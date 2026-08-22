@@ -136,7 +136,7 @@ static inline RESULT korb_flo(CTX *c, VALUE *slots, double d) {
     if (LIKELY(imm)) return RESULT_OK(imm);
     return korb_float_box(c, slots, d);
 }
-RESULT korb_rat_new(CTX *c, VALUE *slots, intptr_t num, intptr_t den);
+RESULT korb_rat_new(CTX *c, VALUE *slots, korb_sword_t num, korb_sword_t den);
 RESULT korb_rat_new_v(CTX *c, VALUE *slots, VALUE num, VALUE den);   /* num/den Integer (Fixnum or Bignum) */
 RESULT korb_cpx_new(CTX *c, VALUE *slots, VALUE re, VALUE im);
 RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint32_t flags);

@@ -158,7 +158,7 @@ static RESULT korb_m_env_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 static RESULT korb_m_env_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c; (void)slots; (void)self; (void)a;
-    intptr_t n = 0; for (char **e = environ; *e; e++) n++;
+    korb_sword_t n = 0; for (char **e = environ; *e; e++) n++;
     return RESULT_OK(LONG2FIX(n));
 }
 static RESULT korb_m_env_empty_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -206,7 +206,7 @@ void korb_define_argv(CTX *c, int n, char *const *args, const char *prog) {
         korb_const_define(c, korb_intern(c->vm, "$0", 2), slots[1]);
         korb_const_define(c, korb_intern(c->vm, "$PROGRAM_NAME", 13), slots[1]);
     }
-    korb_const_define(c, korb_intern(c->vm, "$$", 2), LONG2FIX((intptr_t)getpid()));   /* process id */
+    korb_const_define(c, korb_intern(c->vm, "$$", 2), LONG2FIX((korb_sword_t)getpid()));   /* process id */
     /* $LOAD_PATH / $: — the require search path (one Array shared by both names). */
     slots[1] = korb_ary_new(c, slots + 1, 0).value;
     /* bundled pure-Ruby stdlib: `require 'delegate'` etc. resolve to koruby's

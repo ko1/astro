@@ -166,7 +166,7 @@ static RESULT korb_m_md_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     const int n = korb_md_ngroups(VAL2MD(mdv));
     if (VALUE_SLICE_LEN(a) >= 2) {                        /* [start, length] → Array */
-        intptr_t st = 0, ln = 0;
+        korb_sword_t st = 0, ln = 0;
         if (!korb_to_index(k, &st) || !korb_to_index(VALUE_SLICE_GET(a, 1), &ln)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
         if (st < 0) st += n;
         if (st < 0 || st > n || ln < 0) return RESULT_OK(KORB_NIL);
@@ -174,7 +174,7 @@ static RESULT korb_m_md_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     if (KORB_RANGE_P(k)) {                                /* [range] → Array */
         const KorbRange *r = VAL2RANGE(k);
-        intptr_t b = 0, e;
+        korb_sword_t b = 0, e;
         if (r->rbegin != KORB_NIL) { if (!korb_to_index(r->rbegin, &b)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); }
         if (b < 0) b += n;
         if (r->rend == KORB_NIL) e = n; else { if (!korb_to_index(r->rend, &e)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (e < 0) e += n; if (!r->exclude_end) e += 1; }
@@ -182,7 +182,7 @@ static RESULT korb_m_md_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         long len = e - b; if (len < 0) len = 0;
         return korb_md_group_slice(c, slots, mdv, b, len);
     }
-    intptr_t i = 0;                                       /* [int] → single group */
+    korb_sword_t i = 0;                                       /* [int] → single group */
     if (!korb_to_index(k, &i)) return RESULT_OK(KORB_NIL);
     if (i < 0) i += n;
     if (i < 0 || i >= n) return RESULT_OK(KORB_NIL);
@@ -218,7 +218,7 @@ static RESULT korb_m_md_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         const VALUE arg = VALUE_SLICE_GET(a, j);
         if (KORB_RANGE_P(arg)) {                          /* a Range arg expands to its indices */
             const KorbRange *r = VAL2RANGE(arg);
-            intptr_t b = 0, e;
+            korb_sword_t b = 0, e;
             if (r->rbegin != KORB_NIL) korb_to_index(r->rbegin, &b);
             if (b < 0) b += n;
             if (r->rend == KORB_NIL) e = n; else { e = 0; korb_to_index(r->rend, &e); if (e < 0) e += n; if (!r->exclude_end) e += 1; }
@@ -229,7 +229,7 @@ static RESULT korb_m_md_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             }
             continue;
         }
-        intptr_t i = 0; VALUE g = KORB_NIL;
+        korb_sword_t i = 0; VALUE g = KORB_NIL;
         if (SYMBOL_P(arg) || KORB_STRING_P(arg)) {        /* named-capture reference */
             const char *nm; uint32_t nl;
             if (SYMBOL_P(arg)) { nm = korb_sym_name(c->vm, SYM2ID(arg)); nl = (uint32_t)strlen(nm); }
@@ -273,7 +273,7 @@ static RESULT korb_md_arg_gi(CTX *c, VALUE *slots, VALUE mdv, VALUE arg, int *gi
         if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
         *gi_out = gi; return RESULT_OK(KORB_TRUE);
     }
-    intptr_t i = 0;
+    korb_sword_t i = 0;
     if (!korb_to_index(arg, &i)) {                        /* coerce via #to_int */
         VALUE av = arg; RESULT cr = korb_coerce_to_int(c, slots, &av);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
@@ -507,7 +507,7 @@ static RESULT korb_m_re_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     slots[1] = subj;
     size_t startb = 0;
     if (VALUE_SLICE_LEN(a) >= 2) {                    /* optional char start position */
-        intptr_t pos = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &pos)) {
+        korb_sword_t pos = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &pos)) {
             const KorbString *s = VAL2STR(slots[1]); const long ncp = (long)korb_utf8_count(korb_strbuf_data(s->buf), s->len);
             if (pos < 0) pos += ncp;
             if (pos < 0 || pos > ncp) return RESULT_OK(KORB_FALSE);
@@ -637,7 +637,7 @@ static RESULT korb_m_re_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNWRAP(korb_re_subject(c, slots + 2, VALUE_SLICE_GET(a, 0), &subj)) != KORB_TRUE)
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(VALUE_SLICE_GET(a, 0)));
     slots[1] = subj;
-    long startc = 0; if (VALUE_SLICE_LEN(a) >= 2) { intptr_t p = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &p)) startc = (long)p; }
+    long startc = 0; if (VALUE_SLICE_LEN(a) >= 2) { korb_sword_t p = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &p)) startc = (long)p; }
     const KorbString *s = VAL2STR(slots[1]);
     /* pos is a character index in the subject's encoding — a byte index for
      * single-byte encodings (US-ASCII / ASCII-8BIT), else a UTF-8 char index. */
@@ -666,7 +666,7 @@ static RESULT korb_m_str_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     slots[0] = subj; VALUE re; RESULT cr = korb_re_coerce_pat(c, slots + 1, VALUE_SLICE_GET(a, 0), &re);
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     slots[1] = re;
-    long startc = 0; if (VALUE_SLICE_LEN(a) >= 2) { intptr_t p = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &p) && p > 0) startc = (long)p; }
+    long startc = 0; if (VALUE_SLICE_LEN(a) >= 2) { korb_sword_t p = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &p) && p > 0) startc = (long)p; }
     const KorbString *s = VAL2STR(slots[0]); size_t startb = (startc <= 0) ? 0 : korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)startc);
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], startb, &m);
@@ -683,7 +683,7 @@ static RESULT korb_m_str_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     slots[0] = subj; VALUE re; RESULT cr = korb_re_coerce_pat(c, slots + 1, VALUE_SLICE_GET(a, 0), &re);
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     slots[1] = re;
-    long startc = 0; if (VALUE_SLICE_LEN(a) >= 2) { intptr_t p = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &p) && p > 0) startc = (long)p; }
+    long startc = 0; if (VALUE_SLICE_LEN(a) >= 2) { korb_sword_t p = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &p) && p > 0) startc = (long)p; }
     const KorbString *s = VAL2STR(slots[0]); size_t startb = (startc <= 0) ? 0 : korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)startc);
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], startb, &m);
@@ -966,7 +966,7 @@ RESULT korb_re_str_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE gr
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (cr.value == KORB_FALSE)
                 return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "can't convert %s to Integer (%s#to_int gives %s)", on, on, korb_type_name(gv));
-            intptr_t g = 0; korb_to_index(gv, &g);
+            korb_sword_t g = 0; korb_to_index(gv, &g);
             /* a negative capture index counts back from the last group; -n is out
              * of range as soon as n reaches the group count (group 0 included). */
             const int ngroups = m.n_groups + 1;
@@ -999,7 +999,7 @@ RESULT korb_re_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE gr
             if (SYMBOL_P(slots[2])) { nm = korb_sym_name(c->vm, SYM2ID(slots[2])); nl = (uint32_t)strlen(nm); } else { nm = korb_strbuf_data(VAL2STR(slots[2])->buf); nl = VAL2STR(slots[2])->len; }
             gi = korb_md_name_idx(c, slots[3], nm, nl);
             if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
-        } else { intptr_t g = 0; korb_to_index(slots[2], &g); if (g < 0) g += korb_md_ngroups(VAL2MD(slots[3])); gi = (int)g; }   /* negative capture index counts from the last group */
+        } else { korb_sword_t g = 0; korb_to_index(slots[2], &g); if (g < 0) g += korb_md_ngroups(VAL2MD(slots[3])); gi = (int)g; }   /* negative capture index counts from the last group */
     }
     return korb_md_group(c, slots + 4, slots[3], gi);
 }
@@ -1278,7 +1278,7 @@ static RESULT korb_m_re_last_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     (void)self; VALUE md = korb_re_get_lastmatch(c);
     if (VALUE_SLICE_LEN(a) == 0) return RESULT_OK(md == 0 ? KORB_NIL : md);
     if (md == 0 || md == KORB_NIL || !KORB_MATCHDATA_P(md)) return RESULT_OK(KORB_NIL);
-    intptr_t i = 0; korb_to_index(VALUE_SLICE_GET(a, 0), &i);
+    korb_sword_t i = 0; korb_to_index(VALUE_SLICE_GET(a, 0), &i);
     return korb_md_group(c, slots, md, (int)i);
 }
 

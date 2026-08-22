@@ -115,7 +115,7 @@ static RESULT korb_enum_gen_new(CTX *c, VALUE *slots, VALUE proc, VALUE size) {
 }
 /* Run the generator proc, collecting up to `limit` values (limit < 0 = unbounded,
  * finite only).  Returns the collector Array. */
-static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, intptr_t limit) {
+static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t limit) {
     struct korb_vm *const vm = c->vm;
     if (vm->yielder_class == KORB_NIL) {                        /* lazily build Enumerator::Yielder (a GC root) */
         slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));
@@ -135,7 +135,7 @@ static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, intptr_t l
             const KorbArray *pair = VAL2ARY(korb_items_data(VAL2ARY(slots[0])->items)[i]);
             const char *const opn = korb_sym_name(vm, SYM2ID(korb_items_data(pair->items)[0]));
             if (!strcmp(opn, "uniq")) { slots[4] = UNWRAP(korb_hash_new(c, slots + 5, 8)); CHECK(korb_ary_push_val(c, slots + 5, st, slots[4])); continue; }   /* uniq: seen-Hash state */
-            intptr_t init = 0;
+            korb_sword_t init = 0;
             if (!strcmp(opn, "take") || !strcmp(opn, "drop")) init = FIX2LONG(korb_items_data(pair->items)[1]);
             else if (!strcmp(opn, "drop_while")) init = 1;
             CHECK(korb_ary_push_val(c, slots + 2, st, LONG2FIX(init)));
@@ -202,7 +202,7 @@ static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode) {
     else if (KORB_RANGE_P(slots[0])) {
         const KorbRange *r = VAL2RANGE(slots[0]);
         if (FIXNUM_P(r->rbegin) && FIXNUM_P(r->rend)) {
-            intptr_t n = FIX2LONG(r->rend) - FIX2LONG(r->rbegin) + (r->exclude_end ? 0 : 1);
+            korb_sword_t n = FIX2LONG(r->rend) - FIX2LONG(r->rbegin) + (r->exclude_end ? 0 : 1);
             slots[2] = LONG2FIX(n < 0 ? 0 : n);
         } else if (KORB_INTEGER_P(r->rbegin) &&                 /* endless / +Infinity integer range → #size is Infinity */
                    (r->rend == KORB_NIL || (KORB_FLOAT_P(r->rend) && isinf(korb_float_val(r->rend)) && korb_float_val(r->rend) > 0))) {
@@ -223,9 +223,9 @@ static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode) {
 static VALUE korb_lazy_size(const char *op, VALUE osz, bool src_inf, VALUE blk_proc, bool *dst_inf) {
     const bool inf = src_inf || (KORB_FLOAT_P(osz) && isinf(korb_float_val(osz)));
     *dst_inf = false;
-    if (!strcmp(op, "take")) { if (inf) return blk_proc; if (!FIXNUM_P(osz)) return KORB_NIL; intptr_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(n < s ? n : s); }
+    if (!strcmp(op, "take")) { if (inf) return blk_proc; if (!FIXNUM_P(osz)) return KORB_NIL; korb_sword_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(n < s ? n : s); }
     if (!strcmp(op, "map") || !strcmp(op, "collect") || !strcmp(op, "with_index")) { *dst_inf = inf; return osz; }   /* size-preserving */
-    if (!strcmp(op, "drop")) { if (inf) { *dst_inf = true; return KORB_NIL; } if (!FIXNUM_P(osz)) return KORB_NIL; intptr_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(s > n ? s - n : 0); }
+    if (!strcmp(op, "drop")) { if (inf) { *dst_inf = true; return KORB_NIL; } if (!FIXNUM_P(osz)) return KORB_NIL; korb_sword_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(s > n ? s - n : 0); }
     return KORB_NIL;   /* filtering ops (select/reject/grep/…) make the size unknowable */
 }
 /* Return a new lazy enum = self with one more op appended (op_sym, blk_proc). */
@@ -311,12 +311,12 @@ static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, bool *keep, b
         const KorbArray *pair = VAL2ARY(korb_items_data(VAL2ARY(slots[voff + 1])->items)[oi]);
         const char *const opn = korb_sym_name(c->vm, SYM2ID(korb_items_data(pair->items)[0]));
         if (!strcmp(opn, "drop")) {                             /* skip the first N */
-            const intptr_t s = FIX2LONG(korb_items_data(VAL2ARY(slots[voff + 2])->items)[oi]);
+            const korb_sword_t s = FIX2LONG(korb_items_data(VAL2ARY(slots[voff + 2])->items)[oi]);
             if (s > 0) { korb_ary_store_at(c, slots[voff + 2], oi, LONG2FIX(s - 1)); *keep = false; return RESULT_OK(KORB_NIL); }
             continue;
         }
         if (!strcmp(opn, "take")) {                             /* keep the first N, then terminate */
-            const intptr_t s = FIX2LONG(korb_items_data(VAL2ARY(slots[voff + 2])->items)[oi]);
+            const korb_sword_t s = FIX2LONG(korb_items_data(VAL2ARY(slots[voff + 2])->items)[oi]);
             if (s <= 0) { *keep = false; *term = true; return RESULT_OK(KORB_NIL); }
             korb_ary_store_at(c, slots[voff + 2], oi, LONG2FIX(s - 1));
             continue;
@@ -375,8 +375,8 @@ static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, bool *keep, b
  * state: op_state[] (take/drop counters), `seen` (per-op uniq Hash array).
  * slots[0] holds the current value; slots[1+] is op scratch. */
 static RESULT korb_lazy_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE value, uint32_t start_oi,
-                            intptr_t *op_state, VALUE_REF seen, VALUE_REF res, intptr_t limit,
-                            intptr_t *produced, bool *term) {
+                            korb_sword_t *op_state, VALUE_REF seen, VALUE_REF res, korb_sword_t limit,
+                            korb_sword_t *produced, bool *term) {
     char cstack_probe;
     if (UNLIKELY(&cstack_probe < c->cstack_limit)) return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
     slots[0] = value;                                          /* candidate (rooted) */
@@ -416,7 +416,7 @@ static RESULT korb_lazy_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE value, u
             continue;
         }
         if (!strcmp(opn, "with_index")) {                     /* value → [value, idx] (no block) or block(value, idx) */
-            const intptr_t idx = (oi < 64) ? op_state[oi]++ : 0;
+            const korb_sword_t idx = (oi < 64) ? op_state[oi]++ : 0;
             const VALUE blk = (pair->len >= 3) ? korb_items_data(pair->items)[2] : KORB_NIL;
             if (blk != KORB_NIL) {
                 slots[1] = blk;
@@ -468,15 +468,15 @@ static RESULT korb_lazy_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE value, u
 /* Drive a lazy/cycle enum: produce values, apply ops, push up to `limit` (or all
  * if limit<0) into a fresh Array.  `self` rooted.  `sink` (non-null) yields each
  * instead of collecting (for lazy#each). */
-static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, intptr_t limit);   /* fwd */
-static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t limit) {
+static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t limit);   /* fwd */
+static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t limit) {
     if (SELF_ENUM->mode == 3 || SELF_ENUM->mode == 4) return korb_enum_gen_run(c, slots, self, limit);   /* (lazy) generator */
     slots[0] = UNWRAP(korb_ary_new(c, slots, limit > 0 ? (uint32_t)limit : 8));
     VALUE_REF res = VALUE_REF_AT(&slots[0]);                     /* result (rooted) */
     const uint8_t mode = SELF_ENUM->mode;
     /* per-op state for stateful ops: drop/take counter, drop_while "still dropping"
      * flag.  Indexed by op position; bounded so we can use a C-stack array. */
-    intptr_t op_state[64];
+    korb_sword_t op_state[64];
     bool has_terminator = false;   /* a take/take_while op bounds an otherwise-infinite source */
     /* slots[1] = a per-op seen-hash array for `uniq` (a Hash at each uniq op's
      * index, nil elsewhere) — rooted below the working cursor.  The candidate
@@ -496,7 +496,7 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t lim
           if (!strcmp(opn, "uniq")) { slots[2] = UNWRAP(korb_hash_new(c, slots + 3, 8)); CHECK(korb_ary_push_val(c, slots + 3, seen, slots[2])); }
           else CHECK(korb_ary_push_val(c, slots + 3, seen, KORB_NIL));
       } }
-    intptr_t produced = 0;
+    korb_sword_t produced = 0;
     bool term = false;   /* a take/take_while bound (or the limit) was hit → stop the source */
     /* Feed one source value through the op chain; flat_map fanout + all state is
      * handled by korb_lazy_run.  Candidate + op scratch live at slots[2+]. */
@@ -520,9 +520,9 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t lim
             VALUE bv = VAL2RANGE(src)->rbegin, ev = VAL2RANGE(src)->rend;
             const bool excl = VAL2RANGE(src)->exclude_end != 0;
             if (!FIXNUM_P(bv)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "lazy over a non-integer range");
-            intptr_t i = FIX2LONG(bv);
+            korb_sword_t i = FIX2LONG(bv);
             const bool inf = (ev == KORB_NIL) || KORB_FLOAT_P(ev);   /* nil or Float::INFINITY → unbounded */
-            intptr_t end = inf ? 0 : FIX2LONG(ev);
+            korb_sword_t end = inf ? 0 : FIX2LONG(ev);
             for (;; i++) {
                 if (!inf) { if (excl ? (i >= end) : (i > end)) break; }
                 else if (limit < 0 && !has_terminator) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "lazy.force on an infinite range");
@@ -816,7 +816,7 @@ static RESULT korb_m_enum_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 /* lazy drop(n) / take(n): chain a counted op (lazy); eager → slice the values. */
 static RESULT korb_lazy_count_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, const char *op) {
-    intptr_t n; if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    korb_sword_t n; if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     if (n < 0) n = 0;
     if (SELF_ENUM->mode == 3) {                          /* plain generator: take = bounded, drop = materialize */
         if (!strcmp(op, "take")) return korb_enum_gen_run(c, slots, self, n);
@@ -827,8 +827,8 @@ static RESULT korb_lazy_count_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (SELF_ENUM->mode != 0) { slots[0] = LONG2FIX(n); return korb_lazy_chain(c, slots + 1, self, op, slots[0]); }
     const bool is_take = !strcmp(op, "take");                    /* eager: slice values into a plain Array */
     const KorbArray *v = VAL2ARY(SELF_ENUM->values);
-    const uint32_t len = v->len, lo = is_take ? 0 : (uint32_t)(n < (intptr_t)len ? n : len);
-    const uint32_t hi = is_take ? (uint32_t)(n < (intptr_t)len ? n : len) : len;
+    const uint32_t len = v->len, lo = is_take ? 0 : (uint32_t)(n < (korb_sword_t)len ? n : len);
+    const uint32_t hi = is_take ? (uint32_t)(n < (korb_sword_t)len ? n : len) : len;
     slots[0] = UNWRAP(korb_ary_new(c, slots, hi - lo));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = lo; i < hi; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2ARY(SELF_ENUM->values)->items)[i]));
@@ -839,7 +839,7 @@ static RESULT korb_m_enum_take_l(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* Enumerator#first([n]) — lazy: drive up to n; eager: head of values. */
 static RESULT korb_m_enum_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const bool has_n = VALUE_SLICE_LEN(a) >= 1;
-    intptr_t n = 1;
+    korb_sword_t n = 1;
     if (has_n && UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     if (SELF_ENUM->mode != 0) {
@@ -876,7 +876,7 @@ static RESULT korb_m_enum_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 /* with_index(off=0): yield (value, off+i).  With a block → mapped array;
  * without → a new Enumerator of [value, off+i] pairs. */
 static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    intptr_t off = 0;
+    korb_sword_t off = 0;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {   /* nil ≡ no argument (offset 0) */
         VALUE ov = VALUE_SLICE_GET(a, 0);
         if (FIXNUM_P(ov)) off = FIX2LONG(ov);
@@ -905,7 +905,7 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         if (i >= v->len) break;
         slots[2] = korb_items_data(v->items)[i];
         if (block != NULL) {
-            VALUE argv[2] = { slots[2], LONG2FIX(off + (intptr_t)i) };
+            VALUE argv[2] = { slots[2], LONG2FIX(off + (korb_sword_t)i) };
             RESULT r = korb_block_yield(c, slots + 3, block, def_env, argv, 2, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (opc == 0) CHECK(korb_ary_push_val(c, slots + 3, dst, r.value));   /* map/each: collect block result */
@@ -924,7 +924,7 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         } else {                                       /* build [value, idx] pair */
             slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[2]));
-            CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), LONG2FIX(off + (intptr_t)i)));
+            CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), LONG2FIX(off + (korb_sword_t)i)));
             CHECK(korb_ary_push_val(c, slots + 4, dst, slots[3]));
         }
     }
@@ -981,8 +981,8 @@ static RESULT korb_m_enum_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_enum_gen_at_cursor(CTX *c, VALUE *slots, VALUE_REF self, bool advance) {
     const uint32_t cur = SELF_ENUM->cursor;
     RESULT vr = (SELF_ENUM->mode == 3 || SELF_ENUM->mode == 4)
-                    ? korb_enum_gen_run(c, slots, self, (intptr_t)cur + 1)
-                    : korb_lazy_drive(c, slots, self, (intptr_t)cur + 1);
+                    ? korb_enum_gen_run(c, slots, self, (korb_sword_t)cur + 1)
+                    : korb_lazy_drive(c, slots, self, (korb_sword_t)cur + 1);
     if (UNLIKELY(vr.state != KORB_NORMAL)) return vr;
     slots[0] = vr.value;
     if (cur >= VAL2ARY(slots[0])->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");

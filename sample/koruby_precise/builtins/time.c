@@ -12,7 +12,7 @@ static VALUE korb_time_off_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(v
 
 /* If this Time was built with an explicit numeric utc_offset, its value (seconds);
  * false for a plain local/UTC time. */
-static bool korb_time_fixed_off(CTX *c, VALUE t, intptr_t *out) {
+static bool korb_time_fixed_off(CTX *c, VALUE t, korb_sword_t *out) {
     const VALUE v = korb_ivar_get(c, t, korb_time_off_sym(c->vm));
     if (!FIXNUM_P(v)) return false;
     *out = FIX2LONG(v); return true;
@@ -21,10 +21,10 @@ static bool korb_time_fixed_off(CTX *c, VALUE t, intptr_t *out) {
  * optional), "UTC"/"Z". Returns false if not parseable here.  *utcish reports
  * the forms CRuby treats as UTC itself rather than as a zero offset — "UTC",
  * "Z" and "-00:00" (but not "+00:00", and not a numeric 0). */
-static bool korb_parse_tz_offset(VALUE v, intptr_t *out, bool *utcish) {
+static bool korb_parse_tz_offset(VALUE v, korb_sword_t *out, bool *utcish) {
     if (utcish) *utcish = false;
     if (FIXNUM_P(v))     { *out = FIX2LONG(v);                 return true; }
-    if (KORB_FLOAT_P(v)) { *out = (intptr_t)korb_float_val(v); return true; }
+    if (KORB_FLOAT_P(v)) { *out = (korb_sword_t)korb_float_val(v); return true; }
     if (KORB_STRING_P(v)) {
         const KorbString *const s = VAL2STR(v);
         const char *const p = korb_strbuf_data(s->buf); const uint32_t n = s->len;
@@ -32,9 +32,9 @@ static bool korb_parse_tz_offset(VALUE v, intptr_t *out, bool *utcish) {
         if (n == 1) {   /* military zone letters: A..I = +1..+9, K..M = +10..+12,
                          * N..Y = -1..-12 (J is deliberately unassigned) */
             const char z = p[0];
-            if (z >= 'A' && z <= 'I') { *out = (intptr_t)(z - 'A' + 1) * 3600; return true; }
-            if (z >= 'K' && z <= 'M') { *out = (intptr_t)(z - 'K' + 10) * 3600; return true; }
-            if (z >= 'N' && z <= 'Y') { *out = -(intptr_t)(z - 'N' + 1) * 3600; return true; }
+            if (z >= 'A' && z <= 'I') { *out = (korb_sword_t)(z - 'A' + 1) * 3600; return true; }
+            if (z >= 'K' && z <= 'M') { *out = (korb_sword_t)(z - 'K' + 10) * 3600; return true; }
+            if (z >= 'N' && z <= 'Y') { *out = -(korb_sword_t)(z - 'N' + 1) * 3600; return true; }
             return false;
         }
         if (n >= 3 && (p[0] == '+' || p[0] == '-')) {
@@ -97,7 +97,7 @@ static bool korb_obj_is_numeric(CTX *c, VALUE v);
  * the object does not implement the direction asked for, which lets the caller
  * fall through to its own "bad offset" error. */
 static RESULT
-korb_tz_convert(CTX *c, VALUE *slots, VALUE zone, double base, bool to_utc, intptr_t *off, bool *handled)
+korb_tz_convert(CTX *c, VALUE *slots, VALUE zone, double base, bool to_utc, korb_sword_t *off, bool *handled)
 {
     *handled = false;
     if (!KORB_OBJECT_P(zone)) return RESULT_OK(KORB_NIL);
@@ -117,8 +117,8 @@ korb_tz_convert(CTX *c, VALUE *slots, VALUE zone, double base, bool to_utc, intp
     }
     if (!FIXNUM_P(ir.value))
         return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_coerce_name(c, slots[0]));
-    const intptr_t got = FIX2LONG(ir.value);
-    *off = to_utc ? (intptr_t)base - got : got - (intptr_t)base;
+    const korb_sword_t got = FIX2LONG(ir.value);
+    *off = to_utc ? (korb_sword_t)base - got : got - (korb_sword_t)base;
     if (*off <= -86400 || *off >= 86400)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "utc_offset out of range");
     *handled = true;
@@ -129,7 +129,7 @@ korb_tz_convert(CTX *c, VALUE *slots, VALUE zone, double base, bool to_utc, intp
  * value in *offx when it is not whole (CRuby's #utc_offset hands back the
  * Rational itself).  *got reports whether it reduced to a usable offset. */
 static RESULT
-korb_tz_offset_of_rational(CTX *c, VALUE *slots, VALUE_REF r, intptr_t *off, VALUE *offx, bool *got)
+korb_tz_offset_of_rational(CTX *c, VALUE *slots, VALUE_REF r, korb_sword_t *off, VALUE *offx, bool *got)
 {
     slots[0] = VALUE_REF_GET(r);
     const RESULT tr = korb_send(c, slots + 1, korb_intern(c->vm, "to_i", 4), 0, 0);
@@ -152,7 +152,7 @@ korb_tz_offset_of_rational(CTX *c, VALUE *slots, VALUE_REF r, intptr_t *off, VAL
  * its Time from slots+2 and hand those two slots to korb_time_set_zone.
  * *utcish is set for the "UTC"/"Z"/"-00:00" forms, which mark the Time as UTC. */
 static RESULT
-korb_time_zone_arg(CTX *c, VALUE *slots, VALUE zv, VALUE recv, double base, bool to_utc, intptr_t *off, bool *utcish)
+korb_time_zone_arg(CTX *c, VALUE *slots, VALUE zv, VALUE recv, double base, bool to_utc, korb_sword_t *off, bool *utcish)
 {
     slots[0] = KORB_NIL;                                   /* timezone object */
     slots[1] = KORB_NIL;                                   /* exact offset     */
@@ -220,7 +220,7 @@ static VALUE korb_time_offx_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(
 
 /* Stamp the resolved zone onto a freshly built Time.  Every argument is a rooted
  * slot: korb_ivar_set can grow the ivar table, i.e. it is a GC point. */
-static RESULT korb_time_set_zone(CTX *c, VALUE *slots, VALUE_REF t, intptr_t off, VALUE_REF tzobj, VALUE_REF offx)
+static RESULT korb_time_set_zone(CTX *c, VALUE *slots, VALUE_REF t, korb_sword_t off, VALUE_REF tzobj, VALUE_REF offx)
 {
     CHECK(korb_ivar_set(c, slots, t, korb_time_off_sym(c->vm), LONG2FIX(off)));
     if (VALUE_REF_GET(tzobj) != KORB_NIL)
@@ -262,13 +262,13 @@ static long korb_time_nsec_of(CTX *c, VALUE t) {
  * fractional part, not the large epoch, so `Rational(100,1000)` → 100_000_000). */
 static RESULT korb_time_make_ns(CTX *c, VALUE *slots, VALUE cls, double sec_int, long nsec, bool utc) {
     slots[0] = UNWRAP(korb_time_make(c, slots, cls, sec_int + (double)nsec / 1e9, utc));
-    CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_ns_sym(c->vm), LONG2FIX((intptr_t)nsec)));
+    CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_ns_sym(c->vm), LONG2FIX((korb_sword_t)nsec)));
     return RESULT_OK(slots[0]);
 }
 
 /* broken-down time for a Time value (UTC or local per its flag). */
 static void korb_time_tm(CTX *c, VALUE t, struct tm *out) {
-    intptr_t off;
+    korb_sword_t off;
     if (korb_time_fixed_off(c, t, &off)) {          /* fixed-offset time: wall clock = UTC(epoch + off) */
         const time_t s = (time_t)(korb_time_epoch(c, t) + off);
         gmtime_r(&s, out);
@@ -302,7 +302,7 @@ static RESULT korb_m_time_now(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     double sec; long ns; korb_time_now_parts(&sec, &ns);
     if (in_zv == KORB_NIL) return korb_time_make_ns(c, slots, VALUE_REF_GET(self), sec, ns, false);
-    intptr_t in_off; bool utcish;                            /* slots[0]=zone obj, slots[1]=exact offset */
+    korb_sword_t in_off; bool utcish;                            /* slots[0]=zone obj, slots[1]=exact offset */
     CHECK(korb_time_zone_arg(c, slots, in_zv, VALUE_REF_GET(self), sec, false, &in_off, &utcish));
     slots[2] = UNWRAP(korb_time_make_ns(c, slots + 2, VALUE_REF_GET(self), sec, ns, utcish));
     return korb_time_set_zone(c, slots + 3, VALUE_REF_AT(&slots[2]), in_off,
@@ -403,7 +403,7 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     sec += nsec / 1000000000; nsec %= 1000000000;                /* carry overflow into seconds */
     if (in_zv == KORB_NIL)
         return korb_time_make_ns(c, slots, VALUE_REF_GET(self), (double)sec, nsec, src_utc);
-    intptr_t off; bool utcish;                                   /* Time.at(x, in: zone) */
+    korb_sword_t off; bool utcish;                                   /* Time.at(x, in: zone) */
     CHECK(korb_time_zone_arg(c, slots, in_zv, VALUE_REF_GET(self), (double)sec, false, &off, &utcish));
     slots[2] = UNWRAP(korb_time_make_ns(c, slots + 2, VALUE_REF_GET(self), (double)sec, nsec, utcish));
     return korb_time_set_zone(c, slots + 3, VALUE_REF_AT(&slots[2]), off,
@@ -412,7 +412,7 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 /* shared: build from (year, mon=1, day=1, hour=0, min=0, sec=0) components. */
 /* Parse a Time.new component String to an integer.  For the month a 3-letter
  * English name (jan..dec, any case) is also accepted. */
-static bool korb_parse_time_str(const char *s, uint32_t len, bool is_month, intptr_t *out) {
+static bool korb_parse_time_str(const char *s, uint32_t len, bool is_month, korb_sword_t *out) {
     static const char *const mon[12] = { "jan","feb","mar","apr","may","jun",
                                          "jul","aug","sep","oct","nov","dec" };
     if (is_month && len >= 3) {
@@ -426,19 +426,19 @@ static bool korb_parse_time_str(const char *s, uint32_t len, bool is_month, intp
     char *end; const long v = strtol(buf, &end, 10);
     while (*end == ' ' || *end == '\t' || *end == '\n') end++;
     if (end == buf || *end != '\0') return false;
-    *out = (intptr_t)v; return true;
+    *out = (korb_sword_t)v; return true;
 }
 
 static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE a, bool utc) {
     struct tm tm; memset(&tm, 0, sizeof tm);
-    intptr_t comp[6] = { 1970, 1, 1, 0, 0, 0 };
+    korb_sword_t comp[6] = { 1970, 1, 1, 0, 0, 0 };
     double subsec = 0.0;                                     /* fractional seconds (Float/Rational sec arg) */
-    const intptr_t defs = (intptr_t)VALUE_SLICE_LEN(a);
+    const korb_sword_t defs = (korb_sword_t)VALUE_SLICE_LEN(a);
     slots[0] = cls;                                          /* root cls across #to_int/#to_str dispatch */
-    for (intptr_t i = 0; i < 6 && i < defs; i++) {
+    for (korb_sword_t i = 0; i < 6 && i < defs; i++) {
         VALUE cv = VALUE_SLICE_GET(a, i);
         if (i == 5 && !FIXNUM_P(cv) && (KORB_FLOAT_P(cv) || KORB_RATIONAL_P(cv))) {  /* fractional seconds */
-            double sv = 0; if (korb_num_to_d(cv, &sv)) { comp[5] = (intptr_t)sv; subsec = sv - (double)comp[5]; }
+            double sv = 0; if (korb_num_to_d(cv, &sv)) { comp[5] = (korb_sword_t)sv; subsec = sv - (double)comp[5]; }
             continue;
         }
         if (cv == KORB_NIL) {                                /* nil year is a TypeError; later nils keep the default */
@@ -446,14 +446,14 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
             continue;
         }
         if (FIXNUM_P(cv)) { comp[i] = FIX2LONG(cv); continue; }
-        if (KORB_FLOAT_P(cv)) { comp[i] = (intptr_t)korb_float_val(cv); continue; }
+        if (KORB_FLOAT_P(cv)) { comp[i] = (korb_sword_t)korb_float_val(cv); continue; }
         if (!KORB_STRING_P(cv)) {                            /* coerce: #to_int, else #to_str → parse */
             if (korb_responds_to(c, cv, korb_intern(c->vm, "to_int", 6))) {
                 slots[1] = cv;
                 RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 if (FIXNUM_P(r.value)) { comp[i] = FIX2LONG(r.value); cls = slots[0]; continue; }
-                if (KORB_FLOAT_P(r.value)) { comp[i] = (intptr_t)korb_float_val(r.value); cls = slots[0]; continue; }
+                if (KORB_FLOAT_P(r.value)) { comp[i] = (korb_sword_t)korb_float_val(r.value); cls = slots[0]; continue; }
             }
             if (korb_responds_to(c, cv, korb_intern(c->vm, "to_str", 6))) {
                 slots[1] = cv;
@@ -513,7 +513,7 @@ static int kiso_cant(char *emsg, size_t emax, const char *s, uint32_t len) {
 }
 
 /* exactly two digits, CRuby's two_digits() including its error wording */
-static bool kiso_two(const char *s, uint32_t len, uint32_t *ip, intptr_t *dst,
+static bool kiso_two(const char *s, uint32_t len, uint32_t *ip, korb_sword_t *dst,
                      const char *name, char *emsg, size_t emax) {
     const uint32_t i = *ip, rem = len - i;
     if (rem < 2 || !isdigit((unsigned char)s[i]) || !isdigit((unsigned char)s[i+1]) ||
@@ -534,17 +534,17 @@ static bool kiso_two(const char *s, uint32_t len, uint32_t *ip, intptr_t *dst,
  * information"), 2 with emsg filled on malformed input.  comp[6] = Y,Mon,D,H,
  * Min,S; *nsec = the fraction truncated to nanoseconds (at most `prec` digits
  * are read when prec >= 0); zoff and zlen delimit the zone token. */
-static int korb_time_iso_parse(const char *s, uint32_t len, intptr_t comp[6], long *nsec,
+static int korb_time_iso_parse(const char *s, uint32_t len, korb_sword_t comp[6], long *nsec,
                                uint32_t *zoff, uint32_t *zlen, long prec, char *emsg, size_t emax) {
     comp[0] = 1970; comp[1] = 1; comp[2] = 1; comp[3] = 0; comp[4] = 0; comp[5] = 0;
     *nsec = 0; *zoff = 0; *zlen = 0;
     if (len > 0 && (isspace((unsigned char)s[0]) || isspace((unsigned char)s[len-1])))
         return kiso_cant(emsg, emax, s, len);
     uint32_t i = 0;
-    intptr_t ysign = 1;
+    korb_sword_t ysign = 1;
     if (i < len && (s[i] == '+' || s[i] == '-')) { if (s[i] == '-') ysign = -1; i++; }
     const uint32_t d0 = i;
-    intptr_t y = 0;
+    korb_sword_t y = 0;
     while (i < len && isdigit((unsigned char)s[i])) { y = y * 10 + (s[i] - '0'); i++; }
     if (i == d0) return kiso_cant(emsg, emax, s, len);
     if (i - d0 < 4) { snprintf(emsg, emax, "year must be 4 or more digits: %.*s", (int)(i - d0), s + d0); return 2; }
@@ -621,7 +621,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     if (n == 0) {                                            /* Time.new(in: zone) → now in that zone */
         double sec; long ns; korb_time_now_parts(&sec, &ns);
-        intptr_t in_off; bool utcish;
+        korb_sword_t in_off; bool utcish;
         CHECK(korb_time_zone_arg(c, slots, in_zv, VALUE_REF_GET(self), sec, false, &in_off, &utcish));
         slots[2] = UNWRAP(korb_time_make_ns(c, slots + 2, VALUE_REF_GET(self), sec, ns, utcish));
         return korb_time_set_zone(c, slots + 3, VALUE_REF_AT(&slots[2]), in_off,
@@ -646,7 +646,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             prec = FIXNUM_P(slots[5]) ? (long)FIX2LONG(slots[5]) : 9;
             if (prec < 0) prec = 0;
         }
-        intptr_t comp[6]; long nsec; uint32_t zs, zl; char emsg[256];
+        korb_sword_t comp[6]; long nsec; uint32_t zs, zl; char emsg[256];
         {
             const KorbString *const str = VAL2STR(slots[4]);
             const int pr = korb_time_iso_parse(korb_strbuf_data(str->buf), str->len, comp, &nsec,
@@ -655,7 +655,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             if (pr != 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s", emsg);
         }
         static const char *const cname[6] = { "year", "mon", "mday", "hour", "min", "sec" };
-        static const intptr_t clo[6] = { 0, 1, 1, 0, 0, 0 }, chi[6] = { 0, 12, 31, 24, 59, 60 };
+        static const korb_sword_t clo[6] = { 0, 1, 1, 0, 0, 0 }, chi[6] = { 0, 12, 31, 24, 59, 60 };
         for (uint32_t k = 1; k < 6; k++)
             if (comp[k] < clo[k] || comp[k] > chi[k])
                 return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s out of range", cname[k]);
@@ -668,7 +668,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (zl > 0) slots[5] = UNWRAP(korb_str_slice_new(c, slots + 6, VALUE_REF_AT(&slots[4]), zs, zl));
         else slots[5] = in_zv;
         const bool eff_has = (slots[5] != KORB_NIL);
-        intptr_t eff_off = 0; bool utcish = false;
+        korb_sword_t eff_off = 0; bool utcish = false;
         if (eff_has) {
             struct tm tmw = tm;                            /* timegm normalizes in place */
             CHECK(korb_time_zone_arg(c, slots, slots[5], VALUE_REF_GET(self), (double)timegm(&tmw), true, &eff_off, &utcish));
@@ -685,11 +685,11 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (pos_off && has_in) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "timezone argument given as positional and keyword arguments");
     if (pos_off || has_in) {
         struct tm tm; memset(&tm, 0, sizeof tm);
-        intptr_t comp[6] = { 1970, 1, 1, 0, 0, 0 };
+        korb_sword_t comp[6] = { 1970, 1, 1, 0, 0, 0 };
         for (uint32_t i = 0; i < 6 && i < n; i++) {
             const VALUE cv = VALUE_SLICE_GET(a, i);
             if (FIXNUM_P(cv)) comp[i] = FIX2LONG(cv);
-            else if (KORB_FLOAT_P(cv)) comp[i] = (intptr_t)korb_float_val(cv);
+            else if (KORB_FLOAT_P(cv)) comp[i] = (korb_sword_t)korb_float_val(cv);
         }
         if (comp[1] < 1 || comp[1] > 12 || comp[2] < 1 || comp[2] > 31 ||
             comp[3] < 0 || comp[3] > 24 || comp[4] < 0 || comp[4] > 59 || comp[5] < 0 || comp[5] > 60)
@@ -701,7 +701,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
          * offset is subtracted from */
         struct tm tmw = tm;                                  /* timegm normalizes in place */
         const double wall = (double)timegm(&tmw);
-        intptr_t off; bool utcish;
+        korb_sword_t off; bool utcish;
         CHECK(korb_time_zone_arg(c, slots, pos_off ? VALUE_SLICE_GET(a, 6) : in_zv, VALUE_REF_GET(self), wall, true, &off, &utcish));
         double offd = (double)off;
         if (slots[1] != KORB_NIL) korb_num_to_d(slots[1], &offd);      /* exact fractional offset */
@@ -720,7 +720,7 @@ static RESULT korb_m_time_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)slots; (void)a;
     /* seconds since the epoch, FLOORED (a pre-1970 stamp truncates the wrong way
      * with a plain cast: Time.at(-1.5).to_i is -2, not -1) */
-    return RESULT_OK(LONG2FIX((intptr_t)floor(korb_time_epoch(c, VALUE_REF_GET(self)))));
+    return RESULT_OK(LONG2FIX((korb_sword_t)floor(korb_time_epoch(c, VALUE_REF_GET(self)))));
 }
 static RESULT korb_m_time_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; return korb_float_new(c, slots, korb_time_epoch(c, VALUE_REF_GET(self)));
@@ -755,7 +755,7 @@ static RESULT korb_m_time_subsec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_time_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; const VALUE t = VALUE_REF_GET(self);
     const int64_t sec = (int64_t)korb_time_epoch(c, t);
-    return korb_rat_new(c, slots, (intptr_t)(sec * 1000000000 + korb_time_nsec_of(c, t)), 1000000000);
+    return korb_rat_new(c, slots, (korb_sword_t)(sec * 1000000000 + korb_time_nsec_of(c, t)), 1000000000);
 }
 static RESULT korb_m_time_utc_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a; return RESULT_OK(korb_time_is_utc(c, VALUE_REF_GET(self)) ? KORB_TRUE : KORB_FALSE);
@@ -779,7 +779,7 @@ static RESULT korb_m_time_getlocal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     const double e = korb_time_epoch(c, t);
     const VALUE cls = korb_class_obj_of(c, t);
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
-        intptr_t off; bool utcish;
+        korb_sword_t off; bool utcish;
         CHECK(korb_time_zone_arg(c, slots, VALUE_SLICE_GET(a, 0), VALUE_REF_GET(self), e, false, &off, &utcish));
         /* re-read the class: resolving the zone dispatches, i.e. it can move objects */
         slots[2] = UNWRAP(korb_time_make(c, slots + 2, korb_class_obj_of(c, VALUE_REF_GET(self)), e, utcish));
@@ -821,13 +821,13 @@ static RESULT korb_time_derive(CTX *c, VALUE *slots, VALUE_REF src, double epoch
  * zone would actually change (CRuby lets a no-op through). */
 static RESULT korb_m_time_localtime_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const bool have_arg = VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL;
-    intptr_t off = 0; bool utcish = false;
+    korb_sword_t off = 0; bool utcish = false;
     if (have_arg) {
         const double e = korb_time_epoch(c, VALUE_REF_GET(self));
         CHECK(korb_time_zone_arg(c, slots, VALUE_SLICE_GET(a, 0), VALUE_REF_GET(self), e, false, &off, &utcish));
     }
     /* already in that zone → no change, so a frozen receiver is fine */
-    intptr_t cur; const bool had = korb_time_fixed_off(c, VALUE_REF_GET(self), &cur);
+    korb_sword_t cur; const bool had = korb_time_fixed_off(c, VALUE_REF_GET(self), &cur);
     const bool was_utc = korb_time_is_utc(c, VALUE_REF_GET(self));
     if (have_arg ? (had && cur == off && was_utc == utcish)
                  : (!had && !was_utc)) return RESULT_OK(VALUE_REF_GET(self));
@@ -1009,7 +1009,7 @@ static RESULT korb_m_time_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const bool utc = korb_time_is_utc(c, VALUE_REF_GET(self));
     slots[0] = UNWRAP(korb_ary_new(c, slots, 10));
     VALUE_REF arr = VALUE_REF_AT(&slots[0]);
-    const intptr_t vals[8] = { tm.tm_sec, tm.tm_min, tm.tm_hour, tm.tm_mday, tm.tm_mon + 1,
+    const korb_sword_t vals[8] = { tm.tm_sec, tm.tm_min, tm.tm_hour, tm.tm_mday, tm.tm_mon + 1,
                                tm.tm_year + 1900, tm.tm_wday, tm.tm_yday + 1 };
     for (int i = 0; i < 8; i++) CHECK(korb_ary_push_val(c, slots + 1, arr, LONG2FIX(vals[i])));
     CHECK(korb_ary_push_val(c, slots + 1, arr, tm.tm_isdst > 0 ? KORB_TRUE : KORB_FALSE));
@@ -1023,7 +1023,7 @@ static RESULT korb_m_time_zone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)a;
     const VALUE tz = korb_ivar_get(c, VALUE_REF_GET(self), korb_time_tz_sym(c->vm));
     if (tz != KORB_NIL) return RESULT_OK(tz);                /* built from a timezone object */
-    intptr_t off;
+    korb_sword_t off;
     if (korb_time_fixed_off(c, VALUE_REF_GET(self), &off) && !korb_time_is_utc(c, VALUE_REF_GET(self)))
         return RESULT_OK(KORB_NIL);                          /* a bare numeric offset has no zone name */
     struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
@@ -1034,10 +1034,10 @@ static RESULT korb_m_time_utc_offset(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     (void)slots; (void)a;
     const VALUE ox = korb_ivar_get(c, VALUE_REF_GET(self), korb_time_offx_sym(c->vm));
     if (ox != KORB_NIL) return RESULT_OK(ox);                /* exact (fractional) offset */
-    intptr_t off;
+    korb_sword_t off;
     if (korb_time_fixed_off(c, VALUE_REF_GET(self), &off)) return RESULT_OK(LONG2FIX(off));   /* explicit utc_offset */
     struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
-    return RESULT_OK(LONG2FIX(korb_time_is_utc(c, VALUE_REF_GET(self)) ? 0 : (intptr_t)tm.tm_gmtoff));
+    return RESULT_OK(LONG2FIX(korb_time_is_utc(c, VALUE_REF_GET(self)) ? 0 : (korb_sword_t)tm.tm_gmtoff));
 }
 static RESULT korb_m_time_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const double e = korb_time_epoch(c, VALUE_REF_GET(self));

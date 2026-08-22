@@ -55,7 +55,7 @@ static RESULT korb_aseq_to_array(CTX *c, VALUE *slots, VALUE_REF self) {
     const bool use_float = KORB_FLOAT_P(beginv) || KORB_FLOAT_P(limv) || KORB_FLOAT_P(stepv);
     /* Extract all scalars BEFORE allocating — under STRESS the array alloc GCs and
      * would move the Float operands (beginv/limv/stepv) out from under us. */
-    double s = 0, lim = 0, st = 0; intptr_t is = 0, ilim = 0, ist = 0;
+    double s = 0, lim = 0, st = 0; korb_sword_t is = 0, ilim = 0, ist = 0;
     if (use_float) {
         if (!korb_num_to_d(beginv, &s) || !korb_num_to_d(limv, &lim) || !korb_num_to_d(stepv, &st))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
@@ -75,7 +75,7 @@ static RESULT korb_aseq_to_array(CTX *c, VALUE *slots, VALUE_REF self) {
             CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
         }
     } else {
-        for (intptr_t i = is; ist > 0 ? (excl ? i < ilim : i <= ilim) : (excl ? i > ilim : i >= ilim); i += ist)
+        for (korb_sword_t i = is; ist > 0 ? (excl ? i < ilim : i <= ilim) : (excl ? i > ilim : i >= ilim); i += ist)
             CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
@@ -102,8 +102,8 @@ static RESULT korb_m_aseq_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return RESULT_OK(LONG2FIX((sd > 0 ? bd <= ld : bd >= ld) ? 1 : 0));
     if (isinf(ld)) return ((sd > 0) == (ld > 0)) ? korb_float_new(c, slots, INFINITY) : RESULT_OK(LONG2FIX(0));
     if (FIXNUM_P(beginv) && FIXNUM_P(limv) && FIXNUM_P(stepv)) {              /* exact integer count */
-        intptr_t span = FIX2LONG(limv) - FIX2LONG(beginv), st = FIX2LONG(stepv);
-        intptr_t cnt;
+        korb_sword_t span = FIX2LONG(limv) - FIX2LONG(beginv), st = FIX2LONG(stepv);
+        korb_sword_t cnt;
         if (st > 0) cnt = span < 0 ? 0 : span / st + 1;
         else        cnt = span > 0 ? 0 : (-span) / (-st) + 1;
         if (excl && cnt > 0 && span % st == 0) cnt--;                        /* endpoint excluded when hit exactly */
@@ -132,11 +132,11 @@ static RESULT korb_m_aseq_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     VALUE beginv, limv, stepv; bool excl;
     korb_aseq_params(as, &beginv, &limv, &stepv, &excl);
     const bool want_n = VALUE_SLICE_LEN(a) >= 1;
-    intptr_t n = 1;
+    korb_sword_t n = 1;
     if (want_n && UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     const bool use_float = KORB_FLOAT_P(beginv) || KORB_FLOAT_P(limv) || KORB_FLOAT_P(stepv);
-    double s = 0, lim = 0, st = 0; intptr_t is = 0, ilim = 0, ist = 0; bool endless = (limv == KORB_NIL);
+    double s = 0, lim = 0, st = 0; korb_sword_t is = 0, ilim = 0, ist = 0; bool endless = (limv == KORB_NIL);
     if (use_float) {
         if (!korb_num_to_d(beginv, &s) || !korb_num_to_d(stepv, &st) || (!endless && !korb_num_to_d(limv, &lim)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
@@ -147,14 +147,14 @@ static RESULT korb_m_aseq_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)(n > 0 ? n : 0)));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
-    for (intptr_t i = 0; (want_n ? (intptr_t)VAL2ARY(VALUE_REF_GET(dst))->len < n : i < 1); i++) {
+    for (korb_sword_t i = 0; (want_n ? (korb_sword_t)VAL2ARY(VALUE_REF_GET(dst))->len < n : i < 1); i++) {
         if (use_float) {
             if (!endless && i >= korb_float_step_n(s, lim, st, excl)) break;
             const double d = endless ? s + (double)i * st : korb_float_step_at(s, lim, st, i, excl);
             slots[1] = UNWRAP(korb_float_new(c, slots + 1, d));
             CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
         } else {
-            intptr_t d = is + i * ist;
+            korb_sword_t d = is + i * ist;
             if (!endless && (ist > 0 ? (excl ? d >= ilim : d > ilim) : (excl ? d <= ilim : d < ilim))) break;
             CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(d)));
         }

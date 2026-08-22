@@ -67,7 +67,7 @@ static double korb_mt_real(KorbMT *const st) {
 /* seed an MT from a non-negative Integer (Fixnum or Bignum), CRuby rand_init. */
 static void korb_mt_seed_int(KorbMT *const st, VALUE seed) {
     if (FIXNUM_P(seed)) {
-        intptr_t s = FIX2LONG(seed);
+        korb_sword_t s = FIX2LONG(seed);
         uint64_t a = (s < 0) ? (~(uint64_t)s + 1u) : (uint64_t)s;   /* abs (two's complement) */
         if (a <= 0xFFFFFFFFULL) korb_mt_init_genrand(st, (uint32_t)a);
         else { uint32_t key[2] = { (uint32_t)(a & 0xFFFFFFFFu), (uint32_t)(a >> 32) }; korb_mt_init_by_array(st, key, 2); }
@@ -106,7 +106,7 @@ ARO_BORROW static KorbMT *korb_rng_of(CTX *const c, VALUE rndobj) {
 /* Random.urandom(n) → n bytes of OS entropy as an ASCII-8BIT String. */
 static RESULT korb_m_random_urandom(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    intptr_t n = 0;
+    korb_sword_t n = 0;
     if (VALUE_SLICE_LEN(a) < 1 || UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative string size (or size too big)");
@@ -154,10 +154,10 @@ static KorbRandSrc korb_rand_src_from_kwargs(CTX *const c, VALUE_SLICE a) {
 static RESULT korb_rand_upto(CTX *const c, VALUE *slots, VALUE_SLICE a, uint32_t bound, uint32_t *out) {
     KorbRandSrc src = korb_rand_src_from_kwargs(c, a);
     if (src.obj == KORB_NIL) { *out = korb_mt_limited(src.mt, bound); return RESULT_OK(KORB_NIL); }
-    slots[0] = src.obj; slots[1] = LONG2FIX((intptr_t)bound + 1);   /* rng.rand(bound+1) → [0, bound] */
+    slots[0] = src.obj; slots[1] = LONG2FIX((korb_sword_t)bound + 1);   /* rng.rand(bound+1) → [0, bound] */
     RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "rand", 4), 0, 1);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    intptr_t v;
+    korb_sword_t v;
     if (UNLIKELY(!korb_to_index(r.value, &v)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(r.value));
     if (UNLIKELY(v < 0 || (uintptr_t)v > bound))
@@ -170,12 +170,12 @@ static RESULT korb_rand_upto(CTX *const c, VALUE *slots, VALUE_SLICE a, uint32_t
  * in [0,1) for no arg / 0 / Float, an Integer in [0,n) for positive Integer n,
  * or a value within a Range. */
 /* draw an integer in [0, n) for n >= 1 (n may exceed 2^32). */
-static intptr_t korb_rand_below(KorbMT *st, uintptr_t n) {
-    if (n <= 0xFFFFFFFFu) return (intptr_t)korb_mt_limited(st, (uint32_t)(n - 1));
+static korb_sword_t korb_rand_below(KorbMT *st, uintptr_t n) {
+    if (n <= 0xFFFFFFFFu) return (korb_sword_t)korb_mt_limited(st, (uint32_t)(n - 1));
     uint64_t lim = (uint64_t)n - 1, mask = lim;
     mask |= mask>>1; mask |= mask>>2; mask |= mask>>4; mask |= mask>>8; mask |= mask>>16; mask |= mask>>32;
     uint64_t v; do { v = ((uint64_t)korb_mt_next(st) | ((uint64_t)korb_mt_next(st) << 32)) & mask; } while (v > lim);
-    return (intptr_t)v;
+    return (korb_sword_t)v;
 }
 static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a) {
     if (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL)
@@ -186,8 +186,8 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a) {
         const VALUE lo = r->rbegin, hi = r->rend;
         const bool excl = r->exclude_end;
         if (FIXNUM_P(lo) && FIXNUM_P(hi)) {           /* integer range → Integer */
-            const intptr_t lv = FIX2LONG(lo), hv = FIX2LONG(hi);
-            const intptr_t span = hv - lv + (excl ? 0 : 1);
+            const korb_sword_t lv = FIX2LONG(lo), hv = FIX2LONG(hi);
+            const korb_sword_t span = hv - lv + (excl ? 0 : 1);
             if (span <= 0) return RESULT_OK(KORB_NIL);
             return RESULT_OK(LONG2FIX(lv + korb_rand_below(st, (uintptr_t)span)));
         }
@@ -206,7 +206,7 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a) {
         arg = ir.value;
     }
     if (FIXNUM_P(arg)) {
-        intptr_t n = FIX2LONG(arg);
+        korb_sword_t n = FIX2LONG(arg);
         if (n == 0) return korb_float_new(c, slots, korb_mt_real(st));
         if (n < 0)  n = -n;                           /* the sign is ignored */
         return RESULT_OK(LONG2FIX(korb_rand_below(st, (uintptr_t)n)));
@@ -237,7 +237,7 @@ static RESULT korb_m_random_init(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", on);
         seed = ir.value;
     }
-    if (seed == KORB_NIL) seed = LONG2FIX((intptr_t)(korb_mt_entropy(slots) & 0x3FFFFFFF));   /* #seed reports the drawn value */
+    if (seed == KORB_NIL) seed = LONG2FIX((korb_sword_t)(korb_mt_entropy(slots) & 0x3FFFFFFF));   /* #seed reports the drawn value */
     CHECK(korb_ivar_set(c, slots, self, korb_seed_sym(c->vm), seed));   /* @__seed (may GC; seed re-read below) */
     KorbString *const s = korb_str_alloc(c, slots, (uint32_t)sizeof(KorbMT));   /* binary state buffer (may GC) */
     slots[0] = (VALUE)s;                                                /* root */

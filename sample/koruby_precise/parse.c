@@ -829,7 +829,7 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
 }
 
 static bool
-kp_integer_value(const pm_integer_t *integer, intptr_t *out)
+kp_integer_value(const pm_integer_t *integer, korb_sword_t *out)
 {
     uint64_t mag;
     if (integer->values == NULL) {
@@ -844,11 +844,11 @@ kp_integer_value(const pm_integer_t *integer, intptr_t *out)
     }
     if (integer->negative) {
         if (mag > (uint64_t)FIXNUM_MAX + 1) return false;
-        *out = -(intptr_t)mag;
+        *out = -(korb_sword_t)mag;
         return true;
     }
     if (mag > (uint64_t)FIXNUM_MAX) return false;
-    *out = (intptr_t)mag;
+    *out = (korb_sword_t)mag;
     return true;
 }
 
@@ -2636,7 +2636,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       /* ---- literals ---- */
       case PM_INTEGER_NODE: {
         const pm_integer_node_t *in = (const pm_integer_node_t *)node;
-        intptr_t v;
+        korb_sword_t v;
         if (!kp_integer_value(&in->value, &v)) {       /* beyond Fixnum → bake source digits, rebuild Bignum at eval */
             size_t slen = (size_t)(node->location.end - node->location.start);
             char *buf = malloc(slen + 1);
@@ -2652,7 +2652,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
       case PM_RATIONAL_NODE: {     /* `2r` / `1.5r` → Rational */
         const pm_rational_node_t *rn = (const pm_rational_node_t *)node;
-        intptr_t num, den;
+        korb_sword_t num, den;
         if (!kp_integer_value(&rn->numerator, &num) || !kp_integer_value(&rn->denominator, &den)) {
             char *ns = kp_integer_to_decimal(&rn->numerator);     /* beyond Fixnum → bake digit strings */
             char *ds = kp_integer_to_decimal(&rn->denominator);
@@ -2761,7 +2761,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         bake_add(tc, &en->u.node_end_block.self_off);
         return en;
       }
-      case PM_SOURCE_LINE_NODE: return ALLOC_node_lit(LONG2FIX((intptr_t)(int32_t)kp_line(tc, node)));    /* __LINE__ (signed: eval's first line may be negative) */
+      case PM_SOURCE_LINE_NODE: return ALLOC_node_lit(LONG2FIX((korb_sword_t)(int32_t)kp_line(tc, node)));    /* __LINE__ (signed: eval's first line may be negative) */
       case PM_SOURCE_ENCODING_NODE: {   /* __ENCODING__ → Encoding.find(<file encoding>) */
         const char *const nm = korb_enc_name_of(tc->c->vm, tc->src_enc);
         NODE *recv, *arg;

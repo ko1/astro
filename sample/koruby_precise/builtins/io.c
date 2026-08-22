@@ -70,7 +70,7 @@ static int korb_io_rw(CTX *c, VALUE self) {
 static KorbIORep *korb_io_rep(CTX *c, VALUE self) {
     const VALUE idxv = korb_ivar_get(c, self, ID2SYM(korb_io_fp_mid(c)));
     if (!FIXNUM_P(idxv)) return NULL;
-    const intptr_t idx = FIX2LONG(idxv);
+    const korb_sword_t idx = FIX2LONG(idxv);
     if (idx < 0 || (uint32_t)idx >= c->vm->io_cnt) return NULL;
     return c->vm->io_reps[idx];
 }
@@ -355,7 +355,7 @@ static uint32_t korb_io_read_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *
 static RESULT korb_io_make(CTX *c, VALUE *slots, VALUE klass, int fd, int rw) {
     const uint32_t idx = korb_io_register(c->vm, fd, false);
     slots[0] = UNWRAP(korb_obj_new(c, slots, klass));
-    CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_io_fp_mid(c)), LONG2FIX((intptr_t)idx)));
+    CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_io_fp_mid(c)), LONG2FIX((korb_sword_t)idx)));
     CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_io_mode_mid(c)), LONG2FIX(rw)));
     return RESULT_OK(slots[0]);
 }
@@ -447,7 +447,7 @@ static void korb_io_class_name(CTX *c, VALUE v, char *const buf, size_t sz) {
 /* Integer argument of an IO method: Integer / Float (truncated) as-is, anything
  * else through #to_int (CRuby's rb_to_int).  May dispatch → may GC, so callers
  * must re-read any VALUE they still need afterwards. */
-static RESULT korb_io_arg_int(CTX *c, VALUE *slots, VALUE v, intptr_t *out) {
+static RESULT korb_io_arg_int(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out) {
     if (LIKELY(korb_to_index(v, out))) return RESULT_OK(KORB_TRUE);
     const char *const cls = korb_type_name(v);         /* capture before dispatch (v may move) */
     VALUE t = v;
@@ -462,7 +462,7 @@ static RESULT korb_io_arg_int(CTX *c, VALUE *slots, VALUE v, intptr_t *out) {
 static RESULT korb_m_io_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    intptr_t len;
+    korb_sword_t len;
     CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &len));
     (void)korb_io_flush_rep(rep);
     if (ftruncate(korb_io_fd(c, VALUE_REF_GET(self)), (off_t)len) != 0) return korb_raise_errno(c, slots, errno, "ftruncate", "");
@@ -573,7 +573,7 @@ static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const RESULT r = korb_io_emit(c, slots, VALUE_SLICE_GET(a, i), rep, &nb);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
-    return RESULT_OK(LONG2FIX((intptr_t)nb));
+    return RESULT_OK(LONG2FIX((korb_sword_t)nb));
 }
 /* IO#print(*args) → nil. */
 /* Is the receiver's #write something other than the builtin?  CRuby routes
@@ -674,7 +674,7 @@ static RESULT korb_m_io_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     KORB_IO_NEED_READ(c, slots, self);
     const uint32_t na = VALUE_SLICE_LEN(a);
     bool bounded = false;
-    intptr_t want = 0;
+    korb_sword_t want = 0;
     if (na >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
         const VALUE lv = VALUE_SLICE_GET(a, 0);
         if (FIXNUM_P(lv)) want = FIX2LONG(lv);
@@ -863,7 +863,7 @@ static RESULT korb_m_io_gets(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
      * read may have GC'd, and it lives in a libc allocation the IO points at. */
     if (r.value != KORB_NIL) {
         const uint32_t ln = ++korb_io_rep(c, VALUE_REF_GET(self))->lineno;
-        korb_const_define(c, korb_intern(c->vm, "$.", 2), LONG2FIX((intptr_t)ln));
+        korb_const_define(c, korb_intern(c->vm, "$.", 2), LONG2FIX((korb_sword_t)ln));
     }
     korb_const_define(c, korb_intern(c->vm, "$_", 2), r.value);
     return r;
@@ -874,15 +874,15 @@ static RESULT korb_m_io_lineno(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_READ(c, slots, self);                  /* #lineno is about records read */
-    return RESULT_OK(LONG2FIX((intptr_t)rep->lineno));
+    return RESULT_OK(LONG2FIX((korb_sword_t)rep->lineno));
 }
 static RESULT korb_m_io_lineno_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     const VALUE v = VALUE_SLICE_GET(a, 0);
-    intptr_t n;
+    korb_sword_t n;
     if (FIXNUM_P(v)) n = FIX2LONG(v);
-    else if (KORB_FLOAT_P(v)) n = (intptr_t)korb_float_val(v);
+    else if (KORB_FLOAT_P(v)) n = (korb_sword_t)korb_float_val(v);
     else if (!korb_to_index(v, &n))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(v));
     rep->lineno = (uint32_t)(n < 0 ? 0 : n);
@@ -910,7 +910,7 @@ static RESULT korb_m_io_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         CHECK(korb_ary_push_val(c, slots + 3, arr, slots[2]));
     }
     korb_const_define(c, korb_intern(c->vm, "$.", 2),
-                      LONG2FIX((intptr_t)korb_io_rep(c, VALUE_REF_GET(self))->lineno));
+                      LONG2FIX((korb_sword_t)korb_io_rep(c, VALUE_REF_GET(self))->lineno));
     return RESULT_OK(VALUE_REF_GET(arr));
 }
 static RESULT korb_m_io_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
@@ -947,7 +947,7 @@ static RESULT korb_m_io_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         { const uint32_t re = korb_io_read_enc(c, slots + 2, self, korb_io_rep(c, VALUE_REF_GET(self)));
           KORB_STR_ENC_SET(slots[1], re); }              /* resolve BEFORE taking the header pointer */
         korb_const_define(c, korb_intern(c->vm, "$.", 2),   /* $. follows #each_line too */
-                          LONG2FIX((intptr_t)korb_io_rep(c, VALUE_REF_GET(self))->lineno));
+                          LONG2FIX((korb_sword_t)korb_io_rep(c, VALUE_REF_GET(self))->lineno));
         rr = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
         if (rr.state != KORB_NORMAL) break;
     }
@@ -996,7 +996,7 @@ static RESULT korb_m_io_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     (void)a;
     const VALUE idxv = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_io_fp_mid(c)));
     if (FIXNUM_P(idxv)) {
-        const intptr_t idx = FIX2LONG(idxv);
+        const korb_sword_t idx = FIX2LONG(idxv);
         KorbIORep *const rep = ((uint32_t)idx < c->vm->io_cnt) ? c->vm->io_reps[idx] : NULL;
         if (idx >= 3 && korb_io_open_p(rep)) {   /* 0/1/2 = std streams, never close */
             /* A popen'd stream needs pclose so the child is reaped; keep its
@@ -1101,7 +1101,7 @@ static RESULT korb_m_io_sysseek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
-    intptr_t off;
+    korb_sword_t off;
     CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &off));
     const int whence = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1)))
                          ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : SEEK_SET;
@@ -1109,7 +1109,7 @@ static RESULT korb_m_io_sysseek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     korb_io_flush_rep(rep);
     const off_t r = lseek(rep->fd, (off_t)off, whence);
     if (r < 0) return korb_raise_errno(c, slots, errno, "sysseek", "");
-    return RESULT_OK(LONG2FIX((intptr_t)r));
+    return RESULT_OK(LONG2FIX((korb_sword_t)r));
 }
 
 /* IO#fsync / #fdatasync — flush our buffer, then ask the kernel. */
@@ -1164,7 +1164,7 @@ static RESULT korb_m_io_seek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_READ(c, slots, self);
     KORB_IO_NEED_READ(c, slots, self);
-    const intptr_t off = FIXNUM_P(VALUE_SLICE_GET(a, 0)) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
+    const korb_sword_t off = FIXNUM_P(VALUE_SLICE_GET(a, 0)) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
     const int whence = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : SEEK_SET;
     if (korb_io_seek_rep(rep, (off_t)off, whence) < 0) return korb_raise_errno(c, slots, errno, "seek", "");
     return RESULT_OK(LONG2FIX(0));
@@ -1172,7 +1172,7 @@ static RESULT korb_m_io_seek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_io_pos(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    return RESULT_OK(LONG2FIX(rep ? (intptr_t)korb_io_tell_rep(rep) : 0));
+    return RESULT_OK(LONG2FIX(rep ? (korb_sword_t)korb_io_tell_rep(rep) : 0));
 }
 static RESULT korb_m_io_pos_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;
@@ -1531,12 +1531,12 @@ static RESULT korb_m_io_syswrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         }
         return korb_raise_errno(c, slots, errno, "syswrite", "");
     }
-    return RESULT_OK(LONG2FIX((intptr_t)w));
+    return RESULT_OK(LONG2FIX((korb_sword_t)w));
 }
 static RESULT korb_m_io_sysread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    intptr_t want = 4096;
+    korb_sword_t want = 4096;
     if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) want = FIX2LONG(VALUE_SLICE_GET(a, 0));
     if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length");
     slots[0] = (VALUE)korb_str_alloc(c, slots, (uint32_t)want);
@@ -1571,7 +1571,7 @@ static RESULT korb_m_io_sysread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_io_init_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
-    intptr_t fdv;
+    korb_sword_t fdv;
     CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &fdv));
     const int fd = (int)fdv;
     char mode[16] = "r";
@@ -1589,7 +1589,7 @@ static RESULT korb_m_io_init_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
           c->vm->io_reps[idx]->sync = 1;   /* BasicSocket is sync in CRuby: a buffered
                                               write the peer never sees is a deadlock */
       } }
-    CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_fp_mid(c)), LONG2FIX((intptr_t)idx)));
+    CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_fp_mid(c)), LONG2FIX((korb_sword_t)idx)));
     CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_mode_mid(c)), LONG2FIX(korb_io_mode_rw(mode))));
     if (strchr(mode, 'b'))
         CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
@@ -1664,7 +1664,7 @@ static RESULT korb_m_io_readpartial(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
-    intptr_t want;
+    korb_sword_t want;
     CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &want));
     rep = korb_io_rep(c, VALUE_REF_GET(self));                    /* #to_int may have GC'd */
     if (UNLIKELY(want < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length %ld given", (long)want);
@@ -1710,7 +1710,7 @@ static RESULT korb_m_io_read_nonblock(CTX *c, VALUE *slots, VALUE_REF self, VALU
     if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..3)");
-    intptr_t want;
+    korb_sword_t want;
     CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &want));
     rep = korb_io_rep(c, VALUE_REF_GET(self));                    /* #to_int may have GC'd */
     if (UNLIKELY(want < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length %ld given", (long)want);
@@ -1785,7 +1785,7 @@ static RESULT korb_m_io_write_nonblock(CTX *c, VALUE *slots, VALUE_REF self, VAL
                        : RESULT_OK(ID2SYM(korb_intern(c->vm, "wait_writable", 13)));
         return korb_raise_errno(c, slots + 1, errno, "write", "");
     }
-    return RESULT_OK(LONG2FIX((intptr_t)w));
+    return RESULT_OK(LONG2FIX((korb_sword_t)w));
 }
 
 /* IO#pread(maxlen, offset[, buf]) — read at an absolute offset without moving
@@ -1797,7 +1797,7 @@ static RESULT korb_m_io_pread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 2))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2..3)", VALUE_SLICE_LEN(a));
-    intptr_t want, off;
+    korb_sword_t want, off;
     CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &want));
     CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 1), &off));
     rep = korb_io_rep(c, VALUE_REF_GET(self));                    /* #to_int may have GC'd */
@@ -1837,7 +1837,7 @@ static RESULT korb_m_io_pwrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         slots[0] = sr.value;
         if (UNLIKELY(!KORB_STRING_P(slots[0]))) return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion into String");
     }
-    intptr_t off;
+    korb_sword_t off;
     CHECK(korb_io_arg_int(c, slots + 1, VALUE_SLICE_GET(a, 1), &off));   /* slots[0] holds the String */
     rep = korb_io_rep(c, VALUE_REF_GET(self));                           /* #to_int / #to_s may have GC'd */
     korb_io_flush_rep(rep);
@@ -1845,7 +1845,7 @@ static RESULT korb_m_io_pwrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     ssize_t w;
     do { w = pwrite(rep->fd, p, n, (off_t)off); } while (w < 0 && errno == EINTR);
     if (w < 0) return korb_raise_errno(c, slots + 1, errno, "pwrite", "");
-    return RESULT_OK(LONG2FIX((intptr_t)w));
+    return RESULT_OK(LONG2FIX((korb_sword_t)w));
 }
 
 /* IO.sysopen(path, mode = "r", perm = 0666) → the raw fd, unwrapped. */
@@ -1883,7 +1883,7 @@ static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) { opts = VALUE_SLICE_GET(a, n - 1); n--; }
     if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     if (UNLIKELY(n > 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", n);
-    intptr_t fdv;
+    korb_sword_t fdv;
     CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &fdv));
     const int fd = (int)fdv;   /* a negative or stale fd falls out of the fcntl check below as EBADF */
     /* The mode may come from the positional argument or from `mode:`; a
@@ -2194,7 +2194,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     };
     for (size_t i = 0; i < 3; i++) {
         slots[1] = korb_obj_new(c, slots + 1, slots[0]).value;   /* re-read slots[0]: korb_obj_new GCs and moves the IO class (a stale local would mis-klass the instance) */
-        (void)korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]), ID2SYM(korb_io_fp_mid(c)), LONG2FIX((intptr_t)sv[i].idx));
+        (void)korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]), ID2SYM(korb_io_fp_mid(c)), LONG2FIX((korb_sword_t)sv[i].idx));
         korb_const_define(c, korb_intern(vm, sv[i].gv, (uint32_t)strlen(sv[i].gv)), slots[1]);
         korb_const_define(c, korb_intern(vm, sv[i].cn, (uint32_t)strlen(sv[i].cn)), slots[1]);
         if (sv[i].idx >= 1 && AROH_IS_GC_OBJECT(slots[1]))   /* mark default $stdout/$stderr for the fast fwrite path */

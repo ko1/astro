@@ -985,7 +985,7 @@ static RESULT korb_m_rlimit_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         CHECK(korb_hash_set(c, slots + 2, h, VALUE_REF_AT(&slots[1]), LONG2FIX(korb_rlimit_tab[i].res)));
     }
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, "INFINITY", 8));
-    CHECK(korb_hash_set(c, slots + 2, h, VALUE_REF_AT(&slots[1]), LONG2FIX((intptr_t)RLIM_INFINITY)));
+    CHECK(korb_hash_set(c, slots + 2, h, VALUE_REF_AT(&slots[1]), LONG2FIX((korb_sword_t)RLIM_INFINITY)));
     return RESULT_OK(VALUE_REF_GET(h));
 }
 
@@ -1019,7 +1019,7 @@ static RESULT korb_m_getpriority(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     errno = 0;
     const int pr = getpriority((int)FIX2LONG(VALUE_SLICE_GET(a, 0)), (id_t)FIX2LONG(VALUE_SLICE_GET(a, 1)));
     if (pr == -1 && errno != 0) return korb_raise_errno(c, slots, errno, "getpriority", "");
-    return RESULT_OK(LONG2FIX((intptr_t)pr));
+    return RESULT_OK(LONG2FIX((korb_sword_t)pr));
 }
 /* __setpriority(which, who, prio) → 0 */
 static RESULT korb_m_setpriority(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1042,8 +1042,8 @@ static RESULT korb_m_getrlimit(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return korb_raise_errno(c, slots, errno, "getrlimit", "");
     slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
     VALUE_REF ar = VALUE_REF_AT(&slots[0]);
-    CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((intptr_t)rl.rlim_cur)));
-    CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((intptr_t)rl.rlim_max)));
+    CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((korb_sword_t)rl.rlim_cur)));
+    CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((korb_sword_t)rl.rlim_max)));
     return RESULT_OK(VALUE_REF_GET(ar));
 }
 
@@ -1101,7 +1101,7 @@ static RESULT korb_m_process_test(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
       case 'w': case 'W': return RESULT_OK(access(path, W_OK) == 0 ? KORB_TRUE : KORB_FALSE);
       case 'x': case 'X': return RESULT_OK(access(path, X_OK) == 0 ? KORB_TRUE : KORB_FALSE);
       case 'z': return RESULT_OK((ok && st.st_size == 0) ? KORB_TRUE : KORB_FALSE);
-      case 's': return RESULT_OK((ok && st.st_size > 0) ? LONG2FIX((intptr_t)st.st_size) : KORB_NIL);
+      case 's': return RESULT_OK((ok && st.st_size > 0) ? LONG2FIX((korb_sword_t)st.st_size) : KORB_NIL);
       case 'u': return RESULT_OK((ok && (st.st_mode & S_ISUID)) ? KORB_TRUE : KORB_FALSE);
       case 'g': return RESULT_OK((ok && (st.st_mode & S_ISGID)) ? KORB_TRUE : KORB_FALSE);
       case 'k': return RESULT_OK((ok && (st.st_mode & S_ISVTX)) ? KORB_TRUE : KORB_FALSE);
@@ -1111,7 +1111,7 @@ static RESULT korb_m_process_test(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
       case 'M': case 'A': case 'C': {
         if (!ok) return korb_raise_errno(c, slots, ENOENT, "stat", path);
         const time_t t = cmd == 'M' ? st.st_mtime : cmd == 'A' ? st.st_atime : st.st_ctime;
-        slots[0] = LONG2FIX((intptr_t)t);
+        slots[0] = LONG2FIX((korb_sword_t)t);
         return korb_send(c, slots + 1, korb_intern(c->vm, "__time_at", 9), 0, 0);
       }
       default: break;

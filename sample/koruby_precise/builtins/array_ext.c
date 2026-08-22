@@ -228,7 +228,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             char cobuf[64]; const char *ed; uint32_t elen;
             if (KORB_STRING_P(e)) { const KorbString *es = VAL2STR(e); ed = korb_strbuf_data(es->buf); elen = es->len; }
             else if (e == KORB_NIL) { ed = ""; elen = 0; }
-            else if (coerce && FIXNUM_P(e)) { elen = korb_fmt_int((intptr_t)FIX2LONG(e), 10, cobuf); ed = cobuf; }
+            else if (coerce && FIXNUM_P(e)) { elen = korb_fmt_int((korb_sword_t)FIX2LONG(e), 10, cobuf); ed = cobuf; }
             else if (coerce && SYMBOL_P(e)) { ed = korb_sym_name(c->vm, SYM2ID(e)); elen = (uint32_t)strlen(ed); }
             else if (coerce && KORB_FLOAT_P(e)) { elen = korb_float_to_s(korb_float_val(e), cobuf); ed = cobuf; }
             else if (coerce && e == KORB_TRUE) { ed = "true"; elen = 4; }
@@ -483,7 +483,7 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                     if (UNLIKELY(br.state != KORB_NORMAL)) return br;
                     CHECK(korb_ary_push_val(c, slots + 3, res, br.value));
                 } else
-                { slots[4] = UNWRAP(korb_intptr_to_val(c, slots + 4, (intptr_t)(int64_t)v)); CHECK(korb_ary_push_val(c, slots + 3, res, slots[4])); }
+                { slots[4] = UNWRAP(korb_intptr_to_val(c, slots + 4, (korb_sword_t)(int64_t)v)); CHECK(korb_ary_push_val(c, slots + 3, res, slots[4])); }
             }
         } else if (d == 'U') {                            /* UTF-8 codepoints */
             for (long r = 0; (star || r < cnt); r++) {
@@ -502,7 +502,7 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                                       len, s->len - si);
                 for (int k = 1; k < len; k++) cp = (cp << 6) | ((unsigned char)korb_strbuf_data(s->buf)[si + k] & 0x3F);
                 si += (uint32_t)len;
-                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((intptr_t)cp)));
+                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((korb_sword_t)cp)));
             }
         } else if (d == 'u') {                            /* uuencode decode (one value, consumes rest) */
             const KorbString *s = VAL2STR(slots[1]);
@@ -562,7 +562,7 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 uint32_t v = 0;
                 for (int k = 0; k < sz; k++) v |= (uint32_t)(unsigned char)korb_strbuf_data(s->buf)[si + k] << (8 * (big ? (sz - 1 - k) : k));
                 si += (uint32_t)sz;
-                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((intptr_t)v)));
+                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((korb_sword_t)v)));
             }
         } else if (d == 'S' || d == 's' || d == 'L' || d == 'l' || d == 'I' || d == 'i') {   /* native-endian int (S/L/I unsigned, s/l/i signed); < > override, ! _ = native long size */
             const int sz = (d == 'S' || d == 's') ? 2 : ((bang && (d == 'L' || d == 'l')) ? 8 : 4);
@@ -577,7 +577,7 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 for (int k = 0; k < sz; k++) v |= (uint64_t)(unsigned char)korb_strbuf_data(s->buf)[si + k] << (8 * (big ? (sz - 1 - k) : k));
                 si += (uint32_t)sz;
                 if (sz < 8) {                            /* 2/4 bytes always fit a Fixnum */
-                    const intptr_t iv = sgn ? (sz == 2 ? (intptr_t)(int16_t)v : (intptr_t)(int32_t)v) : (intptr_t)v;
+                    const korb_sword_t iv = sgn ? (sz == 2 ? (korb_sword_t)(int16_t)v : (korb_sword_t)(int32_t)v) : (korb_sword_t)v;
                     CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX(iv)));
                 }
                 else if (!sgn && (v >> 63)) {            /* unsigned 64 > INT64_MAX → Bignum */
@@ -586,7 +586,7 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                     CHECK(korb_ary_push_val(c, slots + 3, res, br.value));
                 }
                 else {                                   /* signed 64, or unsigned that fits: promote past Fixnum if needed */
-                    slots[4] = UNWRAP(korb_intptr_to_val(c, slots + 4, (intptr_t)(int64_t)v));
+                    slots[4] = UNWRAP(korb_intptr_to_val(c, slots + 4, (korb_sword_t)(int64_t)v));
                     CHECK(korb_ary_push_val(c, slots + 3, res, slots[4]));
                 }
             }
@@ -610,7 +610,7 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 if (si >= s->len) break;
                 uint64_t v = 0;
                 while (si < s->len) { const unsigned char b = (unsigned char)korb_strbuf_data(s->buf)[si++]; v = (v << 7) | (uint64_t)(b & 0x7f); if (!(b & 0x80)) break; }
-                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((intptr_t)v)));
+                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((korb_sword_t)v)));
             }
         } else if (d == 'b' || d == 'B') {                /* bit string (b=LSB-first, B=MSB-first) */
             const uint32_t avail = (VAL2STR(slots[1])->len - si) * 8;
@@ -709,7 +709,7 @@ static RESULT korb_m_str_unpack1(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 
 static RESULT korb_m_ary_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
-    intptr_t n;
+    korb_sword_t n;
     if (UNLIKELY(KORB_BIGNUM_P(nv))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
     if (UNLIKELY(!korb_to_index(nv, &n))) {              /* coerce count via #to_int (like Array#drop) */
         RESULT cr = korb_coerce_to_int(c, slots, &nv);
@@ -734,7 +734,7 @@ static RESULT korb_m_ary_sample(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         uint32_t idx; CHECK(korb_rand_upto(c, slots, a, len - 1, &idx));
         return RESULT_OK(korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[idx]);   /* re-read self after any #rand GC */
     }
-    intptr_t n;
+    korb_sword_t n;
     if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) {   /* count coerces via #to_int */
         VALUE cv = VALUE_SLICE_GET(a, 0);
         RESULT ci = korb_coerce_to_int(c, slots, &cv);
@@ -743,16 +743,16 @@ static RESULT korb_m_ary_sample(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative sample number");
-    if ((uint32_t)n > (intptr_t)len) n = len;
+    if ((uint32_t)n > (korb_sword_t)len) n = len;
     if (n == 0) return korb_ary_new(c, slots, 0);
 
     if (n <= 10) {
         /* CRuby ary_sample n<=10: draw all randoms FIRST (alloc would move the
          * rng buffer), then build distinct indices, then materialize. */
         long rnds[10], idx[10], sorted[10];
-        for (intptr_t i = 0; i < n; i++) { uint32_t rv; CHECK(korb_rand_upto(c, slots, a, (uint32_t)(len - i - 1), &rv)); rnds[i] = (long)rv; }
+        for (korb_sword_t i = 0; i < n; i++) { uint32_t rv; CHECK(korb_rand_upto(c, slots, a, (uint32_t)(len - i - 1), &rv)); rnds[i] = (long)rv; }
         sorted[0] = idx[0] = rnds[0];
-        for (intptr_t i = 1; i < n; i++) {
+        for (korb_sword_t i = 1; i < n; i++) {
             long k = rnds[i], j;
             for (j = 0; j < i; ++j) { if (k < sorted[j]) break; ++k; }
             memmove(&sorted[j+1], &sorted[j], sizeof(sorted[0]) * (size_t)(i - j));
@@ -763,14 +763,14 @@ static RESULT korb_m_ary_sample(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         slots[0] = rr.value;
         VALUE_REF dst = VALUE_REF_AT(&slots[0]);
         const KorbArray *const src = VAL2ARY(VALUE_REF_GET(self));
-        for (intptr_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(src->items)[idx[i]]));
+        for (korb_sword_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(src->items)[idx[i]]));
         return RESULT_OK(VALUE_REF_GET(dst));
     }
     /* n>10: copy then partial Fisher-Yates (random, not CRuby-bit-exact). */
     const RESULT cp = korb_ary_subseq(c, slots, self, 0, len);
     if (UNLIKELY(cp.state != KORB_NORMAL)) return cp;
     slots[0] = cp.value;
-    for (intptr_t i = 0; i < n; i++) {
+    for (korb_sword_t i = 0; i < n; i++) {
         uint32_t rj; CHECK(korb_rand_upto(c, slots + 1, a, (uint32_t)(len - i - 1), &rj));   /* slots+1: keep the copy at slots[0] */
         const uint32_t j = i + rj;
         KorbArrayItems *const it = VAL2ARY(slots[0])->items;   /* re-read after any #rand GC */
@@ -805,7 +805,7 @@ static RESULT korb_m_ary_shuffle_bang(CTX *c, VALUE *slots, VALUE_REF self, VALU
 }
 static RESULT korb_m_ary_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
-    intptr_t n;
+    korb_sword_t n;
     if (UNLIKELY(KORB_BIGNUM_P(nv))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
     if (UNLIKELY(!korb_to_index(nv, &n))) {              /* coerce count via #to_int */
         RESULT cr = korb_coerce_to_int(c, slots, &nv);
@@ -856,7 +856,7 @@ static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_ary_delete_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VALUE iv = VALUE_SLICE_GET(a, 0);
-    intptr_t i;
+    korb_sword_t i;
     if (!korb_to_index(iv, &i)) {                        /* coerce index via #to_int */
         RESULT cr = korb_coerce_to_int(c, slots, &iv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
@@ -898,7 +898,7 @@ static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_ary_rotate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    intptr_t sh = 1;
+    korb_sword_t sh = 1;
     if (VALUE_SLICE_LEN(a) >= 1) {
         VALUE cv = VALUE_SLICE_GET(a, 0);
         if (UNLIKELY(!korb_to_index(cv, &sh))) {         /* coerce via #to_int */
@@ -910,7 +910,7 @@ static RESULT korb_m_ary_rotate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     const uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;   /* read after any coercion dispatch */
     if (len == 0) return korb_ary_subseq(c, slots, self, 0, 0);
-    intptr_t s = ((sh % (intptr_t)len) + (intptr_t)len) % (intptr_t)len;   /* normalized left rotation */
+    korb_sword_t s = ((sh % (korb_sword_t)len) + (korb_sword_t)len) % (korb_sword_t)len;   /* normalized left rotation */
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, len)));
     for (uint32_t i = 0; i < len; i++) {
         VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[(s + i) % len];

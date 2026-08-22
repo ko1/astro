@@ -426,7 +426,7 @@ static RESULT korb_m_proc_lambda_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static void korb_kw_arity_flags(const void *kwp, bool *req, bool *opt, bool *kwrest);   /* fwd (defined below) */
 /* Proc#arity: #required positional, negated as -(req+1) when optional/rest make
  * it variable.  (Symbol#to_proc → -2, matching CRuby.) */
-static intptr_t korb_method_arity(const struct korb_method *km);   /* fwd (defined below) */
+static korb_sword_t korb_method_arity(const struct korb_method *km);   /* fwd (defined below) */
 static RESULT korb_m_proc_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
     const KorbProc *p = VAL2PROC(VALUE_REF_GET(self));
@@ -465,7 +465,7 @@ static RESULT korb_m_proc_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     const uint32_t req = reqp + (kreq ? 1u : 0u);
     const bool negate = has_rest || (lam && optp > 0) || (lam && (kopt || kwrest) && !kreq);
-    return RESULT_OK(LONG2FIX(negate ? -((intptr_t)req + 1) : (intptr_t)req));
+    return RESULT_OK(LONG2FIX(negate ? -((korb_sword_t)req + 1) : (korb_sword_t)req));
 }
 /* Proc#source_location → [file, line] where the block was written, or nil. */
 static RESULT korb_m_proc_source_location(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -544,7 +544,7 @@ static void korb_kw_arity_flags(const void *kwp, bool *req, bool *opt, bool *kwr
 /* CRuby arity: required keyword(s) add +1 (total) to the required count and keep
  * it positive; only-optional-kw or **kwrest (with no required kw) make it
  * variadic, like optional positionals / *rest. */
-static intptr_t korb_method_arity(const struct korb_method *km) {
+static korb_sword_t korb_method_arity(const struct korb_method *km) {
     switch (km->kind) {
       case KORB_METHOD_ATTR_R: return 0;
       case KORB_METHOD_ATTR_W: return 1;
@@ -558,14 +558,14 @@ static intptr_t korb_method_arity(const struct korb_method *km) {
         const bool varpos = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0);
         const uint32_t req = (varpos ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt) + (kreq ? 1u : 0u);
         const bool var = varpos || ((kopt || kwrest) && !kreq);
-        return var ? -((intptr_t)req + 1) : (intptr_t)req;
+        return var ? -((korb_sword_t)req + 1) : (korb_sword_t)req;
       }
       default: {                                               /* ISEQ */
         bool kreq, kopt, kwrest; korb_kw_arity_flags(km->kw_info, &kreq, &kopt, &kwrest);
         const bool varpos = (km->opt_defaults != NULL) || (km->rest_slot >= 0);
         const uint32_t req = km->req_cnt + km->post_cnt + (kreq ? 1u : 0u);
         const bool var = varpos || ((kopt || kwrest) && !kreq);
-        return var ? -((intptr_t)req + 1) : (intptr_t)req;
+        return var ? -((korb_sword_t)req + 1) : (korb_sword_t)req;
       }
     }
 }

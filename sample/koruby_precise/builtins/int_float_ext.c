@@ -25,7 +25,7 @@ static RESULT korb_m_immed_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_int_abs2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; const VALUE sv = VALUE_REF_GET(self);
     if (!FIXNUM_P(sv)) { korb_mp_t z; korb_to_mpz(sv, z); korb_mp_mul(z, z, z); RESULT out = korb_big_from_mpz(c, slots, z); korb_mp_clear(z); return out; }
-    intptr_t n = FIX2LONG(sv), r;
+    korb_sword_t n = FIX2LONG(sv), r;
     if (__builtin_mul_overflow(n, n, &r) || !FIXABLE(r)) {
         korb_mp_t z; korb_to_mpz(sv, z); korb_mp_mul(z, z, z); RESULT out = korb_big_from_mpz(c, slots, z); korb_mp_clear(z); return out;
     }
@@ -45,7 +45,7 @@ static RESULT korb_m_int_bits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     const VALUE sv = VALUE_REF_GET(self);                 /* re-read: #to_int may have GC'd (self stays rooted) */
     if (LIKELY(FIXNUM_P(sv) && FIXNUM_P(o))) {
-        const intptr_t m = FIX2LONG(o), n = FIX2LONG(sv) & m;
+        const korb_sword_t m = FIX2LONG(o), n = FIX2LONG(sv) & m;
         const bool r = mode == 0 ? (n == 0) : mode == 1 ? (n != 0) : (n == m);   /* nobits/anybits/allbits */
         return RESULT_OK(r ? KORB_TRUE : KORB_FALSE);
     }
@@ -139,7 +139,7 @@ static RESULT korb_m_ary_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));    /* insert checks frozen upfront (even with no values) */
     VALUE iv = VALUE_SLICE_GET(a, 0);
-    intptr_t idx;
+    korb_sword_t idx;
     if (UNLIKELY(!korb_to_index(iv, &idx))) {            /* coerce position via #to_int */
         RESULT cr = korb_coerce_to_int(c, slots, &iv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
@@ -147,9 +147,9 @@ static RESULT korb_m_ary_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     uint32_t k = VALUE_SLICE_LEN(a) - 1;
     if (k == 0) return RESULT_OK(VALUE_REF_GET(self));
-    intptr_t orig = idx;
+    korb_sword_t orig = idx;
     uint32_t oldlen = VAL2ARY(VALUE_REF_GET(self))->len;
-    if (idx < 0) idx += (intptr_t)oldlen + 1;
+    if (idx < 0) idx += (korb_sword_t)oldlen + 1;
     if (UNLIKELY(idx < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld too small for array", (long)orig);
     uint32_t at = (uint32_t)idx;
     uint32_t pad = at > oldlen ? at - oldlen : 0;
@@ -315,7 +315,7 @@ static RESULT korb_m_hash_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         return RESULT_OK(slots[0]);
     }
     uint32_t np = korb_entry_params_cnt(block);
-    intptr_t acc = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
+    korb_sword_t acc = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         if (i >= h->len) break;
@@ -382,7 +382,7 @@ static RESULT korb_m_ary_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 static RESULT korb_m_hash_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
-    intptr_t n;
+    korb_sword_t n;
     if (UNLIKELY(!korb_to_index(nv, &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(nv));
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to drop negative size");
     uint32_t len = VAL2HASH(VALUE_REF_GET(self))->len;
@@ -604,7 +604,7 @@ static RESULT korb_m_ary_reverse_bang(CTX *c, VALUE *slots, VALUE_REF self, VALU
 }
 static RESULT korb_m_ary_rotate_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
-    intptr_t cnt = 1;
+    korb_sword_t cnt = 1;
     if (VALUE_SLICE_LEN(a) >= 1) {
         VALUE cv = VALUE_SLICE_GET(a, 0);
         if (UNLIKELY(!korb_to_index(cv, &cnt))) {        /* coerce via #to_int */
@@ -617,7 +617,7 @@ static RESULT korb_m_ary_rotate_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     uint32_t n = ary->len;
     if (n > 1) {
-        intptr_t k = ((cnt % (intptr_t)n) + (intptr_t)n) % (intptr_t)n;   /* normalize */
+        korb_sword_t k = ((cnt % (korb_sword_t)n) + (korb_sword_t)n) % (korb_sword_t)n;   /* normalize */
         KorbArrayItems *it = ary->items;
         korb_ary_rev_range(c, it, 0, (uint32_t)k);
         korb_ary_rev_range(c, it, (uint32_t)k, n);
@@ -696,7 +696,7 @@ static RESULT korb_m_ary_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALU
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, VALUE_SLICE_LEN(a))));
     for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
         slots[1] = VALUE_SLICE_GET(a, j);                 /* original index arg (rooted; yielded as-is) */
-        intptr_t idx;
+        korb_sword_t idx;
         if (UNLIKELY(!korb_to_index(slots[1], &idx))) {   /* coerce a non-Integer index via #to_int */
             VALUE iv2 = slots[1];
             RESULT cr = korb_coerce_to_int(c, slots + 2, &iv2);
@@ -704,7 +704,7 @@ static RESULT korb_m_ary_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALU
             if (!korb_to_index(iv2, &idx)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(slots[1]));
         }
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
-        intptr_t n = ary->len, orig = idx;
+        korb_sword_t n = ary->len, orig = idx;
         if (idx < 0) idx += n;
         if (idx < 0 || idx >= n) {
             if (block != NULL) {                          /* block form: yield the original index, use its result */

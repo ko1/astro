@@ -113,7 +113,7 @@ static RESULT korb_m_math_log(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 /* Math.ldexp(frac, exp) = frac * 2**exp. */
 static RESULT korb_m_math_ldexp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self; double x; intptr_t n;
+    (void)self; double x; korb_sword_t n;
     { RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; }
     if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert into Float/Integer");

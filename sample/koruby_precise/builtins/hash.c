@@ -73,7 +73,7 @@ static uint64_t korb_deep_hash_d(VALUE v, uint32_t depth) {
 static uint64_t korb_deep_hash(VALUE v) { return korb_deep_hash_d(v, 0); }
 static RESULT korb_m_obj_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
-    return RESULT_OK(LONG2FIX((intptr_t)(korb_deep_hash(VALUE_REF_GET(self)) >> 2)));   /* >>2 keeps it FIXABLE */
+    return RESULT_OK(LONG2FIX((korb_sword_t)(korb_deep_hash(VALUE_REF_GET(self)) >> 2)));   /* >>2 keeps it FIXABLE */
 }
 
 /* ---- Hash methods -------------------------------------------------------- */

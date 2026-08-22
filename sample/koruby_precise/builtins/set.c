@@ -335,8 +335,8 @@ static RESULT korb_m_obj_object_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (v == KORB_NIL)   return RESULT_OK(LONG2FIX(4));
     if (v == KORB_FALSE) return RESULT_OK(LONG2FIX(0));
     if (v == KORB_TRUE)  return RESULT_OK(LONG2FIX(20));
-    if (SYMBOL_P(v))     return RESULT_OK(LONG2FIX((intptr_t)(((uintptr_t)SYM2ID(v) << 8) | 0x1c)));   /* consistent per symbol */
-    return RESULT_OK(LONG2FIX((intptr_t)((uintptr_t)v >> 2)));
+    if (SYMBOL_P(v))     return RESULT_OK(LONG2FIX((korb_sword_t)(((uintptr_t)SYM2ID(v) << 8) | 0x1c)));   /* consistent per symbol */
+    return RESULT_OK(LONG2FIX((korb_sword_t)((uintptr_t)v >> 2)));
 }
 static RESULT korb_m_obj_is_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE target = VALUE_SLICE_GET(a, 0);
@@ -1217,7 +1217,7 @@ static RESULT korb_comparable_cmp(CTX *c, VALUE *slots, VALUE self, VALUE other,
     /* rb_cmpint: Fixnum/Bignum/Float compare by sign; any other value by
      * dispatching > 0 / < 0.  (A NaN Float has neither sign → 0.) */
     if (FIXNUM_P(r.value)) {
-        const intptr_t v = FIX2LONG(r.value);
+        const korb_sword_t v = FIX2LONG(r.value);
         *out = v < 0 ? -1 : v > 0 ? 1 : 0;
         return RESULT_OK(KORB_TRUE);
     }
@@ -1632,7 +1632,7 @@ static RESULT korb_m_mod_const_source_location(CTX *c, VALUE *slots, VALUE_REF s
     const char *const f = korb_sym_name(vm, fsym);
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, f, (uint32_t)strlen(f)));
     CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]));
-    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), LONG2FIX((intptr_t)line)));
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), LONG2FIX((korb_sword_t)line)));
     return RESULT_OK(slots[0]);
 }
 static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1945,7 +1945,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (VALUE_SLICE_LEN(a) >= 3) {
             slots[0] = VALUE_SLICE_GET(a, 2);
             CHECK(korb_coerce_to_int_pub(c, slots + 1, &slots[0]));   /* #to_int is honoured */
-            intptr_t l = 1;
+            korb_sword_t l = 1;
             if (!korb_to_index(slots[0], &l))
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 2)));
             line = (int32_t)l;

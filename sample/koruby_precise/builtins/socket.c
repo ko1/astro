@@ -284,7 +284,7 @@ static RESULT korb_m_sock_shutdown(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static RESULT korb_m_sock_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    intptr_t want = FIXNUM_P(VALUE_SLICE_GET(a, 1)) ? FIX2LONG(VALUE_SLICE_GET(a, 1)) : 4096;
+    korb_sword_t want = FIXNUM_P(VALUE_SLICE_GET(a, 1)) ? FIX2LONG(VALUE_SLICE_GET(a, 1)) : 4096;
     if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length");
     const int fl = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
     char stackbuf[8192];
@@ -311,7 +311,7 @@ static RESULT korb_m_sock_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_sock_recvfrom(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    intptr_t want = FIXNUM_P(VALUE_SLICE_GET(a, 1)) ? FIX2LONG(VALUE_SLICE_GET(a, 1)) : 4096;
+    korb_sword_t want = FIXNUM_P(VALUE_SLICE_GET(a, 1)) ? FIX2LONG(VALUE_SLICE_GET(a, 1)) : 4096;
     if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length");
     const int fl = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
     char stackbuf[8192];
@@ -363,7 +363,7 @@ static RESULT korb_m_sock_sendto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const ssize_t w = alen ? sendto(fd, p, n, fl, (struct sockaddr *)&ss, alen)
                            : send(fd, p, n, fl);
     if (w < 0) return korb_raise_errno(c, slots, errno, "send", "");
-    return RESULT_OK(LONG2FIX((intptr_t)w));
+    return RESULT_OK(LONG2FIX((korb_sword_t)w));
 }
 
 /* __sock_hostent(name) → [canonical_name, [aliases], addrtype,
@@ -425,7 +425,7 @@ static RESULT korb_m_sock_send(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     uint32_t n; const char *p = korb_str_cstr_len(sv, &n);
     const ssize_t w = send(fd, p, n, fl);
     if (w < 0) return korb_raise_errno(c, slots, errno, "send", "");
-    return RESULT_OK(LONG2FIX((intptr_t)w));
+    return RESULT_OK(LONG2FIX((korb_sword_t)w));
 }
 
 /* __sock_pair(family, type) → [fd, fd] */
@@ -524,7 +524,7 @@ static RESULT korb_m_sock_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     char nm[64];
     if (!korb_sock_cstr(VALUE_SLICE_GET(a, 0), nm, sizeof nm))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
-    static const struct { const char *n; intptr_t v; } cs[] = {
+    static const struct { const char *n; korb_sword_t v; } cs[] = {
         {"AF_INET", AF_INET}, {"AF_INET6", AF_INET6}, {"AF_UNIX", AF_UNIX},
         {"AF_UNSPEC", AF_UNSPEC}, {"PF_INET", PF_INET}, {"PF_INET6", PF_INET6},
         {"PF_UNIX", PF_UNIX}, {"SOCK_STREAM", SOCK_STREAM}, {"SOCK_DGRAM", SOCK_DGRAM},
@@ -539,7 +539,7 @@ static RESULT korb_m_sock_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         {"MSG_DONTWAIT", MSG_DONTWAIT},
         {"AI_PASSIVE", AI_PASSIVE}, {"AI_CANONNAME", AI_CANONNAME}, {"AI_NUMERICHOST", AI_NUMERICHOST},
         {"NI_NUMERICHOST", NI_NUMERICHOST}, {"NI_NUMERICSERV", NI_NUMERICSERV},
-        {"INADDR_ANY", (intptr_t)INADDR_ANY}, {"INADDR_LOOPBACK", (intptr_t)INADDR_LOOPBACK},
+        {"INADDR_ANY", (korb_sword_t)INADDR_ANY}, {"INADDR_LOOPBACK", (korb_sword_t)INADDR_LOOPBACK},
         {"PF_UNSPEC", PF_UNSPEC},
 #ifdef SOCK_RDM
         {"SOCK_RDM", SOCK_RDM},

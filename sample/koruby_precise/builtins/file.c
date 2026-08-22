@@ -373,7 +373,7 @@ static RESULT korb_m_file_stat_pred(CTX *c, VALUE *slots, VALUE_SLICE a, int kin
       case 0: return RESULT_OK(KORB_TRUE);                                  /* exist? */
       case 1: return RESULT_OK(S_ISREG(st.st_mode) ? KORB_TRUE : KORB_FALSE);/* file? */
       case 2: return RESULT_OK(S_ISDIR(st.st_mode) ? KORB_TRUE : KORB_FALSE);/* directory? */
-      default: return RESULT_OK(LONG2FIX((intptr_t)st.st_size));            /* size */
+      default: return RESULT_OK(LONG2FIX((korb_sword_t)st.st_size));            /* size */
     }
 }
 static RESULT korb_m_file_symlink_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -465,9 +465,9 @@ static RESULT korb_m_file_mode_bits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if ((follow ? stat(path, &st) : lstat(path, &st)) != 0) return RESULT_OK(KORB_NIL);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 3));
     VALUE_REF ar = VALUE_REF_AT(&slots[0]);
-    CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((intptr_t)st.st_mode)));
-    CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((intptr_t)st.st_uid)));
-    CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((intptr_t)st.st_gid)));
+    CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((korb_sword_t)st.st_mode)));
+    CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((korb_sword_t)st.st_uid)));
+    CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((korb_sword_t)st.st_gid)));
     return RESULT_OK(VALUE_REF_GET(ar));
 }
 
@@ -511,9 +511,9 @@ static RESULT korb_m_file_chmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_file_umask(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c; (void)slots; (void)self;
     if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0)))
-        return RESULT_OK(LONG2FIX((intptr_t)umask((mode_t)FIX2LONG(VALUE_SLICE_GET(a, 0)))));
+        return RESULT_OK(LONG2FIX((korb_sword_t)umask((mode_t)FIX2LONG(VALUE_SLICE_GET(a, 0)))));
     const mode_t cur = umask(0); umask(cur);                  /* read current without changing it */
-    return RESULT_OK(LONG2FIX((intptr_t)cur));
+    return RESULT_OK(LONG2FIX((korb_sword_t)cur));
 }
 
 /* ---- one-shot descriptor I/O ---------------------------------------------
@@ -641,7 +641,7 @@ static bool korb_mode_readable(const char *m) { return m[0] == 'r' || strchr(m, 
 static bool korb_mode_writable(const char *m) { return m[0] == 'w' || m[0] == 'a' || strchr(m, '+') != NULL; }
 
 /* One optional Integer argument (length / offset), with #to_int coercion. */
-static RESULT korb_io_int_arg(CTX *c, VALUE *slots, VALUE v, bool *given, intptr_t *out) {
+static RESULT korb_io_int_arg(CTX *c, VALUE *slots, VALUE v, bool *given, korb_sword_t *out) {
     *given = false;
     if (v == KORB_NIL) return RESULT_OK(KORB_NIL);
     if (FIXNUM_P(v)) { *out = FIX2LONG(v); *given = true; return RESULT_OK(KORB_NIL); }
@@ -670,7 +670,7 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(!korb_mode_readable(oa.mode)))
         return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "not opened for reading");
     bool has_len = false, has_off = false;
-    intptr_t want = 0, off = 0;
+    korb_sword_t want = 0, off = 0;
     if (na >= 2) CHECK(korb_io_int_arg(c, slots + 1, VALUE_SLICE_GET(a, 1), &has_len, &want));
     if (na >= 3) CHECK(korb_io_int_arg(c, slots + 1, VALUE_SLICE_GET(a, 2), &has_off, &off));
     if (UNLIKELY(has_off && off < 0))
@@ -728,7 +728,7 @@ static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     uint32_t na = VALUE_SLICE_LEN(a);
     VALUE opts = KORB_NIL;
     if (na >= 3 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) { opts = VALUE_SLICE_GET(a, na - 1); na--; }
-    bool has_off = false; intptr_t off = 0;
+    bool has_off = false; korb_sword_t off = 0;
     if (na >= 3) CHECK(korb_io_int_arg(c, slots + 1, VALUE_SLICE_GET(a, 2), &has_off, &off));
     struct korb_open_args oa;
     /* an offset without an explicit mode means "r+": writing at a position is
@@ -753,7 +753,7 @@ static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const KorbString *const ds = VAL2STR(slots[1]);
     const size_t w = korb_fd_write_all(fd, korb_strbuf_data(ds->buf), ds->len);   /* libc only: no GC below */
     close(fd);
-    return RESULT_OK(LONG2FIX((intptr_t)w));
+    return RESULT_OK(LONG2FIX((korb_sword_t)w));
 }
 
 /* ---- line arguments (IO#gets / #readlines / #each_line, IO.foreach, …) -----
@@ -763,7 +763,7 @@ static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * byte limit otherwise; `nil` slurps to EOF and `""` selects paragraph mode
  * (records end at a blank line, and the run of newlines after it is consumed).
  * The limit counts bytes of the returned String, separator included. */
-struct korb_line_args { bool slurp, paragraph, chomp; intptr_t limit; };
+struct korb_line_args { bool slurp, paragraph, chomp; korb_sword_t limit; };
 
 /* Parse them, starting at positional index `from`.  The separator is left in
  * slots[0] (rooted, so a reader that allocates can re-read its bytes through the
@@ -797,7 +797,7 @@ korb_io_line_args(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t from, struct kor
         lim = VALUE_SLICE_GET(a, from + 1);
     }
     if (lim != KORB_NIL) {
-        intptr_t n2;
+        korb_sword_t n2;
         if (FIXNUM_P(lim)) n2 = FIX2LONG(lim);
         else if (!korb_to_index(lim, &n2)) {
             if (!KORB_OBJECT_P(lim) || !korb_responds_to(c, lim, korb_intern(c->vm, "to_int", 6)))
@@ -932,7 +932,7 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
                           la.slurp ? "" : korb_strbuf_data(VAL2STR(VALUE_REF_GET(sepref))->buf),
                           la.slurp ? 0 : VAL2STR(VALUE_REF_GET(sepref))->len, &la, &rs, &re)) {
         slots[3] = UNWRAP(korb_str_new(c, slots + 3, buf + rs, (uint32_t)(re - rs)));
-        if (block) korb_const_define(c, korb_intern(c->vm, "$.", 2), LONG2FIX((intptr_t)++lineno));   /* CRuby updates $. per yield */
+        if (block) korb_const_define(c, korb_intern(c->vm, "$.", 2), LONG2FIX((korb_sword_t)++lineno));   /* CRuby updates $. per yield */
         r = block ? korb_block_yield(c, slots + 4, block, def_env, &slots[3], 1, captured_self)
                   : korb_ary_push_val(c, slots + 4, arr, slots[3]);
         if (UNLIKELY(r.state != KORB_NORMAL)) break;
@@ -951,7 +951,7 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 /* File.delete(*paths) / File.unlink → number removed. */
 static RESULT korb_m_file_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    intptr_t cnt = 0;
+    korb_sword_t cnt = 0;
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         const VALUE pv = VALUE_SLICE_GET(a, i);
         if (UNLIKELY(!KORB_STRING_P(pv)))
@@ -1007,7 +1007,7 @@ static RESULT korb_stat_make_path(CTX *c, VALUE *slots, const struct stat *st, c
     if (!KORB_CLASS_P(cls)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "File::Stat is not defined");
     slots[0] = UNWRAP(korb_obj_new(c, slots, cls));
     VALUE_REF o = VALUE_REF_AT(&slots[0]);
-    #define SETI(nm, v) CHECK(korb_ivar_set(c, slots + 1, o, korb_stat_iv(c, nm), LONG2FIX((intptr_t)(v))))
+    #define SETI(nm, v) CHECK(korb_ivar_set(c, slots + 1, o, korb_stat_iv(c, nm), LONG2FIX((korb_sword_t)(v))))
     SETI("@__size", st->st_size);   SETI("@__mode", st->st_mode);   SETI("@__ino", st->st_ino);
     SETI("@__dev",  st->st_dev);    SETI("@__nlink", st->st_nlink); SETI("@__uid", st->st_uid);
     SETI("@__gid",  st->st_gid);    SETI("@__blksize", st->st_blksize); SETI("@__blocks", st->st_blocks);
@@ -1023,7 +1023,7 @@ static RESULT korb_stat_make_path(CTX *c, VALUE *slots, const struct stat *st, c
 static RESULT korb_stat_make(CTX *c, VALUE *slots, const struct stat *st) {
     return korb_stat_make_path(c, slots, st, NULL);
 }
-static intptr_t korb_stat_field(CTX *c, VALUE self, const char *nm) {
+static korb_sword_t korb_stat_field(CTX *c, VALUE self, const char *nm) {
     const VALUE v = korb_ivar_get(c, self, korb_stat_iv(c, nm));
     return FIXNUM_P(v) ? FIX2LONG(v) : 0;
 }
@@ -1041,7 +1041,7 @@ STAT_INT_M(korb_m_stat_blocks,  "@__blocks")
 STAT_INT_M(korb_m_stat_rdev,    "@__rdev")
 #undef STAT_INT_M
 #define STAT_TIME_M(fn, field) static RESULT fn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
-    (void)a; const intptr_t t = korb_stat_field(c, VALUE_REF_GET(self), field); \
+    (void)a; const korb_sword_t t = korb_stat_field(c, VALUE_REF_GET(self), field); \
     return korb_time_make(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)), (double)t, false); }
 STAT_TIME_M(korb_m_stat_mtime, "@__mtime")
 STAT_TIME_M(korb_m_stat_atime, "@__atime")
@@ -1067,10 +1067,10 @@ static RESULT korb_m_stat_zero_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__size") == 0 ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_stat_owned_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__uid") == (intptr_t)geteuid() ? KORB_TRUE : KORB_FALSE);
+    (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__uid") == (korb_sword_t)geteuid() ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_stat_grouped_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__gid") == (intptr_t)getegid() ? KORB_TRUE : KORB_FALSE);
+    (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__gid") == (korb_sword_t)getegid() ? KORB_TRUE : KORB_FALSE);
 }
 /* Permission predicates.  CRuby answers them from the cached stat fields, not
  * from access(2): pick the owner / group / other triad by comparing the file's
@@ -1108,12 +1108,12 @@ STAT_PERM_M(korb_m_stat_executable_real_p, S_IXUSR, S_IXGRP, S_IXOTH, true)
 /* #size? — the size, or nil for an empty file (so `if stat.size?` works). */
 static RESULT korb_m_stat_size_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
-    const intptr_t sz = korb_stat_field(c, VALUE_REF_GET(self), "@__size");
+    const korb_sword_t sz = korb_stat_field(c, VALUE_REF_GET(self), "@__size");
     return RESULT_OK(sz == 0 ? KORB_NIL : LONG2FIX(sz));
 }
 #define STAT_DEVPART_M(fn, field, part) static RESULT fn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
     (void)slots; (void)a; const dev_t d = (dev_t)korb_stat_field(c, VALUE_REF_GET(self), field); \
-    return RESULT_OK(LONG2FIX((intptr_t)part(d))); }
+    return RESULT_OK(LONG2FIX((korb_sword_t)part(d))); }
 STAT_DEVPART_M(korb_m_stat_dev_major,  "@__dev",  major)
 STAT_DEVPART_M(korb_m_stat_dev_minor,  "@__dev",  minor)
 STAT_DEVPART_M(korb_m_stat_rdev_major, "@__rdev", major)
@@ -1152,7 +1152,7 @@ static RESULT korb_m_stat_ftype(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_stat_spaceship(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; const VALUE o = VALUE_SLICE_GET(a, 0);
     if (!KORB_OBJECT_P(o)) return RESULT_OK(KORB_NIL);
-    const intptr_t m1 = korb_stat_field(c, VALUE_REF_GET(self), "@__mtime"), m2 = korb_stat_field(c, o, "@__mtime");
+    const korb_sword_t m1 = korb_stat_field(c, VALUE_REF_GET(self), "@__mtime"), m2 = korb_stat_field(c, o, "@__mtime");
     return RESULT_OK(LONG2FIX(m1 < m2 ? -1 : m1 > m2 ? 1 : 0));
 }
 /* A path argument: a String as is, otherwise #to_path then #to_str (CRuby's
@@ -1329,7 +1329,7 @@ static RESULT korb_m_dir_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     (void)a; const VALUE s = VALUE_REF_GET(self);
     const KorbArray *ents = korb_dir_ents(c, s); if (!ents) return RESULT_OK(KORB_NIL);
     const VALUE posv = korb_ivar_get(c, s, ID2SYM(korb_dir_pos_id(c)));
-    const intptr_t pos = FIXNUM_P(posv) ? FIX2LONG(posv) : 0;
+    const korb_sword_t pos = FIXNUM_P(posv) ? FIX2LONG(posv) : 0;
     if (pos < 0 || (uint32_t)pos >= ents->len) return RESULT_OK(KORB_NIL);
     slots[0] = korb_items_data(ents->items)[pos];                          /* the entry (rooted) */
     CHECK(korb_ivar_set(c, slots + 1, self, ID2SYM(korb_dir_pos_id(c)), LONG2FIX(pos + 1)));
