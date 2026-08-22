@@ -133,6 +133,12 @@ python3 -m http.server
   wasmtime / Node native WASI は本物のブロック。
 - shim の `poll_oneoff` は clock 購読 1 本のみ。fd を混ぜる IO 待ちは NOTSUP
   になるので、IO.select 系はブラウザでは不可。
+- **vendored shim は 1 箇所パッチ済み** (wasi.js 冒頭コメント参照):
+  args_sizes_get が JS 文字列の `.length` (UTF-16 単位) でサイズを申告するのに
+  args_get は UTF-8 バイトを書くため、**非 ASCII を含む argv (-e の日本語
+  コメント等) でバッファを溢れて "memory access out of bounds"** になる。
+  エンコード後バイト長を数えるよう修正 (environ 側は元から正しい)。
+  上流 (main, 0.4.2 時点) は未修正。
 - ヒープは起動時 malloc の 512 MiB×2 だが、wasm の memory.grow は OS 側で
   遅延コミットされるので実 RSS は数百 MB 弱 (native の観測と同じ理屈)。
   モバイル Safari 等ではタブのメモリ上限に注意。
