@@ -389,26 +389,160 @@ static RESULT korb_m_file_extname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return korb_str_new(c, slots, out, el);
 }
 
-/* File.fnmatch(pat, path[, flags]) — glob match via POSIX fnmatch(3), with the
- * Ruby flag bits translated to glibc's (different numeric values).  Ruby's `**`
- * and `{a,b}` (FNM_EXTGLOB) aren't POSIX, so those edge cases may differ. */
+/* File.fnmatch — Ruby semantics implemented directly (POSIX fnmatch(3) lacks
+ * `**` recursion and `{a,b}` FNM_EXTGLOB, and differs on unterminated `[`). */
+#define KFNM_NOESCAPE 1
+#define KFNM_PATHNAME 2
+#define KFNM_DOTMATCH 4
+#define KFNM_CASEFOLD 8
+#define KFNM_EXTGLOB  16
+static bool kfnm_core(const char *p, const char *pe, const char *s, const char *se, int flags);
+/* one segment (or the whole string when !PATHNAME): leading-dot guard + core. */
+static bool kfnm_helper(const char *p, const char *pe, const char *s, const char *se, int flags) {
+    if (!(flags & KFNM_DOTMATCH) && s < se && *s == '.') {
+        const char *q = p; char pc = 0;                /* pattern must OPEN with a literal '.' */
+        if (q < pe) { pc = *q; if (pc == '\\' && !(flags & KFNM_NOESCAPE) && q + 1 < pe) pc = q[1]; }
+        if (pc != '.' && q < pe && (*q == '*' || *q == '?' || *q == '[')) return false;
+    }
+    return kfnm_core(p, pe, s, se, flags);
+}
+static bool kfnm_core(const char *p, const char *pe, const char *s, const char *se, int flags) {
+    const bool noesc = flags & KFNM_NOESCAPE, fold = flags & KFNM_CASEFOLD;
+    while (p < pe) {
+        char pc = *p;
+        if (pc == '*') {
+            while (p < pe && *p == '*') p++;           /* collapse runs of '*' */
+            if (p == pe) return true;
+            for (const char *t = s; t <= se; t++)
+                if (kfnm_core(p, pe, t, se, flags)) return true;
+            return false;
+        }
+        if (pc == '[') {
+            if (s >= se) return false;
+            const char *q = p + 1; bool neg = false;
+            if (q < pe && (*q == '!' || *q == '^')) { neg = true; q++; }
+            const char sc = fold ? (char)tolower((unsigned char)*s) : *s;
+            bool matched = false, closed = false, first = true;
+            const char *r = q;
+            while (r < pe) {
+                if (*r == ']' && !first) { closed = true; break; }
+                first = false;
+                char lo = *r;
+                if (lo == '\\' && !noesc && r + 1 < pe) { r++; lo = *r; }
+                char hi = lo;
+                if (r + 2 < pe && r[1] == '-' && r[2] != ']') {
+                    hi = r[2]; r += 2;
+                    if (hi == '\\' && !noesc && r + 1 < pe) { r++; hi = *r; }
+                }
+                const char flo = fold ? (char)tolower((unsigned char)lo) : lo;
+                const char fhi = fold ? (char)tolower((unsigned char)hi) : hi;
+                if (sc >= flo && sc <= fhi) matched = true;
+                r++;
+            }
+            if (!closed) return false;                 /* unterminated '[' never matches (CRuby) */
+            if (matched == neg) return false;
+            p = r + 1; s++; continue;
+        }
+        if (s >= se) return false;
+        if (pc == '?') { p++; s++; continue; }
+        if (pc == '\\' && !noesc && p + 1 < pe) { p++; pc = *p; }
+        {
+            const char b = fold ? (char)tolower((unsigned char)*s) : *s;
+            const char a2 = fold ? (char)tolower((unsigned char)pc) : pc;
+            if (a2 != b) return false;
+        }
+        p++; s++;
+    }
+    return s == se;
+}
+/* PATHNAME: match '/'-separated segments; a "**\/" pattern segment matches zero
+ * or more directories. */
+static bool kfnm_segs(const char *p, const char *pe, const char *s, const char *se, int flags) {
+    const char *psl = memchr(p, '/', (size_t)(pe - p));
+    const char *pend1 = psl ? psl : pe;
+    if (pend1 - p == 2 && p[0] == '*' && p[1] == '*' && psl) {   /* "**\/rest" */
+        const char *t = s;
+        for (;;) {
+            if (kfnm_segs(psl + 1, pe, t, se, flags)) return true;
+            if (!(flags & KFNM_DOTMATCH) && t < se && *t == '.') return false;   /* don't recurse into dot-dirs */
+            const char *sl = memchr(t, '/', (size_t)(se - t));
+            if (!sl) return false;
+            t = sl + 1;
+        }
+    }
+    const char *ssl = memchr(s, '/', (size_t)(se - s));
+    const char *send1 = ssl ? ssl : se;
+    if (!kfnm_helper(p, pend1, s, send1, flags)) return false;
+    if (psl && ssl) return kfnm_segs(psl + 1, pe, ssl + 1, se, flags);
+    return !psl && !ssl;
+}
+/* FNM_EXTGLOB {a,b} brace alternation (nesting-aware), then match. */
+static bool kfnm_match(const char *p, uint32_t plen, const char *s, uint32_t slen, int flags, int depth) {
+    if ((flags & KFNM_EXTGLOB) && depth < 16) {
+        const bool noesc = flags & KFNM_NOESCAPE;
+        for (uint32_t i = 0; i < plen; i++) {
+            if (p[i] == '\\' && !noesc) { i++; continue; }
+            if (p[i] != '{') continue;
+            int nest = 0; uint32_t close = 0;
+            for (uint32_t j = i; j < plen; j++) {
+                if (p[j] == '\\' && !noesc) { j++; continue; }
+                if (p[j] == '{') nest++;
+                else if (p[j] == '}') { nest--; if (nest == 0) { close = j; break; } }
+            }
+            if (close == 0) break;                     /* unmatched '{' → literal */
+            /* try each top-level comma alternative */
+            uint32_t alt = i + 1;
+            for (uint32_t j = i + 1; j <= close; j++) {
+                if (p[j] == '\\' && !noesc) { j++; continue; }
+                if (p[j] == '{') { int n2 = 1; while (++j <= close && n2) { if (p[j]=='{') n2++; else if (p[j]=='}') n2--; else if (p[j]=='\\' && !noesc) j++; } j--; continue; }
+                if (j == close || p[j] == ',') {
+                    char buf[4096];
+                    const uint32_t al = j - alt;
+                    if (i + al + (plen - close - 1) + 1 < sizeof buf) {
+                        memcpy(buf, p, i);
+                        memcpy(buf + i, p + alt, al);
+                        memcpy(buf + i + al, p + close + 1, plen - close - 1);
+                        if (kfnm_match(buf, i + al + (plen - close - 1), s, slen, flags, depth + 1)) return true;
+                    }
+                    alt = j + 1;
+                }
+            }
+            return false;
+        }
+    }
+    if (flags & KFNM_PATHNAME) return kfnm_segs(p, p + plen, s, s + slen, flags);
+    return kfnm_helper(p, p + plen, s, s + slen, flags);
+}
 static RESULT korb_m_file_fnmatch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2 || !KORB_STRING_P(VALUE_SLICE_GET(a, 0)) || !KORB_STRING_P(VALUE_SLICE_GET(a, 1))))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2..3)", VALUE_SLICE_LEN(a));
+    for (int i = 0; i < 2; i++) {                      /* #to_path / #to_str coercion */
+        VALUE v = VALUE_SLICE_GET(a, i);
+        if (KORB_STRING_P(v)) continue;
+        if (KORB_OBJECT_P(v)) {
+            static const char *const mids[2] = { "to_path", "to_str" };
+            for (int m = 0; m < 2; m++) {
+                VALUE cv = v;
+                if (korb_responds_to_coerce_p(c, slots, &cv, korb_intern(c->vm, mids[m], (uint32_t)strlen(mids[m])))) {
+                    slots[0] = cv;
+                    RESULT sr = korb_send_impl(c, slots + 1, korb_intern(c->vm, mids[m], (uint32_t)strlen(mids[m])), 0, 0, NULL, NULL, NULL);
+                    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                    if (KORB_STRING_P(sr.value)) { VALUE_REF_SET(VALUE_SLICE_REF(a, i), sr.value); v = sr.value; break; }
+                }
+            }
+        }
+        if (UNLIKELY(!KORB_STRING_P(v)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, i)));
+    }
     const KorbString *const pat = VAL2STR(VALUE_SLICE_GET(a, 0));
     const KorbString *const str = VAL2STR(VALUE_SLICE_GET(a, 1));
     const long rf = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
     char pbuf[4096], sbuf[4096];
     if (UNLIKELY(pat->len >= sizeof pbuf || str->len >= sizeof sbuf)) return RESULT_OK(KORB_FALSE);
-    memcpy(pbuf, korb_strbuf_data(pat->buf), pat->len); pbuf[pat->len] = '\0';
-    memcpy(sbuf, korb_strbuf_data(str->buf), str->len); sbuf[str->len] = '\0';
-    int cf = 0;                                        /* Ruby bits → glibc bits */
-    if (rf & 1)  cf |= FNM_NOESCAPE;                   /* FNM_NOESCAPE  (Ruby 1) */
-    if (rf & 2)  cf |= FNM_PATHNAME;                   /* FNM_PATHNAME  (Ruby 2) */
-    if (rf & 8)  cf |= FNM_CASEFOLD;                   /* FNM_CASEFOLD  (Ruby 8) */
-    if (!(rf & 4)) cf |= FNM_PERIOD;                   /* no FNM_DOTMATCH → leading '.' not matched by '*' */
-    return RESULT_OK(fnmatch(pbuf, sbuf, cf) == 0 ? KORB_TRUE : KORB_FALSE);
+    memcpy(pbuf, korb_strbuf_data(pat->buf), pat->len);
+    memcpy(sbuf, korb_strbuf_data(str->buf), str->len);
+    return RESULT_OK(kfnm_match(pbuf, pat->len, sbuf, str->len, (int)rf, 0) ? KORB_TRUE : KORB_FALSE);
 }
 
 /* stat-based File predicates.  The path pointer is used before any allocation,
