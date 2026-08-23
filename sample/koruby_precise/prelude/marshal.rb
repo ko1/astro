@@ -449,7 +449,7 @@ module Marshal
     if data.nil? || data.bytesize == 0
       raise from_io ? EOFError.new("end of file reached") : ArgumentError.new("marshal data too short")
     end
-    st = { s: data, i: 0, syms: [], objs: [], proc: proc, freeze: freeze }
+    st = { s: data, i: 0, syms: [], objs: [], nocb: {}, proc: proc, freeze: freeze }
     maj = _byte(st); min = _byte(st)
     if maj != MAJOR_VERSION || min > MINOR_VERSION
       raise TypeError,
@@ -512,8 +512,9 @@ module Marshal
   FREEZE = Kernel.instance_method(:freeze)
 
   def self._read(st)
-    v = _read0(st)
-    was_link = st[:link]; st[:link] = false   # consume: a nested read has already cleared its own
+    st[:link] = false                         # only OUR _read0 may set it (a bare _read0 for a
+    v = _read0(st)                            # structural name must not leak its symlink flag here)
+    was_link = st[:link]; st[:link] = false
     # `freeze: true` hands out frozen objects — freeze on the way out, once the
     # container has been filled, and before the caller's proc sees it.  Classes
     # and modules are left alone (CRuby does not freeze them).
@@ -531,7 +532,10 @@ module Marshal
     when 0x54 then true                                 # 'T'
     when 0x46 then false                                # 'F'
     when 0x69 then _rlong(st)                            # 'i' Fixnum
-    when 0x40 then st[:link] = true; st[:objs][_rlong(st)]   # '@' object link (no proc callback)
+    when 0x40                                            # '@' object link
+      li = _rlong(st)
+      st[:link] = true if st[:nocb][li]                  # user _load/marshal_load results: silent
+      st[:objs][li]
     when 0x6c                                            # 'l' Bignum
       sign = _byte(st)
       nwords = _rlong(st)
@@ -541,7 +545,7 @@ module Marshal
     when 0x3a                                            # ':' symbol
       n = _rlong(st); sym = _bytes(st, n).to_sym
       st[:syms] << sym; sym
-    when 0x3b then st[:syms][_rlong(st)]                # ';' symbol link
+    when 0x3b then st[:link] = true; st[:syms][_rlong(st)]   # ';' symbol link (no proc callback)
     when 0x22                                            # '"' string
       # Unwrapped strings are ASCII-8BIT; an enclosing 'I' with :E / :encoding
       # re-tags them.
@@ -608,6 +612,7 @@ module Marshal
           end
         end
         st[:objs][idx] = obj
+        st[:nocb][idx] = true                            # ivar-wrapped _load result: link is silent
         return obj
       end
       v = _read0(st)                                     # transparent: caller's proc sees the object
@@ -681,6 +686,7 @@ module Marshal
       cls = _read0(st)
       data = _bytes(st, _rlong(st))
       obj = _const(cls)._load(data)
+      st[:nocb][idx] = true                              # a link to a _load-built object is silent
       st[:objs][idx] = obj
     when 0x53                                            # 'S' Struct
       idx = st[:objs].size; st[:objs] << nil
@@ -701,6 +707,7 @@ module Marshal
               o.marshal_load(data) if o.respond_to?(:marshal_load)
               o
             end
+      st[:nocb][idx] = true                              # ditto for marshal_load-built objects
       st[:objs][idx] = obj
     else
       raise TypeError, "unsupported Marshal type 0x#{t.to_s(16)}"
