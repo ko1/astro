@@ -294,8 +294,20 @@ module Process
   def self.argv0 = $0
 
   # Reap the child in the background; the thread's value is its Process::Status.
+  # CRuby: the reaper thread carries the pid both as thread-local :pid and as a
+  # singleton #pid, and a vanished child is tolerated (the thread just ends nil).
   def self.detach(pid)
-    Thread.new(pid) { |p| Process.wait2(p)[1] }
+    pid = pid.to_int unless pid.is_a?(Integer)
+    t = Thread.new(pid) do |p|
+      Thread.current[:pid] = p
+      begin
+        Process.wait2(p)[1]
+      rescue Errno::ECHILD
+        nil
+      end
+    end
+    t.define_singleton_method(:pid) { pid }
+    t
   end
 
   module Sys
