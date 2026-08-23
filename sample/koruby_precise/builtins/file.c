@@ -959,7 +959,9 @@ korb_io_line_args(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t from, struct kor
     o->slurp = o->paragraph = o->chomp = false;
     o->limit = -1;
     uint32_t n = VALUE_SLICE_LEN(a);
-    if (n > from && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {          /* trailing chomp: */
+    /* only real keyword args are options — a positional Hash falls through to
+     * the limit position and TypeErrors there (CRuby) */
+    if (n > from && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1)) && korb_kwargs_hash_p(VALUE_SLICE_GET(a, n - 1))) {
         const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
         const int32_t hx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "chomp", 5)));
         if (hx >= 0) o->chomp = KORB_TRUTHY(korb_items_data(h->items)[2 * hx + 1]);
@@ -982,6 +984,8 @@ korb_io_line_args(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t from, struct kor
     }
     if (lim != KORB_NIL) {
         korb_sword_t n2;
+        if (UNLIKELY(KORB_BIGNUM_P(lim)))
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
         if (FIXNUM_P(lim)) n2 = FIX2LONG(lim);
         else if (!korb_to_index(lim, &n2)) {
             if (!KORB_OBJECT_P(lim) || !korb_responds_to(c, lim, korb_intern(c->vm, "to_int", 6)))
