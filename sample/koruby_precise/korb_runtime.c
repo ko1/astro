@@ -10793,6 +10793,14 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
     memcpy(namebuf, korb_strbuf_data(VAL2STR(nv)->buf), nl); namebuf[nl] = '\0';
     char abspath[4096];
+    if (namebuf[0] == '~') {                               /* shell-style tilde expansion (CRuby expand_path) */
+        const char *home = getenv("HOME");
+        if (home && (namebuf[1] == '/' || namebuf[1] == '\0')) {
+            char expanded[4096];
+            if ((size_t)snprintf(expanded, sizeof expanded, "%s%s", home, namebuf + 1) < sizeof expanded)
+                snprintf(namebuf, sizeof namebuf, "%s", expanded);
+        }
+    }
     /* Only an explicitly relative ("./x", "../x") or absolute name is resolved
      * against the working directory; a bare feature name comes from $LOAD_PATH
      * alone (CRuby dropped "." from the load path in 1.9.2, and searching it
@@ -10801,21 +10809,27 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
         korb_resolve_load(".", namebuf, abspath, sizeof abspath)) {
         VALUE out; return korb_load_abspath(c, slots, abspath, true, &out);
     }
-    if (namebuf[0] != '/' && namebuf[0] != '.') {          /* search each $LOAD_PATH dir (no alloc until the load) */
-        const VALUE lp = korb_const_get(c->vm, korb_intern(c->vm, "$LOAD_PATH", 10));
-        if (KORB_ARRAY_P(lp)) {
-            const KorbArray *const la = VAL2ARY(lp);
-            for (uint32_t i = 0; i < la->len; i++) {
-                const VALUE e = korb_items_data(la->items)[i];
+    if (namebuf[0] != '/' && namebuf[0] != '.') {          /* search each $LOAD_PATH dir (re-read per iter: #to_path may run Ruby) */
+        const uint32_t lp_sym = korb_intern(c->vm, "$LOAD_PATH", 10);
+        for (uint32_t i = 0; ; i++) {
+            const VALUE lp = korb_const_get(c->vm, lp_sym);
+            if (!KORB_ARRAY_P(lp) || i >= VAL2ARY(lp)->len) break;
+            VALUE e = korb_items_data(VAL2ARY(lp)->items)[i];
+            if (!KORB_STRING_P(e)) {                       /* a #to_path / #to_str entry (CRuby FilePathValue) */
+                RESULT pr = korb_load_path_arg(c, slots, &e);
+                if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
                 if (!KORB_STRING_P(e)) continue;
-                char dir[4096]; uint32_t dl = VAL2STR(e)->len; if (dl >= sizeof dir) dl = sizeof dir - 1;
-                memcpy(dir, korb_strbuf_data(VAL2STR(e)->buf), dl); dir[dl] = '\0';
-                if (korb_resolve_load(dir, namebuf, abspath, sizeof abspath)) {
-                    VALUE out; return korb_load_abspath(c, slots, abspath, true, &out);
-                }
+            }
+            char dir[4096]; uint32_t dl = VAL2STR(e)->len; if (dl >= sizeof dir) dl = sizeof dir - 1;
+            memcpy(dir, korb_strbuf_data(VAL2STR(e)->buf), dl); dir[dl] = '\0';
+            if (korb_resolve_load(dir, namebuf, abspath, sizeof abspath)) {
+                VALUE out; return korb_load_abspath(c, slots, abspath, true, &out);
             }
         }
     }
+    /* the exact name already in $LOADED_FEATURES → false, even when no such
+     * file exists any more (CRuby) */
+    if (korb_feature_loaded_p(c, namebuf)) return RESULT_OK(KORB_FALSE);
     /* Not on disk.  A handful of stdlib features are built into koruby (no .rb
      * on disk): a require of one of those succeeds as a no-op.  Any other
      * missing feature is a LoadError, matching CRuby. */
