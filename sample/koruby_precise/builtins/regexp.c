@@ -1012,13 +1012,26 @@ RESULT korb_re_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE gr
     if (rr.value != KORB_TRUE) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
     slots[3] = UNWRAP(korb_re_build_md(c, slots + 3, slots[0], slots[1], &m)); korb_re_set_lastmatch(c, slots[3]);
     int gi = 0;
-    if (slots[2] != KORB_NIL) {
+    if (slots[2] != KORB_UNDEF) {
         if (SYMBOL_P(slots[2]) || KORB_STRING_P(slots[2])) {
             const char *nm; uint32_t nl;
             if (SYMBOL_P(slots[2])) { nm = korb_sym_name(c->vm, SYM2ID(slots[2])); nl = (uint32_t)strlen(nm); } else { nm = korb_strbuf_data(VAL2STR(slots[2])->buf); nl = VAL2STR(slots[2])->len; }
             gi = korb_md_name_idx(c, slots[3], nm, nl);
             if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
-        } else { korb_sword_t g = 0; korb_to_index(slots[2], &g); if (g < 0) g += korb_md_ngroups(VAL2MD(slots[3])); gi = (int)g; }   /* negative capture index counts from the last group */
+        } else {
+            korb_sword_t g = 0;
+            if (!korb_to_index(slots[2], &g)) {          /* #to_int coercion; nil/other → TypeError */
+                if (slots[2] == KORB_NIL)
+                    return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "no implicit conversion from nil to integer");
+                VALUE gv = slots[2];
+                RESULT cr = korb_coerce_to_int(c, slots + 4, &gv);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                if (!korb_to_index(gv, &g))
+                    return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, slots[2]));
+            }
+            if (g < 0) g += korb_md_ngroups(VAL2MD(slots[3]));   /* negative capture index counts from the last group */
+            gi = (int)g;
+        }
     }
     return korb_md_group(c, slots + 4, slots[3], gi);
 }

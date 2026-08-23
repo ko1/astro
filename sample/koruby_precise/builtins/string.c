@@ -827,11 +827,28 @@ static RESULT korb_m_str_chomp_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (sv == KORB_NIL) return RESULT_OK(KORB_NIL);   /* nil sep → no-op → nil */
         if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
         const KorbString *sep = VAL2STR(sv);
-        if (sep->len == 0) { while (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\n') { if (n >= 2 && korb_strbuf_data(s->buf)[n-2] == '\r') n--; n--; } }
+        if (sep->len == 1 && korb_strbuf_data(sep->buf)[0] == '\n') {   /* "\n" = universal: \r\n, \n, or \r */
+            if (n >= 2 && korb_strbuf_data(s->buf)[n-2] == '\r' && korb_strbuf_data(s->buf)[n-1] == '\n') n -= 2;
+            else if (n >= 1 && (korb_strbuf_data(s->buf)[n-1] == '\n' || korb_strbuf_data(s->buf)[n-1] == '\r')) n -= 1;
+        }
+        else if (sep->len == 0) { while (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\n') { if (n >= 2 && korb_strbuf_data(s->buf)[n-2] == '\r') n--; n--; } }
         else if (n >= sep->len && memcmp(korb_strbuf_data(s->buf) + n - sep->len, korb_strbuf_data(sep->buf), sep->len) == 0) n -= sep->len;
         if (n == s->len) return RESULT_OK(KORB_NIL);
         s->len = n; korb_strbuf_data(s->buf)[n] = '\0';
         return RESULT_OK(VALUE_REF_GET(self));
+    }
+    {   /* no arg → $/ (usually "\n"; nil → no-op; custom → that separator) */
+        const VALUE rs = korb_const_get(c->vm, korb_intern(c->vm, "$/", 2));
+        if (rs == KORB_NIL) return RESULT_OK(KORB_NIL);
+        if (KORB_STRING_P(rs) && !(VAL2STR(rs)->len == 1 && korb_strbuf_data(VAL2STR(rs)->buf)[0] == '\n')) {
+            const KorbString *sep = VAL2STR(rs);
+            s = VAL2STR(VALUE_REF_GET(self));
+            if (sep->len == 0) { while (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\n') { if (n >= 2 && korb_strbuf_data(s->buf)[n-2] == '\r') n--; n--; } }
+            else if (n >= sep->len && memcmp(korb_strbuf_data(s->buf) + n - sep->len, korb_strbuf_data(sep->buf), sep->len) == 0) n -= sep->len;
+            if (n == s->len) return RESULT_OK(KORB_NIL);
+            s->len = n; korb_strbuf_data(s->buf)[n] = '\0';
+            return RESULT_OK(VALUE_REF_GET(self));
+        }
     }
     if (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\n') { n--; if (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\r') n--; }
     else if (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\r') n--;
@@ -1990,6 +2007,21 @@ static RESULT korb_m_str_chomp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         }
         return korb_str_slice_new(c, slots + 2, self, 0, len);   /* slots[0]=self, slots[1]=sep may be live */
     }
+    {   /* no arg → $/ (usually "\n"; nil → unchanged copy; custom → that separator) */
+        const VALUE rs = korb_const_get(c->vm, korb_intern(c->vm, "$/", 2));
+        if (rs == KORB_NIL) return korb_str_slice_new(c, slots, self, 0, VAL2STR(VALUE_REF_GET(self))->len);
+        if (KORB_STRING_P(rs) && !(VAL2STR(rs)->len == 1 && korb_strbuf_data(VAL2STR(rs)->buf)[0] == '\n')) {
+            const KorbString *sep = VAL2STR(rs);
+            const KorbString *s2 = VAL2STR(VALUE_REF_GET(self));
+            uint32_t len2 = s2->len;
+            if (sep->len == 0) {
+                while (len2 >= 2 && korb_strbuf_data(s2->buf)[len2-2] == '\r' && korb_strbuf_data(s2->buf)[len2-1] == '\n') len2 -= 2;
+                while (len2 >= 1 && korb_strbuf_data(s2->buf)[len2-1] == '\n') len2 -= 1;
+            } else if (len2 >= sep->len && memcmp(korb_strbuf_data(s2->buf) + len2 - sep->len, korb_strbuf_data(sep->buf), sep->len) == 0)
+                len2 -= sep->len;
+            return korb_str_slice_new(c, slots, self, 0, len2);
+        }
+    }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t len = s->len;
     if (len >= 2 && korb_strbuf_data(s->buf)[len-2] == '\r' && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 2;
@@ -2216,12 +2248,18 @@ static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_str_idx_conv(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out) {
     if (LIKELY(korb_to_index(v, out))) return RESULT_OK(KORB_NIL);
     if (KORB_BIGNUM_P(v)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
+    if (KORB_OBJECT_P(v)) {                        /* #to_int-convertible index (Range bounds etc.) */
+        VALUE cv = v;
+        RESULT cr = korb_coerce_to_int(c, slots, &cv);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (korb_to_index(cv, out)) return RESULT_OK(KORB_NIL);
+    }
     return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(v));
 }
 static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE i0 = VALUE_SLICE_GET(a, 0);
     if (KORB_REGEXP_P(i0))                              /* s[regexp] / s[regexp, group] → matched text (builtins/regexp.c) */
-        return korb_re_str_aref(c, slots, self, i0, VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_NIL);
+        return korb_re_str_aref(c, slots, self, i0, VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_UNDEF);
     if (UNLIKELY(VALUE_SLICE_LEN(a) >= 2 && (KORB_STRING_P(i0) || KORB_RANGE_P(i0))))   /* the (start, len) form needs an Integer index, not a String/Range */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(i0));
     if (!KORB_STRING_P(i0) && !KORB_RANGE_P(i0)) {     /* coerce a non-String/Range index via #to_int (before reading self) */
