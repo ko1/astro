@@ -983,58 +983,59 @@ static bool korb_str_search_coerce(CTX *c, VALUE *slots) {
     return KORB_STRING_P(slots[0]);
 }
 static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0))) {       /* byteindex(regexp[, start_byte]) */
-        long startc = 0;
-        if (VALUE_SLICE_LEN(a) >= 2) { korb_sword_t st = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &st)) startc = (long)st; }
-        return korb_re_str_index(c, slots, self, VALUE_SLICE_GET(a, 0), startc, true);
-    }
-    slots[0] = VALUE_SLICE_GET(a, 0);                 /* search (coerce via #to_str) */
-    if (!korb_str_search_coerce(c, slots)) return RESULT_OK(KORB_NIL);
+    /* CRuby order: start offset is converted and range-checked BEFORE the
+     * pattern is type-checked ("".byteindex(1, -1) → nil, no TypeError). */
     korb_sword_t start = 0;
-    if (VALUE_SLICE_LEN(a) >= 2) {                    /* byteindex(substr, start_byte) */
+    if (VALUE_SLICE_LEN(a) >= 2) {
         VALUE ov = VALUE_SLICE_GET(a, 1);
         if (UNLIKELY(!korb_to_index(ov, &start))) {
             RESULT cr = korb_coerce_to_int(c, slots + 1, &ov);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(ov, &start)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+            if (!korb_to_index(ov, &start)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 1)));
         }
+        const korb_sword_t slen = (korb_sword_t)VAL2STR(VALUE_REF_GET(self))->len;
+        if (start < 0) start += slen;
+        if (start < 0 || start > slen) return RESULT_OK(KORB_NIL);
+        if (KORB_STR_ENC(VALUE_REF_GET(self)) == KORB_ENC_UTF8 && start < slen &&
+            ((unsigned char)korb_strbuf_data(VAL2STR(VALUE_REF_GET(self))->buf)[start] & 0xC0) == 0x80)
+            return korb_raise(c, slots + 1, KORB_E_INDEX, 0, "offset %lld does not land on character boundary", (long long)start);
     }
+    if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0)))         /* byteindex(regexp[, start_byte]) */
+        return korb_re_str_index(c, slots, self, VALUE_SLICE_GET(a, 0), (long)start, true);
+    slots[0] = VALUE_SLICE_GET(a, 0);                 /* search (coerce via #to_str) */
+    if (!korb_str_search_coerce(c, slots))
+        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(slots[0]);   /* read after dispatch */
-    uint32_t off = 0;
-    if (VALUE_SLICE_LEN(a) >= 2) {
-        if (start < 0) start += s->len;
-        if (start < 0 || start > (korb_sword_t)s->len) return RESULT_OK(KORB_NIL);
-        off = (uint32_t)start;
-    }
+    const uint32_t off = (uint32_t)start;
     int32_t b = korb_byte_find(korb_strbuf_data(s->buf) + off, s->len - off, korb_strbuf_data(n->buf), n->len);
     return RESULT_OK(b < 0 ? KORB_NIL : LONG2FIX(off + (uint32_t)b));
 }
 static RESULT korb_m_str_byterindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0))) {       /* byterindex(regexp[, stop_byte]) */
-        long stop = 0; bool have_stop = false;
-        if (VALUE_SLICE_LEN(a) >= 2) { korb_sword_t st = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &st)) { stop = (long)st; have_stop = true; } }
-        return korb_re_str_rindex(c, slots, self, VALUE_SLICE_GET(a, 0), stop, true, have_stop);
-    }
-    slots[0] = VALUE_SLICE_GET(a, 0);                 /* search (coerce via #to_str) */
-    if (!korb_str_search_coerce(c, slots)) return RESULT_OK(KORB_NIL);
-    korb_sword_t stop; bool have_stop = false;
-    if (VALUE_SLICE_LEN(a) >= 2) {                    /* byterindex(substr, stop_byte) */
+    korb_sword_t stop = 0; bool have_stop = false;
+    if (VALUE_SLICE_LEN(a) >= 2) {                    /* stop offset first (CRuby order) */
         VALUE ov = VALUE_SLICE_GET(a, 1);
         if (UNLIKELY(!korb_to_index(ov, &stop))) {
             RESULT cr = korb_coerce_to_int(c, slots + 1, &ov);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(ov, &stop)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+            if (!korb_to_index(ov, &stop)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 1)));
         }
+        const korb_sword_t slen = (korb_sword_t)VAL2STR(VALUE_REF_GET(self))->len;
+        if (stop < 0) stop += slen;
+        if (stop < 0) return RESULT_OK(KORB_NIL);
+        if (KORB_STR_ENC(VALUE_REF_GET(self)) == KORB_ENC_UTF8 && stop < slen &&
+            ((unsigned char)korb_strbuf_data(VAL2STR(VALUE_REF_GET(self))->buf)[stop] & 0xC0) == 0x80)
+            return korb_raise(c, slots + 1, KORB_E_INDEX, 0, "offset %lld does not land on character boundary", (long long)stop);
         have_stop = true;
     }
+    if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0)))         /* byterindex(regexp[, stop_byte]) */
+        return korb_re_str_rindex(c, slots, self, VALUE_SLICE_GET(a, 0), (long)stop, true, have_stop);
+    slots[0] = VALUE_SLICE_GET(a, 0);                 /* search (coerce via #to_str) */
+    if (!korb_str_search_coerce(c, slots))
+        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(slots[0]);   /* read after dispatch */
     if (n->len > s->len) return RESULT_OK(KORB_NIL);
     int32_t hi = (int32_t)(s->len - n->len);
-    if (have_stop) {
-        if (stop < 0) stop += s->len;
-        if (stop < 0) return RESULT_OK(KORB_NIL);
-        if (stop < hi) hi = (int32_t)stop;
-    }
+    if (have_stop && stop < hi) hi = (int32_t)stop;
     for (int32_t i = hi; i >= 0; i--)
         if (memcmp(korb_strbuf_data(s->buf) + i, korb_strbuf_data(n->buf), n->len) == 0) return RESULT_OK(LONG2FIX(i));
     return RESULT_OK(KORB_NIL);
@@ -1119,21 +1120,97 @@ static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             return RESULT_OK(LONG2FIX(korb_utf8_count(korb_strbuf_data(s->buf), (uint32_t)i)));
     return RESULT_OK(KORB_NIL);
 }
+/* String#dump — like #inspect but ASCII-only: multibyte chars become \uHHHH /
+ * \u{...}, raw high bytes \xHH, `#` is escaped before {,$,@.  Non-ASCII-
+ * compatible encodings (UTF-16/32) dump as bytes + .force_encoding("NAME"). */
+static RESULT korb_m_str_dump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
+    const char *fe_suffix = NULL;                       /* .force_encoding("NAME") for non-ASCII-compat */
+    bool bytes_only = (enc == KORB_ENC_BINARY);
+    if (enc >= KORB_ENC_OTHER_MIN) {
+        const char *const en = korb_enc_name_of(c->vm, enc);
+        if (en && (strncmp(en, "UTF-16", 6) == 0 || strncmp(en, "UTF-32", 6) == 0)) { fe_suffix = en; bytes_only = true; }
+        else bytes_only = true;                          /* single/multi-byte "other": dump raw bytes as \xHH */
+    }
+    const KorbString *const s0 = VAL2STR(VALUE_REF_GET(self));
+    size_t cap = (size_t)s0->len * 6 + 64, olen = 0;
+    char *out = malloc(cap);
+    if (!out) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
+    #define DUMP_PUT(...) do { if (olen + 16 > cap) { cap *= 2; char *nb = realloc(out, cap); if (!nb) { free(out); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); } out = nb; } olen += (size_t)snprintf(out + olen, cap - olen, __VA_ARGS__); } while (0)
+    DUMP_PUT("\"");
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s0->buf);
+    const uint32_t n = s0->len;
+    for (uint32_t i = 0; i < n; ) {
+        const unsigned char b = p[i];
+        if (b == '"' || b == '\\') { DUMP_PUT("\\%c", b); i++; continue; }
+        if (b == '#' && i + 1 < n && (p[i+1] == '{' || p[i+1] == '$' || p[i+1] == '@')) { DUMP_PUT("\\#"); i++; continue; }
+        switch (b) {
+            case '\n': DUMP_PUT("\\n"); i++; continue;   case '\t': DUMP_PUT("\\t"); i++; continue;
+            case '\r': DUMP_PUT("\\r"); i++; continue;   case 7:    DUMP_PUT("\\a"); i++; continue;
+            case 8:    DUMP_PUT("\\b"); i++; continue;   case 11:   DUMP_PUT("\\v"); i++; continue;
+            case 12:   DUMP_PUT("\\f"); i++; continue;   case 27:   DUMP_PUT("\\e"); i++; continue;
+        }
+        if (b < 0x20 || b == 0x7F) { DUMP_PUT("\\x%02X", b); i++; continue; }
+        if (b < 0x80) { DUMP_PUT("%c", b); i++; continue; }
+        if (!bytes_only && enc == KORB_ENC_UTF8) {       /* multibyte char → \uHHHH / \u{...} */
+            const uint32_t l = korb_utf8_seq_len(p, i, n);
+            if (l >= 2) {
+                uint32_t cp = (uint32_t)(b & (0x7F >> l));
+                for (uint32_t k = 1; k < l; k++) cp = (cp << 6) | (p[i + k] & 0x3F);
+                if (cp > 0xFFFF) DUMP_PUT("\\u{%X}", cp); else DUMP_PUT("\\u%04X", cp);
+                i += l; continue;
+            }
+        }
+        DUMP_PUT("\\x%02X", b); i++;                     /* raw / invalid high byte */
+    }
+    DUMP_PUT("\"");
+    if (fe_suffix) DUMP_PUT(".force_encoding(\"%s\")", fe_suffix);
+    #undef DUMP_PUT
+    RESULT r = korb_str_new(c, slots, out, (uint32_t)olen);
+    free(out);
+    return r;
+}
+/* Plausible-encoding-name check for undump's .force_encoding suffix.  dump only
+ * emits real registry names, which all fall in these families. */
+static bool korb_enc_known_name_p(const char *n) {
+    static const char *const exact[] = { "UTF-8", "UTF8", "US-ASCII", "ASCII", "ASCII-8BIT", "BINARY",
+        "Shift_JIS", "SJIS", "TIS-620", "KOI8-R", "KOI8-U", "GBK", "GB2312", "GB18030", "ANSI_X3.4-1968", NULL };
+    static const char *const pref[] = { "UTF-16", "UTF-32", "UTF8-", "ISO-8859-", "ISO-2022-", "Windows-",
+        "windows-", "CP", "IBM", "mac", "EUC-", "eucJP", "Big5", "stateless-ISO-2022-JP", "Emacs-Mule", NULL };
+    for (uint32_t i = 0; exact[i]; i++) if (strcasecmp(n, exact[i]) == 0) return true;
+    for (uint32_t i = 0; pref[i]; i++) if (strncasecmp(n, pref[i], strlen(pref[i])) == 0) return true;
+    return false;
+}
 /* String#undump — inverse of #dump: parse a "..."-wrapped, escaped literal back
- * to the original bytes.  (.force_encoding(...) suffix is ignored.) */
+ * to the original bytes.  Optional `.force_encoding("NAME")` suffix sets the
+ * result encoding; otherwise the result keeps self's encoding. */
 static RESULT korb_m_str_undump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    if (s->len < 2 || korb_strbuf_data(s->buf)[0] != '"')
-        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "invalid dumped string; not wrapped with '\"' nor '\"...\".force_encoding(\"...\")' form");
-    unsigned char *const out = malloc(s->len);
+    uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
+    if (enc >= KORB_ENC_OTHER_MIN) {                            /* UTF-16/32 self cannot be undumped */
+        const char *const en = korb_enc_name_of(c->vm, enc);
+        if (en && (strncmp(en, "UTF-16", 6) == 0 || strncmp(en, "UTF-32", 6) == 0)) {
+            char msg[96];
+            snprintf(msg, sizeof msg, "ASCII incompatible encoding: %s", en);
+            return korb_raise_enc_compat_msg(c, slots, msg);
+        }
+    }
+    #define UNDUMP_FAIL(...) do { free(out); return korb_raise(c, slots, KORB_E_RUNTIME, 0, __VA_ARGS__); } while (0)
+    unsigned char *out = malloc(s->len ? s->len : 1);
+    if (!out) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
+    if (s->len < 1 || korb_strbuf_data(s->buf)[0] != '"')
+        UNDUMP_FAIL("invalid dumped string; not wrapped with '\"' nor '\"...\".force_encoding(\"...\")' form");
     uint32_t olen = 0, i = 1; bool closed = false;
     #define KORB_HEXV(x) ((x) >= '0' && (x) <= '9' ? (x) - '0' : (x) >= 'A' && (x) <= 'F' ? (x) - 'A' + 10 : (x) >= 'a' && (x) <= 'f' ? (x) - 'a' + 10 : -1)
     while (i < s->len) {
         const int ch = (unsigned char)korb_strbuf_data(s->buf)[i];
         if (ch == '"') { closed = true; i++; break; }
+        if (ch == 0)     UNDUMP_FAIL("string contains null byte");
+        if (ch >= 0x80)  UNDUMP_FAIL("non-ASCII character detected");
         if (ch != '\\') { out[olen++] = (unsigned char)ch; i++; continue; }
-        if (++i >= s->len) break;
+        if (++i >= s->len) break;                                /* trailing backslash → unterminated below */
         const int e = (unsigned char)korb_strbuf_data(s->buf)[i++];
         switch (e) {
             case 'n': out[olen++] = '\n'; break;   case 't': out[olen++] = '\t'; break;
@@ -1143,16 +1220,29 @@ static RESULT korb_m_str_undump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             case 's': out[olen++] = ' ';  break;   case '0': out[olen++] = 0;    break;
             case '"': out[olen++] = '"';  break;   case '\\': out[olen++] = '\\'; break;
             case '#': out[olen++] = '#';  break;
-            case 'x': {                            /* \xHH */
-                if (i + 1 < s->len) { const int hi = KORB_HEXV((unsigned char)korb_strbuf_data(s->buf)[i]), lo = KORB_HEXV((unsigned char)korb_strbuf_data(s->buf)[i + 1]);
-                    if (hi >= 0 && lo >= 0) { out[olen++] = (unsigned char)(hi * 16 + lo); i += 2; break; } }
-                out[olen++] = 'x'; break;
+            case 'x': {                            /* \xHH (1-2 hex digits, at least one) */
+                const int hi = i < s->len ? KORB_HEXV((unsigned char)korb_strbuf_data(s->buf)[i]) : -1;
+                if (hi < 0) UNDUMP_FAIL("invalid hex escape");
+                i++;
+                int v = hi;
+                const int lo = i < s->len ? KORB_HEXV((unsigned char)korb_strbuf_data(s->buf)[i]) : -1;
+                if (lo >= 0) { v = v * 16 + lo; i++; }
+                else if (i < s->len && isalnum((unsigned char)korb_strbuf_data(s->buf)[i]))
+                    UNDUMP_FAIL("invalid hex escape");          /* \x3y */
+                out[olen++] = (unsigned char)v; break;
             }
             case 'u': {                            /* \uHHHH or \u{HHHH ...} → UTF-8 */
                 uint32_t cp = 0; bool brace = (i < s->len && korb_strbuf_data(s->buf)[i] == '{');
                 if (brace) i++;
                 int nd = 0; while (i < s->len) { const int hv = KORB_HEXV((unsigned char)korb_strbuf_data(s->buf)[i]); if (hv < 0) break; cp = cp * 16 + (uint32_t)hv; i++; nd++; if (!brace && nd == 4) break; }
-                if (brace && i < s->len && korb_strbuf_data(s->buf)[i] == '}') i++;
+                if (brace) {
+                    if (nd == 0 || i >= s->len || korb_strbuf_data(s->buf)[i] != '}')
+                        UNDUMP_FAIL("invalid Unicode escape");
+                    i++;
+                } else if (nd != 4) {
+                    UNDUMP_FAIL("invalid Unicode escape");
+                }
+                if (cp > 0x10FFFF) UNDUMP_FAIL("invalid Unicode codepoint");
                 if (cp < 0x80) out[olen++] = (unsigned char)cp;
                 else if (cp < 0x800) { out[olen++] = (unsigned char)(0xC0 | (cp >> 6)); out[olen++] = (unsigned char)(0x80 | (cp & 0x3F)); }
                 else if (cp < 0x10000) { out[olen++] = (unsigned char)(0xE0 | (cp >> 12)); out[olen++] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F)); out[olen++] = (unsigned char)(0x80 | (cp & 0x3F)); }
@@ -1163,11 +1253,28 @@ static RESULT korb_m_str_undump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
     }
     #undef KORB_HEXV
-    if (!closed) { free(out); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "invalid dumped string; not wrapped with '\"' nor '\"...\".force_encoding(\"...\")' form"); }
+    if (!closed) UNDUMP_FAIL("unterminated dumped string");
+    if (i < s->len) {                                           /* only a `.force_encoding("NAME")` suffix may follow */
+        static const char pre[] = ".force_encoding(\"";
+        const char *const rest = korb_strbuf_data(s->buf) + i;
+        const uint32_t rlen = s->len - i;
+        if (rlen <= sizeof pre - 1 + 2 || strncmp(rest, pre, sizeof pre - 1) != 0 ||
+            rest[rlen - 2] != '"' || rest[rlen - 1] != ')')
+            UNDUMP_FAIL("invalid dumped string; not wrapped with '\"' nor '\"...\".force_encoding(\"...\")' form");
+        char ename[64];
+        const uint32_t elen = rlen - (uint32_t)(sizeof pre - 1) - 2;
+        if (elen == 0 || elen >= sizeof ename)
+            UNDUMP_FAIL("invalid dumped string; not wrapped with '\"' nor '\"...\".force_encoding(\"...\")' form");
+        memcpy(ename, rest + sizeof pre - 1, elen); ename[elen] = '\0';
+        if (!korb_enc_known_name_p(ename)) UNDUMP_FAIL("dumped string has unknown encoding name");
+        enc = korb_enc_index_pub(c->vm, ename);
+    }
     KorbString *r = korb_str_alloc(c, slots, olen);   /* may move; out is libc-stable */
     memcpy(korb_strbuf_data(r->buf), out, olen); free(out);
     korb_strbuf_data(r->buf)[olen] = '\0'; r->len = olen;
+    KORB_STR_ENC_SET((VALUE)r, enc);
     return RESULT_OK((VALUE)r);
+    #undef UNDUMP_FAIL
 }
 static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     RESULT oo = korb_str_case_opts(c, slots, a, 3); if (UNLIKELY(oo.state != KORB_NORMAL)) return oo;

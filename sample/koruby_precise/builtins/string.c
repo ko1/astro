@@ -147,51 +147,84 @@ static RESULT korb_m_str_valid_encoding(CTX *c, VALUE *slots, VALUE_REF self, VA
     if (enc >= KORB_ENC_OTHER_MIN) return RESULT_OK(KORB_TRUE);   /* "other": assume valid until hooked */
     return RESULT_OK(korb_str_utf8_valid(VAL2STR(v)) ? KORB_TRUE : KORB_FALSE);
 }
-/* String#scrub([repl]) — replace each maximal invalid UTF-8 sub-sequence with
- * `repl` (default U+FFFD).  A binary/US-ASCII string is returned as-is. */
-static RESULT korb_m_str_scrub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const VALUE v = VALUE_REF_GET(self);
-    const uint32_t enc = KORB_STR_ENC(v);
-    if (enc == KORB_ENC_BINARY || enc >= KORB_ENC_OTHER_MIN) return RESULT_OK(v);   /* every byte legal / not hooked */
-    const bool us_ascii = (enc == KORB_ENC_USASCII);   /* US-ASCII: high bytes are invalid */
-    const KorbString *const s = VAL2STR(v);
-    /* A valid string is returned unchanged — and the replacement's type is NOT
-     * checked in that case (CRuby only validates it when a replacement is used). */
-    {
-        bool valid = true;
-        if (us_ascii) { for (uint32_t i = 0; i < s->len; i++) if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) { valid = false; break; } }
-        else valid = korb_str_utf8_valid(s);
-        if (valid) return RESULT_OK(v);
+/* String#scrub([repl]) { |bad| } — replace each maximal invalid sub-sequence
+ * with `repl`, the block's result, or the default (U+FFFD for UTF-8, "?" for
+ * US-ASCII).  Always returns a fresh plain String in self's encoding. */
+static bool korb_str_enc_valid(const KorbString *s, uint32_t enc) {
+    if (enc == KORB_ENC_USASCII) {
+        for (uint32_t i = 0; i < s->len; i++)
+            if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) return false;
+        return true;
     }
-    char repbuf[64]; const char *rep = "\xEF\xBF\xBD"; uint32_t replen = 3;   /* U+FFFD */
-    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
+    if (enc == KORB_ENC_BINARY || enc >= KORB_ENC_OTHER_MIN) return true;
+    return korb_str_utf8_valid(s);
+}
+static RESULT korb_m_str_scrub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
+    const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
+    const bool us_ascii = (enc == KORB_ENC_USASCII);   /* US-ASCII: high bytes are invalid */
+    if (korb_str_enc_valid(VAL2STR(VALUE_REF_GET(self)), enc)) {
+        /* valid (or unvalidatable) → a fresh plain String copy; the replacement
+         * is NOT validated in this case (CRuby checks it only when used). */
+        const KorbString *const s = VAL2STR(VALUE_REF_GET(self));
+        KorbString *r = korb_str_alloc(c, slots, s->len);
+        const KorbString *const s2 = VAL2STR(VALUE_REF_GET(self));   /* re-read after alloc */
+        memcpy(korb_strbuf_data(r->buf), korb_strbuf_data(s2->buf), s2->len);
+        KORB_STR_ENC_SET((VALUE)r, enc);
+        return RESULT_OK((VALUE)r);
+    }
+    char repbuf[64]; const char *rep; uint32_t replen;
+    if (us_ascii) { rep = "?"; replen = 1; }
+    else          { rep = "\xEF\xBF\xBD"; replen = 3; }   /* U+FFFD */
+    const bool use_arg = VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL;
+    if (use_arg) {
         if (UNLIKELY(!KORB_STRING_P(VALUE_SLICE_GET(a, 0))))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
         const KorbString *const rs = VAL2STR(VALUE_SLICE_GET(a, 0));
+        if (UNLIKELY(!korb_str_enc_valid(rs, KORB_STR_ENC(VALUE_SLICE_GET(a, 0)))))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "replacement must be valid byte sequence '%.*s'",
+                              (int)(rs->len < 32 ? rs->len : 32), korb_strbuf_data(rs->buf));
         replen = rs->len < sizeof repbuf ? rs->len : (uint32_t)sizeof repbuf;
         memcpy(repbuf, korb_strbuf_data(rs->buf), replen); rep = repbuf;
     }
-    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf); const uint32_t n = s->len;
-    size_t cap = n + 1, len = 0; char *out = malloc(cap);
+    const bool use_blk = !use_arg && block != NULL;
+    size_t cap = VAL2STR(VALUE_REF_GET(self))->len + 4, len = 0;
+    char *out = malloc(cap);
     if (!out) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
     #define SCRUB_PUT(ptr, l) do { if (len + (l) + 1 > cap) { cap = (len + (l) + 1) * 2; char *nb = realloc(out, cap); if (!nb) { free(out); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); } out = nb; } memcpy(out + len, (ptr), (l)); len += (l); } while (0)
     uint32_t i = 0;
-    while (i < n) {
+    while (i < VAL2STR(VALUE_REF_GET(self))->len) {   /* re-read every iteration: block calls may GC-move the buffer */
+        const KorbString *const s = VAL2STR(VALUE_REF_GET(self));
+        const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+        const uint32_t n = s->len;
         const uint32_t l = us_ascii ? (p[i] < 0x80 ? 1u : 0u) : korb_utf8_seq_len(p, i, n);
-        if (l) { SCRUB_PUT(p + i, l); i += l; }
-        else if (us_ascii) { SCRUB_PUT(rep, replen); i++; }   /* each high byte → one replacement */
-        else {                                    /* one replacement per maximal invalid sequence */
-            const unsigned char b = p[i];
+        if (l) { SCRUB_PUT(p + i, l); i += l; continue; }
+        /* one replacement per maximal invalid sequence (US-ASCII: per byte) */
+        uint32_t bad_end = i + 1;
+        if (!us_ascii && p[i] >= 0xC2 && p[i] <= 0xF4)   /* truncated lead → consume its (too-few) continuations */
+            while (bad_end < n && (p[bad_end] & 0xC0) == 0x80) bad_end++;
+        if (use_blk) {                                   /* block form: bad bytes (BINARY) → replacement String */
+            char badbuf[64];                             /* stack copy: korb_str_new allocs first → p would be stale */
+            const uint32_t badlen = bad_end - i < sizeof badbuf ? bad_end - i : (uint32_t)sizeof badbuf;
+            memcpy(badbuf, p + i, badlen);
+            slots[0] = UNWRAP(korb_str_new(c, slots, badbuf, badlen));
+            KORB_STR_ENC_SET(slots[0], KORB_ENC_BINARY);
+            RESULT br = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+            if (UNLIKELY(br.state != KORB_NORMAL)) { free(out); return br; }
+            if (UNLIKELY(!KORB_STRING_P(br.value))) {
+                free(out);
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(br.value));
+            }
+            const KorbString *const bs = VAL2STR(br.value);
+            SCRUB_PUT(korb_strbuf_data(bs->buf), bs->len);
+        } else {
             SCRUB_PUT(rep, replen);
-            i++;
-            if (b >= 0xC2 && b <= 0xF4)           /* a valid lead byte, truncated → also consume its (too-few) continuations */
-                while (i < n && (p[i] & 0xC0) == 0x80) i++;
-            /* a stray continuation / invalid lead consumes just itself (one replacement each) */
         }
+        i = bad_end;
     }
     #undef SCRUB_PUT
     RESULT r = korb_str_new(c, slots, out, (uint32_t)len);
     free(out);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, enc);
     return r;
 }
 /* String#b — a duplicate tagged ASCII-8BIT. */

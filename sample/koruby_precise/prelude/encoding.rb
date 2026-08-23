@@ -348,6 +348,13 @@ class Encoding
   class ConverterNotFoundError < StandardError; end
 end
 class String
+  # scrub! — scrub を self に反映。変化がなくても self を返す (CRuby)。
+  def scrub!(repl = nil, &block)
+    r = repl.nil? ? scrub(&block) : scrub(repl, &block)
+    replace(r)
+    self
+  end
+
   # encoding is tracked as a small tag in the string header (0 UTF-8, 1 US-ASCII,
   # 2 ASCII-8BIT); the C primitives read/set it.  Only these three encodings are
   # distinguished — enough for #encoding / #force_encoding / #b and the ASCII /

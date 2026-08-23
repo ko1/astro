@@ -8618,7 +8618,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "delete_suffix", korb_m_str_delete_suffix, 1);
     korb_def_cmethod(c, KORB_C_STRING, "delete_prefix!", korb_m_str_delete_prefix_b, 1);
     korb_def_cmethod(c, KORB_C_STRING, "delete_suffix!", korb_m_str_delete_suffix_b, 1);
-    korb_def_cmethod(c, KORB_C_STRING, "dump", korb_m_obj_inspect, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "dump", korb_m_str_dump, 0);
     korb_def_cmethod(c, KORB_C_STRING, "undump", korb_m_str_undump, 0);
     korb_def_cmethod(c, KORB_C_STRING, "between?", korb_m_str_between, 2);
     korb_def_cmethod(c, KORB_C_STRING, "clamp", korb_m_str_clamp, -1);
@@ -8634,7 +8634,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "rpartition", korb_m_str_rpartition, 1);
     korb_def_cmethod(c, KORB_C_STRING, "partition", korb_m_str_partition, 1);
     korb_def_cmethod(c, KORB_C_STRING, "to_f", korb_m_str_to_f, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "scrub", korb_m_str_scrub, -1);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "scrub", korb_m_str_scrub, -1);
     korb_def_cmethod(c, KORB_C_STRING, "scrub!", korb_m_str_self, -1);
     korb_def_cmethod(c, KORB_C_STRING, "include?", korb_m_str_include, 1);
     korb_def_cmethod(c, KORB_C_STRING, "start_with?", korb_m_str_start_with, -1);
