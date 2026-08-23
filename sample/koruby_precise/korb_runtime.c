@@ -1787,6 +1787,7 @@ korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val
     }
     const uint32_t sym = SYM2ID(name_sym);
     KorbObject *o = VAL2OBJ(VALUE_REF_GET(selfref));
+    if (UNLIKELY(o->head.flags & KORB_FL_FROZEN)) return korb_raise_frozen(c, slots, VALUE_REF_GET(selfref));
     int32_t idx = korb_shape_index_cached(c->vm, o->shape_id, sym);
     if (idx >= 0) {                                   /* existing ivar: in-place (no GC) */
         ARO_STORE(c, o->ivars, &korb_items_data(o->ivars)[idx], val);

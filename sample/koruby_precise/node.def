@@ -2351,7 +2351,7 @@ node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name@sym
     (void)n;
     if (LIKELY(KORB_OBJECT_P(slots[self_off]))) {
         KorbObject *const o = VAL2OBJ(slots[self_off]);
-        if (LIKELY(o->shape_id == ic->shape_id)) {        /* hit: existing ivar at known slot */
+        if (LIKELY(o->shape_id == ic->shape_id && !(o->head.flags & KORB_FL_FROZEN))) {   /* hit: existing ivar at known slot */
             ARO_STORE(c, o->ivars, &korb_items_data(o->ivars)[ic->slot], val);   /* inline WB fast path (no PLT call) */
             return RESULT_OK(val);
         }
