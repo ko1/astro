@@ -170,3 +170,16 @@ module Kernel
   def self.autoload(name, path) = Object.autoload(name, path)
   def self.autoload?(name, inherit = true) = Object.autoload?(name, inherit)
 end
+
+# main#define_method: Object に public メソッドを定義して Symbol を返す。
+# (koruby の toplevel def は global 関数表なので、CRuby と違い main 以外の
+# implicit-self からも見える — 既知の quirk。)
+def define_method(name, method = nil, &block)
+  if method
+    Object.__send__(:define_method, name, method)
+  else
+    Object.__send__(:define_method, name, &block)
+  end
+  Object.__send__(:public, name)
+  name.to_sym
+end

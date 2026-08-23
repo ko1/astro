@@ -1426,3 +1426,16 @@ class Regexp
     src.scan(/\\x([0-9a-fA-F]{1,2})/).any? { |h| h[0].to_i(16) > 0x7f }
   end
 end
+
+# Ruby 3.5+: RUBY_* 定数の Module 名前空間ミラー。
+module Ruby
+  VERSION        = RUBY_VERSION
+  PATCHLEVEL     = RUBY_PATCHLEVEL
+  COPYRIGHT      = RUBY_COPYRIGHT
+  DESCRIPTION    = RUBY_DESCRIPTION
+  ENGINE         = RUBY_ENGINE
+  ENGINE_VERSION = RUBY_ENGINE_VERSION
+  PLATFORM       = RUBY_PLATFORM
+  RELEASE_DATE   = RUBY_RELEASE_DATE
+  REVISION       = RUBY_REVISION
+end

@@ -8173,25 +8173,54 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
  * when the caller's self is a kind of the method's owner.  Returns a RAISE on a
  * violation, else NORMAL.  caller_self == KORB_UNDEF disables the check (internal
  * C dispatch, operators). */
+static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (builtins/symbol.c): the default raiser */
 static RESULT
 korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t mid,
-                    uint32_t line, VALUE recv, VALUE caller_self, VALUE def_class)
+                    uint32_t line, VALUE recv, VALUE caller_self, VALUE def_class,
+                    uint32_t argc, bool *mm_handled)
 {
+    bool viol;
     if (m->visibility == 1) {                          /* private */
-        if (recv != caller_self) {
-            char rdbuf[224];
-            return korb_raise(c, slots, KORB_E_NOMETHOD, line, "private method '%s' called for %s",
-                              korb_sym_name(c->vm, mid), korb_recv_desc(c, slots, recv, rdbuf, sizeof rdbuf));
-        }
+        viol = recv != caller_self;
     } else {                                           /* protected (visibility == 2) */
         const VALUE owner = KORB_CLASS_P(def_class) ? def_class : korb_dispatch_class(c, recv);
-        if (!korb_class_has_ancestor(korb_dispatch_class(c, caller_self), owner)) {
-            char rdbuf[224];
-            return korb_raise(c, slots, KORB_E_NOMETHOD, line, "protected method '%s' called for %s",
-                              korb_sym_name(c->vm, mid), korb_recv_desc(c, slots, recv, rdbuf, sizeof rdbuf));
+        viol = !korb_class_has_ancestor(korb_dispatch_class(c, caller_self), owner);
+    }
+    if (LIKELY(!viol)) return RESULT_OK(KORB_NIL);
+    /* CRuby routes a visibility violation through method_missing when the
+     * receiver has a user-defined one (the callers are block-less sends:
+     * recv at slots[-argc-1], args at slots[-argc..]). */
+    const VALUE cls = korb_dispatch_class(c, recv);
+    if (KORB_CLASS_P(cls)) {
+        const uint32_t mm_mid = korb_intern(c->vm, "method_missing", 14);
+        VALUE mm_def = KORB_NIL;
+        struct korb_method *const mm = korb_mcache_find(c->vm, cls, mm_mid, &mm_def);
+        if (mm && !(mm->kind == KORB_METHOD_CFUNC && mm->rfn == korb_m_obj_method_missing)) {   /* user-defined only, not the default raiser */
+            /* stage [magic | EP | self | :name | args...] */
+            slots[0] = 0;
+            slots[1] = 0;
+            slots[2] = recv;
+            slots[3] = ID2SYM(mid);
+            for (uint32_t j = 0; j < argc; j++) slots[4 + j] = slots[-(korb_sword_t)argc + (korb_sword_t)j];
+            *mm_handled = true;
+            return korb_dispatch_method(c, slots + argc + 4, mm, mm_mid, line, argc + 1, mm_def, NULL, NULL, NULL);
         }
     }
-    return RESULT_OK(KORB_NIL);
+    slots[0] = recv;                                   /* root across the raise + ivar_set allocs */
+    char rdbuf[224];
+    const char *const rd = korb_recv_desc(c, slots + 2, slots[0], rdbuf, sizeof rdbuf);
+    RESULT r = korb_raise(c, slots + 1, KORB_E_NOMETHOD, line, "%s method '%s' called for %s",
+                          m->visibility == 1 ? "private" : "protected",
+                          korb_sym_name(c->vm, mid), rd);
+    if (LIKELY(KORB_EXC_P(r.value))) {                 /* attach #name / #receiver metadata */
+        slots[1] = r.value;
+        VALUE_REF eref = VALUE_REF_AT(&slots[1]);
+        korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__name", 7)), ID2SYM(mid));
+        korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
+        korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
+        r.value = VALUE_REF_GET(eref);
+    }
+    return r;
 }
 __attribute__((no_stack_protector)) RESULT
 korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
@@ -8248,8 +8277,9 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         if (LIKELY(KORB_CLASS_P(recv) && mid != vm->mid_yield && mid != vm->mid_aref)) {
             if (LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == vm->method_serial && ic->klass == recv)) {
                 if (UNLIKELY(ic->m->visibility != 0 && caller_self != KORB_UNDEF)) {   /* private_class_method guard */
-                    const RESULT vr = korb_check_call_vis(c, slots, ic->m, mid, line, recv, caller_self, ic->def_class);
-                    if (vr.state != KORB_NORMAL) return vr;
+                    bool mm_handled = false;
+                    const RESULT vr = korb_check_call_vis(c, slots, ic->m, mid, line, recv, caller_self, ic->def_class, argc, &mm_handled);
+                    if (mm_handled || vr.state != KORB_NORMAL) return vr;
                 }
                 return korb_dispatch_method(c, slots, ic->m, mid, line, argc, ic->def_class, NULL, NULL, NULL);
             }
@@ -8259,8 +8289,9 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
                 KORB_CLASS_P(start_cls) ? korb_mcache_find(vm, start_cls, mid, &def_class) : NULL;
             if (LIKELY(m != NULL)) {
                 if (UNLIKELY(m->visibility != 0 && caller_self != KORB_UNDEF)) {   /* private_class_method guard */
-                    const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class);
-                    if (vr.state != KORB_NORMAL) return vr;
+                    bool mm_handled = false;
+                    const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class, argc, &mm_handled);
+                    if (mm_handled || vr.state != KORB_NORMAL) return vr;
                 }
                 ic->serial = vm->method_serial; ic->klass = recv; ic->m = m;
                 ic->def_class = def_class; ic->kind = KORB_IC_SMETHOD;
@@ -8290,8 +8321,9 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
                ic->serial == vm->method_serial && ic->klass == klass)) {
         struct korb_method *const m = ic->m;
         if (UNLIKELY(ic->kind == KORB_IC_INSTANCE_VIS && caller_self != KORB_UNDEF)) {   /* cached private/protected — guard the cached entry (no re-lookup) */
-            const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, ic->def_class);
-            if (vr.state != KORB_NORMAL) return vr;
+            bool mm_handled = false;
+            const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, ic->def_class, argc, &mm_handled);
+            if (mm_handled || vr.state != KORB_NORMAL) return vr;
         }
         if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines invoke_simple, skips dispatch_method PLT */
             return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
@@ -8320,8 +8352,9 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
     if (UNLIKELY(m->visibility != 0)) {   /* private/protected: cache as _VIS (resolved) — node_send's inline fast path won't match it, so it always routes here to be guarded */
         ic->kind = KORB_IC_INSTANCE_VIS;
         if (caller_self != KORB_UNDEF) {
-            const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class);
-            if (vr.state != KORB_NORMAL) return vr;
+            bool mm_handled = false;
+            const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class, argc, &mm_handled);
+            if (mm_handled || vr.state != KORB_NORMAL) return vr;
         }
         return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
     }
