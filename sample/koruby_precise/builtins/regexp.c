@@ -697,6 +697,7 @@ static RESULT korb_re_scan_elem(CTX *c, VALUE *slots, VALUE subj, VALUE mdv, con
         slots[0] = subj; const uint32_t ml = (uint32_t)(m->ends[0] - m->starts[0]);
         KorbString *r = korb_str_alloc(c, slots + 1, ml);
         memcpy(korb_strbuf_data(r->buf), korb_strbuf_data(VAL2STR(slots[0])->buf) + m->starts[0], ml);
+        KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(slots[0]));   /* result keeps self's encoding */
         return RESULT_OK((VALUE)r);
     }
     slots[0] = mdv; slots[1] = UNWRAP(korb_ary_new(c, slots + 1, (uint32_t)m->n_groups));
@@ -718,6 +719,16 @@ static RESULT korb_re_coerce_pat_literal(CTX *c, VALUE *slots, VALUE pv, VALUE *
         *out = UNWRAP(korb_regexp_new(c, slots + 1, slots[0], 0));
         return RESULT_OK(KORB_TRUE);
     }
+    if (KORB_OBJECT_P(pv)) {                             /* #to_str-convertible pattern (matches literally) */
+        VALUE cv = pv;
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (korb_responds_to_coerce_p(c, slots, &cv, to_str)) {
+            slots[0] = cv;
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (KORB_STRING_P(sr.value)) return korb_re_coerce_pat_literal(c, slots, sr.value, out);
+        }
+    }
     return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_re_arg_type(pv));
 }
 static RESULT korb_m_str_scan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
@@ -734,9 +745,17 @@ static RESULT korb_m_str_scan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (rr.value != KORB_TRUE) break;
         slots[3] = UNWRAP(korb_re_build_md(c, slots + 3, slots[0], slots[1], &m)); korb_re_set_lastmatch(c, slots[3]);
         slots[4] = UNWRAP(korb_re_scan_elem(c, slots + 4, slots[0], slots[3], &m));
-        if (block) { RESULT yr = korb_block_yield(c, slots + 5, block, def_env, &slots[4], 1, cself); if (UNLIKELY(yr.state != KORB_NORMAL)) return yr; }
+        if (block) {
+            RESULT yr = korb_block_yield(c, slots + 5, block, def_env, &slots[4], 1, cself);
+            if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
+            korb_re_set_lastmatch(c, slots[3]);        /* the block may have matched → restore this iteration's $~ */
+        }
         else CHECK(korb_ary_push_val(c, slots + 5, VALUE_REF_AT(&slots[2]), slots[4]));
         off = (m.ends[0] > m.starts[0]) ? m.ends[0] : m.starts[0] + 1;
+        {   /* an empty match advances one CHARACTER, not one byte */
+            const KorbString *s2 = VAL2STR(slots[0]);
+            while (off < (long)s2->len && ((unsigned char)korb_strbuf_data(s2->buf)[off] & 0xC0) == 0x80) off++;
+        }
     }
     return RESULT_OK(block ? slots[0] : slots[2]);
 }
@@ -1008,7 +1027,7 @@ RESULT korb_re_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long st
     const KorbString *s = VAL2STR(slots[0]);
     const long ncp = bytes ? (long)s->len : (long)korb_utf8_count(korb_strbuf_data(s->buf), s->len);
     if (startc < 0) startc += ncp;
-    if (startc < 0 || startc > ncp) return RESULT_OK(KORB_NIL);
+    if (startc < 0 || startc > ncp) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
     size_t startb = bytes ? (size_t)startc : ((startc == 0) ? 0 : korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)startc));
     korb_re_match_t m; RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], startb, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;

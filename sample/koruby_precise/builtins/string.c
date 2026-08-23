@@ -1663,7 +1663,17 @@ static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     uint32_t boff = 0;
     if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0))) {       /* index(regexp[, start]) → char index of the match (builtins/regexp.c) */
         long startc = 0;
-        if (VALUE_SLICE_LEN(a) >= 2) { korb_sword_t st = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &st)) startc = (long)st; }
+        if (VALUE_SLICE_LEN(a) >= 2) {
+            VALUE ov = VALUE_SLICE_GET(a, 1);
+            korb_sword_t st = 0;
+            if (!korb_to_index(ov, &st)) {             /* #to_int coercion; else TypeError */
+                RESULT cr = korb_coerce_to_int(c, slots, &ov);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                if (!korb_to_index(ov, &st))
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 1)));
+            }
+            startc = (long)st;
+        }
         return korb_re_str_index(c, slots, self, VALUE_SLICE_GET(a, 0), startc, false);
     }
     if (VALUE_SLICE_LEN(a) >= 2) {                    /* index(substr, start): range-check start first */
@@ -2488,13 +2498,23 @@ static uint32_t korb_str_line_span(const KorbString *s, uint32_t pos, const char
     }
     return ll;
 }
-/* resolve the line separator arg (a[0]) → bytes; default "\n". */
-ARO_BORROW static const char *korb_line_sep(VALUE_SLICE a, uint32_t *seplen) {
+/* resolve the line separator arg (a[0]) → bytes; default $/ (usually "\n"). */
+ARO_BORROW static const char *korb_line_sep(CTX *c, VALUE_SLICE a, uint32_t *seplen) {
     if (VALUE_SLICE_LEN(a) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {
         const KorbString *sp = VAL2STR(VALUE_SLICE_GET(a, 0));
         *seplen = sp->len; return korb_strbuf_data(sp->buf);
     }
+    if (VALUE_SLICE_LEN(a) == 0 || KORB_HASH_P(VALUE_SLICE_GET(a, 0))) {   /* no explicit sep → $/ */
+        const VALUE rs = korb_const_get(c->vm, korb_intern(c->vm, "$/", 2));
+        if (KORB_STRING_P(rs)) { const KorbString *sp = VAL2STR(rs); *seplen = sp->len; return korb_strbuf_data(sp->buf); }
+    }
     *seplen = 1; return "\n";
+}
+/* no explicit separator and $/ == nil → the whole string is one line. */
+static bool korb_line_sep_is_nil(CTX *c, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) >= 1 && !KORB_HASH_P(VALUE_SLICE_GET(a, 0)))
+        return VALUE_SLICE_GET(a, 0) == KORB_NIL;
+    return korb_const_get(c->vm, korb_intern(c->vm, "$/", 2)) == KORB_NIL;
 }
 /* lines/each_line `chomp:` keyword (trailing Hash). */
 static bool korb_line_chomp(CTX *c, VALUE_SLICE a) {
@@ -2525,13 +2545,13 @@ static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_lines, "each_line", a);
     if (SELF_STR->len > 0)
         { RESULT cr = korb_line_coerce_sep(c, slots, a); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
-    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_NIL) {   /* nil separator → yield the whole string once */
+    if (korb_line_sep_is_nil(c, a)) {   /* nil separator (or $/ == nil) → yield the whole string once */
         slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, 0, SELF_STR->len));
         CHECK(korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self));
         return RESULT_OK(VALUE_REF_GET(self));
     }
     char sepbuf[64]; uint32_t seplen;
-    { const char *sp = korb_line_sep(a, &seplen); if (seplen > 63) seplen = 63; memcpy(sepbuf, sp, seplen); }
+    { const char *sp = korb_line_sep(c, a, &seplen); if (seplen > 63) seplen = 63; memcpy(sepbuf, sp, seplen); }
     const bool chomp = korb_line_chomp(c, a);
     const bool universal = !(VALUE_SLICE_LEN(a) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0)));   /* default $/ → \r\n chomped as a unit */
     uint32_t pos = 0;
@@ -2549,13 +2569,13 @@ static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (SELF_STR->len > 0)   /* an empty string short-circuits to [] without validating the separator (CRuby) */
         { RESULT cr = korb_line_coerce_sep(c, slots, a); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
-    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_NIL) {   /* nil sep → whole string as one line */
+    if (korb_line_sep_is_nil(c, a)) {   /* nil sep (or $/ == nil) → whole string as one line */
         VALUE_REF d = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 1)));
         CHECK(korb_ary_push_val(c, slots + 1, d, UNWRAP(korb_str_slice_new(c, slots + 1, self, 0, VAL2STR(VALUE_REF_GET(self))->len))));
         return RESULT_OK(VALUE_REF_GET(d));
     }
     char sepbuf[64]; uint32_t seplen;
-    { const char *sp = korb_line_sep(a, &seplen); if (seplen > 63) seplen = 63; memcpy(sepbuf, sp, seplen); }
+    { const char *sp = korb_line_sep(c, a, &seplen); if (seplen > 63) seplen = 63; memcpy(sepbuf, sp, seplen); }
     const bool chomp = korb_line_chomp(c, a);
     const bool universal = !(VALUE_SLICE_LEN(a) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0)));   /* default $/ → \r\n chomped as a unit */
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
