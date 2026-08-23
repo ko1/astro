@@ -1364,8 +1364,52 @@ static RESULT korb_m_str_unicode_normalize_bang(CTX *c, VALUE *slots, VALUE_REF 
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Unicode normalization of non-ASCII strings is not supported");
     return RESULT_OK(VALUE_REF_GET(self));                        /* ASCII → unchanged, returns self */
 }
+/* partition/rpartition with a Regexp separator: first (or last) match wins;
+ * sets $~ like Regexp#match. */
+static RESULT korb_str_partition_re(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, bool reverse) {
+    slots[0] = re;                                     /* root the regexp */
+    korb_re_match_t m, last; last.matched = 0;
+    size_t start = 0;
+    for (;;) {
+        RESULT rr = korb_re_run(c, slots + 1, slots[0], VALUE_REF_GET(self), start, &m);
+        if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+        if (rr.value != KORB_TRUE || !m.matched) break;
+        last = m; last.matched = 1;
+        if (!reverse) break;
+        start = (size_t)m.starts[0] + 1;               /* one char on: later overlapping matches must win */
+        const KorbString *const s = VAL2STR(VALUE_REF_GET(self));
+        while (start < s->len && ((unsigned char)korb_strbuf_data(s->buf)[start] & 0xC0) == 0x80) start++;   /* char boundary */
+        if (start > s->len) break;
+    }
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 3));
+    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    if (!last.matched) {                               /* [self,"",""] / ["","",self] (fresh copies) */
+        korb_re_set_lastmatch(c, KORB_NIL);
+        slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, self, 0, VAL2STR(VALUE_REF_GET(self))->len));
+        slots[3] = UNWRAP(korb_str_new(c, slots + 3, "", 0));
+        CHECK(korb_ary_push_val(c, slots + 4, dst, reverse ? slots[3] : slots[2]));
+        CHECK(korb_ary_push_val(c, slots + 4, dst, slots[3]));
+        CHECK(korb_ary_push_val(c, slots + 4, dst, reverse ? slots[2] : slots[3]));
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
+    {   /* $~ */
+        RESULT mr = korb_re_build_md(c, slots + 2, VALUE_REF_GET(self), slots[0], &last);
+        if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+        korb_re_set_lastmatch(c, mr.value);
+    }
+    const uint32_t b = (uint32_t)last.starts[0], e = (uint32_t)last.ends[0];
+    slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, self, 0, b));
+    CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
+    slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, self, b, e - b));
+    CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
+    slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, self, e, VAL2STR(VALUE_REF_GET(self))->len - e));
+    CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 /* rpartition(sep) → [before, sep, after] split at the LAST occurrence of sep. */
 static RESULT korb_m_str_rpartition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0)))
+        return korb_str_partition_re(c, slots, self, VALUE_SLICE_GET(a, 0), true);
     VALUE sv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(sv))) {                /* coerce a non-String separator via #to_str */
         slots[0] = sv;
@@ -1391,7 +1435,8 @@ static RESULT korb_m_str_rpartition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         slots[2] = UNWRAP(korb_str_new(c, slots + 2, "", 0));
         CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
         CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
-        CHECK(korb_ary_push_val(c, slots + 3, dst, VALUE_REF_GET(self)));
+        slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, self, 0, VAL2STR(VALUE_REF_GET(self))->len));   /* fresh copy, plain String */
+        CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
         return RESULT_OK(VALUE_REF_GET(dst));
     }
     slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, self, 0, pre_e));
@@ -1402,6 +1447,8 @@ static RESULT korb_m_str_rpartition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_str_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0)))
+        return korb_str_partition_re(c, slots, self, VALUE_SLICE_GET(a, 0), false);
     VALUE sv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(sv))) {                /* coerce a non-String separator via #to_str */
         slots[0] = sv;
@@ -1418,8 +1465,9 @@ static RESULT korb_m_str_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     uint32_t post_s = (at < 0) ? 0 : (uint32_t)at + sep->len;   /* before any alloc (sep moves under moving GC) */
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 3));
     VALUE_REF dst = VALUE_REF_AT(&slots[1]);
-    if (at < 0) {                                     /* not found → [self,"",""] */
-        CHECK(korb_ary_push_val(c, slots + 2, dst, VALUE_REF_GET(self)));
+    if (at < 0) {                                     /* not found → [self-copy,"",""] */
+        slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, self, 0, VAL2STR(VALUE_REF_GET(self))->len));
+        CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
         slots[2] = UNWRAP(korb_str_new(c, slots + 2, "", 0));
         CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
         CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
