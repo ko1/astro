@@ -692,9 +692,17 @@ module Marshal
       idx = st[:objs].size; st[:objs] << nil
       cls = _read0(st)
       n = _rlong(st)
-      vals = []
-      n.times { _read0(st); vals << _read(st) }
-      st[:objs][idx] = _const(cls).new(*vals)
+      names = []; vals = []
+      n.times { names << _read0(st); vals << _read(st) }
+      k = _const(cls)
+      # CRuby fills the members directly — a user-defined #initialize must NOT
+      # run.  Data has no member writer, so it goes through .new (kwargs).
+      o = if k.respond_to?(:members) && k.ancestors.include?(Data)
+            k.new(**names.each_with_index.to_h { |nm, j| [nm, vals[j]] })
+          else
+            k.allocate.tap { |x| names.each_with_index { |nm, j| (x[nm] = vals[j]) rescue nil } }
+          end
+      st[:objs][idx] = o
     when 0x55                                            # 'U' user marshal_dump
       idx = st[:objs].size; st[:objs] << nil
       cls = _read0(st)
