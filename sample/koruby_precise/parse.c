@@ -1704,9 +1704,11 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return ALLOC_node_nesting((const char *)(const void *)baked, n);
     }
 
-    /* operator calls → dedicated binop / unary nodes */
+    /* operator calls → dedicated binop / unary nodes (a splat arg has no fixed
+     * arity, so it falls through to the generic splat send below) */
     enum kp_binop op = kp_binop_kind(name);
-    if (op != KP_BINOP_NONE && argc == 1) {
+    if (op != KP_BINOP_NONE && argc == 1 &&
+        !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE)) {
         uint32_t n_slots = kind_node_plus.slot_count;   /* lhs staging (all binops alike) */
         NODE *lhs, *rhs;
         WITH_CHAIN(tc, n_slots, (lhs = transduce(tc, cn->receiver),

@@ -262,6 +262,28 @@ class Enumerator
 end
 
 class Enumerator::Lazy
+  # Lazy#initialize(receiver[, size]) { |yielder, *values| ... } — the block is a
+  # TRANSFORM: it is handed a yielder plus each source value and decides what to
+  # emit.  koruby's lazy enumerators are generator-backed, so fold the pair into
+  # one generator block and hand it to Enumerator#initialize.
+  def initialize(receiver, size = nil, &block)
+    raise ArgumentError, "tried to call lazy new without a block" unless block
+    raise FrozenError.new("can't modify frozen #{self.class}", receiver: self) if frozen?
+    @__lazy_size = size
+    super() do |y|
+      receiver.each { |*values| block.call(y, *values) }
+    end
+    self
+  end
+  private :initialize
+
+  # Only a Lazy built through #initialize carries an explicit size; every
+  # derived lazy keeps the builtin behaviour.
+  def size
+    return super unless defined?(@__lazy_size)
+    @__lazy_size.is_a?(Proc) ? @__lazy_size.call : @__lazy_size
+  end
+
   # #eager — 以降を非 lazy に戻す (列挙内容は同じ)。koruby の lazy は
   # Enumerator の mode で表すので、eager な Enumerator を作り直す。
   def eager

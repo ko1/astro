@@ -793,10 +793,16 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
      * else enumerator methods VAL2ENUM-cast a too-small object → heap corruption.
      * A zeroed enumerator is mode 0 with a nil `values`; Enumerator#initialize
      * (given a block) turns it into a generator. */
-    if (VALUE_REF_GET(self) == korb_builtin_class_obj(c->vm, KORB_C_ENUMERATOR)) {
-        KorbEnumerator *const e = korb_alloc(c, slots, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
+    if (KORB_CLASS_P(VALUE_REF_GET(self)) &&
+        korb_class_le(VALUE_REF_GET(self), korb_builtin_class_obj(c->vm, KORB_C_ENUMERATOR)) &&
+        !korb_class_le(VALUE_REF_GET(self), korb_builtin_class_obj(c->vm, KORB_C_ARITHSEQ))) {
+        slots[0] = VALUE_REF_GET(self);              /* Enumerator::Lazy and user subclasses (ArithmeticSequence has its own payload) */
+        KorbEnumerator *const e = korb_alloc(c, slots + 1, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
         e->mode = 0;                                 /* uninitialized-but-safe: empty eager enumerator */
-        return RESULT_OK((VALUE)e);
+        slots[1] = (VALUE)e;
+        if (slots[0] != korb_builtin_class_obj(c->vm, KORB_C_ENUMERATOR))
+            korb_klass_override_set(c, slots[1], slots[0]);
+        return RESULT_OK(slots[1]);
     }
     /* A subclass of a constructible builtin needs that builtin's payload, tagged
      * with the subclass — `SubHash.allocate` must answer a real Hash (Marshal and
