@@ -264,6 +264,8 @@ korb_thread_ctx_load(CTX *c, struct korb_thread *t)
         c->slots_limit = t->vslots_limit; c->slots_high_water = t->saved_hw;
         c->cstack_limit = t->saved_cstack_limit;
     }
+    c->errinfo_n = t->saved_errinfo_n;        /* $! is per thread (CRuby); entries below stay owned by their thread */
+    if (c->errinfo_n > c->errinfo_live) c->errinfo_live = c->errinfo_n;
 }
 
 static void
@@ -301,6 +303,7 @@ korb_thread_yield_cpu(CTX *c, VALUE *slots)
     }
     cur->saved_base = c->slots; cur->saved_top = slots;
     cur->saved_hw = c->slots_high_water; cur->saved_cstack_limit = c->cstack_limit;
+    cur->saved_errinfo_n = c->errinfo_n;
     vm->cur_thread = next;
     next->state = KORB_TH_RUNNING;
     korb_thread_ctx_load(c, next);

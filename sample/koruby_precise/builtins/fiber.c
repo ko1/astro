@@ -131,6 +131,7 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
      * resumer's stack is hidden while it runs (and restored on the way back). */
     const uint32_t s_errinfo_n = c->errinfo_n;
     c->errinfo_n = rep->errinfo_n;
+    if (c->errinfo_n > c->errinfo_live) c->errinfo_live = c->errinfo_n;   /* the suspended side's entries stay rooted */
 
     swapcontext(&here, (ucontext_t *)rep->uctx);       /* === into the fiber === */
 

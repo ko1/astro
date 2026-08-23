@@ -469,6 +469,7 @@ struct korb_thread {
     VALUE *vslots_limit;
     VALUE *saved_base, *saved_top, *saved_hw;   /* suspend 中の c->slots tuple */
     const char *saved_cstack_limit;
+    uint32_t saved_errinfo_n;        /* $! stack depth (thread-local, like a fiber's) */
     void  *uctx;                     /* ucontext_t* */
     void  *cstack;                   /* malloc native stack (NULL = main/process stack) */
     /* scheduling */
@@ -1059,6 +1060,7 @@ struct CTX_struct {
     VALUE     eval_cref;
     VALUE    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
+    uint32_t  errinfo_live;          /* GC-scan depth: max over the running + all suspended threads */
     VALUE     throw_tag;     /* active `throw` tag while a KORB_THROW unwinds (GC-visited) */
     VALUE    *catch_tags;    /* stack of tags of the active `catch` blocks (GC-visited) */
     uint32_t  catch_n, catch_cap;
@@ -1109,8 +1111,10 @@ struct CTX_struct {
     for (uint32_t _fi = 0; _fi < (c)->vm->flit_cnt; _fi++) {                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->flit_vals[_fi]);      \
     }                                                                        \
-    /* `$!` stack: exceptions currently being handled (per-CTX root) */       \
-    for (uint32_t _xi = 0; _xi < (c)->errinfo_n; _xi++) {                    \
+    /* `$!` stack: exceptions being handled.  Scan to errinfo_live, not the
+     * current depth — suspended threads keep their own (deeper) depths and
+     * their entries must stay rooted while they are away. */                \
+    for (uint32_t _xi = 0; _xi < (c)->errinfo_live; _xi++) {                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->errinfo[_xi]);            \
     }                                                                        \
     if ((c)->throw_tag != KORB_NIL)                                          \

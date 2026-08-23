@@ -3178,6 +3178,7 @@ void korb_errinfo_push(CTX *c, VALUE v) {
         c->errinfo_cap = nc;
     }
     c->errinfo[c->errinfo_n++] = v;
+    if (c->errinfo_n > c->errinfo_live) c->errinfo_live = c->errinfo_n;
 }
 void korb_errinfo_pop(CTX *c) { if (c->errinfo_n) c->errinfo_n--; }
 VALUE korb_errinfo_top(const CTX *c) { return c->errinfo_n ? c->errinfo[c->errinfo_n - 1] : KORB_NIL; }
@@ -12254,8 +12255,32 @@ korb_exc_build(CTX *c, VALUE *slots, VALUE_SLICE args)
         const RESULT r = korb_raise(c, slots, KORB_E_RUNTIME, 0, "%.*s", (int)s->len, korb_strbuf_data(s->buf));
         return RESULT_OK(r.value);
     }
+    if (UNLIKELY(n > 3))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..3)", n);
     if (KORB_EXC_P(a0) && n == 1) return RESULT_OK(a0);   /* re-raise an exception object (backtrace preserved) */
     if (KORB_CLASS_P(a0)) {                          /* raise SomeError[, msg[, backtrace]] */
+        /* a user-defined singleton `exception` (not Exception's own) drives the
+         * build, as CRuby's rb_make_exception does */
+        const uint32_t exc_mid0 = korb_intern(c->vm, "exception", 9);
+        const VALUE sing = korb_dispatch_class(c, a0);
+        VALUE exc_owner = KORB_NIL;
+        if (KORB_CLASS_P(sing) && korb_class_find_method(sing, exc_mid0, &exc_owner) != NULL &&
+            KORB_CLASS_P(exc_owner) && exc_owner != korb_dispatch_class(c, korb_builtin_class_obj(c->vm, KORB_C_EXCEPTION))) {
+            slots[0] = a0;
+            uint32_t xargc = 0;
+            if (n >= 2) { slots[1] = VALUE_SLICE_GET(args, 1); xargc = 1; }
+            RESULT xr = korb_send(c, slots + 1 + xargc, exc_mid0, 0, xargc);
+            if (UNLIKELY(xr.state != KORB_NORMAL)) return xr;
+            if (UNLIKELY(!KORB_EXC_P(xr.value)))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "exception object expected");
+            slots[0] = xr.value;
+            if (n >= 3) {
+                slots[1] = VALUE_SLICE_GET(args, 2);
+                RESULT br = korb_send(c, slots + 2, korb_intern(c->vm, "set_backtrace", 13), 0, 1);
+                if (UNLIKELY(br.state != KORB_NORMAL)) return br;
+            }
+            return RESULT_OK(slots[0]);
+        }
         /* nearest builtin-exception ancestor supplies the etype; a user
          * subclass is remembered in exc_class (for #class and rescue). */
         int et = -1;
@@ -12274,7 +12299,20 @@ korb_exc_build(CTX *c, VALUE *slots, VALUE_SLICE args)
             const KorbString *const s = VAL2STR(VALUE_SLICE_GET(args, 1));
             r = korb_raise(c, slots + 1, (unsigned)et, 0, "%.*s", (int)s->len, korb_strbuf_data(s->buf));
         } else {
-            r = korb_raise(c, slots + 1, (unsigned)et, 0, "%s", korb_sym_name(c->vm, VAL2CLASS(slots[0])->name_sym));
+            char cbuf[256];                          /* anonymous class → its #to_s ("#<Class:0x...>") */
+            const char *cname;
+            if (VAL2CLASS(slots[0])->name_sym != 0) cname = korb_sym_name(c->vm, VAL2CLASS(slots[0])->name_sym);
+            else {
+                slots[1] = slots[0];
+                const RESULT tr = korb_send(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0);
+                if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+                uint32_t tl = KORB_STRING_P(tr.value) ? VAL2STR(tr.value)->len : 0;
+                if (tl >= sizeof cbuf) tl = sizeof cbuf - 1;
+                if (tl) memcpy(cbuf, korb_strbuf_data(VAL2STR(tr.value)->buf), tl);
+                cbuf[tl] = '\0';
+                cname = cbuf;
+            }
+            r = korb_raise(c, slots + 1, (unsigned)et, 0, "%s", cname);
             if (n >= 2 && VALUE_SLICE_GET(args, 1) != KORB_NIL && KORB_EXC_P(r.value))   /* non-String message → store the object; #message #to_s's it */
                 ARO_STORE(c, VAL2EXC(r.value), &VAL2EXC(r.value)->msg, VALUE_SLICE_GET(args, 1));
         }
