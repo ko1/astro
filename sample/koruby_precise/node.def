@@ -1218,8 +1218,17 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
 {
     (void)n;
     struct korb_vm *const vm = c->vm;
-    if (LIKELY(cache->idx_plus1 != 0 && cache->serial == vm->const_serial))   /* per-node cache */
-        return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
+    if (LIKELY(c->eval_cref == KORB_NIL)) {                    /* per-node cache (not under instance/class_eval) */
+        if (LIKELY(cache->idx_plus1 != 0 && cache->serial == vm->const_serial))
+            return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
+    } else {
+        /* instance_eval/class_eval(String): the eval cref (the receiver's
+         * singleton / the module) and its ancestry come FIRST, and the answer is
+         * context-dependent so it is never cached on the node. */
+        uint32_t eidx = korb_const_index_owned(vm, name_sym, c->eval_cref);
+        if (eidx == UINT32_MAX) eidx = korb_const_in_ancestry(vm, c->eval_cref, name_sym);
+        if (eidx != UINT32_MAX) return RESULT_OK(vm->const_vals[eidx]);
+    }
     uint32_t idx;
     if (owner_name != 0) {                            /* scoped `M::X` or bare read in a namespace */
         /* owner_name = the innermost enclosing module (bare) or the path parent
@@ -1315,8 +1324,10 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
         }
         return nr;
     }
-    cache->idx_plus1 = idx + 1;
-    cache->serial = vm->const_serial;
+    if (LIKELY(c->eval_cref == KORB_NIL)) {            /* eval-scoped answers are context-dependent */
+        cache->idx_plus1 = idx + 1;
+        cache->serial = vm->const_serial;
+    }
     return RESULT_OK(vm->const_vals[idx]);
 }
 
