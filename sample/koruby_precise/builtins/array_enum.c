@@ -1614,10 +1614,24 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
          * (CRuby: `Float::INFINITY.step(Float::INFINITY, 1) { }` never yields). */
         const bool once_only = isinf(st) || isnan(st);
         const bool no_yield  = (isinf(s) || isnan(s)) && !once_only;   /* Inf start + Inf step still yields once */
-        for (long i = 0; !no_yield; i++) {
+        /* CRuby ruby_float_step: fixed count with an epsilon fudge, so a limit
+         * that is "one step away up to fp error" is still yielded (1.0.step(12.7,
+         * 1.3) ends on 12.7). */
+        long n = -1;
+        if (!no_yield && !once_only && !isnan(lim)) {
+            if (isinf(lim)) n = (st > 0) == (lim > 0) ? -2 : -1;   /* -2 = endless */
+            else {
+                double err = (fabs(s) + fabs(lim) + fabs(lim - s)) / fabs(st) * DBL_EPSILON;
+                if (err > 0.5) err = 0.5;
+                const double nf = floor((lim - s) / st + err);
+                n = (nf < 0) ? -1 : (nf > 9e15 ? (long)9e15 : (long)nf);
+            }
+        } else if (once_only && !no_yield) {
+            n = (isnan(lim) || (st > 0 ? s > lim : s < lim)) ? -1 : 0;   /* the start element only (if within limit) */
+        }
+        for (long i = 0; n == -2 || i <= n; i++) {
             double d = (i == 0) ? s : s + (double)i * st;
-            if (once_only && i > 0) break;               /* only the start element */
-            if (isnan(d) || (st > 0 ? d > lim : d < lim)) break;
+            if (n >= 0 && !isinf(lim) && (st > 0 ? d > lim : d < lim)) d = lim;   /* clamp fp overshoot to the limit */
             if (collect) { slots[1] = UNWRAP(korb_float_new(c, slots + 1, d)); CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1])); continue; }
             slots[0] = UNWRAP(korb_float_new(c, slots, d));
             RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);

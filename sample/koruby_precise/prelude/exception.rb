@@ -10,20 +10,42 @@ class Exception
     highlight ? "\e[1m#{m} (\e[1;4m#{cn}\e[m\e[1m)\e[m" : "#{m} (#{cn})"
   end
   def full_message(highlight: nil, order: nil)
+    unless highlight.nil? || highlight == true || highlight == false
+      raise ArgumentError, "expected true or false as highlight: #{highlight.inspect}"
+    end
+    unless order.nil? || order == :top || order == :bottom
+      raise ArgumentError, "expected :top or :bottom as order: #{order.inspect}"
+    end
     hl = highlight.nil? ? false : (highlight ? true : false)
     order = (hl ? :top : :bottom) if order.nil?
-    bt = backtrace
-    bt = (caller(1) || []) if bt.nil? || bt.empty?
-    dm = detailed_message(highlight: hl)
-    body = bt[0] ? "#{bt[0]}: #{dm}" : dm
-    rest = bt.length > 1 ? bt[1..-1] : []
+    chunk = lambda do |exc|
+      bt = exc.backtrace
+      bt = (caller(1) || []) if bt.nil? || bt.empty?
+      dm = exc.detailed_message(highlight: hl)
+      body = bt[0] ? "#{bt[0]}: #{dm}" : dm
+      rest = bt.length > 1 ? bt[1..-1] : []
+      [body, rest]
+    end
+    # cause chain: self が最初、cause を辿って古いものへ (CRuby order)
+    chain = [self]
+    seen = {self.object_id => true}
+    e = self
+    while (cs = e.cause) && !seen[cs.object_id]
+      chain << cs; seen[cs.object_id] = true; e = cs
+    end
+    sections = chain.map { |exc| chunk.call(exc) }
     if order == :bottom
       lines = [hl ? "\e[1mTraceback\e[m (most recent call last):" : "Traceback (most recent call last):"]
-      rest.reverse_each { |l| lines << "\tfrom #{l}" }
-      lines << body
+      sections.reverse_each do |body, rest|
+        rest.reverse_each { |l| lines << "\tfrom #{l}" }
+        lines << body
+      end
     else
-      lines = [body]
-      rest.each { |l| lines << "\tfrom #{l}" }
+      lines = []
+      sections.each do |body, rest|
+        lines << body
+        rest.each { |l| lines << "\tfrom #{l}" }
+      end
     end
     lines.join("\n") + "\n"
   end
