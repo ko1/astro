@@ -872,9 +872,29 @@ static RESULT korb_m_time_minus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(o));
     return korb_time_derive(c, slots, self, korb_time_epoch(c, t) - d, KORB_NIL);
 }
+/* Time#<=> with a non-Time: CRuby asks the OTHER object (`other <=> self`) and
+ * inverts its sign — that is how a Time-like duck type compares. */
+static RESULT korb_time_cmp_other(CTX *c, VALUE *slots, VALUE_REF self, VALUE o) {
+    const uint32_t cmp = korb_intern(c->vm, "<=>", 3);
+    if (!KORB_OBJECT_P(o) || !korb_responds_to(c, o, cmp)) return RESULT_OK(KORB_NIL);
+    slots[0] = o; slots[1] = VALUE_REF_GET(self);
+    RESULT r = korb_send(c, slots + 2, cmp, 0, 1);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (r.value == KORB_NIL) return RESULT_OK(KORB_NIL);
+    slots[0] = r.value; slots[1] = LONG2FIX(0);        /* (other <=> self) > 0 → self is smaller */
+    RESULT gt = korb_send(c, slots + 2, korb_intern(c->vm, ">", 1), 0, 1);
+    if (UNLIKELY(gt.state != KORB_NORMAL)) return gt;
+    if (KORB_TRUTHY(gt.value)) return RESULT_OK(LONG2FIX(-1));
+    slots[0] = r.value; slots[1] = LONG2FIX(0);
+    RESULT lt = korb_send(c, slots + 2, korb_intern(c->vm, "<", 1), 0, 1);
+    if (UNLIKELY(lt.state != KORB_NORMAL)) return lt;
+    if (KORB_TRUTHY(lt.value)) return RESULT_OK(LONG2FIX(1));
+    return RESULT_OK(LONG2FIX(0));
+}
 static RESULT korb_m_time_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots; const VALUE o = VALUE_SLICE_GET(a, 0);
-    if (!KORB_OBJECT_P(o) || korb_ivar_get(c, o, korb_time_t_sym(c->vm)) == KORB_NIL) return RESULT_OK(KORB_NIL);
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!KORB_OBJECT_P(o) || korb_ivar_get(c, o, korb_time_t_sym(c->vm)) == KORB_NIL)
+        return korb_time_cmp_other(c, slots, self, o);
     const double x = korb_time_epoch(c, VALUE_REF_GET(self)), y = korb_time_epoch(c, o);
     if (x != y) return RESULT_OK(LONG2FIX(x < y ? -1 : 1));
     const long xn = korb_time_nsec_of(c, VALUE_REF_GET(self)), yn = korb_time_nsec_of(c, o);
