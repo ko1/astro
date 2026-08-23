@@ -441,6 +441,8 @@ const char *korb_a_type_name(VALUE v);
 const char *korb_coerce_name(CTX *c, VALUE v);
 /* a constant name registered for autoload on `mod` but not yet loaded */
 bool korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym);
+void korb_const_set_private(CTX *c, VALUE owner, uint32_t sym, bool private_p);   /* private_constant */
+bool korb_const_private_p(const struct korb_vm *vm, VALUE owner, uint32_t sym);
 NODE *koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, bool exit_on_error);
 RESULT korb_rescue_splat_list(CTX *c, VALUE *slots, VALUE *listslot);
 bool korb_defined_call_p(CTX *c, VALUE *slots, uint32_t mid, int32_t self_off);

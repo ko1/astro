@@ -6074,6 +6074,36 @@ korb_autoload_feature_loaded_p(CTX *c, VALUE pathv)
     return false;
 }
 
+/* private_constant / public_constant: mark (owner, name) as unreachable through
+ * an explicit `Owner::NAME`.  Lexical (bare) reads inside the module still see
+ * it, exactly as CRuby. */
+void
+korb_const_set_private(CTX *c, VALUE owner, uint32_t sym, bool private_p)
+{
+    struct korb_vm *const vm = c->vm;
+    for (uint32_t i = 0; i < vm->privconst_cnt; i++)
+        if (vm->privconsts[i].name == sym && vm->privconsts[i].owner == owner) {
+            if (!private_p) vm->privconsts[i] = vm->privconsts[--vm->privconst_cnt];
+            return;
+        }
+    if (!private_p) return;
+    if (vm->privconst_cnt == vm->privconst_capa) {
+        vm->privconst_capa = vm->privconst_capa ? vm->privconst_capa * 2 : 8;
+        vm->privconsts = realloc(vm->privconsts, sizeof(*vm->privconsts) * vm->privconst_capa);
+        if (!vm->privconsts) abort();
+    }
+    vm->privconsts[vm->privconst_cnt].name = sym;
+    vm->privconsts[vm->privconst_cnt].owner = owner;
+    vm->privconst_cnt++;
+}
+bool
+korb_const_private_p(const struct korb_vm *vm, VALUE owner, uint32_t sym)
+{
+    for (uint32_t i = 0; i < vm->privconst_cnt; i++)
+        if (vm->privconsts[i].name == sym && vm->privconsts[i].owner == owner) return true;
+    return false;
+}
+
 /* Is `sym` registered as a (not yet loaded) autoload on `mod`?  The registry is
  * the module's own @__autoloads Hash (prelude Module#autoload).  CRuby reports
  * such a constant as defined before the file is loaded, and removing it must not
@@ -9365,9 +9395,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS,  "using",  korb_m_lit_nil, -1);
     /* constant/method visibility — koruby tracks no visibility, so these are
      * no-ops returning their argument (matches `private`/`public`). */
-    korb_def_cmethod(c, KORB_C_CLASS, "private_constant", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "private_constant", korb_m_mod_private_constant, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "public_constant", korb_m_mod_public_constant, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "deprecate_constant", korb_m_deprecate_constant, -1);
-    korb_def_cmethod(c, KORB_C_CLASS, "public_constant", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "private_class_method", korb_m_private_class_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "public_class_method", korb_m_public_class_method, -1);
     /* Module#autoload / #autoload? live in the prelude (they record a per-module
@@ -9442,9 +9472,9 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("public", korb_m_public, -1);
     MOD_CFN("protected", korb_m_protected, -1);
     MOD_CFN("module_function", korb_m_module_function, -1);
-    MOD_CFN("private_constant", korb_m_visibility_noop, -1);
+    MOD_CFN("private_constant", korb_m_mod_private_constant, -1);
     MOD_CFN("deprecate_constant", korb_m_deprecate_constant, -1);
-    MOD_CFN("public_constant", korb_m_visibility_noop, -1);
+    MOD_CFN("public_constant", korb_m_mod_public_constant, -1);
     /* default no-op callbacks so a module (Kernel, `module M`) responds to the
      * hooks and user overrides can `super` (Class also has method_added/inherited). */
     MOD_CFN("method_added", korb_m_lit_nil, 1);

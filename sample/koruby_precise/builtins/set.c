@@ -1752,6 +1752,27 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
     return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s not defined", korb_sym_name(vm, id));
 }
 /* Module#const_defined?(sym|str) — flat table membership. */
+/* Module#private_constant(*names) / #public_constant(*names). */
+static RESULT korb_mod_const_vis(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool private_p) {
+    const VALUE owner = VALUE_REF_GET(self);
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+        uint32_t sym;
+        { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, i), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+        if (UNLIKELY(korb_const_index_owned(c->vm, sym, owner) == UINT32_MAX &&
+                     !korb_autoload_registered_p(c, owner, sym) &&
+                     korb_const_in_ancestry(c->vm, owner, sym) == UINT32_MAX))
+            return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s::%s not defined",
+                              korb_sym_name(c->vm, VAL2CLASS(owner)->name_sym), korb_sym_name(c->vm, sym));
+        korb_const_set_private(c, owner, sym, private_p);
+    }
+    return RESULT_OK(owner);
+}
+static RESULT korb_m_mod_private_constant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_mod_const_vis(c, slots, self, a, true);
+}
+static RESULT korb_m_mod_public_constant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_mod_const_vis(c, slots, self, a, false);
+}
 static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     struct korb_vm *const vm = c->vm;
     VALUE name = VALUE_SLICE_GET(a, 0);
@@ -1786,8 +1807,8 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
                 if (UNLIKELY(!korb_valid_const_name(p + seg, i - seg)))
                     return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)(i - seg), p + seg);
                 const uint32_t sid = korb_intern(vm, p + seg, i - seg);
-                bool found = false;
-                for (uint32_t k = 0; k < vm->const_cnt; k++) if (vm->const_names[k] == sid) { found = true; break; }
+                bool found = korb_autoload_registered_p(c, VALUE_REF_GET(self), sid);   /* a pending autoload counts */
+                for (uint32_t k = 0; !found && k < vm->const_cnt; k++) if (vm->const_names[k] == sid) found = true;
                 if (!found) return RESULT_OK(KORB_FALSE);
                 i++; seg = i + 1;                             /* skip the second ':' */
             }

@@ -44,7 +44,7 @@ class Module
       # require が失敗したら登録は残す (CRuby と同じ: 次の参照でも LoadError。
       # 先に消すと、同じ定数を待っている別スレッドが登録を見失って NameError
       # になる)。成功したときだけ一度きりの登録を外す。
-      require path
+      Module.__autoload_require(path)                 # main.require (CRuby; mockable in specs)
       __autoload_table.delete(name)
       ancestors.each { |m| m.__autoload_table.delete(name) if m.respond_to?(:__autoload_table, true) }
       # koruby の const 表は top-level 定数を Object 所有として持たないので、
@@ -64,6 +64,22 @@ class Module
   # honoured from #const_missing (rather than at constant-table lookup time).
   def __autoload_table
     @__autoloads ||= {}
+  end
+
+  # CRuby loads an autoload file through main's #require, so a spec can mock it.
+  def self.__autoload_require(path)
+    m = TOPLEVEL_BINDING.eval("self")
+    m.require(path)
+  end
+
+  # A dup'ed module shares the pending autoload registrations (CRuby copies the
+  # table; a still-pending entry keeps working through the copy).
+  def initialize_copy(other)
+    super
+    if other.instance_variable_defined?(:@__autoloads)
+      @__autoloads = other.instance_variable_get(:@__autoloads).dup
+    end
+    self
   end
 
   private def __autoload_path_for(name)
@@ -87,7 +103,7 @@ class Module
   def __autoload_open(name)
     path = __autoload_path_for(name)
     return nil unless path
-    require path
+    Module.__autoload_require(path)
     __autoload_table.delete(name.to_sym)
     nil
   end

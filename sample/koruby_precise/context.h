@@ -1003,6 +1003,10 @@ struct korb_vm {
     /* Module#const_source_location: where each (name, owner) constant was assigned. */
     struct korb_constloc { uint32_t name; VALUE owner; uint32_t file_sym; uint32_t line; } *constlocs;
     uint32_t constloc_cnt, constloc_capa;
+    /* private_constant: (owner, name) pairs unreachable through an explicit
+     * `Owner::NAME`.  Small and rarely populated — a linear scan is enough. */
+    struct korb_privconst { uint32_t name; VALUE ARO_GC_EDGE owner; } *privconsts;
+    uint32_t privconst_cnt, privconst_capa;
     uint32_t str_enc_names[KORB_STR_ENC_MAX];
     uint32_t str_enc_sb_mask;        /* bit i: index i is a single-byte encoding (byte == character) */
     /* source_location: def/block body NODE → (file symbol, line), populated at
@@ -1110,6 +1114,9 @@ struct CTX_struct {
     /* boxed Float-literal pool: forward each box so cached entries stay live */ \
     for (uint32_t _fi = 0; _fi < (c)->vm->flit_cnt; _fi++) {                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->flit_vals[_fi]);      \
+    }                                                                        \
+    for (uint32_t _pi = 0; _pi < (c)->vm->privconst_cnt; _pi++) {            \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->privconsts[_pi].owner); \
     }                                                                        \
     /* `$!` stack: exceptions being handled.  Scan to errinfo_live, not the
      * current depth — suspended threads keep their own (deeper) depths and
