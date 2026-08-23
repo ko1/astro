@@ -617,8 +617,11 @@ class KorubyNodeDef < ASTroGen::NodeDef
           '(n->u.node_call_kw.argv_cnt - 1U - n->u.node_call_kw.pos_argc)',
         %w[node_undef mids]        => 'n->u.node_undef.cnt',
         %w[node_nesting name_syms] => 'n->u.node_nesting.name_cnt',
-        %w[node_binding name_syms] => 'n->u.node_binding.name_cnt',
       }.freeze
+
+      # node_binding.name_syms: packed u32 scope table [L, ns..., (sym,depth,slot)*]
+      # — syms inside triples must re-intern on embed (see koruby_emit_binding_scope).
+      PACKED_SCOPE = { %w[node_binding name_syms] => true }.freeze
 
       # const char* byte buffers (may contain NULs) with their length field.
       BYTES_LEN = {
@@ -670,7 +673,9 @@ class KorubyNodeDef < ASTroGen::NodeDef
         when 'VALUE'
           "    koruby_emit_value(fp, #{field});"
         when 'const char *'
-          if (cnt = SYM_ARRAY_CNT[[node_name, self.name]])
+          if PACKED_SCOPE[[node_name, self.name]]
+            "    koruby_emit_binding_scope(fp, #{field}, n->u.#{node_name}.name_cnt);"
+          elsif (cnt = SYM_ARRAY_CNT[[node_name, self.name]])
             "    koruby_emit_syms(fp, #{field}, #{cnt});"
           elsif (len = BYTES_LEN[[node_name, self.name]])
             "    koruby_emit_cstr_len(fp, #{field}, n->u.#{node_name}.#{len});"

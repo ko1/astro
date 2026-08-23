@@ -847,7 +847,8 @@ main(int argc, char *argv[])
         /* TOPLEVEL_BINDING: a Binding over the (persistent) toplevel frame. */
         {
             RESULT tb = korb_make_binding(c, toplevel_cursor, c->slots,
-                                          koruby_toplevel_local_syms, koruby_toplevel_local_cnt,
+                                          korb_binding_tbl_flat(koruby_toplevel_local_syms, koruby_toplevel_local_cnt),
+                                          koruby_toplevel_local_cnt,
                                           c->slots[-1]);
             if (tb.state == KORB_NORMAL)
                 korb_const_define(c, korb_intern(c->vm, "TOPLEVEL_BINDING", 16), tb.value);

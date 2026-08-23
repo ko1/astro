@@ -423,6 +423,21 @@ static RESULT korb_m_proc_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_proc_lambda_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2PROC(VALUE_REF_GET(self))->is_lambda ? KORB_TRUE : KORB_FALSE);
 }
+/* Proc#binding: the proc's captured env + self.  Local NAMES are not recorded
+ * in the proc, so the binding exposes self/cref (enough for class-defining
+ * eval) but no locals table. */
+static const uint32_t korb_proc_binding_scope_tbl[2] = { 1, 0 };   /* L=1, ns[0]=0 */
+static RESULT korb_m_proc_binding(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = VALUE_REF_GET(self);                       /* root proc across alloc */
+    KorbBinding *b = korb_alloc(c, slots + 1, sizeof(KorbBinding), KORB_OBJ_BINDING);
+    const KorbProc *p = VAL2PROC(slots[0]);
+    b->name_syms = korb_proc_binding_scope_tbl; b->name_cnt = 0; b->src_node = NULL;
+    ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->env,  p->env);
+    ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->self, p->self);
+    ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->extra, KORB_NIL);
+    return RESULT_OK((VALUE)b);
+}
 static void korb_kw_arity_flags(const void *kwp, bool *req, bool *opt, bool *kwrest);   /* fwd (defined below) */
 /* Proc#arity: #required positional, negated as -(req+1) when optional/rest make
  * it variable.  (Symbol#to_proc → -2, matching CRuby.) */

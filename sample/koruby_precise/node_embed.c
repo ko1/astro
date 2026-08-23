@@ -252,3 +252,21 @@ koruby_emit_pat(FILE *fp, const void *p)
     }
     fprintf(fp, ")");
 }
+
+/* node_binding scope table: [L, ns..., (sym,depth,slot)*cnt] — syms re-intern. */
+void
+koruby_emit_binding_scope(FILE *fp, const char *ptr, uint32_t name_cnt)
+{
+    const uint32_t *t = (const uint32_t *)(const void *)ptr;
+    const uint32_t L = t[0];
+    fprintf(fp, "(const char *)korb_embed_binding_scope(_ectx, %uU", L);
+    for (uint32_t d = 0; d < L; d++) fprintf(fp, ", %uU", t[1 + d]);
+    fprintf(fp, ", %uU", name_cnt);
+    for (uint32_t i = 0; i < name_cnt; i++) {
+        const uint32_t *tr = t + 1 + L + 3 * i;
+        fprintf(fp, ", ");
+        koruby_emit_sym_args(fp, tr[0]);
+        fprintf(fp, ", %uU, %uU", tr[1], tr[2]);
+    }
+    fprintf(fp, ")");
+}

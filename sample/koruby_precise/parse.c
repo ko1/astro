@@ -896,6 +896,7 @@ extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) 
 extern const struct NodeKind kind_node_const_set;    /* FOO = expr */
 static NODE *build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa);
 static NODE *build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n);
+static NODE *kp_make_binding_node(struct kp_ctx *tc, uint32_t line);
 extern const struct NodeKind kind_node_hash_merge;   /* hash literal ** splat chain */
 extern const struct NodeKind kind_node_dstr_concat;  /* string-interp concat chain */
 extern const struct NodeKind kind_node_hash_set;     /* hash-literal set chain */
@@ -1411,41 +1412,45 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         }
     }
 
-    /* `binding` — capture the current frame's local scope into a Binding.  Bakes
-     * the scope's local-name table (sym per slot index) + frame base + self. */
+    /* `binding` — capture the LEXICAL local scope (this frame + every enclosing
+     * block frame up to and including the method / class-body / toplevel frame)
+     * into a Binding.  Baked as a packed u32 scope table (see
+     * kp_binding_scope_tbl); the runtime materializes the whole env chain so
+     * enclosing locals stay reachable (and writable) even after frames close. */
     if (cn->receiver == NULL && argc == 0 && cn->block == NULL &&
         strcmp(kp_cid_cstr(tc, cn->name), "binding") == 0) {
-        const pm_constant_id_list_t *locals = tc->frame->locals;
-        const bool it_slot = tc->frame->it_param && locals->size == 0;   /* `{ it }`: slot 0 is `it` */
-        const uint32_t cnt = (uint32_t)locals->size + (it_slot ? 1u : 0u);
-        uint32_t *syms = malloc(sizeof(uint32_t) * (cnt ? cnt : 1));   /* immortal (baked into the node) */
-        if (!syms) abort();
-        if (it_slot) syms[0] = korb_intern(tc->c->vm, "it", 2);
-        for (uint32_t i = 0; i < (uint32_t)locals->size; i++) syms[i + (it_slot ? 1u : 0u)] = kp_intern_cid(tc, locals->ids[i]);
-        const int32_t self_off = -1 - tc->chain;
-        NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)syms, cnt);
-        bake_add(tc, &nb->u.node_binding.def_env_off);    /* frame base shifts with frame_size */
-        bake_add(tc, &nb->u.node_binding.self_off);       /* self at base[-1] (bottom header) */
-        korb_reg_srcloc(tc->c->vm, nb, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));  /* for Binding#source_location */
-        return nb;
+        return kp_make_binding_node(tc, kp_line(tc, (const pm_node_t *)cn));
+    }
+
+    /* `eval(str)` — CRuby evaluates in the CALLER's binding.  koruby has no
+     * runtime frame metadata, so bake a binding for the call site and pass it
+     * as the hidden 2nd argument (only the plain 1-arg form; an explicit
+     * binding / splat form goes through the normal path).  A user-defined
+     * `eval` would see the extra Binding — same caveat as CRuby's own
+     * "eval is special" corners, accepted for compatibility. */
+    if (cn->receiver == NULL && argc == 1 && cn->block == NULL &&
+        !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE) &&
+        !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_FORWARDING_ARGUMENTS_NODE) &&
+        strcmp(kp_cid_cstr(tc, cn->name), "eval") == 0) {
+        const uint32_t line = kp_line(tc, (const pm_node_t *)cn);
+        const uint32_t cnt = 3;                          /* [self, str, binding] */
+        NODE **argv = malloc(sizeof(NODE *) * cnt);
+        if (!argv) abort();
+        int32_t saved = tc->chain;
+        tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;
+        argv[0] = bake_self(tc);
+        argv[1] = transduce(tc, cn->arguments->arguments.nodes[0]);
+        argv[2] = kp_make_binding_node(tc, line);
+        tc->chain = saved;
+        return ALLOC_node_call(korb_intern(tc->c->vm, "eval", 4), line, argv, cnt);
     }
 
     /* `local_variables` — desugar to `binding.local_variables`.  The Binding node is
      * built staged as the send's receiver (KP_SEND0_SC) so its baked offsets match. */
     if (cn->receiver == NULL && argc == 0 && cn->block == NULL &&
         strcmp(kp_cid_cstr(tc, cn->name), "local_variables") == 0) {
-        const pm_constant_id_list_t *locals = tc->frame->locals;
-        const bool it_slot = tc->frame->it_param && locals->size == 0;
-        const uint32_t cnt = (uint32_t)locals->size + (it_slot ? 1u : 0u);
-        uint32_t *syms = malloc(sizeof(uint32_t) * (cnt ? cnt : 1));
-        if (!syms) abort();
-        if (it_slot) syms[0] = korb_intern(tc->c->vm, "it", 2);
-        for (uint32_t i = 0; i < (uint32_t)locals->size; i++) syms[i + (it_slot ? 1u : 0u)] = kp_intern_cid(tc, locals->ids[i]);
         NODE *nb;
-        WITH_CHAIN(tc, KP_SEND0_SC, (nb = ALLOC_node_binding(-tc->chain, -1 - tc->chain,
-                                          (const char *)(const void *)syms, cnt)));
-        bake_add(tc, &nb->u.node_binding.def_env_off);
-        bake_add(tc, &nb->u.node_binding.self_off);
+        WITH_CHAIN(tc, KP_SEND0_SC, (nb = kp_make_binding_node(tc, line)));
         return kp_send0(korb_intern(tc->c->vm, "local_variables", 15), line, nb);
     }
 
@@ -2471,6 +2476,69 @@ build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n)
     WITH_CHAIN(tc, sc, (acc = build_array(tc, elems, n, (uint32_t)n),
                         fwd = bake_lget(tc, (uint32_t)tc->frame->fwd_slot)));
     return ALLOC_node_ary_concat(acc, fwd);
+}
+
+/* Packed scope table for `binding` / caller-binding eval:
+ *   [0]            L        — number of lexical levels captured (innermost first)
+ *   [1 .. L]       ns[d]    — locals count of level d (frame slots 0..ns)
+ *   then name_cnt triples   — (sym, depth, slot), innermost-first, shadowing
+ *                             deduped (an inner name hides an outer one).
+ * The lexical chain crosses block frames only: it stops at (and includes) the
+ * enclosing method / class body / toplevel frame. */
+static uint32_t *
+kp_binding_scope_tbl(struct kp_ctx *tc, uint32_t *out_name_cnt)
+{
+    struct kp_frame *levels[64];
+    uint32_t L = 0;
+    for (struct kp_frame *f = tc->frame; f && L < 64; f = f->prev) {
+        levels[L++] = f;
+        if (f->method_mid || f->class_name_sym || f->anon_class_body) break;   /* scope barrier */
+    }
+    uint32_t total = 0;
+    for (uint32_t d = 0; d < L; d++) {
+        const pm_constant_id_list_t *ls = levels[d]->locals;
+        total += (uint32_t)ls->size + ((levels[d]->it_param && ls->size == 0) ? 1u : 0u);
+    }
+    uint32_t *tbl = malloc(sizeof(uint32_t) * (1 + L + 3 * (total ? total : 1)));   /* immortal */
+    if (!tbl) abort();
+    tbl[0] = L;
+    uint32_t cnt = 0;
+    for (uint32_t d = 0; d < L; d++) {
+        const pm_constant_id_list_t *ls = levels[d]->locals;
+        const bool it_slot = levels[d]->it_param && ls->size == 0;
+        tbl[1 + d] = (uint32_t)ls->size + (it_slot ? 1u : 0u);
+        for (uint32_t i = 0; i < tbl[1 + d]; i++) {
+            const uint32_t sym = (it_slot && i == 0)
+                ? korb_intern(tc->c->vm, "it", 2)
+                : kp_intern_cid(tc, ls->ids[i - (it_slot ? 1u : 0u)]);
+            bool shadowed = false;                       /* inner name wins */
+            for (uint32_t k = 0; k < cnt; k++)
+                if (tbl[1 + L + 3 * k] == sym) { shadowed = true; break; }
+            if (shadowed) continue;
+            tbl[1 + L + 3 * cnt]     = sym;
+            tbl[1 + L + 3 * cnt + 1] = d;
+            tbl[1 + L + 3 * cnt + 2] = i;
+            cnt++;
+        }
+    }
+    *out_name_cnt = cnt;
+    /* the binding walks L-1 env links at runtime: force full-depth capture so
+     * enclosing procs materialize the whole chain (pop propagates upward) */
+    if (L > 1 && tc->frame->max_ref_depth < L - 1) tc->frame->max_ref_depth = L - 1;
+    return tbl;
+}
+
+static NODE *
+kp_make_binding_node(struct kp_ctx *tc, uint32_t line)
+{
+    uint32_t cnt = 0;
+    uint32_t *tbl = kp_binding_scope_tbl(tc, &cnt);
+    const int32_t self_off = -1 - tc->chain;
+    NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)tbl, cnt);
+    bake_add(tc, &nb->u.node_binding.def_env_off);    /* frame base shifts with frame_size */
+    bake_add(tc, &nb->u.node_binding.self_off);       /* self at base[-1] (bottom header) */
+    korb_reg_srcloc(tc->c->vm, nb, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), line);  /* for Binding#source_location */
+    return nb;
 }
 
 /* Value of `return` / `next` / `break` arguments: none → nil, one plain arg →

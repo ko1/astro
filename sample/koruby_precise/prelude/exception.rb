@@ -211,6 +211,10 @@ end
 class Binding
   IMPLICIT_PARAM_NAMES__ = [:it, :_1, :_2, :_3, :_4, :_5, :_6, :_7, :_8, :_9].freeze
 
+  def eval(src, *rest)
+    Kernel.eval(src, self, *rest)
+  end
+
   alias_method :__lvars_all, :local_variables
   def local_variables
     __lvars_all.reject { |n| IMPLICIT_PARAM_NAMES__.include?(n) }

@@ -2999,40 +2999,93 @@ korb_rescue_splat_list(CTX *c, VALUE *slots, VALUE *listslot)
 RESULT korb_coerce_to_int_pub(CTX *c, VALUE *slots, VALUE *v) { return korb_coerce_to_int(c, slots, v); }
 
 
-RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *name_syms, uint32_t name_cnt, VALUE self_val) {
+/* Binding scope table accessors (packed layout: see parse.c
+ * kp_binding_scope_tbl — [L, ns..., (sym,depth,slot)*name_cnt]). */
+#define KORB_BIND_L(b)         ((b)->name_syms[0])
+#define KORB_BIND_NS(b, d)     ((b)->name_syms[1 + (d)])
+#define KORB_BIND_TRIPLE(b, i) ((b)->name_syms + 1 + KORB_BIND_L(b) + 3u * (i))
+
+/* Build the flat, single-level variant of the packed table (toplevel binding /
+ * embed startup).  Immortal malloc. */
+const uint32_t *
+korb_binding_tbl_flat(const uint32_t *syms, uint32_t cnt)
+{
+    uint32_t *tbl = malloc(sizeof(uint32_t) * (2 + 3 * (cnt ? cnt : 1)));
+    if (!tbl) abort();
+    tbl[0] = 1; tbl[1] = cnt;
+    for (uint32_t i = 0; i < cnt; i++) {
+        tbl[2 + 3 * i] = syms[i]; tbl[2 + 3 * i + 1] = 0; tbl[2 + 3 * i + 2] = i;
+    }
+    return tbl;
+}
+
+RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *scope_tbl, uint32_t name_cnt, VALUE self_val) {
     slots[0] = self_val;                                  /* root self across allocs */
-    const VALUE pv = korb_ep_get(frame_base);                      /* original outer link (preserve into e->prev) */
-    KorbEnv *e = korb_open_env_find(frame_base);
-    if (e == NULL) {
-        e = korb_alloc(c, slots + 1, sizeof(KorbEnv), KORB_OBJ_ENV);
-        e->loc = frame_base; e->n = (uint16_t)name_cnt; e->closed = 0;
+    /* Materialize an env for EVERY captured lexical level (same walk as
+     * korb_make_proc's deep capture): enclosing locals must stay reachable —
+     * and writable — through the chain even after their frames return. */
+    const uint32_t L = scope_tbl[0];
+    VALUE *bases[64];
+    bases[0] = frame_base;
+    uint32_t nlive = 1;
+    VALUE outer_env = 0;
+    for (uint32_t k = 1; k < L && k < 64; k++) {
+        const VALUE pv = korb_ep_get(bases[k - 1]);
+        if (pv & 1u) { bases[k] = (VALUE *)(uintptr_t)(pv & ~(uintptr_t)1u); nlive++; }
+        else { outer_env = pv; break; }                  /* already-materialized chain */
+    }
+    slots[1] = outer_env;
+    for (int k = (int)nlive - 1; k >= 0; k--) {
+        const VALUE pv = korb_ep_get(bases[k]);
+        KorbEnv *existing = korb_open_env_find(bases[k]);
+        if (existing) { slots[1] = (VALUE)(uintptr_t)existing; continue; }
+        KorbEnv *e = korb_alloc(c, slots + 2, sizeof(KorbEnv), KORB_OBJ_ENV);
+        e->loc = bases[k];
+        e->n = (uint16_t)scope_tbl[1 + (uint32_t)k];     /* level's full locals count */
+        e->closed = 0;
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
-        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, pv);   /* keep the frame's outer link */
+        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, slots[1] ? slots[1] : pv);
         slots[1] = (VALUE)(uintptr_t)e;
-        korb_ep_set(frame_base, slots[1]);                        /* EP cell: frame owns its env (GC roots via slots) */
-    } else slots[1] = (VALUE)(uintptr_t)e;
+        korb_ep_set(bases[k], slots[1]);                 /* frame owns its env */
+    }
     KorbBinding *b = korb_alloc(c, slots + 2, sizeof(KorbBinding), KORB_OBJ_BINDING);
-    b->name_syms = name_syms; b->name_cnt = name_cnt;
+    b->name_syms = scope_tbl; b->name_cnt = name_cnt;
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->env,  slots[1]);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->self, slots[0]);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->extra, KORB_NIL);
     return RESULT_OK((VALUE)b);
 }
-/* read env index `i` (open → live slots, closed → heap vals). */
+/* env of lexical level `depth` in the binding's chain (0 = binding site). */
+static KorbEnv *korb_bind_level(const KorbBinding *b, uint32_t depth) {
+    VALUE ev = b->env;
+    for (uint32_t d = 0; d < depth; d++) {
+        if (ev == 0 || (ev & 1u)) return NULL;           /* raw/absent beyond capture */
+        ev = VAL2ENV(ev)->prev;
+    }
+    if (ev == 0 || (ev & 1u)) return NULL;
+    return VAL2ENV(ev);
+}
+/* read name index `i` (walks to its level; open → live slots, closed → vals). */
 static VALUE korb_bind_env_get(const KorbBinding *b, uint32_t i) {
-    const KorbEnv *e = VAL2ENV(b->env);
+    const uint32_t *t = KORB_BIND_TRIPLE(b, i);
+    const KorbEnv *e = korb_bind_level(b, t[1]);
+    if (e == NULL) return KORB_NIL;
     const VALUE *base = e->closed ? korb_items_data((KorbArrayItems *)(uintptr_t)e->vals) : e->loc;
-    return base[i];
+    if (e->closed && t[2] >= e->n) return KORB_NIL;      /* level closed with fewer captures */
+    return base[t[2]];
 }
-/* write env index `i` (open → live slots, closed → heap vals via WB). */
+/* write name index `i` (open → live slots, closed → heap vals via WB). */
 static void korb_bind_env_set(CTX *c, const KorbBinding *b, uint32_t i, VALUE v) {
-    KorbEnv *e = VAL2ENV(b->env);
-    if (e->closed) korb_env_store(c, e, i, v);
-    else e->loc[i] = v;
+    const uint32_t *t = KORB_BIND_TRIPLE(b, i);
+    KorbEnv *e = korb_bind_level(b, t[1]);
+    if (e == NULL) return;
+    if (e->closed) { if (t[2] < e->n) korb_env_store(c, e, t[2], v); }
+    else e->loc[t[2]] = v;
 }
-/* frame index of `sym` in the binding's scope, or -1. */
+/* name index of `sym` in the binding's scope, or -1. */
 static int korb_bind_find(const KorbBinding *b, uint32_t sym) {
-    for (uint32_t i = 0; i < b->name_cnt; i++) if (b->name_syms[i] == sym) return (int)i;
+    for (uint32_t i = 0; i < b->name_cnt; i++)
+        if (KORB_BIND_TRIPLE(b, i)[0] == sym) return (int)i;
     return -1;
 }
 /* resolve a :sym / "str" arg to an interned id; SIZE_MAX on a type error (caller raises). */
@@ -3096,7 +3149,7 @@ static RESULT korb_m_bind_lvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     slots[0] = UNWRAP(korb_ary_new(c, slots, b->name_cnt + 2));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++)
-        CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(VAL2BIND(VALUE_REF_GET(self))->name_syms[i])));
+        CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i)[0])));
     const VALUE ex = VAL2BIND(VALUE_REF_GET(self))->extra;
     if (ex != KORB_NIL) for (uint32_t i = 0; i < VAL2HASH(ex)->len; i++)
         CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(ex)->items)[2 * i]));
@@ -9029,6 +9082,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_PROC, "yield", korb_m_proc_call, -1);
     korb_def_cmethod_blk(c, KORB_C_PROC, "===", korb_m_proc_call, -1);
     korb_def_cmethod(c, KORB_C_PROC, "lambda?", korb_m_proc_lambda_q, 0);
+    korb_def_cmethod(c, KORB_C_PROC, "binding", korb_m_proc_binding, 0);
     korb_def_cmethod(c, KORB_C_PROC, "arity", korb_m_proc_arity, 0);
     korb_def_cmethod(c, KORB_C_PROC, "parameters", korb_m_proc_parameters, -1);
     korb_def_cmethod(c, KORB_C_PROC, "source_location", korb_m_proc_source_location, 0);
@@ -11572,6 +11626,16 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(args, 3)));
         eline = (int32_t)l;
     }
+    if (strcmp(fname, "(eval)") == 0 && have_bind) {    /* CRuby 3.3+: default is "(eval at FILE:LINE)" (callsite ≈ the binding's site) */
+        const struct Node *const sn = VAL2BIND(VALUE_SLICE_GET(args, 1))->src_node;
+        uint32_t fsym, ln;
+        if (sn && korb_get_srcloc(c->vm, sn, &fsym, &ln)) {
+            char buf[512];
+            const int n = snprintf(buf, sizeof buf, "(eval at %s:%u)", korb_sym_name(c->vm, fsym), ln);
+            if (n > 0 && (size_t)n < sizeof buf)
+                fname = korb_sym_name(c->vm, korb_intern(c->vm, buf, (uint32_t)n));
+        }
+    }
     const KorbString *s = VAL2STR(sv);
     if (have_bind) {                                    /* eval(str, binding) — seed the eval frame from the binding, run, write back */
         const VALUE bv = VALUE_SLICE_GET(args, 1);
@@ -11581,7 +11645,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         const uint32_t ecnt = (b0->extra != KORB_NIL) ? VAL2HASH(b0->extra)->len : 0;
         const uint32_t declc = b0->name_cnt + ecnt;
         uint32_t *decl = declc ? malloc(sizeof(uint32_t) * declc) : NULL;
-        for (uint32_t i = 0; i < b0->name_cnt; i++) decl[i] = b0->name_syms[i];
+        for (uint32_t i = 0; i < b0->name_cnt; i++) decl[i] = KORB_BIND_TRIPLE(b0, i)[0];
         for (uint32_t i = 0; i < ecnt; i++) decl[b0->name_cnt + i] = SYM2ID(korb_items_data(VAL2HASH(b0->extra)->items)[2 * i]);
         NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, fname, eline, decl, declc);
         free(decl);
@@ -12560,6 +12624,29 @@ korb_embed_attr_descs(CTX *c, uint32_t cnt, ...)
     }
     va_end(ap);
     return d;
+}
+
+/* Binding scope table: L, ns[L], cnt, then (name,len,depth,slot) per entry. */
+uint32_t *
+korb_embed_binding_scope(CTX *c, uint32_t L, ...)
+{
+    va_list ap;
+    va_start(ap, L);
+    uint32_t ns[64];
+    for (uint32_t d = 0; d < L && d < 64; d++) ns[d] = va_arg(ap, uint32_t);
+    const uint32_t cnt = va_arg(ap, uint32_t);
+    uint32_t *tbl = korb_embed_alloc(sizeof(uint32_t) * (1 + L + 3 * (cnt ? cnt : 1)));
+    tbl[0] = L;
+    for (uint32_t d = 0; d < L; d++) tbl[1 + d] = ns[d];
+    for (uint32_t i = 0; i < cnt; i++) {
+        const char *const name = va_arg(ap, const char *);
+        const uint32_t len = va_arg(ap, uint32_t);
+        tbl[1 + L + 3 * i]     = korb_intern(c->vm, name, len);
+        tbl[1 + L + 3 * i + 1] = va_arg(ap, uint32_t);
+        tbl[1 + L + 3 * i + 2] = va_arg(ap, uint32_t);
+    }
+    va_end(ap);
+    return tbl;
 }
 
 /* Recursive pattern descriptor: fixed head, then ecnt sub-pattern pointers,
