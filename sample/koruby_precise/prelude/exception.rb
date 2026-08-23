@@ -146,28 +146,85 @@ end
 # from the C table so the raise side (korb_errno_name) and the constants can
 # never drift apart.  Each class carries its number as ::Errno, like CRuby.
 class SystemCallError < StandardError
-  def initialize(msg = nil, errno = nil)
-    if msg.is_a?(Integer) && errno.nil?    # SystemCallError.new(errno_number)
-      errno = msg
-      msg = nil
+  # errno 引数の coercion (Float 切り捨て / 実数 Complex / #to_int)。
+  def self.__scerr_num(errno)
+    case errno
+    when nil then nil
+    when Integer then errno
+    when Float then errno.to_i
+    when Complex
+      raise RangeError, "can't convert #{errno} into Integer" unless errno.imaginary == 0
+      errno.real.to_i
+    else
+      unless errno.respond_to?(:to_int)
+        raise TypeError, "no implicit conversion of #{errno.class} into Integer"
+      end
+      errno.to_int
     end
-    @errno = errno || (self.class.const_defined?(:Errno) ? self.class::Errno : nil)
+  end
+  def self.__scerr_int_p(v)
+    v.is_a?(Integer) || v.is_a?(Float) || v.is_a?(Complex) || v.respond_to?(:to_int)
+  end
+  # SystemCallError.new は errno に対応する Errno::* クラスを返す (CRuby)。
+  def self.new(*args)
+    if self == SystemCallError
+      raise ArgumentError, "wrong number of arguments (given 0, expected 1..3)" if args.empty?
+      num = (args[0].is_a?(Integer) && args.size == 1) ? args[0] : __scerr_num(args[1])
+      cls = num && Errno::BY_NUM__[num]
+      return cls.new(*args) if cls
+    end
+    super(*args)
+  end
+  def initialize(*args)
+    msg = errno = loc = nil
+    if args[0].is_a?(Integer) && args.size == 1     # SystemCallError.new(errno_number)
+      errno = args[0]
+    elsif self.class.const_defined?(:Errno, false) && !(args.size >= 2 && SystemCallError.__scerr_int_p(args[1]))
+      msg, loc = args[0], args[1]                   # Errno::X.new(msg[, location])
+      unless msg.nil?
+        msg = msg.to_str if !msg.is_a?(String) && msg.respond_to?(:to_str)
+        raise TypeError, "no implicit conversion of #{args[0].class} into String" unless msg.is_a?(String)
+      end
+    else
+      msg, errno, loc = args[0], args[1], args[2]
+      unless msg.nil?
+        msg = msg.to_str if !msg.is_a?(String) && msg.respond_to?(:to_str)
+        raise TypeError, "no implicit conversion of #{args[0].class} into String" unless msg.is_a?(String)
+      end
+      errno = SystemCallError.__scerr_num(errno)
+    end
+    @errno = errno || (self.class.const_defined?(:Errno, false) ? self.class::Errno : nil)
     base = @errno ? __strerror(@errno) : nil
     base = "unknown error" if base.nil? || base.empty?
+    base = "#{base} @ #{loc}" if loc
     super(msg ? "#{base} - #{msg}" : base)
   end
   # The C raise path builds the exception without running #initialize, so fall
   # back to the class's own number.
   def errno
-    @errno || (self.class.const_defined?(:Errno) ? self.class::Errno : nil)
+    @errno || (self.class.const_defined?(:Errno, false) ? self.class::Errno : nil)
   end
 end
 module Errno
-  __errno_table.each do |name, num|
-    next if const_defined?(name, false)
-    cls = Class.new(SystemCallError)
-    cls.const_set(:Errno, num)
-    const_set(name, cls)
+  BY_NUM__ = {}
+  # 同じ番号の別名 (EAGAIN/EWOULDBLOCK 等) は同じクラス。クラス名は CRuby の
+  # 正準名に合わせるため、正準名を先に登録する 2-pass。
+  CANON__ = { "EWOULDBLOCK" => "EAGAIN", "EOPNOTSUPP" => "ENOTSUP", "EDEADLOCK" => "EDEADLK" }
+  tbl = __errno_table
+  [true, false].each do |canon_pass|
+    tbl.each do |name, num|
+      next if CANON__.key?(name.to_s) == canon_pass   # pass1: 正準名, pass2: 別名
+      unless const_defined?(name, false)
+        if num > 0 && BY_NUM__[num]
+          const_set(name, BY_NUM__[num])
+        else
+          cls = Class.new(SystemCallError)
+          cls.const_set(:Errno, num)
+          const_set(name, cls)
+        end
+      end
+      BY_NUM__[num] ||= const_get(name) if num > 0
+    end
   end
 end
 
