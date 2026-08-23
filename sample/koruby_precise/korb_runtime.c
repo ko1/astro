@@ -12137,6 +12137,28 @@ korb_bi_binread(CTX *c, VALUE *slots, VALUE_SLICE args)
     return r;
 }
 
+/* __gc_stat_raw() — [count, minor, major, total_bytes, total_ns] (backs GC.stat). */
+static RESULT
+korb_bi_gc_stat_raw(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)args;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 5));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX((korb_sword_t)aro_gc_count(c))));
+    CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX((korb_sword_t)aro_gc_minor_count(c))));
+    CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX((korb_sword_t)aro_gc_major_count(c))));
+    CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX((korb_sword_t)aro_gc_total_bytes(c))));
+    CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX((korb_sword_t)(aro_gc_total_seconds(c) * 1e9))));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+/* __gc_start() — force a full collection (backs GC.start). */
+static RESULT
+korb_bi_gc_start(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)slots; (void)args;
+    aro_gc_collect(c);
+    return RESULT_OK(KORB_NIL);
+}
 /* __clock_gettime() — monotonic seconds as Float (backs Process.clock_gettime). */
 static RESULT
 korb_bi_clock_gettime(CTX *c, VALUE *slots, VALUE_SLICE args)
@@ -12413,6 +12435,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "srand", korb_bi_srand, -1);
     korb_builtin_define(c, "__binread", korb_bi_binread, 1);
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
+    korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);
+    korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
     korb_builtin_define(c, "Float", korb_bi_float, -1);
     korb_builtin_define(c, "Array", korb_bi_array, -1);

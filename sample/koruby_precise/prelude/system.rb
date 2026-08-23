@@ -321,28 +321,78 @@ __rlimit_table.each do |name, num|
 end
 
 module GC
-  def self.start(*); nil; end
-  def self.enable; false; end
-  def self.disable; false; end
-  def self.stat(*); {}; end
-  def self.count; 0; end
+  def self.start(*); __gc_start; nil; end
+  def self.enable; prev = @__disabled; @__disabled = false; !!prev; end
+  def self.disable; prev = @__disabled; @__disabled = true; !!prev; end
+  # GC#garbage_collect (module instance method; include GC で使う)
+  def garbage_collect(*); GC.start; nil; end
+  # stat: 実 GC の統計を CRuby 形のキーで返す (koruby GC にある分だけ実数、
+  # 残りは 0)。stat(hash) は既存 hash を更新して返し、stat(:key) は単値。
+  def self.stat(arg = nil)
+    cnt, minor, major, bytes, ns = __gc_stat_raw
+    h = {
+      count: cnt, minor_gc_count: minor, major_gc_count: major,
+      total_allocated_objects: 0, total_freed_objects: 0,
+      heap_allocated_pages: 0, heap_sorted_length: 0, heap_allocatable_pages: 0,
+      heap_available_slots: 0, heap_live_slots: 0, heap_free_slots: 0,
+      heap_final_slots: 0, heap_marked_slots: 0, heap_eden_pages: 0,
+      heap_tomb_pages: 0, total_allocated_pages: 0, total_freed_pages: 0,
+      malloc_increase_bytes: bytes, malloc_increase_bytes_limit: 0,
+      minor_gc_count: minor, major_gc_count: major, compact_count: 0,
+      read_barrier_faults: 0, total_moved_objects: 0,
+      remembered_wb_unprotected_objects: 0, remembered_wb_unprotected_objects_limit: 0,
+      old_objects: 0, old_objects_limit: 0, oldmalloc_increase_bytes: 0,
+      oldmalloc_increase_bytes_limit: 0, marking_time: 0, sweeping_time: 0,
+      time: ns / 1_000_000,
+    }
+    case arg
+    when nil then h
+    when Symbol
+      raise ArgumentError, "unknown key: #{arg}" unless h.key?(arg)
+      h[arg]
+    when Hash
+      arg.each_key { |k| arg[k] = h[k] if h.key?(k) }
+      arg
+    else
+      raise TypeError, "non-hash or symbol given"
+    end
+  end
+  def self.count; __gc_stat_raw[0]; end
   def self.stress; false; end
   def self.stress=(v); v; end
   # 計測系は koruby GC (precise copying) では未提供。CRuby と同じ「形」だけ
   # 返して、参照するだけのコードが NoMethodError にならないようにする。
+  CONFIG_KEYS__ = [:rgengc_allow_full_mark].freeze         # 書き込み可能な既知キー
   def self.config(hash = nil)
     @__gc_config ||= { implementation: "koruby-precise" }
     if hash
-      raise TypeError, "expecting keyword arguments" unless hash.is_a?(Hash)
-      hash.each { |k, v| @__gc_config[k.to_sym] = v }
+      raise ArgumentError, "expected keyword arguments" unless hash.is_a?(Hash)
+      hash.each do |k, v|
+        ks = k.to_sym
+        raise ArgumentError, "Attempting to set read-only key \"Implementation\"" if ks == :implementation
+        @__gc_config[ks] = v if CONFIG_KEYS__.include?(ks)  # 未知キーは無視 (CRuby)
+      end
     end
     @__gc_config.dup
+  end
+
+  # GC::Profiler: 形だけ (koruby GC は per-GC プロファイルを取らない)。
+  module Profiler
+    @enabled = false
+    def self.enabled?; @enabled; end
+    def self.enable; @enabled = true; nil; end
+    def self.disable; @enabled = false; nil; end
+    def self.clear; nil; end
+    def self.report(*); nil; end
+    def self.result; ""; end
+    def self.raw_data; @enabled ? [] : nil; end
+    def self.total_time; 0.0; end
   end
   def self.total_time; 0; end
   def self.measure_total_time; @__gc_measure.nil? ? true : @__gc_measure; end
   def self.measure_total_time=(v); @__gc_measure = v ? true : false; v; end
-  def self.auto_compact; false; end
-  def self.auto_compact=(v); v; end
+  def self.auto_compact; !!@__auto_compact; end
+  def self.auto_compact=(v); @__auto_compact = v; v; end
   def self.compact; nil; end
   def self.latest_gc_info(arg = nil); arg.is_a?(Symbol) ? nil : {}; end
 end
