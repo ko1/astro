@@ -81,10 +81,35 @@ static RESULT korb_m_int_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return korb_str_new(c, slots, buf, len);
 }
 static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(KORB_BIGNUM_P(VALUE_REF_GET(self))))          /* CRuby: "bignum out of char range" */
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum out of char range");
     const korb_sword_t n = SELF_INT;
     /* optional Encoding arg: US-ASCII (0..127 byte), ASCII-8BIT/BINARY (0..255
      * byte), UTF-8 (codepoint → 1..4 UTF-8 bytes).  No arg → ASCII-8BIT byte. */
     int kind = 0;   /* 0 = ascii-8bit byte, 1 = us-ascii byte, 2 = utf-8 */
+    uint32_t want_enc = UINT32_MAX;                            /* explicit encoding to tag the result with */
+    if (VALUE_SLICE_LEN(a) == 0) {
+        /* no arg: Encoding.default_internal (when set) decides, else the plain
+         * 0..255 byte rule below */
+        const VALUE encm = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
+        if (KORB_CLASS_P(encm)) {
+            slots[0] = encm;
+            RESULT di = korb_send_impl(c, slots + 1, korb_intern(c->vm, "default_internal", 16), 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(di.state != KORB_NORMAL)) return di;
+            if (di.value != KORB_NIL) {
+                slots[0] = di.value;
+                RESULT nm = korb_send_impl(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(nm.state != KORB_NORMAL)) return nm;
+                if (KORB_STRING_P(nm.value)) {
+                    char eb[64]; uint32_t el = VAL2STR(nm.value)->len;
+                    if (el >= sizeof eb) el = sizeof eb - 1;
+                    memcpy(eb, korb_strbuf_data(VAL2STR(nm.value)->buf), el); eb[el] = '\0';
+                    want_enc = korb_enc_index_pub(c->vm, eb);
+                    kind = (want_enc == KORB_ENC_USASCII) ? 1 : 2;
+                }
+            }
+        }
+    }
     if (VALUE_SLICE_LEN(a) >= 1) {
         slots[0] = VALUE_SLICE_GET(a, 0);
         RESULT nr;
@@ -101,6 +126,12 @@ static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             else if (ENC_IS("ASCII-8BIT") || ENC_IS("BINARY")) kind = 0;
             else kind = 2;   /* other ascii-compatible → treat like UTF-8 for the codepoint */
             #undef ENC_IS
+            {   /* the result carries the requested encoding verbatim */
+                char eb[64]; uint32_t el = nm->len;
+                if (el >= sizeof eb) el = sizeof eb - 1;
+                memcpy(eb, korb_strbuf_data(nm->buf), el); eb[el] = '\0';
+                want_enc = korb_enc_index_pub(c->vm, eb);
+            }
         }
     }
     if (kind == 2) {                                  /* UTF-8 encode the codepoint */
@@ -111,7 +142,9 @@ static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         else if (cp < 0x800)  { b[0] = (char)(0xC0 | (cp >> 6)); b[1] = (char)(0x80 | (cp & 0x3F)); len = 2; }
         else if (cp < 0x10000){ b[0] = (char)(0xE0 | (cp >> 12)); b[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); b[2] = (char)(0x80 | (cp & 0x3F)); len = 3; }
         else                  { b[0] = (char)(0xF0 | (cp >> 18)); b[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); b[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); b[3] = (char)(0x80 | (cp & 0x3F)); len = 4; }
-        return korb_str_new(c, slots, b, (uint32_t)len);   /* UTF-8 string (not binary) */
+        RESULT ur = korb_str_new(c, slots, b, (uint32_t)len);   /* UTF-8 bytes */
+        if (LIKELY(ur.state == KORB_NORMAL) && want_enc != UINT32_MAX) KORB_STR_ENC_SET(ur.value, want_enc);
+        return ur;
     }
     const korb_sword_t hi = (kind == 1) ? 127 : 255;
     if (n < 0 || n > hi) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)n);
@@ -120,9 +153,10 @@ static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (LIKELY(r.state == KORB_NORMAL)) {
         /* With an explicit Encoding the result carries it (US-ASCII / ASCII-8BIT);
          * with no argument CRuby picks US-ASCII for 0..127, else ASCII-8BIT. */
-        const uint32_t enc = (VALUE_SLICE_LEN(a) >= 1)
-            ? ((kind == 1) ? KORB_ENC_USASCII : KORB_ENC_BINARY)
-            : ((n < 0x80) ? KORB_ENC_USASCII : KORB_ENC_BINARY);
+        const uint32_t enc = (want_enc != UINT32_MAX) ? want_enc
+            : (VALUE_SLICE_LEN(a) >= 1
+                 ? ((kind == 1) ? KORB_ENC_USASCII : KORB_ENC_BINARY)
+                 : ((n < 0x80) ? KORB_ENC_USASCII : KORB_ENC_BINARY));
         KORB_STR_ENC_SET(r.value, enc);
     }
     return r;

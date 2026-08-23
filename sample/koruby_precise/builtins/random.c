@@ -154,12 +154,24 @@ static KorbRandSrc korb_rand_src_from_kwargs(CTX *const c, VALUE_SLICE a) {
 static RESULT korb_rand_upto(CTX *const c, VALUE *slots, VALUE_SLICE a, uint32_t bound, uint32_t *out) {
     KorbRandSrc src = korb_rand_src_from_kwargs(c, a);
     if (src.obj == KORB_NIL) { *out = korb_mt_limited(src.mt, bound); return RESULT_OK(KORB_NIL); }
+    if (UNLIKELY(!korb_responds_to(c, src.obj, korb_intern(c->vm, "rand", 4)))) {   /* CRuby: NoMethodError, not a silent fallback */
+        slots[0] = src.obj;
+        char rd[224];
+        return korb_raise(c, slots + 1, KORB_E_NOMETHOD, 0, "undefined method 'rand' for %s",
+                          korb_recv_desc(c, slots + 1, slots[0], rd, sizeof rd));
+    }
     slots[0] = src.obj; slots[1] = LONG2FIX((korb_sword_t)bound + 1);   /* rng.rand(bound+1) → [0, bound] */
     RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "rand", 4), 0, 1);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     korb_sword_t v;
-    if (UNLIKELY(!korb_to_index(r.value, &v)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(r.value));
+    if (UNLIKELY(!korb_to_index(r.value, &v))) {          /* #to_int on the returned object (CRuby) */
+        VALUE rv = r.value;
+        const char *const on = korb_coerce_name(c, rv);
+        RESULT ci = korb_coerce_to_int(c, slots, &rv);
+        if (UNLIKELY(ci.state != KORB_NORMAL)) return ci;
+        if (ci.value == KORB_FALSE || !korb_to_index(rv, &v))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", on);
+    }
     if (UNLIKELY(v < 0 || (uintptr_t)v > bound))
         return korb_raise(c, slots, KORB_E_RANGE, 0, "random number too big %ld", (long)v);
     *out = (uint32_t)v;
