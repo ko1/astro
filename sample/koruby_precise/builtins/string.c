@@ -1967,6 +1967,22 @@ static RESULT korb_split_finish(CTX *c, VALUE *slots, VALUE_REF self, VALUE_REF 
 }
 static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE sepv = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    if (sepv == KORB_NIL) {                                  /* default: $; (deprecated; warns when set) */
+        const uint32_t fs = korb_const_index(c->vm, korb_intern(c->vm, "$;", 2));
+        if (fs != UINT32_MAX && c->vm->const_vals[fs] != KORB_NIL) {
+            sepv = c->vm->const_vals[fs];
+            const uint32_t vb = korb_const_index(c->vm, korb_intern(c->vm, "$VERBOSE", 8));
+            if (vb != UINT32_MAX && c->vm->const_vals[vb] == KORB_TRUE)   /* deprecation warning: verbose only */
+                korb_warn(c, slots, "$; is set to non-nil value");
+        }
+    }
+    {   /* an invalid self can't be split (CRuby) */
+        const VALUE sv = VALUE_REF_GET(self);
+        if (UNLIKELY(KORB_STR_ENC(sv) == KORB_ENC_UTF8 && !korb_str_utf8_valid(VAL2STR(sv))))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
+        if (UNLIKELY(KORB_STRING_P(sepv) && KORB_STR_ENC(sepv) == KORB_ENC_UTF8 && !korb_str_utf8_valid(VAL2STR(sepv))))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
+    }
     /* limit: 0/omitted = unlimited + drop trailing empties; <0 = unlimited keep;
      * >0 = at most `limit` fields (last = remainder).  limit==1 → [self] verbatim. */
     korb_sword_t limit = 0;
@@ -1975,9 +1991,12 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (!korb_to_index(lv, &limit)) {                    /* coerce a non-Integer limit via #to_int */
             RESULT cr = korb_coerce_to_int(c, slots, &lv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            (void)korb_to_index(lv, &limit);
+            if (!korb_to_index(lv, &limit))                  /* Bignum limit → RangeError (CRuby NUM2INT) */
+                return korb_raise(c, slots, KORB_E_RANGE, 0, "integer overflow: limit too big for int");
         }
     }
+    if ((limit > 0 && limit > INT32_MAX) || (limit < 0 && limit < INT32_MIN))
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "integer overflow: limit too big for int");
     if (limit == 1) {                                         /* whole string (sep untouched); empty → [] */
         const uint32_t slen = VAL2STR(VALUE_REF_GET(self))->len;
         VALUE_REF d1 = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 1)));
@@ -2005,7 +2024,9 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         const KorbString *sp = VAL2STR(sepv);
         if (sp->len == 1 && korb_strbuf_data(sp->buf)[0] == ' ') ws = true;   /* " " behaves as whitespace */
     }
-    VALUE_REF sepref = ws ? (VALUE_REF){0} : VALUE_SLICE_REF(a, 0);
+    VALUE_REF sepref = {0};
+    if (!ws)                                              /* root sep in a slot ($; has no arg slot to live in) */
+        sepref = SLOTS_PUSH(slots, sepv);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     if (VAL2STR(VALUE_REF_GET(self))->len == 0)            /* CRuby: empty string always splits to [] */
         return korb_split_finish(c, slots + 1, self, dst, block, def_env, cself);
@@ -2021,6 +2042,8 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, cpos, cl))));
             cpos += cl;
         }
+        if (limit < 0)                                     /* negative limit keeps the trailing "" (CRuby) */
+            CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_new(c, slots + 1, "", 0))));
         return korb_split_finish(c, slots + 1, self, dst, block, def_env, cself);
     }
     uint32_t pos = 0;

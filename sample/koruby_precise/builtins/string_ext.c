@@ -262,14 +262,20 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             else i = save;                                 /* plain width digits → reparse below */
         }
         while (i < flen && strchr("-+ 0#", fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
+        if (explicit_idx < 0 && !has_named && i < flen && isdigit((unsigned char)fmt[i])) {
+            const uint32_t save = i; int num = 0;          /* %-N$… : N$ may follow the flags */
+            while (i < flen && isdigit((unsigned char)fmt[i])) { num = num * 10 + (fmt[i] - '0'); i++; }
+            if (i < flen && fmt[i] == '$') { explicit_idx = num - 1; i++; }
+            else i = save;                                 /* plain width digits → reparse below */
+        }
         TRY_NAMED(); if (err) break;                       /* %flags<name>… */
         if (i < flen && fmt[i] == '*') {                   /* dynamic width: `*` (next arg) or `*N$` (positional) */
             i++;
             VALUE wv;
             { int wnum = 0; bool wany = false; const uint32_t sv = i;
               while (i < flen && isdigit((unsigned char)fmt[i])) { wnum = wnum * 10 + (fmt[i]-'0'); wany = true; i++; }
-              if (wany && i < flen && fmt[i] == '$') { i++; wv = ((uint32_t)(wnum-1) < argn) ? args[wnum-1] : KORB_NIL; }
-              else { i = sv; wv = (ai < argn) ? args[ai++] : KORB_NIL; } }
+              if (wany && i < flen && fmt[i] == '$') { i++; wv = ((uint32_t)(wnum-1) < argn) ? args[wnum-1] : KORB_NIL; saw_numbered = true; }
+              else { i = sv; wv = (ai < argn) ? args[ai++] : KORB_NIL; saw_unnumbered = true; } }
             korb_sword_t w;
             if (!korb_to_index(wv, &w) && KORB_OBJECT_P(wv) && korb_responds_to(c, wv, fmt_to_int)) {
                 slots[1] = wv;                              /* a `*` width may be any #to_int object */
@@ -290,8 +296,8 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 VALUE pv;
                 { int pnum = 0; bool pany = false; const uint32_t sv = i;
                   while (i < flen && isdigit((unsigned char)fmt[i])) { pnum = pnum * 10 + (fmt[i]-'0'); pany = true; i++; }
-                  if (pany && i < flen && fmt[i] == '$') { i++; pv = ((uint32_t)(pnum-1) < argn) ? args[pnum-1] : KORB_NIL; }
-                  else { i = sv; pv = (ai < argn) ? args[ai++] : KORB_NIL; } }
+                  if (pany && i < flen && fmt[i] == '$') { i++; pv = ((uint32_t)(pnum-1) < argn) ? args[pnum-1] : KORB_NIL; saw_numbered = true; }
+                  else { i = sv; pv = (ai < argn) ? args[ai++] : KORB_NIL; saw_unnumbered = true; } }
                 korb_sword_t pl;
                 if (!korb_to_index(pv, &pl)) { err = true; errmsg = "precision too big"; break; }
                 if (pl >= 0) si += snprintf(spec + si, sizeof(spec) - (size_t)si, ".%ld", (long)pl);   /* negative precision → ignored (CRuby) */
@@ -315,7 +321,12 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
         TRY_NAMED(); if (err) break;                       /* %flagsWIDTH.PREC<name>type */
         #undef TRY_NAMED
-        if (i >= flen) { err = true; errmsg = "incomplete format specifier; use %% (double %) instead"; break; }
+        if (i >= flen) {
+            err = true;
+            errmsg = (si == 1 && explicit_idx < 0) ? "incomplete format specifier; use %% (double %) instead"
+                                                   : "malformed format string";
+            break;
+        }
         char conv;
         if (fmt[i] == '{') {                               /* %[flags][width][.prec]{name}: named value to_s (implicit 's') */
             saw_named = true;
@@ -332,6 +343,11 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             }
             named_arg = korb_items_data(VAL2HASH(nh)->items)[2 * hidx + 1]; has_named = true; conv = 's';   /* i at '}'; loop i++ steps past it */
         } else conv = fmt[i];
+        if (!has_named && conv != '%' && !strchr("diufeEgGaAxXoBbcsp", conv)) {   /* bad conversion beats arity errors */
+            if (isprint((unsigned char)conv)) snprintf(mixmsg, sizeof mixmsg, "malformed format string - %%%c", conv);
+            else                              snprintf(mixmsg, sizeof mixmsg, "malformed format string");
+            errmsg = mixmsg; err = true; break;
+        }
         const bool sequential = (!has_named && explicit_idx < 0);
         if (conv != '%' && !has_named) {
             if (explicit_idx >= 0) {
