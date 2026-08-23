@@ -1902,6 +1902,11 @@ static RESULT korb_m_mod_class_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool singleton_definee) {
     (void)cself;
     if (UNLIKELY(block == NULL)) {
+        VALUE *bind_ptr = NULL;              /* hidden caller binding appended by the parser (caller locals) */
+        if (VALUE_SLICE_LEN(a) >= 2 && KORB_BINDING_P(VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1))) {
+            bind_ptr = &a.p[VALUE_SLICE_LEN(a) - 1];   /* stays rooted in the arg slots */
+            a = VALUE_SLICE_MAKE(a.p, VALUE_SLICE_LEN(a) - 1);
+        }
         if (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_LEN(a) > 3)   /* no block: 1..3 args (CRuby) */
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..3)",
                               VALUE_SLICE_LEN(a));
@@ -1961,6 +1966,12 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
                 cref = sr.value; src = slots[0];
             }
         } else if (KORB_CLASS_P(VALUE_REF_GET(self))) cref = VALUE_REF_GET(self);
+        if (bind_ptr) {                                    /* caller binding → its locals are visible + written back */
+            slots[0] = src;
+            slots[1] = VALUE_REF_GET(self);
+            slots[2] = cref;
+            return korb_eval_binding_core(c, slots + 3, &slots[0], bind_ptr, fname, line, &slots[1], slots[2]);
+        }
         return korb_eval_str_self(c, slots, src, VALUE_REF_GET(self), fname, line, cref);
     }
     if (UNLIKELY(VALUE_SLICE_LEN(a) > 0))                     /* a block AND positional args → ArgumentError (CRuby) */

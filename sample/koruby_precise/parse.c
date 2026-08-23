@@ -1445,6 +1445,32 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return ALLOC_node_call(korb_intern(tc->c->vm, "eval", 4), line, argv, cnt);
     }
 
+    /* bare `instance_eval(str...)` — same hidden-binding contract as the
+     * explicit-receiver lowering in transduce_call (caller locals). */
+    if (cn->block == NULL && argc >= 1 && argc <= 3 &&
+        strcmp(kp_cid_cstr(tc, cn->name), "instance_eval") == 0) {
+        bool plain = true;
+        for (size_t i = 0; i < argc; i++) {
+            const pm_node_t *an = cn->arguments->arguments.nodes[i];
+            if (PM_NODE_TYPE_P(an, PM_SPLAT_NODE) || PM_NODE_TYPE_P(an, PM_FORWARDING_ARGUMENTS_NODE) ||
+                PM_NODE_TYPE_P(an, PM_KEYWORD_HASH_NODE) || PM_NODE_TYPE_P(an, PM_BLOCK_ARGUMENT_NODE)) { plain = false; break; }
+        }
+        if (plain) {
+            const uint32_t line2 = kp_line(tc, (const pm_node_t *)cn);
+            uint32_t cnt = 1u + (uint32_t)argc + 1u;     /* [self, args..., binding] */
+            NODE **argv = malloc(sizeof(NODE *) * cnt);
+            if (!argv) abort();
+            int32_t saved = tc->chain;
+            tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;
+            argv[0] = bake_self(tc);
+            for (size_t i = 0; i < argc; i++)
+                argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
+            argv[cnt - 1] = kp_make_binding_node(tc, line2);
+            tc->chain = saved;
+            return ALLOC_node_call(kp_intern_cid(tc, cn->name), line2, argv, cnt);
+        }
+    }
+
     /* `local_variables` — desugar to `binding.local_variables`.  The Binding node is
      * built staged as the send's receiver (KP_SEND0_SC) so its baked offsets match. */
     if (cn->receiver == NULL && argc == 0 && cn->block == NULL &&
@@ -1837,6 +1863,38 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             return ALLOC_node_send_splat(mid, line, recv, arr);
         }
     }
+    /* instance_eval / class_eval / module_eval with positional args (the String
+     * form): append the caller's binding as a hidden trailing arg so the eval'd
+     * string sees (and writes back) caller locals — same contract as the
+     * eval(str) lowering above.  Block forms don't need it. */
+    if (cn->block == NULL && argc >= 1 && argc <= 3 &&
+        !(cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) &&
+        (strcmp(name, "instance_eval") == 0 || strcmp(name, "class_eval") == 0 ||
+         strcmp(name, "module_eval") == 0)) {
+        bool plain = true;
+        for (size_t i = 0; i < argc; i++) {
+            const pm_node_t *an = cn->arguments->arguments.nodes[i];
+            if (PM_NODE_TYPE_P(an, PM_SPLAT_NODE) || PM_NODE_TYPE_P(an, PM_FORWARDING_ARGUMENTS_NODE) ||
+                PM_NODE_TYPE_P(an, PM_KEYWORD_HASH_NODE) || PM_NODE_TYPE_P(an, PM_BLOCK_ARGUMENT_NODE)) { plain = false; break; }
+        }
+        if (plain) {
+            uint32_t cnt = 1u + (uint32_t)argc + 1u;     /* [recv, args..., binding] */
+            int32_t self_off = -1 - tc->chain - (int32_t)cnt - KORB_FRAME_HDR;
+            NODE **argv = malloc(sizeof(NODE *) * cnt);
+            if (!argv) abort();
+            int32_t saved = tc->chain;
+            tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;
+            argv[0] = transduce(tc, cn->receiver);
+            for (size_t i = 0; i < argc; i++)
+                argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
+            argv[cnt - 1] = kp_make_binding_node(tc, line);
+            tc->chain = saved;
+            NODE *call = ALLOC_node_send(mid, line, self_off, argv, cnt);
+            bake_add(tc, &call->u.node_send.self_off);
+            return call;
+        }
+    }
+
     /* unified send (any fixed arity): stage [recv, arg0..] into a parse-time
      * NODE* array; node_send / node_send_safe stage them into consecutive slots
      * at eval.  Safe navigation (recv&.m) nil-checks recv before dispatch. */
