@@ -715,10 +715,17 @@ node_caseeq(CTX *c, NODE *n, VALUE *slots, VALUE_REF wv@child, VALUE subj@child)
 
 // ---- boolean ---------------------------------------------------------------
 
-NODE_DEF @nogc
+NODE_DEF
 node_not(CTX *c, NODE *n, VALUE *slots, VALUE v@child)
 {
-    (void)c; (void)n; (void)slots;
+    (void)n;
+    /* `!obj` is a real method call in Ruby; only heap objects can carry an
+     * override, and the VM-wide flag keeps `!bool` a plain negation. */
+    if (UNLIKELY(c->vm->bang_redefined && AROH_IS_GC_OBJECT(v) &&
+                 korb_find_bang_override(c, v))) {
+        slots[0] = v;
+        return korb_send(c, slots + 1, korb_intern(c->vm, "!", 1), 0, 0);
+    }
     return RESULT_OK(KORB_TRUTHY(v) ? KORB_FALSE : KORB_TRUE);
 }
 

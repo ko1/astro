@@ -138,12 +138,11 @@ class Object
     e.__set_source(this, meth, args)                        # Enumerator#each(*extra) re-drives the source
     e
   end
-  def enum_for(meth = :each, *args)
-    this = self
-    sz = (respond_to?(:size) && args.empty?) ? size : nil
-    e = Enumerator.new(sz) { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
-    e.__set_source(this, meth, args)
-    e
+  alias_method :enum_for, :to_enum    # CRuby: the same definition, not a copy
+
+  def display(port = $stdout)
+    port.write(to_s)
+    nil
   end
 end
 # Errno::* — one SystemCallError subclass per errno the platform defines, built

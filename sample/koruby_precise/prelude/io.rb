@@ -1,4 +1,19 @@
 class IO
+  # CRuby: "#<File:/path>", "#<IO:fd 3>", "#<IO:<STDOUT>>", " (closed)" suffix.
+  def inspect
+    shut = closed?
+    name = if defined?(@__io_std_name) && @__io_std_name
+             "<#{@__io_std_name}>"
+           elsif defined?(@__io_path) && @__io_path
+             @__io_path
+           elsif shut
+             nil            # a closed fd-only IO has no name left to print
+           else
+             "fd #{fileno}"
+           end
+    "#<#{self.class}:#{name}#{shut ? "#{name ? ' ' : ''}(closed)" : ''}>"
+  end
+
   # External/internal encodings.  koruby reads produce UTF-8 (ASCII-8BIT in
   # binary mode); these record what was requested so the accessors round-trip
   # and #set_encoding is not a hard error.

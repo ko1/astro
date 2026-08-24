@@ -831,8 +831,10 @@ main(int argc, char *argv[])
         RESULT pm = korb_obj_new(c, pcur, KORB_NIL);
         if (pm.state == KORB_RAISE) { korb_report_uncaught(c, pm.value); korb_io_flush_std(c->vm); return 1; }
         c->slots[-1] = pm.value;                  /* prelude self at base[-1] (bottom header) */
+        korb_relocate_object_methods(c, pcur);    /* before: the prelude itself asks Kernel for them */
         RESULT pr = EVAL(c, prelude_ast, pcur);
         if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); korb_io_flush_std(c->vm); return 1; }
+        korb_relocate_object_methods(c, pcur);  /* Object's own table is empty in CRuby: move to Kernel/BasicObject */
         korb_seed_provided_features(c, pcur);   /* CRuby-parity: fiber/pathname preload + pseudo $LOADED_FEATURES */
         if (OPTION.verbose_warn != 0) {         /* -w / -W2 → $VERBOSE = true (every Warning category on); -W0 → nil */
             korb_const_define(c, korb_intern(c->vm, "$VERBOSE", 8),

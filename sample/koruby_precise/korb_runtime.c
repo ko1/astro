@@ -2046,6 +2046,7 @@ static VALUE korb_member_ivar_sym(struct korb_vm *vm, VALUE member_sym) {
 static inline VALUE korb_builtin_class_obj(const struct korb_vm *vm, enum korb_class e);
 
 static struct korb_method *korb_class_method_slot(KorbClass *k, uint32_t mid);   /* fwd (defined below) */
+static void korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid);        /* fwd (defined below) */
 /* add a CFUNC method to a specific class object (struct classes get these). */
 static void korb_class_def_cfn(CTX *c, VALUE klass, const char *name, korb_method_fn fn, int32_t arity) {
     struct korb_method *m = korb_class_method_slot(VAL2CLASS(klass), korb_intern(c->vm, name, strlen(name)));
@@ -3390,6 +3391,7 @@ RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t 
     if (UNLIKELY(src == NULL))
         return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* CRuby: NameError, not NoMethodError */
                           korb_sym_name(c->vm, oldm), korb_type_name(klass));
+    korb_check_basic_op_redef(c, klass, newm);          /* an alias can redefine a basic op too */
     struct korb_method *dst = korb_class_method_slot(VAL2CLASS(klass), newm);   /* libc alloc, no GC */
     const struct korb_method tmp = *src;   /* src may dangle if the slot array grows; snapshot first */
     *dst = tmp; dst->mid = newm; dst->owner = klass;
@@ -3475,6 +3477,7 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             char onm[192]; korb_class_qname_into(c, owner, onm, sizeof onm);   /* name the CLASS, not "Class" */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be a subclass of %s", onm);
         }
+        korb_check_basic_op_redef(c, slots[0], mid);
         struct korb_method *dst = korb_class_method_slot(VAL2CLASS(slots[0]), mid);
         *dst = *src;                                     /* copy the definition */
         dst->mid = mid; dst->owner = slots[0];           /* rename + re-own */
@@ -3487,6 +3490,7 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     } else {
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Proc object without a block");
     }
+    korb_check_basic_op_redef(c, slots[0], mid);
     struct korb_method *m = korb_class_method_slot(VAL2CLASS(slots[0]), mid);
     m->kind = KORB_METHOD_DM;
     m->dm_proc = slots[1];
@@ -3512,6 +3516,10 @@ static void
 korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
 {
     struct korb_vm *const vm = c->vm;
+    /* A user-defined `!` (Delegator, BasicObject proxies) makes node_not dispatch
+     * instead of negating in place; one flag for the whole VM keeps the common
+     * `!bool` free. */
+    if (!vm->bang_redefined && mid == korb_intern(vm, "!", 1)) vm->bang_redefined = true;
     /* Array#[] / Array#[]= redefinition deopts the node_aref/node_aset fast path. */
     if (!vm->aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_ARRAY) &&
         (mid == vm->mid_aref || mid == vm->mid_aset))
@@ -3544,8 +3552,193 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
         if (strcmp(nm, ops[i]) == 0) { vm->basic_op_redefined = true; return; }
 }
 
+/* True when `v`'s class (or singleton) defines `!` — node_not's deopt check.
+ * Only reached while vm->bang_redefined is set. */
+bool
+korb_find_bang_override(CTX *c, VALUE v)
+{
+    const VALUE k = korb_dispatch_class(c, v);
+    return KORB_CLASS_P(k) && korb_class_find_method(k, korb_intern(c->vm, "!", 1), NULL) != NULL;
+}
+
 extern const struct NodeKind kind_node_ivar_get;   /* auto-attr detection */
 static VALUE korb_klass_override_get(const struct korb_vm *vm, VALUE obj);   /* fwd (singleton lookup, no alloc) */
+
+/* Module#dup / Class#dup: an anonymous copy that owns its own method table.
+ * Sharing the source's entries would let the copy's undef_method/alias reach
+ * back into the original (delegate.rb builds Delegator's superclass by dup'ing
+ * Kernel and undef'ing half of it). */
+RESULT
+korb_class_dup(CTX *c, VALUE *slots, VALUE src)
+{
+    slots[0] = src;                                   /* root across every alloc below */
+    const VALUE sup = VAL2CLASS(slots[0])->superclass;
+    RESULT nr = korb_class_new(c, slots + 1, 0, sup); /* anonymous, same superclass */
+    if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+    slots[1] = nr.value;
+    KorbClass *const d = VAL2CLASS(slots[1]);
+    const KorbClass *const s = VAL2CLASS(slots[0]);
+    d->is_module = s->is_module;
+    d->is_data = s->is_data;
+    d->struct_kwinit = s->struct_kwinit;
+    d->exc_etype = s->exc_etype;
+    d->cur_visibility = 0;                            /* a fresh body starts public */
+    ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->included,  s->included);
+    ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->prepended, s->prepended);
+    ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->members,   s->members);
+    ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->cvars,     s->cvars);
+    ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->class_ivars, s->class_ivars);
+    ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->enclosing, s->enclosing);
+    const uint32_t n = VAL2CLASS(slots[0])->method_cnt;
+    for (uint32_t i = 0; i < n; i++) {
+        const struct korb_method src_m = *VAL2CLASS(slots[0])->methods[i];   /* snapshot: the slot below may realloc */
+        struct korb_method *const dm = korb_class_method_slot(VAL2CLASS(slots[1]), src_m.mid);
+        *dm = src_m;
+        dm->owner = slots[1];
+    }
+    /* constants defined under the source module come along (Module#constants) */
+    struct korb_vm *const vm = c->vm;
+    const uint32_t cn = vm->const_cnt;                /* the loop appends; only copy the originals */
+    for (uint32_t i = 0; i < cn; i++)
+        if (vm->const_owners[i] == slots[0])
+            korb_const_define_owned(c, vm->const_names[i], vm->const_vals[i], slots[1]);
+    /* module/class methods live on the singleton class; copy the source's own
+     * (inherited ones already reach the copy through the metaclass chain). */
+    VALUE ssing = KORB_NIL;
+    if (((const AroObjectHeader *)(uintptr_t)slots[0])->flags & KORB_FL_HAS_KLASS) {
+        const VALUE ov = korb_klass_override_get(vm, slots[0]);
+        if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) ssing = ov;
+    }
+    if (ssing != KORB_NIL) {
+        slots[2] = ssing;                             /* root: the alloc below may move it */
+        slots[3] = UNWRAP(korb_obj_singleton(c, slots + 4, slots[1]));
+        {   /* `extend`ed modules live on the singleton too */
+            KorbClass *const ds = VAL2CLASS(slots[3]);
+            const KorbClass *const ss = VAL2CLASS(slots[2]);
+            ARO_STORE(c, ds, (VALUE *)(uintptr_t)&ds->included,  ss->included);
+            ARO_STORE(c, ds, (VALUE *)(uintptr_t)&ds->prepended, ss->prepended);
+        }
+        const uint32_t sn = VAL2CLASS(slots[2])->method_cnt;
+        for (uint32_t i = 0; i < sn; i++) {
+            const struct korb_method src_m = *VAL2CLASS(slots[2])->methods[i];
+            struct korb_method *const dm = korb_class_method_slot(VAL2CLASS(slots[3]), src_m.mid);
+            *dm = src_m;
+            dm->owner = slots[3];
+        }
+    }
+    vm->method_serial++;
+    return RESULT_OK(slots[1]);
+}
+
+/* CRuby keeps Object's own method table empty: the Object-level methods live on
+ * Kernel (included) and a handful on BasicObject.  koruby registers them on
+ * Object for convenience, so after boot we relocate them once.  Dispatch is
+ * unaffected (Object's MRO segment searches Kernel next); what changes is what
+ * reflection reports -- UnboundMethod#owner, Module#instance_methods(false),
+ * `Kernel.dup` (delegate.rb builds Delegator's superclass from it), and `super`
+ * from a method that overrides an Object-level one. */
+void
+korb_relocate_object_methods(CTX *c, VALUE *slots)
+{
+    struct korb_vm *const vm = c->vm;
+    /* rooted in slots: the singleton alloc further down can move all three */
+    slots[0] = korb_builtin_class_obj(vm, KORB_C_OBJECT);
+    slots[1] = korb_const_get(vm, korb_intern(vm, "Kernel", 6));
+    slots[2] = korb_const_get(vm, korb_intern(vm, "BasicObject", 11));
+    if (!KORB_CLASS_P(slots[0]) || !KORB_CLASS_P(slots[1]) || !KORB_CLASS_P(slots[2])) return;
+    const VALUE objc = slots[0], kmod = slots[1], bobj = slots[2];
+    /* BasicObject's own methods (CRuby's BasicObject.instance_methods(false)
+     * plus its private ones); everything else on Object belongs to Kernel. */
+    static const char *const basic[] = {
+        "==", "equal?", "!", "__send__", "instance_eval", "instance_exec",
+        "!=", "__id__", "initialize", "method_missing", "singleton_method_added",
+        "singleton_method_removed", "singleton_method_undefined", NULL,
+    };
+    KorbClass *const ko = VAL2CLASS(objc);
+    const uint32_t n = ko->method_cnt;
+    for (uint32_t i = 0; i < n; i++) {
+        struct korb_method *const m = ko->methods[i];
+        const char *const nm = korb_sym_name(vm, m->mid);
+        VALUE target = kmod;
+        for (uint32_t b = 0; basic[b]; b++)
+            if (strcmp(nm, basic[b]) == 0) { target = bobj; break; }
+        KorbClass *const kt = VAL2CLASS(target);
+        bool present = false;
+        for (uint32_t j = 0; j < kt->method_cnt && !present; j++)
+            if (kt->methods[j]->mid == m->mid) present = true;
+        if (present) continue;                  /* target already defines it: keep that one */
+        if (kt->method_cnt == kt->method_capa) {
+            const uint32_t nc = kt->method_capa ? kt->method_capa * 2 : 8;
+            kt->methods = realloc(kt->methods, sizeof(struct korb_method *) * nc);
+            if (!kt->methods) { fprintf(stderr, "koruby_precise: oom (methods)\n"); abort(); }
+            kt->method_capa = nc;
+        }
+        m->owner = target;                      /* `super` and #owner follow the move */
+        kt->methods[kt->method_cnt++] = m;
+    }
+    ko->method_cnt = 0;
+    /* Kernel-level global functions (putc/caller/binding/...) are registered in
+     * the global function table, which reflection cannot see.  Mirror them onto
+     * Kernel as private instance methods, as CRuby has them. */
+    KorbClass *const kk = VAL2CLASS(kmod);
+    for (uint32_t i = 0; i < vm->method_cnt; i++) {
+        const struct korb_method *const g = vm->methods[i];
+        if (g->kind != KORB_METHOD_BUILTIN) continue;
+        bool present = false;
+        for (uint32_t j = 0; j < kk->method_cnt && !present; j++)
+            if (kk->methods[j]->mid == g->mid) present = true;
+        if (present) continue;
+        struct korb_method *const dm = korb_class_method_slot(kk, g->mid);
+        *dm = *g;
+        dm->owner = kmod;
+        dm->visibility = 1;                 /* Kernel's global functions are private */
+    }
+    /* CRuby's Kernel.private_instance_methods(false): the "function" half of
+     * Kernel (puts/raise/format/...) is private, the "object" half public. */
+    static const char *const privnames[] = {
+        "Array", "Complex", "Float", "Hash", "Integer", "Pathname",
+        "Rational", "String", "__callee__", "__dir__", "__method__", "`",
+        "abort", "at_exit", "autoload", "autoload?", "binding", "block_given?",
+        "caller", "caller_locations", "catch", "eval", "exec", "exit",
+        "exit!", "fail", "fork", "format", "gem", "gem_original_require",
+        "gets", "global_variables", "initialize_clone", "initialize_copy",
+        "initialize_dup", "instance_variables_to_inspect", "iterator?", "lambda",
+        "load", "local_variables", "loop", "open", "p", "pp", "print", "printf",
+        "proc", "putc", "puts", "raise", "rand", "readline", "readlines",
+        "require", "require_relative", "respond_to_missing?", "select",
+        "set_trace_func", "sleep", "spawn", "sprintf", "srand", "syscall",
+        "system", "test", "throw", "trace_var", "trap", "untrace_var", "warn",
+        NULL,
+    };
+    /* they are module functions: private on the instance side, public on Kernel
+     * itself (`Kernel.Integer("42")`), so mirror each onto Kernel's singleton. */
+    /* the few that are private WITHOUT being module functions */
+    static const char *const notmodfn[] = {
+        "respond_to_missing?", "initialize_copy", "initialize_clone", "initialize_dup",
+        "instance_variables_to_inspect", "gem", "gem_original_require", "pp", NULL,
+    };
+    slots[3] = korb_obj_singleton(c, slots + 4, slots[1]).value;   /* may GC: slots[1] tracks */
+    for (uint32_t p = 0; privnames[p]; p++) {
+        bool modfn = true;
+        for (uint32_t q = 0; notmodfn[q] && modfn; q++)
+            if (strcmp(privnames[p], notmodfn[q]) == 0) modfn = false;
+        const uint32_t pmid = korb_intern(vm, privnames[p], (uint32_t)strlen(privnames[p]));
+        KorbClass *const kc = VAL2CLASS(slots[1]);
+        for (uint32_t j = 0; j < kc->method_cnt; j++) {
+            if (kc->methods[j]->mid != pmid) continue;
+            kc->methods[j]->visibility = 1;
+            if (modfn && KORB_CLASS_P(slots[3])) {
+                const struct korb_method src_m = *kc->methods[j];
+                struct korb_method *const sm = korb_class_method_slot(VAL2CLASS(slots[3]), pmid);
+                *sm = src_m;
+                sm->owner = slots[3];
+                sm->visibility = 0;
+            }
+            break;
+        }
+    }
+    vm->method_serial++;
+}
 
 void
 korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
@@ -7309,7 +7502,10 @@ korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
 static bool korb_range_default_init_p(CTX *c, VALUE cls) {
     VALUE found_def = KORB_NIL;
     struct korb_method *const m = korb_class_find_method(cls, c->vm->mid_initialize, &found_def);
-    return m == NULL || found_def == korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    /* the inherited default lives on BasicObject (korb_relocate_object_methods);
+     * Object is still checked for subsystems registered after that pass. */
+    return m == NULL || found_def == korb_builtin_class_obj(c->vm, KORB_C_OBJECT) ||
+           found_def == korb_const_get(c->vm, korb_intern(c->vm, "BasicObject", 11));
 }
 
 static RESULT

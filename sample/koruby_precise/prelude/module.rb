@@ -69,7 +69,7 @@ class Module
   # CRuby loads an autoload file through main's #require, so a spec can mock it.
   def self.__autoload_require(path)
     m = TOPLEVEL_BINDING.eval("self")
-    m.require(path)
+    m.__send__(:require, path)     # Kernel#require is private; main's is not a real singleton here
   end
 
   # A dup'ed module shares the pending autoload registrations (CRuby copies the

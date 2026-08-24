@@ -638,10 +638,10 @@ static RESULT korb_m_meth_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_meth_owner(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a;
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
-    if (m->unbound) return RESULT_OK(m->recv);                      /* unbound: recv is the owner */
     if (m->owner != KORB_NIL) return RESULT_OK(m->owner);           /* fixed owner (e.g. from super_method) */
     const struct korb_method *km = korb_meth_resolve(c, m);
     if (km && km->owner != KORB_NIL) return RESULT_OK(km->owner);   /* defining class/module */
+    if (m->unbound) return RESULT_OK(m->recv);                      /* unresolvable: the class it came from */
     return RESULT_OK(korb_builtin_class_obj(c->vm, KORB_C_OBJECT)); /* global fn → Object */
 }
 /* Method#super_method → a Method for the definition above this one in the
@@ -731,12 +731,12 @@ static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self,
     { RESULT r = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &mid); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(cls) || korb_class_find_method(cls, mid, NULL) == NULL)) {
-        /* koruby keeps Kernel's instance methods (respond_to?/freeze/class/...) on
-         * Object; `Kernel.instance_method(:x)` must still find them there. */
+        /* subsystems registered after boot can still land Kernel-level methods on
+         * Object (korb_relocate_object_methods runs once); look there too. */
         if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym == korb_intern(c->vm, "Kernel", 6)) {
             const VALUE objc = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
             if (KORB_CLASS_P(objc) && korb_class_find_method(objc, mid, NULL) != NULL)
-                return korb_unbound_new(c, slots, cls, mid);   /* owned by Kernel (module): binds anywhere */
+                return korb_unbound_new(c, slots, cls, mid);
         }
         RESULT ne = korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* CRuby: NameError, not NoMethodError */
                           korb_sym_name(c->vm, mid), korb_type_name(cls));

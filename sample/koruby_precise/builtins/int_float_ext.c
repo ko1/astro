@@ -539,6 +539,10 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         slots[2] = VALUE_REF_GET(self);                   /* orig (arg); recv = the new object at slots[1] */
         RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
+    } else if (KORB_CLASS_P(v)) {                          /* Module/Class → anonymous copy with its own method table */
+        RESULT cr = korb_class_dup(c, slots + 1, v);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        slots[1] = cr.value;
     } else {
         return RESULT_OK(v);   /* immediate / no special copy */
     }

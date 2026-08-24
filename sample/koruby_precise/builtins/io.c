@@ -1948,6 +1948,13 @@ static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (KORB_STRING_P(slots[1]))
         CHECK(korb_ivar_set(c, slots + 3, nio, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)), slots[1]));
     CHECK(korb_io_capture_default_internal(c, slots + 3, nio));
+    if (KORB_HASH_P(slots[0])) {                                   /* path: names the stream for #inspect */
+        const int32_t pi = korb_hash_find(VAL2HASH(slots[0]), ID2SYM(korb_intern(c->vm, "path", 4)));
+        if (pi >= 0) {
+            slots[3] = korb_items_data(VAL2HASH(slots[0])->items)[2 * pi + 1];
+            CHECK(korb_ivar_set(c, slots + 4, nio, ID2SYM(korb_intern(c->vm, "@__io_path", 10)), slots[3]));
+        }
+    }
     if (KORB_HASH_P(slots[0])) {                                   /* encoding: / autoclose: → prelude */
         slots[3] = VALUE_REF_GET(nio);
         slots[4] = slots[0];
@@ -2195,6 +2202,11 @@ void korb_init_io(CTX *c, VALUE *slots) {
     for (size_t i = 0; i < 3; i++) {
         slots[1] = korb_obj_new(c, slots + 1, slots[0]).value;   /* re-read slots[0]: korb_obj_new GCs and moves the IO class (a stale local would mis-klass the instance) */
         (void)korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]), ID2SYM(korb_io_fp_mid(c)), LONG2FIX((korb_sword_t)sv[i].idx));
+        {   /* IO#inspect names the std streams "<STDOUT>" etc. rather than "fd N" */
+            slots[2] = korb_str_new(c, slots + 2, sv[i].cn, (uint32_t)strlen(sv[i].cn)).value;
+            (void)korb_ivar_set(c, slots + 3, VALUE_REF_AT(&slots[1]),
+                                ID2SYM(korb_intern(vm, "@__io_std_name", 14)), slots[2]);
+        }
         korb_const_define(c, korb_intern(vm, sv[i].gv, (uint32_t)strlen(sv[i].gv)), slots[1]);
         korb_const_define(c, korb_intern(vm, sv[i].cn, (uint32_t)strlen(sv[i].cn)), slots[1]);
         if (sv[i].idx >= 1 && AROH_IS_GC_OBJECT(slots[1]))   /* mark default $stdout/$stderr for the fast fwrite path */

@@ -943,6 +943,9 @@ struct korb_vm {
     bool aref_redefined;
     /* set when Array#<< is redefined: node_shl's Array fast path then deopts. */
     bool arr_shl_redefined;
+    /* set when any class defines `!`: node_not then dispatches instead of
+     * negating in place (BasicObject proxies such as Delegator rely on it). */
+    bool bang_redefined;
     /* set when Hash#[] is redefined: node_aref's Hash fast path then deopts. */
     bool hash_aref_redefined;
     /* set when Method#[] is redefined: node_aref's Method fast path then deopts.

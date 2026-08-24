@@ -1501,3 +1501,15 @@ module Ruby
   RELEASE_DATE   = RUBY_RELEASE_DATE
   REVISION       = RUBY_REVISION
 end
+
+# Random's class-level RNG functions are public singleton methods in CRuby
+# (Kernel#rand / #srand are private instance methods, so they are not reachable
+# through `Random.rand`).
+class Random
+  class << self
+    def rand(*args)  = Kernel.rand(*args)
+    def srand(*args) = Kernel.srand(*args)
+    def seed         = @__seed || Kernel.srand(Kernel.srand)
+    def new_seed     = Kernel.srand(Kernel.srand)
+  end
+end
