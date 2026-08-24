@@ -102,7 +102,12 @@ class StringIO
       @writable = !other.closed_write?
       @append = false
     else
-      other = other.to_str unless other.is_a?(String)
+      unless other.is_a?(String)
+        unless other.respond_to?(:to_str)
+          raise TypeError, "no implicit conversion of #{other.class} into String"
+        end
+        other = other.to_str
+      end
       initialize(other, mode || (other.frozen? ? "r" : "r+"))
     end
     @closed_read = false
@@ -190,8 +195,10 @@ class StringIO
       args.each do |a|
         if a.is_a?(Array)
           puts(*a)
+        elsif a.nil?
+          write("\n")                                  # nil prints as an empty line
         else
-          s = a.to_s
+          s = a.is_a?(String) ? a : (a.respond_to?(:to_ary) ? (puts(*a.to_ary); next) : a.to_s)
           write(s)
           write("\n") unless s.end_with?("\n")
         end
