@@ -6792,7 +6792,10 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     if (UNLIKELY(block == NULL || block == KORB_BLK_CPROC || block->head.kind != &kind_node_entry ||
                  korb_entry_kw_info(block) || korb_entry_destructure_spec(block) ||
                  korb_entry_destructure_n(block) || korb_entry_rest_slot(block) != -1 ||
-                 korb_entry_opt_defaults(block)))   /* NULL (no block) → _full raises; keeps the cold epilogue out of the hot path */
+                 korb_entry_opt_defaults(block) ||
+                 /* a lone non-Array arg for a multi-param block may need #to_ary */
+                 (argc == 1 && !KORB_ARRAY_P(argv[0]) && KORB_OBJECT_P(argv[0]) &&
+                  block->u.node_entry.params_cnt > 1)))   /* NULL (no block) → _full raises; keeps the cold epilogue out of the hot path */
         return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL, 0);   /* is_lam via fwd-detection inside */
 
     const bool fwd = (def_env == KORB_BLK_FWD);
@@ -6895,6 +6898,34 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u..%u)", argc, lo, pc);
         }
     }
+    /* A block that takes more than one positional param auto-splats a single
+     * yielded value: CRuby converts a non-Array through #to_ary first (nil keeps
+     * the object as-is; a non-Array return is a TypeError).  Done once here, so
+     * every binding branch below sees a real Array. */
+    VALUE splat_conv = KORB_UNDEF;
+    if (!is_lambda && argc == 1 && !KORB_ARRAY_P(argv[0])) {
+        const uint32_t np0 = korb_entry_params_cnt(block);
+        const bool wants_many = (np0 > 1) || korb_entry_destructure_n(block) > 0 ||
+                                (korb_entry_destructure_spec(block) != NULL) ||
+                                (np0 == 1 && korb_entry_rest_slot(block) == -2);
+        if (wants_many && KORB_OBJECT_P(argv[0])) {
+            const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+            const VALUE recv = argv[0];
+            if (korb_responds_to(c, recv, to_ary)) {
+                slots[0] = recv;
+                RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+                if (ar.value != KORB_NIL) {
+                    if (UNLIKELY(!KORB_ARRAY_P(ar.value)))
+                        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)",
+                                          korb_coerce_name(c, recv), korb_coerce_name(c, recv), korb_type_name(ar.value));
+                    splat_conv = ar.value;
+                }
+            }
+        }
+    }
+    VALUE conv_buf[1];
+    if (splat_conv != KORB_UNDEF) { conv_buf[0] = splat_conv; argv = conv_buf; }
     const uint8_t *spec = korb_entry_destructure_spec(block);
     uint32_t dn = korb_entry_destructure_n(block);
     if (spec != NULL) {                                 /* mixed scalar + destructuring params, e.g. |a, (k, v)| or |(a, (b, c))| */
