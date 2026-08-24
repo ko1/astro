@@ -691,8 +691,13 @@ main(int argc, char *argv[])
             const char *const lib = a[2] ? a + 2 : (i + 1 < argc ? argv[++i] : NULL);
             if (lib) { if (nreq_libs < 64) req_libs[nreq_libs++] = lib; }
         }
-        else if (strcmp(a, "-w") == 0 || strncmp(a, "-W", 2) == 0 ||
-                 strncmp(a, "--disable", 9) == 0 || strncmp(a, "--enable", 8) == 0 ||
+        else if (strcmp(a, "-w") == 0 || strncmp(a, "-W", 2) == 0) {
+            /* -w / -W2 → $VERBOSE = true (and every Warning category on);
+             * -W0 silences ($VERBOSE = nil), -W1 is the default. */
+            if (strcmp(a, "-w") == 0 || strcmp(a, "-W") == 0 || strcmp(a, "-W2") == 0) OPTION.verbose_warn = 1;
+            else if (strcmp(a, "-W0") == 0) OPTION.verbose_warn = -1;
+        }
+        else if (strncmp(a, "--disable", 9) == 0 || strncmp(a, "--enable", 8) == 0 ||
                  strcmp(a, "--copyright") == 0) {
             /* accepted, no effect */
         }
@@ -829,6 +834,22 @@ main(int argc, char *argv[])
         RESULT pr = EVAL(c, prelude_ast, pcur);
         if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); korb_io_flush_std(c->vm); return 1; }
         korb_seed_provided_features(c, pcur);   /* CRuby-parity: fiber/pathname preload + pseudo $LOADED_FEATURES */
+        if (OPTION.verbose_warn != 0) {         /* -w / -W2 → $VERBOSE = true (every Warning category on); -W0 → nil */
+            korb_const_define(c, korb_intern(c->vm, "$VERBOSE", 8),
+                              OPTION.verbose_warn > 0 ? KORB_TRUE : KORB_NIL);
+            if (OPTION.verbose_warn > 0) {
+                const VALUE wm = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
+                if (KORB_CLASS_P(wm)) {
+                    static const char *const cats[] = { "deprecated", "experimental", "performance", NULL };
+                    for (uint32_t ci = 0; cats[ci]; ci++) {
+                        pcur[0] = wm;
+                        pcur[1] = ID2SYM(korb_intern(c->vm, cats[ci], (uint32_t)strlen(cats[ci])));
+                        pcur[2] = KORB_TRUE;
+                        (void)korb_send(c, pcur + 3, korb_intern(c->vm, "[]=", 3), 0, 2);
+                    }
+                }
+            }
+        }
     }
 
     /* Run (unless `--aot-compile` alone — then we bake below without running).

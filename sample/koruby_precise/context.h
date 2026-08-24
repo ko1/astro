@@ -1440,6 +1440,7 @@ struct koruby_option {
     bool dump_ast;       /* --dump-ast */
     bool quiet;
     bool verbose;
+    int  verbose_warn;   /* -w/-W2 → 1 ($VERBOSE=true), -W0 → -1 (nil), 0 = default */
 
     /* referenced by framework-generated ALLOC_ helpers */
     bool record_all;

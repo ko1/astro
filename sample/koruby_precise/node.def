@@ -183,6 +183,27 @@ node_readonly_gvar(CTX *c, NODE *n, VALUE *slots, const char *name, uint32_t lin
     return korb_raise(c, slots, KORB_E_NAME, line, "%s is a read-only variable", name);
 }
 
+// `$/ = v` and friends: CRuby warns (verbose mode) when a deprecated separator
+// global is set to a non-nil value.  The write itself is done by the caller.
+NODE_DEF @noinline
+node_deprecated_gvar_warn(CTX *c, NODE *n, VALUE *slots, const char *name, VALUE val@child)
+{
+    (void)n;
+    /* CRuby: only under `-w` / Warning[:deprecated] (which $VERBOSE=true enables) */
+    if (val != KORB_NIL && KORB_TRUTHY(korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)))) {
+        slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
+        bool dep_on = true;
+        if (KORB_CLASS_P(slots[0])) {
+            slots[1] = ID2SYM(korb_intern(c->vm, "deprecated", 10));
+            RESULT wr = korb_send(c, slots + 2, korb_intern(c->vm, "[]", 2), 0, 1);
+            if (UNLIKELY(wr.state != KORB_NORMAL)) return wr;
+            dep_on = KORB_TRUTHY(wr.value);
+        }
+        if (dep_on) korb_warn(c, slots, "non-nil '%s' is deprecated", name);
+    }
+    return RESULT_OK(val);
+}
+
 // ---- sequencing ------------------------------------------------------------
 
 NODE_DEF

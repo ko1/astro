@@ -4104,6 +4104,25 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         }
         const pm_global_variable_write_node_t *gw = (const pm_global_variable_write_node_t *)node;
         uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, gw->name));
+        {   /* deprecated separator globals warn (verbose) on a non-nil write */
+            static const char *const dep[] = { "$/", "$-0", "$\\", "$,", "$;", "$-F", "$=", NULL };
+            const char *const rn = korb_sym_name(tc->c->vm, name);
+            for (uint32_t i = 0; dep[i]; i++) {
+                if (strcmp(rn, dep[i]) != 0) continue;
+                const char *const written = kp_cid_cstr(tc, gw->name);
+                char *msgname = malloc(strlen(written) + 1);   /* immortal (baked) */
+                if (!msgname) abort();
+                strcpy(msgname, written);
+                NODE *v2, *warn;
+                /* node_const_set stages its value child; the warn node stages
+                 * ITS child one deeper (its own slot_count on top). */
+                WITH_CHAIN(tc, kind_node_const_set.slot_count,
+                           ({ NODE *inner = transduce(tc, gw->value);   /* @child: evaluated at this cursor */
+                              warn = ALLOC_node_deprecated_gvar_warn(msgname, inner); v2 = warn; }));
+                (void)v2;
+                return build_const_set(tc, name, warn);
+            }
+        }
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
         return build_const_set(tc, name, val);
