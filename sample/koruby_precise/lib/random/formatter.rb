@@ -386,10 +386,20 @@ module Random::Formatter
     elsif n.is_a?(Float)
       return __rand_float if n <= 0
       __rand_float * n
+    elsif n.is_a?(Range)
+      lo, hi = n.begin, n.end
+      raise ArgumentError, "invalid argument - #{n}" if lo.nil? || hi.nil?
+      if lo.is_a?(Integer) && hi.is_a?(Integer)
+        span = hi - lo + (n.exclude_end? ? 0 : 1)
+        raise ArgumentError, "invalid argument - #{n}" if span <= 0
+        lo + random_number(span)
+      else
+        lo + __rand_float * (hi - lo)
+      end
     elsif n.respond_to?(:to_int)
       random_number(n.to_int)
     else
-      __rand_float
+      raise ArgumentError, "invalid argument - #{n}"
     end
   end
   alias rand random_number

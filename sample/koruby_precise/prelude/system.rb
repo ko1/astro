@@ -862,6 +862,10 @@ class << ARGFClass
   alias_method :inspect, :name
 end
 ARGF = ARGFClass.new(*ARGV)
+__set_gvar("$<", ARGF)   # the default input stream (read-only for user code)
+__set_gvar("$*", ARGV)   # $* is ARGV
+$> = $stdout       # the default output stream ($DEFAULT_OUTPUT)
+$. = 0             # input line number, bumped by every #gets
 
 module ObjectSpace
   # WeakMap / WeakKeyMap — koruby's GC has no weak edges, so entries are held

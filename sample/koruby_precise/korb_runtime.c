@@ -11501,6 +11501,16 @@ static RESULT korb_bi_gets(CTX *c, VALUE *slots, VALUE_SLICE args)     { return 
 static RESULT korb_bi_readline(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_bi_gets_impl(c, slots, args, "readline", 8); }
 /* Kernel#global_variables — every defined $-global as a Symbol.  Globals reuse the
  * const table with a $-prefixed name (see parse.c), so scan it for those. */
+/* Assign a global variable by name, bypassing the parse-time read-only check —
+ * the prelude has to seed $< (ARGF), which user code may not assign. */
+static RESULT korb_bi_set_gvar(CTX *c, VALUE *slots, VALUE_SLICE args) {
+    const VALUE nv = VALUE_SLICE_GET(args, 0);
+    if (UNLIKELY(!KORB_STRING_P(nv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "global variable name must be a String");
+    korb_const_define(c, korb_intern(c->vm, korb_strbuf_data(VAL2STR(nv)->buf), VAL2STR(nv)->len),
+                      VALUE_SLICE_GET(args, 1));
+    return RESULT_OK(VALUE_SLICE_GET(args, 1));
+}
 static RESULT korb_bi_global_variables(CTX *c, VALUE *slots, VALUE_SLICE args) {
     (void)args;
     struct korb_vm *const vm = c->vm;
@@ -12884,6 +12894,7 @@ korb_ctx_new(void)
        delegate to Warning.warn and introspect its arity */
     korb_builtin_define(c, "__warn_raw", korb_bi_warn, -1);
     korb_builtin_define(c, "global_variables", korb_bi_global_variables, 0);
+    korb_builtin_define(c, "__set_gvar", korb_bi_set_gvar, 2);
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "require", korb_bi_require, -1);
