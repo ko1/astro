@@ -5,9 +5,36 @@
 class StringIO
   include Enumerable
 
+  # Integer modes (File::RDONLY etc.), same bits CRuby uses.
+  MODE_RDONLY__ = 0
+  MODE_WRONLY__ = 1
+  MODE_RDWR__   = 2
+  MODE_APPEND__ = 1024
+  MODE_TRUNC__  = 512
+
   def initialize(string = +"", mode = nil, **opts)
+    unless string.is_a?(String)
+      unless string.respond_to?(:to_str)
+        raise TypeError, "no implicit conversion of #{string.class} into String"
+      end
+      string = string.to_str
+    end
     @buf = string
     mode = opts[:mode] if mode.nil? && opts.key?(:mode)   # StringIO.new(str, mode: "r")
+    if mode.is_a?(Integer)                                # File::RDONLY / WRONLY | TRUNC / ...
+      acc = mode & 3
+      m = acc == MODE_WRONLY__ ? "w" : acc == MODE_RDWR__ ? "r+" : "r"
+      m = "w" if (mode & MODE_TRUNC__) != 0 && acc != MODE_RDONLY__
+      m = "a" if (mode & MODE_APPEND__) != 0 && acc != MODE_RDONLY__
+      m += "+" if acc == MODE_RDWR__ && !m.include?("+")
+      mode = m
+      @int_mode__ = true      # an Integer mode never truncates on its own
+    elsif !mode.nil? && !mode.is_a?(String)
+      unless mode.respond_to?(:to_str)
+        raise TypeError, "no implicit conversion of #{mode.class} into String"
+      end
+      mode = mode.to_str
+    end
     mode ||= string.frozen? ? "r" : "r+"
     mode = mode.to_s
     mode += "b" if opts[:binmode] && !mode.include?("b")
@@ -15,8 +42,11 @@ class StringIO
     plus = mode.include?("+")
     @readable = plus || mode.start_with?("r")
     @writable = plus || mode.start_with?("w") || @append
-    @buf = @buf.dup if @buf.frozen? && @writable
-    @buf.clear if mode.start_with?("w")
+    if @buf.frozen? && @writable
+      # CRuby refuses a frozen backing string for a writable StringIO
+      raise Errno::EACCES
+    end
+    @buf.clear if mode.start_with?("w") && !@int_mode__
     @pos = 0
     @lineno = 0
     @closed_read = false
