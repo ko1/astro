@@ -369,4 +369,32 @@ module Random::Formatter
     n = 16 if n.nil?
     choose(chars, n)
   end
+
+  # Generate a random number in [0, n) — a Float in [0, 1) when n is 0/omitted,
+  # an Integer for a positive Integer n, a Float for a positive Float n.
+  def random_number(n = 0)
+    if n.is_a?(Integer)
+      return __rand_float if n <= 0
+      # rejection sampling over whole bytes keeps the distribution uniform
+      bits = n.bit_length
+      nbytes = (bits + 7) / 8
+      mask = (1 << bits) - 1
+      loop do
+        v = random_bytes(nbytes).unpack1("H*").to_i(16) & mask
+        return v if v < n
+      end
+    elsif n.is_a?(Float)
+      return __rand_float if n <= 0
+      __rand_float * n
+    elsif n.respond_to?(:to_int)
+      random_number(n.to_int)
+    else
+      __rand_float
+    end
+  end
+  alias rand random_number
+
+  private def __rand_float                       # 53 random bits → [0.0, 1.0)
+    random_bytes(7).unpack1("H*").to_i(16).fdiv(1 << 56)
+  end
 end
