@@ -6697,6 +6697,21 @@ uint32_t korb_entry_params_cnt(NODE *entry) { return entry == KORB_BLK_CPROC ? 1
 uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
 static uint32_t korb_entry_destructure_n(NODE *entry) { return entry->u.node_entry.destructure_n; }
 static int32_t  korb_entry_rest_slot(NODE *entry) { return entry->u.node_entry.rest_slot; }   /* -1 = no rest param */
+/* Bind one destructuring-spec entry (see parse.c): 0x00 = scalar leaf,
+ * 0xFF <k> = a group of k nested entries.  Returns the next entry. */
+static const uint8_t *korb_bind_destr_entry(VALUE *bf, uint32_t *loc, const uint8_t *sp, VALUE pv)
+{
+    if (*sp != 0xFF) { bf[1 + (*loc)++] = pv; return sp + 1; }
+    const uint32_t k = sp[1];
+    const uint8_t *cur = sp + 2;
+    const KorbArray *const ar = KORB_ARRAY_P(pv) ? VAL2ARY(pv) : NULL;
+    for (uint32_t j = 0; j < k; j++) {
+        const VALUE sub = ar ? (j < ar->len ? korb_items_data(ar->items)[j] : KORB_NIL)
+                             : (j == 0 ? pv : KORB_NIL);   /* non-Array → first leaf, rest nil */
+        cur = korb_bind_destr_entry(bf, loc, cur, sub);
+    }
+    return cur;
+}
 static uint32_t korb_entry_post_cnt(NODE *entry)  { return entry->u.node_entry.post_cnt; }    /* trailing required params */
 static struct Node **korb_entry_opt_defaults(NODE *entry) { return (struct Node **)entry->u.node_entry.opt_defaults; }
 static uint32_t korb_entry_req_cnt(NODE *entry) { return entry->u.node_entry.req_cnt; }
@@ -6849,26 +6864,16 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     }
     const uint8_t *spec = korb_entry_destructure_spec(block);
     uint32_t dn = korb_entry_destructure_n(block);
-    if (spec != NULL) {                                 /* mixed scalar + destructuring params, e.g. |a, (k, v)| */
+    if (spec != NULL) {                                 /* mixed scalar + destructuring params, e.g. |a, (k, v)| or |(a, (b, c))| */
         const uint32_t np = korb_entry_params_cnt(block);   /* logical param count */
         const VALUE *src = argv; uint32_t srcn = argc;
         if (!is_lambda && np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {  /* auto-splat one yielded Array across params */
             const KorbArray *ar = VAL2ARY(argv[0]); src = korb_items_data(ar->items); srcn = ar->len;
         }
         uint32_t loc = 0;
-        for (uint32_t p = 0; p < np; p++) {
-            VALUE pv = (p < srcn) ? src[p] : KORB_NIL;
-            uint8_t m = spec[p];
-            if (m == 0) { bf[1 + loc] = pv; loc++; continue; }
-            if (KORB_ARRAY_P(pv)) {                     /* destructure this param into m locals */
-                const KorbArray *ar2 = VAL2ARY(pv);
-                for (uint32_t j = 0; j < m; j++) bf[1 + loc + j] = j < ar2->len ? korb_items_data(ar2->items)[j] : KORB_NIL;
-            } else {
-                bf[1 + loc] = pv;
-                for (uint32_t j = 1; j < m; j++) bf[1 + loc + j] = KORB_NIL;
-            }
-            loc += m;
-        }
+        const uint8_t *sp = spec;
+        for (uint32_t p = 0; p < np; p++)
+            sp = korb_bind_destr_entry(bf, &loc, sp, (p < srcn) ? src[p] : KORB_NIL);
         for (uint32_t i = loc; i < blocals; i++) bf[1 + i] = KORB_NIL;
     } else if (dn > 0) {                                /* |(a, b, ...)| — splat the array arg */
         VALUE arr = (argc >= 1) ? argv[0] : KORB_NIL;

@@ -1040,6 +1040,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
     uint8_t *destructure_spec = NULL;  /* per-param arity for mixed |a,(k,v)| (0=scalar) */
     int32_t rest_slot = -1;         /* local index of a `*rest` param, or -1 */
     uint32_t post_cnt = 0;          /* trailing required params (bound from the end) */
+    uint32_t destr_len = 0;         /* bytes in destructure_spec (variable-length: nested groups) */
     struct Node **opt_defaults = NULL;  /* default exprs for optional params */
     uint32_t req_cnt = 0;           /* leading required positional count */
     struct korb_kw_info *kw_info = NULL;  /* keyword params (a:, b: 10, **kw) */
@@ -1162,8 +1163,14 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                 }
                 bparams = loc;                              /* req + opt + rest(1) + post */
             }
-            /* single |(a, b, ...)| → destructure the one array arg into N locals */
-            else if (ps->requireds.size == 1 && PM_NODE_TYPE_P(ps->requireds.nodes[0], PM_MULTI_TARGET_NODE)) {
+            /* single |(a, b, ...)| → destructure the one array arg into N locals
+             * (a NESTED group goes through the general spec encoder below) */
+            else if (ps->requireds.size == 1 && PM_NODE_TYPE_P(ps->requireds.nodes[0], PM_MULTI_TARGET_NODE) &&
+                     ({ const pm_multi_target_node_t *m0 = (const pm_multi_target_node_t *)ps->requireds.nodes[0];
+                        bool flat = !m0->rest && !m0->rights.size;
+                        for (uint32_t z = 0; flat && z < m0->lefts.size; z++)
+                            if (PM_NODE_TYPE_P(m0->lefts.nodes[z], PM_MULTI_TARGET_NODE)) flat = false;
+                        flat; })) {
                 const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)ps->requireds.nodes[0];
                 if (mt->rest || mt->rights.size) {
                     pop_frame(tc);
@@ -1207,52 +1214,50 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                         }
                     }
                 } else {
-                    /* mixed scalar + |(...)| destructuring params, e.g. |a, (k, v)|.
-                     * spec[i] = destructure arity (0 = scalar); local slots are
-                     * assigned left-to-right, scalar=1 slot, destructure=N slots. */
-                    uint8_t *spec = malloc(bparams ? bparams : 1);
+                    /* mixed scalar + |(...)| destructuring params, e.g. |a, (k, v)|
+                     * or nested |(a, (b, c))|.  The spec is a byte stream, one
+                     * entry per top-level param: 0x00 = scalar (1 local), else
+                     * 0xFF <k> followed by k nested entries (a destructured
+                     * group).  Locals are assigned to leaves left to right. */
+                    uint32_t cap = 16, len = 0;
+                    uint8_t *spec = malloc(cap);
                     if (!spec) abort();
                     uint32_t loc = 0;
-                    for (uint32_t i = 0; i < bparams; i++) {
-                        const pm_node_t *p = ps->requireds.nodes[i];
-                        if (PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) {
-                            spec[i] = 0;
-                            pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-                            if (lvar_index(tc, p, cid) != loc && kp_cid_cstr(tc, cid)[0] != '_') {
-                                free(spec); pop_frame(tc);
-                                return kp_unsupported(tc, p, "repeated block parameter name");
-                            }
+                    bool bad = false;
+                    #define SPEC_PUT(b) do { if (len == cap) { cap *= 2; spec = realloc(spec, cap); if (!spec) abort(); } spec[len++] = (uint8_t)(b); } while (0)
+                    /* recursive encoder (iterative over a small work stack would
+                     * need its own bookkeeping; params nest only a few deep) */
+                    struct { const pm_node_list_t *list; uint32_t i; } stk[16];
+                    uint32_t sp = 0;
+                    const pm_node_list_t *cur = &ps->requireds;
+                    uint32_t ci = 0;
+                    for (;;) {
+                        if (ci >= cur->size) {
+                            if (sp == 0) break;
+                            sp--; cur = stk[sp].list; ci = stk[sp].i;
+                            continue;
+                        }
+                        const pm_node_t *p = cur->nodes[ci++];
+                        if (PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE) ||
+                            PM_NODE_TYPE_P(p, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                            pm_constant_id_t cid = PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)
+                                ? ((const pm_required_parameter_node_t *)p)->name
+                                : ((const pm_local_variable_target_node_t *)p)->name;
+                            if (lvar_index(tc, p, cid) != loc && kp_cid_cstr(tc, cid)[0] != '_') { bad = true; break; }
+                            SPEC_PUT(0x00);
                             loc++;
                         } else if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) {
-                            const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)p;
-                            if (mt->rest || mt->rights.size || mt->lefts.size == 0 || mt->lefts.size > 255) {
-                                free(spec); pop_frame(tc);
-                                return kp_unsupported(tc, p, "block param with splat/post destructure");
-                            }
-                            spec[i] = (uint8_t)mt->lefts.size;
-                            for (uint32_t j = 0; j < mt->lefts.size; j++) {
-                                const pm_node_t *t = mt->lefts.nodes[j];
-                                pm_constant_id_t cid;
-                                if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE))
-                                    cid = ((const pm_local_variable_target_node_t *)t)->name;
-                                else if (PM_NODE_TYPE_P(t, PM_REQUIRED_PARAMETER_NODE))
-                                    cid = ((const pm_required_parameter_node_t *)t)->name;
-                                else {
-                                    free(spec); pop_frame(tc);
-                                    return kp_unsupported(tc, t, "nested destructuring block parameter");
-                                }
-                                if (lvar_index(tc, t, cid) != loc) {
-                                    free(spec); pop_frame(tc);
-                                    return kp_unsupported(tc, t, "repeated name in a destructuring block parameter");
-                                }
-                                loc++;
-                            }
-                        } else {
-                            free(spec); pop_frame(tc);
-                            return kp_unsupported(tc, p, "destructuring block parameter");
-                        }
+                            const pm_multi_target_node_t *mt2 = (const pm_multi_target_node_t *)p;
+                            if (mt2->rest || mt2->rights.size || mt2->lefts.size == 0 || mt2->lefts.size > 254 || sp >= 16) { bad = true; break; }
+                            SPEC_PUT(0xFF); SPEC_PUT(mt2->lefts.size);
+                            stk[sp].list = cur; stk[sp].i = ci; sp++;
+                            cur = &mt2->lefts; ci = 0;
+                        } else { bad = true; break; }
                     }
+                    #undef SPEC_PUT
+                    if (bad) { free(spec); pop_frame(tc); return kp_unsupported(tc, (const pm_node_t *)ps, "destructuring block parameter"); }
                     destructure_spec = spec;
+                    destr_len = len;
                 }
             }
         }
@@ -1286,7 +1291,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
         }
     }
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
-    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), blk_param_slot, post_cnt);
+    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, destr_len, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), blk_param_slot, post_cnt);
     /* Proc#source_location is registered by the caller (which has the block/lambda
      * node, so an empty `{ }` still gets a line). */
     /* node_entry is the dispatch root (yield → entry->head.dispatcher); its own
@@ -1330,7 +1335,7 @@ kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
     WITH_CHAIN(tc, KP_SEND0_SC, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
     NODE *body = kp_send0(sym_id, 0, recv);
     uint32_t frame_size = pop_frame(tc);
-    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
+    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
     code_repo_add("symblock", entry, true);
     return entry;
 }
@@ -2209,7 +2214,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         body = kp_unsupported(tc, cn->body, "class body with rescue/ensure");
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
     code_repo_add("class", entry, true);          /* its own AOT entry */
     NODE *_ncls = ALLOC_node_class(name_sym, entry, -1 - tc->chain - 1, path_owner, super_node);   /* self_off = enclosing self (base[-1]); -1 extra for the staged super child */
     korb_reg_srcloc(tc->c->vm, _ncls, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));   /* Module#const_source_location */
@@ -2517,7 +2522,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         body = kp_unsupported(tc, mn->body, "module body with rescue/ensure");
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
     code_repo_add("module", entry, true);
     NODE *_nmod = ALLOC_node_module(name_sym, entry, -1 - tc->chain, path_owner);   /* self_off = enclosing self (base[-1]) */
     korb_reg_srcloc(tc->c->vm, _nmod, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)mn));   /* Module#const_source_location */
@@ -3958,7 +3963,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         else
             body = kp_unsupported(tc, sc->body, "singleton class body with rescue/ensure");
         uint32_t frame_size = pop_frame(tc);
-        NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
+        NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
         code_repo_add("sclass", entry, true);       /* its own AOT entry */
         return ALLOC_node_sclass(entry, recv_node);
       }
