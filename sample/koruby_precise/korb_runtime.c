@@ -4145,16 +4145,19 @@ korb_invoke_kw_viahash(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos
 {
     VALUE *const base = slots - (pos_argc + kw_argc);
     VALUE *const cur = slots;                              /* scratch above the staged args */
-    cur[0] = UNWRAP(korb_hash_new(c, cur, kw_argc));
-    VALUE_REF h = VALUE_REF_AT(&cur[0]);
+    cur[0] = self;                                         /* park: building the hash below GCs,
+    cur[1] = def_class;                                     * and both are bare C locals */
+    cur[2] = UNWRAP(korb_hash_new(c, cur + 2, kw_argc));
+    VALUE_REF h = VALUE_REF_AT(&cur[2]);
     for (uint32_t p = 0; p < kw_argc; p++) {
-        cur[1] = ID2SYM(kw_syms[p]);
-        cur[2] = base[pos_argc + p];                      /* re-read each iter (hash_set may GC) */
-        CHECK(korb_hash_set(c, cur + 3, h, VALUE_REF_AT(&cur[1]), cur[2]));
+        cur[3] = ID2SYM(kw_syms[p]);
+        cur[4] = base[pos_argc + p];                      /* re-read each iter (hash_set may GC) */
+        CHECK(korb_hash_set(c, cur + 5, h, VALUE_REF_AT(&cur[3]), cur[4]));
     }
     base[pos_argc] = VALUE_REF_GET(h);                    /* trailing hash replaces the kw region head */
     ((AroObjectHeader *)(uintptr_t)base[pos_argc])->flags |= KORB_FL_KWARGS;   /* written as keywords */
-    return korb_invoke_method(c, base + pos_argc + 1, m, pos_argc + 1, line, mid, self, def_class, NULL, NULL, KORB_NIL);
+    const VALUE rself = cur[0], rdef = cur[1];            /* read back before the frame overlaps cur */
+    return korb_invoke_method(c, base + pos_argc + 1, m, pos_argc + 1, line, mid, rself, rdef, NULL, NULL, KORB_NIL);
 }
 
 /* korb_invoke_simple — the streamlined is_simple ISEQ invoke — now lives in
