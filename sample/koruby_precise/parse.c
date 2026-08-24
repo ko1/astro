@@ -4168,6 +4168,26 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         size_t argc = args ? args->arguments.size : 0;
         /* `super(args) { block }` — build the args Array + thread the literal block.
          * Staged like node_super_splat (one array child); def_env_off = self_off+1. */
+        if (sn->block && PM_NODE_TYPE_P(sn->block, PM_BLOCK_ARGUMENT_NODE) &&
+            (((const pm_block_argument_node_t *)sn->block)->expression == NULL ||
+             !PM_NODE_TYPE_P(((const pm_block_argument_node_t *)sn->block)->expression, PM_SYMBOL_NODE))) {
+            /* `super(args, &blk)` / `&nil` / bare `&` — evaluate the block
+             * expression into a rooted synth local; the node #to_proc's it. */
+            const pm_block_argument_node_t *ba = (const pm_block_argument_node_t *)sn->block;
+            const bool anon_blk = (ba->expression == NULL);
+            if (anon_blk && tc->frame->anon_blk_slot < 0)
+                return kp_unsupported(tc, node, "bare & outside a (&) method body");
+            uint32_t pslot = anon_blk ? (uint32_t)tc->frame->anon_blk_slot : alloc_synth_local(tc);
+            NODE *pset = anon_blk ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
+            int32_t soff = -1 - tc->chain - 1, dco = -1 - tc->chain - 1;
+            int32_t poff = (int32_t)pslot - tc->chain - 1;
+            NODE *arr;
+            WITH_CHAIN(tc, 1, (arr = build_array(tc, args ? args->arguments.nodes : NULL, argc, (uint32_t)argc)));
+            NODE *_s = ALLOC_node_super_blkproc(m_mid, line, soff, dco, poff, arr);
+            bake_add(tc, &_s->u.node_super_blkproc.self_off);
+            bake_add(tc, &_s->u.node_super_blkproc.proc_off);
+            return pset ? ALLOC_node_seq(pset, _s) : _s;
+        }
         if (sn->block) {
             NODE *bentry = kp_block_entry(tc, sn->block);
             if (!bentry) return kp_unsupported(tc, node, "super with a non-literal block");

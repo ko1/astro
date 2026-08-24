@@ -1176,6 +1176,27 @@ node_super_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, i
                       (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), self);
 }
 
+// `super(args, &blk)` — the block comes from an expression (`&blk`, `&:sym`,
+// `&nil`), converted with #to_proc and forwarded as this frame's block.
+NODE_DEF @noinline
+node_super_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t proc_off, VALUE_REF args@child)
+{
+    (void)n; (void)args;
+    const VALUE arr  = slots[-1];                         /* the staged args array */
+    const VALUE dc   = slots[dc_off];
+    const VALUE self = slots[self_off];
+    const uint32_t N = VAL2ARY(arr)->len;
+    RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc */
+    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+    const VALUE pv = slots[proc_off];
+    for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (pv == KORB_NIL)                                   /* &nil → no block at all */
+        return korb_super(c, slots + N, mid, line, N, dc, self, NULL, NULL, self);
+    NODE *iseq = VAL2PROC(pv)->iseq;
+    if (iseq == NULL) iseq = KORB_BLK_CPROC;              /* Symbol/Method#to_proc */
+    return korb_super(c, slots + N, mid, line, N, dc, self, iseq, KORB_BLK_FWD, &slots[proc_off]);
+}
+
 // `super` / `super(args)` that forwards the CURRENT method's incoming block
 // (no explicit block literal).  Args come from a built Array (like
 // node_super_splat); the block is read from this frame's block trio (biseq /
