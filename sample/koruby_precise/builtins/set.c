@@ -804,6 +804,20 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             korb_klass_override_set(c, slots[1], slots[0]);
         return RESULT_OK(slots[1]);
     }
+    /* A subclass of Module (`Class.new(Module).new`) must be a real module
+     * object: prepend/include and the ancestry walk all need KorbClass. */
+    if (KORB_CLASS_P(VALUE_REF_GET(self)) &&
+        korb_class_le(VALUE_REF_GET(self), korb_const_get(c->vm, korb_intern(c->vm, "Module", 6))) &&
+        !korb_class_le(VALUE_REF_GET(self), korb_const_get(c->vm, korb_intern(c->vm, "Class", 5)))) {
+        slots[0] = VALUE_REF_GET(self);
+        RESULT mr = korb_class_new(c, slots + 1, 0, KORB_NIL);
+        if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+        slots[1] = mr.value;
+        VAL2CLASS(slots[1])->is_module = 1;
+        if (slots[0] != korb_const_get(c->vm, korb_intern(c->vm, "Module", 6)))
+            korb_klass_override_set(c, slots[1], slots[0]);       /* report the subclass as #class */
+        return RESULT_OK(slots[1]);
+    }
     /* A subclass of a constructible builtin needs that builtin's payload, tagged
      * with the subclass — `SubHash.allocate` must answer a real Hash (Marshal and
      * other libraries build instances this way, bypassing #initialize). */
