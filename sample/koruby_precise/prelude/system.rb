@@ -213,11 +213,13 @@ module Process
   CLOCK_BOOTTIME_ALARM     = 9
   CLOCK_TAI                = 11
   def self.pid; $$; end
-  def self.ppid; 0; end
-  def self.uid; 0; end
-  def self.gid; 0; end
-  def self.euid; 0; end
-  def self.egid; 0; end
+  IDS = __process_ids.freeze   # [uid, euid, gid, egid, ppid] — fixed for the process
+  private_constant :IDS
+  def self.uid  = IDS[0]
+  def self.euid = IDS[1]
+  def self.gid  = IDS[2]
+  def self.egid = IDS[3]
+  def self.ppid = IDS[4]
   def self.clock_gettime(_clk = CLOCK_MONOTONIC, unit = :float_second)
     t = __clock_gettime
     case unit

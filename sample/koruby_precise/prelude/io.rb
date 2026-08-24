@@ -1,4 +1,6 @@
 class IO
+  NULL = '/dev/null'    # the platform's null device
+
   # CRuby: "#<File:/path>", "#<IO:fd 3>", "#<IO:<STDOUT>>", " (closed)" suffix.
   def inspect
     shut = closed?

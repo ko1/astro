@@ -1219,6 +1219,108 @@ static RESULT korb_m_signal_signo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(s < 0 ? KORB_NIL : LONG2FIX(s));
 }
 
+
+
+/* Real/effective ids + parent pid — prelude/system.rb used to hard-code 0. */
+static RESULT korb_m_process_ids(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 5));
+    const VALUE_REF ary = VALUE_REF_AT(&slots[0]);
+    const korb_sword_t ids[5] = { (korb_sword_t)getuid(), (korb_sword_t)geteuid(),
+                                  (korb_sword_t)getgid(), (korb_sword_t)getegid(),
+                                  (korb_sword_t)getppid() };
+    for (int i = 0; i < 5; i++) CHECK(korb_ary_push_val(c, slots + 1, ary, LONG2FIX(ids[i])));
+    return RESULT_OK(slots[0]);
+}
+
+/* ---- Etc primitives (lib/etc.rb builds the module on top) ---------------- */
+#include <sys/utsname.h>
+
+/* Etc.uname → { sysname:, nodename:, release:, version:, machine: } */
+static RESULT korb_m_etc_uname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    (void)a;
+    struct utsname u;
+    if (uname(&u) != 0) return korb_raise_errno(c, slots, errno, "uname", "");
+    slots[0] = UNWRAP(korb_hash_new(c, slots, 5));
+    const VALUE_REF h = VALUE_REF_AT(&slots[0]);
+    static const char *const keys[5] = { "sysname", "nodename", "release", "version", "machine" };
+    const char *const vals[5] = { u.sysname, u.nodename, u.release, u.version, u.machine };
+    for (int i = 0; i < 5; i++) {
+        slots[1] = ID2SYM(korb_intern(c->vm, keys[i], (uint32_t)strlen(keys[i])));
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, vals[i], (uint32_t)strlen(vals[i])));
+        CHECK(korb_hash_set(c, slots + 3, h, VALUE_REF_AT(&slots[1]), slots[2]));
+    }
+    return RESULT_OK(slots[0]);
+}
+
+/* name → _SC_* / _CS_* number, so lib/etc.rb can define the constants without
+ * hard-coding platform numbers.  Unknown names are simply absent. */
+static const struct { const char *nm; int val; } korb_etc_sc[] = {
+#define SCENT(n) { #n, _##n }
+    SCENT(SC_ARG_MAX), SCENT(SC_CHILD_MAX), SCENT(SC_CLK_TCK), SCENT(SC_NGROUPS_MAX),
+    SCENT(SC_OPEN_MAX), SCENT(SC_JOB_CONTROL), SCENT(SC_SAVED_IDS), SCENT(SC_VERSION),
+    SCENT(SC_PAGESIZE), SCENT(SC_RE_DUP_MAX), SCENT(SC_STREAM_MAX), SCENT(SC_TZNAME_MAX),
+    SCENT(SC_LOGIN_NAME_MAX), SCENT(SC_TTY_NAME_MAX), SCENT(SC_HOST_NAME_MAX),
+    SCENT(SC_SYMLOOP_MAX), SCENT(SC_LINE_MAX), SCENT(SC_NPROCESSORS_CONF),
+    SCENT(SC_NPROCESSORS_ONLN),
+#undef SCENT
+};
+static const struct { const char *nm; int val; } korb_etc_cs[] = {
+    { "CS_PATH", _CS_PATH },
+};
+
+static RESULT korb_m_etc_conf_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    (void)a;
+    const uint32_t n = (uint32_t)(sizeof korb_etc_sc / sizeof korb_etc_sc[0]) +
+                       (uint32_t)(sizeof korb_etc_cs / sizeof korb_etc_cs[0]);
+    slots[0] = UNWRAP(korb_hash_new(c, slots, n));
+    const VALUE_REF h = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < n; i++) {
+        const bool is_sc = i < sizeof korb_etc_sc / sizeof korb_etc_sc[0];
+        const char *const nm = is_sc ? korb_etc_sc[i].nm
+                                     : korb_etc_cs[i - sizeof korb_etc_sc / sizeof korb_etc_sc[0]].nm;
+        const int v = is_sc ? korb_etc_sc[i].val
+                            : korb_etc_cs[i - sizeof korb_etc_sc / sizeof korb_etc_sc[0]].val;
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, nm, (uint32_t)strlen(nm)));
+        CHECK(korb_hash_set(c, slots + 2, h, VALUE_REF_AT(&slots[1]), LONG2FIX(v)));
+    }
+    return RESULT_OK(slots[0]);
+}
+
+static RESULT korb_m_etc_sysconf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    korb_sword_t nv;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &nv));
+    errno = 0;
+    const long r = sysconf((int)nv);
+    if (r == -1) {
+        if (errno != 0) return korb_raise_errno(c, slots, errno, "sysconf", "");
+        return RESULT_OK(KORB_NIL);                    /* no limit / not supported */
+    }
+    return RESULT_OK(LONG2FIX((korb_sword_t)r));
+}
+
+static RESULT korb_m_etc_confstr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    korb_sword_t nv;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &nv));
+    errno = 0;
+    char buf[4096];
+    const size_t r = confstr((int)nv, buf, sizeof buf);
+    if (r == 0) return korb_raise_errno(c, slots, errno ? errno : EINVAL, "confstr", "");
+    return korb_str_new(c, slots, buf, (uint32_t)(r > 0 ? r - 1 : 0));
+}
+
+static RESULT korb_m_etc_getlogin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    (void)a;
+    const char *const l = getlogin();
+    if (l == NULL) return RESULT_OK(KORB_NIL);         /* lib/etc.rb falls back to ENV */
+    return korb_str_new(c, slots, l, (uint32_t)strlen(l));
+}
+
 void korb_init_process(CTX *c, VALUE *slots) {
     (void)slots;
     /* The Process module itself comes from the prelude, which loads after this,
@@ -1249,6 +1351,12 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__process_test",   korb_m_process_test,   -1);
     korb_class_def_cfn(c, obj, "__signal_signame", korb_m_signal_signame,  1);
     korb_class_def_cfn(c, obj, "__signal_signo",   korb_m_signal_signo,    1);
+    korb_class_def_cfn(c, obj, "__process_ids",    korb_m_process_ids,     0);
+    korb_class_def_cfn(c, obj, "__etc_uname",      korb_m_etc_uname,       0);
+    korb_class_def_cfn(c, obj, "__etc_conf_table", korb_m_etc_conf_table,  0);
+    korb_class_def_cfn(c, obj, "__etc_sysconf",    korb_m_etc_sysconf,     1);
+    korb_class_def_cfn(c, obj, "__etc_confstr",    korb_m_etc_confstr,     1);
+    korb_class_def_cfn(c, obj, "__etc_getlogin",   korb_m_etc_getlogin,    0);
     const VALUE io_cls = korb_const_get(c->vm, korb_intern(c->vm, "IO", 2));
     if (KORB_CLASS_P(io_cls)) {
         VALUE sl[4]; sl[0] = io_cls;
