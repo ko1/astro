@@ -362,6 +362,7 @@ static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, 
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
 static RESULT korb_m_str_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* string.c — for String.new(non-String source) */
 static RESULT korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VALUE cref);   /* defined below */
+static const char *korb_recv_desc(CTX *c, VALUE *slots, VALUE v, char *buf, size_t bufsz);   /* fwd: "an instance of Foo" */
 static RESULT korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line, VALUE cref);   /* defined below — for instance/class_eval(String) in set.c */
 static RESULT korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
                                      const char *fname, int32_t eline, VALUE *self_slot, VALUE cref);   /* eval with caller binding (set.c uses it too) */
@@ -3950,7 +3951,8 @@ RESULT
 korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int is_module, VALUE enclosing)
 {
     if (superclass != KORB_NIL && !KORB_CLASS_P(superclass))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass must be a Class (%s given)", korb_type_name(superclass));
+        { char rdb[224];
+          return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass must be an instance of Class (given %s)", korb_recv_desc(c, slots + 1, superclass, rdb, sizeof rdb)); }
     /* a class with no explicit superclass derives from Object, so its instances'
      * MRO reaches the universal Object methods (==, freeze, method, ...). */
     if (superclass == KORB_NIL && !is_module)
@@ -7661,7 +7663,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             const bool is_mod = self == korb_const_get(vm, vm->name_module);
             slots[0] = (!is_mod && argc >= 1) ? slots[-(korb_sword_t)argc] : korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* super (rooted) */
             if (UNLIKELY(!is_mod && (!KORB_CLASS_P(slots[0]) || VAL2CLASS(slots[0])->is_module || VAL2CLASS(slots[0])->is_singleton)))
-                return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be a Class (%s given)", korb_type_name(slots[0]));   /* a Module or a metaclass is not a valid superclass */
+                { char rdb[224];   /* a Module or a metaclass is not a valid superclass */
+                  return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be an instance of Class (given %s)", korb_recv_desc(c, slots + 1, slots[0], rdb, sizeof rdb)); }
             slots[1] = UNWRAP(korb_class_new(c, slots + 1, 0, is_mod ? KORB_NIL : slots[0]));   /* anonymous (name_sym 0) */
             if (is_mod) VAL2CLASS(slots[1])->is_module = 1;
             if (!is_mod) {                                  /* fire superclass.inherited(new_class) before the body block */
