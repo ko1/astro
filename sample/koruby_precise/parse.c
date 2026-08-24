@@ -3917,6 +3917,25 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             PM_NODE_TYPE_P(v, PM_CALL_OPERATOR_WRITE_NODE) ||
             PM_NODE_TYPE_P(v, PM_MULTI_WRITE_NODE))
             return ALLOC_node_defined(11, 0, 0);                        /* "assignment" (not evaluated) */
+        if (PM_NODE_TYPE_P(v, PM_ARRAY_NODE)) {
+            /* `defined?([a, b])` is nil when ANY element is undefined: fold the
+             * elements' own defined? checks with && and answer "expression". */
+            const pm_array_node_t *an = (const pm_array_node_t *)v;
+            NODE *chain = NULL;
+            for (size_t i = 0; i < an->elements.size; i++) {
+                const pm_node_t *el = an->elements.nodes[i];
+                if (PM_NODE_TYPE_P(el, PM_SPLAT_NODE) || PM_NODE_TYPE_P(el, PM_KEYWORD_HASH_NODE)) { chain = NULL; break; }
+                pm_defined_node_t dn = *(const pm_defined_node_t *)node;    /* reuse this node's shape */
+                dn.value = (pm_node_t *)el;
+                NODE *chk = transduce(tc, (const pm_node_t *)&dn);
+                chain = chain ? ALLOC_node_and(chain, chk) : chk;
+            }
+            if (chain) {
+                NODE *expr;
+                WITH_CHAIN(tc, 1, (expr = ALLOC_node_defined(5, 0, 0)));
+                return ALLOC_node_and(chain, expr);                         /* nil if any element is undefined */
+            }
+        }
         return ALLOC_node_defined(5, 0, 0);                             /* literals / expr → "expression" */
       }
       case PM_YIELD_NODE: {
