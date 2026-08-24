@@ -112,7 +112,75 @@ class StringScanner
   def pre_match;  @md && @md.pre_match; end
   def post_match; @md && @md.post_match; end
 
+  def matched_size; @md && @md[0].length; end
+  def size;         @md && @md.size; end
+  def captures;     @md && @md.captures; end
+  def named_captures; @md ? @md.named_captures : {}; end
+
+  # values_at(*idx) — the given capture groups (nil when nothing matched).
+  def values_at(*idx)
+    return nil unless @md
+    idx.map { |i| @md[i] }
+  end
+
+  # get_byte — one BYTE (unlike #getch, which is a character).
+  def get_byte
+    return nil if eos?
+    b = @string.byteslice(@pos, 1)
+    @pos += 1
+    @md = nil
+    b
+  end
+  alias getbyte get_byte
+
+  # scan_full(pattern, advance_pointer_p, return_string_p)
+  def scan_full(pattern, advance_pointer_p = true, return_string_p = true)
+    save = @pos
+    r = scan(pattern)
+    @pos = save unless advance_pointer_p
+    return nil if r.nil?
+    return_string_p ? r : (r.length + (advance_pointer_p ? 0 : 0))
+  end
+
+  # search_full(pattern, advance_pointer_p, return_string_p)
+  def search_full(pattern, advance_pointer_p = true, return_string_p = true)
+    save = @pos
+    r = scan_until(pattern)
+    @pos = save unless advance_pointer_p
+    return nil if r.nil?
+    return_string_p ? r : r.length
+  end
+
+  # << / concat — append to the scanned string (position untouched).
+  def concat(str)
+    raise TypeError, "no implicit conversion of #{str.class} into String" unless str.is_a?(String)
+    @string = @string + str
+    self
+  end
+  alias << concat
+
+  # unscan — undo the last match (CRuby raises when there is none).
+  def unscan
+    raise ScanError, "unscan failed: previous match record not exist" unless @md
+    @pos = @md.begin(0) if @md.respond_to?(:begin)
+    @md = nil
+    self
+  end
+
+  def exist?(pattern)
+    save = @pos
+    r = skip_until(pattern)
+    @pos = save
+    r
+  end
+
+  def rest?; !eos?; end
+  def charpos; @string[0, @pos].length; end
+  def fixed_anchor?; false; end
+
   def inspect
     "#<StringScanner #{@pos}/#{@string.length}>"
   end
 end
+
+class ScanError < StandardError; end unless defined?(ScanError)
