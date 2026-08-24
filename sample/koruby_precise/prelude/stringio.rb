@@ -3,6 +3,7 @@
 # mode tracking (closed_read?/closed_write?), pos-aware writes, ungetc,
 # sysread/readpartial/nonblock variants and lineno.
 class StringIO
+  VERSION = "3.2.0" unless const_defined?(:VERSION)
   include Enumerable
 
   # Integer modes (File::RDONLY etc.), same bits CRuby uses.
@@ -226,9 +227,18 @@ class StringIO
   end
 
   def sysread(length = nil, outbuf = nil)
+    if !length.nil? && !length.is_a?(Integer)
+      raise TypeError, "no implicit conversion of #{length.class} into Integer" unless length.respond_to?(:to_int)
+      length = length.to_int
+    end
     raise EOFError, "end of file reached" if eof?
-    read(length, outbuf)
+    r = read(length, outbuf)
+    r = r.dup.force_encoding(Encoding::BINARY) if r && length   # a sized read is binary (CRuby)
+    outbuf ? outbuf.replace(r) : r
   end
+  # io/console's StringIO extension: one character, ignoring the tty options.
+  def getch(*) = getc
+  def getpass(*) = gets
   def readpartial(length = nil, outbuf = nil); sysread(length, outbuf); end
   def read_nonblock(length = nil, outbuf = nil, exception: true)
     if eof? && !exception
@@ -293,7 +303,14 @@ class StringIO
       raise TypeError, "no implicit conversion of #{sep.class} into String" unless sep.respond_to?(:to_str)
       sep = sep.to_str
     end
-    return nil if eof?
+    if !limit.nil? && !limit.is_a?(Integer)         # limit is #to_int-coercible
+      raise TypeError, "no implicit conversion of #{limit.class} into Integer" unless limit.respond_to?(:to_int)
+      limit = limit.to_int
+    end
+    if eof?
+      $_ = nil
+      return nil
+    end
     if sep.nil?
       line = read(limit)
     else
@@ -305,7 +322,9 @@ class StringIO
       @pos += line.bytesize
     end
     @lineno += 1
-    chomp ? line.chomp : line
+    line = line.chomp if chomp
+    $_ = line                                       # CRuby: #gets sets $_
+    line
   end
 
   def readline(sep = $/, limit = nil, chomp: false)
