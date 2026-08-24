@@ -1220,10 +1220,10 @@ node_super_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t lin
     const VALUE pv = slots[proc_off];
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
     if (pv == KORB_NIL)                                   /* &nil → no block at all */
-        return korb_super(c, slots + N, mid, line, N, dc, self, NULL, NULL, self);
+        return korb_super(c, slots + N, mid, line, N, dc, self, NULL, NULL, KORB_NIL);
     NODE *iseq = VAL2PROC(pv)->iseq;
     if (iseq == NULL) iseq = KORB_BLK_CPROC;              /* Symbol/Method#to_proc */
-    return korb_super(c, slots + N, mid, line, N, dc, self, iseq, KORB_BLK_FWD, &slots[proc_off]);
+    return korb_super(c, slots + N, mid, line, N, dc, self, iseq, KORB_BLK_FWD, slots[proc_off]);   /* invoke_method parks cself in the callee frame */
 }
 
 // `super` / `super(args)` that forwards the CURRENT method's incoming block

@@ -947,11 +947,12 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     for (uint32_t i = 0; i < fl && o + 32 < sizeof efmt; i++) {
         if (fmt[i] != '%') { efmt[o++] = fmt[i]; continue; }
         const uint32_t pct = i; i++;
-        bool f_dash = false, f_under = false, f_zero = false, f_upper = false, f_swap = false;
+        bool f_dash = false, f_under = false, f_upper = false, f_swap = false;
         while (i < fl && strchr("-_0^#", fmt[i])) {           /* flags */
             switch (fmt[i]) {
               case '-': f_dash = true; break;   case '_': f_under = true; break;
-              case '0': f_zero = true; break;   case '^': f_upper = true; break;
+              case '0': break;                  /* zero-pad is the default; copied verbatim for libc */
+              case '^': f_upper = true; break;
               default:  f_swap = true; break;
             }
             i++;

@@ -4457,6 +4457,8 @@ korb_class_obj_of(CTX *c, VALUE self)
         while (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) ov = VAL2CLASS(ov)->superclass;  /* singleton is transparent */
         if (ov != KORB_NIL) return ov;
     }
+    /* (checked before the is_module shortcut below, so `Class.new(Module).new`
+     * reports its own subclass rather than plain Module) */
     if (KORB_EXC_P(self)) {
         if (VAL2EXC(self)->exc_class != KORB_NIL) return VAL2EXC(self)->exc_class;   /* user exception subclass */
         uint32_t et = VAL2EXC(self)->etype;
@@ -7677,14 +7679,22 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             return korb_thread_s_new(c, slots, VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc), block, def_env, captured_self);
         if (self == korb_builtin_class_obj(vm, KORB_C_MUTEX))   return korb_mutex_s_new(c, slots);
         if (self == korb_builtin_class_obj(vm, KORB_C_CONDVAR)) return korb_condvar_s_new(c, slots);
-        if (self == korb_builtin_class_obj(vm, KORB_C_CLASS) || self == korb_const_get(vm, vm->name_module)) {   /* Class.new([super]) / Module.new [do…end] */
-            const bool is_mod = self == korb_const_get(vm, vm->name_module);
+        if (self == korb_builtin_class_obj(vm, KORB_C_CLASS) || self == korb_const_get(vm, vm->name_module) ||
+            (KORB_CLASS_P(self) && korb_class_le(self, korb_const_get(vm, vm->name_module)) &&
+             !korb_class_le(self, korb_builtin_class_obj(vm, KORB_C_CLASS)))) {   /* Class.new([super]) / Module.new / a Module subclass */
+            const bool is_mod = self != korb_builtin_class_obj(vm, KORB_C_CLASS) &&
+                                !korb_class_le(self, korb_builtin_class_obj(vm, KORB_C_CLASS));
+            const bool recv_is_subclass = (self != korb_builtin_class_obj(vm, KORB_C_CLASS) &&
+                                           self != korb_const_get(vm, vm->name_module));
+
             slots[0] = (!is_mod && argc >= 1) ? slots[-(korb_sword_t)argc] : korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* super (rooted) */
             if (UNLIKELY(!is_mod && (!KORB_CLASS_P(slots[0]) || VAL2CLASS(slots[0])->is_module || VAL2CLASS(slots[0])->is_singleton)))
                 { char rdb[224];   /* a Module or a metaclass is not a valid superclass */
                   return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be an instance of Class (given %s)", korb_recv_desc(c, slots + 1, slots[0], rdb, sizeof rdb)); }
             slots[1] = UNWRAP(korb_class_new(c, slots + 1, 0, is_mod ? KORB_NIL : slots[0]));   /* anonymous (name_sym 0) */
             if (is_mod) VAL2CLASS(slots[1])->is_module = 1;
+            if (recv_is_subclass)                            /* a Module/Class SUBCLASS reports itself as #class */
+                korb_klass_override_set(c, slots[1], *recv_slot);   /* rooted receiver slot: self may have moved */
             if (!is_mod) {                                  /* fire superclass.inherited(new_class) before the body block */
                 CHECK(korb_register_subclass(c, slots + 4, slots[0], slots[1]));   /* record in super's subclass list */
                 const uint32_t inh = korb_intern(vm, "inherited", 9);
@@ -8281,6 +8291,9 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
         kind = 2;
     } else if (korb_class_exc_etype(vm, cls) >= 0) {   /* exception class → KorbException, not a generic object */
         kind = 2;
+    } else if (korb_class_le(cls, korb_const_get(vm, vm->name_module)) &&
+               !korb_class_le(cls, korb_builtin_class_obj(vm, KORB_C_CLASS))) {
+        kind = 2;                                      /* a Module subclass instantiates a real module */
     } else {
         const enum korb_class base = korb_builtin_base_class(vm, cls);
         if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET ||

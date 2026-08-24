@@ -809,11 +809,13 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if (KORB_CLASS_P(VALUE_REF_GET(self)) &&
         korb_class_le(VALUE_REF_GET(self), korb_const_get(c->vm, korb_intern(c->vm, "Module", 6))) &&
         !korb_class_le(VALUE_REF_GET(self), korb_const_get(c->vm, korb_intern(c->vm, "Class", 5)))) {
-        slots[0] = VALUE_REF_GET(self);
+        slots[0] = VALUE_REF_GET(self);                          /* root the class across the alloc */
         RESULT mr = korb_class_new(c, slots + 1, 0, KORB_NIL);
         if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
         slots[1] = mr.value;
         VAL2CLASS(slots[1])->is_module = 1;
+        /* the override table keys on the object, so set it AFTER the module is
+         * parked in a scanned slot (STRESS moves it otherwise) */
         if (slots[0] != korb_const_get(c->vm, korb_intern(c->vm, "Module", 6)))
             korb_klass_override_set(c, slots[1], slots[0]);       /* report the subclass as #class */
         return RESULT_OK(slots[1]);
