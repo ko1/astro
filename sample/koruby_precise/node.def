@@ -1007,10 +1007,18 @@ node_match_req(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, void *desc)
 // `self_off` reads the default definee: inside a `class` body self is the
 // class (def attaches to it); elsewhere self is main/an instance → global table.
 NODE_DEF @noinline
-node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, int32_t self_off)
+node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, int32_t self_off, int32_t dc_off)
 {
     (void)body_dispatcher;
-    VALUE definee = (c->def_definee != KORB_NIL) ? c->def_definee : slots[self_off];   /* instance_eval → singleton */
+    /* default definee: instance_eval/class_eval's cref if set, else self when it
+     * IS a class (class body), else the enclosing method's owner — a nested
+     * `def` lands in the class the outer method belongs to (CRuby). */
+    VALUE definee = c->def_definee;
+    if (definee == KORB_NIL) {
+        definee = slots[self_off];
+        if (!KORB_CLASS_P(definee) && dc_off != INT32_MIN)
+            { const VALUE cr = korb_cvar_cref(definee, slots[dc_off]); if (KORB_CLASS_P(cr)) definee = cr; }
+    }
     if (UNLIKELY(!KORB_CLASS_P(definee) && c->def_definee != KORB_NIL))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* instance_eval on a value with no singleton */
     if (KORB_CLASS_P(definee)) {
