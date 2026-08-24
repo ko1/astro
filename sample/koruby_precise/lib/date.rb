@@ -620,11 +620,11 @@ class Date
       h[:mon], h[:mday] = __month_index(m[1]), m[2].to_i                        # "mmm[.]DD[, YYYY]"
       h[:year] = m[3].to_i if m[3]
       s = m.pre_match + m.post_match
+    elsif (m = /(-?\d{4})[.](\d{1,2})[.](\d{1,2})/.match(s))
+      h[:year], h[:mon], h[:mday] = m[1].to_i, m[2].to_i, m[3].to_i             # "YYYY.MM.DD" (4-digit head = year)
+      s = m.pre_match + m.post_match
     elsif (m = /(\d{1,2})[.](\d{1,2})[.](-?\d{2,4})/.match(s))
       h[:mday], h[:mon], h[:year] = m[1].to_i, m[2].to_i, m[3].to_i             # "DD.MM.YYYY"
-      s = m.pre_match + m.post_match
-    elsif (m = /(-?\d{4})[.](\d{1,2})[.](\d{1,2})/.match(s))
-      h[:year], h[:mon], h[:mday] = m[1].to_i, m[2].to_i, m[3].to_i             # "YYYY.MM.DD"
       s = m.pre_match + m.post_match
     elsif (m = /\b([A-Za-z]{3,})\.?\b/.match(s)) && __month_index(m[1]) && !__wday_index(m[1])
       h[:mon] = __month_index(m[1])                                            # bare month name
