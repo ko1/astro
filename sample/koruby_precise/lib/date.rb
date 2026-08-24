@@ -743,7 +743,10 @@ class Date
       when "Y" then si = __sp_int(str, si, h, :year, 10, true) or return nil
       when "y" then si = __sp_int(str, si, h, :year, 2) or return nil
       when "m" then si = __sp_int(str, si, h, :mon, 2) or return nil
-      when "d", "e" then si = __sp_int(str, si, h, :mday, 2) or return nil
+      when "d" then si = __sp_int(str, si, h, :mday, 2) or return nil
+      when "e"                                            # day with ONE optional leading blank
+        si += 1 if str[si] == " "
+        si = __sp_int(str, si, h, :mday, 2) or return nil
       when "H" then si = __sp_int(str, si, h, :hour, 2) or return nil
       when "M" then si = __sp_int(str, si, h, :min, 2) or return nil
       when "S" then si = __sp_int(str, si, h, :sec, 2) or return nil
@@ -766,13 +769,32 @@ class Date
         sub = _strptime(str[si..-1], "%H:%M:%S") or return nil
         h.update(sub)
         si += (str.length - si) - sub[:leftover].to_s.length
+      when "C" then si = __sp_int(str, si, h, :__century, 2) or return nil        # century (with %y)
+      when "G" then si = __sp_int(str, si, h, :cwyear, 10, true) or return nil     # commercial year
+      when "g" then si = __sp_int(str, si, h, :__cwyear2, 2) or return nil
+      when "V" then si = __sp_int(str, si, h, :cweek, 2) or return nil             # ISO week
+      when "U" then si = __sp_int(str, si, h, :wnum0, 2) or return nil             # week (Sunday start)
+      when "W" then si = __sp_int(str, si, h, :wnum1, 2) or return nil             # week (Monday start)
+      when "u" then si = __sp_int(str, si, h, :cwday, 1) or return nil             # 1..7 (Mon..Sun)
+      when "w" then si = __sp_int(str, si, h, :wday, 1) or return nil              # 0..6 (Sun..Sat)
+      when "L" then si = __sp_int(str, si, h, :__msec, 3) or return nil
+      when "N" then si = __sp_int(str, si, h, :__nsec, 9) or return nil
       when "%" then (return nil unless str[si] == "%"); si += 1
       else return nil
       end
     end
     h.delete(:leftover)
     h[:leftover] = str[si..-1] if si < str.length
-    h[:year] += h[:year] >= 69 ? 1900 : 2000 if h[:year] && h[:year] < 100 && fmt.include?("%y")
+    if (cen = h.delete(:__century))
+      h[:year] = cen * 100 + (h[:year] || 0)              # %C[%y]
+    elsif h[:year] && h[:year] < 100 && fmt.include?("%y")
+      h[:year] += h[:year] >= 69 ? 1900 : 2000
+    end
+    if (cy2 = h.delete(:__cwyear2))                       # %g: 2-digit commercial year
+      h[:cwyear] = cy2 + (cy2 >= 69 ? 1900 : 2000)
+    end
+    if (ms = h.delete(:__msec)) then h[:sec_fraction] = Rational(ms, 1000) end
+    if (ns = h.delete(:__nsec)) then h[:sec_fraction] = Rational(ns, 1_000_000_000) end
     h
   end
 
@@ -788,11 +810,48 @@ class Date
 
   def self.strptime(str = "-4712-01-01", fmt = "%F", sg = ITALY)
     h = _strptime(str, fmt) or raise Date::Error, "invalid date"
+    __from_parsed(h, sg)
+  end
+
+  # Build a Date from a parsed-field Hash, completing what the format did not
+  # give from today (CRuby: a lone %m is this year's month, %V/%U/%W pick the
+  # week of the current year, %u/%w the weekday of the current week).
+  def self.__from_parsed(h, sg = ITALY)
+    t = nil
+    today = -> { t ||= Date.today }
     if h[:yday] && !h[:mon]
-      ordinal(h[:year] || -4712, h[:yday], sg)
-    else
-      civil(h[:year] || -4712, h[:mon] || 1, h[:mday] || 1, sg)
+      return ordinal(h[:year] || today.().year, h[:yday], sg)
     end
+    if h[:cwday] && !h[:cwyear] && !h[:cweek]        # a lone %u → this week's day (Mon-start)
+      base = today.()
+      monday = base - ((base.wday + 6) % 7)
+      return monday + (h[:cwday] - 1)
+    end
+    if h[:cwyear] || h[:cweek] || h[:cwday]
+      cwy = h[:cwyear] || today.().year
+      cwk = h[:cweek] || 1
+      cwd = h[:cwday] || 1
+      return commercial(cwy, cwk, cwd, sg)
+    end
+    if (wn = h[:wnum0] || h[:wnum1])                 # week of year (Sun/Mon start)
+      y = h[:year] || today.().year
+      jan1 = civil(y, 1, 1, sg)
+      start = h[:wnum0] ? 0 : 1                      # weekday the week starts on
+      first = jan1 - ((jan1.wday - start) % 7)       # first such weekday on/before Jan 1
+      base = first + wn * 7
+      base += (h[:wday] - start) % 7 if h[:wday]
+      return base
+    end
+    if h[:wday] && h[:mday].nil? && h[:mon].nil?     # a lone weekday → this week's
+      base = today.()
+      return base - base.wday + h[:wday]
+    end
+    if h[:year].nil? || h[:mon].nil? || h[:mday].nil?
+      y = h[:year] || today.().year
+      m = h[:mon] || (h[:mday] ? today.().mon : 1)
+      return civil(y, m, h[:mday] || 1, sg)
+    end
+    civil(h[:year], h[:mon], h[:mday], sg)
   end
 end
 
