@@ -609,14 +609,14 @@ class Date
     elsif (m = /(-?\d{4})[.\s]+([A-Za-z]{3,})\.?[.\s]+(\d{1,2})(?:st|nd|rd|th)?/.match(s)) && __month_index(m[2])
       h[:year], h[:mon], h[:mday] = m[1].to_i, __month_index(m[2]), m[3].to_i   # "YYYY mmm DD"
       s = m.pre_match + m.post_match
-    elsif (m = /(\d{1,2})(?:st|nd|rd|th)?[.\s]+([A-Za-z]{3,})\.?(?:[.\s]*(-?\d{4}|\d{1,2}))?/.match(s)) && __month_index(m[2])
+    elsif (m = /(\d{1,2})(?:st|nd|rd|th)?[.\s]+([A-Za-z]{3,})\.?(?:[.\s,]*(-?\d{1,4}))?/.match(s)) && __month_index(m[2])
       h[:mday], h[:mon] = m[1].to_i, __month_index(m[2])                        # "DD mmm[ YYYY]"
       h[:year] = m[3].to_i if m[3]
       s = m.pre_match + m.post_match
     elsif (m = /([A-Za-z]{3,})\.?[.\s]*(-?\d{4})(?![\d])/.match(s)) && __month_index(m[1])
       h[:mon], h[:year] = __month_index(m[1]), m[2].to_i                        # "mmm[.]YYYY" (4 digits = year)
       s = m.pre_match + m.post_match
-    elsif (m = /([A-Za-z]{3,})\.?[.\s]*(\d{1,2})(?!\d)(?:st|nd|rd|th)?(?:\s*,?\s*(-?\d{4}))?/.match(s)) && __month_index(m[1])
+    elsif (m = /([A-Za-z]{3,})\.?[.\s]*(\d{1,2})(?!\d)(?:st|nd|rd|th)?(?:\s*,?\s*(-?\d{1,4}))?/.match(s)) && __month_index(m[1])
       h[:mon], h[:mday] = __month_index(m[1]), m[2].to_i                        # "mmm[.]DD[, YYYY]"
       h[:year] = m[3].to_i if m[3]
       s = m.pre_match + m.post_match
@@ -657,7 +657,7 @@ class Date
       s = m.pre_match + m.post_match
     end
 
-    if (m = /([-+]\d{2}):?(\d{2})?|\b(UTC|GMT|Z)\b/.match(s))
+    if (m = /(?<![\d.])([-+]\d{2}):?(\d{2})?\b|\b(UTC|GMT|Z)\b/.match(s))
       if m[3]
         h[:zone] = m[3]
         h[:offset] = 0
@@ -672,8 +672,8 @@ class Date
       h[:wday] = w
     end
 
-    if comp && h[:year] && h[:year] >= 0 && h[:year] < 100 && str !~ /\d{4}/
-      h[:year] += h[:year] >= 69 ? 1900 : 2000
+    if comp && h[:year] && h[:year] >= 0 && h[:year] < 100
+      h[:year] += h[:year] >= 69 ? 1900 : 2000       # 2-digit year → 19xx/20xx
     end
     h
   end
