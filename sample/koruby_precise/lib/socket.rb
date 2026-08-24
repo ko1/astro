@@ -507,7 +507,14 @@ class Addrinfo
 
   def initialize(sockaddr, family = nil, socktype = nil, protocol = nil)
     a = sockaddr.is_a?(Array) ? sockaddr : Socket.__unpack(sockaddr)
-    __setup(a[0], a[1] || 0, a[2], a[3] || a[2], socktype || Socket::SOCK_STREAM, protocol || 0)
+    __setup(a[0], a[1] || 0, a[2], a[3] || a[2], socktype || 0, protocol || 0)
+    # CRuby: an explicit family wins; with a packed sockaddr String and no
+    # family the pfamily is PF_UNSPEC, but the Array form takes its family.
+    @pfamily = if !family.nil? then Socket.__family(family)
+               elsif sockaddr.is_a?(Array) then @afamily
+               else Socket::PF_UNSPEC
+               end
+    self
   end
 
   def self.getaddrinfo(host, service, family = nil, socktype = nil, protocol = nil, flags = nil)

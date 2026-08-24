@@ -22,9 +22,15 @@ static RESULT korb_sock_addr_ary(CTX *c, VALUE *slots, const struct sockaddr *sa
     int port = 0;
     if (sa->sa_family == AF_INET || sa->sa_family == AF_INET6) {
         fam = sa->sa_family == AF_INET ? "AF_INET" : "AF_INET6";
-        if (getnameinfo(sa, len, host, sizeof host, serv, sizeof serv,
+        /* a caller-supplied sockaddr String may be shorter than the struct
+         * (Socket.sockaddr_in packs 28 bytes for IPv6); getnameinfo wants the
+         * family's own length */
+        const socklen_t want = (sa->sa_family == AF_INET) ? (socklen_t)sizeof(struct sockaddr_in)
+                                                          : (socklen_t)sizeof(struct sockaddr_in6);
+        if (getnameinfo(sa, want, host, sizeof host, serv, sizeof serv,
                         NI_NUMERICHOST | NI_NUMERICSERV) == 0)
             port = atoi(serv);
+        (void)len;
     } else if (sa->sa_family == AF_UNIX) {
         fam = "AF_UNIX";
         const struct sockaddr_un *un = (const struct sockaddr_un *)sa;
@@ -487,7 +493,19 @@ static RESULT korb_m_sock_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const VALUE fv = VALUE_SLICE_GET(a, 0);
     const int fam = (fv == KORB_NIL) ? AF_UNSPEC : korb_sock_family_of(c, fv);
     const VALUE pv = VALUE_SLICE_GET(a, 1);
-    const int port = FIXNUM_P(pv) ? (int)FIX2LONG(pv) : 0;
+    int port = FIXNUM_P(pv) ? (int)FIX2LONG(pv) : 0;
+    if (!FIXNUM_P(pv) && KORB_STRING_P(pv)) {          /* a service name ("smtp") or a numeric String */
+        char sv[64];
+        if (korb_sock_cstr(pv, sv, sizeof sv)) {
+            char *endp = NULL;
+            const long n2 = strtol(sv, &endp, 10);
+            if (endp && *endp == '\0' && endp != sv) port = (int)n2;
+            else {
+                const struct servent *const se = getservbyname(sv, NULL);
+                if (se) port = ntohs((uint16_t)se->s_port);
+            }
+        }
+    }
     char host[512];
     if (!korb_sock_cstr(VALUE_SLICE_GET(a, 2), host, sizeof host))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
