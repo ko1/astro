@@ -261,6 +261,28 @@ class Enumerator
   end
 end
 
+class Enumerator
+  # Remember what an enum_for/to_enum enumerator was built from, so
+  # `enum.each(extra...)` can re-drive `receiver.meth(*args, *extra)` (CRuby).
+  def __set_source(recv, meth, args)
+    @__src_recv = recv
+    @__src_meth = meth
+    @__src_args = args
+    self
+  end
+
+  def each(*extra, &block)
+    return self if block.nil? && extra.empty?
+    if !extra.empty? && defined?(@__src_recv)
+      return @__src_recv.send(@__src_meth, *@__src_args, *extra, &block) if block
+      recv, meth, args = @__src_recv, @__src_meth, @__src_args + extra
+      return Enumerator.new { |y| recv.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
+    end
+    return __each_orig(&block) if block
+    self
+  end
+end
+
 class Enumerator::Lazy
   # Lazy#initialize(receiver[, size]) { |yielder, *values| ... } — the block is a
   # TRANSFORM: it is handed a yielder plus each source value and decides what to

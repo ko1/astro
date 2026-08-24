@@ -134,12 +134,16 @@ class Object
   def to_enum(meth = :each, *args)
     this = self
     sz = (respond_to?(:size) && args.empty?) ? size : nil    # size-preserving enumerators report the receiver's size
-    Enumerator.new(sz) { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
+    e = Enumerator.new(sz) { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
+    e.__set_source(this, meth, args)                        # Enumerator#each(*extra) re-drives the source
+    e
   end
   def enum_for(meth = :each, *args)
     this = self
     sz = (respond_to?(:size) && args.empty?) ? size : nil
-    Enumerator.new(sz) { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
+    e = Enumerator.new(sz) { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
+    e.__set_source(this, meth, args)
+    e
   end
 end
 # Errno::* — one SystemCallError subclass per errno the platform defines, built
