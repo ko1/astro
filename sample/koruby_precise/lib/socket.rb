@@ -454,6 +454,16 @@ class Socket < BasicSocket
     (r && r[0]) ? __family(r[0][0]) : AF_INET
   end
 
+  # Like __socktype but strict: an unknown name is a SocketError (CRuby).
+  def self.__socktype_strict(t)
+    return t if t.is_a?(Integer)
+    n = t.to_s.upcase.sub(/\ASOCK_/, "")
+    { "STREAM" => SOCK_STREAM, "DGRAM" => SOCK_DGRAM, "RAW" => SOCK_RAW,
+      "SEQPACKET" => SOCK_SEQPACKET, "RDM" => (defined?(SOCK_RDM) ? SOCK_RDM : 4) }.fetch(n) do
+      raise SocketError, "unknown socket type: #{t}"
+    end
+  end
+
   def self.__socktype(t)
     return t if t.is_a?(Integer)
     n = t.to_s.upcase.sub(/\ASOCK_/, "")
@@ -506,8 +516,32 @@ class Addrinfo
   end
 
   def initialize(sockaddr, family = nil, socktype = nil, protocol = nil)
-    a = sockaddr.is_a?(Array) ? sockaddr : Socket.__unpack(sockaddr)
-    __setup(a[0], a[1] || 0, a[2], a[3] || a[2], socktype || 0, protocol || 0)
+    if sockaddr.is_a?(Array)
+      a = sockaddr
+      af = Socket.__family(a[0])
+      # CRuby validates the Array form up front.
+      if af == Socket::AF_INET || af == Socket::AF_INET6
+        unless a[3].to_s =~ /\A[0-9a-fA-F:.]+\z/
+          raise SocketError, "getaddrinfo: Name or service not known"
+        end
+      end
+      if !family.nil?
+        pf = Socket.__family(family)
+        unless pf == af || pf == Socket::PF_UNSPEC
+          raise SocketError, "protocol family and address family are mismatched"
+        end
+      end
+    else
+      a = Socket.__unpack(sockaddr)
+    end
+    st = socktype.nil? ? 0 : Socket.__socktype_strict(socktype)
+    if st == Socket::SOCK_RDM || st == Socket::SOCK_SEQPACKET
+      raise SocketError, "socktype not supported for this address family"
+    end
+    if !protocol.nil? && protocol != 0 && st == 0
+      raise SocketError, "protocol requires a socket type"     # IPPROTO_TCP with no socktype
+    end
+    __setup(a[0], a[1] || 0, a[2], a[3] || a[2], st, protocol || 0)
     # CRuby: an explicit family wins; with a packed sockaddr String and no
     # family the pfamily is PF_UNSPEC, but the Array form takes its family.
     @pfamily = if !family.nil? then Socket.__family(family)
