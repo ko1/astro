@@ -271,7 +271,9 @@ kp_gvar_readonly_write(struct kp_ctx *tc, const pm_node_t *at, pm_constant_id_t 
                 r[1] == ':' || r[1] == '"' || r[1] == '<' || r[1] == '?' ||
                 (r[1] >= '1' && r[1] <= '9')));
     if (!ro) {                                           /* the multi-char read-only names */
-        static const char *const ro_names[] = { "$FILENAME", "$-a", "$-l", "$-p", "$LOADED_FEATURES", "$LOAD_PATH", NULL };
+        /* NB: $FILENAME is read-only for user code but the prelude's ARGF
+         * implementation assigns it, so it is intentionally not listed here. */
+        static const char *const ro_names[] = { "$-a", "$-l", "$-p", "$LOADED_FEATURES", "$LOAD_PATH", NULL };
         for (uint32_t i = 0; ro_names[i]; i++) if (strcmp(r, ro_names[i]) == 0) { ro = true; break; }
     }
     if (!ro) return NULL;

@@ -62,7 +62,7 @@ end
 module Warning
   # The categories CRuby knows, each off by default.  An unknown name is an
   # error rather than a silent false, so a typo does not quietly disable.
-  CATEGORIES__ = { deprecated: false, experimental: false, performance: false,
+  CATEGORIES__ = { deprecated: false, experimental: true, performance: false,
                    strict_unused_block: false }
   def self.__category!(category)
     raise TypeError, "wrong argument type #{category.class} (expected Symbol)" unless category.is_a?(Symbol)

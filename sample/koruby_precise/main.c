@@ -840,7 +840,7 @@ main(int argc, char *argv[])
             if (OPTION.verbose_warn > 0) {
                 const VALUE wm = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
                 if (KORB_CLASS_P(wm)) {
-                    static const char *const cats[] = { "deprecated", "experimental", "performance", NULL };
+                    static const char *const cats[] = { "deprecated", "experimental", NULL };   /* -w does NOT enable :performance (CRuby) */
                     for (uint32_t ci = 0; cats[ci]; ci++) {
                         pcur[0] = wm;
                         pcur[1] = ID2SYM(korb_intern(c->vm, cats[ci], (uint32_t)strlen(cats[ci])));
