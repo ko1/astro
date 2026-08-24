@@ -248,6 +248,7 @@ static RESULT korb_m_sock_getaddrinfo(CTX *c, VALUE *slots, VALUE_REF self, VALU
     for (ai = res; ai != NULL; ai = ai->ai_next) {
         slots[1] = UNWRAP(korb_sock_addr_ary(c, slots + 1, ai->ai_addr, ai->ai_addrlen));
         VALUE_REF one = VALUE_REF_AT(&slots[1]);
+        CHECK(korb_ary_push_val(c, slots + 2, one, LONG2FIX(ai->ai_family)));   /* CRuby's 5th element */
         CHECK(korb_ary_push_val(c, slots + 2, one, LONG2FIX(ai->ai_socktype)));
         CHECK(korb_ary_push_val(c, slots + 2, one, LONG2FIX(ai->ai_protocol)));
         CHECK(korb_ary_push_val(c, slots + 2, list, VALUE_REF_GET(one)));

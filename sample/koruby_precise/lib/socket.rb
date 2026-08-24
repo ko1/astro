@@ -591,9 +591,15 @@ end
 class Addrinfo
   attr_reader :afamily, :pfamily, :socktype, :protocol
 
+  # getaddrinfo rows are [famname, port, host, addr, afamily, socktype, protocol];
+  # the 4-element form (from __sock_name / accept) has no trailing numbers.
   def self.__from_ary(a)
     ai = allocate
-    ai.__setup(a[0], a[1], a[2], a[3], a[4] || Socket::SOCK_STREAM, a[5] || 0)
+    if a.size >= 7
+      ai.__setup(a[0], a[1], a[2], a[3], a[5] || Socket::SOCK_STREAM, a[6] || 0)
+    else
+      ai.__setup(a[0], a[1], a[2], a[3], a[4] || Socket::SOCK_STREAM, a[5] || 0)
+    end
     ai
   end
 
@@ -654,7 +660,7 @@ class Addrinfo
     r = getaddrinfo(host, nil, nil, Socket::SOCK_STREAM)
     raise SocketError, "getaddrinfo: no address for #{host}" if r.empty?
     a = r[0].to_a
-    __from_ary([a[0], 0, a[2], a[3], 0, 0])
+    __from_ary([a[0], 0, a[2], a[3], 0, 0])   # .ip leaves socktype/protocol at 0
   end
 
   def self.tcp(host, port) = getaddrinfo(host, port, nil, Socket::SOCK_STREAM).first
