@@ -606,15 +606,28 @@ class Date
     elsif (m = /(\d{1,2})\/(\d{1,2})\/(\d{2,4})/.match(s))
       h[:mon], h[:mday], h[:year] = m[1].to_i, m[2].to_i, m[3].to_i
       s = m.pre_match + m.post_match
-    elsif (m = /(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,})\.?\s*,?\s*(-?\d{1,4})?/.match(s)) && __month_index(m[2])
-      h[:mday] = m[1].to_i
-      h[:mon] = __month_index(m[2])
+    elsif (m = /(-?\d{4})[.\s]+([A-Za-z]{3,})\.?[.\s]+(\d{1,2})(?:st|nd|rd|th)?/.match(s)) && __month_index(m[2])
+      h[:year], h[:mon], h[:mday] = m[1].to_i, __month_index(m[2]), m[3].to_i   # "YYYY mmm DD"
+      s = m.pre_match + m.post_match
+    elsif (m = /(\d{1,2})(?:st|nd|rd|th)?[.\s]+([A-Za-z]{3,})\.?(?:[.\s]*(-?\d{4}|\d{1,2}))?/.match(s)) && __month_index(m[2])
+      h[:mday], h[:mon] = m[1].to_i, __month_index(m[2])                        # "DD mmm[ YYYY]"
       h[:year] = m[3].to_i if m[3]
       s = m.pre_match + m.post_match
-    elsif (m = /([A-Za-z]{3,})\.?\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(-?\d{1,4})?/.match(s)) && __month_index(m[1])
-      h[:mon] = __month_index(m[1])
-      h[:mday] = m[2].to_i
+    elsif (m = /([A-Za-z]{3,})\.?[.\s]*(-?\d{4})(?![\d])/.match(s)) && __month_index(m[1])
+      h[:mon], h[:year] = __month_index(m[1]), m[2].to_i                        # "mmm[.]YYYY" (4 digits = year)
+      s = m.pre_match + m.post_match
+    elsif (m = /([A-Za-z]{3,})\.?[.\s]*(\d{1,2})(?!\d)(?:st|nd|rd|th)?(?:\s*,?\s*(-?\d{4}))?/.match(s)) && __month_index(m[1])
+      h[:mon], h[:mday] = __month_index(m[1]), m[2].to_i                        # "mmm[.]DD[, YYYY]"
       h[:year] = m[3].to_i if m[3]
+      s = m.pre_match + m.post_match
+    elsif (m = /(\d{1,2})[.](\d{1,2})[.](-?\d{2,4})/.match(s))
+      h[:mday], h[:mon], h[:year] = m[1].to_i, m[2].to_i, m[3].to_i             # "DD.MM.YYYY"
+      s = m.pre_match + m.post_match
+    elsif (m = /(-?\d{4})[.](\d{1,2})[.](\d{1,2})/.match(s))
+      h[:year], h[:mon], h[:mday] = m[1].to_i, m[2].to_i, m[3].to_i             # "YYYY.MM.DD"
+      s = m.pre_match + m.post_match
+    elsif (m = /\b([A-Za-z]{3,})\.?\b/.match(s)) && __month_index(m[1]) && !__wday_index(m[1])
+      h[:mon] = __month_index(m[1])                                            # bare month name
       s = m.pre_match + m.post_match
     elsif (m = /\A\s*(\d+)\s*\z/.match(s))
       # Bare digit strings, disambiguated by length (CRuby's ddd rules):
