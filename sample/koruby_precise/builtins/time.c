@@ -947,20 +947,41 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     for (uint32_t i = 0; i < fl && o + 32 < sizeof efmt; i++) {
         if (fmt[i] != '%') { efmt[o++] = fmt[i]; continue; }
         const uint32_t pct = i; i++;
-        while (i < fl && strchr("-_0^#", fmt[i])) i++;        /* flags */
+        bool f_dash = false, f_under = false, f_zero = false, f_upper = false, f_swap = false;
+        while (i < fl && strchr("-_0^#", fmt[i])) {           /* flags */
+            switch (fmt[i]) {
+              case '-': f_dash = true; break;   case '_': f_under = true; break;
+              case '0': f_zero = true; break;   case '^': f_upper = true; break;
+              default:  f_swap = true; break;
+            }
+            i++;
+        }
         int ncolon = 0; while (i < fl && fmt[i] == ':') { ncolon++; i++; }   /* %:z colons */
         int width = -1; { int w = 0; bool any = false; while (i < fl && isdigit((unsigned char)fmt[i])) { w = w*10 + (fmt[i]-'0'); any = true; i++; } if (any) width = w; }
+        (void)f_swap; (void)f_upper;
         if (i >= fl) { efmt[o++] = '%'; break; }
         const char spec = fmt[i];
         if (spec == 'N' || spec == 'L') {                    /* fractional seconds */
             char nb[16]; snprintf(nb, sizeof nb, "%09ld", nsec);   /* 9 digits */
             int wd = width >= 0 ? width : (spec == 'L' ? 3 : 9);
             for (int k = 0; k < wd && o + 1 < sizeof efmt; k++) efmt[o++] = (k < 9) ? nb[k] : '0';   /* truncate / right-pad */
-        } else if (spec == 'z' && ncolon > 0) {              /* %:z / %::z offset with colons */
-            long ao = gmtoff < 0 ? -gmtoff : gmtoff; int hh = (int)(ao/3600), mm = (int)((ao%3600)/60), ss = (int)(ao%60);
-            char zb[16];
-            if (ncolon >= 2) snprintf(zb, sizeof zb, "%c%02d:%02d:%02d", gmtoff < 0 ? '-' : '+', hh, mm, ss);
-            else             snprintf(zb, sizeof zb, "%c%02d:%02d", gmtoff < 0 ? '-' : '+', hh, mm);
+        } else if (spec == 'z') {                            /* %z / %:z / %::z, with Ruby's flags + width */
+            const long ao = gmtoff < 0 ? -gmtoff : gmtoff;
+            const int hh = (int)(ao/3600), mm = (int)((ao%3600)/60), ss = (int)(ao%60);
+            const char sign = gmtoff < 0 ? '-' : '+';
+            char body[24];
+            if (ncolon >= 2)      snprintf(body, sizeof body, "%02d:%02d:%02d", hh, mm, ss);
+            else if (ncolon == 1) snprintf(body, sizeof body, "%02d:%02d", hh, mm);
+            else                  snprintf(body, sizeof body, "%02d%02d", hh, mm);
+            char zb[64];
+            const int blen = (int)strlen(body);
+            /* width counts the sign; pad the DIGITS with 0 (or with blanks for `_`) */
+            int pad = (width > blen + 1) ? width - blen - 1 : 0;
+            char *w = zb;
+            if (f_under) { for (int k = 0; k < pad; k++) *w++ = ' '; *w++ = sign; }
+            else if (f_dash) { *w++ = sign; }                 /* `-` = no padding at all */
+            else { *w++ = sign; for (int k = 0; k < pad; k++) *w++ = '0'; }
+            memcpy(w, body, (size_t)blen); w += blen; *w = '\0';
             for (const char *p = zb; *p && o + 1 < sizeof efmt; p++) efmt[o++] = *p;
         } else if (spec == 'Z' && has_zname) {               /* the timezone object's own name */
             for (const char *p = zbuf; *p && o + 1 < sizeof efmt; p++) efmt[o++] = *p;
