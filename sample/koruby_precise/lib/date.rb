@@ -512,13 +512,19 @@ class Date
     out
   end
 
+  # The pad character is the LAST of the `_` / `0` flags ("%0_10h" pads with
+  # spaces, "%_010h" with zeros); `-` anywhere suppresses padding entirely.
+  private def __padchar(flags, default)
+    ch = default
+    flags.each_char { |f| ch = " " if f == "_"; ch = "0" if f == "0" }
+    ch
+  end
+
   private def __pad(v, w, flags, zero = true)
     s = v.abs.to_s
     neg = v.is_a?(Numeric) && v < 0
-    if flags.include?("-")
-      # no padding
-    else
-      pad = flags.include?("_") ? " " : (zero ? "0" : " ")
+    unless flags.include?("-")
+      pad = __padchar(flags, zero ? "0" : " ")
       s = pad * (w - s.length) + s if w && s.length < w
     end
     (neg ? "-" : "") + s
@@ -540,14 +546,15 @@ class Date
     when "l" then __pad((hour % 12).zero? ? 12 : hour % 12, width || 2, flags + "_")
     when "M" then __pad(min, width || 2, flags)
     when "S" then __pad(sec, width || 2, flags)
-    when "L" then __pad((sec_fraction * 1000).to_i, width || 3, flags)
-    when "N" then __pad((sec_fraction * 1_000_000_000).to_i, width || 9, flags)
+    when "L" then __frac_digits(width || 3)
+    when "N" then __frac_digits(width || 9)
+    when "Q" then (__epoch_seconds * 1000 + __frac_digits(3).to_i).to_s   # ms since epoch
     when "P" then hour < 12 ? "am" : "pm"
     when "p" then hour < 12 ? "AM" : "PM"
-    when "A" then __case(DAYNAMES[wday], flags)
-    when "a" then __case(ABBR_DAYNAMES[wday], flags)
-    when "B" then __case(MONTHNAMES[m], flags)
-    when "b", "h" then __case(ABBR_MONTHNAMES[m], flags)
+    when "A" then __case(DAYNAMES[wday], flags, width)
+    when "a" then __case(ABBR_DAYNAMES[wday], flags, width)
+    when "B" then __case(MONTHNAMES[m], flags, width)
+    when "b", "h" then __case(ABBR_MONTHNAMES[m], flags, width)
     when "u" then (wday.zero? ? 7 : wday).to_s
     when "w" then wday.to_s
     when "G" then __pad(cwyear, width || 4, flags)
@@ -566,6 +573,7 @@ class Date
     when "T", "X" then format("%02d:%02d:%02d", hour, min, sec)
     when "R" then format("%02d:%02d", hour, min)
     when "r" then format("%02d:%02d:%02d %s", (hour % 12).zero? ? 12 : hour % 12, min, sec, hour < 12 ? "AM" : "PM")
+    when "v" then strftime("%e-%^b-%4Y")            # VMS date
     when "c" then strftime("%a %b %e %H:%M:%S %Y")
     when "+" then strftime("%a %b %e %H:%M:%S %Z %Y")
     else "%" + flags + (width ? width.to_s : "") + c
@@ -574,8 +582,18 @@ class Date
 
   private def __epoch_seconds = ((ajd - Rational(4881175, 2)) * 86400).to_i
 
-  private def __case(s, flags)
-    return s.upcase if flags.include?("^")
+  # The fractional second rendered to exactly `n` digits (truncating, as CRuby's
+  # %<width>N does — "%6N" of 0.1s is "100000", not the full nanoseconds).
+  private def __frac_digits(n) = ((sec_fraction * 10**n).to_i).to_s.rjust(n, "0")
+
+  # Text conversions honour ^ (upcase), # (swapcase) and the shared width/pad
+  # flags — "%^_10b" is " APR" padded to 10 (GNU strftime).
+  private def __case(s, flags, width = nil)
+    s = s.upcase if flags.include?("^")
+    s = s.upcase if flags.include?("#")     # CRuby's # upcases a mixed-case name
+    if width && s.length < width && !flags.include?("-")
+      s = __padchar(flags, " ") * (width - s.length) + s
+    end
     s
   end
 
@@ -591,6 +609,10 @@ class Date
 
   # ---- parsing -----------------------------------------------------------
 
+  # Separators accepted between the fields of a textual date ("23/feb/2008",
+  # "november.5th.2005").  A leading "-" stays with the year, so it is not here.
+  SEP__ = %r{[.\s/]}
+
   def self._parse(str, comp = true)
     str = str.to_str if !str.is_a?(String) && str.respond_to?(:to_str)
     raise TypeError, "no implicit conversion into String" unless str.is_a?(String)
@@ -603,33 +625,36 @@ class Date
     elsif (m = /(\d{4})(\d{2})(\d{2})/.match(s))
       h[:year], h[:mon], h[:mday] = m[1].to_i, m[2].to_i, m[3].to_i
       s = m.pre_match + m.post_match
-    elsif (m = /(\d{1,2})\/(\d{1,2})\/(\d{2,4})/.match(s))
-      h[:mon], h[:mday], h[:year] = m[1].to_i, m[2].to_i, m[3].to_i
+    elsif (m = /(-?\d{1,4})([-.\/])(\d{1,2})\2(-?\d{1,4})/.match(s))
+      # a numeric triple: a 4-digit head is the year (YYYY-MM-DD), a 4-digit tail
+      # is the year with the day leading (DD-MM-YYYY), all-short is YY-MM-DD.
+      a, b, cc = m[1], m[3], m[4]
+      if a.delete_prefix("-").length >= 3
+        h[:year], h[:mon], h[:mday] = a.to_i, b.to_i, cc.to_i
+      elsif cc.delete_prefix("-").length >= 3
+        h[:mday], h[:mon], h[:year] = a.to_i, b.to_i, cc.to_i
+      else
+        h[:year], h[:mon], h[:mday] = a.to_i, b.to_i, cc.to_i
+      end
       s = m.pre_match + m.post_match
-    elsif (m = /(-?\d{4})[.\s]+([A-Za-z]{3,})\.?[.\s]+(\d{1,2})(?:st|nd|rd|th)?/.match(s)) && __month_index(m[2])
+    elsif (m = /(-?\d{4})#{SEP__}+([A-Za-z]{3,})\.?#{SEP__}+(\d{1,2})(?:st|nd|rd|th)?/.match(s)) && __month_index(m[2])
       h[:year], h[:mon], h[:mday] = m[1].to_i, __month_index(m[2]), m[3].to_i   # "YYYY mmm DD"
       s = m.pre_match + m.post_match
-    elsif (m = /(\d{1,2})(?:st|nd|rd|th)?[.\s]+([A-Za-z]{3,})\.?(?:[.\s,]*(-?\d{1,4}))?/.match(s)) && __month_index(m[2])
+    elsif (m = /(\d{1,2})(?:st|nd|rd|th)?#{SEP__}+([A-Za-z]{3,})\.?(?:[,\s]*#{SEP__}*(-?\d{1,4}))?/.match(s)) && __month_index(m[2])
       h[:mday], h[:mon] = m[1].to_i, __month_index(m[2])                        # "DD mmm[ YYYY]"
       h[:year] = m[3].to_i if m[3]
       s = m.pre_match + m.post_match
-    elsif (m = /([A-Za-z]{3,})\.?[.\s]*(-?\d{4})(?![\d])/.match(s)) && __month_index(m[1])
+    elsif (m = /([A-Za-z]{3,})\.?#{SEP__}*(-?\d{4})(?![\d])/.match(s)) && __month_index(m[1])
       h[:mon], h[:year] = __month_index(m[1]), m[2].to_i                        # "mmm[.]YYYY" (4 digits = year)
       s = m.pre_match + m.post_match
-    elsif (m = /([A-Za-z]{3,})\.?[.\s]*(\d{1,2})(?!\d)(?:st|nd|rd|th)?(?:\s*,?\s*(-?\d{1,4}))?/.match(s)) && __month_index(m[1])
+    elsif (m = /([A-Za-z]{3,})\.?#{SEP__}*(\d{1,2})(?!\d)(?:st|nd|rd|th)?(?:[,\s]*#{SEP__}*(-?\d{1,4}))?/.match(s)) && __month_index(m[1])
       h[:mon], h[:mday] = __month_index(m[1]), m[2].to_i                        # "mmm[.]DD[, YYYY]"
       h[:year] = m[3].to_i if m[3]
-      s = m.pre_match + m.post_match
-    elsif (m = /(-?\d{4})[.](\d{1,2})[.](\d{1,2})/.match(s))
-      h[:year], h[:mon], h[:mday] = m[1].to_i, m[2].to_i, m[3].to_i             # "YYYY.MM.DD" (4-digit head = year)
-      s = m.pre_match + m.post_match
-    elsif (m = /(\d{1,2})[.](\d{1,2})[.](-?\d{2,4})/.match(s))
-      h[:mday], h[:mon], h[:year] = m[1].to_i, m[2].to_i, m[3].to_i             # "DD.MM.YYYY"
       s = m.pre_match + m.post_match
     elsif (m = /\b([A-Za-z]{3,})\.?\b/.match(s)) && __month_index(m[1]) && !__wday_index(m[1])
       h[:mon] = __month_index(m[1])                                            # bare month name
       s = m.pre_match + m.post_match
-    elsif (m = /\A\s*(\d+)\s*\z/.match(s))
+    elsif (m = /\A\s*(\d+)(?<ord>st|nd|rd|th)?\s*\z/.match(s)) && !(m[1].length == 1 && m[:ord].nil?)
       # Bare digit strings, disambiguated by length (CRuby's ddd rules):
       # DD → day / DDD → year-day / MMDD → month+day / YYMMDD / YYYYMMDD is
       # handled above / YYDDD → 2-digit year + year-day / YYYYDDD.
@@ -693,24 +718,30 @@ class Date
     yy >= 69 ? 1900 + yy : 2000 + yy
   end
 
+  # A partial parse completes from today (Date.parse("10") → this month's 10th).
+  # Shared with DateTime.parse, which completes the date part the same way.
+  def self.__complete_ymd(h, sg)
+    return [h[:year], h[:mon], h[:mday]] if h[:year] && h[:mon] && h[:mday]
+    t = Time.now
+    if h[:yday]
+      d = ordinal(h[:year] || t.year, h[:yday], sg)
+      return [d.year, d.mon, d.mday]
+    end
+    if h[:wday] && h[:mday].nil?
+      base = civil(t.year, t.mon, t.day, sg)       # the named day of THIS week (Sun-start)
+      d = base - base.wday + h[:wday]
+      return [d.year, d.mon, d.mday]
+    end
+    year = h[:year] || t.year
+    mon  = h[:mon] || (h[:mday] && h[:year].nil? ? t.mon : 1)
+    [year, mon, h[:mday] || 1]
+  end
+
   def self.parse(str = "-4712-01-01", comp = true, sg = ITALY)
     h = _parse(str, comp)
     raise Date::Error, "invalid date" unless h[:year] || h[:mon] || h[:mday] || h[:yday] || h[:wday]
-    # Partial dates complete from today (Date.parse("10") → this month's 10th).
-    if h[:year].nil? || h[:mon].nil? || h[:mday].nil?
-      t = Time.now
-      if h[:yday]
-        return ordinal(h[:year] || t.year, h[:yday], sg)
-      elsif h[:wday] && h[:mday].nil?
-        base = civil(t.year, t.mon, t.day, sg)     # the named day of THIS week (Sun-start)
-        return base - base.wday + h[:wday]
-      end
-      h[:year] ||= t.year
-      if h[:mon].nil? && h[:mday]
-        h[:mon] = t.mon
-      end
-    end
-    civil(h[:year], h[:mon] || 1, h[:mday] || 1, sg)
+    y, m, d = __complete_ymd(h, sg)
+    civil(y, m, d, sg)
   end
 
   def self.iso8601(str = "-4712-01-01", sg = ITALY) = parse(str, true, sg)
@@ -765,10 +796,23 @@ class Date
         sub = _strptime(str[si..-1], "%Y-%m-%d") or return nil
         h.update(sub)
         si += (str.length - si) - sub[:leftover].to_s.length
-      when "T"
+      when "T", "X"
         sub = _strptime(str[si..-1], "%H:%M:%S") or return nil
         h.update(sub)
         si += (str.length - si) - sub[:leftover].to_s.length
+      when "c", "D", "x", "v", "R", "r", "n", "t"
+        expansion = { "c" => "%a %b %e %H:%M:%S %Y", "D" => "%m/%d/%y", "x" => "%m/%d/%y",
+                      "v" => "%e-%b-%Y", "R" => "%H:%M", "r" => "%I:%M:%S %p",
+                      "n" => "\n", "t" => "\t" }[spec]
+        sub = _strptime(str[si..-1], expansion) or return nil
+        left = sub.delete(:leftover)
+        h.update(sub)
+        si += (str.length - si) - left.to_s.length
+      when "p", "P"
+        m = /\A([AaPp])\.?[Mm]\.?/.match(str[si..-1]) or return nil
+        h[:__pm] = (m[1] == "P" || m[1] == "p")
+        si += m[0].length
+      when "I" then si = __sp_int(str, si, h, :hour, 2) or return nil
       when "C" then si = __sp_int(str, si, h, :__century, 2) or return nil        # century (with %y)
       when "G" then si = __sp_int(str, si, h, :cwyear, 10, true) or return nil     # commercial year
       when "g" then si = __sp_int(str, si, h, :__cwyear2, 2) or return nil
@@ -792,6 +836,9 @@ class Date
     end
     if (cy2 = h.delete(:__cwyear2))                       # %g: 2-digit commercial year
       h[:cwyear] = cy2 + (cy2 >= 69 ? 1900 : 2000)
+    end
+    if (pm = h.delete(:__pm))                             # %p pairs with %I
+      h[:hour] = (h[:hour] || 0) % 12 + (pm ? 12 : 0)
     end
     if (ms = h.delete(:__msec)) then h[:sec_fraction] = Rational(ms, 1000) end
     if (ns = h.delete(:__nsec)) then h[:sec_fraction] = Rational(ns, 1_000_000_000) end
@@ -842,8 +889,12 @@ class Date
       base += (h[:wday] - start) % 7 if h[:wday]
       return base
     end
-    if h[:wday] && h[:mday].nil? && h[:mon].nil?     # a lone weekday → this week's
-      base = today.()
+    if h[:wday] && h[:mday].nil? && h[:mon].nil?
+      if h[:year]                                    # %Y + %w → week 0 of that year
+        jan1 = civil(h[:year], 1, 1, sg)
+        return jan1 - jan1.wday + h[:wday]
+      end
+      base = today.()                                # a lone weekday → this week's
       return base - base.wday + h[:wday]
     end
     if h[:year].nil? || h[:mon].nil? || h[:mday].nil?
@@ -857,6 +908,8 @@ end
 
 # DateTime adds a time of day and a UTC offset on top of Date.
 class DateTime < Date
+  def strftime(fmt = "%FT%T%:z") = super   # Date's default is "%F"
+
   def self.civil(y = -4712, m = 1, d = 1, h = nil, min = nil, s = 0, of = 0, sg = ITALY)
     if h.nil? && d.is_a?(Numeric) && !d.is_a?(Integer)
       # `DateTime.new(y, m, d)` — with no hour given the day may carry a
@@ -968,9 +1021,9 @@ class DateTime < Date
 
   def self.parse(str = "-4712-01-01T00:00:00+00:00", comp = true, sg = ITALY)
     h = _parse(str, comp)
-    raise Date::Error, "invalid date" unless h[:year] || h[:mon] || h[:mday]
-    civil(h[:year] || -4712, h[:mon] || 1, h[:mday] || 1,
-          h[:hour] || 0, h[:min] || 0, h[:sec] || 0, h[:offset] || 0, sg)
+    raise Date::Error, "invalid date" unless h[:year] || h[:mon] || h[:mday] || h[:yday] || h[:wday]
+    y, m, d = Date.__complete_ymd(h, sg)
+    civil(y, m, d, h[:hour] || 0, h[:min] || 0, h[:sec] || 0, h[:offset] || 0, sg)
   end
 
   def self.strptime(str = "-4712-01-01T00:00:00+00:00", fmt = "%FT%T%z", sg = ITALY)
@@ -981,7 +1034,12 @@ class DateTime < Date
 end
 
 class Time
-  def to_date = Date.civil(year, month, day)
-  def to_datetime = DateTime.civil(year, month, day, hour, min, sec, utc_offset)
+  # Time is proleptic Gregorian, so the conversion goes through the Gregorian
+  # julian day; the resulting Date still carries the default (ITALY) reform.
+  def to_date = Date.jd(Date.civil_to_jd(year, month, day, Date::GREGORIAN))
+  def to_datetime
+    DateTime.jd(Date.civil_to_jd(year, month, day, Date::GREGORIAN),
+                hour, min, sec + Rational(nsec, 1_000_000_000), Rational(utc_offset, 86400))
+  end
   def to_time = self
 end
