@@ -6697,6 +6697,7 @@ uint32_t korb_entry_params_cnt(NODE *entry) { return entry == KORB_BLK_CPROC ? 1
 uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
 static uint32_t korb_entry_destructure_n(NODE *entry) { return entry->u.node_entry.destructure_n; }
 static int32_t  korb_entry_rest_slot(NODE *entry) { return entry->u.node_entry.rest_slot; }   /* -1 = no rest param */
+static uint32_t korb_entry_post_cnt(NODE *entry)  { return entry->u.node_entry.post_cnt; }    /* trailing required params */
 static struct Node **korb_entry_opt_defaults(NODE *entry) { return (struct Node **)entry->u.node_entry.opt_defaults; }
 static uint32_t korb_entry_req_cnt(NODE *entry) { return entry->u.node_entry.req_cnt; }
 static const struct korb_kw_info *korb_entry_kw_info(NODE *entry) { return (const struct korb_kw_info *)entry->u.node_entry.kw_info; }
@@ -6837,7 +6838,8 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         const uint32_t pc = korb_entry_params_cnt(block);
         const bool has_rest = korb_entry_rest_slot(block) != -1;   /* named (>=0) or discard (-2) */
         const uint32_t rs = korb_entry_rest_slot(block) >= 0 ? (uint32_t)korb_entry_rest_slot(block) : pc;
-        const uint32_t npost = (has_rest && pc > rs + 1) ? (pc - rs - 1) : 0;
+        const uint32_t npost = has_rest ? ((pc > rs + 1) ? (pc - rs - 1) : 0)
+                                        : korb_entry_post_cnt(block);   /* |a, b=1, c| — posts are required too */
         const uint32_t lo = korb_entry_req_cnt(block) + npost;   /* required front + required post */
         if (UNLIKELY(argc < lo || (!has_rest && argc > pc))) {
             if (has_rest)   return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u+)", argc, lo);
@@ -6917,20 +6919,35 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
             bf[1 + rs + 1 + j] = (pidx >= 0 && pidx < (int32_t)srcn) ? stage[pidx] : KORB_NIL;
         }
         for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
-    } else if (korb_entry_opt_defaults(block) != NULL) {   /* |req..., opt=default...| (no rest) */
+    } else if (korb_entry_opt_defaults(block) != NULL || korb_entry_post_cnt(block) > 0) {   /* |req..., opt=default..., post...| (no rest) */
         const uint32_t np = korb_entry_params_cnt(block);
         const uint32_t reqc = korb_entry_req_cnt(block);
+        const uint32_t npost = korb_entry_post_cnt(block);
+        const uint32_t nfront = (np > npost) ? np - npost : 0;   /* req + opt (posts bind from the end) */
         struct Node **const opts = korb_entry_opt_defaults(block);
         const bool splat = (!is_lambda && np > 1 && argc == 1 && KORB_ARRAY_P(argv[0]));
         const uint32_t srcn = splat ? VAL2ARY(argv[0])->len : argc;
-        for (uint32_t i = 0; i < np; i++) {
-            if (i < srcn) bf[1 + i] = splat ? korb_items_data(VAL2ARY(argv[0])->items)[i] : argv[i];   /* provided (read before any alloc) */
-            else if (i >= reqc) {                          /* optional → eval default in block scope */
+        const VALUE *const src = splat ? korb_items_data(VAL2ARY(argv[0])->items) : argv;
+        /* CRuby order: required front, then as many optionals as the surplus
+         * allows, then the posts — args are consumed strictly left to right and
+         * any extra beyond that is dropped. */
+        const uint32_t nopt = (nfront > reqc) ? nfront - reqc : 0;
+        uint32_t nopt_fill = 0;
+        if (srcn > reqc + npost) {
+            nopt_fill = srcn - reqc - npost;
+            if (nopt_fill > nopt) nopt_fill = nopt;
+        }
+        uint32_t take = 0;
+        for (uint32_t i = 0; i < nfront; i++) {
+            if (i < reqc || i - reqc < nopt_fill) bf[1 + i] = (take < srcn) ? src[take++] : KORB_NIL;
+            else if (i >= reqc && opts) {                   /* optional → eval default in block scope */
                 RESULT dr = EVAL(c, opts[i - reqc], bf + 1 + blocals);
                 if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
                 bf[1 + i] = dr.value;
             } else bf[1 + i] = KORB_NIL;                    /* missing required → nil (block-lenient) */
         }
+        for (uint32_t j = 0; j < npost; j++)                /* posts follow the consumed front */
+            bf[1 + nfront + j] = (take < srcn) ? src[take++] : KORB_NIL;
         for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
     } else if (korb_entry_rest_slot(block) == -2) {     /* |s,| / |s,*| — discard extras, splat like np+1 params */
         const uint32_t np = korb_entry_params_cnt(block);

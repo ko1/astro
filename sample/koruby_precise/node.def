@@ -2046,7 +2046,7 @@ node_dstr_concat(CTX *c, NODE *n, VALUE *slots, VALUE_REF acc@child, VALUE part@
 // reads params/locals off it (korb_entry_*) to size the block frame, then
 // dispatches it (EVAL evaluates the body at the block-frame cursor).
 NODE_DEF
-node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t destructure_n, void *destructure_spec, uint32_t cap_depth, void *cap_ns, int32_t rest_slot, void *opt_defaults, uint32_t req_cnt, void *kw_info, void *param_info, int32_t blk_param_slot)
+node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t destructure_n, void *destructure_spec, uint32_t cap_depth, void *cap_ns, int32_t rest_slot, void *opt_defaults, uint32_t req_cnt, void *kw_info, void *param_info, int32_t blk_param_slot, uint32_t post_cnt)
 {
     (void)n; (void)params_cnt; (void)locals_cnt; (void)destructure_n; (void)destructure_spec; (void)cap_depth; (void)cap_ns; (void)rest_slot; (void)opt_defaults; (void)req_cnt; (void)kw_info; (void)param_info; (void)blk_param_slot;
     return EVAL_ARG(c, body);
