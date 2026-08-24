@@ -2919,6 +2919,12 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         bake_add(tc, &en->u.node_end_block.self_off);
         return en;
       }
+      case PM_FLIP_FLOP_NODE: {     /* `if a..b` — sed/awk range condition (state on the node) */
+        const pm_flip_flop_node_t *ff = (const pm_flip_flop_node_t *)node;
+        NODE *l = transduce(tc, ff->left);       /* evaluated in place (no staging slots) */
+        NODE *r = transduce(tc, ff->right);
+        return ALLOC_node_flipflop(l, r, (ff->base.flags & PM_RANGE_FLAGS_EXCLUDE_END) ? 1u : 0u);
+      }
       case PM_SOURCE_LINE_NODE: return ALLOC_node_lit(LONG2FIX((korb_sword_t)(int32_t)kp_line(tc, node)));    /* __LINE__ (signed: eval's first line may be negative) */
       case PM_SOURCE_ENCODING_NODE: {   /* __ENCODING__ → Encoding.find(<file encoding>) */
         const char *const nm = korb_enc_name_of(tc->c->vm, tc->src_enc);
