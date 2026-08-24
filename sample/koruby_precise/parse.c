@@ -266,9 +266,14 @@ kp_gvar_readonly_write(struct kp_ctx *tc, const pm_node_t *at, pm_constant_id_t 
 {
     const uint32_t resolved = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, cid));
     const char *const r = korb_sym_name(tc->c->vm, resolved);
-    const bool ro = (r[0] == '$' && r[1] != '\0' && r[2] == '\0' &&
-                     (r[1] == '&' || r[1] == '`' || r[1] == '\'' || r[1] == '+' || r[1] == '!' ||
-                      (r[1] >= '1' && r[1] <= '9')));
+    bool ro = (r[0] == '$' && r[1] != '\0' && r[2] == '\0' &&
+               (r[1] == '&' || r[1] == '`' || r[1] == '\'' || r[1] == '+' || r[1] == '!' ||
+                r[1] == ':' || r[1] == '"' || r[1] == '<' || r[1] == '?' ||
+                (r[1] >= '1' && r[1] <= '9')));
+    if (!ro) {                                           /* the multi-char read-only names */
+        static const char *const ro_names[] = { "$FILENAME", "$-a", "$-l", "$-p", "$LOADED_FEATURES", "$LOAD_PATH", NULL };
+        for (uint32_t i = 0; ro_names[i]; i++) if (strcmp(r, ro_names[i]) == 0) { ro = true; break; }
+    }
     if (!ro) return NULL;
     const char *const written = kp_cid_cstr(tc, cid);
     char *msgname = malloc(strlen(written) + 1);         /* immortal (baked into the node) */
