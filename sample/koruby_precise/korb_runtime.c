@@ -10529,7 +10529,17 @@ korb_eval_toplevel(CTX *c, VALUE *slots, const char *src, size_t len, const char
     RESULT mr = korb_obj_new(c, cur, KORB_NIL);        /* fresh `main` self */
     if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
     fb[-1] = mr.value;
-    return EVAL(c, ast, cur);
+    /* a required/loaded file starts at the real top level even when the require
+     * ran inside instance_eval/class_eval: its `def`s are global functions, not
+     * methods of the surrounding definee. */
+    const VALUE saved_definee = c->def_definee;
+    const VALUE saved_cref = c->eval_cref;
+    c->def_definee = KORB_NIL;
+    c->eval_cref = KORB_NIL;
+    RESULT r = EVAL(c, ast, cur);
+    c->def_definee = saved_definee;
+    c->eval_cref = saved_cref;
+    return r;
 }
 /* source_location: register a def/block body NODE → (file, line) at parse time. */
 /* CRuby warns on every constant reassignment, naming where the previous one was
