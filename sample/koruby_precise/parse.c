@@ -1048,6 +1048,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
     int32_t rest_slot = -1;         /* local index of a `*rest` param, or -1 */
     uint32_t post_cnt = 0;          /* trailing required params (bound from the end) */
     uint32_t destr_len = 0;         /* bytes in destructure_spec (variable-length: nested groups) */
+    bool needs_spec = false;        /* a destructured param appeared in the opt/rest/post form */
     struct Node **opt_defaults = NULL;  /* default exprs for optional params */
     uint32_t req_cnt = 0;           /* leading required positional count */
     struct korb_kw_info *kw_info = NULL;  /* keyword params (a:, b: 10, **kw) */
@@ -1120,6 +1121,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                 uint32_t loc = 0;
                 for (uint32_t i = 0; i < ps->requireds.size; i++) {
                     const pm_node_t *p = ps->requireds.nodes[i];
+                    if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) { needs_spec = true; continue; }   /* |(a,b), *rest| → spec path */
                     if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, p, "destructuring block param with opt/rest"); }
                     if (lvar_index(tc, p, ((const pm_required_parameter_node_t *)p)->name) != loc)
                         { pop_frame(tc); return kp_unsupported(tc, p, "block param slot ordering"); }   /* skip this block, don't abort the file */
@@ -1154,21 +1156,66 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     } else {
                     if (!PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, ps->rest, "block splat parameter"); }
                     const pm_rest_parameter_node_t *rp = (const pm_rest_parameter_node_t *)ps->rest;
-                    rest_slot = (int32_t)loc;
-                    if (lvar_index(tc, ps->rest, rp->name) != loc)
+                    rest_slot = (int32_t)lvar_index(tc, ps->rest, rp->name);   /* destructured params shift the count */
+                    if (!needs_spec && rest_slot != (int32_t)loc)
                         kp_failf(tc, ps->rest, "koruby_precise: block rest not locals[%u]", loc);
                     loc++;
                     }
                 }
-                post_cnt = (uint32_t)ps->posts.size;      /* |a, b=1, c| — posts bind from the END of the args */
+                post_cnt = (uint32_t)ps->posts.size;      /* |a, b=1, c| / |a, *r, c| — posts bind from the END */
                 for (uint32_t i = 0; i < ps->posts.size; i++) {
                     const pm_node_t *p = ps->posts.nodes[i];
+                    if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) { needs_spec = true; continue; }
                     if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, p, "destructuring block post"); }
                     if (lvar_index(tc, p, ((const pm_required_parameter_node_t *)p)->name) != loc)
                         kp_failf(tc, p, "koruby_precise: block post not locals[%u]", loc);
                     loc++;
                 }
                 bparams = loc;                              /* req + opt + rest(1) + post */
+                if (needs_spec) {
+                    /* one entry per logical param (the rest param is a scalar
+                     * entry); leaves carry their target local index. */
+                    uint32_t cap2 = 32, len2 = 0;
+                    uint8_t *sp2 = malloc(cap2);
+                    if (!sp2) abort();
+                    /* header: number of LOGICAL params before *rest (locals and
+                     * logical params diverge once a param destructures) */
+                    sp2[len2++] = (uint8_t)(ps->requireds.size + ps->optionals.size);
+                    #define SP2_PUT(b) do { if (len2 == cap2) { cap2 *= 2; sp2 = realloc(sp2, cap2); if (!sp2) abort(); } sp2[len2++] = (uint8_t)(b); } while (0)
+                    bool bad2 = false;
+                    uint32_t li2 = 0;
+                    #define SP2_LEAF(node_, cid_) do {                         const uint32_t _li = (uint32_t)lvar_index(tc, (node_), (cid_));                         if (_li > 254) { bad2 = true; break; }                         SP2_PUT(0x00); SP2_PUT(_li); li2++; } while (0)
+                    for (uint32_t pass = 0; pass < 3 && !bad2; pass++) {
+                        const pm_node_list_t *lst = pass == 0 ? &ps->requireds
+                                                  : pass == 1 ? &ps->optionals : &ps->posts;
+                        for (uint32_t i = 0; i < lst->size && !bad2; i++) {
+                            const pm_node_t *p = lst->nodes[i];
+                            if (PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE))
+                                SP2_LEAF(p, ((const pm_required_parameter_node_t *)p)->name);
+                            else if (PM_NODE_TYPE_P(p, PM_OPTIONAL_PARAMETER_NODE))
+                                SP2_LEAF(p, ((const pm_optional_parameter_node_t *)p)->name);
+                            else if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) {
+                                const pm_multi_target_node_t *mt3 = (const pm_multi_target_node_t *)p;
+                                if (mt3->rest || mt3->rights.size || mt3->lefts.size == 0 || mt3->lefts.size > 254) { bad2 = true; break; }
+                                SP2_PUT(0xFF); SP2_PUT(mt3->lefts.size);
+                                for (uint32_t j = 0; j < mt3->lefts.size && !bad2; j++) {
+                                    const pm_node_t *t3 = mt3->lefts.nodes[j];
+                                    if (PM_NODE_TYPE_P(t3, PM_LOCAL_VARIABLE_TARGET_NODE))
+                                        SP2_LEAF(t3, ((const pm_local_variable_target_node_t *)t3)->name);
+                                    else if (PM_NODE_TYPE_P(t3, PM_REQUIRED_PARAMETER_NODE))
+                                        SP2_LEAF(t3, ((const pm_required_parameter_node_t *)t3)->name);
+                                    else bad2 = true;
+                                }
+                            } else bad2 = true;
+                        }
+                        if (pass == 1 && rest_slot >= 0) { SP2_PUT(0x00); SP2_PUT((uint32_t)rest_slot); li2++; }   /* the rest param */
+                    }
+                    #undef SP2_LEAF
+                    #undef SP2_PUT
+                    if (bad2) { free(sp2); pop_frame(tc); return kp_unsupported(tc, (const pm_node_t *)ps, "destructuring block param with opt/rest"); }
+                    destructure_spec = sp2;
+                    destr_len = len2;
+                }
             }
             /* single |(a, b, ...)| → destructure the one array arg into N locals
              * (a NESTED group goes through the general spec encoder below) */
