@@ -183,6 +183,37 @@ kp_intern_cid(struct kp_ctx *tc, pm_constant_id_t cid)
     return korb_intern(tc->c->vm, (const char *)ct->start, ct->length);
 }
 
+/* Full dotted name of a constant-path parent ("Net::HTTP" for `class Net::HTTP::Get`),
+ * interned as one symbol.  The rightmost component alone is ambiguous — URI::HTTP
+ * and Net::HTTP both end in "HTTP" — so the whole path is baked and walked at run
+ * time by korb_const_get_path.  Returns 0 when the parent is not a static path. */
+static uint32_t
+kp_intern_cpath(struct kp_ctx *tc, const pm_node_t *node)
+{
+    const pm_node_t *chain[32];
+    uint32_t n = 0;
+    for (const pm_node_t *p = node; p != NULL && n < 32; ) {
+        if (PM_NODE_TYPE_P(p, PM_CONSTANT_READ_NODE)) { chain[n++] = p; break; }
+        if (!PM_NODE_TYPE_P(p, PM_CONSTANT_PATH_NODE)) return 0;      /* dynamic parent */
+        chain[n++] = p;
+        p = ((const pm_constant_path_node_t *)p)->parent;
+    }
+    if (n == 0 || n == 32) return 0;
+    char buf[512];
+    uint32_t len = 0;
+    for (int32_t i = (int32_t)n - 1; i >= 0; i--) {
+        const pm_constant_id_t cid = PM_NODE_TYPE_P(chain[i], PM_CONSTANT_READ_NODE)
+            ? ((const pm_constant_read_node_t *)chain[i])->name
+            : ((const pm_constant_path_node_t *)chain[i])->name;
+        pm_constant_t *const ct = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, cid);
+        if (len + ct->length + 2 >= sizeof buf) return 0;
+        if (len) { buf[len++] = ':'; buf[len++] = ':'; }
+        memcpy(buf + len, ct->start, ct->length);
+        len += (uint32_t)ct->length;
+    }
+    return korb_intern(tc->c->vm, buf, len);
+}
+
 /* ---- `alias $NEW $OLD` — parse 時の名前 alias (process-wide、English.rb 用) ----
  * gvar は const table 流用なので、NEW の read/write を OLD の read/write として
  * transduce すれば常に live な alias になる。$! / $& 等の特例 read も解決後の
@@ -2301,14 +2332,9 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         !PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_PATH_NODE))
         return kp_unsupported(tc, (const pm_node_t *)cn, "dynamic class name");
     uint32_t name_sym = kp_intern_cid(tc, cn->name);
-    uint32_t path_owner = 0;                         /* `class M::C` → M (the path parent's rightmost name) */
-    if (PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_PATH_NODE)) {
-        const pm_node_t *const parent = ((const pm_constant_path_node_t *)cn->constant_path)->parent;
-        if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_READ_NODE))
-            path_owner = kp_intern_cid(tc, ((const pm_constant_read_node_t *)parent)->name);
-        else if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE))
-            path_owner = kp_intern_cid(tc, ((const pm_constant_path_node_t *)parent)->name);
-    }
+    uint32_t path_owner = 0;                         /* `class M::C` → M (full dotted path) */
+    if (PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_PATH_NODE))
+        path_owner = kp_intern_cpath(tc, ((const pm_constant_path_node_t *)cn->constant_path)->parent);
 
     /* superclass expression (evaluated in the ENCLOSING scope) → node_class's
      * staged child; nil when absent. */
@@ -2616,14 +2642,9 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         !PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_PATH_NODE))
         return kp_unsupported(tc, (const pm_node_t *)mn, "dynamic module name");
     uint32_t name_sym = kp_intern_cid(tc, mn->name);
-    uint32_t path_owner = 0;                         /* `module M::Inner` → M (path parent's rightmost name) */
-    if (PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_PATH_NODE)) {
-        const pm_node_t *const parent = ((const pm_constant_path_node_t *)mn->constant_path)->parent;
-        if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_READ_NODE))
-            path_owner = kp_intern_cid(tc, ((const pm_constant_read_node_t *)parent)->name);
-        else if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE))
-            path_owner = kp_intern_cid(tc, ((const pm_constant_path_node_t *)parent)->name);
-    }
+    uint32_t path_owner = 0;                         /* `module M::Inner` → M (full dotted path) */
+    if (PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_PATH_NODE))
+        path_owner = kp_intern_cpath(tc, ((const pm_constant_path_node_t *)mn->constant_path)->parent);
     push_frame(tc, &mn->locals);
     tc->frame->class_name_sym = name_sym;       /* for Module.nesting */
     NODE *body;

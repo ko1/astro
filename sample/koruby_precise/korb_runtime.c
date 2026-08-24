@@ -3171,6 +3171,27 @@ korb_const_get(struct korb_vm *vm, uint32_t name_sym)
     return KORB_NIL;
 }
 
+/* Resolve a baked dotted constant path ("Net::HTTP") one component at a time.
+ * A bare name (no "::") is the ordinary by-name lookup. */
+VALUE
+korb_const_get_path(struct korb_vm *vm, uint32_t name_sym)
+{
+    const char *const nm = korb_sym_name(vm, name_sym);
+    const char *sep = strstr(nm, "::");
+    if (sep == NULL) return korb_const_get(vm, name_sym);
+    VALUE cur = korb_const_get(vm, korb_intern(vm, nm, (uint32_t)(sep - nm)));
+    for (const char *p = sep + 2; KORB_CLASS_P(cur); ) {
+        const char *const next = strstr(p, "::");
+        const uint32_t len = next ? (uint32_t)(next - p) : (uint32_t)strlen(p);
+        const uint32_t idx = korb_const_index_owned(vm, korb_intern(vm, p, len), cur);
+        if (idx == UINT32_MAX) return KORB_NIL;
+        cur = vm->const_vals[idx];
+        if (next == NULL) break;
+        p = next + 2;
+    }
+    return cur;
+}
+
 /* `$!` stack (per-CTX, realloc-backed; rescue bodies only).  Top == `$!`.
  * Visited as roots by AROH_VISIT_ROOTS so entries survive the body's GC. */
 void korb_errinfo_push(CTX *c, VALUE v) {
