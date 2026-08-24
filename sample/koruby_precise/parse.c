@@ -99,7 +99,8 @@ kp_src_enc(CTX *c, const pm_parser_t *parser)
 
 static NODE *transduce(struct kp_ctx *tc, const pm_node_t *node);
 static NODE *build_const_set(struct kp_ctx *tc, uint32_t name_cid, NODE *val);
-static NODE *index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw, const pm_node_t *node);
+static NODE *index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw, const pm_node_t *node,
+                                  const pm_arguments_node_t *args, const pm_node_t *value);
 
 /* node_send takes a parse-time NODE* array [recv, args...]; these build the
  * common small-arity synthetic sends used throughout the parser (op-assign,
@@ -2306,6 +2307,10 @@ assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_loc
                                      v = bake_lget(tc, src_local)));
         return kp_send2(korb_intern(tc->c->vm, "const_set", 9), line, r, k, v);
     }
+    if (PM_NODE_TYPE_P(t, PM_CLASS_VARIABLE_TARGET_NODE)) {
+        return bake_cvar_set(tc, kp_intern_cid(tc, ((const pm_class_variable_target_node_t *)t)->name),
+                             bake_lget(tc, src_local));
+    }
     if (PM_NODE_TYPE_P(t, PM_GLOBAL_VARIABLE_TARGET_NODE)) {
         uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, ((const pm_global_variable_target_node_t *)t)->name));
         NODE *v; WITH_CHAIN(tc, kind_node_const_set.slot_count, (v = bake_lget(tc, src_local)));
@@ -2356,30 +2361,40 @@ assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_loc
  * value is appended to that same Array for the `[]=` call, which keeps the
  * single-evaluation guarantee (`#to_a` must run only once). */
 static NODE *
-index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw, const pm_node_t *node)
+index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw, const pm_node_t *node,
+                     const pm_arguments_node_t *args, const pm_node_t *value)
 {
-    const uint32_t argc = (uint32_t)iw->arguments->arguments.size;
+    /* `iw` is only read for the op= fields; ||=/&&= pass their own args/value
+     * because those prism structs have a different layout. */
+    const uint32_t argc = (uint32_t)args->arguments.size;
     const uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
     const uint32_t aset = korb_intern(tc->c->vm, "[]=", 3);
-    const enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, iw->binary_operator));
-    const uint32_t opmid = kp_intern_cid(tc, iw->binary_operator);
+    /* `||=` / `&&=` reuse this shape but combine with or/and instead of an
+     * operator (binary_operator is 0 for those prism nodes). */
+    const int logic = PM_NODE_TYPE_P(node, PM_INDEX_OR_WRITE_NODE) ? 1
+                    : PM_NODE_TYPE_P(node, PM_INDEX_AND_WRITE_NODE) ? 2 : 0;
+    const enum kp_binop op = logic ? KP_BINOP_NONE : kp_binop_kind(kp_cid_cstr(tc, iw->binary_operator));
+    const uint32_t opmid = logic ? 0 : kp_intern_cid(tc, iw->binary_operator);
     const uint32_t line = kp_line(tc, node);
     const uint32_t t0 = alloc_synth_local(tc);           /* receiver */
     const uint32_t ta = alloc_synth_local(tc);           /* the index Array */
     const uint32_t tn = alloc_synth_local(tc);           /* the computed value */
-    NODE *stores = bake_lset(tc, t0, transduce(tc, iw->receiver));
-    NODE *const arr = build_array(tc, iw->arguments->arguments.nodes, argc, argc);
+    NODE *stores = bake_lset(tc, t0, transduce(tc, iw->receiver));   /* receiver is at the same offset in all three */
+    NODE *const arr = build_array(tc, args->arguments.nodes, argc, argc);
     stores = ALLOC_node_seq(stores, bake_lset(tc, ta, arr));
     NODE *newval;
-    const uint32_t bsc = (op != KP_BINOP_NONE) ? kind_node_plus.slot_count : KP_SEND1_SC;
+    const uint32_t bsc = logic ? 0u                                 /* node_or/and build their children in place */
+                       : (op != KP_BINOP_NONE) ? kind_node_plus.slot_count : KP_SEND1_SC;
     WITH_CHAIN(tc, bsc, ({
         NODE *g_recv, *g_arr, *get, *val;
         { const int32_t _s = tc->chain; tc->chain = _s + 2;
           g_recv = bake_lget(tc, t0); g_arr = bake_lget(tc, ta);
           tc->chain = _s; }
         get = ALLOC_node_send_splat(aref, line, g_recv, g_arr);
-        val = transduce(tc, iw->value);
-        newval = (op != KP_BINOP_NONE) ? alloc_binop(op, get, val, line) : kp_send1(opmid, line, get, val);
+        val = transduce(tc, value);
+        newval = logic ? (logic == 1 ? ALLOC_node_or(get, val) : ALLOC_node_and(get, val))
+               : (op != KP_BINOP_NONE) ? alloc_binop(op, get, val, line)
+               : kp_send1(opmid, line, get, val);
         newval;
     }));
     NODE *seq = ALLOC_node_seq(stores, bake_lset(tc, tn, newval));
@@ -2390,7 +2405,21 @@ index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw
       WITH_CHAIN(tc, kind_node_ary_push.slot_count, (acc = bake_lget(tc, ta), elem = bake_lget(tc, tn)));
       s_arr = ALLOC_node_ary_push(acc, elem);            /* [indices..., value] */
       tc->chain = _s; }
-    seq = ALLOC_node_seq(seq, ALLOC_node_send_splat(aset, line, s_recv, s_arr));
+    NODE *const store = ALLOC_node_send_splat(aset, line, s_recv, s_arr);
+    if (logic) {
+        /* ||= assigns only when the read was falsy, &&= only when it was truthy —
+         * re-test the computed value against the original read so a no-op stays
+         * a no-op (`h[*k] &&= v` must not create the key). */
+        NODE *guard;
+        { const int32_t _s = tc->chain; tc->chain = _s + 2;
+          NODE *g2_recv = bake_lget(tc, t0), *g2_arr = bake_lget(tc, ta);
+          tc->chain = _s;
+          guard = ALLOC_node_send_splat(aref, line, g2_recv, g2_arr); }
+        seq = ALLOC_node_seq(seq, (logic == 1) ? ALLOC_node_or(guard, store)
+                                               : ALLOC_node_and(guard, store));
+        return ALLOC_node_seq(seq, bake_lget(tc, tn));
+    }
+    seq = ALLOC_node_seq(seq, store);
     return ALLOC_node_seq(seq, bake_lget(tc, tn));       /* the expression yields the assigned value */
 }
 
@@ -3289,6 +3318,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (iw->block || argc < 1)
             return kp_unsupported(tc, node, is_or ? "index ||= with block or zero index args"
                                                   : "index &&= with block or zero index args");
+        { bool spl = false;                              /* `h[*a] ||= v` — the splat form shares the op= shape */
+          for (size_t i = 0; i < argc; i++) if (PM_NODE_TYPE_P(iw->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { spl = true; break; }
+          if (spl) return index_opassign_splat(tc, (const pm_index_operator_write_node_t *)node, node, iw->arguments, iw->value); }
         uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
         uint32_t aset = korb_intern(tc->c->vm, "[]=", 3);
         uint32_t line = kp_line(tc, node);
@@ -3335,7 +3367,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             return kp_unsupported(tc, node, "index op= with block or zero index args");
         { bool spl = false;
           for (size_t i = 0; i < argc; i++) if (PM_NODE_TYPE_P(iw->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { spl = true; break; }
-          if (spl) return index_opassign_splat(tc, iw, node); }
+          if (spl) return index_opassign_splat(tc, iw, node, iw->arguments, iw->value); }
         uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
         uint32_t aset = korb_intern(tc->c->vm, "[]=", 3);
         enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, iw->binary_operator));
@@ -3651,8 +3683,27 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             bake_add(tc, &fnode->u.node_for.var_off);
             return fnode;
         }
-        if (!PM_NODE_TYPE_P(fn->index, PM_LOCAL_VARIABLE_TARGET_NODE))
-            return kp_unsupported(tc, fn->index, "for-loop with non-local / destructured index");
+        if (!PM_NODE_TYPE_P(fn->index, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+            /* `for @iv in coll` / @@cv / CONST / $g — iterate into a synth local
+             * and assign it to the real target at the top of the body (the same
+             * shape the destructuring form uses). */
+            uint32_t orig_local = alloc_synth_local(tc);
+            uint32_t iter_local = alloc_synth_local(tc);
+            uint32_t e_local    = alloc_synth_local(tc);
+            NODE *coll = transduce(tc, fn->collection);
+            NODE *store = assign_target_from_synth(tc, fn->index, e_local);
+            if (store == NULL) return kp_unsupported(tc, fn->index, "for-loop index target");
+            NODE *body0 = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil();
+            NODE *body = body0 ? ALLOC_node_seq(store, body0) : store;
+            NODE *fnode = ALLOC_node_for((int32_t)orig_local - tc->chain,
+                                         (int32_t)iter_local - tc->chain,
+                                         (int32_t)e_local - tc->chain,
+                                         coll, body);
+            bake_add(tc, &fnode->u.node_for.orig_off);
+            bake_add(tc, &fnode->u.node_for.iter_off);
+            bake_add(tc, &fnode->u.node_for.var_off);
+            return fnode;
+        }
         const pm_local_variable_target_node_t *iv = (const pm_local_variable_target_node_t *)fn->index;
         if (iv->depth != 0)
             return kp_unsupported(tc, fn->index, "for-loop with outer-scope index");
