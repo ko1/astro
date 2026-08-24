@@ -52,6 +52,14 @@ class Numeric
   # Numeric#step fallback (Integer/Float have C impls that take precedence).
   # Supports positional (limit, step) and keyword (by:, to:) forms; without a
   # block returns an Enumerator.
+  # `1.step(5, "foo")` with no block defers the "step requires numeric arguments"
+  # error to iteration — and to #size, which CRuby also raises from.
+  private def __step_bad_enum(limit, st)
+    e = to_enum(:step, limit, st)
+    def e.size = raise(ArgumentError, "step requires numeric arguments")
+    e
+  end
+
   def step(limit = nil, step_by = nil, by: nil, to: nil, &block)
     limit = to unless to.nil?
     st = !by.nil? ? by : (step_by.nil? ? 1 : step_by)

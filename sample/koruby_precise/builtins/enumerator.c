@@ -37,7 +37,17 @@ korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc)
  * mutated).  Sets *keep (value survives the chain) and *term (a take/take_while
  * bound was reached → stop the whole drive).  Uses slots[voff+3..] as scratch. */
 static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, bool *keep, bool *term);
+/* Shared body.  `want_value` distinguishes Yielder#yield (returns whatever the
+ * consumer sent back — that becomes the source's `yield` value, which is what
+ * Enumerator#feed sets) from Yielder#<< (returns self so `y << a << b` chains). */
+static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool want_value);
 static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_m_yielder_push_impl(c, slots, self, a, false);
+}
+static RESULT korb_m_yielder_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_m_yielder_push_impl(c, slots, self, a, true);
+}
+static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool want_value) {
     const uint32_t ac = VALUE_SLICE_LEN(a);
     const uint32_t csym = korb_intern(c->vm, "@__c", 4);   /* @__c = [collector, limit, ops, op_state] */
     slots[1] = korb_ivar_get(c, VALUE_REF_GET(self), csym);     /* the tuple (rooted) */
@@ -80,7 +90,7 @@ static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             slots[3] = slots[2];                              /* the value (block result was the predicate) */
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(sink->collect), slots[3]));
         }
-        return RESULT_OK(VALUE_REF_GET(self));
+        return RESULT_OK(want_value ? yr.value : VALUE_REF_GET(self));
     }
     if (keep) {
         slots[2] = v;                                         /* root across the push alloc */
@@ -119,7 +129,7 @@ static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, korb_sword
     struct korb_vm *const vm = c->vm;
     if (vm->yielder_class == KORB_NIL) {                        /* lazily build Enumerator::Yielder (a GC root) */
         slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));
-        korb_class_def_cfn(c, slots[0], "yield", korb_m_yielder_push, -1);
+        korb_class_def_cfn(c, slots[0], "yield", korb_m_yielder_yield, -1);
         korb_class_def_cfn(c, slots[0], "<<",    korb_m_yielder_push, -1);
         vm->yielder_class = slots[0];
     }

@@ -134,7 +134,9 @@ class Object
   def to_enum(meth = :each, *args)
     this = self
     sz = (respond_to?(:size) && args.empty?) ? size : nil    # size-preserving enumerators report the receiver's size
-    e = Enumerator.new(sz) { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
+    # y.yield (not y <<) so the source's `yield` sees what the consumer sent
+    # back — that is what Enumerator#feed sets.
+    e = Enumerator.new(sz) { |y| this.send(meth, *args) { |*vs| y.yield(*vs) } }
     e.__set_source(this, meth, args)                        # Enumerator#each(*extra) re-drives the source
     e
   end

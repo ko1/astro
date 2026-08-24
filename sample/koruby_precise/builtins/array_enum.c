@@ -1591,12 +1591,21 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
      * ArgumentError in CRuby.  nil is allowed and means a default step of 1 (but
      * is preserved verbatim for the ArithmeticSequence's inspect). */
     #define KORB_NUM_P(v) (FIXNUM_P(v) || KORB_FLOAT_P(v) || KORB_BIGNUM_P(v) || KORB_RATIONAL_P(v) || KORB_COMPLEX_P(v))
-    if (stepv0 != KORB_NIL && !KORB_NUM_P(stepv0))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step requires numeric arguments");
+    const bool numeric_step = (stepv0 == KORB_NIL) || KORB_NUM_P(stepv0);
     #undef KORB_NUM_P
-    if (block == NULL) {                                  /* no block → lazy ArithmeticSequence */
+    if (block == NULL) {
+        /* a non-numeric step defers the error to iteration time, so the result is
+         * a plain Enumerator rather than an ArithmeticSequence (CRuby) */
+        if (!numeric_step) {
+            slots[0] = VALUE_REF_GET(self);
+            slots[1] = limv0;
+            slots[2] = stepv0;
+            return korb_send(c, slots + 3, korb_intern(c->vm, "__step_bad_enum", 15), 0, 2);
+        }
         return korb_arithseq_new(c, slots, VALUE_REF_GET(self), limv0, stepv0, (uint8_t)((kw || na >= 2) ? 2 : na), 0);
     }
+    if (!numeric_step)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step requires numeric arguments");
     VALUE selfv = VALUE_REF_GET(self);
     VALUE limv = limv0;
     VALUE stepv = (stepv0 == KORB_NIL) ? LONG2FIX(1) : stepv0;   /* nil step ⇒ 1 for iteration */

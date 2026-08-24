@@ -161,10 +161,12 @@ class Enumerator
   # Enumerator.produce(initial = nil) { |prev| ... } — an infinite enumerator of
   # initial, f(initial), f(f(initial)), …  With no initial the first value is
   # f(nil).  The block may raise StopIteration to terminate.
-  def self.produce(*args, &block)
-    raise ArgumentError, "tried to call produce without a block" unless block
+  def self.produce(*args, **opts, &block)
+    raise ArgumentError, "no block given" unless block
+    size = opts.key?(:size) ? opts.delete(:size) : Float::INFINITY
+    raise ArgumentError, "unknown keywords: #{opts.keys.join(', ')}" unless opts.empty?
     raise ArgumentError, "wrong number of arguments" if args.size > 1
-    Enumerator.new do |y|
+    Enumerator.new(size) do |y|
       cur = args.empty? ? block.call(nil) : args[0]
       loop do
         y << cur
@@ -188,7 +190,7 @@ class Enumerator
   alias_method :__c_rewind, :rewind
 
   def next
-    return __c_next if __enum_mode < 3
+    return __c_next if __enum_mode < 3 && !@__ext_fed
     vals = __ext_next_values
     vals.size <= 1 ? vals[0] : vals
   end
@@ -215,7 +217,18 @@ class Enumerator
     @__ext_buf = nil
     @__ext_have = false
     @__ext_done = false
+    @__ext_feed = nil
+    @__ext_fed = false
     __c_rewind
+  end
+
+  # The value the source's `yield` returns on the NEXT step.  Our external
+  # iteration is a Fiber, so it is simply the next #resume argument.
+  def feed(value)
+    raise TypeError, "feed value already set" if @__ext_fed
+    @__ext_fed = true
+    @__ext_feed = value
+    nil
   end
 
   private
@@ -228,6 +241,7 @@ class Enumerator
       nil
     end
     @__ext_started = true
+    @__ext_fresh = true
     @__ext_buf = nil
     @__ext_have = false
     @__ext_done = false
@@ -239,7 +253,17 @@ class Enumerator
       if @__ext_done
         @__ext_buf = nil
       else
-        r = @__ext_fiber.resume
+        # The first resume only starts the source; the value fed before that is
+        # delivered by the NEXT resume (that is the one the first `yield`
+        # returns from), so it is not consumed here.
+        fed = nil
+        unless @__ext_fresh
+          fed = @__ext_feed if @__ext_fed
+          @__ext_fed = false
+          @__ext_feed = nil
+        end
+        @__ext_fresh = false
+        r = @__ext_fiber.resume(fed)
         if r.nil?
           @__ext_done = true
           @__ext_buf = nil
