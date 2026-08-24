@@ -349,10 +349,104 @@ class Socket < BasicSocket
 
   class AncillaryData
     attr_reader :family, :level, :type, :data
+
+    # CRuby stores the NUMERIC family/level/type; symbols and strings
+    # ("INET", :IPPROTO_IP, :RECVTTL) are resolved through the constants.
     def initialize(family, level, type, data)
-      @family, @level, @type, @data = family, level, type, data
+      @family = Socket.__family(family)
+      @level  = AncillaryData.__level(@family, level)
+      @type   = AncillaryData.__type(@family, @level, type)
+      @data   = data.to_str
     end
+
+    def self.__level(fam, lv)
+      return lv if lv.is_a?(Integer)
+      n = lv.to_s.upcase
+      n = "SOL_SOCKET" if n == "SOCKET"
+      n = "IPPROTO_#{n}" unless n.start_with?("SOL_") || n.start_with?("IPPROTO_")
+      Socket.const_defined?(n) ? Socket.const_get(n) : (raise SocketError, "unknown protocol level: #{lv}")
+    end
+
+    def self.__type(fam, level, ty)
+      return ty if ty.is_a?(Integer)
+      n = ty.to_s.upcase
+      pre = level == (Socket.const_defined?(:IPPROTO_IPV6) ? Socket::IPPROTO_IPV6 : -1) ? "IPV6_" : "IP_"
+      [n, "SCM_#{n}", "#{pre}#{n}", "IP_#{n}", "IPV6_#{n}", "TCP_#{n}"].each do |cand|
+        return Socket.const_get(cand) if Socket.const_defined?(cand)
+      end
+      raise SocketError, "unknown control message type: #{ty}"
+    end
+
     def int = @data.unpack("i")[0]
+    def cmsg_is?(level, type)
+      @level == AncillaryData.__level(@family, level) &&
+        @type == AncillaryData.__type(@family, @level, type)
+    end
+    def inspect = "#<Socket::AncillaryData: #{@family} #{@level} #{@type} #{@data.bytesize}bytes>"
+
+    # IP_PKTINFO: struct in_pktinfo { int ifindex; in_addr spec_dst; in_addr addr; }
+    def self.ip_pktinfo(addr, ifindex, spec_dst = addr)
+      data = [ifindex].pack("i") +
+             __in_addr(spec_dst) + __in_addr(addr)
+      new(:INET, :IPPROTO_IP, :PKTINFO, data)
+    end
+    def ip_pktinfo
+      return nil unless @family == Socket::AF_INET
+      ifindex = @data.unpack1("i")
+      spec = @data.byteslice(4, 4).unpack("C4").join(".")
+      addr = @data.byteslice(8, 4).unpack("C4").join(".")
+      [Addrinfo.ip(addr), ifindex, Addrinfo.ip(spec)]
+    end
+
+    # IPV6_PKTINFO: struct in6_pktinfo { in6_addr addr; int ifindex; }
+    def self.ipv6_pktinfo(addr, ifindex)
+      new(:INET6, :IPPROTO_IPV6, :PKTINFO, __in6_addr(addr) + [ifindex].pack("i"))
+    end
+    def ipv6_pktinfo
+      return nil unless @family == Socket::AF_INET6
+      [ipv6_pktinfo_addr, ipv6_pktinfo_ifindex]
+    end
+    def ipv6_pktinfo_addr
+      return nil unless @family == Socket::AF_INET6
+      groups = @data.byteslice(0, 16).unpack("n8").map { |g| g.to_s(16) }
+      Addrinfo.ip(__compress6(groups))
+    end
+    def ipv6_pktinfo_ifindex
+      return nil unless @family == Socket::AF_INET6
+      @data.byteslice(16, 4).unpack1("i")
+    end
+
+    def self.__in_addr(a)
+      ip = a.respond_to?(:ip_address) ? a.ip_address : a.to_s
+      ip.split(".").map(&:to_i).pack("C4")
+    end
+    def self.__in6_addr(a)
+      ip = a.respond_to?(:ip_address) ? a.ip_address : a.to_s
+      # expand "::" then pack the 8 groups
+      head, tail = ip.split("::", 2)
+      hg = head.to_s.empty? ? [] : head.split(":")
+      tg = tail.to_s.empty? ? [] : tail.split(":")
+      groups = hg + Array.new(8 - hg.size - tg.size, "0") + tg
+      groups = ip.split(":") if tail.nil?
+      groups.map { |g| g.to_i(16) }.pack("n8")
+    end
+    def __compress6(groups)
+      s = groups.join(":")
+      s = s.sub(/\b(?:0:){2,}0\b/, ":") if s.include?("0:0")
+      s.sub(/:{3,}/, "::")
+    end
+    private :__compress6
+
+    def self.int(family, level, type, integer)
+      new(family, level, type, [integer].pack("i"))
+    end
+    def self.unix_rights(*ios)
+      new(:UNIX, :SOCKET, :RIGHTS, ios.map { |io| io.respond_to?(:fileno) ? io.fileno : io.to_int }.pack("i*"))
+    end
+    def unix_rights
+      return nil unless @family == Socket::AF_UNIX && @level == Socket::SOL_SOCKET
+      @data.unpack("i*").map { |fd| IO.for_fd(fd) }
+    end
   end
 
   def initialize(family, type, protocol = 0)
