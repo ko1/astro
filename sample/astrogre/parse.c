@@ -473,6 +473,45 @@ static void ire_free(ire_node_t *n);
  * `&&` chains intersection: when seen, recursively parses the RHS
  * operand into a fresh bitmap and ANDs it in.  Recursion is left-
  * associative (`A&&B&&C` = `(A&&B)&&C`), which matches Onigmo. */
+/* Ruby's POSIX bracket classes are Unicode-aware.  Add the non-ASCII part as
+ * codepoint ranges (a practical approximation: the Latin/Greek/Cyrillic and
+ * other common letter blocks, the Unicode decimal-digit blocks, the Unicode
+ * spaces).  Only for the positive form. */
+static void
+posix_class_unicode(re_parser_t *q, const char *name, size_t name_len, cls_cp_ranges_t *cps)
+{
+    #define PMATCH(s) (name_len == sizeof(s) - 1 && memcmp(name, s, sizeof(s) - 1) == 0)
+    const bool alpha = PMATCH("alpha") || PMATCH("alnum") || PMATCH("word") || PMATCH("print") || PMATCH("graph");
+    const bool digit = PMATCH("digit") || PMATCH("alnum") || PMATCH("word") || PMATCH("print") || PMATCH("graph");
+    const bool space = PMATCH("space") || PMATCH("print");
+    const bool upper = PMATCH("upper");
+    const bool lower = PMATCH("lower");
+    #undef PMATCH
+    if (alpha || upper || lower) {
+        cls_cp_add(q, cps, 0x00C0, 0x024F);      /* Latin-1 supplement letters + Latin Extended A/B */
+        cls_cp_add(q, cps, 0x0370, 0x03FF);      /* Greek */
+        cls_cp_add(q, cps, 0x0400, 0x04FF);      /* Cyrillic */
+        cls_cp_add(q, cps, 0x0530, 0x058F);      /* Armenian */
+        cls_cp_add(q, cps, 0x05D0, 0x05EA);      /* Hebrew */
+        cls_cp_add(q, cps, 0x0620, 0x064A);      /* Arabic */
+        cls_cp_add(q, cps, 0x3040, 0x30FF);      /* Kana */
+        cls_cp_add(q, cps, 0x4E00, 0x9FFF);      /* CJK */
+        cls_cp_add(q, cps, 0xAC00, 0xD7A3);      /* Hangul */
+    }
+    if (digit) {
+        cls_cp_add(q, cps, 0x0660, 0x0669);      /* Arabic-Indic */
+        cls_cp_add(q, cps, 0x06F0, 0x06F9);      /* Extended Arabic-Indic */
+        cls_cp_add(q, cps, 0x0966, 0x096F);      /* Devanagari */
+        cls_cp_add(q, cps, 0xFF10, 0xFF19);      /* Fullwidth */
+    }
+    if (space) {
+        cls_cp_add(q, cps, 0x00A0, 0x00A0);
+        cls_cp_add(q, cps, 0x2000, 0x200A);
+        cls_cp_add(q, cps, 0x2028, 0x2029);
+        cls_cp_add(q, cps, 0x3000, 0x3000);
+    }
+}
+
 static void parse_class_body(re_parser_t *q, uint64_t bm[4], cls_cp_ranges_t *cps) {
     bool first = true;
 
@@ -509,6 +548,10 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], cls_cp_ranges_t *cp
                     q->p += 2;  /* consume `:]` */
                     if (neg) bm_invert(mask);
                     bm_or(bm, mask);
+                    /* Ruby's POSIX classes are Unicode-aware: add the non-ASCII
+                     * ranges too (only for the positive form — complementing
+                     * over codepoint space is a different matcher). */
+                    if (!neg && cps != NULL) posix_class_unicode(q, (const char *)name_start, name_len, cps);
                     first = false;
                     continue;
                 }
