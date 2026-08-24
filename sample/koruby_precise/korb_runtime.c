@@ -6699,16 +6699,49 @@ static uint32_t korb_entry_destructure_n(NODE *entry) { return entry->u.node_ent
 static int32_t  korb_entry_rest_slot(NODE *entry) { return entry->u.node_entry.rest_slot; }   /* -1 = no rest param */
 /* Bind one destructuring-spec entry (see parse.c): 0x00 = scalar leaf,
  * 0xFF <k> = a group of k nested entries.  Returns the next entry. */
-static const uint8_t *korb_bind_destr_entry(VALUE *bf, uint32_t *loc, const uint8_t *sp, VALUE pv)
+static const uint8_t *korb_bind_destr_entry(CTX *c, VALUE *bf, uint32_t nlocals, uint32_t *loc, const uint8_t *sp, VALUE pv)
 {
-    if (*sp != 0xFF) { bf[1 + (*loc)++] = pv; return sp + 1; }
+    if (*sp == 0xFE) {                                  /* |(a, *b, c)| — split group */
+        const uint32_t nl = sp[1], rest_named = sp[2], nr = sp[3];
+        const uint8_t *cur = sp + 4;
+        const KorbArray *const ar = KORB_ARRAY_P(pv) ? VAL2ARY(pv) : NULL;
+        const uint32_t n = ar ? ar->len : (pv == KORB_NIL ? 0 : 1);
+        const VALUE *const items = ar ? korb_items_data(ar->items) : &pv;
+        const uint32_t surplus = (n > nl + nr) ? n - nl - nr : 0;
+        /* Stage the source values in the (scanned) block frame before the rest
+         * array is allocated: `items` points into the source Array, which the
+         * alloc's GC would move. */
+        VALUE *const stage = bf + 1 + nlocals;
+        for (uint32_t j = 0; j < n; j++) stage[j] = items[j];
+        for (uint32_t j = 0; j < nl; j++)
+            cur = korb_bind_destr_entry(c, bf, nlocals, loc, cur, (j < n) ? stage[j] : KORB_NIL);
+        if (rest_named) {                               /* the middle slice as an Array */
+            const uint32_t rloc = *cur++;               /* the rest leaf's local index */
+            VALUE *const acur = stage + n;
+            RESULT ra = korb_ary_new(c, acur, surplus ? surplus : 4);
+            if (UNLIKELY(ra.state != KORB_NORMAL)) { bf[1 + rloc] = KORB_NIL; }
+            else {
+                acur[0] = ra.value;
+                for (uint32_t j = 0; j < surplus; j++)
+                    (void)korb_ary_push_val(c, acur + 1, VALUE_REF_AT(&acur[0]), stage[nl + j]);
+                bf[1 + rloc] = acur[0];
+            }
+            (*loc)++;
+        }
+        for (uint32_t j = 0; j < nr; j++) {
+            const uint32_t idx = nl + surplus + j;
+            cur = korb_bind_destr_entry(c, bf, nlocals, loc, cur, (idx < n) ? stage[idx] : KORB_NIL);
+        }
+        return cur;
+    }
+    if (*sp != 0xFF) { (*loc)++; bf[1 + sp[1]] = pv; return sp + 2; }   /* 0x00 <local> */
     const uint32_t k = sp[1];
     const uint8_t *cur = sp + 2;
     const KorbArray *const ar = KORB_ARRAY_P(pv) ? VAL2ARY(pv) : NULL;
     for (uint32_t j = 0; j < k; j++) {
         const VALUE sub = ar ? (j < ar->len ? korb_items_data(ar->items)[j] : KORB_NIL)
                              : (j == 0 ? pv : KORB_NIL);   /* non-Array → first leaf, rest nil */
-        cur = korb_bind_destr_entry(bf, loc, cur, sub);
+        cur = korb_bind_destr_entry(c, bf, nlocals, loc, cur, sub);
     }
     return cur;
 }
@@ -6870,11 +6903,11 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         if (!is_lambda && np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {  /* auto-splat one yielded Array across params */
             const KorbArray *ar = VAL2ARY(argv[0]); src = korb_items_data(ar->items); srcn = ar->len;
         }
+        for (uint32_t i = 0; i < blocals; i++) bf[1 + i] = KORB_NIL;   /* leaves write by local index */
         uint32_t loc = 0;
         const uint8_t *sp = spec;
         for (uint32_t p = 0; p < np; p++)
-            sp = korb_bind_destr_entry(bf, &loc, sp, (p < srcn) ? src[p] : KORB_NIL);
-        for (uint32_t i = loc; i < blocals; i++) bf[1 + i] = KORB_NIL;
+            sp = korb_bind_destr_entry(c, bf, blocals, &loc, sp, (p < srcn) ? src[p] : KORB_NIL);
     } else if (dn > 0) {                                /* |(a, b, ...)| — splat the array arg */
         VALUE arr = (argc >= 1) ? argv[0] : KORB_NIL;
         if (KORB_ARRAY_P(arr)) {

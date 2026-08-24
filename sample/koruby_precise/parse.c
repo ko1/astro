@@ -1243,12 +1243,71 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                             pm_constant_id_t cid = PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)
                                 ? ((const pm_required_parameter_node_t *)p)->name
                                 : ((const pm_local_variable_target_node_t *)p)->name;
-                            if (lvar_index(tc, p, cid) != loc && kp_cid_cstr(tc, cid)[0] != '_') { bad = true; break; }
-                            SPEC_PUT(0x00);
+                            /* a repeated `_` binds positionally; any other name
+                             * that lands on a different local is unsupported */
+                            {   /* leaf: encode the TARGET local (a repeated `_`
+                                 * shares one local but still consumes a position) */
+                                const uint32_t li = (uint32_t)lvar_index(tc, p, cid);
+                                if (li > 254) { bad = true; break; }
+                                SPEC_PUT(0x00); SPEC_PUT(li);
+                            }
                             loc++;
                         } else if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) {
                             const pm_multi_target_node_t *mt2 = (const pm_multi_target_node_t *)p;
-                            if (mt2->rest || mt2->rights.size || mt2->lefts.size == 0 || mt2->lefts.size > 254 || sp >= 16) { bad = true; break; }
+                            if (mt2->lefts.size > 254 || mt2->rights.size > 254 || sp >= 16) { bad = true; break; }
+                            if (mt2->rest) {
+                                /* |(a, *b, c)| — 0xFE <nleft> <rest_named> <nright>,
+                                 * then the left entries and the right entries
+                                 * (the rest leaf, when named, sits between them). */
+                                bool rest_named = false;
+                                if (PM_NODE_TYPE_P(mt2->rest, PM_SPLAT_NODE)) {
+                                    const pm_splat_node_t *spn = (const pm_splat_node_t *)mt2->rest;
+                                    rest_named = (spn->expression != NULL);
+                                } else if (PM_NODE_TYPE_P(mt2->rest, PM_REST_PARAMETER_NODE)) {
+                                    rest_named = (((const pm_rest_parameter_node_t *)mt2->rest)->name != 0);
+                                } else if (!PM_NODE_TYPE_P(mt2->rest, PM_IMPLICIT_REST_NODE)) { bad = true; break; }
+                                SPEC_PUT(0xFE); SPEC_PUT(mt2->lefts.size); SPEC_PUT(rest_named ? 1 : 0); SPEC_PUT(mt2->rights.size);
+                                /* leaves in order: lefts, [rest], rights — encode
+                                 * them by walking the three lists inline */
+                                for (uint32_t z = 0; z < mt2->lefts.size && !bad; z++) {
+                                    const pm_node_t *lt = mt2->lefts.nodes[z];
+                                    if (!PM_NODE_TYPE_P(lt, PM_LOCAL_VARIABLE_TARGET_NODE) &&
+                                        !PM_NODE_TYPE_P(lt, PM_REQUIRED_PARAMETER_NODE)) { bad = true; break; }
+                                    pm_constant_id_t cid2 = PM_NODE_TYPE_P(lt, PM_REQUIRED_PARAMETER_NODE)
+                                        ? ((const pm_required_parameter_node_t *)lt)->name
+                                        : ((const pm_local_variable_target_node_t *)lt)->name;
+                                    { const uint32_t li = (uint32_t)lvar_index(tc, lt, cid2);
+                                      if (li > 254) { bad = true; break; }
+                                      SPEC_PUT(0x00); SPEC_PUT(li); }
+                                    loc++;
+                                }
+                                if (bad) break;
+                                if (rest_named) {
+                                    const pm_node_t *rn = mt2->rest;
+                                    pm_constant_id_t rcid = PM_NODE_TYPE_P(rn, PM_SPLAT_NODE)
+                                        ? ((const pm_local_variable_target_node_t *)((const pm_splat_node_t *)rn)->expression)->name
+                                        : ((const pm_rest_parameter_node_t *)rn)->name;
+                                    { const uint32_t li = (uint32_t)lvar_index(tc, rn, rcid);
+                                      if (li > 254) { bad = true; break; }
+                                      SPEC_PUT(li); }        /* the rest leaf's local (0xFE header already emitted) */
+                                    loc++;
+                                }
+                                for (uint32_t z = 0; z < mt2->rights.size && !bad; z++) {
+                                    const pm_node_t *rt = mt2->rights.nodes[z];
+                                    if (!PM_NODE_TYPE_P(rt, PM_LOCAL_VARIABLE_TARGET_NODE) &&
+                                        !PM_NODE_TYPE_P(rt, PM_REQUIRED_PARAMETER_NODE)) { bad = true; break; }
+                                    pm_constant_id_t cid2 = PM_NODE_TYPE_P(rt, PM_REQUIRED_PARAMETER_NODE)
+                                        ? ((const pm_required_parameter_node_t *)rt)->name
+                                        : ((const pm_local_variable_target_node_t *)rt)->name;
+                                    { const uint32_t li = (uint32_t)lvar_index(tc, rt, cid2);
+                                      if (li > 254) { bad = true; break; }
+                                      SPEC_PUT(0x00); SPEC_PUT(li); }
+                                    loc++;
+                                }
+                                if (bad) break;
+                                continue;
+                            }
+                            if (mt2->rights.size || mt2->lefts.size == 0) { bad = true; break; }
                             SPEC_PUT(0xFF); SPEC_PUT(mt2->lefts.size);
                             stk[sp].list = cur; stk[sp].i = ci; sp++;
                             cur = &mt2->lefts; ci = 0;
