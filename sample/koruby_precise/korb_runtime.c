@@ -8997,6 +8997,9 @@ RESULT korb_re_literal_regexp(CTX *c, VALUE *slots, VALUE pv, VALUE *out);   /* 
 /* Kernel#raise-style args → fully-built exception, OK(exc) = deliverable /
  * RAISE = argument error (defined below; shared by Thread#raise / Fiber#raise). */
 static RESULT korb_exc_build_with_cause(CTX *c, VALUE *slots, VALUE_SLICE args);
+/* transcode.c is included after integer.c but Integer#chr needs it */
+static uint32_t korb_tc_encode_name(const char *enc, uint32_t cp, unsigned char *out);
+static uint32_t korb_tc_bytes_chr(const char *enc, uint32_t v, unsigned char *out, bool *unicode);
 #include "builtins/bignum.c"
 #include "builtins/integer.c"
 #include "builtins/float.c"

@@ -105,7 +105,11 @@ static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
                     if (el >= sizeof eb) el = sizeof eb - 1;
                     memcpy(eb, korb_strbuf_data(VAL2STR(nm.value)->buf), el); eb[el] = '\0';
                     want_enc = korb_enc_index_pub(c->vm, eb);
-                    kind = (want_enc == KORB_ENC_USASCII) ? 1 : 2;
+                    /* CRuby: default_internal only decides for codepoints > 255;
+                     * 0..127 is US-ASCII and 128..255 stays a raw binary byte */
+                    if (n < 0x80)       { kind = 1; want_enc = KORB_ENC_USASCII; }
+                    else if (n < 0x100) { kind = 0; want_enc = KORB_ENC_BINARY; }
+                    else                  kind = 2;
                 }
             }
         }
@@ -134,15 +138,18 @@ static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             }
         }
     }
-    if (kind == 2) {                                  /* UTF-8 encode the codepoint */
+    if (kind == 2) {                                  /* encode the codepoint in the requested encoding */
         if (n < 0 || n > 0x10FFFF) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)n);
-        char b[4]; int len;
-        const uint32_t cp = (uint32_t)n;
-        if (cp < 0x80)        { b[0] = (char)cp; len = 1; }
-        else if (cp < 0x800)  { b[0] = (char)(0xC0 | (cp >> 6)); b[1] = (char)(0x80 | (cp & 0x3F)); len = 2; }
-        else if (cp < 0x10000){ b[0] = (char)(0xE0 | (cp >> 12)); b[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); b[2] = (char)(0x80 | (cp & 0x3F)); len = 3; }
-        else                  { b[0] = (char)(0xF0 | (cp >> 18)); b[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); b[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); b[3] = (char)(0x80 | (cp & 0x3F)); len = 4; }
-        RESULT ur = korb_str_new(c, slots, b, (uint32_t)len);   /* UTF-8 bytes */
+        unsigned char b[8];
+        const char *const ename = (want_enc != UINT32_MAX) ? korb_enc_name_of(c->vm, want_enc) : "UTF-8";
+        /* Unicode targets take a codepoint; every other encoding takes the
+         * integer as its own byte sequence (CRuby's rb_enc_uint_chr). */
+        bool unicode = false;
+        uint32_t len = korb_tc_bytes_chr(ename, (uint32_t)n, b, &unicode);
+        if (unicode) len = korb_tc_encode_name(ename, (uint32_t)n, b);
+        if (len == 0)
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "invalid codepoint 0x%lX in %s", (unsigned long)n, ename);
+        RESULT ur = korb_str_new(c, slots, (const char *)b, len);
         if (LIKELY(ur.state == KORB_NORMAL) && want_enc != UINT32_MAX) KORB_STR_ENC_SET(ur.value, want_enc);
         return ur;
     }

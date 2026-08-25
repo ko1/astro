@@ -18,8 +18,15 @@ enum korb_tc_kind {
     KTC_SB, KTC_MB, KTC_ISO2022JP,
 };
 
+/* legacy multi-byte families whose byte STRUCTURE is wider than the set of
+ * codes that actually map to Unicode (Integer#chr validates structure only) */
+#define KTC_FAM_NONE 0u
+#define KTC_FAM_SJIS 1u
+#define KTC_FAM_EUC  2u
+
 struct korb_tc {
     uint8_t kind;
+    uint8_t fam;
     const uint16_t *sb;                       /* KTC_SB: 0x80..0xFF → codepoint */
     const struct korb_tc_pair *by_bytes, *by_cp;   /* KTC_MB */
     uint32_t n;
@@ -77,6 +84,10 @@ static bool korb_tc_find(const char *name, struct korb_tc *out)
             out->by_bytes = korb_tc_mb_table[i].by_bytes;
             out->by_cp    = korb_tc_mb_table[i].by_cp;
             out->n        = korb_tc_mb_table[i].n;
+            out->fam = (strncasecmp(korb_tc_mb_table[i].name, "Shift_JIS", 9) == 0 ||
+                        strncasecmp(korb_tc_mb_table[i].name, "Windows-31J", 11) == 0) ? KTC_FAM_SJIS
+                     : (strncasecmp(korb_tc_mb_table[i].name, "EUC", 3) == 0 ||
+                        strncasecmp(korb_tc_mb_table[i].name, "CP51932", 7) == 0) ? KTC_FAM_EUC : KTC_FAM_NONE;
             return true;
         }
     return false;
@@ -503,4 +514,41 @@ static RESULT korb_tc_convert(CTX *c, VALUE *slots, VALUE src, const char *fromb
     free(out.b);
     if (LIKELY(r.state == KORB_NORMAL)) { KORB_STR_ENC_SET(r.value, korb_enc_index_pub(c->vm, tob)); *ok = true; }
     return r;
+}
+
+/* Encode one codepoint in `enc` (Integer#chr, String#encode's replacement).
+ * Returns bytes written to out (>= 8 bytes), 0 when not representable. */
+static uint32_t korb_tc_encode_name(const char *enc, uint32_t cp, unsigned char *out)
+{
+    struct korb_tc tc;
+    if (!korb_tc_find(enc, &tc)) return 0;
+    if (tc.kind == KTC_ISO2022JP) { uint8_t m = KTC_JIS_ASCII; return korb_tc_jis_encode(&tc, cp, out, &m); }
+    return korb_tc_encode(&tc, cp, out);
+}
+
+/* Integer#chr on a non-Unicode encoding treats the integer as the (big-endian)
+ * BYTE SEQUENCE, not a codepoint.  Writes it out and validates it decodes. */
+static uint32_t korb_tc_bytes_chr(const char *enc, uint32_t v, unsigned char *out, bool *unicode)
+{
+    struct korb_tc tc;
+    *unicode = false;
+    if (!korb_tc_find(enc, &tc)) return 0;
+    if (tc.kind == KTC_UTF8 || tc.kind == KTC_UTF16LE || tc.kind == KTC_UTF16BE ||
+        tc.kind == KTC_UTF32LE || tc.kind == KTC_UTF32BE) { *unicode = true; return 0; }
+    uint32_t n = 1;
+    if (v > 0xFFFFFF) n = 4; else if (v > 0xFFFF) n = 3; else if (v > 0xFF) n = 2;
+    for (uint32_t i = 0; i < n; i++) out[i] = (unsigned char)((v >> (8 * (n - 1 - i))) & 0xFF);
+    uint32_t cp = 0;
+    if (tc.kind == KTC_ISO2022JP) return n;                  /* stateful: accept as given */
+    if (korb_tc_decode(&tc, out, n, &cp) == n) return n;
+    /* CRuby validates the byte STRUCTURE, not that the pair maps to Unicode:
+     * an unassigned but well-formed two-byte code is still a character. */
+    if (tc.kind == KTC_MB && n == 2) {
+        const unsigned char b0 = out[0], b1 = out[1];
+        if (tc.fam == KTC_FAM_SJIS &&
+            ((b0 >= 0x81 && b0 <= 0x9F) || (b0 >= 0xE0 && b0 <= 0xFC)) &&
+            ((b1 >= 0x40 && b1 <= 0x7E) || (b1 >= 0x80 && b1 <= 0xFC))) return n;
+        if (tc.fam == KTC_FAM_EUC && b0 >= 0xA1 && b0 <= 0xFE && b1 >= 0xA1 && b1 <= 0xFE) return n;
+    }
+    return 0;
 }
