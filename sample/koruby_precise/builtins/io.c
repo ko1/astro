@@ -245,6 +245,10 @@ static uint32_t korb_io_fill_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESUL
                 if (UNLIKELY(pr.state != KORB_NORMAL)) { if (perr) *perr = pr; return 0; }
                 continue;                                /* ready (maybe) → try again, never block */
             }
+            /* a real read(2) failure (EISDIR, EIO, EBADF, ...) is an exception,
+             * not EOF — swallowing it made `File.open(dir).read` return nil */
+            if (perr && c != NULL && !korb_io_would_block(errno))
+                *perr = korb_raise_errno(c, slots, errno, "io_fread", "");
             return 0;
         }
         if (n == 0) { rep->eof = 1; return 0; }

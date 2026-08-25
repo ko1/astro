@@ -171,6 +171,7 @@ module Digest
       self
     end
 
+
     # No argument: the digest of everything fed so far (non-destructive).
     # With a String: reset, hash just that string, reset again.
     def digest(str = nil)
@@ -203,7 +204,7 @@ module Digest
     end
 
     def length = digest_length
-    def size = digest_length
+    alias_method :size, :length      # CRuby: the same definition, not a copy
     def digest_length = digest.bytesize
     def block_length
       raise NotImplementedError, "#{self.class} does not implement block_length()"
@@ -247,6 +248,7 @@ module Digest
       @buffer << Digest.__str(str).b
       self
     end
+    alias_method :<<, :update        # the same definition, as CRuby has it
 
     def reset
       @buffer = +"".b
