@@ -1980,7 +1980,8 @@ static RESULT korb_m_io_s_sysopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t n = VALUE_SLICE_LEN(a);
     VALUE opts = KORB_NIL;
-    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) { opts = VALUE_SLICE_GET(a, n - 1); n--; }
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1)) && korb_kwargs_hash_p(VALUE_SLICE_GET(a, n - 1)))
+        { opts = VALUE_SLICE_GET(a, n - 1); n--; }   /* only a kwargs Hash; a positional one is an arity error */
     if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     if (UNLIKELY(n > 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", n);
     korb_sword_t fdv;
@@ -2118,7 +2119,8 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     uint32_t npos = VALUE_SLICE_LEN(a);
     VALUE fopts = KORB_NIL;
     int32_t fopts_idx = -1;   /* index, not the VALUE: the allocations below move it */
-    if (npos >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, npos - 1))) { fopts_idx = (int32_t)npos - 1; fopts = VALUE_SLICE_GET(a, npos - 1); npos--; }
+    if (npos >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, npos - 1)) && korb_kwargs_hash_p(VALUE_SLICE_GET(a, npos - 1)))
+        { fopts_idx = (int32_t)npos - 1; fopts = VALUE_SLICE_GET(a, npos - 1); npos--; }   /* kwargs only */
     if (UNLIKELY(npos > 3))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..3)", npos);
     int extra_flags = 0;
