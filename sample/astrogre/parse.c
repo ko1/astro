@@ -353,7 +353,7 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte,
  * Negated classes with multi-byte members stay unsupported (complementing
  * over codepoint space needs a different matcher). */
 typedef struct {
-    struct { uint32_t lo, hi; } r[64];
+    struct { uint32_t lo, hi; } r[1024];   /* Unicode-normalize tables use ~700 ranges */
     int n;
 } cls_cp_ranges_t;
 

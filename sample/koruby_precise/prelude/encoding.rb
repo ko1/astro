@@ -559,6 +559,18 @@ class Encoding
   class ConverterNotFoundError < StandardError; end
 end
 class String
+  # Unicode normalization lives in lib/unicode_normalize (CRuby's own pure-Ruby
+  # implementation, vendored); it is loaded on first use like CRuby does.
+  def unicode_normalize(form = :nfc)
+    require "unicode_normalize/normalize"
+    UnicodeNormalize.normalize(self, form)
+  end
+  def unicode_normalize!(form = :nfc) = replace(unicode_normalize(form))
+  def unicode_normalized?(form = :nfc)
+    require "unicode_normalize/normalize"
+    UnicodeNormalize.normalized?(self, form)
+  end
+
   # scrub! — scrub を self に反映。変化がなくても self を返す (CRuby)。
   def scrub!(repl = nil, &block)
     r = repl.nil? ? scrub(&block) : scrub(repl, &block)
