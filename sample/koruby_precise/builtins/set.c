@@ -561,10 +561,10 @@ static RESULT korb_set_visibility1(CTX *c, VALUE *slots, VALUE selfv, KorbClass 
         if (KORB_CLASS_P(kmod)) src = korb_class_find_method(kmod, mid, &adef);
         if (src == NULL) src = korb_method_lookup(c->vm, mid);
     }
-    if (src == NULL)
-        return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
-                          korb_sym_name(c->vm, mid), k->is_module ? "module" : "class",
-                          korb_type_name(selfv));
+    /* Not found anywhere: `new` and friends are dispatch special-cases with no
+     * table entry, so a NameError here would false-positive (`private :new` is
+     * common).  Best-effort no-op, as before. */
+    if (src == NULL) return RESULT_OK(KORB_NIL);
     struct korb_method *dst = korb_class_method_slot(k, mid);   /* libc alloc, no GC */
     const struct korb_method tmp = *src;                        /* snapshot (slot array may have grown) */
     *dst = tmp; dst->mid = mid; dst->visibility = vis;          /* keep tmp.owner for super */

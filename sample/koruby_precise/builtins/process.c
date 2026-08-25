@@ -1221,6 +1221,32 @@ static RESULT korb_m_signal_signo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 
 
 
+
+/* Kernel#fork / Process.fork — fork(2).  With a block the child runs it and
+ * exits with 0 (or 1 on an uncaught exception); the parent gets the pid.
+ * Without a block the child gets nil, the parent the pid. */
+static RESULT korb_m_process_fork(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                  NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)self; (void)a;
+    korb_io_flush_std(c->vm);                       /* the child must not re-emit buffered output */
+    const pid_t pid = fork();
+    if (pid < 0) return korb_raise_errno(c, slots, errno, "fork", "");
+    if (pid == 0) {                                 /* child */
+        if (block == NULL) return RESULT_OK(KORB_NIL);
+        RESULT r = korb_block_yield(c, slots, block, def_env, NULL, 0, cself);
+        int status = 0;
+        if (r.state == KORB_RAISE) {
+            status = korb_system_exit_status(c, r.value);   /* `exit N` inside the block */
+            if (status < 0) { korb_report_uncaught(c, r.value); status = 1; }
+        }
+        korb_drain_at_exit(c, slots);
+        korb_io_flush_std(c->vm);
+        _exit(status);
+    }
+    /* Process._fork's hook point in CRuby; koruby has no at_fork callbacks. */
+    return RESULT_OK(LONG2FIX((korb_sword_t)pid));
+}
+
 /* Real/effective ids + parent pid — prelude/system.rb used to hard-code 0. */
 static RESULT korb_m_process_ids(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; (void)a;
@@ -1352,6 +1378,7 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__signal_signame", korb_m_signal_signame,  1);
     korb_class_def_cfn(c, obj, "__signal_signo",   korb_m_signal_signo,    1);
     korb_class_def_cfn(c, obj, "__process_ids",    korb_m_process_ids,     0);
+    korb_class_def_cfn_blk(c, obj, "fork",         korb_m_process_fork,    0);
     korb_class_def_cfn(c, obj, "__etc_uname",      korb_m_etc_uname,       0);
     korb_class_def_cfn(c, obj, "__etc_conf_table", korb_m_etc_conf_table,  0);
     korb_class_def_cfn(c, obj, "__etc_sysconf",    korb_m_etc_sysconf,     1);

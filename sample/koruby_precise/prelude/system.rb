@@ -213,6 +213,10 @@ module Process
   CLOCK_BOOTTIME_ALARM     = 9
   CLOCK_TAI                = 11
   def self.pid; $$; end
+  class << self
+    def fork(&blk) = super(&blk)          # the primitive is a private Kernel method
+    def _fork = super()
+  end
   IDS = __process_ids.freeze   # [uid, euid, gid, egid, ppid] — fixed for the process
   private_constant :IDS
   def self.uid  = IDS[0]
