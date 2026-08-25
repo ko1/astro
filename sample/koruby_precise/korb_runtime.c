@@ -10806,6 +10806,9 @@ korb_eval_toplevel(CTX *c, VALUE *slots, const char *src, size_t len, const char
     c->def_definee = KORB_NIL;
     c->eval_cref = KORB_NIL;
     RESULT r = EVAL(c, ast, cur);
+    /* the file's frame goes away here, so a proc/define_method block that
+     * captured its locals must have the env closed (heap-copied) first */
+    if (UNLIKELY(korb_frame_escaped(fb))) r = korb_close_ret(c, cur, fb, r);
     c->def_definee = saved_definee;
     c->eval_cref = saved_cref;
     return r;

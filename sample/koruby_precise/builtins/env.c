@@ -5,14 +5,29 @@
 
 extern char **environ;
 
-/* arg → a NUL-terminated env name; raises TypeError on a non-String. */
-ARO_BORROW static const char *korb_env_name(CTX *c, VALUE *slots, VALUE v, RESULT *err) {
+/* arg → a NUL-terminated env name, coercing with #to_str.  The (possibly
+ * coerced) String is parked in slots[park] so the borrowed pointer stays valid
+ * across the rest of the caller. */
+ARO_BORROW static const char *korb_env_name_at(CTX *c, VALUE *slots, uint32_t park, VALUE v, RESULT *err) {
     if (UNLIKELY(!KORB_STRING_P(v))) {
-        *err = korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(v));
-        return NULL;
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (AROH_IS_GC_OBJECT(v) && korb_responds_to(c, v, to_str)) {
+            slots[park] = v;
+            const RESULT r = korb_send(c, slots + park + 1, to_str, 0, 0);
+            if (UNLIKELY(r.state != KORB_NORMAL)) { *err = r; return NULL; }
+            v = r.value;
+        }
+        if (UNLIKELY(!KORB_STRING_P(v))) {
+            *err = korb_raise(c, slots + park, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(v));
+            return NULL;
+        }
     }
+    slots[park] = v;                                  /* root: the pointer below borrows its bytes */
     err->state = KORB_NORMAL;
-    uint32_t len; return korb_str_cstr_len(v, &len);
+    uint32_t len; return korb_str_cstr_len(slots[park], &len);
+}
+ARO_BORROW static const char *korb_env_name(CTX *c, VALUE *slots, VALUE v, RESULT *err) {
+    return korb_env_name_at(c, slots, 0, v, err);
 }
 
 /* ENV[name] → the value String, or nil. */
@@ -21,7 +36,11 @@ static RESULT korb_m_env_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     RESULT err; const char *name = korb_env_name(c, slots, VALUE_SLICE_GET(a, 0), &err);
     if (!name) return err;
     const char *v = getenv(name);
-    return v ? korb_str_new(c, slots, v, (uint32_t)strlen(v)) : RESULT_OK(KORB_NIL);
+    if (!v) return RESULT_OK(KORB_NIL);
+    const RESULT r = korb_str_new(c, slots + 1, v, (uint32_t)strlen(v));
+    if (LIKELY(r.state == KORB_NORMAL))
+        ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;   /* CRuby: ENV values are frozen */
+    return r;
 }
 
 /* ENV[name] = value / ENV.store(name, value) — nil value deletes.  Returns value. */
@@ -29,13 +48,15 @@ static RESULT korb_m_env_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     (void)self;
     RESULT err; const char *name = korb_env_name(c, slots, VALUE_SLICE_GET(a, 0), &err);
     if (!name) return err;
+    if (UNLIKELY(strchr(name, '=') != NULL))
+        return korb_raise_errno(c, slots + 2, EINVAL, "setenv", name);   /* CRuby: Errno::EINVAL */
     const VALUE val = VALUE_SLICE_GET(a, 1);
     if (val == KORB_NIL) { unsetenv(name); return RESULT_OK(KORB_NIL); }
-    if (UNLIKELY(!KORB_STRING_P(val)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(val));
-    uint32_t vlen; const char *v = korb_str_cstr_len(val, &vlen);
+    RESULT verr; const char *const v = korb_env_name_at(c, slots, 1, val, &verr);
+    if (!v) return verr;
+    name = korb_str_cstr_len(slots[0], &(uint32_t){0});   /* re-borrow: the value coercion may have GC'd */
     setenv(name, v, 1);
-    return RESULT_OK(val);
+    return RESULT_OK(slots[1]);
 }
 
 /* ENV.key?(name) and its aliases. */
