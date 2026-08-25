@@ -356,6 +356,7 @@ void korb_io_flush_std(struct korb_vm *const vm) {
 }
 /* new IO/File instance of `klass` bound to `fd`.  slots[0..] scratch; result rooted by caller. */
 static uint32_t korb_io_read_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep);   /* fwd */
+static RESULT korb_io_apply_read_enc(CTX *c, VALUE *slots, VALUE_REF io, VALUE *vslot, uint32_t tag);   /* fwd */
 static RESULT korb_io_make(CTX *c, VALUE *slots, VALUE klass, int fd, int rw) {
     const uint32_t idx = korb_io_register(c->vm, fd, false);
     slots[0] = UNWRAP(korb_obj_new(c, slots, klass));
@@ -764,7 +765,7 @@ static RESULT korb_m_io_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         KORB_STR_ENC_SET(slots[1], KORB_ENC_BINARY);
     else {
         const uint32_t re = korb_io_read_enc(c, slots + 2, self, korb_io_rep(c, VALUE_REF_GET(self)));
-        KORB_STR_ENC_SET(slots[1], re);                  /* resolve BEFORE taking the header pointer */
+        CHECK(korb_io_apply_read_enc(c, slots + 2, self, &slots[1], re));   /* tag + transcode ext→int */
     }
     if (VALUE_REF_GET(bufref) == KORB_NIL)
         return eof ? RESULT_OK(KORB_NIL) : RESULT_OK(slots[1]);
@@ -897,7 +898,7 @@ static RESULT korb_m_io_gets(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (KORB_STRING_P(r.value)) {                        /* the record carries the stream's encoding */
         slots[1] = r.value;
         const uint32_t re = korb_io_read_enc(c, slots + 2, self, korb_io_rep(c, VALUE_REF_GET(self)));
-        KORB_STR_ENC_SET(slots[1], re);                  /* resolve BEFORE taking the header pointer */
+        CHECK(korb_io_apply_read_enc(c, slots + 2, self, &slots[1], re));   /* tag + transcode ext→int */
         r.value = slots[1];
     }
     /* IO#lineno counts the records #gets handed out; $. mirrors it and $_ holds
@@ -1338,6 +1339,22 @@ static RESULT korb_m_io_set_enc_by_bom(CTX *c, VALUE *slots, VALUE_REF self, VAL
 
 /* The encoding a read result carries: the stream's internal encoding if it has
  * one, else its external one.  Memoized on the rep; #set_encoding clears it. */
+/* The external encoding a transcoding stream reads BYTES in (nil when there is
+ * no ext→int pair, in which case the result is just tagged). */
+static RESULT korb_io_apply_read_enc(CTX *c, VALUE *slots, VALUE_REF io, VALUE *vslot, uint32_t tag) {
+    KORB_STR_ENC_SET(*vslot, tag);
+    slots[0] = VALUE_REF_GET(io);
+    const RESULT xr = korb_send(c, slots + 1, korb_intern(c->vm, "__io_read_xenc_name", 19), 0, 0);
+    if (UNLIKELY(xr.state != KORB_NORMAL)) return xr;
+    if (!KORB_STRING_P(xr.value)) return RESULT_OK(*vslot);          /* no transcoding pair */
+    char xb[64]; korb_tc_cstr(xr.value, xb, sizeof xb);
+    if (strcasecmp(xb, korb_enc_name_of(c->vm, tag)) == 0) return RESULT_OK(*vslot);
+    bool ok = false;
+    const RESULT tr = korb_tc_convert(c, slots + 1, *vslot, xb, korb_enc_name_of(c->vm, tag), &ok);
+    if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+    if (ok) *vslot = tr.value;
+    return RESULT_OK(*vslot);
+}
 static uint32_t korb_io_read_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep) {
     if (rep == NULL) return KORB_ENC_UTF8;
     if (rep->enc_idx >= 0) return (uint32_t)rep->enc_idx;

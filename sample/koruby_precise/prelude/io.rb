@@ -40,6 +40,14 @@ class IO
   def __io_read_enc_name
     (internal_encoding || external_encoding || Encoding::UTF_8).name
   end
+  # When an ext→int pair is set, the bytes arrive in the EXTERNAL encoding and
+  # the C read path converts them to the tagged (internal) one.  nil = no pair.
+  def __io_read_xenc_name
+    __resolve_enc
+    return nil unless @__enc2
+    n = @__enc2.name
+    __transcodable?(n) ? n : nil
+  end
 
   def external_encoding
     __resolve_enc
