@@ -929,7 +929,11 @@ static inline bool
 korb_to_index(VALUE v, korb_sword_t *out)
 {
     if (FIXNUM_P(v))     { *out = FIX2LONG(v);          return true; }
-    if (KORB_FLOAT_P(v)) { *out = (korb_sword_t)korb_float_val(v); return true; }
+    if (KORB_FLOAT_P(v)) {
+        const double d = korb_float_val(v);             /* out of long range → not an index */
+        if (isnan(d) || d >= 9.223372036854776e18 || d <= -9.223372036854776e18) return false;
+        *out = (korb_sword_t)d; return true;
+    }
     return false;
 }
 

@@ -196,9 +196,16 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     korb_sword_t i;
     if (UNLIKELY(!korb_to_index(i0, &i))) {
         if (KORB_INTEGER_P(i0)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+        if (KORB_FLOAT_P(i0)) { char fb[40]; korb_float_to_s(korb_float_val(i0), fb);
+                                return korb_raise(c, slots, KORB_E_RANGE, 0, "float %s out of range of integer", fb); }
         RESULT cr = korb_coerce_to_int(c, slots, &i0);     /* coerce via #to_int */
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-        if (!korb_to_index(i0, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (!korb_to_index(i0, &i)) {
+            if (KORB_INTEGER_P(i0)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+        if (KORB_FLOAT_P(i0)) { char fb[40]; korb_float_to_s(korb_float_val(i0), fb);
+                                return korb_raise(c, slots, KORB_E_RANGE, 0, "float %s out of range of integer", fb); }
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        }
         n = SELF_ARY->len;                                 /* re-read after dispatch */
     }
     if (i < 0) i += n;
@@ -207,9 +214,16 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         korb_sword_t len;
         if (UNLIKELY(!korb_to_index(lv, &len))) {
             if (KORB_INTEGER_P(lv)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+            if (KORB_FLOAT_P(lv)) { char fb[40]; korb_float_to_s(korb_float_val(lv), fb);
+                                    return korb_raise(c, slots, KORB_E_RANGE, 0, "float %s out of range of integer", fb); }
             RESULT cr = korb_coerce_to_int(c, slots, &lv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(lv, &len)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+            if (!korb_to_index(lv, &len)) {
+            if (KORB_INTEGER_P(lv)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+            if (KORB_FLOAT_P(lv)) { char fb[40]; korb_float_to_s(korb_float_val(lv), fb);
+                                    return korb_raise(c, slots, KORB_E_RANGE, 0, "float %s out of range of integer", fb); }
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        }
             n = SELF_ARY->len;
         }
         if (len < 0 || i < 0 || i > (korb_sword_t)n) return RESULT_OK(KORB_NIL);
