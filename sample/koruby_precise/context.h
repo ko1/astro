@@ -1016,6 +1016,9 @@ struct korb_vm {
      * `Owner::NAME`.  Small and rarely populated — a linear scan is enough. */
     struct korb_privconst { uint32_t name; VALUE ARO_GC_EDGE owner; } *privconsts;
     uint32_t privconst_cnt, privconst_capa;
+    /* deprecate_constant: same shape — reading such a constant warns. */
+    struct korb_privconst *deprconsts;
+    uint32_t deprconst_cnt, deprconst_capa;
     uint32_t str_enc_names[KORB_STR_ENC_MAX];
     uint32_t str_enc_sb_mask;        /* bit i: index i is a single-byte encoding (byte == character) */
     /* source_location: def/block body NODE → (file symbol, line), populated at
@@ -1130,6 +1133,9 @@ struct CTX_struct {
     }                                                                        \
     for (uint32_t _pi = 0; _pi < (c)->vm->privconst_cnt; _pi++) {            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->privconsts[_pi].owner); \
+    }                                                                        \
+    for (uint32_t _di = 0; _di < (c)->vm->deprconst_cnt; _di++) {            \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->deprconsts[_di].owner); \
     }                                                                        \
     /* `$!` stack: exceptions being handled.  Scan to errinfo_live, not the
      * current depth — suspended threads keep their own (deeper) depths and

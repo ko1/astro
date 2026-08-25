@@ -542,10 +542,20 @@ static RESULT korb_m_visibility_noop(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     (void)c;(void)slots;(void)self;
     return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
 }
-/* Module#deprecate_constant(*names) — koruby doesn't emit deprecation warnings;
- * a no-op that returns self (matching CRuby's return value). */
+/* Module#deprecate_constant(*names) — mark each so a read warns. */
 static RESULT korb_m_deprecate_constant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a;
+    const VALUE owner = VALUE_REF_GET(self);
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+        uint32_t sym;
+        { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, i), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+        if (UNLIKELY(korb_const_index_owned(c->vm, sym, owner) == UINT32_MAX &&
+                     !korb_autoload_registered_p(c, owner, sym) &&
+                     korb_const_in_ancestry(c->vm, owner, sym) == UINT32_MAX)) {
+            char qn[256]; korb_class_desc_into(c, owner, qn, sizeof qn);
+            return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s::%s not defined", qn, korb_sym_name(c->vm, sym));
+        }
+        korb_const_set_deprecated(c, owner, sym);
+    }
     return RESULT_OK(VALUE_REF_GET(self));
 }
 /* private/protected/public: with no args set the class body's default visibility;
@@ -1595,10 +1605,7 @@ static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VA
             const bool intrinsic = !strcmp(nm, "to_s") || !strcmp(nm, "inspect") || !strcmp(nm, "!~") ||
                                    !strcmp(nm, "<=>") || !strcmp(nm, "!") || !strcmp(nm, "!=");
             if (!on_object && !intrinsic)
-            {   char cnm[256];
-                if (VAL2CLASS(cls)->name_sym) korb_class_qname_into(c, cls, cnm, sizeof cnm);
-                else snprintf(cnm, sizeof cnm, "#<%s:0x%016lx>",   /* anonymous: the #to_s form */
-                              k->is_module ? "Module" : "Class", (unsigned long)(uintptr_t)cls);
+            {   char cnm[256]; korb_class_desc_into(c, cls, cnm, sizeof cnm);
                 return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
                                   korb_sym_name(c->vm, mid), k->is_module ? "module" : "class", cnm); }
         }
@@ -1821,7 +1828,11 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
             }
             return nr;
         }
-        result = vm->const_vals[idx];
+        if (UNLIKELY(vm->deprconst_cnt != 0)) {
+            slots[0] = vm->const_vals[idx];                 /* park: the warning path allocates */
+            korb_const_deprecated_warn(c, slots + 1, vm->const_owners[idx], cid);
+            result = slots[0];
+        } else result = vm->const_vals[idx];
         owner = result;                                     /* next component resolves within this */
         p = (q < end) ? q + 2 : end;
         first = false;
@@ -1849,12 +1860,13 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
     for (uint32_t i = 0; i < vm->const_cnt; i++)
         if (vm->const_names[i] == id &&
             (vm->const_owners[i] == selfv || (vm->const_owners[i] == KORB_NIL && selfv == objc))) {
-            const VALUE old = vm->const_vals[i];
+            slots[0] = vm->const_vals[i];      /* park: the deprecation warning allocates */
+            korb_const_deprecated_warn(c, slots + 1, vm->const_owners[i], id);
             vm->const_names[i] = 0;            /* tombstone (interned ids are >0) */
             vm->const_vals[i] = KORB_NIL;
             vm->method_serial++;
             vm->const_serial++;               /* invalidate const caches */
-            return RESULT_OK(old);
+            return RESULT_OK(slots[0]);
         }
     return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s not defined", korb_sym_name(vm, id));
 }

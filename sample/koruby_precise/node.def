@@ -1513,7 +1513,14 @@ node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, NODE *parent)
         korb_const_private_p(vm, slots[0], name))
         return korb_raise(c, slots + 1, KORB_E_NAME, 0, "private constant %s::%s referenced",
                           korb_sym_name(vm, VAL2CLASS(slots[0])->name_sym), korb_sym_name(vm, name));
-    if (LIKELY(idx != UINT32_MAX)) return RESULT_OK(vm->const_vals[idx]);
+    if (LIKELY(idx != UINT32_MAX)) {
+        if (UNLIKELY(vm->deprconst_cnt != 0)) {
+            slots[1] = vm->const_vals[idx];               /* park: the warning path allocates */
+            korb_const_deprecated_warn(c, slots + 2, slots[0], name);
+            return RESULT_OK(slots[1]);
+        }
+        return RESULT_OK(vm->const_vals[idx]);
+    }
     slots[1] = ID2SYM(name);                              /* <owner>.const_missing(:name) — autoload's entry point */
     return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), 0, 1);
 }

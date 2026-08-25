@@ -4381,6 +4381,18 @@ korb_class_qname_into(CTX *c, VALUE cls, char *out, size_t outsz)
     free(b);
 }
 
+/* Like korb_class_qname_into, but an anonymous class/module renders in its
+ * #to_s form ("#<Module:0x...>") instead of an empty string. */
+void
+korb_class_desc_into(CTX *c, VALUE cls, char *out, size_t outsz)
+{
+    if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym == 0)
+        snprintf(out, outsz, "#<%s:0x%016lx>",
+                 VAL2CLASS(cls)->is_module ? "Module" : "Class", (unsigned long)(uintptr_t)cls);
+    else
+        korb_class_qname_into(c, cls, out, outsz);
+}
+
 /* Append `mod` and its transitive included modules to cref's `included` list
  * (deduped against cref's current ancestors).  Order: a module's own includes go
  * in first (deeper), then the module itself, so the reverse-iterated list yields
@@ -6442,6 +6454,46 @@ korb_const_set_private(CTX *c, VALUE owner, uint32_t sym, bool private_p)
     vm->privconsts[vm->privconst_cnt].name = sym;
     vm->privconsts[vm->privconst_cnt].owner = owner;
     vm->privconst_cnt++;
+}
+/* deprecate_constant: mark (owner, name); reading it warns once per read. */
+void
+korb_const_set_deprecated(CTX *c, VALUE owner, uint32_t sym)
+{
+    struct korb_vm *const vm = c->vm;
+    for (uint32_t i = 0; i < vm->deprconst_cnt; i++)
+        if (vm->deprconsts[i].name == sym && vm->deprconsts[i].owner == owner) return;
+    if (vm->deprconst_cnt == vm->deprconst_capa) {
+        vm->deprconst_capa = vm->deprconst_capa ? vm->deprconst_capa * 2 : 8;
+        vm->deprconsts = realloc(vm->deprconsts, sizeof(*vm->deprconsts) * vm->deprconst_capa);
+        if (!vm->deprconsts) abort();
+    }
+    vm->deprconsts[vm->deprconst_cnt].name = sym;
+    vm->deprconsts[vm->deprconst_cnt].owner = owner;
+    vm->deprconst_cnt++;
+}
+bool
+korb_const_deprecated_p(const struct korb_vm *vm, VALUE owner, uint32_t sym)
+{
+    for (uint32_t i = 0; i < vm->deprconst_cnt; i++)
+        if (vm->deprconsts[i].name == sym && vm->deprconsts[i].owner == owner) return true;
+    return false;
+}
+/* "warning: constant Owner::NAME is deprecated", gated on Warning[:deprecated]. */
+void
+korb_const_deprecated_warn(CTX *c, VALUE *slots, VALUE owner, uint32_t sym)
+{
+    struct korb_vm *const vm = c->vm;
+    if (LIKELY(vm->deprconst_cnt == 0) || !korb_const_deprecated_p(vm, owner, sym)) return;
+    {   /* Warning::CATEGORIES__[:deprecated] is the gate (Kernel#warn's own check) */
+        const VALUE wm = korb_const_get(vm, korb_intern(vm, "Warning", 7));
+        if (!KORB_CLASS_P(wm)) return;
+        const uint32_t ci = korb_const_index_owned(vm, korb_intern(vm, "CATEGORIES__", 12), wm);
+        if (ci == UINT32_MAX || !KORB_HASH_P(vm->const_vals[ci])) return;
+        const int32_t hi = korb_hash_find(VAL2HASH(vm->const_vals[ci]), ID2SYM(korb_intern(vm, "deprecated", 10)));
+        if (hi < 0 || !KORB_TRUTHY(korb_items_data(VAL2HASH(vm->const_vals[ci])->items)[2 * hi + 1])) return;
+    }
+    char qn[256]; korb_class_desc_into(c, owner, qn, sizeof qn);
+    korb_warn(c, slots, "constant %s::%s is deprecated", qn, korb_sym_name(vm, sym));
 }
 bool
 korb_const_private_p(const struct korb_vm *vm, VALUE owner, uint32_t sym)
