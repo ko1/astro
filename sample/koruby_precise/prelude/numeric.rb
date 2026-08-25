@@ -31,9 +31,19 @@ class Numeric
   def %(other); self - other * self.div(other); end
   alias modulo %                          # CRuby: #modulo is an alias of #%
   def divmod(other); q = self.div(other); [q, self - other * q]; end
+  # CRuby's num_remainder: a non-Numeric argument is coerced first, then the
+  # sign test is two explicit comparisons per side, in this order (a Numeric
+  # subclass may define only the operators CRuby actually uses).
   def remainder(other)
-    z = self % other
-    (z != 0 && (self < 0) != (other < 0)) ? z - other : z
+    a, b = self, other
+    a, b = other.coerce(self) unless other.is_a?(Numeric)
+    z = a % b
+    if z != 0 && ((a < 0 && b > 0) || (a > 0 && b < 0))
+      return a if b.is_a?(Float) && b.infinite?
+      z - b
+    else
+      z
+    end
   end
   def fdiv(other); self.to_f.fdiv(other); end
   def quo(other); self.to_r.quo(other); end

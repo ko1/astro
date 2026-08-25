@@ -8546,6 +8546,19 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                         }
                     }
                 }
+                {   /* a user `initialize` on the subclass still runs (CRuby): the
+                     * object already exists, so this is a plain dispatch. */
+                    VALUE idef = KORB_NIL;
+                    const struct korb_method *const uinit =
+                        korb_class_find_method(slots[0], vm->mid_initialize, &idef);
+                    if (uinit && uinit->kind == KORB_METHOD_ISEQ) {
+                        slots[2] = slots[1];                   /* recv = the new instance */
+                        for (uint32_t k = 0; k < argc; k++) slots[3 + k] = slots[-(korb_sword_t)argc + (korb_sword_t)k];
+                        RESULT ir = korb_send_impl(c, slots + 3 + argc, vm->mid_initialize, line, argc,
+                                                   block, def_env, captured_self);
+                        if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+                    }
+                }
                 return RESULT_OK(slots[1]);
             }
             if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET) {
