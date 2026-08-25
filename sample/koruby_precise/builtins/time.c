@@ -852,25 +852,76 @@ static RESULT korb_m_time_utc_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     CHECK(korb_ivar_set(c, slots, self, korb_time_offx_sym(c->vm), KORB_NIL));
     return RESULT_OK(VALUE_REF_GET(self));
 }
-static RESULT korb_m_time_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+
+/* Split an addend into whole seconds + nanoseconds, exactly.  A Float is read
+ * as its true binary value (0.7 is 0.699999999999999956, so 699_999_999 ns) and
+ * a Rational keeps its exact fraction, which is what CRuby's Time arithmetic
+ * does; both floor toward -infinity so the ns part stays in 0..999_999_999. */
+static bool korb_time_split_delta(CTX *c, VALUE o, korb_sword_t *sec, korb_sword_t *ns, int sign) {
+    if (FIXNUM_P(o)) { *sec = sign * FIX2LONG(o); *ns = 0; return true; }
+    if (KORB_RATIONAL_P(o)) {
+        const VALUE nv = VAL2RAT(o)->num, dv = VAL2RAT(o)->den;
+        if (!FIXNUM_P(nv) || !FIXNUM_P(dv)) return false;
+        const korb_sword_t n = sign * FIX2LONG(nv), d = FIX2LONG(dv);
+        korb_sword_t q = n / d, r = n % d;
+        if (r < 0) { q -= 1; r += d; }                 /* floor division */
+        *sec = q;
+        *ns = (korb_sword_t)((__int128)r * 1000000000 / d);
+        return true;
+    }
+    double dd = 0;
+    if (!korb_num_to_d(o, &dd)) return false;   /* the caller retries via #to_r */
+    if (!isfinite(dd)) return false;
+    dd *= sign;                                        /* negate BEFORE flooring */
+    const double fl = floor(dd);
+    if (fl < -9.2e18 || fl > 9.2e18) return false;
+    *sec = (korb_sword_t)fl;
+    /* long double keeps enough bits that 0.7 stays 0.6999999999999999556 and
+     * truncates to 699_999_999 ns, as CRuby's exact Rational conversion does. */
+    *ns = (korb_sword_t)(((long double)dd - (long double)fl) * 1000000000.0L);
+    if (*ns > 999999999) *ns = 999999999;
+    return true;
+}
+
+/* self ± delta with the sub-second part carried exactly. */
+static RESULT korb_time_shift(CTX *c, VALUE *slots, VALUE_REF self, VALUE o, int sign) {
+    korb_sword_t dsec, dns;
+    if (!korb_time_split_delta(c, o, &dsec, &dns, sign))
+        return korb_time_derive(c, slots, self, 0, KORB_NIL);      /* caller checked; unreachable */
     const VALUE t = VALUE_REF_GET(self);
+    const double src = korb_time_epoch(c, t);
+    const VALUE nsv = korb_ivar_get(c, t, korb_time_ns_sym(c->vm));
+    korb_sword_t sns = FIXNUM_P(nsv) ? FIX2LONG(nsv)
+                                     : (korb_sword_t)((src - floor(src)) * 1000000000.0 + 0.5);
+    korb_sword_t nsec = sns + dns;
+    korb_sword_t carry = 0;
+    while (nsec < 0)          { nsec += 1000000000; carry -= 1; }
+    while (nsec > 999999999)  { nsec -= 1000000000; carry += 1; }
+    const double epoch = floor(src) + (double)(dsec + carry) + (double)nsec / 1e9;
+    /* CRuby's Time#+ / #- answer a plain Time even for a subclass receiver. */
+    slots[0] = UNWRAP(korb_time_derive(c, slots, self, epoch,
+                                       korb_const_get(c->vm, korb_intern(c->vm, "Time", 4))));
+    CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_ns_sym(c->vm), LONG2FIX(nsec)));
+    return RESULT_OK(slots[0]);
+}
+static RESULT korb_m_time_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE o = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(KORB_OBJECT_P(o) && korb_ivar_get(c, o, korb_time_t_sym(c->vm)) != KORB_NIL))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "time + time?");   /* Time + Time is invalid */
-    double d = 0;
-    if (UNLIKELY(!korb_num_to_d(o, &d)))                              /* String / non-Numeric → TypeError */
+    korb_sword_t ds, dn;
+    if (UNLIKELY(!korb_time_split_delta(c, o, &ds, &dn, 1)))            /* String / non-Numeric → TypeError */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(o));
-    return korb_time_derive(c, slots, self, korb_time_epoch(c, t) + d, KORB_NIL);
+    return korb_time_shift(c, slots, self, o, +1);
 }
 static RESULT korb_m_time_minus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE t = VALUE_REF_GET(self);
     const VALUE o = VALUE_SLICE_GET(a, 0);
     if (KORB_OBJECT_P(o) && korb_ivar_get(c, o, korb_time_t_sym(c->vm)) != KORB_NIL)   /* Time - Time → seconds (Float) */
         return korb_float_new(c, slots, korb_time_epoch(c, t) - korb_time_epoch(c, o));
-    double d = 0;
-    if (UNLIKELY(!korb_num_to_d(o, &d)))                              /* String / non-Numeric → TypeError */
+    korb_sword_t ds, dn;
+    if (UNLIKELY(!korb_time_split_delta(c, o, &ds, &dn, 1)))            /* String / non-Numeric → TypeError */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(o));
-    return korb_time_derive(c, slots, self, korb_time_epoch(c, t) - d, KORB_NIL);
+    return korb_time_shift(c, slots, self, o, -1);
 }
 /* Time#<=> with a non-Time: CRuby asks the OTHER object (`other <=> self`) and
  * inverts its sign — that is how a Time-like duck type compares. */
