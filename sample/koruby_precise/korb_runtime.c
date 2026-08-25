@@ -7370,8 +7370,14 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
      * rooted slot.  No forwarded block → &b stays nil (from the locals zeroing). */
     if (UNLIKELY(bp_blk != NULL)) {
         const int32_t bps = korb_entry_blk_param_slot(block);
-        if (bps >= 0)
-            bf[1 + bps] = UNWRAP(korb_make_proc(c, bf + 1 + blocals, bp_blk, bp_denv, *bp_self, 0));
+        if (bps >= 0) {
+            /* a FORWARDED Proc keeps its identity (`->(&b){b}.call(&pr)` is pr),
+             * so only a literal block is wrapped into a fresh Proc */
+            if (bp_denv == KORB_BLK_FWD && bp_self != NULL && KORB_PROC_P(*bp_self))
+                bf[1 + bps] = *bp_self;
+            else
+                bf[1 + bps] = UNWRAP(korb_make_proc(c, bf + 1 + blocals, bp_blk, bp_denv, *bp_self, 0));
+        }
     }
     bf[0] = fwd ? VAL2PROC(*captured_self)->self : *captured_self;   /* block's lexical self → B[-1] (bottom header; re-read fresh) */
 
