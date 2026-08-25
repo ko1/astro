@@ -1460,6 +1460,11 @@ struct koruby_option {
     bool debug;          /* -d / --debug: $DEBUG = true */
     bool frozen_literals;/* --enable-frozen-string-literal */
     bool switch_args;    /* -s: leading -name[=value] args become globals */
+    bool loop_gets;      /* -n / -p: wrap the program in a `while gets` loop */
+    bool loop_print;     /* -p: also print $_ each iteration */
+    bool auto_split;     /* -a: $F = $_.split each iteration */
+    bool chomp_lines;    /* -l: chomp $_ and set $\ = $/ */
+    bool skip_to_ruby;   /* -x: ignore everything before the first #!...ruby line */
     bool no_deprecated;  /* -W:no-deprecated */
     bool no_experimental;/* -W:no-experimental */
     const char *kcode;   /* -K<letter>: the default external encoding name, or NULL */

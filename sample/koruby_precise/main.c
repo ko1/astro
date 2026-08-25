@@ -5,6 +5,7 @@
  * structural hash matches; `--plain` ignores the code store entirely.
  */
 
+#include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -104,6 +105,18 @@ koruby_apply_flag(const char *a, const char *next_arg,
     }
     if (strcmp(a, "-U") == 0) { OPTION.intenc = "UTF-8"; return true; }
     if (strcmp(a, "-s") == 0) { OPTION.switch_args = true; return true; }
+    if (strcmp(a, "-n") == 0) { OPTION.loop_gets = true; return true; }
+    if (strcmp(a, "-p") == 0) { OPTION.loop_gets = OPTION.loop_print = true; return true; }
+    if (strcmp(a, "-a") == 0) { OPTION.auto_split = true; return true; }
+    /* $-a / $-p / $-l are read-only reflections of the switches; the loop
+     * wrapper sets them through __set_gvar. */
+    if (strcmp(a, "-l") == 0) { OPTION.chomp_lines = true; return true; }
+    if (strncmp(a, "-x", 2) == 0) { OPTION.skip_to_ruby = true; return true; }
+    if (strncmp(a, "-C", 2) == 0) {                     /* chdir before running */
+        const char *const dir = a[2] ? a + 2 : next_arg;
+        if (dir && chdir(dir) != 0) { perror("koruby_precise: -C"); exit(1); }
+        return true;
+    }
     if (strcmp(a, "--enable-frozen-string-literal") == 0 ||
         strcmp(a, "--enable=frozen-string-literal") == 0) { OPTION.frozen_literals = true; return true; }
     if (strcmp(a, "--disable-frozen-string-literal") == 0 ||
@@ -811,6 +824,77 @@ main(int argc, char *argv[])
     else {
         src_name = "-";
         src = read_file_all("-", &src_len);
+    }
+    if (OPTION.skip_to_ruby) {                          /* -x: start at the first #!...ruby line */
+        char *p = src, *found = NULL;
+        while (p && *p) {
+            if (p[0] == '#' && p[1] == '!' && strstr(p, "ruby")) {
+                found = strchr(p, '\n');
+                if (found) found++;
+                break;
+            }
+            p = strchr(p, '\n');
+            if (p) p++;
+        }
+        if (found) { memmove(src, found, strlen(found) + 1); src_len = strlen(src); }
+    }
+    if (OPTION.loop_gets) {
+        /* prism refuses BEGIN outside the top level, and the loop below IS a
+         * nested scope, so lift `BEGIN { ... }` out of the program text first
+         * (CRuby runs those once, before the loop, which is where they land). */
+        char *pre = malloc(src_len + 1);
+        if (!pre) abort();
+        size_t pl = 0, w = 0;
+        for (size_t r = 0; r < src_len; ) {
+            if (src[r] == '#') { while (r < src_len && src[r] != '\n') src[w++] = src[r++]; continue; }
+            if (src[r] == '"' || src[r] == '\'') {     /* copy the whole literal verbatim */
+                const char q = src[r]; src[w++] = src[r++];
+                while (r < src_len && src[r] != q) { if (src[r] == '\\' && r + 1 < src_len) src[w++] = src[r++]; src[w++] = src[r++]; }
+                if (r < src_len) src[w++] = src[r++];
+                continue;
+            }
+            if (strncmp(src + r, "BEGIN", 5) == 0 && (r == 0 || !isalnum((unsigned char)src[r-1])) ) {
+                size_t k = r + 5;
+                while (k < src_len && (src[k] == ' ' || src[k] == '\t')) k++;
+                if (k < src_len && src[k] == '{') {
+                    size_t depth = 0, b = k;
+                    for (; b < src_len; b++) {
+                        if (src[b] == '{') depth++;
+                        else if (src[b] == '}' && --depth == 0) break;
+                    }
+                    if (b < src_len) {                  /* copy the body (without the braces) to the prefix */
+                        memcpy(pre + pl, src + k + 1, b - k - 1); pl += b - k - 1;
+                        pre[pl++] = '\n';
+                        r = b + 1;
+                        continue;
+                    }
+                }
+            }
+            src[w++] = src[r++];
+        }
+        src[w] = '\0'; src_len = w;
+        pre[pl] = '\0';
+        /* -n / -p wrap the program in a gets loop; -a splits, -l chomps. */
+        const char *const head = OPTION.chomp_lines
+            ? "$\\ = $/; __set_gvar(\"$-l\", true); while gets; $_.chomp!;\n"
+            : "while gets;\n";
+        const char *const split = OPTION.auto_split ? "$F = $_.split;\n" : "";
+        char flagbuf[128];
+        snprintf(flagbuf, sizeof flagbuf, "%s%s",
+                 OPTION.loop_print ? "__set_gvar(\"$-p\", true);\n" : "",
+                 OPTION.auto_split ? "__set_gvar(\"$-a\", true);\n" : "");
+        const char *const flags = flagbuf;
+        const char *const tail = OPTION.loop_print ? "\n;print $_; end\n" : "\n;end\n";
+        const size_t nl = strlen(flags) + strlen(head) + strlen(split) + src_len + strlen(tail) + 1;
+        char *const wrapped = malloc(nl);
+        if (!wrapped) abort();
+        char *const wrapped2 = malloc(nl + pl + 2);
+        if (!wrapped2) abort();
+        snprintf(wrapped, nl, "%s%s%s%.*s%s", flags, head, split, (int)src_len, src, tail);
+        snprintf(wrapped2, nl + pl + 2, "%s\n%s", pre, wrapped);
+        free(wrapped); free(pre); free(src);
+        src = wrapped2;
+        src_len = strlen(src);
     }
 #endif /* !KORUBY_EMBED */
 

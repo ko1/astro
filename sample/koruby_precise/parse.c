@@ -67,6 +67,10 @@ struct kp_ctx {
     const char *fname;
     struct kp_frame *frame;
     int32_t chain;            /* staging depth at the current program point */
+    /* BEGIN { } bodies, hoisted to the very front of the program (CRuby runs
+     * them once, before everything else — including a -n/-p gets loop). */
+    NODE   **pre_list;
+    uint32_t pre_cnt, pre_capa;
     int32_t **bake_list;      /* lvar-offset cells awaiting locals_cnt fixup */
     uint32_t bake_cnt, bake_capa;
     bool syntax_error;        /* transduce-time SyntaxError (e.g. binding in alternative pattern) */
@@ -2930,6 +2934,21 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_STATEMENTS_NODE:
         return transduce_statements(tc, (const pm_statements_node_t *)node);
 
+      case PM_PRE_EXECUTION_NODE: {     /* BEGIN { ... } */
+        const pm_pre_execution_node_t *pe = (const pm_pre_execution_node_t *)node;
+        const int32_t saved = tc->chain;
+        tc->chain = 0;                  /* the body is emitted at program top level */
+        NODE *body = pe->statements ? transduce_statements(tc, pe->statements) : lit_nil();
+        tc->chain = saved;
+        if (tc->pre_cnt == tc->pre_capa) {
+            tc->pre_capa = tc->pre_capa ? tc->pre_capa * 2 : 4;
+            tc->pre_list = realloc(tc->pre_list, sizeof(NODE *) * tc->pre_capa);
+            if (!tc->pre_list) abort();
+        }
+        tc->pre_list[tc->pre_cnt++] = body;
+        return lit_nil();
+      }
+
       case PM_PARENTHESES_NODE: {
         const pm_parentheses_node_t *pn = (const pm_parentheses_node_t *)node;
         return transduce_opt(tc, pn->body);
@@ -4470,6 +4489,8 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
     };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
+    for (uint32_t pi = tc.pre_cnt; pi-- > 0; ) ast = ALLOC_node_seq(tc.pre_list[pi], ast);   /* BEGIN { } first */
+    free(tc.pre_list);
     free(tc.bake_list);
     if (tc.syntax_error) {                           /* transduce-time SyntaxError (e.g. binding in alternative pattern) */
         pm_node_destroy(&parser, root);
@@ -4526,6 +4547,8 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
     struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser) };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
+    for (uint32_t pi = tc.pre_cnt; pi-- > 0; ) ast = ALLOC_node_seq(tc.pre_list[pi], ast);   /* BEGIN { } first */
+    free(tc.pre_list);
     free(tc.bake_list);
     bool serr = tc.syntax_error;
     pm_node_destroy(&parser, root);
