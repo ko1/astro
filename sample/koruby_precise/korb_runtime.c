@@ -3597,13 +3597,22 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
         if (strcmp(nm, ops[i]) == 0) { vm->basic_op_redefined = true; return; }
 }
 
+/* BasicObject#! — the default negation, reachable through send/respond_to?.
+ * `!x` itself is node_not, which only dispatches for a user-defined `!`. */
+static RESULT korb_m_obj_not(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)a;
+    return RESULT_OK(KORB_TRUTHY(VALUE_REF_GET(self)) ? KORB_FALSE : KORB_TRUE);
+}
+
 /* True when `v`'s class (or singleton) defines `!` — node_not's deopt check.
  * Only reached while vm->bang_redefined is set. */
 bool
 korb_find_bang_override(CTX *c, VALUE v)
 {
     const VALUE k = korb_dispatch_class(c, v);
-    return KORB_CLASS_P(k) && korb_class_find_method(k, korb_intern(c->vm, "!", 1), NULL) != NULL;
+    if (!KORB_CLASS_P(k)) return false;
+    const struct korb_method *const m = korb_class_find_method(k, korb_intern(c->vm, "!", 1), NULL);
+    return m != NULL && m->kind != KORB_METHOD_CFUNC;   /* the CFUNC one IS the default */
 }
 
 extern const struct NodeKind kind_node_ivar_get;   /* auto-attr detection */
@@ -9488,6 +9497,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "nil?", korb_m_obj_nil_q, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "method_missing", korb_m_obj_method_missing, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "==", korb_m_obj_eq, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "!",  korb_m_obj_not, 0);   /* node_not handles `!x` inline; this is for reflection + send */
     korb_def_cmethod(c, KORB_C_OBJECT, "===", korb_m_obj_case_eq, 1);   /* default: self == other, honouring an overridden #== (Class/Range/Regexp/Set override) */
     korb_def_cmethod(c, KORB_C_OBJECT, "!=", korb_m_obj_neq, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "equal?", korb_m_obj_equal, 1);

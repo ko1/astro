@@ -3969,6 +3969,17 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 NODE *recv = transduce(tc, cn->receiver);
                 NODE *_dc = ALLOC_node_defined_call(recv, kp_intern_cid(tc, cn->name), self_off);
                 bake_add(tc, &_dc->u.node_defined_call.self_off);   /* the caller's self decides protected visibility */
+                /* the RECEIVER must be defined too: `defined?($unset.foo)` and
+                 * `defined?(!@unset)` are both nil in CRuby */
+                if (PM_NODE_TYPE_P(cn->receiver, PM_GLOBAL_VARIABLE_READ_NODE) ||
+                    PM_NODE_TYPE_P(cn->receiver, PM_INSTANCE_VARIABLE_READ_NODE) ||
+                    PM_NODE_TYPE_P(cn->receiver, PM_CLASS_VARIABLE_READ_NODE)) {
+                    pm_defined_node_t rdn = *(const pm_defined_node_t *)node;   /* reuse this node's shape */
+                    rdn.value = (pm_node_t *)cn->receiver;
+                    NODE *rchk;
+                    WITH_CHAIN(tc, 1, (rchk = transduce(tc, (const pm_node_t *)&rdn)));
+                    return ALLOC_node_and(rchk, _dc);
+                }
                 return _dc;
             }
             /* bareword (possibly with args): "method" iff self responds to it. */
