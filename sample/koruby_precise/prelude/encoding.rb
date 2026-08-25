@@ -277,7 +277,14 @@ class Encoding
       e = const_get(cn)
       return e if e.is_a?(Encoding) && (e.name == n || e.name.upcase == n.upcase)
     end
-    Encoding.new(n)
+    raise ArgumentError, "unknown encoding name - #{n}"
+  end
+  # Like find, but nil instead of raising (encode turns a miss into
+  # ConverterNotFoundError, which is a different exception class).
+  def self.__find_or_nil(name)
+    find(name)
+  rescue ArgumentError
+    nil
   end
   # Alias → canonical encoding name.
   def self.aliases
@@ -369,35 +376,130 @@ class String
   end
   # force_encoding / b are C methods (builtins/string.c).
 
-  # encode([enc][, from][, opts]) — koruby models the 3 ASCII-compatible encodings,
-  # where transcoding of ASCII-only data is a no-op (just a tag change).  Non-ASCII
-  # content only converts trivially when the target encoding matches; US-ASCII
-  # targets require ASCII-only content; non-ASCII-compatible targets (UTF-16/32)
-  # and real byte transcoding are out of scope.
+  # encode([to][, from][, opts]) — real byte-level transcoding via __transcode
+  # (builtins/transcode.c).  Encodings koruby has no converter for still convert
+  # when the content is 7-bit, exactly as CRuby does.
+  def __enc_arg(v)                            # Encoding / String / #to_str → name
+    return nil if v.nil?
+    return v.name if v.is_a?(Encoding)
+    return v if v.is_a?(String)
+    raise TypeError, "no implicit conversion of #{v.class} into String" unless v.respond_to?(:to_str)
+    n = v.to_str
+    raise TypeError, "no implicit conversion of #{v.class} into String" unless n.is_a?(String)
+    n
+  end
+  private :__enc_arg
+
   def encode(*args)
     opts = args.last.is_a?(Hash) ? args.pop : {}
-    tenc = args[0].nil? ? Encoding.default_external : (args[0].is_a?(Encoding) ? args[0] : Encoding.find(args[0].to_s))
-    senc = args[1] ? (args[1].is_a?(Encoding) ? args[1] : Encoding.find(args[1].to_s)) : encoding
-    replace_undef = [:undef, :invalid, :replace, :fallback, :xml].any? { |k| opts.key?(k) }
-    r = dup
-    if opts[:universal_newline]                   # \r\n and \r → \n
-      r = r.gsub(/\r\n|\r/, "\n")
-    elsif opts[:cr_newline]                       # \n → \r
-      r = r.gsub("\n", "\r")
-    elsif opts[:crlf_newline]                     # \n → \r\n
-      r = r.gsub("\n", "\r\n")
+    to_name   = __enc_arg(args[0])
+    from_name = __enc_arg(args[1]) || encoding.name
+    if to_name.nil?
+      di = Encoding.default_internal
+      return __encode_decorate(dup, opts).force_encoding(from_name) if di.nil?
+      to_name = di.name
     end
-    if tenc == senc || (r.ascii_only? && tenc.ascii_compatible?)
-      return r.force_encoding(tenc.name)          # identity / ASCII-only → tag change only
+    tenc = Encoding.__find_or_nil(to_name)
+    senc = Encoding.__find_or_nil(from_name)
+    same = to_name.casecmp(from_name) == 0
+    if (tenc.nil? || senc.nil?) && !same
+      raise Encoding::ConverterNotFoundError, "code converter not found (#{from_name} to #{to_name})"
     end
-    # US-ASCII / BINARY targets can't hold non-ASCII source content.
-    if (tenc == Encoding::US_ASCII) && !ascii_only? && !replace_undef
-      raise Encoding::UndefinedConversionError, "from #{senc.name} to US-ASCII"
+    src = __encode_decorate(same ? dup : dup.force_encoding(from_name), opts)
+
+    xml = opts[:xml]
+    if xml
+      raise ArgumentError, "unexpected value for xml option: #{xml}" unless xml == :text || xml == :attr
+      src = src.gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;")
+      src = %Q{"#{src.gsub('"', "&quot;")}"} if xml == :attr
     end
-    # non-ASCII-compatible targets (UTF-16/32) need real byte transcoding, which is
-    # out of scope — return a best-effort tag change rather than a spurious error.
-    r.force_encoding(tenc.name)
+
+    # Same encoding on both sides: CRuby does no conversion at all — invalid
+    # bytes survive — UNLESS invalid:/xml: asks for them to be rewritten.
+    if same && !(opts[:invalid] == :replace || xml)
+      return (tenc ? src.force_encoding(to_name) : src)
+    end
+
+    flags = 0
+    flags |= 1 if opts[:invalid] == :replace
+    flags |= 2 if opts[:undef] == :replace
+    flags |= 4 if xml
+    unless __transcodable?(to_name) && __transcodable?(from_name)
+      # 7-bit content needs no converter at all (CRuby allows it)
+      return src.force_encoding(to_name) if src.ascii_only? && tenc.ascii_compatible?
+      raise Encoding::ConverterNotFoundError, "code converter not found (#{senc.name} to #{tenc.name})"
+    end
+
+    # The replacement is inserted verbatim, so it has to be in the TARGET
+    # encoding already.  CRuby's default is U+FFFD where representable, "?" not.
+    repl = opts[:replace]
+    repl = repl.to_str if !repl.nil? && !repl.is_a?(String)
+    if repl.nil?
+      repl = __transcode("\uFFFD", "UTF-8", to_name, 0, "")
+      repl = __transcode("?", "UTF-8", to_name, 0, "") unless repl.is_a?(String)
+    elsif repl.encoding.name.casecmp(to_name) != 0
+      conv = __transcode(repl, repl.encoding.name, to_name, 0, "")
+      raise Encoding::UndefinedConversionError, "replacement not representable" unless conv.is_a?(String)
+      repl = conv
+    end
+
+    fb = opts[:fallback]
+    out = +""
+    pos_src = src
+    loop do
+      r = __transcode(pos_src, from_name, to_name, flags, repl)
+      if r.is_a?(String)
+        out = out.empty? ? r : (out + r)
+        break
+      end
+      partial, code, idx, cp, ch = r
+      out += partial
+      if code == 0
+        raise Encoding::InvalidByteSequenceError, "#{ch.b.inspect} on #{senc.name}"
+      end
+      rep = __encode_fallback(fb, ch)
+      if rep.nil?
+        raise Encoding::UndefinedConversionError,
+              format("U+%04X from %s to %s", cp, senc.name, tenc.name)
+      end
+      conv = __transcode(rep, rep.encoding.name, to_name, 0, repl)
+      raise ArgumentError, "too big fallback string" unless conv.is_a?(String)
+      out += conv
+      pos_src = pos_src.byteslice(idx + ch.bytesize, pos_src.bytesize).force_encoding(from_name)
+    end
+    out.force_encoding(to_name)
   end
+
+  # newline decorators, applied before the conversion (all ASCII edits)
+  def __encode_decorate(r, opts)
+    if opts[:universal_newline] then r.gsub(/\r\n|\r/, "\n")
+    elsif opts[:cr_newline]     then r.gsub("\n", "\r")
+    elsif opts[:crlf_newline]   then r.gsub("\n", "\r\n")
+    else r
+    end
+  end
+  private :__encode_decorate
+
+  # `fallback:` lookup: Hash-like via #[], callable via #call, anything else is
+  # "no replacement" (nil) and the caller raises UndefinedConversionError.
+  def __encode_fallback(fb, ch)
+    return nil if fb.nil?
+    v = if fb.is_a?(Hash) || (!fb.respond_to?(:call) && fb.respond_to?(:[]))
+          fb[ch]
+        elsif fb.respond_to?(:call)
+          fb.call(ch)
+        else
+          nil
+        end
+    return nil if v.nil?
+    return v if v.is_a?(String)
+    raise TypeError, "no implicit conversion of #{v.class} into String" unless v.respond_to?(:to_str)
+    s = v.to_str
+    raise TypeError, "no implicit conversion of #{v.class} into String" unless s.is_a?(String)
+    s
+  end
+  private :__encode_fallback
+
   def encode!(*args); replace(encode(*args)); force_encoding(args[0].is_a?(Encoding) ? args[0].name : (args[0] || Encoding.default_external.name).to_s); end
 end
 class Symbol

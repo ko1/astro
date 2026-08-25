@@ -1978,7 +1978,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "absolute_path?", korb_m_file_abs_path_p, 1);
     korb_class_def_cfn(c, slots[1], "absolute_path", korb_m_file_absolute_path, -1);
     /* File::Stat — a stat(2) result value class (Object subclass). */
-    slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "File::Stat", 10),
+    slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "Stat", 4),   /* enclosing=File gives the "File::Stat" qname */
                                korb_const_get(vm, korb_intern(vm, "Object", 6)))).value;
     korb_const_define_owned(c, korb_intern(vm, "Stat", 4), slots[2], slots[0]);   /* File::Stat */
     ARO_STORE(c, VAL2CLASS(slots[2]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[2])->enclosing, slots[0]);
