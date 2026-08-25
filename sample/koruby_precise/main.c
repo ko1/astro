@@ -884,13 +884,25 @@ main(int argc, char *argv[])
                  OPTION.loop_print ? "__set_gvar(\"$-p\", true);\n" : "",
                  OPTION.auto_split ? "__set_gvar(\"$-a\", true);\n" : "");
         const char *const flags = flagbuf;
+        /* -n/-p also give Kernel the $_-editing helpers (CRuby ruby.c), as
+         * module functions: private instance methods + public on Kernel. */
+        const char *const dollar_us =
+            "module Kernel\n"
+            "  module_function\n"
+            "  def chomp(*a) = ($_ = $_.chomp(*a))\n"
+            "  def chop = ($_ = $_.chop)\n"
+            "  def sub(*a, &b) = ($_ = $_.sub(*a, &b))\n"
+            "  def gsub(*a, &b) = ($_ = $_.gsub(*a, &b))\n"
+            "  def sub!(*a, &b) = $_.sub!(*a, &b)\n"
+            "  def gsub!(*a, &b) = $_.gsub!(*a, &b)\n"
+            "end\n";
         const char *const tail = OPTION.loop_print ? "\n;print $_; end\n" : "\n;end\n";
-        const size_t nl = strlen(flags) + strlen(head) + strlen(split) + src_len + strlen(tail) + 1;
+        const size_t nl = strlen(dollar_us) + strlen(flags) + strlen(head) + strlen(split) + src_len + strlen(tail) + 1;
         char *const wrapped = malloc(nl);
         if (!wrapped) abort();
         char *const wrapped2 = malloc(nl + pl + 2);
         if (!wrapped2) abort();
-        snprintf(wrapped, nl, "%s%s%s%.*s%s", flags, head, split, (int)src_len, src, tail);
+        snprintf(wrapped, nl, "%s%s%s%s%.*s%s", dollar_us, flags, head, split, (int)src_len, src, tail);
         snprintf(wrapped2, nl + pl + 2, "%s\n%s", pre, wrapped);
         free(wrapped); free(pre); free(src);
         src = wrapped2;
