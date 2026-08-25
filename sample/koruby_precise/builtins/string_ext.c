@@ -644,10 +644,17 @@ static bool korb_casecmp_coerce(CTX *c, VALUE *slots, VALUE *o, RESULT *err) {
     *o = cr.value;
     return true;
 }
+/* Both #casecmp and #casecmp? answer nil when the two encodings cannot be
+ * compared at all (CRuby: rb_enc_compatible == 0). */
+static bool korb_casecmp_compatible(CTX *c, VALUE a, VALUE b) {
+    uint32_t out;
+    return korb_str_enc_combine(c->vm, a, b, &out);
+}
 static RESULT korb_m_str_casecmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE o = VALUE_SLICE_GET(a, 0);
     RESULT err = RESULT_OK(KORB_NIL);
     if (!korb_casecmp_coerce(c, slots, &o, &err)) return err.state != KORB_NORMAL ? err : RESULT_OK(KORB_NIL);
+    if (!korb_casecmp_compatible(c, VALUE_REF_GET(self), o)) return RESULT_OK(KORB_NIL);
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *t = VAL2STR(o);
     return RESULT_OK(LONG2FIX(korb_ci_cmp(korb_strbuf_data(s->buf), s->len, korb_strbuf_data(t->buf), t->len)));
 }
@@ -655,8 +662,16 @@ static RESULT korb_m_str_casecmp_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     VALUE o = VALUE_SLICE_GET(a, 0);
     RESULT err = RESULT_OK(KORB_NIL);
     if (!korb_casecmp_coerce(c, slots, &o, &err)) return err.state != KORB_NORMAL ? err : RESULT_OK(KORB_NIL);
+    if (!korb_casecmp_compatible(c, VALUE_REF_GET(self), o)) return RESULT_OK(KORB_NIL);
+    /* #casecmp? is full case FOLDING ("ß".casecmp?("ss") is true), unlike
+     * #casecmp which compares the simple lowercase forms. */
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *t = VAL2STR(o);
-    return RESULT_OK(korb_ci_cmp(korb_strbuf_data(s->buf), s->len, korb_strbuf_data(t->buf), t->len) == 0 ? KORB_TRUE : KORB_FALSE);
+    char *fa, *fb; uint32_t la, lb;
+    korb_case_transform_buf(korb_strbuf_data(s->buf), s->len, 1, 2, &fa, &la);
+    korb_case_transform_buf(korb_strbuf_data(t->buf), t->len, 1, 2, &fb, &lb);
+    const bool eq = (la == lb) && memcmp(fa, fb, la) == 0;
+    free(fa); free(fb);
+    return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
@@ -1294,13 +1309,7 @@ static RESULT korb_m_str_undump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     RESULT oo = korb_str_case_opts(c, slots, a, 3); if (UNLIKELY(oo.state != KORB_NORMAL)) return oo;
-    const bool ascii_only = FIX2LONG(oo.value) == 1;
-    uint32_t len = VAL2STR(VALUE_REF_GET(self))->len;
-    KorbString *r = korb_str_alloc(c, slots, len);
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));     /* re-read after GC */
-    korb_case_transform(korb_strbuf_data(s->buf), korb_strbuf_data(r->buf), len, 3, ascii_only);   /* swapcase (ASCII + Latin-1) */
-    KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(VALUE_REF_GET(self)));   /* preserve source encoding */
-    return RESULT_OK((VALUE)r);
+    return korb_str_transform(c, slots, self, 3, (int)FIX2LONG(oo.value));
 }
 /* ljust(0)/rjust(1)/center(2) — char-width padding via a transient buffer */
 static RESULT korb_str_pad(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
