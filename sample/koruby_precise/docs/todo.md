@@ -2763,3 +2763,13 @@ US-ASCII、それ以外は UTF-8) しか返せない。
 core/marshal/load_spec の "loads an encoded Symbol" (UTF-16 のシンボル) と
 "loads a binary encoded Symbol" がこれで落ちる。Marshal 側だけでは直せない
 (シンボル表の鍵を バイト列+エンコーディング にする話)。
+
+## vcall (bare identifier) を NameError にする — 未着手
+
+`foo` (レシーバ無し・括弧無し・引数無し) が見つからないとき CRuby は
+`NameError: undefined local variable or method 'foo' for main` を投げるが、
+koruby は `NoMethodError: undefined method 'foo' for main` を投げる。
+`foo()` は両方 NoMethodError なので、区別は純粋に構文 (prism の
+`PM_CALL_NODE_FLAGS_VARIABLE_CALL`) にしかなく、parse 側からしか分からない。
+node_call に vcall ビットを載せる = node.def 変更 → code_store 全消し
+なので、ROI を見て後回し。実 mspec で直接効くのは 3 例のみ。

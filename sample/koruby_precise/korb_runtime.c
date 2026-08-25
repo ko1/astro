@@ -12144,7 +12144,11 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     const char *const saved_name = c->vm->script_name;
     if (cref != KORB_UNDEF) { c->def_definee = cref; c->eval_cref = cref; }
     c->vm->script_name = fname;                     /* raises inside report the eval's filename */
+    /* the eval'd string INHERITS the body's bare-`private` default but its own
+     * changes stay inside (CRuby scopes it to the eval's cref) */
+    const uint8_t saved_vis = KORB_CLASS_P(fb[-1]) ? VAL2CLASS(fb[-1])->cur_visibility : 0xffu;
     RESULT er = EVAL(c, entry, cur);
+    if (saved_vis != 0xffu && KORB_CLASS_P(fb[-1])) VAL2CLASS(fb[-1])->cur_visibility = saved_vis;
     if (cref != KORB_UNDEF) { c->def_definee = saved_definee; c->eval_cref = saved_cref; }
     if (UNLIKELY(er.state == KORB_RAISE)) {
         cur[0] = er.value;                          /* park: capture allocates */

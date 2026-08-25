@@ -1917,6 +1917,20 @@ static RESULT korb_m_kernel_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* instance_exec(*args) { |*args| ... } — run the block with self rebound to the
  * receiver; the block's lexical env (def_env) is preserved so closures still work.
  * Method definitions inside (singleton def) are NOT redirected to the receiver. */
+/* CRuby keeps the bare-`private`/`public`/`module_function` default on the
+ * cref, so a class_eval/module_eval body starts public and its changes don't
+ * leak back out.  koruby stores it on the class, hence the save/reset pair. */
+#define KORB_VIS_NONE 0xffu
+static uint8_t korb_vis_enter(VALUE cls) {
+    if (!KORB_CLASS_P(cls)) return KORB_VIS_NONE;
+    const uint8_t sv = VAL2CLASS(cls)->cur_visibility;
+    VAL2CLASS(cls)->cur_visibility = 0;
+    return sv;
+}
+static void korb_vis_leave(VALUE cls, uint8_t saved) {
+    if (saved != KORB_VIS_NONE && KORB_CLASS_P(cls)) VAL2CLASS(cls)->cur_visibility = saved;
+}
+
 static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool singleton_definee) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
     const uint32_t argc = VALUE_SLICE_LEN(a);
@@ -1937,6 +1951,7 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             c->def_definee = sr.value;
         } else c->def_definee = slots[0];
     } else c->def_definee = slots[0];              /* class_exec/module_exec: the class itself */
+    const uint8_t saved_vis = korb_vis_enter(slots[0]);
     RESULT r;
     if (def_env == KORB_BLK_FWD) {                        /* forwarded Proc: keep ITS closure env, rebind self only */
         slots[1 + argc] = VAL2PROC(*cself)->env;          /* proc's captured env (used as def_env below, not FWD) */
@@ -1944,6 +1959,7 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     } else {
         r = korb_block_yield(c, slots + 1 + argc, block, def_env, &slots[1], argc, &slots[0]);
     }
+    korb_vis_leave(slots[0], saved_vis);
     c->def_definee = saved_definee;
     return r;
 }
@@ -2023,13 +2039,18 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
                 cref = sr.value; src = slots[0];
             }
         } else if (KORB_CLASS_P(VALUE_REF_GET(self))) cref = VALUE_REF_GET(self);
+        const uint8_t saved_vis = korb_vis_enter(VALUE_REF_GET(self));
+        RESULT er;
         if (bind_ptr) {                                    /* caller binding → its locals are visible + written back */
             slots[0] = src;
             slots[1] = VALUE_REF_GET(self);
             slots[2] = cref;
-            return korb_eval_binding_core(c, slots + 3, &slots[0], bind_ptr, fname, line, &slots[1], slots[2]);
+            er = korb_eval_binding_core(c, slots + 3, &slots[0], bind_ptr, fname, line, &slots[1], slots[2]);
+        } else {
+            er = korb_eval_str_self(c, slots, src, VALUE_REF_GET(self), fname, line, cref);
         }
-        return korb_eval_str_self(c, slots, src, VALUE_REF_GET(self), fname, line, cref);
+        korb_vis_leave(VALUE_REF_GET(self), saved_vis);
+        return er;
     }
     if (UNLIKELY(VALUE_SLICE_LEN(a) > 0))                     /* a block AND positional args → ArgumentError (CRuby) */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", VALUE_SLICE_LEN(a));
@@ -2045,6 +2066,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             c->def_definee = sr.value;
         } else c->def_definee = slots[0];
     } else c->def_definee = slots[0];
+    const uint8_t saved_vis = korb_vis_enter(slots[0]);
     RESULT r;
     if (block == KORB_BLK_CPROC)                          /* forwarded C-proc: fixed binding */
         r = korb_block_yield(c, slots + 1, block, def_env, slots, 1, cself);
@@ -2057,6 +2079,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, &slots[0]);
         }
     }
+    korb_vis_leave(slots[0], saved_vis);
     c->def_definee = saved_definee;
     return r;
 }
