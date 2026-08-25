@@ -607,7 +607,7 @@ static RESULT korb_m_public(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
  * an independent copy, not a redirect.  Returns the name (1 arg) / names array. */
 static RESULT korb_m_module_function(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE mod = VALUE_REF_GET(self);
-    if (UNLIKELY(!KORB_CLASS_P(mod)))
+    if (UNLIKELY(!KORB_CLASS_P(mod) || !VAL2CLASS(mod)->is_module))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "module_function must be called for modules");
     const uint32_t argc = VALUE_SLICE_LEN(a);
     if (argc == 0) {

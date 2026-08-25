@@ -2061,6 +2061,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
      * koruby's const table is flat, so these resolve from File / File::Constants
      * / bare alike. */
     slots[1] = (korb_class_new(c, slots + 1, korb_intern(vm, "Constants", 9), KORB_NIL)).value;
+    VAL2CLASS(slots[1])->is_module = 1;                /* File::Constants is a module */
     korb_const_define(c, korb_intern(vm, "Constants", 9), slots[1]);
     static const struct { const char *n; long v; } fc[] = {
         {"RDONLY",0},{"WRONLY",1},{"RDWR",2},{"APPEND",1024},{"CREAT",64},{"EXCL",128},

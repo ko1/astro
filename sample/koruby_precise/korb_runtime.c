@@ -9777,7 +9777,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "private", korb_m_private, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "public", korb_m_public, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_protected, -1);
-    korb_def_cmethod(c, KORB_C_CLASS, "module_function", korb_m_module_function, -1);
+    /* NOT on Class: CRuby undefines Module#module_function there (a Class has no
+     * module functions).  The Module-side registration below is the only one. */
     /* top-level `private`/`public`/... (self = main, an Object) are also no-ops. */
     korb_def_cmethod(c, KORB_C_OBJECT, "private", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "public", korb_m_visibility_noop, -1);
