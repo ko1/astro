@@ -457,6 +457,7 @@ NODE *koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fn
 RESULT korb_rescue_splat_list(CTX *c, VALUE *slots, VALUE *listslot);
 bool korb_defined_call_p(CTX *c, VALUE *slots, uint32_t mid, int32_t self_off);
 VALUE korb_cvar_cref(VALUE self, VALUE entry_cell);
+VALUE korb_const_cref(VALUE self, VALUE entry_cell);   /* like korb_cvar_cref, but keeps a `class << obj` singleton */
 VALUE korb_cvar_owner(VALUE cref, VALUE sym, int32_t *idx_out);
 struct korb_method *korb_super_find(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_def_class);
 VALUE korb_cref_resolve(struct korb_vm *vm, const uint32_t *chain, uint32_t chain_len, uint32_t owner_name);

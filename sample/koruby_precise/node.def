@@ -1312,7 +1312,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * sits between this read and the named enclosing module, and no baked
          * name can reach it — ask the runtime first. */
         if (self_off != INT32_MIN) {
-            const VALUE acref = (dc_off != INT32_MIN) ? korb_cvar_cref(slots[self_off], slots[dc_off])
+            const VALUE acref = (dc_off != INT32_MIN) ? korb_const_cref(slots[self_off], slots[dc_off])
                                                       : (KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL);
             if (KORB_CLASS_P(acref) && VAL2CLASS(acref)->name_sym == 0)
                 idx = korb_const_index_owned(vm, name_sym, acref);
@@ -1351,10 +1351,18 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * entry's owner).  korb_cvar_cref answers both, the same way class
          * variables resolve their cref. */
         const VALUE cref = (self_off == INT32_MIN) ? KORB_NIL
-                         : (dc_off != INT32_MIN ? korb_cvar_cref(slots[self_off], slots[dc_off])   /* method frame: entry->owner */
+                         : (dc_off != INT32_MIN ? korb_const_cref(slots[self_off], slots[dc_off])   /* method frame: entry->owner */
                                                 : (KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL));
         idx = KORB_CLASS_P(cref) ? korb_const_index_owned(vm, name_sym, cref) : UINT32_MAX;
         if (idx == UINT32_MAX && KORB_CLASS_P(cref)) idx = korb_const_in_ancestry(vm, cref, name_sym);
+        /* No baked chain reaches an UNNAMED cref (`class << obj`, or a method
+         * defined in one), so walk its lexical `enclosing` links by hand — that
+         * is how `class << self` inside `module M` still sees M's constants. */
+        for (VALUE o = KORB_CLASS_P(cref) ? VAL2CLASS(cref)->enclosing : KORB_NIL;
+             idx == UINT32_MAX && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {
+            idx = korb_const_index_owned(vm, name_sym, o);
+            if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, o, name_sym);
+        }
         /* A real top-level constant wins over a same-named nested one.  The
          * table is flat, so a plain first-match would let a prelude-defined
          * `Enumerator::Chain` answer a user's bare `Chain` just because it was

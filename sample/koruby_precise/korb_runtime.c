@@ -1995,6 +1995,18 @@ static RESULT korb_register_subclass(CTX *c, VALUE *slots, VALUE super_cls, VALU
 
 /* `entry_cell` is the frame's fs-2 cell: a tagged-odd method-entry pointer in an
  * instance method (def_class = entry->owner), as korb_super reads it. */
+/* The lexical cref for a constant read: like korb_cvar_cref, but a method
+ * defined in a `class << obj` body reports that (unnamed) singleton, not the
+ * object — its body's constants live there. */
+VALUE
+korb_const_cref(VALUE self, VALUE entry_cell)
+{
+    if ((uintptr_t)entry_cell & 1u) {
+        const struct korb_method *const m = (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)1u);
+        if (KORB_CLASS_P(m->owner) && VAL2CLASS(m->owner)->is_singleton) return m->owner;
+    }
+    return korb_cvar_cref(self, entry_cell);
+}
 VALUE
 korb_cvar_cref(VALUE self, VALUE entry_cell)
 {
