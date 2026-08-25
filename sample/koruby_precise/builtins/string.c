@@ -925,13 +925,24 @@ static RESULT korb_m_str_lstrip_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_str_rstrip_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_strip_bang(c, slots, self, a, 2); }
 static RESULT korb_m_str_chomp_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    if (VAL2STR(VALUE_REF_GET(self))->len == 0) return RESULT_OK(KORB_NIL);   /* empty → nil, before any sep check (CRuby) */
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL &&
+        !KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {      /* coerce the separator via #to_str */
+        VALUE sv0 = VALUE_SLICE_GET(a, 0);
+        if (UNLIKELY(!korb_responds_to_coerce_p(c, slots, &sv0, korb_intern(c->vm, "to_str", 6))))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, sv0));
+        slots[0] = sv0;
+        RESULT sr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        if (UNLIKELY(!KORB_STRING_P(sr.value)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+        VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value);   /* the slice cell is rooted; keep the coerced String there */
+    }
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t n = s->len;
-    if (n == 0) return RESULT_OK(KORB_NIL);           /* empty → no-op → nil, before any sep-type check (CRuby) */
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* chomp!(sep) */
         VALUE sv = VALUE_SLICE_GET(a, 0);
         if (sv == KORB_NIL) return RESULT_OK(KORB_NIL);   /* nil sep → no-op → nil */
-        if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
         const KorbString *sep = VAL2STR(sv);
         if (sep->len == 1 && korb_strbuf_data(sep->buf)[0] == '\n') {   /* "\n" = universal: \r\n, \n, or \r */
             if (n >= 2 && korb_strbuf_data(s->buf)[n-2] == '\r' && korb_strbuf_data(s->buf)[n-1] == '\n') n -= 2;
