@@ -825,7 +825,11 @@ static RESULT korb_join_rec(CTX *c, VALUE *slots, FILE *ms, VALUE_REF aref, VALU
     return rr;
 }
 static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (SELF_ARY->len == 0) return korb_str_new(c, slots, "", 0);   /* [].join(anything) → "" (sep not validated) */
+    if (SELF_ARY->len == 0) {                                       /* [].join(anything) → "" (sep not validated) */
+        RESULT e = korb_str_new(c, slots, "", 0);
+        if (LIKELY(e.state == KORB_NORMAL)) KORB_STR_ENC_SET(e.value, KORB_ENC_USASCII);   /* CRuby starts at US-ASCII */
+        return e;
+    }
     /* coerced separator parked in slots[0] so it survives the per-element to_s allocs */
     slots[0] = KORB_NIL;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
