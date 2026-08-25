@@ -997,12 +997,14 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     char efmt[1024]; size_t o = 0;
     for (uint32_t i = 0; i < fl && o + 32 < sizeof efmt; i++) {
         if (fmt[i] != '%') { efmt[o++] = fmt[i]; continue; }
-        const uint32_t pct = i; i++;
+        i++;
         bool f_dash = false, f_under = false, f_upper = false, f_swap = false;
+        char f_pad = 0;
         while (i < fl && strchr("-_0^#", fmt[i])) {           /* flags */
             switch (fmt[i]) {
-              case '-': f_dash = true; break;   case '_': f_under = true; break;
-              case '0': break;                  /* zero-pad is the default; copied verbatim for libc */
+              case '-': f_dash = true; break;
+              case '_': f_under = true; f_pad = ' '; break;
+              case '0': f_pad = '0'; break;     /* the LAST of _ / 0 decides the pad char */
               case '^': f_upper = true; break;
               default:  f_swap = true; break;
             }
@@ -1039,8 +1041,23 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             for (const char *p = zbuf; *p && o + 1 < sizeof efmt; p++) efmt[o++] = *p;
         } else if (spec == 'v') {                            /* VMS date: " 3-FEB-2001" */
             for (const char *p = "%e-%^b-%Y"; *p && o + 1 < sizeof efmt; p++) efmt[o++] = *p;
-        } else {                                             /* copy the whole directive verbatim for strftime */
-            for (uint32_t k = pct; k <= i && o + 1 < sizeof efmt; k++) efmt[o++] = fmt[k];
+        } else {
+            /* Re-emit with only the EFFECTIVE flags: `-` (no padding) wins over
+             * any pad flag, otherwise the last of `_` / `0` decides.  glibc
+             * applies repeated flags differently from Ruby, so normalising here
+             * is what makes "%0-^5h" and "%_010h" agree with CRuby. */
+            if (o + 8 < sizeof efmt) {
+                efmt[o++] = '%';
+                if (f_dash)          efmt[o++] = '-';
+                else if (f_pad == ' ') efmt[o++] = '_';
+                else if (f_pad == '0') efmt[o++] = '0';
+                if (f_upper) efmt[o++] = '^';
+                if (f_swap)  efmt[o++] = '#';
+                /* `-` means no padding at all, so the width must not reach glibc
+                 * (which pads anyway when a width is present). */
+                if (width >= 0 && !f_dash) o += (uint32_t)snprintf(efmt + o, sizeof efmt - o, "%d", width);
+                if (o + 1 < sizeof efmt) efmt[o++] = fmt[i];
+            }
         }
     }
     efmt[o] = 0;
