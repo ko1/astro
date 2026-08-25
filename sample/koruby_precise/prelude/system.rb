@@ -982,6 +982,14 @@ module ObjectSpace
   end
 end
 
+# `Module.constants` (no arguments) is a special form: it answers the constants
+# visible at the caller's scope, which at top level is Object's.  With an
+# argument it is the ordinary Module#constants.
+class << Module
+  alias_method :__constants_of, :constants
+  def constants(*args) = args.empty? ? Object.constants : __constants_of(*args)
+end
+
 module RbConfig
   CONFIG = {
     "host_os" => "linux", "host_cpu" => "x86_64", "arch" => "x86_64-linux",

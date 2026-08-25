@@ -553,7 +553,18 @@ static RESULT korb_set_visibility1(CTX *c, VALUE *slots, VALUE selfv, KorbClass 
      * visibility, keeping the original owner so `super` still resolves above it. */
     VALUE adef = KORB_NIL;
     const struct korb_method *src = korb_class_find_method(selfv, mid, &adef);
-    if (src == NULL) return RESULT_OK(KORB_NIL);       /* inherited-elsewhere / top-level def: best-effort no-op (koruby's cross-module resolution differs from CRuby, so a NameError here would false-positive) */
+    if (src == NULL) {
+        /* a Kernel-level method (they all live on Kernel after boot) or a
+         * top-level def in the global function table: `public :puts` inside a
+         * fresh Module has to copy from there, since a Module has no ancestors. */
+        const VALUE kmod = korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
+        if (KORB_CLASS_P(kmod)) src = korb_class_find_method(kmod, mid, &adef);
+        if (src == NULL) src = korb_method_lookup(c->vm, mid);
+    }
+    if (src == NULL)
+        return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
+                          korb_sym_name(c->vm, mid), k->is_module ? "module" : "class",
+                          korb_type_name(selfv));
     struct korb_method *dst = korb_class_method_slot(k, mid);   /* libc alloc, no GC */
     const struct korb_method tmp = *src;                        /* snapshot (slot array may have grown) */
     *dst = tmp; dst->mid = mid; dst->visibility = vis;          /* keep tmp.owner for super */
@@ -1747,12 +1758,9 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 /* Module#remove_const(sym|str) → the removed value (flat table tombstone). */
 static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self;
-    const VALUE name = VALUE_SLICE_GET(a, 0);
     uint32_t id;
-    if (SYMBOL_P(name)) id = SYM2ID(name);
-    else if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); id = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len); }
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id);   /* Symbol / String / #to_str */
+      if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     struct korb_vm *const vm = c->vm;
     if (korb_autoload_registered_p(c, VALUE_REF_GET(self), id)) {   /* pending autoload → just unregister */
         slots[0] = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(vm, "@__autoloads", 12)));
@@ -1762,8 +1770,13 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
         vm->const_serial++;
         return RESULT_OK(KORB_NIL);
     }
+    /* only a constant defined DIRECTLY in this module can be removed; the
+     * top-level ones (owner nil) belong to Object. */
+    const VALUE selfv = VALUE_REF_GET(self);
+    const VALUE objc = korb_builtin_class_obj(vm, KORB_C_OBJECT);
     for (uint32_t i = 0; i < vm->const_cnt; i++)
-        if (vm->const_names[i] == id) {
+        if (vm->const_names[i] == id &&
+            (vm->const_owners[i] == selfv || (vm->const_owners[i] == KORB_NIL && selfv == objc))) {
             const VALUE old = vm->const_vals[i];
             vm->const_names[i] = 0;            /* tombstone (interned ids are >0) */
             vm->const_vals[i] = KORB_NIL;
