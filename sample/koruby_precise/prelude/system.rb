@@ -549,10 +549,18 @@ class File
   # File.path(obj) — the path String an object names: #to_path if it has one,
   # else the String itself (#to_str-coerced).  Pathname is built on this.
   def self.path(obj)
-    return obj if obj.is_a?(String)
-    return obj.to_path.to_str if obj.respond_to?(:to_path)
-    return obj.to_str if obj.respond_to?(:to_str)
-    raise TypeError, "no implicit conversion of #{obj.nil? ? 'nil' : obj.class} into String"
+    s = if obj.is_a?(String) then obj
+        elsif obj.respond_to?(:to_path)
+          r = obj.to_path
+          r.is_a?(String) ? r : (r.respond_to?(:to_str) ? r.to_str : r)
+        elsif obj.respond_to?(:to_str) then obj.to_str
+        else obj
+        end
+    unless s.is_a?(String)
+      raise TypeError, "no implicit conversion of #{obj.nil? ? 'nil' : obj.class} into String"
+    end
+    raise ArgumentError, "path name contains null byte" if s.include?("\0")
+    s
   end
 end
 

@@ -1331,9 +1331,21 @@ STAT_PRED_M(korb_m_stat_pipe_p,  S_ISFIFO(m))
 STAT_PRED_M(korb_m_stat_setuid_p, (m & S_ISUID) != 0)
 STAT_PRED_M(korb_m_stat_setgid_p, (m & S_ISGID) != 0)
 STAT_PRED_M(korb_m_stat_sticky_p, (m & S_ISVTX) != 0)
-STAT_PRED_M(korb_m_stat_wreadable_p, (m & S_IROTH) != 0)
-STAT_PRED_M(korb_m_stat_wwritable_p, (m & S_IWOTH) != 0)
 #undef STAT_PRED_M
+/* world_readable? / world_writable? are NOT predicates: CRuby returns the
+ * permission bits (an Integer) when the bit is set, and nil when it is not. */
+static RESULT korb_stat_world_bits(CTX *c, VALUE *slots, VALUE_REF self, mode_t bit) {
+    (void)slots;
+    const korb_sword_t m = korb_stat_field(c, VALUE_REF_GET(self), "@__mode");
+    if (((mode_t)m & bit) == 0) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(LONG2FIX(m & 0777));
+}
+static RESULT korb_m_stat_wreadable_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; return korb_stat_world_bits(c, slots, self, S_IROTH);
+}
+static RESULT korb_m_stat_wwritable_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; return korb_stat_world_bits(c, slots, self, S_IWOTH);
+}
 static RESULT korb_m_stat_zero_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__size") == 0 ? KORB_TRUE : KORB_FALSE);
 }

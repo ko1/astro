@@ -2198,7 +2198,13 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     slots[2] = VALUE_REF_GET(io);             /* receiver for #close */
     RESULT cr = korb_send(c, slots + 3, korb_intern(c->vm, "close", 5), 0, 0);
     if (br.state != KORB_NORMAL) { br.value = slots[1]; return br; }   /* block error wins (re-read moved value) */
-    if (cr.state != KORB_NORMAL) return cr;   /* else a genuine close error propagates */
+    if (cr.state != KORB_NORMAL) {
+        /* the block may have closed the stream itself; CRuby swallows the
+         * resulting "closed stream" IOError from the ensure-close */
+        if (cr.state == KORB_RAISE && KORB_EXC_P(cr.value) && VAL2EXC(cr.value)->etype == KORB_E_IOERROR)
+            return RESULT_OK(slots[1]);
+        return cr;                            /* else a genuine close error propagates */
+    }
     return RESULT_OK(slots[1]);               /* success → the block's (possibly moved) value */
 }
 
