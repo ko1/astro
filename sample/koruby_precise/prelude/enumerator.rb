@@ -337,3 +337,116 @@ class Enumerator::Lazy
     Enumerator.new { |y| src.each { |*a| y.yield(*a) } }
   end
 end
+
+class Enumerator::Lazy
+  # Operations koruby's C op-chain does not model are built as generator-backed
+  # lazy enumerators: the source is streamed (Lazy#each yields as it produces),
+  # so an infinite source still terminates on `break`.
+  def __lazy_gen(size = nil, &gen)
+    e = Enumerator.new { |y| gen.call(y) }.lazy
+    e.instance_variable_set(:@__lazy_size, size)
+    e
+  end
+  private :__lazy_gen
+
+  def chunk(&b)
+    raise ArgumentError, "tried to create Proc object without a block" unless b
+    src = self
+    __lazy_gen do |y|
+      cur = nil; key = nil; started = false
+      src.each do |x|
+        k = b.call(x)
+        if !started then cur = [x]; key = k; started = true
+        elsif k == key then cur << x
+        else y << [key, cur]; cur = [x]; key = k
+        end
+      end
+      y << [key, cur] if started
+    end
+  end
+
+  def chunk_while(&b)
+    raise ArgumentError, "tried to create Proc object without a block" unless b
+    src = self
+    __lazy_gen do |y|
+      cur = nil; prev = nil; started = false
+      src.each do |x|
+        if !started then cur = [x]; started = true
+        elsif b.call(prev, x) then cur << x
+        else y << cur; cur = [x]
+        end
+        prev = x
+      end
+      y << cur if started
+    end
+  end
+
+  def slice_when(&b)
+    raise ArgumentError, "tried to create Proc object without a block" unless b
+    src = self
+    __lazy_gen do |y|
+      cur = nil; prev = nil; started = false
+      src.each do |x|
+        if !started then cur = [x]; started = true
+        elsif b.call(prev, x) then y << cur; cur = [x]
+        else cur << x
+        end
+        prev = x
+      end
+      y << cur if started
+    end
+  end
+
+  def slice_before(*pat, &b)
+    src = self
+    __lazy_gen do |y|
+      cur = nil
+      src.each do |x|
+        hit = b ? b.call(x) : pat[0] === x
+        if cur.nil? then cur = [x]
+        elsif hit then y << cur; cur = [x]
+        else cur << x
+        end
+      end
+      y << cur unless cur.nil?
+    end
+  end
+
+  def slice_after(*pat, &b)
+    src = self
+    __lazy_gen do |y|
+      cur = nil
+      src.each do |x|
+        cur = [] if cur.nil?
+        cur << x
+        if b ? b.call(x) : pat[0] === x then y << cur; cur = nil end
+      end
+      y << cur unless cur.nil?
+    end
+  end
+
+  def zip(*others, &b)
+    if others.any? { |o| !o.is_a?(Array) && !o.respond_to?(:to_ary) }
+      # a non-Array argument makes CRuby fall back to the eager Enumerable#zip
+      return super
+    end
+    lists = others.map { |o| o.is_a?(Array) ? o : o.to_ary }
+    src = self
+    z = __lazy_gen(size) do |y|
+      i = 0
+      src.each do |x|
+        row = [x]
+        lists.each { |l| row << l[i] }
+        y << row
+        i += 1
+      end
+    end
+    b ? z.map(&b) : z
+  end
+
+  def to_enum(meth = :each, *args, &sz)
+    src = self
+    __lazy_gen(sz) { |y| src.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
+  end
+  def enum_for(meth = :each, *args, &sz) = to_enum(meth, *args, &sz)
+end

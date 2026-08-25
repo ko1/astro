@@ -384,9 +384,14 @@ static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, bool *keep, b
  * recursive call — the only op that produces 0..N outputs per input.  Shared
  * state: op_state[] (take/drop counters), `seen` (per-op uniq Hash array).
  * slots[0] holds the current value; slots[1+] is op scratch. */
+/* When a lazy chain is iterated with a block (Enumerator::Lazy#each) the values
+ * are streamed to that block instead of being collected — that is what lets an
+ * infinite source terminate on `break`. */
+struct korb_lazy_sink { NODE *block; VALUE *def_env; VALUE *cself; RESULT out; bool broke; };
+
 static RESULT korb_lazy_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE value, uint32_t start_oi,
                             korb_sword_t *op_state, VALUE_REF seen, VALUE_REF res, korb_sword_t limit,
-                            korb_sword_t *produced, bool *term) {
+                            korb_sword_t *produced, bool *term, struct korb_lazy_sink *sink) {
     char cstack_probe;
     if (UNLIKELY(&cstack_probe < c->cstack_limit)) return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
     slots[0] = value;                                          /* candidate (rooted) */
@@ -450,7 +455,7 @@ static RESULT korb_lazy_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE value, u
             slots[1] = fr.value;                              /* block result (rooted) */
             if (KORB_ARRAY_P(slots[1])) {                     /* Array → flatten one level: each elem re-enters ops[oi+1..] */
                 for (uint32_t k = 0; !*term && k < VAL2ARY(slots[1])->len; k++) {   /* re-read len/elem each iter (recursion GCs) */
-                    RESULT r = korb_lazy_run(c, slots + 2, self, korb_items_data(VAL2ARY(slots[1])->items)[k], oi + 1, op_state, seen, res, limit, produced, term);
+                    RESULT r = korb_lazy_run(c, slots + 2, self, korb_items_data(VAL2ARY(slots[1])->items)[k], oi + 1, op_state, seen, res, limit, produced, term, sink);
                     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 }
                 return RESULT_OK(KORB_NIL);                   /* fanout handled here; don't push slots[0] */
@@ -470,7 +475,13 @@ static RESULT korb_lazy_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE value, u
         else if (!strcmp(opn, "take_while")) { if (!KORB_TRUTHY(rv)) { *term = true; return RESULT_OK(KORB_NIL); } }
         else if (!strcmp(opn, "drop_while")) { if (oi < 64 && op_state[oi]) { if (KORB_TRUTHY(rv)) return RESULT_OK(KORB_NIL); op_state[oi] = 0; } }
     }
-    CHECK(korb_ary_push_val(c, slots + 1, res, slots[0]));    /* survived all ops → keep */
+    if (sink) {                                              /* stream to the block */
+        slots[1] = slots[0];
+        RESULT br = korb_block_yield(c, slots + 2, sink->block, sink->def_env, &slots[1], 1, sink->cself);
+        if (UNLIKELY(br.state != KORB_NORMAL)) { sink->out = br; sink->broke = true; *term = true; return RESULT_OK(KORB_NIL); }
+    } else {
+        CHECK(korb_ary_push_val(c, slots + 1, res, slots[0]));    /* survived all ops → keep */
+    }
     (*produced)++;
     if (limit >= 0 && *produced >= limit) *term = true;
     return RESULT_OK(KORB_NIL);
@@ -479,7 +490,7 @@ static RESULT korb_lazy_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE value, u
  * if limit<0) into a fresh Array.  `self` rooted.  `sink` (non-null) yields each
  * instead of collecting (for lazy#each). */
 static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t limit);   /* fwd */
-static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t limit) {
+static RESULT korb_lazy_drive_sink(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t limit, struct korb_lazy_sink *sink) {
     if (SELF_ENUM->mode == 3 || SELF_ENUM->mode == 4) return korb_enum_gen_run(c, slots, self, limit);   /* (lazy) generator */
     slots[0] = UNWRAP(korb_ary_new(c, slots, limit > 0 ? (uint32_t)limit : 8));
     VALUE_REF res = VALUE_REF_AT(&slots[0]);                     /* result (rooted) */
@@ -511,7 +522,7 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t
     /* Feed one source value through the op chain; flat_map fanout + all state is
      * handled by korb_lazy_run.  Candidate + op scratch live at slots[2+]. */
     #define LAZY_FEED(cand_expr) do {                                                      \
-        RESULT _r = korb_lazy_run(c, slots + 2, self, (cand_expr), 0, op_state, seen, res, limit, &produced, &term); \
+        RESULT _r = korb_lazy_run(c, slots + 2, self, (cand_expr), 0, op_state, seen, res, limit, &produced, &term, sink); \
         if (UNLIKELY(_r.state != KORB_NORMAL)) return _r;                                  \
         if (term) goto lazy_done;                                                          \
     } while (0)
@@ -535,7 +546,7 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t
             korb_sword_t end = inf ? 0 : FIX2LONG(ev);
             for (;; i++) {
                 if (!inf) { if (excl ? (i >= end) : (i > end)) break; }
-                else if (limit < 0 && !has_terminator) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "lazy.force on an infinite range");
+                else if (limit < 0 && !has_terminator && sink == NULL) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "lazy.force on an infinite range");
                 LAZY_FEED(LONG2FIX(i));
             }
         } else if (KORB_ARRAY_P(src)) {
@@ -545,7 +556,11 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t
     }
   lazy_done:
     #undef LAZY_FEED
+    if (sink && sink->broke) return sink->out;               /* the block broke / raised */
     return RESULT_OK(VALUE_REF_GET(res));
+}
+static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t limit) {
+    return korb_lazy_drive_sink(c, slots, self, limit, NULL);
 }
 
 /* build the inspect desc "#<Enumerator: RECV:meth>" (no koruby alloc during print). */
@@ -591,18 +606,10 @@ static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (SELF_ENUM->mode == 4) return RESULT_OK(VALUE_REF_GET(self));   /* Enumerator::Lazy#each returns the lazy enum */
         return r;                                         /* plain generator: the source method's return value */
     }
-    if (SELF_ENUM->mode != 0) {                       /* lazy/cycle: force (finite), then yield each — no materialized `values` to read */
-        RESULT vr = korb_lazy_drive(c, slots, self, -1);
+    if (SELF_ENUM->mode != 0) {                       /* lazy/cycle: stream each value to the block */
+        struct korb_lazy_sink sink = { block, def_env, cself, RESULT_OK(KORB_NIL), false };
+        RESULT vr = korb_lazy_drive_sink(c, slots, self, -1, &sink);
         if (UNLIKELY(vr.state != KORB_NORMAL)) return vr;
-        slots[0] = vr.value;
-        VALUE_REF vals = VALUE_REF_AT(&slots[0]);
-        for (uint32_t i = 0; ; i++) {
-            const KorbArray *v = VAL2ARY(VALUE_REF_GET(vals));
-            if (i >= v->len) break;
-            slots[1] = korb_items_data(v->items)[i];
-            RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
-            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        }
         return RESULT_OK(VALUE_REF_GET(self));
     }
     const uint8_t op = SELF_ENUM->op;
