@@ -3491,6 +3491,8 @@ RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t 
     const struct korb_method tmp = *src;   /* src may dangle if the slot array grows; snapshot first */
     *dst = tmp; dst->mid = newm; dst->owner = klass;
     c->vm->method_serial++;
+    slots[0] = klass;                      /* park: the hook is Ruby code */
+    CHECK(korb_fire_method_added(c, slots + 1, slots[0], newm));   /* an alias is a definition too */
     return RESULT_OK(ID2SYM(newm));
 }
 /* Resolve an alias_method name arg → mid: Symbol/String, or #to_str-coercible
@@ -3947,7 +3949,9 @@ korb_fire_method_added(CTX *c, VALUE *slots, VALUE definee, uint32_t mid)
         recv = att;
         hook = korb_intern(vm, "singleton_method_added", 22);
     }
-    if (LIKELY(!korb_responds_to(c, recv, hook))) return RESULT_OK(KORB_NIL);
+    /* Always dispatched: the no-op defaults live on Module / BasicObject, so an
+     * `undef_method :singleton_method_added` must surface as NoMethodError /
+     * #method_missing exactly as CRuby does. */
     slots[0] = recv; slots[1] = ID2SYM(mid);
     return korb_send(c, slots + 2, hook, 0, 1);
 }
@@ -10101,6 +10105,18 @@ korb_register_core_methods(CTX *c)
     /* default no-op callbacks so a module (Kernel, `module M`) responds to the
      * hooks and user overrides can `super` (Class also has method_added/inherited). */
     MOD_CFN("method_added", korb_m_lit_nil, 1);
+    {   /* BasicObject#singleton_method_added / _removed / _undefined: private
+         * no-op defaults, so `super` works and #private_instance_methods lists them. */
+        const VALUE bo = korb_const_get(c->vm, korb_intern(c->vm, "BasicObject", 11));
+        if (KORB_CLASS_P(bo)) {
+            static const char *const smh[] = { "singleton_method_added", "singleton_method_removed", "singleton_method_undefined" };
+            for (size_t i = 0; i < 3; i++) {
+                korb_class_def_cfn(c, bo, smh[i], korb_m_lit_nil, 1);
+                struct korb_method *const m = korb_class_find_method(bo, korb_intern(c->vm, smh[i], (uint32_t)strlen(smh[i])), NULL);
+                if (m) m->visibility = 1;
+            }
+        }
+    }
     MOD_CFN("method_removed", korb_m_lit_nil, 1);
     MOD_CFN("method_undefined", korb_m_lit_nil, 1);
     MOD_CFN("included", korb_m_lit_nil, 1);

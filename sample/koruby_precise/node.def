@@ -1052,14 +1052,11 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, uint32_t p
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* instance_eval on a value with no singleton */
     if (KORB_CLASS_P(definee)) {
         { RESULT fr = korb_check_def_frozen(c, slots, definee); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* frozen class / metaclass-of-frozen → FrozenError */
-        korb_class_def_method(c, definee, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
-        /* fire Module#method_added(name) — only when overridden (no default → no per-def cost). */
-        const uint32_t mad = korb_intern(c->vm, "method_added", 12);
-        if (UNLIKELY(korb_responds_to(c, definee, mad))) {
-            slots[0] = definee; slots[1] = ID2SYM(mid);
-            RESULT hr = korb_send(c, slots + 2, mad, 0, 1);
-            if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
-        }
+        slots[0] = definee;                               /* park: the hook is Ruby code */
+        korb_class_def_method(c, slots[0], mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
+        /* method_added — or singleton_method_added when the definee is a
+         * singleton class (`class << obj; def m; end; end`). */
+        CHECK(korb_fire_method_added(c, slots + 1, slots[0], mid));
     } else {
         korb_method_define(c, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
     }
