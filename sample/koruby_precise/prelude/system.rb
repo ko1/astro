@@ -1577,3 +1577,118 @@ class Random
     def new_seed     = Kernel.srand(Kernel.srand)
   end
 end
+
+# ENV — the C side (builtins/env.c) provides the primitives; the Hash-shaped
+# conveniences and the argument checking live here.
+class << ENV
+  # A name/value must be a String (or #to_str-able); a name may be neither
+  # empty nor contain "=" (setenv(3) rejects those).
+  private def __env_name(k)
+    unless k.is_a?(String)
+      raise TypeError, "no implicit conversion of #{k.nil? ? 'nil' : k.class} into String" unless k.respond_to?(:to_str)
+      k = k.to_str
+      raise TypeError, "no implicit conversion into String" unless k.is_a?(String)
+    end
+    raise Errno::EINVAL, "setenv(#{k.inspect})" if k.empty? || k.include?("=")
+    k
+  end
+  private def __env_value(v)
+    return v if v.is_a?(String)
+    raise TypeError, "no implicit conversion of #{v.nil? ? 'nil' : v.class} into String" unless v.respond_to?(:to_str)
+    s = v.to_str
+    raise TypeError, "no implicit conversion into String" unless s.is_a?(String)
+    s
+  end
+
+  def to_a = to_h.to_a
+  def dig(*args) = to_h.dig(*args)
+  def rehash = nil
+  def freeze = self
+  def first(n = nil) = n.nil? ? to_a.first : to_a.first(n)
+  def any?(&b) = b ? to_h.any?(&b) : !empty?
+  def none?(&b) = to_h.none?(&b)
+  def all?(&b) = to_h.all?(&b)
+  def count(*a, &b) = a.empty? && b.nil? ? size : to_h.count(*a, &b)
+  def find(&b) = b ? to_h.find(&b) : to_enum(:find)
+  def filter_map(&b) = b ? to_h.filter_map(&b) : to_enum(:filter_map)
+  def sum(init = 0, &b) = to_h.sum(init, &b)
+  def min_by(&b) = b ? to_h.min_by(&b) : to_enum(:min_by)
+  def max_by(&b) = b ? to_h.max_by(&b) : to_enum(:max_by)
+  def sort_by(&b) = b ? to_h.sort_by(&b) : to_enum(:sort_by)
+  def group_by(&b) = b ? to_h.group_by(&b) : to_enum(:group_by)
+  def partition(&b) = b ? to_h.partition(&b) : to_enum(:partition)
+  def flat_map(&b) = b ? to_h.flat_map(&b) : to_enum(:flat_map)
+  def zip(*a, &b) = to_h.zip(*a, &b)
+  def sort(&b) = to_h.sort(&b)
+  def map(&b) = b ? to_h.map(&b) : to_enum(:map)
+  def collect(&b) = map(&b)
+  def each_entry(&b) = b ? (to_h.each { |kv| b.call(kv) }; self) : to_enum(:each_entry)
+  def each_with_index(&b) = b ? (to_h.each_with_index { |kv, i| b.call(kv, i) }; self) : to_enum(:each_with_index)
+  def each_with_object(o, &b) = b ? to_h.each_with_object(o, &b) : to_enum(:each_with_object, o)
+  def reduce(*a, &b) = to_h.reduce(*a, &b)
+  def inject(*a, &b) = to_h.inject(*a, &b)
+
+  # ENV.shift removes and returns the first pair (nil when empty).
+  def shift
+    k = keys.first
+    return nil if k.nil?
+    v = self[k]
+    delete(k)
+    [k, v]
+  end
+
+  # ENV.replace validates the WHOLE hash before touching the environment, so a
+  # bad entry leaves it untouched ("does not accept good data following an error").
+  def replace(other)
+    h = other.is_a?(Hash) ? other : (other.respond_to?(:to_hash) ? other.to_hash : nil)
+    raise TypeError, "no implicit conversion of #{other.class} into Hash" unless h.is_a?(Hash)
+    pairs = h.map { |k, v| [__env_name(k), __env_value(v)] }
+    clear
+    pairs.each { |k, v| self[k] = v }
+    self
+  end
+
+  def value?(v)
+    v = __env_value(v) unless v.is_a?(String)
+    values.include?(v)
+  rescue TypeError
+    false
+  end
+  def has_value?(v) = value?(v)
+end
+
+class << ENV
+  # select / reject and their ! forms return an Enumerator when no block is given.
+  def select(&b) = b ? __select(&b) : to_enum(:select)
+  def reject(&b) = b ? __reject(&b) : to_enum(:reject)
+  def select!(&b) = b ? __select!(&b) : to_enum(:select!)
+  def reject!(&b) = b ? __reject!(&b) : to_enum(:reject!)
+  alias filter select      # a real alias: ENV.method(:filter) == ENV.method(:select)
+  alias filter! select!
+  # each / each_pair likewise yield an Enumerator when block-less.
+  alias __each each
+  def each(&b) = b ? __each(&b) : to_enum(:each)
+  def each_pair(&b) = each(&b)
+  alias __keep_if keep_if
+  alias __delete_if delete_if
+  def keep_if(&b) = b ? __keep_if(&b) : to_enum(:keep_if)
+  def delete_if(&b) = b ? __delete_if(&b) : to_enum(:delete_if)
+  # ENV is not copyable (CRuby raises rather than handing out a broken twin).
+  def clone(freeze: nil)
+    unless freeze.nil? || freeze == true || freeze == false
+      raise ArgumentError, "unexpected value for freeze: #{freeze.class}"
+    end
+    raise TypeError, "Cannot clone ENV, use ENV.to_h to get a copy of ENV as a hash"
+  end
+  def dup
+    raise TypeError, "Cannot dup ENV, use ENV.to_h to get a copy of ENV as a hash"
+  end
+  alias __delete delete
+  # ENV.delete calls the block with the name when the variable is absent.
+  def delete(name)
+    had = key?(name)
+    r = __delete(name)
+    return yield(name) if !had && block_given?
+    r
+  end
+end

@@ -488,11 +488,12 @@ void korb_init_env(CTX *c, VALUE *slots) {
     ENVB("each", each, 0);       ENVB("each_pair", each, 0);
     ENVR("delete", delete, 1);
     ENVB("merge!", merge_bang, -1);   ENVB("update", merge_bang, -1);
-    ENVB("select", select, 0);        ENVB("filter", select, 0);
-    ENVB("reject", reject, 0);
+    /* the block-less forms return an Enumerator (prelude wrappers below) */
+    ENVB("__select", select, 0);
+    ENVB("__reject", reject, 0);
     ENVB("keep_if", keep_if, 0);      ENVB("delete_if", delete_if, 0);
-    ENVB("select!", select_bang, 0);  ENVB("filter!", select_bang, 0);
-    ENVB("reject!", reject_bang, 0);
+    ENVB("__select!", select_bang, 0);
+    ENVB("__reject!", reject_bang, 0);
     ENVR("assoc", assoc, 1);          ENVR("rassoc", rassoc, 1);
     ENVR("invert", invert, 0);        ENVR("values_at", values_at, -1);
     ENVR("slice", slice, -1);         ENVR("except", except, -1);
