@@ -460,3 +460,47 @@ static RESULT korb_bi_transcodable(CTX *c, VALUE *slots, VALUE_SLICE args)
     (void)c;
     return RESULT_OK(korb_tc_find(nb, &tc) ? KORB_TRUE : KORB_FALSE);
 }
+
+/* C-callable convenience: convert `src` from → to with no error handling.
+ * Returns the converted String, or KORB_UNDEF in *out when the conversion is
+ * impossible (the caller decides whether that is an error). */
+static RESULT korb_tc_convert(CTX *c, VALUE *slots, VALUE src, const char *fromb, const char *tob, bool *ok)
+{
+    *ok = false;
+    struct korb_tc from, to;
+    if (!korb_tc_find(fromb, &from) || !korb_tc_find(tob, &to)) return RESULT_OK(src);
+    const KorbString *const s = VAL2STR(src);
+    const size_t slen = s->len;
+    unsigned char *const buf = malloc(slen + 1);
+    if (!buf) abort();
+    memcpy(buf, korb_strbuf_data(s->buf), slen);
+    struct korb_tc_out out = { NULL, 0, 0 };
+    uint8_t dmode = KTC_JIS_ASCII, smode = KTC_JIS_ASCII;
+    size_t i = 0;
+    bool bad = false;
+    while (i < slen) {
+        uint32_t cp = 0;
+        if (from.kind == KTC_ISO2022JP) {
+            const uint32_t esc = korb_tc_jis_esc(buf + i, slen - i, &smode);
+            if (esc) { i += esc; continue; }
+        }
+        const uint32_t used = (from.kind == KTC_ISO2022JP)
+            ? korb_tc_jis_decode(&from, buf + i, slen - i, &cp, smode)
+            : korb_tc_decode(&from, buf + i, slen - i, &cp);
+        if (used == 0) { bad = true; break; }
+        unsigned char ob[8];
+        const uint32_t wrote = (to.kind == KTC_ISO2022JP)
+            ? korb_tc_jis_encode(&to, cp, ob, &dmode)
+            : korb_tc_encode(&to, cp, ob);
+        if (wrote == 0) { bad = true; break; }
+        korb_tc_put(&out, ob, wrote);
+        i += used;
+    }
+    if (!bad && to.kind == KTC_ISO2022JP && dmode != KTC_JIS_ASCII) korb_tc_put(&out, "\x1B(B", 3);
+    free(buf);
+    if (bad) { free(out.b); return RESULT_OK(src); }
+    RESULT r = korb_str_new(c, slots, out.b ? out.b : "", (uint32_t)out.len);
+    free(out.b);
+    if (LIKELY(r.state == KORB_NORMAL)) { KORB_STR_ENC_SET(r.value, korb_enc_index_pub(c->vm, tob)); *ok = true; }
+    return r;
+}

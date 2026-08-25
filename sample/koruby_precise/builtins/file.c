@@ -1106,6 +1106,12 @@ korb_line_next(const char *buf, size_t len, size_t *pos, const char *sep, size_t
 
 
 /* File.readlines(path, sep = $/, limit = nil, chomp: false) → the records. */
+/* File.binread / IO.binread — same read, but the result is ASCII-8BIT. */
+static RESULT korb_m_file_binread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    RESULT r = korb_m_file_read(c, slots, self, a);
+    if (LIKELY(r.state == KORB_NORMAL) && KORB_STRING_P(r.value)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
+    return r;
+}
 static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     VALUE pv;
@@ -1959,7 +1965,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "umask",       korb_m_file_umask,       -1);
     korb_class_def_cfn(c, slots[1], "read",        korb_m_file_read,        -1);
     korb_class_def_cfn(c, slots[1], "write",       korb_m_file_write,       -1);
-    korb_class_def_cfn(c, slots[1], "binread",     korb_m_file_read,        -1);   /* koruby I/O is already binary */
+    korb_class_def_cfn(c, slots[1], "binread",     korb_m_file_binread,     -1);
     korb_class_def_cfn(c, slots[1], "binwrite",    korb_m_file_write,       -1);
     korb_class_def_cfn(c, slots[1], "readlines",   korb_m_file_readlines,   -1);
     korb_class_def_cfn_blk(c, slots[1], "foreach", korb_m_file_foreach,     -1);

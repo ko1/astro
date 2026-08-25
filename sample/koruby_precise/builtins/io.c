@@ -572,9 +572,30 @@ static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (empty) return RESULT_OK(LONG2FIX(0));
     }
     KORB_IO_NEED_WRITE(c, slots, self);
+    /* A stream with an explicit external encoding transcodes what it is given
+     * (@__wenc is set by IO#set_encoding / the open options). */
+    slots[0] = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__wenc", 7)));
+    char wenc[64];
+    const bool xcode = KORB_STRING_P(slots[0]);
+    if (xcode) korb_tc_cstr(slots[0], wenc, sizeof wenc);
     size_t nb = 0;
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
-        const RESULT r = korb_io_emit(c, slots, VALUE_SLICE_GET(a, i), rep, &nb);
+        VALUE v = VALUE_SLICE_GET(a, i);
+        if (xcode && KORB_STRING_P(v) && KORB_STR_ENC(v) != KORB_ENC_BINARY) {
+            const uint32_t se = KORB_STR_ENC(v);
+            if (strcasecmp(korb_enc_name_of(c->vm, se), wenc) != 0) {
+                slots[1] = v; bool ok = false;
+                const RESULT tr = korb_tc_convert(c, slots + 2, slots[1], korb_enc_name_of(c->vm, se), wenc, &ok);
+                if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+                if (!ok)                                 /* undecodable input on a transcoding stream */
+                {   char em[128];
+                    snprintf(em, sizeof em, "invalid byte sequence in %s", korb_enc_name_of(c->vm, se));
+                    return korb_raise_nested(c, slots + 2, "Encoding", "InvalidByteSequenceError", em); }
+                v = tr.value;
+            }
+        }
+        slots[1] = v;
+        const RESULT r = korb_io_emit(c, slots + 2, slots[1], rep, &nb);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(LONG2FIX((korb_sword_t)nb));
@@ -2086,6 +2107,11 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)),
                             VALUE_SLICE_GET(a, 1)));
     CHECK(korb_io_capture_default_internal(c, slots + 1, io));
+    if (KORB_HASH_P(fopts)) {                            /* encoding: / autoclose: → the prelude */
+        slots[1] = VALUE_REF_GET(io);
+        slots[2] = fopts;
+        CHECK(korb_send(c, slots + 3, korb_intern(c->vm, "__apply_open_opts", 17), 0, 1));
+    }
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(io));
     slots[1] = VALUE_REF_GET(io);
     RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
@@ -2167,7 +2193,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     /* IO.read/write/readlines/foreach/binread/binwrite — the File class methods. */
     const VALUE io_sing = korb_obj_singleton(c, slots + 1, io_cls).value;
     korb_class_def_cfn(c, io_sing, "read",      korb_m_file_read,      -1);
-    korb_class_def_cfn(c, io_sing, "binread",   korb_m_file_read,      -1);
+    korb_class_def_cfn(c, io_sing, "binread",   korb_m_file_binread,   -1);
     korb_class_def_cfn(c, io_sing, "write",     korb_m_file_write,     -1);
     korb_class_def_cfn(c, io_sing, "binwrite",  korb_m_file_write,     -1);
     korb_class_def_cfn(c, io_sing, "readlines", korb_m_file_readlines, -1);

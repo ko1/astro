@@ -1061,6 +1061,22 @@ korb_str_enc_combine(const struct korb_vm *vm, VALUE av, VALUE bv, uint32_t *out
     if (aa) { *out = eb; return true; }
     return false;
 }
+/* raise Owner::Name (a prelude-defined exception class) with a formatted msg */
+RESULT
+korb_raise_nested(CTX *c, VALUE *slots, const char *owner, const char *name, const char *msg)
+{
+    const VALUE om = korb_const_get(c->vm, korb_intern(c->vm, owner, (uint32_t)strlen(owner)));
+    VALUE cls = KORB_NIL;
+    if (KORB_CLASS_P(om)) {
+        const uint32_t ix = korb_const_index_owned(c->vm, korb_intern(c->vm, name, (uint32_t)strlen(name)), om);
+        if (ix != UINT32_MAX) cls = c->vm->const_vals[ix];
+    }
+    slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
+    RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", msg);
+    if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
+        ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+    return r;
+}
 /* Encoding::CompatibilityError, which lives in the prelude (nested in Encoding). */
 /* raise Encoding::CompatibilityError (a prelude class) with `msg` */
 RESULT
@@ -8985,6 +9001,7 @@ static RESULT korb_exc_build_with_cause(CTX *c, VALUE *slots, VALUE_SLICE args);
 #include "builtins/integer.c"
 #include "builtins/float.c"
 #include "builtins/string.c"
+#include "builtins/transcode.c"
 /* node_eval.c-visible wrapper: GC-safe copy of a whole String (string.c's is static). */
 RESULT korb_str_dup_pub(CTX *c, VALUE *slots, VALUE *src) {
     return korb_str_slice_new(c, slots, VALUE_REF_AT(src), 0, VAL2STR(*src)->len);
@@ -9025,7 +9042,6 @@ static RESULT korb_blop_poll_wait(CTX *c, VALUE *slots, struct pollfd *fds, nfds
 #include "builtins/fiber.c"
 #include "builtins/thread.c"
 #include "builtins/arithseq.c"
-#include "builtins/transcode.c"
 #include "builtins/string_ext.c"
 korb_register_core_methods(CTX *c)
 {

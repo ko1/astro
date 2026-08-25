@@ -134,7 +134,15 @@ class IO
     end
     @__enc_done = true          # an explicit set_encoding wins over the mode string
     __enc_pair(ext, int, Encoding.default_external, int_none ? nil : Encoding.default_internal)
+    __sync_write_enc
     self
+  end
+
+  # The C write path transcodes to @__wenc when it is set.  Only an explicitly
+  # requested external encoding counts; a plain stream writes bytes as given.
+  private def __sync_write_enc
+    e = @__enc2 || @__enc
+    @__wenc = (e && e != Encoding::BINARY && __transcodable?(e.name)) ? e.name : nil
   end
 
   private def __check_newline_opt(v)
@@ -151,12 +159,14 @@ class IO
   # encoding option の値: Encoding / nil はそのまま、他は #to_str で String に。
   private def __enc_opt(v)
     v = v.to_str if !v.nil? && !v.is_a?(Encoding) && !v.is_a?(String) && v.respond_to?(:to_str)
+    v = v[4..-1] if v.is_a?(String) && v.downcase.start_with?("bom|")   # BOM は読み取り時の話
     v == "-" ? nil : v      # "-" は「指定なし」を意味する (CRuby)
   end
 
   def __apply_open_opts(opts)
     return self unless opts.is_a?(Hash) && !opts.empty?
     @autoclose = opts[:autoclose] ? true : false if opts.key?(:autoclose)
+    binmode if opts[:binmode]
     ext = __enc_opt(opts[:external_encoding])
     int = __enc_opt(opts[:internal_encoding])
     enc = __enc_opt(opts[:encoding])
@@ -180,6 +190,7 @@ class IO
       __enc_pair(ext.is_a?(String) ? Encoding.find(ext) : ext,
                  int.is_a?(String) ? Encoding.find(int) : int,
                  Encoding.default_external, Encoding.default_internal)
+      __sync_write_enc
     end
     self
   end
