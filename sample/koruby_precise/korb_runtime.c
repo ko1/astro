@@ -8859,6 +8859,7 @@ RESULT korb_str_dup_pub(CTX *c, VALUE *slots, VALUE *src) {
 #include "builtins/regexp.c"
 #include "builtins/file.c"
 #include "builtins/env.c"
+#include "builtins/zlib.c"
 static RESULT korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, struct KorbIORep *rep);   /* defined below; io.c IO#puts uses it */
 /* IO の readiness 系は blop 層 (builtins/thread.c、io.c より後に include) 実装 */
 static RESULT korb_m_io_wait_readable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
@@ -13013,6 +13014,7 @@ korb_ctx_new(void)
     korb_init_math(c, c->slots);
     korb_init_regexp(c, c->slots);
     korb_init_env(c, c->slots);
+    korb_init_zlib(c);
     korb_init_file(c, c->slots);
     korb_init_io(c, c->slots);
     korb_init_process(c, c->slots);

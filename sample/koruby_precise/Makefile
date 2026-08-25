@@ -111,11 +111,16 @@ KORUBY_CPPFLAGS = -I. -I./prism/include -I$(RUNTIME) \
 	    -DASTRO_PRISM_INC_DIR='"$(PRISM_INC_ABSPATH)"' \
 	    -DKORB_BIGNUM=$(BIGNUM_NUM) \
 	    -DKORUBY_GC_SRC='"$(RUNTIME_ABSPATH)/precise_gc/gc_$(GC).c"'
+# zlib is optional: probe for the header and link it only when present, so a
+# build without it just leaves `require "zlib"` a LoadError.
+ZLIB_OK   := $(shell $(CC) -E -include zlib.h -xc /dev/null >/dev/null 2>&1 && echo yes)
+ZLIB_FLAGS := $(if $(ZLIB_OK),-DKORB_HAVE_ZLIB -lz,)
+
 # $@ = output binary; $(1) = extra flags/sources
 define KORUBY_LINK
 	$(CC) $(KORUBY_CPPFLAGS) $(optflags) -flto=auto -ggdb3 -Wall -Wextra \
 	    -Wno-unused-parameter -rdynamic -fno-plt \
-	    -o $@ $(SRCS) $(1) $(GC_COMMON_SRC) $(GC_SRC) ./prism/build/libprism.a -ldl -lm $(BIGNUM_LIBS) -lcrypt
+	    -o $@ $(SRCS) $(1) $(GC_COMMON_SRC) $(GC_SRC) ./prism/build/libprism.a -ldl -lm $(BIGNUM_LIBS) -lcrypt $(ZLIB_FLAGS)
 endef
 
 koruby_precise: $(KORUBY_DEPS)
