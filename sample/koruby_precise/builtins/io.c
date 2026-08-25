@@ -1641,6 +1641,27 @@ static RESULT korb_m_io_sysread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     s->len = (uint32_t)r;
     korb_strbuf_data(s->buf)[r] = '\0';
     KORB_STR_ENC_SET(slots[0], KORB_ENC_BINARY);
+    if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) {   /* sysread(n, buf) fills and returns buf */
+        VALUE bv = VALUE_SLICE_GET(a, 1);
+        if (UNLIKELY(!KORB_STRING_P(bv))) {                              /* #to_str coercion */
+            if (!korb_responds_to_coerce_p(c, slots + 1, &bv, korb_intern(c->vm, "to_str", 6)))
+                return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, bv));
+            slots[1] = bv;
+            RESULT br = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(br.state != KORB_NORMAL)) return br;
+            if (UNLIKELY(!KORB_STRING_P(br.value)))
+                return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion into String");
+            bv = br.value;
+        }
+        slots[1] = bv;
+        VALUE_REF bref = VALUE_REF_AT(&slots[1]);
+        KORB_CHECK_FROZEN(c, slots + 2, VALUE_REF_GET(bref));
+        KorbString *const dst = korb_str_ensure(c, slots + 2, bref, (uint32_t)r);   /* may move slots[0] */
+        memcpy(korb_strbuf_data(dst->buf), korb_strbuf_data(VAL2STR(slots[0])->buf), (size_t)r);
+        dst->len = (uint32_t)r; korb_strbuf_data(dst->buf)[r] = '\0';
+        KORB_STR_ENC_SET(VALUE_REF_GET(bref), KORB_ENC_BINARY);
+        return RESULT_OK(VALUE_REF_GET(bref));
+    }
     return RESULT_OK(slots[0]);
 }
 
