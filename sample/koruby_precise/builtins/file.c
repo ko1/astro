@@ -129,8 +129,10 @@ static RESULT korb_m_errno_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
  * func it is the "message @ func - path" shape the IO/File layer uses. */
 static RESULT korb_raise_errno(CTX *c, VALUE *slots, int e, const char *func, const char *path) {
     char msg[4096];
-    if (func) snprintf(msg, sizeof msg, "%s @ %s - %s", strerror(e), func, path);   /* format now: path is a movable-String interior ptr, korb_raise allocs */
-    else      snprintf(msg, sizeof msg, "%s - %s", strerror(e), path);
+    /* CRuby: "msg @ func - path" with a path, "msg - func" without one */
+    if (func && path == NULL) snprintf(msg, sizeof msg, "%s - %s", strerror(e), func);
+    else if (func)            snprintf(msg, sizeof msg, "%s @ %s - %s", strerror(e), func, path);   /* format now: path is a movable-String interior ptr, korb_raise allocs */
+    else                      snprintf(msg, sizeof msg, "%s - %s", strerror(e), path);
     const char *cn = korb_errno_name(e);
     const VALUE cls = cn ? korb_const_get(c->vm, korb_intern(c->vm, cn, (uint32_t)strlen(cn))) : KORB_NIL;
     slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
@@ -1930,6 +1932,24 @@ static RESULT korb_m_dir_chdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return br;
 }
 
+/* Dir.fchdir(fd) [ { ... } ] — chdir(2) by descriptor; with a block, restores
+ * the previous directory afterwards and returns the block's value. */
+static RESULT korb_m_dir_fchdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                struct Node *block, VALUE *def_env, VALUE *captured_self) {
+    (void)self;
+    korb_sword_t fd = -1;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !korb_to_index(VALUE_SLICE_GET(a, 0), &fd)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
+                          korb_coerce_name(c, VALUE_SLICE_LEN(a) ? VALUE_SLICE_GET(a, 0) : KORB_NIL));
+    char old[8192];
+    if (block != NULL && !getcwd(old, sizeof old)) old[0] = '\0';
+    if (fchdir((int)fd) != 0) return korb_raise_errno(c, slots, errno, "fchdir", NULL);
+    if (block == NULL) return RESULT_OK(LONG2FIX(0));
+    RESULT br = korb_block_yield(c, slots, block, def_env, NULL, 0, captured_self);
+    if (old[0]) { int rc = chdir(old); (void)rc; }
+    return br;
+}
+
 void korb_init_file(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
     slots[0] = (korb_class_new(c, slots, korb_intern(vm, "File", 4), KORB_NIL)).value;
@@ -2050,6 +2070,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn_blk(c, slots[3], "glob", korb_m_dir_glob, -1);
     korb_class_def_cfn_blk(c, slots[3], "[]",   korb_m_dir_glob, -1);
     korb_class_def_cfn_blk(c, slots[3], "chdir", korb_m_dir_chdir,   -1);
+    korb_class_def_cfn_blk(c, slots[3], "fchdir", korb_m_dir_fchdir, -1);
     korb_class_def_cfn_blk(c, slots[3], "open", korb_m_dir_open,    -1);   /* Dir.open [ {|d|} ] */
     korb_class_def_cfn_blk(c, slots[3], "new",  korb_m_dir_open,    -1);   /* Dir.new */
     /* Dir instance methods (eager-entry cursor object). */

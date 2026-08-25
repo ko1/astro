@@ -6141,7 +6141,11 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
         if (UNLIKELY(!korb_to_index(rhs, &cnt))) {       /* coerce the count via #to_int (lhs is a VALUE_REF → GC-safe) */
             RESULT cr = korb_coerce_to_int(c, slots, &rhs);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(rhs, &cnt)) return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Integer", korb_type_name(rhs));
+            if (!korb_to_index(rhs, &cnt)) {
+                if (KORB_BIGNUM_P(rhs))                  /* a Bignum count can never fit a long */
+                    return korb_raise(c, slots, KORB_E_RANGE, line, "bignum too big to convert into 'long'");
+                return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Integer", korb_type_name(rhs));
+            }
         }
         return korb_str_repeat_ref(c, slots, lhs, cnt, line);
     }
