@@ -319,8 +319,13 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     korb_fprint_inspect_s(c, slots, ms, VALUE_REF_GET(self));   /* containers dispatch element #inspect */
     fclose(ms);
+    /* CRuby tags an all-7-bit #inspect result US-ASCII (`[].inspect`, `{}.inspect`) */
+    bool ascii = true;
+    for (size_t i = 0; i < sz && ascii; i++) if ((unsigned char)buf[i] >= 0x80) ascii = false;
     RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
+    if (LIKELY(r.state == KORB_NORMAL) && ascii && !KORB_STRING_P(VALUE_REF_GET(self)))
+        KORB_STR_ENC_SET(r.value, KORB_ENC_USASCII);
     return r;
 }
 static RESULT korb_m_obj_class(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
