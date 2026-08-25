@@ -1112,10 +1112,15 @@ node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int
 // recv is staged as the child (evaluated in the enclosing scope); the body is a
 // per-process node_entry pointer (not bakeable) → @noinline.
 NODE_DEF @noinline
-node_sclass(CTX *c, NODE *n, VALUE *slots, NODE *body, VALUE_REF recv@child)
+node_sclass(CTX *c, NODE *n, VALUE *slots, NODE *body, int32_t self_off, int32_t dc_off, VALUE_REF recv@child)
 {
     (void)body_dispatcher;
-    return korb_sclass_body(c, slots, body, VALUE_REF_GET(recv));
+    /* the lexical namespace this `class << obj` sits in — recorded on the
+     * singleton so a constant read inside it can walk out to it */
+    const VALUE encl = (self_off == INT32_MIN) ? KORB_NIL
+                     : (dc_off != INT32_MIN ? korb_cvar_cref(slots[self_off], slots[dc_off])
+                                            : (KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL));
+    return korb_sclass_body(c, slots, body, VALUE_REF_GET(recv), encl);
 }
 
 // `module Name ... end` — like node_class but creates a module (no superclass,

@@ -4156,7 +4156,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t frame_size = pop_frame(tc);
         NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
         code_repo_add("sclass", entry, true);       /* its own AOT entry */
-        return ALLOC_node_sclass(entry, recv_node);
+        NODE *_sc = ALLOC_node_sclass(entry, -1 - tc->chain - 1, -1 - tc->chain - 1, recv_node);   /* -1 extra for the staged recv child */
+        bake_add(tc, &_sc->u.node_sclass.self_off);
+        return _sc;
       }
       case PM_CLASS_NODE:
         return transduce_class(tc, (const pm_class_node_t *)node);

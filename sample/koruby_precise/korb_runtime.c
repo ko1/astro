@@ -4267,11 +4267,17 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
  * so any statement (def / attr_accessor / private / alias_method / expressions)
  * applies to the singleton, not just method defs. */
 RESULT
-korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv)
+korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclosing)
 {
     slots[0] = recv;                             /* root recv across the singleton alloc */
-    const VALUE sing = UNWRAP(korb_obj_singleton(c, slots + 1, slots[0]));
+    slots[1] = enclosing;                        /* rooted: the alloc below can move it */
+    const VALUE sing = UNWRAP(korb_obj_singleton(c, slots + 2, slots[0]));
     slots[0] = sing;                             /* self for the body = the singleton class */
+    /* `class << obj` inside a module body is lexically nested in it, so record
+     * that: constant reads in the body (and in classes nested in it) walk out
+     * through `enclosing`, as Module.nesting does in CRuby. */
+    if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[0])->enclosing == KORB_NIL)
+        ARO_STORE(c, VAL2CLASS(slots[0]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->enclosing, slots[1]);
     const VALUE saved_definee = c->def_definee;  /* the body defines on the singleton, via self */
     c->def_definee = KORB_NIL;
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
