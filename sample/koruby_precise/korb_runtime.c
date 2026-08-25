@@ -11847,6 +11847,19 @@ void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const c
     bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
     (void)korb_out_emit(c, slots, out, 2, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
 }
+/* like korb_warn, but for category warnings whose own flag is the gate */
+void korb_warn_ignore_verbose(CTX *c, VALUE *slots, const char *fmt, ...) {
+    char body[240];
+    va_list ap; va_start(ap, fmt);
+    const int bl = vsnprintf(body, sizeof body, fmt, ap);
+    va_end(ap);
+    if (bl < 0) return;
+    char msg[256];
+    const int ml = snprintf(msg, sizeof msg, "warning: %s\n", body);
+    if (ml < 0) return;
+    bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
+    (void)korb_out_emit(c, slots, out, 2, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
+}
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...) {
     if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
     char body[240];

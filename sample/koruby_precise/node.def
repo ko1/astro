@@ -188,17 +188,19 @@ NODE_DEF @noinline
 node_deprecated_gvar_warn(CTX *c, NODE *n, VALUE *slots, const char *name, VALUE val@child)
 {
     (void)n;
-    /* CRuby: only under `-w` / Warning[:deprecated] (which $VERBOSE=true enables) */
-    if (val != KORB_NIL && KORB_TRUTHY(korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)))) {
+    /* Gated on Warning[:deprecated] ALONE — CRuby's category flag is sticky and
+     * independent of $VERBOSE (mspec's `complain` matcher sets $VERBOSE=false
+     * while still expecting deprecation warnings). */
+    if (val != KORB_NIL) {
         slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
-        bool dep_on = true;
+        bool dep_on = false;
         if (KORB_CLASS_P(slots[0])) {
             slots[1] = ID2SYM(korb_intern(c->vm, "deprecated", 10));
             RESULT wr = korb_send(c, slots + 2, korb_intern(c->vm, "[]", 2), 0, 1);
             if (UNLIKELY(wr.state != KORB_NORMAL)) return wr;
             dep_on = KORB_TRUTHY(wr.value);
         }
-        if (dep_on) korb_warn(c, slots, "non-nil '%s' is deprecated", name);
+        if (dep_on) korb_warn_ignore_verbose(c, slots, "non-nil '%s' is deprecated", name);
     }
     return RESULT_OK(val);
 }
@@ -1612,6 +1614,10 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
           if (strcmp(gn, "$~") == 0 && val != KORB_NIL && !KORB_MATCHDATA_P(val))
               return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected MatchData)",
                                 korb_coerce_name(c, val));
+          if (strcmp(gn, "$,") == 0 && val != KORB_NIL && !KORB_STRING_P(val))
+              return korb_raise(c, slots, KORB_E_TYPE, 0, "value of $, must be String");
+          if (strcmp(gn, "$;") == 0 && val != KORB_NIL && !KORB_STRING_P(val) && !KORB_REGEXP_P(val))
+              return korb_raise(c, slots, KORB_E_TYPE, 0, "value of $; must be String or Regexp");
           if (strcmp(gn, "$/") == 0 || strcmp(gn, "$-0") == 0 || strcmp(gn, "$\\") == 0) {
               /* the record separators take a String (no #to_str) or nil; `$/` also
                * freezes a copy, so a later mutation cannot change the separator */

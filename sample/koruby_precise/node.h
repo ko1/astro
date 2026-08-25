@@ -497,6 +497,7 @@ bool korb_find_bang_override(CTX *c, VALUE v);
 void korb_relocate_object_methods(CTX *c, VALUE *slots);
 RESULT korb_class_dup(CTX *c, VALUE *slots, VALUE src);
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);
+void korb_warn_ignore_verbose(CTX *c, VALUE *slots, const char *fmt, ...);   /* category warnings ($VERBOSE-independent) */
 void korb_warn_const_redef(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner);
 void korb_warn_const_redef_at(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner,
                               const char *file, uint32_t line0);   /* with the assignment's position */
