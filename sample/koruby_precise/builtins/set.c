@@ -933,6 +933,32 @@ static RESULT korb_m_class_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 /* Module#constants — the constant names defined directly in this module/class
  * (owner-tagged in the VM const table).  Globals ($) and cvars (@) share the
  * table and are excluded.  (inherit arg / ancestor constants not modelled.) */
+/* Is `owner` in klass's own MRO segment (itself + prepended/included, which
+ * bring their own mixins along)? */
+static bool korb_const_seg_p(VALUE klass, VALUE owner, int depth) {
+    if (!KORB_CLASS_P(klass) || depth > 64) return false;
+    if (klass == owner) return true;
+    const KorbClass *const k = VAL2CLASS(klass);
+    const VALUE lists[2] = { k->prepended, k->included };
+    for (int t = 0; t < 2; t++) {
+        if (lists[t] == KORB_NIL) continue;
+        const KorbArray *const l = VAL2ARY(lists[t]);
+        for (uint32_t j = 0; j < l->len; j++)
+            if (korb_const_seg_p(korb_items_data(l->items)[j], owner, depth + 1)) return true;
+    }
+    return false;
+}
+/* CRuby's rb_mod_const_of stops the ancestor walk AT Object, so neither
+ * Object's constants nor those of a module included into Object show up in
+ * some unrelated class's #constants. */
+static bool korb_const_ancestor_p(VALUE klass, VALUE owner, VALUE objc) {
+    for (VALUE k = klass; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
+        if (k == objc && klass != objc) return false;
+        if (korb_const_seg_p(k, owner, 0)) return true;
+    }
+    return false;
+}
+
 static RESULT korb_m_mod_constants(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const bool inherit = VALUE_SLICE_LEN(a) < 1 || KORB_TRUTHY(VALUE_SLICE_GET(a, 0));   /* default: include ancestors */
     struct korb_vm *const vm = c->vm;
@@ -949,10 +975,13 @@ static RESULT korb_m_mod_constants(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         /* inherit (default): own + included + prepended + ancestors (excl. Object).
          * non-inherit: only constants defined directly in self (owner == self). */
         if (!match && inherit && KORB_CLASS_P(selfv) && KORB_CLASS_P(owner) && owner != objc)
-            match = korb_class_has_ancestor(selfv, owner);
+            match = korb_const_ancestor_p(selfv, owner, objc);
         if (!match) continue;
+        if (korb_const_private_p(vm, owner, vm->const_names[i])) continue;   /* private_constant */
         const char *const nm = korb_sym_name(vm, vm->const_names[i]);
-        if (nm[0] == '$' || nm[0] == '@') continue;
+        /* only real constant names: an internal lowercase entry (CRuby's
+         * `fatal`, IO::generic_readable) is not reported by #constants */
+        if (!(nm[0] >= 'A' && nm[0] <= 'Z') && !((unsigned char)nm[0] & 0x80u)) continue;
         const VALUE csym = ID2SYM(vm->const_names[i]);
         bool dup = false;                                          /* a subclass constant shadows the ancestor's */
         const KorbArray *const d = VAL2ARY(VALUE_REF_GET(arr));
