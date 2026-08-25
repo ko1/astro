@@ -2020,6 +2020,10 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             NODE *recv, *arr;
             WITH_CHAIN(tc, 2, (recv = transduce(tc, cn->receiver),
                                arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
+            /* an element assignment evaluates to the assigned value, not to []='s
+             * return value, even when the index list is splatted */
+            if (mid == tc->c->vm->mid_aset)
+                return ALLOC_node_send_splat_aset(mid, line, recv, arr);
             return ALLOC_node_send_splat(mid, line, recv, arr);
         }
     }
@@ -2486,7 +2490,7 @@ assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_loc
             NODE *r, *arr;
             WITH_CHAIN(tc, 2, (r   = transduce(tc, it->receiver),
                                arr = build_args_plus_value(tc, ia, na, src_local)));
-            return ALLOC_node_send_splat(aset, line, r, arr);
+            return ALLOC_node_send_splat_aset(aset, line, r, arr);
         }
         NODE **const av = malloc(sizeof(NODE *) * (na + 1u));
         if (!av) abort();

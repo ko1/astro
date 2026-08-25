@@ -1872,6 +1872,24 @@ node_send_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, 
     return korb_send(c, slots + N + 1, mid, line, N);
 }
 
+// `recv[*idx] = v` — like node_send_splat, but an element assignment evaluates
+// to the assigned value, which is the LAST element of the staged args array.
+NODE_DEF
+node_send_splat_aset(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, VALUE_REF recv@child, VALUE_REF args@child)
+{
+    (void)n; (void)recv; (void)args;
+    const VALUE rv = slots[-2];
+    const VALUE arr = slots[-1];
+    const uint32_t N = VAL2ARY(arr)->len;
+    slots[0] = rv;
+    for (uint32_t i = 0; i < N; i++) slots[1 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    CHECK(korb_send(c, slots + N + 1, mid, line, N));
+    /* re-read from the staged args array (slots[-1] is scanned, so a GC during
+     * the call forwarded it): its last element is the assigned value */
+    const KorbArray *const a2 = VAL2ARY(slots[-1]);
+    return RESULT_OK(a2->len ? korb_items_data(a2->items)[a2->len - 1] : KORB_NIL);
+}
+
 // receiver call with splat AND a literal/&:sym block: recv.m(*arr) { ... }.
 // Like node_send_splat, but threads a block (node_entry) via korb_send_blk.
 // self_off reads the caller self (block's captured lexical self); def_env_off
@@ -1973,7 +1991,8 @@ node_aset(CTX *c, NODE *n, VALUE *slots, uint32_t line, VALUE_REF recv@child, VA
         /* out of range (Ruby grows + nil-pads) → deopt to []= */
     }
     slots[0] = r; slots[1] = iv; slots[2] = val;           /* deopt → []= send */
-    return korb_send(c, slots + 3, c->vm->mid_aset, line, 2);
+    CHECK(korb_send(c, slots + 3, c->vm->mid_aset, line, 2));
+    return RESULT_OK(slots[2]);                            /* the assignment's value, not []='s result */
 }
 
 // ---- array literals --------------------------------------------------------
