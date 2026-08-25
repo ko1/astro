@@ -936,12 +936,13 @@ static RESULT korb_m_class_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_mod_constants(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const bool inherit = VALUE_SLICE_LEN(a) < 1 || KORB_TRUTHY(VALUE_SLICE_GET(a, 0));   /* default: include ancestors */
     struct korb_vm *const vm = c->vm;
-    const VALUE objc = korb_builtin_class_obj(vm, KORB_C_OBJECT);
-    slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
-    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    slots[0] = korb_builtin_class_obj(vm, KORB_C_OBJECT);           /* rooted: the allocs below move it */
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 8));
+    VALUE_REF arr = VALUE_REF_AT(&slots[1]);
     for (uint32_t i = 0; i < vm->const_cnt; i++) {
         const VALUE owner = vm->const_owners[i];                    /* owners are root-updated across the push GC */
         const VALUE selfv = VALUE_REF_GET(self);
+        const VALUE objc = slots[0];
         /* top-level constants (and the builtin classes) carry no owner; they are
          * Object's, which is what `Object.constants` must list. */
         bool match = (owner == selfv) || (owner == KORB_NIL && selfv == objc);
@@ -957,14 +958,14 @@ static RESULT korb_m_mod_constants(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         const KorbArray *const d = VAL2ARY(VALUE_REF_GET(arr));
         for (uint32_t j = 0; j < d->len; j++) if (korb_items_data(d->items)[j] == csym) { dup = true; break; }
         if (dup) continue;
-        CHECK(korb_ary_push_val(c, slots + 1, arr, csym));
+        CHECK(korb_ary_push_val(c, slots + 2, arr, csym));
     }
     /* a pending autoload is already a constant to CRuby — it shows up in
      * #constants before the file is required. */
-    slots[1] = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(vm, "@__autoloads", 12)));
-    if (KORB_HASH_P(slots[1])) {
-        for (uint32_t i = 0; i < VAL2HASH(slots[1])->len; i++) {
-            const VALUE key = korb_items_data(VAL2HASH(slots[1])->items)[2 * i];   /* Symbol: immediate, GC-stable */
+    slots[0] = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(vm, "@__autoloads", 12)));
+    if (KORB_HASH_P(slots[0])) {
+        for (uint32_t i = 0; i < VAL2HASH(slots[0])->len; i++) {
+            const VALUE key = korb_items_data(VAL2HASH(slots[0])->items)[2 * i];   /* Symbol: immediate, GC-stable */
             if (!SYMBOL_P(key)) continue;
             bool dup = false;
             const KorbArray *const d = VAL2ARY(VALUE_REF_GET(arr));
