@@ -1148,8 +1148,11 @@ node_attr(CTX *c, NODE *n, VALUE *slots, int32_t self_off, void *descs, uint32_t
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "attr accessor called outside a class body");
     { RESULT fr = korb_check_def_frozen(c, slots, cls); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* attr_* in a frozen class → FrozenError */
     const struct korb_attr_desc *d = (const struct korb_attr_desc *)descs;
-    for (uint32_t i = 0; i < count; i++)
-        korb_class_def_attr(c, cls, d[i].mid, d[i].ivar, d[i].is_writer);
+    for (uint32_t i = 0; i < count; i++) {
+        /* re-read self each round: the method_added hook is Ruby code and may move the class */
+        korb_class_def_attr(c, slots[self_off], d[i].mid, d[i].ivar, d[i].is_writer);
+        CHECK(korb_fire_method_added(c, slots, slots[self_off], d[i].mid));
+    }
     return RESULT_OK(KORB_NIL);
 }
 

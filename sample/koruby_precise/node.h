@@ -239,6 +239,7 @@ void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
                              uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info);
 /* attr_reader/writer/accessor: define a getter/setter on the class. */
 void   korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is_writer);
+RESULT korb_fire_method_added(CTX *c, VALUE *slots, VALUE definee, uint32_t mid);
 /* parse-time descriptor list for node_attr (one entry per generated method). */
 struct korb_attr_desc { uint32_t mid; uint32_t ivar; uint8_t is_writer; };
 /* `class Name ... end`: create/find the class + run its body (self = class). */

@@ -3531,6 +3531,7 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         /* the copy takes the DEFINING frame's visibility, not the source's */
         dst->visibility = (VAL2CLASS(slots[0])->cur_visibility == 3) ? 1 : VAL2CLASS(slots[0])->cur_visibility;
         c->vm->method_serial++;
+        CHECK(korb_fire_method_added(c, slots + 2, slots[0], mid));
         return RESULT_OK(ID2SYM(mid));
     } else if (VALUE_SLICE_LEN(a) >= 2) {                /* a 2nd arg that isn't a Proc/Method/UnboundMethod */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Proc/Method/UnboundMethod)", korb_type_name(VALUE_SLICE_GET(a, 1)));
@@ -3548,6 +3549,7 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     m->param_info = (KORB_PROC_P(slots[1]) && VAL2PROC(slots[1])->iseq)   /* carry the block's params for Method#parameters */
                         ? VAL2PROC(slots[1])->iseq->u.node_entry.param_info : NULL;
     c->vm->method_serial++;
+    CHECK(korb_fire_method_added(c, slots + 2, slots[0], mid));
     return RESULT_OK(ID2SYM(mid));
 }
 
@@ -3853,6 +3855,29 @@ korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is
     m->bfn = NULL;
     m->visibility = k->cur_visibility;   /* attr_reader/writer inside `private`/`protected` inherits it */
     c->vm->method_serial++;
+}
+
+/* Fire the definition hook after a non-`def` definition (attr_*, define_method,
+ * alias_method).  A singleton class routes to its attached object's
+ * singleton_method_added instead, like CRuby. */
+RESULT
+korb_fire_method_added(CTX *c, VALUE *slots, VALUE definee, uint32_t mid)
+{
+    if (!KORB_CLASS_P(definee)) return RESULT_OK(KORB_NIL);
+    struct korb_vm *const vm = c->vm;
+    VALUE recv = definee;
+    uint32_t hook = korb_intern(vm, "method_added", 12);
+    if (VAL2CLASS(definee)->is_singleton) {
+        VALUE att = KORB_UNDEF;
+        for (uint32_t i = 0; i < vm->sklass_cnt; i++)
+            if (vm->sklass_cls[i] == definee) { att = vm->sklass_obj[i]; break; }
+        if (att == KORB_UNDEF) return RESULT_OK(KORB_NIL);   /* singleton with no live owner */
+        recv = att;
+        hook = korb_intern(vm, "singleton_method_added", 22);
+    }
+    if (LIKELY(!korb_responds_to(c, recv, hook))) return RESULT_OK(KORB_NIL);
+    slots[0] = recv; slots[1] = ID2SYM(mid);
+    return korb_send(c, slots + 2, hook, 0, 1);
 }
 
 /* lookup mid up the superclass chain; *out_def (if non-NULL) gets the class
