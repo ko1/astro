@@ -2042,7 +2042,8 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
      * positional argument; only 3 positionals are allowed. */
     uint32_t npos = VALUE_SLICE_LEN(a);
     VALUE fopts = KORB_NIL;
-    if (npos >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, npos - 1))) { fopts = VALUE_SLICE_GET(a, npos - 1); npos--; }
+    int32_t fopts_idx = -1;   /* index, not the VALUE: the allocations below move it */
+    if (npos >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, npos - 1))) { fopts_idx = (int32_t)npos - 1; fopts = VALUE_SLICE_GET(a, npos - 1); npos--; }
     if (UNLIKELY(npos > 3))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..3)", npos);
     int extra_flags = 0;
@@ -2107,9 +2108,9 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)),
                             VALUE_SLICE_GET(a, 1)));
     CHECK(korb_io_capture_default_internal(c, slots + 1, io));
-    if (KORB_HASH_P(fopts)) {                            /* encoding: / autoclose: → the prelude */
+    if (fopts_idx >= 0) {                                /* encoding: / autoclose: → the prelude */
         slots[1] = VALUE_REF_GET(io);
-        slots[2] = fopts;
+        slots[2] = VALUE_SLICE_GET(a, (uint32_t)fopts_idx);   /* re-read: the slice is rooted, the C local was not */
         CHECK(korb_send(c, slots + 3, korb_intern(c->vm, "__apply_open_opts", 17), 0, 1));
     }
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(io));
