@@ -385,10 +385,23 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (alen >= 2) {                                             /* Time.at(sec, subsec[, unit]) */
         if (first_is_time)                                       /* Time.at(time, subsec) is a TypeError */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert Time into an exact number");
-        const VALUE sv2 = VALUE_SLICE_GET(a, 1);
+        VALUE sv2 = VALUE_SLICE_GET(a, 1);
         double subv;
-        if (!korb_num_to_d(sv2, &subv))                          /* nil / String / non-Numeric → TypeError */
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(sv2));
+        if (!korb_num_to_d(sv2, &subv)) {                        /* coerce via #to_r, then #to_int (CRuby's order) */
+            bool ok = false;
+            static const struct { const char *nm; uint32_t len; } conv[] = { { "to_r", 4 }, { "to_int", 6 } };
+            for (size_t k = 0; k < 2 && !ok; k++) {
+                VALUE cand = VALUE_SLICE_GET(a, 1);
+                if (!korb_responds_to_coerce_p(c, slots, &cand, korb_intern(c->vm, conv[k].nm, conv[k].len))) continue;
+                slots[0] = cand;
+                RESULT cr = korb_send_impl(c, slots + 1, korb_intern(c->vm, conv[k].nm, conv[k].len), 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                if (korb_num_to_d(cr.value, &subv)) { sv2 = cr.value; ok = true; }
+            }
+            if (!ok)                                             /* nil / String / non-Numeric → TypeError */
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number",
+                                  korb_coerce_name(c, VALUE_SLICE_GET(a, 1)));
+        }
         double per_ns = 1000.0;                                  /* default unit = :microsecond */
         if (alen >= 3 && VALUE_SLICE_GET(a, 2) != KORB_NIL) {
             const VALUE u = VALUE_SLICE_GET(a, 2);

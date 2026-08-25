@@ -361,18 +361,38 @@ static RESULT korb_m_file_dirname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     (void)self;
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
-    uint32_t n; const char *p = korb_str_cstr_len(pv, &n);
-    while (n > 1 && p[n - 1] == '/') n--;             /* strip trailing slashes */
-    size_t last = (size_t)-1;
-    for (size_t i = 0; i < n; i++) if (p[i] == '/') last = i;
-    if (last == (size_t)-1) return korb_str_new(c, slots, ".", 1);
-    while (last > 0 && p[last - 1] == '/') last--;     /* collapse the separator run */
-    if (last == 0) return korb_str_new(c, slots, "/", 1);
-    char out[8192]; if (last >= sizeof out) last = sizeof out - 1;   /* copy off the (movable) source before alloc */
-    memcpy(out, p, last);
+    korb_sword_t level = 1;                            /* optional 2nd arg: strip that many components */
+    if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) {
+        VALUE lv = VALUE_SLICE_GET(a, 1);
+        if (UNLIKELY(!korb_to_index(lv, &level))) {
+            RESULT cr = korb_coerce_to_int_pub(c, slots, &lv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(lv, &level))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
+                                  korb_coerce_name(c, VALUE_SLICE_GET(a, 1)));
+        }
+        if (UNLIKELY(level < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative level: %ld", (long)level);
+        KORB_PATH_ARG(c, slots, a, 0, pv);             /* re-read: the coercion may have moved it */
+    }
+    uint32_t n0; const char *p0 = korb_str_cstr_len(pv, &n0);
+    char out[8192];
+    size_t n = n0 < sizeof out ? n0 : sizeof out - 1;
+    memcpy(out, p0, n);                                /* copy off the movable source once */
+    const uint32_t enc = KORB_STR_ENC(pv);
+    for (korb_sword_t lv = 0; lv < level; lv++) {
+        while (n > 1 && out[n - 1] == '/') n--;        /* strip trailing slashes */
+        size_t last = (size_t)-1;
+        for (size_t i = 0; i < n; i++) if (out[i] == '/') last = i;
+        if (last == (size_t)-1) { n = 1; out[0] = '.'; break; }
+        while (last > 0 && out[last - 1] == '/') last--;   /* collapse the separator run */
+        if (last == 0) { n = 1; out[0] = '/'; break; }
+        n = last;
+    }
     size_t off = 0;                                    /* a leading "//..." run collapses to one "/" (CRuby) */
-    while (off + 1 < last && out[off] == '/' && out[off + 1] == '/') off++;
-    return korb_str_new(c, slots, out + off, (uint32_t)(last - off));
+    while (off + 1 < n && out[off] == '/' && out[off + 1] == '/') off++;
+    RESULT r = korb_str_new(c, slots, out + off, (uint32_t)(n - off));
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, enc);   /* dirname keeps the path's encoding */
+    return r;
 }
 
 static RESULT korb_m_file_basename(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
