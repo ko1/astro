@@ -112,6 +112,114 @@ static RESULT korb_m_zlib_version(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return korb_str_new(c, slots, v, (uint32_t)strlen(v));
 }
 
+/* ---- streaming Deflate / Inflate ----------------------------------------
+ * A handle is an index into a process-wide table of live z_streams (libc
+ * memory, never moved by the GC).  Ruby holds the index as a Fixnum; a stream
+ * the program never closes leaks its z_stream, which is the same trade a
+ * finalizer-less runtime makes elsewhere. */
+struct korb_zstream {
+    z_stream zs;
+    int  used;            /* 0 = free slot */
+    int  deflating;
+    int  ended;           /* Z_STREAM_END seen */
+};
+static struct korb_zstream *korb_zstreams = NULL;
+static uint32_t korb_zstream_cnt = 0, korb_zstream_capa = 0;
+
+static struct korb_zstream *korb_zstream_at(korb_sword_t h) {
+    if (h < 0 || (uint32_t)h >= korb_zstream_cnt) return NULL;
+    struct korb_zstream *const z = &korb_zstreams[h];
+    return z->used ? z : NULL;
+}
+
+/* __zstream_open(deflating, level, window_bits) -> handle */
+static RESULT korb_m_zstream_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const int deflating = KORB_TRUTHY(VALUE_SLICE_GET(a, 0));
+    const int level = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
+    const int wbits = (int)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    uint32_t idx = UINT32_MAX;
+    for (uint32_t i = 0; i < korb_zstream_cnt; i++) if (!korb_zstreams[i].used) { idx = i; break; }
+    if (idx == UINT32_MAX) {
+        if (korb_zstream_cnt == korb_zstream_capa) {
+            korb_zstream_capa = korb_zstream_capa ? korb_zstream_capa * 2 : 8;
+            korb_zstreams = realloc(korb_zstreams, sizeof(*korb_zstreams) * korb_zstream_capa);
+            if (!korb_zstreams) abort();
+        }
+        idx = korb_zstream_cnt++;
+    }
+    struct korb_zstream *const z = &korb_zstreams[idx];
+    memset(z, 0, sizeof *z);
+    z->deflating = deflating;
+    const int rc = deflating ? deflateInit2(&z->zs, level, Z_DEFLATED, wbits, 8, Z_DEFAULT_STRATEGY)
+                             : inflateInit2(&z->zs, wbits);
+    if (rc != Z_OK) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "zstream init failed");
+    z->used = 1;
+    return RESULT_OK(LONG2FIX((korb_sword_t)idx));
+}
+
+/* __zstream_run(handle, input, flush) -> the output produced so far. */
+static RESULT korb_m_zstream_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    struct korb_zstream *const z = korb_zstream_at(FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    if (!z) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "closed zstream");
+    const VALUE sv = VALUE_SLICE_GET(a, 1);
+    const int flush = (int)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    const KorbString *const ks = (sv == KORB_NIL) ? NULL : VAL2STR(sv);
+    /* zlib only reads the input while we call it, and korb_str_new below is the
+     * only allocation - done after the whole transform. */
+    z->zs.next_in  = ks ? (Bytef *)korb_strbuf_data(ks->buf) : (Bytef *)"";
+    z->zs.avail_in = ks ? ks->len : 0;
+    size_t cap = (ks ? ks->len : 0) * 4 + 4096, len = 0;
+    char *out = malloc(cap);
+    if (!out) abort();
+    int rc = Z_OK;
+    for (;;) {
+        z->zs.next_out = (Bytef *)(out + len);
+        z->zs.avail_out = (uInt)(cap - len);
+        rc = z->deflating ? deflate(&z->zs, flush) : inflate(&z->zs, flush);
+        len = cap - z->zs.avail_out;
+        if (rc == Z_STREAM_END) { z->ended = 1; break; }
+        if (rc == Z_BUF_ERROR) break;                 /* nothing more to do right now */
+        if (rc != Z_OK) break;
+        if (z->zs.avail_out != 0 && z->zs.avail_in == 0 && flush == Z_NO_FLUSH) break;
+        if (len == cap) { cap *= 2; char *const g = realloc(out, cap); if (!g) { free(out); abort(); } out = g; }
+    }
+    if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
+        free(out);
+        const int kind = (rc == Z_DATA_ERROR) ? 1 : (rc == Z_NEED_DICT ? 2 : 0);
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "zlib inflate error %d", kind);
+    }
+    const RESULT r = korb_str_new(c, slots, out, (uint32_t)len);
+    free(out);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
+    return r;
+}
+
+/* __zstream_stat(handle) -> [total_in, total_out, stream_end?, avail_in, adler] */
+static RESULT korb_m_zstream_stat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const struct korb_zstream *const z = korb_zstream_at(FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    if (!z) return RESULT_OK(KORB_NIL);
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 5));
+    const VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    CHECK(korb_ary_push_val(c, slots + 1, arr, LONG2FIX((korb_sword_t)z->zs.total_in)));
+    CHECK(korb_ary_push_val(c, slots + 1, arr, LONG2FIX((korb_sword_t)z->zs.total_out)));
+    CHECK(korb_ary_push_val(c, slots + 1, arr, z->ended ? KORB_TRUE : KORB_FALSE));
+    CHECK(korb_ary_push_val(c, slots + 1, arr, LONG2FIX((korb_sword_t)z->zs.avail_in)));
+    CHECK(korb_ary_push_val(c, slots + 1, arr, LONG2FIX((korb_sword_t)(uint32_t)z->zs.adler)));
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
+
+static RESULT korb_m_zstream_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)slots; (void)c;
+    struct korb_zstream *const z = korb_zstream_at(FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    if (!z) return RESULT_OK(KORB_NIL);
+    if (z->deflating) deflateEnd(&z->zs); else inflateEnd(&z->zs);
+    z->used = 0;
+    return RESULT_OK(KORB_NIL);
+}
+
 static void korb_init_zlib(CTX *c) {
     const VALUE obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
     korb_class_def_cfn(c, obj, "__zlib_crc32",     korb_m_zlib_crc32,     -1);
@@ -120,6 +228,10 @@ static void korb_init_zlib(CTX *c) {
     korb_class_def_cfn(c, obj, "__zlib_deflate",   korb_m_zlib_deflate,    3);
     korb_class_def_cfn(c, obj, "__zlib_inflate",   korb_m_zlib_inflate,    2);
     korb_class_def_cfn(c, obj, "__zlib_version",   korb_m_zlib_version,    0);
+    korb_class_def_cfn(c, obj, "__zstream_open",   korb_m_zstream_open,    3);
+    korb_class_def_cfn(c, obj, "__zstream_run",    korb_m_zstream_run,     3);
+    korb_class_def_cfn(c, obj, "__zstream_stat",   korb_m_zstream_stat,    1);
+    korb_class_def_cfn(c, obj, "__zstream_close",  korb_m_zstream_close,   1);
 }
 #else
 static void korb_init_zlib(CTX *c) { (void)c; }

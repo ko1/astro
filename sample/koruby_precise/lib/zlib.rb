@@ -69,41 +69,36 @@ module Zlib
   def deflate(str, level = DEFAULT_COMPRESSION) = Deflate.deflate(str, level)
   def inflate(str) = Inflate.inflate(str)
 
-  # A stream base with the bookkeeping the specs read; the transform itself is
-  # one-shot (buffer the input, convert on #finish), which is behaviourally
-  # equivalent for everything except mid-stream flush boundaries.
+  # A real streaming z_stream lives behind an Integer handle (builtins/zlib.c);
+  # #close frees it.  A stream that is never closed leaks its z_stream, which is
+  # what a runtime without finalizers can offer.
   class ZStream
-    def initialize
-      @in = +"".b
+    def initialize(deflating, level, window_bits)
+      @h = __zstream_open(deflating, level, window_bits)
       @out = +"".b
-      @total_in = 0
       @closed = false
-      @finished = false
     end
 
-    def total_in = @total_in
-    def total_out = @out.bytesize
-    def data_type = Zlib::UNKNOWN
-    def adler = Zlib.adler32(@out)
-    def avail_in = 0
+    def __stat = (__zstream_stat(@h) || [0, 0, false, 0, 0])
+    private :__stat
+
+    def total_in  = __stat[0]
+    def total_out = __stat[1] + @out.bytesize
+    def stream_end? = __stat[2]
+    alias finished? stream_end?
+    def avail_in  = __stat[3]
     def avail_out = 0
     def avail_out=(n); n; end
-    def flush_next_in = (s = @in; @in = +"".b; s)
+    def data_type = Zlib::UNKNOWN
+    def adler = __stat[4]        # zlib's running checksum of the stream
     def closed? = @closed
-    def ended? = @closed
-    def stream_end? = @finished
-    def finished? = @finished
+    alias ended? closed?
+    def flush_next_in = +"".b
     def sync(_str) = false
-    def reset
-      @in = +"".b
-      @out = +"".b
-      @total_in = 0
-      @finished = false
-      nil
-    end
 
     def close
       raise Zlib::Error, "stream is not ready" if @closed
+      __zstream_close(@h)
       @closed = true
       nil
     end
@@ -115,39 +110,51 @@ module Zlib
       s
     end
 
+    def reset
+      __check_open
+      __zstream_close(@h)
+      @h = __zstream_open(@deflating, @level || 6, @window_bits)
+      @out = +"".b
+      nil
+    end
+
     private def __check_open
       raise Zlib::Error, "stream is not ready" if @closed
+    end
+
+    # Map the C-side error tag onto the Zlib exception the API documents.
+    private def __run(str, flush)
+      __zstream_run(@h, str, flush)
+    rescue RuntimeError => e
+      raise Zlib::DataError, "data error" if e.message.include?("error 1")
+      raise Zlib::NeedDict, "need dictionary" if e.message.include?("error 2")
+      raise Zlib::BufError, "buffer error"
     end
   end
 
   class Deflate < ZStream
     def self.deflate(str, level = DEFAULT_COMPRESSION)
-      str = str.to_s
-      __zlib_deflate(str.b, level == DEFAULT_COMPRESSION ? 6 : level, MAX_WBITS)
+      __zlib_deflate(str.to_s.b, level == DEFAULT_COMPRESSION ? 6 : level, MAX_WBITS)
     end
 
     def initialize(level = DEFAULT_COMPRESSION, window_bits = MAX_WBITS,
                    mem_level = DEF_MEM_LEVEL, strategy = DEFAULT_STRATEGY)
-      super()
+      @deflating = true
       @level = level == DEFAULT_COMPRESSION ? 6 : level
       @window_bits = window_bits
+      super(true, @level, window_bits)
     end
 
     def <<(str)
       __check_open
-      unless str.nil?
-        s = str.to_s.b
-        @in << s
-        @total_in += s.bytesize
-      end
+      @out << __run(str.nil? ? nil : str.to_s.b, NO_FLUSH)
       self
     end
 
     def deflate(str, flush = NO_FLUSH)
       __check_open
-      self << str
-      return +"".b unless flush == FINISH
-      finish
+      @out << __run(str.nil? ? nil : str.to_s.b, str.nil? ? FINISH : flush)
+      flush_next_out
     end
 
     def params(level, strategy)
@@ -159,40 +166,46 @@ module Zlib
 
     def finish
       __check_open
-      @finished = true
-      @out << __zlib_deflate(@in, @level, @window_bits)
+      @out << __run(nil, FINISH)
       flush_next_out
     end
 
     def flush(flush = SYNC_FLUSH)
-      return +"".b unless flush == FINISH
-      finish
+      __check_open
+      @out << __run(nil, flush)
+      flush_next_out
     end
   end
 
   class Inflate < ZStream
     def self.inflate(str)
       raise Zlib::BufError, "buffer error" if str.nil? || str.empty?
+      z = new
       begin
-        __zlib_inflate(str.b, MAX_WBITS)
-      rescue RuntimeError => e
-        raise Zlib::DataError, "data error" if e.message.include?("error 1")
-        raise Zlib::NeedDict, "need dictionary" if e.message.include?("error 2")
-        raise Zlib::BufError, "buffer error"
+        out = z.inflate(str)
+        # a stream that never reached its end was truncated
+        raise Zlib::BufError, "buffer error" unless z.stream_end?
+        out + z.finish
+      ensure
+        z.close unless z.closed?
       end
     end
 
     def initialize(window_bits = MAX_WBITS)
-      super()
+      @deflating = false
       @window_bits = window_bits
+      @passthrough = +"".b
+      super(false, 0, window_bits)
     end
 
     def <<(str)
       __check_open
-      unless str.nil?
-        s = str.to_s.b
-        @in << s
-        @total_in += s.bytesize
+      if str.nil?
+        @out << __run(nil, SYNC_FLUSH)
+      elsif stream_end?
+        @passthrough << str.to_s.b       # after the end, data passes through
+      else
+        @out << __run(str.to_s.b, NO_FLUSH)
       end
       self
     end
@@ -200,21 +213,16 @@ module Zlib
     def inflate(str, buffer = nil)
       __check_open
       self << str
-      out = @in.empty? ? +"".b : Inflate.inflate(@in)
-      @finished = true unless @in.empty?
-      @out << out
       r = flush_next_out
       buffer ? buffer.replace(r) : r
     end
 
     def finish
       __check_open
-      unless @in.empty?                                  # `z << data; z.finish`
-        @out << Inflate.inflate(@in)
-        @in = +"".b
-      end
-      @finished = true
-      flush_next_out
+      @out << __run(nil, SYNC_FLUSH) unless stream_end?
+      r = flush_next_out + @passthrough
+      @passthrough = +"".b
+      r
     end
 
     def set_dictionary(dict) = dict
@@ -233,7 +241,8 @@ module Zlib
 
     OS_CODE = Zlib::OS_CODE
 
-    attr_accessor :comment, :orig_name, :mtime, :level, :sync
+    attr_accessor :comment, :orig_name, :level, :sync
+    attr_reader :mtime
     attr_reader :crc, :os_code
 
     def initialize
@@ -280,6 +289,21 @@ module Zlib
       @level = level.nil? || level == DEFAULT_COMPRESSION ? 6 : level
       @buf = +"".b
       @mtime = nil
+    end
+
+    # The gzip header carries mtime/orig_name/comment, so they can only be set
+    # before anything is written (CRuby writes the header on the first write).
+    def mtime=(t)
+      raise Zlib::GzipFile::Error, "header is already written" unless @buf.empty?
+      @mtime = t.is_a?(Integer) ? Time.at(t) : t
+    end
+    def orig_name=(n)
+      raise Zlib::GzipFile::Error, "header is already written" unless @buf.empty?
+      @orig_name = n.to_s
+    end
+    def comment=(n)
+      raise Zlib::GzipFile::Error, "header is already written" unless @buf.empty?
+      @comment = n.to_s
     end
 
     def write(*args)
@@ -446,7 +470,13 @@ module Zlib
     alias tell pos
     def lineno = @lineno
     def lineno=(n); @lineno = n; end
-    def rewind = (@pos = 0; @pos_bias = 0; @lineno = 0; 0)
+    def rewind
+      @io.seek(0, IO::SEEK_SET) if @io.respond_to?(:seek)   # CRuby rewinds the source io
+      @pos = 0
+      @pos_bias = 0
+      @lineno = 0
+      0
+    end
     def unused = nil
     def external_encoding = @encoding || @external_encoding || Encoding.default_external
 
