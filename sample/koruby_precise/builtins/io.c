@@ -560,6 +560,23 @@ static RESULT korb_m_io_s_pipe(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 /* IO#write(*args) → total bytes written. */
+/* IO#initialize(fd[, mode][, **opts]) (private) — re-associate this IO object
+ * with `fd`.  CRuby lets a subclass (or a re-init) point an existing IO at a
+ * different descriptor; the object identity is kept. */
+static RESULT korb_m_io_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t n = VALUE_SLICE_LEN(a);
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1)) &&
+        (VAL2HASH(VALUE_SLICE_GET(a, n - 1))->head.flags & KORB_FL_KWARGS)) n--;   /* keyword options */
+    if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    if (UNLIKELY(n > 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", n);
+    korb_sword_t fdv;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &fdv));
+    if (UNLIKELY(fcntl((int)fdv, F_GETFD) == -1)) return korb_raise_errno(c, slots, errno, "fcntl", NULL);
+    const uint32_t idx = korb_io_register(c->vm, (int)fdv, false);
+    CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_fp_mid(c)), LONG2FIX((korb_sword_t)idx)));
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
 static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
@@ -2180,6 +2197,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("readpartial", readpartial, -1);
     IOM("read_nonblock", read_nonblock, -1);
     IOM("write_nonblock", write_nonblock, -1);
+    IOM("initialize", initialize, -1);
     IOM("lineno", lineno, 0);        IOM("lineno=", lineno_set, 1);
     IOM("close_on_exec?", close_on_exec_p, 0);
     IOM("close_on_exec=", close_on_exec_set, 1);

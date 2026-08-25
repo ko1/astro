@@ -434,9 +434,13 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
     korb_sword_t comp[6] = { 1970, 1, 1, 0, 0, 0 };
     double subsec = 0.0;                                     /* fractional seconds (Float/Rational sec arg) */
     const korb_sword_t defs = (korb_sword_t)VALUE_SLICE_LEN(a);
+    /* The 10-argument form is C's struct tm order (sec, min, hour, mday, month,
+     * year, wday, yday, isdst, tz) — the last four are ignored, like CRuby. */
+    const bool cstyle = (defs == 10);
+    static const uint32_t cidx[6] = { 5, 4, 3, 2, 1, 0 };
     slots[0] = cls;                                          /* root cls across #to_int/#to_str dispatch */
     for (korb_sword_t i = 0; i < 6 && i < defs; i++) {
-        VALUE cv = VALUE_SLICE_GET(a, i);
+        VALUE cv = VALUE_SLICE_GET(a, cstyle ? cidx[i] : (uint32_t)i);
         if (i == 5 && !FIXNUM_P(cv) && (KORB_FLOAT_P(cv) || KORB_RATIONAL_P(cv))) {  /* fractional seconds */
             double sv = 0; if (korb_num_to_d(cv, &sv)) { comp[5] = (korb_sword_t)sv; subsec = sv - (double)comp[5]; }
             continue;
@@ -461,7 +465,7 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 cls = slots[0];
                 if (KORB_STRING_P(r.value)) cv = r.value;
-                else return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, i)));
+                else return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, cstyle ? cidx[i] : (uint32_t)i)));
             } else return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(cv));
         }
         if (KORB_STRING_P(cv)) {                             /* String component → parse (month accepts names) */
@@ -470,7 +474,7 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
                 return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "argument out of range");
         }
     }
-    if (defs >= 7) {                                         /* Time.utc/local 7th arg = microseconds */
+    if (defs >= 7 && !cstyle) {                              /* Time.utc/local 7th arg = microseconds */
         const VALUE uv = VALUE_SLICE_GET(a, 6);
         double us = 0;
         if (FIXNUM_P(uv)) us = (double)FIX2LONG(uv);
