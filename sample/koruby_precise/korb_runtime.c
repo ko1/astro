@@ -11375,12 +11375,45 @@ korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *
 }
 /* Resolve `name` (adding ".rb" if absent) against `base_dir` into `out` (abs),
  * returning true if the file exists. */
+/* Lexically normalise a path: collapse "//", drop "." and resolve ".." without
+ * touching the filesystem (CRuby reports the cleaned path in a LoadError even
+ * when the file does not exist). */
+static void korb_path_lexnorm(const char *in, char *out, size_t outsz) {
+    const char *seg = in;
+    size_t o = 0;
+    const bool abs = (in[0] == '/');
+    if (abs && outsz > 1) out[o++] = '/';
+    while (*seg) {
+        while (*seg == '/') seg++;
+        const char *end = strchr(seg, '/');
+        const size_t n = end ? (size_t)(end - seg) : strlen(seg);
+        if (n == 0) break;
+        if (n == 1 && seg[0] == '.') { seg += n; continue; }
+        if (n == 2 && seg[0] == '.' && seg[1] == '.') {
+            if (o > (abs ? 1u : 0u)) {                    /* pop the previous component */
+                size_t k = o - 1;
+                if (out[k] == '/') k--;
+                while (k > (abs ? 1u : 0u) && out[k - 1] != '/') k--;
+                if (!(k == 0 && !abs && o >= 3 && out[0] == '.' && out[1] == '.')) {
+                    o = k;
+                    if (o > (abs ? 1u : 0u) && out[o - 1] == '/') o--;   /* drop the separator too */
+                    seg += n; continue;
+                }
+            }
+        }
+        if (o > (abs ? 1u : 0u) && o + 1 < outsz) out[o++] = '/';
+        for (size_t i = 0; i < n && o + 1 < outsz; i++) out[o++] = seg[i];
+        seg += n;
+    }
+    if (o == 0 && outsz > 1) out[o++] = abs ? '/' : '.';
+    out[o < outsz ? o : outsz - 1] = '\0';
+}
 static bool korb_resolve_load(const char *base_dir, const char *name, char *out, size_t outsz) {
     char cand[4096];
     const bool has_rb = (strlen(name) >= 3 && strcmp(name + strlen(name) - 3, ".rb") == 0);
     if (name[0] == '/') snprintf(cand, sizeof cand, "%s%s", name, has_rb ? "" : ".rb");
     else                snprintf(cand, sizeof cand, "%s/%s%s", base_dir, name, has_rb ? "" : ".rb");
-    if (!realpath(cand, out)) { if ((size_t)snprintf(out, outsz, "%s", cand) >= outsz) return false; }
+    if (!realpath(cand, out)) korb_path_lexnorm(cand, out, outsz);
     struct stat st; return stat(out, &st) == 0 && S_ISREG(st.st_mode);
 }
 /* Kernel#__dir__ → the directory of the current source file (realpath'd), or nil
@@ -11560,9 +11593,15 @@ korb_bi_require_relative(CTX *c, VALUE *slots, VALUE_SLICE args)
         VALUE out; return korb_load_abspath(c, slots, abspath, true, &out);
     }
     {   /* CRuby names the resolved absolute path (minus any ".rb" it appended) */
-        char full[4096];
-        snprintf(full, sizeof full, "%s/%s", basedir, namebuf);
-        return korb_raise_load_error(c, slots, full);
+        char full[4096], norm[4096];
+        if (basedir[0] == '/') snprintf(full, sizeof full, "%s/%s", basedir, namebuf);
+        else {                                            /* make it absolute, like CRuby */
+            char cwd[4096];
+            if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
+            snprintf(full, sizeof full, "%s/%s/%s", cwd, basedir, namebuf);
+        }
+        korb_path_lexnorm(full, norm, sizeof norm);
+        return korb_raise_load_error(c, slots, norm);
     }
 }
 /* load(name): always (re)load; returns true. */
