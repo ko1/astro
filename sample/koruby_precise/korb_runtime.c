@@ -6511,6 +6511,9 @@ static RESULT korb_cproc_yield(CTX *c, VALUE *restrict slots, VALUE procv,
 /* Invoke a resolved method `m` on the staged receiver (send layout: recv at
  * slots[-argc-1], args at slots[-argc..]).  Handles every method kind, so all
  * receiver dispatch funnels through one place. */
+static RESULT korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
+                                    const VALUE *argv, uint32_t argc, VALUE *captured_self,
+                                    NODE *bp_blk, VALUE *bp_denv, VALUE *bp_self, uint32_t is_lam);   /* fwd */
 static __attribute__((no_stack_protector)) RESULT
 korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
                      uint32_t line, uint32_t argc, VALUE def_class,
@@ -6584,8 +6587,11 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
             slots[0] = m->dm_proc;                       /* root the proc; args live below at slots[-argc] */
             return korb_cproc_yield(c, slots + 1, slots[0], &slots[-(korb_sword_t)argc], argc);
         }
-        RESULT r = korb_block_yield(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
-                                    &slots[-(korb_sword_t)argc], argc, recv_slot);   /* captured_self = receiver slot */
+        /* Forward the method's own block into the body's `|&b|` — a
+         * define_method'd method takes a block like any other. */
+        RESULT r = korb_block_yield_full(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
+                                         &slots[-(korb_sword_t)argc], argc, recv_slot,
+                                         block, def_env, captured_self, 0);   /* captured_self = receiver slot */
         /* A define_method body behaves like a lambda: `return`, `break` and
          * `next` all just leave the method with that value (a bare `break` in a
          * plain block would unwind past it and end the program). */
