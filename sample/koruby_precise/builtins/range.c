@@ -330,7 +330,14 @@ static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     korb_sword_t lo, hi;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {   /* min(n) → first n ascending */
         korb_sword_t n;
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) {   /* coerce via #to_int */
+            VALUE nv = VALUE_SLICE_GET(a, 0);
+            RESULT cr = korb_coerce_to_int_pub(c, slots, &nv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(nv, &n))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
+                                  korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+        }
         if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
         if (!korb_range_int_bounds(r, &lo, &hi)) {
             /* Integer begin but endless / Bignum end: min(n) = first n ascending
@@ -372,7 +379,14 @@ static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         }
         if (FIXNUM_P(r->rend)) {                          /* max(n) → [end, end-1, ...] */
             korb_sword_t n;
-            if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+            if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) {   /* coerce via #to_int */
+            VALUE nv = VALUE_SLICE_GET(a, 0);
+            RESULT cr = korb_coerce_to_int_pub(c, slots, &nv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(nv, &n))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
+                                  korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+        }
             if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
             const korb_sword_t top = FIX2LONG(r->rend) - (r->exclude_end ? 1 : 0);
             return korb_range_seq(c, slots, top, (uint32_t)n, -1);
@@ -403,7 +417,14 @@ static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {   /* max(n) → last n descending */
         korb_sword_t n;
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) {   /* coerce via #to_int */
+            VALUE nv = VALUE_SLICE_GET(a, 0);
+            RESULT cr = korb_coerce_to_int_pub(c, slots, &nv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(nv, &n))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
+                                  korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+        }
         if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
         if (!korb_range_int_bounds(r, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
         uint32_t take = (uint32_t)n; if ((korb_sword_t)take > hi - lo) take = (uint32_t)(hi > lo ? hi - lo : 0);
