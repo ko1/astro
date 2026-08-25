@@ -448,5 +448,5 @@ class Enumerator::Lazy
     src = self
     __lazy_gen(sz) { |y| src.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
   end
-  def enum_for(meth = :each, *args, &sz) = to_enum(meth, *args, &sz)
+  alias enum_for to_enum   # a real alias: #method(:enum_for) == #method(:to_enum)
 end

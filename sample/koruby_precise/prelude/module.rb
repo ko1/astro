@@ -55,7 +55,15 @@ class Module
       rescue NameError
       end
     end
-    msg = self.equal?(Object) ? "uninitialized constant #{name}" : "uninitialized constant #{self}::#{name}"
+    # CRuby names the namespace with #name when it has one, else #inspect
+    # (both may be user-defined, and #to_s is NOT consulted).
+    label = begin
+      n = self.name
+      n.nil? ? inspect : n
+    rescue StandardError
+      inspect
+    end
+    msg = self.equal?(Object) ? "uninitialized constant #{name}" : "uninitialized constant #{label}::#{name}"
     raise NameError.new(msg, name, receiver: self)   # NameError#name / #receiver reflect the missing constant
   end
 

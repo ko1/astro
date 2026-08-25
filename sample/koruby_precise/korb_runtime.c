@@ -3313,18 +3313,35 @@ static uint32_t korb_const_mro_seg(const struct korb_vm *vm, VALUE klass, uint32
  * come first in the flat table.  The outermost link falls back to a by-name
  * lookup because a `module M::Inner` header bakes only `Inner`.  KORB_NIL when
  * there is no usable chain and `owner_name` names nothing. */
+/* Resolve one chain element inside `owner` (nil = top level).  A `class A::B`
+ * header bakes the whole dotted path as one element, so it is walked here. */
+static VALUE
+korb_cref_step(struct korb_vm *vm, VALUE owner, uint32_t elem)
+{
+    const char *const nm = korb_sym_name(vm, elem);
+    const char *p = nm;
+    VALUE cur = owner;
+    for (;;) {
+        const char *const sep = strstr(p, "::");
+        const uint32_t len = sep ? (uint32_t)(sep - p) : (uint32_t)strlen(p);
+        const uint32_t id = korb_intern(vm, p, len);
+        uint32_t j = korb_const_index_owned(vm, id, KORB_CLASS_P(cur) ? cur : KORB_NIL);
+        if (j == UINT32_MAX && cur == KORB_NIL) j = korb_const_index(vm, id);   /* top-level: allow the flat name */
+        if (j == UINT32_MAX) return KORB_NIL;
+        cur = vm->const_vals[j];
+        if (!sep) return cur;
+        if (!KORB_CLASS_P(cur)) return KORB_NIL;
+        p = sep + 2;
+    }
+}
 VALUE
 korb_cref_resolve(struct korb_vm *vm, const uint32_t *chain, uint32_t chain_len, uint32_t owner_name)
 {
     VALUE cref = KORB_NIL;
     if (chain != NULL && chain_len > 0) {
-        uint32_t j = korb_const_index_owned(vm, chain[0], KORB_NIL);
-        if (j == UINT32_MAX) j = korb_const_index(vm, chain[0]);
-        cref = (j != UINT32_MAX) ? vm->const_vals[j] : KORB_NIL;
-        for (uint32_t i = 1; KORB_CLASS_P(cref) && i < chain_len; i++) {
-            const uint32_t k = korb_const_index_owned(vm, chain[i], cref);
-            cref = (k != UINT32_MAX) ? vm->const_vals[k] : KORB_NIL;
-        }
+        cref = korb_cref_step(vm, KORB_NIL, chain[0]);
+        for (uint32_t i = 1; KORB_CLASS_P(cref) && i < chain_len; i++)
+            cref = korb_cref_step(vm, cref, chain[i]);
     }
     if (!KORB_CLASS_P(cref) && owner_name != 0) cref = korb_const_get(vm, owner_name);
     return cref;

@@ -1297,6 +1297,12 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * context-dependent so it is never cached on the node. */
         uint32_t eidx = korb_const_index_owned(vm, name_sym, c->eval_cref);
         if (eidx == UINT32_MAX) eidx = korb_const_in_ancestry(vm, c->eval_cref, name_sym);
+        /* then the cref's own lexical namespace — `M::C.module_eval("X")` sees
+         * M's constants, which is what "resolves constants in the caller scope"
+         * means for the usual case (the receiver is nested where it was called). */
+        for (VALUE o = KORB_CLASS_P(c->eval_cref) ? VAL2CLASS(c->eval_cref)->enclosing : KORB_NIL;
+             eidx == UINT32_MAX && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing)
+            eidx = korb_const_index_owned(vm, name_sym, o);
         if (eidx != UINT32_MAX) return RESULT_OK(vm->const_vals[eidx]);
     }
     uint32_t idx;
@@ -1319,18 +1325,29 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * (M::C vs M::Inner::C) doesn't shadow it via a flat name lookup. */
         const VALUE cref = korb_cref_resolve(vm, cache->owner_chain, cache->chain_len, owner_name);
         /* every read that reaches here is a BARE one now (`A::B` goes through
-         * node_const_path), so the lexical walk and the by-name fallback apply */
-        for (VALUE o = cref; idx == UINT32_MAX && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {   /* lexical scope (Module.nesting) */
-            idx = korb_const_index_owned(vm, name_sym, o);
+         * node_const_path), so the lexical walk applies.  Walk the BAKED chain
+         * (Module.nesting), not the classes' `enclosing` links: `class A::B`
+         * nests as [.., A::B] — A itself is NOT in the nesting. */
+        if (cache->chain_len > 0 && cache->owner_chain != NULL) {
+            for (int32_t i = (int32_t)cache->chain_len - 1; idx == UINT32_MAX && i >= 0; i--) {
+                const VALUE o = korb_cref_resolve(vm, cache->owner_chain, (uint32_t)i + 1, 0);
+                if (KORB_CLASS_P(o)) idx = korb_const_index_owned(vm, name_sym, o);
+            }
+        } else {
+            for (VALUE o = cref; idx == UINT32_MAX && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing)
+                idx = korb_const_index_owned(vm, name_sym, o);
         }
         if (idx == UINT32_MAX)                                                  /* then the innermost class's ancestry (MRO order) */
             idx = korb_const_in_ancestry(vm, cref, name_sym);
         if (idx == UINT32_MAX) idx = korb_const_index_owned(vm, name_sym, KORB_NIL);   /* then top-level / builtin (owner nil) */
-        /* The by-name fallback is for BARE reads only (a baked chain marks them):
-         * an explicit `A::B::C` must resolve inside B, or miss — otherwise a
-         * same-named constant elsewhere answers it, and a pending autoload on B
-         * never gets its chance. */
-        if (idx == UINT32_MAX) idx = korb_const_index(vm, name_sym);            /* finally any namespace (koruby's flat fallback) */
+        /* …and finally Object's own ancestry, which is what makes a constant of a
+         * module `include`d at top level visible unqualified.  There is NO flat
+         * by-name fallback: answering from an unrelated namespace would make
+         * `does not search the lexical scope of the caller` pass when it must raise. */
+        if (idx == UINT32_MAX) {
+            const VALUE objc = korb_const_get(vm, vm->class_name[KORB_C_OBJECT]);
+            if (KORB_CLASS_P(objc)) idx = korb_const_in_ancestry(vm, objc, name_sym);
+        }
     } else {                                          /* bare read with no NAMED enclosing class */
         /* The cref may still exist at runtime and have no name: a `class << obj`
          * body (self IS the singleton) or a method defined in one (the method
@@ -1347,7 +1364,10 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * registered first.  The flat fallback stays: koruby still exposes
          * nested constants unqualified. */
         if (idx == UINT32_MAX) idx = korb_const_index_owned(vm, name_sym, KORB_NIL);
-        if (idx == UINT32_MAX) idx = korb_const_index(vm, name_sym);
+        if (idx == UINT32_MAX) {                       /* Object's ancestry (a module included at top level) */
+            const VALUE objc = korb_const_get(vm, vm->class_name[KORB_C_OBJECT]);
+            if (KORB_CLASS_P(objc)) idx = korb_const_in_ancestry(vm, objc, name_sym);
+        }
     }
     if (UNLIKELY(idx == UINT32_MAX)) {
         /* Truly absent (no table entry).  A constant whose *value* is nil
@@ -1516,9 +1536,14 @@ node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, NODE *parent)
         idx = korb_const_index_owned(vm, name, KORB_NIL);
     if (UNLIKELY(vm->privconst_cnt != 0) &&               /* private_constant: unreachable as Owner::NAME */
         (idx != UINT32_MAX || korb_autoload_registered_p(c, slots[0], name)) &&
-        korb_const_private_p(vm, slots[0], name))
+        (korb_const_private_p(vm, slots[0], name) ||
+         (idx != UINT32_MAX && korb_const_private_p(vm, vm->const_owners[idx], name)))) {
+        /* the marker lives on the module that DEFINED it, which may be an
+         * ancestor of the receiver (`C::A` where C includes M) */
+        char qn[256]; korb_class_desc_into(c, slots[0], qn, sizeof qn);
         return korb_raise(c, slots + 1, KORB_E_NAME, 0, "private constant %s::%s referenced",
-                          korb_sym_name(vm, VAL2CLASS(slots[0])->name_sym), korb_sym_name(vm, name));
+                          qn, korb_sym_name(vm, name));
+    }
     if (LIKELY(idx != UINT32_MAX)) {
         if (UNLIKELY(vm->deprconst_cnt != 0)) {
             slots[1] = vm->const_vals[idx];               /* park: the warning path allocates */
@@ -1546,6 +1571,10 @@ node_defined_cpath_dyn(CTX *c, NODE *n, VALUE *slots, NODE *parent, uint32_t nam
     if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, pr.value, name);   /* inherited counts */
     if (idx == UINT32_MAX && !korb_autoload_registered_p(c, pr.value, name))   /* a pending autoload counts too */
         return RESULT_OK(KORB_NIL);
+    if (UNLIKELY(vm->privconst_cnt != 0) &&                                   /* a private constant is not `defined?` */
+        (korb_const_private_p(vm, pr.value, name) ||
+         (idx != UINT32_MAX && korb_const_private_p(vm, vm->const_owners[idx], name))))
+        return RESULT_OK(KORB_NIL);
     RESULT dr = korb_str_new(c, slots, "constant", 8);
     if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
         ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;
@@ -1567,6 +1596,10 @@ node_defined_cpath(CTX *c, NODE *n, VALUE *slots, uint32_t owner_name@sym, uint3
     if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, owner, name);   /* inherited constants count */
     if (idx == UINT32_MAX && !korb_autoload_registered_p(c, owner, name))   /* a pending autoload counts too */
         return RESULT_OK(KORB_NIL);                                          /* nil-valued constant still counts as defined */
+    if (UNLIKELY(vm->privconst_cnt != 0) &&                                  /* a private constant is not `defined?` */
+        (korb_const_private_p(vm, owner, name) ||
+         (idx != UINT32_MAX && korb_const_private_p(vm, vm->const_owners[idx], name))))
+        return RESULT_OK(KORB_NIL);
     RESULT dr = korb_str_new(c, slots, "constant", 8);
     if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
         ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;
