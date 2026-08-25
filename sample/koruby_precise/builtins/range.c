@@ -1483,20 +1483,39 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             slots[0] = bg;                            /* v    — all rooted (moving GC): the range,   */
             slots[1] = sv;                            /* step   its end, v, step, next may all move   */
             slots[2] = rng->rend;                     /* endv   under the #+/#<=>/yield dispatches.   */
+            /* CRuby decides the direction once, from begin <=> end, and only
+             * checks that the step advances the right way on the FIRST step. */
+            int forward = 1;
+            if (slots[2] != KORB_NIL) {
+                int dcmp; RESULT dr = korb_range_cmp(c, slots + 3, slots[0], slots[2], &dcmp);
+                if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+                if (dcmp == 2) return RESULT_OK(VALUE_REF_GET(self));   /* incomparable ends → nothing */
+                forward = dcmp <= 0;
+            }
+            bool first = true;
             for (;;) {
                 if (slots[2] != KORB_NIL) {           /* bounded: stop once v passes end */
                     int cmp; RESULT cr = korb_range_cmp(c, slots + 3, slots[0], slots[2], &cmp);
                     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-                    if (cmp == 2 || (excl ? cmp >= 0 : cmp > 0)) break;
+                    if (cmp == 2) break;
+                    if (forward ? (excl ? cmp >= 0 : cmp > 0) : (excl ? cmp <= 0 : cmp < 0)) break;
+                    if (cmp == 0) {                   /* the last element: yield it without a further #+ */
+                        if (!excl) { RESULT yr = korb_block_yield(c, slots + 3, block, def_env, &slots[0], 1, captured_self);
+                                     if (UNLIKELY(yr.state != KORB_NORMAL)) return yr; }
+                        break;
+                    }
                 }
                 slots[3] = slots[0];                  /* recv for v+step */
                 slots[4] = slots[1];
                 RESULT nr = korb_send(c, slots + 5, mid_plus, 0, 1);   /* next = v + step */
                 if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
                 slots[3] = nr.value;                  /* park next (rooted) before the <=> dispatch may GC */
-                int pc; RESULT pr = korb_range_cmp(c, slots + 4, slots[3], slots[0], &pc);   /* next <=> v */
-                if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
-                if (pc != 1) break;                   /* no forward progress (step 0 / wrong direction) → stop, no yield */
+                if (first) {                          /* does the step move toward end at all? */
+                    int pc; RESULT pr = korb_range_cmp(c, slots + 4, slots[0], slots[3], &pc);   /* v <=> next */
+                    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+                    if (pc == 2 || (forward ? pc >= 0 : pc <= 0)) break;   /* no progress → stop, no yield */
+                    first = false;
+                }
                 RESULT yr = korb_block_yield(c, slots + 5, block, def_env, &slots[0], 1, captured_self);
                 if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
                 slots[0] = slots[3];                  /* v = next */
