@@ -700,6 +700,7 @@ enum korb_method_kind {
     KORB_METHOD_ATTR_W = 3,   /* attr writer: @ivar = arg0 */
     KORB_METHOD_CFUNC = 4,    /* receiver-dispatch C method (Array#push, ...): rfn/rbfn with self ref */
     KORB_METHOD_DM = 5,       /* define_method: body is a Proc (dm_proc) run with self = receiver */
+    KORB_METHOD_UNDEF = 6,    /* undef_method: a tombstone that STOPS the MRO walk (unlike remove_method) */
 };
 
 struct CTX_struct;

@@ -513,9 +513,19 @@ static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     slots[0] = sv;                                                               /* root self */
     slots[1] = UNWRAP(korb_obj_singleton(c, slots + 2, sv));                      /* singleton (rooted) */
     const uint32_t extended = korb_intern(c->vm, "extended", 8);
+    const uint32_t extend_object = korb_intern(c->vm, "extend_object", 13);
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {                           /* include each module */
         slots[2] = VALUE_SLICE_GET(a, i);
-        CHECK(korb_do_include(c, slots + 3, slots[1], VALUE_SLICE_MAKE(&slots[2], 1)));
+        /* CRuby routes every extend through the (private, overridable)
+         * Module#extend_object; the prelude default does the singleton include. */
+        if (LIKELY(korb_responds_to(c, slots[2], extend_object))) {
+            slots[3] = slots[2];                                                  /* module = receiver */
+            slots[4] = slots[0];                                                  /* the object = arg */
+            RESULT er = korb_send_impl(c, slots + 5, extend_object, 0, 1, NULL, NULL, NULL);
+            if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+        } else {
+            CHECK(korb_do_include(c, slots + 3, slots[1], VALUE_SLICE_MAKE(&slots[2], 1)));
+        }
         if (UNLIKELY(korb_responds_to(c, slots[2], extended))) {                  /* fire Module#extended(obj) hook */
             slots[3] = slots[2];                                                  /* module = receiver (sp[-2]) */
             slots[4] = slots[0];                                                  /* extended object = arg (sp[-1]) */
@@ -1055,14 +1065,22 @@ static RESULT korb_m_class_instance_methods(CTX *c, VALUE *slots, VALUE_REF self
 /* push the visibility-matching method names of `klass_ref`'s class into `result`
  * (with dedup).  vis_mask bit v set ⇒ include methods of visibility v.  Re-reads
  * the class each iteration since korb_ary_push_val can move it under a moving GC. */
-static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALUE_REF klass_ref, uint8_t vis_mask, const uint32_t *priv_mids, uint32_t priv_n) {
+/* `blocked` collects undef tombstones seen so far: a name undef'd nearer in the
+ * MRO hides the ancestor definition from every listing below it. */
+static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALUE_REF blocked, VALUE_REF klass_ref, uint8_t vis_mask, const uint32_t *priv_mids, uint32_t priv_n) {
     const uint32_t n = VAL2CLASS(VALUE_REF_GET(klass_ref))->method_cnt;
     for (uint32_t i = 0; i < n; i++) {
         const struct korb_method *const m = VAL2CLASS(VALUE_REF_GET(klass_ref))->methods[i];   /* entries are immortal (libc) */
+        if (m->mid == UINT32_MAX) continue;
+        const VALUE sym = ID2SYM(m->mid);
+        if (m->kind == KORB_METHOD_UNDEF) { CHECK(korb_ary_push_val(c, slots, blocked, sym)); continue; }
+        { const KorbArray *const b = VAL2ARY(VALUE_REF_GET(blocked));
+          bool hid = false;
+          for (uint32_t j = 0; j < b->len; j++) if (korb_items_data(b->items)[j] == sym) { hid = true; break; }
+          if (hid) continue; }
         uint8_t v = m->visibility;
         for (uint32_t p = 0; p < priv_n; p++) if (m->mid == priv_mids[p]) { v = 1; break; }   /* initialize/initialize_{copy,clone,dup}/respond_to_missing? are always private */
         if (!(vis_mask & (1u << v))) continue;
-        const VALUE sym = ID2SYM(m->mid);
         const KorbArray *const r = VAL2ARY(VALUE_REF_GET(result));
         bool seen = false;
         for (uint32_t j = 0; j < r->len; j++) if (korb_items_data(r->items)[j] == sym) { seen = true; break; }
@@ -1123,21 +1141,23 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
     slots[0] = UNWRAP(korb_ary_new(c, slots + 2, 8));              /* result (rooted at slots[0]) */
     const VALUE_REF result = VALUE_REF_AT(&slots[0]);
     slots[2] = KORB_NIL;                                            /* module scratch (rooted; init so GC never scans garbage) */
+    slots[3] = UNWRAP(korb_ary_new(c, slots + 4, 4));              /* undef'd names seen so far (rooted) */
+    const VALUE_REF blocked = VALUE_REF_AT(&slots[3]);
     while (KORB_CLASS_P(slots[1])) {
         const bool is_sing = VAL2CLASS(slots[1])->is_singleton;
         if (inherit && VAL2CLASS(slots[1])->prepended != KORB_NIL) {   /* prepended modules precede the class (ancestors → only with inherit) */
             const uint32_t plen = VAL2ARY(VAL2CLASS(slots[1])->prepended)->len;
             for (uint32_t j = plen; j-- > 0; ) {
                 slots[2] = korb_items_data(VAL2ARY(VAL2CLASS(slots[1])->prepended)->items)[j];   /* re-read (rooted class) */
-                CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[2]), vis_mask, priv_mids, priv_n));
+                CHECK(korb_push_vis_methods(c, slots + 4, result, blocked, VALUE_REF_AT(&slots[2]), vis_mask, priv_mids, priv_n));
             }
         }
-        CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[1]), vis_mask, priv_mids, priv_n));
+        CHECK(korb_push_vis_methods(c, slots + 4, result, blocked, VALUE_REF_AT(&slots[1]), vis_mask, priv_mids, priv_n));
         if (inherit && VAL2CLASS(slots[1])->included != KORB_NIL) { /* mixed-in modules */
             const uint32_t mlen = VAL2ARY(VAL2CLASS(slots[1])->included)->len;
             for (uint32_t j = mlen; j-- > 0; ) {
                 slots[2] = korb_items_data(VAL2ARY(VAL2CLASS(slots[1])->included)->items)[j];   /* re-read (rooted class) */
-                CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[2]), vis_mask, priv_mids, priv_n));
+                CHECK(korb_push_vis_methods(c, slots + 4, result, blocked, VALUE_REF_AT(&slots[2]), vis_mask, priv_mids, priv_n));
             }
         }
         if (!inherit && !is_sing) break;                           /* false: stop after the first non-singleton class */
@@ -1197,6 +1217,8 @@ static RESULT korb_m_obj_singleton_methods(CTX *c, VALUE *slots, VALUE_REF self,
     slots[1] = KORB_NIL;                                            /* singleton (rooted) */
     slots[2] = KORB_NIL;                                            /* module scratch (rooted) */
     slots[3] = VALUE_REF_GET(self);                                 /* walk cursor (rooted) */
+    slots[4] = UNWRAP(korb_ary_new(c, slots + 5, 4));              /* undef'd names (rooted) */
+    const VALUE_REF blocked = VALUE_REF_AT(&slots[4]);
     /* A Class inherits class methods from its superclasses' singleton classes; walk
      * the (user) superclass chain when `all`, stopping before Object so builtin class
      * methods don't leak in. */
@@ -1205,12 +1227,12 @@ static RESULT korb_m_obj_singleton_methods(CTX *c, VALUE *slots, VALUE_REF self,
     for (;;) {
         slots[1] = korb_dispatch_class(c, slots[3]);                /* singleton (if any) or real class */
         if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[1])->is_singleton) {
-            CHECK(korb_push_vis_methods(c, slots + 4, result, VALUE_REF_AT(&slots[1]), mask, &mid_init, 1u));
+            CHECK(korb_push_vis_methods(c, slots + 5, result, blocked, VALUE_REF_AT(&slots[1]), mask, &mid_init, 1u));
             if (all && VAL2CLASS(slots[1])->included != KORB_NIL) { /* extended modules */
                 const uint32_t mlen = VAL2ARY(VAL2CLASS(slots[1])->included)->len;
                 for (uint32_t j = mlen; j-- > 0; ) {
                     slots[2] = korb_items_data(VAL2ARY(VAL2CLASS(slots[1])->included)->items)[j];
-                    CHECK(korb_push_vis_methods(c, slots + 4, result, VALUE_REF_AT(&slots[2]), mask, &mid_init, 1u));
+                    CHECK(korb_push_vis_methods(c, slots + 5, result, blocked, VALUE_REF_AT(&slots[2]), mask, &mid_init, 1u));
                 }
             }
         }
@@ -1536,10 +1558,10 @@ static RESULT korb_m_class_cvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_class_remove_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE cls = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(cls))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
-    { RESULT fr = korb_check_def_frozen(c, slots, cls); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* remove_method on a frozen class → FrozenError */
     for (uint32_t ai = 0; ai < VALUE_SLICE_LEN(a); ai++) {
-        uint32_t mid;   /* Symbol/String, or #to_str-coercible */
+        uint32_t mid;   /* Symbol/String, or #to_str-coercible — checked BEFORE frozen-ness (CRuby order) */
         { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, ai), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+        { RESULT fr = korb_check_def_frozen(c, slots, VALUE_REF_GET(self)); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }
         KorbClass *const k = VAL2CLASS(VALUE_REF_GET(self));   /* re-read: the coercion may have GC-moved the class */
         bool found = false;
         for (uint32_t i = 0; i < k->method_cnt; i++)
@@ -1573,14 +1595,33 @@ static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VA
             const bool intrinsic = !strcmp(nm, "to_s") || !strcmp(nm, "inspect") || !strcmp(nm, "!~") ||
                                    !strcmp(nm, "<=>") || !strcmp(nm, "!") || !strcmp(nm, "!=");
             if (!on_object && !intrinsic)
+            {   char cnm[256];
+                if (VAL2CLASS(cls)->name_sym) korb_class_qname_into(c, cls, cnm, sizeof cnm);
+                else snprintf(cnm, sizeof cnm, "#<%s:0x%016lx>",   /* anonymous: the #to_s form */
+                              k->is_module ? "Module" : "Class", (unsigned long)(uintptr_t)cls);
                 return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
-                                  korb_sym_name(c->vm, mid), k->is_module ? "module" : "class", korb_type_name(cls));
+                                  korb_sym_name(c->vm, mid), k->is_module ? "module" : "class", cnm); }
         }
-        for (uint32_t i = 0; i < k->method_cnt; i++)
-            if (k->methods[i]->mid == mid) { k->methods[i]->mid = UINT32_MAX; break; }
+        korb_class_undef_slot(k, cls, mid);
+        c->vm->method_serial++;
+        slots[0] = cls;                                  /* the hook is Ruby code: re-root the class */
+        CHECK(korb_fire_def_hook(c, slots + 1, slots[0], mid, "method_undefined", 16));
     }
     c->vm->method_serial++;
     return RESULT_OK(VALUE_REF_GET(self));
+}
+/* Module#undefined_instance_methods — the class's own undef tombstones. */
+static RESULT korb_m_class_undefined_imethods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 4));
+    const VALUE_REF res = VALUE_REF_AT(&slots[0]);
+    if (!KORB_CLASS_P(VALUE_REF_GET(self))) return RESULT_OK(VALUE_REF_GET(res));
+    const uint32_t n = VAL2CLASS(VALUE_REF_GET(self))->method_cnt;
+    for (uint32_t i = 0; i < n; i++) {
+        const struct korb_method *const m = VAL2CLASS(VALUE_REF_GET(self))->methods[i];   /* entries are immortal */
+        if (m->kind == KORB_METHOD_UNDEF) CHECK(korb_ary_push_val(c, slots + 1, res, ID2SYM(m->mid)));
+    }
+    return RESULT_OK(VALUE_REF_GET(res));
 }
 /* Module#method_defined?(sym|str[, inherit]) — true if an instance method by
  * that name is defined on the class / its ancestors (koruby doesn't track
@@ -1600,6 +1641,7 @@ static RESULT korb_method_defined_vis(CTX *c, VALUE *slots, VALUE_REF self, VALU
         for (uint32_t j = 0; j < k->method_cnt; j++) {
             const struct korb_method *const om = k->methods[j];
             if (om->mid != mid) continue;
+            if (om->kind == KORB_METHOD_UNDEF) return RESULT_OK(KORB_FALSE);
             const bool ok = (want < 0) ? (om->visibility != 1) : (om->visibility == want);
             return RESULT_OK(ok ? KORB_TRUE : KORB_FALSE);
         }

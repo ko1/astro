@@ -171,9 +171,11 @@ class Module
     nil
   end
 
-  # The primitive behind Object#extend (private): mix self into obj's singleton class.
+  # The primitive behind Object#extend (private): mix self into obj's singleton
+  # class.  append_features, not include — CRuby does not fire #included here.
   private def extend_object(obj)
-    obj.singleton_class.include(self)
+    raise FrozenError, "can't modify frozen #{obj.class}: #{obj.inspect}" if obj.frozen?
+    append_features(obj.singleton_class)
     obj
   end
 end

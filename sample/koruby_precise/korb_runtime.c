@@ -3857,6 +3857,30 @@ korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is
     c->vm->method_serial++;
 }
 
+/* Install an undef tombstone for `mid` on `k` (owner `cls`). */
+void
+korb_class_undef_slot(KorbClass *k, VALUE cls, uint32_t mid)
+{
+    struct korb_method *const um = korb_class_method_slot(k, mid);   /* libc alloc, no GC */
+    um->mid = mid; um->orig_mid = mid;
+    um->kind = KORB_METHOD_UNDEF; um->owner = cls; um->visibility = 0;
+    um->params_cnt = -1; um->req_cnt = 0; um->post_cnt = 0; um->rest_slot = -1;
+    um->locals_cnt = 0; um->uses_block = 0; um->is_simple = 0;
+    um->body = NULL; um->bfn = NULL; um->rfn = NULL; um->rbfn = NULL;
+    um->dm_proc = KORB_NIL; um->opt_defaults = NULL; um->kw_info = NULL; um->param_info = NULL;
+}
+
+/* Fire a Module definition callback (method_removed / method_undefined). */
+RESULT
+korb_fire_def_hook(CTX *c, VALUE *slots, VALUE mod, uint32_t mid, const char *hook, uint32_t hook_len)
+{
+    if (!KORB_CLASS_P(mod)) return RESULT_OK(KORB_NIL);
+    const uint32_t h = korb_intern(c->vm, hook, hook_len);
+    if (LIKELY(!korb_responds_to(c, mod, h))) return RESULT_OK(KORB_NIL);
+    slots[0] = mod; slots[1] = ID2SYM(mid);
+    return korb_send(c, slots + 2, h, 0, 1);
+}
+
 /* Fire the definition hook after a non-`def` definition (attr_*, define_method,
  * alias_method).  A singleton class routes to its attached object's
  * singleton_method_added instead, like CRuby. */
@@ -3913,7 +3937,7 @@ korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def)
 {
     while (KORB_CLASS_P(klass)) {
         struct korb_method *m = korb_mro_seg_find(klass, mid, out_def, 0);
-        if (m) return m;
+        if (m) return m->kind == KORB_METHOD_UNDEF ? NULL : m;   /* undef tombstone: stop, report missing */
         klass = VAL2CLASS(klass)->superclass;
     }
     return NULL;
@@ -4377,6 +4401,32 @@ korb_include_collect(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE 
         CHECK(korb_ary_push_val(c, slots + 1, dst, VALUE_REF_GET(mref)));
     return RESULT_OK(KORB_NIL);
 }
+/* korb_include_collect + CRuby's re-include rule: when `mod` is ALREADY an
+ * ancestor, the sub-modules it has gained since must land directly below it in
+ * the MRO, not at the top.  The list is reverse-iterated (last = nearest), so
+ * that means rotating the freshly appended block down to mod's index. */
+static RESULT
+korb_include_apply(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE mod)
+{
+    const uint32_t before = VAL2ARY(VALUE_REF_GET(dst))->len;
+    int32_t at = -1;
+    for (uint32_t i = 0; i < before; i++)
+        if (korb_items_data(VAL2ARY(VALUE_REF_GET(dst))->items)[i] == mod) { at = (int32_t)i; break; }
+    CHECK(korb_include_collect(c, slots, cref, dst, mod));
+    if (at < 0) return RESULT_OK(KORB_NIL);                  /* fresh include: collect order is already right */
+    KorbArray *const arr = VAL2ARY(VALUE_REF_GET(dst));      /* no GC below */
+    const uint32_t n = arr->len - before;
+    if (n == 0) return RESULT_OK(KORB_NIL);
+    VALUE *const items = korb_items_data(arr->items);
+    for (uint32_t k = 0; k < n; k++) {                       /* rotate one element at a time (write-barriered) */
+        const VALUE v = items[arr->len - 1];
+        for (uint32_t i = arr->len - 1; i > (uint32_t)at; i--)
+            ARO_STORE(c, arr->items, &items[i], items[i - 1]);
+        ARO_STORE(c, arr->items, &items[at], v);
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
 /* `include mod...` in a class/module body: append each module to klass->included
  * (later lookups check most-recently-included first). Returns the class. */
 RESULT
@@ -4408,7 +4458,7 @@ korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
             if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
         } else {                                               /* default insertion (init, before Module methods exist) */
             slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->included;
-            CHECK(korb_include_collect(c, slots + 3, kref, VALUE_REF_AT(&slots[1]), slots[2]));
+            CHECK(korb_include_apply(c, slots + 3, kref, VALUE_REF_AT(&slots[1]), slots[2]));
         }
         if (UNLIKELY(korb_responds_to(c, slots[2], included_mid))) {   /* fire Module#included(base) hook (direct module only) */
             slots[3] = slots[2];                               /* recv = mod */
@@ -4471,8 +4521,13 @@ korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
  * and then fire the #included / #prepended callback. */
 static RESULT korb_mod_features(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool prepend) {
     const VALUE base = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_CLASS_P(VALUE_REF_GET(self)) || !VAL2CLASS(VALUE_REF_GET(self))->is_module))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s_features must be called for modules", prepend ? "prepend" : "append");
     if (UNLIKELY(!KORB_CLASS_P(base)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(base));
+    if (UNLIKELY(base == VALUE_REF_GET(self) || korb_class_has_ancestor(VALUE_REF_GET(self), base)))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cyclic include detected");
+    KORB_CHECK_FROZEN(c, slots, base);           /* frozen target → FrozenError before any change */
     slots[0] = base;                             /* [0] base (rooted) */
     slots[1] = VALUE_REF_GET(self);              /* [1] self = the module */
     VALUE *const listp = prepend ? (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->prepended
@@ -4483,7 +4538,7 @@ static RESULT korb_mod_features(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                                                   : (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->included, arr);
     }
     slots[2] = prepend ? VAL2CLASS(slots[0])->prepended : VAL2CLASS(slots[0])->included;   /* [2] dst */
-    CHECK(korb_include_collect(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[2]), slots[1]));
+    CHECK(korb_include_apply(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[2]), slots[1]));
     c->vm->method_serial++;                      /* MRO changed → flush caches */
     return RESULT_OK(slots[1]);
 }
@@ -4577,6 +4632,7 @@ korb_super_find(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_d
             if (m == NULL) m = korb_class_find_method(VAL2CLASS(def_class)->superclass, mid, &found_def);
         }
     }
+    if (m != NULL && m->kind == KORB_METHOD_UNDEF) { m = NULL; found_def = KORB_NIL; }   /* undef tombstone */
     if (out_def_class) *out_def_class = found_def;   /* the class the method came from (super's def_class) */
     return m;
 }
@@ -4793,6 +4849,10 @@ korb_dispatch_class(CTX *c, VALUE self)
                 const VALUE ov = korb_klass_override_get(vm, k);
                 if (KORB_CLASS_P(ov)) return ov;
             }
+        if (VAL2CLASS(self)->is_module) {             /* a module's class is Module, not Class */
+            const VALUE mm = korb_const_get(vm, vm->name_module);
+            if (KORB_CLASS_P(mm)) return mm;
+        }
     }
     if (KORB_EXC_P(self)) {
         if (VAL2EXC(self)->exc_class != KORB_NIL) return VAL2EXC(self)->exc_class;   /* user exception subclass → its MRO */
@@ -9746,6 +9806,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "const_set", korb_m_class_const_set, 2);
     korb_def_cmethod(c, KORB_C_CLASS, "remove_method", korb_m_class_remove_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "undef_method", korb_m_class_undef_method, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "undefined_instance_methods", korb_m_class_undefined_imethods, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "<",  korb_m_class_lt, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "<=", korb_m_class_le, 1);
     korb_def_cmethod(c, KORB_C_CLASS, ">",  korb_m_class_gt, 1);
@@ -9879,6 +9940,7 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("remove_const", korb_m_class_remove_const, 1);
     MOD_CFN("remove_method", korb_m_class_remove_method, -1);
     MOD_CFN("undef_method", korb_m_class_undef_method, -1);
+    MOD_CFN("undefined_instance_methods", korb_m_class_undefined_imethods, 0);
     MOD_CFN("alias_method", korb_m_class_alias_method, 2);
     MOD_CFN("<",  korb_m_class_lt, 1);
     MOD_CFN("<=", korb_m_class_le, 1);
@@ -9913,6 +9975,18 @@ korb_register_core_methods(CTX *c)
     MOD_CFN_BLK("module_exec", korb_m_mod_class_exec, -1);
     #undef MOD_CFN
     #undef MOD_CFN_BLK
+    {   /* CRuby undefines the module-only definition methods on Class, so
+         * Class.private_instance_methods doesn't list them and an UnboundMethod
+         * rebound to a Class raises. */
+        static const char *const class_undefs[] = {
+            "append_features", "prepend_features", "extend_object", "module_function", "refine",
+        };
+        const VALUE clsc = korb_builtin_class_obj(c->vm, KORB_C_CLASS);
+        if (KORB_CLASS_P(clsc))
+            for (size_t i = 0; i < sizeof class_undefs / sizeof class_undefs[0]; i++)
+                korb_class_undef_slot(VAL2CLASS(clsc), clsc,
+                                      korb_intern(c->vm, class_undefs[i], (uint32_t)strlen(class_undefs[i])));
+    }
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "then", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "yield_self", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "tap", korb_m_obj_tap, 0);
