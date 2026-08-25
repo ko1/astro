@@ -42,7 +42,7 @@ static double korb_cbrt(double f) {
         { RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; } \
         const double r_ = fn(x);                                                        \
         if (UNLIKELY(isnan(r_) && !isnan(x) && !isinf(x)))   /* finite input → NaN = out of domain */ \
-            return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"%s\"", #nm); \
+            return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - %s", #nm); \
         return korb_float_new(c, slots, r_);                                            \
     }
 #define KORB_MATH2(nm, fn)                                                              \
@@ -79,7 +79,7 @@ static RESULT korb_m_math_log2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &d); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; e = 0;
     }
     const double r2 = log2(d) + (double)e;
-    if (UNLIKELY(isnan(r2) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"log2\"");
+    if (UNLIKELY(isnan(r2) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - log2");
     return korb_float_new(c, slots, r2);
 }
 static RESULT korb_m_math_log10(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -88,7 +88,7 @@ static RESULT korb_m_math_log10(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &d); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; e = 0;
     }
     const double r10 = log10(d) + (double)e * 0.301029995663981195213738894724; /* + e·log10(2) */
-    if (UNLIKELY(isnan(r10) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"log10\"");
+    if (UNLIKELY(isnan(r10) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - log10");
     return korb_float_new(c, slots, r10);
 }
 KORB_MATH2(atan2, atan2) KORB_MATH2(hypot, hypot) KORB_MATH2(copysign, copysign)
@@ -101,7 +101,7 @@ static RESULT korb_m_math_log(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &d); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; e = 0;
     }
     const double lnx = log(d) + (double)e * M_LN2;   /* ln(d·2^e) */
-    if (UNLIKELY(isnan(lnx) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"log\"");
+    if (UNLIKELY(isnan(lnx) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - log");
     if (VALUE_SLICE_LEN(a) >= 2) {
         double db; long eb;
         if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 1), &db, &eb))) {
@@ -164,24 +164,40 @@ void korb_init_math(CTX *c, VALUE *slots) {
     slots[0] = (korb_class_new(c, slots, korb_intern(vm, "Math", 4), KORB_NIL)).value;
     VAL2CLASS(slots[0])->is_module = 1;
     korb_const_define(c, korb_intern(vm, "Math", 4), slots[0]);
-    /* Math::PI / Math::E (flat const table). */
-    korb_const_define(c, korb_intern(vm, "PI", 2), korb_float_new(c, slots + 1, M_PI).value);
-    korb_const_define(c, korb_intern(vm, "E", 1),  korb_float_new(c, slots + 1, M_E).value);
-    /* Float:: constants (flat table: Float::INFINITY → "INFINITY"). */
-    korb_const_define(c, korb_intern(vm, "INFINITY", 8), korb_float_new(c, slots + 1, INFINITY).value);
-    korb_const_define(c, korb_intern(vm, "NAN", 3),      korb_float_new(c, slots + 1, NAN).value);
-    korb_const_define(c, korb_intern(vm, "MAX", 3),      korb_float_new(c, slots + 1, DBL_MAX).value);
-    korb_const_define(c, korb_intern(vm, "MIN", 3),      korb_float_new(c, slots + 1, DBL_MIN).value);
-    korb_const_define(c, korb_intern(vm, "EPSILON", 7),  korb_float_new(c, slots + 1, DBL_EPSILON).value);
-    korb_const_define(c, korb_intern(vm, "I", 1),        korb_cpx_new(c, slots + 1, LONG2FIX(0), LONG2FIX(1)).value);   /* Complex::I */
+    /* Owned so `Float.constants` / `Math.constants` report them; a bare read
+     * still finds them, since the by-name lookup ignores the owner. */
+    const VALUE mathm = slots[0];
+    const VALUE fltc = korb_builtin_class_obj(vm, KORB_C_FLOAT);
+    const VALUE cpxc = korb_builtin_class_obj(vm, KORB_C_COMPLEX);
+#define MCONST(o, nm, n, v) korb_const_define_owned(c, korb_intern(vm, nm, n), (v), (o))
+    MCONST(mathm, "PI", 2, korb_float_new(c, slots + 1, M_PI).value);
+    MCONST(mathm, "E",  1, korb_float_new(c, slots + 1, M_E).value);
+    MCONST(fltc, "INFINITY", 8, korb_float_new(c, slots + 1, INFINITY).value);
+    MCONST(fltc, "NAN", 3,      korb_float_new(c, slots + 1, NAN).value);
+    MCONST(fltc, "MAX", 3,      korb_float_new(c, slots + 1, DBL_MAX).value);
+    MCONST(fltc, "MIN", 3,      korb_float_new(c, slots + 1, DBL_MIN).value);
+    MCONST(fltc, "EPSILON", 7,  korb_float_new(c, slots + 1, DBL_EPSILON).value);
+    MCONST(cpxc, "I", 1,        korb_cpx_new(c, slots + 1, LONG2FIX(0), LONG2FIX(1)).value);
     /* integer-valued Float:: constants (IEEE-754 double properties). */
-    korb_const_define(c, korb_intern(vm, "DIG", 3),         LONG2FIX(DBL_DIG));
-    korb_const_define(c, korb_intern(vm, "MANT_DIG", 8),    LONG2FIX(DBL_MANT_DIG));
-    korb_const_define(c, korb_intern(vm, "MIN_EXP", 7),     LONG2FIX(DBL_MIN_EXP));
-    korb_const_define(c, korb_intern(vm, "MAX_EXP", 7),     LONG2FIX(DBL_MAX_EXP));
-    korb_const_define(c, korb_intern(vm, "MIN_10_EXP", 10), LONG2FIX(DBL_MIN_10_EXP));
-    korb_const_define(c, korb_intern(vm, "MAX_10_EXP", 10), LONG2FIX(DBL_MAX_10_EXP));
-    korb_const_define(c, korb_intern(vm, "RADIX", 5),       LONG2FIX(FLT_RADIX));
+    MCONST(fltc, "DIG", 3,         LONG2FIX(DBL_DIG));
+    MCONST(fltc, "MANT_DIG", 8,    LONG2FIX(DBL_MANT_DIG));
+    MCONST(fltc, "MIN_EXP", 7,     LONG2FIX(DBL_MIN_EXP));
+    MCONST(fltc, "MAX_EXP", 7,     LONG2FIX(DBL_MAX_EXP));
+    MCONST(fltc, "MIN_10_EXP", 10, LONG2FIX(DBL_MIN_10_EXP));
+    MCONST(fltc, "MAX_10_EXP", 10, LONG2FIX(DBL_MAX_10_EXP));
+    MCONST(fltc, "RADIX", 5,       LONG2FIX(FLT_RADIX));
+#undef MCONST
+    {   /* Math::DomainError is created with the exception classes, before Math
+         * exists; re-own the existing entry rather than adding a second one. */
+        const uint32_t de = korb_intern(vm, "DomainError", 11);
+        for (uint32_t i = 0; i < vm->const_cnt; i++)
+            if (vm->const_names[i] == de && vm->const_owners[i] == KORB_NIL) {
+                vm->const_owners[i] = mathm;
+                const VALUE dec = vm->const_vals[i];                     /* also gives it the Math:: qualified name */
+                if (KORB_CLASS_P(dec)) ARO_STORE(c, VAL2CLASS(dec), (VALUE *)(uintptr_t)&VAL2CLASS(dec)->enclosing, mathm);
+                break;
+            }
+    }
     /* slots[0] holds Math; re-read it each call — singleton alloc may move it. */
 #define MF(name, fn, ar) korb_def_modfunc(c, slots + 1, slots[0], name, korb_m_math_##fn, ar)
     MF("sqrt", sqrt, 1); MF("cbrt", cbrt, 1);
