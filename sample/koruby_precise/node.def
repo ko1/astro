@@ -1103,8 +1103,10 @@ node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int
     /* enclosing = the path's parent module (`class M::C`, baked const name) if
      * present, else the lexical self (`module M; class C`). */
     VALUE enclosing = path_owner ? korb_const_get_path(c->vm, path_owner) : slots[self_off];
-    { uint32_t fs, ln;                                    /* Module#const_source_location */
-      if (korb_get_srcloc(c->vm, n, &fs, &ln)) korb_const_reg_loc(c->vm, name_sym, KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL, fs, ln); }
+    { uint32_t fs, ln;                                    /* Module#const_source_location: the FIRST definition wins */
+      const VALUE loc_owner = KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL;
+      if (korb_const_index_owned(c->vm, name_sym, loc_owner) == UINT32_MAX &&
+          korb_get_srcloc(c->vm, n, &fs, &ln)) korb_const_reg_loc(c->vm, name_sym, loc_owner, fs, ln); }
     return korb_class_body(c, slots, name_sym, body, VALUE_REF_GET(super), 0, enclosing);
 }
 
@@ -1131,8 +1133,10 @@ node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, in
     (void)body_dispatcher;
     /* enclosing = the path's parent (`module M::Inner`) if present, else lexical self. */
     VALUE enclosing = path_owner ? korb_const_get_path(c->vm, path_owner) : slots[self_off];
-    { uint32_t fs, ln;                                    /* Module#const_source_location */
-      if (korb_get_srcloc(c->vm, n, &fs, &ln)) korb_const_reg_loc(c->vm, name_sym, KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL, fs, ln); }
+    { uint32_t fs, ln;                                    /* Module#const_source_location: the FIRST definition wins */
+      const VALUE loc_owner = KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL;
+      if (korb_const_index_owned(c->vm, name_sym, loc_owner) == UINT32_MAX &&
+          korb_get_srcloc(c->vm, n, &fs, &ln)) korb_const_reg_loc(c->vm, name_sym, loc_owner, fs, ln); }
     return korb_class_body(c, slots, name_sym, body, KORB_NIL, 1, enclosing);
 }
 

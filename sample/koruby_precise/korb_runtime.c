@@ -4270,6 +4270,7 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
     if (superclass != KORB_NIL && !KORB_CLASS_P(superclass))
         { char rdb[224];
           return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass must be an instance of Class (given %s)", korb_recv_desc(c, slots + 1, superclass, rdb, sizeof rdb)); }
+    const bool super_given = (superclass != KORB_NIL);   /* `class C < X` vs plain `class C` */
     /* a class with no explicit superclass derives from Object, so its instances'
      * MRO reaches the universal Object methods (==, freeze, method, ...). */
     if (superclass == KORB_NIL && !is_module)
@@ -4292,6 +4293,29 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
         fidx = korb_const_index_owned(c->vm, name_sym, KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL);
     }
     VALUE cls = (fidx != UINT32_MAX) ? c->vm->const_vals[fidx] : KORB_NIL;
+    if (fidx != UINT32_MAX) {                    /* the name is taken: it must be the right KIND */
+        const bool bad_kind = !KORB_CLASS_P(cls) ||
+                              (is_module && !VAL2CLASS(cls)->is_module) ||
+                              (!is_module && VAL2CLASS(cls)->is_module);
+        if (bad_kind) {
+            /* CRuby names the constant and points at its previous definition */
+            char where[320] = "";
+            for (uint32_t i = 0; i < c->vm->constloc_cnt; i++)
+                if (c->vm->constlocs[i].name == name_sym && c->vm->constlocs[i].owner == find_owner) {
+                    snprintf(where, sizeof where, "\n%s:%u: previous definition of %s was here",
+                             korb_sym_name(c->vm, c->vm->constlocs[i].file_sym), c->vm->constlocs[i].line,
+                             korb_sym_name(c->vm, name_sym));
+                    break;
+                }
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a %s%s",
+                              korb_sym_name(c->vm, name_sym), is_module ? "module" : "class", where);
+        }
+        /* reopening with a DIFFERENT explicit superclass is an error */
+        if (!is_module && super_given && VAL2CLASS(cls)->superclass != superclass &&
+            !(VAL2CLASS(cls)->superclass == KORB_NIL &&
+              superclass == korb_builtin_class_obj(c->vm, KORB_C_OBJECT)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass mismatch for class %s", korb_sym_name(c->vm, name_sym));
+    }
     if (!KORB_CLASS_P(cls)) {
         slots[0] = superclass;                   /* root super across korb_class_new's GC */
         slots[1] = UNWRAP(korb_class_new(c, slots + 2, name_sym, slots[0]));   /* cls (rooted) */

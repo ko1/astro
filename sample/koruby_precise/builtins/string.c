@@ -1455,10 +1455,6 @@ static RESULT korb_m_str_ascii_only(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) return RESULT_OK(KORB_FALSE);
     return RESULT_OK(KORB_TRUE);
 }
-static bool korb_str_pure_ascii(const KorbString *s) {
-    for (uint32_t i = 0; i < s->len; i++) if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) return false;
-    return true;
-}
 /* partition/rpartition with a Regexp separator: first (or last) match wins;
  * sets $~ like Regexp#match. */
 static RESULT korb_str_partition_re(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, bool reverse) {
