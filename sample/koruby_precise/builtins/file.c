@@ -1,3 +1,4 @@
+#include <pwd.h>
 #include <fcntl.h>
 /* koruby_precise — file.c: a minimal File class (POSIX path-string methods only,
  * no real I/O yet).  #included into korb_runtime.c's TU.  Enough to unblock the
@@ -227,8 +228,8 @@ static RESULT korb_m_file_realpath(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (!realpath(joined, real)) return korb_raise_errno(c, slots, errno, "realpath", joined);
     return korb_str_new(c, slots, real, (uint32_t)strlen(real));
 }
-static RESULT korb_m_file_expand_path(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self;
+/* `tilde`: File.expand_path expands ~ / ~user; File.absolute_path does not. */
+static RESULT korb_file_expand(CTX *c, VALUE *slots, VALUE_SLICE a, bool tilde) {
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
@@ -236,11 +237,22 @@ static RESULT korb_m_file_expand_path(CTX *c, VALUE *slots, VALUE_REF self, VALU
     char raw[8192]; size_t r = 0;
     if (plen > 0 && path[0] == '/') {                 /* already absolute */
         memcpy(raw, path, plen); r = plen;
-    } else if (plen > 0 && path[0] == '~' && (plen == 1 || path[1] == '/')) {
+    } else if (tilde && plen > 0 && path[0] == '~' && (plen == 1 || path[1] == '/')) {
         const char *home = getenv("HOME"); if (!home) home = "/";
         size_t hl = strlen(home);
         memcpy(raw, home, hl); r = hl;
         if (plen > 1) { memcpy(raw + r, path + 1, plen - 1); r += plen - 1; }
+    } else if (tilde && plen > 1 && path[0] == '~') {  /* ~user → that user's home */
+        size_t nl = 1;
+        while (nl < plen && path[nl] != '/') nl++;
+        char user[256];
+        if (nl - 1 >= sizeof user) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "user name too long");
+        memcpy(user, path + 1, nl - 1); user[nl - 1] = '\0';
+        const struct passwd *const pw = getpwnam(user);
+        if (!pw) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "user %s doesn't exist", user);
+        const size_t hl = strlen(pw->pw_dir);
+        memcpy(raw, pw->pw_dir, hl); r = hl;
+        if (nl < plen) { memcpy(raw + r, path + nl, plen - nl); r += plen - nl; }
     } else {                                          /* relative → resolve against base (or cwd) */
         char basebuf[8192]; size_t bl = 0;
         const bool have_base = VALUE_SLICE_LEN(a) >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1));
@@ -265,7 +277,23 @@ static RESULT korb_m_file_expand_path(CTX *c, VALUE *slots, VALUE_REF self, VALU
     if (r >= sizeof raw) r = sizeof raw - 1;
     char out[8192];
     size_t olen = korb_path_normalize(raw, r, out);
+    /* CRuby keeps a leading run of separators verbatim ("////a" stays "////a"),
+     * unlike #dirname; korb_path_normalize collapses it, so put it back. */
+    size_t lead = 0;
+    while (lead < r && raw[lead] == '/') lead++;
+    if (lead < r && raw[lead] == '.') lead = 1;        /* "/" + "../x": the run is the base, not the path */
+    if (lead > 1 && olen + lead < sizeof out) {
+        memmove(out + lead - 1, out, olen + 1);
+        for (size_t k = 0; k < lead - 1; k++) out[k] = '/';
+        olen += lead - 1;
+    }
     return korb_str_new(c, slots, out, (uint32_t)olen);
+}
+static RESULT korb_m_file_expand_path(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; return korb_file_expand(c, slots, a, true);
+}
+static RESULT korb_m_file_absolute_path(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; return korb_file_expand(c, slots, a, false);   /* no ~ expansion (CRuby) */
 }
 
 /* File.join(*parts) → parts joined with a single '/'. */
@@ -275,8 +303,22 @@ static RESULT korb_m_file_expand_path(CTX *c, VALUE *slots, VALUE_REF self, VALU
  * not already end with it.  No allocation happens here, so the interior string
  * pointers stay valid for the whole walk. */
 static RESULT korb_file_join_str(CTX *c, VALUE *slots, VALUE pv, char *buf, size_t cap, size_t *d, bool *first) {
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    if (UNLIKELY(!KORB_STRING_P(pv))) {
+        /* #to_path first, then #to_str (CRuby's rb_get_path_check).  The result
+         * is parked so the borrowed bytes below stay valid. */
+        static const char *const conv[2] = { "to_path", "to_str" };
+        for (uint32_t k = 0; k < 2 && !KORB_STRING_P(pv); k++) {
+            const uint32_t mid = korb_intern(c->vm, conv[k], (uint32_t)strlen(conv[k]));
+            if (!AROH_IS_GC_OBJECT(pv) || !korb_responds_to(c, pv, mid)) continue;
+            slots[0] = pv;
+            const RESULT r = korb_send(c, slots + 1, mid, 0, 0);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            pv = r.value;
+        }
+        if (UNLIKELY(!KORB_STRING_P(pv)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+        slots[0] = pv;                                  /* root: buf below borrows its bytes */
+    }
     uint32_t plen; const char *p = korb_str_cstr_len(pv, &plen);
     if (!*first) {
         if (plen > 0 && p[0] == '/') { while (*d > 0 && buf[*d - 1] == '/') (*d)--; }
@@ -326,7 +368,9 @@ static RESULT korb_m_file_dirname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (last == 0) return korb_str_new(c, slots, "/", 1);
     char out[8192]; if (last >= sizeof out) last = sizeof out - 1;   /* copy off the (movable) source before alloc */
     memcpy(out, p, last);
-    return korb_str_new(c, slots, out, (uint32_t)last);
+    size_t off = 0;                                    /* a leading "//..." run collapses to one "/" (CRuby) */
+    while (off + 1 < last && out[off] == '/' && out[off + 1] == '/') off++;
+    return korb_str_new(c, slots, out + off, (uint32_t)(last - off));
 }
 
 static RESULT korb_m_file_basename(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
@@ -1932,7 +1976,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "birthtime",   korb_m_file_birthtime,    1);
     korb_class_def_cfn(c, slots[1], "truncate",    korb_m_file_truncate,     2);
     korb_class_def_cfn(c, slots[1], "absolute_path?", korb_m_file_abs_path_p, 1);
-    korb_class_def_cfn(c, slots[1], "absolute_path", korb_m_file_expand_path, -1);
+    korb_class_def_cfn(c, slots[1], "absolute_path", korb_m_file_absolute_path, -1);
     /* File::Stat — a stat(2) result value class (Object subclass). */
     slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "File::Stat", 10),
                                korb_const_get(vm, korb_intern(vm, "Object", 6)))).value;
