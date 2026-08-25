@@ -403,6 +403,16 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
                 }
                 continue;
             }
+            if (SYMBOL_P(k)) {   /* IO.popen's encoding options are handled by the IO layer, not exec */
+                const char *const kn = korb_sym_name(c->vm, SYM2ID(k));
+                if (strcmp(kn, "encoding") == 0 || strcmp(kn, "external_encoding") == 0 ||
+                    strcmp(kn, "internal_encoding") == 0 || strcmp(kn, "textmode") == 0 ||
+                    strcmp(kn, "binmode") == 0 || strcmp(kn, "autoclose") == 0 ||
+                    strcmp(kn, "mode") == 0 || strcmp(kn, "invalid") == 0 ||
+                    strcmp(kn, "undef") == 0 || strcmp(kn, "replace") == 0 ||
+                    strcmp(kn, "newline") == 0 || strcmp(kn, "universal_newline") == 0 ||
+                    strcmp(kn, "cr_newline") == 0 || strcmp(kn, "crlf_newline") == 0) continue;
+            }
             if (SYMBOL_P(k) && (uint32_t)SYM2ID(k) == umask_id) {
                 if (UNLIKELY(!FIXNUM_P(v)))
                     return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
@@ -924,6 +934,11 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     korb_io_set_nonblock(korb_io_rep(c, slots[0]));   /* our end only; the child got the other */
     VALUE_REF io = VALUE_REF_AT(&slots[0]);
     CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_pid", 9)), LONG2FIX(pid)));
+    if (hi < VALUE_SLICE_LEN(a)) {                    /* encoding: / autoclose: → the prelude */
+        slots[1] = VALUE_REF_GET(io);
+        slots[2] = VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1);
+        if (KORB_HASH_P(slots[2])) CHECK(korb_send(c, slots + 3, korb_intern(c->vm, "__apply_open_opts", 17), 0, 1));
+    }
     if (strchr(mode, 'b'))
         CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(io));
