@@ -78,13 +78,14 @@ bool korb_re_caseeq_backref(CTX *c, VALUE *slots, VALUE pat, VALUE val) {
     /* MatchData#[]/#pre_match slice their subject as a String, so the subject
      * stored in $~ must be a String — coerce a Symbol to its name here (a fresh
      * String), never store the Symbol itself. */
+    slots[1] = pat;                                        /* root FIRST: the Symbol coercion below allocates */
     if (SYMBOL_P(val)) {
         const char *const nm = korb_sym_name(c->vm, SYM2ID(val));
-        const RESULT sr = korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
+        const RESULT sr = korb_str_new(c, slots + 2, nm, (uint32_t)strlen(nm));
         if (UNLIKELY(sr.state != KORB_NORMAL)) return false;
         val = sr.value;
     } else if (!KORB_STRING_P(val)) { korb_re_set_lastmatch(c, KORB_NIL); return false; }
-    slots[0] = val; slots[1] = pat;                        /* root subject (may have just been allocated) + regexp */
+    slots[0] = val;                                        /* subject (may have just been allocated) */
     const korb_re_exec_fn_t fn = korb_re_load(c->vm);
     if (UNLIKELY(fn == NULL)) return false;
     korb_re_sync_floor(c);

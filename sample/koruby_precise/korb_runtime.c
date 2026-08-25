@@ -2551,7 +2551,9 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         CHECK(korb_ary_push_val(c, slots + 2, mem, sym));   /* accessors are defined below, after the common methods */
     }
     if (has_name) {                                                   /* .new("Name",..) → base::Name (nested under the factory class) */
-        VALUE owner = base;
+        /* `base` is a bare parameter and the member loop above allocated, so it
+         * may have moved: take the namespace from the new class's superclass. */
+        VALUE owner = VAL2CLASS(VALUE_REF_GET(cls))->superclass;
         if (!KORB_CLASS_P(owner)) owner = korb_const_get(vm, korb_intern(vm, "Struct", 6));
         korb_const_define_owned(c, name_id, VALUE_REF_GET(cls), KORB_CLASS_P(owner) ? owner : KORB_NIL);
     }
