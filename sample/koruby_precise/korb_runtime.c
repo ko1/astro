@@ -9562,6 +9562,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "values_at", korb_m_hash_values_at, -1);
     korb_def_cmethod(c, KORB_C_HASH, "slice", korb_m_hash_slice, -1);
     korb_def_cmethod(c, KORB_C_HASH, "except", korb_m_hash_except, -1);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "initialize", korb_m_hash_initialize, -1);
     korb_def_cmethod(c, KORB_C_HASH, "default", korb_m_hash_default, -1);
     korb_def_cmethod(c, KORB_C_HASH, "default=", korb_m_hash_default_set, 1);
     korb_def_cmethod(c, KORB_C_HASH, "compact", korb_m_hash_compact, 0);

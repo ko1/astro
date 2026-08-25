@@ -578,6 +578,30 @@ static RESULT korb_m_hash_default_set(CTX *c, VALUE *slots, VALUE_REF self, VALU
     ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->default_proc, KORB_NIL);   /* default= clears any default_proc */
     return RESULT_OK(v);
 }
+/* Hash#initialize (private) — resets ONLY the default value / default_proc;
+ * the storage is untouched, so a subclass may fill it before calling super. */
+static RESULT korb_m_hash_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    if (UNLIKELY(block != NULL && VALUE_SLICE_LEN(a) > 0))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", VALUE_SLICE_LEN(a));
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
+    VALUE dv = KORB_NIL, dp = KORB_NIL;
+    if (block != NULL) {
+        slots[0] = VALUE_REF_GET(self);                  /* park across korb_make_proc's alloc */
+        VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
+        dp = UNWRAP(korb_make_proc(c, slots + 1, block, denv, KORB_CSELF_VAL(cself), 0));
+        KorbHash *const h0 = VAL2HASH(slots[0]);
+        ARO_STORE(c, h0, (VALUE *)(uintptr_t)&h0->default_val, KORB_NIL);
+        ARO_STORE(c, h0, (VALUE *)(uintptr_t)&h0->default_proc, dp);
+        return RESULT_OK(slots[0]);
+    }
+    if (VALUE_SLICE_LEN(a) == 1) dv = VALUE_SLICE_GET(a, 0);
+    KorbHash *const h = VAL2HASH(VALUE_REF_GET(self));
+    ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->default_val, dv);
+    ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->default_proc, KORB_NIL);
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_hash_compact_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
@@ -616,10 +640,11 @@ static RESULT korb_m_hash_transform_values(CTX *c, VALUE *slots, VALUE_REF self,
  * Hash arg renames listed keys; remaining keys go through the block; with neither
  * the key is kept.  Later collisions overwrite (last wins). */
 static RESULT korb_hash_xform_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    const VALUE mapv = (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
-    if (mapv != KORB_NIL && !KORB_HASH_P(mapv))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Hash)", korb_type_name(mapv));
-    if (UNLIKELY(mapv == KORB_NIL && block == NULL))
+    const bool has_arg = VALUE_SLICE_LEN(a) >= 1;   /* an explicit nil is a TypeError, unlike no arg at all */
+    const VALUE mapv = has_arg ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    if (has_arg && !KORB_HASH_P(mapv))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_coerce_name(c, mapv));
+    if (UNLIKELY(!has_arg && block == NULL))
         { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "transform_keys", 14)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     slots[0] = mapv;                                           /* root the rename map BEFORE any alloc moves it */
     slots[1] = UNWRAP(korb_hash_new(c, slots + 1, VAL2HASH(VALUE_REF_GET(self))->len));
