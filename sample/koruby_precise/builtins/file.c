@@ -1093,7 +1093,18 @@ korb_line_next(const char *buf, size_t len, size_t *pos, const char *sep, size_t
         if (h) { end = (size_t)(h - buf) + seplen; matched = true; }
         else end = len;
     }
-    if (la->limit >= 0 && end - i > (size_t)la->limit) { end = i + (size_t)la->limit; matched = false; }
+    if (la->limit >= 0 && end - i > (size_t)la->limit) {
+        end = i + (size_t)la->limit; matched = false;
+        /* a byte limit must not split a UTF-8 character (CRuby extends past it) */
+        size_t st = end;
+        while (st > i && ((unsigned char)buf[st - 1] & 0xC0) == 0x80) st--;
+        if (st > i) {
+            const unsigned char lead = (unsigned char)buf[st - 1];
+            const size_t need = (lead >= 0xF0) ? 4 : (lead >= 0xE0) ? 3 : (lead >= 0xC0) ? 2 : 1;
+            const size_t have = end - (st - 1);
+            if (have < need && st - 1 + need <= len) end = st - 1 + need;
+        }
+    }
     *rs = i; *re = end; *pos = end;
     if (matched && la->paragraph) while (*pos < len && buf[*pos] == '\n') (*pos)++;
     if (la->chomp && !la->slurp) {                     /* drop the separator we matched */
