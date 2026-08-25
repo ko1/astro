@@ -2159,9 +2159,11 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("wait_readable", wait_readable, -1);   /* POLL blop (builtins/thread.c) */
     IOM("wait_writable", wait_writable, -1);
     IOM("__io_poll", poll_raw, -1);            /* 汎用 events poll (IO#wait 用) */
-    korb_const_define(c, korb_intern(vm, "SEEK_SET", 8), LONG2FIX(SEEK_SET));
-    korb_const_define(c, korb_intern(vm, "SEEK_CUR", 8), LONG2FIX(SEEK_CUR));
-    korb_const_define(c, korb_intern(vm, "SEEK_END", 8), LONG2FIX(SEEK_END));
+    korb_const_define_owned(c, korb_intern(vm, "SEEK_SET", 8),  LONG2FIX(SEEK_SET), io_cls);
+    korb_const_define_owned(c, korb_intern(vm, "SEEK_CUR", 8),  LONG2FIX(SEEK_CUR), io_cls);
+    korb_const_define_owned(c, korb_intern(vm, "SEEK_END", 8),  LONG2FIX(SEEK_END), io_cls);
+    korb_const_define_owned(c, korb_intern(vm, "SEEK_DATA", 9), LONG2FIX(3), io_cls);
+    korb_const_define_owned(c, korb_intern(vm, "SEEK_HOLE", 9), LONG2FIX(4), io_cls);
     /* IO.read/write/readlines/foreach/binread/binwrite — the File class methods. */
     const VALUE io_sing = korb_obj_singleton(c, slots + 1, io_cls).value;
     korb_class_def_cfn(c, io_sing, "read",      korb_m_file_read,      -1);
@@ -2215,5 +2217,15 @@ void korb_init_io(CTX *c, VALUE *slots) {
         korb_const_define(c, korb_intern(vm, sv[i].cn, (uint32_t)strlen(sv[i].cn)), slots[1]);
         if (sv[i].idx >= 1 && AROH_IS_GC_OBJECT(slots[1]))   /* mark default $stdout/$stderr for the fast fwrite path */
             ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_DEFAULT_IO;
+    }
+    {   /* IO includes File::Constants too (IO::SEEK_SET, IO::RDONLY, ...) */
+        const VALUE filec = korb_const_get(vm, korb_intern(vm, "File", 4));
+        const uint32_t ci = KORB_CLASS_P(filec)
+                              ? korb_const_index_owned(vm, korb_intern(vm, "Constants", 9), filec) : UINT32_MAX;
+        if (ci != UINT32_MAX) {
+            slots[1] = vm->const_vals[ci];
+            slots[2] = korb_const_get(vm, korb_intern(vm, "IO", 2));
+            if (KORB_CLASS_P(slots[2])) (void)korb_do_include(c, slots + 3, slots[2], VALUE_SLICE_MAKE(&slots[1], 1));
+        }
     }
 }

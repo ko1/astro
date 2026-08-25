@@ -1980,7 +1980,8 @@ void korb_init_file(CTX *c, VALUE *slots) {
     /* File::Stat — a stat(2) result value class (Object subclass). */
     slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "File::Stat", 10),
                                korb_const_get(vm, korb_intern(vm, "Object", 6)))).value;
-    korb_const_define(c, korb_intern(vm, "Stat", 4), slots[2]);         /* bare + File::Stat resolution */
+    korb_const_define_owned(c, korb_intern(vm, "Stat", 4), slots[2], slots[0]);   /* File::Stat */
+    ARO_STORE(c, VAL2CLASS(slots[2]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[2])->enclosing, slots[0]);
     korb_const_define(c, korb_intern(vm, "File::Stat", 10), slots[2]);
     korb_class_def_cfn(c, slots[2], "size",      korb_m_stat_size,     0);
     korb_class_def_cfn(c, slots[2], "mode",      korb_m_stat_mode,     0);
@@ -2058,11 +2059,12 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[2], "close",      korb_m_dir_close,      0);
     korb_class_def_cfn(c, slots[2], "children",   korb_m_dir_i_children, 0);
     /* File::Constants module + open/seek/fnmatch/lock flags (Linux values).
-     * koruby's const table is flat, so these resolve from File / File::Constants
-     * / bare alike. */
+     * Owned by the module and included into File/IO, so File::RDONLY,
+     * IO::SEEK_SET and File::Constants.constants all behave like CRuby. */
     slots[1] = (korb_class_new(c, slots + 1, korb_intern(vm, "Constants", 9), KORB_NIL)).value;
     VAL2CLASS(slots[1])->is_module = 1;                /* File::Constants is a module */
-    korb_const_define(c, korb_intern(vm, "Constants", 9), slots[1]);
+    ARO_STORE(c, VAL2CLASS(slots[1]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[1])->enclosing, slots[0]);
+    korb_const_define_owned(c, korb_intern(vm, "Constants", 9), slots[1], slots[0]);
     static const struct { const char *n; long v; } fc[] = {
         {"RDONLY",0},{"WRONLY",1},{"RDWR",2},{"APPEND",1024},{"CREAT",64},{"EXCL",128},
         {"NOCTTY",256},{"TRUNC",512},{"NONBLOCK",2048},{"SYNC",1052672},{"DSYNC",4096},
@@ -2071,12 +2073,16 @@ void korb_init_file(CTX *c, VALUE *slots) {
         {"FNM_NOESCAPE",1},{"FNM_PATHNAME",2},{"FNM_DOTMATCH",4},{"FNM_CASEFOLD",8},
         {"FNM_EXTGLOB",16},{"FNM_SYSCASE",0},{"FNM_SHORTNAME",0},
         {"LOCK_SH",1},{"LOCK_EX",2},{"LOCK_UN",8},{"LOCK_NB",4},
-        {"SEEK_SET",0},{"SEEK_CUR",1},{"SEEK_END",2},
+        {"NULL",-1},   /* placeholder: overwritten by the String below */
     };
     for (size_t i = 0; i < sizeof(fc) / sizeof(fc[0]); i++)
-        korb_const_define(c, korb_intern(vm, fc[i].n, (uint32_t)strlen(fc[i].n)), LONG2FIX(fc[i].v));
-    korb_const_define(c, korb_intern(vm, "SEPARATOR", 9),      korb_str_new(c, slots + 2, "/", 1).value);
-    korb_const_define(c, korb_intern(vm, "Separator", 9),      korb_str_new(c, slots + 2, "/", 1).value);
-    korb_const_define(c, korb_intern(vm, "PATH_SEPARATOR", 14), korb_str_new(c, slots + 2, ":", 1).value);
-    korb_const_define(c, korb_intern(vm, "ALT_SEPARATOR", 13),  KORB_NIL);   /* nil on POSIX */
+        korb_const_define_owned(c, korb_intern(vm, fc[i].n, (uint32_t)strlen(fc[i].n)), LONG2FIX(fc[i].v), slots[1]);
+    korb_const_define_owned(c, korb_intern(vm, "NULL", 4), korb_str_new(c, slots + 3, "/dev/null", 9).value, slots[1]);
+    korb_const_define_owned(c, korb_intern(vm, "SEPARATOR", 9),      korb_str_new(c, slots + 3, "/", 1).value, slots[0]);
+    korb_const_define_owned(c, korb_intern(vm, "Separator", 9),      korb_str_new(c, slots + 3, "/", 1).value, slots[0]);
+    korb_const_define_owned(c, korb_intern(vm, "PATH_SEPARATOR", 14), korb_str_new(c, slots + 3, ":", 1).value, slots[0]);
+    korb_const_define_owned(c, korb_intern(vm, "ALT_SEPARATOR", 13),  KORB_NIL, slots[0]);   /* nil on POSIX */
+    /* File includes File::Constants (IO does too — see korb_init_io, which
+     * runs after this and creates the IO class). */
+    (void)korb_do_include(c, slots + 3, slots[0], VALUE_SLICE_MAKE(&slots[1], 1));
 }

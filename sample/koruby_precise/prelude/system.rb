@@ -543,13 +543,8 @@ class IO
 end
 
 class File
-  NULL = "/dev/null"
-  LOCK_SH = 1; LOCK_EX = 2; LOCK_NB = 4; LOCK_UN = 8
+  # NULL / LOCK_* / SEPARATOR* are defined in C (File::Constants / File).
   def flock(_op); 0; end       # 単一プロセス: no-op が正しい近似
-  SEPARATOR = "/"
-  ALT_SEPARATOR = nil
-  PATH_SEPARATOR = ":"
-  Separator = SEPARATOR
 
   # File.path(obj) — the path String an object names: #to_path if it has one,
   # else the String itself (#to_str-coerced).  Pathname is built on this.
