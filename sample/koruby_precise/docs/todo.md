@@ -2773,3 +2773,13 @@ koruby は `NoMethodError: undefined method 'foo' for main` を投げる。
 `PM_CALL_NODE_FLAGS_VARIABLE_CALL`) にしかなく、parse 側からしか分からない。
 node_call に vcall ビットを載せる = node.def 変更 → code_store 全消し
 なので、ROI を見て後回し。実 mspec で直接効くのは 3 例のみ。
+
+## String#== が ASCII 非互換エンコーディングを区別しない — 未着手
+
+`"abcd".force_encoding("utf-8") == "abcd".force_encoding("utf-32le")` は
+CRuby では false (UTF-32LE は ASCII 互換でないので、7bit バイトでも
+comparable ではない)。koruby は true を返す。判定には
+korb_enc_ascii_compat_idx(vm, idx) が要るが、korb_value_eq は
+`(VALUE, VALUE)` シグネチャで 41 箇所から呼ばれる hot path なので
+vm を通す改造は割に合わない。String header に「ASCII 非互換」ビットを
+持たせるのが筋だが、flags の空きが無い。実 mspec への影響は 2 例。

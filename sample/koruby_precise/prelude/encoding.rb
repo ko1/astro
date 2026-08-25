@@ -261,9 +261,24 @@ class Encoding
   @@default_external = UTF_8
   @@default_internal = nil
   def self.default_external; @@default_external; end
-  def self.default_external=(e); @@default_external = e.is_a?(String) ? find(e) : e; end
+  # Both setters take an Encoding, a String, or anything with #to_str; anything
+  # else is a TypeError, and default_external may not be nil (CRuby).
+  def self.__to_enc(v, what)
+    return v if v.is_a?(Encoding)
+    return find(v) if v.is_a?(String)
+    unless v.respond_to?(:to_str)
+      raise TypeError, "no implicit conversion of #{v.nil? ? 'nil' : v.class} into String"
+    end
+    n = v.to_str
+    raise TypeError, "no implicit conversion of #{v.class} into String" unless n.is_a?(String)
+    find(n)
+  end
+  def self.default_external=(e)
+    raise ArgumentError, "default external cannot be nil" if e.nil?
+    @@default_external = __to_enc(e, :external)
+  end
   def self.default_internal; @@default_internal; end
-  def self.default_internal=(e); @@default_internal = (e.nil? ? nil : (e.is_a?(String) ? find(e) : e)); end
+  def self.default_internal=(e); @@default_internal = (e.nil? ? nil : __to_enc(e, :internal)); end
   # Encoding.find(name) → the Encoding constant whose #name matches (case-folded),
   # else a fresh Encoding of that name (used by String#encoding for "other").
   def self.find(name)
