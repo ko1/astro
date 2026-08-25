@@ -238,7 +238,7 @@ class BigDecimal < Numeric
     when BigDecimal then other
     when Integer    then BigDecimal(other, 0)
     when Float      then BigDecimal(other.to_s)
-    when Rational   then BigDecimal(other, DEFAULT_PREC)
+    when Rational   then BigDecimal(other.numerator, 0).div(BigDecimal(other.denominator, 0), DEFAULT_PREC)
     else nil
     end
   end
@@ -472,19 +472,19 @@ class BigDecimal < Numeric
     raise TypeError, "wrong argument type #{prec.class} (expected Integer)" unless prec.is_a?(Integer)
     raise ArgumentError, "argument must be positive" if prec < 0
     r = __unlimited { self + other }
-    prec.zero? ? r : r.__round_sig(prec)
+    prec.zero? ? (@@limit.zero? ? r : r.__round_sig(@@limit)) : r.__round_sig(prec)
   end
   def sub(other, prec)
     raise TypeError, "wrong argument type #{prec.class} (expected Integer)" unless prec.is_a?(Integer)
     raise ArgumentError, "argument must be positive" if prec < 0
     r = __unlimited { self - other }
-    prec.zero? ? r : r.__round_sig(prec)
+    prec.zero? ? (@@limit.zero? ? r : r.__round_sig(@@limit)) : r.__round_sig(prec)
   end
   def mult(other, prec)
     raise TypeError, "wrong argument type #{prec.class} (expected Integer)" unless prec.is_a?(Integer)
     raise ArgumentError, "argument must be positive" if prec < 0
     r = __unlimited { self * other }
-    prec.zero? ? r : r.__round_sig(prec)
+    prec.zero? ? (@@limit.zero? ? r : r.__round_sig(@@limit)) : r.__round_sig(prec)
   end
 
   # Run a block with BigDecimal.limit suspended (an explicit precision argument
@@ -503,6 +503,10 @@ class BigDecimal < Numeric
 
   def <=>(other)
     o = __coerce_operand(other)
+    if o.nil? && other.respond_to?(:coerce)     # any Numeric-ish via #coerce
+      a, b = other.coerce(self)
+      return a <=> b
+    end
     return nil if o.nil?
     return nil if nan? || o.nan?
     if @special == :inf || o.__special == :inf
@@ -574,6 +578,8 @@ module Kernel
       s = value.abs.to_s
       BigDecimal.__new(value.negative? ? -1 : 1, s.to_i, s.length)
     when Float
+      return BigDecimal.__new(1, 0, 0, :nan) if value.nan?
+      return BigDecimal.__new(value > 0 ? 1 : -1, 0, 0, :inf) if value.infinite?
       unless precision.is_a?(Integer) && (precision > 0 || value == value.to_i)
         raise ArgumentError, "can't omit precision for a Float" if precision.zero? && value != value.to_i
       end
@@ -614,11 +620,13 @@ class Float
 end
 
 class String
-  def to_d
-    BigDecimal(self)
-  rescue ArgumentError
-    BigDecimal("0")
-  end
+  # #to_d is the LOOSE parse: it takes the leading numeric part and yields 0 for
+  # a string that does not start with one (unlike Kernel#BigDecimal).
+  def to_d = BigDecimal.__parse(self, false)
+end
+
+class NilClass
+  def to_d = BigDecimal("0")
 end
 
 class Rational
