@@ -2783,3 +2783,28 @@ korb_enc_ascii_compat_idx(vm, idx) が要るが、korb_value_eq は
 `(VALUE, VALUE)` シグネチャで 41 箇所から呼ばれる hot path なので
 vm を通す改造は割に合わない。String header に「ASCII 非互換」ビットを
 持たせるのが筋だが、flags の空きが無い。実 mspec への影響は 2 例。
+
+## Module#const_set が定義位置を記録しない — 未着手
+
+`Module#const_source_location` が const_set で作った定数に対して [] を返す。
+位置を記録するには呼び出し側の行番号が要るが、CFUNC には line が渡って
+いない (node が明示的に渡す設計)。korb_send_impl の slow path で
+c->vm->cur_line に積めば取れるが、汎用 dispatch に store が 1 個増える。
+実 mspec で 4 例。
+
+## define_method のブロック内で super が使えない — 未着手
+
+`class B < A; define_method(:foo) { super() }; end` が
+NotImplementedError ("super outside a method body")。parse 側が
+囲みの def を見つけられないので node_super を生成していない。
+runtime 側も、DM (define_method) の呼び出しはブロックとして
+korb_block_yield_full で走るため frame の fs-2 に method entry が
+無く、korb_super が起点を決められない。両方の対応が要る。
+実 mspec では delegate 系で ~7 例。
+
+## ObjectSpace.each_object が 0 を返すだけ — 未着手
+
+ヒープ走査 API が precise GC framework に無い (aro_gc_* に iterate が
+無い)。各 backend に足すのは重い。Class/Module だけなら定数表と
+subclass リストから作れるが、spec の大半は任意オブジェクトを見る。
+実 mspec で 24 例。
