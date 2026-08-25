@@ -1143,14 +1143,36 @@ static RESULT korb_m_io_sysseek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    if (UNLIKELY(KORB_BIGNUM_P(VALUE_SLICE_GET(a, 0))))       /* wider than off_t */
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
     korb_sword_t off;
     CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &off));
-    const int whence = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1)))
-                         ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : SEEK_SET;
-    if (rep->rpos < rep->rlen) return korb_raise(c, slots, KORB_E_IOERROR, 0, "sysseek for buffered IO");
+    int whence = SEEK_SET;
+    if (VALUE_SLICE_LEN(a) >= 2) {
+        const VALUE wv = VALUE_SLICE_GET(a, 1);
+        if (FIXNUM_P(wv)) whence = (int)FIX2LONG(wv);
+        else if (SYMBOL_P(wv)) {                             /* :SET / :CUR / :END / :DATA / :HOLE */
+            const char *const wn = korb_sym_name(c->vm, SYM2ID(wv));
+            if      (strcmp(wn, "SET") == 0)  whence = SEEK_SET;
+            else if (strcmp(wn, "CUR") == 0)  whence = SEEK_CUR;
+            else if (strcmp(wn, "END") == 0)  whence = SEEK_END;
+            else if (strcmp(wn, "DATA") == 0) whence = 3;
+            else if (strcmp(wn, "HOLE") == 0) whence = 4;
+            else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "symbol must be :SET, :CUR, :END, :DATA, or :HOLE");
+        }
+    }
+    /* CRuby's length-limited reads leave nothing buffered, so a sysseek right
+     * after one works.  koruby buffers more eagerly; rewind the descriptor by
+     * the unread remainder first so the offsets agree. */
+    if (rep->rpos < rep->rlen) {
+        const off_t back = (off_t)(rep->rlen - rep->rpos);
+        if (lseek(rep->fd, -back, SEEK_CUR) < 0)
+            return korb_raise(c, slots, KORB_E_IOERROR, 0, "sysseek for buffered IO");   /* unseekable (pipe) */
+        rep->rpos = rep->rlen = 0;
+    }
     korb_io_flush_rep(rep);
     const off_t r = lseek(rep->fd, (off_t)off, whence);
-    if (r < 0) return korb_raise_errno(c, slots, errno, "sysseek", "");
+    if (r < 0) return korb_raise_errno(c, slots, errno, "sysseek", NULL);
     return RESULT_OK(LONG2FIX((korb_sword_t)r));
 }
 
@@ -1205,21 +1227,36 @@ static RESULT korb_m_io_seek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_READ(c, slots, self);
-    KORB_IO_NEED_READ(c, slots, self);
-    const korb_sword_t off = FIXNUM_P(VALUE_SLICE_GET(a, 0)) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
-    const int whence = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : SEEK_SET;
-    if (korb_io_seek_rep(rep, (off_t)off, whence) < 0) return korb_raise_errno(c, slots, errno, "seek", "");
+    korb_sword_t off;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &off));   /* #to_int coercion */
+    int whence = SEEK_SET;
+    if (VALUE_SLICE_LEN(a) >= 2) {
+        const VALUE wv = VALUE_SLICE_GET(a, 1);
+        if (FIXNUM_P(wv)) whence = (int)FIX2LONG(wv);
+        else if (SYMBOL_P(wv)) {
+            const char *const wn = korb_sym_name(c->vm, SYM2ID(wv));
+            if      (strcmp(wn, "SET") == 0)  whence = SEEK_SET;
+            else if (strcmp(wn, "CUR") == 0)  whence = SEEK_CUR;
+            else if (strcmp(wn, "END") == 0)  whence = SEEK_END;
+            else if (strcmp(wn, "DATA") == 0) whence = 3;
+            else if (strcmp(wn, "HOLE") == 0) whence = 4;
+            else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "symbol must be :SET, :CUR, :END, :DATA, or :HOLE");
+        }
+    }
+    if (korb_io_seek_rep(rep, (off_t)off, whence) < 0) return korb_raise_errno(c, slots, errno, "seek", NULL);
     return RESULT_OK(LONG2FIX(0));
 }
 static RESULT korb_m_io_pos(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots; (void)a;
+    (void)a;
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    return RESULT_OK(LONG2FIX(rep ? (korb_sword_t)korb_io_tell_rep(rep) : 0));
+    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    return RESULT_OK(LONG2FIX((korb_sword_t)korb_io_tell_rep(rep)));
 }
 static RESULT korb_m_io_pos_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;
+    korb_sword_t off;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &off));   /* #to_int coercion */
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    if (rep && FIXNUM_P(VALUE_SLICE_GET(a, 0))) (void)korb_io_seek_rep(rep, (off_t)FIX2LONG(VALUE_SLICE_GET(a, 0)), SEEK_SET);
+    if (rep) (void)korb_io_seek_rep(rep, (off_t)off, SEEK_SET);
     return RESULT_OK(VALUE_SLICE_GET(a, 0));
 }
 static RESULT korb_m_io_rewind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
