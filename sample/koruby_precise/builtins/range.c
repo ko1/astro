@@ -30,11 +30,24 @@ double korb_float_step_at(double beg, double end, double unit, long i, bool excl
 
 /* integer iteration bounds [lo, hi) ; false if endpoints aren't both Integer */
 static bool korb_range_int_bounds(const KorbRange *r, korb_sword_t *lo, korb_sword_t *hi) {
-    if (!FIXNUM_P(r->rbegin) || !FIXNUM_P(r->rend)) return false;
-    korb_sword_t e = FIX2LONG(r->rend);
-    *lo = FIX2LONG(r->rbegin);
-    *hi = r->exclude_end ? e : e + 1;
-    return true;
+    if (!FIXNUM_P(r->rbegin)) return false;
+    if (FIXNUM_P(r->rend)) {
+        const korb_sword_t e = FIX2LONG(r->rend);
+        *lo = FIX2LONG(r->rbegin);
+        *hi = r->exclude_end ? e : e + 1;
+        return true;
+    }
+    /* An Integer begin with a Float end still iterates over integers
+     * ((2..3.7).to_a == [2, 3]); only the stop point is derived from the float. */
+    if (KORB_FLOAT_P(r->rend)) {
+        const double e = korb_float_val(r->rend);
+        if (isnan(e) || isinf(e) || e >= 9.2e18 || e <= -9.2e18) return false;
+        const double fl = floor(e);
+        *lo = FIX2LONG(r->rbegin);
+        *hi = (r->exclude_end && fl == e) ? (korb_sword_t)e : (korb_sword_t)fl + 1;
+        return true;
+    }
+    return false;
 }
 
 static RESULT korb_m_range_begin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RANGE->rbegin); }

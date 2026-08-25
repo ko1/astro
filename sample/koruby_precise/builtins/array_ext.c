@@ -427,9 +427,10 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "'<' allowed only after types sSiIlLqQjJ");
         if (bang && !strchr("sSiIlLqQjJ", d))
             return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "'%c' allowed only after types sSiIlLqQjJ", bangch);
-        bool star = false; long cnt = (d == '@') ? 0 : 1;   /* a bare '@' means position 0 (CRuby) */
+        bool star = false, ucnt = false; long cnt = (d == '@') ? 0 : 1;   /* a bare '@' means position 0 (CRuby) */
         if (ti < t->len && korb_strbuf_data(t->buf)[ti] == '*') { star = true; ti++; }
         else if (ti < t->len && korb_strbuf_data(t->buf)[ti] >= '0' && korb_strbuf_data(t->buf)[ti] <= '9') {
+            ucnt = true;
             cnt = 0; while (ti < t->len && korb_strbuf_data(t->buf)[ti] >= '0' && korb_strbuf_data(t->buf)[ti] <= '9') cnt = cnt * 10 + (korb_strbuf_data(t->buf)[ti++] - '0');
         }
         const uint32_t slen = VAL2STR(slots[1])->len;
@@ -644,9 +645,13 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
             si += (nnib + 1) / 2;
         } else if (d == 'm') {                            /* base64 decode (one value, consumes rest) */
+            /* "m0" is the STRICT form: no line breaks, no stray characters and
+             * the padding must be exact (Base64.strict_decode64 relies on it). */
+            const bool strict = ucnt && cnt == 0;
             const KorbString *s = VAL2STR(slots[1]);
             unsigned char *const out = malloc((size_t)(s->len - si) * 3 / 4 + 4);
             uint32_t olen = 0; int quad[4], qn = 0;
+            bool bad = false, padded = false;
             for (uint32_t k = si; k < s->len; k++) {
                 const int ch = (unsigned char)korb_strbuf_data(s->buf)[k];
                 int v;
@@ -655,11 +660,27 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 else if (ch >= '0' && ch <= '9') v = ch - '0' + 52;
                 else if (ch == '+') v = 62;
                 else if (ch == '/') v = 63;
-                else if (ch == '=') break;                /* padding → done */
-                else continue;                            /* skip newlines / non-base64 */
+                else if (ch == '=') {
+                    if (!strict) break;                   /* padding → done */
+                    padded = true;
+                    if (qn < 2) { bad = true; break; }     /* "=" / "a=" is not a unit */
+                    /* the rest must be padding only, and the unit must be complete */
+                    uint32_t pad = 0;
+                    for (uint32_t j = k; j < s->len; j++) {
+                        if (korb_strbuf_data(s->buf)[j] != '=') { bad = true; break; }
+                        pad++;
+                    }
+                    if (bad || pad != (uint32_t)(4 - qn)) bad = true;
+                    break;
+                }
+                else if (strict) { bad = true; break; }    /* newline / junk */
+                else continue;                            /* lenient: skip newlines / non-base64 */
+                if (padded) { bad = true; break; }
                 quad[qn++] = v;
                 if (qn == 4) { out[olen++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4)); out[olen++] = (unsigned char)((quad[1] << 4) | (quad[2] >> 2)); out[olen++] = (unsigned char)((quad[2] << 6) | quad[3]); qn = 0; }
             }
+            if (strict && !bad && qn != 0 && !padded) bad = true;   /* unpadded tail */
+            if (bad) { free(out); return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid base64"); }
             if (qn >= 2) { out[olen++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4)); if (qn >= 3) out[olen++] = (unsigned char)((quad[1] << 4) | (quad[2] >> 2)); }
             KorbString *r = korb_str_alloc(c, slots + 3, olen);   /* may move slots; out is libc-stable */
             memcpy(korb_strbuf_data(r->buf), out, olen); free(out);
