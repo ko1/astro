@@ -310,9 +310,9 @@ kp_gvar_readonly_write(struct kp_ctx *tc, const pm_node_t *at, pm_constant_id_t 
                 r[1] == ':' || r[1] == '"' || r[1] == '<' || r[1] == '?' ||
                 (r[1] >= '1' && r[1] <= '9')));
     if (!ro) {                                           /* the multi-char read-only names */
-        /* NB: $FILENAME is read-only for user code but the prelude's ARGF
-         * implementation assigns it, so it is intentionally not listed here. */
-        static const char *const ro_names[] = { "$-a", "$-l", "$-p", "$LOADED_FEATURES", "$LOAD_PATH", NULL };
+        /* the prelude reaches these through __set_gvar, which bypasses the check */
+        static const char *const ro_names[] = { "$-a", "$-l", "$-p", "$LOADED_FEATURES",
+                                                "$LOAD_PATH", "$FILENAME", "$:", "$-I", NULL };
         for (uint32_t i = 0; ro_names[i]; i++) if (strcmp(r, ro_names[i]) == 0) { ro = true; break; }
     }
     if (!ro) return NULL;
@@ -4203,7 +4203,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         { NODE *ro = kp_gvar_readonly_write(tc, node, ((const pm_global_variable_write_node_t *)node)->name); if (ro) return ro; }
         if ((kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, ((const pm_global_variable_write_node_t *)node)->name))
             == korb_intern(tc->c->vm, "$@", 2)) {                /* `$@ = v` → $!.set_backtrace(v) */
-            NODE *v; WITH_CHAIN(tc, 2, (v = transduce(tc, ((const pm_global_variable_write_node_t *)node)->value)));
+            /* the value is an @child evaluated at this node's own cursor
+             * (slot_count 0), so the chain must NOT shift */
+            NODE *v = transduce(tc, ((const pm_global_variable_write_node_t *)node)->value);
             return ALLOC_node_errinfo_bt_set(v);
         }
         const pm_global_variable_write_node_t *gw = (const pm_global_variable_write_node_t *)node;

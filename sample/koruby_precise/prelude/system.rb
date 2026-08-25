@@ -599,7 +599,7 @@ class ARGFClass
     @opened_any = true
     @advance = false
     @file_lineno = 0
-    $FILENAME = @current_name
+    __set_gvar("$FILENAME", @current_name)   # read-only for user code
     true
   end
   private :__next_file

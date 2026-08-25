@@ -2088,13 +2088,29 @@ static RESULT korb_m_nme_args(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_exc_set_backtrace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE v = VALUE_REF_GET(self);
     if (!KORB_EXC_P(v)) return RESULT_OK(KORB_NIL);
-    const VALUE bt = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
-    /* CRuby accepts nil, a String, or an Array of Strings; store as given. */
-    if (bt != KORB_NIL && !KORB_STRING_P(bt) && !KORB_ARRAY_P(bt))
+    VALUE bt = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    /* nil, a String (wrapped in a one-element Array), or an Array whose elements
+     * are all Strings / Thread::Backtrace::Location. */
+    if (KORB_STRING_P(bt)) {
+        slots[0] = bt;                                    /* root across the Array alloc */
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 1));
+        CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), slots[0]));
+        bt = slots[1];
+    } else if (KORB_ARRAY_P(bt)) {
+        const KorbArray *const ary = VAL2ARY(bt);
+        for (uint32_t i = 0; i < ary->len; i++) {
+            const VALUE el = korb_items_data(ary->items)[i];
+            if (KORB_STRING_P(el)) continue;
+            if (KORB_OBJECT_P(el) && korb_responds_to(c, el, korb_intern(c->vm, "lineno", 6))) continue;
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location");
+        }
+    } else if (bt != KORB_NIL) {
         return korb_raise(c, slots, KORB_E_TYPE, 0, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location");
+    }
+    slots[0] = bt;                                        /* the exception may have moved above */
     KorbException *const e = VAL2EXC(VALUE_REF_GET(self));
-    ARO_STORE(c, e, &e->backtrace, bt);
-    return RESULT_OK(bt);
+    ARO_STORE(c, e, &e->backtrace, slots[0]);
+    return RESULT_OK(slots[0]);
 }
 static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
