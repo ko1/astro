@@ -15,7 +15,7 @@ struct korb_tc_mb_ent { const char *name; const struct korb_tc_pair *by_bytes, *
 enum korb_tc_kind {
     KTC_NONE = 0, KTC_UTF8, KTC_ASCII, KTC_BINARY,
     KTC_UTF16LE, KTC_UTF16BE, KTC_UTF32LE, KTC_UTF32BE,
-    KTC_SB, KTC_MB,
+    KTC_SB, KTC_MB, KTC_ISO2022JP,
 };
 
 struct korb_tc {
@@ -31,6 +31,9 @@ static const struct { const char *alias, *real; } korb_tc_alias[] = {
     { "UTF8", "UTF-8" }, { "CP65001", "UTF-8" },
     { "SJIS", "Shift_JIS" }, { "CP932", "Windows-31J" }, { "csWindows31J", "Windows-31J" },
     { "eucJP", "EUC-JP" }, { "euc-jp-ms", "eucJP-ms" },
+    { "UTF8-MAC", "UTF-8" }, { "UTF8-DoCoMo", "UTF-8" }, { "UTF8-KDDI", "UTF-8" },
+    { "UTF8-SoftBank", "UTF-8" }, { "CESU-8", "UTF-8" },
+    { "CP50220", "ISO-2022-JP" }, { "CP50221", "ISO-2022-JP" }, { "ISO2022-JP", "ISO-2022-JP" },
     { "CP1250", "Windows-1250" }, { "CP1251", "Windows-1251" }, { "CP1252", "Windows-1252" },
     { "CP1253", "Windows-1253" }, { "CP1254", "Windows-1254" }, { "CP1255", "Windows-1255" },
     { "CP1256", "Windows-1256" }, { "CP1257", "Windows-1257" }, { "CP1258", "Windows-1258" },
@@ -53,6 +56,17 @@ static bool korb_tc_find(const char *name, struct korb_tc *out)
     if (strcasecmp(name, "UTF-16BE") == 0)   { out->kind = KTC_UTF16BE; return true; }
     if (strcasecmp(name, "UTF-32LE") == 0)   { out->kind = KTC_UTF32LE; return true; }
     if (strcasecmp(name, "UTF-32BE") == 0)   { out->kind = KTC_UTF32BE; return true; }
+    if (strcasecmp(name, "ISO-2022-JP") == 0) {          /* stateful: JIS X 0208 via the EUC-JP table */
+        for (size_t i = 0; korb_tc_mb_table[i].name; i++)
+            if (strcasecmp("EUC-JP", korb_tc_mb_table[i].name) == 0) {
+                out->kind = KTC_ISO2022JP;
+                out->by_bytes = korb_tc_mb_table[i].by_bytes;
+                out->by_cp    = korb_tc_mb_table[i].by_cp;
+                out->n        = korb_tc_mb_table[i].n;
+                return true;
+            }
+        return false;
+    }
     for (size_t i = 0; korb_tc_sb_table[i].name; i++)
         if (strcasecmp(name, korb_tc_sb_table[i].name) == 0) {
             out->kind = KTC_SB; out->sb = korb_tc_sb_table[i].tab; return true;
@@ -89,6 +103,19 @@ static const struct korb_tc_pair *korb_tc_mb_cp(const struct korb_tc *tc, uint32
         if (tc->by_cp[mid].cp < cp) lo = mid + 1; else hi = mid;
     }
     return (lo < tc->n && tc->by_cp[lo].cp == cp) ? &tc->by_cp[lo] : NULL;
+}
+
+/* ISO-2022-JP mode: 0 = ASCII/JIS-Roman, 1 = JIS X 0208 (two bytes per char). */
+#define KTC_JIS_ASCII 0u
+#define KTC_JIS_X0208 1u
+
+/* Consume any ESC sequence at p, updating *mode.  Returns bytes eaten (0 = none). */
+static uint32_t korb_tc_jis_esc(const unsigned char *p, size_t len, uint8_t *mode)
+{
+    if (len < 3 || p[0] != 0x1B) return 0;
+    if (p[1] == '$' && (p[2] == '@' || p[2] == 'B')) { *mode = KTC_JIS_X0208; return 3; }
+    if (p[1] == '(' && (p[2] == 'B' || p[2] == 'J')) { *mode = KTC_JIS_ASCII; return 3; }
+    return 0;
 }
 
 /* Decode one character at p.  Returns bytes consumed, or 0 for an invalid
@@ -175,6 +202,60 @@ static uint32_t korb_tc_errlen(const struct korb_tc *tc, const unsigned char *p,
     return k;
 }
 
+/* JIS X 0208 lives in the EUC-JP table shifted by 0x8080, so both directions
+ * reuse it. */
+static uint32_t korb_tc_jis_decode(const struct korb_tc *tc, const unsigned char *p, size_t len, uint32_t *cp, uint8_t mode)
+{
+    if (len == 0) return 0;
+    if (mode == KTC_JIS_ASCII) { if (p[0] < 0x80) { *cp = p[0]; return 1; } return 0; }
+    if (len < 2 || p[0] < 0x21 || p[0] > 0x7E || p[1] < 0x21 || p[1] > 0x7E) return 0;
+    const uint32_t euc = ((uint32_t)(p[0] | 0x80) << 8) | (uint32_t)(p[1] | 0x80);
+    const struct korb_tc_pair *const e = korb_tc_mb_bytes(tc, euc, 2);
+    if (!e) return 0;
+    *cp = e->cp; return 2;
+}
+/* Writes the mode switch when needed; returns bytes written, 0 = undefined. */
+static uint32_t korb_tc_jis_encode(const struct korb_tc *tc, uint32_t cp, unsigned char *out, uint8_t *mode)
+{
+    uint32_t n = 0;
+    if (cp < 0x80) {
+        if (*mode != KTC_JIS_ASCII) { out[n++] = 0x1B; out[n++] = '('; out[n++] = 'B'; *mode = KTC_JIS_ASCII; }
+        out[n++] = (unsigned char)cp;
+        return n;
+    }
+    const struct korb_tc_pair *const e = korb_tc_mb_cp(tc, cp);
+    if (!e || e->n != 2) return 0;
+    const uint32_t b0 = (e->bytes >> 8) & 0xFF, b1 = e->bytes & 0xFF;
+    if (b0 < 0xA1 || b0 > 0xFE || b1 < 0xA1 || b1 > 0xFE) return 0;   /* half-width kana etc. */
+    if (*mode != KTC_JIS_X0208) { out[n++] = 0x1B; out[n++] = '$'; out[n++] = 'B'; *mode = KTC_JIS_X0208; }
+    out[n++] = (unsigned char)(b0 & 0x7F);
+    out[n++] = (unsigned char)(b1 & 0x7F);
+    return n;
+}
+
+/* True when the bytes at p are a valid but TRUNCATED character: more input
+ * would complete it (Converter#primitive_convert reports :incomplete_input). */
+static bool korb_tc_truncated(const struct korb_tc *tc, const unsigned char *p, size_t len)
+{
+    switch (tc->kind) {
+      case KTC_UTF8: {
+        const unsigned char b = p[0];
+        uint32_t need;
+        if ((b & 0xE0) == 0xC0) need = 2;
+        else if ((b & 0xF0) == 0xE0) need = 3;
+        else if ((b & 0xF8) == 0xF0) need = 4;
+        else return false;
+        uint32_t k = 1;
+        while (k < need && k < len && (p[k] & 0xC0) == 0x80) k++;
+        return k == len && k < need;
+      }
+      case KTC_MB:       return p[0] >= 0x80 && len < 4;   /* a lead byte with no room left */
+      case KTC_UTF16LE: case KTC_UTF16BE: return len < 2 || (len < 4 && p[len - 2] != 0);
+      case KTC_UTF32LE: case KTC_UTF32BE: return len < 4;
+      default: return false;
+    }
+}
+
 /* Encode one codepoint.  Returns bytes written to out (>= 8 bytes), or 0 when
  * the target encoding has no representation for it. */
 static uint32_t korb_tc_encode(const struct korb_tc *tc, uint32_t cp, unsigned char *out)
@@ -251,20 +332,22 @@ static void korb_tc_put(struct korb_tc_out *o, const void *p, size_t n)
     o->len += n;
 }
 
-/* __transcode(str, from_name, to_name, flags, replacement) — the single
- * primitive behind String#encode / Encoding::Converter.
+/* __transcode(str, from, to, flags, replacement[, max_bytes]) — the single
+ * primitive behind String#encode and Encoding::Converter.
  *
- *   flags bit0 invalid:  :replace     bit1 undef: :replace
- *         bit2 xml: :text             bit3 xml: :attr
+ *   flags bit0 invalid: :replace   bit1 undef: :replace   bit2 xml charrefs
+ *   max_bytes: cap on the output (nil / negative = unlimited)
  *
- * Returns the converted String on success.  On an error the caller has to
- * handle (`fallback:`, or a raise with the exact CRuby message) it returns
- * [partial_output, code, byte_index, codepoint, raw_bytes] where code is
- * 0 = invalid byte sequence, 1 = undefined conversion. */
+ * Returns the converted String when the whole input converted.  Otherwise an
+ * Array [partial_output, code, consumed_bytes, codepoint, error_bytes] with
+ *   code 0 = invalid byte sequence   1 = undefined conversion
+ *        2 = destination buffer full 3 = incomplete input (truncated char)
+ * so the caller can raise with CRuby's exact message, run a `fallback:`, or
+ * drive a streaming converter. */
 static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     if (UNLIKELY(VALUE_SLICE_LEN(args) < 5))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 5)", VALUE_SLICE_LEN(args));
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 5..6)", VALUE_SLICE_LEN(args));
     const VALUE srcv = VALUE_SLICE_GET(args, 0);
     if (UNLIKELY(!KORB_STRING_P(srcv) || !KORB_STRING_P(VALUE_SLICE_GET(args, 1)) || !KORB_STRING_P(VALUE_SLICE_GET(args, 2))))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "__transcode expects (String, String, String, Integer, String)");
@@ -281,6 +364,9 @@ static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
         memcpy(replb, korb_strbuf_data(rs->buf), repl_len);
     }
 
+    korb_sword_t maxb = -1;
+    if (VALUE_SLICE_LEN(args) >= 6 && FIXNUM_P(VALUE_SLICE_GET(args, 5))) maxb = FIX2LONG(VALUE_SLICE_GET(args, 5));
+
     struct korb_tc from, to;
     if (!korb_tc_find(fromb, &from) || !korb_tc_find(tob, &to))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "code converter not found (%s to %s)", fromb, tob);
@@ -295,11 +381,21 @@ static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
 
     struct korb_tc_out out = { NULL, 0, 0 };
     size_t i = 0;
+    uint8_t smode = KTC_JIS_ASCII, dmode = KTC_JIS_ASCII;   /* ISO-2022-JP shift state */
     int errcode = -1; size_t errpos = 0; uint32_t errcp = 0, errlen = 0;
     while (i < slen) {
         uint32_t cp = 0;
-        const uint32_t used = korb_tc_decode(&from, src + i, slen - i, &cp);
+        if (from.kind == KTC_ISO2022JP) {
+            const uint32_t esc = korb_tc_jis_esc(src + i, slen - i, &smode);
+            if (esc) { i += esc; continue; }
+        }
+        const uint32_t used = (from.kind == KTC_ISO2022JP)
+            ? korb_tc_jis_decode(&from, src + i, slen - i, &cp, smode)
+            : korb_tc_decode(&from, src + i, slen - i, &cp);
         if (used == 0) {                                  /* invalid byte sequence in the source */
+            /* a truncated tail is only "incomplete input" when the caller
+             * still wants to hear about it; invalid: :replace replaces it */
+            if (!(flags & 1u) && korb_tc_truncated(&from, src + i, slen - i)) { errcode = 3; errpos = i; errlen = (uint32_t)(slen - i); break; }
             const uint32_t bad = korb_tc_errlen(&from, src + i, slen - i);
             if (!(flags & 1u)) { errcode = 0; errpos = i; errlen = bad; break; }
             korb_tc_put(&out, replb, repl_len);
@@ -307,7 +403,10 @@ static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
             continue;
         }
         unsigned char buf[8];
-        const uint32_t wrote = korb_tc_encode(&to, cp, buf);
+        const uint32_t wrote = (to.kind == KTC_ISO2022JP)
+            ? korb_tc_jis_encode(&to, cp, buf, &dmode)
+            : korb_tc_encode(&to, cp, buf);
+        if (wrote > 0 && maxb >= 0 && (korb_sword_t)(out.len + wrote) > maxb) { errcode = 2; errpos = i; errlen = 0; break; }
         if (wrote == 0) {                                 /* not representable in the target */
             if (flags & 4u) {                             /* xml: :text / :attr → numeric charref */
                 char cr[16]; const int n = snprintf(cr, sizeof cr, "&#x%X;", cp);
@@ -324,6 +423,8 @@ static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
         i += used;
     }
 
+    if (errcode < 0 && to.kind == KTC_ISO2022JP && dmode != KTC_JIS_ASCII)
+        korb_tc_put(&out, "\x1B(B", 3);                    /* ISO-2022-JP must end in ASCII mode */
     if (errcode < 0) {                                    /* success: one String, tagged with the target */
         RESULT r = korb_str_new(c, slots, out.b ? out.b : "", (uint32_t)out.len);
         free(out.b); free(src);
@@ -343,6 +444,7 @@ static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
     CHECK(korb_ary_push_val(c, slots + 2, a, LONG2FIX((korb_sword_t)errcp)));
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, (const char *)src + errpos, errlen));
     KORB_STR_ENC_SET(slots[1], korb_enc_index_pub(c->vm, fromb));   /* the offending char, in the SOURCE encoding */
+    if (errcode == 2) KORB_STR_ENC_SET(slots[1], korb_enc_index_pub(c->vm, fromb));
     CHECK(korb_ary_push_val(c, slots + 2, a, slots[1]));
     free(out.b); free(src);
     return RESULT_OK(VALUE_REF_GET(a));

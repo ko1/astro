@@ -13131,7 +13131,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "require_relative", korb_bi_require_relative, -1);
     korb_builtin_define(c, "load", korb_bi_load, -1);
     korb_builtin_define(c, "eval",  korb_bi_eval,  -1);
-    korb_builtin_define(c, "__transcode",    korb_bi_transcode,   5);
+    korb_builtin_define(c, "__transcode",    korb_bi_transcode,  -1);
     korb_builtin_define(c, "__transcodable?", korb_bi_transcodable, 1);
     korb_builtin_define(c, "sleep", korb_bi_sleep, -1);   /* TIMER blop (thread.c) — 他 green thread は走れる */
     korb_builtin_define(c, "rand",  korb_bi_rand,  -1);

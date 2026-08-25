@@ -348,6 +348,195 @@ class Encoding
     XML_TEXT_DECORATOR          = 0x8000
     XML_ATTR_CONTENT_DECORATOR  = 0x10000
     XML_ATTR_QUOTE_DECORATOR    = 0x100000
+
+    attr_reader :source_encoding, :destination_encoding, :replacement
+
+    def self.__encname(v, what)
+      return v.name if v.is_a?(Encoding)
+      return v if v.is_a?(String)
+      raise TypeError, "no implicit conversion of #{v.class} into String" unless v.respond_to?(:to_str)
+      n = v.to_str
+      raise TypeError, "no implicit conversion of #{v.class} into String" unless n.is_a?(String)
+      n
+    end
+
+    def initialize(src, dst, opts = 0)
+      sname = Converter.__encname(src, :source)
+      dname = Converter.__encname(dst, :destination)
+      senc = Encoding.__find_or_nil(sname)
+      denc = Encoding.__find_or_nil(dname)
+      if senc.nil? || denc.nil? || senc == denc || !__transcodable?(sname) || !__transcodable?(dname)
+        raise Encoding::ConverterNotFoundError, "code converter not found (#{sname} to #{dname})"
+      end
+      @source_encoding = senc
+      @destination_encoding = denc
+      @src_name = senc.name
+      @dst_name = denc.name
+      @flags = 0
+      repl = nil
+      if opts.is_a?(Hash)
+        @flags |= 1 if (opts[:invalid] == :replace) || opts[:invalid_replace]
+        @flags |= 2 if (opts[:undef] == :replace) || opts[:undef_replace]
+        repl = opts[:replace]
+      elsif opts.is_a?(Integer)
+        @flags |= 1 if (opts & INVALID_MASK) == INVALID_REPLACE
+        @flags |= 2 if (opts & UNDEF_MASK) == UNDEF_REPLACE
+      end
+      if repl.nil?
+        @replacement = @dst_name == "UTF-8" ? "\u{fffd}".dup.force_encoding("UTF-8") : "?".dup.force_encoding("US-ASCII")
+      else
+        raise TypeError, "no implicit conversion of #{repl.class} into String" unless repl.respond_to?(:to_str)
+        r = repl.to_str
+        raise TypeError, "no implicit conversion of #{repl.class} into String" unless r.is_a?(String)
+        @replacement = r
+      end
+      @pending = +""
+      @finished = false
+      @errinfo = [:source_buffer_empty, nil, nil, nil, nil]
+      @last_error = nil
+    end
+
+    def replacement=(v)
+      raise TypeError, "no implicit conversion of #{v.class} into String" unless v.respond_to?(:to_str)
+      r = v.to_str
+      raise TypeError, "no implicit conversion of #{v.class} into String" unless r.is_a?(String)
+      @replacement = r
+    end
+
+    def inspect = "#<Encoding::Converter: #{@src_name} to #{@dst_name}>"
+    def ==(o) = o.is_a?(Converter) && o.source_encoding == @source_encoding && o.destination_encoding == @destination_encoding
+    def primitive_errinfo = @errinfo
+    def last_error = @last_error
+    def convpath = [[@source_encoding, @destination_encoding]]
+    def self.search_convpath(src, dst, _opts = nil)
+      [[Encoding.find(__encname(src, :source)), Encoding.find(__encname(dst, :destination))]]
+    end
+    def self.asciicompat_encoding(enc)
+      e = enc.is_a?(Encoding) ? enc : Encoding.__find_or_nil(__encname(enc, :source))
+      return nil if e.nil?
+      e.ascii_compatible? ? nil : Encoding::UTF_8
+    end
+
+    # The replacement the primitive inserts has to already be in the target
+    # encoding (it is spliced into the byte stream verbatim).
+    def __repl_bytes
+      return @replacement if @replacement.encoding.name.casecmp(@dst_name) == 0
+      r = __transcode(@replacement, @replacement.encoding.name, @dst_name, 0, "")
+      r.is_a?(String) ? r : "?"
+    end
+    private :__repl_bytes
+
+    def primitive_convert(src, dst, dst_offset = nil, dst_bytesize = nil, opts = nil)
+      raise FrozenError, "can't modify frozen String: #{dst.inspect}" if dst.frozen?
+      off = dst_offset.nil? ? dst.bytesize : dst_offset.to_int
+      raise ArgumentError, "too big destination byte offset" if off > dst.bytesize
+      max = dst_bytesize.nil? ? -1 : dst_bytesize.to_int
+      partial = opts.is_a?(Hash) ? !!opts[:partial_input] : false
+      input = @pending + (src.nil? ? "" : src.dup.force_encoding(@src_name))
+      @pending = +""
+      r = __transcode(input, @src_name, @dst_name, @flags, __repl_bytes, max)
+      if r.is_a?(String)
+        out, code, consumed, cp, errb = r, nil, input.bytesize, nil, nil
+      else
+        out, code, consumed, cp, errb = r
+      end
+      dst.replace(dst.byteslice(0, off).to_s + out)
+      dst.force_encoding(@dst_name)
+      src.replace(+"") if src.is_a?(String) && !src.frozen?
+      rest = input.byteslice(consumed + (errb ? errb.bytesize : 0), input.bytesize).to_s
+      case code
+      when nil
+        @errinfo = [:finished, nil, nil, nil, nil]; @last_error = nil
+        :finished
+      when 0
+        again = __read_again(input, consumed, errb)
+        @errinfo = [:invalid_byte_sequence, @src_name, @dst_name, errb, again]
+        @last_error = Encoding::InvalidByteSequenceError.new("#{errb.b.inspect} followed by #{again.b.inspect} on #{@src_name}")
+        src.replace(rest.byteslice(again.bytesize, rest.bytesize).to_s) if src.is_a?(String) && !src.frozen?
+        @pending = +"" if src.is_a?(String)
+        :invalid_byte_sequence
+      when 1
+        @errinfo = [:undefined_conversion, @src_name, @dst_name, errb, +""]
+        @last_error = Encoding::UndefinedConversionError.new(format("U+%04X from %s to %s", cp, @src_name, @dst_name))
+        src.replace(rest) if src.is_a?(String) && !src.frozen?
+        :undefined_conversion
+      when 2
+        @pending = input.byteslice(consumed, input.bytesize).to_s
+        @errinfo = [:destination_buffer_full, nil, nil, nil, nil]; @last_error = nil
+        :destination_buffer_full
+      else
+        if partial
+          @pending = input.byteslice(consumed, input.bytesize).to_s
+          @errinfo = [:source_buffer_empty, nil, nil, nil, nil]; @last_error = nil
+          :source_buffer_empty
+        else
+          @errinfo = [:incomplete_input, @src_name, "UTF-8", errb, +""]
+          @last_error = Encoding::InvalidByteSequenceError.new("incomplete #{errb.b.inspect} on #{@src_name}")
+          :incomplete_input
+        end
+      end
+    end
+
+    # CRuby reports the byte it had to read (and put back) to decide the
+    # sequence was invalid: only when the error bytes were a lead expecting more.
+    def __read_again(input, consumed, errb)
+      nxt = input.byteslice(consumed + errb.bytesize, 1)
+      return +"" if nxt.nil? || nxt.empty?
+      b = errb.getbyte(0)
+      return +"" if b.nil? || b < 0xC0
+      need = b < 0xE0 ? 2 : (b < 0xF0 ? 3 : 4)
+      errb.bytesize < need ? nxt.b : +""
+    end
+    private :__read_again
+
+    def convert(str)
+      raise ArgumentError, "converter already finished" if @finished
+      input = @pending + str.dup.force_encoding(@src_name)
+      @pending = +""
+      r = __transcode(input, @src_name, @dst_name, @flags, __repl_bytes, -1)
+      if r.is_a?(String)
+        @errinfo = [:source_buffer_empty, nil, nil, nil, nil]; @last_error = nil
+        return r.force_encoding(@dst_name)
+      end
+      out, code, consumed, cp, errb = r
+      case code
+      when 0
+        again = __read_again(input, consumed, errb)
+        @errinfo = [:invalid_byte_sequence, @src_name, @dst_name, errb, again]
+        e = Encoding::InvalidByteSequenceError.new("#{errb.b.inspect} followed by #{again.b.inspect} on #{@src_name}")
+        @last_error = e
+        raise e
+      when 1
+        @errinfo = [:undefined_conversion, @src_name, @dst_name, errb, +""]
+        e = Encoding::UndefinedConversionError.new(format("U+%04X from %s to %s", cp, @src_name, @dst_name))
+        @last_error = e
+        raise e
+      else                                          # truncated tail: keep it for the next call
+        @pending = input.byteslice(consumed, input.bytesize).to_s
+        @errinfo = [:source_buffer_empty, nil, nil, nil, nil]; @last_error = nil
+        out.force_encoding(@dst_name)
+      end
+    end
+
+    def finish
+      @finished = true
+      r = @pending.empty? ? +"" : convert_finish_pending
+      @pending = +""
+      r.force_encoding(@dst_name)
+    end
+    def convert_finish_pending
+      r = __transcode(@pending, @src_name, @dst_name, @flags, __repl_bytes, -1)
+      r.is_a?(String) ? r : (r[0] || +"")
+    end
+    private :convert_finish_pending
+
+    def insert_output(str)
+      @pending_out = (@pending_out || +"") + str.to_s
+      nil
+    end
+    def putback(n = nil)
+      +""
+    end
   end
   class CompatibilityError < StandardError; end
   class UndefinedConversionError < StandardError; end
@@ -454,7 +643,7 @@ class String
       end
       partial, code, idx, cp, ch = r
       out += partial
-      if code == 0
+      if code == 0 || code == 3
         raise Encoding::InvalidByteSequenceError, "#{ch.b.inspect} on #{senc.name}"
       end
       rep = __encode_fallback(fb, ch)
