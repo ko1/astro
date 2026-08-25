@@ -80,7 +80,11 @@ struct kp_ctx {
 static uint8_t
 kp_src_enc(CTX *c, const pm_parser_t *parser)
 {
+    /* -K<letter> sets the script encoding too, unless a magic comment already
+     * picked one (prism reports UTF-8 for "no comment"). */
     const char *const name = parser->encoding ? parser->encoding->name : NULL;
+    if (OPTION.kcode && (name == NULL || strcmp(name, "UTF-8") == 0))
+        return (uint8_t)korb_enc_index_pub(c->vm, OPTION.kcode);
     if (name == NULL) return KORB_ENC_UTF8;
     return (uint8_t)korb_enc_index_pub(c->vm, name);
 }
@@ -4432,6 +4436,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
 {
     pm_parser_t parser;
     pm_options_t options = { 0 };
+    if (OPTION.frozen_literals) pm_options_frozen_string_literal_set(&options, true);   /* --enable-frozen-string-literal */
     pm_options_filepath_set(&options, fname);
     pm_options_line_set(&options, first_line);
 
@@ -4499,6 +4504,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
 {
     pm_parser_t parser;
     pm_options_t options = { 0 };
+    if (OPTION.frozen_literals) pm_options_frozen_string_literal_set(&options, true);   /* --enable-frozen-string-literal */
     pm_options_filepath_set(&options, fname);
     pm_options_line_set(&options, first_line);
     /* declare the binding's locals so the eval code recognises them as locals

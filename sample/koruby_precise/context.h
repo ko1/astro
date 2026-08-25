@@ -818,6 +818,11 @@ struct korb_vm {
      * eval.  Root-scanned by AROH_VISIT_ROOTS so the boxes are GC-forwarded. */
     VALUE    *flit_vals;
     uint32_t  flit_cnt, flit_capa;
+    /* frozen String-literal pool (--enable-frozen-string-literal / the magic
+     * comment): equal literals share one frozen object, as CRuby's fstring
+     * table does.  Root-scanned alongside flit_vals. */
+    VALUE    *fstr_vals;
+    uint32_t  fstr_cnt, fstr_capa;
 
     /* per-instance class override table (subclass instances / extended objects /
      * singleton methods).  sklass_obj[i] is the heap object, sklass_cls[i] its
@@ -1117,6 +1122,10 @@ struct CTX_struct {
     /* boxed Float-literal pool: forward each box so cached entries stay live */ \
     for (uint32_t _fi = 0; _fi < (c)->vm->flit_cnt; _fi++) {                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->flit_vals[_fi]);      \
+    }                                                                        \
+    /* frozen String-literal pool: same rule */                              \
+    for (uint32_t _si = 0; _si < (c)->vm->fstr_cnt; _si++) {                 \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->fstr_vals[_si]);      \
     }                                                                        \
     for (uint32_t _pi = 0; _pi < (c)->vm->privconst_cnt; _pi++) {            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->privconsts[_pi].owner); \
@@ -1434,6 +1443,10 @@ struct CTX_struct {
 /* -----------------------------------------------------------------------------
  * Options
  * --------------------------------------------------------------------------- */
+/* $RUBY_DESCRIPTION — the `-v` banner and the RUBY_DESCRIPTION constant must
+ * agree (command_line/rubyopt_spec compares them). */
+#define KORUBY_RUBY_DESCRIPTION "ruby 4.0.2 (koruby/ASTro) [x86_64-linux]"
+
 struct koruby_option {
     bool plain;          /* --plain: ignore the code store */
     bool compiled_only;  /* --compiled-only: run only baked SDs; poison unswapped bodies (compile-miss detect) */
@@ -1444,6 +1457,14 @@ struct koruby_option {
     bool quiet;
     bool verbose;
     int  verbose_warn;   /* -w/-W2 → 1 ($VERBOSE=true), -W0 → -1 (nil), 0 = default */
+    bool debug;          /* -d / --debug: $DEBUG = true */
+    bool frozen_literals;/* --enable-frozen-string-literal */
+    bool switch_args;    /* -s: leading -name[=value] args become globals */
+    bool no_deprecated;  /* -W:no-deprecated */
+    bool no_experimental;/* -W:no-experimental */
+    const char *kcode;   /* -K<letter>: the default external encoding name, or NULL */
+    const char *extenc;  /* -E ext[:int] external encoding name, or NULL */
+    const char *intenc;  /* -E's internal encoding name, or NULL */
 
     /* referenced by framework-generated ALLOC_ helpers */
     bool record_all;

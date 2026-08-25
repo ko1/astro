@@ -52,6 +52,68 @@ usage(FILE *fp)
     astro_print_build_help(fp);
 }
 
+
+/* One CRuby-compatible command-line flag.  Shared by the argv loop and RUBYOPT
+ * (which accepts a subset).  `next_arg` supplies the separate-word form of
+ * -I/-r/-E when there is one; RUBYOPT passes NULL (only the joined form).
+ * Returns false for a flag this build does not accept. */
+static bool
+koruby_apply_flag(const char *a, const char *next_arg,
+                  const char **load_dirs, int *nload_dirs,
+                  const char **req_libs, int *nreq_libs)
+{
+    if (strncmp(a, "-I", 2) == 0) {
+        const char *const dir = a[2] ? a + 2 : next_arg;
+        if (dir && *nload_dirs < 64) load_dirs[(*nload_dirs)++] = dir;
+        return true;
+    }
+    if (strncmp(a, "-r", 2) == 0) {
+        const char *const lib = a[2] ? a + 2 : next_arg;
+        if (lib && *nreq_libs < 64) req_libs[(*nreq_libs)++] = lib;
+        return true;
+    }
+    if (strcmp(a, "-w") == 0 || strncmp(a, "-W", 2) == 0) {
+        if (strcmp(a, "-W:no-deprecated") == 0)        { OPTION.no_deprecated = true;  return true; }
+        if (strcmp(a, "-W:no-experimental") == 0)      { OPTION.no_experimental = true; return true; }
+        if (strncmp(a, "-W:", 3) == 0)                 return true;   /* other categories: accepted */
+        if (strcmp(a, "-w") == 0 || strcmp(a, "-W") == 0 || strcmp(a, "-W2") == 0) OPTION.verbose_warn = 1;
+        else if (strcmp(a, "-W0") == 0) OPTION.verbose_warn = -1;
+        else if (strcmp(a, "-W1") == 0) OPTION.verbose_warn = 2;       /* explicit default ($VERBOSE=false) */
+        return true;
+    }
+    if (strcmp(a, "-d") == 0 || strcmp(a, "--debug") == 0) { OPTION.debug = true; OPTION.verbose_warn = 1; return true; }
+    if (strncmp(a, "-K", 2) == 0) {
+        switch (a[2]) {
+          case 'a': case 'A': case 'n': case 'N': case '\0': OPTION.kcode = "ASCII-8BIT"; break;
+          case 'e': case 'E': OPTION.kcode = "EUC-JP";  break;
+          case 'u': case 'U': OPTION.kcode = "UTF-8";   break;
+          case 's': case 'S': OPTION.kcode = "Windows-31J"; break;
+          default: break;                                   /* unknown code: ignored, as CRuby does */
+        }
+        return true;
+    }
+    if (strncmp(a, "-E", 2) == 0 || strncmp(a, "--encoding=", 11) == 0) {
+        const char *spec = a[1] == 'E' ? (a[2] ? a + 2 : next_arg) : a + 11;
+        if (!spec) return true;
+        char *const dup = strdup(spec);
+        if (!dup) abort();
+        char *const colon = strchr(dup, ':');
+        if (colon) { *colon = '\0'; if (colon[1]) OPTION.intenc = colon + 1; }
+        if (*dup) OPTION.extenc = dup;
+        return true;
+    }
+    if (strcmp(a, "-U") == 0) { OPTION.intenc = "UTF-8"; return true; }
+    if (strcmp(a, "-s") == 0) { OPTION.switch_args = true; return true; }
+    if (strcmp(a, "--enable-frozen-string-literal") == 0 ||
+        strcmp(a, "--enable=frozen-string-literal") == 0) { OPTION.frozen_literals = true; return true; }
+    if (strcmp(a, "--disable-frozen-string-literal") == 0 ||
+        strcmp(a, "--disable=frozen-string-literal") == 0) { OPTION.frozen_literals = false; return true; }
+    if (strncmp(a, "--disable", 9) == 0 || strncmp(a, "--enable", 8) == 0 ||
+        strcmp(a, "--copyright") == 0)
+        return true;
+    return false;
+}
+
 static char *
 read_file_all(const char *path, size_t *len_out)
 {
@@ -647,8 +709,8 @@ main(int argc, char *argv[])
     const bool skip_run = bcfg.aot_compile && !bcfg.run && !bcfg.pg_compile;
 
     /* sample flags + positional script */
-    const char *load_dirs[64]; uint32_t nload_dirs = 0;    /* -I */
-    const char *req_libs[64];  uint32_t nreq_libs  = 0;    /* -r */
+    const char *load_dirs[64]; int nload_dirs = 0;    /* -I */
+    const char *req_libs[64];  int nreq_libs  = 0;    /* -r */
     int i = 1;
 #ifdef KORUBY_EMBED
     /* Embedded executable: the program is baked in — argv[1..] is Ruby ARGV. */
@@ -683,23 +745,11 @@ main(int argc, char *argv[])
         /* CRuby flags that scripts and spec harnesses pass through: -I adds to
          * $LOAD_PATH, -r requires, and the warning / feature switches are
          * accepted so an invocation that only decorates itself with them runs. */
-        else if (strncmp(a, "-I", 2) == 0) {
-            const char *const dir = a[2] ? a + 2 : (i + 1 < argc ? argv[++i] : NULL);
-            if (dir) { if (nload_dirs < 64) load_dirs[nload_dirs++] = dir; }
-        }
-        else if (strncmp(a, "-r", 2) == 0) {
-            const char *const lib = a[2] ? a + 2 : (i + 1 < argc ? argv[++i] : NULL);
-            if (lib) { if (nreq_libs < 64) req_libs[nreq_libs++] = lib; }
-        }
-        else if (strcmp(a, "-w") == 0 || strncmp(a, "-W", 2) == 0) {
-            /* -w / -W2 → $VERBOSE = true (and every Warning category on);
-             * -W0 silences ($VERBOSE = nil), -W1 is the default. */
-            if (strcmp(a, "-w") == 0 || strcmp(a, "-W") == 0 || strcmp(a, "-W2") == 0) OPTION.verbose_warn = 1;
-            else if (strcmp(a, "-W0") == 0) OPTION.verbose_warn = -1;
-        }
-        else if (strncmp(a, "--disable", 9) == 0 || strncmp(a, "--enable", 8) == 0 ||
-                 strcmp(a, "--copyright") == 0) {
-            /* accepted, no effect */
+        else if (a[0] == '-' && a[1] != '\0' &&
+                 koruby_apply_flag(a, (a[2] == '\0' && i + 1 < argc) ? argv[i + 1] : NULL,
+                                   load_dirs, &nload_dirs, req_libs, &nreq_libs)) {
+            /* a two-word -I/-r/-E consumed the next argv slot */
+            if (a[2] == '\0' && (a[1] == 'I' || a[1] == 'r' || a[1] == 'E') && i + 1 < argc) i++;
         }
         else if (a[0] == '-' && a[1] != '\0') {
             fprintf(stderr, "koruby_precise: unknown flag %s\n", a);
@@ -710,6 +760,36 @@ main(int argc, char *argv[])
             break;   /* first positional = script; rest = ARGV */
         }
     }
+    /* RUBYOPT is applied AFTER the argv loop so a cli switch wins for the
+     * settings ($VERBOSE etc.) and CLI -r runs before RUBYOPT -r.  Only the
+     * subset CRuby allows there is accepted; -a/-p/-n are refused. */
+    const int cli_verbose_warn = OPTION.verbose_warn;
+    char *rubyopt_buf = NULL;
+    {
+        const char *const ro = getenv("RUBYOPT");
+        if (ro && *ro) {
+            rubyopt_buf = strdup(ro);
+            if (!rubyopt_buf) abort();
+            char *save = NULL;
+            for (char *tok = strtok_r(rubyopt_buf, " \t", &save); tok;
+                 tok = strtok_r(NULL, " \t", &save)) {
+                if (tok[0] != '-') continue;
+                /* CRuby refuses these in RUBYOPT (they change how the program
+                 * is driven, or exit before it runs) */
+                if (strcmp(tok, "--copyright") == 0 || strcmp(tok, "--version") == 0 ||
+                    (strchr("apn", tok[1]) && tok[2] == '\0')) {
+                    fprintf(stderr, "koruby_precise: invalid switch in RUBYOPT: %s (RuntimeError)\n", tok);
+                    return 1;
+                }
+                if (strcmp(tok, "-v") == 0) { printf("%s\n", KORUBY_RUBY_DESCRIPTION); fflush(stdout); continue; }
+                const int before = OPTION.verbose_warn;
+                if (!koruby_apply_flag(tok, NULL, load_dirs, &nload_dirs, req_libs, &nreq_libs))
+                    { fprintf(stderr, "koruby_precise: invalid switch in RUBYOPT: %s (RuntimeError)\n", tok); return 1; }
+                if (cli_verbose_warn != 0) OPTION.verbose_warn = before;   /* the cli switch wins */
+            }
+        }
+    }
+
     if (!eval_code && i < argc) {
         script = argv[i];
         i++;
@@ -737,7 +817,26 @@ main(int argc, char *argv[])
     CTX *c = korb_ctx_new();
     c->vm->script_name = src_name;
     c->vm->cur_load_file = src_name;   /* __dir__ / require_relative base for top-level code */
-    korb_define_argv(c, argc - i, &argv[i], src_name);   /* ARGV = remaining args; $0 = script */
+    /* -s: leading `-name[=value]` arguments become globals and leave ARGV. */
+    int argv_start = i;
+    if (OPTION.switch_args) {
+        while (argv_start < argc && argv[argv_start][0] == '-' && argv[argv_start][1] != '\0') {
+            const char *const sw = argv[argv_start] + 1;
+            if (strcmp(sw, "-") == 0) { argv_start++; break; }        /* "--" ends the switches */
+            const char *const eq = strchr(sw, '=');
+            char gname[256];
+            const size_t nlen = eq ? (size_t)(eq - sw) : strlen(sw);
+            if (nlen == 0 || nlen + 2 >= sizeof gname) break;
+            gname[0] = '$';
+            memcpy(gname + 1, sw, nlen);
+            for (size_t k = 1; k <= nlen; k++) if (gname[k] == '-') gname[k] = '_';
+            gname[nlen + 1] = '\0';
+            const VALUE val = eq ? korb_str_new(c, c->slots, eq + 1, (uint32_t)strlen(eq + 1)).value : KORB_TRUE;
+            korb_const_define(c, korb_intern(c->vm, gname, (uint32_t)(nlen + 1)), val);
+            argv_start++;
+        }
+    }
+    korb_define_argv(c, argc - argv_start, &argv[argv_start], src_name);   /* ARGV = remaining args; $0 = script */
 
 #ifdef KORUBY_EMBED
     /* Rebuild the baked ASTs (dispatchers pre-bound; symbols re-intern through
@@ -836,10 +935,24 @@ main(int argc, char *argv[])
         if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); korb_io_flush_std(c->vm); return 1; }
         korb_relocate_object_methods(c, pcur);  /* Object's own table is empty in CRuby: move to Kernel/BasicObject */
         korb_seed_provided_features(c, pcur);   /* CRuby-parity: fiber/pathname preload + pseudo $LOADED_FEATURES */
-        if (OPTION.verbose_warn != 0) {         /* -w / -W2 → $VERBOSE = true (every Warning category on); -W0 → nil */
+        if (OPTION.debug) korb_const_define(c, korb_intern(c->vm, "$DEBUG", 6), KORB_TRUE);
+        if (OPTION.kcode || OPTION.extenc || OPTION.intenc) {   /* -K<letter> / -E ext[:int] / -U */
+            const char *const ext = OPTION.extenc ? OPTION.extenc : OPTION.kcode;
+            if (ext) {
+                pcur[0] = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
+                pcur[1] = korb_str_new(c, pcur + 1, ext, (uint32_t)strlen(ext)).value;
+                (void)korb_send(c, pcur + 2, korb_intern(c->vm, "default_external=", 17), 0, 1);
+            }
+            if (OPTION.intenc) {
+                pcur[0] = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
+                pcur[1] = korb_str_new(c, pcur + 1, OPTION.intenc, (uint32_t)strlen(OPTION.intenc)).value;
+                (void)korb_send(c, pcur + 2, korb_intern(c->vm, "default_internal=", 17), 0, 1);
+            }
+        }
+        if (OPTION.verbose_warn != 0) {         /* -w / -W2 → $VERBOSE = true (every Warning category on); -W0 → nil, -W1 → false */
             korb_const_define(c, korb_intern(c->vm, "$VERBOSE", 8),
-                              OPTION.verbose_warn > 0 ? KORB_TRUE : KORB_NIL);
-            if (OPTION.verbose_warn > 0) {
+                              OPTION.verbose_warn > 0 ? (OPTION.verbose_warn == 2 ? KORB_FALSE : KORB_TRUE) : KORB_NIL);
+            if (OPTION.verbose_warn == 1) {
                 const VALUE wm = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
                 if (KORB_CLASS_P(wm)) {
                     static const char *const cats[] = { "deprecated", "experimental", NULL };   /* -w does NOT enable :performance (CRuby) */
@@ -877,9 +990,23 @@ main(int argc, char *argv[])
                 korb_const_define(c, korb_intern(c->vm, "TOPLEVEL_BINDING", 16), tb.value);
         }
         /* -I directories join $LOAD_PATH and -r libraries are required before
-         * the program runs, as CRuby does. */
-        for (uint32_t k = nload_dirs; k-- > 0; ) korb_load_path_unshift(c, toplevel_cursor, load_dirs[k]);
-        for (uint32_t k = 0; k < nreq_libs; k++) {
+         * the program runs, as CRuby does.  RUBYLIB sits below the -I entries. */
+        {
+            const char *const rl = getenv("RUBYLIB");
+            if (rl && *rl) {
+                char *const dup = strdup(rl);
+                if (!dup) abort();
+                uint32_t ndirs = 0;
+                char *dirs[64];
+                char *save = NULL;
+                for (char *t = strtok_r(dup, ":", &save); t && ndirs < 64; t = strtok_r(NULL, ":", &save))
+                    if (*t) dirs[ndirs++] = t;
+                while (ndirs-- > 0) korb_load_path_unshift(c, toplevel_cursor, dirs[ndirs]);
+                free(dup);
+            }
+        }
+        for (int k = nload_dirs; k-- > 0; ) korb_load_path_unshift(c, toplevel_cursor, load_dirs[k]);
+        for (int k = 0; k < nreq_libs; k++) {
             const RESULT rr = korb_require_feature(c, toplevel_cursor, req_libs[k]);
             if (rr.state == KORB_RAISE) { korb_report_uncaught(c, rr.value); korb_io_flush_std(c->vm); return 1; }
         }

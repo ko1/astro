@@ -146,6 +146,30 @@ VALUE korb_flit_get(CTX *c, VALUE *slots, double d) {
     return boxed;
 }
 
+/* Frozen String-literal pool: one shared frozen String per (bytes, encoding),
+ * like CRuby's fstring table.  Linear scan — the pool only ever holds the
+ * program's distinct frozen literals, and lookups happen once per literal
+ * NODE (the node caches the result). */
+VALUE korb_fstr_get(CTX *c, VALUE *slots, const char *bytes, uint32_t len, uint32_t enc) {
+    struct korb_vm *const vm = c->vm;
+    for (uint32_t i = 0; i < vm->fstr_cnt; i++) {
+        const KorbString *const s = VAL2STR(vm->fstr_vals[i]);
+        if (s->len == len && KORB_STR_ENC(vm->fstr_vals[i]) == enc &&
+            memcmp(korb_strbuf_data(s->buf), bytes, len) == 0)
+            return vm->fstr_vals[i];
+    }
+    const VALUE v = korb_str_new(c, slots, bytes, len).value;   /* may GC; the pool is a root */
+    KORB_STR_ENC_SET(v, enc);
+    ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_FROZEN;
+    if (vm->fstr_cnt == vm->fstr_capa) {
+        vm->fstr_capa = vm->fstr_capa ? vm->fstr_capa * 2 : 16;
+        vm->fstr_vals = realloc(vm->fstr_vals, sizeof(VALUE) * vm->fstr_capa);
+        if (!vm->fstr_vals) abort();
+    }
+    vm->fstr_vals[vm->fstr_cnt++] = v;
+    return v;
+}
+
 RESULT
 korb_float_new(CTX *c, VALUE *slots, double d)
 {
@@ -10456,6 +10480,21 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       case KORB_OBJ_OBJECT: {
         const KorbObject *o = VAL2OBJ(v);
         if (o->klass == KORB_NIL) { fputs("main", fp); return; }       /* top-level self */
+        /* a user #to_s wins over the C printer (Encoding#to_s, and any object a
+         * program renders with `print`); only possible when we have slots */
+        if (slots != NULL) {
+            VALUE def = KORB_NIL;
+            const struct korb_method *const m = korb_mcache_find(c->vm, o->klass, korb_intern(c->vm, "to_s", 4), &def);
+            if (m != NULL && m->kind != KORB_METHOD_CFUNC) {   /* a CFUNC to_s is the default → it calls back here */
+                slots[0] = v;
+                const RESULT tsr = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);
+                if (tsr.state == KORB_NORMAL && KORB_STRING_P(tsr.value)) {
+                    const KorbString *const ts = VAL2STR(tsr.value);
+                    fwrite(korb_strbuf_data(ts->buf), 1, ts->len, fp);
+                    return;
+                }
+            }
+        }
         fputs("#<", fp);
         if (!korb_fprint_class_qname(c, fp, o->klass)) fputs("Class", fp);   /* qualified (M::C); anonymous fallback */
         fprintf(fp, ":0x%016lx>", (unsigned long)(uintptr_t)v);   /* to_s: "#<Foo:0x…>" (no ivars) */
@@ -12611,7 +12650,7 @@ korb_bi_print(CTX *c, VALUE *slots, VALUE_SLICE args)
      * involved); the bytes then make one trip to the sink. */
     char *buf = NULL; size_t sz = 0; FILE *const ms = open_memstream(&buf, &sz);
     if (!ms) return RESULT_OK(KORB_NIL);
-    for (uint32_t i = 0; i < n; i++) korb_fprint_to_s(c, ms, VALUE_SLICE_GET(args, i));
+    for (uint32_t i = 0; i < n; i++) korb_fprint_to_s_s(c, slots, ms, VALUE_SLICE_GET(args, i));   /* slots: a user #to_s is dispatched */
     fclose(ms);
     if (def) {                                           /* default $stdout → straight to the descriptor */
         const RESULT wr = korb_io_wr_checked(c, slots, korb_io_std_rep(c->vm, 1), buf, sz);
@@ -12952,7 +12991,7 @@ korb_ctx_new(void)
         static const char *const rc[][2] = {
             {"RUBY_VERSION", "4.0.2"}, {"RUBY_ENGINE", "ruby"},
             {"RUBY_PLATFORM", "x86_64-linux"}, {"RUBY_ENGINE_VERSION", "4.0.2"},
-            {"RUBY_DESCRIPTION", "ruby 4.0.2 (koruby/ASTro) [x86_64-linux]"},
+            {"RUBY_DESCRIPTION", KORUBY_RUBY_DESCRIPTION},
             {"RUBY_COPYRIGHT", "ruby - Copyright (C) 1993-2026 Yukihiro Matsumoto"},
             {"RUBY_RELEASE_DATE", "2026-01-01"}, {"RUBY_REVISION", "0000000000000000000000000000000000000000"},
         };

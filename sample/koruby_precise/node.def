@@ -39,9 +39,8 @@ NODE_DEF
 node_str_frozen(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len)
 {
     (void)n;
-    const RESULT r = korb_str_new(c, slots, bytes, len);
-    if (LIKELY(r.state == KORB_NORMAL)) ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;
-    return r;
+    /* equal frozen literals are ONE object (CRuby's fstring table) */
+    return RESULT_OK(korb_fstr_get(c, slots, bytes, len, KORB_ENC_UTF8));
 }
 
 // Same, for a source file whose `# encoding:` magic comment is not UTF-8: the
