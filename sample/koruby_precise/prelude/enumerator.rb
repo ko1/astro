@@ -343,7 +343,7 @@ class Enumerator::Lazy
   # lazy enumerators: the source is streamed (Lazy#each yields as it produces),
   # so an infinite source still terminates on `break`.
   def __lazy_gen(size = nil, &gen)
-    e = Enumerator.new { |y| gen.call(y) }.lazy
+    e = Enumerator.new(&gen).lazy
     e.instance_variable_set(:@__lazy_size, size)
     e
   end

@@ -383,6 +383,7 @@ void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* de
 void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const char *fmt, ...);   /* with a source position */
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
+static RESULT korb_block_to_proc(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *cself);   /* defined below */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
 static RESULT korb_m_str_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* string.c — for String.new(non-String source) */
 static RESULT korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VALUE cref);   /* defined below */
@@ -3021,6 +3022,16 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
     ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, slots[0]);
     return RESULT_OK((VALUE)p);
 }
+/* The Proc for a block argument.  A FORWARDED block (`m(&blk)` where blk came in
+ * as a block param, or a &method / &proc) arrives as a sentinel with the real
+ * Proc in captured_self — materializing it again would treat the sentinel as a
+ * frame base and crash. */
+static RESULT korb_block_to_proc(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC) return RESULT_OK(KORB_CSELF_VAL(cself));
+    VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);   /* block-arg def_env is tagged (base|1) */
+    return korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(cself), 0);
+}
+
 /* Build a Binding capturing the current frame: an open KorbEnv over `frame_base`
  * (shared with any closures over the same activation, promoted on frame exit),
  * `self`, and the immortal `names` table.  GC-safe (env/self rooted in slots). */
@@ -8396,19 +8407,16 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (def_env == KORB_BLK_FWD)
                 return RESULT_OK(KORB_CSELF_VAL(captured_self));
             /* block-arg def_env arrives tagged (base|1); korb_make_proc wants the raw base. */
-            VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
-            return korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(captured_self), 0);
+            return korb_block_to_proc(c, slots, block, def_env, captured_self);
         }
         if (self == korb_builtin_class_obj(vm, KORB_C_ENUMERATOR) && block != NULL) {   /* Enumerator.new([size]) { |y| ... } — deferred generator */
-            VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);   /* block-arg def_env is tagged (base|1) */
-            slots[0] = UNWRAP(korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(captured_self), 0));
+            slots[0] = UNWRAP(korb_block_to_proc(c, slots, block, def_env, captured_self));
             const VALUE gsize = (argc >= 1) ? slots[-(korb_sword_t)argc] : KORB_NIL;   /* optional leading size arg — re-read after proc alloc (may be a heap callable) */
             return korb_enum_gen_new(c, slots + 1, slots[0], gsize);   /* store the block + known/callable size; terminals drive it (bounded) */
         }
         if (KORB_CLASS_P(vm->lazy_class) && *recv_slot == vm->lazy_class && block != NULL) {   /* Enumerator::Lazy.new(obj[, size]) { |y, *vals| ... } */
             const VALUE lsize = (argc >= 2) ? slots[-(korb_sword_t)argc + 1] : KORB_NIL;   /* size = 2nd arg */
-            VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
-            slots[0] = UNWRAP(korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(captured_self), 0));
+            slots[0] = UNWRAP(korb_block_to_proc(c, slots, block, def_env, captured_self));
             RESULT lr = korb_lazy_gen_new(c, slots + 1, slots[0], false);   /* a lazy generator; the size tests never drive it */
             if (LIKELY(lr.state == KORB_NORMAL) && KORB_ENUM_P(lr.value)) VAL2ENUM(lr.value)->size = FIXNUM_P(lsize) ? lsize : KORB_NIL;
             return lr;

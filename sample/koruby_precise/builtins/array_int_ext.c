@@ -589,8 +589,7 @@ static RESULT korb_m_hash_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     VALUE dv = KORB_NIL, dp = KORB_NIL;
     if (block != NULL) {
         slots[0] = VALUE_REF_GET(self);                  /* park across korb_make_proc's alloc */
-        VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
-        dp = UNWRAP(korb_make_proc(c, slots + 1, block, denv, KORB_CSELF_VAL(cself), 0));
+        dp = UNWRAP(korb_block_to_proc(c, slots + 1, block, def_env, cself));
         KorbHash *const h0 = VAL2HASH(slots[0]);
         ARO_STORE(c, h0, (VALUE *)(uintptr_t)&h0->default_val, KORB_NIL);
         ARO_STORE(c, h0, (VALUE *)(uintptr_t)&h0->default_proc, dp);

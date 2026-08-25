@@ -655,9 +655,8 @@ static RESULT korb_m_enum_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     const VALUE ev = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_ENUM_P(ev))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not an enumerator");
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Enumerator object without a block");
-    VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);   /* block-arg def_env is tagged (base|1) */
     slots[0] = ev;                                          /* root across make_proc alloc */
-    const VALUE proc = UNWRAP(korb_make_proc(c, slots + 1, block, denv, KORB_CSELF_VAL(cself), 0));
+    const VALUE proc = UNWRAP(korb_block_to_proc(c, slots + 1, block, def_env, cself));
     KorbEnumerator *const e = VAL2ENUM(slots[0]);           /* re-derive: make_proc may have moved it */
     e->mode = 3; e->cursor = 0;
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->source, proc);
@@ -720,8 +719,7 @@ static RESULT korb_lazy_op(CTX *c, VALUE *slots, VALUE_REF self, const char *op,
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to call lazy %s without a block", op);
     if (SELF_ENUM->mode == 3) { RESULT fr = korb_enum_force_gen(c, slots, self); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }
     if (SELF_ENUM->mode != 0) {                                  /* lazy(1)/cycle(2)/lazy-generator(4): defer (chain) */
-        VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);   /* a block-arg def_env arrives tagged (base|1); make_proc wants the raw base */
-        slots[0] = UNWRAP(korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(cself), 0));
+        slots[0] = UNWRAP(korb_block_to_proc(c, slots, block, def_env, cself));
         return korb_lazy_chain(c, slots + 1, self, op, slots[0]);
     }
     slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2ARY(SELF_ENUM->values)->len));   /* eager */
@@ -754,8 +752,7 @@ static RESULT korb_enum_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         slots[0] = VALUE_SLICE_GET(a, 0);                        /* pattern */
         slots[1] = KORB_NIL;
         if (block != NULL) {                                     /* optional block transforms each match */
-            VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
-            slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, denv, KORB_CSELF_VAL(cself), 0));
+            slots[1] = UNWRAP(korb_block_to_proc(c, slots + 1, block, def_env, cself));
         }
         return korb_lazy_chain2(c, slots + 2, self, op, slots[0], slots[1]);
     }
@@ -773,8 +770,7 @@ static RESULT korb_m_enum_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (SELF_ENUM->mode == 1 || SELF_ENUM->mode == 4) {          /* lazy → chain "uniq" (proc = block or nil) */
         slots[0] = KORB_NIL;
         if (block != NULL) {
-            VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
-            slots[0] = UNWRAP(korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(cself), 0));
+            slots[0] = UNWRAP(korb_block_to_proc(c, slots, block, def_env, cself));
         }
         return korb_lazy_chain(c, slots + 1, self, "uniq", slots[0]);
     }
@@ -789,8 +785,7 @@ static RESULT korb_m_ary_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_enum_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to call lazy flat_map without a block");
     if (SELF_ENUM->mode == 1 || SELF_ENUM->mode == 4) {          /* lazy → chain */
-        VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
-        slots[0] = UNWRAP(korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(cself), 0));
+        slots[0] = UNWRAP(korb_block_to_proc(c, slots, block, def_env, cself));
         return korb_lazy_chain(c, slots + 1, self, "flat_map", slots[0]);
     }
     RESULT av = korb_m_enum_to_a(c, slots, self, a);             /* eager (0/2/3): materialize + Array#flat_map */
@@ -907,7 +902,7 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     if (SELF_ENUM->mode == 1) {                                  /* lazy (source): chain "with_index" [offset, block] */
         slots[0] = LONG2FIX(off);
         slots[1] = KORB_NIL;
-        if (block != NULL) { VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u); slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, denv, KORB_CSELF_VAL(cself), 0)); }
+        if (block != NULL) { slots[1] = UNWRAP(korb_block_to_proc(c, slots + 1, block, def_env, cself)); }
         return korb_lazy_chain2(c, slots + 2, self, "with_index", slots[0], slots[1]);
     }
     /* lazy/cycle enums carry no materialized `values`; force them first (finite). */
