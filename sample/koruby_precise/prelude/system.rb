@@ -990,6 +990,57 @@ module RbConfig
     "ruby_version" => RUBY_VERSION, "MAJOR" => RUBY_VERSION.split(".")[0],
     "MINOR" => RUBY_VERSION.split(".")[1], "TEENY" => RUBY_VERSION.split(".")[2],
   }
+  CONFIG["PATCHLEVEL"] = RUBY_PATCHLEVEL.to_s
+  CONFIG["UNICODE_VERSION"] = "17.0.0"      # the tables in builtins/unicode_case.h
+  CONFIG["UNICODE_EMOJI_VERSION"] = "17.0"
+  CONFIG["DLEXT"] = "so"
+  CONFIG["target_os"] = CONFIG["host_os"]
+  CONFIG["target_cpu"] = CONFIG["host_cpu"]
+  CONFIG["CROSS_COMPILING"] = "no"
+  CONFIG["ENABLE_SHARED"] = "no"
+  CONFIG["LIBRUBY"] = "libkoruby.a"
+  CONFIG["LIBRUBY_SO"] = "libkoruby.so"
+  CONFIG["LIBPATHENV"] = "LD_LIBRARY_PATH"
+  CONFIG["libdirname"] = "libdir"
+  CONFIG["libdir"] = "/usr/lib"
+  CONFIG["archdir"] = CONFIG["rubylibdir"]
+  # CRuby leaves the values unfrozen even under --enable-frozen-string-literal.
+  CONFIG.transform_values! { |v| v.frozen? ? +v : v }
+
+  # nil unless koruby is installed under a prefix (the spec guards on it).
+  TOPDIR = nil
+
+  # The C types this build uses; the spec only requires String keys and
+  # Integer values plus the documented handful.
+  SIZEOF = {
+    "int" => 4, "short" => 2, "long" => 8, "long long" => 8,
+    "__int64" => 8, "off_t" => 8, "void*" => 8, "float" => 4, "double" => 8,
+    "time_t" => 8, "ptrdiff_t" => 8, "size_t" => 8, "ssize_t" => 8,
+    "int8_t" => 1, "int16_t" => 2, "int32_t" => 4, "int64_t" => 8,
+    "uint8_t" => 1, "uint16_t" => 2, "uint32_t" => 4, "uint64_t" => 8,
+    "intptr_t" => 8, "uintptr_t" => 8,
+  }.freeze
+
+  LIMITS = {
+    "FIXNUM_MAX" => (1 << 62) - 1, "FIXNUM_MIN" => -(1 << 62),
+    "CHAR_MAX" => 127, "CHAR_MIN" => -128,
+    "SHRT_MAX" => 32767, "SHRT_MIN" => -32768,
+    "INT_MAX" => 2147483647, "INT_MIN" => -2147483648,
+    "LONG_MAX" => (1 << 63) - 1, "LONG_MIN" => -(1 << 63),
+    "LLONG_MAX" => (1 << 63) - 1, "LLONG_MIN" => -(1 << 63),
+    "UCHAR_MAX" => 255, "USHRT_MAX" => 65535,
+    "UINT_MAX" => 4294967295, "ULONG_MAX" => (1 << 64) - 1,
+    "ULLONG_MAX" => (1 << 64) - 1,
+    "INT8_MAX" => 127, "INT8_MIN" => -128,
+    "INT16_MAX" => 32767, "INT16_MIN" => -32768,
+    "INT32_MAX" => 2147483647, "INT32_MIN" => -2147483648,
+    "INT64_MAX" => (1 << 63) - 1, "INT64_MIN" => -(1 << 63),
+    "UINT8_MAX" => 255, "UINT16_MAX" => 65535,
+    "UINT32_MAX" => 4294967295, "UINT64_MAX" => (1 << 64) - 1,
+    "FLT_MAX" => Float::MAX, "FLT_MIN" => Float::MIN,
+    "DBL_MAX" => Float::MAX, "DBL_MIN" => Float::MIN,
+  }.freeze
+
   def self.ruby; File.join(CONFIG["bindir"], CONFIG["ruby_install_name"] + CONFIG["EXEEXT"]); end
 end
 
