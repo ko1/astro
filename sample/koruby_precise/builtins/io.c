@@ -379,6 +379,27 @@ static RESULT korb_io_read_bytes(CTX *c, VALUE *slots, KorbIORep *rep, uint32_t 
     uint32_t len = 0;
     RESULT err = RESULT_OK(KORB_NIL);
     while (len < want) {
+        /* Buffer empty and a real descriptor: read straight into the result so
+         * the descriptor is left exactly `want` bytes in.  Reading ahead here
+         * would make a following #sysread skip what we buffered (CRuby). */
+        if (rep->rpos >= rep->rlen && !rep->eof && korb_io_open_p(rep) && rep->fd >= 0) {
+            if (rep->wlen > 0) (void)korb_io_flush_rep(rep);        /* duplex: don't deadlock the peer */
+            KorbString *const s = VAL2STR(VALUE_REF_GET(sref));
+            const ssize_t n = read(rep->fd, korb_strbuf_data(s->buf) + len, want - len);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                if (korb_io_would_block(errno) && rep->nonblk) {
+                    const RESULT pr = korb_io_park(c, slots + 1, rep, POLLIN);   /* may GC */
+                    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+                    continue;
+                }
+                return korb_raise_errno(c, slots + 1, errno, "io_fread", "");
+            }
+            if (n == 0) { rep->eof = 1; break; }
+            len += (uint32_t)n;
+            VAL2STR(VALUE_REF_GET(sref))->len = len;                /* re-derive: park may have moved it */
+            continue;
+        }
         const uint32_t avail = korb_io_fill_p(c, slots + 1, rep, &err);   /* may park → may GC */
         if (UNLIKELY(err.state != KORB_NORMAL)) return err;
         if (avail == 0) break;
@@ -1661,8 +1682,13 @@ static RESULT korb_m_io_syswrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_io_sysread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    /* sysread bypasses the buffer, so unread buffered bytes would be skipped —
+     * CRuby refuses rather than silently losing them */
+    if (UNLIKELY(rep->rpos < rep->rlen))
+        return korb_raise(c, slots, KORB_E_IOERROR, 0, "sysread for buffered IO");
     korb_sword_t want = 4096;
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) want = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL)
+        CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &want));
     if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length");
     slots[0] = (VALUE)korb_str_alloc(c, slots, (uint32_t)want);
     ssize_t r;
