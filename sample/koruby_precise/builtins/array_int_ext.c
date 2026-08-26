@@ -1077,7 +1077,7 @@ static RESULT korb_hash_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
-            bool t = korb_case_eq(c, VALUE_SLICE_GET(a, 0), slots[2]);
+            bool t; CHECK(korb_pat_eq(c, slots + 3, VALUE_SLICE_GET(a, 0), slots[2], &t));
             if (mode == 0 && t) return RESULT_OK(KORB_TRUE);
             if (mode == 1 && !t) return RESULT_OK(KORB_FALSE);
             if (mode == 2 && t) return RESULT_OK(KORB_FALSE);
@@ -1147,6 +1147,8 @@ static RESULT korb_m_hash_reject_bang(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_m_hash_delete_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, false, "delete_if"); }
 static RESULT korb_hash_pair_at(CTX *c, VALUE *slots, VALUE_REF self, uint32_t i, VALUE *out);
 static RESULT korb_m_hash_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
     bool has_pat = VALUE_SLICE_LEN(a) >= 1;
     if (!has_pat && UNLIKELY(block == NULL)) {        /* no block, no pattern → exactly one pair */
         return RESULT_OK(VAL2HASH(VALUE_REF_GET(self))->len == 1 ? KORB_TRUE : KORB_FALSE);
@@ -1158,8 +1160,8 @@ static RESULT korb_m_hash_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (i >= h->len) break;
         bool t;
         if (has_pat) {
-            VALUE pair; CHECK(korb_hash_pair_at(c, slots, self, i, &pair));
-            t = korb_case_eq(c, VALUE_SLICE_GET(a, 0), slots[2]);
+            CHECK(korb_hash_pair_at(c, slots, self, i, &slots[2]));
+            CHECK(korb_pat_eq(c, slots + 3, VALUE_SLICE_GET(a, 0), slots[2], &t));
         } else {
             RESULT r = korb_hash_yield(c, slots, block, def_env, cself, np, korb_items_data(h->items)[2*i], korb_items_data(h->items)[2*i+1]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;

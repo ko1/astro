@@ -5681,6 +5681,20 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
     return korb_value_eq(pat, val);
 }
 
+/* `pat === val` for the quantifier builtins, dispatching #=== when pat is a
+ * user object (korb_case_eq is alloc-free and so can't call back into Ruby). */
+static RESULT
+korb_pat_eq(CTX *c, VALUE *slots, VALUE pat, VALUE val, bool *const out)
+{
+    if (LIKELY(!KORB_OBJECT_P(pat))) { *out = korb_case_eq(c, pat, val); return RESULT_OK(KORB_NIL); }
+    slots[0] = pat;
+    slots[1] = val;
+    const RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "===", 3), 0, 1, NULL, NULL, NULL);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    *out = KORB_TRUTHY(r.value);
+    return RESULT_OK(KORB_NIL);
+}
+
 /* true iff `v` is a plain Array we can match directly.  CRuby calls #deconstruct
  * even on arrays, but the default Array#deconstruct returns self, so only a
  * singleton/extended override is observable → dispatch only when one may exist. */

@@ -1263,6 +1263,8 @@ static RESULT korb_m_range_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_ary_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_range_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
     bool has_pat = VALUE_SLICE_LEN(a) >= 1;
     korb_sword_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
@@ -1274,7 +1276,7 @@ static RESULT korb_m_range_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         VALUE iv = LONG2FIX(i);
         bool t;
         if (has_pat) {
-            t = korb_case_eq(c, VALUE_SLICE_GET(a, 0), iv);
+            CHECK(korb_pat_eq(c, slots, VALUE_SLICE_GET(a, 0), iv, &t));
         } else if (block != NULL) {
             RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -1388,6 +1390,8 @@ static RESULT korb_m_ary_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_ary_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_ary_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_range_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, int mode) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
     bool has_pat = VALUE_SLICE_LEN(a) >= 1;
     korb_sword_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {     /* non-integer range → via to_a */
@@ -1398,7 +1402,7 @@ static RESULT korb_range_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         VALUE iv = LONG2FIX(i);
         bool t;
         if (has_pat) {
-            t = korb_case_eq(c, VALUE_SLICE_GET(a, 0), iv);     /* pattern === element */
+            CHECK(korb_pat_eq(c, slots, VALUE_SLICE_GET(a, 0), iv, &t));     /* pattern === element */
         } else if (block != NULL) {
             RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
