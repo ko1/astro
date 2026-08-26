@@ -2049,7 +2049,11 @@ static RESULT korb_m_io_s_sysopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 
 /* IO.new(fd, mode = "r") / IO.for_fd — wrap an already-open descriptor.  A
  * trailing options Hash (autoclose:, encoding:, …) is accepted and ignored. */
-static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                 struct Node *block, VALUE *def_env, VALUE *cself) {
+    (void)def_env; (void)cself;
+    if (UNLIKELY(block != NULL))                        /* IO.new ignores a block; IO.open is the one that takes it */
+        korb_warn(c, slots, "IO::new() does not take block; use IO::open() instead");
     uint32_t n = VALUE_SLICE_LEN(a);
     VALUE opts = KORB_NIL;
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1)) && korb_kwargs_hash_p(VALUE_SLICE_GET(a, n - 1)))
@@ -2079,17 +2083,10 @@ static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
                 if (korb_hash_find(oh, ID2SYM(korb_intern(c->vm, ek[k].nm, ek[k].len))) >= 0)
                     return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "encoding specified twice");
         }
-        if (KORB_STRING_P(modev)) {                                /* "wb" + binmode: / "wt" + textmode: */
-            const char *const md = korb_strbuf_data(VAL2STR(modev)->buf);
-            uint32_t ml = VAL2STR(modev)->len;                     /* flags only: stop at the ':' */
-            const char *const colon = memchr(md, ':', ml);
-            if (colon) ml = (uint32_t)(colon - md);
-            const bool has_b = memchr(md, 'b', ml) != NULL, has_t = memchr(md, 't', ml) != NULL;
-            const int32_t bi = korb_hash_find(oh, ID2SYM(korb_intern(c->vm, "binmode", 7)));
-            const int32_t ti = korb_hash_find(oh, ID2SYM(korb_intern(c->vm, "textmode", 8)));
-            if ((has_b && bi >= 0) || (has_t && ti >= 0))
-                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "binmode specified twice");
-        }
+        char mbuf[32] = "";                                        /* "wb" + binmode: / "wt" + textmode: / both */
+        if (KORB_STRING_P(modev))
+            snprintf(mbuf, sizeof mbuf, "%.*s", (int)VAL2STR(modev)->len, korb_strbuf_data(VAL2STR(modev)->buf));
+        CHECK(korb_io_check_bt_opts(c, slots, mbuf, opts));
     }
     /* slots[0] = opts, slots[1] = the (possibly coerced) mode value — both
      * rooted from here on, since the coercion and korb_io_make below allocate. */
@@ -2176,12 +2173,13 @@ static int korb_open_no_stall(CTX *c, VALUE *slots, const char *path, int flags,
     }
 }
 
-static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (below) */
+static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                 struct Node *block, VALUE *def_env, VALUE *cself);   /* fwd (below) */
 static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                struct Node *block, VALUE *def_env, VALUE *captured_self) {
     VALUE pv = VALUE_SLICE_GET(a, 0);
     /* File.new(fd[, mode]) wraps an existing descriptor, exactly like IO.new. */
-    if (FIXNUM_P(pv)) return korb_m_io_s_new_fd(c, slots, self, a);
+    if (FIXNUM_P(pv)) return korb_m_io_s_new_fd(c, slots, self, a, NULL, NULL, NULL);
     if (UNLIKELY(!KORB_STRING_P(pv))) {                    /* #to_path then #to_str */
         CHECK(korb_file_path_arg(c, slots, &pv));
         slots[0] = pv;                                     /* root the coerced path */
@@ -2209,6 +2207,12 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
                 if (mv != KORB_NIL) { slots[1] = mv; a = VALUE_SLICE_MAKE(a.p, 2); ((VALUE *)a.p)[1] = mv; npos = 2; }
             }
         }
+    }
+    {   /* binmode:/textmode: must not restate what the mode string already says */
+        char mbuf[32] = "";
+        const VALUE mv = (npos >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+        if (KORB_STRING_P(mv)) snprintf(mbuf, sizeof mbuf, "%.*s", (int)VAL2STR(mv)->len, korb_strbuf_data(VAL2STR(mv)->buf));
+        CHECK(korb_io_check_bt_opts(c, slots + 2, mbuf, fopts));
     }
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     int rw = 0; bool binary = false; int fd;
@@ -2358,8 +2362,8 @@ void korb_init_io(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, io_sing, "select",    korb_m_io_s_select,    -1);   /* POLL blop (thread.c) */
     korb_class_def_cfn_blk(c, io_sing, "pipe",  korb_m_io_s_pipe,      -1);
     korb_class_def_cfn(c, io_sing, "sysopen",   korb_m_io_s_sysopen,   -1);
-    korb_class_def_cfn(c, io_sing, "new",       korb_m_io_s_new_fd,    -1);
-    korb_class_def_cfn(c, io_sing, "for_fd",    korb_m_io_s_new_fd,    -1);
+    korb_class_def_cfn_blk(c, io_sing, "new",   korb_m_io_s_new_fd,    -1);
+    korb_class_def_cfn_blk(c, io_sing, "for_fd", korb_m_io_s_new_fd, -1);
 #undef IOM
 #undef IOB
     /* reparent File under IO so File.open's instances inherit these methods.

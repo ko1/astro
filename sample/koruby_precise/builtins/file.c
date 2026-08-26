@@ -865,6 +865,34 @@ static RESULT korb_open_args_hash(CTX *c, VALUE *slots, VALUE h, struct korb_ope
     return RESULT_OK(KORB_NIL);
 }
 
+/* CRuby refuses a binmode/textmode that is stated both in the mode string and in
+ * the options, and refuses stating both kinds at once.  `mode` may be NULL. */
+static RESULT
+korb_io_check_bt_opts(CTX *c, VALUE *slots, const char *mode, VALUE opts) {
+    if (!KORB_HASH_P(opts)) return RESULT_OK(KORB_NIL);
+    const int32_t bi = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(c->vm, "binmode", 7)));
+    const int32_t ti = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(c->vm, "textmode", 8)));
+    if (bi < 0 && ti < 0) return RESULT_OK(KORB_NIL);
+    bool mode_b = false, mode_t = false;
+    for (const char *p = mode; p && *p && *p != ':'; p++) {
+        if (*p == 'b') mode_b = true;
+        else if (*p == 't') mode_t = true;
+    }
+    /* restating the SAME kind the mode already carries is "specified twice";
+     * naming the other kind alongside it is "both ... specified" */
+    if (mode_b) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, bi >= 0 ? "binmode specified twice"
+                                                                       : "both textmode and binmode specified");
+    if (mode_t) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, ti >= 0 ? "textmode specified twice"
+                                                                       : "both textmode and binmode specified");
+    if (bi >= 0 && ti >= 0) {
+        const VALUE bv = korb_items_data(VAL2HASH(opts)->items)[2 * bi + 1];
+        const VALUE tv = korb_items_data(VAL2HASH(opts)->items)[2 * ti + 1];
+        if (KORB_TRUTHY(bv) || KORB_TRUTHY(tv))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "both textmode and binmode specified");
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
 static RESULT
 korb_io_open_args(CTX *c, VALUE *slots, VALUE opts, const char *defmode, struct korb_open_args *o) {
     snprintf(o->mode, sizeof o->mode, "%s", defmode);
