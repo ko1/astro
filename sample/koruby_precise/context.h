@@ -1013,7 +1013,10 @@ struct korb_vm {
      * raise NotImplementedError; #encoding still round-trips via the name. */
     const char *last_syntax_msg;     /* parse-time SyntaxError detail (static string), NULL if none */
     /* Module#const_source_location: where each (name, owner) constant was assigned. */
-    struct korb_constloc { uint32_t name; VALUE owner; uint32_t file_sym; uint32_t line; } *constlocs;
+    /* owner is keyed by the class's GC-stable `serial` (0 = top-level), not by a
+     * VALUE: this table is libc memory the collector does not scan, so a moving
+     * GC would otherwise turn a class-owned location into "no location". */
+    struct korb_constloc { uint32_t name; uint32_t owner_serial; uint32_t file_sym; uint32_t line; } *constlocs;
     uint32_t constloc_cnt, constloc_capa;
     /* private_constant: (owner, name) pairs unreachable through an explicit
      * `Owner::NAME`.  Small and rarely populated — a linear scan is enough. */

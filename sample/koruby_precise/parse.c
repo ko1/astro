@@ -4341,7 +4341,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *val;
         uint32_t sc = kind_node_const_set.slot_count;
         WITH_CHAIN(tc, sc, (val = transduce(tc, cpw->value)));
-        return ALLOC_node_const_set(name, owner_name, INT32_MIN, val);
+        NODE *cn = ALLOC_node_const_set(name, owner_name, INT32_MIN, val);
+        korb_reg_srcloc(tc->c->vm, cn, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, node));   /* Module#const_source_location */
+        return cn;
       }
       case PM_CONSTANT_PATH_OR_WRITE_NODE: {   /* `A::B ||= v` (static owner) */
         const pm_constant_path_or_write_node_t *ow = (const pm_constant_path_or_write_node_t *)node;

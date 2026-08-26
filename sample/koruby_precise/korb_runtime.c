@@ -3286,11 +3286,24 @@ korb_const_index(const struct korb_vm *vm, uint32_t name_sym)
         if (vm->const_names[i] == name_sym) return i;
     return UINT32_MAX;
 }
+/* Object IS the top-level namespace in Ruby: `Object::X` and a bare `X` name the
+ * same constant, so both must key the table the same way (nil). */
+static inline VALUE korb_const_owner_key(const struct korb_vm *vm, VALUE owner)
+{
+    return owner == korb_builtin_class_obj(vm, KORB_C_OBJECT) ? KORB_NIL : owner;
+}
+/* GC-stable key for a constant's owning module: its class serial (0 = top-level). */
+static inline uint32_t korb_const_owner_serial(const struct korb_vm *vm, VALUE owner)
+{
+    owner = korb_const_owner_key(vm, owner);
+    return KORB_CLASS_P(owner) ? VAL2CLASS(owner)->serial : 0;
+}
 /* index of the constant named `name_sym` owned by `owner` (nil = top-level), or
  * UINT32_MAX.  For owner-aware scoped reads (M::X) and class find-or-create. */
 uint32_t
 korb_const_index_owned(const struct korb_vm *vm, uint32_t name_sym, VALUE owner)
 {
+    owner = korb_const_owner_key(vm, owner);
     for (uint32_t i = 0; i < vm->const_cnt; i++)
         if (vm->const_names[i] == name_sym && vm->const_owners[i] == owner) return i;
     return UINT32_MAX;
@@ -3375,6 +3388,7 @@ void
 korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
 {
     struct korb_vm *const vm = c->vm;
+    owner = korb_const_owner_key(vm, owner);
     /* Ruby: assigning an anonymous class/module to a constant names it after
      * that constant (the first such assignment wins) and nests it under the
      * owning namespace so its qualified name is Owner::Name. */
@@ -4349,7 +4363,8 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
             /* CRuby names the constant and points at its previous definition */
             char where[320] = "";
             for (uint32_t i = 0; i < c->vm->constloc_cnt; i++)
-                if (c->vm->constlocs[i].name == name_sym && c->vm->constlocs[i].owner == find_owner) {
+                if (c->vm->constlocs[i].name == name_sym &&
+                    c->vm->constlocs[i].owner_serial == korb_const_owner_serial(c->vm, find_owner)) {
                     snprintf(where, sizeof where, "\n%s:%u: previous definition of %s was here",
                              korb_sym_name(c->vm, c->vm->constlocs[i].file_sym), c->vm->constlocs[i].line,
                              korb_sym_name(c->vm, name_sym));
@@ -11176,8 +11191,9 @@ korb_const_reg_loc(struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t 
     /* the prelude stands in for CRuby's C code: those constants have no source
      * location (Module#const_source_location answers []) */
     if (strcmp(korb_sym_name(vm, file_sym), "<prelude>") == 0) return;
+    const uint32_t oser = korb_const_owner_serial(vm, owner);
     for (uint32_t i = 0; i < vm->constloc_cnt; i++)
-        if (vm->constlocs[i].name == name_sym && vm->constlocs[i].owner == owner) {
+        if (vm->constlocs[i].name == name_sym && vm->constlocs[i].owner_serial == oser) {
             vm->constlocs[i].file_sym = file_sym; vm->constlocs[i].line = line; return;
         }
     if (vm->constloc_cnt == vm->constloc_capa) {
@@ -11186,7 +11202,7 @@ korb_const_reg_loc(struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t 
         if (!vm->constlocs) abort();
     }
     vm->constlocs[vm->constloc_cnt].name = name_sym;
-    vm->constlocs[vm->constloc_cnt].owner = owner;
+    vm->constlocs[vm->constloc_cnt].owner_serial = oser;
     vm->constlocs[vm->constloc_cnt].file_sym = file_sym;
     vm->constlocs[vm->constloc_cnt].line = line;
     vm->constloc_cnt++;
@@ -11195,8 +11211,9 @@ korb_const_reg_loc(struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t 
 bool
 korb_const_get_loc(const struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t *file_sym, uint32_t *line)
 {
+    const uint32_t oser = korb_const_owner_serial(vm, owner);
     for (uint32_t i = vm->constloc_cnt; i-- > 0; )
-        if (vm->constlocs[i].name == name_sym && vm->constlocs[i].owner == owner) {
+        if (vm->constlocs[i].name == name_sym && vm->constlocs[i].owner_serial == oser) {
             *file_sym = vm->constlocs[i].file_sym; *line = vm->constlocs[i].line; return true;
         }
     return false;

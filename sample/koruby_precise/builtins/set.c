@@ -1771,8 +1771,11 @@ static RESULT korb_m_mod_const_source_location(CTX *c, VALUE *slots, VALUE_REF s
     }
     if (idx == UINT32_MAX && !korb_autoload_registered_p(c, owner, sym)) return RESULT_OK(KORB_NIL);
     uint32_t fsym = 0, line = 0;
+    /* read the table BEFORE allocating: loc_owner is a bare C local, so the
+     * array below would leave it pointing at the pre-GC copy of the module */
+    const bool have_loc = korb_const_get_loc(vm, sym, loc_owner, &fsym, &line);
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 2));
-    if (!korb_const_get_loc(vm, sym, loc_owner, &fsym, &line)) return RESULT_OK(slots[0]);   /* defined in C → [] */
+    if (!have_loc) return RESULT_OK(slots[0]);   /* defined in C → [] */
     const char *const f = korb_sym_name(vm, fsym);
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, f, (uint32_t)strlen(f)));
     CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]));
