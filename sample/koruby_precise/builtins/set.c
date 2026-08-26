@@ -1968,7 +1968,7 @@ static RESULT korb_m_loop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, N
     if (UNLIKELY(block == NULL)) {                        /* no block → an Enumerator */
         slots[0] = VALUE_REF_GET(self);
         slots[1] = ID2SYM(korb_intern(c->vm, "loop", 4));
-        RESULT er = korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1);
+        RESULT er = korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1);
         if (LIKELY(er.state == KORB_NORMAL) && KORB_ENUM_P(er.value)) VAL2ENUM(er.value)->size_inf = 1;   /* loop.size → Infinity */
         return er;
     }

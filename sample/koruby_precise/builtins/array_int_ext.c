@@ -619,7 +619,7 @@ static RESULT korb_m_hash_compact_bang(CTX *c, VALUE *slots, VALUE_REF self, VAL
 }
 static RESULT korb_m_hash_transform_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
-    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "transform_values", 16)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "transform_values", 16)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(VALUE_REF_GET(self))->len));
     if (VAL2HASH(VALUE_REF_GET(self))->head.flags & KORB_FL_CMP_BY_ID)   /* keys unchanged → keep identity comparison */
         ((AroObjectHeader *)(uintptr_t)slots[0])->flags |= KORB_FL_CMP_BY_ID;
@@ -644,7 +644,7 @@ static RESULT korb_hash_xform_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (has_arg && !KORB_HASH_P(mapv))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_coerce_name(c, mapv));
     if (UNLIKELY(!has_arg && block == NULL))
-        { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "transform_keys", 14)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+        { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "transform_keys", 14)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     slots[0] = mapv;                                           /* root the rename map BEFORE any alloc moves it */
     slots[1] = UNWRAP(korb_hash_new(c, slots + 1, VAL2HASH(VALUE_REF_GET(self))->len));
     VALUE_REF dst = VALUE_REF_AT(&slots[1]);
@@ -690,7 +690,7 @@ static RESULT korb_m_hash_transform_keys_b(CTX *c, VALUE *slots, VALUE_REF self,
 /* transform_values! — replace each value in place with block(value); keys unchanged. */
 static RESULT korb_m_hash_transform_values_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
-    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "transform_values", 16)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "transform_values", 16)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     for (uint32_t i = 0; ; i++) {
         KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
@@ -1039,7 +1039,7 @@ static RESULT korb_m_hash_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 /* select(keep=1)/reject(keep=0) → new Hash */
 static RESULT korb_hash_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *captured_self, bool keep) {
-    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "select", 6)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "select", 6)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_hash_new(c, slots, 4)));
     if (VAL2HASH(VALUE_REF_GET(self))->head.flags & KORB_FL_CMP_BY_ID)   /* select/reject retain compare_by_identity */
         ((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(dst))->flags |= KORB_FL_CMP_BY_ID;
@@ -1111,7 +1111,7 @@ static RESULT korb_hash_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *
     if (UNLIKELY(block == NULL)) {                       /* no block → an Enumerator (to_enum(:meth)) — even when frozen */
         slots[0] = VALUE_REF_GET(self);
         slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth)));
-        return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1);
+        return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1);
     }
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));    /* a block-bearing modify on a frozen Hash → FrozenError */
     uint32_t w = 0; bool changed = false;
@@ -1180,7 +1180,7 @@ static RESULT korb_hash_make_pair(CTX *c, VALUE *cursor, VALUE *kslot, VALUE *vs
 }
 /* sort_by → array of [k,v] pairs sorted by block key */
 static RESULT korb_m_hash_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "sort_by", 7)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "sort_by", 7)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     uint32_t np = korb_entry_params_cnt(block);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));        VALUE_REF vals = VALUE_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));    VALUE_REF keys = VALUE_REF_AT(&slots[1]);
@@ -1212,7 +1212,7 @@ static RESULT korb_m_hash_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 /* min_by/max_by → the [k,v] pair with the extreme block key */
 static RESULT korb_hash_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, int want) {
-    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "min_by", 6)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "min_by", 6)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     uint32_t np = korb_entry_params_cnt(block);
     slots[0] = KORB_NIL; slots[1] = KORB_NIL; bool have = false;   /* best pair / best key */
     for (uint32_t i = 0; ; i++) {
@@ -1243,7 +1243,7 @@ static RESULT korb_m_hash_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 /* filter_map → collect truthy block results */
 static RESULT korb_m_hash_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "filter_map", 10)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "filter_map", 10)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     uint32_t np = korb_entry_params_cnt(block);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
@@ -1257,7 +1257,7 @@ static RESULT korb_m_hash_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 /* partition → [yes_pairs, no_pairs] */
 static RESULT korb_m_hash_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "partition", 9)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "partition", 9)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     uint32_t np = korb_entry_params_cnt(block);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));        VALUE_REF yes = VALUE_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));    VALUE_REF no  = VALUE_REF_AT(&slots[1]);
@@ -1277,7 +1277,7 @@ static RESULT korb_m_hash_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 /* find/detect → the first [k,v] pair whose block is truthy, else nil */
 static RESULT korb_m_hash_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "find", 4)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "find", 4)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     uint32_t np = korb_entry_params_cnt(block);
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
@@ -1294,7 +1294,7 @@ static RESULT korb_m_hash_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 /* find_all/select(Enumerable) → array of [k,v] pairs where block truthy */
 static RESULT korb_m_hash_find_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "find_all", 8)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "find_all", 8)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     uint32_t np = korb_entry_params_cnt(block);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
@@ -1403,7 +1403,7 @@ static RESULT korb_m_hash_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 /* group_by → Hash{ block_key => [[k,v], ...] } over pairs */
 static RESULT korb_m_hash_group_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "group_by", 8)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "group_by", 8)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     uint32_t np = korb_entry_params_cnt(block);
     slots[0] = UNWRAP(korb_hash_new(c, slots, 4));     VALUE_REF h = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; ; i++) {
@@ -1445,7 +1445,7 @@ static RESULT korb_m_hash_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         }
         return RESULT_OK(KORB_NIL);
     }
-    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "find_index", 10)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "find_index", 10)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     uint32_t np = korb_entry_params_cnt(block);
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));

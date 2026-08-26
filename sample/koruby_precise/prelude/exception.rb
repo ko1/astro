@@ -133,7 +133,14 @@ class Object
   # that raises does so at iteration time, not at to_enum time (matches CRuby).
   def to_enum(meth = :each, *args)
     this = self
-    sz = (respond_to?(:size) && args.empty?) ? size : nil    # size-preserving enumerators report the receiver's size
+    # size-preserving enumerators report the receiver's size; the predicate-driven
+    # ones have no size function in CRuby (how many elements survive is unknown)
+    sz = if respond_to?(:size) && args.empty?
+           case meth
+           when :find, :detect, :find_index, :take_while, :drop_while then nil
+           else size
+           end
+         end
     # y.yield (not y <<) so the source's `yield` sees what the consumer sent
     # back — that is what Enumerator#feed sets.
     e = Enumerator.new(sz) { |y| this.send(meth, *args) { |*vs| y.yield(*vs) } }

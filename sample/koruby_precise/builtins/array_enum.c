@@ -520,7 +520,7 @@ static RESULT korb_ary_to_enum(CTX *c, VALUE *slots, VALUE_REF self, const char 
 }
 /* min_by(want=-1) / max_by(want=1): element with the extreme block key. */
 static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, int want) {
-    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "min_by", 6)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "min_by", 6)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     slots[0] = KORB_NIL;   /* best value */
     slots[1] = KORB_NIL;   /* best key */
     bool have = false;
@@ -1388,7 +1388,7 @@ static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(block == NULL)) {   /* no block → op-4 (find: early-stop) Enumerator; .each/.with_index drives it */
         slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "find"));
         RESULT er = korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
-        if (er.state == KORB_NORMAL) VAL2ENUM(er.value)->op = 4;
+        if (er.state == KORB_NORMAL) { VAL2ENUM(er.value)->op = 4; VAL2ENUM(er.value)->size_unknown = 1; }   /* CRuby: #find has no size fn */
         return er;
     }
     for (uint32_t i = 0; ; i++) {

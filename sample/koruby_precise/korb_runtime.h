@@ -45,7 +45,7 @@
         const char *_wn__ = strrchr(what, '#'); _wn__ = _wn__ ? _wn__ + 1 : (what); \
         slots[0] = VALUE_REF_GET(self); \
         slots[1] = ID2SYM(korb_intern(c->vm, _wn__, (uint32_t)strlen(_wn__))); \
-        return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); \
+        return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); \
     } } while (0)
 #define ARY_REQUIRE_BLOCK(what) REQUIRE_BLOCK(what)
 

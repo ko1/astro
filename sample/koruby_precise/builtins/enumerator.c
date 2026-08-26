@@ -92,16 +92,16 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
         }
         return RESULT_OK(want_value ? yr.value : VALUE_REF_GET(self));
     }
-    if (keep) {
-        slots[2] = v;                                         /* root across the push alloc */
-        CHECK(korb_ary_push_val(c, slots + 6, VALUE_REF_AT(&slots[0]), slots[2]));
-    }
+    slots[2] = v;                                             /* root across the push alloc, and for the return below */
+    if (keep) CHECK(korb_ary_push_val(c, slots + 6, VALUE_REF_AT(&slots[0]), slots[2]));
     /* bounded: stop on a take/take_while bound, or once `limit` values collected
      * (StopIteration — an enclosing `loop` swallows it, else gen_run catches it). */
     if (term) return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit");
     if (FIXNUM_P(limv) && FIX2LONG(limv) >= 0 && VAL2ARY(slots[0])->len >= (uint32_t)FIX2LONG(limv))
         return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit");
-    return RESULT_OK(VALUE_REF_GET(self));
+    /* #yield hands back what the consumer produced; a plain collect has none, so
+     * nil — same as CRuby's collector, which is what stops a driven take_while. */
+    return RESULT_OK(want_value ? KORB_NIL : VALUE_REF_GET(self));
 }
 /* A deferred generator enumerator: stores the block as a proc in `source`, mode 3.
  * Terminals re-run the proc (bounded by a limit via the yielder) — so infinite
@@ -715,8 +715,13 @@ static RESULT korb_enum_force_gen(CTX *c, VALUE *slots, VALUE_REF self) {
  * enum (0). */
 static RESULT korb_lazy_op(CTX *c, VALUE *slots, VALUE_REF self, const char *op, bool is_map,
                            NODE *block, VALUE *def_env, VALUE *cself) {
-    if (UNLIKELY(block == NULL))                                 /* CRuby: Lazy#select/map/... require a block */
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to call lazy %s without a block", op);
+    if (UNLIKELY(block == NULL)) {
+        if (SELF_ENUM->mode == 1 || SELF_ENUM->mode == 4)        /* CRuby: Lazy#select/map/... require a block */
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to call lazy %s without a block", op);
+        slots[0] = VALUE_REF_GET(self);                          /* eager Enumerator → to_enum(:op) */
+        slots[1] = ID2SYM(korb_intern(c->vm, op, (uint32_t)strlen(op)));
+        return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1);
+    }
     if (SELF_ENUM->mode == 3) { RESULT fr = korb_enum_force_gen(c, slots, self); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }
     if (SELF_ENUM->mode != 0) {                                  /* lazy(1)/cycle(2)/lazy-generator(4): defer (chain) */
         slots[0] = UNWRAP(korb_block_to_proc(c, slots, block, def_env, cself));
@@ -810,8 +815,7 @@ static RESULT korb_m_enum_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 static RESULT korb_m_enum_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to call lazy take_while without a block");
-    if (SELF_ENUM->mode == 3)                                    /* plain generator: eager, but self-bounded — stream + collect (infinite-safe) */
+    if (block != NULL && SELF_ENUM->mode == 3)                   /* plain generator: eager, but self-bounded — stream + collect (infinite-safe) */
         return korb_enum_gen_drive_block(c, slots, self, 1, block, def_env, cself);
     return korb_lazy_op(c, slots, self, "take_while", false, block, def_env, cself);
 }

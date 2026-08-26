@@ -5508,6 +5508,7 @@ korb_cmp_values(VALUE a, VALUE b)
         if (c) return c < 0 ? -1 : 1;
         return (x->len > y->len) - (x->len < y->len);
     }
+    if (a == b && (a == KORB_NIL || a == KORB_TRUE || a == KORB_FALSE)) return 0;   /* NilClass#<=>(nil) etc. */
     return 2;   /* incomparable */
 }
 
