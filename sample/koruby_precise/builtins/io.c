@@ -1204,11 +1204,19 @@ static RESULT korb_m_io_advise(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     else if (!strcmp(nm, "willneed"))   adv = POSIX_FADV_WILLNEED;
     else if (!strcmp(nm, "dontneed"))   adv = POSIX_FADV_DONTNEED;
     else if (!strcmp(nm, "noreuse"))    adv = POSIX_FADV_NOREUSE;
-    else return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "unsupported advice: %s", nm);
-    off_t off = 0, len = 0;
-    if (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) off = (off_t)FIX2LONG(VALUE_SLICE_GET(a, 1));
-    if (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) len = (off_t)FIX2LONG(VALUE_SLICE_GET(a, 2));
-    if (rep->fd >= 0) (void)posix_fadvise(rep->fd, off, len, adv);
+    else return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Unsupported advice: :%s", nm);
+    off_t off = 0, len = 0;                            /* offset/len take #to_int, and must fit a long */
+    for (uint32_t i = 1; i <= 2 && i < VALUE_SLICE_LEN(a); i++) {
+        const VALUE v = VALUE_SLICE_GET(a, i);
+        if (v == KORB_NIL) continue;
+        korb_sword_t n;
+        if (UNLIKELY(KORB_BIGNUM_P(v)))
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+        CHECK(korb_io_arg_int(c, slots, v, &n));
+        if (i == 1) off = (off_t)n; else len = (off_t)n;
+    }
+    if (korb_io_rep(c, VALUE_REF_GET(self))->fd >= 0)   /* re-fetch: #to_int may have GC'd */
+        (void)posix_fadvise(korb_io_rep(c, VALUE_REF_GET(self))->fd, off, len, adv);
     return RESULT_OK(KORB_NIL);
 }
 
@@ -1609,8 +1617,18 @@ static RESULT korb_m_io_ungetc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         /* the whole run goes back — the pushback buffer is ours, so unlike a
            FILE* this is not limited to a single byte */
         if (!korb_io_unget(rep, p, n)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "ungetc failed");
-    } else if (v == KORB_NIL) return RESULT_OK(KORB_NIL);
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(v));
+    } else {                                          /* anything else: #to_str, else TypeError (nil included) */
+        const char *const cls = korb_coerce_name(c, v);   /* capture before the dispatch can move v */
+        slots[0] = v;
+        const RESULT cr = korb_coerce_to_str(c, slots + 1, &slots[0]);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (UNLIKELY(cr.value != KORB_TRUE))
+            return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
+        uint32_t n; const char *const p = korb_str_cstr_len(slots[0], &n);
+        if (n == 0) return RESULT_OK(KORB_NIL);
+        if (!korb_io_unget(korb_io_rep(c, VALUE_REF_GET(self)), p, n))   /* re-fetch: the dispatch may have GC'd */
+            return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "ungetc failed");
+    }
     return RESULT_OK(KORB_NIL);
 }
 
