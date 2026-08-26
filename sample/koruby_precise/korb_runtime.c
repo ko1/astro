@@ -4426,10 +4426,30 @@ korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclo
  * `enclosing` chain outermost-first.  Returns false (writing nothing) for an
  * anonymous class (name_sym 0); an anonymous link in the chain ends qualification.
  * No GC (only reads interned names + writes fp). */
+/* A module has a PERMANENT name when it was bound to a constant and every step
+ * of its lexical path was too — that is what discards a temporary name and what
+ * Module#set_temporary_name refuses to overwrite. */
+static bool
+korb_class_permanent_p(VALUE cls)
+{
+    for (int depth = 0; KORB_CLASS_P(cls) && depth <= 32; depth++) {
+        const KorbClass *const k = VAL2CLASS(cls);
+        if (k->name_sym == 0) return false;
+        if (k->enclosing == KORB_NIL) return true;                 /* top-level constant */
+        cls = k->enclosing;
+    }
+    return false;
+}
 static bool
 korb_fprint_class_qname_d(CTX *c, FILE *fp, VALUE cls, int depth)
 {
     const KorbClass *const k = VAL2CLASS(cls);
+    /* a temporary name replaces the whole qualified name, until the module
+     * becomes reachable through a permanent path (CRuby discards it then) */
+    if (k->temp_name_sym != 0 && !korb_class_permanent_p(cls)) {
+        fputs(korb_sym_name(c->vm, k->temp_name_sym), fp);
+        return true;
+    }
     if (k->name_sym == 0) return false;
     if (depth > 32) { fputs("...", fp); return true; }   /* a cyclic `enclosing` must not hang the printer */
     if (k->enclosing != KORB_NIL && KORB_CLASS_P(k->enclosing)) {
@@ -4448,7 +4468,7 @@ static bool korb_fprint_class_qname(CTX *c, FILE *fp, VALUE cls) { return korb_f
 static RESULT
 korb_class_qname_str(CTX *c, VALUE *slots, VALUE cls)
 {
-    if (VAL2CLASS(cls)->name_sym == 0) return RESULT_OK(KORB_NIL);
+    if (VAL2CLASS(cls)->name_sym == 0 && VAL2CLASS(cls)->temp_name_sym == 0) return RESULT_OK(KORB_NIL);
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }

@@ -899,13 +899,18 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_m_module_set_temp_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE sv = VALUE_REF_GET(self);
     if (!KORB_CLASS_P(sv)) return RESULT_OK(sv);
+    if (UNLIKELY(korb_class_permanent_p(sv)))
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "can't change permanent name");
     const VALUE nm = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
-    if (nm == KORB_NIL) { VAL2CLASS(sv)->name_sym = 0; return RESULT_OK(sv); }   /* clear → anonymous */
+    /* clear → fully anonymous: CRuby drops the constant-derived name too, so a
+     * module that was only reachable through an anonymous namespace has no name */
+    if (nm == KORB_NIL) { VAL2CLASS(sv)->temp_name_sym = 0; VAL2CLASS(sv)->name_sym = 0; return RESULT_OK(sv); }
     if (UNLIKELY(!KORB_STRING_P(nm))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(nm));
     const KorbString *const s = VAL2STR(nm);
     if (UNLIKELY(s->len == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "empty class/module name");
     {   /* reject a valid constant path (each ::-segment is [A-Z][A-Za-z0-9_]*) to avoid confusion */
         const char *const d = korb_strbuf_data(s->buf); const uint32_t len = s->len; uint32_t i = 0; bool cpath = true;
+        if (len >= 2 && d[0] == ':' && d[1] == ':') i = 2;          /* "::A" is a constant path too */
         for (;;) {
             if (i >= len || !(d[i] >= 'A' && d[i] <= 'Z')) { cpath = false; break; }
             i++;
@@ -916,7 +921,7 @@ static RESULT korb_m_module_set_temp_name(CTX *c, VALUE *slots, VALUE_REF self, 
         }
         if (cpath) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "the temporary name must not be a constant path to avoid confusion");
     }
-    VAL2CLASS(sv)->name_sym = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len);
+    VAL2CLASS(sv)->temp_name_sym = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len);
     return RESULT_OK(sv);
 }
 /* Module#name → the class/module name (a frozen String), nil if anonymous. */

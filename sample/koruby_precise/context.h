@@ -598,6 +598,9 @@ struct korb_method;
 typedef struct KorbClass {
     AroObjectHeader head;            /* KORB_OBJ_CLASS */
     uint32_t name_sym;               /* class name (interned), 0 = anonymous */
+    uint32_t temp_name_sym;          /* Module#set_temporary_name, 0 = none.  Kept apart from
+                                      * name_sym so it can be discarded once the module becomes
+                                      * reachable through a permanent constant path. */
     int32_t  exc_etype;              /* builtin exception class → its etype, else -1 */
     uint32_t method_cnt, method_capa;
     uint8_t  is_module;              /* 1 = module (mixin, not instantiable) */
