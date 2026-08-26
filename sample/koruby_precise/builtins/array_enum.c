@@ -516,11 +516,11 @@ static RESULT korb_m_ary_sort_by_bang(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_ary_to_enum(CTX *c, VALUE *slots, VALUE_REF self, const char *meth) {
     slots[0] = VALUE_REF_GET(self);
     slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth)));
-    return korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1, NULL, NULL, NULL);
+    return korb_send_impl(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1, NULL, NULL, NULL);
 }
 /* min_by(want=-1) / max_by(want=1): element with the extreme block key. */
 static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, int want) {
-    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "min_by", 6)); return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1); }
+    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "min_by", 6)); return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1); }
     slots[0] = KORB_NIL;   /* best value */
     slots[1] = KORB_NIL;   /* best key */
     bool have = false;
@@ -1814,7 +1814,7 @@ static RESULT korb_m_ary_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, 
         slots[0] = VALUE_REF_GET(self);
         slots[1] = ID2SYM(korb_intern(c->vm, "each_with_object", 16));
         slots[2] = VALUE_SLICE_GET(a, 0);
-        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "to_enum", 7), 0, 2, NULL, NULL, NULL);
+        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "__to_enum_sized", 15), 0, 2, NULL, NULL, NULL);
     }
     slots[0] = VALUE_SLICE_GET(a, 0);                      /* the memo object (rooted) */
     for (uint32_t i = 0; ; i++) {

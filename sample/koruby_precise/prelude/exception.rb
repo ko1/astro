@@ -131,23 +131,30 @@ class Object
   # Lazy: the underlying `meth` runs only when the returned Enumerator is
   # driven, so `obj.to_enum.lazy...first(n)` never over-iterates and a `meth`
   # that raises does so at iteration time, not at to_enum time (matches CRuby).
-  def to_enum(meth = :each, *args)
+  def to_enum(meth = :each, *args, &sz_block)
     this = self
-    # size-preserving enumerators report the receiver's size; the predicate-driven
-    # ones have no size function in CRuby (how many elements survive is unknown)
-    sz = if respond_to?(:size) && args.empty?
-           case meth
-           when :find, :detect, :find_index, :take_while, :drop_while then nil
-           else size
-           end
-         end
+    # #size is nil unless a size block was given, and that block stays deferred
+    # (#size calls it, not to_enum).  CRuby has no size function for a plain
+    # to_enum: only the builtins that build their own enumerator know a size.
     # y.yield (not y <<) so the source's `yield` sees what the consumer sent
     # back — that is what Enumerator#feed sets.
-    e = Enumerator.new(sz) { |y| this.send(meth, *args) { |*vs| y.yield(*vs) } }
+    e = Enumerator.new(sz_block) { |y| this.send(meth, *args) { |*vs| y.yield(*vs) } }
     e.__set_source(this, meth, args)                        # Enumerator#each(*extra) re-drives the source
     e
   end
   alias_method :enum_for, :to_enum    # CRuby: the same definition, not a copy
+
+  # What a block-less builtin returns: CRuby's own enumerator for `meth`, whose
+  # #size is the receiver's — except for the predicate-driven ones, where how
+  # many elements survive is not knowable up front.
+  private def __to_enum_sized(meth, *args)
+    e = to_enum(meth, *args)
+    return e unless respond_to?(:size) && args.empty?
+    case meth
+    when :find, :detect, :find_index, :take_while, :drop_while then e
+    else e.__set_size(size)
+    end
+  end
 
   def display(port = $stdout)
     port.write(to_s)

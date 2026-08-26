@@ -10351,6 +10351,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "entries", korb_m_enum_to_a, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "force", korb_m_enum_to_a, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "size", korb_m_enum_size, 0);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "__set_size", korb_m_enum_set_size, 1);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "to_s", korb_m_enum_inspect, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "inspect", korb_m_enum_inspect, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "initialize", korb_m_enum_initialize, -1);

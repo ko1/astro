@@ -576,6 +576,16 @@ static RESULT korb_m_enum_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (SELF_ENUM->mode != 0) return korb_lazy_drive(c, slots, self, -1);   /* lazy: force (finite only) */
     return RESULT_OK(SELF_ENUM->values);
 }
+/* Enumerator#__set_size(n) — the size a block-less builtin knows for its own
+ * enumerator (Object#__to_enum_sized).  Returns self so it can tail a to_enum. */
+static RESULT korb_m_enum_set_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    KorbEnumerator *const e = SELF_ENUM;
+    const VALUE n = VALUE_SLICE_GET(a, 0);
+    ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->size, n);
+    e->size_unknown = 0;
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_enum_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
     const KorbEnumerator *const e = SELF_ENUM;
@@ -720,7 +730,7 @@ static RESULT korb_lazy_op(CTX *c, VALUE *slots, VALUE_REF self, const char *op,
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to call lazy %s without a block", op);
         slots[0] = VALUE_REF_GET(self);                          /* eager Enumerator → to_enum(:op) */
         slots[1] = ID2SYM(korb_intern(c->vm, op, (uint32_t)strlen(op)));
-        return korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1);
+        return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1);
     }
     if (SELF_ENUM->mode == 3) { RESULT fr = korb_enum_force_gen(c, slots, self); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }
     if (SELF_ENUM->mode != 0) {                                  /* lazy(1)/cycle(2)/lazy-generator(4): defer (chain) */

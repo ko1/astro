@@ -12,7 +12,7 @@ module Enumerable
     raise TypeError, "no implicit conversion of #{n.class} into Integer" unless n.respond_to?(:to_int)
     n.to_int
   end
-  def map(&blk); return to_enum(:map) unless blk; r = []; each { |*a| r << blk.call(*a) }; r; end
+  def map(&blk); return __to_enum_sized(:map) unless blk; r = []; each { |*a| r << blk.call(*a) }; r; end
   alias collect map
   # filter methods pass the GATHERED element (a single Array when each yields
   # multiple) to the block; the block auto-splats by its arity. (map/flat_map
@@ -27,7 +27,7 @@ module Enumerable
   # (koruby's Enumerator is eager, so this materializes; fine for finite sources.)
   def chain(*others) = Enumerator::Chain.new(self, *others)
   def flat_map(&blk); return to_a.flat_map unless blk; r = []; each { |*a| v = blk.call(*a); if v.is_a?(Array); v.each { |e| r << e }; elsif v.respond_to?(:to_ary); ary = v.to_ary; if ary.is_a?(Array); ary.each { |e| r << e }; elsif ary.nil?; r << v; else; raise TypeError, "can't convert #{v.class} to Array (#{v.class}#to_ary gives #{ary.class})"; end; else; r << v; end }; r; end
-  def find(ifnone = nil, &blk); return to_enum(:find) unless blk; res = nil; found = false; each { |*a| e = a.size <= 1 ? a[0] : a; if blk.call(e); res = e; found = true; break; end }; found ? res : (ifnone ? ifnone.call : nil); end
+  def find(ifnone = nil, &blk); return __to_enum_sized(:find) unless blk; res = nil; found = false; each { |*a| e = a.size <= 1 ? a[0] : a; if blk.call(e); res = e; found = true; break; end }; found ? res : (ifnone ? ifnone.call : nil); end
   alias detect find
   def to_a(*args)
     r = []
@@ -101,17 +101,23 @@ module Enumerable
   # keeps the first element (CRuby semantics). The n form returns the n smallest/largest.
   def min(n = nil, &blk); return (blk ? to_a.sort(&blk) : to_a.sort).first(n) if n; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = blk ? blk.call(x, r) : (x <=> r); raise ArgumentError, "comparison of #{x.class} with #{r.class} failed" if c.nil?; r = x if c < 0; end }; r; end
   def max(n = nil, &blk); return (blk ? to_a.sort(&blk) : to_a.sort).last(n).reverse if n; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = blk ? blk.call(x, r) : (x <=> r); raise ArgumentError, "comparison of #{x.class} with #{r.class} failed" if c.nil?; r = x if c > 0; end }; r; end
-  def min_by(n = nil); return to_enum(:min_by) unless block_given?; s = sort_by { |x| yield(x) }; n ? s.first(n) : s.first; end
-  def max_by(n = nil); return to_enum(:max_by) unless block_given?; s = sort_by { |x| yield(x) }; n ? s.last(n).reverse : s.last; end
+  def min_by(n = nil); return __to_enum_sized(:min_by) unless block_given?; s = sort_by { |x| yield(x) }; n ? s.first(n) : s.first; end
+  def max_by(n = nil); return __to_enum_sized(:max_by) unless block_given?; s = sort_by { |x| yield(x) }; n ? s.last(n).reverse : s.last; end
   def sort(&blk); to_a.sort(&blk); end
-  def sort_by; return to_enum(:sort_by) unless block_given?; a = []; __each_el { |x| a << x }; a.sort_by { |x| yield(x) }; end
+  def sort_by; return __to_enum_sized(:sort_by) unless block_given?; a = []; __each_el { |x| a << x }; a.sort_by { |x| yield(x) }; end
   # all?/any?/none?/one? accept an optional pattern (uses pattern === x), else a block, else truthiness.
   def all?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; pt = a[0]; __each_el { |x| return false unless pt === x }; elsif blk; ok = true; each { |*ar| unless blk.call(*ar); ok = false; break; end }; return ok; else; __each_el { |x| return false unless x }; end; true; end
   def any?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; pt = a[0]; __each_el { |x| return true if pt === x }; elsif blk; hit = false; each { |*ar| if blk.call(*ar); hit = true; break; end }; return hit; else; __each_el { |x| return true if x }; end; false; end
   def none?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; pt = a[0]; __each_el { |x| return false if pt === x }; elsif blk; hit = false; each { |*ar| if blk.call(*ar); hit = true; break; end }; return !hit; else; __each_el { |x| return false if x }; end; true; end
   def one?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; n = 0; if a.size > 0; pt = a[0]; __each_el { |x| (n += 1; break if n > 1) if pt === x }; elsif blk; each { |*ar| (n += 1; break if n > 1) if blk.call(*ar) }; else; __each_el { |x| (n += 1; break if n > 1) if x }; end; n == 1; end
   def cycle(n = nil, &blk)                                          # delegate to Array#cycle (break handled there)
-    return to_enum(:cycle, n) unless blk                           # no block → Enumerator (each not called until iterated)
+    # no block → Enumerator (each not called until iterated); its size is the
+    # receiver's times n, or Infinity when cycling forever
+    unless blk
+      return to_enum(:cycle, n) { s = respond_to?(:size) ? size : nil
+                                  next nil if s.nil?
+                                  n.nil? ? Float::INFINITY : s * (n < 0 ? 0 : n) }
+    end
     return to_a.cycle(&blk) if n.nil?
     ni = if n.is_a?(Integer) then n
          elsif n.respond_to?(:to_int) then n.to_int
@@ -120,9 +126,9 @@ module Enumerable
     return nil if ni <= 0                                          # non-positive count → nil, without iterating
     to_a.cycle(ni, &blk)
   end
-  def each_with_object(o); return to_enum(:each_with_object, o) unless block_given?; __each_el { |x| yield x, o }; o; end
+  def each_with_object(o); return __to_enum_sized(:each_with_object, o) unless block_given?; __each_el { |x| yield x, o }; o; end
   def each_with_index(*args)
-    return to_enum(:each_with_index, *args) unless block_given?
+    return __to_enum_sized(:each_with_index, *args) unless block_given?
     i = 0
     if args.empty?
       __each_el { |x| yield x, i; i += 1 }
@@ -131,11 +137,11 @@ module Enumerable
     end
     self
   end
-  def partition(&blk); return to_enum(:partition) unless blk; a = []; b = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; if blk.call(e); a << e; else; b << e; end }; [a, b]; end
-  def group_by; return to_enum(:group_by) unless block_given?; h = {}; __each_el { |x| k = yield(x); h[k] = [] unless h.key?(k); h[k] << x }; h; end
+  def partition(&blk); return __to_enum_sized(:partition) unless blk; a = []; b = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; if blk.call(e); a << e; else; b << e; end }; [a, b]; end
+  def group_by; return __to_enum_sized(:group_by) unless block_given?; h = {}; __each_el { |x| k = yield(x); h[k] = [] unless h.key?(k); h[k] << x }; h; end
   def tally(h = {}); h = h.to_hash if !h.is_a?(Hash) && h.respond_to?(:to_hash); __each_el { |x| h[x] = (h.key?(x) ? h[x] : 0) + 1 }; h; end
   def chunk
-    return to_enum(:chunk) unless block_given?
+    return __to_enum_sized(:chunk) unless block_given?
     r = []; lastk = nil; f = true
     __each_el { |x|
       k = yield(x)
@@ -173,11 +179,11 @@ module Enumerable
   end
   def take(n); n = __as_int(n); raise ArgumentError, "attempt to take negative size" if n < 0; r = []; __each_el { |x| break if r.size >= n; r << x }; r; end
   def drop(n); n = __as_int(n); raise ArgumentError, "attempt to drop negative size" if n < 0; r = []; i = 0; __each_el { |x| r << x if i >= n; i += 1 }; r; end
-  def take_while(&blk); return to_enum(:take_while) unless blk; r = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; break unless blk.call(*ar); r << e }; r; end
-  def drop_while(&blk); return to_enum(:drop_while) unless blk; r = []; dropping = true; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; dropping = false if dropping && !blk.call(e); r << e unless dropping }; r; end
+  def take_while(&blk); return __to_enum_sized(:take_while) unless blk; r = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; break unless blk.call(*ar); r << e }; r; end
+  def drop_while(&blk); return __to_enum_sized(:drop_while) unless blk; r = []; dropping = true; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; dropping = false if dropping && !blk.call(e); r << e unless dropping }; r; end
   def minmax(&blk); [min(&blk), max(&blk)]; end   # honor an optional comparator block
-  def minmax_by; return to_enum(:minmax_by) unless block_given?; [min_by { |x| yield(x) }, max_by { |x| yield(x) }]; end
-  def find_index(*v, &blk); return to_enum(:find_index) if !blk && v.empty?; i = 0; if blk && v.empty?; idx = nil; each { |*ar| if blk.call(*ar); idx = i; break; end; i += 1 }; return idx; else; t = v[0]; __each_el { |x| return i if x == t; i += 1 }; end; nil; end
+  def minmax_by; return __to_enum_sized(:minmax_by) unless block_given?; [min_by { |x| yield(x) }, max_by { |x| yield(x) }]; end
+  def find_index(*v, &blk); return __to_enum_sized(:find_index) if !blk && v.empty?; i = 0; if blk && v.empty?; idx = nil; each { |*ar| if blk.call(*ar); idx = i; break; end; i += 1 }; return idx; else; t = v[0]; __each_el { |x| return i if x == t; i += 1 }; end; nil; end
   def each_slice(n, &blk); n = __as_int(n); raise ArgumentError, "invalid slice size" unless n > 0; unless blk; this = self; sz = (respond_to?(:size) && (z = size)) ? (z + n - 1) / n : nil; return Enumerator.new(sz) { |y| this.each_slice(n) { |s| y << s } }; end; s = []; __each_el { |x| s << x; if s.size == n; yield s; s = []; end }; yield s unless s.empty?; self; end
   def each_cons(n, &blk); n = __as_int(n); raise ArgumentError, "invalid size" unless n > 0; unless blk; this = self; sz = (respond_to?(:size) && (z = size)) ? (z >= n ? z - n + 1 : 0) : nil; return Enumerator.new(sz) { |y| this.each_cons(n) { |c| y << c } }; end; buf = []; __each_el { |x| buf << x; if buf.size == n; yield buf.dup; buf.shift; end }; self; end
   def zip(*others)
@@ -190,12 +196,12 @@ module Enumerable
     r = []; i = 0; __each_el { |x| row = [x]; os.each { |o| row << o[i] }; r << row; i += 1 }
     if block_given? then r.each { |row| yield row }; nil else r end
   end
-  def filter_map(&blk); return to_enum(:filter_map) unless blk; r = []; each { |*ar| v = blk.call(*ar); r << v if v }; r; end
+  def filter_map(&blk); return __to_enum_sized(:filter_map) unless blk; r = []; each { |*ar| v = blk.call(*ar); r << v if v }; r; end
   alias collect_concat flat_map
   def reverse_each; a = to_a.reverse; return a.each unless block_given?; a.each { |x| yield x }; self; end
   def uniq; seen = {}; r = []; __each_el { |x| k = block_given? ? yield(x) : x; unless seen.key?(k); seen[k] = true; r << x; end }; r; end
   def each_entry(*args)
-    return to_enum(:each_entry, *args) unless block_given?
+    return __to_enum_sized(:each_entry, *args) unless block_given?
     if args.empty?
       __each_el { |x| yield x }
     else
