@@ -724,14 +724,23 @@ static RESULT korb_lazy_op(CTX *c, VALUE *slots, VALUE_REF self, const char *op,
     }
     slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2ARY(SELF_ENUM->values)->len));   /* eager */
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    const bool is_take_while = !strcmp(op, "take_while");
+    const bool is_drop_while = !strcmp(op, "drop_while");
+    bool dropping = is_drop_while;
     for (uint32_t i = 0; ; i++) {
         const KorbArray *v = VAL2ARY(SELF_ENUM->values);
         if (i >= v->len) break;
         slots[1] = korb_items_data(v->items)[i];
+        if (is_drop_while && !dropping) {                 /* past the prefix: no more block calls */
+            CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
+            continue;
+        }
         RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         const bool sel = (op[0] == 's' || op[0] == 'f');   /* select / filter / filter_map */
         if (is_map) CHECK(korb_ary_push_val(c, slots + 2, dst, r.value));
+        else if (is_take_while) { if (!KORB_TRUTHY(r.value)) break; CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1])); }
+        else if (is_drop_while) { if (KORB_TRUTHY(r.value)) continue; dropping = false; CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1])); }
         else if (!strcmp(op, "reject")) { if (!KORB_TRUTHY(r.value)) CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1])); }
         else if (!strcmp(op, "filter_map")) { if (KORB_TRUTHY(r.value)) CHECK(korb_ary_push_val(c, slots + 2, dst, r.value)); }
         else if (sel) { if (KORB_TRUTHY(r.value)) CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1])); }
