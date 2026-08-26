@@ -11148,7 +11148,8 @@ korb_warn_const_redef_at(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner,
     if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
     const char *const nm = korb_sym_name(c->vm, name_sym);
     char qual[256];
-    if (KORB_CLASS_P(owner) && VAL2CLASS(owner)->name_sym) {      /* CRuby names it Owner::CONST */
+    if (KORB_CLASS_P(owner) && VAL2CLASS(owner)->name_sym &&
+        owner != korb_builtin_class_obj(c->vm, KORB_C_OBJECT)) {  /* CRuby names it Owner::CONST (Object is implicit) */
         char obuf[192]; korb_class_qname_into(c, owner, obuf, sizeof obuf);
         snprintf(qual, sizeof qual, "%s::%s", obuf, nm);
     } else snprintf(qual, sizeof qual, "%s", nm);

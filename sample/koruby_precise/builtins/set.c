@@ -1475,18 +1475,21 @@ static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     for (const char *p = cname + 1; *p; p++)              /* reject '=', '?', etc. after the first char */
         if (UNLIKELY(!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_' || (unsigned char)*p >= 0x80)))
             return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", cname);
-    const VALUE val = VALUE_SLICE_GET(a, 1);
     const VALUE owner = VALUE_REF_GET(self);    /* nest the const under the receiver module (→ its #constants) */
     { RESULT fr = korb_check_def_frozen(c, slots, owner); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* const_set on a frozen module → FrozenError */
-    korb_const_define_owned(c, id, val, KORB_CLASS_P(owner) ? owner : KORB_NIL);   /* libc realloc only → no GC move of val */
+    const VALUE cowner = KORB_CLASS_P(owner) ? owner : KORB_NIL;
+    slots[0] = VALUE_SLICE_GET(a, 1);           /* root the value: the warning below can GC */
+    if (UNLIKELY(korb_const_index_owned(c->vm, id, cowner) != UINT32_MAX))
+        korb_warn_const_redef(c, slots + 1, id, cowner);   /* CRuby warns on reassignment */
+    const VALUE val = slots[0];
+    korb_const_define_owned(c, id, val, cowner);   /* libc realloc only → no GC move of val */
     if (UNLIKELY(KORB_CLASS_P(owner) && korb_mod_hook_custom(c, owner, korb_intern(c->vm, "const_added", 11)))) {
-        slots[0] = val;                                   /* root across the hook's GC */
-        slots[1] = owner; slots[2] = ID2SYM(id);
+        slots[1] = owner; slots[2] = ID2SYM(id);          /* slots[0] still roots the value */
         const RESULT hr = korb_send(c, slots + 3, korb_intern(c->vm, "const_added", 11), 0, 1);
         if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
         return RESULT_OK(slots[0]);
     }
-    return RESULT_OK(val);
+    return RESULT_OK(slots[0]);
 }
 /* A class variable name must be @@-prefixed; otherwise NameError (CRuby), with
  * #name (the given name verbatim) and #receiver (self) attached. */
