@@ -609,7 +609,8 @@ static RESULT korb_set_visibility1(CTX *c, VALUE *slots, VALUE selfv, KorbClass 
     struct korb_method *dst = korb_class_method_slot(k, mid);   /* libc alloc, no GC */
     const struct korb_method tmp = *src;                        /* snapshot (slot array may have grown) */
     *dst = tmp; dst->mid = mid; dst->visibility = vis;          /* keep tmp.owner for super */
-    return RESULT_OK(KORB_NIL);
+    slots[0] = selfv;                                           /* the hook is Ruby code: root the class */
+    return korb_fire_method_added(c, slots + 1, slots[0], mid); /* cloning an ancestor method IS a definition */
 }
 static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis) {
     const VALUE selfv = VALUE_REF_GET(self);
@@ -675,6 +676,8 @@ static RESULT korb_m_module_function(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         *sm = tmp; sm->mid = mid; sm->owner = slots[1]; sm->visibility = 0;
         struct korb_method *im = korb_class_method_slot(VAL2CLASS(slots[0]), mid);   /* module instance method = private copy */
         *im = tmp; im->mid = mid; im->owner = slots[0]; im->visibility = 1;
+        c->vm->method_serial++;                               /* the hook below is Ruby code */
+        CHECK(korb_fire_method_added(c, slots + 3, slots[1], mid));   /* the singleton copy fires #singleton_method_added */
     }
     c->vm->method_serial++;
     if (argc == 1) return RESULT_OK(VALUE_SLICE_GET(a, 0));
