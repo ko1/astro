@@ -1723,7 +1723,8 @@ static RESULT korb_m_str_start_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
                 korb_re_set_lastmatch(c, md);            /* start_with? sets $~ on a true match */
                 return RESULT_OK(KORB_TRUE);
             }
-            continue;                                    /* this prefix didn't anchor — try the next arg */
+            korb_re_set_lastmatch(c, KORB_NIL);          /* a Regexp prefix that did not anchor clears $~ */
+            continue;                                    /* try the next arg */
         }
         if (UNLIKELY(!KORB_STRING_P(pv))) {              /* coerce a prefix via #to_str */
             RESULT cr = korb_coerce_to_str(c, slots, &pv);

@@ -591,10 +591,13 @@ static RESULT korb_set_visibility1(CTX *c, VALUE *slots, VALUE selfv, KorbClass 
         if (src == NULL) src = korb_method_lookup(c->vm, mid);
     }
     if (src == NULL) {
-        /* send/__send__/public_send are dispatch special-cases with no table
-         * entry; everything else really is undefined here (CRuby: NameError). */
+        /* send/__send__/public_send/new/allocate are dispatch special-cases with
+         * no table entry, and a singleton class inherits Class's own specials
+         * (`class << self; private :new; end`) — no-op those.  Everything else
+         * really is undefined here (CRuby: NameError). */
         const char *const nm = korb_sym_name(c->vm, mid);
         if (!strcmp(nm, "send") || !strcmp(nm, "__send__") || !strcmp(nm, "public_send")) return RESULT_OK(KORB_NIL);
+        if (k->is_singleton && (!strcmp(nm, "new") || !strcmp(nm, "allocate"))) return RESULT_OK(KORB_NIL);
         char cnm[256]; korb_class_desc_into(c, selfv, cnm, sizeof cnm);
         RESULT ne = korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
                                nm, k->is_module ? "module" : "class", cnm);

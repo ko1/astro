@@ -201,6 +201,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     for (uint32_t i = 0; i < flen; i++) {
         if (fmt[i] != '%') { fputc(fmt[i], ms); continue; }
         char spec[80]; int si = 0; spec[si++] = '%';
+        bool saw_width_digits = false;   /* CRuby names %*[0-9] when a width is all it got */
         i++;
         if (i < flen && fmt[i] == '%') { fputc('%', ms); continue; }
         /* %<name>spec / %{name}: pull the arg from a Hash by name.  A `<name>`
@@ -287,7 +288,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (!korb_to_index(wv, &w)) { err = true; errmsg = "width too big"; break; }
             if (w < 0) { if (si < 70) spec[si++] = '-'; w = -w; }                           /* negative width → left-justify */
             si += snprintf(spec + si, sizeof(spec) - (size_t)si, "%ld", (long)w);
-        } else while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
+        } else while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; saw_width_digits = true; }
         TRY_NAMED(); if (err) break;                       /* %flagsWIDTH<name>… */
         if (i < flen && fmt[i] == '.') {
             i++;
@@ -299,6 +300,13 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                   if (pany && i < flen && fmt[i] == '$') { i++; pv = ((uint32_t)(pnum-1) < argn) ? args[pnum-1] : KORB_NIL; saw_numbered = true; }
                   else { i = sv; pv = (ai < argn) ? args[ai++] : KORB_NIL; saw_unnumbered = true; } }
                 korb_sword_t pl;
+                if (!korb_to_index(pv, &pl) && KORB_OBJECT_P(pv) && korb_responds_to(c, pv, fmt_to_int)) {
+                    slots[1] = pv;                          /* a `*` precision may be any #to_int object, like the width */
+                    RESULT pr = korb_send_impl(c, slots + 2, fmt_to_int, 0, 0, NULL, NULL, NULL);
+                    if (UNLIKELY(pr.state != KORB_NORMAL)) { coerce_err = pr; has_coerce_err = true; err = true; break; }
+                    FMT_REREAD_ARGS();
+                    pv = pr.value;
+                }
                 if (!korb_to_index(pv, &pl)) { err = true; errmsg = "precision too big"; break; }
                 if (pl >= 0) si += snprintf(spec + si, sizeof(spec) - (size_t)si, ".%ld", (long)pl);   /* negative precision → ignored (CRuby) */
             } else {
@@ -324,7 +332,8 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (i >= flen) {
             err = true;
             errmsg = (si == 1 && explicit_idx < 0) ? "incomplete format specifier; use %% (double %) instead"
-                                                   : "malformed format string";
+                  : saw_width_digits                       ? "malformed format string - %*[0-9]"
+                                                           : "malformed format string";
             break;
         }
         char conv;

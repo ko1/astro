@@ -1617,12 +1617,12 @@ class << ENV
   def none?(&b) = to_h.none?(&b)
   def all?(&b) = to_h.all?(&b)
   def count(*a, &b) = a.empty? && b.nil? ? size : to_h.count(*a, &b)
-  def find(&b) = b ? to_h.find(&b) : to_enum(:find)
-  def filter_map(&b) = b ? to_h.filter_map(&b) : to_enum(:filter_map)
+  def find(&b) = b ? to_h.find(&b) : __to_enum_sized(:find)
+  def filter_map(&b) = b ? to_h.filter_map(&b) : __to_enum_sized(:filter_map)
   def sum(init = 0, &b) = to_h.sum(init, &b)
-  def min_by(&b) = b ? to_h.min_by(&b) : to_enum(:min_by)
-  def max_by(&b) = b ? to_h.max_by(&b) : to_enum(:max_by)
-  def sort_by(&b) = b ? to_h.sort_by(&b) : to_enum(:sort_by)
+  def min_by(&b) = b ? to_h.min_by(&b) : __to_enum_sized(:min_by)
+  def max_by(&b) = b ? to_h.max_by(&b) : __to_enum_sized(:max_by)
+  def sort_by(&b) = b ? to_h.sort_by(&b) : __to_enum_sized(:sort_by)
   def group_by(&b) = b ? to_h.group_by(&b) : to_enum(:group_by)
   def partition(&b) = b ? to_h.partition(&b) : to_enum(:partition)
   def flat_map(&b) = b ? to_h.flat_map(&b) : to_enum(:flat_map)
@@ -1667,20 +1667,20 @@ end
 
 class << ENV
   # select / reject and their ! forms return an Enumerator when no block is given.
-  def select(&b) = b ? __select(&b) : to_enum(:select)
-  def reject(&b) = b ? __reject(&b) : to_enum(:reject)
-  def select!(&b) = b ? __select!(&b) : to_enum(:select!)
-  def reject!(&b) = b ? __reject!(&b) : to_enum(:reject!)
+  def select(&b) = b ? __select(&b) : __to_enum_sized(:select)
+  def reject(&b) = b ? __reject(&b) : __to_enum_sized(:reject)
+  def select!(&b) = b ? __select!(&b) : __to_enum_sized(:select!)
+  def reject!(&b) = b ? __reject!(&b) : __to_enum_sized(:reject!)
   alias filter select      # a real alias: ENV.method(:filter) == ENV.method(:select)
   alias filter! select!
   # each / each_pair likewise yield an Enumerator when block-less.
   alias __each each
-  def each(&b) = b ? __each(&b) : to_enum(:each)
+  def each(&b) = b ? __each(&b) : __to_enum_sized(:each)
   def each_pair(&b) = each(&b)
   alias __keep_if keep_if
   alias __delete_if delete_if
-  def keep_if(&b) = b ? __keep_if(&b) : to_enum(:keep_if)
-  def delete_if(&b) = b ? __delete_if(&b) : to_enum(:delete_if)
+  def keep_if(&b) = b ? __keep_if(&b) : __to_enum_sized(:keep_if)
+  def delete_if(&b) = b ? __delete_if(&b) : __to_enum_sized(:delete_if)
   # ENV is not copyable (CRuby raises rather than handing out a broken twin).
   def clone(freeze: nil)
     unless freeze.nil? || freeze == true || freeze == false
