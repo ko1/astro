@@ -579,17 +579,33 @@ static RESULT korb_set_visibility1(CTX *c, VALUE *slots, VALUE selfv, KorbClass 
     VALUE adef = KORB_NIL;
     const struct korb_method *src = korb_class_find_method(selfv, mid, &adef);
     if (src == NULL) {
-        /* a Kernel-level method (they all live on Kernel after boot) or a
-         * top-level def in the global function table: `public :puts` inside a
-         * fresh Module has to copy from there, since a Module has no ancestors. */
-        const VALUE kmod = korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
-        if (KORB_CLASS_P(kmod)) src = korb_class_find_method(kmod, mid, &adef);
+        /* a Kernel-level method (they all live on Kernel after boot), an Object
+         * instance method, or a top-level def in the global function table:
+         * `public :puts` inside a fresh Module has to copy from one of those,
+         * since a Module has no ancestors of its own. */
+        static const char *const fallbacks[] = { "Kernel", "Object" };
+        for (size_t i = 0; i < sizeof fallbacks / sizeof fallbacks[0] && src == NULL; i++) {
+            const VALUE m = korb_const_get(c->vm, korb_intern(c->vm, fallbacks[i], (uint32_t)strlen(fallbacks[i])));
+            if (KORB_CLASS_P(m)) src = korb_class_find_method(m, mid, &adef);
+        }
         if (src == NULL) src = korb_method_lookup(c->vm, mid);
     }
-    /* Not found anywhere: `new` and friends are dispatch special-cases with no
-     * table entry, so a NameError here would false-positive (`private :new` is
-     * common).  Best-effort no-op, as before. */
-    if (src == NULL) return RESULT_OK(KORB_NIL);
+    if (src == NULL) {
+        /* send/__send__/public_send are dispatch special-cases with no table
+         * entry; everything else really is undefined here (CRuby: NameError). */
+        const char *const nm = korb_sym_name(c->vm, mid);
+        if (!strcmp(nm, "send") || !strcmp(nm, "__send__") || !strcmp(nm, "public_send")) return RESULT_OK(KORB_NIL);
+        char cnm[256]; korb_class_desc_into(c, selfv, cnm, sizeof cnm);
+        RESULT ne = korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
+                               nm, k->is_module ? "module" : "class", cnm);
+        if (LIKELY(KORB_EXC_P(ne.value))) {                    /* NameError#name */
+            slots[0] = ne.value;
+            korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(c->vm, "@__name", 7)), ID2SYM(mid));
+            ne.value = slots[0];
+        }
+        return ne;
+    }
+    if (src->visibility == vis) return RESULT_OK(KORB_NIL);     /* same visibility → CRuby does not clone */
     struct korb_method *dst = korb_class_method_slot(k, mid);   /* libc alloc, no GC */
     const struct korb_method tmp = *src;                        /* snapshot (slot array may have grown) */
     *dst = tmp; dst->mid = mid; dst->visibility = vis;          /* keep tmp.owner for super */
