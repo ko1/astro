@@ -681,6 +681,8 @@ static RESULT korb_m_ary_group_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool keep) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    const bool restore_md = (block == NULL);                        /* CRuby leaves $~ alone unless a block runs */
+    VALUE_REF saved_md = SLOTS_PUSH(slots, restore_md ? korb_re_get_lastmatch(c) : KORB_NIL);
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         if (i >= ary->len) break;
@@ -691,7 +693,7 @@ static RESULT korb_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
             slots[1] = _grep_pat;                                   /* root the pattern (a Regexp is movable) across the build */
             _m = korb_re_caseeq_backref(c, slots + 2, VALUE_REF_GET(VALUE_REF_AT(&slots[1])), slots[0]);
         } else {
-            _m = korb_case_eq(c, _grep_pat, slots[0]);
+            CHECK(korb_pat_eq(c, slots + 1, _grep_pat, slots[0], &_m));
         }
         if (_m == keep) {
             if (block != NULL) {
@@ -703,6 +705,7 @@ static RESULT korb_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
             }
         }
     }
+    if (restore_md) korb_re_set_lastmatch(c, VALUE_REF_GET(saved_md));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)   { return korb_ary_grep(c, slots, self, a, block, def_env, cself, true); }
