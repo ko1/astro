@@ -920,16 +920,17 @@ static RESULT korb_m_io_lineno(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(LONG2FIX((korb_sword_t)rep->lineno));
 }
 static RESULT korb_m_io_lineno_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    const VALUE v = VALUE_SLICE_GET(a, 0);
+    if (!korb_io_open_p(korb_io_rep(c, VALUE_REF_GET(self))))
+        return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    KORB_IO_NEED_READ(c, slots, self);                  /* #lineno is about records read */
+    slots[0] = VALUE_SLICE_GET(a, 0);                   /* root: #to_int below can GC */
     korb_sword_t n;
-    if (FIXNUM_P(v)) n = FIX2LONG(v);
-    else if (KORB_FLOAT_P(v)) n = (korb_sword_t)korb_float_val(v);
-    else if (!korb_to_index(v, &n))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(v));
-    rep->lineno = (uint32_t)(n < 0 ? 0 : n);
-    return RESULT_OK(v);
+    if (KORB_FLOAT_P(slots[0])) n = (korb_sword_t)korb_float_val(slots[0]);
+    else CHECK(korb_io_arg_int(c, slots + 1, slots[0], &n));
+    if (UNLIKELY(n > INT32_MAX || n < INT32_MIN))       /* CRuby stores it in a C int */
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "integer %ld too big to convert to `int'", (long)n);
+    korb_io_rep(c, VALUE_REF_GET(self))->lineno = (uint32_t)(n < 0 ? 0 : n);   /* re-fetch: #to_int may have GC'd */
+    return RESULT_OK(slots[0]);
 }
 /* IO#readlines / IO#each_line — the remaining records, same arguments as #gets. */
 static RESULT korb_m_io_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1383,6 +1384,14 @@ static RESULT korb_m_io_enc_reset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 /* IO#binmode? — the prelude's encoding accessors need to see the 'b' flag,
  * which lives in a non-@ internal ivar. */
 static RESULT korb_m_io_binmode_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    if (!korb_io_open_p(korb_io_rep(c, VALUE_REF_GET(self))))
+        return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    return RESULT_OK(korb_io_is_binary(c, VALUE_REF_GET(self)) ? KORB_TRUE : KORB_FALSE);
+}
+/* the same bit without the open check: #external_encoding is readable on a
+ * closed stream, so the prelude's encoding accessors must not raise here. */
+static RESULT korb_m_io_binmode_raw_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
     return RESULT_OK(korb_io_is_binary(c, VALUE_REF_GET(self)) ? KORB_TRUE : KORB_FALSE);
 }
@@ -1580,6 +1589,8 @@ static RESULT korb_m_io_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 /* IO#binmode — switch to byte semantics (reads produce ASCII-8BIT). */
 static RESULT korb_m_io_binmode(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    if (!korb_io_open_p(korb_io_rep(c, VALUE_REF_GET(self))))
+        return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
     return RESULT_OK(VALUE_REF_GET(self));
 }
@@ -2266,7 +2277,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("sysseek", sysseek, -1);      IOM("fsync", fsync, 0);
     IOM("fdatasync", fsync, 0);       IOM("advise", advise, -1);
     IOM("readline", readline, -1);    IOM("readchar", readchar, 0);
-    IOM("binmode?", binmode_p, 0);
+    IOM("binmode?", binmode_p, 0);   IOM("__io_binmode_raw?", binmode_raw_p, 0);
     IOM("__io_enc_reset", enc_reset, 0);
     IOM("__io_bom_encoding", set_enc_by_bom, 0);
     IOM("__io_writable?", writable_p, 0);

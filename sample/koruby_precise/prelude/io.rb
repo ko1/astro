@@ -95,7 +95,7 @@ class IO
       ext = Encoding.find(e) if e && !e.empty? && e != "-"
       int = Encoding.find(n) if n && !n.empty? && n != "-"
     end
-    ext = Encoding::BINARY if ext.nil? && binmode?
+    ext = Encoding::BINARY if ext.nil? && __io_binmode_raw?
     # the defaults as they were when the stream was created (captured in C)
     __enc_pair(ext, int, @__ext_enc0 || Encoding.default_external, @__int_enc0)
   end
@@ -104,7 +104,7 @@ class IO
   # CRuby refuses when the stream is not in binary mode or already carries an
   # encoding of its own.
   def set_encoding_by_bom
-    raise ArgumentError, "ASCII incompatible encoding needs binmode" unless binmode?
+    raise ArgumentError, "ASCII incompatible encoding needs binmode" unless __io_binmode_raw?
     __resolve_enc
     raise ArgumentError, "encoding conversion is set" if @__enc2
     if @__enc && @__enc != Encoding::BINARY
@@ -137,7 +137,7 @@ class IO
     end
     ext = Encoding.find(ext) if ext.is_a?(String)
     int = Encoding.find(int) if int.is_a?(String)
-    if ext.is_a?(Encoding) && !ext.ascii_compatible? && !binmode? && int.nil? && !__io_writable?
+    if ext.is_a?(Encoding) && !ext.ascii_compatible? && !__io_binmode_raw? && int.nil? && !__io_writable?
       raise ArgumentError, "ASCII incompatible encoding needs binmode"
     end
     @__enc_done = true          # an explicit set_encoding wins over the mode string
@@ -154,7 +154,7 @@ class IO
   end
 
   private def __check_newline_opt(v)
-    raise ArgumentError, "newline decorator with binary mode" if binmode?
+    raise ArgumentError, "newline decorator with binary mode" if __io_binmode_raw?
     return if %i[lf crlf cr universal].include?(v)
     raise ArgumentError, "unexpected value for newline option: #{v}" if v.is_a?(Symbol)
     raise ArgumentError, "unexpected value for newline option"
@@ -174,6 +174,9 @@ class IO
   def __apply_open_opts(opts)
     return self unless opts.is_a?(Hash) && !opts.empty?
     @autoclose = opts[:autoclose] ? true : false if opts.key?(:autoclose)
+    # the newline decorator is rejected against the mode the stream was OPENED
+    # with, before :binmode below can turn a text stream binary
+    __check_newline_opt(opts[:newline]) if opts.key?(:newline)
     binmode if opts[:binmode]
     ext = __enc_opt(opts[:external_encoding])
     int = __enc_opt(opts[:internal_encoding])

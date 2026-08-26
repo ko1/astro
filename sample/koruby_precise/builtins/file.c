@@ -232,8 +232,17 @@ static RESULT korb_m_file_realpath(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 /* `tilde`: File.expand_path expands ~ / ~user; File.absolute_path does not. */
 static RESULT korb_file_expand(CTX *c, VALUE *slots, VALUE_SLICE a, bool tilde) {
+    /* both arguments take a #to_path object; coerce (and root) them up front so
+     * the dispatch cannot move the byte pointers read below */
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
+    slots[0] = pv;
+    if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) {
+        VALUE bv;
+        KORB_PATH_ARG(c, slots + 1, a, 1, bv);
+        slots[1] = bv;
+    } else slots[1] = KORB_NIL;
+    pv = slots[0];
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
 
     char raw[8192]; size_t r = 0;
@@ -257,9 +266,9 @@ static RESULT korb_file_expand(CTX *c, VALUE *slots, VALUE_SLICE a, bool tilde) 
         if (nl < plen) { memcpy(raw + r, path + nl, plen - nl); r += plen - nl; }
     } else {                                          /* relative → resolve against base (or cwd) */
         char basebuf[8192]; size_t bl = 0;
-        const bool have_base = VALUE_SLICE_LEN(a) >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1));
+        const bool have_base = KORB_STRING_P(slots[1]);
         if (have_base) {
-            uint32_t blen; const char *base = korb_str_cstr_len(VALUE_SLICE_GET(a, 1), &blen);
+            uint32_t blen; const char *base = korb_str_cstr_len(slots[1], &blen);
             if (blen > 0 && base[0] == '/') { memcpy(basebuf, base, blen); bl = blen; }
             else if (blen > 0 && base[0] == '~' && (blen == 1 || base[1] == '/')) {
                 const char *home = getenv("HOME"); if (!home) home = "/"; size_t hl = strlen(home);
