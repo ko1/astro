@@ -922,7 +922,10 @@ static RESULT korb_m_module_set_temp_name(CTX *c, VALUE *slots, VALUE_REF self, 
 /* Module#name → the class/module name (a frozen String), nil if anonymous. */
 static RESULT korb_m_class_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    return korb_class_qname_str(c, slots, VALUE_REF_GET(self));   /* fully-qualified (M::C); nil if anonymous */
+    const RESULT r = korb_class_qname_str(c, slots, VALUE_REF_GET(self));   /* fully-qualified (M::C); nil if anonymous */
+    if (LIKELY(r.state == KORB_NORMAL) && KORB_STRING_P(r.value))
+        ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;   /* CRuby: Module#name is frozen */
+    return r;
 }
 /* Module#to_s / #inspect → the (qualified) name; an anonymous class stringifies
  * to a placeholder rather than nil. */

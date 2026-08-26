@@ -1096,12 +1096,14 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, 
 // `class Name ... end` — create/find the class + run its body with self=class.
 // @noinline: body is a per-process node_entry pointer (not bakeable).
 NODE_DEF @noinline
-node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int32_t self_off, uint32_t path_owner@sym, VALUE_REF super@child)
+node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int32_t self_off, uint32_t path_owner@sym, VALUE_REF path_base@child, VALUE_REF super@child)
 {
     (void)body_dispatcher;
-    /* enclosing = the path's parent module (`class M::C`, baked const name) if
-     * present, else the lexical self (`module M; class C`). */
-    VALUE enclosing = path_owner ? korb_const_get_path(c->vm, path_owner) : slots[self_off];
+    /* enclosing = the path's parent module: a baked const name (`class M::C`),
+     * or the staged base expression when the path is dynamic (`class m::C`);
+     * else the lexical self (`module M; class C`). */
+    VALUE enclosing = VALUE_REF_GET(path_base) != KORB_NIL ? VALUE_REF_GET(path_base)
+                    : (path_owner ? korb_const_get_path(c->vm, path_owner) : slots[self_off]);
     { uint32_t fs, ln;                                    /* Module#const_source_location: the FIRST definition wins */
       const VALUE loc_owner = KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL;
       if (korb_const_index_owned(c->vm, name_sym, loc_owner) == UINT32_MAX &&
@@ -1127,11 +1129,13 @@ node_sclass(CTX *c, NODE *n, VALUE *slots, NODE *body, int32_t self_off, int32_t
 // `module Name ... end` — like node_class but creates a module (no superclass,
 // not instantiable; mixed into classes via `include`).
 NODE_DEF @noinline
-node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int32_t self_off, uint32_t path_owner@sym)
+node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int32_t self_off, uint32_t path_owner@sym, VALUE_REF path_base@child)
 {
     (void)body_dispatcher;
-    /* enclosing = the path's parent (`module M::Inner`) if present, else lexical self. */
-    VALUE enclosing = path_owner ? korb_const_get_path(c->vm, path_owner) : slots[self_off];
+    /* enclosing = the path's parent (`module M::Inner`), the staged base when it
+     * is a dynamic expression (`module m::Inner`), else lexical self. */
+    VALUE enclosing = VALUE_REF_GET(path_base) != KORB_NIL ? VALUE_REF_GET(path_base)
+                    : (path_owner ? korb_const_get_path(c->vm, path_owner) : slots[self_off]);
     { uint32_t fs, ln;                                    /* Module#const_source_location: the FIRST definition wins */
       const VALUE loc_owner = KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL;
       if (korb_const_index_owned(c->vm, name_sym, loc_owner) == UINT32_MAX &&

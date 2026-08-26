@@ -2345,13 +2345,18 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         return kp_unsupported(tc, (const pm_node_t *)cn, "dynamic class name");
     uint32_t name_sym = kp_intern_cid(tc, cn->name);
     uint32_t path_owner = 0;                         /* `class M::C` → M (full dotted path) */
-    if (PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_PATH_NODE))
-        path_owner = kp_intern_cpath(tc, ((const pm_constant_path_node_t *)cn->constant_path)->parent);
+    const pm_node_t *dyn_base = NULL;                /* `class expr::C` → evaluate expr */
+    if (PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_PATH_NODE)) {
+        const pm_node_t *const parent = ((const pm_constant_path_node_t *)cn->constant_path)->parent;
+        path_owner = kp_intern_cpath(tc, parent);
+        if (path_owner == 0) dyn_base = parent;
+    }
 
-    /* superclass expression (evaluated in the ENCLOSING scope) → node_class's
-     * staged child; nil when absent. */
-    NODE *super_node;
-    WITH_CHAIN(tc, 1, (super_node = cn->superclass ? transduce(tc, cn->superclass)
+    /* path base + superclass expression (both evaluated in the ENCLOSING scope)
+     * → node_class's staged children; nil when absent. */
+    NODE *base_node, *super_node;
+    WITH_CHAIN(tc, 2, (base_node  = dyn_base ? transduce(tc, dyn_base) : ALLOC_node_lit(KORB_NIL),
+                       super_node = cn->superclass ? transduce(tc, cn->superclass)
                                                    : ALLOC_node_lit(KORB_NIL)));
 
     push_frame(tc, &cn->locals);
@@ -2367,7 +2372,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
     code_repo_add("class", entry, true);          /* its own AOT entry */
-    NODE *_ncls = ALLOC_node_class(name_sym, entry, -1 - tc->chain - 1, path_owner, super_node);   /* self_off = enclosing self (base[-1]); -1 extra for the staged super child */
+    NODE *_ncls = ALLOC_node_class(name_sym, entry, -1 - tc->chain - 2, path_owner, base_node, super_node);   /* self_off = enclosing self (base[-1]); -2 for the staged base+super children */
     korb_reg_srcloc(tc->c->vm, _ncls, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));   /* Module#const_source_location */
     bake_add(tc, &_ncls->u.node_class.self_off);
     return _ncls;
@@ -2655,8 +2660,15 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         return kp_unsupported(tc, (const pm_node_t *)mn, "dynamic module name");
     uint32_t name_sym = kp_intern_cid(tc, mn->name);
     uint32_t path_owner = 0;                         /* `module M::Inner` → M (full dotted path) */
-    if (PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_PATH_NODE))
-        path_owner = kp_intern_cpath(tc, ((const pm_constant_path_node_t *)mn->constant_path)->parent);
+    const pm_node_t *dyn_base = NULL;                /* `module expr::Inner` → evaluate expr */
+    if (PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_PATH_NODE)) {
+        const pm_node_t *const parent = ((const pm_constant_path_node_t *)mn->constant_path)->parent;
+        path_owner = kp_intern_cpath(tc, parent);
+        if (path_owner == 0) dyn_base = parent;
+    }
+    /* the base expression is evaluated in the ENCLOSING scope → staged child */
+    NODE *base_node;
+    WITH_CHAIN(tc, 1, (base_node = dyn_base ? transduce(tc, dyn_base) : ALLOC_node_lit(KORB_NIL)));
     push_frame(tc, &mn->locals);
     tc->frame->class_name_sym = name_sym;       /* for Module.nesting */
     NODE *body;
@@ -2670,7 +2682,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
     code_repo_add("module", entry, true);
-    NODE *_nmod = ALLOC_node_module(name_sym, entry, -1 - tc->chain, path_owner);   /* self_off = enclosing self (base[-1]) */
+    NODE *_nmod = ALLOC_node_module(name_sym, entry, -1 - tc->chain - 1, path_owner, base_node);   /* self_off = enclosing self (base[-1]); -1 for the staged base child */
     korb_reg_srcloc(tc->c->vm, _nmod, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)mn));   /* Module#const_source_location */
     bake_add(tc, &_nmod->u.node_module.self_off);
     return _nmod;
