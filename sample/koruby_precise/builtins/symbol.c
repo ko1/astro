@@ -300,6 +300,26 @@ static RESULT korb_m_obj_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     { RESULT nr = korb_arg_to_mid(c, slots, VALUE_SLICE_GET(a, 0), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     return korb_method_new(c, slots, VALUE_REF_GET(self), mid);   /* self re-read (coercion may GC) */
 }
+/* Kernel#public_method — like #method, but only a public one: a private or
+ * protected (or missing) name is a NameError, not a Method. */
+static RESULT korb_m_obj_public_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t mid;
+    { RESULT nr = korb_arg_to_mid(c, slots, VALUE_SLICE_GET(a, 0), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    const VALUE recv = VALUE_REF_GET(self);
+    const VALUE cls = korb_dispatch_class(c, recv);
+    const struct korb_method *const m = KORB_CLASS_P(cls) ? korb_class_find_method(cls, mid, NULL) : NULL;
+    if (m != NULL && m->visibility != 0) {
+        char cnm[192]; korb_class_desc_into(c, cls, cnm, sizeof cnm);
+        return korb_raise(c, slots, KORB_E_NAME, 0, "method '%s' for class '%s' is %s",
+                          korb_sym_name(c->vm, mid), cnm, m->visibility == 1 ? "private" : "protected");
+    }
+    if (m == NULL && !korb_responds_to(c, recv, mid)) {   /* method_missing-backed names still answer */
+        char cnm[192]; korb_class_desc_into(c, cls, cnm, sizeof cnm);
+        return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",
+                          korb_sym_name(c->vm, mid), cnm);
+    }
+    return korb_method_new(c, slots, VALUE_REF_GET(self), mid);
+}
 /* Method#call / #[] — re-dispatch to recv.mid(*args).  Stage [recv | args...]
  * below a fresh cursor and reuse the send machinery (polymorphic with Array#[]). */
 static RESULT korb_m_meth_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {

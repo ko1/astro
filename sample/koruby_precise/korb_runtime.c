@@ -9842,7 +9842,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "remove_instance_variable", korb_m_obj_remove_ivar, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variables", korb_m_obj_ivars, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "method", korb_m_obj_method, 1);
-    korb_def_cmethod(c, KORB_C_OBJECT, "public_method", korb_m_obj_method, 1);   /* public-only rejection is a follow-up */
+    korb_def_cmethod(c, KORB_C_OBJECT, "public_method", korb_m_obj_public_method, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "freeze", korb_m_obj_freeze, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_frozen_q, 0);
     korb_def_cmethod_blk(c, KORB_C_METHOD, "call", korb_m_meth_call, -1);
