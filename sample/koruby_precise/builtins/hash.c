@@ -124,7 +124,17 @@ static RESULT korb_m_hash_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         slots[2] = VALUE_SLICE_GET(a, 0);
         return korb_send(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2);
     }
-    return RESULT_OK(h->default_val);
+    {   /* a miss goes through #default(key), which a subclass may override */
+        const uint32_t dmid = korb_intern(c->vm, "default", 7);
+        const VALUE cls = korb_dispatch_class(c, VALUE_REF_GET(self));
+        const struct korb_method *const dm = KORB_CLASS_P(cls) ? korb_class_find_method(cls, dmid, NULL) : NULL;
+        if (UNLIKELY(dm != NULL && dm->kind == KORB_METHOD_ISEQ)) {   /* only a Ruby override is observable */
+            slots[0] = VALUE_REF_GET(self);
+            slots[1] = VALUE_SLICE_GET(a, 0);
+            return korb_send(c, slots + 2, dmid, 0, 1);
+        }
+    }
+    return RESULT_OK(SELF_HASH->default_val);
 }
 
 static RESULT korb_m_hash_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

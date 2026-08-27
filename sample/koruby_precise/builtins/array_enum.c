@@ -1317,13 +1317,19 @@ static RESULT korb_m_ary_flatten_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     korb_sword_t depth = -1;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) (void)korb_to_index(VALUE_SLICE_GET(a, 0), &depth);
-    bool nested = false;
-    const KorbArray *a0 = VAL2ARY(VALUE_REF_GET(self));
-    for (uint32_t i = 0; i < a0->len; i++) if (KORB_ARRAY_P(korb_items_data(a0->items)[i])) { nested = true; break; }
-    bool changed = nested && depth != 0;                 /* depth 0 → no flattening → nil */
+    const uint32_t len0 = VAL2ARY(VALUE_REF_GET(self))->len;
     RESULT fr = korb_m_ary_flatten(c, slots, self, a);   /* flattened copy */
     if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
     slots[0] = fr.value;
+    /* "changed" means the copy differs, which covers a #to_ary element as well
+     * as a nested Array (a length change, or an element replaced in place) */
+    bool changed = depth != 0 && VAL2ARY(slots[0])->len != len0;
+    if (!changed && depth != 0) {
+        const KorbArray *const src = VAL2ARY(VALUE_REF_GET(self));
+        const KorbArray *const cp  = VAL2ARY(slots[0]);
+        for (uint32_t i = 0; i < len0 && !changed; i++)
+            if (korb_items_data(src->items)[i] != korb_items_data(cp->items)[i]) changed = true;
+    }
     VALUE_REF flat = VALUE_REF_AT(&slots[0]);
     VAL2ARY(VALUE_REF_GET(self))->len = 0;
     uint32_t fn = VAL2ARY(VALUE_REF_GET(flat))->len;

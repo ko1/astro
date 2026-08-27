@@ -5071,8 +5071,10 @@ korb_responds_to_coerce_p(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid)
     const bool has_rtm = korb_class_find_method(dcls, korb_intern(c->vm, "respond_to_missing?", 19), &rtm_def) != NULL &&
                          rtm_def != korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
     if (!(custom_rt || has_rtm)) return false;
-    slots[0] = *selfp; slots[1] = ID2SYM(mid);
-    const RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "respond_to?", 11), 0, 1, NULL, NULL, NULL);
+    slots[0] = *selfp; slots[1] = ID2SYM(mid); slots[2] = KORB_TRUE;
+    /* implicit conversions see private methods too (CRuby's rb_check_funcall),
+     * so #respond_to_missing? is asked with include_all = true */
+    const RESULT r = korb_send_impl(c, slots + 3, korb_intern(c->vm, "respond_to?", 11), 0, 2, NULL, NULL, NULL);
     *selfp = slots[0];                                /* writeback: the dispatch may have moved the receiver */
     return r.state == KORB_NORMAL && KORB_TRUTHY(r.value);
 }

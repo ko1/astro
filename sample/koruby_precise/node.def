@@ -2024,7 +2024,11 @@ node_aref(CTX *c, NODE *n, VALUE *slots, uint32_t line, VALUE_REF recv@child, VA
         const KorbHash *const h = VAL2HASH(r);
         const int32_t hi = korb_hash_find(h, idx);
         if (hi >= 0) return RESULT_OK(korb_items_data(h->items)[2 * hi + 1]);
-        if (LIKELY(h->default_proc == KORB_NIL)) return RESULT_OK(h->default_val);   /* miss → default (proc case falls to send) */
+        /* miss → default; a default_proc or a subclass (which may override
+         * #default) falls through to the send */
+        if (LIKELY(h->default_proc == KORB_NIL) &&
+            LIKELY(!(((const AroObjectHeader *)(uintptr_t)r)->flags & KORB_FL_HAS_KLASS)))
+            return RESULT_OK(h->default_val);
     }
     if (KORB_METHOD_P(r) && !c->vm->method_aref_redefined) {   /* meth[arg] = Method#[] = recv.mid(arg): collapse the [] + meth_call double dispatch (optcarrot @fetch[addr][addr], ~7M/run) */
         const KorbMethod *const m = VAL2METH(r);
