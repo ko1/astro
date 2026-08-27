@@ -37,6 +37,9 @@ struct kp_frame {
     bool it_param;            /* `{ it * 2 }` — slot 0 is the implicit `it` (prism lists no name for it) */
     bool module_function_mode; /* no-arg `module_function` seen in this class/module body */
     uint32_t method_mid;      /* enclosing def's name (0 = not a method body) — for super */
+    bool dm_body;             /* this block frame is a define_method body: it IS a method at run time,
+                               * so a `super` inside it names the entry being executed, not any def
+                               * it happens to sit inside lexically. */
     uint32_t class_name_sym;  /* enclosing class/module body's const name (0 = not a class body) — for Module.nesting */
     bool anon_class_body;     /* `class << obj` — the cref is a class with no name, so constants must be
                                * owned via the runtime self instead of a baked name */
@@ -66,6 +69,7 @@ struct kp_ctx {
     CTX *c;
     const char *fname;
     struct kp_frame *frame;
+    bool next_block_is_dm;    /* the literal block about to be transduced is a define_method body */
     int32_t chain;            /* staging depth at the current program point */
     /* BEGIN { } bodies, hoisted to the very front of the program (CRuby runs
      * them once, before everything else — including a -n/-p gets loop). */
@@ -340,6 +344,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->it_param = false;
     f->module_function_mode = false;
     f->method_mid = 0;
+    f->dm_body = false;
     f->method_params = 0;
     f->depth_shift = tc->pending_depth_shift;
     f->fwd_slot = -1;
@@ -1080,6 +1085,8 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                       const pm_node_t *blk_params, const pm_node_t *blk_body)
 {
     push_frame(tc, blk_locals);
+    tc->frame->dm_body = tc->next_block_is_dm;
+    tc->next_block_is_dm = false;
 
     uint32_t bparams = 0;
     uint32_t destructure_n = 0;     /* >0 for a single |(a,b,...)| destructuring param */
@@ -1494,6 +1501,15 @@ kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
 
 /* Resolve a call's block: a literal `{ }` → real node_entry; `&:sym` → a
  * synthesized `{ |x| x.sym }` block; else NULL = unsupported. */
+/* `define_method(:x) { ... }` / `define_singleton_method` — the literal block
+ * becomes a method body, so a `super` inside it is a method's super. */
+static bool
+kp_defines_method_p(struct kp_ctx *tc, uint32_t mid)
+{
+    const char *const nm = korb_sym_name(tc->c->vm, mid);
+    return !strcmp(nm, "define_method") || !strcmp(nm, "define_singleton_method");
+}
+
 static NODE *
 kp_block_entry(struct kp_ctx *tc, const pm_node_t *blk)
 {
@@ -1730,7 +1746,9 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 return pset ? ALLOC_node_seq(pset, call) : call;
             }
         }
+        tc->next_block_is_dm = kp_defines_method_p(tc, mid);
         NODE *entry = kp_block_entry(tc, cn->block);
+        tc->next_block_is_dm = false;
         if (!entry) return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument (only literal block or &:sym)");
         /* `f(*arr) { ... }` — build the args Array and dispatch dynamically with
          * the block threaded (one staged child = the args array). */
@@ -1956,7 +1974,9 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 return SAFE_WRAP(pset ? ALLOC_node_seq(pset, call) : call);
             }
         }
+        tc->next_block_is_dm = kp_defines_method_p(tc, mid);
         NODE *entry = kp_block_entry(tc, cn->block);
+        tc->next_block_is_dm = false;
         if (!entry) return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument (only literal block or &:sym)");
         /* `recv.m(*arr) { ... }` — build the args Array and dispatch dynamically
          * with the block threaded (two staged children: recv + the args array). */
@@ -4395,10 +4415,16 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_SUPER_NODE: {           /* super(...) — explicit args */
         const pm_super_node_t *sn = (const pm_super_node_t *)node;
         uint32_t m_mid = tc->frame->method_mid;
-        /* No enclosing `def`: this may still be a define_method body, which IS a
-         * method at run time.  Bake a sentinel name the runtime resolves through
-         * the entry it is executing (and raises "outside of method" if none). */
-        if (m_mid == 0) m_mid = korb_intern(tc->c->vm, "__dm_super__", 12);
+        if (m_mid == 0) {
+            /* Walk out: a define_method body is a method in its own right (its
+             * name is only known at run time — bake a sentinel), while a plain
+             * block borrows the name of the def it sits in. */
+            for (const struct kp_frame *f = tc->frame; f && m_mid == 0; f = f->prev) {
+                if (f->dm_body) break;
+                m_mid = f->method_mid;
+            }
+            if (m_mid == 0) m_mid = korb_intern(tc->c->vm, "__dm_super__", 12);
+        }
         uint32_t line = kp_line(tc, node);
         const pm_arguments_node_t *args = sn->arguments;
         size_t argc = args ? args->arguments.size : 0;

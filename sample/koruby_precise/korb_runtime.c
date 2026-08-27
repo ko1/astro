@@ -4784,6 +4784,14 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "super called outside of method");
         mid = c->dm_entry->mid;
         entry_cell = (VALUE)((uintptr_t)c->dm_entry | 1u);
+    } else if (UNLIKELY(!((uintptr_t)entry_cell & 1u))) {
+        /* `super` inside a block: the block's frame carries no method entry, so
+         * take the one the name currently resolves to on the receiver and search
+         * above its owner.  (A block outliving a redefinition can pick the newer
+         * definition — CRuby tracks the block's home method exactly.) */
+        VALUE odef = KORB_NIL;
+        const struct korb_method *const own = korb_class_find_method(korb_dispatch_class(c, self), mid, &odef);
+        if (own != NULL) entry_cell = (VALUE)((uintptr_t)own | 1u);
     }
     VALUE found_def = KORB_NIL;
     struct korb_method *const m = korb_super_find(c, mid, entry_cell, self, &found_def);
