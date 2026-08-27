@@ -20,8 +20,20 @@ class Proc
     # immediate-call form returned the result instead of a Proc.
     f = self   # capture the callee as a local so it survives instance_exec self-rebind
     make = nil
-    make = ->(got) { ->(*more) { all = got + more; all.length >= n ? f.call(*all) : make.call(all) } }
+    make = ->(got) { __curried(->(*more) { all = got + more; all.length >= n ? f.call(*all) : make.call(all) }) }
     make.call([])
+  end
+
+  # CRuby's curried Proc is a builtin with no source of its own: it reports
+  # [[:rest]] whatever the implementation's parameter is named, has no
+  # #source_location, and refuses #binding.
+  private def __curried(pr)
+    pr.singleton_class.class_eval do
+      define_method(:parameters) { |**| [[:rest]] }
+      define_method(:source_location) { nil }
+      define_method(:binding) { raise ArgumentError, "Can't create Binding from C level Proc" }
+    end
+    pr
   end
   # Function composition: (f >> g).(x) == g(f(x)); (f << g).(x) == f(g(x)).
   # The result is a lambda iff the first-executed proc is (matches CRuby):

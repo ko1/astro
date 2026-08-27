@@ -263,6 +263,14 @@ static RESULT korb_m_range_to_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return korb_m_ary_to_set(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);   /* map each element through the block */
 }
 
+/* Proc#to_s / #inspect — the default object form, but CRuby tags it BINARY
+ * (the text embeds a source path, which has no encoding of its own). */
+static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_proc_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const RESULT r = korb_m_obj_to_s(c, slots, self, a);
+    if (LIKELY(r.state == KORB_NORMAL) && KORB_STRING_P(r.value)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
+    return r;
+}
 static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     char *buf = NULL; size_t sz = 0;
