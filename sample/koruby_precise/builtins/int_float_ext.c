@@ -402,8 +402,23 @@ static RESULT korb_m_hash_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 
 /* dup: shallow copy. Immutables (fixnum/symbol/nil/true/false/float) return self;
  * String/Array/Hash get a fresh shallow copy. */
-static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
+/* Run the copy hook on the new object at slots[1] with the original as its one
+ * positional argument (plus clone's freeze: Hash when there is one). */
+
+
+static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (below) */
+/* Run the copy hook on the new object at slots[1] with the original as its one
+ * positional argument (plus clone's freeze: Hash when there is one). */
+static RESULT korb_copy_hook(CTX *c, VALUE *slots, VALUE_REF self, uint32_t hook_mid, const VALUE *hook_kw) {
+    slots[2] = VALUE_REF_GET(self);                      /* orig (arg); recv = the new object at slots[1] */
+    if (hook_kw == NULL || *hook_kw == KORB_NIL) return korb_send_impl(c, slots + 3, hook_mid, 0, 1, NULL, NULL, NULL);
+    slots[3] = *hook_kw;                                 /* clone's freeze: keywords — read from the caller's rooted slot */
+    return korb_send_impl(c, slots + 4, hook_mid, 0, 2, NULL, NULL, NULL);
+}
+/* Shared body of #dup and #clone.  `hook_mid` is the copy hook CRuby runs on the
+ * new object (initialize_dup / initialize_clone); `hook_kw` is the freeze: Hash
+ * clone passes along, or nil. */
+static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t hook_mid, const VALUE *hook_kw) {
     const VALUE v = VALUE_REF_GET(self);
     /* preserve the subclass: a builtin-subclass instance dups to the same class */
     const bool sub = AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS);
@@ -472,7 +487,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         ARO_STORE(c, nre, (VALUE *)(uintptr_t)&nre->source, sre->source);
         slots[1] = (VALUE)nre;
         slots[2] = VALUE_REF_GET(self);                    /* CRuby calls #initialize_copy(orig) after copying */
-        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
+        RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RANGE) {   /* Range → fresh (unfrozen) copy (literals/Range.new are frozen) */
         slots[1] = v;                                      /* root the source across the alloc */
@@ -483,7 +498,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         ARO_STORE(c, nr, (VALUE *)(uintptr_t)&nr->rend,   sr->rend);
         slots[1] = (VALUE)nr;
         slots[2] = VALUE_REF_GET(self);                    /* CRuby calls #initialize_copy(orig) after copying */
-        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
+        RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_PROC) {   /* Proc → fresh (unfrozen) shallow copy */
         slots[1] = v;                                      /* root the source across the alloc */
@@ -495,7 +510,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         slots[1] = (VALUE)np;
         /* CRuby calls #initialize_copy(orig) after copying (default no-op; a user override runs). */
         slots[2] = VALUE_REF_GET(self);
-        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
+        RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_EXCEPTION) {   /* Exception → fresh copy (was aliasing self) */
         slots[1] = v;                                      /* root the source across the alloc */
@@ -516,7 +531,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         }
         /* CRuby calls #initialize_copy(orig) after copying (default no-op; a user override runs) */
         slots[2] = VALUE_REF_GET(self);
-        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
+        RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (KORB_OBJECT_P(v)) {                         /* user object → fresh instance, shallow-copy ivars */
         slots[1] = UNWRAP(korb_obj_new(c, slots + 1, VAL2OBJ(v)->klass));
@@ -537,7 +552,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         /* CRuby calls #initialize_copy(orig) on the new object after copying the
          * ivars — the default is a no-op here, but a user override runs its logic. */
         slots[2] = VALUE_REF_GET(self);                   /* orig (arg); recv = the new object at slots[1] */
-        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
+        RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (KORB_CLASS_P(v)) {                          /* Module/Class → anonymous copy with its own method table */
         RESULT cr = korb_class_dup(c, slots + 1, v);
@@ -548,12 +563,15 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     if (sub && !(KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_singleton))
         korb_klass_override_set(c, slots[1], slots[0]);   /* dup keeps a builtin-subclass class but NOT a singleton class */
-    if (need_initcopy && sub) {                           /* String/Array/Hash/Set subclass: run the (possibly overridden) #initialize_copy now that the class is set */
-        slots[2] = VALUE_REF_GET(self);
-        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
+    if (need_initcopy && sub) {                           /* String/Array/Hash/Set subclass: run the (possibly overridden) hook now that the class is set */
+        RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     }
     return RESULT_OK(slots[1]);
+}
+static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    return korb_obj_copy_impl(c, slots, self, korb_intern(c->vm, "initialize_dup", 14), NULL);
 }
 /* Object#clone(freeze: nil) — like dup, but copies the frozen state (unless
  * freeze: false), and freeze: true forces it.  (Singleton-class copy not done.) */
@@ -570,9 +588,12 @@ static RESULT korb_m_obj_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             fmode = (fv == KORB_NIL) ? -1 : (KORB_TRUTHY(fv) ? 1 : 0);
         }
     }
+    /* CRuby hands #initialize_clone the freeze: keywords it was given, and only
+     * those — a plain clone passes none. */
+    slots[0] = (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) ? VALUE_SLICE_GET(a, n - 1) : KORB_NIL;
     const VALUE sv = VALUE_REF_GET(self);
     const bool self_frozen = AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_FROZEN);
-    RESULT r = korb_m_obj_dup(c, slots, self, VALUE_SLICE_MAKE(NULL, 0));
+    RESULT r = korb_obj_copy_impl(c, slots + 1, self, korb_intern(c->vm, "initialize_clone", 16), &slots[0]);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     const VALUE sv2 = VALUE_REF_GET(self);   /* re-fetch: korb_m_obj_dup GC-moved the receiver; `sv` is stale */
     /* clone (unlike dup) carries the singleton class, so singleton methods survive. */

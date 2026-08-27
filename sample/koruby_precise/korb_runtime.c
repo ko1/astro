@@ -9990,7 +9990,6 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "extend", korb_m_obj_extend, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "singleton_class", korb_m_obj_singleton_class, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "initialize_copy", korb_m_obj_initialize_copy, 1);
-    korb_def_cmethod(c, KORB_C_OBJECT, "initialize_clone", korb_m_obj_initialize_copy, -1);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "define_singleton_method", korb_m_obj_define_singleton_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attached_object", korb_m_class_attached_object, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "subclasses", korb_m_class_subclasses, 0);

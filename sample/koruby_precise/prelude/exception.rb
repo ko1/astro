@@ -128,6 +128,11 @@ module Kernel
   module_function :warn      # CRuby exposes it both ways: private Kernel#warn and public Kernel.warn
 end
 class Object
+  # CRuby's copy chain: #dup calls #initialize_dup and #clone calls
+  # #initialize_clone, and both default to #initialize_copy.
+  private def initialize_dup(orig); initialize_copy(orig); self; end
+  private def initialize_clone(orig, freeze: nil); initialize_copy(orig); self; end
+
   # Lazy: the underlying `meth` runs only when the returned Enumerator is
   # driven, so `obj.to_enum.lazy...first(n)` never over-iterates and a `meth`
   # that raises does so at iteration time, not at to_enum time (matches CRuby).
