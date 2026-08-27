@@ -4471,6 +4471,17 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_forwarding_super_node_t *fn = (const pm_forwarding_super_node_t *)node;
         if (fn->block) return kp_unsupported(tc, node, "super with a block");
         uint32_t m_mid = tc->frame->method_mid;
+        /* CRuby refuses a bare `super` from a define_method body outright: the
+         * block's params are not the method's, so there is nothing to forward. */
+        if (m_mid == 0 && tc->frame->dm_body)
+            return kp_unsupported(tc, node, "implicit argument passing of super from method defined by "
+                                            "define_method() is not supported. Specify all arguments explicitly.");
+        if (m_mid == 0) {   /* a plain block borrows the name of the def it sits in */
+            for (const struct kp_frame *f = tc->frame; f && m_mid == 0; f = f->prev) {
+                if (f->dm_body) break;
+                m_mid = f->method_mid;
+            }
+        }
         if (m_mid == 0) return kp_unsupported(tc, node, "super outside a method body");
         uint32_t line = kp_line(tc, node);
         const uint32_t np = tc->frame->method_params;
