@@ -396,6 +396,27 @@ korb_m_fiber_alive(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     return RESULT_OK(VAL2FIBER(VALUE_REF_GET(self))->rep->fstate != 3 ? KORB_TRUE : KORB_FALSE);
 }
 
+/* Fiber#inspect / #to_s — "#<Fiber:0xADDR file:line (status)>" (CRuby's shape).
+ * The location is the block's, which is what CRuby shows. */
+static RESULT
+korb_m_fiber_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)a;
+    const VALUE fv = VALUE_REF_GET(self);
+    const KorbFiberRep *const rep = VAL2FIBER(fv)->rep;
+    static const char *const st[4] = { "created", "resumed", "suspended", "terminated" };
+    char loc[256] = "";
+    uint32_t fsym = 0, line = 0;
+    if (rep->body != NULL && korb_get_srcloc(c->vm, rep->body, &fsym, &line))
+        snprintf(loc, sizeof loc, "%s:%u", korb_sym_name(c->vm, fsym), line);
+    else
+        snprintf(loc, sizeof loc, "%s", korb_type_name(fv));
+    char buf[320];
+    const int n = snprintf(buf, sizeof buf, "#<Fiber:0x%016zx %s (%s)>",
+                           (size_t)(uintptr_t)fv, loc, st[rep->fstate & 3]);
+    return korb_str_new(c, slots, buf, (uint32_t)(n < 0 ? 0 : (n < (int)sizeof buf ? n : (int)sizeof buf - 1)));
+}
+
 /* Fiber.yield([v]) — suspend the running fiber, hand `v` to its resumer. */
 static RESULT
 korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)

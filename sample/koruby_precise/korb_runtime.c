@@ -9911,6 +9911,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FIBER, "transfer", korb_m_fiber_transfer, -1);
     korb_def_cmethod(c, KORB_C_FIBER, "kill", korb_m_fiber_kill, 0);
     korb_def_cmethod(c, KORB_C_FIBER, "alive?", korb_m_fiber_alive, 0);
+    korb_def_cmethod(c, KORB_C_FIBER, "inspect", korb_m_fiber_inspect, 0);
+    korb_def_cmethod(c, KORB_C_FIBER, "to_s", korb_m_fiber_inspect, 0);
     korb_def_cmethod(c, KORB_C_FIBER, "storage", korb_m_fiber_storage, 0);
     korb_def_cmethod(c, KORB_C_FIBER, "storage=", korb_m_fiber_storage_set, 1);
     korb_def_cmethod(c, KORB_C_FIBER, "blocking?", korb_m_fiber_blocking_p, 0);
