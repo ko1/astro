@@ -811,6 +811,7 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (start < 0) start += bn;
         korb_sword_t e; if (r->rend == KORB_NIL) e = bn; else { if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (e < 0) e += bn; if (!r->exclude_end) e += 1; }
         dellen = e - start;
+        if (dellen < 0) dellen = 0;                /* a range whose end is before its begin deletes nothing */
         repl = VALUE_SLICE_GET(a, 1); repl_pos = 1;
     } else {
         /* 2-arg form requires a Range first argument (an Integer there means the
@@ -864,8 +865,9 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         korb_sword_t si, sl;
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, repl_pos + 1), &si) || !korb_to_index(VALUE_SLICE_GET(a, repl_pos + 2), &sl)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        const korb_sword_t si_arg = si;                    /* CRuby names the index as written */
         if (si < 0) si += rn;
-        if (UNLIKELY(si < 0 || si > (korb_sword_t)rn)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)si);
+        if (UNLIKELY(si < 0 || si > (korb_sword_t)rn)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)si_arg);
         if (UNLIKELY(sl < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "negative length %ld", (long)sl);
         if (si + sl > (korb_sword_t)rn) sl = (korb_sword_t)rn - si;
         roff = (uint32_t)si; rn = (uint32_t)sl;
