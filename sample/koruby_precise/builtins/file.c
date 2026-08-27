@@ -1770,9 +1770,22 @@ static bool korb_glob_skip_dot(const char *name, const char *seg, bool dotmatch)
 
 static int korb_glob_dsel(const struct dirent *d) { (void)d; return 1; }
 
+/* Append the separator that precedes segment `si` (the run of '/' written after
+ * segment si-1 in the pattern).  Returns the new length. */
+static size_t korb_glob_sep(char *rel, size_t rlen, const uint8_t *slashed, int si)
+{
+    if (rlen == 0) return rlen;
+    uint32_t n = (si > 0) ? slashed[si - 1] : 1;
+    if (n == 0) n = 1;
+    while (n-- && rlen + 1 < PATH_MAX) rel[rlen++] = '/';
+    rel[rlen] = '\0';
+    return rlen;
+}
+
 static RESULT
 korb_glob_walk(struct korb_glob *g, VALUE *slots, char *rel, size_t rlen,
-               char *const *segs, const bool *slashed, int nseg, int si, bool dir_only)
+               char *const *segs, const uint8_t *slashed, int nseg, int si, bool dir_only,
+               bool at_base, bool via_star2)
 {
     if (si == nseg) {                                  /* pattern exhausted → a hit */
         if (dir_only && !korb_glob_isdir(g, rel)) return RESULT_OK(KORB_NIL);
@@ -1790,7 +1803,7 @@ korb_glob_walk(struct korb_glob *g, VALUE *slots, char *rel, size_t rlen,
         /* zero directories: the dot form also yields the base itself ("./") */
         /* at the base only the dot form yields "./"; deeper, every level is a hit */
         if (si + 1 < nseg || recdot || rel[0] != '\0')
-            r = korb_glob_walk(g, slots, rel, rlen, segs, slashed, nseg, si + 1, dir_only);
+            r = korb_glob_walk(g, slots, rel, rlen, segs, slashed, nseg, si + 1, dir_only, at_base, true);
         for (int i = 0; nent > 0 && i < nent && r.state == KORB_NORMAL; i++) {
             const char *const nm = ents[i]->d_name;
             if (!strcmp(nm, ".") || !strcmp(nm, "..")) continue;
@@ -1801,23 +1814,33 @@ korb_glob_walk(struct korb_glob *g, VALUE *slots, char *rel, size_t rlen,
             snprintf(sub, sizeof sub, "%s/%s", fp, nm);
             if (lstat(sub, &lst) != 0 || !S_ISDIR(lst.st_mode)) continue;   /* lstat: never follow symlinks */
             const size_t save = rlen;
-            if (rlen) rel[rlen++] = '/';
+            /* the pattern's separator run applies once, entering `**`; the levels
+             * `**` then walks are plain single slashes */
+            rlen = korb_glob_sep(rel, rlen, slashed, at_base ? si : 0);
             memcpy(rel + rlen, nm, nl); rlen += nl; rel[rlen] = '\0';
-            r = korb_glob_walk(g, slots, rel, rlen, segs, slashed, nseg, si, dir_only);   /* still `**` */
+            /* CRuby lists "." only for the level the pattern names, never for a
+             * directory `**` walked into */
+            r = korb_glob_walk(g, slots, rel, rlen, segs, slashed, nseg, si, dir_only, false, true);   /* still `**` */
             rlen = save; rel[rlen] = '\0';
         }
     } else {
         for (int i = 0; nent > 0 && i < nent && r.state == KORB_NORMAL; i++) {
             const char *const nm = ents[i]->d_name;
             if (korb_glob_skip_dot(nm, seg, g->dotmatch)) continue;
+            if (nm[0] == '.' && nm[1] == '\0') {
+                /* "." is listed only for the level the pattern names, and behind
+                 * a `**` only when FNM_DOTMATCH asked for dot entries at all */
+                if (!at_base) continue;
+                if (via_star2 && !g->dotmatch) continue;
+            }
             if (fnmatch(seg, nm, g->fnm) != 0) continue;
             const size_t nl = strlen(nm);
             if (rlen + nl + 2 >= PATH_MAX) continue;
             const size_t save = rlen;
-            if (rlen) rel[rlen++] = '/';
+            rlen = korb_glob_sep(rel, rlen, slashed, si);
             memcpy(rel + rlen, nm, nl); rlen += nl; rel[rlen] = '\0';
             if (si + 1 == nseg || korb_glob_isdir(g, rel))                  /* only a dir can carry more */
-                r = korb_glob_walk(g, slots, rel, rlen, segs, slashed, nseg, si + 1, dir_only);
+                r = korb_glob_walk(g, slots, rel, rlen, segs, slashed, nseg, si + 1, dir_only, at_base, false);
             rlen = save; rel[rlen] = '\0';
         }
     }
@@ -1842,18 +1865,27 @@ static RESULT korb_glob_one(struct korb_glob *g, VALUE *slots, const char *pat) 
     }
     const size_t plen = strlen(p);
     const bool dir_only = plen > 0 && p[plen - 1] == '/';
-    char *segs[256]; bool slashed[256];
+    char *segs[256]; uint8_t slashed[256];
     int nseg = 0;
     for (char *q = p; *q && nseg < 256; ) {
-        char *const sl = strchr(q, '/');
+        char *sl = strchr(q, '/');
         if (sl) *sl = '\0';
-        if (*q) { segs[nseg] = q; slashed[nseg] = (sl != NULL); nseg++; }
+        if (*q) {
+            segs[nseg] = q;
+            /* CRuby echoes a repeated separator back in the result, so keep the
+             * run length rather than collapsing it to one '/' */
+            uint32_t run = 0;
+            if (sl) { char *t = sl + 1; run = 1; while (*t == '/') { t++; run++; } }
+            slashed[nseg] = (uint8_t)(run > 255 ? 255 : run);
+            nseg++;
+        }
         if (!sl) break;
         q = sl + 1;
+        while (*q == '/') q++;
     }
     if (nseg == 0) return RESULT_OK(KORB_NIL);
     char rel[PATH_MAX]; rel[0] = '\0';
-    RESULT r = korb_glob_walk(&gl, slots, rel, 0, segs, slashed, nseg, 0, dir_only);
+    RESULT r = korb_glob_walk(&gl, slots, rel, 0, segs, slashed, nseg, 0, dir_only, true, false);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (absolute) {                                    /* re-prefix the '/' the walk dropped */
         const uint32_t n = VAL2ARY(VALUE_REF_GET(g->arr))->len;
