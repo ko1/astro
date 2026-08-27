@@ -392,6 +392,9 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             static const struct { const char *nm; uint32_t len; } conv[] = { { "to_r", 4 }, { "to_int", 6 } };
             for (size_t k = 0; k < 2 && !ok; k++) {
                 VALUE cand = VALUE_SLICE_GET(a, 1);
+                /* only a Numeric's #to_r counts — nil and String have one but are
+                 * not exact numbers (CRuby: TypeError) */
+                if (k == 0 && !korb_obj_is_numeric(c, cand)) continue;
                 if (!korb_responds_to_coerce_p(c, slots, &cand, korb_intern(c->vm, conv[k].nm, conv[k].len))) continue;
                 slots[0] = cand;
                 RESULT cr = korb_send_impl(c, slots + 1, korb_intern(c->vm, conv[k].nm, conv[k].len), 0, 0, NULL, NULL, NULL);
@@ -403,7 +406,7 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
                                   korb_coerce_name(c, VALUE_SLICE_GET(a, 1)));
         }
         double per_ns = 1000.0;                                  /* default unit = :microsecond */
-        if (alen >= 3 && VALUE_SLICE_GET(a, 2) != KORB_NIL) {
+        if (alen >= 3) {                                     /* nil is not "unset": CRuby rejects it too */
             const VALUE u = VALUE_SLICE_GET(a, 2);
             const char *un = SYMBOL_P(u) ? korb_sym_name(c->vm, SYM2ID(u)) : (KORB_STRING_P(u) ? korb_strbuf_data(VAL2STR(u)->buf) : "");
             if (!strcmp(un, "millisecond")) per_ns = 1e6;
@@ -936,8 +939,22 @@ static RESULT korb_m_time_minus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (KORB_OBJECT_P(o) && korb_ivar_get(c, o, korb_time_t_sym(c->vm)) != KORB_NIL)   /* Time - Time → seconds (Float) */
         return korb_float_new(c, slots, korb_time_epoch(c, t) - korb_time_epoch(c, o));
     korb_sword_t ds, dn;
-    if (UNLIKELY(!korb_time_split_delta(c, o, &ds, &dn, 1)))            /* String / non-Numeric → TypeError */
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(o));
+    if (UNLIKELY(!korb_time_split_delta(c, o, &ds, &dn, 1))) {
+        /* a Numeric that is not one of ours converts through #to_r; a String or
+         * a plain object has no exact value (CRuby: TypeError) */
+        VALUE cand = o;
+        if (korb_obj_is_numeric(c, cand) &&
+            korb_responds_to_coerce_p(c, slots, &cand, korb_intern(c->vm, "to_r", 4))) {
+            slots[0] = cand;
+            const RESULT rr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+            if (korb_time_split_delta(c, rr.value, &ds, &dn, 1)) {
+                slots[0] = rr.value;
+                return korb_time_shift(c, slots + 1, self, slots[0], -1);
+            }
+        }
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_coerce_name(c, o));
+    }
     return korb_time_shift(c, slots, self, o, -1);
 }
 /* Time#<=> with a non-Time: CRuby asks the OTHER object (`other <=> self`) and
