@@ -604,6 +604,9 @@ static RESULT korb_m_enum_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     (void)a;
     VALUE d = SELF_ENUM->desc;
     if (KORB_STRING_P(d)) return RESULT_OK(d);
+    /* Enumerator.allocate without #initialize has no source at all */
+    if (SELF_ENUM->values == KORB_NIL && SELF_ENUM->source == KORB_NIL)
+        return korb_str_new(c, slots, "#<Enumerator: uninitialized>", 28);
     return korb_str_new(c, slots, "#<Enumerator>", 13);
 }
 /* each: yield every materialized value; with no block, return self. */
@@ -661,15 +664,23 @@ static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * korb_send_impl, so this is reached via `allocate` + send(:initialize) or a
  * subclass's generic .new.  (The size argument is accepted but not stored.) */
 static RESULT korb_m_enum_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a;
     const VALUE ev = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_ENUM_P(ev))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not an enumerator");
+    KORB_CHECK_FROZEN(c, slots, ev);
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Enumerator object without a block");
     slots[0] = ev;                                          /* root across make_proc alloc */
-    const VALUE proc = UNWRAP(korb_block_to_proc(c, slots + 1, block, def_env, cself));
+    slots[1] = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;   /* declared #size */
+    const VALUE proc = UNWRAP(korb_block_to_proc(c, slots + 2, block, def_env, cself));
     KorbEnumerator *const e = VAL2ENUM(slots[0]);           /* re-derive: make_proc may have moved it */
     e->mode = 3; e->cursor = 0;
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->source, proc);
+    /* Enumerator.new(size) { } — an Integer/Float::INFINITY is stored directly,
+     * anything callable is kept and asked at #size time. */
+    const VALUE sz = slots[1];
+    if (FIXNUM_P(sz)) e->size = sz;
+    else if (KORB_FLOAT_P(sz) && isinf(korb_float_val(sz)) && korb_float_val(sz) > 0) e->size_inf = 1;
+    else if (sz != KORB_NIL && korb_responds_to_coerce(c, slots + 2, sz, korb_intern(c->vm, "call", 4)))
+        ARO_STORE(c, VAL2ENUM(slots[0]), (VALUE *)(uintptr_t)&VAL2ENUM(slots[0])->size_proc, slots[1]);
     return RESULT_OK(slots[0]);
 }
 /* map: collect block results over the materialized values; no block → self. */
