@@ -946,12 +946,15 @@ static RESULT korb_io_int_arg(CTX *c, VALUE *slots, VALUE v, bool *given, korb_s
 /* IO.read(path[, length[, offset]], **opts) → the file (or a slice) as a String. */
 static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
+    uint32_t na = VALUE_SLICE_LEN(a);
+    VALUE opts = KORB_NIL;
+    if (na >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1)) && korb_kwargs_hash_p(VALUE_SLICE_GET(a, na - 1)))
+        { opts = VALUE_SLICE_GET(a, na - 1); na--; }   /* keyword options, not a positional */
+    if (UNLIKELY(na > 3))                              /* path[, length[, offset]] */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..3)", na);
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
     slots[0] = pv;                                     /* park: the option walk dispatches */
-    uint32_t na = VALUE_SLICE_LEN(a);
-    VALUE opts = KORB_NIL;
-    if (na >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) { opts = VALUE_SLICE_GET(a, na - 1); na--; }
     struct korb_open_args oa;
     CHECK(korb_io_open_args(c, slots + 1, opts, "r", &oa));
     if (UNLIKELY(!korb_mode_readable(oa.mode)))
@@ -1014,7 +1017,10 @@ static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     slots[0] = pv;                                     /* park: the coercions below dispatch */
     uint32_t na = VALUE_SLICE_LEN(a);
     VALUE opts = KORB_NIL;
-    if (na >= 3 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) { opts = VALUE_SLICE_GET(a, na - 1); na--; }
+    if (na >= 3 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1)) && korb_kwargs_hash_p(VALUE_SLICE_GET(a, na - 1)))
+        { opts = VALUE_SLICE_GET(a, na - 1); na--; }   /* keyword options, not a positional */
+    if (UNLIKELY(na > 3))                              /* path, string[, offset] */
+        return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2..3)", na);
     bool has_off = false; korb_sword_t off = 0;
     if (na >= 3) CHECK(korb_io_int_arg(c, slots + 1, VALUE_SLICE_GET(a, 2), &has_off, &off));
     struct korb_open_args oa;
