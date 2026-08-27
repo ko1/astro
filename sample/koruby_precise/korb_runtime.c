@@ -4779,6 +4779,12 @@ RESULT
 korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
            VALUE entry_cell, VALUE self, NODE *block, VALUE *def_env, VALUE captured_self)
 {
+    if (UNLIKELY(mid == c->vm->mid_dm_super)) {   /* `super` in a define_method body */
+        if (UNLIKELY(c->dm_entry == NULL))
+            return korb_raise(c, slots, KORB_E_NOMETHOD, line, "super called outside of method");
+        mid = c->dm_entry->mid;
+        entry_cell = (VALUE)((uintptr_t)c->dm_entry | 1u);
+    }
     VALUE found_def = KORB_NIL;
     struct korb_method *const m = korb_super_find(c, mid, entry_cell, self, &found_def);
     const VALUE def_class = ((uintptr_t)entry_cell & 1u)
@@ -4822,8 +4828,11 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     if (m->kind == KORB_METHOD_DM) {              /* super into a define_method'd method → run its Proc body */
         const KorbProc *const p = VAL2PROC(m->dm_proc);
         slots[0] = self;                          /* captured_self = receiver (rooted scanned slot) */
+        const struct korb_method *const dm_saved = c->dm_entry;
+        c->dm_entry = m;                          /* chained super out of this body */
         RESULT r = korb_block_yield(c, slots + 1, p->iseq, (VALUE *)(uintptr_t)p->env,
                                     &slots[-(korb_sword_t)argc], argc, &slots[0]);
+        c->dm_entry = dm_saved;
         if (r.state == KORB_RETURN) { r.state = KORB_NORMAL; c->return_target = NULL; }   /* return-from-method */
         return r;
     }
@@ -6874,9 +6883,12 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         }
         /* Forward the method's own block into the body's `|&b|` — a
          * define_method'd method takes a block like any other. */
+        const struct korb_method *const dm_saved = c->dm_entry;
+        c->dm_entry = m;                             /* a `super` in the body resolves through this */
         RESULT r = korb_block_yield_full(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
                                          &slots[-(korb_sword_t)argc], argc, recv_slot,
                                          block, def_env, captured_self, 0);   /* captured_self = receiver slot */
+        c->dm_entry = dm_saved;
         /* A define_method body behaves like a lambda: `return`, `break` and
          * `next` all just leave the method with that value (a bare `break` in a
          * plain block would unwind past it and end the program). */
@@ -13433,6 +13445,7 @@ korb_ctx_new(void)
     c->vm->mid_aref        = korb_intern(c->vm, "[]", 2);
     c->vm->mid_aset        = korb_intern(c->vm, "[]=", 3);
     c->vm->mid_eqq         = korb_intern(c->vm, "===", 3);
+    c->vm->mid_dm_super    = korb_intern(c->vm, "__dm_super__", 12);
     c->vm->mid_band        = korb_intern(c->vm, "&", 1);
     c->vm->mid_bor         = korb_intern(c->vm, "|", 1);
     c->vm->mid_bxor        = korb_intern(c->vm, "^", 1);

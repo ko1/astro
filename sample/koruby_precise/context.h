@@ -940,6 +940,8 @@ struct korb_vm {
      * send path tests them with integer compares instead of korb_sym_name+strcmp
      * on every call (send/__send__/public_send check ran for every arg call). */
     uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize, mid_eqq;
+    uint32_t mid_dm_super;   /* sentinel name a `super` with no lexical `def` is baked with:
+                              * a define_method body IS a method, but only at run time. */
     uint32_t mid_band, mid_bor, mid_bxor, mid_shl, mid_shr;   /* bit-op dispatch fallbacks (avoid per-call korb_intern) */
     uint32_t mid_eq;                                          /* "==" — node_eq/node_neq user-object dispatch (avoid per-call korb_intern) */
     uint32_t mid_cmp;                                         /* "<=>" — Array#sort of user/Comparable objects */
@@ -1055,6 +1057,10 @@ struct CTX_struct {
      * It is a transient stack pointer: set the instant a return is raised and
      * cleared when consumed; never read across a GC. */
     VALUE *return_target;
+    /* The method entry whose define_method body is running, so a `super` inside
+     * that body can find the name and owner it was defined under (a block frame
+     * carries no method entry).  Saved/restored around the body call. */
+    const struct korb_method *dm_entry;
     /* Break target: a `break` in a block body belongs to the call that was
      * *given* that block, not to whatever intermediate call happens to be
      * running it (`m { break }` where m does `arr.each { b.call(x) }` must

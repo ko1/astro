@@ -4395,7 +4395,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_SUPER_NODE: {           /* super(...) — explicit args */
         const pm_super_node_t *sn = (const pm_super_node_t *)node;
         uint32_t m_mid = tc->frame->method_mid;
-        if (m_mid == 0) return kp_unsupported(tc, node, "super outside a method body");
+        /* No enclosing `def`: this may still be a define_method body, which IS a
+         * method at run time.  Bake a sentinel name the runtime resolves through
+         * the entry it is executing (and raises "outside of method" if none). */
+        if (m_mid == 0) m_mid = korb_intern(tc->c->vm, "__dm_super__", 12);
         uint32_t line = kp_line(tc, node);
         const pm_arguments_node_t *args = sn->arguments;
         size_t argc = args ? args->arguments.size : 0;
