@@ -1029,10 +1029,14 @@ static RESULT korb_io_close_half(CTX *c, VALUE *slots, VALUE_REF self, int keep_
     const int rw = korb_io_rw(c, VALUE_REF_GET(self));
     const int drop_bit = (keep_bit == 1) ? 2 : 1;
     if (!(rw & drop_bit)) {
-        /* Already dropped (or never had it): a repeat call is a no-op, but a
-         * stream that never had this direction at all is "non-duplex". */
+        /* Already dropped (or never had it).  A closed stream is an error; on a
+         * socket (always duplex) a repeat is a no-op; a plain one-way stream is
+         * "non-duplex". */
         const KorbIORep *const rep0 = korb_io_rep(c, VALUE_REF_GET(self));
-        if (rw == 0 || !korb_io_open_p(rep0)) return RESULT_OK(KORB_NIL);
+        if (!korb_io_open_p(rep0)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+        if (rw == 0) return RESULT_OK(KORB_NIL);
+        int sty0; socklen_t stl0 = sizeof sty0;
+        if (getsockopt(rep0->fd, SOL_SOCKET, SO_TYPE, &sty0, &stl0) == 0) return RESULT_OK(KORB_NIL);
         return korb_raise(c, slots, KORB_E_IOERROR, 0, "closing non-duplex IO for %s", what);
     }
     {

@@ -15,6 +15,15 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <ifaddrs.h>
+#include <netinet/udp.h>
+/* UDP_CORK / UDP_GRO live in linux/udp.h, which redefines struct udphdr — take
+ * just the numbers rather than the header. */
+#if defined(__linux__) && !defined(UDP_CORK)
+#  define UDP_CORK 1
+#endif
+#if defined(__linux__) && !defined(UDP_ENCAP)
+#  define UDP_ENCAP 100
+#endif
 
 /* Build ["AF_INET"|"AF_INET6"|"AF_UNIX", port, host, addr] for a sockaddr. */
 static RESULT korb_sock_addr_ary(CTX *c, VALUE *slots, const struct sockaddr *sa, socklen_t len) {

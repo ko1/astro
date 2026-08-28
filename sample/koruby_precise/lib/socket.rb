@@ -46,8 +46,14 @@ class BasicSocket < IO
   def getsockname = Socket.__pack(getsockname_ary)
   def getpeername = Socket.__pack(getpeername_ary)
 
-  def local_address = Addrinfo.__from_ary(getsockname_ary)
-  def remote_address = Addrinfo.__from_ary(getpeername_ary)
+  # The Addrinfo must describe THIS socket, so take the type/protocol from it
+  # rather than defaulting to SOCK_STREAM.
+  private def __own_addrinfo(ary)
+    st = getsockopt(:SOCKET, :TYPE).int rescue Socket::SOCK_STREAM
+    Addrinfo.__from_ary([ary[0], ary[1], ary[2], ary[3], st, 0])
+  end
+  def local_address = __own_addrinfo(getsockname_ary)
+  def remote_address = __own_addrinfo(getpeername_ary)
 
   # setsockopt(level, optname, value) or setsockopt(Socket::Option).
   def setsockopt(level, optname = nil, value = nil)
@@ -989,7 +995,9 @@ class Socket < BasicSocket
           when (const_defined?(:IPPROTO_IPV6) ? IPPROTO_IPV6 : nil) then "IPV6_"
           else "SO_"
           end
-    [n, pre + n, "SO_#{n}", "TCP_#{n}", "IP_#{n}", "IPV6_#{n}"].each do |cand|
+    # only this level's own family: :CORK under :UDP must not find TCP_CORK
+    [n, pre + n].each do |cand|
+      next unless cand =~ /\A[A-Z_][A-Za-z0-9_]*\z/
       return const_get(cand) if const_defined?(cand) && const_get(cand).is_a?(Integer)
     end
     raise SocketError, "unknown socket level option name: #{o}"
@@ -1172,20 +1180,28 @@ class Addrinfo
     __with_socket(__connected_socket(self, nil), &blk)
   end
 
-  def bind
-    s = ip? ? TCPServer.new(@addr, @port) : UNIXServer.new(@host)
-    return s unless block_given?
+  # CRuby answers a Socket here, not a TCPServer/UNIXServer.
+  def bind(&blk)
+    s = Socket.new(afamily, @socktype == 0 ? Socket::SOCK_STREAM : @socktype, @protocol)
     begin
-      yield s
-    ensure
+      s.setsockopt(:SOCKET, :REUSEADDR, true) if ip?
+      s.bind(to_sockaddr)
+    rescue Exception
       s.close unless s.closed?
+      raise
     end
+    __with_socket(s, &blk)
   end
 
-  def listen(backlog = 5)
+  def listen(backlog = Socket::SOMAXCONN, &blk)
     s = bind
-    s.listen(backlog)
-    s
+    begin
+      s.listen(backlog)
+    rescue Exception
+      s.close unless s.closed?
+      raise
+    end
+    __with_socket(s, &blk)
   end
 
   # connect_to: self is the LOCAL address, the arguments name the peer.
