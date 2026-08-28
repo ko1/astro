@@ -101,15 +101,19 @@ class BasicSocket < IO
 
   # recvmsg → [data, Addrinfo, flags, *controls].  koruby has no ancillary-data
   # plumbing, so the control list is always empty; everything else is faithful.
+  # Socket#recvfrom answers an Addrinfo where BasicSocket's answers the raw
+  # tuple, so accept either shape here.
+  private def __as_addrinfo(a) = a.is_a?(Addrinfo) ? a : Addrinfo.__from_ary(a)
+
   def recvmsg(maxlen = nil, flags = 0, opts = nil, scm_rights: false)
     data, addr = recvfrom(maxlen || 65536, flags)
-    [data, Addrinfo.__from_ary(addr), 0]
+    [data, __as_addrinfo(addr), 0]
   end
 
   def recvmsg_nonblock(maxlen = nil, flags = 0, opts = nil, scm_rights: false, exception: true)
     r = recvfrom_nonblock(maxlen || 65536, flags, nil, exception: exception)
     return r unless r.is_a?(Array)
-    [r[0], Addrinfo.__from_ary(r[1]), 0]
+    [r[0], __as_addrinfo(r[1]), 0]
   end
 
   def sendmsg(mesg, flags = 0, dest_sockaddr = nil, *controls)
@@ -454,6 +458,19 @@ class Socket < BasicSocket
     __init_fd(__sock_open(@family, @type, protocol), "r+")
   end
 
+  # BasicSocket#recvfrom answers the raw [af, port, host, addr] tuple; Socket's
+  # own answers an Addrinfo (CRuby).
+  def recvfrom(maxlen, flags = 0)
+    mesg, addr = super
+    [mesg, Addrinfo.__from_ary(addr)]
+  end
+
+  def recvfrom_nonblock(maxlen = 65536, flags = 0, outbuf = nil, exception: true)
+    r = super
+    return r if r.is_a?(Symbol)
+    [r[0], Addrinfo.__from_ary(r[1])]
+  end
+
   def bind(addr) = (a = Socket.__unpack(addr); __sock_bind(fileno, @family, a[2], a[1]); 0)
   def connect(addr) = (a = Socket.__unpack(addr); __sock_connect(fileno, @family, a[2], a[1]); 0)
   def listen(backlog) = (__sock_listen(fileno, backlog); 0)
@@ -737,14 +754,41 @@ class Addrinfo
   alias_method :eql?, :==
   def hash = to_a.hash
 
-  def connect
-    s = ip? ? TCPSocket.new(@addr, @port) : UNIXSocket.new(@host)
+  # Hand a freshly connected socket to the block (closing it after) or back to
+  # the caller.  CRuby always answers a Socket here, never a TCPSocket.
+  private def __with_socket(s)
     return s unless block_given?
     begin
       yield s
     ensure
       s.close unless s.closed?
     end
+  end
+
+  # Build (host, port) / (path) / (Addrinfo) into an Addrinfo of this one's
+  # socktype and protocol; a trailing options Hash has already been removed.
+  private def __peer_like(args)
+    return args[0] if args.size == 1 && args[0].is_a?(Addrinfo)
+    return Addrinfo.unix(args[0].to_s) unless ip?
+    Addrinfo.__from_ary([@famname, args[1] || 0, args[0].to_s, args[0].to_s, @socktype, @protocol])
+  end
+
+  # bind to `local` (when given), then connect to `remote`
+  private def __connected_socket(remote, local)
+    s = Socket.new(remote.afamily, remote.socktype, remote.protocol)
+    begin
+      s.bind(local.to_sockaddr) if local
+      s.connect(remote.to_sockaddr)
+    rescue Exception
+      s.close unless s.closed?
+      raise
+    end
+    s
+  end
+
+  def connect(*args, &blk)
+    args.pop if args.last.is_a?(Hash)      # trailing options (:timeout) — not modelled
+    __with_socket(__connected_socket(self, nil), &blk)
   end
 
   def bind
@@ -763,21 +807,17 @@ class Addrinfo
     s
   end
 
+  # connect_to: self is the LOCAL address, the arguments name the peer.
   def connect_to(*args, &blk)
-    remote = args.empty? ? self : Addrinfo.__from_ary([@famname, args[1] || 0, args[0].to_s, args[0].to_s, @socktype, @protocol])
-    remote.connect(&blk)
+    args.pop if args.last.is_a?(Hash)
+    remote = args.empty? ? self : __peer_like(args)
+    __with_socket(__connected_socket(remote, args.empty? ? nil : self), &blk)
   end
 
-  # connect_from binds to *self* and connects to the given peer.
+  # connect_from: self is the PEER, the arguments name the local address to bind.
   def connect_from(*args, &blk)
-    peer = args.empty? ? self : Addrinfo.tcp(args[0].to_s, args[1] || 0)
-    s = TCPSocket.new(peer.ip_address, peer.ip_port, ip_address, ip_port)
-    return s unless blk
-    begin
-      blk.call(s)
-    ensure
-      s.close unless s.closed?
-    end
+    args.pop if args.last.is_a?(Hash)
+    __with_socket(__connected_socket(self, args.empty? ? nil : __peer_like(args)), &blk)
   end
 
   # CRuby's shape: [afamily, address, pfamily, socktype, protocol, canonname, nil]
