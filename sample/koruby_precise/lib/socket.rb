@@ -217,11 +217,22 @@ class TCPSocket < IPSocket
 end
 
 class TCPServer < TCPSocket
-  def initialize(host_or_port, port = nil)
-    if port.nil?
-      host, port = nil, host_or_port
-    else
-      host, port = host_or_port, port
+  # TCPServer.new(port) or TCPServer.new(host, port); the arity decides, so an
+  # explicit nil port is "any port on this host", not "this is the port".
+  def initialize(*args)
+    unless (1..2).cover?(args.size)
+      raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1..2)"
+    end
+    host, port = args.size == 1 ? [nil, args[0]] : args
+    # nil / "" mean "any port"; anything else must be an Integer or a name
+    if port.nil? || port == ""
+      port = 0
+    elsif !port.is_a?(Integer) && !port.is_a?(String)
+      unless port.respond_to?(:to_str) || port.respond_to?(:to_int)
+        raise TypeError, "no implicit conversion of #{port.class} into String"
+      end
+      port = port.respond_to?(:to_int) ? port.to_int : port.to_str
+      port = 0 if port == ""
     end
     fam = Socket.__family_of_host(host)
     fd = __sock_open(fam, Socket::SOCK_STREAM, 0)
@@ -334,6 +345,16 @@ class UNIXServer < UNIXSocket
 
   def accept_nonblock(exception: true) = accept
   def listen(backlog) = (__sock_listen(fileno, backlog); 0)
+
+  # Like #accept, but hands back the raw descriptor.
+  def sysaccept
+    loop do
+      pair = __sock_accept(fileno)
+      return pair[0] if pair
+      wait_readable
+    end
+  end
+
   def self.open(path)
     s = new(path)
     return s unless block_given?
@@ -678,6 +699,30 @@ class Socket < BasicSocket
       blk.call(socks)
     ensure
       socks.each { |x| x.close unless x.closed? }
+    end
+  end
+
+  # The service name a port belongs to.
+  def self.getservbyport(port, proto = "tcp")
+    n = __sock_servbyport(port.to_int, proto.to_s)
+    raise SocketError, "no such service for port #{port}/#{proto}" if n.nil?
+    n
+  end
+
+  # Socket.unix(path) → a Socket connected to a UNIX stream socket.
+  def self.unix(path, &blk)
+    s = Socket.new(:UNIX, :STREAM)
+    begin
+      s.connect(Socket.pack_sockaddr_un(path.to_s))
+    rescue Exception
+      s.close unless s.closed?
+      raise
+    end
+    return s unless blk
+    begin
+      blk.call(s)
+    ensure
+      s.close unless s.closed?
     end
   end
 

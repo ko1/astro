@@ -332,6 +332,19 @@ static RESULT korb_m_sock_servbyname(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return RESULT_OK(LONG2FIX((korb_sword_t)ntohs((uint16_t)se->s_port)));
 }
 
+/* __sock_servbyport(port, proto) → the service name, or nil. */
+static RESULT korb_m_sock_servbyport(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    char pr[32];
+    if (VALUE_SLICE_LEN(a) < 2 || !korb_sock_cstr(VALUE_SLICE_GET(a, 1), pr, sizeof pr)) snprintf(pr, sizeof pr, "tcp");
+    const struct servent *const se = getservbyport(htons((uint16_t)FIX2LONG(pv)), pr);
+    if (se == NULL) return RESULT_OK(KORB_NIL);
+    return korb_str_new(c, slots, se->s_name, (uint32_t)strlen(se->s_name));
+}
+
 /* __sock_hostbyaddr(packed_addr, family) → [name, [aliases], addrtype, packed]. */
 static RESULT korb_m_sock_hostbyaddr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -1611,6 +1624,7 @@ void korb_init_socket(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__sock_accept",      korb_m_sock_accept,       1);
     korb_class_def_cfn(c, obj, "__sock_servbyname",  korb_m_sock_servbyname,  -1);
     korb_class_def_cfn(c, obj, "__sock_hostbyaddr",  korb_m_sock_hostbyaddr,  -1);
+    korb_class_def_cfn(c, obj, "__sock_servbyport",  korb_m_sock_servbyport,  -1);
     korb_class_def_cfn(c, obj, "__sock_ifaddrs",     korb_m_sock_ifaddrs,      0);
     korb_class_def_cfn(c, obj, "__sock_send_fd",     korb_m_sock_send_fd,      2);
     korb_class_def_cfn(c, obj, "__sock_recv_fd",     korb_m_sock_recv_fd,      1);
