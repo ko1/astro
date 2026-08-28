@@ -361,6 +361,10 @@ class Socket < BasicSocket
   # rescues keep working.
   ResolutionError = Class.new(SocketError)
 
+  # Everything else the platform defines, straight from the C table — the names
+  # above stay explicit because this file refers to them while loading.
+  __sock_const_list.each { |n, v| const_set(n, v) unless const_defined?(n, false) }
+
   module Constants; end
   constants.each { |cn| Constants.const_set(cn, const_get(cn)) if const_get(cn).is_a?(Integer) }
 

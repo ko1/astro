@@ -698,12 +698,695 @@ static RESULT korb_m_sock_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* __sock_const("AF_INET") → the platform's numeric value.  A lookup keeps
  * lib/socket.rb free of platform ifdefs without inventing 40 constants whose
  * names Ruby could not spell. */
-static RESULT korb_m_sock_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self;
-    char nm[64];
-    if (!korb_sock_cstr(VALUE_SLICE_GET(a, 0), nm, sizeof nm))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
-    static const struct { const char *n; korb_sword_t v; } cs[] = {
+/* Every constant the platform actually defines; the #ifdef guards keep this
+ * portable without a configure step. */
+#define KSC(x) { #x, (korb_sword_t)(x) }
+static const struct korb_sock_const { const char *n; korb_sword_t v; } korb_sock_consts[] = {
+#ifdef AF_ALG
+        KSC(AF_ALG),
+#endif
+#ifdef AF_APPLETALK
+        KSC(AF_APPLETALK),
+#endif
+#ifdef AF_AX25
+        KSC(AF_AX25),
+#endif
+#ifdef AF_BLUETOOTH
+        KSC(AF_BLUETOOTH),
+#endif
+#ifdef AF_CAN
+        KSC(AF_CAN),
+#endif
+#ifdef AF_DECnet
+        KSC(AF_DECnet),
+#endif
+#ifdef AF_IB
+        KSC(AF_IB),
+#endif
+#ifdef AF_IPX
+        KSC(AF_IPX),
+#endif
+#ifdef AF_ISDN
+        KSC(AF_ISDN),
+#endif
+#ifdef AF_KCM
+        KSC(AF_KCM),
+#endif
+#ifdef AF_KEY
+        KSC(AF_KEY),
+#endif
+#ifdef AF_LLC
+        KSC(AF_LLC),
+#endif
+#ifdef AF_LOCAL
+        KSC(AF_LOCAL),
+#endif
+#ifdef AF_MAX
+        KSC(AF_MAX),
+#endif
+#ifdef AF_MPLS
+        KSC(AF_MPLS),
+#endif
+#ifdef AF_NETLINK
+        KSC(AF_NETLINK),
+#endif
+#ifdef AF_PPPOX
+        KSC(AF_PPPOX),
+#endif
+#ifdef AF_RDS
+        KSC(AF_RDS),
+#endif
+#ifdef AF_ROUTE
+        KSC(AF_ROUTE),
+#endif
+#ifdef AF_SNA
+        KSC(AF_SNA),
+#endif
+#ifdef AF_TIPC
+        KSC(AF_TIPC),
+#endif
+#ifdef AF_VSOCK
+        KSC(AF_VSOCK),
+#endif
+#ifdef AF_XDP
+        KSC(AF_XDP),
+#endif
+#ifdef AI_NUMERICSERV
+        KSC(AI_NUMERICSERV),
+#endif
+#ifdef EAI_ADDRFAMILY
+        KSC(EAI_ADDRFAMILY),
+#endif
+#ifdef EAI_BADFLAGS
+        KSC(EAI_BADFLAGS),
+#endif
+#ifdef EAI_MEMORY
+        KSC(EAI_MEMORY),
+#endif
+#ifdef EAI_NODATA
+        KSC(EAI_NODATA),
+#endif
+#ifdef EAI_OVERFLOW
+        KSC(EAI_OVERFLOW),
+#endif
+#ifdef EAI_SYSTEM
+        KSC(EAI_SYSTEM),
+#endif
+#ifdef IFF_ALLMULTI
+        KSC(IFF_ALLMULTI),
+#endif
+#ifdef IFF_AUTOMEDIA
+        KSC(IFF_AUTOMEDIA),
+#endif
+#ifdef IFF_BROADCAST
+        KSC(IFF_BROADCAST),
+#endif
+#ifdef IFF_DEBUG
+        KSC(IFF_DEBUG),
+#endif
+#ifdef IFF_DYNAMIC
+        KSC(IFF_DYNAMIC),
+#endif
+#ifdef IFF_LOOPBACK
+        KSC(IFF_LOOPBACK),
+#endif
+#ifdef IFF_MASTER
+        KSC(IFF_MASTER),
+#endif
+#ifdef IFF_MULTICAST
+        KSC(IFF_MULTICAST),
+#endif
+#ifdef IFF_NOARP
+        KSC(IFF_NOARP),
+#endif
+#ifdef IFF_NOTRAILERS
+        KSC(IFF_NOTRAILERS),
+#endif
+#ifdef IFF_POINTOPOINT
+        KSC(IFF_POINTOPOINT),
+#endif
+#ifdef IFF_PORTSEL
+        KSC(IFF_PORTSEL),
+#endif
+#ifdef IFF_PROMISC
+        KSC(IFF_PROMISC),
+#endif
+#ifdef IFF_RUNNING
+        KSC(IFF_RUNNING),
+#endif
+#ifdef IFF_SLAVE
+        KSC(IFF_SLAVE),
+#endif
+#ifdef IFF_UP
+        KSC(IFF_UP),
+#endif
+#ifdef IFNAMSIZ
+        KSC(IFNAMSIZ),
+#endif
+#ifdef IF_NAMESIZE
+        KSC(IF_NAMESIZE),
+#endif
+#ifdef INADDR_ALLHOSTS_GROUP
+        KSC(INADDR_ALLHOSTS_GROUP),
+#endif
+#ifdef INADDR_BROADCAST
+        KSC(INADDR_BROADCAST),
+#endif
+#ifdef INADDR_MAX_LOCAL_GROUP
+        KSC(INADDR_MAX_LOCAL_GROUP),
+#endif
+#ifdef INADDR_NONE
+        KSC(INADDR_NONE),
+#endif
+#ifdef INADDR_UNSPEC_GROUP
+        KSC(INADDR_UNSPEC_GROUP),
+#endif
+#ifdef INET6_ADDRSTRLEN
+        KSC(INET6_ADDRSTRLEN),
+#endif
+#ifdef INET_ADDRSTRLEN
+        KSC(INET_ADDRSTRLEN),
+#endif
+#ifdef IPPORT_RESERVED
+        KSC(IPPORT_RESERVED),
+#endif
+#ifdef IPPORT_USERRESERVED
+        KSC(IPPORT_USERRESERVED),
+#endif
+#ifdef IPPROTO_AH
+        KSC(IPPROTO_AH),
+#endif
+#ifdef IPPROTO_DSTOPTS
+        KSC(IPPROTO_DSTOPTS),
+#endif
+#ifdef IPPROTO_EGP
+        KSC(IPPROTO_EGP),
+#endif
+#ifdef IPPROTO_ESP
+        KSC(IPPROTO_ESP),
+#endif
+#ifdef IPPROTO_FRAGMENT
+        KSC(IPPROTO_FRAGMENT),
+#endif
+#ifdef IPPROTO_ICMPV6
+        KSC(IPPROTO_ICMPV6),
+#endif
+#ifdef IPPROTO_IDP
+        KSC(IPPROTO_IDP),
+#endif
+#ifdef IPPROTO_IGMP
+        KSC(IPPROTO_IGMP),
+#endif
+#ifdef IPPROTO_NONE
+        KSC(IPPROTO_NONE),
+#endif
+#ifdef IPPROTO_PUP
+        KSC(IPPROTO_PUP),
+#endif
+#ifdef IPPROTO_ROUTING
+        KSC(IPPROTO_ROUTING),
+#endif
+#ifdef IPPROTO_TP
+        KSC(IPPROTO_TP),
+#endif
+#ifdef IPV6_CHECKSUM
+        KSC(IPV6_CHECKSUM),
+#endif
+#ifdef IPV6_DONTFRAG
+        KSC(IPV6_DONTFRAG),
+#endif
+#ifdef IPV6_DSTOPTS
+        KSC(IPV6_DSTOPTS),
+#endif
+#ifdef IPV6_HOPLIMIT
+        KSC(IPV6_HOPLIMIT),
+#endif
+#ifdef IPV6_HOPOPTS
+        KSC(IPV6_HOPOPTS),
+#endif
+#ifdef IPV6_JOIN_GROUP
+        KSC(IPV6_JOIN_GROUP),
+#endif
+#ifdef IPV6_LEAVE_GROUP
+        KSC(IPV6_LEAVE_GROUP),
+#endif
+#ifdef IPV6_MTU_DISCOVER
+        KSC(IPV6_MTU_DISCOVER),
+#endif
+#ifdef IPV6_MULTICAST_HOPS
+        KSC(IPV6_MULTICAST_HOPS),
+#endif
+#ifdef IPV6_MULTICAST_IF
+        KSC(IPV6_MULTICAST_IF),
+#endif
+#ifdef IPV6_MULTICAST_LOOP
+        KSC(IPV6_MULTICAST_LOOP),
+#endif
+#ifdef IPV6_PATHMTU
+        KSC(IPV6_PATHMTU),
+#endif
+#ifdef IPV6_RECVDSTOPTS
+        KSC(IPV6_RECVDSTOPTS),
+#endif
+#ifdef IPV6_RECVERR
+        KSC(IPV6_RECVERR),
+#endif
+#ifdef IPV6_RECVHOPLIMIT
+        KSC(IPV6_RECVHOPLIMIT),
+#endif
+#ifdef IPV6_RECVHOPOPTS
+        KSC(IPV6_RECVHOPOPTS),
+#endif
+#ifdef IPV6_RECVPATHMTU
+        KSC(IPV6_RECVPATHMTU),
+#endif
+#ifdef IPV6_RECVPKTINFO
+        KSC(IPV6_RECVPKTINFO),
+#endif
+#ifdef IPV6_RECVRTHDR
+        KSC(IPV6_RECVRTHDR),
+#endif
+#ifdef IPV6_RECVTCLASS
+        KSC(IPV6_RECVTCLASS),
+#endif
+#ifdef IPV6_RTHDR
+        KSC(IPV6_RTHDR),
+#endif
+#ifdef IPV6_RTHDRDSTOPTS
+        KSC(IPV6_RTHDRDSTOPTS),
+#endif
+#ifdef IPV6_RTHDR_TYPE_0
+        KSC(IPV6_RTHDR_TYPE_0),
+#endif
+#ifdef IPV6_TCLASS
+        KSC(IPV6_TCLASS),
+#endif
+#ifdef IPV6_UNICAST_HOPS
+        KSC(IPV6_UNICAST_HOPS),
+#endif
+#ifdef IP_ADD_MEMBERSHIP
+        KSC(IP_ADD_MEMBERSHIP),
+#endif
+#ifdef IP_ADD_SOURCE_MEMBERSHIP
+        KSC(IP_ADD_SOURCE_MEMBERSHIP),
+#endif
+#ifdef IP_BLOCK_SOURCE
+        KSC(IP_BLOCK_SOURCE),
+#endif
+#ifdef IP_DEFAULT_MULTICAST_LOOP
+        KSC(IP_DEFAULT_MULTICAST_LOOP),
+#endif
+#ifdef IP_DEFAULT_MULTICAST_TTL
+        KSC(IP_DEFAULT_MULTICAST_TTL),
+#endif
+#ifdef IP_DROP_MEMBERSHIP
+        KSC(IP_DROP_MEMBERSHIP),
+#endif
+#ifdef IP_DROP_SOURCE_MEMBERSHIP
+        KSC(IP_DROP_SOURCE_MEMBERSHIP),
+#endif
+#ifdef IP_FREEBIND
+        KSC(IP_FREEBIND),
+#endif
+#ifdef IP_HDRINCL
+        KSC(IP_HDRINCL),
+#endif
+#ifdef IP_IPSEC_POLICY
+        KSC(IP_IPSEC_POLICY),
+#endif
+#ifdef IP_MAX_MEMBERSHIPS
+        KSC(IP_MAX_MEMBERSHIPS),
+#endif
+#ifdef IP_MINTTL
+        KSC(IP_MINTTL),
+#endif
+#ifdef IP_MSFILTER
+        KSC(IP_MSFILTER),
+#endif
+#ifdef IP_MTU_DISCOVER
+        KSC(IP_MTU_DISCOVER),
+#endif
+#ifdef IP_MULTICAST_IF
+        KSC(IP_MULTICAST_IF),
+#endif
+#ifdef IP_OPTIONS
+        KSC(IP_OPTIONS),
+#endif
+#ifdef IP_PASSSEC
+        KSC(IP_PASSSEC),
+#endif
+#ifdef IP_PKTOPTIONS
+        KSC(IP_PKTOPTIONS),
+#endif
+#ifdef IP_PMTUDISC_DO
+        KSC(IP_PMTUDISC_DO),
+#endif
+#ifdef IP_PMTUDISC_DONT
+        KSC(IP_PMTUDISC_DONT),
+#endif
+#ifdef IP_PMTUDISC_WANT
+        KSC(IP_PMTUDISC_WANT),
+#endif
+#ifdef IP_RECVERR
+        KSC(IP_RECVERR),
+#endif
+#ifdef IP_RECVOPTS
+        KSC(IP_RECVOPTS),
+#endif
+#ifdef IP_RECVRETOPTS
+        KSC(IP_RECVRETOPTS),
+#endif
+#ifdef IP_RECVTOS
+        KSC(IP_RECVTOS),
+#endif
+#ifdef IP_RETOPTS
+        KSC(IP_RETOPTS),
+#endif
+#ifdef IP_ROUTER_ALERT
+        KSC(IP_ROUTER_ALERT),
+#endif
+#ifdef IP_TOS
+        KSC(IP_TOS),
+#endif
+#ifdef IP_TRANSPARENT
+        KSC(IP_TRANSPARENT),
+#endif
+#ifdef IP_UNBLOCK_SOURCE
+        KSC(IP_UNBLOCK_SOURCE),
+#endif
+#ifdef IP_XFRM_POLICY
+        KSC(IP_XFRM_POLICY),
+#endif
+#ifdef MCAST_BLOCK_SOURCE
+        KSC(MCAST_BLOCK_SOURCE),
+#endif
+#ifdef MCAST_EXCLUDE
+        KSC(MCAST_EXCLUDE),
+#endif
+#ifdef MCAST_INCLUDE
+        KSC(MCAST_INCLUDE),
+#endif
+#ifdef MCAST_JOIN_GROUP
+        KSC(MCAST_JOIN_GROUP),
+#endif
+#ifdef MCAST_JOIN_SOURCE_GROUP
+        KSC(MCAST_JOIN_SOURCE_GROUP),
+#endif
+#ifdef MCAST_LEAVE_GROUP
+        KSC(MCAST_LEAVE_GROUP),
+#endif
+#ifdef MCAST_LEAVE_SOURCE_GROUP
+        KSC(MCAST_LEAVE_SOURCE_GROUP),
+#endif
+#ifdef MCAST_MSFILTER
+        KSC(MCAST_MSFILTER),
+#endif
+#ifdef MCAST_UNBLOCK_SOURCE
+        KSC(MCAST_UNBLOCK_SOURCE),
+#endif
+#ifdef MSG_CONFIRM
+        KSC(MSG_CONFIRM),
+#endif
+#ifdef MSG_EOR
+        KSC(MSG_EOR),
+#endif
+#ifdef MSG_ERRQUEUE
+        KSC(MSG_ERRQUEUE),
+#endif
+#ifdef MSG_FASTOPEN
+        KSC(MSG_FASTOPEN),
+#endif
+#ifdef MSG_FIN
+        KSC(MSG_FIN),
+#endif
+#ifdef MSG_PROXY
+        KSC(MSG_PROXY),
+#endif
+#ifdef MSG_RST
+        KSC(MSG_RST),
+#endif
+#ifdef MSG_SYN
+        KSC(MSG_SYN),
+#endif
+#ifdef NI_MAXHOST
+        KSC(NI_MAXHOST),
+#endif
+#ifdef NI_MAXSERV
+        KSC(NI_MAXSERV),
+#endif
+#ifdef PF_ALG
+        KSC(PF_ALG),
+#endif
+#ifdef PF_APPLETALK
+        KSC(PF_APPLETALK),
+#endif
+#ifdef PF_AX25
+        KSC(PF_AX25),
+#endif
+#ifdef PF_BLUETOOTH
+        KSC(PF_BLUETOOTH),
+#endif
+#ifdef PF_CAN
+        KSC(PF_CAN),
+#endif
+#ifdef PF_DECnet
+        KSC(PF_DECnet),
+#endif
+#ifdef PF_IB
+        KSC(PF_IB),
+#endif
+#ifdef PF_IPX
+        KSC(PF_IPX),
+#endif
+#ifdef PF_ISDN
+        KSC(PF_ISDN),
+#endif
+#ifdef PF_KCM
+        KSC(PF_KCM),
+#endif
+#ifdef PF_KEY
+        KSC(PF_KEY),
+#endif
+#ifdef PF_LLC
+        KSC(PF_LLC),
+#endif
+#ifdef PF_LOCAL
+        KSC(PF_LOCAL),
+#endif
+#ifdef PF_MAX
+        KSC(PF_MAX),
+#endif
+#ifdef PF_MPLS
+        KSC(PF_MPLS),
+#endif
+#ifdef PF_NETLINK
+        KSC(PF_NETLINK),
+#endif
+#ifdef PF_PPPOX
+        KSC(PF_PPPOX),
+#endif
+#ifdef PF_RDS
+        KSC(PF_RDS),
+#endif
+#ifdef PF_ROUTE
+        KSC(PF_ROUTE),
+#endif
+#ifdef PF_SNA
+        KSC(PF_SNA),
+#endif
+#ifdef PF_TIPC
+        KSC(PF_TIPC),
+#endif
+#ifdef PF_VSOCK
+        KSC(PF_VSOCK),
+#endif
+#ifdef PF_XDP
+        KSC(PF_XDP),
+#endif
+#ifdef SCM_TIMESTAMPING
+        KSC(SCM_TIMESTAMPING),
+#endif
+#ifdef SCM_TIMESTAMPNS
+        KSC(SCM_TIMESTAMPNS),
+#endif
+#ifdef SCM_WIFI_STATUS
+        KSC(SCM_WIFI_STATUS),
+#endif
+#ifdef SOCK_CLOEXEC
+        KSC(SOCK_CLOEXEC),
+#endif
+#ifdef SOCK_NONBLOCK
+        KSC(SOCK_NONBLOCK),
+#endif
+#ifdef SOL_IP
+        KSC(SOL_IP),
+#endif
+#ifdef SOL_TCP
+        KSC(SOL_TCP),
+#endif
+#ifdef SOL_UDP
+        KSC(SOL_UDP),
+#endif
+#ifdef SOMAXCONN
+        KSC(SOMAXCONN),
+#endif
+#ifdef SO_ATTACH_FILTER
+        KSC(SO_ATTACH_FILTER),
+#endif
+#ifdef SO_BINDTODEVICE
+        KSC(SO_BINDTODEVICE),
+#endif
+#ifdef SO_BPF_EXTENSIONS
+        KSC(SO_BPF_EXTENSIONS),
+#endif
+#ifdef SO_BUSY_POLL
+        KSC(SO_BUSY_POLL),
+#endif
+#ifdef SO_DEBUG
+        KSC(SO_DEBUG),
+#endif
+#ifdef SO_DETACH_FILTER
+        KSC(SO_DETACH_FILTER),
+#endif
+#ifdef SO_DOMAIN
+        KSC(SO_DOMAIN),
+#endif
+#ifdef SO_GET_FILTER
+        KSC(SO_GET_FILTER),
+#endif
+#ifdef SO_INCOMING_CPU
+        KSC(SO_INCOMING_CPU),
+#endif
+#ifdef SO_INCOMING_NAPI_ID
+        KSC(SO_INCOMING_NAPI_ID),
+#endif
+#ifdef SO_LOCK_FILTER
+        KSC(SO_LOCK_FILTER),
+#endif
+#ifdef SO_MARK
+        KSC(SO_MARK),
+#endif
+#ifdef SO_MAX_PACING_RATE
+        KSC(SO_MAX_PACING_RATE),
+#endif
+#ifdef SO_NOFCS
+        KSC(SO_NOFCS),
+#endif
+#ifdef SO_NO_CHECK
+        KSC(SO_NO_CHECK),
+#endif
+#ifdef SO_PASSCRED
+        KSC(SO_PASSCRED),
+#endif
+#ifdef SO_PASSSEC
+        KSC(SO_PASSSEC),
+#endif
+#ifdef SO_PEEK_OFF
+        KSC(SO_PEEK_OFF),
+#endif
+#ifdef SO_PEERNAME
+        KSC(SO_PEERNAME),
+#endif
+#ifdef SO_PEERSEC
+        KSC(SO_PEERSEC),
+#endif
+#ifdef SO_PRIORITY
+        KSC(SO_PRIORITY),
+#endif
+#ifdef SO_PROTOCOL
+        KSC(SO_PROTOCOL),
+#endif
+#ifdef SO_RCVBUFFORCE
+        KSC(SO_RCVBUFFORCE),
+#endif
+#ifdef SO_RXQ_OVFL
+        KSC(SO_RXQ_OVFL),
+#endif
+#ifdef SO_SECURITY_AUTHENTICATION
+        KSC(SO_SECURITY_AUTHENTICATION),
+#endif
+#ifdef SO_SECURITY_ENCRYPTION_NETWORK
+        KSC(SO_SECURITY_ENCRYPTION_NETWORK),
+#endif
+#ifdef SO_SECURITY_ENCRYPTION_TRANSPORT
+        KSC(SO_SECURITY_ENCRYPTION_TRANSPORT),
+#endif
+#ifdef SO_SELECT_ERR_QUEUE
+        KSC(SO_SELECT_ERR_QUEUE),
+#endif
+#ifdef SO_SNDBUFFORCE
+        KSC(SO_SNDBUFFORCE),
+#endif
+#ifdef SO_TIMESTAMP
+        KSC(SO_TIMESTAMP),
+#endif
+#ifdef SO_TIMESTAMPING
+        KSC(SO_TIMESTAMPING),
+#endif
+#ifdef SO_TIMESTAMPNS
+        KSC(SO_TIMESTAMPNS),
+#endif
+#ifdef SO_WIFI_STATUS
+        KSC(SO_WIFI_STATUS),
+#endif
+#ifdef TCP_CONGESTION
+        KSC(TCP_CONGESTION),
+#endif
+#ifdef TCP_COOKIE_TRANSACTIONS
+        KSC(TCP_COOKIE_TRANSACTIONS),
+#endif
+#ifdef TCP_DEFER_ACCEPT
+        KSC(TCP_DEFER_ACCEPT),
+#endif
+#ifdef TCP_FASTOPEN
+        KSC(TCP_FASTOPEN),
+#endif
+#ifdef TCP_LINGER2
+        KSC(TCP_LINGER2),
+#endif
+#ifdef TCP_MAXSEG
+        KSC(TCP_MAXSEG),
+#endif
+#ifdef TCP_MD5SIG
+        KSC(TCP_MD5SIG),
+#endif
+#ifdef TCP_QUEUE_SEQ
+        KSC(TCP_QUEUE_SEQ),
+#endif
+#ifdef TCP_QUICKACK
+        KSC(TCP_QUICKACK),
+#endif
+#ifdef TCP_REPAIR
+        KSC(TCP_REPAIR),
+#endif
+#ifdef TCP_REPAIR_OPTIONS
+        KSC(TCP_REPAIR_OPTIONS),
+#endif
+#ifdef TCP_REPAIR_QUEUE
+        KSC(TCP_REPAIR_QUEUE),
+#endif
+#ifdef TCP_SYNCNT
+        KSC(TCP_SYNCNT),
+#endif
+#ifdef TCP_THIN_DUPACK
+        KSC(TCP_THIN_DUPACK),
+#endif
+#ifdef TCP_THIN_LINEAR_TIMEOUTS
+        KSC(TCP_THIN_LINEAR_TIMEOUTS),
+#endif
+#ifdef TCP_TIMESTAMP
+        KSC(TCP_TIMESTAMP),
+#endif
+#ifdef TCP_USER_TIMEOUT
+        KSC(TCP_USER_TIMEOUT),
+#endif
+#ifdef TCP_WINDOW_CLAMP
+        KSC(TCP_WINDOW_CLAMP),
+#endif
+#ifdef UDP_CORK
+        KSC(UDP_CORK),
+#endif
+
         {"AF_INET", AF_INET}, {"AF_INET6", AF_INET6}, {"AF_UNIX", AF_UNIX},
         {"AF_UNSPEC", AF_UNSPEC}, {"PF_INET", PF_INET}, {"PF_INET6", PF_INET6},
         {"PF_UNIX", PF_UNIX}, {"SOCK_STREAM", SOCK_STREAM}, {"SOCK_DGRAM", SOCK_DGRAM},
@@ -826,10 +1509,36 @@ static RESULT korb_m_sock_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         {"EAI_NONAME", EAI_NONAME}, {"EAI_AGAIN", EAI_AGAIN}, {"EAI_FAIL", EAI_FAIL},
         {"EAI_FAMILY", EAI_FAMILY}, {"EAI_SERVICE", EAI_SERVICE}, {"EAI_SOCKTYPE", EAI_SOCKTYPE},
 #endif
-    };
-    for (size_t i = 0; i < sizeof cs / sizeof cs[0]; i++)
-        if (!strcmp(nm, cs[i].n)) return RESULT_OK(LONG2FIX(cs[i].v));
+};
+#undef KSC
+#define KORB_SOCK_NCONST (sizeof korb_sock_consts / sizeof korb_sock_consts[0])
+
+/* __sock_const(name) → the value, or nil when this platform lacks it. */
+static RESULT korb_m_sock_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    char nm[64];
+    if (!korb_sock_cstr(VALUE_SLICE_GET(a, 0), nm, sizeof nm))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    for (size_t i = 0; i < KORB_SOCK_NCONST; i++)
+        if (!strcmp(nm, korb_sock_consts[i].n)) return RESULT_OK(LONG2FIX(korb_sock_consts[i].v));
     return RESULT_OK(KORB_NIL);
+}
+
+/* __sock_const_list() → [[name, value], …] for every constant this build has,
+ * so lib/socket.rb can define them all without listing each name twice. */
+static RESULT korb_m_sock_const_list(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)KORB_SOCK_NCONST));
+    VALUE_REF list = VALUE_REF_AT(&slots[0]);
+    for (size_t i = 0; i < KORB_SOCK_NCONST; i++) {
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
+        VALUE_REF one = VALUE_REF_AT(&slots[1]);
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, korb_sock_consts[i].n, (uint32_t)strlen(korb_sock_consts[i].n)));
+        CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
+        CHECK(korb_ary_push_val(c, slots + 3, one, LONG2FIX(korb_sock_consts[i].v)));
+        CHECK(korb_ary_push_val(c, slots + 2, list, VALUE_REF_GET(one)));
+    }
+    return RESULT_OK(VALUE_REF_GET(list));
 }
 
 void korb_init_socket(CTX *c, VALUE *slots) {
@@ -854,6 +1563,7 @@ void korb_init_socket(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__sock_pair",        korb_m_sock_pair,        -1);
     korb_class_def_cfn(c, obj, "__sock_hostname",    korb_m_sock_hostname,     0);
     korb_class_def_cfn(c, obj, "__sock_const",       korb_m_sock_const,        1);
+    korb_class_def_cfn(c, obj, "__sock_const_list",  korb_m_sock_const_list,   0);
     korb_class_def_cfn(c, obj, "__sock_pack",        korb_m_sock_pack,         3);
     korb_class_def_cfn(c, obj, "__sock_unpack",      korb_m_sock_unpack,       1);
     korb_class_def_cfn(c, obj, "__sock_getnameinfo", korb_m_sock_getnameinfo, -1);
