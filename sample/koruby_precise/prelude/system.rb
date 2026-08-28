@@ -1445,15 +1445,17 @@ class Dir
     raise ArgumentError, "user #{user} doesn't exist"
   end
 
-  def self.foreach(path, &blk)
-    return to_enum(:foreach, path) unless blk
-    entries(path).each(&blk)
+  # `encoding:` only names the encoding of the returned strings, so it is
+  # accepted and forwarded rather than being an arity error.
+  def self.foreach(path, **opts, &blk)
+    return to_enum(:foreach, path, **opts) unless blk
+    entries(path, **opts).each(&blk)
     nil
   end
 
-  def self.each_child(path, &blk)
-    return to_enum(:each_child, path) unless blk
-    children(path).each(&blk)
+  def self.each_child(path, **opts, &blk)
+    return to_enum(:each_child, path, **opts) unless blk
+    children(path, **opts).each(&blk)
     nil
   end
 

@@ -1591,6 +1591,12 @@ static RESULT korb_m_dir_rmdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 /* Dir.entries(path) [with_dots] / Dir.children(path) [without]. */
 static RESULT korb_dir_list(CTX *c, VALUE *slots, VALUE_SLICE a, bool with_dots) {
+    /* a trailing kwargs Hash is `encoding:`, which only names the result strings'
+     * encoding — the listing itself is the same either way */
+    if (VALUE_SLICE_LEN(a) >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1)))
+        a = VALUE_SLICE_MAKE(a.p, VALUE_SLICE_LEN(a) - 1);
+    if (UNLIKELY(VALUE_SLICE_LEN(a) != 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1)", VALUE_SLICE_LEN(a));
     RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
     DIR *d = opendir(path);
     if (!d) return korb_raise_errno(c, slots, errno, "opendir", path);
@@ -2183,8 +2189,8 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[3], "rmdir",    korb_m_dir_rmdir,    1);
     korb_class_def_cfn(c, slots[3], "delete",   korb_m_dir_rmdir,    1);
     korb_class_def_cfn(c, slots[3], "unlink",   korb_m_dir_rmdir,    1);
-    korb_class_def_cfn(c, slots[3], "entries",  korb_m_dir_entries,  1);
-    korb_class_def_cfn(c, slots[3], "children", korb_m_dir_children, 1);
+    korb_class_def_cfn(c, slots[3], "entries",  korb_m_dir_entries,  -1);
+    korb_class_def_cfn(c, slots[3], "children", korb_m_dir_children, -1);
     korb_class_def_cfn_blk(c, slots[3], "glob", korb_m_dir_glob, -1);
     korb_class_def_cfn_blk(c, slots[3], "[]",   korb_m_dir_glob, -1);
     korb_class_def_cfn_blk(c, slots[3], "chdir", korb_m_dir_chdir,   -1);
