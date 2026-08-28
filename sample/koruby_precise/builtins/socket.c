@@ -384,6 +384,64 @@ static RESULT korb_m_sock_getopt_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return korb_str_new(c, slots, buf, (uint32_t)len);
 }
 
+/* __sock_send_fd(fd, payload_fd) — hand a descriptor to the peer over a UNIX
+ * socket (SCM_RIGHTS).  One byte of ordinary data goes with it, as CRuby does,
+ * because a control message needs a carrier. */
+static RESULT korb_m_sock_send_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    const int payload = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
+    char dummy = 0;
+    struct iovec iov; iov.iov_base = &dummy; iov.iov_len = 1;
+    union { struct cmsghdr align; char buf[CMSG_SPACE(sizeof(int))]; } cm;
+    memset(&cm, 0, sizeof cm);
+    struct msghdr msg; memset(&msg, 0, sizeof msg);
+    msg.msg_iov = &iov; msg.msg_iovlen = 1;
+    msg.msg_control = cm.buf; msg.msg_controllen = sizeof cm.buf;
+    struct cmsghdr *const h = CMSG_FIRSTHDR(&msg);
+    h->cmsg_level = SOL_SOCKET; h->cmsg_type = SCM_RIGHTS; h->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(h), &payload, sizeof(int));
+    for (;;) {
+        const ssize_t n = sendmsg(fd, &msg, 0);
+        if (n >= 0) return RESULT_OK(LONG2FIX(n));
+        if (errno == EINTR) continue;
+        return korb_raise_errno(c, slots, errno, "sendmsg", "");
+    }
+}
+
+/* __sock_recv_fd(fd) → the descriptor the peer passed, or nil if none came. */
+static RESULT korb_m_sock_recv_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    char dummy = 0;
+    struct iovec iov; iov.iov_base = &dummy; iov.iov_len = 1;
+    union { struct cmsghdr align; char buf[CMSG_SPACE(sizeof(int))]; } cm;
+    struct msghdr msg;
+    for (;;) {
+        memset(&cm, 0, sizeof cm);
+        memset(&msg, 0, sizeof msg);
+        msg.msg_iov = &iov; msg.msg_iovlen = 1;
+        msg.msg_control = cm.buf; msg.msg_controllen = sizeof cm.buf;
+        const ssize_t n = recvmsg(fd, &msg, 0);
+        if (n >= 0) break;
+        if (errno == EINTR) continue;
+        if (korb_io_would_block(errno)) {               /* park like the other reads do */
+            struct pollfd pf; pf.fd = fd; pf.events = POLLIN; pf.revents = 0;
+            ssize_t ready = 0;
+            const RESULT pr = korb_blop_poll_wait(c, slots, &pf, 1, -1.0, &ready);
+            if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+            continue;
+        }
+        return korb_raise_errno(c, slots, errno, "recvmsg", "");
+    }
+    for (struct cmsghdr *h = CMSG_FIRSTHDR(&msg); h != NULL; h = CMSG_NXTHDR(&msg, h))
+        if (h->cmsg_level == SOL_SOCKET && h->cmsg_type == SCM_RIGHTS) {
+            int got; memcpy(&got, CMSG_DATA(h), sizeof got);
+            return RESULT_OK(LONG2FIX(got));
+        }
+    return RESULT_OK(KORB_NIL);
+}
+
 /* __sock_ifaddrs() → [[family, "addr"], …] for every interface with an IP. */
 static RESULT korb_m_sock_ifaddrs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; (void)a;
@@ -1554,6 +1612,8 @@ void korb_init_socket(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__sock_servbyname",  korb_m_sock_servbyname,  -1);
     korb_class_def_cfn(c, obj, "__sock_hostbyaddr",  korb_m_sock_hostbyaddr,  -1);
     korb_class_def_cfn(c, obj, "__sock_ifaddrs",     korb_m_sock_ifaddrs,      0);
+    korb_class_def_cfn(c, obj, "__sock_send_fd",     korb_m_sock_send_fd,      2);
+    korb_class_def_cfn(c, obj, "__sock_recv_fd",     korb_m_sock_recv_fd,      1);
     korb_class_def_cfn(c, obj, "__sock_getopt_raw",  korb_m_sock_getopt_raw,   3);
     korb_class_def_cfn(c, obj, "__sock_name",        korb_m_sock_name,         2);
     korb_class_def_cfn(c, obj, "__sock_getaddrinfo", korb_m_sock_getaddrinfo, -1);

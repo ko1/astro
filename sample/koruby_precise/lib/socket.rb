@@ -249,6 +249,19 @@ class TCPServer < TCPSocket
 end
 
 class UNIXSocket < BasicSocket
+  # Descriptor passing over SCM_RIGHTS.  #recv_io answers `klass.for_fd`, or the
+  # raw Integer when klass is nil.
+  def send_io(io)
+    __sock_send_fd(fileno, io.respond_to?(:fileno) ? io.fileno : io.to_int)
+    nil
+  end
+
+  def recv_io(klass = IO, mode = nil)
+    fd = __sock_recv_fd(fileno)
+    return fd if klass.nil? || fd.nil?
+    mode.nil? ? klass.for_fd(fd) : klass.for_fd(fd, mode)
+  end
+
   def initialize(path)
     fd = __sock_open(Socket::AF_UNIX, Socket::SOCK_STREAM, 0)
     begin
@@ -424,6 +437,7 @@ class Socket < BasicSocket
     # CRuby stores the NUMERIC family/level/type; symbols and strings
     # ("INET", :IPPROTO_IP, :RECVTTL) are resolved through the constants.
     def initialize(family, level, type, data)
+      family = family.to_str if !family.is_a?(Integer) && !family.is_a?(Symbol) && !family.is_a?(String) && family.respond_to?(:to_str)
       @family = Socket.__family(family)
       @level  = AncillaryData.__level(@family, level)
       @type   = AncillaryData.__type(@family, @level, type)
@@ -431,6 +445,7 @@ class Socket < BasicSocket
     end
 
     def self.__level(fam, lv)
+      lv = lv.to_str if !lv.is_a?(Integer) && !lv.is_a?(Symbol) && !lv.is_a?(String) && lv.respond_to?(:to_str)
       return lv if lv.is_a?(Integer)
       n = lv.to_s.upcase
       n = "SOL_SOCKET" if n == "SOCKET"
@@ -439,6 +454,7 @@ class Socket < BasicSocket
     end
 
     def self.__type(fam, level, ty)
+      ty = ty.to_str if !ty.is_a?(Integer) && !ty.is_a?(Symbol) && !ty.is_a?(String) && ty.respond_to?(:to_str)
       return ty if ty.is_a?(Integer)
       n = ty.to_s.upcase
       pre = level == (Socket.const_defined?(:IPPROTO_IPV6) ? Socket::IPPROTO_IPV6 : -1) ? "IPV6_" : "IP_"
