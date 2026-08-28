@@ -1,3 +1,4 @@
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <errno.h>
 #include <sys/wait.h>
@@ -1440,12 +1441,16 @@ static RESULT korb_m_io_writable_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
  * string koruby understands. */
 static bool korb_io_mode_to_flags(const char *mode, int *out) {
     const bool plus = strchr(mode, '+') != NULL;
+    /* 'x' means O_EXCL, and only makes sense when creating */
+    const bool excl = strchr(mode, 'x') != NULL;
     switch (mode[0]) {
-      case 'r': *out = plus ? O_RDWR : O_RDONLY;                          return true;
-      case 'w': *out = (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_TRUNC;    return true;
-      case 'a': *out = (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_APPEND;   return true;
+      case 'r': *out = plus ? O_RDWR : O_RDONLY;                          break;
+      case 'w': *out = (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_TRUNC;    break;
+      case 'a': *out = (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_APPEND;   break;
       default:  return false;
     }
+    if (excl) *out |= O_EXCL;
+    return true;
 }
 
 /* The rw bits korb_io_make wants: 1 read, 2 write, 3 both. */
@@ -1458,10 +1463,11 @@ static int korb_io_mode_rw(const char *mode) {
 /* open(2) flags for a fopen(3)-style mode string ("r", "w+", "ab", …). */
 static int korb_io_open_flags(const char *mode) {
     const bool plus = strchr(mode, '+') != NULL;
+    const int excl = (strchr(mode, 'x') != NULL) ? O_EXCL : 0;
     switch (mode[0]) {
-      case 'w': return (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_TRUNC;
-      case 'a': return (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_APPEND;
-      default:  return plus ? O_RDWR : O_RDONLY;
+      case 'w': return (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_TRUNC | excl;
+      case 'a': return (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_APPEND | excl;
+      default:  return (plus ? O_RDWR : O_RDONLY) | excl;
     }
 }
 
@@ -1483,7 +1489,10 @@ static bool korb_io_mode_arg(VALUE mv, char *mode, size_t cap) {
     for (uint32_t i = 0; i < ml; i++) if (m[i] == ':') { ml = i; break; }
     if (ml == 0 || ml >= cap) return false;
     memcpy(mode, m, ml); mode[ml] = '\0';
-    return strchr("rwa", mode[0]) != NULL;
+    if (strchr("rwa", mode[0]) == NULL) return false;
+    /* 'x' (O_EXCL) only means anything when the open creates the file */
+    if (strchr(mode, 'x') != NULL && mode[0] != 'w') return false;
+    return true;
 }
 
 /* korb_io_mode_arg for an arbitrary object: a String / Integer is used as is,
@@ -1994,9 +2003,44 @@ static RESULT korb_m_io_pread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
       s->len = (uint32_t)r;
       korb_strbuf_data(s->buf)[r] = '\0'; }
     if (bufv == KORB_NIL) return RESULT_OK(slots[0]);
-    if (UNLIKELY(!KORB_STRING_P(bufv))) return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion into String");
     slots[1] = bufv;                                              /* replace into the caller's buffer, keeping its encoding */
+    if (UNLIKELY(!KORB_STRING_P(slots[1]))) {                     /* a buffer may be any #to_str object */
+        const char *const cls = korb_coerce_name(c, slots[1]);
+        const RESULT cr = korb_coerce_to_str(c, slots + 2, &slots[1]);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (UNLIKELY(cr.value != KORB_TRUE))
+            return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
+    }
     return korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
+}
+
+/* IO#ioctl(request[, arg]) — arg nil/Integer is passed by value, a String is
+ * passed as a buffer and updated in place (CRuby grows an empty one first). */
+static RESULT korb_m_io_ioctl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    korb_sword_t req;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &req));
+    const VALUE av = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+    int r;
+    if (KORB_STRING_P(av)) {
+        slots[0] = av;
+        /* CRuby hands the kernel at least a machine word of room */
+        if (VAL2STR(slots[0])->len < sizeof(long)) {
+            char pad[sizeof(long)];
+            memset(pad, 0, sizeof pad);
+            slots[1] = UNWRAP(korb_str_new(c, slots + 1, pad, (uint32_t)sizeof pad));
+            CHECK(korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1)));
+        }
+        KorbString *const sb = VAL2STR(slots[0]);      /* no alloc from here to the call */
+        r = ioctl(rep->fd, (unsigned long)req, korb_strbuf_data(sb->buf));
+    } else {
+        korb_sword_t iv = 0;
+        if (av != KORB_NIL) CHECK(korb_io_arg_int(c, slots, av, &iv));
+        r = ioctl(korb_io_rep(c, VALUE_REF_GET(self))->fd, (unsigned long)req, (void *)(uintptr_t)iv);
+    }
+    if (r < 0) return korb_raise_errno(c, slots + 2, errno, "ioctl", "");
+    return RESULT_OK(LONG2FIX(r));
 }
 
 /* IO#pwrite(string, offset) — write at an absolute offset without moving the
@@ -2246,6 +2290,9 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (b == 'r') rw = plus ? 3 : 1;
         else if (b == 'w' || b == 'a') rw = plus ? 3 : 2;
         else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode %s", mode);
+        /* 'x' (O_EXCL) is only meaningful when the open creates the file */
+        if (strchr(mode, 'x') != NULL && b != 'w')
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode %s", mode);
         char pbuf[4096];
         snprintf(pbuf, sizeof pbuf, "%.*s", (int)plen, path);
         RESULT operr;
@@ -2336,6 +2383,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("reopen", reopen, -1);       IOM("pid", pid, 0);
     IOM("dup", dup, 0);              IOM("clone", dup, 0);
     IOM("__init_fd", init_fd, -1);
+    IOM("ioctl", ioctl, -1);   IOM("fcntl", ioctl, -1);
     IOM("binmode", binmode, 0);      IOM("ungetc", ungetc, 1);
     IOM("ungetbyte", ungetc, 1);
     IOM("syswrite", syswrite, 1);    IOM("sysread", sysread, -1);
