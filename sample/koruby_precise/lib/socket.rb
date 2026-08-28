@@ -827,8 +827,79 @@ class Addrinfo
   private :__protocol_of
 
   # "::ffff:1.2.3.4" (an IPv4-mapped IPv6 address) → the plain IPv4 Addrinfo.
-  def ipv4_mapped? = ipv6? && @addr.to_s.downcase.start_with?("::ffff:")
-  def ipv4_compat? = ipv6? && @addr.to_s.start_with?("::") && !ipv4_mapped? && @addr.to_s.count(".") == 3
+  def ipv4_mapped? = ipv6_v4mapped?
+  def ipv4_compat? = ipv6_v4compat?
+
+  # The address as raw bytes (4 for IPv4, 16 for IPv6), or nil for a non-IP one.
+  # Every classification predicate below is a plain bit test on these.
+  private def __ip_bytes
+    return nil unless ip?
+    t = @addr.to_s.sub(/%.*\z/, "")                    # a zone id is not part of the address
+    return t.split(".").map { |o| o.to_i }.pack("C4") if ipv4?
+    groups = lambda do |part|
+      out = []
+      return out if part.nil? || part.empty?
+      part.split(":").each do |g|
+        next if g.empty?
+        if g.include?(".")                             # a trailing dotted quad is the low 4 bytes
+          out.concat(g.split(".").map { |o| o.to_i })
+        else
+          v = g.to_i(16)
+          out << ((v >> 8) & 0xFF)
+          out << (v & 0xFF)
+        end
+      end
+      out
+    end
+    head, tail = t.split("::", 2)
+    h = groups.call(head)
+    return h.pack("C16") if tail.nil? && h.size == 16
+    return nil if tail.nil?
+    u = groups.call(tail)
+    return nil if h.size + u.size > 16
+    (h + [0] * (16 - h.size - u.size) + u).pack("C16")
+  end
+
+  private def __b(i) = (b = __ip_bytes) && b.getbyte(i)
+
+  def ipv4_loopback?  = ipv4? && __b(0) == 127
+  def ipv4_multicast? = ipv4? && (__b(0) & 0xF0) == 0xE0
+  def ipv4_private?
+    return false unless ipv4?
+    b = __ip_bytes
+    b.getbyte(0) == 10 ||
+      (b.getbyte(0) == 172 && (b.getbyte(1) & 0xF0) == 16) ||
+      (b.getbyte(0) == 192 && b.getbyte(1) == 168)
+  end
+
+  def ipv6_unspecified? = ipv6? && __ip_bytes == ("\0" * 16).b
+  def ipv6_loopback?    = ipv6? && __ip_bytes == ("\0" * 15 + "\1").b
+  def ipv6_multicast?   = ipv6? && __b(0) == 0xFF
+  def ipv6_linklocal?   = ipv6? && __b(0) == 0xFE && (__b(1) & 0xC0) == 0x80
+  def ipv6_sitelocal?   = ipv6? && __b(0) == 0xFE && (__b(1) & 0xC0) == 0xC0
+  def ipv6_unique_local? = ipv6? && (__b(0) & 0xFE) == 0xFC
+  def ipv6_v4mapped?
+    return false unless ipv6?
+    b = __ip_bytes
+    b[0, 10] == ("\0" * 10).b && b.getbyte(10) == 0xFF && b.getbyte(11) == 0xFF
+  end
+  # ::a.b.c.d, but neither the unspecified nor the loopback address (CRuby)
+  def ipv6_v4compat?
+    return false unless ipv6?
+    b = __ip_bytes
+    return false unless b[0, 12] == ("\0" * 12).b
+    (b.getbyte(12) << 24 | b.getbyte(13) << 16 | b.getbyte(14) << 8 | b.getbyte(15)) > 1
+  end
+  # multicast scope lives in the low nibble of the second byte
+  private def __mc_scope(n) = ipv6? && __b(0) == 0xFF && (__b(1) & 0x0F) == n
+  def ipv6_mc_nodelocal? = __mc_scope(1)
+  def ipv6_mc_linklocal? = __mc_scope(2)
+  def ipv6_mc_sitelocal? = __mc_scope(5)
+  def ipv6_mc_orglocal?  = __mc_scope(8)
+  def ipv6_mc_global?    = __mc_scope(0xE)
+
+  def getnameinfo(flags = 0) = Socket.getnameinfo(to_sockaddr, flags)
+  def ip_unpack = [ip_address, ip_port]
   def ipv6_to_ipv4
     return nil unless ipv4_mapped? || ipv4_compat?
     Addrinfo.__from_ary(["AF_INET", @port, @addr.to_s.split(":").last, @addr.to_s.split(":").last,
