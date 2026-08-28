@@ -486,7 +486,8 @@ class Socket < BasicSocket
 
   def self.getaddrinfo(host, service, family = nil, socktype = nil, protocol = nil,
                        flags = nil, reverse_lookup = nil, timeout: nil)
-    __sock_getaddrinfo(host&.to_s, service, family && __family(family), socktype && __socktype(socktype))
+    __sock_getaddrinfo(host&.to_s, service, family && __family(family), socktype && __socktype(socktype),
+                       flags ? flags.to_int : 0)
   end
 
   # [canonical_name, aliases, address_family, *packed_addresses]
