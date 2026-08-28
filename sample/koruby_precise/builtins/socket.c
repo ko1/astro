@@ -277,7 +277,7 @@ static RESULT korb_m_sock_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* Socket::ResolutionError (Ruby 3.3+, a SocketError) — the class lives in
  * lib/socket.rb, so raise a plain exception carrying it as #class. */
 static RESULT
-korb_raise_resolution_error(CTX *c, VALUE *slots, const char *msg)
+korb_raise_resolution_error_code(CTX *c, VALUE *slots, const char *msg, int code)
 {
     const VALUE sock = korb_const_get(c->vm, korb_intern(c->vm, "Socket", 6));
     VALUE cls = KORB_NIL;
@@ -288,9 +288,18 @@ korb_raise_resolution_error(CTX *c, VALUE *slots, const char *msg)
     }
     slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
     RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", msg);
-    if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
-        ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+    if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value)) {
+        slots[1] = r.value;
+        ARO_STORE(c, VAL2EXC(slots[1]), (VALUE *)(uintptr_t)&VAL2EXC(slots[1])->exc_class, slots[0]);
+        /* #error_code is the EAI_* value getaddrinfo(3) returned */
+        korb_exc_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]),
+                          ID2SYM(korb_intern(c->vm, "@error_code", 11)), LONG2FIX(code));
+        r.value = slots[1];
+    }
     return r;
+}
+static RESULT korb_raise_resolution_error(CTX *c, VALUE *slots, const char *msg) {
+    return korb_raise_resolution_error_code(c, slots, msg, 0);
 }
 
 /* __sock_getaddrinfo(host, port, family, socktype[, flags[, protocol]]) → [[family, port, host, addr, socktype, protocol], …] */
@@ -314,7 +323,7 @@ static RESULT korb_m_sock_getaddrinfo(CTX *c, VALUE *slots, VALUE_REF self, VALU
      * answers the loopback (a client address), which is what CRuby reports */
     if (VALUE_SLICE_LEN(a) >= 5 && FIXNUM_P(VALUE_SLICE_GET(a, 4))) hints.ai_flags = (int)FIX2LONG(VALUE_SLICE_GET(a, 4));
     const int gr = getaddrinfo(host[0] ? host : NULL, portbuf[0] ? portbuf : NULL, &hints, &res);
-    if (gr != 0) { char m[192]; snprintf(m, sizeof m, "getaddrinfo: %s", gai_strerror(gr)); return korb_raise_resolution_error(c, slots, m); }
+    if (gr != 0) { char m[192]; snprintf(m, sizeof m, "getaddrinfo: %s", gai_strerror(gr)); return korb_raise_resolution_error_code(c, slots, m, gr); }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
     VALUE_REF list = VALUE_REF_AT(&slots[0]);
     for (ai = res; ai != NULL; ai = ai->ai_next) {
@@ -630,7 +639,7 @@ static RESULT korb_m_sock_hostent(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_CANONNAME;
     const int gr = getaddrinfo(host, NULL, &hints, &res);
-    if (gr != 0) { char m[192]; snprintf(m, sizeof m, "getaddrinfo: %s", gai_strerror(gr)); return korb_raise_resolution_error(c, slots, m); }
+    if (gr != 0) { char m[192]; snprintf(m, sizeof m, "getaddrinfo: %s", gai_strerror(gr)); return korb_raise_resolution_error_code(c, slots, m, gr); }
     const char *const canon = (res && res->ai_canonname) ? res->ai_canonname : host;
     const int fam = res ? res->ai_family : AF_INET;
     slots[0] = UNWRAP(korb_str_new(c, slots, canon, (uint32_t)strlen(canon)));

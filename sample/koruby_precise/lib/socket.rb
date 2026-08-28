@@ -229,6 +229,8 @@ class TCPSocket < IPSocket
   # accepted and ignored (resolution here is a single getaddrinfo call).
   def initialize(host, port, local_host = nil, local_port = nil,
                  connect_timeout: nil, open_timeout: nil, resolv_timeout: nil)
+    # .new ignores a block; .open is the one that takes it
+    warn("TCPSocket::new() does not take block; use TCPSocket::open() instead") if block_given?
     tmo = connect_timeout || open_timeout
     fam = Socket.__family_of_host(host)      # "::1" must open an AF_INET6 socket
     fd = __sock_open(fam, Socket::SOCK_STREAM, 0)
@@ -263,6 +265,7 @@ class TCPServer < TCPSocket
   # TCPServer.new(port) or TCPServer.new(host, port); the arity decides, so an
   # explicit nil port is "any port on this host", not "this is the port".
   def initialize(*args)
+    warn("TCPServer::new() does not take block; use TCPServer::open() instead") if block_given?
     unless (1..2).cover?(args.size)
       raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1..2)"
     end
@@ -471,7 +474,10 @@ class Socket < BasicSocket
 
   # Raised by name-resolution failures (Ruby 3.3+); a SocketError so older
   # rescues keep working.
-  ResolutionError = Class.new(SocketError)
+  class ResolutionError < SocketError
+    # The EAI_* code getaddrinfo(3) returned.
+    def error_code = @error_code
+  end
 
   # Everything else the platform defines, straight from the C table — the names
   # above stay explicit because this file refers to them while loading.
@@ -547,8 +553,9 @@ class Socket < BasicSocket
               when (Socket.const_defined?(:IPPROTO_IPV6) ? Socket::IPPROTO_IPV6 : nil) then [n, "IPV6_#{n}"]
               else [n]
               end
+      # a name that is just digits is not a name: CRuby wants the Integer itself
+      raise TypeError, "no implicit conversion of String into Integer" if n =~ /\A[0-9]+\z/
       cands.each do |cand|
-        # a numeric-looking name is not a constant name at all
         next unless cand =~ /\A[A-Z_][A-Za-z0-9_]*\z/
         return Socket.const_get(cand) if Socket.const_defined?(cand)
       end
