@@ -278,6 +278,58 @@ static RESULT korb_m_sock_getaddrinfo(CTX *c, VALUE *slots, VALUE_REF self, VALU
     return RESULT_OK(VALUE_REF_GET(list));
 }
 
+/* __sock_servbyname(name, proto) → port (host byte order), or nil. */
+static RESULT korb_m_sock_servbyname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    char nm[128], pr[32];
+    if (!korb_sock_cstr(VALUE_SLICE_GET(a, 0), nm, sizeof nm))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    if (VALUE_SLICE_LEN(a) < 2 || !korb_sock_cstr(VALUE_SLICE_GET(a, 1), pr, sizeof pr)) snprintf(pr, sizeof pr, "tcp");
+    const struct servent *const se = getservbyname(nm, pr);
+    if (se == NULL) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(LONG2FIX((korb_sword_t)ntohs((uint16_t)se->s_port)));
+}
+
+/* __sock_hostbyaddr(packed_addr, family) → [name, [aliases], addrtype, packed]. */
+static RESULT korb_m_sock_hostbyaddr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE av = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(av)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    const uint32_t alen = VAL2STR(av)->len;
+    int fam = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1)))
+                ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : (alen == 16 ? AF_INET6 : AF_INET);
+    struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof ss);
+    socklen_t sl;
+    if (fam == AF_INET6) {
+        if (UNLIKELY(alen != 16)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid address length");
+        struct sockaddr_in6 *const s6 = (struct sockaddr_in6 *)&ss;
+        s6->sin6_family = AF_INET6;
+        memcpy(&s6->sin6_addr, korb_strbuf_data(VAL2STR(av)->buf), 16);
+        sl = sizeof *s6;
+    } else {
+        if (UNLIKELY(alen != 4)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid address length");
+        struct sockaddr_in *const s4 = (struct sockaddr_in *)&ss;
+        s4->sin_family = AF_INET;
+        memcpy(&s4->sin_addr, korb_strbuf_data(VAL2STR(av)->buf), 4);
+        sl = sizeof *s4;
+        fam = AF_INET;
+    }
+    char hbuf[NI_MAXHOST];
+    if (getnameinfo((const struct sockaddr *)&ss, sl, hbuf, sizeof hbuf, NULL, 0, NI_NAMEREQD) != 0)
+        return korb_raise_resolution_error(c, slots, "gethostbyaddr: address not found");
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
+    VALUE_REF out = VALUE_REF_AT(&slots[0]);
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, hbuf, (uint32_t)strlen(hbuf)));
+    CHECK(korb_ary_push_val(c, slots + 2, out, slots[1]));
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 0));                    /* aliases: getnameinfo has none */
+    CHECK(korb_ary_push_val(c, slots + 2, out, slots[1]));
+    CHECK(korb_ary_push_val(c, slots + 2, out, LONG2FIX(fam)));
+    CHECK(korb_ary_push_val(c, slots + 2, out, VALUE_SLICE_GET(a, 0)));
+    return RESULT_OK(VALUE_REF_GET(out));
+}
+
 /* __sock_setopt(fd, level, name, int_value) / __sock_getopt(fd, level, name) */
 static RESULT korb_m_sock_setopt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -701,6 +753,8 @@ void korb_init_socket(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__sock_bind",        korb_m_sock_bind,         4);
     korb_class_def_cfn(c, obj, "__sock_listen",      korb_m_sock_listen,       2);
     korb_class_def_cfn(c, obj, "__sock_accept",      korb_m_sock_accept,       1);
+    korb_class_def_cfn(c, obj, "__sock_servbyname",  korb_m_sock_servbyname,  -1);
+    korb_class_def_cfn(c, obj, "__sock_hostbyaddr",  korb_m_sock_hostbyaddr,  -1);
     korb_class_def_cfn(c, obj, "__sock_name",        korb_m_sock_name,         2);
     korb_class_def_cfn(c, obj, "__sock_getaddrinfo", korb_m_sock_getaddrinfo, -1);
     korb_class_def_cfn(c, obj, "__sock_setopt",      korb_m_sock_setopt,       4);

@@ -469,6 +469,18 @@ class Socket < BasicSocket
     end
   end
 
+  # Like #accept, but hands back the raw descriptor instead of a Socket.
+  def sysaccept
+    loop do
+      pair = __sock_accept(fileno)
+      if pair
+        nfd, addr = pair
+        return [nfd, Addrinfo.__from_ary(addr)]
+      end
+      wait_readable
+    end
+  end
+
   def self.pair(family, type, protocol = 0)
     a, b = __sock_pair(__family(family), __socktype(type))
     [for_fd(a), for_fd(b)]
@@ -490,10 +502,28 @@ class Socket < BasicSocket
                        flags ? flags.to_int : 0)
   end
 
-  # [canonical_name, aliases, address_family, *packed_addresses]
+  # [canonical_name, aliases, address_family, *packed_addresses].
+  # `<broadcast>` / `<any>` are named directly rather than resolved (CRuby).
   def self.gethostbyname(name)
-    h = __sock_hostent(name.to_s)
+    n = name.to_s
+    case n
+    when "<broadcast>" then return ["255.255.255.255", [], AF_INET, [255, 255, 255, 255].pack("C4")]
+    when "<any>"       then return ["0.0.0.0",         [], AF_INET, [0, 0, 0, 0].pack("C4")]
+    end
+    h = __sock_hostent(n)
     [h[0], h[1], h[2], *h[3]]
+  end
+
+  # [hostname, aliases, address_family, packed_address]
+  def self.gethostbyaddr(addr, family = nil)
+    __sock_hostbyaddr(addr, family && __family(family))
+  end
+
+  # The port a named service listens on.
+  def self.getservbyname(service, proto = "tcp")
+    p = __sock_servbyname(service.to_s, proto.to_s)
+    raise SocketError, "no such service #{service}/#{proto}" if p.nil?
+    p
   end
 
   def self.getifaddrs
