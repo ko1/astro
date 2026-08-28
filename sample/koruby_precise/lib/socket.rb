@@ -495,11 +495,21 @@ class Socket < BasicSocket
       ty = ty.to_str if !ty.is_a?(Integer) && !ty.is_a?(Symbol) && !ty.is_a?(String) && ty.respond_to?(:to_str)
       return ty if ty.is_a?(Integer)
       n = ty.to_s.upcase
-      pre = level == (Socket.const_defined?(:IPPROTO_IPV6) ? Socket::IPPROTO_IPV6 : -1) ? "IPV6_" : "IP_"
-      [n, "SCM_#{n}", "#{pre}#{n}", "IP_#{n}", "IPV6_#{n}", "TCP_#{n}"].each do |cand|
+      # only this level's own constant family counts: :RECVTTL is an IP option,
+      # so it must not resolve under SOL_SOCKET
+      cands = case level
+              when Socket::SOL_SOCKET  then [n, "SCM_#{n}"]
+              when Socket::IPPROTO_IP  then [n, "IP_#{n}"]
+              when Socket::IPPROTO_TCP then [n, "TCP_#{n}"]
+              when (Socket.const_defined?(:IPPROTO_IPV6) ? Socket::IPPROTO_IPV6 : nil) then [n, "IPV6_#{n}"]
+              else [n]
+              end
+      cands.each do |cand|
+        # a numeric-looking name is not a constant name at all
+        next unless cand =~ /\A[A-Z_][A-Za-z0-9_]*\z/
         return Socket.const_get(cand) if Socket.const_defined?(cand)
       end
-      raise SocketError, "unknown control message type: #{ty}"
+      raise SocketError, "unknown UNIX control message: #{ty}"
     end
 
     def int = @data.unpack("i")[0]
@@ -881,7 +891,9 @@ class Socket < BasicSocket
   # platform constant is defined, this is a lookup rather than a short table
   # with a silent default.
   def self.__optname(o, level = nil)
+    raise TypeError, "no implicit conversion from nil to integer" if o.nil?
     o = o.to_int if !o.is_a?(Integer) && !o.is_a?(Symbol) && !o.is_a?(String) && o.respond_to?(:to_int)
+    o = o.to_str if !o.is_a?(Integer) && !o.is_a?(Symbol) && !o.is_a?(String) && o.respond_to?(:to_str)
     return o if o.is_a?(Integer)
     n = o.to_s.upcase
     pre = case level
@@ -899,7 +911,9 @@ class Socket < BasicSocket
 
   # Like __level but strict: an unknown name is a SocketError.
   def self.__level_strict(l)
+    raise TypeError, "no implicit conversion from nil to integer" if l.nil?
     l = l.to_int if !l.is_a?(Integer) && !l.is_a?(Symbol) && !l.is_a?(String) && l.respond_to?(:to_int)
+    l = l.to_str if !l.is_a?(Integer) && !l.is_a?(Symbol) && !l.is_a?(String) && l.respond_to?(:to_str)
     return l if l.is_a?(Integer)
     n = l.to_s.upcase
     return SOL_SOCKET if n == "SOCKET" || n == "SOL_SOCKET"
