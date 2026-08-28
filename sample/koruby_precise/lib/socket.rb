@@ -24,13 +24,19 @@ class BasicSocket < IO
     s
   end
 
-  def do_not_reverse_lookup = @do_not_reverse_lookup.nil? ? true : @do_not_reverse_lookup
-  def do_not_reverse_lookup=(v)
-    @do_not_reverse_lookup = v
+  # CRuby snapshots the class-wide setting when the socket is created, so a later
+  # change to BasicSocket.do_not_reverse_lookup does not reach existing sockets.
+  def do_not_reverse_lookup
+    @do_not_reverse_lookup = BasicSocket.do_not_reverse_lookup if @do_not_reverse_lookup.nil?
+    @do_not_reverse_lookup
   end
-  def self.do_not_reverse_lookup = @@dnrl ||= true
+  def do_not_reverse_lookup=(v)
+    @do_not_reverse_lookup = v ? true : false
+  end
+  # `||=` would make a stored `false` read back as true
+  def self.do_not_reverse_lookup = defined?(@@dnrl) ? @@dnrl : true
   def self.do_not_reverse_lookup=(v)
-    @@dnrl = v
+    @@dnrl = v ? true : false
   end
 
   def getsockname_ary = __sock_name(fileno, false)
@@ -91,10 +97,16 @@ class BasicSocket < IO
   end
   # Try the non-blocking op first and park only when it says EAGAIN: a POLL
   # wakeup is not a guarantee that the next call won't block.
-  def recv(maxlen, flags = 0)
+  def recv(maxlen, flags = 0, outbuf = nil)
     loop do
       r = __sock_recv(fileno, maxlen, flags)
-      return r if r
+      if r
+        return r unless outbuf
+        enc = outbuf.encoding
+        outbuf.replace(r)
+        outbuf.force_encoding(enc)
+        return outbuf
+      end
       wait_readable
     end
   end
@@ -172,8 +184,33 @@ class BasicSocket < IO
 end
 
 class IPSocket < BasicSocket
-  def addr(reverse_lookup = nil) = getsockname_ary
-  def peeraddr(reverse_lookup = nil) = getpeername_ary
+  # true / :hostname ask for the PTR name in the host slot; false / :numeric (and
+  # the default) leave the numeric address there.
+  private def __rev(ary, reverse_lookup)
+    want = case reverse_lookup
+           when true, :hostname then true
+           when false, :numeric then false
+           when nil then !do_not_reverse_lookup
+           else raise ArgumentError, "invalid reverse_lookup flag: :#{reverse_lookup}"
+           end
+    return ary unless want
+    ary = ary.dup
+    ary[2] = begin
+      Socket.getnameinfo([ary[0], ary[1], ary[3], ary[3]])[0]
+    rescue StandardError
+      ary[3]
+    end
+    ary
+  end
+
+  def addr(reverse_lookup = nil) = __rev(getsockname_ary, reverse_lookup)
+  def peeraddr(reverse_lookup = nil) = __rev(getpeername_ary, reverse_lookup)
+
+  # #recvfrom follows the socket's own reverse-lookup setting.
+  def recvfrom(maxlen, flags = 0, outbuf = nil)
+    mesg, addr = super
+    [mesg, __rev(addr, nil)]
+  end
   def self.getaddress(host)
     r = __sock_getaddrinfo(host.to_s, nil, nil, Socket::SOCK_STREAM)
     raise SocketError, "getaddrinfo: no address for #{host}" if r.empty?
@@ -646,8 +683,20 @@ class Socket < BasicSocket
 
   def self.getaddrinfo(host, service, family = nil, socktype = nil, protocol = nil,
                        flags = nil, reverse_lookup = nil, timeout: nil)
-    __sock_getaddrinfo(host&.to_s, service, family && __family(family), socktype && __socktype(socktype),
-                       flags ? flags.to_int : 0)
+    rows = __sock_getaddrinfo(host&.to_s, service, family && __family(family),
+                              socktype && __socktype(socktype), flags ? flags.to_int : 0)
+    # reverse_lookup asks for the PTR name in the host slot instead of the
+    # numeric address (the default is numeric).
+    if reverse_lookup
+      rows.each do |r|
+        r[2] = begin
+          getnameinfo([r[0], r[1], r[3], r[3]])[0]
+        rescue StandardError
+          r[3]
+        end
+      end
+    end
+    rows
   end
 
   # [canonical_name, aliases, address_family, *packed_addresses].
@@ -765,6 +814,43 @@ class Socket < BasicSocket
     ensure
       socks.each { |s| s.close unless s.closed? }
     end
+  end
+
+  # Serve a UNIX socket at `path` forever, yielding [socket, client_addrinfo].
+  def self.unix_server_loop(path, &blk)
+    unix_server_socket(path) { |s| accept_loop(s, &blk) }
+  end
+
+  # Serve TCP on host/port forever, yielding [socket, client_addrinfo].
+  def self.tcp_server_loop(host_or_port, port = nil, &blk)
+    tcp_server_sockets(host_or_port, port) { |socks| accept_loop(socks, &blk) }
+  end
+
+  # Where a datagram came from, and how to answer it.
+  class UDPSource
+    attr_reader :remote_address, :local_address
+    def initialize(remote, local, &reply) = (@remote_address, @local_address, @reply = remote, local, reply)
+    def reply(mesg) = @reply.call(mesg)
+    def inspect = "\#<Socket::UDPSource #{@remote_address.inspect} to #{@local_address.inspect}>"
+  end
+
+  # Read datagrams from already-bound sockets forever, yielding
+  # [message, Socket::UDPSource].
+  def self.udp_server_loop_on(sockets, &blk)
+    socks = Array(sockets)
+    loop do
+      ready = IO.select(socks)&.first
+      next if ready.nil?
+      ready.each do |s|
+        mesg, sender = s.recvfrom(65536)
+        src = UDPSource.new(sender, s.local_address) { |reply| s.send(reply, 0, sender.to_sockaddr) }
+        blk.call(mesg, src)
+      end
+    end
+  end
+
+  def self.udp_server_loop(host_or_port, port = nil, &blk)
+    udp_server_sockets(host_or_port, port) { |socks| udp_server_loop_on(socks, &blk) }
   end
 
   # Accept forever from any of `sockets`, yielding [socket, addrinfo].
