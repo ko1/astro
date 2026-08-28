@@ -739,28 +739,34 @@ class Addrinfo
   def initialize(sockaddr, family = nil, socktype = nil, protocol = nil)
     if sockaddr.is_a?(Array)
       a = sockaddr
-      af = Socket.__family(a[0])
-      # CRuby validates the Array form up front.
+      af = Socket.__family_strict(a[0])
+      # CRuby validates the Array form up front: the literal must be of the
+      # declared family (an IPv4 address under AF_INET6 is an error).
       if af == Socket::AF_INET || af == Socket::AF_INET6
-        unless a[3].to_s =~ /\A[0-9a-fA-F:.]+\z/
-          raise SocketError, "getaddrinfo: Name or service not known"
-        end
+        lit = a[3].to_s
+        ok = if af == Socket::AF_INET
+               lit =~ /\A\d{1,3}(\.\d{1,3}){3}\z/
+             else
+               lit.include?(":")
+             end
+        raise Socket::ResolutionError, "getaddrinfo: Name or service not known" unless ok
       end
       if !family.nil?
-        pf = Socket.__family(family)
+        pf = Socket.__family_strict(family)
         unless pf == af || pf == Socket::PF_UNSPEC
-          raise SocketError, "protocol family and address family are mismatched"
+          raise Socket::ResolutionError, "protocol family and address family are mismatched"
         end
       end
     else
       a = Socket.__unpack(sockaddr)
     end
     st = socktype.nil? ? 0 : Socket.__socktype_strict(socktype)
-    if st == Socket::SOCK_RDM || st == Socket::SOCK_SEQPACKET
-      raise SocketError, "socktype not supported for this address family"
-    end
-    if !protocol.nil? && protocol != 0 && st == 0
-      raise SocketError, "protocol requires a socket type"     # IPPROTO_TCP with no socktype
+    if sockaddr.is_a?(Array) && (af == Socket::AF_INET || af == Socket::AF_INET6)
+      # Let getaddrinfo(3) judge the family/socktype/protocol combination, which
+      # is exactly what CRuby does — the accepted set is the platform's, not ours.
+      # a raw socket has no service, and naming one makes getaddrinfo(3) refuse
+      serv = (st == Socket::SOCK_RAW) ? nil : (a[1] || 0)
+      __sock_getaddrinfo(a[3].to_s, serv, af, st, Socket::AI_NUMERICHOST, protocol || 0)
     end
     __setup(a[0], a[1] || 0, a[2], a[3] || a[2], st, protocol || 0)
     # CRuby: an explicit family wins; with a packed sockaddr String and no

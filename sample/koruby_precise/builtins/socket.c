@@ -284,7 +284,7 @@ korb_raise_resolution_error(CTX *c, VALUE *slots, const char *msg)
     return r;
 }
 
-/* __sock_getaddrinfo(host, port, family, socktype[, flags]) → [[family, port, host, addr, socktype, protocol], …] */
+/* __sock_getaddrinfo(host, port, family, socktype[, flags[, protocol]]) → [[family, port, host, addr, socktype, protocol], …] */
 static RESULT korb_m_sock_getaddrinfo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     char host[512], portbuf[64];
@@ -299,6 +299,8 @@ static RESULT korb_m_sock_getaddrinfo(CTX *c, VALUE *slots, VALUE_REF self, VALU
                         ? korb_sock_family_of(c, VALUE_SLICE_GET(a, 2)) : AF_UNSPEC;
     hints.ai_socktype = (VALUE_SLICE_LEN(a) >= 4 && FIXNUM_P(VALUE_SLICE_GET(a, 3)))
                         ? (int)FIX2LONG(VALUE_SLICE_GET(a, 3)) : 0;
+    hints.ai_protocol = (VALUE_SLICE_LEN(a) >= 6 && FIXNUM_P(VALUE_SLICE_GET(a, 5)))
+                        ? (int)FIX2LONG(VALUE_SLICE_GET(a, 5)) : 0;
     /* the caller's ai_flags decide; with no host and no AI_PASSIVE, getaddrinfo(3)
      * answers the loopback (a client address), which is what CRuby reports */
     if (VALUE_SLICE_LEN(a) >= 5 && FIXNUM_P(VALUE_SLICE_GET(a, 4))) hints.ai_flags = (int)FIX2LONG(VALUE_SLICE_GET(a, 4));
