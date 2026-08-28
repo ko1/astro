@@ -134,11 +134,30 @@ static RESULT korb_m_sock_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * completes asynchronously.  Park on POLLOUT and then read SO_ERROR — that is
  * the only way to learn whether it actually connected.  `host` is a stack
  * buffer, so it survives the park's GC. */
-static RESULT korb_sock_finish_connect(CTX *c, VALUE *slots, int fd, const char *host) {
+/* IO::TimeoutError — a Ruby-side class, so raise a plain exception carrying it. */
+static RESULT
+korb_raise_io_timeout(CTX *c, VALUE *slots, const char *msg)
+{
+    const VALUE io = korb_const_get(c->vm, korb_intern(c->vm, "IO", 2));
+    VALUE cls = KORB_NIL;
+    if (KORB_CLASS_P(io)) {
+        const uint32_t ix = korb_const_index_owned(c->vm, korb_intern(c->vm, "TimeoutError", 12), io);
+        if (ix != UINT32_MAX) cls = c->vm->const_vals[ix];
+    }
+    slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
+    RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", msg);
+    if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
+        ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+    return r;
+}
+
+static RESULT korb_sock_finish_connect(CTX *c, VALUE *slots, int fd, const char *host, double timeout) {
     struct pollfd pf; pf.fd = fd; pf.events = POLLOUT; pf.revents = 0;
     ssize_t ready = 0;
-    const RESULT pr = korb_blop_poll_wait(c, slots, &pf, 1, -1.0, &ready);
+    const RESULT pr = korb_blop_poll_wait(c, slots, &pf, 1, timeout, &ready);
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+    if (timeout >= 0.0 && ready == 0)                  /* the wait expired before the connect finished */
+        return korb_raise_io_timeout(c, slots, "Connect timed out!");
     int err = 0; socklen_t el = sizeof err;
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el) != 0)
         return korb_raise_errno(c, slots, errno, "connect", host);
@@ -158,10 +177,30 @@ static RESULT korb_m_sock_connect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     struct sockaddr_storage ss; socklen_t len = 0;
     if (!korb_sock_fill_addr_s(fam, host, serv, &ss, &len))
         return korb_raise_errno(c, slots, ENOENT, "getaddrinfo", host);
-    if (connect(fd, (struct sockaddr *)&ss, len) == 0) return RESULT_OK(LONG2FIX(0));
-    if (errno == EINPROGRESS || errno == EALREADY || errno == EINTR)
-        return korb_sock_finish_connect(c, slots, fd, host);
-    return korb_raise_errno(c, slots, errno, "connect", host);
+    double tmo = -1.0;                                 /* optional 5th arg: seconds, or nil for no limit */
+    const VALUE tv = (VALUE_SLICE_LEN(a) >= 5) ? VALUE_SLICE_GET(a, 4) : KORB_NIL;
+    if (tv != KORB_NIL && !korb_num_to_d(tv, &tmo)) tmo = -1.0;
+    /* A bounded connect has to be able to give up, so it goes out non-blocking
+     * and the wait below enforces the deadline; the flag is put back after. */
+    int saved_fl = -1;
+    if (tmo >= 0.0) {
+        saved_fl = fcntl(fd, F_GETFL);
+        if (saved_fl >= 0 && !(saved_fl & O_NONBLOCK)) (void)fcntl(fd, F_SETFL, saved_fl | O_NONBLOCK);
+        else saved_fl = -1;
+    }
+    const int cr = connect(fd, (struct sockaddr *)&ss, len);
+    const int cerr = errno;
+    if (cr == 0) {
+        if (saved_fl >= 0) (void)fcntl(fd, F_SETFL, saved_fl);
+        return RESULT_OK(LONG2FIX(0));
+    }
+    if (cerr == EINPROGRESS || cerr == EALREADY || cerr == EINTR) {
+        const RESULT r = korb_sock_finish_connect(c, slots, fd, host, tmo);
+        if (saved_fl >= 0) (void)fcntl(fd, F_SETFL, saved_fl);
+        return r;
+    }
+    if (saved_fl >= 0) (void)fcntl(fd, F_SETFL, saved_fl);
+    return korb_raise_errno(c, slots, cerr, "connect", host);
 }
 
 /* __sock_bind(fd, family, host, port) */
@@ -797,7 +836,7 @@ void korb_init_socket(CTX *c, VALUE *slots) {
     (void)slots;
     const VALUE obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
     korb_class_def_cfn(c, obj, "__sock_open",        korb_m_sock_open,        -1);
-    korb_class_def_cfn(c, obj, "__sock_connect",     korb_m_sock_connect,      4);
+    korb_class_def_cfn(c, obj, "__sock_connect",     korb_m_sock_connect,     -1);
     korb_class_def_cfn(c, obj, "__sock_bind",        korb_m_sock_bind,         4);
     korb_class_def_cfn(c, obj, "__sock_listen",      korb_m_sock_listen,       2);
     korb_class_def_cfn(c, obj, "__sock_accept",      korb_m_sock_accept,       1);

@@ -147,12 +147,16 @@ class IPSocket < BasicSocket
 end
 
 class TCPSocket < IPSocket
-  def initialize(host, port, local_host = nil, local_port = nil)
+  # :connect_timeout / :open_timeout bound the connect; :resolv_timeout is
+  # accepted and ignored (resolution here is a single getaddrinfo call).
+  def initialize(host, port, local_host = nil, local_port = nil,
+                 connect_timeout: nil, open_timeout: nil, resolv_timeout: nil)
+    tmo = connect_timeout || open_timeout
     fam = Socket.__family_of_host(host)      # "::1" must open an AF_INET6 socket
     fd = __sock_open(fam, Socket::SOCK_STREAM, 0)
     begin
       __sock_bind(fd, fam, local_host, local_port || 0) if local_host
-      __sock_connect(fd, fam, host.to_s, port)   # Integer or a service name ("smtp")
+      __sock_connect(fd, fam, host.to_s, port, tmo)   # Integer or a service name ("smtp")
     rescue Exception
       IO.new(fd).close rescue nil
       raise
@@ -490,7 +494,7 @@ class Socket < BasicSocket
   end
 
   def initialize(family, type, protocol = 0)
-    @family, @type = Socket.__family(family), Socket.__socktype(type)
+    @family, @type = Socket.__family_strict(family), Socket.__socktype_strict(type)
     __init_fd(__sock_open(@family, @type, protocol), "r+")
   end
 
@@ -535,7 +539,7 @@ class Socket < BasicSocket
   end
 
   def self.pair(family, type, protocol = 0)
-    a, b = __sock_pair(__family(family), __socktype(type))
+    a, b = __sock_pair(__family_strict(family), __socktype_strict(type))
     [for_fd(a), for_fd(b)]
   end
   class << self; alias_method :socketpair, :pair; end
@@ -649,7 +653,9 @@ class Socket < BasicSocket
 
   # Like __socktype but strict: an unknown name is a SocketError (CRuby).
   def self.__socktype_strict(t)
+    t = t.to_int if !t.is_a?(Integer) && !t.is_a?(Symbol) && !t.is_a?(String) && t.respond_to?(:to_int)
     return t if t.is_a?(Integer)
+    t = t.to_str if !t.is_a?(Symbol) && !t.is_a?(String) && t.respond_to?(:to_str)
     n = t.to_s.upcase.sub(/\ASOCK_/, "")
     { "STREAM" => SOCK_STREAM, "DGRAM" => SOCK_DGRAM, "RAW" => SOCK_RAW,
       "SEQPACKET" => SOCK_SEQPACKET, "RDM" => (defined?(SOCK_RDM) ? SOCK_RDM : 4) }.fetch(n) do
@@ -669,6 +675,18 @@ class Socket < BasicSocket
     n = f.to_s.sub(/\AAF_|\APF_/, "")
     { "INET" => AF_INET, "INET6" => AF_INET6, "UNIX" => AF_UNIX,
       "LOCAL" => AF_UNIX, "UNSPEC" => AF_UNSPEC }.fetch(n.upcase, AF_INET)
+  end
+
+  # Like __family but strict: an unknown name is a SocketError (CRuby).
+  def self.__family_strict(f)
+    f = f.to_int if !f.is_a?(Integer) && !f.is_a?(Symbol) && !f.is_a?(String) && f.respond_to?(:to_int)
+    return f if f.is_a?(Integer)
+    f = f.to_str if !f.is_a?(Symbol) && !f.is_a?(String) && f.respond_to?(:to_str)
+    n = f.to_s.sub(/\AAF_|\APF_/, "")
+    { "INET" => AF_INET, "INET6" => AF_INET6, "UNIX" => AF_UNIX,
+      "LOCAL" => AF_UNIX, "UNSPEC" => AF_UNSPEC }.fetch(n.upcase) do
+      raise SocketError, "unknown socket domain: #{f}"
+    end
   end
 
   def self.__level(l)
