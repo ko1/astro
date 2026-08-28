@@ -65,6 +65,8 @@ class BasicSocket < IO
   end
 
   def shutdown(how = Socket::SHUT_RDWR)
+    how = how.to_int if !how.is_a?(Integer) && !how.is_a?(Symbol) && !how.is_a?(String) && how.respond_to?(:to_int)
+    how = how.to_str if !how.is_a?(Integer) && !how.is_a?(Symbol) && !how.is_a?(String) && how.respond_to?(:to_str)
     unless how.is_a?(Integer)
       n = how.to_s.upcase.sub(/\ASHUT_/, "")
       how = { "RD" => Socket::SHUT_RD, "WR" => Socket::SHUT_WR,
@@ -633,6 +635,93 @@ class Socket < BasicSocket
   # Every interface address, as Addrinfos (Socket::Ifaddr is not needed here).
   def self.ip_address_list
     __sock_ifaddrs.map { |fam, addr| Addrinfo.ip(addr) }
+  end
+
+  # Listening sockets for every address `host`/`port` resolves to.
+  def self.tcp_server_sockets(host_or_port, port = nil, &blk)
+    host, port = port.nil? ? [nil, host_or_port] : [host_or_port, port]
+    socks = Addrinfo.getaddrinfo(host, port, nil, :STREAM, nil, Socket::AI_PASSIVE).map do |ai|
+      s = Socket.new(ai.afamily, ai.socktype, ai.protocol)
+      s.setsockopt(:SOCKET, :REUSEADDR, true)
+      s.bind(ai.to_sockaddr)
+      s.listen(Socket::SOMAXCONN)
+      s
+    end
+    # a port of 0 means "any": every later socket must land on the first one's
+    socks = __rebind_same_port(socks, host) if port == 0 || port == "0"
+    return socks unless blk
+    begin
+      blk.call(socks)
+    ensure
+      socks.each { |s| s.close unless s.closed? }
+    end
+  end
+
+  def self.__rebind_same_port(socks, host)
+    return socks if socks.size <= 1
+    chosen = socks[0].local_address.ip_port
+    socks.each_with_index do |s, i|
+      next if i == 0 || s.local_address.ip_port == chosen
+      ai = s.local_address
+      s.close
+      t = Socket.new(ai.afamily, ai.socktype, ai.protocol)
+      t.setsockopt(:SOCKET, :REUSEADDR, true)
+      t.bind(Addrinfo.__from_ary([ai.afamily == Socket::AF_INET6 ? "AF_INET6" : "AF_INET",
+                                  chosen, ai.ip_address, ai.ip_address,
+                                  ai.socktype, ai.protocol]).to_sockaddr)
+      t.listen(Socket::SOMAXCONN)
+      socks[i] = t
+    end
+    socks
+  end
+  private_class_method :__rebind_same_port
+
+  # A listening UNIX socket at `path`.
+  def self.unix_server_socket(path, &blk)
+    File.unlink(path) if File.exist?(path) && File.socket?(path)
+    s = Socket.new(:UNIX, :STREAM)
+    s.bind(Socket.pack_sockaddr_un(path))
+    s.listen(Socket::SOMAXCONN)
+    return s unless blk
+    begin
+      blk.call(s)
+    ensure
+      s.close unless s.closed?
+      File.unlink(path) rescue nil
+    end
+  end
+
+  # Bound (not listening) UDP sockets for host/port.
+  def self.udp_server_sockets(host_or_port, port = nil, &blk)
+    host, port = port.nil? ? [nil, host_or_port] : [host_or_port, port]
+    socks = Addrinfo.getaddrinfo(host, port, nil, :DGRAM, nil, Socket::AI_PASSIVE).map do |ai|
+      s = Socket.new(ai.afamily, ai.socktype, ai.protocol)
+      s.bind(ai.to_sockaddr)
+      s
+    end
+    return socks unless blk
+    begin
+      blk.call(socks)
+    ensure
+      socks.each { |s| s.close unless s.closed? }
+    end
+  end
+
+  # Accept forever from any of `sockets`, yielding [socket, addrinfo].
+  def self.accept_loop(*sockets)
+    socks = sockets.flatten
+    loop do
+      ready = IO.select(socks)&.first
+      next if ready.nil?
+      ready.each do |s|
+        conn, addr = s.accept
+        begin
+          yield conn, addr
+        ensure
+          conn.close unless conn.closed?
+        end
+      end
+    end
   end
 
   # Socket.tcp(host, port[, local_host, local_port]) → a connected Socket.
