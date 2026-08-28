@@ -61,7 +61,14 @@ class BasicSocket < IO
     0
   end
 
-  def send(mesg, flags = 0, dest = nil) = __sock_send(fileno, mesg.to_s, flags)
+  # `dest` is a packed sockaddr (or an Addrinfo); without one the socket must
+  # already be connected.  It was being ignored, so a sendto silently became a
+  # send on an unconnected socket.
+  def send(mesg, flags = 0, dest = nil)
+    return __sock_send(fileno, mesg.to_s, flags) if dest.nil?
+    a = Socket.__unpack(dest.is_a?(Addrinfo) ? dest.to_sockaddr : dest)
+    __sock_sendto(fileno, mesg.to_s, flags, a[0], a[2], a[1])
+  end
   # Try the non-blocking op first and park only when it says EAGAIN: a POLL
   # wakeup is not a guarantee that the next call won't block.
   def recv(maxlen, flags = 0)
@@ -198,6 +205,16 @@ class TCPServer < TCPSocket
 
   def accept_nonblock(exception: true) = accept
   def listen(backlog) = (__sock_listen(fileno, backlog); 0)
+
+  # Like #accept, but hands back the raw descriptor.
+  def sysaccept
+    loop do
+      pair = __sock_accept(fileno)
+      return pair[0] if pair
+      wait_readable
+    end
+  end
+
   def self.open(*args)
     s = new(*args)
     return s unless block_given?
@@ -285,9 +302,14 @@ class UDPSocket < IPSocket
 
   def bind(host, port) = (__sock_bind(fileno, @family, host, port); 0)
   def connect(host, port) = (__sock_connect(fileno, @family, host, port); 0)
+  # UDPSocket#send takes either (host, port) or a single packed sockaddr.
   def send(mesg, flags = 0, host = nil, port = nil)
-    connect(host, port) if host
-    __sock_send(fileno, mesg.to_s, flags)
+    return __sock_send(fileno, mesg.to_s, flags) if host.nil?
+    if port.nil?
+      a = Socket.__unpack(host.is_a?(Addrinfo) ? host.to_sockaddr : host)
+      return __sock_sendto(fileno, mesg.to_s, flags, a[0], a[2], a[1])
+    end
+    __sock_sendto(fileno, mesg.to_s, flags, @family, host.to_s, port)
   end
 end
 
@@ -545,6 +567,21 @@ class Socket < BasicSocket
 
   def self.getifaddrs
     []   # Socket::Ifaddr is not modelled; an empty list is honest, not a lie about interfaces
+  end
+
+  # Every interface address, as Addrinfos (Socket::Ifaddr is not needed here).
+  def self.ip_address_list
+    __sock_ifaddrs.map { |fam, addr| Addrinfo.ip(addr) }
+  end
+
+  # Socket.tcp(host, port[, local_host, local_port]) → a connected Socket.
+  def self.tcp(host, port, local_host = nil, local_port = nil, connect_timeout: nil, resolv_timeout: nil, &blk)
+    remote = Addrinfo.tcp(host.to_s, port)
+    if local_host
+      remote.connect_from(local_host.to_s, local_port || 0, &blk)
+    else
+      remote.connect(&blk)
+    end
   end
 
   # Socket#recvfrom / #accept exist on BasicSocket; the _nonblock forms differ

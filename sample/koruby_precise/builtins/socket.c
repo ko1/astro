@@ -14,6 +14,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <ifaddrs.h>
 
 /* Build ["AF_INET"|"AF_INET6"|"AF_UNIX", port, host, addr] for a sockaddr. */
 static RESULT korb_sock_addr_ary(CTX *c, VALUE *slots, const struct sockaddr *sa, socklen_t len) {
@@ -328,6 +329,35 @@ static RESULT korb_m_sock_hostbyaddr(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     CHECK(korb_ary_push_val(c, slots + 2, out, LONG2FIX(fam)));
     CHECK(korb_ary_push_val(c, slots + 2, out, VALUE_SLICE_GET(a, 0)));
     return RESULT_OK(VALUE_REF_GET(out));
+}
+
+/* __sock_ifaddrs() → [[family, "addr"], …] for every interface with an IP. */
+static RESULT korb_m_sock_ifaddrs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    struct ifaddrs *head = NULL;
+    if (getifaddrs(&head) != 0) return korb_raise_errno(c, slots, errno, "getifaddrs", "");
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
+    VALUE_REF list = VALUE_REF_AT(&slots[0]);
+    RESULT r = RESULT_OK(KORB_NIL);
+    for (const struct ifaddrs *p = head; p != NULL && r.state == KORB_NORMAL; p = p->ifa_next) {
+        if (p->ifa_addr == NULL) continue;
+        const int fam = p->ifa_addr->sa_family;
+        if (fam != AF_INET && fam != AF_INET6) continue;
+        char host[NI_MAXHOST];
+        const socklen_t sl = (fam == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+        if (getnameinfo(p->ifa_addr, sl, host, sizeof host, NULL, 0, NI_NUMERICHOST) != 0) continue;
+        char *const pct = strchr(host, '%');            /* drop a scope id: Addrinfo takes the bare address */
+        if (pct) *pct = '\0';
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
+        VALUE_REF one = VALUE_REF_AT(&slots[1]);
+        CHECK(korb_ary_push_val(c, slots + 2, one, LONG2FIX(fam)));
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, host, (uint32_t)strlen(host)));
+        CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
+        r = korb_ary_push_val(c, slots + 2, list, VALUE_REF_GET(one));
+    }
+    freeifaddrs(head);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(VALUE_REF_GET(list));
 }
 
 /* __sock_setopt(fd, level, name, int_value) / __sock_getopt(fd, level, name) */
@@ -755,6 +785,7 @@ void korb_init_socket(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__sock_accept",      korb_m_sock_accept,       1);
     korb_class_def_cfn(c, obj, "__sock_servbyname",  korb_m_sock_servbyname,  -1);
     korb_class_def_cfn(c, obj, "__sock_hostbyaddr",  korb_m_sock_hostbyaddr,  -1);
+    korb_class_def_cfn(c, obj, "__sock_ifaddrs",     korb_m_sock_ifaddrs,      0);
     korb_class_def_cfn(c, obj, "__sock_name",        korb_m_sock_name,         2);
     korb_class_def_cfn(c, obj, "__sock_getaddrinfo", korb_m_sock_getaddrinfo, -1);
     korb_class_def_cfn(c, obj, "__sock_setopt",      korb_m_sock_setopt,       4);
