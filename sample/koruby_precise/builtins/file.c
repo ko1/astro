@@ -1183,6 +1183,21 @@ korb_line_next(const char *buf, size_t len, size_t *pos, const char *sep, size_t
 
 /* File.readlines(path, sep = $/, limit = nil, chomp: false) → the records. */
 /* File.binread / IO.binread — same read, but the result is ASCII-8BIT. */
+/* File.rename(old, new) → 0 */
+static RESULT korb_m_file_rename(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    VALUE ov, nv;
+    KORB_PATH_ARG(c, slots, a, 0, ov);
+    slots[0] = ov;                                     /* park: the second coercion dispatches */
+    KORB_PATH_ARG(c, slots + 1, a, 1, nv);
+    slots[1] = nv;
+    char ob[PATH_MAX], nb[PATH_MAX];                   /* stack copies: rename(2) must not see moved buffers */
+    snprintf(ob, sizeof ob, "%.*s", (int)VAL2STR(slots[0])->len, korb_strbuf_data(VAL2STR(slots[0])->buf));
+    snprintf(nb, sizeof nb, "%.*s", (int)VAL2STR(slots[1])->len, korb_strbuf_data(VAL2STR(slots[1])->buf));
+    if (rename(ob, nb) != 0) return korb_raise_errno(c, slots + 2, errno, "rename", ob);
+    return RESULT_OK(LONG2FIX(0));
+}
+
 static RESULT korb_m_file_binread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     RESULT r = korb_m_file_read(c, slots, self, a);
     if (LIKELY(r.state == KORB_NORMAL) && KORB_STRING_P(r.value)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
@@ -2115,6 +2130,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn_blk(c, slots[1], "foreach", korb_m_file_foreach,     -1);
     korb_class_def_cfn(c, slots[1], "delete",      korb_m_file_delete,      -1);
     korb_class_def_cfn(c, slots[1], "unlink",      korb_m_file_delete,      -1);
+    korb_class_def_cfn(c, slots[1], "rename",      korb_m_file_rename,       2);
     korb_class_def_cfn(c, slots[1], "link",        korb_m_file_link,         2);
     korb_class_def_cfn(c, slots[1], "symlink",     korb_m_file_symlink,      2);
     korb_class_def_cfn(c, slots[1], "readlink",    korb_m_file_readlink,     1);
