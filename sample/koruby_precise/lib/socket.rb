@@ -352,6 +352,13 @@ class UNIXSocket < BasicSocket
   def addr = ["AF_UNIX", @path.to_s]
   def peeraddr = ["AF_UNIX", getpeername_ary[2]]
 
+  # A UNIX socket's sender address is just ["AF_UNIX", path] — an unbound peer
+  # (a socketpair, or a client that never bound) reports an empty path.
+  def recvfrom(maxlen, flags = 0, outbuf = nil)
+    mesg, _ = super
+    [mesg, ["AF_UNIX", (getpeername_ary[2].to_s rescue "")]]
+  end
+
   def self.pair(type = Socket::SOCK_STREAM, protocol = 0)
     a, b = __sock_pair(Socket::AF_UNIX, type)
     [for_fd(a), for_fd(b)]
@@ -690,6 +697,16 @@ class Socket < BasicSocket
   # getnameinfo(sockaddr, flags = 0) → [hostname, service].  The sockaddr may be
   # packed bytes, an Addrinfo, or the descriptive [family, port, host, addr].
   def self.getnameinfo(sa, flags = 0)
+    if sa.is_a?(Array)
+      # the family has to be one getnameinfo(3) can render; AF_UNIX has no
+      # numeric host/service, so CRuby reports EAI_FAMILY
+      fam = __family_strict(sa[0])
+      unless fam == AF_INET || fam == AF_INET6 || fam == AF_UNSPEC
+        raise ResolutionError.new("getnameinfo: ai_family not supported").tap { |e|
+          e.instance_variable_set(:@error_code, EAI_FAMILY)
+        }
+      end
+    end
     packed = sa.is_a?(String) ? sa : __pack(__unpack(sa))
     __sock_getnameinfo(packed, flags)
   end
