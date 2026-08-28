@@ -43,20 +43,38 @@ class BasicSocket < IO
   def local_address = Addrinfo.__from_ary(getsockname_ary)
   def remote_address = Addrinfo.__from_ary(getpeername_ary)
 
-  def setsockopt(level, optname, value)
-    __sock_setopt(fileno, Socket.__level(level), Socket.__optname(optname), value)
+  # setsockopt(level, optname, value) or setsockopt(Socket::Option).
+  def setsockopt(level, optname = nil, value = nil)
+    if level.is_a?(Socket::Option) && optname.nil?
+      opt = level
+      __sock_setopt(fileno, opt.level, opt.optname, opt.data)
+      return 0
+    end
+    raise ArgumentError, "wrong number of arguments (given 1, expected 3)" if optname.nil?
+    lv = Socket.__level_strict(level)
+    # nil is not a value: CRuby will not guess (true/false and Integer are).
+    raise TypeError, "no implicit conversion of nil into Integer" if value.nil?
+    __sock_setopt(fileno, lv, Socket.__optname(optname, lv), value)
     0
   end
 
   def getsockopt(level, optname)
-    lv, nm = Socket.__level(level), Socket.__optname(optname)
+    lv = Socket.__level_strict(level)
+    nm = Socket.__optname(optname, lv)
     Socket::Option.new(:INET, lv, nm, __sock_getopt_raw(fileno, lv, nm))
   end
 
   def shutdown(how = Socket::SHUT_RDWR)
-    how = { "SHUT_RD" => Socket::SHUT_RD, "SHUT_WR" => Socket::SHUT_WR,
-            "SHUT_RDWR" => Socket::SHUT_RDWR, :SHUT_RD => Socket::SHUT_RD,
-            :SHUT_WR => Socket::SHUT_WR, :SHUT_RDWR => Socket::SHUT_RDWR }.fetch(how, how)
+    unless how.is_a?(Integer)
+      n = how.to_s.upcase.sub(/\ASHUT_/, "")
+      how = { "RD" => Socket::SHUT_RD, "WR" => Socket::SHUT_WR,
+              "RDWR" => Socket::SHUT_RDWR }.fetch(n) do
+        raise SocketError, "unknown shutdown argument: #{n}"
+      end
+    end
+    unless [Socket::SHUT_RD, Socket::SHUT_WR, Socket::SHUT_RDWR].include?(how)
+      raise ArgumentError, "invalid shutdown mode: #{how}"
+    end
     __sock_shutdown(fileno, how)
     0
   end
@@ -371,7 +389,10 @@ class Socket < BasicSocket
   class Option
     attr_reader :family, :level, :optname, :data
     def initialize(family, level, optname, data)
-      @family, @level, @optname, @data = family, level, optname, data
+      @family  = Socket.__family_strict(family)
+      @level   = Socket.__level_strict(level)
+      @optname = Socket.__optname(optname, @level)
+      @data    = data.to_str
     end
     def int = @data.unpack("i")[0]
     def bool = int != 0
@@ -390,6 +411,8 @@ class Socket < BasicSocket
       unless @level == Socket::SOL_SOCKET && @optname == Socket::SO_LINGER
         raise TypeError, "linger socket option expected"
       end
+      # struct linger is two ints; anything shorter is not one
+      raise TypeError, "size differ. expected as sizeof(struct linger)=8 but #{@data.bytesize}" if @data.bytesize < 8
       on, secs = @data.unpack("ii")
       [on != 0, secs]
     end
@@ -699,12 +722,36 @@ class Socket < BasicSocket
     { "SOCKET" => SOL_SOCKET, "TCP" => IPPROTO_TCP, "IP" => IPPROTO_IP, "UDP" => IPPROTO_UDP }.fetch(n, SOL_SOCKET)
   end
 
-  def self.__optname(o)
+  # Resolve an option name against its level's constant family.  Now that every
+  # platform constant is defined, this is a lookup rather than a short table
+  # with a silent default.
+  def self.__optname(o, level = nil)
+    o = o.to_int if !o.is_a?(Integer) && !o.is_a?(Symbol) && !o.is_a?(String) && o.respond_to?(:to_int)
     return o if o.is_a?(Integer)
-    n = o.to_s.upcase.sub(/\ASO_/, "")
-    { "REUSEADDR" => SO_REUSEADDR, "KEEPALIVE" => SO_KEEPALIVE, "BROADCAST" => SO_BROADCAST,
-      "LINGER" => SO_LINGER, "SNDBUF" => SO_SNDBUF, "RCVBUF" => SO_RCVBUF,
-      "TYPE" => SO_TYPE, "ERROR" => SO_ERROR, "NODELAY" => TCP_NODELAY }.fetch(n, SO_REUSEADDR)
+    n = o.to_s.upcase
+    pre = case level
+          when IPPROTO_TCP  then "TCP_"
+          when IPPROTO_IP   then "IP_"
+          when IPPROTO_UDP  then "UDP_"
+          when (const_defined?(:IPPROTO_IPV6) ? IPPROTO_IPV6 : nil) then "IPV6_"
+          else "SO_"
+          end
+    [n, pre + n, "SO_#{n}", "TCP_#{n}", "IP_#{n}", "IPV6_#{n}"].each do |cand|
+      return const_get(cand) if const_defined?(cand) && const_get(cand).is_a?(Integer)
+    end
+    raise SocketError, "unknown socket level option name: #{o}"
+  end
+
+  # Like __level but strict: an unknown name is a SocketError.
+  def self.__level_strict(l)
+    l = l.to_int if !l.is_a?(Integer) && !l.is_a?(Symbol) && !l.is_a?(String) && l.respond_to?(:to_int)
+    return l if l.is_a?(Integer)
+    n = l.to_s.upcase
+    return SOL_SOCKET if n == "SOCKET" || n == "SOL_SOCKET"
+    ["SOL_#{n}", "IPPROTO_#{n}", n].each do |cand|
+      return const_get(cand) if const_defined?(cand) && const_get(cand).is_a?(Integer)
+    end
+    raise SocketError, "unknown protocol level: #{l}"
   end
 end
 
@@ -1025,6 +1072,16 @@ class Addrinfo
                          @socktype, @protocol])
   end
 
-  def family_addrinfo(*args) = self
+  # Build an Addrinfo of this one's family/socktype/protocol from (host, port)
+  # for an IP address or (path) for a UNIX one; an Addrinfo passes through.
+  def family_addrinfo(*args)
+    return args[0] if args.size == 1 && args[0].is_a?(Addrinfo)
+    if unix?
+      raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1)" unless args.size == 1
+      return Addrinfo.unix(args[0].to_s, @socktype == 0 ? Socket::SOCK_STREAM : @socktype)
+    end
+    raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 2)" unless args.size == 2
+    Addrinfo.__from_ary([@famname, args[1], args[0].to_s, args[0].to_s, @socktype, @protocol])
+  end
   def afamily_name = @famname
 end
