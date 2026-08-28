@@ -108,10 +108,21 @@ class BasicSocket < IO
 
   # recvfrom → [data, sender_address].  The blocking form parks and retries;
   # "poll said readable" is not a promise that the next call won't block.
-  def recvfrom(maxlen, flags = 0)
+  # An optional third argument is an output buffer: it is filled in place and
+  # returned, keeping its own encoding (CRuby).
+  def recvfrom(maxlen, flags = 0, outbuf = nil)
     loop do
       r = __sock_recvfrom(fileno, maxlen, flags)
-      return [r[0], r[1]] if r
+      if r
+        next_data = r[0]
+        if outbuf
+          enc = outbuf.encoding
+          outbuf.replace(next_data)
+          outbuf.force_encoding(enc)
+          next_data = outbuf
+        end
+        return [next_data, r[1]]
+      end
       wait_readable
     end
   end
@@ -153,6 +164,10 @@ class BasicSocket < IO
   end
   def sendmsg_nonblock(mesg, flags = 0, dest_sockaddr = nil, *controls, exception: true)
     sendmsg(mesg, flags | Socket::MSG_DONTWAIT, dest_sockaddr, *controls)
+  rescue Errno::EAGAIN, Errno::EWOULDBLOCK
+    # CRuby surfaces "would block" as a WaitWritable, or as a Symbol on request
+    return :wait_writable unless exception
+    raise IO::EAGAINWaitWritable, "sendmsg(2) would block"
   end
 end
 
@@ -637,44 +652,34 @@ class Socket < BasicSocket
     __sock_ifaddrs.map { |fam, addr| Addrinfo.ip(addr) }
   end
 
-  # Listening sockets for every address `host`/`port` resolves to.
+  # Listening sockets for every address `host`/`port` resolves to.  A port of 0
+  # means "any", and CRuby gives every address the SAME port, so the first bind
+  # picks it and the rest follow.
   def self.tcp_server_sockets(host_or_port, port = nil, &blk)
     host, port = port.nil? ? [nil, host_or_port] : [host_or_port, port]
-    socks = Addrinfo.getaddrinfo(host, port, nil, :STREAM, nil, Socket::AI_PASSIVE).map do |ai|
-      s = Socket.new(ai.afamily, ai.socktype, ai.protocol)
-      s.setsockopt(:SOCKET, :REUSEADDR, true)
-      s.bind(ai.to_sockaddr)
-      s.listen(Socket::SOMAXCONN)
-      s
+    socks = []
+    begin
+      Addrinfo.getaddrinfo(host, port, nil, :STREAM, nil, Socket::AI_PASSIVE).each do |ai|
+        s = Socket.new(ai.afamily, ai.socktype, ai.protocol)
+        s.setsockopt(:SOCKET, :REUSEADDR, true)
+        # without V6ONLY a wildcard IPv6 bind also claims the IPv4 port
+        s.setsockopt(:IPV6, :V6ONLY, true) if ai.afamily == Socket::AF_INET6
+        chosen = socks.empty? ? ai.ip_port : socks[0].local_address.ip_port
+        s.bind(ai.family_addrinfo(ai.ip_address, chosen).to_sockaddr)
+        s.listen(Socket::SOMAXCONN)
+        socks << s
+      end
+    rescue Exception
+      socks.each { |x| x.close unless x.closed? }
+      raise
     end
-    # a port of 0 means "any": every later socket must land on the first one's
-    socks = __rebind_same_port(socks, host) if port == 0 || port == "0"
     return socks unless blk
     begin
       blk.call(socks)
     ensure
-      socks.each { |s| s.close unless s.closed? }
+      socks.each { |x| x.close unless x.closed? }
     end
   end
-
-  def self.__rebind_same_port(socks, host)
-    return socks if socks.size <= 1
-    chosen = socks[0].local_address.ip_port
-    socks.each_with_index do |s, i|
-      next if i == 0 || s.local_address.ip_port == chosen
-      ai = s.local_address
-      s.close
-      t = Socket.new(ai.afamily, ai.socktype, ai.protocol)
-      t.setsockopt(:SOCKET, :REUSEADDR, true)
-      t.bind(Addrinfo.__from_ary([ai.afamily == Socket::AF_INET6 ? "AF_INET6" : "AF_INET",
-                                  chosen, ai.ip_address, ai.ip_address,
-                                  ai.socktype, ai.protocol]).to_sockaddr)
-      t.listen(Socket::SOMAXCONN)
-      socks[i] = t
-    end
-    socks
-  end
-  private_class_method :__rebind_same_port
 
   # A listening UNIX socket at `path`.
   def self.unix_server_socket(path, &blk)
