@@ -49,8 +49,8 @@ class BasicSocket < IO
   end
 
   def getsockopt(level, optname)
-    Socket::Option.new(:INET, level, optname,
-                       [__sock_getopt(fileno, Socket.__level(level), Socket.__optname(optname))].pack("i"))
+    lv, nm = Socket.__level(level), Socket.__optname(optname)
+    Socket::Option.new(:INET, lv, nm, __sock_getopt_raw(fileno, lv, nm))
   end
 
   def shutdown(how = Socket::SHUT_RDWR)
@@ -371,6 +371,20 @@ class Socket < BasicSocket
     def unpack(fmt) = @data.unpack(fmt)
     def self.int(family, level, optname, integer) = new(family, level, optname, [integer].pack("i"))
     def self.bool(family, level, optname, bool) = int(family, level, optname, bool ? 1 : 0)
+
+    # SO_LINGER carries a `struct linger` (two ints), not a single one.
+    def self.linger(onoff, secs)
+      on = onoff.is_a?(Integer) ? onoff : (onoff ? 1 : 0)
+      new(Socket::AF_UNSPEC, Socket::SOL_SOCKET, Socket::SO_LINGER, [on, secs.to_int].pack("ii"))
+    end
+
+    def linger
+      unless @level == Socket::SOL_SOCKET && @optname == Socket::SO_LINGER
+        raise TypeError, "linger socket option expected"
+      end
+      on, secs = @data.unpack("ii")
+      [on != 0, secs]
+    end
   end
 
   class AncillaryData

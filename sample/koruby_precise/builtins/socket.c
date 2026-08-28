@@ -331,6 +331,18 @@ static RESULT korb_m_sock_hostbyaddr(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return RESULT_OK(VALUE_REF_GET(out));
 }
 
+/* __sock_getopt_raw(fd, level, name) → the option's bytes as a String. */
+static RESULT korb_m_sock_getopt_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    const int lv = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
+    const int nm = (int)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    char buf[256];
+    socklen_t len = sizeof buf;
+    if (getsockopt(fd, lv, nm, buf, &len) != 0) return korb_raise_errno(c, slots, errno, "getsockopt", "");
+    return korb_str_new(c, slots, buf, (uint32_t)len);
+}
+
 /* __sock_ifaddrs() → [[family, "addr"], …] for every interface with an IP. */
 static RESULT korb_m_sock_ifaddrs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; (void)a;
@@ -367,6 +379,12 @@ static RESULT korb_m_sock_setopt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const int lv = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
     const int nm = (int)FIX2LONG(VALUE_SLICE_GET(a, 2));
     const VALUE v = VALUE_SLICE_GET(a, 3);
+    if (KORB_STRING_P(v)) {   /* a packed struct (SO_LINGER, ip_mreq, …) goes through verbatim */
+        const KorbString *const sv = VAL2STR(v);
+        if (setsockopt(fd, lv, nm, korb_strbuf_data(sv->buf), (socklen_t)sv->len) != 0)
+            return korb_raise_errno(c, slots, errno, "setsockopt", "");
+        return RESULT_OK(LONG2FIX(0));
+    }
     int iv = KORB_TRUTHY(v) ? 1 : 0;
     if (FIXNUM_P(v)) iv = (int)FIX2LONG(v);
     if (setsockopt(fd, lv, nm, &iv, sizeof iv) != 0) return korb_raise_errno(c, slots, errno, "setsockopt", "");
@@ -786,6 +804,7 @@ void korb_init_socket(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__sock_servbyname",  korb_m_sock_servbyname,  -1);
     korb_class_def_cfn(c, obj, "__sock_hostbyaddr",  korb_m_sock_hostbyaddr,  -1);
     korb_class_def_cfn(c, obj, "__sock_ifaddrs",     korb_m_sock_ifaddrs,      0);
+    korb_class_def_cfn(c, obj, "__sock_getopt_raw",  korb_m_sock_getopt_raw,   3);
     korb_class_def_cfn(c, obj, "__sock_name",        korb_m_sock_name,         2);
     korb_class_def_cfn(c, obj, "__sock_getaddrinfo", korb_m_sock_getaddrinfo, -1);
     korb_class_def_cfn(c, obj, "__sock_setopt",      korb_m_sock_setopt,       4);
