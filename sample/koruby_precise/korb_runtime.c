@@ -10256,6 +10256,7 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("class_variable_set", korb_m_class_cvar_set, 2);
     MOD_CFN("class_variable_defined?", korb_m_class_cvar_defined, 1);
     MOD_CFN("class_variables", korb_m_class_cvars, -1);
+    MOD_CFN("remove_class_variable", korb_m_class_remove_cvar, 1);
     MOD_CFN("remove_const", korb_m_class_remove_const, 1);
     MOD_CFN("remove_method", korb_m_class_remove_method, -1);
     MOD_CFN("undef_method", korb_m_class_undef_method, -1);
