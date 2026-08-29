@@ -491,6 +491,19 @@ static RESULT korb_lazy_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE value, u
  * instead of collecting (for lazy#each). */
 static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t limit);   /* fwd */
 static RESULT korb_lazy_drive_sink(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t limit, struct korb_lazy_sink *sink) {
+    /* A `take(0)` (or first(0)) wants nothing, so the source must not run at
+     * all — CRuby never enters the generator. */
+    {   const VALUE ops0 = SELF_ENUM->ops;
+        if (KORB_ARRAY_P(ops0)) {
+            const KorbArray *const oa = VAL2ARY(ops0);
+            for (uint32_t oi = 0; oi < oa->len; oi++) {
+                const KorbArray *const pr = VAL2ARY(korb_items_data(oa->items)[oi]);
+                if (!strcmp(korb_sym_name(c->vm, SYM2ID(korb_items_data(pr->items)[0])), "take") &&
+                    korb_items_data(pr->items)[1] == LONG2FIX(0))
+                    return korb_ary_new(c, slots, 0);
+            }
+        }
+    }
     if (SELF_ENUM->mode == 3 || SELF_ENUM->mode == 4) return korb_enum_gen_run(c, slots, self, limit);   /* (lazy) generator */
     slots[0] = UNWRAP(korb_ary_new(c, slots, limit > 0 ? (uint32_t)limit : 8));
     VALUE_REF res = VALUE_REF_AT(&slots[0]);                     /* result (rooted) */
