@@ -3000,12 +3000,12 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_begin_node_t *bn = (const pm_begin_node_t *)node;
         uint32_t flags = 0;
         NODE *body = bn->statements ? transduce_statements(tc, bn->statements) : lit_nil();
-        if (bn->else_clause) {     /* else runs after a successful body; its value is the result */
-            NODE *eb = bn->else_clause->statements ? transduce_statements(tc, bn->else_clause->statements) : lit_nil();
-            body = ALLOC_node_seq(body, eb);   /* a raising body skips to rescue; an else exception is (rarely) caught here */
-        }
+        NODE *else_b = lit_nil();
+        if (bn->else_clause)       /* else runs after a successful body; its value is the result */
+            else_b = bn->else_clause->statements ? transduce_statements(tc, bn->else_clause->statements) : lit_nil();
         if (!bn->rescue_clause && !bn->ensure_clause)   /* plain begin[/else]/end */
-            return body;
+            return bn->else_clause ? ALLOC_node_seq(body, else_b) : body;
+        if (bn->else_clause) flags |= 4u;
         NODE *rescues = lit_nil();
         NODE *ensure_b = lit_nil();
 
@@ -3021,7 +3021,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             ensure_b = WITH_CHAIN(tc, 1, en->statements ? transduce_statements(tc, en->statements) : lit_nil());
             flags |= 2u;
         }
-        return ALLOC_node_begin(body, rescues, ensure_b, flags);
+        return ALLOC_node_begin(body, rescues, ensure_b, else_b, flags);
       }
 
       /* ---- literals ---- */
@@ -4433,7 +4433,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *cls = ALLOC_node_const(korb_intern(tc->c->vm, "StandardError", 13), 0, INT32_MIN, INT32_MIN);
         NODE *resc = transduce(tc, rm->rescue_expression);
         NODE *rescues = ALLOC_node_rescue(cls, resc, ALLOC_node_reraise(), 0, 0u);  /* catch StandardError */
-        return ALLOC_node_begin(body, rescues, lit_nil(), 1u);
+        return ALLOC_node_begin(body, rescues, lit_nil(), lit_nil(), 1u);
       }
 
       case PM_SUPER_NODE: {           /* super(...) — explicit args */

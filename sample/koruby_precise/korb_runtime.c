@@ -5187,6 +5187,21 @@ korb_mod_hook_custom(CTX *c, VALUE mod, uint32_t mid)
     return owner != korb_const_get(c->vm, korb_intern(c->vm, "Module", 6));
 }
 
+/* true when `cls` defines its own #=== (not Module's) — a rescue clause must
+ * dispatch it rather than use the built-in exception match. */
+bool
+korb_rescue_custom_eqq(CTX *c, VALUE cls)
+{
+    const VALUE dcls = korb_dispatch_class(c, cls);
+    if (!KORB_CLASS_P(dcls)) return false;
+    VALUE owner = KORB_NIL;
+    if (korb_class_find_method(dcls, korb_intern(c->vm, "===", 3), &owner) == NULL) return false;
+    struct korb_vm *const vm = c->vm;
+    return owner != korb_const_get(vm, korb_intern(vm, "Module", 6)) &&
+           owner != korb_const_get(vm, korb_intern(vm, "Class", 5)) &&
+           owner != korb_builtin_class_obj(vm, KORB_C_OBJECT);
+}
+
 /* like korb_responds_to but also honors a user-defined #respond_to_missing?
  * (the type-conversion protocols — #to_str/#to_ary/#to_int/#to_hash — check
  * respond_to? before dispatching, so a proxy/delegator/mock that answers via

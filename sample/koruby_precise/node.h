@@ -213,6 +213,7 @@ VALUE  korb_const_get_path(struct korb_vm *vm, uint32_t name_sym);
 VALUE  korb_fstr_get(CTX *c, VALUE *slots, const char *bytes, uint32_t len, uint32_t enc);
 void   korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner);
 bool   korb_mod_hook_custom(CTX *c, VALUE mod, uint32_t mid);
+bool   korb_rescue_custom_eqq(CTX *c, VALUE cls);   /* rescue clause must dispatch a user #=== */
 const char *korb_enc_name_of(const struct korb_vm *vm, uint32_t idx);
 uint32_t korb_enc_index_pub(struct korb_vm *vm, const char *name);   /* encoding name → header index (registers) */            /* encoding index → name */
 bool   korb_enc_ascii_compat_idx(const struct korb_vm *vm, uint32_t idx);        /* ASCII-compatible encoding? */
