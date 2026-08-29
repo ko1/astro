@@ -255,6 +255,10 @@ end
 # Exception-detail constructors: NameError/NoMethodError carry #name/#receiver/#args;
 # KeyError/FrozenError carry #receiver (+ #key).  Stored in the same @__ ivars the
 # dispatch-time raises use, so the existing C getters keep working.
+class SyntaxError
+  # The file the parser was reading (eval's 3rd argument), or nil.
+  def path; defined?(@__path) ? @__path : nil; end
+end
 class NameError
   UNSET__ = Object.new
   def initialize(msg = nil, name = nil, receiver: UNSET__)

@@ -394,6 +394,7 @@ static RESULT korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALU
 /* SyntaxError from a parse: the parser leaves a detail message on the vm when it
  * has one (e.g. "Can't set variable $&"); otherwise the generic text is used. */
 static RESULT korb_raise_syntax(CTX *c, VALUE *slots, const char *generic);
+static RESULT korb_raise_syntax_at(CTX *c, VALUE *slots, const char *generic, const char *fname);   /* + SyntaxError#path */
 static RESULT korb_alias_argsym(CTX *c, VALUE *slots, VALUE v, uint32_t *out);   /* name arg → mid: Symbol/String/#to_str (defined below) */
 /* div(n) = (self / n).floor → Integer (any numeric n; via runtime dispatch). */
 static RESULT korb_m_rat_divfloor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -11200,7 +11201,16 @@ korb_eval_toplevel(CTX *c, VALUE *slots, const char *src, size_t len, const char
 {
     const uint32_t repo_before = code_repo_count();               /* bodies this file adds: [repo_before, count) */
     NODE *ast = koruby_parse_source(c, src, len, fname, false);   /* immortal AST; no GC */
-    if (UNLIKELY(ast == NULL)) return korb_raise(c, slots, KORB_E_SYNTAX, 0, "syntax error in %s", fname);
+    if (UNLIKELY(ast == NULL)) {
+        RESULT sr = korb_raise(c, slots, KORB_E_SYNTAX, 0, "syntax error in %s", fname);
+        if (LIKELY(KORB_EXC_P(sr.value))) {               /* SyntaxError#path is the file we were reading */
+            slots[0] = sr.value;
+            slots[1] = UNWRAP(korb_str_new(c, slots + 1, fname, (uint32_t)strlen(fname)));
+            korb_exc_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(c->vm, "@__path", 7)), slots[1]);
+            sr.value = slots[0];
+        }
+        return sr;
+    }
     korb_load_time_specialize(ast, repo_before, fname);          /* AOT: bind (+compile when producing) at load */
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0;          /* frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self */
@@ -12493,7 +12503,7 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *
 {
     const KorbString *const s = VAL2STR(str);
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, line, false);   /* immortal AST; no GC */
-    if (UNLIKELY(ast == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
+    if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0;          /* eval frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self */
     VALUE *const fb = slots + 3;                        /* base (bottom header: fb[-2]=EP) */
@@ -12531,12 +12541,27 @@ korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VA
     return r;
 }
 
+/* `fname` (may be NULL) becomes SyntaxError#path — the file the parse was told
+ * it was reading, which for eval is its 3rd argument. */
 static RESULT
-korb_raise_syntax(CTX *c, VALUE *slots, const char *generic)
+korb_raise_syntax_at(CTX *c, VALUE *slots, const char *generic, const char *fname)
 {
     const char *const detail = c->vm->last_syntax_msg;
     c->vm->last_syntax_msg = NULL;
-    return korb_raise(c, slots, KORB_E_SYNTAX, 0, "%s", detail ? detail : generic);
+    RESULT r = korb_raise(c, slots, KORB_E_SYNTAX, 0, "%s", detail ? detail : generic);
+    if (fname != NULL && LIKELY(KORB_EXC_P(r.value))) {
+        slots[0] = r.value;
+        VALUE_REF eref = VALUE_REF_AT(&slots[0]);
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, fname, (uint32_t)strlen(fname)));
+        korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__path", 7)), slots[1]);
+        r.value = slots[0];
+    }
+    return r;
+}
+static RESULT
+korb_raise_syntax(CTX *c, VALUE *slots, const char *generic)
+{
+    return korb_raise_syntax_at(c, slots, generic, NULL);
 }
 
 /* Eval `*src_slot` under the binding at `*bind_slot`: declared-scope parse,
@@ -12672,7 +12697,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_eval_binding_core(c, slots + 2, &slots[0], &slots[1], fname, eline, NULL, KORB_UNDEF);
     }
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, eline, false);   /* immortal AST; no GC */
-    if (UNLIKELY(ast == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
+    if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0;          /* eval frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self(step2) */
     VALUE *const fb = slots + 3;                        /* base (bottom header: fb[-2]=EP) */
