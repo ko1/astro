@@ -2318,6 +2318,10 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF sel
         return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Array or nil)", korb_type_name(keys));
     slots[0] = STRUCT_MEMBERS(self);                           /* members (symbols), rooted */
     slots[1] = keys;                                           /* requested keys, rooted */
+    /* Data names its members only: an Integer key is a TypeError there, and a
+     * non-Symbol key converts through #to_str (Struct still indexes by position). */
+    const VALUE sc_ = korb_class_obj_of(c, VALUE_REF_GET(self));
+    const bool is_data = KORB_CLASS_P(sc_) && VAL2CLASS(sc_)->is_data;
     const uint32_t nk = VAL2ARY(slots[1])->len;
     slots[2] = UNWRAP(korb_hash_new(c, slots + 3, nk));
     VALUE_REF dst = VALUE_REF_AT(&slots[2]);
@@ -2327,9 +2331,29 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF sel
         const KorbArray *const mem = VAL2ARY(slots[0]);        /* re-read post-GC */
         /* resolve key → member symbol: Symbol matches directly, String by name,
          * Integer by position. */
-        VALUE msym = KORB_NIL;
+        VALUE msym = KORB_NIL, outkey = key;   /* the hash keeps the key as given, except a #to_str conversion */
         if (SYMBOL_P(key)) msym = key;
         else if (KORB_STRING_P(key)) msym = ID2SYM(korb_intern(c->vm, korb_strbuf_data(VAL2STR(key)->buf), VAL2STR(key)->len));
+        else if (is_data) {                                    /* Data: #to_str or TypeError */
+            VALUE kv = key;
+            if (KORB_OBJECT_P(kv) && korb_responds_to_coerce_p(c, slots + 5, &kv, korb_intern(c->vm, "to_str", 6))) {
+                slots[5] = kv;
+                RESULT sr = korb_send_impl(c, slots + 6, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                if (KORB_STRING_P(sr.value)) {
+                    msym = ID2SYM(korb_intern(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len));
+                    outkey = sr.value;
+                }
+                else { char db[192]; korb_recv_desc(c, slots + 6, sr.value, db, sizeof db);
+                       return korb_raise(c, slots + 5, KORB_E_TYPE, 0, "can't convert %s to Symbol (%s#to_str gives %s)",
+                                         korb_type_name(key), korb_type_name(key), korb_type_name(sr.value)); }
+            } else {
+                char db[64];
+                if (FIXNUM_P(key)) snprintf(db, sizeof db, "%ld", (long)FIX2LONG(key));
+                else               snprintf(db, sizeof db, "%s", korb_type_name(key));
+                return korb_raise(c, slots + 5, KORB_E_TYPE, 0, "%s is not a symbol nor a string", db);
+            }
+        }
         else if (FIXNUM_P(key)) {
             korb_sword_t idx = FIX2LONG(key);
             if (idx < 0) idx += mem->len;                      /* negative index from the end */
@@ -2351,7 +2375,7 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF sel
         { const KorbArray *const memf = VAL2ARY(slots[0]);     /* re-read (coerce path may have GC'd) */
           for (uint32_t m = 0; m < memf->len; m++) if (korb_items_data(memf->items)[m] == msym) { found = true; break; } }
         if (!found) break;
-        slots[3] = key;                                        /* hash uses the original key */
+        slots[3] = outkey;                                     /* hash uses the key as given (or its #to_str result) */
         slots[4] = korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, msym));
         CHECK(korb_hash_set(c, slots + 5, dst, VALUE_REF_AT(&slots[3]), slots[4]));
     }
@@ -8652,6 +8676,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 }
                 CHECK(korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[0]), iv, slots[1]));
             }
+            if (is_data && AROH_IS_GC_OBJECT(slots[0]))   /* Data instances are frozen (CRuby) */
+                ((AroObjectHeader *)(uintptr_t)slots[0])->flags |= KORB_FL_FROZEN;
             return RESULT_OK(slots[0]);
         }
         if (self == korb_builtin_class_obj(vm, KORB_C_ARRAY)) {       /* Array.new(n[,v]) / Array.new(n){|i|} / Array.new(ary) */
