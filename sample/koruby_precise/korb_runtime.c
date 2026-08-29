@@ -2020,24 +2020,56 @@ korb_cvar_cref(VALUE self, VALUE entry_cell)
 
 /* the ancestor (cref-and-up) that defines class var `sym`, with *idx set to its
  * hash slot; KORB_NIL if undefined anywhere on the chain. */
+static bool korb_cvar_in(VALUE k, VALUE sym, int32_t *idx_out)
+{
+    if (!KORB_CLASS_P(k)) return false;
+    const VALUE cv = VAL2CLASS(k)->cvars;
+    if (cv == KORB_NIL) return false;
+    const int32_t idx = korb_hash_find(VAL2HASH(cv), sym);
+    if (idx < 0) return false;
+    *idx_out = idx;
+    return true;
+}
+
 VALUE
 korb_cvar_owner(VALUE cref, VALUE sym, int32_t *idx_out)
 {
     for (VALUE k = cref; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
-        const VALUE cv = VAL2CLASS(k)->cvars;
-        if (cv != KORB_NIL) {
-            const int32_t idx = korb_hash_find(VAL2HASH(cv), sym);
-            if (idx >= 0) { *idx_out = idx; return k; }
+        if (korb_cvar_in(k, sym, idx_out)) return k;
+        /* a class shares its class variables with the modules it includes and
+         * prepends, not just with its superclasses */
+        const VALUE pre = VAL2CLASS(k)->prepended;
+        if (pre != KORB_NIL) {
+            const KorbArray *const pa = VAL2ARY(pre);
+            for (uint32_t i = 0; i < pa->len; i++)
+                if (korb_cvar_in(korb_items_data(pa->items)[i], sym, idx_out)) return korb_items_data(pa->items)[i];
+        }
+        const VALUE inc = VAL2CLASS(k)->included;
+        if (inc != KORB_NIL) {
+            const KorbArray *const ia = VAL2ARY(inc);
+            for (uint32_t i = 0; i < ia->len; i++)
+                if (korb_cvar_in(korb_items_data(ia->items)[i], sym, idx_out)) return korb_items_data(ia->items)[i];
         }
     }
     return KORB_NIL;
+}
+
+/* A `class << X` body shares X's class variables: the singleton is not a scope
+ * of its own for @@vars (CRuby). */
+static VALUE korb_cvar_scope(CTX *c, VALUE cref)
+{
+    if (!KORB_CLASS_P(cref) || !VAL2CLASS(cref)->is_singleton) return cref;
+    const struct korb_vm *const vm = c->vm;
+    for (uint32_t i = 0; i < vm->sklass_cnt; i++)
+        if (vm->sklass_cls[i] == cref && KORB_CLASS_P(vm->sklass_obj[i])) return vm->sklass_obj[i];
+    return cref;
 }
 
 /* soft: `@@x ||= v` / `&&=` read an undefined cvar as nil instead of raising. */
 RESULT
 korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, uint32_t soft)
 {
-    const VALUE cref = korb_cvar_cref(self, entry_cell);
+    const VALUE cref = korb_cvar_scope(c, korb_cvar_cref(self, entry_cell));
     if (!KORB_CLASS_P(cref)) {
         if (soft) return RESULT_OK(KORB_NIL);
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable access from toplevel");
@@ -2066,7 +2098,7 @@ korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_i
 RESULT
 korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, VALUE val)
 {
-    const VALUE cref = korb_cvar_cref(self, entry_cell);
+    const VALUE cref = korb_cvar_scope(c, korb_cvar_cref(self, entry_cell));
     if (!KORB_CLASS_P(cref))
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable assignment from toplevel");
     { RESULT fr = korb_check_def_frozen(c, slots, cref); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* @@cvar = / class_variable_set on a frozen class → FrozenError */
