@@ -184,6 +184,18 @@ node_readonly_gvar(CTX *c, NODE *n, VALUE *slots, const char *name, uint32_t lin
 
 // `$/ = v` and friends: CRuby warns (verbose mode) when a deprecated separator
 // global is set to a non-nil value.  The write itself is done by the caller.
+// $VERBOSE keeps only nil/true/false; $. coerces through #to_int (kind 1).
+NODE_DEF
+node_gvar_coerce(CTX *c, NODE *n, VALUE *slots, uint32_t kind, VALUE val@child)
+{
+    (void)n;
+    if (kind == 0) return RESULT_OK(val == KORB_NIL ? KORB_NIL : (KORB_TRUTHY(val) ? KORB_TRUE : KORB_FALSE));
+    if (KORB_FLOAT_P(val)) return RESULT_OK(LONG2FIX((korb_sword_t)korb_float_val(val)));
+    slots[0] = val;
+    CHECK(korb_coerce_to_int_pub(c, slots + 1, &slots[0]));
+    return RESULT_OK(slots[0]);
+}
+
 NODE_DEF @noinline
 node_deprecated_gvar_warn(CTX *c, NODE *n, VALUE *slots, const char *name, VALUE val@child)
 {

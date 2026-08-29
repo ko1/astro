@@ -274,6 +274,9 @@ kp_gvar_alias_seed(struct kp_ctx *tc)
         { "$PREMATCH", "$`" }, { "$POSTMATCH", "$'" },
         { "$LAST_PAREN_MATCH", "$+" }, { "$LOADED_FEATURES", "$\"" },
         { "$PROGRAM_NAME", "$0" },
+        /* command-line switch aliases (CRuby exposes these as the same slot) */
+        { "$-d", "$DEBUG" }, { "$-v", "$VERBOSE" }, { "$-w", "$VERBOSE" },
+        { "$-I", "$LOAD_PATH" }, { "$:", "$LOAD_PATH" },
     };
     for (size_t i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++)
         kp_gvar_alias_add(korb_intern(tc->c->vm, pairs[i][0], (uint32_t)strlen(pairs[i][0])),
@@ -4272,6 +4275,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         }
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
+        {   /* a few globals normalize what they store */
+            const char *const rn = korb_sym_name(tc->c->vm, name);
+            if (strcmp(rn, "$VERBOSE") == 0 || strcmp(rn, "$DEBUG") == 0) val = ALLOC_node_gvar_coerce(0, val);
+            else if (strcmp(rn, "$.") == 0)                               val = ALLOC_node_gvar_coerce(1, val);
+        }
         return build_const_set(tc, name, val);
       }
       case PM_GLOBAL_VARIABLE_OPERATOR_WRITE_NODE: {     /* `$x op= v` */
