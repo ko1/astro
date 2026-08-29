@@ -426,17 +426,30 @@ class Enumerator::Lazy
   end
 
   def zip(*others, &b)
-    if others.any? { |o| !o.is_a?(Array) && !o.respond_to?(:to_ary) }
-      # a non-Array argument makes CRuby fall back to the eager Enumerable#zip
+    # Only something with no way to iterate falls back to the eager
+    # Enumerable#zip; an Enumerable argument is pulled lazily, one value per
+    # row, so an infinite source still works.
+    unless others.all? { |o| o.is_a?(Array) || o.respond_to?(:to_ary) || o.respond_to?(:each) }
       return super
     end
-    lists = others.map { |o| o.is_a?(Array) ? o : o.to_ary }
+    lists = others.map { |o| o.is_a?(Array) ? o : (o.respond_to?(:to_ary) ? o.to_ary : nil) }
     src = self
     z = __lazy_gen(size) do |y|
+      iters = others.each_with_index.map { |o, k| lists[k] ? nil : o.to_enum(:each) }
       i = 0
       src.each do |x|
         row = [x]
-        lists.each { |l| row << l[i] }
+        others.each_index do |k|
+          row << if lists[k]
+                   lists[k][i]
+                 else
+                   begin
+                     iters[k].next
+                   rescue StopIteration
+                     nil
+                   end
+                 end
+        end
         y << row
         i += 1
       end
