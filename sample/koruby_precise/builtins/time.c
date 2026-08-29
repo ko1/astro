@@ -496,7 +496,9 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
         if (FIXNUM_P(uv)) us = (double)FIX2LONG(uv);
         else if (KORB_FLOAT_P(uv)) us = korb_float_val(uv);
         else korb_num_to_d(uv, &us);
-        subsec += us / 1e6;
+        if (UNLIKELY(us < 0 || us >= 1000000))               /* CRuby: usec must fit one second */
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "argument out of range");
+        subsec = us / 1e6;                                   /* an explicit usec REPLACES the seconds fraction */
     }
     cls = slots[0];                                          /* re-read after any GC move */
     /* CRuby raises ArgumentError for out-of-range components (no mktime rollover). */
