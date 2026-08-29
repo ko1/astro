@@ -4018,8 +4018,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                     PM_NODE_TYPE_P(cn->receiver, PM_CLASS_VARIABLE_READ_NODE)) {
                     pm_defined_node_t rdn = *(const pm_defined_node_t *)node;   /* reuse this node's shape */
                     rdn.value = (pm_node_t *)cn->receiver;
-                    NODE *rchk;
-                    WITH_CHAIN(tc, 1, (rchk = transduce(tc, (const pm_node_t *)&rdn)));
+                    /* node_and stages nothing (slot_count 0), so both sides sit
+                     * at this cursor — an extra chain hop here made the ivar /
+                     * cvar receiver read the wrong self cell. */
+                    NODE *rchk = transduce(tc, (const pm_node_t *)&rdn);
                     return ALLOC_node_and(rchk, _dc);
                 }
                 return _dc;
@@ -4027,7 +4029,18 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             /* bareword (possibly with args): "method" iff self responds to it. */
             NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d;
         }
-        if (PM_NODE_TYPE_P(v, PM_YIELD_NODE)) { tc->frame->uses_block = true; return ALLOC_node_defined_yield(-4 - tc->chain); }   /* "yield" iff block present */
+        if (PM_NODE_TYPE_P(v, PM_YIELD_NODE)) {   /* "yield" iff the enclosing METHOD got a block */
+            struct kp_frame *mf = tc->frame;
+            uint32_t depth = 0;
+            while (mf->method_mid == 0 && mf->prev) { mf = mf->prev; depth++; }
+            if (mf->method_mid == 0) { mf = tc->frame; depth = 0; }
+            mf->uses_block = true;
+            if (depth == 0) return ALLOC_node_defined_yield(-4 - tc->chain);
+            NODE *dy = ALLOC_node_defined_yield_outer(-2 - tc->chain, depth, -4);
+            bake_add(tc, &dy->u.node_defined_yield_outer.prev_off);
+            add_bake_to(mf, &dy->u.node_defined_yield_outer.trio_base);
+            return dy;
+        }
         if (PM_NODE_TYPE_P(v, PM_CLASS_VARIABLE_READ_NODE)) {            /* "class variable" iff present */
             NODE *_d = ALLOC_node_defined_cvar(-1 - tc->chain, -1 - tc->chain,
                                                kp_intern_cid(tc, ((const pm_class_variable_read_node_t *)v)->name));

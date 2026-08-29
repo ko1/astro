@@ -1589,7 +1589,7 @@ node_defined_cpath_dyn(CTX *c, NODE *n, VALUE *slots, NODE *parent, uint32_t nam
     if (!KORB_CLASS_P(pr.value)) return RESULT_OK(KORB_NIL);
     struct korb_vm *const vm = c->vm;
     uint32_t idx = korb_const_index_owned(vm, name, pr.value);
-    if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, pr.value, name);   /* inherited counts */
+    if (idx == UINT32_MAX) idx = korb_const_in_ancestry_scoped(vm, pr.value, name);   /* inherited counts; Object's own do not */
     if (idx == UINT32_MAX && !korb_autoload_registered_p(c, pr.value, name))   /* a pending autoload counts too */
         return RESULT_OK(KORB_NIL);
     if (UNLIKELY(vm->privconst_cnt != 0) &&                                   /* a private constant is not `defined?` */
@@ -1614,7 +1614,7 @@ node_defined_cpath(CTX *c, NODE *n, VALUE *slots, uint32_t owner_name@sym, uint3
     const VALUE owner = korb_const_get(vm, owner_name);
     if (!KORB_CLASS_P(owner)) return RESULT_OK(KORB_NIL);         /* parent undefined / not a module */
     uint32_t idx = korb_const_index_owned(vm, name, owner);
-    if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, owner, name);   /* inherited constants count */
+    if (idx == UINT32_MAX) idx = korb_const_in_ancestry_scoped(vm, owner, name);   /* inherited constants count; Object's own do not */
     if (idx == UINT32_MAX && !korb_autoload_registered_p(c, owner, name))   /* a pending autoload counts too */
         return RESULT_OK(KORB_NIL);                                          /* nil-valued constant still counts as defined */
     if (UNLIKELY(vm->privconst_cnt != 0) &&                                  /* a private constant is not `defined?` */
@@ -1628,6 +1628,20 @@ node_defined_cpath(CTX *c, NODE *n, VALUE *slots, uint32_t owner_name@sym, uint3
 }
 
 // defined?(yield): "yield" iff a block was passed to the enclosing method.
+// defined?(yield) inside a block: the answer is the enclosing METHOD's block
+// (like block_given?), reached through `depth` env links.
+NODE_DEF
+node_defined_yield_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, int32_t trio_base)
+{
+    (void)n;
+    const VALUE *const node = korb_outer_frame_base(slots[prev_off], depth);
+    if (!node || !((uintptr_t)node[trio_base] & 1u)) return RESULT_OK(KORB_NIL);
+    RESULT dr = korb_str_new(c, slots, "yield", 5);
+    if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
+        ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;
+    return dr;
+}
+
 NODE_DEF @nogc
 node_defined_yield(CTX *c, NODE *n, VALUE *slots, int32_t biseq_off)
 {
