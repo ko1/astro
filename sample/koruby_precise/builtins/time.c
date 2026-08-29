@@ -1044,8 +1044,9 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             }
             i++;
         }
-        int ncolon = 0; while (i < fl && fmt[i] == ':') { ncolon++; i++; }   /* %:z colons */
+        int ncolon = 0; while (i < fl && fmt[i] == ':') { ncolon++; i++; }   /* %:z colons (before the width) */
         int width = -1; { int w = 0; bool any = false; while (i < fl && isdigit((unsigned char)fmt[i])) { w = w*10 + (fmt[i]-'0'); any = true; i++; } if (any) width = w; }
+        while (i < fl && fmt[i] == ':') { ncolon++; i++; }   /* … or after it: `%-010:z` */
         (void)f_swap; (void)f_upper;
         if (i >= fl) { efmt[o++] = '%'; break; }
         const char spec = fmt[i];
@@ -1056,18 +1057,26 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         } else if (spec == 'z') {                            /* %z / %:z / %::z, with Ruby's flags + width */
             const long ao = gmtoff < 0 ? -gmtoff : gmtoff;
             const int hh = (int)(ao/3600), mm = (int)((ao%3600)/60), ss = (int)(ao%60);
-            const char sign = gmtoff < 0 ? '-' : '+';
-            char body[24];
-            if (ncolon >= 2)      snprintf(body, sizeof body, "%02d:%02d:%02d", hh, mm, ss);
-            else if (ncolon == 1) snprintf(body, sizeof body, "%02d:%02d", hh, mm);
-            else                  snprintf(body, sizeof body, "%02d%02d", hh, mm);
+            /* RFC 3339 "unknown local offset": `%-z` on a UTC time is -0000. */
+            const char sign = (gmtoff < 0 || (f_dash && gmtoff == 0)) ? '-' : '+';
+            /* A width is absorbed by the HOUR field (CRuby): `%-10z` → -000000000,
+             * while `_` keeps the hour minimal and pads with blanks before the
+             * sign (`%-_10z` → "      -000"). */
+            const int rest = (ncolon >= 2) ? 6 : (ncolon == 1 ? 3 : 2);   /* chars after the hour */
+            int hw = 2;
+            if (width >= 0) {
+                if (f_under) hw = 1;
+                else { hw = width - 1 - rest; if (hw < 2) hw = 2; }
+            }
+            char body[40];
+            if (ncolon >= 2)      snprintf(body, sizeof body, "%0*d:%02d:%02d", hw, hh, mm, ss);
+            else if (ncolon == 1) snprintf(body, sizeof body, "%0*d:%02d", hw, hh, mm);
+            else                  snprintf(body, sizeof body, "%0*d%02d", hw, hh, mm);
             char zb[64];
             const int blen = (int)strlen(body);
-            /* width counts the sign; pad the DIGITS with 0 (or with blanks for `_`) */
             int pad = (width > blen + 1) ? width - blen - 1 : 0;
             char *w = zb;
             if (f_under) { for (int k = 0; k < pad; k++) *w++ = ' '; *w++ = sign; }
-            else if (f_dash) { *w++ = sign; }                 /* `-` = no padding at all */
             else { *w++ = sign; for (int k = 0; k < pad; k++) *w++ = '0'; }
             memcpy(w, body, (size_t)blen); w += blen; *w = '\0';
             for (const char *p = zb; *p && o + 1 < sizeof efmt; p++) efmt[o++] = *p;
@@ -1089,7 +1098,10 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
                 if (f_swap)  efmt[o++] = '#';
                 /* `-` means no padding at all, so the width must not reach glibc
                  * (which pads anyway when a width is present). */
-                if (width >= 0 && !f_dash) o += (uint32_t)snprintf(efmt + o, sizeof efmt - o, "%d", width);
+                /* Ruby pads the year forms to 4 digits by default; glibc does not. */
+                int w = width;
+                if (w < 0 && !f_dash && f_pad != ' ' && (fmt[i] == 'Y' || fmt[i] == 'G')) w = 4;
+                if (w >= 0 && !f_dash) o += (uint32_t)snprintf(efmt + o, sizeof efmt - o, "%d", w);
                 if (o + 1 < sizeof efmt) efmt[o++] = fmt[i];
             }
         }
