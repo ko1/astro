@@ -166,35 +166,41 @@ void korb_init_math(CTX *c, VALUE *slots) {
     korb_const_define(c, korb_intern(vm, "Math", 4), slots[0]);
     /* Owned so `Float.constants` / `Math.constants` report them; a bare read
      * still finds them, since the by-name lookup ignores the owner. */
-    const VALUE mathm = slots[0];
-    const VALUE fltc = korb_builtin_class_obj(vm, KORB_C_FLOAT);
-    const VALUE cpxc = korb_builtin_class_obj(vm, KORB_C_COMPLEX);
-#define MCONST(o, nm, n, v) korb_const_define_owned(c, korb_intern(vm, nm, n), (v), (o))
-    MCONST(mathm, "PI", 2, korb_float_new(c, slots + 1, M_PI).value);
-    MCONST(mathm, "E",  1, korb_float_new(c, slots + 1, M_E).value);
-    MCONST(fltc, "INFINITY", 8, korb_float_new(c, slots + 1, INFINITY).value);
-    MCONST(fltc, "NAN", 3,      korb_float_new(c, slots + 1, NAN).value);
-    MCONST(fltc, "MAX", 3,      korb_float_new(c, slots + 1, DBL_MAX).value);
-    MCONST(fltc, "MIN", 3,      korb_float_new(c, slots + 1, DBL_MIN).value);
-    MCONST(fltc, "EPSILON", 7,  korb_float_new(c, slots + 1, DBL_EPSILON).value);
-    MCONST(cpxc, "I", 1,        korb_cpx_new(c, slots + 1, LONG2FIX(0), LONG2FIX(1)).value);
+    /* The owner must be re-read AFTER the value's alloc: a moving GC there would
+     * strand a class VALUE captured in a C local (the constant would then be
+     * registered under a stale owner and never found). */
+#define KORB_MATH_MOD  slots[0]
+#define KORB_FLOAT_CLS korb_builtin_class_obj(vm, KORB_C_FLOAT)
+#define KORB_CPX_CLS   korb_builtin_class_obj(vm, KORB_C_COMPLEX)
+#define MCONST(o, nm, n, v) do { slots[2] = (v); korb_const_define_owned(c, korb_intern(vm, nm, n), slots[2], (o)); } while (0)
+    MCONST(KORB_MATH_MOD, "PI", 2, korb_float_new(c, slots + 1, M_PI).value);
+    MCONST(KORB_MATH_MOD, "E",  1, korb_float_new(c, slots + 1, M_E).value);
+    MCONST(KORB_FLOAT_CLS, "INFINITY", 8, korb_float_new(c, slots + 1, INFINITY).value);
+    MCONST(KORB_FLOAT_CLS, "NAN", 3,      korb_float_new(c, slots + 1, NAN).value);
+    MCONST(KORB_FLOAT_CLS, "MAX", 3,      korb_float_new(c, slots + 1, DBL_MAX).value);
+    MCONST(KORB_FLOAT_CLS, "MIN", 3,      korb_float_new(c, slots + 1, DBL_MIN).value);
+    MCONST(KORB_FLOAT_CLS, "EPSILON", 7,  korb_float_new(c, slots + 1, DBL_EPSILON).value);
+    MCONST(KORB_CPX_CLS, "I", 1,        korb_cpx_new(c, slots + 1, LONG2FIX(0), LONG2FIX(1)).value);
     /* integer-valued Float:: constants (IEEE-754 double properties). */
-    MCONST(fltc, "DIG", 3,         LONG2FIX(DBL_DIG));
-    MCONST(fltc, "MANT_DIG", 8,    LONG2FIX(DBL_MANT_DIG));
-    MCONST(fltc, "MIN_EXP", 7,     LONG2FIX(DBL_MIN_EXP));
-    MCONST(fltc, "MAX_EXP", 7,     LONG2FIX(DBL_MAX_EXP));
-    MCONST(fltc, "MIN_10_EXP", 10, LONG2FIX(DBL_MIN_10_EXP));
-    MCONST(fltc, "MAX_10_EXP", 10, LONG2FIX(DBL_MAX_10_EXP));
-    MCONST(fltc, "RADIX", 5,       LONG2FIX(FLT_RADIX));
+    MCONST(KORB_FLOAT_CLS, "DIG", 3,         LONG2FIX(DBL_DIG));
+    MCONST(KORB_FLOAT_CLS, "MANT_DIG", 8,    LONG2FIX(DBL_MANT_DIG));
+    MCONST(KORB_FLOAT_CLS, "MIN_EXP", 7,     LONG2FIX(DBL_MIN_EXP));
+    MCONST(KORB_FLOAT_CLS, "MAX_EXP", 7,     LONG2FIX(DBL_MAX_EXP));
+    MCONST(KORB_FLOAT_CLS, "MIN_10_EXP", 10, LONG2FIX(DBL_MIN_10_EXP));
+    MCONST(KORB_FLOAT_CLS, "MAX_10_EXP", 10, LONG2FIX(DBL_MAX_10_EXP));
+    MCONST(KORB_FLOAT_CLS, "RADIX", 5,       LONG2FIX(FLT_RADIX));
 #undef MCONST
+#undef KORB_MATH_MOD
+#undef KORB_FLOAT_CLS
+#undef KORB_CPX_CLS
     {   /* Math::DomainError is created with the exception classes, before Math
          * exists; re-own the existing entry rather than adding a second one. */
         const uint32_t de = korb_intern(vm, "DomainError", 11);
         for (uint32_t i = 0; i < vm->const_cnt; i++)
             if (vm->const_names[i] == de && vm->const_owners[i] == KORB_NIL) {
-                vm->const_owners[i] = mathm;
+                vm->const_owners[i] = slots[0];
                 const VALUE dec = vm->const_vals[i];                     /* also gives it the Math:: qualified name */
-                if (KORB_CLASS_P(dec)) ARO_STORE(c, VAL2CLASS(dec), (VALUE *)(uintptr_t)&VAL2CLASS(dec)->enclosing, mathm);
+                if (KORB_CLASS_P(dec)) ARO_STORE(c, VAL2CLASS(dec), (VALUE *)(uintptr_t)&VAL2CLASS(dec)->enclosing, slots[0]);
                 break;
             }
     }

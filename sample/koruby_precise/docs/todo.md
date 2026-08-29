@@ -2809,6 +2809,14 @@ korb_block_yield_full で走るため frame の fs-2 に method entry が
 subclass リストから作れるが、spec の大半は任意オブジェクトを見る。
 実 mspec で 24 例。
 
+## ~~`A::B` 定数解決が GC STRESS で落ちる~~ (2026-08-29 修正済)
+
+真因は定数解決ではなく `builtins/math.c` の登録側だった。Float/Complex の
+クラス VALUE を C ローカルに持ったまま `korb_float_new` を呼んでいたので、
+STRESS 下で GC がクラスを動かし、`Float::MAX` 等が stale な owner で
+登録されていた。owner は値の alloc の後に読み直すようにした。
+以下は当時の記録:
+
 ## `A::B` 定数解決が GC STRESS で落ちる (既存バグ)
 
 `BARUBY_GC_STRESS=1 ./koruby_precise -e 'p Float::MAX'` が
