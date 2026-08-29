@@ -1612,6 +1612,24 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)korb_io_flush_rep(rep);
     if (dup2(other->fd, rep->fd) < 0) return korb_raise_errno(c, slots, errno, "dup2", "");
     korb_io_drop_rbuf(rep);
+    (void)fcntl(rep->fd, F_SETFD, FD_CLOEXEC);         /* CRuby always re-arms close-on-exec here */
+    /* The receiver takes on the other stream's mode and path, so a read after
+     * `w.reopen(r)` works and #path reports the new file. */
+    {
+        const uint32_t mode_mid = korb_io_mode_mid(c);
+        const VALUE orw = korb_ivar_get(c, slots[0], ID2SYM(mode_mid));
+        const VALUE oms = korb_ivar_get(c, slots[0], ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)));
+        const VALUE opath = korb_ivar_get(c, slots[0], ID2SYM(korb_intern(c->vm, "@__io_path", 10)));
+        if (orw != KORB_NIL) CHECK(korb_ivar_set(c, slots + 1, self, ID2SYM(mode_mid), orw));
+        else {                                          /* std streams carry no ivar: ask the fd */
+            const int fl = fcntl(rep->fd, F_GETFL);
+            const int acc = (fl < 0) ? O_RDONLY : (fl & O_ACCMODE);
+            CHECK(korb_ivar_set(c, slots + 1, self, ID2SYM(mode_mid),
+                                LONG2FIX(acc == O_WRONLY ? 2 : acc == O_RDWR ? 3 : 1)));
+        }
+        if (oms != KORB_NIL)   { slots[1] = oms;   CHECK(korb_ivar_set(c, slots + 2, self, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)), slots[1])); }
+        if (opath != KORB_NIL) { slots[1] = opath; CHECK(korb_ivar_set(c, slots + 2, self, ID2SYM(korb_intern(c->vm, "@__io_path", 10)), slots[1])); }
+    }
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
