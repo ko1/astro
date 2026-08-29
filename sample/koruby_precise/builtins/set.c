@@ -897,6 +897,11 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
           case KORB_C_STRING: inst = korb_str_new(c, slots + 1, "", 0); break;
           case KORB_C_ARRAY:  inst = korb_ary_new(c, slots + 1, 0); break;
           case KORB_C_HASH:   inst = korb_hash_new(c, slots + 1, 0); break;
+          case KORB_C_RANGE:  slots[1] = KORB_NIL;   /* nil..nil until #initialize; not frozen yet */
+                              inst = korb_range_new(c, slots + 2, VALUE_REF_AT(&slots[1]), KORB_NIL, 0);
+                              if (inst.state == KORB_NORMAL && inst.value != KORB_NIL)
+                                  ((AroObjectHeader *)(uintptr_t)inst.value)->flags &= ~(uint32_t)KORB_FL_FROZEN;
+                              break;
           default: break;
         }
         if (inst.value != KORB_NIL) {

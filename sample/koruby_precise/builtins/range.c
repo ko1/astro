@@ -458,6 +458,31 @@ static RESULT korb_m_range_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     for (korb_sword_t i = lo; i < end; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* Range#initialize(begin, end, exclude_end = false) — private; only usable on a
+ * freshly allocated Range (CRuby raises NameError/FrozenError on a live one). */
+static RESULT korb_m_range_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    if (UNLIKELY(n < 2 || n > 3))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2..3)", n);
+    const VALUE rv = VALUE_REF_GET(self);
+    if (UNLIKELY(!KORB_RANGE_P(rv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a range");
+    /* Ranges are born frozen, so "already initialized" is (begin, end) != (nil, nil). */
+    if (UNLIKELY(VAL2RANGE(rv)->rbegin != KORB_NIL || VAL2RANGE(rv)->rend != KORB_NIL))
+        return korb_raise(c, slots, KORB_E_FROZEN, 0, "can't modify frozen Range: %s", "already initialized");
+    /* both endpoints must be mutually comparable (nil is the beginless/endless mark) */
+    const VALUE bv = VALUE_SLICE_GET(a, 0), ev = VALUE_SLICE_GET(a, 1);
+    if (bv != KORB_NIL && ev != KORB_NIL) {
+        slots[0] = bv; slots[1] = ev;
+        RESULT cr = korb_send(c, slots + 2, korb_intern(c->vm, "<=>", 3), 0, 1);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (UNLIKELY(cr.value == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "bad value for range");
+    }
+    KorbRange *const r = VAL2RANGE(rv);
+    ARO_STORE(c, r, &r->rbegin, VALUE_SLICE_GET(a, 0));
+    ARO_STORE(c, r, &r->rend,   VALUE_SLICE_GET(a, 1));
+    r->exclude_end = (n >= 3 && KORB_TRUTHY(VALUE_SLICE_GET(a, 2))) ? 1u : 0u;
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_range_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(SELF_RANGE->rbegin == KORB_NIL))
         return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot get the first element of beginless range");

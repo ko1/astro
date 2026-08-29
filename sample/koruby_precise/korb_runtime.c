@@ -8071,6 +8071,7 @@ static bool korb_range_default_init_p(CTX *c, VALUE cls) {
     /* the inherited default lives on BasicObject (korb_relocate_object_methods);
      * Object is still checked for subsystems registered after that pass. */
     return m == NULL || found_def == korb_builtin_class_obj(c->vm, KORB_C_OBJECT) ||
+           found_def == korb_builtin_class_obj(c->vm, KORB_C_RANGE) ||   /* Range's own (allocate + send(:initialize)) */
            found_def == korb_const_get(c->vm, korb_intern(c->vm, "BasicObject", 11));
 }
 
@@ -8390,6 +8391,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         slots[0] = self;                                    /* root the subclass across the alloc */
         const VALUE rng = UNWRAP(korb_range_new(c, slots + 1, VALUE_REF_AT(&base[0]), base[1], excl));
         slots[1] = rng;
+        ((AroObjectHeader *)(uintptr_t)slots[1])->flags &= ~(uint32_t)KORB_FL_FROZEN;   /* only Range itself makes frozen instances */
         ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_HAS_KLASS;
         korb_klass_override_set(c, slots[1], slots[0]);     /* both rooted; set does not GC */
         return RESULT_OK(slots[1]);
@@ -9961,6 +9963,8 @@ korb_register_core_methods(CTX *c)
 
     /* Range */
     korb_def_cmethod(c, KORB_C_RANGE, "begin", korb_m_range_begin, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "initialize", korb_m_range_initialize, -1);
+    { struct korb_method *const mi = korb_cmethod_slot(c->vm, KORB_C_RANGE, "initialize"); if (mi) mi->visibility = 1; }
     korb_def_cmethod(c, KORB_C_RANGE, "first", korb_m_range_first, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "take", korb_m_range_take, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "end", korb_m_range_end, 0);
