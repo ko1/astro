@@ -647,7 +647,37 @@ static RESULT korb_m_file_symlink_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_m_file_exist_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)self; return korb_m_file_stat_pred(c, slots, a, 0); }
 static RESULT korb_m_file_file_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)      { (void)self; return korb_m_file_stat_pred(c, slots, a, 1); }
 static RESULT korb_m_file_directory_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_m_file_stat_pred(c, slots, a, 2); }
-static RESULT korb_m_file_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)        { (void)self; return korb_m_file_stat_pred(c, slots, a, 3); }
+/* File.size(f) / File.size?(f) — f is a path or anything with #to_io.  #size
+ * raises on a missing file; #size? answers nil for missing *and* for empty. */
+/* mode: 0 = #size, 1 = #size? */
+static RESULT korb_file_size_of(CTX *c, VALUE *slots, VALUE_SLICE a, int mode) {
+    const bool query = mode != 0;
+    const VALUE arg = VALUE_SLICE_GET(a, 0);
+    struct stat st;
+    const uint32_t to_io = korb_intern(c->vm, "to_io", 5);
+    if (!KORB_STRING_P(arg) && KORB_OBJECT_P(arg) && korb_responds_to(c, arg, to_io)) {
+        slots[0] = arg;
+        RESULT ir = korb_send_impl(c, slots + 1, to_io, 0, 0, NULL, NULL, NULL);
+        if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+        slots[0] = ir.value;
+        RESULT fr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "fileno", 6), 0, 0, NULL, NULL, NULL);
+        if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+        if (!FIXNUM_P(fr.value) || fstat((int)FIX2LONG(fr.value), &st) != 0)
+            return korb_raise_errno(c, slots, errno, "fstat", "");
+    } else {
+        VALUE pv;
+        KORB_PATH_ARG(c, slots, a, 0, pv);
+        uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+        if (plen == 0 || stat(path, &st) != 0) {
+            if (query) return RESULT_OK(KORB_NIL);
+            return korb_raise_errno(c, slots, plen == 0 ? ENOENT : errno, "stat", path);
+        }
+    }
+    if (query && st.st_size == 0) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(LONG2FIX((korb_sword_t)st.st_size));
+}
+static RESULT korb_m_file_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)        { (void)self; return korb_file_size_of(c, slots, a, 0); }
+static RESULT korb_m_file_size_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)      { (void)self; return korb_file_size_of(c, slots, a, 1); }
 /* File.readable?/writable?/executable?(path) → access(2) with R_OK/W_OK/X_OK. */
 static RESULT korb_m_file_access(CTX *c, VALUE *slots, VALUE_SLICE a, int amode) {
     VALUE pv;
@@ -2156,7 +2186,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "file?",       korb_m_file_file_p,      1);
     korb_class_def_cfn(c, slots[1], "directory?",  korb_m_file_directory_p, 1);
     korb_class_def_cfn(c, slots[1], "size",        korb_m_file_size,        1);
-    korb_class_def_cfn(c, slots[1], "size?",       korb_m_file_size,        1);
+    korb_class_def_cfn(c, slots[1], "size?",       korb_m_file_size_q,      1);
     korb_class_def_cfn(c, slots[1], "readable?",   korb_m_file_readable_p,  1);
     korb_class_def_cfn(c, slots[1], "writable?",   korb_m_file_writable_p,  1);
     korb_class_def_cfn(c, slots[1], "executable?", korb_m_file_executable_p, 1);

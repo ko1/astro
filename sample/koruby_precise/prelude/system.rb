@@ -1378,6 +1378,7 @@ class File
     end
 
     def empty?(path) = __process_test("z".ord, File.path(path), nil)
+    alias_method :zero?, :empty?      # CRuby: File.zero? IS File.empty?
     def identical?(a, b)
       __process_test("-".ord, File.path(a), File.path(b))
     rescue Errno::ENOENT, SystemCallError
@@ -1427,7 +1428,7 @@ class File
 end
 
 module FileTest
-  %i[empty? identical? pipe? socket? blockdev? chardev? sticky? setuid? setgid?
+  %i[empty? zero? identical? pipe? socket? blockdev? chardev? sticky? setuid? setgid?
      owned? grpowned? readable_real? writable_real? executable_real?
      world_readable? world_writable?].each do |m|
     define_method(m) { |*a| File.send(m, *a) }
