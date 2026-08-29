@@ -1,27 +1,56 @@
 # Exception message helpers.
 class Exception
+  # true when stderr is a terminal — the default for :highlight.
+  def self.to_tty?
+    $stderr.tty?
+  rescue StandardError
+    false
+  end
+
   def detailed_message(highlight: false, **)
+    unless highlight == true || highlight == false
+      raise ArgumentError, "expected true or false as highlight: #{highlight.inspect}"
+    end
     m = message.to_s; cls = self.class; cn = cls.name
     if m.empty?
       text = cls.equal?(RuntimeError) ? 'unhandled exception' : (cn || cls.to_s)
       return highlight ? "\e[1;4m#{text}\e[m" : text
     end
-    return (highlight ? "\e[1m#{m}\e[m" : m) if cn.nil?
-    highlight ? "\e[1m#{m} (\e[1;4m#{cn}\e[m\e[1m)\e[m" : "#{m} (#{cn})"
+    # the class name goes at the end of the FIRST line; later lines are
+    # decorated on their own (CRuby).
+    lines = m.split("\n", -1)
+    lines.pop if lines.length > 1 && lines[-1].empty?
+    first = lines[0]
+    head = if cn.nil?
+             highlight ? "\e[1m#{first}\e[m" : first
+           elsif highlight
+             "\e[1m#{first} (\e[1;4m#{cn}\e[m\e[1m)\e[m"
+           else
+             "#{first} (#{cn})"
+           end
+    return head if lines.length == 1
+    ([head] + lines[1..-1].map { |l| highlight ? "\e[1m#{l}\e[m" : l }).join("\n")
   end
-  def full_message(highlight: nil, order: nil)
+
+  def full_message(highlight: nil, order: nil, **opts)
     unless highlight.nil? || highlight == true || highlight == false
       raise ArgumentError, "expected true or false as highlight: #{highlight.inspect}"
     end
     unless order.nil? || order == :top || order == :bottom
       raise ArgumentError, "expected :top or :bottom as order: #{order.inspect}"
     end
-    hl = highlight.nil? ? false : (highlight ? true : false)
-    order = (hl ? :top : :bottom) if order.nil?
+    hl = highlight.nil? ? Exception.to_tty? : highlight
+    order = :top if order.nil?
+    dopts = opts.merge(highlight: hl)
     chunk = lambda do |exc|
       bt = exc.backtrace
       bt = (caller(1) || []) if bt.nil? || bt.empty?
-      dm = exc.detailed_message(highlight: hl)
+      dm = exc.respond_to?(:detailed_message) ? exc.detailed_message(**dopts) : nil
+      dm = dm.to_str if !dm.nil? && !dm.is_a?(String) && dm.respond_to?(:to_str)
+      if dm.nil? || !dm.is_a?(String)          # nil / unusable → just the class name
+        cn = exc.class.name || exc.class.to_s
+        dm = hl ? "\e[1;4m#{cn}\e[m" : cn
+      end
       body = bt[0] ? "#{bt[0]}: #{dm}" : dm
       rest = bt.length > 1 ? bt[1..-1] : []
       [body, rest]
