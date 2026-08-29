@@ -425,6 +425,15 @@ class Enumerator::Lazy
     end
   end
 
+  # CRuby's Lazy#each_with_index is EAGER when given a block (it drives the
+  # chain and returns the source); without one it is the lazy #with_index.
+  def each_with_index(&blk)
+    return with_index unless blk
+    i = 0
+    each { |x| blk.call(x, i); i += 1 }
+    self
+  end
+
   def zip(*others, &b)
     # Only something with no way to iterate falls back to the eager
     # Enumerable#zip; an Enumerable argument is pulled lazily, one value per
