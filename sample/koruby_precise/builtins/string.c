@@ -2179,13 +2179,18 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     /* limit: 0/omitted = unlimited + drop trailing empties; <0 = unlimited keep;
      * >0 = at most `limit` fields (last = remainder).  limit==1 → [self] verbatim. */
     korb_sword_t limit = 0;
-    if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) {
+    if (VALUE_SLICE_LEN(a) >= 2) {
         VALUE lv = VALUE_SLICE_GET(a, 1);
+        if (UNLIKELY(lv == KORB_NIL))                        /* an explicit nil limit is a TypeError */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion from nil to integer");
         if (!korb_to_index(lv, &limit)) {                    /* coerce a non-Integer limit via #to_int */
+            const bool big = KORB_BIGNUM_P(lv);
             RESULT cr = korb_coerce_to_int(c, slots, &lv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(lv, &limit))                  /* Bignum limit → RangeError (CRuby NUM2INT) */
-                return korb_raise(c, slots, KORB_E_RANGE, 0, "integer overflow: limit too big for int");
+            if (!korb_to_index(lv, &limit))                  /* Bignum → RangeError; anything else → TypeError */
+                return big ? korb_raise(c, slots, KORB_E_RANGE, 0, "integer overflow: limit too big for int")
+                           : korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
+                                        korb_coerce_name(c, VALUE_SLICE_GET(a, 1)));
         }
     }
     if ((limit > 0 && limit > INT32_MAX) || (limit < 0 && limit < INT32_MIN))
