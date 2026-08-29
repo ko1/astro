@@ -1537,7 +1537,7 @@ static RESULT korb_io_mode_coerce(CTX *c, VALUE *slots, VALUE *mv, char *mode, s
  * file or descriptor, keeping the same IO object identity. */
 static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    const bool was_closed = !korb_io_open_p(rep);      /* a path can reopen a closed stream (CRuby) */
     const uint32_t na_ = VALUE_SLICE_LEN(a);
     if (UNLIKELY(na_ < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     if (UNLIKELY(na_ > 2 && !KORB_HASH_P(VALUE_SLICE_GET(a, na_ - 1))))
@@ -1572,9 +1572,14 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
            (a reopened $stdout must stay fd 1).  dup2 does that atomically. */
         const int nfd = open(path, korb_io_open_flags(mode), 0666);
         if (nfd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
-        (void)korb_io_flush_rep(rep);
-        if (dup2(nfd, rep->fd) < 0) { const int e = errno; close(nfd); return korb_raise_errno(c, slots, e, "dup2", path); }
-        close(nfd);
+        if (was_closed) {
+            rep->fd = nfd;                             /* nothing to keep: adopt the new descriptor */
+            rep->eof = 0;
+        } else {
+            (void)korb_io_flush_rep(rep);
+            if (dup2(nfd, rep->fd) < 0) { const int e = errno; close(nfd); return korb_raise_errno(c, slots, e, "dup2", path); }
+            close(nfd);
+        }
         korb_io_drop_rbuf(rep);
         (void)fcntl(rep->fd, F_SETFD, FD_CLOEXEC);
         /* the reopened stream takes the new mode's direction: `f.reopen(p, "r")`
@@ -1584,6 +1589,7 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         CHECK(korb_ivar_set(c, slots + 2, self, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)), slots[1]));
         return RESULT_OK(VALUE_REF_GET(self));
     }
+    if (UNLIKELY(was_closed)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     /* Not a path: an IO, or anything that converts to one via #to_io. */
     if (!KORB_OBJECT_P(slots[0]) || korb_io_rep(c, slots[0]) == NULL) {
         const uint32_t to_io = korb_intern(c->vm, "to_io", 5);
