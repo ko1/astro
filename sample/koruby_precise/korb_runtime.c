@@ -5198,6 +5198,16 @@ korb_mod_hook_custom(CTX *c, VALUE mod, uint32_t mid)
 
 /* true when `cls` defines its own #=== (not Module's) — a rescue clause must
  * dispatch it rather than use the built-in exception match. */
+/* true when `v`'s #== (or #!=) is still the default identity one, so `x == x`
+ * may shortcut — CRuby's opt_equality does exactly this test. */
+bool
+korb_default_eq_p(CTX *c, VALUE v, uint32_t mid)
+{
+    const VALUE dcls = korb_dispatch_class(c, v);
+    if (!KORB_CLASS_P(dcls)) return true;
+    const struct korb_method *const m = korb_class_find_method(dcls, mid, NULL);
+    return m == NULL || m->kind == KORB_METHOD_CFUNC;   /* only the C defaults on Object/BasicObject are CFUNCs here */
+}
 bool
 korb_rescue_custom_eqq(CTX *c, VALUE cls)
 {

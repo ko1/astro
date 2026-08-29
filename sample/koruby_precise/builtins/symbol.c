@@ -298,6 +298,16 @@ static RESULT korb_m_struct_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_obj_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t mid;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_arg_to_mid(c, slots, VALUE_SLICE_GET(a, 0), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    const VALUE recv = VALUE_REF_GET(self);
+    const VALUE cls = korb_dispatch_class(c, recv);
+    /* an unknown name is a NameError unless #respond_to_missing? claims it
+     * (method_missing alone is not enough — CRuby asks respond_to?) */
+    if ((!KORB_CLASS_P(cls) || korb_class_find_method(cls, mid, NULL) == NULL) &&
+        korb_method_lookup(c->vm, mid) == NULL && !korb_responds_to_coerce(c, slots, recv, mid)) {
+        char cnm[192]; korb_class_desc_into(c, cls, cnm, sizeof cnm);
+        return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",
+                          korb_sym_name(c->vm, mid), cnm);
+    }
     return korb_method_new(c, slots, VALUE_REF_GET(self), mid);   /* self re-read (coercion may GC) */
 }
 /* Kernel#public_method — like #method, but only a public one: a private or

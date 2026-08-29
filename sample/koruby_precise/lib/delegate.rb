@@ -102,7 +102,7 @@ class Delegator < BasicObject
     target = self.__getobj__ {r = false}
     r &&= target_respond_to?(target, m, include_private)
     if r && include_private && !target_respond_to?(target, m, false)
-      warn "delegator does not forward private method \##{m}", uplevel: 3
+      ::Kernel.warn "delegator does not forward private method \##{m}", uplevel: 3
       return false
     end
     r
