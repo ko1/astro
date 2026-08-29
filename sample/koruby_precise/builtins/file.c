@@ -1203,11 +1203,38 @@ static RESULT korb_m_file_binread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (LIKELY(r.state == KORB_NORMAL) && KORB_STRING_P(r.value)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
     return r;
 }
+/* IO.foreach / IO.readlines take the same options as IO.read.  Only `mode:`
+ * changes what happens: a write-only mode still opens (and creates) the file,
+ * then fails as "not opened for reading" — CRuby's order, which programs rely
+ * on for the side effect. */
+static RESULT korb_io_lines_mode_check(CTX *c, VALUE *slots, VALUE_SLICE a, const char *path) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    if (n < 2) return RESULT_OK(KORB_NIL);
+    const VALUE last = VALUE_SLICE_GET(a, n - 1);
+    if (!KORB_HASH_P(last) || !korb_kwargs_hash_p(last)) return RESULT_OK(KORB_NIL);
+    struct korb_open_args oa;
+    CHECK(korb_io_open_args(c, slots, last, "r", &oa));
+    if (korb_mode_readable(oa.mode)) return RESULT_OK(KORB_NIL);
+    char pb[PATH_MAX];
+    snprintf(pb, sizeof pb, "%s", path);
+    const bool plus = strchr(oa.mode, '+') != NULL;
+    const int fl = (oa.mode[0] == 'a') ? ((plus ? O_RDWR : O_WRONLY) | O_CREAT | O_APPEND)
+                                       : ((plus ? O_RDWR : O_WRONLY) | O_CREAT | O_TRUNC);
+    const int fd = open(pb, fl, 0666);
+    if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", pb);
+    close(fd);
+    return korb_raise(c, slots, KORB_E_IOERROR, 0, "not opened for reading");
+}
+
 static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
     slots[0] = pv;                                     /* park: parsing the arguments dispatches */
+    {   const uint32_t pl0 = VAL2STR(slots[0])->len;
+        char pb0[PATH_MAX];
+        snprintf(pb0, sizeof pb0, "%.*s", (int)pl0, korb_strbuf_data(VAL2STR(slots[0])->buf));
+        CHECK(korb_io_lines_mode_check(c, slots + 1, a, pb0)); }
     struct korb_line_args la;
     CHECK(korb_io_line_args(c, slots + 1, a, 1, &la));  /* separator → slots[1] */
     if (UNLIKELY(la.limit == 0))
@@ -1240,6 +1267,10 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
     slots[0] = pv;                                     /* park: parsing the arguments dispatches */
+    {   const uint32_t pl0 = VAL2STR(slots[0])->len;
+        char pb0[PATH_MAX];
+        snprintf(pb0, sizeof pb0, "%.*s", (int)pl0, korb_strbuf_data(VAL2STR(slots[0])->buf));
+        CHECK(korb_io_lines_mode_check(c, slots + 1, a, pb0)); }
     struct korb_line_args la;
     CHECK(korb_io_line_args(c, slots + 1, a, 1, &la));  /* separator → slots[1] */
     if (UNLIKELY(la.limit == 0))
