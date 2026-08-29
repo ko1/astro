@@ -2433,7 +2433,12 @@ static RESULT korb_str_each_enum(CTX *c, VALUE *slots, VALUE_REF self,
                                  RESULT (*arr_fn)(CTX *, VALUE *, VALUE_REF, VALUE_SLICE), const char *name, VALUE_SLICE a) {
     slots[0] = UNWRAP(arr_fn(c, slots, self, a));   /* forward sep/chomp args (each_line) */
     slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), name));
-    return korb_enum_new(c, slots + 2, slots[0], slots[1]);
+    RESULT er = korb_enum_new(c, slots + 2, slots[0], slots[1]);
+    /* The array is an implementation detail: CRuby cannot know a line count
+     * without scanning, so #each_line's enumerator reports no size. */
+    if (LIKELY(er.state == KORB_NORMAL) && KORB_ENUM_P(er.value) && strcmp(name, "each_line") == 0)
+        VAL2ENUM(er.value)->size_unknown = 1;
+    return er;
 }
 static RESULT korb_m_str_each_codepoint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
@@ -2605,13 +2610,25 @@ static uint32_t korb_str_line_len(const KorbString *s, uint32_t pos, const char 
  * that run are skipped (advanced past) but not yielded. */
 static uint32_t korb_str_line_span(const KorbString *s, uint32_t pos, const char *sep, uint32_t seplen, bool chomp, bool universal, uint32_t *adv) {
     if (seplen == 0) {                                     /* paragraph mode */
-        uint32_t m = pos; bool found = false;
-        while (m + 1 < s->len) { if (korb_strbuf_data(s->buf)[m] == '\n' && korb_strbuf_data(s->buf)[m + 1] == '\n') { found = true; break; } m++; }
-        if (!found) { *adv = s->len - pos; return *adv; }  /* last paragraph: rest of string (no run to chomp) */
-        uint32_t rune = m; while (rune < s->len && korb_strbuf_data(s->buf)[rune] == '\n') rune++;   /* end of the newline run */
+        const char *const d = korb_strbuf_data(s->buf);
+        /* a line terminator is "\n" or "\r\n"; a paragraph ends after the
+         * SECOND consecutive one, and the rest of the blank run is skipped. */
+        #define KORB_TERM_END(k) ((d[(k)] == '\r' && (k) + 1 < s->len && d[(k) + 1] == '\n') ? (k) + 2                                   : (d[(k)] == '\n' ? (k) + 1 : 0))
+        uint32_t end = 0;
+        for (uint32_t i = pos; i < s->len; ) {
+            const uint32_t t1 = KORB_TERM_END(i);
+            if (t1 == 0) { i++; continue; }
+            const uint32_t t2 = (t1 < s->len) ? KORB_TERM_END(t1) : 0;
+            if (t2 != 0) { end = t2; break; }
+            i = t1;
+        }
+        if (end == 0) { *adv = s->len - pos; return *adv; } /* last paragraph: rest of string (no run to chomp) */
+        uint32_t rune = end;
+        for (uint32_t t; rune < s->len && (t = KORB_TERM_END(rune)) != 0; ) rune = t;
         *adv = rune - pos;
-        uint32_t yl = (m + 2) - pos;                       /* text + exactly two newlines */
-        if (chomp) while (yl > 0 && korb_strbuf_data(s->buf)[pos + yl - 1] == '\n') yl--;
+        uint32_t yl = end - pos;
+        if (chomp) while (yl > 0 && (d[pos + yl - 1] == '\n' || d[pos + yl - 1] == '\r')) yl--;
+        #undef KORB_TERM_END
         return yl;
     }
     const uint32_t ll = korb_str_line_len(s, pos, sep, seplen);
