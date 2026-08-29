@@ -1540,9 +1540,9 @@ node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, NODE *parent)
         return tr;
     }
     uint32_t idx = korb_const_index_owned(vm, name, slots[0]);
-    if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, slots[0], name);
-    if (idx == UINT32_MAX)                                /* then top-level / builtin constants (owner nil) */
-        idx = korb_const_index_owned(vm, name, KORB_NIL);
+    /* Only Object itself names the top-level constants: `Foo::Hash` is a
+     * NameError in Ruby >= 2.5, `Object::Hash` still resolves. */
+    if (idx == UINT32_MAX) idx = korb_const_in_ancestry_scoped(vm, slots[0], name);
     if (UNLIKELY(vm->privconst_cnt != 0) &&               /* private_constant: unreachable as Owner::NAME */
         (idx != UINT32_MAX || korb_autoload_registered_p(c, slots[0], name)) &&
         (korb_const_private_p(vm, slots[0], name) ||

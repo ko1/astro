@@ -3473,6 +3473,31 @@ korb_const_in_ancestry(const struct korb_vm *vm, VALUE cref, uint32_t name_sym)
     }
     return UINT32_MAX;
 }
+/* Same walk for a scoped read (`Recv::NAME`), which skips Object unless Object
+ * is the receiver — `Foo::Hash` is a NameError in Ruby >= 2.5. */
+uint32_t
+korb_const_in_ancestry_scoped(const struct korb_vm *vm, VALUE recv, uint32_t name_sym)
+{
+    const VALUE objc = korb_builtin_class_obj(vm, KORB_C_OBJECT);
+    for (VALUE k = recv; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
+        if (k == objc && recv != objc) {
+            /* Object's OWN constants are the top-level ones and are excluded,
+             * but the modules included into Object still count (CRuby). */
+            const VALUE inc = VAL2CLASS(k)->included;
+            if (inc != KORB_NIL) {
+                const KorbArray *const ia = VAL2ARY(inc);
+                for (int32_t j = (int32_t)ia->len - 1; j >= 0; j--) {
+                    const uint32_t idx = korb_const_mro_seg(vm, korb_items_data(ia->items)[j], name_sym, 0);
+                    if (idx != UINT32_MAX) return idx;
+                }
+            }
+            continue;
+        }
+        const uint32_t idx = korb_const_mro_seg(vm, k, name_sym, 0);
+        if (idx != UINT32_MAX) return idx;
+    }
+    return UINT32_MAX;
+}
 
 void
 korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
@@ -5289,7 +5314,17 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
     /* ArithmeticSequence's display name is the nested path (const stays keyed by
      * the rightmost "ArithmeticSequence", which is how flat const-paths resolve). */
     { VALUE as = korb_const_get(vm, vm->class_name[KORB_C_ARITHSEQ]);
-      if (KORB_CLASS_P(as)) VAL2CLASS(as)->name_sym = korb_intern(vm, "Enumerator::ArithmeticSequence", 30); }
+      if (KORB_CLASS_P(as)) {
+          VAL2CLASS(as)->name_sym = korb_intern(vm, "Enumerator::ArithmeticSequence", 30);
+          /* also register it under Enumerator: a scoped read does not fall back
+           * to the top-level table.  `enclosing` stays nil — the display name
+           * above is already the full path. */
+          const VALUE ec = korb_const_get(vm, vm->class_name[KORB_C_ENUMERATOR]);
+          if (KORB_CLASS_P(ec)) {
+              slots[0] = as;
+              korb_const_define_owned(c, korb_intern(vm, "ArithmeticSequence", 18), slots[0], ec);
+          }
+      } }
     /* Enumerator::Lazy — a subclass of Enumerator; koruby's lazy enumerators are
      * KORB_OBJ_ENUMERATOR (mode 1/4) and dispatch reports this class for them.
      * Nested const under Enumerator so `Enumerator::Lazy` resolves. */
@@ -5308,6 +5343,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
     { uint32_t bo = korb_intern(vm, "BasicObject", 11);
       slots[0] = korb_class_new(c, slots, bo, KORB_NIL).value;          /* super nil */
       korb_const_define(c, bo, slots[0]);
+      korb_const_define_owned(c, bo, slots[0], slots[0]);               /* CRuby also names it under itself */
       VALUE objc = korb_const_get(vm, object_sym);                      /* Object (rooted in const table) */
       ARO_STORE(c, VAL2CLASS(objc), (VALUE *)(uintptr_t)&VAL2CLASS(objc)->superclass, slots[0]); }
     { uint32_t kn = korb_intern(vm, "Kernel", 6);

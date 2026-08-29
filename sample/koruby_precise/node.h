@@ -234,6 +234,7 @@ VALUE  korb_errinfo_top(const CTX *c);
 uint32_t korb_const_index(const struct korb_vm *vm, uint32_t name_sym);  /* UINT32_MAX if absent */
 uint32_t korb_const_index_owned(const struct korb_vm *vm, uint32_t name_sym, VALUE owner);   /* (name, owner) — owner-aware scoped read */
 uint32_t korb_const_in_ancestry(const struct korb_vm *vm, VALUE cref, uint32_t name_sym);    /* cref's ancestry (MRO order) */
+uint32_t korb_const_in_ancestry_scoped(const struct korb_vm *vm, VALUE recv, uint32_t name_sym);   /* Recv::NAME — skips Object */
 RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj);
 void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
                              uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,

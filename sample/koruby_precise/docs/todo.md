@@ -2808,3 +2808,13 @@ korb_block_yield_full で走るため frame の fs-2 に method entry が
 無い)。各 backend に足すのは重い。Class/Module だけなら定数表と
 subclass リストから作れるが、spec の大半は任意オブジェクトを見る。
 実 mspec で 24 例。
+
+## `A::B` 定数解決が GC STRESS で落ちる (既存バグ)
+
+`BARUBY_GC_STRESS=1 ./koruby_precise -e 'p Float::MAX'` が
+`uninitialized constant Float::MAX` になる。`BARUBY_GC_PURGE=1` 単独では
+再現しない = moving GC でオブジェクトが動いたときの比較。node_const_path が
+`vm->const_owners[i] == owner` を生 VALUE 比較しており、どちらかの更新が
+漏れていると思われる (`korb_const_owner_serial` が既にあるので、そちらへ
+寄せるのが筋)。2026-08-29 の定数スコープ変更より前から再現する
+(node.def を元に戻して A/B 確認済み)。
