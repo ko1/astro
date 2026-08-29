@@ -6,9 +6,28 @@ module CGI
     s.to_s.gsub(/['&"<>]/) { |c| HTML_ESCAPE[c] }
   end
   def self.unescapeHTML(s)
-    s.to_s.gsub(/&(amp|quot|lt|gt|#39|apos);/) do |m|
-      { "&amp;" => "&", "&quot;" => '"', "&lt;" => "<", "&gt;" => ">", "&#39;" => "'", "&apos;" => "'" }[m]
+    __str(s).gsub(/&(?:amp|quot|lt|gt|apos|\#[0-9]+|\#[xX][0-9A-Fa-f]+);/) do |m|
+      case m
+      when "&amp;"  then "&"
+      when "&quot;" then '"'
+      when "&lt;"   then "<"
+      when "&gt;"   then ">"
+      when "&apos;" then "'"
+      else
+        body = m[1..-2]                       # numeric character reference
+        cp = body.start_with?("#x", "#X") ? body[2..-1].to_i(16) : body[1..-1].to_i
+        (cp <= 0 || cp > 0x10FFFF) ? m : cp.chr(Encoding::UTF_8)
+      end
     end
+  end
+  # escapeElement("<A><B>", "A") — escape only the listed tags.
+  def self.escapeElement(string, *elements)
+    elements = elements[0] if elements[0].is_a?(Array)
+    string.to_s.gsub(/<\/?(?:#{elements.join("|")})(?!\w)(?:.|\n)*?>/i) { escapeHTML($&) }
+  end
+  def self.unescapeElement(string, *elements)
+    elements = elements[0] if elements[0].is_a?(Array)
+    string.to_s.gsub(/&lt;\/?(?:#{elements.join("|")})(?!\w)(?:.|\n)*?&gt;/i) { unescapeHTML($&) }
   end
   # The target encoding of a decode: an Encoding, an encoding name, or (by
   # default) CGI.accept_charset.  An unknown name is an ArgumentError.
@@ -24,14 +43,14 @@ module CGI
   private_class_method :__decode_enc
 
   def self.escape(s)
-    s.to_s.gsub(/[^A-Za-z0-9_.\-~ ]/) { |c| c.bytes.map { |b| "%%%02X" % b }.join }.tr(" ", "+")
+    __str(s).gsub(/[^A-Za-z0-9_.\-~ ]/) { |c| c.bytes.map { |b| "%%%02X" % b }.join }.tr(" ", "+")
   end
   def self.unescape(s, encoding = nil)
     enc = __decode_enc(encoding)
     __decoded(__str(s).tr("+", " "), enc)
   end
   def self.escapeURIComponent(s)
-    s.to_s.gsub(/[^A-Za-z0-9_.\-~]/) { |c| c.bytes.map { |b| "%%%02X" % b }.join }
+    __str(s).gsub(/[^A-Za-z0-9_.\-~]/) { |c| c.bytes.map { |b| "%%%02X" % b }.join }
   end
   def self.unescapeURIComponent(s, encoding = nil)
     __decoded(__str(s), __decode_enc(encoding))
