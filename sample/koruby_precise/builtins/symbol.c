@@ -806,8 +806,14 @@ static RESULT korb_m_meth_unbind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_meth_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
     if (UNLIKELY(!m->unbound)) return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'bind' for a Method");
-    slots[0] = m->recv;                                             /* owner class (rooted across dispatch/alloc) */
+    slots[0] = m->recv;                                             /* the class it was retrieved from (rooted) */
     const uint32_t mid = m->mid;
+    {   /* the test is against where the method is DEFINED: an UnboundMethod taken
+         * from a subclass still binds to any instance of the defining class */
+        VALUE odef = KORB_NIL;
+        const struct korb_method *const e = KORB_CLASS_P(slots[0]) ? korb_class_find_method(slots[0], mid, &odef) : NULL;
+        if (e != NULL && KORB_CLASS_P(e->owner)) slots[0] = e->owner;
+    }
     bool ok = korb_case_eq(c, slots[0], VALUE_SLICE_GET(a, 0));      /* owner === obj  ⇔  obj.is_a?(owner) */
     if (!ok && KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_module)
         ok = true;                                                   /* a module's method binds to any object (Ruby 3.0+) */
