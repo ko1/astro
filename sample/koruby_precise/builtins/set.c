@@ -1556,7 +1556,7 @@ static RESULT korb_m_class_cvar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     const VALUE cls = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(cls)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
-    return korb_cvar_set(c, slots, cls, KORB_NIL, id, VALUE_SLICE_GET(a, 1));   /* self is a class → cref = self */
+    return korb_cvar_set(c, slots, cls, KORB_UNDEF, id, VALUE_SLICE_GET(a, 1));   /* explicit receiver: cref = cls */
 }
 static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* fwd (hash.c) */
 /* Module#remove_class_variable(name) → removes the class variable from self
@@ -2084,6 +2084,12 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         } else c->def_definee = slots[0];
     } else c->def_definee = slots[0];              /* class_exec/module_exec: the class itself */
     const uint8_t saved_vis = korb_vis_enter(slots[0]);
+    /* @@vars keep resolving against the block's definition scope, which self no
+     * longer names once the receiver is bound in. */
+    const VALUE saved_cvar_cref = c->cvar_cref;
+    if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
+        c->cvar_cref = korb_cvar_self_class_pub(c, def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC
+                                                   ? VAL2PROC(*cself)->self : KORB_CSELF_VAL(cself));
     RESULT r;
     if (def_env == KORB_BLK_FWD) {                        /* forwarded Proc: keep ITS closure env, rebind self only */
         slots[1 + argc] = VAL2PROC(*cself)->env;          /* proc's captured env (used as def_env below, not FWD) */
@@ -2091,6 +2097,7 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     } else {
         r = korb_block_yield(c, slots + 1 + argc, block, def_env, &slots[1], argc, &slots[0]);
     }
+    c->cvar_cref = saved_cvar_cref;
     korb_vis_leave(slots[0], saved_vis);
     c->def_definee = saved_definee;
     return r;
@@ -2172,6 +2179,11 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             }
         } else if (KORB_CLASS_P(VALUE_REF_GET(self))) cref = VALUE_REF_GET(self);
         const uint8_t saved_vis = korb_vis_enter(VALUE_REF_GET(self));
+        /* @@vars in the source resolve against the CALLER's class, which the
+         * hidden caller binding is the only record of here. */
+        const VALUE saved_cvar_cref = c->cvar_cref;
+        if (singleton_definee && bind_ptr)
+            c->cvar_cref = korb_cvar_self_class_pub(c, VAL2BIND(*bind_ptr)->self);
         RESULT er;
         if (bind_ptr) {                                    /* caller binding → its locals are visible + written back */
             slots[0] = src;
@@ -2181,6 +2193,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         } else {
             er = korb_eval_str_self(c, slots, src, VALUE_REF_GET(self), fname, line, cref);
         }
+        c->cvar_cref = saved_cvar_cref;
         korb_vis_leave(VALUE_REF_GET(self), saved_vis);
         return er;
     }
@@ -2199,6 +2212,10 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         } else c->def_definee = slots[0];
     } else c->def_definee = slots[0];
     const uint8_t saved_vis = korb_vis_enter(slots[0]);
+    const VALUE saved_cvar_cref = c->cvar_cref;           /* @@vars: the block's definition scope (see korb_obj_exec_impl) */
+    if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
+        c->cvar_cref = korb_cvar_self_class_pub(c, def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC
+                                                   ? VAL2PROC(*cself)->self : KORB_CSELF_VAL(cself));
     RESULT r;
     if (block == KORB_BLK_CPROC)                          /* forwarded C-proc: fixed binding */
         r = korb_block_yield(c, slots + 1, block, def_env, slots, 1, cself);
@@ -2211,6 +2228,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, &slots[0]);
         }
     }
+    c->cvar_cref = saved_cvar_cref;
     korb_vis_leave(slots[0], saved_vis);
     c->def_definee = saved_definee;
     return r;

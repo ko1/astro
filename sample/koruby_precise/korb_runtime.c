@@ -2057,6 +2057,14 @@ korb_cvar_owner(VALUE cref, VALUE sym, int32_t *idx_out)
 
 /* A `class << X` body shares X's class variables: the singleton is not a scope
  * of its own for @@vars (CRuby). */
+/* The class scope @@vars resolve against; falls back to the cref instance_eval /
+ * instance_exec kept, since self there names the receiver, not a class. */
+static VALUE korb_dispatch_class(CTX *c, VALUE self);            /* fwd */
+static VALUE korb_cvar_self_class(CTX *c, VALUE self);           /* fwd */
+VALUE korb_cvar_self_class_pub(CTX *c, VALUE self) {
+    return KORB_CLASS_P(self) ? self : korb_cvar_self_class(c, self);
+}
+static VALUE korb_cvar_scope_of(CTX *c, VALUE self, VALUE entry_cell);
 static VALUE korb_cvar_scope(CTX *c, VALUE cref)
 {
     if (!KORB_CLASS_P(cref) || !VAL2CLASS(cref)->is_singleton) return cref;
@@ -2066,11 +2074,36 @@ static VALUE korb_cvar_scope(CTX *c, VALUE cref)
     return cref;
 }
 
+/* self's class with any singleton peeled off — the scope a @@var falls back to
+ * when no lexical cref is reachable (a block does not carry its method's entry
+ * cell).  KORB_NIL for the toplevel `main`, which must keep raising. */
+static VALUE korb_cvar_self_class(CTX *c, VALUE self)
+{
+    if (self == KORB_NIL || (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL)) return KORB_NIL;
+    VALUE k = korb_dispatch_class(c, self);
+    while (KORB_CLASS_P(k) && VAL2CLASS(k)->is_singleton) k = VAL2CLASS(k)->superclass;
+    return KORB_CLASS_P(k) ? k : KORB_NIL;
+}
+static VALUE korb_cvar_scope_of(CTX *c, VALUE self, VALUE entry_cell)
+{
+    if (entry_cell == KORB_UNDEF) return korb_cvar_scope(c, self);   /* explicit receiver (class_variable_get/set) */
+    if ((uintptr_t)entry_cell & 1u) {                 /* a real method frame: its owner is the cref */
+        const VALUE own = korb_cvar_scope(c, korb_cvar_cref(self, entry_cell));
+        if (KORB_CLASS_P(own)) return own;
+    }
+    /* instance_eval/exec: the caller's scope, even when self is a Class — the
+     * receiver never contributes one. */
+    if (c->cvar_cref != KORB_NIL) return korb_cvar_scope(c, c->cvar_cref);
+    const VALUE cref = korb_cvar_scope(c, korb_cvar_cref(self, entry_cell));
+    if (KORB_CLASS_P(cref)) return cref;
+    return korb_cvar_self_class(c, self);
+}
+
 /* soft: `@@x ||= v` / `&&=` read an undefined cvar as nil instead of raising. */
 RESULT
 korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, uint32_t soft)
 {
-    const VALUE cref = korb_cvar_scope(c, korb_cvar_cref(self, entry_cell));
+    const VALUE cref = korb_cvar_scope_of(c, self, entry_cell);
     if (!KORB_CLASS_P(cref)) {
         if (soft) return RESULT_OK(KORB_NIL);
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable access from toplevel");
@@ -2099,7 +2132,7 @@ korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_i
 RESULT
 korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, VALUE val)
 {
-    const VALUE cref = korb_cvar_scope(c, korb_cvar_cref(self, entry_cell));
+    const VALUE cref = korb_cvar_scope_of(c, self, entry_cell);
     if (!KORB_CLASS_P(cref))
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable assignment from toplevel");
     { RESULT fr = korb_check_def_frozen(c, slots, cref); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* @@cvar = / class_variable_set on a frozen class → FrozenError */
@@ -4215,10 +4248,12 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     NODE *const body = m->body;
     /* a method body has its own default definee (its class), so an enclosing
      * instance_eval's must not leak into it */
-    const VALUE saved_definee = c->def_definee;
+    const VALUE saved_definee = c->def_definee, saved_cvar = c->cvar_cref;
     if (UNLIKELY(saved_definee != KORB_NIL)) c->def_definee = KORB_NIL;
+    if (UNLIKELY(saved_cvar != KORB_NIL)) c->cvar_cref = KORB_NIL;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (UNLIKELY(saved_definee != KORB_NIL)) c->def_definee = saved_definee;
+    if (UNLIKELY(saved_cvar != KORB_NIL)) c->cvar_cref = saved_cvar;
     if (r.state == KORB_RETURN) {
         /* Consume only a return targeted at this method (NULL = nearest-method,
          * the common case) — a block's `return` aimed at an outer method passes
@@ -4445,10 +4480,10 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
     VAL2CLASS(cls)->cur_visibility = 0;          /* each (re)opened body starts public */
     /* a class body's default definee is the class itself — an enclosing
      * instance_eval's definee must not reach into it */
-    const VALUE saved_definee = c->def_definee;
-    c->def_definee = KORB_NIL;
+    const VALUE saved_definee = c->def_definee, saved_cvar = c->cvar_cref;
+    c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
-    c->def_definee = saved_definee;
+    c->def_definee = saved_definee; c->cvar_cref = saved_cvar;
     return br;
 }
 
@@ -4468,9 +4503,10 @@ korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclo
     if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[0])->enclosing == KORB_NIL)
         ARO_STORE(c, VAL2CLASS(slots[0]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->enclosing, slots[1]);
     const VALUE saved_definee = c->def_definee;  /* the body defines on the singleton, via self */
-    c->def_definee = KORB_NIL;
+    const VALUE saved_cvar = c->cvar_cref;
+    c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
-    c->def_definee = saved_definee;
+    c->def_definee = saved_definee; c->cvar_cref = saved_cvar;
     return br;
 }
 

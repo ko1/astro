@@ -1086,6 +1086,10 @@ struct CTX_struct {
      * outside such an eval; a constant assignment with no parse-time cref uses
      * it as the owner, which is how `mod.module_eval("X = 1")` lands in mod. */
     VALUE     eval_cref;
+    /* instance_eval/instance_exec rebind self to a non-class receiver, which
+     * loses the class scope @@vars resolve against.  CRuby keeps the caller's
+     * (block definition's) cref for them; this is that cref, KORB_NIL outside. */
+    VALUE     cvar_cref;
     VALUE    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
     uint32_t  errinfo_live;          /* GC-scan depth: max over the running + all suspended threads */
@@ -1161,6 +1165,8 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->def_definee);            \
     if ((c)->eval_cref != KORB_NIL)                                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->eval_cref);              \
+    if ((c)->cvar_cref != KORB_NIL)                                          \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->cvar_cref);              \
     for (uint32_t _ti = 0; _ti < (c)->catch_n; _ti++) {                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->catch_tags[_ti]);         \
     }                                                                        \
