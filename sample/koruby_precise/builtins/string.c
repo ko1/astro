@@ -470,9 +470,25 @@ static inline bool korb_is_ws(unsigned char ch) {
 static uint32_t
 korb_utf8_count(const char *b, uint32_t nbytes)
 {
-    uint32_t n = 0;
-    for (uint32_t i = 0; i < nbytes; i++)
-        if (((unsigned char)b[i] & 0xC0) != 0x80) n++;
+    /* A broken sequence counts one character PER BYTE (CRuby): the lead byte is
+     * only a character with all its continuation bytes present. */
+    uint32_t n = 0, i = 0;
+    while (i < nbytes) {
+        const unsigned char c0 = (unsigned char)b[i];
+        if (LIKELY(c0 < 0x80)) { n++; i++; continue; }
+        const uint32_t need = (c0 & 0xE0) == 0xC0 ? 2 : (c0 & 0xF0) == 0xE0 ? 3 : (c0 & 0xF8) == 0xF0 ? 4 : 0;
+        if (need == 0 || i + need > nbytes) { n++; i++; continue; }
+        bool ok = true;
+        for (uint32_t k = 1; k < need; k++) if (((unsigned char)b[i + k] & 0xC0) != 0x80) { ok = false; break; }
+        if (ok) {   /* reject overlongs, surrogates and > U+10FFFF, like CRuby */
+            const unsigned char c1 = (unsigned char)b[i + 1];
+            if (need == 2)      ok = c0 >= 0xC2;
+            else if (need == 3) ok = !(c0 == 0xE0 && c1 < 0xA0) && !(c0 == 0xED && c1 >= 0xA0);
+            else                ok = c0 <= 0xF4 && !(c0 == 0xF0 && c1 < 0x90) && !(c0 == 0xF4 && c1 > 0x8F);
+        }
+        n++;
+        i += ok ? need : 1;
+    }
     return n;
 }
 /* raise NotImplementedError for a character-level op on an unhooked "other"
