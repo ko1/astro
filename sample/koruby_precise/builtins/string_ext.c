@@ -259,16 +259,18 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (!has_named) {
             const uint32_t save = i; int num = 0; bool any = false;
             while (i < flen && isdigit((unsigned char)fmt[i])) { num = num * 10 + (fmt[i] - '0'); any = true; i++; }
-            if (any && i < flen && fmt[i] == '$') { explicit_idx = num - 1; i++; }
+            if (any && i < flen && fmt[i] == '$') { explicit_idx = num ? num - 1 : -2; i++; }
             else i = save;                                 /* plain width digits → reparse below */
         }
-        while (i < flen && strchr("-+ 0#", fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
+        if (explicit_idx == -2) { err = true; errmsg = "invalid index - 0$"; break; }   /* `%0$s`: indexes are 1-based */
+        while (i < flen && fmt[i] != '\0' && strchr("-+ 0#", fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }   /* strchr matches the terminator */
         if (explicit_idx < 0 && !has_named && i < flen && isdigit((unsigned char)fmt[i])) {
             const uint32_t save = i; int num = 0;          /* %-N$… : N$ may follow the flags */
             while (i < flen && isdigit((unsigned char)fmt[i])) { num = num * 10 + (fmt[i] - '0'); i++; }
-            if (i < flen && fmt[i] == '$') { explicit_idx = num - 1; i++; }
+            if (i < flen && fmt[i] == '$') { explicit_idx = num ? num - 1 : -2; i++; }
             else i = save;                                 /* plain width digits → reparse below */
         }
+        if (explicit_idx == -2) { err = true; errmsg = "invalid index - 0$"; break; }
         TRY_NAMED(); if (err) break;                       /* %flags<name>… */
         if (i < flen && fmt[i] == '*') {                   /* dynamic width: `*` (next arg) or `*N$` (positional) */
             i++;
@@ -324,7 +326,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (explicit_idx < 0 && !has_named && i < flen && isdigit((unsigned char)fmt[i])) {
             const uint32_t save = i; int num = 0;
             while (i < flen && isdigit((unsigned char)fmt[i])) { num = num * 10 + (fmt[i] - '0'); i++; }
-            if (i < flen && fmt[i] == '$') { explicit_idx = num - 1; i++; }
+            if (i < flen && fmt[i] == '$') { explicit_idx = num ? num - 1 : -2; i++; }
             else i = save;
         }
         TRY_NAMED(); if (err) break;                       /* %flagsWIDTH.PREC<name>type */
@@ -352,7 +354,8 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             }
             named_arg = korb_items_data(VAL2HASH(nh)->items)[2 * hidx + 1]; has_named = true; conv = 's';   /* i at '}'; loop i++ steps past it */
         } else conv = fmt[i];
-        if (!has_named && conv != '%' && !strchr("diufeEgGaAxXoBbcsp", conv)) {   /* bad conversion beats arity errors */
+        /* strchr matches the terminator, so a NUL conversion char must be rejected first */
+        if (!has_named && conv != '%' && (conv == '\0' || !strchr("diufeEgGaAxXoBbcsp", conv))) {   /* bad conversion beats arity errors */
             if (isprint((unsigned char)conv)) snprintf(mixmsg, sizeof mixmsg, "malformed format string - %%%c", conv);
             else                              snprintf(mixmsg, sizeof mixmsg, "malformed format string");
             errmsg = mixmsg; err = true; break;
