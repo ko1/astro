@@ -7592,7 +7592,9 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
      * the positional binding below sees only the positional args. */
     const struct korb_kw_info *const kw = korb_entry_kw_info(block);
     const uint32_t orig_argc = argc;
-    /* `**nil` (kwrest_slot -3) forbids keywords: a trailing Hash stays positional. */
+    /* `**nil` forbids keyword syntax outright; a plain positional Hash is fine. */
+    if (UNLIKELY(kw != NULL && kw->kwrest_slot == -3 && argc >= 1 && korb_kwargs_hash_p(argv[argc - 1])))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no keywords accepted");
     const bool has_kw_hash = (kw && kw->kwrest_slot != -3 && argc >= 1 && korb_kwargs_hash_p(argv[argc - 1]));
     if (has_kw_hash) argc--;   /* positional binding below sees only positionals */
     /* A lambda forwarded as a block enforces its positional arity (unlike a plain
