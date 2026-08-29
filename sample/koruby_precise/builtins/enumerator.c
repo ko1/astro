@@ -42,6 +42,8 @@ static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, bool *keep, b
  * Enumerator#feed sets) from Yielder#<< (returns self so `y << a << b` chains). */
 static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool want_value);
 static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) != 1))                 /* #<< is unary; #yield is the variadic one */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1)", VALUE_SLICE_LEN(a));
     return korb_m_yielder_push_impl(c, slots, self, a, false);
 }
 static RESULT korb_m_yielder_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -62,6 +64,9 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), VALUE_SLICE_GET(a, i)));
         v = slots[2];
     }
+    /* y.yield(a,b) keeps its arity for a streaming block: `each { |x| }` must
+     * see the first value, not the packed array. */
+    bool multi = (ac > 1 && ac <= 8);
     /* apply any deferred lazy ops (select/map/reject/filter_map/take_while/...) */
     bool keep = true, term = false;
     const VALUE ops = korb_items_data(VAL2ARY(slots[1])->items)[2];      /* nil for a raw generator */
@@ -71,6 +76,7 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
         slots[5] = korb_items_data(VAL2ARY(slots[1])->items)[3];         /* op_state (rooted) */
         RESULT ar = korb_lazy_apply(c, slots, 3, &keep, &term);
         if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+        multi = false;                                        /* the chain defines the value now */
         v = slots[3];                                         /* possibly mapped */
         slots[1] = korb_ivar_get(c, VALUE_REF_GET(self), csym);   /* re-read after op dispatch GC */
         slots[0] = korb_items_data(VAL2ARY(slots[1])->items)[0];
@@ -80,7 +86,13 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
          * collecting.  A block break / StopIteration stops the whole drive. */
         struct korb_gen_sink *const sink = c->vm->gen_sink;
         slots[2] = v;                                         /* root across the yield */
-        RESULT yr = korb_block_yield(c, slots + 3, sink->block, sink->def_env, &slots[2], 1, sink->cself);
+        uint32_t yn = 1;
+        if (multi) {                                          /* re-spread so block arity rules apply */
+            for (uint32_t i = 0; i < ac; i++) slots[3 + i] = korb_items_data(VAL2ARY(slots[2])->items)[i];
+            yn = ac;
+        }
+        RESULT yr = korb_block_yield(c, slots + 3 + yn, sink->block, sink->def_env,
+                                     multi ? &slots[3] : &slots[2], yn, sink->cself);
         if (yr.state == KORB_BREAK && korb_break_owned(c, sink->block, sink->def_env)) { sink->broke = true; *sink->break_slot = yr.value;
             return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit"); }
         if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;     /* StopIteration / real error propagates */
@@ -127,8 +139,12 @@ static RESULT korb_enum_gen_new(CTX *c, VALUE *slots, VALUE proc, VALUE size) {
  * finite only).  Returns the collector Array. */
 static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t limit) {
     struct korb_vm *const vm = c->vm;
-    if (vm->yielder_class == KORB_NIL) {                        /* lazily build Enumerator::Yielder (a GC root) */
-        slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));
+    if (vm->yielder_class == KORB_NIL) {                        /* bind Enumerator::Yielder (a GC root) */
+        const VALUE ec = korb_const_get(vm, korb_intern(vm, "Enumerator", 10));
+        const uint32_t yi = KORB_CLASS_P(ec) ? korb_const_index_owned(vm, korb_intern(vm, "Yielder", 7), ec) : UINT32_MAX;
+        slots[0] = yi != UINT32_MAX ? vm->const_vals[yi] : KORB_NIL;
+        if (!KORB_CLASS_P(slots[0]))                            /* prelude absent (bootstrap) */
+            slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));
         korb_class_def_cfn(c, slots[0], "yield", korb_m_yielder_yield, -1);
         korb_class_def_cfn(c, slots[0], "<<",    korb_m_yielder_push, -1);
         vm->yielder_class = slots[0];
@@ -678,9 +694,14 @@ static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * subclass's generic .new.  (The size argument is accepted but not stored.) */
 static RESULT korb_m_enum_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     const VALUE ev = VALUE_REF_GET(self);
+    /* blockless first: `Enumerator.new(1, :upto, 3)` is an ArgumentError, and it
+     * never reaches allocate's enumerator, so the type test would mask it. */
+    if (UNLIKELY(block == NULL))
+        return VALUE_SLICE_LEN(a) > 0
+             ? korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", VALUE_SLICE_LEN(a))
+             : korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Enumerator object without a block");
     if (UNLIKELY(!KORB_ENUM_P(ev))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not an enumerator");
     KORB_CHECK_FROZEN(c, slots, ev);
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Enumerator object without a block");
     slots[0] = ev;                                          /* root across make_proc alloc */
     slots[1] = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;   /* declared #size */
     const VALUE proc = UNWRAP(korb_block_to_proc(c, slots + 2, block, def_env, cself));

@@ -1,4 +1,15 @@
 class Enumerator
+  # Populated from C (#yield / #<<) the first time a generator runs; declared
+  # here so `&yielder` and rescue clauses can name the class.
+  class Yielder
+    def to_proc
+      y = self
+      ->(*a) { y.yield(*a) }
+    end
+  end
+end
+
+class Enumerator
   # An Enumerator subclass written in Ruby (Enumerator::Chain / ::Product below,
   # or a user's) keeps its state in ivars, not in the C enumerator struct that
   # Enumerator's own #to_a / #map / #first / … read — reading that struct off a
@@ -354,7 +365,8 @@ class Enumerator::Lazy
     src = self
     __lazy_gen do |y|
       cur = nil; key = nil; started = false
-      src.each do |x|
+      src.each do |*__vs|
+        x = __vs.size <= 1 ? __vs[0] : __vs
         k = b.call(x)
         if !started then cur = [x]; key = k; started = true
         elsif k == key then cur << x
@@ -370,7 +382,8 @@ class Enumerator::Lazy
     src = self
     __lazy_gen do |y|
       cur = nil; prev = nil; started = false
-      src.each do |x|
+      src.each do |*__vs|
+        x = __vs.size <= 1 ? __vs[0] : __vs
         if !started then cur = [x]; started = true
         elsif b.call(prev, x) then cur << x
         else y << cur; cur = [x]
@@ -386,7 +399,8 @@ class Enumerator::Lazy
     src = self
     __lazy_gen do |y|
       cur = nil; prev = nil; started = false
-      src.each do |x|
+      src.each do |*__vs|
+        x = __vs.size <= 1 ? __vs[0] : __vs
         if !started then cur = [x]; started = true
         elsif b.call(prev, x) then y << cur; cur = [x]
         else cur << x
@@ -401,7 +415,8 @@ class Enumerator::Lazy
     src = self
     __lazy_gen do |y|
       cur = nil
-      src.each do |x|
+      src.each do |*__vs|
+        x = __vs.size <= 1 ? __vs[0] : __vs
         hit = b ? b.call(x) : pat[0] === x
         if cur.nil? then cur = [x]
         elsif hit then y << cur; cur = [x]
@@ -416,7 +431,8 @@ class Enumerator::Lazy
     src = self
     __lazy_gen do |y|
       cur = nil
-      src.each do |x|
+      src.each do |*__vs|
+        x = __vs.size <= 1 ? __vs[0] : __vs
         cur = [] if cur.nil?
         cur << x
         if b ? b.call(x) : pat[0] === x then y << cur; cur = nil end
@@ -446,7 +462,8 @@ class Enumerator::Lazy
     z = __lazy_gen(size) do |y|
       iters = others.each_with_index.map { |o, k| lists[k] ? nil : o.to_enum(:each) }
       i = 0
-      src.each do |x|
+      src.each do |*__vs|
+        x = __vs.size <= 1 ? __vs[0] : __vs
         row = [x]
         others.each_index do |k|
           row << if lists[k]
