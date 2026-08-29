@@ -5630,6 +5630,18 @@ static RESULT korb_arg_to_mid(CTX *c, VALUE *slots, VALUE v, uint32_t *mid_out) 
 static int
 korb_cmp_values(VALUE a, VALUE b)
 {
+    if (UNLIKELY(KORB_BIGNUM_P(a) || KORB_BIGNUM_P(b))) {   /* a Bignum never fits the double path below */
+        if (KORB_INTEGER_P(a) && KORB_INTEGER_P(b)) return korb_int_cmp(a, b);
+        double d;
+        if (KORB_BIGNUM_P(a) && (KORB_FLOAT_P(b) || KORB_RATIONAL_P(b)) && korb_num_to_d(b, &d))
+            return (d != d) ? 2 : korb_big_flo_cmp(a, d);
+        if (KORB_BIGNUM_P(b) && (KORB_FLOAT_P(a) || KORB_RATIONAL_P(a)) && korb_num_to_d(a, &d)) {
+            if (d != d) return 2;
+            const int r = korb_big_flo_cmp(b, d);
+            return r == 2 ? 2 : -r;
+        }
+        return 2;
+    }
     if ((FIXNUM_P(a) || KORB_FLOAT_P(a) || KORB_RATIONAL_P(a)) &&
         (FIXNUM_P(b) || KORB_FLOAT_P(b) || KORB_RATIONAL_P(b))) {   /* Rational ordered via double (GC-free; exact for realistic denominators) */
         double x = 0, y = 0; korb_num_to_d(a, &x); korb_num_to_d(b, &y);
