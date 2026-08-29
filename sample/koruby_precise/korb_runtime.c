@@ -4178,6 +4178,8 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     VALUE kwhash = KORB_NIL;
     /* Only a Hash the call site wrote as keywords binds to keyword params; a plain
      * trailing Hash argument is positional (Ruby 3).  `**nil` (-3): never. */
+    if (UNLIKELY(kw != NULL && kw->kwrest_slot == -3 && argc >= 1 && korb_kwargs_hash_p(base[argc - 1])))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no keywords accepted");
     if (kw && kw->kwrest_slot != -3 && argc >= 1 && korb_kwargs_hash_p(base[argc - 1]))
         { kwhash = base[argc - 1]; pos_argc = argc - 1; }
     const uint32_t min_pos = m->req_cnt + m->post_cnt;   /* posts are required too */
@@ -4272,6 +4274,21 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                 base[kw->entries[j].slot] = dr.value;
             } else {
                 return korb_raise_missing_kw(c, slots, line, kw, present);
+            }
+        }
+        if (kw->kwrest_slot == -1 && kwhash != KORB_NIL) {          /* no **rest: every key must be declared */
+            const KorbHash *const kh = VAL2HASH(kwhash);
+            for (uint32_t i = 0; i < kh->len; i++) {
+                const VALUE key = korb_items_data(kh->items)[2 * i];
+                bool declared = false;
+                for (uint32_t j = 0; j < kw->count; j++) if (key == ID2SYM(kw->entries[j].mid)) { declared = true; break; }
+                if (declared) continue;
+                if (SYMBOL_P(key))
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: :%s", korb_sym_name(vm, SYM2ID(key)));
+                if (KORB_STRING_P(key))                             /* a String key is reported quoted (CRuby) */
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: \"%.*s\"",
+                                      (int)VAL2STR(key)->len, korb_strbuf_data(VAL2STR(key)->buf));
+                return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: %s", korb_type_name(key));
             }
         }
         if (kw->kwrest_slot >= 0) {                                 /* collect undeclared keys into **rest */
