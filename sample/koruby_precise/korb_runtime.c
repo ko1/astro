@@ -8577,15 +8577,32 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 slots[0] = UNWRAP(korb_ary_new(c, slots, 0)); return korb_set_new(c, slots + 1, slots[0]);
             }
             VALUE src = korb_set_elems_of(arg);
-            if (src == KORB_NIL) {                          /* not Array/Set → convert via #to_a (Range/Enumerable/…) */
-                if (UNLIKELY(!korb_responds_to(c, arg, korb_intern(vm, "to_a", 4)) &&
-                             !korb_responds_to(c, arg, korb_intern(vm, "each", 4))))
+            if (src == KORB_NIL) {
+                /* CRuby drives the argument with #each_entry when it has one and
+                 * #each otherwise; #to_a is only a shortcut for what we can see. */
+                const uint32_t m_ee = korb_intern(vm, "each_entry", 10);
+                const uint32_t m_each = korb_intern(vm, "each", 4);
+                const uint32_t m_toa = korb_intern(vm, "to_a", 4);
+                const bool has_ee = korb_responds_to(c, arg, m_ee);
+                if (UNLIKELY(!has_ee && !korb_responds_to(c, arg, m_toa) && !korb_responds_to(c, arg, m_each)))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line, "value must be enumerable");
                 slots[0] = arg;
-                RESULT ar = korb_send_impl(c, slots + 1, korb_intern(vm, "to_a", 4), line, 0, NULL, NULL, NULL);
-                if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
-                if (UNLIKELY(!KORB_ARRAY_P(ar.value))) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "value must be enumerable");
-                src = ar.value;
+                const uint32_t drive = has_ee ? m_ee : (korb_responds_to(c, arg, m_toa) ? m_toa : m_each);
+                if (drive == m_toa) {
+                    RESULT ar = korb_send_impl(c, slots + 1, m_toa, line, 0, NULL, NULL, NULL);
+                    if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+                    if (UNLIKELY(!KORB_ARRAY_P(ar.value))) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "value must be enumerable");
+                    src = ar.value;
+                } else {   /* collect what the iterator yields via Enumerator */
+                    slots[1] = ID2SYM(drive);
+                    RESULT er = korb_send_impl(c, slots + 2, korb_intern(vm, "to_enum", 7), line, 1, NULL, NULL, NULL);
+                    if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+                    slots[0] = er.value;
+                    RESULT ar = korb_send_impl(c, slots + 1, m_toa, line, 0, NULL, NULL, NULL);
+                    if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+                    if (UNLIKELY(!KORB_ARRAY_P(ar.value))) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "value must be enumerable");
+                    src = ar.value;
+                }
             }
             slots[0] = src;                                 /* rooted src array */
             if (block != NULL) {                            /* Set.new(enum){ |o| … } → map each element */
