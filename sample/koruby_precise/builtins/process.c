@@ -1212,9 +1212,15 @@ static RESULT korb_m_signal_trap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 
 static RESULT korb_m_signal_signame(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    if (!FIXNUM_P(VALUE_SLICE_GET(a, 0))) return RESULT_OK(KORB_NIL);
-    const int want = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    slots[0] = VALUE_SLICE_GET(a, 0);
+    CHECK(korb_coerce_to_int_pub(c, slots + 1, &slots[0]));   /* #to_int is honoured */
+    if (!FIXNUM_P(slots[0]) && !KORB_BIGNUM_P(slots[0]))
+        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
+                          korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+    if (!FIXNUM_P(slots[0])) return RESULT_OK(KORB_NIL);       /* a Bignum is never a signal number */
+    const int want = (int)FIX2LONG(slots[0]);
     static const struct { const char *n; int s; } tab[] = {
+        {"EXIT", 0},                                          /* signal 0 has the reserved name EXIT */
         {"HUP", SIGHUP}, {"INT", SIGINT}, {"QUIT", SIGQUIT}, {"ILL", SIGILL},
         {"TRAP", SIGTRAP}, {"ABRT", SIGABRT}, {"FPE", SIGFPE}, {"KILL", SIGKILL},
         {"BUS", SIGBUS}, {"SEGV", SIGSEGV}, {"SYS", SIGSYS}, {"PIPE", SIGPIPE},

@@ -1255,6 +1255,8 @@ module Signal
     h = {}
     (1..31).each { |n| (nm = __signal_signame(n)) && h[nm] = n }
     h["EXIT"] = 0
+    h["CLD"] = h["CHLD"] if h.key?("CHLD")     # historical aliases CRuby keeps
+    h["IOT"] = h["ABRT"] if h.key?("ABRT")
     h
   end
 end
