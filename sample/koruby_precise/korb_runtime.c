@@ -3601,9 +3601,13 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         klass = VALUE_REF_GET(self);                     /* to_str dispatch may have moved the class (self is rooted) */
     }
     slots[0] = klass;                                    /* root class across allocs */
-    if (block != NULL && def_env == KORB_BLK_FWD) {      /* `define_method(:x, &proc)` — block is a forwarded Proc: use it as-is */
+    /* An explicit 2nd argument wins over a block (CRuby): `define_method(:x, pr) { }`
+     * defines pr, not the block. */
+    const bool arg_body = VALUE_SLICE_LEN(a) >= 2 &&
+                          (KORB_PROC_P(VALUE_SLICE_GET(a, 1)) || KORB_METHOD_P(VALUE_SLICE_GET(a, 1)));
+    if (!arg_body && block != NULL && def_env == KORB_BLK_FWD) {   /* `define_method(:x, &proc)` — forwarded Proc: use as-is */
         slots[1] = KORB_CSELF_VAL(cself);
-    } else if (block != NULL) {                          /* block form → a (lambda) proc */
+    } else if (!arg_body && block != NULL) {                          /* block form → a (lambda) proc */
         /* a block-arg's def_env arrives in tagged prev form (base|1); korb_make_proc
          * wants the raw frame base (it reads base[-2] for outer scopes).  The
          * captured open env is shared (korb_open_env_find) and promoted to heap when
