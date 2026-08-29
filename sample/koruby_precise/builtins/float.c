@@ -133,7 +133,9 @@ static int korb_round_half_v(CTX *c, VALUE_SLICE a, uint32_t *npos, VALUE *bad) 
 static int korb_round_half(CTX *c, VALUE_SLICE a, uint32_t *npos) { VALUE bad; return korb_round_half_v(c, a, npos, &bad); }
 #define KORB_ROUND_CHECK_HALF(c, slots, a, npos) do { \
     VALUE _bad; (void)korb_round_half_v((c), (a), (npos), &_bad); \
-    if (UNLIKELY(_bad != KORB_NIL)) return korb_raise((c), (slots), KORB_E_ARGUMENT, 0, "invalid rounding mode: %s", korb_type_name(_bad)); \
+    if (UNLIKELY(_bad != KORB_NIL)) return korb_raise((c), (slots), KORB_E_ARGUMENT, 0, "invalid rounding mode: %s", \
+        SYMBOL_P(_bad) ? korb_sym_name((c)->vm, SYM2ID(_bad))                                  \
+        : (KORB_STRING_P(_bad) ? korb_strbuf_data(VAL2STR(_bad)->buf) : korb_type_name(_bad))); \
 } while (0)
 /* round v to an integer-valued double under the given half mode. */
 static double korb_round_half_apply(double v, int half) {

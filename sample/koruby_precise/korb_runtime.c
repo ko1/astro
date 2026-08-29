@@ -372,9 +372,24 @@ RESULT korb_int_rat_divmod(CTX *c, VALUE *slots, VALUE s, VALUE rat, int op) {
     CHECK(korb_ary_push_val(c, slots + 5, VALUE_REF_AT(&slots[4]), slots[3]));
     return RESULT_OK(slots[4]);
 }
+static RESULT korb_rat_round_digits(CTX *c, VALUE *slots, VALUE num0, VALUE den0, korb_sword_t nd, int mode);   /* fwd */
+/* floor/ceil/truncate take the same optional digit count as #round: > 0 keeps a
+ * Rational, <= 0 gives an Integer. */
+static RESULT korb_rat_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
+    korb_sword_t nd = 0;
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
+        slots[0] = VALUE_SLICE_GET(a, 0);
+        CHECK(korb_coerce_to_int_pub(c, slots + 1, &slots[0]));
+        if (!FIXNUM_P(slots[0]))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
+                              korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+        nd = FIX2LONG(slots[0]);
+    }
+    return korb_rat_round_digits(c, slots, SELF_RAT->num, SELF_RAT->den, nd, mode);
+}
 static RESULT korb_m_rat_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_rat_intdiv(c, slots, SELF_RAT->num, SELF_RAT->den, 2); }
-static RESULT korb_m_rat_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_rat_intdiv(c, slots, SELF_RAT->num, SELF_RAT->den, 0); }
-static RESULT korb_m_rat_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_rat_intdiv(c, slots, SELF_RAT->num, SELF_RAT->den, 1); }
+static RESULT korb_m_rat_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_dig(c, slots, self, a, 0); }
+static RESULT korb_m_rat_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_dig(c, slots, self, a, 1); }
 static RESULT korb_m_rat_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RAT->num == LONG2FIX(0) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_rat_integerp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
 static void korb_class_qname_into(CTX *c, VALUE cls, char *out, size_t outsz);   /* defined below */
@@ -492,7 +507,8 @@ static RESULT korb_m_rat_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (nm && !strcmp(nm, "even")) mode = 4;
             else if (nm && !strcmp(nm, "down")) mode = 5;
             else if (nm && !strcmp(nm, "up")) mode = 3;
-            else if (hv != KORB_NIL) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid rounding mode: %s", korb_type_name(hv));   /* unknown half: mode */
+            else if (hv != KORB_NIL) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid rounding mode: %s",
+                                                       nm ? nm : korb_type_name(hv));   /* unknown half: mode */
         }
         n--;
     }
