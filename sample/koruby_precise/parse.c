@@ -1581,7 +1581,10 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         const char *const nm = kp_cid_cstr(tc, cn->name);
         if (strcmp(nm, "__method__") == 0 || strcmp(nm, "__callee__") == 0) {
             uint32_t mid = 0;                            /* walk out through block frames to the enclosing method */
-            for (const struct kp_frame *f = tc->frame; f; f = f->prev) { if (f->method_mid) { mid = f->method_mid; break; } }
+            for (const struct kp_frame *f = tc->frame; f; f = f->prev) {
+                if (f->dm_body) return ALLOC_node_dm_name();   /* define_method: named at run time */
+                if (f->method_mid) { mid = f->method_mid; break; }
+            }
             return ALLOC_node_lit(mid ? ID2SYM(mid) : KORB_NIL);
         }
     }

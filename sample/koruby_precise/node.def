@@ -2472,6 +2472,15 @@ node_yield_outer_splat(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t pre
     return korb_yield_outer(c, slots + N, N, line, prev, depth, trio_base);
 }
 
+// __method__ / __callee__ in a define_method body: the name is bound at run
+// time, so read the entry define_method installed (nil outside one).
+NODE_DEF @nogc
+node_dm_name(CTX *c, NODE *n, VALUE *slots)
+{
+    (void)n; (void)slots;
+    return RESULT_OK(c->dm_entry ? ID2SYM(c->dm_entry->mid) : KORB_NIL);
+}
+
 // block_given? — reads the frame-top biseq cell (odd-tagged when a block was
 // passed; nil when not).
 NODE_DEF @nogc

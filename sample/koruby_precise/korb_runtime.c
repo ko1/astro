@@ -11679,6 +11679,14 @@ static bool korb_resolve_load(const char *base_dir, const char *name, char *out,
     if (!realpath(cand, out)) korb_path_lexnorm(cand, out, outsz);
     struct stat st; return stat(out, &st) == 0 && S_ISREG(st.st_mode);
 }
+/* __method__ / __callee__ reached by an explicit send / eval: the parser bakes
+ * the lexical answer, so this only sees the define_method case (else nil). */
+static RESULT
+korb_bi_method_name(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)slots; (void)args;
+    return RESULT_OK(c->dm_entry ? ID2SYM(c->dm_entry->mid) : KORB_NIL);
+}
 /* Kernel#__dir__ → the directory of the current source file (realpath'd), or nil
  * when there is no file (e.g. -e).  Uses the file being loaded / the main script. */
 static RESULT
@@ -13506,6 +13514,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__set_gvar", korb_bi_set_gvar, 2);
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
+    korb_builtin_define(c, "__method__", korb_bi_method_name, 0);
+    korb_builtin_define(c, "__callee__", korb_bi_method_name, 0);
     korb_builtin_define(c, "require", korb_bi_require, -1);
     korb_builtin_define(c, "require_relative", korb_bi_require_relative, -1);
     korb_builtin_define(c, "load", korb_bi_load, -1);
