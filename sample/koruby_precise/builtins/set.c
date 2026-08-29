@@ -462,7 +462,7 @@ static RESULT korb_m_obj_singleton_class(CTX *c, VALUE *slots, VALUE_REF self, V
     if (sv == KORB_NIL || sv == KORB_TRUE || sv == KORB_FALSE)   /* their class IS their singleton */
         return RESULT_OK(korb_class_obj_of(c, sv));
     if (UNLIKELY(!AROH_IS_GC_OBJECT(sv)))                        /* Integer / Symbol / Float */
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton class for %s", korb_type_name(sv));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");
     return korb_obj_singleton(c, slots, sv);
 }
 /* Object#initialize_copy / initialize_clone (private) — the default hook: type-

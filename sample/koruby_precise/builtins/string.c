@@ -1685,6 +1685,7 @@ static RESULT korb_m_str_squeeze(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_str_squeeze_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_squeeze_into(c, slots, self, a, true); }
 /* append_as_bytes(*objs): append each Integer as a byte (low 8 bits) / String bytes. */
 static RESULT korb_m_str_append_as_bytes(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
         VALUE o = VALUE_SLICE_GET(a, j);
         if (FIXNUM_P(o)) {
