@@ -1425,11 +1425,23 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     VALUE sv = na ? VALUE_SLICE_GET(a, 0) : LONG2FIX(1);
     if (na && !FIXNUM_P(sv) && !KORB_FLOAT_P(sv) && !KORB_BIGNUM_P(sv) && !KORB_RATIONAL_P(sv)) {   /* coerce a non-numeric step via #to_int */
         const uint32_t to_int = korb_intern(c->vm, "to_int", 6);
+        bool got = false;
         if (KORB_OBJECT_P(sv) && korb_responds_to_coerce_p(c, slots, &sv, to_int)) {
             slots[0] = sv;
             RESULT sr = korb_send_impl(c, slots + 1, to_int, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-            if (KORB_INTEGER_P(sr.value)) sv = sr.value;
+            if (KORB_INTEGER_P(sr.value)) { sv = sr.value; got = true; }
+        }
+        /* CRuby also accepts a step that only knows #coerce: the pair's 2nd
+         * element is the step in the range's own numeric domain. */
+        const uint32_t co = korb_intern(c->vm, "coerce", 6);
+        if (!got && KORB_OBJECT_P(sv) && korb_responds_to_coerce_p(c, slots, &sv, co)) {
+            slots[0] = sv;
+            slots[1] = SELF_RANGE->rbegin != KORB_NIL ? SELF_RANGE->rbegin : LONG2FIX(1);
+            RESULT cr = korb_send_impl(c, slots + 2, co, 0, 1, NULL, NULL, NULL);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (KORB_ARRAY_P(cr.value) && VAL2ARY(cr.value)->len == 2)
+                sv = korb_items_data(VAL2ARY(cr.value)->items)[1];
         }
     }
     /* An ArithmeticSequence describes a *numeric* progression; a String (or any
