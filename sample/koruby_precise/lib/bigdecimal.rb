@@ -337,11 +337,13 @@ class BigDecimal < Numeric
 
   def divmod(other)
     o = __coerce_operand(other) or return __coerce_fallback(other, :divmod)
+    # NaN wins over the divide-by-zero check (CRuby)
+    return [BigDecimal.__new(1, 0, 0, :nan), BigDecimal.__new(1, 0, 0, :nan)] if nan? || o.nan?
     raise ZeroDivisionError, "divided by 0" if o.finite? && o.zero?
     return [BigDecimal.__new(1, 0, 0, :nan), BigDecimal.__new(1, 0, 0, :nan)] if !finite? || !o.finite?
     a, b, e = __aligned(o)
-    q = a / b                                            # Integer#/ floors
-    [BigDecimal(q * 10**e, 0), __from_scaled(a - b * q, e)]
+    q = a / b                                            # Integer#/ floors; the 10**e scales cancel
+    [BigDecimal(q, 0), __from_scaled(a - b * q, e)]
   end
 
   def remainder(other)

@@ -91,7 +91,15 @@ class StringIO
   def inspect = to_s
 
   def string; @buf; end
-  def string=(s); @buf = s; @pos = 0; @lineno = 0; s; end
+  def string=(s)
+    unless s.is_a?(String)                     # #to_str-coercible, else TypeError
+      raise TypeError, "no implicit conversion of #{s.nil? ? 'nil' : s.class} into String" unless s.respond_to?(:to_str)
+      s = s.to_str
+      raise TypeError, "no implicit conversion into String" unless s.is_a?(String)
+    end
+    @buf = s; @pos = 0; @lineno = 0
+    s
+  end
   def size;   @buf.bytesize; end
   alias length size
   def pos;    @pos; end
