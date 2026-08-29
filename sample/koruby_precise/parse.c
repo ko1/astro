@@ -2393,7 +2393,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
     else if (PM_NODE_TYPE_P(cn->body, PM_STATEMENTS_NODE))
         body = transduce_statements(tc, (const pm_statements_node_t *)cn->body);
     else
-        body = kp_unsupported(tc, cn->body, "class body with rescue/ensure");
+        body = transduce(tc, cn->body);   /* a begin/rescue/ensure body is just another node */
     uint32_t frame_size = pop_frame(tc);
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
@@ -2703,7 +2703,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
     else if (PM_NODE_TYPE_P(mn->body, PM_STATEMENTS_NODE))
         body = transduce_statements(tc, (const pm_statements_node_t *)mn->body);
     else
-        body = kp_unsupported(tc, mn->body, "module body with rescue/ensure");
+        body = transduce(tc, mn->body);   /* a begin/rescue/ensure body is just another node */
     uint32_t frame_size = pop_frame(tc);
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
@@ -4203,7 +4203,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         else if (PM_NODE_TYPE_P(sc->body, PM_STATEMENTS_NODE))
             body = transduce_statements(tc, (const pm_statements_node_t *)sc->body);
         else
-            body = kp_unsupported(tc, sc->body, "singleton class body with rescue/ensure");
+            body = transduce(tc, sc->body);   /* a begin/rescue/ensure body is just another node */
         uint32_t frame_size = pop_frame(tc);
         NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
         code_repo_add("sclass", entry, true);       /* its own AOT entry */
