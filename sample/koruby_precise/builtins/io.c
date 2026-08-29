@@ -1612,7 +1612,7 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)korb_io_flush_rep(rep);
     if (dup2(other->fd, rep->fd) < 0) return korb_raise_errno(c, slots, errno, "dup2", "");
     korb_io_drop_rbuf(rep);
-    (void)fcntl(rep->fd, F_SETFD, FD_CLOEXEC);         /* CRuby always re-arms close-on-exec here */
+    if (rep->fd > 2) (void)fcntl(rep->fd, F_SETFD, FD_CLOEXEC);   /* non-STDIO only: fd 0/1/2 must survive exec */
     /* The receiver takes on the other stream's mode and path, so a read after
      * `w.reopen(r)` works and #path reports the new file. */
     {
