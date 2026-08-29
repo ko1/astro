@@ -1132,7 +1132,12 @@ static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALU
           for (uint32_t j = 0; j < b->len; j++) if (korb_items_data(b->items)[j] == sym) { hid = true; break; }
           if (hid) continue; }
         uint8_t v = m->visibility;
-        for (uint32_t p = 0; p < priv_n; p++) if (m->mid == priv_mids[p]) { v = 1; break; }   /* initialize/initialize_{copy,clone,dup}/respond_to_missing? are always private */
+        /* initialize/initialize_{copy,clone,dup}/respond_to_missing? etc. read as
+         * private wherever they are instance methods — but a singleton copy made
+         * by module_function is public, so honour its own visibility there. */
+        const bool on_singleton = KORB_CLASS_P(VALUE_REF_GET(klass_ref)) && VAL2CLASS(VALUE_REF_GET(klass_ref))->is_singleton;
+        if (!on_singleton)
+            for (uint32_t p = 0; p < priv_n; p++) if (m->mid == priv_mids[p]) { v = 1; break; }
         if (!(vis_mask & (1u << v))) continue;
         const KorbArray *const r = VAL2ARY(VALUE_REF_GET(result));
         bool seen = false;

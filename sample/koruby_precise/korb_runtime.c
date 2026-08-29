@@ -3658,6 +3658,7 @@ static RESULT korb_m_class_alias_method(CTX *c, VALUE *slots, VALUE_REF self, VA
     { RESULT r = korb_alias_argsym(c, slots + 1, VALUE_SLICE_GET(a, 1), &oldm); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     return korb_do_alias(c, slots + 1, slots[0], newm, oldm);
 }
+static VALUE korb_klass_override_get(const struct korb_vm *vm, VALUE obj);   /* fwd */
 static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE klass = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(klass)))
@@ -3743,6 +3744,14 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     m->uses_block = 0; m->rest_slot = -1; m->post_cnt = 0;
     m->param_info = (KORB_PROC_P(slots[1]) && VAL2PROC(slots[1])->iseq)   /* carry the block's params for Method#parameters */
                         ? VAL2PROC(slots[1])->iseq->u.node_entry.param_info : NULL;
+    if (UNLIKELY(VAL2CLASS(slots[0])->cur_visibility == 3)) {   /* module_function mode: public copy on the singleton (as `def` does) */
+        const VALUE sing = korb_klass_override_get(c->vm, slots[0]);
+        if (KORB_CLASS_P(sing)) {
+            const struct korb_method src = *m;
+            struct korb_method *const sm = korb_class_method_slot(VAL2CLASS(sing), mid);
+            *sm = src; sm->mid = mid; sm->owner = sing; sm->visibility = 0;
+        }
+    }
     c->vm->method_serial++;
     CHECK(korb_fire_method_added(c, slots + 2, slots[0], mid));
     return RESULT_OK(ID2SYM(mid));
