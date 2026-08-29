@@ -69,6 +69,19 @@ module Zlib
   def deflate(str, level = DEFAULT_COMPRESSION) = Deflate.deflate(str, level)
   def inflate(str) = Inflate.inflate(str)
 
+  # With a block, zlib hands the output over in 16 KiB pieces and the call
+  # itself answers nil (CRuby's ZSTREAM_AVAIL_OUT_STEP_MAX).
+  CHUNK_SIZE = 16384
+  def self.__chunked(str, &blk)
+    return str unless blk
+    i = 0
+    while i < str.bytesize
+      blk.call(str.byteslice(i, CHUNK_SIZE))
+      i += CHUNK_SIZE
+    end
+    nil
+  end
+
   # A real streaming z_stream lives behind an Integer handle (builtins/zlib.c);
   # #close frees it.  A stream that is never closed leaks its z_stream, which is
   # what a runtime without finalizers can offer.
@@ -133,8 +146,8 @@ module Zlib
   end
 
   class Deflate < ZStream
-    def self.deflate(str, level = DEFAULT_COMPRESSION)
-      __zlib_deflate(str.to_s.b, level == DEFAULT_COMPRESSION ? 6 : level, MAX_WBITS)
+    def self.deflate(str, level = DEFAULT_COMPRESSION, &blk)
+      Zlib.__chunked(__zlib_deflate(str.to_s.b, level == DEFAULT_COMPRESSION ? 6 : level, MAX_WBITS), &blk)
     end
 
     def initialize(level = DEFAULT_COMPRESSION, window_bits = MAX_WBITS,
@@ -151,10 +164,10 @@ module Zlib
       self
     end
 
-    def deflate(str, flush = NO_FLUSH)
+    def deflate(str, flush = NO_FLUSH, &blk)
       __check_open
       @out << __run(str.nil? ? nil : str.to_s.b, str.nil? ? FINISH : flush)
-      flush_next_out
+      Zlib.__chunked(flush_next_out, &blk)
     end
 
     def params(level, strategy)
@@ -178,14 +191,14 @@ module Zlib
   end
 
   class Inflate < ZStream
-    def self.inflate(str)
+    def self.inflate(str, &blk)
       raise Zlib::BufError, "buffer error" if str.nil? || str.empty?
       z = new
       begin
         out = z.inflate(str)
         # a stream that never reached its end was truncated
         raise Zlib::BufError, "buffer error" unless z.stream_end?
-        out + z.finish
+        Zlib.__chunked(out + z.finish, &blk)
       ensure
         z.close unless z.closed?
       end
@@ -210,10 +223,11 @@ module Zlib
       self
     end
 
-    def inflate(str, buffer = nil)
+    def inflate(str, buffer = nil, &blk)
       __check_open
       self << str
       r = flush_next_out
+      return Zlib.__chunked(r, &blk) if blk
       buffer ? buffer.replace(r) : r
     end
 
