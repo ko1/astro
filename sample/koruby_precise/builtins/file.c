@@ -1626,6 +1626,15 @@ static RESULT korb_dir_list(CTX *c, VALUE *slots, VALUE_SLICE a, bool with_dots)
     closedir(d);
     return RESULT_OK(VALUE_REF_GET(arr));
 }
+/* Dir.chroot(path) → 0 (needs privileges; EPERM otherwise) */
+static RESULT korb_m_dir_chroot(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
+    char pb[PATH_MAX];
+    snprintf(pb, sizeof pb, "%s", path);               /* stack copy: chroot(2) after any GC */
+    if (chroot(pb) != 0) return korb_raise_errno(c, slots, errno, "chroot", pb);
+    return RESULT_OK(LONG2FIX(0));
+}
 static RESULT korb_m_dir_entries(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)self; return korb_dir_list(c, slots, a, true); }
 static RESULT korb_m_dir_children(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_dir_list(c, slots, a, false); }
 
@@ -2211,6 +2220,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn_blk(c, slots[3], "[]",   korb_m_dir_glob, -1);
     korb_class_def_cfn_blk(c, slots[3], "chdir", korb_m_dir_chdir,   -1);
     korb_class_def_cfn_blk(c, slots[3], "fchdir", korb_m_dir_fchdir, -1);
+    korb_class_def_cfn(c, slots[3], "chroot",    korb_m_dir_chroot,    1);
     korb_class_def_cfn_blk(c, slots[3], "open", korb_m_dir_open,    -1);   /* Dir.open [ {|d|} ] */
     korb_class_def_cfn_blk(c, slots[3], "new",  korb_m_dir_open,    -1);   /* Dir.new */
     /* Dir instance methods (eager-entry cursor object). */
