@@ -716,7 +716,14 @@ class String
   end
   private :__encode_fallback
 
-  def encode!(*args); replace(encode(*args)); force_encoding(args[0].is_a?(Encoding) ? args[0].name : (args[0] || Encoding.default_external.name).to_s); end
+  # #replace copies the source's bytes; take the target encoding from the
+  # already-converted result rather than re-parsing the arguments.
+  def encode!(*args, **opts)
+    e = opts.empty? ? encode(*args) : encode(*args, **opts)
+    enc = e.encoding
+    replace(e)
+    force_encoding(enc)
+  end
 end
 class Symbol
   # A Symbol reports US-ASCII when its name is ASCII-only, else UTF-8 (CRuby).

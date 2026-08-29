@@ -2627,10 +2627,17 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         if (KORB_HASH_P(sym)) {                               /* trailing keyword_init: true */
             const VALUE kw_sym = ID2SYM(korb_intern(vm, "keyword_init", 12));
             const KorbHash *const h = VAL2HASH(sym);
-            for (uint32_t j = 0; j < h->len; j++)             /* only keyword_init: is allowed. koruby can't tell keyword-syntax (`b: 2` → ArgumentError) from an explicit Hash literal (`{b: 2}` → CRuby TypeError), so it uses ArgumentError for both (the corpus form is keyword-syntax) */
-                if (korb_items_data(h->items)[2 * j] != kw_sym)
+            /* only keyword_init: is allowed; a plain Hash literal is a bad
+             * member (TypeError), keyword syntax is a bad keyword. */
+            const bool kw_syntax = (((const AroObjectHeader *)(uintptr_t)sym)->flags & KORB_FL_KWARGS) != 0;
+            for (uint32_t j = 0; j < h->len; j++)
+                if (korb_items_data(h->items)[2 * j] != kw_sym) {
+                    const VALUE bad = korb_items_data(h->items)[2 * j];
+                    if (!kw_syntax)
+                        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(sym));
                     return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keyword: :%s",
-                                      SYMBOL_P(korb_items_data(h->items)[2 * j]) ? korb_sym_name(vm, SYM2ID(korb_items_data(h->items)[2 * j])) : korb_type_name(korb_items_data(h->items)[2 * j]));
+                                      SYMBOL_P(bad) ? korb_sym_name(vm, SYM2ID(bad)) : korb_type_name(bad));
+                }
             int32_t ki = korb_hash_find(h, kw_sym);
             if (ki >= 0) {                                   /* keyword_init: true → 1, false → 2 (explicit), nil → 0 (unspecified) */
                 const VALUE kv = korb_items_data(VAL2HASH(sym)->items)[2*ki+1];
@@ -2707,7 +2714,8 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         slots[2] = VALUE_REF_GET(cls);                       /* root the class as the block's self/cref */
         const VALUE saved_definee = c->def_definee;   /* a class body: `def` lands on the class */
         c->def_definee = KORB_NIL;
-        RESULT br = korb_block_yield(c, slots + 3, block, def_env, NULL, 0, &slots[2]);
+        slots[3] = slots[2];                                 /* CRuby passes the new class to the block */
+        RESULT br = korb_block_yield(c, slots + 4, block, def_env, &slots[3], 1, &slots[2]);
         c->def_definee = saved_definee;
         if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;   /* someone else's break passes through */
         if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
