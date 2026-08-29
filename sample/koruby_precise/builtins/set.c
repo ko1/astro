@@ -2309,6 +2309,13 @@ static RESULT korb_m_exc_set_backtrace(CTX *c, VALUE *slots, VALUE_REF self, VAL
     ARO_STORE(c, e, &e->backtrace, slots[0]);
     return RESULT_OK(slots[0]);
 }
+/* The message as STORED (nil when never set) — Marshal dumps that, not the
+ * class-name fallback #message produces. */
+static RESULT korb_m_exc_raw_mesg(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)a;
+    const VALUE v = VALUE_REF_GET(self);
+    return RESULT_OK(KORB_EXC_P(v) ? VAL2EXC(v)->msg : KORB_NIL);
+}
 static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const KorbException *e = VAL2EXC(VALUE_REF_GET(self));

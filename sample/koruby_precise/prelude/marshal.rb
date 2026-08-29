@@ -14,6 +14,13 @@ module Marshal
       limit = an_io; an_io = nil
     end
     raise TypeError, "instance of IO needed" if an_io && !an_io.respond_to?(:write)
+    # An IO/StringIO is not dumpable: CRuby refuses before it starts writing.
+    # Use Module#=== so a BasicObject subclass (no #is_a?) still works, and so
+    # this never calls Class#name on the object.
+    if IO === obj || (defined?(::StringIO) && ::StringIO === obj)
+      raise TypeError, "no _dump_data is defined for IO"
+    end
+    an_io.binmode if an_io.respond_to?(:binmode)
     st = { syms: {}, objs: {}.compare_by_identity, limit: limit, depth: 0 }
     out = (+"\x04\x08").force_encoding("ASCII-8BIT")   # a byte stream, not text
     _dump(obj, out, st)
@@ -316,7 +323,7 @@ module Marshal
     out << "o"; _symdump(name.to_sym, out, st)
     uiv = o.instance_variables
     _long(2 + uiv.length, out)
-    _symdump(:mesg, out, st); _dump(o.message, out, st)
+    _symdump(:mesg, out, st); _dump(o.respond_to?(:__raw_mesg) ? o.__raw_mesg : o.message, out, st)
     _symdump(:bt, out, st);   _dump(o.backtrace, out, st)
     uiv.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
   end
