@@ -201,7 +201,23 @@ static RESULT korb_m_hash_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * builds a new Hash from the [new_key, new_value] pairs the block returns. */
 static RESULT korb_m_hash_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
-    if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    if (block == NULL) {
+        /* a plain Hash is answered as is, but a subclass instance must become a
+         * real Hash (CRuby) */
+        const VALUE sv = VALUE_REF_GET(self);
+        if (LIKELY(!(AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS))))
+            return RESULT_OK(sv);
+        slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(sv)->len));
+        VALUE_REF plain = VALUE_REF_AT(&slots[0]);
+        for (uint32_t i = 0; ; i++) {
+            const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+            if (i >= h->len) break;
+            slots[1] = korb_items_data(h->items)[2*i];
+            slots[2] = korb_items_data(h->items)[2*i+1];
+            CHECK(korb_hash_set(c, slots + 3, plain, VALUE_REF_AT(&slots[1]), slots[2]));
+        }
+        return RESULT_OK(VALUE_REF_GET(plain));
+    }
     slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
     VALUE_REF nh = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; ; i++) {
@@ -211,9 +227,20 @@ static RESULT korb_m_hash_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         VALUE argv[2] = { slots[1], slots[2] };
         RESULT r = korb_block_yield(c, slots + 3, block, def_env, argv, 2, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        if (UNLIKELY(!KORB_ARRAY_P(r.value) || VAL2ARY(r.value)->len != 2))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong element type %s (expected array of [key, value])", korb_type_name(r.value));
         slots[3] = r.value;
+        if (UNLIKELY(!KORB_ARRAY_P(slots[3]))) {          /* a pair may be any #to_ary object */
+            const char *const cls = korb_coerce_name(c, slots[3]);
+            const RESULT cr = korb_coerce_to_ary(c, slots + 4, &slots[3]);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (UNLIKELY(cr.value != KORB_TRUE) || !KORB_ARRAY_P(slots[3]))
+                return korb_raise(c, slots + 4, KORB_E_TYPE, 0,
+                                  "wrong element type %s (expected array of [key, value])", cls);
+        }
+        /* the pair must be exactly [key, value] — a different length is an
+         * ArgumentError, not a type error */
+        if (UNLIKELY(VAL2ARY(slots[3])->len != 2))
+            return korb_raise(c, slots + 4, KORB_E_ARGUMENT, 0,
+                              "element has wrong array length (expected 2, was %u)", VAL2ARY(slots[3])->len);
         slots[4] = korb_items_data(VAL2ARY(slots[3])->items)[0];     /* new key */
         slots[5] = korb_items_data(VAL2ARY(slots[3])->items)[1];     /* new value */
         CHECK(korb_hash_set(c, slots + 6, nh, VALUE_REF_AT(&slots[4]), slots[5]));
