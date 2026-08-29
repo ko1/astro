@@ -501,8 +501,15 @@ static RESULT korb_re_match_set(CTX *c, VALUE *slots, VALUE re, VALUE str) {
     return RESULT_OK(LONG2FIX(cidx));
 }
 static RESULT korb_m_str_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_re_match_set(c, slots, VALUE_SLICE_GET(a, 0), VALUE_REF_GET(self)); }
-static RESULT korb_m_re_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_re_match_set(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); }
+/* `Regexp.allocate` leaves a plain object behind: every Regexp method must
+ * refuse it rather than quietly answer nil. */
+#define KORB_RE_CHECK(c, slots, self) do { \
+    if (UNLIKELY(!KORB_REGEXP_P(VALUE_REF_GET(self)))) \
+        return korb_raise((c), (slots), KORB_E_TYPE, 0, "uninitialized Regexp"); \
+} while (0)
+static RESULT korb_m_re_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { KORB_RE_CHECK(c, slots, self); return korb_re_match_set(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); }
 static RESULT korb_m_re_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* match?(str[, pos]) — no $~ */
+    KORB_RE_CHECK(c, slots, self);
     VALUE subj; slots[0] = VALUE_REF_GET(self);
     if (UNWRAP(korb_re_subject(c, slots + 1, VALUE_SLICE_GET(a, 0), &subj)) != KORB_TRUE) return RESULT_OK(KORB_FALSE);
     slots[1] = subj;
@@ -525,7 +532,7 @@ static RESULT korb_m_re_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     return RESULT_OK(r.value == KORB_NIL ? KORB_FALSE : KORB_TRUE);
 }
-static RESULT korb_m_re_source(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VAL2RE(VALUE_REF_GET(self))->source); }
+static RESULT korb_m_re_source(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(VAL2RE(VALUE_REF_GET(self))->source); }
 /* Regexp::FIXEDENCODING passed to Regexp.new: no prism flag says "fixed to the
  * source's own encoding", so koruby carries it in a private bit. */
 #define KORB_RE_FIXENC 0x10000u
@@ -633,6 +640,7 @@ static RESULT korb_m_re_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 /* Regexp#match(str[,pos]) → MatchData|nil (sets $~); block form yields it. */
 static RESULT korb_m_re_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    KORB_RE_CHECK(c, slots, self);
     slots[0] = VALUE_REF_GET(self); VALUE subj;
     if (VALUE_SLICE_GET(a, 0) == KORB_NIL) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
     if (UNWRAP(korb_re_subject(c, slots + 2, VALUE_SLICE_GET(a, 0), &subj)) != KORB_TRUE)
