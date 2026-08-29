@@ -1387,8 +1387,22 @@ korb_thread_tmo_arg(CTX *c, VALUE *slots, VALUE v, double *out)
     if (v == KORB_NIL) { *out = -1.0; return RESULT_OK(KORB_NIL); }   /* -1 = wait forever */
     if (FIXNUM_P(v)) *out = (double)FIX2LONG(v);
     else if (KORB_FLOAT_P(v)) *out = korb_float_val(v);
-    else if (!korb_num_to_d(v, out))                                  /* Rational / Bignum */
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into time interval", korb_coerce_name(c, v));
+    else if (!korb_num_to_d(v, out)) {                                /* Rational / Bignum */
+        /* CRuby accepts anything with #divmod: seconds = q + r (rb_time_interval) */
+        const char *const cls = korb_coerce_name(c, v);
+        bool got = false;
+        if (KORB_OBJECT_P(v) && korb_responds_to(c, v, korb_intern(c->vm, "divmod", 6))) {
+            slots[0] = v; slots[1] = LONG2FIX(1);
+            const RESULT dr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "divmod", 6), 0, 1, NULL, NULL, NULL);
+            if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+            if (KORB_ARRAY_P(dr.value) && VAL2ARY(dr.value)->len == 2) {
+                double q = 0, r = 0;
+                if (korb_num_to_d(korb_items_data(VAL2ARY(dr.value)->items)[0], &q) &&
+                    korb_num_to_d(korb_items_data(VAL2ARY(dr.value)->items)[1], &r)) { *out = q + r; got = true; }
+            }
+        }
+        if (!got) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into time interval", cls);
+    }
     /* an unvalidated negative would land on the -1 "forever" sentinel and hang */
     if (isnan(*out)) return korb_raise(c, slots, KORB_E_RANGE, 0, "NaN out of Time range");
     if (*out < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "time interval must not be negative");

@@ -1585,7 +1585,12 @@ class Random
     def srand(*args) = Kernel.srand(*args)
     def seed         = @__seed || Kernel.srand(Kernel.srand)
     def new_seed     = Kernel.srand(Kernel.srand)
+    # Like #rand, except that 0 (and a 0.0 max) means "no bound" rather than
+    # "the whole Float range is out" — Random::Formatter's entry point.
+    def random_number(n = 0) = (n == 0 ? rand : rand(n))
   end
+
+  def random_number(n = 0) = (n == 0 ? rand : rand(n))
 end
 
 # ENV — the C side (builtins/env.c) provides the primitives; the Hash-shaped
