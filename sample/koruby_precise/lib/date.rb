@@ -744,12 +744,30 @@ class Date
     civil(y, m, d, sg)
   end
 
-  def self.iso8601(str = "-4712-01-01", sg = ITALY) = parse(str, true, sg)
-  def self.rfc3339(str = "-4712-01-01T00:00:00+00:00", sg = ITALY) = parse(str, true, sg)
-  def self.xmlschema(str = "-4712-01-01", sg = ITALY) = parse(str, true, sg)
-  def self.rfc2822(str = "Mon, 1 Jan -4712 00:00:00 +0000", sg = ITALY) = parse(str, true, sg)
+  # nil is "invalid date" for the format-specific parsers, not a TypeError.
+  def self.__fmt_parse(str, sg)
+    raise Date::Error, "invalid date" if str.nil?
+    parse(str, true, sg)
+  end
+  # The _-prefixed forms return a Hash (empty when nothing parsed) instead of
+  # raising; nil gives {} but a non-String object is still a TypeError.
+  def self.__fmt_hash(str)
+    return {} if str.nil?
+    h = _parse(str, true)
+    h.empty? ? {} : h
+  end
+  def self._iso8601(str)   = __fmt_hash(str)
+  def self._rfc3339(str)   = __fmt_hash(str)
+  def self._xmlschema(str) = __fmt_hash(str)
+  def self._rfc2822(str)   = __fmt_hash(str)
+  def self._rfc822(str)    = __fmt_hash(str)
+  def self._httpdate(str)  = __fmt_hash(str)
+  def self.iso8601(str = "-4712-01-01", sg = ITALY) = __fmt_parse(str, sg)
+  def self.rfc3339(str = "-4712-01-01T00:00:00+00:00", sg = ITALY) = __fmt_parse(str, sg)
+  def self.xmlschema(str = "-4712-01-01", sg = ITALY) = __fmt_parse(str, sg)
+  def self.rfc2822(str = "Mon, 1 Jan -4712 00:00:00 +0000", sg = ITALY) = __fmt_parse(str, sg)
   class << self; alias_method :rfc822, :rfc2822; end
-  def self.httpdate(str = "Mon, 01 Jan -4712 00:00:00 GMT", sg = ITALY) = parse(str, true, sg)
+  def self.httpdate(str = "Mon, 01 Jan -4712 00:00:00 GMT", sg = ITALY) = __fmt_parse(str, sg)
 
   def self._strptime(str, fmt = "%F")
     h = {}
