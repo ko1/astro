@@ -11965,7 +11965,8 @@ korb_bi_require_relative(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
     {   /* CRuby names the resolved absolute path (minus any ".rb" it appended) */
         char full[4096], norm[4096];
-        if (basedir[0] == '/') snprintf(full, sizeof full, "%s/%s", basedir, namebuf);
+        if (namebuf[0] == '/')      snprintf(full, sizeof full, "%s", namebuf);   /* an absolute argument is already the path */
+        else if (basedir[0] == '/') snprintf(full, sizeof full, "%s/%s", basedir, namebuf);
         else {                                            /* make it absolute, like CRuby */
             char cwd[4096];
             if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
@@ -12698,7 +12699,12 @@ korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VA
     c->def_definee = cref;                              /* instance_eval/class_eval(String): `def` lands here */
     c->eval_cref = cref;                                /* … and so do constants */
     c->vm->script_name = fname;
+    /* require_relative / __dir__ inside the eval resolve against the name the
+     * eval was given (its 2nd argument), like CRuby. */
+    const char *const saved_load = c->vm->cur_load_file;
+    c->vm->cur_load_file = fname;
     RESULT r = EVAL(c, ast, cur);
+    c->vm->cur_load_file = saved_load;
     c->def_definee = saved_definee;
     c->eval_cref = saved_cref;
     if (UNLIKELY(r.state == KORB_RAISE)) {
@@ -12783,6 +12789,8 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     const char *const saved_name = c->vm->script_name;
     if (cref != KORB_UNDEF) { c->def_definee = cref; c->eval_cref = cref; }
     c->vm->script_name = fname;                     /* raises inside report the eval's filename */
+    const char *const saved_load = c->vm->cur_load_file;   /* require_relative / __dir__ resolve against it too */
+    c->vm->cur_load_file = fname;
     /* the eval'd string INHERITS the body's bare-`private` default but its own
      * changes stay inside (CRuby scopes it to the eval's cref) */
     const uint8_t saved_vis = KORB_CLASS_P(fb[-1]) ? VAL2CLASS(fb[-1])->cur_visibility : 0xffu;
@@ -12794,6 +12802,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
         (void)korb_capture_backtrace(c, cur);
         er.value = cur[0];
     }
+    c->vm->cur_load_file = saved_load;
     c->vm->script_name = saved_name;
     if (UNLIKELY(er.state != KORB_NORMAL)) return er;
     fb[L] = er.value;                               /* park result across writeback allocs */
