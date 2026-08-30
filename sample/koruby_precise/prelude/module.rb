@@ -40,12 +40,14 @@ class Module
     # An `autoload :Const, "path"` registration gets its chance here: require the
     # file (once) and retry the constant.  Ancestors are searched too, matching
     # CRuby (an autoload on a superclass answers a subclass's lookup).
-    if (path = __autoload_path_for(name))
+    owner, path = __autoload_owner_for(name)
+    if path
       # require が失敗したら登録は残す (CRuby と同じ: 次の参照でも LoadError。
       # 先に消すと、同じ定数を待っている別スレッドが登録を見失って NameError
       # になる)。成功したときだけ一度きりの登録を外す。
       Module.__autoload_require(path)                 # main.require (CRuby; mockable in specs)
       __autoload_table.delete(name)
+      owner.__autoload_table.delete(name) if owner
       ancestors.each { |m| m.__autoload_table.delete(name) if m.respond_to?(:__autoload_table, true) }
       # koruby の const 表は top-level 定数を Object 所有として持たないので、
       # const_defined? ではなく実際に引いてみる (テーブルからは既に外して
@@ -53,6 +55,14 @@ class Module
       begin
         return const_get(name)
       rescue NameError
+      end
+      # The file may have defined it in the lexical scope that registered the
+      # autoload, not here (CRuby then leaves this scope without the constant).
+      if owner && !owner.equal?(self)
+        begin
+          return owner.const_get(name)
+        rescue NameError
+        end
       end
     end
     # CRuby names the namespace with #name when it has one, else #inspect
@@ -91,16 +101,28 @@ class Module
   end
 
   private def __autoload_path_for(name)
+    o, path = __autoload_owner_for(name)
+    path
+  end
+
+  # Which module's pending autoload answers a bare `name` here: self and its
+  # ancestors first, then the lexically enclosing scopes (CRuby resolves a bare
+  # constant through Module.nesting before the ancestry).  Returns [owner, path].
+  private def __autoload_owner_for(name)
     n = name.to_sym
-    t = __autoload_table
-    return t[n] if t.key?(n)
-    ancestors.each do |m|
-      next if m.equal?(self)
-      next unless m.respond_to?(:__autoload_table, true)
-      tbl = m.__autoload_table
-      return tbl[n] if tbl.key?(n)
+    scope = self
+    while scope
+      t = scope.__autoload_table
+      return [scope, t[n]] if t.key?(n)
+      scope.ancestors.each do |m|
+        next if m.equal?(scope)
+        next unless m.respond_to?(:__autoload_table, true)
+        tbl = m.__autoload_table
+        return [m, tbl[n]] if tbl.key?(n)
+      end
+      scope = scope.__lexical_parent
     end
-    nil
+    [nil, nil]
   end
 
   # `class M::C` / `module M::C` where C is a pending autoload: the file has to be

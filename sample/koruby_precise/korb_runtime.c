@@ -10394,6 +10394,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "caller_locations", korb_m_empty_ary, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_get", korb_m_class_const_get, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_source_location", korb_m_mod_const_source_location, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "__lexical_parent", korb_m_mod_lexical_parent, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "remove_const", korb_m_class_remove_const, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_defined?", korb_m_class_const_defined, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "class_variable_get", korb_m_class_cvar_get, 1);
@@ -10436,6 +10437,7 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("const_set", korb_m_class_const_set, 2);
     MOD_CFN("const_get", korb_m_class_const_get, -1);
     MOD_CFN("const_source_location", korb_m_mod_const_source_location, -1);
+    MOD_CFN("__lexical_parent", korb_m_mod_lexical_parent, 0);
     MOD_CFN("const_defined?", korb_m_class_const_defined, -1);
     MOD_CFN("class_variable_get", korb_m_class_cvar_get, 1);
     MOD_CFN("class_variable_set", korb_m_class_cvar_set, 2);

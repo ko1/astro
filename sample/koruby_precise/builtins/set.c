@@ -1739,6 +1739,16 @@ static bool korb_valid_const_name(const char *p, uint32_t len) {
     }
     return true;
 }
+/* Module#__lexical_parent (private) — the class/module this one was defined
+ * inside, nil at top level.  The prelude's autoload lookup walks it: a bare
+ * constant is searched in the lexical scopes before the ancestors. */
+static RESULT korb_m_mod_lexical_parent(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)a;
+    const VALUE k = VALUE_REF_GET(self);
+    if (!KORB_CLASS_P(k)) return RESULT_OK(KORB_NIL);
+    const VALUE e = VAL2CLASS(k)->enclosing;
+    return RESULT_OK(KORB_CLASS_P(e) ? e : KORB_NIL);
+}
 /* Module#const_source_location(name, inherit = true) — [file, line] where the
  * constant was assigned, [] for one defined in C (no position recorded), nil
  * when the constant is not defined at all. */
