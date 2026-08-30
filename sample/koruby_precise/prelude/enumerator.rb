@@ -375,16 +375,16 @@ class Enumerator::Lazy
   # argument).  koruby registers them on Enumerator, so re-expose them here as
   # forwarding wrappers — one extra frame per *chain build*, not per element.
   def map(&blk) = super
-  def collect(&blk) = super
+  alias collect map                          # CRuby: the same UnboundMethod, not a copy
   def select(&blk) = super
-  def filter(&blk) = super
-  def find_all(&blk) = super
+  alias filter select
+  alias find_all select
   def reject(&blk) = super
   def filter_map(&blk) = super
   def take_while(&blk) = super
   def drop_while(&blk) = super
   def flat_map(&blk) = super
-  def collect_concat(&blk) = super
+  alias collect_concat flat_map
   def uniq(&blk) = super
   def compact = super
   def take(n) = super

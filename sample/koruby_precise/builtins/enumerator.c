@@ -104,6 +104,7 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
             slots[3] = slots[2];                              /* the value (block result was the predicate) */
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(sink->collect), slots[3]));
         }
+        if (term) return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit");   /* take's last value: streamed, now stop */
         return RESULT_OK(want_value ? yr.value : VALUE_REF_GET(self));
     }
     slots[2] = v;                                             /* root across the push alloc, and for the return below */
@@ -362,6 +363,7 @@ static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, uint32_t src_
             const korb_sword_t s = FIX2LONG(korb_items_data(VAL2ARY(slots[voff + 2])->items)[oi]);
             if (s <= 0) { *keep = false; *term = true; return RESULT_OK(KORB_NIL); }
             korb_ary_store_at(c, slots[voff + 2], oi, LONG2FIX(s - 1));
+            if (s == 1) *term = true;                           /* the N-th value: emit it, then stop the source */
             continue;
         }
         if (!strcmp(opn, "compact")) { if (slots[voff] == KORB_NIL) { *keep = false; return RESULT_OK(KORB_NIL); } continue; }
