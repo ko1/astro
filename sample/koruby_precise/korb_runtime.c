@@ -10549,7 +10549,7 @@ korb_register_core_methods(CTX *c)
       if (KORB_CLASS_P(nme)) korb_class_def_cfn(c, nme, "args", korb_m_nme_args, 0); }
     korb_def_cmethod(c, KORB_C_EXCEPTION, "set_backtrace", korb_m_exc_set_backtrace, -1);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "cause", korb_m_exc_cause, 0);
-    korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace_locations", korb_m_lit_nil, 0);
+    korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace_locations", korb_m_exc_backtrace_locations, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "message", korb_m_exc_message_via_to_s, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "to_s", korb_m_exc_message, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "__raw_mesg", korb_m_exc_raw_mesg, 0);
@@ -13596,11 +13596,10 @@ korb_exc_build_with_cause(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
     bool has_cause_kw = false; VALUE cause_val = KORB_NIL;
-    /* A lone trailing {cause: …} is taken as the cause keyword.  koruby can't
-     * distinguish `cause: x` (kwargs) from an explicit `{cause: x}` (positional),
-     * and the `raise("msg", cause: e)` form is far more common than the rare
-     * explicit-hash case, so we always extract it. */
-    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {
+    /* Only a trailing hash marked as kwargs is the cause keyword; an explicit
+     * `raise("m", {cause: e})` stays a positional argument (TypeError). */
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1)) &&
+        (((const AroObjectHeader *)(uintptr_t)VALUE_SLICE_GET(args, n - 1))->flags & KORB_FL_KWARGS)) {
         const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(args, n - 1));
         const int32_t ci = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "cause", 5)));
         if (ci >= 0 && h->len == 1) { cause_val = korb_items_data(h->items)[2 * ci + 1]; has_cause_kw = true; n--; }

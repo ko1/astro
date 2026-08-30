@@ -2293,6 +2293,19 @@ static RESULT korb_m_nme_args(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const VALUE v = korb_exc_ivar_get(VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__args", 7)));
     return KORB_ARRAY_P(v) ? RESULT_OK(v) : korb_ary_new(c, slots, 0);
 }
+/* Exception#backtrace_locations — the Location Array a `raise obj, msg, locs`
+ * stored; nil for a String backtrace or none at all (CRuby). */
+static RESULT korb_m_exc_backtrace_locations(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)a;
+    const VALUE v = VALUE_REF_GET(self);
+    if (!KORB_EXC_P(v)) return RESULT_OK(KORB_NIL);
+    const VALUE bt = VAL2EXC(v)->backtrace;
+    if (!KORB_ARRAY_P(bt)) return RESULT_OK(KORB_NIL);
+    const KorbArray *const ary = VAL2ARY(bt);
+    for (uint32_t i = 0; i < ary->len; i++)
+        if (KORB_STRING_P(korb_items_data(ary->items)[i])) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(bt);
+}
 static RESULT korb_m_exc_set_backtrace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE v = VALUE_REF_GET(self);
     if (!KORB_EXC_P(v)) return RESULT_OK(KORB_NIL);
