@@ -2622,33 +2622,40 @@ static RESULT korb_m_struct_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
-static RESULT korb_m_struct_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE o = VALUE_SLICE_GET(a, 0);
-    if (!KORB_OBJECT_P(o) || VAL2OBJ(o)->klass != VAL2OBJ(VALUE_REF_GET(self))->klass) return RESULT_OK(KORB_FALSE);
-    const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));
+/* Pairs currently being compared, on the C stack — CRuby's paired recursion
+ * guard: meeting the same (a, b) again means the cycle matched so far. */
+struct korb_struct_seen { VALUE a, b; const struct korb_struct_seen *prev; };
+/* Member-wise Struct/Data equality.  `strict` selects eql? (type-strict) over ==.
+ * Nothing here allocates, so the bare VALUEs cannot go stale. */
+static bool korb_struct_cmp_rec(CTX *c, VALUE x, VALUE y, bool strict, const struct korb_struct_seen *seen, int depth) {
+    if (x == y) return true;
+    if (!KORB_OBJECT_P(x) || !KORB_OBJECT_P(y) || VAL2OBJ(x)->klass != VAL2OBJ(y)->klass ||
+        !KORB_ARRAY_P(VAL2CLASS(VAL2OBJ(x)->klass)->members))
+        return strict ? korb_value_eql(x, y) : korb_value_eq(x, y);
+    for (const struct korb_struct_seen *p = seen; p != NULL; p = p->prev)
+        if ((p->a == x && p->b == y) || (p->a == y && p->b == x)) return true;
+    if (UNLIKELY(depth > 256)) return true;                   /* C-stack floor for pathologically deep nesting */
+    const struct korb_struct_seen node = { x, y, seen };
+    const KorbArray *const mem = VAL2ARY(VAL2CLASS(VAL2OBJ(x)->klass)->members);
     for (uint32_t i = 0; i < mem->len; i++) {
-        VALUE iv = korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i]);
-        const VALUE sv = korb_ivar_get(c, VALUE_REF_GET(self), iv);
-        const VALUE ov = korb_ivar_get(c, o, iv);
-        if (sv == VALUE_REF_GET(self) && ov == o) continue;   /* direct self-reference at the same position → equal (breaks the cycle, CRuby-style) */
-        if (!korb_value_eq(sv, ov)) return RESULT_OK(KORB_FALSE);
+        const VALUE iv = korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i]);
+        if (!korb_struct_cmp_rec(c, korb_ivar_get(c, x, iv), korb_ivar_get(c, y, iv), strict, &node, depth + 1))
+            return false;
     }
-    return RESULT_OK(KORB_TRUE);
+    return true;
+}
+static RESULT korb_m_struct_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!KORB_OBJECT_P(o) || VAL2OBJ(o)->klass != VAL2OBJ(VALUE_REF_GET(self))->klass) return RESULT_OK(KORB_FALSE);
+    return RESULT_OK(korb_struct_cmp_rec(c, VALUE_REF_GET(self), o, false, NULL, 0) ? KORB_TRUE : KORB_FALSE);
 }
 /* Struct#eql? — like ==, but members are compared type-strictly (1 eql? 1.0 => false). */
 static RESULT korb_m_struct_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;
-    VALUE o = VALUE_SLICE_GET(a, 0);
+    const VALUE o = VALUE_SLICE_GET(a, 0);
     if (!KORB_OBJECT_P(o) || VAL2OBJ(o)->klass != VAL2OBJ(VALUE_REF_GET(self))->klass) return RESULT_OK(KORB_FALSE);
-    const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));
-    for (uint32_t i = 0; i < mem->len; i++) {
-        VALUE iv = korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i]);
-        const VALUE sv = korb_ivar_get(c, VALUE_REF_GET(self), iv);
-        const VALUE ov = korb_ivar_get(c, o, iv);
-        if (sv == VALUE_REF_GET(self) && ov == o) continue;   /* direct self-reference at the same position → equal */
-        if (!korb_value_eql(sv, ov)) return RESULT_OK(KORB_FALSE);
-    }
-    return RESULT_OK(KORB_TRUE);
+    return RESULT_OK(korb_struct_cmp_rec(c, VALUE_REF_GET(self), o, true, NULL, 0) ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_class_new_bracket(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
 static RESULT korb_m_struct_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
@@ -2808,7 +2815,10 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
          * may have moved: take the namespace from the new class's superclass. */
         VALUE owner = VAL2CLASS(VALUE_REF_GET(cls))->superclass;
         if (!KORB_CLASS_P(owner)) owner = korb_const_get(vm, korb_intern(vm, "Struct", 6));
-        korb_const_define_owned(c, name_id, VALUE_REF_GET(cls), KORB_CLASS_P(owner) ? owner : KORB_NIL);
+        slots[2] = KORB_CLASS_P(owner) ? owner : KORB_NIL;             /* root across the warning (it allocates) */
+        if (korb_const_index_owned(vm, name_id, slots[2]) != UINT32_MAX)
+            korb_warn_const_redef(c, slots + 3, name_id, slots[2]);    /* Struct.new("X") twice warns, like any reassignment */
+        korb_const_define_owned(c, name_id, VALUE_REF_GET(cls), slots[2]);
     }
     ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
     /* The common Struct instance methods live on the base Struct class (see
