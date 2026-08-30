@@ -2836,3 +2836,19 @@ require に渡された名前そのもの (`"./load_fixture.rb"` 等) も照合�
 require が自分を「読み込み済み」と誤判定して先に進まなくなる。
 入れるなら、照合対象を「プログラムが明示的に push したエントリ」に
 限るなどの絞り込みが要る。実 mspec で 5 例。
+
+## 囲みスコープの autoload が字句探索で見つからない
+
+```ruby
+module M
+  autoload :X, "..."
+  class Inner
+    def get; X; end     # CRuby は M の autoload を発火させる
+  end
+end
+```
+koruby は Inner.const_missing に落ちて NameError。node_const の
+「見つからない」経路で cref → enclosing を辿り
+`korb_autoload_registered_p` を見る修正を試したが発火しなかった
+(2026-08-30、revert 済み)。`korb_autoload_registered_p` のキーの取り方か、
+cref の解決のどちらかを先に確かめること。core/module/autoload_spec で 2 例。
