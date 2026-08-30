@@ -249,7 +249,10 @@ static RESULT korb_file_expand(CTX *c, VALUE *slots, VALUE_SLICE a, bool tilde) 
     if (plen > 0 && path[0] == '/') {                 /* already absolute */
         memcpy(raw, path, plen); r = plen;
     } else if (tilde && plen > 0 && path[0] == '~' && (plen == 1 || path[1] == '/')) {
-        const char *home = getenv("HOME"); if (!home) home = "/";
+        const char *home = getenv("HOME");
+        if (!home) { const struct passwd *const pw = getpwuid(getuid()); home = pw ? pw->pw_dir : NULL; }   /* CRuby falls back to the user database */
+        if (!home) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "couldn't find HOME environment -- expanding '~'");
+        if (home[0] != '/') return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "non-absolute home");   /* empty counts */
         size_t hl = strlen(home);
         memcpy(raw, home, hl); r = hl;
         if (plen > 1) { memcpy(raw + r, path + 1, plen - 1); r += plen - 1; }
@@ -271,7 +274,11 @@ static RESULT korb_file_expand(CTX *c, VALUE *slots, VALUE_SLICE a, bool tilde) 
             uint32_t blen; const char *base = korb_str_cstr_len(slots[1], &blen);
             if (blen > 0 && base[0] == '/') { memcpy(basebuf, base, blen); bl = blen; }
             else if (blen > 0 && base[0] == '~' && (blen == 1 || base[1] == '/')) {
-                const char *home = getenv("HOME"); if (!home) home = "/"; size_t hl = strlen(home);
+                const char *home = getenv("HOME");
+                if (!home) { const struct passwd *const pw = getpwuid(getuid()); home = pw ? pw->pw_dir : NULL; }
+                if (!home) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "couldn't find HOME environment -- expanding '~'");
+                if (home[0] != '/') return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "non-absolute home");
+                size_t hl = strlen(home);
                 memcpy(basebuf, home, hl); bl = hl;
                 if (blen > 1) { memcpy(basebuf + bl, base + 1, blen - 1); bl += blen - 1; }
             } else {                                  /* relative base → cwd + base */
