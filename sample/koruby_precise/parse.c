@@ -370,6 +370,19 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     tc->chain = 0;
 }
 
+/* A body that consults the frame's definee (nested `def`, class/module body,
+ * `class << x`, `@@var`) must not take the streamlined is_simple invoke: that
+ * path skips the save/restore, so an enclosing instance_eval's definee leaks
+ * into the callee.  uses_block is the existing "not is_simple" channel and
+ * reserves the frame cells to match.  Only the enclosing method frame matters:
+ * class/sclass bodies and blocks are entered through paths that already
+ * save/restore it. */
+static void kp_needs_definee(struct kp_ctx *tc) {
+    struct kp_frame *mf = tc->frame;
+    while (mf->method_mid == 0 && mf->prev) mf = mf->prev;
+    if (mf->method_mid != 0) mf->uses_block = true;
+}
+
 /* the innermost lexically-enclosing class/module const name (0 = top-level) —
  * the cref for owner-aware bare constant reads (walk the frame chain). */
 static uint32_t kp_cref_owner(struct kp_ctx *tc) {
@@ -534,6 +547,7 @@ bake_ivar_set(struct kp_ctx *tc, uint32_t name, NODE *val)
 static NODE *
 bake_cvar_get(struct kp_ctx *tc, uint32_t name, uint32_t soft)
 {
+    kp_needs_definee(tc);
     NODE *n = ALLOC_node_cvar_get(-1 - tc->chain, -1 - tc->chain, name, soft);
     bake_add(tc, &n->u.node_cvar_get.self_off);
     return n;
@@ -541,6 +555,7 @@ bake_cvar_get(struct kp_ctx *tc, uint32_t name, uint32_t soft)
 static NODE *
 bake_cvar_set(struct kp_ctx *tc, uint32_t name, NODE *val)
 {
+    kp_needs_definee(tc);
     NODE *n = ALLOC_node_cvar_set(-1 - tc->chain, -1 - tc->chain, name, val);
     bake_add(tc, &n->u.node_cvar_set.self_off);
     return n;
@@ -4237,9 +4252,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_CALL_NODE:
         return transduce_call(tc, (const pm_call_node_t *)node);
       case PM_DEF_NODE:
+        kp_needs_definee(tc);
         return transduce_def_recv(tc, (const pm_def_node_t *)node, NULL);
       case PM_SINGLETON_CLASS_NODE: {     /* `class << recv; body; end` — run body with self = recv's singleton class */
         const pm_singleton_class_node_t *sc = (const pm_singleton_class_node_t *)node;
+        kp_needs_definee(tc);
         /* recv expression evaluated in the ENCLOSING scope → node_sclass's staged child */
         NODE *recv_node;
         WITH_CHAIN(tc, 1, (recv_node = transduce(tc, sc->expression)));
@@ -4260,8 +4277,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return _sc;
       }
       case PM_CLASS_NODE:
+        kp_needs_definee(tc);
         return transduce_class(tc, (const pm_class_node_t *)node);
       case PM_MODULE_NODE:
+        kp_needs_definee(tc);
         return transduce_module(tc, (const pm_module_node_t *)node);
       case PM_CONSTANT_READ_NODE: {
         const pm_constant_read_node_t *cr = (const pm_constant_read_node_t *)node;

@@ -1106,17 +1106,23 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, uint32_t p
      * IS a class (class body), else the enclosing method's owner — a nested
      * `def` lands in the class the outer method belongs to (CRuby). */
     VALUE definee = c->def_definee;
+    bool nested = false;
     if (definee == KORB_NIL) {
         definee = slots[self_off];
         if (!KORB_CLASS_P(definee) && dc_off != INT32_MIN)
-            { const VALUE cr = korb_cvar_cref(definee, slots[dc_off]); if (KORB_CLASS_P(cr)) definee = cr; }
+            { const VALUE cr = korb_cvar_cref(definee, slots[dc_off]); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
     }
     if (UNLIKELY(!KORB_CLASS_P(definee) && c->def_definee != KORB_NIL))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* instance_eval on a value with no singleton */
     if (KORB_CLASS_P(definee)) {
         { RESULT fr = korb_check_def_frozen(c, slots, definee); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* frozen class / metaclass-of-frozen → FrozenError */
         slots[0] = definee;                               /* park: the hook is Ruby code */
+        /* a def nested in a method body is always public, whatever private/
+         * protected scope the enclosing class body was left in (CRuby) */
+        const uint8_t saved_vis = VAL2CLASS(slots[0])->cur_visibility;
+        if (nested) VAL2CLASS(slots[0])->cur_visibility = 0;
         korb_class_def_method(c, slots[0], mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
+        if (nested) VAL2CLASS(slots[0])->cur_visibility = saved_vis;   /* re-read: the def may have moved it */
         /* method_added — or singleton_method_added when the definee is a
          * singleton class (`class << obj; def m; end; end`). */
         CHECK(korb_fire_method_added(c, slots + 1, slots[0], mid));
