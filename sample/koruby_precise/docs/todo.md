@@ -2826,3 +2826,13 @@ STRESS 下で GC がクラスを動かし、`Float::MAX` 等が stale な owner 
 漏れていると思われる (`korb_const_owner_serial` が既にあるので、そちらへ
 寄せるのが筋)。2026-08-29 の定数スコープ変更より前から再現する
 (node.def を元に戻して A/B 確認済み)。
+
+## require が feature 名を「書かれたまま」照合しない
+
+CRuby は `$LOADED_FEATURES` に対して、展開後の絶対パスだけでなく
+require に渡された名前そのもの (`"./load_fixture.rb"` 等) も照合する。
+`korb_bi_require` の入口でその照合を足すと `core/kernel/require_spec.rb`
+が無限ループした (2026-08-30 に試して revert)。おそらく mspec 自身の
+require が自分を「読み込み済み」と誤判定して先に進まなくなる。
+入れるなら、照合対象を「プログラムが明示的に push したエントリ」に
+限るなどの絞り込みが要る。実 mspec で 5 例。
