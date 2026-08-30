@@ -784,20 +784,27 @@ static RESULT korb_m_ary_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* Merge one element's encoding into the join result's: an ASCII-only element
  * never forces one, two different real ones give up (UINT32_MAX = keep UTF-8). */
 #define KORB_JOIN_ENC_NONE (UINT32_MAX - 1u)   /* no non-ASCII element seen yet */
-static void korb_join_enc_merge(VALUE str, uint32_t *enc) {
+/* Fold one element into the running result encoding, exactly as rb_str_append
+ * would: the result starts US-ASCII and widens to the first non-7-bit
+ * element's encoding.  UINT32_MAX marks an incompatible pair (CompatibilityError). */
+static void korb_join_enc_merge(CTX *c, VALUE str, uint32_t *enc, bool *asc, uint32_t bad[2]) {
     if (*enc == UINT32_MAX) return;
-    const KorbString *const s = VAL2STR(str);
-    const char *const d = korb_strbuf_data(s->buf);
-    for (uint32_t i = 0; i < s->len; i++) if ((unsigned char)d[i] >= 0x80) goto non_ascii;
-    return;                                              /* 7-bit: compatible with anything */
-  non_ascii:;
+    /* CRuby appends into a copy of the FIRST element, so that element's encoding
+     * seeds the result and a later 7-bit piece never changes it. */
+    if (*enc == KORB_JOIN_ENC_NONE) {
+        *enc = KORB_STR_ENC(str);
+        *asc = korb_str_ascii_only_p(c->vm, str);
+        return;
+    }
+    if (korb_str_ascii_only_p(c->vm, str)) return;      /* 7-bit: fits any destination */
     const uint32_t e = KORB_STR_ENC(str);
-    if (*enc == KORB_JOIN_ENC_NONE) *enc = e;
-    else if (*enc != e) *enc = UINT32_MAX;
+    if (e == *enc) { *asc = false; return; }
+    if (*asc) { *enc = e; *asc = false; return; }       /* nothing non-7-bit yet → adopt */
+    bad[0] = *enc; bad[1] = e; *enc = UINT32_MAX;
 }
 /* `enc`: the negotiated result encoding (KORB_ENC_USASCII until a non-ASCII-only
  * element sets it; UINT32_MAX once two incompatible ones meet). */
-static RESULT korb_join_rec(CTX *c, VALUE *slots, FILE *ms, VALUE_REF aref, VALUE_REF sepref, bool *first, uint32_t *enc) {
+static RESULT korb_join_rec(CTX *c, VALUE *slots, FILE *ms, VALUE_REF aref, VALUE_REF sepref, bool *first, uint32_t *enc, bool *asc, uint32_t bad[2]) {
     if (((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(aref))->flags & KORB_FL_JOIN_VISITING)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "recursive array join");
     ((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(aref))->flags |= KORB_FL_JOIN_VISITING;
@@ -835,17 +842,18 @@ static RESULT korb_join_rec(CTX *c, VALUE *slots, FILE *ms, VALUE_REF aref, VALU
             }
         }
         if (recurse) {
-            rr = korb_join_rec(c, slots + 1, ms, VALUE_REF_AT(&slots[0]), sepref, first, enc);
+            rr = korb_join_rec(c, slots + 1, ms, VALUE_REF_AT(&slots[0]), sepref, first, enc, asc, bad);
             if (UNLIKELY(rr.state != KORB_NORMAL)) goto done;
             continue;                                                  /* recursion wrote its own seps + *first */
         }
         if (!*first && KORB_STRING_P(VALUE_REF_GET(sepref))) {
+            korb_join_enc_merge(c, VALUE_REF_GET(sepref), enc, asc, bad);
             const KorbString *const sep = VAL2STR(VALUE_REF_GET(sepref));
             fwrite(korb_strbuf_data(sep->buf), 1, sep->len, ms);
         }
         const VALUE sv = KORB_STRING_P(scalar) ? scalar : (KORB_STRING_P(slots[0]) ? slots[0] : KORB_NIL);
         if (sv != KORB_NIL) {
-            korb_join_enc_merge(sv, enc);
+            korb_join_enc_merge(c, sv, enc, asc, bad);
             fwrite(korb_strbuf_data(VAL2STR(sv)->buf), 1, VAL2STR(sv)->len, ms);   /* String element / #to_str result */
         }
         else korb_fprint_to_s(c, ms, slots[0]);                        /* immediate / builtin / non-String #to_s */
@@ -888,14 +896,17 @@ static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     bool first = true;
     /* slots[0] = separator (String|nil), slots[1] = self; join drives from slots+2.
      * The memstream buffer is C heap, unaffected by GC during #to_s dispatch. */
-    uint32_t jenc = KORB_JOIN_ENC_NONE;
-    if (KORB_STRING_P(slots[0])) korb_join_enc_merge(slots[0], &jenc);   /* the separator counts too */
-    RESULT jr = korb_join_rec(c, slots + 2, ms, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[0]), &first, &jenc);
+    uint32_t jenc = KORB_JOIN_ENC_NONE, jbad[2] = {0, 0};
+    bool jasc = true;
+    /* the separator participates, but only after the first element has seeded
+       the encoding — it is appended between elements, never in front */
+    RESULT jr = korb_join_rec(c, slots + 2, ms, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[0]), &first, &jenc, &jasc, jbad);
     fclose(ms);
     if (UNLIKELY(jr.state != KORB_NORMAL)) { free(buf); return jr; }
+    if (UNLIKELY(jenc == UINT32_MAX)) { free(buf); return korb_raise_enc_compat(c, slots + 2, jbad[0], jbad[1]); }
     RESULT r = korb_str_new(c, slots + 2, buf ? buf : "", (uint32_t)sz);
     free(buf);
-    if (LIKELY(r.state == KORB_NORMAL) && jenc != UINT32_MAX && jenc != KORB_JOIN_ENC_NONE)
+    if (LIKELY(r.state == KORB_NORMAL) && jenc != KORB_JOIN_ENC_NONE)
         KORB_STR_ENC_SET(r.value, jenc);
     return r;
 }
