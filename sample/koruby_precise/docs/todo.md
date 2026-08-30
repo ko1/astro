@@ -2844,6 +2844,19 @@ require が自分を「読み込み済み」と誤判定して先に進まなく
 残るのは `Inner.const_defined?(:X)` が親の定数まで見えて true を返す点
 (CRuby は false)。定数探索そのものの設計なので別件。
 
+## require が $LOADED_FEATURES の「書かれたままの名前」と照合しない
+
+`$LOADED_FEATURES << "./load_fixture.rb"` してから
+`require "./load_fixture.rb"` すると CRuby は false を返す
+(展開前の文字列でも照合する)。koruby は展開後の絶対パスでしか
+照合しないので読み直す。`core/kernel/require_spec` で 3 例。
+
+**2026-08-30 に 2 度目の試行**: `korb_bi_require` の先頭 (path 解決の前) に
+`korb_feature_loaded_p(c, namebuf)` を移す修正を入れたら、**起動時に
+バナーも出ずにハングした** (boot 中の require が早期 false を返すため)。
+revert 済み。次に試すなら boot が完了した後だけ有効にするか、
+$LOADED_FEATURES の走査側を疑うこと。
+
 ## トップレベル def が Object の private にならない
 
 CRuby では `def foo` をトップレベルで書くと `Object` の private
