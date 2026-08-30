@@ -9,9 +9,9 @@ class Module
   end
   private :const_added
 
-  # The modules in the ancestor chain that are not classes.
+  # The modules in the ancestor chain that are not classes (self excluded).
   def included_modules
-    ancestors.select { |m| m.instance_of?(Module) }
+    ancestors.select { |m| m.instance_of?(Module) && !m.equal?(self) }
   end
 
   # Like instance_method, but a non-public method is a NameError.

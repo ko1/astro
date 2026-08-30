@@ -821,7 +821,10 @@ static RESULT korb_m_class_attr1(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     int writer = 0;
     if (n >= 1) {                                             /* attr(name, true|false) */
         const VALUE last = VALUE_SLICE_GET(a, n - 1);
-        if (last == KORB_TRUE || last == KORB_FALSE) { writer = (last == KORB_TRUE) ? 1 : 0; n--; }
+        if (last == KORB_TRUE || last == KORB_FALSE) {
+            writer = (last == KORB_TRUE) ? 1 : 0; n--;
+            korb_warn(c, slots, "optional boolean argument is obsoleted");
+        }
     }
     return korb_m_class_attr_n(c, slots, self, a, n, 1, writer);
 }
@@ -1636,11 +1639,16 @@ static RESULT korb_m_class_remove_method(CTX *c, VALUE *slots, VALUE_REF self, V
         bool found = false;
         for (uint32_t i = 0; i < k->method_cnt; i++)
             if (k->methods[i]->mid == mid) { k->methods[i]->mid = UINT32_MAX; found = true; break; }
-        if (!found)
-            return korb_raise(c, slots, KORB_E_NAME, 0, "method '%s' not defined in %s", korb_sym_name(c->vm, mid), korb_type_name(VALUE_REF_GET(self)));
+        if (!found) {
+            char cnm[256]; korb_class_desc_into(c, VALUE_REF_GET(self), cnm, sizeof cnm);
+            return korb_raise(c, slots, KORB_E_NAME, 0, "method '%s' not defined in %s", korb_sym_name(c->vm, mid), cnm);
+        }
+        c->vm->method_serial++;
+        slots[0] = VALUE_REF_GET(self);         /* the hook is Ruby code: re-root the class */
+        CHECK(korb_fire_def_hook(c, slots + 1, slots[0], mid, "method_removed", 14));
     }
     c->vm->method_serial++;                     /* method table changed → flush caches */
-    return RESULT_OK(cls);
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 /* Module#undef_method(sym...) — prevent the named method(s) from this class.
  * Approximated as remove-if-present (no inherited-block marker); a name absent
@@ -2178,7 +2186,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
                 if (KORB_STRING_P(sr.value)) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); src = sr.value; }
             }
             if (UNLIKELY(!KORB_STRING_P(src)))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
         }
         /* optional 2nd/3rd args: the filename and first line the source is
          * reported as (CRuby uses them for __FILE__ / __LINE__ / backtraces) */

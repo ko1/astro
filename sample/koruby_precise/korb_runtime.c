@@ -1911,7 +1911,7 @@ korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val
             return korb_exc_ivar_set(c, slots, selfref, name_sym, val);
         if (AROH_IS_GC_OBJECT(VALUE_REF_GET(selfref)))   /* String/Array/Hash/Proc/... → generic-ivar table */
             return korb_objivar_set(c, slots, selfref, name_sym, val);
-        return RESULT_OK(val);                        /* immediate (Integer/Symbol/nil/...): no ivar storage */
+        return korb_raise_frozen(c, slots, VALUE_REF_GET(selfref));   /* immediates are frozen (CRuby) */
     }
     const uint32_t sym = SYM2ID(name_sym);
     KorbObject *o = VAL2OBJ(VALUE_REF_GET(selfref));
