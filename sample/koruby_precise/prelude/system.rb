@@ -1600,10 +1600,35 @@ class Random
   def ==(other)
     return false unless other.is_a?(Random)
     return false unless self.class == other.class
+    # #b on both: the state is a byte blob, and String#== would call two equal
+    # states different when their encoding tags differ (a rebuilt one is binary).
     seed == other.seed &&
-      instance_variable_get(:@__mt) == other.instance_variable_get(:@__mt)
+      instance_variable_get(:@__mt).b == other.instance_variable_get(:@__mt).b
   end
   alias eql? ==
+
+  # Marshal: CRuby dumps [state, left, seed], where state is the 624 MT words as
+  # one Integer (word 0 lowest) and `left` counts the words not yet consumed
+  # since the last twist — its `next` cursor sits at state + MT_N + 1 - left,
+  # which is exactly the index @__mt keeps as its trailing word.
+  MT_N = 624
+  private_constant :MT_N
+
+  def marshal_dump
+    w = instance_variable_get(:@__mt).unpack("L*")
+    n = 0
+    (MT_N - 1).downto(0) { |i| n = (n << 32) | w[i] }
+    [n, MT_N + 1 - w[MT_N], seed]
+  end
+
+  def marshal_load(ary)
+    n = ary[0].to_i
+    w = Array.new(MT_N) { v = n & 0xffffffff; n >>= 32; v }
+    w << MT_N + 1 - ary[1].to_i
+    instance_variable_set(:@__mt, w.pack("L*"))
+    instance_variable_set(:@__seed, ary[2])
+    self
+  end
 end
 
 # ENV — the C side (builtins/env.c) provides the primitives; the Hash-shaped
