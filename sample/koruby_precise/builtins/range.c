@@ -33,6 +33,29 @@ double korb_float_step_at(double beg, double end, double unit, long i, bool excl
 /* ---- Range methods ------------------------------------------------------- */
 
 
+/* Numeric? — CRuby's rb_obj_is_kind_of(v, rb_cNumeric), immediates included. */
+static bool korb_range_num_p(CTX *c, VALUE v) {
+    if (FIXNUM_P(v) || KORB_FLOAT_P(v) || KORB_BIGNUM_P(v) || KORB_RATIONAL_P(v)) return true;
+    return korb_obj_is_numeric(c, v);
+}
+
+/* "can't iterate from X" names the value's *class* (CRuby), not its builtin type. */
+static const char *korb_range_iter_name(CTX *c, VALUE v, char *buf, size_t sz) {
+    korb_class_qname_into(c, korb_dispatch_class(c, v), buf, sz);
+    return buf;
+}
+
+/* A count argument (first(n)/last(n)/take(n)): Integer, else #to_int (CRuby). */
+static RESULT korb_range_count_arg(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out) {
+    if (LIKELY(korb_to_index(v, out))) return RESULT_OK(KORB_TRUE);
+    slots[0] = v;
+    RESULT cr = korb_coerce_to_int(c, slots + 1, &slots[0]);
+    if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    if (cr.value != KORB_TRUE || !korb_to_index(slots[0], out))
+        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(v));
+    return RESULT_OK(KORB_TRUE);
+}
+
 /* integer iteration bounds [lo, hi) ; false if endpoints aren't both Integer */
 static bool korb_range_int_bounds(const KorbRange *r, korb_sword_t *lo, korb_sword_t *hi) {
     if (!FIXNUM_P(r->rbegin)) return false;
@@ -68,8 +91,8 @@ static RESULT korb_m_range_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(r->rbegin));
         if ((r->rend == KORB_NIL || (KORB_FLOAT_P(r->rend) && isinf(korb_float_val(r->rend)))) && KORB_INTEGER_P(r->rbegin))   /* endless / +∞-end Integer → Infinity */
             return korb_float_new(c, slots, INFINITY);
-        if (r->rbegin == KORB_NIL && KORB_INTEGER_P(r->rend))   /* beginless Integer → Infinity too */
-            return korb_float_new(c, slots, INFINITY);
+        if (r->rbegin == KORB_NIL)                       /* Ruby 3.4+: a beginless range is not iterable */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from NilClass");
         if (KORB_INTEGER_P(r->rbegin))
             return RESULT_OK(KORB_NIL);                  /* Bignum-bounded integer range: exact count not computed (gap) */
         /* other begin: iterable-by-succ (String/Symbol) → nil; else (nil/Array/…) can't iterate → TypeError */
@@ -376,7 +399,11 @@ static RESULT korb_m_ary_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbRange *r = SELF_RANGE;
     if (UNLIKELY(r->rend == KORB_NIL)) return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot get the maximum of endless range");
-    if (UNLIKELY(r->rbegin == KORB_NIL)) {                /* beginless: count down from the end */
+    /* An exclusive numeric range needs end-1, which only exists for an Integer end. */
+    if (UNLIKELY(r->exclude_end && !KORB_INTEGER_P(r->rend) && korb_range_num_p(c, r->rend)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "cannot exclude non Integer end value");
+    if (UNLIKELY(SELF_RANGE->rbegin == KORB_NIL)) {       /* beginless: count down from the end */
+        r = SELF_RANGE;
         if (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL) {   /* max → the end */
             if (!r->exclude_end) return RESULT_OK(r->rend);
             if (FIXNUM_P(r->rend)) return RESULT_OK(LONG2FIX(FIX2LONG(r->rend) - 1));
@@ -407,6 +434,25 @@ static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (cmp > 0 || (r->exclude_end && cmp == 0)) return RESULT_OK(KORB_NIL);   /* empty */
             if (!r->exclude_end) return RESULT_OK(r->rend);
             return korb_int_arith(c, slots, r->rend, LONG2FIX(1), 1, 0);              /* exclusive: end - 1 */
+        }
+        /* max(n) on the same Bignum-bounded range: count down from the top. */
+        if (KORB_INTEGER_P(r->rbegin) && KORB_INTEGER_P(r->rend) &&
+            VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
+            korb_sword_t n;
+            CHECK(korb_range_count_arg(c, slots, VALUE_SLICE_GET(a, 0), &n));
+            if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+            const int cmp = korb_int_cmp(SELF_RANGE->rbegin, SELF_RANGE->rend);
+            if (cmp > 0 || (SELF_RANGE->exclude_end && cmp == 0)) return korb_ary_new(c, slots, 0);
+            slots[0] = SELF_RANGE->rend;                  /* rooted: bignum arithmetic allocates */
+            if (SELF_RANGE->exclude_end) slots[0] = UNWRAP(korb_int_arith(c, slots + 1, slots[0], LONG2FIX(1), 1, 0));
+            slots[1] = UNWRAP(korb_ary_new(c, slots + 1, (uint32_t)(n > 0 ? n : 0)));
+            VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+            for (korb_sword_t i = 0; i < n; i++) {
+                slots[2] = UNWRAP(korb_int_arith(c, slots + 2, slots[0], LONG2FIX(i), 1, 0));
+                if (korb_int_cmp(slots[2], SELF_RANGE->rbegin) < 0) break;
+                CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
+            }
+            return RESULT_OK(VALUE_REF_GET(dst));
         }
         /* Non-numeric INCLUSIVE range (Time..Time, 'f'..'l'): the max is simply
          * the end (when begin <= end) — no #succ / to_a materialization needed.
@@ -446,7 +492,7 @@ static RESULT korb_m_range_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (SELF_RANGE->rend == KORB_NIL || inf_end) {      /* endless / +Infinity end: take n consecutive from begin */
         if (UNLIKELY(!FIXNUM_P(SELF_RANGE->rbegin))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
         korb_sword_t n;
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        CHECK(korb_range_count_arg(c, slots, VALUE_SLICE_GET(a, 0), &n));
         if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to take negative size");
         return korb_range_seq(c, slots, FIX2LONG(SELF_RANGE->rbegin), (uint32_t)n, +1);
     }
@@ -456,7 +502,7 @@ static RESULT korb_m_range_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         return korb_m_ary_take(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
     }
     korb_sword_t n;
-    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    CHECK(korb_range_count_arg(c, slots, VALUE_SLICE_GET(a, 0), &n));
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to take negative size");
     korb_sword_t end = lo + n; if (end > hi) end = hi;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)(end > lo ? end - lo : 0))));
@@ -504,7 +550,7 @@ static RESULT korb_m_range_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         return korb_m_ary_last(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
     }
     korb_sword_t n;
-    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    CHECK(korb_range_count_arg(c, slots, VALUE_SLICE_GET(a, 0), &n));
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
     korb_sword_t start = hi - n; if (start < lo) start = lo;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)(hi > start ? hi - start : 0))));
@@ -686,7 +732,9 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
         return RESULT_OK(slots[0]);
     }
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
+    { char nm[192];
+      return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s",
+                        korb_range_iter_name(c, SELF_RANGE->rbegin, nm, sizeof nm)); }
 }
 
 static RESULT korb_m_range_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
@@ -806,10 +854,29 @@ static RESULT korb_m_range_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_range_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
-    if (UNLIKELY(block == NULL)) {                        /* no block → self.to_enum(:reverse_each) (finite range) */
+    if (UNLIKELY(block == NULL)) {
+        /* Reverse iteration starts at the end, so the size rule is its own: an
+         * Integer end counts down (Infinity when beginless), any other numeric
+         * or nil end can't be iterated, and a #succ-able end has unknown size. */
+        const KorbRange *const rr = SELF_RANGE;
+        VALUE sz = KORB_NIL; bool inf = false;
+        korb_sword_t lo, hi;
+        if (korb_range_int_bounds(rr, &lo, &hi)) sz = LONG2FIX(hi > lo ? hi - lo : 0);
+        else if (rr->rbegin == KORB_NIL && KORB_INTEGER_P(rr->rend)) inf = true;
+        else if (rr->rend == KORB_NIL || korb_range_num_p(c, rr->rend)) {
+            char nm[192];
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s",
+                              korb_range_iter_name(c, SELF_RANGE->rend, nm, sizeof nm));
+        }
         slots[0] = VALUE_REF_GET(self);
         slots[1] = ID2SYM(korb_intern(c->vm, "reverse_each", 12));
-        return korb_send_impl(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1, NULL, NULL, NULL);
+        RESULT er = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1, NULL, NULL, NULL);
+        if (UNLIKELY(er.state != KORB_NORMAL) || !KORB_ENUM_P(er.value)) return er;
+        slots[0] = er.value;
+        KorbEnumerator *const e = VAL2ENUM(slots[0]);
+        if (inf) e->size_inf = 1;
+        else if (sz != KORB_NIL) { ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->size, sz); e->size_unknown = 0; }
+        return RESULT_OK(slots[0]);
     }
     if (UNLIKELY(SELF_RANGE->rend == KORB_NIL))           /* endless range → can't reverse-iterate from infinity */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rend));
@@ -893,13 +960,17 @@ static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         const VALUE bb = rg->rbegin, ee = rg->rend;
         const bool bok = bb == KORB_NIL || KORB_INTEGER_P(bb) || KORB_FLOAT_P(bb);
         const bool eok = ee == KORB_NIL || KORB_INTEGER_P(ee) || KORB_FLOAT_P(ee);
-        if (UNLIKELY(!bok || !eok))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't do binary search for %s", korb_type_name(bb));
+        if (UNLIKELY(!bok || !eok)) {
+            char nm[192]; korb_class_qname_into(c, korb_dispatch_class(c, bb), nm, sizeof nm);
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't do binary search for %s", nm);
+        }
     }
     if (UNLIKELY(block == NULL)) {                        /* no block → Enumerator */
         slots[0] = UNWRAP(korb_ary_new(c, slots, 0));
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "bsearch"));
-        return korb_enum_new(c, slots + 2, slots[0], slots[1]);
+        RESULT er = korb_enum_new(c, slots + 2, slots[0], slots[1]);
+        if (LIKELY(er.state == KORB_NORMAL)) VAL2ENUM(er.value)->size_unknown = 1;   /* CRuby: #size is nil */
+        return er;
     }
     const VALUE bv = rg->rbegin, ev = rg->rend;
     const bool excl = rg->exclude_end != 0;
@@ -1022,6 +1093,10 @@ static RESULT korb_m_range_min_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
                                    NODE *block, VALUE *def_env, VALUE *cself) {
     if (block == NULL || (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL))
         return korb_m_range_min(c, slots, self, a);
+    if (UNLIKELY(SELF_RANGE->rbegin == KORB_NIL))     /* an open side can't be scanned with a comparator */
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot get the minimum of beginless range");
+    if (UNLIKELY(SELF_RANGE->rend == KORB_NIL))
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot get the minimum of endless range with custom comparison method");
     slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
     return korb_m_ary_min(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0), block, def_env, cself);
 }
@@ -1029,6 +1104,10 @@ static RESULT korb_m_range_max_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
                                    NODE *block, VALUE *def_env, VALUE *cself) {
     if (block == NULL || (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL))
         return korb_m_range_max(c, slots, self, a);
+    if (UNLIKELY(SELF_RANGE->rend == KORB_NIL))       /* an open side can't be scanned with a comparator */
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot get the maximum of endless range");
+    if (UNLIKELY(SELF_RANGE->rbegin == KORB_NIL))
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot get the maximum of beginless range with custom comparison method");
     slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
     return korb_m_ary_max(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0), block, def_env, cself);
 }
@@ -1125,7 +1204,7 @@ static RESULT korb_m_range_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         return korb_m_ary_drop(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
     }
     korb_sword_t n;
-    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    CHECK(korb_range_count_arg(c, slots, VALUE_SLICE_GET(a, 0), &n));
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to drop negative size");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (korb_sword_t i = lo + n; i < hi; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
@@ -1449,12 +1528,6 @@ static RESULT korb_range_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_range_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self)  { return korb_range_quant(c, slots, self, a, block, def_env, captured_self, 0); }
 static RESULT korb_m_range_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self)  { return korb_range_quant(c, slots, self, a, block, def_env, captured_self, 1); }
 static RESULT korb_m_range_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { return korb_range_quant(c, slots, self, a, block, def_env, captured_self, 2); }
-
-/* Numeric? — CRuby's rb_obj_is_kind_of(v, rb_cNumeric), immediates included. */
-static bool korb_range_num_p(CTX *c, VALUE v) {
-    if (FIXNUM_P(v) || KORB_FLOAT_P(v) || KORB_BIGNUM_P(v) || KORB_RATIONAL_P(v)) return true;
-    return korb_obj_is_numeric(c, v);
-}
 
 static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, uint8_t is_pct) {
     uint8_t na = VALUE_SLICE_LEN(a) >= 1 ? 1 : 0;

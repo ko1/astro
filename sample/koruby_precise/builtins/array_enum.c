@@ -289,12 +289,20 @@ static RESULT korb_cmp_block(CTX *c, VALUE *slots, VALUE lhs, VALUE rhs,
     slots[0] = lhs; slots[1] = rhs;                       /* stage + root args */
     RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[0], 2, cself);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    const VALUE v = r.value;
     double d;
-    if (UNLIKELY(v == KORB_NIL || !korb_num_to_d(v, &d)))
+    if (LIKELY(korb_num_to_d(r.value, &d))) { *out = d < 0 ? -1 : d > 0 ? 1 : 0; return RESULT_OK(KORB_NIL); }
+    if (UNLIKELY(r.value == KORB_NIL))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed",
-                          korb_type_name(lhs), korb_type_name(rhs));
-    *out = d < 0 ? -1 : d > 0 ? 1 : 0;
+                          korb_type_name(slots[0]), korb_type_name(slots[1]));
+    /* CRuby's rb_cmpint: a non-numeric result is asked `> 0`, then `< 0`. */
+    slots[2] = r.value; slots[3] = LONG2FIX(0);
+    RESULT gr = korb_send(c, slots + 4, korb_intern(c->vm, ">", 1), 0, 1);
+    if (UNLIKELY(gr.state != KORB_NORMAL)) return gr;
+    if (KORB_TRUTHY(gr.value)) { *out = 1; return RESULT_OK(KORB_NIL); }
+    slots[3] = LONG2FIX(0);
+    RESULT lr = korb_send(c, slots + 4, korb_intern(c->vm, "<", 1), 0, 1);
+    if (UNLIKELY(lr.state != KORB_NORMAL)) return lr;
+    *out = KORB_TRUTHY(lr.value) ? -1 : 0;
     return RESULT_OK(KORB_NIL);
 }
 
