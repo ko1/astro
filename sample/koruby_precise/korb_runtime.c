@@ -2654,6 +2654,15 @@ static RESULT korb_m_class_new_bracket(CTX *c, VALUE *slots, VALUE_REF self, VAL
 static RESULT korb_m_struct_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
 static RESULT korb_m_struct_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);     /* fwd (defined in symbol.c) */
 RESULT korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods);   /* fwd (defined below) */
+/* Does a Struct .new / #initialize call use the keyword form?  keyword_init: true
+ * takes any trailing Hash; unspecified (nil) only a sole Hash actually written as
+ * keywords; explicit false never.  (CRuby 3.2 rb_struct_initialize_m.) */
+static inline bool korb_struct_kw_call_p(uint8_t kwinit_flag, uint32_t argc, VALUE arg0) {
+    if (argc != 1 || !KORB_HASH_P(arg0)) return false;
+    if (kwinit_flag == 1) return true;                        /* keyword_init: true takes a plain Hash too */
+    if (kwinit_flag != 0) return false;                       /* explicit keyword_init: false */
+    return korb_kwargs_hash_p(arg0);
+}
 /* Struct#initialize(*values | member: v, …) — assign members positionally (a
  * shortfall leaves the rest nil; more than N → "struct size differs"), or by
  * keyword for a keyword_init struct.  Registered on every Struct class so a
@@ -2664,7 +2673,8 @@ static RESULT korb_m_struct_initialize(CTX *c, VALUE *slots, VALUE_REF self, VAL
     slots[2] = VAL2CLASS(klass0)->members;                                /* member syms (rooted) */
     const uint32_t mlen = VAL2ARY(slots[2])->len;
     const uint32_t argc = VALUE_SLICE_LEN(a);
-    const bool kwinit = VAL2CLASS(klass0)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, argc - 1));
+    const bool kwinit = korb_struct_kw_call_p(VAL2CLASS(klass0)->struct_kwinit, argc,
+                                             argc >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
     if (kwinit) {
         slots[0] = VALUE_SLICE_GET(a, argc - 1);                          /* kwargs hash (rooted) */
         const KorbHash *const kh = VAL2HASH(slots[0]);
@@ -8765,7 +8775,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             if (!is_data) {                                /* too many positional values → ArgumentError */
                 const KorbArray *const mm = VAL2ARY(VAL2CLASS(*recv_slot)->members);
-                const bool kw = VAL2CLASS(*recv_slot)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(slots[-(korb_sword_t)argc]);   /* keyword_init accepts a plain Hash too */
+                const bool kw = korb_struct_kw_call_p(VAL2CLASS(*recv_slot)->struct_kwinit, argc,
+                                                      argc >= 1 ? slots[-(korb_sword_t)argc] : KORB_NIL);
                 if (UNLIKELY(!kw && argc > mm->len))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line, "struct size differs");
             }
@@ -8773,7 +8784,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             slots[0] = obj;
             const bool kwinit = is_data
                 ? (argc == 1 && korb_kwargs_hash_p(slots[-(korb_sword_t)argc]))
-                : (VAL2CLASS(*recv_slot)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(slots[-(korb_sword_t)argc]));
+                : korb_struct_kw_call_p(VAL2CLASS(*recv_slot)->struct_kwinit, argc,
+                                        argc >= 1 ? slots[-(korb_sword_t)argc] : KORB_NIL);
             /* keyword_init: true takes keywords ONLY — positional values are an
              * arity error (CRuby), not a silent member-by-position fill. */
             if (UNLIKELY(!is_data && VAL2CLASS(*recv_slot)->struct_kwinit == 1 && !kwinit && argc > 0))
