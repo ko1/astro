@@ -234,7 +234,7 @@ static RESULT korb_m_hash_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (UNLIKELY(cr.value != KORB_TRUE) || !KORB_ARRAY_P(slots[3]))
                 return korb_raise(c, slots + 4, KORB_E_TYPE, 0,
-                                  "wrong element type %s (expected array of [key, value])", cls);
+                                  "wrong element type %s (expected array)", cls);
         }
         /* the pair must be exactly [key, value] — a different length is an
          * ArgumentError, not a type error */

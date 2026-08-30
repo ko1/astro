@@ -2363,7 +2363,7 @@ static RESULT korb_m_struct_to_h_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE
                 yr.value = ar.value;
             } else { yr.value = slots[4]; }
             if (UNLIKELY(!KORB_ARRAY_P(yr.value)))
-                return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "wrong element type %s (expected array)", korb_type_name(yr.value));
+                return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "wrong element type %s (expected array)", korb_coerce_name(c, yr.value));
         }
         if (UNLIKELY(VAL2ARY(yr.value)->len != 2))           /* wrong length → ArgumentError (not TypeError) */
             return korb_raise(c, slots + 4, KORB_E_ARGUMENT, 0, "element has wrong array length (expected 2, was %u)", VAL2ARY(yr.value)->len);
@@ -2934,14 +2934,18 @@ static RESULT korb_m_data_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* "#<KIND[ Name] m1=v1, m2=v2>" — shared by Data#inspect and Struct#inspect/to_s. */
 static void korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth);   /* fwd (defined far below) */
 static bool korb_fprint_class_qname(CTX *c, FILE *fp, VALUE cls);                         /* fwd */
+static bool korb_class_permanent_p(VALUE cls);                                            /* fwd */
 static RESULT korb_struct_inspect_impl(CTX *c, VALUE *slots, VALUE_REF self, const char *kind) {
     const VALUE klass = VAL2OBJ(VALUE_REF_GET(self))->klass;
     const KorbClass *const k = VAL2CLASS(klass);
+    /* CRuby only prints the class name when its path is permanent: a struct
+     * const-set under an anonymous namespace renders as "#<struct a=1>". */
+    const bool named = korb_class_permanent_p(klass);
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     fputc('#', ms); fputc('<', ms); fputs(kind, ms);
-    if (k->name_sym) { fputc(' ', ms); korb_fprint_class_qname(c, ms, klass); }   /* qualified name (not the #name method) */
+    if (named) { fputc(' ', ms); korb_fprint_class_qname(c, ms, klass); }   /* qualified name (not the #name method) */
     const KorbArray *const mem = VAL2ARY(k->members);
     for (uint32_t i = 0; i < mem->len; i++) {                 /* no GC in this loop (fprint writes to FILE) */
         const VALUE msym = korb_items_data(mem->items)[i];
@@ -8393,7 +8397,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             for (uint32_t i = 0; i < n; i++) {
                 const VALUE pr = korb_items_data(VAL2ARY(base[0])->items)[i];        /* re-read */
                 if (UNLIKELY(!KORB_ARRAY_P(pr)))
-                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_type_name(pr), i);
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_coerce_name(c, pr), i);
                 if (UNLIKELY(VAL2ARY(pr)->len < 1 || VAL2ARY(pr)->len > 2))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line, "invalid number of elements (%u for 1..2)", VAL2ARY(pr)->len);
                 slots[1] = korb_items_data(VAL2ARY(pr)->items)[0];                   /* key (rooted) */
@@ -8448,7 +8452,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             const uint32_t n = VAL2ARY(abase[0])->len;
             for (uint32_t i = 0; i < n; i++) {
                 const VALUE pr = korb_items_data(VAL2ARY(abase[0])->items)[i];
-                if (UNLIKELY(!KORB_ARRAY_P(pr))) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_type_name(pr), i);
+                if (UNLIKELY(!KORB_ARRAY_P(pr))) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_coerce_name(c, pr), i);
                 slots[2] = korb_items_data(VAL2ARY(pr)->items)[0];
                 slots[3] = VAL2ARY(pr)->len >= 2 ? korb_items_data(VAL2ARY(pr)->items)[1] : KORB_NIL;
                 CHECK(korb_hash_set(c, slots + 4, dst, VALUE_REF_AT(&slots[2]), slots[3]));
