@@ -9762,7 +9762,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "succ!", korb_m_str_succ_bang, 0);
     korb_def_cmethod(c, KORB_C_STRING, "next!", korb_m_str_succ_bang, 0);
     korb_def_cmethod(c, KORB_C_STRING, "tr!", korb_m_str_tr_bang, 2);
-    korb_def_cmethod_blk(c, KORB_C_STRING, "grapheme_clusters", korb_m_str_chars_b, 0);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "grapheme_clusters", korb_m_str_graphemes_b, 0);
     korb_def_cmethod(c, KORB_C_STRING, "<=>", korb_m_str_cmp, 1);
     korb_def_cmethod(c, KORB_C_STRING, "===", korb_m_cmpbl_eq, 1);   /* #=== is an alias of #== (both resolve to the Comparable rfn → instance_method ==) */
     korb_def_cmethod(c, KORB_C_STRING, "%", korb_m_str_format, 1);
@@ -9798,7 +9798,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_char", korb_m_str_each_char, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "upto", korb_m_str_upto, -1);
     korb_def_cmethod(c, KORB_C_STRING, "crypt", korb_m_str_crypt, 1);
-    korb_def_cmethod_blk(c, KORB_C_STRING, "each_grapheme_cluster", korb_m_str_each_char, 0);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "each_grapheme_cluster", korb_m_str_each_grapheme_b, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_line", korb_m_str_each_line, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "lines", korb_m_str_lines_b, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_byte", korb_m_str_each_byte, 0);
