@@ -530,6 +530,7 @@ static RESULT korb_m_rat_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static double korb_cospi(double x);   /* fwd (builtins/int_float_ext.c) */
 static double korb_sinpi(double x);
 RESULT korb_cpx_new(CTX *c, VALUE *slots, VALUE re, VALUE im);   /* fwd (defined below) */
+static bool korb_obj_is_numeric(CTX *c, VALUE v);   /* fwd (builtins/time.c) */
 /* Rational ** exp: Integer exp -> exact Rational; Float/Rational exp -> Float
  * (negative base + fractional exp -> Complex, as for Integer and Float power). */
 static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -770,8 +771,37 @@ RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
         return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%%' for %s",
                           korb_a_type_name(KORB_COMPLEX_P(l) ? l : r));
     if (UNLIKELY(!korb_cpx_parts(l, &lre, &lim) || !korb_cpx_parts(r, &rre, &rim))) {
-        if (KORB_COMPLEX_P(l) && KORB_OBJECT_P(r) && op >= 0 && op <= 3) {   /* Complex op object → coerce protocol */
+        if (KORB_COMPLEX_P(l) && KORB_OBJECT_P(r) && op >= 0 && op <= 3) {
             static const char *const opn[] = { "+", "-", "*", "/" };
+            /* A REAL Numeric applies per component (CRuby's f_add(dat->real, other)):
+             * the component send then runs the coerce protocol itself. */
+            const uint32_t real_p = korb_intern(c->vm, "real?", 5);
+            if (korb_obj_is_numeric(c, r) && korb_responds_to(c, r, real_p)) {
+                slots[0] = l; slots[1] = r;                 /* root across the dispatches */
+                RESULT rp = korb_send(c, slots + 2, real_p, 0, 0);
+                if (UNLIKELY(rp.state != KORB_NORMAL)) return rp;
+                if (KORB_TRUTHY(rp.value)) {
+                    const uint32_t mid = (op == 3) ? korb_intern(c->vm, "quo", 3)
+                                                   : korb_intern(c->vm, opn[op], 1);
+                    VALUE lre2, lim2;
+                    (void)korb_cpx_parts(slots[0], &lre2, &lim2);
+                    slots[2] = lre2; slots[3] = slots[1];
+                    RESULT re = korb_send(c, slots + 4, mid, 0, 1);   /* real op other */
+                    if (UNLIKELY(re.state != KORB_NORMAL)) return re;
+                    slots[2] = re.value;                    /* park the new real part */
+                    if (op == 0 || op == 1) {               /* +/- leave the imaginary part alone */
+                        (void)korb_cpx_parts(slots[0], &lre2, &lim2);
+                        slots[3] = lim2;
+                    } else {                                /* * and / scale it too */
+                        (void)korb_cpx_parts(slots[0], &lre2, &lim2);
+                        slots[3] = lim2; slots[4] = slots[1];
+                        RESULT im = korb_send(c, slots + 5, mid, 0, 1);
+                        if (UNLIKELY(im.state != KORB_NORMAL)) return im;
+                        slots[3] = im.value;
+                    }
+                    return korb_cpx_new(c, slots + 4, slots[2], slots[3]);
+                }
+            }
             bool h; RESULT cr = korb_try_coerce(c, slots, l, r, opn[op], 0, &h);
             if (h) return cr;
         }
