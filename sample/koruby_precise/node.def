@@ -1007,7 +1007,8 @@ node_for(CTX *c, NODE *n, VALUE *slots, int32_t orig_off, int32_t iter_off, int3
         const KorbArray *a = VAL2ARY(slots[iter_off]);     /* re-read: body may move it */
         if (i >= a->len) break;
         slots[var_off] = korb_items_data(a->items)[i];                /* assign the loop var (enclosing local) */
-        RESULT br = EVAL_ARG(c, body);
+        RESULT br;
+        do { br = EVAL_ARG(c, body); } while (UNLIKELY(br.state == KORB_REDO));   /* `redo`: same element again */
         if (UNLIKELY(br.state != KORB_NORMAL)) {
             if (br.state == KORB_BREAK && c->break_blk == NULL) return RESULT_OK(br.value);
             if (br.state != KORB_NEXT) return br;           /* return/raise propagate; `next` continues */
