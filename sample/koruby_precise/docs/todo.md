@@ -2900,3 +2900,32 @@ lefts/rights を葉としてしか書き出さない (入れ子の MULTI_TARGET 
 再帰させるにはエンコーダとデコーダ (C 側の spec walker) の両方が要る。
 rest の無いグループの入れ子 (0xFF) は既に対応済み。
 `language/{lambda,proc}_spec` で 2 例。
+
+## 保存したブロックからの return がメソッドを飛び越える (+ mspec が黙って終わる)
+
+```ruby
+class SavedInnerBlock
+  def add(&b); @block = b; end
+  def outer; yield; @block.call; end
+  def inner; yield; end
+  def start
+    outer { inner { add { return :return_value } } }
+    return false
+  end
+end
+SavedInnerBlock.new.start   # koruby: false / CRuby: :return_value
+```
+`return` の target が `start` の frame にならず、途中の `outer` (または
+`inner`) の invoke に食われている。`node_return_outer` は env chain を
+depth 分辿って target を決めるが、`Proc#call` 経由で別 frame から呼ばれた
+ときに正しい frame に届いていない。**これ自体は昔からのバグ**
+(2026-08-30 に e07e21d8 でも再現を確認)。
+
+さらに 2026-08-30 の worker マージ (Struct/Hash/Method/Module 一式) 以降、
+**同じ例を mspec 経由で走らせるとプロセスが無言で終了する** ように
+なった (`language/return_spec` が 43 例中 21 例でサマリも出さずに exit 0)。
+消費されなかった KORB_RETURN がトップレベルまで抜けている疑い。
+bisect: 765904e4 まで OK、382b0aab で NG。ただしマージ後の tree から
+382b0aab だけ revert しても直らないので原因は複数ある。
+`language/return_spec` は 37 -> 0。core は同じマージで +60 なので
+マージ自体は残してある。
