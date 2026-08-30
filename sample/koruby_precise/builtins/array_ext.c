@@ -349,8 +349,33 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const int32_t bi = korb_hash_find(kh, ID2SYM(korb_intern(c->vm, "buffer", 6)));
         if (bi >= 0) {
             slots[1] = korb_items_data(kh->items)[2 * bi + 1];                 /* root the buffer String across the cat's GC */
-            if (UNLIKELY(!KORB_STRING_P(slots[1]))) { free(ob); return korb_raise(c, slots, KORB_E_TYPE, 0, "buffer must be String"); }
-            RESULT ar = korb_str_cat(c, slots + 2, VALUE_REF_AT(&slots[1]), ob ? (const char *)ob : "", (uint32_t)olen);
+            if (UNLIKELY(!KORB_STRING_P(slots[1]))) { free(ob); return korb_raise(c, slots, KORB_E_TYPE, 0, "buffer must be String, not %s", korb_type_name(slots[1])); }
+            if (UNLIKELY(((const AroObjectHeader *)(uintptr_t)slots[1])->flags & KORB_FL_FROZEN)) {
+                free(ob);
+                return korb_raise(c, slots, KORB_E_FROZEN, 0, "can't modify frozen String: %s", "buffer");
+            }
+            /* A leading `@N` positions the write INSIDE the buffer: keep the
+             * first N bytes (NUL-padded), drop whatever followed them. */
+            size_t skip = 0;
+            { uint32_t k = 0;
+              while (k < t->len && isspace((unsigned char)korb_strbuf_data(t->buf)[k])) k++;
+              if (k < t->len && korb_strbuf_data(t->buf)[k] == '@') {
+                  k++;
+                  size_t n = 0; bool any = false;
+                  if (k < t->len && korb_strbuf_data(t->buf)[k] == '*') { k++; any = true; }
+                  else while (k < t->len && isdigit((unsigned char)korb_strbuf_data(t->buf)[k])) { n = n * 10 + (size_t)(korb_strbuf_data(t->buf)[k] - '0'); k++; any = true; }
+                  (void)any;
+                  skip = n <= olen ? n : olen;
+                  KorbString *const bs = VAL2STR(slots[1]);
+                  if (bs->len > skip) bs->len = (uint32_t)skip;          /* truncate to the offset */
+                  while (VAL2STR(slots[1])->len < skip) {                 /* … or NUL-pad up to it */
+                      static const char z[64] = { 0 };
+                      const uint32_t need = (uint32_t)skip - VAL2STR(slots[1])->len;
+                      RESULT zr = korb_str_cat(c, slots + 2, VALUE_REF_AT(&slots[1]), z, need > 64 ? 64 : need);
+                      if (UNLIKELY(zr.state != KORB_NORMAL)) { free(ob); return zr; }
+                  }
+              } }
+            RESULT ar = korb_str_cat(c, slots + 2, VALUE_REF_AT(&slots[1]), ob ? (const char *)ob + skip : "", (uint32_t)(olen - skip));
             free(ob);
             if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
             return RESULT_OK(slots[1]);
