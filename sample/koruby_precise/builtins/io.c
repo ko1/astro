@@ -248,6 +248,10 @@ static uint32_t korb_io_fill_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESUL
             if (korb_io_would_block(errno) && rep->nonblk && c != NULL) {
                 const RESULT pr = korb_io_park(c, slots, rep, POLLIN);   /* may GC */
                 if (UNLIKELY(pr.state != KORB_NORMAL)) { if (perr) *perr = pr; return 0; }
+                if (UNLIKELY(!korb_io_open_p(rep))) {    /* closed by another green thread */
+                    if (perr) *perr = korb_raise(c, slots, KORB_E_IOERROR, 0, "stream closed in another thread");
+                    return 0;
+                }
                 continue;                                /* ready (maybe) → try again, never block */
             }
             /* a real read(2) failure (EISDIR, EIO, EBADF, ...) is an exception,
@@ -398,6 +402,8 @@ static RESULT korb_io_read_bytes(CTX *c, VALUE *slots, KorbIORep *rep, uint32_t 
                 if (korb_io_would_block(errno) && rep->nonblk) {
                     const RESULT pr = korb_io_park(c, slots + 1, rep, POLLIN);   /* may GC */
                     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+                    if (UNLIKELY(!korb_io_open_p(rep)))   /* closed by another green thread */
+                        return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "stream closed in another thread");
                     continue;
                 }
                 return korb_raise_errno(c, slots + 1, errno, "io_fread", "");
