@@ -17,16 +17,16 @@ module Enumerable
   # filter methods pass the GATHERED element (a single Array when each yields
   # multiple) to the block; the block auto-splats by its arity. (map/flat_map
   # spread instead: a 1-arg block gets the first value.)
-  def select(&blk); return to_a.select unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if blk.call(e) }; r; end
+  def select(&blk); return __to_enum_sized(:select) unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if blk.call(e) }; r; end
   alias filter select
   alias find_all select
-  def reject(&blk); return to_a.reject unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e unless blk.call(e) }; r; end
+  def reject(&blk); return __to_enum_sized(:reject) unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e unless blk.call(e) }; r; end
   def grep(pattern, &blk); r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << (blk ? blk.call(e) : e) if pattern === e }; r; end
   def grep_v(pattern, &blk); r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << (blk ? blk.call(e) : e) unless pattern === e }; r; end
   # chain(*others) → an Enumerator over self's elements followed by each other's.
   # (koruby's Enumerator is eager, so this materializes; fine for finite sources.)
   def chain(*others) = Enumerator::Chain.new(self, *others)
-  def flat_map(&blk); return to_a.flat_map unless blk; r = []; each { |*a| v = blk.call(*a); if v.is_a?(Array); v.each { |e| r << e }; elsif v.respond_to?(:to_ary); ary = v.to_ary; if ary.is_a?(Array); ary.each { |e| r << e }; elsif ary.nil?; r << v; else; raise TypeError, "can't convert #{v.class} to Array (#{v.class}#to_ary gives #{ary.class})"; end; else; r << v; end }; r; end
+  def flat_map(&blk); return __to_enum_sized(:flat_map) unless blk; r = []; each { |*a| v = blk.call(*a); if v.is_a?(Array); v.each { |e| r << e }; elsif v.respond_to?(:to_ary); ary = v.to_ary; if ary.is_a?(Array); ary.each { |e| r << e }; elsif ary.nil?; r << v; else; raise TypeError, "can't convert #{v.class} to Array (#{v.class}#to_ary gives #{ary.class})"; end; else; r << v; end }; r; end
   def find(ifnone = nil, &blk); return __to_enum_sized(:find) unless blk; res = nil; found = false; each { |*a| e = a.size <= 1 ? a[0] : a; if blk.call(e); res = e; found = true; break; end }; found ? res : (ifnone ? ifnone.call : nil); end
   alias detect find
   def to_a(*args)
@@ -116,15 +116,28 @@ module Enumerable
     unless blk
       return to_enum(:cycle, n) { s = respond_to?(:size) ? size : nil
                                   next nil if s.nil?
+                                  next 0 if s == 0                 # nothing to cycle → 0, even forever
                                   n.nil? ? Float::INFINITY : s * (n < 0 ? 0 : n) }
     end
-    return to_a.cycle(&blk) if n.nil?
-    ni = if n.is_a?(Integer) then n
-         elsif n.respond_to?(:to_int) then n.to_int
-         else raise TypeError, "no implicit conversion of #{n.class} into Integer"
-         end
-    return nil if ni <= 0                                          # non-positive count → nil, without iterating
-    to_a.cycle(ni, &blk)
+    ni = nil
+    unless n.nil?
+      ni = if n.is_a?(Integer) then n
+           elsif n.respond_to?(:to_int) then n.to_int
+           else raise TypeError, "no implicit conversion of #{n.class} into Integer"
+           end
+      return nil if ni <= 0                                        # non-positive count → nil, without iterating
+    end
+    # the first pass yields straight off #each (CRuby only buffers as it goes;
+    # a `break` in the block must stop before the source is drained)
+    buf = []
+    __each_el { |x| buf << x; yield x }
+    return nil if buf.empty?
+    if ni.nil?
+      loop { buf.each { |x| yield x } }
+    else
+      (ni - 1).times { buf.each { |x| yield x } }
+    end
+    nil
   end
   def each_with_object(o); return __to_enum_sized(:each_with_object, o) unless block_given?; __each_el { |x| yield x, o }; o; end
   def each_with_index(*args)
@@ -199,7 +212,7 @@ module Enumerable
   end
   def filter_map(&blk); return __to_enum_sized(:filter_map) unless blk; r = []; each { |*ar| v = blk.call(*ar); r << v if v }; r; end
   alias collect_concat flat_map
-  def reverse_each; a = to_a.reverse; return a.each unless block_given?; a.each { |x| yield x }; self; end
+  def reverse_each; return __to_enum_sized(:reverse_each) unless block_given?; to_a.reverse.each { |x| yield x }; self; end
   def uniq; seen = {}; r = []; __each_el { |x| k = block_given? ? yield(x) : x; unless seen.key?(k); seen[k] = true; r << x; end }; r; end
   def each_entry(*args)
     return __to_enum_sized(:each_entry, *args) unless block_given?
