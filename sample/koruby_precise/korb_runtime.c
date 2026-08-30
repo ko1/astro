@@ -2236,12 +2236,17 @@ korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_i
     return RESULT_OK(VALUE_REF_GET(vref));
 }
 
-/* the `@<member>` ivar symbol for a Struct member symbol (`:x` → `:@x`). */
-static VALUE korb_member_ivar_sym(struct korb_vm *vm, VALUE member_sym) {
-    const char *nm = korb_sym_name(vm, SYM2ID(member_sym));
+/* The ivar symbol a Struct/Data member is stored under.  NOT `:@x`: CRuby keeps
+ * members out of the ivar table, so `S.new(1).instance_variable_get(:@x)` is nil
+ * and a user `:@x` on the same object is independent.  `@!` cannot be written
+ * from Ruby (instance_variable_set rejects the name), so the two never collide. */
+static uint32_t korb_member_ivar_id(struct korb_vm *vm, const char *member_name) {
     char buf[256];
-    snprintf(buf, sizeof buf, "@%s", nm);
-    return ID2SYM(korb_intern(vm, buf, strlen(buf)));
+    const int n = snprintf(buf, sizeof buf, "@!%s", member_name);
+    return korb_intern(vm, buf, n > 0 && (size_t)n < sizeof buf ? (size_t)n : strlen(buf));
+}
+static VALUE korb_member_ivar_sym(struct korb_vm *vm, VALUE member_sym) {
+    return ID2SYM(korb_member_ivar_id(vm, korb_sym_name(vm, SYM2ID(member_sym))));
 }
 
 /* Struct.new(*members) — build an anonymous class with attr_accessor per member
@@ -2831,7 +2836,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         const VALUE sym = korb_items_data(VAL2ARY(VALUE_REF_GET(mem))->items)[i];
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
         char buf[256];
-        snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
+        const uint32_t ivar = korb_member_ivar_id(vm, nm);
         korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, nm, strlen(nm)), ivar, 0);   /* reader */
         snprintf(buf, sizeof buf, "%s=", nm); korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, buf, strlen(buf)), ivar, 1);  /* writer */
     }
@@ -3031,9 +3036,7 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len));
         if (!SYMBOL_P(sym)) continue;
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
-        char buf[256];
-        snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
-        korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, nm, strlen(nm)), ivar, 0);   /* reader only (immutable) */
+        korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, nm, strlen(nm)), korb_member_ivar_id(vm, nm), 0);   /* reader only (immutable) */
         CHECK(korb_ary_push_val(c, slots + 2, mem, sym));
     }
     ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
