@@ -11834,7 +11834,13 @@ static bool korb_resolve_load(const char *base_dir, const char *name, char *out,
     const bool has_rb = (strlen(name) >= 3 && strcmp(name + strlen(name) - 3, ".rb") == 0);
     if (name[0] == '/') snprintf(cand, sizeof cand, "%s%s", name, has_rb ? "" : ".rb");
     else                snprintf(cand, sizeof cand, "%s/%s%s", base_dir, name, has_rb ? "" : ".rb");
-    if (!realpath(cand, out)) korb_path_lexnorm(cand, out, outsz);
+    /* $LOADED_FEATURES keeps the path as WRITTEN (expand_path, not realpath):
+     * CRuby does not canonicalize symlinks there. */
+    if (cand[0] != '/') {                                 /* make it absolute first, like expand_path */
+        char cwd[4096], abs[4096];
+        if (getcwd(cwd, sizeof cwd)) { snprintf(abs, sizeof abs, "%s/%s", cwd, cand); snprintf(cand, sizeof cand, "%s", abs); }
+    }
+    korb_path_lexnorm(cand, out, outsz);
     struct stat st; return stat(out, &st) == 0 && S_ISREG(st.st_mode);
 }
 /* __method__ / __callee__ reached by an explicit send / eval: the parser bakes
