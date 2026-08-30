@@ -4708,7 +4708,7 @@ korb_class_desc_into(CTX *c, VALUE cls, char *out, size_t outsz)
  * in first (deeper), then the module itself, so the reverse-iterated list yields
  * [mod, mod's includes…] — i.e. C.ancestors gains mod before mod's ancestors. */
 static RESULT
-korb_include_collect(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE mod)
+korb_include_collect(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE mod, bool prepend)
 {
     if (UNLIKELY(!KORB_CLASS_P(mod))) return RESULT_OK(KORB_NIL);
     slots[0] = mod;                                          /* root mod across recursion/push */
@@ -4717,10 +4717,17 @@ korb_include_collect(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE 
         slots[1] = VAL2CLASS(VALUE_REF_GET(mref))->included; /* root mod's include list */
         VALUE_REF list = VALUE_REF_AT(&slots[1]);
         for (uint32_t j = 0; j < VAL2ARY(VALUE_REF_GET(list))->len; j++)
-            CHECK(korb_include_collect(c, slots + 2, cref, dst, korb_items_data(VAL2ARY(VALUE_REF_GET(list))->items)[j]));
+            CHECK(korb_include_collect(c, slots + 2, cref, dst, korb_items_data(VAL2ARY(VALUE_REF_GET(list))->items)[j], prepend));
     }
-    if (!korb_class_has_ancestor(VALUE_REF_GET(cref), VALUE_REF_GET(mref)))
-        CHECK(korb_ary_push_val(c, slots + 1, dst, VALUE_REF_GET(mref)));
+    /* include skips a module already anywhere in the ancestry; prepend only
+     * skips one already in THIS class's own prepend list — `B < A` where A
+     * includes M still gets M in front when B prepends it (CRuby). */
+    bool have = false;
+    if (prepend) {
+        const KorbArray *const dl = VAL2ARY(VALUE_REF_GET(dst));
+        for (uint32_t i = 0; i < dl->len && !have; i++) if (korb_items_data(dl->items)[i] == VALUE_REF_GET(mref)) have = true;
+    } else have = korb_class_has_ancestor(VALUE_REF_GET(cref), VALUE_REF_GET(mref));
+    if (!have) CHECK(korb_ary_push_val(c, slots + 1, dst, VALUE_REF_GET(mref)));
     return RESULT_OK(KORB_NIL);
 }
 /* korb_include_collect + CRuby's re-include rule: when `mod` is ALREADY an
@@ -4728,13 +4735,13 @@ korb_include_collect(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE 
  * the MRO, not at the top.  The list is reverse-iterated (last = nearest), so
  * that means rotating the freshly appended block down to mod's index. */
 static RESULT
-korb_include_apply(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE mod)
+korb_include_apply(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE mod, bool prepend)
 {
     const uint32_t before = VAL2ARY(VALUE_REF_GET(dst))->len;
     int32_t at = -1;
     for (uint32_t i = 0; i < before; i++)
         if (korb_items_data(VAL2ARY(VALUE_REF_GET(dst))->items)[i] == mod) { at = (int32_t)i; break; }
-    CHECK(korb_include_collect(c, slots, cref, dst, mod));
+    CHECK(korb_include_collect(c, slots, cref, dst, mod, prepend));
     if (at < 0) return RESULT_OK(KORB_NIL);                  /* fresh include: collect order is already right */
     KorbArray *const arr = VAL2ARY(VALUE_REF_GET(dst));      /* no GC below */
     const uint32_t n = arr->len - before;
@@ -4780,7 +4787,7 @@ korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
             if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
         } else {                                               /* default insertion (init, before Module methods exist) */
             slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->included;
-            CHECK(korb_include_apply(c, slots + 3, kref, VALUE_REF_AT(&slots[1]), slots[2]));
+            CHECK(korb_include_apply(c, slots + 3, kref, VALUE_REF_AT(&slots[1]), slots[2], false));
         }
         if (UNLIKELY(korb_responds_to(c, slots[2], included_mid))) {   /* fire Module#included(base) hook (direct module only) */
             slots[3] = slots[2];                               /* recv = mod */
@@ -4824,7 +4831,7 @@ korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
             if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
         } else {                                               /* default insertion (init, before Module methods exist) */
             slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->prepended;
-            CHECK(korb_include_collect(c, slots + 3, kref, VALUE_REF_AT(&slots[1]), slots[2]));
+            CHECK(korb_include_collect(c, slots + 3, kref, VALUE_REF_AT(&slots[1]), slots[2], true));
         }
         if (UNLIKELY(korb_responds_to(c, slots[2], prepended_mid))) {   /* fire Module#prepended(base) hook */
             slots[3] = slots[2];                               /* recv = mod */
@@ -4860,7 +4867,7 @@ static RESULT korb_mod_features(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                                                   : (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->included, arr);
     }
     slots[2] = prepend ? VAL2CLASS(slots[0])->prepended : VAL2CLASS(slots[0])->included;   /* [2] dst */
-    CHECK(korb_include_apply(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[2]), slots[1]));
+    CHECK(korb_include_apply(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[2]), slots[1], prepend));
     c->vm->method_serial++;                      /* MRO changed → flush caches */
     return RESULT_OK(slots[1]);
 }
@@ -4887,9 +4894,9 @@ korb_linearize_seg(VALUE klass, VALUE *buf, int n, int max, int depth)
             n = korb_linearize_seg(korb_items_data(pa->items)[j], buf, n, max, depth + 1);
     }
     if (n < max) {
-        bool dup = false;
-        for (int i = 0; i < n; i++) if (buf[i] == klass) { dup = true; break; }
-        if (!dup) buf[n++] = klass;
+        /* A module can legitimately appear twice — prepended here and included
+         * by an ancestor — so only skip an immediate repeat (a self-cycle). */
+        if (n == 0 || buf[n - 1] != klass) buf[n++] = klass;
     }
     if (k->included != KORB_NIL) {
         const KorbArray *const ia = VAL2ARY(k->included);
