@@ -465,14 +465,18 @@ class Encoding
         :finished
       when 0
         again = __read_again(input, consumed, errb)
-        @errinfo = [:invalid_byte_sequence, @src_name, @dst_name, errb, again]
+        stage_dst = __decode_stage_dst
+        @errinfo = [:invalid_byte_sequence, @src_name.b, stage_dst.b, errb.b, again.b]
         @last_error = Encoding::InvalidByteSequenceError.new("#{errb.b.inspect} followed by #{again.b.inspect} on #{@src_name}")
+                        .__set_info(@src_name, stage_dst, errb.b, again.b, false)
+        @putback_buf = again.b
         src.replace(rest.byteslice(again.bytesize, rest.bytesize).to_s) if src.is_a?(String) && !src.frozen?
         @pending = +"" if src.is_a?(String)
         :invalid_byte_sequence
       when 1
-        @errinfo = [:undefined_conversion, @src_name, @dst_name, errb, +""]
+        @errinfo = [:undefined_conversion, "UTF-8".b, @dst_name.b, __err_char(errb, cp).b, +"".b]
         @last_error = Encoding::UndefinedConversionError.new(format("U+%04X from %s to %s", cp, @src_name, @dst_name))
+                        .__set_info("UTF-8", @dst_name, __err_char(errb, cp))
         src.replace(rest) if src.is_a?(String) && !src.frozen?
         :undefined_conversion
       when 2
@@ -485,12 +489,21 @@ class Encoding
           @errinfo = [:source_buffer_empty, nil, nil, nil, nil]; @last_error = nil
           :source_buffer_empty
         else
-          @errinfo = [:incomplete_input, @src_name, "UTF-8", errb, +""]
+          @errinfo = [:incomplete_input, @src_name.b, __decode_stage_dst.b, errb.b, +"".b]
           @last_error = Encoding::InvalidByteSequenceError.new("incomplete #{errb.b.inspect} on #{@src_name}")
+                          .__set_info(@src_name, __decode_stage_dst, errb.b, nil, true)
           :incomplete_input
         end
       end
     end
+
+    # An invalid byte sequence is found while DECODING, i.e. on the src -> UTF-8
+    # leg of the pivot; CRuby names that leg's destination.  With a UTF-8 source
+    # there is no such leg and the real destination is reported.
+    def __decode_stage_dst
+      @src_name.upcase == "UTF-8" ? @dst_name : "UTF-8"
+    end
+    private :__decode_stage_dst
 
     # CRuby reports the byte it had to read (and put back) to decide the
     # sequence was invalid: only when the error bytes were a lead expecting more.
@@ -498,11 +511,24 @@ class Encoding
       nxt = input.byteslice(consumed + errb.bytesize, 1)
       return +"" if nxt.nil? || nxt.empty?
       b = errb.getbyte(0)
-      return +"" if b.nil? || b < 0xC0
+      return +"" if b.nil? || b < 0x80
+      unless @src_name.upcase == "UTF-8"
+        return errb.bytesize == 1 ? nxt.b : +""     # a lead byte of any multi-byte encoding
+      end
+      return +"" if b < 0xC0
       need = b < 0xE0 ? 2 : (b < 0xF0 ? 3 : 4)
       errb.bytesize < need ? nxt.b : +""
     end
     private :__read_again
+
+    # An undefined conversion is always detected on the Unicode side of the
+    # pivot, so CRuby reports UTF-8 as the failing stage's source encoding and
+    # the offending character in UTF-8 (ISO-8859-1 -> UTF-8 -> EUC-JP etc.).
+    def __err_char(errb, cp)
+      return cp.chr(Encoding::UTF_8) if cp
+      (errb || +"").dup.force_encoding(Encoding::UTF_8)
+    end
+    private :__err_char
 
     def convert(str)
       raise ArgumentError, "converter already finished" if @finished
@@ -517,13 +543,16 @@ class Encoding
       case code
       when 0
         again = __read_again(input, consumed, errb)
-        @errinfo = [:invalid_byte_sequence, @src_name, @dst_name, errb, again]
+        stage_dst = __decode_stage_dst
+        @errinfo = [:invalid_byte_sequence, @src_name.b, stage_dst.b, errb.b, again.b]
         e = Encoding::InvalidByteSequenceError.new("#{errb.b.inspect} followed by #{again.b.inspect} on #{@src_name}")
+              .__set_info(@src_name, stage_dst, errb.b, again.b, false)
         @last_error = e
         raise e
       when 1
-        @errinfo = [:undefined_conversion, @src_name, @dst_name, errb, +""]
+        @errinfo = [:undefined_conversion, "UTF-8".b, @dst_name.b, __err_char(errb, cp).b, +"".b]
         e = Encoding::UndefinedConversionError.new(format("U+%04X from %s to %s", cp, @src_name, @dst_name))
+              .__set_info("UTF-8", @dst_name, __err_char(errb, cp))
         @last_error = e
         raise e
       else                                          # truncated tail: keep it for the next call
@@ -549,14 +578,48 @@ class Encoding
       @pending_out = (@pending_out || +"") + str.to_s
       nil
     end
+    # After an :invalid_byte_sequence the read-ahead bytes are dropped from the
+    # source; #putback hands them back so conversion can resume from them.
     def putback(n = nil)
-      +""
+      buf = @putback_buf || +""
+      cnt = n.nil? ? buf.bytesize : n.to_int
+      cnt = buf.bytesize if cnt > buf.bytesize
+      r = buf.byteslice(0, cnt).to_s
+      @putback_buf = buf.byteslice(cnt, buf.bytesize).to_s
+      r.force_encoding(@src_name)
     end
   end
-  class CompatibilityError < StandardError; end
-  class UndefinedConversionError < StandardError; end
-  class InvalidByteSequenceError < StandardError; end
-  class ConverterNotFoundError < StandardError; end
+  class CompatibilityError < EncodingError; end
+  class ConverterNotFoundError < EncodingError; end
+
+  # The conversion-failure pair carries the transcoding stage that failed:
+  # which encodings were in play and the offending character / bytes.
+  class UndefinedConversionError < EncodingError
+    attr_reader :source_encoding_name, :destination_encoding_name, :error_char
+    def source_encoding = Encoding.find(@source_encoding_name)
+    def destination_encoding = Encoding.find(@destination_encoding_name)
+    def __set_info(src, dst, char)   # :nodoc:
+      @source_encoding_name = src
+      @destination_encoding_name = dst
+      @error_char = char
+      self
+    end
+  end
+
+  class InvalidByteSequenceError < EncodingError
+    attr_reader :source_encoding_name, :destination_encoding_name, :error_bytes, :readagain_bytes
+    def source_encoding = Encoding.find(@source_encoding_name)
+    def destination_encoding = Encoding.find(@destination_encoding_name)
+    def incomplete_input? = !!@incomplete_input
+    def __set_info(src, dst, errb, again, incomplete)   # :nodoc:
+      @source_encoding_name = src
+      @destination_encoding_name = dst
+      @error_bytes = errb
+      @readagain_bytes = (again.nil? || again.empty?) ? nil : again
+      @incomplete_input = incomplete
+      self
+    end
+  end
 end
 class String
   # Unicode normalization lives in lib/unicode_normalize (CRuby's own pure-Ruby
@@ -671,12 +734,14 @@ class String
       partial, code, idx, cp, ch = r
       out += partial
       if code == 0 || code == 3
-        raise Encoding::InvalidByteSequenceError, "#{ch.b.inspect} on #{senc.name}"
+        raise Encoding::InvalidByteSequenceError.new("#{ch.b.inspect} on #{senc.name}")
+                .__set_info(senc.name, tenc.name, ch.b, nil, code == 3)
       end
       rep = __encode_fallback(fb, ch)
       if rep.nil?
-        raise Encoding::UndefinedConversionError,
-              format("U+%04X from %s to %s", cp, senc.name, tenc.name)
+        raise Encoding::UndefinedConversionError
+                .new(format("U+%04X from %s to %s", cp, senc.name, tenc.name))
+                .__set_info("UTF-8", tenc.name, cp ? cp.chr(Encoding::UTF_8) : ch.dup.force_encoding(Encoding::UTF_8))
       end
       conv = __transcode(rep, rep.encoding.name, to_name, 0, repl)
       raise ArgumentError, "too big fallback string" unless conv.is_a?(String)
