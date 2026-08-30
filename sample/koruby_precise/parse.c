@@ -598,6 +598,7 @@ transduce_opt(struct kp_ctx *tc, const pm_node_t *node)
 
 static NODE *massign_general(struct kp_ctx *tc, const pm_node_list_t *lefts, const pm_node_t *rest, const pm_node_list_t *rights, NODE *rhs);
 static NODE *assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_local);
+static NODE *assign_target_from_synth_r(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_local, int32_t recv_local);
 static uint32_t alloc_synth_local(struct kp_ctx *tc);
 static NODE *bake_lset(struct kp_ctx *tc, uint32_t idx, NODE *val);
 
@@ -2406,6 +2407,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
 
 extern const struct NodeKind kind_node_const_set;
 static NODE *assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_local);
+static NODE *assign_target_from_synth_r(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_local, int32_t recv_local);
 
 /* General multi-assign desugar: `lefts..., *rest, rights... = rhs`.  Runs the
  * same node_massign_splat the all-local fast path uses, but into synth locals,
@@ -2432,22 +2434,39 @@ massign_general(struct kp_ctx *tc, const pm_node_list_t *lefts, const pm_node_t 
 
     uint32_t *const synth = malloc(sizeof(uint32_t) * no);
     int32_t  *const offs  = malloc(sizeof(int32_t) * no);
-    if (!synth || !offs) abort();
+    int32_t  *const rcv   = malloc(sizeof(int32_t) * no);
+    if (!synth || !offs || !rcv) abort();
     for (uint32_t k = 0; k < no; k++) { synth[k] = alloc_synth_local(tc); offs[k] = (int32_t)synth[k] - tc->chain; }
+    /* CRuby evaluates every left-hand-side RECEIVER, left to right, before the
+     * right-hand side; only then does it assign.  Hoist them into synth locals
+     * (`rhs` is already built, but node_massign_splat only runs it later). */
+    NODE *prologue = NULL;
+    for (uint32_t k = 0; k < no; k++) {
+        rcv[k] = -1;
+        const pm_node_t *const t = k < npre  ? lefts->nodes[k]
+                                 : k == npre ? splat_t
+                                             : rights->nodes[k - npre - 1u];
+        if (!t || !PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE)) continue;
+        const uint32_t rs = alloc_synth_local(tc);
+        NODE *const st = bake_lset(tc, rs, transduce(tc, ((const pm_call_target_node_t *)t)->receiver));
+        prologue = prologue ? ALLOC_node_seq(prologue, st) : st;
+        rcv[k] = (int32_t)rs;
+    }
     NODE *massign = ALLOC_node_massign_splat(offs, npre, npost, rhs);
     for (uint32_t k = 0; k < no; k++) bake_add(tc, &offs[k]);
     const uint32_t rettmp = alloc_synth_local(tc);          /* hold the massign value across the plumbing */
     NODE *acc = bake_lset(tc, rettmp, massign);
+    if (prologue) acc = ALLOC_node_seq(prologue, acc);
     for (uint32_t i = 0; i < no; i++) {
         const pm_node_t *const t = i < npre  ? lefts->nodes[i]
                                  : i == npre ? splat_t      /* NULL for `*` / no splat → nothing to plumb */
                                              : rights->nodes[i - npre - 1u];
         if (!t) continue;
-        NODE *const a = assign_target_from_synth(tc, t, synth[i]);
-        if (!a) { free(synth); return NULL; }
+        NODE *const a = assign_target_from_synth_r(tc, t, synth[i], rcv[i]);
+        if (!a) { free(synth); free(rcv); return NULL; }
         acc = ALLOC_node_seq(acc, a);
     }
-    free(synth);                                           /* offs stays: the node owns it */
+    free(synth); free(rcv);                                /* offs stays: the node owns it */
     return ALLOC_node_seq(acc, bake_lget(tc, rettmp));
 }
 
@@ -2468,7 +2487,7 @@ build_args_plus_value(struct kp_ctx *tc, struct pm_node **elems, uint32_t n, uin
  * massign_general plumbs its synth temps out to the real targets.  Returns NULL
  * if unsupported. */
 static NODE *
-assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_local)
+assign_target_from_synth_r(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_local, int32_t recv_local)
 {
     uint32_t line = kp_line(tc, t);
     if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
@@ -2506,7 +2525,9 @@ assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_loc
     if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE)) {
         const pm_call_target_node_t *ct = (const pm_call_target_node_t *)t;
         NODE *r, *v;
-        WITH_CHAIN(tc, KP_SEND1_SC, (r = transduce(tc, ct->receiver), v = bake_lget(tc, src_local)));
+        WITH_CHAIN(tc, KP_SEND1_SC, (r = (recv_local >= 0) ? bake_lget(tc, (uint32_t)recv_local)   /* pre-evaluated (multi-assign order) */
+                                                           : transduce(tc, ct->receiver),
+                                     v = bake_lget(tc, src_local)));
         return kp_send1(kp_intern_cid(tc, ct->name), line, r, v);
     }
     if (PM_NODE_TYPE_P(t, PM_INDEX_TARGET_NODE)) {     /* recv[k...] = v — any index arity, `*splat` included */
@@ -2541,6 +2562,11 @@ assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_loc
         return massign_general(tc, &mt->lefts, mt->rest, &mt->rights, bake_lget(tc, src_local));
     }
     return NULL;
+}
+static NODE *
+assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_local)
+{
+    return assign_target_from_synth_r(tc, t, src_local, -1);
 }
 
 /* `recv[*args] op= v` — the index arguments include a splat, so they are built
