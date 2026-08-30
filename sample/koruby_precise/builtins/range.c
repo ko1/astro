@@ -1604,6 +1604,22 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         if (!numeric_range) return RESULT_OK(VALUE_REF_GET(self));   /* CRuby: no iteration, no error */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
     }
+    /* Endless non-numeric range (e.g. ("a"..)): walk with #succ forever — the
+     * block is expected to break.  Materializing it would be a RangeError. */
+    if (SELF_RANGE->rend == KORB_NIL && st > 0 && !numeric_range) {
+        const uint32_t mid_succ = korb_intern(c->vm, "succ", 4);
+        slots[0] = SELF_RANGE->rbegin;                /* v (rooted across the dispatches) */
+        for (;;) {
+            RESULT yr = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+            if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
+            for (korb_sword_t k = 0; k < st; k++) {
+                slots[1] = slots[0];
+                RESULT sr = korb_send(c, slots + 2, mid_succ, 0, 0);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                slots[0] = sr.value;
+            }
+        }
+    }
     korb_sword_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-int (e.g. String) range → stride over to_a */
         if (st > 0) {                                    /* (backward string stepping not supported here) */
