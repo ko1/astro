@@ -93,12 +93,20 @@ class Rational
   def positive?; numerator > 0; end
   def real?; true; end
   # coerce keeps exactness: Integer/Rational -> Rational, Float -> Float.
+  # A Complex with an exact zero imaginary part is exact too; anything else is
+  # not coercible (CRuby raises rather than going through Float()).
   def coerce(other)
     case other
     when Integer  then [Rational(other, 1), self]
     when Rational then [other, self]
     when Float    then [other, to_f]
-    else [Float(other), Float(self)]
+    when Complex
+      if other.imaginary.zero? && !other.imaginary.is_a?(Float)
+        [Rational(other.real, 1), self]
+      else
+        [other, Complex(self, 0)]
+      end
+    else raise TypeError, "#{other.class} can't be coerced into #{self.class}"
     end
   end
 end
