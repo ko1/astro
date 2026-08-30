@@ -370,6 +370,30 @@ class Enumerator::Lazy
 end
 
 class Enumerator::Lazy
+  # CRuby defines the whole lazy op set directly on Lazy (that is what
+  # Lazy.instance_methods(false) reports, and why Lazy#grep takes exactly one
+  # argument).  koruby registers them on Enumerator, so re-expose them here as
+  # forwarding wrappers — one extra frame per *chain build*, not per element.
+  def map(&blk) = super
+  def collect(&blk) = super
+  def select(&blk) = super
+  def filter(&blk) = super
+  def find_all(&blk) = super
+  def reject(&blk) = super
+  def filter_map(&blk) = super
+  def take_while(&blk) = super
+  def drop_while(&blk) = super
+  def flat_map(&blk) = super
+  def collect_concat(&blk) = super
+  def uniq(&blk) = super
+  def compact = super
+  def take(n) = super
+  def drop(n) = super
+  def grep(pattern, &blk) = super
+  def grep_v(pattern, &blk) = super
+  def force(*args) = super
+  def lazy = self
+
   # Operations koruby's C op-chain does not model are built as generator-backed
   # lazy enumerators: the source is streamed (Lazy#each yields as it produces),
   # so an infinite source still terminates on `break`.
