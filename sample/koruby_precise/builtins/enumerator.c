@@ -592,13 +592,26 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t
     return korb_lazy_drive_sink(c, slots, self, limit, NULL);
 }
 
-/* build the inspect desc "#<Enumerator: RECV:meth>" (no koruby alloc during print). */
-static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth) {
+/* build the inspect desc "#<Enumerator: RECV:meth(args)>" (no koruby alloc during print). */
+static RESULT korb_enum_desc_args(CTX *c, VALUE *slots, VALUE recv, const char *meth, VALUE_SLICE args) {
     char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
-    if (ms) { fputs("#<Enumerator: ", ms); korb_fprint_inspect(c, ms, recv); fprintf(ms, ":%s>", meth); fclose(ms); }
+    if (ms) {
+        fputs("#<Enumerator: ", ms); korb_fprint_inspect(c, ms, recv); fprintf(ms, ":%s", meth);
+        const uint32_t n = VALUE_SLICE_LEN(args);
+        for (uint32_t i = 0; i < n; i++) {
+            fputs(i ? ", " : "(", ms);
+            korb_fprint_inspect(c, ms, VALUE_SLICE_GET(args, i));
+        }
+        if (n) fputc(')', ms);
+        fputc('>', ms);
+        fclose(ms);
+    }
     RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
     return r;
+}
+static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth) {
+    return korb_enum_desc_args(c, slots, recv, meth, VALUE_SLICE_MAKE(NULL, 0));
 }
 static RESULT korb_m_enum_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -633,10 +646,19 @@ static RESULT korb_m_enum_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     (void)a;
     VALUE d = SELF_ENUM->desc;
     if (KORB_STRING_P(d)) return RESULT_OK(d);
-    /* Enumerator.allocate without #initialize has no source at all */
-    if (SELF_ENUM->values == KORB_NIL && SELF_ENUM->source == KORB_NIL)
-        return korb_str_new(c, slots, "#<Enumerator: uninitialized>", 28);
-    return korb_str_new(c, slots, "#<Enumerator>", 13);
+    char nm[192];                                     /* the real class: Enumerator::Lazy prints as itself */
+    korb_class_qname_into(c, korb_dispatch_class(c, VALUE_REF_GET(self)), nm, sizeof nm);
+    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+    if (ms) {
+        /* Enumerator.allocate without #initialize has no source at all */
+        if (SELF_ENUM->values == KORB_NIL && SELF_ENUM->source == KORB_NIL) fprintf(ms, "#<%s: uninitialized>", nm);
+        else if (SELF_ENUM->source != KORB_NIL) { fprintf(ms, "#<%s: ", nm); korb_fprint_inspect(c, ms, SELF_ENUM->source); fputc('>', ms); }
+        else fprintf(ms, "#<%s>", nm);
+        fclose(ms);
+    }
+    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+    free(buf);
+    return r;
 }
 /* each: yield every materialized value; with no block, return self. */
 static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
@@ -876,6 +898,7 @@ static RESULT korb_m_enum_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 static RESULT korb_m_enum_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    if (SELF_ENUM->mode == 3) CHECK(korb_enum_force_gen(c, slots, self));   /* plain generator: Enumerable#compact is eager */
     if (SELF_ENUM->mode != 0)
         return korb_lazy_chain(c, slots, self, "compact", KORB_NIL);   /* lazy: chain the op (no-block: drop nils) */
     /* eager Enumerator (Enumerable#compact): materialize the non-nil values into a new Array. */

@@ -289,12 +289,20 @@ static RESULT korb_cmp_block(CTX *c, VALUE *slots, VALUE lhs, VALUE rhs,
     slots[0] = lhs; slots[1] = rhs;                       /* stage + root args */
     RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[0], 2, cself);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    const VALUE v = r.value;
     double d;
-    if (UNLIKELY(v == KORB_NIL || !korb_num_to_d(v, &d)))
+    if (LIKELY(korb_num_to_d(r.value, &d))) { *out = d < 0 ? -1 : d > 0 ? 1 : 0; return RESULT_OK(KORB_NIL); }
+    if (UNLIKELY(r.value == KORB_NIL))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed",
-                          korb_type_name(lhs), korb_type_name(rhs));
-    *out = d < 0 ? -1 : d > 0 ? 1 : 0;
+                          korb_type_name(slots[0]), korb_type_name(slots[1]));
+    /* CRuby's rb_cmpint: a non-numeric result is asked `> 0`, then `< 0`. */
+    slots[2] = r.value; slots[3] = LONG2FIX(0);
+    RESULT gr = korb_send(c, slots + 4, korb_intern(c->vm, ">", 1), 0, 1);
+    if (UNLIKELY(gr.state != KORB_NORMAL)) return gr;
+    if (KORB_TRUTHY(gr.value)) { *out = 1; return RESULT_OK(KORB_NIL); }
+    slots[3] = LONG2FIX(0);
+    RESULT lr = korb_send(c, slots + 4, korb_intern(c->vm, "<", 1), 0, 1);
+    if (UNLIKELY(lr.state != KORB_NORMAL)) return lr;
+    *out = KORB_TRUTHY(lr.value) ? -1 : 0;
     return RESULT_OK(KORB_NIL);
 }
 
@@ -1858,6 +1866,17 @@ static RESULT korb_m_ary_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, 
 }
 
 
+/* An Enumerator built by delegating to the Array version describes itself with
+ * the forced value array; name the enumerator we were called on instead. */
+static RESULT korb_enum_redesc(CTX *c, VALUE *slots, VALUE_REF self, RESULT r, const char *meth, VALUE_SLICE a) {
+    if (r.state != KORB_NORMAL || !KORB_ENUM_P(r.value)) return r;
+    slots[0] = r.value;
+    slots[1] = UNWRAP(korb_enum_desc_args(c, slots + 1, VALUE_REF_GET(self), meth, a));
+    KorbEnumerator *const e = VAL2ENUM(slots[0]);
+    ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->desc, slots[1]);
+    return RESULT_OK(slots[0]);
+}
+
 /* Enumerator#each_slice / each_cons — delegate to the Array versions on the
  * enumerator's (eager-forced) value array, so Enumerable chains like
  * `str.each_char.each_slice(2)` work.  No block → an Enumerator of the
@@ -1868,7 +1887,7 @@ static RESULT korb_m_enum_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     slots[0] = av.value;
     RESULT r = korb_m_ary_each_slice(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
     if (block != NULL && r.state == KORB_NORMAL) return RESULT_OK(VALUE_REF_GET(self));   /* block form returns the enumerator */
-    return r;
+    return korb_enum_redesc(c, slots, self, r, "each_slice", a);
 }
 static RESULT korb_m_enum_each_cons(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     RESULT av = korb_m_enum_to_a(c, slots, self, a);
@@ -1876,5 +1895,5 @@ static RESULT korb_m_enum_each_cons(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     slots[0] = av.value;
     RESULT r = korb_m_ary_each_cons(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
     if (block != NULL && r.state == KORB_NORMAL) return RESULT_OK(VALUE_REF_GET(self));   /* block form returns the enumerator */
-    return r;
+    return korb_enum_redesc(c, slots, self, r, "each_cons", a);
 }

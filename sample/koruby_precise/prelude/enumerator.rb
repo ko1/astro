@@ -489,3 +489,36 @@ class Enumerator::Lazy
   end
   alias enum_for to_enum   # a real alias: #method(:enum_for) == #method(:to_enum)
 end
+
+class Enumerator
+  # #with_index re-drives the *source method* with an index-wrapping block and
+  # returns that method's own value: ary.delete_if.with_index deletes, and
+  # ary.select.with_index returns the selection (CRuby).  Only enumerators that
+  # remember their source can do this; the rest keep the C behaviour (re-drive
+  # the materialized values).
+  alias_method :__with_index_c, :with_index
+
+  private def __wi_offset(off)
+    return 0 if off.nil?
+    return off if off.is_a?(Integer)
+    return off.to_i if off.is_a?(Float)
+    raise TypeError, "no implicit conversion of #{off.class} into Integer" unless off.respond_to?(:to_int)
+    n = off.to_int
+    raise TypeError, "no implicit conversion of #{off.class} into Integer" unless n.is_a?(Integer)
+    n
+  end
+
+  def with_index(offset = 0, &blk)
+    i = __wi_offset(offset)
+    return __with_index_c(i, &blk) unless blk && defined?(@__src_recv)
+    @__src_recv.send(@__src_meth, *@__src_args) { |*vs|
+      r = blk.call(vs.size <= 1 ? vs[0] : vs, i)
+      i += 1
+      r
+    }
+  end
+
+  def each_with_index(&blk)
+    with_index(0, &blk)
+  end
+end
