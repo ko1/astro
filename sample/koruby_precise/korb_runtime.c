@@ -10475,10 +10475,13 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_protected, -1);
     /* NOT on Class: CRuby undefines Module#module_function there (a Class has no
      * module functions).  The Module-side registration below is the only one. */
-    /* top-level `private`/`public`/... (self = main, an Object) are also no-ops. */
-    korb_def_cmethod(c, KORB_C_OBJECT, "private", korb_m_visibility_noop, -1);
-    korb_def_cmethod(c, KORB_C_OBJECT, "public", korb_m_visibility_noop, -1);
-    korb_def_cmethod(c, KORB_C_OBJECT, "protected", korb_m_visibility_noop, -1);
+    /* Kernel-level `private`/`public`/`protected`: a no-op when self is not a
+     * class (top-level `private :foo`, self = main), but the real thing when it
+     * is — `Kernel.send(:protected, :m)` reaches this copy (Kernel's singleton
+     * holds it as a module function) before Module#protected. */
+    korb_def_cmethod(c, KORB_C_OBJECT, "private", korb_m_private, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "public", korb_m_public, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "protected", korb_m_protected, -1);
     /* `refine(Klass) { ... }` (refinements) — koruby has no refinement scoping;
      * treat as a no-op returning a fresh module so the call site doesn't raise. */
     korb_def_cmethod(c, KORB_C_CLASS,  "refine", korb_m_lit_nil, -1);

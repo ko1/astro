@@ -553,10 +553,6 @@ static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 /* Module#private/public/protected/module_function — koruby doesn't enforce
  * visibility, so these are no-ops returning the arg (for `private :foo` /
  * `private def foo`) or nil (bare `private`). */
-static RESULT korb_m_visibility_noop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)self;
-    return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
-}
 /* Module#deprecate_constant(*names) — mark each so a read warns. */
 static RESULT korb_m_deprecate_constant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE owner = VALUE_REF_GET(self);
@@ -1145,7 +1141,10 @@ static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALU
         const bool on_singleton = KORB_CLASS_P(VALUE_REF_GET(klass_ref)) && VAL2CLASS(VALUE_REF_GET(klass_ref))->is_singleton;
         if (!on_singleton)
             for (uint32_t p = 0; p < priv_n; p++) if (m->mid == priv_mids[p]) { v = 1; break; }
-        if (!(vis_mask & (1u << v))) continue;
+        /* a definition nearer in the MRO hides the ancestors' — even when its own
+         * visibility does not match, so `private :m` here keeps an ancestor's
+         * public m out of public_instance_methods (CRuby). */
+        if (!(vis_mask & (1u << v))) { CHECK(korb_ary_push_val(c, slots, blocked, sym)); continue; }
         const KorbArray *const r = VAL2ARY(VALUE_REF_GET(result));
         bool seen = false;
         for (uint32_t j = 0; j < r->len; j++) if (korb_items_data(r->items)[j] == sym) { seen = true; break; }
