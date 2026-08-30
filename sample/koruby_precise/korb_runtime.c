@@ -11420,7 +11420,7 @@ korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, struct KorbIORep *rep)
 /* Evaluate `src` as a top-level program (fresh `main` self, shared globals /
  * constants / methods), like Kernel#eval with no binding.  Used by require/load. */
 static RESULT
-korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const char *fname, VALUE wrap)
+korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const char *fname, VALUE *wrapp)
 {
     const uint32_t repo_before = code_repo_count();               /* bodies this file adds: [repo_before, count) */
     NODE *ast = koruby_parse_source(c, src, len, fname, false);   /* immortal AST; no GC */
@@ -11443,31 +11443,33 @@ korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const
     RESULT mr = korb_obj_new(c, cur, KORB_NIL);        /* fresh `main` self */
     if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
     fb[-1] = mr.value;
-    if (KORB_CLASS_P(wrap)) {                          /* load(file, wrap): self extends the module */
-        cur[0] = fb[-1]; cur[1] = wrap;
+    /* Park the wrap module in the CTX (a GC root) so nothing here holds a bare
+     * VALUE across the extend / EVAL below — a moving GC would strand it. */
+    const VALUE saved_definee = c->def_definee;
+    const VALUE saved_cref = c->eval_cref;
+    const VALUE wrap = wrapp ? *wrapp : KORB_NIL;      /* read AFTER the allocs above: the caller's slot is scanned */
+    c->def_definee = KORB_CLASS_P(wrap) ? wrap : KORB_NIL;   /* `def` / constants land in the wrap module */
+    c->eval_cref    = KORB_CLASS_P(wrap) ? wrap : KORB_NIL;
+    if (KORB_CLASS_P(c->eval_cref)) {                  /* load(file, wrap): self extends the module */
+        cur[0] = fb[-1]; cur[1] = c->eval_cref;
         RESULT er = korb_send_impl(c, cur + 2, korb_intern(c->vm, "extend", 6), 0, 1, NULL, NULL, NULL);
-        if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+        if (UNLIKELY(er.state != KORB_NORMAL)) { c->def_definee = saved_definee; c->eval_cref = saved_cref; return er; }
         fb[-1] = cur[0];
-        memset(fb, 0, (size_t)locals * sizeof(VALUE));  /* extend may have moved things; locals stay zeroed */
-        fb[-1] = cur[0];
+        cur[0] = 0; cur[1] = 0;
     }
     /* a required/loaded file starts at the real top level even when the require
      * ran inside instance_eval/class_eval: its `def`s are global functions, not
      * methods of the surrounding definee. */
-    const VALUE saved_definee = c->def_definee;
-    const VALUE saved_cref = c->eval_cref;
-    c->def_definee = KORB_CLASS_P(wrap) ? wrap : KORB_NIL;   /* `def` / constants land in the wrap module */
-    c->eval_cref    = KORB_CLASS_P(wrap) ? wrap : KORB_NIL;
     uint8_t saved_vis = 0;
-    if (KORB_CLASS_P(wrap)) {                          /* toplevel `def` is private there (CRuby) */
-        saved_vis = VAL2CLASS(wrap)->cur_visibility;
-        VAL2CLASS(wrap)->cur_visibility = 1;
+    if (KORB_CLASS_P(c->eval_cref)) {                  /* toplevel `def` is private there (CRuby) */
+        saved_vis = VAL2CLASS(c->eval_cref)->cur_visibility;
+        VAL2CLASS(c->eval_cref)->cur_visibility = 1;
     }
     RESULT r = EVAL(c, ast, cur);
     /* the file's frame goes away here, so a proc/define_method block that
      * captured its locals must have the env closed (heap-copied) first */
     if (UNLIKELY(korb_frame_escaped(fb))) r = korb_close_ret(c, cur, fb, r);
-    if (KORB_CLASS_P(wrap)) VAL2CLASS(wrap)->cur_visibility = saved_vis;
+    if (KORB_CLASS_P(c->eval_cref)) VAL2CLASS(c->eval_cref)->cur_visibility = saved_vis;   /* re-read: it may have moved */
     c->def_definee = saved_definee;
     c->eval_cref = saved_cref;
     return r;
@@ -11759,7 +11761,7 @@ korb_loading_remove(struct korb_vm *vm, const char *abspath)
 /* Load `abspath` (read + eval at top level), tracking it as a required feature.
  * dedup: if true (require), a second require of the same path returns false. */
 static RESULT
-korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *out, VALUE wrap)
+korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *out, VALUE *wrapp)
 {
     struct korb_vm *const vm = c->vm;
     if (dedup) {
@@ -11799,7 +11801,7 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
     const char *const saved = vm->cur_load_file;
     char *const abscopy = strdup(abspath);             /* stable across the eval (fname baked into AST) */
     vm->cur_load_file = abscopy;
-    RESULT r = korb_eval_toplevel_wrap(c, slots, buf, got, abscopy, wrap);
+    RESULT r = korb_eval_toplevel_wrap(c, slots, buf, got, abscopy, wrapp);
     vm->cur_load_file = saved;
     free(buf);
     if (dedup) korb_loading_remove(vm, abspath);
@@ -11815,7 +11817,7 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
 static RESULT
 korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *out)
 {
-    return korb_load_abspath_wrap(c, slots, abspath, dedup, out, KORB_NIL);
+    return korb_load_abspath_wrap(c, slots, abspath, dedup, out, NULL);
 }
 /* Resolve `name` (adding ".rb" if absent) against `base_dir` into `out` (abs),
  * returning true if the file exists. */
@@ -12110,7 +12112,7 @@ korb_bi_load(CTX *c, VALUE *slots, VALUE_SLICE args)
         }
     }
     slots[1] = wrap;                                   /* root it across the load */
-    VALUE out; return korb_load_abspath_wrap(c, slots + 2, abspath, false, &out, slots[1]);
+    VALUE out; return korb_load_abspath_wrap(c, slots + 2, abspath, false, &out, &slots[1]);
 }
 
 /* Kernel#exit([status]) / exit! — terminate the process (true/nil → 0, false → 1,
