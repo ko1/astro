@@ -3114,7 +3114,17 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t nm = UINT32_MAX, om = UINT32_MAX;
         if (PM_NODE_TYPE_P(al->new_name, PM_SYMBOL_NODE)) { const pm_symbol_node_t *s = (const pm_symbol_node_t *)al->new_name; nm = korb_intern(tc->c->vm, (const char *)pm_string_source(&s->unescaped), pm_string_length(&s->unescaped)); }
         if (PM_NODE_TYPE_P(al->old_name, PM_SYMBOL_NODE)) { const pm_symbol_node_t *s = (const pm_symbol_node_t *)al->old_name; om = korb_intern(tc->c->vm, (const char *)pm_string_source(&s->unescaped), pm_string_length(&s->unescaped)); }
-        if (nm == UINT32_MAX || om == UINT32_MAX) return kp_unsupported(tc, node, "alias with a dynamic-symbol name");
+        if (nm == UINT32_MAX || om == UINT32_MAX) {
+            /* An interpolated name is only known at run time: `alias :"#{x}" y`
+             * becomes self.alias_method(new, old) — inside a class body / a
+             * class_eval block self IS the module, which is what `alias` targets. */
+            const uint32_t line = kp_line(tc, node);
+            NODE *selfn, *nn, *on;
+            WITH_CHAIN(tc, KP_SEND2_SC, (selfn = bake_self(tc),
+                                         nn = (nm != UINT32_MAX) ? ALLOC_node_lit(ID2SYM(nm)) : transduce(tc, al->new_name),
+                                         on = (om != UINT32_MAX) ? ALLOC_node_lit(ID2SYM(om)) : transduce(tc, al->old_name)));
+            return kp_send2(korb_intern(tc->c->vm, "alias_method", 12), line, selfn, nn, on);
+        }
         NODE *na = ALLOC_node_alias(nm, om, -1 - tc->chain);   /* self (the class) at base[-1] */
         bake_add(tc, &na->u.node_alias.self_off);
         return na;
