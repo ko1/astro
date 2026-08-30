@@ -1499,16 +1499,17 @@ static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     for (const char *p = cname + 1; *p; p++)              /* reject '=', '?', etc. after the first char */
         if (UNLIKELY(!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_' || (unsigned char)*p >= 0x80)))
             return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", cname);
-    const VALUE owner = VALUE_REF_GET(self);    /* nest the const under the receiver module (→ its #constants) */
-    { RESULT fr = korb_check_def_frozen(c, slots, owner); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* const_set on a frozen module → FrozenError */
-    const VALUE cowner = KORB_CLASS_P(owner) ? owner : KORB_NIL;
-    slots[0] = VALUE_SLICE_GET(a, 1);           /* root the value: the warning below can GC */
-    if (UNLIKELY(korb_const_index_owned(c->vm, id, cowner) != UINT32_MAX))
-        korb_warn_const_redef(c, slots + 1, id, cowner);   /* CRuby warns on reassignment */
-    const VALUE val = slots[0];
-    korb_const_define_owned(c, id, val, cowner);   /* libc realloc only → no GC move of val */
+    { RESULT fr = korb_check_def_frozen(c, slots, VALUE_REF_GET(self)); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* const_set on a frozen module → FrozenError */
+    /* The warning below allocates, so keep BOTH the value and the owner in
+     * scanned slots and re-read them afterwards (a bare VALUE goes stale). */
+    slots[0] = VALUE_SLICE_GET(a, 1);
+    slots[1] = KORB_CLASS_P(VALUE_REF_GET(self)) ? VALUE_REF_GET(self) : KORB_NIL;   /* cowner */
+    if (UNLIKELY(korb_const_index_owned(c->vm, id, slots[1]) != UINT32_MAX))
+        korb_warn_const_redef(c, slots + 2, id, slots[1]);   /* CRuby warns on reassignment */
+    korb_const_define_owned(c, id, slots[0], slots[1]);   /* libc realloc only → no GC move */
+    const VALUE owner = VALUE_REF_GET(self);              /* re-read: the warning may have moved it */
     if (UNLIKELY(KORB_CLASS_P(owner) && korb_mod_hook_custom(c, owner, korb_intern(c->vm, "const_added", 11)))) {
-        slots[1] = owner; slots[2] = ID2SYM(id);          /* slots[0] still roots the value */
+        slots[1] = VALUE_REF_GET(self); slots[2] = ID2SYM(id);   /* slots[0] still roots the value */
         const RESULT hr = korb_send(c, slots + 3, korb_intern(c->vm, "const_added", 11), 0, 1);
         if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
         return RESULT_OK(slots[0]);

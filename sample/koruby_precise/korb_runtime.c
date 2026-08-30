@@ -11493,11 +11493,14 @@ korb_warn_const_redef_at(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner,
         char obuf[192]; korb_class_qname_into(c, owner, obuf, sizeof obuf);
         snprintf(qual, sizeof qual, "%s::%s", obuf, nm);
     } else snprintf(qual, sizeof qual, "%s", nm);
-    /* CRuby prefixes both lines with the position they happen at */
-    korb_warn_at(c, slots, file, line0, "already initialized constant %s", qual);
+    /* CRuby prefixes both lines with the position they happen at.  korb_warn_at
+     * builds a String, so park the owner across it — a bare VALUE would go
+     * stale under the moving GC and korb_const_get_loc would read freed memory. */
+    slots[0] = owner;
+    korb_warn_at(c, slots + 1, file, line0, "already initialized constant %s", qual);
     uint32_t fsym = 0, line = 0;
-    if (korb_const_get_loc(c->vm, name_sym, owner, &fsym, &line))
-        korb_warn_at(c, slots, korb_sym_name(c->vm, fsym), line, "previous definition of %s was here", nm);
+    if (korb_const_get_loc(c->vm, name_sym, slots[0], &fsym, &line))
+        korb_warn_at(c, slots + 1, korb_sym_name(c->vm, fsym), line, "previous definition of %s was here", nm);
 }
 void
 korb_warn_const_redef(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner)
