@@ -4336,6 +4336,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             const char *const rn = korb_sym_name(tc->c->vm, name);
             if (strcmp(rn, "$VERBOSE") == 0 || strcmp(rn, "$DEBUG") == 0) val = ALLOC_node_gvar_coerce(0, val);
             else if (strcmp(rn, "$.") == 0)                               val = ALLOC_node_gvar_coerce(1, val);
+            else if (strcmp(rn, "$0") == 0)                               val = ALLOC_node_gvar_coerce(2, val);
         }
         return build_const_set(tc, name, val);
       }

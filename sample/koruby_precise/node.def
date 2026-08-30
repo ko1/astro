@@ -190,6 +190,18 @@ node_gvar_coerce(CTX *c, NODE *n, VALUE *slots, uint32_t kind, VALUE val@child)
 {
     (void)n;
     if (kind == 0) return RESULT_OK(val == KORB_NIL ? KORB_NIL : (KORB_TRUTHY(val) ? KORB_TRUE : KORB_FALSE));
+    if (kind == 2) {                                   /* $0 / $PROGRAM_NAME: String or #to_str */
+        if (KORB_STRING_P(val)) return RESULT_OK(val);
+        slots[0] = val;
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_str)) {
+            RESULT sr = korb_send(c, slots + 1, to_str, 0, 0);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (KORB_STRING_P(sr.value)) return RESULT_OK(sr.value);
+        }
+        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
+                          korb_coerce_name(c, slots[0]));
+    }
     if (KORB_FLOAT_P(val)) return RESULT_OK(LONG2FIX((korb_sword_t)korb_float_val(val)));
     slots[0] = val;
     CHECK(korb_coerce_to_int_pub(c, slots + 1, &slots[0]));
