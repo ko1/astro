@@ -3764,10 +3764,17 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                      * (a prelude helper: any? { |p| p === subj }).  Subject-less
                      * case has no value to test each element against. */
                     const pm_splat_node_t *sp = (const pm_splat_node_t *)cv;
-                    if (!has_subj || !sp->expression)
-                        return kp_unsupported(tc, cv, "when with splat (no subject)");
-                    NODE *recv, *subj_arg;
+                    if (!sp->expression)
+                        return kp_unsupported(tc, cv, "when with a bare splat");
                     const uint32_t line = kp_line(tc, cv);
+                    if (!has_subj) {                        /* `case; when *pats` → any truthy element */
+                        NODE *recv0;
+                        WITH_CHAIN(tc, KP_SEND0_SC, (recv0 = transduce(tc, sp->expression)));
+                        NODE *test0 = kp_send0(korb_intern(tc->c->vm, "__korb_when_splat_truthy", 24), line, recv0);
+                        cond = cond ? ALLOC_node_or(cond, test0) : test0;
+                        continue;
+                    }
+                    NODE *recv, *subj_arg;
                     WITH_CHAIN(tc, KP_SEND1_SC, (recv = transduce(tc, sp->expression),
                                                  subj_arg = bake_lget(tc, tmp)));
                     NODE *test = kp_send1(korb_intern(tc->c->vm, "__korb_when_splat", 17), line, recv, subj_arg);
