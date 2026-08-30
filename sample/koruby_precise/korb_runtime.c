@@ -1504,14 +1504,29 @@ korb_hash_find_ctx(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *out_
     }
     slots[0] = key;                                       /* root searched key across dispatch */
     const uint32_t eqm = korb_intern(c->vm, "eql?", 4);
+    const uint32_t hashm = korb_intern(c->vm, "hash", 4);
+    /* CRuby buckets by #hash first, so a key whose #hash differs is never
+     * compared with #eql? (mocks in the spec suite assert exactly that). */
+    slots[2] = slots[0];
+    RESULT khr = korb_send_impl(c, slots + 3, hashm, 0, 0, NULL, NULL, NULL);
+    if (UNLIKELY(khr.state != KORB_NORMAL)) { *out_err = khr; return -1; }
+    slots[1] = khr.value;                                 /* searched key's #hash (rooted) */
     for (uint32_t i = 0; ; i++) {
         const KorbHash *const h = VAL2HASH(VALUE_REF_GET(href));
         if (i >= h->len) return -1;
         const VALUE existing = korb_items_data(h->items)[2 * i];
         if (existing == slots[0]) return (int32_t)i;      /* identity shortcut (no dispatch) */
-        slots[1] = existing;                              /* root stored key */
-        slots[2] = existing; slots[3] = slots[0];         /* stored.eql?(searched) */
-        const RESULT r = korb_send_impl(c, slots + 4, eqm, 0, 1, NULL, NULL, NULL);
+        if (KORB_OBJECT_P(existing)) {                    /* both are objects → compare their #hash */
+            slots[3] = existing;
+            slots[4] = existing;
+            const RESULT hr = korb_send_impl(c, slots + 5, hashm, 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(hr.state != KORB_NORMAL)) { *out_err = hr; return -1; }
+            if (!korb_value_eq(hr.value, slots[1])) continue;
+            slots[3] = slots[0]; slots[4] = korb_items_data(VAL2HASH(VALUE_REF_GET(href))->items)[2 * i];
+        } else {
+            slots[3] = slots[0]; slots[4] = existing;
+        }
+        const RESULT r = korb_send_impl(c, slots + 5, eqm, 0, 1, NULL, NULL, NULL);   /* searched.eql?(stored) */
         if (UNLIKELY(r.state != KORB_NORMAL)) { *out_err = r; return -1; }
         if (KORB_TRUTHY(r.value)) return (int32_t)i;
     }
