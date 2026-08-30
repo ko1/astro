@@ -243,6 +243,7 @@ static RESULT korb_file_expand(CTX *c, VALUE *slots, VALUE_SLICE a, bool tilde) 
         slots[1] = bv;
     } else slots[1] = KORB_NIL;
     pv = slots[0];
+    const uint32_t penc = KORB_STR_ENC(pv);            /* the result keeps the path's encoding (CRuby) */
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
 
     char raw[8192]; size_t r = 0;
@@ -289,7 +290,7 @@ static RESULT korb_file_expand(CTX *c, VALUE *slots, VALUE_SLICE a, bool tilde) 
             if (getcwd(basebuf, sizeof basebuf)) bl = strlen(basebuf); else { basebuf[0] = '/'; bl = 1; }
         }
         memcpy(raw, basebuf, bl); r = bl;
-        raw[r++] = '/';
+        if (r == 0 || raw[r - 1] != '/') raw[r++] = '/';   /* base "/" must not become "//" */
         memcpy(raw + r, path, plen); r += plen;
     }
     if (r >= sizeof raw) r = sizeof raw - 1;
@@ -305,7 +306,9 @@ static RESULT korb_file_expand(CTX *c, VALUE *slots, VALUE_SLICE a, bool tilde) 
         for (size_t k = 0; k < lead - 1; k++) out[k] = '/';
         olen += lead - 1;
     }
-    return korb_str_new(c, slots, out, (uint32_t)olen);
+    RESULT er = korb_str_new(c, slots, out, (uint32_t)olen);
+    if (LIKELY(er.state == KORB_NORMAL)) KORB_STR_ENC_SET(er.value, penc);
+    return er;
 }
 static RESULT korb_m_file_expand_path(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; return korb_file_expand(c, slots, a, true);
@@ -1639,9 +1642,9 @@ static RESULT korb_m_file_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 /* File.absolute_path?(path) → true iff `path` is an absolute path. */
 static RESULT korb_m_file_abs_path_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self; (void)slots;
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (!KORB_STRING_P(pv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    (void)self;
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv))) { CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv; }   /* #to_path / #to_str */
     const KorbString *const s = VAL2STR(pv);
     return RESULT_OK((s->len > 0 && korb_strbuf_data(s->buf)[0] == '/') ? KORB_TRUE : KORB_FALSE);
 }
