@@ -40,6 +40,12 @@ class IO
   def __io_read_enc_name
     (internal_encoding || external_encoding || Encoding::UTF_8).name
   end
+  # The encoding the raw bytes on the stream are in (#getc sizes a character by
+  # it).  Always the external one, whether or not a transcoding pair is set.
+  def __io_byte_enc_name
+    __resolve_enc
+    (@__enc2 || @__enc || Encoding.default_external).name
+  end
   # When an ext→int pair is set, the bytes arrive in the EXTERNAL encoding and
   # the C read path converts them to the tagged (internal) one.  nil = no pair.
   def __io_read_xenc_name

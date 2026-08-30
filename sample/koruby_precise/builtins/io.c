@@ -23,6 +23,7 @@ typedef struct KorbIORep {
     uint8_t  nonblk;                 /* O_NONBLOCK: block by parking, not by stalling */
     uint32_t lineno;                 /* IO#lineno: lines handed out by #gets */
     int      enc_idx;                /* memo: the encoding a read result carries (-1 = ask the prelude) */
+    int      benc_idx;               /* memo: the encoding the raw bytes arrive in (the external one) */
     char    *rbuf; uint32_t rpos, rlen, rcapa;   /* read-ahead: live bytes are [rpos, rlen) */
     char    *wbuf; uint32_t wlen, wcapa;         /* write-behind: wlen bytes pending */
 } KorbIORep;
@@ -48,7 +49,7 @@ static uint32_t korb_io_register(struct korb_vm *vm, int fd, bool sync) {
     if (!rep) { fprintf(stderr, "koruby_precise: oom (io rep)\n"); abort(); }
     rep->fd = fd;
     rep->sync = sync ? 1 : 0;
-    rep->enc_idx = -1;                                  /* unresolved (see korb_io_read_enc) */
+    rep->enc_idx = rep->benc_idx = -1;                  /* unresolved (see korb_io_read_enc) */
     return korb_io_register_rep(vm, rep);
 }
 static uint32_t korb_io_fp_mid(CTX *c) { return korb_intern(c->vm, "__io_fp", 7); }
@@ -357,6 +358,7 @@ void korb_io_flush_std(struct korb_vm *const vm) {
 }
 /* new IO/File instance of `klass` bound to `fd`.  slots[0..] scratch; result rooted by caller. */
 static uint32_t korb_io_read_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep);   /* fwd */
+static uint32_t korb_io_byte_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep);   /* fwd */
 static RESULT korb_io_apply_read_enc(CTX *c, VALUE *slots, VALUE_REF io, VALUE *vslot, uint32_t tag);   /* fwd */
 static RESULT korb_io_make(CTX *c, VALUE *slots, VALUE klass, int fd, int rw) {
     const uint32_t idx = korb_io_register(c->vm, fd, false);
@@ -1131,18 +1133,52 @@ static RESULT korb_m_io_sync_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* IO#getc → the next UTF-8 character, or nil at EOF. */
 static RESULT korb_m_io_getc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    if (!korb_io_open_p(korb_io_rep(c, VALUE_REF_GET(self))))
+        return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_READ(c, slots, self);
+    /* the tag a character carries and the encoding its bytes arrive in differ
+     * only on a transcoding stream; both are memoized on the rep */
+    const uint32_t tag  = korb_io_read_enc(c, slots, self, korb_io_rep(c, VALUE_REF_GET(self)));
+    const uint32_t benc = korb_io_byte_enc(c, slots, self, korb_io_rep(c, VALUE_REF_GET(self)));
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));   /* after the sends above */
     RESULT gerr = RESULT_OK(KORB_NIL);
     const int b0 = korb_io_getb_p(c, slots, rep, &gerr);   /* cbuf below is a C local: safe across a park */
     if (UNLIKELY(gerr.state != KORB_NORMAL)) return gerr;
     if (b0 < 0) return RESULT_OK(KORB_NIL);
     char cbuf[8]; cbuf[0] = (char)b0;
-    const unsigned char u = (unsigned char)b0;
-    uint32_t cl = u < 0x80 ? 1 : u >= 0xF0 ? 4 : u >= 0xE0 ? 3 : u >= 0xC0 ? 2 : 1;
-    for (uint32_t k = 1; k < cl; k++) { const int b = korb_io_getb_p(c, slots, rep, &gerr); if (b < 0) { cl = k; break; } cbuf[k] = (char)b; }
-    return korb_str_new(c, slots, cbuf, cl);
+    uint32_t cl;
+    if (KORB_ENC_SB(c->vm, benc)) {
+        cl = 1;
+    } else if (benc == KORB_ENC_UTF8) {
+        const unsigned char u = (unsigned char)b0;
+        cl = u < 0x80 ? 1 : u >= 0xF0 ? 4 : u >= 0xE0 ? 3 : u >= 0xC0 ? 2 : 1;
+        for (uint32_t k = 1; k < cl; k++) { const int b = korb_io_getb_p(c, slots, rep, &gerr); if (b < 0) { cl = k; break; } cbuf[k] = (char)b; }
+        if (UNLIKELY(gerr.state != KORB_NORMAL)) return gerr;
+    } else {
+        /* a table-driven encoding: keep pulling bytes until they form a
+         * character, then push back whatever the lead byte did not need */
+        const char *const bn = korb_enc_name_of(c->vm, benc);
+        uint32_t have = 1;
+        while ((cl = korb_tc_char_len(bn, (const unsigned char *)cbuf, have)) == 0 && have < sizeof cbuf) {
+            const int b = korb_io_getb_p(c, slots, rep, &gerr);
+            if (UNLIKELY(gerr.state != KORB_NORMAL)) return gerr;
+            if (b < 0) break;
+            cbuf[have++] = (char)b;
+        }
+        if (cl == 0 || cl > have) cl = have;               /* truncated at EOF: hand back what there is */
+        if (have > cl && !korb_io_unget(rep, cbuf + cl, have - cl))
+            return korb_raise(c, slots, KORB_E_IOERROR, 0, "getc failed");
+    }
+    slots[0] = UNWRAP(korb_str_new(c, slots, cbuf, cl));
+    KORB_STR_ENC_SET(slots[0], benc);
+    if (tag != benc) {                                     /* ext → int on a transcoding stream */
+        bool ok = false;
+        const RESULT tr = korb_tc_convert(c, slots + 1, slots[0], korb_enc_name_of(c->vm, benc),
+                                          korb_enc_name_of(c->vm, tag), &ok);
+        if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+        if (ok) slots[0] = tr.value;
+    }
+    return RESULT_OK(slots[0]);
 }
 static RESULT korb_io_raise_eof(CTX *c, VALUE *slots) {
     const VALUE cls = korb_const_get(c->vm, korb_intern(c->vm, "EOFError", 8));
@@ -1390,12 +1426,9 @@ static RESULT korb_io_apply_read_enc(CTX *c, VALUE *slots, VALUE_REF io, VALUE *
     if (ok) *vslot = tr.value;
     return RESULT_OK(*vslot);
 }
-static uint32_t korb_io_read_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep) {
-    if (rep == NULL) return KORB_ENC_UTF8;
-    if (rep->enc_idx >= 0) return (uint32_t)rep->enc_idx;
+static uint32_t korb_io_ask_enc(CTX *c, VALUE *slots, VALUE_REF io, const char *const mname, uint32_t mlen) {
     slots[0] = VALUE_REF_GET(io);
-    const RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "__io_read_enc_name", 18), 0, 0);
-    rep = korb_io_rep(c, VALUE_REF_GET(io));            /* the dispatch may have moved things */
+    const RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, mname, mlen), 0, 0);
     uint32_t idx = KORB_ENC_UTF8;
     if (r.state == KORB_NORMAL && KORB_STRING_P(r.value)) {
         char nb[64];
@@ -1404,14 +1437,31 @@ static uint32_t korb_io_read_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *
         memcpy(nb, korb_strbuf_data(ns->buf), n); nb[n] = '\0';
         idx = korb_enc_index_pub(c->vm, nb);
     }
+    return idx;
+}
+static uint32_t korb_io_read_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep) {
+    if (rep == NULL) return KORB_ENC_UTF8;
+    if (rep->enc_idx >= 0) return (uint32_t)rep->enc_idx;
+    const uint32_t idx = korb_io_ask_enc(c, slots, io, "__io_read_enc_name", 18);
+    rep = korb_io_rep(c, VALUE_REF_GET(io));            /* the dispatch may have moved things */
     if (rep) rep->enc_idx = (int)idx;
+    return idx;
+}
+/* The encoding the stream's raw BYTES are in — the external one.  #getc needs
+ * it to size a character before it can tag (and transcode) the result. */
+static uint32_t korb_io_byte_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep) {
+    if (rep == NULL) return KORB_ENC_UTF8;
+    if (rep->benc_idx >= 0) return (uint32_t)rep->benc_idx;
+    const uint32_t idx = korb_io_ask_enc(c, slots, io, "__io_byte_enc_name", 18);
+    rep = korb_io_rep(c, VALUE_REF_GET(io));
+    if (rep) rep->benc_idx = (int)idx;
     return idx;
 }
 /* IO#__io_enc_reset — the prelude calls this whenever the encodings change. */
 static RESULT korb_m_io_enc_reset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    if (rep) rep->enc_idx = -1;
+    if (rep) rep->enc_idx = rep->benc_idx = -1;
     return RESULT_OK(KORB_NIL);
 }
 
