@@ -1693,11 +1693,26 @@ static RESULT korb_m_dir_rmdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(LONG2FIX(0));
 }
 /* Dir.entries(path) [with_dots] / Dir.children(path) [without]. */
+/* `encoding:` from a trailing kwargs Hash → encoding index, UINT32_MAX if absent. */
+static RESULT korb_dir_enc_kw(CTX *c, VALUE *slots, VALUE h, uint32_t *out) {
+    *out = UINT32_MAX;
+    const int32_t ix = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, "encoding", 8)));
+    if (ix < 0) return RESULT_OK(KORB_NIL);
+    const VALUE v = korb_items_data(VAL2HASH(h)->items)[2 * ix + 1];
+    if (v == KORB_NIL) return RESULT_OK(KORB_NIL);
+    char nm[64];
+    CHECK(korb_open_enc_name(c, slots, v, nm, sizeof nm));
+    if (nm[0]) *out = korb_enc_index_for_name(c->vm, nm);
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_dir_list(CTX *c, VALUE *slots, VALUE_SLICE a, bool with_dots) {
-    /* a trailing kwargs Hash is `encoding:`, which only names the result strings'
+    /* a trailing kwargs Hash carries `encoding:`, which names the result strings'
      * encoding — the listing itself is the same either way */
-    if (VALUE_SLICE_LEN(a) >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1)))
+    uint32_t enc = UINT32_MAX;
+    if (VALUE_SLICE_LEN(a) >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1))) {
+        CHECK(korb_dir_enc_kw(c, slots, VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1), &enc));
         a = VALUE_SLICE_MAKE(a.p, VALUE_SLICE_LEN(a) - 1);
+    }
     if (UNLIKELY(VALUE_SLICE_LEN(a) != 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1)", VALUE_SLICE_LEN(a));
     RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
@@ -1709,6 +1724,7 @@ static RESULT korb_dir_list(CTX *c, VALUE *slots, VALUE_SLICE a, bool with_dots)
     while ((ent = readdir(d)) != NULL) {
         if (!with_dots && (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)) continue;
         slots[1] = UNWRAP(korb_str_new(c, slots + 1, ent->d_name, (uint32_t)strlen(ent->d_name)));
+        if (enc != UINT32_MAX) KORB_STR_ENC_SET(slots[1], enc);
         if (korb_ary_push_val(c, slots + 2, arr, slots[1]).state != KORB_NORMAL) break;
     }
     closedir(d);
@@ -1734,13 +1750,14 @@ static uint32_t korb_dir_ents_id(CTX *c) { return korb_intern(c->vm, "__dir_entr
 static uint32_t korb_dir_pos_id(CTX *c)  { return korb_intern(c->vm, "__dir_pos", 9); }
 static uint32_t korb_dir_path_id(CTX *c) { return korb_intern(c->vm, "__dir_path", 10); }
 /* Read `path` into the cursor ivars of an existing Dir (or subclass) instance. */
-static RESULT korb_dir_fill(CTX *c, VALUE *slots, VALUE_REF obj, const char *path, uint32_t plen) {
+static RESULT korb_dir_fill(CTX *c, VALUE *slots, VALUE_REF obj, const char *path, uint32_t plen, uint32_t enc) {
     DIR *d = opendir(path);
     if (!d) return korb_raise_errno(c, slots, errno, "opendir", path);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 16));            /* entries (rooted) */
     { VALUE_REF arr = VALUE_REF_AT(&slots[0]); struct dirent *ent;
       while ((ent = readdir(d)) != NULL) {
         slots[1] = UNWRAP(korb_str_new(c, slots + 1, ent->d_name, (uint32_t)strlen(ent->d_name)));
+        if (enc != UINT32_MAX) KORB_STR_ENC_SET(slots[1], enc);
         if (korb_ary_push_val(c, slots + 2, arr, slots[1]).state != KORB_NORMAL) break;
       } }
     closedir(d);
@@ -1751,27 +1768,37 @@ static RESULT korb_dir_fill(CTX *c, VALUE *slots, VALUE_REF obj, const char *pat
     return RESULT_OK(VALUE_REF_GET(obj));
 }
 /* Build a Dir instance over `path` (rooted in the caller's slots on return). */
-static RESULT korb_dir_make(CTX *c, VALUE *slots, const char *path, uint32_t plen) {
+static RESULT korb_dir_make(CTX *c, VALUE *slots, const char *path, uint32_t plen, uint32_t enc) {
     const VALUE dcls = korb_const_get(c->vm, korb_intern(c->vm, "Dir", 3));
     slots[0] = UNWRAP(korb_obj_new(c, slots + 1, dcls));         /* the Dir (rooted) */
-    return korb_dir_fill(c, slots + 1, VALUE_REF_AT(&slots[0]), path, plen);
+    return korb_dir_fill(c, slots + 1, VALUE_REF_AT(&slots[0]), path, plen, enc);
 }
 /* Dir#initialize(path) — Dir.new goes through the C builder, but Marshal's 'd'
  * record and a subclass's own #initialize need this entry point. */
 static RESULT korb_m_dir_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t denc = UINT32_MAX;
+    if (VALUE_SLICE_LEN(a) >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1))) {
+        CHECK(korb_dir_enc_kw(c, slots, VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1), &denc));
+        a = VALUE_SLICE_MAKE(a.p, VALUE_SLICE_LEN(a) - 1);
+    }
     RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
     char pbuf[4096]; size_t pl = strlen(path); if (pl >= sizeof pbuf) pl = sizeof pbuf - 1;
     memcpy(pbuf, path, pl); pbuf[pl] = '\0';                     /* path is a movable interior ptr */
-    return korb_dir_fill(c, slots, self, pbuf, (uint32_t)pl);
+    return korb_dir_fill(c, slots, self, pbuf, (uint32_t)pl, denc);
 }
 /* Dir.new(path) / Dir.open(path) [ { |dir| } ] */
 static RESULT korb_m_dir_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                               struct Node *block, VALUE *def_env, VALUE *captured_self) {
     (void)self;
+    uint32_t denc = UINT32_MAX;
+    if (VALUE_SLICE_LEN(a) >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1))) {
+        CHECK(korb_dir_enc_kw(c, slots, VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1), &denc));
+        a = VALUE_SLICE_MAKE(a.p, VALUE_SLICE_LEN(a) - 1);
+    }
     RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
     char pbuf[4096]; size_t pl = strlen(path); if (pl >= sizeof pbuf) pl = sizeof pbuf - 1;
     memcpy(pbuf, path, pl); pbuf[pl] = '\0';                     /* path is a movable interior ptr */
-    slots[0] = UNWRAP(korb_dir_make(c, slots, pbuf, (uint32_t)pl));
+    slots[0] = UNWRAP(korb_dir_make(c, slots, pbuf, (uint32_t)pl, denc));
     VALUE_REF dir = VALUE_REF_AT(&slots[0]);
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(dir));
     slots[1] = VALUE_REF_GET(dir);                               /* Dir.open(block) → block value, dir "closed" after */
