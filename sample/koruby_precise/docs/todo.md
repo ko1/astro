@@ -2837,21 +2837,19 @@ require が自分を「読み込み済み」と誤判定して先に進まなく
 入れるなら、照合対象を「プログラムが明示的に push したエントリ」に
 限るなどの絞り込みが要る。実 mspec で 5 例。
 
-## 囲みスコープの autoload が字句探索で見つからない
+## 囲みスコープの autoload が字句探索で見つからない (2026-08-30 解決)
 
-```ruby
-module M
-  autoload :X, "..."
-  class Inner
-    def get; X; end     # CRuby は M の autoload を発火させる
-  end
-end
-```
-koruby は Inner.const_missing に落ちて NameError。node_const の
-「見つからない」経路で cref → enclosing を辿り
-`korb_autoload_registered_p` を見る修正を試したが発火しなかった
-(2026-08-30、revert 済み)。`korb_autoload_registered_p` のキーの取り方か、
-cref の解決のどちらかを先に確かめること。core/module/autoload_spec で 2 例。
+`Module#__lexical_parent` (private, `builtins/set.c`) を足して
+`__autoload_owner_for` が enclosing chain も辿るようにした (commit 833d654a)。
+残るのは `Inner.const_defined?(:X)` が親の定数まで見えて true を返す点
+(CRuby は false)。定数探索そのものの設計なので別件。
+
+## トップレベル def が Object の private にならない
+
+CRuby では `def foo` をトップレベルで書くと `Object` の private
+インスタンスメソッドになる。koruby は public。`language/def_spec` で
+3 例 (「defines it on Object with private visibility by default」ほか)。
+影響範囲が広いので、prelude/mspec 側の呼び出しを壊さないか確かめてから。
 
 ## IO#write の encoding 問い合わせが prelude に依存する
 
