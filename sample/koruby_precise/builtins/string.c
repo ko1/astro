@@ -515,8 +515,8 @@ korb_utf8_byteoff(const char *b, uint32_t len, uint32_t ci)
 {
     uint32_t i = 0, n = 0;
     while (i < len && n < ci) {
-        i++;
-        while (i < len && ((unsigned char)b[i] & 0xC0) == 0x80) i++;
+        const uint32_t l = korb_utf8_seq_len((const unsigned char *)b, i, len);
+        i += l ? l : 1;   /* a broken sequence is one character PER BYTE, as korb_utf8_count counts it */
         n++;
     }
     return i;
@@ -1774,8 +1774,8 @@ static RESULT korb_m_str_end_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static uint32_t korb_str_char_to_byte(const KorbString *s, korb_sword_t cidx) {
     uint32_t b = 0;
     for (korb_sword_t k = 0; k < cidx && b < s->len; k++) {
-        b++;
-        while (b < s->len && ((unsigned char)korb_strbuf_data(s->buf)[b] & 0xC0) == 0x80) b++;
+        const uint32_t l = korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(s->buf), b, s->len);
+        b += l ? l : 1;
     }
     return b;
 }
@@ -2235,8 +2235,8 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (cpos >= s->len) break;
             bool last_field = (limit > 0 && VAL2ARY(VALUE_REF_GET(dst))->len == (uint32_t)limit - 1);
             if (last_field) { CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, cpos, s->len - cpos)))); break; }
-            uint32_t cl = 1;                               /* one UTF-8 codepoint */
-            while (cpos + cl < s->len && ((unsigned char)korb_strbuf_data(s->buf)[cpos+cl] & 0xC0) == 0x80) cl++;
+            uint32_t cl = korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(s->buf), cpos, s->len);
+            if (!cl) cl = 1;                               /* one UTF-8 codepoint (a broken one is one byte) */
             CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, cpos, cl))));
             cpos += cl;
         }
@@ -2306,7 +2306,7 @@ static RESULT korb_m_str_chars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));
         if (pos >= s->len) break;
         uint32_t cl = 1;                                  /* single-byte enc: 1 byte = 1 char */
-        if (!single) while (pos + cl < s->len && ((unsigned char)korb_strbuf_data(s->buf)[pos+cl] & 0xC0) == 0x80) cl++;
+        if (!single) { cl = korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(s->buf), pos, s->len); if (!cl) cl = 1; }
         CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, cl))));
         pos += cl;
     }
@@ -2759,8 +2759,8 @@ static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     for (;;) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
-        uint32_t cl = 1;
-        while (pos + cl < s->len && ((unsigned char)korb_strbuf_data(s->buf)[pos+cl] & 0xC0) == 0x80) cl++;
+        uint32_t cl = korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(s->buf), pos, s->len);
+        if (!cl) cl = 1;
         slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, pos, cl));   /* root the char */
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
