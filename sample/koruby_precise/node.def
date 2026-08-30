@@ -1600,6 +1600,21 @@ node_defined_super(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, int32_t self
     return dr;
 }
 
+// defined?(super) from inside a block: the answer is about the enclosing
+// METHOD's frame (self + method entry), reached through `depth` env links.
+NODE_DEF
+node_defined_super_outer(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, int32_t prev_off, uint32_t depth, int32_t entry_off)
+{
+    (void)n;
+    const VALUE *const base = korb_outer_frame_base(slots[prev_off], depth);
+    if (!base || !((uintptr_t)base[entry_off] & 1u)) return RESULT_OK(KORB_NIL);
+    if (korb_super_find(c, mid, base[entry_off], base[-1], NULL) == NULL) return RESULT_OK(KORB_NIL);
+    RESULT dr = korb_str_new(c, slots, "super", 5);
+    if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
+        ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;
+    return dr;
+}
+
 // `A::B` — evaluate the parent namespace expression, then look B up in it and
 // its ancestors (never in the parent's lexical surroundings, and never by bare
 // name).  A miss goes through const_missing, which is what fires an autoload.
