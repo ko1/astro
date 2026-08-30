@@ -167,11 +167,27 @@ class Date
     return nil if m.zero? || d.zero?
     m += 13 if m < 0
     return nil if m < 1 || m > 12
-    last = _month_days(y, m, sg)
-    d = last + d + 1 if d < 0
-    return nil if d < 1 || d > last
+    if d < 0
+      # Count back over the days that really exist: the calendar-reform gap is
+      # not a run of dates, so the arithmetic has to happen in JD (CRuby).
+      ljd = __last_dom_jd(y, m, sg) or return nil
+      jd = ljd + d + 1
+      ry, rm, = jd_to_civil(jd, sg)
+      return (ry == y && rm == m) ? jd : nil
+    end
+    return nil if d > _month_days(y, m, sg)
     jd = civil_to_jd(y, m, d, sg)
     jd_to_civil(jd, sg) == [y, m, d] ? jd : nil
+  end
+
+  # JD of the last existing day of (y, m), or nil if the month has none.
+  def self.__last_dom_jd(y, m, sg)
+    last = _month_days(y, m, sg)
+    last.downto(28) do |i|
+      jd = civil_to_jd(y, m, i, sg)
+      return jd if jd_to_civil(jd, sg) == [y, m, i]
+    end
+    nil
   end
 
   def self._valid_ordinal_jd(y, d, sg)
@@ -328,13 +344,20 @@ class Date
     end
   end
 
+  NS_PER_DAY__ = 86400 * 1_000_000_000
+  private_constant :NS_PER_DAY__
+
+  # Keep @jd out of the sum: folding a small fraction into a ~2.4e6 Float jd
+  # loses ~10 µs of the time of day.  A Float operand is taken at the
+  # nanosecond resolution the receiver stores anyway.
   private def __plus_fraction(fr)
-    total = Rational(@jd) + day_fraction + fr
-    jd = total.floor
-    rest = total - jd
+    fr = Rational((fr * NS_PER_DAY__).round, NS_PER_DAY__) if fr.is_a?(Float)
+    total = day_fraction + fr
+    carry = total.floor
+    rest = total - carry
     ns = (rest * 86400 * 1_000_000_000).round
     df, sf = ns.divmod(1_000_000_000)
-    self.class.new!(jd, df, sf, @of, @sg)
+    self.class.new!(@jd + carry, df, sf, @of, @sg)
   end
 
   # Month arithmetic clamps to the end of the target month, as Ruby does.
@@ -345,10 +368,19 @@ class Date
     m = (m - 1) % 12 + 1
     last = Date._month_days(y, m, @sg)
     d = last if d > last
-    self.class.new!(Date.civil_to_jd(y, m, d, @sg), @df, @sf, @of, @sg)
+    # The target day can also land in the calendar-reform gap; step back until
+    # it names a day that exists (CRuby).
+    jd = nil
+    while d >= 1 && (jd = Date._valid_civil_jd(y, m, d, @sg)).nil?
+      d -= 1
+    end
+    raise Date::Error, "invalid date" if jd.nil?
+    self.class.new!(jd, @df, @sf, @of, @sg)
   end
 
-  def <<(n) = self >> -n
+  # `0 - n` rather than `-n`: a non-numeric argument must raise TypeError, as
+  # CRuby's `year*12 + mon-1 + n` does.
+  def <<(n) = self >> (0 - n)
 
   def next_day(n = 1) = self + n
   def prev_day(n = 1) = self - n
@@ -424,6 +456,7 @@ class Date
   def deconstruct_keys(keys)
     all = { year: year, month: month, day: day, yday: yday, wday: wday }
     return all if keys.nil?
+    raise TypeError, "wrong argument type #{keys.class} (expected Array or nil)" unless keys.is_a?(Array)
     h = {}
     keys.each { |k| h[k] = all[k] if all.key?(k) }
     h
@@ -597,13 +630,21 @@ class Date
     s
   end
 
+  # %z / %:z / %::z / %:::z — the last form drops the all-zero trailing parts.
   private def __zone_offset(flags)
     sign = @of < 0 ? "-" : "+"
     a = @of.abs
-    if flags.include?(":")
-      format("%s%02d:%02d", sign, a / 3600, (a % 3600) / 60)
+    h, mi, s = a / 3600, (a % 3600) / 60, a % 60
+    case flags.count(":")
+    when 0 then format("%s%02d%02d", sign, h, mi)
+    when 1 then format("%s%02d:%02d", sign, h, mi)
+    when 2 then format("%s%02d:%02d:%02d", sign, h, mi, s)
     else
-      format("%s%02d%02d", sign, a / 3600, (a % 3600) / 60)
+      if s.zero?
+        mi.zero? ? format("%s%02d", sign, h) : format("%s%02d:%02d", sign, h, mi)
+      else
+        format("%s%02d:%02d:%02d", sign, h, mi, s)
+      end
     end
   end
 
@@ -769,6 +810,14 @@ class Date
   class << self; alias_method :rfc822, :rfc2822; end
   def self.httpdate(str = "Mon, 01 Jan -4712 00:00:00 GMT", sg = ITALY) = __fmt_parse(str, sg)
 
+  # "+09:00" / "+0900" / "Z" / "UTC" → seconds; an unknown zone name → nil.
+  def self.__zone_to_offset(z)
+    return 0 if z == "Z" || z.casecmp("UTC").zero? || z.casecmp("GMT").zero?
+    m = /\A([-+])(\d{2}):?(\d{2})?:?(\d{2})?\z/.match(z) or return nil
+    sign = m[1] == "-" ? -1 : 1
+    sign * (m[2].to_i * 3600 + m[3].to_i * 60 + m[4].to_i)
+  end
+
   def self._strptime(str, fmt = "%F")
     h = {}
     si = 0
@@ -841,6 +890,17 @@ class Date
       when "w" then si = __sp_int(str, si, h, :wday, 1) or return nil              # 0..6 (Sun..Sat)
       when "L" then si = __sp_int(str, si, h, :__msec, 3) or return nil
       when "N" then si = __sp_int(str, si, h, :__nsec, 9) or return nil
+      when "z", "Z"                                       # numeric offset or a zone name
+        m = /\A(?:[-+]\d{2}(?::?\d{2}){0,2}|[A-Za-z]{1,10}(?:[-+]\d{1,2}(?::\d{2})?)?)/.match(str[si..-1]) or return nil
+        h[:zone] = m[0]
+        off = __zone_to_offset(m[0])
+        h[:offset] = off if off
+        si += m[0].length
+      when "+"
+        sub = _strptime(str[si..-1], "%a %b %e %H:%M:%S %Z %Y") or return nil
+        left = sub.delete(:leftover)
+        h.update(sub)
+        si += (str.length - si) - left.to_s.length
       when "%" then (return nil unless str[si] == "%"); si += 1
       else return nil
       end
@@ -991,7 +1051,9 @@ class DateTime < Date
     return [1, 0, 0] if h == 24
     sec = s.floor
     frac = s - sec
-    [0, h * 3600 + min * 60 + sec, (frac * 1_000_000_000).round]
+    ns = frac * 1_000_000_000
+    # An exact (Rational) second keeps its sub-nanosecond part, which %12N needs.
+    [0, h * 3600 + min * 60 + sec, ns.is_a?(Float) ? ns.round : ns]
   end
 
   # Accepts a seconds count, a day fraction, or a "+09:00" string.
@@ -1024,14 +1086,17 @@ class DateTime < Date
   def to_date = Date.new!(@jd, 0, 0, 0, @sg)
   def to_datetime = self
 
+  # The instant comes from the JD (so a Julian date converts correctly), and the
+  # Time keeps this DateTime's own offset whatever the local zone is (CRuby).
   def to_time
-    Time.at(__epoch_seconds)
+    Time.at(Rational(__epoch_seconds) + sec_fraction, in: @of)
   end
 
   def deconstruct_keys(keys)
     all = { year: year, month: month, day: day, yday: yday, wday: wday,
             hour: hour, min: min, sec: sec, sec_fraction: sec_fraction, zone: zone }
     return all if keys.nil?
+    raise TypeError, "wrong argument type #{keys.class} (expected Array or nil)" unless keys.is_a?(Array)
     h = {}
     keys.each { |k| h[k] = all[k] if all.key?(k) }
     h
