@@ -450,7 +450,9 @@ module Marshal
   def self.load(data, proc = nil, freeze: false)
     from_io = false
     if data.respond_to?(:read) && !data.is_a?(String)
-      from_io = true; data = data.read
+      from_io = true
+      data.binmode if data.respond_to?(:binmode)   # CRuby switches the stream to bytes first
+      data = data.read
     end
     data = data.string if data.respond_to?(:string)
     if data.nil? || data.bytesize == 0

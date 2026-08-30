@@ -1594,6 +1594,16 @@ class Random
   end
 
   def random_number(n = 0) = (n == 0 ? rand : rand(n))
+
+  # Two generators are equal when they would produce the same sequence: same
+  # class, same seed and same internal state (what Marshal round-trips).
+  def ==(other)
+    return false unless other.is_a?(Random)
+    return false unless self.class == other.class
+    seed == other.seed &&
+      instance_variable_get(:@__mt) == other.instance_variable_get(:@__mt)
+  end
+  alias eql? ==
 end
 
 # ENV — the C side (builtins/env.c) provides the primitives; the Hash-shaped
