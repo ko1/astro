@@ -187,7 +187,7 @@ static RESULT korb_m_obj_ivar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     bool ok; RESULT nr = korb_ivar_name_arg(c, slots, name, &sym, &ok);
     if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
     if (UNLIKELY(!ok))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        return korb_raise_not_sym(c, slots, VALUE_SLICE_GET(a, 0));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
         return korb_raise_bad_ivar_name(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), SYM2ID(sym));
     if (UNLIKELY(!AROH_IS_GC_OBJECT(VALUE_REF_GET(self)) || KORB_BIGNUM_P(VALUE_REF_GET(self)) ||
@@ -202,7 +202,7 @@ static RESULT korb_m_obj_ivar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     bool ok; RESULT nr = korb_ivar_name_arg(c, slots, name, &sym, &ok);
     if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
     if (UNLIKELY(!ok))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        return korb_raise_not_sym(c, slots, VALUE_SLICE_GET(a, 0));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
         return korb_raise_bad_ivar_name(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), SYM2ID(sym));
     (void)slots;
@@ -212,7 +212,7 @@ static RESULT korb_m_obj_ivar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_obj_ivar_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sym; bool ok;
     { RESULT nr = korb_ivar_name_arg(c, slots, VALUE_SLICE_GET(a, 0), &sym, &ok); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
-    if (UNLIKELY(!ok)) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(!ok)) return korb_raise_not_sym(c, slots, VALUE_SLICE_GET(a, 0));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
         return korb_raise_bad_ivar_name(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), SYM2ID(sym));
     return RESULT_OK(korb_ivar_defined(c, VALUE_REF_GET(self), sym) ? KORB_TRUE : KORB_FALSE);   /* membership, not value (an ivar set to nil is defined) */
@@ -221,7 +221,7 @@ static RESULT korb_m_obj_ivar_defined(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_m_obj_remove_ivar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sym; bool ok;
     { RESULT nr = korb_ivar_name_arg(c, slots, VALUE_SLICE_GET(a, 0), &sym, &ok); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
-    if (UNLIKELY(!ok)) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(!ok)) return korb_raise_not_sym(c, slots, VALUE_SLICE_GET(a, 0));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
         return korb_raise_bad_ivar_name(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), SYM2ID(sym));
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));

@@ -578,7 +578,7 @@ static RESULT korb_set_visibility1(CTX *c, VALUE *slots, VALUE selfv, KorbClass 
     uint32_t mid;
     if (SYMBOL_P(arg)) mid = SYM2ID(arg);
     else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len); }
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(arg));
+    else return korb_raise_not_sym(c, slots, arg);
     for (uint32_t j = 0; j < k->method_cnt; j++)
         if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; return RESULT_OK(KORB_NIL); }
     /* inherited/included method: CRuby adds a visibility-override entry on this
@@ -711,7 +711,7 @@ static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VA
         uint32_t mid;
         if (SYMBOL_P(arg)) mid = SYM2ID(arg);
         else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len); }
-        else return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(arg));
+        else return korb_raise_not_sym(c, slots + 1, arg);
         KorbClass *const k = VAL2CLASS(slots[0]);          /* re-read (a slot-array grow below may move nothing, but be safe) */
         bool set = false;
         for (uint32_t j = 0; j < k->method_cnt; j++)
@@ -797,9 +797,9 @@ static RESULT korb_m_class_attr_n(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
                 slots[2] = nv;
                 RESULT sr = korb_send_impl(c, slots + 3, to_str, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-                if (!KORB_STRING_P(sr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, i)));
+                if (!KORB_STRING_P(sr.value)) return korb_raise_not_sym(c, slots, VALUE_SLICE_GET(a, i));
                 sym = sr.value;
-            } else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(sym));
+            } else return korb_raise_not_sym(c, slots, sym);
         }
         if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len));
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
@@ -924,7 +924,7 @@ static RESULT korb_m_module_set_temp_name(CTX *c, VALUE *slots, VALUE_REF self, 
     /* clear → fully anonymous: CRuby drops the constant-derived name too, so a
      * module that was only reachable through an anonymous namespace has no name */
     if (nm == KORB_NIL) { VAL2CLASS(sv)->temp_name_sym = 0; VAL2CLASS(sv)->name_sym = 0; return RESULT_OK(sv); }
-    if (UNLIKELY(!KORB_STRING_P(nm))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(nm));
+    if (UNLIKELY(!KORB_STRING_P(nm))) return korb_raise_not_sym(c, slots, nm);
     const KorbString *const s = VAL2STR(nm);
     if (UNLIKELY(s->len == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "empty class/module name");
     {   /* reject a valid constant path (each ::-segment is [A-Z][A-Za-z0-9_]*) to avoid confusion */

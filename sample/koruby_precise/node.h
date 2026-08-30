@@ -515,6 +515,7 @@ const char *korb_sym_name(const struct korb_vm *vm, uint32_t id);
 void korb_fprint_to_s(CTX *c, FILE *fp, VALUE v);
 void korb_fprint_inspect(CTX *c, FILE *fp, VALUE v);
 void korb_desc_inspect(CTX *c, VALUE v, char *buf, size_t sz);
+RESULT korb_raise_not_sym(CTX *c, VALUE *slots, VALUE v);
 
 /* CTX lifecycle (korb_runtime.c) */
 CTX *korb_ctx_new(void);

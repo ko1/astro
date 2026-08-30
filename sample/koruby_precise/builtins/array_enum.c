@@ -1808,7 +1808,7 @@ static RESULT korb_reduce_resolve_op(CTX *c, VALUE *slots, VALUE v, uint32_t *op
         if (KORB_STRING_P(sr.value)) { *op_mid = korb_intern(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len); return RESULT_OK(KORB_NIL); }
     }
     *ok = false;
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(v));
+    return korb_raise_not_sym(c, slots, v);
 }
 static RESULT korb_m_ary_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     uint32_t op_mid;

@@ -2709,7 +2709,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
                 if (korb_items_data(h->items)[2 * j] != kw_sym) {
                     const VALUE bad = korb_items_data(h->items)[2 * j];
                     if (!kw_syntax)
-                        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(sym));
+                        return korb_raise_not_sym(c, slots, sym);
                     return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keyword: :%s",
                                       SYMBOL_P(bad) ? korb_sym_name(vm, SYM2ID(bad)) : korb_type_name(bad));
                 }
@@ -2722,7 +2722,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         }
         if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len));
         if (UNLIKELY(!SYMBOL_P(sym)))                         /* member must be a Symbol/String */
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, i)));
+            return korb_raise_not_sym(c, slots, VALUE_SLICE_GET(a, i));
         {   /* duplicate member → ArgumentError */
             const KorbArray *const mm = VAL2ARY(VALUE_REF_GET(mem));
             for (uint32_t k = 0; k < mm->len; k++)
@@ -3327,6 +3327,15 @@ static RESULT korb_m_bind_source_location(CTX *c, VALUE *slots, VALUE_REF self, 
     if (node == NULL) return RESULT_OK(KORB_NIL);
     return korb_srcloc_result(c, slots, node);
 }
+/* A binding's local names are plain identifiers: $global / @ivar / $~ and the
+ * like are a NameError, not a fresh local (CRuby's check_local_id). */
+static RESULT korb_bind_check_lvname(CTX *c, VALUE *slots, VALUE_REF self, uint32_t sym) {
+    const char *const nm = korb_sym_name(c->vm, sym);
+    const unsigned char c0 = (unsigned char)nm[0];
+    if (LIKELY(c0 == '_' || (c0 >= 'a' && c0 <= 'z') || c0 >= 0x80)) return RESULT_OK(KORB_TRUE);
+    char db[224]; korb_desc_inspect(c, VALUE_REF_GET(self), db, sizeof db);
+    return korb_raise(c, slots, KORB_E_NAME, 0, "wrong local variable name '%s' for %s", nm, db);
+}
 static RESULT korb_m_bind_lvget(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t sym;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
@@ -3347,6 +3356,7 @@ static RESULT korb_m_bind_lvdefined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_m_bind_lvset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t sym;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    CHECK(korb_bind_check_lvname(c, slots, self, sym));
     KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
     const VALUE val = VALUE_SLICE_GET(a, 1);
     const int i = korb_bind_find(b, sym);
@@ -3706,7 +3716,7 @@ static RESULT korb_alias_argsym(CTX *c, VALUE *slots, VALUE v, uint32_t *out) {
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_STRING_P(r.value)) { *out = korb_bind_argsym(c, r.value); return RESULT_OK(KORB_NIL); }
     }
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(v));
+    return korb_raise_not_sym(c, slots, v);
 }
 /* Module#alias_method(new, old) → new name symbol. */
 static RESULT korb_m_class_alias_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -3734,7 +3744,7 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         RESULT sr = korb_send(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0);
         if (UNLIKELY(sr.state != KORB_NORMAL)) {
             if (sr.state == KORB_RAISE && KORB_EXC_P(sr.value) && VAL2EXC(sr.value)->etype == KORB_E_NOMETHOD)
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(nv));
+                return korb_raise_not_sym(c, slots, nv);
             return sr;
         }
         if (UNLIKELY(!KORB_STRING_P(sr.value)))
@@ -5762,6 +5772,14 @@ korb_desc_inspect(CTX *c, VALUE v, char *buf, size_t sz)
     free(ms_buf);
 }
 
+/* "1 is not a symbol nor a string" — CRuby names the VALUE, not its class. */
+RESULT
+korb_raise_not_sym(CTX *c, VALUE *slots, VALUE v)
+{
+    char db[224]; korb_desc_inspect(c, v, db, sizeof db);
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", db);
+}
+
 static const char *
 korb_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
 {
@@ -5801,7 +5819,7 @@ static RESULT korb_arg_to_mid(CTX *c, VALUE *slots, VALUE v, uint32_t *mid_out) 
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
         if (KORB_STRING_P(sr.value)) { *mid_out = korb_intern(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len); return RESULT_OK(KORB_NIL); }
     }
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(v));
+    return korb_raise_not_sym(c, slots, v);
 }
 /* ---------------------------------------------------------------------------
  * Equality / comparison.
@@ -8203,12 +8221,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             else {                                          /* coerce a #to_str name (scratch above the args; args/self are GC-rooted below) */
                 const uint32_t to_str = korb_intern(vm, "to_str", 6);
                 if (UNLIKELY(!(KORB_OBJECT_P(name) && korb_responds_to_coerce_p(c, slots, &name, to_str))))
-                    return korb_raise(c, slots, KORB_E_TYPE, line, "%s is not a symbol nor a string", korb_type_name(slots[-(korb_sword_t)argc]));
+                    return korb_raise_not_sym(c, slots, slots[-(korb_sword_t)argc]);
                 slots[0] = name;
                 RESULT sr = korb_send_impl(c, slots + 1, to_str, line, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 if (UNLIKELY(!KORB_STRING_P(sr.value)))
-                    return korb_raise(c, slots, KORB_E_TYPE, line, "%s is not a symbol nor a string", korb_type_name(slots[-(korb_sword_t)argc]));
+                    return korb_raise_not_sym(c, slots, slots[-(korb_sword_t)argc]);
                 slots[0] = sr.value;                        /* root the coerced String while interning */
                 rmid = korb_intern(vm, korb_strbuf_data(VAL2STR(slots[0])->buf), VAL2STR(slots[0])->len);
                 self = *recv_slot;                          /* re-read: the #to_str dispatch may have GC-moved self */
@@ -8644,7 +8662,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                         if (!SYMBOL_P(k) && !KORB_STRING_P(k)) {      /* a key names a member via #to_str (CRuby) */
                             slots[4] = k;
                             if (UNLIKELY(!korb_responds_to(c, k, korb_intern(vm, "to_str", 6))))
-                                return korb_raise(c, slots, KORB_E_TYPE, line, "%s is not a symbol nor a string", korb_type_name(k));
+                                return korb_raise_not_sym(c, slots, k);
                             const RESULT kr = korb_send(c, slots + 5, korb_intern(vm, "to_str", 6), 0, 0);
                             if (UNLIKELY(kr.state != KORB_NORMAL)) return kr;
                             if (UNLIKELY(!KORB_STRING_P(kr.value)))
