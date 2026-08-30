@@ -2414,7 +2414,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
     code_repo_add("class", entry, true);          /* its own AOT entry */
-    NODE *_ncls = ALLOC_node_class(name_sym, entry, -1 - tc->chain - 2, path_owner, base_node, super_node);   /* self_off = enclosing self (base[-1]); -2 for the staged base+super children */
+    NODE *_ncls = ALLOC_node_class(name_sym, entry, -1 - tc->chain - 2, path_owner, dyn_base ? 1u : 0u, base_node, super_node);   /* self_off = enclosing self (base[-1]); -2 for the staged base+super children */
     korb_reg_srcloc(tc->c->vm, _ncls, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));   /* Module#const_source_location */
     bake_add(tc, &_ncls->u.node_class.self_off);
     return _ncls;
@@ -2749,7 +2749,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
     code_repo_add("module", entry, true);
-    NODE *_nmod = ALLOC_node_module(name_sym, entry, -1 - tc->chain - 1, path_owner, base_node);   /* self_off = enclosing self (base[-1]); -1 for the staged base child */
+    NODE *_nmod = ALLOC_node_module(name_sym, entry, -1 - tc->chain - 1, path_owner, dyn_base ? 1u : 0u, base_node);   /* self_off = enclosing self (base[-1]); -1 for the staged base child */
     korb_reg_srcloc(tc->c->vm, _nmod, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)mn));   /* Module#const_source_location */
     bake_add(tc, &_nmod->u.node_module.self_off);
     return _nmod;

@@ -5749,6 +5749,19 @@ korb_class_display_name(CTX *c, VALUE *scratch, VALUE cls, char *buf, size_t sz)
     return NULL;                                         /* nil (anonymous) / non-String / raised → fall back */
 }
 
+/* v.inspect into a fixed buffer (no GC): for error messages that name a value. */
+void
+korb_desc_inspect(CTX *c, VALUE v, char *buf, size_t sz)
+{
+    char *ms_buf = NULL; size_t ms_len = 0;
+    FILE *const ms = open_memstream(&ms_buf, &ms_len);
+    if (ms) { korb_fprint_inspect(c, ms, v); fclose(ms); }
+    const size_t n = ms_len < sz - 1 ? ms_len : sz - 1;
+    if (ms_buf) memcpy(buf, ms_buf, n);
+    buf[ms_buf ? n : 0] = '\0';
+    free(ms_buf);
+}
+
 static const char *
 korb_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
 {
