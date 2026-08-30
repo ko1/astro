@@ -2161,8 +2161,18 @@ static RESULT korb_m_dir_glob(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (rflags & 8) g.fnm |= FNM_CASEFOLD;
     if (!(rflags & 4)) g.fnm |= FNM_PERIOD;            /* no FNM_DOTMATCH → '*' skips a leading '.' */
 
-    /* the patterns: one String, an Array of them, or anything with #to_path */
-    slots[1] = VALUE_SLICE_GET(a, 0);
+    /* the patterns: every positional argument (Dir[] takes *patterns), each a
+     * String, an Array of them, or anything with #to_path.  A Fixnum is
+     * Dir.glob's flags argument, not a pattern. */
+    for (uint32_t ai = 0; ai < na; ai++) {
+    if (ai > 0) {   /* Dir.glob's 2nd positional is the flags argument, whatever it is */
+        const VALUE av = VALUE_SLICE_GET(a, ai);
+        if (!KORB_STRING_P(av) && !KORB_ARRAY_P(av) &&
+            !(KORB_OBJECT_P(av) && (korb_responds_to(c, av, korb_intern(c->vm, "to_path", 7)) ||
+                                    korb_responds_to(c, av, korb_intern(c->vm, "to_str", 6)))))
+            continue;
+    }
+    slots[1] = VALUE_SLICE_GET(a, ai);
     const uint32_t np = KORB_ARRAY_P(slots[1]) ? VAL2ARY(slots[1])->len : 1u;
     for (uint32_t i = 0; i < np; i++) {
         VALUE pv = KORB_ARRAY_P(slots[1]) ? korb_items_data(VAL2ARY(slots[1])->items)[i] : slots[1];
@@ -2185,6 +2195,7 @@ static RESULT korb_m_dir_glob(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (ps->len >= sizeof pbuf) continue;
         memcpy(pbuf, korb_strbuf_data(ps->buf), ps->len); pbuf[ps->len] = '\0';   /* copy: the walk allocs */
         CHECK(korb_glob_brace(&g, slots + 2, pbuf, 0));
+    }
     }
     if (block != NULL) {                                            /* yield each, return nil */
         const uint32_t n = VAL2ARY(slots[0])->len;
