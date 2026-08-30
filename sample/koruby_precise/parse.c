@@ -4182,6 +4182,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_break_node_t *bn = (const pm_break_node_t *)node;
         return ALLOC_node_break(kp_jump_args_value(tc, bn->arguments));   /* `break a, b` → [a, b] */
       }
+      case PM_REDO_NODE:  return ALLOC_node_redo();      /* re-run the block / loop body */
       case PM_RETRY_NODE:                               /* `retry` in a rescue → re-run the begin body */
         return ALLOC_node_retry();
 

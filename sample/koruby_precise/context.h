@@ -137,6 +137,7 @@ enum korb_state {
     KORB_BREAK  = 4,    /* `break` — caught at the nearest loop / block-call boundary */
     KORB_RETRY  = 5,    /* `retry` in a rescue — re-runs the begin body (caught by node_begin) */
     KORB_THROW  = 6,    /* `throw tag, val` — unwinds (past rescue) to the matching `catch`; tag in c->throw_tag */
+    KORB_REDO   = 7,    /* `redo` in a block/loop — re-runs the body with the same bindings */
 };
 
 typedef struct {
@@ -150,6 +151,7 @@ typedef struct {
 #define RESULT_NEXT_(v)   ((RESULT){ (v), KORB_NEXT })
 #define RESULT_BREAK_(v)  ((RESULT){ (v), KORB_BREAK })
 #define RESULT_RETRY_     ((RESULT){ KORB_NIL, KORB_RETRY })
+#define RESULT_REDO_      ((RESULT){ KORB_NIL, KORB_REDO })
 
 /* UNWRAP(expr): take the VALUE out of a RESULT expression, early-returning
  * the RESULT from the *caller* when non-NORMAL.  CHECK(expr): same but the

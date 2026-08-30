@@ -7638,7 +7638,9 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     }
     bf[0] = fwd ? VAL2PROC(*captured_self)->self : *captured_self;   /* lexical self → B[-1] */
 
-    RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
+    RESULT r;
+    do { r = (*block->head.dispatcher)(c, block, bf + 1 + blocals); }   /* `redo`: same bindings, run again */
+    while (UNLIKELY(r.state == KORB_REDO));
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;
     else r = korb_break_claim(c, r, block, is_lambda);   /* a break raised in this body belongs to whoever was handed this block */
     korb_frame_magic_check(bf + 1, KORB_FT_BLOCK, "korb_block_yield");
@@ -7926,7 +7928,9 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     }
     bf[0] = fwd ? VAL2PROC(*captured_self)->self : *captured_self;   /* block's lexical self → B[-1] (bottom header; re-read fresh) */
 
-    RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
+    RESULT r;
+    do { r = (*block->head.dispatcher)(c, block, bf + 1 + blocals); }   /* `redo`: same bindings, run again */
+    while (UNLIKELY(r.state == KORB_REDO));
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = block value */
     else r = korb_break_claim(c, r, block, is_lambda);   /* a break here belongs to whoever was handed this block */
     korb_frame_magic_check(bf + 1, KORB_FT_BLOCK, "korb_block_yield");   /* frame integrity (no-op unless KORB_FRAME_MAGIC) */

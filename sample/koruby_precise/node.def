@@ -924,6 +924,15 @@ node_retry(CTX *c, NODE *n, VALUE *slots)
     return RESULT_RETRY_;
 }
 
+// `redo` — re-run the enclosing block / loop body with the same bindings.
+// Caught by korb_block_yield and by the loop nodes.
+NODE_DEF @nogc
+node_redo(CTX *c, NODE *n, VALUE *slots)
+{
+    (void)c; (void)n; (void)slots;
+    return RESULT_REDO_;
+}
+
 // Pre-test while (negate=0) / until (negate=1): `while cond; body; end`.
 // The post-test form (`begin; body; end while cond`) is a distinct node,
 // node_post_while — the pre/post split is a parse-time control-flow shape, so
@@ -935,7 +944,8 @@ node_while(CTX *c, NODE *n, VALUE *slots, NODE *cond, NODE *body, uint32_t negat
     for (;;) {
         VALUE cv = UNWRAP(EVAL_ARG(c, cond));
         if (negate ? KORB_TRUTHY(cv) : !KORB_TRUTHY(cv)) break;
-        RESULT br = EVAL_ARG(c, body);
+        RESULT br;
+        do { br = EVAL_ARG(c, body); } while (UNLIKELY(br.state == KORB_REDO));   /* `redo`: body again, no re-test */
         if (UNLIKELY(br.state != KORB_NORMAL)) {
             if (br.state == KORB_BREAK && c->break_blk == NULL) return RESULT_OK(br.value);   /* a *loop* break (an unconsumed block break belongs to an outer call) */
             if (br.state != KORB_NEXT) return br;                      /* return / raise propagate; `next` → continue */
@@ -951,7 +961,8 @@ node_post_while(CTX *c, NODE *n, VALUE *slots, NODE *cond, NODE *body, uint32_t 
 {
     (void)n;
     for (;;) {
-        RESULT br = EVAL_ARG(c, body);
+        RESULT br;
+        do { br = EVAL_ARG(c, body); } while (UNLIKELY(br.state == KORB_REDO));   /* `redo`: body again, no re-test */
         if (UNLIKELY(br.state != KORB_NORMAL)) {
             if (br.state == KORB_BREAK && c->break_blk == NULL) return RESULT_OK(br.value);   /* a *loop* break (an unconsumed block break belongs to an outer call) */
             if (br.state != KORB_NEXT) return br;                      /* return / raise propagate; `next` → continue */
