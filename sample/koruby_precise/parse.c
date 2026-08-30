@@ -3190,13 +3190,19 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_string_node_t *sn = (const pm_string_node_t *)node;
         uint32_t len;
         const char *bytes = kp_strdup_pm(&sn->unescaped, &len);
-        /* a \u escape makes the literal UTF-8 whatever the file's encoding is (CRuby) */
+        /* a \u escape makes the literal UTF-8 whatever the file's encoding is —
+         * but only when it actually produces a non-ASCII byte (CRuby keeps the
+         * source encoding for `"\u0061"`). */
         uint8_t lenc = tc->src_enc;
         if (lenc != KORB_ENC_UTF8) {
-            const char *const src = (const char *)sn->base.location.start;
-            const size_t slen = (size_t)(sn->base.location.end - sn->base.location.start);
-            for (size_t i = 0; i + 1 < slen; i++)
-                if (src[i] == '\\' && src[i + 1] == 'u') { lenc = KORB_ENC_UTF8; break; }
+            bool non_ascii = false;
+            for (uint32_t i = 0; i < len; i++) if ((unsigned char)bytes[i] >= 0x80) { non_ascii = true; break; }
+            if (non_ascii) {
+                const char *const src = (const char *)sn->base.location.start;
+                const size_t slen = (size_t)(sn->base.location.end - sn->base.location.start);
+                for (size_t i = 0; i + 1 < slen; i++)
+                    if (src[i] == '\\' && src[i + 1] == 'u') { lenc = KORB_ENC_UTF8; break; }
+            }
         }
         if (lenc != KORB_ENC_UTF8) return ALLOC_node_str_enc(bytes, len, lenc);
         if (sn->base.flags & PM_STRING_FLAGS_FROZEN) return ALLOC_node_str_frozen(bytes, len);   /* # frozen_string_literal: true */

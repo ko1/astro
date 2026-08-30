@@ -167,6 +167,7 @@ static RESULT korb_path_coerce(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t idx
 }
 
 /* Coerce argument `idx` to a path String, propagating a raise. */
+static RESULT korb_file_path_arg(CTX *c, VALUE *slots, VALUE *v);   /* fwd (defined below) */
 #define KORB_PATH_ARG(c, slots, a, idx, out)                                   \
     do {                                                                       \
         const RESULT _pr = korb_path_coerce((c), (slots), (a), (idx));         \
@@ -1373,12 +1374,13 @@ static RESULT korb_m_file_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)self;
     korb_sword_t cnt = 0;
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
-        const VALUE pv = VALUE_SLICE_GET(a, i);
-        if (UNLIKELY(!KORB_STRING_P(pv)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
-        uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
-        if (unlink(path) != 0)   /* CRuby raises Errno::ENOENT; koruby has no Errno, so RuntimeError (still a StandardError) */
-            return korb_raise_errno(c, slots, errno, "apply2files", path);
+        VALUE pv = VALUE_SLICE_GET(a, i);
+        if (UNLIKELY(!KORB_STRING_P(pv))) { CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv; }   /* #to_path / #to_str */
+        char pb[4096]; uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+        if (plen >= sizeof pb) plen = sizeof pb - 1;
+        memcpy(pb, path, plen); pb[plen] = '\0';               /* the interior pointer must survive the raise below */
+        if (unlink(pb) != 0)   /* CRuby raises Errno::ENOENT; koruby has no Errno, so RuntimeError (still a StandardError) */
+            return korb_raise_errno(c, slots, errno, "apply2files", pb);
         cnt++;
     }
     return RESULT_OK(LONG2FIX(cnt));
