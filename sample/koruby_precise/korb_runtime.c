@@ -8627,6 +8627,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                             slots[2] = slots[-(korb_sword_t)argc + (korb_sword_t)i];                       /* positional value (re-read from args region) */
                             CHECK(korb_hash_set(c, slots + 3, kh, VALUE_REF_AT(&slots[1]), slots[2]));
                         }
+                        ((AroObjectHeader *)(uintptr_t)slots[0])->flags |= KORB_FL_KWARGS;   /* written as keywords, so **kw collects it */
                         slots[1] = UNWRAP(korb_obj_new(c, slots + 1, *recv_slot));   /* instance (allocated last, rooted) */
                         VALUE *const ibase = slots + 2;
                         ibase[0] = slots[0];               /* the single kwargs Hash → override's **kw */
