@@ -10838,6 +10838,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARITHSEQ, "begin", korb_m_aseq_begin, 0);
     korb_def_cmethod(c, KORB_C_ARITHSEQ, "end", korb_m_aseq_end, 0);
     korb_def_cmethod(c, KORB_C_ARITHSEQ, "step", korb_m_aseq_step_acc, 0);
+    korb_def_cmethod(c, KORB_C_ARITHSEQ, "exclude_end?", korb_m_aseq_exclude_end, 0);
 
     /* Set */
     korb_def_cmethod(c, KORB_C_SET, "to_a", korb_m_set_to_a, 0);

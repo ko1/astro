@@ -688,6 +688,12 @@ node_eq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child)
         slots[0] = rhs; slots[1] = l;
         return korb_send(c, slots + 2, c->vm->mid_eq, 0, 1);
     }
+    /* ArithmeticSequence compares by its four parameters (prelude #==); checked
+     * here in the cold tail so the hot type chain above is untouched. */
+    if (UNLIKELY(KORB_ARITHSEQ_P(l))) {
+        slots[0] = l; slots[1] = rhs;
+        return korb_send(c, slots + 2, c->vm->mid_eq, 0, 1);
+    }
     return RESULT_OK(KORB_FALSE);
 }
 

@@ -177,6 +177,9 @@ static RESULT korb_m_aseq_begin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_aseq_end(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; VALUE b, l, s; bool e; korb_aseq_params(VAL2ASEQ(VALUE_REF_GET(self)), &b, &l, &s, &e); return RESULT_OK(l);
 }
+static RESULT korb_m_aseq_exclude_end(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; VALUE b, l, s; bool e; korb_aseq_params(VAL2ASEQ(VALUE_REF_GET(self)), &b, &l, &s, &e); return RESULT_OK(e ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_aseq_step_acc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; VALUE b, l, s; bool e; korb_aseq_params(VAL2ASEQ(VALUE_REF_GET(self)), &b, &l, &s, &e); return RESULT_OK(s);
 }

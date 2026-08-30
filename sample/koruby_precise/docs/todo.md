@@ -2872,3 +2872,20 @@ CRuby では `def foo` をトップレベルで書くと `Object` の private
 「変換しない」を memo したままになる。標準ストリームでは結果的に正しい
 挙動なので放置しているが、boot 中に encoding 付きで書く経路を足すときは
 ここを見ること (2026-08-30、worker の note より)。
+
+## Object#hash が moving GC でアドレス由来のまま不安定
+
+`korb_deep_hash_d` (builtins/hash.c) はユーザオブジェクト・クラス等に対して
+`(uintptr_t)v` を返す。moving GC が動くと値が変わるので、
+
+```ruby
+K = Enumerator::ArithmeticSequence
+h1 = [K, 1].hash; 100.times { Object.new }; h2 = [K, 1].hash
+p h1 == h2   # BARUBY_GC_STRESS=1 で false
+```
+
+Hash のキー探索は `korb_value_hash` (ヒープオブジェクトは単一バケット) と
+`korb_value_eq` を使うので `{String => 1}[String]` は壊れない。露出するのは
+`#hash` の**値そのもの**を保持・比較する場合だけ。安定 ID (object_id 相当の
+side table) を持たせるのが本筋。2026-08-30 に ArithmeticSequence#hash で
+踏んだ (クラスをタプルから外して回避)。

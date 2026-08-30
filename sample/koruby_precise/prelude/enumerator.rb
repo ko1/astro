@@ -574,4 +574,16 @@ class Enumerator::ArithmeticSequence
     def new(*); raise NoMethodError, "undefined method 'new' for class Enumerator::ArithmeticSequence"; end
     def allocate; raise TypeError, "allocator undefined for Enumerator::ArithmeticSequence"; end
   end
+  # Two sequences are equal when all four parameters match (CRuby's arith_seq_eq).
+  def ==(other)
+    other.is_a?(Enumerator::ArithmeticSequence) &&
+      self.begin == other.begin && self.end == other.end &&
+      step == other.step && exclude_end? == other.exclude_end?
+  end
+  alias eql? ==
+  # The four parameters only: Object#hash on the class is address-derived and
+  # the moving GC makes it unstable across calls.
+  def hash
+    [self.begin, self.end, step, exclude_end?].hash
+  end
 end
