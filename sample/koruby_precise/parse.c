@@ -4501,7 +4501,6 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_FORWARDING_SUPER_NODE: {   /* bare super — forward the method's params */
         const pm_forwarding_super_node_t *fn = (const pm_forwarding_super_node_t *)node;
-        if (fn->block) return kp_unsupported(tc, node, "super with a block");
         uint32_t m_mid = tc->frame->method_mid;
         /* CRuby refuses a bare `super` from a define_method body outright: the
          * block's params are not the method's, so there is nothing to forward. */
@@ -4528,6 +4527,15 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const uint32_t total = np + (rest_slot >= 0 ? 1u : 0u) + pc + has_kw;
         NODE *arr;
         WITH_CHAIN(tc, 1, (arr = build_fwd_args(tc, np, rest_slot, pb, pc, kw, total)));
+        if (fn->block) {                                  /* `super { ... }` — forwarded args + a literal block */
+            NODE *bentry = kp_block_entry(tc, (const pm_node_t *)fn->block);
+            if (!bentry) return kp_unsupported(tc, node, "super with a non-literal block");
+            const int32_t soff = -1 - tc->chain - 1, dco = -1 - tc->chain - 1, deo = -tc->chain - 1;
+            NODE *_s = ALLOC_node_super_blk(m_mid, line, soff, dco, bentry, deo, arr);
+            bake_add(tc, &_s->u.node_super_blk.self_off);
+            bake_add(tc, &_s->u.node_super_blk.def_env_off);
+            return _s;
+        }
         return emit_super_fwd(tc, m_mid, line, arr);
       }
 
