@@ -2247,6 +2247,17 @@ static int korb_open_no_stall(CTX *c, VALUE *slots, const char *path, int flags,
 
 static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                  struct Node *block, VALUE *def_env, VALUE *cself);   /* fwd (below) */
+/* File.new/open の mode: positional にあればそれ、無ければ options Hash の
+ * mode:.  Hash から引き直すのは、間の open が park して GC を通しうるので
+ * C local に持ち越した VALUE が stale になるため。 */
+static VALUE korb_file_mode_val(CTX *const c, const VALUE_SLICE a, const uint32_t npos, const int32_t fopts_idx) {
+    if (npos >= 2) return VALUE_SLICE_GET(a, 1);
+    if (fopts_idx < 0) return KORB_NIL;
+    const VALUE h = VALUE_SLICE_GET(a, (uint32_t)fopts_idx);
+    if (!KORB_HASH_P(h)) return KORB_NIL;
+    const int32_t mi = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, "mode", 4)));
+    return mi >= 0 ? korb_items_data(VAL2HASH(h)->items)[2 * mi + 1] : KORB_NIL;
+}
 static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                struct Node *block, VALUE *def_env, VALUE *captured_self) {
     VALUE pv = VALUE_SLICE_GET(a, 0);
@@ -2272,25 +2283,18 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             const VALUE fv = korb_items_data(VAL2HASH(fopts)->items)[2 * fi + 1];
             if (FIXNUM_P(fv)) extra_flags = (int)FIX2LONG(fv);
         }
-        if (npos < 2) {                                    /* mode: when no positional mode */
-            const int32_t mi = korb_hash_find(VAL2HASH(fopts), ID2SYM(korb_intern(c->vm, "mode", 4)));
-            if (mi >= 0) {
-                const VALUE mv = korb_items_data(VAL2HASH(fopts)->items)[2 * mi + 1];
-                if (mv != KORB_NIL) { slots[1] = mv; a = VALUE_SLICE_MAKE(a.p, 2); ((VALUE *)a.p)[1] = mv; npos = 2; }
-            }
-        }
     }
     {   /* binmode:/textmode: must not restate what the mode string already says */
         char mbuf[32] = "";
-        const VALUE mv = (npos >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+        const VALUE mv = korb_file_mode_val(c, a, npos, fopts_idx);
         if (KORB_STRING_P(mv)) snprintf(mbuf, sizeof mbuf, "%.*s", (int)VAL2STR(mv)->len, korb_strbuf_data(VAL2STR(mv)->buf));
         CHECK(korb_io_check_bt_opts(c, slots + 2, mbuf, fopts));
     }
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     int rw = 0; bool binary = false; int fd;
-    if (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) {   /* integer O_* flags → open(2) */
-        const int fl = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
-        const mode_t perm = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (mode_t)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0666;
+    if (FIXNUM_P(korb_file_mode_val(c, a, npos, fopts_idx))) {   /* integer O_* flags → open(2) */
+        const int fl = (int)FIX2LONG(korb_file_mode_val(c, a, npos, fopts_idx));
+        const mode_t perm = (npos >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (mode_t)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0666;
         const int acc = fl & 3;   /* O_RDONLY=0 / O_WRONLY=1 / O_RDWR=2 */
         rw = acc == 1 ? 2 : acc == 2 ? 3 : 1;
         char pbuf[4096];                                   /* stack copy: the open may park → GC moves the String */
@@ -2302,8 +2306,8 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
     } else {
         char mode[8] = "r";
-        if (VALUE_SLICE_LEN(a) >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1))) {
-            uint32_t ml; const char *m = korb_str_cstr_len(VALUE_SLICE_GET(a, 1), &ml);
+        if (KORB_STRING_P(korb_file_mode_val(c, a, npos, fopts_idx))) {
+            uint32_t ml; const char *m = korb_str_cstr_len(korb_file_mode_val(c, a, npos, fopts_idx), &ml);
             /* "r:utf-8:euc-jp" — the encoding suffix is not part of the fopen
                mode; the prelude reads it back off @__io_modestr. */
             for (uint32_t i = 0; i < ml; i++) if (m[i] == ':') { ml = i; break; }
@@ -2332,9 +2336,9 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
     CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_path", 10)),
                         VALUE_SLICE_GET(a, 0)));   /* File#path / #to_path */
-    if (VALUE_SLICE_LEN(a) >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1)))
+    if (KORB_STRING_P(korb_file_mode_val(c, a, npos, fopts_idx)))
         CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)),
-                            VALUE_SLICE_GET(a, 1)));
+                            korb_file_mode_val(c, a, npos, fopts_idx)));
     CHECK(korb_io_capture_default_internal(c, slots + 1, io));
     if (fopts_idx >= 0) {                                /* encoding: / autoclose: → the prelude */
         slots[1] = VALUE_REF_GET(io);
