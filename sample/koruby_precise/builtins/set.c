@@ -2280,6 +2280,13 @@ static RESULT korb_m_exc_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 /* NameError#receiver / NoMethodError#receiver → the object the failed call/lookup
  * targeted.  Raises ArgumentError (like CRuby) when no receiver was recorded. */
+/* Tag a NameError with the missing name and the module it was looked up in. */
+void korb_name_error_where(CTX *c, VALUE *slots, VALUE *excp, uint32_t name, VALUE recv) {
+    slots[0] = recv;                                  /* root: the ivar sets allocate */
+    korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(excp), ID2SYM(korb_intern(c->vm, "@__name", 7)), ID2SYM(name));
+    korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(excp), ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
+    korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(excp), ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
+}
 static RESULT korb_m_exc_receiver(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const VALUE r = korb_exc_ivar_get(VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__receiver", 11)));

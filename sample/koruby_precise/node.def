@@ -1619,8 +1619,14 @@ node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, NODE *parent)
         /* the marker lives on the module that DEFINED it, which may be an
          * ancestor of the receiver (`C::A` where C includes M) */
         char qn[256]; korb_class_desc_into(c, slots[0], qn, sizeof qn);
-        return korb_raise(c, slots + 1, KORB_E_NAME, 0, "private constant %s::%s referenced",
-                          qn, korb_sym_name(vm, name));
+        RESULT pr = korb_raise(c, slots + 1, KORB_E_NAME, 0, "private constant %s::%s referenced",
+                               qn, korb_sym_name(vm, name));
+        if (LIKELY(KORB_EXC_P(pr.value))) {           /* NameError#name / #receiver (CRuby) */
+            slots[1] = pr.value;
+            korb_name_error_where(c, slots + 2, &slots[1], name, slots[0]);
+            pr.value = slots[1];
+        }
+        return pr;
     }
     if (LIKELY(idx != UINT32_MAX)) {
         if (UNLIKELY(vm->deprconst_cnt != 0)) {

@@ -456,6 +456,7 @@ void korb_const_set_deprecated(CTX *c, VALUE owner, uint32_t sym);
 bool korb_const_deprecated_p(const struct korb_vm *vm, VALUE owner, uint32_t sym);
 void korb_const_deprecated_warn(CTX *c, VALUE *slots, VALUE owner, uint32_t sym);
 void korb_class_desc_into(CTX *c, VALUE cls, char *out, size_t outsz);
+void korb_name_error_where(CTX *c, VALUE *slots, VALUE *excp, uint32_t name, VALUE recv);
 NODE *koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, bool exit_on_error);
 RESULT korb_rescue_splat_list(CTX *c, VALUE *slots, VALUE *listslot);
 bool korb_defined_call_p(CTX *c, VALUE *slots, uint32_t mid, int32_t self_off);
