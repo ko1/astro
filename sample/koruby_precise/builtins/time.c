@@ -782,10 +782,6 @@ static RESULT korb_m_time_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_time_utc_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a; return RESULT_OK(korb_time_is_utc(c, VALUE_REF_GET(self)) ? KORB_TRUE : KORB_FALSE);
 }
-static RESULT korb_m_time_getutc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; const VALUE t = VALUE_REF_GET(self);
-    return korb_time_make(c, slots, korb_class_obj_of(c, t), korb_time_epoch(c, t), true);
-}
 /* getlocal / localtime: with no argument the process time zone renders the
  * instant; with a utc_offset ("+09:00" or seconds) the result carries that fixed
  * offset instead, the same representation Time.new(..., utc_offset) produces. */
@@ -795,6 +791,12 @@ static RESULT korb_time_copy_nsec(CTX *c, VALUE *slots, VALUE src, VALUE_REF dst
     const VALUE ns = korb_ivar_get(c, src, korb_time_ns_sym(c->vm));
     if (ns != KORB_NIL) CHECK(korb_ivar_set(c, slots, dst, korb_time_ns_sym(c->vm), ns));
     return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_m_time_getutc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; const VALUE t = VALUE_REF_GET(self);
+    slots[0] = UNWRAP(korb_time_make(c, slots, korb_class_obj_of(c, t), korb_time_epoch(c, t), true));
+    CHECK(korb_time_copy_nsec(c, slots + 1, VALUE_REF_GET(self), VALUE_REF_AT(&slots[0])));
+    return RESULT_OK(slots[0]);
 }
 static RESULT korb_m_time_getlocal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE t = VALUE_REF_GET(self);

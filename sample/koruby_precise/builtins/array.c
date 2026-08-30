@@ -449,6 +449,23 @@ static RESULT korb_m_ary_pop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(v);
 }
 
+/* korb_value_eq/_eql compare the value types structurally but have no case for
+ * Regexp / Exception / MatchData / Proc / …, where they simply answer "not
+ * equal".  Those elements must go through a real #== (#eql?) dispatch before an
+ * array may be called unequal.  Only the not-equal path consults this. */
+static inline bool korb_eq_opaque(VALUE v) {
+    if (!AROH_IS_GC_OBJECT(v)) return false;              /* fixnum / symbol / flonum / singleton */
+    switch (KORB_OBJ_TYPE(v)) {
+      case KORB_OBJ_STRING:   case KORB_OBJ_ARRAY:  case KORB_OBJ_HASH:
+      case KORB_OBJ_RANGE:    case KORB_OBJ_FLOAT:  case KORB_OBJ_RATIONAL:
+      case KORB_OBJ_COMPLEX:  case KORB_OBJ_SET:    case KORB_OBJ_BIGNUM:
+      case KORB_OBJ_OBJECT:
+        return false;
+      default:
+        return true;
+    }
+}
+
 /* Array#== — same length, elements compared with #== (object/array/hash elements
  * dispatch, so user == and nested value-equality are honoured; korb_value_eq alone
  * cannot dispatch without a CTX). */
@@ -477,7 +494,11 @@ static RESULT korb_m_ary_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
             if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
             if (!KORB_TRUTHY(r.value)) { result = KORB_FALSE; break; }
         } else if (!korb_value_eq(v, v2)) {
-            result = KORB_FALSE; break;
+            if (!korb_eq_opaque(v) && !korb_eq_opaque(v2)) { result = KORB_FALSE; break; }
+            slots[2] = v; slots[3] = v2;
+            RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
+            if (!KORB_TRUTHY(r.value)) { result = KORB_FALSE; break; }
         }
     }
     VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING;   /* re-deref: dispatch may have moved self */
@@ -505,7 +526,11 @@ static RESULT korb_m_ary_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
             if (!KORB_TRUTHY(r.value)) { result = KORB_FALSE; break; }
         } else if (!korb_value_eql(v, v2)) {
-            result = KORB_FALSE; break;
+            if (!korb_eq_opaque(v) && !korb_eq_opaque(v2)) { result = KORB_FALSE; break; }
+            slots[2] = v; slots[3] = v2;
+            RESULT r = korb_send_impl(c, slots + 4, mid_eql, 0, 1, NULL, NULL, NULL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
+            if (!KORB_TRUTHY(r.value)) { result = KORB_FALSE; break; }
         }
     }
     VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING;

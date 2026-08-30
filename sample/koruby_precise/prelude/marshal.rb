@@ -40,6 +40,13 @@ module Marshal
   MODULE_NAME = Module.instance_method(:name)
   def self._class_name(k) = MODULE_NAME.bind_call(k)
 
+  # A BasicObject subclass has neither #class nor #instance_variables; CRuby
+  # reads both from the object header, so go through the unbound methods.
+  KLASS_OF = Object.instance_method(:class)
+  IVARS_OF = Object.instance_method(:instance_variables)
+  IVAR_GET = Object.instance_method(:instance_variable_get)
+  def self._klass(o) = KLASS_OF.bind_call(o)
+
   # Marshal.dump(obj, limit): each nested value costs one level; a negative
   # limit means unlimited (CRuby).
   def self._dump(o, out, st)
@@ -149,9 +156,10 @@ module Marshal
       raise TypeError, "can't dump anonymous class #{m}" if nm.nil?
       out << "e"; _symdump(nm.to_sym, out, st)
     end
-    if o.class != base
-      nm = _class_name(o.class)
-      raise TypeError, "can't dump anonymous class #{o.class}" if nm.nil?
+    k = _klass(o)
+    if k != base
+      nm = _class_name(k)
+      raise TypeError, "can't dump anonymous class #{k}" if nm.nil?
       out << "C"; _symdump(nm.to_sym, out, st)
     end
   end
@@ -208,7 +216,8 @@ module Marshal
     end
     UNDUMPABLE.each do |n|
       k = (Object.const_get(n) rescue nil)
-      if k && o.is_a?(k)
+      # Module#=== , not #is_a? — a BasicObject subclass has no #is_a?.
+      if k && k === o
         raise TypeError, "no _dump_data is defined for class #{o.class}"
       end
     end
@@ -284,6 +293,9 @@ module Marshal
     end
     enc = _str_enc_marker(d)
     ivars = d.instance_variables
+    # Time copies its own ivars onto the payload String before adding the zone
+    # pseudo-ivars, so they come out first and take the earlier link ids.
+    own = Time === o ? o.instance_variables : []
     # Time's zone rides along as the pseudo-ivars :offset / :zone (no '@' — CRuby
     # writes them straight into the payload's ivar table, so they are invisible
     # to #instance_variables).
@@ -299,11 +311,12 @@ module Marshal
       b1 = (sub % 10) << 4
       extra.unshift([:submicro, (b1 == 0 ? [b0] : [b0, b1]).pack("C*")])
     end
-    if enc || !ivars.empty? || !extra.empty?
+    if enc || !ivars.empty? || !extra.empty? || !own.empty?
       out << "I"
       out << "u"; _symdump(name.to_sym, out, st); _long(d.bytesize, out); out << d.b
-      _long((enc ? 1 : 0) + ivars.length + extra.length, out)
+      _long((enc ? 1 : 0) + ivars.length + extra.length + own.length, out)
       _write_enc(enc, out, st) if enc
+      own.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
       extra.each { |nm, v| _symdump(nm, out, st); _dump(v, out, st) }
       ivars.each { |iv| _symdump(iv, out, st); _dump(d.instance_variable_get(iv), out, st) }
     else
@@ -322,20 +335,25 @@ module Marshal
     _wrap_prefix(o, o.class, out, st)
     out << "o"; _symdump(name.to_sym, out, st)
     uiv = o.instance_variables
-    _long(2 + uiv.length, out)
+    cause = (o.cause rescue nil)                       # only set on a raised exception
+    _long(2 + (cause ? 1 : 0) + uiv.length, out)
     _symdump(:mesg, out, st); _dump(o.respond_to?(:__raw_mesg) ? o.__raw_mesg : o.message, out, st)
     _symdump(:bt, out, st);   _dump(o.backtrace, out, st)
+    if cause
+      _symdump(:cause, out, st); _dump(cause, out, st)
+    end
     uiv.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
   end
 
   def self._dump_generic(o, out, st)
-    name = _class_name(o.class)
-    raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
-    _wrap_prefix(o, o.class, out, st)                  # 'e' extends only ('o' carries the name)
-    ivars = o.instance_variables
+    k = _klass(o)
+    name = _class_name(k)
+    raise TypeError, "can't dump anonymous class #{k}" if name.nil?
+    _wrap_prefix(o, k, out, st)                        # 'e' extends only ('o' carries the name)
+    ivars = IVARS_OF.bind_call(o)
     out << "o"
     _symdump(name.to_sym, out, st); _long(ivars.length, out)
-    ivars.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
+    ivars.each { |iv| _symdump(iv, out, st); _dump(IVAR_GET.bind_call(o, iv), out, st) }
   end
 
   def self._dump_string(o, out, st)
@@ -458,7 +476,16 @@ module Marshal
     if data.nil? || data.bytesize == 0
       raise from_io ? EOFError.new("end of file reached") : ArgumentError.new("marshal data too short")
     end
-    st = { s: data, i: 0, syms: [], objs: [], nocb: {}, proc: proc, freeze: freeze }
+    st = { s: data, i: 0, syms: [], objs: [],
+           # objects registered but not yet finished (CRuby's partial_objects):
+           # a link to one of these is a back-reference inside a cycle, so it
+           # fires neither the caller's proc nor the freeze/dedup step.
+           partial: {}.compare_by_identity,
+           # _load / marshal_load results never leave that set in CRuby, so a
+           # link to them stays silent forever.
+           nocb: {}.compare_by_identity,
+           fstr: {},                                  # freeze: true string dedup
+           proc: proc, freeze: freeze }
     maj = _byte(st); min = _byte(st)
     if maj != MAJOR_VERSION || min > MINOR_VERSION
       raise TypeError,
@@ -471,8 +498,10 @@ module Marshal
   class << self; alias restore load; end
 
   # Resolve a possibly '::'-qualified constant name for load; ArgumentError if absent.
+  # inherit=false: rb_path_to_class does not fall back to Object, so a name that
+  # only resolves through the ancestor chain is "undefined" for Marshal.
   def self._const(name)
-    name.to_s.split("::").reduce(Object) { |m, n| m.const_get(n) }
+    name.to_s.split("::").reduce(Object) { |m, n| m.const_get(n, false) }
   rescue NameError
     raise ArgumentError, "undefined class/module #{name}"
   end
@@ -491,6 +520,7 @@ module Marshal
     else
       st[:objs] << obj
     end
+    st[:partial][obj] = true
     obj
   end
 
@@ -516,6 +546,41 @@ module Marshal
     inner
   end
 
+  # An 'o' record can only rebuild a plain ivar-carrying object; CRuby checks
+  # that the allocated value is a T_OBJECT and calls anything else a format
+  # error.  These are the core classes that allocate something else.
+  NOT_PLAIN_OBJECT = [String, Array, Hash, Regexp, Float, Integer, Symbol,
+                      Struct, Module, IO, Dir, MatchData, Proc, Method].freeze
+  def self._check_o_type(klass)
+    if NOT_PLAIN_OBJECT.any? { |b| klass <= b }
+      raise ArgumentError, "dump format error"
+    end
+  end
+
+  # A 'C' wrapper must name a subclass of the wrapped value's own core type
+  # (CRuby compares the allocated types and calls a mismatch a format error).
+  def self._uclass_check(cls, inner)
+    base = case inner
+           when String then String
+           when Array  then Array
+           when Hash   then Hash
+           when Regexp then Regexp
+           end
+    raise ArgumentError, "dump format error (user class)" if base.nil? || !(cls <= base)
+  end
+
+  # #cause has no setter — Kernel#raise's cause: keyword is the only builder, so
+  # raise the exception here and catch it back.
+  def self._exc_with_cause(klass, mesg, cause)
+    raise klass, mesg, cause: cause
+  rescue Exception => e
+    e
+  end
+
+  # 'd' rebuilds an object that wraps native state (CRuby's T_DATA).  koruby has
+  # no such type tag, so the classes that qualify are named here.
+  DATA_CLASSES = [Dir].freeze
+
   # Object#freeze itself, so a user-defined #freeze is not called (CRuby freezes
   # internally).
   FREEZE = Kernel.instance_method(:freeze)
@@ -524,17 +589,35 @@ module Marshal
     st[:link] = false                         # only OUR _read0 may set it (a bare _read0 for a
     v = _read0(st)                            # structural name must not leak its symlink flag here)
     was_link = st[:link]; st[:link] = false
+    return v if was_link                      # symlink / in-cycle link: nothing left to do
+    st[:partial].delete(v)                    # this object is now fully built
     # `freeze: true` hands out frozen objects — freeze on the way out, once the
     # container has been filled, and before the caller's proc sees it.  Classes
-    # and modules are left alone (CRuby does not freeze them).
-    FREEZE.bind_call(v) if st[:freeze] && !v.is_a?(Module)
-    # The proc sees each object as it is BUILT (a back-reference to one already
-    # built does not fire it again) and its return value replaces the object.
+    # and modules are left alone (CRuby does not freeze them), and Strings are
+    # deduplicated the way rb_str_to_interned_str does.
+    if st[:freeze] && !(Module === v)
+      if String === v
+        v = (st[:fstr][v] ||= (FREEZE.bind_call(v); v))
+      else
+        FREEZE.bind_call(v)
+      end
+    end
+    # The proc sees each object as it is BUILT and its return value replaces it.
     p = st[:proc]
-    (p && !was_link) ? p.call(v) : v
+    p ? p.call(v) : v
   end
 
+  # Only a real back-reference may leave st[:link] set.  A record reads names
+  # (class, ivar, member) through _read0 too, and those are often symbol links —
+  # that must not make the record itself look like a back-reference.
   def self._read0(st)
+    t = st[:s].getbyte(st[:i])
+    v = _read_body(st)
+    st[:link] = false unless t == 0x40 || t == 0x3b
+    v
+  end
+
+  def self._read_body(st)
     t = _byte(st)
     case t
     when 0x30 then nil                                  # '0'
@@ -543,8 +626,11 @@ module Marshal
     when 0x69 then _rlong(st)                            # 'i' Fixnum
     when 0x40                                            # '@' object link
       li = _rlong(st)
-      st[:link] = true if st[:nocb][li]                  # user _load/marshal_load results: silent
-      st[:objs][li]
+      v = st[:objs][li]
+      # A link to a finished object is a normal value (it freezes and fires the
+      # proc again); one to an unfinished object, or to a _load result, is not.
+      st[:link] = true if st[:partial].key?(v) || st[:nocb].key?(v)
+      v
     when 0x6c                                            # 'l' Bignum
       sign = _byte(st)
       nwords = _rlong(st)
@@ -582,16 +668,16 @@ module Marshal
         # CRuby attaches these ivars to the _dump payload String and only then
         # calls ::_load — that is how Time picks up its @offset / @zone.
         _byte(st)
-        idx = st[:objs].size; st[:objs] << nil
         cls = _read0(st)
         data = _bytes(st, _rlong(st))
-        offset = nil; submicro = nil; zname = nil
+        offset = nil; submicro = nil; zname = nil; uiv = []
         _rlong(st).times do
           name = _read0(st); val = _read(st)
           next if name == :E || name == :encoding
           offset = val if name == :offset
           submicro = val if name == :submicro
           zname = val if name == :zone
+          uiv << [name, val] if name.to_s.start_with?("@")
           data.instance_variable_set(name, val) rescue nil   # :offset / :zone have no '@'
         end
         obj = _const(cls)._load(data)
@@ -603,11 +689,10 @@ module Marshal
             obj = obj.utc? ? t2.utc : t2
           end
         end
-        # A non-UTC Time was packed in local wall-clock fields: shift back to the
-        # instant, then re-attach the fixed offset so #utc_offset survives.  The
-        # shift is done on the integer seconds so the nanoseconds stay exact
-        # (Time#- goes through a Float).
-        obj = Time.at(obj.to_i - offset, Rational(obj.nsec, 1000)).getlocal(offset) if Time === obj && offset
+        # The payload holds UTC fields; :offset only says which local zone to
+        # show it in.  Rebuild through the integer seconds so the nanoseconds
+        # stay exact (Time#- goes through a Float).
+        obj = Time.at(obj.to_i, Rational(obj.nsec, 1000)).getlocal(offset) if Time === obj && offset
         # A zone name rides along as the pseudo-ivar :zone.  CRuby rebuilds the
         # timezone OBJECT from it through the class's .find_timezone hook; with no
         # hook the name itself becomes #zone.
@@ -620,8 +705,13 @@ module Marshal
             obj.instance_variable_set(:@__tz, zname)
           end
         end
-        st[:objs][idx] = obj
-        st[:nocb][idx] = true                            # ivar-wrapped _load result: link is silent
+        # The payload's real ivars belong to the rebuilt object too (CRuby's
+        # rb_copy_generic_ivar in time_mload).
+        uiv.each { |name, val| obj.instance_variable_set(name, val) rescue nil }
+        # CRuby registers the object only here — the ivar VALUES took the link
+        # ids ahead of it.
+        st[:objs] << obj
+        st[:nocb][obj] = true                            # ivar-wrapped _load result: link is silent
         return obj
       end
       v = _read0(st)                                     # transparent: caller's proc sees the object
@@ -648,12 +738,13 @@ module Marshal
       cls = _const(_read0(st))
       st[:reuse] = idx
       inner = _read(st)
+      _uclass_check(cls, inner)
       obj = _reclass(cls, inner)
       st[:objs][idx] = obj
     when 0x65                                            # 'e' extend-module wrapper
       msym = _read0(st)
-      obj = _read(st)
-      (obj.extend(_const(msym)) rescue nil)
+      obj = _read0(st)                                   # the wrapper is one object: the
+      (obj.extend(_const(msym)) rescue nil)               # proc fires once, after the extend
       obj
     when 0x63                                            # 'c' Class
       name = _bytes(st, _rlong(st))
@@ -680,8 +771,10 @@ module Marshal
         obj = Range.new(ivars[:begin], ivars[:end], ivars[:excl])
       else
         klass = _const(cls)
-        if klass <= Exception                            # :mesg/:bt are pseudo-ivars
-          obj = klass.new(ivars[:mesg])
+        _check_o_type(klass)
+        if klass <= Exception                            # :mesg/:bt/:cause are pseudo-ivars
+          obj = ivars[:cause] ? _exc_with_cause(klass, ivars[:mesg], ivars[:cause])
+                              : klass.new(ivars[:mesg])
           obj.set_backtrace(ivars[:bt]) if ivars[:bt] && obj.respond_to?(:set_backtrace)
           ivars.each { |name, val| obj.instance_variable_set(name, val) if name.to_s.start_with?("@") }
         else
@@ -695,7 +788,7 @@ module Marshal
       cls = _read0(st)
       data = _bytes(st, _rlong(st))
       obj = _const(cls)._load(data)
-      st[:nocb][idx] = true                              # a link to a _load-built object is silent
+      st[:nocb][obj] = true                              # a link to a _load-built object is silent
       st[:objs][idx] = obj
     when 0x53                                            # 'S' Struct
       idx = st[:objs].size; st[:objs] << nil
@@ -724,8 +817,19 @@ module Marshal
               o.marshal_load(data) if o.respond_to?(:marshal_load)
               o
             end
-      st[:nocb][idx] = true                              # ditto for marshal_load-built objects
+      st[:nocb][obj] = true                              # ditto for marshal_load-built objects
       st[:objs][idx] = obj
+    when 0x64                                            # 'd' wrapped C pointer (_dump_data)
+      name = _read0(st)
+      k = _const(name)
+      raise ArgumentError, "dump format error" unless DATA_CLASSES.any? { |b| k <= b }
+      obj = k.allocate
+      unless obj.respond_to?(:_load_data, true)
+        raise TypeError, "class #{name} needs to have instance method '_load_data'"
+      end
+      _reg(st, obj)
+      obj.send(:_load_data, _read(st))
+      obj
     else
       raise TypeError, "unsupported Marshal type 0x#{t.to_s(16)}"
     end
