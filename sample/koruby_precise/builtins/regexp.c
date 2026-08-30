@@ -500,7 +500,19 @@ static RESULT korb_re_match_set(CTX *c, VALUE *slots, VALUE re, VALUE str) {
     korb_re_set_lastmatch(c, slots[2]);
     return RESULT_OK(LONG2FIX(cidx));
 }
-static RESULT korb_m_str_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_re_match_set(c, slots, VALUE_SLICE_GET(a, 0), VALUE_REF_GET(self)); }
+/* String#=~ — a String operand is a TypeError; a non-Regexp object gets the
+ * question turned around (`obj =~ self`), which is how Regexp-alikes work. */
+static RESULT korb_m_str_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE pat = VALUE_SLICE_GET(a, 0);
+    const bool str_recv = KORB_STRING_P(VALUE_REF_GET(self));   /* shared with NilClass#=~ / Symbol#=~ */
+    if (UNLIKELY(str_recv && KORB_STRING_P(pat)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "type mismatch: String given");
+    if (UNLIKELY(str_recv && !KORB_REGEXP_P(pat) && KORB_OBJECT_P(pat))) {
+        slots[0] = pat; slots[1] = VALUE_REF_GET(self);
+        return korb_send(c, slots + 2, korb_intern(c->vm, "=~", 2), 0, 1);
+    }
+    return korb_re_match_set(c, slots, pat, VALUE_REF_GET(self));
+}
 /* `Regexp.allocate` leaves a plain object behind: every Regexp method must
  * refuse it rather than quietly answer nil. */
 #define KORB_RE_CHECK(c, slots, self) do { \
@@ -667,6 +679,20 @@ static RESULT korb_m_re_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_re_coerce_pat(CTX *c, VALUE *slots, VALUE pv, VALUE *out) {
     if (KORB_REGEXP_P(pv)) { *out = pv; return RESULT_OK(KORB_TRUE); }
     if (KORB_STRING_P(pv)) { slots[0] = pv; *out = UNWRAP(korb_regexp_new(c, slots + 1, slots[0], 0)); return RESULT_OK(KORB_TRUE); }
+    if (KORB_OBJECT_P(pv)) {                             /* a #to_str object is the pattern source */
+        VALUE cv = pv;
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (korb_responds_to_coerce_p(c, slots, &cv, to_str)) {
+            slots[0] = cv;
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (KORB_STRING_P(sr.value)) {
+                slots[0] = sr.value;
+                *out = UNWRAP(korb_regexp_new(c, slots + 1, slots[0], 0));
+                return RESULT_OK(KORB_TRUE);
+            }
+        }
+    }
     return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_re_arg_type(pv));
 }
 static RESULT korb_m_str_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
