@@ -230,6 +230,8 @@ class Enumerator
     @__ext_done = false
     @__ext_feed = nil
     @__ext_fed = false
+    # CRuby rewinds the enclosed object too, when it knows how.
+    @__src_recv.rewind if defined?(@__src_recv) && @__src_recv.respond_to?(:rewind)
     __c_rewind
   end
 
@@ -274,7 +276,13 @@ class Enumerator
           @__ext_feed = nil
         end
         @__ext_fresh = false
-        r = @__ext_fiber.resume(fed)
+        r = begin
+              @__ext_fiber.resume(fed)
+            rescue Exception
+              @__ext_started = false     # the source blew up: the fiber is dead, so the next #next starts it over (CRuby)
+              @__ext_fiber = nil
+              raise
+            end
         if r.nil?
           @__ext_done = true
           @__ext_buf = nil
@@ -319,6 +327,15 @@ class Enumerator
 end
 
 class Enumerator::Lazy
+  # koruby's Enumerator.new fast path would take the block for a plain generator
+  # (called with just the yielder); Lazy.new's block is a TRANSFORM over
+  # `receiver`, so construct here and let #initialize wire the two together.
+  def self.new(receiver, size = nil, &block)
+    o = allocate
+    o.send(:initialize, receiver, size, &block)
+    o
+  end
+
   # Lazy#initialize(receiver[, size]) { |yielder, *values| ... } — the block is a
   # TRANSFORM: it is handed a yielder plus each source value and decides what to
   # emit.  koruby's lazy enumerators are generator-backed, so fold the pair into
@@ -520,5 +537,14 @@ class Enumerator
 
   def each_with_index(&blk)
     with_index(0, &blk)
+  end
+end
+
+# ArithmeticSequence is only ever produced by Numeric#step / Range#step /
+# Range#% — CRuby gives it neither an allocator nor .new.
+class Enumerator::ArithmeticSequence
+  class << self
+    def new(*); raise NoMethodError, "undefined method 'new' for class Enumerator::ArithmeticSequence"; end
+    def allocate; raise TypeError, "allocator undefined for Enumerator::ArithmeticSequence"; end
   end
 end

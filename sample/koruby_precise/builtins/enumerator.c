@@ -65,8 +65,10 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
         v = slots[2];
     }
     /* y.yield(a,b) keeps its arity for a streaming block: `each { |x| }` must
-     * see the first value, not the packed array. */
-    bool multi = (ac > 1 && ac <= 8);
+     * see the first value, not the packed array.  ac == 0 likewise reaches the
+     * block with no value at all (`each { |*a| }` → []), while the collector
+     * still stores nil. */
+    bool multi = (ac != 1 && ac <= 8);
     /* apply any deferred lazy ops (select/map/reject/filter_map/take_while/...) */
     bool keep = true, term = false;
     const VALUE ops = korb_items_data(VAL2ARY(slots[1])->items)[2];      /* nil for a raw generator */
