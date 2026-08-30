@@ -886,15 +886,23 @@ static RESULT korb_open_enc_name(CTX *c, VALUE *slots, VALUE v, char *out, size_
 /* mode / encoding out of one options Hash (also used for an open_args element) */
 static RESULT korb_open_args_hash(CTX *c, VALUE *slots, VALUE h, struct korb_open_args *o) {
     const KorbHash *const hh = VAL2HASH(h);
+    bool mode_has_enc = false;
     int32_t ix = korb_hash_find(hh, ID2SYM(korb_intern(c->vm, "mode", 4)));
     if (ix >= 0) {
         const VALUE mv = korb_items_data(hh->items)[2 * ix + 1];
-        if (KORB_STRING_P(mv)) snprintf(o->mode, sizeof o->mode, "%.*s", (int)VAL2STR(mv)->len, korb_strbuf_data(VAL2STR(mv)->buf));
+        if (KORB_STRING_P(mv)) {
+            snprintf(o->mode, sizeof o->mode, "%.*s", (int)VAL2STR(mv)->len, korb_strbuf_data(VAL2STR(mv)->buf));
+            mode_has_enc = strchr(o->mode, ':') != NULL;
+        }
     }
-    static const struct { const char *nm; uint32_t len; } ek[] = { { "encoding", 8 }, { "external_encoding", 17 } };
-    for (size_t i = 0; i < 2; i++) {
+    static const struct { const char *nm; uint32_t len; } ek[] = {
+        { "encoding", 8 }, { "external_encoding", 17 }, { "internal_encoding", 17 } };
+    for (size_t i = 0; i < 3; i++) {
         ix = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, ek[i].nm, ek[i].len)));
         if (ix < 0) continue;
+        if (mode_has_enc)                              /* "w:UTF-16BE" plus encoding: (CRuby) */
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "encoding specified twice");
+        if (i == 2) continue;                          /* internal_encoding names the other side */
         char nm[64];
         CHECK(korb_open_enc_name(c, slots, korb_items_data(VAL2HASH(h)->items)[2 * ix + 1], nm, sizeof nm));
         if (nm[0]) o->enc = (int)korb_enc_index_for_name(c->vm, nm);
@@ -1073,6 +1081,18 @@ static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (UNLIKELY(!KORB_STRING_P(sr.value)))
             return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 1)));
         slots[1] = sr.value;
+    }
+    /* IO.write opens the file itself, so the external encoding has to be applied
+     * here — there is no IO object whose write path would do it. */
+    if (oa.enc >= 0 && (uint32_t)oa.enc != KORB_ENC_BINARY) {
+        const uint32_t se = KORB_STR_ENC(slots[1]);
+        const char *const dn = korb_enc_name_of(c->vm, (uint32_t)oa.enc);
+        if (strcasecmp(korb_enc_name_of(c->vm, se), dn) != 0) {
+            bool ok = false;
+            const RESULT tr = korb_tc_convert(c, slots + 2, slots[1], korb_enc_name_of(c->vm, se), dn, &ok);
+            if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+            if (ok) slots[1] = tr.value;
+        }
     }
     uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: they may have moved */
     const int oflags = O_WRONLY | O_CREAT |

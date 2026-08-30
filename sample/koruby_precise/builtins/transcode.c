@@ -267,6 +267,20 @@ static bool korb_tc_truncated(const struct korb_tc *tc, const unsigned char *p, 
     }
 }
 
+/* Bytes the first character of `p` spans in `enc`.  0 means the buffer holds
+ * only a truncated prefix, so a byte-at-a-time reader must fetch more; anything
+ * the encoding rejects reports 1, so such a reader always makes progress. */
+static uint32_t korb_tc_char_len(const char *const enc, const unsigned char *const p, const size_t len)
+{
+    if (len == 0) return 0;
+    struct korb_tc tc;
+    if (!korb_tc_find(enc, &tc)) return 1;
+    uint32_t cp;
+    const uint32_t n = korb_tc_decode(&tc, p, len, &cp);
+    if (n != 0) return n;
+    return korb_tc_truncated(&tc, p, len) ? 0 : 1;
+}
+
 /* Encode one codepoint.  Returns bytes written to out (>= 8 bytes), or 0 when
  * the target encoding has no representation for it. */
 static uint32_t korb_tc_encode(const struct korb_tc *tc, uint32_t cp, unsigned char *out)
