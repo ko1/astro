@@ -1084,7 +1084,7 @@ RESULT korb_re_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE gr
                 RESULT cr = korb_coerce_to_int(c, slots + 4, &gv);
                 if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
                 if (!korb_to_index(gv, &g))
-                    return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, slots[2]));
+                    return korb_raise_no_int(c, slots + 4, slots[2]);
             }
             if (g < 0) g += korb_md_ngroups(VAL2MD(slots[3]));   /* negative capture index counts from the last group */
             gi = (int)g;

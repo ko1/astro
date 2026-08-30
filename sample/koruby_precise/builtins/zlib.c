@@ -11,7 +11,7 @@ static RESULT korb_m_zlib_sum(CTX *c, VALUE *slots, VALUE_SLICE a, bool adler) {
     if (n >= 2) {
         const VALUE sv = VALUE_SLICE_GET(a, 1);
         if (UNLIKELY(!FIXNUM_P(sv) && !KORB_BIGNUM_P(sv)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
+            return korb_raise_no_int(c, slots, sv);
         sum = (uLong)(uint32_t)(FIXNUM_P(sv) ? (uint64_t)FIX2LONG(sv) : 0);
     }
     if (n >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {

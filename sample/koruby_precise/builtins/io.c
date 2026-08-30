@@ -803,12 +803,12 @@ static RESULT korb_m_io_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (FIXNUM_P(lv)) want = FIX2LONG(lv);
         else if (!korb_to_index(lv, &want)) {
             if (!KORB_OBJECT_P(lv) || !korb_responds_to(c, lv, korb_intern(c->vm, "to_int", 6)))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, lv));
+                return korb_raise_no_int(c, slots, lv);
             slots[0] = lv;
             const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0);
             if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
             if (!FIXNUM_P(ir.value))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, lv));
+                return korb_raise_no_int(c, slots, lv);
             want = FIX2LONG(ir.value);
         }
         if (UNLIKELY(want < 0))

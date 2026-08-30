@@ -52,7 +52,7 @@ static RESULT korb_range_count_arg(CTX *c, VALUE *slots, VALUE v, korb_sword_t *
     RESULT cr = korb_coerce_to_int(c, slots + 1, &slots[0]);
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     if (cr.value != KORB_TRUE || !korb_to_index(slots[0], out))
-        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(v));
+        return korb_raise_no_int(c, slots + 1, v);
     return RESULT_OK(KORB_TRUE);
 }
 
@@ -1596,7 +1596,7 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             if (flo) {
                 double dbeg, dstep;
                 if (!korb_num_to_d(rng->rbegin, &dbeg) || !korb_num_to_d(sv, &dstep))
-                    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
+                    return korb_raise_no_int(c, slots, sv);
                 if (UNLIKELY(dstep == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
                 if (dstep > 0) {
                     for (long i = 0; ; i++) {         /* count-based: no float-error accumulation */
@@ -1696,7 +1696,7 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             return RESULT_OK(VALUE_REF_GET(self));
         }
     }
-    if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
+    if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise_no_int(c, slots, sv);
     korb_sword_t st = FIX2LONG(sv);
     if (UNLIKELY(st == 0)) {
         if (!b_num) return RESULT_OK(VALUE_REF_GET(self));   /* CRuby: no iteration, no error */

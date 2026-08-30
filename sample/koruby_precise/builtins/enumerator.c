@@ -1009,7 +1009,7 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         else {                                                            /* Float/#to_int coercion; String etc → TypeError */
             RESULT cr = korb_coerce_to_int(c, slots, &ov);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            if (cr.value != KORB_TRUE) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
             korb_to_index(ov, &off);   /* ov is now Integer/Float — extract (truncating Float) */
         }
     }

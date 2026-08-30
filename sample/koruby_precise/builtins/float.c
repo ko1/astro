@@ -147,7 +147,7 @@ static RESULT korb_flt_round_to(CTX *c, VALUE *slots, double d, int kind, VALUE_
     uint32_t npos; const int half = korb_round_half(c, a, &npos); KORB_ROUND_CHECK_HALF(c, slots, a, &npos);
     korb_sword_t ndig = 0;
     if (npos >= 1) {
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &ndig))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &ndig))) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
     }
     if (ndig <= 0 && UNLIKELY(!isfinite(d)))                    /* Inf/NaN → Integer-returning form is out of domain */
         return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, isnan(d) ? "NaN" : (d < 0 ? "-Infinity" : "Infinity"));
@@ -188,7 +188,7 @@ static RESULT korb_m_flt_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     double o; if (UNLIKELY(!korb_num_to_d(arg, &o))) {
         if (KORB_OBJECT_P(arg)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), arg, "fdiv", 0, &h); if (h) return cr; }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(arg));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, arg));
     }
     return korb_float_new(c, slots, SELF_FLT / o);
 }
@@ -196,7 +196,7 @@ static RESULT korb_m_flt_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) {
         const VALUE ov = VALUE_SLICE_GET(a, 0);
         if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ov, "div", 0, &h); if (h) return cr; }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(ov));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, ov));
     }
     if (UNLIKELY(o == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
     return korb_flt_toint(c, slots, floor(SELF_FLT / o), 3);   /* floor → Integer */
@@ -205,7 +205,7 @@ static RESULT korb_m_flt_modulo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) {
         const VALUE ov = VALUE_SLICE_GET(a, 0);
         if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ov, "%", 0, &h); if (h) return cr; }   /* obj#coerce → a % b */
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(ov));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, ov));
     }
     if (UNLIKELY(o == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
     double r = fmod(SELF_FLT, o);
@@ -216,7 +216,7 @@ static RESULT korb_m_flt_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) {
         const VALUE ov = VALUE_SLICE_GET(a, 0);
         if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ov, "remainder", 0, &h); if (h) return cr; }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(ov));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, ov));
     }
     /* CRuby Numeric#remainder: z = self % o (floored), then z - o when the signs
      * of self and o differ.  This reconstruction (not a plain fmod) reproduces
@@ -234,7 +234,7 @@ static RESULT korb_m_flt_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) {
         const VALUE ov = VALUE_SLICE_GET(a, 0);
         if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ov, "divmod", 0, &h); if (h) return cr; }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(ov));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, ov));
     }
     if (UNLIKELY(o == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
     double s = SELF_FLT, q = floor(s / o);
@@ -307,7 +307,7 @@ static RESULT korb_int_round_to(CTX *c, VALUE *slots, korb_sword_t v, int kind, 
         } else if (UNLIKELY(!korb_to_index(dv, &ndig))) {
             RESULT cr = korb_coerce_to_int(c, slots, &dv);   /* coerce via #to_int */
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(dv, &ndig)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            if (!korb_to_index(dv, &ndig)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
         }
     }
     if (UNLIKELY(ndig > INT32_MAX || ndig < INT32_MIN)) /* ndigits must fit in a C int (CRuby) */
@@ -355,7 +355,7 @@ static RESULT korb_bigint_round_to(CTX *c, VALUE *slots, VALUE bigself, int kind
         } else if (UNLIKELY(!korb_to_index(dv, &ndig))) {
             RESULT cr = korb_coerce_to_int(c, slots + 1, &dv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(dv, &ndig)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            if (!korb_to_index(dv, &ndig)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
         }
     }
     if (ndig >= 0) return RESULT_OK(slots[0]);            /* an Integer has no fractional digits */
@@ -447,7 +447,7 @@ static RESULT korb_m_int_digits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (UNLIKELY(!korb_to_index(bv, &base))) {       /* coerce the radix via #to_int (before self is read) */
             RESULT cr = korb_coerce_to_int(c, slots, &bv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(bv, &base)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            if (!korb_to_index(bv, &base)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
         }
         if (base < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative radix");
         if (base < 2) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %ld", (long)base);

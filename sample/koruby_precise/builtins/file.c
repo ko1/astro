@@ -981,12 +981,12 @@ static RESULT korb_io_int_arg(CTX *c, VALUE *slots, VALUE v, bool *given, korb_s
     if (v == KORB_NIL) return RESULT_OK(KORB_NIL);
     if (FIXNUM_P(v)) { *out = FIX2LONG(v); *given = true; return RESULT_OK(KORB_NIL); }
     if (!KORB_OBJECT_P(v) || !korb_responds_to(c, v, korb_intern(c->vm, "to_int", 6)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, v));
+        return korb_raise_no_int(c, slots, v);
     slots[0] = v;
     const RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (!FIXNUM_P(r.value))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, v));
+        return korb_raise_no_int(c, slots, v);
     *out = FIX2LONG(r.value); *given = true;
     return RESULT_OK(KORB_NIL);
 }
@@ -1158,7 +1158,7 @@ korb_io_line_args(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t from, struct kor
         if (FIXNUM_P(lim)) n2 = FIX2LONG(lim);
         else if (!korb_to_index(lim, &n2)) {
             if (!KORB_OBJECT_P(lim) || !korb_responds_to(c, lim, korb_intern(c->vm, "to_int", 6)))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, lim));
+                return korb_raise_no_int(c, slots, lim);
             slots[0] = lim;
             const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0);
             if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;

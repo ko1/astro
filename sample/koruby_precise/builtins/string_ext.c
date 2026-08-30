@@ -571,7 +571,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 uint32_t cm = korb_responds_to_coerce(c, slots + 2, slots[1], c_to_str) ? c_to_str
                             : korb_responds_to_coerce(c, slots + 2, slots[1], c_to_ary) ? c_to_ary
                             : korb_responds_to_coerce(c, slots + 2, slots[1], fmt_to_int) ? fmt_to_int : 0;
-                if (!cm) { coerce_err = korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(slots[1])); has_coerce_err = true; err = true; break; }
+                if (!cm) { coerce_err = korb_raise_no_int(c, slots + 2, slots[1]); has_coerce_err = true; err = true; break; }
                 RESULT cr = korb_send_impl(c, slots + 2, cm, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(cr.state != KORB_NORMAL)) { coerce_err = cr; has_coerce_err = true; err = true; break; }
                 FMT_REREAD_ARGS();
@@ -583,9 +583,9 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                     if (cs->len == 0) { coerce_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "%%c requires a character"); has_coerce_err = true; err = true; break; }
                     cnbytes = (int)korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(cs->buf), 0, cs->len); if (cnbytes <= 0) cnbytes = 1;
                     cbytes = korb_strbuf_data(cs->buf); }
-                else { coerce_err = korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(arg)); has_coerce_err = true; err = true; break; }
+                else { coerce_err = korb_raise_no_int(c, slots + 1, arg); has_coerce_err = true; err = true; break; }
             }
-            else { coerce_err = korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(arg)); has_coerce_err = true; err = true; break; }
+            else { coerce_err = korb_raise_no_int(c, slots + 1, arg); has_coerce_err = true; err = true; break; }
             char enc[4];
             if (cp >= 0) { cnbytes = (int)korb_utf8_encode((uint32_t)cp, enc); cbytes = enc; }
             korb_fmt_emit_c(ms, cbytes, cnbytes, spec, si);
@@ -703,7 +703,7 @@ static RESULT korb_byteslice_bound(CTX *c, VALUE *slots, VALUE v, korb_sword_t *
     RESULT cr = korb_coerce_to_int(c, slots + 1, &slots[0]);
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     if (cr.value != KORB_TRUE || !korb_to_index(slots[0], out))
-        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(v));
+        return korb_raise_no_int(c, slots + 1, v);
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -748,7 +748,7 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (UNLIKELY(!korb_to_index(iv, &i))) {              /* coerce index via #to_int (self via VALUE_REF; bn is a value) */
         RESULT cr = korb_coerce_to_int(c, slots, &iv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-        if (!korb_to_index(iv, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+        if (!korb_to_index(iv, &i)) return korb_raise_no_int(c, slots, iv);
         bn = VAL2STR(VALUE_REF_GET(self))->len;
     }
     if (i < 0) i += bn;
@@ -760,7 +760,7 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         RESULT cr = korb_coerce_to_int(c, slots, &lv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         if (!korb_to_index(lv, &lentmp))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
+            return korb_raise_no_int(c, slots, lv);
     }
     const korb_sword_t len0 = two_arg ? lentmp : 1;
     korb_sword_t len = len0;
@@ -921,7 +921,7 @@ static RESULT korb_m_str_getbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)c;(void)slots;
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     korb_sword_t i;
-    if (!korb_to_index(VALUE_SLICE_GET(a, 0), &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (!korb_to_index(VALUE_SLICE_GET(a, 0), &i)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
     if (i < 0) i += s->len;
     if (i < 0 || (uint32_t)i >= s->len) return RESULT_OK(KORB_NIL);
     return RESULT_OK(LONG2FIX((unsigned char)korb_strbuf_data(s->buf)[i]));
@@ -934,12 +934,12 @@ static RESULT korb_m_str_setbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (UNLIKELY(!korb_to_index(iv, &i))) {
         RESULT cr = korb_coerce_to_int(c, slots + 1, &iv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-        if (cr.value == KORB_FALSE || !korb_to_index(iv, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        if (cr.value == KORB_FALSE || !korb_to_index(iv, &i)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
     }
     if (UNLIKELY(!korb_to_index(bv, &b))) {
         RESULT cr = korb_coerce_to_int(c, slots + 1, &bv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-        if (cr.value == KORB_FALSE || !korb_to_index(bv, &b)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        if (cr.value == KORB_FALSE || !korb_to_index(bv, &b)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 1));
     }
     self = VALUE_REF_AT(&slots[0]);                         /* re-root after possible GC */
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
@@ -1065,7 +1065,7 @@ static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         if (UNLIKELY(!korb_to_index(ov, &start))) {
             RESULT cr = korb_coerce_to_int(c, slots + 1, &ov);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(ov, &start)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 1)));
+            if (!korb_to_index(ov, &start)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 1));
         }
         const korb_sword_t slen = (korb_sword_t)VAL2STR(VALUE_REF_GET(self))->len;
         if (start < 0) start += slen;
@@ -1091,7 +1091,7 @@ static RESULT korb_m_str_byterindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (UNLIKELY(!korb_to_index(ov, &stop))) {
             RESULT cr = korb_coerce_to_int(c, slots + 1, &ov);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(ov, &stop)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 1)));
+            if (!korb_to_index(ov, &stop)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 1));
         }
         const korb_sword_t slen = (korb_sword_t)VAL2STR(VALUE_REF_GET(self))->len;
         if (stop < 0) stop += slen;
@@ -1144,12 +1144,12 @@ static RESULT korb_m_str_ord(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0))) {       /* rindex(regexp[, stop_char]) */
         long stop = 0; bool have_stop = false;
-        if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) {
+        if (VALUE_SLICE_LEN(a) >= 2) {                 /* an explicit nil offset is a TypeError, not "absent" */
             korb_sword_t st;
             if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &st))) {
                 VALUE ov = VALUE_SLICE_GET(a, 1); RESULT cr = korb_coerce_to_int(c, slots, &ov);
                 if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-                if (!korb_to_index(ov, &st)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+                if (!korb_to_index(ov, &st)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 1));
             }
             stop = (long)st; have_stop = true;
         }
@@ -1165,7 +1165,7 @@ static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             VALUE sv = VALUE_SLICE_GET(a, 1);
             RESULT cr = korb_coerce_to_int(c, slots, &sv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(sv, &stop)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+            if (!korb_to_index(sv, &stop)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 1));
         }
         const KorbString *const s0 = VAL2STR(VALUE_REF_GET(self));
         uint32_t ncp = korb_utf8_count(korb_strbuf_data(s0->buf), s0->len);
@@ -1185,6 +1185,9 @@ static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             return korb_raise(c, slots, KORB_E_TYPE, 0, "type mismatch: %s given", korb_type_name(slots[0]));
         sv = cr.value;
     }
+    { uint32_t ce;                                    /* incompatible encodings: CompatibilityError, not a miss */
+      if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), sv, &ce)))
+          return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(sv)); }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
     if (n->len > s->len) return RESULT_OK(KORB_NIL);
     int32_t hi = (int32_t)(s->len - n->len);          /* last byte where a match can begin */
@@ -1360,7 +1363,7 @@ static RESULT korb_str_pad(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, 
     VALUE wv = VALUE_SLICE_GET(a, 0);
     { RESULT cr = korb_coerce_to_int(c, slots, &wv); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }   /* width #to_int */
     korb_sword_t width;
-    if (UNLIKELY(!korb_to_index(wv, &width))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(!korb_to_index(wv, &width))) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
     VALUE padv = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
     if (padv != KORB_NIL && !KORB_STRING_P(padv)) {       /* padstr #to_str */
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);

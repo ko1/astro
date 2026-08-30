@@ -25,7 +25,7 @@ static RESULT korb_m_ary_shift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (UNLIKELY(!korb_to_index(nv, &n))) {       /* coerce the count via #to_int */
             RESULT cr = korb_coerce_to_int(c, slots, &nv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(nv, &n)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            if (!korb_to_index(nv, &n)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
         }
         if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
         uint32_t take = (uint32_t)n; if (take > VAL2ARY(VALUE_REF_GET(self))->len) take = VAL2ARY(VALUE_REF_GET(self))->len;
@@ -89,7 +89,7 @@ static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         VALUE iv2 = slots[0];
         RESULT cr = korb_coerce_to_int(c, slots + 2, &iv2);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-        if (!korb_to_index(iv2, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(slots[0]));
+        if (!korb_to_index(iv2, &i)) return korb_raise_no_int(c, slots, slots[0]);
     }
     const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));  /* re-read after possible dispatch */
     korb_sword_t orig = i;
@@ -123,7 +123,7 @@ static RESULT korb_m_ary_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (cur == KORB_NIL) return RESULT_OK(KORB_NIL);
         if (KORB_ARRAY_P(cur)) {
             korb_sword_t i;
-            if (UNLIKELY(!korb_to_index(key, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(key));
+            if (UNLIKELY(!korb_to_index(key, &i))) return korb_raise_no_int(c, slots, key);
             KorbArray *ar = VAL2ARY(cur);
             if (i < 0) i += ar->len;
             cur = (i < 0 || (uint32_t)i >= ar->len) ? KORB_NIL : korb_items_data(ar->items)[i];
@@ -158,7 +158,7 @@ static RESULT korb_int_shift_arg(CTX *c, VALUE *slots, VALUE_REF self, VALUE o, 
         if (LIKELY(korb_to_index(o, sh_out))) return RESULT_OK(KORB_NIL);   /* Fixnum / Float / ... */
         /* otherwise coerce once via #to_int, then re-check (Bignum/Fixnum) */
         const uint32_t mid = korb_intern(c->vm, "to_int", 6);
-        if (!KORB_OBJECT_P(o) || !korb_responds_to(c, o, mid))
+        if (!KORB_OBJECT_P(o) || !korb_responds_to(c, o, mid))   /* shift keeps the "of X into Integer" wording, nil included (CRuby) */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, o));
         slots[1] = o;
         RESULT r = korb_send_impl(c, slots + 2, mid, 0, 0, NULL, NULL, NULL);
@@ -292,7 +292,7 @@ static RESULT korb_int_bitop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             bool h; RESULT cr = korb_try_coerce(c, slots, s, o, kind == 0 ? "&" : kind == 1 ? "|" : "^", 0, &h);
             if (h) return cr;
         }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(o));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, o));
     }
     return korb_int_bitwise(c, slots, s, o, kind);     /* Bignum operand → GMP two's-complement bitop */
 }
@@ -319,7 +319,7 @@ static RESULT korb_m_int_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (KORB_RATIONAL_P(o)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), o, 3);
     if (UNLIKELY(!KORB_INTEGER_P(o))) {                /* non-numeric arg → the coerce protocol */
         if (KORB_OBJECT_P(o)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), o, "remainder", 0, &h); if (h) return cr; }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(o));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, o));
     }
     if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || !FIXNUM_P(o)))   /* Bignum operand/self → GMP truncated */
         return korb_int_intdiv(c, slots, VALUE_REF_GET(self), o, 3);
@@ -356,7 +356,7 @@ static RESULT korb_m_ary_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             RESULT cr = korb_coerce_to_int(c, slots + 1, &iv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (!korb_to_index(iv, &i))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, j)));
+                return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, j));
         }
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));   /* re-read after possible dispatch */
         VALUE e = KORB_NIL;
@@ -416,7 +416,7 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             if (UNLIKELY(!korb_to_index(pos0, &beg))) {   /* coerce start via #to_int (self is a VALUE_REF; n is a value) */
                 RESULT cr = korb_coerce_to_int(c, slots, &pos0);
                 if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-                if (!korb_to_index(pos0, &beg)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(pos0));
+                if (!korb_to_index(pos0, &beg)) return korb_raise_no_int(c, slots, pos0);
                 n = VAL2ARY(VALUE_REF_GET(self))->len;
             }
         }
@@ -427,7 +427,7 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             if (UNLIKELY(!korb_to_index(pos1, &len))) {
                 RESULT cr = korb_coerce_to_int(c, slots, &pos1);
                 if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-                if (!korb_to_index(pos1, &len)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(pos1));
+                if (!korb_to_index(pos1, &len)) return korb_raise_no_int(c, slots, pos1);
                 n = VAL2ARY(VALUE_REF_GET(self))->len;
             }
             have_len = true;
@@ -484,7 +484,7 @@ static RESULT korb_m_hash_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 else cur = hc->default_val;
             }
         }
-        else if (KORB_ARRAY_P(cur)) { korb_sword_t i; if (UNLIKELY(!korb_to_index(key, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(key)); KorbArray *ar = VAL2ARY(cur); if (i < 0) i += ar->len; cur = (i < 0 || (uint32_t)i >= ar->len) ? KORB_NIL : korb_items_data(ar->items)[i]; }
+        else if (KORB_ARRAY_P(cur)) { korb_sword_t i; if (UNLIKELY(!korb_to_index(key, &i))) return korb_raise_no_int(c, slots, key); KorbArray *ar = VAL2ARY(cur); if (i < 0) i += ar->len; cur = (i < 0 || (uint32_t)i >= ar->len) ? KORB_NIL : korb_items_data(ar->items)[i]; }
         else return korb_dig_dispatch(c, slots, cur, a, k);   /* user object → cur.dig(rest...), else TypeError */
     }
     return RESULT_OK(cur);
@@ -548,7 +548,7 @@ static RESULT korb_hash_first_n(CTX *c, VALUE *slots, VALUE_REF self, uint32_t l
 }
 static RESULT korb_m_hash_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     korb_sword_t n;
-    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to take negative size");
     return korb_hash_first_n(c, slots, self, (uint32_t)n);
 }
@@ -769,7 +769,7 @@ static RESULT korb_m_hash_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         if (UNLIKELY(!korb_to_index(dv, &depth))) {       /* coerce depth via #to_int, else TypeError */
             RESULT cr = korb_coerce_to_int(c, slots, &dv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(dv, &depth)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            if (!korb_to_index(dv, &depth)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
         }
     }
     uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;

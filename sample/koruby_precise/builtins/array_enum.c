@@ -550,7 +550,7 @@ static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *blo
  * (min) or the last n reversed (max).  `want_max` picks the end + reversal. */
 static RESULT korb_ary_minmax_by_n(CTX *c, VALUE *slots, VALUE_REF self, VALUE nv, NODE *block, VALUE *def_env, VALUE *cself, bool want_max) {
     korb_sword_t n;
-    if (UNLIKELY(!korb_to_index(nv, &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(nv));
+    if (UNLIKELY(!korb_to_index(nv, &n))) return korb_raise_no_int(c, slots, nv);
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative size (%ld)", (long)n);
     RESULT sr = korb_m_ary_sort_by(c, slots, self, VALUE_SLICE_MAKE(NULL, 0), block, def_env, cself);   /* ascending by key */
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
@@ -1350,7 +1350,7 @@ static RESULT korb_m_ary_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (!korb_to_index(dv, &d)) {
             RESULT cr = korb_coerce_to_int(c, slots, &dv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(dv, &d)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            if (!korb_to_index(dv, &d)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
         }
         depth = (int)d;
     }

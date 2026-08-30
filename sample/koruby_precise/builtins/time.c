@@ -481,8 +481,8 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 cls = slots[0];
                 if (KORB_STRING_P(r.value)) cv = r.value;
-                else return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, cstyle ? cidx[i] : (uint32_t)i)));
-            } else return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(cv));
+                else return korb_raise_no_int(c, slots + 1, VALUE_SLICE_GET(a, cstyle ? cidx[i] : (uint32_t)i));
+            } else return korb_raise_no_int(c, slots + 1, cv);
         }
         if (KORB_STRING_P(cv)) {                             /* String component → parse (month accepts names) */
             const KorbString *cs = VAL2STR(cv);

@@ -66,7 +66,7 @@ static RESULT korb_m_int_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     int base = 10;
     if (VALUE_SLICE_LEN(a) >= 1) {
         VALUE b = VALUE_SLICE_GET(a, 0);
-        if (!FIXNUM_P(b)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(b));
+        if (!FIXNUM_P(b)) return korb_raise_no_int(c, slots, b);
         base = (int)FIX2LONG(b);
         if (base < 2 || base > 36) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %d", base);
     }
@@ -223,11 +223,11 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     if (UNLIKELY(!KORB_INTEGER_P(ev))) {
         if (KORB_OBJECT_P(ev)) { bool h; RESULT cr = korb_try_coerce(c, slots, selfv, ev, "**", 0, &h); if (h) return cr; }   /* obj#coerce → a ** b */
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(ev));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, ev));
     }
     if (VALUE_SLICE_LEN(a) >= 2 && !(FIXNUM_P(selfv) && FIXNUM_P(ev) && FIXNUM_P(VALUE_SLICE_GET(a, 1)))) {
         VALUE mv = VALUE_SLICE_GET(a, 1);              /* pow(exp, mod) with a Bignum operand → GMP modular exponentiation */
-        if (UNLIKELY(!KORB_INTEGER_P(mv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(mv));
+        if (UNLIKELY(!KORB_INTEGER_P(mv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, mv));
         korb_mp_t zm; korb_to_mpz(mv, zm);
         if (UNLIKELY(korb_mp_sgn(zm) == 0)) { korb_mp_clear(zm); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
         korb_mp_t ze; korb_to_mpz(ev, ze);
@@ -245,7 +245,7 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     korb_sword_t exp = FIX2LONG(ev);
     if (VALUE_SLICE_LEN(a) >= 2) {                    /* pow(exp, mod): modular exponentiation */
         VALUE mv = VALUE_SLICE_GET(a, 1);
-        if (UNLIKELY(!FIXNUM_P(mv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(mv));
+        if (UNLIKELY(!FIXNUM_P(mv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, mv));
         korb_sword_t mod = FIX2LONG(mv);
         if (UNLIKELY(mod == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
         if (UNLIKELY(exp < 0)) return korb_raise(c, slots, KORB_E_RANGE, 0, "Integer#pow() 1st argument cannot be negative when 2nd argument specified");
@@ -300,7 +300,7 @@ static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (KORB_RATIONAL_P(bv)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), bv, 2);
     if (UNLIKELY(!KORB_INTEGER_P(bv))) {                  /* a, b = bv.coerce(self); a.divmod(b) */
         if (KORB_OBJECT_P(bv)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), bv, "divmod", 0, &h); if (h) return cr; }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, bv));
     }
     if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || !FIXNUM_P(bv)))   /* Bignum operand/self → GMP */
         return korb_int_intdiv(c, slots, VALUE_REF_GET(self), bv, 2);
@@ -323,7 +323,7 @@ static RESULT korb_m_int_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (KORB_RATIONAL_P(bv)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), bv, 0);
     if (UNLIKELY(!KORB_INTEGER_P(bv))) {                  /* a, b = bv.coerce(self); a.div(b) */
         if (KORB_OBJECT_P(bv)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), bv, "div", 0, &h); if (h) return cr; }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, bv));
     }
     if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || !FIXNUM_P(bv)))   /* Bignum operand/self → GMP */
         return korb_int_intdiv(c, slots, VALUE_REF_GET(self), bv, 0);
@@ -335,7 +335,7 @@ static RESULT korb_m_int_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 
 static RESULT korb_m_int_gcd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE bv = VALUE_SLICE_GET(a, 0), sv = VALUE_REF_GET(self);
-    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, bv));
     if (FIXNUM_P(sv) && FIXNUM_P(bv)) {
         korb_sword_t g = korb_int_gcd(FIX2LONG(sv), FIX2LONG(bv));
         if (LIKELY(FIXABLE(g))) return RESULT_OK(LONG2FIX(g));   /* non-fixable only when both are the min Fixnum (g == 2^62) */
@@ -351,7 +351,7 @@ static RESULT korb_m_int_gcd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 
 static RESULT korb_m_int_lcm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE bv = VALUE_SLICE_GET(a, 0), sv = VALUE_REF_GET(self);
-    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, bv));
     if (FIXNUM_P(sv) && FIXNUM_P(bv)) {
         korb_sword_t av = FIX2LONG(sv), b = FIX2LONG(bv);
         if (av == 0 || b == 0) return RESULT_OK(LONG2FIX(0));
@@ -418,7 +418,7 @@ static RESULT korb_m_int_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), bv, "fdiv", 0, &h);
             if (h) return cr;
         }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, bv));
     }
     return korb_float_new(c, slots, s / o);
 }
@@ -440,7 +440,7 @@ static RESULT korb_m_int_ceildiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         korb_mp_clear(za); korb_mp_clear(zp); korb_mp_clear(zq); korb_mp_clear(prod); korb_mp_clear(res);
         return out;
     }
-    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, bv));
     if (KORB_BIGNUM_P(VALUE_REF_GET(self)) || KORB_BIGNUM_P(bv)) {   /* ceiling division in GMP (no korb_sword_t overflow) */
         korb_mp_t za, zb, zq;
         korb_to_mpz(VALUE_REF_GET(self), za); korb_to_mpz(bv, zb);

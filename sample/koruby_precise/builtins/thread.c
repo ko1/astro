@@ -970,7 +970,7 @@ korb_m_thread_priority_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     const VALUE v = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!FIXNUM_P(v)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(v));
+        return korb_raise_no_int(c, slots, v);
     VAL2THREAD(VALUE_REF_GET(self))->rep->priority = (int)FIX2LONG(v);   /* 保持のみ (協調 scheduler) */
     return RESULT_OK(v);
 }

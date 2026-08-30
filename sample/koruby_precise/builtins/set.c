@@ -2187,7 +2187,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             CHECK(korb_coerce_to_int_pub(c, slots + 1, &slots[0]));   /* #to_int is honoured */
             korb_sword_t l = 1;
             if (!korb_to_index(slots[0], &l))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 2)));
+                return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 2));
             line = (int32_t)l;
         }
         /* the eval'd string runs under a cref: instance_eval → the receiver's
