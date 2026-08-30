@@ -437,6 +437,7 @@ typedef struct KorbFiberRep {
     uint8_t pending_raise;           /* Fiber#raise: yield raises transfer instead of returning it */
     uint8_t transferred;             /* entered via #transfer — #resume is then a FiberError */
     uint8_t killing;                 /* Fiber#kill: unwind the fiber at its suspension point */
+    uint8_t blocking;                /* Fiber.new(blocking: true) — #blocking? and Fiber.blocking? */
     struct KorbFiberRep *link;       /* vm fiber list (stable ptrs) */
 } KorbFiberRep;
 

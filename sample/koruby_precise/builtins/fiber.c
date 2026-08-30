@@ -378,15 +378,19 @@ static RESULT korb_m_fiber_s_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     rep->storage = slots[2];                            /* re-read: the set may have moved it */
     return RESULT_OK(slots[1]);
 }
-/* Fiber.blocking? — koruby's fibers never park the scheduler, so the main
- * (blocking) fiber reports 1 and any other fiber false, as CRuby does. */
+/* Fiber.blocking? — 1 in a blocking fiber (the root, or one created with
+ * blocking: true), false otherwise.  koruby has no scheduler, so the flag is
+ * purely what the creator asked for. */
 static RESULT korb_m_fiber_s_blocking_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)self; (void)a;
-    return RESULT_OK(c->vm->running_fiber == NULL ? LONG2FIX(1) : KORB_FALSE);
+    const KorbFiberRep *const rep = c->vm->running_fiber;
+    return RESULT_OK((rep == NULL || rep->blocking) ? LONG2FIX(1) : KORB_FALSE);
 }
 static RESULT korb_m_fiber_blocking_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c; (void)slots; (void)self; (void)a;
-    return RESULT_OK(KORB_FALSE);                       /* per-fiber flag; koruby has no scheduler */
+    (void)c; (void)slots; (void)a;
+    const KorbFiberRep *const rep = VAL2FIBER(VALUE_REF_GET(self))->rep;
+    /* the root fiber has no body: it is always blocking */
+    return RESULT_OK((rep->body == NULL || rep->blocking) ? KORB_TRUE : KORB_FALSE);
 }
 
 static RESULT

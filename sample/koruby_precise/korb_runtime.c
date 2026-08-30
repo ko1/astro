@@ -8568,6 +8568,9 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (LIKELY(fr.state == KORB_NORMAL) && argc >= 1) {   /* Fiber.new(storage: h) { … } */
                 const VALUE opts = slots[-(korb_sword_t)argc];
                 if (KORB_HASH_P(opts)) {
+                    const int32_t bi = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(vm, "blocking", 8)));
+                    if (bi >= 0 && KORB_TRUTHY(korb_items_data(VAL2HASH(opts)->items)[2 * bi + 1]))
+                        VAL2FIBER(fr.value)->rep->blocking = 1;
                     const int32_t si = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(vm, "storage", 7)));
                     if (si >= 0) {
                         const VALUE sv = korb_items_data(VAL2HASH(opts)->items)[2 * si + 1];

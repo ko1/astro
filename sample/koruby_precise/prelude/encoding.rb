@@ -282,9 +282,15 @@ class Encoding
   # Encoding.find(name) → the Encoding constant whose #name matches (case-folded),
   # else a fresh Encoding of that name (used by String#encoding for "other").
   def self.find(name)
-    n = name.to_s
+    # CRuby takes an Encoding, a String, or anything with #to_str — a Symbol is
+    # a TypeError, not a name.
+    n = if name.is_a?(Encoding) then name.name
+        elsif name.is_a?(String) then name
+        elsif name.respond_to?(:to_str) then String.try_convert(name) || name.to_str
+        else raise TypeError, "no implicit conversion of #{name.class} into String"
+        end
     return default_external if n == 'external' || n == 'filesystem' || n == 'locale'
-    return (default_internal || default_external) if n == 'internal'
+    return default_internal if n == 'internal'
     # Resolve an alias first, so find("BINARY") is Encoding::ASCII_8BIT itself
     # rather than a fresh Encoding that merely prints the same.
     aliases.each { |a, canon| (n = canon; break) if a.upcase == n.upcase }
