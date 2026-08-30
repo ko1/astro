@@ -85,7 +85,7 @@ class IO
       @__enc = intern
       @__enc2 = ext
     end
-    __io_enc_reset          # the C read paths memoize the resolved encoding
+    __io_enc_reset          # the C read/write paths memoize the resolved encoding
   end
 
   # A mode string may carry "…:external[:internal]"; the encodings are resolved
@@ -148,22 +148,27 @@ class IO
     end
     @__enc_done = true          # an explicit set_encoding wins over the mode string
     __enc_pair(ext, int, Encoding.default_external, int_none ? nil : Encoding.default_internal)
-    __sync_write_enc
     self
   end
 
-  # The C write path transcodes to @__wenc when it is set.  Only an explicitly
-  # requested external encoding counts; a plain stream writes bytes as given.
-  private def __sync_write_enc
+  # The encoding a write transcodes INTO (nil = write the bytes as given).  Only
+  # an explicitly requested external encoding counts, and only one koruby has a
+  # converter for; the C write path asks once and memoizes.
+  def __io_write_enc_name
+    __resolve_enc
     e = @__enc2 || @__enc
-    @__wenc = (e && e != Encoding::BINARY && __transcodable?(e.name)) ? e.name : nil
+    (e && e != Encoding::BINARY && __transcodable?(e.name)) ? e.name : nil
   end
 
+  # Accepts the option and records it: the C write path reads @__nl to decide
+  # whether a written "\n" becomes "\r\n" (:crlf) or "\r" (:cr).
   private def __check_newline_opt(v)
     raise ArgumentError, "newline decorator with binary mode" if __io_binmode_raw?
-    return if %i[lf crlf cr universal].include?(v)
-    raise ArgumentError, "unexpected value for newline option: #{v}" if v.is_a?(Symbol)
-    raise ArgumentError, "unexpected value for newline option"
+    unless %i[lf crlf cr universal].include?(v)
+      raise ArgumentError, "unexpected value for newline option: #{v}" if v.is_a?(Symbol)
+      raise ArgumentError, "unexpected value for newline option"
+    end
+    @__nl = v
   end
 
 
@@ -207,7 +212,6 @@ class IO
       __enc_pair(ext.is_a?(String) ? Encoding.find(ext) : ext,
                  int.is_a?(String) ? Encoding.find(int) : int,
                  Encoding.default_external, Encoding.default_internal)
-      __sync_write_enc
     end
     self
   end

@@ -24,6 +24,7 @@ typedef struct KorbIORep {
     uint32_t lineno;                 /* IO#lineno: lines handed out by #gets */
     int      enc_idx;                /* memo: the encoding a read result carries (-1 = ask the prelude) */
     int      benc_idx;               /* memo: the encoding the raw bytes arrive in (the external one) */
+    int      wenc_idx;               /* memo: what writes transcode into (-1 = nothing; see korb_io_write_enc) */
     char    *rbuf; uint32_t rpos, rlen, rcapa;   /* read-ahead: live bytes are [rpos, rlen) */
     char    *wbuf; uint32_t wlen, wcapa;         /* write-behind: wlen bytes pending */
 } KorbIORep;
@@ -33,6 +34,7 @@ typedef struct KorbIORep {
  * than reaching a descriptor — same writer code, no descriptor involved. */
 #define KORB_IO_FD_MEM (-2)
 #define KORB_IO_BUFSZ  8192u
+#define KORB_IO_ENC_UNSET (-2)   /* wenc_idx: not asked yet (-1 = asked, no transcoding) */
 
 static uint32_t korb_io_register_rep(struct korb_vm *vm, KorbIORep *rep) {
     if (vm->io_cnt == vm->io_capa) {
@@ -50,6 +52,7 @@ static uint32_t korb_io_register(struct korb_vm *vm, int fd, bool sync) {
     rep->fd = fd;
     rep->sync = sync ? 1 : 0;
     rep->enc_idx = rep->benc_idx = -1;                  /* unresolved (see korb_io_read_enc) */
+    rep->wenc_idx = KORB_IO_ENC_UNSET;                  /* -1 already means "do not transcode" */
     return korb_io_register_rep(vm, rep);
 }
 static uint32_t korb_io_fp_mid(CTX *c) { return korb_intern(c->vm, "__io_fp", 7); }
@@ -359,6 +362,7 @@ void korb_io_flush_std(struct korb_vm *const vm) {
 /* new IO/File instance of `klass` bound to `fd`.  slots[0..] scratch; result rooted by caller. */
 static uint32_t korb_io_read_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep);   /* fwd */
 static uint32_t korb_io_byte_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep);   /* fwd */
+static int korb_io_write_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep);       /* fwd */
 static RESULT korb_io_apply_read_enc(CTX *c, VALUE *slots, VALUE_REF io, VALUE *vslot, uint32_t tag);   /* fwd */
 static RESULT korb_io_make(CTX *c, VALUE *slots, VALUE klass, int fd, int rw) {
     const uint32_t idx = korb_io_register(c->vm, fd, false);
@@ -602,6 +606,49 @@ static RESULT korb_m_io_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+/* An ASCII-8BIT String on its way into a transcoding stream: CRuby routes every
+ * conversion through UTF-8, where a byte above 0x7F is undefined. */
+static RESULT korb_io_check_ascii_only(CTX *c, VALUE *slots, VALUE v) {
+    const KorbString *const s = VAL2STR(v);
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    for (uint32_t k = 0; k < s->len; k++) {
+        if (p[k] < 0x80) continue;
+        char em[64];
+        snprintf(em, sizeof em, "\"\\x%02X\" from ASCII-8BIT to UTF-8", p[k]);
+        return korb_raise_nested(c, slots, "Encoding", "UndefinedConversionError", em);
+    }
+    return RESULT_OK(KORB_NIL);
+}
+/* The `newline:` write decorator: 0 = none, 1 = :crlf, 2 = :cr.  Only the open
+ * options set it, so the plain ivar is authoritative without resolving. */
+static int korb_io_write_newline(CTX *c, VALUE io) {
+    const VALUE v = korb_ivar_get(c, io, ID2SYM(korb_intern(c->vm, "@__nl", 5)));
+    if (!SYMBOL_P(v)) return 0;
+    const char *const n = korb_sym_name(c->vm, SYM2ID(v));
+    return strcmp(n, "crlf") == 0 ? 1 : strcmp(n, "cr") == 0 ? 2 : 0;
+}
+/* "\n" → "\r\n" (crlf) or "\r" (cr).  Returns the argument untouched when the
+ * String holds no newline, so the common case allocates nothing. */
+static RESULT korb_io_apply_newline(CTX *c, VALUE *slots, VALUE v, int nl) {
+    const KorbString *s = VAL2STR(v);
+    const char *const d = korb_strbuf_data(s->buf);
+    uint32_t nlf = 0;
+    for (uint32_t k = 0; k < s->len; k++) if (d[k] == '\n') nlf++;
+    if (nlf == 0) return RESULT_OK(v);
+    slots[0] = v;                                        /* the alloc below moves the source */
+    KorbString *const r = korb_str_alloc(c, slots + 1, s->len + (nl == 1 ? nlf : 0));
+    s = VAL2STR(slots[0]);
+    const char *const src = korb_strbuf_data(s->buf);
+    char *const out = korb_strbuf_data(r->buf);
+    uint32_t o = 0;
+    for (uint32_t k = 0; k < s->len; k++) {
+        if (src[k] != '\n') { out[o++] = src[k]; continue; }
+        if (nl == 1) out[o++] = '\r';
+        out[o++] = (nl == 1) ? '\n' : '\r';
+    }
+    KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(slots[0]));
+    return RESULT_OK((VALUE)r);
+}
 static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
@@ -614,17 +661,19 @@ static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (empty) return RESULT_OK(LONG2FIX(0));
     }
     KORB_IO_NEED_WRITE(c, slots, self);
-    /* A stream with an explicit external encoding transcodes what it is given
-     * (@__wenc is set by IO#set_encoding / the open options). */
-    slots[0] = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__wenc", 7)));
-    char wenc[64];
-    const bool xcode = KORB_STRING_P(slots[0]);
-    if (xcode) korb_tc_cstr(slots[0], wenc, sizeof wenc);
+    /* A stream with an explicit external encoding transcodes what it is given. */
+    const int wenc_idx = korb_io_write_enc(c, slots, self, rep);
+    const bool xcode = wenc_idx >= 0;
+    const char *const wenc = xcode ? korb_enc_name_of(c->vm, (uint32_t)wenc_idx) : NULL;
+    const int nl = korb_io_write_newline(c, VALUE_REF_GET(self));
     size_t nb = 0;
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         VALUE v = VALUE_SLICE_GET(a, i);
-        if (xcode && KORB_STRING_P(v) && KORB_STR_ENC(v) != KORB_ENC_BINARY) {
+        if (xcode && KORB_STRING_P(v)) {
             const uint32_t se = KORB_STR_ENC(v);
+            /* CRuby pivots every conversion through UTF-8, and an ASCII-8BIT
+             * byte above 0x7F has no meaning there — hence the raise. */
+            if (se == KORB_ENC_BINARY) CHECK(korb_io_check_ascii_only(c, slots + 1, v));
             if (strcasecmp(korb_enc_name_of(c->vm, se), wenc) != 0) {
                 slots[1] = v; bool ok = false;
                 const RESULT tr = korb_tc_convert(c, slots + 2, slots[1], korb_enc_name_of(c->vm, se), wenc, &ok);
@@ -637,6 +686,7 @@ static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             }
         }
         slots[1] = v;
+        if (nl != 0 && KORB_STRING_P(slots[1])) slots[1] = UNWRAP(korb_io_apply_newline(c, slots + 2, slots[1], nl));
         const RESULT r = korb_io_emit(c, slots + 2, slots[1], rep, &nb);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -1457,11 +1507,29 @@ static uint32_t korb_io_byte_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *
     if (rep) rep->benc_idx = (int)idx;
     return idx;
 }
+/* The encoding a write transcodes INTO, or -1 when the stream passes bytes
+ * through unchanged.  Resolved lazily: a "w:ENC" mode string is only parsed on
+ * first use, so the ivars are not trustworthy until the prelude is asked. */
+static int korb_io_write_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep) {
+    if (rep == NULL) return -1;
+    if (rep->wenc_idx != KORB_IO_ENC_UNSET) return rep->wenc_idx;
+    slots[0] = VALUE_REF_GET(io);
+    const RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "__io_write_enc_name", 19), 0, 0);
+    rep = korb_io_rep(c, VALUE_REF_GET(io));
+    int idx = -1;
+    if (r.state == KORB_NORMAL && KORB_STRING_P(r.value)) {
+        char nb[64];
+        korb_tc_cstr(r.value, nb, sizeof nb);
+        idx = (int)korb_enc_index_pub(c->vm, nb);
+    }
+    if (rep) rep->wenc_idx = idx;
+    return idx;
+}
 /* IO#__io_enc_reset — the prelude calls this whenever the encodings change. */
 static RESULT korb_m_io_enc_reset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    if (rep) rep->enc_idx = rep->benc_idx = -1;
+    if (rep) { rep->enc_idx = rep->benc_idx = -1; rep->wenc_idx = KORB_IO_ENC_UNSET; }
     return RESULT_OK(KORB_NIL);
 }
 
