@@ -267,7 +267,12 @@ static RESULT korb_m_hash_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VAL
                 CHECK(korb_ary_push_val(c, slots + 2, dst, r.value));
                 continue;
             }
-            return korb_raise(c, slots, KORB_E_KEY, 0, "key not found");
+            {   char *kb = NULL; size_t ksz = 0; FILE *km = open_memstream(&kb, &ksz);
+                if (km) { korb_fprint_inspect(c, km, VALUE_SLICE_GET(a, j)); fclose(km); }
+                char msg[512]; snprintf(msg, sizeof msg, "key not found: %s", kb ? kb : "");
+                free(kb);
+                return korb_raise_key(c, slots + 1, VALUE_REF_GET(self), VALUE_SLICE_GET(a, j), msg);   /* KeyError w/ #receiver + #key */
+            }
         }
         CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(h->items)[2 * idx + 1]));
     }

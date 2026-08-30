@@ -121,6 +121,10 @@ static RESULT korb_m_ary_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
         VALUE key = VALUE_SLICE_GET(a, k);
         if (cur == KORB_NIL) return RESULT_OK(KORB_NIL);
+        /* an intermediate value with its own class (singleton / builtin subclass)
+         * may redefine #dig — CRuby dispatches instead of indexing directly */
+        if (k > 0 && AROH_IS_GC_OBJECT(cur) && (((const AroObjectHeader *)(uintptr_t)cur)->flags & KORB_FL_HAS_KLASS))
+            return korb_dig_dispatch(c, slots, cur, a, k);
         if (KORB_ARRAY_P(cur)) {
             korb_sword_t i;
             if (UNLIKELY(!korb_to_index(key, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(key));
@@ -470,6 +474,8 @@ static RESULT korb_m_hash_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
         VALUE key = VALUE_SLICE_GET(a, k);
         if (cur == KORB_NIL) return RESULT_OK(KORB_NIL);
+        if (k > 0 && AROH_IS_GC_OBJECT(cur) && (((const AroObjectHeader *)(uintptr_t)cur)->flags & KORB_FL_HAS_KLASS))
+            return korb_dig_dispatch(c, slots, cur, a, k);   /* may redefine #dig (see Array#dig) */
         if (KORB_HASH_P(cur)) {
             int32_t idx = korb_hash_find(VAL2HASH(cur), key);
             if (idx >= 0) cur = korb_items_data(VAL2HASH(cur)->items)[2 * idx + 1];
