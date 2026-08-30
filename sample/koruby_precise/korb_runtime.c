@@ -8645,8 +8645,18 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                                   slots[0] == korb_builtin_class_obj(vm, KORB_C_CLASS) ? "Class" : "Module");
             slots[1] = UNWRAP(korb_class_new(c, slots + 1, 0, is_mod ? KORB_NIL : slots[0]));   /* anonymous (name_sym 0) */
             if (is_mod) VAL2CLASS(slots[1])->is_module = 1;
-            if (recv_is_subclass)                            /* a Module/Class SUBCLASS reports itself as #class */
+            if (recv_is_subclass) {                          /* a Module/Class SUBCLASS reports itself as #class */
                 korb_klass_override_set(c, slots[1], *recv_slot);   /* rooted receiver slot: self may have moved */
+                const struct korb_method *const im = korb_class_find_method(*recv_slot, vm->mid_initialize, NULL);
+                if (im != NULL && im->owner == *recv_slot) {   /* the subclass defines #initialize → CRuby runs it instead */
+                    slots[2] = slots[1];                      /* the new module/class (rooted across the dispatch) */
+                    slots[3] = slots[2];                      /* receiver */
+                    for (uint32_t i = 0; i < argc; i++) slots[4 + i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];
+                    RESULT ir = korb_send_impl(c, slots + 4 + argc, vm->mid_initialize, line, argc, block, def_env, captured_self);
+                    if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+                    return RESULT_OK(slots[2]);
+                }
+            }
             if (!is_mod) {                                  /* fire superclass.inherited(new_class) before the body block */
                 CHECK(korb_register_subclass(c, slots + 4, slots[0], slots[1]));   /* record in super's subclass list */
                 const uint32_t inh = korb_intern(vm, "inherited", 9);
@@ -8659,7 +8669,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (block != NULL) {                            /* body block: def's land on the new class/module */
                 const VALUE saved_definee = c->def_definee;   /* a class body, not an instance_eval */
                 c->def_definee = KORB_NIL;
-                RESULT br = korb_block_yield(c, slots + 2, block, def_env, NULL, 0, &slots[1]);
+                slots[2] = slots[1];                        /* CRuby passes the new class/module to the block */
+                RESULT br = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, &slots[1]);
                 c->def_definee = saved_definee;
                 if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;
                 if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
@@ -11638,9 +11649,8 @@ korb_warn_const_redef_at(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner,
     if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
     const char *const nm = korb_sym_name(c->vm, name_sym);
     char qual[256];
-    if (KORB_CLASS_P(owner) && VAL2CLASS(owner)->name_sym &&
-        owner != korb_builtin_class_obj(c->vm, KORB_C_OBJECT)) {  /* CRuby names it Owner::CONST (Object is implicit) */
-        char obuf[192]; korb_class_qname_into(c, owner, obuf, sizeof obuf);
+    if (KORB_CLASS_P(owner) && owner != korb_builtin_class_obj(c->vm, KORB_C_OBJECT)) {  /* CRuby names it Owner::CONST (Object is implicit) */
+        char obuf[192]; korb_class_desc_into(c, owner, obuf, sizeof obuf);   /* anonymous → #<Module:0x…> */
         snprintf(qual, sizeof qual, "%s::%s", obuf, nm);
     } else snprintf(qual, sizeof qual, "%s", nm);
     /* CRuby prefixes both lines with the position they happen at.  korb_warn_at
