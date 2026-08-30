@@ -66,11 +66,12 @@ class Time
   # in the first word; min, sec and usec in the second.  A zone offset rides on
   # the payload String as @offset / @zone, which Marshal attaches before _load.
   def _dump(limit = -1)
-    y = year
+    g = utc? ? self : getutc          # the broken-down fields are always UTC
+    y = g.year
     raise ArgumentError, "year too big to marshal: #{y}" if y - 1900 > 0xffff || y - 1900 < 0
     p = (1 << 31) | ((utc? ? 1 : 0) << 30) | ((y - 1900) << 14) |
-        ((mon - 1) << 10) | (mday << 5) | hour
-    s = (min << 26) | (sec << 20) | usec
+        ((g.mon - 1) << 10) | (g.mday << 5) | g.hour
+    s = (g.min << 26) | (g.sec << 20) | g.usec
     str = [p & 0xff, (p >> 8) & 0xff, (p >> 16) & 0xff, (p >> 24) & 0xff,
            s & 0xff, (s >> 8) & 0xff, (s >> 16) & 0xff, (s >> 24) & 0xff].pack("C*")
     str
@@ -89,4 +90,8 @@ class Time
     return t if utc
     t   # Marshal applies the :offset pseudo-ivar; a bare _load sees UTC fields
   end
+
+  # The seconds/nanoseconds/zone live in @__* ivars; CRuby keeps them out of
+  # reach in a native struct, so they must not show up as user ivars.
+  def instance_variables = super.reject { |n| n.to_s.start_with?("@__") }
 end
