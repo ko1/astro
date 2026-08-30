@@ -4,7 +4,9 @@
 /* CRuby's ruby_float_step: how many values a float step yields, and the i-th one
  * (an inclusive range clamps an overshooting last value back to `end`). */
 long korb_float_step_n(double beg, double end, double unit, bool excl) {
+    if (UNLIKELY(isinf(unit))) return (unit > 0 ? beg <= end : beg >= end) ? 1 : 0;
     double n = (end - beg) / unit;
+    if (UNLIKELY(isnan(n))) return 0;             /* both ends the same infinity */
     double err = (fabs(beg) + fabs(end) + fabs(end - beg)) / fabs(unit) * DBL_EPSILON;
     if (err > 0.5) err = 0.5;
     if (excl) {
@@ -14,6 +16,8 @@ long korb_float_step_n(double beg, double end, double unit, bool excl) {
         if (n < 0) return 0;
         n = floor(n + err);
     }
+    /* an infinite endpoint means "yield until the block breaks"; (long)inf is UB */
+    if (UNLIKELY(n >= (double)LONG_MAX)) return LONG_MAX;
     /* one more step may still fit within the rounding error (CRuby) */
     const double d = (n + 1) * unit + beg;
     if (beg < end) { if (excl ? d < end : d <= end) n++; }
@@ -21,6 +25,7 @@ long korb_float_step_n(double beg, double end, double unit, bool excl) {
     return (long)n + 1;
 }
 double korb_float_step_at(double beg, double end, double unit, long i, bool excl) {
+    if (UNLIKELY(isinf(unit))) return beg;        /* only i == 0 exists; 0 * inf is NaN */
     const double d = beg + (double)i * unit;
     if (!excl && (unit >= 0 ? end < d : d < end)) return end;
     return d;
@@ -853,7 +858,7 @@ static RESULT korb_m_range_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALU
         CHECK(korb_ary_push_val(c, slots + 2, out, VALUE_REF_GET(slice)));
     }
     if (block == NULL) {
-        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each_slice"));
+        slots[1] = UNWRAP(korb_enum_desc_args(c, slots + 1, VALUE_REF_GET(self), "each_slice", a));
         return korb_enum_new(c, slots + 2, VALUE_REF_GET(out), slots[1]);
     }
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
@@ -1445,6 +1450,12 @@ static RESULT korb_m_range_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_range_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self)  { return korb_range_quant(c, slots, self, a, block, def_env, captured_self, 1); }
 static RESULT korb_m_range_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { return korb_range_quant(c, slots, self, a, block, def_env, captured_self, 2); }
 
+/* Numeric? — CRuby's rb_obj_is_kind_of(v, rb_cNumeric), immediates included. */
+static bool korb_range_num_p(CTX *c, VALUE v) {
+    if (FIXNUM_P(v) || KORB_FLOAT_P(v) || KORB_BIGNUM_P(v) || KORB_RATIONAL_P(v)) return true;
+    return korb_obj_is_numeric(c, v);
+}
+
 static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, uint8_t is_pct) {
     uint8_t na = VALUE_SLICE_LEN(a) >= 1 ? 1 : 0;
     VALUE sv = na ? VALUE_SLICE_GET(a, 0) : LONG2FIX(1);
@@ -1470,23 +1481,30 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         }
     }
     /* An ArithmeticSequence describes a *numeric* progression; a String (or any
-     * other Comparable) range steps through #succ / #+ and is a plain
-     * Enumerator.  Which one applies is decided by the range's own endpoints. */
-    const VALUE probe_ = SELF_RANGE->rbegin != KORB_NIL ? SELF_RANGE->rbegin : SELF_RANGE->rend;
-    const bool numeric_range = FIXNUM_P(probe_) || KORB_FLOAT_P(probe_) ||
-                               KORB_BIGNUM_P(probe_) || KORB_RATIONAL_P(probe_);
+     * other Comparable) range steps through #succ / #+ and is a plain Enumerator.
+     * CRuby (range_step) decides from begin/end/step all three. */
+    const bool b_num = korb_range_num_p(c, SELF_RANGE->rbegin);
+    const bool e_num = korb_range_num_p(c, SELF_RANGE->rend);
+    const bool s_num = korb_range_num_p(c, sv);
+    const bool beginless = SELF_RANGE->rbegin == KORB_NIL;
+    if (!na && !b_num && !(beginless && e_num) &&
+        !KORB_STRING_P(SELF_RANGE->rbegin) && !SYMBOL_P(SELF_RANGE->rbegin))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step is required for non-numeric ranges");
+    if (UNLIKELY(s_num && b_num &&
+                 ((FIXNUM_P(sv) && sv == LONG2FIX(0)) || (KORB_FLOAT_P(sv) && korb_float_val(sv) == 0.0))))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
     if (block == NULL) {
-        if (!numeric_range) {                         /* → Enumerator over the stepped values (lazy) */
-            slots[0] = VALUE_REF_GET(self);
-            slots[1] = ID2SYM(korb_intern(c->vm, is_pct ? "%" : "step", is_pct ? 1 : 4));
-            if (na) slots[2] = sv;
-            return korb_send(c, slots + 2 + na, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1 + na);
-        }
-        if (UNLIKELY((FIXNUM_P(sv) && sv == LONG2FIX(0)) || (KORB_FLOAT_P(sv) && korb_float_val(sv) == 0.0)))
-            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
-        return korb_arithseq_new(c, slots, VALUE_REF_GET(self), sv, KORB_NIL, na, is_pct);
+        /* a beginless ArithmeticSequence is still useful (e.g. ary[(..-1) % 3]) */
+        if (s_num && ((b_num && (SELF_RANGE->rend == KORB_NIL || e_num)) || (beginless && e_num)))
+            return korb_arithseq_new(c, slots, VALUE_REF_GET(self), sv, KORB_NIL, na, is_pct);
+        if (UNLIKELY(beginless))                      /* a generic beginless Enumerator is useless */
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "#step for non-numeric beginless ranges is meaningless");
+        slots[0] = VALUE_REF_GET(self);               /* → Enumerator over the stepped values (lazy) */
+        slots[1] = ID2SYM(korb_intern(c->vm, is_pct ? "%" : "step", is_pct ? 1 : 4));
+        if (na) slots[2] = sv;
+        return korb_send(c, slots + 2 + na, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1 + na);
     }
-    if (UNLIKELY(SELF_RANGE->rbegin == KORB_NIL))     /* iterating a beginless range is undefined */
+    if (UNLIKELY(beginless))                          /* iterating a beginless range is undefined */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "#step iteration for beginless ranges is meaningless");
     {   /* Endless numeric range (no end): iterate from begin upward by a positive
          * step forever — the block is expected to break.  Yields Float when either
@@ -1601,12 +1619,12 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
     korb_sword_t st = FIX2LONG(sv);
     if (UNLIKELY(st == 0)) {
-        if (!numeric_range) return RESULT_OK(VALUE_REF_GET(self));   /* CRuby: no iteration, no error */
+        if (!b_num) return RESULT_OK(VALUE_REF_GET(self));   /* CRuby: no iteration, no error */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
     }
     /* Endless non-numeric range (e.g. ("a"..)): walk with #succ forever — the
      * block is expected to break.  Materializing it would be a RangeError. */
-    if (SELF_RANGE->rend == KORB_NIL && st > 0 && !numeric_range) {
+    if (SELF_RANGE->rend == KORB_NIL && st > 0 && !b_num) {
         const uint32_t mid_succ = korb_intern(c->vm, "succ", 4);
         slots[0] = SELF_RANGE->rbegin;                /* v (rooted across the dispatches) */
         for (;;) {
