@@ -91,7 +91,10 @@ class Time
     t   # Marshal applies the :offset pseudo-ivar; a bare _load sees UTC fields
   end
 
-  # The seconds/nanoseconds/zone live in @__* ivars; CRuby keeps them out of
-  # reach in a native struct, so they must not show up as user ivars.
-  def instance_variables = super.reject { |n| n.to_s.start_with?("@__") }
+  # The seconds/nanoseconds/zone live in these ivars; CRuby keeps them out of
+  # reach in a native struct, so they must not show up as user ivars.  Named
+  # exactly, so a user's own @__foo on a Time is still reported.
+  TIME_INTERNAL_IVARS__ = %i[@__t @__ns @__utc @__off @__offx @__tz].freeze
+  private_constant :TIME_INTERNAL_IVARS__
+  def instance_variables = super - TIME_INTERNAL_IVARS__
 end
