@@ -2852,3 +2852,12 @@ koruby は Inner.const_missing に落ちて NameError。node_const の
 `korb_autoload_registered_p` を見る修正を試したが発火しなかった
 (2026-08-30、revert 済み)。`korb_autoload_registered_p` のキーの取り方か、
 cref の解決のどちらかを先に確かめること。core/module/autoload_spec で 2 例。
+
+## IO#write の encoding 問い合わせが prelude に依存する
+
+`korb_io_write_enc` は最初の書き込みで prelude の `__io_write_enc_name` を
+1 回 send し、rep に memo する (`__io_enc_reset` でクリア)。prelude が
+まだ読まれていない時点で書くと NoMethodError になり、その stream は
+「変換しない」を memo したままになる。標準ストリームでは結果的に正しい
+挙動なので放置しているが、boot 中に encoding 付きで書く経路を足すときは
+ここを見ること (2026-08-30、worker の note より)。
