@@ -9,16 +9,22 @@ class Module
   end
   private :const_added
 
-  # The modules in the ancestor chain that are not classes.
+  # The modules in the ancestor chain that are not classes (self excluded).
   def included_modules
-    ancestors.select { |m| m.instance_of?(Module) }
+    ancestors.select { |m| m.instance_of?(Module) && !m.equal?(self) }
   end
 
-  # koruby does not track method visibility strictly; public_instance_method is
-  # instance_method for a public/protected method (a private one should raise,
-  # but the distinction isn't modelled here).
+  # Like instance_method, but a non-public method is a NameError.
   def public_instance_method(name)
-    instance_method(name)
+    m = instance_method(name)
+    vis = if private_method_defined?(name) then "private"
+          elsif protected_method_defined?(name) then "protected"
+          end
+    if vis
+      kind = instance_of?(Module) ? "module" : "class"
+      raise NameError.new("method '#{name}' for #{kind} '#{self}' is #{vis}", name.to_sym)
+    end
+    m
   end
 
   # True iff self is a singleton class.  attached_object succeeds only for a

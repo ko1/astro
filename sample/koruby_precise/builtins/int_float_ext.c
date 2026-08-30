@@ -216,6 +216,13 @@ static RESULT korb_m_hash_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             slots[2] = korb_items_data(h->items)[2*i+1];
             CHECK(korb_hash_set(c, slots + 3, plain, VALUE_REF_AT(&slots[1]), slots[2]));
         }
+        {   /* the plain copy keeps the default / default_proc / compare_by_identity (CRuby) */
+            KorbHash *const d = VAL2HASH(VALUE_REF_GET(plain));
+            const KorbHash *const s0 = VAL2HASH(VALUE_REF_GET(self));
+            ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->default_val,  s0->default_val);
+            ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->default_proc, s0->default_proc);
+            if (s0->head.flags & KORB_FL_CMP_BY_ID) d->head.flags |= KORB_FL_CMP_BY_ID;
+        }
         return RESULT_OK(VALUE_REF_GET(plain));
     }
     slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
@@ -234,7 +241,7 @@ static RESULT korb_m_hash_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (UNLIKELY(cr.value != KORB_TRUE) || !KORB_ARRAY_P(slots[3]))
                 return korb_raise(c, slots + 4, KORB_E_TYPE, 0,
-                                  "wrong element type %s (expected array of [key, value])", cls);
+                                  "wrong element type %s (expected array)", cls);
         }
         /* the pair must be exactly [key, value] — a different length is an
          * ArgumentError, not a type error */
@@ -260,7 +267,12 @@ static RESULT korb_m_hash_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VAL
                 CHECK(korb_ary_push_val(c, slots + 2, dst, r.value));
                 continue;
             }
-            return korb_raise(c, slots, KORB_E_KEY, 0, "key not found");
+            {   char *kb = NULL; size_t ksz = 0; FILE *km = open_memstream(&kb, &ksz);
+                if (km) { korb_fprint_inspect(c, km, VALUE_SLICE_GET(a, j)); fclose(km); }
+                char msg[512]; snprintf(msg, sizeof msg, "key not found: %s", kb ? kb : "");
+                free(kb);
+                return korb_raise_key(c, slots + 1, VALUE_REF_GET(self), VALUE_SLICE_GET(a, j), msg);   /* KeyError w/ #receiver + #key */
+            }
         }
         CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(h->items)[2 * idx + 1]));
     }
@@ -442,6 +454,22 @@ static RESULT korb_copy_hook(CTX *c, VALUE *slots, VALUE_REF self, uint32_t hook
     slots[3] = *hook_kw;                                 /* clone's freeze: keywords — read from the caller's rooted slot */
     return korb_send_impl(c, slots + 4, hook_mid, 0, 2, NULL, NULL, NULL);
 }
+/* Copy the source's generic (side-table) ivars onto the fresh copy at *pdst.
+ * CRuby copies ivars before the copy hook, so a user #initialize_copy can still
+ * overwrite them.  No-op unless the source has any. */
+static RESULT korb_copy_gen_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE *pdst) {
+    const VALUE src = VALUE_REF_GET(self);
+    if (!AROH_IS_GC_OBJECT(src) || !(((const AroObjectHeader *)(uintptr_t)src)->flags & KORB_FL_HAS_IVARS)) return RESULT_OK(*pdst);
+    if (!AROH_IS_GC_OBJECT(*pdst)) return RESULT_OK(*pdst);
+    for (uint32_t i = 0; ; i++) {
+        const VALUE h = korb_objivar_hash_of(c->vm, VALUE_REF_GET(self));   /* re-read: ivar_set GCs */
+        if (h == KORB_NIL || i >= VAL2HASH(h)->len) break;
+        slots[0] = korb_items_data(VAL2HASH(h)->items)[2 * i];
+        slots[1] = korb_items_data(VAL2HASH(h)->items)[2 * i + 1];
+        CHECK(korb_ivar_set(c, slots + 2, VALUE_REF_AT(pdst), slots[0], slots[1]));
+    }
+    return RESULT_OK(*pdst);
+}
 /* Shared body of #dup and #clone.  `hook_mid` is the copy hook CRuby runs on the
  * new object (initialize_dup / initialize_clone); `hook_kw` is the freeze: Hash
  * clone passes along, or nil. */
@@ -454,7 +482,7 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
      * (the default is a no-op — a plain builtin can't override it).  A subclass or
      * singleton CAN, so dispatch it in the tail below only when `sub` (zero cost
      * for a plain String#dup). */
-    bool need_initcopy = false;
+    bool need_initcopy = false, gen_done = false;   /* gen_done: generic (side-table) ivars already copied */
     if (KORB_STRING_P(v)) {
         uint32_t len = VAL2STR(v)->len;
         KorbString *r = korb_str_alloc(c, slots + 1, len);
@@ -506,6 +534,8 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv,  src->recv);
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->owner, src->owner);
         slots[1] = (VALUE)m;
+        CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
+        gen_done = true;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_REGEXP) {   /* Regexp → fresh copy (was aliasing self) */
         slots[1] = v;                                      /* root the source across the alloc */
         KorbRegexp *nre = korb_alloc(c, slots + 2, sizeof(KorbRegexp), KORB_OBJ_REGEXP);
@@ -513,6 +543,8 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         nre->ci = sre->ci; nre->flags = sre->flags;
         ARO_STORE(c, nre, (VALUE *)(uintptr_t)&nre->source, sre->source);
         slots[1] = (VALUE)nre;
+        CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
+        gen_done = true;
         slots[2] = VALUE_REF_GET(self);                    /* CRuby calls #initialize_copy(orig) after copying */
         RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
@@ -524,6 +556,8 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         ARO_STORE(c, nr, (VALUE *)(uintptr_t)&nr->rbegin, sr->rbegin);
         ARO_STORE(c, nr, (VALUE *)(uintptr_t)&nr->rend,   sr->rend);
         slots[1] = (VALUE)nr;
+        CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
+        gen_done = true;
         slots[2] = VALUE_REF_GET(self);                    /* CRuby calls #initialize_copy(orig) after copying */
         RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
@@ -536,6 +570,8 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->self,  sb->self);
         ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->extra, sb->extra);
         slots[1] = (VALUE)nb;
+        CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
+        gen_done = true;
         RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_PROC) {   /* Proc → fresh (unfrozen) shallow copy */
@@ -546,6 +582,8 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->env,  sp->env);
         ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->self, sp->self);
         slots[1] = (VALUE)np;
+        CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
+        gen_done = true;
         /* CRuby calls #initialize_copy(orig) after copying (default no-op; a user override runs). */
         slots[2] = VALUE_REF_GET(self);
         RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
@@ -599,6 +637,7 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
     } else {
         return RESULT_OK(v);   /* immediate / no special copy */
     }
+    if (!gen_done) CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
     if (sub && !(KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_singleton))
         korb_klass_override_set(c, slots[1], slots[0]);   /* dup keeps a builtin-subclass class but NOT a singleton class */
     if (need_initcopy && sub) {                           /* String/Array/Hash/Set subclass: run the (possibly overridden) hook now that the class is set */

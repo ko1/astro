@@ -433,6 +433,10 @@ static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     if (VAL2HASH(VALUE_REF_GET(self))->head.flags & KORB_FL_CMP_BY_ID)   /* merge retains compare_by_identity */
         ((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(dst))->flags |= KORB_FL_CMP_BY_ID;
+    if (((const AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self))->flags & KORB_FL_HAS_KLASS) {
+        const VALUE ov = korb_klass_override_get(c->vm, VALUE_REF_GET(self));   /* merge returns a receiver-subclass instance (CRuby) */
+        if (KORB_CLASS_P(ov) && !VAL2CLASS(ov)->is_singleton) korb_klass_override_set(c, VALUE_REF_GET(dst), ov);
+    }
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         if (i >= h->len) break;

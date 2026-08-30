@@ -1911,7 +1911,7 @@ korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val
             return korb_exc_ivar_set(c, slots, selfref, name_sym, val);
         if (AROH_IS_GC_OBJECT(VALUE_REF_GET(selfref)))   /* String/Array/Hash/Proc/... → generic-ivar table */
             return korb_objivar_set(c, slots, selfref, name_sym, val);
-        return RESULT_OK(val);                        /* immediate (Integer/Symbol/nil/...): no ivar storage */
+        return korb_raise_frozen(c, slots, VALUE_REF_GET(selfref));   /* immediates are frozen (CRuby) */
     }
     const uint32_t sym = SYM2ID(name_sym);
     KorbObject *o = VAL2OBJ(VALUE_REF_GET(selfref));
@@ -2236,12 +2236,17 @@ korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_i
     return RESULT_OK(VALUE_REF_GET(vref));
 }
 
-/* the `@<member>` ivar symbol for a Struct member symbol (`:x` → `:@x`). */
-static VALUE korb_member_ivar_sym(struct korb_vm *vm, VALUE member_sym) {
-    const char *nm = korb_sym_name(vm, SYM2ID(member_sym));
+/* The ivar symbol a Struct/Data member is stored under.  NOT `:@x`: CRuby keeps
+ * members out of the ivar table, so `S.new(1).instance_variable_get(:@x)` is nil
+ * and a user `:@x` on the same object is independent.  `@!` cannot be written
+ * from Ruby (instance_variable_set rejects the name), so the two never collide. */
+static uint32_t korb_member_ivar_id(struct korb_vm *vm, const char *member_name) {
     char buf[256];
-    snprintf(buf, sizeof buf, "@%s", nm);
-    return ID2SYM(korb_intern(vm, buf, strlen(buf)));
+    const int n = snprintf(buf, sizeof buf, "@!%s", member_name);
+    return korb_intern(vm, buf, n > 0 && (size_t)n < sizeof buf ? (size_t)n : strlen(buf));
+}
+static VALUE korb_member_ivar_sym(struct korb_vm *vm, VALUE member_sym) {
+    return ID2SYM(korb_member_ivar_id(vm, korb_sym_name(vm, SYM2ID(member_sym))));
 }
 
 /* Struct.new(*members) — build an anonymous class with attr_accessor per member
@@ -2363,7 +2368,7 @@ static RESULT korb_m_struct_to_h_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE
                 yr.value = ar.value;
             } else { yr.value = slots[4]; }
             if (UNLIKELY(!KORB_ARRAY_P(yr.value)))
-                return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "wrong element type %s (expected array)", korb_type_name(yr.value));
+                return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "wrong element type %s (expected array)", korb_coerce_name(c, yr.value));
         }
         if (UNLIKELY(VAL2ARY(yr.value)->len != 2))           /* wrong length → ArgumentError (not TypeError) */
             return korb_raise(c, slots + 4, KORB_E_ARGUMENT, 0, "element has wrong array length (expected 2, was %u)", VAL2ARY(yr.value)->len);
@@ -2622,38 +2627,54 @@ static RESULT korb_m_struct_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
-static RESULT korb_m_struct_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE o = VALUE_SLICE_GET(a, 0);
-    if (!KORB_OBJECT_P(o) || VAL2OBJ(o)->klass != VAL2OBJ(VALUE_REF_GET(self))->klass) return RESULT_OK(KORB_FALSE);
-    const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));
+/* Pairs currently being compared, on the C stack — CRuby's paired recursion
+ * guard: meeting the same (a, b) again means the cycle matched so far. */
+struct korb_struct_seen { VALUE a, b; const struct korb_struct_seen *prev; };
+/* Member-wise Struct/Data equality.  `strict` selects eql? (type-strict) over ==.
+ * Nothing here allocates, so the bare VALUEs cannot go stale. */
+static bool korb_struct_cmp_rec(CTX *c, VALUE x, VALUE y, bool strict, const struct korb_struct_seen *seen, int depth) {
+    if (x == y) return true;
+    if (!KORB_OBJECT_P(x) || !KORB_OBJECT_P(y) || VAL2OBJ(x)->klass != VAL2OBJ(y)->klass ||
+        !KORB_ARRAY_P(VAL2CLASS(VAL2OBJ(x)->klass)->members))
+        return strict ? korb_value_eql(x, y) : korb_value_eq(x, y);
+    for (const struct korb_struct_seen *p = seen; p != NULL; p = p->prev)
+        if ((p->a == x && p->b == y) || (p->a == y && p->b == x)) return true;
+    if (UNLIKELY(depth > 256)) return true;                   /* C-stack floor for pathologically deep nesting */
+    const struct korb_struct_seen node = { x, y, seen };
+    const KorbArray *const mem = VAL2ARY(VAL2CLASS(VAL2OBJ(x)->klass)->members);
     for (uint32_t i = 0; i < mem->len; i++) {
-        VALUE iv = korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i]);
-        const VALUE sv = korb_ivar_get(c, VALUE_REF_GET(self), iv);
-        const VALUE ov = korb_ivar_get(c, o, iv);
-        if (sv == VALUE_REF_GET(self) && ov == o) continue;   /* direct self-reference at the same position → equal (breaks the cycle, CRuby-style) */
-        if (!korb_value_eq(sv, ov)) return RESULT_OK(KORB_FALSE);
+        const VALUE iv = korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i]);
+        if (!korb_struct_cmp_rec(c, korb_ivar_get(c, x, iv), korb_ivar_get(c, y, iv), strict, &node, depth + 1))
+            return false;
     }
-    return RESULT_OK(KORB_TRUE);
+    return true;
+}
+static RESULT korb_m_struct_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!KORB_OBJECT_P(o) || VAL2OBJ(o)->klass != VAL2OBJ(VALUE_REF_GET(self))->klass) return RESULT_OK(KORB_FALSE);
+    return RESULT_OK(korb_struct_cmp_rec(c, VALUE_REF_GET(self), o, false, NULL, 0) ? KORB_TRUE : KORB_FALSE);
 }
 /* Struct#eql? — like ==, but members are compared type-strictly (1 eql? 1.0 => false). */
 static RESULT korb_m_struct_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;
-    VALUE o = VALUE_SLICE_GET(a, 0);
+    const VALUE o = VALUE_SLICE_GET(a, 0);
     if (!KORB_OBJECT_P(o) || VAL2OBJ(o)->klass != VAL2OBJ(VALUE_REF_GET(self))->klass) return RESULT_OK(KORB_FALSE);
-    const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));
-    for (uint32_t i = 0; i < mem->len; i++) {
-        VALUE iv = korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i]);
-        const VALUE sv = korb_ivar_get(c, VALUE_REF_GET(self), iv);
-        const VALUE ov = korb_ivar_get(c, o, iv);
-        if (sv == VALUE_REF_GET(self) && ov == o) continue;   /* direct self-reference at the same position → equal */
-        if (!korb_value_eql(sv, ov)) return RESULT_OK(KORB_FALSE);
-    }
-    return RESULT_OK(KORB_TRUE);
+    return RESULT_OK(korb_struct_cmp_rec(c, VALUE_REF_GET(self), o, true, NULL, 0) ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_class_new_bracket(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
 static RESULT korb_m_struct_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
 static RESULT korb_m_struct_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);     /* fwd (defined in symbol.c) */
 RESULT korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods);   /* fwd (defined below) */
+/* Does a Struct .new / #initialize call use the keyword form?  keyword_init: true
+ * takes any trailing Hash; unspecified (nil) only a sole Hash actually written as
+ * keywords; explicit false never.  (CRuby 3.2 rb_struct_initialize_m.) */
+static inline bool korb_struct_kw_call_p(uint8_t kwinit_flag, uint32_t argc, VALUE arg0) {
+    if (argc != 1 || !KORB_HASH_P(arg0)) return false;
+    if (kwinit_flag == 1) return true;                        /* keyword_init: true takes a plain Hash too */
+    if (kwinit_flag != 0) return false;                       /* explicit keyword_init: false */
+    return korb_kwargs_hash_p(arg0);
+}
 /* Struct#initialize(*values | member: v, …) — assign members positionally (a
  * shortfall leaves the rest nil; more than N → "struct size differs"), or by
  * keyword for a keyword_init struct.  Registered on every Struct class so a
@@ -2664,7 +2685,8 @@ static RESULT korb_m_struct_initialize(CTX *c, VALUE *slots, VALUE_REF self, VAL
     slots[2] = VAL2CLASS(klass0)->members;                                /* member syms (rooted) */
     const uint32_t mlen = VAL2ARY(slots[2])->len;
     const uint32_t argc = VALUE_SLICE_LEN(a);
-    const bool kwinit = VAL2CLASS(klass0)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, argc - 1));
+    const bool kwinit = korb_struct_kw_call_p(VAL2CLASS(klass0)->struct_kwinit, argc,
+                                             argc >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
     if (kwinit) {
         slots[0] = VALUE_SLICE_GET(a, argc - 1);                          /* kwargs hash (rooted) */
         const KorbHash *const kh = VAL2HASH(slots[0]);
@@ -2690,6 +2712,38 @@ static RESULT korb_m_struct_initialize(CTX *c, VALUE *slots, VALUE_REF self, VAL
     }
     return RESULT_OK(KORB_NIL);
 }
+/* Common Struct instance methods (read members + @ivars generically).  These go
+ * on the base Struct class, once, so `Struct.new(:a) { include M }` lets M
+ * override them (CRuby defines them on Struct too).  `pk` is a rooted slot:
+ * korb_class_def_cfn interns the name → may GC → re-read the class each call. */
+static void korb_def_struct_common(CTX *c, const VALUE *pk) {
+    korb_class_def_cfn(c, *pk, "to_a", korb_m_struct_to_a, 0);
+    /* no #to_ary: a Struct is not implicitly an Array in CRuby (it must not
+     * splat in massign / block params / puts) */
+    korb_class_def_cfn(c, *pk, "values", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, *pk, "size", korb_m_struct_size, 0);
+    korb_class_def_cfn(c, *pk, "length", korb_m_struct_size, 0);
+    korb_class_def_cfn(c, *pk, "deconstruct", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, *pk, "values_at", korb_m_struct_values_at, -1);
+    korb_class_def_cfn(c, *pk, "dig", korb_m_struct_dig, -1);
+    korb_class_def_cfn(c, *pk, "deconstruct_keys", korb_m_struct_deconstruct_keys, 1);
+    korb_class_def_cfn_blk(c, *pk, "to_h", korb_m_struct_to_h_blk, 0);
+    korb_class_def_cfn(c, *pk, "members", korb_m_struct_members, 0);
+    korb_class_def_cfn(c, *pk, "[]", korb_m_struct_aref, 1);
+    korb_class_def_cfn(c, *pk, "[]=", korb_m_struct_aset, 2);
+    korb_class_def_cfn(c, *pk, "==", korb_m_struct_eq, 1);
+    korb_class_def_cfn(c, *pk, "inspect", korb_m_struct_inspect, 0);
+    korb_class_def_cfn(c, *pk, "instance_variables", korb_m_struct_ivars, 0);
+    korb_class_def_cfn(c, *pk, "to_s", korb_m_struct_inspect, 0);
+    korb_class_def_cfn(c, *pk, "eql?", korb_m_struct_eql, 1);
+    korb_class_def_cfn(c, *pk, "hash", korb_m_struct_hash, 0);
+    korb_class_def_cfn_blk(c, *pk, "each", korb_m_struct_each, 0);
+    korb_class_def_cfn_blk(c, *pk, "each_pair", korb_m_struct_each_pair, 0);
+    korb_class_def_cfn_blk(c, *pk, "map", korb_m_struct_map, 0);
+    korb_class_def_cfn_blk(c, *pk, "collect", korb_m_struct_map, 0);
+    korb_class_def_cfn(c, *pk, "initialize", korb_m_struct_initialize, -1);
+}
+
 /* `base` = the class .new was called on (Struct itself, or a Struct subclass
  * used as a factory like `class Apple < Struct`).  The new struct class is a
  * subclass of `base` and, when named, a constant under `base`. */
@@ -2766,36 +2820,15 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
          * may have moved: take the namespace from the new class's superclass. */
         VALUE owner = VAL2CLASS(VALUE_REF_GET(cls))->superclass;
         if (!KORB_CLASS_P(owner)) owner = korb_const_get(vm, korb_intern(vm, "Struct", 6));
-        korb_const_define_owned(c, name_id, VALUE_REF_GET(cls), KORB_CLASS_P(owner) ? owner : KORB_NIL);
+        slots[2] = KORB_CLASS_P(owner) ? owner : KORB_NIL;             /* root across the warning (it allocates) */
+        if (korb_const_index_owned(vm, name_id, slots[2]) != UINT32_MAX)
+            korb_warn_const_redef(c, slots + 3, name_id, slots[2]);    /* Struct.new("X") twice warns, like any reassignment */
+        korb_const_define_owned(c, name_id, VALUE_REF_GET(cls), slots[2]);
     }
     ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
-    /* common Struct instance methods (read members + @ivars generically).
-     * korb_class_def_cfn interns the name → may GC → re-read the class from the
-     * rooted `cls` slot each call (never hold it in a bare C-local across them). */
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_a", korb_m_struct_to_a, 0);
-    /* no #to_ary: a Struct is not implicitly an Array in CRuby (it must not
-     * splat in massign / block params / puts) */
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "values", korb_m_struct_to_a, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "size", korb_m_struct_size, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "length", korb_m_struct_size, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct", korb_m_struct_to_a, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "values_at", korb_m_struct_values_at, -1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "dig", korb_m_struct_dig, -1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct_keys", korb_m_struct_deconstruct_keys, 1);
-    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "to_h", korb_m_struct_to_h_blk, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "members", korb_m_struct_members, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "[]", korb_m_struct_aref, 1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "[]=", korb_m_struct_aset, 2);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "==", korb_m_struct_eq, 1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "inspect", korb_m_struct_inspect, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "instance_variables", korb_m_struct_ivars, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_s", korb_m_struct_inspect, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "eql?", korb_m_struct_eql, 1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "hash", korb_m_struct_hash, 0);
-    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "each", korb_m_struct_each, 0);
-    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "each_pair", korb_m_struct_each_pair, 0);
-    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "map", korb_m_struct_map, 0);
-    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "collect", korb_m_struct_map, 0);
+    /* The common Struct instance methods live on the base Struct class (see
+     * korb_def_struct_common), not here: a module `include`d into the struct
+     * body must be able to override them, as in CRuby. */
     /* Member accessors are defined LAST so a member named like a built-in
      * (:hash/:each/:size/:members/…) keeps its accessor — CRuby defines the
      * accessors on the anonymous subclass, shadowing the inherited methods. */
@@ -2803,7 +2836,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         const VALUE sym = korb_items_data(VAL2ARY(VALUE_REF_GET(mem))->items)[i];
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
         char buf[256];
-        snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
+        const uint32_t ivar = korb_member_ivar_id(vm, nm);
         korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, nm, strlen(nm)), ivar, 0);   /* reader */
         snprintf(buf, sizeof buf, "%s=", nm); korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, buf, strlen(buf)), ivar, 1);  /* writer */
     }
@@ -2926,14 +2959,18 @@ static RESULT korb_m_data_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* "#<KIND[ Name] m1=v1, m2=v2>" — shared by Data#inspect and Struct#inspect/to_s. */
 static void korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth);   /* fwd (defined far below) */
 static bool korb_fprint_class_qname(CTX *c, FILE *fp, VALUE cls);                         /* fwd */
+static bool korb_class_permanent_p(VALUE cls);                                            /* fwd */
 static RESULT korb_struct_inspect_impl(CTX *c, VALUE *slots, VALUE_REF self, const char *kind) {
     const VALUE klass = VAL2OBJ(VALUE_REF_GET(self))->klass;
     const KorbClass *const k = VAL2CLASS(klass);
+    /* CRuby only prints the class name when its path is permanent: a struct
+     * const-set under an anonymous namespace renders as "#<struct a=1>". */
+    const bool named = korb_class_permanent_p(klass);
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     fputc('#', ms); fputc('<', ms); fputs(kind, ms);
-    if (k->name_sym) { fputc(' ', ms); korb_fprint_class_qname(c, ms, klass); }   /* qualified name (not the #name method) */
+    if (named) { fputc(' ', ms); korb_fprint_class_qname(c, ms, klass); }   /* qualified name (not the #name method) */
     const KorbArray *const mem = VAL2ARY(k->members);
     for (uint32_t i = 0; i < mem->len; i++) {                 /* no GC in this loop (fprint writes to FILE) */
         const VALUE msym = korb_items_data(mem->items)[i];
@@ -2968,6 +3005,23 @@ static RESULT korb_m_class_new_bracket(CTX *c, VALUE *slots, VALUE_REF self, VAL
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
     return korb_send(c, slots + 1 + argc, korb_intern(c->vm, "new", 3), 0, argc);
 }
+/* Common Data instance methods — on the base Data class, once (see
+ * korb_def_struct_common for why).  `pk` is a rooted slot. */
+static void korb_def_data_common(CTX *c, const VALUE *pk) {
+    korb_class_def_cfn_blk(c, *pk, "to_h", korb_m_struct_to_h_blk, 0);
+    korb_class_def_cfn(c, *pk, "deconstruct_keys", korb_m_struct_deconstruct_keys, 1);   /* requires exactly one arg (keys Array | nil) */
+    korb_class_def_cfn(c, *pk, "members", korb_m_struct_members, 0);
+    korb_class_def_cfn(c, *pk, "to_a", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, *pk, "deconstruct", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, *pk, "==", korb_m_struct_eq, 1);
+    korb_class_def_cfn(c, *pk, "eql?", korb_m_struct_eql, 1);
+    korb_class_def_cfn(c, *pk, "hash", korb_m_struct_hash, 0);
+    korb_class_def_cfn(c, *pk, "with", korb_m_data_with, -1);
+    korb_class_def_cfn(c, *pk, "inspect", korb_m_data_inspect, 0);
+    korb_class_def_cfn(c, *pk, "instance_variables", korb_m_struct_ivars, 0);
+    korb_class_def_cfn(c, *pk, "to_s", korb_m_data_inspect, 0);
+    korb_class_def_cfn(c, *pk, "initialize", korb_m_data_initialize, -1);
+}
 static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)self; (void)cself;
     struct korb_vm *const vm = c->vm;
@@ -2982,25 +3036,13 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len));
         if (!SYMBOL_P(sym)) continue;
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
-        char buf[256];
-        snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
-        korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, nm, strlen(nm)), ivar, 0);   /* reader only (immutable) */
+        korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, nm, strlen(nm)), korb_member_ivar_id(vm, nm), 0);   /* reader only (immutable) */
         CHECK(korb_ary_push_val(c, slots + 2, mem, sym));
     }
     ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
     VAL2CLASS(VALUE_REF_GET(cls))->is_data = 1;
-    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "to_h", korb_m_struct_to_h_blk, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct_keys", korb_m_struct_deconstruct_keys, 1);   /* requires exactly one arg (keys Array | nil) */
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "members", korb_m_struct_members, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_a", korb_m_struct_to_a, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct", korb_m_struct_to_a, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "==", korb_m_struct_eq, 1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "eql?", korb_m_struct_eql, 1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "hash", korb_m_struct_hash, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "with", korb_m_data_with, -1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "inspect", korb_m_data_inspect, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "instance_variables", korb_m_struct_ivars, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_s", korb_m_data_inspect, 0);
+    /* the common Data instance methods live on the base Data class (see
+     * korb_def_data_common) so an `include`d module can override them */
     slots[2] = VALUE_REF_GET(cls);                            /* root across singleton alloc */
     slots[3] = UNWRAP(korb_obj_singleton(c, slots + 4, slots[2]));
     korb_class_def_cfn(c, slots[3], "members", korb_m_struct_class_members, 0);
@@ -5512,17 +5554,15 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
       (void)korb_do_include(c, slots + 2, slots[1], VALUE_SLICE_MAKE(&slots[0], 1)); }
 
     /* Struct factory class — `Struct.new(*members)` builds anonymous subclasses. */
-    { uint32_t s = korb_intern(vm, "Struct", 6); const VALUE sc = korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value; korb_const_define(c, s, sc);
-      /* to_a / deconstruct on the base Struct too (subclasses override with their
-       * own) so reflection works: Struct.instance_method(:deconstruct) == :to_a. */
-      korb_class_def_cfn(c, sc, "to_a", korb_m_struct_to_a, 0);
-      korb_class_def_cfn(c, sc, "deconstruct", korb_m_struct_to_a, 0);
-      korb_class_def_cfn(c, sc, "initialize", korb_m_struct_initialize, -1); }   /* base-class super target for a subclass/block #initialize */
+    { uint32_t s = korb_intern(vm, "Struct", 6);
+      slots[0] = korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value;
+      korb_const_define(c, s, slots[0]);
+      korb_def_struct_common(c, &slots[0]); }   /* shared by every generated struct class (also the super target for a block #initialize) */
     /* Data factory class — `Data.define(*members)` builds anonymous immutable value subclasses. */
     { uint32_t s = korb_intern(vm, "Data", 4);
       slots[0] = korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value;
       korb_const_define(c, s, slots[0]);
-      korb_class_def_cfn(c, slots[0], "initialize", korb_m_data_initialize, -1);   /* on the Data base class → a subclass override's `super` reaches it */
+      korb_def_data_common(c, &slots[0]);
       slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;    /* Data's singleton holds `define` */
       korb_class_def_cfn_blk(c, slots[1], "define", korb_data_define, -1); }
     { uint32_t s = korb_intern(vm, "Module", 6); vm->name_module = s; korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
@@ -8387,7 +8427,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             for (uint32_t i = 0; i < n; i++) {
                 const VALUE pr = korb_items_data(VAL2ARY(base[0])->items)[i];        /* re-read */
                 if (UNLIKELY(!KORB_ARRAY_P(pr)))
-                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_type_name(pr), i);
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_coerce_name(c, pr), i);
                 if (UNLIKELY(VAL2ARY(pr)->len < 1 || VAL2ARY(pr)->len > 2))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line, "invalid number of elements (%u for 1..2)", VAL2ARY(pr)->len);
                 slots[1] = korb_items_data(VAL2ARY(pr)->items)[0];                   /* key (rooted) */
@@ -8442,7 +8482,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             const uint32_t n = VAL2ARY(abase[0])->len;
             for (uint32_t i = 0; i < n; i++) {
                 const VALUE pr = korb_items_data(VAL2ARY(abase[0])->items)[i];
-                if (UNLIKELY(!KORB_ARRAY_P(pr))) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_type_name(pr), i);
+                if (UNLIKELY(!KORB_ARRAY_P(pr))) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_coerce_name(c, pr), i);
                 slots[2] = korb_items_data(VAL2ARY(pr)->items)[0];
                 slots[3] = VAL2ARY(pr)->len >= 2 ? korb_items_data(VAL2ARY(pr)->items)[1] : KORB_NIL;
                 CHECK(korb_hash_set(c, slots + 4, dst, VALUE_REF_AT(&slots[2]), slots[3]));
@@ -8614,8 +8654,18 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                                   slots[0] == korb_builtin_class_obj(vm, KORB_C_CLASS) ? "Class" : "Module");
             slots[1] = UNWRAP(korb_class_new(c, slots + 1, 0, is_mod ? KORB_NIL : slots[0]));   /* anonymous (name_sym 0) */
             if (is_mod) VAL2CLASS(slots[1])->is_module = 1;
-            if (recv_is_subclass)                            /* a Module/Class SUBCLASS reports itself as #class */
+            if (recv_is_subclass) {                          /* a Module/Class SUBCLASS reports itself as #class */
                 korb_klass_override_set(c, slots[1], *recv_slot);   /* rooted receiver slot: self may have moved */
+                const struct korb_method *const im = korb_class_find_method(*recv_slot, vm->mid_initialize, NULL);
+                if (im != NULL && im->owner == *recv_slot) {   /* the subclass defines #initialize → CRuby runs it instead */
+                    slots[2] = slots[1];                      /* the new module/class (rooted across the dispatch) */
+                    slots[3] = slots[2];                      /* receiver */
+                    for (uint32_t i = 0; i < argc; i++) slots[4 + i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];
+                    RESULT ir = korb_send_impl(c, slots + 4 + argc, vm->mid_initialize, line, argc, block, def_env, captured_self);
+                    if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+                    return RESULT_OK(slots[2]);
+                }
+            }
             if (!is_mod) {                                  /* fire superclass.inherited(new_class) before the body block */
                 CHECK(korb_register_subclass(c, slots + 4, slots[0], slots[1]));   /* record in super's subclass list */
                 const uint32_t inh = korb_intern(vm, "inherited", 9);
@@ -8628,7 +8678,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (block != NULL) {                            /* body block: def's land on the new class/module */
                 const VALUE saved_definee = c->def_definee;   /* a class body, not an instance_eval */
                 c->def_definee = KORB_NIL;
-                RESULT br = korb_block_yield(c, slots + 2, block, def_env, NULL, 0, &slots[1]);
+                slots[2] = slots[1];                        /* CRuby passes the new class/module to the block */
+                RESULT br = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, &slots[1]);
                 c->def_definee = saved_definee;
                 if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;
                 if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
@@ -8757,7 +8808,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             if (!is_data) {                                /* too many positional values → ArgumentError */
                 const KorbArray *const mm = VAL2ARY(VAL2CLASS(*recv_slot)->members);
-                const bool kw = VAL2CLASS(*recv_slot)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(slots[-(korb_sword_t)argc]);   /* keyword_init accepts a plain Hash too */
+                const bool kw = korb_struct_kw_call_p(VAL2CLASS(*recv_slot)->struct_kwinit, argc,
+                                                      argc >= 1 ? slots[-(korb_sword_t)argc] : KORB_NIL);
                 if (UNLIKELY(!kw && argc > mm->len))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line, "struct size differs");
             }
@@ -8765,7 +8817,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             slots[0] = obj;
             const bool kwinit = is_data
                 ? (argc == 1 && korb_kwargs_hash_p(slots[-(korb_sword_t)argc]))
-                : (VAL2CLASS(*recv_slot)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(slots[-(korb_sword_t)argc]));
+                : korb_struct_kw_call_p(VAL2CLASS(*recv_slot)->struct_kwinit, argc,
+                                        argc >= 1 ? slots[-(korb_sword_t)argc] : KORB_NIL);
             /* keyword_init: true takes keywords ONLY — positional values are an
              * arity error (CRuby), not a silent member-by-position fill. */
             if (UNLIKELY(!is_data && VAL2CLASS(*recv_slot)->struct_kwinit == 1 && !kwinit && argc > 0))
@@ -8880,15 +8933,28 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (LIKELY(lr.state == KORB_NORMAL) && KORB_ENUM_P(lr.value)) VAL2ENUM(lr.value)->size = FIXNUM_P(lsize) ? lsize : KORB_NIL;
             return lr;
         }
-        if (self == korb_builtin_class_obj(vm, KORB_C_HASH)) {         /* Hash.new([default]) / Hash.new { |h,k| } */
-            if (argc > 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %d, expected 0..1)", (int)argc);
-            if (block != NULL && argc >= 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given 1, expected 0)");
+        if (self == korb_builtin_class_obj(vm, KORB_C_HASH)) {         /* Hash.new([default][, capacity:]) / Hash.new { |h,k| } */
+            uint32_t hargc = argc;
+            if (hargc >= 1 && KORB_HASH_P(slots[-1]) &&
+                (((const AroObjectHeader *)(uintptr_t)slots[-1])->flags & KORB_FL_KWARGS)) {
+                const KorbHash *const kw = VAL2HASH(slots[-1]);       /* only capacity: (a sizing hint koruby has no use for) */
+                const VALUE cap_sym = ID2SYM(korb_intern(vm, "capacity", 8));
+                for (uint32_t ki = 0; ki < kw->len; ki++) {
+                    const VALUE key = korb_items_data(kw->items)[2 * ki];
+                    if (key != cap_sym)
+                        return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: %s%s",
+                                          SYMBOL_P(key) ? ":" : "", SYMBOL_P(key) ? korb_sym_name(vm, SYM2ID(key)) : korb_type_name(key));
+                }
+                hargc--;
+            }
+            if (hargc > 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %d, expected 0..1)", (int)hargc);
+            if (block != NULL && hargc >= 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given 1, expected 0)");
             slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
             if (block != NULL) {                            /* default_proc: called on [] miss with (hash, key) */
                 if (def_env == KORB_BLK_FWD) slots[1] = KORB_CSELF_VAL(captured_self);   /* Hash.new(&pr) → keep pr's identity, don't re-wrap */
                 else slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
                 ARO_STORE(c, VAL2HASH(slots[0]), (VALUE *)(uintptr_t)&VAL2HASH(slots[0])->default_proc, slots[1]);
-            } else if (argc >= 1) {
+            } else if (hargc >= 1) {
                 ARO_STORE(c, VAL2HASH(slots[0]), (VALUE *)(uintptr_t)&VAL2HASH(slots[0])->default_val, slots[-(korb_sword_t)argc]);
             }
             return RESULT_OK(slots[0]);
@@ -10468,10 +10534,13 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_protected, -1);
     /* NOT on Class: CRuby undefines Module#module_function there (a Class has no
      * module functions).  The Module-side registration below is the only one. */
-    /* top-level `private`/`public`/... (self = main, an Object) are also no-ops. */
-    korb_def_cmethod(c, KORB_C_OBJECT, "private", korb_m_visibility_noop, -1);
-    korb_def_cmethod(c, KORB_C_OBJECT, "public", korb_m_visibility_noop, -1);
-    korb_def_cmethod(c, KORB_C_OBJECT, "protected", korb_m_visibility_noop, -1);
+    /* Kernel-level `private`/`public`/`protected`: a no-op when self is not a
+     * class (top-level `private :foo`, self = main), but the real thing when it
+     * is — `Kernel.send(:protected, :m)` reaches this copy (Kernel's singleton
+     * holds it as a module function) before Module#protected. */
+    korb_def_cmethod(c, KORB_C_OBJECT, "private", korb_m_private, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "public", korb_m_public, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "protected", korb_m_protected, -1);
     /* `refine(Klass) { ... }` (refinements) — koruby has no refinement scoping;
      * treat as a no-op returning a fresh module so the call site doesn't raise. */
     korb_def_cmethod(c, KORB_C_CLASS,  "refine", korb_m_lit_nil, -1);
@@ -11590,9 +11659,8 @@ korb_warn_const_redef_at(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner,
     if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
     const char *const nm = korb_sym_name(c->vm, name_sym);
     char qual[256];
-    if (KORB_CLASS_P(owner) && VAL2CLASS(owner)->name_sym &&
-        owner != korb_builtin_class_obj(c->vm, KORB_C_OBJECT)) {  /* CRuby names it Owner::CONST (Object is implicit) */
-        char obuf[192]; korb_class_qname_into(c, owner, obuf, sizeof obuf);
+    if (KORB_CLASS_P(owner) && owner != korb_builtin_class_obj(c->vm, KORB_C_OBJECT)) {  /* CRuby names it Owner::CONST (Object is implicit) */
+        char obuf[192]; korb_class_desc_into(c, owner, obuf, sizeof obuf);   /* anonymous → #<Module:0x…> */
         snprintf(qual, sizeof qual, "%s::%s", obuf, nm);
     } else snprintf(qual, sizeof qual, "%s", nm);
     /* CRuby prefixes both lines with the position they happen at.  korb_warn_at

@@ -555,10 +555,6 @@ static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 /* Module#private/public/protected/module_function — koruby doesn't enforce
  * visibility, so these are no-ops returning the arg (for `private :foo` /
  * `private def foo`) or nil (bare `private`). */
-static RESULT korb_m_visibility_noop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)self;
-    return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
-}
 /* Module#deprecate_constant(*names) — mark each so a read warns. */
 static RESULT korb_m_deprecate_constant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE owner = VALUE_REF_GET(self);
@@ -705,17 +701,19 @@ static RESULT korb_m_module_function(CTX *c, VALUE *slots, VALUE_REF self, VALUE
  * named singleton (class) methods, which live on self's singleton class. */
 static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis) {
     const VALUE selfv = VALUE_REF_GET(self);
-    const VALUE ret = VALUE_SLICE_LEN(a) == 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
-    if (!KORB_CLASS_P(selfv)) return RESULT_OK(ret);
+    if (!KORB_CLASS_P(selfv)) return RESULT_OK(selfv);            /* CRuby returns self */
     slots[0] = UNWRAP(korb_obj_singleton(c, slots + 1, selfv));   /* self's OWN singleton (created if absent → copy-down never touches a parent's) */
-    if (!KORB_CLASS_P(slots[0])) return RESULT_OK(ret);
-    const uint32_t argc = VALUE_SLICE_LEN(a);
+    if (!KORB_CLASS_P(slots[0])) return RESULT_OK(VALUE_REF_GET(self));
+    /* a lone Array argument is the list of names (like private/public) */
+    const bool array_arg = VALUE_SLICE_LEN(a) == 1 && KORB_ARRAY_P(VALUE_SLICE_GET(a, 0));
+    slots[1] = array_arg ? VALUE_SLICE_GET(a, 0) : KORB_NIL;      /* root the name array across the loop's allocs */
+    const uint32_t argc = array_arg ? VAL2ARY(slots[1])->len : VALUE_SLICE_LEN(a);
     for (uint32_t i = 0; i < argc; i++) {
-        const VALUE arg = VALUE_SLICE_GET(a, i);
+        const VALUE arg = array_arg ? korb_items_data(VAL2ARY(slots[1])->items)[i] : VALUE_SLICE_GET(a, i);
         uint32_t mid;
         if (SYMBOL_P(arg)) mid = SYM2ID(arg);
         else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len); }
-        else return korb_raise_not_sym(c, slots + 1, arg);
+        else return korb_raise_not_sym(c, slots + 2, arg);
         KorbClass *const k = VAL2CLASS(slots[0]);          /* re-read (a slot-array grow below may move nothing, but be safe) */
         bool set = false;
         for (uint32_t j = 0; j < k->method_cnt; j++)
@@ -735,11 +733,11 @@ static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VA
          * :allocate はこれ)。enforcement は失うが no-op で通す。 */
         { const char *const nm = korb_sym_name(c->vm, mid);
           if (nm && (strcmp(nm, "new") == 0 || strcmp(nm, "allocate") == 0)) continue; }
-        return korb_raise(c, slots + 1, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* not a class method → NameError */
+        return korb_raise(c, slots + 2, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* not a class method → NameError */
                           korb_sym_name(c->vm, mid), korb_type_name(VALUE_REF_GET(self)));
     }
     c->vm->method_serial++;                                /* invalidate call caches */
-    return RESULT_OK(ret);
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_private_class_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_class_visibility(c, slots, self, a, 1); }
 static RESULT korb_m_public_class_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_set_class_visibility(c, slots, self, a, 0); }
@@ -825,7 +823,10 @@ static RESULT korb_m_class_attr1(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     int writer = 0;
     if (n >= 1) {                                             /* attr(name, true|false) */
         const VALUE last = VALUE_SLICE_GET(a, n - 1);
-        if (last == KORB_TRUE || last == KORB_FALSE) { writer = (last == KORB_TRUE) ? 1 : 0; n--; }
+        if (last == KORB_TRUE || last == KORB_FALSE) {
+            writer = (last == KORB_TRUE) ? 1 : 0; n--;
+            korb_warn(c, slots, "optional boolean argument is obsoleted");
+        }
     }
     return korb_m_class_attr_n(c, slots, self, a, n, 1, writer);
 }
@@ -1149,7 +1150,10 @@ static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALU
         const bool on_singleton = KORB_CLASS_P(VALUE_REF_GET(klass_ref)) && VAL2CLASS(VALUE_REF_GET(klass_ref))->is_singleton;
         if (!on_singleton)
             for (uint32_t p = 0; p < priv_n; p++) if (m->mid == priv_mids[p]) { v = 1; break; }
-        if (!(vis_mask & (1u << v))) continue;
+        /* a definition nearer in the MRO hides the ancestors' — even when its own
+         * visibility does not match, so `private :m` here keeps an ancestor's
+         * public m out of public_instance_methods (CRuby). */
+        if (!(vis_mask & (1u << v))) { CHECK(korb_ary_push_val(c, slots, blocked, sym)); continue; }
         const KorbArray *const r = VAL2ARY(VALUE_REF_GET(result));
         bool seen = false;
         for (uint32_t j = 0; j < r->len; j++) if (korb_items_data(r->items)[j] == sym) { seen = true; break; }
@@ -1639,15 +1643,36 @@ static RESULT korb_m_class_remove_method(CTX *c, VALUE *slots, VALUE_REF self, V
         bool found = false;
         for (uint32_t i = 0; i < k->method_cnt; i++)
             if (k->methods[i]->mid == mid) { k->methods[i]->mid = UINT32_MAX; found = true; break; }
-        if (!found)
-            return korb_raise(c, slots, KORB_E_NAME, 0, "method '%s' not defined in %s", korb_sym_name(c->vm, mid), korb_type_name(VALUE_REF_GET(self)));
+        if (!found) {
+            char cnm[256]; korb_class_desc_into(c, VALUE_REF_GET(self), cnm, sizeof cnm);
+            return korb_raise(c, slots, KORB_E_NAME, 0, "method '%s' not defined in %s", korb_sym_name(c->vm, mid), cnm);
+        }
+        c->vm->method_serial++;
+        slots[0] = VALUE_REF_GET(self);         /* the hook is Ruby code: re-root the class */
+        CHECK(korb_fire_def_hook(c, slots + 1, slots[0], mid, "method_removed", 14));
     }
     c->vm->method_serial++;                     /* method table changed → flush caches */
-    return RESULT_OK(cls);
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 /* Module#undef_method(sym...) — prevent the named method(s) from this class.
  * Approximated as remove-if-present (no inherited-block marker); a name absent
  * from this class is tolerated so it doesn't re-block the file. */
+/* The class name CRuby's undef/print_undef reports: the singleton class of a
+ * class/module is named by that class ("String"), anything else by its #to_s. */
+static void korb_undef_class_desc(CTX *c, VALUE cls, char *out, size_t outsz) {
+    VALUE named = cls;
+    if (VAL2CLASS(cls)->is_singleton)
+        for (uint32_t i = 0; i < c->vm->sklass_cnt; i++)
+            if (c->vm->sklass_cls[i] == cls) {
+                if (KORB_CLASS_P(c->vm->sklass_obj[i])) named = c->vm->sklass_obj[i];
+                break;
+            }
+    char *b = NULL; size_t sz = 0;
+    FILE *ms = open_memstream(&b, &sz);
+    if (ms) { korb_fprint_class_tostr(c, ms, named); fclose(ms); }
+    snprintf(out, outsz, "%s", b ? b : "");
+    free(b);
+}
 static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(!KORB_CLASS_P(VALUE_REF_GET(self)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
     for (uint32_t ai = 0; ai < VALUE_SLICE_LEN(a); ai++) {
@@ -1668,7 +1693,7 @@ static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VA
             const bool intrinsic = !strcmp(nm, "to_s") || !strcmp(nm, "inspect") || !strcmp(nm, "!~") ||
                                    !strcmp(nm, "<=>") || !strcmp(nm, "!") || !strcmp(nm, "!=");
             if (!on_object && !intrinsic)
-            {   char cnm[256]; korb_class_desc_into(c, cls, cnm, sizeof cnm);
+            {   char cnm[256]; korb_undef_class_desc(c, cls, cnm, sizeof cnm);
                 return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
                                   korb_sym_name(c->vm, mid), k->is_module ? "module" : "class", cnm); }
         }
@@ -1953,11 +1978,12 @@ static RESULT korb_mod_const_vis(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         uint32_t sym;
         { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, i), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+        /* the constant must be defined in self — an inherited one is a NameError */
         if (UNLIKELY(korb_const_index_owned(c->vm, sym, owner) == UINT32_MAX &&
-                     !korb_autoload_registered_p(c, owner, sym) &&
-                     korb_const_in_ancestry(c->vm, owner, sym) == UINT32_MAX))
-            return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s::%s not defined",
-                              korb_sym_name(c->vm, VAL2CLASS(owner)->name_sym), korb_sym_name(c->vm, sym));
+                     !korb_autoload_registered_p(c, owner, sym))) {
+            char qn[256]; korb_class_desc_into(c, owner, qn, sizeof qn);
+            return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s::%s not defined", qn, korb_sym_name(c->vm, sym));
+        }
         korb_const_set_private(c, owner, sym, private_p);
     }
     return RESULT_OK(owner);
@@ -2164,7 +2190,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
                 if (KORB_STRING_P(sr.value)) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); src = sr.value; }
             }
             if (UNLIKELY(!KORB_STRING_P(src)))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
         }
         /* optional 2nd/3rd args: the filename and first line the source is
          * reported as (CRuby uses them for __FILE__ / __LINE__ / backtraces) */

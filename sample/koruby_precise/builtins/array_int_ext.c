@@ -121,6 +121,10 @@ static RESULT korb_m_ary_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
         VALUE key = VALUE_SLICE_GET(a, k);
         if (cur == KORB_NIL) return RESULT_OK(KORB_NIL);
+        /* an intermediate value with its own class (singleton / builtin subclass)
+         * may redefine #dig — CRuby dispatches instead of indexing directly */
+        if (k > 0 && AROH_IS_GC_OBJECT(cur) && (((const AroObjectHeader *)(uintptr_t)cur)->flags & KORB_FL_HAS_KLASS))
+            return korb_dig_dispatch(c, slots, cur, a, k);
         if (KORB_ARRAY_P(cur)) {
             korb_sword_t i;
             if (UNLIKELY(!korb_to_index(key, &i))) return korb_raise_no_int(c, slots, key);
@@ -470,6 +474,8 @@ static RESULT korb_m_hash_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
         VALUE key = VALUE_SLICE_GET(a, k);
         if (cur == KORB_NIL) return RESULT_OK(KORB_NIL);
+        if (k > 0 && AROH_IS_GC_OBJECT(cur) && (((const AroObjectHeader *)(uintptr_t)cur)->flags & KORB_FL_HAS_KLASS))
+            return korb_dig_dispatch(c, slots, cur, a, k);   /* may redefine #dig (see Array#dig) */
         if (KORB_HASH_P(cur)) {
             int32_t idx = korb_hash_find(VAL2HASH(cur), key);
             if (idx >= 0) cur = korb_items_data(VAL2HASH(cur)->items)[2 * idx + 1];
@@ -673,7 +679,11 @@ static RESULT korb_m_hash_transform_keys(CTX *c, VALUE *slots, VALUE_REF self, V
 }
 /* transform_keys! — rebuild into a temp, then replace self's contents. */
 static RESULT korb_m_hash_transform_keys_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    if (block != NULL || VALUE_SLICE_LEN(a) > 0) KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* no block/arg → Enumerator (no modify) */
+    if (UNLIKELY(block == NULL && VALUE_SLICE_LEN(a) == 0)) {   /* no block/arg → Enumerator over the bang form (its #each mutates self) */
+        slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "transform_keys!", 15));
+        return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1);
+    }
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     slots[0] = UNWRAP(korb_hash_xform_keys(c, slots + 1, self, a, block, def_env, cself));   /* result rooted at slots[0] */
     VALUE_REF res = VALUE_REF_AT(&slots[0]);
     KORB_HASH_DROP_INDEX(VAL2HASH(VALUE_REF_GET(self)));
@@ -690,7 +700,10 @@ static RESULT korb_m_hash_transform_keys_b(CTX *c, VALUE *slots, VALUE_REF self,
 /* transform_values! — replace each value in place with block(value); keys unchanged. */
 static RESULT korb_m_hash_transform_values_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
-    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "transform_values", 16)); return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1); }
+    if (UNLIKELY(block == NULL)) {   /* Enumerator over the bang form: its #each mutates self */
+        slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "transform_values!", 17));
+        return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1);
+    }
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     for (uint32_t i = 0; ; i++) {
         KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
