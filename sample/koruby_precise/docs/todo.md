@@ -2889,3 +2889,14 @@ Hash のキー探索は `korb_value_hash` (ヒープオブジェクトは単一�
 `#hash` の**値そのもの**を保持・比較する場合だけ。安定 ID (object_id 相当の
 side table) を持たせるのが本筋。2026-08-30 に ArithmeticSequence#hash で
 踏んだ (クラスをタプルから外して回避)。
+
+## ブロック引数の分解が rest を含むグループの入れ子に対応していない
+
+```ruby
+-> (a, (b, (c, *d, (e, (*f)), g), (h, (i, j)))) { }   # M0 unsupported
+```
+`parse.c` の destructure spec エンコーダは 0xFE (rest あり) の枝で
+lefts/rights を葉としてしか書き出さない (入れ子の MULTI_TARGET は `bad`)。
+再帰させるにはエンコーダとデコーダ (C 側の spec walker) の両方が要る。
+rest の無いグループの入れ子 (0xFF) は既に対応済み。
+`language/{lambda,proc}_spec` で 2 例。
