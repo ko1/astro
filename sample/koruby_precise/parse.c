@@ -4458,8 +4458,31 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE: {  /* `A::B op= v` (static owner) → A::B = A::B op v */
         const pm_constant_path_operator_write_node_t *ow = (const pm_constant_path_operator_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, ow->target->name), owner;
-        if (!const_path_static_owner(tc, ow->target->parent, tc->frame->class_name_sym, &owner))
-            return kp_unsupported(tc, node, "constant-path op= with a dynamic module part");
+        if (!const_path_static_owner(tc, ow->target->parent, tc->frame->class_name_sym, &owner)) {
+            /* Dynamic module part: evaluate it ONCE into a synth local, then
+             * mod.const_set(:N, mod.const_get(:N) op v). */
+            if (ow->target->parent == NULL) return kp_unsupported(tc, node, "::CONST op= at top level");
+            const uint32_t line2 = kp_line(tc, node);
+            const uint32_t opmid2 = kp_intern_cid(tc, ow->binary_operator);
+            const enum kp_binop op2 = kp_binop_kind(kp_cid_cstr(tc, ow->binary_operator));
+            const uint32_t mtmp = alloc_synth_local(tc);
+            NODE *const store = bake_lset(tc, mtmp, transduce(tc, ow->target->parent));
+            NODE *r2, *k2, *v2;
+            WITH_CHAIN(tc, KP_SEND2_SC, ({
+                r2 = bake_lget(tc, mtmp);
+                k2 = ALLOC_node_lit(ID2SYM(name));
+                NODE *lhs2, *rhs2;
+                WITH_CHAIN(tc, kind_node_plus.slot_count, ({
+                    NODE *gr, *gk;
+                    WITH_CHAIN(tc, KP_SEND1_SC, (gr = bake_lget(tc, mtmp), gk = ALLOC_node_lit(ID2SYM(name))));
+                    lhs2 = kp_send1(korb_intern(tc->c->vm, "const_get", 9), line2, gr, gk);
+                    rhs2 = transduce(tc, ow->value);
+                }));
+                v2 = (op2 != KP_BINOP_NONE) ? alloc_binop(op2, lhs2, rhs2, line2) : kp_send1(opmid2, line2, lhs2, rhs2);
+            }));
+            NODE *const setn = kp_send2(korb_intern(tc->c->vm, "const_set", 9), line2, r2, k2, v2);
+            return ALLOC_node_seq(store, setn);
+        }
         enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, ow->binary_operator));
         uint32_t opmid = kp_intern_cid(tc, ow->binary_operator), line = kp_line(tc, node);
         NODE *binop = WITH_CHAIN(tc, kind_node_const_set.slot_count, ({
