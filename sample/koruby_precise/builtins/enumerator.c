@@ -898,6 +898,7 @@ static RESULT korb_m_enum_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 static RESULT korb_m_enum_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    if (SELF_ENUM->mode == 3) CHECK(korb_enum_force_gen(c, slots, self));   /* plain generator: Enumerable#compact is eager */
     if (SELF_ENUM->mode != 0)
         return korb_lazy_chain(c, slots, self, "compact", KORB_NIL);   /* lazy: chain the op (no-block: drop nils) */
     /* eager Enumerator (Enumerable#compact): materialize the non-nil values into a new Array. */
