@@ -231,3 +231,12 @@ def define_method(name, method = nil, &block)
   Object.__send__(:public, name)
   name.to_sym
 end
+
+class Class
+  # Reachable only through an explicit `send(:initialize)`: Class.new builds the
+  # class in C without going through it, so any call here is a re-initialization.
+  def initialize(_superclass = nil)
+    raise TypeError, "already initialized class"
+  end
+  private :initialize
+end
