@@ -597,9 +597,12 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
         if (err) break;
     }
+    /* A lone trailing Hash is keyword arguments, never a surplus operand (CRuby
+     * bug #20593): `format("test", k: 1)` must not complain. */
+    const bool lone_kwargs = argn == 1 && KORB_HASH_P(args[0]);
     /* $DEBUG turns a format string that consumed fewer arguments than it was
      * given into an error (CRuby); positional/named directives opt out. */
-    if (!err && !saw_numbered && !saw_named && ai < argn &&
+    if (!err && !saw_numbered && !saw_named && !lone_kwargs && ai < argn &&
         KORB_TRUTHY(korb_const_get(vm, korb_intern(vm, "$DEBUG", 6)))) {
         err = true; errmsg = "too many arguments for format string";
     }
@@ -625,7 +628,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (enc_err) return korb_raise_enc_compat(c, slots, enc_a, enc_b);
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s", errmsg ? errmsg : "format error");
     }
-    if (UNLIKELY(!saw_numbered && !saw_named && ai < argn &&
+    if (UNLIKELY(!saw_numbered && !saw_named && !lone_kwargs && ai < argn &&
                  korb_const_get(vm, korb_intern(vm, "$VERBOSE", 8)) == KORB_TRUE))   /* only in verbose mode (CRuby) */
         korb_warn(c, slots, "too many arguments for format string");
     RESULT r = korb_str_new(c, slots, out ? out : "", (uint32_t)outlen);
