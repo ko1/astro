@@ -455,6 +455,8 @@ RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj) {
     VALUE sing = UNWRAP(korb_class_new(c, slots + 2, 0, slots[1]));               /* anonymous, super=cur */
     VAL2CLASS(sing)->is_singleton = 1;
     slots[2] = sing;
+    if (((const AroObjectHeader *)(uintptr_t)slots[0])->flags & KORB_FL_FROZEN)   /* a frozen object's singleton is frozen */
+        ((AroObjectHeader *)(uintptr_t)slots[2])->flags |= KORB_FL_FROZEN;
     korb_klass_override_set(c, slots[0], slots[2]);                               /* obj/sing rooted, no GC in set */
     return RESULT_OK(slots[2]);
 }
@@ -841,6 +843,8 @@ static RESULT korb_m_class_superclass(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     if (KORB_CLASS_P(VALUE_REF_GET(self))) {             /* immediate classes have no allocator */
+        if (UNLIKELY(VAL2CLASS(VALUE_REF_GET(self))->is_singleton))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't create instance of singleton class");
         /* identity, not name: a user class nested in a namespace may well be
          * called "Float" without being ::Float */
         const VALUE cv = VALUE_REF_GET(self);

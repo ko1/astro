@@ -8545,6 +8545,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         return RESULT_OK(slots[1]);
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
+        if (UNLIKELY(VAL2CLASS(self)->is_singleton))   /* a metaclass has no instances (CRuby) */
+            return korb_raise(c, slots, KORB_E_TYPE, line, "can't create instance of singleton class");
         /* A user-defined `def self.new` (e.g. the Thread stub) overrides the built-in
          * allocator: dispatch it with the args + block.  The non-block path resolves
          * this in node_send_cached; this shared path (block / send) must too. */
@@ -9229,7 +9231,8 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
     KorbClass *const k = VAL2CLASS(cls);
     if (LIKELY(k->new_kind != 0)) return k->new_kind;
     uint8_t kind = 1;
-    if (k->is_module || k->members != KORB_NIL || cls == korb_builtin_class_obj(vm, KORB_C_FIBER) ||
+    if (k->is_module || k->is_singleton ||   /* a metaclass takes the slow path, which raises */
+        k->members != KORB_NIL || cls == korb_builtin_class_obj(vm, KORB_C_FIBER) ||
         cls == korb_builtin_class_obj(vm, KORB_C_THREAD) ||
         cls == korb_builtin_class_obj(vm, KORB_C_MUTEX) || cls == korb_builtin_class_obj(vm, KORB_C_CONDVAR) ||
         cls == korb_const_get(vm, vm->name_struct) || cls == korb_const_get(vm, vm->name_module) ||
