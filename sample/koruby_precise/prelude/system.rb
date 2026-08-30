@@ -1018,6 +1018,8 @@ module RbConfig
   CONFIG["LIBPATHENV"] = "LD_LIBRARY_PATH"
   CONFIG["libdirname"] = "libdir"
   CONFIG["libdir"] = "/usr/lib"
+  CONFIG["AR"] = "ar"
+  CONFIG["STRIP"] = "strip -S -x"
   CONFIG["archdir"] = CONFIG["rubylibdir"]
   # CRuby leaves the values unfrozen even under --enable-frozen-string-literal.
   CONFIG.transform_values! { |v| v.frozen? ? +v : v }

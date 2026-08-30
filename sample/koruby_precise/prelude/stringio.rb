@@ -83,8 +83,12 @@ class StringIO
     end
     @pos = 0
     @lineno = 0
+    @enc = nil                                       # only #set_encoding / #binmode set it
     @closed_read = false
     @closed_write = false
+    if block_given?
+      warn "warning: StringIO::new() does not take block; use StringIO::open() instead"
+    end
   end
 
   # CRuby's StringIO#inspect is the bare Object#to_s form (never the buffer).
@@ -103,7 +107,11 @@ class StringIO
   def size;   @buf.bytesize; end
   alias length size
   def pos;    @pos; end
-  def pos=(n); @pos = n; end
+  def pos=(n)
+    n = __to_int(n)
+    raise Errno::EINVAL, "Invalid argument" if n < 0
+    @pos = n
+  end
   alias tell pos
   def rewind;  @pos = 0; @lineno = 0; 0; end
   def eof?;    @pos >= @buf.bytesize; end
@@ -118,9 +126,17 @@ class StringIO
   def fsync; 0; end
   def sync; true; end
   def sync=(v); v; end
-  def binmode; self; end
+  def fcntl(*)
+    raise NotImplementedError, "fcntl() function is unimplemented on this machine"
+  end
+  # CRuby's #binmode also relabels a writable buffer as BINARY.
+  def binmode
+    @enc = Encoding::BINARY
+    @buf.force_encoding(Encoding::BINARY) if @writable && !@buf.frozen?
+    self
+  end
   def internal_encoding; nil; end
-  def external_encoding; @buf.encoding; end
+  def external_encoding; @enc || @buf.encoding; end
 
   def close; @closed_read = true; @closed_write = true; nil; end
   def close_read
@@ -195,6 +211,7 @@ class StringIO
   private :__check_readable, :__check_writable
 
   def seek(amount, whence = 0)
+    raise IOError, "closed stream" if closed?
     amount = __to_int(amount)
     whence = __to_int(whence)
     raise Errno::EINVAL, "Invalid argument" unless (0..2).cover?(whence)
@@ -208,20 +225,49 @@ class StringIO
   end
 
   # ---- writing (pos-aware; append mode writes at the end) -------------------
+
+  # Splice bytes into @buf at a BYTE offset.  String#[]= counts characters, so
+  # the buffer is relabelled BINARY for the duration; that also keeps a write of
+  # foreign bytes from raising Encoding::CompatibilityError.
+  private def __bsplice(pos, s)
+    enc = @buf.encoding
+    @buf.force_encoding(Encoding::BINARY)
+    begin
+      @buf[pos, s.bytesize] = s.b
+    ensure
+      @buf.force_encoding(enc)
+    end
+  end
+
+  # CRuby converts a written String to the external encoding; a BINARY or
+  # US-ASCII operand, or a conversion it cannot perform, is stored verbatim.
+  private def __transcode(s)
+    enc = external_encoding
+    senc = s.encoding
+    return s if enc.nil? || enc == senc ||
+                enc == Encoding::BINARY || senc == Encoding::BINARY ||
+                senc == Encoding::US_ASCII
+    begin
+      s.encode(enc)
+    rescue StandardError
+      s.dup.force_encoding(enc)
+    end
+  end
+
   def write(*args)
     __check_writable
     n = 0
     args.each do |a|
       s = a.is_a?(String) ? a : a.to_s
       next if s.empty?
+      s = __transcode(s)
       if @append
-        @buf << s
-        @pos = @buf.bytesize
+        __bsplice(@buf.bytesize, s)
       else
-        @buf << ("\0" * (@pos - @buf.bytesize)) if @pos > @buf.bytesize   # sparse pad
-        @buf[@pos, s.bytesize] = s
-        @pos += s.bytesize
+        __bsplice(@buf.bytesize, "\0" * (@pos - @buf.bytesize)) if @pos > @buf.bytesize
+        __bsplice(@pos, s)
       end
+      @pos = @append ? @buf.bytesize : @pos + s.bytesize
       n += s.bytesize
     end
     n
@@ -235,6 +281,7 @@ class StringIO
   end
 
   def print(*args)
+    args = [$_] if args.empty?                    # CRuby: no arguments prints $_
     args.each { |a| write(a.nil? ? "" : a) }
     write($\) if $\
     nil
@@ -319,7 +366,7 @@ class StringIO
     if length
       raise ArgumentError, "negative length #{length} given" if length < 0
       return (length == 0 ? (outbuf ? outbuf.replace("") : "") : nil) if eof?
-      r = @buf.byteslice(@pos, length) || ""
+      r = (@buf.byteslice(@pos, length) || "").dup.force_encoding(Encoding::BINARY)  # a sized read is binary (CRuby)
     else
       r = @buf.byteslice(@pos, @buf.bytesize - @pos) || ""
     end
@@ -331,10 +378,12 @@ class StringIO
     length = __to_int(length) unless length.nil?
     outbuf = __to_str(outbuf) unless outbuf.nil?
     __check_readable
-    return (outbuf ? outbuf.replace("") : "") if length.nil? && eof?   # a full read at EOF is ""
-    raise EOFError, "end of file reached" if eof?
+    return (outbuf ? outbuf.replace("") : "") if (length.nil? || length == 0) && eof?
+    if eof?
+      outbuf.replace("") if outbuf              # CRuby empties the buffer before raising
+      raise EOFError, "end of file reached"
+    end
     r = read(length, outbuf)
-    r = r.dup.force_encoding(Encoding::BINARY) if r && length   # a sized read is binary (CRuby)
     outbuf ? outbuf.replace(r) : r
   end
   # io/console's StringIO extension: one character, ignoring the tty options.
@@ -379,24 +428,37 @@ class StringIO
     b
   end
 
+  # CRuby's strio_unget_bytes: put the bytes back at @pos, growing the buffer
+  # (and shifting the tail right) when there is not enough room in front of it.
+  private def __unget_bytes(s)
+    len = @buf.bytesize
+    cl = s.bytesize
+    pos = @pos
+    if cl > pos
+      ex = cl - (pos < len ? pos : len)
+      tail = @buf.byteslice(pos, len - pos) if pos < len
+      __bsplice(len, "\0" * ex)
+      __bsplice(cl, tail) if tail
+      pos = 0
+    else
+      __bsplice(len, "\0" * (pos - len)) if pos > len
+      pos -= cl
+    end
+    __bsplice(pos, s)
+    @pos = pos
+    nil
+  end
+
   def ungetc(ch)
     __check_readable
     return nil if ch.nil?
     s = ch.is_a?(Integer) ? ch.chr : __to_str(ch)
-    if @pos > @buf.bytesize                         # past the end: pad the gap with NUL
-      @buf << ("\0" * (@pos - @buf.bytesize))
-    end
-    if @pos >= s.bytesize
-      @pos -= s.bytesize
-      @buf[@pos, s.bytesize] = s
-    else
-      @buf[0, @pos] = s
-      @pos = 0
-    end
-    nil
+    __unget_bytes(s)
   end
   def ungetbyte(b)
-    ungetc(b.is_a?(Integer) ? (b & 0xff).chr : b)
+    __check_readable
+    return nil if b.nil?
+    __unget_bytes(b.is_a?(Integer) ? (b & 0xff).chr(Encoding::BINARY) : __to_str(b))
   end
 
   # Coerce the (sep, limit) pair once — #each_line must not re-run a #to_str /
@@ -469,6 +531,7 @@ class StringIO
   def each_line(sep = $/, limit = nil, chomp: false)
     return to_enum(:each_line, sep, limit, chomp: chomp) unless block_given?
     sep, limit = __line_args(sep, limit)
+    raise ArgumentError, "invalid limit: 0 for each_line" if limit == 0
     while (l = __getline(sep, limit, chomp))
       yield l
     end
@@ -477,8 +540,10 @@ class StringIO
   alias each each_line
 
   def readlines(sep = $/, limit = nil, chomp: false)
+    s, l = __line_args(sep, limit)
+    raise ArgumentError, "invalid limit: 0 for readlines" if l == 0
     ls = []
-    each_line(sep, limit, chomp: chomp) { |l| ls << l }
+    each_line(s, l, chomp: chomp) { |line| ls << line }
     ls
   end
 
@@ -500,7 +565,12 @@ class StringIO
 
   def each_codepoint
     return to_enum(:each_codepoint) unless block_given?
-    each_char { |c| yield c.ord }
+    each_char do |c|
+      unless c.valid_encoding?
+        raise ArgumentError, "invalid byte sequence in #{c.encoding}"
+      end
+      yield c.ord
+    end
     self
   end
 
@@ -509,9 +579,14 @@ class StringIO
 
   # ---- encoding --------------------------------------------------------------
   def set_encoding(ext, int = nil, **opts)
-    if ext
-      enc = ext.is_a?(Encoding) ? ext : Encoding.find(ext.to_s) rescue nil
-      @buf.force_encoding(enc) if enc
+    enc = if ext.nil?
+            Encoding.default_external
+          else
+            (ext.is_a?(Encoding) ? ext : Encoding.find(ext.to_s) rescue nil)
+          end
+    if enc
+      @enc = enc
+      @buf.force_encoding(enc) unless @buf.frozen?   # CRuby leaves a frozen buffer alone
     end
     self
   end
@@ -526,11 +601,13 @@ class StringIO
   ].freeze
 
   def set_encoding_by_bom
+    raise FrozenError, "can't modify frozen StringIO: #{inspect}" if frozen?
     head = @buf.byteslice(0, 4).to_s.b
     BOMS__.each do |bom, enc|
       next unless head.start_with?(bom)
       @pos = bom.bytesize if @pos == 0
-      @buf.force_encoding(enc)
+      @enc = enc
+      @buf.force_encoding(enc) unless @buf.frozen?
       return enc
     end
     nil

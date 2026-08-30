@@ -35,8 +35,14 @@ class BigDecimal < Numeric
   DEFAULT_PREC = 20
   private_constant :DEFAULT_PREC
 
-  @@limit = 0
-  @@mode  = 0
+  # CRuby keeps the decimal exponent in a machine word; past that a value
+  # overflows to Infinity (or underflows to zero).
+  EXP_LIMIT__ = 2**63
+  private_constant :EXP_LIMIT__
+
+  @@limit      = 0
+  @@round_mode = ROUND_HALF_UP
+  @@exceptions = 0
 
   class << self
     def limit(n = nil)
@@ -49,14 +55,38 @@ class BigDecimal < Numeric
       old
     end
 
+    # ROUND_MODE gets/sets the rounding mode; every other flag toggles a bit in
+    # the exception mask and the whole mask is returned.
     def mode(mode, value = nil)
       raise TypeError, "wrong argument type #{mode.class} (expected Integer)" unless mode.is_a?(Integer)
       if mode == ROUND_MODE
-        return @@mode if value.nil?
-        @@mode = value
+        return @@round_mode if value.nil?
+        __round_kind(value)                              # validates
+        @@round_mode = value
         return value
       end
-      0
+      unless value.nil?
+        unless value == true || value == false
+          raise TypeError, "second argument must be true or false"
+        end
+        @@exceptions = value ? (@@exceptions | mode) : (@@exceptions & ~mode)
+      end
+      @@exceptions
+    end
+
+    def __round_mode = @@round_mode
+
+    def __round_kind(mode)
+      case mode
+      when ROUND_UP, :up then :ceil_abs
+      when ROUND_DOWN, :down, :truncate then :truncate
+      when ROUND_CEILING, :ceiling, :ceil then :ceil
+      when ROUND_FLOOR, :floor then :floor
+      when ROUND_HALF_UP, :half_up, :default then :half_up
+      when ROUND_HALF_DOWN, :half_down then :half_down
+      when ROUND_HALF_EVEN, :banker, :half_even then :half_even
+      else raise ArgumentError, "invalid rounding mode (#{mode})"
+      end
     end
 
     def double_fig = 16
@@ -68,6 +98,21 @@ class BigDecimal < Numeric
     # The internal constructor: `sign` is +1/-1, `digits` a non-negative
     # Integer with no trailing zeros, `exp` the decimal exponent.
     def __new(sign, digits, exp, special = nil)
+      if special.nil? && !digits.zero?
+        if exp >= EXP_LIMIT__                            # overflow
+          special = :inf
+          digits = 0
+        elsif exp <= -EXP_LIMIT__                        # underflow to zero
+          digits = 0
+          exp = 0
+        end
+      end
+      if special == :nan && (@@exceptions & EXCEPTION_NaN) != 0
+        raise FloatDomainError, "Computation results in 'NaN'(Not a Number)"
+      end
+      if special == :inf && (@@exceptions & EXCEPTION_INFINITY) != 0
+        raise FloatDomainError, "Computation results to 'Infinity'"
+      end
       v = allocate
       v.send(:__setup, sign, digits, exp, special)
       v
@@ -149,7 +194,13 @@ class BigDecimal < Numeric
   def __ndigits = @digits.zero? ? 0 : @digits.to_s.length
   protected :__ndigits
 
-  def to_s(fmt = nil)
+  def to_s(fmt = nil) = __to_s(fmt)
+
+  # #inspect must not go through #to_s: a prepended override of #to_s changes
+  # only what #to_s prints (CRuby).
+  def inspect = __to_s(nil)
+
+  private def __to_s(fmt)
     return (@sign < 0 ? "-Infinity" : "Infinity").force_encoding(Encoding::US_ASCII) if @special == :inf
     return "NaN".dup.force_encoding(Encoding::US_ASCII) if nan?
     fmt = fmt.to_s
@@ -181,7 +232,6 @@ class BigDecimal < Numeric
     body.force_encoding(Encoding::US_ASCII)               # CRuby: always US-ASCII
   end
 
-  def inspect = to_s
   def to_json(*) = to_s.dump
 
   def to_i
@@ -216,9 +266,8 @@ class BigDecimal < Numeric
   end
 
   def hash = [@sign, @digits, @exp, @special].hash
-  def eql?(other) = other.is_a?(BigDecimal) && (self <=> other) == 0 && !nan?
   def dup = self
-  def clone = self
+  alias clone dup                                        # CRuby: the same method
   def frozen? = true
 
   # --- arithmetic -----------------------------------------------------------
@@ -285,7 +334,7 @@ class BigDecimal < Numeric
     o = __coerce_operand(other) or return __coerce_fallback(other, :div)
     if rest.empty?                                    # no precision → integer quotient
       raise ZeroDivisionError, "divided by 0" if o.zero?
-      return (self / o).floor
+      return __unlimited { self / o }.floor            # the global limit must not truncate it
     end
     prec = rest[0]
     raise TypeError, "wrong argument type #{prec.class} (expected Integer)" unless prec.is_a?(Integer)
@@ -314,15 +363,30 @@ class BigDecimal < Numeric
     q = (@digits * 10**shift) / o.__digits
     e = @exp - o.__exp - n + q.to_s.length
     v = BigDecimal.__new(@sign * o.__sign, q, e)
-    prec.zero? ? v.__round_sig(n - DEFAULT_PREC + 2) : v.__round_sig(prec)
+    return v.__round_sig(prec) unless prec.zero?
+    v = v.__round_sig(n - DEFAULT_PREC + 2)
+    @@limit.zero? ? v : v.__round_sig(@@limit)        # BigDecimal.limit caps an unsized quotient
   end
 
-  # Round to `n` significant digits (half-up), returning a new BigDecimal.
-  def __round_sig(n)
+  # Round to `n` significant digits, returning a new BigDecimal.  The rounding
+  # mode is BigDecimal.mode(ROUND_MODE) unless a kind is given.
+  def __round_sig(n, kind = nil)
     return self if !finite? || @digits.zero? || __ndigits <= n || n <= 0
-    drop = __ndigits - n
-    q, r = @digits.divmod(10**drop)
-    q += 1 if r * 2 >= 10**drop
+    kind ||= BigDecimal.__round_kind(BigDecimal.__round_mode)
+    pow = 10**(__ndigits - n)
+    q, r = @digits.divmod(pow)
+    unless r.zero?
+      up = case kind
+           when :truncate  then false
+           when :ceil      then @sign > 0
+           when :floor     then @sign < 0
+           when :ceil_abs  then true
+           when :half_down then r * 2 > pow
+           when :half_even then (r * 2 > pow) || (r * 2 == pow && q.odd?)
+           else                 r * 2 >= pow
+           end
+      q += 1 if up
+    end
     BigDecimal.__new(@sign, q, @exp)
   end
 
@@ -340,10 +404,15 @@ class BigDecimal < Numeric
     # NaN wins over the divide-by-zero check (CRuby)
     return [BigDecimal.__new(1, 0, 0, :nan), BigDecimal.__new(1, 0, 0, :nan)] if nan? || o.nan?
     raise ZeroDivisionError, "divided by 0" if o.finite? && o.zero?
-    return [BigDecimal.__new(1, 0, 0, :nan), BigDecimal.__new(1, 0, 0, :nan)] if !finite? || !o.finite?
-    a, b, e = __aligned(o)
-    q = a / b                                            # Integer#/ floors; the 10**e scales cancel
-    [BigDecimal(q, 0), __from_scaled(a - b * q, e)]
+    # An infinite dividend gives [±Infinity, NaN] (bigdecimal 3.x)
+    if @special == :inf
+      return [BigDecimal.__new(@sign * o.__sign, 0, 0, :inf), BigDecimal.__new(1, 0, 0, :nan)]
+    end
+    return [BigDecimal.__new(1, 0, 0, :nan), BigDecimal.__new(1, 0, 0, :nan)] unless o.finite?
+    # CRuby divides first and floors the (rounded) quotient, so the pair stays
+    # consistent with `self / other` even where that division loses digits.
+    q = BigDecimal(__unlimited { self / o }.floor, 0)
+    [q, __unlimited { self - q * o }]
   end
 
   def remainder(other)
@@ -364,7 +433,10 @@ class BigDecimal < Numeric
     end
     return BigDecimal("1") if n.zero?
     if n.negative?
-      return BigDecimal("1") / (self ** (-n))
+      # CRuby keeps at least ndigits + DOUBLE_FIG digits; a plain #/ would cut
+      # the reciprocal down to the default working precision.
+      prec = [__ndigits, DEFAULT_PREC].max + 2 * BigDecimal.double_fig
+      return BigDecimal("1").div(self ** (-n), prec)
     end
     r = BigDecimal("1")
     base = self
@@ -410,21 +482,10 @@ class BigDecimal < Numeric
 
   def round(*args)
     n = args[0]
-    mode = args.length > 1 ? args[1] : @@mode
+    mode = args.length > 1 ? args[1] : @@round_mode
+    kind = BigDecimal.__round_kind(mode)
     return self if !finite? && !n.nil?                   # round(n) leaves NaN/Infinity alone
-    __round_to(n, __round_kind(mode))
-  end
-
-  private def __round_kind(mode)
-    case mode
-    when ROUND_UP, :up then :ceil_abs
-    when ROUND_DOWN, :truncate, :down then :truncate
-    when ROUND_CEILING, :ceiling, :ceil then :ceil
-    when ROUND_FLOOR, :floor then :floor
-    when ROUND_HALF_DOWN, :half_down then :half_down
-    when ROUND_HALF_EVEN, :banker, :half_even then :half_even
-    else :half_up
-    end
+    __round_to(n, kind)
   end
 
   private def __round_to(n, kind)
@@ -526,6 +587,7 @@ class BigDecimal < Numeric
     !c.nil? && c.zero?
   end
   alias === ==
+  alias eql? ==                                          # CRuby: the same method
 
   def <(other)  = __cmp_op(other, :<)
   def <=(other) = __cmp_op(other, :<=)
@@ -566,8 +628,12 @@ class BigDecimal < Numeric
   def _dump(_limit = nil) = "#{precision}:#{to_s}"
   def split
     return [0, "NaN", 10, 0] if nan?
+    return [@sign, "Infinity", 10, 0] if @special == :inf
     [sign <=> 0, @digits.to_s, 10, @exp]
   end
+
+  NAN      = __new(1, 0, 0, :nan)
+  INFINITY = __new(1, 0, 0, :inf)
 end
 
 # Kernel#BigDecimal(value, exception: true) — the public constructor.
