@@ -105,7 +105,12 @@ module Warning
   # exactly as CRuby has it: that is what makes Warning.method(:warn).owner
   # Warning (not its singleton) and lets a program reopen `module Warning` and
   # call `super`.
-  def warn(msg, category: nil); $stderr.print(msg) if $stderr; nil; end
+  # A categorised warning is suppressed when its category flag is off (CRuby).
+  def warn(msg, category: nil)
+    return nil if category && CATEGORIES__.key?(category) && !CATEGORIES__[category]
+    $stderr.print(msg) if $stderr
+    nil
+  end
   extend self
 end
 
