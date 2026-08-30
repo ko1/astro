@@ -8888,15 +8888,28 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (LIKELY(lr.state == KORB_NORMAL) && KORB_ENUM_P(lr.value)) VAL2ENUM(lr.value)->size = FIXNUM_P(lsize) ? lsize : KORB_NIL;
             return lr;
         }
-        if (self == korb_builtin_class_obj(vm, KORB_C_HASH)) {         /* Hash.new([default]) / Hash.new { |h,k| } */
-            if (argc > 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %d, expected 0..1)", (int)argc);
-            if (block != NULL && argc >= 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given 1, expected 0)");
+        if (self == korb_builtin_class_obj(vm, KORB_C_HASH)) {         /* Hash.new([default][, capacity:]) / Hash.new { |h,k| } */
+            uint32_t hargc = argc;
+            if (hargc >= 1 && KORB_HASH_P(slots[-1]) &&
+                (((const AroObjectHeader *)(uintptr_t)slots[-1])->flags & KORB_FL_KWARGS)) {
+                const KorbHash *const kw = VAL2HASH(slots[-1]);       /* only capacity: (a sizing hint koruby has no use for) */
+                const VALUE cap_sym = ID2SYM(korb_intern(vm, "capacity", 8));
+                for (uint32_t ki = 0; ki < kw->len; ki++) {
+                    const VALUE key = korb_items_data(kw->items)[2 * ki];
+                    if (key != cap_sym)
+                        return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: %s%s",
+                                          SYMBOL_P(key) ? ":" : "", SYMBOL_P(key) ? korb_sym_name(vm, SYM2ID(key)) : korb_type_name(key));
+                }
+                hargc--;
+            }
+            if (hargc > 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %d, expected 0..1)", (int)hargc);
+            if (block != NULL && hargc >= 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given 1, expected 0)");
             slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
             if (block != NULL) {                            /* default_proc: called on [] miss with (hash, key) */
                 if (def_env == KORB_BLK_FWD) slots[1] = KORB_CSELF_VAL(captured_self);   /* Hash.new(&pr) → keep pr's identity, don't re-wrap */
                 else slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
                 ARO_STORE(c, VAL2HASH(slots[0]), (VALUE *)(uintptr_t)&VAL2HASH(slots[0])->default_proc, slots[1]);
-            } else if (argc >= 1) {
+            } else if (hargc >= 1) {
                 ARO_STORE(c, VAL2HASH(slots[0]), (VALUE *)(uintptr_t)&VAL2HASH(slots[0])->default_val, slots[-(korb_sword_t)argc]);
             }
             return RESULT_OK(slots[0]);

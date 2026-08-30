@@ -216,6 +216,13 @@ static RESULT korb_m_hash_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             slots[2] = korb_items_data(h->items)[2*i+1];
             CHECK(korb_hash_set(c, slots + 3, plain, VALUE_REF_AT(&slots[1]), slots[2]));
         }
+        {   /* the plain copy keeps the default / default_proc / compare_by_identity (CRuby) */
+            KorbHash *const d = VAL2HASH(VALUE_REF_GET(plain));
+            const KorbHash *const s0 = VAL2HASH(VALUE_REF_GET(self));
+            ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->default_val,  s0->default_val);
+            ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->default_proc, s0->default_proc);
+            if (s0->head.flags & KORB_FL_CMP_BY_ID) d->head.flags |= KORB_FL_CMP_BY_ID;
+        }
         return RESULT_OK(VALUE_REF_GET(plain));
     }
     slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
