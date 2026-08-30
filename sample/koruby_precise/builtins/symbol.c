@@ -651,6 +651,11 @@ static RESULT korb_m_meth_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (m1->recv == m2->recv && m1->mid == m2->mid) return RESULT_OK(KORB_TRUE);
     const struct korb_method *const e1 = korb_meth_resolve(c, m1);
     const struct korb_method *const e2 = korb_meth_resolve(c, m2);
+    /* `.new` has no table entry (it is a dispatch special case), so an alias of
+     * it resolves to the trampoline while the original resolves to nothing —
+     * match them through the alias's recorded original name. */
+    if (e1 == NULL && e2 != NULL && e2->orig_mid == m1->mid) return RESULT_OK(KORB_TRUE);
+    if (e2 == NULL && e1 != NULL && e1->orig_mid == m2->mid) return RESULT_OK(KORB_TRUE);
     if (e1 == NULL || e2 == NULL) return RESULT_OK(e1 == e2 ? KORB_TRUE : KORB_FALSE);
     if (e1->kind != e2->kind) return RESULT_OK(KORB_FALSE);
     bool same;
@@ -763,6 +768,11 @@ static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self,
     if (UNLIKELY(!KORB_CLASS_P(cls) || korb_class_find_method(cls, mid, NULL) == NULL)) {
         /* subsystems registered after boot can still land Kernel-level methods on
          * Object (korb_relocate_object_methods runs once); look there too. */
+        /* `.new` is a dispatch special case with no table entry; Class still has
+         * to hand out an UnboundMethod for it (Method#call re-dispatches). */
+        if (KORB_CLASS_P(cls) && mid == c->vm->mid_new &&
+            (cls == korb_builtin_class_obj(c->vm, KORB_C_CLASS) || VAL2CLASS(cls)->is_singleton))
+            return korb_unbound_new(c, slots, cls, mid);
         if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym == korb_intern(c->vm, "Kernel", 6)) {
             const VALUE objc = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
             if (KORB_CLASS_P(objc) && korb_class_find_method(objc, mid, NULL) != NULL)
