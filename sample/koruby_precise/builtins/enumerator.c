@@ -36,7 +36,7 @@ korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc)
  * slots[voff+1]=ops Array, slots[voff+2]=op_state Array (per-op Fixnum counters,
  * mutated).  Sets *keep (value survives the chain) and *term (a take/take_while
  * bound was reached → stop the whole drive).  Uses slots[voff+3..] as scratch. */
-static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, bool *keep, bool *term);
+static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, uint32_t src_ac, bool *keep, bool *term);
 /* Shared body.  `want_value` distinguishes Yielder#yield (returns whatever the
  * consumer sent back — that becomes the source's `yield` value, which is what
  * Enumerator#feed sets) from Yielder#<< (returns self so `y << a << b` chains). */
@@ -65,8 +65,10 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
         v = slots[2];
     }
     /* y.yield(a,b) keeps its arity for a streaming block: `each { |x| }` must
-     * see the first value, not the packed array. */
-    bool multi = (ac > 1 && ac <= 8);
+     * see the first value, not the packed array.  ac == 0 likewise reaches the
+     * block with no value at all (`each { |*a| }` → []), while the collector
+     * still stores nil. */
+    bool multi = (ac != 1 && ac <= 8);
     /* apply any deferred lazy ops (select/map/reject/filter_map/take_while/...) */
     bool keep = true, term = false;
     const VALUE ops = korb_items_data(VAL2ARY(slots[1])->items)[2];      /* nil for a raw generator */
@@ -74,7 +76,7 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
         slots[3] = v;                                          /* value (transformed by map) */
         slots[4] = ops;                                        /* ops (rooted) */
         slots[5] = korb_items_data(VAL2ARY(slots[1])->items)[3];         /* op_state (rooted) */
-        RESULT ar = korb_lazy_apply(c, slots, 3, &keep, &term);
+        RESULT ar = korb_lazy_apply(c, slots, 3, (ac > 1 && ac <= 8) ? ac : 0, &keep, &term);
         if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
         multi = false;                                        /* the chain defines the value now */
         v = slots[3];                                         /* possibly mapped */
@@ -102,6 +104,7 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
             slots[3] = slots[2];                              /* the value (block result was the predicate) */
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(sink->collect), slots[3]));
         }
+        if (term) return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit");   /* take's last value: streamed, now stop */
         return RESULT_OK(want_value ? yr.value : VALUE_REF_GET(self));
     }
     slots[2] = v;                                             /* root across the push alloc, and for the return below */
@@ -325,12 +328,27 @@ static RESULT korb_call2(CTX *c, VALUE *slots, VALUE proc, VALUE v1, VALUE v2) {
     slots[0] = proc; slots[1] = v1; slots[2] = v2;
     return korb_send(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2);
 }
+/* call proc.call(*ary[0, n]) — the caller keeps `ary` rooted, and nothing here
+ * allocates before the values are staged, so the raw KorbArray stays valid. */
+static RESULT korb_call_spread(CTX *c, VALUE *slots, VALUE proc, VALUE ary, uint32_t n) {
+    slots[0] = proc;
+    const KorbArray *const a = VAL2ARY(ary);
+    for (uint32_t i = 0; i < n; i++) slots[1 + i] = korb_items_data(a->items)[i];
+    return korb_send(c, slots + 1 + n, korb_intern(c->vm, "call", 4), 0, n);
+}
+/* Ops whose block CRuby calls with a multi-yield's raw values (so a
+ * 1-parameter block sees the first one); the rest get the gathered Array. */
+static bool korb_lazy_op_raw_values(const char *opn) {
+    return !strcmp(opn, "map") || !strcmp(opn, "collect")
+        || !strcmp(opn, "flat_map") || !strcmp(opn, "collect_concat")
+        || !strcmp(opn, "take_while") || !strcmp(opn, "drop_while");
+}
 /* Apply the lazy `ops` chain to slots[voff] (value; transformed in place by
  * map/filter_map).  slots[voff+1]=ops, slots[voff+2]=op_state (per-op Fixnum
  * counters, mutated).  *keep = value survives; *term = a take/take_while bound
  * hit (stop the drive).  ops/op_state are re-read from their slots after every
  * proc dispatch (GC-safe).  Uses slots[voff+3..] as scratch. */
-static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, bool *keep, bool *term) {
+static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, uint32_t src_ac, bool *keep, bool *term) {
     *keep = true; *term = false;
     const uint32_t n = VAL2ARY(slots[voff + 1])->len;
     for (uint32_t oi = 0; oi < n; oi++) {
@@ -345,6 +363,7 @@ static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, bool *keep, b
             const korb_sword_t s = FIX2LONG(korb_items_data(VAL2ARY(slots[voff + 2])->items)[oi]);
             if (s <= 0) { *keep = false; *term = true; return RESULT_OK(KORB_NIL); }
             korb_ary_store_at(c, slots[voff + 2], oi, LONG2FIX(s - 1));
+            if (s == 1) *term = true;                           /* the N-th value: emit it, then stop the source */
             continue;
         }
         if (!strcmp(opn, "compact")) { if (slots[voff] == KORB_NIL) { *keep = false; return RESULT_OK(KORB_NIL); } continue; }
@@ -375,9 +394,13 @@ static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, bool *keep, b
             CHECK(korb_hash_set(c, slots + voff + 5, VALUE_REF_AT(&slots[voff + 4]), VALUE_REF_AT(&slots[voff + 3]), KORB_TRUE));
             continue;
         }
-        /* block ops: proc.call(value) — slots[voff] held across the dispatch (rooted). */
+        /* block ops: proc.call(value) — slots[voff] held across the dispatch (rooted).
+         * Only the head op still sees the source's raw values; from there on the
+         * chain carries one value (same as CRuby's stage-to-stage yielding). */
         slots[voff + 3] = korb_items_data(pair->items)[1];                /* proc */
-        RESULT cr = korb_call1(c, slots + voff + 4, slots[voff + 3], slots[voff]);
+        RESULT cr = (oi == 0 && src_ac > 1 && korb_lazy_op_raw_values(opn))
+                  ? korb_call_spread(c, slots + voff + 4, slots[voff + 3], slots[voff], src_ac)
+                  : korb_call1(c, slots + voff + 4, slots[voff + 3], slots[voff]);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         const VALUE rv = cr.value;
         if (!strcmp(opn, "select") || !strcmp(opn, "filter")) { if (!KORB_TRUTHY(rv)) { *keep = false; return RESULT_OK(KORB_NIL); } }

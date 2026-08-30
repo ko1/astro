@@ -188,7 +188,7 @@ class Object
   # many elements survive is not knowable up front.
   private def __to_enum_sized(meth, *args)
     e = to_enum(meth, *args)
-    return e unless respond_to?(:size) && args.empty?
+    return e unless respond_to?(:size) && (args.empty? || meth == :each_with_object)   # each_with_object's arg is the memo, not a size-changing one
     case meth
     when :find, :detect, :find_index, :take_while, :drop_while then e
     else e.__set_size(size)

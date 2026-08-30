@@ -17,17 +17,17 @@ module Enumerable
   # filter methods pass the GATHERED element (a single Array when each yields
   # multiple) to the block; the block auto-splats by its arity. (map/flat_map
   # spread instead: a 1-arg block gets the first value.)
-  def select(&blk); return to_a.select unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if blk.call(e) }; r; end
+  def select(&blk); return __to_enum_sized(:select) unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if blk.call(e) }; r; end
   alias filter select
   alias find_all select
-  def reject(&blk); return to_a.reject unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e unless blk.call(e) }; r; end
+  def reject(&blk); return __to_enum_sized(:reject) unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e unless blk.call(e) }; r; end
   def grep(pattern, &blk); r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << (blk ? blk.call(e) : e) if pattern === e }; r; end
   def grep_v(pattern, &blk); r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << (blk ? blk.call(e) : e) unless pattern === e }; r; end
   # chain(*others) → an Enumerator over self's elements followed by each other's.
   # (koruby's Enumerator is eager, so this materializes; fine for finite sources.)
   def chain(*others) = Enumerator::Chain.new(self, *others)
-  def flat_map(&blk); return to_a.flat_map unless blk; r = []; each { |*a| v = blk.call(*a); if v.is_a?(Array); v.each { |e| r << e }; elsif v.respond_to?(:to_ary); ary = v.to_ary; if ary.is_a?(Array); ary.each { |e| r << e }; elsif ary.nil?; r << v; else; raise TypeError, "can't convert #{v.class} to Array (#{v.class}#to_ary gives #{ary.class})"; end; else; r << v; end }; r; end
-  def find(ifnone = nil, &blk); return __to_enum_sized(:find) unless blk; res = nil; found = false; each { |*a| e = a.size <= 1 ? a[0] : a; if blk.call(e); res = e; found = true; break; end }; found ? res : (ifnone ? ifnone.call : nil); end
+  def flat_map(&blk); return __to_enum_sized(:flat_map) unless blk; r = []; each { |*a| v = blk.call(*a); if v.is_a?(Array); v.each { |e| r << e }; elsif v.respond_to?(:to_ary); ary = v.to_ary; if ary.is_a?(Array); ary.each { |e| r << e }; elsif ary.nil?; r << v; else; raise TypeError, "can't convert #{v.class} to Array (#{v.class}#to_ary gives #{ary.class})"; end; else; r << v; end }; r; end
+  def find(ifnone = nil, &blk); return __to_enum_sized(:find, ifnone) unless blk; res = nil; found = false; each { |*a| e = a.size <= 1 ? a[0] : a; if blk.call(e); res = e; found = true; break; end }; found ? res : (ifnone ? ifnone.call : nil); end
   alias detect find
   def to_a(*args)
     r = []
@@ -59,13 +59,15 @@ module Enumerable
     end
     raise ArgumentError, "negative array size" if n < 0
     raise RangeError, "bignum too big to convert into `long'" if n > 0x7fffffffffffffff
+    return [] if n == 0                    # CRuby never calls #each at all
     r = []; c = 0
-    __each_el { |e| break if c >= n; r << e; c += 1 }
+    __each_el { |e| r << e; c += 1; break if c >= n }   # break on the n-th, not on the (n+1)-th yield
     r
   end
   # reduce/inject: (sym) | (init, sym) | { block } | (init) { block }.
   def reduce(*args)
-    if block_given?
+    warn "given block not used" if args.size >= 2 && block_given?   # (init, sym) wins over the block
+    if block_given? && args.size < 2
       if args.size >= 1 then acc = args[0]; f = false else acc = nil; f = true end
       __each_el { |x| if f then acc = x; f = false else acc = yield(acc, x) end }
       return acc
@@ -101,8 +103,24 @@ module Enumerable
   # keeps the first element (CRuby semantics). The n form returns the n smallest/largest.
   def min(n = nil, &blk); return (blk ? to_a.sort(&blk) : to_a.sort).first(n) if n; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = blk ? blk.call(x, r) : (x <=> r); raise ArgumentError, "comparison of #{x.class} with #{r.class} failed" if c.nil?; r = x if c < 0; end }; r; end
   def max(n = nil, &blk); return (blk ? to_a.sort(&blk) : to_a.sort).last(n).reverse if n; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = blk ? blk.call(x, r) : (x <=> r); raise ArgumentError, "comparison of #{x.class} with #{r.class} failed" if c.nil?; r = x if c > 0; end }; r; end
-  def min_by(n = nil); return __to_enum_sized(:min_by) unless block_given?; s = sort_by { |x| yield(x) }; n ? s.first(n) : s.first; end
-  def max_by(n = nil); return __to_enum_sized(:max_by) unless block_given?; s = sort_by { |x| yield(x) }; n ? s.last(n).reverse : s.last; end
+  # the 1-element form runs a running min/max so a tie keeps the element that
+  # came first out of #each (a sort would hand back the last of the tie group).
+  def min_by(n = nil); return __to_enum_sized(:min_by) unless block_given?; return sort_by { |x| yield(x) }.first(n) if n; __by_extreme(-1) { |x| yield(x) }; end
+  def max_by(n = nil); return __to_enum_sized(:max_by) unless block_given?; return sort_by { |x| yield(x) }.last(n).reverse if n; __by_extreme(1) { |x| yield(x) }; end
+  private def __by_extreme(want)
+    best = nil; bk = nil; f = true
+    __each_el { |x|
+      k = yield(x)
+      if f
+        best = x; bk = k; f = false
+      else
+        cmp = (k <=> bk)
+        raise ArgumentError, "comparison of #{k.class} with #{bk.class} failed" if cmp.nil?
+        if (want > 0 ? cmp > 0 : cmp < 0); best = x; bk = k; end
+      end
+    }
+    best
+  end
   def sort(&blk); to_a.sort(&blk); end
   def sort_by; return __to_enum_sized(:sort_by) unless block_given?; a = []; __each_el { |x| a << x }; a.sort_by { |x| yield(x) }; end
   # all?/any?/none?/one? accept an optional pattern (uses pattern === x), else a block, else truthiness.
@@ -116,15 +134,28 @@ module Enumerable
     unless blk
       return to_enum(:cycle, n) { s = respond_to?(:size) ? size : nil
                                   next nil if s.nil?
+                                  next 0 if s == 0                 # nothing to cycle → 0, even forever
                                   n.nil? ? Float::INFINITY : s * (n < 0 ? 0 : n) }
     end
-    return to_a.cycle(&blk) if n.nil?
-    ni = if n.is_a?(Integer) then n
-         elsif n.respond_to?(:to_int) then n.to_int
-         else raise TypeError, "no implicit conversion of #{n.class} into Integer"
-         end
-    return nil if ni <= 0                                          # non-positive count → nil, without iterating
-    to_a.cycle(ni, &blk)
+    ni = nil
+    unless n.nil?
+      ni = if n.is_a?(Integer) then n
+           elsif n.respond_to?(:to_int) then n.to_int
+           else raise TypeError, "no implicit conversion of #{n.class} into Integer"
+           end
+      return nil if ni <= 0                                        # non-positive count → nil, without iterating
+    end
+    # the first pass yields straight off #each (CRuby only buffers as it goes;
+    # a `break` in the block must stop before the source is drained)
+    buf = []
+    __each_el { |x| buf << x; yield x }
+    return nil if buf.empty?
+    if ni.nil?
+      loop { buf.each { |x| yield x } }
+    else
+      (ni - 1).times { buf.each { |x| yield x } }
+    end
+    nil
   end
   def each_with_object(o); return __to_enum_sized(:each_with_object, o) unless block_given?; __each_el { |x| yield x, o }; o; end
   def each_with_index(*args)
@@ -160,8 +191,23 @@ module Enumerable
     }
     Enumerator.new { |y| r.each { |ch| y << ch } }
   end
-  def chunk_while; raise ArgumentError, "tried to create Proc object without a block" unless block_given?; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); cur << x; else; r << cur; cur = [x]; end; prev = x }; r << cur unless cur.nil?; r; end
-  def slice_when; raise ArgumentError, "tried to create Proc object without a block" unless block_given?; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); r << cur; cur = [x]; else; cur << x; end; prev = x }; r << cur unless cur.nil?; r; end
+  # CRuby hands back an Enumerator of chunks, not an Array.
+  def chunk_while(&b)
+    raise ArgumentError, "tried to create Proc object without a block" unless b
+    Enumerator.new do |y|
+      cur = nil; f = true; prev = nil
+      __each_el { |x| if f; cur = [x]; f = false; elsif b.call(prev, x); cur << x; else; y << cur; cur = [x]; end; prev = x }
+      y << cur unless cur.nil?
+    end
+  end
+  def slice_when(&b)
+    raise ArgumentError, "tried to create Proc object without a block" unless b
+    Enumerator.new do |y|
+      cur = nil; f = true; prev = nil
+      __each_el { |x| if f; cur = [x]; f = false; elsif b.call(prev, x); y << cur; cur = [x]; else; cur << x; end; prev = x }
+      y << cur unless cur.nil?
+    end
+  end
   def slice_before(*pat, &b)
     raise ArgumentError, "wrong number of arguments (given #{pat.size}, expected 1)" if b ? !pat.empty? : pat.size != 1
     Enumerator.new do |y|
@@ -178,7 +224,7 @@ module Enumerable
       y << cur unless cur.empty?
     end
   end
-  def take(n); n = __as_int(n); raise ArgumentError, "attempt to take negative size" if n < 0; r = []; __each_el { |x| break if r.size >= n; r << x }; r; end
+  def take(n); n = __as_int(n); raise ArgumentError, "attempt to take negative size" if n < 0; return [] if n == 0; r = []; __each_el { |x| r << x; break if r.size >= n }; r; end
   def drop(n); n = __as_int(n); raise ArgumentError, "attempt to drop negative size" if n < 0; r = []; i = 0; __each_el { |x| r << x if i >= n; i += 1 }; r; end
   def take_while(&blk); return __to_enum_sized(:take_while) unless blk; r = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; break unless blk.call(*ar); r << e }; r; end
   def drop_while(&blk); return __to_enum_sized(:drop_while) unless blk; r = []; dropping = true; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; dropping = false if dropping && !blk.call(e); r << e unless dropping }; r; end
@@ -199,7 +245,7 @@ module Enumerable
   end
   def filter_map(&blk); return __to_enum_sized(:filter_map) unless blk; r = []; each { |*ar| v = blk.call(*ar); r << v if v }; r; end
   alias collect_concat flat_map
-  def reverse_each; a = to_a.reverse; return a.each unless block_given?; a.each { |x| yield x }; self; end
+  def reverse_each; return __to_enum_sized(:reverse_each) unless block_given?; to_a.reverse.each { |x| yield x }; self; end
   def uniq; seen = {}; r = []; __each_el { |x| k = block_given? ? yield(x) : x; unless seen.key?(k); seen[k] = true; r << x; end }; r; end
   def each_entry(*args)
     return __to_enum_sized(:each_entry, *args) unless block_given?

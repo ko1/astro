@@ -230,6 +230,8 @@ class Enumerator
     @__ext_done = false
     @__ext_feed = nil
     @__ext_fed = false
+    # CRuby rewinds the enclosed object too, when it knows how.
+    @__src_recv.rewind if defined?(@__src_recv) && @__src_recv.respond_to?(:rewind)
     __c_rewind
   end
 
@@ -274,7 +276,13 @@ class Enumerator
           @__ext_feed = nil
         end
         @__ext_fresh = false
-        r = @__ext_fiber.resume(fed)
+        r = begin
+              @__ext_fiber.resume(fed)
+            rescue Exception
+              @__ext_started = false     # the source blew up: the fiber is dead, so the next #next starts it over (CRuby)
+              @__ext_fiber = nil
+              raise
+            end
         if r.nil?
           @__ext_done = true
           @__ext_buf = nil
@@ -319,6 +327,18 @@ class Enumerator
 end
 
 class Enumerator::Lazy
+  # koruby's Enumerator.new fast path would take the block for a plain generator
+  # (called with just the yielder); Lazy.new's block is a TRANSFORM handed the
+  # yielder plus each value of `receiver`.  Fold the pair into one generator and
+  # take its #lazy so the result really is a deferred lazy enumerator.
+  def self.new(receiver, size = nil, &block)
+    raise ArgumentError, "tried to call lazy new without a block" unless block
+    e = Enumerator.new { |y| receiver.each { |*values| block.call(y, *values) } }.lazy
+    e.__set_size(size) if size.is_a?(Integer)   # derived lazies inherit this C-level size
+    e.instance_variable_set(:@__lazy_size, size)
+    e
+  end
+
   # Lazy#initialize(receiver[, size]) { |yielder, *values| ... } — the block is a
   # TRANSFORM: it is handed a yielder plus each source value and decides what to
   # emit.  koruby's lazy enumerators are generator-backed, so fold the pair into
@@ -350,6 +370,30 @@ class Enumerator::Lazy
 end
 
 class Enumerator::Lazy
+  # CRuby defines the whole lazy op set directly on Lazy (that is what
+  # Lazy.instance_methods(false) reports, and why Lazy#grep takes exactly one
+  # argument).  koruby registers them on Enumerator, so re-expose them here as
+  # forwarding wrappers — one extra frame per *chain build*, not per element.
+  def map(&blk) = super
+  alias collect map                          # CRuby: the same UnboundMethod, not a copy
+  def select(&blk) = super
+  alias filter select
+  alias find_all select
+  def reject(&blk) = super
+  def filter_map(&blk) = super
+  def take_while(&blk) = super
+  def drop_while(&blk) = super
+  def flat_map(&blk) = super
+  alias collect_concat flat_map
+  def uniq(&blk) = super
+  def compact = super
+  def take(n) = super
+  def drop(n) = super
+  def grep(pattern, &blk) = super
+  def grep_v(pattern, &blk) = super
+  def force(*args) = super
+  def lazy = self
+
   # Operations koruby's C op-chain does not model are built as generator-backed
   # lazy enumerators: the source is streamed (Lazy#each yields as it produces),
   # so an infinite source still terminates on `break`.
@@ -520,5 +564,14 @@ class Enumerator
 
   def each_with_index(&blk)
     with_index(0, &blk)
+  end
+end
+
+# ArithmeticSequence is only ever produced by Numeric#step / Range#step /
+# Range#% — CRuby gives it neither an allocator nor .new.
+class Enumerator::ArithmeticSequence
+  class << self
+    def new(*); raise NoMethodError, "undefined method 'new' for class Enumerator::ArithmeticSequence"; end
+    def allocate; raise TypeError, "allocator undefined for Enumerator::ArithmeticSequence"; end
   end
 end
