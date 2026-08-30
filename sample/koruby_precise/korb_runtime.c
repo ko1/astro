@@ -8664,6 +8664,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             const bool kwinit = is_data
                 ? (argc == 1 && korb_kwargs_hash_p(slots[-(korb_sword_t)argc]))
                 : (VAL2CLASS(*recv_slot)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(slots[-(korb_sword_t)argc]));
+            /* keyword_init: true takes keywords ONLY — positional values are an
+             * arity error (CRuby), not a silent member-by-position fill. */
+            if (UNLIKELY(!is_data && VAL2CLASS(*recv_slot)->struct_kwinit == 1 && !kwinit && argc > 0))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 0)", argc);
             if (kwinit) {                                  /* reject keyword arguments that aren't members */
                 const KorbHash *const kh = VAL2HASH(slots[-(korb_sword_t)argc]);
                 const KorbArray *const mem0 = VAL2ARY(VAL2CLASS(*recv_slot)->members);
