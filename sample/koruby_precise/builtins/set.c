@@ -699,17 +699,19 @@ static RESULT korb_m_module_function(CTX *c, VALUE *slots, VALUE_REF self, VALUE
  * named singleton (class) methods, which live on self's singleton class. */
 static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis) {
     const VALUE selfv = VALUE_REF_GET(self);
-    const VALUE ret = VALUE_SLICE_LEN(a) == 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
-    if (!KORB_CLASS_P(selfv)) return RESULT_OK(ret);
+    if (!KORB_CLASS_P(selfv)) return RESULT_OK(selfv);            /* CRuby returns self */
     slots[0] = UNWRAP(korb_obj_singleton(c, slots + 1, selfv));   /* self's OWN singleton (created if absent → copy-down never touches a parent's) */
-    if (!KORB_CLASS_P(slots[0])) return RESULT_OK(ret);
-    const uint32_t argc = VALUE_SLICE_LEN(a);
+    if (!KORB_CLASS_P(slots[0])) return RESULT_OK(VALUE_REF_GET(self));
+    /* a lone Array argument is the list of names (like private/public) */
+    const bool array_arg = VALUE_SLICE_LEN(a) == 1 && KORB_ARRAY_P(VALUE_SLICE_GET(a, 0));
+    slots[1] = array_arg ? VALUE_SLICE_GET(a, 0) : KORB_NIL;      /* root the name array across the loop's allocs */
+    const uint32_t argc = array_arg ? VAL2ARY(slots[1])->len : VALUE_SLICE_LEN(a);
     for (uint32_t i = 0; i < argc; i++) {
-        const VALUE arg = VALUE_SLICE_GET(a, i);
+        const VALUE arg = array_arg ? korb_items_data(VAL2ARY(slots[1])->items)[i] : VALUE_SLICE_GET(a, i);
         uint32_t mid;
         if (SYMBOL_P(arg)) mid = SYM2ID(arg);
         else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len); }
-        else return korb_raise_not_sym(c, slots + 1, arg);
+        else return korb_raise_not_sym(c, slots + 2, arg);
         KorbClass *const k = VAL2CLASS(slots[0]);          /* re-read (a slot-array grow below may move nothing, but be safe) */
         bool set = false;
         for (uint32_t j = 0; j < k->method_cnt; j++)
@@ -729,11 +731,11 @@ static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VA
          * :allocate はこれ)。enforcement は失うが no-op で通す。 */
         { const char *const nm = korb_sym_name(c->vm, mid);
           if (nm && (strcmp(nm, "new") == 0 || strcmp(nm, "allocate") == 0)) continue; }
-        return korb_raise(c, slots + 1, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* not a class method → NameError */
+        return korb_raise(c, slots + 2, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* not a class method → NameError */
                           korb_sym_name(c->vm, mid), korb_type_name(VALUE_REF_GET(self)));
     }
     c->vm->method_serial++;                                /* invalidate call caches */
-    return RESULT_OK(ret);
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_private_class_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_class_visibility(c, slots, self, a, 1); }
 static RESULT korb_m_public_class_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_set_class_visibility(c, slots, self, a, 0); }
@@ -1643,6 +1645,22 @@ static RESULT korb_m_class_remove_method(CTX *c, VALUE *slots, VALUE_REF self, V
 /* Module#undef_method(sym...) — prevent the named method(s) from this class.
  * Approximated as remove-if-present (no inherited-block marker); a name absent
  * from this class is tolerated so it doesn't re-block the file. */
+/* The class name CRuby's undef/print_undef reports: the singleton class of a
+ * class/module is named by that class ("String"), anything else by its #to_s. */
+static void korb_undef_class_desc(CTX *c, VALUE cls, char *out, size_t outsz) {
+    VALUE named = cls;
+    if (VAL2CLASS(cls)->is_singleton)
+        for (uint32_t i = 0; i < c->vm->sklass_cnt; i++)
+            if (c->vm->sklass_cls[i] == cls) {
+                if (KORB_CLASS_P(c->vm->sklass_obj[i])) named = c->vm->sklass_obj[i];
+                break;
+            }
+    char *b = NULL; size_t sz = 0;
+    FILE *ms = open_memstream(&b, &sz);
+    if (ms) { korb_fprint_class_tostr(c, ms, named); fclose(ms); }
+    snprintf(out, outsz, "%s", b ? b : "");
+    free(b);
+}
 static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(!KORB_CLASS_P(VALUE_REF_GET(self)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
     for (uint32_t ai = 0; ai < VALUE_SLICE_LEN(a); ai++) {
@@ -1663,7 +1681,7 @@ static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VA
             const bool intrinsic = !strcmp(nm, "to_s") || !strcmp(nm, "inspect") || !strcmp(nm, "!~") ||
                                    !strcmp(nm, "<=>") || !strcmp(nm, "!") || !strcmp(nm, "!=");
             if (!on_object && !intrinsic)
-            {   char cnm[256]; korb_class_desc_into(c, cls, cnm, sizeof cnm);
+            {   char cnm[256]; korb_undef_class_desc(c, cls, cnm, sizeof cnm);
                 return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
                                   korb_sym_name(c->vm, mid), k->is_module ? "module" : "class", cnm); }
         }
@@ -1948,11 +1966,12 @@ static RESULT korb_mod_const_vis(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         uint32_t sym;
         { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, i), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+        /* the constant must be defined in self — an inherited one is a NameError */
         if (UNLIKELY(korb_const_index_owned(c->vm, sym, owner) == UINT32_MAX &&
-                     !korb_autoload_registered_p(c, owner, sym) &&
-                     korb_const_in_ancestry(c->vm, owner, sym) == UINT32_MAX))
-            return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s::%s not defined",
-                              korb_sym_name(c->vm, VAL2CLASS(owner)->name_sym), korb_sym_name(c->vm, sym));
+                     !korb_autoload_registered_p(c, owner, sym))) {
+            char qn[256]; korb_class_desc_into(c, owner, qn, sizeof qn);
+            return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s::%s not defined", qn, korb_sym_name(c->vm, sym));
+        }
         korb_const_set_private(c, owner, sym, private_p);
     }
     return RESULT_OK(owner);
