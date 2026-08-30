@@ -3416,9 +3416,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                     if (((const pm_local_variable_target_node_t *)t)->depth != 0) {
                         all_local = false; needs_general = true;   /* outer-scope local → general synth-temp desugar (depth-aware) */
                     }
-                } else if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE) ||
-                           PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
+                } else if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE)) {
                     all_local = false;
+                } else if (PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
+                    /* node_massign_het defines constants at top level; the
+                     * general path goes through build_const_set, which keeps the
+                     * lexical owner (`A, B = 1` inside `module M` → M::A). */
+                    all_local = false; needs_general = true;
                 } else if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE) ||
                            PM_NODE_TYPE_P(t, PM_INDEX_TARGET_NODE) ||
                            PM_NODE_TYPE_P(t, PM_GLOBAL_VARIABLE_TARGET_NODE) ||
