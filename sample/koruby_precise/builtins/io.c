@@ -2593,12 +2593,15 @@ void korb_init_io(CTX *c, VALUE *slots) {
         korb_class_def_cfn_blk(c, fsing, "new", korb_m_file_open, -1);    /* File.new = open, no block-close */
     }
     /* $stdout / $stderr / $stdin + STDOUT / STDERR / STDIN — IO objects on the std slots. */
-    struct { const char *gv, *cn; uint32_t idx; } sv[] = {
-        {"$stdin", "STDIN", 0}, {"$stdout", "STDOUT", 1}, {"$stderr", "STDERR", 2},
+    /* rw: STDIN is read-only, STDOUT/STDERR write-only — CRuby raises IOError
+     * either way round, and #external_encoding keys off the same bit. */
+    struct { const char *gv, *cn; uint32_t idx; int rw; } sv[] = {
+        {"$stdin", "STDIN", 0, 1}, {"$stdout", "STDOUT", 1, 2}, {"$stderr", "STDERR", 2, 2},
     };
     for (size_t i = 0; i < 3; i++) {
         slots[1] = korb_obj_new(c, slots + 1, slots[0]).value;   /* re-read slots[0]: korb_obj_new GCs and moves the IO class (a stale local would mis-klass the instance) */
         (void)korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]), ID2SYM(korb_io_fp_mid(c)), LONG2FIX((korb_sword_t)sv[i].idx));
+        (void)korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]), ID2SYM(korb_io_mode_mid(c)), LONG2FIX(sv[i].rw));
         {   /* IO#inspect names the std streams "<STDOUT>" etc. rather than "fd N" */
             slots[2] = korb_str_new(c, slots + 2, sv[i].cn, (uint32_t)strlen(sv[i].cn)).value;
             (void)korb_ivar_set(c, slots + 3, VALUE_REF_AT(&slots[1]),

@@ -1747,3 +1747,21 @@ class << ENV
     r
   end
 end
+
+# $LOAD_PATH.resolve_feature_path(feature) — what `require feature` would load,
+# as [:rb | :so, absolute path], without loading it.  nil when not found.
+def $LOAD_PATH.resolve_feature_path(feature)
+  f = feature.is_a?(String) ? feature : feature.to_str
+  cands = f.end_with?(".rb", ".so") ? [f] : ["#{f}.rb", "#{f}.so"]
+  if f.start_with?("/", "./", "../")
+    cands.each { |p| return [p.end_with?(".so") ? :so : :rb, File.expand_path(p)] if File.file?(p) }
+    return nil
+  end
+  each do |dir|
+    cands.each do |p|
+      full = File.join(dir.to_s, p)
+      return [p.end_with?(".so") ? :so : :rb, File.expand_path(full)] if File.file?(full)
+    end
+  end
+  nil
+end
