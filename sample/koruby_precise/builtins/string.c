@@ -1707,10 +1707,17 @@ static RESULT korb_m_str_append_as_bytes(CTX *c, VALUE *slots, VALUE_REF self, V
         if (FIXNUM_P(o)) {
             char b = (char)(FIX2LONG(o) & 0xFF);
             CHECK(korb_str_cat(c, slots, self, &b, 1));
+        } else if (KORB_BIGNUM_P(o)) {                   /* a Bignum contributes its least significant byte too */
+            korb_mp_t z; korb_to_mpz(o, z);
+            unsigned long lo = korb_mp_get_ui(z);
+            const bool neg = korb_mp_sgn(z) < 0;
+            korb_mp_clear(z);
+            char b = (char)((neg ? (unsigned long)(-(long)(lo & 0xFF)) : lo) & 0xFF);
+            CHECK(korb_str_cat(c, slots, self, &b, 1));
         } else if (KORB_STRING_P(o)) {
             CHECK(korb_str_append_str(c, slots, self, VALUE_SLICE_REF(a, j)));
         } else {
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Integer or String)", korb_type_name(o));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected String or Integer)", korb_coerce_name(c, o));
         }
     }
     return RESULT_OK(VALUE_REF_GET(self));

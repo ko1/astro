@@ -693,19 +693,40 @@ static RESULT korb_m_str_casecmp_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     free(fa); free(fb);
     return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);
 }
+/* One Range bound for #byteslice: Integer, a Bignum that does not fit (RangeError),
+ * else #to_int.  `v` must be reachable from a rooted slot in the caller. */
+static RESULT korb_byteslice_bound(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out) {
+    if (UNLIKELY(KORB_BIGNUM_P(v) && !korb_mp_fits_slong_p(VAL2BIG(v)->z)))
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+    if (LIKELY(korb_to_index(v, out))) return RESULT_OK(KORB_NIL);
+    slots[0] = v;
+    RESULT cr = korb_coerce_to_int(c, slots + 1, &slots[0]);
+    if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    if (cr.value != KORB_TRUE || !korb_to_index(slots[0], out))
+        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(v));
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t bn = s->len;
     VALUE iv = VALUE_SLICE_GET(a, 0);
-    if (KORB_RANGE_P(iv)) {                            /* byteslice(range) */
-        const KorbRange *r = VAL2RANGE(iv);
+    if (KORB_RANGE_P(iv)) {                            /* byteslice(range) — a length argument makes it an index */
+        if (UNLIKELY(VALUE_SLICE_LEN(a) >= 2))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of Range into Integer");
+        slots[0] = iv;                                 /* root the Range across the #to_int dispatches */
         korb_sword_t b = 0, e;
-        if (r->rbegin != KORB_NIL && UNLIKELY(!korb_to_index(r->rbegin, &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        {   const VALUE bv = VAL2RANGE(slots[0])->rbegin;
+            if (bv != KORB_NIL) { CHECK(korb_byteslice_bound(c, slots + 1, bv, &b)); } }
+        bn = VAL2STR(VALUE_REF_GET(self))->len;        /* the dispatch may have moved / grown it */
         if (b < 0) b += bn;
         if (b < 0 || b > (korb_sword_t)bn) return RESULT_OK(KORB_NIL);
+        const KorbRange *const r = VAL2RANGE(slots[0]);
         if (r->rend == KORB_NIL) e = bn;
-        else { if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (e < 0) e += bn; if (!r->exclude_end) e += 1; }
+        else { CHECK(korb_byteslice_bound(c, slots + 1, r->rend, &e));
+               bn = VAL2STR(VALUE_REF_GET(self))->len;
+               if (e < 0) e += bn;
+               if (!VAL2RANGE(slots[0])->exclude_end) e += 1; }
         korb_sword_t len = e - b; if (len < 0) len = 0; if (b + len > (korb_sword_t)bn) len = (korb_sword_t)bn - b;
         return korb_str_slice_new(c, slots, self, (uint32_t)b, (uint32_t)len);
     }
