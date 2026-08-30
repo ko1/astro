@@ -2690,6 +2690,38 @@ static RESULT korb_m_struct_initialize(CTX *c, VALUE *slots, VALUE_REF self, VAL
     }
     return RESULT_OK(KORB_NIL);
 }
+/* Common Struct instance methods (read members + @ivars generically).  These go
+ * on the base Struct class, once, so `Struct.new(:a) { include M }` lets M
+ * override them (CRuby defines them on Struct too).  `pk` is a rooted slot:
+ * korb_class_def_cfn interns the name → may GC → re-read the class each call. */
+static void korb_def_struct_common(CTX *c, const VALUE *pk) {
+    korb_class_def_cfn(c, *pk, "to_a", korb_m_struct_to_a, 0);
+    /* no #to_ary: a Struct is not implicitly an Array in CRuby (it must not
+     * splat in massign / block params / puts) */
+    korb_class_def_cfn(c, *pk, "values", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, *pk, "size", korb_m_struct_size, 0);
+    korb_class_def_cfn(c, *pk, "length", korb_m_struct_size, 0);
+    korb_class_def_cfn(c, *pk, "deconstruct", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, *pk, "values_at", korb_m_struct_values_at, -1);
+    korb_class_def_cfn(c, *pk, "dig", korb_m_struct_dig, -1);
+    korb_class_def_cfn(c, *pk, "deconstruct_keys", korb_m_struct_deconstruct_keys, 1);
+    korb_class_def_cfn_blk(c, *pk, "to_h", korb_m_struct_to_h_blk, 0);
+    korb_class_def_cfn(c, *pk, "members", korb_m_struct_members, 0);
+    korb_class_def_cfn(c, *pk, "[]", korb_m_struct_aref, 1);
+    korb_class_def_cfn(c, *pk, "[]=", korb_m_struct_aset, 2);
+    korb_class_def_cfn(c, *pk, "==", korb_m_struct_eq, 1);
+    korb_class_def_cfn(c, *pk, "inspect", korb_m_struct_inspect, 0);
+    korb_class_def_cfn(c, *pk, "instance_variables", korb_m_struct_ivars, 0);
+    korb_class_def_cfn(c, *pk, "to_s", korb_m_struct_inspect, 0);
+    korb_class_def_cfn(c, *pk, "eql?", korb_m_struct_eql, 1);
+    korb_class_def_cfn(c, *pk, "hash", korb_m_struct_hash, 0);
+    korb_class_def_cfn_blk(c, *pk, "each", korb_m_struct_each, 0);
+    korb_class_def_cfn_blk(c, *pk, "each_pair", korb_m_struct_each_pair, 0);
+    korb_class_def_cfn_blk(c, *pk, "map", korb_m_struct_map, 0);
+    korb_class_def_cfn_blk(c, *pk, "collect", korb_m_struct_map, 0);
+    korb_class_def_cfn(c, *pk, "initialize", korb_m_struct_initialize, -1);
+}
+
 /* `base` = the class .new was called on (Struct itself, or a Struct subclass
  * used as a factory like `class Apple < Struct`).  The new struct class is a
  * subclass of `base` and, when named, a constant under `base`. */
@@ -2769,33 +2801,9 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         korb_const_define_owned(c, name_id, VALUE_REF_GET(cls), KORB_CLASS_P(owner) ? owner : KORB_NIL);
     }
     ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
-    /* common Struct instance methods (read members + @ivars generically).
-     * korb_class_def_cfn interns the name → may GC → re-read the class from the
-     * rooted `cls` slot each call (never hold it in a bare C-local across them). */
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_a", korb_m_struct_to_a, 0);
-    /* no #to_ary: a Struct is not implicitly an Array in CRuby (it must not
-     * splat in massign / block params / puts) */
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "values", korb_m_struct_to_a, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "size", korb_m_struct_size, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "length", korb_m_struct_size, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct", korb_m_struct_to_a, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "values_at", korb_m_struct_values_at, -1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "dig", korb_m_struct_dig, -1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct_keys", korb_m_struct_deconstruct_keys, 1);
-    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "to_h", korb_m_struct_to_h_blk, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "members", korb_m_struct_members, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "[]", korb_m_struct_aref, 1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "[]=", korb_m_struct_aset, 2);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "==", korb_m_struct_eq, 1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "inspect", korb_m_struct_inspect, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "instance_variables", korb_m_struct_ivars, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_s", korb_m_struct_inspect, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "eql?", korb_m_struct_eql, 1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "hash", korb_m_struct_hash, 0);
-    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "each", korb_m_struct_each, 0);
-    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "each_pair", korb_m_struct_each_pair, 0);
-    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "map", korb_m_struct_map, 0);
-    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "collect", korb_m_struct_map, 0);
+    /* The common Struct instance methods live on the base Struct class (see
+     * korb_def_struct_common), not here: a module `include`d into the struct
+     * body must be able to override them, as in CRuby. */
     /* Member accessors are defined LAST so a member named like a built-in
      * (:hash/:each/:size/:members/…) keeps its accessor — CRuby defines the
      * accessors on the anonymous subclass, shadowing the inherited methods. */
@@ -2968,6 +2976,23 @@ static RESULT korb_m_class_new_bracket(CTX *c, VALUE *slots, VALUE_REF self, VAL
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
     return korb_send(c, slots + 1 + argc, korb_intern(c->vm, "new", 3), 0, argc);
 }
+/* Common Data instance methods — on the base Data class, once (see
+ * korb_def_struct_common for why).  `pk` is a rooted slot. */
+static void korb_def_data_common(CTX *c, const VALUE *pk) {
+    korb_class_def_cfn_blk(c, *pk, "to_h", korb_m_struct_to_h_blk, 0);
+    korb_class_def_cfn(c, *pk, "deconstruct_keys", korb_m_struct_deconstruct_keys, 1);   /* requires exactly one arg (keys Array | nil) */
+    korb_class_def_cfn(c, *pk, "members", korb_m_struct_members, 0);
+    korb_class_def_cfn(c, *pk, "to_a", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, *pk, "deconstruct", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, *pk, "==", korb_m_struct_eq, 1);
+    korb_class_def_cfn(c, *pk, "eql?", korb_m_struct_eql, 1);
+    korb_class_def_cfn(c, *pk, "hash", korb_m_struct_hash, 0);
+    korb_class_def_cfn(c, *pk, "with", korb_m_data_with, -1);
+    korb_class_def_cfn(c, *pk, "inspect", korb_m_data_inspect, 0);
+    korb_class_def_cfn(c, *pk, "instance_variables", korb_m_struct_ivars, 0);
+    korb_class_def_cfn(c, *pk, "to_s", korb_m_data_inspect, 0);
+    korb_class_def_cfn(c, *pk, "initialize", korb_m_data_initialize, -1);
+}
 static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)self; (void)cself;
     struct korb_vm *const vm = c->vm;
@@ -2989,18 +3014,8 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
     VAL2CLASS(VALUE_REF_GET(cls))->is_data = 1;
-    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "to_h", korb_m_struct_to_h_blk, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct_keys", korb_m_struct_deconstruct_keys, 1);   /* requires exactly one arg (keys Array | nil) */
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "members", korb_m_struct_members, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_a", korb_m_struct_to_a, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct", korb_m_struct_to_a, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "==", korb_m_struct_eq, 1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "eql?", korb_m_struct_eql, 1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "hash", korb_m_struct_hash, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "with", korb_m_data_with, -1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "inspect", korb_m_data_inspect, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "instance_variables", korb_m_struct_ivars, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_s", korb_m_data_inspect, 0);
+    /* the common Data instance methods live on the base Data class (see
+     * korb_def_data_common) so an `include`d module can override them */
     slots[2] = VALUE_REF_GET(cls);                            /* root across singleton alloc */
     slots[3] = UNWRAP(korb_obj_singleton(c, slots + 4, slots[2]));
     korb_class_def_cfn(c, slots[3], "members", korb_m_struct_class_members, 0);
@@ -5512,17 +5527,15 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
       (void)korb_do_include(c, slots + 2, slots[1], VALUE_SLICE_MAKE(&slots[0], 1)); }
 
     /* Struct factory class — `Struct.new(*members)` builds anonymous subclasses. */
-    { uint32_t s = korb_intern(vm, "Struct", 6); const VALUE sc = korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value; korb_const_define(c, s, sc);
-      /* to_a / deconstruct on the base Struct too (subclasses override with their
-       * own) so reflection works: Struct.instance_method(:deconstruct) == :to_a. */
-      korb_class_def_cfn(c, sc, "to_a", korb_m_struct_to_a, 0);
-      korb_class_def_cfn(c, sc, "deconstruct", korb_m_struct_to_a, 0);
-      korb_class_def_cfn(c, sc, "initialize", korb_m_struct_initialize, -1); }   /* base-class super target for a subclass/block #initialize */
+    { uint32_t s = korb_intern(vm, "Struct", 6);
+      slots[0] = korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value;
+      korb_const_define(c, s, slots[0]);
+      korb_def_struct_common(c, &slots[0]); }   /* shared by every generated struct class (also the super target for a block #initialize) */
     /* Data factory class — `Data.define(*members)` builds anonymous immutable value subclasses. */
     { uint32_t s = korb_intern(vm, "Data", 4);
       slots[0] = korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value;
       korb_const_define(c, s, slots[0]);
-      korb_class_def_cfn(c, slots[0], "initialize", korb_m_data_initialize, -1);   /* on the Data base class → a subclass override's `super` reaches it */
+      korb_def_data_common(c, &slots[0]);
       slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;    /* Data's singleton holds `define` */
       korb_class_def_cfn_blk(c, slots[1], "define", korb_data_define, -1); }
     { uint32_t s = korb_intern(vm, "Module", 6); vm->name_module = s; korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
