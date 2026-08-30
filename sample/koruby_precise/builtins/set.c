@@ -258,6 +258,8 @@ static RESULT korb_m_hash_to_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return korb_set_from_array(c, slots + 1, VALUE_REF_AT(&slots[0]));
 }
 static RESULT korb_m_range_to_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (UNLIKELY(VAL2RANGE(VALUE_REF_GET(self))->rend == KORB_NIL))    /* to_a would say "to an array" */
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot convert endless range to a set");
     slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));          /* the range's elements as an Array */
     if (block == NULL) return korb_set_from_array(c, slots + 1, VALUE_REF_AT(&slots[0]));
     return korb_m_ary_to_set(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);   /* map each element through the block */

@@ -1,3 +1,26 @@
+# to_set(klass, *args) — deprecated in CRuby 4.0 but still honoured: build an
+# instance of the given Set subclass instead of Set.  The builtin Array/Hash/Range
+# #to_set take no argument, so wrap them for the argument form only.
+module Enumerable
+  private def __to_set_klass(args, &blk)
+    warn "warning: passing arguments to Enumerable#to_set is deprecated"
+    args[0].new(is_a?(Array) ? self : to_a, *args[1..-1], &blk)   # a Set subclass populates from an Array
+  end
+  def to_set(*args, &blk)
+    return Set.new(self, &blk) if args.empty?
+    __to_set_klass(args, &blk)
+  end
+end
+[Array, Hash, Range].each do |k|
+  k.class_eval do
+    alias_method :__to_set_c, :to_set
+    def to_set(*args, &blk)
+      return __to_set_c(&blk) if args.empty?
+      __to_set_klass(args, &blk)
+    end
+  end
+end
+
 # Set#divide — partition into subsets.  1-arg block groups by its return value;
 # 2-arg block forms connected components (a,b related iff func(a,b) && func(b,a)).
 class Set

@@ -136,13 +136,20 @@ static RESULT korb_range_cmp(CTX *c, VALUE *slots, VALUE a, VALUE b, int *out) {
  * nil begin/end = unbounded on that side.  slots[0..] are scratch; beg/end/x
  * must be caller-rooted (this only dispatches #<=>, which may GC).  *out set. */
 static RESULT korb_range_cover_value(CTX *c, VALUE *slots, VALUE beg, VALUE end, bool excl, VALUE x, bool *out) {
-    int lc = -1, uc = -1;
-    if (beg != KORB_NIL) { RESULT cl = korb_range_cmp(c, slots, beg, x, &lc); if (UNLIKELY(cl.state != KORB_NORMAL)) return cl; }
-    if (end != KORB_NIL) { RESULT cu = korb_range_cmp(c, slots, x, end, &uc); if (UNLIKELY(cu.state != KORB_NORMAL)) return cu; }
-    if (lc == 2 || uc == 2) { *out = false; return RESULT_OK(KORB_NIL); }
-    const bool lower = (lc <= 0);
-    const bool upper = (end == KORB_NIL) ? true : (excl ? (uc < 0) : (uc <= 0));
-    *out = (lower && upper);
+    /* short-circuit like CRuby's r_cover_p: once the lower bound rules x out,
+     * the upper #<=> is never dispatched (it may raise for a foreign type). */
+    *out = false;
+    if (beg != KORB_NIL) {
+        int lc; RESULT cl = korb_range_cmp(c, slots, beg, x, &lc);
+        if (UNLIKELY(cl.state != KORB_NORMAL)) return cl;
+        if (lc == 2 || lc > 0) return RESULT_OK(KORB_NIL);
+    }
+    if (end != KORB_NIL) {
+        int uc; RESULT cu = korb_range_cmp(c, slots, x, end, &uc);
+        if (UNLIKELY(cu.state != KORB_NORMAL)) return cu;
+        if (uc == 2 || (excl ? uc >= 0 : uc > 0)) return RESULT_OK(KORB_NIL);
+    }
+    *out = true;
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
