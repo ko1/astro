@@ -882,6 +882,21 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
     }
     char *buf = NULL; size_t bz = 0; FILE *ms = open_memstream(&buf, &bz);
     long off = 0; bool replaced = false;
+    /* the result encoding is negotiated with every replacement, as CRuby does */
+    const uint32_t senc = KORB_STR_ENC(VALUE_REF_GET(self));
+    uint32_t renc = senc;  bool rasc = true;
+    bool renc_bad = false;  uint32_t renc_other = 0;
+    /* only the source bytes that SURVIVE count: replacing the sole non-ASCII
+     * run leaves an ASCII-only left side, which then yields to the replacement */
+    #define KORB_GSUB_KEEP(p, n) do { \
+        const unsigned char *kp_ = (const unsigned char *)(p); const size_t kn_ = (n); \
+        for (size_t ki_ = 0; ki_ < kn_; ki_++) if (kp_[ki_] >= 0x80) { \
+            if (!renc_bad && !korb_str_enc_fold_raw(c->vm, &renc, &rasc, senc, false)) \
+                { renc_bad = true; renc_other = senc; } \
+            break; \
+        } \
+        fwrite((p), 1, kn_, ms); \
+    } while (0)
     korb_re_match_t last_m; bool have_last = false;   /* POD copy of the final match → $~ after the loop */
     while (off <= (long)sn) {
         korb_re_match_t m; RESULT rr = korb_re_run(c, slots + 3, slots[1], slots[0], (size_t)off, &m);
@@ -889,13 +904,15 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
         if (rr.value != KORB_TRUE) break;
         last_m = m; have_last = true;
         const long ms0 = m.starts[0], me0 = m.ends[0];
-        fwrite(src + off, 1, (size_t)(ms0 - off), ms);
+        KORB_GSUB_KEEP(src + off, (size_t)(ms0 - off));
         if (block) {
             slots[3] = UNWRAP(korb_re_build_md(c, slots + 3, slots[0], slots[1], &m)); korb_re_set_lastmatch(c, slots[3]);
             slots[4] = UNWRAP(korb_md_group(c, slots + 4, slots[3], 0));
             RESULT yr = korb_block_yield(c, slots + 5, block, def_env, &slots[4], 1, cself);
             if (UNLIKELY(yr.state != KORB_NORMAL)) { free(src); fclose(ms); free(buf); return yr; }
             slots[4] = yr.value;
+            if (KORB_STRING_P(slots[4]) && !renc_bad && !korb_str_enc_fold(c->vm, &renc, &rasc, slots[4]))
+                { renc_bad = true; renc_other = KORB_STR_ENC(slots[4]); }
             RESULT er = korb_emit_to_s(c, slots + 5, ms, slots[4]);
             if (UNLIKELY(er.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return er; }
         } else if (hashrep != KORB_NIL) {
@@ -906,6 +923,8 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
             RESULT hr = korb_send_impl(c, slots + 6, korb_intern(c->vm, "[]", 2), 0, 1, NULL, NULL, NULL);  /* respects default / default_proc */
             if (UNLIKELY(hr.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return hr; }
             slots[4] = hr.value;
+            if (KORB_STRING_P(slots[4]) && !renc_bad && !korb_str_enc_fold(c->vm, &renc, &rasc, slots[4]))
+                { renc_bad = true; renc_other = KORB_STR_ENC(slots[4]); }
             RESULT er = korb_emit_to_s(c, slots + 5, ms, slots[4]);        /* nil → "", else #to_s */
             if (UNLIKELY(er.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return er; }
         } else {
@@ -913,21 +932,24 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
         }
         replaced = true;
         if (me0 > ms0) off = me0;
-        else { if (ms0 < (long)sn) { uint32_t cl = korb_utf8_seq_len((const unsigned char *)src, (uint32_t)ms0, sn); if (!cl) cl = 1; fwrite(src + ms0, 1, cl, ms); off = ms0 + cl; } else off = ms0 + 1; }
+        else { if (ms0 < (long)sn) { uint32_t cl = korb_utf8_seq_len((const unsigned char *)src, (uint32_t)ms0, sn); if (!cl) cl = 1; KORB_GSUB_KEEP(src + ms0, cl); off = ms0 + cl; } else off = ms0 + 1; }
         if (!global) break;
     }
-    if (off <= (long)sn) fwrite(src + off, 1, (size_t)(sn - off), ms);
+    if (off <= (long)sn) KORB_GSUB_KEEP(src + off, (size_t)(sn - off));
+    #undef KORB_GSUB_KEEP
     fclose(ms); free(src); free(rep);
     /* $~ = MatchData of the last match (nil if none), for access after gsub returns */
     if (have_last) { slots[3] = UNWRAP(korb_re_build_md(c, slots + 3, slots[0], slots[1], &last_m)); korb_re_set_lastmatch(c, slots[3]); }
     else korb_re_set_lastmatch(c, KORB_NIL);
+    if (renc_bad) { free(buf); return korb_raise_enc_compat(c, slots + 3, KORB_STR_ENC(VALUE_REF_GET(self)), renc_other); }
     RESULT nr = korb_str_new(c, slots + 3, buf ? buf : "", (uint32_t)bz); free(buf);
     if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
-    KORB_STR_ENC_SET(nr.value, KORB_STR_ENC(VALUE_REF_GET(self)));   /* gsub/sub preserve self's encoding */
+    KORB_STR_ENC_SET(nr.value, renc);   /* self's encoding, widened by the replacements */
     if (!in_place) return nr;
     slots[3] = nr.value; const KorbString *res = VAL2STR(slots[3]); const uint32_t w = res->len;
     KorbString *s2 = korb_str_ensure(c, slots + 4, self, w); res = VAL2STR(slots[3]);
     memcpy(korb_strbuf_data(s2->buf), korb_strbuf_data(res->buf), w); s2->len = w; korb_strbuf_data(s2->buf)[w] = '\0';
+    if (replaced) KORB_STR_ENC_SET(VALUE_REF_GET(self), renc);   /* gsub! widens self's encoding too */
     return RESULT_OK(replaced ? VALUE_REF_GET(self) : KORB_NIL);
 }
 

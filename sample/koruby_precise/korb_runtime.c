@@ -1083,6 +1083,26 @@ korb_str_enc_combine(const struct korb_vm *vm, VALUE av, VALUE bv, uint32_t *out
     if (aa) { *out = eb; return true; }
     return false;
 }
+/* Fold one more String into a running result encoding (gsub/join-style
+ * accumulation): the same rules as korb_str_enc_combine, but the left side is
+ * carried as (encoding, is-7-bit) so no intermediate String is needed.
+ * false = the two have no common encoding. */
+bool
+korb_str_enc_fold_raw(const struct korb_vm *vm, uint32_t *renc, bool *rasc, uint32_t eb, bool ab)
+{
+    if (eb == *renc) { *rasc = *rasc && ab; return true; }
+    if (!korb_enc_ascii_compat_idx(vm, *renc) || !korb_enc_ascii_compat_idx(vm, eb)) return false;
+    if (*rasc && ab) { if (*renc == KORB_ENC_USASCII) *renc = eb; return true; }
+    if (ab) return true;                                   /* the 7-bit side yields */
+    if (*rasc) { *renc = eb; *rasc = false; return true; }
+    return false;                                          /* both non-7-bit, different encodings */
+}
+bool
+korb_str_enc_fold(const struct korb_vm *vm, uint32_t *renc, bool *rasc, VALUE bv)
+{
+    if (VAL2STR(bv)->len == 0) return true;                /* an empty side yields */
+    return korb_str_enc_fold_raw(vm, renc, rasc, KORB_STR_ENC(bv), korb_str_ascii_only_p(vm, bv));
+}
 /* raise Owner::Name (a prelude-defined exception class) with a formatted msg */
 RESULT
 korb_raise_nested(CTX *c, VALUE *slots, const char *owner, const char *name, const char *msg)
