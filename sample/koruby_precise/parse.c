@@ -3387,6 +3387,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (!en->statements) return ALLOC_node_lit(KORB_NIL);   /* #{} → "" via nil.to_s */
         return transduce_statements(tc, en->statements);
       }
+      case PM_EMBEDDED_VARIABLE_NODE:   /* "#@ivar" / "#$gvar" / "#@@cvar" — same as #{...} */
+        return transduce(tc, ((const pm_embedded_variable_node_t *)node)->variable);
 
       /* ---- locals (depth 0 = own frame, depth >= 1 = outer/closure) ---- */
       case PM_LOCAL_VARIABLE_READ_NODE: {
