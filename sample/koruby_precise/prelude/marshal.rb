@@ -40,6 +40,13 @@ module Marshal
   MODULE_NAME = Module.instance_method(:name)
   def self._class_name(k) = MODULE_NAME.bind_call(k)
 
+  # A BasicObject subclass has neither #class nor #instance_variables; CRuby
+  # reads both from the object header, so go through the unbound methods.
+  KLASS_OF = Object.instance_method(:class)
+  IVARS_OF = Object.instance_method(:instance_variables)
+  IVAR_GET = Object.instance_method(:instance_variable_get)
+  def self._klass(o) = KLASS_OF.bind_call(o)
+
   # Marshal.dump(obj, limit): each nested value costs one level; a negative
   # limit means unlimited (CRuby).
   def self._dump(o, out, st)
@@ -149,9 +156,10 @@ module Marshal
       raise TypeError, "can't dump anonymous class #{m}" if nm.nil?
       out << "e"; _symdump(nm.to_sym, out, st)
     end
-    if o.class != base
-      nm = _class_name(o.class)
-      raise TypeError, "can't dump anonymous class #{o.class}" if nm.nil?
+    k = _klass(o)
+    if k != base
+      nm = _class_name(k)
+      raise TypeError, "can't dump anonymous class #{k}" if nm.nil?
       out << "C"; _symdump(nm.to_sym, out, st)
     end
   end
@@ -327,20 +335,25 @@ module Marshal
     _wrap_prefix(o, o.class, out, st)
     out << "o"; _symdump(name.to_sym, out, st)
     uiv = o.instance_variables
-    _long(2 + uiv.length, out)
+    cause = (o.cause rescue nil)                       # only set on a raised exception
+    _long(2 + (cause ? 1 : 0) + uiv.length, out)
     _symdump(:mesg, out, st); _dump(o.respond_to?(:__raw_mesg) ? o.__raw_mesg : o.message, out, st)
     _symdump(:bt, out, st);   _dump(o.backtrace, out, st)
+    if cause
+      _symdump(:cause, out, st); _dump(cause, out, st)
+    end
     uiv.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
   end
 
   def self._dump_generic(o, out, st)
-    name = _class_name(o.class)
-    raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
-    _wrap_prefix(o, o.class, out, st)                  # 'e' extends only ('o' carries the name)
-    ivars = o.instance_variables
+    k = _klass(o)
+    name = _class_name(k)
+    raise TypeError, "can't dump anonymous class #{k}" if name.nil?
+    _wrap_prefix(o, k, out, st)                        # 'e' extends only ('o' carries the name)
+    ivars = IVARS_OF.bind_call(o)
     out << "o"
     _symdump(name.to_sym, out, st); _long(ivars.length, out)
-    ivars.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
+    ivars.each { |iv| _symdump(iv, out, st); _dump(IVAR_GET.bind_call(o, iv), out, st) }
   end
 
   def self._dump_string(o, out, st)
@@ -556,6 +569,14 @@ module Marshal
     raise ArgumentError, "dump format error (user class)" if base.nil? || !(cls <= base)
   end
 
+  # #cause has no setter — Kernel#raise's cause: keyword is the only builder, so
+  # raise the exception here and catch it back.
+  def self._exc_with_cause(klass, mesg, cause)
+    raise klass, mesg, cause: cause
+  rescue Exception => e
+    e
+  end
+
   # 'd' rebuilds an object that wraps native state (CRuby's T_DATA).  koruby has
   # no such type tag, so the classes that qualify are named here.
   DATA_CLASSES = [Dir].freeze
@@ -751,8 +772,9 @@ module Marshal
       else
         klass = _const(cls)
         _check_o_type(klass)
-        if klass <= Exception                            # :mesg/:bt are pseudo-ivars
-          obj = klass.new(ivars[:mesg])
+        if klass <= Exception                            # :mesg/:bt/:cause are pseudo-ivars
+          obj = ivars[:cause] ? _exc_with_cause(klass, ivars[:mesg], ivars[:cause])
+                              : klass.new(ivars[:mesg])
           obj.set_backtrace(ivars[:bt]) if ivars[:bt] && obj.respond_to?(:set_backtrace)
           ivars.each { |name, val| obj.instance_variable_set(name, val) if name.to_s.start_with?("@") }
         else

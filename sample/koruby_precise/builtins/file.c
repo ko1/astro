@@ -1713,8 +1713,8 @@ static RESULT korb_m_dir_children(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static uint32_t korb_dir_ents_id(CTX *c) { return korb_intern(c->vm, "__dir_entries", 13); }
 static uint32_t korb_dir_pos_id(CTX *c)  { return korb_intern(c->vm, "__dir_pos", 9); }
 static uint32_t korb_dir_path_id(CTX *c) { return korb_intern(c->vm, "__dir_path", 10); }
-/* Build a Dir instance over `path` (rooted in the caller's slots on return). */
-static RESULT korb_dir_make(CTX *c, VALUE *slots, const char *path, uint32_t plen) {
+/* Read `path` into the cursor ivars of an existing Dir (or subclass) instance. */
+static RESULT korb_dir_fill(CTX *c, VALUE *slots, VALUE_REF obj, const char *path, uint32_t plen) {
     DIR *d = opendir(path);
     if (!d) return korb_raise_errno(c, slots, errno, "opendir", path);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 16));            /* entries (rooted) */
@@ -1725,13 +1725,24 @@ static RESULT korb_dir_make(CTX *c, VALUE *slots, const char *path, uint32_t ple
       } }
     closedir(d);
     slots[1] = UNWRAP(korb_str_new(c, slots + 2, path, plen));   /* path (rooted) */
-    const VALUE dcls = korb_const_get(c->vm, korb_intern(c->vm, "Dir", 3));
-    slots[2] = UNWRAP(korb_obj_new(c, slots + 3, dcls));         /* the Dir (rooted) */
-    VALUE_REF obj = VALUE_REF_AT(&slots[2]);
-    CHECK(korb_ivar_set(c, slots + 3, obj, ID2SYM(korb_dir_ents_id(c)), slots[0]));
-    CHECK(korb_ivar_set(c, slots + 3, obj, ID2SYM(korb_dir_path_id(c)), slots[1]));
-    CHECK(korb_ivar_set(c, slots + 3, obj, ID2SYM(korb_dir_pos_id(c)),  LONG2FIX(0)));
+    CHECK(korb_ivar_set(c, slots + 2, obj, ID2SYM(korb_dir_ents_id(c)), slots[0]));
+    CHECK(korb_ivar_set(c, slots + 2, obj, ID2SYM(korb_dir_path_id(c)), slots[1]));
+    CHECK(korb_ivar_set(c, slots + 2, obj, ID2SYM(korb_dir_pos_id(c)),  LONG2FIX(0)));
     return RESULT_OK(VALUE_REF_GET(obj));
+}
+/* Build a Dir instance over `path` (rooted in the caller's slots on return). */
+static RESULT korb_dir_make(CTX *c, VALUE *slots, const char *path, uint32_t plen) {
+    const VALUE dcls = korb_const_get(c->vm, korb_intern(c->vm, "Dir", 3));
+    slots[0] = UNWRAP(korb_obj_new(c, slots + 1, dcls));         /* the Dir (rooted) */
+    return korb_dir_fill(c, slots + 1, VALUE_REF_AT(&slots[0]), path, plen);
+}
+/* Dir#initialize(path) — Dir.new goes through the C builder, but Marshal's 'd'
+ * record and a subclass's own #initialize need this entry point. */
+static RESULT korb_m_dir_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
+    char pbuf[4096]; size_t pl = strlen(path); if (pl >= sizeof pbuf) pl = sizeof pbuf - 1;
+    memcpy(pbuf, path, pl); pbuf[pl] = '\0';                     /* path is a movable interior ptr */
+    return korb_dir_fill(c, slots, self, pbuf, (uint32_t)pl);
 }
 /* Dir.new(path) / Dir.open(path) [ { |dir| } ] */
 static RESULT korb_m_dir_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
@@ -2292,6 +2303,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn_blk(c, slots[3], "open", korb_m_dir_open,    -1);   /* Dir.open [ {|d|} ] */
     korb_class_def_cfn_blk(c, slots[3], "new",  korb_m_dir_open,    -1);   /* Dir.new */
     /* Dir instance methods (eager-entry cursor object). */
+    korb_class_def_cfn(c, slots[2], "initialize", korb_m_dir_initialize, -1);
     korb_class_def_cfn(c, slots[2], "read",       korb_m_dir_read,       0);
     korb_class_def_cfn_blk(c, slots[2], "each",   korb_m_dir_each,       0);
     korb_class_def_cfn(c, slots[2], "path",       korb_m_dir_path,       0);
