@@ -328,12 +328,15 @@ end
 
 class Enumerator::Lazy
   # koruby's Enumerator.new fast path would take the block for a plain generator
-  # (called with just the yielder); Lazy.new's block is a TRANSFORM over
-  # `receiver`, so construct here and let #initialize wire the two together.
+  # (called with just the yielder); Lazy.new's block is a TRANSFORM handed the
+  # yielder plus each value of `receiver`.  Fold the pair into one generator and
+  # take its #lazy so the result really is a deferred lazy enumerator.
   def self.new(receiver, size = nil, &block)
-    o = allocate
-    o.send(:initialize, receiver, size, &block)
-    o
+    raise ArgumentError, "tried to call lazy new without a block" unless block
+    e = Enumerator.new { |y| receiver.each { |*values| block.call(y, *values) } }.lazy
+    e.__set_size(size) if size.is_a?(Integer)   # derived lazies inherit this C-level size
+    e.instance_variable_set(:@__lazy_size, size)
+    e
   end
 
   # Lazy#initialize(receiver[, size]) { |yielder, *values| ... } — the block is a
