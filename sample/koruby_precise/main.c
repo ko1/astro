@@ -1075,6 +1075,12 @@ main(int argc, char *argv[])
             RESULT mr = korb_obj_new(c, toplevel_cursor, KORB_NIL);   /* klass=nil → `main` */
             if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); korb_io_flush_std(c->vm); return 1; }
             c->slots[-1] = mr.value;                  /* main self at base[-1] (bottom header) */
+            /* The reserved frame-top cell is the method-entry slot; at top level
+             * there is no entry.  The prelude ran in this same region with a
+             * smaller frame, so leftovers can sit here and korb_cvar_cref would
+             * read one as a tagged method pointer (`class << obj` after ~40
+             * top-level locals used to SEGV). */
+            if (koruby_toplevel_locals_cnt > 0) c->slots[koruby_toplevel_locals_cnt - 1] = 0;
         }
         /* TOPLEVEL_BINDING: a Binding over the (persistent) toplevel frame. */
         {
