@@ -1133,17 +1133,22 @@ main(int argc, char *argv[])
             RESULT lj = korb_raise(c, toplevel_cursor, KORB_E_LOCALJUMP, 0, "break from proc-closure");
             r = RESULT_RAISE_(lj.value);
         }
+        toplevel_cursor[0] = KORB_NIL;                    /* the main exception, rooted across at_exit */
         if (r.state == KORB_RAISE) {
             exit_status = korb_system_exit_status(c, r.value);
-            if (exit_status < 0) {                        /* a real error: report it first, then
-                                                           * let the handlers see it as $! */
-                korb_report_uncaught(c, r.value);
+            if (exit_status < 0) {                        /* a real error: the handlers see it as $! */
                 korb_errinfo_push(c, r.value);
+                toplevel_cursor[0] = r.value;
                 uncaught = true;
             }
         }
-        const int handler_status = korb_drain_at_exit(c, toplevel_cursor);
+        bool handler_exited = false;
+        const int handler_status = korb_drain_at_exit_x(c, toplevel_cursor + 4, &handler_exited);
         if (handler_status >= 0) exit_status = handler_status;   /* a handler's exit wins */
+        /* CRuby reports the uncaught exception AFTER at_exit, and not at all when
+         * a handler called exit.  A handler that merely RAISED does not suppress
+         * it — both are printed.  Read the (possibly moved) exception back. */
+        if (uncaught && !handler_exited) korb_report_uncaught(c, toplevel_cursor[0]);
         fflush(stdout);
         if (exit_status >= 0) {
             korb_io_flush_std(c->vm);

@@ -410,6 +410,7 @@ RESULT korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
 void   korb_report_uncaught(CTX *c, VALUE exc);
 int    korb_system_exit_status(CTX *c, VALUE exc);   /* SystemExit → its status, else -1 */
 int    korb_drain_at_exit(CTX *c, VALUE *slots);   /* run at_exit blocks (main.c); >=0 = exit status a handler asked for */
+int    korb_drain_at_exit_x(CTX *c, VALUE *slots, bool *exited);   /* same, plus "a handler called exit" */
 void   korb_io_flush_std(struct korb_vm *vm);     /* flush stdout/stderr (no stdio to do it at exit) */
 
 /* a Hash the call site wrote as keyword arguments (KORB_FL_KWARGS) */

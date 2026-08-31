@@ -12313,6 +12313,7 @@ korb_bi_load(CTX *c, VALUE *slots, VALUE_SLICE args)
  * Integer → that code).  Runs the registered at_exit blocks first (reverse order),
  * matching CRuby's exit (exit! skips them). */
 int korb_drain_at_exit(CTX *c, VALUE *slots);   /* fwd (defined below; called from main.c) */
+int korb_drain_at_exit_x(CTX *c, VALUE *slots, bool *exited);   /* fwd; *exited = a handler called exit */
 /* If `exc` is a SystemExit, its status (>= 0); otherwise -1.  main.c uses this
  * to end the program quietly with the requested code. */
 int
@@ -12436,9 +12437,10 @@ korb_bi_abort(CTX *c, VALUE *slots, VALUE_SLICE args)
  * in a handler decides the process status, and any other exception is reported
  * and makes it 1 — the remaining handlers still run, seeing it as $!. */
 int
-korb_drain_at_exit(CTX *c, VALUE *slots)
+korb_drain_at_exit_x(CTX *c, VALUE *slots, bool *exited)
 {
     static bool draining = false;
+    if (exited) *exited = false;
     if (draining) return -1;
     draining = true;
     int status = -1;
@@ -12454,7 +12456,7 @@ korb_drain_at_exit(CTX *c, VALUE *slots)
         RESULT er = korb_send(c, slots + 2, korb_intern(c->vm, "call", 4), 0, 0);
         if (er.state == KORB_RAISE) {
             const int st = korb_system_exit_status(c, er.value);
-            if (st >= 0) { status = st; continue; }        /* `exit` in a handler: status only */
+            if (st >= 0) { status = st; if (exited) *exited = true; continue; }   /* `exit` in a handler: status only */
             korb_report_uncaught(c, er.value);
             korb_errinfo_push(c, er.value);                /* later handlers see it as $! */
             status = 1;
@@ -12462,6 +12464,11 @@ korb_drain_at_exit(CTX *c, VALUE *slots)
     }
     draining = false;
     return status;
+}
+int
+korb_drain_at_exit(CTX *c, VALUE *slots)
+{
+    return korb_drain_at_exit_x(c, slots, NULL);
 }
 
 /* Kernel#warn(*msgs) — write each message + newline to stderr (a trailing
