@@ -410,7 +410,13 @@ class IO
   # → [io, opened_here?].  path (String / #to_path) のときだけ open する。
   def self.__cs_io(obj, mode)
     return [obj, false] if obj.respond_to?(mode == "rb" ? :read : :write) && !obj.is_a?(String)
-    path = obj.is_a?(String) ? obj : obj.to_path
+    path = obj
+    unless path.is_a?(String)
+      path = obj.to_path if obj.respond_to?(:to_path)
+      path = String.try_convert(path) || path unless path.is_a?(String)
+      # a #to_path that does not give a String is a TypeError, not an fd
+      raise TypeError, "no implicit conversion of #{path.class} into String" unless path.is_a?(String)
+    end
     [File.open(path, mode), true]
   end
   private_class_method :__cs_io

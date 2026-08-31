@@ -132,8 +132,9 @@ read_file_all(const char *path, size_t *len_out)
 {
     const int fd = strcmp(path, "-") == 0 ? STDIN_FILENO : open(path, O_RDONLY);
     if (fd < 0) {
-        fprintf(stderr, "koruby_precise: cannot open %s\n", path);
-        exit(2);
+        /* CRuby's wording, which scripts and specs match on: it is a LoadError */
+        fprintf(stderr, "ruby: %s -- %s (LoadError)\n", strerror(errno), path);
+        exit(1);
     }
     size_t capa = 1 << 16, len = 0;
     char *buf = malloc(capa);
