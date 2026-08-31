@@ -828,6 +828,7 @@ static RESULT korb_m_ary_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_m_ary_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)VALUE_SLICE_LEN(a));
     const bool has_pat = VALUE_SLICE_LEN(a) >= 1;
+    if (UNLIKELY(has_pat && block != NULL)) korb_warn(c, slots, "given block not used");   /* the pattern wins */
     slots[0] = has_pat ? VALUE_SLICE_GET(a, 0) : KORB_NIL;           /* pattern (rooted) */
     const bool pat_obj = has_pat && KORB_OBJECT_P(slots[0]);         /* user object → dispatch #=== */
     const uint32_t ceq = pat_obj ? korb_intern(c->vm, "===", 3) : 0;

@@ -78,6 +78,17 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(!KORB_STRING_P(slots[0])))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
+    /* CRuby rejects a non-String `buffer:` before packing anything, so check it
+     * up front rather than after the directives have had a chance to raise. */
+    if (na >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) {
+        const KorbHash *const kh = VAL2HASH(VALUE_SLICE_GET(a, na - 1));
+        const int32_t bi = korb_hash_find(kh, ID2SYM(korb_intern(c->vm, "buffer", 6)));
+        if (bi >= 0) {
+            const VALUE bv = korb_items_data(kh->items)[2 * bi + 1];
+            if (UNLIKELY(!KORB_STRING_P(bv)))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "buffer must be String, not %s", korb_type_name(bv));
+        }
+    }
     const KorbString *t = VAL2STR(slots[0]);
     const KorbArray *ary = SELF_ARY;
     uint8_t *ob = NULL; size_t olen = 0, ocap = 0;
@@ -165,7 +176,10 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
                 VALUE e = korb_items_data(ary->items)[ai++];
                 double dv;
-                if (!korb_num_to_d(e, &dv)) { errtype = KORB_E_TYPE; errmsg = "no implicit conversion to float"; break; }   /* nil/true/false/String → TypeError */
+                if (!korb_num_to_d(e, &dv)) {   /* nil/true/false/String → TypeError */
+                    snprintf(errbuf, sizeof errbuf, "can't convert %s into Float", korb_coerce_name(c, e));
+                    errtype = KORB_E_TYPE; errmsg = errbuf; break;
+                }
                 unsigned char tmp[8];
                 if (sz == 4) { float f = (float)dv; memcpy(tmp, &f, 4); } else memcpy(tmp, &dv, 8);
                 for (int b = 0; b < sz; b++) PK_PUT(tmp[big ? (sz - 1 - b) : b]);
@@ -227,7 +241,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             const bool coerce = (d == 'M');   /* only M to_s's its operand; m/u demand a String (#to_str) */
             char cobuf[64]; const char *ed; uint32_t elen;
             if (KORB_STRING_P(e)) { const KorbString *es = VAL2STR(e); ed = korb_strbuf_data(es->buf); elen = es->len; }
-            else if (e == KORB_NIL) { ed = ""; elen = 0; }
+            else if (e == KORB_NIL && d != 'm' && d != 'u') { ed = ""; elen = 0; }   /* m/u demand a String even for nil */
             else if (coerce && FIXNUM_P(e)) { elen = korb_fmt_int((korb_sword_t)FIX2LONG(e), 10, cobuf); ed = cobuf; }
             else if (coerce && SYMBOL_P(e)) { ed = korb_sym_name(c->vm, SYM2ID(e)); elen = (uint32_t)strlen(ed); }
             else if (coerce && KORB_FLOAT_P(e)) { elen = korb_float_to_s(korb_float_val(e), cobuf); ed = cobuf; }
@@ -260,7 +274,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 ary = SELF_ARY; t = VAL2STR(slots[0]);
             }
             else {
-                snprintf(errbuf, sizeof errbuf, "no implicit conversion of %s into String", korb_type_name(e));
+                snprintf(errbuf, sizeof errbuf, "no implicit conversion of %s into String", korb_coerce_name(c, e));
                 errtype = KORB_E_TYPE; errmsg = errbuf; break;
             }
             if (d == 'a' || d == 'A') {
@@ -284,9 +298,9 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 unsigned byte = 0, used = 0;
                 for (uint32_t k = 0; k < ndig; k++) {
                     const char ch = (k < elen) ? ed[k] : '0';
-                    unsigned v = (ch >= '0' && ch <= '9') ? (unsigned)(ch - '0')
-                               : (ch >= 'a' && ch <= 'f') ? (unsigned)(ch - 'a' + 10)
-                               : (ch >= 'A' && ch <= 'F') ? (unsigned)(ch - 'A' + 10) : 0u;
+                    /* CRuby: alpha → ((c & 15) + 9) & 15, anything else → c & 15 */
+                    const bool alpha = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+                    const unsigned v = alpha ? (unsigned)((((unsigned)ch & 15u) + 9u) & 15u) : (unsigned)((unsigned)ch & 15u);
                     if (d == 'H') byte |= v << (used ? 0 : 4); else byte |= v << (used ? 4 : 0);
                     if (++used == 2) { PK_PUT(byte); byte = 0; used = 0; }
                 }
@@ -309,10 +323,12 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 if (col > 0) PK_PUTS("=\n", 2);
             } else {                                      /* m (base64) / u (uuencode) */
                 /* `m0` = base64 with no line breaks (and no trailing newline);
-                 * `m` / `m*` / `m1` / `m2` = 45 bytes per line; `mN` (N>=3) = N. */
+                 * `m`/`m*`/`m1`/`m2` and `u`/`u*`/`u0`/`u1`/`u2` = 45 bytes per
+                 * line; `mN`/`uN` (N>=3) = N. */
                 const bool m_nowrap = (d == 'm' && has_cnt && cnt == 0);
                 long per;
-                if (d == 'm' && has_cnt && (cnt == 1 || cnt == 2)) per = 45;
+                if (has_cnt && cnt >= 1 && cnt <= 2) per = 45;
+                else if (d == 'u' && has_cnt && cnt == 0) per = 45;
                 else per = has_cnt ? cnt : 45;
                 if (m_nowrap) per = elen > 0 ? (long)elen : 3;
                 else { per = (per / 3) * 3; if (per < 3) per = 3; }
@@ -919,6 +935,8 @@ static RESULT korb_m_ary_delete_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (block != NULL && VALUE_SLICE_LEN(a) > 0) korb_warn(c, slots, "given block not used");   /* arg wins */
+    if (block == NULL && VALUE_SLICE_LEN(a) == 0)     /* no needle, no block → Enumerator (no size fn) */
+        return korb_ary_to_enum_unsized(c, slots, self, "rindex", a);
     if (block != NULL && VALUE_SLICE_LEN(a) == 0) {   /* block form (arg, if given, wins per CRuby) */
         for (int32_t i = (int32_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; i >= 0; i--) {
             if (i >= (int32_t)VAL2ARY(VALUE_REF_GET(self))->len) continue;   /* re-check size: the block may have shrunk self */

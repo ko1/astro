@@ -67,19 +67,36 @@ static RESULT korb_m_set_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 /* compare_by_identity — switch the set to identity comparison (returns self). */
 static RESULT korb_m_set_cbi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a;
+    (void)a;
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VAL2SET(VALUE_REF_GET(self))->by_identity = 1;
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_set_cbi_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_SET->by_identity ? KORB_TRUE : KORB_FALSE); }
+/* The members of a Set-or-enumerable operand as a plain Array.  A "Set-like"
+ * object (Enumerable, answers is_a?(Set)) is materialized with #to_a — CRuby's
+ * Set methods accept those transparently.  Result at slots[0] (rooted). */
+static RESULT korb_set_other_elems(CTX *c, VALUE *slots, VALUE o, VALUE *out) {
+    const VALUE direct = korb_set_elems_of(o);
+    if (direct != KORB_NIL) { *out = direct; return RESULT_OK(KORB_NIL); }
+    slots[0] = o;                                       /* root across the respond_to?/to_a dispatch */
+    if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], korb_intern(c->vm, "each", 4))) {
+        RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0, NULL, NULL, NULL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_ARRAY_P(r.value)) { slots[0] = r.value; *out = slots[0]; return RESULT_OK(KORB_NIL); }
+    }
+    *out = KORB_NIL;
+    return RESULT_OK(KORB_NIL);
+}
 /* disjoint?(o): no shared elements.  intersect?(o): some shared element. */
 static RESULT korb_m_set_disjoint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const VALUE oe = korb_set_elems_of(VALUE_SLICE_GET(a, 0));   /* Set/enumerable → elems array */
+    VALUE oe; CHECK(korb_set_other_elems(c, slots, VALUE_SLICE_GET(a, 0), &oe));   /* Set/enumerable/set-like → elems array */
     if (oe == KORB_NIL) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be enumerable");
-    const KorbArray *const ot = VAL2ARY(oe);
-    const KorbArray *const me = VAL2ARY(SELF_SET->elems);        /* re-read self after the line above (no GC since) */
+    slots[0] = oe;                                               /* root: SELF_SET re-read below */
+    const KorbArray *const ot = VAL2ARY(slots[0]);
+    const KorbArray *const me = VAL2ARY(SELF_SET->elems);
     for (uint32_t i = 0; i < me->len; i++)
-        if (korb_arr_has((KorbArray *)ot, korb_items_data(me->items)[i])) return RESULT_OK(KORB_FALSE);
+        if (korb_arr_has(ot, korb_items_data(me->items)[i])) return RESULT_OK(KORB_FALSE);
     return RESULT_OK(KORB_TRUE);
 }
 static RESULT korb_m_set_intersect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -126,7 +143,7 @@ static RESULT korb_m_set_delete_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 static RESULT korb_m_set_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
-    if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    if (block == NULL) REQUIRE_BLOCK("Set#each");
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ar = VAL2ARY(SELF_SET->elems);
         if (i >= ar->len) break;
@@ -158,7 +175,10 @@ static RESULT korb_set_binop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             if (keep && !korb_arr_has(VAL2ARY(VALUE_REF_GET(dst)), e)) CHECK(korb_ary_push_val(c, slots + 2, dst, e));
         }
     }
-    return korb_set_new(c, slots + 2, VALUE_REF_GET(dst));
+    RESULT nr = korb_set_new(c, slots + 2, VALUE_REF_GET(dst));
+    /* CRuby: |, - and ^ keep the receiver's compare_by_identity flag; & does not. */
+    if (nr.state == KORB_NORMAL && op != 1) VAL2SET(nr.value)->by_identity = SELF_SET->by_identity;
+    return nr;
 }
 static RESULT korb_m_set_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_binop(c, slots, self, a, 0); }
 static RESULT korb_m_set_inter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_binop(c, slots, self, a, 1); }

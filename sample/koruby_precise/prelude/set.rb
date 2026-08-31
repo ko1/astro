@@ -79,12 +79,12 @@ class Set
     return to_enum(:divide) unless block_given?
     if func.arity == 2
       # Connected components of the directed graph u->v where func(u,v) is truthy.
-      # CRuby calls the block once for every ordered pair (incl. self-pairs); the
-      # groups are its strongly-connected components (mutual reachability).
+      # CRuby 4.0 calls the block once for every ordered pair of *distinct*
+      # elements; the groups are its strongly-connected components.
       els = to_a
       adj = Array.new(els.size) { [] }
       els.each_with_index do |u, i|
-        els.each_with_index { |v, j| adj[i] << j if func.call(u, v) }
+        els.each_with_index { |v, j| adj[i] << j if i != j && func.call(u, v) }
       end
       idx = Array.new(els.size, nil); low = Array.new(els.size, 0)
       on_stack = Array.new(els.size, false); stack = []; counter = 0; comps = []
@@ -118,5 +118,10 @@ class Set
       end
       self.class.new(groups.values.map { |g| self.class.new(g) })
     end
+  end
+  alias eql? ==                             # CRuby: #eql? is the same UnboundMethod as #==
+  # pp hook for a self-referencing Set: the elements are elided, not re-entered.
+  def pretty_print_cycle(q)
+    q.text(empty? ? "Set[]" : "Set[...]")
   end
 end

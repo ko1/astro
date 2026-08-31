@@ -321,6 +321,10 @@ class Enumerator
       recv, meth, args = @__src_recv, @__src_meth, @__src_args + extra
       return Enumerator.new { |y| recv.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
     end
+    # Re-drive the source method with the caller's own block, like CRuby: the
+    # generator would wrap it in a |*vs| forwarder, and the source would then see
+    # arity -1 instead of the block's real arity (Set#divide branches on it).
+    return @__src_recv.send(@__src_meth, *@__src_args, &block) if block && defined?(@__src_recv)
     return __each_orig(&block) if block
     self
   end
@@ -405,7 +409,7 @@ class Enumerator::Lazy
   private :__lazy_gen
 
   def chunk(&b)
-    raise ArgumentError, "tried to create Proc object without a block" unless b
+    return to_enum(:chunk) unless b     # CRuby: block-less #chunk is an enumerator, not an error
     src = self
     __lazy_gen do |y|
       cur = nil; key = nil; started = false

@@ -18,6 +18,7 @@ static RESULT korb_m_ary_unshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 
 static RESULT korb_m_ary_shift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)VALUE_SLICE_LEN(a));
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* shift(n): remove & return first n as array */
         korb_sword_t n;
@@ -82,6 +83,7 @@ static RESULT korb_m_ary_rassoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     const bool have_default = VALUE_SLICE_LEN(a) >= 2;
+    if (UNLIKELY(have_default && block != NULL)) korb_warn(c, slots, "block supersedes default value argument");
     slots[0] = VALUE_SLICE_GET(a, 0);                     /* original index arg (rooted; yielded to the block as-is) */
     slots[1] = have_default ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
     korb_sword_t i;
@@ -677,23 +679,54 @@ static RESULT korb_hash_xform_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static RESULT korb_m_hash_transform_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     return korb_hash_xform_keys(c, slots, self, a, block, def_env, cself);
 }
-/* transform_keys! — rebuild into a temp, then replace self's contents. */
+/* transform_keys! — CRuby renames pair by pair over a snapshot of the entries,
+ * so a `break` out of the block leaves the already-renamed keys in place and the
+ * rest of the hash untouched (rebuilding into a temp would lose both). */
+static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* fwd (hash.c) */
 static RESULT korb_m_hash_transform_keys_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(block == NULL && VALUE_SLICE_LEN(a) == 0)) {   /* no block/arg → Enumerator over the bang form (its #each mutates self) */
         slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "transform_keys!", 15));
         return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1);
     }
+    const bool has_arg = VALUE_SLICE_LEN(a) >= 1;
+    if (has_arg && !KORB_HASH_P(VALUE_SLICE_GET(a, 0)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
-    slots[0] = UNWRAP(korb_hash_xform_keys(c, slots + 1, self, a, block, def_env, cself));   /* result rooted at slots[0] */
-    VALUE_REF res = VALUE_REF_AT(&slots[0]);
-    KORB_HASH_DROP_INDEX(VAL2HASH(VALUE_REF_GET(self)));
-    VAL2HASH(VALUE_REF_GET(self))->len = 0;                     /* clear self (payload kept) */
+    slots[0] = has_arg ? VALUE_SLICE_GET(a, 0) : KORB_NIL;      /* rename map (rooted) */
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, VAL2HASH(VALUE_REF_GET(self))->len * 2));
+    VALUE_REF pairs = VALUE_REF_AT(&slots[1]);                  /* flat [k, v, …] snapshot */
     for (uint32_t i = 0; ; i++) {
-        const KorbHash *r = VAL2HASH(VALUE_REF_GET(res));
-        if (i >= r->len) break;
-        slots[1] = korb_items_data(r->items)[2 * i];                      /* key */
-        VALUE val = korb_items_data(VAL2HASH(VALUE_REF_GET(res))->items)[2 * i + 1];
-        CHECK(korb_hash_set(c, slots + 2, self, VALUE_REF_AT(&slots[1]), val));
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[2] = korb_items_data(h->items)[2 * i];
+        slots[3] = korb_items_data(h->items)[2 * i + 1];
+        CHECK(korb_ary_push_val(c, slots + 4, pairs, slots[2]));
+        CHECK(korb_ary_push_val(c, slots + 4, pairs, slots[3]));
+    }
+    slots[2] = UNWRAP(korb_hash_new(c, slots + 2, 8));          /* the keys produced so far */
+    VALUE_REF seen = VALUE_REF_AT(&slots[2]);
+    const uint32_t np = VAL2ARY(VALUE_REF_GET(pairs))->len;
+    for (uint32_t i = 0; i + 1 < np; i += 2) {
+        slots[3] = korb_items_data(VAL2ARY(VALUE_REF_GET(pairs))->items)[i];       /* old key */
+        slots[4] = korb_items_data(VAL2ARY(VALUE_REF_GET(pairs))->items)[i + 1];   /* value */
+        slots[5] = slots[3];                                                       /* new key (default = old) */
+        bool mapped = false;
+        if (slots[0] != KORB_NIL) {
+            const int32_t j = korb_hash_find(VAL2HASH(slots[0]), slots[3]);
+            if (j >= 0) { slots[5] = korb_items_data(VAL2HASH(slots[0])->items)[2 * j + 1]; mapped = true; }
+        }
+        if (!mapped && block != NULL) {
+            RESULT r = korb_block_yield(c, slots + 6, block, def_env, &slots[3], 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;     /* break/raise: keep the partial rename */
+            slots[5] = r.value;
+        }
+        if (korb_hash_find(VAL2HASH(VALUE_REF_GET(seen)), slots[3]) < 0) {   /* the old key was not re-created → drop it */
+            slots[6] = slots[3];
+            CHECK(korb_m_hash_delete(c, slots + 7, self, VALUE_SLICE_MAKE(&slots[6], 1), NULL, NULL, NULL));
+        }
+        CHECK(korb_hash_set(c, slots + 6, self, VALUE_REF_AT(&slots[5]), slots[4]));
+        slots[6] = slots[5];
+        CHECK(korb_hash_set(c, slots + 7, seen, VALUE_REF_AT(&slots[6]), KORB_NIL));
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
