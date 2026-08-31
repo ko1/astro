@@ -208,6 +208,23 @@ node_gvar_coerce(CTX *c, NODE *n, VALUE *slots, uint32_t kind, VALUE val@child)
     return RESULT_OK(slots[0]);
 }
 
+// Hash literal with duplicate literal keys.  CRuby warns while compiling; we
+// warn on the first evaluation instead, so the message goes through the Ruby
+// $stderr the program (and mspec's `complain`) can redirect.
+NODE_DEF @noinline
+node_dupkey_warn(CTX *c, NODE *n, VALUE *slots, void *warns, uint32_t cnt, VALUE val@child)
+{
+    (void)n;
+    struct korb_dupkey_warn *const w = (struct korb_dupkey_warn *)warns;
+    for (uint32_t i = 0; i < cnt; i++) {
+        if (w[i].done) continue;
+        w[i].done = 1;
+        korb_warn_at(c, slots, w[i].file, w[i].line,
+                     "key %s is duplicated and overwritten on line %u", w[i].key, w[i].line2);
+    }
+    return RESULT_OK(val);
+}
+
 NODE_DEF @noinline
 node_deprecated_gvar_warn(CTX *c, NODE *n, VALUE *slots, const char *name, VALUE val@child)
 {
@@ -2268,6 +2285,18 @@ NODE_DEF
 node_hash_set(CTX *c, NODE *n, VALUE *slots, VALUE_REF hash@child, VALUE_REF key@child, VALUE val@child)
 {
     (void)n;
+    const VALUE k = VALUE_REF_GET(key);
+    /* A mutable String key is stored frozen (like Hash#[]=), so mutating the
+     * key object afterwards cannot reach into the Hash. */
+    if (UNLIKELY(KORB_STRING_P(k) && !(((const AroObjectHeader *)(uintptr_t)k)->flags & KORB_FL_FROZEN))) {
+        slots[0] = val;                                   /* park: #dup allocates */
+        slots[1] = k;
+        RESULT dr = korb_send(c, slots + 2, korb_intern(c->vm, "dup", 3), 0, 0);
+        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+        slots[1] = dr.value;
+        if (AROH_IS_GC_OBJECT(slots[1])) ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_FROZEN;
+        return korb_hash_set(c, slots + 2, hash, VALUE_REF_AT(&slots[1]), slots[0]);
+    }
     return korb_hash_set(c, slots, hash, key, val);
 }
 

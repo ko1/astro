@@ -967,6 +967,8 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
     return buf;
 }
 
+static NODE *kp_warn_dup_hash_keys(struct kp_ctx *tc, struct pm_node **assocs, size_t n, NODE *h);
+
 /* ---- operators --------------------------------------------------------- */
 
 extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
@@ -1864,7 +1866,9 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             for (uint32_t i = 0; i < pos_argc; i++) argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
             for (uint32_t j = 0; j < kw_cnt; j++) argv[1 + pos_argc + j] = transduce(tc, ((const pm_assoc_node_t *)kh->elements.nodes[j])->value);
             tc->chain = saved;
-            return ALLOC_node_call_kw(mid, line, pos_argc, (const char *)(const void *)kw_syms, argv, cnt);
+            /* `f(a: 1, a: 2)` warns like a Hash literal would */
+            return kp_warn_dup_hash_keys(tc, kh->elements.nodes, kh->elements.size,
+                                         ALLOC_node_call_kw(mid, line, pos_argc, (const char *)(const void *)kw_syms, argv, cnt));
         }
     }
 
@@ -2961,6 +2965,84 @@ kp_jump_args_value(struct kp_ctx *tc, const pm_arguments_node_t *args)
     return build_array(tc, args->arguments.nodes, n, (uint32_t)n);
 }
 
+/* A literal Hash key, for the duplicate-key warning.  Only keys whose value is
+ * known at parse time take part; `kind` separates :a from "a" from 1. */
+struct kp_hkey { const char *txt; size_t len; uint8_t kind; uint32_t line; };
+
+static bool
+kp_hkey_of(struct kp_ctx *tc, const pm_node_t *key, struct kp_hkey *out)
+{
+    out->line = kp_line(tc, key);
+    if (PM_NODE_TYPE_P(key, PM_SYMBOL_NODE)) {
+        const pm_string_t *const u = &((const pm_symbol_node_t *)key)->unescaped;
+        out->txt = (const char *)pm_string_source(u); out->len = pm_string_length(u); out->kind = 0;
+        return true;
+    }
+    if (PM_NODE_TYPE_P(key, PM_STRING_NODE)) {
+        const pm_string_t *const u = &((const pm_string_node_t *)key)->unescaped;
+        out->txt = (const char *)pm_string_source(u); out->len = pm_string_length(u); out->kind = 1;
+        return true;
+    }
+    if (PM_NODE_TYPE_P(key, PM_INTEGER_NODE) || PM_NODE_TYPE_P(key, PM_FLOAT_NODE)) {
+        out->txt = (const char *)key->location.start;
+        out->len = (size_t)(key->location.end - key->location.start);
+        out->kind = 2;
+        return true;
+    }
+    return false;                                       /* dynamic / interpolated: no parse-time answer */
+}
+
+/* Collect the literal keys of a hash literal, descending into a `**{...}` whose
+ * operand is itself a literal (CRuby warns across that boundary too). */
+static void
+kp_collect_hkeys(struct kp_ctx *tc, struct pm_node **assocs, size_t n,
+                 struct kp_hkey *keys, uint32_t *cnt, uint32_t max)
+{
+    for (size_t i = 0; i < n && *cnt < max; i++) {
+        const pm_node_t *const el = assocs[i];
+        if (PM_NODE_TYPE_P(el, PM_ASSOC_SPLAT_NODE)) {
+            const pm_node_t *const v = (const pm_node_t *)((const pm_assoc_splat_node_t *)el)->value;
+            if (v && PM_NODE_TYPE_P(v, PM_HASH_NODE)) {
+                const pm_hash_node_t *const inner = (const pm_hash_node_t *)v;
+                kp_collect_hkeys(tc, inner->elements.nodes, inner->elements.size, keys, cnt, max);
+            }
+            continue;
+        }
+        if (!PM_NODE_TYPE_P(el, PM_ASSOC_NODE)) continue;
+        if (kp_hkey_of(tc, (const pm_node_t *)((const pm_assoc_node_t *)el)->key, &keys[*cnt])) (*cnt)++;
+    }
+}
+
+/* Wrap `h` so the first evaluation reports each duplicate literal key, or return
+ * it unchanged when there is none. */
+static NODE *
+kp_warn_dup_hash_keys(struct kp_ctx *tc, struct pm_node **assocs, size_t n, NODE *h)
+{
+    if (n < 2 || n > 256) return h;
+    struct kp_hkey keys[256];
+    uint32_t cnt = 0;
+    kp_collect_hkeys(tc, assocs, n, keys, &cnt, 256);
+    struct korb_dupkey_warn *warns = NULL;
+    uint32_t wcnt = 0;
+    static const char *const open[] = { ":", "\"", "" }, *const close[] = { "", "\"", "" };
+    for (uint32_t j = 1; j < cnt; j++) {                 /* one report per overwritten occurrence */
+        for (uint32_t i = j; i-- > 0; ) {
+            if (keys[i].kind != keys[j].kind || keys[i].len != keys[j].len ||
+                memcmp(keys[i].txt, keys[j].txt, keys[i].len) != 0) continue;
+            char *const key = malloc(keys[i].len + 3);
+            if (!key) abort();
+            snprintf(key, keys[i].len + 3, "%s%.*s%s", open[keys[i].kind],
+                     (int)keys[i].len, keys[i].txt, close[keys[i].kind]);
+            warns = realloc(warns, sizeof(*warns) * (wcnt + 1));
+            if (!warns) abort();
+            warns[wcnt++] = (struct korb_dupkey_warn){ strdup(tc->fname), key, keys[i].line, keys[j].line, 0 };
+            break;
+        }
+    }
+    if (wcnt == 0) return h;
+    return ALLOC_node_dupkey_warn(warns, wcnt, h);
+}
+
 /* Hash literal `{k => v, ...}` → inside-out set chain (same shape as
  * build_array): hash_set(hash_set(hash_new(n), k0, v0), k1, v1)... */
 static NODE *
@@ -3423,14 +3505,15 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_HASH_NODE: {
         const pm_hash_node_t *hn = (const pm_hash_node_t *)node;
         size_t cnt = hn->elements.size;
-        return build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt);
+        return kp_warn_dup_hash_keys(tc, hn->elements.nodes, cnt,
+                                     build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt));
       }
 
       case PM_KEYWORD_HASH_NODE: {       /* trailing `k: v` / `**h` args → a Hash (becomes kwargs) */
         const pm_keyword_hash_node_t *hn = (const pm_keyword_hash_node_t *)node;
         size_t cnt = hn->elements.size;
         NODE *const h = build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt);
-        return ALLOC_node_kwargs_mark(h);   /* the callee binds a tagged Hash to keywords */
+        return kp_warn_dup_hash_keys(tc, hn->elements.nodes, cnt, ALLOC_node_kwargs_mark(h));   /* the callee binds a tagged Hash to keywords */
       }
 
       case PM_X_STRING_NODE: {          /* `cmd` → self.`("cmd") */

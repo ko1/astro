@@ -453,7 +453,7 @@ module GC
       heap_final_slots: 0, heap_marked_slots: 0, heap_eden_pages: 0,
       heap_tomb_pages: 0, total_allocated_pages: 0, total_freed_pages: 0,
       malloc_increase_bytes: bytes, malloc_increase_bytes_limit: 0,
-      minor_gc_count: minor, major_gc_count: major, compact_count: 0,
+      compact_count: 0,
       read_barrier_faults: 0, total_moved_objects: 0,
       remembered_wb_unprotected_objects: 0, remembered_wb_unprotected_objects_limit: 0,
       old_objects: 0, old_objects_limit: 0, oldmalloc_increase_bytes: 0,
