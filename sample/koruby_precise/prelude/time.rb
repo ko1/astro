@@ -40,10 +40,6 @@ class Time
   end
   alias xmlschema iso8601
 
-  # koruby has no DST tracking (UTC/localtime only) — report standard time.
-  def isdst; false; end
-  alias dst? isdst
-
   def deconstruct_keys(keys)
     all = { year: year, month: month, day: day, yday: yday, wday: wday,
             hour: hour, min: min, sec: sec, subsec: subsec, dst: dst?, zone: zone }
