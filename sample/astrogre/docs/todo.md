@@ -190,6 +190,25 @@ Teddy / line-iteration nodes が landing したあと、標準の ASTro JIT
 ### エンコーディング
 EUC-JP (`/e`)、Windows-31J (`/s`)。需要次第で。
 
+エンジンが知っているのは UTF-8 とバイト列だけなので、これらの
+エンコーディングの subject では `.` が 1 文字を正しく数えられない
+(Windows-31J の半角カナ `\xC3` は 1 byte だが、今は UTF-8 の先行
+バイトとして 2 byte 消費してしまう)。`agre_encoding_t` を増やして
+`.` / クラス / lookbehind の後ろ向き走査に per-encoding の文字長を
+入れる必要がある。rubyspec の `language/regexp/encoding_spec.rb`
+の `/s` 3 例がこれ待ち。
+
+### `\k<name+N>` の nesting level 指定子
+level 0 (`\k<name-0>` / `\k<name+0>`) は素の後方参照として通すが、
+0 以外は RegexpError にしている。本来は再帰の深さごとのキャプチャ
+スタックが要る (`spec/ruby/language/regexp/subexpression_call_spec.rb`
+の mirror 言語の例)。
+
+### `\g<0>` の無限再帰検出
+`\g<0>` (パターン全体の呼び出し) は通るが、`?` などで守られて
+いない `(a)\g<0>` を Onigmo は "never ending recursion" で
+コンパイル時に弾く。今は実行時に再帰床ガードへ落ちる。
+
 ### `(?~)` 不在演算子の精度
 今の実装は `(?:(?!body).)*` 等価で、Onigmo の "matched range の
 contiguous substring が body にマッチしない最長文字列" semantics とは
