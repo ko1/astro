@@ -208,6 +208,21 @@ node_gvar_coerce(CTX *c, NODE *n, VALUE *slots, uint32_t kind, VALUE val@child)
     return RESULT_OK(slots[0]);
 }
 
+// `defined?(...)` used as a statement: CRuby drops it and warns while compiling.
+// We warn on the first evaluation instead, so the message goes through the Ruby
+// $stderr the program (and mspec's `complain`) can redirect.
+NODE_DEF @noinline
+node_void_warn(CTX *c, NODE *n, VALUE *slots, void *warn, VALUE val@child)
+{
+    (void)n;
+    struct korb_dupkey_warn *const w = (struct korb_dupkey_warn *)warn;
+    if (!w->done) {
+        w->done = 1;
+        korb_warn_at(c, slots, w->file, w->line, "possibly useless use of defined? in void context");
+    }
+    return RESULT_OK(val);
+}
+
 // Hash literal with duplicate literal keys.  CRuby warns while compiling; we
 // warn on the first evaluation instead, so the message goes through the Ruby
 // $stderr the program (and mspec's `complain`) can redirect.
@@ -1639,7 +1654,10 @@ node_defined_call(CTX *c, NODE *n, VALUE *slots, NODE *recv, uint32_t mid@sym, i
 {
     (void)n;
     RESULT rr = EVAL_ARG(c, recv);
-    if (rr.state != KORB_NORMAL) return RESULT_OK(KORB_NIL);   /* receiver raised → nil */
+    /* A receiver that RAISES makes defined? nil, but a non-local jump (throw /
+     * break / return / next) still escapes — CRuby only swallows exceptions. */
+    if (rr.state == KORB_RAISE) return RESULT_OK(KORB_NIL);
+    if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
     slots[0] = rr.value;
     if (!korb_defined_call_p(c, slots, mid, self_off)) return RESULT_OK(KORB_NIL);
     RESULT dr = korb_str_new(c, slots + 1, "method", 6);
