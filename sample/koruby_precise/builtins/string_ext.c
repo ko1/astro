@@ -790,6 +790,9 @@ static RESULT korb_m_str_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
         if (!KORB_STRING_P(slots[1])) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 1)));
     }
+    uint32_t renc;                                       /* self takes the union encoding */
+    if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), slots[1], &renc)))
+        return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(slots[1]));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t ncp = korb_utf8_count(korb_strbuf_data(s->buf), s->len);
     korb_sword_t pos = idx >= 0 ? idx : (korb_sword_t)ncp + idx + 1;
@@ -804,6 +807,7 @@ static RESULT korb_m_str_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     KorbString *ns = korb_str_ensure(c, slots, self, newlen);
     memcpy(korb_strbuf_data(ns->buf), out, newlen); ns->len = newlen; korb_strbuf_data(ns->buf)[newlen] = '\0';
     free(out);
+    KORB_STR_ENC_SET(VALUE_REF_GET(self), renc);
     return RESULT_OK(VALUE_REF_GET(self));
 }
 /* Render a Range as "<begin><..|...><end>" (for bytesplice's RangeError text). */
@@ -1377,26 +1381,38 @@ static RESULT korb_str_pad(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, 
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 1)));
     }
     slots[0] = padv;                                      /* root pad across self alloc */
+    uint32_t renc = KORB_STR_ENC(VALUE_REF_GET(self));
+    if (padv != KORB_NIL &&                               /* result carries the union of both encodings */
+        UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), padv, &renc)))
+        return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(padv));
     const KorbString *padstr = (padv != KORB_NIL) ? VAL2STR(padv) : NULL;
     if (padstr && padstr->len == 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "zero width padding");
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    uint32_t ncp = korb_utf8_count(korb_strbuf_data(s->buf), s->len);
+    const uint32_t senc = KORB_STR_ENC(VALUE_REF_GET(self));
+    uint32_t ncp = KORB_ENC_SB(c->vm, senc) ? s->len : korb_utf8_count(korb_strbuf_data(s->buf), s->len);
     if (width <= (korb_sword_t)ncp) return korb_str_slice_new(c, slots, self, 0, s->len);
     uint32_t total_pad = (uint32_t)width - ncp;
     uint32_t left = mode == 1 ? total_pad : mode == 2 ? total_pad / 2 : 0;
     uint32_t right = total_pad - left;
     const char *pb = padstr ? korb_strbuf_data(padstr->buf) : " ";
     uint32_t pl = padstr ? padstr->len : 1;
+    const uint32_t penc = padstr ? KORB_STR_ENC(padv) : KORB_ENC_USASCII;
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
-    for (uint32_t i = 0; i < left; i++)  fputc(pb[i % pl], ms);   /* byte-cycle pad (ASCII pad exact) */
+    /* pad cycles whole *characters* of padstr, not bytes */
+    #define PAD_EMIT(n) do { uint32_t po_ = 0; \
+        for (uint32_t i_ = 0; i_ < (n); i_++) { \
+            const uint32_t cl_ = korb_str_char_bytes(c->vm, penc, (const unsigned char *)pb, po_, pl); \
+            fwrite(pb + po_, 1, cl_, ms); po_ += cl_; if (po_ >= pl) po_ = 0; } } while (0)
+    PAD_EMIT(left);
     fwrite(korb_strbuf_data(s->buf), 1, s->len, ms);
-    for (uint32_t i = 0; i < right; i++) fputc(pb[i % pl], ms);
+    PAD_EMIT(right);
+    #undef PAD_EMIT
     fclose(ms);
     RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
-    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_STR_ENC(VALUE_REF_GET(self)));   /* preserve self's encoding (ASCII pad) */
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, renc);
     return r;
 }
 static RESULT korb_m_str_ljust(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_str_pad(c, slots, self, a, 0); }

@@ -508,6 +508,38 @@ static inline uint32_t korb_str_char_bytes(const struct korb_vm *vm, uint32_t en
     if (i + clen > n) clen = 1;
     return clen;
 }
+/* Character width of a fixed-width Unicode encoding (UTF-16* → 2, UTF-32* → 4),
+ * 0 otherwise; *be gets the byte order (a bare "UTF-16"/"UTF-32" is BE). */
+static uint32_t korb_enc_fixed_unit(const struct korb_vm *vm, uint32_t enc, bool *be) {
+    if (enc < KORB_ENC_OTHER_MIN || enc >= KORB_STR_ENC_MAX || vm->str_enc_names[enc] == 0) return 0;
+    const char *const nm = korb_sym_name(vm, vm->str_enc_names[enc]);
+    uint32_t unit = 0;
+    if (strncasecmp(nm, "UTF-16", 6) == 0 || strncasecmp(nm, "UTF16", 5) == 0) unit = 2;
+    else if (strncasecmp(nm, "UTF-32", 6) == 0 || strncasecmp(nm, "UTF32", 5) == 0) unit = 4;
+    if (unit) *be = (strcasecmp(nm + strlen(nm) - 2, "LE") != 0);
+    return unit;
+}
+/* Is byte offset `off` the head of a character?  0 and len always are.  Decided
+ * for UTF-8 and the UTF-16/32 families; other multi-byte encodings answer true
+ * (no per-encoding hook yet).  CRuby's rb_enc_right_char_head == p test. */
+static bool korb_str_char_head_p(const struct korb_vm *vm, VALUE sv, uint32_t off) {
+    const KorbString *const s = VAL2STR(sv);
+    if (off == 0 || off >= s->len) return true;
+    const uint32_t enc = KORB_STR_ENC(sv);
+    if (KORB_ENC_SB(vm, enc)) return true;
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    if (enc == KORB_ENC_UTF8) return (p[off] & 0xC0) != 0x80;
+    bool be = true;
+    const uint32_t unit = korb_enc_fixed_unit(vm, enc, &be);
+    if (unit == 0) return true;
+    if (off % unit != 0) return false;
+    if (unit == 2) {                     /* UTF-16: never split a surrogate pair */
+        const uint32_t hi = be ? ((uint32_t)p[off - 2] << 8 | p[off - 1])
+                               : ((uint32_t)p[off - 1] << 8 | p[off - 2]);
+        if (hi >= 0xD800 && hi <= 0xDBFF) return false;
+    }
+    return true;
+}
 
 /* byte offset of codepoint index ci (clamped to [0, len]) */
 static uint32_t
@@ -1730,6 +1762,9 @@ static RESULT korb_m_str_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
+    { uint32_t ce;
+      if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), sv, &ce)))
+          return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(sv)); }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
     return RESULT_OK(korb_byte_find(korb_strbuf_data(s->buf), s->len, korb_strbuf_data(n->buf), n->len) >= 0 ? KORB_TRUE : KORB_FALSE);
 }
@@ -1755,9 +1790,14 @@ static RESULT korb_m_str_start_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, i)));
         }
+        { uint32_t ce;
+          if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), pv, &ce)))
+              return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(pv)); }
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));   /* re-read after possible dispatch */
         const KorbString *p = VAL2STR(pv);
-        if (p->len <= s->len && memcmp(korb_strbuf_data(s->buf), korb_strbuf_data(p->buf), p->len) == 0) return RESULT_OK(KORB_TRUE);
+        /* the prefix must end on a character boundary of self (CRuby) */
+        if (p->len <= s->len && korb_str_char_head_p(c->vm, VALUE_REF_GET(self), p->len) &&
+            memcmp(korb_strbuf_data(s->buf), korb_strbuf_data(p->buf), p->len) == 0) return RESULT_OK(KORB_TRUE);
     }
     return RESULT_OK(KORB_FALSE);
 }
@@ -1770,9 +1810,14 @@ static RESULT korb_m_str_end_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, i)));
         }
+        { uint32_t ce;
+          if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), pv, &ce)))
+              return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(pv)); }
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));   /* re-read after possible dispatch */
         const KorbString *p = VAL2STR(pv);
-        if (p->len <= s->len && memcmp(korb_strbuf_data(s->buf) + s->len - p->len, korb_strbuf_data(p->buf), p->len) == 0) return RESULT_OK(KORB_TRUE);
+        /* the suffix must start on a character boundary of self (CRuby) */
+        if (p->len <= s->len && korb_str_char_head_p(c->vm, VALUE_REF_GET(self), s->len - p->len) &&
+            memcmp(korb_strbuf_data(s->buf) + s->len - p->len, korb_strbuf_data(p->buf), p->len) == 0) return RESULT_OK(KORB_TRUE);
     }
     return RESULT_OK(KORB_FALSE);
 }

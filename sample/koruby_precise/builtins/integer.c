@@ -70,15 +70,19 @@ static RESULT korb_m_int_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         base = (int)FIX2LONG(b);
         if (base < 2 || base > 36) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %d", base);
     }
+    /* CRuby: the digits are always US-ASCII, whatever default_internal is */
     if (KORB_BIGNUM_P(VALUE_REF_GET(self))) {
         char *s = korb_mp_get_str(NULL, base, VAL2BIG(VALUE_REF_GET(self))->z);
         RESULT r = korb_str_new(c, slots, s, (uint32_t)strlen(s));
         free(s);
+        if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_USASCII);
         return r;
     }
     char buf[80];
     uint32_t len = korb_fmt_int(SELF_INT, base, buf);
-    return korb_str_new(c, slots, buf, len);
+    VALUE s = UNWRAP(korb_str_new(c, slots, buf, len));
+    KORB_STR_ENC_SET(s, KORB_ENC_USASCII);
+    return RESULT_OK(s);
 }
 static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(KORB_BIGNUM_P(VALUE_REF_GET(self))))          /* CRuby: "bignum out of char range" */
