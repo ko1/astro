@@ -15,7 +15,10 @@ all: koruby_precise koruby_regex.so
 ASTROGRE = ../astrogre
 ASTROGRE_ABS := $(abspath $(ASTROGRE))
 $(ASTROGRE)/libastrogre.so: $(ASTROGRE)/parse.c $(ASTROGRE)/node.c $(ASTROGRE)/match.c \
-                            $(ASTROGRE)/backend_astrogre.c $(ASTROGRE)/aho_corasick.c $(ASTROGRE)/node.def
+                            $(ASTROGRE)/backend_astrogre.c $(ASTROGRE)/aho_corasick.c $(ASTROGRE)/node.def \
+                            $(ASTROGRE)/unicode_prop.c $(ASTROGRE)/unicode_tables.c \
+                            $(ASTROGRE)/unicode_prop.h $(ASTROGRE)/unicode_gcb.h \
+                            $(ASTROGRE)/unicode_grapheme.h
 	$(MAKE) -C $(ASTROGRE) lib
 koruby_regex.so: regex_bridge.c $(ASTROGRE)/libastrogre.so
 	cc -shared -fPIC -O2 -mavx2 -I$(ASTROGRE) -I$(RUNTIME) \
