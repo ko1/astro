@@ -491,8 +491,12 @@ node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return korb_flo(c, slots, korb_float_val(l) / (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer/Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) / korb_float_val(rhs));
-    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 3, n->u.node_div.line);
-    if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 3);
+    /* Only a NUMERIC lhs goes to the numeric paths: `obj / 1.5` on a user class
+     * that defines #/ must reach korb_user_binop below, not "can't be coerced". */
+    if (KORB_FLOAT_P(l) || (KORB_FLOAT_P(rhs) && (KORB_INTEGER_P(l) || KORB_RATIONAL_P(l))))
+        return korb_num_arith(c, slots, l, rhs, 3, n->u.node_div.line);
+    if (KORB_RATIONAL_P(l) || (KORB_RATIONAL_P(rhs) && (KORB_INTEGER_P(l) || KORB_FLOAT_P(l))))
+        return korb_rat_arith(c, slots, l, rhs, 3);
     if (KORB_INTEGER_P(l)) {                            /* Fixnum or Bignum: coerce protocol, else TypeError */
         bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, "/", n->u.node_div.line, &h);
         if (h) return cr;
@@ -709,6 +713,10 @@ node_eq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child)
     }
     if (KORB_OBJECT_P(l) || KORB_METHOD_P(l) || KORB_EXC_P(l) || KORB_HASH_P(l) || KORB_ARRAY_P(l)
         || KORB_REGEXP_P(l) || KORB_MATCHDATA_P(l) || KORB_PROC_P(l)) {   /* value == (user instance / Method / Hash / Array / Regexp / MatchData / Proc) → dispatch */
+        slots[0] = l; slots[1] = rhs;
+        return korb_send(c, slots + 2, c->vm->mid_eq, 0, 1);
+    }
+    if (UNLIKELY(c->vm->value_eq_redefined)) {   /* a builtin's #== was reopened: dispatch */
         slots[0] = l; slots[1] = rhs;
         return korb_send(c, slots + 2, c->vm->mid_eq, 0, 1);
     }
@@ -1926,8 +1934,8 @@ node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, struct
      * else (cache miss, CFUNC, attr, non-simple, main-global) falls through. */
     const uint32_t argc = argv_cnt - 1;
     const VALUE self = slots[-(korb_sword_t)argv_cnt];       /* base[-1] (the staged self receiver) */
-    if (LIKELY(KORB_OBJECT_P(self))) {
-        const VALUE klass = VAL2OBJ(self)->klass;
+    if (LIKELY(KORB_OBJECT_P(self) && !(((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS))) {
+        const VALUE klass = VAL2OBJ(self)->klass;            /* a singleton/extended self goes the slow way */
         if (LIKELY(klass != KORB_NIL)) {                     /* user-instance self-call */
             if (LIKELY(ic->serial == c->vm->method_serial && ic->klass == klass)) {
                 struct korb_method *const m = ic->m;

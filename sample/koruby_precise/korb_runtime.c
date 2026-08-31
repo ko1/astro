@@ -3936,6 +3936,16 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
     if (!vm->int_aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
         mid == vm->mid_aref)
         vm->int_aref_redefined = true;
+    /* `==` reopened on a builtin whose values node_eq compares structurally
+     * (korb_value_eq) instead of dispatching.  Deliberately NOT any class: a
+     * singleton `==` (every mspec mock defines one) must not deopt the VM. */
+    if (!vm->value_eq_redefined && mid == vm->mid_eq) {
+        static const int eq_classes[] = { KORB_C_STRING, KORB_C_SYMBOL, KORB_C_RANGE,
+                                          KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE,
+                                          KORB_C_RATIONAL, KORB_C_COMPLEX };
+        for (size_t i = 0; i < sizeof(eq_classes) / sizeof(eq_classes[0]); i++)
+            if (klass == korb_builtin_class_obj(vm, eq_classes[i])) { vm->value_eq_redefined = true; break; }
+    }
     if (vm->basic_op_redefined) return;   /* already deopted */
     if (klass != korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
         klass != korb_builtin_class_obj(vm, KORB_C_FLOAT)) return;
@@ -6635,8 +6645,12 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
     VALUE l = VALUE_REF_GET(lhs);
     if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 2);
-    if (!KORB_ARRAY_P(l) && !KORB_STRING_P(l) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs))) return korb_num_arith(c, slots, l, rhs, 2, line);
-    if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 2);
+    /* Only a NUMERIC lhs goes to the numeric paths: `obj * 1.5` on a user class
+     * that defines #* must reach korb_user_binop, not "can't be coerced". */
+    if (KORB_FLOAT_P(l) || (KORB_FLOAT_P(rhs) && (KORB_INTEGER_P(l) || KORB_RATIONAL_P(l))))
+        return korb_num_arith(c, slots, l, rhs, 2, line);
+    if (KORB_RATIONAL_P(l) || (KORB_RATIONAL_P(rhs) && (KORB_INTEGER_P(l) || KORB_FLOAT_P(l))))
+        return korb_rat_arith(c, slots, l, rhs, 2);
     if (KORB_STRING_P(l)) {
         korb_sword_t cnt;
         if (UNLIKELY(!korb_to_index(rhs, &cnt))) {       /* coerce the count via #to_int (lhs is a VALUE_REF → GC-safe) */
@@ -7524,7 +7538,11 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 {
     struct korb_vm *const vm = c->vm;
     if (LIKELY(KORB_OBJECT_P(self))) {
-        const VALUE klass = VAL2OBJ(self)->klass;
+        /* A receiverless call still dispatches through the object's SINGLETON
+         * class when it has one (`def obj.m` / `obj.extend`), so key the cache on
+         * the dispatch class, not on the stored ->klass. */
+        const VALUE klass = UNLIKELY(((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS)
+                          ? korb_dispatch_class(c, self) : VAL2OBJ(self)->klass;
         if (LIKELY(klass != KORB_NIL)) {              /* user-instance self-call (inline cache) */
             struct korb_method *m;
             VALUE def_class;

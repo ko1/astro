@@ -814,6 +814,11 @@ struct korb_vm {
      * on Integer/Float; the arithmetic/compare nodes then deopt to a real send
      * so the redefinition is honored (CRuby basic-op-redefined semantics). */
     bool basic_op_redefined;
+    /* `==` redefined on a builtin OTHER than Integer/Float (String, Complex, …):
+     * node_eq's korb_value_eq shortcut has to give way to a real send.  Separate
+     * from basic_op_redefined so it costs one cold branch, not the arithmetic
+     * fast paths. */
+    bool value_eq_redefined;
 
     /* constants (class names): parallel name→value arrays.  `const_vals` holds
      * GC objects (classes) and is root-scanned by AROH_VISIT_ROOTS.
