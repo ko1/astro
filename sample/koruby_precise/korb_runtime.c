@@ -12093,6 +12093,14 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
             if (UNLIKELY(ci.state != KORB_NORMAL)) return ci;
         }
     }
+    if (dedup) {
+        /* this very thread is already inside that file: CRuby warns (only under
+         * $VERBOSE true — korb_warn's gate is the laxer "not nil") and returns false */
+        const struct korb_thread *const self_owner = korb_loading_owner(vm, abspath);
+        if (self_owner != NULL && self_owner == vm->cur_thread &&
+            korb_const_get(vm, korb_intern(vm, "$VERBOSE", 8)) == KORB_TRUE)
+            korb_warn(c, slots, "loading in progress, circular require considered harmful - %s", abspath);
+    }
     if (dedup && korb_feature_loaded_p(c, abspath)) { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
     size_t got = 0;
     char *buf = korb_file_slurp(abspath, &got);
@@ -12237,6 +12245,40 @@ korb_load_path_arg(CTX *c, VALUE *slots, VALUE *v)
     return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
 }
 
+/* CRuby's rb_feature_p for a $LOAD_PATH-searched feature: is `<dir>/<name>[.rb]`
+ * already in $LOADED_FEATURES for SOME $LOAD_PATH entry?  Asking before the file
+ * search is what makes a later entry that already provided the feature win over
+ * an earlier one that merely has the file on disk.  Non-String entries are
+ * skipped (their #to_path would run Ruby here); they only cost a missed dedup. */
+static bool
+korb_feature_in_load_path_p(CTX *c, const char *name)
+{
+    const VALUE lp = korb_const_get(c->vm, korb_intern(c->vm, "$LOAD_PATH", 10));
+    if (!KORB_ARRAY_P(lp)) return false;
+    const size_t nlen = strlen(name);
+    const bool has_rb = nlen >= 3 && strcmp(name + nlen - 3, ".rb") == 0;
+    char cwd[4096];
+    if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
+    const KorbArray *const a = VAL2ARY(lp);
+    for (uint32_t i = 0; i < a->len; i++) {
+        const VALUE e = korb_items_data(a->items)[i];
+        if (!KORB_STRING_P(e)) continue;
+        char dir[4096]; uint32_t dl = VAL2STR(e)->len; if (dl >= sizeof dir) dl = sizeof dir - 1;
+        memcpy(dir, korb_strbuf_data(VAL2STR(e)->buf), dl); dir[dl] = '\0';
+        char cand[4096], norm[4096];
+        const int cl = (dir[0] == '/') ? snprintf(cand, sizeof cand, "%s/%s%s", dir, name, has_rb ? "" : ".rb")
+                                       : snprintf(cand, sizeof cand, "%s/%s/%s%s", cwd, dir, name, has_rb ? "" : ".rb");
+        if (cl < 0 || (size_t)cl >= sizeof cand) continue;
+        korb_path_lexnorm(cand, norm, sizeof norm);
+        /* mid-load in ANOTHER thread: its $LOADED_FEATURES entry is already there
+         * but the body has not run, so let the caller reach the waiting path */
+        const struct korb_thread *const owner = korb_loading_owner(c->vm, norm);
+        if (owner != NULL && owner != c->vm->cur_thread) continue;
+        if (korb_feature_loaded_p(c, norm)) return true;   /* re-reads $LOADED_FEATURES; `a` is only read above */
+    }
+    return false;
+}
+
 /* require(name): search CWD / $LOAD_PATH; load once (false if already loaded). */
 static RESULT
 korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
@@ -12259,6 +12301,22 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
                 snprintf(namebuf, sizeof namebuf, "%s", expanded);
         }
     }
+    /* "Already loaded?" is decided on the feature NAME first, as CRuby does:
+     * verbatim (a program may put a relative or non-canonical name straight into
+     * $LOADED_FEATURES), then as <$LOAD_PATH dir>/<name>[.rb].  Doing this before
+     * the file search keeps a feature from being loaded a second time out of a
+     * different directory that happens to hold a same-named file. */
+    /* An ABSOLUTE name keeps going through korb_load_abspath: $LOADED_FEATURES is
+     * written before the body runs, so answering it here would make a concurrent
+     * require return false instead of waiting for the loading thread. */
+    /* …and only for a name that already carries ".rb": an extensionless entry
+     * does NOT answer a require that resolves to a .rb file (CRuby), which is
+     * why the extensionless case stays behind the file search below. */
+    const size_t namelen = strlen(namebuf);
+    if (namebuf[0] != '/' && namelen >= 3 && strcmp(namebuf + namelen - 3, ".rb") == 0 &&
+        korb_feature_loaded_p(c, namebuf)) return RESULT_OK(KORB_FALSE);
+    if (namebuf[0] != '/' && namebuf[0] != '.' && korb_feature_in_load_path_p(c, namebuf))
+        return RESULT_OK(KORB_FALSE);
     /* Only an explicitly relative ("./x", "../x") or absolute name is resolved
      * against the working directory; a bare feature name comes from $LOAD_PATH
      * alone (CRuby dropped "." from the load path in 1.9.2, and searching it
