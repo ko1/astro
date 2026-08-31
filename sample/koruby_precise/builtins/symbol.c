@@ -425,7 +425,7 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
      * the count). */
     if (UNLIKELY(p->is_lambda) && entry != KORB_BLK_CPROC && korb_entry_kw_info(entry) == NULL) {
         const uint32_t pc  = korb_entry_params_cnt(entry);
-        const bool has_rest = korb_entry_rest_slot(entry) != -1;   /* named (>=0) or discard (-2) */
+        const bool has_rest = korb_entry_has_rest(entry);   /* the implicit `|x,|` rest does not relax the arity */
         const bool variable = (korb_entry_opt_defaults(entry) != NULL) || has_rest;   /* same basis as Proc#arity */
         const uint32_t req = variable ? korb_entry_req_cnt(entry) : pc;               /* non-variable → all required */
         if (UNLIKELY(argc < req || (!has_rest && argc > pc))) {

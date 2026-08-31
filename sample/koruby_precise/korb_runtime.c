@@ -7646,7 +7646,11 @@ static RESULT korb_cproc_yield(CTX *c, VALUE *restrict slots, VALUE procv,
 uint32_t korb_entry_params_cnt(NODE *entry) { return entry == KORB_BLK_CPROC ? 1u : entry->u.node_entry.params_cnt; }
 uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
 static uint32_t korb_entry_destructure_n(NODE *entry) { return entry->u.node_entry.destructure_n; }
-static int32_t  korb_entry_rest_slot(NODE *entry) { return entry->u.node_entry.rest_slot; }   /* -1 = no rest param */
+static int32_t  korb_entry_rest_slot(NODE *entry) { return entry->u.node_entry.rest_slot; }   /* -1 none, -2 anonymous `*`, -3 implicit `|x,|` */
+/* A real *rest param: named (>=0) or anonymous `*` (-2).  The implicit rest of
+ * `|x,|` (-3) binds the same way but is NOT a rest — CRuby leaves it out of
+ * #arity / #parameters and keeps a lambda's arity check exact. */
+static bool korb_entry_has_rest(NODE *entry) { const int32_t r = entry->u.node_entry.rest_slot; return r >= 0 || r == -2; }
 /* Bind one destructuring-spec entry (see parse.c): 0x00 = scalar leaf,
  * 0xFF <k> = a group of k nested entries.  Returns the next entry. */
 static const uint8_t *korb_bind_destr_entry(CTX *c, VALUE *bf, uint32_t nlocals, uint32_t *loc, const uint8_t *sp, VALUE pv)
@@ -7841,7 +7845,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     const bool is_lambda = is_lam || (fwd && VAL2PROC(*captured_self)->is_lambda);   /* explicit (proc.call) or forwarded &lam */
     if (UNLIKELY(is_lambda)) {
         const uint32_t pc = korb_entry_params_cnt(block);
-        const bool has_rest = korb_entry_rest_slot(block) != -1;   /* named (>=0) or discard (-2) */
+        const bool has_rest = korb_entry_has_rest(block);
         const uint32_t rs = korb_entry_rest_slot(block) >= 0 ? (uint32_t)korb_entry_rest_slot(block) : pc;
         const uint32_t npost = has_rest ? ((pc > rs + 1) ? (pc - rs - 1) : 0)
                                         : korb_entry_post_cnt(block);   /* |a, b=1, c| — posts are required too */
@@ -7861,7 +7865,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         const uint32_t np0 = korb_entry_params_cnt(block);
         const bool wants_many = (np0 > 1) || korb_entry_destructure_n(block) > 0 ||
                                 (korb_entry_destructure_spec(block) != NULL) ||
-                                (np0 == 1 && korb_entry_rest_slot(block) == -2);
+                                (np0 == 1 && korb_entry_rest_slot(block) <= -2);   /* |x,| / |x,*| are multi-param for auto-splat */
         if (wants_many && KORB_OBJECT_P(argv[0])) {
             const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
             const VALUE recv = argv[0];
@@ -7990,7 +7994,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         for (uint32_t j = 0; j < npost; j++)                /* posts follow the consumed front */
             bf[1 + nfront + j] = (take < srcn) ? src[take++] : KORB_NIL;
         for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
-    } else if (korb_entry_rest_slot(block) == -2) {     /* |s,| / |s,*| — discard extras, splat like np+1 params */
+    } else if (korb_entry_rest_slot(block) <= -2) {     /* |s,| / |s,*| — discard extras, splat like np+1 params */
         const uint32_t np = korb_entry_params_cnt(block);
         if (!is_lambda && np + 1 > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {
             const KorbArray *ar = VAL2ARY(argv[0]);
