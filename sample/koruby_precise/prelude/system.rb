@@ -1169,10 +1169,15 @@ end
 # at_exit: register a block to run (in reverse order) when the program ends.  The
 # C main loop drains $__at_exit after the top-level program returns.
 $__at_exit = []
+$__exit_trap = nil        # Signal.trap(:EXIT) handler; parked at the tail (runs first)
 module Kernel
   def at_exit(&block)
     raise ArgumentError, "called without a block" unless block
-    $__at_exit << block
+    if $__exit_trap && $__at_exit.last.equal?($__exit_trap)
+      $__at_exit.insert(-2, block)      # stay below the EXIT trap
+    else
+      $__at_exit << block
+    end
     block
   end
   module_function :at_exit   # private Kernel#at_exit and public Kernel.at_exit, as in CRuby
@@ -1325,7 +1330,16 @@ module Signal
     h = __command_arg(command, blk)
     prev = @@handlers.key?(short) ? @@handlers[short] : (ARMED__.include?(short) ? "DEFAULT" : "SYSTEM_DEFAULT")
     @@handlers[short] = h
-    n = short == "EXIT" ? 0 : list[short]
+    if short == "EXIT"
+      # CRuby keeps the EXIT trap in a separate list that runs before every
+      # at_exit block.  Here it is parked at the tail of $__at_exit (the drain
+      # pops from the end) and Kernel#at_exit inserts underneath it.
+      $__at_exit.pop if $__exit_trap && $__at_exit.last.equal?($__exit_trap)
+      $__exit_trap = h.respond_to?(:call) ? h : nil
+      $__at_exit << $__exit_trap if $__exit_trap
+      return prev
+    end
+    n = list[short]
     if n && n > 0
       if h == "IGNORE"
         __signal_trap(n, "IGNORE")     # a blocked+ignored signal is discarded by the kernel
@@ -1428,6 +1442,9 @@ module Kernel
   # test(cmd, file[, file2]) — the file predicates, spelled as a character.
   def test(cmd, file1, file2 = nil) = __process_test(cmd, File.path(file1), file2 && File.path(file2))
   module_function :test
+
+  def select(*args) = IO.select(*args)
+  module_function :select
 
   # $-variable tracing: koruby has no hook on global assignment, so the
   # registration is recorded (and #untrace_var returns it) but never fires.

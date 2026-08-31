@@ -1187,9 +1187,11 @@ static RESULT korb_m_process_test(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
       case 'G': return RESULT_OK((ok && st.st_gid == getgid()) ? KORB_TRUE : KORB_FALSE);
       case 'M': case 'A': case 'C': {
         if (!ok) return korb_raise_errno(c, slots, ENOENT, "stat", path);
-        const time_t t = cmd == 'M' ? st.st_mtime : cmd == 'A' ? st.st_atime : st.st_ctime;
-        slots[0] = LONG2FIX((korb_sword_t)t);
-        return korb_send(c, slots + 1, korb_intern(c->vm, "__time_at", 9), 0, 0);
+        /* File.{m,a,c}time に委譲: 秒だけの Time.at では sub-second が落ちる */
+        const char *const m = cmd == 'M' ? "mtime" : cmd == 'A' ? "atime" : "ctime";
+        slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "File", 4));
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, path, (uint32_t)strlen(path)));
+        return korb_send(c, slots + 2, korb_intern(c->vm, m, (uint32_t)strlen(m)), 0, 1);
       }
       default: break;
     }
