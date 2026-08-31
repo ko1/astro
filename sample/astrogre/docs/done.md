@@ -12,13 +12,22 @@ v1 で入っているもの、カテゴリ別。[`todo.md`](./todo.md) の対。
 - クラス内 escape ショートカット: `\d \D \w \W \s \S \h \H`。
 - POSIX bracket class `[[:alpha:]]` ほか (`alnum` `alpha` `ascii`
   `blank` `cntrl` `digit` `graph` `lower` `print` `punct` `space`
-  `upper` `word` `xdigit`)、否定形 `[[:^alpha:]]`。
+  `upper` `word` `xdigit`)、否定形 `[[:^alpha:]]`。UTF-8 モードでは
+  Ruby と同じ Unicode 集合 (unicode_tables.c)。
+- Unicode プロパティ `\p{...}` / `\P{...}` / `\p{^...}`: general
+  category (1・2 文字)、長い名前 (`Alpha` `Word` `Assigned` ほか)、
+  63 script。クラスの中でも外でも使える。
+- 拡張書記素クラスタ `\X` (UAX #29)。CRuby の
+  `String#grapheme_clusters` と 20,000 ランダム文字列で一致を確認。
+- 非 ASCII メンバを持つ文字クラスは node_re_uniclass
+  (ASCII bitmap + ソート済みコードポイント範囲の二分探索) で
+  マッチする。否定 (`[^\p{L}]`)、`&&` の積、ネストも通る。
 - クラス内集合演算: `[a-z&&[^aeiou]]` (`&&` で intersection、左結合、
   ネストした `[...]` は union メンバー)。
 - 数値 escape: `\xHH`、`\0`、`\n \t \r \f \v \a \e`。
 - Unicode コードポイント escape: `\uHHHH` (4 hex 桁) と `\u{H...}`
-  (1–8 hex 桁) — UTF-8 byte 列にエンコードして埋め込む。クラス内では
-  ASCII (cp < 0x80) のみ許可、multi-byte は parse error。
+  (1–8 hex 桁) — UTF-8 byte 列にエンコードして埋め込む。クラス内の
+  multi-byte も可 (UTF-8 モードのみ)。
 - アンカー: `\A` `\z` `\Z` `^` `$` `\b` `\B` `\G` (前回マッチ末尾)。
 - 改行種 `\R` (`\r\n` または `[\n\v\f\r]`)。
 - `\K` keep-marker — 全体マッチ開始位置を現在の pos に reset。

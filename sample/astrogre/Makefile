@@ -40,7 +40,7 @@ $(ONIGMO_DIR)/build/libonigmo.a: $(ONIGMO_DIR)/build_local.mk
 # `make self-test`, `make bench`, `make bench-file`.
 SELFTEST_SRCS = selftest_runner.c selftest.c $(ENGINE_SRCS)
 selftest_runner: $(SELFTEST_SRCS) $(NODE_GENFILES) Makefile node.h context.h \
-                 backend.h aho_corasick.h unicode_prop.h $(ASTROGRE_DEPS)
+                 backend.h aho_corasick.h unicode_prop.h unicode_gcb.h unicode_grapheme.h $(ASTROGRE_DEPS)
 	$(CC) $(CFLAGS) -o $@ $(SELFTEST_SRCS) $(LDFLAGS) $(LIBS)
 
 self-test: selftest_runner
@@ -54,7 +54,8 @@ self-test: selftest_runner
 # not define OPTION (the library supplies a default).
 LIBASTROGRE_SRCS = $(ENGINE_SRCS) libastrogre_option.c
 libastrogre.so: $(LIBASTROGRE_SRCS) $(NODE_GENFILES) libastrogre.map Makefile \
-                node.h context.h backend.h parse.h aho_corasick.h unicode_prop.h $(ASTROGRE_DEPS)
+                node.h context.h backend.h parse.h aho_corasick.h \
+                unicode_prop.h unicode_gcb.h unicode_grapheme.h $(ASTROGRE_DEPS)
 	$(CC) $(CFLAGS) -fPIC -shared -Wl,--version-script=libastrogre.map \
 	    -o $@ $(LIBASTROGRE_SRCS) $(LDFLAGS) $(LIBS)
 .PHONY: lib

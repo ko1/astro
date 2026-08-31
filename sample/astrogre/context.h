@@ -22,6 +22,8 @@
 
 /* Unicode property sets — node_re_uniclass's `set` operand points at one. */
 #include "unicode_prop.h"
+/* Grapheme cluster segmentation — node_re_grapheme (`\X`). */
+#include "unicode_grapheme.h"
 
 /* Maximum number of capturing groups (including \0 = whole match). */
 #define ASTROGRE_MAX_GROUPS 32

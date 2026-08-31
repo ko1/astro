@@ -66,7 +66,8 @@ are: $(ARE_SRCS) $(ENG_SRCS) $(NODE_GENFILES) \
      $(ARE_DIR)/types.h $(ARE_DIR)/ignore.h $(ARE_DIR)/work.h \
      $(ENGINE_DIR)/node.h $(ENGINE_DIR)/context.h $(ENGINE_DIR)/parse.h \
      $(ENGINE_DIR)/backend.h $(ENGINE_DIR)/aho_corasick.h \
-     $(ENGINE_DIR)/unicode_prop.h \
+     $(ENGINE_DIR)/unicode_prop.h $(ENGINE_DIR)/unicode_gcb.h \
+     $(ENGINE_DIR)/unicode_grapheme.h \
      Makefile $(ARE_DEPS)
 	$(CC) $(CFLAGS) -o $@ $(ARE_SRCS) $(ENG_SRCS) $(LDFLAGS) $(LIBS)
 

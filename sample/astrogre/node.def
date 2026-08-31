@@ -1051,6 +1051,21 @@ node_re_uniclass(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t bm1
     return r;
 }
 
+/* `\X` — one extended grapheme cluster (UAX #29).  Atomic, like Onigmo:
+ * the cluster boundary is a property of the input, not something the rest
+ * of the pattern may backtrack into. */
+NODE_DEF
+node_re_grapheme(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    if (c->pos >= c->str_len) return MR_FAIL;
+    const size_t end = agre_grapheme_end(c->str, c->str_len, c->pos);
+    const size_t adv = end - c->pos;
+    c->pos = end;
+    const VALUE r = EVAL_ARG(c, next);
+    if (!r) c->pos -= adv;
+    return r;
+}
+
 /* ------------------------------------------------------------------ */
 /* Alternation                                                         */
 /* ------------------------------------------------------------------ */

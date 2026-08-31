@@ -28,6 +28,7 @@ typedef enum {
     IRE_DOT,            /* .  (respects multiline) */
     IRE_CLASS,          /* [...] — byte-level bitmap */
     IRE_UNICLASS,       /* [...] / \p{...} — codepoint-level range set */
+    IRE_GRAPHEME,       /* \X — one extended grapheme cluster */
     IRE_ALT,
     IRE_CONCAT,
     IRE_REP,
@@ -969,6 +970,8 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             bm_add_special(n->u.cls.bm, e);
             return n;
         }
+        case 'X':
+            return ire_new(IRE_GRAPHEME);
         case 'p': case 'P': {
             if (q->encoding != AGRE_ENC_UTF8) { re_error(q, "\\p needs UTF-8 mode"); return NULL; }
             uint64_t bm[4] = {0};
@@ -1677,6 +1680,7 @@ ire_memo_eligible_inner(const ire_node_t *n, bool in_la)
     case IRE_CONDITIONAL:
         return false;
     case IRE_LIT: case IRE_DOT: case IRE_CLASS: case IRE_UNICLASS:
+    case IRE_GRAPHEME:
     case IRE_BOS: case IRE_EOS: case IRE_EOS_NL:
     case IRE_BOL: case IRE_EOL:
     case IRE_WB: case IRE_NWB:
@@ -1727,7 +1731,8 @@ ire_must_consume(const ire_node_t *n)
     case IRE_LIT:           return n->u.lit.len > 0;
     case IRE_DOT:
     case IRE_CLASS:
-    case IRE_UNICLASS:      return true;
+    case IRE_UNICLASS:
+    case IRE_GRAPHEME:      return true;
     case IRE_BOS: case IRE_EOS: case IRE_EOS_NL:
     case IRE_BOL: case IRE_EOL:
     case IRE_WB: case IRE_NWB:
@@ -1768,7 +1773,8 @@ ire_fixed_len(const ire_node_t *n, agre_encoding_t enc)
     switch (n->kind) {
     case IRE_LIT:           return (int)n->u.lit.len;
     case IRE_CLASS:         return 1;
-    case IRE_UNICLASS:      return -1;    /* one codepoint = 1..4 bytes */
+    case IRE_UNICLASS:
+    case IRE_GRAPHEME:      return -1;   /* variable byte width */
     case IRE_DOT:           return enc == AGRE_ENC_UTF8 ? -1 : 1;
     case IRE_BACKREF:       return -1;
     case IRE_BOS: case IRE_EOS: case IRE_EOS_NL:
@@ -2080,6 +2086,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
     case IRE_DOT:           return make_dot(L, tail);
     case IRE_CLASS:         return lower_class(L, n, tail);
     case IRE_UNICLASS:      return lower_uniclass(L, n, tail);
+    case IRE_GRAPHEME:      return ALLOC_node_re_grapheme(tail);
     case IRE_BOS:           return ALLOC_node_re_bos(tail);
     case IRE_EOS:           return ALLOC_node_re_eos(tail);
     case IRE_EOS_NL:        return ALLOC_node_re_eos_nl(tail);
