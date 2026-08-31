@@ -12653,7 +12653,9 @@ static VALUE korb_out_target(CTX *c, const char *gv, uint32_t gvlen, bool *is_de
 }
 /* Emit a byte run to a reassigned/mocked output object via #write. */
 static RESULT korb_out_emit(CTX *c, VALUE *slots, VALUE out, uint32_t stdidx, const char *data, size_t len) {
-    if (UNLIKELY(!KORB_OBJECT_P(out))) { if (len) (void)korb_io_wr(korb_io_std_rep(c->vm, stdidx), data, len); return RESULT_OK(KORB_NIL); }
+    /* Any heap object standing in for $stdout/$stderr gets #write — including a
+     * String or StringIO with a singleton #write, which a test harness uses. */
+    if (UNLIKELY(!AROH_IS_GC_OBJECT(out))) { if (len) (void)korb_io_wr(korb_io_std_rep(c->vm, stdidx), data, len); return RESULT_OK(KORB_NIL); }
     slots[0] = out;
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, data, (uint32_t)len));
     RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "write", 5), 0, 1);
