@@ -1207,15 +1207,22 @@ node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int
      * or the staged base expression when the path is dynamic (`class m::C`);
      * else the lexical self (`module M; class C`).  dyn_base says the staged
      * child is real, so `class nil::C` is a TypeError, not a top-level class. */
-    if (UNLIKELY(dyn_base && !KORB_CLASS_P(VALUE_REF_GET(path_base)))) {
+    if (UNLIKELY(dyn_base == 1 && !KORB_CLASS_P(VALUE_REF_GET(path_base)))) {
         char db[224]; korb_desc_inspect(c, VALUE_REF_GET(path_base), db, sizeof db);
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a class/module", db);
     }
     if (UNLIKELY(KORB_CLASS_P(VALUE_REF_GET(super)) && VAL2CLASS(VALUE_REF_GET(super))->is_singleton))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't make subclass of singleton class");
-    VALUE enclosing = dyn_base ? VALUE_REF_GET(path_base)
-                    : (path_owner ? korb_const_get_path(c->vm, path_owner) : slots[self_off]);
-    CHECK(korb_check_const_path_private(c, slots, enclosing, name_sym, path_owner || dyn_base));
+    /* self_off == INT32_MIN: written inside a block whose lexical scope is the
+     * top level, so it nests there even if `self` is some other class. */
+    VALUE enclosing = dyn_base == 1 ? VALUE_REF_GET(path_base)
+                    : (path_owner ? korb_const_get_path(c->vm, path_owner)
+                                  : (self_off == INT32_MIN ? KORB_NIL : slots[self_off]));
+    if (UNLIKELY(dyn_base == 2 && !KORB_CLASS_P(enclosing))) {   /* `class A::B` where A is not a module */
+        char db[224]; korb_desc_inspect(c, enclosing, db, sizeof db);
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a class/module", db);
+    }
+    CHECK(korb_check_const_path_private(c, slots, enclosing, name_sym, dyn_base != 0));
     { uint32_t fs, ln;                                    /* Module#const_source_location: the FIRST definition wins */
       const VALUE loc_owner = KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL;
       if (korb_const_index_owned(c->vm, name_sym, loc_owner) == UINT32_MAX &&
@@ -1246,13 +1253,18 @@ node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, in
     (void)body_dispatcher;
     /* enclosing = the path's parent (`module M::Inner`), the staged base when it
      * is a dynamic expression (`module m::Inner`), else lexical self. */
-    if (UNLIKELY(dyn_base && !KORB_CLASS_P(VALUE_REF_GET(path_base)))) {
+    if (UNLIKELY(dyn_base == 1 && !KORB_CLASS_P(VALUE_REF_GET(path_base)))) {
         char db[224]; korb_desc_inspect(c, VALUE_REF_GET(path_base), db, sizeof db);
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a class/module", db);
     }
-    VALUE enclosing = dyn_base ? VALUE_REF_GET(path_base)
-                    : (path_owner ? korb_const_get_path(c->vm, path_owner) : slots[self_off]);
-    CHECK(korb_check_const_path_private(c, slots, enclosing, name_sym, path_owner || dyn_base));
+    VALUE enclosing = dyn_base == 1 ? VALUE_REF_GET(path_base)
+                    : (path_owner ? korb_const_get_path(c->vm, path_owner)
+                                  : (self_off == INT32_MIN ? KORB_NIL : slots[self_off]));
+    if (UNLIKELY(dyn_base == 2 && !KORB_CLASS_P(enclosing))) {   /* `class A::B` where A is not a module */
+        char db[224]; korb_desc_inspect(c, enclosing, db, sizeof db);
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a class/module", db);
+    }
+    CHECK(korb_check_const_path_private(c, slots, enclosing, name_sym, dyn_base != 0));
     { uint32_t fs, ln;                                    /* Module#const_source_location: the FIRST definition wins */
       const VALUE loc_owner = KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL;
       if (korb_const_index_owned(c->vm, name_sym, loc_owner) == UINT32_MAX &&

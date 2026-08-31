@@ -41,6 +41,8 @@ struct kp_frame {
                                * so a `super` inside it names the entry being executed, not any def
                                * it happens to sit inside lexically. */
     uint32_t class_name_sym;  /* enclosing class/module body's const name (0 = not a class body) — for Module.nesting */
+    bool block_body;          /* a block/lambda body: `self` inside it can have been rebound (Class.new,
+                               * class_eval), so a `class X` here nests by LEXICAL scope, not by self. */
     bool anon_class_body;     /* `class << obj` — the cref is a class with no name, so constants must be
                                * owned via the runtime self instead of a baked name */
     bool anon_cref_method;    /* a method defined in such a body: its cref is that unnamed class, which only
@@ -373,6 +375,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->method_kw_info = NULL;
     f->class_name_sym = 0;
     f->anon_class_body = false;
+    f->block_body = false;
     f->anon_cref_method = false;
     f->max_ref_depth = 0;
     f->add_cells = NULL;
@@ -978,6 +981,26 @@ extern const struct NodeKind kind_node_aref;         /* recv[idx] */
 extern const struct NodeKind kind_node_aset;         /* recv[idx] = val */
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
 extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) chain */
+
+/* Where a `class X` / `module X` written HERE nests.  Normally that is the
+ * runtime `self` (a class body runs with self = the class), but inside a block
+ * self can have been rebound by Class.new / class_eval, while Ruby's constant
+ * nesting stays lexical.  Returns false when self is the right answer; returns
+ * true and sets *owner to the enclosing class body's name (0 = top level) when
+ * the definition sits inside a block. */
+static bool
+kp_lexical_class_owner(struct kp_ctx *tc, uint32_t *owner)
+{
+    bool in_block = false;
+    for (const struct kp_frame *f = tc->frame; f; f = f->prev) {
+        if (f->anon_class_body) return false;      /* `class << obj`: only self names that cref */
+        if (f->class_name_sym) { *owner = f->class_name_sym; return in_block; }
+        if (f->block_body) in_block = true;
+    }
+    *owner = 0;                                    /* no enclosing class body → top level */
+    return in_block;
+}
+
 extern const struct NodeKind kind_node_const_set;    /* FOO = expr */
 static NODE *build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa);
 static NODE *build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n);
@@ -1120,6 +1143,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                       const pm_node_t *blk_params, const pm_node_t *blk_body)
 {
     push_frame(tc, blk_locals);
+    tc->frame->block_body = true;
     tc->frame->dm_body = tc->next_block_is_dm;
     tc->next_block_is_dm = false;
 
@@ -2442,7 +2466,14 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         path_owner = kp_intern_cpath(tc, parent);
         if (path_owner == 0) dyn_base = parent;
     }
+    const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B */
 
+    /* a bare `class X` inside a block nests lexically, not by self */
+    bool lex_top = false;
+    if (path_owner == 0 && dyn_base == NULL) {
+        uint32_t lex = 0;
+        if (kp_lexical_class_owner(tc, &lex)) { path_owner = lex; lex_top = (lex == 0); }
+    }
     /* path base + superclass expression (both evaluated in the ENCLOSING scope)
      * → node_class's staged children; nil when absent. */
     NODE *base_node, *super_node;
@@ -2463,9 +2494,9 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
     code_repo_add("class", entry, true);          /* its own AOT entry */
-    NODE *_ncls = ALLOC_node_class(name_sym, entry, -1 - tc->chain - 2, path_owner, dyn_base ? 1u : 0u, base_node, super_node);   /* self_off = enclosing self (base[-1]); -2 for the staged base+super children */
+    NODE *_ncls = ALLOC_node_class(name_sym, entry, lex_top ? INT32_MIN : -1 - tc->chain - 2, path_owner, path_kind, base_node, super_node);   /* self_off = enclosing self (base[-1]); -2 for the staged base+super children */
     korb_reg_srcloc(tc->c->vm, _ncls, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));   /* Module#const_source_location */
-    bake_add(tc, &_ncls->u.node_class.self_off);
+    if (!lex_top) bake_add(tc, &_ncls->u.node_class.self_off);
     return _ncls;
 }
 
@@ -2857,6 +2888,12 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         path_owner = kp_intern_cpath(tc, parent);
         if (path_owner == 0) dyn_base = parent;
     }
+    const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B */
+    bool lex_top = false;                            /* see node_class: lexical nesting inside a block */
+    if (path_owner == 0 && dyn_base == NULL) {
+        uint32_t lex = 0;
+        if (kp_lexical_class_owner(tc, &lex)) { path_owner = lex; lex_top = (lex == 0); }
+    }
     /* the base expression is evaluated in the ENCLOSING scope → staged child */
     NODE *base_node;
     WITH_CHAIN(tc, 1, (base_node = dyn_base ? transduce(tc, dyn_base) : ALLOC_node_lit(KORB_NIL)));
@@ -2873,9 +2910,9 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0);
     code_repo_add("module", entry, true);
-    NODE *_nmod = ALLOC_node_module(name_sym, entry, -1 - tc->chain - 1, path_owner, dyn_base ? 1u : 0u, base_node);   /* self_off = enclosing self (base[-1]); -1 for the staged base child */
+    NODE *_nmod = ALLOC_node_module(name_sym, entry, lex_top ? INT32_MIN : -1 - tc->chain - 1, path_owner, path_kind, base_node);   /* self_off = enclosing self (base[-1]); -1 for the staged base child */
     korb_reg_srcloc(tc->c->vm, _nmod, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)mn));   /* Module#const_source_location */
-    bake_add(tc, &_nmod->u.node_module.self_off);
+    if (!lex_top) bake_add(tc, &_nmod->u.node_module.self_off);
     return _nmod;
 }
 

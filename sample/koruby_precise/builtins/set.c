@@ -2024,6 +2024,25 @@ static RESULT korb_m_mod_private_constant(CTX *c, VALUE *slots, VALUE_REF self, 
 static RESULT korb_m_mod_public_constant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_mod_const_vis(c, slots, self, a, false);
 }
+/* Is `id` a constant of `owner` — its own table, then (with inherit) the whole
+ * ancestry, then the top-level constants every class sees through Object?
+ * `*val_out`, when asked for, receives the value so a scoped name can descend. */
+static bool
+korb_const_defined_in(CTX *c, VALUE owner, uint32_t id, bool inherit, VALUE *val_out)
+{
+    struct korb_vm *const vm = c->vm;
+    uint32_t idx = UINT32_MAX;
+    if (KORB_CLASS_P(owner)) {
+        idx = korb_const_index_owned(vm, id, owner);
+        if (idx == UINT32_MAX && inherit) idx = korb_const_in_ancestry(vm, owner, id);
+    }
+    if (idx == UINT32_MAX && (inherit || !KORB_CLASS_P(owner)))
+        idx = korb_const_index_owned(vm, id, KORB_NIL);   /* top level (owner nil) */
+    if (idx == UINT32_MAX) return false;
+    if (val_out) *val_out = vm->const_vals[idx];
+    return true;
+}
+
 static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     struct korb_vm *const vm = c->vm;
     VALUE name = VALUE_SLICE_GET(a, 0);
@@ -2037,49 +2056,38 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
             name = sr.value;
         } else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
     }
-    uint32_t id;
+    const bool inherit = (VALUE_SLICE_LEN(a) < 2) || KORB_TRUTHY(VALUE_SLICE_GET(a, 1));   /* coerce the inherit flag to a boolean (nil/false → no inherit) */
     if (SYMBOL_P(name)) {
-        id = SYM2ID(name);
+        const uint32_t id = SYM2ID(name);
         const char *const sn = korb_sym_name(vm, id);      /* a Symbol name is atomic — validate the whole thing */
         if (UNLIKELY(!korb_valid_const_name(sn, (uint32_t)strlen(sn))))
             return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", sn);
         if (korb_autoload_registered_p(c, VALUE_REF_GET(self), id)) return RESULT_OK(KORB_TRUE);
+        return RESULT_OK(korb_const_defined_in(c, VALUE_REF_GET(self), id, inherit, NULL) ? KORB_TRUE : KORB_FALSE);
     }
-    else if (KORB_STRING_P(name)) {
+    if (KORB_STRING_P(name)) {
         const KorbString *const s = VAL2STR(name);
         const char *p = korb_strbuf_data(s->buf); uint32_t len = s->len;
-        /* scoped name "A::B::C" / leading "::Top": flat model resolves the final
-         * segment (and requires every intermediate segment to also be defined). */
+        /* scoped name "A::B::C" / leading "::Top": each segment is resolved in
+         * the namespace the previous one named, exactly like `A::B::C` would. */
         if (len >= 2 && p[0] == ':' && p[1] == ':') { p += 2; len -= 2; }
+        VALUE cur = VALUE_REF_GET(self);
         uint32_t seg = 0;
         for (uint32_t i = 0; i <= len; i++) {
-            if (i == len || (i + 1 < len && p[i] == ':' && p[i + 1] == ':')) {
-                if (i == seg) return RESULT_OK(KORB_FALSE);   /* empty segment */
-                if (UNLIKELY(!korb_valid_const_name(p + seg, i - seg)))
-                    return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)(i - seg), p + seg);
-                const uint32_t sid = korb_intern(vm, p + seg, i - seg);
-                bool found = korb_autoload_registered_p(c, VALUE_REF_GET(self), sid);   /* a pending autoload counts */
-                for (uint32_t k = 0; !found && k < vm->const_cnt; k++) if (vm->const_names[k] == sid) found = true;
-                if (!found) return RESULT_OK(KORB_FALSE);
-                i++; seg = i + 1;                             /* skip the second ':' */
-            }
+            if (i != len && !(i + 1 < len && p[i] == ':' && p[i + 1] == ':')) continue;
+            if (i == seg) return RESULT_OK(KORB_FALSE);   /* empty segment */
+            if (UNLIKELY(!korb_valid_const_name(p + seg, i - seg)))
+                return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)(i - seg), p + seg);
+            const uint32_t sid = korb_intern(vm, p + seg, i - seg);
+            VALUE val = KORB_NIL;
+            if (!korb_autoload_registered_p(c, cur, sid) &&
+                !korb_const_defined_in(c, cur, sid, inherit, &val)) return RESULT_OK(KORB_FALSE);
+            cur = val;                                    /* the next segment lives in it */
+            i++; seg = i + 1;                             /* skip the second ':' */
         }
         return RESULT_OK(KORB_TRUE);
     }
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
-    /* owner-aware: the receiver + (unless inherit=false) its ancestors, then a
-     * top-level fallback for inherited/Object constants. */
-    const bool inherit = (VALUE_SLICE_LEN(a) < 2) || KORB_TRUTHY(VALUE_SLICE_GET(a, 1));   /* coerce the inherit flag to a boolean (nil/false → no inherit) */
-    const VALUE owner = VALUE_REF_GET(self);
-    if (KORB_CLASS_P(owner)) {
-        if (korb_const_index_owned(vm, id, owner) != UINT32_MAX) return RESULT_OK(KORB_TRUE);
-        if (!inherit) return RESULT_OK(KORB_FALSE);
-        /* the whole ancestry (superclasses AND included/prepended modules) */
-        if (korb_const_in_ancestry(vm, owner, id) != UINT32_MAX) return RESULT_OK(KORB_TRUE);
-    }
-    /* then the top-level constants (owner nil), which every class inherits from
-     * Object — but NOT constants owned by some unrelated namespace. */
-    return RESULT_OK(korb_const_index_owned(vm, id, KORB_NIL) != UINT32_MAX ? KORB_TRUE : KORB_FALSE);
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
 }
 /* Object#then / yield_self — yield self, return the block's value (no block → self). */
 static RESULT korb_m_obj_then(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
