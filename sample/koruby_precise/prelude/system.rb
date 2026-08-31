@@ -284,8 +284,19 @@ module Process
   end
   private_class_method :__as_rlimit_int
 
+  # 実クロックは 1ns。CRuby が別実装で埋めている擬似クロックだけ固有の分解能を返す。
+  PSEUDO_CLOCK_RES__ = {
+    GETTIMEOFDAY_BASED_CLOCK_REALTIME: 1_000,
+    TIME_BASED_CLOCK_REALTIME: 1_000_000_000,
+    GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID: 1_000,
+    TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID: 10_000_000,
+    TIMES_BASED_CLOCK_MONOTONIC: 10_000_000,
+    CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID: 1_000,
+  }.freeze
+  private_constant :PSEUDO_CLOCK_RES__
+
   def self.clock_getres(_clk = CLOCK_MONOTONIC, unit = :float_second)
-    ns = 1
+    ns = PSEUDO_CLOCK_RES__[_clk] || 1
     case unit
     when :float_second      then ns / 1_000_000_000.0
     when :float_millisecond then ns / 1_000_000.0
@@ -1257,7 +1268,14 @@ module Process
   def self.getpgid(*a) = __getpgid(*a)
   def self.getpgrp = __getpgid(0)
   def self.last_status = $?
-  def self.setpgid(pid, pgid) = __setpgid(pid, pgid)
+  def self.setpgid(pid, pgid) = __setpgid(__pid_arg(pid), __pid_arg(pgid))
+  def self.__pid_arg(v)          # #to_int で coerce (CRuby と同じ)
+    return v if v.is_a?(Integer)
+    raise TypeError, "no implicit conversion of #{v.class} into Integer" unless v.respond_to?(:to_int)
+    n = v.to_int
+    raise TypeError, "can't convert #{v.class} to Integer" unless n.is_a?(Integer)
+    n
+  end
   def self.setsid = __setsid
   # module functions in CRuby; the Kernel ones are private so an explicit
   # `Process.exit` would otherwise be a NoMethodError
@@ -1641,11 +1659,11 @@ end
 module Process
   # groups/waitall などの薄い実装 (koruby は setgroups 系を持たないので
   # 取得のみ、変更は空実装)。
-  def self.groups; []; end
-  def self.groups=(v); v; end
-  def self.maxgroups; 65536; end
-  def self.maxgroups=(v); v; end
-  def self.initgroups(user, group); []; end
+  def self.groups; __getgroups; end
+  def self.groups=(v); __setgroups(v); end
+  def self.maxgroups; @__maxgroups || 65536; end
+  def self.maxgroups=(v); @__maxgroups = v.to_int; v; end
+  def self.initgroups(user, group) = __initgroups(user.to_s, __pid_arg(group))
   def self.setproctitle(title); title.to_s; end
   def self.getsid(pid = 0); __getpgid(pid); end
   def self.warmup; true; end

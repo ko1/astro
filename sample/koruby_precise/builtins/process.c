@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <grp.h>        /* setgroups(2) */
 
 #define KORB_SPAWN_MAX_ARGV 256
 
@@ -1401,6 +1402,46 @@ static RESULT korb_m_process_fork(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(LONG2FIX((korb_sword_t)pid));
 }
 
+/* Process.groups — the supplemental group access list (getgroups(2)). */
+static RESULT korb_m_process_getgroups(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    gid_t buf[NGROUPS_MAX];
+    const int n = getgroups((int)(sizeof buf / sizeof buf[0]), buf);
+    if (n < 0) return korb_raise_errno(c, slots, errno, "getgroups", "");
+    slots[0] = UNWRAP(korb_ary_new(c, slots, n > 0 ? (uint32_t)n : 1));
+    const VALUE_REF ary = VALUE_REF_AT(&slots[0]);
+    for (int i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, ary, LONG2FIX((korb_sword_t)buf[i])));
+    return RESULT_OK(slots[0]);
+}
+/* Process.groups= — setgroups(2) (EPERM for an unprivileged process). */
+static RESULT korb_m_process_setgroups(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE av = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_ARRAY_P(av))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Array");
+    const KorbArray *const ar = VAL2ARY(av);
+    if (UNLIKELY(ar->len > NGROUPS_MAX)) return korb_raise_errno(c, slots, EINVAL, "setgroups", "");
+    gid_t buf[NGROUPS_MAX];
+    for (uint32_t i = 0; i < ar->len; i++) {
+        const VALUE g = korb_items_data(ar->items)[i];
+        if (UNLIKELY(!FIXNUM_P(g))) return korb_raise_no_int(c, slots, g);
+        buf[i] = (gid_t)FIX2LONG(g);
+    }
+    if (setgroups((size_t)ar->len, buf) != 0) return korb_raise_errno(c, slots, errno, "setgroups", "");
+    return RESULT_OK(av);
+}
+
+/* Process.initgroups(user, gid) — initgroups(3), then report the new list. */
+static RESULT korb_m_process_initgroups(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    char user[256];
+    if (!korb_cstr_arg(VALUE_SLICE_GET(a, 0), user, sizeof user))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    const VALUE g = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!FIXNUM_P(g))) return korb_raise_no_int(c, slots, g);
+    if (initgroups(user, (gid_t)FIX2LONG(g)) != 0)
+        return korb_raise_errno(c, slots, errno, "initgroups", "");
+    return korb_m_process_getgroups(c, slots, self, a);
+}
+
 /* Real/effective ids + parent pid — prelude/system.rb used to hard-code 0. */
 static RESULT korb_m_process_ids(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; (void)a;
@@ -1525,6 +1566,9 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__set_reid", korb_m_process_set_reid, 3);
     korb_class_def_cfn(c, obj, "__getpid",   korb_m_process_getpid,   0);
     korb_class_def_cfn(c, obj, "__daemon",   korb_m_process_daemon,  -1);
+    korb_class_def_cfn(c, obj, "__getgroups", korb_m_process_getgroups, 0);
+    korb_class_def_cfn(c, obj, "__setgroups", korb_m_process_setgroups, 1);
+    korb_class_def_cfn(c, obj, "__initgroups", korb_m_process_initgroups, 2);
     korb_class_def_cfn(c, obj, "__signal_trap",    korb_m_signal_trap,    -1);
     korb_class_def_cfn(c, obj, "__signal_block",   korb_m_signal_block,   -1);
     korb_class_def_cfn(c, obj, "__rlimit_table",   korb_m_rlimit_table,    0);
