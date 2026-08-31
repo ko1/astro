@@ -1254,6 +1254,11 @@ module Process
   def self.last_status = $?
   def self.setpgid(pid, pgid) = __setpgid(pid, pgid)
   def self.setsid = __setsid
+  # module functions in CRuby; the Kernel ones are private so an explicit
+  # `Process.exit` would otherwise be a NoMethodError
+  def self.exit(*a) = Kernel.exit(*a)
+  def self.exit!(*a) = Kernel.exit!(*a)
+  def self.abort(*a) = Kernel.abort(*a)
   def self.daemon(nochdir = false, noclose = false) = __daemon(nochdir, noclose)
 end
 
