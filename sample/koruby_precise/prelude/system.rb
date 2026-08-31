@@ -559,6 +559,9 @@ class File
     unless s.is_a?(String)
       raise TypeError, "no implicit conversion of #{obj.nil? ? 'nil' : obj.class} into String"
     end
+    unless s.encoding.ascii_compatible?   # before the NUL scan: UTF-16/32 paths are full of NUL bytes
+      raise Encoding::CompatibilityError, "path name must be ASCII-compatible (#{s.encoding}): #{s.inspect}"
+    end
     raise ArgumentError, "path name contains null byte" if s.include?("\0")
     s
   end

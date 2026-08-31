@@ -147,9 +147,24 @@ static RESULT korb_raise_errno(CTX *c, VALUE *slots, int e, const char *func, co
  * then #to_str.  The result is written back into the argument cell — that cell
  * is rooted, so callers can keep reading the path through the slice after this
  * (possibly GC-ing) dispatch.  `a` must be the caller's own argument slice.  */
+/* A path is handed to the OS as bytes, so a wide/stateful encoding cannot name
+ * one.  CRuby quotes the offending string. */
+static RESULT korb_path_enc_check(CTX *c, VALUE *slots, VALUE pv) {
+    const uint32_t e = KORB_STR_ENC(pv);
+    if (LIKELY(korb_enc_ascii_compat_idx(c->vm, e))) return RESULT_OK(KORB_NIL);
+    char *ib = NULL; size_t il = 0;
+    FILE *const ms = open_memstream(&ib, &il);
+    if (ms) { korb_fprint_inspect_s(c, slots, ms, pv); fclose(ms); }
+    char msg[512];
+    snprintf(msg, sizeof msg, "path name must be ASCII-compatible (%s): %s",
+             korb_enc_name_of(c->vm, e), ib ? ib : "");
+    free(ib);
+    return korb_raise_enc_compat_msg(c, slots, msg);
+}
+
 static RESULT korb_path_coerce(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t idx) {
     VALUE v = VALUE_SLICE_GET(a, idx);
-    if (LIKELY(KORB_STRING_P(v))) return RESULT_OK(v);
+    if (LIKELY(KORB_STRING_P(v))) { CHECK(korb_path_enc_check(c, slots, v)); return RESULT_OK(v); }
     const char *const tname = (v == KORB_NIL) ? "nil" : korb_type_name(v);   /* capture before any dispatch can move `v` */
     static const struct { const char *name; uint32_t len; } conv[] = { { "to_path", 7 }, { "to_str", 6 } };
     for (size_t i = 0; i < sizeof conv / sizeof conv[0] && !KORB_STRING_P(v); i++) {
@@ -163,6 +178,7 @@ static RESULT korb_path_coerce(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t idx
     if (UNLIKELY(!KORB_STRING_P(v)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", tname);
     VALUE_REF_SET(VALUE_SLICE_REF(a, idx), v);     /* keep the coerced String where the caller reads it */
+    CHECK(korb_path_enc_check(c, slots, v));
     return RESULT_OK(v);
 }
 
@@ -228,8 +244,11 @@ static RESULT korb_m_file_realpath(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         jl = plen < sizeof joined ? plen : sizeof joined - 1; memcpy(joined, path, jl); joined[jl] = '\0';
     }
     char real[4096];
+    const uint32_t penc = KORB_STR_ENC(pv);                        /* the result keeps the path's encoding */
     if (!realpath(joined, real)) return korb_raise_errno(c, slots, errno, "realpath", joined);
-    return korb_str_new(c, slots, real, (uint32_t)strlen(real));
+    RESULT rr = korb_str_new(c, slots, real, (uint32_t)strlen(real));
+    if (LIKELY(rr.state == KORB_NORMAL)) KORB_STR_ENC_SET(rr.value, penc);
+    return rr;
 }
 /* `tilde`: File.expand_path expands ~ / ~user; File.absolute_path does not. */
 static RESULT korb_file_expand(CTX *c, VALUE *slots, VALUE_SLICE a, bool tilde) {
@@ -324,7 +343,7 @@ static RESULT korb_m_file_absolute_path(CTX *c, VALUE *slots, VALUE_REF self, VA
  * trailing separators on the left, otherwise one is inserted when the left does
  * not already end with it.  No allocation happens here, so the interior string
  * pointers stay valid for the whole walk. */
-static RESULT korb_file_join_str(CTX *c, VALUE *slots, VALUE pv, char *buf, size_t cap, size_t *d, bool *first) {
+static RESULT korb_file_join_str(CTX *c, VALUE *slots, VALUE pv, char *buf, size_t cap, size_t *d, bool *first, uint32_t *enc) {
     if (UNLIKELY(!KORB_STRING_P(pv))) {
         /* #to_path first, then #to_str (CRuby's rb_get_path_check).  The result
          * is parked so the borrowed bytes below stay valid. */
@@ -341,7 +360,11 @@ static RESULT korb_file_join_str(CTX *c, VALUE *slots, VALUE pv, char *buf, size
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
         slots[0] = pv;                                  /* root: buf below borrows its bytes */
     }
+    { const uint32_t e = KORB_STR_ENC(pv);             /* the result takes the first non-default component encoding */
+      if (*enc == KORB_ENC_UTF8 && e != KORB_ENC_UTF8 && e != KORB_ENC_USASCII) *enc = e; }
     uint32_t plen; const char *p = korb_str_cstr_len(pv, &plen);
+    if (UNLIKELY(memchr(p, '\0', plen) != NULL))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
     if (!*first) {
         if (plen > 0 && p[0] == '/') { while (*d > 0 && buf[*d - 1] == '/') (*d)--; }
         else if (!(*d > 0 && buf[*d - 1] == '/') && *d + 1 < cap) buf[(*d)++] = '/';
@@ -354,8 +377,8 @@ static RESULT korb_file_join_str(CTX *c, VALUE *slots, VALUE pv, char *buf, size
 
 /* Arrays are flattened; an empty one still counts as an (empty) component, so
  * File.join("a", []) is "a/" just as in CRuby. */
-static RESULT korb_file_join_val(CTX *c, VALUE *slots, VALUE pv, char *buf, size_t cap, size_t *d, bool *first, uint32_t depth) {
-    if (!KORB_ARRAY_P(pv)) return korb_file_join_str(c, slots, pv, buf, cap, d, first);
+static RESULT korb_file_join_val(CTX *c, VALUE *slots, VALUE pv, char *buf, size_t cap, size_t *d, bool *first, uint32_t depth, uint32_t *enc) {
+    if (!KORB_ARRAY_P(pv)) return korb_file_join_str(c, slots, pv, buf, cap, d, first, enc);
     if (UNLIKELY(depth > 16)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "recursive array");
     const uint32_t n = VAL2ARY(pv)->len;
     if (n == 0) {
@@ -364,16 +387,19 @@ static RESULT korb_file_join_val(CTX *c, VALUE *slots, VALUE pv, char *buf, size
         return RESULT_OK(KORB_NIL);
     }
     for (uint32_t i = 0; i < n; i++)
-        CHECK(korb_file_join_val(c, slots, korb_items_data(VAL2ARY(pv)->items)[i], buf, cap, d, first, depth + 1));
+        CHECK(korb_file_join_val(c, slots, korb_items_data(VAL2ARY(pv)->items)[i], buf, cap, d, first, depth + 1, enc));
     return RESULT_OK(KORB_NIL);
 }
 
 static RESULT korb_m_file_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     char buf[8192]; size_t d = 0; bool first = true;
+    uint32_t enc = KORB_ENC_UTF8;
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++)
-        CHECK(korb_file_join_val(c, slots, VALUE_SLICE_GET(a, i), buf, sizeof buf, &d, &first, 0));
-    return korb_str_new(c, slots, buf, (uint32_t)d);
+        CHECK(korb_file_join_val(c, slots, VALUE_SLICE_GET(a, i), buf, sizeof buf, &d, &first, 0, &enc));
+    RESULT r = korb_str_new(c, slots, buf, (uint32_t)d);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, enc);
+    return r;
 }
 
 /* File.dirname(path) → everything before the last '/', or "." if none. */
@@ -435,8 +461,22 @@ static RESULT korb_m_file_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * (".*" strips any extension). */
 static RESULT korb_m_file_basename(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || VALUE_SLICE_LEN(a) > 2))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)",
+                          VALUE_SLICE_LEN(a));
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
+    if (VALUE_SLICE_LEN(a) >= 2 && !KORB_STRING_P(VALUE_SLICE_GET(a, 1))) {   /* the suffix takes #to_str only */
+        VALUE sv = VALUE_SLICE_GET(a, 1);
+        const char *const cls = korb_coerce_name(c, sv);
+        slots[0] = sv;
+        const RESULT cr = korb_coerce_to_str(c, slots + 1, &slots[0]);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (UNLIKELY(cr.value != KORB_TRUE))
+            return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
+        VALUE_REF_SET(VALUE_SLICE_REF(a, 1), slots[0]);
+        KORB_PATH_ARG(c, slots, a, 0, pv);              /* re-read: the coercion may have moved it */
+    }
     uint32_t n; const char *p = korb_str_cstr_len(pv, &n);
     if (n == 0) return korb_str_new(c, slots, "", 0);   /* basename("") → "" */
     while (n > 1 && p[n - 1] == '/') n--;             /* strip trailing slashes */
@@ -454,7 +494,10 @@ static RESULT korb_m_file_basename(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     char out[8192]; if (blen >= sizeof out) blen = sizeof out - 1;   /* copy off the (movable) source before alloc */
     memcpy(out, base, blen);
-    return korb_str_new(c, slots, out, blen);
+    const uint32_t penc = KORB_STR_ENC(pv);
+    RESULT r = korb_str_new(c, slots, out, blen);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, penc);   /* basename keeps the path's encoding */
+    return r;
 }
 
 /* File.extname(path) → ".ext" of the basename, or "" (a leading dot is not one). */
@@ -467,12 +510,19 @@ static RESULT korb_m_file_extname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     size_t s = 0;
     for (size_t i = 0; i < n; i++) if (p[i] == '/') s = i + 1;
     const char *base = p + s; uint32_t blen = (uint32_t)(n - s);
+    size_t st = 0;
+    while (st < blen && base[st] == '.') st++;          /* a leading dot run is not an extension */
     size_t dot = (size_t)-1;
-    for (size_t i = 1; i < blen; i++) if (base[i] == '.') dot = i;     /* skip a leading dot (i starts at 1) */
-    if (dot == (size_t)-1 || dot == (size_t)blen - 1) return korb_str_new(c, slots, "", 0);  /* none / trailing dot */
-    char out[512]; uint32_t el = (uint32_t)(blen - dot); if (el >= sizeof out) el = sizeof out - 1;
-    memcpy(out, base + dot, el);                       /* copy off the (movable) source before alloc */
-    return korb_str_new(c, slots, out, el);
+    for (size_t i = st; i < blen; i++) if (base[i] == '.') dot = i;
+    char out[512]; uint32_t el = 0;
+    if (dot == (size_t)-1) el = 0;                                /* no dot after the leading run */
+    else if (dot == (size_t)blen - 1) { out[0] = '.'; el = 1; }   /* a trailing dot run collapses to "." */
+    else { el = (uint32_t)(blen - dot); if (el >= sizeof out) el = sizeof out - 1;
+           memcpy(out, base + dot, el); }              /* copy off the (movable) source before alloc */
+    const uint32_t penc = KORB_STR_ENC(pv);
+    RESULT r = korb_str_new(c, slots, out, el);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, penc);   /* extname keeps the path's encoding */
+    return r;
 }
 
 /* File.fnmatch — Ruby semantics implemented directly (POSIX fnmatch(3) lacks
@@ -1375,7 +1425,7 @@ static RESULT korb_m_file_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     korb_sword_t cnt = 0;
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         VALUE pv = VALUE_SLICE_GET(a, i);
-        if (UNLIKELY(!KORB_STRING_P(pv))) { CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv; }   /* #to_path / #to_str */
+        CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv;   /* #to_path / #to_str + the encoding check */
         char pb[4096]; uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
         if (plen >= sizeof pb) plen = sizeof pb - 1;
         memcpy(pb, path, plen); pb[plen] = '\0';               /* the interior pointer must survive the raise below */
@@ -1592,7 +1642,7 @@ static RESULT korb_m_stat_spaceship(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 /* A path argument: a String as is, otherwise #to_path then #to_str (CRuby's
  * FilePathValue).  Dispatches → may GC, so the caller must re-read its VALUEs. */
 static RESULT korb_file_path_arg(CTX *c, VALUE *slots, VALUE *v) {
-    if (LIKELY(KORB_STRING_P(*v))) return RESULT_OK(KORB_TRUE);
+    if (LIKELY(KORB_STRING_P(*v))) { CHECK(korb_path_enc_check(c, slots, *v)); return RESULT_OK(KORB_TRUE); }
     const char *const cls = korb_type_name(*v);            /* capture before dispatch */
     static const char *const conv[2] = { "to_path", "to_str" };
     static const uint32_t convlen[2] = { 7, 6 };
@@ -1604,7 +1654,7 @@ static RESULT korb_file_path_arg(CTX *c, VALUE *slots, VALUE *v) {
         const RESULT pr = korb_send(c, slots + 1, mid, 0, 0);
         if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
         *v = pr.value;
-        if (KORB_STRING_P(*v)) return RESULT_OK(KORB_TRUE);
+        if (KORB_STRING_P(*v)) { slots[0] = *v; CHECK(korb_path_enc_check(c, slots + 1, slots[0])); *v = slots[0]; return RESULT_OK(KORB_TRUE); }
     }
     return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
 }
@@ -1613,7 +1663,7 @@ static RESULT korb_file_path_arg(CTX *c, VALUE *slots, VALUE *v) {
 static RESULT korb_file_stat_impl(CTX *c, VALUE *slots, VALUE_SLICE a, bool is_l) {
     char pb[4096];
     VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv))) { CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv; }
+    CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv;   /* also rejects a non-ASCII-compatible path */
     if (!korb_file_pathbuf(pv, pb, sizeof pb))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     struct stat st;

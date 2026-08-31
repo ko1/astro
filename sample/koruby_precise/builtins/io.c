@@ -2443,10 +2443,8 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     VALUE pv = VALUE_SLICE_GET(a, 0);
     /* File.new(fd[, mode]) wraps an existing descriptor, exactly like IO.new. */
     if (FIXNUM_P(pv)) return korb_m_io_s_new_fd(c, slots, self, a, NULL, NULL, NULL);
-    if (UNLIKELY(!KORB_STRING_P(pv))) {                    /* #to_path then #to_str */
-        CHECK(korb_file_path_arg(c, slots, &pv));
-        slots[0] = pv;                                     /* root the coerced path */
-    }
+    CHECK(korb_file_path_arg(c, slots, &pv));              /* #to_path then #to_str; also the encoding check */
+    slots[0] = pv;                                         /* root the coerced path */
     /* A trailing Hash is keyword options (mode:, flags:, encoding: …), not a
      * positional argument; only 3 positionals are allowed. */
     uint32_t npos = VALUE_SLICE_LEN(a);
