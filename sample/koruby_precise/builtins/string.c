@@ -530,6 +530,25 @@ static uint32_t korb_enc_fixed_unit(const struct korb_vm *vm, uint32_t enc, bool
     if (unit) *be = (strcasecmp(tail, "LE") != 0);
     return unit;
 }
+/* ASCII-compatible = one byte per ASCII character, mapping to itself.  The
+ * UTF-16/32 families, UTF-7 and the stateful ISO-2022 / CP502xx encodings
+ * are not (mirrors Encoding#ascii_compatible? in prelude/encoding.rb). */
+static bool korb_enc_ascii_compat(const struct korb_vm *vm, uint32_t enc) {
+    if (enc < KORB_ENC_OTHER_MIN || enc >= KORB_STR_ENC_MAX || vm->str_enc_names[enc] == 0) return true;
+    const char *const nm = korb_sym_name(vm, vm->str_enc_names[enc]);
+    return !(strncasecmp(nm, "UTF-16", 6) == 0 || strncasecmp(nm, "UTF-32", 6) == 0 ||
+             strcasecmp(nm, "UTF-7") == 0 || strncasecmp(nm, "ISO-2022", 8) == 0 ||
+             strncasecmp(nm, "CP502", 5) == 0);
+}
+/* CRuby raises this before parsing a number out of a non-ASCII-compatible
+ * String (#to_i / #to_f / #to_r / #to_c / #undump). */
+static RESULT korb_str_need_ascii_compat(CTX *c, VALUE *slots, VALUE v) {
+    const uint32_t enc = KORB_STR_ENC(v);
+    if (LIKELY(korb_enc_ascii_compat(c->vm, enc))) return RESULT_OK(KORB_NIL);
+    char msg[96];
+    snprintf(msg, sizeof msg, "ASCII incompatible encoding: %s", korb_enc_name_of(c->vm, enc));
+    return korb_raise_enc_compat_msg(c, slots, msg);
+}
 /* Shift_JIS and its variants (two-byte lead ranges, single-byte katakana). */
 static bool korb_enc_is_sjis(const struct korb_vm *vm, uint32_t enc) {
     if (enc < KORB_ENC_OTHER_MIN || enc >= KORB_STR_ENC_MAX || vm->str_enc_names[enc] == 0) return false;
@@ -1741,6 +1760,7 @@ static RESULT korb_m_str_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_str_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    CHECK(korb_str_need_ascii_compat(c, slots, VALUE_REF_GET(self)));
     const KorbString *const s = VAL2STR(VALUE_REF_GET(self));
     const char *const d = korb_strbuf_data(s->buf);
     const uint32_t len = s->len;
@@ -1993,6 +2013,7 @@ static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    CHECK(korb_str_need_ascii_compat(c, slots, VALUE_REF_GET(self)));
     int base = 10;
     bool have_base = false;
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* to_i(base): base 0 = auto-detect prefix */
@@ -2103,6 +2124,7 @@ static RESULT korb_m_str_oct(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 /* String#to_r — lenient parse of [ws][sign]int['/'int | '.'frac]; non-numeric → (0/1). */
 static RESULT korb_m_str_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    CHECK(korb_str_need_ascii_compat(c, slots, VALUE_REF_GET(self)));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     const char *const d = korb_strbuf_data(s->buf); const uint32_t len = s->len; uint32_t i = 0;
     while (i < len && isspace((unsigned char)d[i])) i++;
@@ -2178,6 +2200,7 @@ static bool korb_str_parse_c_num(CTX *c, VALUE *outslot, const char *d, uint32_t
  * non-numeric string → (0+0i). */
 static RESULT korb_m_str_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    CHECK(korb_str_need_ascii_compat(c, slots, VALUE_REF_GET(self)));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     const uint32_t len = s->len; uint32_t i = 0;
     /* Copy the bytes to the stack: parsing allocates (Float/Rational/Complex),

@@ -1270,9 +1270,9 @@ static RESULT korb_m_str_undump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     (void)a;
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
-    if (enc >= KORB_ENC_OTHER_MIN) {                            /* UTF-16/32 self cannot be undumped */
+    if (enc >= KORB_ENC_OTHER_MIN) {                            /* a non-ASCII-compatible self cannot be undumped */
         const char *const en = korb_enc_name_of(c->vm, enc);
-        if (en && (strncmp(en, "UTF-16", 6) == 0 || strncmp(en, "UTF-32", 6) == 0)) {
+        if (!korb_enc_ascii_compat(c->vm, enc)) {
             char msg[96];
             snprintf(msg, sizeof msg, "ASCII incompatible encoding: %s", en);
             return korb_raise_enc_compat_msg(c, slots, msg);
