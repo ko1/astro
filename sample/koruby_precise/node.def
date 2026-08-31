@@ -1270,7 +1270,12 @@ node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int
       const VALUE loc_owner = KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL;
       if (korb_const_index_owned(c->vm, name_sym, loc_owner) == UINT32_MAX &&
           korb_get_srcloc(c->vm, n, &fs, &ln)) korb_const_reg_loc(c->vm, name_sym, loc_owner, fs, ln); }
-    return korb_class_body(c, slots, name_sym, body, VALUE_REF_GET(super), 0, enclosing);
+    { RESULT br = korb_class_body(c, slots, name_sym, body, VALUE_REF_GET(super), 0, enclosing);
+      /* a class/module body is its own return-capturing scope: a `return`
+       * reaching here (from a block inside it) is a LocalJumpError, not a
+       * return from whatever method the body happens to run under. */
+      if (UNLIKELY(br.state == KORB_RETURN)) return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "unexpected return");
+      return br; }
 }
 
 // `class << recv ... end` — run the body with self = recv's singleton class.
@@ -1285,6 +1290,9 @@ node_sclass(CTX *c, NODE *n, VALUE *slots, NODE *body, int32_t self_off, int32_t
     const VALUE encl = (self_off == INT32_MIN) ? KORB_NIL
                      : (dc_off != INT32_MIN ? korb_cvar_cref(slots[self_off], slots[dc_off])
                                             : (KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL));
+    /* NOTE: unlike a class/module body, a `class << obj` body is NOT its own
+     * return-capturing scope — `return` in it returns from the enclosing
+     * method (ClassSpecs.sclass_with_return). */
     return korb_sclass_body(c, slots, body, VALUE_REF_GET(recv), encl);
 }
 
@@ -1312,7 +1320,12 @@ node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, in
       const VALUE loc_owner = KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL;
       if (korb_const_index_owned(c->vm, name_sym, loc_owner) == UINT32_MAX &&
           korb_get_srcloc(c->vm, n, &fs, &ln)) korb_const_reg_loc(c->vm, name_sym, loc_owner, fs, ln); }
-    return korb_class_body(c, slots, name_sym, body, KORB_NIL, 1, enclosing);
+    { RESULT br = korb_class_body(c, slots, name_sym, body, KORB_NIL, 1, enclosing);
+      /* a class/module body is its own return-capturing scope: a `return`
+       * reaching here (from a block inside it) is a LocalJumpError, not a
+       * return from whatever method the body happens to run under. */
+      if (UNLIKELY(br.state == KORB_RETURN)) return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "unexpected return");
+      return br; }
 }
 
 // attr_reader/writer/accessor — defines getters/setters on self (the class).
