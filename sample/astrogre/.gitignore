@@ -11,6 +11,7 @@ node_head.h
 
 # Build artifacts
 astrogre
+selftest_runner
 *.o
 *.so
 *.a

@@ -22,7 +22,11 @@ node.o: $(srcdir)/../node.c \
 
 parse.o: $(srcdir)/../parse.c \
     $(srcdir)/../node.h $(srcdir)/../context.h $(srcdir)/../parse.h \
-    $(srcdir)/../node_head.h
+    $(srcdir)/../node_head.h $(srcdir)/../unicode_prop.h \
+    $(srcdir)/../unicode_gcb.h $(srcdir)/../unicode_grapheme.h
+
+unicode_prop.o: $(srcdir)/../unicode_prop.c $(srcdir)/../unicode_prop.h
+unicode_tables.o: $(srcdir)/../unicode_tables.c $(srcdir)/../unicode_prop.h
 
 match.o: $(srcdir)/../match.c \
     $(srcdir)/../node.h $(srcdir)/../context.h $(srcdir)/../parse.h

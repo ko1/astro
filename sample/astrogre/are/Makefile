@@ -35,7 +35,9 @@ ENG_SRCS = $(ENGINE_DIR)/node.c           \
            $(ENGINE_DIR)/match.c          \
            $(ENGINE_DIR)/selftest.c       \
            $(ENGINE_DIR)/backend_astrogre.c \
-           $(ENGINE_DIR)/aho_corasick.c
+           $(ENGINE_DIR)/aho_corasick.c \
+           $(ENGINE_DIR)/unicode_prop.c \
+           $(ENGINE_DIR)/unicode_tables.c
 
 NODE_GENFILES = $(ENGINE_DIR)/node_eval.c       \
                 $(ENGINE_DIR)/node_dispatch.c   \
@@ -64,6 +66,8 @@ are: $(ARE_SRCS) $(ENG_SRCS) $(NODE_GENFILES) \
      $(ARE_DIR)/types.h $(ARE_DIR)/ignore.h $(ARE_DIR)/work.h \
      $(ENGINE_DIR)/node.h $(ENGINE_DIR)/context.h $(ENGINE_DIR)/parse.h \
      $(ENGINE_DIR)/backend.h $(ENGINE_DIR)/aho_corasick.h \
+     $(ENGINE_DIR)/unicode_prop.h $(ENGINE_DIR)/unicode_gcb.h \
+     $(ENGINE_DIR)/unicode_grapheme.h \
      Makefile $(ARE_DEPS)
 	$(CC) $(CFLAGS) -o $@ $(ARE_SRCS) $(ENG_SRCS) $(LDFLAGS) $(LIBS)
 

@@ -179,15 +179,13 @@ Teddy / line-iteration nodes が landing したあと、標準の ASTro JIT
 ## 言語仕様の不足
 
 ### Unicode
-- `\p{...}` / `\P{...}` プロパティクラス。
 - `/i` の Unicode case fold (今は ASCII のみ)。
-- `\X` extended grapheme cluster。
-
-### クラス内マルチバイト文字
-`[äé]` は今、ASCII bitmap に高位バイトを byte-by-byte で書き込んで
-いるだけで、コードポイント単位のマッチにはならない。ハイブリッド
-クラス (ASCII bitmap + ソート済みコードポイント範囲リスト) が必要。
-これが入れば `\u` のクラス内 multi-byte 形式も扱える。
+- `\p{}` の名前は general category / 長い名前 / script のみ。block
+  (`\p{InHiragana}`) と `Age=` 等の値つきプロパティは未対応。
+- `[^a]` のような「非 ASCII メンバを持たない」否定クラスは今も byte
+  単位 (`[^a]` が「あ」の先頭 1 byte にマッチしてしまう)。SIMD
+  prefilter と first-byte 解析が bitmap クラスを前提にしているので
+  意図的に据え置き。
 
 ### エンコーディング
 EUC-JP (`/e`)、Windows-31J (`/s`)。需要次第で。

@@ -211,15 +211,26 @@ lazy はできるだけ短くマッチさせる:
 UTF-8 モードでは `é` のような複数バイト文字も 1 文字として扱う。`/é+/` は
 `é` の繰り返しにマッチ (末尾バイトの繰り返しではない)。
 
+## Unicode プロパティ
+
+`\p{NAME}` はプロパティ NAME に属する 1 文字、`\P{NAME}` (= `\p{^NAME}`)
+はその補集合にマッチする。名前は大小・`-`・`_`・空白を無視して引く。
+
+| 種類 | 例 |
+|---|---|
+| general category | `\p{L}` `\p{Lu}` `\p{Nd}` `\p{Po}` `\p{Zs}` `\p{Cn}` |
+| 長い名前 | `\p{Alpha}` `\p{Word}` `\p{Space}` `\p{Graph}` `\p{Assigned}` `\p{Any}` |
+| script | `\p{Latin}` `\p{Han}` `\p{Hiragana}` `\p{Katakana}` `\p{Hangul}` ほか |
+
+`[[:alpha:]]` 等の POSIX bracket class も UTF-8 モードでは Unicode 対応
+(Ruby と同じ集合)。`/n` (バイトモード) では従来どおり ASCII のみ。
+
+`\X` は拡張書記素クラスタ 1 個 (UAX #29)。絵文字 + 肌色 modifier、ZWJ
+連結、Hangul jamo、Regional Indicator の対をひとまとまりとして扱う。
+
 ## サポートしない
 
-- 後読み `(?<=...)` / `(?<!...)`
-- 文字クラス内の複数バイト文字 (`[あ-ん]` など)
-- Unicode プロパティ `\p{Letter}` `\p{Lu}` 等
 - `/i` の Unicode 大文字小文字変換 (ASCII 範囲のみ)
-- 拡張書記素クラスタ `\X`
-- Atomic group `(?>...)`
-- Possessive quantifier (`*+ ++ ?+`)
 - EUC-JP / Windows-31J エンコーディング
 
 詳細: [`done.md`](done.md) / [`todo.md`](todo.md)。
