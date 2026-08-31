@@ -1474,10 +1474,14 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
 {
     (void)n;
     struct korb_vm *const vm = c->vm;
-    if (LIKELY(c->eval_cref == KORB_NIL)) {                    /* per-node cache (not under instance/class_eval) */
+    /* self_off is baked ONLY for a read whose cref is unnamed (a `class << obj`
+     * body, or a method defined in one).  There the answer depends on which
+     * object is running — two singleton classes share the node — so the per-node
+     * cache must not be used at all. */
+    if (LIKELY(c->eval_cref == KORB_NIL && self_off == INT32_MIN)) {   /* per-node cache */
         if (LIKELY(cache->idx_plus1 != 0 && cache->serial == vm->const_serial))
             return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
-    } else {
+    } else if (c->eval_cref != KORB_NIL) {
         /* instance_eval/class_eval(String): the eval cref (the receiver's
          * singleton / the module) and its ancestry come FIRST, and the answer is
          * context-dependent so it is never cached on the node. */
@@ -1608,7 +1612,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
         }
         return nr;
     }
-    if (LIKELY(c->eval_cref == KORB_NIL)) {            /* eval-scoped answers are context-dependent */
+    if (LIKELY(c->eval_cref == KORB_NIL && self_off == INT32_MIN)) {   /* eval- and singleton-scoped answers are context-dependent */
         cache->idx_plus1 = idx + 1;
         cache->serial = vm->const_serial;
     }
