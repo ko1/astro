@@ -287,9 +287,21 @@ static RESULT korb_m_md_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             const KorbRange *r = VAL2RANGE(arg);
             korb_sword_t b = 0, e;
             if (r->rbegin != KORB_NIL) korb_to_index(r->rbegin, &b);
+            const korb_sword_t raw_b = b;
             if (b < 0) b += n;
             if (r->rend == KORB_NIL) e = n; else { e = 0; korb_to_index(r->rend, &e); if (e < 0) e += n; if (!r->exclude_end) e += 1; }
-            if (UNLIKELY(b < 0 || b > n)) return korb_raise(c, slots, KORB_E_RANGE, 0, "%d..%d out of range", (int)b, (int)e);
+            /* The message names the range as written, not as resolved. */
+            if (UNLIKELY(b < 0 || b > n)) {
+                char rs[64];
+                if (r->rend == KORB_NIL) {
+                    snprintf(rs, sizeof rs, "%ld%s", (long)raw_b, r->exclude_end ? "..." : "..");
+                } else {
+                    korb_sword_t raw_e = 0; korb_to_index(r->rend, &raw_e);
+                    snprintf(rs, sizeof rs, "%ld%s%ld", (long)raw_b,
+                             r->exclude_end ? "..." : "..", (long)raw_e);
+                }
+                return korb_raise(c, slots, KORB_E_RANGE, 0, "%s out of range", rs);
+            }
             for (long gi = b; gi < e; gi++) {
                 slots[2] = (gi >= 0 && gi < n) ? UNWRAP(korb_md_group(c, slots + 2, slots[0], (int)gi)) : KORB_NIL;
                 CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
@@ -623,7 +635,7 @@ static int korb_re_ruby_opts(uint32_t flags) {
     if (flags & 128u) o |= 32;                  /* ASCII-8BIT (/n) → NOENCODING */
     return o;
 }
-static RESULT korb_m_re_options(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(korb_re_ruby_opts(VAL2RE(VALUE_REF_GET(self))->flags))); }
+static RESULT korb_m_re_options(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(LONG2FIX(korb_re_ruby_opts(VAL2RE(VALUE_REF_GET(self))->flags))); }
 /* /e and /s name an encoding no Ruby-visible option bit distinguishes; #encoding
  * asks for it here. */
 static RESULT korb_m_re_enc_hint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1254,7 +1266,10 @@ static RESULT korb_m_re_escape(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         else if (ch == '\t') fputs("\\t", ms); else if (ch == '\f') fputs("\\f", ms);
         else if (ch == ' ') fputs("\\ ", ms); else fputc(ch, ms); }
     fclose(ms);
-    const uint32_t senc = KORB_STR_ENC(slots[0]);      /* the escape keeps the source's encoding */
+    /* The escape keeps the source's encoding, except that an all-ASCII input
+     * yields US-ASCII whatever it was tagged with (CRuby). */
+    const uint32_t senc = korb_str_ascii_only_p(c->vm, slots[0])
+                        ? KORB_ENC_USASCII : KORB_STR_ENC(slots[0]);
     RESULT r = korb_str_new(c, slots + 1, buf ? buf : "", (uint32_t)z); free(buf);
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, senc);
     return r;
