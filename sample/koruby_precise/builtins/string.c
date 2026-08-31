@@ -1047,8 +1047,27 @@ static RESULT korb_m_str_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 /* in-place whitespace strip (mode: 0 both, 1 left, 2 right). self if changed else nil. */
 static bool korb_str_sets_match(VALUE_SLICE a, unsigned char ch);
+/* strip's encoding checks (mode 0 strip / 1 lstrip / 2 rstrip).  CRuby decodes
+ * from the left in #lstrip, so an invalid codepoint at the first non-space
+ * position is an ArgumentError; #rstrip rejects any broken string outright with
+ * an Encoding::CompatibilityError. */
+static RESULT korb_str_strip_enc_check(CTX *c, VALUE *slots, VALUE v, int mode) {
+    if (KORB_STR_ENC(v) != KORB_ENC_UTF8) return RESULT_OK(KORB_NIL);
+    const KorbString *const s = VAL2STR(v);
+    if (korb_str_utf8_valid(s)) return RESULT_OK(KORB_NIL);
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    if (mode != 2) {
+        uint32_t i = 0;
+        while (i < s->len && p[i] <= ' ') i++;         /* leading ASCII spaces */
+        if (i < s->len && korb_utf8_seq_len(p, i, s->len) == 0)
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
+    }
+    if (mode != 1) return korb_raise_enc_compat_msg(c, slots, "invalid byte sequence in UTF-8");
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_str_strip_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    if (VALUE_SLICE_LEN(a) == 0) CHECK(korb_str_strip_enc_check(c, slots, VALUE_REF_GET(self), mode));
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t lo = 0, hi = s->len;
     bool has_set = VALUE_SLICE_LEN(a) >= 1;
@@ -2205,6 +2224,7 @@ static RESULT korb_m_str_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 /* mode: 0=both 1=left 2=right. With a charset arg (Ruby 4.0), strip those chars
  * (delete/count-style set with ranges + ^) instead of whitespace. */
 static RESULT korb_str_strip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
+    if (VALUE_SLICE_LEN(a) == 0) CHECK(korb_str_strip_enc_check(c, slots, VALUE_REF_GET(self), mode));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t start = 0, end = s->len;
     bool has_set = VALUE_SLICE_LEN(a) >= 1;
@@ -3005,11 +3025,27 @@ done:
 /* crypt(salt) — POSIX crypt(3) one-way hash (libc).  The golden oracle is the
  * host CRuby, which uses the same libc crypt, so results match bit-for-bit. */
 static RESULT korb_m_str_crypt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (VALUE_SLICE_LEN(a) < 1 || !KORB_STRING_P(VALUE_SLICE_GET(a, 0)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
-                          VALUE_SLICE_LEN(a) >= 1 ? korb_type_name(VALUE_SLICE_GET(a, 0)) : "nil");
+    if (VALUE_SLICE_LEN(a) < 1) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of nil into String");
+    if (!KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {         /* coerce the salt via #to_str */
+        VALUE sv = VALUE_SLICE_GET(a, 0);
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(sv) && korb_responds_to_coerce_p(c, slots, &sv, to_str)) {
+            slots[0] = sv;
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (KORB_STRING_P(sr.value)) VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value);
+        }
+        if (!KORB_STRING_P(VALUE_SLICE_GET(a, 0)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
+                              korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
     const KorbString *key = SELF_STR, *salt = VAL2STR(VALUE_SLICE_GET(a, 0));
-    if (salt->len < 2) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "salt too short (need >=2 bytes)");
+    /* CRuby rejects a NUL in either operand and a salt shorter than two
+     * (non-NUL) characters before calling crypt(3). */
+    if (memchr(korb_strbuf_data(key->buf), '\0', key->len) != NULL)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
+    if (salt->len < 2 || memchr(korb_strbuf_data(salt->buf), '\0', 2) != NULL)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "salt too short (need >=2 bytes)");
     char kb[4096], sb[512];
     if (key->len >= sizeof(kb) || salt->len >= sizeof(sb))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string too long for crypt");
