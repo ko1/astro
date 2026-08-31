@@ -54,6 +54,38 @@ usage(FILE *fp)
 }
 
 
+/* --enable=NAME / --disable-NAME.  CRuby matches NAME as a prefix of a known
+ * feature and treats '-' and '_' alike, so `--enable=gem` reaches `gems`. */
+static void
+koruby_apply_feature(const char *const name, const bool on)
+{
+    static const char *const features[] = {
+        "gems", "error_highlight", "did_you_mean", "syntax_suggest",
+        "rubyopt", "frozen_string_literal", "yjit", "zjit",
+    };
+    char norm[64];
+    size_t n = 0;
+    for (const char *p = name; *p && n + 1 < sizeof(norm); p++) norm[n++] = *p == '-' ? '_' : *p;
+    norm[n] = '\0';
+    if (n == 0) return;
+
+    if (strcmp(norm, "all") == 0) {
+        OPTION.frozen_literals = on;
+        OPTION.no_rubyopt = !on;
+        return;
+    }
+    for (size_t k = 0; k < sizeof(features) / sizeof(features[0]); k++) {
+        if (n >= strlen(features[k]) + 1 || strncmp(norm, features[k], n) != 0) continue;
+        if (strcmp(features[k], "frozen_string_literal") == 0) OPTION.frozen_literals = on;
+        else if (strcmp(features[k], "rubyopt") == 0)          OPTION.no_rubyopt = !on;
+        return;                                          /* the rest are accepted no-ops */
+    }
+    fprintf(stderr, "koruby_precise: warning: unknown argument for --%s: '%s'\n",
+            on ? "enable" : "disable", name);
+    fprintf(stderr, "koruby_precise: warning: features are [gems, error_highlight, did_you_mean, "
+                    "syntax_suggest, rubyopt, frozen_string_literal, yjit, zjit].\n");
+}
+
 /* One CRuby-compatible command-line flag.  Shared by the argv loop and RUBYOPT
  * (which accepts a subset).  `next_arg` supplies the separate-word form of
  * -I/-r/-E when there is one; RUBYOPT passes NULL (only the joined form).
@@ -111,20 +143,53 @@ koruby_apply_flag(const char *a, const char *next_arg,
     /* $-a / $-p / $-l are read-only reflections of the switches; the loop
      * wrapper sets them through __set_gvar. */
     if (strcmp(a, "-l") == 0) { OPTION.chomp_lines = true; return true; }
-    if (strncmp(a, "-x", 2) == 0) { OPTION.skip_to_ruby = true; return true; }
+    if (strncmp(a, "-x", 2) == 0) {                     /* -x[DIR]: DIR is chdir'd into first */
+        OPTION.skip_to_ruby = true;
+        const char *const dir = a[2] ? a + 2 : NULL;
+        if (dir && chdir(dir) != 0) { perror("koruby_precise: -x"); exit(1); }
+        return true;
+    }
     if (strncmp(a, "-C", 2) == 0) {                     /* chdir before running */
         const char *const dir = a[2] ? a + 2 : next_arg;
         if (dir && chdir(dir) != 0) { perror("koruby_precise: -C"); exit(1); }
         return true;
     }
-    if (strcmp(a, "--enable-frozen-string-literal") == 0 ||
-        strcmp(a, "--enable=frozen-string-literal") == 0) { OPTION.frozen_literals = true; return true; }
-    if (strcmp(a, "--disable-frozen-string-literal") == 0 ||
-        strcmp(a, "--disable=frozen-string-literal") == 0) { OPTION.frozen_literals = false; return true; }
-    if (strncmp(a, "--disable", 9) == 0 || strncmp(a, "--enable", 8) == 0 ||
-        strcmp(a, "--copyright") == 0)
+    if (strncmp(a, "--disable", 9) == 0 || strncmp(a, "--enable", 8) == 0) {
+        const bool on = a[2] == 'e';
+        const char *feat = a + (on ? 8 : 9);
+        if (*feat == '=' || *feat == '-') feat++;
+        else if (*feat != '\0') return false;            /* --enablefoo is not a flag */
+        koruby_apply_feature(feat, on);
         return true;
+    }
+    if (strcmp(a, "--copyright") == 0) return true;
     return false;
+}
+
+/* -S: resolve a bare script name against $RUBYPATH then $PATH.  CRuby looks for
+ * a readable file here, not an executable one (its own fixtures are mode 644). */
+static const char *
+koruby_search_script(const char *const name)
+{
+    if (strchr(name, '/') != NULL) return name;
+    for (int src = 0; src < 2; src++) {
+        const char *const list = getenv(src == 0 ? "RUBYPATH" : "PATH");
+        if (!list) continue;
+        for (const char *p = list; *p; ) {
+            const char *const sep = strchr(p, ':');
+            const size_t dlen = sep ? (size_t)(sep - p) : strlen(p);
+            if (dlen > 0 && dlen + strlen(name) + 2 < PATH_MAX) {
+                char buf[PATH_MAX];
+                memcpy(buf, p, dlen);
+                buf[dlen] = '/';
+                strcpy(buf + dlen + 1, name);
+                if (access(buf, R_OK) == 0) return strdup(buf);
+            }
+            if (!sep) break;
+            p = sep + 1;
+        }
+    }
+    return name;                                    /* not found: fail as usual */
 }
 
 static char *
@@ -752,6 +817,10 @@ main(int argc, char *argv[])
         else if (strcmp(a, "--ccs") == 0 || strcmp(a, "--clear-code-store") == 0) {
             OPTION.clear_store = true;
         }
+        else if (strncmp(a, "-S", 2) == 0) {
+            OPTION.search_path = true;
+            if (a[2]) { script = a + 2; i++; break; }    /* joined form: -Sname */
+        }
         else if (strcmp(a, "--") == 0) {
             i++;
             break;
@@ -780,7 +849,7 @@ main(int argc, char *argv[])
     const int cli_verbose_warn = OPTION.verbose_warn;
     char *rubyopt_buf = NULL;
     {
-        const char *const ro = getenv("RUBYOPT");
+        const char *const ro = OPTION.no_rubyopt ? NULL : getenv("RUBYOPT");
         if (ro && *ro) {
             rubyopt_buf = strdup(ro);
             if (!rubyopt_buf) abort();
@@ -804,10 +873,11 @@ main(int argc, char *argv[])
         }
     }
 
-    if (!eval_code && i < argc) {
+    if (!eval_code && !script && i < argc) {
         script = argv[i];
         i++;
     }
+    if (script && OPTION.search_path) script = koruby_search_script(script);
     /* argv[i..] would be Ruby ARGV — M0 has no ARGV object yet. */
 
     const char *src_name;
@@ -826,18 +896,31 @@ main(int argc, char *argv[])
         src_name = "-";
         src = read_file_all("-", &src_len);
     }
+    /* A script whose shebang names some other interpreter is run from its first
+     * `#!...ruby` line onwards, exactly as -x does (CRuby's load_file_internal). */
+    const bool xflag = OPTION.skip_to_ruby;
+    if (!xflag && script && src_len > 2 && src[0] == '#' && src[1] == '!') {
+        const char *const eol = memchr(src, '\n', src_len);
+        const size_t first = eol ? (size_t)(eol - src) : src_len;
+        if (memmem(src, first, "ruby", 4) == NULL) OPTION.skip_to_ruby = true;
+    }
     if (OPTION.skip_to_ruby) {                          /* -x: start at the first #!...ruby line */
         char *p = src, *found = NULL;
         while (p && *p) {
-            if (p[0] == '#' && p[1] == '!' && strstr(p, "ruby")) {
-                found = strchr(p, '\n');
-                if (found) found++;
+            char *const nl = strchr(p, '\n');
+            /* "ruby" must be on the shebang line itself, not anywhere after it */
+            if (p[0] == '#' && p[1] == '!' &&
+                memmem(p, nl ? (size_t)(nl - p) : strlen(p), "ruby", 4) != NULL) {
+                found = nl ? nl + 1 : NULL;
                 break;
             }
-            p = strchr(p, '\n');
-            if (p) p++;
+            p = nl ? nl + 1 : NULL;
         }
         if (found) { memmove(src, found, strlen(found) + 1); src_len = strlen(src); }
+        else if (xflag) {
+            fprintf(stderr, "%s: no Ruby script found in input (LoadError)\n", src_name);
+            return 1;
+        }
     }
     if (OPTION.loop_gets) {
         /* prism refuses BEGIN outside the top level, and the loop below IS a
