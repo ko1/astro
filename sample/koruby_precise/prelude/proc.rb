@@ -1,9 +1,21 @@
 # Proc#curry — partial application.
 class Proc
   def to_proc; self; end
-  # Mark this Proc so a bare kwargs Hash flows through *args (koruby already
-  # threads a trailing kwargs Hash through splat, so this is a no-op that returns self).
-  def ruby2_keywords; self; end
+  # Mark this Proc so a bare kwargs Hash flows through *args.  koruby already
+  # threads a trailing kwargs Hash through splat, so the marking itself is a
+  # no-op — but CRuby warns (and skips) when the shape cannot carry the flag:
+  # no *rest, or any keyword/keyrest, or a post argument after the *rest.
+  def ruby2_keywords
+    ps = parameters
+    rest = ps.index { |p| p[0] == :rest }
+    ok = !rest.nil? &&
+         ps.none? { |p| p[0] == :key || p[0] == :keyreq || p[0] == :keyrest } &&
+         ps[(rest + 1)..].none? { |p| p[0] == :req || p[0] == :opt }
+    unless ok
+      warn "Skipping set of ruby2_keywords flag for proc (proc accepts keywords or proc does not accept argument splat)"
+    end
+    self
+  end
   def curry(n = (arity < 0 ? -arity - 1 : arity))
     # A lambda accepts curry(n) only for an n it could actually be called with:
     # at least its required count and, unless it takes a *rest, at most req+opt.
@@ -69,11 +81,5 @@ class Method
       end
     end
     to_proc.curry(n)
-  end
-end
-
-class Proc
-  def ruby2_keywords
-    self   # kwargs already flow through the Hash flag; marking is a no-op
   end
 end
