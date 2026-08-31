@@ -2069,9 +2069,16 @@ static RESULT korb_m_loop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, N
         if (LIKELY(er.state == KORB_NORMAL) && KORB_ENUM_P(er.value)) VAL2ENUM(er.value)->size_inf = 1;   /* loop.size → Infinity */
         return er;
     }
+    uint32_t tick = 0;
     for (;;) {
         RESULT r = korb_block_yield(c, slots, block, def_env, NULL, 0, cself);
-        if (r.state == KORB_NORMAL) continue;
+        if (r.state == KORB_NORMAL) {
+            /* same preemption point the while nodes have: a spinning `loop` must
+             * not starve the other green threads */
+            if (UNLIKELY(c->vm->runq_head != NULL || c->vm->blop_npending != 0) &&
+                (++tick & 63u) == 0) CHECK(korb_loop_yield(c, slots));
+            continue;
+        }
         if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) return RESULT_OK(r.value);   /* break [v] → loop value (only ours) */
         if (r.state == KORB_RAISE && KORB_EXC_P(r.value) && VAL2EXC(r.value)->etype == KORB_E_STOP_ITERATION)
             return RESULT_OK(KORB_NIL);                         /* StopIteration ends the loop */

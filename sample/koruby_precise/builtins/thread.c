@@ -877,6 +877,33 @@ korb_m_thread_s_main(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     return korb_thread_handle(c, slots, c->vm->main_thread);
 }
 
+/* Preemption point for a pure-Ruby loop.  Green threads are cooperative, so a
+ * `while true; end` starves every other thread: Thread#raise / #kill never get
+ * delivered and a sleeping thread's timer never fires.  The loop nodes call
+ * this every so often; it is a no-op unless somebody is actually waiting. */
+bool korb_loop_wants_yield(const CTX *c) {
+    const struct korb_vm *const vm = c->vm;
+    if (vm->cur_thread == NULL || vm->running_fiber != NULL) return false;
+    if (vm->runq_head != NULL || vm->blop_npending != 0) return true;
+    const VALUE pi = vm->cur_thread->pending_ints;
+    return pi != KORB_NIL && VAL2ARY(pi)->len != 0;
+}
+RESULT korb_loop_yield(CTX *c, VALUE *slots) {
+    struct korb_vm *const vm = c->vm;
+    if (vm->cur_thread == NULL || vm->running_fiber != NULL) return RESULT_OK(KORB_NIL);   /* no thread switch from inside a Fiber */
+    /* Nobody is on the run queue but somebody is waiting on a timer or an fd:
+     * collect what is ready (never sleeping) so their wait can actually end —
+     * a spinning loop is the one place that never reaches the pump otherwise. */
+    if (vm->runq_head == NULL && vm->blop_npending != 0) (void)korb_blop_pump(vm, 0);
+    if (vm->runq_head != NULL) {
+        struct korb_thread *const cur = vm->cur_thread;
+        cur->state = KORB_TH_READY;
+        korb_thread_runq_push(vm, cur);
+        CHECK(korb_thread_yield_cpu(c, slots));
+    }
+    return korb_thread_check_ints(c, slots);
+}
+
 static RESULT
 korb_m_thread_s_pass(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {

@@ -518,6 +518,9 @@ void korb_fprint_inspect(CTX *c, FILE *fp, VALUE v);
 void korb_desc_inspect(CTX *c, VALUE v, char *buf, size_t sz);
 RESULT korb_raise_not_sym(CTX *c, VALUE *slots, VALUE v);
 RESULT korb_raise_no_int(CTX *c, VALUE *slots, VALUE v);
+/* Loop preemption: cheap probe + the actual yield (builtins/thread.c). */
+bool   korb_loop_wants_yield(const CTX *c);
+RESULT korb_loop_yield(CTX *c, VALUE *slots);
 
 /* CTX lifecycle (korb_runtime.c) */
 CTX *korb_ctx_new(void);

@@ -2964,7 +2964,7 @@ t.join            # ここで戻らない
 いないかから見ること。
 
 
-## 純 Ruby ループ中の Thread#raise / #kill が届かない
+## (一部解決 2026-08-31) 純 Ruby ループ中の Thread#raise / #kill が届かない
 
 green thread に preemption が無く、`while`/`until`/`loop` のノードは
 割り込みチェックもスケジューラ譲渡もしないので、
@@ -2977,7 +2977,15 @@ t2.join      # 戻らない
 ```
 
 `core/mutex/lock_spec` がこれでファイルごとハングする (6 例)。
-ループノードに「N 回に一度 pending interrupt を見て、他に runnable が
-いれば譲る」を入れれば直るが、(1) `korb_thread_check_ints` は毎回
-`sigtimedwait` を呼ぶので安い述語を別に要る、(2) `node_while` などは
-`@nogc` 注釈付きで、譲渡は GC しうるので注釈を外す必要がある。
+**2026-08-31**: `node_while` / `node_post_while` / `Kernel#loop` に
+preemption point を入れた。ガードは VM の 2 フィールドを見るだけ
+(`runq_head` と `blop_npending`) なので、単一スレッドのプログラムでは
+何も queue されておらず素通りする。実測で tight な `while` ループが
+0.328s -> 0.334s (約 2%)。runq が空でも blop が残っていれば
+`korb_blop_pump(vm, 0)` を回す — spin しているループだけが pump に
+到達しないので、これが無いと相手の timer が永久に切れない。
+
+**残り**: `core/mutex/lock_spec` はまだハングする。最後の例が
+**Fiber の中で** `loop { lock.synchronize {} }` を回しており、fiber 内から
+thread 切り替えはできない (`korb_loop_yield` は running_fiber なら no-op)。
+CRuby は fiber を持つ thread に interrupt を届ける。
