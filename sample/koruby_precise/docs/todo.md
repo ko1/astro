@@ -3084,3 +3084,56 @@ $ koruby_precise -e 'raise "foo"'
 corpus や sweep を回していると CPU が足りずタイムアウトが大量発生して
 101120 PASS が 67542 PASS まで落ちた (再実行で完全に一致して回復)。
 壊滅的な結果が出たら**まず自分の計測を疑い、負荷を確認して測り直す**。
+
+## (2026-08-31 夕) master 側で寝かせた項目
+
+いずれも「直せるが、その場で着手するには他 agent と衝突するか、
+影響範囲が広くて単独でゲートを回したい」もの。
+
+**1. トップレベル `def` は Object の private インスタンスメソッド**
+
+```ruby
+def tl; end
+p Object.private_method_defined?(:tl)   # koruby: false  CRuby: true
+p Object.new.tl                        # koruby: :tl     CRuby: NoMethodError
+```
+koruby はトップレベル def を Object ではなく**グローバルなメソッド表**に
+入れている。直すと `language/def_spec` で 4 例前後、他にも効くはずだが、
+**その表は fib の速い経路そのもの** (`node_call` / `korb_call_cached` の
+`cc` 側、klass==nil の self)。移すなら速度を測りながらやること。
+
+**2. `FrozenError#receiver` が設定されていない**
+
+```ruby
+begin; Module.new { self.freeze; def foo; end }; rescue FrozenError=>e; e.receiver; end
+# koruby: ArgumentError "no receiver is available"   CRuby: そのモジュール
+```
+`korb_raise_frozen` で `@__receiver` / `@__has_recv` を立てるだけ。
+ついでに `def c.foo` で `c.singleton_class` が凍っている場合に
+FrozenError にならない (koruby は何も raise しない)。
+
+**3. `strict_unused_block` 警告 (Ruby 3.4)**
+
+ブロックを使わないメソッドにブロックを渡すと
+`the block passed to 'm' defined at FILE:LINE may be ignored` が出る。
+`yield` があれば出ない、`&blk` 仮引数があれば出ない、`super` があれば
+出ない。**`block_given?` だけでは出る**ので、koruby の `uses_block`
+(yield と block_given? を区別しない) をそのまま使うと合わない。
+呼び出し側で 1 度だけ、メソッドの定義位置つきで出す必要がある。
+`language/method_spec` で 5 例。
+
+**4. Regexp リテラルはパース時に検証されない**
+
+`eval("/[[:alpha:]-[:digit:]]/")` が SyntaxError にならない
+(`Regexp.new` に同じ文字列を渡せば RegexpError になる)。
+`parse.c` の `PM_REGULAR_EXPRESSION_NODE` で astrogre にかけて、
+失敗したら `tc` にエラーを立てて `koruby_parse_source_at` を NULL
+リターンさせる、という形が要る (transduce から parse を中断する経路が
+今は無い)。
+
+**5. `def m(*, a)` — 無名 rest と post の併用**
+
+post のスロット位置が `rest_slot + 1` から計算されるので、無名 rest を
+末尾の synth local に置く今の方式では合わない。`kp_param_first_locals`
+の並べ替えは**名前のある**パラメータしか置けないので、これには効かない。
+`language/method_spec` で 1 例。
