@@ -1198,6 +1198,7 @@ node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't make subclass of singleton class");
     VALUE enclosing = dyn_base ? VALUE_REF_GET(path_base)
                     : (path_owner ? korb_const_get_path(c->vm, path_owner) : slots[self_off]);
+    CHECK(korb_check_const_path_private(c, slots, enclosing, name_sym, path_owner || dyn_base));
     { uint32_t fs, ln;                                    /* Module#const_source_location: the FIRST definition wins */
       const VALUE loc_owner = KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL;
       if (korb_const_index_owned(c->vm, name_sym, loc_owner) == UINT32_MAX &&
@@ -1234,6 +1235,7 @@ node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, in
     }
     VALUE enclosing = dyn_base ? VALUE_REF_GET(path_base)
                     : (path_owner ? korb_const_get_path(c->vm, path_owner) : slots[self_off]);
+    CHECK(korb_check_const_path_private(c, slots, enclosing, name_sym, path_owner || dyn_base));
     { uint32_t fs, ln;                                    /* Module#const_source_location: the FIRST definition wins */
       const VALUE loc_owner = KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL;
       if (korb_const_index_owned(c->vm, name_sym, loc_owner) == UINT32_MAX &&
@@ -1661,7 +1663,10 @@ node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, NODE *parent)
         (korb_const_private_p(vm, slots[0], name) ||
          (idx != UINT32_MAX && korb_const_private_p(vm, vm->const_owners[idx], name)))) {
         /* the marker lives on the module that DEFINED it, which may be an
-         * ancestor of the receiver (`C::A` where C includes M) */
+         * ancestor of the receiver (`C::A` where C includes M); CRuby names
+         * that module in both the message and NameError#receiver */
+        if (!korb_const_private_p(vm, slots[0], name) && idx != UINT32_MAX)
+            slots[0] = vm->const_owners[idx];
         char qn[256]; korb_class_desc_into(c, slots[0], qn, sizeof qn);
         RESULT pr = korb_raise(c, slots + 1, KORB_E_NAME, 0, "private constant %s::%s referenced",
                                qn, korb_sym_name(vm, name));

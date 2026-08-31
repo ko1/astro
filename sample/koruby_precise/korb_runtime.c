@@ -7034,6 +7034,28 @@ korb_const_private_p(const struct korb_vm *vm, VALUE owner, uint32_t sym)
     return false;
 }
 
+/* `class A::B` / `module A::B` reopening a constant B that A marked private is a
+ * NameError, same as reading it.  `scoped` is false for a plain `class B` in a
+ * lexical body, which stays legal. */
+RESULT
+korb_check_const_path_private(CTX *c, VALUE *slots, VALUE enclosing, uint32_t sym, bool scoped)
+{
+    struct korb_vm *const vm = c->vm;
+    if (LIKELY(!scoped || vm->privconst_cnt == 0) || !KORB_CLASS_P(enclosing) ||
+        !korb_const_private_p(vm, enclosing, sym))
+        return RESULT_OK(KORB_NIL);
+    slots[0] = enclosing;                              /* park: the raise path allocates */
+    char qn[256]; korb_class_desc_into(c, slots[0], qn, sizeof qn);
+    RESULT pr = korb_raise(c, slots + 1, KORB_E_NAME, 0, "private constant %s::%s referenced",
+                           qn, korb_sym_name(vm, sym));
+    if (LIKELY(KORB_EXC_P(pr.value))) {
+        slots[1] = pr.value;
+        korb_name_error_where(c, slots + 2, &slots[1], sym, slots[0]);
+        pr.value = slots[1];
+    }
+    return pr;
+}
+
 /* Is `sym` registered as a (not yet loaded) autoload on `mod`?  The registry is
  * the module's own @__autoloads Hash (prelude Module#autoload).  CRuby reports
  * such a constant as defined before the file is loaded, and removing it must not

@@ -4141,8 +4141,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                                                 kp_intern_cid(tc, cp->name));
             if (cp->parent != NULL)                                  /* nested/dynamic parent → evaluate it, then probe */
                 return ALLOC_node_defined_cpath_dyn(transduce(tc, cp->parent), kp_intern_cid(tc, cp->name));
-            { NODE *_d = ALLOC_node_defined(1, kp_intern_cid(tc, cp->name), self_off);   /* `::TOP` → flat probe */
-              bake_add(tc, &_d->u.node_defined.self_off); return _d; }
+            /* `defined?(::TOP)` is `defined?(Object::TOP)` — owner-aware, so a
+             * constant private to Object answers nil */
+            return ALLOC_node_defined_cpath(korb_intern(tc->c->vm, "Object", 6), kp_intern_cid(tc, cp->name));
         }
         if (PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_READ_NODE))
             { NODE *_d = ALLOC_node_defined(2, kp_intern_cid(tc, ((const pm_instance_variable_read_node_t *)v)->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d; }
@@ -4405,7 +4406,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             NODE *par = transduce(tc, cp->parent);
             return ALLOC_node_const_path(kp_intern_cid(tc, cp->name), par);
         }
-        return ALLOC_node_const(kp_intern_cid(tc, cp->name), 0, INT32_MIN, INT32_MIN);   /* `::TOP` */
+        /* `::TOP` is `Object::TOP`: routing it through the owner-aware node is
+         * what makes private_constant on Object bite. */
+        return ALLOC_node_const_path(kp_intern_cid(tc, cp->name),
+                                     ALLOC_node_const(korb_intern(tc->c->vm, "Object", 6), 0, INT32_MIN, INT32_MIN));
       }
 
       /* Global variables `$x` reuse the flat const table — the `$` in the name

@@ -454,6 +454,7 @@ const char *korb_coerce_name(CTX *c, VALUE v);
 bool korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym);
 void korb_const_set_private(CTX *c, VALUE owner, uint32_t sym, bool private_p);   /* private_constant */
 bool korb_const_private_p(const struct korb_vm *vm, VALUE owner, uint32_t sym);
+RESULT korb_check_const_path_private(CTX *c, VALUE *slots, VALUE enclosing, uint32_t sym, bool scoped);
 void korb_const_set_deprecated(CTX *c, VALUE owner, uint32_t sym);
 bool korb_const_deprecated_p(const struct korb_vm *vm, VALUE owner, uint32_t sym);
 void korb_const_deprecated_warn(CTX *c, VALUE *slots, VALUE owner, uint32_t sym);
