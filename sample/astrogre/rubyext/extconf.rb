@@ -32,7 +32,8 @@ $CFLAGS << " -DASTROGRE_SRC_DIR=\\\"#{ROOT}\\\""
 # our wrapper.  mkmf compiles each .c into the corresponding .o.
 $VPATH << ROOT
 $srcs = ["astrogre_ext.c", "astrogre_dump_helper.c",
-         "node.c", "parse.c", "match.c", "aho_corasick.c"]
+         "node.c", "parse.c", "match.c", "aho_corasick.c",
+         "unicode_prop.c", "unicode_tables.c"]
 
 $LIBS << " -ldl"
 

@@ -20,6 +20,9 @@
 #include <stdlib.h>
 #include <assert.h>
 
+/* Unicode property sets — node_re_uniclass's `set` operand points at one. */
+#include "unicode_prop.h"
+
 /* Maximum number of capturing groups (including \0 = whole match). */
 #define ASTROGRE_MAX_GROUPS 32
 
