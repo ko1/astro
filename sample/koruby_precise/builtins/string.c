@@ -2665,10 +2665,12 @@ static RESULT korb_m_str_each_codepoint(CTX *c, VALUE *slots, VALUE_REF self, VA
         if (UNLIKELY(!korb_str_enc_valid(VAL2STR(v), enc)))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", korb_enc_name_of(c->vm, enc));
     }
+    const bool sb = KORB_ENC_SB(c->vm, KORB_STR_ENC(VALUE_REF_GET(self)));   /* one byte = one codepoint */
     for (uint32_t pos = 0; ; ) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
-        uint32_t cl; uint32_t cp = korb_utf8_decode(korb_strbuf_data(s->buf) + pos, s->len - pos, &cl);
+        uint32_t cl = 1, cp = (unsigned char)korb_strbuf_data(s->buf)[pos];
+        if (!sb) cp = korb_utf8_decode(korb_strbuf_data(s->buf) + pos, s->len - pos, &cl);
         VALUE cv = LONG2FIX(cp);
         RESULT r = korb_block_yield(c, slots, block, def_env, &cv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -2789,11 +2791,13 @@ static RESULT korb_str_codepoints_impl(CTX *c, VALUE *slots, VALUE_REF self, boo
         if (!korb_str_enc_valid(VAL2STR(v), enc))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", korb_enc_name_of(c->vm, enc));
     }
+    const bool sb = KORB_ENC_SB(c->vm, KORB_STR_ENC(VALUE_REF_GET(self)));   /* one byte = one codepoint */
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t pos = 0; ; ) {
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));
         if (pos >= s->len) break;
-        uint32_t cl; uint32_t cp = korb_utf8_decode(korb_strbuf_data(s->buf) + pos, s->len - pos, &cl);
+        uint32_t cl = 1, cp = (unsigned char)korb_strbuf_data(s->buf)[pos];
+        if (!sb) cp = korb_utf8_decode(korb_strbuf_data(s->buf) + pos, s->len - pos, &cl);
         CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(cp)));
         pos += cl;
     }
