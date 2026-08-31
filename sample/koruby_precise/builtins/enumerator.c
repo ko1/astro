@@ -654,7 +654,13 @@ static RESULT korb_m_enum_set_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static RESULT korb_m_enum_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
     const KorbEnumerator *const e = SELF_ENUM;
-    if (e->size_inf) return korb_float_new(c, slots, (double)INFINITY);          /* infinite source (endless/Float::INFINITY range) */
+    if (e->size_inf) {   /* infinite source (endless / Float::INFINITY range) */
+        /* Hand back the Float::INFINITY object itself: heap Floats are not
+         * interned, so a fresh one would fail the #equal? the specs make. */
+        const VALUE inf = korb_const_get(c->vm, korb_intern(c->vm, "INFINITY", 8));
+        if (KORB_FLOAT_P(inf) && isinf(korb_float_val(inf))) return RESULT_OK(inf);
+        return korb_float_new(c, slots, (double)INFINITY);
+    }
     if (e->size_proc != KORB_NIL) {                                             /* a callable size — call it fresh each time */
         slots[0] = e->size_proc;
         return korb_send(c, slots + 1, korb_intern(c->vm, "call", 4), 0, 0);
