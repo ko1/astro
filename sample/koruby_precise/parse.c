@@ -608,13 +608,34 @@ lit_nil(void)
     return ALLOC_node_lit(KORB_NIL);
 }
 
+/* `defined?(expr)` in a statement position: nothing is evaluated, and the
+ * warning fires once, on the first execution of the enclosing code (CRuby warns
+ * while compiling — we go through Ruby's $stderr so a harness can capture it). */
+static NODE *
+kp_defined_void(struct kp_ctx *tc, const pm_node_t *st)
+{
+    struct korb_dupkey_warn *const w = malloc(sizeof(*w));   /* immortal: the node reads it */
+    if (!w) abort();
+    w->file = strdup(tc->fname); w->key = NULL;
+    w->line = kp_line(tc, st); w->line2 = 0; w->done = 0;
+    return ALLOC_node_void_warn(w, lit_nil());
+}
+
 static NODE *
 transduce_statements(struct kp_ctx *tc, const pm_statements_node_t *stmts)
 {
     if (stmts == NULL || stmts->body.size == 0) return lit_nil();
     NODE *acc = NULL;
     for (size_t i = 0; i < stmts->body.size; i++) {
-        NODE *one = transduce(tc, stmts->body.nodes[i]);
+        const pm_node_t *const st = stmts->body.nodes[i];
+        NODE *one;
+        /* A `defined?(...)` whose value is discarded is not evaluated at all —
+         * CRuby warns at compile time and drops it. */
+        if (i + 1 < stmts->body.size && PM_NODE_TYPE_P(st, PM_DEFINED_NODE)) {
+            one = kp_defined_void(tc, st);
+        } else {
+            one = transduce(tc, st);
+        }
         acc = acc ? ALLOC_node_seq(acc, one) : one;
     }
     return acc;
