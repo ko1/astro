@@ -4637,6 +4637,11 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
      * MRO reaches the universal Object methods (==, freeze, method, ...). */
     if (superclass == KORB_NIL && !is_module)
         superclass = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    /* The lexical self is not always a module: at the top level of a `load(f, wrap)`
+     * — and inside `obj.instance_eval("class C")` — it is a plain object, and the
+     * namespace the body belongs to is the cref the eval installed.  A class self
+     * still wins (Foo.class_eval("class C") nests in Foo, as it already did). */
+    if (!KORB_CLASS_P(enclosing) && KORB_CLASS_P(c->eval_cref)) enclosing = c->eval_cref;
     VALUE_REF encl_ref = SLOTS_PUSH(slots, enclosing);   /* root the lexical namespace below; slots advances past it */
     /* find-or-create owner-aware: reopen the class/module of the SAME namespace
      * (M::C reopens M::C, not a top-level C). */
@@ -11775,6 +11780,10 @@ korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const
     if (KORB_CLASS_P(c->eval_cref)) VAL2CLASS(c->eval_cref)->cur_visibility = saved_vis;   /* re-read: it may have moved */
     c->def_definee = saved_definee;
     c->eval_cref = saved_cref;
+    /* `return` at the top level of a file means "stop loading this file", not
+     * "return from whoever called require/load" — absorb it here (main.c does
+     * the same for the main script).  break/throw still propagate. */
+    if (UNLIKELY(r.state == KORB_RETURN)) r = RESULT_OK(KORB_NIL);
     return r;
 }
 /* source_location: register a def/block body NODE → (file, line) at parse time. */
