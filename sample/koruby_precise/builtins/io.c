@@ -2445,6 +2445,7 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (FIXNUM_P(pv)) return korb_m_io_s_new_fd(c, slots, self, a, NULL, NULL, NULL);
     CHECK(korb_file_path_arg(c, slots, &pv));              /* #to_path then #to_str; also the encoding check */
     slots[0] = pv;                                         /* root the coerced path */
+    VALUE_REF_SET(VALUE_SLICE_REF(a, 0), pv);              /* #path reports the coerced String, not the wrapper */
     /* A trailing Hash is keyword options (mode:, flags:, encoding: …), not a
      * positional argument; only 3 positionals are allowed. */
     uint32_t npos = VALUE_SLICE_LEN(a);

@@ -849,19 +849,28 @@ static RESULT korb_m_file_chmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     CHECK(korb_file_mode_arg(c, slots, VALUE_SLICE_GET(a, 0), &m));
     uint32_t n = 0;
     for (uint32_t i = 1; i < VALUE_SLICE_LEN(a); i++) {
-        const VALUE pv = VALUE_SLICE_GET(a, i);
-        if (UNLIKELY(!KORB_STRING_P(pv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
-        uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
-        if (chmod(path, m) != 0) return korb_raise_errno(c, slots, errno, "chmod", path);
+        VALUE pv = VALUE_SLICE_GET(a, i);
+        CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv;   /* #to_path / #to_str */
+        char pb[4096]; uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+        if (plen >= sizeof pb) plen = sizeof pb - 1;
+        memcpy(pb, path, plen); pb[plen] = '\0';                   /* the raise below can move the source */
+        if (chmod(pb, m) != 0) return korb_raise_errno(c, slots, errno, "chmod", pb);
         n++;
     }
     return RESULT_OK(LONG2FIX(n));
 }
 /* File.umask([mask]) → sets and/or returns the process file-creation mask. */
 static RESULT korb_m_file_umask(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c; (void)slots; (void)self;
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0)))
-        return RESULT_OK(LONG2FIX((korb_sword_t)umask((mode_t)FIX2LONG(VALUE_SLICE_GET(a, 0)))));
+    (void)self;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)",
+                          VALUE_SLICE_LEN(a));
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {
+        const korb_sword_t m = FIX2LONG(VALUE_SLICE_GET(a, 0));
+        if (UNLIKELY(m < 0 || m > 07777))                      /* CRuby: mode_t range, not a silent truncation */
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "integer %ld too big to convert to `mode_t'", (long)m);
+        return RESULT_OK(LONG2FIX((korb_sword_t)umask((mode_t)m)));
+    }
     const mode_t cur = umask(0); umask(cur);                  /* read current without changing it */
     return RESULT_OK(LONG2FIX((korb_sword_t)cur));
 }
@@ -1447,7 +1456,10 @@ static bool korb_file_pathbuf(VALUE v, char *buf, size_t bufsz) {
 /* File.link(old, new) → 0 (hard link). */
 static RESULT korb_m_file_link(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; char ob[4096], nb[4096];
-    if (!korb_file_pathbuf(VALUE_SLICE_GET(a, 0), ob, sizeof ob) || !korb_file_pathbuf(VALUE_SLICE_GET(a, 1), nb, sizeof nb))
+    VALUE ov = VALUE_SLICE_GET(a, 0), nv = VALUE_SLICE_GET(a, 1);
+    CHECK(korb_file_path_arg(c, slots, &ov)); slots[0] = ov;
+    CHECK(korb_file_path_arg(c, slots + 1, &nv)); slots[1] = nv;
+    if (!korb_file_pathbuf(slots[0], ob, sizeof ob) || !korb_file_pathbuf(slots[1], nb, sizeof nb))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     if (link(ob, nb) != 0) return korb_raise_errno(c, slots, errno, "link", ob);
     return RESULT_OK(LONG2FIX(0));
@@ -1455,7 +1467,10 @@ static RESULT korb_m_file_link(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* File.symlink(old, new) → 0 (symbolic link). */
 static RESULT korb_m_file_symlink(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; char ob[4096], nb[4096];
-    if (!korb_file_pathbuf(VALUE_SLICE_GET(a, 0), ob, sizeof ob) || !korb_file_pathbuf(VALUE_SLICE_GET(a, 1), nb, sizeof nb))
+    VALUE ov = VALUE_SLICE_GET(a, 0), nv = VALUE_SLICE_GET(a, 1);
+    CHECK(korb_file_path_arg(c, slots, &ov)); slots[0] = ov;
+    CHECK(korb_file_path_arg(c, slots + 1, &nv)); slots[1] = nv;
+    if (!korb_file_pathbuf(slots[0], ob, sizeof ob) || !korb_file_pathbuf(slots[1], nb, sizeof nb))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     if (symlink(ob, nb) != 0) return korb_raise_errno(c, slots, errno, "symlink", ob);
     return RESULT_OK(LONG2FIX(0));
@@ -1463,12 +1478,15 @@ static RESULT korb_m_file_symlink(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 /* File.readlink(path) → the symlink's target. */
 static RESULT korb_m_file_readlink(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; char pb[4096], buf[4096];
-    if (!korb_file_pathbuf(VALUE_SLICE_GET(a, 0), pb, sizeof pb))
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv;
+    if (!korb_file_pathbuf(pv, pb, sizeof pb))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     const ssize_t n = readlink(pb, buf, sizeof buf - 1);
     if (n < 0) return korb_raise_errno(c, slots, errno, "readlink", pb);
     return korb_str_new(c, slots, buf, (uint32_t)n);
 }
+static RESULT korb_time_make_ns(CTX *c, VALUE *slots, VALUE cls, double sec_int, long nsec, bool utc);   /* fwd (time.c, same TU) */
 /* --- File::Stat --- a stat(2)/lstat(2) result.  Fields are stored as ivars at
  * construction (numeric fields as Fixnums, the three times as epoch seconds);
  * methods read them back.  No live handle, so nothing to GC-scan. */
@@ -1485,6 +1503,8 @@ static RESULT korb_stat_make_path(CTX *c, VALUE *slots, const struct stat *st, c
     SETI("@__gid",  st->st_gid);    SETI("@__blksize", st->st_blksize); SETI("@__blocks", st->st_blocks);
     SETI("@__rdev", st->st_rdev);   SETI("@__mtime", st->st_mtime); SETI("@__atime", st->st_atime);
     SETI("@__ctime", st->st_ctime);
+    SETI("@__mtime_ns", st->st_mtim.tv_nsec); SETI("@__atime_ns", st->st_atim.tv_nsec);
+    SETI("@__ctime_ns", st->st_ctim.tv_nsec);
     #undef SETI
     if (path != NULL) {
         slots[1] = UNWRAP(korb_str_new(c, slots + 1, path, (uint32_t)strlen(path)));
@@ -1494,6 +1514,28 @@ static RESULT korb_stat_make_path(CTX *c, VALUE *slots, const struct stat *st, c
 }
 static RESULT korb_stat_make(CTX *c, VALUE *slots, const struct stat *st) {
     return korb_stat_make_path(c, slots, st, NULL);
+}
+/* File::Stat.new(path) — fill an already-allocated Stat from stat(2). */
+static RESULT korb_m_stat_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    char pb[4096];
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv;   /* #to_path / #to_str */
+    if (!korb_file_pathbuf(pv, pb, sizeof pb))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    struct stat st;
+    if (stat(pb, &st) != 0) return korb_raise_errno(c, slots, errno, "rb_stat_init", pb);
+    #define SETI(nm, v) CHECK(korb_ivar_set(c, slots + 1, self, korb_stat_iv(c, nm), LONG2FIX((korb_sword_t)(v))))
+    SETI("@__size", st.st_size);   SETI("@__mode", st.st_mode);   SETI("@__ino", st.st_ino);
+    SETI("@__dev",  st.st_dev);    SETI("@__nlink", st.st_nlink); SETI("@__uid", st.st_uid);
+    SETI("@__gid",  st.st_gid);    SETI("@__blksize", st.st_blksize); SETI("@__blocks", st.st_blocks);
+    SETI("@__rdev", st.st_rdev);   SETI("@__mtime", st.st_mtime); SETI("@__atime", st.st_atime);
+    SETI("@__ctime", st.st_ctime);
+    SETI("@__mtime_ns", st.st_mtim.tv_nsec); SETI("@__atime_ns", st.st_atim.tv_nsec);
+    SETI("@__ctime_ns", st.st_ctim.tv_nsec);
+    #undef SETI
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, pb, (uint32_t)strlen(pb)));
+    CHECK(korb_ivar_set(c, slots + 2, self, korb_stat_iv(c, "@__path"), slots[1]));
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 static korb_sword_t korb_stat_field(CTX *c, VALUE self, const char *nm) {
     const VALUE v = korb_ivar_get(c, self, korb_stat_iv(c, nm));
@@ -1512,12 +1554,15 @@ STAT_INT_M(korb_m_stat_blksize, "@__blksize")
 STAT_INT_M(korb_m_stat_blocks,  "@__blocks")
 STAT_INT_M(korb_m_stat_rdev,    "@__rdev")
 #undef STAT_INT_M
-#define STAT_TIME_M(fn, field) static RESULT fn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
+/* the sub-second part lives in a parallel "…_ns" field, so File.mtime(path) and
+ * File.stat(path).mtime compare equal */
+#define STAT_TIME_M(fn, field, nsfield) static RESULT fn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
     (void)a; const korb_sword_t t = korb_stat_field(c, VALUE_REF_GET(self), field); \
-    return korb_time_make(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)), (double)t, false); }
-STAT_TIME_M(korb_m_stat_mtime, "@__mtime")
-STAT_TIME_M(korb_m_stat_atime, "@__atime")
-STAT_TIME_M(korb_m_stat_ctime, "@__ctime")
+    const korb_sword_t ns = korb_stat_field(c, VALUE_REF_GET(self), nsfield); \
+    return korb_time_make_ns(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)), (double)t, (long)ns, false); }
+STAT_TIME_M(korb_m_stat_mtime, "@__mtime", "@__mtime_ns")
+STAT_TIME_M(korb_m_stat_atime, "@__atime", "@__atime_ns")
+STAT_TIME_M(korb_m_stat_ctime, "@__ctime", "@__ctime_ns")
 #undef STAT_TIME_M
 #define STAT_PRED_M(fn, expr) static RESULT fn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
     (void)slots; (void)a; const mode_t m = (mode_t)korb_stat_field(c, VALUE_REF_GET(self), "@__mode"); \
@@ -1553,6 +1598,7 @@ static RESULT korb_m_stat_zero_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_stat_owned_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__uid") == (korb_sword_t)geteuid() ? KORB_TRUE : KORB_FALSE);
 }
+/* #grpowned? — the file's group is one of the process's (effective gid here). */
 static RESULT korb_m_stat_grouped_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__gid") == (korb_sword_t)getegid() ? KORB_TRUE : KORB_FALSE);
 }
@@ -1675,17 +1721,23 @@ static RESULT korb_m_file_lstat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 /* File.atime/ctime/mtime(path) → the corresponding Time (via stat). */
 static RESULT korb_file_time_impl(CTX *c, VALUE *slots, VALUE_SLICE a, int which) {
     char pb[4096];
-    if (!korb_file_pathbuf(VALUE_SLICE_GET(a, 0), pb, sizeof pb))
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv;   /* #to_path / #to_str */
+    if (!korb_file_pathbuf(pv, pb, sizeof pb))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     struct stat st;
     if (stat(pb, &st) != 0) return korb_raise_errno(c, slots, errno, "stat", pb);
-    const time_t t = which == 0 ? st.st_atime : which == 1 ? st.st_ctime : st.st_mtime;
-    return korb_time_make(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)), (double)t, false);
+    const struct timespec ts = which == 0 ? st.st_atim : which == 1 ? st.st_ctim : st.st_mtim;
+    /* the sub-second part is what File.mtime "with microseconds" checks */
+    return korb_time_make_ns(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)),
+                             (double)ts.tv_sec, ts.tv_nsec, false);
 }
 /* File.truncate(path, len) → 0 (resize the file). */
 static RESULT korb_m_file_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; char pb[4096];
-    if (!korb_file_pathbuf(VALUE_SLICE_GET(a, 0), pb, sizeof pb))
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv;
+    if (!korb_file_pathbuf(pv, pb, sizeof pb))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     const VALUE lv = VALUE_SLICE_GET(a, 1);
     if (!FIXNUM_P(lv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
@@ -2345,7 +2397,6 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "mkfifo",      korb_m_file_mkfifo,     -1);
     korb_class_def_cfn(c, slots[1], "__mode_bits", korb_m_file_mode_bits,  -1);
     korb_class_def_cfn(c, slots[1], "symlink?",    korb_m_file_symlink_p,   1);
-    korb_class_def_cfn(c, slots[1], "exists?",     korb_m_file_exist_p,     1);
     korb_class_def_cfn(c, slots[1], "file?",       korb_m_file_file_p,      1);
     korb_class_def_cfn(c, slots[1], "directory?",  korb_m_file_directory_p, 1);
     korb_class_def_cfn(c, slots[1], "size",        korb_m_file_size,        1);
@@ -2411,6 +2462,8 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[2], "zero?",     korb_m_stat_zero_p,   0);
     korb_class_def_cfn(c, slots[2], "owned?",    korb_m_stat_owned_p,  0);
     korb_class_def_cfn(c, slots[2], "grouped?",  korb_m_stat_grouped_p, 0);
+    korb_class_def_cfn(c, slots[2], "grpowned?", korb_m_stat_grouped_p, 0);
+    korb_class_def_cfn(c, slots[2], "initialize", korb_m_stat_initialize, 1);
     korb_class_def_cfn(c, slots[2], "<=>",       korb_m_stat_spaceship, 1);
     korb_class_def_cfn(c, slots[2], "readable?",        korb_m_stat_readable_p,        0);
     korb_class_def_cfn(c, slots[2], "readable_real?",   korb_m_stat_readable_real_p,   0);
@@ -2433,7 +2486,6 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[3], "pwd",     korb_m_dir_pwd,     0);
     korb_class_def_cfn(c, slots[3], "getwd",   korb_m_dir_pwd,     0);
     korb_class_def_cfn(c, slots[3], "exist?",  korb_m_dir_exist_p, 1);
-    korb_class_def_cfn(c, slots[3], "exists?", korb_m_dir_exist_p, 1);
     korb_class_def_cfn(c, slots[3], "mkdir",    korb_m_dir_mkdir,    -1);
     korb_class_def_cfn(c, slots[3], "rmdir",    korb_m_dir_rmdir,    1);
     korb_class_def_cfn(c, slots[3], "delete",   korb_m_dir_rmdir,    1);

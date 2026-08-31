@@ -502,9 +502,25 @@ class IO
   READABLE = 1   # POLLIN
   PRIORITY = 2   # POLLPRI
   WRITABLE = 4   # POLLOUT
-  def path; @__io_path; end
-  def to_path; @__io_path; end
+  include Enumerable            # CRuby: IO (and so File) is Enumerable over #each_line
+  # a fresh, mutable String every call (CRuby builds one from the fptr's path)
+  def to_path
+    s = @__io_path
+    return +"<#{@__io_std_name}>" if s.nil? && @__io_std_name   # CRuby names the std streams this way
+    s.is_a?(String) ? (+s.dup) : s
+  end
+  alias path to_path            # CRuby: #path IS #to_path
   def size; stat.size; end
+  # The open file's times.  koruby re-stats the path it was opened with, which
+  # is all the fd-less File::Stat representation can offer.
+  def atime = File.atime(__time_path)
+  def ctime = File.ctime(__time_path)
+  def mtime = File.mtime(__time_path)
+  def birthtime = File.birthtime(__time_path)
+  private def __time_path
+    raise IOError, "closed stream" if closed?
+    @__io_path or raise NotImplementedError, "file times are unavailable for a descriptor with no path"
+  end
   # File#lstat — stat の symlink 版。開いているのはファイル本体なので、
   # 開いたときのパスを lstat し直す (パスがなければ #stat と同じ)。
   def lstat
@@ -1443,6 +1459,7 @@ end
 
 # Dir conveniences on top of the C primitives (entries/children/chdir/…).
 class Dir
+  include Enumerable            # CRuby: Dir is Enumerable over #each
   def self.home(user = nil)
     return ENV["HOME"] if user.nil? || user == ""
     # /etc/passwd lookup, the portable-enough way.
