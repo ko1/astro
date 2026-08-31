@@ -5,7 +5,10 @@ class Encoding
   def initialize(name); @name = name; end
   def name; @name; end
   def to_s; @name; end
-  def inspect; @name == "ASCII-8BIT" ? "#<Encoding:BINARY (ASCII-8BIT)>" : "#<Encoding:" + @name + ">"; end
+  def inspect
+    return "#<Encoding:BINARY (ASCII-8BIT)>" if @name == "ASCII-8BIT"
+    "#<Encoding:" + @name + (dummy? ? " (dummy)>" : ">")
+  end
   def ==(o); o.is_a?(Encoding) && o.name == @name; end
   # ASCII-compatible = one byte per ASCII char, mapping to itself.  The UTF-16 /
   # UTF-32 families (including the explicit-endian variants), UTF-7 and the
@@ -311,7 +314,8 @@ class Encoding
   def self.aliases
     { 'BINARY' => 'ASCII-8BIT', 'ASCII' => 'US-ASCII', 'ANSI_X3.4-1968' => 'US-ASCII',
       'UTF8' => 'UTF-8', 'SJIS' => 'Shift_JIS', 'CP932' => 'Windows-31J', 'eucJP' => 'EUC-JP',
-      'external' => default_external.name, 'locale' => default_external.name }
+      'external' => default_external.name, 'locale' => default_external.name,
+      'filesystem' => default_external.name }
   end
   def self.list
     r = []; constants.each { |cn| e = const_get(cn); r << e if e.is_a?(Encoding) && !r.include?(e) }; r
@@ -319,9 +323,12 @@ class Encoding
   def self.name_list; list.map(&:name) + aliases.keys; end
   def self.locale_charmap; default_external.name; end
   # This encoding's canonical name plus any aliases pointing to it.
+  # This encoding's canonical name plus every alias pointing to it (CRuby lists
+  # the "external"/"locale"/"filesystem" pseudo-names too, on whichever encoding
+  # they currently resolve to).
   def names
     r = [@name]
-    Encoding.aliases.each { |a, canon| r << a if canon == @name && a != 'external' && a != 'locale' }
+    Encoding.aliases.each { |a, canon| r << a if canon == @name && !r.include?(a) }
     r
   end
   # Encoding.compatible?(obj1, obj2) → the encoding two objects can share, else nil.
@@ -428,14 +435,34 @@ class Encoding
     def ==(o) = o.is_a?(Converter) && o.source_encoding == @source_encoding && o.destination_encoding == @destination_encoding
     def primitive_errinfo = @errinfo
     def last_error = @last_error
-    def convpath = [[@source_encoding, @destination_encoding]]
-    def self.search_convpath(src, dst, _opts = nil)
-      [[Encoding.find(__encname(src, :source)), Encoding.find(__encname(dst, :destination))]]
+    # Encodings CRuby ships no transcoder for (measured against ruby 4.0): no
+    # conversion path reaches them, in either direction.
+    NO_TRANSCODER__ = ["EUC-TW", "Emacs-Mule", "GB1988", "ISO-2022-JP-2", "MacJapanese",
+                       "UTF-7", "Windows-1258", "macCentEuro", "macThai"].freeze
+    # CRuby routes every conversion through UTF-8 unless one side already is it
+    # (the direct legacy-to-legacy transcoders it also ships are not modelled).
+    def self.__convpath_pairs(s, d)
+      if s == d || NO_TRANSCODER__.include?(s.name) || NO_TRANSCODER__.include?(d.name)
+        raise Encoding::ConverterNotFoundError, "code converter not found (#{s.name} to #{d.name})"
+      end
+      return [[s, d]] if s == Encoding::UTF_8 || d == Encoding::UTF_8
+      [[s, Encoding::UTF_8], [Encoding::UTF_8, d]]
+    end
+    def convpath
+      path = Converter.__convpath_pairs(@source_encoding, @destination_encoding)
+      (@flags & 4) != 0 ? path + ["crlf_newline"] : path
+    end
+    def self.search_convpath(src, dst, opts = nil)
+      path = __convpath_pairs(Encoding.find(__encname(src, :source)),
+                              Encoding.find(__encname(dst, :destination)))
+      (opts.is_a?(Hash) && opts[:crlf_newline]) ? path + ["crlf_newline"] : path
     end
     def self.asciicompat_encoding(enc)
       e = enc.is_a?(Encoding) ? enc : Encoding.__find_or_nil(__encname(enc, :source))
       return nil if e.nil?
-      e.ascii_compatible? ? nil : Encoding::UTF_8
+      return nil if e.ascii_compatible?
+      # the stateful ISO-2022 family has a stateless ASCII-compatible twin
+      e.name.start_with?("ISO-2022") ? Encoding.find("stateless-#{e.name}") : Encoding::UTF_8
     end
 
     # The replacement the primitive inserts has to already be in the target
@@ -621,7 +648,7 @@ class Encoding
     attr_reader :source_encoding_name, :destination_encoding_name, :error_bytes, :readagain_bytes
     def source_encoding = Encoding.find(@source_encoding_name)
     def destination_encoding = Encoding.find(@destination_encoding_name)
-    def incomplete_input? = !!@incomplete_input
+    def incomplete_input? = @incomplete_input.nil? ? nil : !!@incomplete_input
     def __set_info(src, dst, errb, again, incomplete)   # :nodoc:
       @source_encoding_name = src
       @destination_encoding_name = dst
