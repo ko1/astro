@@ -107,6 +107,10 @@ typedef struct re_parser {
     bool case_insensitive;
     bool multiline;
     bool extended;
+    /* (?a) / (?d) / (?u): how wide the character classes reach.  Ruby's
+     * default is (?d) — POSIX brackets are Unicode-aware but `\w` and
+     * friends stay ASCII. */
+    enum { AGRE_CC_DEFAULT, AGRE_CC_ASCII, AGRE_CC_UNICODE } cc_mode;
     agre_encoding_t encoding;
 
     int n_groups;     /* # of capturing groups assigned so far */
@@ -455,6 +459,20 @@ posix_class_unicode(re_parser_t *q, const char *name, size_t name_len, bool neg,
     cls_cp_add_prop_high(q, cps, &s, neg);
 }
 
+/* The Unicode property `\d` / `\w` / `\s` stands for under (?u), or NULL when
+ * the shorthand stays ASCII (every mode but (?u), and always for \h). */
+static const char *
+uni_shorthand_prop(const re_parser_t *q, int e)
+{
+    if (q->cc_mode != AGRE_CC_UNICODE || q->encoding != AGRE_ENC_UTF8) return NULL;
+    switch (e) {
+    case 'd': case 'D': return "digit";
+    case 'w': case 'W': return "word";
+    case 's': case 'S': return "space";
+    default:            return NULL;
+    }
+}
+
 /* Complement a class operand.  A class with no codepoint members keeps the
  * historical byte-level flip (`[^a]` stays a 256-bit bitmap, which is what
  * the SIMD prefilters and the first-byte analysis can use).  Once any
@@ -527,7 +545,8 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps)
                     bm_or(bm, mask);
                     /* Ruby's POSIX classes are Unicode-aware; add the
                      * non-ASCII half (or its complement) too. */
-                    if (q->encoding == AGRE_ENC_UTF8 && cps != NULL)
+                    if (q->encoding == AGRE_ENC_UTF8 && cps != NULL &&
+                        q->cc_mode != AGRE_CC_ASCII)
                         posix_class_unicode(q, (const char *)name_start, name_len, neg, cps);
                     first = false;
                     prev_is_set = true;
@@ -929,6 +948,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         bool atomic = false;
         bool nc = false;
         int saved_ci = q->case_insensitive, saved_ml = q->multiline, saved_x = q->extended;
+        const int saved_cc = q->cc_mode;
         bool saved_flags = false;
         const uint8_t *pending_name_start = NULL;
         const uint8_t *pending_name_end   = NULL;
@@ -1038,6 +1058,10 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                     else if (fc == 'i') q->case_insensitive = !turning_off;
                     else if (fc == 'm') q->multiline = !turning_off;
                     else if (fc == 'x') q->extended = !turning_off;
+                    /* a/d/u select one mode; they have no "off" form. */
+                    else if (fc == 'a') q->cc_mode = AGRE_CC_ASCII;
+                    else if (fc == 'd') q->cc_mode = AGRE_CC_DEFAULT;
+                    else if (fc == 'u') q->cc_mode = AGRE_CC_UNICODE;
                 }
                 if (q->p < q->end && *q->p == ':') {
                     q->p++;
@@ -1069,6 +1093,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             q->case_insensitive = saved_ci;
             q->multiline = saved_ml;
             q->extended = saved_x;
+            q->cc_mode = saved_cc;
         }
 
         if (capture) {
@@ -1129,7 +1154,16 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         case 'h': case 'H': {
             ire_node_t *n = ire_new(IRE_CLASS);
             bm_add_special(n->u.cls.bm, e);
-            return n;
+            /* (?u) widens \d \w \s to their Unicode properties; \h (hex) is
+             * ASCII in Ruby whatever the mode. */
+            const char *const prop = uni_shorthand_prop(q, e);
+            if (prop == NULL) return n;
+            agre_cpsetb_t cps = { 0 };
+            posix_class_unicode(q, prop, strlen(prop), isupper(e) != 0, &cps);
+            if (cps.n == 0) { agre_cpsetb_free(&cps); return n; }
+            ire_node_t *const u = ire_uniclass(n->u.cls.bm, &cps);
+            ire_free(n);
+            return u;
         }
         case 'X':
             return ire_new(IRE_GRAPHEME);
