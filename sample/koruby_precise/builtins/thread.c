@@ -112,6 +112,22 @@ korb_blop_expire(struct korb_vm *vm)
     return posted;
 }
 
+/* 眠っている間に届く signal 用の wake-up fd。koruby は trap した signal を block
+ * して check point で sigtimedwait する設計なので、poll(2) は素通しで起こされない
+ * (`Signal.trap("TERM"){…}; sleep` が二度と起きなかった)。signalfd は「pending に
+ * なった」ことだけを教えてくれる — 読まないので signal は pending のまま残り、
+ * 従来どおり korb_signal_deliver が sigtimedwait で刈り取る。 */
+#if !defined(KORB_WASI) && defined(__linux__)
+#include <sys/signalfd.h>
+static int korb_signal_wakefd(void) {
+    sigset_t set;
+    korb_sigset_deliverable(&set);
+    return signalfd(-1, &set, SFD_CLOEXEC | SFD_NONBLOCK);
+}
+#else
+static int korb_signal_wakefd(void) { return -1; }
+#endif
+
 /* pump: 完了回収。block=1 なら fd readiness / 次の deadline まで native に眠る —
  * scheduler idle が呼ぶ、native thread が眠る唯一の場所。戻り値: post した数。
  * POLL blop の pollfd 群を 1 本の poll(2) に束ね、revents を書き戻して post。 */
@@ -124,7 +140,7 @@ korb_blop_pump(struct korb_vm *vm, int block)
     for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
         if (b->kind == KORB_BLOP_POLL) total += b->u.poll.nfds;
     struct pollfd sbuf[64];
-    struct pollfd *pf = (total <= 64) ? sbuf : malloc(sizeof(*pf) * total);
+    struct pollfd *pf = (total + 1 <= 64) ? sbuf : malloc(sizeof(*pf) * (total + 1));
     if (!pf) abort();
     nfds_t k = 0;
     for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
@@ -146,7 +162,23 @@ korb_blop_pump(struct korb_vm *vm, int block)
         }
     }
     if (total == 0 && ms == 0) { if (pf != sbuf) free(pf); return posted; }
-    const int rc = poll(pf, total, ms);
+    /* 本当に眠るときだけ signal 用の wake-up fd を足す (作って捨てるだけ; 状態なし) */
+    const int sfd = (ms != 0) ? korb_signal_wakefd() : -1;
+    nfds_t nfds = total;
+    if (sfd >= 0) { pf[nfds].fd = sfd; pf[nfds].events = POLLIN; pf[nfds].revents = 0; nfds++; }
+    const int rc = poll(pf, nfds, ms);
+    if (sfd >= 0) {
+        /* pending signal で起きた: 誰かを runnable にして check point (sigtimedwait)
+         * まで走らせる。CRuby と同じく main thread に配送させる。 */
+        if (rc > 0 && pf[nfds - 1].revents) {
+            struct korb_blop *victim = NULL;
+            for (struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
+                if (b->waiter == vm->main_thread) { victim = b; break; }
+            if (victim == NULL) victim = vm->blop_pending;
+            if (victim) { korb_blop_post(vm, victim, -EINTR); posted++; }
+        }
+        close(sfd);
+    }
     if (rc > 0) {                                   /* revents を各 blop に書き戻し */
         k = 0;
         for (struct korb_blop *b = vm->blop_pending, *nx; b; b = nx) {
