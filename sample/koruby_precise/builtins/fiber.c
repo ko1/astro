@@ -33,11 +33,16 @@ korb_fiber_trampoline(unsigned hi, unsigned lo)
     VALUE arg = rep->transfer;                        /* value from the first resume */
     RESULT r = korb_block_yield(c, c->slots, rep->body, rep->def_env, &arg, 1, &rep->captured_self);
     rep->fstate = 3;                                  /* done */
+    if (r.state == KORB_RETURN || r.state == KORB_BREAK)   /* `return` / `break` の逃げ場がない */
+        r = korb_raise(c, c->slots, KORB_E_LOCALJUMP, 0, "%s",
+                       r.state == KORB_RETURN ? "unexpected return" : "break from proc-closure");
     if (r.state == KORB_RAISE && r.value == KORB_UNDEF) r = RESULT_OK(KORB_NIL);   /* #kill sentinel */
     rep->raised = (r.state == KORB_RAISE) ? 1u : 0u;
     rep->transfer = (r.state == KORB_NORMAL || r.state == KORB_RAISE) ? r.value : KORB_NIL;
     swapcontext((ucontext_t *)rep->uctx, (ucontext_t *)rep->resume_uctx);  /* never returns */
 }
+
+static struct korb_thread *korb_thread_boot(CTX *c);   /* fwd (thread.c, included later) */
 
 static RESULT
 korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *captured_self)
@@ -56,6 +61,7 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
     rep->storage = KORB_NIL;                           /* set below: a copy of the creator's */
     rep->fibobj = (VALUE)fb;                           /* Fiber.current (root; no GC between alloc and here) */
     rep->fstate = 0;
+    rep->owner = korb_thread_boot(c);                  /* only this thread may resume/transfer it */
     void *vs = mmap(NULL, KORB_FIBER_VSLOTS_BYTES, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (vs == MAP_FAILED) { perror("koruby_precise: mmap fiber vslots"); abort(); }
@@ -88,6 +94,11 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
 }
 
 static VALUE korb_fiber_kill_sentinel(CTX *c);   /* fwd (Fiber#kill unwind payload) */
+
+/* The green thread a Fiber belongs to: CRuby's "fiber called across threads". */
+static bool korb_fiber_foreign(CTX *c, const KorbFiberRep *rep) {
+    return rep->owner != NULL && c->vm->cur_thread != NULL && rep->owner != c->vm->cur_thread;
+}
 
 /* Switch into `rep` (fstate 0 or 2) carrying `xfer` — the shared engine behind
  * Fiber#resume and Fiber#raise.  With deliver_raise, the fiber's Fiber.yield
@@ -157,8 +168,13 @@ static RESULT
 korb_m_fiber_resume(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     KorbFiberRep *const rep = VAL2FIBER(VALUE_REF_GET(self))->rep;
+    if (UNLIKELY(korb_fiber_foreign(c, rep)))
+        return korb_raise_fiber_error(c, slots, "fiber called across threads");
     if (UNLIKELY(rep->fstate == 3)) return korb_raise_fiber_error(c, slots, "attempt to resume a terminated fiber");
-    if (UNLIKELY(rep->fstate == 1)) return korb_raise_fiber_error(c, slots, "attempt to resume a resumed fiber (double resume)");
+    if (UNLIKELY(rep->fstate == 1))   /* 自分自身か、resume 連鎖の祖先か */
+        return korb_raise_fiber_error(c, slots,
+            (rep == c->vm->running_fiber || (c->vm->running_fiber == NULL && rep == c->vm->root_fiber))
+            ? "attempt to resume the current fiber" : "attempt to resume a resuming fiber");
     if (UNLIKELY(rep->transferred))   /* CRuby: a transferred fiber is not resumable */
         return korb_raise_fiber_error(c, slots, "attempt to yield on a not resumed fiber");
     return korb_fiber_switch_in(c, slots, rep,
@@ -181,6 +197,8 @@ static RESULT
 korb_m_fiber_transfer(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     KorbFiberRep *const rep = VAL2FIBER(VALUE_REF_GET(self))->rep;
+    if (UNLIKELY(korb_fiber_foreign(c, rep)))
+        return korb_raise_fiber_error(c, slots, "fiber called across threads");
     if (UNLIKELY(rep->fstate == 3)) return korb_raise_fiber_error(c, slots, "attempt to resume a terminated fiber");
     if (UNLIKELY(rep == c->vm->running_fiber)) return korb_raise_fiber_error(c, slots, "attempt to transfer to self");
     if (UNLIKELY(rep->fstate == 2 && !rep->transferred))
