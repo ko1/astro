@@ -1480,6 +1480,7 @@ class Dir
   # dirfd(3) equivalent: an fd opened on the directory, created lazily and
   # owned by this Dir (closed with GC; koruby Dir has no explicit close of it).
   def fileno
+    raise IOError, "closed directory" if @__dir_closed
     @__dir_fd ||= IO.sysopen(path, File::RDONLY)
   end
 end

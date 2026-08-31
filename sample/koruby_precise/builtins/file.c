@@ -1754,6 +1754,14 @@ static RESULT korb_m_dir_children(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static uint32_t korb_dir_ents_id(CTX *c) { return korb_intern(c->vm, "__dir_entries", 13); }
 static uint32_t korb_dir_pos_id(CTX *c)  { return korb_intern(c->vm, "__dir_pos", 9); }
 static uint32_t korb_dir_path_id(CTX *c) { return korb_intern(c->vm, "__dir_path", 10); }
+/* #close only marks the object: the entries were read at open, but every cursor
+ * operation must still fail afterwards the way a live DIR* would. */
+/* spelled with the '@' the siblings omit: prelude's Dir#fileno checks it too */
+static uint32_t korb_dir_closed_id(CTX *c) { return korb_intern(c->vm, "@__dir_closed", 13); }
+static bool korb_dir_closed_p(CTX *c, VALUE s) { return korb_ivar_get(c, s, ID2SYM(korb_dir_closed_id(c))) == KORB_TRUE; }
+#define KORB_DIR_CHECK_OPEN(c, slots, self)                                            \
+    do { if (UNLIKELY(korb_dir_closed_p((c), VALUE_REF_GET(self))))                    \
+             return korb_raise((c), (slots), KORB_E_IOERROR, 0, "closed directory"); } while (0)
 /* Read `path` into the cursor ivars of an existing Dir (or subclass) instance. */
 static RESULT korb_dir_fill(CTX *c, VALUE *slots, VALUE_REF obj, const char *path, uint32_t plen, uint32_t enc) {
     DIR *d = opendir(path);
@@ -1806,14 +1814,19 @@ static RESULT korb_m_dir_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     slots[0] = UNWRAP(korb_dir_make(c, slots, pbuf, (uint32_t)pl, denc));
     VALUE_REF dir = VALUE_REF_AT(&slots[0]);
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(dir));
-    slots[1] = VALUE_REF_GET(dir);                               /* Dir.open(block) → block value, dir "closed" after */
+    slots[1] = VALUE_REF_GET(dir);                               /* Dir.open(block) → block value, dir closed after */
     RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
+    slots[1] = br.value;                                         /* root across the ivar write (raised value included) */
+    const RESULT cr = korb_ivar_set(c, slots + 2, dir, ID2SYM(korb_dir_closed_id(c)), KORB_TRUE);
+    br.value = slots[1];
+    if (br.state != KORB_NORMAL) return br;
+    CHECK(cr);
     return br;
 }
 static const KorbArray *korb_dir_ents(CTX *c, VALUE self) { const VALUE e = korb_ivar_get(c, self, ID2SYM(korb_dir_ents_id(c))); return KORB_ARRAY_P(e) ? VAL2ARY(e) : NULL; }
 /* Dir#read → next entry name (advancing the cursor), or nil at end. */
 static RESULT korb_m_dir_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; const VALUE s = VALUE_REF_GET(self);
+    (void)a; KORB_DIR_CHECK_OPEN(c, slots, self); const VALUE s = VALUE_REF_GET(self);
     const KorbArray *ents = korb_dir_ents(c, s); if (!ents) return RESULT_OK(KORB_NIL);
     const VALUE posv = korb_ivar_get(c, s, ID2SYM(korb_dir_pos_id(c)));
     const korb_sword_t pos = FIXNUM_P(posv) ? FIX2LONG(posv) : 0;
@@ -1825,7 +1838,7 @@ static RESULT korb_m_dir_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 /* Dir#each { |name| } → self (Enumerator over entries if no block). */
 static RESULT korb_m_dir_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                               struct Node *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a; const VALUE s = VALUE_REF_GET(self);
+    (void)a; KORB_DIR_CHECK_OPEN(c, slots, self); const VALUE s = VALUE_REF_GET(self);
     const VALUE ev = korb_ivar_get(c, s, ID2SYM(korb_dir_ents_id(c)));
     if (block == NULL) return korb_enum_new(c, slots, KORB_ARRAY_P(ev) ? ev : KORB_NIL, KORB_NIL);
     slots[0] = KORB_ARRAY_P(ev) ? ev : KORB_NIL;                 /* root the entries array */
@@ -1842,29 +1855,33 @@ static RESULT korb_m_dir_path(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     (void)slots; (void)a; return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_dir_path_id(c))));
 }
 static RESULT korb_m_dir_pos(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots; (void)a; const VALUE p = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_dir_pos_id(c)));
+    (void)a; KORB_DIR_CHECK_OPEN(c, slots, self); const VALUE p = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_dir_pos_id(c)));
     return RESULT_OK(FIXNUM_P(p) ? p : LONG2FIX(0));
 }
 static RESULT korb_m_dir_rewind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_dir_pos_id(c)), LONG2FIX(0)));
+    (void)a; KORB_DIR_CHECK_OPEN(c, slots, self); CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_dir_pos_id(c)), LONG2FIX(0)));
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_dir_seek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_DIR_CHECK_OPEN(c, slots, self);
     const VALUE nv = VALUE_SLICE_GET(a, 0);
     CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_dir_pos_id(c)), FIXNUM_P(nv) ? nv : LONG2FIX(0)));
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_dir_pos_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_DIR_CHECK_OPEN(c, slots, self);
     const VALUE nv = VALUE_SLICE_GET(a, 0);
     CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_dir_pos_id(c)), FIXNUM_P(nv) ? nv : LONG2FIX(0)));
     return RESULT_OK(nv);
 }
 static RESULT korb_m_dir_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c; (void)slots; (void)self; (void)a; return RESULT_OK(KORB_NIL);   /* entries already read; no handle */
+    (void)a;                                     /* closing twice is not an error (CRuby) */
+    CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_dir_closed_id(c)), KORB_TRUE));
+    return RESULT_OK(KORB_NIL);
 }
 /* Dir#children / #each_child — entries excluding "." and "..". */
 static RESULT korb_m_dir_i_children(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
+    (void)a; KORB_DIR_CHECK_OPEN(c, slots, self);
     const KorbArray *ents = korb_dir_ents(c, VALUE_REF_GET(self));
     const uint32_t n = ents ? ents->len : 0;                 /* read len BEFORE korb_ary_new GCs `ents` away */
     slots[0] = UNWRAP(korb_ary_new(c, slots, n));

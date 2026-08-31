@@ -320,8 +320,15 @@ class IO
   def to_io = self
 
   # koruby always closes the descriptor with the IO; record the preference.
-  def autoclose? = @autoclose.nil? ? true : @autoclose
-  def autoclose=(v); @autoclose = v ? true : false; v; end
+  def autoclose?
+    raise IOError, "closed stream" if closed?
+    @autoclose.nil? ? true : @autoclose
+  end
+  def autoclose=(v)
+    raise IOError, "closed stream" if closed?
+    @autoclose = v ? true : false
+    v
+  end
 
   def self.try_convert(obj)
     return obj if obj.is_a?(IO)
