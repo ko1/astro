@@ -48,8 +48,20 @@ module Zlib
   module_function
 
   def zlib_version = ZLIB_VERSION
-  def crc32(*args) = __zlib_crc32(*args)
-  def adler32(*args) = __zlib_adler32(*args)
+  # CRuby takes the seed through NUM2ULONG, so anything wider than a machine
+  # word is a RangeError rather than a silent truncation.
+  def self.__check_seed(args)
+    return if args.size < 2
+    v = args[1]
+    return if v.nil?
+    v = v.to_int unless v.is_a?(Integer)
+    if v >= (1 << 64) || v < -(1 << 63)
+      raise RangeError, "bignum too big to convert into 'unsigned long'"
+    end
+  end
+
+  def crc32(*args) = (Zlib.__check_seed(args); __zlib_crc32(*args))
+  def adler32(*args) = (Zlib.__check_seed(args); __zlib_adler32(*args))
   def crc_table = __zlib_crc_table
 
   def crc32_combine(crc1, crc2, len2)
@@ -135,6 +147,27 @@ module Zlib
       raise Zlib::Error, "stream is not ready" if @closed
     end
 
+    # Hand the output over in 16 KiB pieces (ZSTREAM_AVAIL_OUT_STEP_MAX).  A
+    # short tail is only yielded once the stream has ended; otherwise it stays
+    # buffered for the next call, as in CRuby.  `break' out of the block leaves
+    # everything not yet yielded in the buffer.
+    private def __emit(str, blk)
+      return str unless blk
+      n = str.bytesize
+      i = 0
+      lim = stream_end? ? n : n - (n % CHUNK_SIZE)
+      begin
+        while i < lim
+          j = i
+          i += CHUNK_SIZE          # count it before yielding: a `break' consumes it
+          blk.call(str.byteslice(j, CHUNK_SIZE))
+        end
+      ensure
+        @out = (i < n ? str.byteslice(i, n - i) : +"".b) + @out
+      end
+      nil
+    end
+
     # Map the C-side error tag onto the Zlib exception the API documents.
     private def __run(str, flush)
       __zstream_run(@h, str, flush)
@@ -167,7 +200,7 @@ module Zlib
     def deflate(str, flush = NO_FLUSH, &blk)
       __check_open
       @out << __run(str.nil? ? nil : str.to_s.b, str.nil? ? FINISH : flush)
-      Zlib.__chunked(flush_next_out, &blk)
+      __emit(flush_next_out, blk)
     end
 
     def params(level, strategy)
@@ -218,7 +251,11 @@ module Zlib
       elsif stream_end?
         @passthrough << str.to_s.b       # after the end, data passes through
       else
-        @out << __run(str.to_s.b, NO_FLUSH)
+        s = str.to_s.b
+        @out << __run(s, NO_FLUSH)
+        # the stream may have ended mid-argument: the rest passes through
+        n = avail_in
+        @passthrough << s.byteslice(s.bytesize - n, n) if n > 0
       end
       self
     end
@@ -226,17 +263,20 @@ module Zlib
     def inflate(str, buffer = nil, &blk)
       __check_open
       self << str
+      return __emit(flush_next_out, blk) if blk
       r = flush_next_out
-      return Zlib.__chunked(r, &blk) if blk
       buffer ? buffer.replace(r) : r
     end
 
-    def finish
+    def finish(&blk)
       __check_open
-      @out << __run(nil, SYNC_FLUSH) unless stream_end?
+      unless stream_end?
+        @out << __run(nil, SYNC_FLUSH)
+        raise Zlib::BufError, "buffer error" unless stream_end?
+      end
       r = flush_next_out + @passthrough
       @passthrough = +"".b
-      r
+      __emit(r, blk)
     end
 
     def set_dictionary(dict) = dict
@@ -255,9 +295,18 @@ module Zlib
 
     OS_CODE = Zlib::OS_CODE
 
-    attr_accessor :comment, :orig_name, :level, :sync
+    attr_writer :comment, :orig_name
+    attr_accessor :level, :sync
     attr_reader :mtime
     attr_reader :crc, :os_code
+
+    # The header fields live in the stream, so CRuby refuses to read them back
+    # once it is closed.
+    def comment;   __check_closed; @comment;   end
+    def orig_name; __check_closed; @orig_name; end
+    private def __check_closed
+      raise Zlib::GzipFile::Error, "closed gzip stream" if @closed
+    end
 
     def initialize
       @closed = false
@@ -308,19 +357,24 @@ module Zlib
     # The gzip header carries mtime/orig_name/comment, so they can only be set
     # before anything is written (CRuby writes the header on the first write).
     def mtime=(t)
-      raise Zlib::GzipFile::Error, "header is already written" unless @buf.empty?
+      __check_header
       @mtime = t.is_a?(Integer) ? Time.at(t) : t
     end
     def orig_name=(n)
-      raise Zlib::GzipFile::Error, "header is already written" unless @buf.empty?
+      __check_header
       @orig_name = n.to_s
     end
     def comment=(n)
-      raise Zlib::GzipFile::Error, "header is already written" unless @buf.empty?
+      __check_header
       @comment = n.to_s
+    end
+    # CRuby emits the header on the first #write, even a zero-length one.
+    private def __check_header
+      raise Zlib::GzipFile::Error, "header is already written" if @header_written
     end
 
     def write(*args)
+      @header_written = true
       n = 0
       args.each { |a| s = a.to_s.b; @buf << s; n += s.bytesize }
       n
@@ -390,7 +444,13 @@ module Zlib
     def initialize(io, **opts)
       super()
       @io = io
-      raw = io.read.to_s.b
+      # CRuby always reads with an explicit size, and a source io may only
+      # implement that arity.
+      raw = +"".b
+      while (chunk = io.read(16384))
+        break if chunk.empty?
+        raw << chunk.b
+      end
       @data = __parse(raw)
       @pos = 0
       @pos_bias = 0
@@ -423,6 +483,18 @@ module Zlib
 
     def gets(sep = $/, limit = nil)
       __check
+      if sep == ""                      # paragraph mode: skip blank lines, stop at "\n\n"
+        @pos += 1 while @pos < @data.bytesize && @data.getbyte(@pos) == 10
+        return nil if @pos >= @data.bytesize
+        rest = @data.byteslice(@pos..)
+        i = rest.index("\n\n".b)
+        line = i ? rest.byteslice(0, i + 2) : rest
+        @pos += line.bytesize
+        # the run of newlines after the paragraph is consumed but not returned
+        @pos += 1 while @pos < @data.bytesize && @data.getbyte(@pos) == 10
+        @lineno += 1
+        return ($_ = line.dup.force_encoding(__enc))
+      end
       return nil if @pos >= @data.bytesize
       rest = @data.byteslice(@pos..)
       i = sep ? rest.index(sep) : nil

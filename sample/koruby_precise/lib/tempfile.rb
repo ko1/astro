@@ -346,6 +346,7 @@ class Tempfile < DelegateClass(File)
   # buffer is flushed before determining the size.
   def size
     if !__getobj__.closed?
+      __getobj__.flush   # koruby's IO#size does not flush the write buffer
       __getobj__.size # File#size calls rb_io_flush_raw()
     else
       File.size(__getobj__.path)

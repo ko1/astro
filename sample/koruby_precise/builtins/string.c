@@ -3027,6 +3027,36 @@ static RESULT korb_m_str_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         }
         goto done;
     }
+    /* both edges all ASCII digits → iterate as Integers, zero-padded to the
+     * width of the receiver ("8".upto("11") = 8 9 10 11, not succ semantics). */
+    {
+        const KorbString *const bs = VAL2STR(slots[0]), *const es = VAL2STR(slots[1]);
+        bool digits = bs->len > 0 && es->len > 0 && bs->len < 19 && es->len < 19;
+        for (uint32_t i = 0; digits && i < bs->len; i++)
+            digits = korb_strbuf_data(bs->buf)[i] >= '0' && korb_strbuf_data(bs->buf)[i] <= '9';
+        for (uint32_t i = 0; digits && i < es->len; i++)
+            digits = korb_strbuf_data(es->buf)[i] >= '0' && korb_strbuf_data(es->buf)[i] <= '9';
+        if (digits) {
+            const int width = (int)bs->len;
+            long long bi = 0, ei = 0;
+            for (uint32_t i = 0; i < bs->len; i++) bi = bi * 10 + (korb_strbuf_data(bs->buf)[i] - '0');
+            for (uint32_t i = 0; i < es->len; i++) ei = ei * 10 + (korb_strbuf_data(es->buf)[i] - '0');
+            for (; bi <= ei; bi++) {
+                if (excl && bi == ei) break;
+                char nbuf[32];
+                const int nl = snprintf(nbuf, sizeof nbuf, "%.*lld", width, bi);
+                slots[3] = UNWRAP(korb_str_new(c, slots + 3, nbuf, (uint32_t)nl));
+                KORB_STR_ENC_SET(slots[3], KORB_ENC_USASCII);
+                if (block) {
+                    RESULT r = korb_block_yield(c, slots + 4, block, def_env, &slots[3], 1, cself);
+                    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                } else {
+                    CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[2]), slots[3]));
+                }
+            }
+            goto done;
+        }
+    }
     for (int guard = 0; guard < 100000000; guard++) {
         const uint32_t curlen = VAL2STR(slots[0])->len, endlen = VAL2STR(slots[1])->len;
         if (curlen > endlen) break;                                        /* succ grew past end length */
@@ -3045,7 +3075,9 @@ static RESULT korb_m_str_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 done:
     if (block == NULL) {
         slots[3] = UNWRAP(korb_enum_desc(c, slots + 3, VALUE_REF_GET(self), "upto"));
-        return korb_enum_new(c, slots + 4, slots[2], slots[3]);
+        const RESULT er = korb_enum_new(c, slots + 4, slots[2], slots[3]);
+        if (LIKELY(er.state == KORB_NORMAL)) VAL2ENUM(er.value)->size_unknown = 1;   /* CRuby: #size is nil */
+        return er;
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
