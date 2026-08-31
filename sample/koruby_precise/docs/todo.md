@@ -2935,3 +2935,30 @@ bisect: 765904e4 まで OK、382b0aab で NG。ただしマージ後の tree か
 `korb_outer_frame_base_at` で「自分の env なら depth を消費せず prev へ」を
 入れて解決。`language/return_spec` 0 -> 38 (マージ前の 37 より良い)、
 core 20958 -> 20962。
+
+
+## sleep 中の signal で起こす signalfd は blocked IO を巻き添えにする
+
+worker が入れた `a1430a90` (blop pump が眠るときだけ signalfd(2) を poll の
+待ち集合に足し、pending signal で main thread の blop を EINTR post する) は
+`Signal.trap("TERM"){}; sleep` が起きない問題を直し、
+`core/process/{wait,status/wait}_spec` を丸ごと (0 -> 19) 復活させた。
+
+しかし同じ変更で **別スレッドが close した fd を read 中のスレッドが
+永久にハングする** ようになり、`core/io/read_spec` 109 -> 0、
+`core/io/close_spec` 11 -> 0 と差し引き大幅マイナスだったので 2026-08-31 に
+revert した。再現:
+
+```ruby
+r, w = IO.pipe
+t = Thread.new { begin; r.read(1); rescue => e; e; end }
+Thread.pass until t.stop?
+r.close
+t.join            # ここで戻らない
+```
+
+「main thread の blop だけを EINTR する」に絞っても直らなかったので、
+原因は wake 先の選び方ではなく poll 集合に fd が 1 本増えること自体
+(revents の書き戻しか rc の解釈) の側にある。次に試すなら
+`korb_blop_pump` の poll 後のループが `total` と `nfds` を取り違えて
+いないかから見ること。
