@@ -279,6 +279,37 @@ static void bm_add_special(uint64_t bm[4], int c) {
 /* Defined below, next to the codepoint-set helpers. */
 static bool parse_prop_ref(re_parser_t *q, bool negate, uint64_t bm[4], agre_cpsetb_t *cps);
 
+static int re_hex_val(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* `\xH` or `\xHH` — Ruby takes one or two hex digits, so `\xAG` is 0x0A
+ * followed by a literal G.  Zero digits is an error. */
+static bool parse_hex_escape(re_parser_t *q, uint8_t *out) {
+    int v = 0, n = 0;
+    while (n < 2 && q->p < q->end) {
+        const int d = re_hex_val(*q->p);
+        if (d < 0) break;
+        v = v * 16 + d; q->p++; n++;
+    }
+    if (n == 0) { re_error(q, "invalid hex escape"); return false; }
+    *out = (uint8_t)v;
+    return true;
+}
+
+/* `\N` inside a character class: up to three octal digits (no back-references
+ * exist here, so every digit escape is octal). */
+static uint8_t parse_octal_escape(re_parser_t *q, int first) {
+    int v = first - '0', n = 1;
+    while (n < 3 && q->p < q->end && *q->p >= '0' && *q->p <= '7') {
+        v = v * 8 + (*q->p++ - '0'); n++;
+    }
+    return (uint8_t)v;
+}
+
 /* Parse a single escape inside a class.  Returns 1 if handled (already set
  * bits), 0 if it was a single character (write *out_byte).  `cps` collects
  * members at or above U+0080; NULL when the caller can't take any. */
@@ -299,18 +330,16 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps
     case 'r': *out_byte = '\r'; return 0;
     case 'f': *out_byte = '\f'; return 0;
     case 'v': *out_byte = '\v'; return 0;
-    case '0': *out_byte = 0;    return 0;
+    case '0': case '1': case '2': case '3':
+    case '4': case '5': case '6': case '7':
+        *out_byte = parse_octal_escape(q, c); return 0;
     case 'a': *out_byte = '\a'; return 0;
     case 'e': *out_byte = 0x1b; return 0;
     /* Inside a class, `\b` is backspace (0x08), not word-boundary. */
     case 'b': *out_byte = '\b'; return 0;
-    case 'x': {
-        if (q->p + 2 > q->end) { re_error(q, "invalid hex escape"); return 0; }
-        char h[3] = { (char)q->p[0], (char)q->p[1], 0 };
-        q->p += 2;
-        *out_byte = (uint8_t)strtol(h, NULL, 16);
+    case 'x':
+        parse_hex_escape(q, out_byte);
         return 0;
-    }
     case 'u': {
         /* \uHHHH or \u{H...} inside [].  Our class is byte-level
          * so only ASCII codepoints (cp < 0x80) can be expressed
@@ -1300,13 +1329,9 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             case 'v': b = '\v'; break;
             case 'a': b = '\a'; break;
             case 'e': b = 0x1b; break;
-            case 'x': {
-                if (q->p + 2 > q->end) { re_error(q, "invalid hex escape"); return NULL; }
-                char h[3] = { (char)q->p[0], (char)q->p[1], 0 };
-                q->p += 2;
-                b = (uint8_t)strtol(h, NULL, 16);
+            case 'x':
+                if (!parse_hex_escape(q, &b)) return NULL;
                 break;
-            }
             default: b = (uint8_t)e; break;
             }
             ire_node_t *n = ire_new(IRE_LIT);
