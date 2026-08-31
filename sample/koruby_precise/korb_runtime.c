@@ -9099,11 +9099,23 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                                       base == KORB_C_FIBER ? "tried to create a Fiber without a block"
                                                            : "tried to create Proc object without a block");
                 slots[0] = *recv_slot;                         /* root the subclass (recv) */
-                VALUE inst = (base == KORB_C_FIBER)
-                    ? UNWRAP(korb_fiber_new(c, slots + 1, block, def_env, captured_self))
-                    : UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
-                slots[1] = inst;                               /* root instance across the override set */
-                korb_klass_override_set(c, slots[1], slots[0]);   /* override class = the subclass */
+                if (base == KORB_C_PROC && def_env == KORB_BLK_FWD) {
+                    /* `Sub.new(&p)`: CRuby hands back p itself when its class already
+                     * matches, else a re-classed copy (proc_new). */
+                    slots[1] = KORB_CSELF_VAL(captured_self);  /* the forwarded Proc */
+                    if (korb_class_obj_of(c, slots[1]) != slots[0]) {
+                        const RESULT dr = korb_send(c, slots + 2, korb_intern(vm, "dup", 3), 0, 0);
+                        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+                        slots[1] = dr.value;
+                        korb_klass_override_set(c, slots[1], slots[0]);
+                    }
+                } else {
+                    const VALUE inst = (base == KORB_C_FIBER)
+                        ? UNWRAP(korb_fiber_new(c, slots + 1, block, def_env, captured_self))
+                        : UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
+                    slots[1] = inst;                           /* root instance across the override set */
+                    korb_klass_override_set(c, slots[1], slots[0]);   /* override class = the subclass */
+                }
                 if (base == KORB_C_FIBER && argc >= 1) {       /* Fiber.new(storage: h) { … } */
                     const VALUE opts = slots[-(korb_sword_t)argc];
                     if (KORB_HASH_P(opts)) {

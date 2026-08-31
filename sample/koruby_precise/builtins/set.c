@@ -2130,6 +2130,14 @@ static RESULT korb_m_obj_tap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_kernel_makeproc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, uint32_t is_lambda) {
     (void)a; (void)self;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Proc object without a block");
+    if (def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC) {   /* `&expr`, not a literal block */
+        const VALUE fwd = KORB_CSELF_VAL(cself);
+        /* CRuby: proc(&p) IS p; lambda(&p) likewise when p is already a lambda
+         * (a Symbol/Method proc counts), and ArgumentError when it is not. */
+        if (is_lambda && !(KORB_PROC_P(fwd) && VAL2PROC(fwd)->is_lambda))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "the lambda method requires a literal block");
+        return RESULT_OK(fwd);
+    }
     VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);   /* block-arg def_env arrives tagged (base|1) */
     return korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(cself), is_lambda);
 }
