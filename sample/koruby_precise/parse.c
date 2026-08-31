@@ -2231,6 +2231,69 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
 
 /* ---- def ----------------------------------------------------------------- */
 
+
+/* prism lists a def's locals in source order, so a local first created inside a
+ * default expression (`def m(a = b = 1, c = 2)`) lands *between* the parameters
+ * and breaks the ABI's "parameters occupy locals[0..params_cnt)" layout.  Build
+ * a reordered private copy in that case: every named parameter first, in ABI
+ * order, then the rest of the locals as prism had them.  Returns NULL when the
+ * natural order already works or when the shape is one this cannot describe
+ * (destructured or repeated parameters, an anonymous rest with posts). */
+static const pm_constant_id_list_t *
+kp_param_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *locals,
+                      const pm_parameters_node_t *ps)
+{
+    if (!ps || locals->size == 0) return NULL;
+    pm_constant_id_t want[64];
+    uint32_t n = 0;
+    #define WANT(cid) do { if ((cid) == 0 || n >= 64) return NULL; want[n++] = (cid); } while (0)
+    for (size_t i = 0; i < ps->requireds.size; i++) {
+        if (!PM_NODE_TYPE_P(ps->requireds.nodes[i], PM_REQUIRED_PARAMETER_NODE)) return NULL;
+        WANT(((const pm_required_parameter_node_t *)ps->requireds.nodes[i])->name);
+    }
+    for (size_t i = 0; i < ps->optionals.size; i++) {
+        if (!PM_NODE_TYPE_P(ps->optionals.nodes[i], PM_OPTIONAL_PARAMETER_NODE)) return NULL;
+        WANT(((const pm_optional_parameter_node_t *)ps->optionals.nodes[i])->name);
+    }
+    if (ps->rest) {
+        if (!PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE)) return NULL;
+        const pm_constant_id_t rn = ((const pm_rest_parameter_node_t *)ps->rest)->name;
+        if (rn == 0) { if (ps->posts.size) return NULL; }   /* anonymous rest: no local to place */
+        else WANT(rn);
+    }
+    for (size_t i = 0; i < ps->posts.size; i++) {
+        if (!PM_NODE_TYPE_P(ps->posts.nodes[i], PM_REQUIRED_PARAMETER_NODE)) return NULL;
+        WANT(((const pm_required_parameter_node_t *)ps->posts.nodes[i])->name);
+    }
+    #undef WANT
+    if (n == 0) return NULL;
+    bool same = (n <= locals->size);
+    for (uint32_t i = 0; same && i < n; i++) if (locals->ids[i] != want[i]) same = false;
+    if (same) return NULL;                              /* prism's order already matches */
+    for (uint32_t i = 0; i < n; i++)                    /* a repeated name has no unique slot */
+        for (uint32_t j = i + 1; j < n; j++) if (want[i] == want[j]) return NULL;
+    for (uint32_t i = 0; i < n; i++) {                  /* every parameter must BE one of the locals */
+        bool found = false;
+        for (size_t k = 0; !found && k < locals->size; k++) found = (locals->ids[k] == want[i]);
+        if (!found) return NULL;
+    }
+    pm_constant_id_t *const ids = malloc(sizeof(*ids) * locals->size);   /* immortal: the frame reads it */
+    if (!ids) abort();
+    memcpy(ids, want, sizeof(*ids) * n);
+    uint32_t w = n;
+    for (size_t k = 0; k < locals->size; k++) {
+        bool is_param = false;
+        for (uint32_t i = 0; !is_param && i < n; i++) is_param = (want[i] == locals->ids[k]);
+        if (!is_param) ids[w++] = locals->ids[k];
+    }
+    if (w != locals->size) { free(ids); return NULL; }   /* duplicate local ids: leave it alone */
+    pm_constant_id_list_t *const out = malloc(sizeof(*out));
+    if (!out) abort();
+    out->ids = ids; out->size = locals->size; out->capacity = locals->size;
+    (void)tc;
+    return out;
+}
+
 static NODE *
 transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *recv_override)
 {
@@ -2269,7 +2332,8 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     }
 
     const bool anon_cref = tc->frame->anon_class_body || tc->frame->anon_cref_method;
-    push_frame(tc, &dn->locals);
+    const pm_constant_id_list_t *const reordered = kp_param_first_locals(tc, &dn->locals, ps);
+    push_frame(tc, reordered ? reordered : &dn->locals);
     tc->frame->anon_cref_method = anon_cref;               /* constants resolve via the entry cell */
     tc->frame->method_mid = kp_intern_cid(tc, dn->name);   /* for `super` inside the body */
     tc->frame->method_params = params_cnt;
