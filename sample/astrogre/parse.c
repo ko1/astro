@@ -70,6 +70,9 @@ typedef struct ire_node {
         struct { int idx; struct ire_node *body; } group;
         struct { struct ire_node *body; } nc;
         struct { int idx; } backref;
+        /* `.` captures /m where it appears: `(?m)` only applies from that
+         * point on, and `(?m:…)` only inside the group. */
+        struct { bool ml; } dot;
         /* Conditional (?(idx)yes|no): if capture group #idx is set,
          * dispatch the `yes` branch, else `no` (which is IRE_EMPTY when
          * only "yes" was given). */
@@ -1102,7 +1105,12 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         return body;
     }
     case '[': q->p++; return parse_class(q);
-    case '.': q->p++; return ire_new(IRE_DOT);
+    case '.': {
+        q->p++;
+        ire_node_t *const n = ire_new(IRE_DOT);
+        n->u.dot.ml = q->multiline;
+        return n;
+    }
     case '^': q->p++; return ire_new(IRE_BOL);
     case '$': q->p++; return ire_new(IRE_EOL);
     case '\\': {
@@ -2067,7 +2075,6 @@ ire_collect_prefix(ire_node_t *n, fixed_prefix_t *out, bool *consumes_anything)
 typedef struct lower_ctx {
     re_parser_t *q;
     bool ci;
-    bool ml;
     agre_encoding_t enc;
     NODE *rep_cont;
     /* Subroutine references encountered during lower.  After main
@@ -2140,11 +2147,11 @@ lower_lookbehind(lower_ctx_t *L, ire_node_t *body, NODE *tail, bool negative)
         : ALLOC_node_re_lookbehind_var    (body_nd, tail);
 }
 
-static NODE *make_dot(lower_ctx_t *L, NODE *tail) {
+static NODE *make_dot(const lower_ctx_t *L, bool ml, NODE *tail) {
     if (L->enc == AGRE_ENC_UTF8) {
-        return L->ml ? ALLOC_node_re_dot_utf8_m(tail) : ALLOC_node_re_dot_utf8(tail);
+        return ml ? ALLOC_node_re_dot_utf8_m(tail) : ALLOC_node_re_dot_utf8(tail);
     }
-    return L->ml ? ALLOC_node_re_dot_m(tail) : ALLOC_node_re_dot(tail);
+    return ml ? ALLOC_node_re_dot_m(tail) : ALLOC_node_re_dot(tail);
 }
 
 static NODE *
@@ -2200,7 +2207,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
         }
         return ALLOC_node_re_lit(bytes, n->u.lit.len, tail);
     }
-    case IRE_DOT:           return make_dot(L, tail);
+    case IRE_DOT:           return make_dot(L, n->u.dot.ml, tail);
     case IRE_CLASS:         return lower_class(L, n, tail);
     case IRE_UNICLASS:      return lower_uniclass(L, n, tail);
     case IRE_GRAPHEME:      return ALLOC_node_re_grapheme(tail);
@@ -2284,7 +2291,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
          * UTF-8 variants so backward iteration respects codepoint
          * boundaries in UTF-8 mode. */
         if (n->u.rep.body && n->u.rep.body->kind == IRE_DOT) {
-            const uint32_t ml = L->ml ? 1 : 0;
+            const uint32_t ml = n->u.rep.body->u.dot.ml ? 1 : 0;
             if (n->u.rep.greedy) {
                 if (L->enc == AGRE_ENC_UTF8) {
                     return ALLOC_node_re_greedy_dot_utf8(n->u.rep.min, n->u.rep.max, tail, ml);
@@ -2551,7 +2558,6 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     lower_ctx_t L = {0};
     L.q = &q;
     L.ci = q.case_insensitive;
-    L.ml = q.multiline;
     L.enc = q.encoding;
     L.rep_cont = astrogre_rep_cont_singleton();
 
