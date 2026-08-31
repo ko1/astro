@@ -3453,11 +3453,13 @@ static RESULT korb_m_bind_lvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     (void)a; const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));
     slots[0] = UNWRAP(korb_ary_new(c, slots, b->name_cnt + 2));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
-    for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++)
-        CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i)[0])));
+    /* innermost scope first (CRuby): names added through the binding live in a
+     * scope of their own, inside the captured chain the baked table lists. */
     const VALUE ex = VAL2BIND(VALUE_REF_GET(self))->extra;
     if (ex != KORB_NIL) for (uint32_t i = 0; i < VAL2HASH(ex)->len; i++)
-        CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(ex)->items)[2 * i]));
+        CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(VAL2BIND(VALUE_REF_GET(self))->extra)->items)[2 * i]));
+    for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++)
+        CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i)[0])));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 /* Regexp / MatchData / String-regex methods live in builtins/regexp.c
