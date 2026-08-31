@@ -212,18 +212,17 @@ module Process
   CLOCK_REALTIME_ALARM     = 8
   CLOCK_BOOTTIME_ALARM     = 9
   CLOCK_TAI                = 11
-  def self.pid; $$; end
+  def self.pid; __getpid; end              # not $$: that is captured at boot and stale after fork
   class << self
     def fork(&blk) = super(&blk)          # the primitive is a private Kernel method
     def _fork = super()
   end
-  IDS = __process_ids.freeze   # [uid, euid, gid, egid, ppid] — fixed for the process
-  private_constant :IDS
-  def self.uid  = IDS[0]
-  def self.euid = IDS[1]
-  def self.gid  = IDS[2]
-  def self.egid = IDS[3]
-  def self.ppid = IDS[4]
+  # ids are re-read every call: fork (and set*id) change them
+  def self.uid  = __process_ids[0]
+  def self.euid = __process_ids[1]
+  def self.gid  = __process_ids[2]
+  def self.egid = __process_ids[3]
+  def self.ppid = __process_ids[4]
   def self.clock_gettime(_clk = CLOCK_MONOTONIC, unit = :float_second)
     t = __clock_gettime
     case unit
@@ -285,8 +284,19 @@ module Process
   end
   private_class_method :__as_rlimit_int
 
+  # 実クロックは 1ns。CRuby が別実装で埋めている擬似クロックだけ固有の分解能を返す。
+  PSEUDO_CLOCK_RES__ = {
+    GETTIMEOFDAY_BASED_CLOCK_REALTIME: 1_000,
+    TIME_BASED_CLOCK_REALTIME: 1_000_000_000,
+    GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID: 1_000,
+    TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID: 10_000_000,
+    TIMES_BASED_CLOCK_MONOTONIC: 10_000_000,
+    CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID: 1_000,
+  }.freeze
+  private_constant :PSEUDO_CLOCK_RES__
+
   def self.clock_getres(_clk = CLOCK_MONOTONIC, unit = :float_second)
-    ns = 1
+    ns = PSEUDO_CLOCK_RES__[_clk] || 1
     case unit
     when :float_second      then ns / 1_000_000_000.0
     when :float_millisecond then ns / 1_000_000.0
@@ -316,11 +326,98 @@ module Process
     t
   end
 
+  # id= accepts an Integer or a user/group *name* (CRuby resolves via getpwnam(3)).
+  def self.__uid_arg(v)
+    return v if v.is_a?(Integer)
+    if v.is_a?(String)
+      require 'etc'
+      pw = (Etc.getpwnam(v) rescue nil)
+      raise ArgumentError, "can't find user for #{v}" unless pw
+      return pw.uid
+    end
+    raise TypeError, "no implicit conversion of #{v.class} into Integer"
+  end
+  def self.__gid_arg(v)
+    return v if v.is_a?(Integer)
+    if v.is_a?(String)
+      require 'etc'
+      gr = (Etc.getgrnam(v) rescue nil)
+      raise ArgumentError, "can't find group for #{v}" unless gr
+      return gr.gid
+    end
+    raise TypeError, "no implicit conversion of #{v.class} into Integer"
+  end
+  def self.uid=(v);  __set_id(0, __uid_arg(v)); end
+  def self.euid=(v); __set_id(1, __uid_arg(v)); end
+  def self.gid=(v);  __set_id(2, __gid_arg(v)); end
+  def self.egid=(v); __set_id(3, __gid_arg(v)); end
+
   module Sys
     def self.getuid = Process.uid
     def self.geteuid = Process.euid
     def self.getgid = Process.gid
     def self.getegid = Process.egid
+    def self.setuid(v)  = __set_id(0, v)
+    def self.seteuid(v) = __set_id(1, v)
+    def self.setruid(v) = __set_reid(0, v, -1)
+    def self.setgid(v)  = __set_id(2, v)
+    def self.setegid(v) = __set_id(3, v)
+    def self.setrgid(v) = __set_reid(1, v, -1)
+    def self.setreuid(r, e) = __set_reid(0, r, e)
+    def self.setregid(r, e) = __set_reid(1, r, e)
+    def self.issetugid = false
+  end
+
+  module UID
+    def self.rid = Process.uid
+    def self.eid = Process.euid
+    def self.eid=(v); Process.euid = v; end
+    def self.change_privilege(v) = (Process.uid = v; Process.uid)
+    def self.grant_privilege(v) = (Process.euid = v; Process.euid)
+    def self.re_exchange
+      r, e = Process.uid, Process.euid
+      __set_reid(0, e, r)
+      Process.euid
+    end
+    def self.re_exchangeable? = true
+    def self.sid_available? = true
+    def self.switch
+      r, e = Process.uid, Process.euid
+      __set_reid(0, e, r)
+      return Process.euid unless block_given?
+      begin
+        yield
+      ensure
+        __set_reid(0, r, e)
+      end
+    end
+    def self.from_name(name) = Process.__uid_arg(name)
+  end
+
+  module GID
+    def self.rid = Process.gid
+    def self.eid = Process.egid
+    def self.eid=(v); Process.egid = v; end
+    def self.change_privilege(v) = (Process.gid = v; Process.gid)
+    def self.grant_privilege(v) = (Process.egid = v; Process.egid)
+    def self.re_exchange
+      r, e = Process.gid, Process.egid
+      __set_reid(1, e, r)
+      Process.egid
+    end
+    def self.re_exchangeable? = true
+    def self.sid_available? = true
+    def self.switch
+      r, e = Process.gid, Process.egid
+      __set_reid(1, e, r)
+      return Process.egid unless block_given?
+      begin
+        yield
+      ensure
+        __set_reid(1, r, e)
+      end
+    end
+    def self.from_name(name) = Process.__gid_arg(name)
   end
 end
 
@@ -1092,10 +1189,15 @@ end
 # at_exit: register a block to run (in reverse order) when the program ends.  The
 # C main loop drains $__at_exit after the top-level program returns.
 $__at_exit = []
+$__exit_trap = nil        # Signal.trap(:EXIT) handler; parked at the tail (runs first)
 module Kernel
   def at_exit(&block)
     raise ArgumentError, "called without a block" unless block
-    $__at_exit << block
+    if $__exit_trap && $__at_exit.last.equal?($__exit_trap)
+      $__at_exit.insert(-2, block)      # stay below the EXIT trap
+    else
+      $__at_exit << block
+    end
     block
   end
   module_function :at_exit   # private Kernel#at_exit and public Kernel.at_exit, as in CRuby
@@ -1175,7 +1277,21 @@ module Process
   def self.getpgid(*a) = __getpgid(*a)
   def self.getpgrp = __getpgid(0)
   def self.last_status = $?
-  def self.setpgid(pid, pgid) = __setpgid(pid, pgid)
+  def self.setpgid(pid, pgid) = __setpgid(__pid_arg(pid), __pid_arg(pgid))
+  def self.__pid_arg(v)          # #to_int で coerce (CRuby と同じ)
+    return v if v.is_a?(Integer)
+    raise TypeError, "no implicit conversion of #{v.class} into Integer" unless v.respond_to?(:to_int)
+    n = v.to_int
+    raise TypeError, "can't convert #{v.class} to Integer" unless n.is_a?(Integer)
+    n
+  end
+  def self.setsid = __setsid
+  # module functions in CRuby; the Kernel ones are private so an explicit
+  # `Process.exit` would otherwise be a NoMethodError
+  def self.exit(*a) = Kernel.exit(*a)
+  def self.exit!(*a) = Kernel.exit!(*a)
+  def self.abort(*a) = Kernel.abort(*a)
+  def self.daemon(nochdir = false, noclose = false) = __daemon(nochdir, noclose)
 end
 
 module Signal
@@ -1241,7 +1357,16 @@ module Signal
     h = __command_arg(command, blk)
     prev = @@handlers.key?(short) ? @@handlers[short] : (ARMED__.include?(short) ? "DEFAULT" : "SYSTEM_DEFAULT")
     @@handlers[short] = h
-    n = short == "EXIT" ? 0 : list[short]
+    if short == "EXIT"
+      # CRuby keeps the EXIT trap in a separate list that runs before every
+      # at_exit block.  Here it is parked at the tail of $__at_exit (the drain
+      # pops from the end) and Kernel#at_exit inserts underneath it.
+      $__at_exit.pop if $__exit_trap && $__at_exit.last.equal?($__exit_trap)
+      $__exit_trap = h.respond_to?(:call) ? h : nil
+      $__at_exit << $__exit_trap if $__exit_trap
+      return prev
+    end
+    n = list[short]
     if n && n > 0
       if h == "IGNORE"
         __signal_trap(n, "IGNORE")     # a blocked+ignored signal is discarded by the kernel
@@ -1344,6 +1469,9 @@ module Kernel
   # test(cmd, file[, file2]) — the file predicates, spelled as a character.
   def test(cmd, file1, file2 = nil) = __process_test(cmd, File.path(file1), file2 && File.path(file2))
   module_function :test
+
+  def select(*args) = IO.select(*args)
+  module_function :select
 
   # $-variable tracing: koruby has no hook on global assignment, so the
   # registration is recorded (and #untrace_var returns it) but never fires.
@@ -1540,11 +1668,11 @@ end
 module Process
   # groups/waitall などの薄い実装 (koruby は setgroups 系を持たないので
   # 取得のみ、変更は空実装)。
-  def self.groups; []; end
-  def self.groups=(v); v; end
-  def self.maxgroups; 65536; end
-  def self.maxgroups=(v); v; end
-  def self.initgroups(user, group); []; end
+  def self.groups; __getgroups; end
+  def self.groups=(v); __setgroups(v); end
+  def self.maxgroups; @__maxgroups || 65536; end
+  def self.maxgroups=(v); @__maxgroups = v.to_int; v; end
+  def self.initgroups(user, group) = __initgroups(user.to_s, __pid_arg(group))
   def self.setproctitle(title); title.to_s; end
   def self.getsid(pid = 0); __getpgid(pid); end
   def self.warmup; true; end

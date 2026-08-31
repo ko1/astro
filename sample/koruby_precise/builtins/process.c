@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <grp.h>        /* setgroups(2) */
 
 #define KORB_SPAWN_MAX_ARGV 256
 
@@ -1187,9 +1188,11 @@ static RESULT korb_m_process_test(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
       case 'G': return RESULT_OK((ok && st.st_gid == getgid()) ? KORB_TRUE : KORB_FALSE);
       case 'M': case 'A': case 'C': {
         if (!ok) return korb_raise_errno(c, slots, ENOENT, "stat", path);
-        const time_t t = cmd == 'M' ? st.st_mtime : cmd == 'A' ? st.st_atime : st.st_ctime;
-        slots[0] = LONG2FIX((korb_sword_t)t);
-        return korb_send(c, slots + 1, korb_intern(c->vm, "__time_at", 9), 0, 0);
+        /* File.{m,a,c}time に委譲: 秒だけの Time.at では sub-second が落ちる */
+        const char *const m = cmd == 'M' ? "mtime" : cmd == 'A' ? "atime" : "ctime";
+        slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "File", 4));
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, path, (uint32_t)strlen(path)));
+        return korb_send(c, slots + 2, korb_intern(c->vm, m, (uint32_t)strlen(m)), 0, 1);
       }
       default: break;
     }
@@ -1219,6 +1222,75 @@ static RESULT korb_m_process_setpgid(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     (void)self;
     if (setpgid((pid_t)FIX2LONG(VALUE_SLICE_GET(a, 0)), (pid_t)FIX2LONG(VALUE_SLICE_GET(a, 1))) < 0)
         return korb_raise_errno(c, slots, errno, "setpgid", "");
+    return RESULT_OK(LONG2FIX(0));
+}
+/* __set_id(which, id) — which: 0 uid, 1 euid, 2 gid, 3 egid. */
+static RESULT korb_m_process_set_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const long which = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    const long id = FIX2LONG(VALUE_SLICE_GET(a, 1));
+    int r = -1;
+    const char *nm = "setuid";
+    switch (which) {
+      case 0: r = setuid((uid_t)id); nm = "setuid"; break;
+      case 1: r = seteuid((uid_t)id); nm = "seteuid"; break;
+      case 2: r = setgid((gid_t)id); nm = "setgid"; break;
+      default: r = setegid((gid_t)id); nm = "setegid"; break;
+    }
+    if (r != 0) return korb_raise_errno(c, slots, errno, nm, "");
+    return RESULT_OK(LONG2FIX(id));
+}
+/* __set_reid(which, rid, eid) — which: 0 setreuid, 1 setregid. */
+static RESULT korb_m_process_set_reid(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const long which = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    const long r0 = FIX2LONG(VALUE_SLICE_GET(a, 1)), e0 = FIX2LONG(VALUE_SLICE_GET(a, 2));
+    const int r = which == 0 ? setreuid((uid_t)r0, (uid_t)e0) : setregid((gid_t)r0, (gid_t)e0);
+    if (r != 0) return korb_raise_errno(c, slots, errno, which == 0 ? "setreuid" : "setregid", "");
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_m_process_setsid(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    const pid_t s = setsid();
+    if (s < 0) return korb_raise_errno(c, slots, errno, "setsid", "");
+    return RESULT_OK(LONG2FIX(s));
+}
+/* Process.pid must re-read: $$ is captured at boot and is stale after fork. */
+static RESULT korb_m_process_getpid(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)self; (void)a;
+    return RESULT_OK(LONG2FIX((korb_sword_t)getpid()));
+}
+
+/* true / false / nil only — CRuby's rb_bool_expected. */
+static RESULT korb_bool_arg(CTX *c, VALUE *slots, VALUE v, const char *name, int *out) {
+    if (v == KORB_TRUE)  { *out = 1; return RESULT_OK(KORB_NIL); }
+    if (v == KORB_FALSE || v == KORB_NIL) { *out = 0; return RESULT_OK(KORB_NIL); }
+    char *b = NULL; size_t bl = 0;
+    FILE *ms = open_memstream(&b, &bl);
+    if (ms) { korb_fprint_inspect(c, ms, v); fclose(ms); }
+    char ib[128]; snprintf(ib, sizeof ib, "%s", b ? b : "?"); free(b);
+    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "expected true or false as %s: %s", name, ib);
+}
+
+/* Process.daemon(nochdir = false, noclose = false) — fork, let the parent leave
+ * without running at_exit, then detach the child from its controlling tty. */
+static RESULT korb_m_process_daemon(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    int nochdir = 0, noclose = 0;
+    if (VALUE_SLICE_LEN(a) >= 1) CHECK(korb_bool_arg(c, slots, VALUE_SLICE_GET(a, 0), "nochdir", &nochdir));
+    if (VALUE_SLICE_LEN(a) >= 2) CHECK(korb_bool_arg(c, slots, VALUE_SLICE_GET(a, 1), "noclose", &noclose));
+    korb_io_flush_std(c->vm);
+    const pid_t pid = fork();
+    if (pid < 0) return korb_raise_errno(c, slots, errno, "fork", "");
+    if (pid > 0) _exit(0);                          /* parent: no at_exit handlers */
+    if (setsid() < 0) return korb_raise_errno(c, slots, errno, "setsid", "");
+    if (!nochdir && chdir("/") != 0) return korb_raise_errno(c, slots, errno, "chdir", "/");
+    if (!noclose) {
+        const int nfd = open("/dev/null", O_RDWR);
+        if (nfd < 0) return korb_raise_errno(c, slots, errno, "open", "/dev/null");
+        for (int i = 0; i <= 2; i++) (void)dup2(nfd, i);
+        if (nfd > 2) close(nfd);
+    }
     return RESULT_OK(LONG2FIX(0));
 }
 
@@ -1328,6 +1400,46 @@ static RESULT korb_m_process_fork(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     }
     /* Process._fork's hook point in CRuby; koruby has no at_fork callbacks. */
     return RESULT_OK(LONG2FIX((korb_sword_t)pid));
+}
+
+/* Process.groups — the supplemental group access list (getgroups(2)). */
+static RESULT korb_m_process_getgroups(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    gid_t buf[NGROUPS_MAX];
+    const int n = getgroups((int)(sizeof buf / sizeof buf[0]), buf);
+    if (n < 0) return korb_raise_errno(c, slots, errno, "getgroups", "");
+    slots[0] = UNWRAP(korb_ary_new(c, slots, n > 0 ? (uint32_t)n : 1));
+    const VALUE_REF ary = VALUE_REF_AT(&slots[0]);
+    for (int i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, ary, LONG2FIX((korb_sword_t)buf[i])));
+    return RESULT_OK(slots[0]);
+}
+/* Process.groups= — setgroups(2) (EPERM for an unprivileged process). */
+static RESULT korb_m_process_setgroups(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE av = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_ARRAY_P(av))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Array");
+    const KorbArray *const ar = VAL2ARY(av);
+    if (UNLIKELY(ar->len > NGROUPS_MAX)) return korb_raise_errno(c, slots, EINVAL, "setgroups", "");
+    gid_t buf[NGROUPS_MAX];
+    for (uint32_t i = 0; i < ar->len; i++) {
+        const VALUE g = korb_items_data(ar->items)[i];
+        if (UNLIKELY(!FIXNUM_P(g))) return korb_raise_no_int(c, slots, g);
+        buf[i] = (gid_t)FIX2LONG(g);
+    }
+    if (setgroups((size_t)ar->len, buf) != 0) return korb_raise_errno(c, slots, errno, "setgroups", "");
+    return RESULT_OK(av);
+}
+
+/* Process.initgroups(user, gid) — initgroups(3), then report the new list. */
+static RESULT korb_m_process_initgroups(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    char user[256];
+    if (!korb_cstr_arg(VALUE_SLICE_GET(a, 0), user, sizeof user))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    const VALUE g = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!FIXNUM_P(g))) return korb_raise_no_int(c, slots, g);
+    if (initgroups(user, (gid_t)FIX2LONG(g)) != 0)
+        return korb_raise_errno(c, slots, errno, "initgroups", "");
+    return korb_m_process_getgroups(c, slots, self, a);
 }
 
 /* Real/effective ids + parent pid — prelude/system.rb used to hard-code 0. */
@@ -1449,6 +1561,14 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__kill",     korb_m_process_kill,    -1);
     korb_class_def_cfn(c, obj, "__getpgid",  korb_m_process_getpgid, -1);
     korb_class_def_cfn(c, obj, "__setpgid",  korb_m_process_setpgid,  2);
+    korb_class_def_cfn(c, obj, "__setsid",   korb_m_process_setsid,   0);
+    korb_class_def_cfn(c, obj, "__set_id",   korb_m_process_set_id,   2);
+    korb_class_def_cfn(c, obj, "__set_reid", korb_m_process_set_reid, 3);
+    korb_class_def_cfn(c, obj, "__getpid",   korb_m_process_getpid,   0);
+    korb_class_def_cfn(c, obj, "__daemon",   korb_m_process_daemon,  -1);
+    korb_class_def_cfn(c, obj, "__getgroups", korb_m_process_getgroups, 0);
+    korb_class_def_cfn(c, obj, "__setgroups", korb_m_process_setgroups, 1);
+    korb_class_def_cfn(c, obj, "__initgroups", korb_m_process_initgroups, 2);
     korb_class_def_cfn(c, obj, "__signal_trap",    korb_m_signal_trap,    -1);
     korb_class_def_cfn(c, obj, "__signal_block",   korb_m_signal_block,   -1);
     korb_class_def_cfn(c, obj, "__rlimit_table",   korb_m_rlimit_table,    0);

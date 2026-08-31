@@ -112,6 +112,22 @@ korb_blop_expire(struct korb_vm *vm)
     return posted;
 }
 
+/* 眠っている間に届く signal 用の wake-up fd。koruby は trap した signal を block
+ * して check point で sigtimedwait する設計なので、poll(2) は素通しで起こされない
+ * (`Signal.trap("TERM"){…}; sleep` が二度と起きなかった)。signalfd は「pending に
+ * なった」ことだけを教えてくれる — 読まないので signal は pending のまま残り、
+ * 従来どおり korb_signal_deliver が sigtimedwait で刈り取る。 */
+#if !defined(KORB_WASI) && defined(__linux__)
+#include <sys/signalfd.h>
+static int korb_signal_wakefd(void) {
+    sigset_t set;
+    korb_sigset_deliverable(&set);
+    return signalfd(-1, &set, SFD_CLOEXEC | SFD_NONBLOCK);
+}
+#else
+static int korb_signal_wakefd(void) { return -1; }
+#endif
+
 /* pump: 完了回収。block=1 なら fd readiness / 次の deadline まで native に眠る —
  * scheduler idle が呼ぶ、native thread が眠る唯一の場所。戻り値: post した数。
  * POLL blop の pollfd 群を 1 本の poll(2) に束ね、revents を書き戻して post。 */
@@ -124,7 +140,7 @@ korb_blop_pump(struct korb_vm *vm, int block)
     for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
         if (b->kind == KORB_BLOP_POLL) total += b->u.poll.nfds;
     struct pollfd sbuf[64];
-    struct pollfd *pf = (total <= 64) ? sbuf : malloc(sizeof(*pf) * total);
+    struct pollfd *pf = (total + 1 <= 64) ? sbuf : malloc(sizeof(*pf) * (total + 1));
     if (!pf) abort();
     nfds_t k = 0;
     for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
@@ -146,7 +162,23 @@ korb_blop_pump(struct korb_vm *vm, int block)
         }
     }
     if (total == 0 && ms == 0) { if (pf != sbuf) free(pf); return posted; }
-    const int rc = poll(pf, total, ms);
+    /* 本当に眠るときだけ signal 用の wake-up fd を足す (作って捨てるだけ; 状態なし) */
+    const int sfd = (ms != 0) ? korb_signal_wakefd() : -1;
+    nfds_t nfds = total;
+    if (sfd >= 0) { pf[nfds].fd = sfd; pf[nfds].events = POLLIN; pf[nfds].revents = 0; nfds++; }
+    const int rc = poll(pf, nfds, ms);
+    if (sfd >= 0) {
+        /* pending signal で起きた: 誰かを runnable にして check point (sigtimedwait)
+         * まで走らせる。CRuby と同じく main thread に配送させる。 */
+        if (rc > 0 && pf[nfds - 1].revents) {
+            struct korb_blop *victim = NULL;
+            for (struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
+                if (b->waiter == vm->main_thread) { victim = b; break; }
+            if (victim == NULL) victim = vm->blop_pending;
+            if (victim) { korb_blop_post(vm, victim, -EINTR); posted++; }
+        }
+        close(sfd);
+    }
     if (rc > 0) {                                   /* revents を各 blop に書き戻し */
         k = 0;
         for (struct korb_blop *b = vm->blop_pending, *nx; b; b = nx) {
@@ -928,8 +960,11 @@ korb_m_thread_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                     NODE *block, VALUE *def_env, VALUE *cself)
 {
     struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || VALUE_SLICE_LEN(a) > 2))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)",
+                          (unsigned)VALUE_SLICE_LEN(a));
+    if (UNLIKELY(block != NULL && VALUE_SLICE_LEN(a) >= 2))
+        korb_warn(c, slots, "block supersedes default value argument");
     VALUE k; CHECK(korb_thread_tls_key(c, slots, VALUE_SLICE_GET(a, 0), &k));
     if (t->tls != KORB_NIL) {
         const int32_t i = korb_hash_find(VAL2HASH(t->tls), k);
@@ -977,8 +1012,10 @@ korb_m_thread_priority_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     const VALUE v = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!FIXNUM_P(v)))
         return korb_raise_no_int(c, slots, v);
-    VAL2THREAD(VALUE_REF_GET(self))->rep->priority = (int)FIX2LONG(v);   /* 保持のみ (協調 scheduler) */
-    return RESULT_OK(v);
+    korb_sword_t p = FIX2LONG(v);                      /* CRuby は -3..3 に clamp して保持 */
+    if (p > 3) p = 3; else if (p < -3) p = -3;
+    VAL2THREAD(VALUE_REF_GET(self))->rep->priority = (int)p;   /* 保持のみ (協調 scheduler) */
+    return RESULT_OK(v);                               /* 代入式の値は clamp 前 */
 }
 
 static RESULT
@@ -1113,10 +1150,13 @@ korb_m_thread_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     const char *st = t->state == KORB_TH_DEAD ? "dead"
                    : t->state == KORB_TH_PENDED ? "sleep" : "run";
     char buf[640]; char nb[64]; nb[0] = 0;
+    int name_enc = -1;                                /* 非 ASCII の名前ならその encoding が伝播 (CRuby) */
     if (t->name != KORB_NIL && KORB_STRING_P(t->name)) {
         const uint32_t nl = VAL2STR(t->name)->len < 48 ? VAL2STR(t->name)->len : 48;
         memcpy(nb, korb_strbuf_data(VAL2STR(t->name)->buf), nl);
         nb[nl] = 0;
+        for (uint32_t i = 0; i < nl; i++)
+            if ((unsigned char)nb[i] >= 0x80) { name_enc = (int)KORB_STR_ENC(t->name); break; }
     }
     /* CRuby names the source location of the block the thread runs, when it has
      * one: "#<Thread:0x… file:line run>". */
@@ -1130,7 +1170,8 @@ korb_m_thread_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     const int len = snprintf(buf, sizeof buf, "#<Thread:%p%s%s%s %s>",
                              (void *)t, nb[0] ? "@" : "", nb, loc, st);
     RESULT r = korb_str_new(c, slots, buf, (uint32_t)len);
-    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);   /* CRuby: ASCII-8BIT */
+    if (LIKELY(r.state == KORB_NORMAL))
+        KORB_STR_ENC_SET(r.value, name_enc >= 0 ? (uint32_t)name_enc : KORB_ENC_BINARY);   /* CRuby: 既定は ASCII-8BIT */
     return r;
 }
 
@@ -1160,7 +1201,9 @@ korb_waitq_remove(struct korb_thread **head, struct korb_thread **tail, struct k
     }
 }
 
-/* 先頭から「まだ PENDED の」waiter を 1 人起こす (interrupt 済みの stale entry は捨てる) */
+/* 先頭から「まだ PENDED の」waiter を 1 人起こす (interrupt 済みの stale entry は捨てる)。
+ * blop で眠っている waiter (CondVar#wait は Mutex#sleep 経由なのでこちら) は blop を
+ * cancel しないと wait ループに戻ってしまうので、post して起こす。 */
 static void
 korb_waitq_wake_one(struct korb_vm *vm, struct korb_thread **head, struct korb_thread **tail)
 {
@@ -1170,16 +1213,19 @@ korb_waitq_wake_one(struct korb_vm *vm, struct korb_thread **head, struct korb_t
         if (*head == NULL) *tail = NULL;
         t->join_next = NULL;
         if (t->state == KORB_TH_PENDED) {
-            t->state = KORB_TH_READY;
-            korb_thread_runq_push(vm, t);
+            if (t->blop) korb_blop_cancel(vm, t->blop, -ECANCELED);   /* post が unpark する */
+            else { t->state = KORB_TH_READY; korb_thread_runq_push(vm, t); }
             return;
         }
     }
 }
 
-/* Mutex#lock の芯 (CondVar#wait の再 lock からも使う)。self は rooted ref。 */
+/* Mutex#lock の芯 (Mutex#sleep の再 lock からも使う)。self は rooted ref。
+ * interruptible=false は CRuby の mutex_lock_uninterruptible 相当: Thread#kill /
+ * #raise が来ていても先に lock を取り、割り込みは次の check 点まで持ち越す
+ * (Mutex#sleep / CondVar#wait は「起きたら必ず lock を持っている」が仕様)。 */
 static RESULT
-korb_mutex_lock_core(CTX *c, VALUE *slots, VALUE_REF self)
+korb_mutex_lock_core(CTX *c, VALUE *slots, VALUE_REF self, bool interruptible)
 {
     struct korb_vm *const vm = c->vm;
     korb_thread_boot(c);
@@ -1197,8 +1243,10 @@ korb_mutex_lock_core(CTX *c, VALUE *slots, VALUE_REF self)
         m = VAL2MUTEX(VALUE_REF_GET(self));                 /* GC で動いたかもしれない */
         korb_waitq_remove(&m->wq_head, &m->wq_tail, vm->cur_thread);   /* interrupt 起床なら残っている */
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        RESULT ci = korb_thread_check_ints(c, slots);
-        if (UNLIKELY(ci.state != KORB_NORMAL)) return ci;
+        if (interruptible) {
+            RESULT ci = korb_thread_check_ints(c, slots);
+            if (UNLIKELY(ci.state != KORB_NORMAL)) return ci;
+        }
         /* unlock に起こされた: ループ先頭で再取得を試みる (他が先取りしたら再 wait) */
     }
 }
@@ -1220,7 +1268,7 @@ korb_mutex_unlock_core(CTX *c, VALUE *slots, VALUE_REF self)
 
 static RESULT
 korb_m_mutex_lock(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
-{ (void)a; return korb_mutex_lock_core(c, slots, self); }
+{ (void)a; return korb_mutex_lock_core(c, slots, self, true); }
 
 static RESULT
 korb_m_mutex_unlock(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
@@ -1260,7 +1308,7 @@ korb_m_mutex_synchronize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
     (void)a;
     if (UNLIKELY(block == NULL))
         return korb_raise_thread_error(c, slots, "must be called with a block");
-    CHECK(korb_mutex_lock_core(c, slots, self));
+    CHECK(korb_mutex_lock_core(c, slots, self, true));
     RESULT r = korb_block_yield(c, slots, block, def_env, NULL, 0, cself);
     RESULT u = korb_mutex_unlock_core(c, slots, self);
     if (r.state != KORB_NORMAL) return r;                 /* block の unwind が優先 */
@@ -1284,7 +1332,7 @@ korb_m_mutex_sleep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (sec >= 0) korb_blop_deadline_in(&b, sec);
     struct timespec t0; korb_blop_now(&t0);
     RESULT sr = korb_blop_wait(c, slots, &b);
-    RESULT lr = korb_mutex_lock_core(c, slots, self);     /* raise でも必ず再 lock を試す */
+    RESULT lr = korb_mutex_lock_core(c, slots, self, false);     /* raise でも必ず再 lock を試す */
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
     if (UNLIKELY(lr.state != KORB_NORMAL)) return lr;
     struct timespec t1; korb_blop_now(&t1);
@@ -1294,48 +1342,27 @@ korb_m_mutex_sleep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     return RESULT_OK(LONG2FIX(slept < 0 ? 0 : slept));
 }
 
-/* ConditionVariable#wait(mutex[, timeout]) — cv 待機列に入り、mutex を放し、
- * signal / timeout / interrupt で起きたら mutex を取り直す。 */
+/* ConditionVariable#wait(obj[, timeout]) — cv 待機列に入って obj.sleep(timeout) を
+ * 呼ぶ (CRuby も #sleep への funcall なので Mutex 以外でもよい)。起床時の再 lock は
+ * Mutex#sleep 側の責務。待機列からの自己除去は ensure 相当で必ず行う。 */
 static RESULT
 korb_m_condvar_wait(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     struct korb_vm *const vm = c->vm;
     korb_thread_boot(c);
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !KORB_MUTEX_P(VALUE_SLICE_GET(a, 0))))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type (expected Mutex)");
-    double tmo = -1.0;
-    if (VALUE_SLICE_LEN(a) >= 2) CHECK(korb_thread_tmo_arg(c, slots, VALUE_SLICE_GET(a, 1), &tmo));
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     if (UNLIKELY(vm->running_fiber != NULL))
         return korb_raise_thread_error(c, slots, "can't switch threads from inside a Fiber");
     struct korb_thread *const cur = vm->cur_thread;
-    struct korb_blop tb;                                  /* timeout 併走 (join と同型) */
-    if (tmo >= 0) {
-        memset(&tb, 0, sizeof tb);
-        tb.kind = KORB_BLOP_TIMER; tb.waiter = cur;
-        korb_blop_deadline_in(&tb, tmo);
-        korb_blop_prep(vm, &tb);
-    }
     { KorbCondVar *cv = VAL2CONDVAR(VALUE_REF_GET(self));
       korb_waitq_push(&cv->wq_head, &cv->wq_tail, cur); }
-    RESULT ur = korb_mutex_unlock_core(c, slots, VALUE_SLICE_REF(a, 0));
-    if (UNLIKELY(ur.state != KORB_NORMAL)) {              /* mutex を持っていなかった等 */
-        KorbCondVar *cv = VAL2CONDVAR(VALUE_REF_GET(self));
-        korb_waitq_remove(&cv->wq_head, &cv->wq_tail, cur);
-        if (tmo >= 0) korb_blop_cancel(vm, &tb, -ECANCELED);
-        return ur;
-    }
-    cur->state = KORB_TH_PENDED;
-    RESULT r = korb_thread_yield_cpu(c, slots);
+    slots[0] = VALUE_SLICE_GET(a, 0);                     /* receiver of #sleep */
+    slots[1] = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_NIL;   /* CRuby は常に 1 引数 */
+    const RESULT r = korb_send(c, slots + 2, korb_intern(vm, "sleep", 5), 0, 1);
     { KorbCondVar *cv = VAL2CONDVAR(VALUE_REF_GET(self));  /* 再導出 + 自己除去 (冪等) */
       korb_waitq_remove(&cv->wq_head, &cv->wq_tail, vm->cur_thread); }
-    if (tmo >= 0 && !(tb.flags & KORB_BLOP_F_DONE))
-        korb_blop_cancel(vm, &tb, -ECANCELED);
-    RESULT ci = korb_thread_check_ints(c, slots);
-    RESULT lr = korb_mutex_lock_core(c, slots, VALUE_SLICE_REF(a, 0));   /* 例外でも再 lock */
-    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (UNLIKELY(ci.state != KORB_NORMAL)) return ci;
-    if (UNLIKELY(lr.state != KORB_NORMAL)) return lr;
-    return RESULT_OK(VALUE_REF_GET(self));
+    return r;                                             /* CRuby は #sleep の戻り値をそのまま返す */
 }
 
 static RESULT

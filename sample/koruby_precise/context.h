@@ -439,6 +439,7 @@ typedef struct KorbFiberRep {
     uint8_t killing;                 /* Fiber#kill: unwind the fiber at its suspension point */
     uint8_t blocking;                /* Fiber.new(blocking: true) — #blocking? and Fiber.blocking? */
     struct KorbFiberRep *link;       /* vm fiber list (stable ptrs) */
+    struct korb_thread *owner;       /* creating green thread — resume from another is a FiberError */
 } KorbFiberRep;
 
 typedef struct KorbFiber {
