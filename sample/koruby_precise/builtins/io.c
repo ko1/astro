@@ -79,6 +79,15 @@ static KorbIORep *korb_io_rep(CTX *c, VALUE self) {
     if (idx < 0 || (uint32_t)idx >= c->vm->io_cnt) return NULL;
     return c->vm->io_reps[idx];
 }
+/* Fill a caller-supplied read buffer.  CRuby's read/readpartial/sysread keep the
+ * buffer's own encoding (only its bytes are replaced), while String#replace
+ * adopts the source's — so put it back. */
+static RESULT korb_io_fill_buf(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_SLICE src) {
+    const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(dst));
+    CHECK(korb_m_str_replace(c, slots, dst, src));
+    KORB_STR_ENC_SET(VALUE_REF_GET(dst), enc);
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 #define KORB_IO_NEED_OPEN(c, slots, self) do { if (UNLIKELY(!korb_io_open_p(korb_io_rep((c), VALUE_REF_GET(self))))) \
     return korb_raise((c), (slots), KORB_E_IOERROR, 0, "closed stream"); } while (0)
 /* Put a stream into the parking regime: its descriptor goes non-blocking, so a
@@ -2048,7 +2057,7 @@ static RESULT korb_io_take_buffered(CTX *c, VALUE *slots, KorbIORep *const rep,
     if (UNLIKELY(!KORB_STRING_P(bufv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     slots[0] = sr.value;
     slots[1] = bufv;
-    return korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
+    return korb_io_fill_buf(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
 }
 
 /* IO#readpartial(maxlen[, buf]) — at least one byte, but only what is already
@@ -2068,7 +2077,7 @@ static RESULT korb_m_io_readpartial(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (bufv == KORB_NIL) return korb_str_new(c, slots, "", 0);
         slots[0] = UNWRAP(korb_str_new(c, slots, "", 0));
         slots[1] = bufv;
-        return korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
+        return korb_io_fill_buf(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
     }
     RESULT err = RESULT_OK(KORB_NIL);
     const uint32_t avail = korb_io_fill_p(c, slots, rep, &err);   /* may park → may GC */
@@ -2148,7 +2157,7 @@ static RESULT korb_m_io_read_nonblock(CTX *c, VALUE *slots, VALUE_REF self, VALU
     if (UNLIKELY(!KORB_STRING_P(bufv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     slots[0] = sr.value;
     slots[1] = bufv;
-    return korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
+    return korb_io_fill_buf(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
 }
 
 /* IO#write_nonblock(string[, exception: true]) */
@@ -2225,7 +2234,7 @@ static RESULT korb_m_io_pread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(cr.value != KORB_TRUE))
             return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
     }
-    return korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
+    return korb_io_fill_buf(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
 }
 
 /* IO#ioctl(request[, arg]) — arg nil/Integer is passed by value, a String is
@@ -2244,7 +2253,7 @@ static RESULT korb_m_io_ioctl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             char pad[sizeof(long)];
             memset(pad, 0, sizeof pad);
             slots[1] = UNWRAP(korb_str_new(c, slots + 1, pad, (uint32_t)sizeof pad));
-            CHECK(korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1)));
+            CHECK(korb_io_fill_buf(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1)));
         }
         KorbString *const sb = VAL2STR(slots[0]);      /* no alloc from here to the call */
         r = ioctl(rep->fd, (unsigned long)req, korb_strbuf_data(sb->buf));
@@ -2272,7 +2281,7 @@ static RESULT korb_m_io_fcntl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             char pad[sizeof(long)];
             memset(pad, 0, sizeof pad);
             slots[1] = UNWRAP(korb_str_new(c, slots + 1, pad, (uint32_t)sizeof pad));
-            CHECK(korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1)));
+            CHECK(korb_io_fill_buf(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1)));
         }
         KorbString *const sb = VAL2STR(slots[0]);                 /* no alloc from here to the call */
         r = fcntl(korb_io_rep(c, VALUE_REF_GET(self))->fd, (int)cmd, korb_strbuf_data(sb->buf));

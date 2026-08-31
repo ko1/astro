@@ -229,6 +229,14 @@ class StringIO
   # Splice bytes into @buf at a BYTE offset.  String#[]= counts characters, so
   # the buffer is relabelled BINARY for the duration; that also keeps a write of
   # foreign bytes from raising Encoding::CompatibilityError.
+  # CRuby keeps the caller buffer's encoding on a sized read; #replace adopts
+  # the source's, so put it back.
+  private def __fill_buf(buf, str)
+    enc = buf.encoding
+    buf.replace(str)
+    buf.force_encoding(enc)
+    buf
+  end
   private def __bsplice(pos, s)
     enc = @buf.encoding
     @buf.force_encoding(Encoding::BINARY)
@@ -371,7 +379,7 @@ class StringIO
       r = @buf.byteslice(@pos, @buf.bytesize - @pos) || ""
     end
     @pos += r.bytesize
-    outbuf ? outbuf.replace(r) : r
+    outbuf ? __fill_buf(outbuf, r) : r
   end
 
   def sysread(length = nil, outbuf = nil)
@@ -384,7 +392,7 @@ class StringIO
       raise EOFError, "end of file reached"
     end
     r = read(length, outbuf)
-    outbuf ? outbuf.replace(r) : r
+    outbuf ? __fill_buf(outbuf, r) : r
   end
   # io/console's StringIO extension: one character, ignoring the tty options.
   def getch(*) = getc
