@@ -1015,6 +1015,42 @@ node_re_class(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t bm1, u
     return r;
 }
 
+/* Unicode-aware character class: `\p{...}`, `[[:alpha:]]` and any class
+ * whose members reach past U+007F.  One codepoint per match.
+ *
+ * ASCII stays on the same bitmap test node_re_class uses (the bitmap is
+ * derived from the set's sub-0x80 part at parse time), so a class that
+ * merely *can* match non-ASCII costs nothing extra on ASCII input.  Only
+ * a lead byte >= 0x80 pays the decode + binary search.
+ *
+ * `set` is an `agre_cpset_t *` owned by the pattern.  Pointers can't be
+ * baked into an SD, so the body reads it back out of the NODE rather than
+ * from the (NULL-in-AOT) operand; `set_hash` carries the set's identity
+ * into the structural hash so two different sets never share an SD. */
+NODE_DEF
+node_re_uniclass(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t bm1, uint64_t set_hash, void *set, NODE *next)
+{
+    (void)set; (void)set_hash;
+    if (c->pos >= c->str_len) return MR_FAIL;
+    const uint8_t b = c->str[c->pos];
+    int adv;
+    if (LIKELY(b < 0x80)) {
+        const uint64_t bm = (b < 64) ? bm0 : bm1;
+        if (!((bm >> (b & 63)) & 1ULL)) return MR_FAIL;
+        adv = 1;
+    }
+    else {
+        uint32_t cp;
+        adv = agre_utf8_decode(c->str + c->pos, c->str_len - c->pos, &cp);
+        if (adv == 0) return MR_FAIL;
+        if (!agre_cpset_contains((const agre_cpset_t *)n->u.node_re_uniclass.set, cp)) return MR_FAIL;
+    }
+    c->pos += (size_t)adv;
+    const VALUE r = EVAL_ARG(c, next);
+    if (!r) c->pos -= (size_t)adv;
+    return r;
+}
+
 /* ------------------------------------------------------------------ */
 /* Alternation                                                         */
 /* ------------------------------------------------------------------ */

@@ -26,7 +26,8 @@
 typedef enum {
     IRE_LIT,
     IRE_DOT,            /* .  (respects multiline) */
-    IRE_CLASS,          /* [...] */
+    IRE_CLASS,          /* [...] — byte-level bitmap */
+    IRE_UNICLASS,       /* [...] / \p{...} — codepoint-level range set */
     IRE_ALT,
     IRE_CONCAT,
     IRE_REP,
@@ -58,6 +59,10 @@ typedef struct ire_node {
     union {
         struct { char *bytes; uint32_t len; bool ci; } lit;
         struct { uint64_t bm[4]; } cls;
+        /* Codepoint-level class.  `bm` is the sub-0x80 half (so the
+         * matcher can answer ASCII from a bitmap without touching the
+         * range table); `r`/`n` is the rest, all >= 0x80. */
+        struct { uint64_t bm[2]; agre_cprange_t *r; uint32_t n; } uni;
         struct { struct ire_node *l, *r; } alt;
         struct { struct ire_node **xs; size_t n; size_t cap; } cat;
         struct { struct ire_node *body; int32_t min; int32_t max; bool greedy; } rep;
@@ -258,15 +263,23 @@ static void bm_add_special(uint64_t bm[4], int c) {
     }
 }
 
+/* Defined below, next to the codepoint-set helpers. */
+static bool parse_prop_ref(re_parser_t *q, bool negate, uint64_t bm[4], agre_cpsetb_t *cps);
+
 /* Parse a single escape inside a class.  Returns 1 if handled (already set
- * bits), 0 if it was a single character (write *out_byte). */
-static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte, uint32_t *out_cp) {
+ * bits), 0 if it was a single character (write *out_byte).  `cps` collects
+ * members at or above U+0080; NULL when the caller can't take any. */
+static int parse_class_escape(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps, uint8_t *out_byte, uint32_t *out_cp) {
     *out_cp = 0;
     int c = re_get(q);
     switch (c) {
     case 'd': case 'D': case 'w': case 'W': case 's': case 'S':
     case 'h': case 'H':
         bm_add_special(bm, c);
+        return 1;
+    case 'p': case 'P':
+        if (q->encoding != AGRE_ENC_UTF8) { re_error(q, "\\p needs UTF-8 mode"); return 1; }
+        parse_prop_ref(q, c == 'P', bm, cps);
         return 1;
     case 'n': *out_byte = '\n'; return 0;
     case 't': *out_byte = '\t'; return 0;
@@ -346,122 +359,71 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte,
 
 /* ---- multi-byte class members (UTF-8) -------------------------------------
  * The class bitmap is byte-level; members at or above U+0080 (literal
- * multi-byte characters and \u escapes) are collected as codepoint ranges and
- * compiled into an alternation of byte-class sequences via lead/trail
- * decomposition (RE2-style).  UTF-8 is self-synchronizing, so the generated
- * lead-anchored sequences can never match in the middle of a codepoint.
- * Negated classes with multi-byte members stay unsupported (complementing
- * over codepoint space needs a different matcher). */
-typedef struct {
-    struct { uint32_t lo, hi; } r[1024];   /* Unicode-normalize tables use ~700 ranges */
-    int n;
-} cls_cp_ranges_t;
-
+ * multi-byte characters, \u escapes, \p{...} properties, the Unicode part
+ * of the POSIX bracket classes) are collected as codepoint ranges in a
+ * separate builder.  A class that ends up with any of those lowers to
+ * node_re_uniclass — a codepoint matcher — instead of the byte bitmap. */
 static void
-cls_cp_add(re_parser_t *q, cls_cp_ranges_t *cps, uint32_t lo, uint32_t hi)
+cls_cp_add(re_parser_t *q, agre_cpsetb_t *cps, uint32_t lo, uint32_t hi)
 {
-    if (cps == NULL) {   /* nested [...] / && operand — not plumbed through */
+    if (cps == NULL) {   /* caller didn't plumb a codepoint accumulator */
         re_error(q, "multi-byte char-class member is not supported here");
         return;
     }
-    if (cps->n >= (int)(sizeof(cps->r) / sizeof(cps->r[0]))) {
-        re_error(q, "too many multi-byte char-class members");
+    if (!agre_cpsetb_add(cps, lo, hi)) re_error(q, "out of memory in char-class");
+}
+
+/* Add a property's members within [0x80, AGRE_CP_MAX] to `cps` — or, when
+ * `neg`, the gaps between them.  The sub-0x80 part is handled by the
+ * caller's byte bitmap. */
+static void
+cls_cp_add_prop_high(re_parser_t *q, agre_cpsetb_t *cps, const agre_cpset_t *s, bool neg)
+{
+    if (!neg) {
+        for (uint32_t i = 0; i < s->n; i++) {
+            if (s->r[i].hi < 0x80) continue;
+            cls_cp_add(q, cps, s->r[i].lo < 0x80 ? 0x80 : s->r[i].lo, s->r[i].hi);
+        }
         return;
     }
-    cps->r[cps->n].lo = lo;
-    cps->r[cps->n].hi = hi;
-    cps->n++;
-}
-
-static int
-utf8_encode_cp(uint32_t cp, uint8_t out[4])
-{
-    if (cp < 0x80)      { out[0] = (uint8_t)cp; return 1; }
-    if (cp < 0x800)     { out[0] = (uint8_t)(0xC0 | (cp >> 6));
-                          out[1] = (uint8_t)(0x80 | (cp & 0x3F)); return 2; }
-    if (cp < 0x10000)   { out[0] = (uint8_t)(0xE0 | (cp >> 12));
-                          out[1] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
-                          out[2] = (uint8_t)(0x80 | (cp & 0x3F)); return 3; }
-    out[0] = (uint8_t)(0xF0 | (cp >> 18));
-    out[1] = (uint8_t)(0x80 | ((cp >> 12) & 0x3F));
-    out[2] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
-    out[3] = (uint8_t)(0x80 | (cp & 0x3F));
-    return 4;
-}
-
-static ire_node_t *
-cls_byte_range_node(uint8_t lo, uint8_t hi)
-{
-    ire_node_t *n = ire_new(IRE_CLASS);
-    bm_set_range(n->u.cls.bm, lo, hi);
-    return n;
-}
-
-static ire_node_t *
-ire_alt2(ire_node_t *l, ire_node_t *r)
-{
-    if (l == NULL) return r;
-    if (r == NULL) return l;
-    ire_node_t *a = ire_new(IRE_ALT);
-    a->u.alt.l = l;
-    a->u.alt.r = r;
-    return a;
-}
-
-/* Byte-class sequence matching exactly the UTF-8 encodings between the two
- * equal-length byte strings lo..hi (inclusive, lexicographic).  Positions
- * after a strictly-less lead byte range span the full trail space 80..BF. */
-static ire_node_t *
-utf8_seq_between(const uint8_t *lo, const uint8_t *hi, int len)
-{
-    if (len == 1) return cls_byte_range_node(lo[0], hi[0]);
-    if (lo[0] == hi[0]) {
-        ire_node_t *cat = ire_new(IRE_CONCAT);
-        ire_cat_push(cat, cls_byte_range_node(lo[0], lo[0]));
-        ire_cat_push(cat, utf8_seq_between(lo + 1, hi + 1, len - 1));
-        return cat;
+    uint32_t next = 0x80;
+    for (uint32_t i = 0; i < s->n; i++) {
+        if (s->r[i].hi < 0x80) continue;
+        const uint32_t lo = s->r[i].lo < 0x80 ? 0x80 : s->r[i].lo;
+        if (lo > next) cls_cp_add(q, cps, next, lo - 1);
+        if (s->r[i].hi >= AGRE_CP_MAX) return;
+        next = s->r[i].hi + 1;
     }
-    /* [lo0] lo-tail..max  |  (lo0,hi0) full-tail  |  [hi0] min..hi-tail */
-    uint8_t maxt[4] = { 0xBF, 0xBF, 0xBF, 0xBF };
-    uint8_t mint[4] = { 0x80, 0x80, 0x80, 0x80 };
-    ire_node_t *a = ire_new(IRE_CONCAT);
-    ire_cat_push(a, cls_byte_range_node(lo[0], lo[0]));
-    ire_cat_push(a, utf8_seq_between(lo + 1, maxt, len - 1));
-    ire_node_t *b = NULL;
-    if ((uint8_t)(lo[0] + 1) <= (uint8_t)(hi[0] - 1)) {
-        b = ire_new(IRE_CONCAT);
-        ire_cat_push(b, cls_byte_range_node((uint8_t)(lo[0] + 1), (uint8_t)(hi[0] - 1)));
-        ire_cat_push(b, utf8_seq_between(mint, maxt, len - 1));
-    }
-    ire_node_t *c = ire_new(IRE_CONCAT);
-    ire_cat_push(c, cls_byte_range_node(hi[0], hi[0]));
-    ire_cat_push(c, utf8_seq_between(mint, hi + 1, len - 1));
-    return ire_alt2(ire_alt2(a, b), c);
+    cls_cp_add(q, cps, next, AGRE_CP_MAX);
 }
 
-/* Codepoint range [lo,hi] (lo >= 0x80) → alternation of byte sequences,
- * split at encoded-length boundaries so both endpoints encode equally. */
-static ire_node_t *
-utf8_range_node(uint32_t lo, uint32_t hi)
+/* `\p{NAME}` / `\P{NAME}` — the `\p` or `\P` is already consumed.  Adds the
+ * property (complemented when `negate`) to the caller's byte bitmap (ASCII
+ * half) and codepoint accumulator (the rest).  `\p{^NAME}` flips too. */
+static bool
+parse_prop_ref(re_parser_t *q, bool negate, uint64_t bm[4], agre_cpsetb_t *cps)
 {
-    static const uint32_t bounds[][2] = { {0x80, 0x7FF}, {0x800, 0xFFFF}, {0x10000, 0x10FFFF} };
-    ire_node_t *acc = NULL;
-    for (size_t i = 0; i < sizeof(bounds) / sizeof(bounds[0]); i++) {
-        uint32_t l = lo > bounds[i][0] ? lo : bounds[i][0];
-        uint32_t h = hi < bounds[i][1] ? hi : bounds[i][1];
-        if (l > h) continue;
-        uint8_t lb[4], hb[4];
-        int len = utf8_encode_cp(l, lb);
-        (void)utf8_encode_cp(h, hb);
-        acc = ire_alt2(acc, utf8_seq_between(lb, hb, len));
+    if (re_peek(q) != '{') { re_error(q, "invalid character property"); return false; }
+    q->p++;
+    const uint8_t *name = q->p;
+    while (q->p < q->end && *q->p != '}') q->p++;
+    if (q->p >= q->end) { re_error(q, "unterminated character property"); return false; }
+    const uint8_t *const name_end = q->p;
+    q->p++;                                   /* consume '}' */
+    if (name < name_end && *name == '^') { negate = !negate; name++; }
+
+    agre_cpset_t s;
+    if (!agre_uni_prop_find((const char *)name, (size_t)(name_end - name), &s)) {
+        re_error(q, "unknown character property name");
+        return false;
     }
-    return acc;
+    for (uint32_t b = 0; b < 0x80; b++) {
+        if (agre_cpset_contains(&s, b) != negate) bm_set(bm, (uint8_t)b);
+    }
+    cls_cp_add_prop_high(q, cps, &s, negate);
+    return !q->error;
 }
 
-/* Forward decls: parse_class is called recursively for nested `[...]`
- * members and for `&&`-RHS sub-classes; ire_free disposes those
- * temporary nested-class nodes after we copy out their bitmap. */
-static ire_node_t *parse_class(re_parser_t *q);
 static void ire_free(ire_node_t *n);
 
 /* Parse one class operand into `bm` until ']' (consumed) or '&&' (left
@@ -473,52 +435,52 @@ static void ire_free(ire_node_t *n);
  * `&&` chains intersection: when seen, recursively parses the RHS
  * operand into a fresh bitmap and ANDs it in.  Recursion is left-
  * associative (`A&&B&&C` = `(A&&B)&&C`), which matches Onigmo. */
-/* Ruby's POSIX bracket classes are Unicode-aware.  Add the non-ASCII part as
- * codepoint ranges (a practical approximation: the Latin/Greek/Cyrillic and
- * other common letter blocks, the Unicode decimal-digit blocks, the Unicode
- * spaces).  Only for the positive form. */
+/* Ruby's POSIX bracket classes are Unicode-aware for UTF-8 patterns.  The
+ * ASCII half is already in the caller's bitmap (bm_posix_class); this adds
+ * the rest from the generated tables.  `[[:^name:]]` complements. */
 static void
-posix_class_unicode(re_parser_t *q, const char *name, size_t name_len, cls_cp_ranges_t *cps)
+posix_class_unicode(re_parser_t *q, const char *name, size_t name_len, bool neg, agre_cpsetb_t *cps)
 {
-    #define PMATCH(s) (name_len == sizeof(s) - 1 && memcmp(name, s, sizeof(s) - 1) == 0)
-    const bool alpha = PMATCH("alpha") || PMATCH("alnum") || PMATCH("word") || PMATCH("print") || PMATCH("graph");
-    const bool digit = PMATCH("digit") || PMATCH("alnum") || PMATCH("word") || PMATCH("print") || PMATCH("graph");
-    const bool space = PMATCH("space") || PMATCH("print");
-    const bool upper = PMATCH("upper");
-    const bool lower = PMATCH("lower");
-    #undef PMATCH
-    if (alpha || upper || lower) {
-        cls_cp_add(q, cps, 0x00C0, 0x024F);      /* Latin-1 supplement letters + Latin Extended A/B */
-        cls_cp_add(q, cps, 0x0370, 0x03FF);      /* Greek */
-        cls_cp_add(q, cps, 0x0400, 0x04FF);      /* Cyrillic */
-        cls_cp_add(q, cps, 0x0530, 0x058F);      /* Armenian */
-        cls_cp_add(q, cps, 0x05D0, 0x05EA);      /* Hebrew */
-        cls_cp_add(q, cps, 0x0620, 0x064A);      /* Arabic */
-        cls_cp_add(q, cps, 0x3040, 0x30FF);      /* Kana */
-        cls_cp_add(q, cps, 0x4E00, 0x9FFF);      /* CJK */
-        cls_cp_add(q, cps, 0xAC00, 0xD7A3);      /* Hangul */
-    }
-    if (digit) {
-        cls_cp_add(q, cps, 0x0660, 0x0669);      /* Arabic-Indic */
-        cls_cp_add(q, cps, 0x06F0, 0x06F9);      /* Extended Arabic-Indic */
-        cls_cp_add(q, cps, 0x0966, 0x096F);      /* Devanagari */
-        cls_cp_add(q, cps, 0xFF10, 0xFF19);      /* Fullwidth */
-    }
-    if (space) {
-        cls_cp_add(q, cps, 0x00A0, 0x00A0);
-        cls_cp_add(q, cps, 0x2000, 0x200A);
-        cls_cp_add(q, cps, 0x2028, 0x2029);
-        cls_cp_add(q, cps, 0x3000, 0x3000);
-    }
+    agre_cpset_t s;
+    if (!agre_posix_prop_find(name, name_len, &s)) return;  /* ASCII-only class (xdigit, ascii) */
+    cls_cp_add_prop_high(q, cps, &s, neg);
 }
 
-static void parse_class_body(re_parser_t *q, uint64_t bm[4], cls_cp_ranges_t *cps) {
+/* Complement a class operand.  A class with no codepoint members keeps the
+ * historical byte-level flip (`[^a]` stays a 256-bit bitmap, which is what
+ * the SIMD prefilters and the first-byte analysis can use).  Once any
+ * member reaches past U+007F the class is a codepoint matcher anyway, so
+ * complement ASCII in the bitmap and the rest over [0x80, U+10FFFF]. */
+static void
+cls_negate(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps)
+{
+    if (cps == NULL || cps->n == 0) { bm_invert(bm); return; }
+    bm[0] = ~bm[0];
+    bm[1] = ~bm[1];
+    bm[2] = bm[3] = 0;                    /* UTF-8 mode: 0x80.. are not whole characters */
+    /* cps holds only >= 0x80; adding the ASCII block first makes the
+     * whole-space complement come back as the >= 0x80 complement. */
+    if (!agre_cpsetb_add(cps, 0, 0x7F) || !agre_cpsetb_complement(cps))
+        re_error(q, "out of memory in char-class");
+}
+
+static void parse_class_body(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps) {
     bool first = true;
+    /* Previous member was a whole set (POSIX class / nested class / `\d` /
+     * `\p{}`), which can't be the low end of a range — Ruby rejects
+     * `[[:alpha:]-z]` and `[\d-x]` but allows a trailing `[[:alpha:]-]`. */
+    bool prev_is_set = false;
 
     while (q->p < q->end) {
         int c = re_peek(q);
 
         if (c == ']' && !first) { q->p++; return; }
+
+        if (prev_is_set && c == '-' && q->p + 1 < q->end && q->p[1] != ']') {
+            re_error(q, "unmatched range specifier in char-class");
+            return;
+        }
+        prev_is_set = false;
 
         /* `&&` set intersection.  Onigmo requires at least one prior
          * member (so `[&&x]` is `&` `&` `x`), which our `!first` guard
@@ -527,9 +489,15 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], cls_cp_ranges_t *cp
          * consumes the closing `]`, so we return immediately. */
         if (!first && q->p + 1 < q->end && q->p[0] == '&' && q->p[1] == '&') {
             q->p += 2;
-            uint64_t rhs[4] = {0};
-            parse_class_body(q, rhs, NULL);   /* && over multi-byte: unsupported */
-            bm_and(bm, rhs);
+            uint64_t rhs_bm[4] = {0};
+            agre_cpsetb_t rhs_cps = { 0 };
+            parse_class_body(q, rhs_bm, cps ? &rhs_cps : NULL);
+            bm_and(bm, rhs_bm);
+            if (cps != NULL) {
+                const agre_cpset_t v = { rhs_cps.r, rhs_cps.n };
+                agre_cpsetb_intersect(cps, &v);
+            }
+            agre_cpsetb_free(&rhs_cps);
             return;
         }
 
@@ -548,11 +516,12 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], cls_cp_ranges_t *cp
                     q->p += 2;  /* consume `:]` */
                     if (neg) bm_invert(mask);
                     bm_or(bm, mask);
-                    /* Ruby's POSIX classes are Unicode-aware: add the non-ASCII
-                     * ranges too (only for the positive form — complementing
-                     * over codepoint space is a different matcher). */
-                    if (!neg && cps != NULL) posix_class_unicode(q, (const char *)name_start, name_len, cps);
+                    /* Ruby's POSIX classes are Unicode-aware; add the
+                     * non-ASCII half (or its complement) too. */
+                    if (q->encoding == AGRE_ENC_UTF8 && cps != NULL)
+                        posix_class_unicode(q, (const char *)name_start, name_len, neg, cps);
                     first = false;
+                    prev_is_set = true;
                     continue;
                 }
                 re_error(q, "invalid POSIX bracket type");
@@ -566,15 +535,20 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], cls_cp_ranges_t *cp
          * `&&` (e.g. `[a-z&&[^aeiou]]`). */
         if (c == '[') {
             q->p++;  /* consume '[' */
-            ire_node_t *nested = parse_class(q);
-            if (nested->kind != IRE_CLASS) {   /* nested class expanded to an ALT (multi-byte member) */
-                re_error(q, "multi-byte member in a nested char-class is not supported");
-                ire_free(nested);
-                return;
+            uint64_t nbm[4] = {0};
+            agre_cpsetb_t ncps = { 0 };
+            bool nneg = false;
+            if (re_peek(q) == '^') { nneg = true; q->p++; }
+            parse_class_body(q, nbm, cps ? &ncps : NULL);
+            if (nneg) cls_negate(q, nbm, cps ? &ncps : NULL);
+            bm_or(bm, nbm);
+            if (cps != NULL) {
+                const agre_cpset_t v = { ncps.r, ncps.n };
+                if (!agre_cpsetb_add_set(cps, &v)) re_error(q, "out of memory in char-class");
             }
-            bm_or(bm, nested->u.cls.bm);
-            ire_free(nested);
+            agre_cpsetb_free(&ncps);
             first = false;
+            prev_is_set = true;
             continue;
         }
 
@@ -586,7 +560,8 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], cls_cp_ranges_t *cp
 
         if (c == '\\') {
             q->p++;
-            if (parse_class_escape(q, bm, &byte_val, &cp_val)) {
+            if (parse_class_escape(q, bm, cps, &byte_val, &cp_val)) {
+                prev_is_set = true;
                 continue;  /* set was applied */
             }
             got_byte = true;
@@ -628,7 +603,7 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], cls_cp_ranges_t *cp
                 q->p++;
                 uint64_t dummy[4] = {0};
                 uint8_t hib;
-                if (parse_class_escape(q, dummy, &hib, &hi_cp)) {
+                if (parse_class_escape(q, dummy, NULL, &hib, &hi_cp)) {
                     re_error(q, "char-class value at end of range");
                     return;
                 }
@@ -655,6 +630,13 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], cls_cp_ranges_t *cp
             const uint32_t lo_c = cp_val ? cp_val : (uint32_t)byte_val;
             const uint32_t hi_c = hi_cp  ? hi_cp  : (uint32_t)hi;
             if (lo_c > hi_c) { re_error(q, "empty range in char class"); return; }
+            if (q->encoding != AGRE_ENC_UTF8) {
+                /* Byte mode (/n): the whole range is bitmap territory. */
+                if (hi_c > 0xFF) { re_error(q, "invalid range in char class"); return; }
+                for (uint32_t i = lo_c; i <= hi_c; i++)
+                    bm_set_ci(bm, (uint8_t)i, q->case_insensitive);
+                continue;
+            }
             const uint32_t ascii_hi = hi_c < 0x7F ? hi_c : 0x7F;
             if (lo_c <= 0x7F) {
                 for (uint32_t i = lo_c; i <= ascii_hi; i++)
@@ -671,27 +653,38 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], cls_cp_ranges_t *cp
     re_error(q, "premature end of char-class");
 }
 
+/* Hand a finished (bitmap, codepoint-set) pair to an IRE_UNICLASS node.
+ * Takes ownership of the builder's array. */
+static ire_node_t *
+ire_uniclass(const uint64_t bm[4], agre_cpsetb_t *cps)
+{
+    ire_node_t *const n = ire_new(IRE_UNICLASS);
+    n->u.uni.bm[0] = bm[0];
+    n->u.uni.bm[1] = bm[1];
+    n->u.uni.r = cps->r;
+    n->u.uni.n = cps->n;
+    cps->r = NULL;
+    cps->n = cps->cap = 0;
+    return n;
+}
+
 static ire_node_t *parse_class(re_parser_t *q) {
     /* '[' already consumed */
     ire_node_t *n = ire_new(IRE_CLASS);
     bool negate = false;
     if (re_peek(q) == '^') { negate = true; q->p++; }
-    cls_cp_ranges_t cps = { .n = 0 };
-    parse_class_body(q, n->u.cls.bm, &cps);
+    /* Codepoint members only exist in UTF-8 mode; in ASCII/binary mode the
+     * class stays byte-level and `\u{80+}` / `\p{}` are parse errors. */
+    agre_cpsetb_t cps = { 0 };
+    const bool utf8 = q->encoding == AGRE_ENC_UTF8;
+    parse_class_body(q, n->u.cls.bm, utf8 ? &cps : NULL);
+    if (negate) cls_negate(q, n->u.cls.bm, utf8 ? &cps : NULL);
     if (cps.n > 0) {
-        if (negate) {
-            re_error(q, "multi-byte member in a negated char-class is not supported");
-            return n;
-        }
-        /* Expand: [ascii bitmap] | utf8-seq(range) | ...  (see cls_cp_ranges_t) */
-        bool bm_empty = (n->u.cls.bm[0] | n->u.cls.bm[1] | n->u.cls.bm[2] | n->u.cls.bm[3]) == 0;
-        ire_node_t *acc = bm_empty ? NULL : n;
-        if (bm_empty) ire_free(n);
-        for (int i = 0; i < cps.n; i++)
-            acc = ire_alt2(acc, utf8_range_node(cps.r[i].lo, cps.r[i].hi));
-        return acc;
+        ire_node_t *const u = ire_uniclass(n->u.cls.bm, &cps);
+        ire_free(n);
+        return u;
     }
-    if (negate) bm_invert(n->u.cls.bm);
+    agre_cpsetb_free(&cps);
     return n;
 }
 
@@ -758,6 +751,21 @@ static ire_node_t *parse_atom(re_parser_t *q) {
     re_skip_ws(q);
     int c = re_peek(q);
     if (c < 0) return ire_new(IRE_EMPTY);
+
+    /* A `{` here has no atom to repeat.  Only a *well-formed* `{m,n}` is
+     * an error; anything else (`/{/`, `/{a}/`, `/P{L}/`) is a literal
+     * brace and drops through to the default case.  Ruby agrees. */
+    if (c == '{') {
+        const uint8_t *const save = q->p;
+        int32_t mn, mx;
+        q->p++;
+        const bool is_quantifier = parse_braces(q, &mn, &mx);
+        q->p = save;
+        if (is_quantifier) {
+            re_error(q, "target of repeat operator is not specified");
+            return NULL;
+        }
+    }
 
     switch (c) {
     case '(': {
@@ -961,6 +969,21 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             bm_add_special(n->u.cls.bm, e);
             return n;
         }
+        case 'p': case 'P': {
+            if (q->encoding != AGRE_ENC_UTF8) { re_error(q, "\\p needs UTF-8 mode"); return NULL; }
+            uint64_t bm[4] = {0};
+            agre_cpsetb_t cps = { 0 };
+            if (!parse_prop_ref(q, e == 'P', bm, &cps)) { agre_cpsetb_free(&cps); return NULL; }
+            /* A property with no member past U+007F (`\p{ASCII}`) is just a
+             * byte class; anything else needs the codepoint matcher. */
+            if (cps.n == 0) {
+                ire_node_t *n = ire_new(IRE_CLASS);
+                n->u.cls.bm[0] = bm[0];
+                n->u.cls.bm[1] = bm[1];
+                return n;
+            }
+            return ire_uniclass(bm, &cps);
+        }
         case 'R': {
             /* Generic newline: `\r\n | [\n\v\f\r]`.  ASCII subset only. */
             ire_node_t *crlf = ire_new(IRE_LIT);
@@ -1144,7 +1167,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
     }
     case '|': case ')':
         return ire_new(IRE_EMPTY);
-    case '*': case '+': case '?': case '{':
+    case '*': case '+': case '?':
         re_error(q, "target of repeat operator is not specified");
         return NULL;
     default: {
@@ -1653,7 +1676,7 @@ ire_memo_eligible_inner(const ire_node_t *n, bool in_la)
     case IRE_SUBROUTINE:
     case IRE_CONDITIONAL:
         return false;
-    case IRE_LIT: case IRE_DOT: case IRE_CLASS:
+    case IRE_LIT: case IRE_DOT: case IRE_CLASS: case IRE_UNICLASS:
     case IRE_BOS: case IRE_EOS: case IRE_EOS_NL:
     case IRE_BOL: case IRE_EOL:
     case IRE_WB: case IRE_NWB:
@@ -1703,7 +1726,8 @@ ire_must_consume(const ire_node_t *n)
     switch (n->kind) {
     case IRE_LIT:           return n->u.lit.len > 0;
     case IRE_DOT:
-    case IRE_CLASS:         return true;
+    case IRE_CLASS:
+    case IRE_UNICLASS:      return true;
     case IRE_BOS: case IRE_EOS: case IRE_EOS_NL:
     case IRE_BOL: case IRE_EOL:
     case IRE_WB: case IRE_NWB:
@@ -1744,6 +1768,7 @@ ire_fixed_len(const ire_node_t *n, agre_encoding_t enc)
     switch (n->kind) {
     case IRE_LIT:           return (int)n->u.lit.len;
     case IRE_CLASS:         return 1;
+    case IRE_UNICLASS:      return -1;    /* one codepoint = 1..4 bytes */
     case IRE_DOT:           return enc == AGRE_ENC_UTF8 ? -1 : 1;
     case IRE_BACKREF:       return -1;
     case IRE_BOS: case IRE_EOS: case IRE_EOS_NL:
@@ -2005,6 +2030,22 @@ lower_class(lower_ctx_t *L, ire_node_t *n, NODE *tail)
     return ALLOC_node_re_class(n->u.cls.bm[0], n->u.cls.bm[1], n->u.cls.bm[2], n->u.cls.bm[3], tail);
 }
 
+/* The range array outlives the IR (which is freed right after lowering),
+ * so copy it into pattern-owned storage. */
+static NODE *
+lower_uniclass(lower_ctx_t *L, ire_node_t *n, NODE *tail)
+{
+    const size_t bytes = (size_t)n->u.uni.n * sizeof(agre_cprange_t);
+    agre_cprange_t *const r = (agre_cprange_t *)malloc(bytes);
+    agre_cpset_t *const s = (agre_cpset_t *)malloc(sizeof(*s));
+    memcpy(r, n->u.uni.r, bytes);
+    astrogre_own(r);
+    astrogre_own(s);
+    s->r = r;
+    s->n = n->u.uni.n;
+    return ALLOC_node_re_uniclass(n->u.uni.bm[0], n->u.uni.bm[1], agre_cpset_hash(s), s, tail);
+}
+
 static NODE *
 lower_concat(lower_ctx_t *L, ire_node_t *cat, NODE *tail)
 {
@@ -2038,6 +2079,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
     }
     case IRE_DOT:           return make_dot(L, tail);
     case IRE_CLASS:         return lower_class(L, n, tail);
+    case IRE_UNICLASS:      return lower_uniclass(L, n, tail);
     case IRE_BOS:           return ALLOC_node_re_bos(tail);
     case IRE_EOS:           return ALLOC_node_re_eos(tail);
     case IRE_EOS_NL:        return ALLOC_node_re_eos_nl(tail);
@@ -2199,6 +2241,7 @@ static void ire_free(ire_node_t *n) {
     if (!n) return;
     switch (n->kind) {
     case IRE_LIT: free(n->u.lit.bytes); break;
+    case IRE_UNICLASS: free(n->u.uni.r); break;
     case IRE_ALT: ire_free(n->u.alt.l); ire_free(n->u.alt.r); break;
     case IRE_CONCAT:
         for (size_t i = 0; i < n->u.cat.n; i++) ire_free(n->u.cat.xs[i]);
