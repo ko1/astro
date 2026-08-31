@@ -884,6 +884,7 @@ node_rescue(CTX *c, NODE *n, VALUE *slots, NODE *match, NODE *body, NODE *next, 
         /* capture the unwind backtrace into the exception before user code can
          * observe it via `e.backtrace` / `$!.backtrace` (once; re-raise keeps it) */
         UNWRAP(korb_capture_backtrace(c, slots));
+        c->break_blk = NULL;   /* the unwind stopped here: no break is in flight any more */
         if (flags & 1u) slots[resc_var] = slots[0];    /* bind `=> e` */
         /* push the exception onto the per-CTX `$!` stack for the body; pop on
          * exit (nesting + restore-to-outer fall out of push/pop, top == $!). */
@@ -915,6 +916,7 @@ node_rescue_splat(CTX *c, NODE *n, VALUE *slots, NODE *match, NODE *body, NODE *
             return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "class or module required for rescue clause");
         if (!korb_exc_matches(c, slots[0], cls)) continue;
         UNWRAP(korb_capture_backtrace(c, slots));
+        c->break_blk = NULL;   /* the unwind stopped here: no break is in flight any more */
         if (flags & 1u) slots[resc_var] = slots[0];    /* bind `=> e` */
         korb_errinfo_push(c, slots[0]);
         RESULT br = EVAL_ARG(c, body);

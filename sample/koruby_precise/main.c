@@ -1125,6 +1125,15 @@ main(int argc, char *argv[])
          * message for SystemExit).  at_exit still runs, as it does for any exit. */
         int exit_status = -1;
         bool uncaught = false;
+        if (r.state == KORB_BREAK || r.state == KORB_RETURN) {
+            /* A jump nobody consumed reached the end of the program.  Ending
+             * quietly here hides the bug (and truncates whatever the script was
+             * printing), so report it the way CRuby does. */
+            const char *const what = (r.state == KORB_BREAK) ? "break from proc-closure"
+                                                             : "unexpected return";
+            RESULT lj = korb_raise(c, toplevel_cursor, KORB_E_LOCALJUMP, 0, "%s", what);
+            r = RESULT_RAISE_(lj.value);
+        }
         if (r.state == KORB_RAISE) {
             exit_status = korb_system_exit_status(c, r.value);
             if (exit_status < 0) {                        /* a real error: report it first, then

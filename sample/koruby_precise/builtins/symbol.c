@@ -431,6 +431,7 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         c->return_target = NULL;
         r.state = KORB_NORMAL;
     }
+    if (UNLIKELY(is_lam && r.state == KORB_BREAK)) r.state = KORB_NORMAL;   /* a lambda's `break` acts like `return` */
     return r;
 }
 /* Symbol#to_proc — a Proc that sends the symbol to its first argument. */

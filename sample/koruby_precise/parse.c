@@ -1211,7 +1211,8 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     for (uint32_t j = 0; j < ps->optionals.size; j++) {
                         const pm_optional_parameter_node_t *op = (const pm_optional_parameter_node_t *)ps->optionals.nodes[j];
                         if (lvar_index(tc, (const pm_node_t *)op, op->name) != loc)
-                            kp_failf(tc, (const pm_node_t *)op, "koruby_precise: block optional not locals[%u]", loc);
+                            { free(opt_defaults); pop_frame(tc);   /* skip this block, don't abort the file */
+                              return kp_unsupported(tc, (const pm_node_t *)op, "block optional parameter slot ordering"); }
                         opt_defaults[j] = transduce(tc, op->value);   /* default runs in block scope */
                         loc++;
                     }
