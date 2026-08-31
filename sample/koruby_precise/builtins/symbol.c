@@ -3,8 +3,15 @@
 /* ---- Symbol methods ------------------------------------------------------ */
 
 static RESULT korb_m_sym_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
-    return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
+    (void)a;
+    const uint32_t id = SYM2ID(VALUE_REF_GET(self));
+    const char *const nm = korb_sym_name(c->vm, id);
+    const uint32_t len = c->vm->sym_lens[id];         /* the name may hold NUL bytes */
+    bool ascii = true;
+    for (uint32_t i = 0; i < len; i++) if ((unsigned char)nm[i] >= 0x80) { ascii = false; break; }
+    const VALUE s = UNWRAP(korb_str_new(c, slots, nm, len));
+    if (ascii) KORB_STR_ENC_SET(s, KORB_ENC_USASCII);   /* CRuby: an ASCII-only Symbol is US-ASCII */
+    return RESULT_OK(s);
 }
 static RESULT korb_m_sym_to_sym(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 /* Symbol.all_symbols → an Array of every interned Symbol. */
@@ -22,8 +29,8 @@ static RESULT korb_m_sym_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_sym_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a;
-    const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
-    return RESULT_OK(LONG2FIX(korb_utf8_count(nm, (uint32_t)strlen(nm))));   /* UTF-8 char count, like String#length */
+    const uint32_t id = SYM2ID(VALUE_REF_GET(self));   /* sym_lens, not strlen: a name may hold NUL */
+    return RESULT_OK(LONG2FIX(korb_utf8_count(korb_sym_name(c->vm, id), c->vm->sym_lens[id])));
 }
 
 /* ---- nil / true / false methods ------------------------------------------ */

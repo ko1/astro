@@ -1154,9 +1154,14 @@ static RESULT korb_str_delfix(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *p = VAL2STR(pv);
     uint32_t bs = 0, be = s->len; bool match = false;
-    if (p->len <= s->len) {
-        if (mode == 0 && memcmp(korb_strbuf_data(s->buf), korb_strbuf_data(p->buf), p->len) == 0) { bs = p->len; match = true; }
-        else if (mode == 1 && memcmp(korb_strbuf_data(s->buf) + s->len - p->len, korb_strbuf_data(p->buf), p->len) == 0) { be = s->len - p->len; match = true; }
+    /* an empty affix deletes nothing (bang → nil); the cut must land on a
+     * character boundary, so a partial multi-byte sequence never matches */
+    if (p->len > 0 && p->len <= s->len) {
+        const uint32_t cut = (mode == 0) ? p->len : s->len - p->len;
+        if (korb_str_char_head_p(c->vm, VALUE_REF_GET(self), cut)) {
+            if (mode == 0 && memcmp(korb_strbuf_data(s->buf), korb_strbuf_data(p->buf), p->len) == 0) { bs = cut; match = true; }
+            else if (mode == 1 && memcmp(korb_strbuf_data(s->buf) + cut, korb_strbuf_data(p->buf), p->len) == 0) { be = cut; match = true; }
+        }
     }
     if (!in_place) return korb_str_slice_new(c, slots, self, bs, be - bs);
     if (!match) return RESULT_OK(KORB_NIL);

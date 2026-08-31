@@ -3,8 +3,6 @@
 #include <math.h>
 #include <float.h>   /* DBL_MAX / DBL_MIN / DBL_EPSILON for Float:: constants */
 
-static bool korb_math_d(VALUE v, double *out) { return korb_num_to_d(v, out); }
-
 /* Coerce v to a double for a Math function: fast numeric path, else Float(v) via
  * #to_f (CRuby rb_to_float semantics — accepts any object that defines #to_f).
  * Returns a RAISE result (TypeError, or whatever #to_f raised) on failure. */
@@ -24,7 +22,10 @@ static RESULT korb_math_coerce_d(CTX *c, VALUE *slots, VALUE v, double *out) {
             if (LIKELY(korb_num_to_d(fr.value, out))) return RESULT_OK(KORB_NIL);
         }
     }
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(slots[0]));
+    /* CRuby names nil/true/false literally, other types by class */
+    const char *const tn = slots[0] == KORB_NIL ? "nil" : slots[0] == KORB_TRUE ? "true"
+                         : slots[0] == KORB_FALSE ? "false" : korb_type_name(slots[0]);
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", tn);
 }
 
 /* CRuby refines glibc's cbrt with one Newton step for correct rounding. */
@@ -59,8 +60,33 @@ KORB_MATH1(asin, asin)   KORB_MATH1(acos, acos)   KORB_MATH1(atan, atan)
 KORB_MATH1(sinh, sinh)   KORB_MATH1(cosh, cosh)   KORB_MATH1(tanh, tanh)
 KORB_MATH1(asinh, asinh) KORB_MATH1(acosh, acosh) KORB_MATH1(atanh, atanh)
 KORB_MATH1(exp, exp)
-KORB_MATH1(gamma, tgamma) KORB_MATH1(erf, erf)    KORB_MATH1(erfc, erfc)
+KORB_MATH1(erf, erf)      KORB_MATH1(erfc, erfc)
 KORB_MATH1(expm1, expm1)  KORB_MATH1(log1p, log1p)
+
+/* n! for n = 0..22 — the range where a double is still exact.  CRuby returns
+ * these verbatim so Math.gamma(n) == (n-1)! holds for small integer n. */
+static const double korb_fact_table[] = {
+    1.0, 1.0, 2.0, 6.0, 24.0, 120.0, 720.0, 5040.0, 40320.0, 362880.0,
+    3628800.0, 39916800.0, 479001600.0, 6227020800.0, 87178291200.0,
+    1307674368000.0, 20922789888000.0, 355687428096000.0, 6402373705728000.0,
+    121645100408832000.0, 2432902008176640000.0, 51090942171709440000.0,
+    1124000727777607680000.0,
+};
+static RESULT korb_m_math_gamma(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; double x;
+    { RESULT cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
+    if (isinf(x)) {
+        if (signbit(x)) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - gamma");
+        return korb_float_new(c, slots, HUGE_VAL);
+    }
+    double ip;
+    if (modf(x, &ip) == 0.0) {                    /* integral argument */
+        if (ip < 0) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - gamma");
+        if (ip > 0 && ip - 1 < (double)(sizeof korb_fact_table / sizeof korb_fact_table[0]))
+            return korb_float_new(c, slots, korb_fact_table[(int)ip - 1]);
+    }
+    return korb_float_new(c, slots, tgamma(x));
+}
 
 /* Decompose v into mantissa `d` and binary exponent `e` so v == d * 2**e, with
  * |d| in [0.5, 1) for a Bignum (via GMP, no double overflow) or the plain double
@@ -115,8 +141,17 @@ static RESULT korb_m_math_log(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_math_ldexp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; double x; korb_sword_t n;
     { RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; }
-    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &n)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert into Float/Integer");
+    VALUE nv = VALUE_SLICE_GET(a, 1);
+    if (KORB_FLOAT_P(nv)) {                       /* CRuby NUM2INT: NaN/Infinity are out of range */
+        const double d = korb_float_val(nv);
+        if (isnan(d)) return korb_raise(c, slots, KORB_E_RANGE, 0, "float NaN out of range of integer");
+        if (isinf(d)) return korb_raise(c, slots, KORB_E_RANGE, 0, "float %sInf out of range of integer", d < 0 ? "-" : "");
+    }
+    if (UNLIKELY(!korb_to_index(nv, &n))) {       /* #to_int coercion, else TypeError */
+        RESULT cr = korb_coerce_to_int(c, slots, &nv);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (!korb_to_index(nv, &n)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 1));
+    }
     return korb_float_new(c, slots, ldexp(x, (int)n));
 }
 /* Math.frexp(x) → [fraction, exponent]. */
@@ -134,8 +169,9 @@ static RESULT korb_m_math_frexp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 /* Math.lgamma(x) → [log|gamma(x)|, sign]. */
 static RESULT korb_m_math_lgamma(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; double x;
-    if (UNLIKELY(!korb_math_d(VALUE_SLICE_GET(a, 0), &x)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert into Float");
+    { RESULT cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
+    if (isinf(x) && signbit(x))                   /* CRuby: -Infinity is out of domain */
+        return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - lgamma");
     double v = lgamma(x);
     int sign = signbit(tgamma(x)) ? -1 : 1;
     slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
@@ -157,6 +193,7 @@ static void korb_def_modfunc(CTX *c, VALUE *slots, VALUE modobj, const char *nam
     m->kind = KORB_METHOD_CFUNC; m->owner = sing; m->params_cnt = arity; m->rfn = fn; m->rbfn = NULL; m->uses_block = 0;
     struct korb_method *im = korb_class_method_slot(VAL2CLASS(slots[0]), mid);   /* slots[0] = (re-read) Math module */
     im->kind = KORB_METHOD_CFUNC; im->owner = slots[0]; im->params_cnt = arity; im->rfn = fn; im->rbfn = NULL; im->uses_block = 0;
+    im->visibility = 1;   /* module_function: the instance-method half is private */
 }
 
 void korb_init_math(CTX *c, VALUE *slots) {
