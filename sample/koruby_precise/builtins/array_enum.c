@@ -1106,11 +1106,11 @@ static RESULT korb_m_ary_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(!KORB_ARRAY_P(slots[1]))) {               /* coerce a pair-like element via #to_ary */
             const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
             if (!korb_responds_to_coerce(c, slots + 2, slots[1], to_ary))
-                return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "wrong element type %s at %u (expected array)", korb_type_name(slots[1]), i);
+                return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "wrong element type %s at %u (expected array)", korb_coerce_name(c, slots[1]), i);
             RESULT ar = korb_send_impl(c, slots + 2, to_ary, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
             if (UNLIKELY(!KORB_ARRAY_P(ar.value)))
-                return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "wrong element type %s at %u (expected array)", korb_type_name(slots[1]), i);
+                return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "wrong element type %s at %u (expected array)", korb_coerce_name(c, slots[1]), i);
             slots[1] = ar.value;
         }
         if (UNLIKELY(VAL2ARY(slots[1])->len != 2))
