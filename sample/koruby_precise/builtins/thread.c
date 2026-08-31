@@ -954,8 +954,11 @@ korb_m_thread_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                     NODE *block, VALUE *def_env, VALUE *cself)
 {
     struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || VALUE_SLICE_LEN(a) > 2))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)",
+                          (unsigned)VALUE_SLICE_LEN(a));
+    if (UNLIKELY(block != NULL && VALUE_SLICE_LEN(a) >= 2))
+        korb_warn(c, slots, "block supersedes default value argument");
     VALUE k; CHECK(korb_thread_tls_key(c, slots, VALUE_SLICE_GET(a, 0), &k));
     if (t->tls != KORB_NIL) {
         const int32_t i = korb_hash_find(VAL2HASH(t->tls), k);
@@ -1003,8 +1006,10 @@ korb_m_thread_priority_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     const VALUE v = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!FIXNUM_P(v)))
         return korb_raise_no_int(c, slots, v);
-    VAL2THREAD(VALUE_REF_GET(self))->rep->priority = (int)FIX2LONG(v);   /* 保持のみ (協調 scheduler) */
-    return RESULT_OK(v);
+    korb_sword_t p = FIX2LONG(v);                      /* CRuby は -3..3 に clamp して保持 */
+    if (p > 3) p = 3; else if (p < -3) p = -3;
+    VAL2THREAD(VALUE_REF_GET(self))->rep->priority = (int)p;   /* 保持のみ (協調 scheduler) */
+    return RESULT_OK(v);                               /* 代入式の値は clamp 前 */
 }
 
 static RESULT
@@ -1139,10 +1144,13 @@ korb_m_thread_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     const char *st = t->state == KORB_TH_DEAD ? "dead"
                    : t->state == KORB_TH_PENDED ? "sleep" : "run";
     char buf[640]; char nb[64]; nb[0] = 0;
+    int name_enc = -1;                                /* 非 ASCII の名前ならその encoding が伝播 (CRuby) */
     if (t->name != KORB_NIL && KORB_STRING_P(t->name)) {
         const uint32_t nl = VAL2STR(t->name)->len < 48 ? VAL2STR(t->name)->len : 48;
         memcpy(nb, korb_strbuf_data(VAL2STR(t->name)->buf), nl);
         nb[nl] = 0;
+        for (uint32_t i = 0; i < nl; i++)
+            if ((unsigned char)nb[i] >= 0x80) { name_enc = (int)KORB_STR_ENC(t->name); break; }
     }
     /* CRuby names the source location of the block the thread runs, when it has
      * one: "#<Thread:0x… file:line run>". */
@@ -1156,7 +1164,8 @@ korb_m_thread_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     const int len = snprintf(buf, sizeof buf, "#<Thread:%p%s%s%s %s>",
                              (void *)t, nb[0] ? "@" : "", nb, loc, st);
     RESULT r = korb_str_new(c, slots, buf, (uint32_t)len);
-    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);   /* CRuby: ASCII-8BIT */
+    if (LIKELY(r.state == KORB_NORMAL))
+        KORB_STR_ENC_SET(r.value, name_enc >= 0 ? (uint32_t)name_enc : KORB_ENC_BINARY);   /* CRuby: 既定は ASCII-8BIT */
     return r;
 }
 
