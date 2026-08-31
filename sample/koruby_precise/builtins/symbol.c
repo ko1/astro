@@ -533,10 +533,24 @@ static RESULT korb_m_proc_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const bool negate = has_rest || (lam && optp > 0) || (lam && (kopt || kwrest) && !kreq);
     return RESULT_OK(LONG2FIX(negate ? -((korb_sword_t)req + 1) : (korb_sword_t)req));
 }
-/* Proc#source_location → [file, line] where the block was written, or nil. */
+/* The NODE that carries a method entry's source location: define_method takes it
+ * from the block it was given, everything else from the def body (NULL for C). */
+static struct Node *korb_method_srcloc_node(const struct korb_method *km) {
+    if (km == NULL) return NULL;
+    if (km->kind == KORB_METHOD_DM && KORB_PROC_P(km->dm_proc)) return VAL2PROC(km->dm_proc)->iseq;
+    return km->body;
+}
+/* Proc#source_location → [file, line] where the block was written, or nil.
+ * A Method#to_proc proc has no body of its own and reports the method's. */
 static RESULT korb_m_proc_source_location(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const KorbProc *const p = VAL2PROC(VALUE_REF_GET(self));
+    if (p->iseq == NULL && p->self != KORB_NIL) {          /* method proc: recv + mid, no body */
+        const VALUE klass = korb_dispatch_class(c, p->self);
+        const struct korb_method *km = KORB_CLASS_P(klass) ? korb_class_find_method(klass, p->sym_mid, NULL) : NULL;
+        if (km == NULL) km = korb_method_lookup(c->vm, p->sym_mid);
+        return korb_srcloc_result(c, slots, korb_method_srcloc_node(km));
+    }
     return korb_srcloc_result(c, slots, p->iseq);
 }
 /* Proc#parameters — [[kind, name], ...] from the parse-time param_info (cold;
@@ -645,7 +659,7 @@ static RESULT korb_m_meth_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_meth_source_location(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const struct korb_method *const km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
-    return korb_srcloc_result(c, slots, km ? km->body : NULL);
+    return korb_srcloc_result(c, slots, korb_method_srcloc_node(km));
 }
 /* #original_name: the name at original definition, surviving aliases. */
 static RESULT korb_m_meth_original_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
