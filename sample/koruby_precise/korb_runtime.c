@@ -7947,7 +7947,10 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         VALUE *const stage = bf + 1 + blocals;
         for (uint32_t i = 0; i < srcn; i++)
             stage[i] = splat ? korb_items_data(VAL2ARY(argv[0])->items)[i] : argv[i];
-        if (spec) for (uint32_t i = 0; i < blocals; i++) bf[1 + i] = KORB_NIL;   /* leaves write by local index */
+        /* Clear the whole block frame before anything allocates or a default
+         * expression runs: an omitted optional reads as nil from inside its own
+         * default (CRuby), and the GC must not scan the previous frame's junk. */
+        for (uint32_t i = 0; i < blocals; i++) bf[1 + i] = KORB_NIL;
         const uint32_t surplus = (srcn > nfront + npost) ? (srcn - nfront - npost) : 0;
         VALUE *const rcur = stage + srcn;                                    /* alloc above the staged source */
         rcur[0] = UNWRAP(korb_ary_new(c, rcur, surplus ? surplus : 4));
@@ -7998,6 +8001,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         /* CRuby order: required front, then as many optionals as the surplus
          * allows, then the posts — args are consumed strictly left to right and
          * any extra beyond that is dropped. */
+        for (uint32_t i = 0; i < blocals; i++) bf[1 + i] = KORB_NIL;   /* see above: omitted optionals read nil */
         const uint32_t nopt = (nfront > reqc) ? nfront - reqc : 0;
         uint32_t nopt_fill = 0;
         if (srcn > reqc + npost) {
