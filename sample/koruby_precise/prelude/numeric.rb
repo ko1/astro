@@ -9,18 +9,21 @@ class Numeric
   # their own C implementations, which take precedence).
   def abs; self < 0 ? -self : self; end
   alias magnitude abs                     # CRuby: #magnitude is an alias of #abs (same UnboundMethod)
-  def -@; a, b = coerce(0); a - b; end    # CRuby Numeric#-@: 0 - self via #coerce (subtract 2nd from 1st)
+  # CRuby Numeric#-@: 0 - self via #coerce (subtract 2nd from 1st).
+  def -@; a, b = self.coerce(0); a - b; end
   def abs2; self * self; end
-  def arg; self < 0 ? Math::PI : 0; end   # angle: 0 for non-negative reals, PI for negative (Float/Integer have C impls)
+  # angle: 0 for non-negative reals, PI for negative (Float/Integer have their own)
+  def arg; self < 0 ? Math::PI : 0; end
   alias angle arg
   alias phase arg
   def rectangular; [self, 0]; end         # a real's rectangular form (Complex overrides)
   alias rect rectangular
-  def polar; [abs, arg]; end
+  def polar; [self.abs, self.arg]; end
   def conjugate; self; end
   alias conj conjugate
+  def real?; true; end                    # Complex overrides
   def zero?; self == 0; end
-  def nonzero?; zero? ? nil : self; end
+  def nonzero?; self.zero? ? nil : self; end
   def negative?; self < 0; end
   def positive?; self > 0; end
   def integer?; false; end
@@ -35,6 +38,11 @@ class Numeric
   alias modulo %                          # CRuby: #modulo is an alias of #%
   # CRuby num_divmod is [num_div, num_modulo]; #/ is therefore dispatched twice.
   def divmod(other); [self.div(other), self % other]; end
+  # A Numeric has no identity of its own, so CRuby refuses singleton methods on
+  # one (Integer/Float already raise from the C side).
+  def singleton_method_added(name)
+    raise TypeError, "can't define singleton method \"#{name}\" for #{self.class}"
+  end
   def dup; self; end                      # a Numeric is its own copy
   def clone(freeze: nil)
     raise ArgumentError, "can't unfreeze #{self.class}" if freeze == false
@@ -60,7 +68,16 @@ class Numeric
     end
   end
   def fdiv(other); self.to_f.fdiv(other); end
-  def quo(other); self.to_r.quo(other); end
+  # CRuby num_quo converts through rb_convert_type, so a #to_r that returns a
+  # non-Rational is a TypeError rather than silently going on.
+  def quo(other)
+    r = self.to_r
+    unless r.is_a?(Rational)
+      raise TypeError, "can't convert #{self.class} into Rational " \
+                       "(#{self.class}#to_r gives #{r.class})"
+    end
+    r.quo(other)
+  end
   # Rounding fallbacks: CRuby's Numeric converts to Float and delegates.
   def floor(ndigits = 0); to_f.floor(ndigits); end
   def ceil(ndigits = 0); to_f.ceil(ndigits); end
@@ -97,6 +114,18 @@ class Numeric
     end
     self
   end
+end
+
+# The C Float#arg/#polar answer 0 for NaN; CRuby propagates the NaN.  CRuby
+# tests signbit(), so -0.0 is negative here too.
+class Float
+  def arg
+    return self if nan?
+    (self < 0 || (self == 0 && (1.0 / self) < 0)) ? Math::PI : 0
+  end
+  alias angle arg
+  alias phase arg
+  def polar; [abs, arg]; end
 end
 
 # Rational sign predicates: a reduced Rational keeps den > 0, so the sign is the
