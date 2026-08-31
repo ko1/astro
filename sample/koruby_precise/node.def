@@ -246,6 +246,26 @@ node_deprecated_gvar_warn(CTX *c, NODE *n, VALUE *slots, const char *name, VALUE
     return RESULT_OK(val);
 }
 
+// `$=` — removed from Ruby long ago: reading or writing it warns and the write
+// is ignored.  Same Warning[:deprecated] gate as node_deprecated_gvar_warn.
+NODE_DEF @noinline
+node_dollar_eq(CTX *c, NODE *n, VALUE *slots, uint32_t assigned, VALUE val@child)
+{
+    (void)n;
+    slots[0] = val;                                   /* park: the Warning[] dispatch allocates */
+    slots[1] = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
+    bool dep_on = false;
+    if (KORB_CLASS_P(slots[1])) {
+        slots[2] = ID2SYM(korb_intern(c->vm, "deprecated", 10));
+        RESULT wr = korb_send(c, slots + 3, korb_intern(c->vm, "[]", 2), 0, 1);
+        if (UNLIKELY(wr.state != KORB_NORMAL)) return wr;
+        dep_on = KORB_TRUTHY(wr.value);
+    }
+    if (dep_on)
+        korb_warn_ignore_verbose(c, slots + 1, "variable $= is no longer effective%s", assigned ? "; ignored" : "");
+    return RESULT_OK(assigned ? slots[0] : KORB_FALSE);
+}
+
 // ---- sequencing ------------------------------------------------------------
 
 NODE_DEF

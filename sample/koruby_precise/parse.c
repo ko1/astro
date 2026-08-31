@@ -1001,6 +1001,33 @@ kp_lexical_class_owner(struct kp_ctx *tc, uint32_t *owner)
     return in_block;
 }
 
+
+/* `(expr)::N ||= v` / `&&=` — the module part is evaluated exactly once into a
+ * synth local, then the read and the write go through const_get / const_set.
+ * `or_form` picks ||= (probe with const_defined? so an unset constant does not
+ * raise) over &&= (a plain read, which does raise when unset, like CRuby). */
+static NODE *
+kp_dyn_const_opassign(struct kp_ctx *tc, const pm_node_t *node, const pm_node_t *modpart,
+                      uint32_t name, const pm_node_t *value, bool or_form)
+{
+    struct korb_vm *const vm = tc->c->vm;
+    const uint32_t line = kp_line(tc, node);
+    const uint32_t mtmp = alloc_synth_local(tc);
+    NODE *const store = bake_lset(tc, mtmp, transduce(tc, modpart));
+    NODE *gr, *gk;
+    WITH_CHAIN(tc, KP_SEND1_SC, (gr = bake_lget(tc, mtmp), gk = ALLOC_node_lit(ID2SYM(name))));
+    NODE *read = kp_send1(korb_intern(vm, "const_get", 9), line, gr, gk);
+    NODE *sr, *sk, *sv;
+    WITH_CHAIN(tc, KP_SEND2_SC, (sr = bake_lget(tc, mtmp), sk = ALLOC_node_lit(ID2SYM(name)),
+                                 sv = transduce(tc, value)));
+    NODE *const set = kp_send2(korb_intern(vm, "const_set", 9), line, sr, sk, sv);
+    if (!or_form) return ALLOC_node_seq(store, ALLOC_node_and(read, set));
+    NODE *dr, *dk;
+    WITH_CHAIN(tc, KP_SEND1_SC, (dr = bake_lget(tc, mtmp), dk = ALLOC_node_lit(ID2SYM(name))));
+    NODE *const defq = kp_send1(korb_intern(vm, "const_defined?", 14), line, dr, dk);
+    return ALLOC_node_seq(store, ALLOC_node_or(ALLOC_node_and(defq, read), set));
+}
+
 extern const struct NodeKind kind_node_const_set;    /* FOO = expr */
 static NODE *build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa);
 static NODE *build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n);
@@ -4580,6 +4607,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (gn == korb_intern(tc->c->vm, "$`", 2)) return ALLOC_node_backref(1);
         if (gn == korb_intern(tc->c->vm, "$'", 2)) return ALLOC_node_backref(2);
         if (gn == korb_intern(tc->c->vm, "$+", 2)) return ALLOC_node_backref(3);
+        if (gn == korb_intern(tc->c->vm, "$=", 2))                /* removed: warns, always false */
+            return ALLOC_node_dollar_eq(0, ALLOC_node_lit(KORB_FALSE));
         return ALLOC_node_const(gn, 0, INT32_MIN, INT32_MIN);
       }
       case PM_NUMBERED_REFERENCE_READ_NODE: {   /* $1..$9 → group n of the last match ($~) */
@@ -4606,6 +4635,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         }
         const pm_global_variable_write_node_t *gw = (const pm_global_variable_write_node_t *)node;
         uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, gw->name));
+        if (strcmp(korb_sym_name(tc->c->vm, name), "$=") == 0)   /* write is warned and dropped */
+            return ALLOC_node_dollar_eq(1, transduce(tc, gw->value));
         {   /* deprecated separator globals warn (verbose) on a non-nil write */
             static const char *const dep[] = { "$/", "$-0", "$\\", "$,", "$;", "$-F", "$=", NULL };
             const char *const rn = korb_sym_name(tc->c->vm, name);
@@ -4732,8 +4763,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_CONSTANT_PATH_OR_WRITE_NODE: {   /* `A::B ||= v` (static owner) */
         const pm_constant_path_or_write_node_t *ow = (const pm_constant_path_or_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, ow->target->name), owner;
-        if (!const_path_static_owner(tc, ow->target->parent, tc->frame->class_name_sym, &owner))
-            return kp_unsupported(tc, node, "constant-path ||= with a dynamic module part");
+        if (!const_path_static_owner(tc, ow->target->parent, tc->frame->class_name_sym, &owner)) {
+            if (ow->target->parent == NULL) return kp_unsupported(tc, node, "::CONST ||= at top level");
+            return kp_dyn_const_opassign(tc, node, ow->target->parent, name, ow->value, true);
+        }
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, ow->value)));
         NODE *set = ALLOC_node_const_set(name, owner, INT32_MIN, val);
@@ -4744,8 +4777,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_CONSTANT_PATH_AND_WRITE_NODE: {  /* `A::B &&= v` (static owner) — read raises if undefined */
         const pm_constant_path_and_write_node_t *aw = (const pm_constant_path_and_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, aw->target->name), owner;
-        if (!const_path_static_owner(tc, aw->target->parent, tc->frame->class_name_sym, &owner))
-            return kp_unsupported(tc, node, "constant-path &&= with a dynamic module part");
+        if (!const_path_static_owner(tc, aw->target->parent, tc->frame->class_name_sym, &owner)) {
+            if (aw->target->parent == NULL) return kp_unsupported(tc, node, "::CONST &&= at top level");
+            return kp_dyn_const_opassign(tc, node, aw->target->parent, name, aw->value, false);
+        }
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, aw->value)));
         NODE *set = ALLOC_node_const_set(name, owner, INT32_MIN, val);
