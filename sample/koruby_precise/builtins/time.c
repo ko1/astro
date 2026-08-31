@@ -276,6 +276,9 @@ static void korb_time_tm(CTX *c, VALUE t, struct tm *out) {
         return;
     }
     const time_t s = (time_t)korb_time_epoch(c, t);
+    /* No tzset() here: like CRuby, a local Time renders in the zone it was built
+       (or explicitly converted) in, so the zone is picked up at those points —
+       localtime_r deliberately does not re-read TZ. */
     if (korb_time_is_utc(c, t)) gmtime_r(&s, out); else localtime_r(&s, out);
 }
 
@@ -811,6 +814,7 @@ static RESULT korb_m_time_getlocal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         return korb_time_set_zone(c, slots + 3, VALUE_REF_AT(&slots[2]), off,
                                   VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]));
     }
+    tzset();                                  /* #getlocal with no zone means TZ as it is now */
     slots[0] = UNWRAP(korb_time_make(c, slots, cls, e, false));
     CHECK(korb_time_copy_nsec(c, slots + 1, VALUE_REF_GET(self), VALUE_REF_AT(&slots[0])));
     return RESULT_OK(slots[0]);
@@ -860,6 +864,7 @@ static RESULT korb_m_time_localtime_bang(CTX *c, VALUE *slots, VALUE_REF self, V
     CHECK(korb_ivar_set(c, slots + 2, t, korb_time_utc_sym(c->vm), utcish ? KORB_TRUE : KORB_FALSE));
     if (have_arg) return korb_time_set_zone(c, slots + 2, t, off, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]));
     /* no argument: back to the process time zone — drop any fixed offset */
+    tzset();                                    /* adopt TZ as it is *now* (see korb_time_make) */
     CHECK(korb_ivar_set(c, slots + 2, t, korb_time_off_sym(c->vm), KORB_NIL));
     CHECK(korb_ivar_set(c, slots + 2, t, korb_time_tz_sym(c->vm), KORB_NIL));
     CHECK(korb_ivar_set(c, slots + 2, t, korb_time_offx_sym(c->vm), KORB_NIL));
@@ -1190,6 +1195,16 @@ static RESULT korb_m_time_zone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const char *z = korb_time_is_utc(c, VALUE_REF_GET(self)) ? "UTC" : (tm.tm_zone ? tm.tm_zone : "");
     return korb_str_new(c, slots, z, (uint32_t)strlen(z));
 }
+/* Time#dst? / #isdst — only a zone-derived local time can be in DST; a UTC or
+ * fixed-offset Time never is. */
+static RESULT korb_m_time_dst_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    const VALUE sv = VALUE_REF_GET(self);
+    korb_sword_t off;
+    if (korb_time_is_utc(c, sv) || korb_time_fixed_off(c, sv, &off)) return RESULT_OK(KORB_FALSE);
+    struct tm tm; korb_time_tm(c, sv, &tm);
+    return RESULT_OK(tm.tm_isdst > 0 ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_time_utc_offset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
     const VALUE ox = korb_ivar_get(c, VALUE_REF_GET(self), korb_time_offx_sym(c->vm));
@@ -1242,6 +1257,8 @@ void korb_init_time(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, t, "tv_sec", korb_m_time_to_i, 0);
     korb_class_def_cfn(c, t, "to_a",  korb_m_time_to_a,  0);
     korb_class_def_cfn(c, t, "zone",       korb_m_time_zone,       0);
+    korb_class_def_cfn(c, t, "dst?",       korb_m_time_dst_p,      0);
+    korb_class_def_cfn(c, t, "isdst",      korb_m_time_dst_p,      0);
     korb_class_def_cfn(c, t, "utc_offset", korb_m_time_utc_offset, 0);
     korb_class_def_cfn(c, t, "gmt_offset", korb_m_time_utc_offset, 0);
     korb_class_def_cfn(c, t, "gmtoff",     korb_m_time_utc_offset, 0);
