@@ -453,6 +453,9 @@ class Encoding
       raise ArgumentError, "too big destination byte offset" if off > dst.bytesize
       max = dst_bytesize.nil? ? -1 : dst_bytesize.to_int
       partial = opts.is_a?(Hash) ? !!opts[:partial_input] : false
+      # CRuby shortens the source buffer in place; its encoding never changes,
+      # so restore it after each #replace (which adopts the argument's).
+      src_enc = src.is_a?(String) ? src.encoding : nil
       input = @pending + (src.nil? ? "" : src.dup.force_encoding(@src_name))
       @pending = +""
       r = __transcode(input, @src_name, @dst_name, @flags, __repl_bytes, max)
@@ -463,7 +466,7 @@ class Encoding
       end
       dst.replace(dst.byteslice(0, off).to_s + out)
       dst.force_encoding(@dst_name)
-      src.replace(+"") if src.is_a?(String) && !src.frozen?
+      if src.is_a?(String) && !src.frozen? then src.replace(+""); src.force_encoding(src_enc) end
       rest = input.byteslice(consumed + (errb ? errb.bytesize : 0), input.bytesize).to_s
       case code
       when nil
@@ -476,14 +479,16 @@ class Encoding
         @last_error = Encoding::InvalidByteSequenceError.new("#{errb.b.inspect} followed by #{again.b.inspect} on #{@src_name}")
                         .__set_info(@src_name, stage_dst, errb.b, again.b, false)
         @putback_buf = again.b
-        src.replace(rest.byteslice(again.bytesize, rest.bytesize).to_s) if src.is_a?(String) && !src.frozen?
+        if src.is_a?(String) && !src.frozen?
+          src.replace(rest.byteslice(again.bytesize, rest.bytesize).to_s); src.force_encoding(src_enc)
+        end
         @pending = +"" if src.is_a?(String)
         :invalid_byte_sequence
       when 1
         @errinfo = [:undefined_conversion, "UTF-8".b, @dst_name.b, __err_char(errb, cp).b, +"".b]
         @last_error = Encoding::UndefinedConversionError.new(format("U+%04X from %s to %s", cp, @src_name, @dst_name))
                         .__set_info("UTF-8", @dst_name, __err_char(errb, cp))
-        src.replace(rest) if src.is_a?(String) && !src.frozen?
+        if src.is_a?(String) && !src.frozen? then src.replace(rest); src.force_encoding(src_enc) end
         :undefined_conversion
       when 2
         @pending = input.byteslice(consumed, input.bytesize).to_s
@@ -656,7 +661,11 @@ class String
     when 0 then Encoding::UTF_8
     when 1 then Encoding::US_ASCII
     when 2 then Encoding::ASCII_8BIT
-    else Encoding.find(__encoding_name)   # "other" (index 3+): by stored name
+    else
+      # "other" (index 3+): by stored name.  A special name ("internal" etc.)
+      # that was unset when force_encoding ran resolves to BINARY, as CRuby's
+      # rb_to_encoding does.
+      Encoding.find(__encoding_name) || Encoding::ASCII_8BIT
     end
   end
   # force_encoding / b are C methods (builtins/string.c).

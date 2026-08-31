@@ -768,9 +768,11 @@ static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (UNLIKELY(!KORB_STRING_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
     if (o == VALUE_REF_GET(self)) return RESULT_OK(VALUE_REF_GET(self));   /* s.replace(s) is a no-op (clear-then-append would empty it) */
+    const uint32_t oenc = KORB_STR_ENC(o);             /* self takes other's encoding (CRuby), invalidity included */
     VAL2STR(VALUE_REF_GET(self))->len = 0;             /* clear, then append other */
     /* Append at slots+2: the #to_str branch parks `self` at slots[0], so the grow's
      * korb_alloc must not use slots[0]/[1] as scratch (that would stale `self`). */
+    KORB_STR_ENC_SET(VALUE_REF_GET(self), oenc);       /* set before the append: it combines encodings */
     return korb_str_append_str(c, slots + 2, self, VALUE_SLICE_REF(a, 0));
 }
 static RESULT korb_m_str_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -2594,6 +2596,7 @@ static uint32_t korb_utf8_decode(const char *p, uint32_t avail, uint32_t *clen) 
  * array (defined later in this TU). */
 static RESULT korb_m_str_chars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_str_codepoints_enum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_str_bytes(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);          /* enumerator.c (included later) */
@@ -2612,7 +2615,13 @@ static RESULT korb_str_each_enum(CTX *c, VALUE *slots, VALUE_REF self,
 }
 static RESULT korb_m_str_each_codepoint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
-    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_codepoints, "each_codepoint", a);
+    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_codepoints_enum, "each_codepoint", a);
+    {   /* with a block CRuby validates the whole string before yielding */
+        const VALUE v = VALUE_REF_GET(self);
+        const uint32_t enc = KORB_STR_ENC(v);
+        if (UNLIKELY(!korb_str_enc_valid(VAL2STR(v), enc)))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", korb_enc_name_of(c->vm, enc));
+    }
     for (uint32_t pos = 0; ; ) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
@@ -2729,8 +2738,14 @@ static RESULT korb_m_str_tr_s_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     return RESULT_OK(matched ? VALUE_REF_GET(self) : KORB_NIL);
 }
-static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
+/* the enumerator form must not raise at construction, so the check is a flag */
+static RESULT korb_str_codepoints_impl(CTX *c, VALUE *slots, VALUE_REF self, bool check) {
+    if (check) {                                      /* CRuby scans before yielding anything */
+        const VALUE v = VALUE_REF_GET(self);
+        const uint32_t enc = KORB_STR_ENC(v);
+        if (!korb_str_enc_valid(VAL2STR(v), enc))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", korb_enc_name_of(c->vm, enc));
+    }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t pos = 0; ; ) {
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));
@@ -2740,6 +2755,12 @@ static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         pos += cl;
     }
     return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; return korb_str_codepoints_impl(c, slots, self, true);
+}
+static RESULT korb_m_str_codepoints_enum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; return korb_str_codepoints_impl(c, slots, self, false);
 }
 static RESULT korb_m_str_each_byte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
