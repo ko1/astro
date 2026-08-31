@@ -172,7 +172,10 @@ static RESULT korb_m_flt_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_flt_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_flt_round_to(c, slots, SELF_FLT, 2, a); }
 static RESULT korb_m_flt_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_flt_round_to(c, slots, SELF_FLT, 3, a); }
 static RESULT korb_m_flt_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; char b[40]; uint32_t n = korb_float_to_s(SELF_FLT, b); return korb_str_new(c, slots, b, n);
+    (void)a; char b[40]; uint32_t n = korb_float_to_s(SELF_FLT, b);
+    VALUE s = UNWRAP(korb_str_new(c, slots, b, n));   /* CRuby: always US-ASCII */
+    KORB_STR_ENC_SET(s, KORB_ENC_USASCII);
+    return RESULT_OK(s);
 }
 static RESULT korb_m_flt_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE arg = VALUE_SLICE_GET(a, 0);

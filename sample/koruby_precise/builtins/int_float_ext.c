@@ -34,9 +34,11 @@ static RESULT korb_m_int_abs2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_int_bits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
     VALUE o = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_INTEGER_P(o))) {                   /* coerce a Float / #to_int object to an Integer (CRuby rb_to_int) */
-        if (KORB_OBJECT_P(o) || KORB_FLOAT_P(o)) {
+        const uint32_t to_int_id = korb_intern(c->vm, "to_int", 6);
+        /* honors #respond_to?: without #to_int CRuby raises TypeError, not NoMethodError */
+        if ((KORB_OBJECT_P(o) || KORB_FLOAT_P(o)) && korb_responds_to_coerce_p(c, slots, &o, to_int_id)) {
             slots[0] = o;
-            RESULT tr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
+            RESULT tr = korb_send_impl(c, slots + 1, to_int_id, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
             if (KORB_INTEGER_P(tr.value)) o = tr.value;
         }

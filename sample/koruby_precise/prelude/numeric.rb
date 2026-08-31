@@ -27,10 +27,24 @@ class Numeric
   def numerator; to_r.numerator; end       # CRuby: delegates to the Rational form
   def denominator; to_r.denominator; end
   def to_int; to_i; end
-  def div(other); (self / other).floor; end
+  def div(other)
+    raise ZeroDivisionError, "divided by 0" if 0 == other   # CRuby num_div checks before dispatching #/
+    (self / other).floor
+  end
   def %(other); self - other * self.div(other); end
   alias modulo %                          # CRuby: #modulo is an alias of #%
-  def divmod(other); q = self.div(other); [q, self - other * q]; end
+  # CRuby num_divmod is [num_div, num_modulo]; #/ is therefore dispatched twice.
+  def divmod(other); [self.div(other), self % other]; end
+  def dup; self; end                      # a Numeric is its own copy
+  def clone(freeze: nil)
+    raise ArgumentError, "can't unfreeze #{self.class}" if freeze == false
+    self
+  end
+  # CRuby num_eql: values of different types are never eql?; same type defers to #==
+  def eql?(other)
+    return false unless other.is_a?(Numeric) && self.class == other.class
+    (self == other) ? true : false
+  end
   # CRuby's num_remainder: a non-Numeric argument is coerced first, then the
   # sign test is two explicit comparisons per side, in this order (a Numeric
   # subclass may define only the operators CRuby actually uses).
@@ -130,6 +144,10 @@ class Complex
     else raise TypeError, "#{other.class} can't be coerced into Complex"
     end
   end
+  # CRuby undefines the ordering/rounding half of Numeric on Complex.
+  undef_method :%, :<, :<=, :>, :>=, :between?, :clamp, :div, :divmod,
+               :floor, :ceil, :modulo, :round, :step, :truncate,
+               :negative?, :positive?, :remainder
 end
 
 class Range

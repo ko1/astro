@@ -18,6 +18,7 @@ static bool korb_str_bytes_ascii(VALUE v) {
     return true;
 }
 static inline uint32_t korb_str_char_bytes(const struct korb_vm *vm, uint32_t enc, const unsigned char *p, uint32_t i, uint32_t n);   /* fwd */
+static uint32_t korb_enc_char_bytes_other(const struct korb_vm *vm, uint32_t enc, const unsigned char *p, uint32_t i, uint32_t n);   /* fwd */
 /* Is this encoding one byte per character?  The multi-byte families are the
  * short list, so they are the ones named here; everything else (ISO-8859-x,
  * KOI8-x, Windows-125x, IBM/CP 8-bit code pages, TIS-620, macRoman, …) is a
@@ -503,10 +504,150 @@ static RESULT korb_str_enc_notimpl(CTX *c, VALUE *slots, VALUE v) {
  * called per character in the reverse / each_char loops. */
 static inline uint32_t korb_str_char_bytes(const struct korb_vm *vm, uint32_t enc, const unsigned char *p, uint32_t i, uint32_t n) {
     if (KORB_ENC_SB(vm, enc)) return 1;
+    if (UNLIKELY(enc != KORB_ENC_UTF8)) {                /* UTF-16/32BE/LE, Shift_JIS */
+        const uint32_t o = korb_enc_char_bytes_other(vm, enc, p, i, n);
+        if (o) return o;                                 /* 0 = no rule → UTF-8 stepping below */
+    }
     const unsigned char b = p[i];
     uint32_t clen = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
     if (i + clen > n) clen = 1;
     return clen;
+}
+/* Character width of a byte-order-tagged Unicode encoding (UTF-16BE/LE → 2,
+ * UTF-32BE/LE → 4), 0 otherwise; *be gets the byte order.  A bare "UTF-16" /
+ * "UTF-32" is a *dummy* encoding in Ruby and steps byte by byte, so it is
+ * deliberately not matched here. */
+static uint32_t korb_enc_fixed_unit(const struct korb_vm *vm, uint32_t enc, bool *be) {
+    if (enc < KORB_ENC_OTHER_MIN || enc >= KORB_STR_ENC_MAX || vm->str_enc_names[enc] == 0) return 0;
+    const char *const nm = korb_sym_name(vm, vm->str_enc_names[enc]);
+    const size_t n = strlen(nm);
+    if (n < 3) return 0;
+    const char *const tail = nm + n - 2;
+    if (strcasecmp(tail, "BE") != 0 && strcasecmp(tail, "LE") != 0) return 0;
+    uint32_t unit = 0;
+    if (strncasecmp(nm, "UTF-16", 6) == 0 || strncasecmp(nm, "UTF16", 5) == 0) unit = 2;
+    else if (strncasecmp(nm, "UTF-32", 6) == 0 || strncasecmp(nm, "UTF32", 5) == 0) unit = 4;
+    if (unit) *be = (strcasecmp(tail, "LE") != 0);
+    return unit;
+}
+/* ASCII-compatible = one byte per ASCII character, mapping to itself.  The
+ * UTF-16/32 families, UTF-7 and the stateful ISO-2022 / CP502xx encodings
+ * are not (mirrors Encoding#ascii_compatible? in prelude/encoding.rb). */
+static bool korb_enc_ascii_compat(const struct korb_vm *vm, uint32_t enc) {
+    if (enc < KORB_ENC_OTHER_MIN || enc >= KORB_STR_ENC_MAX || vm->str_enc_names[enc] == 0) return true;
+    const char *const nm = korb_sym_name(vm, vm->str_enc_names[enc]);
+    return !(strncasecmp(nm, "UTF-16", 6) == 0 || strncasecmp(nm, "UTF-32", 6) == 0 ||
+             strcasecmp(nm, "UTF-7") == 0 || strncasecmp(nm, "ISO-2022", 8) == 0 ||
+             strncasecmp(nm, "CP502", 5) == 0);
+}
+/* CRuby raises this before parsing a number out of a non-ASCII-compatible
+ * String (#to_i / #to_f / #to_r / #to_c / #undump). */
+static RESULT korb_str_need_ascii_compat(CTX *c, VALUE *slots, VALUE v) {
+    const uint32_t enc = KORB_STR_ENC(v);
+    if (LIKELY(korb_enc_ascii_compat(c->vm, enc))) return RESULT_OK(KORB_NIL);
+    char msg[96];
+    snprintf(msg, sizeof msg, "ASCII incompatible encoding: %s", korb_enc_name_of(c->vm, enc));
+    return korb_raise_enc_compat_msg(c, slots, msg);
+}
+/* Shift_JIS and its variants (two-byte lead ranges, single-byte katakana). */
+static bool korb_enc_is_sjis(const struct korb_vm *vm, uint32_t enc) {
+    if (enc < KORB_ENC_OTHER_MIN || enc >= KORB_STR_ENC_MAX || vm->str_enc_names[enc] == 0) return false;
+    const char *const nm = korb_sym_name(vm, vm->str_enc_names[enc]);
+    return strncasecmp(nm, "Shift_JIS", 9) == 0 || strncasecmp(nm, "SJIS", 4) == 0 ||
+           strcasecmp(nm, "Windows-31J") == 0 || strcasecmp(nm, "CP932") == 0;
+}
+/* Can koruby step characters in this encoding without a per-encoding hook? */
+static bool korb_enc_char_steppable(const struct korb_vm *vm, uint32_t enc) {
+    bool be;
+    return korb_enc_fixed_unit(vm, enc, &be) != 0 || korb_enc_is_sjis(vm, enc);
+}
+/* Byte length of the character at `i` for the non-UTF-8 multi-byte encodings
+ * koruby knows.  Returns 0 when the encoding has no stepping rule. */
+static uint32_t korb_enc_char_bytes_other(const struct korb_vm *vm, uint32_t enc,
+                                          const unsigned char *p, uint32_t i, uint32_t n) {
+    bool be = true;
+    const uint32_t u = korb_enc_fixed_unit(vm, enc, &be);
+    if (u == 4) return (i + 4 <= n) ? 4 : n - i;
+    if (u == 2) {
+        if (i + 2 > n) return n - i;                 /* a lone trailing byte is one character */
+        const uint32_t hi = be ? ((uint32_t)p[i] << 8 | p[i+1]) : ((uint32_t)p[i+1] << 8 | p[i]);
+        if (hi >= 0xD800 && hi <= 0xDBFF && i + 4 <= n) {
+            const uint32_t lo = be ? ((uint32_t)p[i+2] << 8 | p[i+3]) : ((uint32_t)p[i+3] << 8 | p[i+2]);
+            if (lo >= 0xDC00 && lo <= 0xDFFF) return 4;   /* surrogate pair = one character */
+        }
+        return 2;
+    }
+    if (korb_enc_is_sjis(vm, enc)) {
+        const unsigned char b = p[i];
+        return (((b >= 0x81 && b <= 0x9F) || (b >= 0xE0 && b <= 0xFC)) && i + 2 <= n) ? 2 : 1;
+    }
+    return 0;
+}
+/* Is byte offset `off` the head of a character?  0 and len always are.  Decided
+ * for UTF-8 and the UTF-16/32 families; other multi-byte encodings answer true
+ * (no per-encoding hook yet).  CRuby's rb_enc_right_char_head == p test. */
+static bool korb_str_char_head_p(const struct korb_vm *vm, VALUE sv, uint32_t off) {
+    const KorbString *const s = VAL2STR(sv);
+    if (off == 0 || off >= s->len) return true;
+    const uint32_t enc = KORB_STR_ENC(sv);
+    if (KORB_ENC_SB(vm, enc)) return true;
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    if (enc == KORB_ENC_UTF8) return (p[off] & 0xC0) != 0x80;
+    bool be = true;
+    const uint32_t unit = korb_enc_fixed_unit(vm, enc, &be);
+    if (unit == 0) return true;
+    if (off % unit != 0) return false;
+    if (unit == 2) {                     /* UTF-16: never split a surrogate pair */
+        const uint32_t hi = be ? ((uint32_t)p[off - 2] << 8 | p[off - 1])
+                               : ((uint32_t)p[off - 1] << 8 | p[off - 2]);
+        if (hi >= 0xD800 && hi <= 0xDBFF) return false;
+    }
+    return true;
+}
+/* The ASCII codepoint of the fixed-width character at byte offset `o`, or -1 if
+ * it is not a 7-bit one (CRuby rb_enc_ascget). */
+static int korb_fixed_ascget(const unsigned char *p, uint32_t o, uint32_t unit, bool be) {
+    uint32_t v = 0;
+    for (uint32_t i = 0; i < unit; i++) v = (v << 8) | p[o + (be ? i : unit - 1 - i)];
+    return v < 0x80 ? (int)v : -1;
+}
+/* Byte count of a trailing universal line ending ("\r\n", "\n" or "\r"), 0 if
+ * none.  Encoding-aware, so UTF-16/32 strings chomp their encoded newline
+ * rather than a raw \n byte (CRuby smart_chomp). */
+static uint32_t korb_str_trailing_nl(const struct korb_vm *vm, VALUE sv) {
+    const KorbString *const s = VAL2STR(sv);
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    const uint32_t len = s->len;
+    bool be = true;
+    const uint32_t u = korb_enc_fixed_unit(vm, KORB_STR_ENC(sv), &be);
+    if (u == 0) {
+        if (len >= 2 && p[len - 2] == '\r' && p[len - 1] == '\n') return 2;
+        if (len >= 1 && (p[len - 1] == '\n' || p[len - 1] == '\r')) return 1;
+        return 0;
+    }
+    if (len < u || len % u != 0) return 0;
+    const int last = korb_fixed_ascget(p, len - u, u, be);
+    if (last == '\n') {
+        if (len >= 2 * u && korb_fixed_ascget(p, len - 2 * u, u, be) == '\r') return 2 * u;
+        return u;
+    }
+    return last == '\r' ? u : 0;
+}
+/* Byte count of the last character (for #chop), \r\n counted as one. */
+static uint32_t korb_str_last_char_bytes(const struct korb_vm *vm, VALUE sv) {
+    const KorbString *const s = VAL2STR(sv);
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    const uint32_t len = s->len;
+    if (len == 0) return 0;
+    const uint32_t nl = korb_str_trailing_nl(vm, sv);
+    if (nl > 1) return nl;                          /* "\r\n" (or its encoded form) */
+    bool be = true;
+    const uint32_t u = korb_enc_fixed_unit(vm, KORB_STR_ENC(sv), &be);
+    if (u != 0) return (len % u == 0) ? u : 1;
+    if (KORB_ENC_SB(vm, KORB_STR_ENC(sv))) return 1;
+    uint32_t n = len - 1;                           /* back up over one UTF-8 codepoint */
+    while (n > 0 && (p[n] & 0xC0) == 0x80) n--;
+    return len - n;
 }
 
 /* byte offset of codepoint index ci (clamped to [0, len]) */
@@ -646,9 +787,11 @@ static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (UNLIKELY(!KORB_STRING_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
     if (o == VALUE_REF_GET(self)) return RESULT_OK(VALUE_REF_GET(self));   /* s.replace(s) is a no-op (clear-then-append would empty it) */
+    const uint32_t oenc = KORB_STR_ENC(o);             /* self takes other's encoding (CRuby), invalidity included */
     VAL2STR(VALUE_REF_GET(self))->len = 0;             /* clear, then append other */
     /* Append at slots+2: the #to_str branch parks `self` at slots[0], so the grow's
      * korb_alloc must not use slots[0]/[1] as scratch (that would stale `self`). */
+    KORB_STR_ENC_SET(VALUE_REF_GET(self), oenc);       /* set before the append: it combines encodings */
     return korb_str_append_str(c, slots + 2, self, VALUE_SLICE_REF(a, 0));
 }
 static RESULT korb_m_str_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -923,8 +1066,27 @@ static RESULT korb_m_str_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 /* in-place whitespace strip (mode: 0 both, 1 left, 2 right). self if changed else nil. */
 static bool korb_str_sets_match(VALUE_SLICE a, unsigned char ch);
+/* strip's encoding checks (mode 0 strip / 1 lstrip / 2 rstrip).  CRuby decodes
+ * from the left in #lstrip, so an invalid codepoint at the first non-space
+ * position is an ArgumentError; #rstrip rejects any broken string outright with
+ * an Encoding::CompatibilityError. */
+static RESULT korb_str_strip_enc_check(CTX *c, VALUE *slots, VALUE v, int mode) {
+    if (KORB_STR_ENC(v) != KORB_ENC_UTF8) return RESULT_OK(KORB_NIL);
+    const KorbString *const s = VAL2STR(v);
+    if (korb_str_utf8_valid(s)) return RESULT_OK(KORB_NIL);
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    if (mode != 2) {
+        uint32_t i = 0;
+        while (i < s->len && p[i] <= ' ') i++;         /* leading ASCII spaces */
+        if (i < s->len && korb_utf8_seq_len(p, i, s->len) == 0)
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
+    }
+    if (mode != 1) return korb_raise_enc_compat_msg(c, slots, "invalid byte sequence in UTF-8");
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_str_strip_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    if (VALUE_SLICE_LEN(a) == 0) CHECK(korb_str_strip_enc_check(c, slots, VALUE_REF_GET(self), mode));
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t lo = 0, hi = s->len;
     bool has_set = VALUE_SLICE_LEN(a) >= 1;
@@ -960,10 +1122,8 @@ static RESULT korb_m_str_chomp_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         VALUE sv = VALUE_SLICE_GET(a, 0);
         if (sv == KORB_NIL) return RESULT_OK(KORB_NIL);   /* nil sep → no-op → nil */
         const KorbString *sep = VAL2STR(sv);
-        if (sep->len == 1 && korb_strbuf_data(sep->buf)[0] == '\n') {   /* "\n" = universal: \r\n, \n, or \r */
-            if (n >= 2 && korb_strbuf_data(s->buf)[n-2] == '\r' && korb_strbuf_data(s->buf)[n-1] == '\n') n -= 2;
-            else if (n >= 1 && (korb_strbuf_data(s->buf)[n-1] == '\n' || korb_strbuf_data(s->buf)[n-1] == '\r')) n -= 1;
-        }
+        if (sep->len == 1 && korb_strbuf_data(sep->buf)[0] == '\n')   /* "\n" = universal: \r\n, \n, or \r */
+            n -= korb_str_trailing_nl(c->vm, VALUE_REF_GET(self));
         else if (sep->len == 0) { while (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\n') { if (n >= 2 && korb_strbuf_data(s->buf)[n-2] == '\r') n--; n--; } }
         else if (n >= sep->len && memcmp(korb_strbuf_data(s->buf) + n - sep->len, korb_strbuf_data(sep->buf), sep->len) == 0) n -= sep->len;
         if (n == s->len) return RESULT_OK(KORB_NIL);
@@ -983,9 +1143,9 @@ static RESULT korb_m_str_chomp_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             return RESULT_OK(VALUE_REF_GET(self));
         }
     }
-    if (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\n') { n--; if (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\r') n--; }
-    else if (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\r') n--;
-    else return RESULT_OK(KORB_NIL);
+    { const uint32_t nl = korb_str_trailing_nl(c->vm, VALUE_REF_GET(self));
+      if (nl == 0) return RESULT_OK(KORB_NIL);
+      n -= nl; }
     s->len = n; korb_strbuf_data(s->buf)[n] = '\0';
     return RESULT_OK(VALUE_REF_GET(self));
 }
@@ -994,12 +1154,7 @@ static RESULT korb_m_str_chop_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));     /* chop! checks frozen upfront (even for "") */
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     if (s->len == 0) return RESULT_OK(KORB_NIL);
-    uint32_t n = s->len;
-    if (n >= 2 && korb_strbuf_data(s->buf)[n-1] == '\n' && korb_strbuf_data(s->buf)[n-2] == '\r') n -= 2;
-    else {
-        n--;                                           /* back up over one UTF-8 char */
-        while (n > 0 && ((unsigned char)korb_strbuf_data(s->buf)[n] & 0xC0) == 0x80) n--;
-    }
+    const uint32_t n = s->len - korb_str_last_char_bytes(c->vm, VALUE_REF_GET(self));
     s->len = n; korb_strbuf_data(s->buf)[n] = '\0';
     return RESULT_OK(VALUE_REF_GET(self));
 }
@@ -1122,9 +1277,14 @@ static RESULT korb_str_delfix(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *p = VAL2STR(pv);
     uint32_t bs = 0, be = s->len; bool match = false;
-    if (p->len <= s->len) {
-        if (mode == 0 && memcmp(korb_strbuf_data(s->buf), korb_strbuf_data(p->buf), p->len) == 0) { bs = p->len; match = true; }
-        else if (mode == 1 && memcmp(korb_strbuf_data(s->buf) + s->len - p->len, korb_strbuf_data(p->buf), p->len) == 0) { be = s->len - p->len; match = true; }
+    /* an empty affix deletes nothing (bang → nil); the cut must land on a
+     * character boundary, so a partial multi-byte sequence never matches */
+    if (p->len > 0 && p->len <= s->len) {
+        const uint32_t cut = (mode == 0) ? p->len : s->len - p->len;
+        if (korb_str_char_head_p(c->vm, VALUE_REF_GET(self), cut)) {
+            if (mode == 0 && memcmp(korb_strbuf_data(s->buf), korb_strbuf_data(p->buf), p->len) == 0) { bs = cut; match = true; }
+            else if (mode == 1 && memcmp(korb_strbuf_data(s->buf) + cut, korb_strbuf_data(p->buf), p->len) == 0) { be = cut; match = true; }
+        }
     }
     if (!in_place) return korb_str_slice_new(c, slots, self, bs, be - bs);
     if (!match) return RESULT_OK(KORB_NIL);
@@ -1600,6 +1760,7 @@ static RESULT korb_m_str_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_str_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    CHECK(korb_str_need_ascii_compat(c, slots, VALUE_REF_GET(self)));
     const KorbString *const s = VAL2STR(VALUE_REF_GET(self));
     const char *const d = korb_strbuf_data(s->buf);
     const uint32_t len = s->len;
@@ -1730,6 +1891,9 @@ static RESULT korb_m_str_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
+    { uint32_t ce;
+      if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), sv, &ce)))
+          return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(sv)); }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
     return RESULT_OK(korb_byte_find(korb_strbuf_data(s->buf), s->len, korb_strbuf_data(n->buf), n->len) >= 0 ? KORB_TRUE : KORB_FALSE);
 }
@@ -1755,9 +1919,14 @@ static RESULT korb_m_str_start_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, i)));
         }
+        { uint32_t ce;
+          if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), pv, &ce)))
+              return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(pv)); }
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));   /* re-read after possible dispatch */
         const KorbString *p = VAL2STR(pv);
-        if (p->len <= s->len && memcmp(korb_strbuf_data(s->buf), korb_strbuf_data(p->buf), p->len) == 0) return RESULT_OK(KORB_TRUE);
+        /* the prefix must end on a character boundary of self (CRuby) */
+        if (p->len <= s->len && korb_str_char_head_p(c->vm, VALUE_REF_GET(self), p->len) &&
+            memcmp(korb_strbuf_data(s->buf), korb_strbuf_data(p->buf), p->len) == 0) return RESULT_OK(KORB_TRUE);
     }
     return RESULT_OK(KORB_FALSE);
 }
@@ -1770,9 +1939,14 @@ static RESULT korb_m_str_end_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, i)));
         }
+        { uint32_t ce;
+          if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), pv, &ce)))
+              return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(pv)); }
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));   /* re-read after possible dispatch */
         const KorbString *p = VAL2STR(pv);
-        if (p->len <= s->len && memcmp(korb_strbuf_data(s->buf) + s->len - p->len, korb_strbuf_data(p->buf), p->len) == 0) return RESULT_OK(KORB_TRUE);
+        /* the suffix must start on a character boundary of self (CRuby) */
+        if (p->len <= s->len && korb_str_char_head_p(c->vm, VALUE_REF_GET(self), s->len - p->len) &&
+            memcmp(korb_strbuf_data(s->buf) + s->len - p->len, korb_strbuf_data(p->buf), p->len) == 0) return RESULT_OK(KORB_TRUE);
     }
     return RESULT_OK(KORB_FALSE);
 }
@@ -1839,6 +2013,7 @@ static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    CHECK(korb_str_need_ascii_compat(c, slots, VALUE_REF_GET(self)));
     int base = 10;
     bool have_base = false;
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* to_i(base): base 0 = auto-detect prefix */
@@ -1949,6 +2124,7 @@ static RESULT korb_m_str_oct(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 /* String#to_r — lenient parse of [ws][sign]int['/'int | '.'frac]; non-numeric → (0/1). */
 static RESULT korb_m_str_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    CHECK(korb_str_need_ascii_compat(c, slots, VALUE_REF_GET(self)));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     const char *const d = korb_strbuf_data(s->buf); const uint32_t len = s->len; uint32_t i = 0;
     while (i < len && isspace((unsigned char)d[i])) i++;
@@ -2024,6 +2200,7 @@ static bool korb_str_parse_c_num(CTX *c, VALUE *outslot, const char *d, uint32_t
  * non-numeric string → (0+0i). */
 static RESULT korb_m_str_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    CHECK(korb_str_need_ascii_compat(c, slots, VALUE_REF_GET(self)));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     const uint32_t len = s->len; uint32_t i = 0;
     /* Copy the bytes to the stack: parsing allocates (Float/Rational/Complex),
@@ -2070,6 +2247,7 @@ static RESULT korb_m_str_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 /* mode: 0=both 1=left 2=right. With a charset arg (Ruby 4.0), strip those chars
  * (delete/count-style set with ranges + ^) instead of whitespace. */
 static RESULT korb_str_strip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
+    if (VALUE_SLICE_LEN(a) == 0) CHECK(korb_str_strip_enc_check(c, slots, VALUE_REF_GET(self), mode));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t start = 0, end = s->len;
     bool has_set = VALUE_SLICE_LEN(a) >= 1;
@@ -2110,8 +2288,7 @@ static RESULT korb_m_str_chomp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         uint32_t len = s->len;
         const KorbString *sep = VAL2STR(sv);
         if (sep->len == 1 && korb_strbuf_data(sep->buf)[0] == '\n') {   /* "\n" = the universal line ending: \r\n, \n, or \r */
-            if (len >= 2 && korb_strbuf_data(s->buf)[len-2] == '\r' && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 2;
-            else if (len >= 1 && (korb_strbuf_data(s->buf)[len-1] == '\n' || korb_strbuf_data(s->buf)[len-1] == '\r')) len -= 1;
+            len -= korb_str_trailing_nl(c->vm, VALUE_REF_GET(self));
         } else if (sep->len == 0) {                   /* "" → strip all trailing \n / \r\n */
             while (len >= 2 && korb_strbuf_data(s->buf)[len-2] == '\r' && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 2;
             while (len >= 1 && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 1;
@@ -2135,22 +2312,13 @@ static RESULT korb_m_str_chomp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             return korb_str_slice_new(c, slots, self, 0, len2);
         }
     }
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    uint32_t len = s->len;
-    if (len >= 2 && korb_strbuf_data(s->buf)[len-2] == '\r' && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 2;
-    else if (len >= 1 && (korb_strbuf_data(s->buf)[len-1] == '\n' || korb_strbuf_data(s->buf)[len-1] == '\r')) len -= 1;
+    const uint32_t len = VAL2STR(VALUE_REF_GET(self))->len - korb_str_trailing_nl(c->vm, VALUE_REF_GET(self));
     return korb_str_slice_new(c, slots, self, 0, len);
 }
 
 static RESULT korb_m_str_chop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    uint32_t len = s->len;
-    if (len >= 2 && korb_strbuf_data(s->buf)[len-2] == '\r' && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 2;
-    else if (len >= 1) {
-        len--;                                  /* drop a whole trailing UTF-8 codepoint */
-        while (len > 0 && ((unsigned char)korb_strbuf_data(s->buf)[len] & 0xC0) == 0x80) len--;
-    }
+    const uint32_t len = VAL2STR(VALUE_REF_GET(self))->len - korb_str_last_char_bytes(c->vm, VALUE_REF_GET(self));
     return korb_str_slice_new(c, slots, self, 0, len);
 }
 
@@ -2301,22 +2469,38 @@ static RESULT korb_m_str_charlen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const KorbString *const s = VAL2STR(v);
     const uint32_t enc = KORB_STR_ENC(v);
     if (LIKELY(enc == KORB_ENC_UTF8)) return RESULT_OK(LONG2FIX((korb_sword_t)korb_utf8_count(korb_strbuf_data(s->buf), s->len)));
-    if (KORB_ENC_SB(c->vm, enc) || korb_str_bytes_ascii(v)) return RESULT_OK(LONG2FIX((korb_sword_t)s->len));
-    return korb_str_enc_notimpl(c, slots, v);
+    if (KORB_ENC_SB(c->vm, enc)) return RESULT_OK(LONG2FIX((korb_sword_t)s->len));
+    /* the ASCII shortcut is only valid for ASCII-compatible encodings: in
+     * UTF-16/32 four ASCII-range bytes are one character, not four */
+    if (!korb_enc_char_steppable(c->vm, enc)) {
+        if (korb_str_bytes_ascii(v)) return RESULT_OK(LONG2FIX((korb_sword_t)s->len));
+        return korb_str_enc_notimpl(c, slots, v);
+    }
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    korb_sword_t n = 0;
+    for (uint32_t i = 0; i < s->len; n++) {
+        const uint32_t l = korb_str_char_bytes(c->vm, enc, p, i, s->len);
+        i += l ? l : 1;
+    }
+    return RESULT_OK(LONG2FIX(n));
 }
 
 static RESULT korb_m_str_chars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
-    if (UNLIKELY(KORB_ENC_NEEDS_HOOK(c->vm, enc)) && !korb_str_bytes_ascii(VALUE_REF_GET(self))) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
+    if (UNLIKELY(KORB_ENC_NEEDS_HOOK(c->vm, enc)) && !korb_enc_char_steppable(c->vm, enc)
+        && !korb_str_bytes_ascii(VALUE_REF_GET(self))) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
     const bool single = KORB_ENC_SB(c->vm, enc);
+    const bool other = korb_enc_char_steppable(c->vm, enc);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     uint32_t pos = 0;
     for (;;) {
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));
         if (pos >= s->len) break;
         uint32_t cl = 1;                                  /* single-byte enc: 1 byte = 1 char */
-        if (!single) { cl = korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(s->buf), pos, s->len); if (!cl) cl = 1; }
+        if (other) cl = korb_str_char_bytes(c->vm, enc, (const unsigned char *)korb_strbuf_data(s->buf), pos, s->len);
+        else if (!single) { cl = korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(s->buf), pos, s->len); if (!cl) cl = 1; }
+        if (!cl) cl = 1;
         CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, cl))));
         pos += cl;
     }
@@ -2455,6 +2639,7 @@ static uint32_t korb_utf8_decode(const char *p, uint32_t avail, uint32_t *clen) 
  * array (defined later in this TU). */
 static RESULT korb_m_str_chars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_str_codepoints_enum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_str_bytes(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);          /* enumerator.c (included later) */
@@ -2473,11 +2658,19 @@ static RESULT korb_str_each_enum(CTX *c, VALUE *slots, VALUE_REF self,
 }
 static RESULT korb_m_str_each_codepoint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
-    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_codepoints, "each_codepoint", a);
+    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_codepoints_enum, "each_codepoint", a);
+    {   /* with a block CRuby validates the whole string before yielding */
+        const VALUE v = VALUE_REF_GET(self);
+        const uint32_t enc = KORB_STR_ENC(v);
+        if (UNLIKELY(!korb_str_enc_valid(VAL2STR(v), enc)))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", korb_enc_name_of(c->vm, enc));
+    }
+    const bool sb = KORB_ENC_SB(c->vm, KORB_STR_ENC(VALUE_REF_GET(self)));   /* one byte = one codepoint */
     for (uint32_t pos = 0; ; ) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
-        uint32_t cl; uint32_t cp = korb_utf8_decode(korb_strbuf_data(s->buf) + pos, s->len - pos, &cl);
+        uint32_t cl = 1, cp = (unsigned char)korb_strbuf_data(s->buf)[pos];
+        if (!sb) cp = korb_utf8_decode(korb_strbuf_data(s->buf) + pos, s->len - pos, &cl);
         VALUE cv = LONG2FIX(cp);
         RESULT r = korb_block_yield(c, slots, block, def_env, &cv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -2590,17 +2783,31 @@ static RESULT korb_m_str_tr_s_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     return RESULT_OK(matched ? VALUE_REF_GET(self) : KORB_NIL);
 }
-static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
+/* the enumerator form must not raise at construction, so the check is a flag */
+static RESULT korb_str_codepoints_impl(CTX *c, VALUE *slots, VALUE_REF self, bool check) {
+    if (check) {                                      /* CRuby scans before yielding anything */
+        const VALUE v = VALUE_REF_GET(self);
+        const uint32_t enc = KORB_STR_ENC(v);
+        if (!korb_str_enc_valid(VAL2STR(v), enc))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", korb_enc_name_of(c->vm, enc));
+    }
+    const bool sb = KORB_ENC_SB(c->vm, KORB_STR_ENC(VALUE_REF_GET(self)));   /* one byte = one codepoint */
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t pos = 0; ; ) {
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));
         if (pos >= s->len) break;
-        uint32_t cl; uint32_t cp = korb_utf8_decode(korb_strbuf_data(s->buf) + pos, s->len - pos, &cl);
+        uint32_t cl = 1, cp = (unsigned char)korb_strbuf_data(s->buf)[pos];
+        if (!sb) cp = korb_utf8_decode(korb_strbuf_data(s->buf) + pos, s->len - pos, &cl);
         CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(cp)));
         pos += cl;
     }
     return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; return korb_str_codepoints_impl(c, slots, self, true);
+}
+static RESULT korb_m_str_codepoints_enum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; return korb_str_codepoints_impl(c, slots, self, false);
 }
 static RESULT korb_m_str_each_byte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
@@ -2765,11 +2972,16 @@ static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
     if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_chars, "each_char", a);
+    const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
+    if (UNLIKELY(KORB_ENC_NEEDS_HOOK(c->vm, enc)) && !korb_enc_char_steppable(c->vm, enc)
+        && !korb_str_bytes_ascii(VALUE_REF_GET(self))) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
+    const bool plain = (enc == KORB_ENC_UTF8);
     uint32_t pos = 0;
     for (;;) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
-        uint32_t cl = korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(s->buf), pos, s->len);
+        uint32_t cl = plain ? korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(s->buf), pos, s->len)
+                            : korb_str_char_bytes(c->vm, enc, (const unsigned char *)korb_strbuf_data(s->buf), pos, s->len);
         if (!cl) cl = 1;
         slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, pos, cl));   /* root the char */
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
@@ -2840,11 +3052,27 @@ done:
 /* crypt(salt) — POSIX crypt(3) one-way hash (libc).  The golden oracle is the
  * host CRuby, which uses the same libc crypt, so results match bit-for-bit. */
 static RESULT korb_m_str_crypt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (VALUE_SLICE_LEN(a) < 1 || !KORB_STRING_P(VALUE_SLICE_GET(a, 0)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
-                          VALUE_SLICE_LEN(a) >= 1 ? korb_type_name(VALUE_SLICE_GET(a, 0)) : "nil");
+    if (VALUE_SLICE_LEN(a) < 1) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of nil into String");
+    if (!KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {         /* coerce the salt via #to_str */
+        VALUE sv = VALUE_SLICE_GET(a, 0);
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(sv) && korb_responds_to_coerce_p(c, slots, &sv, to_str)) {
+            slots[0] = sv;
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (KORB_STRING_P(sr.value)) VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value);
+        }
+        if (!KORB_STRING_P(VALUE_SLICE_GET(a, 0)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
+                              korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
     const KorbString *key = SELF_STR, *salt = VAL2STR(VALUE_SLICE_GET(a, 0));
-    if (salt->len < 2) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "salt too short (need >=2 bytes)");
+    /* CRuby rejects a NUL in either operand and a salt shorter than two
+     * (non-NUL) characters before calling crypt(3). */
+    if (memchr(korb_strbuf_data(key->buf), '\0', key->len) != NULL)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
+    if (salt->len < 2 || memchr(korb_strbuf_data(salt->buf), '\0', 2) != NULL)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "salt too short (need >=2 bytes)");
     char kb[4096], sb[512];
     if (key->len >= sizeof(kb) || salt->len >= sizeof(sb))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string too long for crypt");
