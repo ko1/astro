@@ -1063,7 +1063,7 @@ NODE_DEF @nogc
 node_return_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, VALUE v@child)
 {
     (void)n;
-    c->return_target = korb_outer_frame_base(slots[prev_off], depth);
+    c->return_target = korb_outer_frame_base_at(&slots[prev_off], slots[prev_off], depth);
     return RESULT_RETURN_(v);
 }
 

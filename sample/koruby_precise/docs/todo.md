@@ -2901,7 +2901,7 @@ lefts/rights を葉としてしか書き出さない (入れ子の MULTI_TARGET 
 rest の無いグループの入れ子 (0xFF) は既に対応済み。
 `language/{lambda,proc}_spec` で 2 例。
 
-## 保存したブロックからの return がメソッドを飛び越える (+ mspec が黙って終わる)
+## (解決済 2026-08-31) 保存したブロックからの return がメソッドを飛び越える
 
 ```ruby
 class SavedInnerBlock
@@ -2927,5 +2927,11 @@ depth 分辿って target を決めるが、`Proc#call` 経由で別 frame か�
 消費されなかった KORB_RETURN がトップレベルまで抜けている疑い。
 bisect: 765904e4 まで OK、382b0aab で NG。ただしマージ後の tree から
 382b0aab だけ revert しても直らないので原因は複数ある。
-`language/return_spec` は 37 -> 0。core は同じマージで +60 なので
-マージ自体は残してある。
+**2026-08-31 修正**: 原因は二つ。(1) `node_return_outer` の depth を
+`kp_note_depth` に登録していなかったので、escape した Proc が env chain を
+その深さまで materialize せず target が NULL (= nearest-method) に落ちていた。
+(2) `korb_outer_frame_base` が materialize 済み env の chain を辿れず、
+かつ frame が自分の open env を EP セルに持つ場合に一段ずれていた。
+`korb_outer_frame_base_at` で「自分の env なら depth を消費せず prev へ」を
+入れて解決。`language/return_spec` 0 -> 38 (マージ前の 37 より良い)、
+core 20958 -> 20962。

@@ -381,6 +381,7 @@ RESULT korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
 RESULT korb_yield_outer(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
                         VALUE prev_handle, uint32_t depth, int32_t trio_base);
 VALUE *korb_outer_frame_base(VALUE prev_handle, uint32_t depth);
+VALUE *korb_outer_frame_base_at(VALUE *ep_cell, VALUE prev_handle, uint32_t depth);
 RESULT korb_exc_ivar_set(CTX *c, VALUE *slots, VALUE_REF excref, VALUE name_sym, VALUE val);   /* set an exception ivar (e.g. @__name), usable from node_eval.c */
 
 /* Pattern-matching (`expr in/ => pattern`) compiled descriptor + runtime matcher.

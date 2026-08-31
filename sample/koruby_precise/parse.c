@@ -4101,6 +4101,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (depth == 0) {
             return ALLOC_node_return(kp_jump_args_value(tc, rn->arguments));
         }
+        /* An escaped Proc must materialize enough of the env chain for
+         * korb_outer_frame_base to reach the home method frame at run time —
+         * the same requirement a depth-`depth` variable read has. */
+        kp_note_depth(tc, depth);
         /* node_return_outer reads this block frame's PREV cell (prev_off, like
          * node_ivar_set's self_off — a VALUE @child reserves no sibling slot). */
         NODE *v = kp_jump_args_value(tc, rn->arguments);

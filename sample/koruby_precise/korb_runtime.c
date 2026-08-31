@@ -8109,14 +8109,34 @@ korb_yield_outer(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
 VALUE *
 korb_outer_frame_base(VALUE prev_handle, uint32_t depth)
 {
-    if ((prev_handle & 1u) == 0) return NULL;
-    VALUE *node = (VALUE *)(uintptr_t)(prev_handle & ~(uintptr_t)1u);
-    for (uint32_t k = 1; k < depth; k++) {
-        const VALUE h = korb_ep_get(node);
-        if ((h & 1u) == 0) return NULL;
-        node = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
+    /* The chain mixes raw frame handles (odd) with materialized KorbEnvs (even,
+     * non-zero) — a Proc that outlived its defining block frames carries the
+     * latter.  Walk both: an OPEN env still names its live frame through `loc`,
+     * which is exactly what a non-local `return` needs to aim at. */
+    return korb_outer_frame_base_at(NULL, prev_handle, depth);
+}
+/* Same walk, but `ep_cell` (when given) is the frame's own EP cell so a leading
+ * OWN env — the cell holds this frame's materialized env once it escaped, not
+ * the parent handle — is stepped over without consuming a level. */
+VALUE *
+korb_outer_frame_base_at(VALUE *ep_cell, VALUE prev_handle, uint32_t depth)
+{
+    VALUE h = prev_handle;
+    if (ep_cell != NULL && h != 0 && (h & 1u) == 0 &&
+        VAL2ENV(h)->closed == 0 && VAL2ENV(h)->loc == ep_cell + 2)
+        h = VAL2ENV(h)->prev;
+    for (uint32_t k = 1; ; k++) {
+        if (h == 0) return NULL;
+        if (h & 1u) {                                  /* raw frame pointer */
+            VALUE *const node = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
+            if (k >= depth) return node;
+            h = korb_ep_get(node);
+            continue;
+        }
+        const KorbEnv *const e = VAL2ENV(h);           /* materialized env: an open one still names its live frame */
+        if (k >= depth) return e->closed ? NULL : e->loc;
+        h = e->prev;
     }
-    return node;
 }
 
 /* ---------------------------------------------------------------------------
