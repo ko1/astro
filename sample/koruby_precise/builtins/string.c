@@ -5,6 +5,17 @@
 static RESULT korb_m_str_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_STR->len)); }
 static RESULT korb_m_str_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_STR->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_str_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static bool korb_exact_class_p(CTX *c, VALUE v, int cls);   /* fwd (array.c) */
+/* String#to_s — self, but a SUBCLASS instance converts to a plain String (CRuby). */
+static RESULT korb_m_str_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const VALUE v = VALUE_REF_GET(self);
+    if (LIKELY(korb_exact_class_p(c, v, KORB_C_STRING))) return RESULT_OK(v);
+    const KorbString *const s = VAL2STR(v);
+    RESULT r = korb_str_new(c, slots, korb_strbuf_data(s->buf), s->len);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_STR_ENC(v));
+    return r;
+}
 static inline bool korb_str_is_frozen(VALUE v) {
     return AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_FROZEN);
 }

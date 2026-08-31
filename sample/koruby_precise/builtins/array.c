@@ -97,6 +97,22 @@ static RESULT korb_m_ary_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(LONG2FIX((xl > yl) - (xl < yl)));
 }
 static RESULT korb_m_ary_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+/* True when `v`'s class (singletons peeled) is exactly the builtin `cls`. */
+static bool korb_exact_class_p(CTX *c, VALUE v, int cls) {
+    VALUE k = korb_class_obj_of(c, v);
+    while (KORB_CLASS_P(k) && VAL2CLASS(k)->is_singleton) k = VAL2CLASS(k)->superclass;
+    return k == korb_builtin_class_obj(c->vm, cls);
+}
+/* Array#to_a — self, but a SUBCLASS instance converts to a plain Array (CRuby). */
+static RESULT korb_m_ary_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    if (LIKELY(korb_exact_class_p(c, VALUE_REF_GET(self), KORB_C_ARRAY))) return RESULT_OK(VALUE_REF_GET(self));
+    const uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, n ? n : 1));
+    for (uint32_t i = 0; i < n; i++)                      /* re-read self: the push can GC-move it */
+        CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i]));
+    return RESULT_OK(slots[0]);
+}
 static RESULT korb_m_ary_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* first(n) → first n as array */
         korb_sword_t n;

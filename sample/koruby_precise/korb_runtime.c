@@ -9842,8 +9842,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "size", korb_m_str_charlen, 0);
     korb_def_cmethod(c, KORB_C_STRING, "bytesize", korb_m_str_len, 0);
     korb_def_cmethod(c, KORB_C_STRING, "empty?", korb_m_str_empty, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "to_s", korb_m_str_self, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "to_str", korb_m_str_self, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "to_s", korb_m_str_to_s, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "to_str", korb_m_str_to_s, 0);   /* CRuby: to_str is rb_str_to_s too */
     korb_def_cmethod(c, KORB_C_STRING, "+@", korb_m_str_plus_at, 0);
     korb_def_cmethod(c, KORB_C_STRING, "-@", korb_m_str_uminus, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_i", korb_m_str_to_i, -1);
@@ -10028,7 +10028,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "size", korb_m_ary_len, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "empty?", korb_m_ary_empty, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "<=>", korb_m_ary_cmp, 1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "to_a", korb_m_ary_self, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "to_a", korb_m_ary_to_a, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "to_h", korb_m_ary_to_h, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "cycle", korb_m_ary_cycle, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "permutation", korb_m_ary_permutation, -1);
@@ -13732,13 +13732,23 @@ korb_bi_gc_start(CTX *c, VALUE *slots, VALUE_SLICE args)
     aro_gc_collect(c);
     return RESULT_OK(KORB_NIL);
 }
-/* __clock_gettime() — monotonic seconds as Float (backs Process.clock_gettime). */
+/* __clock_gettime(id) — seconds as Float from the clock the id names (backs
+ * Process.clock_gettime).  0 = REALTIME, 2 = PROCESS_CPUTIME, 3 = THREAD_CPUTIME,
+ * anything else = MONOTONIC (the prelude's own numbering). */
 static RESULT
 korb_bi_clock_gettime(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    (void)args;
+    korb_sword_t id = 1;
+    if (VALUE_SLICE_LEN(args) >= 1 && FIXNUM_P(VALUE_SLICE_GET(args, 0))) id = FIX2LONG(VALUE_SLICE_GET(args, 0));
+    clockid_t clk = CLOCK_MONOTONIC;
+    switch (id) {
+      case 0: clk = CLOCK_REALTIME; break;
+      case 2: clk = CLOCK_PROCESS_CPUTIME_ID; break;
+      case 3: clk = CLOCK_THREAD_CPUTIME_ID; break;
+      default: break;
+    }
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (clock_gettime(clk, &ts) != 0) clock_gettime(CLOCK_MONOTONIC, &ts);
     return korb_float_new(c, slots, (double)ts.tv_sec + (double)ts.tv_nsec / 1e9);
 }
 

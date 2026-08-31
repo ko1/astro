@@ -223,8 +223,8 @@ module Process
   def self.gid  = __process_ids[2]
   def self.egid = __process_ids[3]
   def self.ppid = __process_ids[4]
-  def self.clock_gettime(_clk = CLOCK_MONOTONIC, unit = :float_second)
-    t = __clock_gettime
+  def self.clock_gettime(clk = CLOCK_MONOTONIC, unit = :float_second)
+    t = __clock_gettime(clk.is_a?(Integer) ? clk : CLOCK_MONOTONIC)
     case unit
     when :float_second, nil then t          # nil は既定 (:float_second)
     when :float_millisecond then t * 1000.0
