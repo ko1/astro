@@ -2487,6 +2487,17 @@ static VALUE korb_file_mode_val(CTX *const c, const VALUE_SLICE a, const uint32_
     const int32_t mi = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, "mode", 4)));
     return mi >= 0 ? korb_items_data(VAL2HASH(h)->items)[2 * mi + 1] : KORB_NIL;
 }
+/* 同様に perm: 3 番目の positional が無ければ options Hash の perm: を見る。 */
+static mode_t korb_file_perm_val(CTX *const c, const VALUE_SLICE a, const uint32_t npos, const int32_t fopts_idx) {
+    if (npos >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) return (mode_t)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    if (fopts_idx < 0) return 0666;
+    const VALUE h = VALUE_SLICE_GET(a, (uint32_t)fopts_idx);
+    if (!KORB_HASH_P(h)) return 0666;
+    const int32_t pi = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, "perm", 4)));
+    if (pi < 0) return 0666;
+    const VALUE pv = korb_items_data(VAL2HASH(h)->items)[2 * pi + 1];
+    return FIXNUM_P(pv) ? (mode_t)FIX2LONG(pv) : 0666;
+}
 static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                struct Node *block, VALUE *def_env, VALUE *captured_self) {
     VALUE pv = VALUE_SLICE_GET(a, 0);
@@ -2522,7 +2533,7 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     int rw = 0; bool binary = false; int fd;
     if (FIXNUM_P(korb_file_mode_val(c, a, npos, fopts_idx))) {   /* integer O_* flags → open(2) */
         const int fl = (int)FIX2LONG(korb_file_mode_val(c, a, npos, fopts_idx));
-        const mode_t perm = (npos >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (mode_t)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0666;
+        const mode_t perm = korb_file_perm_val(c, a, npos, fopts_idx);
         const int acc = fl & 3;   /* O_RDONLY=0 / O_WRONLY=1 / O_RDWR=2 */
         rw = acc == 1 ? 2 : acc == 2 ? 3 : 1;
         char pbuf[4096];                                   /* stack copy: the open may park → GC moves the String */
@@ -2552,7 +2563,7 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         char pbuf[4096];
         snprintf(pbuf, sizeof pbuf, "%.*s", (int)plen, path);
         RESULT operr;
-        const mode_t perm2 = (npos >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (mode_t)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0666;
+        const mode_t perm2 = korb_file_perm_val(c, a, npos, fopts_idx);
         fd = korb_open_no_stall(c, slots, pbuf, korb_io_open_flags(mode) | extra_flags, perm2, &operr);
         if (UNLIKELY(operr.state != KORB_NORMAL)) return operr;
         if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", pbuf);
