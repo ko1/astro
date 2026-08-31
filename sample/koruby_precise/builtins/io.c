@@ -1705,7 +1705,7 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             close(nfd);
         }
         korb_io_drop_rbuf(rep);
-        (void)fcntl(rep->fd, F_SETFD, FD_CLOEXEC);
+        if (rep->fd > 2) (void)fcntl(rep->fd, F_SETFD, FD_CLOEXEC);   /* fd 0/1/2 must survive exec: `STDOUT.reopen path` then system() */
         /* the reopened stream takes the new mode's direction: `f.reopen(p, "r")`
            on a write-only IO is readable afterwards */
         CHECK(korb_ivar_set(c, slots + 1, self, ID2SYM(korb_io_mode_mid(c)), LONG2FIX(korb_io_mode_rw(mode))));
@@ -1734,7 +1734,12 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(!korb_io_open_p(other))) return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "closed stream");
     (void)korb_io_flush_rep(other);
     (void)korb_io_flush_rep(rep);
+    /* the other stream's *logical* position (fd offset minus its read-ahead) —
+       dup2 below shares the offset, so unread buffered bytes must be given back */
+    const uint32_t opend = (other->rlen > other->rpos) ? other->rlen - other->rpos : 0;
+    const off_t ooff = opend ? lseek(other->fd, 0, SEEK_CUR) : (off_t)-1;
     if (dup2(other->fd, rep->fd) < 0) return korb_raise_errno(c, slots, errno, "dup2", "");
+    if (ooff >= 0 && (off_t)opend <= ooff) (void)lseek(rep->fd, ooff - (off_t)opend, SEEK_SET);
     korb_io_drop_rbuf(rep);
     if (rep->fd > 2) (void)fcntl(rep->fd, F_SETFD, FD_CLOEXEC);   /* non-STDIO only: fd 0/1/2 must survive exec */
     /* The receiver takes on the other stream's mode and path, so a read after
@@ -1753,6 +1758,13 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         }
         if (oms != KORB_NIL)   { slots[1] = oms;   CHECK(korb_ivar_set(c, slots + 2, self, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)), slots[1])); }
         if (opath != KORB_NIL) { slots[1] = opath; CHECK(korb_ivar_set(c, slots + 2, self, ID2SYM(korb_intern(c->vm, "@__io_path", 10)), slots[1])); }
+    }
+    /* CRuby retags the receiver with the donor's class (File.open(..).reopen(io) is an IO) */
+    if (KORB_OBJECT_P(VALUE_REF_GET(self))) {
+        const VALUE ocls = korb_class_obj_of(c, slots[0]);
+        KorbObject *const so = VAL2OBJ(VALUE_REF_GET(self));
+        if (KORB_CLASS_P(ocls) && so->klass != ocls)
+            ARO_STORE(c, so, (VALUE *)(uintptr_t)&so->klass, ocls);
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
@@ -2191,6 +2203,35 @@ static RESULT korb_m_io_ioctl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(LONG2FIX(r));
 }
 
+/* IO#fcntl(cmd[, arg]) — same arg conventions as #ioctl.  Not an alias of it:
+ * F_GETFL & friends are a different request space. */
+static RESULT korb_m_io_fcntl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    korb_sword_t cmd;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &cmd));
+    const VALUE av = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+    int r;
+    if (KORB_STRING_P(av)) {
+        slots[0] = av;
+        if (VAL2STR(slots[0])->len < sizeof(long)) {              /* as in #ioctl: give the kernel a word of room */
+            char pad[sizeof(long)];
+            memset(pad, 0, sizeof pad);
+            slots[1] = UNWRAP(korb_str_new(c, slots + 1, pad, (uint32_t)sizeof pad));
+            CHECK(korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1)));
+        }
+        KorbString *const sb = VAL2STR(slots[0]);                 /* no alloc from here to the call */
+        r = fcntl(korb_io_rep(c, VALUE_REF_GET(self))->fd, (int)cmd, korb_strbuf_data(sb->buf));
+    } else {
+        korb_sword_t iv = 0;
+        if (av == KORB_TRUE) iv = 1;
+        else if (av != KORB_NIL && av != KORB_FALSE) CHECK(korb_io_arg_int(c, slots, av, &iv));
+        r = fcntl(korb_io_rep(c, VALUE_REF_GET(self))->fd, (int)cmd, (long)iv);
+    }
+    if (r < 0) return korb_raise_errno(c, slots + 2, errno, "fcntl", "");
+    return RESULT_OK(LONG2FIX(r));
+}
+
 /* IO#pwrite(string, offset) — write at an absolute offset without moving the
  * file position. */
 static RESULT korb_m_io_pwrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -2535,7 +2576,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("reopen", reopen, -1);       IOM("pid", pid, 0);
     IOM("dup", dup, 0);              IOM("clone", dup, 0);
     IOM("__init_fd", init_fd, -1);
-    IOM("ioctl", ioctl, -1);   IOM("fcntl", ioctl, -1);
+    IOM("ioctl", ioctl, -1);   IOM("fcntl", fcntl, -1);
     IOM("binmode", binmode, 0);      IOM("ungetc", ungetc, 1);
     IOM("ungetbyte", ungetc, 1);
     IOM("syswrite", syswrite, 1);    IOM("sysread", sysread, -1);
