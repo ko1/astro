@@ -1406,7 +1406,13 @@ static RESULT korb_m_io_rewind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_io_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                   struct Node *block, VALUE *def_env, VALUE *captured_self) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    /* without a block CRuby hands back an Enumerator even on a closed stream —
+       the IOError only surfaces when it is iterated */
+    if (!korb_io_open_p(rep)) {
+        if (block != NULL) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+        slots[0] = UNWRAP(korb_ary_new(c, slots, 0));
+        return korb_enum_new(c, slots + 1, slots[0], KORB_NIL);
+    }
     KORB_IO_NEED_READ(c, slots, self);
     RESULT collect = korb_m_io_read(c, slots, self, a);   /* slurp the rest */
     if (UNLIKELY(collect.state != KORB_NORMAL)) return collect;
@@ -1794,7 +1800,14 @@ static RESULT korb_m_io_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     const int fd = dup(rep->fd);
     if (fd < 0) return korb_raise_errno(c, slots, errno, "dup", "");
     (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
-    return korb_io_make(c, slots, korb_class_obj_of(c, VALUE_REF_GET(self)), fd, rw);
+    const bool bin = korb_io_is_binary(c, VALUE_REF_GET(self));
+    slots[0] = UNWRAP(korb_io_make(c, slots, korb_class_obj_of(c, VALUE_REF_GET(self)), fd, rw));
+    /* the copy keeps the original byte semantics and name (CRuby copies the fptr) */
+    if (bin) CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
+    { const VALUE pth = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__io_path", 10)));
+      if (pth != KORB_NIL) { slots[1] = pth;
+          CHECK(korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(c->vm, "@__io_path", 10)), slots[1])); } }
+    return RESULT_OK(slots[0]);
 }
 
 /* IO#binmode — switch to byte semantics (reads produce ASCII-8BIT). */
@@ -1834,6 +1847,31 @@ static RESULT korb_m_io_ungetc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "ungetc failed");
     }
     return RESULT_OK(KORB_NIL);
+}
+
+/* IO#ungetbyte — bytes, not characters: nil is a no-op and an Integer is taken
+ * modulo 256 (so, unlike #ungetc, it never raises TypeError/RangeError). */
+static RESULT korb_m_io_ungetbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    KORB_IO_NEED_READ(c, slots, self);
+    const VALUE v = VALUE_SLICE_GET(a, 0);
+    if (v == KORB_NIL) return RESULT_OK(KORB_NIL);
+    if (KORB_INTEGER_P(v)) {
+        korb_sword_t b;
+        if (FIXNUM_P(v)) b = FIX2LONG(v);
+        else {                                        /* a bignum: only the low byte matters */
+            slots[0] = v; slots[1] = LONG2FIX(0xff);
+            const RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "&", 1), 0, 1);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            b = FIXNUM_P(r.value) ? FIX2LONG(r.value) : 0;
+        }
+        const char ch = (char)(b & 0xff);
+        if (!korb_io_unget(korb_io_rep(c, VALUE_REF_GET(self)), &ch, 1))
+            return korb_raise(c, slots, KORB_E_IOERROR, 0, "ungetbyte failed");
+        return RESULT_OK(KORB_NIL);
+    }
+    return korb_m_io_ungetc(c, slots, self, a);       /* String / #to_str */
 }
 
 /* IO#syswrite / IO#sysread — unbuffered write(2)/read(2) on the descriptor. */
@@ -2592,7 +2630,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("__init_fd", init_fd, -1);
     IOM("ioctl", ioctl, -1);   IOM("fcntl", fcntl, -1);
     IOM("binmode", binmode, 0);      IOM("ungetc", ungetc, 1);
-    IOM("ungetbyte", ungetc, 1);
+    IOM("ungetbyte", ungetbyte, 1);
     IOM("syswrite", syswrite, 1);    IOM("sysread", sysread, -1);
     IOM("pread", pread, -1);         IOM("pwrite", pwrite, -1);
     IOM("readpartial", readpartial, -1);

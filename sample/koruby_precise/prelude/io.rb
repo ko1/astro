@@ -188,7 +188,7 @@ class IO
     # the newline decorator is rejected against the mode the stream was OPENED
     # with, before :binmode below can turn a text stream binary
     __check_newline_opt(opts[:newline]) if opts.key?(:newline)
-    binmode if opts[:binmode]
+    __binmode_flag if opts[:binmode]   # the option only flips byte semantics; an explicit encoding: still wins
     ext = __enc_opt(opts[:external_encoding])
     int = __enc_opt(opts[:internal_encoding])
     enc = __enc_opt(opts[:encoding])
@@ -331,8 +331,9 @@ class IO
   end
 
   def self.try_convert(obj)
-    return obj if obj.is_a?(IO)
-    return nil unless obj.respond_to?(:to_io)
+    return obj if IO === obj
+    # a BasicObject has no #is_a?/#respond_to? of its own — reach them through Object
+    return nil unless ::Object.instance_method(:respond_to?).bind_call(obj, :to_io)
     io = obj.to_io
     raise TypeError, "can't convert #{obj.class} to IO (#{obj.class}#to_io gives #{io.class})" unless io.is_a?(IO)
     io
@@ -420,5 +421,20 @@ module Kernel
   # Kernel の private instance method)。
   private def putc(obj)
     $stdout.putc(obj)
+  end
+end
+
+class IO
+  # The C #binmode flips the byte-semantics flag; CRuby additionally pins the
+  # encodings (external BINARY, no internal), which is what #external_encoding
+  # reports afterwards.
+  alias __binmode_flag binmode
+  private :__binmode_flag
+  def binmode
+    __binmode_flag
+    @__enc_done = true
+    @__enc = Encoding::BINARY
+    @__enc2 = nil
+    self
   end
 end
