@@ -5192,6 +5192,15 @@ static VALUE korb_klass_override_get(const struct korb_vm *vm, VALUE obj) {
         if (vm->sklass_obj[i] == obj) return vm->sklass_cls[i];
     return KORB_NIL;
 }
+/* The value's OWN singleton class, if one has been materialized (nil otherwise).
+ * The override table also holds plain subclasses for extended builtins, so the
+ * is_singleton check is what makes this "own singleton" and not "dispatch class". */
+static VALUE korb_own_singleton_class(const struct korb_vm *vm, VALUE v) {
+    if (!AROH_IS_GC_OBJECT(v) || !(((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS))
+        return KORB_NIL;
+    const VALUE ov = korb_klass_override_get(vm, v);
+    return (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) ? ov : KORB_NIL;
+}
 /* Start-of-lookup class for a user instance: its singleton class if one exists
  * (so `send`/internal dispatch see singleton methods), else its plain class.
  * The HAS_KLASS bit gates the scan, so objects without a singleton pay nothing. */
@@ -11390,15 +11399,40 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       }
       case KORB_OBJ_METHOD: {                          /* #<Method: Recv(DefiningModule)#name> */
         const KorbMethod *const m = (const KorbMethod *)(uintptr_t)v;
-        const VALUE recv_cls = m->unbound ? m->recv : korb_class_obj_of(c, m->recv);
-        fprintf(fp, "#<%s: ", m->unbound ? "UnboundMethod" : "Method");
-        if (KORB_CLASS_P(recv_cls)) korb_fprint_class_qname(c, fp, recv_cls); else fputs("Object", fp);
-        /* the module/class that actually defines the method, if different from the receiver class */
+        /* lookup starts at the dispatch class so singleton/extended definitions win */
+        const VALUE start = m->unbound ? m->recv : korb_dispatch_class(c, m->recv);
         VALUE def_cls = KORB_NIL;
-        const struct korb_method *km = KORB_CLASS_P(recv_cls) ? korb_class_find_method(recv_cls, m->mid, &def_cls) : NULL;
+        const struct korb_method *km = KORB_CLASS_P(start) ? korb_class_find_method(start, m->mid, &def_cls) : NULL;
         if (km == NULL) km = korb_method_lookup(c->vm, m->mid);   /* top-level (global function) method */
-        if (KORB_CLASS_P(def_cls) && def_cls != recv_cls) { fputc('(', fp); korb_fprint_class_qname(c, fp, def_cls); fputc(')', fp); }
-        fprintf(fp, "#%s", korb_sym_name(c->vm, m->mid));
+        if (m->owner != KORB_NIL) def_cls = m->owner;             /* fixed owner (bound-from-unbound / super_method) */
+        fprintf(fp, "#<%s: ", m->unbound ? "UnboundMethod" : "Method");
+        const char *sharp = "#";
+        if (m->unbound) {                                /* CRuby prints only the defining module */
+            const VALUE d = KORB_CLASS_P(def_cls) ? def_cls : start;
+            if (KORB_CLASS_P(d)) korb_fprint_class_tostr(c, fp, d); else fputs("Object", fp);
+        } else if (KORB_CLASS_P(def_cls) && VAL2CLASS(def_cls)->is_singleton) {
+            /* defined in a singleton class → "recv.name" (or "recv(attached).name") */
+            const VALUE att = korb_singleton_attached(c, def_cls);
+            korb_fprint_obj_default_inspect(c, fp, m->recv);
+            if (att != KORB_NIL && att != m->recv) {
+                fputc('(', fp); korb_fprint_obj_default_inspect(c, fp, att); fputc(')', fp);
+            }
+            sharp = ".";
+        } else {
+            /* the receiver's class as CRuby's CLASS_OF sees it: a Class/Module
+             * receiver shows its metaclass, any other object its real class. */
+            VALUE mk = KORB_NIL;
+            if (KORB_CLASS_P(m->recv)) {
+                mk = korb_own_singleton_class(c->vm, m->recv);    /* nil when not materialized yet */
+                if (KORB_CLASS_P(mk)) korb_fprint_class_tostr(c, fp, mk);
+                else { fputs("#<Class:", fp); korb_fprint_class_tostr(c, fp, m->recv); fputc('>', fp); }
+            } else {
+                mk = korb_class_obj_of(c, m->recv);
+                if (KORB_CLASS_P(mk)) korb_fprint_class_tostr(c, fp, mk); else fputs("Object", fp);
+            }
+            if (KORB_CLASS_P(def_cls) && def_cls != mk) { fputc('(', fp); korb_fprint_class_tostr(c, fp, def_cls); fputc(')', fp); }
+        }
+        fprintf(fp, "%s%s", sharp, korb_sym_name(c->vm, m->mid));
         if (km != NULL && km->orig_mid && km->orig_mid != km->mid)   /* aliased → #renamed(original) */
             fprintf(fp, "(%s)", korb_sym_name(c->vm, km->orig_mid));
         /* parameter signature + source location for a Ruby-defined method (CRuby shape) */
@@ -11423,6 +11457,19 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
             uint32_t fsym, line;
             if (km->body && korb_get_srcloc(c->vm, km->body, &fsym, &line))
                 fprintf(fp, " %s:%u", korb_sym_name(c->vm, fsym), line);
+        } else if (km != NULL) {                        /* C-defined: params are nameless → "_" / "*" (CRuby shape) */
+            int32_t nreq = 0; bool rest = false;
+            switch (km->kind) {
+              case KORB_METHOD_ATTR_R: break;
+              case KORB_METHOD_ATTR_W: nreq = 1; break;
+              case KORB_METHOD_BUILTIN:
+              case KORB_METHOD_CFUNC:  if (km->params_cnt < 0) rest = true; else nreq = km->params_cnt; break;
+              default: rest = true; break;              /* define_method without param_info */
+            }
+            fputc('(', fp);
+            for (int32_t i = 0; i < nreq; i++) fputs(i ? ", _" : "_", fp);
+            if (rest) fputs("*", fp);
+            fputc(')', fp);
         }
         fputc('>', fp);
         return;
