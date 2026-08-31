@@ -2989,3 +2989,98 @@ preemption point を入れた。ガードは VM の 2 フィールドを見る�
 **Fiber の中で** `loop { lock.synchronize {} }` を回しており、fiber 内から
 thread 切り替えはできない (`korb_loop_yield` は running_fiber なら no-op)。
 CRuby は fiber を持つ thread に interrupt を届ける。
+
+
+## (2026-08-31 調査) def のパラメータまわりの残り 2 件
+
+**1. デフォルト式の中で作られた local がパラメータ順を壊す**
+
+```ruby
+def bar(a=b=c=1, d=2) = [a,b,c,d]
+# koruby: NotImplementedError: M0 unsupported: repeated parameter name
+# CRuby : bar #=> [1,1,1,2] / bar(3) #=> [3,nil,nil,2] (b,c は単なる local)
+```
+
+prism の locals はソース順 (a,b,c,d) なので、optional #1 の `d` が
+`req_cnt+1 = 1` ではなく slot 3 に来る。parse.c の
+「optional は [req_cnt, req_cnt+opt_cnt) に連続」という前提が崩れる。
+直すならフレームの locals をパラメータ先頭に並べ替えたコピーを作る
+(destructured / forwarding / 同名パラメータがあるときは従来どおり)。
+`language/def_spec` で 4 例。
+
+**2. rest を含むグループの中の入れ子分解**
+
+```ruby
+-> (a, (b, (c, *d, (e, (*f)), g), (h, (i, j)))) { }   # NotImplementedError
+-> (a, b=1, *c, (*d, (e)), f: 2, g:, h:, **k, &l) { } # 同上
+```
+
+parse.c の 0xFE (rest つきグループ) の枝は lefts/rights を **葉に限定**
+していて、その中の MULTI_TARGET を拒否する。エンコーダを完全再帰にして
+デコーダ側 (korb_block_bind の spec 解釈) を合わせる必要がある。
+`language/lambda_spec` で 4 例、`proc_spec`/`block_spec` にも数例。
+
+## (2026-08-31 調査) 入れ子 def の definee は cref であって owner ではない
+
+```ruby
+class K
+  TARGET = Object.new
+  def TARGET.defs_method
+    def inherited_method; end     # CRuby: K のインスタンスメソッド
+  end                             # koruby: TARGET の特異メソッド
+end
+class K2
+  class << self
+    def mk; def cm; end; end      # CRuby: K2 のクラスメソッド
+  end                             # koruby: K2 のインスタンスメソッド
+end
+```
+
+`node_def` は「self がクラスならそれ、でなければ enclosing method の
+`owner`」を definee にしているが、CRuby は **def を書いた字句スコープ
+(cref)** を使う。`struct korb_method` に cref フィールドが無いので、
+これを持たせるところからになる。`language/def_spec` で 4 例
+(eval 越しの 2 例を含む)。
+
+## (2026-08-31 調査) chilled string (Ruby 3.4+) が未実装
+
+`frozen_string_literal` マジックコメントの無いファイルの文字列リテラルは
+CRuby 3.4 以降 "chilled" で、破壊的変更のたびに
+`warning: literal string will be frozen in the future` を出す
+(`Warning[:deprecated]` が gate)。`frozen?` は false のまま、`+@` は
+別インスタンスを返し、`clone` は chilled を引き継ぎ、`singleton_class` や
+`instance_variable_set` でも警告する。`core/string/chilled_string_spec`
+で 11 例。
+
+実装案は 2 つあってどちらも一長一短:
+- 専用フラグを立てて `KORB_CHECK_FROZEN` の速い経路を「FROZEN または
+  CHILLED」に広げる。header flags は 16bit が埋まっているので String 用に
+  bit 9 (Hash の HASH_NOINDEX) を再利用することになり、noindex な Hash の
+  変更が毎回 slow path を通る。
+- chilled を FROZEN + 追加ビットで表す。既存の choke point をそのまま
+  使えるが、`KORB_FL_FROZEN` を直接見ている箇所 (Hash リテラルのキー
+  複製など) が全部「凍っている」と誤解する。
+
+## (2026-08-31) 未捕捉例外レポートが raise フレームを噛ませる
+
+```
+$ koruby_precise -e 'raise "foo"'
+-e:0:in 'raise': foo (RuntimeError)
+        from -e:1:in '<main>'
+# CRuby: -e:1:in '<main>': foo (RuntimeError)
+```
+
+`korb_report_uncaught` は `vm->bt` をそのまま使うので、(1) 先頭に行番号 0 の
+`raise` フレームが入る、(2) `Exception#backtrace` を無視するので
+`set_backtrace` / カスタム backtrace が反映されない。
+`core/exception/top_level_spec` (0/5)、`command_line/backtrace_limit_spec`
+(0/3)、`core/exception/backtrace_spec` (6/7) がこれで落ちる。
+`--backtrace-limit` はフラグだけ受理してあるので、レポート側を直すときに
+`OPTION` から拾って `... N levels...` を出すこと。
+
+## (2026-08-31) corpus / sweep の数字は負荷で崩れる
+
+`make test` の runner は per-test 15s timeout。worker agent が同時に
+corpus や sweep を回していると CPU が足りずタイムアウトが大量発生して
+101120 PASS が 67542 PASS まで落ちた (再実行で完全に一致して回復)。
+壊滅的な結果が出たら**まず自分の計測を疑い、負荷を確認して測り直す**。
