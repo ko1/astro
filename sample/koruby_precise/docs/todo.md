@@ -2962,3 +2962,22 @@ t.join            # ここで戻らない
 (revents の書き戻しか rc の解釈) の側にある。次に試すなら
 `korb_blop_pump` の poll 後のループが `total` と `nfds` を取り違えて
 いないかから見ること。
+
+
+## 純 Ruby ループ中の Thread#raise / #kill が届かない
+
+green thread に preemption が無く、`while`/`until`/`loop` のノードは
+割り込みチェックもスケジューラ譲渡もしないので、
+
+```ruby
+t2 = nil
+t1 = Thread.new { loop { sleep 0.01; t2.raise if t2 } }
+t2 = Thread.new { begin; loop {}; rescue RuntimeError; end }
+t2.join      # 戻らない
+```
+
+`core/mutex/lock_spec` がこれでファイルごとハングする (6 例)。
+ループノードに「N 回に一度 pending interrupt を見て、他に runnable が
+いれば譲る」を入れれば直るが、(1) `korb_thread_check_ints` は毎回
+`sigtimedwait` を呼ぶので安い述語を別に要る、(2) `node_while` などは
+`@nogc` 注釈付きで、譲渡は GC しうるので注釈を外す必要がある。

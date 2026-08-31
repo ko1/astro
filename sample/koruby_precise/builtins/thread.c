@@ -1461,6 +1461,8 @@ korb_m_io_s_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     (void)self;
     const uint32_t alen = VALUE_SLICE_LEN(a);
+    if (UNLIKELY(alen == 0))   /* CRuby: 1..4 arguments; without any it is not "wait forever" */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..4)");
     double tmo = -1.0;
     if (alen >= 4) CHECK(korb_thread_tmo_arg(c, slots, VALUE_SLICE_GET(a, 3), &tmo));
     uint32_t cnt[3] = { 0, 0, 0 };

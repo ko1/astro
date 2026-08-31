@@ -513,8 +513,11 @@ module GC
 end
 
 module ObjectSpace
+  # koruby has no heap walk: nothing is yielded.  Without a block CRuby returns
+  # an Enumerator, and code does chain on it (`each_object(Class).select {…}`),
+  # so give it one rather than the count.
   def self.each_object(*)
-    return 0 unless block_given?
+    return [].each unless block_given?
     0
   end
   def self.count_objects(*); {}; end
