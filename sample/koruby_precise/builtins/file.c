@@ -1895,6 +1895,7 @@ struct korb_glob {
     int fnm;                           /* fnmatch(3) flags */
     bool dotmatch;
     const char *base;                  /* "" = the process cwd */
+    bool has_base;                     /* an explicit base: is itself a double-star hit, spelled "/" */
 };
 
 /* the filesystem path for a result path (which is relative to base) */
@@ -1915,7 +1916,7 @@ static RESULT korb_glob_emit(struct korb_glob *g, VALUE *slots, const char *rel,
     if (dir_only) snprintf(buf, sizeof buf, "%s/", rel);      /* empty rel becomes "./", for a dot double-star */
     else if (rel[0] == '\0') return RESULT_OK(KORB_NIL);
     else snprintf(buf, sizeof buf, "%s", rel);
-    if (dir_only && rel[0] == '\0') snprintf(buf, sizeof buf, "./");
+    if (dir_only && rel[0] == '\0') snprintf(buf, sizeof buf, g->has_base ? "/" : "./");
     slots[0] = UNWRAP(korb_str_new(g->c, slots, buf, (uint32_t)strlen(buf)));
     return korb_ary_push_val(g->c, slots + 1, g->arr, slots[0]);
 }
@@ -1953,22 +1954,22 @@ korb_glob_walk(struct korb_glob *g, VALUE *slots, char *rel, size_t rlen,
         return korb_glob_emit(g, slots, rel, dir_only);
     }
     const char *const seg = segs[si];
-    /* a double star recurses only when a '/' follows it; a trailing one is just a star */
-    const bool rec = slashed[si] && (!strcmp(seg, "**") || !strcmp(seg, ".**"));
-    const bool recdot = rec && seg[0] == '.';
+    /* a double star recurses only when a '/' follows it; a trailing one is just a
+     * star, and ".**" is a plain pattern (CRuby's ".**" + slash yields only "./") */
+    const bool rec = slashed[si] && !strcmp(seg, "**");
     char fp[PATH_MAX]; korb_glob_fspath(g, rel, fp, sizeof fp);
     struct dirent **ents = NULL;
     const int nent = scandir(fp, &ents, korb_glob_dsel, alphasort);     /* sorted, as CRuby lists */
     RESULT r = RESULT_OK(KORB_NIL);
     if (rec) {
-        /* zero directories: the dot form also yields the base itself ("./") */
-        /* at the base only the dot form yields "./"; deeper, every level is a hit */
-        if (si + 1 < nseg || recdot || rel[0] != '\0')
+        /* zero directories: an explicit base: is itself a hit ("/"); without one
+         * the process cwd is not, so at the base only a longer pattern continues */
+        if (si + 1 < nseg || g->has_base || rel[0] != '\0')
             r = korb_glob_walk(g, slots, rel, rlen, segs, slashed, nseg, si + 1, dir_only, at_base, true);
         for (int i = 0; nent > 0 && i < nent && r.state == KORB_NORMAL; i++) {
             const char *const nm = ents[i]->d_name;
             if (!strcmp(nm, ".") || !strcmp(nm, "..")) continue;
-            if (!recdot && !g->dotmatch && nm[0] == '.') continue;
+            if (!g->dotmatch && nm[0] == '.') continue;
             const size_t nl = strlen(nm);
             if (rlen + nl + 2 >= PATH_MAX) continue;
             char sub[PATH_MAX]; struct stat lst;
@@ -2023,6 +2024,7 @@ static RESULT korb_glob_one(struct korb_glob *g, VALUE *slots, const char *pat) 
         while (*p == '/') p++;
         snprintf(abase, sizeof abase, "/");
         gl.base = abase;
+        gl.has_base = false;                           /* an absolute pattern ignores base: */
     }
     const size_t plen = strlen(p);
     const bool dir_only = plen > 0 && p[plen - 1] == '/';
@@ -2156,7 +2158,7 @@ static RESULT korb_m_dir_glob(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (basebuf[0]) { struct stat bst; if (stat(basebuf, &bst) != 0 || !S_ISDIR(bst.st_mode)) return korb_ary_new(c, slots, 0); }
 
     slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
-    struct korb_glob g = { c, VALUE_REF_AT(&slots[0]), 0, (rflags & 4) != 0, basebuf };
+    struct korb_glob g = { c, VALUE_REF_AT(&slots[0]), 0, (rflags & 4) != 0, basebuf, basebuf[0] != '\0' };
     if (rflags & 1) g.fnm |= FNM_NOESCAPE;             /* Ruby's bits differ from glibc's */
     if (rflags & 8) g.fnm |= FNM_CASEFOLD;
     if (!(rflags & 4)) g.fnm |= FNM_PERIOD;            /* no FNM_DOTMATCH → '*' skips a leading '.' */
@@ -2188,13 +2190,26 @@ static RESULT korb_m_dir_glob(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             if (!KORB_STRING_P(pv))
                 return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion into String");
         }
+        /* CRuby reads the pattern as bytes, so a stateful/wide encoding cannot
+         * be a pattern at all, and the hits carry the pattern's encoding */
+        const uint32_t penc = KORB_STR_ENC(pv);
+        if (UNLIKELY(!korb_enc_ascii_compat_idx(c->vm, penc)))
+            return korb_raise_enc_compat(c, slots + 2, penc, KORB_ENC_USASCII);
         const KorbString *const ps = VAL2STR(pv);
         if (UNLIKELY(memchr(korb_strbuf_data(ps->buf), '\0', ps->len) != NULL))
             return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "nul-separated glob pattern is deprecated");
         char pbuf[PATH_MAX];
         if (ps->len >= sizeof pbuf) continue;
         memcpy(pbuf, korb_strbuf_data(ps->buf), ps->len); pbuf[ps->len] = '\0';   /* copy: the walk allocs */
+        const uint32_t nbefore = VAL2ARY(slots[0])->len;
         CHECK(korb_glob_brace(&g, slots + 2, pbuf, 0));
+        if (penc != KORB_ENC_UTF8 && penc != KORB_ENC_USASCII) {   /* US-ASCII yields filesystem-encoded paths */
+            const KorbArray *const ra = VAL2ARY(slots[0]);
+            for (uint32_t k = nbefore; k < ra->len; k++) {
+                const VALUE rv = korb_items_data(ra->items)[k];
+                if (KORB_STRING_P(rv)) KORB_STR_ENC_SET(rv, penc);
+            }
+        }
     }
     }
     if (block != NULL) {                                            /* yield each, return nil */
