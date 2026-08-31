@@ -896,6 +896,21 @@ main(int argc, char *argv[])
         src_name = "-";
         src = read_file_all("-", &src_len);
     }
+    /* DATA: only the main script's own `__END__` defines it, and the offset is
+     * into the file on disk, so take it before -x / -n rewrite the buffer. */
+    long data_offset = -1;
+    if (script) {
+        for (size_t p = 0; p + 7 <= src_len; ) {
+            if ((p == 0 || src[p - 1] == '\n') && memcmp(src + p, "__END__", 7) == 0 &&
+                (p + 7 == src_len || src[p + 7] == '\n')) {
+                data_offset = (long)(p + 7 == src_len ? p + 7 : p + 8);
+                break;
+            }
+            const char *const nl = memchr(src + p, '\n', src_len - p);
+            if (!nl) break;
+            p = (size_t)(nl - src) + 1;
+        }
+    }
     /* A script whose shebang names some other interpreter is run from its first
      * `#!...ruby` line onwards, exactly as -x does (CRuby's load_file_internal). */
     const bool xflag = OPTION.skip_to_ruby;
@@ -1189,6 +1204,18 @@ main(int argc, char *argv[])
                     if (*t) dirs[ndirs++] = t;
                 while (ndirs-- > 0) korb_load_path_unshift(c, toplevel_cursor, dirs[ndirs]);
                 free(dup);
+            }
+        }
+        if (data_offset >= 0) {                 /* DATA = the script itself, seeked past __END__ */
+            toplevel_cursor[0] = korb_const_get(c->vm, korb_intern(c->vm, "File", 4));
+            toplevel_cursor[1] = korb_str_new(c, toplevel_cursor + 1, src_name, (uint32_t)strlen(src_name)).value;
+            const RESULT fr = korb_send(c, toplevel_cursor + 2, korb_intern(c->vm, "open", 4), 0, 1);
+            if (fr.state == KORB_NORMAL) {
+                toplevel_cursor[0] = fr.value;
+                toplevel_cursor[1] = LONG2FIX(data_offset);
+                const RESULT sr = korb_send(c, toplevel_cursor + 2, korb_intern(c->vm, "seek", 4), 0, 1);
+                if (sr.state == KORB_NORMAL)
+                    korb_const_define(c, korb_intern(c->vm, "DATA", 4), toplevel_cursor[0]);
             }
         }
         for (int k = nload_dirs; k-- > 0; ) korb_load_path_unshift(c, toplevel_cursor, load_dirs[k]);

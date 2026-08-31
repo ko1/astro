@@ -71,9 +71,34 @@ static uint64_t korb_deep_hash_d(VALUE v, uint32_t depth) {
     return (uint64_t)(uintptr_t)v;                     /* identity (user objects etc.) */
 }
 static uint64_t korb_deep_hash(VALUE v) { return korb_deep_hash_d(v, 0); }
+
+/* #hash is salted per process (CVE-2011-4815): an attacker must not be able to
+ * predict which keys collide.  Only the public method is salted — the internal
+ * Hash index keeps using korb_value_hash, which never leaves the process. */
+static uint64_t
+korb_hash_salt(void)
+{
+    static uint64_t salt = 0;
+    if (UNLIKELY(salt == 0)) {
+        const int fd = open("/dev/urandom", O_RDONLY);
+        if (fd >= 0) {
+            if (read(fd, &salt, sizeof salt) != (ssize_t)sizeof salt) salt = 0;
+            close(fd);
+        }
+        if (salt == 0) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            salt = ((uint64_t)getpid() << 32) ^ (uint64_t)ts.tv_nsec ^ 0x9e3779b97f4a7c15ULL;
+        }
+    }
+    return salt;
+}
+
 static RESULT korb_m_obj_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
-    return RESULT_OK(LONG2FIX((korb_sword_t)(korb_deep_hash(VALUE_REF_GET(self)) >> 2)));   /* >>2 keeps it FIXABLE */
+    uint64_t h = korb_deep_hash(VALUE_REF_GET(self)) ^ korb_hash_salt();
+    h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 29;
+    return RESULT_OK(LONG2FIX((korb_sword_t)(h >> 2)));   /* >>2 keeps it FIXABLE */
 }
 
 /* ---- Hash methods -------------------------------------------------------- */
