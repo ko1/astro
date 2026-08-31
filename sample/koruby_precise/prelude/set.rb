@@ -120,4 +120,8 @@ class Set
     end
   end
   alias eql? ==                             # CRuby: #eql? is the same UnboundMethod as #==
+  # pp hook for a self-referencing Set: the elements are elided, not re-entered.
+  def pretty_print_cycle(q)
+    q.text(empty? ? "Set[]" : "Set[...]")
+  end
 end

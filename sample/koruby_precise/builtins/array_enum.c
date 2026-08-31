@@ -746,6 +746,23 @@ static RESULT korb_m_ary_sort_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     (void)a;
     if (block == NULL) {
+        /* A user object needs its #<=> dispatched (korb_cmp_full only knows the
+         * builtin types), and that can GC — sort a copy and adopt the order. */
+        bool has_obj = false;
+        { const KorbArray *const d0 = VAL2ARY(VALUE_REF_GET(self));
+          for (uint32_t i = 0; i < d0->len; i++)
+              if (KORB_OBJECT_P(korb_items_data(d0->items)[i])) { has_obj = true; break; } }
+        if (has_obj) {
+            RESULT sr = korb_m_ary_sort(c, slots, self, a, NULL, NULL, NULL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            slots[0] = sr.value;
+            KorbArray *const dst = VAL2ARY(VALUE_REF_GET(self));
+            KorbArrayItems *const dstit = dst->items;
+            const KorbArray *const src = VAL2ARY(slots[0]);
+            for (uint32_t i = 0; i < dst->len && i < src->len; i++)
+                ARO_STORE(c, dstit, &korb_items_data(dstit)[i], korb_items_data(src->items)[i]);
+            return RESULT_OK(VALUE_REF_GET(self));
+        }
         KorbArray *d = VAL2ARY(VALUE_REF_GET(self));    /* in-place; cmp does not alloc */
         KorbArrayItems *const dit = d->items;
         const VALUE *data = korb_items_data(dit);

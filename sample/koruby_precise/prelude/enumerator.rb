@@ -409,7 +409,7 @@ class Enumerator::Lazy
   private :__lazy_gen
 
   def chunk(&b)
-    raise ArgumentError, "tried to create Proc object without a block" unless b
+    return to_enum(:chunk) unless b     # CRuby: block-less #chunk is an enumerator, not an error
     src = self
     __lazy_gen do |y|
       cur = nil; key = nil; started = false
