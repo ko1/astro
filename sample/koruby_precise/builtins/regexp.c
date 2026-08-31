@@ -9,6 +9,71 @@
  * (and thus $1..$9, $&, $`, $') is kept in the flat const table under "$~". */
 
 static const char *korb_re_arg_type(VALUE v);   /* fwd (defined below) */
+static const char *korb_enc_idx_name(const struct korb_vm *vm, uint32_t idx);   /* fwd */
+
+/* Regexp::FIXEDENCODING passed to Regexp.new: no prism flag says "fixed to the
+ * source's own encoding", so koruby carries it in a private bit. */
+#define KORB_RE_FIXENC 0x10000u
+
+/* The pattern's own encoding, for the match-time compatibility check.  Only the
+ * cases the prelude's Regexp#encoding is sure about are reported; /e and /s name
+ * encodings koruby never transcodes to, so they stay unknown and the caller
+ * falls back to comparing against the source's encoding. */
+static uint32_t korb_re_enc_idx(const struct korb_vm *vm, VALUE re, bool *out_fixed, bool *out_known)
+{
+    const uint32_t f = VAL2RE(re)->flags;
+    const VALUE srcv = VAL2RE(re)->source;
+    const uint32_t senc = KORB_STRING_P(srcv) ? KORB_STR_ENC(srcv) : KORB_ENC_BINARY;
+    *out_known = true;
+    if (f & 128u) {   /* /n is NOENCODING, never FIXEDENCODING */
+        *out_fixed = false;
+        return (KORB_STRING_P(srcv) && korb_str_ascii_only_p(vm, srcv)) ? KORB_ENC_USASCII : KORB_ENC_BINARY;
+    }
+    if (f & 512u) { *out_fixed = true; return KORB_ENC_UTF8; }          /* /u */
+    if (f & (64u | 256u)) { *out_fixed = true; *out_known = false; return senc; }  /* /e, /s */
+    *out_fixed = (f & KORB_RE_FIXENC) != 0 || !korb_enc_ascii_compat_idx(vm, senc);
+    return senc;
+}
+
+/* True when the pattern pins an encoding, so a subject in a different one may
+ * be a CompatibilityError.  An unpinned pattern adapts to any ASCII-compatible
+ * subject, which is the overwhelmingly common case — keep it off the call. */
+static inline bool korb_re_enc_pinned(VALUE re)
+{
+    const VALUE srcv = VAL2RE(re)->source;
+    return (VAL2RE(re)->flags & (64u | 128u | 256u | 512u | KORB_RE_FIXENC)) != 0 ||
+           (KORB_STRING_P(srcv) && KORB_STR_ENC(srcv) >= KORB_ENC_OTHER_MIN);
+}
+
+/* CRuby's rb_reg_prepare_enc: an encoding the pattern can't be read in is a
+ * CompatibilityError.  Only the pattern's *explicitly* pinned encodings are
+ * enforced, so an ordinary ASCII pattern still matches anything. */
+static RESULT korb_re_check_enc(CTX *c, VALUE *slots, VALUE re, VALUE subj)
+{
+    const uint32_t senc = KORB_STR_ENC(subj);
+    bool re_fixed = false, re_known = false;
+    const uint32_t renc = korb_re_enc_idx(c->vm, re, &re_fixed, &re_known);
+
+    /* CRuby also rejects an ASCII-incompatible subject outright (rule 2 of
+     * rb_reg_prepare_enc).  Not enabled yet: prelude/encoding.rb's
+     * Regexp#encoding runs `src.scan(/\\u…/)` on the pattern source before it
+     * checks src.encoding.ascii_compatible?, so a UTF-16 sourced Regexp would
+     * raise while merely reporting its own encoding. */
+    if (!korb_enc_ascii_compat_idx(c->vm, senc)) {
+        /* nothing yet — see above */
+    } else if (re_fixed && re_known && renc != senc) {
+        if (!korb_enc_ascii_compat_idx(c->vm, renc) || !korb_str_ascii_only_p(c->vm, subj))
+            return korb_raise_enc_compat(c, slots, renc, senc);
+    } else if ((VAL2RE(re)->flags & 128u) && senc != KORB_ENC_BINARY &&
+               !korb_str_ascii_only_p(c->vm, subj)) {
+        korb_warn(c, slots, "historical binary regexp match /.../n against %s string",
+                  korb_enc_idx_name(c->vm, senc));
+    }
+    /* CRuby also raises ArgumentError on a broken subject.  Not done here: it
+     * needs the whole subject walked, and without CRuby's cached coderange that
+     * is an O(n) tax on every match (measured ~11% on a regex-heavy bench). */
+    return RESULT_OK(KORB_NIL);
+}
 
 /* ---- low-level engine call (no koruby alloc inside → subject bytes stable) */
 static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb_re_match_t *m) {
@@ -16,6 +81,7 @@ static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t sta
     const korb_re_exec_fn_t fn = korb_re_load(c->vm);
     if (UNLIKELY(fn == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Regexp engine (koruby_regex.so) unavailable");
     korb_re_sync_floor(c);   /* lazy first-load happens above; make sure the floor is set for THIS stack */
+    if (UNLIKELY(korb_re_enc_pinned(re))) CHECK(korb_re_check_enc(c, slots, re, subj));
     const KorbString *const pat = VAL2STR(VAL2RE(re)->source), *const s = VAL2STR(subj);
     if (startb > s->len) { m->matched = 0; return RESULT_OK(KORB_FALSE); }
     /* Encoding: a /n regex, or a single-byte subject (BINARY / US-ASCII), matches
@@ -545,10 +611,6 @@ static RESULT korb_m_re_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(r.value == KORB_NIL ? KORB_FALSE : KORB_TRUE);
 }
 static RESULT korb_m_re_source(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(VAL2RE(VALUE_REF_GET(self))->source); }
-/* Regexp::FIXEDENCODING passed to Regexp.new: no prism flag says "fixed to the
- * source's own encoding", so koruby carries it in a private bit. */
-#define KORB_RE_FIXENC 0x10000u
-
 /* prism flag bits → Ruby's Regexp option bits.  The encoding flags (/u /e /s /n)
  * all mean "the pattern's encoding is fixed": Ruby reports FIXEDENCODING (16)
  * for /u /e /s and NOENCODING (32) for /n. */
