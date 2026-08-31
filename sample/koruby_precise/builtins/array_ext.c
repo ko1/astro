@@ -935,6 +935,8 @@ static RESULT korb_m_ary_delete_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (block != NULL && VALUE_SLICE_LEN(a) > 0) korb_warn(c, slots, "given block not used");   /* arg wins */
+    if (block == NULL && VALUE_SLICE_LEN(a) == 0)     /* no needle, no block → Enumerator (no size fn) */
+        return korb_ary_to_enum_unsized(c, slots, self, "rindex", a);
     if (block != NULL && VALUE_SLICE_LEN(a) == 0) {   /* block form (arg, if given, wins per CRuby) */
         for (int32_t i = (int32_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; i >= 0; i--) {
             if (i >= (int32_t)VAL2ARY(VALUE_REF_GET(self))->len) continue;   /* re-check size: the block may have shrunk self */

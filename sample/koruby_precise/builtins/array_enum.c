@@ -505,8 +505,13 @@ static RESULT korb_m_ary_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         return RESULT_OK(VALUE_REF_GET(vals));
     }
 }
+/* self.to_enum(:meth) — sized twin below; used where CRuby has no size fn. */
+static RESULT korb_ary_to_enum(CTX *c, VALUE *slots, VALUE_REF self, const char *meth);
+
 /* sort_by!: sort in place by block key (sort_by then copy back into self). */
 static RESULT korb_m_ary_sort_by_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    /* No block → an Enumerator; the frozen check happens when it is driven. */
+    if (UNLIKELY(block == NULL)) return korb_ary_to_enum(c, slots, self, "sort_by!");
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* CRuby raises FrozenError upfront, even on an empty array */
     RESULT sr = korb_m_ary_sort_by(c, slots, self, a, block, def_env, cself);   /* sorted copy at slots[0] */
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
@@ -525,6 +530,16 @@ static RESULT korb_ary_to_enum(CTX *c, VALUE *slots, VALUE_REF self, const char 
     slots[0] = VALUE_REF_GET(self);
     slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth)));
     return korb_send_impl(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1, NULL, NULL, NULL);
+}
+/* self.to_enum(:meth[, arg]) — the predicate-driven methods (find/rfind/rindex/
+ * bsearch/…) have no size function in CRuby, and find's `ifnone` has to be
+ * replayed when the enumerator is driven.  `arg` is KORB_NIL when absent. */
+static RESULT korb_ary_to_enum_unsized(CTX *c, VALUE *slots, VALUE_REF self, const char *meth, VALUE_SLICE a) {
+    const bool has_arg = VALUE_SLICE_LEN(a) > 0;
+    slots[0] = VALUE_REF_GET(self);
+    slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth)));
+    if (has_arg) slots[2] = VALUE_SLICE_GET(a, 0);
+    return korb_send_impl(c, slots + (has_arg ? 3 : 2), korb_intern(c->vm, "to_enum", 7), 0, has_arg ? 2 : 1, NULL, NULL, NULL);
 }
 /* min_by(want=-1) / max_by(want=1): element with the extreme block key. */
 static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, int want) {
@@ -1125,7 +1140,15 @@ static RESULT korb_m_ary_cycle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "cycle"));
             return korb_enum_new(c, slots + 2, VALUE_REF_GET(out), slots[1]);
         }
-        return korb_lazy_new(c, slots, VALUE_REF_GET(self), 2);   /* unbounded → infinite lazy enum */
+        {   /* unbounded → infinite lazy enum; #size is Infinity unless self is empty */
+            RESULT lr = korb_lazy_new(c, slots, VALUE_REF_GET(self), 2);
+            if (lr.state == KORB_NORMAL && VAL2ARY(VALUE_REF_GET(self))->len > 0) {
+                VAL2ENUM(lr.value)->size_inf = 1;
+            } else if (lr.state == KORB_NORMAL) {
+                VAL2ENUM(lr.value)->size = LONG2FIX(0);
+            }
+            return lr;
+        }
     }
     if (bounded && n <= 0) return RESULT_OK(KORB_NIL);
     if (SELF_ARY->len == 0) return RESULT_OK(KORB_NIL);
@@ -1444,12 +1467,8 @@ static RESULT korb_find_ifnone(CTX *c, VALUE *slots, VALUE_SLICE a) {
     return korb_send(c, slots + 1, korb_intern(c->vm, "call", 4), 0, 0);
 }
 static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    if (UNLIKELY(block == NULL)) {   /* no block → op-4 (find: early-stop) Enumerator; .each/.with_index drives it */
-        slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "find"));
-        RESULT er = korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
-        if (er.state == KORB_NORMAL) { VAL2ENUM(er.value)->op = 4; VAL2ENUM(er.value)->size_unknown = 1; }   /* CRuby: #find has no size fn */
-        return er;
-    }
+    /* no block → to_enum(:find, ifnone): re-driving replays the ifnone proc */
+    if (UNLIKELY(block == NULL)) return korb_ary_to_enum_unsized(c, slots, self, "find", a);
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;
@@ -1462,7 +1481,7 @@ static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 
 static RESULT korb_m_ary_rfind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    ARY_REQUIRE_BLOCK("Array#rfind");
+    if (UNLIKELY(block == NULL)) return korb_ary_to_enum_unsized(c, slots, self, "rfind", a);
     for (int64_t i = (int64_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; i >= 0; i--) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         if ((uint64_t)i >= ary->len) continue;
@@ -1564,10 +1583,20 @@ static RESULT korb_m_ary_intersect_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     }
     return RESULT_OK(KORB_FALSE);
 }
+/* find-any mode: only the sign of the block's numeric result matters, so a
+ * Bignum (whose magnitude no double can hold) is as good as a Fixnum. */
+static bool korb_bsearch_num_sign(VALUE rv, int *const sign) {
+    if (KORB_BIGNUM_P(rv)) { *sign = korb_mp_sgn(VAL2BIG(rv)->z); return true; }
+    double d;
+    if (!(FIXNUM_P(rv) || KORB_FLOAT_P(rv)) || !korb_num_to_d(rv, &d)) return false;
+    *sign = (d < 0) ? -1 : (d > 0) ? 1 : 0;
+    return true;
+}
+
 /* bsearch: find-minimum (boolean block) or find-any (Integer block). Returns the
  * matching element, or nil. Array must be sorted for meaningful results. */
 static RESULT korb_m_ary_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a; ARY_REQUIRE_BLOCK("Array#bsearch");
+    if (UNLIKELY(block == NULL)) return korb_ary_to_enum_unsized(c, slots, self, "bsearch", a);   /* CRuby: no size fn */
     uint32_t lo = 0, hi = VAL2ARY(VALUE_REF_GET(self))->len;
     VALUE found = KORB_NIL; bool have = false;
     while (lo < hi) {
@@ -1576,11 +1605,11 @@ static RESULT korb_m_ary_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         VALUE rv = r.value;
+        int cmp;
         if (rv == KORB_TRUE || rv == KORB_FALSE || rv == KORB_NIL) {   /* find-minimum */
             if (KORB_TRUTHY(rv)) { found = slots[0]; have = true; hi = mid; }
             else lo = mid + 1;
-        } else if (FIXNUM_P(rv) || KORB_FLOAT_P(rv)) {                 /* find-any (numeric) */
-            double cmp; (void)korb_num_to_d(rv, &cmp);
+        } else if (korb_bsearch_num_sign(rv, &cmp)) {                  /* find-any (numeric) */
             if (cmp == 0) return RESULT_OK(slots[0]);
             else if (cmp < 0) hi = mid;
             else lo = mid + 1;
@@ -1592,7 +1621,7 @@ static RESULT korb_m_ary_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 
 static RESULT korb_m_ary_bsearch_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a; ARY_REQUIRE_BLOCK("Array#bsearch_index");
+    if (UNLIKELY(block == NULL)) return korb_ary_to_enum_unsized(c, slots, self, "bsearch_index", a);   /* CRuby: no size fn */
     uint32_t lo = 0, hi = VAL2ARY(VALUE_REF_GET(self))->len;
     uint32_t found = 0; bool have = false;
     while (lo < hi) {
@@ -1601,10 +1630,10 @@ static RESULT korb_m_ary_bsearch_index(CTX *c, VALUE *slots, VALUE_REF self, VAL
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         VALUE rv = r.value;
+        int cmp;
         if (rv == KORB_TRUE || rv == KORB_FALSE || rv == KORB_NIL) {
             if (KORB_TRUTHY(rv)) { found = mid; have = true; hi = mid; } else lo = mid + 1;
-        } else if (FIXNUM_P(rv) || KORB_FLOAT_P(rv)) {
-            double cmp; (void)korb_num_to_d(rv, &cmp);
+        } else if (korb_bsearch_num_sign(rv, &cmp)) {
             if (cmp == 0) return RESULT_OK(LONG2FIX(mid));
             else if (cmp < 0) hi = mid; else lo = mid + 1;
         } else {
