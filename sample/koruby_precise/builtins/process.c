@@ -873,21 +873,58 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         VALUE mv = VALUE_SLICE_GET(a, lo + 1);
         if (mv != KORB_NIL) CHECK(korb_io_mode_coerce(c, slots, &mv, mode, sizeof mode));   /* #to_str / #to_int */
     }
-    /* Re-slice to (env?, cmd…, opts?) so the plan builder sees no mode word.  For
-     * IO.popen an Array command IS the argv list (unlike spawn's [cmd, argv0]),
-     * so expand it. */
-    VALUE av[64]; uint32_t an = 0;
-    if (lo == 1) av[an++] = VALUE_SLICE_GET(a, 0);
-    const VALUE cmdv = VALUE_SLICE_GET(a, lo);
-    if (KORB_ARRAY_P(cmdv)) {
-        const uint32_t cn = VAL2ARY(cmdv)->len;
-        for (uint32_t i = 0; i < cn && an < 62; i++) av[an++] = korb_items_data(VAL2ARY(cmdv)->items)[i];
-    } else {
-        av[an++] = cmdv;
+    /* `IO.popen("-")` forks without exec: the child continues here and gets nil
+     * back, with the pipe wired to its std stream. */
+    bool dash = false;
+    {
+        const VALUE cv = VALUE_SLICE_GET(a, lo);
+        if (KORB_STRING_P(cv)) {
+            uint32_t cl; const char *const cs = korb_str_cstr_len(cv, &cl);
+            dash = (cl == 1 && cs[0] == '-');
+        }
     }
-    if (hi < VALUE_SLICE_LEN(a)) av[an++] = VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1);
+    /* `[cmd…, exec-opts], mode, io-opts` puts a Hash at both ends; the plan
+     * builder only reads one, so fold them together first (it skips IO-only
+     * keys itself).  Done before av is filled: this is the one allocation. */
+    VALUE merged = KORB_NIL;
+    if (!dash) {
+        const VALUE cmdv0 = VALUE_SLICE_GET(a, lo);
+        const uint32_t cn0 = KORB_ARRAY_P(cmdv0) ? VAL2ARY(cmdv0)->len : 0;
+        const VALUE inner = cn0 ? korb_items_data(VAL2ARY(cmdv0)->items)[cn0 - 1] : KORB_NIL;
+        if (hi < VALUE_SLICE_LEN(a) && KORB_HASH_P(inner)) {
+            slots[0] = inner;
+            slots[1] = VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1);
+            slots[2] = UNWRAP(korb_hash_new(c, slots + 2, VAL2HASH(slots[0])->len + VAL2HASH(slots[1])->len));
+            for (uint32_t w = 0; w <= 1; w++) {
+                for (uint32_t i = 0; ; i++) {
+                    const KorbHash *const h = VAL2HASH(slots[w]);
+                    if (i >= h->len) break;
+                    slots[3] = korb_items_data(h->items)[2 * i];
+                    CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[2]), VALUE_REF_AT(&slots[3]),
+                                        korb_items_data(VAL2HASH(slots[w])->items)[2 * i + 1]));
+                }
+            }
+            merged = slots[2];
+        }
+    }
     struct korb_spawn_plan plan;
-    CHECK(korb_spawn_plan_build(c, slots, VALUE_SLICE_MAKE(av, an), &plan));
+    if (!dash) {
+        /* Re-slice to (env?, cmd…, opts?) so the plan builder sees no mode word.  For
+         * IO.popen an Array command IS the argv list (unlike spawn's [cmd, argv0]),
+         * so expand it. */
+        VALUE av[64]; uint32_t an = 0;
+        if (lo == 1) av[an++] = VALUE_SLICE_GET(a, 0);
+        const VALUE cmdv = VALUE_SLICE_GET(a, lo);
+        if (KORB_ARRAY_P(cmdv)) {
+            const uint32_t cn = VAL2ARY(cmdv)->len;
+            for (uint32_t i = 0; i < cn && an < 62; i++) av[an++] = korb_items_data(VAL2ARY(cmdv)->items)[i];
+            if (merged != KORB_NIL) av[an - 1] = merged;              /* replaces the array's own opts Hash */
+        } else {
+            av[an++] = cmdv;
+        }
+        if (hi < VALUE_SLICE_LEN(a) && merged == KORB_NIL) av[an++] = VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1);
+        CHECK(korb_spawn_plan_build(c, slots, VALUE_SLICE_MAKE(av, an), &plan));
+    }
 
     const bool reading = (mode[0] == 'r');
     const bool duplex = strchr(mode, '+') != NULL;       /* "r+" — the parent both reads and writes */
@@ -903,29 +940,54 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     /* The child gets the raw end it needs; ours stays close-on-exec. */
     (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
-    /* The pipe redirect is applied BEFORE the option ones, so `err: [:child, :out]`
-     * (mspec's 2>&1) sees the pipe as the child's stdout, not our terminal. */
-    const uint32_t pipe_n = duplex ? 2u : 1u;
-    if (plan.nredir + pipe_n > sizeof plan.redir / sizeof plan.redir[0]) {
-        close(fds[0]); close(fds[1]);
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "too many redirects");
-    }
-    memmove(&plan.redir[pipe_n], &plan.redir[0], plan.nredir * sizeof plan.redir[0]);
-    plan.nredir += pipe_n;
-    if (duplex) {
-        struct korb_redir *const r0 = &plan.redir[0];
-        r0->from = 0; r0->to = fds[1]; r0->path[0] = '\0'; r0->oflags = 0;
-        struct korb_redir *const r1 = &plan.redir[1];
-        r1->from = 1; r1->to = fds[1]; r1->path[0] = '\0'; r1->oflags = 0;
+    pid_t pid;
+    if (dash) {
+        korb_io_flush_std(c->vm);   /* the child would otherwise re-emit our buffer */
+        pid = fork();
+        if (pid == 0) {                                  /* child: nil back, pipe as its std stream */
+            const int keep = duplex ? fds[1] : fds[reading ? 1 : 0];
+            const int drop = duplex ? fds[0] : fds[reading ? 0 : 1];
+            if (duplex) { (void)dup2(keep, 0); (void)dup2(keep, 1); }
+            else (void)dup2(keep, reading ? 1 : 0);
+            if (keep > 2) close(keep);
+            if (drop > 2) close(drop);
+            if (block == NULL) return RESULT_OK(KORB_NIL);
+            slots[0] = KORB_NIL;
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+            int status = 0;                              /* CRuby's child exits when the block returns */
+            if (r.state == KORB_RAISE) {
+                status = korb_system_exit_status(c, r.value);
+                if (status < 0) { korb_report_uncaught(c, r.value); status = 1; }
+            }
+            korb_drain_at_exit(c, slots);
+            korb_io_flush_std(c->vm);
+            _exit(status);
+        }
     } else {
-        (void)fcntl(fds[reading ? 0 : 1], F_SETFD, FD_CLOEXEC);
-        struct korb_redir *const r = &plan.redir[0];
-        r->from = reading ? 1 : 0;
-        r->to = fds[reading ? 1 : 0];
-        r->path[0] = '\0'; r->oflags = 0;
+        /* The pipe redirect is applied BEFORE the option ones, so `err: [:child, :out]`
+         * (mspec's 2>&1) sees the pipe as the child's stdout, not our terminal. */
+        const uint32_t pipe_n = duplex ? 2u : 1u;
+        if (plan.nredir + pipe_n > sizeof plan.redir / sizeof plan.redir[0]) {
+            close(fds[0]); close(fds[1]);
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "too many redirects");
+        }
+        memmove(&plan.redir[pipe_n], &plan.redir[0], plan.nredir * sizeof plan.redir[0]);
+        plan.nredir += pipe_n;
+        if (duplex) {
+            struct korb_redir *const r0 = &plan.redir[0];
+            r0->from = 0; r0->to = fds[1]; r0->path[0] = '\0'; r0->oflags = 0;
+            struct korb_redir *const r1 = &plan.redir[1];
+            r1->from = 1; r1->to = fds[1]; r1->path[0] = '\0'; r1->oflags = 0;
+        } else {
+            (void)fcntl(fds[reading ? 0 : 1], F_SETFD, FD_CLOEXEC);
+            struct korb_redir *const r = &plan.redir[0];
+            r->from = reading ? 1 : 0;
+            r->to = fds[reading ? 1 : 0];
+            r->path[0] = '\0'; r->oflags = 0;
+        }
+        korb_io_flush_std(c->vm);   /* the child inherits our write buffer: drain it first */
+        pid = korb_spawn_run(&plan);
     }
-    korb_io_flush_std(c->vm);   /* the child inherits our write buffer: drain it first */
-    const pid_t pid = korb_spawn_run(&plan);
     if (pid < 0) { close(fds[0]); close(fds[1]); return korb_raise_errno(c, slots, errno, "fork", ""); }
     close(duplex ? fds[1] : fds[reading ? 1 : 0]);
     slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self),
