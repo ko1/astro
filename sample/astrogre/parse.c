@@ -1000,18 +1000,29 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                 cnode->u.cond.yes = yes_branch;
                 cnode->u.cond.no  = no_branch;
                 return cnode;
-            } else if (q->p < q->end && *q->p == '<') {
-                /* (?<name>...) named capture, (?<=...) / (?<!...) lookbehind. */
+            } else if (q->p < q->end && (*q->p == '<' || *q->p == '\'')) {
+                /* (?<name>…) / (?'name'…) named capture,
+                 * (?<=…) / (?<!…) lookbehind. */
+                const bool angle = (*q->p == '<');
                 q->p++;
-                if (q->p < q->end && *q->p == '=') {
+                if (angle && q->p < q->end && *q->p == '=') {
                     q->p++; capture = false; lookbehind = true;
-                } else if (q->p < q->end && *q->p == '!') {
+                } else if (angle && q->p < q->end && *q->p == '!') {
                     q->p++; capture = false; neg_lookbehind = true;
                 } else {
+                    const uint8_t close = angle ? '>' : '\'';
                     pending_name_start = q->p;
-                    while (q->p < q->end && *q->p != '>') q->p++;
+                    while (q->p < q->end && *q->p != close) q->p++;
                     pending_name_end = q->p;
                     if (q->p < q->end) q->p++;
+                    if (pending_name_end == pending_name_start) {
+                        re_error(q, "group name is empty"); return NULL;
+                    }
+                    /* A leading digit or `-` would collide with numeric and
+                     * relative references. */
+                    if (isdigit(*pending_name_start) || *pending_name_start == '-') {
+                        re_error(q, "invalid group name"); return NULL;
+                    }
                     capture = true;
                 }
             } else {
@@ -2376,6 +2387,67 @@ static void ire_free(ire_node_t *n) {
     free(n);
 }
 
+/* Apply `map` (old index → new index, 0 = drop) to every group and
+ * group reference in the tree.  Dropped groups become plain
+ * non-capturing groups. */
+static void
+ire_renumber(ire_node_t *n, const int *restrict map)
+{
+    if (!n) return;
+    switch (n->kind) {
+    case IRE_ALT: ire_renumber(n->u.alt.l, map); ire_renumber(n->u.alt.r, map); break;
+    case IRE_CONCAT:
+        for (size_t i = 0; i < n->u.cat.n; i++) ire_renumber(n->u.cat.xs[i], map);
+        break;
+    case IRE_REP: ire_renumber(n->u.rep.body, map); break;
+    case IRE_GROUP: {
+        ire_node_t *const body = n->u.group.body;
+        const int nidx = map[n->u.group.idx];
+        ire_renumber(body, map);
+        if (nidx == 0) { n->kind = IRE_NCGROUP; n->u.nc.body = body; }
+        else           { n->u.group.idx = nidx; }
+        break;
+    }
+    case IRE_NCGROUP:
+    case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+    case IRE_LOOKBEHIND: case IRE_NEG_LOOKBEHIND:
+    case IRE_ATOMIC: case IRE_ABSENCE:
+        ire_renumber(n->u.nc.body, map); break;
+    case IRE_CONDITIONAL:
+        n->u.cond.idx = map[n->u.cond.idx];
+        ire_renumber(n->u.cond.yes, map);
+        ire_renumber(n->u.cond.no, map);
+        break;
+    case IRE_BACKREF:   n->u.backref.idx = map[n->u.backref.idx]; break;
+    case IRE_SUBROUTINE: n->u.sub.idx = map[n->u.sub.idx]; break;
+    default: break;
+    }
+}
+
+/* Ruby stops treating plain `(…)` as capturing as soon as the pattern
+ * has a named group, and renumbers the named ones 1..N.  Onigmo does
+ * this as a post-pass too, which keeps `(?#…)` comments and /x comments
+ * from being mistaken for group syntax. */
+static void
+re_disable_unnamed_captures(re_parser_t *q, ire_node_t *ir)
+{
+    if (q->n_names == 0 || q->n_groups == 0) return;
+    int *const map = (int *)calloc((size_t)q->n_groups + 1, sizeof(int));
+    for (int i = 0; i < q->n_names; i++) map[q->name_idx[i]] = 1;
+    int next = 0;
+    for (int i = 1; i <= q->n_groups; i++) if (map[i]) map[i] = ++next;
+    ire_renumber(ir, map);
+    for (int i = 0; i < q->n_names; i++) q->name_idx[i] = map[q->name_idx[i]];
+    /* groups_by_idx was filled with the old numbering; compact it in
+     * place — safe upwards because map[i] <= i. */
+    for (int i = 1; i <= q->n_groups && i < q->cap_groups; i++) {
+        if (map[i] != 0) q->groups_by_idx[map[i]] = q->groups_by_idx[i];
+    }
+    for (int i = next + 1; i <= q->n_groups && i < q->cap_groups; i++) q->groups_by_idx[i] = NULL;
+    q->n_groups = next;
+    free(map);
+}
+
 /* ------------------------------------------------------------------ */
 /* Node ownership (per-pattern) — see node.c node_allocate.            */
 /* ------------------------------------------------------------------ */
@@ -2463,6 +2535,8 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
         free(q.groups_by_idx); re_parser_free_names(&q);
         return NULL;
     }
+
+    re_disable_unnamed_captures(&q, ir);
 
     /* Pre-lower IR rewrites: alt-of-single-bytes → class, etc.  Cheap
      * tree walk that lets the lower pass see structural simplifications
