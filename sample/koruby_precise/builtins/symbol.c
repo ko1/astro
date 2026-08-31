@@ -432,6 +432,13 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         r.state = KORB_NORMAL;
     }
     if (UNLIKELY(is_lam && r.state == KORB_BREAK)) r.state = KORB_NORMAL;   /* a lambda's `break` acts like `return` */
+    if (UNLIKELY(r.state == KORB_RETURN && c->return_target == NULL && !is_lam)) {
+        /* A non-local `return` always names its home method frame; a NULL target
+         * here means the chain was closed — the method already returned, so this
+         * is CRuby's "unexpected return", raised at the call, not unwound. */
+        c->return_target = NULL;
+        return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "unexpected return");
+    }
     return r;
 }
 /* Symbol#to_proc — a Proc that sends the symbol to its first argument. */
