@@ -110,6 +110,11 @@ typedef struct re_parser {
     bool error;
     char errbuf[256];
 
+    /* Numeric group references are validated once the total group count
+     * is known, so that forward references (`/(?:(\2)|(.))+/`) work. */
+    int  max_num_ref;
+    bool used_num_ref;
+
     /* Named-capture (name, idx) pairs.  Names are heap dups; ownership
      * passes to the astrogre_pattern at the end of parsing. */
     char **names;
@@ -710,6 +715,150 @@ re_register_name(re_parser_t *q, const uint8_t *name_start, size_t name_len, int
     q->n_names++;
 }
 
+/* --- delimited group references: \k<…>, \g<…>, (?(…)…) ------------- */
+
+/* Which construct a reference body came from.  They differ in how a
+ * `+`/`-` inside the body is read: `\g<…>` has no nesting levels, so
+ * `\g<a-1>` is the plain name "a-1", while `\k<a-1>` is name "a" at
+ * level -1. */
+typedef enum { REF_BACKREF, REF_CALL, REF_COND } ref_kind_t;
+
+static bool
+ref_all_digits(const uint8_t *restrict s, const uint8_t *restrict e)
+{
+    if (s >= e) return false;
+    for (const uint8_t *p = s; p < e; p++) if (*p < '0' || *p > '9') return false;
+    return true;
+}
+
+/* Saturating, so a silly `\k<99999999999>` can't wrap into a valid index. */
+static int
+ref_decimal(const uint8_t *restrict s, const uint8_t *restrict e)
+{
+    int v = 0;
+    for (const uint8_t *p = s; p < e; p++) {
+        if (v > 1000000) return v;
+        v = v * 10 + (*p - '0');
+    }
+    return v;
+}
+
+/* Resolve a reference body to a group index; -1 (with the parse error
+ * set) on failure.  0 is a valid answer only for `\g<0>`. */
+static int
+re_resolve_ref(re_parser_t *q, const uint8_t *const s, const uint8_t *const e,
+               ref_kind_t kind)
+{
+    if (s >= e) { re_error(q, "group name is empty"); return -1; }
+
+    const bool neg = (*s == '-'), rel = (neg || *s == '+');
+    if (ref_all_digits(s, e) || (rel && ref_all_digits(s + 1, e))) {
+        const int n = ref_decimal(rel ? s + 1 : s, e);
+        int idx;
+        if (!rel) {
+            /* `\g<0>` calls the whole pattern; `\k<0>` / `(?(0)…)` are errors. */
+            if (n == 0 && kind == REF_CALL) return 0;
+            if (n == 0) { re_error(q, "0 is not a valid backreference"); return -1; }
+            idx = n;
+        } else if (neg) {
+            idx = q->n_groups + 1 - n;   /* relative to the groups opened so far */
+        } else if (kind == REF_BACKREF) {
+            re_error(q, "forward relative backreference"); return -1;
+        } else {
+            idx = q->n_groups + n;
+        }
+        if (idx < 1) { re_error(q, "invalid backref number/name"); return -1; }
+        q->used_num_ref = true;
+        if (idx > q->max_num_ref) q->max_num_ref = idx;
+        return idx;
+    }
+
+    /* Name reference.  A trailing `+N` / `-N` is a nesting-level
+     * specifier and is not part of the name (except for `\g`). */
+    const uint8_t *ne = e;
+    if (kind != REF_CALL) {
+        for (const uint8_t *p = s + 1; p < e; p++) {
+            if (*p == '+' || *p == '-') { ne = p; break; }
+        }
+        if (ne != e) {
+            if (!ref_all_digits(ne + 1, e)) { re_error(q, "invalid group name"); return -1; }
+            /* Level 0 is the plain reference; other levels would need a
+             * per-recursion capture stack, which we don't keep. */
+            if (ref_decimal(ne + 1, e) != 0) {
+                re_error(q, "nesting level specifier is not supported"); return -1;
+            }
+        }
+    }
+    const size_t nl = (size_t)(ne - s);
+    for (int i = 0; i < q->n_names; i++) {
+        if (strlen(q->names[i]) == nl && memcmp(q->names[i], s, nl) == 0) return q->name_idx[i];
+    }
+    re_error(q, "undefined group name reference");
+    return -1;
+}
+
+/* Read `<…>` or `'…'` after `\k` / `\g`, leaving q->p past the closer.
+ * Returns false (without consuming) when no delimiter is there. */
+static bool
+re_take_ref_body(re_parser_t *q, const uint8_t **out_s, const uint8_t **out_e)
+{
+    if (q->p >= q->end || (*q->p != '<' && *q->p != '\'')) return false;
+    const uint8_t close = (*q->p == '<') ? '>' : '\'';
+    q->p++;
+    *out_s = q->p;
+    while (q->p < q->end && *q->p != close) q->p++;
+    if (q->p >= q->end) { re_error(q, "unterminated group reference"); return false; }
+    *out_e = q->p;
+    q->p++;
+    return true;
+}
+
+static ire_node_t *
+ire_lit_byte(const re_parser_t *q, uint8_t b)
+{
+    ire_node_t *const n = ire_new(IRE_LIT);
+    n->u.lit.bytes = (char *)malloc(1);
+    n->u.lit.bytes[0] = (char)b;
+    n->u.lit.len = 1;
+    n->u.lit.ci = q->case_insensitive;
+    return n;
+}
+
+/* `\0…` is always octal.  `\1`…`\9` is a back-reference (forward ones
+ * included — validated once the group count is final).  `\10` and up
+ * only back-reference a group that is already open; otherwise Ruby
+ * re-reads the run as an octal escape, and any digits the octal escape
+ * doesn't take are left for the caller to parse as literals. */
+static ire_node_t *
+parse_num_escape(re_parser_t *q, int first)
+{
+    const uint8_t *const ds = q->p - 1;   /* the first digit */
+    if (first != '0') {
+        const uint8_t *p = q->p;
+        int n = first - '0';
+        while (p < q->end && *p >= '0' && *p <= '9') {
+            if (n > 1000000) break;
+            n = n * 10 + (*p++ - '0');
+        }
+        if (p == q->p || n <= q->n_groups) {
+            q->p = p;
+            q->used_num_ref = true;
+            if (n > q->max_num_ref) q->max_num_ref = n;
+            ire_node_t *const bn = ire_new(IRE_BACKREF);
+            bn->u.backref.idx = n;
+            return bn;
+        }
+    }
+    int b = 0, ndig = 0;
+    while (ndig < 3 && ds + ndig < q->end && ds[ndig] >= '0' && ds[ndig] <= '7') {
+        b = b * 8 + (ds[ndig] - '0');
+        ndig++;
+    }
+    if (ndig == 0) { q->p = ds + 1; return ire_lit_byte(q, *ds); }  /* leading 8 or 9 */
+    q->p = ds + ndig;
+    return ire_lit_byte(q, (uint8_t)b);
+}
+
 /* Register a parsed IRE_GROUP for later \g<…> resolution. */
 static void
 re_register_group(re_parser_t *q, int idx, struct ire_node *g)
@@ -816,31 +965,24 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                 abs_node->u.nc.body = body_inner;
                 return abs_node;
             } else if (q->p < q->end && *q->p == '(') {
-                /* (?(N)YES) / (?(N)YES|NO) / (?(<name>)YES|NO) — conditional. */
+                /* (?(N)YES|NO) / (?(<name>)…) / (?('name')…) — conditional.
+                 * Undelimited bodies are digits only; anything else needs
+                 * <> or '' around it. */
                 q->p++;
-                int cond_idx = 0;
+                int cond_idx;
                 if (q->p < q->end && isdigit(*q->p)) {
-                    while (q->p < q->end && isdigit(*q->p)) {
-                        cond_idx = cond_idx * 10 + (*q->p++ - '0');
-                    }
-                } else if (q->p < q->end && *q->p == '<') {
-                    q->p++;
-                    const uint8_t *const ns = q->p;
-                    while (q->p < q->end && *q->p != '>') q->p++;
-                    const size_t nl = (size_t)(q->p - ns);
-                    if (q->p < q->end) q->p++;
-                    for (int i = 0; i < q->n_names; i++) {
-                        if (strlen(q->names[i]) == nl &&
-                            memcmp(q->names[i], ns, nl) == 0) {
-                            cond_idx = q->name_idx[i];
-                            break;
-                        }
-                    }
-                    if (cond_idx == 0) { re_error(q, "unknown capture name in (?(...))"); return NULL; }
+                    const uint8_t *const ds = q->p;
+                    while (q->p < q->end && isdigit(*q->p)) q->p++;
+                    cond_idx = re_resolve_ref(q, ds, q->p, REF_COND);
+                } else if (q->p < q->end && (*q->p == '<' || *q->p == '\'')) {
+                    const uint8_t *ns, *nend;
+                    if (!re_take_ref_body(q, &ns, &nend)) return NULL;
+                    cond_idx = re_resolve_ref(q, ns, nend, REF_COND);
                 } else {
-                    re_error(q, "unsupported conditional form");
+                    re_error(q, "invalid conditional pattern");
                     return NULL;
                 }
+                if (cond_idx < 0) return NULL;
                 if (q->p >= q->end || *q->p != ')') { re_error(q, "expected ) in (?(...))"); return NULL; }
                 q->p++;
                 ire_node_t *yes_branch = parse_concat(q);
@@ -1003,60 +1145,25 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             alt->u.alt.r = cls;
             return alt;
         }
-        case 'g': {
-            /* \g<name> or \g<N> — subroutine call. */
-            if (q->p >= q->end || *q->p != '<') {
-                re_error(q, "expected `<` after `\\g`");
-                return NULL;
+        case 'g': case 'k': {
+            /* \g<…> / \g'…' subroutine call, \k<…> / \k'…' backref.
+             * Without a delimiter Ruby reads the letter literally. */
+            const ref_kind_t kind = (e == 'g') ? REF_CALL : REF_BACKREF;
+            const uint8_t *ns, *nend;
+            if (!re_take_ref_body(q, &ns, &nend)) {
+                if (q->error) return NULL;
+                return ire_lit_byte(q, (uint8_t)e);
             }
-            q->p++;
-            int idx = 0;
-            if (q->p < q->end && isdigit(*q->p)) {
-                while (q->p < q->end && isdigit(*q->p)) idx = idx * 10 + (*q->p++ - '0');
-            } else {
-                const uint8_t *const ns = q->p;
-                while (q->p < q->end && *q->p != '>') q->p++;
-                const size_t nl = (size_t)(q->p - ns);
-                for (int i = 0; i < q->n_names; i++) {
-                    if (strlen(q->names[i]) == nl && memcmp(q->names[i], ns, nl) == 0) {
-                        idx = q->name_idx[i];
-                        break;
-                    }
-                }
-            }
-            if (q->p < q->end && *q->p == '>') q->p++;
-            if (idx == 0) { re_error(q, "unknown subroutine target"); return NULL; }
-            ire_node_t *n = ire_new(IRE_SUBROUTINE);
-            n->u.sub.idx = idx;
+            const int idx = re_resolve_ref(q, ns, nend, kind);
+            if (idx < 0) return NULL;
+            ire_node_t *n = ire_new(kind == REF_CALL ? IRE_SUBROUTINE : IRE_BACKREF);
+            if (kind == REF_CALL) n->u.sub.idx = idx;
+            else                  n->u.backref.idx = idx;
             return n;
         }
-        case 'k': {
-            /* \k<name> — named backref.  Resolve via q->names; default
-             * to group 1 if name is unknown. */
-            int idx = 1;
-            if (q->p < q->end && *q->p == '<') {
-                q->p++;
-                const uint8_t *const ns = q->p;
-                while (q->p < q->end && *q->p != '>') q->p++;
-                const size_t nl = (size_t)(q->p - ns);
-                if (q->p < q->end) q->p++;
-                for (int i = 0; i < q->n_names; i++) {
-                    if (strlen(q->names[i]) == nl && memcmp(q->names[i], ns, nl) == 0) {
-                        idx = q->name_idx[i];
-                        break;
-                    }
-                }
-            }
-            ire_node_t *n = ire_new(IRE_BACKREF);
-            n->u.backref.idx = idx;
-            return n;
-        }
-        case '1': case '2': case '3': case '4': case '5':
-        case '6': case '7': case '8': case '9': {
-            ire_node_t *n = ire_new(IRE_BACKREF);
-            n->u.backref.idx = e - '0';
-            return n;
-        }
+        case '0': case '1': case '2': case '3': case '4':
+        case '5': case '6': case '7': case '8': case '9':
+            return parse_num_escape(q, e);
         case 'u': {
             /* \uHHHH or \u{H...} — Unicode codepoint.  Encode as
              * UTF-8 bytes (1-4) and emit as IRE_LIT.  This way the
@@ -1125,7 +1232,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             return n;
         }
         case 'n': case 't': case 'r': case 'f': case 'v':
-        case 'a': case 'e': case '0':
+        case 'a': case 'e':
         case '\\': case '/': case '.': case '^': case '$':
         case '(': case ')': case '[': case ']':
         case '{': case '}': case '|': case '*': case '+':
@@ -1140,7 +1247,6 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             case 'v': b = '\v'; break;
             case 'a': b = '\a'; break;
             case 'e': b = 0x1b; break;
-            case '0': b = 0;    break;
             case 'x': {
                 if (q->p + 2 > q->end) { re_error(q, "invalid hex escape"); return NULL; }
                 char h[3] = { (char)q->p[0], (char)q->p[1], 0 };
@@ -2144,7 +2250,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
     }
     case IRE_SUBROUTINE: {
         const int idx = n->u.sub.idx;
-        if (idx <= 0 || idx >= L->q->cap_groups || L->q->groups_by_idx[idx] == NULL) {
+        if (idx < 0 || idx >= L->q->cap_groups || L->q->groups_by_idx[idx] == NULL) {
             re_error(L->q, "subroutine target undefined (forward reference?)");
             return tail;
         }
@@ -2339,6 +2445,12 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     bool anchored_bos = (pat_len >= 2 && pat[0] == '\\' && pat[1] == 'A');
 
     ire_node_t *ir = parse_alt(&q);
+    /* Numeric references are only checkable now that the group count is
+     * final — and a single named group turns them all into errors. */
+    if (!q.error && q.used_num_ref) {
+        if (q.n_names > 0) re_error(&q, "numbered backref/call is not allowed (use name)");
+        else if (q.max_num_ref > q.n_groups) re_error(&q, "invalid backref number/name");
+    }
     if (q.error) {
         astrogre_set_error(q.errbuf);
         ire_free(ir);
@@ -2372,6 +2484,8 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     astrogre_pattern *p = (astrogre_pattern *)calloc(1, sizeof(*p));
     astrogre_g_building = p;
 
+    re_register_group(&q, 0, ir);   /* `\g<0>` calls the whole pattern */
+
     NODE *succ = ALLOC_node_re_succ();
     /* Wrap the whole pattern in capture group 0 so the matcher records
      * the final-match span automatically through cap_end. */
@@ -2401,7 +2515,7 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
         while (any_new && !q.error) {
             any_new = false;
             const int snapshot_cap = L.sub_needed_cap;
-            for (int idx = 1; idx < snapshot_cap; idx++) {
+            for (int idx = 0; idx < snapshot_cap; idx++) {
                 if (!L.sub_needed[idx] || sub_chains[idx]) continue;
                 ire_node_t *const target = q.groups_by_idx[idx];
                 if (!target) continue;
