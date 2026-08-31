@@ -1904,6 +1904,33 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     uint32_t line = kp_line(tc, (const pm_node_t *)cn);
     size_t argc = cn->arguments ? cn->arguments->arguments.size : 0;
 
+    /* `recv.attr = v` is an assignment: it yields v, not whatever the setter
+     * returns.  Stage v in a temp, call the setter, hand the temp back.  With
+     * safe navigation a nil receiver skips the argument too. */
+    if ((cn->base.flags & PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE) && argc == 1 && cn->block == NULL &&
+        !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE)) {
+        const bool safe = (cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) != 0;
+        const uint32_t tr = alloc_synth_local(tc), tv = alloc_synth_local(tc);
+        /* receiver first, then the right-hand side (CRuby's evaluation order) */
+        NODE *const store_recv = bake_lset(tc, tr, transduce(tc, cn->receiver));
+        NODE *const store_val = bake_lset(tc, tv, transduce(tc, cn->arguments->arguments.nodes[0]));
+        /* the setter call is an ordinary node_send: it must carry self_off so a
+         * private `attr=` stays callable only through `self.` */
+        NODE **argv = malloc(sizeof(NODE *) * 2);
+        if (!argv) abort();
+        const int32_t self_off = -1 - tc->chain - 2 - KORB_FRAME_HDR;
+        const int32_t saved = tc->chain;
+        tc->chain = saved + 2 + KORB_FRAME_HDR;
+        argv[0] = bake_lget(tc, tr);
+        argv[1] = bake_lget(tc, tv);
+        tc->chain = saved;
+        NODE *const set = ALLOC_node_send(mid, line, self_off, argv, 2);
+        bake_add(tc, &set->u.node_send.self_off);
+        NODE *body = ALLOC_node_seq(store_val, ALLOC_node_seq(set, bake_lget(tc, tv)));
+        if (safe) body = ALLOC_node_nil_guard(bake_lget(tc, tr), body);   /* nil receiver: no rhs, no call */
+        return ALLOC_node_seq(store_recv, body);
+    }
+
     /* `Module.nesting` — the lexically-enclosing class/module bodies, innermost
      * first.  Resolved at parse time from the frame chain (the names) and at
      * runtime to the live class objects (koruby's flat const table). */
@@ -3884,8 +3911,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *s_recv, *s_val;
         WITH_CHAIN(tc, KP_SEND1_SC, (s_recv = bake_lget(tc, t0), s_val = bake_lget(tc, t1)));
         NODE *set = kp_send1(write_mid, line, s_recv, s_val);
-        return ALLOC_node_seq(store_recv, ALLOC_node_seq(store_newval,
-                   ALLOC_node_seq(set, bake_lget(tc, t1))));
+        NODE *body = ALLOC_node_seq(store_newval, ALLOC_node_seq(set, bake_lget(tc, t1)));
+        /* `recv&.attr op= v` — a nil receiver yields nil and runs nothing else */
+        if (cw->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)
+            body = ALLOC_node_nil_guard(bake_lget(tc, t0), body);
+        return ALLOC_node_seq(store_recv, body);
       }
 
       case PM_CALL_OR_WRITE_NODE:        /* recv.attr ||= value */
@@ -3908,8 +3938,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         WITH_CHAIN(tc, KP_SEND1_SC, (s_recv = bake_lget(tc, t0), s_val = bake_lget(tc, t1)));
         NODE *set = kp_send1(write_mid, line, s_recv, s_val);
         NODE *set_branch = ALLOC_node_seq(store_val, ALLOC_node_seq(set, bake_lget(tc, t1)));
-        return ALLOC_node_seq(store_recv, is_or ? ALLOC_node_or(get, set_branch)
-                                                : ALLOC_node_and(get, set_branch));
+        NODE *body = is_or ? ALLOC_node_or(get, set_branch) : ALLOC_node_and(get, set_branch);
+        /* `recv&.attr ||= v` / `&&=` — a nil receiver yields nil, reads nothing */
+        if (cw->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)
+            body = ALLOC_node_nil_guard(bake_lget(tc, t0), body);
+        return ALLOC_node_seq(store_recv, body);
       }
 
       /* ---- control flow ---- */
