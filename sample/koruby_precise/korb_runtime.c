@@ -3143,7 +3143,7 @@ RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
 RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid) {
     VALUE_REF rref = SLOTS_PUSH(slots, recv);            /* root recv across alloc */
     KorbMethod *m = korb_alloc(c, slots, sizeof(KorbMethod), KORB_OBJ_METHOD);
-    m->mid = mid; m->unbound = 0;
+    m->mid = mid; m->unbound = 0; m->missing = 0;
     ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv, VALUE_REF_GET(rref));
     return RESULT_OK((VALUE)m);
 }
@@ -3453,11 +3453,13 @@ static RESULT korb_m_bind_lvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     (void)a; const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));
     slots[0] = UNWRAP(korb_ary_new(c, slots, b->name_cnt + 2));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
-    for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++)
-        CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i)[0])));
+    /* innermost scope first (CRuby): names added through the binding live in a
+     * scope of their own, inside the captured chain the baked table lists. */
     const VALUE ex = VAL2BIND(VALUE_REF_GET(self))->extra;
     if (ex != KORB_NIL) for (uint32_t i = 0; i < VAL2HASH(ex)->len; i++)
-        CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(ex)->items)[2 * i]));
+        CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(VAL2BIND(VALUE_REF_GET(self))->extra)->items)[2 * i]));
+    for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++)
+        CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i)[0])));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 /* Regexp / MatchData / String-regex methods live in builtins/regexp.c
@@ -5191,6 +5193,15 @@ static VALUE korb_klass_override_get(const struct korb_vm *vm, VALUE obj) {
     for (uint32_t i = 0; i < vm->sklass_cnt; i++)
         if (vm->sklass_obj[i] == obj) return vm->sklass_cls[i];
     return KORB_NIL;
+}
+/* The value's OWN singleton class, if one has been materialized (nil otherwise).
+ * The override table also holds plain subclasses for extended builtins, so the
+ * is_singleton check is what makes this "own singleton" and not "dispatch class". */
+static VALUE korb_own_singleton_class(const struct korb_vm *vm, VALUE v) {
+    if (!AROH_IS_GC_OBJECT(v) || !(((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS))
+        return KORB_NIL;
+    const VALUE ov = korb_klass_override_get(vm, v);
+    return (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) ? ov : KORB_NIL;
 }
 /* Start-of-lookup class for a user instance: its singleton class if one exists
  * (so `send`/internal dispatch see singleton methods), else its plain class.
@@ -7657,7 +7668,11 @@ static RESULT korb_cproc_yield(CTX *c, VALUE *restrict slots, VALUE procv,
 uint32_t korb_entry_params_cnt(NODE *entry) { return entry == KORB_BLK_CPROC ? 1u : entry->u.node_entry.params_cnt; }
 uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
 static uint32_t korb_entry_destructure_n(NODE *entry) { return entry->u.node_entry.destructure_n; }
-static int32_t  korb_entry_rest_slot(NODE *entry) { return entry->u.node_entry.rest_slot; }   /* -1 = no rest param */
+static int32_t  korb_entry_rest_slot(NODE *entry) { return entry->u.node_entry.rest_slot; }   /* -1 none, -2 anonymous `*`, -3 implicit `|x,|` */
+/* A real *rest param: named (>=0) or anonymous `*` (-2).  The implicit rest of
+ * `|x,|` (-3) binds the same way but is NOT a rest — CRuby leaves it out of
+ * #arity / #parameters and keeps a lambda's arity check exact. */
+static bool korb_entry_has_rest(NODE *entry) { const int32_t r = entry->u.node_entry.rest_slot; return r >= 0 || r == -2; }
 /* Bind one destructuring-spec entry (see parse.c): 0x00 = scalar leaf,
  * 0xFF <k> = a group of k nested entries.  Returns the next entry. */
 static const uint8_t *korb_bind_destr_entry(CTX *c, VALUE *bf, uint32_t nlocals, uint32_t *loc, const uint8_t *sp, VALUE pv)
@@ -7852,7 +7867,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     const bool is_lambda = is_lam || (fwd && VAL2PROC(*captured_self)->is_lambda);   /* explicit (proc.call) or forwarded &lam */
     if (UNLIKELY(is_lambda)) {
         const uint32_t pc = korb_entry_params_cnt(block);
-        const bool has_rest = korb_entry_rest_slot(block) != -1;   /* named (>=0) or discard (-2) */
+        const bool has_rest = korb_entry_has_rest(block);
         const uint32_t rs = korb_entry_rest_slot(block) >= 0 ? (uint32_t)korb_entry_rest_slot(block) : pc;
         const uint32_t npost = has_rest ? ((pc > rs + 1) ? (pc - rs - 1) : 0)
                                         : korb_entry_post_cnt(block);   /* |a, b=1, c| — posts are required too */
@@ -7872,7 +7887,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         const uint32_t np0 = korb_entry_params_cnt(block);
         const bool wants_many = (np0 > 1) || korb_entry_destructure_n(block) > 0 ||
                                 (korb_entry_destructure_spec(block) != NULL) ||
-                                (np0 == 1 && korb_entry_rest_slot(block) == -2);
+                                (np0 == 1 && korb_entry_rest_slot(block) <= -2);   /* |x,| / |x,*| are multi-param for auto-splat */
         if (wants_many && KORB_OBJECT_P(argv[0])) {
             const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
             const VALUE recv = argv[0];
@@ -8001,7 +8016,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         for (uint32_t j = 0; j < npost; j++)                /* posts follow the consumed front */
             bf[1 + nfront + j] = (take < srcn) ? src[take++] : KORB_NIL;
         for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
-    } else if (korb_entry_rest_slot(block) == -2) {     /* |s,| / |s,*| — discard extras, splat like np+1 params */
+    } else if (korb_entry_rest_slot(block) <= -2) {     /* |s,| / |s,*| — discard extras, splat like np+1 params */
         const uint32_t np = korb_entry_params_cnt(block);
         if (!is_lambda && np + 1 > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {
             const KorbArray *ar = VAL2ARY(argv[0]);
@@ -9110,11 +9125,23 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                                       base == KORB_C_FIBER ? "tried to create a Fiber without a block"
                                                            : "tried to create Proc object without a block");
                 slots[0] = *recv_slot;                         /* root the subclass (recv) */
-                VALUE inst = (base == KORB_C_FIBER)
-                    ? UNWRAP(korb_fiber_new(c, slots + 1, block, def_env, captured_self))
-                    : UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
-                slots[1] = inst;                               /* root instance across the override set */
-                korb_klass_override_set(c, slots[1], slots[0]);   /* override class = the subclass */
+                if (base == KORB_C_PROC && def_env == KORB_BLK_FWD) {
+                    /* `Sub.new(&p)`: CRuby hands back p itself when its class already
+                     * matches, else a re-classed copy (proc_new). */
+                    slots[1] = KORB_CSELF_VAL(captured_self);  /* the forwarded Proc */
+                    if (korb_class_obj_of(c, slots[1]) != slots[0]) {
+                        const RESULT dr = korb_send(c, slots + 2, korb_intern(vm, "dup", 3), 0, 0);
+                        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+                        slots[1] = dr.value;
+                        korb_klass_override_set(c, slots[1], slots[0]);
+                    }
+                } else {
+                    const VALUE inst = (base == KORB_C_FIBER)
+                        ? UNWRAP(korb_fiber_new(c, slots + 1, block, def_env, captured_self))
+                        : UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
+                    slots[1] = inst;                           /* root instance across the override set */
+                    korb_klass_override_set(c, slots[1], slots[0]);   /* override class = the subclass */
+                }
                 if (base == KORB_C_FIBER && argc >= 1) {       /* Fiber.new(storage: h) { … } */
                     const VALUE opts = slots[-(korb_sword_t)argc];
                     if (KORB_HASH_P(opts)) {
@@ -11412,15 +11439,40 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       }
       case KORB_OBJ_METHOD: {                          /* #<Method: Recv(DefiningModule)#name> */
         const KorbMethod *const m = (const KorbMethod *)(uintptr_t)v;
-        const VALUE recv_cls = m->unbound ? m->recv : korb_class_obj_of(c, m->recv);
-        fprintf(fp, "#<%s: ", m->unbound ? "UnboundMethod" : "Method");
-        if (KORB_CLASS_P(recv_cls)) korb_fprint_class_qname(c, fp, recv_cls); else fputs("Object", fp);
-        /* the module/class that actually defines the method, if different from the receiver class */
+        /* lookup starts at the dispatch class so singleton/extended definitions win */
+        const VALUE start = m->unbound ? m->recv : korb_dispatch_class(c, m->recv);
         VALUE def_cls = KORB_NIL;
-        const struct korb_method *km = KORB_CLASS_P(recv_cls) ? korb_class_find_method(recv_cls, m->mid, &def_cls) : NULL;
+        const struct korb_method *km = KORB_CLASS_P(start) ? korb_class_find_method(start, m->mid, &def_cls) : NULL;
         if (km == NULL) km = korb_method_lookup(c->vm, m->mid);   /* top-level (global function) method */
-        if (KORB_CLASS_P(def_cls) && def_cls != recv_cls) { fputc('(', fp); korb_fprint_class_qname(c, fp, def_cls); fputc(')', fp); }
-        fprintf(fp, "#%s", korb_sym_name(c->vm, m->mid));
+        if (m->owner != KORB_NIL) def_cls = m->owner;             /* fixed owner (bound-from-unbound / super_method) */
+        fprintf(fp, "#<%s: ", m->unbound ? "UnboundMethod" : "Method");
+        const char *sharp = "#";
+        if (m->unbound) {                                /* CRuby prints only the defining module */
+            const VALUE d = KORB_CLASS_P(def_cls) ? def_cls : start;
+            if (KORB_CLASS_P(d)) korb_fprint_class_tostr(c, fp, d); else fputs("Object", fp);
+        } else if (KORB_CLASS_P(def_cls) && VAL2CLASS(def_cls)->is_singleton) {
+            /* defined in a singleton class → "recv.name" (or "recv(attached).name") */
+            const VALUE att = korb_singleton_attached(c, def_cls);
+            korb_fprint_obj_default_inspect(c, fp, m->recv);
+            if (att != KORB_NIL && att != m->recv) {
+                fputc('(', fp); korb_fprint_obj_default_inspect(c, fp, att); fputc(')', fp);
+            }
+            sharp = ".";
+        } else {
+            /* the receiver's class as CRuby's CLASS_OF sees it: a Class/Module
+             * receiver shows its metaclass, any other object its real class. */
+            VALUE mk = KORB_NIL;
+            if (KORB_CLASS_P(m->recv)) {
+                mk = korb_own_singleton_class(c->vm, m->recv);    /* nil when not materialized yet */
+                if (KORB_CLASS_P(mk)) korb_fprint_class_tostr(c, fp, mk);
+                else { fputs("#<Class:", fp); korb_fprint_class_tostr(c, fp, m->recv); fputc('>', fp); }
+            } else {
+                mk = korb_class_obj_of(c, m->recv);
+                if (KORB_CLASS_P(mk)) korb_fprint_class_tostr(c, fp, mk); else fputs("Object", fp);
+            }
+            if (KORB_CLASS_P(def_cls) && def_cls != mk) { fputc('(', fp); korb_fprint_class_tostr(c, fp, def_cls); fputc(')', fp); }
+        }
+        fprintf(fp, "%s%s", sharp, korb_sym_name(c->vm, m->mid));
         if (km != NULL && km->orig_mid && km->orig_mid != km->mid)   /* aliased → #renamed(original) */
             fprintf(fp, "(%s)", korb_sym_name(c->vm, km->orig_mid));
         /* parameter signature + source location for a Ruby-defined method (CRuby shape) */
@@ -11445,6 +11497,19 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
             uint32_t fsym, line;
             if (km->body && korb_get_srcloc(c->vm, km->body, &fsym, &line))
                 fprintf(fp, " %s:%u", korb_sym_name(c->vm, fsym), line);
+        } else if (km != NULL) {                        /* C-defined: params are nameless → "_" / "*" (CRuby shape) */
+            int32_t nreq = 0; bool rest = false;
+            switch (km->kind) {
+              case KORB_METHOD_ATTR_R: break;
+              case KORB_METHOD_ATTR_W: nreq = 1; break;
+              case KORB_METHOD_BUILTIN:
+              case KORB_METHOD_CFUNC:  if (km->params_cnt < 0) rest = true; else nreq = km->params_cnt; break;
+              default: rest = true; break;              /* define_method without param_info */
+            }
+            fputc('(', fp);
+            for (int32_t i = 0; i < nreq; i++) fputs(i ? ", _" : "_", fp);
+            if (rest) fputs("*", fp);
+            fputc(')', fp);
         }
         fputc('>', fp);
         return;

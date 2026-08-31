@@ -1070,7 +1070,9 @@ build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
     else if (PM_NODE_TYPE_P(blk_params, PM_PARAMETERS_NODE))
         ps = (const pm_parameters_node_t *)blk_params;
     if (!ps) return NULL;
-    uint32_t n = (uint32_t)(ps->requireds.size + ps->optionals.size + (ps->rest ? 1 : 0) +
+    /* `|x,|` (implicit rest) is not a parameter at all in CRuby's #parameters */
+    const bool has_rest_param = ps->rest && !PM_NODE_TYPE_P(ps->rest, PM_IMPLICIT_REST_NODE);
+    uint32_t n = (uint32_t)(ps->requireds.size + ps->optionals.size + (has_rest_param ? 1 : 0) +
                             ps->posts.size + ps->keywords.size + (ps->keyword_rest ? 1 : 0) + (ps->block ? 1 : 0));
     if (n == 0) return NULL;
     struct korb_param_info *pi = malloc(sizeof(*pi) + n * sizeof(struct korb_param_entry));
@@ -1083,7 +1085,7 @@ build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
     }
     for (uint32_t i = 0; i < ps->optionals.size; i++)
         PI_ADD(1, ((const pm_optional_parameter_node_t *)ps->optionals.nodes[i])->name);
-    if (ps->rest) {   /* anonymous `*` reports the name :* (Ruby 3.x), a named rest its name */
+    if (has_rest_param) {   /* anonymous `*` reports the name :* (Ruby 3.x), a named rest its name */
         const pm_constant_id_t rn = PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE) ? ((const pm_rest_parameter_node_t *)ps->rest)->name : 0;
         pi->e[k].kind = 2; pi->e[k].name = rn ? kp_intern_cid(tc, rn) : korb_intern(tc->c->vm, "*", 1); k++;
     }
@@ -1225,14 +1227,17 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                      * auto-splat purposes.  No local is consumed: rest_slot = -2
                      * tells the binder "splat like a rest, store nothing".
                      * (With post params the discarded slot would shift the posts'
-                     * local indexes — keep that combination unsupported.) */
-                    const bool anon_rest =
-                        PM_NODE_TYPE_P(ps->rest, PM_IMPLICIT_REST_NODE) ||
+                     * local indexes — keep that combination unsupported.)
+                     * -3 is the implicit `|s,|` form: it binds identically but is
+                     * NOT a rest param — CRuby keeps it out of #arity /
+                     * #parameters and a lambda still enforces its exact arity. */
+                    const bool implicit_rest = PM_NODE_TYPE_P(ps->rest, PM_IMPLICIT_REST_NODE);
+                    const bool anon_rest = implicit_rest ||
                         (PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE) &&
                          !((const pm_rest_parameter_node_t *)ps->rest)->name);
                     if (anon_rest) {
                         if (ps->posts.size) { pop_frame(tc); return kp_unsupported(tc, ps->rest, "anonymous block rest with post params"); }
-                        rest_slot = -2;
+                        rest_slot = implicit_rest ? -3 : -2;
                     } else {
                     if (!PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, ps->rest, "block splat parameter"); }
                     const pm_rest_parameter_node_t *rp = (const pm_rest_parameter_node_t *)ps->rest;

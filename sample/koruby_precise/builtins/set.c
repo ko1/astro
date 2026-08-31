@@ -985,24 +985,34 @@ static RESULT korb_m_class_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * is the attached class/module's own to_s (recursing) or, for an object, its
  * default "#<ClassName:0xADDR>" (NOT dispatching #inspect); else the anonymous
  * "#<Class:0xADDR>". */
+/* The object a singleton class is attached to, or nil when `cls` is not a
+ * singleton class (or the pairing was never recorded). */
+static VALUE korb_singleton_attached(CTX *c, VALUE cls) {
+    if (!KORB_CLASS_P(cls) || !VAL2CLASS(cls)->is_singleton) return KORB_NIL;
+    for (uint32_t i = 0; i < c->vm->sklass_cnt; i++)
+        if (c->vm->sklass_cls[i] == cls) return c->vm->sklass_obj[i];
+    return KORB_NIL;
+}
+static void korb_fprint_class_tostr(CTX *c, FILE *ms, VALUE cls);
+/* Default #inspect rendering without dispatching a user #inspect: a Class/Module
+ * uses its own to_s, any other object the bare "#<ClassName:0xADDR>". */
+static void korb_fprint_obj_default_inspect(CTX *c, FILE *ms, VALUE v) {
+    if (KORB_CLASS_P(v)) { korb_fprint_class_tostr(c, ms, v); return; }
+    VALUE oc = korb_dispatch_class(c, v);
+    while (KORB_CLASS_P(oc) && VAL2CLASS(oc)->is_singleton) oc = VAL2CLASS(oc)->superclass;   /* real class */
+    fputs("#<", ms);
+    if (KORB_CLASS_P(oc)) korb_fprint_class_tostr(c, ms, oc);   /* named → qname, anonymous → #<Class:0x…> */
+    else fputs("Object", ms);
+    fprintf(ms, ":0x%016zx>", (size_t)(uintptr_t)v);
+}
 static void korb_fprint_class_tostr(CTX *c, FILE *ms, VALUE cls) {
     const KorbClass *const k = VAL2CLASS(cls);
     if (k->name_sym != 0) { korb_fprint_class_qname(c, ms, cls); return; }
     if (k->is_singleton) {
-        VALUE att = KORB_NIL;
-        for (uint32_t i = 0; i < c->vm->sklass_cnt; i++)
-            if (c->vm->sklass_cls[i] == cls) { att = c->vm->sklass_obj[i]; break; }
+        const VALUE att = korb_singleton_attached(c, cls);
         if (att != KORB_NIL) {
             fputs("#<Class:", ms);
-            if (KORB_CLASS_P(att)) korb_fprint_class_tostr(c, ms, att);   /* attached Class/Module/singleton → recurse */
-            else {                                                         /* attached object → #<ClassName:0xADDR> */
-                VALUE oc = korb_dispatch_class(c, att);
-                while (KORB_CLASS_P(oc) && VAL2CLASS(oc)->is_singleton) oc = VAL2CLASS(oc)->superclass;   /* real class */
-                fputs("#<", ms);
-                if (KORB_CLASS_P(oc)) korb_fprint_class_tostr(c, ms, oc);   /* named → qname, anonymous → #<Class:0x…> */
-                else fputs("Object", ms);
-                fprintf(ms, ":0x%016zx>", (size_t)(uintptr_t)att);
-            }
+            korb_fprint_obj_default_inspect(c, ms, att);
             fputc('>', ms);
             return;
         }
@@ -2120,6 +2130,14 @@ static RESULT korb_m_obj_tap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_kernel_makeproc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, uint32_t is_lambda) {
     (void)a; (void)self;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Proc object without a block");
+    if (def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC) {   /* `&expr`, not a literal block */
+        const VALUE fwd = KORB_CSELF_VAL(cself);
+        /* CRuby: proc(&p) IS p; lambda(&p) likewise when p is already a lambda
+         * (a Symbol/Method proc counts), and ArgumentError when it is not. */
+        if (is_lambda && !(KORB_PROC_P(fwd) && VAL2PROC(fwd)->is_lambda))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "the lambda method requires a literal block");
+        return RESULT_OK(fwd);
+    }
     VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);   /* block-arg def_env arrives tagged (base|1) */
     return korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(cself), is_lambda);
 }

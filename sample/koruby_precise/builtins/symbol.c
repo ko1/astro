@@ -314,14 +314,18 @@ static RESULT korb_m_obj_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const VALUE recv = VALUE_REF_GET(self);
     const VALUE cls = korb_dispatch_class(c, recv);
     /* an unknown name is a NameError unless #respond_to_missing? claims it
-     * (method_missing alone is not enough — CRuby asks respond_to?) */
-    if ((!KORB_CLASS_P(cls) || korb_class_find_method(cls, mid, NULL) == NULL) &&
-        korb_method_lookup(c->vm, mid) == NULL && !korb_responds_to_coerce(c, slots, recv, mid)) {
+     * (method_missing alone is not enough — CRuby asks respond_to?).
+     * korb_responds_to also covers the dispatch special cases (new / send / …)
+     * that have no table entry but are real methods all the same. */
+    const bool defined = korb_responds_to(c, recv, mid) || korb_method_lookup(c->vm, mid) != NULL;
+    if (!defined && !korb_responds_to_coerce(c, slots, recv, mid)) {
         char cnm[192]; korb_class_desc_into(c, cls, cnm, sizeof cnm);
         return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",
                           korb_sym_name(c->vm, mid), cnm);
     }
-    return korb_method_new(c, slots, VALUE_REF_GET(self), mid);   /* self re-read (coercion may GC) */
+    RESULT r = korb_method_new(c, slots, VALUE_REF_GET(self), mid);   /* self re-read (coercion may GC) */
+    if (!defined && LIKELY(r.state == KORB_NORMAL)) VAL2METH(r.value)->missing = 1;   /* method_missing-backed */
+    return r;
 }
 /* Kernel#public_method — like #method, but only a public one: a private or
  * protected (or missing) name is a NameError, not a Method. */
@@ -349,14 +353,28 @@ static RESULT korb_m_meth_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const KorbMethod *m = VAL2METH(VALUE_REF_GET(self));
     if (UNLIKELY(m->unbound)) return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'call' for an UnboundMethod (use #bind)");
     uint32_t mid = m->mid, argc = VALUE_SLICE_LEN(a);
+    if (UNLIKELY(m->missing)) {   /* CRuby: always method_missing(name, *args), even if the name exists by now */
+        slots[0] = m->recv;
+        slots[1] = ID2SYM(mid);
+        for (uint32_t i = 0; i < argc; i++) slots[2 + i] = VALUE_SLICE_GET(a, i);
+        return korb_send_impl(c, slots + 2 + argc, korb_intern(c->vm, "method_missing", 14), 0, argc + 1, block, def_env, cself);
+    }
     const VALUE owner = m->owner;
     if (UNLIKELY(owner != KORB_NIL && KORB_CLASS_P(owner))) {   /* bound-from-unbound: invoke the FIXED method from its owner (not virtual) */
         struct korb_method *const entry = korb_class_find_method(owner, mid, NULL);
-        if (LIKELY(entry != NULL && entry->kind == KORB_METHOD_ISEQ)) {   /* korb_invoke_method handles ISEQ only; builtins fall to virtual */
+        if (LIKELY(entry != NULL && entry->kind == KORB_METHOD_ISEQ)) {
             slots[0] = m->recv;                          /* self (the bound receiver) */
             slots[1] = owner;                            /* def_class for super resolution */
             for (uint32_t i = 0; i < argc; i++) slots[2 + i] = VALUE_SLICE_GET(a, i);
             return korb_invoke_method(c, slots + 2 + argc, entry, argc, 0, mid, slots[0], slots[1], block, def_env, KORB_CSELF_VAL(cself));
+        }
+        if (entry != NULL) {                             /* builtin (cfunc/attr): still the CAPTURED entry — the
+                                                          * receiver may not even respond to the name (a Kernel
+                                                          * method bound onto a BasicObject), and a same-named
+                                                          * singleton override must not win. */
+            slots[0] = m->recv;                          /* recv, in the slot below the args */
+            for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+            return korb_dispatch_method(c, slots + 1 + argc, entry, mid, 0, argc, owner, block, def_env, cself);
         }
     }
     slots[0] = m->recv;                                  /* recv below the args */
@@ -407,7 +425,7 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
      * the count). */
     if (UNLIKELY(p->is_lambda) && entry != KORB_BLK_CPROC && korb_entry_kw_info(entry) == NULL) {
         const uint32_t pc  = korb_entry_params_cnt(entry);
-        const bool has_rest = korb_entry_rest_slot(entry) != -1;   /* named (>=0) or discard (-2) */
+        const bool has_rest = korb_entry_has_rest(entry);   /* the implicit `|x,|` rest does not relax the arity */
         const bool variable = (korb_entry_opt_defaults(entry) != NULL) || has_rest;   /* same basis as Proc#arity */
         const uint32_t req = variable ? korb_entry_req_cnt(entry) : pc;               /* non-variable → all required */
         if (UNLIKELY(argc < req || (!has_rest && argc > pc))) {
@@ -533,10 +551,24 @@ static RESULT korb_m_proc_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const bool negate = has_rest || (lam && optp > 0) || (lam && (kopt || kwrest) && !kreq);
     return RESULT_OK(LONG2FIX(negate ? -((korb_sword_t)req + 1) : (korb_sword_t)req));
 }
-/* Proc#source_location → [file, line] where the block was written, or nil. */
+/* The NODE that carries a method entry's source location: define_method takes it
+ * from the block it was given, everything else from the def body (NULL for C). */
+static struct Node *korb_method_srcloc_node(const struct korb_method *km) {
+    if (km == NULL) return NULL;
+    if (km->kind == KORB_METHOD_DM && KORB_PROC_P(km->dm_proc)) return VAL2PROC(km->dm_proc)->iseq;
+    return km->body;
+}
+/* Proc#source_location → [file, line] where the block was written, or nil.
+ * A Method#to_proc proc has no body of its own and reports the method's. */
 static RESULT korb_m_proc_source_location(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const KorbProc *const p = VAL2PROC(VALUE_REF_GET(self));
+    if (p->iseq == NULL && p->self != KORB_NIL) {          /* method proc: recv + mid, no body */
+        const VALUE klass = korb_dispatch_class(c, p->self);
+        const struct korb_method *km = KORB_CLASS_P(klass) ? korb_class_find_method(klass, p->sym_mid, NULL) : NULL;
+        if (km == NULL) km = korb_method_lookup(c->vm, p->sym_mid);
+        return korb_srcloc_result(c, slots, korb_method_srcloc_node(km));
+    }
     return korb_srcloc_result(c, slots, p->iseq);
 }
 /* Proc#parameters — [[kind, name], ...] from the parse-time param_info (cold;
@@ -589,6 +621,7 @@ static RESULT korb_m_meth_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* Resolve a bound Method to its korb_method entry: receiver-class MRO first,
  * then the global function table (top-level def / builtin like `p`). */
 static const struct korb_method *korb_meth_resolve(CTX *c, const KorbMethod *m) {
+    if (m->missing) return NULL;                 /* no definition: it lives behind method_missing */
     /* unbound: recv IS the owner class → look the method up directly there. */
     const VALUE klass = m->unbound ? m->recv : korb_dispatch_class(c, m->recv);
     const struct korb_method *km = KORB_CLASS_P(klass) ? korb_class_find_method(klass, m->mid, NULL) : NULL;
@@ -645,7 +678,7 @@ static RESULT korb_m_meth_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_meth_source_location(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const struct korb_method *const km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
-    return korb_srcloc_result(c, slots, km ? km->body : NULL);
+    return korb_srcloc_result(c, slots, korb_method_srcloc_node(km));
 }
 /* #original_name: the name at original definition, surviving aliases. */
 static RESULT korb_m_meth_original_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -663,6 +696,8 @@ static RESULT korb_m_meth_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     const KorbMethod *const m1 = VAL2METH(VALUE_REF_GET(self));
     const KorbMethod *const m2 = VAL2METH(ov);
     if (m1->unbound != m2->unbound) return RESULT_OK(KORB_FALSE);
+    if (m1->missing || m2->missing)   /* no definition to compare: same receiver + same name */
+        return RESULT_OK((m1->missing && m2->missing && m1->recv == m2->recv && m1->mid == m2->mid) ? KORB_TRUE : KORB_FALSE);
     /* bound methods must share the receiver object; unbound ones only need the
      * same underlying definition (extracting from different subclasses is equal). */
     if (!m1->unbound && m1->recv != m2->recv) return RESULT_OK(KORB_FALSE);
@@ -695,10 +730,39 @@ static RESULT korb_m_meth_owner(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     (void)slots;(void)a;
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
     if (m->owner != KORB_NIL) return RESULT_OK(m->owner);           /* fixed owner (e.g. from super_method) */
-    const struct korb_method *km = korb_meth_resolve(c, m);
+    if (m->missing) return RESULT_OK(korb_dispatch_class(c, m->recv));   /* CRuby: the receiver's class */
+    /* the class whose table actually holds the entry: `public :m` on an
+     * inherited private method (and alias_method) put a copy in the reopening
+     * class and CRuby reports THAT as the owner — the entry's own ->owner still
+     * points at the original, which is what super resolution needs. */
+    const VALUE klass = m->unbound ? m->recv : korb_dispatch_class(c, m->recv);
+    VALUE def = KORB_NIL;
+    const struct korb_method *km = KORB_CLASS_P(klass) ? korb_class_find_method(klass, m->mid, &def) : NULL;
+    if (km != NULL && KORB_CLASS_P(def)) return RESULT_OK(def);
+    if (km == NULL) km = korb_method_lookup(c->vm, m->mid);
     if (km && km->owner != KORB_NIL) return RESULT_OK(km->owner);   /* defining class/module */
     if (m->unbound) return RESULT_OK(m->recv);                      /* unresolvable: the class it came from */
     return RESULT_OK(korb_builtin_class_obj(c->vm, KORB_C_OBJECT)); /* global fn → Object */
+}
+/* Does `mk` hold a live (non-tombstone) entry for `mid`?  When `same_as` is
+ * given, only an entry with that exact definition counts. */
+static bool korb_class_owns_method(const KorbClass *mk, uint32_t mid, const struct korb_method *same_as) {
+    for (uint32_t q = 0; q < mk->method_cnt; q++) {
+        const struct korb_method *const e = mk->methods[q];
+        if (e->mid != mid || e->mid == UINT32_MAX || e->kind == KORB_METHOD_UNDEF) continue;
+        if (same_as == NULL) return true;
+        if (e->kind != same_as->kind) continue;
+        switch (e->kind) {
+          case KORB_METHOD_ISEQ:    if (e->body == same_as->body) return true; break;
+          case KORB_METHOD_CFUNC:   if (e->rfn == same_as->rfn && e->rbfn == same_as->rbfn) return true; break;
+          case KORB_METHOD_BUILTIN: if (e->bfn == same_as->bfn) return true; break;
+          case KORB_METHOD_ATTR_R:
+          case KORB_METHOD_ATTR_W:  if (e->attr_ivar == same_as->attr_ivar) return true; break;
+          case KORB_METHOD_DM:      if (e->dm_proc == same_as->dm_proc) return true; break;
+          default: break;
+        }
+    }
+    return false;
 }
 /* Method#super_method → a Method for the definition above this one in the
  * receiver's MRO (fixed super-owner), or nil if there's no super. */
@@ -710,7 +774,9 @@ static RESULT korb_m_meth_super_method(CTX *c, VALUE *slots, VALUE_REF self, VAL
     const VALUE cur_owner = (m->owner != KORB_NIL) ? m->owner : (km ? km->owner : KORB_NIL);
     if (!KORB_CLASS_P(cur_owner)) return RESULT_OK(KORB_NIL);
     const VALUE start = m->unbound ? m->recv : korb_dispatch_class(c, m->recv);
-    const uint32_t mid = m->mid;
+    /* CRuby searches for the ORIGINAL name: an alias's super is what the
+     * aliased definition's own super was, not what shadows the alias name. */
+    const uint32_t mid = (km != NULL && km->orig_mid != 0) ? km->orig_mid : m->mid;
     const uint8_t unbound = m->unbound;
     const VALUE recv = m->recv;
     VALUE mro[256];
@@ -718,13 +784,12 @@ static RESULT korb_m_meth_super_method(CTX *c, VALUE *slots, VALUE_REF self, VAL
     int di = -1;
     for (int i = 0; i < n; i++) if (mro[i] == cur_owner) { di = i; break; }
     if (di < 0) return RESULT_OK(KORB_NIL);
+    if (mid != m->mid)                                              /* alias: descend past the original definition first */
+        for (int i = di + 1; i < n; i++)
+            if (KORB_CLASS_P(mro[i]) && korb_class_owns_method(VAL2CLASS(mro[i]), mid, km)) { di = i; break; }
     for (int i = di + 1; i < n; i++) {
         if (!KORB_CLASS_P(mro[i])) continue;
-        const KorbClass *const mk = VAL2CLASS(mro[i]);
-        bool has = false;
-        for (uint32_t q = 0; q < mk->method_cnt; q++)
-            if (mk->methods[q]->mid == mid && mk->methods[q]->mid != UINT32_MAX) { has = true; break; }
-        if (!has) continue;
+        if (!korb_class_owns_method(VAL2CLASS(mro[i]), mid, NULL)) continue;
         slots[0] = mro[i];                                          /* root super-owner across the alloc */
         if (unbound)                                                /* unbound: recv IS the owner class */
             return korb_unbound_new(c, slots + 1, slots[0], mid);
@@ -745,9 +810,11 @@ static RESULT korb_param_push(CTX *c, VALUE *slots, VALUE_REF res, const char *k
  * fixed-arity → [[:req]]×n; ISEQ → positional kinds (names not retained). */
 static RESULT korb_m_meth_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    const bool missing = VAL2METH(VALUE_REF_GET(self))->missing;
     const struct korb_method *km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
     VALUE_REF res = VALUE_REF_AT(&slots[0]);
+    if (missing) { CHECK(korb_param_push(c, slots + 1, res, "rest")); return RESULT_OK(VALUE_REF_GET(res)); }   /* method_missing forwards everything */
     if (km == NULL) return RESULT_OK(VALUE_REF_GET(res));
     if (km->kind == KORB_METHOD_ATTR_W) { CHECK(korb_param_push(c, slots + 1, res, "req")); return RESULT_OK(VALUE_REF_GET(res)); }
     if (km->kind == KORB_METHOD_ATTR_R) return RESULT_OK(VALUE_REF_GET(res));
@@ -845,32 +912,36 @@ static RESULT korb_m_meth_unbind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (m->unbound) return RESULT_OK(VALUE_REF_GET(self));
     return korb_unbound_new(c, slots, korb_dispatch_class(c, m->recv), m->mid);
 }
+/* CRuby's bind check, shared by #bind and #bind_call.  slots[0] holds the class
+ * the UnboundMethod was retrieved from on entry and the class the method is
+ * actually DEFINED in on return (an UnboundMethod taken from a subclass still
+ * binds to any instance of the defining class); slots[1] holds the bind target.
+ * Both must be caller slots — the singleton probe below can GC. */
+static bool korb_meth_bind_ok(CTX *c, VALUE *slots, uint32_t mid) {
+    {   VALUE odef = KORB_NIL;
+        const struct korb_method *const e = KORB_CLASS_P(slots[0]) ? korb_class_find_method(slots[0], mid, &odef) : NULL;
+        if (e != NULL && KORB_CLASS_P(e->owner)) slots[0] = e->owner;
+    }
+    if (korb_case_eq(c, slots[0], slots[1])) return true;            /* owner === obj  ⇔  obj.is_a?(owner) */
+    if (KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_module)
+        return true;                                                 /* a module's method binds to any object (Ruby 3.0+) */
+    if (KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_singleton && KORB_CLASS_P(slots[1])) {
+        const RESULT sr = korb_obj_singleton(c, slots + 2, slots[1]);   /* a class method binds to a subclass */
+        if (sr.state == KORB_NORMAL) return korb_class_has_ancestor(sr.value, slots[0]);
+    }
+    return false;
+}
 /* UnboundMethod#bind(obj) → Method bound to obj (obj must be a kind_of owner). */
 static RESULT korb_m_meth_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
     if (UNLIKELY(!m->unbound)) return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'bind' for a Method");
     slots[0] = m->recv;                                             /* the class it was retrieved from (rooted) */
+    slots[1] = VALUE_SLICE_GET(a, 0);                               /* obj */
     const uint32_t mid = m->mid;
-    {   /* the test is against where the method is DEFINED: an UnboundMethod taken
-         * from a subclass still binds to any instance of the defining class */
-        VALUE odef = KORB_NIL;
-        const struct korb_method *const e = KORB_CLASS_P(slots[0]) ? korb_class_find_method(slots[0], mid, &odef) : NULL;
-        if (e != NULL && KORB_CLASS_P(e->owner)) slots[0] = e->owner;
-    }
-    bool ok = korb_case_eq(c, slots[0], VALUE_SLICE_GET(a, 0));      /* owner === obj  ⇔  obj.is_a?(owner) */
-    if (!ok && KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_module)
-        ok = true;                                                   /* a module's method binds to any object (Ruby 3.0+) */
-    if (!ok && KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_singleton && KORB_CLASS_P(VALUE_SLICE_GET(a, 0))) {
-        slots[1] = VALUE_SLICE_GET(a, 0);                            /* a class method binds to a subclass */
-        const RESULT sr = korb_obj_singleton(c, slots + 2, slots[1]);
-        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-        ok = korb_class_has_ancestor(sr.value, slots[0]);
-    }
-    if (UNLIKELY(!ok)) {
+    if (UNLIKELY(!korb_meth_bind_ok(c, slots, mid))) {
         char onm[192]; korb_class_qname_into(c, slots[0], onm, sizeof onm);   /* the owner's NAME, not "Class" */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be an instance of %s", onm);
     }
-    slots[1] = VALUE_SLICE_GET(a, 0);                              /* obj (re-read after dispatch) */
     RESULT r = korb_method_new(c, slots + 2, slots[1], mid);       /* bound: recv = obj */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     ARO_STORE(c, VAL2METH(r.value), (VALUE *)(uintptr_t)&VAL2METH(r.value)->owner, slots[0]);   /* fix the dispatch to the unbound's owner */
@@ -881,7 +952,13 @@ static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     const uint32_t mid = m->mid, argc = VALUE_SLICE_LEN(a) - 1;
-    const VALUE owner = m->unbound ? m->recv : m->owner;   /* unbound: recv is the owner class */
+    slots[0] = m->unbound ? m->recv : m->owner;            /* unbound: recv is the owner class */
+    slots[1] = VALUE_SLICE_GET(a, 0);                      /* bind target */
+    if (KORB_CLASS_P(slots[0]) && UNLIKELY(!korb_meth_bind_ok(c, slots, mid))) {   /* same test as #bind */
+        char onm[192]; korb_class_qname_into(c, slots[0], onm, sizeof onm);
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be an instance of %s", onm);
+    }
+    const VALUE owner = slots[0];                          /* the resolved defining class */
     if (owner != KORB_NIL && KORB_CLASS_P(owner)) {        /* invoke the FIXED method from its owner */
         struct korb_method *const entry = korb_class_find_method(owner, mid, NULL);
         if (LIKELY(entry != NULL && entry->kind == KORB_METHOD_ISEQ)) {

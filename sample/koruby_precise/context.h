@@ -384,6 +384,8 @@ typedef struct KorbMethod {
     VALUE ARO_GC_EDGE owner;         /* bound-from-unbound: the class to invoke from (fixed, not virtual); nil = virtual re-dispatch by mid */
     uint32_t mid;                    /* interned method name */
     uint8_t  unbound;                /* 1 = UnboundMethod (recv holds the owner class) */
+    uint8_t  missing;                /* 1 = name has no definition; respond_to_missing? vouched for it,
+                                      * so #call always routes through method_missing (CRuby mnew_missing) */
 } KorbMethod;
 
 /* Closure env (one captured scope activation), materialized when a Proc escapes
