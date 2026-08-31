@@ -1496,6 +1496,10 @@ struct koruby_option {
     bool chomp_lines;    /* -l: chomp $_ and set $\ = $/ */
     bool skip_to_ruby;   /* -x: ignore everything before the first #!...ruby line */
     bool search_path;    /* -S: look the script up in $RUBYPATH, then $PATH */
+    bool syntax_check;   /* -c: parse only, print "Syntax OK" */
+    bool rec_sep_given;  /* -0[octal] was given: rec_sep/rec_sep_len are $/ (NULL = nil) */
+    const char *rec_sep;
+    uint32_t rec_sep_len;
     bool no_deprecated;  /* -W:no-deprecated */
     bool no_experimental;/* -W:no-experimental */
     const char *kcode;   /* -K<letter>: the default external encoding name, or NULL */
