@@ -3143,7 +3143,7 @@ RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
 RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid) {
     VALUE_REF rref = SLOTS_PUSH(slots, recv);            /* root recv across alloc */
     KorbMethod *m = korb_alloc(c, slots, sizeof(KorbMethod), KORB_OBJ_METHOD);
-    m->mid = mid; m->unbound = 0;
+    m->mid = mid; m->unbound = 0; m->missing = 0;
     ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv, VALUE_REF_GET(rref));
     return RESULT_OK((VALUE)m);
 }
