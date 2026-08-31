@@ -540,6 +540,51 @@ static bool korb_str_char_head_p(const struct korb_vm *vm, VALUE sv, uint32_t of
     }
     return true;
 }
+/* The ASCII codepoint of the fixed-width character at byte offset `o`, or -1 if
+ * it is not a 7-bit one (CRuby rb_enc_ascget). */
+static int korb_fixed_ascget(const unsigned char *p, uint32_t o, uint32_t unit, bool be) {
+    uint32_t v = 0;
+    for (uint32_t i = 0; i < unit; i++) v = (v << 8) | p[o + (be ? i : unit - 1 - i)];
+    return v < 0x80 ? (int)v : -1;
+}
+/* Byte count of a trailing universal line ending ("\r\n", "\n" or "\r"), 0 if
+ * none.  Encoding-aware, so UTF-16/32 strings chomp their encoded newline
+ * rather than a raw \n byte (CRuby smart_chomp). */
+static uint32_t korb_str_trailing_nl(const struct korb_vm *vm, VALUE sv) {
+    const KorbString *const s = VAL2STR(sv);
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    const uint32_t len = s->len;
+    bool be = true;
+    const uint32_t u = korb_enc_fixed_unit(vm, KORB_STR_ENC(sv), &be);
+    if (u == 0) {
+        if (len >= 2 && p[len - 2] == '\r' && p[len - 1] == '\n') return 2;
+        if (len >= 1 && (p[len - 1] == '\n' || p[len - 1] == '\r')) return 1;
+        return 0;
+    }
+    if (len < u || len % u != 0) return 0;
+    const int last = korb_fixed_ascget(p, len - u, u, be);
+    if (last == '\n') {
+        if (len >= 2 * u && korb_fixed_ascget(p, len - 2 * u, u, be) == '\r') return 2 * u;
+        return u;
+    }
+    return last == '\r' ? u : 0;
+}
+/* Byte count of the last character (for #chop), \r\n counted as one. */
+static uint32_t korb_str_last_char_bytes(const struct korb_vm *vm, VALUE sv) {
+    const KorbString *const s = VAL2STR(sv);
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    const uint32_t len = s->len;
+    if (len == 0) return 0;
+    const uint32_t nl = korb_str_trailing_nl(vm, sv);
+    if (nl > 1) return nl;                          /* "\r\n" (or its encoded form) */
+    bool be = true;
+    const uint32_t u = korb_enc_fixed_unit(vm, KORB_STR_ENC(sv), &be);
+    if (u != 0) return (len % u == 0) ? u : 1;
+    if (KORB_ENC_SB(vm, KORB_STR_ENC(sv))) return 1;
+    uint32_t n = len - 1;                           /* back up over one UTF-8 codepoint */
+    while (n > 0 && (p[n] & 0xC0) == 0x80) n--;
+    return len - n;
+}
 
 /* byte offset of codepoint index ci (clamped to [0, len]) */
 static uint32_t
@@ -992,10 +1037,8 @@ static RESULT korb_m_str_chomp_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         VALUE sv = VALUE_SLICE_GET(a, 0);
         if (sv == KORB_NIL) return RESULT_OK(KORB_NIL);   /* nil sep → no-op → nil */
         const KorbString *sep = VAL2STR(sv);
-        if (sep->len == 1 && korb_strbuf_data(sep->buf)[0] == '\n') {   /* "\n" = universal: \r\n, \n, or \r */
-            if (n >= 2 && korb_strbuf_data(s->buf)[n-2] == '\r' && korb_strbuf_data(s->buf)[n-1] == '\n') n -= 2;
-            else if (n >= 1 && (korb_strbuf_data(s->buf)[n-1] == '\n' || korb_strbuf_data(s->buf)[n-1] == '\r')) n -= 1;
-        }
+        if (sep->len == 1 && korb_strbuf_data(sep->buf)[0] == '\n')   /* "\n" = universal: \r\n, \n, or \r */
+            n -= korb_str_trailing_nl(c->vm, VALUE_REF_GET(self));
         else if (sep->len == 0) { while (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\n') { if (n >= 2 && korb_strbuf_data(s->buf)[n-2] == '\r') n--; n--; } }
         else if (n >= sep->len && memcmp(korb_strbuf_data(s->buf) + n - sep->len, korb_strbuf_data(sep->buf), sep->len) == 0) n -= sep->len;
         if (n == s->len) return RESULT_OK(KORB_NIL);
@@ -1015,9 +1058,9 @@ static RESULT korb_m_str_chomp_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             return RESULT_OK(VALUE_REF_GET(self));
         }
     }
-    if (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\n') { n--; if (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\r') n--; }
-    else if (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\r') n--;
-    else return RESULT_OK(KORB_NIL);
+    { const uint32_t nl = korb_str_trailing_nl(c->vm, VALUE_REF_GET(self));
+      if (nl == 0) return RESULT_OK(KORB_NIL);
+      n -= nl; }
     s->len = n; korb_strbuf_data(s->buf)[n] = '\0';
     return RESULT_OK(VALUE_REF_GET(self));
 }
@@ -1026,12 +1069,7 @@ static RESULT korb_m_str_chop_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));     /* chop! checks frozen upfront (even for "") */
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     if (s->len == 0) return RESULT_OK(KORB_NIL);
-    uint32_t n = s->len;
-    if (n >= 2 && korb_strbuf_data(s->buf)[n-1] == '\n' && korb_strbuf_data(s->buf)[n-2] == '\r') n -= 2;
-    else {
-        n--;                                           /* back up over one UTF-8 char */
-        while (n > 0 && ((unsigned char)korb_strbuf_data(s->buf)[n] & 0xC0) == 0x80) n--;
-    }
+    const uint32_t n = s->len - korb_str_last_char_bytes(c->vm, VALUE_REF_GET(self));
     s->len = n; korb_strbuf_data(s->buf)[n] = '\0';
     return RESULT_OK(VALUE_REF_GET(self));
 }
@@ -2160,8 +2198,7 @@ static RESULT korb_m_str_chomp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         uint32_t len = s->len;
         const KorbString *sep = VAL2STR(sv);
         if (sep->len == 1 && korb_strbuf_data(sep->buf)[0] == '\n') {   /* "\n" = the universal line ending: \r\n, \n, or \r */
-            if (len >= 2 && korb_strbuf_data(s->buf)[len-2] == '\r' && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 2;
-            else if (len >= 1 && (korb_strbuf_data(s->buf)[len-1] == '\n' || korb_strbuf_data(s->buf)[len-1] == '\r')) len -= 1;
+            len -= korb_str_trailing_nl(c->vm, VALUE_REF_GET(self));
         } else if (sep->len == 0) {                   /* "" → strip all trailing \n / \r\n */
             while (len >= 2 && korb_strbuf_data(s->buf)[len-2] == '\r' && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 2;
             while (len >= 1 && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 1;
@@ -2185,22 +2222,13 @@ static RESULT korb_m_str_chomp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             return korb_str_slice_new(c, slots, self, 0, len2);
         }
     }
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    uint32_t len = s->len;
-    if (len >= 2 && korb_strbuf_data(s->buf)[len-2] == '\r' && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 2;
-    else if (len >= 1 && (korb_strbuf_data(s->buf)[len-1] == '\n' || korb_strbuf_data(s->buf)[len-1] == '\r')) len -= 1;
+    const uint32_t len = VAL2STR(VALUE_REF_GET(self))->len - korb_str_trailing_nl(c->vm, VALUE_REF_GET(self));
     return korb_str_slice_new(c, slots, self, 0, len);
 }
 
 static RESULT korb_m_str_chop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    uint32_t len = s->len;
-    if (len >= 2 && korb_strbuf_data(s->buf)[len-2] == '\r' && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 2;
-    else if (len >= 1) {
-        len--;                                  /* drop a whole trailing UTF-8 codepoint */
-        while (len > 0 && ((unsigned char)korb_strbuf_data(s->buf)[len] & 0xC0) == 0x80) len--;
-    }
+    const uint32_t len = VAL2STR(VALUE_REF_GET(self))->len - korb_str_last_char_bytes(c->vm, VALUE_REF_GET(self));
     return korb_str_slice_new(c, slots, self, 0, len);
 }
 

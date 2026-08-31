@@ -458,9 +458,27 @@ module Marshal
     return "inf" if f == Float::INFINITY
     return "-inf" if f == -Float::INFINITY
     return "nan" if f.nan?
+    return (1 / f < 0 ? "-0" : "0") if f == 0.0
+    # CRuby's w_float formats the shortest round-tripping digit string `digits`
+    # with the decimal point at `decpt`: exponential when decpt is far from the
+    # digits, otherwise plain.  Float#to_s gives us the same digits.
     s = f.to_s
-    s = s[0..-3] if s.end_with?(".0")   # CRuby drops a trailing ".0"
-    s
+    sign = s.start_with?("-") ? (s = s[1..]; "-") : ""
+    mant, _, exp = s.partition("e")
+    exp = exp.empty? ? 0 : exp.to_i
+    intpart, _, frac = mant.partition(".")
+    decpt = (intpart == "0" ? -(frac.length - frac.sub(/\A0+/, "").length) : intpart.length) + exp
+    digits = (intpart + frac).sub(/\A0+/, "").sub(/0+\z/, "")
+    digits = "0" if digits.empty?
+    if decpt < -3 || decpt > digits.length
+      e = digits.length > 1 ? "#{digits[0]}.#{digits[1..]}" : digits
+      "#{sign}#{e}e#{decpt - 1}"
+    elsif decpt > 0
+      rest = digits[decpt..]
+      "#{sign}#{digits[0, decpt]}#{rest.empty? ? "" : ".#{rest}"}"
+    else
+      "#{sign}0.#{"0" * -decpt}#{digits}"
+    end
   end
 
   # --- load ------------------------------------------------------------------
