@@ -1773,7 +1773,8 @@ class Random
     def rand(*args)  = Kernel.rand(*args)
     def srand(*args) = Kernel.srand(*args)
     def seed         = @__seed || Kernel.srand(Kernel.srand)
-    def new_seed     = Kernel.srand(Kernel.srand)
+    # new_seed is the C Random.new_seed (fresh OS entropy, independent of srand)
+    def bytes(n)     = Random.new(Kernel.srand(Kernel.srand)).bytes(n)
     # Like #rand, except that 0 (and a 0.0 max) means "no bound" rather than
     # "the whole Float range is out" — Random::Formatter's entry point.
     def random_number(n = 0) = (n == 0 ? rand : rand(n))

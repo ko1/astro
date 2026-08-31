@@ -10509,7 +10509,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANDOM, "rand", korb_m_random_rand, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "seed", korb_m_random_seed, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_RANDOM), "urandom", korb_m_random_urandom, 1);   /* Random.urandom class method */
-    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_RANDOM), "bytes", korb_m_random_urandom, 1);
+    korb_def_cmethod(c, KORB_C_RANDOM, "bytes", korb_m_random_bytes, 1);      /* instance: MT-derived, seed-reproducible */
+    korb_def_cmethod(c, KORB_C_RANDOM, "state", korb_m_random_state, 0);
+    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_RANDOM), "new_seed", korb_m_random_new_seed, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "<=>", korb_m_obj_cmp, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "inspect", korb_m_obj_inspect, 0);

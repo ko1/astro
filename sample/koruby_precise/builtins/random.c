@@ -307,6 +307,53 @@ static RESULT korb_m_random_seed(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_seed_sym(c->vm)));
 }
 
+/* Random#bytes(n) — n bytes drawn from successive genrand_int32 results, four
+ * little-endian bytes per draw (CRuby's rand_mt_bytes; a partial tail word uses
+ * its low bytes). */
+static RESULT korb_m_random_bytes(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    korb_sword_t n = 0;
+    if (VALUE_SLICE_LEN(a) < 1 || UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative string size (or size too big)");
+    KorbMT *const st = korb_rng_of(c, VALUE_REF_GET(self));
+    if (UNLIKELY(st == NULL)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "uninitialized Random");
+    char *buf = (char *)malloc((size_t)(n ? n : 1));
+    if (!buf) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "out of memory");
+    for (korb_sword_t i = 0; i < n; ) {
+        uint32_t w = korb_mt_next(st);
+        for (int b = 0; b < 4 && i < n; b++, i++, w >>= 8) buf[i] = (char)(w & 0xFFu);
+    }
+    RESULT r = korb_str_new(c, slots, buf, (uint32_t)n);
+    free(buf);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
+    return r;
+}
+
+/* Random#state — CRuby exposes the generator's full state as an Integer; two
+ * generators compare equal iff their seed AND state match, which is all the
+ * specs use it for.  A 624-word mixdown is enough to distinguish them. */
+static RESULT korb_m_random_state(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbMT *const st = korb_rng_of(c, VALUE_REF_GET(self));
+    if (UNLIKELY(st == NULL)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "uninitialized Random");
+    uint64_t h = 1469598103934665603ULL ^ st->mti;
+    for (uint32_t i = 0; i < 624; i++) { h ^= st->mt[i]; h *= 1099511628211ULL; }
+    return RESULT_OK(LONG2FIX((korb_sword_t)(h >> 3)));   /* >>3 keeps it FIXABLE */
+}
+
+/* Random.new_seed — a fresh arbitrary seed, independent of Kernel#srand. */
+static RESULT korb_m_random_new_seed(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    uint64_t v = 0;
+    const int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) { if (korb_fd_read_n(fd, (char *)&v, sizeof v) != sizeof v) v = 0; close(fd); }
+    if (v == 0) {
+        struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+        v = ((uint64_t)getpid() << 32) ^ (uint64_t)ts.tv_nsec ^ 0x9e3779b97f4a7c15ULL;
+    }
+    return RESULT_OK(LONG2FIX((korb_sword_t)(v >> 3)));   /* >>3 keeps it FIXABLE */
+}
+
 /* Kernel#rand / srand use a per-vm default generator (no GC edges). */
 static KorbMT *korb_default_rng(struct korb_vm *const vm) {
     if (!vm->default_rng_seeded) { korb_mt_init_genrand(&vm->default_rng, korb_mt_entropy(&vm->default_rng)); vm->default_rng_seeded = true; }
