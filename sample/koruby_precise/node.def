@@ -1662,7 +1662,13 @@ NODE_DEF
 node_defined_super(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, int32_t self_off, int32_t dc_off)
 {
     (void)n;
-    if (korb_super_find(c, mid, slots[dc_off], slots[self_off], NULL) == NULL) return RESULT_OK(KORB_NIL);
+    VALUE entry = slots[dc_off];
+    if (UNLIKELY(mid == c->vm->mid_dm_super)) {       /* define_method body: named at run time */
+        if (c->dm_entry == NULL) return RESULT_OK(KORB_NIL);
+        mid = c->dm_entry->mid;
+        entry = (VALUE)((uintptr_t)c->dm_entry | 1u);
+    }
+    if (korb_super_find(c, mid, entry, slots[self_off], NULL) == NULL) return RESULT_OK(KORB_NIL);
     RESULT dr = korb_str_new(c, slots, "super", 5);
     if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
         ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;
@@ -2396,11 +2402,10 @@ node_undef(CTX *c, NODE *n, VALUE *slots, const char *mids, uint32_t cnt, int32_
     const VALUE cls = slots[self_off];
     if (UNLIKELY(!KORB_CLASS_P(cls)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "undef outside a class/module body");
-    KorbClass *const k = VAL2CLASS(cls);
     const uint32_t *const ids = (const uint32_t *)(const void *)mids;
-    for (uint32_t j = 0; j < cnt; j++)
-        for (uint32_t i = 0; i < k->method_cnt; i++)
-            if (k->methods[i]->mid == ids[j]) { k->methods[i]->mid = UINT32_MAX; break; }
+    /* `undef` is undef_method: it leaves a tombstone, so an INHERITED method is
+     * hidden too (and `super` past it finds nothing). */
+    for (uint32_t j = 0; j < cnt; j++) CHECK(korb_undef_one(c, slots, slots[self_off], ids[j]));
     c->vm->method_serial++;                             /* method table changed → flush caches */
     return RESULT_OK(KORB_NIL);
 }

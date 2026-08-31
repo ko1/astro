@@ -1703,20 +1703,17 @@ static void korb_undef_class_desc(CTX *c, VALUE cls, char *out, size_t outsz) {
     snprintf(out, outsz, "%s", b ? b : "");
     free(b);
 }
-static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (UNLIKELY(!KORB_CLASS_P(VALUE_REF_GET(self)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
-    for (uint32_t ai = 0; ai < VALUE_SLICE_LEN(a); ai++) {
-        uint32_t mid;                                 /* Symbol/String, or #to_str-coercible (bad type is checked before frozen-ness, CRuby order) */
-        { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, ai), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
-        const VALUE cls = VALUE_REF_GET(self);        /* re-read: the coercion may have GC-moved the class */
+/* One `undef_method` / `undef` name: NameError when the name exists nowhere,
+ * else an undef tombstone on `cls` plus the method_undefined hook.  `slots[0]`
+ * and up are used as scratch. */
+RESULT
+korb_undef_one(CTX *c, VALUE *slots, VALUE cls, uint32_t mid)
+{
+    {
         KorbClass *const k = VAL2CLASS(cls);
-        KORB_CHECK_FROZEN(c, slots, cls);             /* undef_method on a frozen class → FrozenError (even for a missing name) */
+        KORB_CHECK_FROZEN(c, slots, cls);             /* undef on a frozen class → FrozenError (even for a missing name) */
         VALUE mdef = KORB_NIL;                         /* NameError only when the method exists nowhere (self/ancestors/global/Object/intrinsic) */
         if (UNLIKELY(korb_class_find_method(cls, mid, &mdef) == NULL && korb_method_lookup(c->vm, mid) == NULL)) {
-            /* to_s/inspect/!~/<=>/! are koruby-intrinsic universal methods (no
-             * table entry); ==/===/hash/eql? live on Object.  undef_method of an
-             * inherited/intrinsic method is legal (delegate.rb undefs exactly
-             * these on a duped Kernel) — only a genuinely unknown name raises. */
             const VALUE objc = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
             const bool on_object = KORB_CLASS_P(objc) && korb_class_find_method(objc, mid, NULL) != NULL;
             const char *const nm = korb_sym_name(c->vm, mid);
@@ -1729,8 +1726,19 @@ static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VA
         }
         korb_class_undef_slot(k, cls, mid);
         c->vm->method_serial++;
-        slots[0] = cls;                                  /* the hook is Ruby code: re-root the class */
-        CHECK(korb_fire_def_hook(c, slots + 1, slots[0], mid, "method_undefined", 16));
+    }
+    slots[0] = cls;                                  /* the hook is Ruby code: re-root the class */
+    CHECK(korb_fire_def_hook(c, slots + 1, slots[0], mid, "method_undefined", 16));
+    return RESULT_OK(KORB_NIL);
+}
+
+static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(!KORB_CLASS_P(VALUE_REF_GET(self)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
+    for (uint32_t ai = 0; ai < VALUE_SLICE_LEN(a); ai++) {
+        uint32_t mid;                                 /* Symbol/String, or #to_str-coercible (bad type is checked before frozen-ness, CRuby order) */
+        { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, ai), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+        const VALUE cls = VALUE_REF_GET(self);        /* re-read: the coercion may have GC-moved the class */
+        CHECK(korb_undef_one(c, slots, cls, mid));
     }
     c->vm->method_serial++;
     return RESULT_OK(VALUE_REF_GET(self));

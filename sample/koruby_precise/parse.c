@@ -4430,8 +4430,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 struct kp_frame *mf = tc->frame;
                 uint32_t depth = 0;
                 while (mf->method_mid == 0 && mf->prev && !mf->dm_body) { mf = mf->prev; depth++; }
+                if (mf->dm_body) {   /* a define_method body IS a method, but its name is only known at run time */
+                    NODE *_d = ALLOC_node_defined_super(korb_intern(tc->c->vm, "__dm_super__", 12),
+                                                        -1 - tc->chain, -1 - tc->chain);
+                    bake_add(tc, &_d->u.node_defined_super.self_off);
+                    return _d;
+                }
                 m_mid = mf->method_mid;
-                if (m_mid == 0 || depth == 0) return ALLOC_node_lit(KORB_NIL);   /* top level / define_method body */
+                if (m_mid == 0 || depth == 0) return ALLOC_node_lit(KORB_NIL);   /* top level */
                 NODE *ds = ALLOC_node_defined_super_outer(m_mid, -2 - tc->chain, depth, -1);
                 bake_add(tc, &ds->u.node_defined_super_outer.prev_off);
                 add_bake_to(mf, &ds->u.node_defined_super_outer.entry_off);   /* base[fs-1] = method entry */
