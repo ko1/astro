@@ -1461,13 +1461,22 @@ end
 class Dir
   include Enumerable            # CRuby: Dir is Enumerable over #each
   def self.home(user = nil)
-    return ENV["HOME"] if user.nil? || user == ""
+    # a fresh, unfrozen String (ENV[] may hand back a frozen one)
+    if user.nil? || user == ""
+      h = ENV["HOME"]
+      return h.nil? ? __passwd_home(nil) : (+h.dup)
+    end
     # /etc/passwd lookup, the portable-enough way.
     File.foreach("/etc/passwd") do |line|
       f = line.split(":")
       return f[5] if f[0] == user
     end rescue nil
     raise ArgumentError, "user #{user} doesn't exist"
+  end
+
+  # Dir.chdir with no argument goes to the home directory (CRuby)
+  def self.chdir(path = nil, &blk)
+    __chdir(path.nil? ? home : path, &blk)
   end
 
   # `encoding:` only names the encoding of the returned strings, so it is
@@ -1484,8 +1493,22 @@ class Dir
     nil
   end
 
+  # a path that is not a directory is simply "not empty" (CRuby returns false
+  # rather than raising ENOTDIR)
   def self.empty?(path)
-    children(File.path(path)).empty?
+    p = File.path(path)
+    return false unless File.directory?(p)
+    children(p).empty?
+  end
+
+  # the current user's home from the password database, used when HOME is unset
+  def self.__passwd_home(user)
+    name = user || (Etc.getlogin rescue nil)
+    File.foreach("/etc/passwd") do |line|
+      f = line.split(":")
+      return f[5] if name ? f[0] == name : f[2].to_i == Process.uid
+    end rescue nil
+    raise ArgumentError, "couldn't find HOME environment -- expanding `~'"
   end
 
   def each_child(&blk)

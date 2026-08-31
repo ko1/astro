@@ -1786,9 +1786,20 @@ ARO_BORROW static const char *korb_path_arg(CTX *c, VALUE *slots, VALUE_SLICE a,
 /* Dir.mkdir(path[, mode]) → 0 (raises on failure). */
 static RESULT korb_m_dir_mkdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
     long mode = 0777;
-    if (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) mode = (long long)FIX2LONG(VALUE_SLICE_GET(a, 1));
+    if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) {
+        VALUE mv = VALUE_SLICE_GET(a, 1);
+        korb_sword_t m;
+        if (!korb_to_index(mv, &m)) {                  /* not already an Integer: #to_int */
+            const char *const cls = korb_coerce_name(c, mv);
+            const RESULT cr = korb_coerce_to_int_pub(c, slots, &mv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (UNLIKELY(!korb_to_index(mv, &m)))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", cls);
+        }
+        mode = (long)m;
+    }
+    RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
     if (mkdir(path, (mode_t)mode) != 0) return korb_raise_errno(c, slots, errno, "dir_s_mkdir", path);
     return RESULT_OK(LONG2FIX(0));
 }
@@ -1951,6 +1962,8 @@ static RESULT korb_m_dir_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
+    /* the walk consumed the directory: #read afterwards is at EOF (CRuby) */
+    CHECK(korb_ivar_set(c, slots + 1, self, ID2SYM(korb_dir_pos_id(c)), LONG2FIX(n)));
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_dir_path(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -2494,7 +2507,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[3], "children", korb_m_dir_children, -1);
     korb_class_def_cfn_blk(c, slots[3], "glob", korb_m_dir_glob, -1);
     korb_class_def_cfn_blk(c, slots[3], "[]",   korb_m_dir_glob, -1);
-    korb_class_def_cfn_blk(c, slots[3], "chdir", korb_m_dir_chdir,   -1);
+    korb_class_def_cfn_blk(c, slots[3], "__chdir", korb_m_dir_chdir, -1);   /* the prelude wraps it to default to Dir.home */
     korb_class_def_cfn_blk(c, slots[3], "fchdir", korb_m_dir_fchdir, -1);
     korb_class_def_cfn(c, slots[3], "chroot",    korb_m_dir_chroot,    1);
     korb_class_def_cfn_blk(c, slots[3], "open", korb_m_dir_open,    -1);   /* Dir.open [ {|d|} ] */
