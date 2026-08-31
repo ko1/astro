@@ -212,18 +212,17 @@ module Process
   CLOCK_REALTIME_ALARM     = 8
   CLOCK_BOOTTIME_ALARM     = 9
   CLOCK_TAI                = 11
-  def self.pid; $$; end
+  def self.pid; __getpid; end              # not $$: that is captured at boot and stale after fork
   class << self
     def fork(&blk) = super(&blk)          # the primitive is a private Kernel method
     def _fork = super()
   end
-  IDS = __process_ids.freeze   # [uid, euid, gid, egid, ppid] — fixed for the process
-  private_constant :IDS
-  def self.uid  = IDS[0]
-  def self.euid = IDS[1]
-  def self.gid  = IDS[2]
-  def self.egid = IDS[3]
-  def self.ppid = IDS[4]
+  # ids are re-read every call: fork (and set*id) change them
+  def self.uid  = __process_ids[0]
+  def self.euid = __process_ids[1]
+  def self.gid  = __process_ids[2]
+  def self.egid = __process_ids[3]
+  def self.ppid = __process_ids[4]
   def self.clock_gettime(_clk = CLOCK_MONOTONIC, unit = :float_second)
     t = __clock_gettime
     case unit
@@ -316,11 +315,98 @@ module Process
     t
   end
 
+  # id= accepts an Integer or a user/group *name* (CRuby resolves via getpwnam(3)).
+  def self.__uid_arg(v)
+    return v if v.is_a?(Integer)
+    if v.is_a?(String)
+      require 'etc'
+      pw = (Etc.getpwnam(v) rescue nil)
+      raise ArgumentError, "can't find user for #{v}" unless pw
+      return pw.uid
+    end
+    raise TypeError, "no implicit conversion of #{v.class} into Integer"
+  end
+  def self.__gid_arg(v)
+    return v if v.is_a?(Integer)
+    if v.is_a?(String)
+      require 'etc'
+      gr = (Etc.getgrnam(v) rescue nil)
+      raise ArgumentError, "can't find group for #{v}" unless gr
+      return gr.gid
+    end
+    raise TypeError, "no implicit conversion of #{v.class} into Integer"
+  end
+  def self.uid=(v);  __set_id(0, __uid_arg(v)); end
+  def self.euid=(v); __set_id(1, __uid_arg(v)); end
+  def self.gid=(v);  __set_id(2, __gid_arg(v)); end
+  def self.egid=(v); __set_id(3, __gid_arg(v)); end
+
   module Sys
     def self.getuid = Process.uid
     def self.geteuid = Process.euid
     def self.getgid = Process.gid
     def self.getegid = Process.egid
+    def self.setuid(v)  = __set_id(0, v)
+    def self.seteuid(v) = __set_id(1, v)
+    def self.setruid(v) = __set_reid(0, v, -1)
+    def self.setgid(v)  = __set_id(2, v)
+    def self.setegid(v) = __set_id(3, v)
+    def self.setrgid(v) = __set_reid(1, v, -1)
+    def self.setreuid(r, e) = __set_reid(0, r, e)
+    def self.setregid(r, e) = __set_reid(1, r, e)
+    def self.issetugid = false
+  end
+
+  module UID
+    def self.rid = Process.uid
+    def self.eid = Process.euid
+    def self.eid=(v); Process.euid = v; end
+    def self.change_privilege(v) = (Process.uid = v; Process.uid)
+    def self.grant_privilege(v) = (Process.euid = v; Process.euid)
+    def self.re_exchange
+      r, e = Process.uid, Process.euid
+      __set_reid(0, e, r)
+      Process.euid
+    end
+    def self.re_exchangeable? = true
+    def self.sid_available? = true
+    def self.switch
+      r, e = Process.uid, Process.euid
+      __set_reid(0, e, r)
+      return Process.euid unless block_given?
+      begin
+        yield
+      ensure
+        __set_reid(0, r, e)
+      end
+    end
+    def self.from_name(name) = Process.__uid_arg(name)
+  end
+
+  module GID
+    def self.rid = Process.gid
+    def self.eid = Process.egid
+    def self.eid=(v); Process.egid = v; end
+    def self.change_privilege(v) = (Process.gid = v; Process.gid)
+    def self.grant_privilege(v) = (Process.egid = v; Process.egid)
+    def self.re_exchange
+      r, e = Process.gid, Process.egid
+      __set_reid(1, e, r)
+      Process.egid
+    end
+    def self.re_exchangeable? = true
+    def self.sid_available? = true
+    def self.switch
+      r, e = Process.gid, Process.egid
+      __set_reid(1, e, r)
+      return Process.egid unless block_given?
+      begin
+        yield
+      ensure
+        __set_reid(1, r, e)
+      end
+    end
+    def self.from_name(name) = Process.__gid_arg(name)
   end
 end
 
@@ -1167,6 +1253,8 @@ module Process
   def self.getpgrp = __getpgid(0)
   def self.last_status = $?
   def self.setpgid(pid, pgid) = __setpgid(pid, pgid)
+  def self.setsid = __setsid
+  def self.daemon(nochdir = false, noclose = false) = __daemon(nochdir, noclose)
 end
 
 module Signal
