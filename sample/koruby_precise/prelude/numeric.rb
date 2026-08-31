@@ -169,10 +169,29 @@ class Complex
   def coerce(other)
     case other
     when Complex then [other, self]
-    when Numeric then [Complex(other, 0), self]
+    when Numeric
+      # CRuby only accepts a *real* Numeric here.
+      raise TypeError, "#{other.class} can't be coerced into Complex" unless other.real?
+      [Complex(other, 0), self]
     else raise TypeError, "#{other.class} can't be coerced into Complex"
     end
   end
+  # CRuby formats through #to_s / #inspect of the two parts (the C version here
+  # printed the raw objects).  The sign comes from signbit for a Float, so -0.0
+  # is negative; a `*' goes in when the imaginary text does not end in a digit.
+  private def __format(insp)
+    im = imaginary
+    neg = im.is_a?(Float) ? (im < 0 || (im == 0 && (1.0 / im) < 0)) : im < 0
+    a = insp ? real.inspect : real.to_s
+    b = im.abs
+    b = insp ? b.inspect : b.to_s
+    s = "#{a}#{neg ? '-' : '+'}#{b}"
+    d = s.getbyte(s.bytesize - 1)
+    s += "*" unless d && d >= 48 && d <= 57
+    s + "i"
+  end
+  def to_s; __format(false); end
+  def inspect; "(" + __format(true) + ")"; end
   # CRuby undefines the ordering/rounding half of Numeric on Complex.
   undef_method :%, :<, :<=, :>, :>=, :between?, :clamp, :div, :divmod,
                :floor, :ceil, :modulo, :round, :step, :truncate,
