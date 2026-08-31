@@ -18,6 +18,7 @@ static RESULT korb_m_ary_unshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 
 static RESULT korb_m_ary_shift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)VALUE_SLICE_LEN(a));
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* shift(n): remove & return first n as array */
         korb_sword_t n;
@@ -82,6 +83,7 @@ static RESULT korb_m_ary_rassoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     const bool have_default = VALUE_SLICE_LEN(a) >= 2;
+    if (UNLIKELY(have_default && block != NULL)) korb_warn(c, slots, "block supersedes default value argument");
     slots[0] = VALUE_SLICE_GET(a, 0);                     /* original index arg (rooted; yielded to the block as-is) */
     slots[1] = have_default ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
     korb_sword_t i;

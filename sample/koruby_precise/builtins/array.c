@@ -10,7 +10,11 @@ static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if (UNLIKELY(argc > 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..2)", argc);
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VAL2ARY(VALUE_REF_GET(self))->len = 0;               /* reset */
-    if (argc == 0) return RESULT_OK(VALUE_REF_GET(self));
+    if (argc == 0) {
+        if (UNLIKELY(block != NULL)) korb_warn(c, slots, "given block not used");
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
+    if (UNLIKELY(argc == 2 && block != NULL)) korb_warn(c, slots, "block supersedes default value argument");
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* a0 (rooted across #to_ary/#to_int dispatch) */
     if (argc == 1 && !FIXNUM_P(slots[0])) {              /* 1-arg form may be an Array copy (Array or #to_ary) */
         if (!KORB_ARRAY_P(slots[0]) && KORB_OBJECT_P(slots[0])) {
@@ -303,6 +307,7 @@ static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         korb_sword_t start, dellen;
         CHECK(korb_index_coerce(c, slots, iv, &start));
         CHECK(korb_index_coerce(c, slots, VALUE_SLICE_GET(a, 1), &dellen));
+        if (UNLIKELY(dellen < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "negative length (%ld)", (long)dellen);
         return korb_ary_splice(c, slots, self, start, dellen, VALUE_SLICE_REF(a, 2));
     }
     if (KORB_RANGE_P(iv)) {                               /* a[b..e] = val (incl. beginless/endless) */
@@ -421,6 +426,7 @@ static RESULT korb_m_ary_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 
 static RESULT korb_m_ary_pop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)VALUE_SLICE_LEN(a));
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* pop(n): remove & return last n as array */
         korb_sword_t n;

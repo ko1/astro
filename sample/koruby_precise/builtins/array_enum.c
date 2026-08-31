@@ -886,6 +886,10 @@ static RESULT korb_join_rec(CTX *c, VALUE *slots, FILE *ms, VALUE_REF aref, VALU
     return rr;
 }
 static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    /* CRuby warns about a non-nil $, before it looks at self, so `[].join` warns too */
+    if ((VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL) &&
+        KORB_STRING_P(korb_const_get(c->vm, korb_intern(c->vm, "$,", 2))))
+        korb_warn(c, slots, "$, is set to non-nil value");
     if (SELF_ARY->len == 0) {                                       /* [].join(anything) → "" (sep not validated) */
         RESULT e = korb_str_new(c, slots, "", 0);
         if (LIKELY(e.state == KORB_NORMAL)) KORB_STR_ENC_SET(e.value, KORB_ENC_USASCII);   /* CRuby starts at US-ASCII */
@@ -909,7 +913,7 @@ static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     if (slots[0] == KORB_NIL) {                                    /* no explicit separator → fall back to $, */
         const VALUE ofs = korb_const_get(c->vm, korb_intern(c->vm, "$,", 2));
-        if (KORB_STRING_P(ofs)) { slots[0] = ofs; korb_warn(c, slots + 1, "$, is set to non-nil value"); }
+        if (KORB_STRING_P(ofs)) slots[0] = ofs;                    /* warned above */
     }
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
@@ -1643,8 +1647,8 @@ static RESULT korb_m_ary_bsearch_index(CTX *c, VALUE *slots, VALUE_REF self, VAL
     return RESULT_OK(have ? LONG2FIX(found) : KORB_NIL);
 }
 static RESULT korb_m_ary_map_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
+    (void)a; ARY_REQUIRE_BLOCK("Array#map!");   /* no block → Enumerator; frozen only bites when driven */
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
-    (void)a; ARY_REQUIRE_BLOCK("Array#map!");
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         if (i >= ary->len) break;
