@@ -924,26 +924,28 @@ re_register_group(re_parser_t *q, int idx, struct ire_node *g)
     q->groups_by_idx[idx] = g;
 }
 
-/* Parse {min,max} or {n} after we've already consumed '{' */
-static bool parse_braces(re_parser_t *q, int32_t *out_min, int32_t *out_max) {
+/* Parse {min,max} or {n} after we've already consumed '{'.  `out_comma` (may
+ * be NULL) reports whether the form had a `,` — a trailing `?` is a lazy
+ * marker only then, so `a{2}?` is `(a{2})?` while `a{2,2}?` is lazy. */
+static bool parse_braces(re_parser_t *q, int32_t *out_min, int32_t *out_max, bool *out_comma) {
     int32_t mn = 0, mx = 0;
-    bool have_mx = false;
+    bool have_mn = false, have_mx = false, comma = false;
 
-    while (q->p < q->end && isdigit(*q->p)) { mn = mn * 10 + (*q->p++ - '0'); }
+    while (q->p < q->end && isdigit(*q->p)) { mn = mn * 10 + (*q->p++ - '0'); have_mn = true; }
     if (q->p < q->end && *q->p == ',') {
-        q->p++;
-        if (q->p < q->end && *q->p != '}') {
-            while (q->p < q->end && isdigit(*q->p)) { mx = mx * 10 + (*q->p++ - '0'); }
-            have_mx = true;
-        }
+        q->p++; comma = true;
+        while (q->p < q->end && isdigit(*q->p)) { mx = mx * 10 + (*q->p++ - '0'); have_mx = true; }
     } else {
-        mx = mn; have_mx = true;
+        mx = mn; have_mx = have_mn;   /* `{n}`; `{}` names no bound */
     }
+    /* `{}` / `{,}` name no bound at all, so Ruby reads them as literal text. */
+    if (!have_mn && !have_mx) return false;
     if (q->p >= q->end || *q->p != '}') return false;
     q->p++;
 
     *out_min = mn;
     *out_max = have_mx ? mx : -1;
+    if (out_comma) *out_comma = comma;
     return true;
 }
 
@@ -960,7 +962,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         const uint8_t *const save = q->p;
         int32_t mn, mx;
         q->p++;
-        const bool is_quantifier = parse_braces(q, &mn, &mx);
+        const bool is_quantifier = parse_braces(q, &mn, &mx, NULL);
         q->p = save;
         if (is_quantifier) {
             re_error(q, "target of repeat operator is not specified");
@@ -1394,14 +1396,14 @@ static ire_node_t *parse_quantifier(re_parser_t *q, ire_node_t *atom) {
     re_skip_ws(q);
     int c = re_peek(q);
     int32_t mn, mx; bool greedy = true;
-    bool braces = false;
+    bool braces = false, brace_comma = false;
     if (c == '*')      { q->p++; mn = 0; mx = -1; }
     else if (c == '+') { q->p++; mn = 1; mx = -1; }
     else if (c == '?') { q->p++; mn = 0; mx = 1; }
     else if (c == '{') {
         const uint8_t *save = q->p;
         q->p++;
-        if (!parse_braces(q, &mn, &mx)) {
+        if (!parse_braces(q, &mn, &mx, &brace_comma)) {
             q->p = save;
             return atom;
         }
@@ -1410,7 +1412,9 @@ static ire_node_t *parse_quantifier(re_parser_t *q, ire_node_t *atom) {
         return atom;
     }
     bool possessive = false;
-    if (re_peek(q) == '?') { q->p++; greedy = false; }
+    /* After an exact `{n}` a `?` is its own quantifier, not a lazy marker;
+     * parse_concat's loop picks it up as a second rep. */
+    if (re_peek(q) == '?' && !(braces && !brace_comma)) { q->p++; greedy = false; }
     /* Onigmo treats `\d{m,n}+` as `(\d{m,n})+` (nested rep), NOT
      * possessive — only `*+` `++` `?+` are possessive. */
     else if (!braces && re_peek(q) == '+') { q->p++; possessive = true; }
