@@ -173,6 +173,12 @@ static RESULT
 korb_blop_poll_wait(CTX *c, VALUE *slots, struct pollfd *fds, nfds_t nfds,
                     double timeout_sec, ssize_t *out_ready)
 {
+    if (timeout_sec == 0.0) {                       /* poll(2) with a zero timeout: one probe, no parking */
+        int n;
+        do { n = poll(fds, nfds, 0); } while (n < 0 && errno == EINTR);
+        *out_ready = (n > 0) ? n : 0;
+        return RESULT_OK(KORB_NIL);
+    }
     struct korb_blop b; memset(&b, 0, sizeof b);
     b.kind = KORB_BLOP_POLL;
     b.u.poll.fds = fds; b.u.poll.nfds = nfds;

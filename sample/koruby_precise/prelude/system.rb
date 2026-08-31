@@ -531,11 +531,20 @@ class IO
     events = 0
     timeout = nil
     int_form = false
+    # CRuby has two shapes: wait(events, timeout) and the legacy
+    # wait(timeout = nil, mode = :read).  With two or more arguments a trailing
+    # numeric (or nil) is always the timeout — `wait(IO::WRITABLE, 0)` must not
+    # block forever because 0 looked like another events mask.
+    if args.length >= 2 && (args[-1].nil? || args[-1].is_a?(Numeric))
+      timeout = args[-1]
+      args = args[0...-1]
+    end
     args.each do |x|
       case x
       when Integer
-        if events.zero? && !int_form && args.length >= 1 && x == args[0] && !x.between?(0, 7)
-          timeout = x           # wait(10) 形: 大きい Integer は timeout と解釈しない (CRuby は events)
+        if events.zero? && !int_form && !x.between?(0, 7)
+          timeout = x           # a lone out-of-range Integer is the timeout, not an events mask
+          next
         end
         events |= x
         int_form = true

@@ -2127,6 +2127,7 @@ static RESULT korb_m_io_read_nonblock(CTX *c, VALUE *slots, VALUE_REF self, VALU
     }
     char stackbuf[8192];
     const size_t cap = (size_t)want < sizeof stackbuf ? (size_t)want : sizeof stackbuf;
+    if (!rep->nonblk) korb_io_set_nonblock(rep);      /* CRuby's read_nonblock puts the fd in O_NONBLOCK for good */
     ssize_t n;
     do { n = read(rep->fd, stackbuf, cap); } while (n < 0 && errno == EINTR);
     if (n < 0) {
@@ -2172,6 +2173,7 @@ static RESULT korb_m_io_write_nonblock(CTX *c, VALUE *slots, VALUE_REF self, VAL
         if (UNLIKELY(!KORB_STRING_P(slots[0]))) return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion into String");
     }
     korb_io_flush_rep(rep);                         /* keep ordering with buffered writes */
+    if (!rep->nonblk) korb_io_set_nonblock(rep);    /* a full pipe must give EAGAIN, not block */
     uint32_t n; const char *const p = korb_str_cstr_len(slots[0], &n);
     ssize_t w;
     do { w = write(rep->fd, p, n); } while (w < 0 && errno == EINTR);
