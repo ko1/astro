@@ -773,8 +773,14 @@ class Socket < BasicSocket
     rows = __sock_getaddrinfo(host&.to_s, service, family && __family(family),
                               socktype && __socktype(socktype), flags ? flags.to_int : 0)
     # reverse_lookup asks for the PTR name in the host slot instead of the
-    # numeric address (the default is numeric).
-    if reverse_lookup
+    # numeric address.  nil (the default) defers to the global setting.
+    want = case reverse_lookup
+           when true, :hostname then true
+           when false, :numeric then false
+           when nil then !BasicSocket.do_not_reverse_lookup
+           else raise ArgumentError, "invalid reverse_lookup flag: :#{reverse_lookup}"
+           end
+    if want
       rows.each do |r|
         r[2] = begin
           getnameinfo([r[0], r[1], r[3], r[3]])[0]
@@ -1181,6 +1187,11 @@ class Addrinfo
     __from_ary([a[0], 0, a[2], a[3], 0, 0])   # .ip leaves socktype/protocol at 0
   end
 
+  def self.foreach(nodename, service, family = nil, socktype = nil, protocol = nil,
+                   flags = nil, timeout: nil, &blk)
+    getaddrinfo(nodename, service, family, socktype, protocol, flags).each(&blk)
+  end
+
   def self.tcp(host, port) = getaddrinfo(host, port, nil, Socket::SOCK_STREAM).first
   def self.udp(host, port) = getaddrinfo(host, port, nil, Socket::SOCK_DGRAM).first
 
@@ -1198,9 +1209,13 @@ class Addrinfo
   def to_a = [@famname, @port, @host, @addr]
 
   def inspect_sockaddr
-    return @host.to_s unless ip?
-    a = ipv6? ? "[#{@addr}]" : @addr.to_s
-    @port.to_i == 0 ? a : "#{a}:#{@port}"
+    unless ip?
+      p = @host.to_s
+      # a relative UNIX path would read like a host name, so CRuby tags it
+      return (unix? && !p.start_with?("/")) ? "UNIX #{p}" : p
+    end
+    return @addr.to_s if @port.to_i == 0     # the brackets only separate an IPv6 address from its port
+    "#{ipv6? ? "[#{@addr}]" : @addr}:#{@port}"
   end
 
   # "#<Addrinfo: 127.0.0.1:80 TCP>" — the trailing word names the socktype,
@@ -1302,7 +1317,8 @@ class Addrinfo
   # where `address` is [numeric_address, service] for IP and the path for UNIX.
   def marshal_dump
     addr = ip? ? [@addr.to_s, @port.to_s] : @host.to_s
-    [afamily_name, addr, pfamily_name, socktype_name, protocol_name, canonname, nil]
+    # a protocol with no IPPROTO_ name marshals as its number (CRuby)
+    [afamily_name, addr, pfamily_name, socktype_name, protocol_name || @protocol, canonname, nil]
   end
 
   def marshal_load(ary)
@@ -1442,7 +1458,13 @@ class Addrinfo
   # Build an Addrinfo of this one's family/socktype/protocol from (host, port)
   # for an IP address or (path) for a UNIX one; an Addrinfo passes through.
   def family_addrinfo(*args)
-    return args[0] if args.size == 1 && args[0].is_a?(Addrinfo)
+    if args[0].is_a?(Addrinfo)
+      raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1)" unless args.size == 1
+      ai = args[0]
+      raise ArgumentError, "protocol family mismatch: #{ai.inspect} for #{inspect}" unless ai.pfamily == pfamily
+      raise ArgumentError, "socket type mismatch: #{ai.inspect} for #{inspect}" unless ai.socktype == socktype
+      return ai
+    end
     if unix?
       raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1)" unless args.size == 1
       return Addrinfo.unix(args[0].to_s, @socktype == 0 ? Socket::SOCK_STREAM : @socktype)
