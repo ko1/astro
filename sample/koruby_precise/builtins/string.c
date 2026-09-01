@@ -2551,7 +2551,13 @@ static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             return RESULT_OK(KORB_NIL);
         }
     }
-    return RESULT_OK(LONG2FIX(korb_cmp_values(VALUE_REF_GET(self), o)));
+    const int r = korb_cmp_values(VALUE_REF_GET(self), o);
+    /* CRuby rb_str_cmp: byte-equal but incomparable encodings still order by
+     * encoding index (that is what makes String#== / #=== report false). */
+    if (UNLIKELY(r == 0 && KORB_STR_ENC(VALUE_REF_GET(self)) != KORB_STR_ENC(o) &&
+                 !korb_str_comparable(c->vm, VALUE_REF_GET(self), o)))
+        return RESULT_OK(LONG2FIX(KORB_STR_ENC(VALUE_REF_GET(self)) > KORB_STR_ENC(o) ? 1 : -1));
+    return RESULT_OK(LONG2FIX(r));
 }
 
 /* String#[] — int index, (int,len), Range, or substring match.  Indices are

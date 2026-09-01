@@ -14,7 +14,6 @@ static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (UNLIKELY(block != NULL)) korb_warn(c, slots, "given block not used");
         return RESULT_OK(VALUE_REF_GET(self));
     }
-    if (UNLIKELY(argc == 2 && block != NULL)) korb_warn(c, slots, "block supersedes default value argument");
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* a0 (rooted across #to_ary/#to_int dispatch) */
     if (argc == 1 && !FIXNUM_P(slots[0])) {              /* 1-arg form may be an Array copy (Array or #to_ary) */
         if (!KORB_ARRAY_P(slots[0]) && KORB_OBJECT_P(slots[0])) {
