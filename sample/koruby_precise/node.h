@@ -476,18 +476,32 @@ VALUE korb_cref_resolve(struct korb_vm *vm, const uint32_t *chain, uint32_t chai
 /* mutation guard: raise FrozenError (returning from the caller) if `v` is a
  * frozen heap object.  Used at the top of in-place mutators. */
 RESULT korb_raise_frozen(CTX *c, VALUE *slots, VALUE v);   /* "can't modify frozen <Type>: <inspect>" */
+RESULT korb_unchill(CTX *c, VALUE *slots, VALUE v);   /* chilled String: warn once, drop the mark, allow the mutation */
 RESULT korb_check_def_frozen(CTX *c, VALUE *slots, VALUE definee);   /* def on a frozen class / singleton-of-frozen-obj → FrozenError */
+/* The genuinely-frozen path stays a plain tail return, so the guard's shape is
+ * unchanged for it.  Only a CHILLED String (a Ruby 3.4 literal) takes the second
+ * bit test and the warn-then-continue call — and that happens once per object,
+ * since korb_unchill clears the mark. */
 #define KORB_CHECK_FROZEN(c, slots, v) do {                                    \
     const VALUE _kf = (v);                                                     \
     if (UNLIKELY(AROH_IS_GC_OBJECT(_kf) &&                                     \
-                 (((const AroObjectHeader *)(uintptr_t)_kf)->flags & KORB_FL_FROZEN))) \
-        return korb_raise_frozen((c), (slots), _kf);                           \
+                 (((const AroObjectHeader *)(uintptr_t)_kf)->flags & KORB_FL_FROZEN))) { \
+        if (((const AroObjectHeader *)(uintptr_t)_kf)->flags & KORB_FL_CHILLED) \
+            { const RESULT _fr = korb_unchill((c), (slots), _kf);              \
+              if (UNLIKELY(_fr.state != KORB_NORMAL)) return _fr; }            \
+        else return korb_raise_frozen((c), (slots), _kf);                      \
+    }                                                                          \
 } while (0)
 /* leaner variant for hot paths where `v` is already known to be a heap object
  * of a known type (skips the tag check). */
 #define KORB_CHECK_FROZEN_HEAP(c, slots, v, tname) do {                        \
-    if (UNLIKELY(((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_FL_FROZEN)) \
-        return korb_raise_frozen((c), (slots), (v));                           \
+    const uint16_t _hf = ((const AroObjectHeader *)(uintptr_t)(v))->flags;     \
+    if (UNLIKELY(_hf & KORB_FL_FROZEN)) {                                      \
+        if (_hf & KORB_FL_CHILLED)                                             \
+            { const RESULT _fr = korb_unchill((c), (slots), (v));              \
+              if (UNLIKELY(_fr.state != KORB_NORMAL)) return _fr; }            \
+        else return korb_raise_frozen((c), (slots), (v));                      \
+    }                                                                          \
 } while (0)
 
 /* string→integer parse (Fixnum or, on overflow with GMP, a Bignum); base 0 =
@@ -510,6 +524,7 @@ void korb_relocate_object_methods(CTX *c, VALUE *slots);
 RESULT korb_class_dup(CTX *c, VALUE *slots, VALUE src);
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);
 void korb_warn_ignore_verbose(CTX *c, VALUE *slots, const char *fmt, ...);   /* category warnings ($VERBOSE-independent) */
+void korb_warn_deprecated(CTX *c, VALUE *slots, const char *msg);   /* gated on Warning[:deprecated] */
 void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const char *fmt, ...);
 
 /* One duplicate-key report for a Hash literal, filled in by the parser; `done`

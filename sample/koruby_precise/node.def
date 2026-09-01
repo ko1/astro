@@ -32,6 +32,20 @@ node_str(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len)
     return korb_str_new(c, slots, bytes, len);
 }
 
+// A literal in a file with no `frozen_string_literal` comment is CHILLED
+// (Ruby 3.4+): #frozen? is false, but the first mutation warns and clears the
+// mark.  Carrying FROZEN too is what makes every existing mutation guard stop
+// on it without widening any hot path.
+NODE_DEF
+node_str_chilled(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len)
+{
+    (void)n;
+    const RESULT r = korb_str_new(c, slots, bytes, len);
+    if (LIKELY(r.state == KORB_NORMAL))
+        ((AroObjectHeader *)(uintptr_t)r.value)->flags |= (KORB_FL_FROZEN | KORB_FL_CHILLED);
+    return r;
+}
+
 // `# frozen_string_literal: true` — the literal yields a frozen String.  Each
 // evaluation still builds one (CRuby also deduplicates; identity is the only
 // difference), so mutation attempts raise exactly as they should.

@@ -7433,9 +7433,22 @@ korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym)
     return !(KORB_STRING_P(pathv) && korb_autoload_feature_loaded_p(c, pathv));
 }
 
+/* A CHILLED String literal (Ruby 3.4+) is not really frozen: warn once for this
+ * object, drop the mark, and let the caller mutate it. */
+RESULT
+korb_unchill(CTX *c, VALUE *slots, VALUE v)
+{
+    ((AroObjectHeader *)(uintptr_t)v)->flags &= (uint16_t)~(KORB_FL_CHILLED | KORB_FL_FROZEN);
+    korb_warn_deprecated(c, slots, "literal string will be frozen in the future "
+                                   "(run with --debug-frozen-string-literal for more information)");
+    return RESULT_OK(KORB_NIL);
+}
+
 RESULT
 korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
 {
+    if (UNLIKELY(KORB_STRING_P(v) && (((AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_CHILLED)))
+        return korb_unchill(c, slots, v);          /* reached from the non-macro callers */
     /* name the object's real class and let it inspect itself: a user instance is
      * not "Object", and a Time renders as a Time.  nil/true/false are named by
      * their class here (NilClass), not by the value as in a TypeError. */
@@ -13189,6 +13202,37 @@ void korb_warn_ignore_verbose(CTX *c, VALUE *slots, const char *fmt, ...) {
     if (ml < 0) return;
     bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
     (void)korb_out_emit(c, slots, out, 2, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
+}
+/* rb_warn_deprecated: gated on Warning[:deprecated] ALONE (the category flag is
+ * independent of $VERBOSE — mspec's `complain` sets $VERBOSE=false and still
+ * expects deprecation warnings). */
+void korb_warn_deprecated(CTX *c, VALUE *slots, const char *msg) {
+    /* Chilled-literal mutation reaches this once per object, so keep the name
+     * lookups out of it — only the Warning[] dispatch itself remains. */
+    static uint32_t id_warning, id_dep, id_aref;
+    if (UNLIKELY(id_warning == 0)) {
+        id_warning = korb_intern(c->vm, "Warning", 7);
+        id_dep     = korb_intern(c->vm, "deprecated", 10);
+        id_aref    = korb_intern(c->vm, "[]", 2);
+    }
+    slots[0] = korb_const_get(c->vm, id_warning);
+    if (!KORB_CLASS_P(slots[0])) return;
+    /* Read Warning::CATEGORIES__ directly: Warning[] is a Ruby method with two
+     * validity checks in front of the lookup, and this runs on every chilled
+     * literal that gets mutated. */
+    static uint32_t id_cats;
+    if (UNLIKELY(id_cats == 0)) id_cats = korb_intern(c->vm, "CATEGORIES__", 12);
+    const uint32_t ci = korb_const_index_owned(c->vm, id_cats, slots[0]);
+    if (LIKELY(ci != UINT32_MAX) && KORB_HASH_P(c->vm->const_vals[ci])) {
+        const int32_t hi = korb_hash_find(VAL2HASH(c->vm->const_vals[ci]), ID2SYM(id_dep));
+        if (hi < 0 || !KORB_TRUTHY(korb_items_data(VAL2HASH(c->vm->const_vals[ci])->items)[2 * hi + 1])) return;
+        korb_warn_ignore_verbose(c, slots, "%s", msg);
+        return;
+    }
+    slots[1] = ID2SYM(id_dep);
+    const RESULT wr = korb_send(c, slots + 2, id_aref, 0, 1);
+    if (wr.state != KORB_NORMAL || !KORB_TRUTHY(wr.value)) return;
+    korb_warn_ignore_verbose(c, slots, "%s", msg);
 }
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...) {
     if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;

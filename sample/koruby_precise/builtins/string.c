@@ -86,8 +86,7 @@ static RESULT korb_m_str_enc_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 /* String#__set_encoding_tag(n) → set the encoding index in place, return self. */
 static RESULT korb_m_str_set_enc_tag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE s = VALUE_REF_GET(self);
-    if (UNLIKELY(korb_str_is_frozen(s)))
-        return korb_raise(c, slots, KORB_E_FROZEN, 0, "can't modify frozen String: %s", "");
+    KORB_CHECK_FROZEN(c, slots, s);          /* chilled → warn and carry on, frozen → raise */
     const uint32_t n = FIXNUM_P(VALUE_SLICE_GET(a, 0)) ? (uint32_t)FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
     KORB_STR_ENC_SET(s, n);
     return RESULT_OK(s);
@@ -96,8 +95,7 @@ static RESULT korb_m_str_set_enc_tag(CTX *c, VALUE *slots, VALUE_REF self, VALUE
  * an Encoding), return self.  Frozen-checked. */
 static RESULT korb_m_str_force_encoding(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE s = VALUE_REF_GET(self);
-    if (UNLIKELY(korb_str_is_frozen(s)))
-        return korb_raise(c, slots, KORB_E_FROZEN, 0, "can't modify frozen String: %s", "");
+    KORB_CHECK_FROZEN(c, slots, s);          /* chilled → warn and carry on, frozen → raise */
     VALUE enc = VALUE_SLICE_GET(a, 0);
     char nbuf[64] = {0};
     if (!KORB_STRING_P(enc)) {                 /* a #to_str-coercible object, or an Encoding (read @name) */
@@ -245,13 +243,22 @@ static RESULT korb_m_str_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) 
     return RESULT_OK((VALUE)r);
 }
 /* String#-@ → a frozen string (self if already frozen, else a frozen copy). */
+/* A chilled literal is not frozen as far as Ruby is concerned, so -@ / +@ must
+ * hand back a DIFFERENT object for it, exactly as they do for a mutable String. */
+static bool korb_str_chilled_p(VALUE v) {
+    return KORB_STRING_P(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_CHILLED) != 0;
+}
 static RESULT korb_m_str_uminus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    if (korb_str_is_frozen(VALUE_REF_GET(self))) return RESULT_OK(VALUE_REF_GET(self));
+    if (korb_str_is_frozen(VALUE_REF_GET(self)) && !korb_str_chilled_p(VALUE_REF_GET(self)))
+        return RESULT_OK(VALUE_REF_GET(self));
     slots[0] = VALUE_REF_GET(self);
     RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "dup", 3), 0, 0);   /* GC-safe copy via #dup */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (AROH_IS_GC_OBJECT(r.value)) ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;
+    if (AROH_IS_GC_OBJECT(r.value)) {
+        AroObjectHeader *const h = (AroObjectHeader *)(uintptr_t)r.value;
+        h->flags = (uint16_t)((h->flags & ~KORB_FL_CHILLED) | KORB_FL_FROZEN);
+    }
     return r;
 }
 /* String#+@ → a mutable string (self if already mutable, else an unfrozen copy). */
@@ -259,7 +266,10 @@ static RESULT korb_m_str_plus_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)a;
     if (!korb_str_is_frozen(VALUE_REF_GET(self))) return RESULT_OK(VALUE_REF_GET(self));
     slots[0] = VALUE_REF_GET(self);
-    return korb_send(c, slots + 1, korb_intern(c->vm, "dup", 3), 0, 0);       /* mutable copy via #dup */
+    RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "dup", 3), 0, 0);   /* mutable copy via #dup */
+    if (LIKELY(r.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(r.value))         /* the copy is plainly mutable */
+        ((AroObjectHeader *)(uintptr_t)r.value)->flags &= (uint16_t)~(KORB_FL_CHILLED | KORB_FL_FROZEN);
+    return r;
 }
 /* String#to_sym — the Symbol keeps self's encoding (an ASCII-only name normalises
  * to US-ASCII inside korb_intern_enc), and malformed bytes are refused. */

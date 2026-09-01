@@ -462,6 +462,14 @@ RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj) {
             return RESULT_OK(korb_class_obj_of(c, obj));
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");
     }
+    /* Giving a CHILLED literal a singleton class ends its chilled status, with the
+     * same warning a mutation gets (CRuby) — otherwise the singleton would be
+     * born frozen and `"lit".extend(M)` would raise. */
+    if (UNLIKELY(KORB_STRING_P(obj) && (((AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_CHILLED))) {
+        slots[0] = obj;
+        CHECK(korb_raise_frozen(c, slots + 1, slots[0]));   /* chilled → warn + unchill, never raises here */
+        obj = slots[0];
+    }
     {   /* heap Integer (bignum) / Float / Symbol have no singleton either */
         const enum korb_class kc = korb_class_of(obj);
         if (UNLIKELY(kc == KORB_C_INTEGER || kc == KORB_C_FLOAT || kc == KORB_C_SYMBOL))

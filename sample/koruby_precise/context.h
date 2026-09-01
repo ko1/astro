@@ -232,6 +232,12 @@ enum korb_obj_type {
  * positional (Ruby 3 semantics). */
 #define KORB_FL_KWARGS     0x1000u
 #define KORB_FL_HASH_NOINDEX 0x200u
+/* bit 9 (String only — shares the bit with Hash's HASH_NOINDEX, which is never
+ * examined here): the String is CHILLED (Ruby 3.4+).  A chilled String also has
+ * KORB_FL_FROZEN set, so every existing mutation guard already stops on it; the
+ * single choke point korb_raise_frozen then warns, clears both bits and lets the
+ * mutation through instead of raising.  #frozen? reports false while it is set. */
+#define KORB_FL_CHILLED    0x200u
 
 /* bit 10 (Array, transient): array is on the current Array#join recursion path.
  * GC-safe cycle detection (survives moves) so join can dispatch element #to_s. */

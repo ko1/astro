@@ -94,6 +94,7 @@ struct kp_ctx {
     bool syntax_error;        /* transduce-time SyntaxError (e.g. binding in alternative pattern) */
     bool pending_depth_shift; /* the next pushed frame is an END { } body (see kp_frame.depth_shift) */
     uint8_t src_enc;          /* KORB_ENC_* for this file's string literals (from the magic comment) */
+    bool fsl_false;           /* an explicit `# frozen_string_literal: false` — literals are plain, not chilled */
     const char *syntax_err;   /* a compile-time error found while lowering (bad Regexp literal): parse fails */
 };
 
@@ -3471,6 +3472,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         }
         if (lenc != KORB_ENC_UTF8) return ALLOC_node_str_enc(bytes, len, lenc);
         if (sn->base.flags & PM_STRING_FLAGS_FROZEN) return ALLOC_node_str_frozen(bytes, len);   /* # frozen_string_literal: true */
+        /* no magic comment either way → chilled (Ruby 3.4+); an explicit
+         * `frozen_string_literal: false` opts out. */
+        if (!tc->fsl_false) return ALLOC_node_str_chilled(bytes, len);
         return ALLOC_node_str(bytes, len);
       }
       case PM_REGULAR_EXPRESSION_NODE: {   /* /pat/ → Regexp (matching via astrogre) */
@@ -5064,6 +5068,25 @@ kp_stash_syntax_msg(CTX *c, const pm_parser_t *parser, const char *fname)
     c->vm->last_syntax_msg = buf;
 }
 
+/* An explicit `# frozen_string_literal: false` opts the file out of chilled
+ * literals; no comment at all means chilled (Ruby 3.4+).  prism only reports the
+ * `true` case through PM_STRING_FLAGS_FROZEN, so scan the magic-comment area. */
+static bool
+kp_fsl_false(const char *src, size_t len)
+{
+    const size_t scan = len < 4096 ? len : 4096;
+    for (size_t i = 0; i + 24 < scan; i++) {
+        if (src[i] != 'f' || memcmp(src + i, "frozen_string_literal", 21) != 0) continue;
+        size_t j = i + 21;
+        while (j < scan && (src[j] == ' ' || src[j] == '\t')) j++;
+        if (j < scan && src[j] == ':') j++;
+        while (j < scan && (src[j] == ' ' || src[j] == '\t')) j++;
+        if (j + 5 <= scan && memcmp(src + j, "false", 5) == 0) return true;
+        return false;
+    }
+    return false;
+}
+
 NODE *
 koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, bool exit_on_error)
 {
@@ -5100,6 +5123,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
         .c = c,
         .fname = fname,
         .src_enc = kp_src_enc(c, &parser),
+        .fsl_false = kp_fsl_false(src, len),
     };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
@@ -5162,7 +5186,8 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
         pm_node_destroy(&parser, root); pm_parser_free(&parser); pm_options_free(&options);
         return NULL;
     }
-    struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser) };
+    struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser),
+                         .fsl_false = kp_fsl_false(src, len) };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
     for (uint32_t pi = tc.pre_cnt; pi-- > 0; ) ast = ALLOC_node_seq(tc.pre_list[pi], ast);   /* BEGIN { } first */

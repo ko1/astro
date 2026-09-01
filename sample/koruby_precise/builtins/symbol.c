@@ -127,6 +127,9 @@ static RESULT korb_m_obj_itself(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_obj_freeze(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a; VALUE v = VALUE_REF_GET(self);
     if (AROH_IS_GC_OBJECT(v)) {
+        /* an explicit #freeze ends chilled status: from here a mutation is a
+         * real FrozenError, not a deprecation warning */
+        ((AroObjectHeader *)(uintptr_t)v)->flags &= (uint16_t)~KORB_FL_CHILLED;
         ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_FROZEN;
         /* A frozen Array gets capa=len so node_shl's existing `len < capa` room
          * check fails → the (rare) slow path does the FrozenError raise.  Keeps
@@ -144,7 +147,11 @@ static RESULT korb_m_obj_freeze(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_obj_frozen_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; VALUE v = VALUE_REF_GET(self);
     if (!AROH_IS_GC_OBJECT(v)) return RESULT_OK(KORB_TRUE);   /* immediates are frozen */
-    return RESULT_OK((((AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_FROZEN) ? KORB_TRUE : KORB_FALSE);
+    const uint16_t fl = ((AroObjectHeader *)(uintptr_t)v)->flags;
+    /* A CHILLED String carries FROZEN so the mutation guards catch it, but it is
+     * not frozen yet as far as Ruby is concerned. */
+    if (UNLIKELY(KORB_STRING_P(v) && (fl & KORB_FL_CHILLED))) return RESULT_OK(KORB_FALSE);
+    return RESULT_OK((fl & KORB_FL_FROZEN) ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_obj_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     /* CRuby Object#<=>: 0 if self == other (dispatched, so a custom #== counts), else nil. */
