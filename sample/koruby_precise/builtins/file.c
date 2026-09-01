@@ -2251,6 +2251,20 @@ static RESULT korb_m_dir_glob(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     char basebuf[PATH_MAX]; basebuf[0] = '\0';
     if (na >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) {          /* base: / sort: / flags: */
         const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(a, na - 1));
+        { /* reject anything but the three accepted keywords, as CRuby does */
+            char ubuf[256]; size_t ulen = 0; uint32_t ucnt = 0;
+            for (uint32_t hi = 0; hi < h->len; hi++) {
+                const VALUE key = korb_items_data(h->items)[2 * hi];
+                const char *const kn = SYMBOL_P(key) ? korb_sym_name(c->vm, SYM2ID(key)) : NULL;
+                if (kn && (strcmp(kn, "base") == 0 || strcmp(kn, "sort") == 0 || strcmp(kn, "flags") == 0)) continue;
+                ucnt++;
+                if (ulen < sizeof ubuf - 1)
+                    ulen += (size_t)snprintf(ubuf + ulen, sizeof ubuf - ulen, "%s%s%s", ucnt > 1 ? ", " : "",
+                                             kn ? ":" : "", kn ? kn : korb_type_name(key));
+            }
+            if (UNLIKELY(ucnt > 0))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keyword%s: %s", ucnt > 1 ? "s" : "", ubuf);
+        }
         int32_t ix = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "sort", 4)));
         if (ix >= 0) {
             const VALUE sv = korb_items_data(h->items)[2 * ix + 1];
