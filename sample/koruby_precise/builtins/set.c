@@ -1233,7 +1233,7 @@ static RESULT korb_append_names(CTX *c, VALUE *slots, VALUE_REF result, const ch
 static const char *const korb_kernel_priv_funcs[] = { "loop", "catch", "throw", "lambda", "proc", "block_given?", "iterator?" };
 static const char *const korb_kernel_pub_funcs[]  = { "loop", "catch", "throw", "lambda", "proc" };
 static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask) {
-    const bool inherit = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
+    const bool inherit = VALUE_SLICE_LEN(a) < 1 || KORB_TRUTHY(VALUE_SLICE_GET(a, 0));   /* nil counts as false, like CRuby's RTEST */
     const uint32_t priv_mids[] = {                                  /* method names that are always reported private */
         c->vm->mid_initialize,
         korb_intern(c->vm, "initialize_copy", 15),
