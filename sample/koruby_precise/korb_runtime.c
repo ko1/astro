@@ -5589,6 +5589,26 @@ korb_responds_to_coerce_p(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid)
     *selfp = slots[0];                                /* writeback: the dispatch may have moved the receiver */
     return r.state == KORB_NORMAL && KORB_TRUTHY(r.value);
 }
+/* CRuby's rb_check_funcall (the #to_ary probe a block's auto-splat runs) asks
+ * the receiver's OWN #respond_to? first whenever it is overridden — before the
+ * method table is consulted at all — with include_all = true.  A mock or a
+ * BasicObject with `def obj.respond_to?` therefore sees the call.  Everything
+ * else falls back to the plain lookup + #respond_to_missing?.
+ * slots needs >= 3 free cells; *selfp is written back after the dispatch. */
+static bool
+korb_check_funcall_respond_to(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid)
+{
+    const VALUE dcls = korb_dispatch_class(c, *selfp);
+    if (!KORB_CLASS_P(dcls)) return false;
+    const uint32_t rt_mid = korb_intern(c->vm, "respond_to?", 11);
+    const struct korb_method *const rt = korb_class_find_method(dcls, rt_mid, NULL);
+    if (rt == NULL || rt->kind == KORB_METHOD_CFUNC)     /* the built-in one */
+        return korb_responds_to_coerce_p(c, slots, selfp, mid);
+    slots[0] = *selfp; slots[1] = ID2SYM(mid); slots[2] = KORB_TRUE;
+    const RESULT r = korb_send_impl(c, slots + 3, rt_mid, 0, 2, NULL, NULL, NULL);
+    *selfp = slots[0];                                   /* writeback: the dispatch may have moved it */
+    return r.state == KORB_NORMAL && KORB_TRUTHY(r.value);
+}
 bool
 korb_responds_to_coerce(CTX *c, VALUE *slots, VALUE self, uint32_t mid)
 {
@@ -8179,7 +8199,6 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     /* &block forward: re-read prev (proc->env) from the rooted Proc slot each
      * call so a GC-moved escaped env is never stale. */
     const bool fwd = (def_env == KORB_BLK_FWD);
-    const VALUE prev = fwd ? VAL2PROC(*captured_self)->env : (VALUE)(uintptr_t)def_env;
     const uint32_t blocals = korb_entry_locals_cnt(block);   /* incl. self cell */
     /* block frame (bottom header): locals base B = bf+1, with B[-2]=EP (PREV:
      * tagged-odd slots handle, or even KorbEnv* for an escaped Proc) and
@@ -8192,10 +8211,6 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  &cstack_probe < c->cstack_limit)) {
         return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
     }
-    bf[-2] = 0;          /* B[-3] (magic; zeroed for GC scan, overwritten by magic_set in debug) */
-    bf[-1] = prev;       /* B[-2] (EP / PREV link)     */
-    bf[0]  = 0;          /* B[-1] (block lexical self, set just before dispatch) */
-    korb_frame_magic_set(bf + 1, KORB_FT_BLOCK);   /* B[-3] integrity marker (no-op unless KORB_FRAME_MAGIC) */
     /* keyword params: a trailing Hash is consumed as kwargs (like methods), so
      * the positional binding below sees only the positional args. */
     const struct korb_kw_info *const kw = korb_entry_kw_info(block);
@@ -8234,20 +8249,31 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                                 (np0 == 1 && korb_entry_rest_slot(block) <= -2);   /* |x,| / |x,*| are multi-param for auto-splat */
         if (wants_many && KORB_OBJECT_P(argv[0])) {
             const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
-            const VALUE recv = argv[0];
-            if (korb_responds_to(c, recv, to_ary)) {
-                slots[0] = recv;
+            VALUE recv = argv[0];                        /* parked in slots[0] by the probe below */
+            if (korb_check_funcall_respond_to(c, slots, &recv, to_ary)) {
+                slots[0] = recv;                         /* re-park: the probe may have moved it */
                 RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
                 if (ar.value != KORB_NIL) {
                     if (UNLIKELY(!KORB_ARRAY_P(ar.value)))
-                        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)",
-                                          korb_coerce_name(c, recv), korb_coerce_name(c, recv), korb_type_name(ar.value));
+                        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)",
+                                          korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_type_name(ar.value));
                     splat_conv = ar.value;
                 }
             }
         }
     }
+    /* Frame header LAST: the #to_ary probe above stages its dispatch in
+     * slots[0..2], which are exactly these three cells, and a GC inside it can
+     * move the env the EP names — so read it once, here, from the rooted Proc. */
+    bf[-2] = 0;          /* B[-3] (magic; zeroed for GC scan, overwritten by magic_set in debug) */
+    bf[-1] = fwd ? VAL2PROC(*captured_self)->env : (VALUE)(uintptr_t)def_env;   /* B[-2] (EP / PREV link) */
+    /* B[-1] block lexical self.  Set here, not just before dispatch: an
+     * optional's default expression runs in this frame and may call a method on
+     * self (`proc { |a = a() | }`), and the cell is scanned from here on so a GC
+     * during binding forwards it (line below re-reads it fresh anyway). */
+    bf[0]  = fwd ? VAL2PROC(*captured_self)->self : *captured_self;
+    korb_frame_magic_set(bf + 1, KORB_FT_BLOCK);   /* B[-3] integrity marker (no-op unless KORB_FRAME_MAGIC) */
     VALUE conv_buf[1];
     if (splat_conv != KORB_UNDEF) { conv_buf[0] = splat_conv; argv = conv_buf; }
     const uint8_t *spec = korb_entry_destructure_spec(block);
@@ -8326,9 +8352,14 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         } else {
             bf[1 + rs] = VALUE_REF_GET(rarr);
         }
-        for (uint32_t j = 0; j < npost; j++) {                               /* trailing post params → the last npost args */
-            const int32_t pidx = (int32_t)srcn - (int32_t)npost + (int32_t)j;
-            const VALUE pv = (pidx >= 0 && pidx < (int32_t)srcn) ? stage[pidx] : KORB_NIL;
+        /* Posts take the LAST npost args.  When there are not even enough args
+         * for the required front + posts, a block binds leniently: the front
+         * takes what it can and the posts follow it left-aligned, nil-padded
+         * (`|a, *b, c, d|` yielded 1,2 → a=1, c=2, d=nil — not c=1, d=2). */
+        const uint32_t pbase = (srcn >= reqc + npost) ? (srcn - npost) : (srcn < reqc ? srcn : reqc);
+        for (uint32_t j = 0; j < npost; j++) {
+            const uint32_t pidx = pbase + j;
+            const VALUE pv = (pidx < srcn) ? stage[pidx] : KORB_NIL;
             if (fsp) fsp = korb_bind_destr_entry(c, bf, blocals, &sploc, fsp, pv);
             else     bf[1 + rs + 1 + j] = pv;
         }
