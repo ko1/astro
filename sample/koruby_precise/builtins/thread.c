@@ -433,6 +433,31 @@ korb_bi_sleep(CTX *c, VALUE *slots, VALUE_SLICE args)
     double sec = -1.0;                              /* forever */
     if (VALUE_SLICE_LEN(args) >= 1 && VALUE_SLICE_GET(args, 0) != KORB_NIL)
         CHECK(korb_thread_tmo_arg(c, slots, VALUE_SLICE_GET(args, 0), &sec));   /* validates negative / NaN */
+    /* A Fiber scheduler takes over sleeping for a NON-blocking fiber (CRuby):
+     * `scheduler.kernel_sleep(*args)`, with the duration passed through as
+     * written.  The root fiber and a `blocking: true` one keep the timer. */
+    if (UNLIKELY(c->vm->running_fiber != NULL && !c->vm->running_fiber->blocking)) {
+        const VALUE fibc = korb_const_get(c->vm, korb_intern(c->vm, "Fiber", 5));
+        const VALUE sched = KORB_CLASS_P(fibc)
+            ? korb_class_ivar_get(fibc, ID2SYM(korb_intern(c->vm, "@__scheduler", 12))) : KORB_NIL;
+        if (sched != KORB_NIL) {
+            const uint32_t n = VALUE_SLICE_LEN(args);
+            slots[0] = sched;
+            for (uint32_t i = 0; i < n; i++) slots[1 + i] = VALUE_SLICE_GET(args, i);
+            return korb_send(c, slots + 1 + n, korb_intern(c->vm, "kernel_sleep", 12), 0, n);
+        }
+    }
+    /* Inside a fiber there is no way to park on the scheduler (a thread switch
+     * from a fiber is not supported), so a BOUNDED sleep blocks outright — that
+     * is what `Fiber.new(blocking: true) { sleep 0.01 }` asks for.  An unbounded
+     * one would never come back, so it falls through and raises. */
+    if (UNLIKELY(c->vm->running_fiber != NULL) && sec >= 0) {
+        struct timespec req;
+        req.tv_sec  = (time_t)sec;
+        req.tv_nsec = (long)((sec - (double)(time_t)sec) * 1e9);
+        while (nanosleep(&req, &req) != 0 && errno == EINTR) { }
+        return RESULT_OK(LONG2FIX((korb_sword_t)(sec + 0.5)));
+    }
     struct korb_blop b; memset(&b, 0, sizeof b);
     b.kind = KORB_BLOP_TIMER;
     if (sec >= 0) korb_blop_deadline_in(&b, sec);

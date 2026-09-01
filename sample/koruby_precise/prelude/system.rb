@@ -1775,17 +1775,29 @@ class Regexp
 end
 
 class Fiber
-  # Fiber scheduler は未実装 (koruby の fiber は協調 coroutine で、blocking
-  # 操作の肩代わりをする scheduler を持たない)。参照だけで NoMethodError に
-  # ならないよう nil を返す。
-  def self.scheduler; nil; end
-  def self.current_scheduler; nil; end
+  # Fiber scheduler は「登録できて、Kernel#sleep だけがフックされる」ところまで。
+  # blocking 操作全般 (io_wait / block / unblock) の肩代わりは未実装 —
+  # koruby の fiber は協調 coroutine で、その配管を持たない。
+  def self.scheduler
+    @__scheduler
+  end
+  def self.current_scheduler
+    raise RuntimeError, "No scheduler is available!" if @__scheduler.nil?
+    @__scheduler
+  end
   def self.set_scheduler(sched)
-    raise ArgumentError, "scheduler is not supported" unless sched.nil?
-    nil
+    if sched.nil?
+      @__scheduler = nil
+      return nil
+    end
+    [:block, :unblock, :kernel_sleep, :io_wait].each do |m|
+      raise ArgumentError, "Scheduler must implement ##{m}" unless sched.respond_to?(m)
+    end
+    @__scheduler = sched
   end
   def self.schedule(*args, &blk)
-    raise RuntimeError, "No scheduler is available!"
+    raise RuntimeError, "No scheduler is available!" if @__scheduler.nil?
+    Fiber.new(blocking: false) { blk.call(*args) }.tap(&:resume)
   end
 end
 
