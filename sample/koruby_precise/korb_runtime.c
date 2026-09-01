@@ -14048,6 +14048,22 @@ korb_bi_gc_start(CTX *c, VALUE *slots, VALUE_SLICE args)
     aro_gc_collect(c);
     return RESULT_OK(KORB_NIL);
 }
+/* __gc_stress(flag) — read (no args) or set the collector's stress flag, which
+ * makes every allocation collect.  Backs GC.stress / GC.stress=; the knob is
+ * the same one BARUBY_GC_STRESS sets at startup. */
+static RESULT
+korb_bi_gc_stress(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)slots;
+    if (VALUE_SLICE_LEN(args) >= 1) {
+        const VALUE v = VALUE_SLICE_GET(args, 0);
+        const bool on = (v != KORB_NIL && v != KORB_FALSE);
+        ARO_GC_COMMON(c)->stress = on;
+        if (on) ARO_GC_COMMON(c)->stress_interval = 1;   /* every alloc, as CRuby does */
+    }
+    return RESULT_OK(ARO_GC_COMMON(c)->stress ? KORB_TRUE : KORB_FALSE);
+}
+
 /* --- ObjectSpace.each_object -----------------------------------------------
  * The heap walk (aro_gc_each_object) hands back every payload in the arena.
  * Two of those kinds are not Ruby objects — the raw buffer behind a
@@ -14447,6 +14463,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);
     korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);
     korb_builtin_define(c, "__heap_objects__", korb_bi_heap_objects, -1);
+    korb_builtin_define(c, "__gc_stress", korb_bi_gc_stress, -1);
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
     korb_builtin_define(c, "Float", korb_bi_float, -1);
     korb_builtin_define(c, "Array", korb_bi_array, -1);

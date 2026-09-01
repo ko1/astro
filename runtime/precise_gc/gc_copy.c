@@ -770,6 +770,9 @@ gc_collect_internal(CTX *c)
     }
 
     ARO_GC_COMMON(c)->stats.gc_count++;
+    /* Cheney is non-generational: every cycle traces the whole live set, so
+     * each one is a major collection and minor_count stays 0. */
+    ARO_GC_COMMON(c)->stats.major_count++;
     aro_gc_time_end(c, t0);
 }
 
