@@ -504,6 +504,8 @@ static void korb_io_class_name(CTX *c, VALUE v, char *const buf, size_t sz) {
  * must re-read any VALUE they still need afterwards. */
 static RESULT korb_io_arg_int(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out) {
     if (LIKELY(korb_to_index(v, out))) return RESULT_OK(KORB_TRUE);
+    if (UNLIKELY(KORB_BIGNUM_P(v)))                    /* an Integer, just not one that fits a C off_t */
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
     const char *const cls = korb_type_name(v);         /* capture before dispatch (v may move) */
     VALUE t = v;
     const RESULT r = korb_coerce_to_int(c, slots, &t);
@@ -2435,6 +2437,14 @@ static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             strcat(mode, "b");
     }
     if (fcntl(fd, F_GETFD) < 0) return korb_raise_errno(c, slots + 2, errno, "", "");
+    { /* the requested mode has to fit the descriptor's own access mode (CRuby) */
+      const int fl = fcntl(fd, F_GETFL);
+      if (fl >= 0) {
+          const int acc = fl & O_ACCMODE;
+          const int rw = korb_io_mode_rw(mode);                    /* bit0 = read, bit1 = write */
+          if (((rw & 1) && acc == O_WRONLY) || ((rw & 2) && acc == O_RDONLY))
+              return korb_raise_errno(c, slots + 2, EINVAL, "", "");
+      } }
     /* the IO wraps the caller's descriptor; nothing is duplicated */
     const bool binary = strchr(mode, 'b') != NULL;
     slots[2] = UNWRAP(korb_io_make(c, slots + 2, VALUE_REF_GET(self), fd, korb_io_mode_rw(mode)));
