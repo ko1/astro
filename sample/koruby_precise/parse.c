@@ -2898,23 +2898,30 @@ index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw
 /* Build {k0: lget(slot0), ...}(.merge(**kwrest)) as a Hash NODE — the keyword
  * arguments a bare `super` forwards (each kw param's current value, incl.
  * defaults, then the kwrest merged).  Inside-out like build_hash. */
+/* Read the enclosing METHOD's local `idx` from `depth` scopes out (0 = we are in
+ * the method frame itself).  Bare `super` inside a block forwards the method's
+ * parameters, which live that many env links away. */
+static NODE *bake_lget_at(struct kp_ctx *tc, uint32_t depth, int32_t idx) {
+    return depth == 0 ? bake_lget(tc, (uint32_t)idx) : bake_eget(tc, depth, (uint32_t)idx);
+}
+
 static NODE *
-build_fwd_kwargs(struct kp_ctx *tc, struct korb_kw_info *kw, uint32_t n)
+build_fwd_kwargs(struct kp_ctx *tc, struct korb_kw_info *kw, uint32_t n, uint32_t depth)
 {
     if (n == 0) {                                        /* base: {} (+ **kwrest merged on top) */
         NODE *h = ALLOC_node_hash_new(kw->count);
         if (kw->kwrest_slot >= 0) {
             NODE *src; const uint32_t sc = kind_node_hash_merge.slot_count;
-            WITH_CHAIN(tc, sc, (src = bake_lget(tc, kw->kwrest_slot)));
+            WITH_CHAIN(tc, sc, (src = bake_lget_at(tc, depth, kw->kwrest_slot)));
             h = ALLOC_node_hash_merge(h, src);
         }
         return h;
     }
     const uint32_t sc = kind_node_hash_set.slot_count;
     NODE *acc, *key, *val;
-    WITH_CHAIN(tc, sc, (acc = build_fwd_kwargs(tc, kw, n - 1),
+    WITH_CHAIN(tc, sc, (acc = build_fwd_kwargs(tc, kw, n - 1, depth),
                         key = ALLOC_node_lit(ID2SYM(kw->entries[n - 1].mid)),
-                        val = bake_lget(tc, kw->entries[n - 1].slot)));
+                        val = bake_lget_at(tc, depth, kw->entries[n - 1].slot)));
     return ALLOC_node_hash_set(acc, key, val);
 }
 
@@ -2924,7 +2931,7 @@ build_fwd_kwargs(struct kp_ctx *tc, struct korb_kw_info *kw, uint32_t n)
  * np + (rest?1:0) + pc, indexing the segments in that order. */
 static NODE *
 build_fwd_args(struct kp_ctx *tc, uint32_t np, int32_t rest_slot, uint32_t post_base, uint32_t pc,
-               struct korb_kw_info *kw, uint32_t total)
+               struct korb_kw_info *kw, uint32_t total, uint32_t depth)
 {
     if (total == 0) return ALLOC_node_array_new(0);
     const uint32_t bi = total - 1;                        /* build index of the last element */
@@ -2933,8 +2940,8 @@ build_fwd_args(struct kp_ctx *tc, uint32_t np, int32_t rest_slot, uint32_t post_
     const uint32_t sc = kind_node_ary_push.slot_count;
     if (has_kw && bi == np + has_rest + pc) {             /* trailing kwargs hash element */
         NODE *acc, *kwh;
-        WITH_CHAIN(tc, sc, (acc = build_fwd_args(tc, np, rest_slot, post_base, pc, kw, total - 1),
-                            kwh = build_fwd_kwargs(tc, kw, kw->count)));
+        WITH_CHAIN(tc, sc, (acc = build_fwd_args(tc, np, rest_slot, post_base, pc, kw, total - 1, depth),
+                            kwh = build_fwd_kwargs(tc, kw, kw->count, depth)));
         return ALLOC_node_ary_push(acc, ALLOC_node_kwargs_mark(kwh));   /* forwarded as keywords */
     }
     bool is_rest = false; int32_t slot;
@@ -2942,8 +2949,8 @@ build_fwd_args(struct kp_ctx *tc, uint32_t np, int32_t rest_slot, uint32_t post_
     else if (has_rest && bi == np)      { slot = rest_slot; is_rest = true; }          /* *rest (splat) */
     else                                  slot = (int32_t)(post_base + (bi - np - has_rest));  /* post */
     NODE *acc, *elem;
-    WITH_CHAIN(tc, sc, (acc  = build_fwd_args(tc, np, rest_slot, post_base, pc, kw, total - 1),
-                        elem = bake_lget(tc, slot)));
+    WITH_CHAIN(tc, sc, (acc  = build_fwd_args(tc, np, rest_slot, post_base, pc, kw, total - 1, depth),
+                        elem = bake_lget_at(tc, depth, slot)));
     return is_rest ? ALLOC_node_ary_concat(acc, elem) : ALLOC_node_ary_push(acc, elem);
 }
 
@@ -4994,26 +5001,32 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (m_mid == 0 && tc->frame->dm_body)
             return kp_unsupported(tc, node, "implicit argument passing of super from method defined by "
                                             "define_method() is not supported. Specify all arguments explicitly.");
+        /* The parameters to forward belong to the enclosing METHOD frame, which
+         * may be `depth` scopes out when the `super` is written inside a block. */
+        const struct kp_frame *mf = tc->frame;
+        uint32_t depth = 0;
         if (m_mid == 0) {   /* a plain block borrows the name of the def it sits in */
             for (const struct kp_frame *f = tc->frame; f && m_mid == 0; f = f->prev) {
                 if (f->dm_body) break;
                 m_mid = f->method_mid;
+                mf = f;
+                if (m_mid == 0) depth++;
             }
         }
         if (m_mid == 0) return kp_unsupported(tc, node, "super outside a method body");
         uint32_t line = kp_line(tc, node);
-        const uint32_t np = tc->frame->method_params;
-        const int32_t rest_slot = tc->frame->method_rest_slot;
-        const uint32_t pc = tc->frame->method_post_cnt;
-        const uint32_t pb = tc->frame->method_post_base >= 0 ? (uint32_t)tc->frame->method_post_base : 0;
-        struct korb_kw_info *const kw = tc->frame->method_kw_info;
+        const uint32_t np = mf->method_params;
+        const int32_t rest_slot = mf->method_rest_slot;
+        const uint32_t pc = mf->method_post_cnt;
+        const uint32_t pb = mf->method_post_base >= 0 ? (uint32_t)mf->method_post_base : 0;
+        struct korb_kw_info *const kw = mf->method_kw_info;
         const uint32_t has_kw = (kw && (kw->count || kw->kwrest_slot >= 0)) ? 1u : 0u;
         /* bare `super` forwards the method's current args (positional + rest +
          * post + keyword) and its incoming block: build [pos..., *rest, post...,
          * {kwargs}] via super_fwd. */
         const uint32_t total = np + (rest_slot >= 0 ? 1u : 0u) + pc + has_kw;
         NODE *arr;
-        WITH_CHAIN(tc, 1, (arr = build_fwd_args(tc, np, rest_slot, pb, pc, kw, total)));
+        WITH_CHAIN(tc, 1, (arr = build_fwd_args(tc, np, rest_slot, pb, pc, kw, total, depth)));
         if (fn->block) {                                  /* `super { ... }` — forwarded args + a literal block */
             NODE *bentry = kp_block_entry(tc, (const pm_node_t *)fn->block);
             if (!bentry) return kp_unsupported(tc, node, "super with a non-literal block");
