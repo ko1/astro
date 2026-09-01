@@ -14069,6 +14069,89 @@ korb_bi_gc_start(CTX *c, VALUE *slots, VALUE_SLICE args)
     aro_gc_collect(c);
     return RESULT_OK(KORB_NIL);
 }
+/* __gc_stress(flag) — read (no args) or set the collector's stress flag, which
+ * makes every allocation collect.  Backs GC.stress / GC.stress=; the knob is
+ * the same one BARUBY_GC_STRESS sets at startup. */
+static RESULT
+korb_bi_gc_stress(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)slots;
+    if (VALUE_SLICE_LEN(args) >= 1) {
+        const VALUE v = VALUE_SLICE_GET(args, 0);
+        const bool on = (v != KORB_NIL && v != KORB_FALSE);
+        ARO_GC_COMMON(c)->stress = on;
+        if (on) ARO_GC_COMMON(c)->stress_interval = 1;   /* every alloc, as CRuby does */
+    }
+    return RESULT_OK(ARO_GC_COMMON(c)->stress ? KORB_TRUE : KORB_FALSE);
+}
+
+/* --- ObjectSpace.each_object -----------------------------------------------
+ * The heap walk (aro_gc_each_object) hands back every payload in the arena.
+ * Two of those kinds are not Ruby objects — the raw buffer behind a
+ * String/Array/Hash and a closure env — and are filtered out here.
+ *
+ * The visitor runs with the walk cursor live, so it must not allocate.  That
+ * forces the two-pass shape: count first, size the result Array exactly, then
+ * refill so every push takes korb_ary_push_val's no-grow path.  The array is
+ * allocated between the passes, so the second pass can only ever see FEWER
+ * matches than the first (an intervening GC drops garbage; the array itself is
+ * skipped by identity) — never more, so the capacity always holds. */
+struct korb_objspace_snap {
+    CTX       *c;
+    VALUE      filter;   /* class/module to match, KORB_NIL = every object */
+    VALUE      skip;     /* the result Array itself (pass 2), else KORB_NIL */
+    uint32_t   count;
+    KorbArray *dst;      /* pass 2 target; NULL while counting */
+};
+
+static void
+korb_objspace_visit(void *arg, void *payload)
+{
+    struct korb_objspace_snap *const s = (struct korb_objspace_snap *)arg;
+    const VALUE v = (VALUE)(uintptr_t)payload;
+    if (v == s->skip) return;
+    switch (((const AroObjectHeader *)payload)->flags & KORB_OBJ_TYPE_MASK) {
+      case KORB_OBJ_VALUE_ARRAY:                  /* Array/Hash backing store */
+      case KORB_OBJ_STR_BUF:                      /* String backing store */
+      case KORB_OBJ_ENV:                          /* closure env */
+        return;
+      default: break;
+    }
+    if (s->filter != KORB_NIL && !korb_obj_kind_of_p(s->c, v, s->filter)) return;
+    if (s->dst != NULL) {
+        if (UNLIKELY(s->dst->len >= s->dst->capa)) return;
+        KorbArrayItems *const it = s->dst->items;
+        ARO_STORE(s->c, it, &korb_items_data(it)[s->dst->len], v);
+        s->dst->len++;
+    }
+    s->count++;
+}
+
+/* __heap_objects__(mod) — Array of every heap object that `is_a? mod`
+ * (mod = nil → all of them).  Backs ObjectSpace.each_object.  Like CRuby's
+ * heap walk this can also surface garbage that has not been collected yet. */
+static RESULT
+korb_bi_heap_objects(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    const VALUE filter = VALUE_SLICE_LEN(args) >= 1 ? VALUE_SLICE_GET(args, 0) : KORB_NIL;
+    if (filter != KORB_NIL && !KORB_CLASS_P(filter))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");
+    slots[0] = filter;                       /* rooted across the Array alloc below */
+
+    struct korb_objspace_snap s = { c, filter, KORB_NIL, 0, NULL };
+    if (!aro_gc_each_object(c, korb_objspace_visit, &s))
+        return korb_raise(c, slots + 1, KORB_E_NOTIMPL, 0,
+                          "ObjectSpace.each_object: this GC backend cannot walk the heap");
+
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, s.count));
+    s.filter = slots[0];                     /* re-read: the alloc may have moved it */
+    s.skip   = slots[1];
+    s.count  = 0;
+    s.dst    = VAL2ARY(slots[1]);
+    aro_gc_each_object(c, korb_objspace_visit, &s);
+    return RESULT_OK(slots[1]);
+}
+
 /* __clock_gettime(id) — seconds as Float from the clock the id names (backs
  * Process.clock_gettime).  0 = REALTIME, 2 = PROCESS_CPUTIME, 3 = THREAD_CPUTIME,
  * anything else = MONOTONIC (the prelude's own numbering). */
@@ -14400,6 +14483,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);
     korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);
+    korb_builtin_define(c, "__heap_objects__", korb_bi_heap_objects, -1);
+    korb_builtin_define(c, "__gc_stress", korb_bi_gc_stress, -1);
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
     korb_builtin_define(c, "Float", korb_bi_float, -1);
     korb_builtin_define(c, "Array", korb_bi_array, -1);

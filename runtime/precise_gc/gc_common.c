@@ -65,6 +65,16 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
     return NULL;
 }
 
+/* Default heap walk — "this backend cannot walk".  Backends whose heap is a
+ * gapless bump region (gc_copy) override it. */
+__attribute__((weak))
+bool
+aro_gc_each_object(CTX *c, void (*visit)(void *arg, void *payload), void *arg)
+{
+    (void)c; (void)visit; (void)arg;
+    return false;
+}
+
 /* Restore framework-owned head fields after a `aro_gc_alloc` + memcpy
  * realloc.  The memcpy from the OLD payload overwrites the freshly-init'd
  * head of NEW (head is at payload offset 0).  Sample calls this from its
