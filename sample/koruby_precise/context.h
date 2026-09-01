@@ -1125,6 +1125,11 @@ struct CTX_struct {
     VALUE     throw_tag;     /* active `throw` tag while a KORB_THROW unwinds (GC-visited) */
     VALUE    *catch_tags;    /* stack of tags of the active `catch` blocks (GC-visited) */
     uint32_t  catch_n, catch_cap;
+    /* Symbol id of the key a hash pattern could not find (0 = none), so the
+     * NoMatchingPatternError raised at the end of a `case/in` chain can be
+     * upgraded to NoMatchingPatternKeyError.  A plain id, not a VALUE, so it
+     * needs no GC root.  Cleared on every top-level korb_pat_match. */
+    uint32_t  pat_key_mid;
     struct korb_vm *vm;
 };
 

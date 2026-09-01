@@ -6279,17 +6279,55 @@ korb_pat_eq(CTX *c, VALUE *slots, VALUE pat, VALUE val, bool *const out)
  * even on arrays, but the default Array#deconstruct returns self, so only a
  * singleton/extended override is observable → dispatch only when one may exist. */
 static inline bool
-korb_pat_plain_array(VALUE v)
+korb_pat_plain_array(CTX *c, VALUE v)
 {
-    return KORB_ARRAY_P(v) && !(((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS);
+    return KORB_ARRAY_P(v) && !(((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS) &&
+           !UNLIKELY(c->vm->refinements_active);   /* a refined Array#deconstruct is observable */
 }
 
-/* Recursive pattern matcher (node_match_pred/req).  `base` is the match node's
- * frame view (binding writes land in its locals); `cur` is scratch above the
- * rooted subject.  Returns RESULT{KORB_TRUE|KORB_FALSE} (or a raise from a value
- * pattern's EVAL).  Subject re-read from subjref after any GC point. */
+/* CRuby compiles a pattern's `#deconstruct` / `#deconstruct_keys` guard as a
+ * real `subject.respond_to?(sym)` call, so an object that overrides
+ * #respond_to? (a mock, a delegator) gets to answer.  Only an override is worth
+ * a dispatch — the built-in answer is what korb_responds_to already computes.
+ * `cur` needs >= 4 free cells; the subject is re-read through subjref. */
+static RESULT
+korb_pat_responds_to(CTX *c, VALUE *cur, VALUE_REF subjref, uint32_t mid, bool *out)
+{
+    const VALUE dcls = korb_dispatch_class(c, VALUE_REF_GET(subjref));
+    const struct korb_method *rt = NULL;
+    if (KORB_CLASS_P(dcls))
+        rt = korb_class_find_method(dcls, korb_intern(c->vm, "respond_to?", 11), NULL);
+    if (rt == NULL || rt->kind == KORB_METHOD_CFUNC) {      /* the built-in one */
+        *out = korb_responds_to(c, VALUE_REF_GET(subjref), mid);
+        return RESULT_OK(KORB_NIL);
+    }
+    cur[0] = VALUE_REF_GET(subjref);
+    cur[1] = ID2SYM(mid);
+    const RESULT r = korb_send(c, cur + 2, korb_intern(c->vm, "respond_to?", 11), 0, 1);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    *out = KORB_TRUTHY(r.value);
+    return RESULT_OK(KORB_NIL);
+}
+
+static RESULT korb_pat_match_1(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct korb_pat *p);
+
+/* Entry point for node_match_pred/req.  kind 255 is the synthetic always-fail
+ * descriptor parse.c puts at the tail of an else-less `case/in`; it must not
+ * clear the key-miss note the preceding clause left behind. */
 RESULT
 korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct korb_pat *p)
+{
+    if (p->kind == 255) return RESULT_OK(KORB_FALSE);
+    c->pat_key_mid = 0;
+    return korb_pat_match_1(c, base, cur, subjref, p);
+}
+
+/* Recursive pattern matcher.  `base` is the match node's frame view (binding
+ * writes land in its locals); `cur` is scratch above the rooted subject.
+ * Returns RESULT{KORB_TRUE|KORB_FALSE} (or a raise from a value pattern's
+ * EVAL).  Subject re-read from subjref after any GC point. */
+static RESULT
+korb_pat_match_1(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct korb_pat *p)
 {
     switch (p->kind) {
       case 0:                                            /* binding: always matches */
@@ -6303,7 +6341,8 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
          * `^(t1..t2)` of Times) whose <=> the no-alloc korb_case_eq can't
          * dispatch → route these through the real #=== method.  Class/Regexp/
          * literal patterns keep the fast path. */
-        if (KORB_PROC_P(pv.value) || KORB_OBJECT_P(pv.value) || KORB_RANGE_P(pv.value)) {
+        if (KORB_PROC_P(pv.value) || KORB_OBJECT_P(pv.value) || KORB_RANGE_P(pv.value) ||
+            UNLIKELY(c->vm->refinements_active)) {   /* a refined #=== must win over korb_case_eq */
             cur[0] = pv.value; cur[1] = VALUE_REF_GET(subjref);
             RESULT er = korb_send(c, cur + 2, korb_intern(c->vm, "===", 3), 0, 1);
             if (UNLIKELY(er.state != KORB_NORMAL)) return er;
@@ -6322,11 +6361,12 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
       case 2: {                                          /* array pattern [e0..en) — Array, else #deconstruct'd to one */
         if (p->value_node) { RESULT cv = EVAL(c, p->value_node, cur); if (UNLIKELY(cv.state != KORB_NORMAL)) return cv;   /* `Const[…]` → Const === subject */
                              if (!korb_case_eq(c, cv.value, VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE); }
-        if (korb_pat_plain_array(VALUE_REF_GET(subjref))) {
+        if (korb_pat_plain_array(c, VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
         } else {
             const uint32_t mid_dc = korb_intern(c->vm, "deconstruct", 11);   /* Struct/Data/custom hook */
-            if (!korb_responds_to(c, VALUE_REF_GET(subjref), mid_dc)) return RESULT_OK(KORB_FALSE);
+            bool has_dc = false; CHECK(korb_pat_responds_to(c, cur, subjref, mid_dc, &has_dc));
+            if (!has_dc) return RESULT_OK(KORB_FALSE);
             cur[0] = VALUE_REF_GET(subjref);                                  /* receiver */
             RESULT dr = korb_send(c, cur + 1, mid_dc, 0, 0);
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
@@ -6336,7 +6376,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         if (VAL2ARY(cur[0])->len != p->n) return RESULT_OK(KORB_FALSE);
         for (uint32_t i = 0; i < p->n; i++) {
             cur[1] = korb_items_data(VAL2ARY(cur[0])->items)[i];    /* element at cur[1]; cur[0] keeps the array rooted */
-            RESULT r = korb_pat_match(c, base, cur + 2, VALUE_REF_AT(&cur[1]), p->elems[i]);
+            RESULT r = korb_pat_match_1(c, base, cur + 2, VALUE_REF_AT(&cur[1]), p->elems[i]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
         }
@@ -6347,12 +6387,13 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
                              if (!korb_case_eq(c, cv.value, VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE); }
         /* materialize the hash at cur[0]: a real Hash directly, else via the
          * object's #deconstruct_keys (Struct/Data/custom pattern-match hook). */
-        if (KORB_HASH_P(VALUE_REF_GET(subjref))) {
-            cur[0] = VALUE_REF_GET(subjref);
+        if (KORB_HASH_P(VALUE_REF_GET(subjref)) && !UNLIKELY(c->vm->refinements_active)) {
+            cur[0] = VALUE_REF_GET(subjref);        /* a refined Hash#deconstruct_keys is observable */
         }
         else {
             const uint32_t mid_dk = korb_intern(c->vm, "deconstruct_keys", 16);
-            if (!korb_responds_to(c, VALUE_REF_GET(subjref), mid_dk)) return RESULT_OK(KORB_FALSE);
+            bool has_dk = false; CHECK(korb_pat_responds_to(c, cur, subjref, mid_dk, &has_dk));
+            if (!has_dk) return RESULT_OK(KORB_FALSE);
             cur[0] = VALUE_REF_GET(subjref);              /* recv (scanned slot) */
             /* CRuby passes the pattern's keys as an Array so the object may build
              * a minimal hash; a *named* **rest needs every key → pass nil. */
@@ -6373,9 +6414,12 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
             return RESULT_OK(VAL2HASH(cur[0])->len == 0 ? KORB_TRUE : KORB_FALSE);
         for (uint32_t i = 0; i < p->n; i++) {
             const int32_t idx = korb_hash_find(VAL2HASH(cur[0]), p->keys[i]);
-            if (idx < 0) return RESULT_OK(KORB_FALSE);
+            if (idx < 0) {                                /* note it: the case/in tail raises NoMatchingPatternKeyError */
+                if (SYMBOL_P(p->keys[i])) c->pat_key_mid = SYM2ID(p->keys[i]);
+                return RESULT_OK(KORB_FALSE);
+            }
             cur[1] = korb_items_data(VAL2HASH(cur[0])->items)[2 * idx + 1];
-            RESULT r = korb_pat_match(c, base, cur + 2, VALUE_REF_AT(&cur[1]), p->elems[i]);
+            RESULT r = korb_pat_match_1(c, base, cur + 2, VALUE_REF_AT(&cur[1]), p->elems[i]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
         }
@@ -6400,11 +6444,12 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
       case 8: {                                          /* find pattern [*left, mid..., *right] */
         if (p->value_node) { RESULT cv = EVAL(c, p->value_node, cur); if (UNLIKELY(cv.state != KORB_NORMAL)) return cv;   /* `Const[*, …, *]` */
                              if (!korb_case_eq(c, cv.value, VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE); }
-        if (korb_pat_plain_array(VALUE_REF_GET(subjref))) {
+        if (korb_pat_plain_array(c, VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
         } else {
             const uint32_t mid_dc = korb_intern(c->vm, "deconstruct", 11);
-            if (!korb_responds_to(c, VALUE_REF_GET(subjref), mid_dc)) return RESULT_OK(KORB_FALSE);
+            bool has_dc = false; CHECK(korb_pat_responds_to(c, cur, subjref, mid_dc, &has_dc));
+            if (!has_dc) return RESULT_OK(KORB_FALSE);
             cur[0] = VALUE_REF_GET(subjref);
             RESULT dr = korb_send(c, cur + 1, mid_dc, 0, 0);
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
@@ -6417,7 +6462,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
             bool all = true;
             for (uint32_t i = 0; i < p->n; i++) {
                 cur[1] = korb_items_data(VAL2ARY(cur[0])->items)[s + i];
-                RESULT r = korb_pat_match(c, base, cur + 2, VALUE_REF_AT(&cur[1]), p->elems[i]);
+                RESULT r = korb_pat_match_1(c, base, cur + 2, VALUE_REF_AT(&cur[1]), p->elems[i]);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 if (r.value != KORB_TRUE) { all = false; break; }
             }
@@ -6440,7 +6485,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         return RESULT_OK(KORB_FALSE);
       }
       case 4: {                                          /* capture: inner pattern, then bind */
-        RESULT r = korb_pat_match(c, base, cur, subjref, p->elems[0]);
+        RESULT r = korb_pat_match_1(c, base, cur, subjref, p->elems[0]);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
         base[p->bind_off] = VALUE_REF_GET(subjref);
@@ -6448,7 +6493,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
       }
       case 5: {                                          /* alternation: elems[0] | elems[1] */
         for (uint32_t i = 0; i < p->n; i++) {
-            RESULT r = korb_pat_match(c, base, cur, subjref, p->elems[i]);
+            RESULT r = korb_pat_match_1(c, base, cur, subjref, p->elems[i]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (r.value == KORB_TRUE) return RESULT_OK(KORB_TRUE);
         }
@@ -6457,11 +6502,12 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
       case 6: {                                          /* array w/ rest: [pre..., *rest, post...] — Array or #deconstruct'd */
         if (p->value_node) { RESULT cv = EVAL(c, p->value_node, cur); if (UNLIKELY(cv.state != KORB_NORMAL)) return cv;   /* `Const[…, *rest, …]` */
                              if (!korb_case_eq(c, cv.value, VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE); }
-        if (korb_pat_plain_array(VALUE_REF_GET(subjref))) {
+        if (korb_pat_plain_array(c, VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
         } else {
             const uint32_t mid_dc = korb_intern(c->vm, "deconstruct", 11);
-            if (!korb_responds_to(c, VALUE_REF_GET(subjref), mid_dc)) return RESULT_OK(KORB_FALSE);
+            bool has_dc = false; CHECK(korb_pat_responds_to(c, cur, subjref, mid_dc, &has_dc));
+            if (!has_dc) return RESULT_OK(KORB_FALSE);
             cur[0] = VALUE_REF_GET(subjref);
             RESULT dr = korb_send(c, cur + 1, mid_dc, 0, 0);
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
@@ -6474,7 +6520,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         if (len < p->n + p->npost) return RESULT_OK(KORB_FALSE);
         for (uint32_t i = 0; i < p->n; i++) {            /* pre */
             cur2[0] = korb_items_data(VAL2ARY(VALUE_REF_GET(aref))->items)[i];
-            RESULT r = korb_pat_match(c, base, cur2 + 1, VALUE_REF_AT(&cur2[0]), p->elems[i]);
+            RESULT r = korb_pat_match_1(c, base, cur2 + 1, VALUE_REF_AT(&cur2[0]), p->elems[i]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
         }
@@ -6490,7 +6536,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         }
         for (uint32_t i = 0; i < p->npost; i++) {        /* post (from the tail) */
             cur2[0] = korb_items_data(VAL2ARY(VALUE_REF_GET(aref))->items)[len - p->npost + i];
-            RESULT r = korb_pat_match(c, base, cur2 + 1, VALUE_REF_AT(&cur2[0]), p->elems[p->n + i]);
+            RESULT r = korb_pat_match_1(c, base, cur2 + 1, VALUE_REF_AT(&cur2[0]), p->elems[p->n + i]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
         }
@@ -7045,6 +7091,15 @@ korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+
+    /* A `case/in` whose last clause failed only on an absent hash key raises
+     * NoMatchingPatternKeyError (a NoMatchingPatternError subclass). */
+    if (UNLIKELY(etype == KORB_E_NO_MATCHING_PATTERN) && c->pat_key_mid != 0) {
+        const size_t n = strlen(buf);
+        snprintf(buf + n, sizeof(buf) - n, ": key not found: :%s", korb_sym_name(c->vm, c->pat_key_mid));
+        etype = KORB_E_NO_MATCHING_PATTERN_KEY;
+        c->pat_key_mid = 0;
+    }
 
     c->vm->bt_cnt = 0;     /* fresh unwind */
 
