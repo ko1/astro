@@ -3061,7 +3061,60 @@ CRuby 3.4 以降 "chilled" で、破壊的変更のたびに
   使えるが、`KORB_FL_FROZEN` を直接見ている箇所 (Hash リテラルのキー
   複製など) が全部「凍っている」と誤解する。
 
-## (2026-08-31) 未捕捉例外レポートが raise フレームを噛ませる
+### (2026-09-01 調査) 設計は 2 案目 + bit 9 で確定。ただし parse.c 待ち
+
+**採る案: chilled = `KORB_FL_FROZEN` + chilled bit (bit 9)、String 限定。**
+
+1 案目の欠点 (noindex Hash が毎回 slow path) は、そもそも hot path を
+広げないので発生しない。chilled String は既に FROZEN bit が立っているから
+`KORB_CHECK_FROZEN` の既存の 1 bit test でそのまま捕まる —
+**hot path の追加命令はゼロ**。
+
+2 案目への「`KORB_FL_FROZEN` 直読み箇所が誤解する」という反論は有限で機械的:
+`KORB_FL_FROZEN` の出現は 44 箇所、うち読みは 17 箇所しかなく、しかも
+変更ガードは `KORB_CHECK_FROZEN` / `KORB_CHECK_FROZEN_HEAP` の両方が
+**`korb_raise_frozen()` 1 関数**に集約されている。ここが
+「警告して続行 (chilled)」と「FrozenError (本当に frozen)」を分ける唯一の
+分岐点になる。`frozen?` など残りの直読みは個別に chilled を見ればよい。
+
+bit の選択 (todo が bit 9 のコストを不可避と見ていた点の訂正):
+- bit 9 (`KORB_FL_HASH_NOINDEX`) で**問題ない**。この案では chilled bit を
+  見るのは「FROZEN test を通った」かつ「String である」場合だけなので、
+  noindex な Hash は判定対象にすらならない。実際 bit 9 の読み書きは
+  `korb_runtime.c:1683-1685` の Hash 上だけ。
+- bit 10 (`KORB_FL_JOIN_VISITING`) は**使えない**。Array 専用に見えるが
+  `builtins/string.c:2566` が `String#<=>` の最中に String へ立てる。
+- bit 11 (`KORB_FL_CMP_VISITING`) も String は Comparable なので不可。
+
+**未着手の理由**: 11 例のうち 6 例 (リテラル側) は `parse.c` / `node.def`
+無しでは届かない。「frozen_string_literal の無いファイルのリテラル」という
+判定は `parse.c:3473` の `PM_STRING_FLAGS_FROZEN` 分岐にしか無く、印を付ける
+先も `node_str` の本体 (node.def)。`node_str` が呼ぶ `korb_str_new` は
+汎用コンストラクタなのでそこでは付けられない。`node_str_frozen` と同じ形で
+`node_str_chilled` を足すのが素直。
+
+残り 5 例は `Symbol#to_s` 側 (guard 2)。builtins だけで届くが、上記の機構
+一式が必要な上に、`sym.to_s` の結果は prelude 全体で使われるので、それを
+FROZEN 扱いにする影響範囲がリテラル側より広い。**リテラル側と一緒に、
+parse.c 側の担当と合わせて入れるのが正しい**と判断して見送った。
+
+なお `core/symbol/to_s_spec` の残り 1 例
+(`string returned by :bad!.to_s will be frozen in the future`) も同じ機構待ち。
+
+## (2026-09-01) private_class_method :new が enforce できない
+
+```ruby
+class A; private_class_method :new; end
+A.new     # koruby: A のインスタンスが返る / CRuby: NoMethodError
+```
+
+`korb_set_class_visibility` (builtins/set.c) は `new` / `allocate` を
+no-op で通している。この 2 つは method entry を持たず `korb_send_impl` の
+特例 dispatch なので、可視性を書き込む先が無いため。
+singleton に entry を作る手も、`korb_send_impl` が `m2` を見つけた時点で
+`korb_dispatch_method` に飛ばしてしまい既定の allocator に落ちないので
+そのままでは使えない。`mid_new` cascade 側に可視性チェックを足す必要があり、
+dispatch の hot path に触るので独立の作業。`library/matrix/new_spec` で 1 例。
 
 ```
 $ koruby_precise -e 'raise "foo"'

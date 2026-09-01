@@ -673,15 +673,18 @@ static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     }
     /* `private [:a, :b]` treats a lone Array argument as the list of names. */
     const bool array_arg = (argc == 1 && KORB_ARRAY_P(VALUE_SLICE_GET(a, 0)));
-    if (KORB_CLASS_P(selfv)) {                         /* top-level / non-class: best-effort no-op on the names */
-        KorbClass *const k = VAL2CLASS(selfv);
+    /* top-level `private :m` runs with self == main (not a class); CRuby defines
+     * main#private to act on Object, so aim there when self is not a class. */
+    const VALUE target = KORB_CLASS_P(selfv) ? selfv : korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    if (KORB_CLASS_P(target)) {
+        KorbClass *const k = VAL2CLASS(target);
         if (array_arg) {
             slots[0] = VALUE_SLICE_GET(a, 0);         /* root the name array across NameError alloc */
             for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++)
-                CHECK(korb_set_visibility1(c, slots + 1, selfv, k, korb_items_data(VAL2ARY(slots[0])->items)[i], vis));
+                CHECK(korb_set_visibility1(c, slots + 1, target, k, korb_items_data(VAL2ARY(slots[0])->items)[i], vis));
         } else {
             for (uint32_t i = 0; i < argc; i++)
-                CHECK(korb_set_visibility1(c, slots, selfv, k, VALUE_SLICE_GET(a, i), vis));
+                CHECK(korb_set_visibility1(c, slots, target, k, VALUE_SLICE_GET(a, i), vis));
         }
         c->vm->method_serial++;
     }
@@ -1230,7 +1233,7 @@ static RESULT korb_append_names(CTX *c, VALUE *slots, VALUE_REF result, const ch
 static const char *const korb_kernel_priv_funcs[] = { "loop", "catch", "throw", "lambda", "proc", "block_given?", "iterator?" };
 static const char *const korb_kernel_pub_funcs[]  = { "loop", "catch", "throw", "lambda", "proc" };
 static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask) {
-    const bool inherit = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
+    const bool inherit = VALUE_SLICE_LEN(a) < 1 || KORB_TRUTHY(VALUE_SLICE_GET(a, 0));   /* nil counts as false, like CRuby's RTEST */
     const uint32_t priv_mids[] = {                                  /* method names that are always reported private */
         c->vm->mid_initialize,
         korb_intern(c->vm, "initialize_copy", 15),

@@ -261,10 +261,32 @@ static RESULT korb_m_str_plus_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     slots[0] = VALUE_REF_GET(self);
     return korb_send(c, slots + 1, korb_intern(c->vm, "dup", 3), 0, 0);       /* mutable copy via #dup */
 }
+/* String#to_sym — the Symbol keeps self's encoding (an ASCII-only name normalises
+ * to US-ASCII inside korb_intern_enc), and malformed bytes are refused. */
 static RESULT korb_m_str_to_sym(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;(void)a;
-    const KorbString *s = SELF_STR;
-    return RESULT_OK(ID2SYM(korb_intern(c->vm, korb_strbuf_data(s->buf), s->len)));
+    (void)a;
+    const VALUE sv = VALUE_REF_GET(self);
+    const KorbString *const s = VAL2STR(sv);
+    const uint32_t enc = KORB_STR_ENC(sv);
+    if (UNLIKELY(!korb_str_enc_valid(s, enc))) {
+        const char *const d = korb_strbuf_data(s->buf);
+        char esc[128];
+        uint32_t o = 0;
+        for (uint32_t i = 0; i < s->len && o + 5 < sizeof esc; i++) {   /* CRuby quotes the name inspect-style */
+            const unsigned char b = (unsigned char)d[i];
+            if (b >= 0x20 && b < 0x7f && b != '"' && b != '\\') esc[o++] = (char)b;
+            else o += (uint32_t)snprintf(esc + o, sizeof esc - o, "\\x%02X", b);
+        }
+        esc[o] = '\0';
+        char msg[192];
+        snprintf(msg, sizeof msg, "invalid symbol in encoding %s :\"%s\"", korb_enc_name_of(c->vm, enc), esc);
+        slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "EncodingError", 13));
+        RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", msg);
+        if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
+            ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+        return r;
+    }
+    return RESULT_OK(ID2SYM(korb_intern_enc(c->vm, korb_strbuf_data(s->buf), s->len, enc)));
 }
 /* Validate case-mapping options (the mapping itself stays ASCII-only).  op:
  * 0=upcase 1=downcase 2=capitalize 3=swapcase.  Accepts () | :ascii | :turkic |

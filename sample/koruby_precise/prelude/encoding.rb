@@ -833,9 +833,10 @@ class String
   end
 end
 class Symbol
-  # A Symbol reports US-ASCII when its name is ASCII-only, else UTF-8 (CRuby).
+  # A Symbol carries the encoding of the String it was interned from; #to_s
+  # hands that tag back, so ask the String.
   def encoding
-    to_s.ascii_only? ? Encoding::US_ASCII : Encoding::UTF_8
+    to_s.encoding
   end
 end
 class Regexp

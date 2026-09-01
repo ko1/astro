@@ -7,11 +7,20 @@ static RESULT korb_m_sym_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const uint32_t id = SYM2ID(VALUE_REF_GET(self));
     const char *const nm = korb_sym_name(c->vm, id);
     const uint32_t len = c->vm->sym_lens[id];         /* the name may hold NUL bytes */
-    bool ascii = true;
-    for (uint32_t i = 0; i < len; i++) if ((unsigned char)nm[i] >= 0x80) { ascii = false; break; }
+    const uint32_t enc = c->vm->sym_encs[id];
     const VALUE s = UNWRAP(korb_str_new(c, slots, nm, len));
-    if (ascii) KORB_STR_ENC_SET(s, KORB_ENC_USASCII);   /* CRuby: an ASCII-only Symbol is US-ASCII */
+    KORB_STR_ENC_SET(s, enc);                         /* the Symbol's own encoding */
     return RESULT_OK(s);
+}
+/* Symbol#name — unlike #to_s/#id2name this returns the *same* frozen String on
+ * every call (CRuby hands back an fstring).  The fstring pool already gives us
+ * both properties, so intern the name there. */
+static RESULT korb_m_sym_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const uint32_t id = SYM2ID(VALUE_REF_GET(self));
+    const char *const nm = korb_sym_name(c->vm, id);
+    const uint32_t len = c->vm->sym_lens[id];         /* the name may hold NUL bytes */
+    return RESULT_OK(korb_fstr_get(c, slots, nm, len, c->vm->sym_encs[id]));
 }
 static RESULT korb_m_sym_to_sym(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 /* Symbol.all_symbols → an Array of every interned Symbol. */
