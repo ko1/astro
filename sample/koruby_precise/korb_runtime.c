@@ -8054,7 +8054,9 @@ static const uint8_t *korb_bind_destr_entry(CTX *c, VALUE *bf, uint32_t nlocals,
         const uint32_t nl = sp[1], rest_named = sp[2], nr = sp[3];
         const uint8_t *cur = sp + 4;
         const KorbArray *const ar = KORB_ARRAY_P(pv) ? VAL2ARY(pv) : NULL;
-        const uint32_t n = ar ? ar->len : (pv == KORB_NIL ? 0 : 1);
+        /* a non-Array (nil included) decomposes as the 1-element list [pv]:
+         * `->((*f)){f}.call(nil)` is [nil], not [] (CRuby). */
+        const uint32_t n = ar ? ar->len : 1;
         const VALUE *const items = ar ? korb_items_data(ar->items) : &pv;
         const uint32_t surplus = (n > nl + nr) ? n - nl - nr : 0;
         /* Stage the source values in the (scanned) block frame before the rest
@@ -8251,11 +8253,15 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
      * the object as-is; a non-Array return is a TypeError).  Done once here, so
      * every binding branch below sees a real Array. */
     VALUE splat_conv = KORB_UNDEF;
-    if (!is_lambda && argc == 1 && !KORB_ARRAY_P(argv[0])) {
+    if (argc == 1 && !KORB_ARRAY_P(argv[0])) {
         const uint32_t np0 = korb_entry_params_cnt(block);
-        const bool wants_many = (np0 > 1) || korb_entry_destructure_n(block) > 0 ||
+        /* A lambda never auto-splats, but a DESTRUCTURING param (`|(a, b)|`)
+         * still converts its argument through #to_ary — that is the param's own
+         * decomposition, not auto-splat (CRuby). */
+        const bool wants_many = korb_entry_destructure_n(block) > 0 ||
                                 (korb_entry_destructure_spec(block) != NULL) ||
-                                (np0 == 1 && korb_entry_rest_slot(block) <= -2);   /* |x,| / |x,*| are multi-param for auto-splat */
+                                (!is_lambda && ((np0 > 1) ||
+                                 (np0 == 1 && korb_entry_rest_slot(block) <= -2)));   /* |x,| / |x,*| are multi-param for auto-splat */
         if (wants_many && KORB_OBJECT_P(argv[0])) {
             const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
             VALUE recv = argv[0];                        /* parked in slots[0] by the probe below */
