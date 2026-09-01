@@ -513,12 +513,21 @@ module GC
 end
 
 module ObjectSpace
-  # koruby has no heap walk: nothing is yielded.  Without a block CRuby returns
-  # an Enumerator, and code does chain on it (`each_object(Class).select {…}`),
-  # so give it one rather than the count.
-  def self.each_object(*)
-    return [].each unless block_given?
-    0
+  # The copying GC's arena is a gapless bump region, so __heap_objects__ can walk
+  # it (see docs/objectspace_heap_walk.md).  It returns a snapshot Array rather
+  # than yielding, because a block that allocates would move the heap under the
+  # walk cursor.  As in CRuby the walk can also surface not-yet-collected
+  # garbage; nothing is yielded twice.
+  def self.each_object(*args, &blk)
+    if args.size > 1
+      raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)"
+    end
+    mod = args[0]
+    raise TypeError, "class or module required" if args.size == 1 && !mod.is_a?(Module)
+    return to_enum(:each_object, *args) if blk.nil?
+    objs = __heap_objects__(mod)
+    objs.each { |o| blk.call(o) }
+    objs.size
   end
   def self.count_objects(*); {}; end
   def self.garbage_collect(*); nil; end
