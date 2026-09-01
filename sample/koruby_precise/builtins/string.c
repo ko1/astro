@@ -1852,10 +1852,17 @@ static RESULT korb_m_str_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(LONG2FIX(cnt));
 }
 static RESULT korb_m_str_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     korb_sword_t bits = 16;
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) bits = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (VALUE_SLICE_LEN(a) >= 1) {
+        VALUE nv = VALUE_SLICE_GET(a, 0);
+        if (UNLIKELY(!korb_to_index(nv, &bits))) {            /* #to_int coercion (CRuby's NUM2INT) */
+            RESULT cr = korb_coerce_to_int(c, slots, &nv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (UNLIKELY(cr.value != KORB_TRUE || !korb_to_index(nv, &bits)))
+                return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
+        }
+    }
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));        /* re-read: the coercion may have moved self */
     korb_sword_t sum = 0;
     for (uint32_t i = 0; i < s->len; i++) sum += (unsigned char)korb_strbuf_data(s->buf)[i];
     if (bits > 0 && bits < 64) sum &= ((korb_sword_t)1 << bits) - 1;
