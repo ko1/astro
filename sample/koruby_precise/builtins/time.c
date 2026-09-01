@@ -411,13 +411,17 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         double per_ns = 1000.0;                                  /* default unit = :microsecond */
         if (alen >= 3) {                                     /* nil is not "unset": CRuby rejects it too */
             const VALUE u = VALUE_SLICE_GET(a, 2);
-            const char *un = SYMBOL_P(u) ? korb_sym_name(c->vm, SYM2ID(u)) : (KORB_STRING_P(u) ? korb_strbuf_data(VAL2STR(u)->buf) : "");
+            /* CRuby only accepts a Symbol here — no #to_sym / String coercion */
+            if (UNLIKELY(!SYMBOL_P(u)))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unexpected unit: %s",
+                                  KORB_STRING_P(u) ? korb_strbuf_data(VAL2STR(u)->buf) : korb_type_name(u));
+            const char *un = korb_sym_name(c->vm, SYM2ID(u));
             if (!strcmp(un, "millisecond")) per_ns = 1e6;
             else if (!strcmp(un, "microsecond") || !strcmp(un, "usec")) per_ns = 1000.0;
             else if (!strcmp(un, "nanosecond") || !strcmp(un, "nsec")) per_ns = 1.0;
             else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unexpected unit: %s", un);
         }
-        nsec += (long)(subv * per_ns + 0.5);
+        nsec += (long)(subv * per_ns);                       /* CRuby truncates the sub-nanosecond part */
     }
     sec += nsec / 1000000000; nsec %= 1000000000;                /* carry overflow into seconds */
     if (in_zv == KORB_NIL)
@@ -1032,6 +1036,10 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             has_zname = true;
         }
     }
+    /* A bare numeric offset has no zone name at all: CRuby's %Z is "" there,
+     * where libc would print "GMT". */
+    { korb_sword_t fixoff;
+      if (!has_zname && !is_utc && korb_time_fixed_off(c, VALUE_REF_GET(self), &fixoff)) { zbuf[0] = '\0'; has_zname = true; } }
     /* Nanosecond part, for the Ruby-only %L / %N sub-second directives. */
     const long nsec = korb_time_nsec_of(c, VALUE_REF_GET(self));
     const long gmtoff = tm.tm_gmtoff;
@@ -1193,7 +1201,14 @@ static RESULT korb_m_time_zone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return RESULT_OK(KORB_NIL);                          /* a bare numeric offset has no zone name */
     struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
     const char *z = korb_time_is_utc(c, VALUE_REF_GET(self)) ? "UTC" : (tm.tm_zone ? tm.tm_zone : "");
-    return korb_str_new(c, slots, z, (uint32_t)strlen(z));
+    const RESULT r = korb_str_new(c, slots, z, (uint32_t)strlen(z));
+    /* CRuby's zone_str: an ASCII-only abbreviation is a US-ASCII String */
+    if (LIKELY(r.state == KORB_NORMAL)) {
+        bool ascii = true;
+        for (const char *p = z; *p; p++) if ((unsigned char)*p >= 0x80) { ascii = false; break; }
+        if (ascii) KORB_STR_ENC_SET(r.value, KORB_ENC_USASCII);
+    }
+    return r;
 }
 /* Time#dst? / #isdst — only a zone-derived local time can be in DST; a UTC or
  * fixed-offset Time never is. */

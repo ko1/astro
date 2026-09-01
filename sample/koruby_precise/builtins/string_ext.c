@@ -909,6 +909,11 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (UNLIKELY(!korb_str_bpos_ok(rs, roff + rn)))
             return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %u does not land on character boundary", roff + rn);
     }
+    /* CRuby associates rb_enc_check(str, val): splicing a UTF-8 run into a
+     * US-ASCII receiver leaves the result UTF-8.  Computed before the splice,
+     * while both operands still hold their original bytes. */
+    uint32_t newenc = KORB_STR_ENC(VALUE_REF_GET(self));
+    const bool enc_ok = korb_str_enc_combine(c->vm, VALUE_REF_GET(self), repl, &newenc);
     uint32_t sufoff = (uint32_t)(start + dellen), suflen = bn - sufoff;
     uint32_t newlen = (uint32_t)start + rn + suflen;
     char *out = malloc(newlen ? newlen : 1);                /* assemble full new content (no GC) */
@@ -919,6 +924,7 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     KorbString *ns = korb_str_ensure(c, slots, self, newlen);   /* may move; out is libc-stable */
     memcpy(korb_strbuf_data(ns->buf), out, newlen); ns->len = newlen; korb_strbuf_data(ns->buf)[newlen] = '\0';
     free(out);
+    if (enc_ok) KORB_STR_ENC_SET(VALUE_REF_GET(self), newenc);
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_str_getbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
