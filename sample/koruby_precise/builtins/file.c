@@ -233,9 +233,37 @@ ARO_BORROW static const char *korb_str_cstr_len(VALUE v, uint32_t *len) {
 }
 
 /* File.expand_path(path, base = Dir.pwd) → an absolute, normalized path. */
+/* Collapse "." and "x/.." components lexically, in place.  realpath(3) refuses
+ * "dir/file/.." with ENOTDIR; CRuby's own resolver just pops the component. */
+static void korb_path_clean(char *const p) {
+    char *out = p;
+    const bool abs = p[0] == '/';
+    if (abs) out++;
+    char *seg = p + (abs ? 1 : 0);
+    char *w = out;
+    while (*seg) {
+        char *const end = strchr(seg, '/');
+        const size_t n = end ? (size_t)(end - seg) : strlen(seg);
+        if (n == 0 || (n == 1 && seg[0] == '.')) {
+            /* skip */
+        } else if (n == 2 && seg[0] == '.' && seg[1] == '.' && w > out) {
+            w--;                                          /* step back over the trailing '/' */
+            while (w > out && w[-1] != '/') w--;
+        } else {
+            memmove(w, seg, n); w += n; *w++ = '/';
+        }
+        if (!end) break;
+        seg = end + 1;
+    }
+    if (w > out && w[-1] == '/') w--;
+    *w = '\0';
+    if (!abs && p[0] == '\0') { p[0] = '.'; p[1] = '\0'; }
+}
+
 /* File.realpath(path[, dir]) — canonical absolute path with symlinks resolved;
- * every component (incl. the last) must exist, else Errno::ENOENT. */
-static RESULT korb_m_file_realpath(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+ * every component (incl. the last) must exist, else Errno::ENOENT.
+ * File.realdirpath only requires the directory part to exist. */
+static RESULT korb_file_realpath(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool dironly) {
     (void)self;
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
@@ -252,11 +280,67 @@ static RESULT korb_m_file_realpath(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         jl = plen < sizeof joined ? plen : sizeof joined - 1; memcpy(joined, path, jl); joined[jl] = '\0';
     }
     char real[4096];
-    const uint32_t penc = KORB_STR_ENC(pv);                        /* the result keeps the path's encoding */
-    if (!realpath(joined, real)) return korb_raise_errno(c, slots, errno, "realpath", joined);
+    /* The result keeps the path's encoding — but an all-ASCII path carries no
+     * encoding of its own, so the base directory's wins (CRuby). */
+    uint32_t penc = KORB_STR_ENC(pv);
+    if (VALUE_SLICE_LEN(a) >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1))) {
+        bool ascii = true;
+        for (uint32_t i = 0; i < plen; i++) if ((unsigned char)path[i] >= 0x80) { ascii = false; break; }
+        if (ascii) penc = KORB_STR_ENC(VALUE_SLICE_GET(a, 1));
+    }
+    if (!realpath(joined, real)) {
+        const int e1 = errno;
+        bool ok = false;
+        if (e1 == ENOTDIR) {                                       /* "dir/file/.." — pop it lexically */
+            char cleaned[4096];
+            snprintf(cleaned, sizeof cleaned, "%s", joined);
+            korb_path_clean(cleaned);
+            ok = realpath(cleaned, real) != NULL;
+        }
+        /* realdirpath: only the directory part has to exist.  The last component
+         * is still followed if it is a symlink, so a dangling link resolves to
+         * its (absent) target — and a link whose *directory* is absent still
+         * raises ENOENT.  ELOOP and friends are never softened. */
+        if (!ok && dironly && e1 == ENOENT) {
+            char cur[4096];
+            snprintf(cur, sizeof cur, "%s", joined);
+            for (int i = 0; i < 32 && !ok; i++) {
+                char head[4096];
+                snprintf(head, sizeof head, "%s", cur);
+                char *const slash = strrchr(head, '/');
+                const char *tail;
+                if (slash == NULL) { tail = cur; head[0] = '.'; head[1] = '\0'; }
+                else if (slash == head) { tail = slash + 1; head[1] = '\0'; }
+                else { tail = slash + 1; *slash = '\0'; }
+                char dreal[4096];
+                if (!realpath(head, dreal)) break;                 /* the directory part is the real ENOENT */
+                char full[4096];
+                snprintf(full, sizeof full, "%s%s%s", dreal, strcmp(dreal, "/") ? "/" : "", tail);
+                struct stat lst;
+                if (lstat(full, &lst) == 0 && S_ISLNK(lst.st_mode)) {
+                    char lnk[4096];
+                    const ssize_t n = readlink(full, lnk, sizeof lnk - 1);
+                    if (n < 0) break;
+                    lnk[n] = '\0';
+                    if (lnk[0] == '/') snprintf(cur, sizeof cur, "%s", lnk);
+                    else snprintf(cur, sizeof cur, "%s/%s", dreal, lnk);
+                    continue;
+                }
+                snprintf(real, sizeof real, "%s", full);
+                ok = true;
+            }
+        }
+        if (!ok) return korb_raise_errno(c, slots, e1, "realpath", joined);
+    }
     RESULT rr = korb_str_new(c, slots, real, (uint32_t)strlen(real));
     if (LIKELY(rr.state == KORB_NORMAL)) KORB_STR_ENC_SET(rr.value, penc);
     return rr;
+}
+static RESULT korb_m_file_realpath(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_file_realpath(c, slots, self, a, false);
+}
+static RESULT korb_m_file_realdirpath(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_file_realpath(c, slots, self, a, true);
 }
 /* `tilde`: File.expand_path expands ~ / ~user; File.absolute_path does not. */
 static RESULT korb_file_expand(CTX *c, VALUE *slots, VALUE_SLICE a, bool tilde) {
@@ -2440,7 +2524,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;   /* class methods on File's singleton */
     korb_class_def_cfn(c, slots[1], "expand_path", korb_m_file_expand_path, -1);
     korb_class_def_cfn(c, slots[1], "realpath", korb_m_file_realpath, -1);
-    korb_class_def_cfn(c, slots[1], "realdirpath", korb_m_file_realpath, -1);
+    korb_class_def_cfn(c, slots[1], "realdirpath", korb_m_file_realdirpath, -1);
     korb_class_def_cfn(c, slots[1], "join",        korb_m_file_join,        -1);
     korb_class_def_cfn(c, slots[1], "dirname",     korb_m_file_dirname,     -1);
     korb_class_def_cfn(c, slots[1], "basename",    korb_m_file_basename,    -1);
