@@ -787,18 +787,30 @@ korb_thread_hkey_p(CTX *c, VALUE *slots, VALUE *hp, VALUE key)
     return RESULT_OK(korb_hash_find(VAL2HASH(*hp), k) >= 0 ? KORB_TRUE : KORB_FALSE);
 }
 
+/* Thread#[] は CRuby では FIBER-local: 走っている fiber がある間はその fiber の
+ * 表を使う (root fiber の分は thread rep の tls)。receiver が他 thread のときは
+ * その thread の root 表 — 他 thread の fiber を覗く手段は無い。表の置き場は
+ * どちらも libc-stable な rep 内なので、ポインタとして持ち回してよい。 */
+static VALUE *korb_thread_tls_slot(CTX *c, VALUE thv)
+{
+    struct korb_thread *const t = VAL2THREAD(thv)->rep;
+    if (t == c->vm->cur_thread && c->vm->running_fiber != NULL)
+        return &c->vm->running_fiber->tls;
+    return &t->tls;
+}
+
 static RESULT
 korb_m_thread_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
-{ return korb_thread_hget(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tls, VALUE_SLICE_GET(a, 0)); }
+{ return korb_thread_hget(c, slots, korb_thread_tls_slot(c, VALUE_REF_GET(self)), VALUE_SLICE_GET(a, 0)); }
 
 static RESULT
 korb_m_thread_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 { CHECK(korb_thread_check_frozen(c, slots, VALUE_REF_GET(self)));
-  return korb_thread_hset(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tls, VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1)); }
+  return korb_thread_hset(c, slots, korb_thread_tls_slot(c, VALUE_REF_GET(self)), VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1)); }
 
 static RESULT
 korb_m_thread_key_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
-{ return korb_thread_hkey_p(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tls, VALUE_SLICE_GET(a, 0)); }
+{ return korb_thread_hkey_p(c, slots, korb_thread_tls_slot(c, VALUE_REF_GET(self)), VALUE_SLICE_GET(a, 0)); }
 
 /* thread_variable_* — CRuby では fiber-local (#[]) と別空間 */
 static RESULT
@@ -986,16 +998,16 @@ static RESULT
 korb_m_thread_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                     NODE *block, VALUE *def_env, VALUE *cself)
 {
-    struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || VALUE_SLICE_LEN(a) > 2))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)",
                           (unsigned)VALUE_SLICE_LEN(a));
     if (UNLIKELY(block != NULL && VALUE_SLICE_LEN(a) >= 2))
         korb_warn(c, slots, "block supersedes default value argument");
     VALUE k; CHECK(korb_thread_tls_key(c, slots, VALUE_SLICE_GET(a, 0), &k));
-    if (t->tls != KORB_NIL) {
-        const int32_t i = korb_hash_find(VAL2HASH(t->tls), k);
-        if (i >= 0) return RESULT_OK(korb_items_data(VAL2HASH(t->tls)->items)[2 * i + 1]);
+    const VALUE *const hp = korb_thread_tls_slot(c, VALUE_REF_GET(self));
+    if (*hp != KORB_NIL) {
+        const int32_t i = korb_hash_find(VAL2HASH(*hp), k);
+        if (i >= 0) return RESULT_OK(korb_items_data(VAL2HASH(*hp)->items)[2 * i + 1]);
     }
     if (block != NULL) {
         slots[0] = k;
@@ -1020,7 +1032,7 @@ korb_thread_hkeys(CTX *c, VALUE *slots, const VALUE *hp)
 
 static RESULT
 korb_m_thread_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
-{ (void)a; return korb_thread_hkeys(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tls); }
+{ (void)a; return korb_thread_hkeys(c, slots, korb_thread_tls_slot(c, VALUE_REF_GET(self))); }
 
 static RESULT
 korb_m_thread_tvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
