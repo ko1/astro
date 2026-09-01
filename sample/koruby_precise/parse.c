@@ -4998,9 +4998,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t m_mid = tc->frame->method_mid;
         /* CRuby refuses a bare `super` from a define_method body outright: the
          * block's params are not the method's, so there is nothing to forward. */
-        if (m_mid == 0 && tc->frame->dm_body)
-            return kp_unsupported(tc, node, "implicit argument passing of super from method defined by "
-                                            "define_method() is not supported. Specify all arguments explicitly.");
+        if (m_mid == 0 && tc->frame->dm_body)   /* Ruby's own error, not an implementation gap */
+            return ALLOC_node_runtime_error("implicit argument passing of super from method defined by "
+                                            "define_method() is not supported. Specify all arguments explicitly.",
+                                            kp_line(tc, node));
         /* The parameters to forward belong to the enclosing METHOD frame, which
          * may be `depth` scopes out when the `super` is written inside a block. */
         const struct kp_frame *mf = tc->frame;

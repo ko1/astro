@@ -148,6 +148,16 @@ node_unsupported(CTX *c, NODE *n, VALUE *slots, const char *what, uint32_t line)
     return korb_raise(c, slots, KORB_E_NOTIMPL, line, "M0 unsupported: %s", what);
 }
 
+// A construct koruby PARSES but Ruby itself rejects at run time (verbatim
+// message, RuntimeError) — distinct from node_unsupported, which reports a gap
+// in this implementation.
+NODE_DEF @noinline
+node_runtime_error(CTX *c, NODE *n, VALUE *slots, const char *msg, uint32_t line)
+{
+    (void)n;
+    return korb_raise(c, slots, KORB_E_RUNTIME, line, "%s", msg);
+}
+
 // `$@` — the current exception's backtrace (nil when `$!` is nil).
 NODE_DEF
 node_errinfo_bt(CTX *c, NODE *n, VALUE *slots, int32_t unused)
