@@ -3884,8 +3884,8 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     } else if (VALUE_SLICE_LEN(a) >= 2 && KORB_METHOD_P(VALUE_SLICE_GET(a, 1))) {
         /* Method / UnboundMethod form: copy the resolved definition under `mid`. */
         const KorbMethod *const mo = VAL2METH(VALUE_SLICE_GET(a, 1));
-        const VALUE owner = mo->unbound ? mo->recv : korb_dispatch_class(c, mo->recv);
-        const bool owner_mod = KORB_CLASS_P(owner) && VAL2CLASS(owner)->is_module;
+        VALUE owner = mo->unbound ? mo->recv : korb_dispatch_class(c, mo->recv);
+        bool owner_mod = KORB_CLASS_P(owner) && VAL2CLASS(owner)->is_module;
         const struct korb_method *src = KORB_CLASS_P(owner) ? korb_class_find_method(owner, mo->mid, NULL) : NULL;
         if (src == NULL) src = korb_method_lookup(c->vm, mo->mid);
         if (src == NULL && owner_mod) {                  /* Kernel's methods live on Object in koruby */
@@ -3894,9 +3894,17 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         }
         if (UNLIKELY(src == NULL))
             return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s'", korb_sym_name(c->vm, mo->mid));
+        /* the constraint is against the *defining* module, not the class the
+         * (Unbound)Method was retrieved from: `Object.instance_method(:x)` on a
+         * Kernel method is module-owned and binds anywhere (CRuby #owner). */
+        if (KORB_CLASS_P(src->owner)) {
+            owner = src->owner;
+            owner_mod = VAL2CLASS(owner)->is_module;
+        }
         /* a module-owned method (e.g. a Kernel UnboundMethod) binds to any class;
          * only a class owner requires the defining class to be a descendant. */
-        if (UNLIKELY(KORB_CLASS_P(owner) && VAL2CLASS(owner)->is_singleton && owner != slots[0]))
+        if (UNLIKELY(KORB_CLASS_P(owner) && VAL2CLASS(owner)->is_singleton &&
+                     !korb_class_has_ancestor(slots[0], owner)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't bind singleton method to a different class");
         if (UNLIKELY(KORB_CLASS_P(owner) && !owner_mod && !korb_class_has_ancestor(slots[0], owner))) {
             char onm[192]; korb_class_qname_into(c, owner, onm, sizeof onm);   /* name the CLASS, not "Class" */
@@ -7645,9 +7653,15 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
          * define_method'd method takes a block like any other. */
         const struct korb_method *const dm_saved = c->dm_entry;
         c->dm_entry = m;                             /* a `super` in the body resolves through this */
+        /* like any method body, this one has its own default definee (a nested
+         * `def` uses the block's lexical def-class) — an enclosing
+         * instance_eval's must not leak in (cf. korb_invoke_method) */
+        const VALUE dm_definee = c->def_definee;
+        if (UNLIKELY(dm_definee != KORB_NIL)) c->def_definee = KORB_NIL;
         RESULT r = korb_block_yield_full(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
                                          &slots[-(korb_sword_t)argc], argc, recv_slot,
-                                         block, def_env, captured_self, 0);   /* captured_self = receiver slot */
+                                         block, def_env, captured_self, 2);   /* captured_self = receiver slot; 2 = method-shaped binding */
+        if (UNLIKELY(dm_definee != KORB_NIL)) c->def_definee = dm_definee;
         c->dm_entry = dm_saved;
         /* A define_method body behaves like a lambda: `return`, `break` and
          * `next` all just leave the method with that value (a bare `break` in a
@@ -8275,7 +8289,10 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
      * block/proc) and never auto-splats a single Array.  The proc is reachable via
      * captured_self on the FWD path (the only path that can carry a lambda). */
     const bool is_lambda = is_lam || (fwd && VAL2PROC(*captured_self)->is_lambda);   /* explicit (proc.call) or forwarded &lam */
-    if (UNLIKELY(is_lambda)) {
+    /* is_lam == 2: a define_method'd body.  Method semantics for auto-splat
+     * (`|a,|` keeps the Array) but the caller already ran the method-shaped
+     * arity check, which also covers the keyword cases this one skips. */
+    if (UNLIKELY(is_lambda && is_lam != 2)) {
         const uint32_t pc = korb_entry_params_cnt(block);
         const bool has_rest = korb_entry_has_rest(block);
         const uint32_t rs = korb_entry_rest_slot(block) >= 0 ? (uint32_t)korb_entry_rest_slot(block) : pc;
