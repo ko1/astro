@@ -3099,7 +3099,16 @@ kp_make_binding_node(struct kp_ctx *tc, uint32_t line)
     uint32_t cnt = 0;
     uint32_t *tbl = kp_binding_scope_tbl(tc, &cnt);
     const int32_t self_off = -1 - tc->chain;
-    NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)tbl, cnt);
+    /* The lexically-enclosing class/module NAME, resolved at run time (the frame's
+     * method-entry cell is not reachable from here: this node is often built
+     * inside a call's argument-staging window, where a cursor-relative offset
+     * does not land on the frame cursor).  0 = no enclosing class body. */
+    /* An UNNAMED cref (`class << obj`, or a method defined in one) cannot be
+     * baked by name; leave it 0 and let the runtime fall back to self, which IS
+     * that class inside the body. */
+    const uint32_t cref_name = (tc->frame->anon_class_body || tc->frame->anon_cref_method)
+                             ? 0u : kp_cref_owner(tc);
+    NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)tbl, cnt, cref_name);
     bake_add(tc, &nb->u.node_binding.def_env_off);    /* frame base shifts with frame_size */
     bake_add(tc, &nb->u.node_binding.self_off);       /* self at base[-1] (bottom header) */
     korb_reg_srcloc(tc->c->vm, nb, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), line);  /* for Binding#source_location */

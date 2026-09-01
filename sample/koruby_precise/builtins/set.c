@@ -2306,7 +2306,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             slots[0] = src;
             slots[1] = VALUE_REF_GET(self);
             slots[2] = cref;
-            er = korb_eval_binding_core(c, slots + 3, &slots[0], bind_ptr, fname, line, &slots[1], slots[2]);
+            er = korb_eval_binding_core(c, slots + 3, &slots[0], bind_ptr, fname, line, &slots[1], slots[2], false);   /* instance_eval/class_eval names the definee outright */
         } else {
             er = korb_eval_str_self(c, slots, src, VALUE_REF_GET(self), fname, line, cref);
         }

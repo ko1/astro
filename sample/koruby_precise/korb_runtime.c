@@ -405,7 +405,8 @@ static RESULT korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const c
 static const char *korb_recv_desc(CTX *c, VALUE *slots, VALUE v, char *buf, size_t bufsz);   /* fwd: "an instance of Foo" */
 static RESULT korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line, VALUE cref);   /* defined below — for instance/class_eval(String) in set.c */
 static RESULT korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
-                                     const char *fname, int32_t eline, VALUE *self_slot, VALUE cref);   /* eval with caller binding (set.c uses it too) */
+                                     const char *fname, int32_t eline, VALUE *self_slot, VALUE cref,
+                                     bool soft_definee);   /* eval with caller binding (set.c uses it too) */
 /* SyntaxError from a parse: the parser leaves a detail message on the vm when it
  * has one (e.g. "Can't set variable $&"); otherwise the generic text is used. */
 static RESULT korb_raise_syntax(CTX *c, VALUE *slots, const char *generic);
@@ -3327,7 +3328,7 @@ korb_binding_tbl_flat(const uint32_t *syms, uint32_t cnt)
     return tbl;
 }
 
-RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *scope_tbl, uint32_t name_cnt, VALUE self_val) {
+RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *scope_tbl, uint32_t name_cnt, VALUE self_val, uint32_t cref_name) {
     slots[0] = self_val;                                  /* root self across allocs */
     /* Materialize an env for EVERY captured lexical level (same walk as
      * korb_make_proc's deep capture): enclosing locals must stay reachable —
@@ -3356,11 +3357,17 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
         slots[1] = (VALUE)(uintptr_t)e;
         korb_ep_set(bases[k], slots[1]);                 /* frame owns its env */
     }
-    KorbBinding *b = korb_alloc(c, slots + 2, sizeof(KorbBinding), KORB_OBJ_BINDING);
+    /* The cref is resolved HERE, from its baked name, so nothing has to survive
+     * the env allocations above (a parked VALUE did not). */
+    VALUE cref = cref_name ? korb_const_get_path(c->vm, cref_name) : KORB_NIL;
+    if (!KORB_CLASS_P(cref)) cref = KORB_CLASS_P(slots[0]) ? slots[0] : KORB_NIL;
+    slots[2] = cref;
+    KorbBinding *b = korb_alloc(c, slots + 3, sizeof(KorbBinding), KORB_OBJ_BINDING);
     b->name_syms = scope_tbl; b->name_cnt = name_cnt;
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->env,  slots[1]);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->self, slots[0]);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->extra, KORB_NIL);
+    ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->cref, slots[2]);
     return RESULT_OK((VALUE)b);
 }
 /* env of lexical level `depth` in the binding's chain (0 = binding site). */
@@ -13476,7 +13483,8 @@ korb_raise_syntax(CTX *c, VALUE *slots, const char *generic)
  * KORB_UNDEF installs the def/const scope for the duration. */
 static RESULT
 korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
-                       const char *fname, int32_t eline, VALUE *self_slot, VALUE cref)
+                       const char *fname, int32_t eline, VALUE *self_slot, VALUE cref,
+                       bool soft_definee)
 {
     if (strcmp(fname, "(eval)") == 0) {                 /* CRuby 3.3+: default is "(eval at FILE:LINE)" (callsite ≈ the binding's site) */
         const struct Node *const sn = VAL2BIND(*bind_slot)->src_node;
@@ -13517,7 +13525,15 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     const VALUE saved_definee = c->def_definee;
     const VALUE saved_cref = c->eval_cref;
     const char *const saved_name = c->vm->script_name;
-    if (cref != KORB_UNDEF) { c->def_definee = cref; c->eval_cref = cref; }
+    /* instance_eval/class_eval(String) name the definee outright, so their cref
+     * sets both.  A cref that merely came from the BINDING (`eval(str)`) is
+     * lexical only: an enclosing class_eval/module_eval already owns the `def`
+     * target (ERB does `mod.module_eval { eval(src, binding) }` and expects
+     * `def` to land on mod), so it fills that in only when nothing else has. */
+    if (cref != KORB_UNDEF) {
+        c->eval_cref = cref;
+        if (!soft_definee || c->def_definee == KORB_NIL) c->def_definee = cref;
+    }
     c->vm->script_name = fname;                     /* raises inside report the eval's filename */
     const char *const saved_load = c->vm->cur_load_file;   /* require_relative / __dir__ resolve against it too */
     c->vm->cur_load_file = fname;
@@ -13602,7 +13618,12 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
     const KorbString *s = VAL2STR(sv);
     if (have_bind) {                                    /* eval(str, binding) — seed the eval frame from the binding, run, write back */
         slots[0] = sv; slots[1] = VALUE_SLICE_GET(args, 1);
-        return korb_eval_binding_core(c, slots + 2, &slots[0], &slots[1], fname, eline, NULL, KORB_UNDEF);
+        /* The binding carries the lexical cref of where it was taken, so a `def`
+         * / `class` / constant in the eval'd string lands in the enclosing class
+         * (this is the hidden binding `eval(str)` lowers to). */
+        const VALUE bcref = KORB_BINDING_P(slots[1]) ? VAL2BIND(slots[1])->cref : KORB_NIL;
+        return korb_eval_binding_core(c, slots + 2, &slots[0], &slots[1], fname, eline, NULL,
+                                      KORB_CLASS_P(bcref) ? bcref : KORB_UNDEF, true);   /* lexical only */
     }
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, eline, false);   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);

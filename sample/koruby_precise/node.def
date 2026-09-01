@@ -2634,9 +2634,13 @@ node_kwargs_mark(CTX *c, NODE *n, VALUE *slots, VALUE h@child)
 // def_env_off = frame base (locals at base[0..name_cnt)), self_off = lexical self,
 // name_syms = immortal sym table (a const char* runtime-ref so the SD stays shared).
 NODE_DEF
-node_binding(CTX *c, NODE *n, VALUE *slots, int32_t def_env_off, int32_t self_off, const char *name_syms, uint32_t name_cnt)
+node_binding(CTX *c, NODE *n, VALUE *slots, int32_t def_env_off, int32_t self_off, const char *name_syms, uint32_t name_cnt, uint32_t owner_name@sym)
 {
-    RESULT r = korb_make_binding(c, slots, &slots[def_env_off], (const uint32_t *)(const void *)name_syms, name_cnt, slots[self_off]);
+    /* The binding remembers the LEXICAL class it was taken in (by NAME — it is
+     * resolved after the env allocations): `eval(str)` lowers to
+     * eval(str, <this binding>), and that cref is what puts a `def` / `class` /
+     * constant inside the eval'd string in the enclosing class. */
+    RESULT r = korb_make_binding(c, slots, &slots[def_env_off], (const uint32_t *)(const void *)name_syms, name_cnt, slots[self_off], owner_name);
     if (LIKELY(r.state == KORB_NORMAL) && KORB_OBJ_TYPE(r.value) == KORB_OBJ_BINDING)
         VAL2BIND(r.value)->src_node = n;   /* record the call site for Binding#source_location */
     return r;
