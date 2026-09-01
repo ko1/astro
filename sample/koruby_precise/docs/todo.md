@@ -3159,3 +3159,105 @@ CRuby は String に **coderange をキャッシュ**して 1 度しか走査し
 
 同じ理由で `String#reverse` などの「壊れたバイト列を 1 バイトとして扱う」
 系 (`korb_str_char_bytes`) も、coderange 無しでは検査を足せない。
+
+## (2026-09-01) 捕捉されたブロックからの break が LocalJumpError にならない
+
+```ruby
+def cap(&b) = b
+cap { break :br }.call     # koruby: break がトップまで抜ける / CRuby: LocalJumpError
+def y6 = yield
+y6(&cap { break :br })     # 同上
+```
+
+`break` は「そのブロックリテラルを渡された呼び出し」に巻き戻る。その呼び出しが
+既に return していれば CRuby は `break from proc-closure` (LocalJumpError) を
+出す。koruby の判定は `CTX.break_blk` (break を上げたブロックの entry NODE)
+だけで、**持ち主のフレームがまだ生きているか**を見ていない。
+
+生きている側は全部通っていることを確認済み (CRuby と一致):
+
+| 形 | 結果 |
+|---|---|
+| `def m(&b) = b.call` に `m { break }` | 通る (正しい) |
+| `def m = yield` に `m { break }` | 通る |
+| `def m(&b) = inner(&b)` / `def inner4(&b) = b.call` 経由 | 通る |
+| `def m(&b); [1].each { b.call }; end` | 通る |
+| 持ち主が return 済み (`cap{}.call` / `y6(&cap{})`) | **LocalJumpError にならない** |
+
+`language/break_spec` で 5 例 (+ Thread 1 例 + super 1 例)。
+
+**関連して見つけた別バグ**: lambda は「自分の body が上げた break」だけを
+return 相当に畳むべきなのに、通り抜けただけの内側ブロックの break も
+飲んでしまう。
+
+```ruby
+def mid(&b)
+  -> { ScratchPad << :before; b.call; ScratchPad << :unreachable1 }.call
+  ScratchPad << :unreachable2
+end
+[1].each { mid { break } }   # koruby は :unreachable2 を記録する
+```
+
+`korb_break_claim` (node.h) と `korb_m_proc_call` (builtins/symbol.c) の
+2 箇所が is_lambda だけで畳んでいる。**ただしこれ単独では直せない**:
+lambda が飲むのをやめると上の「持ち主が死んでいる break」がトップまで
+抜けてプロセスが落ちる (mspec の `-> { }` が今それを隠している)。
+2026-09-01 に実装して確認したうえで revert した。
+
+直すなら持ち主フレームの生存判定が要る。案としては、`&b` を Proc に
+昇格するとき (`korb_make_proc`) に持ち主フレームの base と
+`base[locals_cnt-1]` のメソッド entry を KorbProc に控えておき、
+`Proc#call` から break が出たときに「その base がまだ現役 (sp より下) で
+entry セルが一致する」かを見る。ホットパスには何も足さない。
+ただしフレーム走査は backtrace ブランチ (`korb_frames_*`) と衝突するので、
+そちらのマージ後に着手すること。
+
+## (2026-09-01) この周辺で parse.c / node.def 側に残っている件
+
+いずれも別 agent の担当ファイルなので手を付けていない。
+
+- **`super` の暗黙引数がブロックの中だと足りない** — `PM_FORWARDING_SUPER_NODE`
+  が `tc->frame` (= ブロックのフレーム) の `method_params` / `method_kw_info`
+  を読むので、`def m(arg:); proc { super }.call; end` が
+  `missing keyword: :arg`。名前 (`m_mid`) だけは `f->prev` を辿っている。
+- **`super()` がブロックの中だと呼び出し元のブロックを渡さない** —
+  `node_super_fwd` の `biseq_off` は現フレームの trio を指す。
+  `def m(v); 1.times { super() }; end` で親の `yield` が LocalJumpError。
+- **同名パラメータ `_` の並び替え** — `def m(_, _, _=:a, _=:b, *_, _, _)` で
+  zsuper が壊れる (`[[5],6,7,4,5,6,7]`)。`kp_param_first_locals` の話。
+- **define_method 内の暗黙 super** は NotImplementedError。CRuby は実行時の
+  RuntimeError (NotImplementedError は StandardError ではないので拾えない)。
+- **`rescue` の捕捉先がローカル以外** — `rescue E => CONST` /
+  `rescue E => obj&.setter=` が未対応。
+- **`rescue` の節の式を評価する時点で `$!` が立っていない** —
+  `korb_errinfo_push` が node.def の rescue body 側にしかないので、
+  `rescue (raise "x")` で上がった例外の `#cause` が nil になる。
+- **`in` の右辺代入 (prism node 97)** が未対応 (`pattern_matching_spec` 1 例)。
+
+## (2026-09-01) パターンマッチの #deconstruct が case ごとにキャッシュされない
+
+```ruby
+case obj
+in [1, 2] then false
+in [0, 1] then true
+end
+```
+
+CRuby は `obj.deconstruct` を 1 回しか呼ばず結果を case 文の隠しローカルに
+キャッシュする。koruby は節ごとに `korb_pat_match` に入るので 2 回呼ぶ。
+`language/pattern_matching_spec` 1 例。
+
+キャッシュのスコープが「その case 文の 1 回の実行」でないと
+`case obj … end; case obj … end` で 2 回目が古い結果を使ってしまうが、
+節どうしを結びつける識別子が実行時に無い (節ごとに別の desc / 別の slots)。
+parse.c 側で case ごとの synth local を 1 つ増やして
+`korb_pat_match` に渡すのが素直。
+
+## (2026-09-01) NoMatchingPatternKeyError の近似
+
+`CTX.pat_key_mid` は「最後に走った節の hash パターンが落としたキー」なので、
+**節が複数あって最後の節がキー不一致で落ちた場合**にも
+NoMatchingPatternKeyError になる。CRuby は節が 1 つのときだけ詳細な方を出す
+(`in Integer; in {b: 2}` は NoMatchingPatternError)。節数が実行時に分からない
+ための近似。過剰に詳しくなる方向にしか外れず、どちらも
+NoMatchingPatternError 系なので当面このままにする。
