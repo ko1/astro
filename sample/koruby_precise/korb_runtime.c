@@ -10379,7 +10379,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SYMBOL, "clamp", korb_m_sym_clamp, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "start_with?", korb_m_sym_start_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "end_with?", korb_m_sym_end_with, -1);
-    korb_def_cmethod(c, KORB_C_SYMBOL, "name", korb_m_sym_to_s, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "name", korb_m_sym_name, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_sym", korb_m_sym_to_sym, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_proc", korb_m_sym_to_proc, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "intern", korb_m_sym_to_sym, 0);
