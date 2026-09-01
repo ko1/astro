@@ -373,11 +373,10 @@ static RESULT korb_m_obj_object_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (SYMBOL_P(v))     return RESULT_OK(LONG2FIX((korb_sword_t)(((uintptr_t)SYM2ID(v) << 8) | 0x1c)));   /* consistent per symbol */
     return RESULT_OK(LONG2FIX((korb_sword_t)((uintptr_t)v >> 2)));
 }
-static RESULT korb_m_obj_is_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE target = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_CLASS_P(target))) return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");
-    if (target == korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT])) return RESULT_OK(KORB_TRUE);
-    VALUE sv = VALUE_REF_GET(self);
+/* `sv is_a? target` — target must already be known to be a class/module.
+ * Allocation-free, so the ObjectSpace heap walk can use it as a filter. */
+static bool korb_obj_kind_of_p(CTX *c, VALUE sv, VALUE target) {
+    if (target == korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT])) return true;
     /* start from the RAW override (singleton included) so extended modules count.
      * For a class with no own metaclass yet, CRuby still has one (it makes them
      * eagerly), so walk to the nearest materialized one instead of stopping at
@@ -391,20 +390,25 @@ static RESULT korb_m_obj_is_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     else
         cls = korb_class_obj_of(c, sv);
     while (KORB_CLASS_P(cls)) {
-        if (cls == target) return RESULT_OK(KORB_TRUE);
+        if (cls == target) return true;
         VALUE pre = VAL2CLASS(cls)->prepended;           /* prepended modules count */
         if (pre != KORB_NIL) {
             const KorbArray *pa = VAL2ARY(pre);
-            for (uint32_t j = 0; j < pa->len; j++) if (korb_items_data(pa->items)[j] == target) return RESULT_OK(KORB_TRUE);
+            for (uint32_t j = 0; j < pa->len; j++) if (korb_items_data(pa->items)[j] == target) return true;
         }
         VALUE inc = VAL2CLASS(cls)->included;            /* included/extended modules count */
         if (inc != KORB_NIL) {
             const KorbArray *ia = VAL2ARY(inc);
-            for (uint32_t j = 0; j < ia->len; j++) if (korb_items_data(ia->items)[j] == target) return RESULT_OK(KORB_TRUE);
+            for (uint32_t j = 0; j < ia->len; j++) if (korb_items_data(ia->items)[j] == target) return true;
         }
         cls = VAL2CLASS(cls)->superclass;
     }
-    return RESULT_OK(KORB_FALSE);
+    return false;
+}
+static RESULT korb_m_obj_is_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE target = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_CLASS_P(target))) return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");
+    return RESULT_OK(korb_obj_kind_of_p(c, VALUE_REF_GET(self), target) ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     struct korb_vm *const vm = c->vm;
@@ -2321,7 +2325,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             slots[0] = src;
             slots[1] = VALUE_REF_GET(self);
             slots[2] = cref;
-            er = korb_eval_binding_core(c, slots + 3, &slots[0], bind_ptr, fname, line, &slots[1], slots[2]);
+            er = korb_eval_binding_core(c, slots + 3, &slots[0], bind_ptr, fname, line, &slots[1], slots[2], false);   /* instance_eval/class_eval names the definee outright */
         } else {
             er = korb_eval_str_self(c, slots, src, VALUE_REF_GET(self), fname, line, cref);
         }

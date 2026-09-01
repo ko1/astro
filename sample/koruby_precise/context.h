@@ -372,6 +372,10 @@ typedef struct KorbBinding {
     VALUE ARO_GC_EDGE env;           /* KorbEnv (open → live slots, closed → heap vals) */
     VALUE ARO_GC_EDGE self;          /* captured self */
     VALUE ARO_GC_EDGE extra;         /* Hash {sym=>val} of locals added after capture (nil until used) */
+    VALUE ARO_GC_EDGE cref;          /* the lexical class/module the binding was taken in (nil at top level).
+                                      * `eval(str)` lowers to eval(str, <hidden binding>), so this is what
+                                      * makes `def` / `class` / a constant inside the eval'd string land in
+                                      * the enclosing class instead of at top level. */
     const uint32_t *name_syms;       /* immortal: name_syms[i] = sym of local at env index i */
     uint32_t name_cnt;
     const struct Node *src_node;     /* immortal: the `binding` call node (for #source_location); NULL if unknown */
@@ -1400,6 +1404,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->env);                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->self);                    \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->extra);                   \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->cref);                    \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

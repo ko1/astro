@@ -770,6 +770,9 @@ gc_collect_internal(CTX *c)
     }
 
     ARO_GC_COMMON(c)->stats.gc_count++;
+    /* Cheney is non-generational: every cycle traces the whole live set, so
+     * each one is a major collection and minor_count stays 0. */
+    ARO_GC_COMMON(c)->stats.major_count++;
     aro_gc_time_end(c, t0);
 }
 
@@ -777,6 +780,41 @@ void
 aro_gc_collect(CTX *c)
 {
     gc_collect_internal(c);
+}
+
+/* Heap walk.  Cheney bump allocation makes the active semispace gapless:
+ * [active_base, active_top) is a run of payloads, each introduced by its own
+ * AroObjectHeader, with no free-list holes and no forwarding pointers (those
+ * only ever live in the retired from-space).  So the walk is just "step by
+ * ALIGN8(gc_size)".  Large objects sit outside the arena on `large_head`.
+ *
+ * Garbage that has not been collected yet is visited too — the arena is a
+ * chronological log of allocations since the last collect, and nothing marks
+ * the dead ones.  CRuby's rb_objspace_each_objects behaves the same way.
+ *
+ * `visit` must not allocate (see gc.h). */
+bool
+aro_gc_each_object(CTX *c, void (*visit)(void *arg, void *payload), void *arg)
+{
+    const ASTroGC *const gc = ARO_GC_INSTANCE(c);
+    if (!gc || !gc->active_base) return false;
+    char *p = gc->active_base;
+    char *const end = gc->active_top;
+    while (p < end) {
+        AroObjectHeader *const h = (AroObjectHeader *)p;
+        /* Same guard as the cheney scan loop: a bad size would step the cursor
+         * into the middle of an object and every later header would be junk. */
+        if (UNLIKELY(h->gc_size == 0 || h->gc_size > (1u << 20))) {
+            fprintf(stderr, "GC BUG: corrupt gc_size=%u at %p during each_object walk\n",
+                    h->gc_size, (void *)p);
+            return false;
+        }
+        p += ALIGN8(h->gc_size);
+        visit(arg, h);
+    }
+    for (const LargeObj *lo = gc->large_head; lo != NULL; lo = lo->next)
+        visit(arg, large_payload((LargeObj *)(uintptr_t)lo));
+    return true;
 }
 
 /* Liveness for a registered finalize payload, post mark/forward:

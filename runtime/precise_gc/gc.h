@@ -447,6 +447,17 @@ void *aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size);
 
 void  aro_gc_collect(CTX *c);
 
+/* Optional backend hook: enumerate every allocated payload in the heap
+ * (backs a sample's ObjectSpace.each_object).  Returns false when the
+ * backend cannot walk — the default in gc_common.c is weak and does so.
+ *
+ * The visitor MUST NOT allocate: a GC mid-walk moves objects and leaves
+ * the cursor pointing at from-space.  It may see garbage that is not yet
+ * collected (CRuby's each_object has the same property).  Nothing is
+ * spent on this unless it is called — no per-alloc or per-collect
+ * bookkeeping exists to support it. */
+bool  aro_gc_each_object(CTX *c, void (*visit)(void *arg, void *payload), void *arg);
+
 /* ---------------------------------------------------------------------------
  * Finalizer API — weak-reference + post-mark sweep pass.
  *

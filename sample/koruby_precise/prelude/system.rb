@@ -473,8 +473,12 @@ module GC
     end
   end
   def self.count; __gc_stat_raw[0]; end
-  def self.stress; false; end
-  def self.stress=(v); v; end
+  # Wired to the collector's real stress flag (the one BARUBY_GC_STRESS sets),
+  # so `GC.stress = true` genuinely collects at every allocation.  The assigned
+  # value is remembered verbatim because CRuby's reader hands back what was set
+  # (it also accepts an Integer bitmask), not a normalized boolean.
+  def self.stress; @__stress.nil? ? __gc_stress : @__stress; end
+  def self.stress=(v); __gc_stress(v); @__stress = v; end
   # 計測系は koruby GC (precise copying) では未提供。CRuby と同じ「形」だけ
   # 返して、参照するだけのコードが NoMethodError にならないようにする。
   CONFIG_KEYS__ = [:rgengc_allow_full_mark].freeze         # 書き込み可能な既知キー
@@ -513,15 +517,41 @@ module GC
 end
 
 module ObjectSpace
-  # koruby has no heap walk: nothing is yielded.  Without a block CRuby returns
-  # an Enumerator, and code does chain on it (`each_object(Class).select {…}`),
-  # so give it one rather than the count.
-  def self.each_object(*)
-    return [].each unless block_given?
-    0
+  # The copying GC's arena is a gapless bump region, so __heap_objects__ can walk
+  # it (see docs/objectspace_heap_walk.md).  It returns a snapshot Array rather
+  # than yielding, because a block that allocates would move the heap under the
+  # walk cursor.  As in CRuby the walk can also surface not-yet-collected
+  # garbage; nothing is yielded twice.
+  def self.each_object(*args, &blk)
+    if args.size > 1
+      raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)"
+    end
+    mod = args[0]
+    raise TypeError, "class or module required" if args.size == 1 && !mod.is_a?(Module)
+    return to_enum(:each_object, *args) if blk.nil?
+    objs = __heap_objects__(mod)
+    objs.each { |o| blk.call(o) }
+    objs.size
   end
   def self.count_objects(*); {}; end
   def self.garbage_collect(*); nil; end
+
+  # Deprecated in Ruby 4.0 and warned about on every call.  The immediate ids
+  # are the exact inverse of Object#object_id; a heap id is an address, so it is
+  # resolved by the same heap walk each_object uses.  A moving GC can hand out
+  # the same address twice over a program's life, which is precisely why CRuby
+  # deprecated this.
+  def self._id2ref(id)
+    warn "warning: ObjectSpace._id2ref is deprecated" unless $VERBOSE.nil?
+    raise TypeError, "not an id value" unless id.is_a?(Integer)
+    return false if id == 0
+    return nil   if id == 4
+    return true  if id == 20
+    return (id - 1) / 2 if id.odd?
+    found = __heap_objects__(nil).find { |o| o.object_id == id }
+    raise RangeError, "#{id} is not an id value" if found.nil?
+    found
+  end
 
   # Finalizers.  koruby's GC has no per-object finalization hook, so a finalizer
   # never fires on collection — but it does fire at process exit, which is the
@@ -541,6 +571,10 @@ module ObjectSpace
     when Integer, Symbol, Float, NilClass, TrueClass, FalseClass
       raise ArgumentError, "cannot define finalizer for #{obj.class}"
     end
+    raise FrozenError, "can't modify frozen #{obj.class}: #{obj.inspect}" if obj.frozen?
+    # A finalizer whose receiver is the object keeps it alive forever, so CRuby
+    # warns about it.  The receiver is the Proc's self / the Method's receiver.
+    __warn_self_referential_finalizer__(obj, callable)
     entry = FINALIZERS__.find { |e| e[0].equal?(obj) }
     if entry.nil?
       entry = [obj, []]
@@ -558,7 +592,18 @@ module ObjectSpace
     end
   end
 
+  def self.__warn_self_referential_finalizer__(obj, callable)
+    return if $VERBOSE.nil?               # -W0 silences it, as rb_warn does
+    recv = case callable
+           when Proc   then (callable.binding.receiver rescue nil)
+           when Method then callable.receiver
+           end
+    warn "warning: finalizer references object to be finalized" if recv.equal?(obj)
+  end
+  private_class_method :__warn_self_referential_finalizer__
+
   def self.undefine_finalizer(obj)
+    raise FrozenError, "can't modify frozen #{obj.class}: #{obj.inspect}" if obj.frozen?
     FINALIZERS__.reject! { |e| e[0].equal?(obj) }
     obj
   end
@@ -574,7 +619,11 @@ module ObjectSpace
         begin
           f.call(id)
         rescue Exception => e
-          warn "Exception in finalizer #{f.inspect}: #{e.message}" if $VERBOSE
+          # rb_warn's wording and gating: silent only when $VERBOSE is nil (-W0).
+          unless $VERBOSE.nil?
+            warn "warning: Exception in finalizer #{f.inspect}"
+            warn "#{e.class}: #{e.message}"
+          end
         end
       end
     end

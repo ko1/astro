@@ -270,7 +270,7 @@ RESULT korb_minus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t 
 RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, bool *handled);
 RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, uint32_t line, bool *handled);   /* node_div coerce path */
 RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda);
-RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *scope_tbl, uint32_t name_cnt, VALUE self_val);
+RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *scope_tbl, uint32_t name_cnt, VALUE self_val, uint32_t cref_name);
 const uint32_t *korb_binding_tbl_flat(const uint32_t *syms, uint32_t cnt);   /* single-level packed scope table */
 void   korb_env_store(CTX *c, struct KorbEnv *e, uint32_t index, VALUE v);
 RESULT korb_str_mod(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs);

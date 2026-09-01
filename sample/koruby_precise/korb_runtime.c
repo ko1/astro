@@ -405,7 +405,8 @@ static RESULT korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const c
 static const char *korb_recv_desc(CTX *c, VALUE *slots, VALUE v, char *buf, size_t bufsz);   /* fwd: "an instance of Foo" */
 static RESULT korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line, VALUE cref);   /* defined below — for instance/class_eval(String) in set.c */
 static RESULT korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
-                                     const char *fname, int32_t eline, VALUE *self_slot, VALUE cref);   /* eval with caller binding (set.c uses it too) */
+                                     const char *fname, int32_t eline, VALUE *self_slot, VALUE cref,
+                                     bool soft_definee);   /* eval with caller binding (set.c uses it too) */
 /* SyntaxError from a parse: the parser leaves a detail message on the vm when it
  * has one (e.g. "Can't set variable $&"); otherwise the generic text is used. */
 static RESULT korb_raise_syntax(CTX *c, VALUE *slots, const char *generic);
@@ -3327,7 +3328,7 @@ korb_binding_tbl_flat(const uint32_t *syms, uint32_t cnt)
     return tbl;
 }
 
-RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *scope_tbl, uint32_t name_cnt, VALUE self_val) {
+RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *scope_tbl, uint32_t name_cnt, VALUE self_val, uint32_t cref_name) {
     slots[0] = self_val;                                  /* root self across allocs */
     /* Materialize an env for EVERY captured lexical level (same walk as
      * korb_make_proc's deep capture): enclosing locals must stay reachable —
@@ -3356,11 +3357,17 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
         slots[1] = (VALUE)(uintptr_t)e;
         korb_ep_set(bases[k], slots[1]);                 /* frame owns its env */
     }
-    KorbBinding *b = korb_alloc(c, slots + 2, sizeof(KorbBinding), KORB_OBJ_BINDING);
+    /* The cref is resolved HERE, from its baked name, so nothing has to survive
+     * the env allocations above (a parked VALUE did not). */
+    VALUE cref = cref_name ? korb_const_get_path(c->vm, cref_name) : KORB_NIL;
+    if (!KORB_CLASS_P(cref)) cref = KORB_CLASS_P(slots[0]) ? slots[0] : KORB_NIL;
+    slots[2] = cref;
+    KorbBinding *b = korb_alloc(c, slots + 3, sizeof(KorbBinding), KORB_OBJ_BINDING);
     b->name_syms = scope_tbl; b->name_cnt = name_cnt;
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->env,  slots[1]);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->self, slots[0]);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->extra, KORB_NIL);
+    ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->cref, slots[2]);
     return RESULT_OK((VALUE)b);
 }
 /* env of lexical level `depth` in the binding's chain (0 = binding site). */
@@ -13616,7 +13623,8 @@ korb_raise_syntax(CTX *c, VALUE *slots, const char *generic)
  * KORB_UNDEF installs the def/const scope for the duration. */
 static RESULT
 korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
-                       const char *fname, int32_t eline, VALUE *self_slot, VALUE cref)
+                       const char *fname, int32_t eline, VALUE *self_slot, VALUE cref,
+                       bool soft_definee)
 {
     if (strcmp(fname, "(eval)") == 0) {                 /* CRuby 3.3+: default is "(eval at FILE:LINE)" (callsite ≈ the binding's site) */
         const struct Node *const sn = VAL2BIND(*bind_slot)->src_node;
@@ -13657,7 +13665,15 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     const VALUE saved_definee = c->def_definee;
     const VALUE saved_cref = c->eval_cref;
     const char *const saved_name = c->vm->script_name;
-    if (cref != KORB_UNDEF) { c->def_definee = cref; c->eval_cref = cref; }
+    /* instance_eval/class_eval(String) name the definee outright, so their cref
+     * sets both.  A cref that merely came from the BINDING (`eval(str)`) is
+     * lexical only: an enclosing class_eval/module_eval already owns the `def`
+     * target (ERB does `mod.module_eval { eval(src, binding) }` and expects
+     * `def` to land on mod), so it fills that in only when nothing else has. */
+    if (cref != KORB_UNDEF) {
+        c->eval_cref = cref;
+        if (!soft_definee || c->def_definee == KORB_NIL) c->def_definee = cref;
+    }
     c->vm->script_name = fname;                     /* raises inside report the eval's filename */
     const char *const saved_load = c->vm->cur_load_file;   /* require_relative / __dir__ resolve against it too */
     c->vm->cur_load_file = fname;
@@ -13742,7 +13758,12 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
     const KorbString *s = VAL2STR(sv);
     if (have_bind) {                                    /* eval(str, binding) — seed the eval frame from the binding, run, write back */
         slots[0] = sv; slots[1] = VALUE_SLICE_GET(args, 1);
-        return korb_eval_binding_core(c, slots + 2, &slots[0], &slots[1], fname, eline, NULL, KORB_UNDEF);
+        /* The binding carries the lexical cref of where it was taken, so a `def`
+         * / `class` / constant in the eval'd string lands in the enclosing class
+         * (this is the hidden binding `eval(str)` lowers to). */
+        const VALUE bcref = KORB_BINDING_P(slots[1]) ? VAL2BIND(slots[1])->cref : KORB_NIL;
+        return korb_eval_binding_core(c, slots + 2, &slots[0], &slots[1], fname, eline, NULL,
+                                      KORB_CLASS_P(bcref) ? bcref : KORB_UNDEF, true);   /* lexical only */
     }
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, eline, false);   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
@@ -14188,6 +14209,89 @@ korb_bi_gc_start(CTX *c, VALUE *slots, VALUE_SLICE args)
     aro_gc_collect(c);
     return RESULT_OK(KORB_NIL);
 }
+/* __gc_stress(flag) — read (no args) or set the collector's stress flag, which
+ * makes every allocation collect.  Backs GC.stress / GC.stress=; the knob is
+ * the same one BARUBY_GC_STRESS sets at startup. */
+static RESULT
+korb_bi_gc_stress(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)slots;
+    if (VALUE_SLICE_LEN(args) >= 1) {
+        const VALUE v = VALUE_SLICE_GET(args, 0);
+        const bool on = (v != KORB_NIL && v != KORB_FALSE);
+        ARO_GC_COMMON(c)->stress = on;
+        if (on) ARO_GC_COMMON(c)->stress_interval = 1;   /* every alloc, as CRuby does */
+    }
+    return RESULT_OK(ARO_GC_COMMON(c)->stress ? KORB_TRUE : KORB_FALSE);
+}
+
+/* --- ObjectSpace.each_object -----------------------------------------------
+ * The heap walk (aro_gc_each_object) hands back every payload in the arena.
+ * Two of those kinds are not Ruby objects — the raw buffer behind a
+ * String/Array/Hash and a closure env — and are filtered out here.
+ *
+ * The visitor runs with the walk cursor live, so it must not allocate.  That
+ * forces the two-pass shape: count first, size the result Array exactly, then
+ * refill so every push takes korb_ary_push_val's no-grow path.  The array is
+ * allocated between the passes, so the second pass can only ever see FEWER
+ * matches than the first (an intervening GC drops garbage; the array itself is
+ * skipped by identity) — never more, so the capacity always holds. */
+struct korb_objspace_snap {
+    CTX       *c;
+    VALUE      filter;   /* class/module to match, KORB_NIL = every object */
+    VALUE      skip;     /* the result Array itself (pass 2), else KORB_NIL */
+    uint32_t   count;
+    KorbArray *dst;      /* pass 2 target; NULL while counting */
+};
+
+static void
+korb_objspace_visit(void *arg, void *payload)
+{
+    struct korb_objspace_snap *const s = (struct korb_objspace_snap *)arg;
+    const VALUE v = (VALUE)(uintptr_t)payload;
+    if (v == s->skip) return;
+    switch (((const AroObjectHeader *)payload)->flags & KORB_OBJ_TYPE_MASK) {
+      case KORB_OBJ_VALUE_ARRAY:                  /* Array/Hash backing store */
+      case KORB_OBJ_STR_BUF:                      /* String backing store */
+      case KORB_OBJ_ENV:                          /* closure env */
+        return;
+      default: break;
+    }
+    if (s->filter != KORB_NIL && !korb_obj_kind_of_p(s->c, v, s->filter)) return;
+    if (s->dst != NULL) {
+        if (UNLIKELY(s->dst->len >= s->dst->capa)) return;
+        KorbArrayItems *const it = s->dst->items;
+        ARO_STORE(s->c, it, &korb_items_data(it)[s->dst->len], v);
+        s->dst->len++;
+    }
+    s->count++;
+}
+
+/* __heap_objects__(mod) — Array of every heap object that `is_a? mod`
+ * (mod = nil → all of them).  Backs ObjectSpace.each_object.  Like CRuby's
+ * heap walk this can also surface garbage that has not been collected yet. */
+static RESULT
+korb_bi_heap_objects(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    const VALUE filter = VALUE_SLICE_LEN(args) >= 1 ? VALUE_SLICE_GET(args, 0) : KORB_NIL;
+    if (filter != KORB_NIL && !KORB_CLASS_P(filter))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");
+    slots[0] = filter;                       /* rooted across the Array alloc below */
+
+    struct korb_objspace_snap s = { c, filter, KORB_NIL, 0, NULL };
+    if (!aro_gc_each_object(c, korb_objspace_visit, &s))
+        return korb_raise(c, slots + 1, KORB_E_NOTIMPL, 0,
+                          "ObjectSpace.each_object: this GC backend cannot walk the heap");
+
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, s.count));
+    s.filter = slots[0];                     /* re-read: the alloc may have moved it */
+    s.skip   = slots[1];
+    s.count  = 0;
+    s.dst    = VAL2ARY(slots[1]);
+    aro_gc_each_object(c, korb_objspace_visit, &s);
+    return RESULT_OK(slots[1]);
+}
+
 /* __clock_gettime(id) — seconds as Float from the clock the id names (backs
  * Process.clock_gettime).  0 = REALTIME, 2 = PROCESS_CPUTIME, 3 = THREAD_CPUTIME,
  * anything else = MONOTONIC (the prelude's own numbering). */
@@ -14519,6 +14623,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);
     korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);
+    korb_builtin_define(c, "__heap_objects__", korb_bi_heap_objects, -1);
+    korb_builtin_define(c, "__gc_stress", korb_bi_gc_stress, -1);
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
     korb_builtin_define(c, "Float", korb_bi_float, -1);
     korb_builtin_define(c, "Array", korb_bi_array, -1);
