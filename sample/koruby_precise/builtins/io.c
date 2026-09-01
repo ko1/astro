@@ -785,9 +785,13 @@ static RESULT korb_m_io_lshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_io_puts(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     const uint32_t n = VALUE_SLICE_LEN(a);
+    /* an empty puts still goes through the stream's newline: decorator */
+    const int nlk = korb_io_write_newline(c, VALUE_REF_GET(self));
+    const char *const eol = nlk == 1 ? "\r\n" : nlk == 2 ? "\r" : "\n";
+    const size_t eoln = (nlk == 1) ? 2 : 1;
     if (korb_io_write_redefined(c, VALUE_REF_GET(self))) {   /* render into memory, hand the text to #write */
         KorbIORep mem = KORB_IO_MEM_SINK;
-        if (n == 0) (void)korb_io_wr(&mem, "\n", 1);
+        if (n == 0) (void)korb_io_wr(&mem, eol, eoln);
         else for (uint32_t i = 0; i < n; i++) {
             RESULT pr = korb_puts_one_to(c, slots, VALUE_SLICE_GET(a, i), &mem);
             if (UNLIKELY(pr.state != KORB_NORMAL)) { free(mem.wbuf); return pr; }
@@ -803,7 +807,7 @@ static RESULT korb_m_io_puts(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_WRITE(c, slots, self);
-    if (n == 0) { KORB_IO_WR(c, slots, rep, "\n", 1); return RESULT_OK(KORB_NIL); }
+    if (n == 0) { KORB_IO_WR(c, slots, rep, eol, eoln); return RESULT_OK(KORB_NIL); }
     for (uint32_t i = 0; i < n; i++)
         CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(a, i), rep));
     return RESULT_OK(KORB_NIL);
@@ -1107,6 +1111,15 @@ static RESULT korb_m_io_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_io_close_half(CTX *c, VALUE *slots, VALUE_REF self, int keep_bit, const char *what) {
     const int rw = korb_io_rw(c, VALUE_REF_GET(self));
     const int drop_bit = (keep_bit == 1) ? 2 : 1;
+    if (keep_bit == 1 && (rw & 1) && (rw & 2)) {
+        /* close_write on a stream that is also readable: only a duplex one (a
+         * socket, or a popen'd "r+" child) may half-close (CRuby). */
+        const KorbIORep *const rep0 = korb_io_rep(c, VALUE_REF_GET(self));
+        int sty; socklen_t stl = sizeof sty;
+        const bool sock = rep0 && rep0->fd >= 0 && getsockopt(rep0->fd, SOL_SOCKET, SO_TYPE, &sty, &stl) == 0;
+        if (!sock && !FIXNUM_P(korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__io_pid", 9)))))
+            return korb_raise(c, slots, KORB_E_IOERROR, 0, "closing non-duplex IO for %s", what);
+    }
     if (!(rw & drop_bit)) {
         /* Already dropped (or never had it).  A closed stream is an error; on a
          * socket (always duplex) a repeat is a no-op; a plain one-way stream is
@@ -1901,6 +1914,7 @@ static RESULT korb_m_io_syswrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[0] = r.value;
     }
+    if (rep->wlen > 0) korb_warn(c, slots + 1, "syswrite for buffered IO");   /* CRuby warns, then flushes */
     (void)korb_io_flush_rep(rep);
     ssize_t w;
     for (;;) {
