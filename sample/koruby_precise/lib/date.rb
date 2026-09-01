@@ -695,11 +695,11 @@ class Date
     elsif (m = /\b([A-Za-z]{3,})\.?\b/.match(s)) && __month_index(m[1]) && !__wday_index(m[1])
       h[:mon] = __month_index(m[1])                                            # bare month name
       s = m.pre_match + m.post_match
-    elsif (m = /\A\s*(\d+)(?<ord>st|nd|rd|th)?\s*\z/.match(s)) && !(m[1].length == 1 && m[:ord].nil?)
+    elsif (m = /\A\s*(?<num>\d+)(?<ord>st|nd|rd|th)?\s*\z/.match(s)) && !(m[:num].length == 1 && m[:ord].nil?)
       # Bare digit strings, disambiguated by length (CRuby's ddd rules):
       # DD → day / DDD → year-day / MMDD → month+day / YYMMDD / YYYYMMDD is
       # handled above / YYDDD → 2-digit year + year-day / YYYYDDD.
-      d = m[1]
+      d = m[:num]
       case d.length
       when 1, 2 then h[:mday] = d.to_i
       when 3    then h[:yday] = d.to_i
