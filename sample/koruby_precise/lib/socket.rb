@@ -22,7 +22,7 @@ class BasicSocket < IO
 
   def self.for_fd(fd)
     s = allocate
-    s.__send__(:__init_fd, fd, "r+")
+    s.__send__(:__init_fd, fd, "r+b")   # every socket is binary in CRuby
     s
   end
 
@@ -241,7 +241,7 @@ class TCPSocket < IPSocket
       IO.new(fd).close rescue nil
       raise
     end
-    __init_fd(fd, "r+")
+    __init_fd(fd, "r+b")
   end
 
   def self.open(*args)
@@ -284,7 +284,7 @@ class TCPServer < TCPSocket
     __sock_setopt(fd, Socket::SOL_SOCKET, Socket::SO_REUSEADDR, 1)
     __sock_bind(fd, fam, host, port)
     __sock_listen(fd, 5)
-    __init_fd(fd, "r+")     # not TCPSocket#initialize: a server binds, never connects
+    __init_fd(fd, "r+b")     # not TCPSocket#initialize: a server binds, never connects
   end
 
   def accept
@@ -352,7 +352,7 @@ class UNIXSocket < BasicSocket
       IO.new(fd).close rescue nil
       raise
     end
-    __init_fd(fd, "r+")
+    __init_fd(fd, "r+b")
     @path = path.to_s
   end
 
@@ -391,7 +391,7 @@ class UNIXServer < UNIXSocket
     __sock_bind(fd, Socket::AF_UNIX, path.to_s, 0)
     __sock_listen(fd, 5)
     @path = path.to_s
-    __init_fd(fd, "r+")
+    __init_fd(fd, "r+b")
   end
 
   def accept
@@ -431,7 +431,7 @@ end
 class UDPSocket < IPSocket
   def initialize(family = Socket::AF_INET)
     @family = Socket.__family(family)
-    __init_fd(__sock_open(@family, Socket::SOCK_DGRAM, 0), "r+")
+    __init_fd(__sock_open(@family, Socket::SOCK_DGRAM, 0), "r+b")
   end
   def family = @family
 
@@ -652,7 +652,7 @@ class Socket < BasicSocket
 
   def initialize(family, type, protocol = 0)
     @family, @type = Socket.__family_strict(family), Socket.__socktype_strict(type)
-    __init_fd(__sock_open(@family, @type, protocol), "r+")
+    __init_fd(__sock_open(@family, @type, protocol), "r+b")
   end
 
   # BasicSocket#recvfrom answers the raw [af, port, host, addr] tuple; Socket's
