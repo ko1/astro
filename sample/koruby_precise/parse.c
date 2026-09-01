@@ -94,6 +94,7 @@ struct kp_ctx {
     bool syntax_error;        /* transduce-time SyntaxError (e.g. binding in alternative pattern) */
     bool pending_depth_shift; /* the next pushed frame is an END { } body (see kp_frame.depth_shift) */
     uint8_t src_enc;          /* KORB_ENC_* for this file's string literals (from the magic comment) */
+    const char *syntax_err;   /* a compile-time error found while lowering (bad Regexp literal): parse fails */
 };
 
 /* The file's `# encoding:` magic comment, as prism resolved it, mapped onto the
@@ -3455,6 +3456,18 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                                            PM_REGULAR_EXPRESSION_FLAGS_EUC_JP |
                                            PM_REGULAR_EXPRESSION_FLAGS_WINDOWS_31J |
                                            PM_REGULAR_EXPRESSION_FLAGS_UTF_8);
+        /* CRuby rejects a bad pattern while COMPILING, so a literal the engine
+         * refuses is a SyntaxError, not a first-evaluation RegexpError. */
+        if (tc->syntax_err == NULL) {
+            const char *const why = korb_re_literal_error(tc->c, bytes, len, flags);
+            if (UNLIKELY(why != NULL)) {
+                static char buf[512];
+                const pm_node_t *const at = (const pm_node_t *)rn;
+                snprintf(buf, sizeof buf, "%s:%u: %s: /%.*s/", tc->fname, kp_line(tc, at), why, (int)len, bytes);
+                tc->syntax_err = buf;
+                tc->syntax_error = true;
+            }
+        }
         return ALLOC_node_regexp(bytes, len, flags);
       }
       case PM_SYMBOL_NODE: {
@@ -5060,7 +5073,11 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
         pm_node_destroy(&parser, root);
         pm_parser_free(&parser);
         pm_options_free(&options);
-        if (!exit_on_error) return NULL;             /* eval(str): caller raises SyntaxError */
+        if (!exit_on_error) {                        /* eval(str): caller raises SyntaxError */
+            if (tc.syntax_err) c->vm->last_syntax_msg = tc.syntax_err;
+            return NULL;
+        }
+        if (tc.syntax_err) fprintf(stderr, "%s\n", tc.syntax_err);
         fprintf(stderr, "%s: syntax error (SyntaxError)\n", fname);
         exit(1);
     }
@@ -5115,6 +5132,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
     free(tc.pre_list);
     free(tc.bake_list);
     bool serr = tc.syntax_error;
+    if (serr && tc.syntax_err) c->vm->last_syntax_msg = tc.syntax_err;   /* the real reason, not the generic */
     pm_node_destroy(&parser, root);
     pm_parser_free(&parser);
     pm_options_free(&options);

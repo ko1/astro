@@ -1325,7 +1325,8 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         }
     }
     (void)korb_re_load(c->vm);
-    korb_re_valid_fn_t vf = (korb_re_valid_fn_t)c->vm->re_valid_fn;
+    korb_re_valid_fn_t vf0 = (korb_re_valid_fn_t)c->vm->re_valid_fn;
+    korb_re_valid_fn_t vf = vf0;
     if (vf) {
         const KorbString *ps = VAL2STR(slots[0]);
         if (!vf(korb_strbuf_data(ps->buf), ps->len, flags)) {
@@ -1551,4 +1552,17 @@ static void korb_init_regexp(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "compile", korb_m_re_new, -1);
     korb_class_def_cfn(c, slots[1], "union",   korb_m_re_union, -1);
     korb_class_def_cfn(c, slots[1], "last_match", korb_m_re_last_match, -1);
+}
+
+/* Parse-time check for a Regexp LITERAL: CRuby rejects a bad pattern while
+ * compiling (SyntaxError), not on first evaluation.  Returns NULL when the
+ * engine accepts the pattern, else its reason. */
+const char *
+korb_re_literal_error(CTX *c, const char *pat, uint32_t len, uint32_t flags)
+{
+    (void)korb_re_load(c->vm);
+    const korb_re_valid_fn_t vf = (korb_re_valid_fn_t)c->vm->re_valid_fn;
+    if (vf == NULL || vf(pat, len, flags)) return NULL;
+    const char *const m = korb_re_error(c->vm);
+    return m ? m : "invalid regular expression";
 }
