@@ -322,7 +322,7 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         uint32_t syms[64];
         for (uint32_t sid = sid0; sid; ) { const struct korb_shape *s = &c->vm->shapes[sid]; if (s->ivar_count >= 1 && s->ivar_count <= n) syms[s->ivar_count - 1] = s->edge_sym; sid = s->parent; }
         fputs("#<", ms);
-        if (!korb_fprint_class_qname(c, ms, VAL2OBJ(v0)->klass)) fputs("Object", ms);
+        korb_fprint_class_desc(c, ms, VAL2OBJ(v0)->klass);
         fprintf(ms, ":0x%016lx", (unsigned long)(uintptr_t)v0);
         slots[0] = v0;                                       /* root the object across nested #inspect dispatch */
         const bool cyc = (((const AroObjectHeader *)(uintptr_t)v0)->flags & KORB_FL_JOIN_VISITING) != 0;
@@ -1037,8 +1037,12 @@ static void korb_fprint_obj_default_inspect(CTX *c, FILE *ms, VALUE v) {
     else fputs("Object", ms);
     fprintf(ms, ":0x%016zx>", (size_t)(uintptr_t)v);
 }
+/* A refinement module always prints as "#<refinement:Target@Owner>", even when
+ * it is bound to a constant and so has a #name (CRuby). */
+static bool korb_fprint_refinement_tostr(CTX *c, FILE *ms, VALUE cls);
 static void korb_fprint_class_tostr(CTX *c, FILE *ms, VALUE cls) {
     const KorbClass *const k = VAL2CLASS(cls);
+    if (korb_fprint_refinement_tostr(c, ms, cls)) return;
     if (k->name_sym != 0) { korb_fprint_class_qname(c, ms, cls); return; }
     if (k->is_singleton) {
         const VALUE att = korb_singleton_attached(c, cls);
@@ -1051,11 +1055,21 @@ static void korb_fprint_class_tostr(CTX *c, FILE *ms, VALUE cls) {
     }
     fprintf(ms, "#<%s:0x%016zx>", k->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls);
 }
+static bool korb_fprint_refinement_tostr(CTX *c, FILE *ms, VALUE cls) {
+    const VALUE tgt = korb_refinement_target(c->vm, cls);
+    if (!KORB_CLASS_P(tgt)) return false;
+    fputs("#<refinement:", ms);
+    korb_fprint_class_tostr(c, ms, tgt);
+    const VALUE own = korb_class_ivar_get(cls, ID2SYM(korb_intern(c->vm, "@__refine_owner", 15)));
+    if (KORB_CLASS_P(own)) { fputc('@', ms); korb_fprint_class_tostr(c, ms, own); }
+    fputc('>', ms);
+    return true;
+}
 static RESULT korb_m_class_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const VALUE cls = VALUE_REF_GET(self);
     const KorbClass *const k = VAL2CLASS(cls);
-    if (k->name_sym == 0) {                                        /* anonymous / singleton → formatted form */
+    if (k->name_sym == 0 || KORB_CLASS_P(korb_refinement_target(c->vm, cls))) {   /* anonymous / singleton / refinement → formatted form */
         char *buf = NULL; size_t sz = 0;
         FILE *ms = open_memstream(&buf, &sz);
         if (!ms) { char b[48]; int n = snprintf(b, sizeof b, "#<%s:0x%016zx>", k->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls); return korb_str_new(c, slots, b, (uint32_t)n); }
@@ -1980,16 +1994,25 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         if (idx == UINT32_MAX && (leading_top || (inherit && first)))
             idx = korb_const_index_owned(vm, cid, KORB_NIL);
         if (idx == UINT32_MAX) {
-            /* const_missing hook on the (original) receiver for a bare name. */
-            if (first && !leading_top && q >= end) {
-                const uint32_t cm = korb_intern(vm, "const_missing", 13);
-                VALUE cmdef = KORB_NIL;
-                if (KORB_CLASS_P(VALUE_REF_GET(self)) &&
-                    korb_mcache_find(vm, korb_dispatch_class(c, VALUE_REF_GET(self)), cm, &cmdef)) {
-                    slots[0] = VALUE_REF_GET(self);
-                    slots[1] = ID2SYM(cid);
-                    return korb_send_impl(c, slots + 2, cm, 0, 1, NULL, NULL, NULL);
-                }
+            /* CRuby fires <namespace>.const_missing(:Name) at EVERY component, not
+             * just a bare trailing one — that is how a pending autoload answers
+             * `::Top` and the inner segments of `A::B`.  The namespace is the
+             * receiver for a bare first component, Object under a leading `::`,
+             * and the previous component's value after that. */
+            const VALUE hookrecv = !first ? owner
+                                 : leading_top ? korb_builtin_class_obj(vm, KORB_C_OBJECT)
+                                               : VALUE_REF_GET(self);
+            const uint32_t cm = korb_intern(vm, "const_missing", 13);
+            VALUE cmdef = KORB_NIL;
+            if (KORB_CLASS_P(hookrecv) &&
+                korb_mcache_find(vm, korb_dispatch_class(c, hookrecv), cm, &cmdef)) {
+                slots[0] = hookrecv;
+                slots[1] = ID2SYM(cid);
+                const RESULT hr = korb_send_impl(c, slots + 2, cm, 0, 1, NULL, NULL, NULL);
+                if (UNLIKELY(hr.state != KORB_NORMAL) || q >= end) return hr;
+                owner = result = hr.value;                  /* keep walking the path */
+                p = q + 2; first = false;
+                continue;
             }
             RESULT nr = korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %.*s", (int)clen, buf + (p - buf));
             if (LIKELY(KORB_EXC_P(nr.value))) {           /* NameError#name = the missing constant symbol */
@@ -2010,22 +2033,27 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     }
     return RESULT_OK(result);
 }
+/* Drop `id` from `mod`'s pending-autoload table, loaded or not.  CRuby keeps the
+ * registration in the constant slot itself, so removing the constant drops it
+ * too — otherwise restoring $LOADED_FEATURES resurrects a stale autoload. */
+static RESULT korb_autoload_unregister(CTX *c, VALUE *slots, VALUE mod, uint32_t id) {
+    struct korb_vm *const vm = c->vm;
+    const VALUE t = korb_ivar_get(c, mod, ID2SYM(korb_intern(vm, "@__autoloads", 12)));
+    if (!KORB_HASH_P(t)) return RESULT_OK(KORB_NIL);
+    slots[0] = t; slots[1] = ID2SYM(id);
+    return korb_send(c, slots + 2, korb_intern(vm, "delete", 6), 0, 1);
+}
+
 /* Module#remove_const(sym|str) → the removed value (flat table tombstone). */
 static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t id;
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id);   /* Symbol / String / #to_str */
       if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     struct korb_vm *const vm = c->vm;
-    if (korb_autoload_registered_p(c, VALUE_REF_GET(self), id)) {   /* pending autoload → just unregister */
-        slots[0] = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(vm, "@__autoloads", 12)));
-        slots[1] = ID2SYM(id);
-        const RESULT dr = korb_send(c, slots + 2, korb_intern(vm, "delete", 6), 0, 1);
-        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-        vm->const_serial++;
-        return RESULT_OK(KORB_NIL);
-    }
     /* only a constant defined DIRECTLY in this module can be removed; the
-     * top-level ones (owner nil) belong to Object. */
+     * top-level ones (owner nil) belong to Object.  A real definition wins over
+     * a still-registered autoload: once the file has run, the slot holds the
+     * value and that is what CRuby hands back. */
     const VALUE selfv = VALUE_REF_GET(self);
     const VALUE objc = korb_builtin_class_obj(vm, KORB_C_OBJECT);
     for (uint32_t i = 0; i < vm->const_cnt; i++)
@@ -2037,8 +2065,12 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
             vm->const_vals[i] = KORB_NIL;
             vm->method_serial++;
             vm->const_serial++;               /* invalidate const caches */
+            CHECK(korb_autoload_unregister(c, slots + 1, VALUE_REF_GET(self), id));   /* slots[0] parks the result */
             return RESULT_OK(slots[0]);
         }
+    { const RESULT dr = korb_autoload_unregister(c, slots, VALUE_REF_GET(self), id);   /* no value yet: drop the registration */
+      if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+      if (dr.value != KORB_NIL) { vm->const_serial++; return RESULT_OK(KORB_NIL); } }
     return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s not defined", korb_sym_name(vm, id));
 }
 /* Module#const_defined?(sym|str) — flat table membership. */

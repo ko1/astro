@@ -3668,6 +3668,18 @@ korb_const_in_ancestry_scoped(const struct korb_vm *vm, VALUE recv, uint32_t nam
     return UINT32_MAX;
 }
 
+/* "Anonymous" for naming purposes: no name of its own, or a qualified path that
+ * passes through an anonymous namespace (`m::N` where m is anonymous).  CRuby
+ * renames such a module when it is first assigned to a REACHABLE constant. */
+static bool korb_class_path_anonymous(VALUE cls)
+{
+    for (int d = 0; d < 64 && KORB_CLASS_P(cls); d++) {
+        if (VAL2CLASS(cls)->name_sym == 0) return true;
+        cls = VAL2CLASS(cls)->enclosing;
+    }
+    return false;
+}
+
 void
 korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
 {
@@ -3676,7 +3688,12 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
     /* Ruby: assigning an anonymous class/module to a constant names it after
      * that constant (the first such assignment wins) and nests it under the
      * owning namespace so its qualified name is Owner::Name. */
-    if (KORB_CLASS_P(val) && VAL2CLASS(val)->name_sym == 0) {
+    /* An already-named module whose PATH is anonymous (`m::N`) is renamed only
+     * when the new home is itself reachable — assigning it to another anonymous
+     * namespace leaves the name alone (CRuby). */
+    if (KORB_CLASS_P(val) && korb_class_path_anonymous(val) &&
+        (VAL2CLASS(val)->name_sym == 0 ||
+         !(KORB_CLASS_P(owner) && korb_class_path_anonymous(owner)))) {
         VAL2CLASS(val)->name_sym = name_sym;
         /* Object is the top-level namespace: a constant assigned directly under it
          * is named by the bare constant ("X"), not "Object::X".  Only a genuine
@@ -3686,8 +3703,11 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
         for (VALUE o = KORB_CLASS_P(owner) ? VAL2CLASS(owner)->enclosing : KORB_NIL;
              !cyclic && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing)
             if (o == val) cyclic = true;
-        if (KORB_CLASS_P(owner) && owner != objc && !cyclic && VAL2CLASS(val)->enclosing == KORB_NIL)
+        /* the old enclosing (if any) was itself anonymous — that is what made the
+         * path anonymous — so the new namespace replaces it */
+        if (KORB_CLASS_P(owner) && owner != objc && !cyclic)
             ARO_STORE(c, VAL2CLASS(val), (VALUE *)(uintptr_t)&VAL2CLASS(val)->enclosing, owner);
+        else if (owner == objc) VAL2CLASS(val)->enclosing = KORB_NIL;   /* rooted at top level */
     }
     /* keyed by (name, owner): reassigning the same constant in the same namespace
      * updates in place, but M::C and a top-level C get distinct entries so both
@@ -3884,8 +3904,8 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     } else if (VALUE_SLICE_LEN(a) >= 2 && KORB_METHOD_P(VALUE_SLICE_GET(a, 1))) {
         /* Method / UnboundMethod form: copy the resolved definition under `mid`. */
         const KorbMethod *const mo = VAL2METH(VALUE_SLICE_GET(a, 1));
-        const VALUE owner = mo->unbound ? mo->recv : korb_dispatch_class(c, mo->recv);
-        const bool owner_mod = KORB_CLASS_P(owner) && VAL2CLASS(owner)->is_module;
+        VALUE owner = mo->unbound ? mo->recv : korb_dispatch_class(c, mo->recv);
+        bool owner_mod = KORB_CLASS_P(owner) && VAL2CLASS(owner)->is_module;
         const struct korb_method *src = KORB_CLASS_P(owner) ? korb_class_find_method(owner, mo->mid, NULL) : NULL;
         if (src == NULL) src = korb_method_lookup(c->vm, mo->mid);
         if (src == NULL && owner_mod) {                  /* Kernel's methods live on Object in koruby */
@@ -3894,9 +3914,17 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         }
         if (UNLIKELY(src == NULL))
             return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s'", korb_sym_name(c->vm, mo->mid));
+        /* the constraint is against the *defining* module, not the class the
+         * (Unbound)Method was retrieved from: `Object.instance_method(:x)` on a
+         * Kernel method is module-owned and binds anywhere (CRuby #owner). */
+        if (KORB_CLASS_P(src->owner)) {
+            owner = src->owner;
+            owner_mod = VAL2CLASS(owner)->is_module;
+        }
         /* a module-owned method (e.g. a Kernel UnboundMethod) binds to any class;
          * only a class owner requires the defining class to be a descendant. */
-        if (UNLIKELY(KORB_CLASS_P(owner) && VAL2CLASS(owner)->is_singleton && owner != slots[0]))
+        if (UNLIKELY(KORB_CLASS_P(owner) && VAL2CLASS(owner)->is_singleton &&
+                     !korb_class_has_ancestor(slots[0], owner)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't bind singleton method to a different class");
         if (UNLIKELY(KORB_CLASS_P(owner) && !owner_mod && !korb_class_has_ancestor(slots[0], owner))) {
             char onm[192]; korb_class_qname_into(c, owner, onm, sizeof onm);   /* name the CLASS, not "Class" */
@@ -3908,6 +3936,14 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         dst->mid = mid; dst->owner = slots[0];           /* rename + re-own */
         /* the copy takes the DEFINING frame's visibility, not the source's */
         dst->visibility = (VAL2CLASS(slots[0])->cur_visibility == 3) ? 1 : VAL2CLASS(slots[0])->cur_visibility;
+        if (UNLIKELY(VAL2CLASS(slots[0])->cur_visibility == 3)) {   /* module_function mode: public copy on the singleton (as `def` does) */
+            const VALUE sing = korb_klass_override_get(c->vm, slots[0]);
+            if (KORB_CLASS_P(sing)) {
+                const struct korb_method mcopy = *dst;       /* the slot alloc below may move the table */
+                struct korb_method *const sm = korb_class_method_slot(VAL2CLASS(sing), mid);
+                *sm = mcopy; sm->mid = mid; sm->owner = sing; sm->visibility = 0;
+            }
+        }
         c->vm->method_serial++;
         CHECK(korb_fire_method_added(c, slots + 2, slots[0], mid));
         return RESULT_OK(ID2SYM(mid));
@@ -4945,6 +4981,19 @@ korb_class_qname_into(CTX *c, VALUE cls, char *out, size_t outsz)
     if (ms) { korb_fprint_class_qname(c, ms, cls); fclose(ms); }
     snprintf(out, outsz, "%s", b ? b : "");
     free(b);
+}
+
+/* korb_fprint_class_qname with the anonymous case filled in: CRuby renders an
+ * instance of an anonymous class as "#<#<Class:0x…>:0x…>", i.e. the class's own
+ * #to_s stands in for the missing name. */
+static void
+korb_fprint_class_desc(CTX *c, FILE *fp, VALUE cls)
+{
+    if (korb_fprint_class_qname(c, fp, cls)) return;
+    if (KORB_CLASS_P(cls))
+        fprintf(fp, "#<%s:0x%016lx>", VAL2CLASS(cls)->is_module ? "Module" : "Class",
+                (unsigned long)(uintptr_t)cls);
+    else fputs("Object", fp);
 }
 
 /* Like korb_class_qname_into, but an anonymous class/module renders in its
@@ -7658,9 +7707,15 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
          * define_method'd method takes a block like any other. */
         const struct korb_method *const dm_saved = c->dm_entry;
         c->dm_entry = m;                             /* a `super` in the body resolves through this */
+        /* like any method body, this one has its own default definee (a nested
+         * `def` uses the block's lexical def-class) — an enclosing
+         * instance_eval's must not leak in (cf. korb_invoke_method) */
+        const VALUE dm_definee = c->def_definee;
+        if (UNLIKELY(dm_definee != KORB_NIL)) c->def_definee = KORB_NIL;
         RESULT r = korb_block_yield_full(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
                                          &slots[-(korb_sword_t)argc], argc, recv_slot,
-                                         block, def_env, captured_self, 0);   /* captured_self = receiver slot */
+                                         block, def_env, captured_self, 2);   /* captured_self = receiver slot; 2 = method-shaped binding */
+        if (UNLIKELY(dm_definee != KORB_NIL)) c->def_definee = dm_definee;
         c->dm_entry = dm_saved;
         /* A define_method body behaves like a lambda: `return`, `break` and
          * `next` all just leave the method with that value (a bare `break` in a
@@ -8288,7 +8343,10 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
      * block/proc) and never auto-splats a single Array.  The proc is reachable via
      * captured_self on the FWD path (the only path that can carry a lambda). */
     const bool is_lambda = is_lam || (fwd && VAL2PROC(*captured_self)->is_lambda);   /* explicit (proc.call) or forwarded &lam */
-    if (UNLIKELY(is_lambda)) {
+    /* is_lam == 2: a define_method'd body.  Method semantics for auto-splat
+     * (`|a,|` keeps the Array) but the caller already ran the method-shaped
+     * arity check, which also covers the keyword cases this one skips. */
+    if (UNLIKELY(is_lambda && is_lam != 2)) {
         const uint32_t pc = korb_entry_params_cnt(block);
         const bool has_rest = korb_entry_has_rest(block);
         const uint32_t rs = korb_entry_rest_slot(block) >= 0 ? (uint32_t)korb_entry_rest_slot(block) : pc;
@@ -11849,7 +11907,7 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
             }
         }
         fputs("#<", fp);
-        if (!korb_fprint_class_qname(c, fp, o->klass)) fputs("Class", fp);   /* qualified (M::C); anonymous fallback */
+        korb_fprint_class_desc(c, fp, o->klass);             /* qualified (M::C), or the anonymous class's own #to_s */
         fprintf(fp, ":0x%016lx>", (unsigned long)(uintptr_t)v);   /* to_s: "#<Foo:0x…>" (no ivars) */
         return;
       }

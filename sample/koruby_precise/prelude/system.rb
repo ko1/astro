@@ -21,6 +21,11 @@ end
 ThreadGroup::Default = ThreadGroup.new
 
 class Thread
+  # koruby は runnable が居なくなったら fatal で落ちる (deadlock 検出は常時)。
+  # この flag は CRuby 互換の getter/setter だけで、検出の有無は変えられない。
+  @__ignore_deadlock = false
+  def self.ignore_deadlock; @__ignore_deadlock; end
+  def self.ignore_deadlock=(v); @__ignore_deadlock = v; end
   def self.exclusive; yield; end
   def self.exit; current.kill; end        # 明示定義 (無いと explicit-recv quirk で Kernel#exit に落ちる)
   def self.kill(th); th.kill; end
@@ -85,8 +90,9 @@ class Queue
     @__mutex.synchronize do
       raise ArgumentError, "can't set a timeout if non_block is enabled" if timeout && non_block
       while @__items.empty?
-        return nil if @__closed
+        # non_block は close より先: CRuby は閉じた空 queue でも ThreadError
         raise ThreadError, "queue empty" if non_block
+        return nil if @__closed
         if timeout
           @__cond.wait(@__mutex, timeout)
           return @__items.shift unless @__items.empty?
@@ -170,8 +176,9 @@ class SizedQueue < Queue
     @__mutex.synchronize do
       raise ArgumentError, "can't set a timeout if non_block is enabled" if timeout && non_block
       while @__items.empty?
-        return nil if @__closed
+        # non_block は close より先: CRuby は閉じた空 queue でも ThreadError
         raise ThreadError, "queue empty" if non_block
+        return nil if @__closed
         if timeout
           @__cond.wait(@__mutex, timeout)
           break unless @__items.empty?
@@ -1745,12 +1752,22 @@ module Process
 end
 
 class Regexp
-  # Regexp.linear_time? — バックリファレンスや先読みを含まないパターンなら
-  # 線形時間で実行できる、という CRuby の判定。astrogre のエンジンはバック
-  # トラック式なので、CRuby と同じ「構文に後方参照/先読みが無いか」で答える。
+  # Regexp.linear_time? — CRuby は「位置と状態のメモ化で線形時間にできるか」を
+  # 答える。メモ化で潰せないのは後方参照 (\1 / \k<n>) と subexpression call
+  # (\g<n>) だけで、先読み・後読みは linear。
+  # 注意: astrogre はメモ化を持たないバックトラック式なので、koruby が true を
+  # 返しても実際の実行が線形とは限らない。CRuby と同じ答えを返す互換のための
+  # 述語であって、この実装の保証ではない。
   def self.linear_time?(re, opts = nil)
-    src = re.is_a?(Regexp) ? re.source : (re.is_a?(String) ? re : (return false))
-    !src.match?(/\\\d|\(\?[=!<]/)
+    if re.is_a?(Regexp)
+      warn "warning: flags ignored" if opts && !$VERBOSE.nil?
+      src = re.source
+    elsif re.is_a?(String)
+      src = re
+    else
+      return false
+    end
+    !src.match?(/\\[0-9]|\\k<|\\g</)
   end
   def self.timeout; @__timeout; end
   def self.timeout=(sec)
@@ -1773,17 +1790,29 @@ class Regexp
 end
 
 class Fiber
-  # Fiber scheduler は未実装 (koruby の fiber は協調 coroutine で、blocking
-  # 操作の肩代わりをする scheduler を持たない)。参照だけで NoMethodError に
-  # ならないよう nil を返す。
-  def self.scheduler; nil; end
-  def self.current_scheduler; nil; end
+  # Fiber scheduler は「登録できて、Kernel#sleep だけがフックされる」ところまで。
+  # blocking 操作全般 (io_wait / block / unblock) の肩代わりは未実装 —
+  # koruby の fiber は協調 coroutine で、その配管を持たない。
+  def self.scheduler
+    @__scheduler
+  end
+  def self.current_scheduler
+    raise RuntimeError, "No scheduler is available!" if @__scheduler.nil?
+    @__scheduler
+  end
   def self.set_scheduler(sched)
-    raise ArgumentError, "scheduler is not supported" unless sched.nil?
-    nil
+    if sched.nil?
+      @__scheduler = nil
+      return nil
+    end
+    [:block, :unblock, :kernel_sleep, :io_wait].each do |m|
+      raise ArgumentError, "Scheduler must implement ##{m}" unless sched.respond_to?(m)
+    end
+    @__scheduler = sched
   end
   def self.schedule(*args, &blk)
-    raise RuntimeError, "No scheduler is available!"
+    raise RuntimeError, "No scheduler is available!" if @__scheduler.nil?
+    Fiber.new(blocking: false) { blk.call(*args) }.tap(&:resume)
   end
 end
 

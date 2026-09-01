@@ -434,6 +434,7 @@ typedef struct KorbFiberRep {
     VALUE captured_self;             /* the block's lexical self (root) */
     VALUE fibobj;                    /* the Fiber object owning this rep (root) — Fiber.current */
     VALUE storage;                   /* Fiber#storage: fiber-local Hash (root; nil until used) */
+    VALUE tls;                       /* Thread#[] storage — CRuby's "thread locals" are FIBER-local (root; nil until used) */
     VALUE *vslots;                   /* fiber value-stack base (fixed mmap) */
     VALUE *vslots_top;               /* saved scan top while suspended */
     VALUE *vslots_limit;
@@ -1280,6 +1281,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->captured_self);           \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->fibobj);                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->storage);                 \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->tls);                     \
         if (_fr != (c)->vm->running_fiber && _fr->fstate == 2) {              \
             for (VALUE *_p = _fr->vslots - 2; _p < _fr->vslots_top; _p++)         \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
@@ -1570,6 +1572,12 @@ struct koruby_option {
     bool record_all;
 };
 
+/* libastrogre.so has its own global `OPTION` (struct astrogre_option), and the
+ * interpreter is linked -rdynamic, so ours preempted the library's: astrogre
+ * then read koruby's fields.  `-w` / `-W0` landed on its cs_verbose and spammed
+ * "cs_miss: …" onto stderr from every regex.  Give ours a private ABI name; the
+ * source (main.c, generated ALLOC_ helpers) keeps writing OPTION. */
+#define OPTION korb_option
 extern struct koruby_option OPTION;
 
 #endif /* KORUBY_CONTEXT_H */
