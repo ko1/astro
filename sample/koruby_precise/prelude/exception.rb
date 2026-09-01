@@ -177,7 +177,13 @@ class Object
     # to_enum: only the builtins that build their own enumerator know a size.
     # y.yield (not y <<) so the source's `yield` sees what the consumer sent
     # back — that is what Enumerator#feed sets.
-    e = Enumerator.new(sz_block) { |y| this.send(meth, *args) { |*vs| y.yield(*vs) } }
+    # CRuby's #to_a / #force are Enumerable's, so they drive `self.each` — an
+    # `each` defined on the *enumerator* (a singleton) is what runs.  Consult it
+    # only when the receiver has no such method, so the usual path is unchanged.
+    e = Enumerator.new(sz_block) { |y|
+      src = this.respond_to?(meth, true) ? this : e
+      src.send(meth, *args) { |*vs| y.yield(*vs) }
+    }
     e.__set_source(this, meth, args)                        # Enumerator#each(*extra) re-drives the source
     e
   end

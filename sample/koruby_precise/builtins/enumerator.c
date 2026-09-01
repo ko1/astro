@@ -492,6 +492,20 @@ static RESULT korb_lazy_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE value, u
             RESULT fr = korb_call1(c, slots + 2, slots[1], slots[0]);
             if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
             slots[1] = fr.value;                              /* block result (rooted) */
+            /* CRuby also decomposes anything answering both #force and #each
+             * (i.e. another lazy enumerator).  koruby registers #force on
+             * Enumerator itself, so an Enumerator must additionally be lazy —
+             * a plain one stays a single value, as in CRuby.  The decomposition
+             * materializes, so an *infinite* inner lazy is not supported. */
+            if (!KORB_ARRAY_P(slots[1]) && AROH_IS_GC_OBJECT(slots[1]) &&
+                (KORB_ENUM_P(slots[1]) ? (VAL2ENUM(slots[1])->mode == 1 || VAL2ENUM(slots[1])->mode == 4)
+                                       : (korb_responds_to(c, slots[1], korb_intern(c->vm, "force", 5)) &&
+                                          korb_responds_to(c, slots[1], korb_intern(c->vm, "each", 4))))) {
+                slots[2] = slots[1];
+                RESULT ir = korb_send(c, slots + 3, korb_intern(c->vm, "force", 5), 0, 0);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+                if (KORB_ARRAY_P(ir.value)) slots[1] = ir.value;
+            }
             if (KORB_ARRAY_P(slots[1])) {                     /* Array → flatten one level: each elem re-enters ops[oi+1..] */
                 for (uint32_t k = 0; !*term && k < VAL2ARY(slots[1])->len; k++) {   /* re-read len/elem each iter (recursion GCs) */
                     RESULT r = korb_lazy_run(c, slots + 2, self, korb_items_data(VAL2ARY(slots[1])->items)[k], oi + 1, op_state, seen, res, limit, produced, term, sink);
