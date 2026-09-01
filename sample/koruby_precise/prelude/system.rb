@@ -1747,12 +1747,22 @@ module Process
 end
 
 class Regexp
-  # Regexp.linear_time? — バックリファレンスや先読みを含まないパターンなら
-  # 線形時間で実行できる、という CRuby の判定。astrogre のエンジンはバック
-  # トラック式なので、CRuby と同じ「構文に後方参照/先読みが無いか」で答える。
+  # Regexp.linear_time? — CRuby は「位置と状態のメモ化で線形時間にできるか」を
+  # 答える。メモ化で潰せないのは後方参照 (\1 / \k<n>) と subexpression call
+  # (\g<n>) だけで、先読み・後読みは linear。
+  # 注意: astrogre はメモ化を持たないバックトラック式なので、koruby が true を
+  # 返しても実際の実行が線形とは限らない。CRuby と同じ答えを返す互換のための
+  # 述語であって、この実装の保証ではない。
   def self.linear_time?(re, opts = nil)
-    src = re.is_a?(Regexp) ? re.source : (re.is_a?(String) ? re : (return false))
-    !src.match?(/\\\d|\(\?[=!<]/)
+    if re.is_a?(Regexp)
+      warn "warning: flags ignored" if opts && !$VERBOSE.nil?
+      src = re.source
+    elsif re.is_a?(String)
+      src = re
+    else
+      return false
+    end
+    !src.match?(/\\[0-9]|\\k<|\\g</)
   end
   def self.timeout; @__timeout; end
   def self.timeout=(sec)
