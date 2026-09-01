@@ -378,10 +378,18 @@ static RESULT korb_m_obj_is_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(!KORB_CLASS_P(target))) return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");
     if (target == korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT])) return RESULT_OK(KORB_TRUE);
     VALUE sv = VALUE_REF_GET(self);
-    /* start from the RAW override (singleton included) so extended modules count */
-    VALUE cls = (AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS))
-                  ? korb_klass_override_get(c->vm, sv)
-                  : korb_class_obj_of(c, sv);
+    /* start from the RAW override (singleton included) so extended modules count.
+     * For a class with no own metaclass yet, CRuby still has one (it makes them
+     * eagerly), so walk to the nearest materialized one instead of stopping at
+     * Class — that is what makes `C.singleton_class.is_a?(Class.singleton_class)`
+     * true. */
+    VALUE cls;
+    if (AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS))
+        cls = korb_klass_override_get(c->vm, sv);
+    else if (KORB_CLASS_P(sv) && !VAL2CLASS(sv)->is_module)
+        cls = korb_dispatch_class(c, sv);
+    else
+        cls = korb_class_obj_of(c, sv);
     while (KORB_CLASS_P(cls)) {
         if (cls == target) return RESULT_OK(KORB_TRUE);
         VALUE pre = VAL2CLASS(cls)->prepended;           /* prepended modules count */
@@ -450,15 +458,22 @@ RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj) {
             return RESULT_OK(korb_class_obj_of(c, obj));
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");
     }
+    {   /* heap Integer (bignum) / Float / Symbol have no singleton either */
+        const enum korb_class kc = korb_class_of(obj);
+        if (UNLIKELY(kc == KORB_C_INTEGER || kc == KORB_C_FLOAT || kc == KORB_C_SYMBOL))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");
+    }
     if (((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_KLASS) {
         VALUE ov = korb_klass_override_get(vm, obj);
         if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) return RESULT_OK(ov);   /* reuse */
     }
     slots[0] = obj;                                                              /* root self across class alloc */
     VALUE cur;
-    if (KORB_CLASS_P(obj) && !VAL2CLASS(obj)->is_singleton) {
+    if (KORB_CLASS_P(obj)) {
         /* metaclass hierarchy: a class's singleton inherits from its PARENT class's
-         * singleton (built lazily + memoized), so subclasses inherit class methods. */
+         * singleton (built lazily + memoized), so subclasses inherit class methods.
+         * Also for a singleton class: #<Class:BasicObject>'s super is Class, so the
+         * meta^n chain terminates at #<Class:Class>. */
         const VALUE parent = VAL2CLASS(obj)->superclass;
         if (KORB_CLASS_P(parent)) {
             cur = UNWRAP(korb_obj_singleton(c, slots + 2, parent));              /* parent metaclass (recursion; GC may move obj) */
