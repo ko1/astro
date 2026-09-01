@@ -958,7 +958,11 @@ NODE_DEF
 node_rescue(CTX *c, NODE *n, VALUE *slots, NODE *match, NODE *body, NODE *next, int32_t resc_var, uint32_t flags)
 {
     (void)n;
+    /* $! is the in-flight exception while the CLAUSE EXPRESSION runs too, not
+     * only while the body does — `rescue (raise "x")` must see it as #cause. */
+    korb_errinfo_push(c, slots[0]);
     RESULT cr = EVAL(c, match, slots + 1);             /* rescue class (exception stays at slots[0]) */
+    korb_errinfo_pop(c);
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     if (UNLIKELY(!KORB_CLASS_P(cr.value)))             /* `rescue 42` etc. → TypeError, not a silent non-match */
         return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "class or module required for rescue clause");
@@ -994,7 +998,11 @@ NODE_DEF @noinline
 node_rescue_splat(CTX *c, NODE *n, VALUE *slots, NODE *match, NODE *body, NODE *next, int32_t resc_var, uint32_t flags)
 {
     (void)n;
+    /* $! is the in-flight exception while the CLAUSE EXPRESSION runs too, not
+     * only while the body does — `rescue (raise "x")` must see it as #cause. */
+    korb_errinfo_push(c, slots[0]);
     RESULT cr = EVAL(c, match, slots + 1);             /* the list (exception stays at slots[0]) */
+    korb_errinfo_pop(c);
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     slots[1] = cr.value;
     if (!KORB_ARRAY_P(slots[1])) {
