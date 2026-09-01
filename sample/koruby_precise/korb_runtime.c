@@ -4166,6 +4166,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     m->kind = KORB_METHOD_ISEQ;
     m->visibility = (k->cur_visibility == 3) ? 1 : k->cur_visibility;   /* mode 3 = module_function: private instance method */
     m->owner = klass;        /* super's def_class + __method__ source (frame fs-2) */
+    m->refine_set = c->refinements;   /* refinements are lexical: capture the defining scope's */
     m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;
@@ -4320,6 +4321,42 @@ korb_mcache_find(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def)
     e->serial = vm->method_serial; e->klass = klass; e->mid = mid; e->m = m; e->def_class = def;
     *out_def = def;
     return m;
+}
+
+/* Serial to stamp into an inline/call cache.  While refinements are active a
+ * site must re-resolve on every call (the answer depends on the running scope,
+ * which no cache key covers), so stamp a serial that can never match — that
+ * also disables node.def's inline fast paths without touching them. */
+static inline uint32_t korb_ic_serial(const struct korb_vm *vm) {
+    return LIKELY(!vm->refinements_active) ? vm->method_serial : 0u;
+}
+
+/* Look `mid` up in the refinements active in the running scope
+ * (docs/refinements.md).  Returns NULL when the normal lookup wins. */
+static struct korb_method *
+korb_refined_find(CTX *c, VALUE klass, uint32_t mid, VALUE *out_def)
+{
+    const VALUE act = c->refinements;
+    if (act == KORB_NIL || !KORB_ARRAY_P(act) || !KORB_CLASS_P(klass)) return NULL;
+    const KorbArray *const a = VAL2ARY(act);
+    const VALUE *const av = korb_items_data(a->items);
+    for (int32_t i = (int32_t)a->len - 3; i >= 0; i -= 3) {   /* the latest `using` wins */
+        const VALUE target = av[i], refi = av[i + 1];
+        if (!KORB_CLASS_P(target) || !KORB_CLASS_P(refi)) continue;
+        if (!korb_class_has_ancestor(klass, target)) continue;
+        VALUE rdef = KORB_NIL;
+        struct korb_method *const m = korb_class_find_method(refi, mid, &rdef);
+        if (m == NULL) continue;
+        /* A refinement is spliced in just above the class it refines, so a
+         * definition BELOW that class (subclass / singleton / a module included
+         * later) still wins. */
+        VALUE own_def = KORB_NIL;
+        if (korb_class_find_method(klass, mid, &own_def) != NULL &&
+            !korb_class_has_ancestor(target, own_def)) continue;
+        if (out_def) *out_def = rdef;
+        return m;
+    }
+    return NULL;
 }
 
 /* Set up an ISEQ frame (args at slots[-argc..]) with `self` and `def_class`
@@ -4477,11 +4514,16 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     /* a method body has its own default definee (its class), so an enclosing
      * instance_eval's must not leak into it */
     const VALUE saved_definee = c->def_definee, saved_cvar = c->cvar_cref;
+    /* refinements are lexical: the callee sees the set active where it was
+     * DEFINED, never the caller's (docs/refinements.md). */
+    const VALUE saved_refine = c->refinements;
     if (UNLIKELY(saved_definee != KORB_NIL)) c->def_definee = KORB_NIL;
     if (UNLIKELY(saved_cvar != KORB_NIL)) c->cvar_cref = KORB_NIL;
+    if (UNLIKELY(saved_refine != m->refine_set)) c->refinements = m->refine_set;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (UNLIKELY(saved_definee != KORB_NIL)) c->def_definee = saved_definee;
     if (UNLIKELY(saved_cvar != KORB_NIL)) c->cvar_cref = saved_cvar;
+    if (UNLIKELY(saved_refine != c->refinements)) c->refinements = saved_refine;
     if (r.state == KORB_RETURN) {
         /* Consume only a return targeted at this method (NULL = nearest-method,
          * the common case) — a block's `return` aimed at an outer method passes
@@ -4714,9 +4756,10 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
     /* a class body's default definee is the class itself — an enclosing
      * instance_eval's definee must not reach into it */
     const VALUE saved_definee = c->def_definee, saved_cvar = c->cvar_cref;
+    const VALUE saved_refine = c->refinements;   /* `using` in a body ends with the body */
     c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
-    c->def_definee = saved_definee; c->cvar_cref = saved_cvar;
+    c->def_definee = saved_definee; c->cvar_cref = saved_cvar; c->refinements = saved_refine;
     return br;
 }
 
@@ -4737,9 +4780,10 @@ korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclo
         ARO_STORE(c, VAL2CLASS(slots[0]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->enclosing, slots[1]);
     const VALUE saved_definee = c->def_definee;  /* the body defines on the singleton, via self */
     const VALUE saved_cvar = c->cvar_cref;
+    const VALUE saved_refine = c->refinements;   /* `using` in a body ends with the body */
     c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
-    c->def_definee = saved_definee; c->cvar_cref = saved_cvar;
+    c->def_definee = saved_definee; c->cvar_cref = saved_cvar; c->refinements = saved_refine;
     return br;
 }
 
@@ -6810,6 +6854,7 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body,
 {
     struct korb_method *m = korb_method_slot(c, mid);
     m->kind = KORB_METHOD_ISEQ;
+    m->refine_set = c->refinements;   /* see korb_class_def_method */
     m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;
@@ -7371,8 +7416,14 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         return r;
       }
       default: /* KORB_METHOD_ISEQ */
-        if (LIKELY(m->is_simple))
-            return korb_invoke_simple(c, slots, m, argc, line, mid, self, def_class);
+        if (LIKELY(m->is_simple)) {
+            /* korb_invoke_simple cannot install the callee's refinement set, so
+             * once refinements are live a simple method is demoted on first call
+             * and takes korb_invoke_method from then on. */
+            if (LIKELY(!c->vm->refinements_active))
+                return korb_invoke_simple(c, slots, m, argc, line, mid, self, def_class);
+            m->is_simple = 0;
+        }
         return korb_invoke_method(c, slots, m, argc, line, mid, self, def_class,
                                   block, def_env, KORB_CSELF_VAL(captured_self));
     }
@@ -7499,7 +7550,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
             return nmr;
         }
         cc->m = m;
-        cc->serial = vm->method_serial;
+        cc->serial = korb_ic_serial(vm);
     }
 
     VALUE *const base = slots - argc;     /* staged args = parameter window */
@@ -7520,8 +7571,11 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     }
 
     /* ISEQ global function: no defining class (super in a global fn has none). */
-    if (LIKELY(m->is_simple))
-        return korb_invoke_simple(c, slots, m, argc, line, mid, self, KORB_NIL);
+    if (LIKELY(m->is_simple)) {
+        if (LIKELY(!vm->refinements_active))
+            return korb_invoke_simple(c, slots, m, argc, line, mid, self, KORB_NIL);
+        m->is_simple = 0;                          /* see korb_dispatch_method */
+    }
     return korb_invoke_method(c, slots, m, argc, line, mid, self, KORB_NIL,
                               block, def_env, KORB_CSELF_VAL(captured_self));
 }
@@ -7574,12 +7628,44 @@ korb_invoke_self(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
  * prologue + send/__send__ probe + mcache hash.  Everything else (main/global via
  * cc, builtin self, CFUNC, method_missing) falls to korb_call_impl; those sites
  * don't fill `ic`. */
+/* Refinement probe for a receiver dispatch site (recv staged at slots[-argc-1]).
+ * Returns true (with *out set) when an active refinement supplies `mid`. */
+static __attribute__((noinline)) bool
+korb_refined_dispatch(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                      VALUE recv, NODE *block, VALUE *def_env, VALUE *captured_self, RESULT *out)
+{
+    if (c->refinements == KORB_NIL) return false;
+    VALUE rdef = KORB_NIL;
+    struct korb_method *const m = korb_refined_find(c, korb_dispatch_class(c, recv), mid, &rdef);
+    if (m == NULL) return false;
+    *out = korb_dispatch_method(c, slots, m, mid, line, argc, rdef, block, def_env, captured_self);
+    return true;
+}
+
+/* Same, for an implicit-self call (args at slots[-argc..], self passed apart). */
+static __attribute__((noinline)) bool
+korb_refined_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                  VALUE self, RESULT *out)
+{
+    if (c->refinements == KORB_NIL) return false;
+    VALUE rdef = KORB_NIL;
+    struct korb_method *const m = korb_refined_find(c, korb_dispatch_class(c, self), mid, &rdef);
+    if (m == NULL || m->kind != KORB_METHOD_ISEQ) return false;
+    m->is_simple = 0;                       /* the callee needs its own refinement set */
+    *out = korb_invoke_method(c, slots, m, argc, line, mid, self, rdef, NULL, NULL, KORB_NIL);
+    return true;
+}
+
 __attribute__((no_stack_protector)) RESULT
 korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                  struct korb_callcache *cc, struct korb_inlcache *ic,
                  uint32_t argc, VALUE self)
 {
     struct korb_vm *const vm = c->vm;
+    if (UNLIKELY(vm->refinements_active)) {          /* refined implicit-self call */
+        RESULT rr;
+        if (korb_refined_call(c, slots, mid, line, argc, self, &rr)) return rr;
+    }
     if (LIKELY(KORB_OBJECT_P(self))) {
         /* A receiverless call still dispatches through the object's SINGLETON
          * class when it has one (`def obj.m` / `obj.extend`), so key the cache on
@@ -7595,10 +7681,13 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                 def_class = KORB_NIL;
                 m = korb_mcache_find(vm, klass, mid, &def_class);
                 if (UNLIKELY(m == NULL)) return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL);
-                ic->serial = vm->method_serial; ic->klass = klass; ic->m = m; ic->def_class = def_class;
+                ic->serial = korb_ic_serial(vm); ic->klass = klass; ic->m = m; ic->def_class = def_class;
             }
-            if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines */
-                return korb_invoke_simple(c, slots, m, argc, line, mid, self, def_class);
+            if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple)) {  /* hot path: inlines */
+                if (LIKELY(!vm->refinements_active))
+                    return korb_invoke_simple(c, slots, m, argc, line, mid, self, def_class);
+                m->is_simple = 0;                     /* see korb_dispatch_method */
+            }
             RESULT r;
             if (korb_invoke_self(c, slots, m, argc, line, mid, self, def_class, &r))
                 return r;   /* ATTR / non-simple ISEQ */
@@ -7635,11 +7724,11 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
                 m = ic->m; def_class = ic->def_class;
             } else {
                 m = korb_mcache_find(vm, klass, mid, &def_class);
-                if (m) { ic->serial = vm->method_serial; ic->klass = klass; ic->m = m; ic->def_class = def_class; ic->kind = KORB_IC_INSTANCE; }
+                if (m) { ic->serial = korb_ic_serial(vm); ic->klass = klass; ic->m = m; ic->def_class = def_class; ic->kind = KORB_IC_INSTANCE; }
             }
         } else {                                         /* main / top-level global function */
             if (LIKELY(cc->serial == vm->method_serial && cc->m != NULL)) m = cc->m;
-            else { m = korb_method_lookup(vm, mid); if (m) { cc->serial = vm->method_serial; cc->m = m; } }
+            else { m = korb_method_lookup(vm, mid); if (m) { cc->serial = korb_ic_serial(vm); cc->m = m; } }
         }
     }
     if (LIKELY(m != NULL && m->kind == KORB_METHOD_ISEQ)) {
@@ -8448,6 +8537,11 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
     }
 
+    if (UNLIKELY(vm->refinements_active)) {   /* refined dispatch (also covers send/__send__/public_send, which re-enter here) */
+        RESULT rr;
+        if (korb_refined_dispatch(c, slots, mid, line, argc, self, block, def_env, captured_self, &rr)) return rr;
+    }
+
     /* user instance → dispatch through its class chain (miss falls to Object). */
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
         VALUE def_class = KORB_NIL;
@@ -8796,10 +8890,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             if (block != NULL) {                            /* body block: def's land on the new class/module */
                 const VALUE saved_definee = c->def_definee;   /* a class body, not an instance_eval */
+                const VALUE saved_refine = c->refinements;    /* `using` in the body ends with it */
                 c->def_definee = KORB_NIL;
                 slots[2] = slots[1];                        /* CRuby passes the new class/module to the block */
                 RESULT br = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, &slots[1]);
                 c->def_definee = saved_definee;
+                c->refinements = saved_refine;
                 if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;
                 if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
             }
@@ -9535,6 +9631,10 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
 {
     struct korb_vm *const vm = c->vm;
     const VALUE recv = slots[-(korb_sword_t)argc - 1];
+    if (UNLIKELY(vm->refinements_active)) {          /* refined receiver dispatch */
+        RESULT rr;
+        if (korb_refined_dispatch(c, slots, mid, line, argc, recv, NULL, NULL, NULL, &rr)) return rr;
+    }
     /* class receivers (Klass.new / Fiber.yield / Struct / class methods) and the
      * send/__send__/public_send family need korb_send_impl's special handling. */
     if (UNLIKELY(KORB_CLASS_P(recv) ||
@@ -9550,7 +9650,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
             } else {
                 idef = KORB_NIL;
                 init = korb_class_find_method(recv, vm->mid_initialize, &idef);
-                ic->serial = vm->method_serial; ic->klass = recv; ic->m = init; ic->def_class = idef;
+                ic->serial = korb_ic_serial(vm); ic->klass = recv; ic->m = init; ic->def_class = idef;
                 ic->kind = KORB_IC_NEW;
             }
             const VALUE obj = UNWRAP(korb_obj_new(c, slots, recv));   /* may GC (bumps serial → next call re-resolves) */
@@ -9600,7 +9700,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
                     const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class, argc, &mm_handled);
                     if (mm_handled || vr.state != KORB_NORMAL) return vr;
                 }
-                ic->serial = vm->method_serial; ic->klass = recv; ic->m = m;
+                ic->serial = korb_ic_serial(vm); ic->klass = recv; ic->m = m;
                 ic->def_class = def_class; ic->kind = KORB_IC_SMETHOD;
                 return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
             }
@@ -9655,7 +9755,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         KORB_CLASS_P(klass) ? korb_mcache_find(vm, klass, mid, &def_class) : NULL;
     if (UNLIKELY(m == NULL))   /* NoMethodError (rare) — let korb_send_impl format/raise */
         return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
-    ic->serial = vm->method_serial; ic->klass = klass; ic->m = m; ic->def_class = def_class;
+    ic->serial = korb_ic_serial(vm); ic->klass = klass; ic->m = m; ic->def_class = def_class;
     if (UNLIKELY(m->visibility != 0)) {   /* private/protected: cache as _VIS (resolved) — node_send's inline fast path won't match it, so it always routes here to be guarded */
         ic->kind = KORB_IC_INSTANCE_VIS;
         if (caller_self != KORB_UNDEF) {
@@ -10676,10 +10776,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "protected", korb_m_protected, -1);
     /* `refine(Klass) { ... }` (refinements) — koruby has no refinement scoping;
      * treat as a no-op returning a fresh module so the call site doesn't raise. */
-    korb_def_cmethod(c, KORB_C_CLASS,  "refine", korb_m_lit_nil, -1);
-    korb_def_cmethod(c, KORB_C_OBJECT, "refine", korb_m_lit_nil, -1);
-    korb_def_cmethod(c, KORB_C_OBJECT, "using",  korb_m_lit_nil, -1);
-    korb_def_cmethod(c, KORB_C_CLASS,  "using",  korb_m_lit_nil, -1);
+    korb_def_cmethod_blk(c, KORB_C_CLASS,  "refine", korb_m_mod_refine, -1);
+    korb_def_cmethod_blk(c, KORB_C_OBJECT, "refine", korb_m_mod_refine, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "using",  korb_m_mod_using, -1);
+    korb_def_cmethod(c, KORB_C_CLASS,  "using",  korb_m_mod_using, -1);
     /* constant/method visibility — koruby tracks no visibility, so these are
      * no-ops returning their argument (matches `private`/`public`). */
     korb_def_cmethod(c, KORB_C_CLASS, "private_constant", korb_m_mod_private_constant, -1);
@@ -10793,6 +10893,8 @@ korb_register_core_methods(CTX *c)
     MOD_CFN_BLK("module_eval", korb_m_mod_class_eval, -1);
     MOD_CFN_BLK("class_exec", korb_m_mod_class_exec, -1);
     MOD_CFN_BLK("module_exec", korb_m_mod_class_exec, -1);
+    MOD_CFN_BLK("refine", korb_m_mod_refine, -1);   /* Module-only: undef'd on Class just below */
+    MOD_CFN("using", korb_m_mod_using, -1);
     #undef MOD_CFN
     #undef MOD_CFN_BLK
     {   /* CRuby undefines the module-only definition methods on Class, so
@@ -12161,7 +12263,12 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
     const char *const saved = vm->cur_load_file;
     char *const abscopy = strdup(abspath);             /* stable across the eval (fname baked into AST) */
     vm->cur_load_file = abscopy;
+    /* refinement activation is per file: a `using` at the top of the loaded file
+     * neither leaks out nor inherits the requiring file's (docs/refinements.md). */
+    const VALUE saved_refine = c->refinements;
+    c->refinements = KORB_NIL;
     RESULT r = korb_eval_toplevel_wrap(c, slots, buf, got, abscopy, wrapp);
+    c->refinements = saved_refine;
     vm->cur_load_file = saved;
     free(buf);
     if (dedup) korb_loading_remove(vm, abspath);
@@ -14151,6 +14258,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__set_gvar", korb_bi_set_gvar, 2);
     korb_builtin_define(c, "__autoload_feature_loaded?", korb_bi_autoload_feature_loaded, 1);
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
+    korb_builtin_define(c, "__used_refinements", korb_bi_used_refinements, 0);   /* Module.used_refinements (prelude) */
+    korb_builtin_define(c, "__used_modules", korb_bi_used_modules, 0);
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "__method__", korb_bi_method_name, 0);
     korb_builtin_define(c, "__callee__", korb_bi_method_name, 0);

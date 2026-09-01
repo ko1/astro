@@ -762,6 +762,9 @@ struct korb_method {
                               * never change, so a frame-held entry yields a live owner + stable mid. */
     VALUE dm_proc;           /* KORB_METHOD_DM: the define_method Proc (env pre-closed). nil otherwise.
                               * Manually GC-forwarded next to owner (entry is immortal libc). */
+    VALUE refine_set;        /* refinements active where this method was defined (CTX.refinements
+                              * snapshot), nil for the usual case.  Installed on the callee by
+                              * korb_invoke_method.  Manually GC-forwarded next to owner. */
     struct Node **opt_defaults;  /* ISEQ: default-value exprs for optionals (len = params_cnt-req_cnt), NULL if none */
     void *kw_info;           /* ISEQ: struct korb_kw_info * (keyword params), NULL if none */
     void *param_info;        /* ISEQ: struct korb_param_info * (full param list for #parameters), NULL if none — cold-read only */
@@ -819,6 +822,11 @@ struct korb_vm {
      * from basic_op_redefined so it costs one cold branch, not the arithmetic
      * fast paths. */
     bool value_eq_redefined;
+    /* set the first time a `using` activates a refinement (docs/refinements.md).
+     * Same deopt-flag pattern as basic_op_redefined: while false the dispatch
+     * paths are untouched; once true the inline/call caches stop being filled so
+     * every site re-resolves and can consult the active refinements. */
+    bool refinements_active;
 
     /* constants (class names): parallel name→value arrays.  `const_vals` holds
      * GC objects (classes) and is root-scanned by AROH_VISIT_ROOTS.
@@ -1101,6 +1109,10 @@ struct CTX_struct {
      * loses the class scope @@vars resolve against.  CRuby keeps the caller's
      * (block definition's) cref for them; this is that cref, KORB_NIL outside. */
     VALUE     cvar_cref;
+    /* refinements active in the running lexical scope: a flat Array
+     * [target, refinement, owner_module, ...] (later entries win), KORB_NIL when
+     * none.  Saved/restored by every scope-ish construct — see docs/refinements.md. */
+    VALUE     refinements;
     VALUE    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
     uint32_t  errinfo_live;          /* GC-scan depth: max over the running + all suspended threads */
@@ -1178,6 +1190,8 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->eval_cref);              \
     if ((c)->cvar_cref != KORB_NIL)                                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->cvar_cref);              \
+    if ((c)->refinements != KORB_NIL)                                        \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->refinements);            \
     for (uint32_t _ti = 0; _ti < (c)->catch_n; _ti++) {                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->catch_tags[_ti]);         \
     }                                                                        \
@@ -1188,6 +1202,7 @@ struct CTX_struct {
     for (uint32_t _mi = 0; _mi < (c)->vm->method_cnt; _mi++) {               \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->owner); \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->dm_proc); \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->refine_set); \
     }                                                                        \
     /* per-instance class override table: forward both columns in lockstep   \
      * so the (object, class) pairing survives compaction. */                \
@@ -1410,6 +1425,7 @@ struct CTX_struct {
         for (uint32_t _mi = 0; _mi < _cl->method_cnt; _mi++) {              \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->owner); \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->dm_proc); \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->refine_set); \
         }                                                                  \
         (void)(payload_size);                                               \
         break;                                                               \
