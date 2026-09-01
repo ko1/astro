@@ -6963,11 +6963,18 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
  * Symbols (interned names; immediates — libc table, never GC-scanned).
  * ------------------------------------------------------------------------- */
 
-static inline uint32_t korb_str_hash(const char *s, size_t len)
+/* FNV-1a, and — in the same pass, for free — whether every byte is 7-bit. */
+static inline uint32_t korb_str_hash_ascii(const char *s, size_t len, bool *ascii_only)
 {
     uint32_t h = 2166136261u;                         /* FNV-1a */
-    for (size_t i = 0; i < len; i++) { h ^= (uint8_t)s[i]; h *= 16777619u; }
+    uint8_t hi = 0;
+    for (size_t i = 0; i < len; i++) { const uint8_t b = (uint8_t)s[i]; hi |= b; h ^= b; h *= 16777619u; }
+    if (ascii_only) *ascii_only = (hi & 0x80u) == 0;
     return h ? h : 1u;
+}
+static inline uint32_t korb_str_hash(const char *s, size_t len)
+{
+    return korb_str_hash_ascii(s, len, NULL);
 }
 /* insert id into the open-addressing index (caller ensures capacity + no dup). */
 static void korb_sym_hash_put(struct korb_vm *vm, uint32_t id)
@@ -6978,8 +6985,12 @@ static void korb_sym_hash_put(struct korb_vm *vm, uint32_t id)
     while (vm->sym_hash[slot]) slot = (slot + 1) & mask;
     vm->sym_hash[slot] = id + 1;
 }
+/* Intern `name` under encoding `enc`.  The hash index stays keyed on the bytes
+ * alone (so the common one-encoding-per-name case probes exactly once), but the
+ * match also compares the encoding, so the same bytes under two encodings become
+ * two ids and simply sit in the same probe chain. */
 uint32_t
-korb_intern(struct korb_vm *vm, const char *name, size_t len)
+korb_intern_enc(struct korb_vm *vm, const char *name, size_t len, uint32_t enc)
 {
     if (UNLIKELY(vm->sym_hash_cap == 0)) {            /* lazy init */
         vm->sym_hash_cap = 1024;
@@ -6987,20 +6998,26 @@ korb_intern(struct korb_vm *vm, const char *name, size_t len)
         if (!vm->sym_hash) { fprintf(stderr, "koruby_precise: oom (sym hash)\n"); abort(); }
         for (uint32_t i = 0; i < vm->sym_cnt; i++) korb_sym_hash_put(vm, i);   /* index any pre-existing */
     }
-    const uint32_t h = korb_str_hash(name, len);
+    bool ascii_only;
+    const uint32_t h = korb_str_hash_ascii(name, len, &ascii_only);
+    /* CRuby normalises an ASCII-only name to US-ASCII regardless of the source
+     * String's tag, so `"foo".b.to_sym` and `:foo` are the same Symbol. */
+    const uint8_t want = (uint8_t)(ascii_only ? KORB_ENC_USASCII : enc);
     uint32_t mask = vm->sym_hash_cap - 1;
     for (uint32_t slot = h & mask; ; slot = (slot + 1) & mask) {   /* find-or-miss */
         const uint32_t e = vm->sym_hash[slot];
         if (e == 0) break;                            /* empty slot → not interned */
         const uint32_t id = e - 1;
-        if (vm->sym_lens[id] == len && memcmp(vm->sym_names[id], name, len) == 0)
+        if (vm->sym_lens[id] == len && vm->sym_encs[id] == want &&
+            memcmp(vm->sym_names[id], name, len) == 0)
             return id;
     }
     if (vm->sym_cnt == vm->sym_capa) {
         vm->sym_capa = vm->sym_capa ? vm->sym_capa * 2 : 64;
         vm->sym_names = realloc(vm->sym_names, sizeof(char *) * vm->sym_capa);
         vm->sym_lens  = realloc(vm->sym_lens,  sizeof(uint32_t) * vm->sym_capa);
-        if (!vm->sym_names || !vm->sym_lens) { fprintf(stderr, "koruby_precise: out of memory (symbols)\n"); abort(); }
+        vm->sym_encs  = realloc(vm->sym_encs,  sizeof(uint8_t)  * vm->sym_capa);
+        if (!vm->sym_names || !vm->sym_lens || !vm->sym_encs) { fprintf(stderr, "koruby_precise: out of memory (symbols)\n"); abort(); }
     }
     char *copy = malloc(len + 1);
     if (!copy) { fprintf(stderr, "koruby_precise: out of memory (symbols)\n"); abort(); }
@@ -7009,6 +7026,7 @@ korb_intern(struct korb_vm *vm, const char *name, size_t len)
     const uint32_t id = vm->sym_cnt++;
     vm->sym_names[id] = copy;
     vm->sym_lens[id] = (uint32_t)len;
+    vm->sym_encs[id] = want;
     if ((vm->sym_cnt * 4u) >= (vm->sym_hash_cap * 3u)) {   /* grow index past 0.75 load, then re-index all */
         vm->sym_hash_cap *= 2;
         vm->sym_hash = realloc(vm->sym_hash, sizeof(uint32_t) * vm->sym_hash_cap);
@@ -7019,6 +7037,15 @@ korb_intern(struct korb_vm *vm, const char *name, size_t len)
         korb_sym_hash_put(vm, id);
     }
     return id;
+}
+/* Names interned from C are method/ivar/constant names: ASCII in practice (and
+ * so normalised to US-ASCII above), with UTF-8 as the fallback for the rare
+ * non-ASCII one — which is what koruby reported before symbols carried an
+ * encoding at all. */
+uint32_t
+korb_intern(struct korb_vm *vm, const char *name, size_t len)
+{
+    return korb_intern_enc(vm, name, len, KORB_ENC_UTF8);
 }
 
 const char *

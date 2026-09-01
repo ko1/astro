@@ -798,6 +798,12 @@ struct korb_vm {
      * (slot -> id+1, 0 = empty) for O(1) intern instead of a linear strlen scan. */
     const char **sym_names;
     uint32_t *sym_lens;
+    /* Per-symbol encoding (a KORB_ENC_* index).  A Symbol keeps the encoding of
+     * the String it came from, and the intern key is (bytes, encoding) — the same
+     * bytes tagged ISO-8859-1 and BINARY are two distinct Symbols.  An ASCII-only
+     * name is always US-ASCII whatever its source String was tagged (CRuby), so
+     * every name interned from C lands on a single canonical id. */
+    uint8_t *sym_encs;
     uint32_t *sym_hash;
     uint32_t sym_cnt, sym_capa, sym_hash_cap;
 
