@@ -36,8 +36,19 @@ class Module
     false
   end
 
-  # koruby has no refinements; report none.
-  def refinements; []; end
+  # Refinements defined directly in this module (docs/refinements.md).  The C
+  # side keeps them as a flat [target, refinement, ...] Array.
+  def refinements
+    flat = instance_variable_get(:@__refinements)
+    return [] unless flat
+    out = []
+    i = 1
+    while i < flat.size
+      out << flat[i]
+      i += 2
+    end
+    out
+  end
   def undefined_instance_methods; []; end
 
   # Default hooks (private).  const_added is a no-op; const_missing raises.
@@ -244,4 +255,30 @@ class Class
     raise TypeError, "already initialized class"
   end
   private :initialize
+end
+
+# The anonymous module `Module#refine` creates (docs/refinements.md).  Its
+# #class is pinned to Refinement by the C side; the refined class is kept in
+# @__refine_target.
+class Refinement < Module
+  def target
+    instance_variable_get(:@__refine_target)
+  end
+
+  # Copy the OWN Ruby-defined methods of each module into this refinement.
+  def import_methods(*mods)
+    __refinement_import(self, mods)
+  end
+
+  # CRuby removed these on Refinement in 3.2 (a refinement cannot gain methods
+  # from another module, and it is never itself included/prepended/extended).
+  def include(*)
+    raise TypeError, "Refinement#include has been removed"
+  end
+
+  def prepend(*)
+    raise TypeError, "Refinement#prepend has been removed"
+  end
+
+  undef_method :append_features, :prepend_features, :extend_object
 end

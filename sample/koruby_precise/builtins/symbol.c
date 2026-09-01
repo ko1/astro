@@ -866,6 +866,13 @@ static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self,
             if (KORB_CLASS_P(objc) && korb_class_find_method(objc, mid, NULL) != NULL)
                 return korb_unbound_new(c, slots, cls, mid);
         }
+        /* a refinement active in the running scope answers too, and the
+         * UnboundMethod's #owner is the refinement (docs/refinements.md) */
+        if (UNLIKELY(c->vm->refinements_active) && KORB_CLASS_P(cls)) {
+            VALUE rdef = KORB_NIL;
+            if (korb_refined_find(c, cls, mid, &rdef) != NULL && KORB_CLASS_P(rdef))
+                return korb_unbound_new(c, slots, rdef, mid);
+        }
         char cnm[256]; korb_class_desc_into(c, cls, cnm, sizeof cnm);
         RESULT ne = korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",   /* CRuby: NameError, not NoMethodError */
                           korb_sym_name(c->vm, mid),
