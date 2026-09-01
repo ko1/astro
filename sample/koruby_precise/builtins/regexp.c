@@ -9,6 +9,71 @@
  * (and thus $1..$9, $&, $`, $') is kept in the flat const table under "$~". */
 
 static const char *korb_re_arg_type(VALUE v);   /* fwd (defined below) */
+static const char *korb_enc_idx_name(const struct korb_vm *vm, uint32_t idx);   /* fwd */
+
+/* Regexp::FIXEDENCODING passed to Regexp.new: no prism flag says "fixed to the
+ * source's own encoding", so koruby carries it in a private bit. */
+#define KORB_RE_FIXENC 0x10000u
+
+/* The pattern's own encoding, for the match-time compatibility check.  Only the
+ * cases the prelude's Regexp#encoding is sure about are reported; /e and /s name
+ * encodings koruby never transcodes to, so they stay unknown and the caller
+ * falls back to comparing against the source's encoding. */
+static uint32_t korb_re_enc_idx(const struct korb_vm *vm, VALUE re, bool *out_fixed, bool *out_known)
+{
+    const uint32_t f = VAL2RE(re)->flags;
+    const VALUE srcv = VAL2RE(re)->source;
+    const uint32_t senc = KORB_STRING_P(srcv) ? KORB_STR_ENC(srcv) : KORB_ENC_BINARY;
+    *out_known = true;
+    if (f & 128u) {   /* /n is NOENCODING, never FIXEDENCODING */
+        *out_fixed = false;
+        return (KORB_STRING_P(srcv) && korb_str_ascii_only_p(vm, srcv)) ? KORB_ENC_USASCII : KORB_ENC_BINARY;
+    }
+    if (f & 512u) { *out_fixed = true; return KORB_ENC_UTF8; }          /* /u */
+    if (f & (64u | 256u)) { *out_fixed = true; *out_known = false; return senc; }  /* /e, /s */
+    *out_fixed = (f & KORB_RE_FIXENC) != 0 || !korb_enc_ascii_compat_idx(vm, senc);
+    return senc;
+}
+
+/* True when the pattern pins an encoding, so a subject in a different one may
+ * be a CompatibilityError.  An unpinned pattern adapts to any ASCII-compatible
+ * subject, which is the overwhelmingly common case — keep it off the call. */
+static inline bool korb_re_enc_pinned(VALUE re)
+{
+    const VALUE srcv = VAL2RE(re)->source;
+    return (VAL2RE(re)->flags & (64u | 128u | 256u | 512u | KORB_RE_FIXENC)) != 0 ||
+           (KORB_STRING_P(srcv) && KORB_STR_ENC(srcv) >= KORB_ENC_OTHER_MIN);
+}
+
+/* CRuby's rb_reg_prepare_enc: an encoding the pattern can't be read in is a
+ * CompatibilityError.  Only the pattern's *explicitly* pinned encodings are
+ * enforced, so an ordinary ASCII pattern still matches anything. */
+static RESULT korb_re_check_enc(CTX *c, VALUE *slots, VALUE re, VALUE subj)
+{
+    const uint32_t senc = KORB_STR_ENC(subj);
+    bool re_fixed = false, re_known = false;
+    const uint32_t renc = korb_re_enc_idx(c->vm, re, &re_fixed, &re_known);
+
+    /* CRuby also rejects an ASCII-incompatible subject outright (rule 2 of
+     * rb_reg_prepare_enc).  Not enabled yet: prelude/encoding.rb's
+     * Regexp#encoding runs `src.scan(/\\u…/)` on the pattern source before it
+     * checks src.encoding.ascii_compatible?, so a UTF-16 sourced Regexp would
+     * raise while merely reporting its own encoding. */
+    if (!korb_enc_ascii_compat_idx(c->vm, senc)) {
+        /* nothing yet — see above */
+    } else if (re_fixed && re_known && renc != senc) {
+        if (!korb_enc_ascii_compat_idx(c->vm, renc) || !korb_str_ascii_only_p(c->vm, subj))
+            return korb_raise_enc_compat(c, slots, renc, senc);
+    } else if ((VAL2RE(re)->flags & 128u) && senc != KORB_ENC_BINARY &&
+               !korb_str_ascii_only_p(c->vm, subj)) {
+        korb_warn(c, slots, "historical binary regexp match /.../n against %s string",
+                  korb_enc_idx_name(c->vm, senc));
+    }
+    /* CRuby also raises ArgumentError on a broken subject.  Not done here: it
+     * needs the whole subject walked, and without CRuby's cached coderange that
+     * is an O(n) tax on every match (measured ~11% on a regex-heavy bench). */
+    return RESULT_OK(KORB_NIL);
+}
 
 /* ---- low-level engine call (no koruby alloc inside → subject bytes stable) */
 static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb_re_match_t *m) {
@@ -16,6 +81,7 @@ static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t sta
     const korb_re_exec_fn_t fn = korb_re_load(c->vm);
     if (UNLIKELY(fn == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Regexp engine (koruby_regex.so) unavailable");
     korb_re_sync_floor(c);   /* lazy first-load happens above; make sure the floor is set for THIS stack */
+    if (UNLIKELY(korb_re_enc_pinned(re))) CHECK(korb_re_check_enc(c, slots, re, subj));
     const KorbString *const pat = VAL2STR(VAL2RE(re)->source), *const s = VAL2STR(subj);
     if (startb > s->len) { m->matched = 0; return RESULT_OK(KORB_FALSE); }
     /* Encoding: a /n regex, or a single-byte subject (BINARY / US-ASCII), matches
@@ -221,9 +287,21 @@ static RESULT korb_m_md_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             const KorbRange *r = VAL2RANGE(arg);
             korb_sword_t b = 0, e;
             if (r->rbegin != KORB_NIL) korb_to_index(r->rbegin, &b);
+            const korb_sword_t raw_b = b;
             if (b < 0) b += n;
             if (r->rend == KORB_NIL) e = n; else { e = 0; korb_to_index(r->rend, &e); if (e < 0) e += n; if (!r->exclude_end) e += 1; }
-            if (UNLIKELY(b < 0 || b > n)) return korb_raise(c, slots, KORB_E_RANGE, 0, "%d..%d out of range", (int)b, (int)e);
+            /* The message names the range as written, not as resolved. */
+            if (UNLIKELY(b < 0 || b > n)) {
+                char rs[64];
+                if (r->rend == KORB_NIL) {
+                    snprintf(rs, sizeof rs, "%ld%s", (long)raw_b, r->exclude_end ? "..." : "..");
+                } else {
+                    korb_sword_t raw_e = 0; korb_to_index(r->rend, &raw_e);
+                    snprintf(rs, sizeof rs, "%ld%s%ld", (long)raw_b,
+                             r->exclude_end ? "..." : "..", (long)raw_e);
+                }
+                return korb_raise(c, slots, KORB_E_RANGE, 0, "%s out of range", rs);
+            }
             for (long gi = b; gi < e; gi++) {
                 slots[2] = (gi >= 0 && gi < n) ? UNWRAP(korb_md_group(c, slots + 2, slots[0], (int)gi)) : KORB_NIL;
                 CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
@@ -545,10 +623,6 @@ static RESULT korb_m_re_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(r.value == KORB_NIL ? KORB_FALSE : KORB_TRUE);
 }
 static RESULT korb_m_re_source(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(VAL2RE(VALUE_REF_GET(self))->source); }
-/* Regexp::FIXEDENCODING passed to Regexp.new: no prism flag says "fixed to the
- * source's own encoding", so koruby carries it in a private bit. */
-#define KORB_RE_FIXENC 0x10000u
-
 /* prism flag bits → Ruby's Regexp option bits.  The encoding flags (/u /e /s /n)
  * all mean "the pattern's encoding is fixed": Ruby reports FIXEDENCODING (16)
  * for /u /e /s and NOENCODING (32) for /n. */
@@ -561,7 +635,7 @@ static int korb_re_ruby_opts(uint32_t flags) {
     if (flags & 128u) o |= 32;                  /* ASCII-8BIT (/n) → NOENCODING */
     return o;
 }
-static RESULT korb_m_re_options(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(korb_re_ruby_opts(VAL2RE(VALUE_REF_GET(self))->flags))); }
+static RESULT korb_m_re_options(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(LONG2FIX(korb_re_ruby_opts(VAL2RE(VALUE_REF_GET(self))->flags))); }
 /* /e and /s name an encoding no Ruby-visible option bit distinguishes; #encoding
  * asks for it here. */
 static RESULT korb_m_re_enc_hint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -570,19 +644,68 @@ static RESULT korb_m_re_enc_hint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return nm ? korb_str_new(c, slots, nm, (uint32_t)strlen(nm)) : RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_re_casefold(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK((VAL2RE(VALUE_REF_GET(self))->flags & 4u) ? KORB_TRUE : KORB_FALSE); }
+/* True when the `(` at s[0] is closed by the `)` at s[len-1], i.e. the source is
+ * one group.  Skips escapes and character-class bodies so a `)` inside `[)]`
+ * doesn't close anything. */
+static bool korb_re_one_group(const char *restrict s, size_t len) {
+    size_t depth = 0;
+    bool in_class = false;
+    for (size_t i = 0; i < len; i++) {
+        const char ch = s[i];
+        if (ch == '\\') { i++; continue; }
+        if (in_class) { if (ch == ']') in_class = false; continue; }
+        if (ch == '[') {
+            in_class = true;
+            if (i + 1 < len && s[i + 1] == '^') i++;
+            if (i + 1 < len && s[i + 1] == ']') i++;   /* leading `]` is a member */
+            continue;
+        }
+        if (ch == '(') depth++;
+        else if (ch == ')') { if (--depth == 0) return i == len - 1; }
+    }
+    return false;
+}
+
 /* `(?mix-mix:source)` — a Regexp's own options travel with its source, which is
- * what makes an embedded copy (Regexp#to_s, Regexp.union) keep them. */
+ * what makes an embedded copy (Regexp#to_s, Regexp.union) keep them.  Like
+ * CRuby, an option group wrapping the whole source is folded into that header
+ * instead of being nested: `/(?i:.)/.to_s` is `(?i-mx:.)`. */
 static void korb_re_write_to_s(FILE *ms, VALUE re) {
     const uint32_t f = VAL2RE(re)->flags;
     const VALUE srcv = VAL2RE(re)->source;                      /* nil for an allocate'd / never-compiled Regexp */
     const KorbString *const src = KORB_STRING_P(srcv) ? VAL2STR(srcv) : NULL;
-    char on[4]; int no = 0; char off[4]; int nf = 0;
-    if (f & 16u) on[no++]='m'; else off[nf++]='m';
-    if (f & 4u)  on[no++]='i'; else off[nf++]='i';
-    if (f & 8u)  on[no++]='x'; else off[nf++]='x';
+    bool m = (f & 16u) != 0, i = (f & 4u) != 0, x = (f & 8u) != 0;
+    const char *body = src ? korb_strbuf_data(src->buf) : "";
+    size_t len = src ? src->len : 0;
+
+    /* `(?opts)rest` sets options for the rest and can repeat; `(?opts:body)`
+     * folds in only when its `)` really is the last byte. */
+    while (len >= 4 && body[0] == '(' && body[1] == '?') {
+        bool nm = m, ni = i, nx = x, off = false, ok = true;
+        size_t p = 2;
+        for (; p < len; p++) {
+            const char ch = body[p];
+            if (ch == '-' && !off) { off = true; continue; }
+            if (ch == 'm')      nm = !off;
+            else if (ch == 'i') ni = !off;
+            else if (ch == 'x') nx = !off;
+            else { ok = (ch == ':' || ch == ')'); break; }
+        }
+        if (!ok || p >= len) break;
+        if (body[p] == ')') { m = nm; i = ni; x = nx; body += p + 1; len -= p + 1; continue; }
+        if (!korb_re_one_group(body, len)) break;
+        m = nm; i = ni; x = nx;
+        body += p + 1; len -= p + 2;   /* drop the header and the trailing ) */
+        break;
+    }
+
+    char on[4]; int no = 0; char neg[4]; int nf = 0;
+    if (m) on[no++]='m'; else neg[nf++]='m';
+    if (i) on[no++]='i'; else neg[nf++]='i';
+    if (x) on[no++]='x'; else neg[nf++]='x';
     fputs("(?", ms); fwrite(on, 1, (size_t)no, ms);
-    if (nf) { fputc('-', ms); fwrite(off, 1, (size_t)nf, ms); }
-    fputc(':', ms); if (src) fwrite(korb_strbuf_data(src->buf), 1, src->len, ms); fputc(')', ms);
+    if (nf) { fputc('-', ms); fwrite(neg, 1, (size_t)nf, ms); }
+    fputc(':', ms); fwrite(body, 1, len, ms); fputc(')', ms);
 }
 static RESULT korb_m_re_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; slots[0] = VALUE_REF_GET(self);
@@ -1143,7 +1266,10 @@ static RESULT korb_m_re_escape(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         else if (ch == '\t') fputs("\\t", ms); else if (ch == '\f') fputs("\\f", ms);
         else if (ch == ' ') fputs("\\ ", ms); else fputc(ch, ms); }
     fclose(ms);
-    const uint32_t senc = KORB_STR_ENC(slots[0]);      /* the escape keeps the source's encoding */
+    /* The escape keeps the source's encoding, except that an all-ASCII input
+     * yields US-ASCII whatever it was tagged with (CRuby). */
+    const uint32_t senc = korb_str_ascii_only_p(c->vm, slots[0])
+                        ? KORB_ENC_USASCII : KORB_STR_ENC(slots[0]);
     RESULT r = korb_str_new(c, slots + 1, buf ? buf : "", (uint32_t)z); free(buf);
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, senc);
     return r;
@@ -1367,8 +1493,25 @@ static RESULT korb_m_re_last_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     (void)self; VALUE md = korb_re_get_lastmatch(c);
     if (VALUE_SLICE_LEN(a) == 0) return RESULT_OK(md == 0 ? KORB_NIL : md);
     if (md == 0 || md == KORB_NIL || !KORB_MATCHDATA_P(md)) return RESULT_OK(KORB_NIL);
-    korb_sword_t i = 0; korb_to_index(VALUE_SLICE_GET(a, 0), &i);
-    return korb_md_group(c, slots, md, (int)i);
+    slots[0] = md;
+    const VALUE k = VALUE_SLICE_GET(a, 0);
+    if (SYMBOL_P(k) || KORB_STRING_P(k)) {                /* a name, as MatchData#[] takes one */
+        const char *nm; uint32_t nl;
+        if (SYMBOL_P(k)) { nm = korb_sym_name(c->vm, SYM2ID(k)); nl = (uint32_t)strlen(nm); }
+        else { nm = korb_strbuf_data(VAL2STR(k)->buf); nl = VAL2STR(k)->len; }
+        const int gi = korb_md_name_idx(c, slots[0], nm, nl);
+        if (gi < 0) return korb_raise(c, slots + 1, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
+        return korb_md_group(c, slots + 1, slots[0], gi);
+    }
+    slots[1] = k;
+    CHECK(korb_coerce_to_int_pub(c, slots + 2, &slots[1]));
+    if (!FIXNUM_P(slots[1]))
+        return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    korb_sword_t i = FIX2LONG(slots[1]);
+    const int n = korb_md_ngroups(VAL2MD(slots[0]));
+    if (i < 0) i += n;
+    if (i < 0 || i >= n) return RESULT_OK(KORB_NIL);
+    return korb_md_group(c, slots + 2, slots[0], (int)i);
 }
 
 /* ---- $~ backref accessor (node_backref) — kind: 0=$& 1=$` 2=$' 3=$+ 100+n=$n */

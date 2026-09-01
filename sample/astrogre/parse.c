@@ -70,6 +70,9 @@ typedef struct ire_node {
         struct { int idx; struct ire_node *body; } group;
         struct { struct ire_node *body; } nc;
         struct { int idx; } backref;
+        /* `.` captures /m where it appears: `(?m)` only applies from that
+         * point on, and `(?m:…)` only inside the group. */
+        struct { bool ml; } dot;
         /* Conditional (?(idx)yes|no): if capture group #idx is set,
          * dispatch the `yes` branch, else `no` (which is IRE_EMPTY when
          * only "yes" was given). */
@@ -104,11 +107,20 @@ typedef struct re_parser {
     bool case_insensitive;
     bool multiline;
     bool extended;
+    /* (?a) / (?d) / (?u): how wide the character classes reach.  Ruby's
+     * default is (?d) — POSIX brackets are Unicode-aware but `\w` and
+     * friends stay ASCII. */
+    enum { AGRE_CC_DEFAULT, AGRE_CC_ASCII, AGRE_CC_UNICODE } cc_mode;
     agre_encoding_t encoding;
 
     int n_groups;     /* # of capturing groups assigned so far */
     bool error;
     char errbuf[256];
+
+    /* Numeric group references are validated once the total group count
+     * is known, so that forward references (`/(?:(\2)|(.))+/`) work. */
+    int  max_num_ref;
+    bool used_num_ref;
 
     /* Named-capture (name, idx) pairs.  Names are heap dups; ownership
      * passes to the astrogre_pattern at the end of parsing. */
@@ -267,6 +279,37 @@ static void bm_add_special(uint64_t bm[4], int c) {
 /* Defined below, next to the codepoint-set helpers. */
 static bool parse_prop_ref(re_parser_t *q, bool negate, uint64_t bm[4], agre_cpsetb_t *cps);
 
+static int re_hex_val(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* `\xH` or `\xHH` — Ruby takes one or two hex digits, so `\xAG` is 0x0A
+ * followed by a literal G.  Zero digits is an error. */
+static bool parse_hex_escape(re_parser_t *q, uint8_t *out) {
+    int v = 0, n = 0;
+    while (n < 2 && q->p < q->end) {
+        const int d = re_hex_val(*q->p);
+        if (d < 0) break;
+        v = v * 16 + d; q->p++; n++;
+    }
+    if (n == 0) { re_error(q, "invalid hex escape"); return false; }
+    *out = (uint8_t)v;
+    return true;
+}
+
+/* `\N` inside a character class: up to three octal digits (no back-references
+ * exist here, so every digit escape is octal). */
+static uint8_t parse_octal_escape(re_parser_t *q, int first) {
+    int v = first - '0', n = 1;
+    while (n < 3 && q->p < q->end && *q->p >= '0' && *q->p <= '7') {
+        v = v * 8 + (*q->p++ - '0'); n++;
+    }
+    return (uint8_t)v;
+}
+
 /* Parse a single escape inside a class.  Returns 1 if handled (already set
  * bits), 0 if it was a single character (write *out_byte).  `cps` collects
  * members at or above U+0080; NULL when the caller can't take any. */
@@ -287,18 +330,16 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps
     case 'r': *out_byte = '\r'; return 0;
     case 'f': *out_byte = '\f'; return 0;
     case 'v': *out_byte = '\v'; return 0;
-    case '0': *out_byte = 0;    return 0;
+    case '0': case '1': case '2': case '3':
+    case '4': case '5': case '6': case '7':
+        *out_byte = parse_octal_escape(q, c); return 0;
     case 'a': *out_byte = '\a'; return 0;
     case 'e': *out_byte = 0x1b; return 0;
     /* Inside a class, `\b` is backspace (0x08), not word-boundary. */
     case 'b': *out_byte = '\b'; return 0;
-    case 'x': {
-        if (q->p + 2 > q->end) { re_error(q, "invalid hex escape"); return 0; }
-        char h[3] = { (char)q->p[0], (char)q->p[1], 0 };
-        q->p += 2;
-        *out_byte = (uint8_t)strtol(h, NULL, 16);
+    case 'x':
+        parse_hex_escape(q, out_byte);
         return 0;
-    }
     case 'u': {
         /* \uHHHH or \u{H...} inside [].  Our class is byte-level
          * so only ASCII codepoints (cp < 0x80) can be expressed
@@ -447,6 +488,20 @@ posix_class_unicode(re_parser_t *q, const char *name, size_t name_len, bool neg,
     cls_cp_add_prop_high(q, cps, &s, neg);
 }
 
+/* The Unicode property `\d` / `\w` / `\s` stands for under (?u), or NULL when
+ * the shorthand stays ASCII (every mode but (?u), and always for \h). */
+static const char *
+uni_shorthand_prop(const re_parser_t *q, int e)
+{
+    if (q->cc_mode != AGRE_CC_UNICODE || q->encoding != AGRE_ENC_UTF8) return NULL;
+    switch (e) {
+    case 'd': case 'D': return "digit";
+    case 'w': case 'W': return "word";
+    case 's': case 'S': return "space";
+    default:            return NULL;
+    }
+}
+
 /* Complement a class operand.  A class with no codepoint members keeps the
  * historical byte-level flip (`[^a]` stays a 256-bit bitmap, which is what
  * the SIMD prefilters and the first-byte analysis can use).  Once any
@@ -519,7 +574,8 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps)
                     bm_or(bm, mask);
                     /* Ruby's POSIX classes are Unicode-aware; add the
                      * non-ASCII half (or its complement) too. */
-                    if (q->encoding == AGRE_ENC_UTF8 && cps != NULL)
+                    if (q->encoding == AGRE_ENC_UTF8 && cps != NULL &&
+                        q->cc_mode != AGRE_CC_ASCII)
                         posix_class_unicode(q, (const char *)name_start, name_len, neg, cps);
                     first = false;
                     prev_is_set = true;
@@ -710,6 +766,150 @@ re_register_name(re_parser_t *q, const uint8_t *name_start, size_t name_len, int
     q->n_names++;
 }
 
+/* --- delimited group references: \k<…>, \g<…>, (?(…)…) ------------- */
+
+/* Which construct a reference body came from.  They differ in how a
+ * `+`/`-` inside the body is read: `\g<…>` has no nesting levels, so
+ * `\g<a-1>` is the plain name "a-1", while `\k<a-1>` is name "a" at
+ * level -1. */
+typedef enum { REF_BACKREF, REF_CALL, REF_COND } ref_kind_t;
+
+static bool
+ref_all_digits(const uint8_t *restrict s, const uint8_t *restrict e)
+{
+    if (s >= e) return false;
+    for (const uint8_t *p = s; p < e; p++) if (*p < '0' || *p > '9') return false;
+    return true;
+}
+
+/* Saturating, so a silly `\k<99999999999>` can't wrap into a valid index. */
+static int
+ref_decimal(const uint8_t *restrict s, const uint8_t *restrict e)
+{
+    int v = 0;
+    for (const uint8_t *p = s; p < e; p++) {
+        if (v > 1000000) return v;
+        v = v * 10 + (*p - '0');
+    }
+    return v;
+}
+
+/* Resolve a reference body to a group index; -1 (with the parse error
+ * set) on failure.  0 is a valid answer only for `\g<0>`. */
+static int
+re_resolve_ref(re_parser_t *q, const uint8_t *const s, const uint8_t *const e,
+               ref_kind_t kind)
+{
+    if (s >= e) { re_error(q, "group name is empty"); return -1; }
+
+    const bool neg = (*s == '-'), rel = (neg || *s == '+');
+    if (ref_all_digits(s, e) || (rel && ref_all_digits(s + 1, e))) {
+        const int n = ref_decimal(rel ? s + 1 : s, e);
+        int idx;
+        if (!rel) {
+            /* `\g<0>` calls the whole pattern; `\k<0>` / `(?(0)…)` are errors. */
+            if (n == 0 && kind == REF_CALL) return 0;
+            if (n == 0) { re_error(q, "0 is not a valid backreference"); return -1; }
+            idx = n;
+        } else if (neg) {
+            idx = q->n_groups + 1 - n;   /* relative to the groups opened so far */
+        } else if (kind == REF_BACKREF) {
+            re_error(q, "forward relative backreference"); return -1;
+        } else {
+            idx = q->n_groups + n;
+        }
+        if (idx < 1) { re_error(q, "invalid backref number/name"); return -1; }
+        q->used_num_ref = true;
+        if (idx > q->max_num_ref) q->max_num_ref = idx;
+        return idx;
+    }
+
+    /* Name reference.  A trailing `+N` / `-N` is a nesting-level
+     * specifier and is not part of the name (except for `\g`). */
+    const uint8_t *ne = e;
+    if (kind != REF_CALL) {
+        for (const uint8_t *p = s + 1; p < e; p++) {
+            if (*p == '+' || *p == '-') { ne = p; break; }
+        }
+        if (ne != e) {
+            if (!ref_all_digits(ne + 1, e)) { re_error(q, "invalid group name"); return -1; }
+            /* Level 0 is the plain reference; other levels would need a
+             * per-recursion capture stack, which we don't keep. */
+            if (ref_decimal(ne + 1, e) != 0) {
+                re_error(q, "nesting level specifier is not supported"); return -1;
+            }
+        }
+    }
+    const size_t nl = (size_t)(ne - s);
+    for (int i = 0; i < q->n_names; i++) {
+        if (strlen(q->names[i]) == nl && memcmp(q->names[i], s, nl) == 0) return q->name_idx[i];
+    }
+    re_error(q, "undefined group name reference");
+    return -1;
+}
+
+/* Read `<…>` or `'…'` after `\k` / `\g`, leaving q->p past the closer.
+ * Returns false (without consuming) when no delimiter is there. */
+static bool
+re_take_ref_body(re_parser_t *q, const uint8_t **out_s, const uint8_t **out_e)
+{
+    if (q->p >= q->end || (*q->p != '<' && *q->p != '\'')) return false;
+    const uint8_t close = (*q->p == '<') ? '>' : '\'';
+    q->p++;
+    *out_s = q->p;
+    while (q->p < q->end && *q->p != close) q->p++;
+    if (q->p >= q->end) { re_error(q, "unterminated group reference"); return false; }
+    *out_e = q->p;
+    q->p++;
+    return true;
+}
+
+static ire_node_t *
+ire_lit_byte(const re_parser_t *q, uint8_t b)
+{
+    ire_node_t *const n = ire_new(IRE_LIT);
+    n->u.lit.bytes = (char *)malloc(1);
+    n->u.lit.bytes[0] = (char)b;
+    n->u.lit.len = 1;
+    n->u.lit.ci = q->case_insensitive;
+    return n;
+}
+
+/* `\0…` is always octal.  `\1`…`\9` is a back-reference (forward ones
+ * included — validated once the group count is final).  `\10` and up
+ * only back-reference a group that is already open; otherwise Ruby
+ * re-reads the run as an octal escape, and any digits the octal escape
+ * doesn't take are left for the caller to parse as literals. */
+static ire_node_t *
+parse_num_escape(re_parser_t *q, int first)
+{
+    const uint8_t *const ds = q->p - 1;   /* the first digit */
+    if (first != '0') {
+        const uint8_t *p = q->p;
+        int n = first - '0';
+        while (p < q->end && *p >= '0' && *p <= '9') {
+            if (n > 1000000) break;
+            n = n * 10 + (*p++ - '0');
+        }
+        if (p == q->p || n <= q->n_groups) {
+            q->p = p;
+            q->used_num_ref = true;
+            if (n > q->max_num_ref) q->max_num_ref = n;
+            ire_node_t *const bn = ire_new(IRE_BACKREF);
+            bn->u.backref.idx = n;
+            return bn;
+        }
+    }
+    int b = 0, ndig = 0;
+    while (ndig < 3 && ds + ndig < q->end && ds[ndig] >= '0' && ds[ndig] <= '7') {
+        b = b * 8 + (ds[ndig] - '0');
+        ndig++;
+    }
+    if (ndig == 0) { q->p = ds + 1; return ire_lit_byte(q, *ds); }  /* leading 8 or 9 */
+    q->p = ds + ndig;
+    return ire_lit_byte(q, (uint8_t)b);
+}
+
 /* Register a parsed IRE_GROUP for later \g<…> resolution. */
 static void
 re_register_group(re_parser_t *q, int idx, struct ire_node *g)
@@ -724,26 +924,28 @@ re_register_group(re_parser_t *q, int idx, struct ire_node *g)
     q->groups_by_idx[idx] = g;
 }
 
-/* Parse {min,max} or {n} after we've already consumed '{' */
-static bool parse_braces(re_parser_t *q, int32_t *out_min, int32_t *out_max) {
+/* Parse {min,max} or {n} after we've already consumed '{'.  `out_comma` (may
+ * be NULL) reports whether the form had a `,` — a trailing `?` is a lazy
+ * marker only then, so `a{2}?` is `(a{2})?` while `a{2,2}?` is lazy. */
+static bool parse_braces(re_parser_t *q, int32_t *out_min, int32_t *out_max, bool *out_comma) {
     int32_t mn = 0, mx = 0;
-    bool have_mx = false;
+    bool have_mn = false, have_mx = false, comma = false;
 
-    while (q->p < q->end && isdigit(*q->p)) { mn = mn * 10 + (*q->p++ - '0'); }
+    while (q->p < q->end && isdigit(*q->p)) { mn = mn * 10 + (*q->p++ - '0'); have_mn = true; }
     if (q->p < q->end && *q->p == ',') {
-        q->p++;
-        if (q->p < q->end && *q->p != '}') {
-            while (q->p < q->end && isdigit(*q->p)) { mx = mx * 10 + (*q->p++ - '0'); }
-            have_mx = true;
-        }
+        q->p++; comma = true;
+        while (q->p < q->end && isdigit(*q->p)) { mx = mx * 10 + (*q->p++ - '0'); have_mx = true; }
     } else {
-        mx = mn; have_mx = true;
+        mx = mn; have_mx = have_mn;   /* `{n}`; `{}` names no bound */
     }
+    /* `{}` / `{,}` name no bound at all, so Ruby reads them as literal text. */
+    if (!have_mn && !have_mx) return false;
     if (q->p >= q->end || *q->p != '}') return false;
     q->p++;
 
     *out_min = mn;
     *out_max = have_mx ? mx : -1;
+    if (out_comma) *out_comma = comma;
     return true;
 }
 
@@ -760,7 +962,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         const uint8_t *const save = q->p;
         int32_t mn, mx;
         q->p++;
-        const bool is_quantifier = parse_braces(q, &mn, &mx);
+        const bool is_quantifier = parse_braces(q, &mn, &mx, NULL);
         q->p = save;
         if (is_quantifier) {
             re_error(q, "target of repeat operator is not specified");
@@ -777,6 +979,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         bool atomic = false;
         bool nc = false;
         int saved_ci = q->case_insensitive, saved_ml = q->multiline, saved_x = q->extended;
+        const int saved_cc = q->cc_mode;
         bool saved_flags = false;
         const uint8_t *pending_name_start = NULL;
         const uint8_t *pending_name_end   = NULL;
@@ -816,31 +1019,24 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                 abs_node->u.nc.body = body_inner;
                 return abs_node;
             } else if (q->p < q->end && *q->p == '(') {
-                /* (?(N)YES) / (?(N)YES|NO) / (?(<name>)YES|NO) — conditional. */
+                /* (?(N)YES|NO) / (?(<name>)…) / (?('name')…) — conditional.
+                 * Undelimited bodies are digits only; anything else needs
+                 * <> or '' around it. */
                 q->p++;
-                int cond_idx = 0;
+                int cond_idx;
                 if (q->p < q->end && isdigit(*q->p)) {
-                    while (q->p < q->end && isdigit(*q->p)) {
-                        cond_idx = cond_idx * 10 + (*q->p++ - '0');
-                    }
-                } else if (q->p < q->end && *q->p == '<') {
-                    q->p++;
-                    const uint8_t *const ns = q->p;
-                    while (q->p < q->end && *q->p != '>') q->p++;
-                    const size_t nl = (size_t)(q->p - ns);
-                    if (q->p < q->end) q->p++;
-                    for (int i = 0; i < q->n_names; i++) {
-                        if (strlen(q->names[i]) == nl &&
-                            memcmp(q->names[i], ns, nl) == 0) {
-                            cond_idx = q->name_idx[i];
-                            break;
-                        }
-                    }
-                    if (cond_idx == 0) { re_error(q, "unknown capture name in (?(...))"); return NULL; }
+                    const uint8_t *const ds = q->p;
+                    while (q->p < q->end && isdigit(*q->p)) q->p++;
+                    cond_idx = re_resolve_ref(q, ds, q->p, REF_COND);
+                } else if (q->p < q->end && (*q->p == '<' || *q->p == '\'')) {
+                    const uint8_t *ns, *nend;
+                    if (!re_take_ref_body(q, &ns, &nend)) return NULL;
+                    cond_idx = re_resolve_ref(q, ns, nend, REF_COND);
                 } else {
-                    re_error(q, "unsupported conditional form");
+                    re_error(q, "invalid conditional pattern");
                     return NULL;
                 }
+                if (cond_idx < 0) return NULL;
                 if (q->p >= q->end || *q->p != ')') { re_error(q, "expected ) in (?(...))"); return NULL; }
                 q->p++;
                 ire_node_t *yes_branch = parse_concat(q);
@@ -858,18 +1054,29 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                 cnode->u.cond.yes = yes_branch;
                 cnode->u.cond.no  = no_branch;
                 return cnode;
-            } else if (q->p < q->end && *q->p == '<') {
-                /* (?<name>...) named capture, (?<=...) / (?<!...) lookbehind. */
+            } else if (q->p < q->end && (*q->p == '<' || *q->p == '\'')) {
+                /* (?<name>…) / (?'name'…) named capture,
+                 * (?<=…) / (?<!…) lookbehind. */
+                const bool angle = (*q->p == '<');
                 q->p++;
-                if (q->p < q->end && *q->p == '=') {
+                if (angle && q->p < q->end && *q->p == '=') {
                     q->p++; capture = false; lookbehind = true;
-                } else if (q->p < q->end && *q->p == '!') {
+                } else if (angle && q->p < q->end && *q->p == '!') {
                     q->p++; capture = false; neg_lookbehind = true;
                 } else {
+                    const uint8_t close = angle ? '>' : '\'';
                     pending_name_start = q->p;
-                    while (q->p < q->end && *q->p != '>') q->p++;
+                    while (q->p < q->end && *q->p != close) q->p++;
                     pending_name_end = q->p;
                     if (q->p < q->end) q->p++;
+                    if (pending_name_end == pending_name_start) {
+                        re_error(q, "group name is empty"); return NULL;
+                    }
+                    /* A leading digit or `-` would collide with numeric and
+                     * relative references. */
+                    if (isdigit(*pending_name_start) || *pending_name_start == '-') {
+                        re_error(q, "invalid group name"); return NULL;
+                    }
                     capture = true;
                 }
             } else {
@@ -882,6 +1089,10 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                     else if (fc == 'i') q->case_insensitive = !turning_off;
                     else if (fc == 'm') q->multiline = !turning_off;
                     else if (fc == 'x') q->extended = !turning_off;
+                    /* a/d/u select one mode; they have no "off" form. */
+                    else if (fc == 'a') q->cc_mode = AGRE_CC_ASCII;
+                    else if (fc == 'd') q->cc_mode = AGRE_CC_DEFAULT;
+                    else if (fc == 'u') q->cc_mode = AGRE_CC_UNICODE;
                 }
                 if (q->p < q->end && *q->p == ':') {
                     q->p++;
@@ -913,6 +1124,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             q->case_insensitive = saved_ci;
             q->multiline = saved_ml;
             q->extended = saved_x;
+            q->cc_mode = saved_cc;
         }
 
         if (capture) {
@@ -949,7 +1161,12 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         return body;
     }
     case '[': q->p++; return parse_class(q);
-    case '.': q->p++; return ire_new(IRE_DOT);
+    case '.': {
+        q->p++;
+        ire_node_t *const n = ire_new(IRE_DOT);
+        n->u.dot.ml = q->multiline;
+        return n;
+    }
     case '^': q->p++; return ire_new(IRE_BOL);
     case '$': q->p++; return ire_new(IRE_EOL);
     case '\\': {
@@ -968,7 +1185,16 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         case 'h': case 'H': {
             ire_node_t *n = ire_new(IRE_CLASS);
             bm_add_special(n->u.cls.bm, e);
-            return n;
+            /* (?u) widens \d \w \s to their Unicode properties; \h (hex) is
+             * ASCII in Ruby whatever the mode. */
+            const char *const prop = uni_shorthand_prop(q, e);
+            if (prop == NULL) return n;
+            agre_cpsetb_t cps = { 0 };
+            posix_class_unicode(q, prop, strlen(prop), isupper(e) != 0, &cps);
+            if (cps.n == 0) { agre_cpsetb_free(&cps); return n; }
+            ire_node_t *const u = ire_uniclass(n->u.cls.bm, &cps);
+            ire_free(n);
+            return u;
         }
         case 'X':
             return ire_new(IRE_GRAPHEME);
@@ -1003,60 +1229,25 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             alt->u.alt.r = cls;
             return alt;
         }
-        case 'g': {
-            /* \g<name> or \g<N> — subroutine call. */
-            if (q->p >= q->end || *q->p != '<') {
-                re_error(q, "expected `<` after `\\g`");
-                return NULL;
+        case 'g': case 'k': {
+            /* \g<…> / \g'…' subroutine call, \k<…> / \k'…' backref.
+             * Without a delimiter Ruby reads the letter literally. */
+            const ref_kind_t kind = (e == 'g') ? REF_CALL : REF_BACKREF;
+            const uint8_t *ns, *nend;
+            if (!re_take_ref_body(q, &ns, &nend)) {
+                if (q->error) return NULL;
+                return ire_lit_byte(q, (uint8_t)e);
             }
-            q->p++;
-            int idx = 0;
-            if (q->p < q->end && isdigit(*q->p)) {
-                while (q->p < q->end && isdigit(*q->p)) idx = idx * 10 + (*q->p++ - '0');
-            } else {
-                const uint8_t *const ns = q->p;
-                while (q->p < q->end && *q->p != '>') q->p++;
-                const size_t nl = (size_t)(q->p - ns);
-                for (int i = 0; i < q->n_names; i++) {
-                    if (strlen(q->names[i]) == nl && memcmp(q->names[i], ns, nl) == 0) {
-                        idx = q->name_idx[i];
-                        break;
-                    }
-                }
-            }
-            if (q->p < q->end && *q->p == '>') q->p++;
-            if (idx == 0) { re_error(q, "unknown subroutine target"); return NULL; }
-            ire_node_t *n = ire_new(IRE_SUBROUTINE);
-            n->u.sub.idx = idx;
+            const int idx = re_resolve_ref(q, ns, nend, kind);
+            if (idx < 0) return NULL;
+            ire_node_t *n = ire_new(kind == REF_CALL ? IRE_SUBROUTINE : IRE_BACKREF);
+            if (kind == REF_CALL) n->u.sub.idx = idx;
+            else                  n->u.backref.idx = idx;
             return n;
         }
-        case 'k': {
-            /* \k<name> — named backref.  Resolve via q->names; default
-             * to group 1 if name is unknown. */
-            int idx = 1;
-            if (q->p < q->end && *q->p == '<') {
-                q->p++;
-                const uint8_t *const ns = q->p;
-                while (q->p < q->end && *q->p != '>') q->p++;
-                const size_t nl = (size_t)(q->p - ns);
-                if (q->p < q->end) q->p++;
-                for (int i = 0; i < q->n_names; i++) {
-                    if (strlen(q->names[i]) == nl && memcmp(q->names[i], ns, nl) == 0) {
-                        idx = q->name_idx[i];
-                        break;
-                    }
-                }
-            }
-            ire_node_t *n = ire_new(IRE_BACKREF);
-            n->u.backref.idx = idx;
-            return n;
-        }
-        case '1': case '2': case '3': case '4': case '5':
-        case '6': case '7': case '8': case '9': {
-            ire_node_t *n = ire_new(IRE_BACKREF);
-            n->u.backref.idx = e - '0';
-            return n;
-        }
+        case '0': case '1': case '2': case '3': case '4':
+        case '5': case '6': case '7': case '8': case '9':
+            return parse_num_escape(q, e);
         case 'u': {
             /* \uHHHH or \u{H...} — Unicode codepoint.  Encode as
              * UTF-8 bytes (1-4) and emit as IRE_LIT.  This way the
@@ -1125,7 +1316,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             return n;
         }
         case 'n': case 't': case 'r': case 'f': case 'v':
-        case 'a': case 'e': case '0':
+        case 'a': case 'e':
         case '\\': case '/': case '.': case '^': case '$':
         case '(': case ')': case '[': case ']':
         case '{': case '}': case '|': case '*': case '+':
@@ -1140,14 +1331,9 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             case 'v': b = '\v'; break;
             case 'a': b = '\a'; break;
             case 'e': b = 0x1b; break;
-            case '0': b = 0;    break;
-            case 'x': {
-                if (q->p + 2 > q->end) { re_error(q, "invalid hex escape"); return NULL; }
-                char h[3] = { (char)q->p[0], (char)q->p[1], 0 };
-                q->p += 2;
-                b = (uint8_t)strtol(h, NULL, 16);
+            case 'x':
+                if (!parse_hex_escape(q, &b)) return NULL;
                 break;
-            }
             default: b = (uint8_t)e; break;
             }
             ire_node_t *n = ire_new(IRE_LIT);
@@ -1210,14 +1396,14 @@ static ire_node_t *parse_quantifier(re_parser_t *q, ire_node_t *atom) {
     re_skip_ws(q);
     int c = re_peek(q);
     int32_t mn, mx; bool greedy = true;
-    bool braces = false;
+    bool braces = false, brace_comma = false;
     if (c == '*')      { q->p++; mn = 0; mx = -1; }
     else if (c == '+') { q->p++; mn = 1; mx = -1; }
     else if (c == '?') { q->p++; mn = 0; mx = 1; }
     else if (c == '{') {
         const uint8_t *save = q->p;
         q->p++;
-        if (!parse_braces(q, &mn, &mx)) {
+        if (!parse_braces(q, &mn, &mx, &brace_comma)) {
             q->p = save;
             return atom;
         }
@@ -1226,7 +1412,9 @@ static ire_node_t *parse_quantifier(re_parser_t *q, ire_node_t *atom) {
         return atom;
     }
     bool possessive = false;
-    if (re_peek(q) == '?') { q->p++; greedy = false; }
+    /* After an exact `{n}` a `?` is its own quantifier, not a lazy marker;
+     * parse_concat's loop picks it up as a second rep. */
+    if (re_peek(q) == '?' && !(braces && !brace_comma)) { q->p++; greedy = false; }
     /* Onigmo treats `\d{m,n}+` as `(\d{m,n})+` (nested rep), NOT
      * possessive — only `*+` `++` `?+` are possessive. */
     else if (!braces && re_peek(q) == '+') { q->p++; possessive = true; }
@@ -1950,7 +2138,6 @@ ire_collect_prefix(ire_node_t *n, fixed_prefix_t *out, bool *consumes_anything)
 typedef struct lower_ctx {
     re_parser_t *q;
     bool ci;
-    bool ml;
     agre_encoding_t enc;
     NODE *rep_cont;
     /* Subroutine references encountered during lower.  After main
@@ -2023,11 +2210,11 @@ lower_lookbehind(lower_ctx_t *L, ire_node_t *body, NODE *tail, bool negative)
         : ALLOC_node_re_lookbehind_var    (body_nd, tail);
 }
 
-static NODE *make_dot(lower_ctx_t *L, NODE *tail) {
+static NODE *make_dot(const lower_ctx_t *L, bool ml, NODE *tail) {
     if (L->enc == AGRE_ENC_UTF8) {
-        return L->ml ? ALLOC_node_re_dot_utf8_m(tail) : ALLOC_node_re_dot_utf8(tail);
+        return ml ? ALLOC_node_re_dot_utf8_m(tail) : ALLOC_node_re_dot_utf8(tail);
     }
-    return L->ml ? ALLOC_node_re_dot_m(tail) : ALLOC_node_re_dot(tail);
+    return ml ? ALLOC_node_re_dot_m(tail) : ALLOC_node_re_dot(tail);
 }
 
 static NODE *
@@ -2083,7 +2270,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
         }
         return ALLOC_node_re_lit(bytes, n->u.lit.len, tail);
     }
-    case IRE_DOT:           return make_dot(L, tail);
+    case IRE_DOT:           return make_dot(L, n->u.dot.ml, tail);
     case IRE_CLASS:         return lower_class(L, n, tail);
     case IRE_UNICLASS:      return lower_uniclass(L, n, tail);
     case IRE_GRAPHEME:      return ALLOC_node_re_grapheme(tail);
@@ -2144,7 +2331,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
     }
     case IRE_SUBROUTINE: {
         const int idx = n->u.sub.idx;
-        if (idx <= 0 || idx >= L->q->cap_groups || L->q->groups_by_idx[idx] == NULL) {
+        if (idx < 0 || idx >= L->q->cap_groups || L->q->groups_by_idx[idx] == NULL) {
             re_error(L->q, "subroutine target undefined (forward reference?)");
             return tail;
         }
@@ -2167,7 +2354,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
          * UTF-8 variants so backward iteration respects codepoint
          * boundaries in UTF-8 mode. */
         if (n->u.rep.body && n->u.rep.body->kind == IRE_DOT) {
-            const uint32_t ml = L->ml ? 1 : 0;
+            const uint32_t ml = n->u.rep.body->u.dot.ml ? 1 : 0;
             if (n->u.rep.greedy) {
                 if (L->enc == AGRE_ENC_UTF8) {
                     return ALLOC_node_re_greedy_dot_utf8(n->u.rep.min, n->u.rep.max, tail, ml);
@@ -2270,6 +2457,67 @@ static void ire_free(ire_node_t *n) {
     free(n);
 }
 
+/* Apply `map` (old index → new index, 0 = drop) to every group and
+ * group reference in the tree.  Dropped groups become plain
+ * non-capturing groups. */
+static void
+ire_renumber(ire_node_t *n, const int *restrict map)
+{
+    if (!n) return;
+    switch (n->kind) {
+    case IRE_ALT: ire_renumber(n->u.alt.l, map); ire_renumber(n->u.alt.r, map); break;
+    case IRE_CONCAT:
+        for (size_t i = 0; i < n->u.cat.n; i++) ire_renumber(n->u.cat.xs[i], map);
+        break;
+    case IRE_REP: ire_renumber(n->u.rep.body, map); break;
+    case IRE_GROUP: {
+        ire_node_t *const body = n->u.group.body;
+        const int nidx = map[n->u.group.idx];
+        ire_renumber(body, map);
+        if (nidx == 0) { n->kind = IRE_NCGROUP; n->u.nc.body = body; }
+        else           { n->u.group.idx = nidx; }
+        break;
+    }
+    case IRE_NCGROUP:
+    case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+    case IRE_LOOKBEHIND: case IRE_NEG_LOOKBEHIND:
+    case IRE_ATOMIC: case IRE_ABSENCE:
+        ire_renumber(n->u.nc.body, map); break;
+    case IRE_CONDITIONAL:
+        n->u.cond.idx = map[n->u.cond.idx];
+        ire_renumber(n->u.cond.yes, map);
+        ire_renumber(n->u.cond.no, map);
+        break;
+    case IRE_BACKREF:   n->u.backref.idx = map[n->u.backref.idx]; break;
+    case IRE_SUBROUTINE: n->u.sub.idx = map[n->u.sub.idx]; break;
+    default: break;
+    }
+}
+
+/* Ruby stops treating plain `(…)` as capturing as soon as the pattern
+ * has a named group, and renumbers the named ones 1..N.  Onigmo does
+ * this as a post-pass too, which keeps `(?#…)` comments and /x comments
+ * from being mistaken for group syntax. */
+static void
+re_disable_unnamed_captures(re_parser_t *q, ire_node_t *ir)
+{
+    if (q->n_names == 0 || q->n_groups == 0) return;
+    int *const map = (int *)calloc((size_t)q->n_groups + 1, sizeof(int));
+    for (int i = 0; i < q->n_names; i++) map[q->name_idx[i]] = 1;
+    int next = 0;
+    for (int i = 1; i <= q->n_groups; i++) if (map[i]) map[i] = ++next;
+    ire_renumber(ir, map);
+    for (int i = 0; i < q->n_names; i++) q->name_idx[i] = map[q->name_idx[i]];
+    /* groups_by_idx was filled with the old numbering; compact it in
+     * place — safe upwards because map[i] <= i. */
+    for (int i = 1; i <= q->n_groups && i < q->cap_groups; i++) {
+        if (map[i] != 0) q->groups_by_idx[map[i]] = q->groups_by_idx[i];
+    }
+    for (int i = next + 1; i <= q->n_groups && i < q->cap_groups; i++) q->groups_by_idx[i] = NULL;
+    q->n_groups = next;
+    free(map);
+}
+
 /* ------------------------------------------------------------------ */
 /* Node ownership (per-pattern) — see node.c node_allocate.            */
 /* ------------------------------------------------------------------ */
@@ -2339,6 +2587,12 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     bool anchored_bos = (pat_len >= 2 && pat[0] == '\\' && pat[1] == 'A');
 
     ire_node_t *ir = parse_alt(&q);
+    /* Numeric references are only checkable now that the group count is
+     * final — and a single named group turns them all into errors. */
+    if (!q.error && q.used_num_ref) {
+        if (q.n_names > 0) re_error(&q, "numbered backref/call is not allowed (use name)");
+        else if (q.max_num_ref > q.n_groups) re_error(&q, "invalid backref number/name");
+    }
     if (q.error) {
         astrogre_set_error(q.errbuf);
         ire_free(ir);
@@ -2351,6 +2605,8 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
         free(q.groups_by_idx); re_parser_free_names(&q);
         return NULL;
     }
+
+    re_disable_unnamed_captures(&q, ir);
 
     /* Pre-lower IR rewrites: alt-of-single-bytes → class, etc.  Cheap
      * tree walk that lets the lower pass see structural simplifications
@@ -2365,12 +2621,13 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     lower_ctx_t L = {0};
     L.q = &q;
     L.ci = q.case_insensitive;
-    L.ml = q.multiline;
     L.enc = q.encoding;
     L.rep_cont = astrogre_rep_cont_singleton();
 
     astrogre_pattern *p = (astrogre_pattern *)calloc(1, sizeof(*p));
     astrogre_g_building = p;
+
+    re_register_group(&q, 0, ir);   /* `\g<0>` calls the whole pattern */
 
     NODE *succ = ALLOC_node_re_succ();
     /* Wrap the whole pattern in capture group 0 so the matcher records
@@ -2401,7 +2658,7 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
         while (any_new && !q.error) {
             any_new = false;
             const int snapshot_cap = L.sub_needed_cap;
-            for (int idx = 1; idx < snapshot_cap; idx++) {
+            for (int idx = 0; idx < snapshot_cap; idx++) {
                 if (!L.sub_needed[idx] || sub_chains[idx]) continue;
                 ire_node_t *const target = q.groups_by_idx[idx];
                 if (!target) continue;
