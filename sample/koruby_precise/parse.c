@@ -3219,14 +3219,26 @@ build_hash(struct kp_ctx *tc, struct pm_node **assocs, size_t n, uint32_t capa)
  * build_array).  The accumulator is always a String; each part is appended
  * via its to_s inside node_dstr_concat. */
 static NODE *
-build_dstr(struct kp_ctx *tc, struct pm_node **parts, size_t n)
+build_dstr_enc(struct kp_ctx *tc, struct pm_node **parts, size_t n, uint8_t seed_enc)
 {
-    if (n == 0) return ALLOC_node_str("", 0);
+    /* The empty seed carries the FILE's encoding, not the default: an
+     * interpolated literal in a us-ascii source is us-ascii (its parts negotiate
+     * upward from there), and seeding UTF-8 would drag every one to UTF-8.
+     * A regexp source is the exception — there an /u /e /s /n modifier decides,
+     * so its caller passes UTF-8 and lets the modifier apply. */
+    if (n == 0) return seed_enc != KORB_ENC_UTF8 ? ALLOC_node_str_enc("", 0, seed_enc)
+                                                 : ALLOC_node_str("", 0);
     NODE *acc, *part;
     uint32_t sc = kind_node_dstr_concat.slot_count;
-    WITH_CHAIN(tc, sc, (acc  = build_dstr(tc, parts, n - 1),
+    WITH_CHAIN(tc, sc, (acc  = build_dstr_enc(tc, parts, n - 1, seed_enc),
                         part = transduce(tc, parts[n - 1])));
     return ALLOC_node_dstr_concat(acc, part);
+}
+
+static NODE *
+build_dstr(struct kp_ctx *tc, struct pm_node **parts, size_t n)
+{
+    return build_dstr_enc(tc, parts, n, tc->src_enc);
 }
 
 /* Bake the lexically-enclosing class/module names (outermost→innermost) into a
@@ -3695,7 +3707,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                                            PM_REGULAR_EXPRESSION_FLAGS_WINDOWS_31J |
                                            PM_REGULAR_EXPRESSION_FLAGS_UTF_8);
         NODE *src;
-        WITH_CHAIN(tc, kind_node_regexp_dyn.slot_count, (src = build_dstr(tc, in->parts.nodes, in->parts.size)));
+        WITH_CHAIN(tc, kind_node_regexp_dyn.slot_count, (src = build_dstr_enc(tc, in->parts.nodes, in->parts.size, KORB_ENC_UTF8)));   /* the /u /e /s /n modifier decides, not the file */
         return ALLOC_node_regexp_dyn(flags, src);
       }
       case PM_EMBEDDED_STATEMENTS_NODE: {
