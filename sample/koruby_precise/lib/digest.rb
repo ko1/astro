@@ -163,13 +163,9 @@ module Digest
   # ---- Digest::Instance / Digest::Class --------------------------------
   module Instance
     def update(str)
-      raise NotImplementedError, "#{self.class} does not implement update()"
+      raise RuntimeError, "#{self.class} does not implement update()"
     end
-
-    def <<(str)
-      update(str)
-      self
-    end
+    alias_method :<<, :update        # the same definition, as CRuby has it
 
 
     # No argument: the digest of everything fed so far (non-destructive).
@@ -446,6 +442,7 @@ module Digest
       @impl.update(str)
       self
     end
+    alias_method :<<, :update        # the same definition, as CRuby has it
 
     def reset
       @impl.reset
