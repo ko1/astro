@@ -13,6 +13,8 @@ class BasicSocket < IO
   # inherit it (their ::new takes a host/port/path).  Route ::new back through
   # allocate + #initialize, and attach the fd with IO#__init_fd.
   def self.new(*args, &blk)
+    # IO.new's rb_warn, inherited by every socket class: only ::open takes a block
+    warn "warning: #{self}::new() does not take block; use #{self}::open() instead" if blk && !$VERBOSE.nil?
     s = allocate
     s.__send__(:initialize, *args, &blk)
     s
@@ -229,8 +231,6 @@ class TCPSocket < IPSocket
   # accepted and ignored (resolution here is a single getaddrinfo call).
   def initialize(host, port, local_host = nil, local_port = nil,
                  connect_timeout: nil, open_timeout: nil, resolv_timeout: nil)
-    # .new ignores a block; .open is the one that takes it
-    warn("TCPSocket::new() does not take block; use TCPSocket::open() instead") if block_given?
     tmo = connect_timeout || open_timeout
     fam = Socket.__family_of_host(host)      # "::1" must open an AF_INET6 socket
     fd = __sock_open(fam, Socket::SOCK_STREAM, 0)
@@ -265,7 +265,6 @@ class TCPServer < TCPSocket
   # TCPServer.new(port) or TCPServer.new(host, port); the arity decides, so an
   # explicit nil port is "any port on this host", not "this is the port".
   def initialize(*args)
-    warn("TCPServer::new() does not take block; use TCPServer::open() instead") if block_given?
     unless (1..2).cover?(args.size)
       raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1..2)"
     end
@@ -336,7 +335,16 @@ class UNIXSocket < BasicSocket
     mode.nil? ? klass.for_fd(fd) : klass.for_fd(fd, mode)
   end
 
+  # An embedded NUL would truncate the sun_path handed to connect(2)/bind(2)
+  # (CVE-2018-8779), so reject it the way CRuby's rb_get_path does.
+  def self.__check_path(path)
+    s = path.to_s
+    raise ArgumentError, "path name contains null byte" if s.include?("\0")
+    s
+  end
+
   def initialize(path)
+    path = UNIXSocket.__check_path(path)
     fd = __sock_open(Socket::AF_UNIX, Socket::SOCK_STREAM, 0)
     begin
       __sock_connect(fd, Socket::AF_UNIX, path.to_s, 0)
@@ -378,6 +386,7 @@ end
 
 class UNIXServer < UNIXSocket
   def initialize(path)
+    path = UNIXSocket.__check_path(path)
     fd = __sock_open(Socket::AF_UNIX, Socket::SOCK_STREAM, 0)
     __sock_bind(fd, Socket::AF_UNIX, path.to_s, 0)
     __sock_listen(fd, 5)

@@ -162,9 +162,17 @@ static RESULT korb_path_enc_check(CTX *c, VALUE *slots, VALUE pv) {
     return korb_raise_enc_compat_msg(c, slots, msg);
 }
 
+/* CRuby's rb_get_path: an embedded NUL would silently truncate the path handed
+ * to the syscall (CVE-2018-8780), so every path argument is rejected outright. */
+static RESULT korb_path_nul_check(CTX *c, VALUE *slots, VALUE v) {
+    const KorbString *const s = VAL2STR(v);
+    if (UNLIKELY(memchr(korb_strbuf_data(s->buf), '\0', s->len) != NULL))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "path name contains null byte");
+    return RESULT_OK(v);
+}
 static RESULT korb_path_coerce(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t idx) {
     VALUE v = VALUE_SLICE_GET(a, idx);
-    if (LIKELY(KORB_STRING_P(v))) { CHECK(korb_path_enc_check(c, slots, v)); return RESULT_OK(v); }
+    if (LIKELY(KORB_STRING_P(v))) { CHECK(korb_path_enc_check(c, slots, v)); return korb_path_nul_check(c, slots, v); }
     const char *const tname = (v == KORB_NIL) ? "nil" : korb_type_name(v);   /* capture before any dispatch can move `v` */
     static const struct { const char *name; uint32_t len; } conv[] = { { "to_path", 7 }, { "to_str", 6 } };
     for (size_t i = 0; i < sizeof conv / sizeof conv[0] && !KORB_STRING_P(v); i++) {
@@ -179,7 +187,7 @@ static RESULT korb_path_coerce(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t idx
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", tname);
     VALUE_REF_SET(VALUE_SLICE_REF(a, idx), v);     /* keep the coerced String where the caller reads it */
     CHECK(korb_path_enc_check(c, slots, v));
-    return RESULT_OK(v);
+    return korb_path_nul_check(c, slots, v);
 }
 
 /* Coerce argument `idx` to a path String, propagating a raise. */
@@ -1688,7 +1696,7 @@ static RESULT korb_m_stat_spaceship(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 /* A path argument: a String as is, otherwise #to_path then #to_str (CRuby's
  * FilePathValue).  Dispatches → may GC, so the caller must re-read its VALUEs. */
 static RESULT korb_file_path_arg(CTX *c, VALUE *slots, VALUE *v) {
-    if (LIKELY(KORB_STRING_P(*v))) { CHECK(korb_path_enc_check(c, slots, *v)); return RESULT_OK(KORB_TRUE); }
+    if (LIKELY(KORB_STRING_P(*v))) { CHECK(korb_path_enc_check(c, slots, *v)); CHECK(korb_path_nul_check(c, slots, *v)); return RESULT_OK(KORB_TRUE); }
     const char *const cls = korb_type_name(*v);            /* capture before dispatch */
     static const char *const conv[2] = { "to_path", "to_str" };
     static const uint32_t convlen[2] = { 7, 6 };
@@ -1700,7 +1708,7 @@ static RESULT korb_file_path_arg(CTX *c, VALUE *slots, VALUE *v) {
         const RESULT pr = korb_send(c, slots + 1, mid, 0, 0);
         if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
         *v = pr.value;
-        if (KORB_STRING_P(*v)) { slots[0] = *v; CHECK(korb_path_enc_check(c, slots + 1, slots[0])); *v = slots[0]; return RESULT_OK(KORB_TRUE); }
+        if (KORB_STRING_P(*v)) { slots[0] = *v; CHECK(korb_path_enc_check(c, slots + 1, slots[0])); CHECK(korb_path_nul_check(c, slots + 1, slots[0])); *v = slots[0]; return RESULT_OK(KORB_TRUE); }
     }
     return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
 }
@@ -2328,8 +2336,10 @@ static RESULT korb_m_dir_glob(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(!korb_enc_ascii_compat_idx(c->vm, penc)))
             return korb_raise_enc_compat(c, slots + 2, penc, KORB_ENC_USASCII);
         const KorbString *const ps = VAL2STR(pv);
-        if (UNLIKELY(memchr(korb_strbuf_data(ps->buf), '\0', ps->len) != NULL))
-            return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "nul-separated glob pattern is deprecated");
+        if (UNLIKELY(memchr(korb_strbuf_data(ps->buf), '\0', ps->len) != NULL))   /* only the single-String form ever meant "several patterns" */
+            return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0,
+                              KORB_ARRAY_P(slots[1]) ? "path name contains null byte"
+                                                     : "nul-separated glob pattern is deprecated");
         char pbuf[PATH_MAX];
         if (ps->len >= sizeof pbuf) continue;
         memcpy(pbuf, korb_strbuf_data(ps->buf), ps->len); pbuf[ps->len] = '\0';   /* copy: the walk allocs */
