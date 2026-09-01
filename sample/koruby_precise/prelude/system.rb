@@ -21,6 +21,11 @@ end
 ThreadGroup::Default = ThreadGroup.new
 
 class Thread
+  # koruby は runnable が居なくなったら fatal で落ちる (deadlock 検出は常時)。
+  # この flag は CRuby 互換の getter/setter だけで、検出の有無は変えられない。
+  @__ignore_deadlock = false
+  def self.ignore_deadlock; @__ignore_deadlock; end
+  def self.ignore_deadlock=(v); @__ignore_deadlock = v; end
   def self.exclusive; yield; end
   def self.exit; current.kill; end        # 明示定義 (無いと explicit-recv quirk で Kernel#exit に落ちる)
   def self.kill(th); th.kill; end

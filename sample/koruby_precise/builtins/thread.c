@@ -598,6 +598,10 @@ static RESULT
 korb_m_thread_s_start(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                       NODE *block, VALUE *def_env, VALUE *cself)
 {
+    /* CRuby: .start / .fork は Proc を作るところで落ちるので ArgumentError
+     * (block 無しの .new が出す ThreadError とは別) */
+    if (UNLIKELY(block == NULL))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Proc object without a block");
     slots[0] = VALUE_REF_GET(self);                       /* class (root) */
     slots[1] = UNWRAP(korb_thread_s_new(c, slots + 2, a, block, def_env, cself));
     if (KORB_CLASS_P(slots[0]) &&
@@ -1166,8 +1170,10 @@ korb_m_thread_native_thread_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 {
     (void)c; (void)slots; (void)a;
     const struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
-    if (t->state == KORB_TH_DEAD) return RESULT_OK(KORB_NIL);
-    return RESULT_OK(LONG2FIX((long)gettid()));   /* green: 全員同じ native tid */
+    /* M:N: native thread に載っているのは「今走っている」green thread だけ。
+     * CRuby も M:N scheduler では載っていない thread に nil を返す。 */
+    if (t->state == KORB_TH_DEAD || t != c->vm->cur_thread) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(LONG2FIX((long)gettid()));
 }
 
 /* ThreadGroup 連携 (本体は prelude の Ruby class; 所属だけ rep が持つ) */
