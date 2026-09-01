@@ -673,15 +673,18 @@ static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     }
     /* `private [:a, :b]` treats a lone Array argument as the list of names. */
     const bool array_arg = (argc == 1 && KORB_ARRAY_P(VALUE_SLICE_GET(a, 0)));
-    if (KORB_CLASS_P(selfv)) {                         /* top-level / non-class: best-effort no-op on the names */
-        KorbClass *const k = VAL2CLASS(selfv);
+    /* top-level `private :m` runs with self == main (not a class); CRuby defines
+     * main#private to act on Object, so aim there when self is not a class. */
+    const VALUE target = KORB_CLASS_P(selfv) ? selfv : korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    if (KORB_CLASS_P(target)) {
+        KorbClass *const k = VAL2CLASS(target);
         if (array_arg) {
             slots[0] = VALUE_SLICE_GET(a, 0);         /* root the name array across NameError alloc */
             for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++)
-                CHECK(korb_set_visibility1(c, slots + 1, selfv, k, korb_items_data(VAL2ARY(slots[0])->items)[i], vis));
+                CHECK(korb_set_visibility1(c, slots + 1, target, k, korb_items_data(VAL2ARY(slots[0])->items)[i], vis));
         } else {
             for (uint32_t i = 0; i < argc; i++)
-                CHECK(korb_set_visibility1(c, slots, selfv, k, VALUE_SLICE_GET(a, i), vis));
+                CHECK(korb_set_visibility1(c, slots, target, k, VALUE_SLICE_GET(a, i), vis));
         }
         c->vm->method_serial++;
     }
