@@ -1566,6 +1566,12 @@ struct koruby_option {
     bool record_all;
 };
 
+/* libastrogre.so has its own global `OPTION` (struct astrogre_option), and the
+ * interpreter is linked -rdynamic, so ours preempted the library's: astrogre
+ * then read koruby's fields.  `-w` / `-W0` landed on its cs_verbose and spammed
+ * "cs_miss: …" onto stderr from every regex.  Give ours a private ABI name; the
+ * source (main.c, generated ALLOC_ helpers) keeps writing OPTION. */
+#define OPTION korb_option
 extern struct koruby_option OPTION;
 
 #endif /* KORUBY_CONTEXT_H */
