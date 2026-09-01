@@ -553,6 +553,8 @@ static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const uint32_t extend_object = korb_intern(c->vm, "extend_object", 13);
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {                           /* include each module */
         slots[2] = VALUE_SLICE_GET(a, i);
+        if (UNLIKELY(c->vm->refinements_active) && KORB_CLASS_P(korb_refinement_target(c->vm, slots[2])))
+            return korb_raise(c, slots + 3, KORB_E_TYPE, 0, "Cannot extend object with refinement");
         /* CRuby routes every extend through the (private, overridable)
          * Module#extend_object; the prelude default does the singleton include. */
         if (LIKELY(korb_responds_to(c, slots[2], extend_object))) {
@@ -2511,6 +2513,13 @@ static RESULT korb_m_exc_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
  * it refines in @__refine_target and reports Refinement as its #class. */
 #define KORB_IV_REFINEMENTS   "@__refinements"
 #define KORB_IV_REFINE_TARGET "@__refine_target"
+#define KORB_IV_REFINE_OWNER  "@__refine_owner"
+
+/* The argument's class name, as CRuby's "wrong argument type %s" wants it. */
+static const char *korb_argclass_name(VALUE v) {
+    if (KORB_CLASS_P(v)) return VAL2CLASS(v)->is_module ? "Module" : "Class";
+    return korb_type_name(v);
+}
 
 static VALUE korb_mod_refinements_ary(struct korb_vm *vm, VALUE mod) {
     if (!KORB_CLASS_P(mod)) return KORB_NIL;
@@ -2583,6 +2592,9 @@ static RESULT korb_m_mod_refine(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         CHECK(korb_class_ivar_set(c, slots, rref,
                                   ID2SYM(korb_intern(vm, KORB_IV_REFINE_TARGET, sizeof KORB_IV_REFINE_TARGET - 1)),
                                   VALUE_REF_GET(tref)));
+        CHECK(korb_class_ivar_set(c, slots, rref,
+                                  ID2SYM(korb_intern(vm, KORB_IV_REFINE_OWNER, sizeof KORB_IV_REFINE_OWNER - 1)),
+                                  VALUE_REF_GET(oref)));
         if (korb_mod_refinements_ary(vm, VALUE_REF_GET(oref)) == KORB_NIL) {
             slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 4));
             CHECK(korb_class_ivar_set(c, slots + 1, oref, ivsym, slots[0]));
@@ -2685,6 +2697,73 @@ static RESULT korb_used_column(CTX *c, VALUE *slots, uint32_t col)
 /* Registered as REAL singleton methods on Module: a prelude wrapper would be an
  * ISEQ frame, and korb_invoke_method resets the scope to the wrapper's own
  * (empty) refinement set before the body runs. */
+/* Refinement#import_methods(*mods) — copy each module's OWN Ruby-defined methods
+ * into the refinement (they then dispatch with the refinement's scope).  Reached
+ * from the prelude wrapper, which passes the refinement and the module Array. */
+static RESULT korb_bi_refinement_import(CTX *c, VALUE *slots, VALUE_SLICE a)
+{
+    struct korb_vm *const vm = c->vm;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) != 2 || !KORB_CLASS_P(VALUE_SLICE_GET(a, 0)) ||
+                 !KORB_ARRAY_P(VALUE_SLICE_GET(a, 1))))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong arguments");
+    VALUE_REF rref = SLOTS_PUSH(slots, VALUE_SLICE_GET(a, 0));   /* the refinement module */
+    VALUE_REF mref = SLOTS_PUSH(slots, VALUE_SLICE_GET(a, 1));   /* the argument Array */
+    /* An imported body runs in the refinement's own scope.  It cannot be read
+     * off CTX here: the prelude wrapper is an ISEQ frame, so korb_invoke_method
+     * has already swapped the refine block's scope out.  Rebuild it from R's
+     * owner (a late-bound entry, like korb_m_mod_refine installs). */
+    slots[0] = KORB_NIL;
+    { const VALUE owner = korb_class_ivar_get(VALUE_REF_GET(rref),
+                              ID2SYM(korb_intern(vm, KORB_IV_REFINE_OWNER, sizeof KORB_IV_REFINE_OWNER - 1)));
+      if (KORB_CLASS_P(owner)) {
+          slots[1] = owner;
+          slots[0] = UNWRAP(korb_ary_new(c, slots + 2, 3));
+          VALUE_REF sc = VALUE_REF_AT(&slots[0]);
+          CHECK(korb_ary_push_val(c, slots + 2, sc, KORB_NIL));
+          CHECK(korb_ary_push_val(c, slots + 2, sc, KORB_NIL));
+          CHECK(korb_ary_push_val(c, slots + 2, sc, slots[1]));
+      } }
+    const uint32_t n = VAL2ARY(VALUE_REF_GET(mref))->len;
+    /* every argument is type-checked BEFORE anything is imported (CRuby) */
+    for (uint32_t i = 0; i < n; i++) {
+        const VALUE m = korb_items_data(VAL2ARY(VALUE_REF_GET(mref))->items)[i];
+        if (!KORB_CLASS_P(m) || !VAL2CLASS(m)->is_module)
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)",
+                              korb_argclass_name(m));
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        { const VALUE m = korb_items_data(VAL2ARY(VALUE_REF_GET(mref))->items)[i];
+          const KorbClass *const mk = VAL2CLASS(m);
+          if (mk->included != KORB_NIL || mk->prepended != KORB_NIL) {
+              char nm[224]; korb_class_desc_into(c, m, nm, sizeof nm);
+              korb_warn(c, slots, "%s has ancestors, but Refinement#import_methods doesn't import their methods", nm);
+          } }
+        /* a non-Ruby method aborts here — the modules before this one stay imported */
+        { const VALUE m = korb_items_data(VAL2ARY(VALUE_REF_GET(mref))->items)[i];   /* re-read: the warn dispatched */
+          const KorbClass *const mk = VAL2CLASS(m);
+          for (uint32_t j = 0; j < mk->method_cnt; j++) {
+              const uint8_t k = mk->methods[j]->kind;
+              if (k != KORB_METHOD_ISEQ && k != KORB_METHOD_ATTR_R && k != KORB_METHOD_ATTR_W) {
+                  char nm[224]; korb_class_desc_into(c, m, nm, sizeof nm);
+                  return korb_raise(c, slots, KORB_E_ARGUMENT, 0,
+                                    "Can't import method which is not defined with Ruby code: %s#%s",
+                                    nm, korb_sym_name(vm, mk->methods[j]->mid));
+              }
+          } }
+        { const VALUE m = korb_items_data(VAL2ARY(VALUE_REF_GET(mref))->items)[i];
+          const KorbClass *const mk = VAL2CLASS(m);
+          for (uint32_t j = 0; j < mk->method_cnt; j++) {   /* no GC below: method slots are libc */
+              const struct korb_method tmp = *mk->methods[j];
+              struct korb_method *const dst =
+                  korb_class_method_slot(VAL2CLASS(VALUE_REF_GET(rref)), tmp.mid);
+              *dst = tmp;
+              dst->owner = VALUE_REF_GET(rref);
+              dst->refine_set = slots[0];         /* the refinement's own scope, built above */
+          } }
+        vm->method_serial++;
+    }
+    return RESULT_OK(VALUE_REF_GET(rref));
+}
 static RESULT korb_m_used_refinements(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; (void)a; return korb_used_column(c, slots, 1); }
 static RESULT korb_m_used_modules(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)self; (void)a; return korb_used_column(c, slots, 2); }
 

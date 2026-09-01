@@ -265,6 +265,11 @@ class Refinement < Module
     instance_variable_get(:@__refine_target)
   end
 
+  # Copy the OWN Ruby-defined methods of each module into this refinement.
+  def import_methods(*mods)
+    __refinement_import(self, mods)
+  end
+
   # CRuby removed these on Refinement in 3.2 (a refinement cannot gain methods
   # from another module, and it is never itself included/prepended/extended).
   def include(*)
@@ -275,15 +280,5 @@ class Refinement < Module
     raise TypeError, "Refinement#prepend has been removed"
   end
 
-  def append_features(*)
-    raise TypeError, "Refinement#append_features has been removed"
-  end
-
-  def prepend_features(*)
-    raise TypeError, "Refinement#prepend_features has been removed"
-  end
-
-  def extend_object(*)
-    raise TypeError, "Refinement#extend_object has been removed"
-  end
+  undef_method :append_features, :prepend_features, :extend_object
 end

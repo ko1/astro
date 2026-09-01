@@ -959,6 +959,7 @@ struct korb_vm {
      * send path tests them with integer compares instead of korb_sym_name+strcmp
      * on every call (send/__send__/public_send check ran for every arg call). */
     uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize, mid_eqq;
+    uint32_t mid_method_missing;
     uint32_t mid_dm_super;   /* sentinel name a `super` with no lexical `def` is baked with:
                               * a define_method body IS a method, but only at run time. */
     uint32_t mid_band, mid_bor, mid_bxor, mid_shl, mid_shr;   /* bit-op dispatch fallbacks (avoid per-call korb_intern) */
