@@ -129,7 +129,31 @@ class BasicSocket < IO
     end
   end
   def recv_nonblock(maxlen, flags = 0, exception: true) = recv(maxlen, flags | Socket::MSG_DONTWAIT)
-  def connect_address = local_address
+  # The address a peer would use to reach this socket: the bound address, with a
+  # wildcard IP replaced by the loopback one.  An unbound socket has none.
+  def connect_address
+    a = local_address
+    if a.unix?
+      raise SocketError, "no connection address" if a.unix_path.empty?
+      return a
+    end
+    raise SocketError, "no connection address" if a.ip_port == 0
+    ip = a.ip_address
+    if ip == "0.0.0.0" || ip == "::"
+      lo = (ip == "0.0.0.0") ? "127.0.0.1" : "::1"
+      return Addrinfo.__from_ary([a.afamily_name, a.ip_port, lo, lo, a.socktype, a.protocol])
+    end
+    a
+  end
+
+  # [euid, egid] of the peer.  UNIX sockets only — SO_PEERCRED carries a
+  # struct ucred { pid_t pid; uid_t uid; gid_t gid; }.
+  def getpeereid
+    raise NoMethodError, "undefined method 'getpeereid' for an instance of #{self.class}" unless
+      local_address.unix?
+    _pid, uid, gid = getsockopt(Socket::SOL_SOCKET, Socket::SO_PEERCRED).unpack("iII")
+    [uid, gid]
+  end
 
   # koruby always closes the descriptor with the IO, so autoclose is a recorded
   # preference rather than a behaviour switch.
@@ -742,6 +766,11 @@ class Socket < BasicSocket
 
   def bind(addr) = (a = Socket.__unpack(addr); __sock_bind(fileno, @family, a[2], a[1]); 0)
   def connect(addr) = (a = Socket.__unpack(addr); __sock_connect(fileno, @family, a[2], a[1]); 0)
+  # Socket.tcp's :connect_timeout / :open_timeout, which #connect has no room for.
+  def __connect_within(ai, timeout)
+    __sock_connect(fileno, @family, ai.ip_address, ai.ip_port, timeout)
+    0
+  end
   def listen(backlog) = (__sock_listen(fileno, __backlog(backlog)); 0)
 
   def accept
@@ -951,6 +980,15 @@ class Socket < BasicSocket
     def inspect = "\#<Socket::UDPSource #{@remote_address.inspect} to #{@local_address.inspect}>"
   end
 
+  # Read one datagram from each ready socket, yielding [message, UDPSource].
+  def self.udp_server_recv(sockets, &blk)
+    Array(sockets).each do |s|
+      mesg, sender = s.recvfrom(65536)
+      src = UDPSource.new(sender, s.local_address) { |reply| s.send(reply, 0, sender.to_sockaddr) }
+      blk.call(mesg, src)
+    end
+  end
+
   # Read datagrams from already-bound sockets forever, yielding
   # [message, Socket::UDPSource].
   def self.udp_server_loop_on(sockets, &blk)
@@ -958,11 +996,7 @@ class Socket < BasicSocket
     loop do
       ready = IO.select(socks)&.first
       next if ready.nil?
-      ready.each do |s|
-        mesg, sender = s.recvfrom(65536)
-        src = UDPSource.new(sender, s.local_address) { |reply| s.send(reply, 0, sender.to_sockaddr) }
-        blk.call(mesg, src)
-      end
+      udp_server_recv(ready, &blk)
     end
   end
 
@@ -988,12 +1022,24 @@ class Socket < BasicSocket
   end
 
   # Socket.tcp(host, port[, local_host, local_port]) → a connected Socket.
-  def self.tcp(host, port, local_host = nil, local_port = nil, connect_timeout: nil, resolv_timeout: nil, &blk)
+  def self.tcp(host, port, local_host = nil, local_port = nil,
+               connect_timeout: nil, resolv_timeout: nil, open_timeout: nil, &blk)
+    tmo = connect_timeout || open_timeout
     remote = Addrinfo.tcp(host.to_s, port)
-    if local_host
-      remote.connect_from(local_host.to_s, local_port || 0, &blk)
-    else
-      remote.connect(&blk)
+    return remote.connect_from(local_host.to_s, local_port || 0, &blk) if local_host
+    return remote.connect(&blk) unless tmo
+    s = Socket.new(remote.afamily, remote.socktype, remote.protocol)
+    begin
+      s.__connect_within(remote, tmo)
+    rescue Exception
+      s.close unless s.closed?
+      raise
+    end
+    return s unless blk
+    begin
+      blk.call(s)
+    ensure
+      s.close unless s.closed?
     end
   end
 
@@ -1007,6 +1053,9 @@ class Socket < BasicSocket
     end
     [Socket.for_fd(pair[0]), Addrinfo.__from_ary(pair[1])]
   end
+
+  # Refuse IPv4 traffic on an IPv6 socket.
+  def ipv6only! = (setsockopt(Socket::IPPROTO_IPV6, Socket::IPV6_V6ONLY, 1); nil)
 
   # nil family = infer from the host string, so sockaddr_in accepts IPv6 too.
   def self.sockaddr_in(port, host) = __sock_pack(nil, port, host.to_s)   # Integer or service name
