@@ -161,7 +161,7 @@ class BasicSocket < IO
   # plumbing, so the control list is always empty; everything else is faithful.
   # Socket#recvfrom answers an Addrinfo where BasicSocket's answers the raw
   # tuple, so accept either shape here.
-  private def __as_addrinfo(a) = a.is_a?(Addrinfo) ? a : Addrinfo.__from_ary(a)
+  private def __as_addrinfo(a) = a.is_a?(Addrinfo) ? a : __own_addrinfo(a)
 
   def recvmsg(maxlen = nil, flags = 0, opts = nil, scm_rights: false)
     data, addr = recvfrom(maxlen || 65536, flags)
@@ -659,13 +659,13 @@ class Socket < BasicSocket
   # own answers an Addrinfo (CRuby).
   def recvfrom(maxlen, flags = 0)
     mesg, addr = super
-    [mesg, Addrinfo.__from_ary(addr)]
+    [mesg, __own_addrinfo(addr)]     # the sender's address, typed like this socket
   end
 
   def recvfrom_nonblock(maxlen = 65536, flags = 0, outbuf = nil, exception: true)
     r = super
     return r if r.is_a?(Symbol)
-    [r[0], Addrinfo.__from_ary(r[1])]
+    [r[0], __own_addrinfo(r[1])]
   end
 
   def bind(addr) = (a = Socket.__unpack(addr); __sock_bind(fileno, @family, a[2], a[1]); 0)
