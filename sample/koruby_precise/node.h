@@ -457,6 +457,7 @@ bool korb_const_private_p(const struct korb_vm *vm, VALUE owner, uint32_t sym);
 RESULT korb_check_const_path_private(CTX *c, VALUE *slots, VALUE enclosing, uint32_t sym, bool scoped);
 RESULT korb_undef_one(CTX *c, VALUE *slots, VALUE cls, uint32_t mid);   /* `undef` / undef_method, one name */
 const char *korb_re_literal_error(CTX *c, const char *pat, uint32_t len, uint32_t flags);   /* NULL = the engine accepts it */
+VALUE korb_exc_ivar_get_pub(VALUE exc, VALUE name_sym);   /* an Exception's side-hash ivar */
 void korb_const_set_deprecated(CTX *c, VALUE owner, uint32_t sym);
 bool korb_const_deprecated_p(const struct korb_vm *vm, VALUE owner, uint32_t sym);
 void korb_const_deprecated_warn(CTX *c, VALUE *slots, VALUE owner, uint32_t sym);

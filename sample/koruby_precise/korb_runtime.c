@@ -1793,6 +1793,8 @@ korb_class_ivar_set(CTX *c, VALUE *slots, VALUE_REF clsref, VALUE name_sym, VALU
     return RESULT_OK(VALUE_REF_GET(vref));
 }
 
+VALUE korb_exc_ivar_get_pub(VALUE exc, VALUE name_sym);   /* node_eval.c reaches the side hash through this */
+
 /* A custom Exception subclass instance keeps its ivars in a side hash (like a
  * Class), so `@id` on a NotFound exception works.  KorbException has no shape. */
 static VALUE
@@ -1803,6 +1805,7 @@ korb_exc_ivar_get(VALUE exc, VALUE name_sym)
     const int32_t idx = korb_hash_find(VAL2HASH(h), name_sym);
     return idx >= 0 ? korb_items_data(VAL2HASH(h)->items)[2 * idx + 1] : KORB_NIL;
 }
+VALUE korb_exc_ivar_get_pub(VALUE exc, VALUE name_sym) { return korb_exc_ivar_get(exc, name_sym); }
 
 RESULT
 korb_exc_ivar_set(CTX *c, VALUE *slots, VALUE_REF excref, VALUE name_sym, VALUE val)

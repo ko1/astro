@@ -1620,7 +1620,21 @@ transduce_call_with_block(struct kp_ctx *tc, const pm_call_node_t *cn, uint32_t 
 }
 
 static NODE *
+transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn);
+
+/* A VARIABLE call (`foo` — no receiver, no parens, no args, no block) that
+ * misses is a NameError, not a NoMethodError.  Only the parser can tell, so the
+ * miss is re-labelled by a wrapper node. */
+static NODE *
 transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
+{
+    NODE *const call = transduce_func_call_1(tc, cn);
+    if ((cn->base.flags & PM_CALL_NODE_FLAGS_VARIABLE_CALL) == 0) return call;
+    return ALLOC_node_vcall(kp_intern_cid(tc, cn->name), call);
+}
+
+static NODE *
+transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
 {
     uint32_t mid = kp_intern_cid(tc, cn->name);
     uint32_t line = kp_line(tc, (const pm_node_t *)cn);
