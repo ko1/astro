@@ -4518,10 +4518,20 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         base[locals_cnt - 2] = captured_self;
     }
     if (kw && kw->kwrest_slot >= 0) base[kw->kwrest_slot] = kwhash;   /* root kwhash across the GC below (kwrest slot is never a positional/keyword slot) */
+    /* Snapshot what the rest of this invocation reads out of the entry.  A
+     * default expression may redefine this very method, and korb_class_def_method
+     * reuses the entry in place — the call in flight must still finish as the OLD
+     * definition (CRuby).  These are all malloc'd AST/table pointers, never GC
+     * objects, so holding them in C locals is safe.  (`kw` and `locals_cnt` are
+     * already snapshotted above; m->refine_set is read late on purpose — it IS a
+     * VALUE and must not be held across the defaults' GC points.) */
+    NODE *const body = m->body;
+    struct Node **const opt_defaults = m->opt_defaults;
+    const uint32_t opt_req_cnt = m->req_cnt, opt_params_cnt = (uint32_t)m->params_cnt;
     /* fill missing optional params by evaluating their defaults in method scope
      * (cursor = body cursor; defaults may reference earlier params + self). */
-    for (uint32_t pi = avail; pi < (uint32_t)m->params_cnt; pi++) {   /* optionals past the provided front get defaults */
-        NODE *const dflt = m->opt_defaults[pi - m->req_cnt];
+    for (uint32_t pi = avail; pi < opt_params_cnt; pi++) {   /* optionals past the provided front get defaults */
+        NODE *const dflt = opt_defaults[pi - opt_req_cnt];
         RESULT dr = (*dflt->head.dispatcher)(c, dflt, base + locals_cnt);
         if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
         base[pi] = dr.value;              /* below cursor → rooted for later defaults/body */
@@ -4578,7 +4588,6 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
             base[kw->kwrest_slot] = VALUE_REF_GET(kr);
         }
     }
-    NODE *const body = m->body;
     /* a method body has its own default definee (its class), so an enclosing
      * instance_eval's must not leak into it */
     const VALUE saved_definee = c->def_definee, saved_cvar = c->cvar_cref;
