@@ -258,6 +258,13 @@ static long korb_time_nsec_of(CTX *c, VALUE t) {
     long ns = (long)((e - (double)(time_t)e) * 1e9 + 0.5);
     return ns < 0 ? 0 : ns > 999999999 ? 999999999 : ns;
 }
+/* Whole (floored) seconds, recovered exactly.  floor(@__t) is not enough: a
+ * present-day X.999999999 has no room in the double and rounds to X+1, so take
+ * the exact sub-second back out first. */
+static korb_sword_t korb_time_sec_of(CTX *c, VALUE t) {
+    const double e = korb_time_epoch(c, t);
+    return (korb_sword_t)llround(e - (double)korb_time_nsec_of(c, t) / 1e9);
+}
 /* korb_time_make + an exact nanosecond sub-second (computed from the small
  * fractional part, not the large epoch, so `Rational(100,1000)` → 100_000_000). */
 static RESULT korb_time_make_ns(CTX *c, VALUE *slots, VALUE cls, double sec_int, long nsec, bool utc) {
@@ -749,7 +756,7 @@ static RESULT korb_m_time_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)slots; (void)a;
     /* seconds since the epoch, FLOORED (a pre-1970 stamp truncates the wrong way
      * with a plain cast: Time.at(-1.5).to_i is -2, not -1) */
-    return RESULT_OK(LONG2FIX((korb_sword_t)floor(korb_time_epoch(c, VALUE_REF_GET(self)))));
+    return RESULT_OK(LONG2FIX(korb_time_sec_of(c, VALUE_REF_GET(self))));
 }
 static RESULT korb_m_time_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; return korb_float_new(c, slots, korb_time_epoch(c, VALUE_REF_GET(self)));
@@ -949,8 +956,13 @@ static RESULT korb_m_time_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_time_minus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE t = VALUE_REF_GET(self);
     const VALUE o = VALUE_SLICE_GET(a, 0);
-    if (KORB_OBJECT_P(o) && korb_ivar_get(c, o, korb_time_t_sym(c->vm)) != KORB_NIL)   /* Time - Time → seconds (Float) */
-        return korb_float_new(c, slots, korb_time_epoch(c, t) - korb_time_epoch(c, o));
+    if (KORB_OBJECT_P(o) && korb_ivar_get(c, o, korb_time_t_sym(c->vm)) != KORB_NIL) {  /* Time - Time → seconds (Float) */
+        /* whole seconds and nanoseconds separately: subtracting two present-day
+         * epochs as doubles has no bits left for the sub-second part */
+        const double dsec = (double)(korb_time_sec_of(c, t) - korb_time_sec_of(c, o));
+        const double dns  = (double)(korb_time_nsec_of(c, t) - korb_time_nsec_of(c, o));
+        return korb_float_new(c, slots, dsec + dns / 1e9);
+    }
     korb_sword_t ds, dn;
     if (UNLIKELY(!korb_time_split_delta(c, o, &ds, &dn, 1))) {
         /* a Numeric that is not one of ours converts through #to_r; a String or
@@ -1230,12 +1242,21 @@ static RESULT korb_m_time_utc_offset(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return RESULT_OK(LONG2FIX(korb_time_is_utc(c, VALUE_REF_GET(self)) ? 0 : (korb_sword_t)tm.tm_gmtoff));
 }
 static RESULT korb_m_time_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const double e = korb_time_epoch(c, VALUE_REF_GET(self));
     const int nd = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
-    const double scale = pow(10.0, nd);
-    const double r = round(e * scale) / scale;
+    /* round the exact nanosecond sub-second, not `e * 10**nd`: for a present-day
+     * epoch the double has no sub-microsecond bits left to round. */
+    korb_sword_t ns = korb_time_nsec_of(c, VALUE_REF_GET(self)), carry = 0;
+    if (nd < 9) {
+        korb_sword_t scale = 1;
+        for (int i = nd < 0 ? 0 : nd; i < 9; i++) scale *= 10;
+        ns = ((ns + scale / 2) / scale) * scale;
+        if (ns > 999999999) { ns -= 1000000000; carry = 1; }
+    }
+    const double r = (double)(korb_time_sec_of(c, VALUE_REF_GET(self)) + carry) + (double)ns / 1e9;
     /* CRuby#round hands back a plain Time even for a subclass receiver */
-    return korb_time_derive(c, slots, self, r, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)));
+    slots[0] = UNWRAP(korb_time_derive(c, slots, self, r, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4))));
+    CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_ns_sym(c->vm), LONG2FIX(ns)));
+    return RESULT_OK(slots[0]);
 }
 
 void korb_init_time(CTX *c, VALUE *slots) {

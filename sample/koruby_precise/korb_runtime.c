@@ -9901,6 +9901,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "length", korb_m_str_charlen, 0);
     korb_def_cmethod(c, KORB_C_STRING, "size", korb_m_str_charlen, 0);
     korb_def_cmethod(c, KORB_C_STRING, "bytesize", korb_m_str_len, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "eql?", korb_m_str_eql, 1);
     korb_def_cmethod(c, KORB_C_STRING, "empty?", korb_m_str_empty, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_s", korb_m_str_to_s, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_str", korb_m_str_to_s, 0);   /* CRuby: to_str is rb_str_to_s too */
