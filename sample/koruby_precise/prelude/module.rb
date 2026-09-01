@@ -205,10 +205,14 @@ class Module
       unless method_defined?(n) || private_method_defined?(n) || respond_to?(n, true)
         raise NameError.new("undefined method '#{n}' for class '#{self}'", n)
       end
-      # the flag only means anything on a `*rest`-only signature
+      # the flag only means anything on a `*rest`-only signature: the splat has
+      # to be the last positional one (post args would eat the marked Hash) and
+      # there must be no keywords
       params = (instance_method(n).parameters rescue [])
-      ok = params.any? { |t, _| t == :rest } &&
-           params.none? { |t, _| t == :key || t == :keyreq || t == :keyrest }
+      ri = params.index { |t, _| t == :rest }
+      ok = !ri.nil? &&
+           params.none? { |t, _| t == :key || t == :keyreq || t == :keyrest } &&
+           params[(ri + 1)..].none? { |t, _| t == :req || t == :opt }
       unless ok
         warn "Skipping set of ruby2_keywords flag for #{n} (method accepts keywords " \
              "or method does not accept argument splat)", uplevel: 1

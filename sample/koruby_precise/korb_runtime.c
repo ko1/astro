@@ -3668,6 +3668,18 @@ korb_const_in_ancestry_scoped(const struct korb_vm *vm, VALUE recv, uint32_t nam
     return UINT32_MAX;
 }
 
+/* "Anonymous" for naming purposes: no name of its own, or a qualified path that
+ * passes through an anonymous namespace (`m::N` where m is anonymous).  CRuby
+ * renames such a module when it is first assigned to a REACHABLE constant. */
+static bool korb_class_path_anonymous(VALUE cls)
+{
+    for (int d = 0; d < 64 && KORB_CLASS_P(cls); d++) {
+        if (VAL2CLASS(cls)->name_sym == 0) return true;
+        cls = VAL2CLASS(cls)->enclosing;
+    }
+    return false;
+}
+
 void
 korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
 {
@@ -3676,7 +3688,12 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
     /* Ruby: assigning an anonymous class/module to a constant names it after
      * that constant (the first such assignment wins) and nests it under the
      * owning namespace so its qualified name is Owner::Name. */
-    if (KORB_CLASS_P(val) && VAL2CLASS(val)->name_sym == 0) {
+    /* An already-named module whose PATH is anonymous (`m::N`) is renamed only
+     * when the new home is itself reachable — assigning it to another anonymous
+     * namespace leaves the name alone (CRuby). */
+    if (KORB_CLASS_P(val) && korb_class_path_anonymous(val) &&
+        (VAL2CLASS(val)->name_sym == 0 ||
+         !(KORB_CLASS_P(owner) && korb_class_path_anonymous(owner)))) {
         VAL2CLASS(val)->name_sym = name_sym;
         /* Object is the top-level namespace: a constant assigned directly under it
          * is named by the bare constant ("X"), not "Object::X".  Only a genuine
@@ -3686,8 +3703,11 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
         for (VALUE o = KORB_CLASS_P(owner) ? VAL2CLASS(owner)->enclosing : KORB_NIL;
              !cyclic && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing)
             if (o == val) cyclic = true;
-        if (KORB_CLASS_P(owner) && owner != objc && !cyclic && VAL2CLASS(val)->enclosing == KORB_NIL)
+        /* the old enclosing (if any) was itself anonymous — that is what made the
+         * path anonymous — so the new namespace replaces it */
+        if (KORB_CLASS_P(owner) && owner != objc && !cyclic)
             ARO_STORE(c, VAL2CLASS(val), (VALUE *)(uintptr_t)&VAL2CLASS(val)->enclosing, owner);
+        else if (owner == objc) VAL2CLASS(val)->enclosing = KORB_NIL;   /* rooted at top level */
     }
     /* keyed by (name, owner): reassigning the same constant in the same namespace
      * updates in place, but M::C and a top-level C get distinct entries so both
