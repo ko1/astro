@@ -81,6 +81,18 @@ class Module
         rescue NameError
         end
       end
+      # ...or in an enclosing lexical scope.  CRuby then drops the registration
+      # (already done above), warns in verbose mode, and answers from the parent.
+      scope = __lexical_parent
+      while scope
+        begin
+          v = scope.const_get(name, false)
+          warn "warning: Expected #{path} to define #{self}::#{name} but it didn't" if $VERBOSE
+          return v
+        rescue NameError
+        end
+        scope = scope.__lexical_parent
+      end
     end
     # CRuby names the namespace with #name when it has one, else #inspect
     # (both may be user-defined, and #to_s is NOT consulted).
