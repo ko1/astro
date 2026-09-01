@@ -597,28 +597,41 @@ class Socket < BasicSocket
 
     def self.__level(fam, lv)
       lv = lv.to_str if !lv.is_a?(Integer) && !lv.is_a?(Symbol) && !lv.is_a?(String) && lv.respond_to?(:to_str)
-      return lv if lv.is_a?(Integer)
-      n = lv.to_s.upcase
-      n = "SOL_SOCKET" if n == "SOCKET"
-      n = "IPPROTO_#{n}" unless n.start_with?("SOL_") || n.start_with?("IPPROTO_")
-      Socket.const_defined?(n) ? Socket.const_get(n) : (raise SocketError, "unknown protocol level: #{lv}")
+      unless lv.is_a?(Integer)
+        n = lv.to_s.upcase
+        n = "SOL_SOCKET" if n == "SOCKET"
+        n = "IPPROTO_#{n}" unless n.start_with?("SOL_") || n.start_with?("IPPROTO_")
+        raise SocketError, "unknown protocol level: #{lv}" unless Socket.const_defined?(n)
+        lv = Socket.const_get(n)
+      end
+      # AF_UNIX carries only socket-level control messages
+      if fam == Socket::AF_UNIX && lv != Socket::SOL_SOCKET
+        raise SocketError, "level not supported for UNIX socket: #{lv}"
+      end
+      lv
+    end
+
+    # The constant-name prefix each protocol level's control messages use.
+    def self.__type_prefix(level)
+      case level
+      when Socket::SOL_SOCKET  then "SCM_"
+      when Socket::IPPROTO_IP  then "IP_"
+      when Socket::IPPROTO_TCP then "TCP_"
+      when Socket::IPPROTO_UDP then "UDP_"
+      when (Socket.const_defined?(:IPPROTO_IPV6) ? Socket::IPPROTO_IPV6 : nil) then "IPV6_"
+      end
     end
 
     def self.__type(fam, level, ty)
       ty = ty.to_str if !ty.is_a?(Integer) && !ty.is_a?(Symbol) && !ty.is_a?(String) && ty.respond_to?(:to_str)
       return ty if ty.is_a?(Integer)
       n = ty.to_s.upcase
-      # only this level's own constant family counts: :RECVTTL is an IP option,
-      # so it must not resolve under SOL_SOCKET
-      cands = case level
-              when Socket::SOL_SOCKET  then [n, "SCM_#{n}"]
-              when Socket::IPPROTO_IP  then [n, "IP_#{n}"]
-              when Socket::IPPROTO_TCP then [n, "TCP_#{n}"]
-              when (Socket.const_defined?(:IPPROTO_IPV6) ? Socket::IPPROTO_IPV6 : nil) then [n, "IPV6_#{n}"]
-              else [n]
-              end
       # a name that is just digits is not a name: CRuby wants the Integer itself
       raise TypeError, "no implicit conversion of String into Integer" if n =~ /\A[0-9]+\z/
+      # only this level's own constant family counts: :RECVTTL is an IP option,
+      # so it must not resolve under SOL_SOCKET — and neither must :IP_RECVTTL
+      pfx = __type_prefix(level)
+      cands = pfx ? (n.start_with?(pfx) ? [n] : ["#{pfx}#{n}"]) : [n]
       cands.each do |cand|
         next unless cand =~ /\A[A-Z_][A-Za-z0-9_]*\z/
         return Socket.const_get(cand) if Socket.const_defined?(cand)
@@ -626,10 +639,15 @@ class Socket < BasicSocket
       raise SocketError, "unknown UNIX control message: #{ty}"
     end
 
-    def int = @data.unpack("i")[0]
+    def int
+      raise TypeError, "size differ. expected as sizeof(int)=4 but #{@data.bytesize}" if @data.bytesize != 4
+      @data.unpack("i")[0]
+    end
+    # Both names are resolved before comparing, so an unknown one still raises.
     def cmsg_is?(level, type)
-      @level == AncillaryData.__level(@family, level) &&
-        @type == AncillaryData.__type(@family, @level, type)
+      lv = AncillaryData.__level(@family, level)
+      ty = AncillaryData.__type(@family, lv, type)
+      @level == lv && @type == ty
     end
     def inspect = "#<Socket::AncillaryData: #{@family} #{@level} #{@type} #{@data.bytesize}bytes>"
 
@@ -690,11 +708,17 @@ class Socket < BasicSocket
       new(family, level, type, [integer].pack("i"))
     end
     def self.unix_rights(*ios)
-      new(:UNIX, :SOCKET, :RIGHTS, ios.map { |io| io.respond_to?(:fileno) ? io.fileno : io.to_int }.pack("i*"))
+      ios.each { |io| raise TypeError, "IO expected" unless io.is_a?(IO) }
+      d = new(:UNIX, :SOCKET, :RIGHTS, ios.map(&:fileno).pack("i*"))
+      d.instance_variable_set(:@ios, ios)     # CRuby hands back the very IO objects
+      d
     end
+    # nil unless this message actually carries descriptors.
     def unix_rights
-      return nil unless @family == Socket::AF_UNIX && @level == Socket::SOL_SOCKET
-      @data.unpack("i*").map { |fd| IO.for_fd(fd) }
+      unless @level == Socket::SOL_SOCKET && @type == Socket::SCM_RIGHTS
+        raise TypeError, "level and type must be SOL_SOCKET and SCM_RIGHTS"
+      end
+      @ios
     end
   end
 
