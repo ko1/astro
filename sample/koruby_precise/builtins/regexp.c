@@ -54,13 +54,10 @@ static RESULT korb_re_check_enc(CTX *c, VALUE *slots, VALUE re, VALUE subj)
     bool re_fixed = false, re_known = false;
     const uint32_t renc = korb_re_enc_idx(c->vm, re, &re_fixed, &re_known);
 
-    /* CRuby also rejects an ASCII-incompatible subject outright (rule 2 of
-     * rb_reg_prepare_enc).  Not enabled yet: prelude/encoding.rb's
-     * Regexp#encoding runs `src.scan(/\\u…/)` on the pattern source before it
-     * checks src.encoding.ascii_compatible?, so a UTF-16 sourced Regexp would
-     * raise while merely reporting its own encoding. */
+    /* Rule 2 of rb_reg_prepare_enc: an ASCII-incompatible subject (UTF-16 etc.)
+     * cannot be searched at all, whatever the pattern is. */
     if (!korb_enc_ascii_compat_idx(c->vm, senc)) {
-        /* nothing yet — see above */
+        return korb_raise_enc_compat(c, slots, renc, senc);
     } else if (re_fixed && re_known && renc != senc) {
         if (!korb_enc_ascii_compat_idx(c->vm, renc) || !korb_str_ascii_only_p(c->vm, subj))
             return korb_raise_enc_compat(c, slots, renc, senc);
@@ -81,7 +78,10 @@ static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t sta
     const korb_re_exec_fn_t fn = korb_re_load(c->vm);
     if (UNLIKELY(fn == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Regexp engine (koruby_regex.so) unavailable");
     korb_re_sync_floor(c);   /* lazy first-load happens above; make sure the floor is set for THIS stack */
-    if (UNLIKELY(korb_re_enc_pinned(re))) CHECK(korb_re_check_enc(c, slots, re, subj));
+    /* Also gate on the SUBJECT: rule 2 (ASCII-incompatible subject) does not
+     * depend on the pattern, so a plain ASCII regexp must reach the check too. */
+    if (UNLIKELY(korb_re_enc_pinned(re) || KORB_STR_ENC(subj) >= KORB_ENC_OTHER_MIN))
+        CHECK(korb_re_check_enc(c, slots, re, subj));
     const KorbString *const pat = VAL2STR(VAL2RE(re)->source), *const s = VAL2STR(subj);
     if (startb > s->len) { m->matched = 0; return RESULT_OK(KORB_FALSE); }
     /* Encoding: a /n regex, or a single-byte subject (BINARY / US-ASCII), matches

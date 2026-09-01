@@ -845,6 +845,10 @@ class Regexp
   # pattern is US-ASCII; otherwise it carries its source String's encoding.
   def encoding
     src = source
+    # An ASCII-incompatible source (UTF-16 etc.) reports itself directly: the
+    # \u scan below would have to match against it, and matching such a String
+    # is exactly what raises Encoding::CompatibilityError.
+    return src.encoding unless src.encoding.ascii_compatible?
     # A \u / \u{…} escape whose codepoint is outside 7-bit ASCII forces UTF-8,
     # even when the escape text itself is ASCII (CRuby).  \u escapes that stay in
     # 7-bit ASCII (e.g. A) do not.
