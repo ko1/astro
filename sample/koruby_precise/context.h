@@ -1113,6 +1113,11 @@ struct CTX_struct {
      * [target, refinement, owner_module, ...] (later entries win), KORB_NIL when
      * none.  Saved/restored by every scope-ish construct — see docs/refinements.md. */
     VALUE     refinements;
+    /* Scope save stack for `refinements`.  A C local must not hold a VALUE across
+     * a GC (the moving collector would leave it stale), so a scope parks the
+     * enclosing set here, where the root visitor forwards it. */
+    VALUE    *refine_saved;
+    uint32_t  refine_n, refine_cap;
     VALUE    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
     uint32_t  errinfo_live;          /* GC-scan depth: max over the running + all suspended threads */
@@ -1192,6 +1197,9 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->cvar_cref);              \
     if ((c)->refinements != KORB_NIL)                                        \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->refinements);            \
+    for (uint32_t _ri = 0; _ri < (c)->refine_n; _ri++) {                     \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->refine_saved[_ri]);       \
+    }                                                                        \
     for (uint32_t _ti = 0; _ti < (c)->catch_n; _ti++) {                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->catch_tags[_ti]);         \
     }                                                                        \

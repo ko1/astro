@@ -4331,6 +4331,40 @@ static inline uint32_t korb_ic_serial(const struct korb_vm *vm) {
     return LIKELY(!vm->refinements_active) ? vm->method_serial : 0u;
 }
 
+static VALUE korb_mod_refinements_ary(struct korb_vm *vm, VALUE mod);   /* fwd (builtins/set.c) */
+
+/* Park the running scope's refinement set where the GC visits it (a C local
+ * would go stale across a moving collection) and take it back. */
+static void korb_refine_push(CTX *c) {
+    if (c->refine_n == c->refine_cap) {
+        c->refine_cap = c->refine_cap ? c->refine_cap * 2 : 16;
+        c->refine_saved = realloc(c->refine_saved, sizeof(VALUE) * c->refine_cap);
+        if (!c->refine_saved) { fprintf(stderr, "koruby_precise: out of memory (refinement scopes)\n"); abort(); }
+    }
+    c->refine_saved[c->refine_n++] = c->refinements;
+}
+static void korb_refine_pop(CTX *c) {
+    c->refinements = c->refine_n ? c->refine_saved[--c->refine_n] : KORB_NIL;
+}
+
+/* Try one (refined class, refinement module) pair against the receiver class. */
+static struct korb_method *
+korb_refined_try(VALUE klass, VALUE target, VALUE refi, uint32_t mid, VALUE *out_def)
+{
+    if (!KORB_CLASS_P(target) || !KORB_CLASS_P(refi)) return NULL;
+    if (!korb_class_has_ancestor(klass, target)) return NULL;
+    VALUE rdef = KORB_NIL;
+    struct korb_method *const m = korb_class_find_method(refi, mid, &rdef);
+    if (m == NULL) return NULL;
+    /* A refinement is spliced in just above the class it refines, so a definition
+     * BELOW that class (subclass / singleton / a module included later) wins. */
+    VALUE own_def = KORB_NIL;
+    if (korb_class_find_method(klass, mid, &own_def) != NULL &&
+        !korb_class_has_ancestor(target, own_def)) return NULL;
+    if (out_def) *out_def = rdef;
+    return m;
+}
+
 /* Look `mid` up in the refinements active in the running scope
  * (docs/refinements.md).  Returns NULL when the normal lookup wins. */
 static struct korb_method *
@@ -4341,20 +4375,21 @@ korb_refined_find(CTX *c, VALUE klass, uint32_t mid, VALUE *out_def)
     const KorbArray *const a = VAL2ARY(act);
     const VALUE *const av = korb_items_data(a->items);
     for (int32_t i = (int32_t)a->len - 3; i >= 0; i -= 3) {   /* the latest `using` wins */
-        const VALUE target = av[i], refi = av[i + 1];
-        if (!KORB_CLASS_P(target) || !KORB_CLASS_P(refi)) continue;
-        if (!korb_class_has_ancestor(klass, target)) continue;
-        VALUE rdef = KORB_NIL;
-        struct korb_method *const m = korb_class_find_method(refi, mid, &rdef);
-        if (m == NULL) continue;
-        /* A refinement is spliced in just above the class it refines, so a
-         * definition BELOW that class (subclass / singleton / a module included
-         * later) still wins. */
-        VALUE own_def = KORB_NIL;
-        if (korb_class_find_method(klass, mid, &own_def) != NULL &&
-            !korb_class_has_ancestor(target, own_def)) continue;
-        if (out_def) *out_def = rdef;
-        return m;
+        if (av[i] == KORB_NIL) {
+            /* Late-bound entry (a refine block): the owner's whole table is
+             * active, INCLUDING refinements added to it after this scope began. */
+            const VALUE ra = korb_mod_refinements_ary(c->vm, av[i + 2]);
+            if (!KORB_ARRAY_P(ra)) continue;
+            const KorbArray *const r = VAL2ARY(ra);
+            for (int32_t j = (int32_t)r->len - 2; j >= 0; j -= 2) {
+                struct korb_method *const m = korb_refined_try(klass, korb_items_data(r->items)[j],
+                                                               korb_items_data(r->items)[j + 1], mid, out_def);
+                if (m) return m;
+            }
+            continue;
+        }
+        struct korb_method *const m = korb_refined_try(klass, av[i], av[i + 1], mid, out_def);
+        if (m) return m;
     }
     return NULL;
 }
@@ -4516,14 +4551,15 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     const VALUE saved_definee = c->def_definee, saved_cvar = c->cvar_cref;
     /* refinements are lexical: the callee sees the set active where it was
      * DEFINED, never the caller's (docs/refinements.md). */
-    const VALUE saved_refine = c->refinements;
+    const bool refine_scope = UNLIKELY(vm->refinements_active);
     if (UNLIKELY(saved_definee != KORB_NIL)) c->def_definee = KORB_NIL;
     if (UNLIKELY(saved_cvar != KORB_NIL)) c->cvar_cref = KORB_NIL;
-    if (UNLIKELY(saved_refine != m->refine_set)) c->refinements = m->refine_set;
+    if (refine_scope) { korb_refine_push(c); c->refinements = m->refine_set; }
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (UNLIKELY(saved_definee != KORB_NIL)) c->def_definee = saved_definee;
     if (UNLIKELY(saved_cvar != KORB_NIL)) c->cvar_cref = saved_cvar;
-    if (UNLIKELY(saved_refine != c->refinements)) c->refinements = saved_refine;
+    if (refine_scope) korb_refine_pop(c);
+    else if (UNLIKELY(c->refinements != KORB_NIL)) c->refinements = KORB_NIL;   /* the body turned refinements on */
     if (r.state == KORB_RETURN) {
         /* Consume only a return targeted at this method (NULL = nearest-method,
          * the common case) — a block's `return` aimed at an outer method passes
@@ -4756,10 +4792,11 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
     /* a class body's default definee is the class itself — an enclosing
      * instance_eval's definee must not reach into it */
     const VALUE saved_definee = c->def_definee, saved_cvar = c->cvar_cref;
-    const VALUE saved_refine = c->refinements;   /* `using` in a body ends with the body */
+    korb_refine_push(c);                         /* `using` in a body ends with the body */
     c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
-    c->def_definee = saved_definee; c->cvar_cref = saved_cvar; c->refinements = saved_refine;
+    c->def_definee = saved_definee; c->cvar_cref = saved_cvar;
+    korb_refine_pop(c);
     return br;
 }
 
@@ -4780,10 +4817,11 @@ korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclo
         ARO_STORE(c, VAL2CLASS(slots[0]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->enclosing, slots[1]);
     const VALUE saved_definee = c->def_definee;  /* the body defines on the singleton, via self */
     const VALUE saved_cvar = c->cvar_cref;
-    const VALUE saved_refine = c->refinements;   /* `using` in a body ends with the body */
+    korb_refine_push(c);                         /* `using` in a body ends with the body */
     c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
-    c->def_definee = saved_definee; c->cvar_cref = saved_cvar; c->refinements = saved_refine;
+    c->def_definee = saved_definee; c->cvar_cref = saved_cvar;
+    korb_refine_pop(c);
     return br;
 }
 
@@ -8890,12 +8928,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             if (block != NULL) {                            /* body block: def's land on the new class/module */
                 const VALUE saved_definee = c->def_definee;   /* a class body, not an instance_eval */
-                const VALUE saved_refine = c->refinements;    /* `using` in the body ends with it */
+                korb_refine_push(c);                          /* `using` in the body ends with it */
                 c->def_definee = KORB_NIL;
                 slots[2] = slots[1];                        /* CRuby passes the new class/module to the block */
                 RESULT br = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, &slots[1]);
                 c->def_definee = saved_definee;
-                c->refinements = saved_refine;
+                korb_refine_pop(c);
                 if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;
                 if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
             }
@@ -12265,10 +12303,10 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
     vm->cur_load_file = abscopy;
     /* refinement activation is per file: a `using` at the top of the loaded file
      * neither leaks out nor inherits the requiring file's (docs/refinements.md). */
-    const VALUE saved_refine = c->refinements;
+    korb_refine_push(c);
     c->refinements = KORB_NIL;
     RESULT r = korb_eval_toplevel_wrap(c, slots, buf, got, abscopy, wrapp);
-    c->refinements = saved_refine;
+    korb_refine_pop(c);
     vm->cur_load_file = saved;
     free(buf);
     if (dedup) korb_loading_remove(vm, abspath);
@@ -14258,8 +14296,6 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__set_gvar", korb_bi_set_gvar, 2);
     korb_builtin_define(c, "__autoload_feature_loaded?", korb_bi_autoload_feature_loaded, 1);
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
-    korb_builtin_define(c, "__used_refinements", korb_bi_used_refinements, 0);   /* Module.used_refinements (prelude) */
-    korb_builtin_define(c, "__used_modules", korb_bi_used_modules, 0);
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "__method__", korb_bi_method_name, 0);
     korb_builtin_define(c, "__callee__", korb_bi_method_name, 0);
@@ -14334,6 +14370,14 @@ korb_ctx_new(void)
         korb_const_define(c, korb_intern(c->vm, "RUBY_PATCHLEVEL", 15), LONG2FIX(0));
     }
     korb_register_core_methods(c);
+    {   /* Module.used_refinements / .used_modules (docs/refinements.md) */
+        const VALUE modc = korb_const_get(c->vm, c->vm->name_module);
+        const RESULT sr = KORB_CLASS_P(modc) ? korb_obj_singleton(c, c->slots, modc) : RESULT_OK(KORB_NIL);
+        if (sr.state == KORB_NORMAL && KORB_CLASS_P(sr.value)) {
+            korb_class_def_cfn(c, sr.value, "used_refinements", korb_m_used_refinements, 0);
+            korb_class_def_cfn(c, sr.value, "used_modules", korb_m_used_modules, 0);
+        }
+    }
 
     /* resolve dispatch-hot method names once (see struct korb_vm). */
     c->vm->mid_send        = korb_intern(c->vm, "send", 4);

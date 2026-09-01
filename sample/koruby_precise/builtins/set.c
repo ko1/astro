@@ -2296,7 +2296,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         /* @@vars in the source resolve against the CALLER's class, which the
          * hidden caller binding is the only record of here. */
         const VALUE saved_cvar_cref = c->cvar_cref;
-        const VALUE saved_refine = c->refinements;   /* `using` in the eval'd source ends with it */
+        korb_refine_push(c);                         /* `using` in the eval'd source ends with it */
         if (singleton_definee && bind_ptr)
             c->cvar_cref = korb_cvar_self_class_pub(c, VAL2BIND(*bind_ptr)->self);
         RESULT er;
@@ -2309,7 +2309,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             er = korb_eval_str_self(c, slots, src, VALUE_REF_GET(self), fname, line, cref);
         }
         c->cvar_cref = saved_cvar_cref;
-        c->refinements = saved_refine;
+        korb_refine_pop(c);
         korb_vis_leave(VALUE_REF_GET(self), saved_vis);
         return er;
     }
@@ -2329,7 +2329,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     } else c->def_definee = slots[0];
     const uint8_t saved_vis = korb_vis_enter(slots[0]);
     const VALUE saved_cvar_cref = c->cvar_cref;           /* @@vars: the block's definition scope (see korb_obj_exec_impl) */
-    const VALUE saved_refine = c->refinements;            /* `using` in the block ends with it */
+    korb_refine_push(c);                                  /* `using` in the block ends with it */
     if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
         c->cvar_cref = korb_cvar_self_class_pub(c, def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC
                                                    ? VAL2PROC(*cself)->self : KORB_CSELF_VAL(cself));
@@ -2346,7 +2346,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         }
     }
     c->cvar_cref = saved_cvar_cref;
-    c->refinements = saved_refine;
+    korb_refine_pop(c);
     korb_vis_leave(slots[0], saved_vis);
     c->def_definee = saved_definee;
     return r;
@@ -2559,7 +2559,7 @@ static RESULT korb_m_mod_refine(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                           VALUE_SLICE_LEN(a));
     if (UNLIKELY(!KORB_CLASS_P(VALUE_SLICE_GET(a, 0))))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Class or Module)",
-                          korb_a_type_name(VALUE_SLICE_GET(a, 0)));
+                          korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (UNLIKELY(block == NULL))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block given");
 
@@ -2594,19 +2594,30 @@ static RESULT korb_m_mod_refine(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         refi = VALUE_REF_GET(rref);
     }
 
-    slots[0] = refi;                                  /* rooted across the body block */
+    slots[0] = refi;                                  /* R: the block's self and the return value */
     VALUE_REF rref = VALUE_REF_AT(&slots[0]);
-    /* Inside a refine block ALL of the owner's refinements are active (CRuby). */
-    const VALUE saved_definee = c->def_definee, saved_refine = c->refinements;
+    const VALUE saved_definee = c->def_definee;
     const VALUE saved_cvar = c->cvar_cref;
+    /* Inside a refine block ALL of the owner's refinements are active, and a
+     * refine that runs LATER joins them (CRuby resolves through the module, not
+     * a snapshot) — so record a late-bound (nil, nil, owner) entry. */
     slots[1] = UNWRAP(korb_ary_new(c, slots + 2, 8));
-    CHECK(korb_refine_collect(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_REF_GET(oref), 0));
+    { VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+      for (uint32_t i = 0; ; i++) {
+          const VALUE cur = c->refinements;
+          if (!KORB_ARRAY_P(cur) || i >= VAL2ARY(cur)->len) break;
+          CHECK(korb_ary_push_val(c, slots + 2, dst, korb_items_data(VAL2ARY(cur)->items)[i]));
+      }
+      CHECK(korb_ary_push_val(c, slots + 2, dst, KORB_NIL));
+      CHECK(korb_ary_push_val(c, slots + 2, dst, KORB_NIL));
+      CHECK(korb_ary_push_val(c, slots + 2, dst, VALUE_REF_GET(oref))); }
+    korb_refine_push(c);                              /* nothing may raise between here and the pop */
     c->refinements = slots[1];
     c->def_definee = VALUE_REF_GET(rref);             /* `def` lands on the refinement module */
     c->cvar_cref = KORB_NIL;
     if (!vm->refinements_active) { vm->refinements_active = true; vm->method_serial++; }
     RESULT r;
-    slots[2] = VALUE_REF_GET(rref);                   /* the block's argument and its self */
+    slots[2] = VALUE_REF_GET(rref);                   /* the block's argument */
     if (block == KORB_BLK_CPROC)
         r = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, cself);
     else if (def_env == KORB_BLK_FWD) {
@@ -2614,7 +2625,8 @@ static RESULT korb_m_mod_refine(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         r = korb_block_yield(c, slots + 4, block, (VALUE *)(uintptr_t)slots[3], &slots[2], 1, &slots[0]);
     } else
         r = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, &slots[0]);
-    c->def_definee = saved_definee; c->refinements = saved_refine; c->cvar_cref = saved_cvar;
+    c->def_definee = saved_definee; c->cvar_cref = saved_cvar;
+    korb_refine_pop(c);
     if (UNLIKELY(r.state != KORB_NORMAL && r.state != KORB_BREAK)) return r;
     /* a refined basic operator has to deopt the arithmetic/compare nodes, which
      * are keyed on the REFINED class — announce them there. */
@@ -2635,7 +2647,7 @@ static RESULT korb_m_mod_using(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const VALUE mod = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_CLASS_P(mod) || !VAL2CLASS(mod)->is_module))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)",
-                          korb_a_type_name(mod));
+                          korb_type_name(mod));
     VALUE_REF mref = SLOTS_PUSH(slots, mod);
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
@@ -2660,6 +2672,7 @@ static RESULT korb_used_column(CTX *c, VALUE *slots, uint32_t col)
         const VALUE cur = c->refinements;
         if (!KORB_ARRAY_P(cur) || i >= VAL2ARY(cur)->len) break;
         const VALUE v = korb_items_data(VAL2ARY(cur)->items)[i];
+        if (v == KORB_NIL) continue;                 /* a late-bound refine-block entry */
         bool seen = false;
         const KorbArray *const d = VAL2ARY(VALUE_REF_GET(dst));
         for (uint32_t j = 0; j < d->len; j++) if (korb_items_data(d->items)[j] == v) { seen = true; break; }
@@ -2669,6 +2682,9 @@ static RESULT korb_used_column(CTX *c, VALUE *slots, uint32_t col)
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
-static RESULT korb_bi_used_refinements(CTX *c, VALUE *slots, VALUE_SLICE a) { (void)a; return korb_used_column(c, slots, 1); }
-static RESULT korb_bi_used_modules(CTX *c, VALUE *slots, VALUE_SLICE a)     { (void)a; return korb_used_column(c, slots, 2); }
+/* Registered as REAL singleton methods on Module: a prelude wrapper would be an
+ * ISEQ frame, and korb_invoke_method resets the scope to the wrapper's own
+ * (empty) refinement set before the body runs. */
+static RESULT korb_m_used_refinements(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; (void)a; return korb_used_column(c, slots, 1); }
+static RESULT korb_m_used_modules(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)self; (void)a; return korb_used_column(c, slots, 2); }
 

@@ -287,14 +287,3 @@ class Refinement < Module
     raise TypeError, "Refinement#extend_object has been removed"
   end
 end
-
-class << Module
-  # Refinements / modules activated in the running lexical scope.
-  def used_refinements
-    __used_refinements
-  end
-
-  def used_modules
-    __used_modules
-  end
-end
