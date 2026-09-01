@@ -1172,15 +1172,23 @@ static RESULT korb_m_str_chop_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 /* char-set membership for count/squeeze/delete: supports leading ^ negation and
  * a-z ranges (ASCII-byte level). */
+/* One byte of a tr/charset spec: a leading backslash escapes the next byte, so
+ * " \-'" is the three chars ' ', '-', '\'' (CRuby's trnext). */
+static unsigned char korb_charset_next_byte(const char *set, uint32_t n, uint32_t *i) {
+    if (set[*i] == '\\' && *i + 1 < n) (*i)++;
+    return (unsigned char)set[(*i)++];
+}
 static bool korb_charset_match(const char *set, uint32_t n, unsigned char ch) {
     bool neg = false; uint32_t i = 0;
     if (n > 1 && set[0] == '^') { neg = true; i = 1; }   /* a lone "^" is the literal char, not a complement */
     bool in = false;
-    for (; i < n; i++) {
-        if (i + 2 < n && set[i+1] == '-') {
-            if ((unsigned char)set[i] <= ch && ch <= (unsigned char)set[i+2]) in = true;
-            i += 2;
-        } else if ((unsigned char)set[i] == ch) in = true;
+    while (i < n) {
+        const unsigned char lo = korb_charset_next_byte(set, n, &i);
+        if (i < n && set[i] == '-' && i + 1 < n) {       /* lo-hi range */
+            i++;
+            const unsigned char hi = korb_charset_next_byte(set, n, &i);
+            if (lo <= ch && ch <= hi) in = true;
+        } else if (lo == ch) in = true;
     }
     return neg ? !in : in;
 }
@@ -1209,15 +1217,22 @@ static uint32_t korb_utf8_dec1(const char *p, uint32_t avail, uint32_t *clen) {
 }
 /* Codepoint-aware charset match: parse the set as UTF-8 codepoints, honouring
  * `a-b` ranges and a leading `^` complement (a lone "^" is literal). */
+/* korb_charset_next_byte's codepoint twin: skip an escaping backslash, decode. */
+static uint32_t korb_charset_next_cp(const char *set, uint32_t n, uint32_t *i) {
+    if (set[*i] == '\\' && *i + 1 < n) (*i)++;
+    uint32_t cl; const uint32_t cp = korb_utf8_dec1(set + *i, n - *i, &cl);
+    *i += cl;
+    return cp;
+}
 static bool korb_charset_match_cp(const char *set, uint32_t n, uint32_t cp) {
     bool neg = false; uint32_t i = 0;
     if (n > 1 && set[0] == '^') { neg = true; i = 1; }
     bool in = false;
     while (i < n) {
-        uint32_t cl; const uint32_t lo = korb_utf8_dec1(set + i, n - i, &cl); i += cl;
+        const uint32_t lo = korb_charset_next_cp(set, n, &i);
         if (i < n && set[i] == '-' && i + 1 < n) {   /* lo-hi range */
             i++;
-            uint32_t cl2; const uint32_t hi = korb_utf8_dec1(set + i, n - i, &cl2); i += cl2;
+            const uint32_t hi = korb_charset_next_cp(set, n, &i);
             if (lo <= cp && cp <= hi) in = true;
         } else if (lo == cp) in = true;
     }
@@ -1254,10 +1269,12 @@ static RESULT korb_str_sets_coerce(CTX *c, VALUE *slots, VALUE_SLICE a) {
 static bool korb_charset_bad_range(const char *set, uint32_t n, unsigned char *lo, unsigned char *hi) {
     uint32_t i = 0;
     if (n > 1 && set[0] == '^') i = 1;
-    for (; i < n; i++) {
-        if (i + 2 < n && set[i+1] == '-') {
-            if ((unsigned char)set[i] > (unsigned char)set[i+2]) { *lo = (unsigned char)set[i]; *hi = (unsigned char)set[i+2]; return true; }
-            i += 2;
+    while (i < n) {
+        const unsigned char a = korb_charset_next_byte(set, n, &i);
+        if (i < n && set[i] == '-' && i + 1 < n) {
+            i++;
+            const unsigned char b = korb_charset_next_byte(set, n, &i);
+            if (a > b) { *lo = a; *hi = b; return true; }
         }
     }
     return false;
@@ -1267,7 +1284,11 @@ static RESULT korb_str_sets_validate(CTX *c, VALUE *slots, VALUE_SLICE a) {
     unsigned char lo, hi;
     for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
         const VALUE sv = VALUE_SLICE_GET(a, j);
-        if (KORB_STRING_P(sv) && korb_charset_bad_range(korb_strbuf_data(VAL2STR(sv)->buf), VAL2STR(sv)->len, &lo, &hi))
+        if (!KORB_STRING_P(sv)) continue;
+        /* CRuby decodes the set char by char, so malformed bytes are an error */
+        if (UNLIKELY(KORB_STR_ENC(sv) == KORB_ENC_UTF8 && !korb_str_utf8_valid(VAL2STR(sv))))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
+        if (korb_charset_bad_range(korb_strbuf_data(VAL2STR(sv)->buf), VAL2STR(sv)->len, &lo, &hi))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid range \"%c-%c\" in string transliteration", lo, hi);
     }
     return RESULT_OK(KORB_NIL);
@@ -1373,10 +1394,14 @@ static RESULT korb_m_str_delete_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static uint32_t korb_tr_expand(const char *s, uint32_t n, unsigned char *out, uint32_t cap) {
     uint32_t k = 0, i = 0;
     while (i < n && k < cap) {
-        if (i + 2 < n && s[i + 1] == '-' && (unsigned char)s[i] <= (unsigned char)s[i + 2]) {
-            for (int ch = (unsigned char)s[i]; ch <= (unsigned char)s[i + 2] && k < cap; ch++) out[k++] = (unsigned char)ch;
-            i += 3;
-        } else out[k++] = (unsigned char)s[i++];
+        const unsigned char lo = korb_charset_next_byte(s, n, &i);
+        if (i < n && s[i] == '-' && i + 1 < n) {
+            const uint32_t save = i;
+            i++;
+            const unsigned char hi = korb_charset_next_byte(s, n, &i);
+            if (lo <= hi) { for (int ch = lo; ch <= (int)hi && k < cap; ch++) out[k++] = (unsigned char)ch; }
+            else { out[k++] = lo; i = save; }             /* descending: not a range (the caller already rejected it) */
+        } else out[k++] = lo;
     }
     return k;
 }
@@ -1385,12 +1410,12 @@ static uint32_t korb_tr_expand(const char *s, uint32_t n, unsigned char *out, ui
 static uint32_t korb_tr_expand_cp(const char *s, uint32_t n, uint32_t *out, uint32_t cap) {
     uint32_t k = 0, i = 0;
     while (i < n && k < cap) {
-        uint32_t cl; const uint32_t lo = korb_utf8_dec1(s + i, n - i, &cl); const uint32_t ni = i + cl;
-        if (ni < n && s[ni] == '-' && ni + 1 < n) {          /* lo-hi range */
-            uint32_t cl2; const uint32_t hi = korb_utf8_dec1(s + ni + 1, n - ni - 1, &cl2);
+        const uint32_t lo = korb_charset_next_cp(s, n, &i);
+        if (i < n && s[i] == '-' && i + 1 < n) {             /* lo-hi range */
+            i++;
+            const uint32_t hi = korb_charset_next_cp(s, n, &i);
             for (uint32_t ch = lo; ch <= hi && k < cap; ch++) out[k++] = ch;
-            i = ni + 1 + cl2;
-        } else { out[k++] = lo; i = ni; }
+        } else out[k++] = lo;
     }
     return k;
 }
@@ -1399,12 +1424,12 @@ static bool korb_charset_bad_range_cp(const char *s, uint32_t n, uint32_t *lo_ou
     uint32_t i = 0;
     if (n > 1 && s[0] == '^') i = 1;
     while (i < n) {
-        uint32_t cl; const uint32_t lo = korb_utf8_dec1(s + i, n - i, &cl); const uint32_t ni = i + cl;
-        if (ni < n && s[ni] == '-' && ni + 1 < n) {
-            uint32_t cl2; const uint32_t hi = korb_utf8_dec1(s + ni + 1, n - ni - 1, &cl2);
+        const uint32_t lo = korb_charset_next_cp(s, n, &i);
+        if (i < n && s[i] == '-' && i + 1 < n) {
+            i++;
+            const uint32_t hi = korb_charset_next_cp(s, n, &i);
             if (lo > hi) { *lo_out = lo; *hi_out = hi; return true; }
-            i = ni + 1 + cl2;
-        } else i = ni;
+        }
     }
     return false;
 }
@@ -1827,10 +1852,17 @@ static RESULT korb_m_str_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(LONG2FIX(cnt));
 }
 static RESULT korb_m_str_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     korb_sword_t bits = 16;
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) bits = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (VALUE_SLICE_LEN(a) >= 1) {
+        VALUE nv = VALUE_SLICE_GET(a, 0);
+        if (UNLIKELY(!korb_to_index(nv, &bits))) {            /* #to_int coercion (CRuby's NUM2INT) */
+            RESULT cr = korb_coerce_to_int(c, slots, &nv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (UNLIKELY(cr.value != KORB_TRUE || !korb_to_index(nv, &bits)))
+                return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
+        }
+    }
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));        /* re-read: the coercion may have moved self */
     korb_sword_t sum = 0;
     for (uint32_t i = 0; i < s->len; i++) sum += (unsigned char)korb_strbuf_data(s->buf)[i];
     if (bits > 0 && bits < 64) sum &= ((korb_sword_t)1 << bits) - 1;
@@ -2551,7 +2583,13 @@ static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             return RESULT_OK(KORB_NIL);
         }
     }
-    return RESULT_OK(LONG2FIX(korb_cmp_values(VALUE_REF_GET(self), o)));
+    const int r = korb_cmp_values(VALUE_REF_GET(self), o);
+    /* CRuby rb_str_cmp: byte-equal but incomparable encodings still order by
+     * encoding index (that is what makes String#== / #=== report false). */
+    if (UNLIKELY(r == 0 && KORB_STR_ENC(VALUE_REF_GET(self)) != KORB_STR_ENC(o) &&
+                 !korb_str_comparable(c->vm, VALUE_REF_GET(self), o)))
+        return RESULT_OK(LONG2FIX(KORB_STR_ENC(VALUE_REF_GET(self)) > KORB_STR_ENC(o) ? 1 : -1));
+    return RESULT_OK(LONG2FIX(r));
 }
 
 /* String#[] — int index, (int,len), Range, or substring match.  Indices are

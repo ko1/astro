@@ -909,6 +909,11 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (UNLIKELY(!korb_str_bpos_ok(rs, roff + rn)))
             return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %u does not land on character boundary", roff + rn);
     }
+    /* CRuby associates rb_enc_check(str, val): splicing a UTF-8 run into a
+     * US-ASCII receiver leaves the result UTF-8.  Computed before the splice,
+     * while both operands still hold their original bytes. */
+    uint32_t newenc = KORB_STR_ENC(VALUE_REF_GET(self));
+    const bool enc_ok = korb_str_enc_combine(c->vm, VALUE_REF_GET(self), repl, &newenc);
     uint32_t sufoff = (uint32_t)(start + dellen), suflen = bn - sufoff;
     uint32_t newlen = (uint32_t)start + rn + suflen;
     char *out = malloc(newlen ? newlen : 1);                /* assemble full new content (no GC) */
@@ -919,6 +924,7 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     KorbString *ns = korb_str_ensure(c, slots, self, newlen);   /* may move; out is libc-stable */
     memcpy(korb_strbuf_data(ns->buf), out, newlen); ns->len = newlen; korb_strbuf_data(ns->buf)[newlen] = '\0';
     free(out);
+    if (enc_ok) KORB_STR_ENC_SET(VALUE_REF_GET(self), newenc);
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_str_getbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1209,10 +1215,28 @@ static RESULT korb_m_str_dump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
     const char *fe_suffix = NULL;                       /* .force_encoding("NAME") for non-ASCII-compat */
     bool bytes_only = (enc == KORB_ENC_BINARY);
+    char fe_name[64];
     if (enc >= KORB_ENC_OTHER_MIN) {
-        const char *const en = korb_enc_name_of(c->vm, enc);
-        if (en && (strncmp(en, "UTF-16", 6) == 0 || strncmp(en, "UTF-32", 6) == 0)) { fe_suffix = en; bytes_only = true; }
-        else bytes_only = true;                          /* single/multi-byte "other": dump raw bytes as \xHH */
+        /* CRuby appends .force_encoding for any non-ASCII-compatible encoding.
+         * The header registry keeps the name as first written ("utf-16be"), so
+         * ask the Encoding object for the canonical spelling. */
+        if (!korb_enc_ascii_compat_idx(c->vm, enc)) {
+            fe_suffix = korb_enc_name_of(c->vm, enc);
+            slots[0] = VALUE_REF_GET(self);
+            RESULT er = korb_send(c, slots + 1, korb_intern(c->vm, "encoding", 8), 0, 0);
+            if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+            slots[0] = er.value;
+            RESULT nr = korb_send(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0);
+            if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+            if (KORB_STRING_P(nr.value)) {
+                uint32_t l = VAL2STR(nr.value)->len;
+                if (l >= sizeof fe_name) l = sizeof fe_name - 1;
+                memcpy(fe_name, korb_strbuf_data(VAL2STR(nr.value)->buf), l);
+                fe_name[l] = '\0';
+                fe_suffix = fe_name;
+            }
+        }
+        bytes_only = true;                               /* single/multi-byte "other": dump raw bytes as \xHH */
     }
     const KorbString *const s0 = VAL2STR(VALUE_REF_GET(self));
     size_t cap = (size_t)s0->len * 6 + 64, olen = 0;
@@ -1250,6 +1274,9 @@ static RESULT korb_m_str_dump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     #undef DUMP_PUT
     RESULT r = korb_str_new(c, slots, out, (uint32_t)olen);
     free(out);
+    /* the dump keeps self's encoding, except that a non-ASCII-compatible one is
+     * fully escaped and so comes back as US-ASCII (CRuby) */
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, fe_suffix ? KORB_ENC_USASCII : enc);
     return r;
 }
 /* Plausible-encoding-name check for undump's .force_encoding suffix.  dump only

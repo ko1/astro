@@ -208,7 +208,15 @@ module Zlib
       nil
     end
 
-    def set_dictionary(dict) = dict
+    # deflateSetDictionary / inflateSetDictionary.  Inflate parks the input it
+    # could not consume when it raised NeedDict, so #finish resumes from there.
+    def set_dictionary(dict)
+      __check_open
+      __zstream_set_dict(@h, dict.to_s.b)
+      dict
+    rescue RuntimeError
+      raise Zlib::StreamError, "stream error"
+    end
 
     def finish
       __check_open
@@ -279,7 +287,15 @@ module Zlib
       __emit(r, blk)
     end
 
-    def set_dictionary(dict) = dict
+    # deflateSetDictionary / inflateSetDictionary.  Inflate parks the input it
+    # could not consume when it raised NeedDict, so #finish resumes from there.
+    def set_dictionary(dict)
+      __check_open
+      __zstream_set_dict(@h, dict.to_s.b)
+      dict
+    rescue RuntimeError
+      raise Zlib::StreamError, "stream error"
+    end
     def sync_point? = false
   end
 

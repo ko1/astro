@@ -14,7 +14,6 @@ static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (UNLIKELY(block != NULL)) korb_warn(c, slots, "given block not used");
         return RESULT_OK(VALUE_REF_GET(self));
     }
-    if (UNLIKELY(argc == 2 && block != NULL)) korb_warn(c, slots, "block supersedes default value argument");
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* a0 (rooted across #to_ary/#to_int dispatch) */
     if (argc == 1 && !FIXNUM_P(slots[0])) {              /* 1-arg form may be an Array copy (Array or #to_ary) */
         if (!KORB_ARRAY_P(slots[0]) && KORB_OBJECT_P(slots[0])) {
@@ -530,6 +529,22 @@ static inline bool korb_eq_opaque(VALUE v) {
     }
 }
 
+/* CRuby's rb_respond_to: a *public* check that hands #respond_to? the name only.
+ * korb_responds_to_coerce_p passes the include_all flag too, which an
+ * `expects(:respond_to?).with(:to_ary)` stub (mspec's mocks) does not match. */
+static bool korb_ary_respond_to_pub(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid) {
+    if (korb_responds_to(c, *selfp, mid)) return true;
+    const VALUE dcls = korb_dispatch_class(c, *selfp);
+    if (!KORB_CLASS_P(dcls)) return false;
+    VALUE rt_def = KORB_NIL;
+    (void)korb_class_find_method(dcls, korb_intern(c->vm, "respond_to?", 11), &rt_def);
+    if (rt_def == KORB_NIL || rt_def == korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]))
+        return false;                                     /* the default #respond_to? already said no */
+    slots[0] = *selfp; slots[1] = ID2SYM(mid);
+    const RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "respond_to?", 11), 0, 1, NULL, NULL, NULL);
+    *selfp = slots[0];                                    /* writeback: the dispatch may have moved it */
+    return r.state == KORB_NORMAL && KORB_TRUTHY(r.value);
+}
 /* Array#== — same length, elements compared with #== (object/array/hash elements
  * dispatch, so user == and nested value-equality are honoured; korb_value_eq alone
  * cannot dispatch without a CTX). */
@@ -537,8 +552,9 @@ static RESULT korb_m_ary_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     const VALUE other = VALUE_SLICE_GET(a, 0);
     if (VALUE_REF_GET(self) == other) return RESULT_OK(KORB_TRUE);
     if (!KORB_ARRAY_P(other)) {                            /* Array-like (responds to #to_ary) → delegate other == self */
-        if (KORB_OBJECT_P(other) && korb_responds_to(c, other, korb_intern(c->vm, "to_ary", 6))) {
-            slots[0] = other; slots[1] = VALUE_REF_GET(self);
+        VALUE o = other;
+        if (KORB_OBJECT_P(o) && korb_ary_respond_to_pub(c, slots, &o, korb_intern(c->vm, "to_ary", 6))) {
+            slots[0] = o; slots[1] = VALUE_REF_GET(self);
             return korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
         }
         return RESULT_OK(KORB_FALSE);
@@ -551,6 +567,7 @@ static RESULT korb_m_ary_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     VALUE result = KORB_TRUE;
     for (uint32_t i = 0; i < n; i++) {
         const VALUE v = korb_items_data(VAL2ARY(slots[0])->items)[i], v2 = korb_items_data(VAL2ARY(slots[1])->items)[i];
+        if (v == v2) continue;                                            /* rb_equal's identity shortcut ([NaN] == [NaN] is true) */
         if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
             KORB_OBJECT_P(v2) || KORB_ARRAY_P(v2) || KORB_HASH_P(v2)) {   /* dispatch == (recurses for nested) */
             slots[2] = v; slots[3] = v2;

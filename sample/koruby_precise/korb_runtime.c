@@ -1096,6 +1096,16 @@ static bool korb_str_ascii_only_p(const struct korb_vm *vm, VALUE sv) {
         if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) return false;
     return true;
 }
+/* CRuby's rb_str_comparable: whether byte-identical Strings in different
+ * encodings still count as equal.  Only reached once the bytes match. */
+static bool korb_str_comparable(const struct korb_vm *vm, VALUE av, VALUE bv) {
+    if (VAL2STR(av)->len == 0 || VAL2STR(bv)->len == 0) return true;
+    const uint32_t ea = KORB_STR_ENC(av), eb = KORB_STR_ENC(bv);
+    if (ea == eb) return true;
+    const bool aa = korb_str_ascii_only_p(vm, av), ab = korb_str_ascii_only_p(vm, bv);
+    if (aa && (ab || korb_enc_ascii_compat_idx(vm, eb))) return true;
+    return ab && korb_enc_ascii_compat_idx(vm, ea);
+}
 /* The encoding two Strings can share (CRuby's rb_enc_compatible): same one, or
  * the side that is not plain 7-bit ASCII; false when there is none. */
 bool
@@ -6002,7 +6012,8 @@ korb_value_eq(VALUE a, VALUE b)
         const KorbString *x = VAL2STR(a), *y = VAL2STR(b);
         if (x->len != y->len || memcmp(korb_strbuf_data(x->buf), korb_strbuf_data(y->buf), x->len) != 0) return false;
         /* same bytes: equal unless the encodings differ AND the content is not
-         * plain ASCII (CRuby's rb_str_comparable) */
+         * plain ASCII (CRuby's rb_str_comparable; no vm here, so the
+         * non-ASCII-compatible half of that test lives in korb_str_comparable) */
         const uint32_t ea = KORB_STR_ENC(a), eb = KORB_STR_ENC(b);
         if (LIKELY(ea == eb)) return true;
         const char *const d = korb_strbuf_data(x->buf);
@@ -9019,6 +9030,9 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 }
                 if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative array size");
             }
+            /* same rb_warn pair as Array#initialize (the fast path skips it) */
+            if (UNLIKELY(block != NULL && argc != 1))
+                korb_warn(c, slots, argc == 0 ? "given block not used" : "block supersedes default value argument");
             slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)n));
             VALUE_REF dst = VALUE_REF_AT(&slots[0]);
             for (korb_sword_t i = 0; i < n; i++) {

@@ -531,9 +531,74 @@ class Enumerator::Lazy
     b ? z.map(&b) : z
   end
 
+  # An Enumerable method that answers an enumerator answers a *Lazy* one on a
+  # Lazy receiver (CRuby routes it through #to_enum, which Lazy overrides).
+  # koruby's Enumerable builds a plain Enumerator, so re-wrap the streaming form.
+  # The block forms are spelled out rather than `super`: Enumerator's C
+  # #each_slice / #each_cons force the receiver into an Array first, which an
+  # infinite lazy source cannot survive.
+  def each_slice(n, &b)
+    n = __as_int(n)
+    raise ArgumentError, "invalid slice size" unless n > 0
+    unless b
+      src = self
+      return __lazy_gen { |y| src.each_slice(n) { |s| y << s } }
+    end
+    s = []
+    each { |*vs| s << (vs.size <= 1 ? vs[0] : vs); (b.call(s); s = []) if s.size == n }
+    b.call(s) unless s.empty?
+    self
+  end
+  def each_cons(n, &b)
+    n = __as_int(n)
+    raise ArgumentError, "invalid size" unless n > 0
+    unless b
+      src = self
+      return __lazy_gen { |y| src.each_cons(n) { |x| y << x } }
+    end
+    buf = []
+    each { |*vs| buf << (vs.size <= 1 ? vs[0] : vs); (b.call(buf.dup); buf.shift) if buf.size == n }
+    self
+  end
+  def each_entry(*args, &b)
+    return super if b
+    src = self
+    __lazy_gen { |y| src.each_entry(*args) { |x| y << x } }
+  end
+  def each_with_object(o, &b)
+    return super if b
+    src = self
+    __lazy_gen { |y| src.each_with_object(o) { |x, m| y << [x, m] } }
+  end
+  def with_object(o, &b)
+    return super if b
+    src = self
+    __lazy_gen { |y| src.with_object(o) { |x, m| y << [x, m] } }
+  end
+  def cycle(n = nil, &b)
+    return super if b
+    src = self
+    __lazy_gen { |y| src.cycle(n) { |x| y << x } }
+  end
+
+  # CRuby's lazy_use_super_method: for the lazy op set, #to_enum drives the
+  # EAGER Enumerable version (Lazy#map would only build another chain and never
+  # feed the yielder).  The Enumerable ones stream through #each, so an infinite
+  # source still terminates when the consumer breaks.
   def to_enum(meth = :each, *args, &sz)
     src = self
-    __lazy_gen(sz) { |y| src.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
+    case meth
+    when :map, :collect, :flat_map, :collect_concat, :select, :find_all, :filter,
+         :filter_map, :reject, :grep, :grep_v, :zip, :take, :take_while, :drop,
+         :drop_while, :uniq
+      m = Enumerable.instance_method(meth).bind(src)
+      __lazy_gen(sz) { |y| m.call(*args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
+    when :with_index, :each_with_index
+      off = (meth == :with_index && !args.empty? && args[0]) ? args[0] : 0
+      __lazy_gen(sz) { |y| i = off; src.each { |*vs| y << [(vs.size <= 1 ? vs[0] : vs), i]; i += 1 } }
+    else
+      __lazy_gen(sz) { |y| src.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
+    end
   end
   alias enum_for to_enum   # a real alias: #method(:enum_for) == #method(:to_enum)
 end
