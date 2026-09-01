@@ -3727,6 +3727,7 @@ korb_class_method_slot(KorbClass *const k, uint32_t mid)
         k->methods[k->method_cnt++] = m;
     }
     m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0; m->dm_proc = KORB_NIL;
+    m->super_owner = KORB_NIL;             /* a redefinition drops any inherited alias origin */
     return m;
 }
 
@@ -3793,7 +3794,12 @@ RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t 
     korb_check_basic_op_redef(c, klass, newm);          /* an alias can redefine a basic op too */
     struct korb_method *dst = korb_class_method_slot(VAL2CLASS(klass), newm);   /* libc alloc, no GC */
     const struct korb_method tmp = *src;   /* src may dangle if the slot array grows; snapshot first */
-    *dst = tmp; dst->mid = newm; dst->owner = klass;
+    *dst = tmp; dst->mid = newm;
+    /* `super` from the alias resumes after the ORIGINAL defining class (CRuby's
+     * defined_class); `owner` stays the aliasing class, which is what
+     * UnboundMethod#owner reports.  A chained alias keeps the first origin. */
+    if (dst->super_owner == KORB_NIL) dst->super_owner = tmp.owner;
+    dst->owner = klass;
     c->vm->method_serial++;
     slots[0] = klass;                      /* park: the hook is Ruby code */
     CHECK(korb_fire_method_added(c, slots + 1, slots[0], newm));   /* an alias is a definition too */
@@ -5107,6 +5113,7 @@ static RESULT korb_m_mod_append_features(CTX *c, VALUE *slots, VALUE_REF self, V
 static RESULT korb_m_mod_prepend_features(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_mod_features(c, slots, self, a, true); }
 
 static VALUE korb_dispatch_class(CTX *c, VALUE self);
+static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd: the default raiser */
 
 /* Linearize `klass`'s MRO into buf: per class up the superclass chain, the
  * prepended modules (most-recent first), then the class, then the included
@@ -5157,7 +5164,7 @@ korb_super_find(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_d
 {
     const struct korb_method *const cur =
         ((uintptr_t)entry_cell & 1u) ? (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)1u) : NULL;
-    const VALUE def_class = cur ? cur->owner : KORB_NIL;
+    const VALUE def_class = cur ? (cur->super_owner != KORB_NIL ? cur->super_owner : cur->owner) : KORB_NIL;
     if (out_def_class) *out_def_class = def_class;
     VALUE found_def = KORB_NIL;
     struct korb_method *m = NULL;
@@ -5249,9 +5256,41 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         c->vm->super_new_skip = KORB_NIL;
         return r;
     }
-    if (UNLIKELY(m == NULL))
+    if (UNLIKELY(m == NULL)) {
+        struct korb_vm *const vm = c->vm;
+        /* BasicObject#send / #__send__ have no method-table entry (korb_send_impl
+         * special-cases them), so a module that overrides one and calls `super`
+         * must do the reflective redispatch here. */
+        if ((mid == vm->mid_send || mid == vm->mid___send__) && argc >= 1) {
+            const VALUE name = slots[-(korb_sword_t)argc];
+            uint32_t rmid;
+            if (SYMBOL_P(name)) rmid = SYM2ID(name);
+            else if (KORB_STRING_P(name)) rmid = korb_intern(vm, korb_strbuf_data(VAL2STR(name)->buf), VAL2STR(name)->len);
+            else return korb_raise_not_sym(c, slots, name);
+            for (uint32_t j = 1; j < argc; j++) slots[1 + j] = slots[-(korb_sword_t)argc + j];
+            slots[0] = captured_self;                      /* park in a scanned slot for the cself ptr */
+            slots[1] = self;                               /* recv below the shifted args */
+            return korb_send_impl(c, slots + argc + 1, rmid, line, argc - 1, block, def_env, &slots[0]);
+        }
+        /* Nothing above def_class: CRuby runs the #method_missing protocol (the
+         * default one is what raises NoMethodError), so a user-defined
+         * #method_missing sees it — that is how `super` past an undef'd method
+         * lands there. */
+        const VALUE dcls = korb_dispatch_class(c, self);
+        VALUE mm_def = KORB_NIL;
+        struct korb_method *const mm =
+            KORB_CLASS_P(dcls) ? korb_mcache_find(vm, dcls, vm->mid_method_missing, &mm_def) : NULL;
+        if (mm != NULL && !(mm->kind == KORB_METHOD_CFUNC && mm->rfn == korb_m_obj_method_missing)) {
+            for (uint32_t j = 0; j < argc; j++) slots[3 + j] = slots[-(korb_sword_t)argc + j];
+            slots[0] = captured_self;                      /* park in a scanned slot for the cself ptr */
+            slots[1] = self;                               /* recv, then :name, then the args */
+            slots[2] = ID2SYM(mid);
+            return korb_send_impl(c, slots + 3 + argc, vm->mid_method_missing, line,
+                                  argc + 1, block, def_env, &slots[0]);
+        }
         return korb_raise(c, slots, KORB_E_NOMETHOD, line,
-                          "super: no superclass method '%s'", korb_sym_name(c->vm, mid));
+                          "super: no superclass method '%s'", korb_sym_name(vm, mid));
+    }
     if (m->kind == KORB_METHOD_ATTR_R)
         return RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
     if (m->kind == KORB_METHOD_CFUNC) {           /* super into a builtin (e.g. Exception#initialize) */

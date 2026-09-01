@@ -760,6 +760,10 @@ struct korb_method {
                               * Manually GC-forwarded (entry is immortal libc, so the class
                               * visitor + roots forward this field — like const_vals).  owner/mid
                               * never change, so a frame-held entry yields a live owner + stable mid. */
+    VALUE super_owner;       /* where `super` resumes from, when that is NOT `owner`: an alias
+                              * keeps the ORIGINAL defining class here (CRuby's defined_class),
+                              * so `super` from Alias3#name3 continues after Alias2, not after
+                              * Alias3.  nil = use owner.  Manually GC-forwarded next to owner. */
     VALUE dm_proc;           /* KORB_METHOD_DM: the define_method Proc (env pre-closed). nil otherwise.
                               * Manually GC-forwarded next to owner (entry is immortal libc). */
     VALUE refine_set;        /* refinements active where this method was defined (CTX.refinements
@@ -1215,6 +1219,7 @@ struct CTX_struct {
     /* global fn entries (immortal libc): forward each entry's owner edge. */ \
     for (uint32_t _mi = 0; _mi < (c)->vm->method_cnt; _mi++) {               \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->owner); \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->super_owner); \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->dm_proc); \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->refine_set); \
     }                                                                        \
@@ -1438,6 +1443,7 @@ struct CTX_struct {
         /* method entries are immortal libc; forward each entry's owner edge. */ \
         for (uint32_t _mi = 0; _mi < _cl->method_cnt; _mi++) {              \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->owner); \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->super_owner); \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->dm_proc); \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->refine_set); \
         }                                                                  \
