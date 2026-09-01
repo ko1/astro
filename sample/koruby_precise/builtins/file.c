@@ -679,9 +679,25 @@ static RESULT korb_m_file_fnmatch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         if (UNLIKELY(!KORB_STRING_P(v)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, i)));
     }
+    long rf = 0;
+    if (VALUE_SLICE_LEN(a) >= 3) {                     /* the flags are NUM2INT: #to_int only */
+        VALUE fv = VALUE_SLICE_GET(a, 2);
+        if (!FIXNUM_P(fv)) {
+            const char *const cls = korb_type_name(fv);
+            const uint32_t toi = korb_intern(c->vm, "to_int", 6);
+            if (!korb_responds_to_coerce_p(c, slots, &fv, toi))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", cls);
+            slots[0] = fv;
+            const RESULT cr = korb_send_impl(c, slots + 1, toi, 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!FIXNUM_P(cr.value))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", cls);
+            fv = cr.value;
+        }
+        rf = FIX2LONG(fv);
+    }
     const KorbString *const pat = VAL2STR(VALUE_SLICE_GET(a, 0));
     const KorbString *const str = VAL2STR(VALUE_SLICE_GET(a, 1));
-    const long rf = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
     char pbuf[4096], sbuf[4096];
     if (UNLIKELY(pat->len >= sizeof pbuf || str->len >= sizeof sbuf)) return RESULT_OK(KORB_FALSE);
     memcpy(pbuf, korb_strbuf_data(pat->buf), pat->len);
@@ -873,6 +889,8 @@ static RESULT korb_m_file_umask(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)",
                           VALUE_SLICE_LEN(a));
+    if (VALUE_SLICE_LEN(a) >= 1 && !FIXNUM_P(VALUE_SLICE_GET(a, 0)) && KORB_BIGNUM_P(VALUE_SLICE_GET(a, 0)))
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
     if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {
         const korb_sword_t m = FIX2LONG(VALUE_SLICE_GET(a, 0));
         if (UNLIKELY(m < 0 || m > 07777))                      /* CRuby: mode_t range, not a silent truncation */
@@ -1086,6 +1104,8 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: it may have moved */
     const int fd = open(path, O_RDONLY);
     if (fd < 0) return korb_raise_errno(c, slots + 1, errno, "rb_sysopen", path);
+    { struct stat rst;                                 /* open(2) opens a directory; read(2) is what fails */
+      if (fstat(fd, &rst) == 0 && S_ISDIR(rst.st_mode)) { close(fd); return korb_raise_errno(c, slots + 1, EISDIR, "read", path); } }
     if (has_off) (void)lseek(fd, (off_t)off, SEEK_SET);
     RESULT r;
     if (has_len) {                                                    /* bounded read */
