@@ -126,19 +126,15 @@ static RESULT korb_m_str_force_encoding(CTX *c, VALUE *slots, VALUE_REF self, VA
 static uint32_t korb_utf8_seq_len(const unsigned char *p, uint32_t i, uint32_t n) {
     const unsigned char b = p[i];
     if (b < 0x80) return 1;
-    uint32_t need; uint32_t cp; unsigned char lo = 0x80, hi = 0xBF;
-    if ((b & 0xE0) == 0xC0)      { need = 1; cp = b & 0x1F; if (b < 0xC2) return 0; }   /* reject overlong */
-    else if ((b & 0xF0) == 0xE0) { need = 2; cp = b & 0x0F; if (b == 0xE0) lo = 0xA0; if (b == 0xED) hi = 0x9F; }
-    else if ((b & 0xF8) == 0xF0) { need = 3; cp = b & 0x07; if (b == 0xF0) lo = 0x90; if (b == 0xF4) hi = 0x8F; if (b > 0xF4) return 0; }
+    uint32_t need; unsigned char lo = 0x80, hi = 0xBF;
+    if ((b & 0xE0) == 0xC0)      { need = 1; if (b < 0xC2) return 0; }   /* reject overlong */
+    else if ((b & 0xF0) == 0xE0) { need = 2; if (b == 0xE0) lo = 0xA0; if (b == 0xED) hi = 0x9F; }
+    else if ((b & 0xF8) == 0xF0) { need = 3; if (b == 0xF0) lo = 0x90; if (b == 0xF4) hi = 0x8F; if (b > 0xF4) return 0; }
     else return 0;
     if (i + 1 + need > n) return 0;
-    for (uint32_t k = 1; k <= need; k++) {
-        const unsigned char cb = p[i + k];
-        const unsigned char lok = (k == 1) ? lo : 0x80, hik = (k == 1) ? hi : 0xBF;
-        if (cb < lok || cb > hik) return 0;
-        cp = (cp << 6) | (cb & 0x3F);
-    }
-    (void)cp;
+    if (p[i + 1] < lo || p[i + 1] > hi) return 0;          /* 2nd byte carries the range narrowing */
+    if (need >= 2 && (p[i + 2] & 0xC0) != 0x80) return 0;
+    if (need == 3 && (p[i + 3] & 0xC0) != 0x80) return 0;
     return need + 1;
 }
 static bool korb_str_utf8_valid(const KorbString *s) {
@@ -519,10 +515,11 @@ static inline uint32_t korb_str_char_bytes(const struct korb_vm *vm, uint32_t en
         const uint32_t o = korb_enc_char_bytes_other(vm, enc, p, i, n);
         if (o) return o;                                 /* 0 = no rule → UTF-8 stepping below */
     }
-    const unsigned char b = p[i];
-    uint32_t clen = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
-    if (i + clen > n) clen = 1;
-    return clen;
+    if (LIKELY(p[i] < 0x80)) return 1;                   /* ASCII: no validation needed */
+    /* a broken sequence is one character PER BYTE in CRuby (rb_enc_mbclen), so
+     * the lead byte only spans its width when the continuation bytes are there */
+    const uint32_t clen = korb_utf8_seq_len(p, i, n);
+    return clen ? clen : 1;
 }
 /* Character width of a byte-order-tagged Unicode encoding (UTF-16BE/LE → 2,
  * UTF-32BE/LE → 4), 0 otherwise; *be gets the byte order.  A bare "UTF-16" /
@@ -855,11 +852,10 @@ static RESULT korb_str_transform_bang(CTX *c, VALUE *slots, VALUE_REF self, int 
     if (op == 4) {                                     /* reverse! (UTF-8 char-aware) */
         char *tmp = malloc(len ? len : 1);
         if (!tmp) abort();
+        const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
         uint32_t wi = len, i = 0;
-        while (i < len) {
-            const unsigned char b = (unsigned char)korb_strbuf_data(s->buf)[i];
-            uint32_t clen = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
-            if (i + clen > len) clen = 1;
+        while (i < len) {                              /* same char stepping as #reverse */
+            const uint32_t clen = korb_str_char_bytes(c->vm, enc, (const unsigned char *)korb_strbuf_data(s->buf), i, len);
             wi -= clen; memcpy(tmp + wi, korb_strbuf_data(s->buf) + i, clen); i += clen;
         }
         memcpy(korb_strbuf_data(s->buf), tmp, len); free(tmp);
@@ -2590,6 +2586,21 @@ static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
                  !korb_str_comparable(c->vm, VALUE_REF_GET(self), o)))
         return RESULT_OK(LONG2FIX(KORB_STR_ENC(VALUE_REF_GET(self)) > KORB_STR_ENC(o) ? 1 : -1));
     return RESULT_OK(LONG2FIX(r));
+}
+
+/* String#eql? — same bytes AND comparable encodings.  Kept out of korb_value_eq
+ * (the Hash key path) on purpose: that one has no vm, so it cannot ask whether
+ * an encoding is ASCII-compatible, and making it able to would cost the index
+ * scan.  Here CTX gives us the vm for free. */
+static RESULT korb_m_str_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(o)) return RESULT_OK(KORB_FALSE);
+    const VALUE s = VALUE_REF_GET(self);
+    const KorbString *const x = VAL2STR(s), *const y = VAL2STR(o);
+    if (x->len != y->len || memcmp(korb_strbuf_data(x->buf), korb_strbuf_data(y->buf), x->len) != 0)
+        return RESULT_OK(KORB_FALSE);
+    return RESULT_OK(korb_str_comparable(c->vm, s, o) ? KORB_TRUE : KORB_FALSE);
 }
 
 /* String#[] — int index, (int,len), Range, or substring match.  Indices are

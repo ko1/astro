@@ -1089,6 +1089,9 @@ static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     slots[0] = VALUE_SLICE_GET(a, 0);                 /* search (coerce via #to_str) */
     if (!korb_str_search_coerce(c, slots))
         return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+    { uint32_t ce;                                    /* incompatible encodings: CompatibilityError, not a miss */
+      if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), slots[0], &ce)))
+          return korb_raise_enc_compat(c, slots + 1, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(slots[0])); }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(slots[0]);   /* read after dispatch */
     const uint32_t off = (uint32_t)start;
     int32_t b = korb_byte_find(korb_strbuf_data(s->buf) + off, s->len - off, korb_strbuf_data(n->buf), n->len);
@@ -1116,6 +1119,9 @@ static RESULT korb_m_str_byterindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     slots[0] = VALUE_SLICE_GET(a, 0);                 /* search (coerce via #to_str) */
     if (!korb_str_search_coerce(c, slots))
         return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+    { uint32_t ce;                                    /* incompatible encodings: CompatibilityError, not a miss */
+      if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), slots[0], &ce)))
+          return korb_raise_enc_compat(c, slots + 1, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(slots[0])); }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(slots[0]);   /* read after dispatch */
     if (n->len > s->len) return RESULT_OK(KORB_NIL);
     int32_t hi = (int32_t)(s->len - n->len);
