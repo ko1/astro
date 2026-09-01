@@ -85,8 +85,9 @@ class Queue
     @__mutex.synchronize do
       raise ArgumentError, "can't set a timeout if non_block is enabled" if timeout && non_block
       while @__items.empty?
-        return nil if @__closed
+        # non_block は close より先: CRuby は閉じた空 queue でも ThreadError
         raise ThreadError, "queue empty" if non_block
+        return nil if @__closed
         if timeout
           @__cond.wait(@__mutex, timeout)
           return @__items.shift unless @__items.empty?
@@ -170,8 +171,9 @@ class SizedQueue < Queue
     @__mutex.synchronize do
       raise ArgumentError, "can't set a timeout if non_block is enabled" if timeout && non_block
       while @__items.empty?
-        return nil if @__closed
+        # non_block は close より先: CRuby は閉じた空 queue でも ThreadError
         raise ThreadError, "queue empty" if non_block
+        return nil if @__closed
         if timeout
           @__cond.wait(@__mutex, timeout)
           break unless @__items.empty?

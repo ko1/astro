@@ -738,15 +738,45 @@ korb_thread_hget(CTX *c, VALUE *slots, VALUE *hp, VALUE key)
     return RESULT_OK(i >= 0 ? korb_items_data(VAL2HASH(*hp)->items)[2 * i + 1] : KORB_NIL);
 }
 
+/* Drop `k` in place (keys are Symbols here, so no #eql? dispatch / no GC). */
+static void
+korb_thread_hdel(CTX *c, VALUE *hp, VALUE k)
+{
+    if (*hp == KORB_NIL) return;
+    KorbHash *const h = VAL2HASH(*hp);
+    const int32_t idx = korb_hash_find(h, k);
+    if (idx < 0) return;
+    KorbArrayItems *const it = h->items;
+    for (uint32_t i = (uint32_t)idx; i + 1 < h->len; i++) {          /* shift to keep order */
+        ARO_STORE(c, it, &korb_items_data(it)[2 * i],     korb_items_data(it)[2 * (i + 1)]);
+        ARO_STORE(c, it, &korb_items_data(it)[2 * i + 1], korb_items_data(it)[2 * (i + 1) + 1]);
+    }
+    h->len--;
+    ARO_STORE(c, it, &korb_items_data(it)[2 * h->len], KORB_NIL);
+    ARO_STORE(c, it, &korb_items_data(it)[2 * h->len + 1], KORB_NIL);
+    KORB_HASH_DROP_INDEX(h);
+}
+
+/* CRuby stores nil by REMOVING the key, so #key? / #thread_variable? go false. */
 static RESULT
 korb_thread_hset(CTX *c, VALUE *slots, VALUE *hp, VALUE key, VALUE val)
 {
     slots[0] = val;
     VALUE k; CHECK(korb_thread_tls_key(c, slots + 1, key, &k));
     slots[1] = k;
+    if (slots[0] == KORB_NIL) { korb_thread_hdel(c, hp, slots[1]); return RESULT_OK(KORB_NIL); }
     if (*hp == KORB_NIL) *hp = UNWRAP(korb_hash_new(c, slots + 2, 4));
     CHECK(korb_hash_set(c, slots + 2, VALUE_REF_AT(hp), VALUE_REF_AT(&slots[1]), slots[0]));
     return RESULT_OK(slots[0]);
+}
+
+/* Thread#[]= / #thread_variable_set on a frozen Thread (CRuby message). */
+static RESULT
+korb_thread_check_frozen(CTX *c, VALUE *slots, VALUE th)
+{
+    if (UNLIKELY(((const AroObjectHeader *)(uintptr_t)th)->flags & KORB_FL_FROZEN))
+        return korb_raise(c, slots, KORB_E_FROZEN, 0, "can't modify frozen thread locals");
+    return RESULT_OK(KORB_NIL);
 }
 
 static RESULT
@@ -763,7 +793,8 @@ korb_m_thread_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 
 static RESULT
 korb_m_thread_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
-{ return korb_thread_hset(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tls, VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1)); }
+{ CHECK(korb_thread_check_frozen(c, slots, VALUE_REF_GET(self)));
+  return korb_thread_hset(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tls, VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1)); }
 
 static RESULT
 korb_m_thread_key_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
@@ -776,7 +807,8 @@ korb_m_thread_tvar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 
 static RESULT
 korb_m_thread_tvar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
-{ return korb_thread_hset(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tvars, VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1)); }
+{ CHECK(korb_thread_check_frozen(c, slots, VALUE_REF_GET(self)));
+  return korb_thread_hset(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tvars, VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1)); }
 
 static RESULT
 korb_m_thread_tvar_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
@@ -1215,6 +1247,13 @@ korb_waitq_wake_one(struct korb_vm *vm, struct korb_thread **head, struct korb_t
     }
 }
 
+/* 所有スレッドが死んだ mutex は「未 lock」扱い。CRuby は thread 終了時に
+ * その thread が握っていた Mutex を全部解放する。rep は libc 側で回収されない
+ * ので、死んだ owner ポインタを読むのは安全。 */
+static struct korb_thread *korb_mutex_owner(const KorbMutex *m) {
+    return (m->owner != NULL && m->owner->state == KORB_TH_DEAD) ? NULL : m->owner;
+}
+
 /* Mutex#lock の芯 (Mutex#sleep の再 lock からも使う)。self は rooted ref。
  * interruptible=false は CRuby の mutex_lock_uninterruptible 相当: Thread#kill /
  * #raise が来ていても先に lock を取り、割り込みは次の check 点まで持ち越す
@@ -1227,7 +1266,7 @@ korb_mutex_lock_core(CTX *c, VALUE *slots, VALUE_REF self, bool interruptible)
     for (;;) {
         KorbMutex *m = VAL2MUTEX(VALUE_REF_GET(self));      /* park 跨ぎ毎に再導出 */
         struct korb_thread *const cur = vm->cur_thread;
-        if (m->owner == NULL) { m->owner = cur; return RESULT_OK(VALUE_REF_GET(self)); }
+        if (korb_mutex_owner(m) == NULL) { m->owner = cur; return RESULT_OK(VALUE_REF_GET(self)); }
         if (UNLIKELY(m->owner == cur))
             return korb_raise_thread_error(c, slots, "deadlock; recursive locking");
         if (UNLIKELY(vm->running_fiber != NULL))
@@ -1252,7 +1291,7 @@ korb_mutex_unlock_core(CTX *c, VALUE *slots, VALUE_REF self)
     struct korb_vm *const vm = c->vm;
     korb_thread_boot(c);
     KorbMutex *const m = VAL2MUTEX(VALUE_REF_GET(self));
-    if (UNLIKELY(m->owner == NULL))
+    if (UNLIKELY(korb_mutex_owner(m) == NULL))
         return korb_raise_thread_error(c, slots, "Attempt to unlock a mutex which is not locked");
     if (UNLIKELY(m->owner != vm->cur_thread))
         return korb_raise_thread_error(c, slots, "Attempt to unlock a mutex which is locked by another thread");
@@ -1275,7 +1314,7 @@ korb_m_mutex_try_lock(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     (void)slots; (void)a;
     korb_thread_boot(c);
     KorbMutex *const m = VAL2MUTEX(VALUE_REF_GET(self));
-    if (m->owner != NULL) return RESULT_OK(KORB_FALSE);
+    if (korb_mutex_owner(m) != NULL) return RESULT_OK(KORB_FALSE);
     m->owner = c->vm->cur_thread;
     return RESULT_OK(KORB_TRUE);
 }
@@ -1284,7 +1323,7 @@ static RESULT
 korb_m_mutex_locked_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     (void)c; (void)slots; (void)a;
-    return RESULT_OK(VAL2MUTEX(VALUE_REF_GET(self))->owner != NULL ? KORB_TRUE : KORB_FALSE);
+    return RESULT_OK(korb_mutex_owner(VAL2MUTEX(VALUE_REF_GET(self))) != NULL ? KORB_TRUE : KORB_FALSE);
 }
 
 static RESULT
@@ -1292,7 +1331,7 @@ korb_m_mutex_owned_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     (void)slots; (void)a;
     korb_thread_boot(c);
-    return RESULT_OK(VAL2MUTEX(VALUE_REF_GET(self))->owner == c->vm->cur_thread ? KORB_TRUE : KORB_FALSE);
+    return RESULT_OK(korb_mutex_owner(VAL2MUTEX(VALUE_REF_GET(self))) == c->vm->cur_thread ? KORB_TRUE : KORB_FALSE);
 }
 
 /* Mutex#synchronize { … } — lock; yield; ensure unlock (block の例外でも解放) */
