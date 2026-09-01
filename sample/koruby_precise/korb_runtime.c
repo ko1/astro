@@ -4637,6 +4637,11 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
      * MRO reaches the universal Object methods (==, freeze, method, ...). */
     if (superclass == KORB_NIL && !is_module)
         superclass = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    /* The lexical self is not always a module: at the top level of a `load(f, wrap)`
+     * — and inside `obj.instance_eval("class C")` — it is a plain object, and the
+     * namespace the body belongs to is the cref the eval installed.  A class self
+     * still wins (Foo.class_eval("class C") nests in Foo, as it already did). */
+    if (!KORB_CLASS_P(enclosing) && KORB_CLASS_P(c->eval_cref)) enclosing = c->eval_cref;
     VALUE_REF encl_ref = SLOTS_PUSH(slots, enclosing);   /* root the lexical namespace below; slots advances past it */
     /* find-or-create owner-aware: reopen the class/module of the SAME namespace
      * (M::C reopens M::C, not a top-level C). */
@@ -6963,30 +6968,68 @@ korb_etype_name(unsigned int etype)
  * The registration keeps the path as written ("foo", "foo.rb", "lib/foo"), while
  * $LOADED_FEATURES holds absolute paths, so the ".rb"-completed form is matched
  * against a whole trailing path component (mirrors prelude Module#autoload?). */
+/* Does a loaded-feature entry `f` name the same feature as the registration
+ * `path`?  Verbatim, or `path`(+".rb") as a whole trailing path component. */
+static bool
+korb_autoload_path_match(const char *f, size_t fl, const char *path, size_t plen, bool has_rb, size_t slen)
+{
+    if (fl == plen && memcmp(f, path, plen) == 0) return true;      /* verbatim */
+    if (fl < slen) return false;
+    const char *const tail = f + fl - slen;
+    if (fl > slen && tail[-1] != '/') return false;                 /* only a whole component matches */
+    if (memcmp(tail, path, plen) != 0) return false;
+    return has_rb || memcmp(tail + plen, ".rb", 3) == 0;
+}
+
+/* Is that feature being loaded RIGHT NOW?  0 = no, 1 = by another thread,
+ * 2 = by this one. */
+static int
+korb_autoload_loading_state(const CTX *c, const char *path, size_t plen, bool has_rb, size_t slen)
+{
+    const struct korb_vm *const vm = c->vm;
+    for (uint32_t i = 0; i < vm->loading_cnt; i++) {
+        const char *const f = vm->loading[i].path;
+        if (korb_autoload_path_match(f, strlen(f), path, plen, has_rb, slen))
+            return vm->loading[i].owner == vm->cur_thread ? 2 : 1;
+    }
+    return 0;
+}
+
 static bool
 korb_autoload_feature_loaded_p(CTX *c, VALUE pathv)
 {
-    const VALUE lf = korb_const_get(c->vm, korb_intern(c->vm, "$LOADED_FEATURES", 16));
-    if (!KORB_ARRAY_P(lf)) return false;
     const KorbString *const p = VAL2STR(pathv);
     const char *const path = korb_strbuf_data(p->buf);
     const size_t plen = p->len;
     const bool has_rb = plen >= 3 && memcmp(path + plen - 3, ".rb", 3) == 0;
     const size_t slen = has_rb ? plen : plen + 3;          /* length of the ".rb" form */
+    /* Mid-load: $LOADED_FEATURES already names the file, but its body has not run
+     * yet.  CRuby hides the pending registration only from the thread doing the
+     * load — every other thread still sees the autoload. */
+    const int st = korb_autoload_loading_state(c, path, plen, has_rb, slen);
+    if (st != 0) return st == 2;
+    const VALUE lf = korb_const_get(c->vm, korb_intern(c->vm, "$LOADED_FEATURES", 16));
+    if (!KORB_ARRAY_P(lf)) return false;
     const KorbArray *const a = VAL2ARY(lf);
     for (uint32_t i = 0; i < a->len; i++) {
         const VALUE e = korb_items_data(a->items)[i];
         if (!KORB_STRING_P(e)) continue;
         const KorbString *const s = VAL2STR(e);
-        const char *const f = korb_strbuf_data(s->buf);
-        if (s->len == plen && memcmp(f, path, plen) == 0) return true;   /* verbatim */
-        if (s->len < slen) continue;
-        const char *const tail = f + s->len - slen;
-        if (s->len > slen && tail[-1] != '/') continue;    /* only a whole component matches */
-        if (memcmp(tail, path, plen) != 0) continue;
-        if (has_rb || memcmp(tail + plen, ".rb", 3) == 0) return true;
+        if (korb_autoload_path_match(korb_strbuf_data(s->buf), s->len, path, plen, has_rb, slen)) return true;
     }
     return false;
+}
+
+/* __autoload_feature_loaded?(path) — the same question from Ruby, so the
+ * prelude's Module#autoload? hides a pending registration in exactly the cases
+ * the C constant lookup does (mid-load thread rule included). */
+static RESULT
+korb_bi_autoload_feature_loaded(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)slots;
+    const VALUE pv = VALUE_SLICE_GET(args, 0);
+    if (!KORB_STRING_P(pv)) return RESULT_OK(KORB_FALSE);
+    return RESULT_OK(korb_autoload_feature_loaded_p(c, pv) ? KORB_TRUE : KORB_FALSE);
 }
 
 /* private_constant / public_constant: mark (owner, name) as unreachable through
@@ -11775,6 +11818,10 @@ korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const
     if (KORB_CLASS_P(c->eval_cref)) VAL2CLASS(c->eval_cref)->cur_visibility = saved_vis;   /* re-read: it may have moved */
     c->def_definee = saved_definee;
     c->eval_cref = saved_cref;
+    /* `return` at the top level of a file means "stop loading this file", not
+     * "return from whoever called require/load" — absorb it here (main.c does
+     * the same for the main script).  break/throw still propagate. */
+    if (UNLIKELY(r.state == KORB_RETURN)) r = RESULT_OK(KORB_NIL);
     return r;
 }
 /* source_location: register a def/block body NODE → (file, line) at parse time. */
@@ -12093,6 +12140,14 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
             if (UNLIKELY(ci.state != KORB_NORMAL)) return ci;
         }
     }
+    if (dedup) {
+        /* this very thread is already inside that file: CRuby warns (only under
+         * $VERBOSE true — korb_warn's gate is the laxer "not nil") and returns false */
+        const struct korb_thread *const self_owner = korb_loading_owner(vm, abspath);
+        if (self_owner != NULL && self_owner == vm->cur_thread &&
+            korb_const_get(vm, korb_intern(vm, "$VERBOSE", 8)) == KORB_TRUE)
+            korb_warn(c, slots, "loading in progress, circular require considered harmful - %s", abspath);
+    }
     if (dedup && korb_feature_loaded_p(c, abspath)) { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
     size_t got = 0;
     char *buf = korb_file_slurp(abspath, &got);
@@ -12237,6 +12292,40 @@ korb_load_path_arg(CTX *c, VALUE *slots, VALUE *v)
     return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
 }
 
+/* CRuby's rb_feature_p for a $LOAD_PATH-searched feature: is `<dir>/<name>[.rb]`
+ * already in $LOADED_FEATURES for SOME $LOAD_PATH entry?  Asking before the file
+ * search is what makes a later entry that already provided the feature win over
+ * an earlier one that merely has the file on disk.  Non-String entries are
+ * skipped (their #to_path would run Ruby here); they only cost a missed dedup. */
+static bool
+korb_feature_in_load_path_p(CTX *c, const char *name)
+{
+    const VALUE lp = korb_const_get(c->vm, korb_intern(c->vm, "$LOAD_PATH", 10));
+    if (!KORB_ARRAY_P(lp)) return false;
+    const size_t nlen = strlen(name);
+    const bool has_rb = nlen >= 3 && strcmp(name + nlen - 3, ".rb") == 0;
+    char cwd[4096];
+    if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
+    const KorbArray *const a = VAL2ARY(lp);
+    for (uint32_t i = 0; i < a->len; i++) {
+        const VALUE e = korb_items_data(a->items)[i];
+        if (!KORB_STRING_P(e)) continue;
+        char dir[4096]; uint32_t dl = VAL2STR(e)->len; if (dl >= sizeof dir) dl = sizeof dir - 1;
+        memcpy(dir, korb_strbuf_data(VAL2STR(e)->buf), dl); dir[dl] = '\0';
+        char cand[4096], norm[4096];
+        const int cl = (dir[0] == '/') ? snprintf(cand, sizeof cand, "%s/%s%s", dir, name, has_rb ? "" : ".rb")
+                                       : snprintf(cand, sizeof cand, "%s/%s/%s%s", cwd, dir, name, has_rb ? "" : ".rb");
+        if (cl < 0 || (size_t)cl >= sizeof cand) continue;
+        korb_path_lexnorm(cand, norm, sizeof norm);
+        /* mid-load in ANOTHER thread: its $LOADED_FEATURES entry is already there
+         * but the body has not run, so let the caller reach the waiting path */
+        const struct korb_thread *const owner = korb_loading_owner(c->vm, norm);
+        if (owner != NULL && owner != c->vm->cur_thread) continue;
+        if (korb_feature_loaded_p(c, norm)) return true;   /* re-reads $LOADED_FEATURES; `a` is only read above */
+    }
+    return false;
+}
+
 /* require(name): search CWD / $LOAD_PATH; load once (false if already loaded). */
 static RESULT
 korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
@@ -12259,6 +12348,22 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
                 snprintf(namebuf, sizeof namebuf, "%s", expanded);
         }
     }
+    /* "Already loaded?" is decided on the feature NAME first, as CRuby does:
+     * verbatim (a program may put a relative or non-canonical name straight into
+     * $LOADED_FEATURES), then as <$LOAD_PATH dir>/<name>[.rb].  Doing this before
+     * the file search keeps a feature from being loaded a second time out of a
+     * different directory that happens to hold a same-named file. */
+    /* An ABSOLUTE name keeps going through korb_load_abspath: $LOADED_FEATURES is
+     * written before the body runs, so answering it here would make a concurrent
+     * require return false instead of waiting for the loading thread. */
+    /* …and only for a name that already carries ".rb": an extensionless entry
+     * does NOT answer a require that resolves to a .rb file (CRuby), which is
+     * why the extensionless case stays behind the file search below. */
+    const size_t namelen = strlen(namebuf);
+    if (namebuf[0] != '/' && namelen >= 3 && strcmp(namebuf + namelen - 3, ".rb") == 0 &&
+        korb_feature_loaded_p(c, namebuf)) return RESULT_OK(KORB_FALSE);
+    if (namebuf[0] != '/' && namebuf[0] != '.' && korb_feature_in_load_path_p(c, namebuf))
+        return RESULT_OK(KORB_FALSE);
     /* Only an explicitly relative ("./x", "../x") or absolute name is resolved
      * against the working directory; a bare feature name comes from $LOAD_PATH
      * alone (CRuby dropped "." from the load path in 1.9.2, and searching it
@@ -14044,6 +14149,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__warn_raw", korb_bi_warn, -1);
     korb_builtin_define(c, "global_variables", korb_bi_global_variables, 0);
     korb_builtin_define(c, "__set_gvar", korb_bi_set_gvar, 2);
+    korb_builtin_define(c, "__autoload_feature_loaded?", korb_bi_autoload_feature_loaded, 1);
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "__method__", korb_bi_method_name, 0);

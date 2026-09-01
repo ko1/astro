@@ -179,11 +179,10 @@ class Module
     nil
   end
 
-  # その feature が既に読み込まれているか ($LOADED_FEATURES は絶対パスなので
-  # 拡張子の有無を吸収して末尾一致で見る)。
+  # その feature が既に読み込まれているか。判定は C 側と共通 (末尾一致に加えて
+  # 「今まさに読み込み中」を扱う: 読んでいるスレッドからだけ隠す)。
   private def __autoload_loaded?(path)
-    stem = path.end_with?(".rb") ? path : path + ".rb"
-    $LOADED_FEATURES.any? { |f| f == path || f.end_with?("/" + stem) || f == stem }
+    __autoload_feature_loaded?(path)
   end
   private def const_added(name); end
 
