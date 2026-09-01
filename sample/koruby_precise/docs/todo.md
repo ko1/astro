@@ -3137,3 +3137,25 @@ post のスロット位置が `rest_slot + 1` から計算されるので、無�
 末尾の synth local に置く今の方式では合わない。`kp_param_first_locals`
 の並べ替えは**名前のある**パラメータしか置けないので、これには効かない。
 `language/method_spec` で 1 例。
+
+## (2026-09-01) 壊れた encoding の String に regex をかけたときの ArgumentError
+
+```ruby
+b = ("a" + [0x92].pack("C") + "b").force_encoding("utf-8")
+b.gsub(/x/, "")   # koruby: "ab" が返る   CRuby: ArgumentError "invalid byte sequence in UTF-8"
+b =~ /x/          # 同上
+```
+
+`korb_re_run` に `korb_str_utf8_valid` を挟めば直るが、**実測して却下した**。
+検査は O(n) で、`s =~ /re/` を繰り返すと毎回フルスキャンになる。1 MB の
+subject に対して 400k 回マッチするマイクロベンチが 600s でも終わらなく
+なった (400 GB 分のスキャン)。`startb == 0` のときだけに絞っても
+`str =~ /re/` は毎回 startb 0 なので効かない。
+
+CRuby は String に **coderange をキャッシュ**して 1 度しか走査しない。
+やるなら `KorbString` に coderange のビット/フィールドを足して、
+破壊的変更で無効化する仕組みとセットで入れること (context.h)。
+それ無しでこの検査を入れてはいけない。
+
+同じ理由で `String#reverse` などの「壊れたバイト列を 1 バイトとして扱う」
+系 (`korb_str_char_bytes`) も、coderange 無しでは検査を足せない。

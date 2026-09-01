@@ -818,13 +818,34 @@ static RESULT korb_re_coerce_pat(CTX *c, VALUE *slots, VALUE pv, VALUE *out) {
     }
     return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_re_arg_type(pv));
 }
+/* `str.match(pat, pos)` — a NEGATIVE pos counts characters back from the end;
+ * once out of range on either side there is no match at all.  Returns false when
+ * the position cannot be used, else the (non-negative) character offset. */
+static bool
+korb_re_start_char(CTX *c, VALUE subj, VALUE posv, long *out)
+{
+    korb_sword_t p = 0;
+    if (!korb_to_index(posv, &p)) { *out = 0; return true; }   /* unusable → treat as 0, as before */
+    if (p < 0) {
+        const KorbString *const s = VAL2STR(subj);
+        const uint32_t nch = (KORB_STR_ENC(subj) == KORB_ENC_UTF8)
+                           ? korb_utf8_count(korb_strbuf_data(s->buf), s->len) : s->len;
+        p += (korb_sword_t)nch;
+        if (p < 0) return false;
+    }
+    *out = (long)p;
+    (void)c;
+    return true;
+}
 static RESULT korb_m_str_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE subj;
     if (UNWRAP(korb_re_subject(c, slots, VALUE_REF_GET(self), &subj)) != KORB_TRUE) return RESULT_OK(KORB_NIL);
     slots[0] = subj; VALUE re; RESULT cr = korb_re_coerce_pat(c, slots + 1, VALUE_SLICE_GET(a, 0), &re);
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     slots[1] = re;
-    long startc = 0; if (VALUE_SLICE_LEN(a) >= 2) { korb_sword_t p = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &p) && p > 0) startc = (long)p; }
+    long startc = 0;
+    if (VALUE_SLICE_LEN(a) >= 2 && !korb_re_start_char(c, slots[0], VALUE_SLICE_GET(a, 1), &startc))
+        { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }   /* out of range → no match */
     const KorbString *s = VAL2STR(slots[0]); size_t startb = (startc <= 0) ? 0 : korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)startc);
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], startb, &m);
@@ -841,7 +862,9 @@ static RESULT korb_m_str_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     slots[0] = subj; VALUE re; RESULT cr = korb_re_coerce_pat(c, slots + 1, VALUE_SLICE_GET(a, 0), &re);
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     slots[1] = re;
-    long startc = 0; if (VALUE_SLICE_LEN(a) >= 2) { korb_sword_t p = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &p) && p > 0) startc = (long)p; }
+    long startc = 0;
+    if (VALUE_SLICE_LEN(a) >= 2 && !korb_re_start_char(c, slots[0], VALUE_SLICE_GET(a, 1), &startc))
+        return RESULT_OK(KORB_FALSE);                    /* out of range → no match */
     const KorbString *s = VAL2STR(slots[0]); size_t startb = (startc <= 0) ? 0 : korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)startc);
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], startb, &m);
