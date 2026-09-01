@@ -2730,6 +2730,7 @@ static RESULT korb_m_struct_initialize(CTX *c, VALUE *slots, VALUE_REF self, VAL
  * on the base Struct class, once, so `Struct.new(:a) { include M }` lets M
  * override them (CRuby defines them on Struct too).  `pk` is a rooted slot:
  * korb_class_def_cfn interns the name → may GC → re-read the class each call. */
+static uint32_t korb_intern_enc(struct korb_vm *vm, const char *name, size_t len, uint32_t enc);   /* fwd */
 static void korb_def_struct_common(CTX *c, const VALUE *pk) {
     korb_class_def_cfn(c, *pk, "to_a", korb_m_struct_to_a, 0);
     /* no #to_ary: a Struct is not implicitly an Array in CRuby (it must not
@@ -2851,8 +2852,13 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
         char buf[256];
         const uint32_t ivar = korb_member_ivar_id(vm, nm);
-        korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, nm, strlen(nm)), ivar, 0);   /* reader */
-        snprintf(buf, sizeof buf, "%s=", nm); korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, buf, strlen(buf)), ivar, 1);  /* writer */
+        /* Reuse the member's OWN id and encoding: re-interning its bytes would
+         * default to UTF-8 and give a different Symbol for a member whose name
+         * came from, say, an ISO-8859-1 String. */
+        const uint32_t menc = vm->sym_encs[SYM2ID(sym)];
+        korb_class_def_attr(c, VALUE_REF_GET(cls), SYM2ID(sym), ivar, 0);   /* reader */
+        snprintf(buf, sizeof buf, "%s=", nm);
+        korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern_enc(vm, buf, strlen(buf), menc), ivar, 1);  /* writer */
     }
     VAL2CLASS(VALUE_REF_GET(cls))->struct_kwinit = kwinit;
     /* class-level `Rec.members`: install on the class's singleton (name already

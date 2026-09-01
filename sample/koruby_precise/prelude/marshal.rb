@@ -628,6 +628,17 @@ module Marshal
   # Only a real back-reference may leave st[:link] set.  A record reads names
   # (class, ivar, member) through _read0 too, and those are often symbol links —
   # that must not make the record itself look like a back-reference.
+  # A Symbol is interned by (bytes, encoding), so an 'I'-wrapped symbol has to be
+  # re-interned once its :E / :encoding marker is seen — force_encoding cannot
+  # retag a Symbol.  The symbol table entry it already took is rewritten too, so
+  # later ';' links resolve to the same Symbol.
+  def self.__resym(st, sym, enc)
+    re = (sym.to_s.dup.force_encoding(enc).to_sym rescue sym)
+    i = st[:syms].rindex(sym)
+    st[:syms][i] = re if i
+    re
+  end
+
   def self._read0(st)
     t = st[:s].getbyte(st[:i])
     v = _read_body(st)
@@ -738,10 +749,18 @@ module Marshal
         name = _read0(st); val = _read(st)              # ivar name is structural; value is data
         tgt = (Regexp === v) ? v.source : v             # a Regexp keeps its encoding on its source
         if name == :E                                   # encoding marker, not a user ivar
-          (tgt.force_encoding(val ? "UTF-8" : "US-ASCII") rescue nil) if tgt.respond_to?(:force_encoding)
+          if Symbol === v
+            v = self.__resym(st, v, val ? "UTF-8" : "US-ASCII")
+          elsif tgt.respond_to?(:force_encoding)
+            (tgt.force_encoding(val ? "UTF-8" : "US-ASCII") rescue nil)
+          end
           next
         end
         if name == :encoding
+          if Symbol === v
+            v = self.__resym(st, v, val)
+            next
+          end
           (tgt.force_encoding(val) rescue nil) if tgt.respond_to?(:force_encoding)
           next
         end
