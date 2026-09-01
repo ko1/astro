@@ -2002,22 +2002,27 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     }
     return RESULT_OK(result);
 }
+/* Drop `id` from `mod`'s pending-autoload table, loaded or not.  CRuby keeps the
+ * registration in the constant slot itself, so removing the constant drops it
+ * too — otherwise restoring $LOADED_FEATURES resurrects a stale autoload. */
+static RESULT korb_autoload_unregister(CTX *c, VALUE *slots, VALUE mod, uint32_t id) {
+    struct korb_vm *const vm = c->vm;
+    const VALUE t = korb_ivar_get(c, mod, ID2SYM(korb_intern(vm, "@__autoloads", 12)));
+    if (!KORB_HASH_P(t)) return RESULT_OK(KORB_NIL);
+    slots[0] = t; slots[1] = ID2SYM(id);
+    return korb_send(c, slots + 2, korb_intern(vm, "delete", 6), 0, 1);
+}
+
 /* Module#remove_const(sym|str) → the removed value (flat table tombstone). */
 static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t id;
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id);   /* Symbol / String / #to_str */
       if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     struct korb_vm *const vm = c->vm;
-    if (korb_autoload_registered_p(c, VALUE_REF_GET(self), id)) {   /* pending autoload → just unregister */
-        slots[0] = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(vm, "@__autoloads", 12)));
-        slots[1] = ID2SYM(id);
-        const RESULT dr = korb_send(c, slots + 2, korb_intern(vm, "delete", 6), 0, 1);
-        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-        vm->const_serial++;
-        return RESULT_OK(KORB_NIL);
-    }
     /* only a constant defined DIRECTLY in this module can be removed; the
-     * top-level ones (owner nil) belong to Object. */
+     * top-level ones (owner nil) belong to Object.  A real definition wins over
+     * a still-registered autoload: once the file has run, the slot holds the
+     * value and that is what CRuby hands back. */
     const VALUE selfv = VALUE_REF_GET(self);
     const VALUE objc = korb_builtin_class_obj(vm, KORB_C_OBJECT);
     for (uint32_t i = 0; i < vm->const_cnt; i++)
@@ -2029,8 +2034,12 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
             vm->const_vals[i] = KORB_NIL;
             vm->method_serial++;
             vm->const_serial++;               /* invalidate const caches */
+            CHECK(korb_autoload_unregister(c, slots + 1, VALUE_REF_GET(self), id));   /* slots[0] parks the result */
             return RESULT_OK(slots[0]);
         }
+    { const RESULT dr = korb_autoload_unregister(c, slots, VALUE_REF_GET(self), id);   /* no value yet: drop the registration */
+      if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+      if (dr.value != KORB_NIL) { vm->const_serial++; return RESULT_OK(KORB_NIL); } }
     return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s not defined", korb_sym_name(vm, id));
 }
 /* Module#const_defined?(sym|str) — flat table membership. */
