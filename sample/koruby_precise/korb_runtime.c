@@ -3916,6 +3916,14 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         dst->mid = mid; dst->owner = slots[0];           /* rename + re-own */
         /* the copy takes the DEFINING frame's visibility, not the source's */
         dst->visibility = (VAL2CLASS(slots[0])->cur_visibility == 3) ? 1 : VAL2CLASS(slots[0])->cur_visibility;
+        if (UNLIKELY(VAL2CLASS(slots[0])->cur_visibility == 3)) {   /* module_function mode: public copy on the singleton (as `def` does) */
+            const VALUE sing = korb_klass_override_get(c->vm, slots[0]);
+            if (KORB_CLASS_P(sing)) {
+                const struct korb_method mcopy = *dst;       /* the slot alloc below may move the table */
+                struct korb_method *const sm = korb_class_method_slot(VAL2CLASS(sing), mid);
+                *sm = mcopy; sm->mid = mid; sm->owner = sing; sm->visibility = 0;
+            }
+        }
         c->vm->method_serial++;
         CHECK(korb_fire_method_added(c, slots + 2, slots[0], mid));
         return RESULT_OK(ID2SYM(mid));
@@ -4953,6 +4961,19 @@ korb_class_qname_into(CTX *c, VALUE cls, char *out, size_t outsz)
     if (ms) { korb_fprint_class_qname(c, ms, cls); fclose(ms); }
     snprintf(out, outsz, "%s", b ? b : "");
     free(b);
+}
+
+/* korb_fprint_class_qname with the anonymous case filled in: CRuby renders an
+ * instance of an anonymous class as "#<#<Class:0x…>:0x…>", i.e. the class's own
+ * #to_s stands in for the missing name. */
+static void
+korb_fprint_class_desc(CTX *c, FILE *fp, VALUE cls)
+{
+    if (korb_fprint_class_qname(c, fp, cls)) return;
+    if (KORB_CLASS_P(cls))
+        fprintf(fp, "#<%s:0x%016lx>", VAL2CLASS(cls)->is_module ? "Module" : "Class",
+                (unsigned long)(uintptr_t)cls);
+    else fputs("Object", fp);
 }
 
 /* Like korb_class_qname_into, but an anonymous class/module renders in its
@@ -11853,7 +11874,7 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
             }
         }
         fputs("#<", fp);
-        if (!korb_fprint_class_qname(c, fp, o->klass)) fputs("Class", fp);   /* qualified (M::C); anonymous fallback */
+        korb_fprint_class_desc(c, fp, o->klass);             /* qualified (M::C), or the anonymous class's own #to_s */
         fprintf(fp, ":0x%016lx>", (unsigned long)(uintptr_t)v);   /* to_s: "#<Foo:0x…>" (no ivars) */
         return;
       }
