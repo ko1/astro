@@ -208,6 +208,38 @@ node_gvar_coerce(CTX *c, NODE *n, VALUE *slots, uint32_t kind, VALUE val@child)
     return RESULT_OK(slots[0]);
 }
 
+// A bare identifier (`foo`, no receiver, no parens, no args) that resolves to
+// nothing is a NameError in Ruby, not a NoMethodError — the difference is the
+// call SYNTAX, which only the parser knows.  Wraps the ordinary call node and
+// re-raises the miss; anything else passes through untouched.
+NODE_DEF @noinline
+node_vcall(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *call)
+{
+    (void)n;
+    const RESULT r = EVAL_ARG(c, call);
+    if (LIKELY(r.state != KORB_RAISE) || !KORB_EXC_P(r.value)) return r;
+    const KorbException *const e = VAL2EXC(r.value);
+    if (e->etype != KORB_E_NOMETHOD || e->exc_class != KORB_NIL || !KORB_STRING_P(e->msg)) return r;
+    /* Only OUR miss message, for THIS name — a NoMethodError raised inside a
+     * user #method_missing must keep its class. */
+    char head[160];
+    const int hl = snprintf(head, sizeof head, "undefined method '%s' ", korb_sym_name(c->vm, mid));
+    const KorbString *const ms = VAL2STR(e->msg);
+    if (hl <= 0 || (uint32_t)hl > ms->len || memcmp(korb_strbuf_data(ms->buf), head, (size_t)hl) != 0) return r;
+    slots[0] = r.value;                               /* park: the new raise allocates */
+    const KorbString *const ms2 = VAL2STR(VAL2EXC(slots[0])->msg);
+    RESULT nr = korb_raise(c, slots + 1, KORB_E_NAME, 0, "undefined local variable or method '%s' %.*s",
+                           korb_sym_name(c->vm, mid), (int)(ms2->len - (uint32_t)hl),
+                           korb_strbuf_data(ms2->buf) + hl);
+    if (LIKELY(KORB_EXC_P(nr.value))) {               /* carry #name / #receiver over */
+        const VALUE recv = korb_exc_ivar_get_pub(slots[0], ID2SYM(korb_intern(c->vm, "@__receiver", 11)));
+        slots[0] = nr.value;
+        korb_name_error_where(c, slots + 1, &slots[0], mid, recv);
+        nr.value = slots[0];
+    }
+    return nr;
+}
+
 // `defined?(...)` used as a statement: CRuby drops it and warns while compiling.
 // We warn on the first evaluation instead, so the message goes through the Ruby
 // $stderr the program (and mspec's `complain`) can redirect.
