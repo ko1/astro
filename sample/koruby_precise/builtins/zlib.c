@@ -122,6 +122,11 @@ struct korb_zstream {
     int  used;            /* 0 = free slot */
     int  deflating;
     int  ended;           /* Z_STREAM_END seen */
+    /* input left unconsumed when inflate stopped on Z_NEED_DICT: it points into
+     * a Ruby String that the moving GC may relocate, so keep a libc copy until
+     * #set_dictionary lets the stream continue. */
+    char  *pending;
+    size_t pending_len;
 };
 static struct korb_zstream *korb_zstreams = NULL;
 static uint32_t korb_zstream_cnt = 0, korb_zstream_capa = 0;
@@ -168,9 +173,20 @@ static RESULT korb_m_zstream_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const KorbString *const ks = (sv == KORB_NIL) ? NULL : VAL2STR(sv);
     /* zlib only reads the input while we call it, and korb_str_new below is the
      * only allocation - done after the whole transform. */
-    z->zs.next_in  = ks ? (Bytef *)korb_strbuf_data(ks->buf) : (Bytef *)"";
-    z->zs.avail_in = ks ? ks->len : 0;
-    size_t cap = (ks ? ks->len : 0) * 4 + 4096, len = 0;
+    const char *in = ks ? korb_strbuf_data(ks->buf) : "";
+    size_t inlen = ks ? ks->len : 0;
+    char *joined = NULL;                              /* leftover from a Z_NEED_DICT stop comes first */
+    if (z->pending_len) {
+        joined = malloc(z->pending_len + inlen + 1);
+        if (!joined) abort();
+        memcpy(joined, z->pending, z->pending_len);
+        if (inlen) memcpy(joined + z->pending_len, in, inlen);
+        in = joined; inlen += z->pending_len;
+        free(z->pending); z->pending = NULL; z->pending_len = 0;
+    }
+    z->zs.next_in  = (Bytef *)(uintptr_t)in;
+    z->zs.avail_in = (uInt)inlen;
+    size_t cap = inlen * 4 + 4096, len = 0;
     char *out = malloc(cap);
     if (!out) abort();
     int rc = Z_OK;
@@ -187,9 +203,17 @@ static RESULT korb_m_zstream_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     }
     if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
         free(out);
+        if (rc == Z_NEED_DICT && z->zs.avail_in) {    /* park the rest for the post-set_dictionary run */
+            z->pending_len = z->zs.avail_in;
+            z->pending = malloc(z->pending_len);
+            if (!z->pending) abort();
+            memcpy(z->pending, z->zs.next_in, z->pending_len);
+        }
+        free(joined);
         const int kind = (rc == Z_DATA_ERROR) ? 1 : (rc == Z_NEED_DICT ? 2 : 0);
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "zlib inflate error %d", kind);
     }
+    free(joined);
     const RESULT r = korb_str_new(c, slots, out, (uint32_t)len);
     free(out);
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
@@ -211,11 +235,28 @@ static RESULT korb_m_zstream_stat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(VALUE_REF_GET(arr));
 }
 
+/* __zstream_set_dict(handle, dict) -> dict (Zlib::{Deflate,Inflate}#set_dictionary) */
+static RESULT korb_m_zstream_set_dict(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    struct korb_zstream *const z = korb_zstream_at(FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    if (!z) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "closed zstream");
+    const VALUE dv = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!KORB_STRING_P(dv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(dv));
+    const KorbString *const ds = VAL2STR(dv);         /* no alloc between here and the zlib call */
+    const Bytef *const d = (const Bytef *)korb_strbuf_data(ds->buf);
+    const int rc = z->deflating ? deflateSetDictionary(&z->zs, d, ds->len)
+                                : inflateSetDictionary(&z->zs, d, ds->len);
+    if (rc != Z_OK) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "zlib set_dictionary failed");
+    return RESULT_OK(dv);
+}
+
 static RESULT korb_m_zstream_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; (void)slots; (void)c;
     struct korb_zstream *const z = korb_zstream_at(FIX2LONG(VALUE_SLICE_GET(a, 0)));
     if (!z) return RESULT_OK(KORB_NIL);
     if (z->deflating) deflateEnd(&z->zs); else inflateEnd(&z->zs);
+    free(z->pending); z->pending = NULL; z->pending_len = 0;
     z->used = 0;
     return RESULT_OK(KORB_NIL);
 }
@@ -232,6 +273,7 @@ static void korb_init_zlib(CTX *c) {
     korb_class_def_cfn(c, obj, "__zstream_run",    korb_m_zstream_run,     3);
     korb_class_def_cfn(c, obj, "__zstream_stat",   korb_m_zstream_stat,    1);
     korb_class_def_cfn(c, obj, "__zstream_close",  korb_m_zstream_close,   1);
+    korb_class_def_cfn(c, obj, "__zstream_set_dict", korb_m_zstream_set_dict, 2);
 }
 #else
 static void korb_init_zlib(CTX *c) { (void)c; }
