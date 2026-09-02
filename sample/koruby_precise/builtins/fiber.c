@@ -243,17 +243,19 @@ static RESULT
 korb_m_fiber_raise(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     KorbFiberRep *const rep = VAL2FIBER(VALUE_REF_GET(self))->rep;
+    if (UNLIKELY(korb_fiber_foreign(c, rep)))
+        return korb_raise_fiber_error(c, slots, "fiber called across threads");
     if (UNLIKELY(rep->fstate == 0))
         return korb_raise_fiber_error(c, slots, "cannot raise exception on unborn fiber");
     if (UNLIKELY(rep->fstate == 3))
         return korb_raise_fiber_error(c, slots, "attempt to resume a terminated fiber");
     const RESULT r = korb_exc_build_with_cause(c, slots, a);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;            /* argument error → caller */
-    if (rep == c->vm->running_fiber ||
-        (c->vm->running_fiber == NULL && rep == c->vm->root_fiber))
-        return RESULT_RAISE_(r.value);                         /* raise on the current fiber */
-    if (UNLIKELY(rep->fstate == 1))                            /* running deeper in the resume chain */
-        return korb_raise_fiber_error(c, slots, "attempt to resume a resumed fiber (double resume)");
+    /* fstate 1 is the current fiber or, since koruby keeps resume on the C stack,
+     * one of its resume-chain ancestors.  Raising into an ancestor is what
+     * Kernel#raise here already does: the exception unwinds out to it. */
+    if (rep->fstate == 1 || (c->vm->running_fiber == NULL && rep == c->vm->root_fiber))
+        return RESULT_RAISE_(r.value);
     return korb_fiber_switch_in(c, slots, rep, r.value, 1);
 }
 
