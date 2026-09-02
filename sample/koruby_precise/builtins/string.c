@@ -3013,6 +3013,27 @@ static RESULT korb_line_coerce_sep(CTX *c, VALUE *slots, VALUE_SLICE a) {
     }
     return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(s0));
 }
+/* CRuby converts the DEFAULT separator into the receiver's encoding before
+ * searching (rb_str_enumerate_lines).  With a non-ASCII-compatible encoding that
+ * turns "\n" into a sequence that does not occur in the subject — the dummy
+ * UTF-16/32 forms even carry a BOM — and it is where an encoding with no
+ * converter (UTF-7) reports Encoding::ConverterNotFoundError. */
+static RESULT korb_line_sep_conv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                 char *sepbuf, uint32_t *seplen) {
+    const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
+    if (LIKELY(korb_enc_ascii_compat(c->vm, enc))) return RESULT_OK(KORB_NIL);
+    if (VALUE_SLICE_LEN(a) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0))) return RESULT_OK(KORB_NIL);
+    const char *const en = korb_enc_name_of(c->vm, enc);
+    slots[0] = UNWRAP(korb_str_new(c, slots, sepbuf, *seplen));                  /* receiver */
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, en, (uint32_t)strlen(en)));     /* argument */
+    const RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "encode", 6), 0, 1);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (UNLIKELY(!KORB_STRING_P(r.value))) return RESULT_OK(KORB_NIL);
+    const KorbString *const cs = VAL2STR(r.value);
+    *seplen = cs->len < 64 ? cs->len : 63;
+    memcpy(sepbuf, korb_strbuf_data(cs->buf), *seplen);
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_lines, "each_line", a);
     if (SELF_STR->len > 0)
@@ -3024,6 +3045,7 @@ static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     char sepbuf[64]; uint32_t seplen;
     { const char *sp = korb_line_sep(c, a, &seplen); if (seplen > 63) seplen = 63; memcpy(sepbuf, sp, seplen); }
+    CHECK(korb_line_sep_conv(c, slots, self, a, sepbuf, &seplen));
     const bool chomp = korb_line_chomp(c, a);
     const bool universal = !(VALUE_SLICE_LEN(a) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0)));   /* default $/ → \r\n chomped as a unit */
     uint32_t pos = 0;
@@ -3048,6 +3070,7 @@ static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     char sepbuf[64]; uint32_t seplen;
     { const char *sp = korb_line_sep(c, a, &seplen); if (seplen > 63) seplen = 63; memcpy(sepbuf, sp, seplen); }
+    CHECK(korb_line_sep_conv(c, slots, self, a, sepbuf, &seplen));
     const bool chomp = korb_line_chomp(c, a);
     const bool universal = !(VALUE_SLICE_LEN(a) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0)));   /* default $/ → \r\n chomped as a unit */
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));

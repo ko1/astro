@@ -711,10 +711,38 @@ class String
   end
   private :__enc_arg
 
+  # UTF-16 / UTF-32 は BOM で endian を決める dummy encoding。具体的な
+  # (BE/LE) 版に読み替えて変換し、出力側には BOM を付ける。
+  BOM_DUMMY__ = { "UTF-16" => "UTF-16BE", "UTF-32" => "UTF-32BE" }.freeze
+  BOM_BYTES__ = { "UTF-16BE" => "\xFE\xFF".b, "UTF-16LE" => "\xFF\xFE".b,
+                  "UTF-32BE" => "\x00\x00\xFE\xFF".b, "UTF-32LE" => "\xFF\xFE\x00\x00".b }.freeze
+  private def __bom_dummy(name) = name && BOM_DUMMY__[name.upcase]
+  # BOM を剥がし、[具体エンコーディング名, 本体] を返す。BOM が無いのは
+  # CRuby では不正バイト列。
+  private def __bom_strip(bin, default)
+    ["#{default[0, 6]}BE", "#{default[0, 6]}LE"].each do |k|
+      b = BOM_BYTES__[k]
+      return [k, bin.byteslice(b.bytesize, bin.bytesize - b.bytesize)] if bin.start_with?(b)
+    end
+    raise Encoding::InvalidByteSequenceError.new("#{bin[0, 2].inspect} on #{encoding.name}")
+  end
+
   def encode(*args)
     opts = args.last.is_a?(Hash) ? args.pop : {}
     to_name   = __enc_arg(args[0])
     from_name = __enc_arg(args[1]) || encoding.name
+    bt = __bom_dummy(to_name)
+    bf = __bom_dummy(from_name)
+    if bt || bf
+      src = self
+      if bf
+        from_name, body = __bom_strip(dup.force_encoding("ASCII-8BIT"), bf)
+        src = body.force_encoding(from_name)
+      end
+      return src.encode(to_name, from_name, opts) unless bt
+      out = src.encode(bt, from_name, opts)
+      return (BOM_BYTES__[bt] + out.b).force_encoding(to_name)
+    end
     if to_name.nil?
       di = Encoding.default_internal
       return __encode_decorate(dup, opts).force_encoding(from_name) if di.nil?
