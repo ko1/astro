@@ -1006,8 +1006,18 @@ static RESULT korb_m_module_set_temp_name(CTX *c, VALUE *slots, VALUE_REF self, 
 static RESULT korb_m_class_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const RESULT r = korb_class_qname_str(c, slots, VALUE_REF_GET(self));   /* fully-qualified (M::C); nil if anonymous */
-    if (LIKELY(r.state == KORB_NORMAL) && KORB_STRING_P(r.value))
+    if (LIKELY(r.state == KORB_NORMAL) && KORB_STRING_P(r.value)) {
+        /* CRuby hands back the SAME frozen String every time (an fstring).  Copy
+         * the name to the stack first: the pool's miss path allocates. */
+        char buf[512];
+        const KorbString *const s = VAL2STR(r.value);
+        const uint32_t len = s->len, enc = KORB_STR_ENC(r.value);
+        if (LIKELY(len < sizeof buf)) {
+            memcpy(buf, korb_strbuf_data(s->buf), len);
+            return RESULT_OK(korb_fstr_get(c, slots, buf, len, enc));
+        }
         ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;   /* CRuby: Module#name is frozen */
+    }
     return r;
 }
 /* Module#to_s / #inspect → the (qualified) name; an anonymous class stringifies

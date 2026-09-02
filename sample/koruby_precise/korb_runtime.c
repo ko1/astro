@@ -1212,11 +1212,12 @@ korb_str_repeat_ref(CTX *c, VALUE *slots, VALUE_REF src, korb_sword_t cnt, uint3
     if (cnt < 0)
         return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative argument");
     uint32_t len = VAL2STR(VALUE_REF_GET(src))->len;
-    size_t total = (size_t)len * (size_t)cnt;
-    if (total > (size_t)1 << 31)
+    size_t total;
+    if (__builtin_mul_overflow((size_t)len, (size_t)cnt, &total) || total > (size_t)1 << 31)
         return korb_raise(c, slots, KORB_E_ARGUMENT, line, "argument too big");
     KorbString *s = korb_str_alloc(c, slots, (uint32_t)total);
     const KorbString *ss = VAL2STR(VALUE_REF_GET(src));
+    if (len == 0) return RESULT_OK((VALUE)s);            /* "" * huge is "" — never spin the copy loop */
     for (korb_sword_t i = 0; i < cnt; i++) {
         memcpy(korb_strbuf_data(s->buf) + (size_t)i * len, korb_strbuf_data(ss->buf), len);
     }
@@ -6987,9 +6988,13 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
             RESULT cr = korb_coerce_to_int(c, slots, &rhs);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (!korb_to_index(rhs, &cnt)) {
-                if (KORB_BIGNUM_P(rhs))                  /* a Bignum count can never fit a long */
+                /* koruby's fixnums stop at ±2^62, so a legal long count (min_long,
+                 * max_long) arrives as a Bignum: take it, and reserve the
+                 * RangeError for one that really does not fit a long. */
+                if (!KORB_BIGNUM_P(rhs)) return korb_raise_no_int(c, slots, rhs);
+                if (!korb_mp_fits_slong_p(VAL2BIG(rhs)->z))
                     return korb_raise(c, slots, KORB_E_RANGE, line, "bignum too big to convert into 'long'");
-                return korb_raise_no_int(c, slots, rhs);
+                cnt = (korb_sword_t)korb_mp_get_si(VAL2BIG(rhs)->z);
             }
         }
         return korb_str_repeat_ref(c, slots, lhs, cnt, line);
