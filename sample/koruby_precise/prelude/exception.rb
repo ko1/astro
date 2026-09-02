@@ -375,7 +375,8 @@ class Binding
     __lvars_all.reject { |n| IMPLICIT_PARAM_NAMES__.include?(n) }
   end
 
-  # 暗黙パラメータはスコープ厳密: 外側スコープのものは見えない (#__lvars_own)。
+  # 暗黙パラメータはスコープ厳密: 外側スコープのものは見えない
+  # (#__lvars_own)。
   def implicit_parameters
     __lvars_own.select { |n| IMPLICIT_PARAM_NAMES__.include?(n) }.sort
   end

@@ -1206,6 +1206,20 @@ static RESULT korb_m_class_ancestors(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return RESULT_OK(slots[0]);
 }
 static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask);  /* fwd */
+/* Binding#__lvars_own — only the names of the binding site's OWN scope (baked
+ * depth 0), not the enclosing ones #local_variables also reports.  The implicit
+ * (numbered / it) parameter API is scope-exact in CRuby and needs this. */
+static RESULT korb_m_bind_lvars_own(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2BIND(VALUE_REF_GET(self))->name_cnt + 1));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++) {
+        const uint32_t *const t = KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i);
+        if (t[1] != 0) continue;
+        CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(t[0])));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 /* Module#instance_methods(inherit=true) → public/protected method names (symbols).
  * Excludes the private `initialize`; dedups across the ancestor chain. */
 static RESULT korb_m_class_instance_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
