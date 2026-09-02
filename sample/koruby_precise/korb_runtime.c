@@ -3151,13 +3151,22 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
 static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb_re_match_t *m);
 static RESULT korb_re_build_md(CTX *c, VALUE *slots, VALUE subj, VALUE re, const korb_re_match_t *m);
 static void korb_re_set_lastmatch(CTX *c, VALUE md_or_nil);
-RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
+static RESULT korb_re_alloc(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
     VALUE_REF sref = SLOTS_PUSH(slots, source);          /* root source across alloc */
     KorbRegexp *r = korb_alloc(c, slots, sizeof(KorbRegexp), KORB_OBJ_REGEXP);
     r->flags = flags;
     r->ci = (flags & 4u) ? 1u : 0u;
     ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->source, VALUE_REF_GET(sref));
     return RESULT_OK((VALUE)r);
+}
+/* node.def's `/pat/` and `/#{}/` reach only this entry point, and a Regexp
+ * literal is frozen in CRuby — so the freeze lives here and every other
+ * constructor (Regexp.new / .union / String coercion) uses korb_re_alloc. */
+RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
+    const RESULT r = korb_re_alloc(c, slots, source, flags);
+    if (LIKELY(r.state == KORB_NORMAL))
+        ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;
+    return r;
 }
 /* obj.method(:sym) → a bound Method object (receiver + method id). */
 RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid) {

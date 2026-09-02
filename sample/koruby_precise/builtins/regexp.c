@@ -801,7 +801,7 @@ static RESULT korb_m_re_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 /* ---- String#match / match? ----------------------------------------------- */
 static RESULT korb_re_coerce_pat(CTX *c, VALUE *slots, VALUE pv, VALUE *out) {
     if (KORB_REGEXP_P(pv)) { *out = pv; return RESULT_OK(KORB_TRUE); }
-    if (KORB_STRING_P(pv)) { slots[0] = pv; *out = UNWRAP(korb_regexp_new(c, slots + 1, slots[0], 0)); return RESULT_OK(KORB_TRUE); }
+    if (KORB_STRING_P(pv)) { slots[0] = pv; *out = UNWRAP(korb_re_alloc(c, slots + 1, slots[0], 0)); return RESULT_OK(KORB_TRUE); }
     if (KORB_OBJECT_P(pv)) {                             /* a #to_str object is the pattern source */
         VALUE cv = pv;
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
@@ -811,7 +811,7 @@ static RESULT korb_re_coerce_pat(CTX *c, VALUE *slots, VALUE pv, VALUE *out) {
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             if (KORB_STRING_P(sr.value)) {
                 slots[0] = sr.value;
-                *out = UNWRAP(korb_regexp_new(c, slots + 1, slots[0], 0));
+                *out = UNWRAP(korb_re_alloc(c, slots + 1, slots[0], 0));
                 return RESULT_OK(KORB_TRUE);
             }
         }
@@ -897,7 +897,7 @@ static RESULT korb_re_coerce_pat_literal(CTX *c, VALUE *slots, VALUE pv, VALUE *
         for (uint32_t i = 0; i < n; i++) { unsigned char ch = (unsigned char)b[i]; if (strchr("\\.*+?()[]{}|-^$", ch)) fputc('\\', ms); fputc(ch, ms); }
         fclose(ms);
         slots[0] = UNWRAP(korb_str_new(c, slots, buf ? buf : "", (uint32_t)z)); free(buf);
-        *out = UNWRAP(korb_regexp_new(c, slots + 1, slots[0], 0));
+        *out = UNWRAP(korb_re_alloc(c, slots + 1, slots[0], 0));
         return RESULT_OK(KORB_TRUE);
     }
     if (KORB_OBJECT_P(pv)) {                             /* #to_str-convertible pattern (matches literally) */
@@ -1361,7 +1361,7 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
             return korb_raise(c, slots, KORB_E_REGEXP, 0, "%s", why);
         }
     }
-    const RESULT rr = korb_regexp_new(c, slots + 1, slots[0], flags);
+    const RESULT rr = korb_re_alloc(c, slots + 1, slots[0], flags);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
     /* Regexp subclass: tag the instance with the receiver class (the same
      * side-table route Range/String/Array subclasses take). */
@@ -1511,7 +1511,7 @@ static RESULT korb_m_re_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     fclose(ms); slots[0] = UNWRAP(korb_str_new(c, slots, buf ? buf : "", (uint32_t)z)); free(buf);
     const uint32_t renc = (incompat != UINT32_MAX) ? incompat : cfixed;
     if (renc != UINT32_MAX) KORB_STR_ENC_SET(slots[0], renc);   /* the union carries the imposed encoding */
-    return korb_regexp_new(c, slots + 1, slots[0], 0);   /* CRuby builds it from the source alone */
+    return korb_re_alloc(c, slots + 1, slots[0], 0);      /* CRuby builds it from the source alone */
 }
 static RESULT korb_m_re_last_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; VALUE md = korb_re_get_lastmatch(c);

@@ -1842,6 +1842,14 @@ class Regexp
     return true unless src.ascii_only?
     src.scan(/\\x([0-9a-fA-F]{1,2})/).any? { |h| h[0].to_i(16) > 0x7f }
   end
+
+  # Regexp.new/.compile build the object outright, so #initialize is only ever
+  # reachable via #send on an already-built Regexp — which CRuby always rejects.
+  def initialize(*)
+    raise FrozenError.new("can't modify frozen Regexp: #{inspect}", receiver: self) if frozen?
+    raise TypeError, "already initialized regexp"
+  end
+  private :initialize
 end
 
 # Ruby 3.5+: RUBY_* 定数の Module 名前空間ミラー。
