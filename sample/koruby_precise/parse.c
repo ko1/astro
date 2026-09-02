@@ -3318,8 +3318,17 @@ build_const_read(struct kp_ctx *tc, uint32_t name_cid)
 static NODE *
 build_const_set(struct kp_ctx *tc, uint32_t name_cid, NODE *val)
 {
+    /* Inside a block the current frame names no class, so the constant used to
+     * land on Object; the owner is the enclosing lexical class body.  Only the
+     * block case is redirected — kp_lexical_class_owner returns false for a
+     * `class << obj` body (self names that cref) and when no block intervenes. */
     const bool anon = tc->frame->anon_class_body;
-    NODE *cn = ALLOC_node_const_set(name_cid, tc->frame->class_name_sym,
+    uint32_t owner = tc->frame->class_name_sym;
+    if (owner == 0 && !anon) {
+        uint32_t lex = 0;
+        if (kp_lexical_class_owner(tc, &lex)) owner = lex;
+    }
+    NODE *cn = ALLOC_node_const_set(name_cid, owner,
                                     anon ? -1 - tc->chain : INT32_MIN, val);
     if (anon) bake_add(tc, &cn->u.node_const_set.self_off);   /* self at base[-1] */
     bake_cref_chain(tc, &cn->u.node_const_set.cache);
