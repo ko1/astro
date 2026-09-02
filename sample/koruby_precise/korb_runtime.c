@@ -13420,6 +13420,14 @@ korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_rat_new_v(c, slots + 2, slots[0], slots[1]);
     }
 bad:
+    /* Rational(Complex) — CRuby routes the one-argument form through #to_r, so a
+     * non-zero imaginary part is that method's RangeError (nil under
+     * exception: false), not a Complex quotient. */
+    if (n == 1 && KORB_COMPLEX_P(nv)) {
+        if (!exc) return RESULT_OK(KORB_NIL);
+        slots[0] = nv;
+        return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, NULL);
+    }
     /* A Complex operand (either position) is handled by Complex arithmetic:
      * Rational(3, Complex(2,0)) is 3/2, and a non-real denominator yields a
      * Complex quotient — exactly `numerator / denominator` in Ruby. */
@@ -13446,7 +13454,15 @@ bad:
             if (!korb_responds_to(c, nv, mid)) continue;
             slots[0] = nv;
             RESULT rr = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, NULL);
-            if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+            if (UNLIKELY(rr.state != KORB_NORMAL)) {
+                /* CRuby protects both conversions under exception: false, and
+                 * #to_int unconditionally (its failure becomes the TypeError
+                 * below); only #to_r's exception reaches the caller. */
+                if (!exc) return RESULT_OK(KORB_NIL);
+                if (i == 0) return rr;
+                nv = slots[0];                            /* re-read: the send may have moved it */
+                continue;
+            }
             if (KORB_RATIONAL_P(rr.value)) return RESULT_OK(rr.value);
             if (KORB_INTEGER_P(rr.value)) return korb_rat_new_v(c, slots + 1, rr.value, LONG2FIX(1));
             nv = slots[0];
@@ -13546,6 +13562,42 @@ static bool korb_parse_cpx(CTX *c, VALUE *slots, const char *s, uint32_t len) {
     return korb_cpx_component(c, slots + 2, s, ilo, ihi, &slots[1]);
 }
 
+/* One String operand of Complex(), parsed strictly (CRuby's string_to_c_strict).
+ * A literal with an exact-zero imaginary part reduces to its real part, so
+ * Complex("1", 2) is (1+2i).  Unparsable → ArgumentError, or *ok = false under
+ * exception: false.  `scratch` must not overlap the caller's parked operands —
+ * korb_parse_cpx writes scratch[0..1]. */
+static RESULT
+korb_cpx_str_operand(CTX *c, VALUE *scratch, VALUE sv, bool exc, VALUE *out, bool *ok)
+{
+    *ok = true;
+    if (UNLIKELY(!korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(sv)))) {
+        char m[96];
+        snprintf(m, sizeof m, "ASCII incompatible encoding: %s", korb_enc_name_of(c->vm, KORB_STR_ENC(sv)));
+        return korb_raise_enc_compat_msg(c, scratch, m);
+    }
+    /* copy the bytes out first: korb_parse_cpx allocates, which can move sv */
+    char buf[128];
+    const uint32_t len = VAL2STR(sv)->len;
+    const bool fits = len < sizeof buf;
+    if (fits) memcpy(buf, korb_strbuf_data(VAL2STR(sv)->buf), len);
+    for (uint32_t i = 0; fits && i < len; i++)
+        if (UNLIKELY(buf[i] == '\0')) {
+            if (!exc) { *ok = false; return RESULT_OK(KORB_NIL); }
+            return korb_raise(c, scratch, KORB_E_ARGUMENT, 0, "string contains null byte");
+        }
+    if (fits && korb_parse_cpx(c, scratch, buf, len)) {
+        if (scratch[1] == LONG2FIX(0)) { *out = scratch[0]; return RESULT_OK(scratch[0]); }
+        const RESULT r = korb_cpx_new(c, scratch + 2, scratch[0], scratch[1]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        *out = r.value;
+        return r;
+    }
+    if (!exc) { *ok = false; return RESULT_OK(KORB_NIL); }
+    return korb_raise(c, scratch, KORB_E_ARGUMENT, 0, "invalid value for convert(): \"%.*s\"",
+                      (int)(fits ? len : 0), fits ? buf : "");
+}
+
 static RESULT
 korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -13568,8 +13620,28 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
         }
     }
     if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
-    const VALUE re = VALUE_SLICE_GET(args, 0);
-    const VALUE im = (n >= 2) ? VALUE_SLICE_GET(args, 1) : LONG2FIX(0);
+    VALUE re = VALUE_SLICE_GET(args, 0);
+    VALUE im = (n >= 2) ? VALUE_SLICE_GET(args, 1) : LONG2FIX(0);
+    /* nil in either position is rejected before anything else (CRuby) */
+    if (UNLIKELY(re == KORB_NIL || im == KORB_NIL)) {
+        if (!exc) return RESULT_OK(KORB_NIL);
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert nil into Complex");
+    }
+    /* A String operand is parsed first, in either position ("1+2i", "123", ...). */
+    if (UNLIKELY(KORB_STRING_P(re) || KORB_STRING_P(im))) {
+        slots[0] = re; slots[1] = im;                                 /* parked: the parse allocates */
+        for (uint32_t i = 0; i < 2; i++) {
+            if (!KORB_STRING_P(slots[i])) continue;
+            VALUE parsed = KORB_NIL; bool ok = true;
+            CHECK(korb_cpx_str_operand(c, slots + 2, slots[i], exc, &parsed, &ok));
+            if (!ok) return RESULT_OK(KORB_NIL);
+            slots[i] = parsed;
+        }
+        re = slots[0]; im = slots[1];
+    }
+    /* Decided while the operands are still fresh: the tail below runs after
+     * calls that can move them. */
+    const bool im_real_kind = KORB_INTEGER_P(im) || KORB_FLOAT_P(im) || KORB_RATIONAL_P(im);
     /* Complex(a, b) == a + b*i.  Evaluating via full complex arithmetic (rather
      * than picking components directly) reproduces CRuby's Float promotion of the
      * cross terms, e.g. Complex(c(1.5,2), c(-5,6.3)) → (-4.8-3.0i) not (...-3i). */
@@ -13581,30 +13653,6 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
         slots[2] = UNWRAP(korb_cpx_new(c, slots + 2, LONG2FIX(0), LONG2FIX(1)));   /* i */
         slots[3] = UNWRAP(korb_cpx_arith(c, slots + 3, slots[1], slots[2], 2));    /* b * i */
         return korb_cpx_arith(c, slots + 4, slots[0], slots[3], 0);                /* a + b*i */
-    }
-    /* single String arg → parse a complex literal ("1+2i", "123", ...).  Copy to
-     * a stack buffer first: korb_parse_cpx allocates (the components), which may
-     * move the String and invalidate its data pointer mid-parse. */
-    if (n == 1 && KORB_STRING_P(re)) {
-        const KorbString *s = VAL2STR(re);
-        if (UNLIKELY(!korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(re)))) {   /* checked before parsing */
-            char m[96];
-            snprintf(m, sizeof m, "ASCII incompatible encoding: %s", korb_enc_name_of(c->vm, KORB_STR_ENC(re)));
-            return korb_raise_enc_compat_msg(c, slots, m);
-        }
-        for (uint32_t i = 0; i < s->len; i++)
-            if (UNLIKELY(korb_strbuf_data(s->buf)[i] == '\0')) {
-                if (!exc) return RESULT_OK(KORB_NIL);
-                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
-            }
-        char buf[128];
-        if (s->len < sizeof buf) {
-            memcpy(buf, korb_strbuf_data(s->buf), s->len);
-            if (korb_parse_cpx(c, slots, buf, s->len))
-                return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
-        }
-        if (!exc) return RESULT_OK(KORB_NIL);
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for convert(): \"%.*s\"", (int)s->len, korb_strbuf_data(s->buf));
     }
     /* a Numeric that is not one of the builtin kinds: CRuby asks #real? — a real
      * one becomes the real component, a complex one is returned as-is, and with
@@ -13643,6 +13691,13 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
         RESULT cr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_c", 4), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         if (KORB_COMPLEX_P(cr.value)) return RESULT_OK(cr.value);
+    }
+    /* Two operands end up at Complex.new, whose argument check is "not a real";
+     * CRuby short-circuits exception: false only when the imaginary part is not
+     * a real builtin kind, so Complex(:sym, 0, exception: false) still raises. */
+    if (n >= 2) {
+        if (!exc && !im_real_kind) return RESULT_OK(KORB_NIL);
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
     }
     if (!exc) return RESULT_OK(KORB_NIL);
     return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Complex", korb_coerce_name(c, VALUE_SLICE_GET(args, 0)));
