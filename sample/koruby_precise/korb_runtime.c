@@ -4531,6 +4531,20 @@ korb_refined_find(CTX *c, VALUE klass, uint32_t mid, VALUE *out_def)
     return NULL;
 }
 
+/* A parameter default runs in METHOD scope, so a `def` written inside it lands
+ * on the method's class — an enclosing instance_eval's definee must not reach it
+ * (the body's own clearing happens later, after every default is evaluated). */
+static inline RESULT
+korb_eval_param_default(CTX *c, NODE *dflt, VALUE *restrict cursor)
+{
+    const VALUE sd = c->def_definee, sc = c->cvar_cref;
+    if (LIKELY(sd == KORB_NIL && sc == KORB_NIL)) return (*dflt->head.dispatcher)(c, dflt, cursor);
+    c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
+    const RESULT r = (*dflt->head.dispatcher)(c, dflt, cursor);
+    c->def_definee = sd; c->cvar_cref = sc;
+    return r;
+}
+
 /* Set up an ISEQ frame (args at slots[-argc..]) with `self` and `def_class`
  * (the class that defines this method — for `super`), and dispatch.  Shared by
  * instance dispatch, implicit self-calls, global calls, super, and new's init.
@@ -4636,7 +4650,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
      * (cursor = body cursor; defaults may reference earlier params + self). */
     for (uint32_t pi = avail; pi < opt_params_cnt; pi++) {   /* optionals past the provided front get defaults */
         NODE *const dflt = opt_defaults[pi - opt_req_cnt];
-        RESULT dr = (*dflt->head.dispatcher)(c, dflt, base + locals_cnt);
+        RESULT dr = korb_eval_param_default(c, dflt, base + locals_cnt);
         if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
         base[pi] = dr.value;              /* below cursor → rooted for later defaults/body */
     }
@@ -4650,7 +4664,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         for (uint32_t j = 0; j < kw->count; j++) {                  /* pass 2: defaults / required check */
             if (j < 64 && (present & (1ull << j))) continue;
             if (kw->entries[j].deflt) {
-                RESULT dr = (*kw->entries[j].deflt->head.dispatcher)(c, kw->entries[j].deflt, base + locals_cnt);
+                RESULT dr = korb_eval_param_default(c, kw->entries[j].deflt, base + locals_cnt);
                 if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
                 base[kw->entries[j].slot] = dr.value;
             } else {
@@ -4773,7 +4787,7 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
             for (uint32_t j = 0; j < kw_argc; j++) base[kw->entries[j].slot] = kwbuf[j];
             for (uint32_t pi = pos_argc; pi < (uint32_t)m->params_cnt; pi++) {   /* optional positional defaults */
                 NODE *const dflt = m->opt_defaults[pi - m->req_cnt];
-                RESULT dr = (*dflt->head.dispatcher)(c, dflt, base + locals_cnt);
+                RESULT dr = korb_eval_param_default(c, dflt, base + locals_cnt);
                 if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
                 base[pi] = dr.value;
             }
@@ -4795,7 +4809,7 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     /* optional positional defaults (after the provided positionals) */
     for (uint32_t pi = pos_argc; pi < (uint32_t)m->params_cnt; pi++) {
         NODE *const dflt = m->opt_defaults[pi - m->req_cnt];
-        RESULT dr = (*dflt->head.dispatcher)(c, dflt, base + locals_cnt);
+        RESULT dr = korb_eval_param_default(c, dflt, base + locals_cnt);
         if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
         base[pi] = dr.value;
     }
@@ -4803,7 +4817,7 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     for (uint32_t j = 0; j < kw->count; j++) {
         if (j < 64 && (present & (1ull << j))) continue;
         if (kw->entries[j].deflt) {
-            RESULT dr = (*kw->entries[j].deflt->head.dispatcher)(c, kw->entries[j].deflt, base + locals_cnt);
+            RESULT dr = korb_eval_param_default(c, kw->entries[j].deflt, base + locals_cnt);
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
             base[kw->entries[j].slot] = dr.value;
         } else {
@@ -4961,6 +4975,7 @@ korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclo
      * through `enclosing`, as Module.nesting does in CRuby. */
     if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[0])->enclosing == KORB_NIL)
         ARO_STORE(c, VAL2CLASS(slots[0]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->enclosing, slots[1]);
+    VAL2CLASS(slots[0])->cur_visibility = 0;     /* each (re)opened body starts public, as a class body does */
     const VALUE saved_definee = c->def_definee;  /* the body defines on the singleton, via self */
     const VALUE saved_cvar = c->cvar_cref;
     korb_refine_push(c);                         /* `using` in a body ends with the body */
@@ -7548,6 +7563,21 @@ korb_unchill(CTX *c, VALUE *slots, VALUE v)
     return RESULT_OK(KORB_NIL);
 }
 
+/* FrozenError#receiver — the object the write was refused on.  slots[0] holds it
+ * (rooted); the exception is parked at slots[1] across the ivar sets. */
+static RESULT
+korb_frozen_with_recv(CTX *c, VALUE *slots, RESULT fe)
+{
+    if (LIKELY(KORB_EXC_P(fe.value))) {
+        slots[1] = fe.value;
+        const VALUE_REF eref = VALUE_REF_AT(&slots[1]);
+        korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
+        korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
+        fe.value = slots[1];
+    }
+    return fe;
+}
+
 RESULT
 korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
 {
@@ -7560,14 +7590,15 @@ korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
     if (v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE) {
         const char *const cn = (v == KORB_NIL) ? "NilClass" : (v == KORB_TRUE) ? "TrueClass" : "FalseClass";
         const char *const iv = (v == KORB_NIL) ? "nil" : (v == KORB_TRUE) ? "true" : "false";
-        return korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %s", cn, iv);
+        return korb_frozen_with_recv(c, slots, korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %s", cn, iv));
     }
     if (KORB_OBJECT_P(slots[0])) {                     /* an object renders through its own #inspect */
         const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0);
         if (ir.state == KORB_NORMAL && KORB_STRING_P(ir.value)) {
             const KorbString *const is = VAL2STR(ir.value);
-            return korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %.*s",
-                              korb_coerce_name(c, slots[0]), (int)is->len, korb_strbuf_data(is->buf));
+            return korb_frozen_with_recv(c, slots,
+                       korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %.*s",
+                                  korb_coerce_name(c, slots[0]), (int)is->len, korb_strbuf_data(is->buf)));
         }
     }
     char *ibuf = NULL; size_t ilen = 0;
@@ -7576,7 +7607,7 @@ korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
     RESULT r = korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %s",
                           korb_coerce_name(c, slots[0]), ibuf ? ibuf : "");
     free(ibuf);
-    return r;
+    return korb_frozen_with_recv(c, slots, r);
 }
 
 /* Guard a method definition against a frozen definee.  Adding a method to a
@@ -7592,9 +7623,12 @@ korb_check_def_frozen(CTX *c, VALUE *slots, VALUE definee)
         for (uint32_t i = 0; i < vm->sklass_cnt; i++)
             if (vm->sklass_cls[i] == definee) { target = vm->sklass_obj[i]; break; }
     }
-    if (UNLIKELY(AROH_IS_GC_OBJECT(target) &&
-                 (((const AroObjectHeader *)(uintptr_t)target)->flags & KORB_FL_FROZEN)))
+    #define KORB_FROZEN_OBJ_P(v) (AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_FL_FROZEN))
+    /* a directly frozen definee counts too (`obj.singleton_class.freeze`), and
+     * CRuby still names the attached object in the message */
+    if (UNLIKELY(KORB_FROZEN_OBJ_P(target) || KORB_FROZEN_OBJ_P(definee)))
         return korb_raise_frozen(c, slots, target);
+    #undef KORB_FROZEN_OBJ_P
     return RESULT_OK(KORB_NIL);
 }
 
