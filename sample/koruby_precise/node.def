@@ -1290,6 +1290,9 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, 
     }
     KORB_CHECK_FROZEN(c, slots, obj);                    /* `def frozen_obj.m` → FrozenError */
     VALUE sing = UNWRAP(korb_obj_singleton(c, slots, obj));
+    slots[0] = sing;                                     /* park: the check formats the receiver */
+    { RESULT fr = korb_check_def_frozen(c, slots + 1, slots[0]); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* `obj.singleton_class.freeze` */
+    sing = slots[0];
     korb_class_def_method(c, sing, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
     /* fire the BasicObject#singleton_method_added(name) hook — only when the
      * object actually defines it (no default → no per-def cost otherwise; and

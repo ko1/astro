@@ -1011,6 +1011,25 @@ extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) 
  * nesting stays lexical.  Returns false when self is the right answer; returns
  * true and sets *owner to the enclosing class body's name (0 = top level) when
  * the definition sits inside a block. */
+/* Reads and literals only: evaluating one cannot be observed by a sibling
+ * expression, so their relative order is free. */
+static bool
+kp_order_transparent(const pm_node_t *n)
+{
+    if (n == NULL) return true;
+    switch (PM_NODE_TYPE(n)) {
+      case PM_LOCAL_VARIABLE_READ_NODE: case PM_INSTANCE_VARIABLE_READ_NODE:
+      case PM_CLASS_VARIABLE_READ_NODE: case PM_GLOBAL_VARIABLE_READ_NODE:
+      case PM_CONSTANT_READ_NODE:       case PM_SELF_NODE:
+      case PM_INTEGER_NODE:             case PM_FLOAT_NODE:
+      case PM_SYMBOL_NODE:              case PM_STRING_NODE:
+      case PM_NIL_NODE:                 case PM_TRUE_NODE: case PM_FALSE_NODE:
+        return true;
+      default:
+        return false;
+    }
+}
+
 static bool
 kp_lexical_class_owner(struct kp_ctx *tc, uint32_t *owner)
 {
@@ -2062,10 +2081,18 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 if (anon_blk && tc->frame->anon_blk_slot < 0)
                     return kp_unsupported(tc, (const pm_node_t *)cn, "bare & outside a (&) method body");
                 uint32_t pslot = anon_blk ? (uint32_t)tc->frame->anon_blk_slot : alloc_synth_local(tc);
-                NODE *pset = anon_blk ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
                 bool has_splat = false;
                 for (size_t i = 0; i < argc; i++)
                     if (PM_NODE_TYPE_P(cn->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+                /* CRuby evaluates `&expr` LAST (after the receiver and the
+                 * arguments).  Only materialize that when something here can
+                 * observe the order — otherwise keep the cheap shape. */
+                bool blk_last = !anon_blk && !kp_order_transparent(ba->expression);
+                if (!blk_last && !anon_blk && !kp_order_transparent(cn->receiver)) blk_last = true;
+                for (size_t i = 0; !blk_last && i < argc; i++)
+                    if (!kp_order_transparent(cn->arguments->arguments.nodes[i])) blk_last = true;
+                NODE *pset = (anon_blk || (blk_last && !has_splat))
+                             ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
                 if (has_splat) {
                     /* `recv.m(*arr, &proc)` — build the args Array; node_send_splat_blkproc
                      * coerces the proc and forwards it (2 staged children: recv + array). */
@@ -2085,6 +2112,14 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 argv[0] = RECV_NODE();
                 for (size_t i = 0; i < argc; i++)
                     argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
+                if (blk_last) {
+                    /* thread `&expr` through the LAST staged child: stash that
+                     * child's value, evaluate the block expression, hand it back */
+                    const uint32_t tmp = alloc_synth_local(tc);
+                    NODE *const last = ALLOC_node_seq(bake_lset(tc, pslot, transduce(tc, ba->expression)),
+                                                      bake_lget(tc, tmp));
+                    argv[sc - 1] = ALLOC_node_seq(bake_lset(tc, tmp, argv[sc - 1]), last);
+                }
                 tc->chain = saved;
                 NODE *call = ALLOC_node_send_blkproc(mid, line, (int32_t)pslot - tc->chain - (int32_t)sc - KORB_FRAME_HDR, argv, sc);
                 bake_add(tc, &call->u.node_send_blkproc.proc_off);
@@ -2233,14 +2268,18 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
  * a reordered private copy in that case: every named parameter first, in ABI
  * order, then the rest of the locals as prism had them.  Returns NULL when the
  * natural order already works or when the shape is one this cannot describe
- * (destructured or repeated parameters, an anonymous rest with posts). */
+ * (destructured or repeated parameters).
+ *
+ * `def m(*, a)` has no local for the anonymous rest, yet the ABI derives the
+ * post slots from rest_slot+1, so reserve an unnamed slot (id 0, which no name
+ * can match) between the optionals and the posts. */
 static const pm_constant_id_list_t *
 kp_param_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *locals,
                       const pm_parameters_node_t *ps)
 {
     if (!ps || locals->size == 0) return NULL;
     pm_constant_id_t want[64];
-    uint32_t n = 0;
+    uint32_t n = 0, ph = 0;                 /* ph = reserved unnamed slots in want[] */
     #define WANT(cid) do { if ((cid) == 0 || n >= 64) return NULL; want[n++] = (cid); } while (0)
     for (size_t i = 0; i < ps->requireds.size; i++) {
         if (!PM_NODE_TYPE_P(ps->requireds.nodes[i], PM_REQUIRED_PARAMETER_NODE)) return NULL;
@@ -2253,7 +2292,9 @@ kp_param_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *locals,
     if (ps->rest) {
         if (!PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE)) return NULL;
         const pm_constant_id_t rn = ((const pm_rest_parameter_node_t *)ps->rest)->name;
-        if (rn == 0) { if (ps->posts.size) return NULL; }   /* anonymous rest: no local to place */
+        if (rn == 0) {                                  /* anonymous rest: reserve a slot only when posts need one */
+            if (ps->posts.size) { if (n >= 64) return NULL; want[n++] = 0; ph++; }
+        }
         else WANT(rn);
     }
     for (size_t i = 0; i < ps->posts.size; i++) {
@@ -2262,17 +2303,23 @@ kp_param_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *locals,
     }
     #undef WANT
     if (n == 0) return NULL;
-    bool same = (n <= locals->size);
-    for (uint32_t i = 0; same && i < n; i++) if (locals->ids[i] != want[i]) same = false;
-    if (same) return NULL;                              /* prism's order already matches */
-    for (uint32_t i = 0; i < n; i++)                    /* a repeated name has no unique slot */
+    const uint32_t out_size = (uint32_t)locals->size + ph;
+    if (ph == 0) {
+        bool same = (n <= locals->size);
+        for (uint32_t i = 0; same && i < n; i++) if (locals->ids[i] != want[i]) same = false;
+        if (same) return NULL;                          /* prism's order already matches */
+    }
+    for (uint32_t i = 0; i < n; i++) {                  /* a repeated name has no unique slot */
+        if (want[i] == 0) continue;
         for (uint32_t j = i + 1; j < n; j++) if (want[i] == want[j]) return NULL;
+    }
     for (uint32_t i = 0; i < n; i++) {                  /* every parameter must BE one of the locals */
+        if (want[i] == 0) continue;
         bool found = false;
         for (size_t k = 0; !found && k < locals->size; k++) found = (locals->ids[k] == want[i]);
         if (!found) return NULL;
     }
-    pm_constant_id_t *const ids = malloc(sizeof(*ids) * locals->size);   /* immortal: the frame reads it */
+    pm_constant_id_t *const ids = malloc(sizeof(*ids) * out_size);   /* immortal: the frame reads it */
     if (!ids) abort();
     memcpy(ids, want, sizeof(*ids) * n);
     uint32_t w = n;
@@ -2281,10 +2328,10 @@ kp_param_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *locals,
         for (uint32_t i = 0; !is_param && i < n; i++) is_param = (want[i] == locals->ids[k]);
         if (!is_param) ids[w++] = locals->ids[k];
     }
-    if (w != locals->size) { free(ids); return NULL; }   /* duplicate local ids: leave it alone */
+    if (w != out_size) { free(ids); return NULL; }       /* duplicate local ids: leave it alone */
     pm_constant_id_list_t *const out = malloc(sizeof(*out));
     if (!out) abort();
-    out->ids = ids; out->size = locals->size; out->capacity = locals->size;
+    out->ids = ids; out->size = out_size; out->capacity = out_size;
     (void)tc;
     return out;
 }
@@ -2316,11 +2363,6 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
          * supported — they bind from the tail, optionals fill the middle. */
         if (ps->rest && !PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE))
             return kp_unsupported(tc, (const pm_node_t *)dn, "forwarding rest parameter");
-        /* anonymous `*` rest collects surplus args into a synth local (the body
-         * can't name it).  With posts the post-slot layout assumes a named rest,
-         * so reject that rarer combo. */
-        if (ps->rest && ((const pm_rest_parameter_node_t *)ps->rest)->name == 0 && ps->posts.size)
-            return kp_unsupported(tc, (const pm_node_t *)dn, "anonymous rest parameter with post parameters");
         req_cnt = (uint32_t)ps->requireds.size;
         opt_cnt = (uint32_t)ps->optionals.size;
         params_cnt = req_cnt + opt_cnt;   /* positional fixed slots; rest/keywords follow */
@@ -2328,6 +2370,12 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
 
     const bool anon_cref = tc->frame->anon_class_body || tc->frame->anon_cref_method;
     const pm_constant_id_list_t *const reordered = kp_param_first_locals(tc, &dn->locals, ps);
+    /* `def m(*, a)`: the posts sit at rest_slot+1, so the anonymous rest needs the
+     * slot kp_param_first_locals reserves — without that list there is nowhere to put it. */
+    const bool anon_rest_posts = ps && ps->rest && PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE)
+                                 && ((const pm_rest_parameter_node_t *)ps->rest)->name == 0 && ps->posts.size;
+    if (anon_rest_posts && !reordered)
+        return kp_unsupported(tc, (const pm_node_t *)dn, "anonymous rest parameter with post parameters");
     push_frame(tc, reordered ? reordered : &dn->locals);
     tc->frame->anon_cref_method = anon_cref;               /* constants resolve via the entry cell */
     tc->frame->method_mid = kp_intern_cid(tc, dn->name);   /* for `super` inside the body */
@@ -2373,8 +2421,9 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     int32_t rest_slot = -1;
     if (ps && ps->rest) {
         pm_constant_id_t rn = ((const pm_rest_parameter_node_t *)ps->rest)->name;
-        rest_slot = rn ? (int32_t)lvar_index(tc, ps->rest, rn)   /* named rest → its local slot */
-                       : (int32_t)alloc_synth_local(tc);          /* anonymous `*` → synth slot (bare `*` forwards it) */
+        rest_slot = rn                ? (int32_t)lvar_index(tc, ps->rest, rn)   /* named rest → its local slot */
+                  : anon_rest_posts   ? (int32_t)params_cnt                     /* the reserved unnamed slot, so posts land at +1 */
+                                      : (int32_t)alloc_synth_local(tc);         /* anonymous `*` → synth slot (bare `*` forwards it) */
         if (!rn) tc->frame->anon_rest_slot = rest_slot;
         tc->frame->method_rest_slot = rest_slot;                 /* for forwarding super (`super` re-splats the rest) */
     }
@@ -2547,16 +2596,18 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
     uint32_t name_sym = kp_intern_cid(tc, cn->name);
     uint32_t path_owner = 0;                         /* `class M::C` → M (full dotted path) */
     const pm_node_t *dyn_base = NULL;                /* `class expr::C` → evaluate expr */
+    bool abs_top = false;                            /* `class ::C` — top level, whatever encloses it */
     if (PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_PATH_NODE)) {
         const pm_node_t *const parent = ((const pm_constant_path_node_t *)cn->constant_path)->parent;
+        abs_top = (parent == NULL);
         path_owner = kp_intern_cpath(tc, parent);
-        if (path_owner == 0) dyn_base = parent;
+        if (path_owner == 0 && !abs_top) dyn_base = parent;
     }
     const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B */
 
     /* a bare `class X` inside a block nests lexically, not by self */
-    bool lex_top = false;
-    if (path_owner == 0 && dyn_base == NULL) {
+    bool lex_top = abs_top;
+    if (!abs_top && path_owner == 0 && dyn_base == NULL) {
         uint32_t lex = 0;
         if (kp_lexical_class_owner(tc, &lex)) { path_owner = lex; lex_top = (lex == 0); }
     }
@@ -2976,14 +3027,16 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
     uint32_t name_sym = kp_intern_cid(tc, mn->name);
     uint32_t path_owner = 0;                         /* `module M::Inner` → M (full dotted path) */
     const pm_node_t *dyn_base = NULL;                /* `module expr::Inner` → evaluate expr */
+    bool abs_top = false;                            /* `module ::M` — top level, whatever encloses it */
     if (PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_PATH_NODE)) {
         const pm_node_t *const parent = ((const pm_constant_path_node_t *)mn->constant_path)->parent;
+        abs_top = (parent == NULL);
         path_owner = kp_intern_cpath(tc, parent);
-        if (path_owner == 0) dyn_base = parent;
+        if (path_owner == 0 && !abs_top) dyn_base = parent;
     }
     const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B */
-    bool lex_top = false;                            /* see node_class: lexical nesting inside a block */
-    if (path_owner == 0 && dyn_base == NULL) {
+    bool lex_top = abs_top;                          /* see node_class: lexical nesting inside a block */
+    if (!abs_top && path_owner == 0 && dyn_base == NULL) {
         uint32_t lex = 0;
         if (kp_lexical_class_owner(tc, &lex)) { path_owner = lex; lex_top = (lex == 0); }
     }
@@ -3729,8 +3782,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const char *bytes = kp_strdup_pm(&xn->unescaped, &len);
         const uint32_t bt = korb_intern(tc->c->vm, "`", 1);
         NODE *recv, *arg;
+        /* a non-interpolated command literal hands a FROZEN String to `` (CRuby) */
         WITH_CHAIN(tc, KP_SEND1_SC, (recv = bake_self(tc),
-                                     arg = ALLOC_node_str(bytes, len)));
+                                     arg = ALLOC_node_str_frozen(bytes, len)));
         return kp_send1(bt, kp_line(tc, node), recv, arg);
       }
       case PM_INTERPOLATED_X_STRING_NODE: {   /* `cmd #{x}` → self.`(dstr) */
@@ -4393,8 +4447,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
          * env depth; depth 0 (method top-level or no method) → plain return. */
         struct kp_frame *mf = tc->frame;
         uint32_t depth = 0;
-        while (mf->method_mid == 0 && mf->prev) { mf = mf->prev; depth++; }
-        if (mf->method_mid == 0) depth = 0;
+        while (mf->method_mid == 0 && mf->prev && !mf->class_name_sym && !mf->anon_class_body) { mf = mf->prev; depth++; }
+        /* No method: the top-level program frame IS the home (`proc { return }` at
+         * top level ends the file), but a class/module body is not — a `return`
+         * that reaches one has nowhere to go (LocalJumpError). */
+        if (mf->method_mid == 0 && (mf->class_name_sym || mf->anon_class_body)) depth = 0;
+        else if (mf->method_mid == 0 && rn->arguments)     /* top-level return yields no value */
+            fprintf(stderr, "%s: warning: argument of top-level return is ignored\n", tc->fname);
         if (depth == 0) {
             return ALLOC_node_return(kp_jump_args_value(tc, rn->arguments));
         }
@@ -4581,6 +4640,19 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_yield_node_t *yn = (const pm_yield_node_t *)node;
         uint32_t line = kp_line(tc, node);
         size_t yargc = yn->arguments ? yn->arguments->arguments.size : 0;
+        /* A class/module/`class << obj` body ends the method scope, so a `yield`
+         * that reaches one has no block to name.  prism skips this check while
+         * parsing an eval (parsing_eval), which is exactly where it still bites. */
+        for (const struct kp_frame *f = tc->frame; f && f->method_mid == 0; f = f->prev) {
+            if (!f->class_name_sym && !f->anon_class_body) continue;
+            if (tc->syntax_err == NULL) {
+                static char ybuf[512];
+                snprintf(ybuf, sizeof ybuf, "%s:%u: Invalid yield", tc->fname, line);
+                tc->syntax_err = ybuf;
+            }
+            tc->syntax_error = true;
+            break;
+        }
         /* `yield` reaches the enclosing METHOD's block, not a nested block's.
          * Walk up to the method frame (method_mid != 0), counting block frames. */
         struct kp_frame *mf = tc->frame;
@@ -4999,6 +5071,18 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             bake_add(tc, &_s->u.node_super_blk.self_off);
             bake_add(tc, &_s->u.node_super_blk.def_env_off);
             return _s;
+        }
+        /* `super(...)` — the enclosing `def m(...)` already collected the positional
+         * args into its synth rest local; the block rides the frame's block cells,
+         * which super_fwd forwards anyway. */
+        if (argc >= 1 && PM_NODE_TYPE_P(args->arguments.nodes[argc - 1], PM_FORWARDING_ARGUMENTS_NODE)) {
+            if (tc->frame->fwd_slot < 0)
+                return kp_unsupported(tc, node, "... forwarding outside a (...) method body");
+            NODE *farr;
+            WITH_CHAIN(tc, 1, (farr = (argc == 1)
+                ? bake_lget(tc, (uint32_t)tc->frame->fwd_slot)
+                : build_array_with_fwd(tc, args->arguments.nodes, argc - 1)));
+            return emit_super_fwd(tc, m_mid, line, farr);
         }
         /* `super(args)` with no literal block — build the args Array and forward
          * the current method's incoming block (super_fwd). */

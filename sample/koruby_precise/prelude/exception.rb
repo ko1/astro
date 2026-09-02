@@ -388,7 +388,7 @@ class Binding
     unless __lvars_all.include?(n)
       raise NameError, "implicit parameter '#{n}' is not defined for #{inspect}"
     end
-    local_variable_get(n)
+    __lvget_implicit(n)   # local_variable_get rejects _1.._9 outright
   end
 
   private def __implicit_param_name(name)

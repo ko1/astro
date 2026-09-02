@@ -190,6 +190,7 @@ static void korb_to_mpz(VALUE v, korb_mp_t out);
 static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const korb_mp_t src);
 static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_int coercion, usable from the main body */
 static RESULT korb_coerce_to_ary(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_ary coercion */
+static bool korb_check_funcall_respond_to(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid);   /* fwd — rb_check_funcall's #respond_to? probe */
 
 /* Make a reduced Rational from VALUE num/den (Fixnum or Bignum); den != 0,
  * normalized den > 0.  Fixnum-fits fast path; Bignum path reduces via korb_mp_gcd. */
@@ -1384,8 +1385,9 @@ korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val)
      * (Ruby `[*x]` / `a, b = *x` semantics); otherwise `*x` is just `[x]`. */
     if (KORB_OBJECT_P(val)) {
         const uint32_t to_a_mid = korb_intern(c->vm, "to_a", 4);
+        VALUE *const vp = slots;                         /* same cell as vr, for the writeback */
         VALUE_REF vr = SLOTS_PUSH(slots, val);           /* root recv across the respond_to? / to_a dispatch */
-        if (korb_responds_to_coerce(c, slots, VALUE_REF_GET(vr), to_a_mid)) {   /* honors #respond_to? (proxies/mocks) */
+        if (korb_check_funcall_respond_to(c, slots, vp, to_a_mid)) {   /* an overridden #respond_to? is asked first (CRuby) */
             RESULT ta = korb_send(c, slots, to_a_mid, 0, 0);
             if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
             if (KORB_ARRAY_P(ta.value)) {
@@ -1415,7 +1417,7 @@ korb_massign_coerce(CTX *c, VALUE *slots)
     const VALUE v = slots[0];
     if (KORB_ARRAY_P(v) || !KORB_OBJECT_P(v)) return RESULT_OK(v);
     const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
-    if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_ary)) return RESULT_OK(slots[0]);   /* honors #respond_to? */
+    if (!korb_check_funcall_respond_to(c, slots + 1, &slots[0], to_ary)) return RESULT_OK(slots[0]);   /* an overridden #respond_to? is asked first (CRuby) */
     RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (KORB_ARRAY_P(r.value)) { slots[0] = r.value; return RESULT_OK(r.value); }
@@ -2150,6 +2152,53 @@ korb_cvar_owner(VALUE cref, VALUE sym, int32_t *idx_out)
     return KORB_NIL;
 }
 
+/* Like korb_cvar_owner, but keeps walking to the HIGHEST ancestor that defines
+ * `sym` (CRuby reads and writes there) and reports the nearest one in *front.
+ * front != result means the variable was defined below an ancestor that later
+ * grew its own — CRuby calls that "overtaken" and raises. */
+VALUE
+korb_cvar_owner_top(VALUE cref, VALUE sym, int32_t *idx_out, VALUE *front_out)
+{
+    VALUE top = KORB_NIL, front = KORB_NIL;
+    int32_t idx = 0;
+    for (VALUE k = cref; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
+        const VALUE mods[2] = { VAL2CLASS(k)->prepended, VAL2CLASS(k)->included };
+        if (korb_cvar_in(k, sym, &idx)) { top = k; *idx_out = idx; if (front == KORB_NIL) front = k; }
+        for (uint32_t m = 0; m < 2; m++) {
+            if (mods[m] == KORB_NIL) continue;
+            const KorbArray *const ma = VAL2ARY(mods[m]);
+            for (uint32_t i = 0; i < ma->len; i++) {
+                const VALUE mv = korb_items_data(ma->items)[i];
+                if (korb_cvar_in(mv, sym, &idx)) { top = mv; *idx_out = idx; if (front == KORB_NIL) front = mv; }
+            }
+        }
+    }
+    *front_out = front;
+    return top;
+}
+
+/* Class/module name for a cvar error message; anonymous ones render like #to_s. */
+void
+korb_cvar_class_name(CTX *c, VALUE cls, char *out, size_t outsz)
+{
+    korb_class_qname_into(c, cls, out, outsz);
+    if (out[0] == '\0')
+        snprintf(out, outsz, "#<%s:0x%016zx>", VAL2CLASS(cls)->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls);
+}
+
+/* CRuby's cvar_overtaken: reading or writing through a class whose variable is
+ * shadowed by an ancestor's own copy is an error, not a silent pick. */
+RESULT
+korb_cvar_check_overtaken(CTX *c, VALUE *slots, VALUE front, VALUE top, uint32_t sym_id)
+{
+    if (LIKELY(front == top)) return RESULT_OK(KORB_NIL);
+    char fn[192], tn[192];
+    korb_cvar_class_name(c, front, fn, sizeof fn);
+    korb_cvar_class_name(c, top, tn, sizeof tn);
+    return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable %s of %s is overtaken by %s",
+                      korb_sym_name(c->vm, sym_id), fn, tn);
+}
+
 /* A `class << X` body shares X's class variables: the singleton is not a scope
  * of its own for @@vars (CRuby). */
 /* The class scope @@vars resolve against; falls back to the cref instance_eval /
@@ -2182,8 +2231,11 @@ static VALUE korb_cvar_self_class(CTX *c, VALUE self)
 static VALUE korb_cvar_scope_of(CTX *c, VALUE self, VALUE entry_cell)
 {
     if (entry_cell == KORB_UNDEF) return korb_cvar_scope(c, self);   /* explicit receiver (class_variable_get/set) */
-    if ((uintptr_t)entry_cell & 1u) {                 /* a real method frame: its owner is the cref */
-        const VALUE own = korb_cvar_scope(c, korb_cvar_cref(self, entry_cell));
+    if ((uintptr_t)entry_cell & 1u) {                 /* a real method frame: the DEFINING class is the cref,
+                                                       * never self's — `extend M` runs M's methods with a
+                                                       * class self, yet @@vars stay M's (CRuby). */
+        const struct korb_method *const m = (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)1u);
+        const VALUE own = korb_cvar_scope(c, m->owner);
         if (KORB_CLASS_P(own)) return own;
     }
     /* instance_eval/exec: the caller's scope, even when self is a Class — the
@@ -2205,12 +2257,15 @@ korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_i
     }
     const VALUE sym = ID2SYM(sym_id);
     int32_t idx;
-    const VALUE owner = korb_cvar_owner(cref, sym, &idx);
+    VALUE front;
+    const VALUE owner = korb_cvar_owner_top(cref, sym, &idx, &front);
+    if (owner != KORB_NIL) CHECK(korb_cvar_check_overtaken(c, slots, front, owner, sym_id));
     if (owner == KORB_NIL) {
         if (soft) return RESULT_OK(KORB_NIL);
+        char cn[192]; korb_cvar_class_name(c, cref, cn, sizeof cn);
         slots[0] = cref;                                  /* root across raise + ivar_set */
         RESULT ne = korb_raise(c, slots + 1, KORB_E_NAME, 0, "uninitialized class variable %s in %s",
-                          korb_sym_name(c->vm, sym_id), korb_type_name(cref));
+                          korb_sym_name(c->vm, sym_id), cn);
         if (LIKELY(KORB_EXC_P(ne.value))) {               /* NameError#name → :@@x, #receiver → the resolving class */
             slots[1] = ne.value;
             VALUE_REF eref = VALUE_REF_AT(&slots[1]);
@@ -2229,12 +2284,14 @@ korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_i
 {
     const VALUE cref = korb_cvar_scope_of(c, self, entry_cell);
     if (!KORB_CLASS_P(cref))
-        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable assignment from toplevel");
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable access from toplevel");
     { RESULT fr = korb_check_def_frozen(c, slots, cref); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* @@cvar = / class_variable_set on a frozen class → FrozenError */
     const VALUE sym = ID2SYM(sym_id);
     int32_t idx;
-    VALUE target = korb_cvar_owner(cref, sym, &idx);   /* update existing ancestor, else define in cref */
-    if (target == KORB_NIL) target = cref;
+    VALUE front;
+    VALUE target = korb_cvar_owner_top(cref, sym, &idx, &front);   /* update the topmost ancestor, else define in cref */
+    if (target != KORB_NIL) CHECK(korb_cvar_check_overtaken(c, slots, front, target, sym_id));
+    else                    target = cref;
 
     /* Root target + val across the hash alloc/grow (both may GC/move). */
     VALUE_REF tref = SLOTS_PUSH(slots, target);
@@ -3427,6 +3484,12 @@ static RESULT korb_m_bind_source_location(CTX *c, VALUE *slots, VALUE_REF self, 
 }
 /* A binding's local names are plain identifiers: $global / @ivar / $~ and the
  * like are a NameError, not a fresh local (CRuby's check_local_id). */
+/* `_1`..`_9` name a block's numbered parameters, never a Binding local (CRuby). */
+static RESULT korb_bind_check_numparam(CTX *c, VALUE *slots, uint32_t sym) {
+    const char *const nm = korb_sym_name(c->vm, sym);
+    if (LIKELY(!(nm[0] == '_' && nm[1] >= '1' && nm[1] <= '9' && nm[2] == '\0'))) return RESULT_OK(KORB_NIL);
+    return korb_raise(c, slots, KORB_E_NAME, 0, "numbered parameter '%s' is not a local variable", nm);
+}
 static RESULT korb_bind_check_lvname(CTX *c, VALUE *slots, VALUE_REF self, uint32_t sym) {
     const char *const nm = korb_sym_name(c->vm, sym);
     const unsigned char c0 = (unsigned char)nm[0];
@@ -3434,18 +3497,30 @@ static RESULT korb_bind_check_lvname(CTX *c, VALUE *slots, VALUE_REF self, uint3
     char db[224]; korb_desc_inspect(c, VALUE_REF_GET(self), db, sizeof db);
     return korb_raise(c, slots, KORB_E_NAME, 0, "wrong local variable name '%s' for %s", nm, db);
 }
-static RESULT korb_m_bind_lvget(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    uint32_t sym;   /* Symbol/String, or #to_str-coercible */
-    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+static RESULT korb_bind_lvget_sym(CTX *c, VALUE *slots, VALUE_REF self, uint32_t sym) {
     const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
     const int i = korb_bind_find(b, sym);
     if (i >= 0) return RESULT_OK(korb_bind_env_get(b, (uint32_t)i));
     if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym)); if (hi >= 0) return RESULT_OK(korb_items_data(VAL2HASH(b->extra)->items)[2 * hi + 1]); }
     return korb_raise(c, slots, KORB_E_NAME, 0, "local variable '%s' is not defined for %s", korb_sym_name(c->vm, sym), "an instance of Binding");
 }
+static RESULT korb_m_bind_lvget(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t sym;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    CHECK(korb_bind_check_numparam(c, slots, sym));
+    return korb_bind_lvget_sym(c, slots, self, sym);
+}
+/* Binding#implicit_parameter_get's reader: the same lookup, minus the numbered
+ * parameter rejection (its whole point is to reach _1.._9 / it). */
+static RESULT korb_m_bind_lvget_implicit(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t sym;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    return korb_bind_lvget_sym(c, slots, self, sym);
+}
 static RESULT korb_m_bind_lvdefined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t sym;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    CHECK(korb_bind_check_numparam(c, slots, sym));
     const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
     if (korb_bind_find(b, sym) >= 0) return RESULT_OK(KORB_TRUE);
     if (b->extra != KORB_NIL && korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym)) >= 0) return RESULT_OK(KORB_TRUE);
@@ -3454,6 +3529,7 @@ static RESULT korb_m_bind_lvdefined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_m_bind_lvset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t sym;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    CHECK(korb_bind_check_numparam(c, slots, sym));
     CHECK(korb_bind_check_lvname(c, slots, self, sym));
     KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
     const VALUE val = VALUE_SLICE_GET(a, 1);
@@ -4476,6 +4552,20 @@ korb_refined_find(CTX *c, VALUE klass, uint32_t mid, VALUE *out_def)
     return NULL;
 }
 
+/* A parameter default runs in METHOD scope, so a `def` written inside it lands
+ * on the method's class — an enclosing instance_eval's definee must not reach it
+ * (the body's own clearing happens later, after every default is evaluated). */
+static inline RESULT
+korb_eval_param_default(CTX *c, NODE *dflt, VALUE *restrict cursor)
+{
+    const VALUE sd = c->def_definee, sc = c->cvar_cref;
+    if (LIKELY(sd == KORB_NIL && sc == KORB_NIL)) return (*dflt->head.dispatcher)(c, dflt, cursor);
+    c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
+    const RESULT r = (*dflt->head.dispatcher)(c, dflt, cursor);
+    c->def_definee = sd; c->cvar_cref = sc;
+    return r;
+}
+
 /* Set up an ISEQ frame (args at slots[-argc..]) with `self` and `def_class`
  * (the class that defines this method — for `super`), and dispatch.  Shared by
  * instance dispatch, implicit self-calls, global calls, super, and new's init.
@@ -4581,7 +4671,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
      * (cursor = body cursor; defaults may reference earlier params + self). */
     for (uint32_t pi = avail; pi < opt_params_cnt; pi++) {   /* optionals past the provided front get defaults */
         NODE *const dflt = opt_defaults[pi - opt_req_cnt];
-        RESULT dr = (*dflt->head.dispatcher)(c, dflt, base + locals_cnt);
+        RESULT dr = korb_eval_param_default(c, dflt, base + locals_cnt);
         if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
         base[pi] = dr.value;              /* below cursor → rooted for later defaults/body */
     }
@@ -4595,7 +4685,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         for (uint32_t j = 0; j < kw->count; j++) {                  /* pass 2: defaults / required check */
             if (j < 64 && (present & (1ull << j))) continue;
             if (kw->entries[j].deflt) {
-                RESULT dr = (*kw->entries[j].deflt->head.dispatcher)(c, kw->entries[j].deflt, base + locals_cnt);
+                RESULT dr = korb_eval_param_default(c, kw->entries[j].deflt, base + locals_cnt);
                 if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
                 base[kw->entries[j].slot] = dr.value;
             } else {
@@ -4718,7 +4808,7 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
             for (uint32_t j = 0; j < kw_argc; j++) base[kw->entries[j].slot] = kwbuf[j];
             for (uint32_t pi = pos_argc; pi < (uint32_t)m->params_cnt; pi++) {   /* optional positional defaults */
                 NODE *const dflt = m->opt_defaults[pi - m->req_cnt];
-                RESULT dr = (*dflt->head.dispatcher)(c, dflt, base + locals_cnt);
+                RESULT dr = korb_eval_param_default(c, dflt, base + locals_cnt);
                 if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
                 base[pi] = dr.value;
             }
@@ -4740,7 +4830,7 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     /* optional positional defaults (after the provided positionals) */
     for (uint32_t pi = pos_argc; pi < (uint32_t)m->params_cnt; pi++) {
         NODE *const dflt = m->opt_defaults[pi - m->req_cnt];
-        RESULT dr = (*dflt->head.dispatcher)(c, dflt, base + locals_cnt);
+        RESULT dr = korb_eval_param_default(c, dflt, base + locals_cnt);
         if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
         base[pi] = dr.value;
     }
@@ -4748,7 +4838,7 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     for (uint32_t j = 0; j < kw->count; j++) {
         if (j < 64 && (present & (1ull << j))) continue;
         if (kw->entries[j].deflt) {
-            RESULT dr = (*kw->entries[j].deflt->head.dispatcher)(c, kw->entries[j].deflt, base + locals_cnt);
+            RESULT dr = korb_eval_param_default(c, kw->entries[j].deflt, base + locals_cnt);
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
             base[kw->entries[j].slot] = dr.value;
         } else {
@@ -4906,6 +4996,7 @@ korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclo
      * through `enclosing`, as Module.nesting does in CRuby. */
     if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[0])->enclosing == KORB_NIL)
         ARO_STORE(c, VAL2CLASS(slots[0]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->enclosing, slots[1]);
+    VAL2CLASS(slots[0])->cur_visibility = 0;     /* each (re)opened body starts public, as a class body does */
     const VALUE saved_definee = c->def_definee;  /* the body defines on the singleton, via self */
     const VALUE saved_cvar = c->cvar_cref;
     korb_refine_push(c);                         /* `using` in a body ends with the body */
@@ -7504,6 +7595,21 @@ korb_unchill(CTX *c, VALUE *slots, VALUE v)
     return RESULT_OK(KORB_NIL);
 }
 
+/* FrozenError#receiver — the object the write was refused on.  slots[0] holds it
+ * (rooted); the exception is parked at slots[1] across the ivar sets. */
+static RESULT
+korb_frozen_with_recv(CTX *c, VALUE *slots, RESULT fe)
+{
+    if (LIKELY(KORB_EXC_P(fe.value))) {
+        slots[1] = fe.value;
+        const VALUE_REF eref = VALUE_REF_AT(&slots[1]);
+        korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
+        korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
+        fe.value = slots[1];
+    }
+    return fe;
+}
+
 RESULT
 korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
 {
@@ -7516,14 +7622,15 @@ korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
     if (v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE) {
         const char *const cn = (v == KORB_NIL) ? "NilClass" : (v == KORB_TRUE) ? "TrueClass" : "FalseClass";
         const char *const iv = (v == KORB_NIL) ? "nil" : (v == KORB_TRUE) ? "true" : "false";
-        return korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %s", cn, iv);
+        return korb_frozen_with_recv(c, slots, korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %s", cn, iv));
     }
     if (KORB_OBJECT_P(slots[0])) {                     /* an object renders through its own #inspect */
         const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0);
         if (ir.state == KORB_NORMAL && KORB_STRING_P(ir.value)) {
             const KorbString *const is = VAL2STR(ir.value);
-            return korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %.*s",
-                              korb_coerce_name(c, slots[0]), (int)is->len, korb_strbuf_data(is->buf));
+            return korb_frozen_with_recv(c, slots,
+                       korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %.*s",
+                                  korb_coerce_name(c, slots[0]), (int)is->len, korb_strbuf_data(is->buf)));
         }
     }
     char *ibuf = NULL; size_t ilen = 0;
@@ -7532,7 +7639,7 @@ korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
     RESULT r = korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %s",
                           korb_coerce_name(c, slots[0]), ibuf ? ibuf : "");
     free(ibuf);
-    return r;
+    return korb_frozen_with_recv(c, slots, r);
 }
 
 /* Guard a method definition against a frozen definee.  Adding a method to a
@@ -7548,9 +7655,12 @@ korb_check_def_frozen(CTX *c, VALUE *slots, VALUE definee)
         for (uint32_t i = 0; i < vm->sklass_cnt; i++)
             if (vm->sklass_cls[i] == definee) { target = vm->sklass_obj[i]; break; }
     }
-    if (UNLIKELY(AROH_IS_GC_OBJECT(target) &&
-                 (((const AroObjectHeader *)(uintptr_t)target)->flags & KORB_FL_FROZEN)))
+    #define KORB_FROZEN_OBJ_P(v) (AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_FL_FROZEN))
+    /* a directly frozen definee counts too (`obj.singleton_class.freeze`), and
+     * CRuby still names the attached object in the message */
+    if (UNLIKELY(KORB_FROZEN_OBJ_P(target) || KORB_FROZEN_OBJ_P(definee)))
         return korb_raise_frozen(c, slots, target);
+    #undef KORB_FROZEN_OBJ_P
     return RESULT_OK(KORB_NIL);
 }
 
@@ -10935,6 +11045,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "to_s", korb_m_obj_to_s, 0);   /* #inspect is an alias of #to_s */
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "inspect", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_get", korb_m_bind_lvget, 1);
+    korb_def_cmethod(c, KORB_C_BINDING, "__lvget_implicit", korb_m_bind_lvget_implicit, 1);   /* prelude: implicit_parameter_get */
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_set", korb_m_bind_lvset, 2);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_defined?", korb_m_bind_lvdefined, 1);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variables", korb_m_bind_lvars, 0);
