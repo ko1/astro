@@ -1565,11 +1565,21 @@ class Object
   # not defined on the singleton class itself.
   def singleton_method(name)
     sc = singleton_class
-    unless sc.instance_methods(false).include?(name.to_sym) ||
-           sc.private_instance_methods(false).include?(name.to_sym)
-      raise NameError.new("undefined singleton method '#{name}' for #{inspect}", name.to_sym)
+    sym = name.to_sym
+    m = begin
+          method(sym)
+        rescue NameError
+          nil
+        end
+    # The singleton class *and* the modules included/prepended into it count;
+    # the inherited part of the chain (from the first other Class on) does not.
+    if m
+      sc.ancestors.each do |mod|
+        break if mod.is_a?(Class) && !mod.equal?(sc)
+        return m if mod.equal?(m.owner)
+      end
     end
-    method(name)
+    raise NameError.new("undefined singleton method '#{name}' for #{inspect}", sym)
   end
 end
 
