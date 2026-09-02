@@ -692,7 +692,9 @@ static RESULT korb_m_obj_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
      * ends it, exactly as #freeze does. */
     if (AROH_IS_GC_OBJECT(r.value) && KORB_STRING_P(r.value) && fmode != 1 &&
         AROH_IS_GC_OBJECT(sv2) && (((const AroObjectHeader *)(uintptr_t)sv2)->flags & KORB_FL_CHILLED))
-        ((AroObjectHeader *)(uintptr_t)r.value)->flags |= (KORB_FL_CHILLED | KORB_FL_FROZEN);
+        ((AroObjectHeader *)(uintptr_t)r.value)->flags |=
+            (uint16_t)(KORB_FL_CHILLED | KORB_FL_FROZEN |
+                       (((const AroObjectHeader *)(uintptr_t)sv2)->flags & KORB_FL_CHILLED_SYM));
     return r;
 }
 

@@ -7487,7 +7487,18 @@ korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym)
 RESULT
 korb_unchill(CTX *c, VALUE *slots, VALUE v)
 {
-    ((AroObjectHeader *)(uintptr_t)v)->flags &= (uint16_t)~(KORB_FL_CHILLED | KORB_FL_FROZEN);
+    const uint16_t fl = ((AroObjectHeader *)(uintptr_t)v)->flags;
+    ((AroObjectHeader *)(uintptr_t)v)->flags &= (uint16_t)~(KORB_FL_CHILLED | KORB_FL_CHILLED_SYM | KORB_FL_FROZEN);
+    if (fl & KORB_FL_CHILLED_SYM) {
+        /* the bytes are still the Symbol's name — nothing has mutated it yet */
+        char msg[320];
+        const KorbString *const s = VAL2STR(v);
+        const int n = (int)(s->len > 250 ? 250 : s->len);
+        snprintf(msg, sizeof msg, "string returned by :%.*s.to_s will be frozen in the future",
+                 n, (const char *)korb_strbuf_data(s->buf));
+        korb_warn_deprecated(c, slots, msg);
+        return RESULT_OK(KORB_NIL);
+    }
     korb_warn_deprecated(c, slots, "literal string will be frozen in the future "
                                    "(run with --debug-frozen-string-literal for more information)");
     return RESULT_OK(KORB_NIL);

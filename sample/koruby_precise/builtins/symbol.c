@@ -10,6 +10,7 @@ static RESULT korb_m_sym_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const uint32_t enc = c->vm->sym_encs[id];
     const VALUE s = UNWRAP(korb_str_new(c, slots, nm, len));
     KORB_STR_ENC_SET(s, enc);                         /* the Symbol's own encoding */
+    ((AroObjectHeader *)(uintptr_t)s)->flags |= (KORB_FL_FROZEN | KORB_FL_CHILLED | KORB_FL_CHILLED_SYM);
     return RESULT_OK(s);
 }
 /* Symbol#name — unlike #to_s/#id2name this returns the *same* frozen String on
@@ -129,7 +130,7 @@ static RESULT korb_m_obj_freeze(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (AROH_IS_GC_OBJECT(v)) {
         /* an explicit #freeze ends chilled status: from here a mutation is a
          * real FrozenError, not a deprecation warning */
-        ((AroObjectHeader *)(uintptr_t)v)->flags &= (uint16_t)~KORB_FL_CHILLED;
+        ((AroObjectHeader *)(uintptr_t)v)->flags &= (uint16_t)~(KORB_FL_CHILLED | KORB_FL_CHILLED_SYM);
         ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_FROZEN;
         /* A frozen Array gets capa=len so node_shl's existing `len < capa` room
          * check fails → the (rare) slow path does the FrozenError raise.  Keeps

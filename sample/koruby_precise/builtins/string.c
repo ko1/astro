@@ -257,7 +257,7 @@ static RESULT korb_m_str_uminus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (AROH_IS_GC_OBJECT(r.value)) {
         AroObjectHeader *const h = (AroObjectHeader *)(uintptr_t)r.value;
-        h->flags = (uint16_t)((h->flags & ~KORB_FL_CHILLED) | KORB_FL_FROZEN);
+        h->flags = (uint16_t)((h->flags & ~(KORB_FL_CHILLED | KORB_FL_CHILLED_SYM)) | KORB_FL_FROZEN);
     }
     return r;
 }
@@ -268,7 +268,7 @@ static RESULT korb_m_str_plus_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     slots[0] = VALUE_REF_GET(self);
     RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "dup", 3), 0, 0);   /* mutable copy via #dup */
     if (LIKELY(r.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(r.value))         /* the copy is plainly mutable */
-        ((AroObjectHeader *)(uintptr_t)r.value)->flags &= (uint16_t)~(KORB_FL_CHILLED | KORB_FL_FROZEN);
+        ((AroObjectHeader *)(uintptr_t)r.value)->flags &= (uint16_t)~(KORB_FL_CHILLED | KORB_FL_CHILLED_SYM | KORB_FL_FROZEN);
     return r;
 }
 /* String#to_sym — the Symbol keeps self's encoding (an ASCII-only name normalises

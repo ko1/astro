@@ -238,6 +238,13 @@ enum korb_obj_type {
  * single choke point korb_raise_frozen then warns, clears both bits and lets the
  * mutation through instead of raising.  #frozen? reports false while it is set. */
 #define KORB_FL_CHILLED    0x200u
+/* bit 10 (String only — shares the bit with Array/Hash's JOIN_VISITING, which is
+ * never set on a String): this chilled String came from Symbol#to_s rather than
+ * from a literal, which only selects a different warning text.  It is always set
+ * together with KORB_FL_CHILLED, so the mutation guards still test one bit.
+ * NOTE the high bits are NOT free here: a String keeps its encoding in
+ * KORB_STR_ENC_MASK (0x7000) *and* KORB_STR_ENC_HI_MASK (0x0180). */
+#define KORB_FL_CHILLED_SYM 0x400u
 
 /* bit 10 (Array, transient): array is on the current Array#join recursion path.
  * GC-safe cycle detection (survives moves) so join can dispatch element #to_s. */
