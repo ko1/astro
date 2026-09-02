@@ -1574,13 +1574,28 @@ static RESULT korb_m_class_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static RESULT korb_m_class_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_do_prepend(c, slots, VALUE_REF_GET(self), a);
 }
+/* A constant name must start UPPERCASE.  For a non-ASCII codepoint that means it
+ * has a lowercase mapping (Ж / Ἅ yes; é, ж, あ, થ no) — CRuby's rb_enc_isupper. */
+static bool korb_const_name_head_upper(const char *nm) {
+    const unsigned char b = (unsigned char)nm[0];
+    if (b < 0x80) return b >= 'A' && b <= 'Z';
+    const uint32_t clen = b >= 0xF0 ? 4u : b >= 0xE0 ? 3u : b >= 0xC0 ? 2u : 1u;
+    if (clen == 1) return false;                          /* stray continuation byte */
+    uint32_t cp = b & (0xFFu >> (clen + 1));
+    for (uint32_t i = 1; i < clen; i++) {
+        if ((nm[i] & 0xC0) != 0x80) return false;         /* truncated: not a letter */
+        cp = (cp << 6) | ((unsigned char)nm[i] & 0x3F);
+    }
+    return korb_case_cp(cp, 0) != cp ||
+           korb_case_multi(cp, korb_case_down_multi, KORB_CASE_DOWN_MULTI_N) != NULL;
+}
 /* Module#const_set(name, value) — koruby's const table is flat (global), so this
  * defines/overwrites the named constant. Returns the value. */
 static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t id;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
-    const char *const cname = korb_sym_name(c->vm, id);   /* [A-Z][A-Za-z0-9_]* (or non-ASCII) */
-    if (UNLIKELY(!((cname[0] >= 'A' && cname[0] <= 'Z') || (unsigned char)cname[0] >= 0x80)))
+    const char *const cname = korb_sym_name(c->vm, id);   /* [A-Z][A-Za-z0-9_]* (or an uppercase non-ASCII head) */
+    if (UNLIKELY(!korb_const_name_head_upper(cname)))
         return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", cname);
     for (const char *p = cname + 1; *p; p++)              /* reject '=', '?', etc. after the first char */
         if (UNLIKELY(!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_' || (unsigned char)*p >= 0x80)))

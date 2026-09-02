@@ -2561,16 +2561,18 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
     uint32_t name_sym = kp_intern_cid(tc, cn->name);
     uint32_t path_owner = 0;                         /* `class M::C` → M (full dotted path) */
     const pm_node_t *dyn_base = NULL;                /* `class expr::C` → evaluate expr */
+    bool abs_top = false;                            /* `class ::C` — top level, whatever encloses it */
     if (PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_PATH_NODE)) {
         const pm_node_t *const parent = ((const pm_constant_path_node_t *)cn->constant_path)->parent;
+        abs_top = (parent == NULL);
         path_owner = kp_intern_cpath(tc, parent);
-        if (path_owner == 0) dyn_base = parent;
+        if (path_owner == 0 && !abs_top) dyn_base = parent;
     }
     const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B */
 
     /* a bare `class X` inside a block nests lexically, not by self */
-    bool lex_top = false;
-    if (path_owner == 0 && dyn_base == NULL) {
+    bool lex_top = abs_top;
+    if (!abs_top && path_owner == 0 && dyn_base == NULL) {
         uint32_t lex = 0;
         if (kp_lexical_class_owner(tc, &lex)) { path_owner = lex; lex_top = (lex == 0); }
     }
@@ -2990,14 +2992,16 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
     uint32_t name_sym = kp_intern_cid(tc, mn->name);
     uint32_t path_owner = 0;                         /* `module M::Inner` → M (full dotted path) */
     const pm_node_t *dyn_base = NULL;                /* `module expr::Inner` → evaluate expr */
+    bool abs_top = false;                            /* `module ::M` — top level, whatever encloses it */
     if (PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_PATH_NODE)) {
         const pm_node_t *const parent = ((const pm_constant_path_node_t *)mn->constant_path)->parent;
+        abs_top = (parent == NULL);
         path_owner = kp_intern_cpath(tc, parent);
-        if (path_owner == 0) dyn_base = parent;
+        if (path_owner == 0 && !abs_top) dyn_base = parent;
     }
     const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B */
-    bool lex_top = false;                            /* see node_class: lexical nesting inside a block */
-    if (path_owner == 0 && dyn_base == NULL) {
+    bool lex_top = abs_top;                          /* see node_class: lexical nesting inside a block */
+    if (!abs_top && path_owner == 0 && dyn_base == NULL) {
         uint32_t lex = 0;
         if (kp_lexical_class_owner(tc, &lex)) { path_owner = lex; lex_top = (lex == 0); }
     }
@@ -4398,8 +4402,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
          * env depth; depth 0 (method top-level or no method) → plain return. */
         struct kp_frame *mf = tc->frame;
         uint32_t depth = 0;
-        while (mf->method_mid == 0 && mf->prev) { mf = mf->prev; depth++; }
-        if (mf->method_mid == 0) depth = 0;
+        while (mf->method_mid == 0 && mf->prev && !mf->class_name_sym && !mf->anon_class_body) { mf = mf->prev; depth++; }
+        /* No method: the top-level program frame IS the home (`proc { return }` at
+         * top level ends the file), but a class/module body is not — a `return`
+         * that reaches one has nowhere to go (LocalJumpError). */
+        if (mf->method_mid == 0 && (mf->class_name_sym || mf->anon_class_body)) depth = 0;
+        else if (mf->method_mid == 0 && rn->arguments)     /* top-level return yields no value */
+            fprintf(stderr, "%s: warning: argument of top-level return is ignored\n", tc->fname);
         if (depth == 0) {
             return ALLOC_node_return(kp_jump_args_value(tc, rn->arguments));
         }
