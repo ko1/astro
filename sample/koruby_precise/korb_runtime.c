@@ -3497,6 +3497,20 @@ static RESULT korb_m_bind_lvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i)[0])));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* Binding#__lvars_own — only the names of the binding site's OWN scope (baked
+ * depth 0), not the enclosing ones #local_variables also reports.  The implicit
+ * (numbered / it) parameter API is scope-exact in CRuby and needs this. */
+static RESULT korb_m_bind_lvars_own(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));
+    slots[0] = UNWRAP(korb_ary_new(c, slots, b->name_cnt + 1));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++) {
+        const uint32_t *const t = KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i);
+        if (t[1] != 0) continue;
+        CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(t[0])));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 /* Regexp / MatchData / String-regex methods live in builtins/regexp.c
  * (#included after string.c so korb_utf8_* and korb_obj_singleton are visible). */
 
@@ -10936,6 +10950,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_set", korb_m_bind_lvset, 2);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_defined?", korb_m_bind_lvdefined, 1);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variables", korb_m_bind_lvars, 0);
+    korb_def_cmethod(c, KORB_C_BINDING, "__lvars_own", korb_m_bind_lvars_own, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "receiver", korb_m_bind_recv, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "source_location", korb_m_bind_source_location, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "inherited", korb_m_lit_nil, 1);   /* default no-op hook (so user inherited can call super) */
