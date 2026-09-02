@@ -1575,11 +1575,21 @@ class Object
   # not defined on the singleton class itself.
   def singleton_method(name)
     sc = singleton_class
-    unless sc.instance_methods(false).include?(name.to_sym) ||
-           sc.private_instance_methods(false).include?(name.to_sym)
-      raise NameError.new("undefined singleton method '#{name}' for #{inspect}", name.to_sym)
+    sym = name.to_sym
+    m = begin
+          method(sym)
+        rescue NameError
+          nil
+        end
+    # The singleton class *and* the modules included/prepended into it count;
+    # the inherited part of the chain (from the first other Class on) does not.
+    if m
+      sc.ancestors.each do |mod|
+        break if mod.is_a?(Class) && !mod.equal?(sc)
+        return m if mod.equal?(m.owner)
+      end
     end
-    method(name)
+    raise NameError.new("undefined singleton method '#{name}' for #{inspect}", sym)
   end
 end
 
@@ -1852,6 +1862,14 @@ class Regexp
     return true unless src.ascii_only?
     src.scan(/\\x([0-9a-fA-F]{1,2})/).any? { |h| h[0].to_i(16) > 0x7f }
   end
+
+  # Regexp.new/.compile build the object outright, so #initialize is only ever
+  # reachable via #send on an already-built Regexp — which CRuby always rejects.
+  def initialize(*)
+    raise FrozenError.new("can't modify frozen Regexp: #{inspect}", receiver: self) if frozen?
+    raise TypeError, "already initialized regexp"
+  end
+  private :initialize
 end
 
 # Ruby 3.5+: RUBY_* 定数の Module 名前空間ミラー。

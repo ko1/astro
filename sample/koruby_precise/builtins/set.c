@@ -1006,8 +1006,18 @@ static RESULT korb_m_module_set_temp_name(CTX *c, VALUE *slots, VALUE_REF self, 
 static RESULT korb_m_class_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const RESULT r = korb_class_qname_str(c, slots, VALUE_REF_GET(self));   /* fully-qualified (M::C); nil if anonymous */
-    if (LIKELY(r.state == KORB_NORMAL) && KORB_STRING_P(r.value))
+    if (LIKELY(r.state == KORB_NORMAL) && KORB_STRING_P(r.value)) {
+        /* CRuby hands back the SAME frozen String every time (an fstring).  Copy
+         * the name to the stack first: the pool's miss path allocates. */
+        char buf[512];
+        const KorbString *const s = VAL2STR(r.value);
+        const uint32_t len = s->len, enc = KORB_STR_ENC(r.value);
+        if (LIKELY(len < sizeof buf)) {
+            memcpy(buf, korb_strbuf_data(s->buf), len);
+            return RESULT_OK(korb_fstr_get(c, slots, buf, len, enc));
+        }
         ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;   /* CRuby: Module#name is frozen */
+    }
     return r;
 }
 /* Module#to_s / #inspect → the (qualified) name; an anonymous class stringifies
@@ -1196,6 +1206,20 @@ static RESULT korb_m_class_ancestors(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return RESULT_OK(slots[0]);
 }
 static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask);  /* fwd */
+/* Binding#__lvars_own — only the names of the binding site's OWN scope (baked
+ * depth 0), not the enclosing ones #local_variables also reports.  The implicit
+ * (numbered / it) parameter API is scope-exact in CRuby and needs this. */
+static RESULT korb_m_bind_lvars_own(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2BIND(VALUE_REF_GET(self))->name_cnt + 1));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++) {
+        const uint32_t *const t = KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i);
+        if (t[1] != 0) continue;
+        CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(t[0])));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 /* Module#instance_methods(inherit=true) → public/protected method names (symbols).
  * Excludes the private `initialize`; dedups across the ancestor chain. */
 static RESULT korb_m_class_instance_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

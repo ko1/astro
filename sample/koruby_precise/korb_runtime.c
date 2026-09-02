@@ -1213,11 +1213,12 @@ korb_str_repeat_ref(CTX *c, VALUE *slots, VALUE_REF src, korb_sword_t cnt, uint3
     if (cnt < 0)
         return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative argument");
     uint32_t len = VAL2STR(VALUE_REF_GET(src))->len;
-    size_t total = (size_t)len * (size_t)cnt;
-    if (total > (size_t)1 << 31)
+    size_t total;
+    if (__builtin_mul_overflow((size_t)len, (size_t)cnt, &total) || total > (size_t)1 << 31)
         return korb_raise(c, slots, KORB_E_ARGUMENT, line, "argument too big");
     KorbString *s = korb_str_alloc(c, slots, (uint32_t)total);
     const KorbString *ss = VAL2STR(VALUE_REF_GET(src));
+    if (len == 0) return RESULT_OK((VALUE)s);            /* "" * huge is "" — never spin the copy loop */
     for (korb_sword_t i = 0; i < cnt; i++) {
         memcpy(korb_strbuf_data(s->buf) + (size_t)i * len, korb_strbuf_data(ss->buf), len);
     }
@@ -3208,13 +3209,22 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
 static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb_re_match_t *m);
 static RESULT korb_re_build_md(CTX *c, VALUE *slots, VALUE subj, VALUE re, const korb_re_match_t *m);
 static void korb_re_set_lastmatch(CTX *c, VALUE md_or_nil);
-RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
+static RESULT korb_re_alloc(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
     VALUE_REF sref = SLOTS_PUSH(slots, source);          /* root source across alloc */
     KorbRegexp *r = korb_alloc(c, slots, sizeof(KorbRegexp), KORB_OBJ_REGEXP);
     r->flags = flags;
     r->ci = (flags & 4u) ? 1u : 0u;
     ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->source, VALUE_REF_GET(sref));
     return RESULT_OK((VALUE)r);
+}
+/* node.def's `/pat/` and `/#{}/` reach only this entry point, and a Regexp
+ * literal is frozen in CRuby — so the freeze lives here and every other
+ * constructor (Regexp.new / .union / String coercion) uses korb_re_alloc. */
+RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
+    const RESULT r = korb_re_alloc(c, slots, source, flags);
+    if (LIKELY(r.state == KORB_NORMAL))
+        ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;
+    return r;
 }
 /* obj.method(:sym) → a bound Method object (receiver + method id). */
 RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid) {
@@ -7055,9 +7065,13 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
             RESULT cr = korb_coerce_to_int(c, slots, &rhs);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (!korb_to_index(rhs, &cnt)) {
-                if (KORB_BIGNUM_P(rhs))                  /* a Bignum count can never fit a long */
+                /* koruby's fixnums stop at ±2^62, so a legal long count (min_long,
+                 * max_long) arrives as a Bignum: take it, and reserve the
+                 * RangeError for one that really does not fit a long. */
+                if (!KORB_BIGNUM_P(rhs)) return korb_raise_no_int(c, slots, rhs);
+                if (!korb_mp_fits_slong_p(VAL2BIG(rhs)->z))
                     return korb_raise(c, slots, KORB_E_RANGE, line, "bignum too big to convert into 'long'");
-                return korb_raise_no_int(c, slots, rhs);
+                cnt = (korb_sword_t)korb_mp_get_si(VAL2BIG(rhs)->z);
             }
         }
         return korb_str_repeat_ref(c, slots, lhs, cnt, line);
@@ -11049,6 +11063,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_set", korb_m_bind_lvset, 2);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_defined?", korb_m_bind_lvdefined, 1);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variables", korb_m_bind_lvars, 0);
+    korb_def_cmethod(c, KORB_C_BINDING, "__lvars_own", korb_m_bind_lvars_own, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "receiver", korb_m_bind_recv, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "source_location", korb_m_bind_source_location, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "inherited", korb_m_lit_nil, 1);   /* default no-op hook (so user inherited can call super) */
@@ -11761,7 +11776,10 @@ korb_fprint_quoted_enc(FILE *fp, const char *bytes, uint32_t len, bool binary)
                 int n = (ch >= 0xF0) ? 3 : (ch >= 0xE0) ? 2 : (ch >= 0xC0) ? 1 : -1;
                 bool valid = n >= 0 && i + (uint32_t)n < len;
                 for (int k = 1; valid && k <= n; k++) if (((unsigned char)bytes[i+k] & 0xC0) != 0x80) valid = false;
-                if (valid) { fputc(ch, fp); for (int k = 1; k <= n; k++) fputc(bytes[i+k], fp); i += (uint32_t)n; }
+                /* U+0080..U+009F (the C1 controls) are not printable: \uNNNN */
+                if (valid && ch == 0xC2 && (unsigned char)bytes[i+1] <= 0x9F)
+                    { fprintf(fp, "\\u%04X", (unsigned char)bytes[i+1]); i += 1; }
+                else if (valid) { fputc(ch, fp); for (int k = 1; k <= n; k++) fputc(bytes[i+k], fp); i += (uint32_t)n; }
                 else fprintf(fp, "\\x%02X", ch);
             }
         }
@@ -13533,6 +13551,14 @@ korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_rat_new_v(c, slots + 2, slots[0], slots[1]);
     }
 bad:
+    /* Rational(Complex) — CRuby routes the one-argument form through #to_r, so a
+     * non-zero imaginary part is that method's RangeError (nil under
+     * exception: false), not a Complex quotient. */
+    if (n == 1 && KORB_COMPLEX_P(nv)) {
+        if (!exc) return RESULT_OK(KORB_NIL);
+        slots[0] = nv;
+        return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, NULL);
+    }
     /* A Complex operand (either position) is handled by Complex arithmetic:
      * Rational(3, Complex(2,0)) is 3/2, and a non-real denominator yields a
      * Complex quotient — exactly `numerator / denominator` in Ruby. */
@@ -13559,7 +13585,15 @@ bad:
             if (!korb_responds_to(c, nv, mid)) continue;
             slots[0] = nv;
             RESULT rr = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, NULL);
-            if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+            if (UNLIKELY(rr.state != KORB_NORMAL)) {
+                /* CRuby protects both conversions under exception: false, and
+                 * #to_int unconditionally (its failure becomes the TypeError
+                 * below); only #to_r's exception reaches the caller. */
+                if (!exc) return RESULT_OK(KORB_NIL);
+                if (i == 0) return rr;
+                nv = slots[0];                            /* re-read: the send may have moved it */
+                continue;
+            }
             if (KORB_RATIONAL_P(rr.value)) return RESULT_OK(rr.value);
             if (KORB_INTEGER_P(rr.value)) return korb_rat_new_v(c, slots + 1, rr.value, LONG2FIX(1));
             nv = slots[0];
@@ -13659,6 +13693,42 @@ static bool korb_parse_cpx(CTX *c, VALUE *slots, const char *s, uint32_t len) {
     return korb_cpx_component(c, slots + 2, s, ilo, ihi, &slots[1]);
 }
 
+/* One String operand of Complex(), parsed strictly (CRuby's string_to_c_strict).
+ * A literal with an exact-zero imaginary part reduces to its real part, so
+ * Complex("1", 2) is (1+2i).  Unparsable → ArgumentError, or *ok = false under
+ * exception: false.  `scratch` must not overlap the caller's parked operands —
+ * korb_parse_cpx writes scratch[0..1]. */
+static RESULT
+korb_cpx_str_operand(CTX *c, VALUE *scratch, VALUE sv, bool exc, VALUE *out, bool *ok)
+{
+    *ok = true;
+    if (UNLIKELY(!korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(sv)))) {
+        char m[96];
+        snprintf(m, sizeof m, "ASCII incompatible encoding: %s", korb_enc_name_of(c->vm, KORB_STR_ENC(sv)));
+        return korb_raise_enc_compat_msg(c, scratch, m);
+    }
+    /* copy the bytes out first: korb_parse_cpx allocates, which can move sv */
+    char buf[128];
+    const uint32_t len = VAL2STR(sv)->len;
+    const bool fits = len < sizeof buf;
+    if (fits) memcpy(buf, korb_strbuf_data(VAL2STR(sv)->buf), len);
+    for (uint32_t i = 0; fits && i < len; i++)
+        if (UNLIKELY(buf[i] == '\0')) {
+            if (!exc) { *ok = false; return RESULT_OK(KORB_NIL); }
+            return korb_raise(c, scratch, KORB_E_ARGUMENT, 0, "string contains null byte");
+        }
+    if (fits && korb_parse_cpx(c, scratch, buf, len)) {
+        if (scratch[1] == LONG2FIX(0)) { *out = scratch[0]; return RESULT_OK(scratch[0]); }
+        const RESULT r = korb_cpx_new(c, scratch + 2, scratch[0], scratch[1]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        *out = r.value;
+        return r;
+    }
+    if (!exc) { *ok = false; return RESULT_OK(KORB_NIL); }
+    return korb_raise(c, scratch, KORB_E_ARGUMENT, 0, "invalid value for convert(): \"%.*s\"",
+                      (int)(fits ? len : 0), fits ? buf : "");
+}
+
 static RESULT
 korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -13681,8 +13751,28 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
         }
     }
     if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
-    const VALUE re = VALUE_SLICE_GET(args, 0);
-    const VALUE im = (n >= 2) ? VALUE_SLICE_GET(args, 1) : LONG2FIX(0);
+    VALUE re = VALUE_SLICE_GET(args, 0);
+    VALUE im = (n >= 2) ? VALUE_SLICE_GET(args, 1) : LONG2FIX(0);
+    /* nil in either position is rejected before anything else (CRuby) */
+    if (UNLIKELY(re == KORB_NIL || im == KORB_NIL)) {
+        if (!exc) return RESULT_OK(KORB_NIL);
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert nil into Complex");
+    }
+    /* A String operand is parsed first, in either position ("1+2i", "123", ...). */
+    if (UNLIKELY(KORB_STRING_P(re) || KORB_STRING_P(im))) {
+        slots[0] = re; slots[1] = im;                                 /* parked: the parse allocates */
+        for (uint32_t i = 0; i < 2; i++) {
+            if (!KORB_STRING_P(slots[i])) continue;
+            VALUE parsed = KORB_NIL; bool ok = true;
+            CHECK(korb_cpx_str_operand(c, slots + 2, slots[i], exc, &parsed, &ok));
+            if (!ok) return RESULT_OK(KORB_NIL);
+            slots[i] = parsed;
+        }
+        re = slots[0]; im = slots[1];
+    }
+    /* Decided while the operands are still fresh: the tail below runs after
+     * calls that can move them. */
+    const bool im_real_kind = KORB_INTEGER_P(im) || KORB_FLOAT_P(im) || KORB_RATIONAL_P(im);
     /* Complex(a, b) == a + b*i.  Evaluating via full complex arithmetic (rather
      * than picking components directly) reproduces CRuby's Float promotion of the
      * cross terms, e.g. Complex(c(1.5,2), c(-5,6.3)) → (-4.8-3.0i) not (...-3i). */
@@ -13694,30 +13784,6 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
         slots[2] = UNWRAP(korb_cpx_new(c, slots + 2, LONG2FIX(0), LONG2FIX(1)));   /* i */
         slots[3] = UNWRAP(korb_cpx_arith(c, slots + 3, slots[1], slots[2], 2));    /* b * i */
         return korb_cpx_arith(c, slots + 4, slots[0], slots[3], 0);                /* a + b*i */
-    }
-    /* single String arg → parse a complex literal ("1+2i", "123", ...).  Copy to
-     * a stack buffer first: korb_parse_cpx allocates (the components), which may
-     * move the String and invalidate its data pointer mid-parse. */
-    if (n == 1 && KORB_STRING_P(re)) {
-        const KorbString *s = VAL2STR(re);
-        if (UNLIKELY(!korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(re)))) {   /* checked before parsing */
-            char m[96];
-            snprintf(m, sizeof m, "ASCII incompatible encoding: %s", korb_enc_name_of(c->vm, KORB_STR_ENC(re)));
-            return korb_raise_enc_compat_msg(c, slots, m);
-        }
-        for (uint32_t i = 0; i < s->len; i++)
-            if (UNLIKELY(korb_strbuf_data(s->buf)[i] == '\0')) {
-                if (!exc) return RESULT_OK(KORB_NIL);
-                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
-            }
-        char buf[128];
-        if (s->len < sizeof buf) {
-            memcpy(buf, korb_strbuf_data(s->buf), s->len);
-            if (korb_parse_cpx(c, slots, buf, s->len))
-                return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
-        }
-        if (!exc) return RESULT_OK(KORB_NIL);
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for convert(): \"%.*s\"", (int)s->len, korb_strbuf_data(s->buf));
     }
     /* a Numeric that is not one of the builtin kinds: CRuby asks #real? — a real
      * one becomes the real component, a complex one is returned as-is, and with
@@ -13756,6 +13822,13 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
         RESULT cr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_c", 4), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         if (KORB_COMPLEX_P(cr.value)) return RESULT_OK(cr.value);
+    }
+    /* Two operands end up at Complex.new, whose argument check is "not a real";
+     * CRuby short-circuits exception: false only when the imaginary part is not
+     * a real builtin kind, so Complex(:sym, 0, exception: false) still raises. */
+    if (n >= 2) {
+        if (!exc && !im_real_kind) return RESULT_OK(KORB_NIL);
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
     }
     if (!exc) return RESULT_OK(KORB_NIL);
     return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Complex", korb_coerce_name(c, VALUE_SLICE_GET(args, 0)));

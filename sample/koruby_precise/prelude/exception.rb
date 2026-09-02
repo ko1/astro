@@ -375,24 +375,28 @@ class Binding
     __lvars_all.reject { |n| IMPLICIT_PARAM_NAMES__.include?(n) }
   end
 
+  # 暗黙パラメータはスコープ厳密: 外側スコープのものは見えない
+  # (#__lvars_own)。
   def implicit_parameters
-    __lvars_all.select { |n| IMPLICIT_PARAM_NAMES__.include?(n) }.sort
+    __lvars_own.select { |n| IMPLICIT_PARAM_NAMES__.include?(n) }.sort
   end
 
   def implicit_parameter_defined?(name)
-    __lvars_all.include?(__implicit_param_name(name))
+    __lvars_own.include?(__implicit_param_name(name))
   end
 
   def implicit_parameter_get(name)
     n = __implicit_param_name(name)
-    unless __lvars_all.include?(n)
+    unless __lvars_own.include?(n)
       raise NameError, "implicit parameter '#{n}' is not defined for #{inspect}"
     end
     __lvget_implicit(n)   # local_variable_get rejects _1.._9 outright
   end
 
   private def __implicit_param_name(name)
-    n = name.is_a?(String) ? name.to_sym : name
+    n = name
+    n = n.to_str if !n.is_a?(Symbol) && !n.is_a?(String) && n.respond_to?(:to_str)
+    n = n.to_sym if n.is_a?(String)
     raise TypeError, "#{name.inspect} is not a symbol nor a string" unless n.is_a?(Symbol)
     raise NameError, "'#{n}' is not an implicit parameter" unless IMPLICIT_PARAM_NAMES__.include?(n)
     n
