@@ -2233,14 +2233,18 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
  * a reordered private copy in that case: every named parameter first, in ABI
  * order, then the rest of the locals as prism had them.  Returns NULL when the
  * natural order already works or when the shape is one this cannot describe
- * (destructured or repeated parameters, an anonymous rest with posts). */
+ * (destructured or repeated parameters).
+ *
+ * `def m(*, a)` has no local for the anonymous rest, yet the ABI derives the
+ * post slots from rest_slot+1, so reserve an unnamed slot (id 0, which no name
+ * can match) between the optionals and the posts. */
 static const pm_constant_id_list_t *
 kp_param_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *locals,
                       const pm_parameters_node_t *ps)
 {
     if (!ps || locals->size == 0) return NULL;
     pm_constant_id_t want[64];
-    uint32_t n = 0;
+    uint32_t n = 0, ph = 0;                 /* ph = reserved unnamed slots in want[] */
     #define WANT(cid) do { if ((cid) == 0 || n >= 64) return NULL; want[n++] = (cid); } while (0)
     for (size_t i = 0; i < ps->requireds.size; i++) {
         if (!PM_NODE_TYPE_P(ps->requireds.nodes[i], PM_REQUIRED_PARAMETER_NODE)) return NULL;
@@ -2253,7 +2257,9 @@ kp_param_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *locals,
     if (ps->rest) {
         if (!PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE)) return NULL;
         const pm_constant_id_t rn = ((const pm_rest_parameter_node_t *)ps->rest)->name;
-        if (rn == 0) { if (ps->posts.size) return NULL; }   /* anonymous rest: no local to place */
+        if (rn == 0) {                                  /* anonymous rest: reserve a slot only when posts need one */
+            if (ps->posts.size) { if (n >= 64) return NULL; want[n++] = 0; ph++; }
+        }
         else WANT(rn);
     }
     for (size_t i = 0; i < ps->posts.size; i++) {
@@ -2262,17 +2268,23 @@ kp_param_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *locals,
     }
     #undef WANT
     if (n == 0) return NULL;
-    bool same = (n <= locals->size);
-    for (uint32_t i = 0; same && i < n; i++) if (locals->ids[i] != want[i]) same = false;
-    if (same) return NULL;                              /* prism's order already matches */
-    for (uint32_t i = 0; i < n; i++)                    /* a repeated name has no unique slot */
+    const uint32_t out_size = (uint32_t)locals->size + ph;
+    if (ph == 0) {
+        bool same = (n <= locals->size);
+        for (uint32_t i = 0; same && i < n; i++) if (locals->ids[i] != want[i]) same = false;
+        if (same) return NULL;                          /* prism's order already matches */
+    }
+    for (uint32_t i = 0; i < n; i++) {                  /* a repeated name has no unique slot */
+        if (want[i] == 0) continue;
         for (uint32_t j = i + 1; j < n; j++) if (want[i] == want[j]) return NULL;
+    }
     for (uint32_t i = 0; i < n; i++) {                  /* every parameter must BE one of the locals */
+        if (want[i] == 0) continue;
         bool found = false;
         for (size_t k = 0; !found && k < locals->size; k++) found = (locals->ids[k] == want[i]);
         if (!found) return NULL;
     }
-    pm_constant_id_t *const ids = malloc(sizeof(*ids) * locals->size);   /* immortal: the frame reads it */
+    pm_constant_id_t *const ids = malloc(sizeof(*ids) * out_size);   /* immortal: the frame reads it */
     if (!ids) abort();
     memcpy(ids, want, sizeof(*ids) * n);
     uint32_t w = n;
@@ -2281,10 +2293,10 @@ kp_param_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *locals,
         for (uint32_t i = 0; !is_param && i < n; i++) is_param = (want[i] == locals->ids[k]);
         if (!is_param) ids[w++] = locals->ids[k];
     }
-    if (w != locals->size) { free(ids); return NULL; }   /* duplicate local ids: leave it alone */
+    if (w != out_size) { free(ids); return NULL; }       /* duplicate local ids: leave it alone */
     pm_constant_id_list_t *const out = malloc(sizeof(*out));
     if (!out) abort();
-    out->ids = ids; out->size = locals->size; out->capacity = locals->size;
+    out->ids = ids; out->size = out_size; out->capacity = out_size;
     (void)tc;
     return out;
 }
@@ -2316,11 +2328,6 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
          * supported — they bind from the tail, optionals fill the middle. */
         if (ps->rest && !PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE))
             return kp_unsupported(tc, (const pm_node_t *)dn, "forwarding rest parameter");
-        /* anonymous `*` rest collects surplus args into a synth local (the body
-         * can't name it).  With posts the post-slot layout assumes a named rest,
-         * so reject that rarer combo. */
-        if (ps->rest && ((const pm_rest_parameter_node_t *)ps->rest)->name == 0 && ps->posts.size)
-            return kp_unsupported(tc, (const pm_node_t *)dn, "anonymous rest parameter with post parameters");
         req_cnt = (uint32_t)ps->requireds.size;
         opt_cnt = (uint32_t)ps->optionals.size;
         params_cnt = req_cnt + opt_cnt;   /* positional fixed slots; rest/keywords follow */
@@ -2328,6 +2335,12 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
 
     const bool anon_cref = tc->frame->anon_class_body || tc->frame->anon_cref_method;
     const pm_constant_id_list_t *const reordered = kp_param_first_locals(tc, &dn->locals, ps);
+    /* `def m(*, a)`: the posts sit at rest_slot+1, so the anonymous rest needs the
+     * slot kp_param_first_locals reserves — without that list there is nowhere to put it. */
+    const bool anon_rest_posts = ps && ps->rest && PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE)
+                                 && ((const pm_rest_parameter_node_t *)ps->rest)->name == 0 && ps->posts.size;
+    if (anon_rest_posts && !reordered)
+        return kp_unsupported(tc, (const pm_node_t *)dn, "anonymous rest parameter with post parameters");
     push_frame(tc, reordered ? reordered : &dn->locals);
     tc->frame->anon_cref_method = anon_cref;               /* constants resolve via the entry cell */
     tc->frame->method_mid = kp_intern_cid(tc, dn->name);   /* for `super` inside the body */
@@ -2373,8 +2386,9 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     int32_t rest_slot = -1;
     if (ps && ps->rest) {
         pm_constant_id_t rn = ((const pm_rest_parameter_node_t *)ps->rest)->name;
-        rest_slot = rn ? (int32_t)lvar_index(tc, ps->rest, rn)   /* named rest → its local slot */
-                       : (int32_t)alloc_synth_local(tc);          /* anonymous `*` → synth slot (bare `*` forwards it) */
+        rest_slot = rn                ? (int32_t)lvar_index(tc, ps->rest, rn)   /* named rest → its local slot */
+                  : anon_rest_posts   ? (int32_t)params_cnt                     /* the reserved unnamed slot, so posts land at +1 */
+                                      : (int32_t)alloc_synth_local(tc);         /* anonymous `*` → synth slot (bare `*` forwards it) */
         if (!rn) tc->frame->anon_rest_slot = rest_slot;
         tc->frame->method_rest_slot = rest_slot;                 /* for forwarding super (`super` re-splats the rest) */
     }
@@ -4572,6 +4586,19 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_yield_node_t *yn = (const pm_yield_node_t *)node;
         uint32_t line = kp_line(tc, node);
         size_t yargc = yn->arguments ? yn->arguments->arguments.size : 0;
+        /* A class/module/`class << obj` body ends the method scope, so a `yield`
+         * that reaches one has no block to name.  prism skips this check while
+         * parsing an eval (parsing_eval), which is exactly where it still bites. */
+        for (const struct kp_frame *f = tc->frame; f && f->method_mid == 0; f = f->prev) {
+            if (!f->class_name_sym && !f->anon_class_body) continue;
+            if (tc->syntax_err == NULL) {
+                static char ybuf[512];
+                snprintf(ybuf, sizeof ybuf, "%s:%u: Invalid yield", tc->fname, line);
+                tc->syntax_err = ybuf;
+            }
+            tc->syntax_error = true;
+            break;
+        }
         /* `yield` reaches the enclosing METHOD's block, not a nested block's.
          * Walk up to the method frame (method_mid != 0), counting block frames. */
         struct kp_frame *mf = tc->frame;
@@ -4990,6 +5017,18 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             bake_add(tc, &_s->u.node_super_blk.self_off);
             bake_add(tc, &_s->u.node_super_blk.def_env_off);
             return _s;
+        }
+        /* `super(...)` — the enclosing `def m(...)` already collected the positional
+         * args into its synth rest local; the block rides the frame's block cells,
+         * which super_fwd forwards anyway. */
+        if (argc >= 1 && PM_NODE_TYPE_P(args->arguments.nodes[argc - 1], PM_FORWARDING_ARGUMENTS_NODE)) {
+            if (tc->frame->fwd_slot < 0)
+                return kp_unsupported(tc, node, "... forwarding outside a (...) method body");
+            NODE *farr;
+            WITH_CHAIN(tc, 1, (farr = (argc == 1)
+                ? bake_lget(tc, (uint32_t)tc->frame->fwd_slot)
+                : build_array_with_fwd(tc, args->arguments.nodes, argc - 1)));
+            return emit_super_fwd(tc, m_mid, line, farr);
         }
         /* `super(args)` with no literal block — build the args Array and forward
          * the current method's incoming block (super_fwd). */
