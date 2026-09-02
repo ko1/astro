@@ -1796,8 +1796,9 @@ class Fiber
   def self.scheduler
     @__scheduler
   end
+  # scheduler が無ければ nil (raise しない)。raise するのは Fiber.schedule だけ。
+  # 本来は「現 fiber が non-blocking のときだけ返す」だが、その区別はまだ無い。
   def self.current_scheduler
-    raise RuntimeError, "No scheduler is available!" if @__scheduler.nil?
     @__scheduler
   end
   def self.set_scheduler(sched)
