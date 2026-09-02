@@ -22,7 +22,7 @@ class BasicSocket < IO
 
   def self.for_fd(fd)
     s = allocate
-    s.__send__(:__init_fd, fd, "r+")
+    s.__send__(:__init_fd, fd, "r+b")   # every socket is binary in CRuby
     s
   end
 
@@ -39,6 +39,16 @@ class BasicSocket < IO
   def self.do_not_reverse_lookup = defined?(@@dnrl) ? @@dnrl : true
   def self.do_not_reverse_lookup=(v)
     @@dnrl = v ? true : false
+  end
+
+  # #listen's backlog goes through NUM2INT: #to_int only, so a String is a
+  # TypeError rather than something to parse.
+  private def __backlog(n)
+    return n if n.is_a?(Integer)
+    raise TypeError, "no implicit conversion of #{n.class} into Integer" unless n.respond_to?(:to_int)
+    v = n.to_int
+    raise TypeError, "can't convert #{n.class} to Integer" unless v.is_a?(Integer)
+    v
   end
 
   def getsockname_ary = __sock_name(fileno, false)
@@ -119,7 +129,31 @@ class BasicSocket < IO
     end
   end
   def recv_nonblock(maxlen, flags = 0, exception: true) = recv(maxlen, flags | Socket::MSG_DONTWAIT)
-  def connect_address = local_address
+  # The address a peer would use to reach this socket: the bound address, with a
+  # wildcard IP replaced by the loopback one.  An unbound socket has none.
+  def connect_address
+    a = local_address
+    if a.unix?
+      raise SocketError, "no connection address" if a.unix_path.empty?
+      return a
+    end
+    raise SocketError, "no connection address" if a.ip_port == 0
+    ip = a.ip_address
+    if ip == "0.0.0.0" || ip == "::"
+      lo = (ip == "0.0.0.0") ? "127.0.0.1" : "::1"
+      return Addrinfo.__from_ary([a.afamily_name, a.ip_port, lo, lo, a.socktype, a.protocol])
+    end
+    a
+  end
+
+  # [euid, egid] of the peer.  UNIX sockets only — SO_PEERCRED carries a
+  # struct ucred { pid_t pid; uid_t uid; gid_t gid; }.
+  def getpeereid
+    raise NoMethodError, "undefined method 'getpeereid' for an instance of #{self.class}" unless
+      local_address.unix?
+    _pid, uid, gid = getsockopt(Socket::SOL_SOCKET, Socket::SO_PEERCRED).unpack("iII")
+    [uid, gid]
+  end
 
   # koruby always closes the descriptor with the IO, so autoclose is a recorded
   # preference rather than a behaviour switch.
@@ -161,7 +195,7 @@ class BasicSocket < IO
   # plumbing, so the control list is always empty; everything else is faithful.
   # Socket#recvfrom answers an Addrinfo where BasicSocket's answers the raw
   # tuple, so accept either shape here.
-  private def __as_addrinfo(a) = a.is_a?(Addrinfo) ? a : Addrinfo.__from_ary(a)
+  private def __as_addrinfo(a) = a.is_a?(Addrinfo) ? a : __own_addrinfo(a)
 
   def recvmsg(maxlen = nil, flags = 0, opts = nil, scm_rights: false)
     data, addr = recvfrom(maxlen || 65536, flags)
@@ -241,7 +275,7 @@ class TCPSocket < IPSocket
       IO.new(fd).close rescue nil
       raise
     end
-    __init_fd(fd, "r+")
+    __init_fd(fd, "r+b")
   end
 
   def self.open(*args)
@@ -284,7 +318,7 @@ class TCPServer < TCPSocket
     __sock_setopt(fd, Socket::SOL_SOCKET, Socket::SO_REUSEADDR, 1)
     __sock_bind(fd, fam, host, port)
     __sock_listen(fd, 5)
-    __init_fd(fd, "r+")     # not TCPSocket#initialize: a server binds, never connects
+    __init_fd(fd, "r+b")     # not TCPSocket#initialize: a server binds, never connects
   end
 
   def accept
@@ -299,7 +333,7 @@ class TCPServer < TCPSocket
   end
 
   def accept_nonblock(exception: true) = accept
-  def listen(backlog) = (__sock_listen(fileno, backlog); 0)
+  def listen(backlog) = (__sock_listen(fileno, __backlog(backlog)); 0)
 
   # Like #accept, but hands back the raw descriptor.
   def sysaccept
@@ -352,12 +386,14 @@ class UNIXSocket < BasicSocket
       IO.new(fd).close rescue nil
       raise
     end
-    __init_fd(fd, "r+")
+    __init_fd(fd, "r+b")
     @path = path.to_s
   end
 
-  def path = @path
-  def addr = ["AF_UNIX", @path.to_s]
+  # CRuby reports getsockname's path, not the path that was connected to: a
+  # client (and a socketpair half) never binds, so its own path is "".
+  def path = getsockname_ary[2].to_s
+  def addr = ["AF_UNIX", path]
   def peeraddr = ["AF_UNIX", getpeername_ary[2]]
 
   # A UNIX socket's sender address is just ["AF_UNIX", path] — an unbound peer
@@ -391,7 +427,7 @@ class UNIXServer < UNIXSocket
     __sock_bind(fd, Socket::AF_UNIX, path.to_s, 0)
     __sock_listen(fd, 5)
     @path = path.to_s
-    __init_fd(fd, "r+")
+    __init_fd(fd, "r+b")
   end
 
   def accept
@@ -406,7 +442,7 @@ class UNIXServer < UNIXSocket
   end
 
   def accept_nonblock(exception: true) = accept
-  def listen(backlog) = (__sock_listen(fileno, backlog); 0)
+  def listen(backlog) = (__sock_listen(fileno, __backlog(backlog)); 0)
 
   # Like #accept, but hands back the raw descriptor.
   def sysaccept
@@ -431,7 +467,7 @@ end
 class UDPSocket < IPSocket
   def initialize(family = Socket::AF_INET)
     @family = Socket.__family(family)
-    __init_fd(__sock_open(@family, Socket::SOCK_DGRAM, 0), "r+")
+    __init_fd(__sock_open(@family, Socket::SOCK_DGRAM, 0), "r+b")
   end
   def family = @family
 
@@ -510,10 +546,46 @@ class Socket < BasicSocket
       @optname = Socket.__optname(optname, @level)
       @data    = data.to_str
     end
-    def int = @data.unpack("i")[0]
-    def bool = int != 0
+    # CRuby checks the payload really is one int before decoding it.
+    def int
+      raise TypeError, "size differ. expected as sizeof(int)=4 but #{@data.bytesize}" if @data.bytesize != 4
+      @data.unpack("i")[0]
+    end
+    def bool
+      raise TypeError, "size differ. expected as sizeof(int)=4 but #{@data.bytesize}" if @data.bytesize != 4
+      @data.unpack("i")[0] != 0
+    end
     def to_s = @data
     def unpack(fmt) = @data.unpack(fmt)
+
+    # "#<Socket::Option: UNSPEC SOCKET LINGER on 30sec>"
+    def inspect
+      fam = Option.__cname(@family, %w[AF_]) || @family.to_s
+      lvl = @level == Socket::SOL_SOCKET ? "SOCKET" : (Option.__cname(@level, %w[IPPROTO_]) || @level.to_s)
+      opt = Option.__cname(@optname, ["#{lvl == "SOCKET" ? "SO" : lvl}_"]) || @optname.to_s
+      body =
+        if @level == Socket::SOL_SOCKET && @optname == Socket::SO_LINGER && @data.bytesize >= 8
+          on, secs = @data.unpack("ii")
+          "#{on != 0 ? "on" : "off"} #{secs}sec"
+        elsif @data.bytesize == 4
+          @data.unpack("i")[0].to_s
+        else
+          @data.unpack("C*").map { |b| format("%02x", b) }.join
+        end
+      "#<Socket::Option: #{fam} #{lvl} #{opt} #{body}>"
+    end
+
+    # The bare name of the Socket constant with value `v` and one of `pfxs` as
+    # its prefix ("AF_INET" with "AF_" -> "INET").
+    def self.__cname(v, pfxs)
+      pfxs.each do |p|
+        n = Socket.constants.find { |c|
+          c.to_s.start_with?(p) && (x = Socket.const_get(c); x.is_a?(Integer) && x == v)
+        }
+        return n.to_s[p.size..] if n
+      end
+      nil
+    end
     def self.int(family, level, optname, integer) = new(family, level, optname, [integer].pack("i"))
     def self.bool(family, level, optname, bool) = int(family, level, optname, bool ? 1 : 0)
 
@@ -549,28 +621,41 @@ class Socket < BasicSocket
 
     def self.__level(fam, lv)
       lv = lv.to_str if !lv.is_a?(Integer) && !lv.is_a?(Symbol) && !lv.is_a?(String) && lv.respond_to?(:to_str)
-      return lv if lv.is_a?(Integer)
-      n = lv.to_s.upcase
-      n = "SOL_SOCKET" if n == "SOCKET"
-      n = "IPPROTO_#{n}" unless n.start_with?("SOL_") || n.start_with?("IPPROTO_")
-      Socket.const_defined?(n) ? Socket.const_get(n) : (raise SocketError, "unknown protocol level: #{lv}")
+      unless lv.is_a?(Integer)
+        n = lv.to_s.upcase
+        n = "SOL_SOCKET" if n == "SOCKET"
+        n = "IPPROTO_#{n}" unless n.start_with?("SOL_") || n.start_with?("IPPROTO_")
+        raise SocketError, "unknown protocol level: #{lv}" unless Socket.const_defined?(n)
+        lv = Socket.const_get(n)
+      end
+      # AF_UNIX carries only socket-level control messages
+      if fam == Socket::AF_UNIX && lv != Socket::SOL_SOCKET
+        raise SocketError, "level not supported for UNIX socket: #{lv}"
+      end
+      lv
+    end
+
+    # The constant-name prefix each protocol level's control messages use.
+    def self.__type_prefix(level)
+      case level
+      when Socket::SOL_SOCKET  then "SCM_"
+      when Socket::IPPROTO_IP  then "IP_"
+      when Socket::IPPROTO_TCP then "TCP_"
+      when Socket::IPPROTO_UDP then "UDP_"
+      when (Socket.const_defined?(:IPPROTO_IPV6) ? Socket::IPPROTO_IPV6 : nil) then "IPV6_"
+      end
     end
 
     def self.__type(fam, level, ty)
       ty = ty.to_str if !ty.is_a?(Integer) && !ty.is_a?(Symbol) && !ty.is_a?(String) && ty.respond_to?(:to_str)
       return ty if ty.is_a?(Integer)
       n = ty.to_s.upcase
-      # only this level's own constant family counts: :RECVTTL is an IP option,
-      # so it must not resolve under SOL_SOCKET
-      cands = case level
-              when Socket::SOL_SOCKET  then [n, "SCM_#{n}"]
-              when Socket::IPPROTO_IP  then [n, "IP_#{n}"]
-              when Socket::IPPROTO_TCP then [n, "TCP_#{n}"]
-              when (Socket.const_defined?(:IPPROTO_IPV6) ? Socket::IPPROTO_IPV6 : nil) then [n, "IPV6_#{n}"]
-              else [n]
-              end
       # a name that is just digits is not a name: CRuby wants the Integer itself
       raise TypeError, "no implicit conversion of String into Integer" if n =~ /\A[0-9]+\z/
+      # only this level's own constant family counts: :RECVTTL is an IP option,
+      # so it must not resolve under SOL_SOCKET — and neither must :IP_RECVTTL
+      pfx = __type_prefix(level)
+      cands = pfx ? (n.start_with?(pfx) ? [n] : ["#{pfx}#{n}"]) : [n]
       cands.each do |cand|
         next unless cand =~ /\A[A-Z_][A-Za-z0-9_]*\z/
         return Socket.const_get(cand) if Socket.const_defined?(cand)
@@ -578,10 +663,15 @@ class Socket < BasicSocket
       raise SocketError, "unknown UNIX control message: #{ty}"
     end
 
-    def int = @data.unpack("i")[0]
+    def int
+      raise TypeError, "size differ. expected as sizeof(int)=4 but #{@data.bytesize}" if @data.bytesize != 4
+      @data.unpack("i")[0]
+    end
+    # Both names are resolved before comparing, so an unknown one still raises.
     def cmsg_is?(level, type)
-      @level == AncillaryData.__level(@family, level) &&
-        @type == AncillaryData.__type(@family, @level, type)
+      lv = AncillaryData.__level(@family, level)
+      ty = AncillaryData.__type(@family, lv, type)
+      @level == lv && @type == ty
     end
     def inspect = "#<Socket::AncillaryData: #{@family} #{@level} #{@type} #{@data.bytesize}bytes>"
 
@@ -642,35 +732,46 @@ class Socket < BasicSocket
       new(family, level, type, [integer].pack("i"))
     end
     def self.unix_rights(*ios)
-      new(:UNIX, :SOCKET, :RIGHTS, ios.map { |io| io.respond_to?(:fileno) ? io.fileno : io.to_int }.pack("i*"))
+      ios.each { |io| raise TypeError, "IO expected" unless io.is_a?(IO) }
+      d = new(:UNIX, :SOCKET, :RIGHTS, ios.map(&:fileno).pack("i*"))
+      d.instance_variable_set(:@ios, ios)     # CRuby hands back the very IO objects
+      d
     end
+    # nil unless this message actually carries descriptors.
     def unix_rights
-      return nil unless @family == Socket::AF_UNIX && @level == Socket::SOL_SOCKET
-      @data.unpack("i*").map { |fd| IO.for_fd(fd) }
+      unless @level == Socket::SOL_SOCKET && @type == Socket::SCM_RIGHTS
+        raise TypeError, "level and type must be SOL_SOCKET and SCM_RIGHTS"
+      end
+      @ios
     end
   end
 
   def initialize(family, type, protocol = 0)
     @family, @type = Socket.__family_strict(family), Socket.__socktype_strict(type)
-    __init_fd(__sock_open(@family, @type, protocol), "r+")
+    __init_fd(__sock_open(@family, @type, protocol), "r+b")
   end
 
   # BasicSocket#recvfrom answers the raw [af, port, host, addr] tuple; Socket's
   # own answers an Addrinfo (CRuby).
   def recvfrom(maxlen, flags = 0)
     mesg, addr = super
-    [mesg, Addrinfo.__from_ary(addr)]
+    [mesg, __own_addrinfo(addr)]     # the sender's address, typed like this socket
   end
 
   def recvfrom_nonblock(maxlen = 65536, flags = 0, outbuf = nil, exception: true)
     r = super
     return r if r.is_a?(Symbol)
-    [r[0], Addrinfo.__from_ary(r[1])]
+    [r[0], __own_addrinfo(r[1])]
   end
 
   def bind(addr) = (a = Socket.__unpack(addr); __sock_bind(fileno, @family, a[2], a[1]); 0)
   def connect(addr) = (a = Socket.__unpack(addr); __sock_connect(fileno, @family, a[2], a[1]); 0)
-  def listen(backlog) = (__sock_listen(fileno, backlog); 0)
+  # Socket.tcp's :connect_timeout / :open_timeout, which #connect has no room for.
+  def __connect_within(ai, timeout)
+    __sock_connect(fileno, @family, ai.ip_address, ai.ip_port, timeout)
+    0
+  end
+  def listen(backlog) = (__sock_listen(fileno, __backlog(backlog)); 0)
 
   def accept
     loop do
@@ -725,8 +826,14 @@ class Socket < BasicSocket
     rows = __sock_getaddrinfo(host&.to_s, service, family && __family(family),
                               socktype && __socktype(socktype), flags ? flags.to_int : 0)
     # reverse_lookup asks for the PTR name in the host slot instead of the
-    # numeric address (the default is numeric).
-    if reverse_lookup
+    # numeric address.  nil (the default) defers to the global setting.
+    want = case reverse_lookup
+           when true, :hostname then true
+           when false, :numeric then false
+           when nil then !BasicSocket.do_not_reverse_lookup
+           else raise ArgumentError, "invalid reverse_lookup flag: :#{reverse_lookup}"
+           end
+    if want
       rows.each do |r|
         r[2] = begin
           getnameinfo([r[0], r[1], r[3], r[3]])[0]
@@ -873,6 +980,15 @@ class Socket < BasicSocket
     def inspect = "\#<Socket::UDPSource #{@remote_address.inspect} to #{@local_address.inspect}>"
   end
 
+  # Read one datagram from each ready socket, yielding [message, UDPSource].
+  def self.udp_server_recv(sockets, &blk)
+    Array(sockets).each do |s|
+      mesg, sender = s.recvfrom(65536)
+      src = UDPSource.new(sender, s.local_address) { |reply| s.send(reply, 0, sender.to_sockaddr) }
+      blk.call(mesg, src)
+    end
+  end
+
   # Read datagrams from already-bound sockets forever, yielding
   # [message, Socket::UDPSource].
   def self.udp_server_loop_on(sockets, &blk)
@@ -880,11 +996,7 @@ class Socket < BasicSocket
     loop do
       ready = IO.select(socks)&.first
       next if ready.nil?
-      ready.each do |s|
-        mesg, sender = s.recvfrom(65536)
-        src = UDPSource.new(sender, s.local_address) { |reply| s.send(reply, 0, sender.to_sockaddr) }
-        blk.call(mesg, src)
-      end
+      udp_server_recv(ready, &blk)
     end
   end
 
@@ -910,12 +1022,24 @@ class Socket < BasicSocket
   end
 
   # Socket.tcp(host, port[, local_host, local_port]) → a connected Socket.
-  def self.tcp(host, port, local_host = nil, local_port = nil, connect_timeout: nil, resolv_timeout: nil, &blk)
+  def self.tcp(host, port, local_host = nil, local_port = nil,
+               connect_timeout: nil, resolv_timeout: nil, open_timeout: nil, &blk)
+    tmo = connect_timeout || open_timeout
     remote = Addrinfo.tcp(host.to_s, port)
-    if local_host
-      remote.connect_from(local_host.to_s, local_port || 0, &blk)
-    else
-      remote.connect(&blk)
+    return remote.connect_from(local_host.to_s, local_port || 0, &blk) if local_host
+    return remote.connect(&blk) unless tmo
+    s = Socket.new(remote.afamily, remote.socktype, remote.protocol)
+    begin
+      s.__connect_within(remote, tmo)
+    rescue Exception
+      s.close unless s.closed?
+      raise
+    end
+    return s unless blk
+    begin
+      blk.call(s)
+    ensure
+      s.close unless s.closed?
     end
   end
 
@@ -929,6 +1053,9 @@ class Socket < BasicSocket
     end
     [Socket.for_fd(pair[0]), Addrinfo.__from_ary(pair[1])]
   end
+
+  # Refuse IPv4 traffic on an IPv6 socket.
+  def ipv6only! = (setsockopt(Socket::IPPROTO_IPV6, Socket::IPV6_V6ONLY, 1); nil)
 
   # nil family = infer from the host string, so sockaddr_in accepts IPv6 too.
   def self.sockaddr_in(port, host) = __sock_pack(nil, port, host.to_s)   # Integer or service name
@@ -1133,6 +1260,11 @@ class Addrinfo
     __from_ary([a[0], 0, a[2], a[3], 0, 0])   # .ip leaves socktype/protocol at 0
   end
 
+  def self.foreach(nodename, service, family = nil, socktype = nil, protocol = nil,
+                   flags = nil, timeout: nil, &blk)
+    getaddrinfo(nodename, service, family, socktype, protocol, flags).each(&blk)
+  end
+
   def self.tcp(host, port) = getaddrinfo(host, port, nil, Socket::SOCK_STREAM).first
   def self.udp(host, port) = getaddrinfo(host, port, nil, Socket::SOCK_DGRAM).first
 
@@ -1148,12 +1280,15 @@ class Addrinfo
   def ip_port = (raise SocketError, "need IPv4 or IPv6 address" unless ip?; @port.to_i)
   def unix_path = (raise SocketError, "need AF_UNIX address" unless unix?; @host.to_s)
   def to_a = [@famname, @port, @host, @addr]
-  def to_s = @addr.to_s
 
   def inspect_sockaddr
-    return @host.to_s unless ip?
-    a = ipv6? ? "[#{@addr}]" : @addr.to_s
-    @port.to_i == 0 ? a : "#{a}:#{@port}"
+    unless ip?
+      p = @host.to_s
+      # a relative UNIX path would read like a host name, so CRuby tags it
+      return (unix? && !p.start_with?("/")) ? "UNIX #{p}" : p
+    end
+    return @addr.to_s if @port.to_i == 0     # the brackets only separate an IPv6 address from its port
+    "#{ipv6? ? "[#{@addr}]" : @addr}:#{@port}"
   end
 
   # "#<Addrinfo: 127.0.0.1:80 TCP>" — the trailing word names the socktype,
@@ -1171,6 +1306,7 @@ class Addrinfo
   end
   def to_sockaddr = Socket.__pack(to_a)
   alias_method :to_str, :to_sockaddr
+  alias_method :to_s,   :to_sockaddr      # CRuby: the same definition
   def canonname = nil
   def ==(other) = other.is_a?(Addrinfo) && to_a == other.to_a
   alias_method :eql?, :==
@@ -1254,7 +1390,8 @@ class Addrinfo
   # where `address` is [numeric_address, service] for IP and the path for UNIX.
   def marshal_dump
     addr = ip? ? [@addr.to_s, @port.to_s] : @host.to_s
-    [afamily_name, addr, pfamily_name, socktype_name, protocol_name, canonname, nil]
+    # a protocol with no IPPROTO_ name marshals as its number (CRuby)
+    [afamily_name, addr, pfamily_name, socktype_name, protocol_name || @protocol, canonname, nil]
   end
 
   def marshal_load(ary)
@@ -1370,16 +1507,37 @@ class Addrinfo
 
   def getnameinfo(flags = 0) = Socket.getnameinfo(to_sockaddr, flags)
   def ip_unpack = [ip_address, ip_port]
+  # The low 32 bits of this IPv6 address as a dotted quad.  inet_ntop prints
+  # "::0.0.1.1" as "::101", so the last group has to be re-split into bytes.
+  private def __v6_low32
+    s = @addr.to_s.sub(/%.*\z/, "")
+    head, tail = s.split("::", 2)
+    hw = head.to_s.split(":").reject(&:empty?)
+    tw = tail.to_s.split(":").reject(&:empty?)
+    last = (tw.empty? ? hw : tw).last
+    return last if last && last.include?(".")     # already a dotted tail
+    words = tail.nil? ? hw : hw + Array.new(8 - hw.size - tw.size, "0") + tw
+    a = words[6].to_i(16)
+    b = words[7].to_i(16)
+    [(a >> 8) & 0xff, a & 0xff, (b >> 8) & 0xff, b & 0xff].join(".")
+  end
+
   def ipv6_to_ipv4
     return nil unless ipv4_mapped? || ipv4_compat?
-    Addrinfo.__from_ary(["AF_INET", @port, @addr.to_s.split(":").last, @addr.to_s.split(":").last,
-                         @socktype, @protocol])
+    q = __v6_low32
+    Addrinfo.__from_ary(["AF_INET", @port, q, q, @socktype, @protocol])
   end
 
   # Build an Addrinfo of this one's family/socktype/protocol from (host, port)
   # for an IP address or (path) for a UNIX one; an Addrinfo passes through.
   def family_addrinfo(*args)
-    return args[0] if args.size == 1 && args[0].is_a?(Addrinfo)
+    if args[0].is_a?(Addrinfo)
+      raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1)" unless args.size == 1
+      ai = args[0]
+      raise ArgumentError, "protocol family mismatch: #{ai.inspect} for #{inspect}" unless ai.pfamily == pfamily
+      raise ArgumentError, "socket type mismatch: #{ai.inspect} for #{inspect}" unless ai.socktype == socktype
+      return ai
+    end
     if unix?
       raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1)" unless args.size == 1
       return Addrinfo.unix(args[0].to_s, @socktype == 0 ? Socket::SOCK_STREAM : @socktype)

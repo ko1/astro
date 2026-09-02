@@ -1576,6 +1576,18 @@ end
 # File / FileTest predicates on top of the __process_test character commands
 # (the same primitive Kernel#test uses) and __mode_bits.
 class File
+  # A stat compares (and so ==) by mtime; CRuby mixes Comparable in for that.
+  class Stat
+    include Comparable
+
+    def inspect
+      s = +"#<File::Stat dev=0x#{dev.to_s(16)}, ino=#{ino}, mode=#{sprintf("%07o", mode)}, nlink=#{nlink}"
+      s << ", uid=#{uid}, gid=#{gid}, rdev=0x#{rdev.to_s(16)}, size=#{size}, blksize=#{blksize.inspect}"
+      s << ", blocks=#{blocks.inspect}, atime=#{atime.inspect}, mtime=#{mtime.inspect}, ctime=#{ctime.inspect}"
+      s << ">"
+    end
+  end
+
   class << self
     def ftype(path)
       path = File.path(path)
@@ -1693,6 +1705,7 @@ class Dir
   # rather than raising ENOTDIR)
   def self.empty?(path)
     p = File.path(path)
+    raise Errno::ENOENT, p unless File.exist?(p)
     return false unless File.directory?(p)
     children(p).empty?
   end

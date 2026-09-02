@@ -44,7 +44,17 @@ static RESULT korb_sock_addr_ary(CTX *c, VALUE *slots, const struct sockaddr *sa
     } else if (sa->sa_family == AF_UNIX) {
         fam = "AF_UNIX";
         const struct sockaddr_un *un = (const struct sockaddr_un *)sa;
-        snprintf(host, sizeof host, "%s", un->sun_path);
+        /* An unnamed (or auto-bound) UNIX socket reports only sun_family, so
+         * sun_path holds no string at all — reading it yields stack garbage. */
+        const size_t off = offsetof(struct sockaddr_un, sun_path);
+        if ((size_t)len > off) {
+            size_t avail = (size_t)len - off;
+            if (avail > sizeof un->sun_path) avail = sizeof un->sun_path;
+            size_t plen = strnlen(un->sun_path, avail);
+            if (plen >= sizeof host) plen = sizeof host - 1;
+            memcpy(host, un->sun_path, plen);
+            host[plen] = '\0';
+        }
     }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
     VALUE_REF ar = VALUE_REF_AT(&slots[0]);
@@ -248,6 +258,7 @@ static RESULT korb_m_sock_accept(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)self;
     const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
     struct sockaddr_storage ss; socklen_t len = sizeof ss;
+    memset(&ss, 0, sizeof ss);
     const int nfd = accept(fd, (struct sockaddr *)&ss, &len);
     if (nfd < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return RESULT_OK(KORB_NIL);
@@ -268,6 +279,7 @@ static RESULT korb_m_sock_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
     const bool peer = KORB_TRUTHY(VALUE_SLICE_GET(a, 1));
     struct sockaddr_storage ss; socklen_t len = sizeof ss;
+    memset(&ss, 0, sizeof ss);
     const int r = peer ? getpeername(fd, (struct sockaddr *)&ss, &len)
                        : getsockname(fd, (struct sockaddr *)&ss, &len);
     if (r != 0) return korb_raise_errno(c, slots, errno, peer ? "getpeername" : "getsockname", "");
