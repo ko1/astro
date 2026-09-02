@@ -1627,11 +1627,16 @@ static RESULT korb_m_class_cvar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     { RESULT r = korb_cvar_name_check(c, slots, id, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
     int32_t idx = -1;
-    const VALUE owner = KORB_CLASS_P(cls) ? korb_cvar_owner(cls, ID2SYM(id), &idx) : KORB_NIL;
+    VALUE front = KORB_NIL;
+    const VALUE owner = KORB_CLASS_P(cls) ? korb_cvar_owner_top(cls, ID2SYM(id), &idx, &front) : KORB_NIL;
+    if (owner != KORB_NIL) CHECK(korb_cvar_check_overtaken(c, slots, front, owner, id));
     if (owner == KORB_NIL) {
+        char cn[192];
+        if (KORB_CLASS_P(cls)) korb_cvar_class_name(c, cls, cn, sizeof cn);
+        else                   snprintf(cn, sizeof cn, "%s", korb_type_name(cls));
         slots[0] = cls;                                   /* root the class across raise + ivar_set */
         RESULT ne = korb_raise(c, slots + 1, KORB_E_NAME, 0, "uninitialized class variable %s in %s",
-                          korb_sym_name(c->vm, id), korb_type_name(cls));
+                          korb_sym_name(c->vm, id), cn);
         if (LIKELY(KORB_EXC_P(ne.value))) {               /* NameError#name → :@@x, #receiver → the class */
             slots[1] = ne.value;
             VALUE_REF eref = VALUE_REF_AT(&slots[1]);

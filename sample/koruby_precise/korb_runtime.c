@@ -2150,6 +2150,53 @@ korb_cvar_owner(VALUE cref, VALUE sym, int32_t *idx_out)
     return KORB_NIL;
 }
 
+/* Like korb_cvar_owner, but keeps walking to the HIGHEST ancestor that defines
+ * `sym` (CRuby reads and writes there) and reports the nearest one in *front.
+ * front != result means the variable was defined below an ancestor that later
+ * grew its own — CRuby calls that "overtaken" and raises. */
+VALUE
+korb_cvar_owner_top(VALUE cref, VALUE sym, int32_t *idx_out, VALUE *front_out)
+{
+    VALUE top = KORB_NIL, front = KORB_NIL;
+    int32_t idx = 0;
+    for (VALUE k = cref; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
+        const VALUE mods[2] = { VAL2CLASS(k)->prepended, VAL2CLASS(k)->included };
+        if (korb_cvar_in(k, sym, &idx)) { top = k; *idx_out = idx; if (front == KORB_NIL) front = k; }
+        for (uint32_t m = 0; m < 2; m++) {
+            if (mods[m] == KORB_NIL) continue;
+            const KorbArray *const ma = VAL2ARY(mods[m]);
+            for (uint32_t i = 0; i < ma->len; i++) {
+                const VALUE mv = korb_items_data(ma->items)[i];
+                if (korb_cvar_in(mv, sym, &idx)) { top = mv; *idx_out = idx; if (front == KORB_NIL) front = mv; }
+            }
+        }
+    }
+    *front_out = front;
+    return top;
+}
+
+/* Class/module name for a cvar error message; anonymous ones render like #to_s. */
+void
+korb_cvar_class_name(CTX *c, VALUE cls, char *out, size_t outsz)
+{
+    korb_class_qname_into(c, cls, out, outsz);
+    if (out[0] == '\0')
+        snprintf(out, outsz, "#<%s:0x%016zx>", VAL2CLASS(cls)->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls);
+}
+
+/* CRuby's cvar_overtaken: reading or writing through a class whose variable is
+ * shadowed by an ancestor's own copy is an error, not a silent pick. */
+RESULT
+korb_cvar_check_overtaken(CTX *c, VALUE *slots, VALUE front, VALUE top, uint32_t sym_id)
+{
+    if (LIKELY(front == top)) return RESULT_OK(KORB_NIL);
+    char fn[192], tn[192];
+    korb_cvar_class_name(c, front, fn, sizeof fn);
+    korb_cvar_class_name(c, top, tn, sizeof tn);
+    return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable %s of %s is overtaken by %s",
+                      korb_sym_name(c->vm, sym_id), fn, tn);
+}
+
 /* A `class << X` body shares X's class variables: the singleton is not a scope
  * of its own for @@vars (CRuby). */
 /* The class scope @@vars resolve against; falls back to the cref instance_eval /
@@ -2182,8 +2229,11 @@ static VALUE korb_cvar_self_class(CTX *c, VALUE self)
 static VALUE korb_cvar_scope_of(CTX *c, VALUE self, VALUE entry_cell)
 {
     if (entry_cell == KORB_UNDEF) return korb_cvar_scope(c, self);   /* explicit receiver (class_variable_get/set) */
-    if ((uintptr_t)entry_cell & 1u) {                 /* a real method frame: its owner is the cref */
-        const VALUE own = korb_cvar_scope(c, korb_cvar_cref(self, entry_cell));
+    if ((uintptr_t)entry_cell & 1u) {                 /* a real method frame: the DEFINING class is the cref,
+                                                       * never self's — `extend M` runs M's methods with a
+                                                       * class self, yet @@vars stay M's (CRuby). */
+        const struct korb_method *const m = (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)1u);
+        const VALUE own = korb_cvar_scope(c, m->owner);
         if (KORB_CLASS_P(own)) return own;
     }
     /* instance_eval/exec: the caller's scope, even when self is a Class — the
@@ -2205,12 +2255,15 @@ korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_i
     }
     const VALUE sym = ID2SYM(sym_id);
     int32_t idx;
-    const VALUE owner = korb_cvar_owner(cref, sym, &idx);
+    VALUE front;
+    const VALUE owner = korb_cvar_owner_top(cref, sym, &idx, &front);
+    if (owner != KORB_NIL) CHECK(korb_cvar_check_overtaken(c, slots, front, owner, sym_id));
     if (owner == KORB_NIL) {
         if (soft) return RESULT_OK(KORB_NIL);
+        char cn[192]; korb_cvar_class_name(c, cref, cn, sizeof cn);
         slots[0] = cref;                                  /* root across raise + ivar_set */
         RESULT ne = korb_raise(c, slots + 1, KORB_E_NAME, 0, "uninitialized class variable %s in %s",
-                          korb_sym_name(c->vm, sym_id), korb_type_name(cref));
+                          korb_sym_name(c->vm, sym_id), cn);
         if (LIKELY(KORB_EXC_P(ne.value))) {               /* NameError#name → :@@x, #receiver → the resolving class */
             slots[1] = ne.value;
             VALUE_REF eref = VALUE_REF_AT(&slots[1]);
@@ -2229,12 +2282,14 @@ korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_i
 {
     const VALUE cref = korb_cvar_scope_of(c, self, entry_cell);
     if (!KORB_CLASS_P(cref))
-        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable assignment from toplevel");
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable access from toplevel");
     { RESULT fr = korb_check_def_frozen(c, slots, cref); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* @@cvar = / class_variable_set on a frozen class → FrozenError */
     const VALUE sym = ID2SYM(sym_id);
     int32_t idx;
-    VALUE target = korb_cvar_owner(cref, sym, &idx);   /* update existing ancestor, else define in cref */
-    if (target == KORB_NIL) target = cref;
+    VALUE front;
+    VALUE target = korb_cvar_owner_top(cref, sym, &idx, &front);   /* update the topmost ancestor, else define in cref */
+    if (target != KORB_NIL) CHECK(korb_cvar_check_overtaken(c, slots, front, target, sym_id));
+    else                    target = cref;
 
     /* Root target + val across the hash alloc/grow (both may GC/move). */
     VALUE_REF tref = SLOTS_PUSH(slots, target);
