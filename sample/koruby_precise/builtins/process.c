@@ -774,27 +774,63 @@ static RESULT korb_m_kernel_system(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 /* Kernel#` — run the command through the shell and return its stdout. */
 static RESULT korb_m_kernel_backtick(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    const VALUE cv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(cv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(cv));
+    slots[0] = VALUE_SLICE_GET(a, 0);
+    CHECK(korb_spawn_to_str(c, slots));                        /* the command may be a #to_str object */
     char cmd[8192];
-    uint32_t n; const char *s = korb_str_cstr_len(cv, &n);
+    uint32_t n; const char *s = korb_str_cstr_len(slots[0], &n);
     if (n >= sizeof cmd) n = sizeof cmd - 1;
     memcpy(cmd, s, n); cmd[n] = '\0';
-    int fds[2];
+    /* CRuby only goes through the shell when the command has a metacharacter;
+     * a plain command is exec'd directly, so a missing binary is ENOENT rather
+     * than sh's exit 127.  argv points into `cmd`, which the split NUL-terminates. */
+    char *argv[64];
+    const bool shell = korb_cmd_needs_shell(cmd, n);
+    if (!shell) {
+        size_t ac = 0;
+        for (char *p = cmd; *p && ac + 1 < sizeof argv / sizeof argv[0]; ) {
+            while (*p == ' ' || *p == '\t') p++;
+            if (!*p) break;
+            argv[ac++] = p;
+            while (*p && *p != ' ' && *p != '\t') p++;
+            if (*p) *p++ = '\0';
+        }
+        argv[ac] = NULL;
+        if (ac == 0) { argv[0] = cmd; argv[1] = NULL; }       /* all blank: let exec report ENOENT */
+    }
+    int fds[2], efd[2];
     if (pipe(fds) != 0) return korb_raise_errno(c, slots, errno, "pipe", "");
+    /* close-on-exec status pipe: the child reports a failed exec through it, so
+     * the parent can raise the child's errno instead of returning "". */
+    if (pipe(efd) != 0) { close(fds[0]); close(fds[1]); return korb_raise_errno(c, slots, errno, "pipe", ""); }
+    fcntl(efd[0], F_SETFD, FD_CLOEXEC);
+    fcntl(efd[1], F_SETFD, FD_CLOEXEC);
     fflush(NULL);
     korb_io_flush_std(c->vm);   /* the child inherits our write buffer: drain it first */
     const pid_t pid = fork();
-    if (pid < 0) { close(fds[0]); close(fds[1]); return korb_raise_errno(c, slots, errno, "fork", ""); }
+    if (pid < 0) { const int e = errno; close(fds[0]); close(fds[1]); close(efd[0]); close(efd[1]);
+                   return korb_raise_errno(c, slots, e, "fork", ""); }
     if (pid == 0) {
         korb_child_reset_signals();
-        close(fds[0]);
+        close(fds[0]); close(efd[0]);
         if (fds[1] != 1) { dup2(fds[1], 1); close(fds[1]); }
-        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        if (shell) execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        else       execvp(argv[0], argv);
+        const int e = errno;
+        ssize_t wr = write(efd[1], &e, sizeof e);
+        (void)wr;
         _exit(127);
     }
     close(fds[1]);
+    close(efd[1]);
+    int cerr = 0;
+    if (read(efd[0], &cerr, sizeof cerr) != (ssize_t)sizeof cerr) cerr = 0;
+    close(efd[0]);
+    if (cerr != 0) {
+        int raw = 0;
+        close(fds[0]);
+        waitpid(pid, &raw, 0);
+        return korb_raise_errno(c, slots, cerr, argv[0] ? argv[0] : cmd, "");
+    }
     /* Accumulate into a malloc'd buffer: no Ruby allocation until the child is
        done, so nothing can move underneath us. */
     size_t cap = 4096, len = 0;
@@ -816,7 +852,27 @@ static RESULT korb_m_kernel_backtick(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     CHECK(korb_status_make(c, slots, pid, raw));
     const RESULT sr = korb_str_new(c, slots, buf, (uint32_t)len);
     free(buf);
-    return sr;
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    /* CRuby tags the output with the default external encoding, not UTF-8 */
+    slots[0] = sr.value;
+    slots[1] = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
+    if (KORB_CLASS_P(slots[1])) {
+        slots[2] = slots[1];
+        const RESULT er = korb_send(c, slots + 3, korb_intern(c->vm, "default_external", 16), 0, 0);
+        if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+        slots[2] = er.value;
+        if (KORB_OBJECT_P(slots[2])) {
+            const RESULT nr = korb_send(c, slots + 3, korb_intern(c->vm, "name", 4), 0, 0);
+            if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+            if (KORB_STRING_P(nr.value)) {
+                char eb[64]; uint32_t el = VAL2STR(nr.value)->len;
+                if (el >= sizeof eb) el = sizeof eb - 1;
+                memcpy(eb, korb_strbuf_data(VAL2STR(nr.value)->buf), el); eb[el] = '\0';
+                KORB_STR_ENC_SET(slots[0], korb_enc_index_pub(c->vm, eb));   /* slots[0] survived the sends */
+            }
+        }
+    }
+    return RESULT_OK(slots[0]);
 }
 
 /* Process.kill(sig, *pids) → the number of signalled processes. */
