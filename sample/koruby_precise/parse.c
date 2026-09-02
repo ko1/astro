@@ -3738,8 +3738,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const char *bytes = kp_strdup_pm(&xn->unescaped, &len);
         const uint32_t bt = korb_intern(tc->c->vm, "`", 1);
         NODE *recv, *arg;
+        /* a non-interpolated command literal hands a FROZEN String to `` (CRuby) */
         WITH_CHAIN(tc, KP_SEND1_SC, (recv = bake_self(tc),
-                                     arg = ALLOC_node_str(bytes, len)));
+                                     arg = ALLOC_node_str_frozen(bytes, len)));
         return kp_send1(bt, kp_line(tc, node), recv, arg);
       }
       case PM_INTERPOLATED_X_STRING_NODE: {   /* `cmd #{x}` → self.`(dstr) */

@@ -190,6 +190,7 @@ static void korb_to_mpz(VALUE v, korb_mp_t out);
 static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const korb_mp_t src);
 static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_int coercion, usable from the main body */
 static RESULT korb_coerce_to_ary(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_ary coercion */
+static bool korb_check_funcall_respond_to(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid);   /* fwd — rb_check_funcall's #respond_to? probe */
 
 /* Make a reduced Rational from VALUE num/den (Fixnum or Bignum); den != 0,
  * normalized den > 0.  Fixnum-fits fast path; Bignum path reduces via korb_mp_gcd. */
@@ -1384,8 +1385,9 @@ korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val)
      * (Ruby `[*x]` / `a, b = *x` semantics); otherwise `*x` is just `[x]`. */
     if (KORB_OBJECT_P(val)) {
         const uint32_t to_a_mid = korb_intern(c->vm, "to_a", 4);
+        VALUE *const vp = slots;                         /* same cell as vr, for the writeback */
         VALUE_REF vr = SLOTS_PUSH(slots, val);           /* root recv across the respond_to? / to_a dispatch */
-        if (korb_responds_to_coerce(c, slots, VALUE_REF_GET(vr), to_a_mid)) {   /* honors #respond_to? (proxies/mocks) */
+        if (korb_check_funcall_respond_to(c, slots, vp, to_a_mid)) {   /* an overridden #respond_to? is asked first (CRuby) */
             RESULT ta = korb_send(c, slots, to_a_mid, 0, 0);
             if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
             if (KORB_ARRAY_P(ta.value)) {
@@ -1415,7 +1417,7 @@ korb_massign_coerce(CTX *c, VALUE *slots)
     const VALUE v = slots[0];
     if (KORB_ARRAY_P(v) || !KORB_OBJECT_P(v)) return RESULT_OK(v);
     const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
-    if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_ary)) return RESULT_OK(slots[0]);   /* honors #respond_to? */
+    if (!korb_check_funcall_respond_to(c, slots + 1, &slots[0], to_ary)) return RESULT_OK(slots[0]);   /* an overridden #respond_to? is asked first (CRuby) */
     RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (KORB_ARRAY_P(r.value)) { slots[0] = r.value; return RESULT_OK(r.value); }
@@ -3482,6 +3484,12 @@ static RESULT korb_m_bind_source_location(CTX *c, VALUE *slots, VALUE_REF self, 
 }
 /* A binding's local names are plain identifiers: $global / @ivar / $~ and the
  * like are a NameError, not a fresh local (CRuby's check_local_id). */
+/* `_1`..`_9` name a block's numbered parameters, never a Binding local (CRuby). */
+static RESULT korb_bind_check_numparam(CTX *c, VALUE *slots, uint32_t sym) {
+    const char *const nm = korb_sym_name(c->vm, sym);
+    if (LIKELY(!(nm[0] == '_' && nm[1] >= '1' && nm[1] <= '9' && nm[2] == '\0'))) return RESULT_OK(KORB_NIL);
+    return korb_raise(c, slots, KORB_E_NAME, 0, "numbered parameter '%s' is not a local variable", nm);
+}
 static RESULT korb_bind_check_lvname(CTX *c, VALUE *slots, VALUE_REF self, uint32_t sym) {
     const char *const nm = korb_sym_name(c->vm, sym);
     const unsigned char c0 = (unsigned char)nm[0];
@@ -3492,6 +3500,7 @@ static RESULT korb_bind_check_lvname(CTX *c, VALUE *slots, VALUE_REF self, uint3
 static RESULT korb_m_bind_lvget(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t sym;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    CHECK(korb_bind_check_numparam(c, slots, sym));
     const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
     const int i = korb_bind_find(b, sym);
     if (i >= 0) return RESULT_OK(korb_bind_env_get(b, (uint32_t)i));
@@ -3501,6 +3510,7 @@ static RESULT korb_m_bind_lvget(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_bind_lvdefined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t sym;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    CHECK(korb_bind_check_numparam(c, slots, sym));
     const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
     if (korb_bind_find(b, sym) >= 0) return RESULT_OK(KORB_TRUE);
     if (b->extra != KORB_NIL && korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym)) >= 0) return RESULT_OK(KORB_TRUE);
@@ -3509,6 +3519,7 @@ static RESULT korb_m_bind_lvdefined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_m_bind_lvset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t sym;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    CHECK(korb_bind_check_numparam(c, slots, sym));
     CHECK(korb_bind_check_lvname(c, slots, self, sym));
     KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
     const VALUE val = VALUE_SLICE_GET(a, 1);
