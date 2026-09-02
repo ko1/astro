@@ -1347,6 +1347,15 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
             free(ib);
         }
     }
+    /* CRuby tags a 7-bit ASCII pattern US-ASCII, and #source reports that — so
+     * the pattern String cannot be shared with the caller's. */
+    if (!(flags & (64u | 128u | 256u | 512u | KORB_RE_FIXENC)) &&   /* /n /u /e /s pin their own */
+        korb_str_bytes_ascii(slots[0]) && KORB_STR_ENC(slots[0]) != KORB_ENC_USASCII) {
+        const RESULT dr = korb_str_dup_pub(c, slots + 1, &slots[0]);
+        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+        slots[0] = dr.value;
+        KORB_STR_ENC_SET(slots[0], KORB_ENC_USASCII);
+    }
     (void)korb_re_load(c->vm);
     korb_re_valid_fn_t vf0 = (korb_re_valid_fn_t)c->vm->re_valid_fn;
     korb_re_valid_fn_t vf = vf0;
