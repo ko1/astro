@@ -958,18 +958,23 @@ class ARGFClass
     res
   end
 
-  # readpartial / read_nonblock do not silently cross a file boundary: at the
-  # end of one file they move on and read from the next, and only raise
-  # EOFError once every file is exhausted.
+  # readpartial / read_nonblock do not silently cross a file boundary.  Reaching
+  # the end of one file advances to the next but yields ONE empty read for that
+  # call, so the caller sees the boundary; EOFError comes only once every file
+  # is exhausted.
   def __partial(meth, maxlen, buffer, **kw)
-    loop do
-      io = __stream
-      raise EOFError, "end of file reached" if io.nil?
-      begin
-        return buffer ? io.send(meth, maxlen, buffer, **kw) : io.send(meth, maxlen, **kw)
-      rescue EOFError
-        __finish_current
-      end
+    had = @current
+    io = __stream
+    raise EOFError, "end of file reached" if io.nil?
+    # __stream silently skips a file that is already at EOF; that seam is what
+    # the caller must see as one empty read before the next file's bytes.
+    return(buffer ? buffer.replace("") : "") if had && !had.equal?(io)
+    begin
+      buffer ? io.send(meth, maxlen, buffer, **kw) : io.send(meth, maxlen, **kw)
+    rescue EOFError
+      __finish_current
+      raise EOFError, "end of file reached" if __stream.nil?
+      buffer ? buffer.replace("") : ""
     end
   end
   private :__partial
@@ -977,6 +982,11 @@ class ARGFClass
   def readpartial(maxlen, buffer = nil); __partial(:readpartial, maxlen, buffer); end
 
   def read_nonblock(maxlen, buffer = nil, exception: true)
+    # CRuby checks the keyword before it looks at any stream, so an exhausted
+    # ARGF still reports the bad argument rather than EOFError.
+    unless exception == true || exception == false
+      raise ArgumentError, "expected true or false as exception: #{exception.inspect}"
+    end
     __partial(:read_nonblock, maxlen, buffer, exception: exception)
   end
 
