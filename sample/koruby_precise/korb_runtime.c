@@ -11668,7 +11668,10 @@ korb_fprint_quoted_enc(FILE *fp, const char *bytes, uint32_t len, bool binary)
                 int n = (ch >= 0xF0) ? 3 : (ch >= 0xE0) ? 2 : (ch >= 0xC0) ? 1 : -1;
                 bool valid = n >= 0 && i + (uint32_t)n < len;
                 for (int k = 1; valid && k <= n; k++) if (((unsigned char)bytes[i+k] & 0xC0) != 0x80) valid = false;
-                if (valid) { fputc(ch, fp); for (int k = 1; k <= n; k++) fputc(bytes[i+k], fp); i += (uint32_t)n; }
+                /* U+0080..U+009F (the C1 controls) are not printable: \uNNNN */
+                if (valid && ch == 0xC2 && (unsigned char)bytes[i+1] <= 0x9F)
+                    { fprintf(fp, "\\u%04X", (unsigned char)bytes[i+1]); i += 1; }
+                else if (valid) { fputc(ch, fp); for (int k = 1; k <= n; k++) fputc(bytes[i+k], fp); i += (uint32_t)n; }
                 else fprintf(fp, "\\x%02X", ch);
             }
         }
