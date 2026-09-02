@@ -73,12 +73,16 @@ koruby_apply_feature(const char *const name, const bool on)
     if (strcmp(norm, "all") == 0) {
         OPTION.frozen_literals = on;
         OPTION.no_rubyopt = !on;
+        OPTION.no_gems = !on;
+        OPTION.no_did_you_mean = !on;
         return;
     }
     for (size_t k = 0; k < sizeof(features) / sizeof(features[0]); k++) {
         if (n >= strlen(features[k]) + 1 || strncmp(norm, features[k], n) != 0) continue;
         if (strcmp(features[k], "frozen_string_literal") == 0) OPTION.frozen_literals = on;
         else if (strcmp(features[k], "rubyopt") == 0)          OPTION.no_rubyopt = !on;
+        else if (strcmp(features[k], "gems") == 0)             OPTION.no_gems = !on;
+        else if (strcmp(features[k], "did_you_mean") == 0)     OPTION.no_did_you_mean = !on;
         return;                                          /* the rest are accepted no-ops */
     }
     fprintf(stderr, "koruby_precise: warning: unknown argument for --%s: '%s'\n",
@@ -286,6 +290,29 @@ load_prelude_source(size_t *len_out)
     return buf;
 }
 #endif /* KORUBY_PRELUDE_BLOB */
+
+/* CRuby defines Gem / DidYouMean unless the matching feature is switched off, and
+ * `defined?(Gem)` is how programs detect them.  Appending to the prelude source
+ * keeps this on the one path that both the native and the wasm build share.
+ * Bodies stay empty: nothing here implements rubygems, and a stub with methods
+ * would only lure callers further in. */
+static char *
+koruby_prelude_append_features(char *const src, size_t *const len_out)
+{
+    static const char gem_src[] = "\nmodule Gem; end\n";
+    static const char dym_src[] = "\nmodule DidYouMean; end\n";
+    const size_t add = (OPTION.no_gems ? 0 : sizeof gem_src - 1) +
+                       (OPTION.no_did_you_mean ? 0 : sizeof dym_src - 1);
+    if (add == 0) return src;
+    char *const buf = realloc(src, *len_out + add + 1);
+    if (!buf) abort();
+    size_t n = *len_out;
+    if (!OPTION.no_gems)          { memcpy(buf + n, gem_src, sizeof gem_src - 1); n += sizeof gem_src - 1; }
+    if (!OPTION.no_did_you_mean)  { memcpy(buf + n, dym_src, sizeof dym_src - 1); n += sizeof dym_src - 1; }
+    buf[n] = '\0';
+    *len_out = n;
+    return buf;
+}
 
 /* Newest mtime among the prelude files — folded into the preload-store version so
  * editing a prelude .rb invalidates the baked SDs. */
@@ -1096,6 +1123,7 @@ main(int argc, char *argv[])
      * user-program parse. */
     size_t prelude_len = 0;
     char *prelude_src = OPTION.dump_ast ? NULL : load_prelude_source(&prelude_len);
+    if (prelude_src) prelude_src = koruby_prelude_append_features(prelude_src, &prelude_len);
     NODE *prelude_ast = OPTION.dump_ast ? NULL
                       : koruby_parse_source(c, prelude_src, prelude_len, "<prelude>", true);
     uint32_t prelude_locals = koruby_toplevel_locals_cnt;
