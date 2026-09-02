@@ -3314,3 +3314,38 @@ NoMatchingPatternKeyError になる。CRuby は節が 1 つのときだけ詳細
 (`in Integer; in {b: 2}` は NoMatchingPatternError)。節数が実行時に分からない
 ための近似。過剰に詳しくなる方向にしか外れず、どちらも
 NoMatchingPatternError 系なので当面このままにする。
+
+## TracePoint の起動コスト (2026-09-02 計測)
+
+`prelude/tracepoint.rb` (132 行) を prelude に足したことで、起動時の命令数が
+**125.1M -> 127.0M (+1.87M, +1.5%)** 増えた。定常状態のコストはゼロ
+(fib(34) で +0.090%、これも同じ固定コストの薄まったもの)。値段はイベントを
+一切発火できない API 検証だけで rubyspec +29。
+
+削るなら prelude を遅延させる仕組みが要る。`const_missing` や
+`def self.new` での遅延は `TracePoint.instance_methods` /
+`defined?(TracePoint)` が最初の参照まで嘘をつくので却下。正攻法は
+**embedded prelude に autoload を張れるようにする** こと (koruby の
+autoload 自体は動いている)。prelude は wasm では 1 本の blob に
+連結されているので、区間を覚えておいて必要になったら eval する形になる。
+
+## chilled string の残り 1 件
+
+`"still" "+chilled"` のような**隣接リテラルの連結**が chilled にならない。
+prism は PM_INTERPOLATED_STRING_NODE を返し、build_dstr が実行時連結の
+新しい String を作るため。CRuby はパース時に 1 個のリテラルに畳んで
+chilled にする。直すなら parse.c の PM_INTERPOLATED_STRING_NODE で
+「全パートが PM_STRING_NODE なら畳む」を入れる (実行時連結が消えるので
+わずかに速くもなる)。chilled_string_spec の残り 1 例。
+
+## TracePoint の :line / :call イベント (未実装)
+
+- `:line`: 文の境界に choke point が無い。単文のブロック本体
+  (`trace.enable do line_event = true end`) は `node_seq` すら作られない
+  (`--dump-ast` で確認)。また `struct NodeHead` の `line` フィールドは
+  **読まれても書かれてもいない** (M0 の PGC 用に確保されただけ)。
+  行番号を持たせるところから。
+- `:call` / `:return` / `:b_call`: choke point は `korb_send_impl` しか
+  なく、そこから Ruby の Proc を呼ぶと moving GC 越しに dispatch 経路の
+  生 VALUE が全部 stale になる。frame push/pop と backtrace 側の作業と
+  正面衝突するので、そちらが片付いてから。
