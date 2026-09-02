@@ -1350,6 +1350,7 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     /* CRuby tags a 7-bit ASCII pattern US-ASCII, and #source reports that — so
      * the pattern String cannot be shared with the caller's. */
     if (!(flags & (64u | 128u | 256u | 512u | KORB_RE_FIXENC)) &&   /* /n /u /e /s pin their own */
+        korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(slots[0])) &&  /* UTF-16LE etc. keep theirs */
         korb_str_bytes_ascii(slots[0]) && KORB_STR_ENC(slots[0]) != KORB_ENC_USASCII) {
         const RESULT dr = korb_str_dup_pub(c, slots + 1, &slots[0]);
         if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
