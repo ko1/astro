@@ -1011,6 +1011,25 @@ extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) 
  * nesting stays lexical.  Returns false when self is the right answer; returns
  * true and sets *owner to the enclosing class body's name (0 = top level) when
  * the definition sits inside a block. */
+/* Reads and literals only: evaluating one cannot be observed by a sibling
+ * expression, so their relative order is free. */
+static bool
+kp_order_transparent(const pm_node_t *n)
+{
+    if (n == NULL) return true;
+    switch (PM_NODE_TYPE(n)) {
+      case PM_LOCAL_VARIABLE_READ_NODE: case PM_INSTANCE_VARIABLE_READ_NODE:
+      case PM_CLASS_VARIABLE_READ_NODE: case PM_GLOBAL_VARIABLE_READ_NODE:
+      case PM_CONSTANT_READ_NODE:       case PM_SELF_NODE:
+      case PM_INTEGER_NODE:             case PM_FLOAT_NODE:
+      case PM_SYMBOL_NODE:              case PM_STRING_NODE:
+      case PM_NIL_NODE:                 case PM_TRUE_NODE: case PM_FALSE_NODE:
+        return true;
+      default:
+        return false;
+    }
+}
+
 static bool
 kp_lexical_class_owner(struct kp_ctx *tc, uint32_t *owner)
 {
@@ -2062,10 +2081,18 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 if (anon_blk && tc->frame->anon_blk_slot < 0)
                     return kp_unsupported(tc, (const pm_node_t *)cn, "bare & outside a (&) method body");
                 uint32_t pslot = anon_blk ? (uint32_t)tc->frame->anon_blk_slot : alloc_synth_local(tc);
-                NODE *pset = anon_blk ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
                 bool has_splat = false;
                 for (size_t i = 0; i < argc; i++)
                     if (PM_NODE_TYPE_P(cn->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+                /* CRuby evaluates `&expr` LAST (after the receiver and the
+                 * arguments).  Only materialize that when something here can
+                 * observe the order — otherwise keep the cheap shape. */
+                bool blk_last = !anon_blk && !kp_order_transparent(ba->expression);
+                if (!blk_last && !anon_blk && !kp_order_transparent(cn->receiver)) blk_last = true;
+                for (size_t i = 0; !blk_last && i < argc; i++)
+                    if (!kp_order_transparent(cn->arguments->arguments.nodes[i])) blk_last = true;
+                NODE *pset = (anon_blk || (blk_last && !has_splat))
+                             ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
                 if (has_splat) {
                     /* `recv.m(*arr, &proc)` — build the args Array; node_send_splat_blkproc
                      * coerces the proc and forwards it (2 staged children: recv + array). */
@@ -2085,6 +2112,14 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 argv[0] = RECV_NODE();
                 for (size_t i = 0; i < argc; i++)
                     argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
+                if (blk_last) {
+                    /* thread `&expr` through the LAST staged child: stash that
+                     * child's value, evaluate the block expression, hand it back */
+                    const uint32_t tmp = alloc_synth_local(tc);
+                    NODE *const last = ALLOC_node_seq(bake_lset(tc, pslot, transduce(tc, ba->expression)),
+                                                      bake_lget(tc, tmp));
+                    argv[sc - 1] = ALLOC_node_seq(bake_lset(tc, tmp, argv[sc - 1]), last);
+                }
                 tc->chain = saved;
                 NODE *call = ALLOC_node_send_blkproc(mid, line, (int32_t)pslot - tc->chain - (int32_t)sc - KORB_FRAME_HDR, argv, sc);
                 bake_add(tc, &call->u.node_send_blkproc.proc_off);

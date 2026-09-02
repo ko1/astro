@@ -3497,15 +3497,25 @@ static RESULT korb_bind_check_lvname(CTX *c, VALUE *slots, VALUE_REF self, uint3
     char db[224]; korb_desc_inspect(c, VALUE_REF_GET(self), db, sizeof db);
     return korb_raise(c, slots, KORB_E_NAME, 0, "wrong local variable name '%s' for %s", nm, db);
 }
-static RESULT korb_m_bind_lvget(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    uint32_t sym;   /* Symbol/String, or #to_str-coercible */
-    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
-    CHECK(korb_bind_check_numparam(c, slots, sym));
+static RESULT korb_bind_lvget_sym(CTX *c, VALUE *slots, VALUE_REF self, uint32_t sym) {
     const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
     const int i = korb_bind_find(b, sym);
     if (i >= 0) return RESULT_OK(korb_bind_env_get(b, (uint32_t)i));
     if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym)); if (hi >= 0) return RESULT_OK(korb_items_data(VAL2HASH(b->extra)->items)[2 * hi + 1]); }
     return korb_raise(c, slots, KORB_E_NAME, 0, "local variable '%s' is not defined for %s", korb_sym_name(c->vm, sym), "an instance of Binding");
+}
+static RESULT korb_m_bind_lvget(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t sym;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    CHECK(korb_bind_check_numparam(c, slots, sym));
+    return korb_bind_lvget_sym(c, slots, self, sym);
+}
+/* Binding#implicit_parameter_get's reader: the same lookup, minus the numbered
+ * parameter rejection (its whole point is to reach _1.._9 / it). */
+static RESULT korb_m_bind_lvget_implicit(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t sym;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    return korb_bind_lvget_sym(c, slots, self, sym);
 }
 static RESULT korb_m_bind_lvdefined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t sym;   /* Symbol/String, or #to_str-coercible */
@@ -11024,6 +11034,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "to_s", korb_m_obj_to_s, 0);   /* #inspect is an alias of #to_s */
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "inspect", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_get", korb_m_bind_lvget, 1);
+    korb_def_cmethod(c, KORB_C_BINDING, "__lvget_implicit", korb_m_bind_lvget_implicit, 1);   /* prelude: implicit_parameter_get */
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_set", korb_m_bind_lvset, 2);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_defined?", korb_m_bind_lvdefined, 1);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variables", korb_m_bind_lvars, 0);
