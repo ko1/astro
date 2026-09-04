@@ -22,41 +22,89 @@ GC は **precise moving/copy GC**（`GC=copy` default）。全ての alloc-heavy
 
 ## 性能（optcarrot, 180 フレーム, checksum 59662 全モード一致）
 
-`make optcarrot-report FRAMES=180 BENCHRUNS=3`、2026-08-14 / idle な 16-core Linux /
-比較対象は **CRuby 4.0.2**（比は相手の CRuby バージョンで動くので、数字を引用するときは
-一緒に測り直すこと）:
+2026-09-04、専用機 sp4（Ryzen 9 8945HS / 8 cores, 16 threads、Linux 7.0、
+performance governor、gcc 15.2）で計測。比較対象は **CRuby 4.0.6 +PRISM**。
+各 7 回の median（括弧内は min–max）:
 
 | 実行系 | fps | 対 素の CRuby | 対 CRuby+YJIT |
 |---|---:|---:|---:|
-| **koruby AOT**（aot+cached） | **77.0** | **1.80×（速い）** | 0.44× |
-| koruby interp (tree-walk) | 42.0 | 0.98× | 0.24× |
-| CRuby (no yjit) | 42.7 | 1.00× | 0.24× |
-| CRuby + YJIT | 176.8 | 4.14× | 1.00× |
+| **koruby AOT**（aot+cached） | **81.3** (80.5–82.2) | **1.29×** | 0.27× |
+| koruby interp (tree-walk) | 51.9 (51.6–52.9) | 0.82× | 0.17× |
+| CRuby (no yjit) | 63.1 (62.2–64.3) | 1.00× | 0.21× |
+| CRuby + YJIT | 300.1 (294.3–303.4) | 4.76× | 1.00× |
 
-- **AOT は素の CRuby を 1.8× 上回る**。tree-walk インタプリタ単体でも素の CRuby と同水準。
-- YJIT には optcarrot（method-call / object アクセス支配のワークロード）で負ける。マイクロベンチでは
-  多くで AOT が YJIT を上回り、再帰（ackermann/fib）と object 系で負ける、という分布
-  （[docs/perf.md](./docs/perf.md)）。
-- AOT の bake 込み（aot+compile）は 21.0 秒。2 回目以降は `code_store` を dlopen するだけ。
-- バイナリ: 本体は strip 後 **1.98 MB**（`-ggdb3` 込みだと 9.94 MB）。
-  optcarrot 全体を AOT 特殊化すると `code_store/all.so` が **2.88 MB**（**494 SD / 494 TU**）。
+- optcarrot では **warm AOT が素の CRuby の 1.29×**。YJIT は AOT の 3.69×。
+- 標準の `make optcarrot-report FRAMES=180 BENCHRUNS=3` では AOT 80.9 fps、
+  AOT cold（bake + 1 run）35.738 s、warm run 2.321 s。
+- 53 本の microbench（各5モード、best-of-3）の実時間 geomean は、素の CRuby = 1.00 に対し
+  **YJIT 0.49 / interp 0.74 / AOT cold 1.04 / AOT warm 0.37**。warm AOT は素の
+  CRuby の 2.70×、YJIT の 1.32×で、YJIT に 32/53 ベンチで勝つ。再帰・method send・
+  ivar/object 系は YJIT が強い。
+- 比は CPU、コンパイラ、CRuby/YJIT バージョンで大きく動く。数字を引用するときは
+  比較対象も同じ環境で測り直すこと。詳細と過去値は [docs/perf.md](./docs/perf.md)。
 
 ## rubyspec 充足（core, CRuby drop-in 目標）
 
 計測は **本物の mspec を無改造の spec に噛ませる** `tools/mspec_real_run.rb` を使う。
-2026-08-14 時点:
+2026-09-04 時点（ASTro `0a908f2a`、rubyspec `ed31b0d376`）:
 
 ```
 DUMP=core.tsv ruby tools/mspec_real_run.rb ~/ruby/src/master/spec/ruby/core 12
-files=2144   fully-clean（0 fail 0 err）= 1,026
-examples=22,326  pass=17,908  fail=3,111  err=1,307   → core example pass-rate 80.2%
+files=2144  clean=1625  whole-file-fail=7
+examples=22885  pass=22184  fail=519  err=182
+example pass-rate = 96.9%
 ```
 
-- 単一 spec の失敗詳細は `ruby tools/runspec1.rb <spec>`（例 `array/uniq`）。
+- **core example pass-rate は 96.9%**。完走した spec の `pass / (pass + fail + err)` で、
+  fully-clean は 1,625 / 2,144 files（75.8%）。summary 未到達の 7 files（CRuby 上で計 65 examples）を
+  すべて不合格とする保守的な下限でも **96.7%**。
+- 単一 spec は
+  `SPEC_TEMP_DIR=<writable> ./koruby_precise tools/mspec_launch.rb <absolute-spec-path>` で再現できる。
 - `tools/rubyspec_run.rb`（mspec **shim** + spec 連結方式）は速いが `it_behaves_like` や
-  mock が独自実装なので **pass を水増しする**（同時期に shim 86.7% / 実 mspec 78%）。
+  mock が独自実装なので **pass を水増しする**。
   数字を出すときは実 mspec のほうを使うこと。
-- 残りの分布と意図的除外は [docs/rubyspec.md](./docs/rubyspec.md)。
+
+カテゴリ別（summary が返った examples）:
+
+| category | pass / total | category | pass / total | category | pass / total |
+|---|---:|---|---:|---|---:|
+| `argf` | 127/139 (91.4%) | `array` | 2,884/2,898 (99.5%) | `basicobject` | 160/172 (93.0%) |
+| `binding` | 85/98 (86.7%) | `builtin_constants` | 27/27 (100.0%) | `class` | 50/54 (92.6%) |
+| `comparable` | 54/54 (100.0%) | `complex` | 166/169 (98.2%) | `conditionvariable` | 9/11 (81.8%) |
+| `data` | 85/88 (96.6%) | `dir` | 325/333 (97.6%) | `encoding` | 618/632 (97.8%) |
+| `enumerable` | 532/536 (99.3%) | `enumerator` | 421/431 (97.7%) | `env` | 172/193 (89.1%) |
+| `exception` | 215/250 (86.0%) | `false` | 12/13 (92.3%) | `fiber` | 161/171 (94.2%) |
+| `file` | 894/911 (98.1%) | `filetest` | 85/89 (95.5%) | `float` | 255/260 (98.1%) |
+| `gc` | 39/39 (100.0%) | `hash` | 550/562 (97.9%) | `integer` | 585/598 (97.8%) |
+| `io` | 1,589/1,625 (97.8%) | `kernel` | 2,097/2,222 (94.4%) | `main` | 23/27 (85.2%) |
+| `marshal` | 473/475 (99.6%) | `matchdata` | 180/185 (97.3%) | `math` | 243/243 (100.0%) |
+| `method` | 194/199 (97.5%) | `module` | 1,021/1,049 (97.3%) | `mutex` | 28/29 (96.6%) |
+| `nil` | 26/27 (96.3%) | `numeric` | 325/326 (99.7%) | `objectspace` | 107/107 (100.0%) |
+| `proc` | 235/247 (95.1%) | `process` | 339/363 (93.4%) | `queue` | 46/46 (100.0%) |
+| `random` | 85/87 (97.7%) | `range` | 606/606 (100.0%) | `rational` | 155/158 (98.1%) |
+| `refinement` | 24/25 (96.0%) | `regexp` | 249/258 (96.5%) | `set` | 165/175 (94.3%) |
+| `signal` | 52/53 (98.1%) | `sizedqueue` | 59/61 (96.7%) | `string` | 3,846/3,905 (98.5%) |
+| `struct` | 170/170 (100.0%) | `symbol` | 262/270 (97.0%) | `systemexit` | 6/6 (100.0%) |
+| `thread` | 261/327 (79.8%) | `threadgroup` | 8/8 (100.0%) | `time` | 629/652 (96.5%) |
+| `tracepoint` | 29/76 (38.2%) | `true` | 12/13 (92.3%) | `unboundmethod` | 100/106 (94.3%) |
+| `warning` | 29/31 (93.5%) | — | — | — | — |
+
+主な残課題:
+
+- **TracePoint のイベント配信**: API 層はあるが、`:line` / `:call` / `:return` /
+  `:b_call` などの実行時フックが未実装。
+- **実行中フレームの観測**: `caller` / `caller_locations` / `Thread#backtrace`
+  と location 系、例外 backtrace / `full_message` / トップレベル表示の一部が不完全。
+- **Thread/Fiber の割り込みと同期**: Fiber 内で lock 中の thread への `raise` / `kill`
+  など、green-thread モデルと CRuby native thread の意味差が残る。
+- **eval/Binding の字句スコープ**: `eval(str)` から呼び出し元・外側 block の local を
+  読み書きするケースと、Binding の外側 scope 列挙に残りがある。
+- **完走しない7 files**: `io/close_write`、`kernel/chomp`、`kernel/chop`、`mutex/lock`、
+  `process/kill`、`process/status/wait`、`process/wait`。duplex IO、`-n` 実行モード、
+  Fiber 内 lock への割り込み、signal/wait の wakeup が主なハング経路。
+- その他は ENV の変換プロトコル、Encoding::Converter / Unicode、String、
+  Process/IO などの個別 edge case。失敗の履歴と設計上の制約は
+  [docs/rubyspec.md](./docs/rubyspec.md) と [docs/todo.md](./docs/todo.md) に記録している。
 
 corpus（`make test`）は CRuby オラクル差分の golden test **100,354 件を 0 fail / 0 crash** で維持している。
 
