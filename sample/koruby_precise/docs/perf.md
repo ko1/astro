@@ -112,6 +112,21 @@ raw 出力、7反復の optcarrot、環境、再現手順は
 
 DOOM の AOT bake 単体は **11.275秒**。AOT warm は約0.50秒で、YJIT とほぼ同水準。
 
+### Spinel 比較（optcarrot / DOOM）
+
+Spinel `matz/spinel` commit `ca7c5b5916f91542374446bab3ff669c7202dffd` を同じ sp4
+でビルドし、同じ require-free bundle を渡した。Spinel は Ruby を C に変換して
+standalone native executable を作るため、koruby の `all.so` とは成果物の種類が異なる。
+
+| workload | Spinel compile | Spinel artifact | 実行結果 |
+|---|---:|---:|---|
+| optcarrot (180 frames) | 1.555s（失敗） | なし | `send` の動的メソッド名が unsupported |
+| DOOM (60 frames) | 13.248s | 1,287,248 bytes | compile 成功、実行時 `patch_index` nil で失敗 |
+
+入力サイズは optcarrot が `.rb` 42ファイル / 233,406 bytes、bundle 134,350 bytes、
+DOOM が `.rb` 51ファイル / 418,103 bytes、bundle 157,836 bytes。Spinel の DOOM は
+コンパイル自体は通るが checksum を得られないため、性能比較値としては採用しない。
+
 
 ### GC backend 比較（同一 microbench、AOT warm）
 
