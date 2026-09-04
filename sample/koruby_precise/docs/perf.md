@@ -94,68 +94,67 @@ raw 出力、7反復の optcarrot、環境、再現手順は
 
 ### GC backend 比較（同一 microbench、AOT warm）
 
-上の主結果は default の `GC=copy`。同じ条件で `GC=copy_gen` も測定し、53本すべての AOT warm 実時間を比較する（秒、低いほど高速）。
+上の主結果は default の `GC=copy`。同じ条件で `GC=copy_gen` と `GC=mark_gen` も測定し、53本すべてを **YJIT=1.00** 基準で比較する（値が小さいほど高速）。
 
-| bench | copy | copy_gen | copy_gen / copy |
+| bench | copy | copy_gen | mark_gen |
 |---|---:|---:|---:|
-| `ackermann` | 0.224 | 0.228 | 1.02x |
-| `array_access` | 0.232 | 0.232 | 1.00x |
-| `ary` | 0.189 | 0.128 | 0.68x |
-| `aryidx` | 0.019 | 0.020 | 1.05x |
-| `bignum` | 0.079 | 0.080 | 1.01x |
-| `binary_trees` | 0.132 | 0.134 | 1.02x |
-| `bitops` | 0.066 | 0.066 | 1.00x |
-| `block` | 0.115 | 0.116 | 1.01x |
-| `block_yield_kernel` | 0.086 | 0.086 | 1.00x |
-| `casewhen` | 0.112 | 0.112 | 1.00x |
-| `closures` | 0.148 | 0.156 | 1.05x |
-| `cmpsort` | 0.175 | 0.184 | 1.05x |
-| `collatz` | 0.177 | 0.178 | 1.01x |
-| `exception` | 0.091 | 0.097 | 1.07x |
-| `fannkuch` | 0.107 | 0.109 | 1.02x |
-| `fib` | 0.125 | 0.124 | 0.99x |
-| `floatcalc` | 0.094 | 0.095 | 1.01x |
-| `gc_bigobj` | 0.111 | 0.120 | 1.08x |
-| `gc_wb` | 0.075 | 0.074 | 0.99x |
-| `gcchurn` | 0.142 | 0.155 | 1.09x |
-| `gcd` | 0.197 | 0.198 | 1.01x |
-| `gen_gc` | 0.277 | 0.220 | 0.79x |
-| `hash` | 0.335 | 0.332 | 0.99x |
-| `hashiter` | 0.107 | 0.106 | 0.99x |
-| `intdiv` | 0.065 | 0.064 | 0.98x |
-| `iterators` | 0.293 | 0.292 | 1.00x |
-| `ivar` | 0.204 | 0.218 | 1.07x |
-| `kwargs` | 0.107 | 0.108 | 1.01x |
-| `mandelbrot` | 0.170 | 0.171 | 1.01x |
-| `mapreduce` | 0.193 | 0.202 | 1.05x |
-| `mathfn` | 0.182 | 0.180 | 0.99x |
-| `method_call` | 0.227 | 0.226 | 1.00x |
-| `methodchain` | 0.211 | 0.215 | 1.02x |
-| `nbody` | 0.173 | 0.181 | 1.05x |
-| `nested_loop` | 0.076 | 0.077 | 1.01x |
-| `nesteddata` | 0.068 | 0.070 | 1.03x |
-| `object` | 0.152 | 0.162 | 1.07x |
-| `poly` | 0.128 | 0.164 | 1.28x |
-| `rangeeach` | 0.069 | 0.069 | 1.00x |
-| `render_span_kernel` | 0.219 | 0.218 | 1.00x |
-| `send` | 0.261 | 0.262 | 1.00x |
-| `sieve` | 0.075 | 0.076 | 1.01x |
-| `sort` | 0.116 | 0.120 | 1.03x |
-| `sprintfb` | 0.271 | 0.271 | 1.00x |
-| `str` | 0.376 | 0.382 | 1.02x |
-| `strcmp` | 0.080 | 0.082 | 1.02x |
-| `strfmt` | 0.602 | 0.615 | 1.02x |
-| `strops` | 0.245 | 0.253 | 1.03x |
-| `strscan` | 0.195 | 0.213 | 1.09x |
-| `structacc` | 0.128 | 0.129 | 1.01x |
-| `tak` | 0.241 | 0.240 | 1.00x |
-| `while` | 0.069 | 0.069 | 1.00x |
-| `while2` | 0.049 | 0.048 | 0.98x |
+| `ackermann` | 2.07 | 2.07 | 2.06 |
+| `array_access` | 1.10 | 1.07 | 1.60 |
+| `ary` | 0.84 | 0.57 | 1.11 |
+| `aryidx` | 0.55 | 0.56 | 0.57 |
+| `bignum` | 0.91 | 0.91 | 0.97 |
+| `binary_trees` | 1.50 | 1.51 | 1.86 |
+| `bitops` | 0.27 | 0.27 | 0.27 |
+| `block` | 0.35 | 0.35 | 0.34 |
+| `block_yield_kernel` | 0.50 | 0.50 | 0.49 |
+| `casewhen` | 1.09 | 1.07 | 1.08 |
+| `closures` | 0.30 | 0.32 | 0.44 |
+| `cmpsort` | 1.04 | 1.09 | 1.13 |
+| `collatz` | 0.84 | 0.80 | 0.78 |
+| `exception` | 0.61 | 0.65 | 0.71 |
+| `fannkuch` | 0.72 | 0.74 | 0.74 |
+| `fib` | 1.57 | 1.56 | 1.58 |
+| `floatcalc` | 0.57 | 0.58 | 0.55 |
+| `gc_bigobj` | 0.37 | 0.40 | 0.56 |
+| `gc_wb` | 0.41 | 0.40 | 0.56 |
+| `gcchurn` | 0.64 | 0.70 | 1.08 |
+| `gcd` | 1.05 | 1.03 | 1.05 |
+| `gen_gc` | 1.34 | 1.07 | 1.47 |
+| `hash` | 1.12 | 1.11 | 1.14 |
+| `hashiter` | 0.45 | 0.46 | 0.46 |
+| `intdiv` | 0.37 | 0.40 | 0.37 |
+| `iterators` | 0.43 | 0.43 | 0.43 |
+| `ivar` | 1.50 | 1.62 | 1.60 |
+| `kwargs` | 0.84 | 0.85 | 0.86 |
+| `mandelbrot` | 0.61 | 0.61 | 0.65 |
+| `mapreduce` | 0.38 | 0.40 | 0.50 |
+| `mathfn` | 1.12 | 1.14 | 1.14 |
+| `method_call` | 1.41 | 1.40 | 1.41 |
+| `methodchain` | 0.55 | 0.56 | 0.65 |
+| `nbody` | 1.13 | 1.18 | 1.18 |
+| `nested_loop` | 0.89 | 0.87 | 0.88 |
+| `nesteddata` | 0.81 | 0.84 | 1.22 |
+| `object` | 1.03 | 1.12 | 1.41 |
+| `poly` | 0.88 | 1.09 | 0.90 |
+| `rangeeach` | 0.36 | 0.36 | 0.37 |
+| `render_span_kernel` | 0.33 | 0.33 | 0.34 |
+| `send` | 1.79 | 1.76 | 1.81 |
+| `sieve` | 0.50 | 0.51 | 0.52 |
+| `sort` | 0.47 | 0.49 | 0.55 |
+| `sprintfb` | 1.04 | 1.05 | 1.26 |
+| `str` | 1.11 | 1.08 | 1.47 |
+| `strcmp` | 0.95 | 0.96 | 1.09 |
+| `strfmt` | 1.65 | 1.68 | 2.24 |
+| `strops` | 1.24 | 1.28 | 1.58 |
+| `strscan` | 0.75 | 0.81 | 1.85 |
+| `structacc` | 1.38 | 1.38 | 1.37 |
+| `tak` | 1.74 | 1.71 | 1.73 |
+| `while` | 0.14 | 0.14 | 0.14 |
+| `while2` | 0.82 | 0.81 | 0.82 |
 
-`copy_gen / copy < 1` が世代別 GC の短縮、`> 1` が悪化を示す。geomean は copy 0.37x、copy_gen 0.38x（CRuby 基準）で、全体ではほぼ同等。`copy_gen` は `ary` / `gen_gc` で効く一方、`gcchurn` / `strscan` は約9%遅かった。
+Geomean（CRuby=1.00）は `copy` **0.37x** / `copy_gen` **0.38x** / `mark_gen` **0.42x**、YJIT=1.00 基準ではおよそ `copy` **0.76x** / `copy_gen` **0.78x** / `mark_gen` **0.86x**。`mark_gen` は `strscan` 1.85x、`strfmt` 2.24x、`gen_gc` 1.47x と churn 系で大きく遅く、`copy_gen` も全体では copy とほぼ同等だった。
 
-copy_gen の raw 出力は [`microbench-5mode-copy-gen-x3.txt`](/home/ko1/ruby/src/trials/koruby_precise-perf-20260904/artifacts/microbench-5mode-copy-gen-x3.txt)、
-copy の raw 出力は [`microbench-5mode-x3-valid.txt`](/home/ko1/ruby/src/trials/koruby_precise-perf-20260904/artifacts/microbench-5mode-x3-valid.txt)。
+raw 出力は [`microbench-5mode-x3-valid.txt`](/home/ko1/ruby/src/trials/koruby_precise-perf-20260904/artifacts/microbench-5mode-x3-valid.txt)、[`microbench-5mode-copy-gen-x3.txt`](/home/ko1/ruby/src/trials/koruby_precise-perf-20260904/artifacts/microbench-5mode-copy-gen-x3.txt)、[`microbench-5mode-mark-gen-x3.txt`](/home/ko1/ruby/src/trials/koruby_precise-perf-20260904/artifacts/microbench-5mode-mark-gen-x3.txt)。
 
 ## 2026-06-24: block-yield に simple-block fast path (成功・block 系 ~17-23%)
 
