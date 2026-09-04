@@ -3,6 +3,95 @@
 本書は **どんな最適化を試したか** と **その結果** を一覧する。
 成功例だけでなく **見送ったもの** も同じ重みで記録する (再評価のために)。
 
+## 2026-09-04: rubyspec 追従後の microbench 再計測
+
+sp4（Ryzen 9 8945HS、8C/16T、Linux 7.0、performance governor）で、ASTro
+`0a908f2a` を gcc 15.2 / `-O2 -flto=auto` でビルドし、CRuby 4.0.6 +PRISM と
+比較した。対象は `sample/rubyharness/bench` の 53 本、各モード best-of-3。
+`aot+compile` は毎回 code store を消して bake 時間を含め、`aot+cached` は
+同じ store の実行時間だけを測る。全セルで出力一致を確認した。
+
+### Geomean（実時間、CRuby = 1.00、値が小さいほど高速）
+
+| mode | relative time | CRuby 比の読み方 |
+|---|---:|---|
+| CRuby (no JIT) | 1.00x | 基準 |
+| CRuby + YJIT | 0.49x | 2.04x faster |
+| koruby interpreter | 0.74x | 1.35x faster |
+| koruby AOT cold | 1.04x | CRuby とほぼ同じ（bake 込み） |
+| koruby AOT warm | **0.37x** | **2.70x faster** |
+
+warm AOT は YJIT に 32/53 本で勝ち、CRuby には 51/53 本で勝った。YJIT が勝つ
+代表例は再帰・method send・ivar/object 系（`ackermann`, `fib`, `tak`, `send`,
+`method_call`, `ivar`, `structacc`）。AOT が特に強いのは `while`, `bitops`,
+`closures`, `rangeeach`, `intdiv` などである。
+
+### ベンチごとの YJIT 正規化値
+
+下表は各行の CRuby+YJIT を 1.00 とした実時間比（`aot+cached < 1` が YJIT より速い）。
+
+| bench | CRuby | YJIT | interp | AOT cold | AOT warm |
+|---|---:|---:|---:|---:|---:|
+| `ackermann` | 7.27 | 1.00 | 5.71 | 3.86 | 2.07 |
+| `array_access` | 2.63 | 1.00 | 2.78 | 2.11 | 1.10 |
+| `ary` | 1.71 | 1.00 | 1.79 | 1.43 | 0.84 |
+| `aryidx` | 1.10 | 1.00 | 0.66 | 5.74 | 0.55 |
+| `bignum` | 1.18 | 1.00 | 1.00 | 2.59 | 0.91 |
+| `binary_trees` | 2.51 | 1.00 | 1.95 | 3.75 | 1.50 |
+| `bitops` | 3.98 | 1.00 | 2.86 | 1.14 | 0.27 |
+| `block` | 1.22 | 1.00 | 0.47 | 0.74 | 0.35 |
+| `block_yield_kernel` | 2.49 | 1.00 | 0.88 | 1.66 | 0.50 |
+| `casewhen` | 3.18 | 1.00 | 3.35 | 2.69 | 1.09 |
+| `closures` | 0.91 | 1.00 | 0.44 | 0.75 | 0.30 |
+| `cmpsort` | 1.48 | 1.00 | 1.17 | 1.95 | 1.04 |
+| `collatz` | 2.29 | 1.00 | 2.33 | 1.79 | 0.84 |
+| `exception` | 1.05 | 1.00 | 0.88 | 2.22 | 0.61 |
+| `fannkuch` | 3.75 | 1.00 | 3.00 | 5.40 | 0.72 |
+| `fib` | 6.06 | 1.00 | 3.81 | 4.18 | 1.57 |
+| `floatcalc` | 2.06 | 1.00 | 1.69 | 2.33 | 0.57 |
+| `gc_bigobj` | 1.15 | 1.00 | 0.45 | 1.34 | 0.37 |
+| `gc_wb` | 1.00 | 1.00 | 0.73 | 2.69 | 0.41 |
+| `gcchurn` | 1.45 | 1.00 | 1.43 | 1.49 | 0.64 |
+| `gcd` | 5.10 | 1.00 | 2.97 | 2.18 | 1.05 |
+| `gen_gc` | 1.09 | 1.00 | 1.58 | 3.19 | 1.34 |
+| `hash` | 1.59 | 1.00 | 1.79 | 1.75 | 1.12 |
+| `hashiter` | 1.31 | 1.00 | 0.60 | 1.48 | 0.45 |
+| `intdiv` | 2.50 | 1.00 | 1.83 | 1.92 | 0.37 |
+| `iterators` | 1.56 | 1.00 | 0.61 | 0.71 | 0.43 |
+| `ivar` | 6.11 | 1.00 | 4.59 | 2.83 | 1.50 |
+| `kwargs` | 3.39 | 1.00 | 2.21 | 2.42 | 0.84 |
+| `mandelbrot` | 2.34 | 1.00 | 1.97 | 2.10 | 0.61 |
+| `mapreduce` | 1.49 | 1.00 | 0.51 | 0.75 | 0.38 |
+| `mathfn` | 1.57 | 1.00 | 1.62 | 2.81 | 1.12 |
+| `method_call` | 6.07 | 1.00 | 3.87 | 2.41 | 1.41 |
+| `methodchain` | 1.50 | 1.00 | 0.63 | 0.96 | 0.55 |
+| `nbody` | 2.84 | 1.00 | 2.04 | 9.57 | 1.13 |
+| `nested_loop` | 6.48 | 1.00 | 7.77 | 3.51 | 0.89 |
+| `nesteddata` | 1.12 | 1.00 | 1.00 | 4.07 | 0.81 |
+| `object` | 2.08 | 1.00 | 1.56 | 2.46 | 1.03 |
+| `poly` | 2.75 | 1.00 | 1.95 | 2.82 | 0.88 |
+| `rangeeach` | 1.20 | 1.00 | 0.48 | 1.03 | 0.36 |
+| `render_span_kernel` | 0.99 | 1.00 | 0.67 | 1.53 | 0.33 |
+| `send` | 5.20 | 1.00 | 3.94 | 2.69 | 1.79 |
+| `sieve` | 1.85 | 1.00 | 1.75 | 2.70 | 0.50 |
+| `sort` | 1.12 | 1.00 | 0.67 | 1.33 | 0.47 |
+| `sprintfb` | 1.10 | 1.00 | 1.15 | 1.86 | 1.04 |
+| `str` | 1.32 | 1.00 | 1.34 | 1.64 | 1.11 |
+| `strcmp` | 1.05 | 1.00 | 1.02 | 4.36 | 0.95 |
+| `strfmt` | 1.15 | 1.00 | 1.81 | 2.33 | 1.65 |
+| `strops` | 1.30 | 1.00 | 1.36 | 2.66 | 1.24 |
+| `strscan` | 1.08 | 1.00 | 0.75 | 1.67 | 0.75 |
+| `structacc` | 4.10 | 1.00 | 2.34 | 4.30 | 1.38 |
+| `tak` | 6.32 | 1.00 | 4.37 | 3.14 | 1.74 |
+| `while` | 1.02 | 1.00 | 1.26 | 0.45 | 0.14 |
+| `while2` | 5.40 | 1.00 | 4.77 | 2.88 | 0.82 |
+
+raw 出力、7反復の optcarrot、環境、再現手順は
+[`koruby_precise-perf-20260904`](/home/ko1/ruby/src/trials/koruby_precise-perf-20260904/README.md)
+に保存した。なお sp4 の `/usr/bin/timeout` は uutils 版で短いコマンドにも約100 ms
+加算するため、microbench では campaign 内の BusyBox timeout を PATH 先頭に置いた。
+
+
 ## 2026-06-24: block-yield に simple-block fast path (成功・block 系 ~17-23%)
 
 profile (`structacc` aot+cached) で **`korb_block_yield` が 43% self**。全 param-binding
