@@ -36,6 +36,10 @@ performance governor、gcc 15.2）で計測。比較対象は **CRuby 4.0.6 +PRI
 - optcarrot では **warm AOT が素の CRuby の 1.29×**。YJIT は AOT の 3.69×。
 - 標準の `make optcarrot-report FRAMES=180 BENCHRUNS=3` では AOT 80.9 fps、
   AOT cold（bake + 1 run）35.738 s、warm run 2.321 s。
+- optcarrot の AOT bake 単体は **33.350 s**。Ruby ソース42ファイル合計 **233,406 bytes**、
+  bundle **134,350 bytes**、生成 `code_store/all.so` **3,252,600 bytes**。
+- 純 Ruby DOOM（E1M1、60フレーム）は CRuby 1.095 s / YJIT 0.529 s / koruby interpreter
+  0.991 s / AOT warm 0.503 s（checksum `17930386881013214317` 全モード一致）。AOT bake は **11.275 s**。
 - 53 本の microbench（各5モード、best-of-3、`GC=copy`）の実時間 geomean は、素の CRuby = 1.00 に対し
   **YJIT 0.49 / interp 0.74 / AOT cold 1.04 / AOT warm 0.37**。warm AOT は素の
   CRuby の 2.70×、YJIT の 1.32×で、YJIT に 32/53 ベンチで勝つ。再帰・method send・

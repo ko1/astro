@@ -91,6 +91,27 @@ raw 出力、7反復の optcarrot、環境、再現手順は
 に保存した。なお sp4 の `/usr/bin/timeout` は uutils 版で短いコマンドにも約100 ms
 加算するため、microbench では campaign 内の BusyBox timeout を PATH 先頭に置いた。
 
+### optcarrot AOT bake とサイズ（GC=copy）
+
+180フレーム用 bundle の AOT bake 単体は **33.350秒**。optcarrot 配下の Ruby ソースは
+42ファイル、合計 **233,406 bytes**（約228 KiB）、生成 bundle は **134,350 bytes**、
+生成された `code_store/all.so` は **3,252,600 bytes**（約3.10 MiB）だった。全 `.rb`
+ファイルの個別サイズは campaign artifact の `optcarrot-aot-size.txt` に保存している。
+
+### DOOM（60フレーム、GC=copy）
+
+純 Ruby DOOM の E1M1 headless render。checksum は全モードで
+`17930386881013214317` と一致した。時間は初期 clone 済み状態の best-of-3。
+
+| mode | time [s] | 対 CRuby | 対 YJIT |
+|---|---:|---:|---:|
+| CRuby | 1.095 | 1.00x | 2.07x |
+| CRuby + YJIT | 0.529 | 0.48x | 1.00x |
+| koruby interpreter | 0.991 | 0.90x | 1.87x |
+| koruby AOT warm | 0.503 | 0.46x | 0.95x |
+
+DOOM の AOT bake 単体は **11.275秒**。AOT warm は約0.50秒で、YJIT とほぼ同水準。
+
 
 ### GC backend 比較（同一 microbench、AOT warm）
 
