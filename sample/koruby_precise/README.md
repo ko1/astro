@@ -43,7 +43,8 @@ performance governor、gcc 15.2）で計測。比較対象は **CRuby 4.0.6 +PRI
 - 同じ条件で `GC=copy_gen` も測定した（geomean: AOT warm 0.38）。`ary` / `gen_gc` は改善したが、
   `gcchurn` / `strscan` は copy より約9%遅く、効果は workload 依存だった。
 - `GC=mark_gen` も同条件で測定し、AOT warm geomean は CRuby 比 0.42（YJIT 比 約0.86）。
-  全53本の CRuby/YJIT 比較と各 raw log は [docs/perf.md](./docs/perf.md) に記載した。
+  さらに `bump` / `immix` / `immix_gen` / `mark_compact_gen` / `mark_bump_gen` も同条件で測定した。
+  8 backend・全53本の CRuby/YJIT 比較と各 raw log は [docs/perf.md](./docs/perf.md) に記載した。
 - 比は CPU、コンパイラ、CRuby/YJIT バージョンで大きく動く。数字を引用するときは
   比較対象も同じ環境で測り直すこと。詳細と過去値は [docs/perf.md](./docs/perf.md)。
 
