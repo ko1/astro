@@ -54,19 +54,23 @@ performance governor、gcc 15.2）で計測。比較対象は **CRuby 4.0.6 +PRI
 
 ## rubyspec 充足（core, CRuby drop-in 目標）
 
-2026-09-04 時点（ASTro `0a908f2a`、rubyspec `ed31b0d376`、`spec/ruby/core`）。
+2026-09-04 時点（koruby_precise `0a908f2a`、rubyspec `4eaa9145`、`spec/ruby/core`）。
 計測は **本物の mspec を無改造の spec に噛ませる** `tools/mspec_real_run.rb`
 （`DUMP=core.tsv ruby tools/mspec_real_run.rb ~/ruby/src/master/spec/ruby/core 12`）。
 
 | 指標 | 値 |
 |---|---:|
-| **example pass-rate** | **96.9%** |
-| examples | 22,885 (pass 22,184 / fail 519 / err 182) |
-| fully-clean files | 1,625 / 2,144 (75.8%) |
-| 完走しない files | 7（CRuby 上で計 65 examples） |
-| 保守的下限（未完走を全て不合格として算入） | 96.7% |
+| **example pass-rate** | **97.0%** |
+| examples | 22,910 (pass 22,215 / fail 523 / err 172) |
+| fully-clean files | 1,633 / 2,144 (76.2%) |
+| 完走しない files | 4（CRuby 上で計 45 examples） |
+| 保守的下限（未完走を全て不合格として算入） | 96.8% |
 
 - pass-rate は完走した spec の `pass / (pass + fail + err)`。
+- 2 回連続実行での差は 1 example のみ（`file/open` が pass↔err で振れる）。
+  ただし per-file 20s timeout があるので、**測る前にマシンの負荷を確認すること**
+  （過去 sweep の残骸プロセスを落としてから測り直したら、未完走 files が 7 → 4 になった。
+  残骸の件は [docs/todo.md](./docs/todo.md) の「sweep が fork した子プロセスを残す」）。
 - 単一 spec の再現は
   `SPEC_TEMP_DIR=<writable> ./koruby_precise tools/mspec_launch.rb <absolute-spec-path>`。
 - `tools/rubyspec_run.rb`（mspec **shim** + spec 連結方式）は速いが `it_behaves_like` や
@@ -82,16 +86,16 @@ performance governor、gcc 15.2）で計測。比較対象は **CRuby 4.0.6 +PRI
 | `data` | 85/88 (96.6%) | `dir` | 325/333 (97.6%) | `encoding` | 618/632 (97.8%) |
 | `enumerable` | 532/536 (99.3%) | `enumerator` | 421/431 (97.7%) | `env` | 172/193 (89.1%) |
 | `exception` | 215/250 (86.0%) | `false` | 12/13 (92.3%) | `fiber` | 161/171 (94.2%) |
-| `file` | 894/911 (98.1%) | `filetest` | 85/89 (95.5%) | `float` | 255/260 (98.1%) |
+| `file` | 899/913 (98.5%) | `filetest` | 85/89 (95.5%) | `float` | 255/260 (98.1%) |
 | `gc` | 39/39 (100.0%) | `hash` | 550/562 (97.9%) | `integer` | 585/598 (97.8%) |
-| `io` | 1,589/1,625 (97.8%) | `kernel` | 2,097/2,222 (94.4%) | `main` | 23/27 (85.2%) |
+| `io` | 1,602/1,634 (98.0%) | `kernel` | 2,110/2,235 (94.4%) | `main` | 23/27 (85.2%) |
 | `marshal` | 473/475 (99.6%) | `matchdata` | 180/185 (97.3%) | `math` | 243/243 (100.0%) |
 | `method` | 194/199 (97.5%) | `module` | 1,021/1,049 (97.3%) | `mutex` | 28/29 (96.6%) |
 | `nil` | 26/27 (96.3%) | `numeric` | 325/326 (99.7%) | `objectspace` | 107/107 (100.0%) |
 | `proc` | 235/247 (95.1%) | `process` | 339/363 (93.4%) | `queue` | 46/46 (100.0%) |
 | `random` | 85/87 (97.7%) | `range` | 606/606 (100.0%) | `rational` | 155/158 (98.1%) |
 | `refinement` | 24/25 (96.0%) | `regexp` | 249/258 (96.5%) | `set` | 165/175 (94.3%) |
-| `signal` | 52/53 (98.1%) | `sizedqueue` | 59/61 (96.7%) | `string` | 3,846/3,905 (98.5%) |
+| `signal` | 52/53 (98.1%) | `sizedqueue` | 59/61 (96.7%) | `string` | 3,846/3,906 (98.5%) |
 | `struct` | 170/170 (100.0%) | `symbol` | 262/270 (97.0%) | `systemexit` | 6/6 (100.0%) |
 | `thread` | 261/327 (79.8%) | `threadgroup` | 8/8 (100.0%) | `time` | 629/652 (96.5%) |
 | `tracepoint` | 29/76 (38.2%) | `true` | 12/13 (92.3%) | `unboundmethod` | 100/106 (94.3%) |
@@ -105,7 +109,7 @@ performance governor、gcc 15.2）で計測。比較対象は **CRuby 4.0.6 +PRI
 | 実行中フレームの観測 | `caller` / `caller_locations` / `Thread#backtrace` と location 系、例外 backtrace / `full_message` / トップレベル表示の一部が不完全 |
 | Thread/Fiber の割り込みと同期 | Fiber 内で lock 中の thread への `raise` / `kill` など、green-thread モデルと CRuby native thread の意味差 |
 | eval/Binding の字句スコープ | `eval(str)` から呼び出し元・外側 block の local を読み書きするケース、Binding の外側 scope 列挙 |
-| 完走しない 7 files | `io/close_write`、`kernel/chomp`、`kernel/chop`、`mutex/lock`、`process/kill`、`process/status/wait`、`process/wait`。duplex IO、`-n` 実行モード、Fiber 内 lock への割り込み、signal/wait の wakeup が主なハング経路 |
+| 完走しない 4 files | `mutex/lock`、`process/kill`、`process/status/wait`、`process/wait`。Fiber 内 lock への割り込みと signal/wait の wakeup がハング経路。さらに `process/wait` 系は fork した子が `timeout` の kill を生き延びて残留するので、sweep 後にプロセスを確認すること |
 | 個別 edge case | ENV の変換プロトコル、Encoding::Converter / Unicode、String、Process/IO など |
 
 失敗の履歴と設計上の制約は [docs/rubyspec.md](./docs/rubyspec.md) と

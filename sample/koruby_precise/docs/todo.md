@@ -65,6 +65,23 @@
   `rlimit_*`、`:in` に IO 以外の Ruby オブジェクト。`close_others:` と `chdir:` と
   fd リダイレクトは実装済み。
 
+- **sweep が fork した子プロセスを残す (2026-09-04 発覚、未修正)**。
+  `tools/mspec_real_run.rb` を 1 回回すごとに
+  `core/process/wait_spec.rb` と `core/process/status/wait_spec.rb` の
+  koruby プロセスが 2 個ずつ生き残る。`timeout -k 5 20` は spawn した
+  直下の子しか殺さないので、spec 内で fork された子 (cmdline が親と同一)
+  が orphan になって残る。放置すると溜まり、
+  `core/process/kill_spec.rb` 由来のものは **100% CPU を回し続ける**
+  (実際に 3-4 日ぶんが 6 プロセス残っていて ~6 CPU を食っていた)。
+  観測: この 6 プロセスを落として測り直すと、前回 whole-file-fail だった
+  `io/close_write` / `kernel/chomp` / `kernel/chop` の 3 件が
+  いずれも 0 fail で完走し、未完走 files は 7 → 4 に減った。
+  per-file 20s timeout なので残骸の CPU 負荷が原因と考えられるが、
+  高負荷を再現しての確認まではしていない。
+  対策候補: runner 側で子を新しい process group に入れて group ごと kill する。
+  当面は sweep 後に
+  `ps -eo pid,args | grep mspec_launch` で残骸を確認して落とすこと。
+
 ## 既知バグ (2026-08-11 に発覚、未修正)
 
 - **Class / Module の `#inspect` override が `p` で無視される**。
