@@ -120,10 +120,12 @@ standalone native executable を作るため、koruby の `all.so` とは成果�
 
 | workload | Spinel compile | Spinel artifact | 実行結果 |
 |---|---:|---:|---|
-| optcarrot (180 frames) | 1.555s（失敗） | なし | `send` の動的メソッド名が unsupported |
+| optcarrot (180 frames, `experiment/spinel`) | 8.298s | 882,208 bytes | **1261.6 fps**, checksum `59662` |
 | DOOM (60 frames) | 13.248s | 1,287,248 bytes | compile 成功、実行時 `patch_index` nil で失敗 |
 
-入力サイズは optcarrot が `.rb` 42ファイル / 233,406 bytes、bundle 134,350 bytes、
+optcarrot は Spinel 対応ブランチ `mame/optcarrot` commit `b622088c` の
+`tools/pack-for-spinel.rb` で作った bundle（**124,933 bytes**）を使用した。
+通常版の入力サイズは `.rb` 42ファイル / 233,406 bytes、bundle 134,350 bytes、
 DOOM が `.rb` 51ファイル / 418,103 bytes、bundle 157,836 bytes。Spinel の DOOM は
 コンパイル自体は通るが checksum を得られないため、性能比較値としては採用しない。
 
