@@ -54,24 +54,23 @@ performance governor、gcc 15.2）で計測。比較対象は **CRuby 4.0.6 +PRI
 
 ## rubyspec 充足（core, CRuby drop-in 目標）
 
-計測は **本物の mspec を無改造の spec に噛ませる** `tools/mspec_real_run.rb` を使う。
-2026-09-04 時点（ASTro `0a908f2a`、rubyspec `ed31b0d376`）:
+2026-09-04 時点（ASTro `0a908f2a`、rubyspec `ed31b0d376`、`spec/ruby/core`）。
+計測は **本物の mspec を無改造の spec に噛ませる** `tools/mspec_real_run.rb`
+（`DUMP=core.tsv ruby tools/mspec_real_run.rb ~/ruby/src/master/spec/ruby/core 12`）。
 
-```
-DUMP=core.tsv ruby tools/mspec_real_run.rb ~/ruby/src/master/spec/ruby/core 12
-files=2144  clean=1625  whole-file-fail=7
-examples=22885  pass=22184  fail=519  err=182
-example pass-rate = 96.9%
-```
+| 指標 | 値 |
+|---|---:|
+| **example pass-rate** | **96.9%** |
+| examples | 22,885 (pass 22,184 / fail 519 / err 182) |
+| fully-clean files | 1,625 / 2,144 (75.8%) |
+| 完走しない files | 7（CRuby 上で計 65 examples） |
+| 保守的下限（未完走を全て不合格として算入） | 96.7% |
 
-- **core example pass-rate は 96.9%**。完走した spec の `pass / (pass + fail + err)` で、
-  fully-clean は 1,625 / 2,144 files（75.8%）。summary 未到達の 7 files（CRuby 上で計 65 examples）を
-  すべて不合格とする保守的な下限でも **96.7%**。
-- 単一 spec は
-  `SPEC_TEMP_DIR=<writable> ./koruby_precise tools/mspec_launch.rb <absolute-spec-path>` で再現できる。
+- pass-rate は完走した spec の `pass / (pass + fail + err)`。
+- 単一 spec の再現は
+  `SPEC_TEMP_DIR=<writable> ./koruby_precise tools/mspec_launch.rb <absolute-spec-path>`。
 - `tools/rubyspec_run.rb`（mspec **shim** + spec 連結方式）は速いが `it_behaves_like` や
-  mock が独自実装なので **pass を水増しする**。
-  数字を出すときは実 mspec のほうを使うこと。
+  mock が独自実装なので **pass を水増しする**。数字を出すときは実 mspec のほうを使うこと。
 
 カテゴリ別（summary が返った examples）:
 
@@ -100,20 +99,17 @@ example pass-rate = 96.9%
 
 主な残課題:
 
-- **TracePoint のイベント配信**: API 層はあるが、`:line` / `:call` / `:return` /
-  `:b_call` などの実行時フックが未実装。
-- **実行中フレームの観測**: `caller` / `caller_locations` / `Thread#backtrace`
-  と location 系、例外 backtrace / `full_message` / トップレベル表示の一部が不完全。
-- **Thread/Fiber の割り込みと同期**: Fiber 内で lock 中の thread への `raise` / `kill`
-  など、green-thread モデルと CRuby native thread の意味差が残る。
-- **eval/Binding の字句スコープ**: `eval(str)` から呼び出し元・外側 block の local を
-  読み書きするケースと、Binding の外側 scope 列挙に残りがある。
-- **完走しない7 files**: `io/close_write`、`kernel/chomp`、`kernel/chop`、`mutex/lock`、
-  `process/kill`、`process/status/wait`、`process/wait`。duplex IO、`-n` 実行モード、
-  Fiber 内 lock への割り込み、signal/wait の wakeup が主なハング経路。
-- その他は ENV の変換プロトコル、Encoding::Converter / Unicode、String、
-  Process/IO などの個別 edge case。失敗の履歴と設計上の制約は
-  [docs/rubyspec.md](./docs/rubyspec.md) と [docs/todo.md](./docs/todo.md) に記録している。
+| 残課題 | 内容 |
+|---|---|
+| TracePoint のイベント配信 | API 層はあるが `:line` / `:call` / `:return` / `:b_call` などの実行時フックが未実装 |
+| 実行中フレームの観測 | `caller` / `caller_locations` / `Thread#backtrace` と location 系、例外 backtrace / `full_message` / トップレベル表示の一部が不完全 |
+| Thread/Fiber の割り込みと同期 | Fiber 内で lock 中の thread への `raise` / `kill` など、green-thread モデルと CRuby native thread の意味差 |
+| eval/Binding の字句スコープ | `eval(str)` から呼び出し元・外側 block の local を読み書きするケース、Binding の外側 scope 列挙 |
+| 完走しない 7 files | `io/close_write`、`kernel/chomp`、`kernel/chop`、`mutex/lock`、`process/kill`、`process/status/wait`、`process/wait`。duplex IO、`-n` 実行モード、Fiber 内 lock への割り込み、signal/wait の wakeup が主なハング経路 |
+| 個別 edge case | ENV の変換プロトコル、Encoding::Converter / Unicode、String、Process/IO など |
+
+失敗の履歴と設計上の制約は [docs/rubyspec.md](./docs/rubyspec.md) と
+[docs/todo.md](./docs/todo.md) に記録している。
 
 corpus（`make test`）は CRuby オラクル差分の golden test **100,354 件を 0 fail / 0 crash** で維持している。
 
