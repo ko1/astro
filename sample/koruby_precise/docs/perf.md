@@ -92,6 +92,71 @@ raw 出力、7反復の optcarrot、環境、再現手順は
 加算するため、microbench では campaign 内の BusyBox timeout を PATH 先頭に置いた。
 
 
+### GC backend 比較（同一 microbench、AOT warm）
+
+上の主結果は default の `GC=copy`。同じ条件で `GC=copy_gen` も測定し、53本すべての AOT warm 実時間を比較する（秒、低いほど高速）。
+
+| bench | copy | copy_gen | copy_gen / copy |
+|---|---:|---:|---:|
+| `ackermann` | 0.224 | 0.228 | 1.02x |
+| `array_access` | 0.232 | 0.232 | 1.00x |
+| `ary` | 0.189 | 0.128 | 0.68x |
+| `aryidx` | 0.019 | 0.020 | 1.05x |
+| `bignum` | 0.079 | 0.080 | 1.01x |
+| `binary_trees` | 0.132 | 0.134 | 1.02x |
+| `bitops` | 0.066 | 0.066 | 1.00x |
+| `block` | 0.115 | 0.116 | 1.01x |
+| `block_yield_kernel` | 0.086 | 0.086 | 1.00x |
+| `casewhen` | 0.112 | 0.112 | 1.00x |
+| `closures` | 0.148 | 0.156 | 1.05x |
+| `cmpsort` | 0.175 | 0.184 | 1.05x |
+| `collatz` | 0.177 | 0.178 | 1.01x |
+| `exception` | 0.091 | 0.097 | 1.07x |
+| `fannkuch` | 0.107 | 0.109 | 1.02x |
+| `fib` | 0.125 | 0.124 | 0.99x |
+| `floatcalc` | 0.094 | 0.095 | 1.01x |
+| `gc_bigobj` | 0.111 | 0.120 | 1.08x |
+| `gc_wb` | 0.075 | 0.074 | 0.99x |
+| `gcchurn` | 0.142 | 0.155 | 1.09x |
+| `gcd` | 0.197 | 0.198 | 1.01x |
+| `gen_gc` | 0.277 | 0.220 | 0.79x |
+| `hash` | 0.335 | 0.332 | 0.99x |
+| `hashiter` | 0.107 | 0.106 | 0.99x |
+| `intdiv` | 0.065 | 0.064 | 0.98x |
+| `iterators` | 0.293 | 0.292 | 1.00x |
+| `ivar` | 0.204 | 0.218 | 1.07x |
+| `kwargs` | 0.107 | 0.108 | 1.01x |
+| `mandelbrot` | 0.170 | 0.171 | 1.01x |
+| `mapreduce` | 0.193 | 0.202 | 1.05x |
+| `mathfn` | 0.182 | 0.180 | 0.99x |
+| `method_call` | 0.227 | 0.226 | 1.00x |
+| `methodchain` | 0.211 | 0.215 | 1.02x |
+| `nbody` | 0.173 | 0.181 | 1.05x |
+| `nested_loop` | 0.076 | 0.077 | 1.01x |
+| `nesteddata` | 0.068 | 0.070 | 1.03x |
+| `object` | 0.152 | 0.162 | 1.07x |
+| `poly` | 0.128 | 0.164 | 1.28x |
+| `rangeeach` | 0.069 | 0.069 | 1.00x |
+| `render_span_kernel` | 0.219 | 0.218 | 1.00x |
+| `send` | 0.261 | 0.262 | 1.00x |
+| `sieve` | 0.075 | 0.076 | 1.01x |
+| `sort` | 0.116 | 0.120 | 1.03x |
+| `sprintfb` | 0.271 | 0.271 | 1.00x |
+| `str` | 0.376 | 0.382 | 1.02x |
+| `strcmp` | 0.080 | 0.082 | 1.02x |
+| `strfmt` | 0.602 | 0.615 | 1.02x |
+| `strops` | 0.245 | 0.253 | 1.03x |
+| `strscan` | 0.195 | 0.213 | 1.09x |
+| `structacc` | 0.128 | 0.129 | 1.01x |
+| `tak` | 0.241 | 0.240 | 1.00x |
+| `while` | 0.069 | 0.069 | 1.00x |
+| `while2` | 0.049 | 0.048 | 0.98x |
+
+`copy_gen / copy < 1` が世代別 GC の短縮、`> 1` が悪化を示す。geomean は copy 0.37x、copy_gen 0.38x（CRuby 基準）で、全体ではほぼ同等。`copy_gen` は `ary` / `gen_gc` で効く一方、`gcchurn` / `strscan` は約9%遅かった。
+
+copy_gen の raw 出力は [`microbench-5mode-copy-gen-x3.txt`](/home/ko1/ruby/src/trials/koruby_precise-perf-20260904/artifacts/microbench-5mode-copy-gen-x3.txt)、
+copy の raw 出力は [`microbench-5mode-x3-valid.txt`](/home/ko1/ruby/src/trials/koruby_precise-perf-20260904/artifacts/microbench-5mode-x3-valid.txt)。
+
 ## 2026-06-24: block-yield に simple-block fast path (成功・block 系 ~17-23%)
 
 profile (`structacc` aot+cached) で **`korb_block_yield` が 43% self**。全 param-binding

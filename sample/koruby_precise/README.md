@@ -36,10 +36,12 @@ performance governor、gcc 15.2）で計測。比較対象は **CRuby 4.0.6 +PRI
 - optcarrot では **warm AOT が素の CRuby の 1.29×**。YJIT は AOT の 3.69×。
 - 標準の `make optcarrot-report FRAMES=180 BENCHRUNS=3` では AOT 80.9 fps、
   AOT cold（bake + 1 run）35.738 s、warm run 2.321 s。
-- 53 本の microbench（各5モード、best-of-3）の実時間 geomean は、素の CRuby = 1.00 に対し
+- 53 本の microbench（各5モード、best-of-3、`GC=copy`）の実時間 geomean は、素の CRuby = 1.00 に対し
   **YJIT 0.49 / interp 0.74 / AOT cold 1.04 / AOT warm 0.37**。warm AOT は素の
   CRuby の 2.70×、YJIT の 1.32×で、YJIT に 32/53 ベンチで勝つ。再帰・method send・
   ivar/object 系は YJIT が強い。
+- 同じ条件で `GC=copy_gen` も測定した（geomean: AOT warm 0.38）。`ary` / `gen_gc` は改善したが、
+  `gcchurn` / `strscan` は copy より約9%遅く、効果は workload 依存だった。
 - 比は CPU、コンパイラ、CRuby/YJIT バージョンで大きく動く。数字を引用するときは
   比較対象も同じ環境で測り直すこと。詳細と過去値は [docs/perf.md](./docs/perf.md)。
 
