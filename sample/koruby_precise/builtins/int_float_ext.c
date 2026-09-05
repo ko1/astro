@@ -729,11 +729,19 @@ static RESULT korb_m_ary_rotate_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     uint32_t n = ary->len;
     if (n > 1) {
-        korb_sword_t k = ((cnt % (korb_sword_t)n) + (korb_sword_t)n) % (korb_sword_t)n;   /* normalize */
+        const uint32_t k = (uint32_t)(((cnt % (korb_sword_t)n) + (korb_sword_t)n) % (korb_sword_t)n);   /* normalize */
         KorbArrayItems *it = ary->items;
-        korb_ary_rev_range(c, it, 0, (uint32_t)k);
-        korb_ary_rev_range(c, it, (uint32_t)k, n);
-        korb_ary_rev_range(c, it, 0, n);
+        if (k == 0) return RESULT_OK(VALUE_REF_GET(self));
+        if (n <= 256) {                              /* small (optcarrot's 16-cell pixel ring): snapshot + 2 bulk stores */
+            VALUE tmp[256];
+            memcpy(tmp, korb_items_data(it), n * sizeof(VALUE));
+            ARO_STORE_BULK(c, it, korb_items_data(it), tmp + k, n - k);
+            ARO_STORE_BULK(c, it, korb_items_data(it) + (n - k), tmp, k);
+        } else {                                     /* 3-reverse: no scratch */
+            korb_ary_rev_range(c, it, 0, k);
+            korb_ary_rev_range(c, it, k, n);
+            korb_ary_rev_range(c, it, 0, n);
+        }
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }

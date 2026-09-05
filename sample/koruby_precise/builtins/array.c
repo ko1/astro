@@ -303,9 +303,9 @@ static RESULT korb_ary_splice(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t
     if (start <= len && start + dellen <= len && repl == dellen &&
         VALUE_REF_GET(self) != VALUE_REF_GET(valref)) {   /* in-place; aliasing → slow path */
         if (splat) {
-            for (korb_sword_t j = 0; j < repl; j++)
-                korb_ary_store_at(c, VALUE_REF_GET(self), (uint32_t)(start + j),
-                                  korb_items_data(VAL2ARY(VALUE_REF_GET(valref))->items)[j]);
+            KorbArrayItems *const dit = VAL2ARY(VALUE_REF_GET(self))->items;
+            ARO_STORE_BULK(c, dit, korb_items_data(dit) + start,
+                           korb_items_data(VAL2ARY(VALUE_REF_GET(valref))->items), (size_t)repl);
         } else {
             korb_ary_store_at(c, VALUE_REF_GET(self), (uint32_t)start, VALUE_REF_GET(valref));
         }
