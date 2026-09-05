@@ -343,7 +343,7 @@ node_lset(CTX *c, NODE *n, VALUE *slots, int32_t off, VALUE rval@child)
 // (nil-padded), else target[0]=rhs and the rest are nil.  No allocation — the
 // rhs array (e.g. the literal built for `a, b = b, a`) snapshots both sides
 // first, so swaps work.  `offsets` is a baked int32[] of frame-slot offsets.
-NODE_DEF @noinline
+NODE_DEF
 node_massign(CTX *c, NODE *n, VALUE *slots, void *offsets, uint32_t ntargets, VALUE rval@child)
 {
     (void)n;
@@ -366,7 +366,7 @@ node_massign(CTX *c, NODE *n, VALUE *slots, void *offsets, uint32_t ntargets, VA
 // local (kind 0, data=slot offset), instance var (kind 1, data=ivar name sym),
 // or constant (kind 2, data=const name sym).  rhs parked in slots[0] across the
 // ivar-set allocs.  Returns the rhs (Array or scalar).
-NODE_DEF @noinline
+NODE_DEF
 node_massign_het(CTX *c, NODE *n, VALUE *slots, void *descs, uint32_t nt, int32_t self_off, VALUE rval@child)
 {
     (void)n;
@@ -395,7 +395,7 @@ node_massign_het(CTX *c, NODE *n, VALUE *slots, void *descs, uint32_t nt, int32_
 // `offsets` = npre pre-offsets, then the splat offset, then npost post-offsets.
 // The splat collects the middle elements into a fresh Array (a GC point — rhs is
 // parked in slots[0] across the alloc; ELEM treats a non-Array rhs as [rhs]).
-NODE_DEF @noinline
+NODE_DEF
 node_massign_splat(CTX *c, NODE *n, VALUE *slots, void *offsets, uint32_t npre, uint32_t npost, VALUE rval@child)
 {
     (void)n;
@@ -1172,9 +1172,10 @@ node_return_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t dept
 }
 
 // pattern match `expr in pattern` → true/false (binds locals as a side effect).
-// @noinline: the compiled pattern descriptor (`desc`) is a per-process pointer
-// (not bakeable); the runtime matcher walks the subject + writes bindings.
-NODE_DEF @noinline
+// The compiled pattern descriptor (`desc`) is a per-process pointer the SD
+// reads from the node at runtime; the runtime matcher walks the subject +
+// writes bindings.
+NODE_DEF
 node_match_pred(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, void *desc)
 {
     (void)n;
@@ -1183,7 +1184,7 @@ node_match_pred(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, void *desc)
 }
 
 // pattern match `expr => pattern` → nil, or raise on no match.
-NODE_DEF @noinline
+NODE_DEF
 node_match_req(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, void *desc)
 {
     (void)n;

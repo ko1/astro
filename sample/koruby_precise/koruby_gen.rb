@@ -589,6 +589,14 @@ class KorubyNodeDef < ASTroGen::NodeDef
           # truncate (docs: feedback_astro_cstr_truncation).  Always emit a
           # runtime reference instead of baking the literal.
           return nil, "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
+        when 'void *'
+          # Per-process pointer (parse-built descriptor arrays): the base
+          # class bakes NULL, which forced every such node to be @noinline —
+          # and a @noinline node dispatches its CHILDREN through the
+          # interpreter even inside AOT code (optcarrot: massign rhs ~3%).
+          # The hash already folds void* to a constant, so reference the
+          # node field at runtime instead.
+          return nil, "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
         when 'uint32_t'
           if self.name == 'line' || sym?
             # hash-excluded (above) → must not be baked as a constant, or
