@@ -3,6 +3,79 @@
 本書は **どんな最適化を試したか** と **その結果** を一覧する。
 成功例だけでなく **見送ったもの** も同じ重みで記録する (再評価のために)。
 
+## 2026-09-05: 裸識別子のラッパノードを外す (成功・optcarrot AOT +18.0%)
+
+### 症状と切り分け
+
+「optcarrot が遅くなった」の申告を、(a) 計測環境、(b) 使い方、(c) コード退行に分けた。
+
+1. **stale code store** — optcarrot 配下に 2 週間前の `code_store` が残っていた。
+   新しい binary で読むと素の実行は **SEGV**、`--compiled-only` は compile-miss で即死。
+   計測前に `rm -rf code_store` すること。
+2. **マシン** — ローカルは他ジョブが ~5 CPU 使っており、コードの変わらない
+   CRuby / YJIT も 8/14 比 0.79-0.80× に落ちていた。**対照を同じ round で測れば見える**。
+3. **本物の退行** — 8/14 `f50b934a` と 9/2 `0a908f2a` を同時刻に交互実行して
+   **AOT 0.74×**。これが実体。
+
+### 二分探索の罠 (この履歴では `git rev-list` 順は使えない)
+
+最初 `git rev-list --reverse f50b934a..0a908f2a` の 724 commit を二分探索したが
+**無効だった**。この履歴は worktree ブランチを多数 merge しており、`rev-list` の
+並びで隣接する commit が親子関係にない (`idx625` は `idx626` の祖先ではない)。
+隣どうしを「変更の前後」として比べていたことになる。手がかりは**非単調性**で、
+犯人候補の「次」の commit が速度を取り戻していた。
+
+`git rev-list --reverse --first-parent` で本線 562 commit を取り直して再探索した。
+本線で測ると形もはっきりし、8/14〜8/31 は 57-64 fps で横ばい、9/1 に一段落ちて
+以降 HEAD まで 46-51 fps の帯を横ばい (**段差は 1 か所だけ**) だった。
+
+### 原因 (`b15868bc`, 2026-09-01)
+
+裸の識別子 `zork` (レシーバ無し・括弧無し・引数無し) の miss を `NoMethodError`
+ではなく `NameError` にするため、prism の `VARIABLE_CALL` が立った呼び出しを
+`node_vcall` という `@noinline` の**ラッパノードで包んで**いた。commit message は
+「成功時のコストはゼロ」と書いていたが、**ASTro はノードごとに dispatcher を持つので
+包めば成功時も 1 段増える**。optcarrot の CPU/PPU の内側はこの形の呼び出しでできている。
+
+親 `2abcba23` 55.2/55.3/58.5 fps に対し `b15868bc` は 47.9/49.6/50.0/50.1/51.5 fps。
+範囲は重ならず、中央値で -10%（ローカル計測）。
+
+### 修正
+
+パーサが `NODE->head.flags.is_vcall` に印を付け、`korb_call_impl` の receiverless
+miss 地点だけがその印を読む。`node_call` は既に `n` を dispatcher 引数で持っている
+ので下位へ `const NODE *site` として渡すだけで、**成功時に増える仕事はゼロ**。
+副産物として、旧実装が miss メッセージを `snprintf` + `memcmp` で照合していたのが消え、
+ユーザ `#method_missing` が上げた `NoMethodError` との区別が構造的になった。
+
+SD の署名は `SD_xxx(CTX *c, NODE *n, VALUE *slots)` で **`n` は実行時引数**なので、
+AOT でも印は正しく読める（AOT と interp で出力が 1 文字も違わないことを確認）。
+
+### 結果 (sp4 専有、gcc 15.2、CRuby 4.0.2 `d3da9fec82`、180 frames、3 round 交互)
+
+| round | koruby master | koruby fix | CRuby | CRuby+YJIT |
+|---|---:|---:|---:|---:|
+| 1 | 81.7 | **96.4** | 62.5 | 298.0 |
+| 2 | 81.4 | **96.3** | 62.3 | 294.2 |
+| 3 | 82.0 | **96.9** | 62.5 | 297.6 |
+| median | 81.7 | **96.4** | 62.5 | 297.6 |
+
+**+18.0%**。CRuby 比 1.31× → **1.54×**、YJIT 比 0.274× → **0.324×**。
+checksum は全 12 セル `59662`。3 round の散らばりは 1% 未満。
+（負荷のあるローカル機では +11.7%。静かなマシンのほうが素直に出る。）
+
+退行なし: corpus 4901 PASS / STRESS+PURGE 4899 PASS 0 CRASH / rubyspec core
+22215-22910 / language 2762-2854 / core/exception 215-250 — いずれも master と同一。
+
+### 残り
+
+全体 -26% のうち帰属できたのはこの -13% 分だけ。残る -4% は 8/30-9/1 の
+ゆるやかな下がりで、1 点あたりのノイズ (±4 fps) より小さい刻みに散っており
+個々の commit に帰属できない。追うなら fps ではなく `perf stat -e instructions`
+に指標を替える必要がある。
+
+計測一式: `~/ruby/src/trials/2026-09-05-koruby-optcarrot-regression/`
+
 ## 2026-09-04: rubyspec 追従後の microbench 再計測
 
 sp4（Ryzen 9 8945HS、8C/16T、Linux 7.0、performance governor）で、ASTro

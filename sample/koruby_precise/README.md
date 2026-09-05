@@ -22,20 +22,28 @@ GC は **precise moving/copy GC**（`GC=copy` default）。全ての alloc-heavy
 
 ## 性能（optcarrot, 180 フレーム, checksum 59662 全モード一致）
 
-2026-09-04、専用機 sp4（Ryzen 9 8945HS / 8 cores, 16 threads、Linux 7.0、
-performance governor、gcc 15.2）で計測。比較対象は **CRuby 4.0.6 +PRISM**。
-各 7 回の median（括弧内は min–max）:
+2026-09-05、専用機 sp4（Ryzen 9 8945HS / 8 cores, 16 threads、Linux 7.0、
+performance governor、gcc 15.2、他ジョブなし）で計測。比較対象は自前ビルドの
+**CRuby 4.0.2 +PRISM**（`v4.0.2`, revision `d3da9fec82`）。master と修正版を
+1 round 内で交互に、各 3 round の median:
 
 | 実行系 | fps | 対 素の CRuby | 対 CRuby+YJIT |
 |---|---:|---:|---:|
-| **koruby AOT**（aot+cached） | **81.3** (80.5–82.2) | **1.29×** | 0.27× |
-| koruby interp (tree-walk) | 51.9 (51.6–52.9) | 0.82× | 0.17× |
-| CRuby (no yjit) | 63.1 (62.2–64.3) | 1.00× | 0.21× |
-| CRuby + YJIT | 300.1 (294.3–303.4) | 4.76× | 1.00× |
+| **koruby AOT**（aot+cached） | **96.4** (96.3–96.9) | **1.54×** | 0.32× |
+| CRuby (no yjit) | 62.5 (62.3–62.5) | 1.00× | 0.21× |
+| CRuby + YJIT | 297.6 (294.2–298.0) | 4.76× | 1.00× |
 
-- optcarrot では **warm AOT が素の CRuby の 1.29×**。YJIT は AOT の 3.69×。
+- optcarrot では **warm AOT が素の CRuby の 1.54×**。YJIT は AOT の 3.09×。
+- **`node_vcall` のラッパノードを外して 81.7 → 96.4 fps (+18.0%)**（2026-09-05）。
+  裸の識別子 `foo` の miss を NameError にするために call ノードを `@noinline` の
+  ラッパで包んでいたのを、パーサが `NodeHead` に印を付けて miss 側だけが読む形に変えた。
+  成功時に dispatcher が 1 段増えるのが実測で効いていた。経緯と切り分けは
+  `~/ruby/src/trials/2026-09-05-koruby-optcarrot-regression/`。
+- 修正前の 2026-09-04 計測（同じ sp4、CRuby 4.0.6 比較、各 7 回 median）は
+  AOT **81.3** (80.5–82.2) / interp **51.9** (51.6–52.9) / CRuby 63.1 / YJIT 300.1。
+  interp と cold bake は修正後に測り直していない（上の表は AOT のみ 09-05 の値）。
 - 標準の `make optcarrot-report FRAMES=180 BENCHRUNS=3` では AOT 80.9 fps、
-  AOT cold（bake + 1 run）35.738 s、warm run 2.321 s。
+  AOT cold（bake + 1 run）35.738 s、warm run 2.321 s（いずれも vcall 修正前の値）。
 - optcarrot の AOT bake 単体は **33.350 s**。Ruby ソース42ファイル合計 **233,406 bytes**、
   bundle **134,350 bytes**、生成 `code_store/all.so` **3,252,600 bytes**。
 - 純 Ruby DOOM（E1M1、60フレーム）は CRuby 1.095 s / YJIT 0.529 s / koruby interpreter
@@ -51,6 +59,8 @@ performance governor、gcc 15.2）で計測。比較対象は **CRuby 4.0.6 +PRI
   8 backend・全53本の CRuby/YJIT 比較と各 raw log は [docs/perf.md](./docs/perf.md) に記載した。
 - 比は CPU、コンパイラ、CRuby/YJIT バージョンで大きく動く。数字を引用するときは
   比較対象も同じ環境で測り直すこと。詳細と過去値は [docs/perf.md](./docs/perf.md)。
+- **計測前に optcarrot 配下の `code_store` を消すこと。** 古い store を新しい binary で
+  読むと素の実行は SEGV、`--compiled-only` は compile-miss で即死する。
 
 ## rubyspec 充足（core, CRuby drop-in 目標）
 
