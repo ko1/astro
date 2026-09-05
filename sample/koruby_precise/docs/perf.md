@@ -3,6 +3,95 @@
 本書は **どんな最適化を試したか** と **その結果** を一覧する。
 成功例だけでなく **見送ったもの** も同じ重みで記録する (再評価のために)。
 
+## 2026-09-06: send の class 確認をキャッシュ + send(:sym) 直接 invoke + 単独 splat 無コピー (成功・optcarrot AOT +69%)
+
+### 何が遅かったか
+
+`perf record` (sp4, AOT run) で **`korb_mro_seg_find` が 25.6%**。call graph は
+`korb_send_impl` 先頭の
+
+```c
+if (mid == send/__send__/public_send && korb_class_find_method(class_of(self), mid, NULL) == NULL)
+```
+
+= 「受け側クラスが自前の #send を持っていなければ reflective send」の判定。これが
+**キャッシュ無しの線形 MRO 走査** (CPU → Object → Kernel の method table を `mid` 比較)
+を `send` のたびに走らせていた。optcarrot の CPU は `--opt` 無し (`-b`) なので
+`send(*DISPATCH[@opcode])` → `send(mode, ...)` → `send(instr)` と **1 命令あたり
+2〜3 回 send** する。
+
+修正後の profile では `korb_ary_new` + `aro_gc_alloc` が ~6%: `send(*DISPATCH[@opcode])`
+の `*x` を build_array が `[] + concat` に降ろし、命令ごとに Array を 1 個作っていた。
+
+### 変更
+
+1. **fix1** `korb_send_user_defined()`: 同じ答えを serial 付き `korb_mcache_find` で返す。
+2. **fix2** `korb_call_impl` の send 分岐: arg0 が Symbol・self が user object・refinement
+   無効・public_send でない・:sym が simple ISEQ に解決するとき、引数を 1 セル下に
+   ずらして `korb_invoke_simple` を直接呼ぶ。send/__send__ は visibility を無視するので
+   korb_send_impl の user-object 経路と同値。public_send (visibility 検査あり) は従来経路。
+3. **fix3** `node_splat_view` + parser `build_call_args`: 引数が `*x` 1 個だけの呼び出しは
+   x が Array ならそのまま渡す (他は `[*x]` 変換)。`node_call_splat` / `node_send_splat`
+   (+`_blk`) は要素をその場で slot に展開するだけなので共有して安全。`&proc` 付き
+   variant は #to_proc (ユーザコード) を配列より先に呼ぶのでコピーのまま。
+4. **fix4** fix2 の fast path を `korb_call_send` (noinline) に出す。korb_call_impl が
+   1.2KB 太った版 (fix3) は `sprintfb` (send も splat も使わない) が **+7%** 遅く、
+   `perf stat` で命令数 −0.5% / cycles +7% / L1 i-cache miss 269k → 3.27M (12×) と
+   **配置効果**だった。外に出すと i-cache miss 0.50M、sprintfb は base +4% まで戻る
+   (残りも korb_send_impl 側の +77 byte 等による配置ずれで、命令数は base より少ない)。
+
+### 結果 (sp4 専有, gcc 15.2, CRuby 4.1.0dev `69b49ac7ae` +YJIT, 180 frames, AOT best-of-3, 同 round 交互)
+
+| 段階 | AOT fps (3 round) | 累積 |
+|---|---|---:|
+| base `28e4fea0` | 97.3 / 97.6 / 97.3 | 1.00× |
+| fix1 | 147.7 / 147.7 / 146.6 | 1.52× |
+| fix2 | 154.1 / 154.8 / 153.6 | 1.58× |
+| fix3 | 163.9 / 164.9 / 165.3 | 1.69× |
+| fix4 (最終) | 163.3 / 163.7 / 164.1 | 1.68× |
+
+最終 base vs fix4 (3 round 交互, 素の CRuby は同機で別途 3 回):
+
+| round | base | fix4 | CRuby | CRuby+YJIT |
+|---|---:|---:|---:|---:|
+| 1 | 97.3 | **163.3** | 62.5 | 298.0 / 296.8 |
+| 2 | 97.2 | **163.7** | 61.6 | 298.0 / 297.2 |
+| 3 | 97.2 | **164.1** | 61.4 | 296.1 / 296.2 |
+
+**+68%** (97.2 → 163.7)。CRuby 比 1.58× → **2.66×**、YJIT 比 0.33× → **0.55×**。
+
+YJIT は同 round で 295〜300 fps で不変 (対照)。checksum は全セル `59662`。
+interp (`--plain`, 単発) も 53.2 → 72.3 fps。
+
+microbench 53 本 (5 mode, best-of-3, 同 sp4, `rubyharness/tools/run_bench.rb`): aot+cached の
+fix4/base 比は 49/53 本が ±3% 以内。動いたのは exception 0.93、aryidx 1.05、while2 1.04
+(20〜100 ms 級)、poly 1.26。poly は base 自身が 2 回の suite で 0.155 / 0.129 s、fix が
+0.128 / 0.163 s と **二峰性** (fix3 の suite では 0.83 で「速く」出た) で配置ノイズ。
+fix3 で +7% だった sprintfb は fix4 で 1.03 (0.268 → 0.277 s)。geomean は base / fix とも
+CRuby 比 interp 0.78 / AOT warm 0.39 で不変 (send/splat を使わない bench には効かない、が意図どおり)。
+per-bench の生数字は `logs/final2/compare.md`。
+
+退行なし: corpus 4901 PASS / 1 FAIL (`complex_pow_coerce`, master 同一) / STRESS+PURGE
+4899 PASS / 3 FAIL / 0 CRASH (master 同一) / rubyspec (本物 mspec) language 2762-2854、
+core/basicobject 160-172、core/kernel 2110-2235、core/proc 235-247、core/module 1021-1049
+— HEAD binary と同時刻比較で完全一致。
+
+### 罠 (計測)
+
+版ごとに**独立したツリーで make** すること。binary は `KORUBY_SRC_DIR` の絶対パスで
+`preload_store` を読むので、`cp -a` したツリーの binary は元ツリーの preload を掴み、
+元ツリーで別版を焼き直した瞬間から `--compiled-only` が「AOT compile-miss for body
+'module' (hash mismatch)」で死ぬ (fps 0.0)。mtime ではない。
+
+### 残り
+
+fix3 後の profile は method body の SD に平坦に散る (`all.so` 80% / runtime 16%)。
+0 引数 self-call の SD (全 call site が共有) が self 15.8% で、1 call ~75 命令の
+frame 設定・ic 判定・戻り値判定。ここから先は call 規約の設計変更が要る。
+小物: `Array#rotate!` の 3-reverse (1.7%)、send 経路の mcache 2 回引き (~2%)。
+
+計測一式: `~/ruby/src/trials/2026-09-06-koruby-precise-perf/`
+
 ## 2026-09-05: 裸識別子のラッパノードを外す (成功・optcarrot AOT +18.0%)
 
 ### 症状と切り分け

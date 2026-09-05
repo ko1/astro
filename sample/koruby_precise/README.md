@@ -25,23 +25,30 @@ GC は **precise moving/copy GC**（`GC=copy` default）。全ての alloc-heavy
 2026-09-05、専用機 sp4（Ryzen 9 8945HS / 8 cores, 16 threads、Linux 7.0、
 performance governor、gcc 15.2、他ジョブなし）で計測。比較対象は自前ビルドの
 **CRuby 4.0.2 +PRISM**（`v4.0.2`, revision `d3da9fec82`）。master と修正版を
-1 round 内で交互に、各 3 round の median:
+1 round 内で交互に、各 3 round の median（2026-09-06、sp4 専有、CRuby 4.1.0dev master
+`69b49ac7ae` +PRISM、gcc 15.2）:
 
 | 実行系 | fps | 対 素の CRuby | 対 CRuby+YJIT |
 |---|---:|---:|---:|
-| **koruby AOT**（aot+cached） | **96.4** (96.3–96.9) | **1.54×** | 0.32× |
-| CRuby (no yjit) | 62.5 (62.3–62.5) | 1.00× | 0.21× |
-| CRuby + YJIT | 297.6 (294.2–298.0) | 4.76× | 1.00× |
+| **koruby AOT**（aot+cached） | **163.7** (163.3–164.1) | **2.66×** | 0.55× |
+| CRuby (no yjit) | 61.6 (61.4–62.5) | 1.00× | 0.21× |
+| CRuby + YJIT | 297.2 (296.1–298.0) | 4.83× | 1.00× |
 
-- optcarrot では **warm AOT が素の CRuby の 1.54×**。YJIT は AOT の 3.09×。
-- **`node_vcall` のラッパノードを外して 81.7 → 96.4 fps (+18.0%)**（2026-09-05）。
-  裸の識別子 `foo` の miss を NameError にするために call ノードを `@noinline` の
-  ラッパで包んでいたのを、パーサが `NodeHead` に印を付けて miss 側だけが読む形に変えた。
-  成功時に dispatcher が 1 段増えるのが実測で効いていた。経緯と切り分けは
+- optcarrot では **warm AOT が素の CRuby の 2.66×**。YJIT は AOT の 1.82×。
+- **send 経路の修正で 97.2 → 163.7 fps (+68%)**（2026-09-06）。`send` のたびに「受け側が
+  自前の #send を持つか」を Object/Kernel の method table まで線形走査していた
+  (perf で 25.6%) のを method cache 経由にし、implicit-self `send(:sym, …)` を直接
+  invoke、単独 splat `f(*x)` の引数配列コピーを省いた。optcarrot の CPU は `-b` だと
+  `--opt` 無しで 1 命令あたり 2〜3 回 `send` する。計測一式は
+  `~/ruby/src/trials/2026-09-06-koruby-precise-perf/`。
+- その前の 2026-09-05 は **`node_vcall` のラッパノードを外して 81.7 → 96.4 fps (+18.0%)**
+  （同 sp4、CRuby 4.0.2 比較: CRuby 62.5 / YJIT 297.6）。裸の識別子 `foo` の miss を
+  NameError にするために call ノードを `@noinline` のラッパで包んでいたのを、パーサが
+  `NodeHead` に印を付けて miss 側だけが読む形に変えた。経緯と切り分けは
   `~/ruby/src/trials/2026-09-05-koruby-optcarrot-regression/`。
 - 修正前の 2026-09-04 計測（同じ sp4、CRuby 4.0.6 比較、各 7 回 median）は
   AOT **81.3** (80.5–82.2) / interp **51.9** (51.6–52.9) / CRuby 63.1 / YJIT 300.1。
-  interp と cold bake は修正後に測り直していない（上の表は AOT のみ 09-05 の値）。
+  interp と cold bake は測り直していない（09-06 の `--plain` 単発は 72.3 fps）。
 - 標準の `make optcarrot-report FRAMES=180 BENCHRUNS=3` では AOT 80.9 fps、
   AOT cold（bake + 1 run）35.738 s、warm run 2.321 s（いずれも vcall 修正前の値）。
 - optcarrot の AOT bake 単体は **33.350 s**。Ruby ソース42ファイル合計 **233,406 bytes**、
