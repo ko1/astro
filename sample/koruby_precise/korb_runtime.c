@@ -7885,7 +7885,8 @@ static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VA
 static RESULT
 korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                struct korb_callcache *cc, uint32_t argc,
-               VALUE self, NODE *block, VALUE *def_env, VALUE *captured_self)
+               VALUE self, NODE *block, VALUE *def_env, VALUE *captured_self,
+               const NODE *site)
 {
     struct korb_vm *const vm = c->vm;
 
@@ -7995,8 +7996,15 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
             char rdbuf2[256];
             const char *const rd2 = (KORB_OBJECT_P(slots[0]) && VAL2OBJ(slots[0])->klass == KORB_NIL)
                                         ? "main" : korb_recv_desc(c, slots + 2, slots[0], rdbuf2, sizeof rdbuf2);
-            RESULT nmr = korb_raise(c, slots + 1, KORB_E_NOMETHOD, line,
-                              "undefined method '%s' for %s", korb_sym_name(vm, mid), rd2);
+            /* `zork` (no receiver, no parens, no args) misses as NameError, not
+             * NoMethodError.  Only the parser can tell them apart, so it marks
+             * the call node; the mark is read here and nowhere else. */
+            const bool vcall = site != NULL && site->head.flags.is_vcall;
+            RESULT nmr = vcall
+                ? korb_raise(c, slots + 1, KORB_E_NAME, line,
+                             "undefined local variable or method '%s' for %s", korb_sym_name(vm, mid), rd2)
+                : korb_raise(c, slots + 1, KORB_E_NOMETHOD, line,
+                             "undefined method '%s' for %s", korb_sym_name(vm, mid), rd2);
             if (LIKELY(KORB_EXC_P(nmr.value))) {
                 slots[1] = nmr.value;
                 VALUE_REF eref = VALUE_REF_AT(&slots[1]);
@@ -8050,7 +8058,7 @@ RESULT
 korb_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
           struct korb_callcache *cc, uint32_t argc, VALUE self)
 {
-    return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL);
+    return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL, NULL);
 }
 
 /* Invoke a resolved user-instance method with EXPLICIT self (implicit-call
@@ -8125,7 +8133,7 @@ korb_refined_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t ar
 __attribute__((no_stack_protector)) RESULT
 korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                  struct korb_callcache *cc, struct korb_inlcache *ic,
-                 uint32_t argc, VALUE self)
+                 uint32_t argc, VALUE self, const NODE *site)
 {
     struct korb_vm *const vm = c->vm;
     if (UNLIKELY(vm->refinements_active)) {          /* refined implicit-self call */
@@ -8146,7 +8154,7 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
             } else {
                 def_class = KORB_NIL;
                 m = korb_mcache_find(vm, klass, mid, &def_class);
-                if (UNLIKELY(m == NULL)) return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL);
+                if (UNLIKELY(m == NULL)) return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL, site);
                 ic->serial = korb_ic_serial(vm); ic->klass = klass; ic->m = m; ic->def_class = def_class;
             }
             if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple)) {  /* hot path: inlines */
@@ -8168,7 +8176,7 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
             return korb_invoke_simple(c, slots, cc->m, argc, line, mid, self, KORB_NIL);
         }
     }
-    return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL);
+    return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL, site);
 }
 
 /* Implicit-self keyword call `f(pos..., k: v...)`.  Positionals at
@@ -8226,7 +8234,7 @@ korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
               struct korb_callcache *cc, uint32_t argc,
               VALUE self, NODE *block, VALUE *def_env, VALUE *captured_self)
 {
-    RESULT r = korb_call_impl(c, slots, mid, line, cc, argc, self, block, def_env, captured_self);
+    RESULT r = korb_call_impl(c, slots, mid, line, cc, argc, self, block, def_env, captured_self, NULL);
     /* `break [v]` in the block = this call's value — but only if the break came
      * from the block *this* call site handed over (a break from a block merely
      * forwarded through here belongs to an outer call). */

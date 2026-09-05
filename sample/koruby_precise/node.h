@@ -37,6 +37,7 @@ struct NodeHead {
         bool is_specializing;
         bool is_dumping;
         bool no_inline;
+        bool is_vcall;          /* bare identifier (`foo`): a miss is NameError */
     } flags;
     const struct NodeKind *kind;
     node_hash_t hash_value;
@@ -291,9 +292,11 @@ void   korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
 RESULT korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc);
 RESULT korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                         struct korb_inlcache *ic, VALUE caller_self);   /* caller_self = KORB_UNDEF → no visibility check */
+/* `site` is the call node, or NULL when there is none; read ONLY on the
+ * method-miss path (for head.flags.is_vcall), never on the hot path. */
 RESULT korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                         struct korb_callcache *cc, struct korb_inlcache *ic,
-                        uint32_t argc, VALUE self);
+                        uint32_t argc, VALUE self, const NODE *site);
 /* Implicit-self keyword call: positionals at base[0..pos_argc), keyword VALUEs at
  * base[pos_argc..+kw_argc) named by kw_syms[]; binds keywords without a Hash when
  * the callee allows (else materializes one). */

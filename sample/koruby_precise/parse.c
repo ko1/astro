@@ -1643,14 +1643,16 @@ static NODE *
 transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn);
 
 /* A VARIABLE call (`foo` — no receiver, no parens, no args, no block) that
- * misses is a NameError, not a NoMethodError.  Only the parser can tell, so the
- * miss is re-labelled by a wrapper node. */
+ * misses is a NameError, not a NoMethodError.  Only the parser can tell, so it
+ * marks the node; korb_call_impl reads the mark on the miss path.  A wrapper
+ * node would cost a second dispatcher on every successful call. */
 static NODE *
 transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
 {
     NODE *const call = transduce_func_call_1(tc, cn);
-    if ((cn->base.flags & PM_CALL_NODE_FLAGS_VARIABLE_CALL) == 0) return call;
-    return ALLOC_node_vcall(kp_intern_cid(tc, cn->name), call);
+    if (call != NULL && (cn->base.flags & PM_CALL_NODE_FLAGS_VARIABLE_CALL) != 0)
+        call->head.flags.is_vcall = true;
+    return call;
 }
 
 static NODE *
