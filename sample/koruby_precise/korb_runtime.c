@@ -7894,6 +7894,39 @@ static RESULT korb_m_fiber_s_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_fiber_s_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_fiber_s_blocking_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (builtins/symbol.c): the default raiser */
+/* Implicit-self send / __send__ / public_send, out of line so the send-only
+ * code does not grow korb_call_impl.
+ * Fast path: `send(:sym, args...)` on a user instance whose class resolves :sym
+ * to a simple ISEQ method (no user #send override, see the cached check in
+ * korb_send_impl).  send/__send__ bypass visibility, so this is exactly
+ * korb_send_impl's user-instance dispatch minus two arg copies and the
+ * send-name re-dispatch (optcarrot's CPU issues 3 sends per emulated
+ * instruction).  public_send keeps the visibility-checking path. */
+static __attribute__((noinline)) RESULT
+korb_call_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+               VALUE self, NODE *block, VALUE *def_env, VALUE *captured_self)
+{
+    struct korb_vm *const vm = c->vm;
+    if (LIKELY(mid != vm->mid_public_send && SYMBOL_P(slots[-(korb_sword_t)argc]) &&
+               KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL &&
+               !vm->refinements_active)) {
+        const VALUE klass = korb_obj_dispatch_klass(vm, self);
+        if (LIKELY(korb_send_user_defined(vm, klass, mid) == NULL)) {
+            const uint32_t rmid = SYM2ID(slots[-(korb_sword_t)argc]);
+            VALUE def_class = KORB_NIL;
+            struct korb_method *const m = korb_mcache_find(vm, klass, rmid, &def_class);
+            if (LIKELY(m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple)) {
+                for (uint32_t j = 0; j + 1 < argc; j++)   /* drop the name: args slide down one cell */
+                    slots[-(korb_sword_t)argc + j] = slots[-(korb_sword_t)argc + j + 1];
+                return korb_invoke_simple(c, slots - 1, m, argc - 1, line, rmid, self, def_class);
+            }
+        }
+    }
+    for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(korb_sword_t)argc + j];
+    slots[0] = self;                            /* recv below the args */
+    return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
+}
+
 static RESULT
 korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                struct korb_callcache *cc, uint32_t argc,
@@ -7906,30 +7939,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
      * receiver (korb_send_impl shifts arg0 = the target method name). */
     if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send)) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
-        /* Fast path: `send(:sym, args...)` on a user instance whose class resolves
-         * :sym to a simple ISEQ method (no user #send override, see the cached
-         * check in korb_send_impl).  send/__send__ bypass visibility, so this is
-         * exactly korb_send_impl's user-instance dispatch minus two arg copies
-         * and the send-name re-dispatch (optcarrot's CPU issues 3 sends per
-         * emulated instruction).  public_send keeps the visibility-checking path. */
-        if (LIKELY(mid != vm->mid_public_send && SYMBOL_P(slots[-(korb_sword_t)argc]) &&
-                   KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL &&
-                   !vm->refinements_active)) {
-            const VALUE klass = korb_obj_dispatch_klass(vm, self);
-            if (LIKELY(korb_send_user_defined(vm, klass, mid) == NULL)) {
-                const uint32_t rmid = SYM2ID(slots[-(korb_sword_t)argc]);
-                VALUE def_class = KORB_NIL;
-                struct korb_method *const m = korb_mcache_find(vm, klass, rmid, &def_class);
-                if (LIKELY(m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple)) {
-                    for (uint32_t j = 0; j + 1 < argc; j++)   /* drop the name: args slide down one cell */
-                        slots[-(korb_sword_t)argc + j] = slots[-(korb_sword_t)argc + j + 1];
-                    return korb_invoke_simple(c, slots - 1, m, argc - 1, line, rmid, self, def_class);
-                }
-            }
-        }
-        for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(korb_sword_t)argc + j];
-        slots[0] = self;                            /* recv below the args */
-        return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
+        return korb_call_send(c, slots, mid, line, argc, self, block, def_env, captured_self);
     }
 
     /* implicit self-call on a user instance → dispatch through its class chain
