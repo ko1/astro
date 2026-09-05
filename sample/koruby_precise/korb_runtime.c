@@ -10261,6 +10261,15 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         klass = korb_builtin_class_obj(vm, KORB_C_INTEGER);   /* immediate: skip the dispatch_class + class_of PLT pair */
     } else if (FLONUM_P(recv)) {
         klass = korb_builtin_class_obj(vm, KORB_C_FLOAT);     /* (numeric kernels send to_i/abs/coerce on these per-iteration) */
+    } else if (AROH_IS_GC_OBJECT(recv) &&
+               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
+               (KORB_OBJ_TYPE(recv) == KORB_OBJ_ARRAY || KORB_OBJ_TYPE(recv) == KORB_OBJ_STRING ||
+                KORB_OBJ_TYPE(recv) == KORB_OBJ_HASH)) {
+        /* plain Array/String/Hash (no singleton/subclass override): the class is
+         * the type tag — skip korb_dispatch_class's exception/enumerator/class
+         * cascade and the korb_class_of switch. */
+        klass = korb_builtin_class_obj(vm, KORB_OBJ_TYPE(recv) == KORB_OBJ_ARRAY ? KORB_C_ARRAY
+                                         : KORB_OBJ_TYPE(recv) == KORB_OBJ_STRING ? KORB_C_STRING : KORB_C_HASH);
     } else {
         klass = korb_dispatch_class(c, recv);
     }
