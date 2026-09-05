@@ -4484,6 +4484,18 @@ korb_mcache_find(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def)
     return m;
 }
 
+/* Cached "does the receiver's class define its own send/__send__/public_send?"
+ * — the reflective forms live in no method table, so a hit is a real user
+ * definition.  Uncached, this walk scanned Object/Kernel's whole table on every
+ * `send` (25% of optcarrot's AOT time). */
+static inline struct korb_method *
+korb_send_user_defined(struct korb_vm *vm, VALUE klass, uint32_t mid)
+{
+    if (UNLIKELY(!KORB_CLASS_P(klass))) return NULL;
+    VALUE def = KORB_NIL;
+    return korb_mcache_find(vm, klass, mid, &def);
+}
+
 /* Serial to stamp into an inline/call cache.  While refinements are active a
  * site must re-resolve on every call (the answer depends on the running scope,
  * which no cache key covers), so stamp a serial that can never match — that
@@ -7894,6 +7906,27 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
      * receiver (korb_send_impl shifts arg0 = the target method name). */
     if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send)) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
+        /* Fast path: `send(:sym, args...)` on a user instance whose class resolves
+         * :sym to a simple ISEQ method (no user #send override, see the cached
+         * check in korb_send_impl).  send/__send__ bypass visibility, so this is
+         * exactly korb_send_impl's user-instance dispatch minus two arg copies
+         * and the send-name re-dispatch (optcarrot's CPU issues 3 sends per
+         * emulated instruction).  public_send keeps the visibility-checking path. */
+        if (LIKELY(mid != vm->mid_public_send && SYMBOL_P(slots[-(korb_sword_t)argc]) &&
+                   KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL &&
+                   !vm->refinements_active)) {
+            const VALUE klass = korb_obj_dispatch_klass(vm, self);
+            if (LIKELY(korb_send_user_defined(vm, klass, mid) == NULL)) {
+                const uint32_t rmid = SYM2ID(slots[-(korb_sword_t)argc]);
+                VALUE def_class = KORB_NIL;
+                struct korb_method *const m = korb_mcache_find(vm, klass, rmid, &def_class);
+                if (LIKELY(m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple)) {
+                    for (uint32_t j = 0; j + 1 < argc; j++)   /* drop the name: args slide down one cell */
+                        slots[-(korb_sword_t)argc + j] = slots[-(korb_sword_t)argc + j + 1];
+                    return korb_invoke_simple(c, slots - 1, m, argc - 1, line, rmid, self, def_class);
+                }
+            }
+        }
         for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(korb_sword_t)argc + j];
         slots[0] = self;                            /* recv below the args */
         return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
@@ -8990,7 +9023,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
      * the reflective one), and that must win — the universal forms are not
      * registered in any method table, so any hit here is a real definition. */
     if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
-        korb_class_find_method(korb_class_obj_of(c, self), mid, NULL) == NULL) {
+        korb_send_user_defined(vm, korb_class_obj_of(c, self), mid) == NULL) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         {
             VALUE name = slots[-(korb_sword_t)argc];           /* arg0 */

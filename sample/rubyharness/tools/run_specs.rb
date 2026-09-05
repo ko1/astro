@@ -97,8 +97,10 @@ def classify_diff(file, interp, ref, secs, tmp)
     a = out.lines
     b = ref_out.lines
     pass = fail = 0
-    [a.size, b.size].max.times { |i| a[i] == b[i] ? pass += 1 : fail += 1 }
-    return { status: :ok, pass: pass, fail: fail, crash: crash_lines.size, crash_lines: crash_lines }
+    fail_lines = []   # 1-based output line numbers that differ (first few)
+    [a.size, b.size].max.times { |i| a[i] == b[i] ? pass += 1 : (fail += 1; fail_lines << i + 1) }
+    return { status: :ok, pass: pass, fail: fail, crash: crash_lines.size, crash_lines: crash_lines,
+             fail_lines: fail_lines.first(5) }
   end
 end
 
@@ -170,6 +172,11 @@ if opts[:diff]
     puts format('%-18s %8d %6d %6d %7d %6d', c, *cols.map { |k| h[k] })
   end
   # TODO lists
+  failed = results.select { |_, r| r[:status] == :ok && r[:fail].to_i > 0 }
+  unless failed.empty?
+    puts "\nFAIL assertions (file: output lines) — #{failed.values.sum { |r| r[:fail] }} total:"
+    failed.sort.first(40).each { |f, r| puts "  #{f}: #{r[:fail_lines].join(', ')}" }
+  end
   recov = results.select { |_, r| r[:status] == :ok && r[:crash].to_i > 0 }
   unless recov.empty?
     puts "\nrecovered CRASH assertions (file: lines) — #{recov.values.sum { |r| r[:crash] }} total:"
