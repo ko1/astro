@@ -1073,6 +1073,7 @@ kp_dyn_const_opassign(struct kp_ctx *tc, const pm_node_t *node, const pm_node_t 
 extern const struct NodeKind kind_node_const_set;    /* FOO = expr */
 static NODE *build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa);
 static NODE *build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n);
+static NODE *build_call_args(struct kp_ctx *tc, struct pm_node **elems, size_t n);
 static NODE *kp_make_binding_node(struct kp_ctx *tc, uint32_t line);
 extern const struct NodeKind kind_node_hash_merge;   /* hash literal ** splat chain */
 extern const struct NodeKind kind_node_dstr_concat;  /* string-interp concat chain */
@@ -1869,7 +1870,7 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                 int32_t self_off = -1 - tc->chain - 1;   /* one staged child: the args array */
                 int32_t def_env_off = -tc->chain - 1;    /* caller frame base (tagged |1 at eval) */
                 NODE *arr;
-                WITH_CHAIN(tc, 1, (arr = build_array(tc, args->arguments.nodes, argc, (uint32_t)argc)));
+                WITH_CHAIN(tc, 1, (arr = build_call_args(tc, args->arguments.nodes, argc)));
                 NODE *_cs = ALLOC_node_call_splat_blk(mid, line, self_off, entry, def_env_off, arr);
                 bake_add(tc, &_cs->u.node_call_splat_blk.self_off);
                 bake_add(tc, &_cs->u.node_call_splat_blk.def_env_off);
@@ -1906,7 +1907,7 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
         if (has_splat) {
             int32_t self_off = -1 - tc->chain - 1;       /* one staged child: the args array */
             NODE *arr;
-            WITH_CHAIN(tc, 1, (arr = build_array(tc, args->arguments.nodes, argc, (uint32_t)argc)));
+            WITH_CHAIN(tc, 1, (arr = build_call_args(tc, args->arguments.nodes, argc)));
             { NODE *_cs = ALLOC_node_call_splat(mid, line, self_off, arr); bake_add(tc, &_cs->u.node_call_splat.self_off); return _cs; }
         }
     }
@@ -2143,7 +2144,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 int32_t def_env_off = -tc->chain - 2;    /* caller frame base (tagged |1 at eval) */
                 NODE *recv, *arr;
                 WITH_CHAIN(tc, 2, (recv = RECV_NODE(),
-                                   arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
+                                   arr  = build_call_args(tc, cn->arguments->arguments.nodes, argc)));
                 NODE *_cs = ALLOC_node_send_splat_blk(mid, line, self_off, entry, def_env_off, recv, arr);
                 bake_add(tc, &_cs->u.node_send_splat_blk.self_off);
                 bake_add(tc, &_cs->u.node_send_splat_blk.def_env_off);
@@ -2193,7 +2194,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         if (has_splat) {
             NODE *recv, *arr;
             WITH_CHAIN(tc, 2, (recv = transduce(tc, cn->receiver),
-                               arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
+                               arr  = build_call_args(tc, cn->arguments->arguments.nodes, argc)));
             /* an element assignment evaluates to the assigned value, not to []='s
              * return value, even when the index list is splatted */
             if (mid == tc->c->vm->mid_aset)
@@ -3104,6 +3105,20 @@ build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n)
     WITH_CHAIN(tc, sc, (acc = build_array(tc, elems, n, (uint32_t)n),
                         fwd = bake_lget(tc, (uint32_t)tc->frame->fwd_slot)));
     return ALLOC_node_ary_concat(acc, fwd);
+}
+
+/* Call-site argument Array.  A lone `*x` becomes node_splat_view (no copy when
+ * x already is an Array — the spreader reads it immediately); anything else is
+ * build_array's push/concat chain.  Not for the &proc variants: they run
+ * #to_proc (user code) before reading the array. */
+static NODE *
+build_call_args(struct kp_ctx *tc, struct pm_node **elems, size_t n)
+{
+    if (n == 1 && PM_NODE_TYPE_P(elems[0], PM_SPLAT_NODE)) {
+        const pm_node_t *const expr = (const pm_node_t *)((const pm_splat_node_t *)elems[0])->expression;
+        if (expr != NULL) return ALLOC_node_splat_view(transduce(tc, expr));
+    }
+    return build_array(tc, elems, n, (uint32_t)n);
 }
 
 /* Packed scope table for `binding` / caller-binding eval:

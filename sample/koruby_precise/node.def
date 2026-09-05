@@ -2385,6 +2385,20 @@ node_ary_concat(CTX *c, NODE *n, VALUE *slots, VALUE_REF ary@child, VALUE elem@c
     return korb_ary_concat_val(c, slots, ary, elem);   /* splat: spread elem into ary */
 }
 
+// `f(*x)` with a lone splat: the call-site spreader (node_call_splat /
+// node_send_splat) copies the elements into the arg slots right away, so an
+// Array needs no `[*x]` copy.  Anything else takes the same conversion as
+// node_ary_concat (Range / nil / #to_a / `[x]`).
+NODE_DEF
+node_splat_view(CTX *c, NODE *n, VALUE *slots, VALUE elem@child)
+{
+    (void)n;
+    if (LIKELY(KORB_ARRAY_P(elem))) return RESULT_OK(elem);
+    slots[0] = elem;                                    /* root across the alloc */
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 2, 1));
+    return korb_ary_concat_val(c, slots + 2, VALUE_REF_AT(&slots[1]), slots[0]);
+}
+
 // ---- hash literals ---------------------------------------------------------
 //
 // `{k => v, ...}` lowers to a set chain: hash_set(hash_set(hash_new(n),k0,v0)...).
