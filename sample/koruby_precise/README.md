@@ -30,17 +30,19 @@ performance governor、gcc 15.2、他ジョブなし）で計測。比較対象�
 
 | 実行系 | fps | 対 素の CRuby | 対 CRuby+YJIT |
 |---|---:|---:|---:|
-| **koruby AOT**（aot+cached） | **163.7** (163.3–164.1) | **2.66×** | 0.55× |
-| CRuby (no yjit) | 61.6 (61.4–62.5) | 1.00× | 0.21× |
-| CRuby + YJIT | 297.2 (296.1–298.0) | 4.83× | 1.00× |
+| **koruby AOT**（aot+cached） | **172.1** (171.8–172.8) | **2.83×** | 0.58× |
+| CRuby (no yjit) | 60.7 (59.8–61.2) | 1.00× | 0.20× |
+| CRuby + YJIT | 298.2 (296.4–299.5) | 4.91× | 1.00× |
 
-- optcarrot では **warm AOT が素の CRuby の 2.66×**。YJIT は AOT の 1.82×。
-- **send 経路の修正で 97.2 → 163.7 fps (+68%)**（2026-09-06）。`send` のたびに「受け側が
-  自前の #send を持つか」を Object/Kernel の method table まで線形走査していた
-  (perf で 25.6%) のを method cache 経由にし、implicit-self `send(:sym, …)` を直接
-  invoke、単独 splat `f(*x)` の引数配列コピーを省いた。optcarrot の CPU は `-b` だと
-  `--opt` 無しで 1 命令あたり 2〜3 回 `send` する。計測一式は
-  `~/ruby/src/trials/2026-09-06-koruby-precise-perf/`。
+- optcarrot では **warm AOT が素の CRuby の 2.83×**。YJIT は AOT の 1.73×。
+- **2026-09-06 に 97.1 → 172.1 fps (+77%)**。内訳: `send` のたびに「受け側が自前の
+  #send を持つか」を Object/Kernel の method table まで線形走査していた (perf で 25.6%)
+  のを method cache 経由に + implicit-self `send(:sym, …)` の直接 invoke + 単独 splat
+  `f(*x)` のコピー省略 (97 → 164)、void* オペランドの runtime 参照で massign を AOT
+  特殊化 + rotate!/splice の bulk store + builtin レシーバの型タグ (→ 167)、
+  fat inline cache (ic に callee の body/dispatcher/frame size を複製) + block 形状
+  flag (→ 172)。optcarrot の CPU は `-b` だと `--opt` 無しで 1 命令あたり 2〜3 回
+  `send` する。計測一式は `~/ruby/src/trials/2026-09-06-koruby-precise-perf/`。
 - その前の 2026-09-05 は **`node_vcall` のラッパノードを外して 81.7 → 96.4 fps (+18.0%)**
   （同 sp4、CRuby 4.0.2 比較: CRuby 62.5 / YJIT 297.6）。裸の識別子 `foo` の miss を
   NameError にするために call ノードを `@noinline` のラッパで包んでいたのを、パーサが

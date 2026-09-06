@@ -92,6 +92,66 @@ frame 設定・ic 判定・戻り値判定。ここから先は call 規約の�
 
 計測一式: `~/ruby/src/trials/2026-09-06-koruby-precise-perf/`
 
+## 2026-09-06 (round 3): fat inline cache + block 形状 flag (成功・optcarrot +3.2%)
+
+### 観測
+
+`perf record -e L1-dcache-load-misses` (ローカルで可: プロセス単位のカウンタは負荷に
+影響されない) を `perf script -F sym,symoff` の IP ヒストグラムで命令に割り付けた。
+0 引数 self-call の SD (self 15.8%) は **1 call あたり ~1.5 L1d miss**、内訳は
+korb_method (libc calloc の 128 B 構造体) ~30%、NODE/ic ~25%、self オブジェクト、
+vm/ctx、call 後の C スタック。IPC は 3.4〜3.7 で命令律速だが、依存ロードの miss も
+効いている。
+
+### 変更
+
+1. **fat inline cache**: `korb_inlcache` に body / dispatcher / locals_cnt / params_cnt /
+   simple を複製 (40 → 64 B)。node_call / node_send の SD 内 fast path と
+   korb_call_cached / korb_send_cached の hit は `korb_invoke_simple_ic` (ic の値だけで
+   frame を組む) を呼び、korb_method と body head の 2 行に触らない。serial guard は
+   従来どおり。code store の swap 後に `korb_dispatchers_swapped` が method_serial を
+   bump して、焼き込んだ dispatcher が古くならないようにする。NODE は kind ごとの実
+   サイズで確保されるので太るのは call/send 系ノードだけ (node_call 80 → 104 B)。
+2. **korb_block_yield**: block 形状 (kw/destructure/rest/opt) の判定は parse 時定数
+   なので最初の yield で `head.flags.yield_simple` に覚える (毎回 5 ロード → 1)。
+
+### 結果
+
+ローカル `perf stat -r 3`: 命令数 21.77G → 21.53G (−1.1%)、L1d miss 360M → 336M (−6.7%)。
+sp4 (round 2 vs round 3、3 round 交互、YJIT 292〜297 で不変):
+
+| round | round 2 | round 3 |
+|---|---:|---:|
+| 1 | 167.3 | **171.2** |
+| 2 | 167.5 | **175.1** |
+| 3 | 166.0 | **170.6** |
+
+**+3.2%** (167.0 → 172.3)。checksum 59662。corpus 4901 / 1 FAIL (既存)、STRESS+PURGE
+4899 / 3 / 0 CRASH (既存と同一)。最終 (master `28e4fea0` vs round 3、3 round 交互、素の CRuby は直後に 3 回):
+
+| round | master | round 3 | CRuby | CRuby+YJIT |
+|---|---:|---:|---:|---:|
+| 1 | 97.4 | **172.8** | 59.8 | 299.5 / 298.5 |
+| 2 | 97.1 | **172.1** | 61.2 | 298.5 / 298.2 |
+| 3 | 96.7 | **171.8** | 60.7 | 296.4 / 297.2 |
+
+一日の累計 **+77%** (97.1 → 172.1)。CRuby 比 1.60× → **2.83×**、YJIT 比 0.33× → **0.58×**。
+microbench 53 本 (aot+cached, round3/master): 15 本が 3% 以上速く (array_access 0.88、
+str 0.90、iterators 0.91、block 0.93、rangeeach 0.93、ackermann 0.94、hashiter 0.94、
+mapreduce 0.94 …)、5 本が 3% 以上遅い (while 1.09、collatz 1.06、sprintfb 1.05、
+render_span_kernel 1.04; いずれも 70〜280 ms 級で配置ノイズの幅)。geomean は
+interp 0.77 / AOT warm 0.38 で不変。生数字は
+`~/ruby/src/trials/2026-09-06-koruby-precise-perf/logs/final3/compare.md`。
+
+### 却下・保留
+
+- korb_method の 64 align (前節): L1d miss +43%。
+- korb_ivar_set (out-of-line、self 1.0%) は ic miss 経路。単一インスタンスの
+  optcarrot で miss するのは attr_writer (ATTR_W は ic fast path が無い) と shape
+  多態サイトのはず。2-entry ic か ATTR_W の inline は未着手。
+- 0 引数 call の残り (~75 命令/call): 引数数・stack limit・locals zero・entry tag・
+  EP・戻り値状態・escaped check。ここから先は call 規約の設計変更。
+
 ## 2026-09-06 (round 2): void* 特殊化 / rotate!・splice bulk / builtin レシーバ (成功・optcarrot +2%)
 
 send/splat の後の profile (fix4) から拾った小物 3 件と、却下 1 件。
