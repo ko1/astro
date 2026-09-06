@@ -16,6 +16,24 @@
 #include <elf.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+// memfd_create is behind _GNU_SOURCE, and this file is #included late into the
+// host's translation unit — call the syscall directly instead.
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 0x0001U
+#endif
+static int
+astro_ld_memfd(const char *name, unsigned flags)
+{
+#ifdef SYS_memfd_create
+    return (int)syscall(SYS_memfd_create, name, flags);
+#else
+    (void)name; (void)flags;
+    return -1;
+#endif
+}
 
 #ifndef R_X86_64_GOTPCRELX
 #define R_X86_64_GOTPCRELX 41
@@ -24,56 +42,78 @@
 #define R_X86_64_REX_GOTPCRELX 42
 #endif
 
-// ---- code arena (reserved once in the low 2 GB, committed per chunk) -------
+// ---- code arena ------------------------------------------------------------
+//
+// One reservation, two views of the same pages (memfd): a writable one the
+// loader patches through, and an executable one in the low 2 GB (the medium
+// code model addresses .rodata with 32-bit absolutes, so the address the code
+// runs at must fit there).  Aliasing keeps W^X without a single per-chunk
+// mprotect, which is what let chunks be page-granular before: instances now
+// pack at their own alignment (16 B floor, raised to the object's strictest
+// section alignment — 32 B for the .rodata.cst32 the AVX constants land in).
 
 static struct {
-    char *base, *cur, *end;
+    char *w, *x;                 // write view / exec view of the same bytes
+    size_t used, size;
     bool failed;
 } astro_ld_arena;
 
 static bool
 astro_ld_arena_init(void)
 {
-    if (astro_ld_arena.base) return true;
+    if (astro_ld_arena.w) return true;
     if (astro_ld_arena.failed) return false;
+    astro_ld_arena.failed = true;                 // cleared on success
+
     const size_t reserve = (size_t)256 << 20;
+    const int fd = astro_ld_memfd("astro_sd", MFD_CLOEXEC);
+    if (fd < 0) return false;
+    if (ftruncate(fd, (off_t)reserve) != 0) { close(fd); return false; }
+
+    char *x = MAP_FAILED;
     for (uintptr_t hint = 0x20000000u; hint < 0x70000000u; hint += 0x10000000u) {
-        void *p = mmap((void *)hint, reserve, PROT_NONE,
-                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+        void *p = mmap((void *)hint, reserve, PROT_READ | PROT_EXEC,
+                       MAP_SHARED | MAP_FIXED_NOREPLACE, fd, 0);
         if (p == MAP_FAILED) continue;
         if ((uintptr_t)p != hint) { munmap(p, reserve); continue; }   // old kernel: hint ignored
-        astro_ld_arena.base = astro_ld_arena.cur = p;
-        astro_ld_arena.end = (char *)p + reserve;
-        return true;
+        x = p;
+        break;
     }
-    astro_ld_arena.failed = true;
-    return false;
+    if (x == MAP_FAILED) { close(fd); return false; }
+
+    void *w = mmap(NULL, reserve, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (w == MAP_FAILED) { munmap(x, reserve); return false; }
+
+    astro_ld_arena.w = (char *)w;
+    astro_ld_arena.x = x;
+    astro_ld_arena.size = reserve;
+    astro_ld_arena.used = 0;
+    astro_ld_arena.failed = false;
+    return true;
 }
 
-// Page-aligned RW chunk (mprotect'ed to RX by the caller once patched).
+// Bump-allocate `size` bytes aligned to `align`; *xp receives the executable
+// address of the same bytes.  x86 keeps the two views' i-cache coherent, and an
+// instance is only reachable once its dispatcher pointer is published.
 static char *
-astro_ld_alloc(size_t size)
+astro_ld_alloc(size_t size, size_t align, char **xp)
 {
     if (!astro_ld_arena_init()) return NULL;
-    const size_t page = 4096;
-    size = (size + page - 1) & ~(page - 1);
-    if ((size_t)(astro_ld_arena.end - astro_ld_arena.cur) < size) return NULL;
-    char *const p = astro_ld_arena.cur;
-    if (mprotect(p, size, PROT_READ | PROT_WRITE) != 0) return NULL;
-    astro_ld_arena.cur += size;
-    return p;
+    if (align < 16) align = 16;
+    const size_t off = (astro_ld_arena.used + align - 1) & ~(align - 1);
+    if (size > astro_ld_arena.size - off) return NULL;
+    astro_ld_arena.used = off + size;
+    *xp = astro_ld_arena.x + off;
+    return astro_ld_arena.w + off;
 }
 
-// Only the most recent chunk can be returned (bump allocator); used when
-// relocation fails after the copy.
+// Give back the most recent chunk (bump allocator) when patching fails.
 static void
-astro_ld_unalloc(char *p, size_t size)
+astro_ld_unalloc(const char *w, size_t size)
 {
-    const size_t page = 4096;
-    size = (size + page - 1) & ~(page - 1);
-    if (p + size != astro_ld_arena.cur) return;
-    mprotect(p, size, PROT_NONE);
-    astro_ld_arena.cur = p;
+    if (w + size == astro_ld_arena.w + astro_ld_arena.used)
+        astro_ld_arena.used = (size_t)(w - astro_ld_arena.w);
 }
 
 // ---- object cache: op/<SD>.o read once per SD name --------------------------
@@ -188,7 +228,7 @@ astro_cs_instantiate(NODE *n)
     // Layout: every SHF_ALLOC section (text / rodata; nothing writable).
     int64_t *place = calloc(shnum, sizeof(*place));
     if (!place) return false;
-    size_t total = 0;
+    size_t total = 0, maxalign = 16;
     for (unsigned i = 0; i < shnum; i++) {
         const Elf64_Shdr *const s = &o->sh[i];
         place[i] = -1;
@@ -197,6 +237,7 @@ astro_cs_instantiate(NODE *n)
         if ((s->sh_flags & SHF_WRITE) && s->sh_size > 0) { free(place); astro_ld_stats.failed++; return false; }
         if (s->sh_size == 0) continue;
         const size_t align = s->sh_addralign > 1 ? s->sh_addralign : 1;
+        if (align > maxalign) maxalign = align;   // the chunk carries the strictest one
         total = (total + align - 1) & ~(align - 1);
         place[i] = (int64_t)total;
         total += s->sh_size;
@@ -217,7 +258,8 @@ astro_cs_instantiate(NODE *n)
     const size_t got_off = total;
     total += ngot * 8;
 
-    char *const base = astro_ld_alloc(total);
+    char *xbase = NULL;
+    char *const base = astro_ld_alloc(total, maxalign, &xbase);   // base: write view, xbase: exec view
     if (!base) { free(place); astro_ld_stats.failed++; return false; }
     for (unsigned i = 0; i < shnum; i++) {
         if (place[i] < 0) continue;
@@ -239,12 +281,16 @@ astro_cs_instantiate(NODE *n)
             const Elf64_Rela *const r = &rel[k];
             const unsigned t = ELF64_R_TYPE(r->r_info);
             const size_t si = ELF64_R_SYM(r->r_info);
-            // A relocation writes 4 or 8 bytes; both must stay inside the copied section.
-            if (si >= o->nsym || r->r_offset > tgt->sh_size || tgt->sh_size - r->r_offset < 8) { ok = false; break; }
+            // The write must stay inside the copied section — 8 bytes for the
+            // 64-bit forms, 4 for the rest (a 4-byte reloc can sit 4 bytes from
+            // the end, so demanding 8 everywhere rejects valid objects).
+            const size_t rw = (t == R_X86_64_64) ? 8 : 4;
+            if (si >= o->nsym || r->r_offset > tgt->sh_size || tgt->sh_size - r->r_offset < rw) { ok = false; break; }
             const Elf64_Sym *const sym = &o->sym[si];
             if (sym->st_name >= o->strsz) { ok = false; break; }
             const char *const sname = o->str + sym->st_name;
-            char *const where = base + place[s->sh_info] + r->r_offset;
+            char *const where = base + place[s->sh_info] + r->r_offset;         // store here
+            const uintptr_t wherex = (uintptr_t)(xbase + place[s->sh_info] + r->r_offset);  // runs here
             const int64_t A = r->r_addend;
 
             if (sym->st_shndx == SHN_UNDEF && strcmp(sname, "_astro_hole_base") == 0) {
@@ -267,7 +313,7 @@ astro_cs_instantiate(NODE *n)
                 if (!p) { ok = false; break; }
                 S = (uintptr_t)p;
             } else if (sym->st_shndx < shnum && place[sym->st_shndx] >= 0) {
-                S = (uintptr_t)(base + place[sym->st_shndx] + sym->st_value);
+                S = (uintptr_t)(xbase + place[sym->st_shndx] + sym->st_value);
             } else {
                 ok = false; break;
             }
@@ -276,14 +322,15 @@ astro_cs_instantiate(NODE *n)
             case R_X86_64_32: { uint64_t v = S + (uint64_t)A; if (v > 0xffffffffu) ok = false; else { uint32_t w = (uint32_t)v; memcpy(where, &w, 4); } break; }
             case R_X86_64_32S: { int64_t v = (int64_t)S + A; if (!astro_ld_fits_s32(v)) ok = false; else { int32_t w = (int32_t)v; memcpy(where, &w, 4); } break; }
             case R_X86_64_PC32:
-            case R_X86_64_PLT32: { int64_t v = (int64_t)S + A - (int64_t)(uintptr_t)where; if (!astro_ld_fits_s32(v)) ok = false; else { int32_t w = (int32_t)v; memcpy(where, &w, 4); } break; }
+            case R_X86_64_PLT32: { int64_t v = (int64_t)S + A - (int64_t)wherex; if (!astro_ld_fits_s32(v)) ok = false; else { int32_t w = (int32_t)v; memcpy(where, &w, 4); } break; }
             case R_X86_64_GOTPCREL:
             case R_X86_64_GOTPCRELX:
             case R_X86_64_REX_GOTPCRELX: {
                 char *const slot = base + got_off + got_used * 8;
+                const uintptr_t slotx = (uintptr_t)(xbase + got_off + got_used * 8);
                 got_used++;
                 memcpy(slot, &S, 8);
-                int64_t v = (int64_t)(uintptr_t)slot + A - (int64_t)(uintptr_t)where;
+                int64_t v = (int64_t)slotx + A - (int64_t)wherex;
                 if (!astro_ld_fits_s32(v)) ok = false; else { int32_t w = (int32_t)v; memcpy(where, &w, 4); }
                 break;
             }
@@ -298,19 +345,18 @@ astro_cs_instantiate(NODE *n)
         const Elf64_Sym *const sym = &o->sym[k];
         if (ELF64_ST_TYPE(sym->st_info) == STT_FUNC && sym->st_shndx < shnum && place[sym->st_shndx] >= 0
             && strcmp(o->str + sym->st_name, name) == 0) {
-            entry = base + place[sym->st_shndx] + sym->st_value;
+            entry = xbase + place[sym->st_shndx] + sym->st_value;
             break;
         }
     }
     free(place);
     if (!ok || !entry) { astro_ld_unalloc(base, total); astro_ld_stats.failed++; return false; }
-    const size_t rounded = (total + 4095) & ~(size_t)4095;
-    if (mprotect(base, rounded, PROT_READ | PROT_EXEC) != 0) { astro_ld_unalloc(base, total); astro_ld_stats.failed++; return false; }
     n->head.dispatcher = (node_dispatcher_func_t)entry;
     if (getenv("ASTRO_LD_TRACE"))
-        fprintf(stderr, "astro_ld: %s at %p (+%zu, got %zu) pool %p\n", name, (void *)base, total, got_used, (const void *)n->head.pool);
+        fprintf(stderr, "astro_ld: %s at %p (%zu B, align %zu, got %zu) pool %p\n",
+                name, (void *)entry, total, maxalign, got_used, (const void *)n->head.pool);
     astro_ld_stats.n++;
-    astro_ld_stats.bytes += rounded;
+    astro_ld_stats.bytes += total;
     return true;
 }
 

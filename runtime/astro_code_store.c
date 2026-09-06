@@ -301,6 +301,8 @@ void
 astro_cs_pool_attach(NODE *n, astro_pool_fill_t fill)
 {
     const uint32_t cnt = fill(n, NULL);
+    n->head.nholes = cnt;          // consuming runs never ran SPECIALIZE; the
+                                   // loader bounds-checks hole indices with this
     astro_hole_t *pool = malloc(sizeof(*pool) * (cnt ? cnt : 1));
     if (!pool) {
         fprintf(stderr, "astro_cs_pool_attach: out of memory\n");
