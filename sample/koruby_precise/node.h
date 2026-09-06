@@ -38,6 +38,7 @@ struct NodeHead {
         bool is_dumping;
         bool no_inline;
         bool is_vcall;          /* bare identifier (`foo`): a miss is NameError */
+        bool yield_simple;      /* node_entry block: korb_block_yield's fast path applies (set on first yield) */
     } flags;
     const struct NodeKind *kind;
     node_hash_t hash_value;
@@ -103,12 +104,24 @@ enum korb_ic_kind { KORB_IC_INSTANCE = 0, KORB_IC_SMETHOD = 1, KORB_IC_NEW = 2, 
 /* one-shot flag for a node that must act only the first time it runs (END { }). */
 struct korb_oncecell { uint8_t done; };
 
+/* Fat inline cache: besides the resolved entry it copies what the simple-ISEQ
+ * fast path needs (body, its dispatcher, frame sizes), so a cached call touches
+ * only the site's own cache line — not the korb_method (libc heap) and the body
+ * node header as well.  optcarrot: ~1.5 L1d misses per 0-arg self-call, ~30% of
+ * them on those two lines.  `simple` is set only for a plain ISEQ that
+ * korb_invoke_simple can run; the serial guard keeps it coherent (refinements
+ * stamp a never-matching serial; a code-store swap bumps method_serial). */
 struct korb_inlcache {
     uint64_t serial;
     VALUE    klass;
     struct korb_method *m;
     VALUE    def_class;
+    struct Node *body;               /* simple: m->body */
+    node_dispatcher_func_t dispatch; /* simple: body->head.dispatcher at fill time */
+    uint32_t locals_cnt;             /* simple: m->locals_cnt */
+    int32_t  params_cnt;             /* simple: m->params_cnt */
     uint8_t  kind;
+    uint8_t  simple;                 /* m is KORB_METHOD_ISEQ && is_simple */
 };
 
 /* node_head.h provides NodeKind, per-node structs, the Node union, and
@@ -660,6 +673,7 @@ static inline void korb_frame_magic_check(const VALUE *const base, const enum ko
  * the rare open-env-close / exception-backtrace paths). */
 RESULT korb_close_ret(CTX *c, VALUE *scratch, VALUE *frame_base, RESULT r);
 void   korb_bt_append(struct korb_vm *vm, uint32_t line, const char *name);
+void   korb_dispatchers_swapped(struct korb_vm *vm);   /* code-store swap → refill fat inline caches */
 
 /* Streamlined invocation of a "simple" ISEQ method (only required positional
  * params; the caller guarantees m->is_simple).  always_inline so it folds into
@@ -727,6 +741,69 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     korb_frame_magic_check(base, KORB_FT_METHOD, "korb_invoke_simple");   /* frame integrity (no-op unless KORB_FRAME_MAGIC) */
     if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
     return r;
+}
+
+
+/* korb_invoke_simple driven by a fat inline cache (ic->simple == 1): identical
+ * frame protocol, but body / dispatcher / frame sizes come from the cache line
+ * instead of the method entry and the body node header. */
+static inline __attribute__((always_inline, no_stack_protector)) RESULT
+korb_invoke_simple_ic(CTX *c, VALUE *slots, const struct korb_inlcache *ic, uint32_t argc,
+                      uint32_t line, uint32_t mid, VALUE self)
+{
+    if (UNLIKELY(argc != (uint32_t)ic->params_cnt))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                          "wrong number of arguments (given %u, expected %d)", argc, ic->params_cnt);
+    VALUE *const base = slots - argc;
+    const uint32_t locals_cnt = ic->locals_cnt;
+    char cstack_probe;
+    if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
+                 &cstack_probe < c->cstack_limit))
+        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
+    if (locals_cnt - 1 > argc) {
+        const uint32_t nz = locals_cnt - 1 - argc;
+        VALUE *const z = base + argc;
+        switch (nz) {
+            case 4: z[3] = 0;   /* fallthrough */
+            case 3: z[2] = 0;   /* fallthrough */
+            case 2: z[1] = 0;   /* fallthrough */
+            case 1: z[0] = 0; break;
+            default: memset(z, 0, nz * sizeof(VALUE));
+        }
+    }
+    base[locals_cnt - 1] = (VALUE)((uintptr_t)ic->m | 1u);   /* method entry at frame top (tagged) */
+    korb_ep_set(base, 0);
+    korb_frame_magic_set(base, KORB_FT_METHOD);
+    (void)self;
+    RESULT r = (*ic->dispatch)(c, ic->body, base + locals_cnt);
+    if (r.state == KORB_RETURN) {
+        if (c->return_target == NULL || c->return_target == base) {
+            r.state = KORB_NORMAL;
+            c->return_target = NULL;
+        }
+    }
+    else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) {
+        KorbException *e = VAL2EXC(r.value);
+        korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
+        e->line = line;
+    }
+    korb_frame_magic_check(base, KORB_FT_METHOD, "korb_invoke_simple_ic");
+    if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
+    return r;
+}
+
+/* Fill an inline cache; copies the simple-ISEQ fast-path data when applicable. */
+static inline void
+korb_ic_fill(struct korb_inlcache *ic, uint64_t serial, VALUE klass, struct korb_method *m,
+             VALUE def_class, uint8_t kind)
+{
+    ic->serial = serial; ic->klass = klass; ic->m = m; ic->def_class = def_class; ic->kind = kind;
+    if (m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple && kind == KORB_IC_INSTANCE) {
+        ic->body = m->body; ic->dispatch = m->body->head.dispatcher;
+        ic->locals_cnt = m->locals_cnt; ic->params_cnt = m->params_cnt; ic->simple = 1;
+    } else {
+        ic->body = NULL; ic->dispatch = NULL; ic->locals_cnt = 0; ic->params_cnt = 0; ic->simple = 0;
+    }
 }
 
 #endif /* KORUBY_NODE_H */

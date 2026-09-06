@@ -1167,6 +1167,7 @@ main(int argc, char *argv[])
         ensure_preload();                        /* bake (if stale) + dlopen preload.so */
         INIT();                                  /* dlopen code_store/all.so if present */
         unsigned int swaps = swap_in_cached_sds(ast);
+        korb_dispatchers_swapped(c->vm);         /* fat inline caches must not keep pre-swap dispatchers */
         if (OPTION.verbose) {
             fprintf(stderr, "koruby_precise: aot: swapped %u dispatchers "
                     "(program + %u method bodies)\n", swaps, code_repo_count());
@@ -1190,6 +1191,7 @@ main(int argc, char *argv[])
             unsigned int pswaps = astro_cs_load(prelude_ast, NULL) ? 1 : 0;
             for (uint32_t i = 0; i < g_prelude_repo_count; i++)
                 if (astro_cs_load(code_repo_body_at(i), NULL)) pswaps++;
+            korb_dispatchers_swapped(c->vm);
             if (OPTION.verbose)
                 fprintf(stderr, "koruby_precise: plain: prelude on %u baked SDs "
                         "(%u bodies)\n", pswaps, g_prelude_repo_count);

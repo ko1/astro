@@ -4496,6 +4496,10 @@ korb_send_user_defined(struct korb_vm *vm, VALUE klass, uint32_t mid)
     return korb_mcache_find(vm, klass, mid, &def);
 }
 
+/* Code-store swap: body dispatchers changed under the fat inline caches, so
+ * every site must refill (main.c calls this after each astro_cs_load pass). */
+void korb_dispatchers_swapped(struct korb_vm *vm) { vm->method_serial++; }
+
 /* Serial to stamp into an inline/call cache.  While refinements are active a
  * site must re-resolve on every call (the answer depends on the running scope,
  * which no cache key covers), so stamp a serial that can never match — that
@@ -8193,12 +8197,13 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
             struct korb_method *m;
             VALUE def_class;
             if (LIKELY(ic->serial == vm->method_serial && ic->klass == klass)) {
+                if (LIKELY(ic->simple)) return korb_invoke_simple_ic(c, slots, ic, argc, line, mid, self);
                 m = ic->m; def_class = ic->def_class;
             } else {
                 def_class = KORB_NIL;
                 m = korb_mcache_find(vm, klass, mid, &def_class);
                 if (UNLIKELY(m == NULL)) return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL, site);
-                ic->serial = korb_ic_serial(vm); ic->klass = klass; ic->m = m; ic->def_class = def_class;
+                korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE);
             }
             if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple)) {  /* hot path: inlines */
                 if (LIKELY(!vm->refinements_active))
@@ -8241,7 +8246,7 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
                 m = ic->m; def_class = ic->def_class;
             } else {
                 m = korb_mcache_find(vm, klass, mid, &def_class);
-                if (m) { ic->serial = korb_ic_serial(vm); ic->klass = klass; ic->m = m; ic->def_class = def_class; ic->kind = KORB_IC_INSTANCE; }
+                if (m) korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE);
             }
         } else {                                         /* main / top-level global function */
             if (LIKELY(cc->serial == vm->method_serial && cc->m != NULL)) m = cc->m;
@@ -8434,14 +8439,23 @@ __attribute__((no_stack_protector)) RESULT
 korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self)
 {
-    if (UNLIKELY(block == NULL || block == KORB_BLK_CPROC || block->head.kind != &kind_node_entry ||
-                 korb_entry_kw_info(block) || korb_entry_destructure_spec(block) ||
-                 korb_entry_destructure_n(block) || korb_entry_rest_slot(block) != -1 ||
-                 korb_entry_opt_defaults(block) ||
-                 /* a lone non-Array arg for a multi-param block may need #to_ary */
-                 (argc == 1 && !KORB_ARRAY_P(argv[0]) && KORB_OBJECT_P(argv[0]) &&
-                  block->u.node_entry.params_cnt > 1)))   /* NULL (no block) → _full raises; keeps the cold epilogue out of the hot path */
-        return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL, 0);   /* is_lam via fwd-detection inside */
+    /* The block-shape part of the fast-path test is parse-time constant, so it
+     * is decided once per block node and remembered in head.flags.yield_simple
+     * (five node_entry field loads per yield otherwise). */
+    if (UNLIKELY(block == NULL || block == KORB_BLK_CPROC)) 
+        return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL, 0);   /* NULL → _full raises; keeps the cold epilogue out of the hot path */
+    if (UNLIKELY(!block->head.flags.yield_simple)) {
+        if (block->head.kind != &kind_node_entry ||
+            korb_entry_kw_info(block) || korb_entry_destructure_spec(block) ||
+            korb_entry_destructure_n(block) || korb_entry_rest_slot(block) != -1 ||
+            korb_entry_opt_defaults(block))
+            return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL, 0);   /* is_lam via fwd-detection inside */
+        block->head.flags.yield_simple = true;
+    }
+    /* a lone non-Array arg for a multi-param block may need #to_ary */
+    if (UNLIKELY(argc == 1 && !KORB_ARRAY_P(argv[0]) && KORB_OBJECT_P(argv[0]) &&
+                 block->u.node_entry.params_cnt > 1))
+        return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL, 0);
 
     const bool fwd = (def_env == KORB_BLK_FWD);
     /* A lambda forwarded as a block (`m(&lam); yield`) enforces arity and never
@@ -10190,8 +10204,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
             } else {
                 idef = KORB_NIL;
                 init = korb_class_find_method(recv, vm->mid_initialize, &idef);
-                ic->serial = korb_ic_serial(vm); ic->klass = recv; ic->m = init; ic->def_class = idef;
-                ic->kind = KORB_IC_NEW;
+                korb_ic_fill(ic, korb_ic_serial(vm), recv, init, idef, KORB_IC_NEW);
             }
             const VALUE obj = UNWRAP(korb_obj_new(c, slots, recv));   /* may GC (bumps serial → next call re-resolves) */
             if (init) {
@@ -10240,8 +10253,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
                     const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class, argc, &mm_handled);
                     if (mm_handled || vr.state != KORB_NORMAL) return vr;
                 }
-                ic->serial = korb_ic_serial(vm); ic->klass = recv; ic->m = m;
-                ic->def_class = def_class; ic->kind = KORB_IC_SMETHOD;
+                korb_ic_fill(ic, korb_ic_serial(vm), recv, m, def_class, KORB_IC_SMETHOD);
                 return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
             }
             /* miss (method_missing / NoMethodError) → korb_send_impl formats it */
@@ -10275,6 +10287,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
     }
     if (LIKELY((ic->kind == KORB_IC_INSTANCE || ic->kind == KORB_IC_INSTANCE_VIS) &&
                ic->serial == vm->method_serial && ic->klass == klass)) {
+        if (LIKELY(ic->simple)) return korb_invoke_simple_ic(c, slots, ic, argc, line, mid, recv);
         struct korb_method *const m = ic->m;
         if (UNLIKELY(ic->kind == KORB_IC_INSTANCE_VIS && caller_self != KORB_UNDEF)) {   /* cached private/protected — guard the cached entry (no re-lookup) */
             bool mm_handled = false;
@@ -10304,9 +10317,8 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         KORB_CLASS_P(klass) ? korb_mcache_find(vm, klass, mid, &def_class) : NULL;
     if (UNLIKELY(m == NULL))   /* NoMethodError (rare) — let korb_send_impl format/raise */
         return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
-    ic->serial = korb_ic_serial(vm); ic->klass = klass; ic->m = m; ic->def_class = def_class;
     if (UNLIKELY(m->visibility != 0)) {   /* private/protected: cache as _VIS (resolved) — node_send's inline fast path won't match it, so it always routes here to be guarded */
-        ic->kind = KORB_IC_INSTANCE_VIS;
+        korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE_VIS);
         if (caller_self != KORB_UNDEF) {
             bool mm_handled = false;
             const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class, argc, &mm_handled);
@@ -10314,7 +10326,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         }
         return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
     }
-    ic->kind = KORB_IC_INSTANCE;
+    korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE);
     return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
 }
 

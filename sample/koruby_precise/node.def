@@ -2007,11 +2007,8 @@ node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, struct
     if (LIKELY(KORB_OBJECT_P(self) && !(((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS))) {
         const VALUE klass = VAL2OBJ(self)->klass;            /* a singleton/extended self goes the slow way */
         if (LIKELY(klass != KORB_NIL)) {                     /* user-instance self-call */
-            if (LIKELY(ic->serial == c->vm->method_serial && ic->klass == klass)) {
-                struct korb_method *const m = ic->m;
-                if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))
-                    return korb_invoke_simple(c, slots, m, argc, line, mid, self, ic->def_class);
-            }
+            if (LIKELY(ic->serial == c->vm->method_serial && ic->klass == klass && ic->simple))
+                return korb_invoke_simple_ic(c, slots, ic, argc, line, mid, self);
         } else if (LIKELY(cc->serial == c->vm->method_serial && cc->m != NULL &&
                           cc->m->kind == KORB_METHOD_ISEQ && cc->m->is_simple)) {
             return korb_invoke_simple(c, slots, cc->m, argc, line, mid, self, KORB_NIL);   /* top-level global (fib) */
@@ -2147,12 +2144,12 @@ node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_
         const VALUE klass = VAL2OBJ(recv)->klass;
         if (LIKELY(klass != KORB_NIL && ic->kind == KORB_IC_INSTANCE &&
                    ic->serial == c->vm->method_serial && ic->klass == klass)) {
-            struct korb_method *const m = ic->m;
             /* the ic caches only public methods as KORB_IC_INSTANCE (korb_send_cached
              * withholds private/protected), so this hot path needs no visibility
              * check — private/protected sites never satisfy the ic guard above. */
-            if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))
-                return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
+            if (LIKELY(ic->simple))
+                return korb_invoke_simple_ic(c, slots, ic, argc, line, mid, recv);
+            struct korb_method *const m = ic->m;
             if (m->kind == KORB_METHOD_ATTR_R) {             /* attr/struct reader: inline shape walk, no cross-module hop */
                 const KorbObject *const ob = VAL2OBJ(recv);
                 const int32_t idx = korb_shape_index(c->vm, ob->shape_id, m->attr_ivar);
