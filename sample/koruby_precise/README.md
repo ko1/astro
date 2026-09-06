@@ -26,23 +26,26 @@ GC は **precise moving/copy GC**（`GC=copy` default）。全ての alloc-heavy
 performance governor、gcc 15.2、他ジョブなし）で計測。比較対象は自前ビルドの
 **CRuby 4.0.2 +PRISM**（`v4.0.2`, revision `d3da9fec82`）。master と修正版を
 1 round 内で交互に、各 3 round の median（2026-09-06、sp4 専有、CRuby 4.1.0dev master
-`69b49ac7ae` +PRISM、gcc 15.2）:
+`69b49ac7ae` +PRISM、gcc 15.2。koruby と YJIT は同 round、素の CRuby は同日の別 round）:
 
 | 実行系 | fps | 対 素の CRuby | 対 CRuby+YJIT |
 |---|---:|---:|---:|
 | **koruby AOT**（aot+cached） | **172.1** (171.8–172.8) | **2.83×** | 0.58× |
+| （参考）koruby AOT + 即値 bake 実験パッチ | 189.9 (189.8–190.1) | 3.13× | 0.64× |
 | CRuby (no yjit) | 60.7 (59.8–61.2) | 1.00× | 0.20× |
-| CRuby + YJIT | 298.2 (296.4–299.5) | 4.91× | 1.00× |
+| CRuby + YJIT | 296.3 (295.8–297.0) | 4.88× | 1.00× |
 
-- optcarrot では **warm AOT が素の CRuby の 2.83×**。YJIT は AOT の 1.73×。
-- **2026-09-06 に 97.1 → 172.1 fps (+77%)**。内訳: `send` のたびに「受け側が自前の
+- optcarrot では **warm AOT が素の CRuby の 2.83×**。YJIT は AOT の 1.73×。即値 bake は SD を 1 プログラムの intern 順に鍵づけする（別プログラムと SD を共有できない）のでツリーには入れていない（上限の参照値、[docs/copy_and_patch.md](./docs/copy_and_patch.md)）。
+- **2026-09-06 に 97.1 → 172.1 fps (1.77×、即値 bake 込みなら 189.9)**。内訳: `send` のたびに「受け側が自前の
   #send を持つか」を Object/Kernel の method table まで線形走査していた (perf で 25.6%)
   のを method cache 経由に + implicit-self `send(:sym, …)` の直接 invoke + 単独 splat
   `f(*x)` のコピー省略 (97 → 164)、void* オペランドの runtime 参照で massign を AOT
   特殊化 + rotate!/splice の bulk store + builtin レシーバの型タグ (→ 167)、
   fat inline cache (ic に callee の body/dispatcher/frame size を複製) + block 形状
-  flag (→ 172)。optcarrot の CPU は `-b` だと `--opt` 無しで 1 命令あたり 2〜3 回
-  `send` する。計測一式は `~/ruby/src/trials/2026-09-06-koruby-precise-perf/`。
+  flag (→ 172)。symbol ID / 行番号 / Symbol リテラルを SD に即値で焼くと 190 だが
+  共有性を壊すので実験のみ ([docs/copy_and_patch.md](./docs/copy_and_patch.md))。optcarrot の CPU は `-b` だと
+  `--opt` 無しで 1 命令あたり 2〜3 回 `send` する。計測一式は
+  `~/ruby/src/trials/2026-09-06-koruby-precise-perf/`。
 - その前の 2026-09-05 は **`node_vcall` のラッパノードを外して 81.7 → 96.4 fps (+18.0%)**
   （同 sp4、CRuby 4.0.2 比較: CRuby 62.5 / YJIT 297.6）。裸の識別子 `foo` の miss を
   NameError にするために call ノードを `@noinline` のラッパで包んでいたのを、パーサが

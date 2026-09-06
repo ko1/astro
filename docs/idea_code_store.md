@@ -108,3 +108,99 @@ JIT を持つサンプル (naruby) では、ホットノード検出時に L0 �
 完了後に `astro_cs_load` を呼ぶ。code store はハッシュ→dispatcher マップの管理と
 `.so` のロードに専念し、「何をエントリとするか」「いつコンパイルするか」の
 ポリシーは言語側に委ねる。
+
+## 7. 穴 (hole) とインスタンス化 — dlopen 経路とローダ経路 (設計、2026-09-06)
+
+### 7.1 動機
+
+SD は木の形 (hash) ごとに 1 つを共有するので、サイト固有の値 — メソッド名 ID、行番号、
+Symbol リテラル、inline cache のアドレス、子 NODE のアドレス — は SD の中で NODE から
+読む (`n->u.node_call.mid`、`n->u.node_plus.lhs->u.node_ivar_get.ic` …)。この
+**AST の pointer chase** が特化コードの残りコストの大きな部分になっている。
+koruby_precise の optcarrot (AOT, sp4) で、ID / 行番号 / Symbol 値だけを即値に焼く実験
+(trials の実験パッチ、ツリー外) は **+10.6%** (172.9 → 190.0 fps)、命令数 −6%、L1d miss −22%。
+ただし ID を hash に含めるので SD が 1 プログラムの intern 順に鍵づけされ、別プログラムと
+SD を共有できない (Reusable の原則に反する)。よって「共有テンプレートはそのまま、値は
+インスタンスごとに供給する」機構が要る。詳細と数字は
+`sample/koruby_precise/docs/copy_and_patch.md`。
+
+### 7.2 穴の抽象
+
+SD テンプレートの中で「実行時に NODE から読んでいた値」を **穴 k** として番号づけし、
+SD は `HOLE_U32(k)` / `HOLE_PTR(k)` マクロで参照する。穴の値をどう供給するかは
+2 通りあり、**どちらでも同じテンプレート・同じ hash・同じ穴番号**を使う:
+
+| 経路 | 供給方法 | 速さ | 可搬性 |
+|---|---|---|---|
+| **ローダ** (`astro_cs_instantiate`) | `.o` の `.text` をインスタンスごとにコピーし、ELF 再配置 (穴 = 未定義シンボル) を実値で埋める。即値。 | 最速 (即値、pointer chase 無し) | x86-64 Linux。hot な body だけに限る |
+| **dlopen + 初期化** (`astro_cs_load`) | `all.so` の共有 SD をそのまま使い、swap 時に初期化コード `SD_<h>_fill` がインスタンスの **穴の表 (pool)** を作って `n->head.pool` に置く。SD は `P = n->head.pool` を 1 回読み、`P[k]` で参照。 | pointer chase が「深さ d の依存ロード」から「1 + 独立ロード」に。命令数は変わらない | 全 arch / wasm / `--build` |
+
+穴に入れるのは、今 `build_specializer` が「実行時参照」で出しているもの全部:
+`@sym` オペランド、`line`、Symbol リテラル (VALUE)、`@ref` の cache アドレス
+(`&n->u.X.ic`)、`void *` の記述子、`const char *` の配列、out-of-line 子の `NODE *`
+(dispatcher と組で)、そして子を辿るための子 `NODE *` 自体。これで SD 本体は `n` を
+穴表の取得以外に参照しなくなる。
+
+### 7.3 生成器 (lib/astrogen.rb)
+
+- `Operand#build_specializer` に 3 つ目の出し方 **hole** を足す。既存は「定数で焼く」
+  「`n->u.X.f` を実行時に読む」。どのオペランドを穴にするかはサンプルの Operand
+  サブクラスが `hole?` で決める (koruby: `sym?`、`line`、cache 系 `@ref`、`void *`、
+  Symbol リテラル、子 NODE*)。hash からは今までどおり除外 (共有を保つ)。
+- SPECIALIZE は SD ごとに穴の表を集め、次を `.c` に emit する:
+  - `#define SD_<h>_HOLES <n>`
+  - `static void SD_<h>_fill(const NODE *n, uintptr_t *pool)` — 木を辿って各穴の値を
+    NODE から取り出す初期化コード (`pool[3] = (uintptr_t)&n->u.node_call.argv[0]->u.node_ivar_get.ic;`)。
+    ローダ経路もこれで値を得る (パッチの元値)。
+  - 穴の種類表 `static const uint8_t SD_<h>_hole_kind[]` (u32 即値 / 64bit ポインタ /
+    dispatcher 関数)。ローダが再配置の種類と突き合わせる。
+- テンプレート本体の穴参照は `HOLE_*` マクロで書き、ビルドモードで展開を変える:
+  - pool モード (`.so`): `#define HOLE_U32(k) ((uint32_t)P[k])`、SD 先頭で
+    `const uintptr_t *const P = n->head.pool;`。
+  - patch モード (`.o`): `extern char _astro_hole_##k[];`
+    `#define HOLE_U32(k) ((uint32_t)(uintptr_t)_astro_hole_##k)` → gcc が
+    `mov $imm32` + `R_X86_64_32` を残す。`-fno-pic -fno-plt -fno-jump-tables`。
+  同じ `.c` から両方をコンパイルする (`o/` に patch 版、`all.so` に pool 版)。
+- インライン展開された子は親と同じ pool / 同じコードコピーに入るので穴番号は body
+  単位で通し番号。out-of-line 子 (`@noinline`、block の node_entry) は自分の root を持つ。
+
+### 7.4 ランタイム (runtime/astro_code_store.{h,c})
+
+```c
+// NodeHead に 1 語追加
+const uintptr_t *pool;          // pool モード: この body インスタンスの穴の表
+
+// dlopen 経路 (既存の astro_cs_load の中):
+//   dlsym("SD_<h>") → dispatcher、dlsym("SD_<h>_fill") → pool を作って fill → n->head.pool
+bool astro_cs_load(NODE *n, const char *file);
+
+// ローダ経路 (任意、x86-64 Linux):
+//   o/SD_<h>.o の .text/.rodata をコピー、.rela.text を SD_<h>_fill の値と
+//   dlsym(RTLD_DEFAULT) で解決、n->head.dispatcher にコピーを据える。
+//   失敗 (未対応 reloc / arch) は false → 呼び側は astro_cs_load のままでよい。
+bool astro_cs_instantiate(NODE *n);
+```
+
+- ローダの中身: 最小 ELF リーダ (`.symtab` / `.rela.text` / `.rodata`)、扱う再配置は
+  `R_X86_64_64 / 32 / 32S / PC32 / PLT32`。`.rodata` (文字列・定数) もコピーして PC32 を
+  つなぐ。コード領域はテンプレート `.so` とホストバイナリの ±2 GB に `mmap` (hint 付き)
+  して `call rel32` が届くようにする。`mprotect` で RX。
+- hot 判定はサンプル側 (PG の count、または swap 後 N 回呼ばれたら) — code store は
+  「呼ばれたら instantiate する」だけ。cold は共有 SD のまま。
+- `.o` は `astro_cs_build` が既に `o/` に持っている。patch 版と pool 版で CFLAGS が
+  違うので `o/` を 2 系統にする (`o/` = .so 用、`op/` = patch 用)。
+
+### 7.5 サンプル側
+
+- Operand サブクラスで `hole?` を返す (koruby_gen.rb)。
+- `n->head.pool` を GC や dump が触る必要は無い (libc 確保、immortal)。
+- それ以外は無変更: 呼び出し規約 `(CTX *, NODE *, VALUE *)` は据え置き。
+
+### 7.6 見込みと段取り
+
+- pool モード: 依存ロードが消える分だけ。ID 即値実験 (+10.6%) の一部、たぶん半分程度。
+  全 arch で効き、bake 時間も伸びない (テンプレート共有のまま) ので**先にこれ**。
+- ローダ: 即値化で残り全部 + ic/子ポインタも即値。I キャッシュは hot 限定で抑える。
+- 段取り: (1) astrogen に hole 出力 + `_fill` 生成 (pool モード) → koruby で計測
+  (2) `.o` の patch 版ビルド + `astro_cs_instantiate` の spike を SD 1 個で
+  (3) hot 判定と optcarrot / microbench で判定。

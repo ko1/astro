@@ -92,6 +92,59 @@ frame 設定・ic 判定・戻り値判定。ここから先は call 規約の�
 
 計測一式: `~/ruby/src/trials/2026-09-06-koruby-precise-perf/`
 
+## 2026-09-06 (round 4): symbol ID / 行番号 / Symbol リテラルを SD に即値で焼く (実験のみ・ツリーには入れない・optcarrot +10.6%)
+
+user の指摘「ロード時に定数として埋め込めば速くなる」から。詳細は
+[docs/copy_and_patch.md](./copy_and_patch.md)。
+
+### 何をやめたか
+
+SD は木の形ごとに共有し、`mid@sym` / `line` / Symbol リテラルは順序非依存のため
+実行時に NODE から読んでいた (1b327c48)。0 引数 call の SD は先頭で `line` と `mid` を
+無条件にロードして callee-saved に抱え (RAISE 時に必要)、「miss 側で読み直す」書き換えでは
+命令数が 1 つも減らなかった。即値にする以外に消えない。
+
+### 変更 (実験パッチ `trials/.../patches/05-bake-syms-experiment.diff`、ツリーには入れない)
+
+- `@sym` オペランド・`line`・Symbol リテラル (node_lit の VALUE) を **hash に含めて**
+  SD に定数として焼く。hash に含めるので**自己検証**: bake 時と intern 順が違う node は
+  hash が変わり SD が見つからない (interp に落ちる / `--compiled-only` なら poison)。
+  誤った即値で走る経路は無い。
+- intern 順は boot → prelude → parse 順で決定的なので、プログラム自身の code_store と
+  preload_store は一致する (別 binary なら preload は既存の staleness 判定で焼き直し)。
+- `--build` (埋め込み exe) は boot の intern 順が bake プロセスと違った
+  (`__zlib_crc32` が 236 番 vs 1071 番) ので、bake 時の symbol 表 (名前・長さ・encoding)
+  を `_embed.c` に emit し、`korb_ctx_new_seeded` が boot の intern より前に VM を seed
+  する (実験パッチ内)。
+
+### 結果
+
+ローカル `perf stat -r 3` (optcarrot AOT): 命令数 21.53G → **20.23G (−6.0%)**、
+L1d miss 336M → **261M (−22%)**、L1i miss 1.4M → 13.9M (10×)、SD 502 → 535、
+all.so 3.32 → 3.86 MB。sp4 (round 3 vs 即値、3 round 交互、YJIT 294〜299 不変):
+
+| round | round 3 | 即値 bake |
+|---|---:|---:|
+| 1 | 176.7 | **190.3** |
+| 2 | 171.1 | **190.5** |
+| 3 | 170.9 | **189.3** |
+
+**+10.6%** (172.9 → 190.0)。一日の累計 97.1 → 190 (**1.96×**)、YJIT 比 0.64×。
+suite (round 3 vs 即値, `logs/r4/`): optcarrot 172.3/177.0/171.2 → 189.8/189.9/190.1 (+9.5%)。
+microbench 53 本 (aot+cached 即値/round3): 12 本が 3% 以上速く (gcd 0.88、method_call 0.90、
+while 0.91、fib 0.92、ivar 0.93 …)、poly 1.07 のみ遅い (二峰性の bench)。geomean は
+AOT warm 0.38 → 0.37、interp 0.77 → 0.76。埋め込み exe (`--build`, send.rb) は出力一致・
+命令数 3.56G (interp 11.9G)。
+
+### 格下げの理由
+
+hash に ID を含めると SD が 1 プログラムの intern 順に鍵づけされ、**別プログラムの
+同じ形のノードが SD を共有できない** (user 指摘)。`line` の分は同一プログラム内の共有も
+減る。ASTro の Reusable の原則に反するのでツリーには入れず (tag
+`perf-send-cache-bake-experiment` と trials の patch に保存)、上限の参照値として残す。
+`--build` の `data_offset` 未宣言 (master でもコンパイル不能) だけは別 commit で修正。
+本命は共有テンプレート + 穴 (docs/idea_code_store.md §7、copy_and_patch.md)。
+
 ## 2026-09-06 (round 3): fat inline cache + block 形状 flag (成功・optcarrot +3.2%)
 
 ### 観測
@@ -142,6 +195,13 @@ mapreduce 0.94 …)、5 本が 3% 以上遅い (while 1.09、collatz 1.06、spri
 render_span_kernel 1.04; いずれも 70〜280 ms 級で配置ノイズの幅)。geomean は
 interp 0.77 / AOT warm 0.38 で不変。生数字は
 `~/ruby/src/trials/2026-09-06-koruby-precise-perf/logs/final3/compare.md`。
+
+### DOOM (60 frames, headless, sp4, base = master 28e4fea0 vs round 3)
+
+AOT `--compiled-only` 5 回交互: master 0.504〜0.512 s → round 3 **0.494〜0.496 s (−2.7%)**、
+interp `--plain` 0.97〜0.99 s で同等、CRuby 0.92 s / YJIT 0.49 s。checksum 全て
+`17930386881013214317`。DOOM は send / splat を使わないので効きは小さく、YJIT とほぼ並ぶ
+(0.495 vs 0.489)。`~/ruby/src/trials/2026-09-06-koruby-precise-perf/logs/doom-ab.txt`。
 
 ### 却下・保留
 
