@@ -50,7 +50,7 @@ astro_ld_memfd(const char *name, unsigned flags)
 
 static struct {
     char *w, *x;                 // write view / exec view of the same bytes
-    size_t used, size;
+    size_t used, prev_used, size;
     bool failed;
 } astro_ld_arena;
 
@@ -101,19 +101,22 @@ astro_ld_alloc(size_t size, size_t align, char **xp)
 {
     if (!astro_ld_arena_init()) return NULL;
     if (align < 16) align = 16;
+    if (align > astro_ld_arena.size - astro_ld_arena.used) return NULL;
     const size_t off = (astro_ld_arena.used + align - 1) & ~(align - 1);
-    if (size > astro_ld_arena.size - off) return NULL;
+    if (off > astro_ld_arena.size || size > astro_ld_arena.size - off) return NULL;
+    astro_ld_arena.prev_used = astro_ld_arena.used;   // for unalloc (padding too)
     astro_ld_arena.used = off + size;
     *xp = astro_ld_arena.x + off;
     return astro_ld_arena.w + off;
 }
 
-// Give back the most recent chunk (bump allocator) when patching fails.
+// Give back the most recent chunk (bump allocator) when patching fails —
+// including the padding that was skipped to align it.
 static void
 astro_ld_unalloc(const char *w, size_t size)
 {
     if (w + size == astro_ld_arena.w + astro_ld_arena.used)
-        astro_ld_arena.used = (size_t)(w - astro_ld_arena.w);
+        astro_ld_arena.used = astro_ld_arena.prev_used;
 }
 
 // ---- object cache: op/<SD>.o read once per SD name --------------------------
@@ -149,14 +152,20 @@ astro_ld_read(struct astro_ld_obj *o, const char *path)
     fseek(fp, 0, SEEK_SET);
     if (len <= (long)sizeof(Elf64_Ehdr)) { fclose(fp); return false; }
     o->data = malloc((size_t)len);
-    if (!o->data || fread(o->data, 1, (size_t)len, fp) != (size_t)len) { fclose(fp); return false; }
+    if (!o->data || fread(o->data, 1, (size_t)len, fp) != (size_t)len) {
+        fclose(fp); free(o->data); o->data = NULL; return false;
+    }
     fclose(fp);
     o->size = (size_t)len;
     o->eh = (const Elf64_Ehdr *)o->data;
     const Elf64_Ehdr *const eh = o->eh;
     if (memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0 || eh->e_ident[EI_CLASS] != ELFCLASS64
         || eh->e_ident[EI_DATA] != ELFDATA2LSB || eh->e_type != ET_REL || eh->e_machine != ASTRO_ARCH_ELF_MACHINE
-        || eh->e_shentsize != sizeof(Elf64_Shdr) || eh->e_shoff + (size_t)eh->e_shnum * sizeof(Elf64_Shdr) > o->size)
+        || eh->e_shentsize != sizeof(Elf64_Shdr))
+        return false;
+    // Bounds without overflow: e_shoff is 64-bit and could wrap the addition.
+    if (eh->e_shoff > o->size
+        || (o->size - eh->e_shoff) / sizeof(Elf64_Shdr) < eh->e_shnum)
         return false;
     o->sh = (const Elf64_Shdr *)(o->data + eh->e_shoff);
     if (eh->e_shstrndx >= eh->e_shnum) return false;
@@ -216,6 +225,10 @@ bool
 astro_cs_instantiate(NODE *n)
 {
     if (!n || !n->head.flags.is_specialized || !n->head.pool || !n->head.dispatcher_name) return false;
+    // Instances are immortal (an activation may still be running in one), so a
+    // node is woven at most once: a second call would leak a chunk.
+    if (astro_ld_arena.x && (char *)n->head.dispatcher >= astro_ld_arena.x
+        && (char *)n->head.dispatcher < astro_ld_arena.x + astro_ld_arena.size) return false;
     const char *const name = n->head.dispatcher_name;
     if (strncmp(name, "SD_", 3) != 0 && strncmp(name, "PGSD_", 5) != 0) return false;
     struct astro_ld_obj *const o = astro_ld_obj_get(name);
@@ -234,7 +247,12 @@ astro_cs_instantiate(NODE *n)
         if ((s->sh_flags & SHF_WRITE) && s->sh_size > 0) { free(place); astro_ld_stats.failed++; return false; }
         if (s->sh_size == 0) continue;
         const size_t align = s->sh_addralign > 1 ? s->sh_addralign : 1;
+        // The arena is page-aligned, so aligning the offset aligns the address
+        // only while the requirement is <= a page; and a power of two is what
+        // the masking below assumes.  Anything else: leave the node on pool.
+        if ((align & (align - 1)) != 0 || align > 4096) { free(place); astro_ld_stats.failed++; return false; }
         if (align > maxalign) maxalign = align;   // the chunk carries the strictest one
+        if (s->sh_size > SIZE_MAX - total - align) { free(place); astro_ld_stats.failed++; return false; }
         total = (total + align - 1) & ~(align - 1);
         place[i] = (int64_t)total;
         total += s->sh_size;
@@ -244,6 +262,9 @@ astro_cs_instantiate(NODE *n)
     for (unsigned i = 0; i < shnum; i++) {
         const Elf64_Shdr *const s = &o->sh[i];
         if (s->sh_type != SHT_RELA || s->sh_info >= shnum || place[s->sh_info] < 0) continue;
+        if (s->sh_entsize != sizeof(Elf64_Rela) || s->sh_size % sizeof(Elf64_Rela)) {
+            free(place); astro_ld_stats.failed++; return false;
+        }
         const Elf64_Rela *const rel = (const Elf64_Rela *)(o->data + s->sh_offset);
         const size_t nrel = s->sh_size / sizeof(Elf64_Rela);
         for (size_t k = 0; k < nrel; k++) {
@@ -293,6 +314,11 @@ astro_cs_instantiate(NODE *n)
                 // Hole: the addend is the index into n's pool.  A mismatch (a
                 // stale op/ object against a pool built by another SD version)
                 // must fail, never read past the table.
+                // No GOT slot is reserved for holes (the value is the datum,
+                // not an address to indirect through), so a GOT-shaped hole
+                // relocation must fail rather than reach the backend with a
+                // null slot.
+                if (astro_arch_reloc_needs_got(t)) { ok = false; break; }
                 if (A < 0 || (uint32_t)A >= n->head.nholes) { ok = false; break; }
                 // The hole's value IS the symbol value here: the addend picked
                 // the slot, so the backend writes it with addend 0.
@@ -306,7 +332,10 @@ astro_cs_instantiate(NODE *n)
                 void *const p = dlsym(RTLD_DEFAULT, sname);
                 if (!p) { ok = false; break; }
                 S = (uintptr_t)p;
-            } else if (sym->st_shndx < shnum && place[sym->st_shndx] >= 0) {
+            } else if (sym->st_shndx == SHN_ABS) {
+                S = (uintptr_t)sym->st_value;
+            } else if (sym->st_shndx < shnum && place[sym->st_shndx] >= 0
+                       && sym->st_value <= o->sh[sym->st_shndx].sh_size) {
                 S = (uintptr_t)(xbase + place[sym->st_shndx] + sym->st_value);
             } else {
                 ok = false; break;
@@ -326,7 +355,8 @@ astro_cs_instantiate(NODE *n)
     for (size_t k = 0; ok && k < o->nsym; k++) {
         const Elf64_Sym *const sym = &o->sym[k];
         if (ELF64_ST_TYPE(sym->st_info) == STT_FUNC && sym->st_shndx < shnum && place[sym->st_shndx] >= 0
-            && strcmp(o->str + sym->st_name, name) == 0) {
+            && sym->st_value < o->sh[sym->st_shndx].sh_size
+            && sym->st_name < o->strsz && strcmp(o->str + sym->st_name, name) == 0) {
             entry = xbase + place[sym->st_shndx] + sym->st_value;
             break;
         }
@@ -350,3 +380,5 @@ astro_cs_instantiate_stats(uint32_t *n, uint32_t *failed, size_t *bytes)
     if (failed) *failed = astro_ld_stats.failed;
     if (bytes) *bytes = astro_ld_stats.bytes;
 }
+
+#undef ASTRO_LOADER_IMPL

@@ -21,8 +21,13 @@
 #define ASTRO_ARCH_ARENA_LO 0x20000000u
 #define ASTRO_ARCH_ARENA_HI 0x70000000u
 
+#endif /* ASTRO_HOLE_ARCH_X86_64_H */
+
 // ---- compile side: how a hole becomes an immediate --------------------------
-#ifdef ASTRO_SD_PATCH
+// Own guard: the first include may come from a translation unit that has not
+// defined ASTRO_SD_PATCH (the host), and a later one may.
+#if defined(ASTRO_SD_PATCH) && !defined(ASTRO_HOLE_ARCH_X86_64_IMM_H)
+#define ASTRO_HOLE_ARCH_X86_64_IMM_H
 // `P` is `extern char _astro_hole_base[]`, so `P + k` is a link-time constant
 // and its relocation carries k as the addend — that addend is the hole number.
 //
@@ -35,8 +40,6 @@
 #define ASTRO_ARCH_HOLE_IMM(k) __extension__({ \
     uintptr_t _hv; __asm__("movabsq $%p1, %0" : "=r"(_hv) : "i"(P + (k))); _hv; })
 #endif
-
-#endif /* ASTRO_HOLE_ARCH_X86_64_H */
 
 // ---- load side: relocation application ---------------------------------------
 #if defined(ASTRO_LOADER_IMPL) && !defined(ASTRO_HOLE_ARCH_X86_64_LOAD_H)
@@ -92,13 +95,14 @@ astro_arch_reloc_apply(unsigned type, char *where, uintptr_t wherex,
         uint32_t w = (uint32_t)v; memcpy(where, &w, 4); return true;
     }
     case R_X86_64_32S: {
-        int64_t v = (int64_t)S + A;
+        // Wrap-safe: signed overflow in the check itself would be UB.
+        const int64_t v = (int64_t)(S + (uint64_t)A);
         if (v < INT32_MIN || v > INT32_MAX) return false;
         int32_t w = (int32_t)v; memcpy(where, &w, 4); return true;
     }
     case R_X86_64_PC32:
     case R_X86_64_PLT32: {
-        int64_t v = (int64_t)S + A - (int64_t)wherex;
+        const int64_t v = (int64_t)(S + (uint64_t)A - wherex);
         if (v < INT32_MIN || v > INT32_MAX) return false;
         int32_t w = (int32_t)v; memcpy(where, &w, 4); return true;
     }
@@ -107,8 +111,9 @@ astro_arch_reloc_apply(unsigned type, char *where, uintptr_t wherex,
     case R_X86_64_REX_GOTPCRELX: {
         // -fno-plt turns host calls into `call *sym@GOTPCREL(%rip)`; give each
         // instance its own slot so the target is reachable from anywhere.
+        if (!got) return false;                    // caller reserved no slot
         memcpy(got, &S, 8);
-        int64_t v = (int64_t)gotx + A - (int64_t)wherex;
+        const int64_t v = (int64_t)(gotx + (uint64_t)A - wherex);
         if (v < INT32_MIN || v > INT32_MAX) return false;
         int32_t w = (int32_t)v; memcpy(where, &w, 4); return true;
     }
