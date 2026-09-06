@@ -49,17 +49,26 @@ static struct {
     uint32_t *nholes;     // pool mode: hole count of the emitted SD (per hash)
 } astro_spec_dedup;
 
-// Found → *nholes (nullable) receives the emitted SD's hole count.
+// Signature kept at one argument: samples emit calls to this from their own
+// specializers (naruby / baruby / baruby_precise all do).
 static bool
-astro_spec_dedup_has(node_hash_t h, uint32_t *const nholes)
+astro_spec_dedup_has(node_hash_t h)
 {
     for (uint32_t i = 0; i < astro_spec_dedup.size; i++) {
-        if (astro_spec_dedup.hashes[i] == h) {
-            if (nholes) *nholes = astro_spec_dedup.nholes[i];
-            return true;
-        }
+        if (astro_spec_dedup.hashes[i] == h) return true;
     }
     return false;
+}
+
+// Hole count recorded for an already-emitted SD (pool mode; 0 when absent).
+__attribute__((unused))
+static uint32_t
+astro_spec_dedup_nholes(node_hash_t h)
+{
+    for (uint32_t i = 0; i < astro_spec_dedup.size; i++) {
+        if (astro_spec_dedup.hashes[i] == h) return astro_spec_dedup.nholes[i];
+    }
+    return 0;
 }
 
 static void
@@ -106,14 +115,13 @@ SPECIALIZE(FILE *fp, NODE *n)
         // identical Horg but different Hopt collapse into one emission —
         // wrong, since their generated bodies differ (baked prologue etc.).
         node_hash_t h = astro_cs_use_hopt_name ? HOPT(n) : HASH(n);
-        uint32_t nholes = 0;
 
-        if (astro_spec_dedup_has(h, &nholes)) {
+        if (astro_spec_dedup_has(h)) {
             // already generated in this compile session
             // but still need to set dispatcher_name for this node instance
             n->head.dispatcher_name = alloc_dispatcher_name(n);
 #ifdef ASTRO_NODEHEAD_POOL
-            n->head.nholes = nholes;   // parent reserves the same range
+            n->head.nholes = astro_spec_dedup_nholes(h);   // parent reserves the same range
 #endif
         }
         else if (n->head.flags.is_specializing) {
