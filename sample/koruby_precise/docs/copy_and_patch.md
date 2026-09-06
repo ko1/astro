@@ -96,6 +96,37 @@ B は +10.6% だが、**SD を 1 プログラムの intern 順に鍵づけする
 本命は A: 共有テンプレートはそのまま、ローダがインスタンスごとにコピーして穴
 (mid / line / ic / 子 NODE*) を埋める。
 
+## 相対評価: CRuby / YJIT / interp / AOT を同一ラウンドで (2026-09-06)
+
+同じ機械 (sp4)・同じ optcarrot・同じ ROM・同じ 180 frames を、**1 つの時間窓で 6 構成を交互に**
+best-of-3。全セル checksum 59662 (= 同じ絵を出している)。CRuby / YJIT は `bin/optcarrot`、
+koruby は require 不要 bundle (koruby 専用の File shim を含むので CRuby では動かない) 経由。
+
+| 構成 | fps (3 round 中央値) | 全 round | CRuby 比 | YJIT 比 |
+|---|---:|---|---:|---:|
+| CRuby 4.1.0dev (JIT 無し) | 62.6 | 62.0 / 62.6 / 62.7 | 1.00× | 0.21× |
+| CRuby + YJIT | 301.3 | 299.2 / 301.3 / 302.4 | **4.82×** | 1.00× |
+| koruby **interp** (`--plain`) | 72.2 | 72.7 / 72.2 / 72.0 | 1.15× | 0.24× |
+| koruby **AOT** master `0ffc4c0f` | 173.2 | 173.0 / 180.4 / 173.2 | 2.77× | 0.57× |
+| koruby **AOT** + P (pool) | 208.8 | 208.3 / 209.4 / 208.8 | 3.34× | 0.69× |
+| koruby **AOT** + P + L (loader) | **227.2** | 227.2 / 226.4 / 227.3 | **3.63×** | **0.75×** |
+
+読み方: この 2 経路は「木を歩くインタプリタ」ではなく **AOT でコンパイル済みのコード**の話で、
+1 日で YJIT 比 0.57× → **0.75×**、CRuby 比 2.77× → **3.63×** に動いた。interp (1.15×) と AOT (3.63×)
+の差 3.1× が ASTro の部分評価そのものの効き。
+
+**「compiled である」ことの担保** (trials `logs/rel/compiled-evidence.txt`):
+
+- 3 本とも `--compiled-only` で実行している。このモードは **未特殊化 body に 1 回でも
+  インタプリタ dispatch が来た時点で abort (exit 7)** するので、AOT の行にインタプリタ実行が
+  混ざることはない (混ざれば数字ではなくエラーになる)。
+- 起動時の swap 実数: `swapped 1983 dispatchers (program + 2008 method bodies)` — program root と
+  全メソッド body が baked SD に差し替わっている。
+- L の行はさらに `29/2027 bodies instantiated (233 KB), 0 failed` = hot 判定で選ばれた 29 body が
+  コピー＋即値 patch された実体。
+- interp 行 (`--plain`) は user code を木で歩く。ただし固定 prelude は baked SD のまま
+  (prelude は preload.so の SD)、つまり 72.2 fps は**インタプリタ側に有利**な値。
+
 ## 結果: 経路 P (穴 + pool、2026-09-06、`docs/idea_code_store.md` §7.7)
 
 SD は site 固有値を NODE から読まず、SD インスタンスの穴の表 `n->head.pool` (`astro_hole_t[]`、
