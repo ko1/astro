@@ -39,13 +39,13 @@
 // newly-added architecture starts, and the cheapest way to check that the
 // pool-only fallback still works on a machine that does have one.
 #if defined(ASTRO_ARCH_FORCE_NONE)
-#  include "hole/arch_none.h"
+#  include "loader/arch_none.h"
 #elif defined(__x86_64__)
-#  include "hole/arch_x86_64.h"
+#  include "loader/arch_x86_64.h"
 #elif defined(__aarch64__)
-#  include "hole/arch_aarch64.h"
+#  include "loader/arch_aarch64.h"
 #else
-#  include "hole/arch_none.h"
+#  include "loader/arch_none.h"
 #endif
 
 #ifndef ASTRO_ARCH_DEFAULTS_DONE

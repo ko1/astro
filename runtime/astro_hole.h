@@ -31,8 +31,8 @@ void astro_cs_pool_attach(struct Node *n, astro_pool_fill_t fill);
 // loader can write per instance.  `P` is a symbolic base — an extern array of
 // unknown size — so `P + k` is a link-time constant whose relocation addend is
 // the hole number.  How that constant is materialised is instruction-set work:
-// see hole/arch_<isa>.h (ASTRO_ARCH_HOLE_IMM).
-#include "hole/arch.h"
+// see loader/arch_<isa>.h (ASTRO_ARCH_HOLE_IMM).
+#include "loader/arch.h"
 extern char _astro_hole_base[];
 typedef const char *astro_pool_ptr_t;
 #define ASTRO_POOL_PARAM astro_pool_ptr_t const P

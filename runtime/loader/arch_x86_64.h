@@ -3,7 +3,7 @@
 #ifndef ASTRO_HOLE_ARCH_X86_64_H
 #define ASTRO_HOLE_ARCH_X86_64_H
 
-// x86-64 backend for the loader path.  See hole/arch.h for the contract.
+// x86-64 backend for the loader path.  See loader/arch.h for the contract.
 
 #define ASTRO_ARCH_SUPPORTED 1
 #define ASTRO_ARCH_NAME      "x86-64"

@@ -257,7 +257,7 @@ L1d miss −50% だが L1i miss 9×・分岐ミス +47% で cycles +12.7% (net �
 共有テンプレートの私的コピーにノードの実行時情報を織り込む (node weaving)、というのがこの経路の
 性格である。
 
-命令セットに触る部分は `runtime/hole/arch_<isa>.h` に閉じ込め、`runtime/hole/arch.h` が契約を持つ。
+命令セットに触る部分は `runtime/loader/arch_<isa>.h` に閉じ込め、`runtime/loader/arch.h` が契約を持つ。
 それ以外 (ELF 読み・arena・シンボル解決・hot 方針・異常系) は `runtime/astro_loader.c` 側で共有する。
 
 backend が用意するもの:

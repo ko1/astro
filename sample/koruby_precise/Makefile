@@ -106,7 +106,7 @@ KORUBY_DEPS = .built_gc Makefile $(SRCS) context.h node.h korb_runtime.h $(BUILT
               $(GC_COMMON_SRC) $(GC_SRC) $(PRECISE_GC_DIR)/gc.h $(PRECISE_GC_DIR)/gc_types.h \
               $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h \
               $(RUNTIME)/astro_loader.c $(RUNTIME)/astro_hole.h \
-              $(wildcard $(RUNTIME)/hole/*.h) \
+              $(wildcard $(RUNTIME)/loader/*.h) \
               $(RUNTIME)/astro_build.c $(RUNTIME)/astro_build.h $(RUNTIME)/astro_ref_template.h
 KORUBY_CPPFLAGS = -I. -I./prism/include -I$(RUNTIME) \
 	    -DBARUBY_GC=$(GC_NUM) \

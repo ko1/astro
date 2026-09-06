@@ -11,7 +11,7 @@
 // us aliased W^X mappings, and the architecture has a backend.  Everything
 // instruction-set specific — which relocations exist, how a hole becomes an
 // immediate, where the code may live, what flags op/*.o needs, i-cache
-// coherency — lives in hole/arch_<isa>.h behind the contract in hole/arch.h.
+// coherency — lives in loader/arch_<isa>.h behind the contract in loader/arch.h.
 // Anything unsupported returns false and the body keeps its pool-mode SD.
 
 #define ASTRO_LOADER_IMPL 1
@@ -20,7 +20,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
-#include "hole/arch.h"
+#include "loader/arch.h"
 
 // memfd_create is behind _GNU_SOURCE, and this file is #included late into the
 // host's translation unit — call the syscall directly instead.

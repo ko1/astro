@@ -30,9 +30,9 @@
 // Node-weaving loader (astro_loader.c).  Needs three things: the pool path (it
 // reads the hole values from n->head.pool), an OS that can alias one mapping
 // writable and executable (memfd; Linux), and an architecture backend
-// (hole/arch_<isa>.h).  Any of them missing → pool path only, which is correct
+// (loader/arch_<isa>.h).  Any of them missing → pool path only, which is correct
 // everywhere.
-#include "hole/arch.h"
+#include "loader/arch.h"
 #if defined(ASTRO_NODEHEAD_POOL) && defined(__linux__) && !ASTRO_CS_NO_DLOPEN && ASTRO_ARCH_SUPPORTED
 #define ASTRO_LOADER_SUPPORTED 1
 #else
