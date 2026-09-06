@@ -92,6 +92,46 @@ frame 設定・ic 判定・戻り値判定。ここから先は call 規約の�
 
 計測一式: `~/ruby/src/trials/2026-09-06-koruby-precise-perf/`
 
+## 2026-09-06 (round 2): void* 特殊化 / rotate!・splice bulk / builtin レシーバ (成功・optcarrot +2%)
+
+send/splat の後の profile (fix4) から拾った小物 3 件と、却下 1 件。
+
+1. **void* オペランドを SD から runtime 参照** (koruby_gen.rb): astrogen の既定は void* を
+   `(void *)NULL` として焼くので、parse 時の記述子配列を持つ massign / pattern match は
+   @noinline だった。@noinline ノードは AOT 中でも**子を interpreter の dispatcher で
+   評価する**ため、`a, b = x, y` の rhs (配列リテラル + ivar/plus/aref) が interp で走り、
+   `DISPATCH_node_*` の self が 3.2% あった。runtime 参照にして @noinline を外すと 0.08%。
+2. **Array#rotate! / 同長 splice を bulk store に**: 3-reverse (4n store) → snapshot + 2 回の
+   ARO_STORE_BULK (n store)。`@bg_pixels.rotate!(8)` と `@bg_pixels[x, 8] = lut` が tile ごと。
+3. **素の Array/String/Hash レシーバのクラスを型タグで決める** (korb_send_cached):
+   korb_dispatch_class の exception/enumerator/class cascade と korb_class_of の switch を
+   飛ばす (self 1.1%)。String 系 microbench に効いた。
+
+結果 (sp4, fix4 vs round 2, 同 round 交互; round 1 の base は preload 再焼きで欠測):
+
+| round | fix4 | round 2 | YJIT |
+|---|---:|---:|---:|
+| 2 | 163.2 | **166.3** | 297.1 / 296.4 |
+| 3 | 163.8 | **167.4** | 297.3 / 296.6 |
+
+optcarrot **+2.0%** (163.5 → 166.9)。microbench 53 本 (aot+cached, fix/base): array_access 0.88、
+str 0.92、strcmp 0.94、strops 0.96 が改善、strscan 1.04 / aryidx 1.05 (20〜200 ms 級のノイズ幅)。
+geomean は 0.38 で不変。checksum 59662。corpus / STRESS+PURGE は master と同一。
+
+### 却下: korb_method を 64-byte 境界に aligned_alloc
+
+L1d miss の annotate で call SD の miss の ~30% が korb_method (libc calloc, 128 B) の
+先頭行だったので 64 align を試したが、**L1d miss 360M → 515M (+43%)** で逆効果
+(ローカル、`perf stat -r 3`、命令数は同一)。全 entry が同じ set index に揃って
+conflict miss が増える。配置を揃えるより「触る行を減らす」方向 (fat inline cache) が筋。
+
+### 計測メモ
+
+- キャッシュ miss・命令数の割り付けは負荷のあるローカル機でも読める (プロセス単位の
+  カウンタ)。時間・cycles だけ sp4 で取る。
+- `perf annotate` は all.so (3 MB、同名 SD が複数コピー) に対して数分かかる。
+  `perf script -F sym,symoff` の IP ヒストグラム + `objdump --start-address` のほうが速い。
+
 ## 2026-09-05: 裸識別子のラッパノードを外す (成功・optcarrot AOT +18.0%)
 
 ### 症状と切り分け
