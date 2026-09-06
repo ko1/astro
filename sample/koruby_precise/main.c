@@ -1111,6 +1111,7 @@ main(int argc, char *argv[])
 #ifdef KORUBY_EMBED
     /* Rebuild the baked ASTs (dispatchers pre-bound; symbols re-intern through
      * `c`).  No parse: the exe starts straight into evaluation. */
+    const long data_offset = -1;             /* no __END__ / DATA in an embedded exe (no script file) */
     NODE *prelude_ast = koruby_embed_prelude_ast(c);
     uint32_t prelude_locals = koruby_embed_prelude_locals;
     g_prelude_repo_count = code_repo_count();   /* the exe registers no bodies at build time */
