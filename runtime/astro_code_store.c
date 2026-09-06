@@ -27,8 +27,13 @@
 #include <inttypes.h>
 #include "astro_code_store.h"
 
-// Loader path (astro_loader.c): pool mode on x86-64 Linux with dlopen.
-#if defined(ASTRO_NODEHEAD_POOL) && defined(__x86_64__) && defined(__linux__) && !ASTRO_CS_NO_DLOPEN
+// Node-weaving loader (astro_loader.c).  Needs three things: the pool path (it
+// reads the hole values from n->head.pool), an OS that can alias one mapping
+// writable and executable (memfd; Linux), and an architecture backend
+// (hole/arch_<isa>.h).  Any of them missing → pool path only, which is correct
+// everywhere.
+#include "hole/arch.h"
+#if defined(ASTRO_NODEHEAD_POOL) && defined(__linux__) && !ASTRO_CS_NO_DLOPEN && ASTRO_ARCH_SUPPORTED
 #define ASTRO_LOADER_SUPPORTED 1
 #else
 #define ASTRO_LOADER_SUPPORTED 0
@@ -831,12 +836,12 @@ astro_cs_build_target(const char *extra_cflags, const char *target)
     fprintf(fp, "\n");
     fprintf(fp, "all: all.so\n");
     fprintf(fp, "\n");
-#ifdef ASTRO_NODEHEAD_POOL
+#if ASTRO_LOADER_SUPPORTED
     // Loader-path objects (docs/idea_code_store.md §7, astro_cs_instantiate):
     // the same sources, non-PIC with holes left as relocations.  Kept in op/
     // (never linked into all.so).  Built by `make patch`.
     fprintf(fp, "CFLAGS_PATCH ?= $(filter-out -fPIC -fno-semantic-interposition,$(CFLAGS))"
-                " -fno-pic -fno-plt -fno-jump-tables -mcmodel=medium -fno-asynchronous-unwind-tables -DASTRO_SD_PATCH=1\n");
+                " %s -DASTRO_SD_PATCH=1\n", ASTRO_ARCH_CFLAGS);
     fprintf(fp, "POBJS = $(patsubst c/%%.c,op/%%.o,$(SRCS))\n");
     fprintf(fp, "patch: $(POBJS)\n");
     fprintf(fp, ".PHONY: patch\n");
@@ -900,7 +905,7 @@ void
 astro_cs_build(const char *extra_cflags)
 {
     astro_cs_build_target(extra_cflags, "all.so");
-#ifdef ASTRO_NODEHEAD_POOL
+#if ASTRO_LOADER_SUPPORTED
     // ASTRO_CS_PATCH=1: also build the loader-path objects (op/).
     const char *patch = getenv("ASTRO_CS_PATCH");
     if (patch && patch[0] && strcmp(patch, "0") != 0)

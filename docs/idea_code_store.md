@@ -248,6 +248,34 @@ L1d miss −50% だが L1i miss 9×・分岐ミス +47% で cycles +12.7% (net �
 出ない) ので pool の `P[k]` 再ロードと命令数は同じで、効くのは D miss の多い大きな body だけ。
 インスタンス化は同形 body の SD 共有 (I キャッシュ共用) を失うので、対象は上位数十 body に絞る。
 
+### 7.7.1 ローダの位置づけと arch backend の切り分け
+
+普通のローダは、モジュールを 1 回マップするときに**シンボル表**から再配置を解決する。ここでの
+ローダは、**同じオブジェクトを AST ノードごとに 1 つずつ実体化し、そのノードの実行時状態から
+再配置を解決する** — 値は pool が既に集めてある穴の中身 (intern 済み ID、inline cache の
+アドレス、子 NODE のポインタ) で、どれもコンパイル時には存在しない。**ノードがシンボル表**であり、
+共有テンプレートの私的コピーにノードの実行時情報を織り込む (node weaving)、というのがこの経路の
+性格である。
+
+命令セットに触る部分は `runtime/hole/arch_<isa>.h` に閉じ込め、`runtime/hole/arch.h` が契約を持つ。
+それ以外 (ELF 読み・arena・シンボル解決・hot 方針・異常系) は `runtime/astro_loader.c` 側で共有する。
+
+backend が用意するもの:
+
+| | 中身 |
+|---|---|
+| コンパイル側 | `ASTRO_ARCH_HOLE_IMM(k)` — 穴 k を、**他の穴から導出されない**形の即値にする。`ASTRO_ARCH_CFLAGS` — その形が再配置として残るビルドフラグ (code model / PIC / jump table) |
+| ロード側 | `ASTRO_ARCH_ELF_MACHINE`、`astro_arch_reloc_width/needs_got/apply`、`ASTRO_ARCH_ARENA_LO/HI` (コード模型が要求するアドレス窓)、`astro_arch_sync_icache` |
+
+`ASTRO_ARCH_SUPPORTED 0` の backend (`arch_none.h`、現状の `arch_aarch64.h`) では `op/` を作らず
+`astro_cs_instantiate` が常に false を返し、**全 body が pool 経路のまま**動く。x86-64 機でも
+`-DASTRO_ARCH_FORCE_NONE` でその状態を再現でき、新 arch の出発点をそのまま試せる
+(検証済み: ビルド成功、`op/` 0 個、`KORUBY_INSTANTIATE=all` で 0 instances / 0 failed、出力一致)。
+
+`arch_aarch64.h` は未実装だが、必要な調査結果 (MOVZ+MOVK 4 本に分かれる `_MOVW_UABS_G*`、
+BL の ±128MB と ADRP+LDR による GOT 経由、ADRP+ADD は ±4GB なのでアドレス窓不要、
+**i-cache は非コヒーレントなので `astro_arch_sync_icache` の実装が必須**) をヘッダに書いてある。
+
 ### 7.8 実装状況 (2026-09-06): pool 経路 = 実装済み、ローダ経路 = spike (§7.7)
 
 実装箇所: `lib/astrogen.rb` (`Node.pool_mode?` / `Operand#hole?` / `hole_arg` /

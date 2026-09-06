@@ -26,27 +26,21 @@ typedef uint32_t (*astro_pool_fill_t)(const struct Node *n, astro_hole_t *pool);
 void astro_cs_pool_attach(struct Node *n, astro_pool_fill_t fill);
 
 #if defined(ASTRO_SD_PATCH)
-// Loader path (astro_cs_instantiate, x86-64 only): the same SD source compiled
-// with -fno-pic -fno-plt -fno-jump-tables -mcmodel=medium.  `P` is a symbolic
-// base: an extern array of unknown size, which the medium code model addresses
-// with 64-bit immediates, so every `P + k` folds to `_astro_hole_base + k` and
-// leaves an R_X86_64_64 / 32 relocation whose ADDEND is the hole index.  The
-// loader copies the code per instance and writes pool[k] over each of them.
+// Loader path: the same SD source compiled a second time with the flags the
+// architecture backend asks for, so each hole survives as a relocation the
+// loader can write per instance.  `P` is a symbolic base — an extern array of
+// unknown size — so `P + k` is a link-time constant whose relocation addend is
+// the hole number.  How that constant is materialised is instruction-set work:
+// see hole/arch_<isa>.h (ASTRO_ARCH_HOLE_IMM).
+#include "hole/arch.h"
 extern char _astro_hole_base[];
 typedef const char *astro_pool_ptr_t;
 #define ASTRO_POOL_PARAM astro_pool_ptr_t const P
 #define ASTRO_POOL_ROOT  astro_pool_ptr_t const P = _astro_hole_base
-// Each hole is materialised by its own `movabs $_astro_hole_base+k` whose
-// result is opaque to gcc: written as plain C, gcc folds `base + k` into
-// addressing-mode displacements or derives one hole from another
-// (`lea -0x54(%r12)`), which patching the immediates independently breaks.
-// The "i" constraint needs `P + k` to be a link-time constant, hence every
-// inline SD is always_inline in this mode (ASTRO_SD_INLINE_ATTR).
-#define ASTRO_HOLE_IMM(k) __extension__({ uintptr_t _hv; __asm__("movabsq $%p1, %0" : "=r"(_hv) : "i"(P + (k))); _hv; })
-#define HOLE_U32(k) ((uint32_t)ASTRO_HOLE_IMM(k))
-#define HOLE_I32(k) ((int32_t)(uint32_t)ASTRO_HOLE_IMM(k))
-#define HOLE_U64(k) ((uint64_t)ASTRO_HOLE_IMM(k))
-#define HOLE_PTR(k) ((void *)ASTRO_HOLE_IMM(k))
+#define HOLE_U32(k) ((uint32_t)ASTRO_ARCH_HOLE_IMM(k))
+#define HOLE_I32(k) ((int32_t)(uint32_t)ASTRO_ARCH_HOLE_IMM(k))
+#define HOLE_U64(k) ((uint64_t)ASTRO_ARCH_HOLE_IMM(k))
+#define HOLE_PTR(k) ((void *)ASTRO_ARCH_HOLE_IMM(k))
 #define ASTRO_SD_INLINE_ATTR __attribute__((always_inline))
 #elif defined(ASTRO_SD_POOL)
 // Inside an SD translation unit `P` is the pool of the enclosing public SD

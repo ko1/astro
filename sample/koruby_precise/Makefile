@@ -106,6 +106,7 @@ KORUBY_DEPS = .built_gc Makefile $(SRCS) context.h node.h korb_runtime.h $(BUILT
               $(GC_COMMON_SRC) $(GC_SRC) $(PRECISE_GC_DIR)/gc.h $(PRECISE_GC_DIR)/gc_types.h \
               $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h \
               $(RUNTIME)/astro_loader.c $(RUNTIME)/astro_hole.h \
+              $(wildcard $(RUNTIME)/hole/*.h) \
               $(RUNTIME)/astro_build.c $(RUNTIME)/astro_build.h $(RUNTIME)/astro_ref_template.h
 KORUBY_CPPFLAGS = -I. -I./prism/include -I$(RUNTIME) \
 	    -DBARUBY_GC=$(GC_NUM) \
@@ -114,7 +115,8 @@ KORUBY_CPPFLAGS = -I. -I./prism/include -I$(RUNTIME) \
 	    -DASTRO_RUNTIME_DIR='"$(RUNTIME_ABSPATH)"' \
 	    -DASTRO_PRISM_INC_DIR='"$(PRISM_INC_ABSPATH)"' \
 	    -DKORB_BIGNUM=$(BIGNUM_NUM) \
-	    -DKORUBY_GC_SRC='"$(RUNTIME_ABSPATH)/precise_gc/gc_$(GC).c"'
+	    -DKORUBY_GC_SRC='"$(RUNTIME_ABSPATH)/precise_gc/gc_$(GC).c"' \
+	    $(CPPFLAGS_EXTRA)
 # zlib is optional: probe for the header and link it only when present, so a
 # build without it just leaves `require "zlib"` a LoadError.
 ZLIB_OK   := $(shell $(CC) -E -include zlib.h -xc /dev/null >/dev/null 2>&1 && echo yes)

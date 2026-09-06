@@ -1,23 +1,26 @@
-// ASTro loader path (docs/idea_code_store.md §7): copy-and-patch instantiation
-// of a specialized dispatcher.
+// ASTro node-weaving loader (docs/idea_code_store.md §7).
 //
-// #included from astro_code_store.c (pool mode, x86-64 Linux only).  The store
-// keeps a second object of every SD source in op/, compiled -fno-pic
-// -mcmodel=medium with every hole left as an R_X86_64_64 relocation against
-// `_astro_hole_base` whose addend is the hole index (astro_hole.h).
-// astro_cs_instantiate(n) copies that object's .text/.rodata into a private
-// chunk, writes n's pool values over the hole relocations (immediates instead
-// of P[k] loads), resolves the remaining relocations (host symbols through a
-// per-instance GOT, local sections directly) and installs the copy as n's
-// dispatcher.  The chunk lives in the low 2 GB — the medium code model refers
-// to .rodata with 32-bit absolute addresses.  Anything unexpected returns
-// false and leaves the node on its pool-mode SD.
+// A normal loader resolves an object's relocations from a symbol table, once,
+// when a module is mapped.  This one instantiates the SAME object once per AST
+// node and resolves its relocations from that node's run-time state — the hole
+// values the pool already collected: interned IDs, inline-cache addresses, the
+// child NODE pointers.  The node is the symbol table, and the values are woven
+// into a private copy of the shared template.
+//
+// #included from astro_code_store.c when the pool path is on, the OS can give
+// us aliased W^X mappings, and the architecture has a backend.  Everything
+// instruction-set specific — which relocations exist, how a hole becomes an
+// immediate, where the code may live, what flags op/*.o needs, i-cache
+// coherency — lives in hole/arch_<isa>.h behind the contract in hole/arch.h.
+// Anything unsupported returns false and the body keeps its pool-mode SD.
 
+#define ASTRO_LOADER_IMPL 1
 #include <elf.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include "hole/arch.h"
 
 // memfd_create is behind _GNU_SOURCE, and this file is #included late into the
 // host's translation unit — call the syscall directly instead.
@@ -34,13 +37,6 @@ astro_ld_memfd(const char *name, unsigned flags)
     return -1;
 #endif
 }
-
-#ifndef R_X86_64_GOTPCRELX
-#define R_X86_64_GOTPCRELX 41
-#endif
-#ifndef R_X86_64_REX_GOTPCRELX
-#define R_X86_64_REX_GOTPCRELX 42
-#endif
 
 // ---- code arena ------------------------------------------------------------
 //
@@ -71,7 +67,11 @@ astro_ld_arena_init(void)
     if (ftruncate(fd, (off_t)reserve) != 0) { close(fd); return false; }
 
     char *x = MAP_FAILED;
-    for (uintptr_t hint = 0x20000000u; hint < 0x70000000u; hint += 0x10000000u) {
+    // Some code models can only address data with a limited-width immediate, so
+    // the executable view may have to sit in a window the backend names.
+    const uintptr_t lo = ASTRO_ARCH_ARENA_LO ? (uintptr_t)ASTRO_ARCH_ARENA_LO : 0x20000000u;
+    const uintptr_t hi = ASTRO_ARCH_ARENA_HI ? (uintptr_t)ASTRO_ARCH_ARENA_HI : 0x70000000u;
+    for (uintptr_t hint = lo; hint < hi; hint += 0x10000000u) {
         void *p = mmap((void *)hint, reserve, PROT_READ | PROT_EXEC,
                        MAP_SHARED | MAP_FIXED_NOREPLACE, fd, 0);
         if (p == MAP_FAILED) continue;
@@ -155,7 +155,7 @@ astro_ld_read(struct astro_ld_obj *o, const char *path)
     o->eh = (const Elf64_Ehdr *)o->data;
     const Elf64_Ehdr *const eh = o->eh;
     if (memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0 || eh->e_ident[EI_CLASS] != ELFCLASS64
-        || eh->e_ident[EI_DATA] != ELFDATA2LSB || eh->e_type != ET_REL || eh->e_machine != EM_X86_64
+        || eh->e_ident[EI_DATA] != ELFDATA2LSB || eh->e_type != ET_REL || eh->e_machine != ASTRO_ARCH_ELF_MACHINE
         || eh->e_shentsize != sizeof(Elf64_Shdr) || eh->e_shoff + (size_t)eh->e_shnum * sizeof(Elf64_Shdr) > o->size)
         return false;
     o->sh = (const Elf64_Shdr *)(o->data + eh->e_shoff);
@@ -212,9 +212,6 @@ astro_ld_obj_get(const char *name)
 
 static struct { uint32_t n, failed; size_t bytes; } astro_ld_stats;
 
-static bool
-astro_ld_fits_s32(int64_t v) { return v >= INT32_MIN && v <= INT32_MAX; }
-
 bool
 astro_cs_instantiate(NODE *n)
 {
@@ -250,13 +247,12 @@ astro_cs_instantiate(NODE *n)
         const Elf64_Rela *const rel = (const Elf64_Rela *)(o->data + s->sh_offset);
         const size_t nrel = s->sh_size / sizeof(Elf64_Rela);
         for (size_t k = 0; k < nrel; k++) {
-            const unsigned t = ELF64_R_TYPE(rel[k].r_info);
-            if (t == R_X86_64_GOTPCREL || t == R_X86_64_GOTPCRELX || t == R_X86_64_REX_GOTPCRELX) ngot++;
+            if (astro_arch_reloc_needs_got(ELF64_R_TYPE(rel[k].r_info))) ngot++;
         }
     }
     total = (total + 7) & ~(size_t)7;
     const size_t got_off = total;
-    total += ngot * 8;
+    total += ngot * ASTRO_ARCH_GOT_SLOT;
 
     char *xbase = NULL;
     char *const base = astro_ld_alloc(total, maxalign, &xbase);   // base: write view, xbase: exec view
@@ -281,11 +277,11 @@ astro_cs_instantiate(NODE *n)
             const Elf64_Rela *const r = &rel[k];
             const unsigned t = ELF64_R_TYPE(r->r_info);
             const size_t si = ELF64_R_SYM(r->r_info);
-            // The write must stay inside the copied section — 8 bytes for the
-            // 64-bit forms, 4 for the rest (a 4-byte reloc can sit 4 bytes from
-            // the end, so demanding 8 everywhere rejects valid objects).
-            const size_t rw = (t == R_X86_64_64) ? 8 : 4;
-            if (si >= o->nsym || r->r_offset > tgt->sh_size || tgt->sh_size - r->r_offset < rw) { ok = false; break; }
+            // The write must stay inside the copied section.  Width (and
+            // whether the type is supported at all) is the backend's answer.
+            const size_t rw = astro_arch_reloc_width(t);
+            if (rw == 0 || si >= o->nsym || r->r_offset > tgt->sh_size
+                || tgt->sh_size - r->r_offset < rw) { ok = false; break; }
             const Elf64_Sym *const sym = &o->sym[si];
             if (sym->st_name >= o->strsz) { ok = false; break; }
             const char *const sname = o->str + sym->st_name;
@@ -298,13 +294,11 @@ astro_cs_instantiate(NODE *n)
                 // stale op/ object against a pool built by another SD version)
                 // must fail, never read past the table.
                 if (A < 0 || (uint32_t)A >= n->head.nholes) { ok = false; break; }
-                const uint64_t v = (uint64_t)n->head.pool[A];
-                switch (t) {
-                case R_X86_64_64:  memcpy(where, &v, 8); break;
-                case R_X86_64_32:  if (v > 0xffffffffu) ok = false; else { uint32_t w = (uint32_t)v; memcpy(where, &w, 4); } break;
-                case R_X86_64_32S: if (!astro_ld_fits_s32((int64_t)v)) ok = false; else { int32_t w = (int32_t)v; memcpy(where, &w, 4); } break;
-                default: ok = false;
-                }
+                // The hole's value IS the symbol value here: the addend picked
+                // the slot, so the backend writes it with addend 0.
+                ok = astro_arch_reloc_apply(t, where, wherex,
+                                            (uintptr_t)n->head.pool[A], 0, NULL, 0);
+                if (!ok) break;
                 continue;
             }
             uintptr_t S;
@@ -317,25 +311,13 @@ astro_cs_instantiate(NODE *n)
             } else {
                 ok = false; break;
             }
-            switch (t) {
-            case R_X86_64_64: { uint64_t v = S + (uint64_t)A; memcpy(where, &v, 8); break; }
-            case R_X86_64_32: { uint64_t v = S + (uint64_t)A; if (v > 0xffffffffu) ok = false; else { uint32_t w = (uint32_t)v; memcpy(where, &w, 4); } break; }
-            case R_X86_64_32S: { int64_t v = (int64_t)S + A; if (!astro_ld_fits_s32(v)) ok = false; else { int32_t w = (int32_t)v; memcpy(where, &w, 4); } break; }
-            case R_X86_64_PC32:
-            case R_X86_64_PLT32: { int64_t v = (int64_t)S + A - (int64_t)wherex; if (!astro_ld_fits_s32(v)) ok = false; else { int32_t w = (int32_t)v; memcpy(where, &w, 4); } break; }
-            case R_X86_64_GOTPCREL:
-            case R_X86_64_GOTPCRELX:
-            case R_X86_64_REX_GOTPCRELX: {
-                char *const slot = base + got_off + got_used * 8;
-                const uintptr_t slotx = (uintptr_t)(xbase + got_off + got_used * 8);
+            char *slot = NULL; uintptr_t slotx = 0;
+            if (astro_arch_reloc_needs_got(t)) {
+                slot  = base + got_off + got_used * ASTRO_ARCH_GOT_SLOT;
+                slotx = (uintptr_t)(xbase + got_off + got_used * ASTRO_ARCH_GOT_SLOT);
                 got_used++;
-                memcpy(slot, &S, 8);
-                int64_t v = (int64_t)slotx + A - (int64_t)wherex;
-                if (!astro_ld_fits_s32(v)) ok = false; else { int32_t w = (int32_t)v; memcpy(where, &w, 4); }
-                break;
             }
-            default: ok = false;
-            }
+            ok = astro_arch_reloc_apply(t, where, wherex, S, A, slot, slotx);
         }
     }
 
@@ -351,6 +333,7 @@ astro_cs_instantiate(NODE *n)
     }
     free(place);
     if (!ok || !entry) { astro_ld_unalloc(base, total); astro_ld_stats.failed++; return false; }
+    astro_arch_sync_icache(xbase, total);
     n->head.dispatcher = (node_dispatcher_func_t)entry;
     if (getenv("ASTRO_LD_TRACE"))
         fprintf(stderr, "astro_ld: %s at %p (%zu B, align %zu, got %zu) pool %p\n",
