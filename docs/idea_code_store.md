@@ -205,7 +205,44 @@ bool astro_cs_instantiate(NODE *n);
   (2) `.o` の patch 版ビルド + `astro_cs_instantiate` の spike を SD 1 個で
   (3) hot 判定と optcarrot / microbench で判定。
 
-### 7.7 実装状況 (2026-09-06): pool 経路 = 実装済み、ローダ経路 = 未実装
+### 7.7 ローダ経路 (2026-09-06、spike 実装済み・opt-in)
+
+`runtime/astro_loader.c` (`astro_cs_instantiate`、x86-64 Linux + dlopen のみ、他は false)。
+store の Makefile に `op/` (patch 用 .o、`make patch`、bake 時 `ASTRO_CS_PATCH=1` で一緒に作る) を追加。
+同じ SD .c を `-fno-pic -fno-plt -fno-jump-tables -mcmodel=medium -fno-asynchronous-unwind-tables
+-DASTRO_SD_PATCH` でコンパイルし、`astro_hole.h` の patch モードで穴を再配置にする。
+
+- **穴の表現**: `P` は `extern char _astro_hole_base[]` (medium model で 64bit 絶対 = `movabs`)、
+  `P + k` の addend = 穴番号 (root からの絶対番号: inline SD の `P + off` を gcc が畳む)。
+  ただし素の C 式だと gcc が `base+k` を addressing の displacement に割ったり、別の穴から
+  `lea -0x54(%r12)` で導出する (即値を独立に patch すると壊れる) ので、各穴は
+  `asm("movabsq $%p1, %0" : "=r" : "i"(P + k))` で不透明な即値にする。"i" 制約のため patch
+  モードでは inline SD を `always_inline` (`ASTRO_SD_INLINE_ATTR`)。
+- **ローダ**: `op/SD_<h>.o` を読み (名前でキャッシュ)、SHF_ALLOC な .text / .rodata* を低位 2GB に
+  予約した arena (256MB、`MAP_FIXED_NOREPLACE`、medium model の 32bit 絶対 .rodata 参照のため) の
+  チャンクへコピー、`.rela.text` を解決: `_astro_hole_base` への R_X86_64_64 は `n->head.pool[A]`、
+  未定義シンボルは `dlsym(RTLD_DEFAULT)`、ホスト関数への呼び出しは `-fno-plt` の GOTPCREL(X) を
+  チャンク内 GOT で解決 (距離制限なし)、PC32/PLT32/32/32S も対応。RX にして `head.dispatcher` に据える。
+  書き込み可能セクションや未対応 reloc は false。
+- **hot 判定 (koruby main.c、`KORUBY_INSTANTIATE=hot[:N]`)**: 起動時に全 body の dispatcher を計数
+  トランポリン (`head.hash_opt` を count に流用、NODE* → 元 dispatcher は open addressing 表) に
+  差し替え、N dispatch (既定 200000; optcarrot は ROM 読込が先頭 2M dispatch を占めるので 5000000)
+  後に `KORUBY_HOT_RATIO` (既定 0.005) 以上の body だけインスタンス化して全部戻す
+  (`korb_dispatchers_swapped` で fat ic を無効化)。`=all` は全 body (上限の測定用)。
+  罠: finish で entry 配列を qsort すると、生きているトランポリンが持つ entry ポインタが別 body を
+  指す (nil `<<` の NoMethodError で発覚)。orig を先に読み、index 配列を sort する。
+
+結果 (sp4、pool vs pool+loader(hot 0.005 / 5M)、3 round 交互、YJIT 296〜300 不変、checksum 59662):
+**206.9 → 216.6 fps (+4.6%)**、master からの累計 171.9 → 216.6 (+26%)。microbench 53 (hot:200000):
+7 本 ≥3% 速 (gcd 0.92 / sprintfb 0.93 / aryidx・binary_trees・tak 0.95 / fib 0.96)、3 本 遅
+(poly 1.23 = 二峰性 / nbody 1.08 / casewhen 1.05)。
+ローカル perf stat (負荷あり、命令数のみ信頼): `all` (2027 インスタンス 20MB) は命令 −7.8%、
+L1d miss −50% だが L1i miss 9×・分岐ミス +47% で cycles +12.7% (net 負)。hot 0.005 (29 body 308KB)
+は命令 −5.9%、L1d −49%、L1i 14×。ループ内の穴は `movabs` を毎回再マテリアライズ (asm はループ外へ
+出ない) ので pool の `P[k]` 再ロードと命令数は同じで、効くのは D miss の多い大きな body だけ。
+インスタンス化は同形 body の SD 共有 (I キャッシュ共用) を失うので、対象は上位数十 body に絞る。
+
+### 7.8 実装状況 (2026-09-06): pool 経路 = 実装済み、ローダ経路 = spike (§7.7)
 
 実装箇所: `lib/astrogen.rb` (`Node.pool_mode?` / `Operand#hole?` / `hole_arg` /
 `child_call_emitter` / `sd_pool_*`)、`runtime/astro_hole.h` (`astro_hole_t`、`HOLE_*`、

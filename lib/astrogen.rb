@@ -419,7 +419,7 @@ module ASTroGen
       # Statement(s) at the top of the SD body: the public root fetches P.
       def sd_pool_prologue_emitter
         return nil unless pool_mode?
-        "    if (is_public) fprintf(fp, \"    astro_hole_t const *restrict const P = n->head.pool;\\n\");"
+        "    if (is_public) fprintf(fp, \"    ASTRO_POOL_ROOT;\\n\");"
       end
 
       # Local state of SPECIALIZE_ in pool mode: fill stream + hole counter.
@@ -1015,7 +1015,7 @@ module ASTroGen
             //                 regressions on pi / sha256 / fannkuch), so we
             //                 ship gcc's heuristic by default and opt the
             //                 specific nodes that need it via @always_inline.
-            if (!is_public) fprintf(fp, "static inline #{@option.include?('@always_inline') ? '__attribute__((always_inline)) ' : ''}");
+            if (!is_public) fprintf(fp, "static inline #{pool_mode? ? 'ASTRO_SD_INLINE_ATTR ' : ''}#{@option.include?('@always_inline') ? '__attribute__((always_inline)) ' : ''}");
             fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
         #{sd_signature_emitter}
             fprintf(fp, "{\\n");
@@ -1204,7 +1204,7 @@ module ASTroGen
         <<~C
         #ifdef ASTRO_SD_POOL
         typedef #{sample.result_type} (*astro_lazy_dispatcher_t)(#{prefix}, ASTRO_POOL_PARAM);
-        #define ASTRO_LAZY_PARAM(x) astro_lazy_dispatcher_t x##_dispatcher, astro_hole_t const *restrict x##_pool
+        #define ASTRO_LAZY_PARAM(x) astro_lazy_dispatcher_t x##_dispatcher, astro_pool_ptr_t x##_pool
         #define ASTRO_LAZY_ARGS(x) astro_sd_indirect, NULL
         #define EVAL_ARG(c, n) (EVAL_ARG_CHECK(n), (*n##_dispatcher)(c, n#{extra_args_str}, n##_pool))
         static inline #{sample.result_type}

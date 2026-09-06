@@ -488,6 +488,8 @@ bake_code_store(NODE *ast)
  *     dispatchers already pointing into an older generation stay valid.
  *
  * No-op under --plain (ignore all compiled code) and when no store is loadable. */
+static void koruby_instantiate_sds(NODE *ast, uint32_t from);
+
 void
 korb_load_time_specialize(NODE *ast, uint32_t repo_from, const char *file)
 {
@@ -510,6 +512,7 @@ korb_load_time_specialize(NODE *ast, uint32_t repo_from, const char *file)
     astro_cs_load(ast, NULL);
     for (uint32_t i = repo_from; i < code_repo_count(); i++)
         astro_cs_load(code_repo_body_at(i), NULL);
+    koruby_instantiate_sds(ast, repo_from);
 }
 
 /* --compiled-only poison: a body that was NOT swapped to a baked SD gets this
@@ -557,6 +560,144 @@ swap_in_cached_sds(NODE *ast)
         else if (OPTION.compiled_only && !body->head.flags.no_inline) body->head.dispatcher = korb_poison_dispatch;
     }
     return swaps;
+}
+
+/* Loader path (astro_cs_instantiate) policy — KORUBY_INSTANTIATE=
+ *   all       every body that runs on a baked SD (upper bound; I-cache heavy)
+ *   hot[:N]   count body invocations through a trampoline for the first N
+ *             dispatches (default 200000), then instantiate the bodies with at
+ *             least KORUBY_HOT_RATIO (default 0.005) of them and drop the
+ *             trampolines.  The count lives in head.hash_opt (unused in M0). */
+struct korb_hot_ent { NODE *n; node_dispatcher_func_t orig; };
+static struct {
+    struct korb_hot_ent *v; uint32_t n, capa;
+    struct korb_hot_ent **tab; uint32_t mask;     /* NODE* -> entry (open addressing) */
+    uint64_t total, limit;
+    bool active;
+} g_hot;
+
+static struct korb_hot_ent *
+korb_hot_find(const NODE *n)
+{
+    uint32_t h = (uint32_t)(((uintptr_t)n >> 4) * 2654435761u) & g_hot.mask;
+    for (;;) {
+        struct korb_hot_ent *e = g_hot.tab[h];
+        if (!e || e->n == n) return e;
+        h = (h + 1) & g_hot.mask;
+    }
+}
+
+static void korb_hot_finish(CTX *c);
+
+static RESULT
+korb_hot_dispatch(CTX *c, NODE *n, VALUE *slots)
+{
+    const node_dispatcher_func_t orig = korb_hot_find(n)->orig;   /* before finish(): it drops the tables */
+    n->head.hash_opt++;
+    if (++g_hot.total == g_hot.limit) korb_hot_finish(c);
+    return (*orig)(c, n, slots);
+}
+
+static void
+korb_hot_add(NODE *n)
+{
+    if (g_hot.n == g_hot.capa) {
+        g_hot.capa = g_hot.capa ? g_hot.capa * 2 : 256;
+        g_hot.v = realloc(g_hot.v, sizeof(*g_hot.v) * g_hot.capa);
+        if (!g_hot.v) { fprintf(stderr, "koruby_precise: out of memory (hot table)\n"); abort(); }
+    }
+    g_hot.v[g_hot.n].n = n;
+    g_hot.v[g_hot.n].orig = n->head.dispatcher;
+    g_hot.n++;
+}
+
+/* Build the lookup table and install the trampolines (after all adds: the
+ * entry array must not move once trampolines hand out pointers into it). */
+static void
+korb_hot_arm(void)
+{
+    uint32_t sz = 256;
+    while (sz < g_hot.n * 2) sz *= 2;
+    g_hot.tab = calloc(sz, sizeof(*g_hot.tab));
+    g_hot.mask = sz - 1;
+    for (uint32_t i = 0; i < g_hot.n; i++) {
+        uint32_t h = (uint32_t)(((uintptr_t)g_hot.v[i].n >> 4) * 2654435761u) & g_hot.mask;
+        while (g_hot.tab[h]) h = (h + 1) & g_hot.mask;
+        g_hot.tab[h] = &g_hot.v[i];
+        g_hot.v[i].n->head.dispatcher = korb_hot_dispatch;
+    }
+    g_hot.active = true;
+}
+
+static int
+korb_hot_cmp(const void *a, const void *b)
+{
+    const uint64_t ca = (*(const struct korb_hot_ent *const *)a)->n->head.hash_opt;
+    const uint64_t cb = (*(const struct korb_hot_ent *const *)b)->n->head.hash_opt;
+    return ca < cb ? 1 : ca > cb ? -1 : 0;
+}
+
+static void
+korb_hot_finish(CTX *c)
+{
+    if (!g_hot.active) return;
+    g_hot.active = false;
+    const char *const r = getenv("KORUBY_HOT_RATIO");
+    const double ratio = r && r[0] ? atof(r) : 0.005;
+    const uint64_t min = (uint64_t)((double)g_hot.total * ratio);
+    for (uint32_t i = 0; i < g_hot.n; i++) g_hot.v[i].n->head.dispatcher = g_hot.v[i].orig;
+    /* Sort an index: live trampoline activations may still point into g_hot.v. */
+    struct korb_hot_ent **const idx = malloc(sizeof(*idx) * g_hot.n);
+    if (!idx) abort();
+    for (uint32_t i = 0; i < g_hot.n; i++) idx[i] = &g_hot.v[i];
+    qsort(idx, g_hot.n, sizeof(*idx), korb_hot_cmp);
+    uint32_t ni = 0;
+    for (uint32_t i = 0; i < g_hot.n; i++) {
+        NODE *const n = idx[i]->n;
+        if (n->head.hash_opt < min || n->head.hash_opt == 0) break;
+        if (astro_cs_instantiate(n)) ni++;
+        if (OPTION.verbose)
+            fprintf(stderr, "koruby_precise: hot: %s calls=%llu -> %s\n", n->head.dispatcher_name,
+                    (unsigned long long)n->head.hash_opt, n->head.dispatcher == idx[i]->orig ? "pool" : "instance");
+    }
+    free(idx);
+    for (uint32_t i = 0; i < g_hot.n; i++) g_hot.v[i].n->head.hash_opt = 0;
+    korb_dispatchers_swapped(c->vm);       /* fat inline caches hold the old dispatchers */
+    if (OPTION.verbose) {
+        uint32_t nn, nf; size_t nb;
+        astro_cs_instantiate_stats(&nn, &nf, &nb);
+        fprintf(stderr, "koruby_precise: hot: %llu dispatches counted, %u/%u bodies instantiated (%zu KB), %u failed\n",
+                (unsigned long long)g_hot.total, ni, g_hot.n, nb >> 10, nf);
+    }
+}
+
+static void
+koruby_instantiate_sds(NODE *ast, uint32_t from)
+{
+    const char *const mode = getenv("KORUBY_INSTANTIATE");
+    if (!mode || !mode[0] || strcmp(mode, "0") == 0) return;
+    const bool hot = strncmp(mode, "hot", 3) == 0;
+    if (hot && g_hot.limit == 0) g_hot.limit = mode[3] == ':' ? strtoull(mode + 4, NULL, 10) : 200000;
+    if (ast && ast->head.flags.is_specialized) { if (hot) korb_hot_add(ast); else astro_cs_instantiate(ast); }
+    for (uint32_t i = from; i < code_repo_count(); i++) {
+        NODE *const body = code_repo_body_at(i);
+        if (!body->head.flags.is_specialized) continue;
+        if (hot) korb_hot_add(body); else astro_cs_instantiate(body);
+    }
+}
+
+/* Called once after the startup swaps: arm the hot trampolines / report. */
+static void
+koruby_instantiate_report(void)
+{
+    const char *const mode = getenv("KORUBY_INSTANTIATE");
+    if (!mode || !mode[0] || strcmp(mode, "0") == 0) return;
+    if (strncmp(mode, "hot", 3) == 0) { korb_hot_arm(); return; }
+    if (OPTION.verbose) {
+        uint32_t ni, nf; size_t nb;
+        astro_cs_instantiate_stats(&ni, &nf, &nb);
+        fprintf(stderr, "koruby_precise: loader: %u instances (%zu KB), %u failed\n", ni, nb >> 10, nf);
+    }
 }
 
 #ifndef KORUBY_EMBED
@@ -1172,6 +1313,9 @@ main(int argc, char *argv[])
         ensure_preload();                        /* bake (if stale) + dlopen preload.so */
         INIT();                                  /* dlopen code_store/all.so if present */
         unsigned int swaps = swap_in_cached_sds(ast);
+        koruby_instantiate_sds(ast, 0);
+        if (prelude_ast && prelude_ast->head.flags.is_specialized) koruby_instantiate_sds(prelude_ast, code_repo_count());
+        koruby_instantiate_report();
         korb_dispatchers_swapped(c->vm);         /* fat inline caches must not keep pre-swap dispatchers */
         if (OPTION.verbose) {
             fprintf(stderr, "koruby_precise: aot: swapped %u dispatchers "

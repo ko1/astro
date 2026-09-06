@@ -384,7 +384,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
               if (!#{f}[_i]->head.flags.no_inline)
                   fprintf(fp, "static inline #{result_type} %s(#{sd_inline_decl_params});\\n", #{f}[_i]->head.dispatcher_name);
 
-          if (!is_public) fprintf(fp, "static inline #{@option.include?('@always_inline') ? '__attribute__((always_inline)) ' : ''}");
+          if (!is_public) fprintf(fp, "static inline #{pool_mode? ? 'ASTRO_SD_INLINE_ATTR ' : ''}#{@option.include?('@always_inline') ? '__attribute__((always_inline)) ' : ''}");
           fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
       #{sd_signature_emitter}
           fprintf(fp, "{\\n");
@@ -470,7 +470,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
 
       #{ decls.join("\n") }
 
-          if (!is_public) fprintf(fp, "static inline #{@option.include?('@always_inline') ? '__attribute__((always_inline)) ' : ''}");
+          if (!is_public) fprintf(fp, "static inline #{pool_mode? ? 'ASTRO_SD_INLINE_ATTR ' : ''}#{@option.include?('@always_inline') ? '__attribute__((always_inline)) ' : ''}");
           fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
       #{sd_signature_emitter}
           fprintf(fp, "{\\n");

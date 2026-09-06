@@ -81,6 +81,15 @@ uint32_t               astro_cs_static_sd_count(void);
 astro_pool_fill_t astro_cs_static_pool_lookup(const char *sym);
 #endif
 
+// Loader path (docs/idea_code_store.md §7, pool mode, x86-64 Linux): copy the
+// SD's op/<SD>.o per instance with n's hole values patched in as immediates
+// and install the copy as n->head.dispatcher.  Needs op/ built (ASTRO_CS_PATCH=1
+// at bake) and n already bound by astro_cs_load.  Returns false — leaving the
+// pool-mode SD in place — on any unsupported input (no object, relocation
+// type, arena exhausted).  Instances are immortal.
+bool astro_cs_instantiate(NODE *n);
+void astro_cs_instantiate_stats(uint32_t *n, uint32_t *failed, size_t *bytes);
+
 // Print disassembly of the specialized dispatcher for node (via objdump).
 // Does nothing if the node is not specialized.
 void astro_cs_disasm(NODE *n);

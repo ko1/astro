@@ -143,4 +143,47 @@ rubyspec 6 ディレクトリ (language / core/kernel / array / module / proc / 
 ホスト側 `korb_runtime.o` が WASI 未対応シンボル (`pwd.h` / `chroot` / `fchdir` / `tzset` /
 `LONG_MAX` / `CLOCK_*_CPUTIME_ID`) で落ちるため .wasm の実行確認は未 (P とは無関係)。
 
-次: 経路 L (`astro_cs_instantiate`、`.o` の再配置を穴にして hot body だけコピー)。
+## 結果: 経路 L (ローダ、spike、2026-09-06、`docs/idea_code_store.md` §7.7)
+
+`runtime/astro_loader.c`。bake 時 `ASTRO_CS_PATCH=1` で store に `op/` (`-fno-pic -mcmodel=medium
+-DASTRO_SD_PATCH` の .o、穴 = `_astro_hole_base + k` への R_X86_64_64) を作り、`KORUBY_INSTANTIATE=hot`
+で起動直後の計数トランポリン (N dispatch、既定 200000) 後に `KORUBY_HOT_RATIO` (既定 0.005) 以上の
+body だけ `.text/.rodata` をコピーして穴を即値に patch (`=all` は全 body)。既定 off。
+
+sp4 (`trials/.../logs/l1/`, pool `fbd6fa31` vs pool+loader hot 0.005 / 5M, 3 round 交互):
+
+| round | pool | pool + loader (hot) | CRuby+YJIT |
+|---|---:|---:|---:|
+| 1 | 207.8 | **216.6** | 299.5 / 295.8 |
+| 2 | 206.3 | **216.8** | 297.0 / 297.1 |
+| 3 | 206.9 | **216.0** | 297.3 / 298.3 |
+
+**+4.6%** (206.9 → 216.6)。master からの累計 171.9 → 216.6 (**+26%**)、CRuby 比 3.6×、YJIT 比 0.73×。
+optcarrot では 29/2027 body (308 KB) がインスタンス化される (ROM 読込が先頭 2M dispatch を占めるので
+窓は 5M)。microbench 53 (hot:200000 窓, `logs/l1/compare.md`): 7 本 ≥3% 速 (gcd 0.92 / sprintfb 0.93 /
+aryidx・binary_trees・tak 0.95 / fib 0.96)、3 本 遅 (poly 1.23 = 二峰性 / nbody 1.08 / casewhen 1.05)。
+
+機構 (ローカル `perf stat`、他セッションの負荷ありで命令数のみ信頼):
+
+| optcarrot | pool | loader all (2027 体, 20 MB) | loader hot 0.005 (29 体, 308 KB) |
+|---|---:|---:|---:|
+| 命令数 | 21.29G | 19.63G (−7.8%) | 20.04G (−5.9%) |
+| L1d miss | 141M | 71M (−50%) | 79M (−49%) |
+| L1i miss | 2.2M | 19.8M (9×) | 13.0M (6×) |
+| cycles | 5.52G | 6.22G (+12.7%) | (負荷で比較不能; sp4 で +4.6%) |
+
+- 即値化は D 側にさらに効く (命令 −6〜8%、L1d miss 半減) が、インスタンス化は同形 body の SD 共有
+  (I キャッシュ共用) を失うので `all` は net 負。hot 限定で正になる。
+- ループ内の穴は `movabs` を毎回再マテリアライズする (asm 即値はループ外へ出ない) ので、pool の
+  `P[k]` (L1 hit) と命令数は同じ。効くのは D miss の多い大きな body だけで、nested_loop 級の
+  小ループでは 10B 命令ぶんコードが太るだけ (ローカル 2.13G → 2.35G 命令)。
+- 罠 1: 穴を素の C 式 `base + k` にすると gcc が addressing の displacement に割ったり
+  `lea -0x54(%r12)` で別の穴から導出する → 即値を独立に patch できない。`asm("movabsq $%p1,%0" ::
+  "i"(P+k))` で不透明化 (patch モードは inline SD を always_inline)。
+- 罠 2: hot finish で entry 配列を qsort すると、生きているトランポリンの entry ポインタが別 body を
+  指し nil の `<<` で落ちる。orig を先に読み index 配列を sort。
+- ゲート: corpus 4901/1 (loader ビルド、既定 off)、`all` / `hot` で 17 bench + optcarrot の出力が pool と
+  一致、インスタンス化失敗 0 (1481 / 2027 体)。
+
+残り: `-fno-plt` の GOT 間接 call を直接 call にする (チャンクをホストの ±2GB に置く)、u32 穴を
+`movl $imm32` (5B) にする、hot 判定を PG count に置き換える、`--build` / wasm は P のまま。

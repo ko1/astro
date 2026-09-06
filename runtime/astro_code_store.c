@@ -27,6 +27,16 @@
 #include <inttypes.h>
 #include "astro_code_store.h"
 
+// Loader path (astro_loader.c): pool mode on x86-64 Linux with dlopen.
+#if defined(ASTRO_NODEHEAD_POOL) && defined(__x86_64__) && defined(__linux__) && !ASTRO_CS_NO_DLOPEN
+#define ASTRO_LOADER_SUPPORTED 1
+#else
+#define ASTRO_LOADER_SUPPORTED 0
+#endif
+#if ASTRO_LOADER_SUPPORTED
+static char astro_ld_preload_dir[512];   // = ASTRO_CS_DIR_MAX (defined below)
+#endif
+
 // ---------------------------------------------------------------------------
 // Specialize dedup: tracks which hashes have been generated during a single
 // astro_cs_compile() call to avoid emitting duplicate SD_ functions.
@@ -330,6 +340,15 @@ astro_cs_set_preload(const char *path)
     // hold pointers into the image).  set_preload runs once at startup before any
     // dispatch swap, so simply (re)opening is safe.
     astro_cs.preload_handle = path ? dlopen(path, RTLD_LAZY) : NULL;
+#endif
+#if ASTRO_LOADER_SUPPORTED
+    // The loader looks for op/<SD>.o next to the preload .so as well.
+    astro_ld_preload_dir[0] = 0;
+    if (path) {
+        const char *const slash = strrchr(path, '/');
+        if (slash && (size_t)(slash - path) < sizeof(astro_ld_preload_dir))
+            snprintf(astro_ld_preload_dir, sizeof(astro_ld_preload_dir), "%.*s", (int)(slash - path), path);
+    }
 #endif
 }
 
@@ -802,6 +821,21 @@ astro_cs_build_target(const char *extra_cflags, const char *target)
     fprintf(fp, "\n");
     fprintf(fp, "all: all.so\n");
     fprintf(fp, "\n");
+#ifdef ASTRO_NODEHEAD_POOL
+    // Loader-path objects (docs/idea_code_store.md §7, astro_cs_instantiate):
+    // the same sources, non-PIC with holes left as relocations.  Kept in op/
+    // (never linked into all.so).  Built by `make patch`.
+    fprintf(fp, "CFLAGS_PATCH ?= $(filter-out -fPIC -fno-semantic-interposition,$(CFLAGS))"
+                " -fno-pic -fno-plt -fno-jump-tables -mcmodel=medium -fno-asynchronous-unwind-tables -DASTRO_SD_PATCH=1\n");
+    fprintf(fp, "POBJS = $(patsubst c/%%.c,op/%%.o,$(SRCS))\n");
+    fprintf(fp, "patch: $(POBJS)\n");
+    fprintf(fp, ".PHONY: patch\n");
+    fprintf(fp, "op/%%.o: c/%%.c | op\n");
+    fprintf(fp, "\t$(CC) $(CFLAGS_PATCH) -c $< -o $@\n");
+    fprintf(fp, "op:\n");
+    fprintf(fp, "\tmkdir -p op\n");
+    fprintf(fp, "\n");
+#endif
     // Link to a temp file then atomically rename it over all.so.  This gives
     // two things:
     //   1. dlopen(3) caches handles by inode, so the rename (new inode) lets
@@ -825,7 +859,7 @@ astro_cs_build_target(const char *extra_cflags, const char *target)
     fprintf(fp, "\tmkdir -p o\n");
     fprintf(fp, "\n");
     fprintf(fp, "clean:\n");
-    fprintf(fp, "\trm -rf o all.so\n");
+    fprintf(fp, "\trm -rf o op all.so\n");
 
     fclose(fp);
 
@@ -856,6 +890,12 @@ void
 astro_cs_build(const char *extra_cflags)
 {
     astro_cs_build_target(extra_cflags, "all.so");
+#ifdef ASTRO_NODEHEAD_POOL
+    // ASTRO_CS_PATCH=1: also build the loader-path objects (op/).
+    const char *patch = getenv("ASTRO_CS_PATCH");
+    if (patch && patch[0] && strcmp(patch, "0") != 0)
+        astro_cs_build_target(extra_cflags, "patch");
+#endif
 }
 
 // Compile SD_*.c → o/*.o in parallel WITHOUT linking all.so.  For exe builds
@@ -986,3 +1026,24 @@ astro_cs_disasm(NODE *n)
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// Loader path
+// ---------------------------------------------------------------------------
+#if ASTRO_LOADER_SUPPORTED
+#include "astro_loader.c"
+#else
+bool
+astro_cs_instantiate(NODE *n)
+{
+    (void)n;
+    return false;
+}
+
+void
+astro_cs_instantiate_stats(uint32_t *n, uint32_t *failed, size_t *bytes)
+{
+    if (n) *n = 0;
+    if (failed) *failed = 0;
+    if (bytes) *bytes = 0;
+}
+#endif
