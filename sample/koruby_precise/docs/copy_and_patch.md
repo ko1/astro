@@ -229,3 +229,23 @@ ackermann・binary_trees・tak 0.95)、4 本 遅 (poly 1.22 = 二峰性 / aryidx
 
 残り: `-fno-plt` の GOT 間接 call を直接 call にする (チャンクをホストの ±2GB に置く)、u32 穴を
 `movl $imm32` (5B) にする、hot 判定を PG count に置き換える、`--build` / wasm は P のまま。
+
+## テスト (2026-09-06)
+
+詳細と全ログは trials `2026-09-06-koruby-precise-perf/` の「テスト」節 (`logs/tests/`)。要点:
+
+- **全サンプル sweep** (29 サンプルをブランチと master worktree で直列ビルド + 各 test):
+  `astro_spec_dedup_has` の引数を増やしたせいで naruby / baruby / baruby_precise が
+  **ビルド不能**になっていたのを検出 → 1 引数に戻して修正 (`c26a6bc6`)。以後は
+  ブランチと master が全サンプルで一致 (残る失敗は両側同一 = 既存)。
+- **コーパス**: 4901/1 (既存)、STRESS+PURGE 4899/3/0 CRASH (既存と同一)。
+- **AOT 差分**: 513 本を 1 つの共有ストア (1721 SD) に焼き、interp / AOT / loader all /
+  loader hot の 4 モードで実行 → **511/513 が完全一致**、残り 2 件は master でも同挙動。
+- **rubyspec 20 ディレクトリ** (約 15,700 examples) を master binary / ブランチ /
+  ブランチ+loader で同一窓比較 → **20/20 完全一致**。
+- **ローダ異常系 10 ケース** (op/ 削除・truncate・ヘッダ破壊・ビット反転・別 SD の .o・
+  ratio 極値・GC STRESS): すべて出力一致、失敗は件数報告して pool にフォールバック。
+- **ストア再利用**: A で焼いたストアで B が動き (出力一致・ストア不変)、逆も可。
+  `--build` 埋め込み exe も出力一致 (`SD_*_pool` 1126)。
+- **アプリ**: optcarrot 59662 / DOOM 17930386881013214317 / rubyboy 4747678158831331132 が
+  CRuby・interp・AOT・loader(all/hot) で全一致。
