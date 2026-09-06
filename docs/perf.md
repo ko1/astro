@@ -487,6 +487,17 @@ luastro の `@always_inline`）は **callee 単体での gcc compilability**
 していない。SIMD/AVX を多用する数値 kernel では「親 SD が肥大化したとき
 gcc YMM allocator が破綻するか」という別軸の判断が要る。
 
+### 4.10 SD の SLP ベクトル化は staged slot の store-forwarding を壊す（koruby_precise、2026-09-06）
+
+SD は子の値を `slots[-2] = ...; slots[-1] = ...;` と scalar store で staging し、直後の body が
+両方を読む。`-O3` の SLP ベクトル化がこの 2 本の load を 1 本の 16B `vmovdqu` にまとめると、
+直前の 8B store 2 本にまたがる load になって store-forwarding が失敗し、ループが 3× 遅くなる
+（nested_loop: cycles 465M → 1398M、命令数は減っている）。pool 経路（`idea_code_store.md` §7）で
+code shape が変わって顕在化したが、従来の SD でも同じ形が出うる（master に同フラグを付けると
+nested_loop −9%）。koruby は SD CFLAGS に `-fno-tree-slp-vectorize`（optcarrot には中立）。
+兆候: `perf annotate` のホットループに `vmovdqu` / `vpextrq` があり、IPC が急落している。
+`perf stat` で命令数が減って cycles が増えたら、まずこれを疑う。
+
 ## 5. パーサレベル書き換え
 
 EVAL body には触らないが AST 形は整えてよい。**新しいノード kind を

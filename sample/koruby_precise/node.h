@@ -5,6 +5,7 @@
 
 #include "context.h"
 #include "precise_gc/gc.h"
+#include "astro_hole.h"
 
 typedef struct Node NODE;
 typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n, VALUE *slots);
@@ -44,9 +45,13 @@ struct NodeHead {
     node_hash_t hash_value;
     node_hash_t hash_opt;       /* PGC identity — unused in M0 */
     int32_t line;               /* PGC index key — unused in M0 */
+    uint32_t nholes;            /* SPECIALIZE-time: hole count of this subtree's SD */
     const char *dispatcher_name;
     node_dispatcher_func_t dispatcher;
+    const astro_hole_t *pool;   /* hole table of this SD instance (idea_code_store.md §7) */
 };
+/* NodeHead carries pool/nholes: enables the framework's pool-mode paths. */
+#define ASTRO_NODEHEAD_POOL 1
 
 /* Inline method-call cache — embedded in call nodes via @ref.  Valid while
  * serial matches vm->method_serial. */

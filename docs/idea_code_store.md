@@ -204,3 +204,51 @@ bool astro_cs_instantiate(NODE *n);
 - 段取り: (1) astrogen に hole 出力 + `_fill` 生成 (pool モード) → koruby で計測
   (2) `.o` の patch 版ビルド + `astro_cs_instantiate` の spike を SD 1 個で
   (3) hot 判定と optcarrot / microbench で判定。
+
+### 7.7 実装状況 (2026-09-06): pool 経路 = 実装済み、ローダ経路 = 未実装
+
+実装箇所: `lib/astrogen.rb` (`Node.pool_mode?` / `Operand#hole?` / `hole_arg` /
+`child_call_emitter` / `sd_pool_*`)、`runtime/astro_hole.h` (`astro_hole_t`、`HOLE_*`、
+`ASTRO_POOL_PARAM`)、`runtime/astro_node.c` (`astro_hole_alloc` / `astro_hole_sub` /
+`astro_hole_emit_fill`、`--build` builder 末尾の pool attach)、`runtime/astro_code_store.c`
+(dedup 表に穴数、`astro_cs_load` が `SD_<h>_pool` を dlsym して `astro_cs_pool_attach`、
+store format salt)。koruby_precise: `node.h` の NodeHead に `pool` / `nholes` と
+`ASTRO_NODEHEAD_POOL`、`koruby_gen.rb` は `pool_mode?` (`KORUBY_POOL=0` で従来出力) と
+`hole?` の宣言、SD 出力の上書きを pool 対応。opt-in しないサンプルの生成物は不変
+(node_alloc.c の `#ifdef ASTRO_NODEHEAD_POOL` 初期化だけ増える)。
+
+上の設計 (7.2〜7.4) からの差分:
+
+- **穴番号は SD (subtree) ごとに 0 起点の相対番号**。親は子 SD を `P + off` で呼び、
+  `SD_<h>_fill` が子の `SD_<c>_fill(child, pool + off)` を連鎖する。同じ形の inline SD が
+  1 ファイル内で dedup されても同じテキストで済む (絶対番号だと親ごとに別テキスト)。
+  子の穴数は `n->head.nholes` (SPECIALIZE 時、dedup hit でも表から復元)。
+- inline SD は `(CTX *, NODE *, VALUE *, ASTRO_POOL_PARAM)` の 4 引数。public SD は
+  呼び出し規約据え置きで、先頭で `P = n->head.pool` を 1 回読む。
+- lazy 子 (`NODE *` operand、`EVAL_ARG`) は SD TU (`ASTRO_SD_POOL`) では
+  `ASTRO_LAZY_PARAM(x)` = (SD 関数ポインタ, `x_pool`) の対で受け、`EVAL_ARG` が
+  `(c, n, slots, x_pool)` で呼ぶ。no_inline 子 (cycle break / `@noinline` kind) は
+  `astro_sd_indirect` (runtime dispatcher へ橋渡し、pool 引数は NULL)。interp TU は従来どおり
+  (`node_eval.c` はマクロで両 TU に対応)。
+- `SD_<h>_HOLES` / 穴の種類表は出さず、exported `uint32_t SD_<h>_pool(const NODE *,
+  astro_hole_t *)` (pool が NULL なら穴数だけ返す) に集約。ローダ経路の穴種別は `.o` の
+  再配置種別 (R_X86_64_32 = u32 / R_X86_64_64 = ptr) で判る。
+- pool 要素は `unsigned long long` (LP64 では VALUE = long と TBAA が別クラスなので slot
+  store が `P[k]` の再ロードを強制しない。wasm32 でも 64 bit)。
+- 旧 (pool 前) の code_store は hash 一致で再利用されるので、store の version に format
+  salt を混ぜて自動で消す (koruby の program store は version 0 だったため)。
+- `line` operand: koruby の多くの body は `(void)line` して slow path で `n->u.X.line` を
+  読む (fast path に値を抱えない既存方針) ので、その穴は埋まるが読まれない (1 語の無駄、
+  実行コスト無し)。
+- 罠: SD を `-O3` で焼くと SLP ベクトル化が staged slot への scalar store 2 本を 16B
+  load にまとめ、store-forwarding が失敗して 3× 遅くなる形が pool 経路で顕在化した
+  (nested_loop)。koruby は SD CFLAGS に `-fno-tree-slp-vectorize` (`docs/perf.md` §4.10)。
+
+結果 (sp4, optcarrot 180 frames AOT, 3 round 交互, YJIT 対照 295〜300 で不変):
+**172 → 206 fps (+19.7%)**。ローカル `perf stat -r 3`: 命令数 −1.1%、cycles −13.5%、
+**L1d miss 396M → 148M (−63%)**、L1i miss 2.0M → 1.7M。即値 bake 実験 (+10.6%) を超えたのは
+ic / 子 NODE* まで密な表に載り、SD の複製 (I キャッシュ) が無いため。microbench 53 本は
+15 本 ≥3% 速く (send 0.56 / fannkuch 0.73 / hashiter 0.89 / while 0.89)、4 本 ≥3% 遅い
+(casewhen 1.09 / aryidx 1.05 / fib 1.04 / ivar 1.04)。詳細は
+`sample/koruby_precise/docs/copy_and_patch.md` と
+`~/ruby/src/trials/2026-09-06-koruby-precise-perf/` (経路 P)。

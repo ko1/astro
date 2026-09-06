@@ -243,6 +243,52 @@ alloc_dispatcher_name_hash(NODE *n)
     return hash_node(n);
 }
 
+#ifdef ASTRO_NODEHEAD_POOL
+// ---------------------------------------------------------------------------
+// Holes (pool mode, docs/idea_code_store.md §7) — called from the generated
+// SPECIALIZE_<node> while it prints an SD.  `hf` collects the body of
+// SD_<h>_fill, `*h` is the SD's running hole count.
+// ---------------------------------------------------------------------------
+
+// Next hole k; the fill computes it from the node as `(astro_hole_t)(expr)`.
+__attribute__((unused))
+static uint32_t
+astro_hole_alloc(FILE *hf, uint32_t *const h, const char *const expr)
+{
+    const uint32_t k = (*h)++;
+    fprintf(hf, "    pool[%u] = (astro_hole_t)(%s);\n", k, expr);
+    return k;
+}
+
+// Reserve the hole range of an inlined child subtree (numbered from 0 inside
+// its own SD text, hence called with `P + off`) and chain its fill.
+__attribute__((unused))
+static uint32_t
+astro_hole_sub(FILE *hf, uint32_t *const h, const char *const expr, const NODE *const child)
+{
+    const uint32_t off = *h;
+    *h += child->head.nholes;
+    fprintf(hf, "    %s_fill(%s, pool + %u);\n", child->head.dispatcher_name, expr, off);
+    return off;
+}
+
+// SD_<h>_fill for every SD; public roots also export SD_<h>_pool (count +
+// fill), which astro_cs_load resolves next to SD_<h>.
+__attribute__((unused))
+static void
+astro_hole_emit_fill(FILE *fp, const char *const name, const char *const body,
+                     uint32_t nholes, bool is_public)
+{
+    fprintf(fp, "static inline void\n%s_fill(const NODE *restrict n, astro_hole_t *restrict pool)\n"
+                "{\n    (void)n; (void)pool;\n%s}\n\n", name, body ? body : "");
+    if (is_public) {
+        fprintf(fp, "uint32_t\n%s_pool(const NODE *n, astro_hole_t *pool)\n"
+                    "{\n    if (pool) %s_fill(n, pool);\n    return %uU;\n}\n\n",
+                name, name, nholes);
+    }
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // AST → C source emitters
 // ---------------------------------------------------------------------------
@@ -640,6 +686,9 @@ astro_emit_ast_c_program_params(FILE *fp, NODE *root,
             if (dup) continue;
             if (n_seen < log_n) seen[n_seen++] = sd;
             fprintf(fp, "ASTRO_SD_PROTO(%s);\n", sd);
+#ifdef ASTRO_NODEHEAD_POOL
+            fprintf(fp, "uint32_t %s_pool(const NODE *n, astro_hole_t *pool);\n", sd);
+#endif
         }
         if (n_seen) fprintf(fp, "\n");
         free(seen);
@@ -672,6 +721,14 @@ astro_emit_ast_c_program_params(FILE *fp, NODE *root,
             fprintf(fp, "    _n[%d]->head.flags.is_specialized = true;\n", id);
         }
     }
+#ifdef ASTRO_NODEHEAD_POOL
+    // Pools last: a fill walks the whole subtree, so every child must exist.
+    for (int id = 0; id < ctx.next_id; id++) {
+        NODE *n = by_id[id];
+        const char *sd = n ? astro_emit_lookup_sd(n) : NULL;
+        if (sd) fprintf(fp, "    astro_cs_pool_attach(_n[%d], %s_pool);\n", id, sd);
+    }
+#endif
     fprintf(fp, "    return _n[%d];\n", root_id);
     fprintf(fp, "}\n");
 

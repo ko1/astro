@@ -22,6 +22,11 @@ class KorubyNodeDef < ASTroGen::NodeDef
   class Node < ASTroGen::NodeDef::Node
     def result_type = "RESULT"
 
+    # Pool mode (docs/idea_code_store.md §7): site-specific operands come from
+    # the SD instance's hole table.  `KORUBY_POOL=0` at codegen restores the
+    # runtime NODE references (A/B only).
+    def self.pool_mode? = ENV['KORUBY_POOL'] != '0'
+
     # Dispatcher signature: (CTX *c, NODE *n, VALUE *slots)
     def common_param_count = 3
 
@@ -164,7 +169,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       body_args = comma_operands(@operands.map do |op|
         if op.children?       then "_cnt"
         elsif op.ref?         then "&n->u.#{@name}.#{op.name}"
-        elsif op.node?        then "n->u.#{@name}.#{op.name}, n->u.#{@name}.#{op.name}->head.dispatcher"
+        elsif op.node?        then op.dispatch_node_args(@name)
         else                       "n->u.#{@name}.#{op.name}"
         end
       end)
@@ -222,7 +227,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
         elsif op.ref?
           "&n->u.#{@name}.#{op.name}"
         elsif op.node?
-          "n->u.#{@name}.#{op.name}, n->u.#{@name}.#{op.name}->head.dispatcher"
+          op.dispatch_node_args(@name)
         else
           "n->u.#{@name}.#{op.name}"
         end
@@ -330,6 +335,35 @@ class KorubyNodeDef < ASTroGen::NodeDef
             else
               'fprintf(fp, "    slots += %u;\\n", _cnt);'
             end
+      # Staging of element _i: pool mode reads the child NODE * from a hole
+      # and passes the child SD its pool slice; otherwise the baked index.
+      stage = if pool_mode?
+        <<~C.chomp
+                  char _e[96], _ec[112];   /* element expr, and cast to an integer for the fill */
+                  snprintf(_e, sizeof _e, "#{f}[%u]", _i);
+                  snprintf(_ec, sizeof _ec, "(uintptr_t)%s", _e);
+                  if (#{f}[_i]->head.flags.no_inline) {
+                      fprintf(fp, "    { NODE *const _cn = (NODE *)HOLE_PTR(%u); slots[%d] = UNWRAP((*_cn->head.dispatcher)(c, _cn, slots)); }\\n",
+                              astro_hole_alloc(_hf, &_h, _ec), (int)_i - (int)_cnt);
+                  } else {
+                      const uint32_t _k = astro_hole_alloc(_hf, &_h, _ec);
+                      const uint32_t _o = astro_hole_sub(_hf, &_h, _e, #{f}[_i]);
+                      fprintf(fp, "    slots[%d] = UNWRAP(%s(c, (NODE *)HOLE_PTR(%u), slots, P + %u));\\n",
+                              (int)_i - (int)_cnt, #{f}[_i]->head.dispatcher_name, _k, _o);
+                  }
+        C
+      else
+        <<~C.chomp
+                  /* no_inline child → indirect call via its stored dispatcher (index
+                   * baked); inlinable child → direct call to its baked SD name. */
+                  if (#{f}[_i]->head.flags.no_inline)
+                      fprintf(fp, "    slots[%d] = UNWRAP(#{f}[%u]->head.dispatcher(c, #{f}[%u], slots));\\n",
+                              (int)_i - (int)_cnt, _i, _i);
+                  else
+                      fprintf(fp, "    slots[%d] = UNWRAP(%s(c, #{f}[%u], slots));\\n",
+                              (int)_i - (int)_cnt, #{f}[_i]->head.dispatcher_name, _i);
+        C
+      end
       <<~C
       static void
       SPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)
@@ -339,7 +373,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       #{child_nodes.join("\n")}
           const char *dispatcher_name = alloc_dispatcher_name(n);
           n->head.dispatcher_name = dispatcher_name;
-
+      #{sd_pool_open}
           if (astro_emit_sd_comments_p()) {
               fprintf(fp, "// ");
               DUMP(fp, n, true);
@@ -348,28 +382,22 @@ class KorubyNodeDef < ASTroGen::NodeDef
 
           for (uint32_t _i = 0; _i < _cnt; _i++)
               if (!#{f}[_i]->head.flags.no_inline)
-                  fprintf(fp, "static inline #{result_type} %s(#{@prefix_args.join(', ')});\\n", #{f}[_i]->head.dispatcher_name);
+                  fprintf(fp, "static inline #{result_type} %s(#{sd_inline_decl_params});\\n", #{f}[_i]->head.dispatcher_name);
 
           if (!is_public) fprintf(fp, "static inline #{@option.include?('@always_inline') ? '__attribute__((always_inline)) ' : ''}");
           fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
-          fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
+      #{sd_signature_emitter}
           fprintf(fp, "{\\n");
+      #{sd_pool_prologue_emitter}
           #{adv}
           for (uint32_t _i = 0; _i < _cnt; _i++) {
-              /* no_inline child → indirect call via its stored dispatcher (index
-               * baked); inlinable child → direct call to its baked SD name. */
-              if (#{f}[_i]->head.flags.no_inline)
-                  fprintf(fp, "    slots[%d] = UNWRAP(#{f}[%u]->head.dispatcher(c, #{f}[%u], slots));\\n",
-                          (int)_i - (int)_cnt, _i, _i);
-              else
-                  fprintf(fp, "    slots[%d] = UNWRAP(%s(c, #{f}[%u], slots));\\n",
-                          (int)_i - (int)_cnt, #{f}[_i]->head.dispatcher_name, _i);
+      #{stage}
           }
           fprintf(fp, "    return EVAL_#{@name}(#{prefix_call_args.join(', ')}, \\n");
       #{ args.map { |a| "    " + a }.join("\n    fprintf(fp, \",\\n\");\n") }
           fprintf(fp, "\\n    );\\n");
           fprintf(fp, "}\\n\\n");
-      }
+      #{sd_pool_close}}
       C
     end
 
@@ -404,7 +432,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
         else
           lhs = "VALUE _c_#{op.name}"
         end
-        "    fprintf(fp, \"    #{lhs} = UNWRAP(%s(#{child_dispatch_args(nil, field)}));\\n\", DISPATCHER_NAME(#{field}));"
+        child_call_emitter(lhs, nil, field)
       end
       unless slot_area_prologue.empty?
         setup_emitters.unshift("    fprintf(fp, \"    #{slot_area_prologue}\\n\");")
@@ -412,7 +440,8 @@ class KorubyNodeDef < ASTroGen::NodeDef
 
       decls = @operands.find_all(&:node?).map do |op|
         field_name = "n->u.#{@name}.#{op.name}"
-        "    if (#{field_name}) { fprintf(fp, \"static inline #{result_type} %s(#{@prefix_args.join(', ')});\\n\", #{field_name}->head.dispatcher_name); }"
+        cond = pool_mode? ? "#{field_name} && !#{field_name}->head.flags.no_inline" : field_name
+        "    if (#{cond}) { fprintf(fp, \"static inline #{result_type} %s(#{sd_inline_decl_params});\\n\", #{field_name}->head.dispatcher_name); }"
       end
 
       if @option.include? '@noinline'
@@ -432,7 +461,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       #{ child_nodes.join("\n") }
           const char *dispatcher_name = alloc_dispatcher_name(n);
           n->head.dispatcher_name = dispatcher_name;
-
+      #{sd_pool_open}
           if (astro_emit_sd_comments_p()) {
               fprintf(fp, "// ");
               DUMP(fp, n, true);
@@ -443,8 +472,9 @@ class KorubyNodeDef < ASTroGen::NodeDef
 
           if (!is_public) fprintf(fp, "static inline #{@option.include?('@always_inline') ? '__attribute__((always_inline)) ' : ''}");
           fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
-          fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
+      #{sd_signature_emitter}
           fprintf(fp, "{\\n");
+      #{sd_pool_prologue_emitter}
       #{ setup_emitters.join("\n        ") }
       #{
         if args.empty?
@@ -458,7 +488,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
         end
       }
           fprintf(fp, "}\\n\\n");
-      }
+      #{sd_pool_close}}
       C
     rescue ASTroGen::NodeDef::UnsupportedOperand
       "#define SPECIALIZE_#{@name}  NULL\n"
@@ -560,18 +590,38 @@ class KorubyNodeDef < ASTroGen::NodeDef
         end
       end
 
+      CACHE_TYPES = ['struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_constcache *',
+                     'struct korb_inlcache *', 'struct korb_oncecell *'].freeze
+
+      # Pool mode: everything the SD used to read from the NODE at runtime.
+      # (Symbol literals are decided at emission time — see build_specializer.)
+      def hole?
+        return false if child? || children?
+        sym? || self.name == 'line' || CACHE_TYPES.include?(@type) ||
+          %w[void\ * const\ char\ * VALUE].include?(@type) || node?
+      end
+
       def build_specializer(name)
         # Bare VALUE operand (node_lit): Symbol literals are per-process
         # interned IDs, so baking the raw bits breaks any consumer with a
         # different intern order (--build exes rebuild the AST without
-        # parsing).  Runtime-ref symbols; other immediates bake as constants.
+        # parsing).  Runtime-ref symbols (a hole in pool mode); other
+        # immediates bake as constants.
         if !child? && @type == 'VALUE'
+          sym_ref = if pool_mode?
+            "        fprintf(fp, \"        (VALUE)HOLE_U64(%u)\", astro_hole_alloc(_hf, &_h, \"n->u.#{name}.#{self.name}\"));\n"
+          else
+            "        fprintf(fp, \"        n->u.#{name}.#{self.name}\");\n"
+          end
           return nil,
-            "    if (SYMBOL_P(n->u.#{name}.#{self.name}))\n" \
-            "        fprintf(fp, \"        n->u.#{name}.#{self.name}\");\n" \
+            "    if (SYMBOL_P(n->u.#{name}.#{self.name}))\n" +
+            sym_ref +
             "    else\n" \
             "        fprintf(fp, \"        (VALUE)0x%lxL\", (long)n->u.#{name}.#{self.name});"
         end
+        # Pool mode: the base class routes every hole? operand (caches,
+        # symbol IDs, line, void *, byte arrays, lazy children) to HOLE_*.
+        return super if pool_mode? && !(child? && @type == 'VALUE_REF')
         # Staged (VALUE_REF) @child: the EVAL arg is a VALUE_REF to the
         # staging cell, mirroring the DISPATCH glue (the base default
         # would pass the bare cell expression).

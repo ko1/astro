@@ -36,32 +36,46 @@ static struct {
     uint32_t size;
     uint32_t capa;
     node_hash_t *hashes;
+    uint32_t *nholes;     // pool mode: hole count of the emitted SD (per hash)
 } astro_spec_dedup;
 
+// Found → *nholes (nullable) receives the emitted SD's hole count.
 static bool
-astro_spec_dedup_has(node_hash_t h)
+astro_spec_dedup_has(node_hash_t h, uint32_t *const nholes)
 {
     for (uint32_t i = 0; i < astro_spec_dedup.size; i++) {
-        if (astro_spec_dedup.hashes[i] == h) return true;
+        if (astro_spec_dedup.hashes[i] == h) {
+            if (nholes) *nholes = astro_spec_dedup.nholes[i];
+            return true;
+        }
     }
     return false;
 }
 
 static void
-astro_spec_dedup_add(node_hash_t h)
+astro_spec_dedup_add(node_hash_t h, uint32_t nholes)
 {
     if (astro_spec_dedup.size >= astro_spec_dedup.capa) {
         uint32_t capa = astro_spec_dedup.capa == 0 ? 16 : astro_spec_dedup.capa * 2;
         astro_spec_dedup.hashes = realloc(astro_spec_dedup.hashes,
                                           sizeof(node_hash_t) * capa);
-        if (!astro_spec_dedup.hashes) {
+        astro_spec_dedup.nholes = realloc(astro_spec_dedup.nholes,
+                                          sizeof(uint32_t) * capa);
+        if (!astro_spec_dedup.hashes || !astro_spec_dedup.nholes) {
             fprintf(stderr, "astro_spec_dedup: out of memory\n");
             exit(1);
         }
         astro_spec_dedup.capa = capa;
     }
+    astro_spec_dedup.nholes[astro_spec_dedup.size] = nholes;
     astro_spec_dedup.hashes[astro_spec_dedup.size++] = h;
 }
+
+#ifdef ASTRO_NODEHEAD_POOL
+#define ASTRO_NODE_NHOLES(n) ((n)->head.nholes)
+#else
+#define ASTRO_NODE_NHOLES(n) 0U
+#endif
 
 static void
 astro_spec_dedup_clear(void)
@@ -82,11 +96,15 @@ SPECIALIZE(FILE *fp, NODE *n)
         // identical Horg but different Hopt collapse into one emission —
         // wrong, since their generated bodies differ (baked prologue etc.).
         node_hash_t h = astro_cs_use_hopt_name ? HOPT(n) : HASH(n);
+        uint32_t nholes = 0;
 
-        if (astro_spec_dedup_has(h)) {
+        if (astro_spec_dedup_has(h, &nholes)) {
             // already generated in this compile session
             // but still need to set dispatcher_name for this node instance
             n->head.dispatcher_name = alloc_dispatcher_name(n);
+#ifdef ASTRO_NODEHEAD_POOL
+            n->head.nholes = nholes;   // parent reserves the same range
+#endif
         }
         else if (n->head.flags.is_specializing) {
             // Cycle break: this node's specializer is already on the
@@ -103,7 +121,7 @@ SPECIALIZE(FILE *fp, NODE *n)
             (*n->head.kind->specializer)(fp, n, false);
             n->head.flags.is_specializing = false;
 
-            astro_spec_dedup_add(h);
+            astro_spec_dedup_add(h, ASTRO_NODE_NHOLES(n));
         }
     }
 }
@@ -244,6 +262,64 @@ astro_cs_dlsym(const char *sym)
     return func;
 }
 
+#ifdef ASTRO_NODEHEAD_POOL
+// Pool mode: SD_<h>_pool lives next to SD_<h>.  A statically linked table
+// may provide it too (weak default: none).
+__attribute__((weak)) astro_pool_fill_t
+astro_cs_static_pool_lookup(const char *sym)
+{
+    (void)sym;
+    return NULL;
+}
+
+static astro_pool_fill_t
+astro_cs_dlsym_pool(const char *sd_sym)
+{
+    char sym[160];
+    snprintf(sym, sizeof(sym), "%s_pool", sd_sym);
+    astro_pool_fill_t fill = astro_cs_static_pool_lookup(sym);
+#if !ASTRO_CS_NO_DLOPEN
+    if (!fill && astro_cs.all_handle)
+        fill = (astro_pool_fill_t)dlsym(astro_cs.all_handle, sym);
+    if (!fill && astro_cs.preload_handle)
+        fill = (astro_pool_fill_t)dlsym(astro_cs.preload_handle, sym);
+#endif
+    return fill;
+}
+
+void
+astro_cs_pool_attach(NODE *n, astro_pool_fill_t fill)
+{
+    const uint32_t cnt = fill(n, NULL);
+    astro_hole_t *pool = malloc(sizeof(*pool) * (cnt ? cnt : 1));
+    if (!pool) {
+        fprintf(stderr, "astro_cs_pool_attach: out of memory\n");
+        exit(1);
+    }
+    fill(n, pool);
+    n->head.pool = pool;
+}
+
+// Bind the SD found as `sd_sym` to n together with its pool.  An SD without
+// its _pool is a broken store (built by a pre-pool binary): fail loudly rather
+// than run it with pool == NULL.  The pool is installed before the dispatcher
+// (the caller's next store); rebinding is not atomic, so — as with the
+// dispatcher swap itself — a node must not be rebound to a differently shaped
+// SD while another thread may be executing it.
+static void
+astro_cs_bind_pool(NODE *n, const char *sd_sym)
+{
+    astro_pool_fill_t fill = astro_cs_dlsym_pool(sd_sym);
+    if (!fill) {
+        fprintf(stderr, "astro_cs_load: %s has no %s_pool (stale code store?)\n", sd_sym, sd_sym);
+        abort();
+    }
+    astro_cs_pool_attach(n, fill);
+}
+#else
+#define astro_cs_bind_pool(n, sym) ((void)0)
+#endif
+
 void
 astro_cs_set_preload(const char *path)
 {
@@ -368,6 +444,21 @@ astro_cs_resolve_dir(char *buf, size_t bufsz, const char *dir)
     }
 }
 
+// Pool mode changes the SD source (HOLE_* / SD_<h>_pool) and the NodeHead ABI,
+// and astro_cs_compile reuses an on-disk SD_<h>.c by hash alone — so stamp the
+// store format into the version: a pre-pool store is cleared even when the
+// host passes version 0 (koruby's program store), instead of aborting at load
+// on a missing _pool.
+static uint64_t
+astro_cs_effective_version(uint64_t version)
+{
+#ifdef ASTRO_NODEHEAD_POOL
+    return version ^ 0x504F4F4C00000001ULL;   // "POOL" format salt, never 0
+#else
+    return version;
+#endif
+}
+
 // Check if version has changed since last compile. If so, clear the store.
 // version = 0 means skip check.
 static void
@@ -429,7 +520,7 @@ astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
 
     // Check version and clear stale cache
     if (store_dir) {
-        astro_cs_check_version(version);
+        astro_cs_check_version(astro_cs_effective_version(version));
     }
 
     if (store_dir) {
@@ -488,6 +579,7 @@ astro_cs_load(NODE *n, const char *file)
                 n->head.dispatcher_name = name;
                 n->head.hash_opt = hopt;
                 n->head.flags.has_hash_opt = true;
+                astro_cs_bind_pool(n, sym_name);
                 n->head.dispatcher = func;
                 n->head.flags.is_specialized = true;
                 return true;
@@ -502,6 +594,7 @@ astro_cs_load(NODE *n, const char *file)
     node_dispatcher_func_t func = astro_cs_dlsym(sym_name);
     if (func) {
         n->head.dispatcher_name = alloc_dispatcher_name(n);
+        astro_cs_bind_pool(n, sym_name);
         n->head.dispatcher = func;
         n->head.flags.is_specialized = true;
         return true;
@@ -580,6 +673,11 @@ astro_cs_compile(NODE *entry, const char *file)
 
     // Header: include language files (absolute paths).
     fprintf(fp, "// Auto-generated by ASTro Code Store\n");
+#ifdef ASTRO_NODEHEAD_POOL
+    // Pool mode: selects the HOLE_* macros (astro_hole.h, via node.h) and
+    // node_eval.c's SD-side EVAL_ARG / lazy-dispatcher form in this TU.
+    fprintf(fp, "#define ASTRO_SD_POOL 1\n");
+#endif
     fprintf(fp, "#include \"%s/node.h\"\n", astro_cs.src_dir);
     fprintf(fp, "\n");
     // NODE_SKIP_COLD: skip the cold helper definitions that node.def guards.
@@ -603,7 +701,7 @@ astro_cs_compile(NODE *entry, const char *file)
     (*entry->head.kind->specializer)(fp, entry, true);
     long body_end = ftell(fp);
     entry->head.flags.is_specializing = false;
-    astro_spec_dedup_add(h);
+    astro_spec_dedup_add(h, ASTRO_NODE_NHOLES(entry));
 
     fclose(fp);
 

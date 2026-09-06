@@ -80,6 +80,14 @@ module ASTroGen
         def ref? = @ref
         def child? = @child
 
+        # Pool mode (docs/idea_code_store.md §7): a `hole?` operand is not
+        # read from the NODE by the SD but from the SD instance's hole table
+        # (`P[k]`, filled at load by SD_<h>_fill).  Embedders decide per
+        # operand (koruby: @sym, line, caches, void *, Symbol literals, child
+        # NODE *).  Never part of the hash — the template stays shared.
+        def hole? = false
+        def pool_mode? = @owner&.pool_mode? ? true : false
+
         # Storage type in the NODE struct.  For @child operands, the
         # author-written type is VALUE (body's view) but storage is NODE *.
         # All struct/alloc/hash/dump/specialize logic must use this.
@@ -115,10 +123,64 @@ module ASTroGen
             # body receives the pre-evaluated VALUE; no dispatcher param
             "#{@type} #{@name}"
           elsif node?
-            "#{@type} #{@name}, node_dispatcher_func_t #{@name}_dispatcher"
+            # Pool mode: the dispatcher parameter is a macro so the same
+            # node_eval.c compiles in both the interpreter TU (plain dispatcher)
+            # and the SD TU (SD + pool offset; see build_eval).
+            if pool_mode?
+              "#{@type} #{@name}, ASTRO_LAZY_PARAM(#{@name})"
+            else
+              "#{@type} #{@name}, node_dispatcher_func_t #{@name}_dispatcher"
+            end
           else
             "#{@type} #{@name}"
           end
+        end
+
+        # DISPATCH-side argument for a lazy NODE * operand.
+        def dispatch_node_args(name)
+          field = "n->u.#{name}.#{self.name}"
+          pool_mode? ? "#{field}, ASTRO_LAZY_ARGS(#{field})" : "#{field}, #{field}->head.dispatcher"
+        end
+
+        # SPECIALIZE-side statements printing this operand's EVAL arg as a
+        # hole reference (pool mode, hole? true).  `_hf` / `_h` are the fill
+        # stream and hole counter of the enclosing SPECIALIZE_ (see
+        # Node#build_specializer); astro_hole_alloc (astro_node.c) numbers
+        # the hole and records the fill expression.
+        def hole_arg(name)
+          field = "n->u.#{name}.#{self.name}"
+          if ref?
+            return "    fprintf(fp, \"        (#{@type})HOLE_PTR(%u)\", astro_hole_alloc(_hf, &_h, \"(uintptr_t)&#{field}\"));"
+          end
+          case storage_type
+          when 'NODE *'
+            lazy_node_hole_arg(field)
+          when 'uint32_t'
+            "    fprintf(fp, \"        HOLE_U32(%u)\", astro_hole_alloc(_hf, &_h, \"#{field}\"));"
+          when 'int32_t'
+            "    fprintf(fp, \"        HOLE_I32(%u)\", astro_hole_alloc(_hf, &_h, \"#{field}\"));"
+          when 'uint64_t', 'VALUE'
+            "    fprintf(fp, \"        (#{storage_type})HOLE_U64(%u)\", astro_hole_alloc(_hf, &_h, \"#{field}\"));"
+          when 'const char *', 'void *'
+            "    fprintf(fp, \"        (#{storage_type})HOLE_PTR(%u)\", astro_hole_alloc(_hf, &_h, \"(uintptr_t)#{field}\"));"
+          else
+            raise "no hole form for operand: #{join}"
+          end
+        end
+
+        # Lazy child as a hole: the NODE * plus the (SD, pool offset) pair the
+        # EVAL body dispatches through.  A no_inline child (cycle break or
+        # @noinline kind) goes through its runtime dispatcher (own pool).
+        def lazy_node_hole_arg(field)
+          <<~C.chomp
+              if (#{field} && !#{field}->head.flags.no_inline) {
+                  const uint32_t _k = astro_hole_alloc(_hf, &_h, "(uintptr_t)#{field}");
+                  const uint32_t _o = astro_hole_sub(_hf, &_h, "#{field}", #{field});
+                  fprintf(fp, "        (NODE *)HOLE_PTR(%u), %s, P + %u", _k, #{field}->head.dispatcher_name, _o);
+              } else {
+                  fprintf(fp, "        (NODE *)HOLE_PTR(%u), astro_sd_indirect, NULL", astro_hole_alloc(_hf, &_h, "(uintptr_t)#{field}"));
+              }
+          C
         end
 
         # Parameter type/name for the allocator and any storage-shape context.
@@ -273,6 +335,10 @@ module ASTroGen
             arg = "    fprintf(fp, \"        #{@owner.child_storage_expr(@sp_slot)}\");"
             return cn, arg
           end
+          if pool_mode? && hole?
+            cn = node? ? "    SPECIALIZE(fp, n->u.#{name}.#{self.name});" : nil
+            return cn, hole_arg(name)
+          end
           arg = case storage_type
           when 'NODE *'
             cn = "    SPECIALIZE(fp, n->u.#{name}.#{self.name});"
@@ -323,6 +389,75 @@ module ASTroGen
       # help the compiler CSE reloads inside the evaluated tree.
       def specializer_prologue = nil
       def specializer_epilogue = nil
+
+      # --------------------------------------------------------------------
+      # Pool mode (docs/idea_code_store.md §7).  Off by default; an embedder
+      # opts in by overriding the class method (and answering Operand#hole?).
+      # The dispatcher ABI is unchanged: the public SD reads its instance's
+      # hole table from n->head.pool; inline SDs take it as an extra `P`
+      # parameter (each subtree numbers its holes from 0 and is called with
+      # `P + offset`, so a shape's SD text is the same wherever it is inlined).
+      # --------------------------------------------------------------------
+      def self.pool_mode? = false
+      def pool_mode? = self.class.pool_mode?
+
+      # C fragment (inside SPECIALIZE_) printing the SD's name + parameter
+      # list: public SDs keep the dispatcher signature, inline ones append P.
+      def sd_signature_emitter
+        if pool_mode?
+          "    fprintf(fp, \"%s(#{@prefix_args.join(', ')}%s)\\n\", dispatcher_name, is_public ? \"\" : \", ASTRO_POOL_PARAM\");"
+        else
+          "    fprintf(fp, \"%s(#{@prefix_args.join(', ')})\\n\", dispatcher_name);"
+        end
+      end
+
+      # Forward declaration of an inline child SD.
+      def sd_inline_decl_params
+        pool_mode? ? "#{@prefix_args.join(', ')}, ASTRO_POOL_PARAM" : @prefix_args.join(', ')
+      end
+
+      # Statement(s) at the top of the SD body: the public root fetches P.
+      def sd_pool_prologue_emitter
+        return nil unless pool_mode?
+        "    if (is_public) fprintf(fp, \"    astro_hole_t const *restrict const P = n->head.pool;\\n\");"
+      end
+
+      # Local state of SPECIALIZE_ in pool mode: fill stream + hole counter.
+      def sd_pool_open
+        return "" unless pool_mode?
+        "    char *_hbuf = NULL; size_t _hlen = 0; uint32_t _h = 0;\n" \
+        "    FILE *_hf = open_memstream(&_hbuf, &_hlen);\n"
+      end
+
+      # After the SD text: emit SD_<h>_fill (+ exported SD_<h>_pool for
+      # public roots) and record the subtree's hole count on the node.
+      def sd_pool_close
+        return "" unless pool_mode?
+        "    fclose(_hf);\n" \
+        "    astro_hole_emit_fill(fp, dispatcher_name, _hbuf, _h, is_public);\n" \
+        "    free(_hbuf);\n" \
+        "    n->head.nholes = _h;\n"
+      end
+
+      # C statement (inside SPECIALIZE_) that prints `<lhs> = UNWRAP(<child
+      # SD call>)` for the @child at `field`.  `slot` is its storage slot.
+      def child_call_emitter(lhs, slot, field)
+        unless pool_mode?
+          return "    fprintf(fp, \"    #{lhs} = UNWRAP(%s(#{child_dispatch_args(slot, field)}));\\n\", DISPATCHER_NAME(#{field}));"
+        end
+        <<~C.chomp
+            if (#{field}->head.flags.no_inline) {
+                const uint32_t _k = astro_hole_alloc(_hf, &_h, "(uintptr_t)#{field}");
+                fprintf(fp, "    NODE *const _cn%u = (NODE *)HOLE_PTR(%u);\\n    #{lhs} = UNWRAP((*_cn%u->head.dispatcher)(#{child_dispatch_args(slot, '_cn%u')}));\\n",
+                        _k, _k, _k, _k);
+            } else {
+                const uint32_t _k = astro_hole_alloc(_hf, &_h, "(uintptr_t)#{field}");
+                const uint32_t _o = astro_hole_sub(_hf, &_h, "#{field}", #{field});
+                fprintf(fp, "    #{lhs} = UNWRAP(%s(#{child_dispatch_args(slot, '(NODE *)HOLE_PTR(%u)')}, P + %u));\\n",
+                        #{field}->head.dispatcher_name, _k, _o);
+            }
+        C
+      end
 
       # --------------------------------------------------------------------
       # @child storage hooks.  ASTroGen base guarantees the @child contract
@@ -658,6 +793,10 @@ module ASTroGen
         #ifdef ASTRO_NODEHEAD_DISPATCH_CNT
             _n->head.dispatch_cnt = 0;
         #endif
+        #ifdef ASTRO_NODEHEAD_POOL
+            _n->head.pool = NULL;
+            _n->head.nholes = 0;
+        #endif
             _n->head.flags.has_hash_value = false;
             _n->head.flags.is_specialized = false;
             _n->head.flags.is_specializing = false;
@@ -698,7 +837,7 @@ module ASTroGen
                     "&n->u.#{name}.#{it.name}"
                   else
                     arg = +"n->u.#{name}.#{it.name}"
-                    arg << ", n->u.#{name}.#{it.name}->head.dispatcher" if it.node?
+                    arg = it.dispatch_node_args(name) if it.node?
                     arg
                   end
                 })
@@ -809,7 +948,7 @@ module ASTroGen
         # advanced sp).  Child's DISPATCH/SD prologue does the advance.
         setup_emitters = setup_decl_emitters + child_ops.map do |op|
           field = "n->u.#{@name}.#{op.name}"
-          "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{child_dispatch_args(op.sp_slot, field)}));\\n\", DISPATCHER_NAME(#{field}));"
+          child_call_emitter(child_storage_expr(op.sp_slot), op.sp_slot, field)
         end
 
         # Slot-area prologue at top of SD body (per-language hook).
@@ -823,7 +962,10 @@ module ASTroGen
 
         decls = @operands.find_all{it.node?}.map do
           field_name = "n->u.#{@name}.#{it.name}"
-          "    if (#{field_name}) { fprintf(fp, \"static inline #{result_type} %s(#{@prefix_args.join(', ')});\\n\", #{field_name}->head.dispatcher_name); }"
+          # pool mode: a no_inline child is reached through its runtime
+          # dispatcher (DISPATCH_x, a 3-arg static in node_dispatch.c) — no decl.
+          cond = pool_mode? ? "#{field_name} && !#{field_name}->head.flags.no_inline" : field_name
+          "    if (#{cond}) { fprintf(fp, \"static inline #{result_type} %s(#{sd_inline_decl_params});\\n\", #{field_name}->head.dispatcher_name); }"
         end
 
         if @option.include? '@noinline'
@@ -843,7 +985,7 @@ module ASTroGen
         #{ child_nodes.join("\n")}
             const char *dispatcher_name = alloc_dispatcher_name(n); // SD_%lx % hash_node(n)
             n->head.dispatcher_name = dispatcher_name;
-
+        #{sd_pool_open}
             // comment — gated by ASTRO_SD_COMMENTS env var.  On big
             // programs with many no_inline callees, the framework's
             // auto-DUMP commentary balloons the SD source size by orders
@@ -875,8 +1017,9 @@ module ASTroGen
             //                 specific nodes that need it via @always_inline.
             if (!is_public) fprintf(fp, "static inline #{@option.include?('@always_inline') ? '__attribute__((always_inline)) ' : ''}");
             fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
-            fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
+        #{sd_signature_emitter}
             fprintf(fp, "{\\n");
+#{ sd_pool_prologue_emitter ? "        #{sd_pool_prologue_emitter}" : "" }
 #{ specializer_prologue ? "            fprintf(fp, \"    #{specializer_prologue}\\n\");" : "" }
         #{ setup_emitters.join("\n        ") }
 #{  # Direct `return EVAL_...(...)` — no named temp.  gcc fails to apply NRVO
@@ -897,7 +1040,7 @@ module ASTroGen
     end
 }
             fprintf(fp, "}\\n\\n");
-        }
+        #{sd_pool_close}}
         C
       rescue UnsupportedOperand => e
         p e
@@ -1052,6 +1195,34 @@ module ASTroGen
       extra_call_args = sample ? sample.prefix_call_args.drop(2) : []
       extra_args_str = extra_call_args.empty? ? "" : ", " + extra_call_args.join(", ")
 
+      # Pool mode: lazy children carry (SD, pool offset) in the SD TU
+      # (ASTRO_SD_POOL, set by astro_cs_compile) and the plain dispatcher in
+      # the interpreter TU.  astro_sd_indirect bridges a no_inline child
+      # (runtime dispatcher, own pool) into the SD-side calling form.
+      eval_arg_macros = if sample&.pool_mode?
+        prefix = sample.instance_variable_get(:@prefix_args).join(', ')
+        <<~C
+        #ifdef ASTRO_SD_POOL
+        typedef #{sample.result_type} (*astro_lazy_dispatcher_t)(#{prefix}, ASTRO_POOL_PARAM);
+        #define ASTRO_LAZY_PARAM(x) astro_lazy_dispatcher_t x##_dispatcher, astro_hole_t const *restrict x##_pool
+        #define ASTRO_LAZY_ARGS(x) astro_sd_indirect, NULL
+        #define EVAL_ARG(c, n) (EVAL_ARG_CHECK(n), (*n##_dispatcher)(c, n#{extra_args_str}, n##_pool))
+        static inline #{sample.result_type}
+        astro_sd_indirect(#{prefix}, ASTRO_POOL_PARAM)
+        {
+            (void)P;
+            return (*n->head.dispatcher)(#{sample.prefix_call_args.join(', ')});
+        }
+        #else
+        #define ASTRO_LAZY_PARAM(x) node_dispatcher_func_t x##_dispatcher
+        #define ASTRO_LAZY_ARGS(x) (x)->head.dispatcher
+        #define EVAL_ARG(c, n) (EVAL_ARG_CHECK(n), (*n##_dispatcher)(c, n#{extra_args_str}))
+        #endif
+        C
+      else
+        "#define EVAL_ARG(c, n) (EVAL_ARG_CHECK(n), (*n##_dispatcher)(c, n#{extra_args_str}))\n"
+      end
+
       <<~C
       // This file is auto-generated from #{@file}.
 
@@ -1061,7 +1232,7 @@ module ASTroGen
       #ifndef EVAL_ARG_CHECK
       #define EVAL_ARG_CHECK(n) ((void)0)
       #endif
-      #define EVAL_ARG(c, n) (EVAL_ARG_CHECK(n), (*n##_dispatcher)(c, n#{extra_args_str}))
+      #{eval_arg_macros.chomp}
 
       #{eval_body}
       C

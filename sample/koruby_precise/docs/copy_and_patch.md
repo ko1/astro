@@ -95,3 +95,52 @@ B は +10.6% だが、**SD を 1 プログラムの intern 順に鍵づけする
 ツリーには入れず (tag `perf-send-cache-bake-experiment`、trials の patch)、上限の参照値として残す。
 本命は A: 共有テンプレートはそのまま、ローダがインスタンスごとにコピーして穴
 (mid / line / ic / 子 NODE*) を埋める。
+
+## 結果: 経路 P (穴 + pool、2026-09-06、`docs/idea_code_store.md` §7.7)
+
+SD は site 固有値を NODE から読まず、SD インスタンスの穴の表 `n->head.pool` (`astro_hole_t[]`、
+load 時に生成 `SD_<h>_fill` が埋める) から `P[k]` で読む。inline SD には `P + off` を隠し引数で渡す。
+hash・呼び出し規約・SD 数 (502) は不変、all.so は 3.32 → 3.88 MB (`_fill` のぶん)。
+
+sp4 (`trials/.../logs/p2/optcarrot-ab.txt`, master `0ffc4c0f` vs pool, 3 round 交互):
+
+| round | master | pool | CRuby+YJIT |
+|---|---:|---:|---:|
+| 1 | 171.7 | **205.7** | 295.6 / 298.4 |
+| 2 | 172.4 | **204.7** | 297.7 / 297.6 |
+| 3 | 171.9 | **206.4** | 299.8 / 297.6 |
+
+**+19.7%** (171.9 → 205.7、中央値)。checksum 全セル 59662。CRuby 比 3.4×、YJIT 比 0.69×。
+即値 bake 実験 (+10.6%) を超えた: ic / 子 NODE* まで表に載り、SD 複製 (I キャッシュ 10×) が無い。
+
+ローカル `perf stat -r 3` (optcarrot 180f `--compiled-only`):
+
+| | master | pool | pool + `-fno-tree-slp-vectorize` |
+|---|---:|---:|---:|
+| 命令数 | 21.52G | 21.34G (−0.9%) | 21.29G (−1.1%) |
+| cycles | 6.29G | 5.48G (−13%) | 5.44G (−13.5%) |
+| L1d miss | 396M | **148M (−63%)** | 148M |
+| L1i miss | 2.02M | 1.72M | 1.69M |
+
+命令数がほぼ不変で L1d miss が 6 割減 = 設計どおり「依存ロードの深さと NODE 行の散らばり」が消えた。
+
+罠 (pool 版だけ nested_loop が AOT 3.57× 遅かった): SD の `-O3` で SLP ベクトル化が staged
+slot への scalar store 2 本 (`movq -0x20(%rbx)` / `-0x18`) を直後の 16B load (`vmovdqu`) にまとめ、
+store-forwarding が失敗してループが 3× (cycles 465M → 1398M、命令数は減っている)。
+`-fno-tree-slp-vectorize` で 388M (master の 465M より速い)。master も同フラグで 424M (−9%)。
+optcarrot には中立 (5.48 → 5.44G)。koruby の SD CFLAGS に入れた (`main.c` `koruby_extra_cflags`)。
+
+microbench 53 本 (aot+cached pool/master, `logs/p2/compare.md`): 15 本 ≥3% 速く、4 本 ≥3% 遅い。
+速: send 0.56 / fannkuch 0.73 / hashiter 0.89 / while 0.89 / intdiv 0.92 / nbody 0.92 / bitops 0.94 /
+exception 0.94 / strfmt 0.94。遅: casewhen 1.09 (ローカル perf stat: 命令 +1.2% / cycles +6.5%、
+フラグは無関係 = pool の per-entry コスト) / aryidx 1.05 (19→20 ms) / fib 1.04 (ローカル cycles 同値) /
+ivar 1.04。
+
+ゲート (ローカル): corpus 4901/1 FAIL (既存)、STRESS+PURGE 4899/3/0 CRASH (既存と同一)、
+rubyspec 6 ディレクトリ (language / core/kernel / array / module / proc / basicobject) を HEAD binary と
+同時刻に実 mspec で比較して pass/fail/err 完全一致、`--build` 埋め込み exe 出力一致 (1127 `_pool`
+シンボル)。wasm: pool 版 SD .c 1126/1126 が wasm32 clang でコンパイル可。ただし master 時点で
+ホスト側 `korb_runtime.o` が WASI 未対応シンボル (`pwd.h` / `chroot` / `fchdir` / `tzset` /
+`LONG_MAX` / `CLOCK_*_CPUTIME_ID`) で落ちるため .wasm の実行確認は未 (P とは無関係)。
+
+次: 経路 L (`astro_cs_instantiate`、`.o` の再配置を穴にして hot body だけコピー)。

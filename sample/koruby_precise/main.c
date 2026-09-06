@@ -353,6 +353,10 @@ koruby_extra_cflags(char *buf, size_t n)
     snprintf(buf, n,
              "--param=early-inlining-insns=100"
              " -fcf-protection=none"
+             /* SLP merges the scalar slot loads of staged children into a 16B
+              * vector load right after their scalar stores: store-forwarding
+              * fails and the loop stalls (nested_loop 3x under pool mode). */
+             " -fno-tree-slp-vectorize"
              " -I" KORUBY_SRC_DIR
              " -I" ASTRO_RUNTIME_DIR
              " -I" ASTRO_PRISM_INC_DIR
