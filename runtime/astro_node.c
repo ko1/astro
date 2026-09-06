@@ -279,6 +279,11 @@ static void
 astro_hole_emit_fill(FILE *fp, const char *const name, const char *const body,
                      uint32_t nholes, bool is_public)
 {
+    // The filler is only ever called through the pool build (all.so): the loader
+    // reads the values it produced, it does not run it.  Guard it out of the
+    // patch build so it is not copied into every instance (measured ~9% of an
+    // instance's text).
+    fprintf(fp, "#ifndef ASTRO_SD_NO_FILL\n");
     fprintf(fp, "static inline void\n%s_fill(const NODE *restrict n, astro_hole_t *restrict pool)\n"
                 "{\n    (void)n; (void)pool;\n%s}\n\n", name, body ? body : "");
     if (is_public) {
@@ -286,6 +291,7 @@ astro_hole_emit_fill(FILE *fp, const char *const name, const char *const body,
                     "{\n    if (pool) %s_fill(n, pool);\n    return %uU;\n}\n\n",
                 name, name, nholes);
     }
+    fprintf(fp, "#endif\n\n");
 }
 #endif
 

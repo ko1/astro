@@ -13,8 +13,11 @@
 // the value can be patched per instance; -fno-pic/-fno-plt keep calls and data
 // references direct; -fno-jump-tables keeps .rodata free of code addresses that
 // would need their own relocation pass.
+// ASTRO_SD_NO_FILL: the pool filler is dead weight here — the loader takes the
+// values from the pool the all.so build produced, so keeping the filler would
+// only copy it into every instance.
 #define ASTRO_ARCH_CFLAGS \
-    "-fno-pic -fno-plt -fno-jump-tables -mcmodel=medium -fno-asynchronous-unwind-tables"
+    "-fno-pic -fno-plt -fno-jump-tables -mcmodel=medium -fno-asynchronous-unwind-tables -DASTRO_SD_NO_FILL"
 
 // The medium code model reaches .rodata with 32-bit absolute addresses, so the
 // executable view of an instance has to live in the low 2 GB.

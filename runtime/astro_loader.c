@@ -221,10 +221,34 @@ astro_ld_obj_get(const char *name)
 
 static struct { uint32_t n, failed; size_t bytes; } astro_ld_stats;
 
+// Values for the holes.  Normally the pool path already built them on this node;
+// if it did not (a policy that weaves at bind time need not keep a pool at all),
+// run the same generated filler into a scratch buffer — same traversal, same
+// order, same numbers.
+struct astro_ld_values { const astro_hole_t *v; uint32_t n; astro_hole_t *owned; };
+
+static bool
+astro_ld_values_get(NODE *n, const char *sd_sym, struct astro_ld_values *out)
+{
+    // ASTRO_LD_SCRATCH=1 takes the scratch path even when a pool exists, so the
+    // pool-independent route is exercised by the test suite (both must agree).
+    static int scratch = -1;
+    if (scratch < 0) { const char *e = getenv("ASTRO_LD_SCRATCH"); scratch = (e && *e && strcmp(e, "0")) ? 1 : 0; }
+    if (n->head.pool && !scratch) { out->v = n->head.pool; out->n = n->head.nholes; out->owned = NULL; return true; }
+    astro_pool_fill_t fill = astro_cs_dlsym_pool(sd_sym);
+    if (!fill) return false;
+    const uint32_t cnt = fill(n, NULL);
+    astro_hole_t *buf = malloc(sizeof(*buf) * (cnt ? cnt : 1));
+    if (!buf) return false;
+    fill(n, buf);
+    out->v = buf; out->n = cnt; out->owned = buf;
+    return true;
+}
+
 bool
 astro_cs_instantiate(NODE *n)
 {
-    if (!n || !n->head.flags.is_specialized || !n->head.pool || !n->head.dispatcher_name) return false;
+    if (!n || !n->head.flags.is_specialized || !n->head.dispatcher_name) return false;
     // Instances are immortal (an activation may still be running in one), so a
     // node is woven at most once: a second call would leak a chunk.
     if (astro_ld_arena.x && (char *)n->head.dispatcher >= astro_ld_arena.x
@@ -233,26 +257,29 @@ astro_cs_instantiate(NODE *n)
     if (strncmp(name, "SD_", 3) != 0 && strncmp(name, "PGSD_", 5) != 0) return false;
     struct astro_ld_obj *const o = astro_ld_obj_get(name);
     if (!o || o->bad) { astro_ld_stats.failed++; return false; }
+    struct astro_ld_values hv;
+    if (!astro_ld_values_get(n, name, &hv)) { astro_ld_stats.failed++; return false; }
+#define ASTRO_LD_RETURN(v) do { free(hv.owned); return (v); } while (0)
 
     const unsigned shnum = o->eh->e_shnum;
     // Layout: every SHF_ALLOC section (text / rodata; nothing writable).
     int64_t *place = calloc(shnum, sizeof(*place));
-    if (!place) return false;
+    if (!place) ASTRO_LD_RETURN(false);
     size_t total = 0, maxalign = 16;
     for (unsigned i = 0; i < shnum; i++) {
         const Elf64_Shdr *const s = &o->sh[i];
         place[i] = -1;
         if (!(s->sh_flags & SHF_ALLOC)) continue;
         if (s->sh_type != SHT_PROGBITS && s->sh_type != SHT_NOBITS) continue;
-        if ((s->sh_flags & SHF_WRITE) && s->sh_size > 0) { free(place); astro_ld_stats.failed++; return false; }
+        if ((s->sh_flags & SHF_WRITE) && s->sh_size > 0) { free(place); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
         if (s->sh_size == 0) continue;
         const size_t align = s->sh_addralign > 1 ? s->sh_addralign : 1;
         // The arena is page-aligned, so aligning the offset aligns the address
         // only while the requirement is <= a page; and a power of two is what
         // the masking below assumes.  Anything else: leave the node on pool.
-        if ((align & (align - 1)) != 0 || align > 4096) { free(place); astro_ld_stats.failed++; return false; }
+        if ((align & (align - 1)) != 0 || align > 4096) { free(place); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
         if (align > maxalign) maxalign = align;   // the chunk carries the strictest one
-        if (s->sh_size > SIZE_MAX - total - align) { free(place); astro_ld_stats.failed++; return false; }
+        if (s->sh_size > SIZE_MAX - total - align) { free(place); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
         total = (total + align - 1) & ~(align - 1);
         place[i] = (int64_t)total;
         total += s->sh_size;
@@ -263,7 +290,7 @@ astro_cs_instantiate(NODE *n)
         const Elf64_Shdr *const s = &o->sh[i];
         if (s->sh_type != SHT_RELA || s->sh_info >= shnum || place[s->sh_info] < 0) continue;
         if (s->sh_entsize != sizeof(Elf64_Rela) || s->sh_size % sizeof(Elf64_Rela)) {
-            free(place); astro_ld_stats.failed++; return false;
+            free(place); astro_ld_stats.failed++; ASTRO_LD_RETURN(false);
         }
         const Elf64_Rela *const rel = (const Elf64_Rela *)(o->data + s->sh_offset);
         const size_t nrel = s->sh_size / sizeof(Elf64_Rela);
@@ -277,7 +304,7 @@ astro_cs_instantiate(NODE *n)
 
     char *xbase = NULL;
     char *const base = astro_ld_alloc(total, maxalign, &xbase);   // base: write view, xbase: exec view
-    if (!base) { free(place); astro_ld_stats.failed++; return false; }
+    if (!base) { free(place); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
     for (unsigned i = 0; i < shnum; i++) {
         if (place[i] < 0) continue;
         const Elf64_Shdr *const s = &o->sh[i];
@@ -319,11 +346,11 @@ astro_cs_instantiate(NODE *n)
                 // relocation must fail rather than reach the backend with a
                 // null slot.
                 if (astro_arch_reloc_needs_got(t)) { ok = false; break; }
-                if (A < 0 || (uint32_t)A >= n->head.nholes) { ok = false; break; }
+                if (A < 0 || (uint32_t)A >= hv.n) { ok = false; break; }
                 // The hole's value IS the symbol value here: the addend picked
                 // the slot, so the backend writes it with addend 0.
                 ok = astro_arch_reloc_apply(t, where, wherex,
-                                            (uintptr_t)n->head.pool[A], 0, NULL, 0);
+                                            (uintptr_t)hv.v[A], 0, NULL, 0);
                 if (!ok) break;
                 continue;
             }
@@ -362,7 +389,7 @@ astro_cs_instantiate(NODE *n)
         }
     }
     free(place);
-    if (!ok || !entry) { astro_ld_unalloc(base, total); astro_ld_stats.failed++; return false; }
+    if (!ok || !entry) { astro_ld_unalloc(base, total); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
     astro_arch_sync_icache(xbase, total);
     n->head.dispatcher = (node_dispatcher_func_t)entry;
     if (getenv("ASTRO_LD_TRACE"))
@@ -370,7 +397,8 @@ astro_cs_instantiate(NODE *n)
                 name, (void *)entry, total, maxalign, got_used, (const void *)n->head.pool);
     astro_ld_stats.n++;
     astro_ld_stats.bytes += total;
-    return true;
+    ASTRO_LD_RETURN(true);
+#undef ASTRO_LD_RETURN
 }
 
 void
