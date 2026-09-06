@@ -64,6 +64,18 @@ astro_ld_alloc(size_t size)
     return p;
 }
 
+// Only the most recent chunk can be returned (bump allocator); used when
+// relocation fails after the copy.
+static void
+astro_ld_unalloc(char *p, size_t size)
+{
+    const size_t page = 4096;
+    size = (size + page - 1) & ~(page - 1);
+    if (p + size != astro_ld_arena.cur) return;
+    mprotect(p, size, PROT_NONE);
+    astro_ld_arena.cur = p;
+}
+
 // ---- object cache: op/<SD>.o read once per SD name --------------------------
 
 struct astro_ld_obj {
@@ -76,6 +88,7 @@ struct astro_ld_obj {
     const Elf64_Sym *sym;
     size_t nsym;
     const char *str;
+    size_t strsz;
     bool bad;
 };
 
@@ -107,13 +120,24 @@ astro_ld_read(struct astro_ld_obj *o, const char *path)
         return false;
     o->sh = (const Elf64_Shdr *)(o->data + eh->e_shoff);
     if (eh->e_shstrndx >= eh->e_shnum) return false;
+    // Every section this loader reads from must lie inside the file.
+    for (unsigned i = 0; i < eh->e_shnum; i++) {
+        const Elf64_Shdr *const sh = &o->sh[i];
+        if (sh->sh_type == SHT_NOBITS) continue;
+        if (sh->sh_offset > o->size || sh->sh_size > o->size - sh->sh_offset) return false;
+    }
     o->shstr = (const char *)(o->data + o->sh[eh->e_shstrndx].sh_offset);
     for (unsigned i = 0; i < eh->e_shnum; i++) {
-        if (o->sh[i].sh_type == SHT_SYMTAB) {
-            o->sym = (const Elf64_Sym *)(o->data + o->sh[i].sh_offset);
-            o->nsym = o->sh[i].sh_size / sizeof(Elf64_Sym);
-            o->str = (const char *)(o->data + o->sh[o->sh[i].sh_link].sh_offset);
-        }
+        if (o->sh[i].sh_type != SHT_SYMTAB) continue;
+        if (o->sh[i].sh_entsize != sizeof(Elf64_Sym)) return false;
+        if (o->sh[i].sh_link >= eh->e_shnum) return false;
+        const Elf64_Shdr *const st = &o->sh[o->sh[i].sh_link];
+        if (st->sh_type != SHT_STRTAB || st->sh_size == 0) return false;
+        o->sym = (const Elf64_Sym *)(o->data + o->sh[i].sh_offset);
+        o->nsym = o->sh[i].sh_size / sizeof(Elf64_Sym);
+        o->str = (const char *)(o->data + st->sh_offset);
+        o->strsz = st->sh_size;
+        if (o->str[o->strsz - 1] != '\0') return false;   // names are NUL-terminated in range
     }
     return o->sym != NULL;
 }
@@ -210,18 +234,24 @@ astro_cs_instantiate(NODE *n)
         if (s->sh_type != SHT_RELA || s->sh_info >= shnum || place[s->sh_info] < 0) continue;
         const Elf64_Rela *const rel = (const Elf64_Rela *)(o->data + s->sh_offset);
         const size_t nrel = s->sh_size / sizeof(Elf64_Rela);
+        const Elf64_Shdr *const tgt = &o->sh[s->sh_info];
         for (size_t k = 0; k < nrel && ok; k++) {
             const Elf64_Rela *const r = &rel[k];
             const unsigned t = ELF64_R_TYPE(r->r_info);
             const size_t si = ELF64_R_SYM(r->r_info);
-            if (si >= o->nsym) { ok = false; break; }
+            // A relocation writes 4 or 8 bytes; both must stay inside the copied section.
+            if (si >= o->nsym || r->r_offset > tgt->sh_size || tgt->sh_size - r->r_offset < 8) { ok = false; break; }
             const Elf64_Sym *const sym = &o->sym[si];
+            if (sym->st_name >= o->strsz) { ok = false; break; }
             const char *const sname = o->str + sym->st_name;
             char *const where = base + place[s->sh_info] + r->r_offset;
             const int64_t A = r->r_addend;
 
             if (sym->st_shndx == SHN_UNDEF && strcmp(sname, "_astro_hole_base") == 0) {
-                // Hole: the addend is the index into n's pool.
+                // Hole: the addend is the index into n's pool.  A mismatch (a
+                // stale op/ object against a pool built by another SD version)
+                // must fail, never read past the table.
+                if (A < 0 || (uint32_t)A >= n->head.nholes) { ok = false; break; }
                 const uint64_t v = (uint64_t)n->head.pool[A];
                 switch (t) {
                 case R_X86_64_64:  memcpy(where, &v, 8); break;
@@ -273,9 +303,9 @@ astro_cs_instantiate(NODE *n)
         }
     }
     free(place);
-    if (!ok || !entry) { astro_ld_stats.failed++; return false; }   // chunk stays committed (rare)
+    if (!ok || !entry) { astro_ld_unalloc(base, total); astro_ld_stats.failed++; return false; }
     const size_t rounded = (total + 4095) & ~(size_t)4095;
-    if (mprotect(base, rounded, PROT_READ | PROT_EXEC) != 0) { astro_ld_stats.failed++; return false; }
+    if (mprotect(base, rounded, PROT_READ | PROT_EXEC) != 0) { astro_ld_unalloc(base, total); astro_ld_stats.failed++; return false; }
     n->head.dispatcher = (node_dispatcher_func_t)entry;
     if (getenv("ASTRO_LD_TRACE"))
         fprintf(stderr, "astro_ld: %s at %p (+%zu, got %zu) pool %p\n", name, (void *)base, total, got_used, (const void *)n->head.pool);
