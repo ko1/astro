@@ -150,18 +150,24 @@ rubyspec 6 ディレクトリ (language / core/kernel / array / module / proc / 
 で起動直後の計数トランポリン (N dispatch、既定 200000) 後に `KORUBY_HOT_RATIO` (既定 0.005) 以上の
 body だけ `.text/.rodata` をコピーして穴を即値に patch (`=all` は全 body)。既定 off。
 
-sp4 (`trials/.../logs/l1/`, pool `fbd6fa31` vs pool+loader hot 0.005 / 5M, 3 round 交互):
+sp4 (`trials/.../logs/l2/`, pool `fbd6fa31` vs pool+loader hot 0.005 / 5M, 3 round 交互):
 
 | round | pool | pool + loader (hot) | CRuby+YJIT |
 |---|---:|---:|---:|
-| 1 | 207.8 | **216.6** | 299.5 / 295.8 |
-| 2 | 206.3 | **216.8** | 297.0 / 297.1 |
-| 3 | 206.9 | **216.0** | 297.3 / 298.3 |
+| 1 | 208.5 | **223.9** | 299.6 / 297.4 |
+| 2 | 206.2 | **224.6** | 296.7 / 296.1 |
+| 3 | 207.3 | **223.3** | 296.7 / 292.7 |
 
-**+4.6%** (206.9 → 216.6)。master からの累計 171.9 → 216.6 (**+26%**)、CRuby 比 3.6×、YJIT 比 0.73×。
-optcarrot では 29/2027 body (308 KB) がインスタンス化される (ROM 読込が先頭 2M dispatch を占めるので
-窓は 5M)。microbench 53 (hot:200000 窓, `logs/l1/compare.md`): 7 本 ≥3% 速 (gcd 0.92 / sprintfb 0.93 /
-aryidx・binary_trees・tak 0.95 / fib 0.96)、3 本 遅 (poly 1.23 = 二峰性 / nbody 1.08 / casewhen 1.05)。
+**+8.2%** (207.3 → 223.9)。master からの累計 171.9 → 223.9 (**+30%**)、CRuby 比 3.7×、YJIT 比 0.75×。
+optcarrot では 29/2027 body (233 KB) がインスタンス化される (ROM 読込が先頭 2M dispatch を占めるので
+窓は 5M)。microbench 53 (hot:200000 窓, `logs/l2/compare.md`): 6 本 ≥3% 速 (exception 0.90 / gcd 0.92 /
+ackermann・binary_trees・tak 0.95)、4 本 遅 (poly 1.22 = 二峰性 / aryidx 1.05 / casewhen・nbody 1.04)。
+
+初版はチャンクごとに `mprotect` して RX にしていたため 4KB 粒度で、同じ構成が +4.6% だった
+(`logs/l1/`)。arena を memfd の二重マップ (RW ビュー + 低位 2GB の RX ビュー) にして 16B 詰めに
+したら **+8.2%** に伸びた: 使用量は all で 20.0 → 15.4 MB、hot で 308 → 233 KB だが、効いたのは
+バイト数より密度 (i-cache / i-TLB)。ELF 側が 4KB を要求している箇所は無い (`.o` に PT_LOAD は無く、
+`sh_addralign` は最大 32 = `.rodata.cst32`)。
 
 機構 (ローカル `perf stat`、他セッションの負荷ありで命令数のみ信頼):
 
@@ -183,7 +189,12 @@ aryidx・binary_trees・tak 0.95 / fib 0.96)、3 本 遅 (poly 1.23 = 二峰性 
 - 罠 2: hot finish で entry 配列を qsort すると、生きているトランポリンの entry ポインタが別 body を
   指し nil の `<<` で落ちる。orig を先に読み index 配列を sort。
 - ゲート: corpus 4901/1 (loader ビルド、既定 off)、`all` / `hot` で 17 bench + optcarrot の出力が pool と
-  一致、インスタンス化失敗 0 (1481 / 2027 体)。
+  一致、インスタンス化失敗 0 (2027 体)。
+- 罠 3: `runtime/astro_loader.c` が koruby の Makefile の依存に無く、**境界チェックの commit が
+  一度もコンパイルされずに「通って」いた**。依存を足して焼き直したら、その境界チェック自体に
+  (a) 4 byte 書く再配置にも 8 byte の余裕を要求、(b) 消費側は SPECIALIZE を通らないので
+  `head.nholes` が 0 のまま = 穴 addend 検査が全滅、という 2 つのバグがあった (optcarrot で
+  1889/1983 失敗)。`astro_cs_pool_attach` が穴数を `head.nholes` に載せるようにして解決。
 
 残り: `-fno-plt` の GOT 間接 call を直接 call にする (チャンクをホストの ±2GB に置く)、u32 穴を
 `movl $imm32` (5B) にする、hot 判定を PG count に置き換える、`--build` / wasm は P のまま。
