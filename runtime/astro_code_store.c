@@ -286,15 +286,18 @@ astro_cs_dlsym(const char *sym)
 }
 
 #if ASTRO_LOADER_SUPPORTED
-// Arena placement.  Near the host (default) every host call is a direct rel32
-// and finding room is an mmap-probing problem; below 4 GB the host is out of
-// rel32 range and calls go through a per-instance GOT slot.  The choice has to
-// agree between the bake (which picks the flags) and the load.
+// Arena placement.  Below 4 GB (default) the host is out of rel32 range, so
+// host calls go through a per-instance GOT slot; ASTRO_LD_NEAR=1 puts the arena
+// beside the host instead and keeps the calls direct.  Measured on optcarrot
+// (sp4): no speed difference (229.7 vs 228.2 fps median, cycles the other way),
+// so the default is the one that does not depend on landing next to the host.
+// Near is 9% smaller in instance bytes, which is why it stays available.
+// The choice has to agree between the bake (which picks the flags) and the load.
 static bool
 astro_ld_arena_near(void)
 {
     const char *const e = getenv("ASTRO_LD_NEAR");
-    return !(e && e[0] && strcmp(e, "0") == 0);
+    return e && e[0] && strcmp(e, "0") != 0;
 }
 
 // Loader-only store: all.so carries the descriptors and nothing else; the code

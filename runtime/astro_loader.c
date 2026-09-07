@@ -166,14 +166,46 @@ astro_ld_arena_init(void)
     return true;
 }
 
+// One GOT slot per host symbol for the whole arena, not one per instance: the
+// slot holds the symbol's address, which is the same for every instance that
+// refers to it.  Per-instance slots cost 457 KB on optcarrot (58,618 slots for
+// 77 distinct symbols).  Open addressing, keyed by the target address.
+#define ASTRO_LD_GOT_CAPA 2048
+static struct { uintptr_t target; char *w; uintptr_t x; } astro_ld_got[ASTRO_LD_GOT_CAPA];
+static uint32_t astro_ld_got_n;
+
+static char *astro_ld_alloc(size_t size, size_t align, char **xp);
+
+static bool
+astro_ld_got_for(const uintptr_t target, char **const wp, uintptr_t *const xp)
+{
+    uint32_t h = (uint32_t)((target >> 3) * 2654435761u) & (ASTRO_LD_GOT_CAPA - 1);
+    for (;;) {
+        if (astro_ld_got[h].target == target) {
+            *wp = astro_ld_got[h].w; *xp = astro_ld_got[h].x;
+            return true;
+        }
+        if (astro_ld_got[h].w == NULL) break;
+        h = (h + 1) & (ASTRO_LD_GOT_CAPA - 1);
+    }
+    if (astro_ld_got_n >= ASTRO_LD_GOT_CAPA / 2) return false;   // keep it sparse
+    char *x = NULL;
+    char *const w = astro_ld_alloc(ASTRO_ARCH_GOT_SLOT, ASTRO_ARCH_GOT_SLOT, &x);
+    if (!w) return false;
+    astro_ld_got[h].target = target;
+    astro_ld_got[h].w = w;
+    astro_ld_got[h].x = (uintptr_t)x;
+    astro_ld_got_n++;
+    *wp = w; *xp = (uintptr_t)x;
+    return true;
+}
+
 #if ASTRO_ARCH_STUB_SIZE
 // One trampoline per far target, shared by every instance: the targets are a
 // handful of libc entry points, and a stub in the arena is reachable from any
 // call site in it.
 static struct { uintptr_t target, stub; } astro_ld_stub[512];
 static uint32_t astro_ld_stub_n;
-
-static char *astro_ld_alloc(size_t size, size_t align, char **xp);
 
 static uintptr_t
 astro_ld_stub_for(const uintptr_t target)
@@ -231,13 +263,7 @@ struct astro_ld_obj {
     size_t nsym;
     const char *str;
     size_t strsz;
-    bool bad;
 };
-
-static struct {
-    struct astro_ld_obj *v;
-    uint32_t n, capa;
-} astro_ld_objs;
 
 static char astro_ld_preload_dir[ASTRO_CS_DIR_MAX];   // set by astro_cs_set_preload
 
@@ -290,18 +316,14 @@ astro_ld_read(struct astro_ld_obj *o, const char *path)
     return o->sym != NULL;
 }
 
-static struct astro_ld_obj *
-astro_ld_obj_get(const char *name)
+// Read the object for one weave and drop it again.  It was cached once, but
+// the reuse is 1.1 instances per object (optcarrot): nodes rarely share a
+// shape, so the cache only kept a few MB resident for nothing.  The second
+// read of a repeated shape comes from the page cache.
+static bool
+astro_ld_obj_open(struct astro_ld_obj *const o, const char *const name)
 {
-    for (uint32_t i = 0; i < astro_ld_objs.n; i++)
-        if (strcmp(astro_ld_objs.v[i].name, name) == 0) return &astro_ld_objs.v[i];
-    if (strlen(name) >= sizeof(astro_ld_objs.v[0].name)) return NULL;
-    if (astro_ld_objs.n == astro_ld_objs.capa) {
-        astro_ld_objs.capa = astro_ld_objs.capa ? astro_ld_objs.capa * 2 : 64;
-        astro_ld_objs.v = realloc(astro_ld_objs.v, sizeof(*astro_ld_objs.v) * astro_ld_objs.capa);
-        if (!astro_ld_objs.v) { fprintf(stderr, "astro_loader: out of memory\n"); exit(1); }
-    }
-    struct astro_ld_obj *const o = &astro_ld_objs.v[astro_ld_objs.n++];
+    if (strlen(name) >= sizeof(o->name)) return false;
     memset(o, 0, sizeof(*o));
     strcpy(o->name, name);
     char path[ASTRO_CS_PATH_MAX];
@@ -312,8 +334,15 @@ astro_ld_obj_get(const char *name)
         snprintf(path, sizeof(path), "%s/op/%s.o", astro_ld_preload_dir, name);
         ok = astro_ld_read(o, path);
     }
-    o->bad = !ok;
-    return o;
+    if (!ok) { free(o->data); o->data = NULL; }
+    return ok;
+}
+
+static void
+astro_ld_obj_close(struct astro_ld_obj *const o)
+{
+    free(o->data);
+    o->data = NULL;
 }
 
 // ---- instantiate ------------------------------------------------------------
@@ -354,11 +383,14 @@ astro_cs_instantiate(NODE *n)
         && (char *)n->head.dispatcher < astro_ld_arena.x + astro_ld_arena.size) return false;
     const char *const name = n->head.dispatcher_name;
     if (strncmp(name, "SD_", 3) != 0 && strncmp(name, "PGSD_", 5) != 0) return false;
-    struct astro_ld_obj *const o = astro_ld_obj_get(name);
-    if (!o || o->bad) { astro_ld_stats.failed++; return false; }
+    struct astro_ld_obj obj;
+    struct astro_ld_obj *const o = &obj;
+    if (!astro_ld_obj_open(o, name)) { astro_ld_stats.failed++; return false; }
     struct astro_ld_values hv;
-    if (!astro_ld_values_get(n, name, &hv)) { astro_ld_stats.failed++; return false; }
-#define ASTRO_LD_RETURN(v) do { free(hv.owned); return (v); } while (0)
+    if (!astro_ld_values_get(n, name, &hv)) {
+        astro_ld_obj_close(o); astro_ld_stats.failed++; return false;
+    }
+#define ASTRO_LD_RETURN(v) do { free(hv.owned); astro_ld_obj_close(o); return (v); } while (0)
 
     const unsigned shnum = o->eh->e_shnum;
     // Layout: every SHF_ALLOC section (text / rodata; nothing writable).
@@ -383,23 +415,15 @@ astro_cs_instantiate(NODE *n)
         place[i] = (int64_t)total;
         total += s->sh_size;
     }
-    // GOT slots: one per GOT-relative relocation (dedup is not worth it).
-    size_t ngot = 0;
+    // The relocation tables have to be well-formed before anything is copied.
     for (unsigned i = 0; i < shnum; i++) {
         const Elf64_Shdr *const s = &o->sh[i];
         if (s->sh_type != SHT_RELA || s->sh_info >= shnum || place[s->sh_info] < 0) continue;
         if (s->sh_entsize != sizeof(Elf64_Rela) || s->sh_size % sizeof(Elf64_Rela)) {
             free(place); astro_ld_stats.failed++; ASTRO_LD_RETURN(false);
         }
-        const Elf64_Rela *const rel = (const Elf64_Rela *)(o->data + s->sh_offset);
-        const size_t nrel = s->sh_size / sizeof(Elf64_Rela);
-        for (size_t k = 0; k < nrel; k++) {
-            if (astro_arch_reloc_needs_got(ELF64_R_TYPE(rel[k].r_info))) ngot++;
-        }
     }
     total = (total + 7) & ~(size_t)7;
-    const size_t got_off = total;
-    total += ngot * ASTRO_ARCH_GOT_SLOT;
 
     char *xbase = NULL;
     char *const base = astro_ld_alloc(total, maxalign, &xbase);   // base: write view, xbase: exec view
@@ -412,7 +436,6 @@ astro_cs_instantiate(NODE *n)
     }
 
     // Relocate.
-    size_t got_used = 0;
     bool ok = true;
     for (unsigned i = 0; i < shnum && ok; i++) {
         const Elf64_Shdr *const s = &o->sh[i];
@@ -475,10 +498,8 @@ astro_cs_instantiate(NODE *n)
             }
 #endif
             char *slot = NULL; uintptr_t slotx = 0;
-            if (astro_arch_reloc_needs_got(t)) {
-                slot  = base + got_off + got_used * ASTRO_ARCH_GOT_SLOT;
-                slotx = (uintptr_t)(xbase + got_off + got_used * ASTRO_ARCH_GOT_SLOT);
-                got_used++;
+            if (astro_arch_reloc_needs_got(t) && !astro_ld_got_for(S, &slot, &slotx)) {
+                ok = false; break;
             }
             ok = astro_arch_reloc_apply(t, where, wherex, S, A, slot, slotx);
         }
@@ -500,8 +521,8 @@ astro_cs_instantiate(NODE *n)
     astro_arch_sync_icache(xbase, total);
     n->head.dispatcher = (node_dispatcher_func_t)entry;
     if (getenv("ASTRO_LD_TRACE"))
-        fprintf(stderr, "astro_ld: %s at %p (%zu B, align %zu, got %zu) pool %p\n",
-                name, (void *)entry, total, maxalign, got_used, (const void *)n->head.pool);
+        fprintf(stderr, "astro_ld: %s at %p (%zu B, align %zu, shared got %u) pool %p\n",
+                name, (void *)entry, total, maxalign, astro_ld_got_n, (const void *)n->head.pool);
     astro_ld_stats.n++;
     astro_ld_stats.bytes += total;
     ASTRO_LD_RETURN(true);
