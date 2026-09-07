@@ -138,19 +138,11 @@ astro_ld_arena_init(void)
                     (void *)t.lo, (void *)t.hi, (void *)x,
                     (long long)(((int64_t)(uintptr_t)x - (int64_t)t.lo) >> 20));
     }
-    else {
-        // Some code models can only address data with a limited-width immediate,
-        // so the executable view may have to sit in a window the backend names.
-        const uintptr_t lo = ASTRO_ARCH_ARENA_LO ? (uintptr_t)ASTRO_ARCH_ARENA_LO : 0x20000000u;
-        const uintptr_t hi = ASTRO_ARCH_ARENA_HI ? (uintptr_t)ASTRO_ARCH_ARENA_HI : 0x70000000u;
-        for (uintptr_t hint = lo; hint < hi; hint += 0x10000000u) {
-            void *p = mmap((void *)hint, reserve, PROT_READ | PROT_EXEC,
-                           MAP_SHARED | MAP_FIXED_NOREPLACE, fd, 0);
-            if (p == MAP_FAILED) continue;
-            if ((uintptr_t)p != hint) { munmap(p, reserve); continue; }   // old kernel: hint ignored
-            x = p;
-            break;
-        }
+    if (x == MAP_FAILED) {
+        // Nowhere near the host: any page is still correct, because a call that
+        // does not reach is routed through a stub in the arena.
+        void *const p = mmap(NULL, reserve, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
+        if (p != MAP_FAILED) x = p;
     }
     if (x == MAP_FAILED) { close(fd); return false; }
 

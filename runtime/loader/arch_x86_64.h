@@ -15,20 +15,16 @@
 // would need their own relocation pass.
 // ASTRO_SD_NO_DESC: the hole descriptor is data the loader reads from the
 // all.so side, so emitting it here too would just be copied into the object.
-// Two placements, chosen by ASTRO_LD_NEAR (default: near).
-//   near — data is rip-relative (-fpie), so the arena is free to sit next to
-//          the host and calls stay direct (PLT32, rel32).  Reaching the host is
-//          then a placement problem, solved by probing mmap hints around it;
-//          anything still out of reach (libc) goes through an arena stub.
-//          Holes stay 64-bit absolute immediates, which -fpie leaves alone.
-//   low  — data uses 32-bit absolutes, so the arena must live below 4 GB; the
-//          host is then out of rel32 range and calls go through a per-instance
-//          GOT slot (-fno-plt).
+// -fpie: data is rip-relative, so an instance runs correctly at any address
+// (an absolute 32-bit datum reference would pin the arena below 4 GB, which
+// buys 16 bytes of code per SD and costs the freedom to place it), and host
+// calls stay direct rel32.  Holes are 64-bit absolute immediates, which -fpie
+// leaves alone.  A call that turns out not to reach goes through an arena stub,
+// so the same object is correct whether or not the arena landed near the host.
+// Measured on optcarrot (sp4): near 231.0 fps, far (stubs) 228.1, and the
+// -fno-plt/GOT shape this replaced 223.7.
 #define ASTRO_ARCH_CFLAGS \
     "-fpie -fno-jump-tables -fno-asynchronous-unwind-tables -DASTRO_SD_NO_DESC"
-#define ASTRO_ARCH_CFLAGS_LOW \
-    "-fno-pic -fno-plt -fno-jump-tables -mcmodel=medium" \
-    " -fno-asynchronous-unwind-tables -DASTRO_SD_NO_DESC"
 
 // The medium code model reaches .rodata with 32-bit absolute addresses, so the
 // executable view of an instance has to live in the low 2 GB.

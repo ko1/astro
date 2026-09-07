@@ -293,11 +293,14 @@ astro_cs_dlsym(const char *sym)
 // so the default is the one that does not depend on landing next to the host.
 // Near is 9% smaller in instance bytes, which is why it stays available.
 // The choice has to agree between the bake (which picks the flags) and the load.
+// Try to place the arena next to the host so its calls are direct; ASTRO_LD_NEAR=0
+// skips that and takes any page, which the stub path makes correct (and is how
+// the fallback gets tested).
 static bool
 astro_ld_arena_near(void)
 {
     const char *const e = getenv("ASTRO_LD_NEAR");
-    return e && e[0] && strcmp(e, "0") != 0;
+    return !(e && e[0] && strcmp(e, "0") == 0);
 }
 
 // Loader-only store: all.so carries the descriptors and nothing else; the code
@@ -982,12 +985,10 @@ astro_cs_build_target(const char *extra_cflags, const char *target)
     // Loader-path objects (docs/idea_code_store.md §7, astro_cs_instantiate):
     // the same sources, non-PIC with holes left as relocations.  Kept in op/
     // (never linked into all.so).  Built by `make patch`.
-    // -fno-plt has to go for the near placement: it is what turns a direct
-    // rel32 call into a GOT load, and it comes from the shared CFLAGS.
-    fprintf(fp, "CFLAGS_PATCH ?= $(filter-out -fPIC -fno-semantic-interposition%s,$(CFLAGS))"
-                " %s -DASTRO_SD_PATCH=1\n",
-            astro_ld_arena_near() ? " -fno-plt" : "",
-            astro_ld_arena_near() ? ASTRO_ARCH_CFLAGS : ASTRO_ARCH_CFLAGS_LOW);
+    // -fno-plt has to go: it is what turns a direct rel32 call into a GOT load,
+    // and it comes from the shared CFLAGS.
+    fprintf(fp, "CFLAGS_PATCH ?= $(filter-out -fPIC -fno-semantic-interposition -fno-plt,$(CFLAGS))"
+                " %s -DASTRO_SD_PATCH=1\n", ASTRO_ARCH_CFLAGS);
     fprintf(fp, "POBJS = $(patsubst c/%%.c,op/%%.o,$(SRCS))\n");
     fprintf(fp, "patch: $(POBJS)\n");
     fprintf(fp, ".PHONY: patch\n");
