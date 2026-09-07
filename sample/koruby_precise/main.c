@@ -563,11 +563,24 @@ swap_in_cached_sds(NODE *ast)
 }
 
 /* Loader path (astro_cs_instantiate) policy — KORUBY_INSTANTIATE=
- *   all       every body that runs on a baked SD (upper bound; I-cache heavy)
+ *   all       every body bound to a baked SD, run or not (upper bound)
+ *   first     instantiate a body the first time it is dispatched, via a
+ *             one-shot trampoline; bodies that never run cost nothing
  *   hot[:N]   count body invocations through a trampoline for the first N
  *             dispatches (default 200000), then instantiate the bodies with at
  *             least KORUBY_HOT_RATIO (default 0.005) of them and drop the
  *             trampolines.  The count lives in head.hash_opt (unused in M0). */
+enum korb_inst_mode { KORB_INST_OFF, KORB_INST_ALL, KORB_INST_FIRST, KORB_INST_HOT };
+
+static enum korb_inst_mode
+korb_inst_mode(void)
+{
+    const char *const m = getenv("KORUBY_INSTANTIATE");
+    if (!m || !m[0] || strcmp(m, "0") == 0) return KORB_INST_OFF;
+    if (strncmp(m, "hot", 3) == 0)          return KORB_INST_HOT;
+    if (strcmp(m, "first") == 0)            return KORB_INST_FIRST;
+    return KORB_INST_ALL;
+}
 struct korb_hot_ent { NODE *n; node_dispatcher_func_t orig; };
 static struct {
     struct korb_hot_ent *v; uint32_t n, capa;
@@ -598,6 +611,16 @@ korb_hot_dispatch(CTX *c, NODE *n, VALUE *slots)
     return (*orig)(c, n, slots);
 }
 
+/* One-shot: weave this body now that it has actually been reached. */
+static RESULT
+korb_first_dispatch(CTX *c, NODE *n, VALUE *slots)
+{
+    n->head.dispatcher = korb_hot_find(n)->orig;   /* drop the trampoline first */
+    if (astro_cs_instantiate(n))                   /* installs the instance on success */
+        korb_dispatchers_swapped(c->vm);           /* fat inline caches hold the old one */
+    return (*n->head.dispatcher)(c, n, slots);
+}
+
 static void
 korb_hot_add(NODE *n)
 {
@@ -614,7 +637,7 @@ korb_hot_add(NODE *n)
 /* Build the lookup table and install the trampolines (after all adds: the
  * entry array must not move once trampolines hand out pointers into it). */
 static void
-korb_hot_arm(void)
+korb_hot_arm(const node_dispatcher_func_t tramp)
 {
     uint32_t sz = 256;
     while (sz < g_hot.n * 2) sz *= 2;
@@ -624,7 +647,7 @@ korb_hot_arm(void)
         uint32_t h = (uint32_t)(((uintptr_t)g_hot.v[i].n >> 4) * 2654435761u) & g_hot.mask;
         while (g_hot.tab[h]) h = (h + 1) & g_hot.mask;
         g_hot.tab[h] = &g_hot.v[i];
-        g_hot.v[i].n->head.dispatcher = korb_hot_dispatch;
+        g_hot.v[i].n->head.dispatcher = tramp;
     }
     g_hot.active = true;
 }
@@ -674,25 +697,42 @@ korb_hot_finish(CTX *c)
 static void
 koruby_instantiate_sds(NODE *ast, uint32_t from)
 {
-    const char *const mode = getenv("KORUBY_INSTANTIATE");
-    if (!mode || !mode[0] || strcmp(mode, "0") == 0) return;
-    const bool hot = strncmp(mode, "hot", 3) == 0;
-    if (hot && g_hot.limit == 0) g_hot.limit = mode[3] == ':' ? strtoull(mode + 4, NULL, 10) : 200000;
-    if (ast && ast->head.flags.is_specialized) { if (hot) korb_hot_add(ast); else astro_cs_instantiate(ast); }
+    const enum korb_inst_mode mode = korb_inst_mode();
+    if (mode == KORB_INST_OFF) return;
+    const bool defer = mode != KORB_INST_ALL;      /* hot / first go through a trampoline */
+    if (mode == KORB_INST_HOT && g_hot.limit == 0) {
+        const char *const m = getenv("KORUBY_INSTANTIATE");
+        g_hot.limit = m[3] == ':' ? strtoull(m + 4, NULL, 10) : 200000;
+    }
+    if (ast && ast->head.flags.is_specialized) { if (defer) korb_hot_add(ast); else astro_cs_instantiate(ast); }
     for (uint32_t i = from; i < code_repo_count(); i++) {
         NODE *const body = code_repo_body_at(i);
         if (!body->head.flags.is_specialized) continue;
-        if (hot) korb_hot_add(body); else astro_cs_instantiate(body);
+        if (defer) korb_hot_add(body); else astro_cs_instantiate(body);
     }
+}
+
+static void
+korb_first_report(void)
+{
+    uint32_t ni, nf; size_t nb;
+    astro_cs_instantiate_stats(&ni, &nf, &nb);
+    fprintf(stderr, "koruby_precise: first: %u/%u bodies instantiated (%zu KB), %u failed\n",
+            ni, g_hot.n, nb >> 10, nf);
 }
 
 /* Called once after the startup swaps: arm the hot trampolines / report. */
 static void
 koruby_instantiate_report(void)
 {
-    const char *const mode = getenv("KORUBY_INSTANTIATE");
-    if (!mode || !mode[0] || strcmp(mode, "0") == 0) return;
-    if (strncmp(mode, "hot", 3) == 0) { korb_hot_arm(); return; }
+    const enum korb_inst_mode mode = korb_inst_mode();
+    if (mode == KORB_INST_OFF) return;
+    if (mode == KORB_INST_HOT)   { korb_hot_arm(korb_hot_dispatch); return; }
+    if (mode == KORB_INST_FIRST) {
+        korb_hot_arm(korb_first_dispatch);
+        if (OPTION.verbose) atexit(korb_first_report);   /* the count is only known at exit */
+        return;
+    }
     if (OPTION.verbose) {
         uint32_t ni, nf; size_t nb;
         astro_cs_instantiate_stats(&ni, &nf, &nb);
