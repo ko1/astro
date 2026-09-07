@@ -304,9 +304,21 @@ astro_ld_arena_near(void)
 }
 
 // Loader-only store: all.so carries the descriptors and nothing else; the code
-// lives in op/<SD>.o and is woven per node.  Set at bake time by
-// ASTRO_CS_LOADER_ONLY=1 and recorded in the store so consumers agree.
-static int astro_cs_loader_only;
+// lives in op/<SD>.o and is woven per node.  Two separate questions:
+//   - what to bake here.  The loader is the better path where it exists, so a
+//     backend that supports it bakes loader-only; ASTRO_CS_LOADER_ONLY=0 opts
+//     back to the pool build.
+//   - what the store at hand actually is.  That is the marker it carries, and
+//     it is what the bind path and the embedder's weaving policy must follow —
+//     a pool store stays a pool store no matter what this process would bake.
+static int astro_cs_loader_only;          // the store's own kind
+
+static bool
+astro_cs_bake_loader_only(void)
+{
+    const char *const e = getenv("ASTRO_CS_LOADER_ONLY");
+    return (e && e[0]) ? strcmp(e, "0") != 0 : true;
+}
 
 bool
 astro_cs_is_loader_only(void)
@@ -689,8 +701,6 @@ astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
         astro_cs_path(marker, sizeof(marker), astro_cs.store_dir, "loader_only");
         FILE *const mf = fopen(marker, "r");
         if (mf) { astro_cs_loader_only = 1; fclose(mf); }
-        const char *const lo = getenv("ASTRO_CS_LOADER_ONLY");
-        if (lo && lo[0] && strcmp(lo, "0") != 0) astro_cs_loader_only = 1;
 #endif
     }
 }
@@ -1008,7 +1018,7 @@ astro_cs_build_target(const char *extra_cflags, const char *target)
     fprintf(fp, "\n");
 #endif
 #if ASTRO_LOADER_SUPPORTED
-    fprintf(fp, "LINKOBJS = $(%s)\n\n", astro_cs_loader_only ? "DOBJS" : "OBJS");
+    fprintf(fp, "LINKOBJS = $(%s)\n\n", astro_cs_bake_loader_only() ? "DOBJS" : "OBJS");
 #else
     fprintf(fp, "LINKOBJS = $(OBJS)\n\n");
 #endif
@@ -1070,6 +1080,7 @@ astro_cs_build(const char *extra_cflags)
     // descriptor-only all.so as if it held dispatchers.
     char marker[ASTRO_CS_PATH_MAX];
     astro_cs_path(marker, sizeof(marker), astro_cs.store_dir, "loader_only");
+    astro_cs_loader_only = astro_cs_bake_loader_only();   // this store's kind from now on
     if (astro_cs_loader_only) {
         FILE *const mf = fopen(marker, "w");
         if (mf) fclose(mf);

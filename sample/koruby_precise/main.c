@@ -566,11 +566,14 @@ swap_in_cached_sds(NODE *ast)
  *   all       every body bound to a baked SD, run or not (upper bound)
  *   first     instantiate a body the first time it is dispatched, via a
  *             one-shot trampoline; bodies that never run cost nothing
+ *   second    the same, but on the second dispatch: one bit in head.hash_opt
+ *             says "seen once", so a body that runs exactly once (46% of the
+ *             ones that run at all, on optcarrot) is never woven
  *   hot[:N]   count body invocations through a trampoline for the first N
  *             dispatches (default 200000), then instantiate the bodies with at
  *             least KORUBY_HOT_RATIO (default 0.005) of them and drop the
  *             trampolines.  The count lives in head.hash_opt (unused in M0). */
-enum korb_inst_mode { KORB_INST_OFF, KORB_INST_ALL, KORB_INST_FIRST, KORB_INST_HOT };
+enum korb_inst_mode { KORB_INST_OFF, KORB_INST_ALL, KORB_INST_FIRST, KORB_INST_SECOND, KORB_INST_HOT };
 
 static enum korb_inst_mode
 korb_inst_mode(void)
@@ -582,6 +585,7 @@ korb_inst_mode(void)
     if (strcmp(m, "0") == 0) return KORB_INST_OFF;
     if (strncmp(m, "hot", 3) == 0)          return KORB_INST_HOT;
     if (strcmp(m, "first") == 0)            return KORB_INST_FIRST;
+    if (strcmp(m, "second") == 0)           return KORB_INST_SECOND;
     return KORB_INST_ALL;
 }
 struct korb_hot_ent { NODE *n; node_dispatcher_func_t orig; };
@@ -625,6 +629,27 @@ korb_first_dispatch(CTX *c, NODE *n, VALUE *slots)
     else if (OPTION.compiled_only && astro_cs_is_loader_only() && !n->head.flags.no_inline) {
         /* No pool SD to fall back on: an unwoven body would silently run on
          * the interpreter, which is exactly what --compiled-only forbids. */
+        n->head.dispatcher = korb_poison_dispatch;
+    }
+    return (*n->head.dispatcher)(c, n, slots);
+}
+
+// Weave on the second visit: the first one only sets the bit.  Cheap because
+// the trampoline is already there; a body just keeps it for one more dispatch.
+static RESULT
+korb_second_dispatch(CTX *c, NODE *n, VALUE *slots)
+{
+    struct korb_hot_ent *const e = korb_hot_find(n);
+    if (n->head.hash_opt == 0) {                   // seen once, stay a trampoline
+        n->head.hash_opt = 1;
+        return (*e->orig)(c, n, slots);
+    }
+    n->head.hash_opt = 0;
+    n->head.dispatcher = e->orig;
+    if (astro_cs_instantiate(n)) {
+        korb_dispatchers_swapped(c->vm);
+    }
+    else if (OPTION.compiled_only && astro_cs_is_loader_only() && !n->head.flags.no_inline) {
         n->head.dispatcher = korb_poison_dispatch;
     }
     return (*n->head.dispatcher)(c, n, slots);
@@ -721,13 +746,15 @@ koruby_instantiate_sds(NODE *ast, uint32_t from)
     }
 }
 
+static const char *korb_inst_label = "first";
+
 static void
 korb_first_report(void)
 {
     uint32_t ni, nf; size_t nb;
     astro_cs_instantiate_stats(&ni, &nf, &nb);
-    fprintf(stderr, "koruby_precise: first: %u/%u bodies instantiated (%zu KB), %u failed\n",
-            ni, g_hot.n, nb >> 10, nf);
+    fprintf(stderr, "koruby_precise: %s: %u/%u bodies instantiated (%zu KB), %u failed\n",
+            korb_inst_label, ni, g_hot.n, nb >> 10, nf);
 }
 
 /* Called once after the startup swaps: arm the hot trampolines / report. */
@@ -737,8 +764,9 @@ koruby_instantiate_report(void)
     const enum korb_inst_mode mode = korb_inst_mode();
     if (mode == KORB_INST_OFF) return;
     if (mode == KORB_INST_HOT)   { korb_hot_arm(korb_hot_dispatch); return; }
-    if (mode == KORB_INST_FIRST) {
-        korb_hot_arm(korb_first_dispatch);
+    if (mode == KORB_INST_FIRST || mode == KORB_INST_SECOND) {
+        korb_inst_label = mode == KORB_INST_FIRST ? "first" : "second";
+        korb_hot_arm(mode == KORB_INST_FIRST ? korb_first_dispatch : korb_second_dispatch);
         if (OPTION.verbose) atexit(korb_first_report);   /* the count is only known at exit */
         return;
     }
