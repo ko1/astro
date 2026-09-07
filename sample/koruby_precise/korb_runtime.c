@@ -1219,8 +1219,19 @@ korb_str_repeat_ref(CTX *c, VALUE *slots, VALUE_REF src, korb_sword_t cnt, uint3
     KorbString *s = korb_str_alloc(c, slots, (uint32_t)total);
     const KorbString *ss = VAL2STR(VALUE_REF_GET(src));
     if (len == 0) return RESULT_OK((VALUE)s);            /* "" * huge is "" — never spin the copy loop */
-    for (korb_sword_t i = 0; i < cnt; i++) {
-        memcpy(korb_strbuf_data(s->buf) + (size_t)i * len, korb_strbuf_data(ss->buf), len);
+    char *const dst = korb_strbuf_data(s->buf);
+    if (len == 1) {                                      /* "\0" * 848640 was 848640 one-byte memcpy calls */
+        memset(dst, korb_strbuf_data(ss->buf)[0], total);
+        return RESULT_OK((VALUE)s);
+    }
+    /* Double what is already written instead of appending one copy at a time:
+     * log2(cnt) memcpy calls rather than cnt of them. */
+    memcpy(dst, korb_strbuf_data(ss->buf), len);
+    size_t done = len;
+    while (done < total) {
+        const size_t take = (done <= total - done) ? done : total - done;
+        memcpy(dst + done, dst, take);
+        done += take;
     }
     return RESULT_OK((VALUE)s);
 }

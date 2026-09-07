@@ -3,6 +3,24 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## 既知バグ (GC)
+
+- **ペイロードが 4096 バイト以上のオブジェクトを確保すると
+  `ASTRO_GC_STRESS=1` で SEGV する** (2026-09-07 発見)。文字列でも配列でも
+  起こり、境界は 4096 バイトちょうど:
+
+  ```
+  "x".ljust(4000)      → ok        Array.new(400, 0)  → ok
+  "x".ljust(4096)      → SEGV      Array.new(511, 0)  → SEGV   (511 * 8 = 4088 + header)
+  ```
+
+  `String#*` や `Array#fill` とは無関係で、`ljust` / `join` / `Array.new`
+  など確保しさえすれば再現する。`gc_copy` のラージオブジェクト経路が疑わしい。
+  **STRESS を付けないと出ない**ので通常のテストは通ってしまい、逆に
+  STRESS を使った GC 検証がこのサイズより上でできない (2026-09-07 の
+  `String#*` / `Array#fill` の検証は 4096 未満に収めて行った)。
+  なお `ASTRO_GC_PURGE=1` を併用すると通ることがあり、ヒープ配置依存。
+
 ## 既知バグ (socket / require)
 
 - ~~socket の blocking spec が whole-file timeout~~ **(2026-08-10 解消)**。

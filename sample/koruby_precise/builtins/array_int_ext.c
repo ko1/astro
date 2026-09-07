@@ -448,6 +448,17 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(beg + len > (korb_sword_t)0x7fffffff))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "argument too big");
     slots[0] = v;                                        /* root value across any grow */
+    /* No block and a region already inside the array: nothing in the loop can
+     * allocate, so the array cannot move — hoist the per-element re-read and
+     * the grow check out (they cost more than the store itself). */
+    if (block == NULL && beg >= 0 && len > 0 &&
+        beg + len <= (korb_sword_t)VAL2ARY(VALUE_REF_GET(self))->len) {
+        KorbArray *const ary = VAL2ARY(VALUE_REF_GET(self));
+        VALUE *const data = korb_items_data(ary->items);
+        const VALUE fv = slots[0];
+        for (korb_sword_t i = beg; i < beg + len; i++) ARO_STORE(c, ary->items, &data[i], fv);
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
     for (korb_sword_t i = beg; i < beg + len; i++) {
         if (i < 0) continue;
         if (block != NULL) {
