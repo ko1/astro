@@ -9105,6 +9105,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     if (UNLIKELY(vm->refinements_active)) {   /* refined dispatch (also covers send/__send__/public_send, which re-enter here) */
         RESULT rr;
         if (korb_refined_dispatch(c, slots, mid, line, argc, self, block, def_env, captured_self, &rr)) return rr;
+        self = *recv_slot;   /* re-read: a refined lookup dispatches Ruby and can GC-move self,
+                              * and every branch below this point still uses it (same rule as the
+                              * #to_str re-read above).  Only reachable with refinements active,
+                              * which is why it has not bitten yet. */
     }
 
     /* user instance → dispatch through its class chain (miss falls to Object). */

@@ -32,8 +32,9 @@ ENCAP_BASELINE=0
 # value-read-after-gc ratchet.  Unlike the others this one is NOT at zero: a
 # VALUE taken out of a slot / field / argument and used after a may-GC call is
 # everywhere, and the query cannot tell an immediate (which never moves) from a
-# heap object.  189 on 2026-09-07; the number may only go down.
-VRAG_BASELINE=189
+# heap object.  71 on 2026-09-07 (was 189 before korb_send_impl re-read `self`
+# after the refined dispatch); the number may only go down.
+VRAG_BASELINE=71
 
 # ---- fixture DBs (borrow_cases.c for temporal; annotation_cases.c for escape/unused) ----
 FDB=$DBDIR/fixture
