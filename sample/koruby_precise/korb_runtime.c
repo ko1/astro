@@ -34,6 +34,29 @@
  * Allocation — publish + alloc (v2_design §3.3).
  * ------------------------------------------------------------------------- */
 
+#ifdef KORB_STALE_CHECK
+int aro_gc_addr_stale(CTX *c, const void *p);       /* gc_copy.c */
+CTX *korb_stale_ctx;                                 /* debug build only */
+static unsigned long korb_sc_calls, korb_sc_heap, korb_sc_stale;
+static void korb_sc_report(void) {
+    fprintf(stderr, "KORB_STALE: %lu derefs, %lu heap, %lu stale\n",
+            korb_sc_calls, korb_sc_heap, korb_sc_stale);
+}
+VALUE korb_stale_check(VALUE v, const char *file, int line)
+{
+    korb_sc_calls++;
+    if (korb_stale_ctx && v && ((uintptr_t)v & 7u) == 0) {
+        korb_sc_heap++;
+        if (aro_gc_addr_stale(korb_stale_ctx, (const void *)(uintptr_t)v)) {
+            if (korb_sc_stale++ < 8)
+                fprintf(stderr, "KORB_STALE: %s:%d dereferences a moved-out VALUE %p\n",
+                        file, line, (void *)(uintptr_t)v);
+        }
+    }
+    return v;
+}
+#endif
+
 void *
 korb_alloc(CTX *c, VALUE *slots, size_t size, unsigned int type)
 {
@@ -9105,10 +9128,16 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     if (UNLIKELY(vm->refinements_active)) {   /* refined dispatch (also covers send/__send__/public_send, which re-enter here) */
         RESULT rr;
         if (korb_refined_dispatch(c, slots, mid, line, argc, self, block, def_env, captured_self, &rr)) return rr;
-        self = *recv_slot;   /* re-read: a refined lookup dispatches Ruby and can GC-move self,
-                              * and every branch below this point still uses it (same rule as the
-                              * #to_str re-read above).  Only reachable with refinements active,
-                              * which is why it has not bitten yet. */
+        self = *recv_slot;   /* Defensive, NOT a fix for a live bug: every `return false` inside
+                              * korb_refined_dispatch sits BEFORE its only allocating call
+                              * (korb_dispatch_method), so today the fall-through path cannot
+                              * collect and `self` cannot be stale.  value_read_after_gc.ql
+                              * flags it anyway — an intraprocedural CFG cannot see that the
+                              * allocating path always returns — and KORB_STALE_CHECK under
+                              * ASTRO_GC_STRESS=1 confirms it never goes stale.  Kept because
+                              * it costs nothing on a cold path and stops the hazard from
+                              * appearing if korb_refined_dispatch ever grows an allocating
+                              * early return.  See docs/done.md 2026-09-07. */
     }
 
     /* user instance → dispatch through its class chain (miss falls to Object). */
@@ -14979,6 +15008,10 @@ korb_ctx_new(void)
     /* Native C-stack floor: the AST walker recurses on the C stack, which
      * overflows long before the slots reservation.  Margin must cover one
      * deepest expression chain + the raise/unwind path. */
+#ifdef KORB_STALE_CHECK
+    korb_stale_ctx = c;
+    atexit(korb_sc_report);
+#endif
     {
         pthread_attr_t attr;
         void *stack_addr = NULL;

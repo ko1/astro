@@ -50,6 +50,65 @@ ascheme_precise 179/179、baruby_precise 8/8 (`T_gc_big` / `T_gc_stress` 込み)
 性能は交互測定 8 組で 0.758 → 0.749 s と、むしろわずかに速い
 (不明なメモリへのキャッシュミスが、96 バイトの配列の二分探索に置き換わる)。
 
+### 撤回: korb_send_impl の `self` は真陽性ではなかった
+
+`value_read_after_gc.ql` の 189 件のうち 118 行 (62%) を占めていた
+`korb_send_impl` の `self` について、**「真陽性だった」と書いたが誤り**だった。
+訂正して経緯ごと残す。
+
+見立てはこうだった: `korb_refined_dispatch` は「扱ったら return、扱わなかったら
+false を返して落ちてくる」形で、落ちてきた後も `self` を使い続けるのに読み直しが
+無い。`korb_refined_dispatch` は may-GC。だから stale になりうる、と。
+
+実際には **`return false` は全部、唯一の確保呼び出し `korb_dispatch_method` より
+手前にある**:
+
+```c
+if (c->refinements == KORB_NIL) return false;                    /* 確保なし */
+struct korb_method *const m = korb_refined_find(...);            /* may-GC ではない */
+if (m == NULL) return false;                                     /* 確保なし */
+*out = korb_dispatch_method(...);                                /* ここだけが確保 */
+return true;                                                     /* 必ず true で返る */
+```
+
+`korb_refined_find` と `korb_dispatch_class` は may-GC ではない (CodeQL で確認)。
+`korb_refined_dispatch` が may-GC と出るのは `korb_dispatch_method` のせいだけで、
+そこを通ったら必ず return する。**落ちてくる経路では GC が起きえない。**
+関数内 CFG しか見ないクエリには、この「確保する経路は必ず return する」が
+見えなかった、というのが真相。
+
+気づいたきっかけは KORB_STALE_CHECK (下記) だった。読み直しを外した版を
+`ASTRO_GC_STRESS=1` で走らせても stale が 1 件も出ず、それで
+`korb_refined_dispatch` を読み直して分かった。静的な見立てを実行時の観測が
+否定した形。
+
+読み直しの 1 行自体は残してある。冷たい経路で費用が無く、`korb_refined_dispatch`
+が将来「確保してから false で返る」経路を持ったときに効くため。ただし
+**バグ修正ではない**。
+
+### KORB_STALE_CHECK — 「今 stale か」を実行時に聞く
+
+`value_read_after_gc.ql` が言えるのは「stale になりうる」までで、即値と heap
+オブジェクトの区別も、確保する経路が実際に通る経路かも分からない。同じ問いを
+実行時に聞くのがこれ。`VAL2STR` / `VAL2ARY` / `VAL2HASH` / `VAL2OBJ` /
+`VAL2CLASS` に噛ませ、`aro_gc_addr_stale` (gc_copy.c) に問い合わせる。
+
+```sh
+cc ... -DKORB_STALE_CHECK ...
+ASTRO_GC_STRESS=1 ./koruby_stale foo.rb
+```
+
+**報告が出たら必ず本物** (実際に移動済みのアドレスを deref している)。
+**出なくても安全の証明にはならない** — その実行が通った経路しか見ていない。
+
+「GC が起きた不幸なケースでしか stale にならないのでは」という懸念はもっともで、
+素で走らせるとタイミング任せになる。`ASTRO_GC_STRESS=1` は確保ごとに GC するので
+その運の要素は消え、残る穴は**経路カバレッジだけ**になる。
+
+実測 (2026-09-07): `-e 'p 1'` で deref 63,698 回すべて heap ポインタ、stale 0 件。
+35 箇所を Bignum / String / to_int を持つ object で狙って踏むスクリプトでも 0 件。
+上記の `self` の件は、これが 0 を返し続けたことが再調査のきっかけになった。
+
 ### File::NULL の owner が stale だった (C の引数評価順)
 
 `0x10000` の正体を追い切った結果。**あれは誰かが書いた値ではなく、GC が付けた

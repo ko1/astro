@@ -655,10 +655,28 @@ typedef struct KorbClass {
 #define KORB_CLASS_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_CLASS)
 #define KORB_FLOAT_P(v)    (FLONUM_P(v) || (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FLOAT))
 #define KORB_HEAP_FLOAT_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FLOAT)
-#define VAL2STR(v)         ((KorbString *)(uintptr_t)(v))
+/* KORB_STALE_CHECK (debug build): ask the collector, at every dereference,
+ * whether this VALUE is a heap pointer it has already moved out from under us.
+ * value_read_after_gc.ql can only say "this COULD be stale" — it cannot tell an
+ * immediate from a heap object, nor whether the allocating path is the one
+ * taken.  This answers the same question at runtime, and the answer is exact:
+ * a report is always a real stale dereference.
+ *
+ * Silence is NOT a clean bill of health.  It only covers paths the run actually
+ * executes, so pair it with ASTRO_GC_STRESS=1 (collect at every allocation),
+ * which removes the "only if a GC happened to land there" luck and leaves
+ * coverage as the sole gap.  Off by default; costs a call per dereference. */
+#ifdef KORB_STALE_CHECK
+VALUE korb_stale_check(VALUE v, const char *file, int line);
+#define KORB_SC(v) korb_stale_check((VALUE)(uintptr_t)(v), __FILE__, __LINE__)
+#else
+#define KORB_SC(v) (v)
+#endif
+
+#define VAL2STR(v)         ((KorbString *)(uintptr_t)KORB_SC(v))
 #define VAL2EXC(v)         ((KorbException *)(uintptr_t)(v))
-#define VAL2ARY(v)         ((KorbArray *)(uintptr_t)(v))
-#define VAL2HASH(v)        ((KorbHash *)(uintptr_t)(v))
+#define VAL2ARY(v)         ((KorbArray *)(uintptr_t)KORB_SC(v))
+#define VAL2HASH(v)        ((KorbHash *)(uintptr_t)KORB_SC(v))
 
 /* ARO_BORROW: the sanctioned accessor for a String's movable byte buffer.  Only
  * ARO_BORROW-marked functions may reach into the raw layout, so the internal
@@ -671,8 +689,8 @@ static inline ARO_BORROW char  *korb_strbuf_data(KorbStrBuf *b)      { return b-
 static inline ARO_BORROW VALUE *korb_items_data (KorbArrayItems *it) { return it->data_priv; }
 static inline ARO_BORROW char  *korb_str_data   (VALUE v)           { return korb_strbuf_data(VAL2STR(v)->buf); }
 #define VAL2RANGE(v)       ((KorbRange *)(uintptr_t)(v))
-#define VAL2OBJ(v)         ((KorbObject *)(uintptr_t)(v))
-#define VAL2CLASS(v)       ((KorbClass *)(uintptr_t)(v))
+#define VAL2OBJ(v)         ((KorbObject *)(uintptr_t)KORB_SC(v))
+#define VAL2CLASS(v)       ((KorbClass *)(uintptr_t)KORB_SC(v))
 #define VAL2FLT(v)         ((KorbFloat *)(uintptr_t)(v))
 /* the double value of any Float (flonum immediate or heap KorbFloat). */
 #define korb_float_val(v)  (FLONUM_P(v) ? korb_flo2d(v) : VAL2FLT(v)->val)
