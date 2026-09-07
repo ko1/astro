@@ -84,7 +84,9 @@ fwd_overlay_set(AroObjectHeader *h, void *new_payload)
  * = 128 KiB causes such chunks to be mmap'd, so free → munmap → physical
  * release) instead of sitting in from-space until the next collect.
  * Matches `gc_mark.c`'s slab class max (4096 B). */
+#ifndef LARGE_THRESHOLD                  /* overridable so a build can bisect this path */
 #define LARGE_THRESHOLD      4096u
+#endif
 
 /* Large object wrapper.  Lives in a separately-malloc'd buffer; not in
  * either semispace.  Payload (= sample struct starting with
@@ -162,6 +164,15 @@ typedef struct ASTroGC {
      * LargeObj.next.  `large_gray` is the scan queue during collect. */
     LargeObj *large_head;
     LargeObj *large_gray;
+    /* Live large payload addresses, sorted.  forward_payload needs to answer
+     * "is this candidate one of my large objects?" for pointers that lie
+     * outside the from/to planes.  It must answer WITHOUT dereferencing the
+     * candidate: the edge filter admits any 8-aligned non-zero word, so a
+     * plain integer sitting in a scanned slot (0x10000 was the one that bit
+     * us) arrives here, and reading its header SEGVs.  Binary search over
+     * this array is exact and touches only memory we own. */
+    void **large_addrs;
+    size_t large_n, large_capa;
 } ASTroGC;
 
 // ----------------------------------------------------------------------------
@@ -317,6 +328,55 @@ gc_bump(CTX *c, size_t payload_size, size_t aligned)
     return payload;
 }
 
+/* --- live large payload index (sorted, exact, never derefs the candidate) -- */
+static size_t
+large_lower_bound(const ASTroGC *gc, const void *p)
+{
+    size_t lo = 0, hi = gc->large_n;
+    while (lo < hi) {
+        size_t mid = (lo + hi) >> 1;
+        if ((uintptr_t)gc->large_addrs[mid] < (uintptr_t)p) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+static bool
+large_contains(const ASTroGC *gc, const void *p)
+{
+    if (gc->large_n == 0) return false;
+    size_t i = large_lower_bound(gc, p);
+    return i < gc->large_n && gc->large_addrs[i] == p;
+}
+
+static void
+large_addr_insert(ASTroGC *gc, void *p)
+{
+    if (gc->large_n == gc->large_capa) {
+        size_t nc = gc->large_capa ? gc->large_capa * 2 : 16;
+        void **na = (void **)realloc(gc->large_addrs, nc * sizeof(void *));
+        if (!na) { perror("aro_gc=copy: large_addrs"); abort(); }
+        gc->large_addrs = na;
+        gc->large_capa = nc;
+    }
+    size_t i = large_lower_bound(gc, p);
+    memmove(&gc->large_addrs[i + 1], &gc->large_addrs[i],
+            (gc->large_n - i) * sizeof(void *));
+    gc->large_addrs[i] = p;
+    gc->large_n++;
+}
+
+static void
+large_addr_remove(ASTroGC *gc, void *p)
+{
+    size_t i = large_lower_bound(gc, p);
+    if (i < gc->large_n && gc->large_addrs[i] == p) {
+        memmove(&gc->large_addrs[i], &gc->large_addrs[i + 1],
+                (gc->large_n - i - 1) * sizeof(void *));
+        gc->large_n--;
+    }
+}
+
 /* Allocate a LargeObj in malloc heap and link into gc->large_head. */
 static void *
 large_alloc(CTX *c, size_t payload_size, size_t aligned)
@@ -336,6 +396,7 @@ large_alloc(CTX *c, size_t payload_size, size_t aligned)
     h->flags    = 0;
     h->gc_flags = HDR_LARGE;   /* O(1) discriminator in forward_payload */
     h->gc_size  = (uint32_t)payload_size;
+    large_addr_insert(gc, payload);
     gc->bytes_since_gc += payload_size;
     return payload;
 }
@@ -448,6 +509,10 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
     LargeObj *new_lo = (LargeObj *)realloc(lo, sizeof(LargeObj) + new_aligned);
     if (!new_lo) { perror("aro_gc=copy: realloc large"); abort(); }
     *link = new_lo;
+    if (large_payload(new_lo) != old) {          /* realloc moved it: reindex */
+        large_addr_remove(gc, old);
+        large_addr_insert(gc, large_payload(new_lo));
+    }
     AroObjectHeader *newh = large_head(new_lo);
     newh->gc_size = (uint32_t)new_size;
 
@@ -540,7 +605,7 @@ forward_payload(ASTroGC *gc, void *old_payload)
              * (set by large_alloc) discriminates in O(1) — no large_head walk,
              * which was O(large_count) per out-of-range ref and pathological
              * for AST-node-heavy programs (optcarrot 1 frame >> minutes). */
-            if (gc->large_head && HDR_IS_LARGE((AroObjectHeader *)old_payload)) {
+            if (large_contains(gc, old_payload)) {
                 if (!HDR_IS_MARKED((AroObjectHeader *)old_payload)) {
                     HDR_SET_MARKED((AroObjectHeader *)old_payload);
                     LargeObj *lo = large_from_payload(old_payload);
@@ -549,7 +614,9 @@ forward_payload(ASTroGC *gc, void *old_payload)
                 }
                 return old_payload;
             }
-            /* libc-allocated immortal. */
+            /* libc-allocated immortal, or not a pointer at all (the edge
+             * filter admits any 8-aligned non-zero word).  Either way we must
+             * not dereference it — hand it back untouched. */
             return old_payload;
         }
     }
@@ -561,9 +628,13 @@ forward_payload(ASTroGC *gc, void *old_payload)
 
     /* Large object: lives outside the from-space arena, doesn't move.
      * Mark + enqueue for content scan; return the same payload pointer. */
-    if (__builtin_expect(gc->large_head != NULL, 0)) {
+    /* Range test first (two compares, the cheney hot path stays as it was),
+     * then the exact index.  Range alone would mis-file a to-space object as
+     * large and write next_gray at payload-8, over the object before it. */
+    if (__builtin_expect(gc->large_n != 0, 0)) {
         char *p = (char *)old_payload;
-        if (p < gc->from_base_cur || p >= gc->from_base_cur + gc->region_bytes) {
+        if ((p < gc->from_base_cur || p >= gc->from_base_cur + gc->region_bytes)
+            && large_contains(gc, old_payload)) {
             if (HDR_IS_MARKED(oldh)) return old_payload;
             HDR_SET_MARKED(oldh);
             LargeObj *lo = large_from_payload(old_payload);
@@ -721,7 +792,18 @@ gc_collect_internal(CTX *c)
      * small objs, payload itself for marked large objs, NULL for dead. */
     aro_gc_finalize_walk(c);
 
-    /* (3) Sweep large_head: free unmarked, clear marker on survivors. */
+    /* (3) Sweep.  Compact the sorted address index FIRST — it keys off
+     * HDR_MARKED, which the list sweep below clears on the survivors.  One
+     * pass, order preserved, so the array stays sorted. */
+    {
+        size_t w = 0;
+        for (size_t i = 0; i < gc->large_n; i++) {
+            if (HDR_IS_MARKED((AroObjectHeader *)gc->large_addrs[i]))
+                gc->large_addrs[w++] = gc->large_addrs[i];
+        }
+        gc->large_n = w;
+    }
+    /* Sweep large_head: free unmarked, clear marker on survivors. */
     LargeObj **link = &gc->large_head;
     while (*link) {
         LargeObj *lo = *link;
@@ -854,6 +936,9 @@ aro_gc_fini(CTX *c)
         if (gc->space1) munmap(gc->space1, gc->region_bytes);
     }
     aro_gc_free_large_chain_malloc(gc->large_head);
+    free(gc->large_addrs);
+    gc->large_addrs = NULL;
+    gc->large_n = gc->large_capa = 0;
     free(gc);
     c->astro_gc = NULL;
 }
