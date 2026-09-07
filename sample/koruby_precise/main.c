@@ -619,8 +619,14 @@ static RESULT
 korb_first_dispatch(CTX *c, NODE *n, VALUE *slots)
 {
     n->head.dispatcher = korb_hot_find(n)->orig;   /* drop the trampoline first */
-    if (astro_cs_instantiate(n))                   /* installs the instance on success */
+    if (astro_cs_instantiate(n)) {                 /* installs the instance on success */
         korb_dispatchers_swapped(c->vm);           /* fat inline caches hold the old one */
+    }
+    else if (OPTION.compiled_only && astro_cs_is_loader_only() && !n->head.flags.no_inline) {
+        /* No pool SD to fall back on: an unwoven body would silently run on
+         * the interpreter, which is exactly what --compiled-only forbids. */
+        n->head.dispatcher = korb_poison_dispatch;
+    }
     return (*n->head.dispatcher)(c, n, slots);
 }
 
