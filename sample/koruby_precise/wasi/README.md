@@ -220,3 +220,16 @@ GitHub Pages でもそのまま動く: `wasi/build/` は gitignore なので、�
 (朝時点の interp-only 比較とその撤回の経緯は
 `~/ruby/src/trials/20260822_koruby_wasm_vs_rubywasm/` と
 `~/ruby/src/trials/20260822_koruby_wasm_aot/` に残してある。)
+
+## 既知の破損 (2026-09-07 時点、master 由来)
+
+wasm ビルドが master で通らない。穴/pool の作業とは無関係で、原因は 8 月末〜9 月頭の
+2 コミットが wasi sysroot に無いものを無条件で使っていること:
+
+- `main.c` の `PATH_MAX` (`096d56de` `-S` / `-x` の実装) — `<limits.h>` の PATH_MAX は
+  wasi-libc に無い。
+- `builtins/file.c` の `#include <pwd.h>` (`5b4778db` File.realdirpath) — wasi-libc に
+  `pwd.h` は無い。
+
+どちらも `wasi/sys/` に shim を置くか `#ifdef __wasi__` で逃がせば済む。直すまで
+`make -C wasi` / `make -C wasi aot` は失敗する。
