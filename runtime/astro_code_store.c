@@ -286,34 +286,104 @@ astro_cs_dlsym(const char *sym)
 }
 
 #ifdef ASTRO_NODEHEAD_POOL
-// Pool mode: SD_<h>_pool lives next to SD_<h>.  A statically linked table
+// Pool mode: SD_<h>_desc lives next to SD_<h>.  A statically linked table
 // may provide it too (weak default: none).
-__attribute__((weak)) astro_pool_fill_t
-astro_cs_static_pool_lookup(const char *sym)
+__attribute__((weak)) const uint8_t *
+astro_cs_static_desc_lookup(const char *sym)
 {
     (void)sym;
     return NULL;
 }
 
-static astro_pool_fill_t
-astro_cs_dlsym_pool(const char *sd_sym)
+// The shape's descriptor lives next to its dispatcher, as data.
+static const uint8_t *
+astro_cs_dlsym_desc(const char *sd_sym)
 {
     char sym[160];
-    snprintf(sym, sizeof(sym), "%s_pool", sd_sym);
-    astro_pool_fill_t fill = astro_cs_static_pool_lookup(sym);
+    snprintf(sym, sizeof(sym), "%s_desc", sd_sym);
+    const uint8_t *d = astro_cs_static_desc_lookup(sym);
 #if !ASTRO_CS_NO_DLOPEN
-    if (!fill && astro_cs.all_handle)
-        fill = (astro_pool_fill_t)dlsym(astro_cs.all_handle, sym);
-    if (!fill && astro_cs.preload_handle)
-        fill = (astro_pool_fill_t)dlsym(astro_cs.preload_handle, sym);
+    if (!d && astro_cs.all_handle)
+        d = (const uint8_t *)dlsym(astro_cs.all_handle, sym);
+    if (!d && astro_cs.preload_handle)
+        d = (const uint8_t *)dlsym(astro_cs.preload_handle, sym);
 #endif
-    return fill;
+    return d;
+}
+
+// Replay a shape's descriptor against one node (see astro_node.c for the ops).
+// Returns the number of holes written; with pool == NULL it only counts.
+uint32_t
+astro_hole_walk(const NODE *n, const uint8_t *d, astro_hole_t *pool)
+{
+    enum { H_END = 0, H_EMIT, H_ADDR, H_DOWN, H_DOWN_AT, H_UP, H_EMIT_AT };
+    const uint32_t nholes = (uint32_t)d[0] | ((uint32_t)d[1] << 8)
+                          | ((uint32_t)d[2] << 16) | ((uint32_t)d[3] << 24);
+    if (!pool) return nholes;
+    const uint32_t depth = (uint32_t)d[4] | ((uint32_t)d[5] << 8);
+    const NODE *fixed[32];
+    const NODE **const stack = depth <= 32 ? fixed : malloc(sizeof(*stack) * depth);
+    if (!stack) { fprintf(stderr, "astro_hole_walk: out of memory\n"); exit(1); }
+    uint32_t sp = 0, k = 0;
+    d += 6;
+    for (;;) {
+        const uint8_t op = *d++;
+        if (op == H_END) break;
+        const uint32_t off = (uint32_t)d[0] | ((uint32_t)d[1] << 8);
+        switch (op) {
+        case H_EMIT: {
+            d += 2;
+            const uint8_t size = *d++;
+            const char *const f = (const char *)n + off;
+            astro_hole_t v = 0;
+            switch (size) {
+            case 1: v = *(const uint8_t *)f; break;
+            case 2: v = *(const uint16_t *)f; break;
+            case 4: v = *(const uint32_t *)f; break;
+            default: memcpy(&v, f, 8); break;
+            }
+            pool[k++] = v;
+            break;
+        }
+        case H_ADDR:
+            d += 2;
+            pool[k++] = (astro_hole_t)(uintptr_t)((const char *)n + off);
+            break;
+        case H_DOWN:
+            d += 2;
+            stack[sp++] = n;
+            n = *(NODE *const *)((const char *)n + off);
+            break;
+        case H_DOWN_AT: {
+            const uint32_t idx = (uint32_t)d[2] | ((uint32_t)d[3] << 8);
+            d += 4;
+            stack[sp++] = n;
+            n = (*(NODE *const *const *)((const char *)n + off))[idx];
+            break;
+        }
+        case H_EMIT_AT: {
+            const uint32_t idx = (uint32_t)d[2] | ((uint32_t)d[3] << 8);
+            d += 4;
+            pool[k++] = (astro_hole_t)(uintptr_t)
+                (*(void *const *const *)((const char *)n + off))[idx];
+            break;
+        }
+        case H_UP:
+            n = stack[--sp];
+            break;
+        default:
+            fprintf(stderr, "astro_hole_walk: bad opcode %u (corrupt code store?)\n", op);
+            abort();
+        }
+    }
+    if (stack != fixed) free((void *)stack);
+    return k;
 }
 
 void
-astro_cs_pool_attach(NODE *n, astro_pool_fill_t fill)
+astro_cs_pool_attach(NODE *n, const uint8_t *desc)
 {
-    const uint32_t cnt = fill(n, NULL);
+    const uint32_t cnt = astro_hole_walk(n, desc, NULL);
     n->head.nholes = cnt;          // consuming runs never ran SPECIALIZE; the
                                    // loader bounds-checks hole indices with this
     astro_hole_t *pool = malloc(sizeof(*pool) * (cnt ? cnt : 1));
@@ -321,12 +391,12 @@ astro_cs_pool_attach(NODE *n, astro_pool_fill_t fill)
         fprintf(stderr, "astro_cs_pool_attach: out of memory\n");
         exit(1);
     }
-    fill(n, pool);
+    astro_hole_walk(n, desc, pool);
     n->head.pool = pool;
 }
 
 // Bind the SD found as `sd_sym` to n together with its pool.  An SD without
-// its _pool is a broken store (built by a pre-pool binary): fail loudly rather
+// its _desc is a broken store (built by a pre-pool binary): fail loudly rather
 // than run it with pool == NULL.  The pool is installed before the dispatcher
 // (the caller's next store); rebinding is not atomic, so — as with the
 // dispatcher swap itself — a node must not be rebound to a differently shaped
@@ -334,12 +404,12 @@ astro_cs_pool_attach(NODE *n, astro_pool_fill_t fill)
 static void
 astro_cs_bind_pool(NODE *n, const char *sd_sym)
 {
-    astro_pool_fill_t fill = astro_cs_dlsym_pool(sd_sym);
-    if (!fill) {
-        fprintf(stderr, "astro_cs_load: %s has no %s_pool (stale code store?)\n", sd_sym, sd_sym);
+    const uint8_t *const desc = astro_cs_dlsym_desc(sd_sym);
+    if (!desc) {
+        fprintf(stderr, "astro_cs_load: %s has no %s_desc (stale code store?)\n", sd_sym, sd_sym);
         abort();
     }
-    astro_cs_pool_attach(n, fill);
+    astro_cs_pool_attach(n, desc);
 }
 #else
 #define astro_cs_bind_pool(n, sym) ((void)0)
@@ -478,11 +548,11 @@ astro_cs_resolve_dir(char *buf, size_t bufsz, const char *dir)
     }
 }
 
-// Pool mode changes the SD source (HOLE_* / SD_<h>_pool) and the NodeHead ABI,
+// Pool mode changes the SD source (HOLE_* / SD_<h>_desc) and the NodeHead ABI,
 // and astro_cs_compile reuses an on-disk SD_<h>.c by hash alone — so stamp the
 // store format into the version: a pre-pool store is cleared even when the
 // host passes version 0 (koruby's program store), instead of aborting at load
-// on a missing _pool.
+// on a missing _desc.
 static uint64_t
 astro_cs_effective_version(uint64_t version)
 {

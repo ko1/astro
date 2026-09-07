@@ -245,53 +245,135 @@ alloc_dispatcher_name_hash(NODE *n)
 
 #ifdef ASTRO_NODEHEAD_POOL
 // ---------------------------------------------------------------------------
-// Holes (pool mode, docs/idea_code_store.md §7) — called from the generated
-// SPECIALIZE_<node> while it prints an SD.  `hf` collects the body of
-// SD_<h>_fill, `*h` is the SD's running hole count.
+// Holes (pool mode, docs/idea_code_store.md §7)
 // ---------------------------------------------------------------------------
+//
+// Which values a hole table holds is a property of the node's SHAPE, so it does
+// not need a generated function per SD: SPECIALIZE records the traversal as a
+// byte-coded descriptor, and one walker in the runtime replays it against any
+// node of that shape.  The descriptor of an inlined child is spliced into its
+// parent's, so a public SD carries one flat program for its whole subtree and
+// there are no cross-references (hence no relocations) between descriptors.
+//
+//   EMIT off,size   pool[k++] = *(uintN *)((char *)n + off)
+//   ADDR off        pool[k++] = (uintptr_t)((char *)n + off)     (&n->u.X.ic)
+//   DOWN off        push n; n = *(NODE **)((char *)n + off)
+//   EMIT_AT off,i   pool[k++] = ((void **)((char *)n + off))[i]   (@children)
+//   DOWN_AT off,i   push n; n = ((NODE **)((char *)n + off))[i]  (@children)
+//   UP              n = pop
+//
+// Header: 4 bytes hole count, then 2 bytes maximum DOWN nesting (the walker
+// sizes its node stack from it), then the ops, then END.
+//
+// Offsets and sizes come from offsetof/sizeof in the generated SPECIALIZE code,
+// so the layout is the compiler's answer, not something restated by hand.
 
-// Next hole k; the fill computes it from the node as `(astro_hole_t)(expr)`.
-__attribute__((unused))
-static uint32_t
-astro_hole_alloc(FILE *hf, uint32_t *const h, const char *const expr)
+enum {
+    ASTRO_HOLE_END = 0, ASTRO_HOLE_EMIT, ASTRO_HOLE_ADDR,
+    ASTRO_HOLE_DOWN, ASTRO_HOLE_DOWN_AT, ASTRO_HOLE_UP, ASTRO_HOLE_EMIT_AT
+};
+
+// The generated SPECIALIZE code names fields; the compiler supplies the layout.
+#define ASTRO_OFF(path) ((uint32_t)offsetof(struct Node, path))
+#define ASTRO_SZ(path)  ((uint32_t)sizeof(((struct Node *)0)->path))
+
+// Descriptor under construction (one per SD being emitted).
+struct astro_hole_buf { uint8_t *b; uint32_t n, capa, depth; };
+
+static void
+astro_hole_put(struct astro_hole_buf *const d, uint32_t v, uint32_t bytes)
 {
-    const uint32_t k = (*h)++;
-    fprintf(hf, "    pool[%u] = (astro_hole_t)(%s);\n", k, expr);
-    return k;
+    if (d->n + bytes > d->capa) {
+        d->capa = d->capa ? d->capa * 2 + bytes : 64 + bytes;
+        d->b = realloc(d->b, d->capa);
+        if (!d->b) { fprintf(stderr, "astro_hole: out of memory\n"); exit(1); }
+    }
+    for (uint32_t i = 0; i < bytes; i++) d->b[d->n++] = (uint8_t)(v >> (8 * i));
 }
 
-// Reserve the hole range of an inlined child subtree (numbered from 0 inside
-// its own SD text, hence called with `P + off`) and chain its fill.
+// Emitted descriptors, kept for the session so a parent can splice a child's.
+static struct { char name[64]; uint8_t *b; uint32_t n, depth; } *astro_hole_saved;
+static uint32_t astro_hole_saved_n, astro_hole_saved_capa;
+
+static const uint8_t *
+astro_hole_saved_get(const char *const name, uint32_t *const len, uint32_t *const depth)
+{
+    for (uint32_t i = 0; i < astro_hole_saved_n; i++) {
+        if (strcmp(astro_hole_saved[i].name, name) == 0) {
+            *len = astro_hole_saved[i].n;
+            *depth = astro_hole_saved[i].depth;
+            return astro_hole_saved[i].b;
+        }
+    }
+    *len = *depth = 0;
+    return NULL;
+}
+
+// One hole: record how to read it, return its number.
 __attribute__((unused))
 static uint32_t
-astro_hole_sub(FILE *hf, uint32_t *const h, const char *const expr, const NODE *const child)
+astro_hole_alloc(struct astro_hole_buf *const d, uint32_t *const h,
+                 uint32_t op, uint32_t off, uint32_t arg)
 {
-    const uint32_t off = *h;
+    astro_hole_put(d, op, 1);
+    astro_hole_put(d, off, 2);
+    if (op == ASTRO_HOLE_EMIT)         astro_hole_put(d, arg, 1);   // size
+    else if (op == ASTRO_HOLE_EMIT_AT) astro_hole_put(d, arg, 2);   // index
+    return (*h)++;
+}
+
+// Splice an inlined child's descriptor, wrapped in the navigation that reaches
+// it.  `idx` is used only for @children (DOWN_AT); pass 0 otherwise.
+__attribute__((unused))
+static uint32_t
+astro_hole_sub(struct astro_hole_buf *const d, uint32_t *const h,
+               uint32_t off, int32_t idx, const NODE *const child)
+{
+    const uint32_t base = *h;
     *h += child->head.nholes;
-    fprintf(hf, "    %s_fill(%s, pool + %u);\n", child->head.dispatcher_name, expr, off);
-    return off;
+    if (idx < 0) {
+        astro_hole_put(d, ASTRO_HOLE_DOWN, 1);
+        astro_hole_put(d, off, 2);
+    } else {
+        astro_hole_put(d, ASTRO_HOLE_DOWN_AT, 1);
+        astro_hole_put(d, off, 2);
+        astro_hole_put(d, (uint32_t)idx, 2);
+    }
+    uint32_t len = 0, sub_depth = 0;
+    const uint8_t *const sub = astro_hole_saved_get(child->head.dispatcher_name, &len, &sub_depth);
+    for (uint32_t i = 0; i < len; i++) astro_hole_put(d, sub[i], 1);
+    // The walker needs a stack this deep to replay the splice.
+    if (sub_depth + 1 > d->depth) d->depth = sub_depth + 1;
+    astro_hole_put(d, ASTRO_HOLE_UP, 1);
+    return base;
 }
 
-// SD_<h>_fill for every SD; public roots also export SD_<h>_pool (count +
-// fill), which astro_cs_load resolves next to SD_<h>.
+// Keep the descriptor for parents to splice; a public SD also emits it as data
+// (`SD_<h>_desc`), which astro_cs_load resolves next to SD_<h>.
 __attribute__((unused))
 static void
-astro_hole_emit_fill(FILE *fp, const char *const name, const char *const body,
+astro_hole_emit_desc(FILE *fp, const char *const name, struct astro_hole_buf *const d,
                      uint32_t nholes, bool is_public)
 {
-    // The filler is only ever called through the pool build (all.so): the loader
-    // reads the values it produced, it does not run it.  Guard it out of the
-    // patch build so it is not copied into every instance (measured ~9% of an
-    // instance's text).
-    fprintf(fp, "#ifndef ASTRO_SD_NO_FILL\n");
-    fprintf(fp, "static inline void\n%s_fill(const NODE *restrict n, astro_hole_t *restrict pool)\n"
-                "{\n    (void)n; (void)pool;\n%s}\n\n", name, body ? body : "");
-    if (is_public) {
-        fprintf(fp, "uint32_t\n%s_pool(const NODE *n, astro_hole_t *pool)\n"
-                    "{\n    if (pool) %s_fill(n, pool);\n    return %uU;\n}\n\n",
-                name, name, nholes);
+    if (astro_hole_saved_n == astro_hole_saved_capa) {
+        astro_hole_saved_capa = astro_hole_saved_capa ? astro_hole_saved_capa * 2 : 128;
+        astro_hole_saved = realloc(astro_hole_saved, sizeof(*astro_hole_saved) * astro_hole_saved_capa);
+        if (!astro_hole_saved) { fprintf(stderr, "astro_hole: out of memory\n"); exit(1); }
     }
-    fprintf(fp, "#endif\n\n");
+    snprintf(astro_hole_saved[astro_hole_saved_n].name, 64, "%s", name);
+    astro_hole_saved[astro_hole_saved_n].b = d->b;
+    astro_hole_saved[astro_hole_saved_n].n = d->n;
+    astro_hole_saved[astro_hole_saved_n].depth = d->depth;
+    astro_hole_saved_n++;
+
+    if (!is_public) return;
+    // The descriptor is data, so it stays out of the patch objects' text and
+    // costs nothing per instance.
+    fprintf(fp, "#ifndef ASTRO_SD_NO_DESC\nconst uint8_t %s_desc[] = {%uU,%uU,%uU,%uU,%uU,%uU",
+            name, nholes & 0xff, (nholes >> 8) & 0xff, (nholes >> 16) & 0xff, (nholes >> 24) & 0xff,
+            d->depth & 0xff, (d->depth >> 8) & 0xff);
+    for (uint32_t i = 0; i < d->n; i++) fprintf(fp, ",%uU", d->b[i]);
+    fprintf(fp, ",%uU};\n#endif\n\n", ASTRO_HOLE_END);
 }
 #endif
 
@@ -693,7 +775,7 @@ astro_emit_ast_c_program_params(FILE *fp, NODE *root,
             if (n_seen < log_n) seen[n_seen++] = sd;
             fprintf(fp, "ASTRO_SD_PROTO(%s);\n", sd);
 #ifdef ASTRO_NODEHEAD_POOL
-            fprintf(fp, "uint32_t %s_pool(const NODE *n, astro_hole_t *pool);\n", sd);
+            fprintf(fp, "extern const uint8_t %s_desc[];\n", sd);
 #endif
         }
         if (n_seen) fprintf(fp, "\n");
@@ -732,7 +814,7 @@ astro_emit_ast_c_program_params(FILE *fp, NODE *root,
     for (int id = 0; id < ctx.next_id; id++) {
         NODE *n = by_id[id];
         const char *sd = n ? astro_emit_lookup_sd(n) : NULL;
-        if (sd) fprintf(fp, "    astro_cs_pool_attach(_n[%d], %s_pool);\n", id, sd);
+        if (sd) fprintf(fp, "    astro_cs_pool_attach(_n[%d], %s_desc);\n", id, sd);
     }
 #endif
     fprintf(fp, "    return _n[%d];\n", root_id);

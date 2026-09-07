@@ -73,12 +73,12 @@ node_dispatcher_func_t astro_cs_static_sd_lookup(const char *sym);
 uint32_t               astro_cs_static_sd_count(void);
 
 // Pool mode (ASTRO_NODEHEAD_POOL, docs/idea_code_store.md §7): a static table
-// must also resolve "SD_<hash>_pool" — astro_cs_load aborts on an SD whose
-// pool fill cannot be found.  Weak no-table default; see astro_hole.h for the
-// fill signature.  (koruby's wasm --build bypasses the table: the emitted AST
-// builder references SD_<h> / SD_<h>_pool directly.)
+// must also resolve "SD_<hash>_desc", the shape's hole descriptor —
+// astro_cs_load aborts on an SD that has none.  Weak no-table default.
+// (koruby's wasm --build bypasses the table: the emitted AST builder names
+// SD_<h> and SD_<h>_desc directly.)
 #ifdef ASTRO_NODEHEAD_POOL
-astro_pool_fill_t astro_cs_static_pool_lookup(const char *sym);
+const uint8_t *astro_cs_static_desc_lookup(const char *sym);
 #endif
 
 // Loader path (docs/idea_code_store.md §7, pool mode, x86-64 Linux): copy the

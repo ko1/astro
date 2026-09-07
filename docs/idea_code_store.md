@@ -248,23 +248,35 @@ L1d miss −50% だが L1i miss 9×・分岐ミス +47% で cycles +12.7% (net �
 出ない) ので pool の `P[k]` 再ロードと命令数は同じで、効くのは D miss の多い大きな body だけ。
 インスタンス化は同形 body の SD 共有 (I キャッシュ共用) を失うので、対象は上位数十 body に絞る。
 
-### 7.7.2 fill の置き場所 (2026-09-06)
+### 7.7.2 穴の値の作り方 — 記述子 + walker (2026-09-06 → 09-07)
 
-穴の値を作るのは生成された `SD_<h>_fill` だけで、**両経路がこれを共有**している。pool は
+穴の値を作るのは 1 箇所だけで、**pool 経路とローダ経路がそれを共有**している。pool は
 その出力を表に実体化して実行のたびに引き、ローダは織り込むときに 1 回読んで即値にする。
 
-- **`op/` (patch ビルド) には fill を出さない** (`-DASTRO_SD_NO_FILL`)。ローダは `all.so` 側の
-  fill が作った値を使うので、patch オブジェクトに fill があるとインスタンスごとに
-  **実行されないコードを複製**することになる。落とした結果 optcarrot で all 15650 → 14641 KB
-  (−6.4%)、hot 233 → 215 KB (−7.7%)。
-- **ローダは pool 配列に依存しない**。`n->head.pool` があればそれを、無ければ同じ fill を
-  スクラッチバッファに呼んで使う。これで「表を作らずローダだけ」という構成が選べる。
+- **`op/` (patch ビルド) には値の作り手を出さない** (`-DASTRO_SD_NO_DESC`)。ローダは `all.so` 側から
+  値を得るので、patch オブジェクトに入れるとインスタンスごとに**使われないものを複製**する
+  ことになる。落とした結果 optcarrot で all 15650 → 14641 KB (−6.4%)、hot 233 → 215 KB (−7.7%)。
+- **ローダは pool 配列に依存しない**。`n->head.pool` があればそれを、無ければ同じ記述子を
+  スクラッチバッファに展開して使う。これで「表を作らずローダだけ」という構成が選べる。
   `ASTRO_LD_SCRATCH=1` で常にスクラッチ経路を通し、両者が一致することをテストしている
   (異常系 10 ケース・optcarrot・DOOM とも同一結果)。
-- 検討したが見送り: fill を**記述子 (データ) + 汎用 walker** に置き換える案。形はノードが
-  持っているので専用関数は原理的に不要だが、実測すると得は `all.so` の 306 KB が 110〜220 KB に
-  なるだけ (3.4 MB 中の 3〜6%)、しかもバインド後は触られないコードである。上の 2 点で
-  実害のある複製は消えたので、番号付けの真実を 2 箇所に分ける危険に見合わないと判断した。
+- **どの値を穴にするかはノードの形の性質**なので、SD ごとの専用関数は要らない。SPECIALIZE は
+  木の辿り方を**バイトコードの記述子**として出し、ランタイムの walker 1 本がそれを任意の
+  同形ノードに対して再生する。生成物から `SD_<h>_fill()` と `SD_<h>_pool()` が消え、
+  `const uint8_t SD_<h>_desc[]` (データ) だけが残る。
+
+  ops は `EMIT off,size` / `ADDR off` / `DOWN off` / `EMIT_AT off,i` / `DOWN_AT off,i` / `UP` / `END`。
+  先頭に穴数 (4B) と **DOWN の最大深さ** (2B) を置き、walker はそれでノードスタックを取る。
+  オフセットと大きさは生成コード側の `offsetof` / `sizeof` で出すので、レイアウトを人が
+  書き写す箇所は無い。inline した子の記述子は親のバイト列に**そのまま埋め込む**ので、
+  public な SD は部分木ぜんぶを 1 本の平坦なプログラムとして持ち、記述子どうしの
+  相互参照 (= 再配置) は無い。
+
+  **2026-09-06 にはこの案を見送っていた**: 得は `all.so` の 306 KB が 110〜220 KB のデータに
+  なるだけで、番号付けの真実が 2 箇所に分かれる危険に見合わないと書いた。撤回する。
+  穴の番号は「記述子のストリーム順 = walker の `k` の順」で 1 箇所に閉じ、専用関数と
+  そのテキストを持ち回る必要が無くなる方が構造として素直だった。optcarrot の 502 SD で
+  記述子は計 184 KB。
 
 ### 7.7.1 ローダの位置づけと arch backend の切り分け
 
@@ -299,9 +311,9 @@ BL の ±128MB と ADRP+LDR による GOT 経由、ADRP+ADD は ±4GB なので�
 実装箇所: `lib/astrogen.rb` (`Node.pool_mode?` / `Operand#hole?` / `hole_arg` /
 `child_call_emitter` / `sd_pool_*`)、`runtime/astro_hole.h` (`astro_hole_t`、`HOLE_*`、
 `ASTRO_POOL_PARAM`)、`runtime/astro_node.c` (`astro_hole_alloc` / `astro_hole_sub` /
-`astro_hole_emit_fill`、`--build` builder 末尾の pool attach)、`runtime/astro_code_store.c`
-(dedup 表に穴数、`astro_cs_load` が `SD_<h>_pool` を dlsym して `astro_cs_pool_attach`、
-store format salt)。koruby_precise: `node.h` の NodeHead に `pool` / `nholes` と
+`astro_hole_emit_desc`、`--build` builder 末尾の pool attach)、`runtime/astro_code_store.c`
+(dedup 表に穴数、`astro_hole_walk`、`astro_cs_load` が `SD_<h>_desc` を dlsym して
+`astro_cs_pool_attach`、store format salt)。koruby_precise: `node.h` の NodeHead に `pool` / `nholes` と
 `ASTRO_NODEHEAD_POOL`、`koruby_gen.rb` は `pool_mode?` (`KORUBY_POOL=0` で従来出力) と
 `hole?` の宣言、SD 出力の上書きを pool 対応。opt-in しないサンプルの生成物は不変
 (node_alloc.c の `#ifdef ASTRO_NODEHEAD_POOL` 初期化だけ増える)。
@@ -309,7 +321,7 @@ store format salt)。koruby_precise: `node.h` の NodeHead に `pool` / `nholes`
 上の設計 (7.2〜7.4) からの差分:
 
 - **穴番号は SD (subtree) ごとに 0 起点の相対番号**。親は子 SD を `P + off` で呼び、
-  `SD_<h>_fill` が子の `SD_<c>_fill(child, pool + off)` を連鎖する。同じ形の inline SD が
+  親の記述子は子の記述子を `DOWN` … `UP` で挟んでそのまま取り込む。同じ形の inline SD が
   1 ファイル内で dedup されても同じテキストで済む (絶対番号だと親ごとに別テキスト)。
   子の穴数は `n->head.nholes` (SPECIALIZE 時、dedup hit でも表から復元)。
 - inline SD は `(CTX *, NODE *, VALUE *, ASTRO_POOL_PARAM)` の 4 引数。public SD は
@@ -319,9 +331,9 @@ store format salt)。koruby_precise: `node.h` の NodeHead に `pool` / `nholes`
   `(c, n, slots, x_pool)` で呼ぶ。no_inline 子 (cycle break / `@noinline` kind) は
   `astro_sd_indirect` (runtime dispatcher へ橋渡し、pool 引数は NULL)。interp TU は従来どおり
   (`node_eval.c` はマクロで両 TU に対応)。
-- `SD_<h>_HOLES` / 穴の種類表は出さず、exported `uint32_t SD_<h>_pool(const NODE *,
-  astro_hole_t *)` (pool が NULL なら穴数だけ返す) に集約。ローダ経路の穴種別は `.o` の
-  再配置種別 (R_X86_64_32 = u32 / R_X86_64_64 = ptr) で判る。
+- `SD_<h>_HOLES` / 穴の種類表 / 生成関数は出さず、`const uint8_t SD_<h>_desc[]` 1 本に
+  集約 (§7.7.2)。ローダ経路の穴種別は `.o` の再配置種別 (R_X86_64_32 = u32 /
+  R_X86_64_64 = ptr) で判る。
 - pool 要素は `unsigned long long` (LP64 では VALUE = long と TBAA が別クラスなので slot
   store が `P[k]` の再ロードを強制しない。wasm32 でも 64 bit)。
 - 旧 (pool 前) の code_store は hash 一致で再利用されるので、store の version に format

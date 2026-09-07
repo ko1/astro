@@ -235,12 +235,12 @@ astro_ld_values_get(NODE *n, const char *sd_sym, struct astro_ld_values *out)
     static int scratch = -1;
     if (scratch < 0) { const char *e = getenv("ASTRO_LD_SCRATCH"); scratch = (e && *e && strcmp(e, "0")) ? 1 : 0; }
     if (n->head.pool && !scratch) { out->v = n->head.pool; out->n = n->head.nholes; out->owned = NULL; return true; }
-    astro_pool_fill_t fill = astro_cs_dlsym_pool(sd_sym);
-    if (!fill) return false;
-    const uint32_t cnt = fill(n, NULL);
+    const uint8_t *const desc = astro_cs_dlsym_desc(sd_sym);
+    if (!desc) return false;
+    const uint32_t cnt = astro_hole_walk(n, desc, NULL);
     astro_hole_t *buf = malloc(sizeof(*buf) * (cnt ? cnt : 1));
     if (!buf) return false;
-    fill(n, buf);
+    astro_hole_walk(n, desc, buf);
     out->v = buf; out->n = cnt; out->owned = buf;
     return true;
 }

@@ -149,20 +149,21 @@ module ASTroGen
         # the hole and records the fill expression.
         def hole_arg(name)
           field = "n->u.#{name}.#{self.name}"
+          path  = "u.#{name}.#{self.name}"      # offsetof/sizeof are the compiler's answer
           if ref?
-            return "    fprintf(fp, \"        (#{@type})HOLE_PTR(%u)\", astro_hole_alloc(_hf, &_h, \"(uintptr_t)&#{field}\"));"
+            return "    fprintf(fp, \"        (#{@type})HOLE_PTR(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_ADDR, ASTRO_OFF(#{path}), 0));"
           end
           case storage_type
           when 'NODE *'
-            lazy_node_hole_arg(field)
+            lazy_node_hole_arg(field, path)
           when 'uint32_t'
-            "    fprintf(fp, \"        HOLE_U32(%u)\", astro_hole_alloc(_hf, &_h, \"#{field}\"));"
+            "    fprintf(fp, \"        HOLE_U32(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path})));"
           when 'int32_t'
-            "    fprintf(fp, \"        HOLE_I32(%u)\", astro_hole_alloc(_hf, &_h, \"#{field}\"));"
+            "    fprintf(fp, \"        HOLE_I32(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path})));"
           when 'uint64_t', 'VALUE'
-            "    fprintf(fp, \"        (#{storage_type})HOLE_U64(%u)\", astro_hole_alloc(_hf, &_h, \"#{field}\"));"
+            "    fprintf(fp, \"        (#{storage_type})HOLE_U64(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path})));"
           when 'const char *', 'void *'
-            "    fprintf(fp, \"        (#{storage_type})HOLE_PTR(%u)\", astro_hole_alloc(_hf, &_h, \"(uintptr_t)#{field}\"));"
+            "    fprintf(fp, \"        (#{storage_type})HOLE_PTR(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path})));"
           else
             raise "no hole form for operand: #{join}"
           end
@@ -171,14 +172,15 @@ module ASTroGen
         # Lazy child as a hole: the NODE * plus the (SD, pool offset) pair the
         # EVAL body dispatches through.  A no_inline child (cycle break or
         # @noinline kind) goes through its runtime dispatcher (own pool).
-        def lazy_node_hole_arg(field)
+        def lazy_node_hole_arg(field, path)
           <<~C.chomp
               if (#{field} && !#{field}->head.flags.no_inline) {
-                  const uint32_t _k = astro_hole_alloc(_hf, &_h, "(uintptr_t)#{field}");
-                  const uint32_t _o = astro_hole_sub(_hf, &_h, "#{field}", #{field});
+                  const uint32_t _k = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path}));
+                  const uint32_t _o = astro_hole_sub(_hf, &_h, ASTRO_OFF(#{path}), -1, #{field});
                   fprintf(fp, "        (NODE *)HOLE_PTR(%u), %s, P + %u", _k, #{field}->head.dispatcher_name, _o);
               } else {
-                  fprintf(fp, "        (NODE *)HOLE_PTR(%u), astro_sd_indirect, NULL", astro_hole_alloc(_hf, &_h, "(uintptr_t)#{field}"));
+                  fprintf(fp, "        (NODE *)HOLE_PTR(%u), astro_sd_indirect, NULL",
+                          astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path})));
               }
           C
         end
@@ -425,34 +427,33 @@ module ASTroGen
       # Local state of SPECIALIZE_ in pool mode: fill stream + hole counter.
       def sd_pool_open
         return "" unless pool_mode?
-        "    char *_hbuf = NULL; size_t _hlen = 0; uint32_t _h = 0;\n" \
-        "    FILE *_hf = open_memstream(&_hbuf, &_hlen);\n"
+        "    struct astro_hole_buf _hbuf = {0}; struct astro_hole_buf *const _hf = &_hbuf;\n" \
+        "    uint32_t _h = 0; (void)_hf;\n"
       end
 
-      # After the SD text: emit SD_<h>_fill (+ exported SD_<h>_pool for
-      # public roots) and record the subtree's hole count on the node.
+      # After the SD text: emit the shape descriptor (public roots only) and
+      # record the subtree's hole count on the node.
       def sd_pool_close
         return "" unless pool_mode?
-        "    fclose(_hf);\n" \
-        "    astro_hole_emit_fill(fp, dispatcher_name, _hbuf, _h, is_public);\n" \
-        "    free(_hbuf);\n" \
+        "    astro_hole_emit_desc(fp, dispatcher_name, &_hbuf, _h, is_public);\n" \
         "    n->head.nholes = _h;\n"
       end
 
       # C statement (inside SPECIALIZE_) that prints `<lhs> = UNWRAP(<child
       # SD call>)` for the @child at `field`.  `slot` is its storage slot.
-      def child_call_emitter(lhs, slot, field)
+      def child_call_emitter(lhs, slot, field, path = nil)
         unless pool_mode?
           return "    fprintf(fp, \"    #{lhs} = UNWRAP(%s(#{child_dispatch_args(slot, field)}));\\n\", DISPATCHER_NAME(#{field}));"
         end
+        path ||= field.sub(/\An->/, '')
         <<~C.chomp
             if (#{field}->head.flags.no_inline) {
-                const uint32_t _k = astro_hole_alloc(_hf, &_h, "(uintptr_t)#{field}");
+                const uint32_t _k = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path}));
                 fprintf(fp, "    NODE *const _cn%u = (NODE *)HOLE_PTR(%u);\\n    #{lhs} = UNWRAP((*_cn%u->head.dispatcher)(#{child_dispatch_args(slot, '_cn%u')}));\\n",
                         _k, _k, _k, _k);
             } else {
-                const uint32_t _k = astro_hole_alloc(_hf, &_h, "(uintptr_t)#{field}");
-                const uint32_t _o = astro_hole_sub(_hf, &_h, "#{field}", #{field});
+                const uint32_t _k = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path}));
+                const uint32_t _o = astro_hole_sub(_hf, &_h, ASTRO_OFF(#{path}), -1, #{field});
                 fprintf(fp, "    #{lhs} = UNWRAP(%s(#{child_dispatch_args(slot, '(NODE *)HOLE_PTR(%u)')}, P + %u));\\n",
                         #{field}->head.dispatcher_name, _k, _o);
             }
@@ -948,7 +949,7 @@ module ASTroGen
         # advanced sp).  Child's DISPATCH/SD prologue does the advance.
         setup_emitters = setup_decl_emitters + child_ops.map do |op|
           field = "n->u.#{@name}.#{op.name}"
-          child_call_emitter(child_storage_expr(op.sp_slot), op.sp_slot, field)
+          child_call_emitter(child_storage_expr(op.sp_slot), op.sp_slot, field, "u.#{@name}.#{op.name}")
         end
 
         # Slot-area prologue at top of SD body (per-language hook).

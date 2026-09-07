@@ -130,8 +130,9 @@ koruby は require 不要 bundle (koruby 専用の File shim を含むので CRu
 ## 結果: 経路 P (穴 + pool、2026-09-06、`docs/idea_code_store.md` §7.7)
 
 SD は site 固有値を NODE から読まず、SD インスタンスの穴の表 `n->head.pool` (`astro_hole_t[]`、
-load 時に生成 `SD_<h>_fill` が埋める) から `P[k]` で読む。inline SD には `P + off` を隠し引数で渡す。
-hash・呼び出し規約・SD 数 (502) は不変、all.so は 3.32 → 3.88 MB (`_fill` のぶん)。
+load 時に記述子 `SD_<h>_desc` を walker が再生して埋める) から `P[k]` で読む。inline SD には
+`P + off` を隠し引数で渡す。hash・呼び出し規約・SD 数 (502) は不変、all.so は 3.32 → 3.67 MB
+(記述子 184 KB のぶん。生成関数だった頃は 3.88 MB)。
 
 sp4 (`trials/.../logs/p2/optcarrot-ab.txt`, master `0ffc4c0f` vs pool, 3 round 交互):
 

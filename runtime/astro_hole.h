@@ -18,12 +18,13 @@
 typedef unsigned long long astro_hole_t;
 
 struct Node;
-// Generated per public SD: fills `pool` (when non-NULL) for the tree rooted
-// at `n` and returns the hole count.
-typedef uint32_t (*astro_pool_fill_t)(const struct Node *n, astro_hole_t *pool);
-// Build n's pool with `fill` and install it (astro_code_store.c).  Pools are
-// immortal: an activation of an older SD generation may still hold P.
-void astro_cs_pool_attach(struct Node *n, astro_pool_fill_t fill);
+// A shape's hole table is described by a byte-coded traversal emitted next to
+// its dispatcher (`SD_<h>_desc`), replayed by astro_hole_walk against any node
+// of that shape — see astro_node.c for the ops.
+uint32_t astro_hole_walk(const struct Node *n, const uint8_t *desc, astro_hole_t *pool);
+// Build n's pool from the descriptor and install it (astro_code_store.c).
+// Pools are immortal: an activation of an older SD generation may still hold P.
+void astro_cs_pool_attach(struct Node *n, const uint8_t *desc);
 
 #if defined(ASTRO_SD_PATCH)
 // Loader path: the same SD source compiled a second time with the flags the
