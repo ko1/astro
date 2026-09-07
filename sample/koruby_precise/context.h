@@ -669,8 +669,24 @@ typedef struct KorbClass {
 #ifdef KORB_STALE_CHECK
 VALUE korb_stale_check(VALUE v, const char *file, int line);
 #define KORB_SC(v) korb_stale_check((VALUE)(uintptr_t)(v), __FILE__, __LINE__)
+/* KORB_GC_HERE — collect right here, in a debug build only.
+ *
+ * ASTRO_GC_STRESS=1 collects at EVERY allocation, which removes the "did a GC
+ * happen to land there" luck but costs orders of magnitude in time — too slow to
+ * run a whole suite under.  value_read_after_gc.ql already names the exact
+ * may-GC call each hazard hangs off, so drop this immediately after that call
+ * instead: the one collection that matters happens, deterministically, and the
+ * rest of the run goes at normal speed.
+ *
+ * What it does NOT remove is value luck: if the slot happens to hold a Fixnum
+ * on the path the test takes, nothing moves and nothing is learned.  The query's
+ * type context tells you what to feed (a Bignum, a String, an object with
+ * #to_int); that part is test-input work, not tooling. */
+void korb_gc_here(void *c);          /* CTX is not declared yet at this point */
+#define KORB_GC_HERE(c) korb_gc_here((void *)(c))
 #else
 #define KORB_SC(v) (v)
+#define KORB_GC_HERE(c) ((void)0)
 #endif
 
 #define VAL2STR(v)         ((KorbString *)(uintptr_t)KORB_SC(v))

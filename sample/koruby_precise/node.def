@@ -537,7 +537,7 @@ node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     if (KORB_RATIONAL_P(l) || (KORB_RATIONAL_P(rhs) && (KORB_INTEGER_P(l) || KORB_FLOAT_P(l))))
         return korb_rat_arith(c, slots, l, rhs, 3);
     if (KORB_INTEGER_P(l)) {                            /* Fixnum or Bignum: coerce protocol, else TypeError */
-        bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, "/", n->u.node_div.line, &h);
+        bool h; RESULT cr = korb_try_coerce(c, slots, l, &rhs, "/", n->u.node_div.line, &h);
         if (h) return cr;
         return korb_raise(c, slots, KORB_E_TYPE, n->u.node_div.line, "%s can't be coerced into Integer", korb_type_name(rhs));
     }

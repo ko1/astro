@@ -50,6 +50,59 @@ ascheme_precise 179/179、baruby_precise 8/8 (`T_gc_big` / `T_gc_stress` 込み)
 性能は交互測定 8 組で 0.758 → 0.749 s と、むしろわずかに速い
 (不明なメモリへのキャッシュミスが、96 バイトの配列の二分探索に置き換わる)。
 
+### korb_try_coerce の rhs が stale だった (#coerce が nil を返す経路)
+
+**KORB_GC_HERE で見つけて、素の STRESS で確認した本物のバグ。**
+
+```c
+RESULT korb_try_coerce(...) {
+    *handled = false;
+    if (!korb_responds_to(c, rhs, coerce_id)) return RESULT_OK(KORB_NIL);   /* 確保なし */
+    *handled = true;
+    slots[0] = rhs; slots[1] = l;
+    RESULT cr = korb_send_impl(...);                       /* ← Ruby が走る = GC */
+    if (cr.value == KORB_NIL) { *handled = false; return RESULT_OK(KORB_NIL); }   /* ← 確保の後で false */
+    ...
+}
+```
+
+`korb_refined_dispatch` と違い、**`korb_send_impl` を走らせた後に `*handled = false`
+で返る経路がある** (`#coerce` が nil を返したとき)。呼び出し側 25 箇所はどれも
+
+```c
+bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, op, line, &h);
+if (h) return cr;
+return korb_raise(c, slots, ..., korb_coerce_name(c, rhs));   /* ← rhs は stale */
+```
+
+の形で、TypeError のメッセージを**移動済みのオブジェクトから**作っていた。
+Ruby から素直に踏める:
+
+```ruby
+class C; def coerce(o); nil; end; end
+1 + C.new
+```
+
+`ASTRO_GC_STRESS=1` + KORB_STALE_CHECK で **1,200 件**の stale deref
+(`korb_a_type_name` 内の `VAL2OBJ(v)->klass`)。出力は CRuby と一致したままで、
+移動先の中身がたまたま読めているだけの静かな破壊だった。
+
+**直し方**: `rhs` を in/out ポインタにした (この codebase の
+`korb_coerce_to_int(c, slots, &pos0)` と同じ作法)。`korb_try_coerce` は
+ディスパッチ直後に `*rhs = slots[0]` と書き戻す — slots[0] はルート付きなので
+GC が更新している。呼び出し 25 箇所を `&<local>` に機械的に書き換え、
+渡せなくなった `const VALUE` を 11 箇所外した。
+
+修正後 stale 0 件。coerce プロトコル自体 (`[a, b]` を返す通常の経路) も CRuby 一致。
+`t/hand/coerce_nil_stale.rb` と `t/hand/coerce_protocol.rb` を回帰として追加。
+
+**見つけ方の要点**: 「STRESS は全確保で GC するから遅すぎる」「たまたまその値
+だっただけかもしれない」という指摘はどちらも正しい。前者は
+`value_read_after_gc.ql` が名指しした may-GC 呼び出しの直後にだけ
+`KORB_GC_HERE()` を置くことで解いた (0.25 秒で 12,000 件の stale を検出)。
+後者は道具では解けず、テスト入力の問題として残る — ただしクエリの型文脈が
+「何を食わせるべきか」を教えてくれる (ここでは `#coerce` が nil を返す object)。
+
 ### 撤回: korb_send_impl の `self` は真陽性ではなかった
 
 `value_read_after_gc.ql` の 189 件のうち 118 行 (62%) を占めていた

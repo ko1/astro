@@ -295,7 +295,7 @@ static RESULT korb_int_bitop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     if (UNLIKELY(!KORB_INTEGER_P(o))) {                /* user object → #coerce protocol; Float/etc. → TypeError */
         if (KORB_OBJECT_P(o)) {
-            bool h; RESULT cr = korb_try_coerce(c, slots, s, o, kind == 0 ? "&" : kind == 1 ? "|" : "^", 0, &h);
+            bool h; RESULT cr = korb_try_coerce(c, slots, s, &o, kind == 0 ? "&" : kind == 1 ? "|" : "^", 0, &h);
             if (h) return cr;
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, o));
@@ -324,7 +324,7 @@ static RESULT korb_m_int_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     if (KORB_RATIONAL_P(o)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), o, 3);
     if (UNLIKELY(!KORB_INTEGER_P(o))) {                /* non-numeric arg → the coerce protocol */
-        if (KORB_OBJECT_P(o)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), o, "remainder", 0, &h); if (h) return cr; }
+        if (KORB_OBJECT_P(o)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &o, "remainder", 0, &h); if (h) return cr; }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, o));
     }
     if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || !FIXNUM_P(o)))   /* Bignum operand/self → GMP truncated */

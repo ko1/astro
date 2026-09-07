@@ -60,7 +60,7 @@ static RESULT korb_m_flt_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_flt_nan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(isnan(SELF_FLT) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_flt_inf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; double d = SELF_FLT; return RESULT_OK(isinf(d) ? LONG2FIX(d < 0 ? -1 : 1) : KORB_NIL); }
 static RESULT korb_m_flt_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const VALUE ov = VALUE_SLICE_GET(a, 0);
+    VALUE ov = VALUE_SLICE_GET(a, 0);
     double o;
     if (!korb_num_to_d(ov, &o)) {                            /* coercible object → a, b = o.coerce(self); a <=> b */
         const double si = SELF_FLT;
@@ -75,7 +75,7 @@ static RESULT korb_m_flt_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
                 return RESULT_OK(LONG2FIX((self_level > other_level) - (self_level < other_level)));
             }
         }
-        if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ov, "<=>", 0, &h); if (h) return cr; }
+        if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &ov, "<=>", 0, &h); if (h) return cr; }
         return RESULT_OK(KORB_NIL);
     }
     double s = SELF_FLT;
@@ -178,7 +178,7 @@ static RESULT korb_m_flt_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(s);
 }
 static RESULT korb_m_flt_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const VALUE arg = VALUE_SLICE_GET(a, 0);
+    VALUE arg = VALUE_SLICE_GET(a, 0);
     if (KORB_COMPLEX_P(arg)) {                          /* self / (cr+ci·i) → Complex (Float components) */
         const double s = SELF_FLT;
         double cr, ci;
@@ -190,15 +190,15 @@ static RESULT korb_m_flt_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
     }
     double o; if (UNLIKELY(!korb_num_to_d(arg, &o))) {
-        if (KORB_OBJECT_P(arg)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), arg, "fdiv", 0, &h); if (h) return cr; }
+        if (KORB_OBJECT_P(arg)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &arg, "fdiv", 0, &h); if (h) return cr; }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, arg));
     }
     return korb_float_new(c, slots, SELF_FLT / o);
 }
 static RESULT korb_m_flt_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) {
-        const VALUE ov = VALUE_SLICE_GET(a, 0);
-        if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ov, "div", 0, &h); if (h) return cr; }
+        VALUE ov = VALUE_SLICE_GET(a, 0);
+        if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &ov, "div", 0, &h); if (h) return cr; }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, ov));
     }
     if (UNLIKELY(o == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
@@ -206,8 +206,8 @@ static RESULT korb_m_flt_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 static RESULT korb_m_flt_modulo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) {
-        const VALUE ov = VALUE_SLICE_GET(a, 0);
-        if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ov, "%", 0, &h); if (h) return cr; }   /* obj#coerce → a % b */
+        VALUE ov = VALUE_SLICE_GET(a, 0);
+        if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &ov, "%", 0, &h); if (h) return cr; }   /* obj#coerce → a % b */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, ov));
     }
     if (UNLIKELY(o == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
@@ -217,8 +217,8 @@ static RESULT korb_m_flt_modulo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 static RESULT korb_m_flt_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) {
-        const VALUE ov = VALUE_SLICE_GET(a, 0);
-        if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ov, "remainder", 0, &h); if (h) return cr; }
+        VALUE ov = VALUE_SLICE_GET(a, 0);
+        if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &ov, "remainder", 0, &h); if (h) return cr; }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, ov));
     }
     /* CRuby Numeric#remainder: z = self % o (floored), then z - o when the signs
@@ -235,8 +235,8 @@ static RESULT korb_m_flt_next(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_flt_prev(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_float_new(c, slots, nextafter(SELF_FLT, (double)-INFINITY)); }
 static RESULT korb_m_flt_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) {
-        const VALUE ov = VALUE_SLICE_GET(a, 0);
-        if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ov, "divmod", 0, &h); if (h) return cr; }
+        VALUE ov = VALUE_SLICE_GET(a, 0);
+        if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &ov, "divmod", 0, &h); if (h) return cr; }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, ov));
     }
     if (UNLIKELY(o == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");

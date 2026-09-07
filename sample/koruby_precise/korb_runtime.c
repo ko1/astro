@@ -42,6 +42,7 @@ static void korb_sc_report(void) {
     fprintf(stderr, "KORB_STALE: %lu derefs, %lu heap, %lu stale\n",
             korb_sc_calls, korb_sc_heap, korb_sc_stale);
 }
+void korb_gc_here(void *cv) { aro_gc_collect((CTX *)cv); }
 VALUE korb_stale_check(VALUE v, const char *file, int line)
 {
     korb_sc_calls++;
@@ -279,7 +280,7 @@ RESULT korb_rat_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     if (UNLIKELY(!korb_as_rat_v(l, &slots[0], &slots[1]) || !korb_as_rat_v(r, &slots[2], &slots[3]))) {
         if (KORB_RATIONAL_P(l) && KORB_OBJECT_P(r)) {     /* a, b = r.coerce(l); a OP b */
             static const char *const ratop[] = { "+", "-", "*", "/", "%" };
-            bool h; RESULT cr = korb_try_coerce(c, slots, l, r, ratop[op], 0, &h); if (h) return cr;
+            bool h; RESULT cr = korb_try_coerce(c, slots, l, &r, ratop[op], 0, &h); if (h) return cr;
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_coerce_name(c, KORB_RATIONAL_P(l) ? r : l));
     }
@@ -560,7 +561,7 @@ static bool korb_obj_is_numeric(CTX *c, VALUE v);   /* fwd (builtins/time.c) */
  * (negative base + fractional exp -> Complex, as for Integer and Float power). */
 static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
-    const VALUE e = VALUE_SLICE_GET(a, 0);
+    VALUE e = VALUE_SLICE_GET(a, 0);
     slots[0] = SELF_RAT->num; slots[1] = SELF_RAT->den;     /* root */
     if (KORB_INTEGER_P(e)) {                                /* exact Rational */
         korb_mp_t en; korb_to_mpz(e, en);
@@ -597,7 +598,7 @@ static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         double ex;
         if (KORB_FLOAT_P(e)) ex = korb_float_val(e);
         else if (KORB_RATIONAL_P(e)) { korb_mp_t a2, b2; korb_to_mpz(VAL2RAT(e)->num, a2); korb_to_mpz(VAL2RAT(e)->den, b2); ex = korb_mp_get_d(a2) / korb_mp_get_d(b2); korb_mp_clear(a2); korb_mp_clear(b2); }
-        else if (KORB_OBJECT_P(e)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), e, "**", 0, &h); if (h) return cr; return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_coerce_name(c, e)); }
+        else if (KORB_OBJECT_P(e)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &e, "**", 0, &h); if (h) return cr; return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_coerce_name(c, e)); }
         else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_coerce_name(c, e));
         /* 0 ** negative: an exact (Rational) exponent diverges → ZeroDivisionError;
          * a Float exponent stays in the float domain → pow(0.0, neg) = Infinity. */
@@ -628,10 +629,10 @@ static RESULT korb_m_rat_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_rat_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 2); }
 static RESULT korb_m_rat_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 3); }
 static RESULT korb_m_rat_cmp_m(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const VALUE o = VALUE_SLICE_GET(a, 0);
+    VALUE o = VALUE_SLICE_GET(a, 0);
     int r = korb_rat_cmp(VALUE_REF_GET(self), o);
     if (r == 2) {                                          /* coercible object → a, b = o.coerce(self); a <=> b */
-        if (KORB_OBJECT_P(o)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), o, "<=>", 0, &h); if (h) return cr; }
+        if (KORB_OBJECT_P(o)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &o, "<=>", 0, &h); if (h) return cr; }
         return RESULT_OK(KORB_NIL);
     }
     return RESULT_OK(LONG2FIX(r));
@@ -827,7 +828,7 @@ RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
                     return korb_cpx_new(c, slots + 4, slots[2], slots[3]);
                 }
             }
-            bool h; RESULT cr = korb_try_coerce(c, slots, l, r, opn[op], 0, &h);
+            bool h; RESULT cr = korb_try_coerce(c, slots, l, &r, opn[op], 0, &h);
             if (h) return cr;
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Complex", korb_coerce_name(c, KORB_COMPLEX_P(l) ? r : l));
@@ -879,7 +880,7 @@ static RESULT korb_m_cpx_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 /* Complex#** — exact repeated squaring for an Integer exponent (negative →
  * reciprocal); otherwise the polar formula z^w = exp(w·ln z) (Float result). */
 static RESULT korb_m_cpx_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const VALUE ev = VALUE_SLICE_GET(a, 0);
+    VALUE ev = VALUE_SLICE_GET(a, 0);
     if (FIXNUM_P(ev)) {
         korb_sword_t n = FIX2LONG(ev);
         const bool neg = n < 0; uintptr_t k = neg ? (uintptr_t)(-n) : (uintptr_t)n;
@@ -901,7 +902,7 @@ static RESULT korb_m_cpx_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (KORB_COMPLEX_P(ev)) { korb_num_to_d(VAL2CPX(ev)->re, &wre); korb_num_to_d(VAL2CPX(ev)->im, &wim); }
     else if (!korb_num_to_d(ev, &wre)) {
         if (KORB_OBJECT_P(ev)) {                          /* a, b = ev.coerce(self); a ** b */
-            bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ev, "**", 0, &h);
+            bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &ev, "**", 0, &h);
             if (h) return cr;
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Complex", korb_coerce_name(c, ev));
@@ -1044,7 +1045,7 @@ korb_float_to_s(double d, char *buf)
     return (uint32_t)strlen(buf);
 }
 
-RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, uint32_t line, bool *handled);   /* fwd; decl in node.h for node_eval.c */
+RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE *rhs, const char *op, uint32_t line, bool *handled);   /* fwd; decl in node.h for node_eval.c */
 /* numeric arithmetic with at least one Float operand.  op: 0+ 1- 2* 3/ 4% */
 RESULT
 korb_num_arith(CTX *c, VALUE *slots, VALUE l, VALUE rhs, int op, uint32_t line)
@@ -1054,7 +1055,7 @@ korb_num_arith(CTX *c, VALUE *slots, VALUE l, VALUE rhs, int op, uint32_t line)
     if (UNLIKELY(!korb_num_to_d(l, &b)))     /* l not numeric → method missing on l */
         return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '%s' for %s", opn[op], korb_a_type_name(l));
     if (UNLIKELY(!korb_num_to_d(rhs, &b))) {  /* rhs not numeric → coerce protocol, else coercion error */
-        bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, opn[op], line, &h);
+        bool h; RESULT cr = korb_try_coerce(c, slots, l, &rhs, opn[op], line, &h);
         if (h) return cr;
         return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Float", korb_coerce_name(c, rhs));
     }
@@ -6942,7 +6943,7 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
         }
     }
     if ((KORB_INTEGER_P(l) || KORB_FLOAT_P(l) || KORB_RATIONAL_P(l)) && KORB_OBJECT_P(r)) {
-        bool h; RESULT cr = korb_try_coerce(c, slots, l, r, korb_cmp_op_name[op], line, &h);   /* a, b = r.coerce(l); a OP b */
+        bool h; RESULT cr = korb_try_coerce(c, slots, l, &r, korb_cmp_op_name[op], line, &h);   /* a, b = r.coerce(l); a OP b */
         if (h) return cr;
     }
     if (KORB_INTEGER_P(l) || KORB_FLOAT_P(l) || KORB_RATIONAL_P(l) || KORB_STRING_P(l) || SYMBOL_P(l)) {
@@ -6991,13 +6992,19 @@ RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op,
 /* Numeric coerce protocol: `l OP rhs` where rhs is non-numeric → if rhs responds
  * to #coerce, do `a, b = rhs.coerce(l); a OP b`.  *handled stays false if rhs has
  * no #coerce (caller raises its own TypeError). */
-RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, uint32_t line, bool *handled) {
+/* `rhs` is in/out: #coerce runs Ruby, so a moving GC can relocate the caller's
+ * copy.  The interesting path is `coerce` returning nil — *handled goes back to
+ * false AFTER the dispatch, and every caller then builds its TypeError message
+ * out of its own now-stale local ("%s can't be coerced into Integer").  Write
+ * the forwarded value back so the caller's local stays valid. */
+RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE *rhs, const char *op, uint32_t line, bool *handled) {
     *handled = false;
     const uint32_t coerce_id = korb_intern(c->vm, "coerce", 6);
-    if (!korb_responds_to(c, rhs, coerce_id)) return RESULT_OK(KORB_NIL);
+    if (!korb_responds_to(c, *rhs, coerce_id)) return RESULT_OK(KORB_NIL);
     *handled = true;
-    slots[0] = rhs; slots[1] = l;                            /* recv=rhs, arg=l for #coerce */
+    slots[0] = *rhs; slots[1] = l;                           /* recv=rhs, arg=l for #coerce */
     RESULT cr = korb_send_impl(c, slots + 2, coerce_id, line, 1, NULL, NULL, NULL);
+    *rhs = slots[0];                                         /* rooted through the dispatch */
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     if (cr.value == KORB_NIL) { *handled = false; return RESULT_OK(KORB_NIL); }   /* nil → not coercible: let the caller raise its own TypeError/ArgumentError */
     if (UNLIKELY(!KORB_ARRAY_P(cr.value) || VAL2ARY(cr.value)->len != 2))
@@ -7050,7 +7057,7 @@ korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
         return korb_ary_plus_ref(c, slots, lhs, r);
     }
     if (KORB_INTEGER_P(l)) {                          /* Fixnum or Bignum: coerce protocol, else TypeError */
-        bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, "+", line, &h);
+        bool h; RESULT cr = korb_try_coerce(c, slots, l, &rhs, "+", line, &h);
         if (h) return cr;
         return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_coerce_name(c, rhs));
     }
@@ -7091,7 +7098,7 @@ korb_minus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 1);
     if (KORB_ARRAY_P(l) || KORB_SET_P(l)) return korb_sub_slow(c, slots, lhs, rhs, line);
     if (KORB_INTEGER_P(l)) {                          /* Fixnum or Bignum: coerce protocol, else TypeError */
-        bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, "-", line, &h);
+        bool h; RESULT cr = korb_try_coerce(c, slots, l, &rhs, "-", line, &h);
         if (h) return cr;
         return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_coerce_name(c, rhs));
     }
@@ -7162,7 +7169,7 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
         return korb_raise_no_int(c, slots, rhs);   /* non-int / non-str */
     }
     if (KORB_INTEGER_P(l)) {                          /* Fixnum or Bignum: coerce protocol, else TypeError */
-        bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, "*", line, &h);
+        bool h; RESULT cr = korb_try_coerce(c, slots, l, &rhs, "*", line, &h);
         if (h) return cr;
         return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_coerce_name(c, rhs));
     }
