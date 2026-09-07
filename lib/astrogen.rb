@@ -151,19 +151,19 @@ module ASTroGen
           field = "n->u.#{name}.#{self.name}"
           path  = "u.#{name}.#{self.name}"      # offsetof/sizeof are the compiler's answer
           if ref?
-            return "    fprintf(fp, \"        (#{@type})HOLE_PTR(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_ADDR, ASTRO_OFF(#{path}), 0));"
+            return "    fprintf(fp, \"        (#{@type})HOLE_PTR(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_ADDR, \"#{path}\", -1));"
           end
           case storage_type
           when 'NODE *'
             lazy_node_hole_arg(field, path)
           when 'uint32_t'
-            "    fprintf(fp, \"        HOLE_U32(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path})));"
+            "    fprintf(fp, \"        HOLE_U32(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"#{path}\", -1));"
           when 'int32_t'
-            "    fprintf(fp, \"        HOLE_I32(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path})));"
+            "    fprintf(fp, \"        HOLE_I32(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"#{path}\", -1));"
           when 'uint64_t', 'VALUE'
-            "    fprintf(fp, \"        (#{storage_type})HOLE_U64(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path})));"
+            "    fprintf(fp, \"        (#{storage_type})HOLE_U64(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"#{path}\", -1));"
           when 'const char *', 'void *'
-            "    fprintf(fp, \"        (#{storage_type})HOLE_PTR(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path})));"
+            "    fprintf(fp, \"        (#{storage_type})HOLE_PTR(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"#{path}\", -1));"
           else
             raise "no hole form for operand: #{join}"
           end
@@ -175,12 +175,12 @@ module ASTroGen
         def lazy_node_hole_arg(field, path)
           <<~C.chomp
               if (#{field} && !#{field}->head.flags.no_inline) {
-                  const uint32_t _k = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path}));
-                  const uint32_t _o = astro_hole_sub(_hf, &_h, ASTRO_OFF(#{path}), -1, #{field});
+                  const uint32_t _k = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"#{path}\", -1);
+                  const uint32_t _o = astro_hole_sub(_hf, &_h, "#{path}", -1, #{field});
                   fprintf(fp, "        (NODE *)HOLE_PTR(%u), %s, P + %u", _k, #{field}->head.dispatcher_name, _o);
               } else {
                   fprintf(fp, "        (NODE *)HOLE_PTR(%u), astro_sd_indirect, NULL",
-                          astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path})));
+                          astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"#{path}\", -1));
               }
           C
         end
@@ -448,12 +448,12 @@ module ASTroGen
         path ||= field.sub(/\An->/, '')
         <<~C.chomp
             if (#{field}->head.flags.no_inline) {
-                const uint32_t _k = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path}));
+                const uint32_t _k = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"#{path}\", -1);
                 fprintf(fp, "    NODE *const _cn%u = (NODE *)HOLE_PTR(%u);\\n    #{lhs} = UNWRAP((*_cn%u->head.dispatcher)(#{child_dispatch_args(slot, '_cn%u')}));\\n",
                         _k, _k, _k, _k);
             } else {
-                const uint32_t _k = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(#{path}), ASTRO_SZ(#{path}));
-                const uint32_t _o = astro_hole_sub(_hf, &_h, ASTRO_OFF(#{path}), -1, #{field});
+                const uint32_t _k = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"#{path}\", -1);
+                const uint32_t _o = astro_hole_sub(_hf, &_h, "#{path}", -1, #{field});
                 fprintf(fp, "    #{lhs} = UNWRAP(%s(#{child_dispatch_args(slot, '(NODE *)HOLE_PTR(%u)')}, P + %u));\\n",
                         #{field}->head.dispatcher_name, _k, _o);
             }

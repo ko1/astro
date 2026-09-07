@@ -1,4 +1,13 @@
+#ifdef __wasi__
+/* wasi-libc has no user database.  ~ expansion then rests on HOME alone, and
+   ~user has no answer to give. */
+struct passwd { const char *pw_dir; };
+#  define getpwuid(uid) ((const struct passwd *)NULL)
+#  define getpwnam(name) ((const struct passwd *)NULL)
+#  define getuid()       0
+#else
 #include <pwd.h>
+#endif
 #include <fcntl.h>
 /* koruby_precise — file.c: a minimal File class (POSIX path-string methods only,
  * no real I/O yet).  #included into korb_runtime.c's TU.  Enough to unblock the

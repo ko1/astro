@@ -15,6 +15,9 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#ifndef PATH_MAX
+#  define PATH_MAX 4096          /* wasi-libc does not define it */
+#endif
 
 #include "node.h"
 #include "astro_node.h"      /* astro_emit_ast_c_program_params (--build) */

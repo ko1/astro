@@ -91,3 +91,9 @@ KORB_WASI_MISSING int madvise(void *addr, size_t len, int advice) {
     (void)addr; (void)len; (void)advice; return 0;   /* 助言なので無視でよい */
 }
 KORB_WASI_MISSING int system(const char *cmd) { (void)cmd; errno = ENOTSUP; return -1; }
+
+/* 2026-09-07 に足りなくなった分。chroot / fchdir は操作系なので ENOTSUP、
+   tzset は WASI に時間帯データベースが無いので何もしない。 */
+KORB_WASI_MISSING int chroot(const char *path) { (void)path; errno = ENOTSUP; return -1; }
+KORB_WASI_MISSING int fchdir(int fd)           { (void)fd;   errno = ENOTSUP; return -1; }
+KORB_WASI_MISSING void tzset(void)             { }

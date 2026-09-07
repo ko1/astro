@@ -273,36 +273,45 @@ enum {
     ASTRO_HOLE_DOWN, ASTRO_HOLE_DOWN_AT, ASTRO_HOLE_UP, ASTRO_HOLE_EMIT_AT
 };
 
-// The generated SPECIALIZE code names fields; the compiler supplies the layout.
-#define ASTRO_OFF(path) ((uint32_t)offsetof(struct Node, path))
-#define ASTRO_SZ(path)  ((uint32_t)sizeof(((struct Node *)0)->path))
+// ASTRO_OFF / ASTRO_SZ / ASTRO_OFF_B live in astro_hole.h: the SD TU needs them.
 
-// Descriptor under construction (one per SD being emitted).
-struct astro_hole_buf { uint8_t *b; uint32_t n, capa, depth; };
+// Descriptor under construction (one per SD being emitted).  Field offsets are
+// kept as the *path text*, not as numbers: the descriptor is emitted as C whose
+// initialisers are offsetof/sizeof expressions, so the layout is the target
+// compiler's answer.  Baking numbers here would freeze the host's layout into
+// the store, which breaks cross builds (wasm32 has 4-byte pointers).
+struct astro_hole_op {
+    uint8_t op;
+    char path[192];        // "" for ops with no field
+    int32_t idx;           // @children index, or -1
+};
+struct astro_hole_buf { struct astro_hole_op *v; uint32_t n, capa, depth; };
 
-static void
-astro_hole_put(struct astro_hole_buf *const d, uint32_t v, uint32_t bytes)
+static struct astro_hole_op *
+astro_hole_put(struct astro_hole_buf *const d)
 {
-    if (d->n + bytes > d->capa) {
-        d->capa = d->capa ? d->capa * 2 + bytes : 64 + bytes;
-        d->b = realloc(d->b, d->capa);
-        if (!d->b) { fprintf(stderr, "astro_hole: out of memory\n"); exit(1); }
+    if (d->n == d->capa) {
+        d->capa = d->capa ? d->capa * 2 : 32;
+        d->v = realloc(d->v, sizeof(*d->v) * d->capa);
+        if (!d->v) { fprintf(stderr, "astro_hole: out of memory\n"); exit(1); }
     }
-    for (uint32_t i = 0; i < bytes; i++) d->b[d->n++] = (uint8_t)(v >> (8 * i));
+    struct astro_hole_op *const o = &d->v[d->n++];
+    memset(o, 0, sizeof(*o));
+    return o;
 }
 
 // Emitted descriptors, kept for the session so a parent can splice a child's.
-static struct { char name[64]; uint8_t *b; uint32_t n, depth; } *astro_hole_saved;
+static struct { char name[64]; struct astro_hole_op *v; uint32_t n, depth; } *astro_hole_saved;
 static uint32_t astro_hole_saved_n, astro_hole_saved_capa;
 
-static const uint8_t *
+static const struct astro_hole_op *
 astro_hole_saved_get(const char *const name, uint32_t *const len, uint32_t *const depth)
 {
     for (uint32_t i = 0; i < astro_hole_saved_n; i++) {
         if (strcmp(astro_hole_saved[i].name, name) == 0) {
             *len = astro_hole_saved[i].n;
             *depth = astro_hole_saved[i].depth;
-            return astro_hole_saved[i].b;
+            return astro_hole_saved[i].v;
         }
     }
     *len = *depth = 0;
@@ -313,12 +322,12 @@ astro_hole_saved_get(const char *const name, uint32_t *const len, uint32_t *cons
 __attribute__((unused))
 static uint32_t
 astro_hole_alloc(struct astro_hole_buf *const d, uint32_t *const h,
-                 uint32_t op, uint32_t off, uint32_t arg)
+                 uint32_t op, const char *const path, int32_t idx)
 {
-    astro_hole_put(d, op, 1);
-    astro_hole_put(d, off, 2);
-    if (op == ASTRO_HOLE_EMIT)         astro_hole_put(d, arg, 1);   // size
-    else if (op == ASTRO_HOLE_EMIT_AT) astro_hole_put(d, arg, 2);   // index
+    struct astro_hole_op *const o = astro_hole_put(d);
+    o->op = (uint8_t)op;
+    snprintf(o->path, sizeof(o->path), "%s", path ? path : "");
+    o->idx = idx;
     return (*h)++;
 }
 
@@ -327,31 +336,28 @@ astro_hole_alloc(struct astro_hole_buf *const d, uint32_t *const h,
 __attribute__((unused))
 static uint32_t
 astro_hole_sub(struct astro_hole_buf *const d, uint32_t *const h,
-               uint32_t off, int32_t idx, const NODE *const child)
+               const char *const path, int32_t idx, const NODE *const child)
 {
     const uint32_t base = *h;
     *h += child->head.nholes;
-    if (idx < 0) {
-        astro_hole_put(d, ASTRO_HOLE_DOWN, 1);
-        astro_hole_put(d, off, 2);
-    } else {
-        astro_hole_put(d, ASTRO_HOLE_DOWN_AT, 1);
-        astro_hole_put(d, off, 2);
-        astro_hole_put(d, (uint32_t)idx, 2);
-    }
+    struct astro_hole_op *o = astro_hole_put(d);
+    o->op = (uint8_t)(idx < 0 ? ASTRO_HOLE_DOWN : ASTRO_HOLE_DOWN_AT);
+    snprintf(o->path, sizeof(o->path), "%s", path);
+    o->idx = idx;
     uint32_t len = 0, sub_depth = 0;
-    const uint8_t *const sub = astro_hole_saved_get(child->head.dispatcher_name, &len, &sub_depth);
-    for (uint32_t i = 0; i < len; i++) astro_hole_put(d, sub[i], 1);
+    const struct astro_hole_op *const sub =
+        astro_hole_saved_get(child->head.dispatcher_name, &len, &sub_depth);
+    for (uint32_t i = 0; i < len; i++) *astro_hole_put(d) = sub[i];
     // The walker needs a stack this deep to replay the splice.
     if (sub_depth + 1 > d->depth) d->depth = sub_depth + 1;
-    astro_hole_put(d, ASTRO_HOLE_UP, 1);
+    astro_hole_put(d)->op = ASTRO_HOLE_UP;
     return base;
 }
 
 // Public descriptors wait here until the whole file is written: they go after
 // the SD text, so a build can drop the text (-DASTRO_SD_DESC_ONLY) and keep the
 // data.  That is what a loader-only store links into all.so.
-static struct { const char *name; const uint8_t *b; uint32_t n, nholes, depth; } *astro_hole_pending;
+static struct { const char *name; const struct astro_hole_op *v; uint32_t n, nholes, depth; } *astro_hole_pending;
 static uint32_t astro_hole_pending_n, astro_hole_pending_capa;
 
 // Keep the descriptor for parents to splice; a public SD also queues it as data
@@ -367,7 +373,7 @@ astro_hole_emit_desc(FILE *fp, const char *const name, struct astro_hole_buf *co
         if (!astro_hole_saved) { fprintf(stderr, "astro_hole: out of memory\n"); exit(1); }
     }
     snprintf(astro_hole_saved[astro_hole_saved_n].name, 64, "%s", name);
-    astro_hole_saved[astro_hole_saved_n].b = d->b;
+    astro_hole_saved[astro_hole_saved_n].v = d->v;
     astro_hole_saved[astro_hole_saved_n].n = d->n;
     astro_hole_saved[astro_hole_saved_n].depth = d->depth;
     astro_hole_saved_n++;
@@ -380,7 +386,7 @@ astro_hole_emit_desc(FILE *fp, const char *const name, struct astro_hole_buf *co
         if (!astro_hole_pending) { fprintf(stderr, "astro_hole: out of memory\n"); exit(1); }
     }
     astro_hole_pending[astro_hole_pending_n++] = (typeof(*astro_hole_pending)){
-        astro_hole_saved[astro_hole_saved_n - 1].name, d->b, d->n, nholes, d->depth };
+        astro_hole_saved[astro_hole_saved_n - 1].name, d->v, d->n, nholes, d->depth };
 }
 
 // Write the queued descriptors as data and reset for the next file.  The
@@ -397,9 +403,17 @@ astro_hole_flush_descs(FILE *const fp)
         fprintf(fp, "const uint8_t %s_desc[] = {%uU,%uU,%uU,%uU,%uU,%uU",
                 astro_hole_pending[j].name, nh & 0xff, (nh >> 8) & 0xff, (nh >> 16) & 0xff,
                 (nh >> 24) & 0xff, dp & 0xff, (dp >> 8) & 0xff);
-        for (uint32_t i = 0; i < astro_hole_pending[j].n; i++)
-            fprintf(fp, ",%uU", astro_hole_pending[j].b[i]);
-        fprintf(fp, ",%uU};\n", ASTRO_HOLE_END);
+        for (uint32_t i = 0; i < astro_hole_pending[j].n; i++) {
+            const struct astro_hole_op *const o = &astro_hole_pending[j].v[i];
+            fprintf(fp, ",\n  %uU", o->op);
+            if (o->op != ASTRO_HOLE_UP)
+                fprintf(fp, ",ASTRO_OFF_B(%s,0),ASTRO_OFF_B(%s,1)", o->path, o->path);
+            if (o->op == ASTRO_HOLE_EMIT)
+                fprintf(fp, ",(uint8_t)ASTRO_SZ(%s)", o->path);
+            else if (o->op == ASTRO_HOLE_EMIT_AT || o->op == ASTRO_HOLE_DOWN_AT)
+                fprintf(fp, ",%uU,%uU", (unsigned)o->idx & 0xff, ((unsigned)o->idx >> 8) & 0xff);
+        }
+        fprintf(fp, ",\n  %uU};\n", ASTRO_HOLE_END);
     }
     fprintf(fp, "#endif\n");
     astro_hole_pending_n = 0;
@@ -501,6 +515,7 @@ struct astro_emit_ctx {
     size_t visited_size;
     size_t visited_capa;
 
+    const char *arr;                  // name of the file-scope NODE * table
     struct astro_emit_fixup *fixups;
     size_t fixups_size;
     size_t fixups_capa;
@@ -648,7 +663,7 @@ astro_emit_ast_c_child(FILE *fp, NODE *child)
         // logic in astro_emit_ast_c_program.
         return;
     }
-    fprintf(fp, "_n[%d]", id);
+    fprintf(fp, "%s[%d]", ctx->arr, id);
 }
 
 static void
@@ -704,7 +719,7 @@ static void
 astro_emit_ctx_emit_node(struct astro_emit_ctx *ctx, FILE *fp, NODE *n)
 {
     int id = astro_emit_ctx_lookup(ctx, n);
-    fprintf(fp, "    _n[%d] = ", id);
+    fprintf(fp, "    %s[%d] = ", ctx->arr, id);
     // Run the EMIT_AST function with the emit-phase active.
     (*n->head.kind->emit_ast)(fp, n);
     fprintf(fp, ";\n");
@@ -757,6 +772,38 @@ astro_emit_lookup_sd(NODE *n)
     return NULL;
 }
 
+// wasm allows 50,000 locals per function and the C compiler spends a few per
+// node, so the builder is emitted in parts of this many nodes.
+#define ASTRO_EMIT_PART_NODES 1000
+
+// "CTX *_ectx, int x" -> "_ectx, x"; "void" or "" -> "".  Only the shapes the
+// samples actually pass (a type and a name) need to work.
+#include <ctype.h>
+
+static void
+astro_emit_param_names(char *out, size_t cap, const char *params)
+{
+    out[0] = '\0';
+    if (!params || strcmp(params, "void") == 0) return;
+    size_t w = 0;
+    const char *p = params;
+    while (*p) {
+        const char *const comma = strchr(p, ',');
+        const char *end = comma ? comma : p + strlen(p);
+        const char *q = end;                       // last identifier in this param
+        while (q > p && !isalnum((unsigned char)q[-1]) && q[-1] != '_') q--;
+        const char *b = q;
+        while (b > p && (isalnum((unsigned char)b[-1]) || b[-1] == '_')) b--;
+        if (q > b) {
+            if (w && w + 2 < cap) { out[w++] = ','; out[w++] = ' '; }
+            for (const char *r = b; r < q && w + 1 < cap; r++) out[w++] = *r;
+        }
+        if (!comma) break;
+        p = comma + 1;
+    }
+    out[w < cap ? w : cap - 1] = '\0';
+}
+
 void
 astro_emit_ast_c_program_params(FILE *fp, NODE *root,
                                 const char *func_name,
@@ -768,8 +815,11 @@ astro_emit_ast_c_program_params(FILE *fp, NODE *root,
         fprintf(fp, "NODE *%s(%s) { return NULL; }\n", func_name, params);
         return;
     }
+    char arr[160];
+    snprintf(arr, sizeof(arr), "%s_nodes", func_name);   // one table per builder
     struct astro_emit_ctx ctx = { 0 };
     ctx.fp = fp;
+    ctx.arr = arr;
     ctx.in_collect_phase = true;
     astro_emit_ast_active_ctx = &ctx;
 
@@ -811,11 +861,11 @@ astro_emit_ast_c_program_params(FILE *fp, NODE *root,
         free(seen);
     }
 
-    fprintf(fp, "NODE *\n");
-    fprintf(fp, "%s(%s)\n", func_name, params);
-    fprintf(fp, "{\n");
-    fprintf(fp, "    static NODE *_n[%zu] = {0};\n", ctx.visited_size);
-    fprintf(fp, "    if (_n[%d]) return _n[%d];\n", root_id, root_id);
+    // The node table is file-scope so the builder can be cut into parts: one
+    // function per ASTRO_EMIT_PART_NODES nodes.  wasm caps a function at 50,000
+    // locals and a prelude of a few thousand nodes goes past it (73,284 in
+    // koruby's, 2026-09-07), so a single builder simply does not load there.
+    fprintf(fp, "static NODE *%s[%zu];\n\n", ctx.arr, ctx.visited_size);
 
     // Pass 2: emit ALLOC line for each NODE, ordered by ID (post-order
     // ⇒ children before parents).  For nodes whose hash matches an SD
@@ -826,27 +876,53 @@ astro_emit_ast_c_program_params(FILE *fp, NODE *root,
     for (size_t j = 0; j < ctx.visited_size; j++) {
         if (ctx.visited[j].id >= 0) by_id[ctx.visited[j].id] = ctx.visited[j].node;
     }
-    for (int id = 0; id < ctx.next_id; id++) {
-        NODE *n = by_id[id];
-        if (!n) continue;
-        astro_emit_ctx_emit_node(&ctx, fp, n);
-        const char *sd = astro_emit_lookup_sd(n);
-        if (sd) {
-            fprintf(fp,
-                    "    _n[%d]->head.dispatcher = (node_dispatcher_func_t)%s;\n",
-                    id, sd);
-            fprintf(fp, "    _n[%d]->head.flags.is_specialized = true;\n", id);
+    char args[256];
+    astro_emit_param_names(args, sizeof(args), params);
+    int nparts = 0;
+    for (int id = 0; id < ctx.next_id; ) {
+        fprintf(fp, "static void\n%s_part%d(%s)\n{\n", func_name, nparts, params);
+        if (args[0]) fprintf(fp, "    (void)%s;\n", args);
+        for (int k = 0; k < ASTRO_EMIT_PART_NODES && id < ctx.next_id; id++) {
+            NODE *n = by_id[id];
+            if (!n) continue;
+            k++;
+            astro_emit_ctx_emit_node(&ctx, fp, n);
+            const char *sd = astro_emit_lookup_sd(n);
+            if (sd) {
+                fprintf(fp,
+                        "    %s[%d]->head.dispatcher = (node_dispatcher_func_t)%s;\n",
+                        ctx.arr, id, sd);
+                fprintf(fp, "    %s[%d]->head.flags.is_specialized = true;\n", ctx.arr, id);
+            }
         }
+        fprintf(fp, "}\n\n");
+        nparts++;
     }
 #ifdef ASTRO_NODEHEAD_POOL
-    // Pools last: a fill walks the whole subtree, so every child must exist.
-    for (int id = 0; id < ctx.next_id; id++) {
-        NODE *n = by_id[id];
-        const char *sd = n ? astro_emit_lookup_sd(n) : NULL;
-        if (sd) fprintf(fp, "    astro_cs_pool_attach(_n[%d], %s_desc);\n", id, sd);
+    // Pools last: the descriptor walks the whole subtree, so every child must
+    // exist.  Chunked for the same reason as the builder itself.
+    int npools = 0;
+    for (int id = 0; id < ctx.next_id; ) {
+        fprintf(fp, "static void\n%s_pool%d(void)\n{\n", func_name, npools);
+        for (int k = 0; k < ASTRO_EMIT_PART_NODES && id < ctx.next_id; id++) {
+            NODE *n = by_id[id];
+            const char *sd = n ? astro_emit_lookup_sd(n) : NULL;
+            if (!sd) continue;
+            k++;
+            fprintf(fp, "    astro_cs_pool_attach(%s[%d], %s_desc);\n", ctx.arr, id, sd);
+        }
+        fprintf(fp, "}\n\n");
+        npools++;
     }
 #endif
-    fprintf(fp, "    return _n[%d];\n", root_id);
+    fprintf(fp, "NODE *\n%s(%s)\n{\n", func_name, params);
+    fprintf(fp, "    if (%s[%d]) return %s[%d];\n", ctx.arr, root_id, ctx.arr, root_id);
+    for (int i = 0; i < nparts; i++)
+        fprintf(fp, "    %s_part%d(%s);\n", func_name, i, args);
+#ifdef ASTRO_NODEHEAD_POOL
+    for (int i = 0; i < npools; i++) fprintf(fp, "    %s_pool%d();\n", func_name, i);
+#endif
+    fprintf(fp, "    return %s[%d];\n", ctx.arr, root_id);
     fprintf(fp, "}\n");
 
     astro_emit_ast_active_ctx = NULL;

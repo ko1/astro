@@ -88,7 +88,8 @@ $(CORE_OBJS): $(SRC)/context.h Makefile
 # set, so cross-references resolve; only the koruby_re_* API keeps its name.
 ASTROGRE := $(abspath ../../astrogre)
 NM       := $(WASI_SDK)/bin/llvm-nm
-REGEX_ENGINE = node.c parse.c match.c backend_astrogre.c aho_corasick.c libastrogre_option.c
+REGEX_ENGINE = node.c parse.c match.c backend_astrogre.c aho_corasick.c libastrogre_option.c \
+               unicode_prop.c unicode_tables.c
 REGEX_NAMES  = $(basename $(REGEX_ENGINE)) regex_bridge
 RXFLAGS  = --target=wasm32-wasip1 -O2 -w -D_WASI_EMULATED_PROCESS_CLOCKS \
            -I$(ASTROGRE) -I$(RUNTIME)

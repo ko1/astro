@@ -4,6 +4,16 @@
 #define KORB_WASI_DECLS_H
 #include <sys/types.h>
 #include <stdio.h>
+#include <limits.h>   /* LONG_MAX 等: Linux では他のヘッダ経由で入るものが wasi では入らない */
+#include <time.h>
+/* wasi-libc は monotonic / realtime しか持たない。CPU 時計は要求されたら
+   monotonic に読み替える (Process.clock_gettime が例外を投げるよりよい)。 */
+#ifndef CLOCK_PROCESS_CPUTIME_ID
+#  define CLOCK_PROCESS_CPUTIME_ID CLOCK_MONOTONIC
+#endif
+#ifndef CLOCK_THREAD_CPUTIME_ID
+#  define CLOCK_THREAD_CPUTIME_ID CLOCK_MONOTONIC
+#endif
 uid_t  geteuid(void);
 uid_t  getuid(void);
 gid_t  getegid(void);
@@ -23,6 +33,9 @@ int    pipe2(int fds[2], int flags);
 int    execvp(const char *file, char *const argv[]);
 int    dup(int fd);
 int    dup2(int oldfd, int newfd);
+int    chroot(const char *path);
+int    fchdir(int fd);
+void   tzset(void);
 int    setpgid(pid_t pid, pid_t pgid);
 char  *getlogin(void);
 char  *crypt(const char *key, const char *salt);

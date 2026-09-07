@@ -17,6 +17,14 @@
 
 typedef unsigned long long astro_hole_t;
 
+// The shape descriptor names fields; the compiler that builds the SD supplies
+// the layout.  Emitting numbers instead would freeze the baking host's layout
+// into the store, which is wrong for a cross build (wasm32 has 4-byte pointers).
+#include <stddef.h>
+#define ASTRO_OFF(path)      ((uint32_t)offsetof(struct Node, path))
+#define ASTRO_SZ(path)       ((uint32_t)sizeof(((struct Node *)0)->path))
+#define ASTRO_OFF_B(path, i) ((uint8_t)((ASTRO_OFF(path) >> (8 * (i))) & 0xff))
+
 struct Node;
 // A shape's hole table is described by a byte-coded traversal emitted next to
 // its dispatcher (`SD_<h>_desc`), replayed by astro_hole_walk against any node

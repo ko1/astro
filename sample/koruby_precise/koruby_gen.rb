@@ -341,11 +341,11 @@ class KorubyNodeDef < ASTroGen::NodeDef
         <<~C.chomp
                   if (#{f}[_i]->head.flags.no_inline) {
                       fprintf(fp, "    { NODE *const _cn = (NODE *)HOLE_PTR(%u); slots[%d] = UNWRAP((*_cn->head.dispatcher)(c, _cn, slots)); }\\n",
-                              astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT_AT, ASTRO_OFF(u.#{@name}.#{kids.name}), _i),
+                              astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT_AT, "u.#{@name}.#{kids.name}", (int32_t)_i),
                               (int)_i - (int)_cnt);
                   } else {
-                      const uint32_t _k = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT_AT, ASTRO_OFF(u.#{@name}.#{kids.name}), _i);
-                      const uint32_t _o = astro_hole_sub(_hf, &_h, ASTRO_OFF(u.#{@name}.#{kids.name}), (int32_t)_i, #{f}[_i]);
+                      const uint32_t _k = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT_AT, "u.#{@name}.#{kids.name}", (int32_t)_i);
+                      const uint32_t _o = astro_hole_sub(_hf, &_h, "u.#{@name}.#{kids.name}", (int32_t)_i, #{f}[_i]);
                       fprintf(fp, "    slots[%d] = UNWRAP(%s(c, (NODE *)HOLE_PTR(%u), slots, P + %u));\\n",
                               (int)_i - (int)_cnt, #{f}[_i]->head.dispatcher_name, _k, _o);
                   }
@@ -607,7 +607,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
         # immediates bake as constants.
         if !child? && @type == 'VALUE'
           sym_ref = if pool_mode?
-            "        fprintf(fp, \"        (VALUE)HOLE_U64(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, ASTRO_OFF(u.#{name}.#{self.name}), ASTRO_SZ(u.#{name}.#{self.name})));\n"
+            "        fprintf(fp, \"        (VALUE)HOLE_U64(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"u.#{name}.#{self.name}\", -1));\n"
           else
             "        fprintf(fp, \"        n->u.#{name}.#{self.name}\");\n"
           end
