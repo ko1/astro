@@ -242,11 +242,24 @@ store の Makefile に `op/` (patch 用 .o、`make patch`、bake 時 `ASTRO_CS_P
 **207.3 → 223.9 fps (+8.2%)**、master からの累計 171.9 → 223.9 (**+30%**)。microbench 53 (hot:200000):
 6 本 ≥3% 速 (exception 0.90 / gcd 0.92 / ackermann・binary_trees・tak 0.95)、4 本 遅
 (poly 1.22 = 二峰性 / aryidx 1.05 / casewhen・nbody 1.04)、geomean 1.00。
-ローカル perf stat (負荷あり、命令数のみ信頼): `all` (2027 インスタンス 20MB) は命令 −7.8%、
-L1d miss −50% だが L1i miss 9×・分岐ミス +47% で cycles +12.7% (net 負)。hot 0.005 (29 body 308KB)
-は命令 −5.9%、L1d −49%、L1i 14×。ループ内の穴は `movabs` を毎回再マテリアライズ (asm はループ外へ
-出ない) ので pool の `P[k]` 再ロードと命令数は同じで、効くのは D miss の多い大きな body だけ。
-インスタンス化は同形 body の SD 共有 (I キャッシュ共用) を失うので、対象は上位数十 body に絞る。
+**`all` と `hot` の比較 (2026-09-07 に sp4 で取り直し、`logs/desc/all-vs-hot-sp4.txt`)**:
+5 ラウンド交互の fps は pool 211.3 / **all 230.9** / hot 228.0 (max、median も同順) で、
+**定常スループットは全 body 織り込みが一番速い**。プロセス全体の perf stat では cycles が
+pool 4.80G / all 4.69G / **hot 4.58G** と hot 最小になるが、これは all が起動時に 1983 body を
+織り込む分 (`-e 'p 1'` の起動で 22.5 → 52.3 ms、命令 152.9M → 361.6M) を含むためで、
+題材が 1.5 秒しか回らないことの反映である。L1d miss は pool 147.5M → all 65.7M (−55%)、
+L1i miss は 1.84M → 14.0M (7.6×)。
+
+`all` の代償は起動時間と常駐量 (optcarrot で 1983 インスタンス 15.7 MB、hot 0.005 は 29 body 233 KB)
+で、速さではない。長く回るプロセスなら all、起動が支配的なら hot、という切り分けになる。
+
+**撤回**: 2026-09-06 にはここに「`all` は L1i miss 9×・分岐ミス +47% で cycles +12.7% (net 負)」と
+書いていた。負荷のかかった手元機での測定で、sp4 では再現しない。hot を既定に選んだ理由は
+「all が遅いから」ではなく、起動コストと常駐量である。
+
+ループ内の穴は `movabs` を毎回再マテリアライズ (asm はループ外へ出ない) ので pool の `P[k]`
+再ロードと命令数は同じで、効くのは D miss の多い大きな body。インスタンス化は同形 body の
+SD 共有 (I キャッシュ共用) を失う。
 
 ### 7.7.2 穴の値の作り方 — 記述子 + walker (2026-09-06 → 09-07)
 
