@@ -57,7 +57,10 @@ class FrameStdout extends Fd {
 
 
 // One entry point for both hosts: the browser Worker and the Node test.
-export async function runDoom({ mod, wad, ctlBuf, fbBuf, palBuf, log, ready }) {
+// `src` is the Ruby program when the module is the plain interpreter (it is
+// then run as `koruby --plain /doom/doom_web.rb`); the AOT modules carry the
+// program inside and ignore it.
+export async function runDoom({ mod, wad, src, argv, ctlBuf, fbBuf, palBuf, log, ready }) {
   const ctl = new Int32Array(ctlBuf);
   const fb = new Uint8Array(fbBuf);
   const pal = new Uint8Array(palBuf);
@@ -65,9 +68,12 @@ export async function runDoom({ mod, wad, ctlBuf, fbBuf, palBuf, log, ready }) {
     new TickStdin(ctl),
     new FrameStdout(ctl, fb, pal),
     ConsoleStdout.lineBuffered(l => log && log(l)),
-    new PreopenDirectory('/doom', new Map([['doom1.wad', new File(wad, { readonly: true })]])),
+    new PreopenDirectory('/doom', new Map([
+      ['doom1.wad', new File(wad, { readonly: true })],
+      ...(src ? [['doom_web.rb', new File(src, { readonly: true })]] : []),
+    ])),
   ];
-  const wasi = new WASI(['doom'], [], fds, { debug: false });
+  const wasi = new WASI(argv || ['doom'], [], fds, { debug: false });
   const inst = await WebAssembly.instantiate(mod, { wasi_snapshot_preview1: wasi.wasiImport });
   ready && ready();
   try { return wasi.start(inst); }

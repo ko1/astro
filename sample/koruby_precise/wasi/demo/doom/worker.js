@@ -4,10 +4,10 @@
 import { runDoom } from './doom_run.js';
 
 onmessage = async (ev) => {
-  const { mod, wad, ctlBuf, fbBuf, palBuf } = ev.data;
+  const { mod, wad, src, argv, ctlBuf, fbBuf, palBuf } = ev.data;
   try {
     const rc = await runDoom({
-      mod, wad, ctlBuf, fbBuf, palBuf,
+      mod, wad, src, argv, ctlBuf, fbBuf, palBuf,
       log: l => postMessage({ log: l }),
       ready: () => postMessage({ ready: true }),
     });

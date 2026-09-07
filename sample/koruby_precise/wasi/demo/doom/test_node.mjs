@@ -14,12 +14,22 @@ const W = 320, H = 240, FRAME = W * H;
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 
 if (!isMainThread) {
-  const { mod, wad, ctlBuf, fbBuf, palBuf } = workerData;
+  const { mod, wad, src, argv, ctlBuf, fbBuf, palBuf } = workerData;
   const { runDoom } = await import('./doom_run.js');
-  await runDoom({ mod, wad, ctlBuf, fbBuf, palBuf, log: l => console.log('[guest]', l) });
+  await runDoom({ mod, wad, src, argv, ctlBuf, fbBuf, palBuf, log: l => console.log('[guest]', l) });
 } else {
   const frames = Number(process.argv[2] || 3);
-  const wasm = readFileSync(HERE + 'doom.wasm');
+  const kind = process.argv[3] || 'new';
+  const BUILDS = {
+    new:    { wasm: 'doom.wasm' },
+    old:    { wasm: 'doom-old.wasm' },
+    interp: { wasm: 'koruby-interp.wasm', src: 'doom_web.rb',
+              argv: ['koruby', '--plain', '/doom/doom_web.rb'] },
+  };
+  const b = BUILDS[kind];
+  if (!b) { console.error('unknown build:', kind); process.exit(1); }
+  const wasm = readFileSync(HERE + b.wasm);
+  const src = b.src ? readFileSync(HERE + b.src) : null;
   const wad = readFileSync(HERE + 'doom1.wad');
   const mod = await WebAssembly.compile(wasm);
 
@@ -30,7 +40,8 @@ if (!isMainThread) {
 
   const w = new Worker(new URL(import.meta.url), {
     workerData: { mod, wad: wad.buffer.slice(wad.byteOffset, wad.byteOffset + wad.byteLength),
-                  ctlBuf, fbBuf, palBuf },
+                  src: src ? src.buffer.slice(src.byteOffset, src.byteOffset + src.byteLength) : null,
+                  argv: b.argv, ctlBuf, fbBuf, palBuf },
   });
   w.on('error', e => { console.error('worker error:', e); process.exit(1); });
 
@@ -56,7 +67,7 @@ if (!isMainThread) {
   const palSum = pal.reduce((a, b) => a + b, 0);
   console.log(`palette ready=${Atomics.load(ctl, 3)} sum=${palSum}`);
   if (Atomics.load(ctl, 3) !== 1 || palSum === 0) { console.error('no palette'); process.exit(1); }
-  console.log(`${frames} frames in ${((Date.now() - t0) / 1000).toFixed(2)}s`);
+  console.log(`${kind}: ${frames} frames in ${((Date.now() - t0) / 1000).toFixed(2)}s`);
   tick('q');
   await new Promise(r => setTimeout(r, 500));
   process.exit(0);
