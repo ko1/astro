@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>DOOM in pure Ruby, AOT-compiled, in the browser</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0b0d; color: #ddd;
+         font-family: system-ui, sans-serif; display: flex; flex-direction: column;
+         align-items: center; gap: 1rem; padding: 1.5rem 1rem 3rem; }
+  h1 { font-size: 1.15rem; font-weight: 600; margin: 0; letter-spacing: .02em; }
+  #wrap { position: relative; }
+  canvas { width: 960px; max-width: 92vw; aspect-ratio: 4 / 3; display: block;
+           image-rendering: pixelated; background: #000; border: 1px solid #333; }
+  #overlay { position: absolute; inset: 0; display: grid; place-items: center;
+             background: rgba(0,0,0,.72); font-size: .95rem; text-align: center;
+             padding: 1rem; line-height: 1.7; }
+  #overlay.hidden { display: none; }
+  .row { display: flex; gap: 1.5rem; flex-wrap: wrap; justify-content: center;
+         font-size: .82rem; color: #9a9aa2; }
+  kbd { background: #23232a; border: 1px solid #3a3a44; border-bottom-width: 2px;
+        border-radius: 4px; padding: .05rem .35rem; font-size: .78rem; color: #ddd; }
+  #stat { font-family: ui-monospace, monospace; font-size: .8rem; color: #7d7d86; }
+  a { color: #8ab4f8; }
+</style>
+</head>
+<body>
+<h1>DOOM — pure Ruby, AOT-compiled by ASTro, running in the browser</h1>
+<div id="wrap">
+  <canvas id="screen" width="320" height="240"></canvas>
+  <div id="overlay">読み込み中…</div>
+</div>
+<div class="row">
+  <span><kbd>W</kbd><kbd>S</kbd> 前後</span>
+  <span><kbd>A</kbd><kbd>D</kbd> 横移動</span>
+  <span><kbd>←</kbd><kbd>→</kbd> 旋回</span>
+</div>
+<div id="stat">—</div>
+<div class="row" style="max-width: 60rem; display: block; text-align: center; line-height: 1.8">
+  レンダラは <a href="https://github.com/nasfive/rb-doom">pure Ruby の DOOM</a>。
+  それを koruby_precise が AST 部分評価で C に落とし、wasm32-wasip1 に
+  クロスコンパイルしてあります（prelude・プログラム・全メソッド本体を埋め込んだ単一 .wasm）。
+  wasm にはローダが無いので、穴の値は pool 経路で供給されます。
+  ゲストは Worker で動き、1 フレームにつき stdin から 1 バイト受け取り
+  320×240 のパレット indexed フレームを stdout に書きます。
+</div>
+
+<script type="module">
+const W = 320, H = 240, FRAME = W * H;
+const cv = document.getElementById('screen');
+const ctx = cv.getContext('2d', { alpha: false });
+const img = ctx.createImageData(W, H);
+const overlay = document.getElementById('overlay');
+const stat = document.getElementById('stat');
+
+if (!window.crossOriginIsolated) {
+  overlay.textContent = 'SharedArrayBuffer が使えません。serve.py で COOP/COEP 付きに配信してください。';
+  throw new Error('not cross-origin isolated');
+}
+
+// [0] tick, [1] key byte, [2] frames produced, [3] palette ready
+const ctlBuf = new SharedArrayBuffer(16);
+const fbBuf  = new SharedArrayBuffer(FRAME);
+const palBuf = new SharedArrayBuffer(768);
+const ctl = new Int32Array(ctlBuf);
+const fb  = new Uint8Array(fbBuf);
+const pal = new Uint8Array(palBuf);
+
+const held = new Set();
+const KEYMAP = { KeyW: 'w', KeyS: 's', KeyA: 'a', KeyD: 'd', ArrowLeft: 'j', ArrowRight: 'l' };
+addEventListener('keydown', e => { if (KEYMAP[e.code]) { held.add(KEYMAP[e.code]); e.preventDefault(); } });
+addEventListener('keyup',   e => { if (KEYMAP[e.code]) { held.delete(KEYMAP[e.code]); e.preventDefault(); } });
+
+let drawn = 0, started = 0, fps = 0, lastT = 0, lastN = 0;
+
+function draw() {
+  const n = Atomics.load(ctl, 2);
+  if (n !== drawn && Atomics.load(ctl, 3) === 1) {
+    drawn = n;
+    const d = img.data;
+    for (let i = 0, p = 0; i < FRAME; i++, p += 4) {
+      const c = fb[i] * 3;
+      d[p] = pal[c]; d[p + 1] = pal[c + 1]; d[p + 2] = pal[c + 2]; d[p + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    if (overlay.classList.contains('hidden') === false) overlay.classList.add('hidden');
+  }
+  const now = performance.now();
+  if (now - lastT > 500) {
+    fps = (drawn - lastN) * 1000 / (now - lastT);
+    lastT = now; lastN = drawn;
+    stat.textContent = `${fps.toFixed(1)} fps — ${drawn} frames — 320x240`;
+  }
+  // Hand the guest one tick and the current key.
+  let k = '.'.charCodeAt(0);
+  for (const c of held) { k = c.charCodeAt(0); break; }
+  Atomics.store(ctl, 1, k);
+  Atomics.add(ctl, 0, 1);
+  Atomics.notify(ctl, 0);
+  requestAnimationFrame(draw);
+}
+
+(async () => {
+  overlay.textContent = 'wasm と WAD を取得中…';
+  const [wasmBytes, wadBytes] = await Promise.all([
+    fetch('doom.wasm').then(r => r.arrayBuffer()),
+    fetch('doom1.wad').then(r => r.arrayBuffer()),
+  ]);
+  overlay.textContent = 'wasm をコンパイル中…';
+  const mod = await WebAssembly.compile(wasmBytes);
+  const worker = new Worker('worker.js', { type: 'module' });
+  worker.onmessage = (ev) => {
+    if (ev.data.ready) { overlay.textContent = '起動中（WAD 読み込み）…'; started = performance.now(); requestAnimationFrame(draw); }
+    if (ev.data.log) console.log('[guest]', ev.data.log);
+    if (ev.data.error) { overlay.classList.remove('hidden'); overlay.textContent = ev.data.error; }
+    if (ev.data.exit !== undefined) { overlay.classList.remove('hidden'); overlay.textContent = `終了 (${ev.data.exit})`; }
+  };
+  worker.postMessage({ mod, wad: wadBytes, ctlBuf, fbBuf, palBuf }, [wadBytes]);
+})();
+</script>
+</body>
+</html>
