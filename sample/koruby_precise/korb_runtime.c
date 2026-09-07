@@ -2024,6 +2024,9 @@ korb_ivar_remove(CTX *c, VALUE self, VALUE name_sym, bool *found)
         free(syms);
         for (uint32_t i = (uint32_t)idx; i + 1 < n; i++)          /* compact values (store-only, no GC) */
             ARO_STORE(c, o->ivars, &korb_items_data(o->ivars)[i], korb_items_data(o->ivars)[i + 1]);
+        /* nil the slot the shift vacated: GC walks ivar_capa (it cannot reach
+         * vm->shapes), so a leftover duplicate here would keep a dead ref. */
+        ARO_STORE(c, o->ivars, &korb_items_data(o->ivars)[n - 1], KORB_NIL);
         o->shape_id = ns;
         return old;
     }

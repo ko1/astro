@@ -1350,19 +1350,36 @@ struct CTX_struct {
       case KORB_OBJ_ARRAY: {                                                 \
         KorbArray *_a = (KorbArray *)(payload);                             \
         ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_a->items);               \
+        if (_a->items) {   /* re-read: the line above may have moved it */   \
+            VALUE *const _ad = korb_items_data(_a->items);                  \
+            for (uint32_t _ai2 = 0; _ai2 < _a->len; _ai2++)                 \
+                ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ad[_ai2]);           \
+        }                                                                    \
         (void)(payload_size);                                                \
         break;                                                               \
       }                                                                      \
-      case KORB_OBJ_VALUE_ARRAY: {                                          \
-        KorbArrayItems *_ai = (KorbArrayItems *)(payload);                  \
-        size_t _n = ((payload_size) - sizeof(KorbArrayItems)) / sizeof(VALUE); \
-        for (size_t _i = 0; _i < _n; _i++)                                  \
-            ARO_GC_VISIT_EDGE((ctx), edge_visit, &korb_items_data(_ai)[_i]); \
+      case KORB_OBJ_VALUE_ARRAY:                                             \
+        /* Deliberately NOT self-scanned.  payload_size gives the CAPACITY;   \
+         * the logical length lives in the owner, and the slots past it are   \
+         * dead.  Walking them keeps garbage alive and — worse — hands the    \
+         * collector words that are not VALUEs at all (the edge filter admits \
+         * any 8-aligned non-zero word), which is how a plain integer reached \
+         * forward_payload.  Each owner walks its own live prefix: Array by   \
+         * len, Hash by 2*len, Object by ivar_capa (whose tail is kept nil),  \
+         * Env by n.  An items buffer has exactly one owner — the four sites  \
+         * that assign it all allocate it fresh — so nothing is missed and    \
+         * nothing is scanned twice. */                                       \
+        (void)(payload_size);                                                \
         break;                                                               \
-      }                                                                      \
       case KORB_OBJ_HASH: {                                                  \
         KorbHash *_hh = (KorbHash *)(payload);                              \
         ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->items);              \
+        if (_hh->items) {  /* pairs: [k0,v0,k1,v1,...], 2 per live pair */   \
+            VALUE *const _hd = korb_items_data(_hh->items);                 \
+            const uint32_t _hn = _hh->len * 2u;                             \
+            for (uint32_t _hi = 0; _hi < _hn; _hi++)                        \
+                ARO_GC_VISIT_EDGE((ctx), edge_visit, &_hd[_hi]);            \
+        }                                                                    \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_hh->default_val);            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_hh->default_proc);           \
         if (_hh->index) ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->index); /* raw uint32 table */ \
@@ -1453,6 +1470,15 @@ struct CTX_struct {
         KorbObject *_ob = (KorbObject *)(payload);                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ob->klass);                  \
         ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_ob->ivars);             \
+        /* The live count is vm->shapes[shape_id].ivar_count, which this      \
+         * macro has no CTX to reach — so walk ivar_capa instead.  That is    \
+         * exact, not conservative: the store is zero-filled at alloc, only   \
+         * ever grows, and korb_ivar_remove nils the slot it vacates. */      \
+        if (_ob->ivars) {                                                    \
+            VALUE *const _od = korb_items_data(_ob->ivars);                  \
+            for (uint32_t _oi2 = 0; _oi2 < _ob->ivar_capa; _oi2++)          \
+                ARO_GC_VISIT_EDGE((ctx), edge_visit, &_od[_oi2]);           \
+        }                                                                    \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \
@@ -1479,7 +1505,14 @@ struct CTX_struct {
       case KORB_OBJ_ENV: {                                                   \
         KorbEnv *_ev = (KorbEnv *)(payload);                                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ev->prev);   /* odd slots-ptr skipped, KorbEnv* fwd */ \
-        if (_ev->closed) ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ev->vals);  /* open: loc->slots root */ \
+        if (_ev->closed) {                                                   \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ev->vals);  /* open: loc->slots root */ \
+            if (_ev->vals) {   /* allocated with exactly n slots */           \
+                VALUE *const _vd = korb_items_data((KorbArrayItems *)(uintptr_t)_ev->vals); \
+                for (uint32_t _vi = 0; _vi < _ev->n; _vi++)                 \
+                    ARO_GC_VISIT_EDGE((ctx), edge_visit, &_vd[_vi]);        \
+            }                                                                \
+        }                                                                    \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

@@ -50,6 +50,58 @@ ascheme_precise 179/179、baruby_precise 8/8 (`T_gc_big` / `T_gc_stress` 込み)
 性能は交互測定 8 組で 0.758 → 0.749 s と、むしろわずかに速い
 (不明なメモリへのキャッシュミスが、96 バイトの配列の二分探索に置き換わる)。
 
+### VALUE_ARRAY の走査を生存ぶんに限る (conservative 経路の除去)
+
+`AROH_SCAN_EDGES` の `KORB_OBJ_VALUE_ARRAY` は、要素数を payload_size から
+逆算していた。これは **容量** であって、持ち主の `len` ではない。items
+オブジェクト自身は論理長を持たないのでそう書くしかなかった形だが、結果として
+`len` を超えた予備スロットも GC のエッジとして走査されていた。
+
+`ARO_GC_VISIT_EDGE` のフィルタは「8 の倍数かつ非 0」だけなので、予備スロットに
+残った素の整数もポインタ候補として `forward_payload` に届く。**precise GC の
+つもりの箇所に conservative な経路が混ざっていた**、というのが実態。実測した
+例 (prelude 中、毎 GC に出現):
+
+```
+Array len=1 capa=4 → 4 要素ぶん走査
+   e0=Class  e1=nil  e2=0x10000 (ポインタでない生の値)  e3=Class
+```
+
+**直し方**: `KORB_OBJ_VALUE_ARRAY` は自分では走査せず、持ち主がそれぞれの
+生存ぶんを歩く。
+
+| 持ち主 | 走査範囲 |
+|---|---|
+| `KorbArray.items` | `[0, len)` |
+| `KorbHash.items` | `[0, 2*len)` |
+| `KorbObject.ivars` | `[0, ivar_capa)` — 下記 |
+| `KorbEnv.vals` | `[0, n)` (確保が n ちょうど) |
+
+items バッファは持ち主が 1 つに定まる (代入している 4 か所はすべて新規確保で、
+共有はない) ので、取りこぼしも二重走査も起きない。
+
+ivars だけは生存数が `vm->shapes[shape_id].ivar_count` にあり、このマクロは
+CTX を受け取らないので届かない。代わりに `ivar_capa` ぶん歩くが、これは
+conservative ではなく厳密である: 確保時に 0 埋めされ、ivars は伸びるだけで、
+`korb_ivar_remove` が詰めたあとに空いた末尾を nil にするよう直した (これも
+今回の変更)。
+
+**検証**:
+- 診断ビルドで「アリーナ外の生の値」が `forward_payload` に届く回数を数えた。
+  修正前は `p "x".ljust(4096).size` 1 回で **1865 件**、修正後は **0 件**。
+  large_live / stress_big でも 0 件
+- pop / delete / remove_instance_variable の縮む経路を素と STRESS で確認
+- GC を強く踏む hand テスト 40 本で素と STRESS の出力一致 (うち 15 本は
+  STRESS+PURGE でも一致)
+- `make test` 4901 PASS (FAIL 1 は既存の `complex_pow_coerce`)
+- 性能は交互測定 6 組で 0.775 → 0.771 s (差なし)。走査が capa から len に
+  減るぶん、むしろ仕事は少ない
+
+**残っている宿題**: `0x10000` を書いたのが誰かは未特定。Array の予備スロット
+(`len` の外) に入っていたので GC からは見えなくなったが、生の値が VALUE 配列に
+書かれること自体は残っている。`len` が伸びれば push が上書きするので実害は
+考えにくいが、確定はしていない。
+
 ### String#* と Array#fill の大きい入力
 
 `String#*` は repeat のループが 1 コピーずつ `memcpy` を呼んでいたので、
