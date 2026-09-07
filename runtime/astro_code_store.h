@@ -81,6 +81,12 @@ uint32_t               astro_cs_static_sd_count(void);
 const uint8_t *astro_cs_static_desc_lookup(const char *sym);
 #endif
 
+// Loader-only store: all.so carries only the shape descriptors and the code
+// lives in op/<SD>.o.  astro_cs_load then binds the name and the pool but
+// leaves the interpreter dispatcher in place, so the embedder must weave the
+// body (astro_cs_instantiate) before it can run compiled.
+bool astro_cs_is_loader_only(void);
+
 // Loader path (docs/idea_code_store.md §7, pool mode, x86-64 Linux): copy the
 // SD's op/<SD>.o per instance with n's hole values patched in as immediates
 // and install the copy as n->head.dispatcher.  Needs op/ built (ASTRO_CS_PATCH=1

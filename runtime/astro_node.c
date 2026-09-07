@@ -348,7 +348,13 @@ astro_hole_sub(struct astro_hole_buf *const d, uint32_t *const h,
     return base;
 }
 
-// Keep the descriptor for parents to splice; a public SD also emits it as data
+// Public descriptors wait here until the whole file is written: they go after
+// the SD text, so a build can drop the text (-DASTRO_SD_DESC_ONLY) and keep the
+// data.  That is what a loader-only store links into all.so.
+static struct { const char *name; const uint8_t *b; uint32_t n, nholes, depth; } *astro_hole_pending;
+static uint32_t astro_hole_pending_n, astro_hole_pending_capa;
+
+// Keep the descriptor for parents to splice; a public SD also queues it as data
 // (`SD_<h>_desc`), which astro_cs_load resolves next to SD_<h>.
 __attribute__((unused))
 static void
@@ -366,14 +372,37 @@ astro_hole_emit_desc(FILE *fp, const char *const name, struct astro_hole_buf *co
     astro_hole_saved[astro_hole_saved_n].depth = d->depth;
     astro_hole_saved_n++;
 
+    (void)fp;
     if (!is_public) return;
-    // The descriptor is data, so it stays out of the patch objects' text and
-    // costs nothing per instance.
-    fprintf(fp, "#ifndef ASTRO_SD_NO_DESC\nconst uint8_t %s_desc[] = {%uU,%uU,%uU,%uU,%uU,%uU",
-            name, nholes & 0xff, (nholes >> 8) & 0xff, (nholes >> 16) & 0xff, (nholes >> 24) & 0xff,
-            d->depth & 0xff, (d->depth >> 8) & 0xff);
-    for (uint32_t i = 0; i < d->n; i++) fprintf(fp, ",%uU", d->b[i]);
-    fprintf(fp, ",%uU};\n#endif\n\n", ASTRO_HOLE_END);
+    if (astro_hole_pending_n == astro_hole_pending_capa) {
+        astro_hole_pending_capa = astro_hole_pending_capa ? astro_hole_pending_capa * 2 : 32;
+        astro_hole_pending = realloc(astro_hole_pending, sizeof(*astro_hole_pending) * astro_hole_pending_capa);
+        if (!astro_hole_pending) { fprintf(stderr, "astro_hole: out of memory\n"); exit(1); }
+    }
+    astro_hole_pending[astro_hole_pending_n++] = (typeof(*astro_hole_pending)){
+        astro_hole_saved[astro_hole_saved_n - 1].name, d->b, d->n, nholes, d->depth };
+}
+
+// Write the queued descriptors as data and reset for the next file.  The
+// descriptor is data, so it stays out of the patch objects' text and costs
+// nothing per instance.
+__attribute__((unused))
+static void
+astro_hole_flush_descs(FILE *const fp)
+{
+    if (astro_hole_pending_n == 0) return;
+    fprintf(fp, "#ifndef ASTRO_SD_NO_DESC\n#include <stdint.h>\n");
+    for (uint32_t j = 0; j < astro_hole_pending_n; j++) {
+        const uint32_t nh = astro_hole_pending[j].nholes, dp = astro_hole_pending[j].depth;
+        fprintf(fp, "const uint8_t %s_desc[] = {%uU,%uU,%uU,%uU,%uU,%uU",
+                astro_hole_pending[j].name, nh & 0xff, (nh >> 8) & 0xff, (nh >> 16) & 0xff,
+                (nh >> 24) & 0xff, dp & 0xff, (dp >> 8) & 0xff);
+        for (uint32_t i = 0; i < astro_hole_pending[j].n; i++)
+            fprintf(fp, ",%uU", astro_hole_pending[j].b[i]);
+        fprintf(fp, ",%uU};\n", ASTRO_HOLE_END);
+    }
+    fprintf(fp, "#endif\n");
+    astro_hole_pending_n = 0;
 }
 #endif
 

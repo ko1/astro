@@ -576,7 +576,10 @@ static enum korb_inst_mode
 korb_inst_mode(void)
 {
     const char *const m = getenv("KORUBY_INSTANTIATE");
-    if (!m || !m[0] || strcmp(m, "0") == 0) return KORB_INST_OFF;
+    // A loader-only store has no dispatchers to fall back on, so weaving is
+    // not optional there: default to first (weave on first dispatch).
+    if (!m || !m[0]) return astro_cs_is_loader_only() ? KORB_INST_FIRST : KORB_INST_OFF;
+    if (strcmp(m, "0") == 0) return KORB_INST_OFF;
     if (strncmp(m, "hot", 3) == 0)          return KORB_INST_HOT;
     if (strcmp(m, "first") == 0)            return KORB_INST_FIRST;
     return KORB_INST_ALL;
