@@ -50,6 +50,78 @@ ascheme_precise 179/179、baruby_precise 8/8 (`T_gc_big` / `T_gc_stress` 込み)
 性能は交互測定 8 組で 0.758 → 0.749 s と、むしろわずかに速い
 (不明なメモリへのキャッシュミスが、96 バイトの配列の二分探索に置き換わる)。
 
+### File::NULL の owner が stale だった (C の引数評価順)
+
+`0x10000` の正体を追い切った結果。**あれは誰かが書いた値ではなく、GC が付けた
+印だった。** ヘッダの並びは「低 32bit = flags|gc_flags、高 32bit = gc_size」
+なので、`0x10000` は `gc_flags = 1 = HDR_FORWARDED`、`flags = 0`、`gc_size = 0`。
+つまり GC が **items 配列の途中 (offset 24) をオブジェクトの先頭だと思って
+forward した跡**で、隣の `[3]` に入っていた「無名 Class」は転送先ポインタ
+だった。
+
+原因は `builtins/file.c`:
+
+```c
+korb_const_define_owned(c, korb_intern(vm, "NULL", 4),
+                        korb_str_new(c, slots + 3, "/dev/null", 9).value,  /* 確保 = GC */
+                        slots[1]);                                          /* 先に読まれる */
+```
+
+**C は引数の評価順を規定しない。** gcc は右から評価するので `slots[1]` (owner =
+File::Constants) を先にレジスタへ読み、そのあと `korb_str_new` の中の GC が
+その owner を移動させる。root 走査が更新するのは *スロット* であって、
+すでに取られたコピーではないから、古いアドレスがそのまま
+`vm->const_owners[]` に焼かれて**永久に残る**。あとでそのアドレスが再利用
+されると、無関係なオブジェクトの途中を指すことになる。
+
+同じ形が `NULL` / `SEPARATOR` / `Separator` / `PATH_SEPARATOR` の 4 か所に
+あった。文字列を先にスロットへ置いてから渡すよう直した。
+
+**特定の手順** (gdb は使えなかった。LTO + `-ggdb3` の 14MB バイナリで 10 分
+経っても何も出さず、ASAN ビルドは `-O1` でフレームが太って prelude を読む前に
+cstack ガードに当たる。ASAN はそもそも GC アリーナ内の書き込みを見られない):
+
+1. GC に診断を入れ、壊れた配列の持ち主を to 空間から逆引き → `Set.included`
+2. 書き込みバリア (`ARO_STORE`) に検査を入れる → **発火しない** = 生の書き込み
+3. 確保のたびに定数表を検査 → `korb_alloc` の**出口**で発火 = GC 中に壊れる
+4. 「from 空間のエッジがオブジェクト先頭を指しているか」の検査を入れる →
+   `roots:const_owners[133]`、名前は `NULL`
+5. 定数定義のたびに定数表を検査 → `korb_init_file` からの呼び出しで発火
+
+### ASTRO_GC_EDGE_CHECK — stale ポインタを現場で捕まえる
+
+上の 4 番目の検査を残した。`forward_payload` の cheney コピー直前で、
+from/to 空間のアドレスが**オブジェクトの先頭か**を `gc_size` の健全性で見る。
+先頭でなければ stale ポインタが GC に届いたということで、そのまま進むと
+壊れた `gc_size` を読み、さらに `HDR_FORWARDED` と転送先アドレスを
+**生きているオブジェクトの途中に書き込む**。被害は原因から遠く離れた場所に
+出るので、ここで捕まえる価値がある。
+
+```
+ASTRO_GC_EDGE_CHECK=1      … 警告のみ (先頭 10 件)、実行は続行
+ASTRO_GC_EDGE_CHECK=abort  … 最初の 1 件で C バックトレース付き abort
+```
+
+既定は off。STRESS で自動 ON にはしていない — **koruby にはまだ既知の違反が
+残っている**ため、自動にすると全 STRESS 実行が止まってしまう。
+
+**残っている違反** (2026-09-07 時点、`ASTRO_GC_EDGE_CHECK=1 ASTRO_GC_STRESS=1
+koruby_precise -e 'p 1'` で 3 件):
+
+```
+edge -> 0x...600720 gc_size=0 during root scan, in to-space (past to_top)
+```
+
+`roots:slots` = VALUE スタックの、`slots_top` より下にあって**一度も書かれて
+いない**スロット。`AROH_VISIT_ROOTS` は `slots_top` より上を high-water まで
+0 埋めするが、下の未初期化スロットは対象外。`korb_alloc` が
+`c->slots_top = slots` で公開する以上、staging 中に穴が空いていると古い値が
+ルートとして見える。塞ぐには staging 箇所の総点検が要るので未着手。
+
+性能: 交互測定 6 組で検査なし 0.767 s / 検査あり 0.744 s。増えた分岐は
+予測可能で、差は LTO のコード配置ゆらぎ (検査ありが速いのは分岐のおかげでは
+ない)。いずれにせよ計測できるコストは無い。
+
 ### VALUE_ARRAY の走査を生存ぶんに限る (conservative 経路の除去)
 
 `AROH_SCAN_EDGES` の `KORB_OBJ_VALUE_ARRAY` は、要素数を payload_size から

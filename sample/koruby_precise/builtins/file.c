@@ -2681,10 +2681,21 @@ void korb_init_file(CTX *c, VALUE *slots) {
     };
     for (size_t i = 0; i < sizeof(fc) / sizeof(fc[0]); i++)
         korb_const_define_owned(c, korb_intern(vm, fc[i].n, (uint32_t)strlen(fc[i].n)), LONG2FIX(fc[i].v), slots[1]);
-    korb_const_define_owned(c, korb_intern(vm, "NULL", 4), korb_str_new(c, slots + 3, "/dev/null", 9).value, slots[1]);
-    korb_const_define_owned(c, korb_intern(vm, "SEPARATOR", 9),      korb_str_new(c, slots + 3, "/", 1).value, slots[0]);
-    korb_const_define_owned(c, korb_intern(vm, "Separator", 9),      korb_str_new(c, slots + 3, "/", 1).value, slots[0]);
-    korb_const_define_owned(c, korb_intern(vm, "PATH_SEPARATOR", 14), korb_str_new(c, slots + 3, ":", 1).value, slots[0]);
+    /* Stage each String in a slot first.  C does not order argument evaluation,
+     * and gcc evaluates right-to-left: written as one call, `slots[N]` (the
+     * owner) is loaded BEFORE korb_str_new runs, so a collection inside the
+     * allocation moves the owner and the pre-loaded, now-stale pointer is what
+     * gets baked into vm->const_owners.  It stays there forever (the root scan
+     * forwards the slot, not the copy that was already taken), and once the
+     * address is reused it points into the middle of an unrelated object. */
+    slots[4] = korb_str_new(c, slots + 5, "/dev/null", 9).value;
+    korb_const_define_owned(c, korb_intern(vm, "NULL", 4), slots[4], slots[1]);
+    slots[4] = korb_str_new(c, slots + 5, "/", 1).value;
+    korb_const_define_owned(c, korb_intern(vm, "SEPARATOR", 9), slots[4], slots[0]);
+    slots[4] = korb_str_new(c, slots + 5, "/", 1).value;
+    korb_const_define_owned(c, korb_intern(vm, "Separator", 9), slots[4], slots[0]);
+    slots[4] = korb_str_new(c, slots + 5, ":", 1).value;
+    korb_const_define_owned(c, korb_intern(vm, "PATH_SEPARATOR", 14), slots[4], slots[0]);
     korb_const_define_owned(c, korb_intern(vm, "ALT_SEPARATOR", 13),  KORB_NIL, slots[0]);   /* nil on POSIX */
     /* File includes File::Constants (IO does too — see korb_init_io, which
      * runs after this and creates the IO class). */

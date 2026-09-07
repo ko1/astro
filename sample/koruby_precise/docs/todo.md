@@ -3,6 +3,29 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## 既知バグ (GC): slots_top より下の未初期化スロット
+
+`ASTRO_GC_EDGE_CHECK=1 ASTRO_GC_STRESS=1 ./koruby_precise -e 'p 1'` で 3 件出る:
+
+```
+GC BUG: edge -> 0x...600720 is not an object start (gc_size=0) during root scan,
+        in to-space (past to_top = never allocated this cycle)
+```
+
+`AROH_VISIT_ROOTS` の slots 走査が、`slots_top` より下にあって一度も書かれて
+いないスロットを踏んでいる。そこには前のフレームの古い値が残っており、
+GC はそれをポインタとして forward しようとする。今回は「未使用の to 空間」を
+指しているので実害は出ていないが、from 空間の生きたオブジェクトの途中を
+指せば、`HDR_FORWARDED` と転送先アドレスをそこに書き込んで壊す
+(2026-09-07 に直した File::NULL の件がまさにそれ)。
+
+high-water 0 埋めは `slots_top` より **上** しか見ないので、この穴は塞げない。
+`korb_alloc` が `c->slots_top = slots` で公開する以上、staging の途中に
+書かれていないスロットがあると必ずルートとして見えてしまう。
+
+直すには staging 箇所の総点検 (どこで穴が空くか) が要る。検出手段は
+[done.md](./done.md) の ASTRO_GC_EDGE_CHECK にある。
+
 ## 既知バグ (socket / require)
 
 - ~~socket の blocking spec が whole-file timeout~~ **(2026-08-10 解消)**。

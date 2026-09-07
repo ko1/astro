@@ -30,6 +30,24 @@ _Static_assert(sizeof(AroObjectHeader) == 8,
                "Cheney: head must be 8 bytes (fwd overlay, no dedicated gc_fwd)");
 
 #define HDR_FORWARDED  (uint16_t)0x0001u   /* small obj copied to to-space */
+/* Report-and-die for the edge check below.  The C backtrace names the
+ * allocation that was in flight, which is usually one frame from the code that
+ * captured the stale pointer. */
+#if defined(__wasi__) || !defined(__GLIBC__)
+static void aro_gc_edge_check_abort(void) { abort(); }
+#else
+#include <execinfo.h>
+static void aro_gc_edge_check_abort(void)
+{
+    void *bt[64];
+    backtrace_symbols_fd(bt, backtrace(bt, 64), 2);
+    abort();
+}
+#endif
+
+#define EDGE_CHECK_MAX 10
+static unsigned edge_check_seen;
+
 #define HDR_MARKED     (uint16_t)0x0002u   /* large obj marked alive */
 #define HDR_LARGE      (uint16_t)0x0004u   /* large obj (malloc'd, non-moving) */
 #define HDR_IS_FORWARDED(h) (((h)->gc_flags & HDR_FORWARDED) != 0)
@@ -173,6 +191,13 @@ typedef struct ASTroGC {
      * this array is exact and touches only memory we own. */
     void **large_addrs;
     size_t large_n, large_capa;
+    /* ASTRO_GC_EDGE_CHECK: report edges that do not point at an object START
+     * (see forward_payload).  0 = off, 1 = warn (first EDGE_CHECK_MAX), 2 =
+     * abort on the first one.  Opt-in rather than automatic under stress:
+     * koruby still has a known offender (an uninitialized slot below
+     * slots_top), so turning it on by default would break every stress run. */
+    int edge_check;
+    const char *phase;          /* "roots" / "cheney" / "large" — for the edge check message */
 } ASTroGC;
 
 // ----------------------------------------------------------------------------
@@ -213,6 +238,10 @@ aro_gc_init(CTX *c)
     bool purge  = (getenv("ASTRO_GC_PURGE") != NULL) || (getenv("BARUBY_GC_PURGE") != NULL);
     ARO_GC_COMMON(c)->stress = stress;
     ARO_GC_COMMON(c)->purge  = purge;
+    {
+        const char *ec = getenv("ASTRO_GC_EDGE_CHECK");
+        gc->edge_check = !ec ? 0 : (strcmp(ec, "abort") == 0 ? 2 : 1);
+    }
     if (stress) {
         /* BARUBY_GC_STRESS=N (N > 1) → GC every N allocs.  N=1 or any
          * non-numeric value keeps the every-alloc behavior.  Lets large
@@ -644,6 +673,35 @@ forward_payload(ASTroGC *gc, void *old_payload)
         }
     }
 
+    /* A from-space address that is not an object START means someone handed us
+     * a stale interior pointer.  Copying it would read a bogus gc_size and,
+     * worse, stamp HDR_FORWARDED plus a forwarding address INTO THE MIDDLE of
+     * whatever live object now occupies that memory.  That is not hypothetical:
+     * File::NULL's owner was captured before an allocation that moved it (C
+     * leaves argument evaluation order open), and the resulting interior
+     * pointer wrote a fake header into Set's ancestor array.  The corruption
+     * lands far from its cause, so catch it here. */
+    if (__builtin_expect(gc->edge_check != 0, 0) &&
+        (oldh->gc_size == 0 || oldh->gc_size > (1u << 20))) {
+        {
+            char *const p_ = (char *)old_payload;
+            const bool in_from_ = p_ >= gc->from_base_cur &&
+                                  p_ < gc->from_base_cur + gc->region_bytes;
+            fprintf(stderr,
+                "GC BUG: edge -> %p is not an object start (gc_size=%u flags=%#x "
+                "gc_flags=%#x) during %s, in %s%s — a stale pointer reached the "
+                "collector\n",
+                old_payload, oldh->gc_size, oldh->flags, oldh->gc_flags,
+                gc->phase ? gc->phase : "?",
+                in_from_ ? "from-space" : "to-space",
+                (!in_from_ && p_ >= gc->to_top) ? " (past to_top = never allocated this cycle)" : "");
+            if (gc->edge_check >= 2) aro_gc_edge_check_abort();
+            if (++edge_check_seen >= EDGE_CHECK_MAX) {
+                fprintf(stderr, "GC BUG: (further edge-check reports suppressed)\n");
+                gc->edge_check = 0;
+            }
+        }
+    }
     /* Cheney copy: from-space → to-space.  After memcpy, mark old as
      * FORWARDED and store fwd ptr in overlay slot (= payload offset 8,
      * overwriting first sample field — from-space is discarded after
@@ -744,7 +802,9 @@ gc_collect_internal(CTX *c)
      * sample's AROH_VISIT_ROOTS macro handles any high-water /
      * dead-slot zeroing it cares about. */
     struct timespec tcheney = aro_gc_phase_begin();
+    gc->phase = "root scan";
     AROH_VISIT_ROOTS(c, gc, forward_edge);
+    gc->phase = "cheney scan";
 
     /* (2a) Cheney scan-loop in to-space.  Hot loop, run unconditionally.
      * SCAN category calls sample's SCAN_EDGES which dispatches via
@@ -770,6 +830,7 @@ gc_collect_internal(CTX *c)
     /* (2b) Large-gray drain (only if large objs exist).  Each large gray
      * scan can produce new to-space objs (which need cheney drain) or
      * new large gray entries, so loop until both queues empty. */
+    gc->phase = "large-object scan";
     while (gc->large_gray) {
         LargeObj *lo = gc->large_gray;
         gc->large_gray = lo->next_gray;
