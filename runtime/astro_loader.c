@@ -54,6 +54,52 @@ static struct {
     bool failed;
 } astro_ld_arena;
 
+// The host's executable segments, so "near enough for rel32" is a checked
+// property and not a hope.  /proc/self/maps is read rather than link.h's
+// dl_iterate_phdr, which needs _GNU_SOURCE this late-included file cannot set.
+struct astro_ld_text { uintptr_t lo, hi; };
+
+static struct astro_ld_text
+astro_ld_host_text(void)
+{
+    struct astro_ld_text t = { UINTPTR_MAX, 0 };
+    char exe[ASTRO_CS_PATH_MAX];
+    const ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) {
+        exe[n] = 0;
+        FILE *const f = fopen("/proc/self/maps", "r");
+        if (f) {
+            char line[1024];
+            while (fgets(line, sizeof(line), f)) {
+                unsigned long lo = 0, hi = 0;
+                char perms[8] = {0}, path[512] = {0};
+                if (sscanf(line, "%lx-%lx %7s %*s %*s %*s %511[^\n]", &lo, &hi, perms, path) < 3) continue;
+                if (perms[2] != 'x') continue;
+                const char *p = path;
+                while (*p == ' ' || *p == '\t') p++;
+                if (strcmp(p, exe) != 0) continue;
+                if ((uintptr_t)lo < t.lo) t.lo = (uintptr_t)lo;
+                if ((uintptr_t)hi > t.hi) t.hi = (uintptr_t)hi;
+            }
+            fclose(f);
+        }
+    }
+    if (t.hi == 0) {              // no maps: fall back to one known address
+        const uintptr_t a = (uintptr_t)&astro_ld_host_text;
+        t.lo = a; t.hi = a + 1;
+    }
+    return t;
+}
+
+// Can every rel32 between [x, x+size) and the host text fit in 32 bits?
+static bool
+astro_ld_in_rel32(uintptr_t x, size_t size, struct astro_ld_text t)
+{
+    const int64_t d1 = (int64_t)(t.hi - x);            // furthest forward jump
+    const int64_t d2 = (int64_t)((x + size) - t.lo);   // furthest backward jump
+    return d1 < INT32_MAX && d1 > INT32_MIN && d2 < INT32_MAX && d2 > INT32_MIN;
+}
+
 static bool
 astro_ld_arena_init(void)
 {
@@ -67,17 +113,44 @@ astro_ld_arena_init(void)
     if (ftruncate(fd, (off_t)reserve) != 0) { close(fd); return false; }
 
     char *x = MAP_FAILED;
-    // Some code models can only address data with a limited-width immediate, so
-    // the executable view may have to sit in a window the backend names.
-    const uintptr_t lo = ASTRO_ARCH_ARENA_LO ? (uintptr_t)ASTRO_ARCH_ARENA_LO : 0x20000000u;
-    const uintptr_t hi = ASTRO_ARCH_ARENA_HI ? (uintptr_t)ASTRO_ARCH_ARENA_HI : 0x70000000u;
-    for (uintptr_t hint = lo; hint < hi; hint += 0x10000000u) {
-        void *p = mmap((void *)hint, reserve, PROT_READ | PROT_EXEC,
-                       MAP_SHARED | MAP_FIXED_NOREPLACE, fd, 0);
-        if (p == MAP_FAILED) continue;
-        if ((uintptr_t)p != hint) { munmap(p, reserve); continue; }   // old kernel: hint ignored
-        x = p;
-        break;
+    if (astro_ld_arena_near()) {
+        // Direct rel32 calls into the host: the arena has to land within ±2GB
+        // of its text.  Probe outwards from it — the classic JIT trick —
+        // starting below, where a PIE leaves room.  Every candidate is checked
+        // against the measured text range, so a hit is a fact, not a hope.
+        const struct astro_ld_text t = astro_ld_host_text();
+        const uintptr_t anchor = t.lo & ~(uintptr_t)0xfffff;
+        for (size_t off = reserve; off < ((size_t)1 << 31) && x == MAP_FAILED; off += reserve) {
+            for (int up = 0; up < 2; up++) {
+                if (!up && anchor < off) continue;
+                const uintptr_t hint = up ? (t.hi + off) & ~(uintptr_t)0xfffff : anchor - off;
+                if (!astro_ld_in_rel32(hint, reserve, t)) continue;
+                void *p = mmap((void *)hint, reserve, PROT_READ | PROT_EXEC,
+                               MAP_SHARED | MAP_FIXED_NOREPLACE, fd, 0);
+                if (p == MAP_FAILED) continue;
+                if ((uintptr_t)p != hint) { munmap(p, reserve); continue; }
+                x = p;
+                break;
+            }
+        }
+        if (x != MAP_FAILED && getenv("ASTRO_LD_TRACE"))
+            fprintf(stderr, "astro_ld: host text %p-%p, arena %p (+%lld MB)\n",
+                    (void *)t.lo, (void *)t.hi, (void *)x,
+                    (long long)(((int64_t)(uintptr_t)x - (int64_t)t.lo) >> 20));
+    }
+    else {
+        // Some code models can only address data with a limited-width immediate,
+        // so the executable view may have to sit in a window the backend names.
+        const uintptr_t lo = ASTRO_ARCH_ARENA_LO ? (uintptr_t)ASTRO_ARCH_ARENA_LO : 0x20000000u;
+        const uintptr_t hi = ASTRO_ARCH_ARENA_HI ? (uintptr_t)ASTRO_ARCH_ARENA_HI : 0x70000000u;
+        for (uintptr_t hint = lo; hint < hi; hint += 0x10000000u) {
+            void *p = mmap((void *)hint, reserve, PROT_READ | PROT_EXEC,
+                           MAP_SHARED | MAP_FIXED_NOREPLACE, fd, 0);
+            if (p == MAP_FAILED) continue;
+            if ((uintptr_t)p != hint) { munmap(p, reserve); continue; }   // old kernel: hint ignored
+            x = p;
+            break;
+        }
     }
     if (x == MAP_FAILED) { close(fd); return false; }
 
@@ -92,6 +165,32 @@ astro_ld_arena_init(void)
     astro_ld_arena.failed = false;
     return true;
 }
+
+#if ASTRO_ARCH_STUB_SIZE
+// One trampoline per far target, shared by every instance: the targets are a
+// handful of libc entry points, and a stub in the arena is reachable from any
+// call site in it.
+static struct { uintptr_t target, stub; } astro_ld_stub[512];
+static uint32_t astro_ld_stub_n;
+
+static char *astro_ld_alloc(size_t size, size_t align, char **xp);
+
+static uintptr_t
+astro_ld_stub_for(const uintptr_t target)
+{
+    for (uint32_t i = 0; i < astro_ld_stub_n; i++)
+        if (astro_ld_stub[i].target == target) return astro_ld_stub[i].stub;
+    if (astro_ld_stub_n == sizeof(astro_ld_stub) / sizeof(astro_ld_stub[0])) return 0;
+    char *x = NULL;
+    char *const w = astro_ld_alloc(ASTRO_ARCH_STUB_SIZE, 16, &x);
+    if (!w) return 0;
+    astro_arch_make_stub(w, target);
+    astro_ld_stub[astro_ld_stub_n].target = target;
+    astro_ld_stub[astro_ld_stub_n].stub = (uintptr_t)x;
+    astro_ld_stub_n++;
+    return (uintptr_t)x;
+}
+#endif
 
 // Bump-allocate `size` bytes aligned to `align`; *xp receives the executable
 // address of the same bytes.  x86 keeps the two views' i-cache coherent, and an
@@ -367,6 +466,14 @@ astro_cs_instantiate(NODE *n)
             } else {
                 ok = false; break;
             }
+#if ASTRO_ARCH_STUB_SIZE
+            // Out of rel32 reach (a libc entry point, say): route the call
+            // through a trampoline in the arena instead of failing.
+            if (astro_arch_reloc_is_pcrel32(t) && !astro_arch_reloc_pcrel32_fits(S, A, wherex)) {
+                S = astro_ld_stub_for(S);
+                if (!S) { ok = false; break; }
+            }
+#endif
             char *slot = NULL; uintptr_t slotx = 0;
             if (astro_arch_reloc_needs_got(t)) {
                 slot  = base + got_off + got_used * ASTRO_ARCH_GOT_SLOT;

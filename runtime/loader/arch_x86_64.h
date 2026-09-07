@@ -15,11 +15,27 @@
 // would need their own relocation pass.
 // ASTRO_SD_NO_DESC: the hole descriptor is data the loader reads from the
 // all.so side, so emitting it here too would just be copied into the object.
+// Two placements, chosen by ASTRO_LD_NEAR (default: near).
+//   near — data is rip-relative (-fpie), so the arena is free to sit next to
+//          the host and calls stay direct (PLT32, rel32).  Reaching the host is
+//          then a placement problem, solved by probing mmap hints around it;
+//          anything still out of reach (libc) goes through an arena stub.
+//          Holes stay 64-bit absolute immediates, which -fpie leaves alone.
+//   low  — data uses 32-bit absolutes, so the arena must live below 4 GB; the
+//          host is then out of rel32 range and calls go through a per-instance
+//          GOT slot (-fno-plt).
 #define ASTRO_ARCH_CFLAGS \
-    "-fno-pic -fno-plt -fno-jump-tables -mcmodel=medium -fno-asynchronous-unwind-tables -DASTRO_SD_NO_DESC"
+    "-fpie -fno-jump-tables -fno-asynchronous-unwind-tables -DASTRO_SD_NO_DESC"
+#define ASTRO_ARCH_CFLAGS_LOW \
+    "-fno-pic -fno-plt -fno-jump-tables -mcmodel=medium" \
+    " -fno-asynchronous-unwind-tables -DASTRO_SD_NO_DESC"
 
 // The medium code model reaches .rodata with 32-bit absolute addresses, so the
 // executable view of an instance has to live in the low 2 GB.
+// A call whose target is out of rel32 range needs a trampoline, exactly as a
+// linker's PLT entry does: movabs $target,%r11 ; jmp *%r11.  %r11 is the ABI's
+// scratch register, so no argument or return register is disturbed.
+#define ASTRO_ARCH_STUB_SIZE 16
 #define ASTRO_ARCH_ARENA_LO 0x20000000u
 #define ASTRO_ARCH_ARENA_HI 0x70000000u
 
@@ -121,6 +137,31 @@ astro_arch_reloc_apply(unsigned type, char *where, uintptr_t wherex,
     }
     default: return false;
     }
+}
+
+static inline bool
+astro_arch_reloc_is_pcrel32(const unsigned type)
+{
+    return type == R_X86_64_PC32 || type == R_X86_64_PLT32;
+}
+
+static inline bool
+astro_arch_reloc_pcrel32_fits(const uintptr_t S, const int64_t A, const uintptr_t wherex)
+{
+    const int64_t v = (int64_t)(S + (uint64_t)A - wherex);
+    return v >= INT32_MIN && v <= INT32_MAX;
+}
+
+static inline void
+astro_arch_make_stub(char *const w, const uintptr_t target)
+{
+    static const unsigned char code[ASTRO_ARCH_STUB_SIZE] = {
+        0x49, 0xbb, 0, 0, 0, 0, 0, 0, 0, 0,   // movabs $target,%r11
+        0x41, 0xff, 0xe3,                      // jmp *%r11
+        0xcc, 0xcc, 0xcc                       // pad
+    };
+    memcpy(w, code, sizeof(code));
+    memcpy(w + 2, &target, 8);
 }
 
 // The two views alias the same pages; x86 keeps their instruction caches

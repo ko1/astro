@@ -286,6 +286,17 @@ astro_cs_dlsym(const char *sym)
 }
 
 #if ASTRO_LOADER_SUPPORTED
+// Arena placement.  Near the host (default) every host call is a direct rel32
+// and finding room is an mmap-probing problem; below 4 GB the host is out of
+// rel32 range and calls go through a per-instance GOT slot.  The choice has to
+// agree between the bake (which picks the flags) and the load.
+static bool
+astro_ld_arena_near(void)
+{
+    const char *const e = getenv("ASTRO_LD_NEAR");
+    return !(e && e[0] && strcmp(e, "0") == 0);
+}
+
 // Loader-only store: all.so carries the descriptors and nothing else; the code
 // lives in op/<SD>.o and is woven per node.  Set at bake time by
 // ASTRO_CS_LOADER_ONLY=1 and recorded in the store so consumers agree.
@@ -968,8 +979,12 @@ astro_cs_build_target(const char *extra_cflags, const char *target)
     // Loader-path objects (docs/idea_code_store.md §7, astro_cs_instantiate):
     // the same sources, non-PIC with holes left as relocations.  Kept in op/
     // (never linked into all.so).  Built by `make patch`.
-    fprintf(fp, "CFLAGS_PATCH ?= $(filter-out -fPIC -fno-semantic-interposition,$(CFLAGS))"
-                " %s -DASTRO_SD_PATCH=1\n", ASTRO_ARCH_CFLAGS);
+    // -fno-plt has to go for the near placement: it is what turns a direct
+    // rel32 call into a GOT load, and it comes from the shared CFLAGS.
+    fprintf(fp, "CFLAGS_PATCH ?= $(filter-out -fPIC -fno-semantic-interposition%s,$(CFLAGS))"
+                " %s -DASTRO_SD_PATCH=1\n",
+            astro_ld_arena_near() ? " -fno-plt" : "",
+            astro_ld_arena_near() ? ASTRO_ARCH_CFLAGS : ASTRO_ARCH_CFLAGS_LOW);
     fprintf(fp, "POBJS = $(patsubst c/%%.c,op/%%.o,$(SRCS))\n");
     fprintf(fp, "patch: $(POBJS)\n");
     fprintf(fp, ".PHONY: patch\n");

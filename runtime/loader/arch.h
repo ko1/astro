@@ -13,6 +13,8 @@
 //                              relocation carries k as its addend, in a form
 //                              the compiler cannot fold into another hole's
 //                              (see arch_x86_64.h for why that matters)
+//     ASTRO_ARCH_CFLAGS_LOW    same, for the below-4GB arena placement
+//                              (defaults to ASTRO_ARCH_CFLAGS)
 //     ASTRO_ARCH_CFLAGS        flags the store must use for op/*.o so the
 //                              holes survive as relocations (code model, no
 //                              PIC/PLT indirection, no jump tables, ...)
@@ -65,4 +67,19 @@
 #ifndef ASTRO_ARCH_GOT_SLOT
 #define ASTRO_ARCH_GOT_SLOT 8
 #endif
+#ifndef ASTRO_ARCH_STUB_SIZE
+#define ASTRO_ARCH_STUB_SIZE 0
+#endif
+#endif
+
+#ifndef ASTRO_ARCH_CFLAGS_LOW
+#define ASTRO_ARCH_CFLAGS_LOW ASTRO_ARCH_CFLAGS
+#endif
+
+// Backends without far-call trampolines: every pc-relative call is assumed to
+// reach, which is true when the arena sits inside the code model's window.
+#if defined(ASTRO_LOADER_IMPL) && ASTRO_ARCH_STUB_SIZE == 0
+#define astro_arch_reloc_is_pcrel32(t)          (false)
+#define astro_arch_reloc_pcrel32_fits(S, A, w)  (true)
+#define astro_arch_make_stub(w, t)              ((void)0)
 #endif
