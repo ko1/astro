@@ -108,3 +108,40 @@ aro_borrow_unused.ql        annotation-hygiene check
 maygc.ql                    may-gc inference helper
 test/                       fixtures
 ```
+
+
+## 6. unsequenced-gc-arg (`unsequenced_gc_arg.ql`)
+
+**一つの引数リストに、GC を起こしうる呼び出しと、GC が動かす VALUE の読みが
+同居していないか。** C は引数の評価順を規定しないので、VALUE の読みが先に
+起きうる。そうなると移動前のアドレスが渡り、**誰も直さない** — ルート走査が
+更新するのはスロットであって、すでに取られたコピーではないから。
+
+これは新しい規則ではなく、既存の「確保をまたいだら再読み込み」を、名前付き
+ローカルが無いために寿命が見えない場所から見たもの。だから
+`value_after_gc.ql` (StackVariable を鍵にする) では原理的に見えない。
+
+順序こそ標準が開けている部分なので、このクエリは制御フローの順序を一切見ず、
+**同居**だけを問う。
+
+実例: `File::NULL` の owner (`builtins/file.c`)。2026-09-07 に修正。stale な
+owner が `vm->const_owners` に焼かれ、後に `Set` の ancestor 配列の途中に
+偽ヘッダを書き込んでいた。修正前のコードでこのクエリを流すと 4 件出て、修正後は
+0 件になることを確認済み。
+
+自己テスト: `test/unseq_cases.c` (BAD 3 / GOOD 4)。
+
+## 7. value-read-after-gc (`value_read_after_gc.ql`) — ラチェット
+
+`value_after_gc.ql` が追うのは **may-GC 呼び出しが「作った」** VALUE だけ。
+実際に多いのは、スロット・引数・構造体フィールドから **「取り出しただけ」** の
+VALUE を GC 後に使う形で、そちらは検出されていなかった (`test/gap_cases.c` を
+`value_after_gc.ql` に流すと 0 件)。このクエリは源を「定数でない任意の VALUE 式」
+まで広げる。
+
+**これだけはゼロにできない。** 静的には即値 (絶対に動かない) と heap オブジェクトを
+区別できず、実際に GC する経路かどうかも分からないため。2026-09-07 時点で 189 件
+(うち 145 件が `korb_runtime.c`)。`VRAG_BASELINE` として run.sh に置き、
+**増えたら落ちる**ようにしてある。仕分けは未着手。
+
+自己テスト: `test/gap_cases.c` (BAD 2 / GOOD 2)。
