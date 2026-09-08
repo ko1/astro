@@ -626,14 +626,17 @@ static RESULT
 korb_first_dispatch(CTX *c, NODE *n, VALUE *slots)
 {
     n->head.dispatcher = korb_hot_find(n)->orig;   /* drop the trampoline first */
-    if (astro_cs_instantiate(n)) {                 /* installs the instance on success */
-        korb_dispatchers_swapped(c->vm);           /* fat inline caches hold the old one */
-    }
-    else if (OPTION.compiled_only && astro_cs_is_loader_only() && !n->head.flags.no_inline) {
-        /* No pool SD to fall back on: an unwoven body would silently run on
-         * the interpreter, which is exactly what --compiled-only forbids. */
+    if (!astro_cs_instantiate(n)                   /* installs the instance on success */
+        && OPTION.compiled_only && !n->head.flags.no_inline
+        && n->head.dispatcher == n->head.kind->default_dispatcher) {
+        /* Nothing to fall back on but the interpreter, which is exactly what
+         * --compiled-only forbids.  A pool SD (mixed store) is a fine fallback,
+         * so the test is the restored dispatcher, not the store's kind. */
         n->head.dispatcher = korb_poison_dispatch;
     }
+    /* Unconditional: the trampoline is gone either way, and a fat cache that
+     * still holds it would re-enter this one-shot on every call. */
+    korb_dispatchers_swapped(c->vm);
     return (*n->head.dispatcher)(c, n, slots);
 }
 
@@ -649,12 +652,12 @@ korb_second_dispatch(CTX *c, NODE *n, VALUE *slots)
     }
     n->head.hash_opt = 0;
     n->head.dispatcher = e->orig;
-    if (astro_cs_instantiate(n)) {
-        korb_dispatchers_swapped(c->vm);
-    }
-    else if (OPTION.compiled_only && astro_cs_is_loader_only() && !n->head.flags.no_inline) {
+    if (!astro_cs_instantiate(n)
+        && OPTION.compiled_only && !n->head.flags.no_inline
+        && n->head.dispatcher == n->head.kind->default_dispatcher) {
         n->head.dispatcher = korb_poison_dispatch;
     }
+    korb_dispatchers_swapped(c->vm);               /* as in first: the trampoline is gone */
     return (*n->head.dispatcher)(c, n, slots);
 }
 
