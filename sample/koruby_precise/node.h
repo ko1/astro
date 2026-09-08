@@ -55,9 +55,21 @@ struct NodeHead {
 
 /* Inline method-call cache — embedded in call nodes via @ref.  Valid while
  * serial matches vm->method_serial. */
+/* Top-level (`self` is main) function calls land here rather than in the
+ * inline cache: there is no receiver class to key on, only the method serial.
+ * Fattened for the same reason korb_inlcache is — the hot path used to walk
+ * cc->m to read `kind`/`is_simple`, then korb_invoke_simple walked m->body and
+ * body->head.dispatcher, touching two more cache lines per call.  fib / tak /
+ * ackermann / method_call are all top-level defs, so that was the main
+ * recursion path. */
 struct korb_callcache {
     uint64_t serial;
     struct korb_method *m;
+    struct Node *body;               /* simple: m->body */
+    node_dispatcher_func_t dispatch; /* simple: body->head.dispatcher at fill time */
+    uint32_t locals_cnt;             /* simple: m->locals_cnt */
+    int32_t  params_cnt;             /* simple: m->params_cnt */
+    uint8_t  simple;                 /* m is KORB_METHOD_ISEQ && is_simple */
 };
 
 /* Block/lambda parameter introspection (Proc#parameters) — built once at parse
@@ -809,6 +821,30 @@ korb_ic_fill(struct korb_inlcache *ic, uint64_t serial, VALUE klass, struct korb
     } else {
         ic->body = NULL; ic->dispatch = NULL; ic->locals_cnt = 0; ic->params_cnt = 0; ic->simple = 0;
     }
+}
+
+/* Mirror of korb_ic_fill for the top-level call cache. */
+static inline void
+korb_cc_fill(struct korb_callcache *cc, uint64_t serial, struct korb_method *m)
+{
+    cc->serial = serial; cc->m = m;
+    if (m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple) {
+        cc->body = m->body; cc->dispatch = m->body->head.dispatcher;
+        cc->locals_cnt = m->locals_cnt; cc->params_cnt = m->params_cnt; cc->simple = 1;
+    } else {
+        cc->body = NULL; cc->dispatch = NULL; cc->locals_cnt = 0; cc->params_cnt = 0; cc->simple = 0;
+    }
+}
+
+/* korb_invoke_simple driven by the top-level call cache (cc->simple == 1). */
+static inline __attribute__((always_inline, no_stack_protector)) RESULT
+korb_invoke_simple_cc(CTX *c, VALUE *slots, const struct korb_callcache *cc, uint32_t argc,
+                      uint32_t line, uint32_t mid, VALUE self)
+{
+    struct korb_inlcache tmp;
+    tmp.m = cc->m; tmp.body = cc->body; tmp.dispatch = cc->dispatch;
+    tmp.locals_cnt = cc->locals_cnt; tmp.params_cnt = cc->params_cnt;
+    return korb_invoke_simple_ic(c, slots, &tmp, argc, line, mid, self);
 }
 
 #endif /* KORUBY_NODE_H */

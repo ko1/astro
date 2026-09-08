@@ -8140,8 +8140,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
             }
             return nmr;
         }
-        cc->m = m;
-        cc->serial = korb_ic_serial(vm);
+        korb_cc_fill(cc, korb_ic_serial(vm), m);
     }
 
     VALUE *const base = slots - argc;     /* staged args = parameter window */
@@ -8284,14 +8283,13 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
             if (korb_invoke_self(c, slots, m, argc, line, mid, self, def_class, &r))
                 return r;   /* ATTR / non-simple ISEQ */
             /* CFUNC → fall through to korb_call_impl */
-        } else if (LIKELY(cc->serial == vm->method_serial && cc->m != NULL &&
-                          cc->m->kind == KORB_METHOD_ISEQ && cc->m->is_simple)) {
+        } else if (LIKELY(cc->serial == vm->method_serial && cc->simple)) {
             /* top-level (main, klass-less) call of a cached simple ISEQ global
              * function (fib / ackermann / inc) — skip korb_call_impl's maze.
              * No send-variant guard needed: send/__send__/public_send sites are
              * intercepted in korb_call_impl (line ~2901) before cc->m is ever
              * filled, so a non-NULL simple-ISEQ cc->m is never a send variant. */
-            return korb_invoke_simple(c, slots, cc->m, argc, line, mid, self, KORB_NIL);
+            return korb_invoke_simple_cc(c, slots, cc, argc, line, mid, self);
         }
     }
     return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL, site);
@@ -8320,7 +8318,7 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
             }
         } else {                                         /* main / top-level global function */
             if (LIKELY(cc->serial == vm->method_serial && cc->m != NULL)) m = cc->m;
-            else { m = korb_method_lookup(vm, mid); if (m) { cc->serial = korb_ic_serial(vm); cc->m = m; } }
+            else { m = korb_method_lookup(vm, mid); if (m) korb_cc_fill(cc, korb_ic_serial(vm), m); }
         }
     }
     if (LIKELY(m != NULL && m->kind == KORB_METHOD_ISEQ)) {
