@@ -189,7 +189,7 @@ NODE ポインタ（`n->u.node_add.lv` 等）はプロセスを跨げないた�
 | ドキュメント | 内容 |
 |---|---|
 | [idea_astrogen.md](./idea_astrogen.md) | ASTroGen の生成物、`node.def` の形式、NodeHead 構造 |
-| [idea_code_store.md](./idea_code_store.md) | Code Store — 特化コードの保存・ロード機構 (API・利用フロー・ファイル構成)。§7 は**ロード時ノード束縛** (load-time node binding): ノードごとの値をロード時に結びつける技法と、その 2 実装 (プール束縛 / パッチ束縛) |
+| [idea_code_store.md](./idea_code_store.md) | Code Store — 特化コードの保存・ロード機構 (API・利用フロー・ファイル構成)。§7 は**ロード時ノード束縛** (load-time node binding): ノードごとの値をロード時に結びつける技法と、その 2 実装 (パッチ束縛 / 間接束縛) |
 | [idea_jit.md](./idea_jit.md) | JIT の設計 — L0/L1/L2 階層、通信プロトコル、状態遷移、トリガー条件 |
 | [idea_evaluation.md](./idea_evaluation.md) | 論文評価 — naruby の構成とベンチマーク結果 |
 | [idea_variadic.md](./idea_variadic.md) | 可変長子ノード列 (variadic node) のための ASTroGen 拡張 |
