@@ -58,6 +58,32 @@ VALUE korb_stale_check(VALUE v, const char *file, int line)
 }
 #endif
 
+/* Identity in a release build (the optimiser drops it); the CodeQL database is
+ * extracted from that build and the query keys on this call.  See context.h. */
+#ifndef KORB_STALE_CHECK
+VALUE korb_not_ref(VALUE v, const char *file, int line) { (void)file; (void)line; return v; }
+#else
+#define KORB_ANR_SITES 128
+static struct { const char *f; int l; unsigned long n; } korb_anr[KORB_ANR_SITES];
+static unsigned korb_anr_n;
+static void korb_anr_report(void) {
+    fprintf(stderr, "KORB_ASSERT_NOT_REF: %u site(s) saw a heap reference\n", korb_anr_n);
+    for (unsigned i = 0; i < korb_anr_n; i++)
+        fprintf(stderr, "  HEAP REACHES %s:%d  x%lu\n", korb_anr[i].f, korb_anr[i].l, korb_anr[i].n);
+}
+VALUE korb_not_ref(VALUE v, const char *file, int line)
+{
+    if (!v || ((uintptr_t)v & 7u) != 0) return v;
+    for (unsigned i = 0; i < korb_anr_n; i++)
+        if (korb_anr[i].l == line && korb_anr[i].f == file) { korb_anr[i].n++; return v; }
+    if (korb_anr_n < KORB_ANR_SITES) {
+        korb_anr[korb_anr_n].f = file; korb_anr[korb_anr_n].l = line; korb_anr[korb_anr_n].n = 1;
+        korb_anr_n++;
+    }
+    return v;
+}
+#endif
+
 void *
 korb_alloc(CTX *c, VALUE *slots, size_t size, unsigned int type)
 {
@@ -15018,6 +15044,7 @@ korb_ctx_new(void)
 #ifdef KORB_STALE_CHECK
     korb_stale_ctx = c;
     atexit(korb_sc_report);
+    atexit(korb_anr_report);
 #endif
     {
         pthread_attr_t attr;

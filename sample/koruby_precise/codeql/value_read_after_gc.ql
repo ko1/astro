@@ -28,9 +28,20 @@ predicate mayGcNode(ControlFlowNode n) {
 }
 
 /** A VALUE-typed local whose definition is not a compile-time immediate. */
+/* `v = KORB_NOT_REF(v)` states the value is an immediate from here on.  An
+ * immediate never moves, so this definition is not movable and the chain the
+ * query is looking for stops at it.  korb_not_ref is a real function in the
+ * release build the database is extracted from, which is what makes the
+ * annotation visible here at all. */
+predicate notRefCall(Expr e) {
+  exists(FunctionCall fc | fc = e.getAChild*() and fc.getTarget().hasName("korb_not_ref"))
+}
+
 predicate movableDef(SsaDefinition def, StackVariable v) {
   v.getType().getName() = "VALUE" and
-  exists(Expr src | src = def.getDefiningValue(v) and not src.isConstant())
+  exists(Expr src |
+    src = def.getDefiningValue(v) and not src.isConstant() and not notRefCall(src)
+  )
 }
 
 predicate redefOf(SsaDefinition def, StackVariable v, ControlFlowNode n) {

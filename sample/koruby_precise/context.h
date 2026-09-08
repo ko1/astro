@@ -269,9 +269,9 @@ enum korb_obj_type {
 #define KORB_ENC_USASCII    1u
 #define KORB_ENC_BINARY     2u
 #define KORB_ENC_OTHER_MIN  3u
-#define KORB_STR_ENC(v)     ((uint32_t)(((((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_STR_ENC_MASK) >> KORB_STR_ENC_SHIFT) | \
+#define KORB_STR_ENC(v)     ((uint32_t)(((((const AroObjectHeader *)(uintptr_t)KORB_SC(v))->flags & KORB_STR_ENC_MASK) >> KORB_STR_ENC_SHIFT) | \
                              ((((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_STR_ENC_HI_MASK) >> 4)))
-#define KORB_STR_ENC_SET(v, idx) do { AroObjectHeader *h__ = (AroObjectHeader *)(uintptr_t)(v); \
+#define KORB_STR_ENC_SET(v, idx) do { AroObjectHeader *h__ = (AroObjectHeader *)(uintptr_t)KORB_SC(v); \
     h__->flags = (uint16_t)((h__->flags & ~(KORB_STR_ENC_MASK | KORB_STR_ENC_HI_MASK)) | \
                             (((uint16_t)(idx) << KORB_STR_ENC_SHIFT) & KORB_STR_ENC_MASK) | \
                             (((uint16_t)(idx) << 4) & KORB_STR_ENC_HI_MASK)); } while (0)
@@ -645,7 +645,7 @@ typedef struct KorbClass {
     VALUE ARO_GC_EDGE subclasses;    /* KorbArray of direct subclass class-objects (for Class#subclasses), or nil */
 } KorbClass;
 
-#define KORB_OBJ_TYPE(v)   (((AroObjectHeader *)(uintptr_t)(v))->flags & KORB_OBJ_TYPE_MASK)
+#define KORB_OBJ_TYPE(v)   (((AroObjectHeader *)(uintptr_t)KORB_SC(v))->flags & KORB_OBJ_TYPE_MASK)
 #define KORB_STRING_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_STRING)
 #define KORB_EXC_P(v)      (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_EXCEPTION)
 #define KORB_ARRAY_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ARRAY)
@@ -666,6 +666,32 @@ typedef struct KorbClass {
  * executes, so pair it with ASTRO_GC_STRESS=1 (collect at every allocation),
  * which removes the "only if a GC happened to land there" luck and leaves
  * coverage as the sole gap.  Off by default; costs a call per dereference. */
+/* KORB_NOT_REF — "this VALUE is not a reference, so a collection cannot
+ * invalidate it".  Used as a REASSIGNMENT, before the may-GC call that
+ * value_read_after_gc.ql named:
+ *
+ *     v = KORB_NOT_REF(v);
+ *     ... may-GC call ...
+ *     use(v);
+ *
+ * korb_not_ref is a REAL function in EVERY build (the identity in release, so
+ * the optimiser drops it).  That is deliberate: the CodeQL database is
+ * extracted from a release build, and an annotation that expands to nothing —
+ * or to a bare `(v)` — leaves the analysis blind to it.  The query keys on this
+ * call and treats the definition it creates as not movable, so an annotated
+ * site leaves the report for good instead of living in a baseline number.
+ *
+ * Reassignment rather than a fresh name because C has no shadowing: a second
+ * `VALUE v = ...` beside an existing `v` is a redefinition error, and inventing
+ * a name per site is worse than reusing the one already there.
+ *
+ * Under -DKORB_STALE_CHECK the same call CHECKS the claim, and a heap value
+ * simply ARRIVING refutes it — no collection and no particular timing needed.
+ * Run real applications under it: the app supplies the paths and the values,
+ * which a hand-written probe cannot. */
+VALUE korb_not_ref(VALUE v, const char *file, int line);
+#define KORB_NOT_REF(v) korb_not_ref((VALUE)(uintptr_t)(v), __FILE__, __LINE__)
+
 #ifdef KORB_STALE_CHECK
 VALUE korb_stale_check(VALUE v, const char *file, int line);
 #define KORB_SC(v) korb_stale_check((VALUE)(uintptr_t)(v), __FILE__, __LINE__)
@@ -690,7 +716,7 @@ void korb_gc_here(void *c);          /* CTX is not declared yet at this point */
 #endif
 
 #define VAL2STR(v)         ((KorbString *)(uintptr_t)KORB_SC(v))
-#define VAL2EXC(v)         ((KorbException *)(uintptr_t)(v))
+#define VAL2EXC(v)         ((KorbException *)(uintptr_t)KORB_SC(v))
 #define VAL2ARY(v)         ((KorbArray *)(uintptr_t)KORB_SC(v))
 #define VAL2HASH(v)        ((KorbHash *)(uintptr_t)KORB_SC(v))
 
@@ -704,44 +730,44 @@ void korb_gc_here(void *c);          /* CTX is not declared yet at this point */
 static inline ARO_BORROW char  *korb_strbuf_data(KorbStrBuf *b)      { return b->data_priv; }
 static inline ARO_BORROW VALUE *korb_items_data (KorbArrayItems *it) { return it->data_priv; }
 static inline ARO_BORROW char  *korb_str_data   (VALUE v)           { return korb_strbuf_data(VAL2STR(v)->buf); }
-#define VAL2RANGE(v)       ((KorbRange *)(uintptr_t)(v))
+#define VAL2RANGE(v)       ((KorbRange *)(uintptr_t)KORB_SC(v))
 #define VAL2OBJ(v)         ((KorbObject *)(uintptr_t)KORB_SC(v))
 #define VAL2CLASS(v)       ((KorbClass *)(uintptr_t)KORB_SC(v))
-#define VAL2FLT(v)         ((KorbFloat *)(uintptr_t)(v))
+#define VAL2FLT(v)         ((KorbFloat *)(uintptr_t)KORB_SC(v))
 /* the double value of any Float (flonum immediate or heap KorbFloat). */
 #define korb_float_val(v)  (FLONUM_P(v) ? korb_flo2d(v) : VAL2FLT(v)->val)
 #define KORB_RATIONAL_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RATIONAL)
-#define VAL2RAT(v)         ((KorbRational *)(uintptr_t)(v))
+#define VAL2RAT(v)         ((KorbRational *)(uintptr_t)KORB_SC(v))
 #define KORB_COMPLEX_P(v)  (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_COMPLEX)
-#define VAL2CPX(v)         ((KorbComplex *)(uintptr_t)(v))
+#define VAL2CPX(v)         ((KorbComplex *)(uintptr_t)KORB_SC(v))
 #define KORB_ENUM_P(v)     (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ENUMERATOR)
-#define VAL2ENUM(v)        ((KorbEnumerator *)(uintptr_t)(v))
+#define VAL2ENUM(v)        ((KorbEnumerator *)(uintptr_t)KORB_SC(v))
 #define KORB_SET_P(v)      (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_SET)
-#define VAL2SET(v)         ((KorbSet *)(uintptr_t)(v))
+#define VAL2SET(v)         ((KorbSet *)(uintptr_t)KORB_SC(v))
 #define KORB_REGEXP_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_REGEXP)
-#define VAL2RE(v)          ((KorbRegexp *)(uintptr_t)(v))
+#define VAL2RE(v)          ((KorbRegexp *)(uintptr_t)KORB_SC(v))
 #define KORB_METHOD_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_METHOD)
-#define VAL2METH(v)        ((KorbMethod *)(uintptr_t)(v))
+#define VAL2METH(v)        ((KorbMethod *)(uintptr_t)KORB_SC(v))
 #define KORB_BINDING_P(v)  (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_BINDING)
-#define VAL2BIND(v)        ((KorbBinding *)(uintptr_t)(v))
+#define VAL2BIND(v)        ((KorbBinding *)(uintptr_t)KORB_SC(v))
 #define KORB_FIBER_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FIBER)
-#define VAL2FIBER(v)       ((KorbFiber *)(uintptr_t)(v))
+#define VAL2FIBER(v)       ((KorbFiber *)(uintptr_t)KORB_SC(v))
 #define KORB_THREAD_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_THREAD)
-#define VAL2THREAD(v)      ((KorbThread *)(uintptr_t)(v))
+#define VAL2THREAD(v)      ((KorbThread *)(uintptr_t)KORB_SC(v))
 #define KORB_MUTEX_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_MUTEX)
-#define VAL2MUTEX(v)       ((KorbMutex *)(uintptr_t)(v))
+#define VAL2MUTEX(v)       ((KorbMutex *)(uintptr_t)KORB_SC(v))
 #define KORB_CONDVAR_P(v)  (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_CONDVAR)
-#define VAL2CONDVAR(v)     ((KorbCondVar *)(uintptr_t)(v))
+#define VAL2CONDVAR(v)     ((KorbCondVar *)(uintptr_t)KORB_SC(v))
 #define KORB_ARITHSEQ_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ARITHSEQ)
-#define VAL2ASEQ(v)        ((KorbArithSeq *)(uintptr_t)(v))
+#define VAL2ASEQ(v)        ((KorbArithSeq *)(uintptr_t)KORB_SC(v))
 #define KORB_MATCHDATA_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_MATCHDATA)
-#define VAL2MD(v)          ((KorbMatchData *)(uintptr_t)(v))
+#define VAL2MD(v)          ((KorbMatchData *)(uintptr_t)KORB_SC(v))
 #define KORB_BIGNUM_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_BIGNUM)
-#define VAL2BIG(v)         ((KorbBignum *)(uintptr_t)(v))
+#define VAL2BIG(v)         ((KorbBignum *)(uintptr_t)KORB_SC(v))
 #define KORB_ENV_P(v)      (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ENV)
-#define VAL2ENV(v)         ((KorbEnv *)(uintptr_t)(v))
+#define VAL2ENV(v)         ((KorbEnv *)(uintptr_t)KORB_SC(v))
 #define KORB_PROC_P(v)     (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_PROC)
-#define VAL2PROC(v)        ((KorbProc *)(uintptr_t)(v))
+#define VAL2PROC(v)        ((KorbProc *)(uintptr_t)KORB_SC(v))
 /* any Integer: immediate Fixnum or heap Bignum */
 #define KORB_INTEGER_P(v)  (FIXNUM_P(v) || KORB_BIGNUM_P(v))
 
