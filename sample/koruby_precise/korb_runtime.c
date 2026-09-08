@@ -4971,6 +4971,27 @@ korb_invoke_kw_viahash(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos
     return korb_invoke_method(c, base + pos_argc + 1, m, pos_argc + 1, line, mid, rself, rdef, NULL, NULL, KORB_NIL);
 }
 
+/* Cold tail of korb_invoke_simple / _ic: a non-NORMAL return, or a frame whose
+ * env escaped.  Out of line so the hot path is one state test and `line` / `mid`
+ * need not survive the dispatch call in callee-saved registers. */
+RESULT
+korb_invoke_ret_cold(CTX *c, VALUE *base, uint32_t locals_cnt, RESULT r, uint32_t line, uint32_t mid)
+{
+    if (r.state == KORB_RETURN) {
+        if (c->return_target == NULL || c->return_target == base) {
+            r.state = KORB_NORMAL;
+            c->return_target = NULL;
+        }
+    }
+    else if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) {
+        KorbException *e = VAL2EXC(r.value);
+        korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
+        e->line = line;
+    }
+    if (korb_frame_escaped(base)) r = korb_close_ret(c, base + locals_cnt, base, r);
+    return r;
+}
+
 /* korb_invoke_simple — the streamlined is_simple ISEQ invoke — now lives in
  * node.h as an always_inline so it folds into the code_store SDs too (node_call
  * inlines its own fast path). */

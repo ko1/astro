@@ -690,6 +690,7 @@ static inline void korb_frame_magic_check(const VALUE *const base, const enum ko
  * korb_runtime.c (the SD / all.so reaches them as exported symbols, only on
  * the rare open-env-close / exception-backtrace paths). */
 RESULT korb_close_ret(CTX *c, VALUE *scratch, VALUE *frame_base, RESULT r);
+RESULT korb_invoke_ret_cold(CTX *c, VALUE *base, uint32_t locals_cnt, RESULT r, uint32_t line, uint32_t mid);
 void   korb_bt_append(struct korb_vm *vm, uint32_t line, const char *name);
 void   korb_dispatchers_swapped(struct korb_vm *vm);   /* code-store swap → refill fat inline caches */
 
@@ -794,20 +795,11 @@ korb_invoke_simple_ic(CTX *c, VALUE *slots, const struct korb_inlcache *ic, uint
     korb_frame_magic_set(base, KORB_FT_METHOD);
     (void)self;
     RESULT r = (*ic->dispatch)(c, ic->body, base + locals_cnt);
-    if (r.state == KORB_RETURN) {
-        if (c->return_target == NULL || c->return_target == base) {
-            r.state = KORB_NORMAL;
-            c->return_target = NULL;
-        }
-    }
-    else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) {
-        KorbException *e = VAL2EXC(r.value);
-        korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
-        e->line = line;
-    }
     korb_frame_magic_check(base, KORB_FT_METHOD, "korb_invoke_simple_ic");
-    if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
-    return r;
+    /* One test on the hot path; everything else is the cold tail (which also
+     * keeps line / mid off the callee-saved set across the dispatch). */
+    if (LIKELY(r.state == KORB_NORMAL && !korb_frame_escaped(base))) return r;
+    return korb_invoke_ret_cold(c, base, locals_cnt, r, line, mid);
 }
 
 /* Fill an inline cache; copies the simple-ISEQ fast-path data when applicable. */
