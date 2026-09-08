@@ -998,6 +998,7 @@ static NODE *kp_warn_dup_hash_keys(struct kp_ctx *tc, struct pm_node **assocs, s
 /* ---- operators --------------------------------------------------------- */
 
 extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
+extern const struct NodeKind kind_node_ivar_arith;   /* fused `@x +=` / `@x -=` */
 extern const struct NodeKind kind_node_caseeq;       /* case/when `v === subj` */
 extern const struct NodeKind kind_node_entry;        /* block/lambda entry — guards proc/block reify */
 extern const struct NodeKind kind_node_aref;         /* recv[idx] */
@@ -3692,6 +3693,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t opmid = kp_intern_cid(tc, ow->binary_operator);
         uint32_t name = kp_intern_cid(tc, ow->name), line = kp_line(tc, node);
         NODE *lhs, *rhs, *comb;
+        if (op == KP_PLUS || op == KP_MINUS) {   /* fused: one self guard / shape check / ivars deref */
+            NODE *v;
+            WITH_CHAIN(tc, kind_node_ivar_arith.slot_count, (v = transduce(tc, ow->value)));
+            NODE *a = ALLOC_node_ivar_arith(-1 - tc->chain, name, op == KP_MINUS, v, line);
+            bake_add(tc, &a->u.node_ivar_arith.self_off);
+            return a;
+        }
         if (op != KP_BINOP_NONE) {
             WITH_CHAIN(tc, kind_node_plus.slot_count, (lhs = bake_ivar_get(tc, name),
                                                        rhs = transduce(tc, ow->value)));

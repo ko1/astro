@@ -7107,6 +7107,65 @@ korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
                       "undefined method '+' for %s", korb_a_type_name(l));
 }
 
+/* `@x += v` / `@x -= v` off node_ivar_arith's tagged-fixnum fast path: read the
+ * ivar, apply the operator through the same ladder node_plus / node_minus use,
+ * then store.  `self` is re-read from the frame for the store because the
+ * operator can run Ruby and move the object. */
+RESULT
+korb_ivar_arith_slow(CTX *c, VALUE *slots, int32_t self_off, uint32_t name,
+                     uint32_t sub, VALUE rhs, struct korb_ivcache *ic, uint32_t line)
+{
+    VALUE cur = KORB_NIL;
+    const VALUE self = slots[self_off];
+    if (LIKELY(KORB_OBJECT_P(self))) {
+        const KorbObject *const o = VAL2OBJ(self);
+        if (o->shape_id == ic->shape_id) {
+            cur = korb_items_data(o->ivars)[ic->slot];
+        }
+        else {
+            const int32_t idx = korb_shape_index(c->vm, o->shape_id, name);
+            if (idx >= 0) { ic->shape_id = o->shape_id; ic->slot = idx; cur = korb_items_data(o->ivars)[idx]; }
+        }
+    }
+    else if (AROH_IS_GC_OBJECT(self)) {
+        cur = korb_ivar_get(c, self, ID2SYM(name));   /* class / exception / container side storage */
+    }
+
+    VALUE val;
+    if (UNLIKELY(c->vm->basic_op_redefined)) {
+        slots[0] = cur; slots[1] = rhs;
+        val = UNWRAP(korb_send(c, slots + 2, korb_intern(c->vm, sub ? "-" : "+", 1), line, 1));
+    }
+    else if (FIXNUM_P(cur) && FIXNUM_P(rhs)) {
+        korb_sword_t s;
+        const bool ovf = sub ? __builtin_sub_overflow((korb_sword_t)cur, (korb_sword_t)rhs - 1, &s)
+                             : __builtin_add_overflow((korb_sword_t)cur, (korb_sword_t)rhs - 1, &s);
+        val = ovf ? UNWRAP(korb_int_arith(c, slots, cur, rhs, (int)sub, line)) : (VALUE)s;
+    }
+    else if ((KORB_BIGNUM_P(cur) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(cur) && KORB_INTEGER_P(rhs)) {
+        val = UNWRAP(korb_int_arith(c, slots, cur, rhs, (int)sub, line));
+    }
+    else if (KORB_FLOAT_P(cur) && KORB_FLOAT_P(rhs)) {
+        const double a = korb_float_val(cur), b = korb_float_val(rhs);
+        val = UNWRAP(korb_flo(c, slots, sub ? a - b : a + b));
+    }
+    else if (KORB_FLOAT_P(cur) && FIXNUM_P(rhs)) {
+        const double a = korb_float_val(cur), b = (double)FIX2LONG(rhs);
+        val = UNWRAP(korb_flo(c, slots, sub ? a - b : a + b));
+    }
+    else if (FIXNUM_P(cur) && KORB_FLOAT_P(rhs)) {
+        const double a = (double)FIX2LONG(cur), b = korb_float_val(rhs);
+        val = UNWRAP(korb_flo(c, slots, sub ? a - b : a + b));
+    }
+    else {
+        VALUE *sp = slots;
+        const VALUE_REF lref = SLOTS_PUSH(sp, cur);   /* root it: the ladder below can GC */
+        val = UNWRAP(sub ? korb_minus_slow(c, sp, lref, rhs, line)
+                         : korb_plus_slow(c, sp, lref, rhs, line));
+    }
+    return korb_ivar_set(c, slots, VALUE_REF_AT(&slots[self_off]), ID2SYM(name), val);
+}
+
 /* `-` cold ladder, kept out-of-line so node_minus's SD stays small (mirrors
  * korb_plus_slow).  Reached only for non-(fixnum/float) operands. */
 RESULT

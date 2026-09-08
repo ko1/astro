@@ -298,6 +298,7 @@ RESULT korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t l
 RESULT korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_sub_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_minus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);   /* `-` cold ladder (complex/float/rat/array/user/raise) */
+RESULT korb_ivar_arith_slow(CTX *c, VALUE *slots, int32_t self_off, uint32_t name, uint32_t sub, VALUE rhs, struct korb_ivcache *ic, uint32_t line);   /* `@x +=`/`-=` off the fixnum fast path */
 RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, bool *handled);
 RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE *rhs, const char *op, uint32_t line, bool *handled);   /* node_div coerce path */
 RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda);

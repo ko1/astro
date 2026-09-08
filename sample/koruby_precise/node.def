@@ -2861,6 +2861,32 @@ node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name@sym
     return korb_raise_frozen(c, slots, slots[self_off]);   /* immediates are frozen (CRuby's FrozenError) */
 }
 
+/* `@x += v` / `@x -= v`.  The three-node form (ivar_get, plus, ivar_set) pays
+ * for the self guard, the shape check and the `o->ivars` deref twice and stages
+ * the intermediate through slots; fused, the tagged-fixnum case does all of it
+ * once.  `sub` is 0 for `+`, 1 for `-` (korb_int_arith's numbering), baked as a
+ * literal in an SD so the branch folds away. */
+NODE_DEF
+node_ivar_arith(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name@sym, uint32_t sub, VALUE rhs@child, struct korb_ivcache *ic@ref, uint32_t line)
+{
+    (void)n;
+    const VALUE self = slots[self_off];
+    if (LIKELY(KORB_OBJECT_P(self) && !c->vm->basic_op_redefined)) {
+        KorbObject *const o = VAL2OBJ(self);
+        if (LIKELY(o->shape_id == ic->shape_id && !(o->head.flags & KORB_FL_FROZEN))) {
+            VALUE *const p = &korb_items_data(o->ivars)[ic->slot];
+            const VALUE cur = *p;
+            if (LIKELY(FIXNUM_P(cur) && FIXNUM_P(rhs))) {
+                korb_sword_t s;
+                const bool ovf = sub ? __builtin_sub_overflow((korb_sword_t)cur, (korb_sword_t)rhs - 1, &s)
+                                     : __builtin_add_overflow((korb_sword_t)cur, (korb_sword_t)rhs - 1, &s);
+                if (LIKELY(!ovf)) { *p = (VALUE)s; return RESULT_OK((VALUE)s); }   /* fixnum store needs no write barrier */
+            }
+        }
+    }
+    return korb_ivar_arith_slow(c, slots, self_off, name, sub, rhs, ic, line);
+}
+
 // ---- class variables (`@@x`) -----------------------------------------------
 //
 // `self_off`/`dc_off` read the frame's self + def_class cells; the cref is self
