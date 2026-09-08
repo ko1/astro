@@ -75,21 +75,68 @@ DEFAULT = %w[cruby cruby+yjit interp aot+compile aot+cached].freeze
 modes = (opts[:modes]&.split(',') || DEFAULT)
 modes.each { |m| MODES.key?(m) || abort("unknown mode: #{m} (have: #{MODES.keys.join(', ')})") }
 
-def best(env, cmd, runs, secs)
+# Spawn the child here and enforce the deadline in Ruby, rather than wrapping it
+# in coreutils `timeout`.  That wrapper put an extra process inside the measured
+# interval and — the reason this was rewritten — QUANTISED every result to 100 ms:
+# `timeout` wakes on a tick to check its deadline, so the time always rounded up
+# to the next tenth.  Measured on sp4:
+#
+#     sleep 0.37  -> 0.4032      sleep 1.23 -> 1.3037
+#     sleep 0.62  -> 0.7034      true       -> 0.1038
+#     sleep 0.37 without timeout -> 0.3726     (correct)
+#
+# At the 0.1-1 s these benches take on a fast machine that made every execution
+# mode report the same number, which is not a small error but a total loss of
+# signal.  Timing the spawn directly also gives the child's CPU time for free
+# (`Process.times` deltas), which is steadier than wall clock under any load.
+def run_once(env, cmd, secs)
+  out = +''
+  timed_out = false
+  st = nil
+  c0 = Process.times
+  t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  Open3.popen3(env, *cmd) do |sin, sout, serr, wait|
+    sin.close
+    ro = Thread.new { out = sout.read }          # both pipes drained concurrently:
+    re = Thread.new { serr.read }                # a full stderr must not wedge stdout
+    unless wait.join(secs)
+      timed_out = true
+      Process.kill('TERM', wait.pid) rescue nil
+      unless wait.join(2)
+        Process.kill('KILL', wait.pid) rescue nil
+        wait.join
+      end
+    end
+    ro.join
+    re.join
+    st = wait.value
+  end
+  t1 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  c1 = Process.times
+  code = if timed_out then 124
+         elsif st.exited? then st.exitstatus
+         elsif st.signaled? then 128 + st.termsig
+         else 1
+         end
+  cpu = (c1.cutime - c0.cutime) + (c1.cstime - c0.cstime)
+  [t1 - t0, cpu, out, code]
+end
+
+def best(env, cmd, runs, secs, metric = 'wall')
   best_t = out = nil
   code = 0
   runs.times do
-    t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    o, _e, st = Open3.capture3(env, 'timeout', '-k', '2', secs.to_s, *cmd)
-    t1 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    code = st.exited? ? st.exitstatus : (st.signaled? ? 128 + st.termsig : 1)
+    wall, cpu, o, c = run_once(env, cmd, secs)
+    code = c
     break if code != 0
     out = o.strip
-    dt = t1 - t0
+    dt = metric == 'cpu' ? cpu : wall
     best_t = dt if best_t.nil? || dt < best_t
   end
   [best_t, out, code]
 end
+
+METRIC = (ENV['BENCH_METRIC'] || 'wall')   # wall | cpu (cpu = child user+sys)
 
 def measure(mode, f, runs, secs)
   mode[:prep]&.call(f)
@@ -101,7 +148,7 @@ def measure(mode, f, runs, secs)
   end
   # AOT/PG modes are N/A when the interpreter can't build a code store.
   return [nil, nil, :na] if mode[:aot] && !File.exist?('code_store/all.so')
-  t, out, code = best(mode[:env] || {}, mode[:run].call(f), runs, secs)
+  t, out, code = best(mode[:env] || {}, mode[:run].call(f), runs, secs, METRIC)
   [t && t + extra, out, code]
 end
 
