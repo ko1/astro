@@ -695,8 +695,8 @@ RESULT korb_entry_ret_cold(CTX *c, VALUE *base, uint32_t locals_cnt, RESULT r);
 /* 呼び出し側に残る冷たい尾: RAISE のバックトレースだけ。base も locals_cnt も
  * 要らないので、dispatch をまたいで生存させる値が無くなる。 */
 RESULT korb_call_ret_cold(CTX *c, RESULT r, uint32_t line, uint32_t mid);
-/* attr/struct reader as an ic->dispatch target (ic->body carries the korb_method). */
-RESULT korb_attr_r_entry(CTX *c, NODE *n, VALUE *slots);
+/* main.c: a node synthesized at runtime (attr_reader entry) — bind to a baked SD / instantiate like a parsed body. */
+void   korb_synth_node_ready(NODE *n);
 void   korb_bt_append(struct korb_vm *vm, uint32_t line, const char *name);
 void   korb_dispatchers_swapped(struct korb_vm *vm);   /* code-store swap → refill fat inline caches */
 
@@ -816,10 +816,8 @@ korb_ic_fill(struct korb_inlcache *ic, uint64_t serial, VALUE klass, struct korb
     ic->serial = serial; ic->klass = klass; ic->m = m; ic->def_class = def_class; ic->kind = kind;
     ic->body = NULL; ic->dispatch = NULL;
     if (m == NULL || kind != KORB_IC_INSTANCE) return;
-    if (m->kind == KORB_METHOD_ISEQ && m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) {
+    if (m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) {   /* ISEQ simple entry or attr_reader (its ivar node) */
         ic->body = m->simple_entry; ic->dispatch = m->simple_entry->head.dispatcher;
-    } else if (m->kind == KORB_METHOD_ATTR_R && argc == 0) {
-        ic->body = (struct Node *)m; ic->dispatch = korb_attr_r_entry;   /* frameless; ic->body is the method */
     }
 }
 
@@ -828,8 +826,7 @@ static inline void
 korb_cc_fill(struct korb_callcache *cc, uint64_t serial, struct korb_method *m, uint32_t argc)
 {
     cc->serial = serial; cc->m = m;
-    if (m != NULL && m->simple_entry != NULL &&
-        m->kind == KORB_METHOD_ISEQ && argc == (uint32_t)m->params_cnt) {
+    if (m != NULL && m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) {
         cc->body = m->simple_entry; cc->dispatch = m->simple_entry->head.dispatcher;
     } else {
         cc->body = NULL; cc->dispatch = NULL;

@@ -4440,6 +4440,15 @@ korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is
     m->body = NULL;
     m->bfn = NULL;
     m->visibility = k->cur_visibility;   /* attr_reader/writer inside `private`/`protected` inherits it */
+    if (!is_writer) {
+        /* The reader's entry is the ivar read itself (recv = slots[-1]): a leaf
+         * needs no frame or stack check, so no node_simple_entry.  Registered
+         * like a parsed body so the AOT store bakes / binds its SD. */
+        NODE *const entry = ALLOC_node_ivar_get(-1, ivar_sym);
+        code_repo_add("attr_reader", entry, true);
+        korb_synth_node_ready(entry);
+        m->simple_entry = entry;
+    }
     c->vm->method_serial++;
 }
 
@@ -10370,22 +10379,6 @@ korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t 
     }
     return r;
 }
-/* ic->dispatch target for an attr/struct reader (installed by korb_ic_fill with
- * ic->body = the method).  Reached through korb_invoke_entry_ic like a simple
- * entry but builds no frame: recv is slots[-1] (argc == 0). */
-RESULT
-korb_attr_r_entry(CTX *c, NODE *n, VALUE *slots)
-{
-    const struct korb_method *const m = (const struct korb_method *)n;
-    const VALUE recv = slots[-1];
-    if (LIKELY(KORB_OBJECT_P(recv))) {                    /* inline shape walk */
-        const KorbObject *const ob = VAL2OBJ(recv);
-        const int32_t idx = korb_shape_index(c->vm, ob->shape_id, m->attr_ivar);
-        return RESULT_OK(idx < 0 ? KORB_NIL : korb_items_data(ob->ivars)[idx]);
-    }
-    return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));   /* builtin-typed subclass instance */
-}
-
 /* What to do after an instance-kind ic hit (the check itself is
  * KORB_IC_INSTANCE_HIT).  Split out so korb_send_cached can test the cache both
  * before and after the class-receiver / send-family cascade. */

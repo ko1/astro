@@ -778,6 +778,17 @@ koruby_instantiate_sds(NODE *ast, uint32_t from)
     }
 }
 
+/* A node synthesized at runtime (attr_reader's entry): bind it to an already
+ * baked SD and instantiate it the way a parsed body is.  Under --aot-compile it
+ * is baked by the end-of-run bake_code_store via the code repo. */
+void
+korb_synth_node_ready(NODE *n)
+{
+    if (OPTION.plain) return;
+    astro_cs_load(n, NULL);
+    koruby_instantiate_sds(n, code_repo_count());
+}
+
 static const char *korb_inst_label = "first";
 
 static void
@@ -1382,6 +1393,11 @@ main(int argc, char *argv[])
     NODE *prelude_ast = OPTION.dump_ast ? NULL
                       : koruby_parse_source(c, prelude_src, prelude_len, "<prelude>", true);
     uint32_t prelude_locals = koruby_toplevel_locals_cnt;
+    /* Entries synthesized at runtime (attr_reader: node_ivar_get(-1) with the
+     * ivar as a hole) all share one shape; register a prototype so preload.so
+     * bakes that SD once and korb_synth_node_ready binds each real entry to it
+     * (--aot-compile does not run the program, so it cannot see the real ones). */
+    code_repo_add("attr_reader", ALLOC_node_ivar_get(-1, 0), true);
     /* Prelude method bodies registered so far form [0, g_prelude_repo_count);
      * they are baked into preload.so, not the program's code store. */
     g_prelude_repo_count = code_repo_count();
