@@ -3910,6 +3910,7 @@ korb_class_method_slot(KorbClass *const k, uint32_t mid)
         k->methods[k->method_cnt++] = m;
     }
     m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0; m->dm_proc = KORB_NIL;
+    m->simple_entry = NULL;                       /* 再定義でスロットを使い回すので必ず落とす */
     m->super_owner = KORB_NIL;             /* a redefinition drops any inherited alias origin */
     return m;
 }
@@ -4381,7 +4382,7 @@ korb_relocate_object_methods(CTX *c, VALUE *slots)
 }
 
 void
-korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
+korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry,
                       uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
                       uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info)
 {
@@ -4406,6 +4407,8 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     /* fixed positional arity, nothing exotic → streamlined invoke eligible. */
     m->is_simple = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 &&
                     req_cnt == params_cnt && !uses_block);
+    /* parser-built node_simple_entry (also for uses_block: fixed arity, block-less sites only) */
+    m->simple_entry = entry;
     /* Auto-attr: a method whose body is exactly `@ivar` (no params, no block)
      * is an attr_reader — dispatch returns the ivar directly, skipping a frame.
      * A multi-statement body roots at node_seq, so only the bare single-read
@@ -4991,6 +4994,33 @@ korb_invoke_ret_cold(CTX *c, VALUE *base, uint32_t locals_cnt, RESULT r, uint32_
     if (korb_frame_escaped(base)) r = korb_close_ret(c, base + locals_cnt, base, r);
     return r;
 }
+
+/* node_simple_entry の冷たい尾 (callee 側): 自分宛の RETURN を消費し、開いた env を
+ * 閉じる。呼び出し元の line / mid は要らない。 */
+RESULT
+korb_entry_ret_cold(CTX *c, VALUE *base, uint32_t locals_cnt, RESULT r)
+{
+    if (r.state == KORB_RETURN && (c->return_target == NULL || c->return_target == base)) {
+        r.state = KORB_NORMAL;
+        c->return_target = NULL;
+    }
+    if (korb_frame_escaped(base)) r = korb_close_ret(c, base + locals_cnt, base, r);
+    return r;
+}
+
+/* 呼び出し側に残る冷たい尾: 例外にこのサイトの行番号を積むだけ。base も
+ * locals_cnt も要らないので、dispatch をまたいで生存する値が無くなる。 */
+RESULT
+korb_call_ret_cold(CTX *c, RESULT r, uint32_t line, uint32_t mid)
+{
+    if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) {
+        KorbException *e = VAL2EXC(r.value);
+        korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
+        e->line = line;
+    }
+    return r;
+}
+
 
 /* korb_invoke_simple — the streamlined is_simple ISEQ invoke — now lives in
  * node.h as an always_inline so it folds into the code_store SDs too (node_call
@@ -7404,7 +7434,7 @@ korb_method_slot(CTX *c, uint32_t mid)
 }
 
 void
-korb_method_define(CTX *c, uint32_t mid, NODE *body,
+korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
                    uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
                    uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info)
 {
@@ -7424,6 +7454,7 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body,
     m->bfn = NULL;
     m->is_simple = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 &&
                     req_cnt == params_cnt && !uses_block);
+    m->simple_entry = entry;   /* parser-built node_simple_entry (uses_block も可) */
     c->vm->method_serial++;   /* invalidate call caches */
 }
 
@@ -8220,7 +8251,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
             }
             return nmr;
         }
-        korb_cc_fill(cc, korb_ic_serial(vm), m);
+        korb_cc_fill(cc, korb_ic_serial(vm), m, argc);
     }
 
     VALUE *const base = slots - argc;     /* staged args = parameter window */
@@ -8244,7 +8275,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     if (LIKELY(m->is_simple)) {
         if (LIKELY(!vm->refinements_active))
             return korb_invoke_simple(c, slots, m, argc, line, mid, self, KORB_NIL);
-        m->is_simple = 0;                          /* see korb_dispatch_method */
+        m->is_simple = 0; m->simple_entry = NULL;                          /* see korb_dispatch_method */
     }
     return korb_invoke_method(c, slots, m, argc, line, mid, self, KORB_NIL,
                               block, def_env, KORB_CSELF_VAL(captured_self));
@@ -8321,7 +8352,7 @@ korb_refined_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t ar
     VALUE rdef = KORB_NIL;
     struct korb_method *const m = korb_refined_find(c, korb_dispatch_class(c, self), mid, &rdef);
     if (m == NULL || m->kind != KORB_METHOD_ISEQ) return false;
-    m->is_simple = 0;                       /* the callee needs its own refinement set */
+    m->is_simple = 0; m->simple_entry = NULL;                       /* the callee needs its own refinement set */
     *out = korb_invoke_method(c, slots, m, argc, line, mid, self, rdef, NULL, NULL, KORB_NIL);
     return true;
 }
@@ -8346,30 +8377,30 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
             struct korb_method *m;
             VALUE def_class;
             if (LIKELY(ic->serial == vm->method_serial && ic->klass == klass)) {
-                if (LIKELY(ic->simple)) return korb_invoke_simple_ic(c, slots, ic, argc, line, mid, self);
+                if (LIKELY(ic->dispatch)) return korb_invoke_entry_ic(c, slots, ic, argc, line, mid);
                 m = ic->m; def_class = ic->def_class;
             } else {
                 def_class = KORB_NIL;
                 m = korb_mcache_find(vm, klass, mid, &def_class);
                 if (UNLIKELY(m == NULL)) return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL, site);
-                korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE);
+                korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE, argc);
             }
             if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple)) {  /* hot path: inlines */
                 if (LIKELY(!vm->refinements_active))
                     return korb_invoke_simple(c, slots, m, argc, line, mid, self, def_class);
-                m->is_simple = 0;                     /* see korb_dispatch_method */
+                m->is_simple = 0; m->simple_entry = NULL;                     /* see korb_dispatch_method */
             }
             RESULT r;
             if (korb_invoke_self(c, slots, m, argc, line, mid, self, def_class, &r))
                 return r;   /* ATTR / non-simple ISEQ */
             /* CFUNC → fall through to korb_call_impl */
-        } else if (LIKELY(cc->serial == vm->method_serial && cc->simple)) {
+        } else if (LIKELY(cc->serial == vm->method_serial && cc->dispatch)) {
             /* top-level (main, klass-less) call of a cached simple ISEQ global
              * function (fib / ackermann / inc) — skip korb_call_impl's maze.
              * No send-variant guard needed: send/__send__/public_send sites are
              * intercepted in korb_call_impl (line ~2901) before cc->m is ever
              * filled, so a non-NULL simple-ISEQ cc->m is never a send variant. */
-            return korb_invoke_simple_cc(c, slots, cc, argc, line, mid, self);
+            return korb_invoke_entry_cc(c, slots, cc, argc, line, mid);
         }
     }
     return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL, site);
@@ -8394,11 +8425,13 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
                 m = ic->m; def_class = ic->def_class;
             } else {
                 m = korb_mcache_find(vm, klass, mid, &def_class);
-                if (m) korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE);
+                /* kwargs 経路は simple entry を使わない (argc の意味が違う)。
+                 * 決して一致しない値を渡して高速路の設置だけ抑える。 */
+                if (m) korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);
             }
         } else {                                         /* main / top-level global function */
             if (LIKELY(cc->serial == vm->method_serial && cc->m != NULL)) m = cc->m;
-            else { m = korb_method_lookup(vm, mid); if (m) korb_cc_fill(cc, korb_ic_serial(vm), m); }
+            else { m = korb_method_lookup(vm, mid); if (m) korb_cc_fill(cc, korb_ic_serial(vm), m, UINT32_MAX); }
         }
     }
     if (LIKELY(m != NULL && m->kind == KORB_METHOD_ISEQ)) {
@@ -10362,7 +10395,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
             } else {
                 idef = KORB_NIL;
                 init = korb_class_find_method(recv, vm->mid_initialize, &idef);
-                korb_ic_fill(ic, korb_ic_serial(vm), recv, init, idef, KORB_IC_NEW);
+                korb_ic_fill(ic, korb_ic_serial(vm), recv, init, idef, KORB_IC_NEW, argc);
             }
             const VALUE obj = UNWRAP(korb_obj_new(c, slots, recv));   /* may GC (bumps serial → next call re-resolves) */
             if (init) {
@@ -10411,7 +10444,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
                     const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class, argc, &mm_handled);
                     if (mm_handled || vr.state != KORB_NORMAL) return vr;
                 }
-                korb_ic_fill(ic, korb_ic_serial(vm), recv, m, def_class, KORB_IC_SMETHOD);
+                korb_ic_fill(ic, korb_ic_serial(vm), recv, m, def_class, KORB_IC_SMETHOD, argc);
                 return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
             }
             /* miss (method_missing / NoMethodError) → korb_send_impl formats it */
@@ -10445,7 +10478,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
     }
     if (LIKELY((ic->kind == KORB_IC_INSTANCE || ic->kind == KORB_IC_INSTANCE_VIS) &&
                ic->serial == vm->method_serial && ic->klass == klass)) {
-        if (LIKELY(ic->simple)) return korb_invoke_simple_ic(c, slots, ic, argc, line, mid, recv);
+        if (LIKELY(ic->dispatch)) return korb_invoke_entry_ic(c, slots, ic, argc, line, mid);
         struct korb_method *const m = ic->m;
         if (UNLIKELY(ic->kind == KORB_IC_INSTANCE_VIS && caller_self != KORB_UNDEF)) {   /* cached private/protected — guard the cached entry (no re-lookup) */
             bool mm_handled = false;
@@ -10476,7 +10509,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
     if (UNLIKELY(m == NULL))   /* NoMethodError (rare) — let korb_send_impl format/raise */
         return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
     if (UNLIKELY(m->visibility != 0)) {   /* private/protected: cache as _VIS (resolved) — node_send's inline fast path won't match it, so it always routes here to be guarded */
-        korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE_VIS);
+        korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE_VIS, argc);
         if (caller_self != KORB_UNDEF) {
             bool mm_handled = false;
             const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class, argc, &mm_handled);
@@ -10484,7 +10517,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         }
         return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
     }
-    korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE);
+    korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE, argc);
     return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
 }
 

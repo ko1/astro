@@ -65,11 +65,10 @@ struct NodeHead {
 struct korb_callcache {
     uint64_t serial;
     struct korb_method *m;
-    struct Node *body;               /* simple: m->body */
-    node_dispatcher_func_t dispatch; /* simple: body->head.dispatcher at fill time */
-    uint32_t locals_cnt;             /* simple: m->locals_cnt */
-    int32_t  params_cnt;             /* simple: m->params_cnt */
-    uint8_t  simple;                 /* m is KORB_METHOD_ISEQ && is_simple */
+    struct Node *body;               /* = m->simple_entry (dispatch の第 2 引数) */
+    /* non-NULL であることが「この (サイト, callee) 組が simple entry 高速路に乗る」の
+     * 判定そのもの。別フラグは要らない — どのみち呼ぶために load する。 */
+    node_dispatcher_func_t dispatch; /* m->simple_entry->head.dispatcher at fill time */
 };
 
 /* Block/lambda parameter introspection (Proc#parameters) — built once at parse
@@ -133,12 +132,11 @@ struct korb_inlcache {
     VALUE    klass;
     struct korb_method *m;
     VALUE    def_class;
-    struct Node *body;               /* simple: m->body */
-    node_dispatcher_func_t dispatch; /* simple: body->head.dispatcher at fill time */
-    uint32_t locals_cnt;             /* simple: m->locals_cnt */
-    int32_t  params_cnt;             /* simple: m->params_cnt */
+    struct Node *body;               /* = m->simple_entry (dispatch の第 2 引数) */
+    /* non-NULL であることが「この (サイト, callee) 組が simple entry 高速路に乗る」の
+     * 判定そのもの。別フラグは要らない — どのみち呼ぶために load する。 */
+    node_dispatcher_func_t dispatch; /* m->simple_entry->head.dispatcher at fill time */
     uint8_t  kind;
-    uint8_t  simple;                 /* m is KORB_METHOD_ISEQ && is_simple */
 };
 
 /* node_head.h provides NodeKind, per-node structs, the Node union, and
@@ -269,7 +267,7 @@ uint32_t korb_const_index_owned(const struct korb_vm *vm, uint32_t name_sym, VAL
 uint32_t korb_const_in_ancestry(const struct korb_vm *vm, VALUE cref, uint32_t name_sym);    /* cref's ancestry (MRO order) */
 uint32_t korb_const_in_ancestry_scoped(const struct korb_vm *vm, VALUE recv, uint32_t name_sym);   /* Recv::NAME — skips Object */
 RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj);
-void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
+void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry,
                              uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
                              uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info);
 /* attr_reader/writer/accessor: define a getter/setter on the class. */
@@ -387,7 +385,7 @@ struct korb_kw_entry { uint32_t mid; uint32_t slot; struct Node *deflt; };
 struct korb_kw_info  { uint32_t count; int32_t kwrest_slot; struct korb_kw_entry *entries; };
 
 /* method machinery */
-void   korb_method_define(CTX *c, uint32_t mid, NODE *body,
+void   korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
                           uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
                           uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info);
 void   korb_builtin_define(CTX *c, const char *name, korb_builtin_fn fn,
@@ -691,6 +689,12 @@ static inline void korb_frame_magic_check(const VALUE *const base, const enum ko
  * the rare open-env-close / exception-backtrace paths). */
 RESULT korb_close_ret(CTX *c, VALUE *scratch, VALUE *frame_base, RESULT r);
 RESULT korb_invoke_ret_cold(CTX *c, VALUE *base, uint32_t locals_cnt, RESULT r, uint32_t line, uint32_t mid);
+/* node_simple_entry の冷たい尾: RETURN の消費と脱出フレームのクローズ (callee 側の
+ * 事情だけ。line / mid は要らない)。 */
+RESULT korb_entry_ret_cold(CTX *c, VALUE *base, uint32_t locals_cnt, RESULT r);
+/* 呼び出し側に残る冷たい尾: RAISE のバックトレースだけ。base も locals_cnt も
+ * 要らないので、dispatch をまたいで生存させる値が無くなる。 */
+RESULT korb_call_ret_cold(CTX *c, RESULT r, uint32_t line, uint32_t mid);
 void   korb_bt_append(struct korb_vm *vm, uint32_t line, const char *name);
 void   korb_dispatchers_swapped(struct korb_vm *vm);   /* code-store swap → refill fat inline caches */
 
@@ -763,81 +767,61 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
 }
 
 
-/* korb_invoke_simple driven by a fat inline cache (ic->simple == 1): identical
- * frame protocol, but body / dispatcher / frame sizes come from the cache line
- * instead of the method entry and the body node header. */
+/* Cache-driven simple invoke.  The frame setup now lives in the callee's
+ * node_simple_entry SD (where params_cnt / locals_cnt are constants), so all
+ * that remains here is: hand the method entry over in the EP cell (a caller-side
+ * constant offset, argc being baked at the site) and dispatch.  Nothing but
+ * `line` / `mid` — themselves baked immediates — stays live across the call. */
 static inline __attribute__((always_inline, no_stack_protector)) RESULT
-korb_invoke_simple_ic(CTX *c, VALUE *slots, const struct korb_inlcache *ic, uint32_t argc,
-                      uint32_t line, uint32_t mid, VALUE self)
+korb_invoke_entry_ic(CTX *c, VALUE *slots, const struct korb_inlcache *ic, uint32_t argc,
+                     uint32_t line, uint32_t mid)
 {
-    if (UNLIKELY(argc != (uint32_t)ic->params_cnt))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                          "wrong number of arguments (given %u, expected %d)", argc, ic->params_cnt);
-    VALUE *const base = slots - argc;
-    const uint32_t locals_cnt = ic->locals_cnt;
-    char cstack_probe;
-    if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
-                 &cstack_probe < c->cstack_limit))
-        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
-    if (locals_cnt - 1 > argc) {
-        const uint32_t nz = locals_cnt - 1 - argc;
-        VALUE *const z = base + argc;
-        switch (nz) {
-            case 4: z[3] = 0;   /* fallthrough */
-            case 3: z[2] = 0;   /* fallthrough */
-            case 2: z[1] = 0;   /* fallthrough */
-            case 1: z[0] = 0; break;
-            default: memset(z, 0, nz * sizeof(VALUE));
-        }
-    }
-    base[locals_cnt - 1] = (VALUE)((uintptr_t)ic->m | 1u);   /* method entry at frame top (tagged) */
-    korb_ep_set(base, 0);
-    korb_frame_magic_set(base, KORB_FT_METHOD);
-    (void)self;
-    RESULT r = (*ic->dispatch)(c, ic->body, base + locals_cnt);
-    korb_frame_magic_check(base, KORB_FT_METHOD, "korb_invoke_simple_ic");
-    /* One test on the hot path; everything else is the cold tail (which also
-     * keeps line / mid off the callee-saved set across the dispatch). */
-    if (LIKELY(r.state == KORB_NORMAL && !korb_frame_escaped(base))) return r;
-    return korb_invoke_ret_cold(c, base, locals_cnt, r, line, mid);
+    korb_ep_set(slots - argc, (VALUE)((uintptr_t)ic->m | 1u));   /* method entry, moved to the frame top by the entry */
+    const RESULT r = (*ic->dispatch)(c, ic->body, slots);
+    if (LIKELY(r.state == KORB_NORMAL)) return r;
+    return korb_call_ret_cold(c, r, line, mid);
 }
 
-/* Fill an inline cache; copies the simple-ISEQ fast-path data when applicable. */
+/* Mirror for the top-level call cache. */
+static inline __attribute__((always_inline, no_stack_protector)) RESULT
+korb_invoke_entry_cc(CTX *c, VALUE *slots, const struct korb_callcache *cc, uint32_t argc,
+                     uint32_t line, uint32_t mid)
+{
+    korb_ep_set(slots - argc, (VALUE)((uintptr_t)cc->m | 1u));
+    const RESULT r = (*cc->dispatch)(c, cc->body, slots);
+    if (LIKELY(r.state == KORB_NORMAL)) return r;
+    return korb_call_ret_cold(c, r, line, mid);
+}
+
+/* Fill an inline cache.  The `simple` fast path is installed only when the
+ * callee has a node_simple_entry AND this site's argc matches its arity — the
+ * ic is per site, so argc is fixed for it.  That moves the arity check off the
+ * hot path entirely: a mismatched site simply never caches, and falls through
+ * to the general path which raises ArgumentError. */
 static inline void
 korb_ic_fill(struct korb_inlcache *ic, uint64_t serial, VALUE klass, struct korb_method *m,
-             VALUE def_class, uint8_t kind)
+             VALUE def_class, uint8_t kind, uint32_t argc)
 {
     ic->serial = serial; ic->klass = klass; ic->m = m; ic->def_class = def_class; ic->kind = kind;
-    if (m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple && kind == KORB_IC_INSTANCE) {
-        ic->body = m->body; ic->dispatch = m->body->head.dispatcher;
-        ic->locals_cnt = m->locals_cnt; ic->params_cnt = m->params_cnt; ic->simple = 1;
+    if (m != NULL && m->simple_entry != NULL && kind == KORB_IC_INSTANCE &&
+        m->kind == KORB_METHOD_ISEQ && argc == (uint32_t)m->params_cnt) {
+        ic->body = m->simple_entry; ic->dispatch = m->simple_entry->head.dispatcher;
     } else {
-        ic->body = NULL; ic->dispatch = NULL; ic->locals_cnt = 0; ic->params_cnt = 0; ic->simple = 0;
+        ic->body = NULL; ic->dispatch = NULL;
     }
 }
 
 /* Mirror of korb_ic_fill for the top-level call cache. */
 static inline void
-korb_cc_fill(struct korb_callcache *cc, uint64_t serial, struct korb_method *m)
+korb_cc_fill(struct korb_callcache *cc, uint64_t serial, struct korb_method *m, uint32_t argc)
 {
     cc->serial = serial; cc->m = m;
-    if (m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple) {
-        cc->body = m->body; cc->dispatch = m->body->head.dispatcher;
-        cc->locals_cnt = m->locals_cnt; cc->params_cnt = m->params_cnt; cc->simple = 1;
+    if (m != NULL && m->simple_entry != NULL &&
+        m->kind == KORB_METHOD_ISEQ && argc == (uint32_t)m->params_cnt) {
+        cc->body = m->simple_entry; cc->dispatch = m->simple_entry->head.dispatcher;
     } else {
-        cc->body = NULL; cc->dispatch = NULL; cc->locals_cnt = 0; cc->params_cnt = 0; cc->simple = 0;
+        cc->body = NULL; cc->dispatch = NULL;
     }
-}
-
-/* korb_invoke_simple driven by the top-level call cache (cc->simple == 1). */
-static inline __attribute__((always_inline, no_stack_protector)) RESULT
-korb_invoke_simple_cc(CTX *c, VALUE *slots, const struct korb_callcache *cc, uint32_t argc,
-                      uint32_t line, uint32_t mid, VALUE self)
-{
-    struct korb_inlcache tmp;
-    tmp.m = cc->m; tmp.body = cc->body; tmp.dispatch = cc->dispatch;
-    tmp.locals_cnt = cc->locals_cnt; tmp.params_cnt = cc->params_cnt;
-    return korb_invoke_simple_ic(c, slots, &tmp, argc, line, mid, self);
 }
 
 #endif /* KORUBY_NODE_H */

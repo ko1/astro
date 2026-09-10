@@ -834,6 +834,10 @@ struct korb_method {
     uint32_t locals_cnt;     /* ISEQ: frame size (params first, +2 if uses_block) */
     uint32_t attr_ivar;      /* ATTR_R/W: the @ivar symbol id */
     struct Node *body;       /* ISEQ */
+    /* 呼び出しの入口。どちらも同じ本体ノードを指し、AOT が焼くのはこちら側。
+     * 充填時に (site の argc, callee の形状) で片方を選んで cc/ic に載せる。 */
+    struct Node *simple_entry;   /* node_simple_entry: 固定位置引数のみ。無ければ NULL */
+    /* struct Node *complex_entry;  — opt/rest/post/kw 用 (未実装、次段) */
     VALUE owner;             /* defining class/module (super's def_class), nil for a global fn.
                               * Manually GC-forwarded (entry is immortal libc, so the class
                               * visitor + roots forward this field — like const_vals).  owner/mid

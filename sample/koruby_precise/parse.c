@@ -2565,24 +2565,41 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     korb_reg_srcloc(tc->c->vm, body, korb_intern(tc->c->vm, tc->fname, strlen(tc->fname)), kp_line(tc, (const pm_node_t *)dn));
     /* full param list (names + kinds) for Method#parameters — cold-read only, like the block node_entry's. */
     void *pinfo = build_param_info(tc, dn->parameters ? (const pm_node_t *)dn->parameters : NULL);
+    /* Simple methods (fixed positional arity, nothing exotic) get a
+     * node_simple_entry: the frame setup moves onto the callee so params_cnt /
+     * locals_cnt fold into that entry's SD.  Non-simple shapes keep the old
+     * caller-side binding (korb_invoke_method), so they get no entry. */
+    /* uses_block でも作る: ブロックを渡さないサイトからは、yield を持つだけの
+     * メソッドも固定 arity なら同じ entry で呼べる (locals_cnt はブロック用の
+     * 3 セルを含んでおり、ゼロ埋めで nil になる = yield は LocalJumpError)。
+     * ブロック付きの呼び出しは別ノード (node_call_blk) を通るので無関係。 */
+    NODE *entry = NULL;
+    if (kw_info == NULL && rest_slot < 0 && post_cnt == 0 && req_cnt == params_cnt)
+        entry = ALLOC_node_simple_entry(body, params_cnt, frame_size);
+
     /* self at the def site (enclosing frame) = the default definee */
     NODE *def;
     if (mod_func) {
         /* module_function: define as instance method AND as a singleton on self. */
-        NODE *idef = ALLOC_node_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, -1 - tc->chain, -1 - tc->chain);
+        NODE *idef = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, -1 - tc->chain, -1 - tc->chain);
         bake_add(tc, &idef->u.node_def.self_off);          /* definee = self at base[-1] */
-        NODE *sdef = ALLOC_node_singleton_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, recv_node);
+        NODE *sdef = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, recv_node);
         def = ALLOC_node_seq(idef, sdef);
     } else if (recv_node) {
-        def = ALLOC_node_singleton_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, recv_node);
+        def = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, recv_node);
     } else {
-        def = ALLOC_node_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, -1 - tc->chain, -1 - tc->chain);
+        def = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, -1 - tc->chain, -1 - tc->chain);
         bake_add(tc, &def->u.node_def.self_off);           /* definee = self at base[-1] */
     }
 
     /* Every method body is its own AOT entry: call sites reach it through
      * body->head.dispatcher at runtime (specializer can't fold that). */
     code_repo_add(korb_sym_name(tc->c->vm, mid), body, true);
+    /* the simple entry is its own AOT root (call sites dispatch it via
+     * ic->dispatch).  The body stays registered too: refinements can demote
+     * is_simple at run time, and korb_invoke_method then dispatches the body
+     * directly — it must still have an SD. */
+    if (entry) code_repo_add(korb_sym_name(tc->c->vm, mid), entry, true);
     return def;
 }
 
