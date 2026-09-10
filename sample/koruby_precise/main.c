@@ -594,7 +594,10 @@ korb_inst_mode(void)
 struct korb_hot_ent { NODE *n; node_dispatcher_func_t orig; };
 static struct {
     struct korb_hot_ent *v; uint32_t n, capa;
-    struct korb_hot_ent **tab; uint32_t mask;     /* NODE* -> entry (open addressing) */
+    /* NODE* -> v の添字+1 (0 = 空).  ポインタを持つと korb_hot_add の realloc で
+     * 全エントリがダングリングになる (arm 後に追加されると実際に起きる)。 */
+    uint32_t *tab; uint32_t mask;
+    node_dispatcher_func_t tramp;                /* arm 済みなら、後から足すノードにも被せる */
     uint64_t total, limit;
     bool active;
 } g_hot;
@@ -604,10 +607,33 @@ korb_hot_find(const NODE *n)
 {
     uint32_t h = (uint32_t)(((uintptr_t)n >> 4) * 2654435761u) & g_hot.mask;
     for (;;) {
-        struct korb_hot_ent *e = g_hot.tab[h];
-        if (!e || e->n == n) return e;
+        const uint32_t i = g_hot.tab[h];
+        if (i == 0) return NULL;
+        if (g_hot.v[i - 1].n == n) return &g_hot.v[i - 1];
         h = (h + 1) & g_hot.mask;
     }
+}
+
+/* v[i] を表に入れる (表は必ず空きがある状態で呼ぶ)。 */
+static void
+korb_hot_tab_put(uint32_t i)
+{
+    uint32_t h = (uint32_t)(((uintptr_t)g_hot.v[i].n >> 4) * 2654435761u) & g_hot.mask;
+    while (g_hot.tab[h]) h = (h + 1) & g_hot.mask;
+    g_hot.tab[h] = i + 1;
+}
+
+/* 全体を作り直す (初回 arm と、負荷率が上がったとき)。 */
+static void
+korb_hot_tab_build(void)
+{
+    uint32_t sz = 256;
+    while (sz < g_hot.n * 2) sz *= 2;
+    free(g_hot.tab);
+    g_hot.tab = calloc(sz, sizeof(*g_hot.tab));
+    if (!g_hot.tab) { fprintf(stderr, "koruby_precise: out of memory (hot table)\n"); abort(); }
+    g_hot.mask = sz - 1;
+    for (uint32_t i = 0; i < g_hot.n; i++) korb_hot_tab_put(i);
 }
 
 static void korb_hot_finish(CTX *c);
@@ -672,6 +698,13 @@ korb_hot_add(NODE *n)
     g_hot.v[g_hot.n].n = n;
     g_hot.v[g_hot.n].orig = n->head.dispatcher;
     g_hot.n++;
+    /* arm 済みの後に足されたノードも、トランポリンと表の両方に載せる。
+     * (載せ忘れると korb_hot_find が NULL を返して first_dispatch で落ちる) */
+    if (g_hot.active) {
+        n->head.dispatcher = g_hot.tramp;
+        if ((g_hot.mask + 1) < g_hot.n * 2) korb_hot_tab_build();
+        else korb_hot_tab_put(g_hot.n - 1);
+    }
 }
 
 /* Build the lookup table and install the trampolines (after all adds: the
@@ -679,16 +712,9 @@ korb_hot_add(NODE *n)
 static void
 korb_hot_arm(const node_dispatcher_func_t tramp)
 {
-    uint32_t sz = 256;
-    while (sz < g_hot.n * 2) sz *= 2;
-    g_hot.tab = calloc(sz, sizeof(*g_hot.tab));
-    g_hot.mask = sz - 1;
-    for (uint32_t i = 0; i < g_hot.n; i++) {
-        uint32_t h = (uint32_t)(((uintptr_t)g_hot.v[i].n >> 4) * 2654435761u) & g_hot.mask;
-        while (g_hot.tab[h]) h = (h + 1) & g_hot.mask;
-        g_hot.tab[h] = &g_hot.v[i];
-        g_hot.v[i].n->head.dispatcher = tramp;
-    }
+    g_hot.tramp = tramp;
+    korb_hot_tab_build();
+    for (uint32_t i = 0; i < g_hot.n; i++) g_hot.v[i].n->head.dispatcher = tramp;
     g_hot.active = true;
 }
 
