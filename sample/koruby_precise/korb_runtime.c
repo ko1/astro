@@ -10416,9 +10416,60 @@ korb_send_ic_dispatch(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_
     (LIKELY(((ic)->kind == KORB_IC_INSTANCE || (ic)->kind == KORB_IC_INSTANCE_VIS) && \
             (ic)->serial == (vm)->method_serial && (ic)->klass == (klass)))
 
+/* Receiver → class for the common shapes without touching korb_dispatch_class:
+ * plain user instance (its klass field; NIL for main), fixnum, flonum, plain
+ * Array / String / Hash (the type tag is the class).  KORB_NIL = not one of them. */
+static inline VALUE
+korb_fast_klass(const struct korb_vm *vm, VALUE recv)
+{
+    if (LIKELY(KORB_OBJECT_P(recv) &&
+               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS)))
+        return VAL2OBJ(recv)->klass;
+    if (FIXNUM_P(recv)) return korb_builtin_class_obj(vm, KORB_C_INTEGER);
+    if (FLONUM_P(recv)) return korb_builtin_class_obj(vm, KORB_C_FLOAT);
+    if (AROH_IS_GC_OBJECT(recv) &&
+        !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
+        (KORB_OBJ_TYPE(recv) == KORB_OBJ_ARRAY || KORB_OBJ_TYPE(recv) == KORB_OBJ_STRING ||
+         KORB_OBJ_TYPE(recv) == KORB_OBJ_HASH))
+        return korb_builtin_class_obj(vm, KORB_OBJ_TYPE(recv) == KORB_OBJ_ARRAY ? KORB_C_ARRAY
+                                        : KORB_OBJ_TYPE(recv) == KORB_OBJ_STRING ? KORB_C_STRING : KORB_C_HASH);
+    return KORB_NIL;
+}
+
+static __attribute__((noinline, no_stack_protector)) RESULT
+korb_send_cached_slow(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                      struct korb_inlcache *ic, VALUE caller_self, VALUE klass);
+
+/* The hot entry from node_send's miss: small on purpose (the SD's guard already
+ * failed, so this is where every builtin-receiver send lands).  An ic hit on a
+ * public instance method → entry dispatch or the cfunc call right here; anything
+ * else (refinements, class receivers, send family, private/protected, misses) is
+ * the slow tail's job, which keeps this function's prologue tiny. */
 __attribute__((no_stack_protector)) RESULT
 korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                  struct korb_inlcache *ic, VALUE caller_self)
+{
+    struct korb_vm *const vm = c->vm;
+    const VALUE recv = slots[-(korb_sword_t)argc - 1];
+    const VALUE klass = korb_fast_klass(vm, recv);
+    if (LIKELY(klass != KORB_NIL && ic->kind == KORB_IC_INSTANCE &&
+               ic->serial == vm->method_serial && ic->klass == klass && !vm->refinements_active)) {
+        if (LIKELY(ic->dispatch)) return korb_invoke_entry_ic(c, slots, ic, argc, line, mid);
+        const struct korb_method *const m = ic->m;
+        if (LIKELY(m->kind == KORB_METHOD_CFUNC && !m->uses_block &&
+                   (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc))) {
+            const RESULT r = m->rfn(c, slots, VALUE_REF_AT(&slots[-(korb_sword_t)argc - 1]),
+                                    VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc));
+            if (LIKELY(r.state == KORB_NORMAL)) return r;
+            return korb_call_ret_cold(c, r, line, mid);
+        }
+    }
+    return korb_send_cached_slow(c, slots, mid, line, argc, ic, caller_self, klass);
+}
+
+static __attribute__((noinline, no_stack_protector)) RESULT
+korb_send_cached_slow(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                      struct korb_inlcache *ic, VALUE caller_self, VALUE klass)
 {
     struct korb_vm *const vm = c->vm;
     const VALUE recv = slots[-(korb_sword_t)argc - 1];
@@ -10426,26 +10477,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         RESULT rr;
         if (korb_refined_dispatch(c, slots, mid, line, argc, recv, NULL, NULL, NULL, &rr)) return rr;
     }
-    /* Receiver → class for the common shapes (plain user instance, fixnum, flonum,
-     * plain Array/String/Hash) and the ic check come first: a hot builtin send
-     * pays only this before the cached cfunc call, not the class-receiver /
-     * send-family cascade below. */
-    VALUE klass = KORB_NIL;
-    if (LIKELY(KORB_OBJECT_P(recv) &&
-               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS))) {
-        klass = VAL2OBJ(recv)->klass;                        /* NIL for main → korb_dispatch_class below */
-    } else if (FIXNUM_P(recv)) {
-        klass = korb_builtin_class_obj(vm, KORB_C_INTEGER);
-    } else if (FLONUM_P(recv)) {
-        klass = korb_builtin_class_obj(vm, KORB_C_FLOAT);
-    } else if (AROH_IS_GC_OBJECT(recv) &&
-               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
-               (KORB_OBJ_TYPE(recv) == KORB_OBJ_ARRAY || KORB_OBJ_TYPE(recv) == KORB_OBJ_STRING ||
-                KORB_OBJ_TYPE(recv) == KORB_OBJ_HASH)) {
-        klass = korb_builtin_class_obj(vm, KORB_OBJ_TYPE(recv) == KORB_OBJ_ARRAY ? KORB_C_ARRAY
-                                         : KORB_OBJ_TYPE(recv) == KORB_OBJ_STRING ? KORB_C_STRING : KORB_C_HASH);
-    }
-    if (klass != KORB_NIL && KORB_IC_INSTANCE_HIT(ic, vm, klass))
+    if (klass != KORB_NIL && KORB_IC_INSTANCE_HIT(ic, vm, klass))   /* INSTANCE_VIS, non-simple ISEQ, … */
         return korb_send_ic_dispatch(c, slots, mid, line, argc, ic, recv, caller_self);
     /* class receivers (Klass.new / Fiber.yield / Struct / class methods) and the
      * send/__send__/public_send family need korb_send_impl's special handling. */
