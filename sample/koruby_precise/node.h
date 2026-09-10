@@ -793,6 +793,55 @@ korb_invoke_entry_cc(CTX *c, VALUE *slots, const struct korb_callcache *cc, uint
     return korb_call_ret_cold(c, r, line, mid);
 }
 
+/* Builtin receiver → class object (2 loads); mirrors korb_runtime.c's korb_builtin_class_obj. */
+static inline VALUE
+korb_bi_class(const struct korb_vm *vm, enum korb_class e)
+{
+    const uint32_t idx = vm->class_obj_idx[e];
+    return (idx == UINT32_MAX) ? KORB_NIL : vm->const_vals[idx];
+}
+
+/* node_send's fallthrough, replacing a direct korb_send_cached call: same
+ * arguments (so the SD keeps exactly the live values it had), one tail call.
+ * flonum / fixnum / plain Array / String / Hash receivers get their class from
+ * the type tag and, on an ic hit, call the cfunc right here (DOOM: 92% of the
+ * sends that left the SD are flonum + Array; optcarrot: 98% Array + Hash);
+ * everything else continues into korb_send_cached.  Kept out of line so the
+ * caller SD's register pressure does not grow (an inlined branch cost ivar +4.8%). */
+static __attribute__((noinline, no_stack_protector, unused)) RESULT
+korb_send_builtin_or_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                            struct korb_inlcache *ic, VALUE caller_self)
+{
+    const VALUE recv = slots[-(korb_sword_t)argc - 1];
+    VALUE klass = KORB_NIL;
+    if (FLONUM_P(recv))      klass = korb_bi_class(c->vm, KORB_C_FLOAT);
+    else if (FIXNUM_P(recv)) klass = korb_bi_class(c->vm, KORB_C_INTEGER);
+    else if (AROH_IS_GC_OBJECT(recv) &&
+             !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS)) {
+        const uint8_t t = KORB_OBJ_TYPE(recv);
+        if (t == KORB_OBJ_ARRAY)       klass = korb_bi_class(c->vm, KORB_C_ARRAY);
+        else if (t == KORB_OBJ_STRING) klass = korb_bi_class(c->vm, KORB_C_STRING);
+        else if (t == KORB_OBJ_HASH)   klass = korb_bi_class(c->vm, KORB_C_HASH);
+    }
+    if (LIKELY(klass != KORB_NIL && ic->kind == KORB_IC_INSTANCE &&
+               ic->serial == c->vm->method_serial && ic->klass == klass)) {
+        if (LIKELY(ic->dispatch)) return korb_invoke_entry_ic(c, slots, ic, argc, line, mid);
+        struct korb_method *const m = ic->m;
+        if (LIKELY(m->kind == KORB_METHOD_CFUNC && !m->uses_block &&
+                   (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc))) {
+            RESULT r = m->rfn(c, slots, VALUE_REF_AT(&slots[-(korb_sword_t)argc - 1]),
+                              VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc));
+            if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) {
+                KorbException *e = VAL2EXC(r.value);
+                korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
+                e->line = line;
+            }
+            return r;
+        }
+    }
+    return korb_send_cached(c, slots, mid, line, argc, ic, caller_self);
+}
+
 /* Fill an inline cache.  The `simple` fast path is installed only when the
  * callee has a node_simple_entry AND this site's argc matches its arity — the
  * ic is per site, so argc is fixed for it.  That moves the arity check off the

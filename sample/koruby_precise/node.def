@@ -2199,6 +2199,16 @@ node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_
      * no visibility check.  Otherwise pass the caller's self (base[-1]) for the
      * private (self.foo only) / protected (is_a? owner) guard. */
     const VALUE caller_self = (self_off == INT32_MIN) ? KORB_UNDEF : slots[self_off];
+    /* H5e: only a builtin receiver (flonum / fixnum / plain Array / String / Hash)
+     * takes the in-TU helper; a class (Foo.new), symbol, nil... goes straight to
+     * korb_send_cached as before — routing those through the helper cost
+     * object +8.7% (one extra call + a cascade that never matches).  Both are
+     * tail calls with identical arguments, so the SD keeps the same live set. */
+    if (FLONUM_P(recv) || FIXNUM_P(recv) ||
+        (AROH_IS_GC_OBJECT(recv) && (KORB_OBJ_TYPE(recv) == KORB_OBJ_ARRAY ||
+                                     KORB_OBJ_TYPE(recv) == KORB_OBJ_STRING ||
+                                     KORB_OBJ_TYPE(recv) == KORB_OBJ_HASH)))
+        return korb_send_builtin_or_cached(c, slots, mid, line, argc, ic, caller_self);
     return korb_send_cached(c, slots, mid, line, argc, ic, caller_self);
 }
 
