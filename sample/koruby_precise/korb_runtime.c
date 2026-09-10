@@ -10370,6 +10370,59 @@ korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t 
     }
     return r;
 }
+/* ic->dispatch target for an attr/struct reader (installed by korb_ic_fill with
+ * ic->body = the method).  Reached through korb_invoke_entry_ic like a simple
+ * entry but builds no frame: recv is slots[-1] (argc == 0). */
+RESULT
+korb_attr_r_entry(CTX *c, NODE *n, VALUE *slots)
+{
+    const struct korb_method *const m = (const struct korb_method *)n;
+    const VALUE recv = slots[-1];
+    if (LIKELY(KORB_OBJECT_P(recv))) {                    /* inline shape walk */
+        const KorbObject *const ob = VAL2OBJ(recv);
+        const int32_t idx = korb_shape_index(c->vm, ob->shape_id, m->attr_ivar);
+        return RESULT_OK(idx < 0 ? KORB_NIL : korb_items_data(ob->ivars)[idx]);
+    }
+    return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));   /* builtin-typed subclass instance */
+}
+
+/* What to do after an instance-kind ic hit (the check itself is
+ * KORB_IC_INSTANCE_HIT).  Split out so korb_send_cached can test the cache both
+ * before and after the class-receiver / send-family cascade. */
+static inline RESULT
+korb_send_ic_dispatch(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                 struct korb_inlcache *ic, VALUE recv, VALUE caller_self)
+{
+    struct korb_vm *const vm = c->vm;
+    if (LIKELY(ic->dispatch)) return korb_invoke_entry_ic(c, slots, ic, argc, line, mid);
+    struct korb_method *const m = ic->m;
+    if (UNLIKELY(ic->kind == KORB_IC_INSTANCE_VIS && caller_self != KORB_UNDEF)) {   /* cached private/protected — guard the cached entry (no re-lookup) */
+        bool mm_handled = false;
+        const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, ic->def_class, argc, &mm_handled);
+        if (mm_handled || vr.state != KORB_NORMAL) return vr;
+    }
+    if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines invoke_simple, skips dispatch_method PLT */
+        return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
+    if (m->kind == KORB_METHOD_ATTR_R)                          /* attr/struct reader: inline ivar load, skip dispatch_method PLT */
+        return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));
+    if (m->kind == KORB_METHOD_CFUNC && !m->uses_block &&       /* builtin (Array#<</[], String#..) — inline the CFUNC call, skip dispatch_method */
+        LIKELY(m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
+        RESULT r = m->rfn(c, slots, VALUE_REF_AT(&slots[-(korb_sword_t)argc - 1]),
+                          VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc));
+        if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) {
+            KorbException *e = VAL2EXC(r.value);
+            korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
+            e->line = line;
+        }
+        return r;
+    }
+    return korb_dispatch_method(c, slots, m, mid, line, argc, ic->def_class, NULL, NULL, NULL);
+}
+
+#define KORB_IC_INSTANCE_HIT(ic, vm, klass) \
+    (LIKELY(((ic)->kind == KORB_IC_INSTANCE || (ic)->kind == KORB_IC_INSTANCE_VIS) && \
+            (ic)->serial == (vm)->method_serial && (ic)->klass == (klass)))
+
 __attribute__((no_stack_protector)) RESULT
 korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                  struct korb_inlcache *ic, VALUE caller_self)
@@ -10380,6 +10433,27 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         RESULT rr;
         if (korb_refined_dispatch(c, slots, mid, line, argc, recv, NULL, NULL, NULL, &rr)) return rr;
     }
+    /* Receiver → class for the common shapes (plain user instance, fixnum, flonum,
+     * plain Array/String/Hash) and the ic check come first: a hot builtin send
+     * pays only this before the cached cfunc call, not the class-receiver /
+     * send-family cascade below. */
+    VALUE klass = KORB_NIL;
+    if (LIKELY(KORB_OBJECT_P(recv) &&
+               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS))) {
+        klass = VAL2OBJ(recv)->klass;                        /* NIL for main → korb_dispatch_class below */
+    } else if (FIXNUM_P(recv)) {
+        klass = korb_builtin_class_obj(vm, KORB_C_INTEGER);
+    } else if (FLONUM_P(recv)) {
+        klass = korb_builtin_class_obj(vm, KORB_C_FLOAT);
+    } else if (AROH_IS_GC_OBJECT(recv) &&
+               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
+               (KORB_OBJ_TYPE(recv) == KORB_OBJ_ARRAY || KORB_OBJ_TYPE(recv) == KORB_OBJ_STRING ||
+                KORB_OBJ_TYPE(recv) == KORB_OBJ_HASH)) {
+        klass = korb_builtin_class_obj(vm, KORB_OBJ_TYPE(recv) == KORB_OBJ_ARRAY ? KORB_C_ARRAY
+                                         : KORB_OBJ_TYPE(recv) == KORB_OBJ_STRING ? KORB_C_STRING : KORB_C_HASH);
+    }
+    if (klass != KORB_NIL && KORB_IC_INSTANCE_HIT(ic, vm, klass))
+        return korb_send_ic_dispatch(c, slots, mid, line, argc, ic, recv, caller_self);
     /* class receivers (Klass.new / Fiber.yield / Struct / class methods) and the
      * send/__send__/public_send family need korb_send_impl's special handling. */
     if (UNLIKELY(KORB_CLASS_P(recv) ||
@@ -10452,57 +10526,11 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
     }
 
-    /* receiver class: a plain user instance (no singleton override) reads its
-     * klass inline; everything else (override / builtin / exception / main)
-     * goes through korb_dispatch_class. */
-    VALUE klass;
-    if (LIKELY(KORB_OBJECT_P(recv) &&
-               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
-               (klass = VAL2OBJ(recv)->klass) != KORB_NIL)) {
-        /* plain user instance — klass set above */
-    } else if (FIXNUM_P(recv)) {
-        klass = korb_builtin_class_obj(vm, KORB_C_INTEGER);   /* immediate: skip the dispatch_class + class_of PLT pair */
-    } else if (FLONUM_P(recv)) {
-        klass = korb_builtin_class_obj(vm, KORB_C_FLOAT);     /* (numeric kernels send to_i/abs/coerce on these per-iteration) */
-    } else if (AROH_IS_GC_OBJECT(recv) &&
-               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
-               (KORB_OBJ_TYPE(recv) == KORB_OBJ_ARRAY || KORB_OBJ_TYPE(recv) == KORB_OBJ_STRING ||
-                KORB_OBJ_TYPE(recv) == KORB_OBJ_HASH)) {
-        /* plain Array/String/Hash (no singleton/subclass override): the class is
-         * the type tag — skip korb_dispatch_class's exception/enumerator/class
-         * cascade and the korb_class_of switch. */
-        klass = korb_builtin_class_obj(vm, KORB_OBJ_TYPE(recv) == KORB_OBJ_ARRAY ? KORB_C_ARRAY
-                                         : KORB_OBJ_TYPE(recv) == KORB_OBJ_STRING ? KORB_C_STRING : KORB_C_HASH);
-    } else {
+    if (klass == KORB_NIL) {                             /* main / singleton override / exception / … */
         klass = korb_dispatch_class(c, recv);
+        if (KORB_IC_INSTANCE_HIT(ic, vm, klass))
+            return korb_send_ic_dispatch(c, slots, mid, line, argc, ic, recv, caller_self);
     }
-    if (LIKELY((ic->kind == KORB_IC_INSTANCE || ic->kind == KORB_IC_INSTANCE_VIS) &&
-               ic->serial == vm->method_serial && ic->klass == klass)) {
-        if (LIKELY(ic->dispatch)) return korb_invoke_entry_ic(c, slots, ic, argc, line, mid);
-        struct korb_method *const m = ic->m;
-        if (UNLIKELY(ic->kind == KORB_IC_INSTANCE_VIS && caller_self != KORB_UNDEF)) {   /* cached private/protected — guard the cached entry (no re-lookup) */
-            bool mm_handled = false;
-            const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, ic->def_class, argc, &mm_handled);
-            if (mm_handled || vr.state != KORB_NORMAL) return vr;
-        }
-        if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines invoke_simple, skips dispatch_method PLT */
-            return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
-        if (m->kind == KORB_METHOD_ATTR_R)                          /* attr/struct reader: inline ivar load, skip dispatch_method PLT */
-            return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));
-        if (m->kind == KORB_METHOD_CFUNC && !m->uses_block &&       /* builtin (Array#<</[], String#..) — inline the CFUNC call, skip dispatch_method */
-            LIKELY(m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
-            RESULT r = m->rfn(c, slots, VALUE_REF_AT(&slots[-(korb_sword_t)argc - 1]),
-                              VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc));
-            if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) {
-                KorbException *e = VAL2EXC(r.value);
-                korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
-                e->line = line;
-            }
-            return r;
-        }
-        return korb_dispatch_method(c, slots, m, mid, line, argc, ic->def_class, NULL, NULL, NULL);
-    }
-
     VALUE def_class = KORB_NIL;
     struct korb_method *const m =
         KORB_CLASS_P(klass) ? korb_mcache_find(vm, klass, mid, &def_class) : NULL;

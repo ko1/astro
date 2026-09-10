@@ -2171,44 +2171,19 @@ node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_
 {
     (void)n;
     const uint32_t argc = argv_cnt - 1;
-    /* Inline the cached plain-user-instance fast path so the SD skips the
-     * cross-module korb_send_cached call for the two hottest method kinds:
-     * a simple ISEQ (method_call/object) and an attr/struct reader (ivar/
-     * structacc).  The ic->kind == INSTANCE guard is mandatory: a site whose
-     * receiver flips class/instance must not reuse a class-method entry. */
+    /* The SD keeps only the ic check + entry dispatch: a plain user instance whose
+     * class matches the cache goes straight to ic->dispatch (simple ISEQ entry or
+     * attr reader, both installed by korb_ic_fill).  Everything else — builtin
+     * receivers, cfuncs, private/protected, misses — is korb_send_cached's job. */
     const VALUE recv = slots[-(korb_sword_t)argc - 1];
     if (LIKELY(KORB_OBJECT_P(recv) &&
-               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS))) {
-        const VALUE klass = VAL2OBJ(recv)->klass;
-        if (LIKELY(klass != KORB_NIL && ic->kind == KORB_IC_INSTANCE &&
-                   ic->serial == c->vm->method_serial && ic->klass == klass)) {
-            /* the ic caches only public methods as KORB_IC_INSTANCE (korb_send_cached
-             * withholds private/protected), so this hot path needs no visibility
-             * check — private/protected sites never satisfy the ic guard above. */
-            if (LIKELY(ic->dispatch))
-                return korb_invoke_entry_ic(c, slots, ic, argc, line, mid);
-            struct korb_method *const m = ic->m;
-            if (m->kind == KORB_METHOD_ATTR_R) {             /* attr/struct reader: inline shape walk, no cross-module hop */
-                const KorbObject *const ob = VAL2OBJ(recv);
-                const int32_t idx = korb_shape_index(c->vm, ob->shape_id, m->attr_ivar);
-                return RESULT_OK(idx < 0 ? KORB_NIL : korb_items_data(ob->ivars)[idx]);
-            }
-        }
-    }
+               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
+               ic->klass == VAL2OBJ(recv)->klass && ic->serial == c->vm->method_serial && ic->dispatch))
+        return korb_invoke_entry_ic(c, slots, ic, argc, line, mid);
     /* self_off == INT32_MIN → a synthetic send (op-assign/[]/=== desugar): public,
      * no visibility check.  Otherwise pass the caller's self (base[-1]) for the
      * private (self.foo only) / protected (is_a? owner) guard. */
     const VALUE caller_self = (self_off == INT32_MIN) ? KORB_UNDEF : slots[self_off];
-    /* H5e: only a builtin receiver (flonum / fixnum / plain Array / String / Hash)
-     * takes the in-TU helper; a class (Foo.new), symbol, nil... goes straight to
-     * korb_send_cached as before — routing those through the helper cost
-     * object +8.7% (one extra call + a cascade that never matches).  Both are
-     * tail calls with identical arguments, so the SD keeps the same live set. */
-    if (FLONUM_P(recv) || FIXNUM_P(recv) ||
-        (AROH_IS_GC_OBJECT(recv) && (KORB_OBJ_TYPE(recv) == KORB_OBJ_ARRAY ||
-                                     KORB_OBJ_TYPE(recv) == KORB_OBJ_STRING ||
-                                     KORB_OBJ_TYPE(recv) == KORB_OBJ_HASH)))
-        return korb_send_builtin_or_cached(c, slots, mid, line, argc, ic, caller_self);
     return korb_send_cached(c, slots, mid, line, argc, ic, caller_self);
 }
 
