@@ -10438,41 +10438,51 @@ korb_fast_klass(const struct korb_vm *vm, VALUE recv)
 
 static __attribute__((noinline, no_stack_protector)) RESULT
 korb_send_cached_slow(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-                      struct korb_inlcache *ic, VALUE caller_self, VALUE klass);
+                      struct korb_inlcache *ic, VALUE caller_self);
 
-/* The hot entry from node_send's miss: small on purpose (the SD's guard already
- * failed, so this is where every builtin-receiver send lands).  An ic hit on a
- * public instance method → entry dispatch or the cfunc call right here; anything
- * else (refinements, class receivers, send family, private/protected, misses) is
- * the slow tail's job, which keeps this function's prologue tiny. */
+/* Instance-kind ic hit from korb_send_cached (kind INSTANCE = public, so no
+ * caller_self needed): entry dispatch or the cfunc call.  Its own function so the
+ * wrapper below has no frame at all — both of its exits are sibcalls. */
+static __attribute__((noinline, no_stack_protector)) RESULT
+korb_send_cached_hit(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                     struct korb_inlcache *ic, VALUE recv)
+{
+    if (LIKELY(ic->dispatch)) return korb_invoke_entry_ic(c, slots, ic, argc, line, mid);
+    const struct korb_method *const m = ic->m;
+    if (LIKELY(m->kind == KORB_METHOD_CFUNC && !m->uses_block &&
+               (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc))) {
+        const RESULT r = m->rfn(c, slots, VALUE_REF_AT(&slots[-(korb_sword_t)argc - 1]),
+                                VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc));
+        if (LIKELY(r.state == KORB_NORMAL)) return r;
+        return korb_call_ret_cold(c, r, line, mid);
+    }
+    return korb_send_ic_dispatch(c, slots, mid, line, argc, ic, recv, KORB_UNDEF);   /* non-simple ISEQ etc. */
+}
+
+/* The hot entry from node_send's miss (every builtin-receiver send lands here):
+ * fast klass → ic check, then a sibcall either way, so this function keeps no
+ * frame.  Refinements, class receivers, the send family, private/protected and
+ * misses are the slow tail's job. */
 __attribute__((no_stack_protector)) RESULT
 korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                  struct korb_inlcache *ic, VALUE caller_self)
 {
-    struct korb_vm *const vm = c->vm;
+    const struct korb_vm *const vm = c->vm;
     const VALUE recv = slots[-(korb_sword_t)argc - 1];
     const VALUE klass = korb_fast_klass(vm, recv);
     if (LIKELY(klass != KORB_NIL && ic->kind == KORB_IC_INSTANCE &&
-               ic->serial == vm->method_serial && ic->klass == klass && !vm->refinements_active)) {
-        if (LIKELY(ic->dispatch)) return korb_invoke_entry_ic(c, slots, ic, argc, line, mid);
-        const struct korb_method *const m = ic->m;
-        if (LIKELY(m->kind == KORB_METHOD_CFUNC && !m->uses_block &&
-                   (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc))) {
-            const RESULT r = m->rfn(c, slots, VALUE_REF_AT(&slots[-(korb_sword_t)argc - 1]),
-                                    VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc));
-            if (LIKELY(r.state == KORB_NORMAL)) return r;
-            return korb_call_ret_cold(c, r, line, mid);
-        }
-    }
-    return korb_send_cached_slow(c, slots, mid, line, argc, ic, caller_self, klass);
+               ic->serial == vm->method_serial && ic->klass == klass && !vm->refinements_active))
+        return korb_send_cached_hit(c, slots, mid, line, argc, ic, recv);
+    return korb_send_cached_slow(c, slots, mid, line, argc, ic, caller_self);
 }
 
 static __attribute__((noinline, no_stack_protector)) RESULT
 korb_send_cached_slow(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-                      struct korb_inlcache *ic, VALUE caller_self, VALUE klass)
+                      struct korb_inlcache *ic, VALUE caller_self)
 {
     struct korb_vm *const vm = c->vm;
     const VALUE recv = slots[-(korb_sword_t)argc - 1];
+    VALUE klass = korb_fast_klass(vm, recv);            /* recomputed: cheaper than an 8th argument (kills the sibcall) */
     if (UNLIKELY(vm->refinements_active)) {          /* refined receiver dispatch */
         RESULT rr;
         if (korb_refined_dispatch(c, slots, mid, line, argc, recv, NULL, NULL, NULL, &rr)) return rr;
