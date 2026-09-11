@@ -682,44 +682,50 @@ class IO
   def lstat
     @__io_path ? File.lstat(@__io_path) : stat
   end
-  # io/wait: IO#wait(events_int|symbols…, timeout) — POLL blop 1 発
+  # io/wait: IO#wait.  CRuby's io_wait has two shapes: exactly (events, timeout)
+  # with no Symbol answers the ready-event mask; anything else is the legacy
+  # form (Symbols + at most one timeout) and answers self / nil.
   def wait(*args)
+    if args.length == 2 && !args[0].is_a?(Symbol) && !args[1].is_a?(Symbol)
+      ev = args[0]
+      raise TypeError, "no implicit conversion from nil to integer" if ev.nil?
+      ev = ev.to_int if !ev.is_a?(Integer) && ev.respond_to?(:to_int)
+      raise TypeError, "no implicit conversion of #{ev.class} into Integer" unless ev.is_a?(Integer)
+      raise ArgumentError, "Events must be positive integer!" if ev <= 0
+      r = __wait_events(__io_poll(ev, args[1]), ev)
+      return r.zero? ? nil : r
+    end
     events = 0
     timeout = nil
-    int_form = false
-    # CRuby has two shapes: wait(events, timeout) and the legacy
-    # wait(timeout = nil, mode = :read).  With two or more arguments a trailing
-    # numeric (or nil) is always the timeout — `wait(IO::WRITABLE, 0)` must not
-    # block forever because 0 looked like another events mask.
-    if args.length >= 2 && (args[-1].nil? || args[-1].is_a?(Numeric))
-      timeout = args[-1]
-      args = args[0...-1]
-    end
+    seen = false
     args.each do |x|
-      case x
-      when Integer
-        if events.zero? && !int_form && !x.between?(0, 7)
-          timeout = x           # a lone out-of-range Integer is the timeout, not an events mask
-          next
-        end
-        events |= x
-        int_form = true
-      when Float   then timeout = x
-      when nil     then timeout = nil
-      when Symbol
-        case x
-        when :read, :r, :readable        then events |= READABLE
-        when :write, :w, :writable       then events |= WRITABLE
-        when :read_write, :rw, :readable_writable then events |= (READABLE | WRITABLE)
-        else raise ArgumentError, "unsupported mode: #{x}"
-        end
-      when Numeric then timeout = x
+      if x.is_a?(Symbol)
+        events |= case x
+                  when :read, :r, :readable then READABLE
+                  when :write, :w, :writable then WRITABLE
+                  when :read_write, :rw, :readable_writable then READABLE | WRITABLE
+                  else raise ArgumentError, "unsupported mode: #{x}"
+                  end
+      else
+        raise ArgumentError, "timeout given more than once" if seen
+        raise TypeError, "can't convert #{x.class} into time interval" unless x.is_a?(Numeric)
+        raise ArgumentError, "time interval must not be negative" if x < 0
+        timeout = x
+        seen = true
       end
     end
     events = READABLE if events.zero?
-    r = __io_poll(events, timeout)
-    return nil if r.zero?
-    int_form ? r : self
+    __wait_events(__io_poll(events, timeout), events).zero? ? nil : self
+  end
+  # poll(2) revents → IO::READABLE/WRITABLE/PRIORITY the way CRuby maps them:
+  # HUP counts as readable, and an error readies every requested event.
+  private def __wait_events(revents, events)
+    r = 0
+    r |= READABLE if (revents & 0x19) != 0      # POLLIN | POLLERR | POLLHUP
+    r |= WRITABLE if (revents & 0x0c) != 0      # POLLOUT | POLLERR
+    r |= PRIORITY if (revents & 0x02) != 0      # POLLPRI
+    r |= events if (revents & 0x28) != 0        # POLLERR | POLLNVAL
+    r
   end
 end
 
