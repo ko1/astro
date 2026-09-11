@@ -37,6 +37,13 @@ static RESULT korb_m_zlib_crc_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(VALUE_REF_GET(arr));
 }
 
+/* ARO_BORROW: point a stack z_stream's input at a String's movable bytes.  The
+ * borrow dies at the next allocation, so the caller finishes zlib (End) first. */
+ARO_BORROW static void korb_z_bind_in(z_stream *const zs, const KorbString *const ks) {
+    zs->next_in  = (Bytef *)korb_strbuf_data(ks->buf);
+    zs->avail_in = ks->len;
+}
+
 /* __zlib_deflate(str, level, window_bits) → the compressed String.
  * window_bits picks the wrapper: 15 = zlib, -15 = raw, 31 = gzip. */
 static RESULT korb_m_zlib_deflate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -53,8 +60,7 @@ static RESULT korb_m_zlib_deflate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     const uLong cap = deflateBound(&zs, ks->len) + 64;
     char *const out = malloc(cap ? cap : 1);
     if (!out) { deflateEnd(&zs); abort(); }
-    zs.next_in = (Bytef *)korb_strbuf_data(ks->buf);
-    zs.avail_in = ks->len;
+    korb_z_bind_in(&zs, ks);
     zs.next_out = (Bytef *)out;
     zs.avail_out = (uInt)cap;
     const int rc = deflate(&zs, Z_FINISH);
@@ -79,8 +85,7 @@ static RESULT korb_m_zlib_inflate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     z_stream zs; memset(&zs, 0, sizeof zs);
     if (inflateInit2(&zs, wbits) != Z_OK)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "inflateInit2 failed");
-    zs.next_in = (Bytef *)korb_strbuf_data(ks->buf);
-    zs.avail_in = ks->len;
+    korb_z_bind_in(&zs, ks);
     size_t cap = ks->len * 4 + 256, len = 0;
     char *out = malloc(cap);
     if (!out) { inflateEnd(&zs); abort(); }
@@ -171,20 +176,16 @@ static RESULT korb_m_zstream_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const VALUE sv = VALUE_SLICE_GET(a, 1);
     const int flush = (int)FIX2LONG(VALUE_SLICE_GET(a, 2));
     const KorbString *const ks = (sv == KORB_NIL) ? NULL : VAL2STR(sv);
-    /* zlib only reads the input while we call it, and korb_str_new below is the
-     * only allocation - done after the whole transform. */
-    const char *in = ks ? korb_strbuf_data(ks->buf) : "";
-    size_t inlen = ks ? ks->len : 0;
-    char *joined = NULL;                              /* leftover from a Z_NEED_DICT stop comes first */
-    if (z->pending_len) {
-        joined = malloc(z->pending_len + inlen + 1);
-        if (!joined) abort();
-        memcpy(joined, z->pending, z->pending_len);
-        if (inlen) memcpy(joined + z->pending_len, in, inlen);
-        in = joined; inlen += z->pending_len;
-        free(z->pending); z->pending = NULL; z->pending_len = 0;
-    }
-    z->zs.next_in  = (Bytef *)(uintptr_t)in;
+    /* z lives in the process-wide table, so a next_in into the String would
+     * outlive this call under the moving GC: stage the input in libc memory,
+     * behind any leftover from a Z_NEED_DICT stop. */
+    const size_t inlen = z->pending_len + (ks ? ks->len : 0);
+    char *const in = malloc(inlen + 1);
+    if (!in) abort();
+    if (z->pending_len) memcpy(in, z->pending, z->pending_len);
+    if (ks && ks->len) memcpy(in + z->pending_len, korb_strbuf_data(ks->buf), ks->len);
+    free(z->pending); z->pending = NULL; z->pending_len = 0;
+    z->zs.next_in  = (Bytef *)in;
     z->zs.avail_in = (uInt)inlen;
     size_t cap = inlen * 4 + 4096, len = 0;
     char *out = malloc(cap);
@@ -209,11 +210,11 @@ static RESULT korb_m_zstream_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             if (!z->pending) abort();
             memcpy(z->pending, z->zs.next_in, z->pending_len);
         }
-        free(joined);
+        free(in);
         const int kind = (rc == Z_DATA_ERROR) ? 1 : (rc == Z_NEED_DICT ? 2 : 0);
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "zlib inflate error %d", kind);
     }
-    free(joined);
+    free(in);
     const RESULT r = korb_str_new(c, slots, out, (uint32_t)len);
     free(out);
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
