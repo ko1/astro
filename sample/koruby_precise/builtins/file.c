@@ -752,7 +752,7 @@ static bool kfnm_match(const char *p, uint32_t plen, const char *s, uint32_t sle
 }
 static RESULT korb_m_file_fnmatch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2))
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2 || VALUE_SLICE_LEN(a) > 3))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2..3)", VALUE_SLICE_LEN(a));
     for (int i = 0; i < 2; i++) {                      /* #to_path / #to_str coercion */
         VALUE v = VALUE_SLICE_GET(a, i);
@@ -801,11 +801,23 @@ static RESULT korb_m_file_fnmatch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 /* stat-based File predicates.  The path pointer is used before any allocation,
  * so it stays valid (no moving-GC hazard). */
 static RESULT korb_m_file_stat_pred(CTX *c, VALUE *slots, VALUE_SLICE a, int kind) {
-    VALUE pv;
-    KORB_PATH_ARG(c, slots, a, 0, pv);
-    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    VALUE pv = VALUE_SLICE_GET(a, 0);
     struct stat st;
-    if (stat(path, &st) != 0) return RESULT_OK(kind == 3 ? KORB_NIL : KORB_FALSE);
+    const uint32_t to_io = korb_intern(c->vm, "to_io", 5);
+    if (!KORB_STRING_P(pv) && KORB_OBJECT_P(pv) && korb_responds_to(c, pv, to_io)) {
+        slots[0] = pv;                                   /* an IO-like: #to_io, then fstat its #fileno */
+        const RESULT ir = korb_send_impl(c, slots + 1, to_io, 0, 0, NULL, NULL, NULL);
+        if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+        slots[0] = ir.value;
+        const RESULT fr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "fileno", 6), 0, 0, NULL, NULL, NULL);
+        if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+        if (!FIXNUM_P(fr.value) || fstat((int)FIX2LONG(fr.value), &st) != 0)
+            return RESULT_OK(kind == 3 ? KORB_NIL : KORB_FALSE);
+    } else {
+        KORB_PATH_ARG(c, slots, a, 0, pv);
+        uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+        if (stat(path, &st) != 0) return RESULT_OK(kind == 3 ? KORB_NIL : KORB_FALSE);
+    }
     switch (kind) {
       case 0: return RESULT_OK(KORB_TRUE);                                  /* exist? */
       case 1: return RESULT_OK(S_ISREG(st.st_mode) ? KORB_TRUE : KORB_FALSE);/* file? */
@@ -1171,6 +1183,23 @@ static RESULT korb_io_int_arg(CTX *c, VALUE *slots, VALUE v, bool *given, korb_s
 }
 
 /* IO.read(path[, length[, offset]], **opts) → the file (or a slice) as a String. */
+/* The index of Encoding.default_external, or -1 when it is UTF-8 (the
+ * default tag) or cannot be resolved. */
+static int korb_file_default_ext_enc(CTX *c, VALUE *slots) {
+    slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
+    if (!KORB_CLASS_P(slots[0])) return -1;
+    const RESULT er = korb_send(c, slots + 1, korb_intern(c->vm, "default_external", 16), 0, 0);
+    if (er.state != KORB_NORMAL || !KORB_OBJECT_P(er.value)) return -1;
+    slots[0] = er.value;
+    const RESULT nr = korb_send(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0);
+    if (nr.state != KORB_NORMAL || !KORB_STRING_P(nr.value)) return -1;
+    uint32_t n; const char *const nm = korb_str_cstr_len(nr.value, &n);
+    char name[64];
+    snprintf(name, sizeof name, "%.*s", (int)(n < 63 ? n : 63), nm);
+    const uint32_t ix = korb_enc_index_pub(c->vm, name);
+    return (ix == UINT32_MAX || ix == KORB_ENC_UTF8) ? -1 : (int)ix;
+}
+
 static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     uint32_t na = VALUE_SLICE_LEN(a);
@@ -1217,6 +1246,7 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (!buf) return korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "out of memory reading %s", path);
     const char *data = buf;
     int enc = oa.enc;
+    if (enc < 0) enc = korb_file_default_ext_enc(c, slots + 1);   /* Encoding.default_external (CRuby) */
     if (oa.bom) {                                        /* "r:BOM|enc": the mark decides and is dropped */
         uint32_t blen = 0;
         const char *const bname = korb_io_bom_at(buf, (uint32_t)len, &blen);
@@ -1440,6 +1470,8 @@ static RESULT korb_m_file_rename(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 
 static RESULT korb_m_file_binread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2)) && FIX2LONG(VALUE_SLICE_GET(a, 2)) < 0)
+        return korb_raise_errno(c, slots, EINVAL, "rb_io_seek", "");   /* binread seeks, it does not validate */
     RESULT r = korb_m_file_read(c, slots, self, a);
     if (LIKELY(r.state == KORB_NORMAL) && KORB_STRING_P(r.value)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
     return r;
@@ -1721,7 +1753,13 @@ static RESULT korb_m_stat_owned_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 /* #grpowned? — the file's group is one of the process's (effective gid here). */
 static RESULT korb_m_stat_grouped_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__gid") == (korb_sword_t)getegid() ? KORB_TRUE : KORB_FALSE);
+    (void)slots; (void)a;
+    const gid_t gid = (gid_t)korb_stat_field(c, VALUE_REF_GET(self), "@__gid");
+    if (gid == getegid()) return RESULT_OK(KORB_TRUE);
+    gid_t groups[256];                                   /* supplementary groups (CRuby's rb_group_member) */
+    const int n = getgroups((int)(sizeof groups / sizeof groups[0]), groups);
+    for (int i = 0; i < n; i++) if (groups[i] == gid) return RESULT_OK(KORB_TRUE);
+    return RESULT_OK(KORB_FALSE);
 }
 /* Permission predicates.  CRuby answers them from the cached stat fields, not
  * from access(2): pick the owner / group / other triad by comparing the file's
@@ -1776,9 +1814,12 @@ STAT_DEVPART_M(korb_m_stat_rdev_minor, "@__rdev", minor)
 static RESULT korb_birthtime_of(CTX *c, VALUE *slots, const char *path) {
 #if defined(__linux__) && defined(STATX_BTIME)
     struct statx stx;
-    if (statx(AT_FDCWD, path, 0, STATX_BTIME, &stx) == 0 && (stx.stx_mask & STATX_BTIME))
-        return korb_time_make(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)),
-                              (double)stx.stx_btime.tv_sec + (double)stx.stx_btime.tv_nsec / 1e9, false);
+    if (statx(AT_FDCWD, path, 0, STATX_BTIME, &stx) == 0) {
+        if (stx.stx_mask & STATX_BTIME)
+            return korb_time_make(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)),
+                                  (double)stx.stx_btime.tv_sec + (double)stx.stx_btime.tv_nsec / 1e9, false);
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "birthtime is unimplemented on this filesystem");
+    }
 #else
     (void)path;
 #endif
@@ -2031,7 +2072,12 @@ static RESULT korb_m_dir_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
     char pbuf[4096]; size_t pl = strlen(path); if (pl >= sizeof pbuf) pl = sizeof pbuf - 1;
     memcpy(pbuf, path, pl); pbuf[pl] = '\0';                     /* path is a movable interior ptr */
-    return korb_dir_fill(c, slots, self, pbuf, (uint32_t)pl, denc);
+    CHECK(korb_dir_fill(c, slots, self, pbuf, (uint32_t)pl, denc));
+    if (KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {                  /* #to_path answers in the argument's encoding */
+        const VALUE pv = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_dir_path_id(c)));
+        if (KORB_STRING_P(pv)) KORB_STR_ENC_SET(pv, KORB_STR_ENC(VALUE_SLICE_GET(a, 0)));
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 /* Dir.new(path) / Dir.open(path) [ { |dir| } ] */
 static RESULT korb_m_dir_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
@@ -2047,6 +2093,10 @@ static RESULT korb_m_dir_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     memcpy(pbuf, path, pl); pbuf[pl] = '\0';                     /* path is a movable interior ptr */
     slots[0] = UNWRAP(korb_dir_make(c, slots, pbuf, (uint32_t)pl, denc));
     VALUE_REF dir = VALUE_REF_AT(&slots[0]);
+    if (KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {                  /* #to_path answers in the argument's encoding */
+        const VALUE pv = korb_ivar_get(c, VALUE_REF_GET(dir), ID2SYM(korb_dir_path_id(c)));
+        if (KORB_STRING_P(pv)) KORB_STR_ENC_SET(pv, KORB_STR_ENC(VALUE_SLICE_GET(a, 0)));
+    }
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(dir));
     slots[1] = VALUE_REF_GET(dir);                               /* Dir.open(block) → block value, dir closed after */
     RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
@@ -2502,7 +2552,8 @@ static RESULT korb_m_dir_chdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (block == NULL) return RESULT_OK(LONG2FIX(0));
     slots[0] = VALUE_SLICE_GET(a, 0);   /* block arg = the path String itself (no re-alloc — str_new from the arg's interior would use a moved pointer) */
     RESULT br = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
-    if (old[0]) { int rc = chdir(old); (void)rc; }
+    if (old[0] && chdir(old) != 0 && br.state == KORB_NORMAL)
+        return korb_raise_errno(c, slots + 1, errno, "chdir", old);
     return br;
 }
 

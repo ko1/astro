@@ -226,8 +226,43 @@ class IO
     begin
       yield io
     ensure
-      io.close unless io.closed?
+      begin
+        io.close unless io.closed?
+      rescue IOError => e
+        raise unless e.message == "closed stream"
+      end
     end
+  end
+
+  # IO.select: an element that is not an IO must answer #to_io with one; the
+  # result names the objects as given.
+  class << self
+    alias_method :__select_raw, :select
+    private :__select_raw
+    def select(reads, writes = nil, excepts = nil, timeout = nil)
+      sets = [reads, writes, excepts].map { |set|
+        next nil if set.nil?
+        raise TypeError, "wrong argument type #{set.class} (expected Array)" unless set.is_a?(Array)
+        set.map { |o|
+          next [o, o] if o.is_a?(IO)
+          raise TypeError, "can't convert #{o.class} into IO" unless o.respond_to?(:to_io)
+          io = o.to_io
+          raise TypeError, "can't convert #{o.class} to IO (#{o.class}#to_io gives #{io.class})" unless io.is_a?(IO)
+          [o, io]
+        }
+      }
+      r = __select_raw(*sets.map { |set| set&.map(&:last) }, timeout)
+      return r if r.nil?
+      r.each_with_index.map { |ready, i| ready.map { |io| sets[i].find { |pair| pair[1].equal?(io) }[0] } }
+    end
+  end
+
+  # An each_char Enumerator has no size; a closed stream raises when iterated.
+  alias_method :__each_char_raw, :each_char
+  private :__each_char_raw
+  def each_char(&blk)
+    return to_enum(:each_char) { nil } unless blk
+    __each_char_raw(&blk)
   end
 end
 
@@ -378,14 +413,19 @@ class IO
           want = chunk if want > chunk
           break if want <= 0
           data = nil
-          if partial
-            begin
-              data = src_io.readpartial(want)
-            rescue EOFError
-              break
+          begin
+            if partial
+              begin
+                data = src_io.readpartial(want, +"")   # CRuby passes a buffer: (size, buf)
+              rescue EOFError
+                break
+              end
+            else
+              data = src_io.read(want, +"")
             end
-          else
-            data = src_io.read(want)
+          rescue Errno::EBADF
+            raise IOError, "not opened for reading" if src_io.is_a?(IO)
+            raise
           end
           break if data.nil? || data.empty?
           dst_io.write(data)
@@ -421,7 +461,9 @@ class IO
 
   # → [io, opened_here?].  path (String / #to_path) のときだけ open する。
   def self.__cs_io(obj, mode)
-    return [obj, false] if obj.respond_to?(mode == "rb" ? :read : :write) && !obj.is_a?(String)
+    if !obj.is_a?(String) && (mode == "rb" ? (obj.respond_to?(:readpartial) || obj.respond_to?(:read)) : obj.respond_to?(:write))
+      return [obj, false]
+    end
     path = obj
     unless path.is_a?(String)
       path = obj.to_path if obj.respond_to?(:to_path)

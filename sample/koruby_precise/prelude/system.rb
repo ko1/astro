@@ -731,7 +731,15 @@ end
 
 class File
   # NULL / LOCK_* / SEPARATOR* are defined in C (File::Constants / File).
-  def flock(_op); 0; end       # 単一プロセス: no-op が正しい近似
+  # LOCK_NB answers false when the lock is held elsewhere; without it, wait.
+  def flock(op)
+    op = op.to_int unless op.is_a?(Integer)
+    loop do
+      r = __flock_nb(op)
+      return r if r == 0 || (op & File::LOCK_NB) != 0
+      sleep 0.01
+    end
+  end
 
   # File.path(obj) — the path String an object names: #to_path if it has one,
   # else the String itself (#to_str-coerced).  Pathname is built on this.
@@ -787,11 +795,11 @@ class ARGFClass
   def __next_file
     if @argv.empty?
       return false if @opened_any            # ARGV exhausted (or stdin already used)
-      @current = STDIN
+      @current = $stdin
       @current_name = "-"
     else
       @current_name = @argv.shift.to_s
-      @current = @current_name == "-" ? STDIN : File.open(@current_name, @binmode ? "rb" : "r")
+      @current = @current_name == "-" ? $stdin : File.open(@current_name, @binmode ? "rb" : "r")
     end
     @opened_any = true
     @advance = false
@@ -809,12 +817,14 @@ class ARGFClass
 
   # The IO to read from, skipping over files already at EOF; nil when the whole
   # stream is exhausted.
-  def __stream
+  # `probe`: skip a file already at EOF by asking #eof? — which parks on an
+  # empty pipe, so the non-blocking readers pass false and let the read decide.
+  def __stream(probe = true)
     loop do
       if @current.nil? || @advance
         return nil unless __next_file
       end
-      return @current unless @current.closed? || @current.eof?
+      return @current unless @current.closed? || (probe && @current.eof?)
       __finish_current
     end
   end
@@ -938,11 +948,13 @@ class ARGFClass
 
   def read(length = nil, buffer = nil)
     if length.nil?
-      res = +""
+      res = nil                              # the first chunk sets the encoding
       while (io = __stream)
-        res << io.read.to_s
+        s = io.read.to_s
+        res = res ? res << s : s
         __finish_current
       end
+      res ||= "".dup.force_encoding(@binmode ? Encoding::BINARY : Encoding.default_external)
       return buffer.replace(res) if buffer
       return res
     end
@@ -970,7 +982,7 @@ class ARGFClass
   # is exhausted.
   def __partial(meth, maxlen, buffer, **kw)
     had = @current
-    io = __stream
+    io = __stream(false)
     raise EOFError, "end of file reached" if io.nil?
     # __stream silently skips a file that is already at EOF; that seam is what
     # the caller must see as one empty read before the next file's bytes.
@@ -979,7 +991,7 @@ class ARGFClass
       buffer ? io.send(meth, maxlen, buffer, **kw) : io.send(meth, maxlen, **kw)
     rescue EOFError
       __finish_current
-      raise EOFError, "end of file reached" if __stream.nil?
+      raise EOFError, "end of file reached" if __stream(false).nil?
       buffer ? buffer.replace("") : ""
     end
   end
@@ -1069,6 +1081,7 @@ class << ARGFClass
   alias_method :inspect, :name
 end
 ARGF = ARGFClass.new(*ARGV)
+ARGF.instance_variable_set(:@argv, ARGV)    # ARGF.argv IS ARGV (CRuby)
 __set_gvar("$<", ARGF)   # the default input stream (read-only for user code)
 __set_gvar("$*", ARGV)   # $* is ARGV
 $> = $stdout       # the default output stream ($DEFAULT_OUTPUT)
@@ -1647,7 +1660,8 @@ class File
     def setuid?(path)    = __process_test("u".ord, File.path(path), nil)
     def setgid?(path)    = __process_test("g".ord, File.path(path), nil)
     def owned?(path)     = __process_test("o".ord, File.path(path), nil)
-    def grpowned?(path)  = __process_test("G".ord, File.path(path), nil)
+    # any of the process's groups (File::Stat#grpowned? knows the supplementary ones)
+    def grpowned?(path)  = (File.stat(File.path(path)).grpowned? rescue false)
     # The _real? family uses real (not effective) ids; with no setuid in play
     # access(2) already answers with the real ids' rights on this runtime.
     def readable_real?(path)   = __process_test("r".ord, File.path(path), nil)
@@ -1752,8 +1766,16 @@ class Dir
     self
   end
 
-  # CRuby 3.3+: Dir#chdir — change into this directory.
-  def chdir(&blk) = Dir.chdir(path, &blk)
+  alias_method :__each_raw, :each
+  private :__each_raw
+  def each(&blk)
+    return to_enum(:each) { nil } unless blk
+    __each_raw(&blk)
+  end
+
+  # CRuby 3.3+: Dir#chdir — change into this directory by its descriptor; the
+  # block form returns to where it was even if that path no longer exists.
+  def chdir(&blk) = Dir.fchdir(fileno, &blk)
 
   # dirfd(3) equivalent: an fd opened on the directory, created lazily and
   # owned by this Dir (closed with GC; koruby Dir has no explicit close of it).

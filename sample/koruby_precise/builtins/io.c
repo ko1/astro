@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <sys/file.h>
 /* koruby_precise — io.c: the IO/File object layer, driven straight from a file
  * descriptor.  An IO/File instance stores its slot index (into vm->io_reps) in
  * the @__io_fp ivar; the rep itself is a raw C pointer kept off-heap, so no GC
@@ -173,9 +174,10 @@ static bool korb_io_flush_rep_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESU
                 }
                 continue;
             }
-            /* Drop what could not be written: retrying it on the next flush
-               would emit bytes out of order behind the caller's back. */
-            rep->wlen = 0;
+            /* A vanished reader keeps the bytes: nothing can ever be emitted
+               out of order, and #close must still report the EPIPE (CRuby).
+               Any other failure drops them, or a retry would reorder output. */
+            if (errno != EPIPE) rep->wlen = 0;
             return false;
         }
         off += (uint32_t)w;
@@ -313,8 +315,10 @@ static RESULT korb_io_wr_checked(CTX *c, VALUE *slots, KorbIORep *const rep, con
     /* Only EPIPE (a vanished reader) and EMSGSIZE (an oversized datagram):    \
        a write that fails for any other reason has always been silent          \
        here, and turning those into raises changes unrelated paths. */          \
-    if (UNLIKELY(!wok__ && (errno == EPIPE || errno == EMSGSIZE)))              \
+    if (UNLIKELY(!wok__ && (errno == EPIPE || errno == EMSGSIZE))) {            \
+        (rep_)->wlen = 0;    /* a direct write keeps nothing; only #flush's buffered bytes stay */ \
         return korb_raise_errno((c_), (slots_), errno, "write", "");           \
+    }                                                                          \
 } while (0)
 
 /* Push bytes back so the next read returns them.  Unlike a FILE*'s one-byte
@@ -1163,7 +1167,10 @@ static RESULT korb_m_io_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             /* A popen'd stream needs pclose so the child is reaped; keep its
                exit status for $? the way IO.popen's caller expects. */
             const VALUE pidv = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__io_pid", 9)));
+            errno = 0;
+            const bool epipe = !korb_io_flush_rep(rep) && errno == EPIPE;   /* pending bytes, reader gone */
             korb_io_close_rep(rep);
+            if (epipe) return korb_raise_errno(c, slots, EPIPE, "write", "");
             if (FIXNUM_P(pidv)) {          /* popen'd: reap the child and publish $? */
                 int raw = 0;
                 const pid_t got = waitpid((pid_t)FIX2LONG(pidv), &raw, 0);
@@ -1190,7 +1197,9 @@ static RESULT korb_m_io_flush(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     (void)a;
     KORB_IO_NEED_OPEN(c, slots, self);
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    if (rep) (void)korb_io_flush_rep(rep);
+    errno = 0;
+    if (rep && !korb_io_flush_rep(rep) && errno == EPIPE)   /* a vanished reader, like KORB_IO_WR */
+        return korb_raise_errno(c, slots, EPIPE, "write", "");
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_io_eof_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1757,8 +1766,8 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         CHECK(korb_ivar_set(c, slots + 2, self, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)), slots[1]));
         return RESULT_OK(VALUE_REF_GET(self));
     }
-    if (UNLIKELY(was_closed)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    /* Not a path: an IO, or anything that converts to one via #to_io. */
+    /* Not a path: an IO, or anything that converts to one via #to_io.  The
+       conversion runs even on a closed receiver — CRuby asks first, then raises. */
     if (!KORB_OBJECT_P(slots[0]) || korb_io_rep(c, slots[0]) == NULL) {
         const uint32_t to_io = korb_intern(c->vm, "to_io", 5);
         char cls[192];                                            /* the class name, captured before dispatch */
@@ -1774,6 +1783,7 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s to IO (%s#to_io gives %s)",
                               cls, cls, korb_type_name(slots[0]));
     }
+    if (UNLIKELY(was_closed)) return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "closed stream");
     KorbIORep *const other = korb_io_rep(c, slots[0]);
     if (UNLIKELY(!korb_io_open_p(other))) return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "closed stream");
     (void)korb_io_flush_rep(other);
@@ -1989,8 +1999,7 @@ static RESULT korb_m_io_sysread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         KORB_CHECK_FROZEN(c, slots + 2, VALUE_REF_GET(bref));
         KorbString *const dst = korb_str_ensure(c, slots + 2, bref, (uint32_t)r);   /* may move slots[0] */
         memcpy(korb_strbuf_data(dst->buf), korb_strbuf_data(VAL2STR(slots[0])->buf), (size_t)r);
-        dst->len = (uint32_t)r; korb_strbuf_data(dst->buf)[r] = '\0';
-        KORB_STR_ENC_SET(VALUE_REF_GET(bref), KORB_ENC_BINARY);
+        dst->len = (uint32_t)r; korb_strbuf_data(dst->buf)[r] = '\0';   /* the buffer keeps its encoding (CRuby) */
         return RESULT_OK(VALUE_REF_GET(bref));
     }
     return RESULT_OK(slots[0]);
@@ -2152,6 +2161,19 @@ static RESULT korb_io_exception_opt(CTX *c, VALUE *slots, VALUE h, bool *exc) {
     *exc = v == KORB_TRUE;
     return RESULT_OK(KORB_NIL);
 }
+/* IO#__flock_nb(op) → 0, or false when the lock is held elsewhere.  Always
+ * LOCK_NB: the blocking form is a retry loop in the prelude (File#flock), so
+ * the scheduler keeps running. */
+static RESULT korb_m_io_flock_nb(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    korb_sword_t op;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &op));
+    if (flock(rep->fd, (int)op | LOCK_NB) == 0) return RESULT_OK(LONG2FIX(0));
+    if (errno == EWOULDBLOCK || errno == EAGAIN) return RESULT_OK(KORB_FALSE);
+    return korb_raise_errno(c, slots, errno, "flock", "");
+}
+
 /* IO#read_nonblock(maxlen[, buf][, exception: true]) — never parks: EAGAIN
  * surfaces as IO::EAGAINWaitReadable (or :wait_readable). */
 static RESULT korb_m_io_read_nonblock(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -2262,12 +2284,17 @@ static RESULT korb_m_io_pread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         r = pread(rep->fd, korb_strbuf_data(sb->buf), (size_t)want, (off_t)off);
     } while (r < 0 && errno == EINTR);
     if (r < 0) return korb_raise_errno(c, slots + 1, errno, "pread", "");
-    if (r == 0 && want > 0) return korb_io_raise_eof(c, slots + 1);
+    /* re-read the buffer argument: the alloc above may have moved it */
+    const VALUE bufv2 = VALUE_SLICE_LEN(a) >= 3 ? VALUE_SLICE_GET(a, 2) : KORB_NIL;
+    if (r == 0 && want > 0) {                 /* EOF: the caller's buffer is emptied first (CRuby) */
+        if (KORB_STRING_P(bufv2)) korb_io_clear_buf(bufv2);
+        return korb_io_raise_eof(c, slots + 1);
+    }
     { KorbString *const s = VAL2STR(slots[0]);
       s->len = (uint32_t)r;
       korb_strbuf_data(s->buf)[r] = '\0'; }
-    if (bufv == KORB_NIL) return RESULT_OK(slots[0]);
-    slots[1] = bufv;                                              /* replace into the caller's buffer, keeping its encoding */
+    if (bufv2 == KORB_NIL) return RESULT_OK(slots[0]);
+    slots[1] = bufv2;                                             /* replace into the caller's buffer, keeping its encoding */
     if (UNLIKELY(!KORB_STRING_P(slots[1]))) {                     /* a buffer may be any #to_str object */
         const char *const cls = korb_coerce_name(c, slots[1]);
         const RESULT cr = korb_coerce_to_str(c, slots + 2, &slots[1]);
@@ -2547,11 +2574,37 @@ static mode_t korb_file_perm_val(CTX *const c, const VALUE_SLICE a, const uint32
     const VALUE pv = korb_items_data(VAL2HASH(h)->items)[2 * pi + 1];
     return FIXNUM_P(pv) ? (mode_t)FIX2LONG(pv) : 0666;
 }
+/* The block form of File.open: yield the stream, then ensure-close it via the
+ * object's #close (so a subclass override runs and is observable).  The block
+ * value is the return, but a close error propagates when the block itself
+ * succeeded (CRuby's ensure semantics); the "closed stream" IOError from a
+ * block that closed the stream itself is swallowed. */
+static RESULT korb_file_open_yield(CTX *c, VALUE *slots, VALUE_REF io,
+                                   struct Node *block, VALUE *def_env, VALUE *captured_self) {
+    slots[1] = VALUE_REF_GET(io);
+    RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
+    slots[1] = br.value;                      /* root the block's value/exception across close's GC */
+    slots[2] = VALUE_REF_GET(io);             /* receiver for #close */
+    RESULT cr = korb_send(c, slots + 3, korb_intern(c->vm, "close", 5), 0, 0);
+    if (br.state != KORB_NORMAL) { br.value = slots[1]; return br; }   /* block error wins (re-read moved value) */
+    if (cr.state != KORB_NORMAL) {
+        if (cr.state == KORB_RAISE && KORB_EXC_P(cr.value) && VAL2EXC(cr.value)->etype == KORB_E_IOERROR)
+            return RESULT_OK(slots[1]);
+        return cr;                            /* else a genuine close error propagates */
+    }
+    return RESULT_OK(slots[1]);               /* success → the block's (possibly moved) value */
+}
+
 static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                struct Node *block, VALUE *def_env, VALUE *captured_self) {
     VALUE pv = VALUE_SLICE_GET(a, 0);
-    /* File.new(fd[, mode]) wraps an existing descriptor, exactly like IO.new. */
-    if (FIXNUM_P(pv)) return korb_m_io_s_new_fd(c, slots, self, a, NULL, NULL, NULL);
+    /* File.open(fd[, mode]) wraps an existing descriptor, exactly like IO.new. */
+    if (FIXNUM_P(pv)) {
+        const RESULT nr = korb_m_io_s_new_fd(c, slots, self, a, NULL, NULL, NULL);
+        if (block == NULL || nr.state != KORB_NORMAL) return nr;
+        slots[0] = nr.value;
+        return korb_file_open_yield(c, slots + 1, VALUE_REF_AT(&slots[0]), block, def_env, captured_self);
+    }
     CHECK(korb_file_path_arg(c, slots, &pv));              /* #to_path then #to_str; also the encoding check */
     slots[0] = pv;                                         /* root the coerced path */
     VALUE_REF_SET(VALUE_SLICE_REF(a, 0), pv);              /* #path reports the coerced String, not the wrapper */
@@ -2634,23 +2687,21 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         CHECK(korb_send(c, slots + 3, korb_intern(c->vm, "__apply_open_opts", 17), 0, 1));
     }
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(io));
-    slots[1] = VALUE_REF_GET(io);
-    RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
-    /* ensure close via the object's #close (so a subclass override runs and is
-     * observable); the block value is the return, but a close error propagates
-     * when the block itself succeeded (CRuby's ensure semantics). */
-    slots[1] = br.value;                      /* root the block's value/exception across close's GC */
-    slots[2] = VALUE_REF_GET(io);             /* receiver for #close */
-    RESULT cr = korb_send(c, slots + 3, korb_intern(c->vm, "close", 5), 0, 0);
-    if (br.state != KORB_NORMAL) { br.value = slots[1]; return br; }   /* block error wins (re-read moved value) */
-    if (cr.state != KORB_NORMAL) {
-        /* the block may have closed the stream itself; CRuby swallows the
-         * resulting "closed stream" IOError from the ensure-close */
-        if (cr.state == KORB_RAISE && KORB_EXC_P(cr.value) && VAL2EXC(cr.value)->etype == KORB_E_IOERROR)
-            return RESULT_OK(slots[1]);
-        return cr;                            /* else a genuine close error propagates */
+    return korb_file_open_yield(c, slots, io, block, def_env, captured_self);
+}
+
+/* File.new: like File.open, but a block is ignored with CRuby's warning. */
+static RESULT korb_m_file_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                              struct Node *block, VALUE *def_env, VALUE *captured_self) {
+    (void)def_env; (void)captured_self;
+    if (UNLIKELY(block != NULL)) {
+        char cls[192] = "File";                        /* the receiver is the class itself */
+        if (KORB_CLASS_P(VALUE_REF_GET(self))) korb_class_qname_into(c, VALUE_REF_GET(self), cls, sizeof cls);
+        char msg[256];
+        snprintf(msg, sizeof msg, "%s::new() does not take block; use %s::open() instead", cls, cls);
+        korb_warn(c, slots, msg);
     }
-    return RESULT_OK(slots[1]);               /* success → the block's (possibly moved) value */
+    return korb_m_file_open(c, slots, self, a, NULL, NULL, NULL);
 }
 
 void korb_init_io(CTX *c, VALUE *slots) {
@@ -2706,6 +2757,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("pread", pread, -1);         IOM("pwrite", pwrite, -1);
     IOM("readpartial", readpartial, -1);
     IOM("read_nonblock", read_nonblock, -1);
+    IOM("__flock_nb", flock_nb, 1);
     IOM("write_nonblock", write_nonblock, -1);
     IOM("initialize", initialize, -1);
     IOM("lineno", lineno, 0);        IOM("lineno=", lineno_set, 1);
@@ -2754,7 +2806,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
         vm->method_serial++;
         const VALUE fsing = slots[3];
         korb_class_def_cfn_blk(c, fsing, "open", korb_m_file_open, -1);   /* File.open (block) */
-        korb_class_def_cfn_blk(c, fsing, "new", korb_m_file_open, -1);    /* File.new = open, no block-close */
+        korb_class_def_cfn_blk(c, fsing, "new", korb_m_file_new, -1);     /* File.new = open, a block only warns */
     }
     /* $stdout / $stderr / $stdin + STDOUT / STDERR / STDIN — IO objects on the std slots. */
     /* rw: STDIN is read-only, STDOUT/STDERR write-only — CRuby raises IOError

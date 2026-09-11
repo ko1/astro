@@ -129,7 +129,7 @@ class IO
       ensure
         buffer.free
       end
-      backing
+      backing.force_encoding(Encoding::BINARY)
     end
 
     # mmap の代わりにファイル内容のコピーを持つ (書き戻しはしない)。可否判定
@@ -527,8 +527,9 @@ class IO
       set_string(data, offset)
     end
 
+    # A length of 0 (or none) means "to the end of the buffer" (Ruby < 4.1).
     def write(io, length = nil, offset = 0)
-      length ||= @size - offset
+      length = @size - offset if length.nil? || length == 0
       io.write(get_string(offset, length))
     end
 
