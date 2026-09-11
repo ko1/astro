@@ -1365,7 +1365,12 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
     return RESULT_OK(VALUE_REF_GET(result));
 }
 /* Object#*: walk the object's dispatch class (singleton + class + …). */
-static RESULT korb_m_obj_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)           { return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<0)|(1u<<2)); }
+static RESULT korb_m_obj_singleton_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
+static RESULT korb_m_obj_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) >= 1 && !KORB_TRUTHY(VALUE_SLICE_GET(a, 0)))   /* methods(false) → the singleton methods (CRuby) */
+        return korb_m_obj_singleton_methods(c, slots, self, a);
+    return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<0)|(1u<<2));
+}
 static RESULT korb_m_obj_public_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE sv = VALUE_REF_GET(self);
     RESULT r = korb_collect_methods_from(c, slots, korb_dispatch_class(c, sv), a, (1u << 0));

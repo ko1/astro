@@ -586,6 +586,8 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         slots[1] = (VALUE)np;
         CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
         gen_done = true;
+        if (sub && !(KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_singleton))
+            korb_klass_override_set(c, slots[1], slots[0]);   /* a Proc subclass: its own #initialize_dup/clone must see the class */
         /* CRuby calls #initialize_copy(orig) after copying (default no-op; a user override runs). */
         slots[2] = VALUE_REF_GET(self);
         RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
