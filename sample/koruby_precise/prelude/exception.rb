@@ -78,6 +78,17 @@ class Exception
     end
     lines.join("\n") + "\n"
   end
+  # The positions of #backtrace as Location objects.  Memoized because CRuby
+  # hands out the same Array every time (a caller may mutate it in place).
+  def backtrace_locations
+    return @__bt_locs if @__bt_locs
+    raw = __backtrace_locations_raw
+    return @__bt_locs = raw if raw
+    b = backtrace
+    return nil if b.nil?
+    @__bt_locs = b.map { |s| s.is_a?(String) ? Thread::Backtrace::Location.new(s) : s }
+  end
+
   # no arg → self; with a message → a clone with the message replaced (CRuby
   # runs Exception#initialize on the clone, never the subclass's #initialize).
   def exception(*args)
@@ -94,6 +105,64 @@ class Exception
     self.class == other.class && message == other.message && backtrace == other.backtrace
   end
 end
+class Thread
+  class Backtrace
+    # A backtrace position.  koruby builds backtraces as "path:lineno:in 'label'"
+    # strings, so a Location is that string with the three fields split back out.
+    class Location
+      def initialize(str)
+        @str = str
+        i = str.rindex(":in '")
+        if i
+          head = str[0, i]
+          @label = str[(i + 5)..-2]
+        else
+          head = str
+          @label = nil
+        end
+        j = head.rindex(':')
+        if j && head[(j + 1)..-1] =~ /\A\d+\z/
+          @path = head[0, j]
+          @lineno = head[(j + 1)..-1].to_i
+        else
+          @path = head
+          @lineno = 0
+        end
+      end
+      attr_reader :path, :lineno, :label
+
+      # The label without the "block (N levels) in " prefix and the owner it is
+      # qualified by: "block in C#foo" and "C.foo" both give "foo".
+      def base_label
+        l = @label
+        return nil if l.nil?
+        l = l.sub(/\Ablock (\(\d+ levels\) )?in /, '')
+        k = [l.rindex('#'), l.rindex('.')].compact.max
+        k ? l[(k + 1)..-1] : l
+      end
+
+      # nil for a position with no real file behind it (-e, <internal:...>).
+      def absolute_path
+        return nil if @path.nil? || @path.empty? || @path.start_with?('<') || @path == '-e'
+        File.absolute_path(@path)
+      end
+
+      def to_s = @str
+      def inspect = @str.inspect
+    end
+  end
+end
+
+module Kernel
+  # caller() with each position wrapped in a Thread::Backtrace::Location.
+  # __caller_strings drops this frame itself, so the arguments mean what they
+  # would to a caller() written at the call site.
+  private def caller_locations(*args)
+    strs = __caller_strings(*args)
+    strs && strs.map { |s| Thread::Backtrace::Location.new(s) }
+  end
+end
+
 module Warning
   # The categories CRuby knows, each off by default.  An unknown name is an
   # error rather than a silent false, so a typo does not quietly disable.
@@ -128,6 +197,7 @@ module Kernel
   # redefined Warning.warn cannot recurse.
   private def warn(*msgs, uplevel: nil, category: nil)
     return nil if $VERBOSE.nil?
+    prefix = nil
     unless uplevel.nil?
       unless uplevel.is_a?(Integer)
         raise TypeError, "no implicit conversion of #{uplevel.nil? ? 'nil' : uplevel.class} into Integer" unless uplevel.respond_to?(:to_int)
@@ -135,6 +205,12 @@ module Kernel
         raise TypeError, "can't convert to Integer" unless uplevel.is_a?(Integer)
       end
       raise ArgumentError, "negative level (#{uplevel})" if uplevel < 0
+      # uplevel: 0 is the caller of #warn; index 0 of the list is #warn itself.
+      # A level past the bottom of the stack keeps the "warning: " prefix but
+      # names no position (CRuby).
+      loc = caller_locations(uplevel + 1, 1)
+      loc = loc && loc[0]
+      prefix = loc ? "#{loc.path}:#{loc.lineno}: warning: " : "warning: "
     end
     unless category.nil?
       raise TypeError, "no implicit conversion of #{category.class} into Symbol" unless category.respond_to?(:to_sym)
@@ -155,6 +231,7 @@ module Kernel
       end
     end
     msgs.each { |m| append.call(m) }
+    msg = prefix + msg if prefix
     return ($stderr.write(msg) if $stderr) && nil if equal?(Warning)
     # CRuby's rule verbatim: a Warning.warn of arity 1 takes the message alone;
     # anything else is handed the category keyword too.

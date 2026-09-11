@@ -446,6 +446,8 @@ typedef struct KorbFiberRep {
     VALUE *vslots_top;               /* saved scan top while suspended */
     VALUE *vslots_limit;
     VALUE *vslots_hw;                /* saved high-water while suspended */
+    const VALUE *vcfunc_link;        /* saved c->cfunc_link — it points INTO this fiber's own slot
+                                      * stack, so it must travel with it */
     VALUE *def_env;                  /* block's def_env (creator stack, non-moving) */
     struct Node *body;               /* block entry (node_entry, immortal) */
     void  *uctx;                     /* ucontext_t * (fiber's saved context) */
@@ -497,6 +499,9 @@ struct korb_thread {
     struct KorbFiberRep *root_fiber;    /* この thread の root fiber 代役 (Fiber.current / storage; 遅延生成) */
     VALUE int_masks;                 /* handle_interrupt のマスク列 [klass, sym, ..., n] (root; nil まで未使用) */
     uint32_t saved_errinfo_n;        /* $! stack depth (thread-local, like a fiber's) */
+    const VALUE *saved_cfunc_link;   /* c->cfunc_link while suspended: it points into THIS thread's
+                                      * slot stack, so leaving it loaded across a switch would let a
+                                      * backtrace walk into another thread's frames */
     void  *uctx;                     /* ucontext_t* */
     void  *cstack;                   /* malloc native stack (NULL = main/process stack) */
     /* scheduling */
@@ -863,12 +868,34 @@ struct korb_method {
      * takes_block in uses_block.  rbfn used when uses_block, else rfn. */
     korb_method_fn     rfn;
     korb_method_blk_fn rbfn;
+    /* Backtrace memos, both on the unwind path (a raise-heavy program walks the
+     * same frames over and over).  bt_file: the def's source file — resolving it
+     * scans the srcloc table, and a def site never moves.  bt_label: the interned
+     * "Owner#name", rebuilt when an alias or a constant assignment may have
+     * (re)named the owner. */
+    const char *bt_file;
+    const char *bt_label;
+    uint32_t    bt_label_mid;
+    uint64_t    bt_label_serial;
+    uint8_t     bt_file_done;
 };
 
 struct korb_bt_entry {       /* one unwind frame for the uncaught-exception report */
     uint32_t line;
-    const char *name;        /* method name, or "<main>" */
+    const char *name;        /* CRuby 3.4 frame label: "Object#foo" / "C.bar" / "<main>" */
+    const char *file;        /* the frame's source file (NULL = the file being run) */
 };
+
+/* One live Ruby frame, as the backtrace walk reads it back out of the frames
+ * themselves (node.h, "Frame link").  Nothing on the call path maintains a
+ * copy: the walk IS the record. */
+struct korb_frame_rec {
+    const char *file;    /* the frame's source file; NULL = the file being run */
+    const char *label;   /* interned (immortal): "Object#foo", "block in C#bar", "<main>" */
+    uint32_t line;       /* this frame's own position */
+    uint32_t kind;       /* the KORB_FTOP_* tag its frame-top marker carried */
+};
+#define KORB_FSTACK_MAX 4096u      /* backtrace depth cap, like CRuby's */
 
 /* CRuby-compatible MT19937 state (624-word vector + cursor); defined here so the
  * vm can embed the Kernel#rand default generator.  Operations: builtins/random.c. */
@@ -1014,6 +1041,13 @@ struct korb_vm {
      * in RESULT.value) */
     struct korb_bt_entry *bt;
     uint32_t bt_cnt, bt_capa;
+    /* Scratch the frame walk materializes into (one allocation, reused). */
+    struct korb_frame_rec *fscratch;
+    /* Address range of everything a frame-top marker may point at (method
+     * entries and AST nodes — all immortal libc allocations).  A marker outside
+     * it is not one of ours, so the walk stops instead of dereferencing it.
+     * Maintained where methods and nodes are created, never on a call path. */
+    uintptr_t bt_lo, bt_hi;
 
     /* Fiber support: list of all live fibers (suspended ones' value-stacks are
      * GC roots), the currently-running fiber (NULL = main), the main stack's
@@ -1173,6 +1207,20 @@ struct CTX_struct {
      * It is a transient stack pointer: set the instant a return is raised and
      * cleared when consumed; never read across a GC. */
     VALUE *return_target;
+    /* Backtrace only: the frame-link cell of the innermost C method that is
+     * RUNNING A BLOCK (`each`, `instance_exec`, `Proc#call`, ...).  A block
+     * frame it starts has no parse-time link — the C method, not a call node,
+     * placed it — so it copies this one, re-aimed.  Written by the dispatch of
+     * block-taking builtins only (save on entry, restore on return); the call
+     * path proper never touches it.  NULL = unknown → the walk stops there. */
+    const VALUE *cfunc_link;
+    /* Single use: the frame this call comes from, for a dispatch that builds the
+     * callee window itself (korb_send_impl relocates [recv, args]; a splat call
+     * node reserves no header cells) and so cannot be handed a link inside the
+     * window.  carry_top is the caller's frame-top marker cell, carry_line its
+     * position; set immediately before the dispatch, cleared as it is read. */
+    const VALUE *carry_top;
+    uint32_t     carry_line;
     /* The method entry whose define_method body is running, so a `super` inside
      * that body can find the name and owner it was defined under (a block frame
      * carries no method entry).  Saved/restored around the body call. */

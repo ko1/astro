@@ -674,7 +674,7 @@ static RESULT korb_set_visibility1(CTX *c, VALUE *slots, VALUE selfv, KorbClass 
         return ne;
     }
     if (src->visibility == vis) return RESULT_OK(KORB_NIL);     /* same visibility → CRuby does not clone */
-    struct korb_method *dst = korb_class_method_slot(k, mid);   /* libc alloc, no GC */
+    struct korb_method *dst = korb_class_method_slot(c->vm, k, mid);   /* libc alloc, no GC */
     const struct korb_method tmp = *src;                        /* snapshot (slot array may have grown) */
     *dst = tmp; dst->mid = mid; dst->visibility = vis;          /* keep tmp.owner for super */
     slots[0] = selfv;                                           /* the hook is Ruby code: root the class */
@@ -743,9 +743,9 @@ static RESULT korb_m_module_function(CTX *c, VALUE *slots, VALUE_REF self, VALUE
             return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for module '%s'",
                               korb_sym_name(c->vm, mid), korb_type_name(slots[0]));
         const struct korb_method tmp = *src;                  /* snapshot before any slot-array grow */
-        struct korb_method *sm = korb_class_method_slot(VAL2CLASS(slots[1]), mid);   /* singleton = public copy */
+        struct korb_method *sm = korb_class_method_slot(c->vm, VAL2CLASS(slots[1]), mid);   /* singleton = public copy */
         *sm = tmp; sm->mid = mid; sm->owner = slots[1]; sm->visibility = 0;
-        struct korb_method *im = korb_class_method_slot(VAL2CLASS(slots[0]), mid);   /* module instance method = private copy */
+        struct korb_method *im = korb_class_method_slot(c->vm, VAL2CLASS(slots[0]), mid);   /* module instance method = private copy */
         *im = tmp; im->mid = mid; im->owner = slots[0]; im->visibility = 1;
         c->vm->method_serial++;                               /* the hook below is Ruby code */
         CHECK(korb_fire_method_added(c, slots + 3, slots[1], mid));   /* the singleton copy fires #singleton_method_added */
@@ -784,7 +784,7 @@ static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VA
         const struct korb_method *src = korb_class_find_method(slots[0], mid, NULL);
         if (src != NULL) {
             const struct korb_method tmp = *src;           /* snapshot: the slot-array grow may dangle src */
-            struct korb_method *dst = korb_class_method_slot(VAL2CLASS(slots[0]), mid);
+            struct korb_method *dst = korb_class_method_slot(c->vm, VAL2CLASS(slots[0]), mid);
             *dst = tmp; dst->mid = mid; dst->owner = slots[0]; dst->visibility = vis;
             continue;
         }
@@ -1836,7 +1836,7 @@ korb_undef_one(CTX *c, VALUE *slots, VALUE cls, uint32_t mid)
                 return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
                                   korb_sym_name(c->vm, mid), k->is_module ? "module" : "class", cnm); }
         }
-        korb_class_undef_slot(k, cls, mid);
+        korb_class_undef_slot(c->vm, k, cls, mid);
         c->vm->method_serial++;
     }
     slots[0] = cls;                                  /* the hook is Ruby code: re-root the class */
@@ -2883,7 +2883,7 @@ static RESULT korb_bi_refinement_import(CTX *c, VALUE *slots, VALUE_SLICE a)
           for (uint32_t j = 0; j < mk->method_cnt; j++) {   /* no GC below: method slots are libc */
               const struct korb_method tmp = *mk->methods[j];
               struct korb_method *const dst =
-                  korb_class_method_slot(VAL2CLASS(VALUE_REF_GET(rref)), tmp.mid);
+                  korb_class_method_slot(c->vm, VAL2CLASS(VALUE_REF_GET(rref)), tmp.mid);
               *dst = tmp;
               dst->owner = VALUE_REF_GET(rref);
               dst->refine_set = slots[0];         /* the refinement's own scope, built above */

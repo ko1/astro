@@ -189,9 +189,9 @@ static void korb_def_modfunc_vis(CTX *c, VALUE *slots, VALUE modobj, const char 
     const uint32_t mid = korb_intern(c->vm, name, strlen(name));
     slots[0] = modobj;                                         /* root across the singleton/table allocs */
     VALUE sing = korb_obj_singleton(c, slots + 1, slots[0]).value;   /* created once, reused after */
-    struct korb_method *m = korb_class_method_slot(VAL2CLASS(sing), mid);
+    struct korb_method *m = korb_class_method_slot(c->vm, VAL2CLASS(sing), mid);
     m->kind = KORB_METHOD_CFUNC; m->owner = sing; m->params_cnt = arity; m->rfn = fn; m->rbfn = NULL; m->uses_block = 0;
-    struct korb_method *im = korb_class_method_slot(VAL2CLASS(slots[0]), mid);   /* slots[0] = (re-read) Math module */
+    struct korb_method *im = korb_class_method_slot(c->vm, VAL2CLASS(slots[0]), mid);   /* slots[0] = (re-read) Math module */
     im->kind = KORB_METHOD_CFUNC; im->owner = slots[0]; im->params_cnt = arity; im->rfn = fn; im->rbfn = NULL; im->uses_block = 0;
     im->visibility = vis;   /* module_function makes the instance half private; a plain
                              * class method (Random.bytes, Thread.pass, …) does not */

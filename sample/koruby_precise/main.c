@@ -1536,7 +1536,14 @@ main(int argc, char *argv[])
              * smaller frame, so leftovers can sit here and korb_cvar_cref would
              * read one as a tagged method pointer (`class << obj` after ~40
              * top-level locals used to SEGV). */
-            if (koruby_toplevel_locals_cnt > 0) c->slots[koruby_toplevel_locals_cnt - 1] = 0;
+            /* …and the backtrace's bottom frame marker goes there instead: it
+             * names the script and says there is nothing below it (distance 0).
+             * korb_cvar_cref and friends test for the method tag, so this tag
+             * reads as "no method frame" exactly as the zero did. */
+            if (koruby_toplevel_locals_cnt > 0)
+                c->slots[koruby_toplevel_locals_cnt - 1] =
+                    ((VALUE)korb_intern(c->vm, c->vm->script_name ? c->vm->script_name : "?",
+                                        strlen(c->vm->script_name ? c->vm->script_name : "?")) << 32) | KORB_FTOP_MAIN;
         }
         /* TOPLEVEL_BINDING: a Binding over the (persistent) toplevel frame. */
         {

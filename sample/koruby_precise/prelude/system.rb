@@ -30,6 +30,36 @@ class Thread
   def self.exit; current.kill; end        # 明示定義 (無いと explicit-recv quirk で Kernel#exit に落ちる)
   def self.kill(th); th.kill; end
   def group; __group || ThreadGroup::Default; end
+  # The running thread's frames are the ones Kernel#caller walks (__caller_strings
+  # drops this very frame, so the offsets mean what CRuby's do: 0 = the caller of
+  # #backtrace).  Another thread's stack is not reachable from here, so it keeps
+  # the stub answer (nil when dead, else a frame naming what it is blocked in).
+  def backtrace(*args)
+    return __backtrace_other(*args) unless equal?(Thread.current)
+    __bt_current('Thread#backtrace', args)
+  end
+  def backtrace_locations(*args)
+    strs = equal?(Thread.current) ? __bt_current('Thread#backtrace_locations', args)
+                                  : __backtrace_other(*args)
+    strs && strs.map { |s| Thread::Backtrace::Location.new(s) }
+  end
+  # CRuby reports the call to #backtrace itself as position 0: the same place as
+  # the caller's, labelled with the method.  Below it is Kernel#caller's list.
+  # __caller_strings(1) drops both this frame and the #backtrace frame.
+  private def __bt_current(label, args)
+    list = __caller_strings(1)
+    return nil unless list
+    list.unshift(list[0].sub(/:in '.*'\z/, ":in '" + label + "'")) unless list.empty?
+    return list if args.empty?
+    a = args[0]
+    return list[a] if a.is_a?(Range)
+    start = a.to_int
+    raise ArgumentError, "negative level (#{start})" if start < 0
+    return nil if start > list.length
+    len = (args.length >= 2 && !args[1].nil?) ? args[1].to_int : nil
+    raise ArgumentError, "negative size (#{len})" if len && len < 0
+    len ? list[start, len] : list[start..-1]
+  end
   # handle_interrupt: マスク列は C 側 (Thread#__int_mask_push) が持ち、配送点が
   # 「今この例外を配ってよいか」を内側のフレームから順に引く。:on_blocking は
   # blocking な配送点 (blop 待ち・join・Mutex) でだけ配られ、Thread.pass のような

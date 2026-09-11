@@ -50,6 +50,10 @@ class KorubyNodeDef < ASTroGen::NodeDef
     # children are excluded — they never touch the slot area.
     def children_op = @operands.find(&:children?)
 
+    # @framehdr: the node reserves the callee's header cells (and so stores the
+    # frame link itself, from a hole its cursor advance allocates).
+    def framehdr? = @option.include?('@framehdr')
+
     # Same as the base, but the operand-name suffix set also accepts @children
     # (placed before @child so it wins the alternation on "@children").
     def parse_operands(str)
@@ -180,9 +184,14 @@ class KorubyNodeDef < ASTroGen::NodeDef
       framehdr = @option.include?('@framehdr')
       hdr = framehdr ? ' + KORB_FRAME_HDR' : ''
       # The reserved header cells (base[-2..]) sit in the GC-scanned slot range,
-      # so they MUST be zeroed before any arg eval (which can GC) — a stale value
-      # would be misread as a heap pointer.  korb_invoke fills EP/magic later.
-      zero = framehdr ? "\n          for (uint32_t _h = 0; _h < KORB_FRAME_HDR; _h++) slots[-(intptr_t)_cnt - 1 - (intptr_t)_h] = 0;" : ''
+      # so they MUST be filled before any arg eval (which can GC) — a stale value
+      # would be misread as a heap pointer.  korb_invoke fills EP later.
+      # base[-3] takes the frame link (node.h) when the node carries one: same
+      # store as the zero it replaces, so the backtrace chain costs no call-path
+      # instruction.  Nodes without a `flink` operand keep the plain zero.
+      link = @operands.any? { |op| op.name == 'flink' } ? "n->u.#{@name}.flink" : '0'
+      zero = framehdr ? "\n          slots[-(intptr_t)_cnt - 1] = 0;" \
+                        "\n          slots[-(intptr_t)_cnt - 2] = #{link};" : ''
       <<~C
       static __attribute__((no_stack_protector)) #{result_type}
       DISPATCH_#{@name}(#{@prefix_args.join(', ')})
@@ -330,8 +339,27 @@ class KorubyNodeDef < ASTroGen::NodeDef
       # like the interpreted dispatcher (build_children_dispatch) — otherwise the
       # AOT path leaves EP/magic unreserved and corrupts the callee frame.
       adv = if @option.include?('@framehdr')
+              # The frame link is the FIRST hole this SD allocates, so it is
+              # emitted here, before the children's — hole order is allocation
+              # order and the desc table is written from the same accumulator.
+              link_emit = if @operands.any? { |op| op.name == 'flink' }
+                            if pool_mode?
+                              # ONE hole for the link, and ONE materialization:
+                              # each HOLE_* expansion is its own movabs (the
+                              # loader needs it opaque), so the store and the
+                              # EVAL argument share a C local.
+                              'const uint32_t _flink_hole = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, "u.' + @name + '.flink", -1);' + "\n" +
+                              '          fprintf(fp, "    const VALUE _flink = (VALUE)HOLE_U64(%u);\\n", _flink_hole);' + "\n" +
+                              '          fprintf(fp, "    slots[-(intptr_t)%u - 2] = _flink;\\n", _cnt);'
+                            else
+                              'fprintf(fp, "    slots[-(intptr_t)%u - 2] = %uU;\\n", _cnt, n->u.' + @name + '.flink);'
+                            end
+                          else
+                            'fprintf(fp, "    slots[-(intptr_t)%u - 2] = 0;\\n", _cnt);'
+                          end
               'fprintf(fp, "    slots += %u + KORB_FRAME_HDR;\\n", _cnt);' + "\n" +
-              '          fprintf(fp, "    for (uint32_t _h = 0; _h < KORB_FRAME_HDR; _h++) slots[-(intptr_t)%u - 1 - (intptr_t)_h] = 0;\\n", _cnt);'
+              '          fprintf(fp, "    slots[-(intptr_t)%u - 1] = 0;\\n", _cnt);' + "\n" +
+              '          ' + link_emit
             else
               'fprintf(fp, "    slots += %u;\\n", _cnt);'
             end
@@ -600,6 +628,13 @@ class KorubyNodeDef < ASTroGen::NodeDef
       end
 
       def build_specializer(name)
+        # The frame link already has a hole, allocated by the @framehdr cursor
+        # advance that stores it (see build_children_specializer): reuse that
+        # index so the SD materializes the value once, not twice.
+        if self.name == 'flink' && @owner.framehdr?
+          return nil, (pool_mode? ? '    fprintf(fp, "        _flink");'
+                                  : "    fprintf(fp, \"        (VALUE)%lluULL\", (unsigned long long)n->u.#{name}.flink);")
+        end
         # Bare VALUE operand (node_lit): Symbol literals are per-process
         # interned IDs, so baking the raw bits breaks any consumer with a
         # different intern order (--build exes rebuild the AST without

@@ -114,6 +114,7 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     VALUE *const s_slots = c->slots; VALUE *const s_top = c->slots_top;
     VALUE *const s_limit = c->slots_limit; VALUE *const s_hw = c->slots_high_water;
     const char *const s_cstack = c->cstack_limit;
+    const VALUE *const s_cfunc_link = c->cfunc_link;   /* points into the resumer's stack */
     /* While this resumer is suspended, the GC scans its stack up to the recorded
      * top.  Use `slots` (the resume frame's true cursor), not the possibly-lagging
      * c->slots_top (== s_top) — same fix as Fiber.yield.  s_top is still used to
@@ -136,6 +137,7 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     c->slots = rep->vslots; c->slots_top = rep->vslots_top;
     c->slots_limit = rep->vslots_limit; c->slots_high_water = rep->vslots_hw;
     c->cstack_limit = (const char *)rep->cstack + KORB_FIBER_CSTACK_MARGIN;
+    c->cfunc_link = rep->vcfunc_link;                  /* NULL on the first resume: no frames yet */
     korb_re_sync_floor(c);   /* astrogre \g<> guard must use the fiber's stack */
     c->vm->running_fiber = rep;
     /* `$!` is fiber-local: the fiber starts from ITS own errinfo depth, and the
@@ -152,6 +154,7 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     c->vm->running_fiber = prev;
     c->slots = s_slots; c->slots_top = s_top; c->slots_limit = s_limit;
     c->slots_high_water = s_hw; c->cstack_limit = s_cstack;
+    c->cfunc_link = s_cfunc_link;
     korb_re_sync_floor(c);   /* restore the outer stack's floor */
     if (prev == NULL) c->vm->main_slots = NULL;
 
@@ -486,6 +489,7 @@ korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
      * its (unscanned) scratch — the same role c->slots_top plays for the active
      * stack at a korb_alloc-triggered GC. */
     rep->vslots_top = slots; rep->vslots_hw = c->slots_high_water;
+    rep->vcfunc_link = c->cfunc_link;                  /* travels with this fiber's stack */
     swapcontext((ucontext_t *)rep->uctx, (ucontext_t *)rep->resume_uctx);  /* === out === */
     /* === resumed: resume() restored c->slots to ours === */
     rep->fstate = 1;
