@@ -2036,13 +2036,15 @@ class << ENV
     self
   end
 
+  # A value that is neither a String nor #to_str-convertible answers nil (CRuby).
   def value?(v)
     v = __env_value(v) unless v.is_a?(String)
     values.include?(v)
   rescue TypeError
-    false
+    nil
   end
-  def has_value?(v) = value?(v)
+  alias has_value? value?    # a real alias: ENV.method(:has_value?) == ENV.method(:value?)
+  def inspect = to_h.inspect
 end
 
 class << ENV
@@ -2056,7 +2058,11 @@ class << ENV
   # each / each_pair likewise yield an Enumerator when block-less.
   alias __each each
   def each(&b) = b ? __each(&b) : __to_enum_sized(:each)
-  def each_pair(&b) = each(&b)
+  alias each_pair each
+  alias __each_key each_key
+  alias __each_value each_value
+  def each_key(&b) = b ? __each_key(&b) : __to_enum_sized(:each_key)
+  def each_value(&b) = b ? __each_value(&b) : __to_enum_sized(:each_value)
   alias __keep_if keep_if
   alias __delete_if delete_if
   def keep_if(&b) = b ? __keep_if(&b) : __to_enum_sized(:keep_if)
@@ -2074,6 +2080,7 @@ class << ENV
   alias __delete delete
   # ENV.delete calls the block with the name when the variable is absent.
   def delete(name)
+    name = name.to_str if !name.is_a?(String) && name.respond_to?(:to_str)   # coerce once (key? + __delete would ask twice)
     had = key?(name)
     r = __delete(name)
     return yield(name) if !had && block_given?

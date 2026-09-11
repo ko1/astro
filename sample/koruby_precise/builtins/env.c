@@ -48,10 +48,10 @@ static RESULT korb_m_env_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     (void)self;
     RESULT err; const char *name = korb_env_name(c, slots, VALUE_SLICE_GET(a, 0), &err);
     if (!name) return err;
-    if (UNLIKELY(strchr(name, '=') != NULL))
-        return korb_raise_errno(c, slots + 2, EINVAL, "setenv", name);   /* CRuby: Errno::EINVAL */
     const VALUE val = VALUE_SLICE_GET(a, 1);
-    if (val == KORB_NIL) { unsetenv(name); return RESULT_OK(KORB_NIL); }
+    if (val == KORB_NIL) { unsetenv(name); return RESULT_OK(KORB_NIL); }   /* a nil value deletes, even for a bad name (CRuby) */
+    if (UNLIKELY(name[0] == '\0' || strchr(name, '=') != NULL))
+        return korb_raise_errno(c, slots + 2, EINVAL, "setenv", name);   /* CRuby: Errno::EINVAL */
     RESULT verr; const char *const v = korb_env_name_at(c, slots, 1, val, &verr);
     if (!v) return verr;
     name = korb_str_cstr_len(slots[0], &(uint32_t){0});   /* re-borrow: the value coercion may have GC'd */
@@ -75,7 +75,10 @@ static RESULT korb_m_env_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (!name) return err;
     const char *v = getenv(name);
     if (v) return korb_str_new(c, slots, v, (uint32_t)strlen(v));
-    if (block != NULL) { slots[0] = VALUE_SLICE_GET(a, 0); return korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self); }
+    if (block != NULL) {
+        if (VALUE_SLICE_LEN(a) >= 2) korb_warn(c, slots + 1, "block supersedes default value argument");
+        slots[0] = VALUE_SLICE_GET(a, 0); return korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+    }
     if (VALUE_SLICE_LEN(a) >= 2) return RESULT_OK(VALUE_SLICE_GET(a, 1));
     char msg[512]; snprintf(msg, sizeof msg, "key not found: \"%s\"", name);   /* KeyError w/ #receiver = ENV, #key */
     return korb_raise_key(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "ENV", 3)), VALUE_SLICE_GET(a, 0), msg);
@@ -136,7 +139,7 @@ static RESULT korb_m_env_to_h_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
                 if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
                 slots[1] = ar.value;
             }
-            if (UNLIKELY(!KORB_ARRAY_P(slots[1]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong element type %s (expected array)", korb_type_name(r.value));
+            if (UNLIKELY(!KORB_ARRAY_P(slots[1]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong element type %s (expected array)", korb_coerce_name(c, slots[1]));
         }
         if (UNLIKELY(VAL2ARY(slots[1])->len != 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "element has wrong array length (expected 2, was %u)", VAL2ARY(slots[1])->len);
         slots[2] = korb_items_data(VAL2ARY(slots[1])->items)[0]; slots[3] = korb_items_data(VAL2ARY(slots[1])->items)[1];
@@ -342,13 +345,13 @@ static RESULT korb_m_env_each_value(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 /* ENV.key(value) → the first key whose value == value, or nil. */
 static RESULT korb_m_env_key(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    const VALUE want = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(want))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(want));
-    const KorbString *ws = VAL2STR(want);
+    RESULT err; const char *want = korb_env_name(c, slots, VALUE_SLICE_GET(a, 0), &err);   /* #to_str coercion; parks in slots[0] */
+    if (!want) return err;
+    const size_t wl = strlen(want);
     for (char **e = environ; *e; e++) {
         uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
-        if (strlen(val) == ws->len && memcmp(val, korb_strbuf_data(ws->buf), ws->len) == 0)
-            return korb_str_new(c, slots, key, klen);
+        if (strlen(val) == wl && memcmp(val, want, wl) == 0)
+            return korb_str_new(c, slots + 1, key, klen);
     }
     return RESULT_OK(KORB_NIL);
 }
@@ -371,17 +374,20 @@ static RESULT korb_m_env_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_env_rassoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     const VALUE want = VALUE_SLICE_GET(a, 0);
-    if (!KORB_STRING_P(want)) return RESULT_OK(KORB_NIL);
-    const KorbString *ws = VAL2STR(want);
+    if (!KORB_STRING_P(want) && !(AROH_IS_GC_OBJECT(want) && korb_responds_to(c, want, korb_intern(c->vm, "to_str", 6))))
+        return RESULT_OK(KORB_NIL);                       /* not String-like → nil, never TypeError (CRuby) */
+    RESULT err; const char *ws = korb_env_name(c, slots, want, &err);   /* #to_str coercion; parks in slots[0] */
+    if (!ws) return err;
+    const size_t wl = strlen(ws);
     for (char **e = environ; *e; e++) {
         uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
-        if (strlen(val) == ws->len && memcmp(val, korb_strbuf_data(ws->buf), ws->len) == 0) {
-            slots[0] = UNWRAP(korb_str_new(c, slots, key, klen));
-            slots[1] = UNWRAP(korb_str_new(c, slots + 1, val, (uint32_t)strlen(val)));
-            slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
-            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
-            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
-            return RESULT_OK(slots[2]);
+        if (strlen(val) == wl && memcmp(val, ws, wl) == 0) {
+            slots[1] = UNWRAP(korb_str_new(c, slots + 1, key, klen));
+            slots[2] = UNWRAP(korb_str_new(c, slots + 2, val, (uint32_t)strlen(val)));
+            slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
+            CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[1]));
+            CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[2]));
+            return RESULT_OK(slots[3]);
         }
     }
     return RESULT_OK(KORB_NIL);
