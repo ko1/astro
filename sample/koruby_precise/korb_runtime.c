@@ -4471,9 +4471,21 @@ RESULT
 korb_fire_def_hook(CTX *c, VALUE *slots, VALUE mod, uint32_t mid, const char *hook, uint32_t hook_len)
 {
     if (!KORB_CLASS_P(mod)) return RESULT_OK(KORB_NIL);
+    VALUE recv = mod;
+    char sname[48];
+    if (VAL2CLASS(mod)->is_singleton) {                  /* singleton class → attached object's singleton_method_* */
+        struct korb_vm *const vm = c->vm;
+        VALUE att = KORB_UNDEF;
+        for (uint32_t i = 0; i < vm->sklass_cnt; i++)
+            if (vm->sklass_cls[i] == mod) { att = vm->sklass_obj[i]; break; }
+        if (att == KORB_UNDEF) return RESULT_OK(KORB_NIL);
+        recv = att;
+        snprintf(sname, sizeof sname, "singleton_%.*s", (int)hook_len, hook);
+        hook = sname; hook_len = (uint32_t)strlen(sname);
+    }
     const uint32_t h = korb_intern(c->vm, hook, hook_len);
-    if (LIKELY(!korb_responds_to(c, mod, h))) return RESULT_OK(KORB_NIL);
-    slots[0] = mod; slots[1] = ID2SYM(mid);
+    if (LIKELY(!korb_responds_to(c, recv, h))) return RESULT_OK(KORB_NIL);
+    slots[0] = recv; slots[1] = ID2SYM(mid);
     return korb_send(c, slots + 2, h, 0, 1);
 }
 
@@ -6423,7 +6435,8 @@ korb_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
         const KorbClass *const k = VAL2CLASS(v);
         const char *const kind = k->is_module ? "module" : "class";
         char nm[192];
-        if (korb_class_display_name(c, scratch, v, nm, sizeof nm)) snprintf(buf, sz, "%s %s", kind, nm);
+        if (k->is_singleton) { korb_desc_inspect(c, v, nm, sizeof nm); snprintf(buf, sz, "%s %s", kind, nm); }   /* "class #<Class:#<Object:0x…>>" */
+        else if (korb_class_display_name(c, scratch, v, nm, sizeof nm)) snprintf(buf, sz, "%s %s", kind, nm);
         else if (k->name_sym) { korb_class_qname_into(c, v, nm, sizeof nm); snprintf(buf, sz, "%s %s", kind, nm); }
         else snprintf(buf, sz, "%s #<%s:0x%016zx>", kind, k->is_module ? "Module" : "Class", (size_t)(uintptr_t)v);
         return buf;
@@ -6431,7 +6444,10 @@ korb_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
     if (KORB_OBJECT_P(v)) {
         const VALUE cls = VAL2OBJ(v)->klass;
         char nm[192];
-        if (KORB_CLASS_P(cls) && korb_class_display_name(c, scratch, cls, nm, sizeof nm)) snprintf(buf, sz, "an instance of %s", nm);
+        if (korb_own_singleton_class(c->vm, v) != KORB_NIL && KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) {   /* CRuby: "#<Foo:0x…>" once it has a singleton class */
+            korb_class_qname_into(c, cls, nm, sizeof nm); snprintf(buf, sz, "#<%s:0x%016zx>", nm, (size_t)(uintptr_t)v);
+        }
+        else if (KORB_CLASS_P(cls) && korb_class_display_name(c, scratch, cls, nm, sizeof nm)) snprintf(buf, sz, "an instance of %s", nm);
         else if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) { korb_class_qname_into(c, cls, nm, sizeof nm); snprintf(buf, sz, "an instance of %s", nm); }
         else if (KORB_CLASS_P(cls))
             snprintf(buf, sz, "an instance of #<Class:0x%016zx>", (size_t)(uintptr_t)cls);
