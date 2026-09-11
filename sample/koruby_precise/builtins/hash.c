@@ -245,7 +245,8 @@ static RESULT korb_m_hash_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     for (uint32_t i = 0; i < n; i++) {
         const KorbHash *x = VAL2HASH(slots[0]);
         const VALUE k = korb_items_data(x->items)[2 * i], v = korb_items_data(x->items)[2 * i + 1];
-        const int32_t j = korb_hash_find(VAL2HASH(slots[1]), k);   /* key match = eql?/hash */
+        RESULT ferr; const int32_t j = korb_hash_find_ctx(c, slots + 2, VALUE_REF_AT(&slots[1]), k, &ferr);   /* key match = #hash + #eql? (user keys dispatch) */
+        if (UNLIKELY(ferr.state != KORB_NORMAL)) { VAL2HASH(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return ferr; }
         if (j < 0) { result = KORB_FALSE; break; }
         const VALUE v2 = korb_items_data(VAL2HASH(slots[1])->items)[2 * j + 1];
         if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
@@ -276,7 +277,8 @@ static RESULT korb_m_hash_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     for (uint32_t i = 0; i < n; i++) {
         const KorbHash *x = VAL2HASH(slots[0]);
         const VALUE k = korb_items_data(x->items)[2 * i], v = korb_items_data(x->items)[2 * i + 1];
-        const int32_t j = korb_hash_find(VAL2HASH(slots[1]), k);
+        RESULT ferr; const int32_t j = korb_hash_find_ctx(c, slots + 2, VALUE_REF_AT(&slots[1]), k, &ferr);   /* key match = #hash + #eql? (user keys dispatch) */
+        if (UNLIKELY(ferr.state != KORB_NORMAL)) { VAL2HASH(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return ferr; }
         if (j < 0) { result = KORB_FALSE; break; }
         const VALUE v2 = korb_items_data(VAL2HASH(slots[1])->items)[2 * j + 1];
         if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
