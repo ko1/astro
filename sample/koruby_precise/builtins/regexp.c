@@ -924,10 +924,8 @@ static RESULT korb_re_scan_elem(CTX *c, VALUE *slots, VALUE subj, VALUE mdv, con
  * (unlike #match, which reads it as a regex source), so escape it first. */
 static RESULT korb_re_coerce_pat_literal(CTX *c, VALUE *slots, VALUE pv, VALUE *out) {
     if (KORB_REGEXP_P(pv)) { *out = pv; return RESULT_OK(KORB_TRUE); }
-    if (KORB_STRING_P(pv) || SYMBOL_P(pv)) {
-        const char *b; uint32_t n;
-        if (SYMBOL_P(pv)) { const char *nm = korb_sym_name(c->vm, SYM2ID(pv)); b = nm; n = (uint32_t)strlen(nm); }
-        else { b = korb_strbuf_data(VAL2STR(pv)->buf); n = VAL2STR(pv)->len; }
+    if (KORB_STRING_P(pv)) {                             /* a Symbol is a TypeError, like any non-String */
+        const char *b = korb_strbuf_data(VAL2STR(pv)->buf); const uint32_t n = VAL2STR(pv)->len;
         char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
         for (uint32_t i = 0; i < n; i++) { unsigned char ch = (unsigned char)b[i]; if (strchr("\\.*+?()[]{}|-^$", ch)) fputc('\\', ms); fputc(ch, ms); }
         fclose(ms);

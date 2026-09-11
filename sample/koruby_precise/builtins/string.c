@@ -2554,7 +2554,9 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 if (LIKELY(KORB_STRING_P(sr.value))) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); sepv = sr.value; }
             }
-            if (UNLIKELY(!KORB_STRING_P(sepv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sepv));
+            if (UNLIKELY(!KORB_STRING_P(sepv)))
+                return SYMBOL_P(sepv) ? korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type Symbol (expected Regexp)")
+                                      : korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sepv));
         }
         const KorbString *sp = VAL2STR(sepv);
         if (sp->len == 1 && korb_strbuf_data(sp->buf)[0] == ' ') ws = true;   /* " " behaves as whitespace */
@@ -3140,13 +3142,16 @@ static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     CHECK(korb_line_sep_conv(c, slots, self, a, sepbuf, &seplen));
     const bool chomp = korb_line_chomp(c, a);
     const bool universal = !(VALUE_SLICE_LEN(a) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0)));   /* default $/ → \r\n chomped as a unit */
+    /* iterate over a snapshot (CRuby: rb_str_new_frozen): the block may mutate self */
+    slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, 0, SELF_STR->len));
+    const VALUE_REF snap = VALUE_REF_AT(&slots[0]);
     uint32_t pos = 0;
     for (;;) {
-        const KorbString *s = SELF_STR;
+        const KorbString *s = VAL2STR(VALUE_REF_GET(snap));
         if (pos >= s->len) break;
         uint32_t ll; uint32_t yl = korb_str_line_span(s, pos, sepbuf, seplen, chomp, universal, &ll);
-        slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, pos, yl));   /* root the line (chomped if requested) */
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+        slots[1] = UNWRAP(korb_str_slice_new(c, slots + 1, snap, pos, yl));   /* root the line (chomped if requested) */
+        RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         pos += ll;
     }

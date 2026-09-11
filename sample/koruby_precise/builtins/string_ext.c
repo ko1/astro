@@ -555,7 +555,10 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
              * #to_ary (single elem), then #to_int; nothing → TypeError. */
             long cp = -1;                                  /* codepoint, or -1 → use `cbytes` */
             const char *cbytes = NULL; int cnbytes = 0;
-            if (FIXNUM_P(arg)) cp = FIX2LONG(arg);
+            if (FIXNUM_P(arg)) {
+                cp = FIX2LONG(arg);
+                if (cp < 0) { coerce_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "invalid character"); has_coerce_err = true; err = true; break; }
+            }
             else if (KORB_STRING_P(arg)) {
                 const KorbString *cs = VAL2STR(arg);
                 if (cs->len == 0) { cbytes = ""; cnbytes = 0; }   /* %c of "" → no character (still pads to width) */
@@ -577,7 +580,10 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 FMT_REREAD_ARGS();
                 VALUE cv = cr.value;
                 if (KORB_ARRAY_P(cv)) cv = VAL2ARY(cv)->len > 0 ? korb_items_data(VAL2ARY(cv)->items)[0] : KORB_NIL;
-                if (FIXNUM_P(cv)) cp = FIX2LONG(cv);
+                if (FIXNUM_P(cv)) {
+                    cp = FIX2LONG(cv);
+                    if (cp < 0) { coerce_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "invalid character"); has_coerce_err = true; err = true; break; }
+                }
                 else if (KORB_STRING_P(cv)) { slots[1] = cv;  /* root the coerced String */
                     const KorbString *cs = VAL2STR(slots[1]);
                     if (cs->len == 0) { coerce_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "%%c requires a character"); has_coerce_err = true; err = true; break; }
@@ -587,7 +593,22 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             }
             else { coerce_err = korb_raise_no_int(c, slots + 1, arg); has_coerce_err = true; err = true; break; }
             char enc[4];
-            if (cp >= 0) { cnbytes = (int)korb_utf8_encode((uint32_t)cp, enc); cbytes = enc; }
+            if (cp >= 0) {                                 /* CRuby: NUM2INT, then rb_enc_codelen in the FORMAT's encoding */
+                const uint32_t fenc = KORB_STR_ENC(VALUE_REF_GET(self));
+                if (cp > 0x7FFFFFFFL) { coerce_err = korb_raise(c, slots + 1, KORB_E_RANGE, 0, "integer %ld too big to convert to 'int'", cp); has_coerce_err = true; err = true; break; }
+                if (fenc == KORB_ENC_UTF8) {
+                    if (cp > 0x10FFFF) { coerce_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "invalid character"); has_coerce_err = true; err = true; break; }
+                    cnbytes = (int)korb_utf8_encode((uint32_t)cp, enc); cbytes = enc;
+                } else if (fenc == KORB_ENC_USASCII || KORB_ENC_SB(c->vm, fenc)) {   /* one byte, any value */
+                    if (cp > 0xFF) { coerce_err = korb_raise(c, slots + 1, KORB_E_RANGE, 0, "%ld out of char range", cp); has_coerce_err = true; err = true; break; }
+                    enc[0] = (char)cp; cnbytes = 1; cbytes = enc;
+                } else {                                   /* multibyte "other": the code IS the byte sequence (big-endian) */
+                    if (cp >= 0x80 && cp <= 0xFF) { coerce_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "invalid character"); has_coerce_err = true; err = true; break; }
+                    cnbytes = 0;
+                    for (int sh = 24; sh >= 0; sh -= 8) { const int b = (int)((cp >> sh) & 0xFF); if (b || cnbytes || sh == 0) enc[cnbytes++] = (char)b; }
+                    cbytes = enc;
+                }
+            }
             korb_fmt_emit_c(ms, cbytes, cnbytes, spec, si);
             break;
           }
