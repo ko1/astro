@@ -1358,16 +1358,13 @@ static RESULT korb_ary_flatten_depth(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_
     for (uint32_t i = 0; i < n; i++) {
         VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(src))->items)[i];
         if (depth != 0 && !KORB_ARRAY_P(e) && KORB_OBJECT_P(e)) {        /* non-Array element with #to_ary → flatten its result */
-            const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
-            if (korb_responds_to_coerce_p(c, slots, &e, to_ary)) {
-                slots[0] = e;
-                RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
-                if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
-                if (ar.value != KORB_NIL) {                  /* nil → not coercible: leave the element as a leaf (rb_check_array_type) */
-                    if (UNLIKELY(!KORB_ARRAY_P(ar.value)))
-                        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)", korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_type_name(ar.value));
-                    e = ar.value;
-                }
+            VALUE cv = e;                                    /* rb_check_array_type: respond_to?- and method_missing-aware */
+            const RESULT cr = korb_check_funcall(c, slots, &cv, korb_intern(c->vm, "to_ary", 6));
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cr.value == KORB_TRUE && cv != KORB_NIL) {   /* nil → not coercible: leave the element as a leaf */
+                if (UNLIKELY(!KORB_ARRAY_P(cv)))
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)", korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_type_name(cv));
+                e = cv;
             }
         }
         if (KORB_ARRAY_P(e) && depth != 0) {

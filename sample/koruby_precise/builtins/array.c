@@ -353,6 +353,21 @@ static RESULT korb_index_coerce(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out
         return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
     return korb_raise_no_int(c, slots, v);
 }
+/* The rhs of a multi-element `a[i, n] = rhs` / `a[r] = rhs`: an Array is spread;
+ * a #to_ary object (respond_to?/method_missing-aware) spreads its result; any
+ * other value is stored as one element.  Leaves the (rooted) rhs in slots[0]. */
+static RESULT korb_ary_aset_rhs(CTX *c, VALUE *slots, VALUE rhs) {
+    slots[0] = rhs;
+    if (KORB_ARRAY_P(rhs) || !KORB_OBJECT_P(rhs)) return RESULT_OK(rhs);
+    VALUE cv = rhs;
+    const RESULT cr = korb_check_funcall(c, slots + 1, &cv, korb_intern(c->vm, "to_ary", 6));
+    if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    if (cr.value == KORB_FALSE || cv == KORB_NIL) return RESULT_OK(slots[0]);   /* not convertible → one element */
+    if (UNLIKELY(!KORB_ARRAY_P(cv)))
+        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)", korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_type_name(cv));
+    slots[0] = cv;
+    return RESULT_OK(cv);
+}
 static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2..3)", VALUE_SLICE_LEN(a));
@@ -362,7 +377,8 @@ static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         CHECK(korb_index_coerce(c, slots, iv, &start));
         CHECK(korb_index_coerce(c, slots, VALUE_SLICE_GET(a, 1), &dellen));
         if (UNLIKELY(dellen < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "negative length (%ld)", (long)dellen);
-        return korb_ary_splice(c, slots, self, start, dellen, VALUE_SLICE_REF(a, 2));
+        CHECK(korb_ary_aset_rhs(c, slots, VALUE_SLICE_GET(a, 2)));   /* → slots[0] */
+        return korb_ary_splice(c, slots + 1, self, start, dellen, VALUE_REF_AT(&slots[0]));
     }
     if (KORB_RANGE_P(iv)) {                               /* a[b..e] = val (incl. beginless/endless) */
         const KorbRange *r = VAL2RANGE(iv);
@@ -385,7 +401,8 @@ static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (!endless && e < 0) e += len;
         korb_sword_t last = (endless || excl) ? e - 1 : e, dellen = last - b + 1;
         if (dellen < 0) dellen = 0;
-        return korb_ary_splice(c, slots, self, b, dellen, VALUE_SLICE_REF(a, 1));
+        CHECK(korb_ary_aset_rhs(c, slots, VALUE_SLICE_GET(a, 1)));   /* → slots[0] */
+        return korb_ary_splice(c, slots + 1, self, b, dellen, VALUE_REF_AT(&slots[0]));
     }
     korb_sword_t i;
     CHECK(korb_index_coerce(c, slots, iv, &i));          /* may GC (via #to_int) → read ary after */

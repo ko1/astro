@@ -755,12 +755,12 @@ static RESULT korb_m_ary_product(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     CHECK(korb_ary_push_val(c, slots, cargs, VALUE_REF_GET(self)));
     for (uint32_t j = 0; j < na; j++) {
         slots[0] = VALUE_SLICE_GET(a, j);
-        if (!KORB_ARRAY_P(slots[0])) {                   /* coerce a #to_ary object to an Array */
-            const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
-            if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce_p(c, slots + 1, &slots[0], to_ary)) {
-                RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
-                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-                slots[0] = r.value;
+        if (!KORB_ARRAY_P(slots[0])) {                   /* coerce a #to_ary object to an Array (method_missing-aware) */
+            if (KORB_OBJECT_P(slots[0])) {
+                VALUE cv = slots[0];
+                const RESULT cr = korb_check_funcall(c, slots + 1, &cv, korb_intern(c->vm, "to_ary", 6));
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                slots[0] = cv;
             }
             if (UNLIKELY(!KORB_ARRAY_P(slots[0])))
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, j)));

@@ -240,6 +240,7 @@ static void korb_to_mpz(VALUE v, korb_mp_t out);
 static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const korb_mp_t src);
 static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_int coercion, usable from the main body */
 static RESULT korb_coerce_to_ary(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_ary coercion */
+RESULT korb_check_funcall(CTX *c, VALUE *slots, VALUE *v, uint32_t mid);   /* fwd — rb_check_funcall-style conversion probe (defined below) */
 static bool korb_check_funcall_respond_to(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid);   /* fwd — rb_check_funcall's #respond_to? probe */
 
 /* Make a reduced Rational from VALUE num/den (Fixnum or Bignum); den != 0,
@@ -5920,6 +5921,39 @@ korb_check_funcall_respond_to(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid)
     const RESULT r = korb_send_impl(c, slots + 3, rt_mid, 0, 2, NULL, NULL, NULL);
     *selfp = slots[0];                                   /* writeback: the dispatch may have moved it */
     return r.state == KORB_NORMAL && KORB_TRUTHY(r.value);
+}
+/* rb_check_funcall for the implicit-conversion protocols (#to_ary / #to_str /
+ * #to_int …): call `mid` on *v when the object responds (an overridden
+ * #respond_to? / #respond_to_missing? decides), else — when neither is
+ * overridden — a USER #method_missing gets the call; its NoMethodError means
+ * "not convertible".  KORB_TRUE with *v = the result, KORB_FALSE (untouched),
+ * or the raise.  slots: >= 6 free cells. */
+RESULT
+korb_check_funcall(CTX *c, VALUE *slots, VALUE *v, uint32_t mid)
+{
+    struct korb_vm *const vm = c->vm;
+    bool via_mm = false;
+    if (!korb_responds_to_coerce_p(c, slots, v, mid)) {
+        const VALUE dcls = korb_dispatch_class(c, *v);
+        if (!KORB_CLASS_P(dcls)) return RESULT_OK(KORB_FALSE);
+        VALUE rt_def = KORB_NIL, rtm_def = KORB_NIL, mm_def = KORB_NIL;
+        (void)korb_class_find_method(dcls, korb_intern(vm, "respond_to?", 11), &rt_def);
+        if (rt_def != KORB_NIL && rt_def != korb_const_get(vm, vm->class_name[KORB_C_OBJECT])) return RESULT_OK(KORB_FALSE);   /* its own #respond_to? said no */
+        if (korb_class_find_method(dcls, korb_intern(vm, "respond_to_missing?", 19), &rtm_def) != NULL &&
+            rtm_def != korb_const_get(vm, korb_intern(vm, "Kernel", 6))) return RESULT_OK(KORB_FALSE);
+        const struct korb_method *const mm = korb_class_find_method(dcls, vm->mid_method_missing, &mm_def);
+        if (mm == NULL || (mm->kind == KORB_METHOD_CFUNC && mm->rfn == korb_m_obj_method_missing)) return RESULT_OK(KORB_FALSE);
+        via_mm = true;
+    }
+    slots[0] = *v;                                       /* root the receiver across the dispatch */
+    const RESULT r = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, NULL);
+    if (via_mm && r.state == KORB_RAISE && KORB_EXC_P(r.value) && VAL2EXC(r.value)->etype == KORB_E_NOMETHOD) {
+        *v = slots[0];                                   /* method_missing declined → not convertible */
+        return RESULT_OK(KORB_FALSE);
+    }
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    *v = r.value;
+    return RESULT_OK(KORB_TRUE);
 }
 bool
 korb_responds_to_coerce(CTX *c, VALUE *slots, VALUE self, uint32_t mid)
