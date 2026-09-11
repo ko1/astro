@@ -292,6 +292,7 @@ class Encoding
         elsif name.respond_to?(:to_str) then String.try_convert(name) || name.to_str
         else raise TypeError, "no implicit conversion of #{name.class} into String"
         end
+    raise ArgumentError, "invalid encoding name (non ASCII)" unless n.encoding.ascii_compatible?
     return default_external if n == 'external' || n == 'filesystem' || n == 'locale'
     return default_internal if n == 'internal'
     # Resolve an alias first, so find("BINARY") is Encoding::ASCII_8BIT itself
@@ -321,7 +322,20 @@ class Encoding
     r = []; constants.each { |cn| e = const_get(cn); r << e if e.is_a?(Encoding) && !r.include?(e) }; r
   end
   def self.name_list; list.map(&:name) + aliases.keys; end
-  def self.locale_charmap; default_external.name; end
+  # The charmap of the process locale (nl_langinfo(CODESET)), fixed at startup
+  # like setlocale(): "C"/"POSIX" is ANSI_X3.4-1968 on glibc, "xx_XX.UTF-8" is
+  # UTF-8, anything else falls back to the default external encoding's name.
+  LOCALE_CHARMAP__ = begin
+    loc = ENV["LC_ALL"]
+    loc = ENV["LC_CTYPE"] if loc.nil? || loc.empty?
+    loc = ENV["LANG"] if loc.nil? || loc.empty?
+    if loc.nil? || loc.empty? || loc == "C" || loc == "POSIX" then "ANSI_X3.4-1968"
+    elsif loc =~ /\.(utf-?8)\z/i then "UTF-8"
+    else nil
+    end
+  end
+  private_constant :LOCALE_CHARMAP__
+  def self.locale_charmap; LOCALE_CHARMAP__ || default_external.name; end
   # This encoding's canonical name plus any aliases pointing to it.
   # This encoding's canonical name plus every alias pointing to it (CRuby lists
   # the "external"/"locale"/"filesystem" pseudo-names too, on whichever encoding
@@ -344,17 +358,26 @@ class Encoding
     # An empty operand is decided before the ASCII-compatibility gate, as in
     # rb_enc_compatible: it carries no bytes that could conflict.
     return ea if sb && sb.empty?
-    return ((ea.ascii_compatible? && sb && sb.ascii_only?) ? ea : eb) if sa && sa.empty?
+    return ((ea.ascii_compatible? && sb.ascii_only?) ? ea : eb) if sa && sb && sa.empty?
     # Anything else needs both sides to be ASCII-compatible.
     return nil unless ea.ascii_compatible? && eb.ascii_compatible?
-    # "ASCII-only" coderange: a String/Symbol exposes it directly; a bare Encoding
-    # has no content, so only US-ASCII (which can hold nothing but ASCII) counts.
-    a1 = sa ? sa.ascii_only? : ea == US_ASCII
-    b1 = sb ? sb.ascii_only? : eb == US_ASCII
-    if b1 then ea
-    elsif a1 then eb
-    else nil
+    # A content-less operand (Regexp, Encoding) tagged US-ASCII yields to the other.
+    return ea if sb.nil? && eb == US_ASCII
+    return eb if sa.nil? && ea == US_ASCII
+    # enc_compatible_latter swaps the operands so a String comes first but keeps
+    # enc1/enc2 in place, so the answer depends on argument order (CRuby quirk).
+    sa, sb = sb, sa if sa.nil?
+    return nil if sa.nil?
+    a1 = sa.ascii_only?
+    if sb
+      b1 = sb.ascii_only?
+      if a1 != b1
+        return eb if a1
+        return ea if b1
+      end
+      return ea if b1
     end
+    a1 ? eb : nil
   end
 end
 class Encoding

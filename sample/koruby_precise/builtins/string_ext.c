@@ -1064,14 +1064,19 @@ static RESULT korb_m_sym_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     const KorbString *rs = VAL2STR(slots[1]);
     return RESULT_OK(ID2SYM(korb_intern(c->vm, korb_strbuf_data(rs->buf), rs->len)));
 }
+/* the Symbol's name as a String in the Symbol's own encoding (NUL-safe length) */
+static RESULT korb_sym_name_str(CTX *c, VALUE *slots, VALUE sym) {
+    const uint32_t id = SYM2ID(sym);
+    RESULT r = korb_str_new(c, slots, korb_sym_name(c->vm, id), c->vm->sym_lens[id]);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, c->vm->sym_encs[id]);
+    return r;
+}
 static RESULT korb_m_sym_start_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
-    slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
+    slots[0] = UNWRAP(korb_sym_name_str(c, slots, VALUE_REF_GET(self)));
     return korb_m_str_start_with(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
 }
 static RESULT korb_m_sym_end_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
-    slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
+    slots[0] = UNWRAP(korb_sym_name_str(c, slots, VALUE_REF_GET(self)));
     return korb_m_str_end_with(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
 }
 /* coerce the search arg (slots[0]) via #to_str, returns true if it is now a String. */

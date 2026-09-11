@@ -248,18 +248,49 @@ static RESULT korb_m_str_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) 
 static bool korb_str_chilled_p(VALUE v) {
     return KORB_STRING_P(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_CHILLED) != 0;
 }
+/* String#-@ / #dedup: the interned (fstring-pool) String for these bytes, as
+ * CRuby's rb_fstring.  A bare frozen receiver becomes the pool entry itself. */
 static RESULT korb_m_str_uminus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    if (korb_str_is_frozen(VALUE_REF_GET(self)) && !korb_str_chilled_p(VALUE_REF_GET(self)))
-        return RESULT_OK(VALUE_REF_GET(self));
-    slots[0] = VALUE_REF_GET(self);
-    RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "dup", 3), 0, 0);   /* GC-safe copy via #dup */
-    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (AROH_IS_GC_OBJECT(r.value)) {
-        AroObjectHeader *const h = (AroObjectHeader *)(uintptr_t)r.value;
-        h->flags = (uint16_t)((h->flags & ~(KORB_FL_CHILLED | KORB_FL_CHILLED_SYM)) | KORB_FL_FROZEN);
+    struct korb_vm *const vm = c->vm;
+    const VALUE sv = VALUE_REF_GET(self);
+    const KorbString *const s = VAL2STR(sv);
+    const uint32_t enc = KORB_STR_ENC(sv), len = s->len;
+    const bool frozen = korb_str_is_frozen(sv) && !korb_str_chilled_p(sv);
+    const bool bare = korb_exact_class_p(c, sv, KORB_C_STRING) &&
+                      !(((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_IVARS);
+    if (!bare) {                                        /* ivars / subclass: never interned (CRuby returns str) */
+        if (frozen) return RESULT_OK(sv);
+        slots[0] = sv;
+        RESULT r = korb_send(c, slots + 1, korb_intern(vm, "dup", 3), 0, 0);   /* a frozen private copy, same class */
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (AROH_IS_GC_OBJECT(r.value)) {
+            AroObjectHeader *const h = (AroObjectHeader *)(uintptr_t)r.value;
+            h->flags = (uint16_t)((h->flags & ~(KORB_FL_CHILLED | KORB_FL_CHILLED_SYM)) | KORB_FL_FROZEN);
+        }
+        return r;
     }
-    return r;
+    for (uint32_t i = 0; i < vm->fstr_cnt; i++) {
+        const KorbString *const f = VAL2STR(vm->fstr_vals[i]);
+        if (f->len == len && KORB_STR_ENC(vm->fstr_vals[i]) == enc &&
+            memcmp(korb_strbuf_data(f->buf), korb_strbuf_data(s->buf), len) == 0)
+            return RESULT_OK(vm->fstr_vals[i]);
+    }
+    if (frozen) {                                       /* a bare frozen string becomes the pool entry */
+        if (vm->fstr_cnt == vm->fstr_capa) {
+            vm->fstr_capa = vm->fstr_capa ? vm->fstr_capa * 2 : 16;
+            vm->fstr_vals = realloc(vm->fstr_vals, sizeof(VALUE) * vm->fstr_capa);
+            if (!vm->fstr_vals) abort();
+        }
+        vm->fstr_vals[vm->fstr_cnt++] = sv;
+        return RESULT_OK(sv);
+    }
+    char *const bytes = malloc(len ? len : 1);          /* stable across the pool's alloc (self may move) */
+    if (!bytes) abort();
+    memcpy(bytes, korb_strbuf_data(s->buf), len);
+    const VALUE r = korb_fstr_get(c, slots, bytes, len, enc);
+    free(bytes);
+    return RESULT_OK(r);
 }
 /* String#+@ → a mutable string (self if already mutable, else an unfrozen copy). */
 static RESULT korb_m_str_plus_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
