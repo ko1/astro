@@ -78,8 +78,14 @@ class Exception
     end
     lines.join("\n") + "\n"
   end
-  # no arg → self; with a message → a new exception of the same class (CRuby clones + replaces).
-  def exception(*args); args.empty? ? self : self.class.new(*args); end
+  # no arg → self; with a message → a clone with the message replaced (CRuby
+  # runs Exception#initialize on the clone, never the subclass's #initialize).
+  def exception(*args)
+    return self if args.empty?
+    e = clone
+    Exception.instance_method(:initialize).bind_call(e, *args)
+    e
+  end
   def self.exception(*args); new(*args); end   # Class-level Exception.exception(msg) == new(msg)
   # Equal iff same object, or same class + message + backtrace.
   def ==(other)
@@ -243,7 +249,7 @@ class SystemCallError < StandardError
     msg = errno = loc = nil
     if args[0].is_a?(Integer) && args.size == 1     # SystemCallError.new(errno_number)
       errno = args[0]
-    elsif self.class.const_defined?(:Errno, false) && !(args.size >= 2 && SystemCallError.__scerr_int_p(args[1]))
+    elsif self.class.__errno_num && !(args.size >= 2 && SystemCallError.__scerr_int_p(args[1]))
       msg, loc = args[0], args[1]                   # Errno::X.new(msg[, location])
       unless msg.nil?
         msg = msg.to_str if !msg.is_a?(String) && msg.respond_to?(:to_str)
@@ -257,7 +263,7 @@ class SystemCallError < StandardError
       end
       errno = SystemCallError.__scerr_num(errno)
     end
-    @errno = errno || (self.class.const_defined?(:Errno, false) ? self.class::Errno : nil)
+    @errno = errno || self.class.__errno_num
     base = @errno ? __strerror(@errno) : nil
     base = "unknown error" if base.nil? || base.empty?
     base = "#{base} @ #{loc}" if loc
@@ -266,7 +272,17 @@ class SystemCallError < StandardError
   # The C raise path builds the exception without running #initialize, so fall
   # back to the class's own number.
   def errno
-    @errno || (self.class.const_defined?(:Errno, false) ? self.class::Errno : nil)
+    @errno || self.class.__errno_num
+  end
+  # The errno an Errno::X class (or a user subclass of one) stands for; nil for
+  # SystemCallError itself.  Walks up so `Class.new(Errno::ENOENT)` inherits it.
+  def self.__errno_num
+    k = self
+    while k && k != SystemCallError
+      return k::Errno if k.const_defined?(:Errno, false)
+      k = k.superclass
+    end
+    nil
   end
 end
 module Errno
@@ -426,4 +442,11 @@ class SystemExit
       super(*args)
     end
   end
+end
+
+# Kernel#throw with no matching catch: the C raise path stashes the tag/value.
+class UncaughtThrowError < ArgumentError
+  def tag = @tag
+  def value = @value
+  def to_s = "uncaught throw #{@tag.inspect}"
 end

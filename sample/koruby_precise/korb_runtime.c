@@ -11324,6 +11324,8 @@ korb_register_core_methods(CTX *c)
     /* Object (universal fallback) */
     korb_def_cmethod(c, KORB_C_OBJECT, "nil?", korb_m_obj_nil_q, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "method_missing", korb_m_obj_method_missing, -1);
+    { struct korb_method *const m = korb_class_find_method(korb_builtin_class_obj(c->vm, KORB_C_OBJECT), korb_intern(c->vm, "method_missing", 14), NULL);
+      if (m) m->visibility = 1; }                         /* BasicObject#method_missing is private (CRuby) */
     korb_def_cmethod(c, KORB_C_OBJECT, "==", korb_m_obj_eq, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "!",  korb_m_obj_not, 0);   /* node_not handles `!x` inline; this is for reflection + send */
     korb_def_cmethod(c, KORB_C_OBJECT, "===", korb_m_obj_case_eq, 1);   /* default: self == other, honouring an overridden #== (Class/Range/Regexp/Set override) */
@@ -11622,6 +11624,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "const_source_location", korb_m_mod_const_source_location, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "__lexical_parent", korb_m_mod_lexical_parent, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "remove_const", korb_m_class_remove_const, 1);
+    { struct korb_method *const m = korb_class_find_method(korb_builtin_class_obj(c->vm, KORB_C_CLASS), korb_intern(c->vm, "remove_const", 12), NULL);
+      if (m) m->visibility = 1; }                         /* Module#remove_const is private (CRuby) */
     korb_def_cmethod(c, KORB_C_CLASS, "const_defined?", korb_m_class_const_defined, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "class_variable_get", korb_m_class_cvar_get, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "class_variable_set", korb_m_class_cvar_set, 2);
@@ -11671,6 +11675,8 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("class_variables", korb_m_class_cvars, -1);
     MOD_CFN("remove_class_variable", korb_m_class_remove_cvar, 1);
     MOD_CFN("remove_const", korb_m_class_remove_const, 1);
+    { struct korb_method *const m = korb_class_find_method(korb_const_get(c->vm, c->vm->name_module), korb_intern(c->vm, "remove_const", 12), NULL);
+      if (m) m->visibility = 1; }                         /* private (CRuby) */
     MOD_CFN("remove_method", korb_m_class_remove_method, -1);
     MOD_CFN("undef_method", korb_m_class_undef_method, -1);
     MOD_CFN("undefined_instance_methods", korb_m_class_undefined_imethods, 0);

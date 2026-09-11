@@ -802,10 +802,19 @@ static RESULT korb_m_throw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) 
     const VALUE tag = VALUE_SLICE_GET(a, 0);
     bool active = false;
     for (uint32_t i = c->catch_n; i-- > 0; ) if (c->catch_tags[i] == tag) { active = true; break; }
-    if (!active)
-        return korb_raise(c, slots, KORB_E_UNCAUGHT_THROW, 0, "uncaught throw %s", korb_type_name(tag));
-    c->throw_tag = tag;
     const VALUE val = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+    if (!active) {
+        slots[0] = tag; slots[1] = val;
+        RESULT r = korb_raise(c, slots + 2, KORB_E_UNCAUGHT_THROW, 0, "uncaught throw %s", korb_type_name(tag));
+        if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) {   /* #tag / #value (prelude readers) */
+            slots[2] = r.value;
+            CHECK(korb_ivar_set(c, slots + 3, VALUE_REF_AT(&slots[2]), ID2SYM(korb_intern(c->vm, "@tag", 4)), slots[0]));
+            CHECK(korb_ivar_set(c, slots + 3, VALUE_REF_AT(&slots[2]), ID2SYM(korb_intern(c->vm, "@value", 6)), slots[1]));
+            r.value = slots[2];
+        }
+        return r;
+    }
+    c->throw_tag = tag;
     return (RESULT){ val, KORB_THROW };
 }
 /* Kernel#catch([tag]) { |tag| ... } — a throw with the matching (identity) tag
