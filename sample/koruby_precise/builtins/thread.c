@@ -115,6 +115,42 @@ korb_blop_expire(struct korb_vm *vm)
     return posted;
 }
 
+/* fd を閉じる側から: その fd で park している POLL blop を POLLNVAL で叩き起こす
+ * (waiter は syscall をやり直して EBADF を見る)。閉じるだけでは poll(2) が
+ * POLLNVAL を返すことに頼ることになり、番号が別の fd に再利用された瞬間に
+ * 永久に起きなくなる。 */
+static void korb_blop_wake_fd(struct korb_vm *vm, int fd)
+{
+    if (fd < 0) return;
+    for (struct korb_blop *b = vm->blop_pending, *nx; b; b = nx) {
+        nx = b->bl_next;
+        if (b->kind != KORB_BLOP_POLL) continue;
+        ssize_t hit = 0;
+        for (nfds_t i = 0; i < b->u.poll.nfds; i++)
+            if (b->u.poll.fds[i].fd == fd) { b->u.poll.fds[i].revents = POLLNVAL; hit++; }
+        if (hit) korb_blop_post(vm, b, hit);
+    }
+}
+
+/* pending signal で 1 thread を runnable にする。ここでは Ruby は動かせないので、
+ * 起こすだけ — 配送は起きた側の check point (korb_blop_wait → check_ints)。
+ * CRuby は trap handler を main thread で走らせるので main を優先する。
+ * 戻り値: 起こした数 (0 = 誰も起こせなかった)。 */
+static int
+korb_blop_signal_wake(struct korb_vm *vm)
+{
+    struct korb_thread *t = vm->main_thread;
+    if (t == NULL || t->state != KORB_TH_PENDED) {
+        t = NULL;
+        for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
+            if (b->waiter && b->waiter->state == KORB_TH_PENDED) { t = b->waiter; break; }
+    }
+    if (t == NULL) return 0;
+    if (t->blop) korb_blop_post(vm, t->blop, -EINTR);   /* wait 側が配送後に待ち直す */
+    else { t->state = KORB_TH_READY; korb_thread_runq_push(vm, t); }
+    return 1;
+}
+
 /* pump: 完了回収。block=1 なら fd readiness / 次の deadline まで native に眠る —
  * scheduler idle が呼ぶ、native thread が眠る唯一の場所。戻り値: post した数。
  * POLL blop の pollfd 群を 1 本の poll(2) に束ね、revents を書き戻して post。 */
@@ -122,14 +158,19 @@ static int
 korb_blop_pump(struct korb_vm *vm, int block)
 {
     int posted = korb_blop_expire(vm);
+    /* 眠る側だけ signalfd を見る: blocked signal は poll(2) から見えないので、
+     * これが無いと trap 済みプロセスの sleep が kill(2) を寝過ごす。 */
+    const int sigfd = block ? korb_signal_wait_fd(vm) : -1;
     /* fd 収集 (POLL blops) */
-    nfds_t total = 0;
+    nfds_t total = (sigfd >= 0) ? 1 : 0;
     for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
         if (b->kind == KORB_BLOP_POLL) total += b->u.poll.nfds;
     struct pollfd sbuf[64];
     struct pollfd *pf = (total <= 64) ? sbuf : malloc(sizeof(*pf) * total);
     if (!pf) abort();
     nfds_t k = 0;
+    if (sigfd >= 0) { pf[0].fd = sigfd; pf[0].events = POLLIN; pf[0].revents = 0; k = 1; }
+    const nfds_t fd0 = k;
     for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
         if (b->kind == KORB_BLOP_POLL)
             for (nfds_t i = 0; i < b->u.poll.nfds; i++) {
@@ -150,8 +191,11 @@ korb_blop_pump(struct korb_vm *vm, int block)
     }
     if (total == 0 && ms == 0) { if (pf != sbuf) free(pf); return posted; }
     const int rc = poll(pf, total, ms);
+    /* signal の起床は revents 書き戻しの後: blop を list から外すと pf[] の
+       index 対応が崩れる */
+    const bool sig_ready = (rc > 0 && sigfd >= 0 && pf[0].revents != 0);
     if (rc > 0) {                                   /* revents を各 blop に書き戻し */
-        k = 0;
+        k = fd0;
         for (struct korb_blop *b = vm->blop_pending, *nx; b; b = nx) {
             nx = b->bl_next;
             if (b->kind != KORB_BLOP_POLL) continue;
@@ -166,6 +210,7 @@ korb_blop_pump(struct korb_vm *vm, int block)
     }
     if (pf != sbuf) free(pf);
     posted += korb_blop_expire(vm);
+    if (sig_ready) posted += korb_blop_signal_wake(vm);
     return posted;
 }
 
@@ -210,6 +255,21 @@ korb_thread_runq_push(struct korb_vm *vm, struct korb_thread *t)
     t->rq_next = NULL;
     if (vm->runq_tail) vm->runq_tail->rq_next = t; else vm->runq_head = t;
     vm->runq_tail = t;
+}
+
+/* t の #join 待ちを全員起こす。既に runnable な待ち手は queue に入れ直さない:
+ * 二重 push は runq を切り詰めて、後ろの thread を丸ごと落とす。 */
+static void
+korb_thread_joiners_wake(struct korb_vm *vm, struct korb_thread *t)
+{
+    for (struct korb_thread *j = t->joiners, *nx; j; j = nx) {
+        nx = j->join_next;
+        j->join_next = NULL;
+        if (j->state != KORB_TH_PENDED) continue;      /* 割り込み等で既に起きている */
+        j->state = KORB_TH_READY;
+        korb_thread_runq_push(vm, j);
+    }
+    t->joiners = NULL;
 }
 
 static struct korb_thread *
@@ -518,15 +578,20 @@ korb_blop_wait(CTX *c, VALUE *slots, struct korb_blop *b)
     struct korb_vm *const vm = c->vm;
     korb_thread_boot(c);
     b->waiter = vm->cur_thread;
-    korb_blop_prep(vm, b);
-    while (!(b->flags & KORB_BLOP_F_DONE)) {
-        struct korb_thread *const cur = vm->cur_thread;
-        cur->state = KORB_TH_PENDED; cur->blop = b;
-        RESULT r = korb_thread_yield_cpu(c, slots);
-        cur->blop = NULL;
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    for (;;) {
+        korb_blop_prep(vm, b);
+        while (!(b->flags & KORB_BLOP_F_DONE)) {
+            struct korb_thread *const cur = vm->cur_thread;
+            cur->state = KORB_TH_PENDED; cur->blop = b;
+            RESULT r = korb_thread_yield_cpu(c, slots);
+            cur->blop = NULL;
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        }
+        const RESULT r = korb_thread_check_ints(c, slots);   /* 割り込み配送点 (Thread#raise/#kill/signal) */
+        /* -EINTR は signal で起こされただけ。handler が戻ったのなら CRuby と
+           同じく操作を続行する (sleep も read も signal では打ち切らない)。 */
+        if (LIKELY(b->result != -EINTR) || UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
-    return korb_thread_check_ints(c, slots);   /* 割り込み配送点 (Thread#raise/#kill) */
 }
 
 /* Kernel#sleep([sec]) — TIMER blop。他の green thread はその間走れる。
@@ -601,13 +666,7 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
         t->result = r.value;                  /* NORMAL (break/return unwinds folded in M1) */
     }
     t->state = KORB_TH_DEAD;
-    for (struct korb_thread *j = t->joiners; j; ) {   /* #join 待ちを全員起こす */
-        struct korb_thread *nx = j->join_next;
-        j->join_next = NULL; j->state = KORB_TH_READY;
-        korb_thread_runq_push(c->vm, j);
-        j = nx;
-    }
-    t->joiners = NULL;
+    korb_thread_joiners_wake(c->vm, t);
     /* TODO(M2): vslots/cstack の reap (この stack の上では解放できない) */
     korb_thread_exit_switch(c);               /* never returns */
 }
@@ -751,6 +810,7 @@ korb_m_thread_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         cur->state = KORB_TH_PENDED;
         cur->join_next = t->joiners; t->joiners = cur;
         RESULT r = korb_thread_yield_cpu(c, slots);
+        korb_thread_joiners_remove(t, cur);   /* 毎周入れ直す: 残すと多重登録になる */
         if (tmo >= 0) {
             if (!(tb.flags & KORB_BLOP_F_DONE))
                 korb_blop_cancel(vm, &tb, -ECANCELED);      /* 死亡側が先: timer を回収 */
@@ -968,13 +1028,7 @@ korb_m_thread_kill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (t->state == KORB_TH_DEAD) return RESULT_OK(VALUE_REF_GET(self));
     if (!t->started && t->state == KORB_TH_READY) {    /* 未起動: 走らせず葬る */
         t->state = KORB_TH_DEAD;                       /* runq からは pop 時に skip */
-        for (struct korb_thread *j = t->joiners; j; ) {
-            struct korb_thread *nx = j->join_next;
-            j->join_next = NULL; j->state = KORB_TH_READY;
-            korb_thread_runq_push(c->vm, j);
-            j = nx;
-        }
-        t->joiners = NULL;
+        korb_thread_joiners_wake(c->vm, t);
         return RESULT_OK(VALUE_REF_GET(self));
     }
     if (t == c->vm->cur_thread) return korb_thread_kill_raise(c, slots);   /* 自殺: 即 unwind */
@@ -1082,7 +1136,14 @@ korb_m_thread_s_pass(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     (void)self; (void)a;
     struct korb_vm *const vm = c->vm;
-    if (vm->cur_thread == NULL || vm->runq_head == NULL) return RESULT_OK(KORB_NIL);
+    if (vm->cur_thread == NULL) return RESULT_OK(KORB_NIL);
+    if (vm->runq_head == NULL) {
+        /* runq が空でも engine には一度回す。`Thread.pass while cond` という
+           spin loop は、これが無いと blop 待ちの thread を永久に飢えさせる
+           (CRuby の thread は native なので pass 無しでも進む)。 */
+        if (vm->blop_npending) korb_blop_pump(vm, 0);
+        if (vm->runq_head == NULL) return korb_thread_check_ints_nb(c, slots);
+    }
     struct korb_thread *const cur = vm->cur_thread;
     cur->state = KORB_TH_READY;
     korb_thread_runq_push(vm, cur);

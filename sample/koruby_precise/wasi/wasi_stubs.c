@@ -52,3 +52,4 @@ void korb_init_process(CTX *c, VALUE *slots) {
 /* thread.c が呼ぶが、実体は除外した process.c にある。WASI ではシグナルが
  * 配送されないので、届いていない = 何もしないでよい。 */
 static RESULT korb_signal_deliver(CTX *c, VALUE *slots) { (void)c; (void)slots; return RESULT_OK(KORB_NIL); }
+static int korb_signal_wait_fd(struct korb_vm *vm) { (void)vm; return -1; }

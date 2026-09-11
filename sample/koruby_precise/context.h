@@ -1036,6 +1036,7 @@ struct korb_vm {
      * 登録済みで完了待ちの blop の連結リスト (rep 同様 C スタック上の実体)。 */
     struct korb_blop *blop_pending;
     uint32_t blop_npending;
+    int sigfd;                         /* signalfd(2): pending-signal readiness for the pump. -1 = not armed */
     uint8_t thread_aoe_global;         /* Thread.abort_on_exception (class-level) */
 
     /* direct-mapped user-object method cache (klass,mid)→method.  Valid while

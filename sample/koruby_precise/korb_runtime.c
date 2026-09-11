@@ -10704,6 +10704,8 @@ static RESULT korb_m_io_poll_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* park the current green thread until `fd` is ready (thread.c, included later) */
 static RESULT korb_blop_poll_wait(CTX *c, VALUE *slots, struct pollfd *fds, nfds_t nfds,
                                   double timeout_sec, ssize_t *out_ready);
+/* wake whoever is parked on `fd`, because we are about to close it (thread.c) */
+static void korb_blop_wake_fd(struct korb_vm *vm, int fd);
 #include "builtins/io.c"
 #ifdef KORB_WASI
 #  include "wasi/wasi_stubs.c"      /* WASI: プロセスもソケットも無い */
@@ -15291,6 +15293,7 @@ korb_ctx_new(void)
 
     c->vm = calloc(1, sizeof(struct korb_vm));
     if (!c->vm) { fprintf(stderr, "koruby_precise: out of memory (VM)\n"); abort(); }
+    c->vm->sigfd = -1;                                  /* calloc's 0 is a real fd */
     c->vm->mcache = calloc(KORB_MCACHE_N, sizeof(*c->vm->mcache));
     if (!c->vm->mcache) { fprintf(stderr, "koruby_precise: out of memory (mcache)\n"); abort(); }
     c->vm->shapes = calloc(64, sizeof(*c->vm->shapes));   /* [0]=unused, [1]=root */

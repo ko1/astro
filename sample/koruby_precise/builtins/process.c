@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/signalfd.h>
 #include <grp.h>        /* setgroups(2) */
 
 #define KORB_SPAWN_MAX_ARGV 256
@@ -52,6 +53,28 @@ static void korb_child_reset_signals(void) {
     (void)pthread_sigmask(SIG_SETMASK, &empty, NULL);
 }
 
+/* poll(2) is blind to a blocked signal, so the blop pump (thread.c) waits on
+ * this fd as well: a signalfd reads as readable exactly while one of its
+ * signals is pending.  Nothing ever read(2)s it — korb_signal_reap dequeues
+ * with sigtimedwait(2), and that is what clears the readiness.  Without it a
+ * `sleep` in a process that trapped TERM would never see the kill(2). */
+static int korb_signal_wait_fd(struct korb_vm *vm) {
+    if (vm->sigfd < 0) {
+        /* Nothing is blocked until the program traps something, and taking a
+           descriptor before then would shift every fd number a script sees. */
+        sigset_t blocked;
+        if (pthread_sigmask(SIG_BLOCK, NULL, &blocked) != 0) return -1;
+        bool any = false;
+        for (size_t i = 0; i < sizeof korb_sig_deliverable / sizeof korb_sig_deliverable[0]; i++)
+            if (sigismember(&blocked, korb_sig_deliverable[i])) { any = true; break; }
+        if (!any) return -1;
+        sigset_t set;
+        korb_sigset_deliverable(&set);
+        vm->sigfd = signalfd(-1, &set, SFD_NONBLOCK | SFD_CLOEXEC);
+    }
+    return vm->sigfd;
+}
+
 /* Reap one pending deliverable signal without blocking; 0 = none pending. */
 static int korb_signal_reap(void) {
     sigset_t set;
@@ -62,8 +85,25 @@ static int korb_signal_reap(void) {
     return s > 0 ? s : 0;
 }
 
-static int korb_signo_of(CTX *c, VALUE v);   /* fwd (defined with the trap builtins below) */
+static int korb_signo_of(CTX *c, VALUE v);        /* fwd (defined with the trap builtins below) */
+static int korb_signo_of_name(const char *nm);    /* fwd (同上) */
 RESULT korb_signal_deliver(CTX *c, VALUE *slots);   /* fwd (defined just below korb_kill_self) */
+
+/* A Symbol/String signal argument into `buf`; false for any other type. */
+static bool korb_signal_name_arg(CTX *c, VALUE v, char *const buf, size_t cap) {
+    if (SYMBOL_P(v)) {
+        const char *const p = korb_sym_name(c->vm, SYM2ID(v));
+        snprintf(buf, cap, "%s", p ? p : "");
+        return true;
+    }
+    if (KORB_STRING_P(v)) {
+        uint32_t n; const char *const p = korb_str_cstr_len(v, &n);
+        if (n >= cap) n = (uint32_t)cap - 1;
+        memcpy(buf, p, n); buf[n] = '\0';
+        return true;
+    }
+    return false;
+}
 
 /* __signal_block(signo, flag) — add/remove one signal from the blocked (i.e.
  * koruby-delivered) set.  Signal.trap uses it to take over INT/QUIT. */
@@ -715,14 +755,30 @@ static RESULT korb_m_process_spawn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(LONG2FIX(pid));
 }
 
+/* A pid / flags argument: CRuby coerces it with #to_int, and rejects anything
+ * else — silently falling back to "any child" would wait on the wrong process. */
+static RESULT korb_process_int_arg(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out) {
+    if (LIKELY(FIXNUM_P(v))) { *out = FIX2LONG(v); return RESULT_OK(KORB_NIL); }
+    if (!KORB_OBJECT_P(v) || !korb_responds_to(c, v, korb_intern(c->vm, "to_int", 6)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    slots[0] = v;
+    const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0);
+    if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+    if (UNLIKELY(!FIXNUM_P(ir.value)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    *out = FIX2LONG(ir.value);
+    return RESULT_OK(KORB_NIL);
+}
+
 /* Process.wait(pid = -1) → pid ($? gets the status).  wait2 returns [pid, status]. */
 static RESULT korb_process_wait_common(CTX *c, VALUE *slots, VALUE_SLICE a, bool pair) {
-    pid_t want = -1;
-    int flags = 0;
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) want = (pid_t)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    if (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) flags = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
+    korb_sword_t want = -1, flags = 0;
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL)
+        CHECK(korb_process_int_arg(c, slots, VALUE_SLICE_GET(a, 0), &want));
+    if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL)
+        CHECK(korb_process_int_arg(c, slots, VALUE_SLICE_GET(a, 1), &flags));
     int raw = 0;
-    const pid_t got = waitpid(want, &raw, flags);
+    const pid_t got = waitpid((pid_t)want, &raw, (int)flags);
     if (got < 0) return korb_raise_errno(c, slots, errno, "waitpid", "");
     if (got == 0) return RESULT_OK(KORB_NIL);            /* WNOHANG, still running */
     slots[0] = UNWRAP(korb_status_make(c, slots, got, raw));
@@ -875,41 +931,35 @@ static RESULT korb_m_kernel_backtick(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return RESULT_OK(slots[0]);
 }
 
-/* Process.kill(sig, *pids) → the number of signalled processes. */
+/* Process.kill(sig, *pids) → the number of signalled processes.  A negative
+ * signal number, or a name with a leading '-', targets each pid's process group
+ * instead; kill(2) spells that as a negative pid. */
 static RESULT korb_m_process_kill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     int sig = 0;
+    bool group = false;
     const VALUE sv = VALUE_SLICE_GET(a, 0);
-    if (FIXNUM_P(sv)) sig = (int)FIX2LONG(sv);
-    else if (KORB_STRING_P(sv) || SYMBOL_P(sv)) {
+    if (FIXNUM_P(sv)) {
+        sig = (int)FIX2LONG(sv);
+        if (sig < 0) { sig = -sig; group = true; }
+    } else {
         char nm[32];
-        if (SYMBOL_P(sv)) {
-            const char *p = korb_sym_name(c->vm, SYM2ID(sv));
-            snprintf(nm, sizeof nm, "%s", p ? p : "");
-        } else {
-            uint32_t n; const char *p = korb_str_cstr_len(sv, &n);
-            if (n >= sizeof nm) n = sizeof nm - 1;
-            memcpy(nm, p, n); nm[n] = '\0';
-        }
-        const char *base = strncmp(nm, "SIG", 3) == 0 ? nm + 3 : nm;
-        if      (!strcmp(base, "TERM")) sig = SIGTERM;
-        else if (!strcmp(base, "KILL")) sig = SIGKILL;
-        else if (!strcmp(base, "INT"))  sig = SIGINT;
-        else if (!strcmp(base, "HUP"))  sig = SIGHUP;
-        else if (!strcmp(base, "USR1")) sig = SIGUSR1;
-        else if (!strcmp(base, "USR2")) sig = SIGUSR2;
-        else if (!strcmp(base, "STOP")) sig = SIGSTOP;
-        else if (!strcmp(base, "CONT")) sig = SIGCONT;
-        else if (!strcmp(base, "EXIT") || !strcmp(base, "0")) sig = 0;
-        else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unsupported signal '%s'", nm);
-    } else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "bad signal type");
+        if (!korb_signal_name_arg(c, sv, nm, sizeof nm))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "bad signal type");
+        const char *base = nm;
+        if (*base == '-') { group = true; base++; }
+        sig = strcmp(base, "0") == 0 ? 0 : korb_signo_of_name(base);
+        if (sig < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unsupported signal '%s'", nm);
+    }
     uint32_t n = 0;
     for (uint32_t i = 1; i < VALUE_SLICE_LEN(a); i++) {
-        const VALUE pv = VALUE_SLICE_GET(a, i);
-        if (!FIXNUM_P(pv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-        const pid_t target = (pid_t)FIX2LONG(pv);
-        if (target == getpid()) CHECK(korb_kill_self(c, slots, sig));   /* deliver to ourselves, don't die */
+        korb_sword_t pid_arg = 0;
+        CHECK(korb_process_int_arg(c, slots, VALUE_SLICE_GET(a, i), &pid_arg));
+        const pid_t target = group ? (pid_t)-pid_arg : (pid_t)pid_arg;
+        /* a group send reaches us too, but only kill(2) reaches the others; our
+           own copy stays pending (blocked) until the next check point */
+        if (!group && target == getpid()) CHECK(korb_kill_self(c, slots, sig));   /* deliver to ourselves, don't die */
         else if (kill(target, sig) != 0) return korb_raise_errno(c, slots, errno, "kill", "");
         n++;
     }
@@ -1350,19 +1400,9 @@ static RESULT korb_m_process_daemon(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(LONG2FIX(0));
 }
 
-/* Signal name ("INT" / "SIGINT" / :INT / 2) → signal number, or -1. */
-static int korb_signo_of(CTX *c, VALUE v) {
-    if (FIXNUM_P(v)) return (int)FIX2LONG(v);
-    char nm[32] = "";
-    if (SYMBOL_P(v)) {
-        const char *p = korb_sym_name(c->vm, SYM2ID(v));
-        snprintf(nm, sizeof nm, "%s", p ? p : "");
-    } else if (KORB_STRING_P(v)) {
-        uint32_t n; const char *p = korb_str_cstr_len(v, &n);
-        if (n >= sizeof nm) n = sizeof nm - 1;
-        memcpy(nm, p, n); nm[n] = '\0';
-    } else return -1;
-    const char *b = strncmp(nm, "SIG", 3) == 0 ? nm + 3 : nm;
+/* Signal name ("INT" / "SIGINT") → signal number, or -1. */
+static int korb_signo_of_name(const char *const nm) {
+    const char *const b = strncmp(nm, "SIG", 3) == 0 ? nm + 3 : nm;
     static const struct { const char *n; int s; } tab[] = {
         {"HUP", SIGHUP}, {"INT", SIGINT}, {"QUIT", SIGQUIT}, {"ILL", SIGILL},
         {"TRAP", SIGTRAP}, {"ABRT", SIGABRT}, {"FPE", SIGFPE}, {"KILL", SIGKILL},
@@ -1376,6 +1416,14 @@ static int korb_signo_of(CTX *c, VALUE v) {
     for (size_t i = 0; i < sizeof tab / sizeof tab[0]; i++)
         if (!strcmp(b, tab[i].n)) return tab[i].s;
     return -1;
+}
+
+/* A signal argument ("INT" / "SIGINT" / :INT / 2) → signal number, or -1. */
+static int korb_signo_of(CTX *c, VALUE v) {
+    if (FIXNUM_P(v)) return (int)FIX2LONG(v);
+    char nm[32] = "";
+    if (!korb_signal_name_arg(c, v, nm, sizeof nm)) return -1;
+    return korb_signo_of_name(nm);
 }
 
 /* __signal_trap(sig, command) → the previous command String.
@@ -1440,6 +1488,9 @@ static RESULT korb_m_signal_signo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
  * thread is marked dead, its pending blop dropped, and the run queue emptied. */
 static void korb_blop_cancel(struct korb_vm *vm, struct korb_blop *b, int neg_errno);   /* fwd (thread.c) */
 static void korb_fork_child_threads(struct korb_vm *vm) {
+    /* a signalfd reports the *reader's* pending signals, but the parent may
+       still hold one queued in it — re-arm ours rather than reason about that */
+    if (vm->sigfd >= 0) { close(vm->sigfd); vm->sigfd = -1; }
     struct korb_thread *const me = vm->cur_thread;
     if (me == NULL) return;
     for (struct korb_thread *t = vm->thread_list; t; t = t->next) {
