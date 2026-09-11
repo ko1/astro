@@ -96,7 +96,18 @@ struct kp_ctx {
     uint8_t src_enc;          /* KORB_ENC_* for this file's string literals (from the magic comment) */
     bool fsl_false;           /* an explicit `# frozen_string_literal: false` — literals are plain, not chilled */
     const char *syntax_err;   /* a compile-time error found while lowering (bad Regexp literal): parse fails */
+    uint32_t eval_aliases[8]; /* `alias x eval`: names that get eval's hidden-binding lowering too */
+    uint32_t eval_alias_cnt;
 };
+
+/* `alias x eval` seen earlier in this file: x is lowered like eval itself. */
+static bool
+kp_is_eval_alias(const struct kp_ctx *tc, pm_constant_id_t name)
+{
+    for (uint32_t i = 0; i < tc->eval_alias_cnt; i++)
+        if (tc->eval_aliases[i] == (uint32_t)name) return true;
+    return false;
+}
 
 /* The file's `# encoding:` magic comment, as prism resolved it, mapped onto the
  * string encoding tag (a name koruby has no tag for is registered on the spot;
@@ -1707,6 +1718,8 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
         return kp_make_binding_node(tc, kp_line(tc, (const pm_node_t *)cn));
     }
 
+    /* `alias my_eval eval` in this file: the alias gets the same hidden-binding
+     * lowering (CRuby's eval is special at the call site, not in the method). */
     /* `eval(str)` — CRuby evaluates in the CALLER's binding.  koruby has no
      * runtime frame metadata, so bake a binding for the call site and pass it
      * as the hidden 2nd argument (only the plain 1-arg form; an explicit
@@ -1716,7 +1729,7 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
     if (cn->receiver == NULL && argc == 1 && cn->block == NULL &&
         !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE) &&
         !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_FORWARDING_ARGUMENTS_NODE) &&
-        strcmp(kp_cid_cstr(tc, cn->name), "eval") == 0) {
+        (strcmp(kp_cid_cstr(tc, cn->name), "eval") == 0 || kp_is_eval_alias(tc, cn->name))) {
         const uint32_t line = kp_line(tc, (const pm_node_t *)cn);
         const uint32_t cnt = 3;                          /* [self, str, binding] */
         NODE **argv = malloc(sizeof(NODE *) * cnt);
@@ -3636,6 +3649,17 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                                          nn = (nm != UINT32_MAX) ? ALLOC_node_lit(ID2SYM(nm)) : transduce(tc, al->new_name),
                                          on = (om != UINT32_MAX) ? ALLOC_node_lit(ID2SYM(om)) : transduce(tc, al->old_name)));
             return kp_send2(korb_intern(tc->c->vm, "alias_method", 12), line, selfn, nn, on);
+        }
+        /* `alias my_eval eval`: remember the new name so its call sites get the
+         * hidden caller-binding argument too (the lowering is by name). */
+        if (om == korb_intern(tc->c->vm, "eval", 4) && tc->eval_alias_cnt < 8 &&
+            PM_NODE_TYPE_P(al->new_name, PM_SYMBOL_NODE)) {
+            const pm_symbol_node_t *sn = (const pm_symbol_node_t *)al->new_name;
+            const pm_constant_id_t cid =
+                pm_constant_pool_find(&tc->parser->constant_pool,
+                                      pm_string_source(&sn->unescaped),
+                                      pm_string_length(&sn->unescaped));
+            if (cid != 0) tc->eval_aliases[tc->eval_alias_cnt++] = (uint32_t)cid;
         }
         NODE *na = ALLOC_node_alias(nm, om, -1 - tc->chain);   /* self (the class) at base[-1] */
         bake_add(tc, &na->u.node_alias.self_off);
