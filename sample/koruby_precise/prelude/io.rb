@@ -267,6 +267,18 @@ end
 # IO::WaitReadable / IO::WaitWritable and the Errno::EAGAIN subclasses the
 # *_nonblock methods raise, so `rescue IO::WaitReadable` works.
 class IO
+  # IO#timeout (Ruby 3.2): the wait limit for operations that consult it.
+  def timeout = @__io_timeout
+  def timeout=(v)
+    unless v.nil?
+      raise TypeError, "can't convert #{v.class} into time interval" unless v.is_a?(Numeric)
+      raise ArgumentError, "time interval must not be negative" if v < 0
+    end
+    @__io_timeout = v
+  end
+end
+
+class IO
   module WaitReadable; end
   module WaitWritable; end
   class EAGAINWaitReadable < Errno::EAGAIN; include WaitReadable; end

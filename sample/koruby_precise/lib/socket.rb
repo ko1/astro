@@ -69,7 +69,11 @@ class BasicSocket < IO
 
   # setsockopt(level, optname, value) or setsockopt(Socket::Option).
   def setsockopt(level, optname = nil, value = nil)
-    if level.is_a?(Socket::Option) && optname.nil?
+    if level.is_a?(Socket::Option)
+      # CRuby's (level, optname, value) form is checked first, so an Option
+      # with extra arguments is an arity error, then a type error
+      raise TypeError, "no implicit conversion of Socket::Option into Integer" unless value.nil?
+      raise ArgumentError, "wrong number of arguments (given 2, expected 3)" unless optname.nil?
       opt = level
       __sock_setopt(fileno, opt.level, opt.optname, opt.data)
       return 0
@@ -91,6 +95,9 @@ class BasicSocket < IO
   def shutdown(how = Socket::SHUT_RDWR)
     how = how.to_int if !how.is_a?(Integer) && !how.is_a?(Symbol) && !how.is_a?(String) && how.respond_to?(:to_int)
     how = how.to_str if !how.is_a?(Integer) && !how.is_a?(Symbol) && !how.is_a?(String) && how.respond_to?(:to_str)
+    unless how.is_a?(Integer) || how.is_a?(Symbol) || how.is_a?(String)
+      raise TypeError, "no implicit conversion of #{how.class} into Integer"
+    end
     unless how.is_a?(Integer)
       n = how.to_s.upcase.sub(/\ASHUT_/, "")
       how = { "RD" => Socket::SHUT_RD, "WR" => Socket::SHUT_WR,
@@ -105,20 +112,45 @@ class BasicSocket < IO
     0
   end
 
-  # `dest` is a packed sockaddr (or an Addrinfo); without one the socket must
-  # already be connected.  It was being ignored, so a sendto silently became a
-  # send on an unconnected socket.
-  def send(mesg, flags = 0, dest = nil)
-    return __sock_send(fileno, mesg.to_s, flags) if dest.nil?
-    a = Socket.__unpack(dest.is_a?(Addrinfo) ? dest.to_sockaddr : dest)
-    __sock_sendto(fileno, mesg.to_s, flags, a[0], a[2], a[1])
+  # The message must be a String or answer #to_str (CRuby: StringValue).
+  def self.__str_arg(v)
+    return v if v.is_a?(String)
+    raise TypeError, "no implicit conversion of #{v.class} into String" unless v.respond_to?(:to_str)
+    r = v.to_str
+    raise TypeError, "can't convert #{v.class} to String (#{v.class}#to_str gives #{r.class})" unless r.is_a?(String)
+    r
   end
+
+  # `dest` is a packed sockaddr (or an Addrinfo); without one the socket must
+  # already be connected.  A full buffer parks the fiber and retries, unless
+  # the caller asked for MSG_DONTWAIT — then EAGAIN is its answer.
+  def send(mesg, flags = 0, dest = nil)
+    mesg = BasicSocket.__str_arg(mesg)
+    a = dest && Socket.__unpack(dest.is_a?(Addrinfo) ? dest.to_sockaddr : dest)
+    loop do
+      begin
+        return __sock_send(fileno, mesg, flags) if a.nil?
+        return __sock_sendto(fileno, mesg, flags, a[0], a[2], a[1])
+      rescue Errno::EAGAIN, Errno::EWOULDBLOCK
+        raise if (flags & Socket::MSG_DONTWAIT) != 0
+        wait_writable
+      end
+    end
+  end
+  # A zero-length read on a stream socket is the peer's orderly shutdown, which
+  # CRuby reports as nil (a datagram may legitimately be empty).
+  private def __dgram?
+    @__dgram = (getsockopt(:SOCKET, :TYPE).int == Socket::SOCK_DGRAM) if @__dgram.nil?
+    @__dgram
+  end
+  private def __recv_eof?(r) = r.empty? && !__dgram?
   # Try the non-blocking op first and park only when it says EAGAIN: a POLL
   # wakeup is not a guarantee that the next call won't block.
   def recv(maxlen, flags = 0, outbuf = nil)
     loop do
       r = __sock_recv(fileno, maxlen, flags)
       if r
+        return nil if __recv_eof?(r)
         return r unless outbuf
         enc = outbuf.encoding
         outbuf.replace(r)
@@ -128,7 +160,20 @@ class BasicSocket < IO
       wait_readable
     end
   end
-  def recv_nonblock(maxlen, flags = 0, exception: true) = recv(maxlen, flags | Socket::MSG_DONTWAIT)
+  # Never parks: "would block" is IO::EAGAINWaitReadable, or :wait_readable.
+  def recv_nonblock(maxlen, flags = 0, outbuf = nil, exception: true)
+    r = __sock_recv(fileno, maxlen, flags)
+    if r.nil?
+      return :wait_readable unless exception
+      raise IO::EAGAINWaitReadable, "recv(2) would block"
+    end
+    return nil if __recv_eof?(r)
+    return r unless outbuf
+    enc = outbuf.encoding
+    outbuf.replace(r)
+    outbuf.force_encoding(enc)
+    outbuf
+  end
   # The address a peer would use to reach this socket: the bound address, with a
   # wildcard IP replaced by the loopback one.  An unbound socket has none.
   def connect_address
@@ -155,6 +200,15 @@ class BasicSocket < IO
     [uid, gid]
   end
 
+  def close_read
+    raise IOError, "closed stream" if closed?
+    super
+  end
+  def close_write
+    raise IOError, "closed stream" if closed?
+    super
+  end
+
   # koruby always closes the descriptor with the IO, so autoclose is a recorded
   # preference rather than a behaviour switch.
   def autoclose? = @autoclose.nil? ? true : @autoclose
@@ -168,6 +222,7 @@ class BasicSocket < IO
     loop do
       r = __sock_recvfrom(fileno, maxlen, flags)
       if r
+        return nil if __recv_eof?(r[0])
         next_data = r[0]
         if outbuf
           enc = outbuf.encoding
@@ -187,7 +242,12 @@ class BasicSocket < IO
       return :wait_readable unless exception
       raise IO::EAGAINWaitReadable, "recvfrom(2) would block"
     end
-    outbuf.replace(r[0]) if outbuf
+    return nil if __recv_eof?(r[0])
+    if outbuf
+      enc = outbuf.encoding
+      outbuf.replace(r[0])
+      outbuf.force_encoding(enc)
+    end
     [outbuf || r[0], r[1]]
   end
 
@@ -195,27 +255,23 @@ class BasicSocket < IO
   # plumbing, so the control list is always empty; everything else is faithful.
   # Socket#recvfrom answers an Addrinfo where BasicSocket's answers the raw
   # tuple, so accept either shape here.
-  private def __as_addrinfo(a) = a.is_a?(Addrinfo) ? a : __own_addrinfo(a)
+  # A connected stream has no sender address; CRuby still answers an Addrinfo
+  # there, an AF_UNSPEC one of this socket's type.
+  private def __as_addrinfo(a) = a.is_a?(Addrinfo) ? a : __own_addrinfo(a || ["AF_UNSPEC", 0, "", ""])
 
   def recvmsg(maxlen = nil, flags = 0, opts = nil, scm_rights: false)
-    data, addr = recvfrom(maxlen || 65536, flags)
-    [data, __as_addrinfo(addr), 0]
+    r = recvfrom(maxlen || 65536, flags)
+    return nil if r.nil?
+    [r[0], __as_addrinfo(r[1]), 0]
   end
 
   def recvmsg_nonblock(maxlen = nil, flags = 0, opts = nil, scm_rights: false, exception: true)
     r = recvfrom_nonblock(maxlen || 65536, flags, nil, exception: exception)
-    return r unless r.is_a?(Array)
+    return r unless r.is_a?(Array)      # :wait_readable, or nil at EOF
     [r[0], __as_addrinfo(r[1]), 0]
   end
 
-  def sendmsg(mesg, flags = 0, dest_sockaddr = nil, *controls)
-    if dest_sockaddr
-      a = Socket.__unpack(dest_sockaddr)
-      __sock_sendto(fileno, mesg.to_s, flags, a[0], a[2], a[1])
-    else
-      __sock_send(fileno, mesg.to_s, flags)
-    end
-  end
+  def sendmsg(mesg, flags = 0, dest_sockaddr = nil, *controls) = send(mesg, flags, dest_sockaddr)
   def sendmsg_nonblock(mesg, flags = 0, dest_sockaddr = nil, *controls, exception: true)
     sendmsg(mesg, flags | Socket::MSG_DONTWAIT, dest_sockaddr, *controls)
   rescue Errno::EAGAIN, Errno::EWOULDBLOCK
@@ -248,10 +304,17 @@ class IPSocket < BasicSocket
   def addr(reverse_lookup = nil) = __rev(getsockname_ary, reverse_lookup)
   def peeraddr(reverse_lookup = nil) = __rev(getpeername_ary, reverse_lookup)
 
+  # "#<TCPSocket:fd 4, AF_INET, 127.0.0.1, 42870>"
+  def inspect
+    return "#<#{self.class}:(closed)>" if closed?
+    a = getsockname_ary
+    "#<#{self.class}:fd #{fileno}, #{a[0]}, #{a[3]}, #{a[1]}>"
+  end
+
   # #recvfrom follows the socket's own reverse-lookup setting.
   def recvfrom(maxlen, flags = 0, outbuf = nil)
-    mesg, addr = super
-    [mesg, __rev(addr, nil)]
+    r = super
+    r && [r[0], r[1] && __rev(r[1], nil)]
   end
   def self.getaddress(host)
     r = __sock_getaddrinfo(host.to_s, nil, nil, Socket::SOCK_STREAM)
@@ -266,14 +329,24 @@ class TCPSocket < IPSocket
   def initialize(host, port, local_host = nil, local_port = nil,
                  connect_timeout: nil, open_timeout: nil, resolv_timeout: nil)
     tmo = connect_timeout || open_timeout
-    fam = Socket.__family_of_host(host)      # "::1" must open an AF_INET6 socket
-    fd = __sock_open(fam, Socket::SOCK_STREAM, 0)
-    begin
-      __sock_bind(fd, fam, local_host, local_port || 0) if local_host
-      __sock_connect(fd, fam, host.to_s, port, tmo)   # Integer or a service name ("smtp")
-    rescue Exception
-      IO.new(fd).close rescue nil
-      raise
+    # nil host: CRuby tries each address getaddrinfo(3) answers for the local
+    # host (typically ::1 then 127.0.0.1) and keeps the first that connects
+    cands = if host.nil?
+              rows = __sock_getaddrinfo(nil, port, nil, Socket::SOCK_STREAM) rescue []
+              rows.map { |r| [Socket.__family(r[0]), r[3]] }
+            end
+    cands = [[Socket.__family_of_host(host), host.to_s]] if cands.nil? || cands.empty?   # "::1" must open an AF_INET6 socket
+    fd = nil
+    cands.each_with_index do |(fam, h), i|
+      fd = __sock_open(fam, Socket::SOCK_STREAM, 0)
+      begin
+        __sock_bind(fd, fam, local_host, local_port || 0) if local_host
+        __sock_connect(fd, fam, h, port, tmo)   # Integer or a service name ("smtp")
+        break
+      rescue Exception
+        IO.new(fd).close rescue nil
+        raise if i == cands.size - 1
+      end
     end
     __init_fd(fd, "r+b")
   end
@@ -332,7 +405,14 @@ class TCPServer < TCPSocket
     end
   end
 
-  def accept_nonblock(exception: true) = accept
+  def accept_nonblock(exception: true)
+    pair = __sock_accept(fileno)
+    unless pair
+      return :wait_readable unless exception
+      raise IO::EAGAINWaitReadable, "accept(2) would block"
+    end
+    TCPSocket.for_fd(pair[0])
+  end
   def listen(backlog) = (__sock_listen(fileno, __backlog(backlog)); 0)
 
   # Like #accept, but hands back the raw descriptor.
@@ -396,15 +476,16 @@ class UNIXSocket < BasicSocket
   def addr = ["AF_UNIX", path]
   def peeraddr = ["AF_UNIX", getpeername_ary[2]]
 
-  # A UNIX socket's sender address is just ["AF_UNIX", path] — an unbound peer
-  # (a socketpair, or a client that never bound) reports an empty path.
+  # A UNIX socket's sender address is just ["AF_UNIX", path]: what recvfrom(2)
+  # reported — an unbound peer (a socketpair, or a client that never bound) has
+  # an empty path.
   def recvfrom(maxlen, flags = 0, outbuf = nil)
-    mesg, _ = super
-    [mesg, ["AF_UNIX", (getpeername_ary[2].to_s rescue "")]]
+    r = super
+    r && [r[0], ["AF_UNIX", r[1] ? r[1][2].to_s : ""]]
   end
 
   def self.pair(type = Socket::SOCK_STREAM, protocol = 0)
-    a, b = __sock_pair(Socket::AF_UNIX, type)
+    a, b = __sock_pair(Socket::AF_UNIX, Socket.__socktype_strict(type))
     [for_fd(a), for_fd(b)]
   end
   class << self; alias_method :socketpair, :pair; end
@@ -441,7 +522,14 @@ class UNIXServer < UNIXSocket
     end
   end
 
-  def accept_nonblock(exception: true) = accept
+  def accept_nonblock(exception: true)
+    pair = __sock_accept(fileno)
+    unless pair
+      return :wait_readable unless exception
+      raise IO::EAGAINWaitReadable, "accept(2) would block"
+    end
+    UNIXSocket.for_fd(pair[0])
+  end
   def listen(backlog) = (__sock_listen(fileno, __backlog(backlog)); 0)
 
   # Like #accept, but hands back the raw descriptor.
@@ -475,12 +563,9 @@ class UDPSocket < IPSocket
   def connect(host, port) = (__sock_connect(fileno, @family, host, port); 0)
   # UDPSocket#send takes either (host, port) or a single packed sockaddr.
   def send(mesg, flags = 0, host = nil, port = nil)
-    return __sock_send(fileno, mesg.to_s, flags) if host.nil?
-    if port.nil?
-      a = Socket.__unpack(host.is_a?(Addrinfo) ? host.to_sockaddr : host)
-      return __sock_sendto(fileno, mesg.to_s, flags, a[0], a[2], a[1])
-    end
-    __sock_sendto(fileno, mesg.to_s, flags, @family, host.to_s, port)
+    return super(mesg, flags, host) if port.nil?
+    mesg = BasicSocket.__str_arg(mesg)
+    __sock_sendto(fileno, mesg, flags, @family, host.to_s, port)
   end
 end
 
@@ -748,24 +833,40 @@ class Socket < BasicSocket
 
   def initialize(family, type, protocol = 0)
     @family, @type = Socket.__family_strict(family), Socket.__socktype_strict(type)
+    unless protocol.is_a?(Integer)
+      raise TypeError, "no implicit conversion of #{protocol.class} into Integer" unless protocol.respond_to?(:to_int)
+      protocol = protocol.to_int
+    end
     __init_fd(__sock_open(@family, @type, protocol), "r+b")
   end
 
   # BasicSocket#recvfrom answers the raw [af, port, host, addr] tuple; Socket's
   # own answers an Addrinfo (CRuby).
   def recvfrom(maxlen, flags = 0)
-    mesg, addr = super
-    [mesg, __own_addrinfo(addr)]     # the sender's address, typed like this socket
+    r = super
+    r && [r[0], r[1] && __own_addrinfo(r[1])]     # the sender's address, typed like this socket
   end
 
   def recvfrom_nonblock(maxlen = 65536, flags = 0, outbuf = nil, exception: true)
     r = super
-    return r if r.is_a?(Symbol)
-    [r[0], __own_addrinfo(r[1])]
+    return r unless r.is_a?(Array)      # :wait_readable, or nil at EOF
+    [r[0], r[1] && __own_addrinfo(r[1])]
   end
 
   def bind(addr) = (a = Socket.__unpack(addr); __sock_bind(fileno, @family, a[2], a[1]); 0)
-  def connect(addr) = (a = Socket.__unpack(addr); __sock_connect(fileno, @family, a[2], a[1]); 0)
+  def connect(addr) = (a = Socket.__unpack(addr); __sock_connect(fileno, @family, a[2], a[1], timeout); 0)
+  # The fd stays O_NONBLOCK afterwards (CRuby); EINPROGRESS surfaces as
+  # IO::EINPROGRESSWaitWritable or :wait_writable, EISCONN as 0 when exceptionless.
+  def connect_nonblock(addr, exception: true)
+    a = Socket.__unpack(addr)
+    r = __sock_connect(fileno, @family, a[2], a[1], nil, true)
+    return 0 if r == 0
+    return :wait_writable unless exception
+    raise IO::EINPROGRESSWaitWritable, "connect(2) would block"
+  rescue Errno::EISCONN
+    raise if exception
+    0
+  end
   # Socket.tcp's :connect_timeout / :open_timeout, which #connect has no room for.
   def __connect_within(ai, timeout)
     __sock_connect(fileno, @family, ai.ip_address, ai.ip_port, timeout)
@@ -808,6 +909,9 @@ class Socket < BasicSocket
   # packed bytes, an Addrinfo, or the descriptive [family, port, host, addr].
   def self.getnameinfo(sa, flags = 0)
     if sa.is_a?(Array)
+      unless (3..4).cover?(sa.size)
+        raise ArgumentError, "array size should be 3 or 4, #{sa.size} given"
+      end
       # the family has to be one getnameinfo(3) can render; AF_UNIX has no
       # numeric host/service, so CRuby reports EAI_FAMILY
       fam = __family_strict(sa[0])
@@ -823,8 +927,9 @@ class Socket < BasicSocket
 
   def self.getaddrinfo(host, service, family = nil, socktype = nil, protocol = nil,
                        flags = nil, reverse_lookup = nil, timeout: nil)
-    rows = __sock_getaddrinfo(host&.to_s, service, family && __family(family),
-                              socktype && __socktype(socktype), flags ? flags.to_int : 0)
+    host = host.is_a?(Symbol) ? host.to_s : BasicSocket.__str_arg(host) unless host.nil?
+    rows = __sock_getaddrinfo(host, service, family && __family(family),
+                              socktype && __socktype(socktype), flags ? flags.to_int : 0, protocol || 0)
     # reverse_lookup asks for the PTR name in the host slot instead of the
     # numeric address.  nil (the default) defers to the global setting.
     want = case reverse_lookup
@@ -869,13 +974,33 @@ class Socket < BasicSocket
     p
   end
 
-  def self.getifaddrs
-    []   # Socket::Ifaddr is not modelled; an empty list is honest, not a lie about interfaces
+  # One getifaddrs(3) entry.  The addresses are Addrinfos (nil when the entry
+  # has none, or it is not an IP one — AF_PACKET is not modelled).
+  class Ifaddr
+    attr_reader :name, :ifindex, :flags, :addr, :netmask, :broadaddr, :dstaddr
+    def initialize(name, ifindex, flags, addr, netmask, broadaddr, dstaddr)
+      @name, @ifindex, @flags = name, ifindex, flags
+      @addr, @netmask, @broadaddr, @dstaddr = [addr, netmask, broadaddr, dstaddr].map { |t|
+        t && Addrinfo.__from_ary([t[0], t[1], t[2], t[3], 0, 0])
+      }
+    end
+    def inspect
+      s = "#<Socket::Ifaddr #{@name}"
+      s << " #{@addr.inspect_sockaddr}" if @addr
+      s << " netmask=#{@netmask.inspect_sockaddr}" if @netmask
+      s << " broadcast=#{@broadaddr.inspect_sockaddr}" if @broadaddr
+      s << " dstaddr=#{@dstaddr.inspect_sockaddr}" if @dstaddr
+      s << ">"
+    end
   end
 
-  # Every interface address, as Addrinfos (Socket::Ifaddr is not needed here).
+  def self.getifaddrs
+    __sock_ifaddrs.map { |row| Ifaddr.new(*row) }
+  end
+
+  # Every interface's IP addresses, as Addrinfos.
   def self.ip_address_list
-    __sock_ifaddrs.map { |fam, addr| Addrinfo.ip(addr) }
+    getifaddrs.map(&:addr).compact.select(&:ip?)
   end
 
   # Listening sockets for every address `host`/`port` resolves to.  A port of 0
@@ -1031,6 +1156,9 @@ class Socket < BasicSocket
     s = Socket.new(remote.afamily, remote.socktype, remote.protocol)
     begin
       s.__connect_within(remote, tmo)
+    rescue IO::TimeoutError
+      s.close unless s.closed?
+      raise Errno::ETIMEDOUT, "user specified timeout for #{host}:#{port}"
     rescue Exception
       s.close unless s.closed?
       raise
@@ -1058,9 +1186,17 @@ class Socket < BasicSocket
   def ipv6only! = (setsockopt(Socket::IPPROTO_IPV6, Socket::IPV6_V6ONLY, 1); nil)
 
   # nil family = infer from the host string, so sockaddr_in accepts IPv6 too.
-  def self.sockaddr_in(port, host) = __sock_pack(nil, port, host.to_s)   # Integer or service name
+  def self.sockaddr_in(port, host)   # port: Integer or a service name
+    __sock_pack(nil, port, host.nil? || host.is_a?(Integer) ? host&.to_s : BasicSocket.__str_arg(host))
+  end
   class << self; alias_method :pack_sockaddr_in, :sockaddr_in; end
-  def self.sockaddr_un(path) = __sock_pack(AF_UNIX, 0, path.to_s)
+  def self.sockaddr_un(path)
+    path = BasicSocket.__str_arg(path)
+    if path.bytesize > 108
+      raise ArgumentError, "too long unix socket path (#{path.bytesize} bytes given but 108 bytes max)"
+    end
+    __sock_pack(AF_UNIX, 0, path)
+  end
   class << self; alias_method :pack_sockaddr_un, :sockaddr_un; end
 
   def self.unpack_sockaddr_in(sa)
@@ -1083,6 +1219,7 @@ class Socket < BasicSocket
   def self.__unpack(sa)
     return sa if sa.is_a?(Array)
     return sa.to_a if sa.is_a?(Addrinfo)
+    raise TypeError, "no implicit conversion of #{sa.class} into String" unless sa.respond_to?(:to_str)
     __sock_unpack(sa.to_str)
   end
 
@@ -1099,7 +1236,7 @@ class Socket < BasicSocket
   def self.__socktype_strict(t)
     t = t.to_int if !t.is_a?(Integer) && !t.is_a?(Symbol) && !t.is_a?(String) && t.respond_to?(:to_int)
     return t if t.is_a?(Integer)
-    t = t.to_str if !t.is_a?(Symbol) && !t.is_a?(String) && t.respond_to?(:to_str)
+    t = BasicSocket.__str_arg(t) unless t.is_a?(Symbol)
     n = t.to_s.upcase.sub(/\ASOCK_/, "")
     { "STREAM" => SOCK_STREAM, "DGRAM" => SOCK_DGRAM, "RAW" => SOCK_RAW,
       "SEQPACKET" => SOCK_SEQPACKET, "RDM" => (defined?(SOCK_RDM) ? SOCK_RDM : 4) }.fetch(n) do
@@ -1125,7 +1262,7 @@ class Socket < BasicSocket
   def self.__family_strict(f)
     f = f.to_int if !f.is_a?(Integer) && !f.is_a?(Symbol) && !f.is_a?(String) && f.respond_to?(:to_int)
     return f if f.is_a?(Integer)
-    f = f.to_str if !f.is_a?(Symbol) && !f.is_a?(String) && f.respond_to?(:to_str)
+    f = BasicSocket.__str_arg(f) unless f.is_a?(Symbol)
     n = f.to_s.sub(/\AAF_|\APF_/, "")
     { "INET" => AF_INET, "INET6" => AF_INET6, "UNIX" => AF_UNIX,
       "LOCAL" => AF_UNIX, "UNSPEC" => AF_UNSPEC }.fetch(n.upcase) do
@@ -1214,7 +1351,8 @@ class Addrinfo
       # declared family (an IPv4 address under AF_INET6 is an error).
       if af == Socket::AF_INET || af == Socket::AF_INET6
         lit = a[3].to_s
-        ok = if af == Socket::AF_INET
+        ok = if ["", "<any>", "<broadcast>"].include?(lit) then af == Socket::AF_INET
+             elsif af == Socket::AF_INET
                lit =~ /\A\d{1,3}(\.\d{1,3}){3}\z/
              else
                lit.include?(":")
@@ -1232,6 +1370,10 @@ class Addrinfo
     end
     st = socktype.nil? ? 0 : Socket.__socktype_strict(socktype)
     if sockaddr.is_a?(Array) && (af == Socket::AF_INET || af == Socket::AF_INET6)
+      # CRuby's resolver pairs an unspecified socktype only with IPPROTO_IP/UDP
+      if st == 0 && ![0, Socket::IPPROTO_UDP].include?(protocol || 0)
+        raise Socket::ResolutionError, "getaddrinfo: ai_socktype not supported"
+      end
       # Let getaddrinfo(3) judge the family/socktype/protocol combination, which
       # is exactly what CRuby does — the accepted set is the platform's, not ours.
       # a raw socket has no service, and naming one makes getaddrinfo(3) refuse
@@ -1249,7 +1391,11 @@ class Addrinfo
   end
 
   def self.getaddrinfo(host, service, family = nil, socktype = nil, protocol = nil, flags = nil)
-    Socket.getaddrinfo(host, service, family, socktype, protocol, flags).map { |a| __from_ary(a) }
+    Socket.getaddrinfo(host, service, family, socktype, protocol, flags).map { |a|
+      ai = __from_ary(a)
+      ai.instance_variable_set(:@canonname, a[7]) if a.size >= 8    # AI_CANONNAME
+      ai
+    }
   end
 
   # Addrinfo.ip leaves socktype/protocol unspecified (0), unlike .tcp/.udp.
@@ -1307,7 +1453,7 @@ class Addrinfo
   def to_sockaddr = Socket.__pack(to_a)
   alias_method :to_str, :to_sockaddr
   alias_method :to_s,   :to_sockaddr      # CRuby: the same definition
-  def canonname = nil
+  def canonname = @canonname
   def ==(other) = other.is_a?(Addrinfo) && to_a == other.to_a
   alias_method :eql?, :==
   def hash = to_a.hash
@@ -1403,6 +1549,7 @@ class Addrinfo
       __setup(fam, a[1].to_i, a[0].to_s, a[0].to_s,
               Socket.__socktype(ary[3] || 0), __protocol_of(ary[4]))
     end
+    @canonname = ary[5]
   end
 
   def pfamily_name = afamily_name.to_s.sub(/\AAF_/, "PF_")

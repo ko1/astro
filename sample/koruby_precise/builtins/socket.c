@@ -15,6 +15,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <ifaddrs.h>
+#include <net/if.h>
 #include <netinet/udp.h>
 /* UDP_CORK / UDP_GRO live in linux/udp.h, which redefines struct udphdr — take
  * just the numbers rather than the header. */
@@ -68,37 +69,57 @@ static RESULT korb_sock_addr_ary(CTX *c, VALUE *slots, const struct sockaddr *sa
     return RESULT_OK(VALUE_REF_GET(ar));
 }
 
+static RESULT korb_raise_resolution_error_code(CTX *c, VALUE *slots, const char *msg, int code);
+
 /* Fill a sockaddr from (family, host, service).  `serv` is what getaddrinfo(3)
  * calls a service: a port number in decimal *or* a name from /etc/services
- * ("smtp").  AF_UNIX uses `host` as the path. */
-static bool korb_sock_fill_addr_s(int family, const char *host, const char *serv,
-                                  struct sockaddr_storage *ss, socklen_t *len) {
+ * ("smtp").  AF_UNIX uses `host` as the path.  Host follows CRuby's host_str:
+ * "" / "<any>" are INADDR_ANY, "<broadcast>" the broadcast address, and NULL
+ * is left to getaddrinfo(3) (wildcard with AI_PASSIVE in `flags`, else
+ * loopback).  Answers 0, or the EAI_* code. */
+static int korb_sock_fill_addr_s(int family, const char *host, const char *serv, int flags,
+                                 struct sockaddr_storage *ss, socklen_t *len) {
     memset(ss, 0, sizeof *ss);
     if (family == AF_UNIX) {
         struct sockaddr_un *un = (struct sockaddr_un *)ss;
         un->sun_family = AF_UNIX;
         snprintf(un->sun_path, sizeof un->sun_path, "%s", host ? host : "");
         *len = (socklen_t)sizeof(struct sockaddr_un);
-        return true;
+        return 0;
     }
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = family;
     hints.ai_socktype = SOCK_STREAM;
-    if (host == NULL || host[0] == '\0') hints.ai_flags = AI_PASSIVE;
-    if (getaddrinfo((host && host[0]) ? host : NULL, (serv && serv[0]) ? serv : NULL, &hints, &res) != 0 || res == NULL)
-        return false;
+    hints.ai_flags = flags;
+    if (host && (host[0] == '\0' || !strcmp(host, "<any>"))) {
+        host = (family == AF_INET6) ? "::" : "0.0.0.0";
+        hints.ai_flags |= AI_NUMERICHOST;
+    } else if (host && !strcmp(host, "<broadcast>")) {
+        host = "255.255.255.255";
+        hints.ai_flags |= AI_NUMERICHOST;
+    }
+    const int gr = getaddrinfo(host, (serv && serv[0]) ? serv : NULL, &hints, &res);
+    if (gr != 0) return gr;
+    if (res == NULL) return EAI_NONAME;
     memcpy(ss, res->ai_addr, res->ai_addrlen);
     *len = res->ai_addrlen;
     freeaddrinfo(res);
-    return true;
+    return 0;
 }
 
-static bool korb_sock_fill_addr(int family, const char *host, int port,
-                                struct sockaddr_storage *ss, socklen_t *len) {
+static int korb_sock_fill_addr(int family, const char *host, int port, int flags,
+                               struct sockaddr_storage *ss, socklen_t *len) {
     char portbuf[16];
     snprintf(portbuf, sizeof portbuf, "%d", port);
-    return korb_sock_fill_addr_s(family, host, portbuf, ss, len);
+    return korb_sock_fill_addr_s(family, host, portbuf, flags, ss, len);
+}
+
+/* Socket::ResolutionError for a failed getaddrinfo(3). */
+static RESULT korb_sock_raise_gai(CTX *c, VALUE *slots, int gr) {
+    char m[192];
+    snprintf(m, sizeof m, "getaddrinfo: %s", gai_strerror(gr));
+    return korb_raise_resolution_error_code(c, slots, m, gr);
 }
 
 /* Render a port argument as a getaddrinfo service string: an Integer becomes
@@ -184,7 +205,8 @@ static RESULT korb_sock_finish_connect(CTX *c, VALUE *slots, int fd, const char 
     return RESULT_OK(LONG2FIX(0));
 }
 
-/* __sock_connect(fd, family, host, port_or_service) */
+/* __sock_connect(fd, family, host, port_or_service[, timeout[, nonblock]]).
+ * nonblock: leave the fd O_NONBLOCK and answer nil (not park) on EINPROGRESS. */
 static RESULT korb_m_sock_connect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
@@ -194,11 +216,20 @@ static RESULT korb_m_sock_connect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     korb_sock_serv_arg(c, VALUE_SLICE_GET(a, 3), serv, sizeof serv);
     struct sockaddr_storage ss; socklen_t len = 0;
-    if (!korb_sock_fill_addr_s(fam, host, serv, &ss, &len))
-        return korb_raise_errno(c, slots, ENOENT, "getaddrinfo", host);
+    { const int gr = korb_sock_fill_addr_s(fam, host, serv, 0, &ss, &len);
+      if (gr != 0) return korb_sock_raise_gai(c, slots, gr); }
     double tmo = -1.0;                                 /* optional 5th arg: seconds, or nil for no limit */
     const VALUE tv = (VALUE_SLICE_LEN(a) >= 5) ? VALUE_SLICE_GET(a, 4) : KORB_NIL;
     if (tv != KORB_NIL && !korb_num_to_d(tv, &tmo)) tmo = -1.0;
+    const bool nonblock = VALUE_SLICE_LEN(a) >= 6 && KORB_TRUTHY(VALUE_SLICE_GET(a, 5));
+    if (nonblock) {
+        const int fl = fcntl(fd, F_GETFL);
+        if (fl >= 0 && !(fl & O_NONBLOCK)) (void)fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+        const int cr = connect(fd, (struct sockaddr *)&ss, len);
+        if (cr == 0) return RESULT_OK(LONG2FIX(0));
+        if (errno == EINPROGRESS || errno == EALREADY || errno == EINTR) return RESULT_OK(KORB_NIL);
+        return korb_raise_errno(c, slots, errno, "connect", host);
+    }
     /* A bounded connect has to be able to give up, so it goes out non-blocking
      * and the wait below enforces the deadline; the flag is put back after. */
     int saved_fl = -1;
@@ -233,8 +264,8 @@ static RESULT korb_m_sock_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     char serv[64];
     korb_sock_serv_arg(c, VALUE_SLICE_GET(a, 3), serv, sizeof serv);
     struct sockaddr_storage ss; socklen_t len = 0;
-    if (!korb_sock_fill_addr_s(fam, host, serv, &ss, &len))
-        return korb_raise_errno(c, slots, ENOENT, "getaddrinfo", host);
+    { const int gr = korb_sock_fill_addr_s(fam, host, serv, AI_PASSIVE, &ss, &len);
+      if (gr != 0) return korb_sock_raise_gai(c, slots, gr); }
     if (bind(fd, (struct sockaddr *)&ss, len) != 0) return korb_raise_errno(c, slots, errno, "bind", host);
     return RESULT_OK(LONG2FIX(0));
 }
@@ -334,7 +365,12 @@ static RESULT korb_m_sock_getaddrinfo(CTX *c, VALUE *slots, VALUE_REF self, VALU
     /* the caller's ai_flags decide; with no host and no AI_PASSIVE, getaddrinfo(3)
      * answers the loopback (a client address), which is what CRuby reports */
     if (VALUE_SLICE_LEN(a) >= 5 && FIXNUM_P(VALUE_SLICE_GET(a, 4))) hints.ai_flags = (int)FIX2LONG(VALUE_SLICE_GET(a, 4));
-    const int gr = getaddrinfo(host[0] ? host : NULL, portbuf[0] ? portbuf : NULL, &hints, &res);
+    /* CRuby's host_str: nil is NULL, but "" is INADDR_ANY spelled out */
+    const char *hp = host;
+    if (VALUE_SLICE_GET(a, 0) == KORB_NIL) hp = NULL;
+    else if (host[0] == '\0' || !strcmp(host, "<any>")) { hp = "0.0.0.0"; hints.ai_flags |= AI_NUMERICHOST; }
+    else if (!strcmp(host, "<broadcast>")) { hp = "255.255.255.255"; hints.ai_flags |= AI_NUMERICHOST; }
+    const int gr = getaddrinfo(hp, portbuf[0] ? portbuf : NULL, &hints, &res);
     if (gr != 0) { char m[192]; snprintf(m, sizeof m, "getaddrinfo: %s", gai_strerror(gr)); return korb_raise_resolution_error_code(c, slots, m, gr); }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
     VALUE_REF list = VALUE_REF_AT(&slots[0]);
@@ -344,6 +380,10 @@ static RESULT korb_m_sock_getaddrinfo(CTX *c, VALUE *slots, VALUE_REF self, VALU
         CHECK(korb_ary_push_val(c, slots + 2, one, LONG2FIX(ai->ai_family)));   /* CRuby's 5th element */
         CHECK(korb_ary_push_val(c, slots + 2, one, LONG2FIX(ai->ai_socktype)));
         CHECK(korb_ary_push_val(c, slots + 2, one, LONG2FIX(ai->ai_protocol)));
+        if (ai->ai_canonname) {                          /* AI_CANONNAME: the 8th element */
+            slots[2] = UNWRAP(korb_str_new(c, slots + 2, ai->ai_canonname, (uint32_t)strlen(ai->ai_canonname)));
+            CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
+        }
         CHECK(korb_ary_push_val(c, slots + 2, list, VALUE_REF_GET(one)));
     }
     freeaddrinfo(res);
@@ -388,13 +428,13 @@ static RESULT korb_m_sock_hostbyaddr(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     memset(&ss, 0, sizeof ss);
     socklen_t sl;
     if (fam == AF_INET6) {
-        if (UNLIKELY(alen != 16)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid address length");
+        if (UNLIKELY(alen != 16)) return korb_raise_resolution_error_code(c, slots, "host not found", 0);
         struct sockaddr_in6 *const s6 = (struct sockaddr_in6 *)&ss;
         s6->sin6_family = AF_INET6;
         memcpy(&s6->sin6_addr, korb_strbuf_data(VAL2STR(av)->buf), 16);
         sl = sizeof *s6;
     } else {
-        if (UNLIKELY(alen != 4)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid address length");
+        if (UNLIKELY(alen != 4)) return korb_raise_resolution_error_code(c, slots, "host not found", 0);
         struct sockaddr_in *const s4 = (struct sockaddr_in *)&ss;
         s4->sin_family = AF_INET;
         memcpy(&s4->sin_addr, korb_strbuf_data(VAL2STR(av)->buf), 4);
@@ -485,7 +525,19 @@ static RESULT korb_m_sock_recv_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(KORB_NIL);
 }
 
-/* __sock_ifaddrs() → [[family, "addr"], …] for every interface with an IP. */
+/* One ifaddrs address as the [family, port, host, addr] tuple, or nil when it
+ * is missing or not IP (AF_PACKET has no Addrinfo shape here). */
+static RESULT korb_sock_ifaddr_tuple(CTX *c, VALUE *slots, const struct sockaddr *sa) {
+    if (sa == NULL || (sa->sa_family != AF_INET && sa->sa_family != AF_INET6)) return RESULT_OK(KORB_NIL);
+    struct sockaddr_storage ss;
+    const socklen_t sl = (sa->sa_family == AF_INET) ? (socklen_t)sizeof(struct sockaddr_in) : (socklen_t)sizeof(struct sockaddr_in6);
+    memcpy(&ss, sa, sl);
+    if (sa->sa_family == AF_INET6) ((struct sockaddr_in6 *)&ss)->sin6_scope_id = 0;   /* Addrinfo takes the bare address */
+    return korb_sock_addr_ary(c, slots, (const struct sockaddr *)&ss, sl);
+}
+
+/* __sock_ifaddrs() → [[name, ifindex, flags, addr, netmask, broadaddr, dstaddr], …]
+ * for every interface entry; the three addresses are tuples or nil. */
 static RESULT korb_m_sock_ifaddrs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; (void)a;
     struct ifaddrs *head = NULL;
@@ -494,18 +546,23 @@ static RESULT korb_m_sock_ifaddrs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     VALUE_REF list = VALUE_REF_AT(&slots[0]);
     RESULT r = RESULT_OK(KORB_NIL);
     for (const struct ifaddrs *p = head; p != NULL && r.state == KORB_NORMAL; p = p->ifa_next) {
-        if (p->ifa_addr == NULL) continue;
-        const int fam = p->ifa_addr->sa_family;
-        if (fam != AF_INET && fam != AF_INET6) continue;
-        char host[NI_MAXHOST];
-        const socklen_t sl = (fam == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
-        if (getnameinfo(p->ifa_addr, sl, host, sizeof host, NULL, 0, NI_NUMERICHOST) != 0) continue;
-        char *const pct = strchr(host, '%');            /* drop a scope id: Addrinfo takes the bare address */
-        if (pct) *pct = '\0';
-        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
+        const char *const name = p->ifa_name ? p->ifa_name : "";
+        const unsigned ifindex = if_nametoindex(name);
+        const struct sockaddr *const brd = (p->ifa_flags & IFF_BROADCAST) ? p->ifa_broadaddr : NULL;
+        const struct sockaddr *const dst = (p->ifa_flags & IFF_POINTOPOINT) ? p->ifa_dstaddr : NULL;
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 7));
         VALUE_REF one = VALUE_REF_AT(&slots[1]);
-        CHECK(korb_ary_push_val(c, slots + 2, one, LONG2FIX(fam)));
-        slots[2] = UNWRAP(korb_str_new(c, slots + 2, host, (uint32_t)strlen(host)));
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, name, (uint32_t)strlen(name)));
+        CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
+        CHECK(korb_ary_push_val(c, slots + 3, one, LONG2FIX((korb_sword_t)ifindex)));
+        CHECK(korb_ary_push_val(c, slots + 3, one, LONG2FIX((korb_sword_t)p->ifa_flags)));
+        slots[2] = UNWRAP(korb_sock_ifaddr_tuple(c, slots + 2, p->ifa_addr));
+        CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
+        slots[2] = UNWRAP(korb_sock_ifaddr_tuple(c, slots + 2, p->ifa_netmask));
+        CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
+        slots[2] = UNWRAP(korb_sock_ifaddr_tuple(c, slots + 2, brd));
+        CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
+        slots[2] = UNWRAP(korb_sock_ifaddr_tuple(c, slots + 2, dst));
         CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
         r = korb_ary_push_val(c, slots + 2, list, VALUE_REF_GET(one));
     }
@@ -577,7 +634,8 @@ static RESULT korb_m_sock_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* __sock_recvfrom(fd, maxlen, flags) → [String, [family, port, host, addr]],
  * or nil when the call would block (the caller parks and retries).  MSG_DONTWAIT
  * is always added: koruby drives blocking through the scheduler, never by
- * stalling the native thread. */
+ * stalling the native thread.  A connected stream reports no sender address
+ * (recvfrom(2) leaves the length 0), which CRuby surfaces as nil. */
 static RESULT korb_m_sock_recvfrom(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
@@ -602,7 +660,7 @@ static RESULT korb_m_sock_recvfrom(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
     KORB_STR_ENC_SET(sr.value, KORB_ENC_BINARY);
     slots[0] = sr.value;                                  /* root the payload across the array builds */
-    slots[1] = UNWRAP(korb_sock_addr_ary(c, slots + 1, (struct sockaddr *)&ss, slen ? slen : (socklen_t)sizeof ss));
+    slots[1] = slen ? UNWRAP(korb_sock_addr_ary(c, slots + 1, (struct sockaddr *)&ss, slen)) : KORB_NIL;
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
     VALUE_REF pair = VALUE_REF_AT(&slots[2]);
     CHECK(korb_ary_push_val(c, slots + 3, pair, slots[0]));
@@ -626,8 +684,8 @@ static RESULT korb_m_sock_sendto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (!korb_sock_cstr(VALUE_SLICE_GET(a, 4), host, sizeof host))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
         korb_sock_serv_arg(c, VALUE_SLICE_LEN(a) >= 6 ? VALUE_SLICE_GET(a, 5) : KORB_NIL, serv, sizeof serv);
-        if (!korb_sock_fill_addr_s(fam, host, serv, &ss, &alen))
-            return korb_raise_errno(c, slots, ENOENT, "getaddrinfo", host);
+        { const int gr = korb_sock_fill_addr_s(fam, host, serv, 0, &ss, &alen);
+          if (gr != 0) return korb_sock_raise_gai(c, slots, gr); }
     }
     uint32_t n; const char *const p = korb_str_cstr_len(sv, &n);   /* nothing allocates before the send */
     const ssize_t w = alen ? sendto(fd, p, n, fl, (struct sockaddr *)&ss, alen)
@@ -730,13 +788,13 @@ static RESULT korb_m_sock_getnameinfo(CTX *c, VALUE *slots, VALUE_REF self, VALU
     uint32_t n; const char *const p = korb_str_cstr_len(sv, &n);
     struct sockaddr_storage ss;
     if (n < sizeof(sa_family_t) || n > sizeof ss)
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "not a valid sockaddr (%u bytes)", n);
+        return korb_raise_resolution_error_code(c, slots, "getnameinfo: ai_family not supported", EAI_FAMILY);
     memset(&ss, 0, sizeof ss);
     memcpy(&ss, p, n);                              /* copy out before anything allocates */
     const int flags = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : 0;
     char hbuf[NI_MAXHOST] = "", sbuf[NI_MAXSERV] = "";
     const int r = getnameinfo((struct sockaddr *)&ss, (socklen_t)n, hbuf, sizeof hbuf, sbuf, sizeof sbuf, flags);
-    if (r != 0) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "getnameinfo: %s", gai_strerror(r));
+    if (r != 0) { char m[192]; snprintf(m, sizeof m, "getnameinfo: %s", gai_strerror(r)); return korb_raise_resolution_error_code(c, slots, m, r); }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
     VALUE_REF ar = VALUE_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, hbuf, (uint32_t)strlen(hbuf)));
@@ -771,11 +829,12 @@ static RESULT korb_m_sock_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         }
     }
     char host[512];
-    if (!korb_sock_cstr(VALUE_SLICE_GET(a, 2), host, sizeof host))
+    const VALUE hv = VALUE_SLICE_GET(a, 2);
+    if (!korb_sock_cstr(hv, host, sizeof host))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     struct sockaddr_storage ss; socklen_t len = 0;
-    if (!korb_sock_fill_addr(fam, host, port, &ss, &len))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cannot resolve address '%s'", host);
+    { const int gr = korb_sock_fill_addr(fam, hv == KORB_NIL ? NULL : host, port, 0, &ss, &len);
+      if (gr != 0) return korb_sock_raise_gai(c, slots, gr); }
     const RESULT sr = korb_str_new(c, slots, (const char *)&ss, (uint32_t)len);
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
     KORB_STR_ENC_SET(sr.value, KORB_ENC_BINARY);
