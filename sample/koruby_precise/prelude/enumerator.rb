@@ -248,10 +248,12 @@ class Enumerator
 
   # The Fiber yields [args] for every element and returns nil when `each` ends,
   # so a nil resume value unambiguously means "exhausted".
+  EXT_DONE__ = Object.new.freeze
+  private_constant :EXT_DONE__
   def __ext_start
     @__ext_fiber = Fiber.new do
-      each { |*args| Fiber.yield([args]) }
-      nil
+      r = each { |*args| Fiber.yield([args]) }
+      [EXT_DONE__, r]                     # `each`'s own return value → StopIteration#result
     end
     @__ext_started = true
     @__ext_fresh = true
@@ -283,16 +285,21 @@ class Enumerator
               @__ext_fiber = nil
               raise
             end
-        if r.nil?
+        if r.nil? || (r.size == 2 && EXT_DONE__.equal?(r[0]))
           @__ext_done = true
           @__ext_buf = nil
+          @__ext_result = r && r[1]
         else
           @__ext_buf = r[0]
         end
       end
       @__ext_have = true
     end
-    raise StopIteration, "iteration reached an end" if @__ext_buf.nil?
+    if @__ext_buf.nil?
+      e = StopIteration.new("iteration reached an end")
+      e.instance_variable_set(:@result, @__ext_result)
+      raise e
+    end
     @__ext_buf
   end
 

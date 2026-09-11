@@ -479,7 +479,15 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
          * here means the chain was closed — the method already returned, so this
          * is CRuby's "unexpected return", raised at the call, not unwound. */
         c->return_target = NULL;
-        return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "unexpected return");
+        slots[0] = r.value;                                /* the value given to `return` (rooted) */
+        RESULT lj = korb_raise(c, slots + 1, KORB_E_LOCALJUMP, 0, "unexpected return");
+        if (lj.state == KORB_RAISE && KORB_EXC_P(lj.value)) {   /* #reason / #exit_value (prelude readers) */
+            slots[1] = lj.value;
+            CHECK(korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]), ID2SYM(korb_intern(c->vm, "@reason", 7)), ID2SYM(korb_intern(c->vm, "return", 6))));
+            CHECK(korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]), ID2SYM(korb_intern(c->vm, "@exit_value", 11)), slots[0]));
+            lj.value = slots[1];
+        }
+        return lj;
     }
     return r;
 }

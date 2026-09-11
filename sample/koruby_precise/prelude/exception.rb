@@ -444,9 +444,20 @@ class SystemExit
   end
 end
 
+# An orphan `return` (Proc#call after its method returned): the C raise path
+# stashes what CRuby exposes.
+class LocalJumpError
+  def reason = @reason
+  def exit_value = @exit_value
+end
+
 # Kernel#throw with no matching catch: the C raise path stashes the tag/value.
 class UncaughtThrowError < ArgumentError
   def tag = @tag
   def value = @value
   def to_s = "uncaught throw #{@tag.inspect}"
+end
+
+class StopIteration
+  def result = @result   # what the underlying `each` returned (external enumeration)
 end
