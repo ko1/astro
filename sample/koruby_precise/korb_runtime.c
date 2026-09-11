@@ -6444,10 +6444,7 @@ korb_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
     if (KORB_OBJECT_P(v)) {
         const VALUE cls = VAL2OBJ(v)->klass;
         char nm[192];
-        if (korb_own_singleton_class(c->vm, v) != KORB_NIL && KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) {   /* CRuby: "#<Foo:0x…>" once it has a singleton class */
-            korb_class_qname_into(c, cls, nm, sizeof nm); snprintf(buf, sz, "#<%s:0x%016zx>", nm, (size_t)(uintptr_t)v);
-        }
-        else if (KORB_CLASS_P(cls) && korb_class_display_name(c, scratch, cls, nm, sizeof nm)) snprintf(buf, sz, "an instance of %s", nm);
+        if (KORB_CLASS_P(cls) && korb_class_display_name(c, scratch, cls, nm, sizeof nm)) snprintf(buf, sz, "an instance of %s", nm);
         else if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) { korb_class_qname_into(c, cls, nm, sizeof nm); snprintf(buf, sz, "an instance of %s", nm); }
         else if (KORB_CLASS_P(cls))
             snprintf(buf, sz, "an instance of #<Class:0x%016zx>", (size_t)(uintptr_t)cls);
@@ -6456,6 +6453,22 @@ korb_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
         return buf;
     }
     return korb_a_type_name(v);
+}
+
+/* NoMethodError's receiver text: korb_recv_desc, except an object that has a
+ * singleton class reads "#<Foo:0x…>" (CRuby). */
+static const char *
+korb_nomethod_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
+{
+    if (KORB_OBJECT_P(v) && korb_own_singleton_class(c->vm, v) != KORB_NIL) {
+        const VALUE cls = VAL2OBJ(v)->klass;
+        if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) {
+            char nm[192]; korb_class_qname_into(c, cls, nm, sizeof nm);
+            snprintf(buf, sz, "#<%s:0x%016zx>", nm, (size_t)(uintptr_t)v);
+            return buf;
+        }
+    }
+    return korb_recv_desc(c, scratch, v, buf, sz);
 }
 
 /* Coerce a method-name argument (Symbol / String / #to_str object) to an
@@ -8282,7 +8295,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
             slots[0] = self;                               /* root receiver across raise + ivar_set */
             char rdbuf2[256];
             const char *const rd2 = (KORB_OBJECT_P(slots[0]) && VAL2OBJ(slots[0])->klass == KORB_NIL)
-                                        ? "main" : korb_recv_desc(c, slots + 2, slots[0], rdbuf2, sizeof rdbuf2);
+                                        ? "main" : korb_nomethod_recv_desc(c, slots + 2, slots[0], rdbuf2, sizeof rdbuf2);
             /* `zork` (no receiver, no parens, no args) misses as NameError, not
              * NoMethodError.  Only the parser can tell them apart, so it marks
              * the call node; the mark is read here and nowhere else. */
@@ -10287,7 +10300,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         slots[0] = self;                                   /* root receiver across the raise + ivar_set allocs */
         char rdbuf[256];
-        const char *const rd = korb_recv_desc(c, slots + 2, slots[0], rdbuf, sizeof rdbuf);
+        const char *const rd = korb_nomethod_recv_desc(c, slots + 2, slots[0], rdbuf, sizeof rdbuf);
         RESULT r = korb_raise(c, slots + 1, KORB_E_NOMETHOD, line,
                               "undefined method '%s' for %s",
                               korb_sym_name(vm, mid), rd);
@@ -10415,7 +10428,7 @@ korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t 
     }
     slots[0] = recv;                                   /* root across the raise + ivar_set allocs */
     char rdbuf[224];
-    const char *const rd = korb_recv_desc(c, slots + 2, slots[0], rdbuf, sizeof rdbuf);
+    const char *const rd = korb_nomethod_recv_desc(c, slots + 2, slots[0], rdbuf, sizeof rdbuf);
     RESULT r = korb_raise(c, slots + 1, KORB_E_NOMETHOD, line, "%s method '%s' called for %s",
                           m->visibility == 1 ? "private" : "protected",
                           korb_sym_name(c->vm, mid), rd);

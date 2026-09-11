@@ -84,7 +84,7 @@ static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VA
     const char *const nm = nmbuf;
     const VALUE recv = VALUE_REF_GET(self);
     char buf[256];   /* CRuby-shaped: "class Foo" / "module Bar" / "an instance of Foo" / … */
-    const char *tn = korb_recv_desc(c, slots, recv, buf, sizeof buf);
+    const char *tn = korb_nomethod_recv_desc(c, slots, recv, buf, sizeof buf);
     RESULT r = korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for %s", nm, tn);
     if (LIKELY(KORB_EXC_P(r.value))) {                    /* attach #name / #receiver metadata */
         slots[0] = r.value;

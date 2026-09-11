@@ -158,7 +158,7 @@ static RESULT korb_rand_upto(CTX *const c, VALUE *slots, VALUE_SLICE a, uint32_t
         slots[0] = src.obj;
         char rd[224];
         return korb_raise(c, slots + 1, KORB_E_NOMETHOD, 0, "undefined method 'rand' for %s",
-                          korb_recv_desc(c, slots + 1, slots[0], rd, sizeof rd));
+                          korb_nomethod_recv_desc(c, slots + 1, slots[0], rd, sizeof rd));
     }
     slots[0] = src.obj; slots[1] = LONG2FIX((korb_sword_t)bound + 1);   /* rng.rand(bound+1) → [0, bound] */
     RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "rand", 4), 0, 1);
