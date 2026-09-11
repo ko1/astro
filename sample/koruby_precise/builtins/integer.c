@@ -231,7 +231,8 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     if (VALUE_SLICE_LEN(a) >= 2 && !(FIXNUM_P(selfv) && FIXNUM_P(ev) && FIXNUM_P(VALUE_SLICE_GET(a, 1)))) {
         VALUE mv = VALUE_SLICE_GET(a, 1);              /* pow(exp, mod) with a Bignum operand → GMP modular exponentiation */
-        if (UNLIKELY(!KORB_INTEGER_P(mv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, mv));
+        if (UNLIKELY(!KORB_INTEGER_P(mv)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "Integer#pow() 2nd argument not allowed unless all arguments are integers");
         korb_mp_t zm; korb_to_mpz(mv, zm);
         if (UNLIKELY(korb_mp_sgn(zm) == 0)) { korb_mp_clear(zm); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
         korb_mp_t ze; korb_to_mpz(ev, ze);

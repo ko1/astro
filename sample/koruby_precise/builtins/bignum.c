@@ -211,6 +211,7 @@ static RESULT korb_m_integer_sqrt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
     VALUE n = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(n)) n = LONG2FIX((korb_sword_t)korb_float_val(n));   /* Integer.sqrt(8.5) → isqrt(8) (CRuby truncates) */
+    else if (!KORB_INTEGER_P(n)) CHECK(korb_coerce_to_int(c, slots, &n));   /* #to_int */
     if (UNLIKELY(!KORB_INTEGER_P(n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     korb_mp_t z, r;

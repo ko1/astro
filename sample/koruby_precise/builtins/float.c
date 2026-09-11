@@ -318,7 +318,14 @@ static RESULT korb_int_round_to(CTX *c, VALUE *slots, korb_sword_t v, int kind, 
     if (ndig >= 0) return RESULT_OK(LONG2FIX(v));      /* no fractional digits in an Integer */
     korb_sword_t f = 1;
     for (korb_sword_t k = 0; k < -ndig; k++) {
-        if (UNLIKELY(f > FIXNUM_MAX / 10)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "out of Fixnum range (Bignum not implemented)");
+        if (UNLIKELY(f > FIXNUM_MAX / 10)) {
+            /* 10^-ndig exceeds every Fixnum, so |v| < 10^-ndig / 2: the result is
+             * 0, or ±10^-ndig for a floor/ceil that moves away from zero. */
+            const int sign = (kind == 0 && v < 0) ? -1 : (kind == 1 && v > 0) ? 1 : 0;
+            if (sign == 0) return RESULT_OK(LONG2FIX(0));
+            slots[0] = UNWRAP(korb_int_pow(c, slots, LONG2FIX(10), LONG2FIX(-ndig), 0));
+            return sign > 0 ? RESULT_OK(slots[0]) : korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), 0, 0);
+        }
         f *= 10;
     }
     korb_sword_t q = v / f, r = v % f, res;
