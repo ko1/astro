@@ -117,7 +117,11 @@ korb_tz_convert(CTX *c, VALUE *slots, VALUE zone, double base, bool to_utc, korb
     }
     if (!FIXNUM_P(ir.value))
         return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_coerce_name(c, slots[0]));
-    const korb_sword_t got = FIX2LONG(ir.value);
+    korb_sword_t got = FIX2LONG(ir.value);
+    korb_sword_t foff;                                     /* #utc_to_local answering with a fixed-offset Time: its WALL clock is the local time (CRuby's extract_vtm) */
+    if (!to_utc && KORB_OBJECT_P(slots[0]) && korb_ivar_get(c, slots[0], korb_time_t_sym(c->vm)) != KORB_NIL &&
+        korb_time_fixed_off(c, slots[0], &foff))
+        got += foff;
     *off = to_utc ? (korb_sword_t)base - got : got - (korb_sword_t)base;
     if (*off <= -86400 || *off >= 86400)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "utc_offset out of range");
@@ -522,7 +526,17 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
     tm.tm_year = (int)comp[0] - 1900; tm.tm_mon = (int)comp[1] - 1; tm.tm_mday = (int)comp[2];
     tm.tm_hour = (int)comp[3]; tm.tm_min = (int)comp[4]; tm.tm_sec = (int)comp[5];
     tm.tm_isdst = -1;
-    const time_t e = utc ? timegm(&tm) : mktime(&tm);
+    time_t e = utc ? timegm(&tm) : mktime(&tm);              /* (mktime itself re-reads TZ) */
+    if (cstyle && !utc) {                                    /* isdst (arg 8): a hint that only decides a repeated hour at a DST end */
+        const int hint = KORB_TRUTHY(VALUE_SLICE_GET(a, 8)) ? 1 : 0;
+        struct tm alt = tm; alt.tm_isdst = hint;
+        alt.tm_year = (int)comp[0] - 1900; alt.tm_mon = (int)comp[1] - 1; alt.tm_mday = (int)comp[2];
+        alt.tm_hour = (int)comp[3]; alt.tm_min = (int)comp[4]; alt.tm_sec = (int)comp[5];
+        const time_t e2 = mktime(&alt);
+        struct tm chk; localtime_r(&e2, &chk);
+        if (chk.tm_hour == (int)comp[3] && chk.tm_min == (int)comp[4] && chk.tm_mday == (int)comp[2] && chk.tm_isdst == hint)
+            e = e2;                                          /* same wall clock on the hinted side → honour the hint */
+    }
     /* exact nsec from the small fractional part (accurate), not the large epoch. */
     long nsec = (long)(subsec * 1e9 + 0.5);
     if (nsec < 0) nsec = 0; else if (nsec > 999999999) nsec = 999999999;
