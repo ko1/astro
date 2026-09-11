@@ -491,8 +491,11 @@ struct korb_thread {
     /* stacks / context */
     VALUE *vslots;                   /* 自分の value stack base (main: main slots) */
     VALUE *vslots_limit;
-    VALUE *saved_base, *saved_top, *saved_hw;   /* suspend 中の c->slots tuple */
+    VALUE *saved_base, *saved_top, *saved_hw;   /* suspend 中の c->slots tuple (fiber 内なら root stack の範囲) */
     const char *saved_cstack_limit;
+    struct KorbFiberRep *saved_fiber;   /* fiber の中で suspend した: 再開時に running_fiber へ戻す (stack tuple は fiber 側) */
+    struct KorbFiberRep *root_fiber;    /* この thread の root fiber 代役 (Fiber.current / storage; 遅延生成) */
+    VALUE int_masks;                 /* handle_interrupt のマスク列 [klass, sym, ..., n] (root; nil まで未使用) */
     uint32_t saved_errinfo_n;        /* $! stack depth (thread-local, like a fiber's) */
     void  *uctx;                     /* ucontext_t* */
     void  *cstack;                   /* malloc native stack (NULL = main/process stack) */
@@ -503,6 +506,7 @@ struct korb_thread {
     uint8_t roe;                     /* Thread#report_on_exception (default 1) */
     uint8_t aoe;                     /* Thread#abort_on_exception (死時に main へ例外転送) */
     uint8_t defer_ints;              /* >0 = handle_interrupt(:never) 区間 (配送延期) */
+    uint8_t aborting;                /* #kill 配送済みで ensure を走行中 (#status "aborting") */
     const char *waiting_feature;     /* require 待ち: 対象 feature の abspath (待機側の
                                         stack 上バッファ; PENDED の間だけ有効)。 */
     const char *blocked_in;          /* C-level cooperative wait の label ("require" 等)。
@@ -1032,7 +1036,6 @@ struct korb_vm {
      * 登録済みで完了待ちの blop の連結リスト (rep 同様 C スタック上の実体)。 */
     struct korb_blop *blop_pending;
     uint32_t blop_npending;
-    VALUE thread_kill_exc;             /* Thread#kill 用内部例外 class (遅延生成; GC root) */
     uint8_t thread_aoe_global;         /* Thread.abort_on_exception (class-level) */
 
     /* direct-mapped user-object method cache (klass,mid)→method.  Valid while
@@ -1329,8 +1332,6 @@ struct CTX_struct {
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->yielder_class);            \
     /* Enumerator::Lazy class object. */                                       \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->lazy_class);               \
-    /* Thread#kill 内部例外 class (KORB_NIL まで未生成)。 */                    \
-    ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->thread_kill_exc);          \
     /* cached frozen nil/true/false #to_s strings. */                          \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->str_nil_to_s);             \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->str_true_to_s);            \
@@ -1353,7 +1354,12 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->fibobj);                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->storage);                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->tls);                     \
-        if (_fr != (c)->vm->running_fiber && _fr->fstate == 2) {              \
+        /* suspended (2) fibers, and running (1) ones that are not on the CPU: \
+         * resume-chain ancestors and fibers whose thread is parked keep their   \
+         * top in vslots_top (fiber switch_in / thread ctx_save).  The root      \
+         * stand-in has no stack (vslots NULL). */                               \
+        if (_fr->vslots != NULL && _fr != (c)->vm->running_fiber &&              \
+            (_fr->fstate == 2 || _fr->fstate == 1)) {                            \
             for (VALUE *_p = _fr->vslots - 2; _p < _fr->vslots_top; _p++)         \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
         }                                                                    \
@@ -1374,6 +1380,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->name);                      \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->pending_ints);              \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tgroup);                     \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->int_masks);                  \
         if (_t != (c)->vm->cur_thread && _t->started && _t->state != KORB_TH_DEAD) { \
             for (VALUE *_p = _t->saved_base - 2; _p < _t->saved_top; _p++)    \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \

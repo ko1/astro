@@ -259,9 +259,28 @@ korb_m_fiber_raise(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     return korb_fiber_switch_in(c, slots, rep, r.value, 1);
 }
 
-/* Fiber.current — the running fiber, or the implicit root fiber on the main
- * stack (CRuby returns a Fiber object there too; koruby has no object for the
- * root, so it reports nil rather than inventing one). */
+/* A stand-in rep for a thread's root stack (no body, permanently running).
+ * Registered in fiber_list so its fibobj/storage edges are GC roots. */
+static KorbFiberRep *
+korb_fiber_root_rep_alloc(CTX *c, VALUE *slots)
+{
+    KorbFiber *fb = korb_alloc(c, slots, sizeof(KorbFiber), KORB_OBJ_FIBER);   /* no GC below */
+    KorbFiberRep *rp = calloc(1, sizeof(KorbFiberRep));
+    if (!rp) { fprintf(stderr, "koruby_precise: oom (root fiber rep)\n"); abort(); }
+    fb->rep = rp;
+    rp->fibobj = (VALUE)fb;
+    rp->transfer = KORB_NIL;
+    rp->storage = KORB_NIL;
+    rp->tls = KORB_NIL;
+    rp->captured_self = KORB_NIL;
+    rp->fstate = 1;                                    /* running: never resumable */
+    rp->link = c->vm->fiber_list;                      /* rooted via the fibobj edge */
+    c->vm->fiber_list = rp;
+    return rp;
+}
+
+/* Fiber.current — the running fiber, or the current thread's root stand-in
+ * (vm->root_fiber follows the running thread: thread ctx_save / ctx_load). */
 static RESULT
 korb_m_fiber_s_current(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
@@ -273,20 +292,28 @@ korb_m_fiber_s_current(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
      * Fiber.  It is permanently "running", so #resume reports a double resume
      * exactly as resuming the current fiber does. */
     if (c->vm->root_fiber != NULL) return RESULT_OK(c->vm->root_fiber->fibobj);
-    KorbFiber *fb = korb_alloc(c, slots, sizeof(KorbFiber), KORB_OBJ_FIBER);   /* no GC below */
-    KorbFiberRep *rp = calloc(1, sizeof(KorbFiberRep));
-    if (!rp) { fprintf(stderr, "koruby_precise: oom (root fiber rep)\n"); abort(); }
-    fb->rep = rp;
-    rp->fibobj = (VALUE)fb;
-    rp->transfer = KORB_NIL;
-    rp->storage = KORB_NIL;
-    rp->captured_self = KORB_NIL;
-    rp->fstate = 1;                                    /* running: never resumable */
-    rp->link = c->vm->fiber_list;                      /* rooted via the fibobj edge */
-    c->vm->fiber_list = rp;
-    c->vm->root_fiber = rp;
+    c->vm->root_fiber = korb_fiber_root_rep_alloc(c, slots);
     (void)self;
-    return RESULT_OK(rp->fibobj);
+    return RESULT_OK(c->vm->root_fiber->fibobj);
+}
+
+static KorbFiberRep *korb_fiber_cur_rep(CTX *c, VALUE *slots);   /* fwd */
+/* Fiber.blocking { |fiber| … } — run the block with the current fiber marked
+ * blocking (Fiber.blocking? → 1, current_scheduler → nil), then restore. */
+static RESULT
+korb_m_fiber_s_blocking_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                            NODE *block, VALUE *def_env, VALUE *cself)
+{
+    (void)self; (void)a;
+    if (UNLIKELY(block == NULL))
+        return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
+    KorbFiberRep *const rep = korb_fiber_cur_rep(c, slots);   /* libc-stable */
+    slots[0] = rep->fibobj;
+    const uint8_t was = rep->blocking;
+    rep->blocking = 1;
+    RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+    rep->blocking = was;
+    return r;
 }
 
 /* ---- Fiber storage (fiber-local variables) --------------------------------

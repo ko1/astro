@@ -8,8 +8,10 @@
  * stack 含む)。KorbThread heap object は薄い可動 handle。
  *
  * 制約 (M1):
- *  - Fiber の中では thread 切替不可 (ThreadError) — fiber/main-slots の GC
- *    scan 機構と直交させるため。切替点では常に vm->running_fiber == NULL。
+ *  - Fiber の中からの thread 切替: 走っている fiber の stack top を fiber 側
+ *    (vslots_top) に、thread 側には root stack と running_fiber を退避する
+ *    (korb_thread_ctx_save / ctx_load)。GC は fiber_list 経由で fstate 1/2 の
+ *    非稼働 fiber を全部 scan する。
  *  - Thread#join(timeout) / #kill(実行中) / sleep 連携は M2/M3 (blop 層)。
  *  - dead thread の stack は未回収 (M2 で reap; rep 自体は意図的に不滅)。 */
 
@@ -21,6 +23,7 @@ enum korb_blop_kind  { KORB_BLOP_POLL, KORB_BLOP_READ, KORB_BLOP_WRITE, KORB_BLO
 enum korb_blop_flags { KORB_BLOP_F_TIMEOUT = 1, KORB_BLOP_F_DONE = 2 };
 
 static void korb_thread_runq_push(struct korb_vm *vm, struct korb_thread *t);   /* fwd (下の scheduler 節) */
+static RESULT korb_bi_exit(CTX *c, VALUE *slots, VALUE_SLICE args);            /* fwd (korb_runtime.c) */
 static RESULT korb_thread_tmo_arg(CTX *c, VALUE *slots, VALUE v, double *out);  /* fwd (下の IO 節) */
 
 struct korb_blop {
@@ -238,6 +241,8 @@ korb_thread_boot(CTX *c)
     if (vm->running_fiber == NULL) { m->vslots = c->slots; m->vslots_limit = c->slots_limit; }
     m->uctx = calloc(1, sizeof(ucontext_t));
     if (!m->uctx) abort();
+    m->int_masks = KORB_NIL;
+    m->root_fiber = vm->root_fiber;
     m->state = KORB_TH_RUNNING; m->started = 1; m->roe = 1;
     m->next = vm->thread_list; vm->thread_list = m;
     vm->cur_thread = vm->main_thread = m;
@@ -261,17 +266,53 @@ korb_thread_handle(CTX *c, VALUE *slots, struct korb_thread *t)
 static void
 korb_thread_ctx_load(CTX *c, struct korb_thread *t)
 {
+    struct korb_vm *const vm = c->vm;
+    KorbFiberRep *const f = t->saved_fiber;
     if (!t->started) {                        /* 初走: 新品の stack */
         c->slots = t->vslots; c->slots_top = t->vslots;
         c->slots_limit = t->vslots_limit; c->slots_high_water = t->vslots;
         c->cstack_limit = (const char *)t->cstack + KORB_FIBER_CSTACK_MARGIN;
+        vm->running_fiber = NULL; vm->main_slots = vm->main_slots_top = NULL;
+    } else if (f != NULL) {                   /* fiber の中で suspend: fiber の stack tuple + root stack を戻す */
+        c->slots = f->vslots; c->slots_top = f->vslots_top;
+        c->slots_limit = f->vslots_limit; c->slots_high_water = f->vslots_hw;
+        c->cstack_limit = (const char *)f->cstack + KORB_FIBER_CSTACK_MARGIN;
+        vm->running_fiber = f;
+        vm->main_slots = t->saved_base; vm->main_slots_top = t->saved_top;
     } else {                                  /* 再開: suspend 時の tuple */
         c->slots = t->saved_base; c->slots_top = t->saved_top;
         c->slots_limit = t->vslots_limit; c->slots_high_water = t->saved_hw;
         c->cstack_limit = t->saved_cstack_limit;
+        vm->running_fiber = NULL; vm->main_slots = vm->main_slots_top = NULL;
     }
+    korb_re_sync_floor(c);                    /* astrogre の C-stack floor も切替 */
+    vm->root_fiber = t->root_fiber;           /* Fiber.current / storage は thread 毎 */
     c->errinfo_n = t->saved_errinfo_n;        /* $! is per thread (CRuby); entries below stay owned by their thread */
     if (c->errinfo_n > c->errinfo_live) c->errinfo_live = c->errinfo_n;
+}
+
+/* 現 thread の stack tuple を退避する (yield_cpu の直前)。fiber の中なら走っている
+ * fiber の top は fiber 側に置き (GC は fiber_list で scan)、thread 側は fiber
+ * switch_in が park した root stack の範囲を持つ。 */
+static void
+korb_thread_ctx_save(CTX *c, struct korb_thread *cur, VALUE *slots)
+{
+    struct korb_vm *const vm = c->vm;
+    KorbFiberRep *const f = vm->running_fiber;
+    cur->saved_fiber = f;
+    cur->root_fiber = vm->root_fiber;
+    if (f != NULL) {
+        f->vslots_top = slots; f->vslots_hw = c->slots_high_water;
+        cur->saved_base = vm->main_slots; cur->saved_top = vm->main_slots_top;
+        cur->saved_hw = NULL; cur->saved_cstack_limit = NULL;
+    } else {
+        if (cur->vslots == NULL) {            /* boot が fiber 内だった main (遅延分) */
+            cur->vslots = c->slots; cur->vslots_limit = c->slots_limit;
+        }
+        cur->saved_base = c->slots; cur->saved_top = slots;
+        cur->saved_hw = c->slots_high_water; cur->saved_cstack_limit = c->cstack_limit;
+    }
+    cur->saved_errinfo_n = c->errinfo_n;
 }
 
 static void
@@ -304,12 +345,7 @@ korb_thread_yield_cpu(CTX *c, VALUE *slots)
         }
         if (next == cur) { cur->state = KORB_TH_RUNNING; return RESULT_OK(KORB_NIL); }   /* 自分の blop が完了 */
     }
-    if (cur->vslots == NULL) {                /* boot が fiber 内だった main (遅延分) */
-        cur->vslots = c->slots; cur->vslots_limit = c->slots_limit;
-    }
-    cur->saved_base = c->slots; cur->saved_top = slots;
-    cur->saved_hw = c->slots_high_water; cur->saved_cstack_limit = c->cstack_limit;
-    cur->saved_errinfo_n = c->errinfo_n;
+    korb_thread_ctx_save(c, cur, slots);
     vm->cur_thread = next;
     next->state = KORB_TH_RUNNING;
     korb_thread_ctx_load(c, next);
@@ -341,28 +377,19 @@ korb_thread_exit_switch(CTX *c)
  * (blop_wait 戻り・join/pass/stop の wake 直後) — RUBY_VM_CHECK_INTS 相当。
  * Phase 1 は発行側も green thread なので対象が RUNNING のことはない。 */
 
-/* Thread#kill 用の内部例外 class (遅延生成; 定数非公開)。rescue Exception には
- * 掛かる (CRuby の完全な rescue 不能とは差異; ensure は走る)。 */
-static VALUE
-korb_thread_kill_class(CTX *c, VALUE *slots)
-{
-    struct korb_vm *const vm = c->vm;
-    if (vm->thread_kill_exc == KORB_NIL) {
-        const VALUE sup = korb_const_get(vm, korb_intern(vm, "Exception", 9));
-        vm->thread_kill_exc = korb_class_new(c, slots, korb_intern(vm, "Thread::Kill", 12), sup).value;
-    }
-    return vm->thread_kill_exc;
-}
+/* Thread#kill の unwind payload: 例外でない即値なので rescue に掛からず $! も
+ * 変えない (CRuby の TAG_FATAL 相当; ensure だけ走る)。Fiber#kill の KORB_UNDEF
+ * とは別物 — fiber を貫いて thread 全体を畳む。 */
+#define KORB_THREAD_KILL LONG2FIX(0x4b494c4c)
 
-/* kill 例外インスタンスを作って RAISE RESULT で返す */
+/* 自 thread を kill: main は exit(0) (CRuby)、他は aborting にして sentinel を投げる */
 static RESULT
 korb_thread_kill_raise(CTX *c, VALUE *slots)
 {
-    slots[0] = korb_thread_kill_class(c, slots + 1);
-    RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "killed thread");
-    if (KORB_EXC_P(r.value))
-        ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
-    return r;
+    struct korb_thread *const cur = c->vm->cur_thread;
+    if (cur == c->vm->main_thread) return korb_bi_exit(c, slots, VALUE_SLICE_MAKE(slots, 0));
+    cur->aborting = 1;
+    return RESULT_RAISE_(KORB_THREAD_KILL);
 }
 
 /* 割り込みを積んで、対象が PENDED なら起こす。exc = 例外 VALUE / KORB_FALSE (kill)。
@@ -382,24 +409,103 @@ korb_thread_interrupt(CTX *c, VALUE *slots, struct korb_thread *t, VALUE exc)
     return RESULT_OK(KORB_NIL);
 }
 
-/* 配送点: pending があれば先頭を取り出して RAISE で返す (無ければ NORMAL)。 */
+/* handle_interrupt のマスク: 0 immediate / 1 on_blocking / 2 never。int_masks は
+ * [klass, sym, ..., n] のフレーム列 (内側が末尾)。内側のフレームから見て最初に
+ * 一致した klass が効く。kill マーカは CRuby と同じく Integer として照合する。 */
+static int
+korb_thread_int_mask_of(CTX *c, const struct korb_thread *t, VALUE exc)
+{
+    if (t->int_masks == KORB_NIL) return 0;
+    const KorbArray *const ma = VAL2ARY(t->int_masks);
+    const VALUE *const d = korb_items_data(ma->items);
+    const VALUE intcls = korb_const_get(c->vm, korb_intern(c->vm, "Integer", 7));
+    const uint32_t s_imm = korb_intern(c->vm, "immediate", 9), s_blk = korb_intern(c->vm, "on_blocking", 11);
+    uint32_t i = ma->len;
+    while (i > 0) {
+        const uint32_t n = (uint32_t)FIX2LONG(d[i - 1]);
+        const uint32_t base = i - 1 - 2 * n;
+        for (uint32_t k = 0; k < n; k++) {
+            const VALUE klass = d[base + 2 * k];
+            const bool hit = exc == KORB_FALSE ? (KORB_CLASS_P(intcls) && KORB_CLASS_P(klass) && korb_class_le(intcls, klass))
+                                               : korb_exc_matches(c, exc, klass);
+            if (!hit) continue;
+            const uint32_t sym = (uint32_t)SYM2ID(d[base + 2 * k + 1]);
+            return sym == s_imm ? 0 : sym == s_blk ? 1 : 2;
+        }
+        i = base;
+    }
+    return 0;
+}
+
+/* 配送点: マスクが許す最初の pending を取り出して RAISE で返す (無ければ NORMAL)。
+ * blocking = この check 点が blocking 操作か (:on_blocking はそこでだけ配送)。 */
 static RESULT
-korb_thread_check_ints(CTX *c, VALUE *slots)
+korb_thread_check_ints_at(CTX *c, VALUE *slots, bool blocking)
 {
     /* Pending OS signals are delivered here too: they are blocked process-wide
      * (process.c) and only become visible when reaped at a check point. */
     CHECK(korb_signal_deliver(c, slots));
     struct korb_thread *const cur = c->vm->cur_thread;
     if (cur == NULL || cur->pending_ints == KORB_NIL) return RESULT_OK(KORB_NIL);
-    if (cur->defer_ints) return RESULT_OK(KORB_NIL);   /* handle_interrupt(:never) 区間 */
+    if (cur->defer_ints) return RESULT_OK(KORB_NIL);   /* __defer_ints 区間 (旧経路) */
     KorbArray *const pa = VAL2ARY(cur->pending_ints);
-    if (pa->len == 0) return RESULT_OK(KORB_NIL);
-    const VALUE exc = korb_items_data(pa->items)[0];      /* shift (要素移動のみ; 新 edge なし) */
-    memmove(&korb_items_data(pa->items)[0], &korb_items_data(pa->items)[1],
-            (size_t)(pa->len - 1) * sizeof(VALUE));
-    pa->len--;
-    if (exc == KORB_FALSE) return korb_thread_kill_raise(c, slots);
-    return RESULT_RAISE_(exc);
+    for (uint32_t i = 0; i < pa->len; i++) {
+        const VALUE exc = korb_items_data(pa->items)[i];
+        const int m = korb_thread_int_mask_of(c, cur, exc);
+        if (m == 2 || (m == 1 && !blocking)) continue;
+        memmove(&korb_items_data(pa->items)[i], &korb_items_data(pa->items)[i + 1],   /* 要素移動のみ; 新 edge なし */
+                (size_t)(pa->len - i - 1) * sizeof(VALUE));
+        pa->len--;
+        if (exc == KORB_FALSE) return korb_thread_kill_raise(c, slots);
+        /* Thread#raise の配送: 対象 thread 側でも #exception を呼ぶ (CRuby は
+         * rb_make_exception 経由なので、caller / target の両方で呼ばれる)。 */
+        slots[0] = exc;
+        const RESULT er = korb_send(c, slots + 1, korb_intern(c->vm, "exception", 9), 0, 0);
+        if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+        return RESULT_RAISE_(KORB_EXC_P(er.value) ? er.value : slots[0]);
+    }
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_thread_check_ints(CTX *c, VALUE *slots) { return korb_thread_check_ints_at(c, slots, true); }
+static RESULT korb_thread_check_ints_nb(CTX *c, VALUE *slots) { return korb_thread_check_ints_at(c, slots, false); }
+
+/* Thread#__int_mask_push(hash) / #__int_mask_pop — handle_interrupt のマスク
+ * フレーム (prelude が検証済みの {Class => sym} Hash)。 */
+static RESULT
+korb_m_thread_int_mask_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
+    slots[0] = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_HASH_P(slots[0])))
+        return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "unknown mask signature");
+    if (t->int_masks == KORB_NIL) t->int_masks = UNWRAP(korb_ary_new(c, slots + 1, 8));
+    const uint32_t n = VAL2HASH(slots[0])->len;
+    for (uint32_t i = 0; i < 2 * n; i++)                 /* Hash は slots[0] で rooted: 毎回読み直す */
+        CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&t->int_masks), korb_items_data(VAL2HASH(slots[0])->items)[i]));
+    CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&t->int_masks), LONG2FIX(n)));
+    return RESULT_OK(KORB_NIL);
+}
+
+static RESULT
+korb_m_thread_int_mask_pop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)c; (void)slots; (void)a;
+    struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
+    if (t->int_masks == KORB_NIL) return RESULT_OK(KORB_NIL);
+    KorbArray *const ma = VAL2ARY(t->int_masks);
+    if (ma->len == 0) return RESULT_OK(KORB_NIL);
+    const uint32_t n = (uint32_t)FIX2LONG(korb_items_data(ma->items)[ma->len - 1]);
+    ma->len -= 2 * n + 1;
+    return RESULT_OK(KORB_NIL);
+}
+
+/* Thread.__check_ints — 非 blocking の配送点 (handle_interrupt の入口 / 出口) */
+static RESULT
+korb_m_thread_s_check_ints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)self; (void)a;
+    korb_thread_boot(c);
+    return korb_thread_check_ints_nb(c, slots);
 }
 
 /* ---- korb_blop_wait: 唯一の suspension point ------------------------------ */
@@ -411,8 +517,6 @@ korb_blop_wait(CTX *c, VALUE *slots, struct korb_blop *b)
 {
     struct korb_vm *const vm = c->vm;
     korb_thread_boot(c);
-    if (UNLIKELY(vm->running_fiber != NULL))
-        return korb_raise_thread_error(c, slots, "can't switch threads from inside a Fiber");
     b->waiter = vm->cur_thread;
     korb_blop_prep(vm, b);
     while (!(b->flags & KORB_BLOP_F_DONE)) {
@@ -447,17 +551,6 @@ korb_bi_sleep(CTX *c, VALUE *slots, VALUE_SLICE args)
             return korb_send(c, slots + 1 + n, korb_intern(c->vm, "kernel_sleep", 12), 0, n);
         }
     }
-    /* Inside a fiber there is no way to park on the scheduler (a thread switch
-     * from a fiber is not supported), so a BOUNDED sleep blocks outright — that
-     * is what `Fiber.new(blocking: true) { sleep 0.01 }` asks for.  An unbounded
-     * one would never come back, so it falls through and raises. */
-    if (UNLIKELY(c->vm->running_fiber != NULL) && sec >= 0) {
-        struct timespec req;
-        req.tv_sec  = (time_t)sec;
-        req.tv_nsec = (long)((sec - (double)(time_t)sec) * 1e9);
-        while (nanosleep(&req, &req) != 0 && errno == EINTR) { }
-        return RESULT_OK(LONG2FIX((korb_sword_t)(sec + 0.5)));
-    }
     struct korb_blop b; memset(&b, 0, sizeof b);
     b.kind = KORB_BLOP_TIMER;
     if (sec >= 0) korb_blop_deadline_in(&b, sec);
@@ -490,8 +583,7 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
     }
     RESULT r = korb_send(c, base + 1 + n, korb_intern(c->vm, "call", 4), 0, n);
     if (r.state == KORB_RAISE) {
-        if (KORB_EXC_P(r.value) && c->vm->thread_kill_exc != KORB_NIL &&
-            VAL2EXC(r.value)->exc_class == c->vm->thread_kill_exc) {
+        if (r.value == KORB_THREAD_KILL) {
             t->result = KORB_NIL;             /* #kill: 正常終了扱い (join は self を返す) */
         } else {
             t->raised = 1; t->exc = r.value;
@@ -531,7 +623,7 @@ korb_thread_alloc_handle(CTX *c, VALUE *slots)
     if (!t) { fprintf(stderr, "koruby_precise: oom (thread rep)\n"); abort(); }
     t->thval = KORB_NIL; t->captured_self = KORB_NIL; t->args = KORB_NIL; t->blk = KORB_NIL;
     t->result = KORB_NIL; t->exc = KORB_NIL; t->tls = KORB_NIL; t->tvars = KORB_NIL;
-    t->name = KORB_NIL; t->pending_ints = KORB_NIL;
+    t->name = KORB_NIL; t->pending_ints = KORB_NIL; t->int_masks = KORB_NIL;
     t->tgroup = c->vm->cur_thread ? c->vm->cur_thread->tgroup : KORB_NIL;   /* 親 group を継承 (CRuby) */
     t->roe = 1;
     t->state = KORB_TH_DEAD;                 /* 初期化まで scheduler から不可視 (queue にも入れない) */
@@ -563,6 +655,17 @@ korb_thread_init_body(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
     else slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
     t->args = slots[0];
     t->blk = slots[1];
+    /* the new thread's root fiber starts with a COPY of the creator fiber's
+     * storage (CRuby: Fiber.current.storage is inherited across Thread.new) */
+    { const KorbFiberRep *const cf = c->vm->running_fiber ? c->vm->running_fiber : c->vm->root_fiber;
+      if (cf != NULL && cf->storage != KORB_NIL && VAL2HASH(cf->storage)->len > 0) {
+          slots[2] = cf->storage;
+          const RESULT dr = korb_send(c, slots + 3, korb_intern(c->vm, "dup", 3), 0, 0);
+          if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+          slots[2] = dr.value;
+          t->root_fiber = korb_fiber_root_rep_alloc(c, slots + 3);
+          t->root_fiber->storage = slots[2];
+      } }
     void *vs = mmap(NULL, KORB_FIBER_VSLOTS_BYTES, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (vs == MAP_FAILED) { perror("koruby_precise: mmap thread vslots"); abort(); }
@@ -637,8 +740,6 @@ korb_m_thread_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (UNLIKELY(t == vm->cur_thread))
         return korb_raise_thread_error(c, slots, "Target thread must not be current thread");
     while (t->state != KORB_TH_DEAD) {
-        if (UNLIKELY(vm->running_fiber != NULL))
-            return korb_raise_thread_error(c, slots, "can't switch threads from inside a Fiber");
         struct korb_thread *const cur = vm->cur_thread;
         struct korb_blop tb;                        /* join(timeout): TIMER blop を併走 */
         if (tmo >= 0) {
@@ -694,6 +795,7 @@ korb_m_thread_status(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     const struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
     if (t->state == KORB_TH_DEAD) return RESULT_OK(t->raised ? KORB_NIL : KORB_FALSE);
     if (t->state == KORB_TH_PENDED) return korb_str_new(c, slots, "sleep", 5);
+    if (t->aborting) return korb_str_new(c, slots, "aborting", 8);   /* #kill 済みで ensure 走行中 */
     return korb_str_new(c, slots, "run", 3);
 }
 
@@ -924,8 +1026,6 @@ korb_m_thread_s_stop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     (void)self; (void)a;
     struct korb_vm *const vm = c->vm;
     korb_thread_boot(c);
-    if (UNLIKELY(vm->running_fiber != NULL))
-        return korb_raise_thread_error(c, slots, "can't switch threads from inside a Fiber");
     if (vm->runq_head == NULL && vm->blop_npending == 0)
         return korb_raise_thread_error(c, slots, "stopping only thread");
     struct korb_thread *const cur = vm->cur_thread;
@@ -956,14 +1056,14 @@ korb_m_thread_s_main(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
  * this every so often; it is a no-op unless somebody is actually waiting. */
 bool korb_loop_wants_yield(const CTX *c) {
     const struct korb_vm *const vm = c->vm;
-    if (vm->cur_thread == NULL || vm->running_fiber != NULL) return false;
+    if (vm->cur_thread == NULL) return false;
     if (vm->runq_head != NULL || vm->blop_npending != 0) return true;
     const VALUE pi = vm->cur_thread->pending_ints;
     return pi != KORB_NIL && VAL2ARY(pi)->len != 0;
 }
 RESULT korb_loop_yield(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
-    if (vm->cur_thread == NULL || vm->running_fiber != NULL) return RESULT_OK(KORB_NIL);   /* no thread switch from inside a Fiber */
+    if (vm->cur_thread == NULL) return RESULT_OK(KORB_NIL);
     /* Nobody is on the run queue but somebody is waiting on a timer or an fd:
      * collect what is ready (never sleeping) so their wait can actually end —
      * a spinning loop is the one place that never reaches the pump otherwise. */
@@ -974,7 +1074,7 @@ RESULT korb_loop_yield(CTX *c, VALUE *slots) {
         korb_thread_runq_push(vm, cur);
         CHECK(korb_thread_yield_cpu(c, slots));
     }
-    return korb_thread_check_ints(c, slots);
+    return korb_thread_check_ints_nb(c, slots);
 }
 
 static RESULT
@@ -983,13 +1083,11 @@ korb_m_thread_s_pass(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     (void)self; (void)a;
     struct korb_vm *const vm = c->vm;
     if (vm->cur_thread == NULL || vm->runq_head == NULL) return RESULT_OK(KORB_NIL);
-    if (UNLIKELY(vm->running_fiber != NULL))
-        return korb_raise_thread_error(c, slots, "can't switch threads from inside a Fiber");
     struct korb_thread *const cur = vm->cur_thread;
     cur->state = KORB_TH_READY;
     korb_thread_runq_push(vm, cur);
     CHECK(korb_thread_yield_cpu(c, slots));
-    return korb_thread_check_ints(c, slots);
+    return korb_thread_check_ints_nb(c, slots);
 }
 
 static RESULT
@@ -1162,7 +1260,16 @@ korb_m_thread_pending_interrupt_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (KORB_THREAD_P(recv)) t = VAL2THREAD(recv)->rep;
     else t = c->vm->cur_thread;                            /* Thread.pending_interrupt? (class 経由) */
     if (t == NULL || t->pending_ints == KORB_NIL) return RESULT_OK(KORB_FALSE);
-    return RESULT_OK(VAL2ARY(t->pending_ints)->len > 0 ? KORB_TRUE : KORB_FALSE);
+    const KorbArray *const pa = VAL2ARY(t->pending_ints);
+    if (VALUE_SLICE_LEN(a) >= 1) {                         /* pending_interrupt?(klass): その class のものだけ */
+        const VALUE klass = VALUE_SLICE_GET(a, 0);
+        if (UNLIKELY(!KORB_CLASS_P(klass)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required for rescue clause");
+        for (uint32_t i = 0; i < pa->len; i++)
+            if (korb_exc_matches(c, korb_items_data(pa->items)[i], klass)) return RESULT_OK(KORB_TRUE);
+        return RESULT_OK(KORB_FALSE);
+    }
+    return RESULT_OK(pa->len > 0 ? KORB_TRUE : KORB_FALSE);
 }
 
 static RESULT
@@ -1218,7 +1325,7 @@ korb_m_thread_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     (void)a;
     struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
     const char *st = t->state == KORB_TH_DEAD ? "dead"
-                   : t->state == KORB_TH_PENDED ? "sleep" : "run";
+                   : t->state == KORB_TH_PENDED ? "sleep" : t->aborting ? "aborting" : "run";
     char buf[640]; char nb[64]; nb[0] = 0;
     int name_enc = -1;                                /* 非 ASCII の名前ならその encoding が伝播 (CRuby) */
     if (t->name != KORB_NIL && KORB_STRING_P(t->name)) {
@@ -1312,8 +1419,6 @@ korb_mutex_lock_core(CTX *c, VALUE *slots, VALUE_REF self, bool interruptible)
         if (korb_mutex_owner(m) == NULL) { m->owner = cur; return RESULT_OK(VALUE_REF_GET(self)); }
         if (UNLIKELY(m->owner == cur))
             return korb_raise_thread_error(c, slots, "deadlock; recursive locking");
-        if (UNLIKELY(vm->running_fiber != NULL))
-            return korb_raise_thread_error(c, slots, "can't switch threads from inside a Fiber");
         korb_waitq_push(&m->wq_head, &m->wq_tail, cur);     /* ここから park まで alloc なし */
         cur->state = KORB_TH_PENDED;
         RESULT r = korb_thread_yield_cpu(c, slots);
@@ -1429,8 +1534,6 @@ korb_m_condvar_wait(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     korb_thread_boot(c);
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
-    if (UNLIKELY(vm->running_fiber != NULL))
-        return korb_raise_thread_error(c, slots, "can't switch threads from inside a Fiber");
     struct korb_thread *const cur = vm->cur_thread;
     { KorbCondVar *cv = VAL2CONDVAR(VALUE_REF_GET(self));
       korb_waitq_push(&cv->wq_head, &cv->wq_tail, cur); }

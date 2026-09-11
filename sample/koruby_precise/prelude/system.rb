@@ -30,8 +30,10 @@ class Thread
   def self.exit; current.kill; end        # 明示定義 (無いと explicit-recv quirk で Kernel#exit に落ちる)
   def self.kill(th); th.kill; end
   def group; __group || ThreadGroup::Default; end
-  # handle_interrupt 簡易版: :never を含む mask は区間全体を配送延期。
-  # クラス別マスク / :on_blocking の精密な意味論は未対応 (自明の外)。
+  # handle_interrupt: マスク列は C 側 (Thread#__int_mask_push) が持ち、配送点が
+  # 「今この例外を配ってよいか」を内側のフレームから順に引く。:on_blocking は
+  # blocking な配送点 (blop 待ち・join・Mutex) でだけ配られ、Thread.pass のような
+  # 非 blocking な点では配られない。
   def self.handle_interrupt(hash, &blk)
     raise ArgumentError, "block is needed" unless blk
     raise ArgumentError, "unknown mask signature" unless hash.is_a?(Hash) && !hash.empty?
@@ -39,15 +41,14 @@ class Thread
       raise TypeError, "class or module required for rescue clause" unless k.is_a?(Module)
       raise ArgumentError, "unknown mask signature" unless [:immediate, :on_blocking, :never].include?(v)
     end
-    if hash.values.include?(:never)
-      current.__defer_ints_begin
-      begin
-        yield
-      ensure
-        current.__defer_ints_end
-      end
-    else
+    th = current
+    th.__int_mask_push(hash)
+    begin
+      __check_ints              # :immediate になった pending はブロックの前に走る
       yield
+    ensure
+      th.__int_mask_pop
+      __check_ints              # マスクが遅らせた分はブロックを出るときに配る
     end
   end
   def self.each_caller_location(*args, &blk)
@@ -221,8 +222,20 @@ module Process
   CLOCK_TAI                = 11
   def self.pid; __getpid; end              # not $$: that is captured at boot and stale after fork
   class << self
-    def fork(&blk) = super(&blk)          # the primitive is a private Kernel method
-    def _fork = super()
+    # CRuby と同じく fork(2) 本体は Process._fork にあり、fork はそれを呼ぶ
+    # (差し替えれば fork の側にも効く)。
+    def _fork = __fork_raw
+    def fork(&blk)
+      pid = _fork
+      return pid unless pid == 0
+      return nil unless blk                # 子・ブロック無し: nil
+      begin                                # 子: ブロックを走らせて終了する
+        blk.call
+        __fork_finish(0)
+      rescue Exception => e
+        __fork_finish(e)
+      end
+    end
   end
   # ids are re-read every call: fork (and set*id) change them
   def self.uid  = __process_ids[0]

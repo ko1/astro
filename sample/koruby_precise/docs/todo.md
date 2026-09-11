@@ -2476,6 +2476,44 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
   - **差分ソートネスファザー `tools/fuzz_soundness.rb`**（`--stress` で GC crash 検出）。node.def の slot/frame offset 型バグは静的+動的とも残存無し確認。
 - **残（到達可能）**: `super` block forward は depth==0 のみ（nested block 内 super 未対応）。`X::Foo`(X 非module)→TypeError（node に explicit-path/bare-read 区別が必要）。method/massign の mock-protocol coercion（除外）。
 
+## (2026-09-11) fiber 越しの thread 切替 / handle_interrupt / _fork
+
+実装した (M1 の「Fiber の中では thread 切替不可」制約を外した):
+
+- **fiber の中からの thread 切替**: `korb_thread_ctx_save` / `ctx_load` が、走っている
+  fiber の stack top を fiber 側 (`vslots_top`) に、thread 側には root stack と
+  `running_fiber` を退避する。GC は `fiber_list` 経由で fstate 1/2 の非稼働 fiber を
+  全部 scan する。`blop_wait` / `join` / `Thread.stop` / `Thread.pass` / Mutex / CondVar の
+  "can't switch threads from inside a Fiber" を全部撤去。`Fiber.new(blocking: true)` の
+  中の `sleep` が nanosleep に落ちる特別扱いも不要になった。
+- **`Thread.handle_interrupt` の本物のマスク**: マスク列は C 側 (`Thread#__int_mask_push`)
+  が持ち、配送点が内側フレームから順に引く。`:on_blocking` は blocking な配送点
+  (blop 待ち・join・Mutex) だけで配られ、`Thread.pass` のような非 blocking な点では配られない
+  (`korb_thread_check_ints_at(blocking)`)。prelude の `:never` だけの簡易版を置き換え。
+- **`Thread#kill` の payload を TAG_FATAL 相当の即値に**: `Thread::Kill` 例外クラスをやめ、
+  `KORB_THREAD_KILL` (Fixnum sentinel) を RAISE で流す。`rescue Exception` に掛からず
+  `$!` も変えない。main thread の kill は `exit(0)`。`#status` は ensure 走行中 `"aborting"`。
+- **thread の root fiber**: thread ごとに `Fiber.current` の代役を持ち、`Thread.new` は
+  生成側 fiber の storage の**コピー**を継承する (CRuby 同)。`Fiber.blocking { }` 追加。
+- **fork**: `Process._fork` (= `__fork_raw`) を CRuby と同じ hook 点にして `Process.fork` が
+  それを呼ぶ。子では forking thread 以外を dead にして run queue を空にする。
+  子のブロックが `exit(n)` したら n が終了ステータス (`__fork_finish` が SystemExit を見る)。
+
+rubyspec (単体実行): thread/kill **WFAIL(timeout) → 13 例 0F 3E**、
+thread/raise **WFAIL(timeout) → 77 例 3F**、thread/handle_interrupt 1F2E → **0F**、
+thread/status 10E → 3E、thread/pending_interrupt 1F2E → **0F**、thread/exit 2E → **0F**、
+fiber/blocking 3E → **0F (13 例)**、fiber/storage 13F18E → **0F (30 例)**、
+fiber/kill 3/0/7 → **0F**、fiber/current 3E → 1F、
+process/_fork 1F1E → **0F**、process/fork → **0F (8 例)**、kernel/fork → **0F (10 例)**。
+
+残り (kill sentinel の縁):
+- [ ] thread/status 3 err: `dying_thread_ensures { Thread.stop }` の `#wakeup` が
+      ThreadError "killed thread" になる / kill 済み thread の ensure 中に
+      LocalJumpError "no block given (yield)" が出る (sentinel が yield 経路を
+      通るときの状態復帰)。
+- [ ] thread/kill 3 err、thread/raise 3 fail の内訳未調査。
+- [ ] fiber/current 1 fail。
+
 ## Thread/IO (io_design.md Phase 1 実装後の残)
 - [ ] Time.now の秒未満精度 (to_f が整数秒 — IO.select/timeout テストの時間検証が偽陰性になる)
 - [ ] IO#close → korb_blop_cancel_fd (待機中 thread に IOError "stream closed in another thread")
@@ -2483,7 +2521,7 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
 - [ ] IO read/write 本体の blop 化 (fd ベース IO 層への作り直し; 現状 FILE* 同期のまま)
 - [ ] epoll / io_uring engine (現状 poll(2) のみ; vtable 化と probe は io_design.md 通り)
 - [ ] pump wake eventfd + signal 配送 (pump 睡眠中の Ctrl-C)
-- [ ] rescue Exception が Thread::Kill を捕まえてしまう (CRuby は kill を rescue 不能)
+- [x] rescue Exception が Thread::Kill を捕まえてしまう → 2026-09-11 に即値 sentinel 化で解決
 
 ## stdlib vendor 後の残 (2026-08-09)
 - [ ] CSV.parse が2行目以降を落とす (strscan の each_line/scan 系の挙動差疑い)

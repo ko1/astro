@@ -1436,6 +1436,50 @@ static RESULT korb_m_signal_signo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 /* Kernel#fork / Process.fork — fork(2).  With a block the child runs it and
  * exits with 0 (or 1 on an uncaught exception); the parent gets the pid.
  * Without a block the child gets nil, the parent the pid. */
+/* In the child only the forking thread survives (CRuby): every other green
+ * thread is marked dead, its pending blop dropped, and the run queue emptied. */
+static void korb_blop_cancel(struct korb_vm *vm, struct korb_blop *b, int neg_errno);   /* fwd (thread.c) */
+static void korb_fork_child_threads(struct korb_vm *vm) {
+    struct korb_thread *const me = vm->cur_thread;
+    if (me == NULL) return;
+    for (struct korb_thread *t = vm->thread_list; t; t = t->next) {
+        if (t == me) continue;
+        if (t->blop) korb_blop_cancel(vm, t->blop, -ECANCELED);
+        t->state = KORB_TH_DEAD;
+        t->joiners = NULL;
+    }
+    vm->runq_head = vm->runq_tail = NULL;
+    vm->main_thread = me;
+}
+
+/* Process._fork → __fork_raw: fork(2) and nothing else (0 in the child). */
+static RESULT korb_m_process_fork_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    korb_io_flush_std(c->vm);                       /* the child must not re-emit buffered output */
+    fflush(NULL);
+    const pid_t pid = fork();
+    if (pid < 0) return korb_raise_errno(c, slots, errno, "fork", "");
+    if (pid == 0) korb_fork_child_threads(c->vm);
+    return RESULT_OK(LONG2FIX((korb_sword_t)pid));
+}
+
+/* __fork_finish(v): end the child after its block — v is an exit status or the
+ * exception that escaped the block (reported, status 1).  at_exit runs. */
+static RESULT korb_m_process_fork_finish(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE v = VALUE_SLICE_GET(a, 0);
+    int status = 0;
+    if (FIXNUM_P(v)) status = (int)FIX2LONG(v);
+    else if (KORB_EXC_P(v)) {
+        const int se = korb_system_exit_status(c, v);      /* exit(n) in the block: n is the status */
+        if (se >= 0) status = se;
+        else { korb_report_uncaught(c, v); status = 1; }
+    }
+    korb_drain_at_exit(c, slots);
+    korb_io_flush_std(c->vm);
+    _exit(status);
+}
+
 static RESULT korb_m_process_fork(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                   NODE *block, VALUE *def_env, VALUE *cself) {
     (void)self; (void)a;
@@ -1443,6 +1487,7 @@ static RESULT korb_m_process_fork(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     const pid_t pid = fork();
     if (pid < 0) return korb_raise_errno(c, slots, errno, "fork", "");
     if (pid == 0) {                                 /* child */
+        korb_fork_child_threads(c->vm);
         if (block == NULL) return RESULT_OK(KORB_NIL);
         RESULT r = korb_block_yield(c, slots, block, def_env, NULL, 0, cself);
         int status = 0;
@@ -1598,6 +1643,11 @@ static RESULT korb_m_etc_getlogin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return korb_str_new(c, slots, l, (uint32_t)strlen(l));
 }
 
+static RESULT korb_m_thread_int_mask_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (thread.c) */
+static RESULT korb_m_thread_int_mask_pop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_thread_s_check_ints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_fiber_s_blocking_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                          NODE *block, VALUE *def_env, VALUE *cself);   /* fwd (fiber.c) */
 void korb_init_process(CTX *c, VALUE *slots) {
     (void)slots;
     /* The Process module itself comes from the prelude, which loads after this,
@@ -1638,6 +1688,22 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__signal_signo",   korb_m_signal_signo,    1);
     korb_class_def_cfn(c, obj, "__process_ids",    korb_m_process_ids,     0);
     korb_class_def_cfn_blk(c, obj, "fork",         korb_m_process_fork,    0);
+    korb_class_def_cfn(c, obj, "__fork_raw",       korb_m_process_fork_raw, 0);
+    korb_class_def_cfn(c, obj, "__fork_finish",    korb_m_process_fork_finish, 1);
+    /* Thread / Fiber primitives that live in thread.c / fiber.c (same TU, included
+     * after this file): handle_interrupt masks and Fiber.blocking. */
+    {
+        const VALUE thc = korb_builtin_class_obj(c->vm, KORB_C_THREAD);
+        korb_class_def_cfn(c, thc, "__int_mask_push", korb_m_thread_int_mask_push, 1);
+        korb_class_def_cfn(c, thc, "__int_mask_pop",  korb_m_thread_int_mask_pop,  0);
+        VALUE sl[4]; sl[0] = thc;
+        const VALUE th_sing = korb_obj_singleton(c, sl + 1, thc).value;
+        korb_class_def_cfn(c, th_sing, "__check_ints", korb_m_thread_s_check_ints, 0);
+        const VALUE fbc = korb_builtin_class_obj(c->vm, KORB_C_FIBER);
+        sl[0] = fbc;
+        const VALUE fb_sing = korb_obj_singleton(c, sl + 1, fbc).value;
+        korb_class_def_cfn_blk(c, fb_sing, "blocking", korb_m_fiber_s_blocking_blk, 0);
+    }
     korb_class_def_cfn(c, obj, "__etc_uname",      korb_m_etc_uname,       0);
     korb_class_def_cfn(c, obj, "__etc_conf_table", korb_m_etc_conf_table,  0);
     korb_class_def_cfn(c, obj, "__etc_sysconf",    korb_m_etc_sysconf,     1);
