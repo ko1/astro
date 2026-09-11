@@ -1643,11 +1643,6 @@ static RESULT korb_m_etc_getlogin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return korb_str_new(c, slots, l, (uint32_t)strlen(l));
 }
 
-static RESULT korb_m_thread_int_mask_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (thread.c) */
-static RESULT korb_m_thread_int_mask_pop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
-static RESULT korb_m_thread_s_check_ints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
-static RESULT korb_m_fiber_s_blocking_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
-                                          NODE *block, VALUE *def_env, VALUE *cself);   /* fwd (fiber.c) */
 void korb_init_process(CTX *c, VALUE *slots) {
     (void)slots;
     /* The Process module itself comes from the prelude, which loads after this,
@@ -1690,20 +1685,6 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn_blk(c, obj, "fork",         korb_m_process_fork,    0);
     korb_class_def_cfn(c, obj, "__fork_raw",       korb_m_process_fork_raw, 0);
     korb_class_def_cfn(c, obj, "__fork_finish",    korb_m_process_fork_finish, 1);
-    /* Thread / Fiber primitives that live in thread.c / fiber.c (same TU, included
-     * after this file): handle_interrupt masks and Fiber.blocking. */
-    {
-        const VALUE thc = korb_builtin_class_obj(c->vm, KORB_C_THREAD);
-        korb_class_def_cfn(c, thc, "__int_mask_push", korb_m_thread_int_mask_push, 1);
-        korb_class_def_cfn(c, thc, "__int_mask_pop",  korb_m_thread_int_mask_pop,  0);
-        VALUE sl[4]; sl[0] = thc;
-        const VALUE th_sing = korb_obj_singleton(c, sl + 1, thc).value;
-        korb_class_def_cfn(c, th_sing, "__check_ints", korb_m_thread_s_check_ints, 0);
-        const VALUE fbc = korb_builtin_class_obj(c->vm, KORB_C_FIBER);
-        sl[0] = fbc;
-        const VALUE fb_sing = korb_obj_singleton(c, sl + 1, fbc).value;
-        korb_class_def_cfn_blk(c, fb_sing, "blocking", korb_m_fiber_s_blocking_blk, 0);
-    }
     korb_class_def_cfn(c, obj, "__etc_uname",      korb_m_etc_uname,       0);
     korb_class_def_cfn(c, obj, "__etc_conf_table", korb_m_etc_conf_table,  0);
     korb_class_def_cfn(c, obj, "__etc_sysconf",    korb_m_etc_sysconf,     1);

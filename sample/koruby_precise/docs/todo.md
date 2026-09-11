@@ -2506,6 +2506,18 @@ fiber/blocking 3E → **0F (13 例)**、fiber/storage 13F18E → **0F (30 例)**
 fiber/kill 3/0/7 → **0F**、fiber/current 3E → 1F、
 process/_fork 1F1E → **0F**、process/fork → **0F (8 例)**、kernel/fork → **0F (10 例)**。
 
+STRESS+PURGE で発覚 (同日修正): 組み込みクラスの singleton を作る登録を
+`korb_init_process` の中で **C ローカルの `VALUE sl[4]` を slots として**行っていたため、
+GC のルート走査が C スタックまで舐めて即 SEGV していた。登録は korb_runtime.c の
+Thread/Fiber の登録ブロック (`tsing` / `fsing`、slots は `c->slots`) に移した。
+新しい場所のまま C ローカル配列に戻すと再現するので、原因は場所ではなく配列のほう
+(切り分け済み)。**`korb_init_process` の IO#popen 登録に同じ形が残っている** (master でも
+落ちないが同じ危うさ)。
+
+残り:
+- [ ] STRESS+PURGE で `t/hand/core_conv_mm_aware.rb` が SEGV。**master でも落ちる**ので
+      この変更由来ではない (2026-09-11 の `#to_ary` を rb_check_funcall 相当にした回の疑い)。
+
 残り (kill sentinel の縁):
 - [ ] thread/status 3 err: `dying_thread_ensures { Thread.stop }` の `#wakeup` が
       ThreadError "killed thread" になる / kill 済み thread の ensure 中に
