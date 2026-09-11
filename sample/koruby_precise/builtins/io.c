@@ -310,11 +310,11 @@ static RESULT korb_io_wr_checked(CTX *c, VALUE *slots, KorbIORep *const rep, con
     errno = 0;                                                                 \
     const bool wok__ = korb_io_wr_p((c_), (slots_), (rep_), (p_), (n_), &werr__); \
     if (UNLIKELY(werr__.state != KORB_NORMAL)) return werr__;                  \
-    /* Only EPIPE: CRuby reports a vanished reader, but a write that fails for  \
-       any other reason (a closed or bad descriptor) has always been silent     \
+    /* Only EPIPE (a vanished reader) and EMSGSIZE (an oversized datagram):    \
+       a write that fails for any other reason has always been silent          \
        here, and turning those into raises changes unrelated paths. */          \
-    if (UNLIKELY(!wok__ && errno == EPIPE))                                    \
-        return korb_raise_errno((c_), (slots_), EPIPE, "write", "");           \
+    if (UNLIKELY(!wok__ && (errno == EPIPE || errno == EMSGSIZE)))              \
+        return korb_raise_errno((c_), (slots_), errno, "write", "");           \
 } while (0)
 
 /* Push bytes back so the next read returns them.  Unlike a FILE*'s one-byte
