@@ -25,10 +25,10 @@ files = Dir.glob("#{root}/**/*_spec.rb").sort
 #                      requires a library; see tools/mspec_launch.rb.
 LAUNCHER = File.expand_path("mspec_launch.rb", __dir__)
 if ENV['MSPEC_MODE'] == 'self'
-  SPAWN_ENV = { 'MSPEC_RUNNER' => nil }
+  SPAWN_ENV = { 'MSPEC_RUNNER' => nil, 'RUBY_FLAGS' => '' }
   ARGS_FOR  = ->(f) { [f] }
 else
-  SPAWN_ENV = { 'MSPEC_RUNNER' => '1' }
+  SPAWN_ENV = { 'MSPEC_RUNNER' => '1', 'RUBY_FLAGS' => '' }   # mspec 本体は必ず立てる: 無いと fixture が落ちる
   ARGS_FOR  = ->(f) { [LAUNCHER, f] }
 end
 # summary line: "1 file, N examples, M expectations, F failures, E errors, T tagged"
