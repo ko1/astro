@@ -366,7 +366,15 @@ static RESULT korb_m_obj_class(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_obj_object_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
     const VALUE v = VALUE_REF_GET(self);
-    if (FIXNUM_P(v))     return RESULT_OK(LONG2FIX(2 * FIX2LONG(v) + 1));
+    if (FIXNUM_P(v)) {
+        const korb_sword_t n = FIX2LONG(v);
+        if (LIKELY(n < FIXNUM_MAX / 2 && n > FIXNUM_MIN / 2)) return RESULT_OK(LONG2FIX(2 * n + 1));
+        korb_mp_t z; korb_to_mpz(v, z);                    /* 2n+1 past the Fixnum range → Bignum (CRuby) */
+        korb_mp_mul_ui(z, z, 2); korb_mp_add_ui(z, z, 1);
+        RESULT r = korb_big_from_mpz(c, slots, z);
+        korb_mp_clear(z);
+        return r;
+    }
     if (v == KORB_NIL)   return RESULT_OK(LONG2FIX(4));
     if (v == KORB_FALSE) return RESULT_OK(LONG2FIX(0));
     if (v == KORB_TRUE)  return RESULT_OK(LONG2FIX(20));

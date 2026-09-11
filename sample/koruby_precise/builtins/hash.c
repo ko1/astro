@@ -77,6 +77,7 @@ static uint64_t korb_deep_hash(VALUE v) {
      * below collapses the WHOLE result to a function of the outermost array's
      * length, so rec.hash == [rec].hash == [[rec]].hash. */
     if (UNLIKELY(cycle && KORB_ARRAY_P(v))) return 0x9E3779B97F4A7C15ULL + VAL2ARY(v)->len * 31u;
+    if (UNLIKELY(cycle && KORB_HASH_P(v)))  return 0xBEEFULL + VAL2HASH(v)->len * 31u;   /* same rule for Hash: h.hash == {x: h}.hash */
     return h;
 }
 
