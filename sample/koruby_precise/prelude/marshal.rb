@@ -92,7 +92,7 @@ module Marshal
     else
       return false if defined?(Data) && Data === o
       return false if o.respond_to?(:marshal_dump)
-      o.respond_to?(:_dump)
+      o.respond_to?(:_dump, true)   # CRuby asks with include_private (Time#_dump is private)
     end
   end
 
@@ -133,7 +133,7 @@ module Marshal
         _dump_data(o, out, st)
       elsif o.respond_to?(:marshal_dump)
         _dump_umarshal(o, out, st)
-      elsif o.respond_to?(:_dump)
+      elsif o.respond_to?(:_dump, true)
         _dump_udump(o, out, st)
       elsif Exception === o
         _dump_exception(o, out, st)
@@ -287,7 +287,7 @@ module Marshal
   def self._dump_udump(o, out, st)
     name = _class_name(o.class)
     raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
-    d = o._dump(-1)
+    d = o.__send__(:_dump, -1)
     unless String === d
       raise TypeError, "_dump() must return string, not #{d.class}"
     end
@@ -709,7 +709,7 @@ module Marshal
           uiv << [name, val] if name.to_s.start_with?("@")
           data.instance_variable_set(name, val) rescue nil   # :offset / :zone have no '@'
         end
-        obj = _const(cls)._load(data)
+        obj = _const(cls).__send__(:_load, data)
         if Time === obj && submicro                        # restore the sub-microsecond digits
           b = submicro.bytes
           sub = ((b[0] >> 4) * 100) + ((b[0] & 0xF) * 10) + (b[1] ? (b[1] >> 4) : 0)
@@ -824,7 +824,7 @@ module Marshal
       idx = st[:objs].size; st[:objs] << nil
       cls = _read0(st)
       data = _bytes(st, _rlong(st))
-      obj = _const(cls)._load(data)
+      obj = _const(cls).__send__(:_load, data)
       st[:nocb][obj] = true                              # a link to a _load-built object is silent
       st[:objs][idx] = obj
     when 0x53                                            # 'S' Struct

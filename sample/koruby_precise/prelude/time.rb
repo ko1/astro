@@ -44,6 +44,7 @@ class Time
     all = { year: year, month: month, day: day, yday: yday, wday: wday,
             hour: hour, min: min, sec: sec, subsec: subsec, dst: dst?, zone: zone }
     return all if keys.nil?
+    raise TypeError, "wrong argument type #{keys.class} (expected Array or nil)" unless keys.is_a?(Array)
     h = {}
     keys.each { |k| h[k] = all[k] if all.key?(k) }
     h
@@ -86,6 +87,11 @@ class Time
     return t if utc
     t   # Marshal applies the :offset pseudo-ivar; a bare _load sees UTC fields
   end
+  private :_dump
+  private_class_method :_load
+
+  # eql? compares the instant (seconds + nanoseconds), so hash must too.
+  def hash = [to_i, nsec].hash
 
   # The seconds/nanoseconds/zone live in these ivars; CRuby keeps them out of
   # reach in a native struct, so they must not show up as user ivars.  Named

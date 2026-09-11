@@ -949,8 +949,20 @@ static RESULT korb_m_time_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(KORB_OBJECT_P(o) && korb_ivar_get(c, o, korb_time_t_sym(c->vm)) != KORB_NIL))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "time + time?");   /* Time + Time is invalid */
     korb_sword_t ds, dn;
-    if (UNLIKELY(!korb_time_split_delta(c, o, &ds, &dn, 1)))            /* String / non-Numeric → TypeError */
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(o));
+    if (UNLIKELY(!korb_time_split_delta(c, o, &ds, &dn, 1))) {
+        VALUE cand = o;                                      /* a foreign Numeric converts through #to_r (as Time#- does) */
+        if (korb_obj_is_numeric(c, cand) &&
+            korb_responds_to_coerce_p(c, slots, &cand, korb_intern(c->vm, "to_r", 4))) {
+            slots[0] = cand;
+            const RESULT rr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+            if (korb_time_split_delta(c, rr.value, &ds, &dn, 1)) {
+                slots[0] = rr.value;
+                return korb_time_shift(c, slots + 1, self, slots[0], +1);
+            }
+        }
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_coerce_name(c, o));   /* String / non-Numeric */
+    }
     return korb_time_shift(c, slots, self, o, +1);
 }
 static RESULT korb_m_time_minus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -986,7 +998,7 @@ static RESULT korb_m_time_minus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * inverts its sign — that is how a Time-like duck type compares. */
 static RESULT korb_time_cmp_other(CTX *c, VALUE *slots, VALUE_REF self, VALUE o) {
     const uint32_t cmp = korb_intern(c->vm, "<=>", 3);
-    if (!KORB_OBJECT_P(o) || !korb_responds_to(c, o, cmp)) return RESULT_OK(KORB_NIL);
+    if (!korb_responds_to(c, o, cmp)) return RESULT_OK(KORB_NIL);   /* an Integer's <=> runs the coerce probe on self, as CRuby's rb_invcmp does */
     slots[0] = o; slots[1] = VALUE_REF_GET(self);
     RESULT r = korb_send(c, slots + 2, cmp, 0, 1);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
