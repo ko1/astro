@@ -224,6 +224,20 @@ matrix / ipaddr / resolv / getoptlong / open3 / random/formatter を vendor
   alloc を跨いで生ポインタを保持している疑い。gdb bt から追うこと
   ([[project_koruby_precise_stress_gc_fixes]] と同じ手順)。
 
+## 既知バグ (2026-09-11 に発覚、未修正)
+
+- **rubyspec `library/zlib/gzipreader/rewind_spec.rb` の "invokes seek method on
+  the associated IO object" が STRESS+PURGE でのみ落ちる** (`Mock 'io': method
+  get_io called with unexpected arguments ()`)。通常実行は 3 例 PASS。zlib.c の
+  borrow-escape 修正 (ef23a58b) 前の binary でも同じく落ちるので zlib ではない。
+  `should_receive(:get_io).any_number_of_times` の引数照合が GC ストレス下で
+  壊れる経路 (mspec mock / singleton def) を追うこと。
+- **`Zlib::Inflate#avail_in` がストリーム終端後に残った入力を数える**。
+  `z << (deflated + "TRAILING")` の後、CRuby は残りを出力へ素通しして
+  `avail_in == 0`、koruby は出力は一致するが `avail_in == 8` を返す
+  (lib/zlib.rb の `<<` が `@passthrough` に回した分を `__stat[3]` から引いて
+  いない)。
+
 ## 既知バグ (メソッドオブジェクト)
 
 - **`UnboundMethod#bind_call` が Class/Module レシーバで singleton override に
