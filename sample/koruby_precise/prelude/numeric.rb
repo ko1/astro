@@ -118,6 +118,13 @@ end
 
 # The C Float#arg/#polar answer 0 for NaN; CRuby propagates the NaN.  CRuby
 # tests signbit(), so -0.0 is negative here too.
+class Integer
+  # n.upto(bad) / n.downto(bad) without a block: CRuby hands back the
+  # Enumerator and only #size / #each raise the comparison error.
+  def __iter_enum_bad(meth, lim)
+    to_enum(meth, lim) { raise ArgumentError, "comparison of Integer with #{lim.nil? ? 'nil' : lim.class} failed" }
+  end
+end
 class Float
   def arg
     return self if nan?

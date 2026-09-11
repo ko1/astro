@@ -252,8 +252,18 @@ static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (UNLIKELY(!korb_to_index(iv, &i))) {                            /* coerce the bit index via #to_int */
             RESULT cr = korb_coerce_to_int(c, slots, &iv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(iv, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
             selfv = VALUE_REF_GET(self);                                    /* re-read: coercion may have moved a Bignum self */
+            if (!korb_to_index(iv, &i)) {
+                /* an index past `long` (Bignum, or a Float that big): every such
+                 * bit is the sign bit; a negative one is below bit 0 → 0 */
+                int sgn = 0;
+                if (KORB_BIGNUM_P(iv)) sgn = korb_mp_sgn(VAL2BIG(iv)->z);
+                else if (KORB_FLOAT_P(iv) && isfinite(korb_float_val(iv))) sgn = korb_float_val(iv) < 0 ? -1 : 1;
+                else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+                if (sgn < 0 || VALUE_SLICE_LEN(a) >= 2) return RESULT_OK(LONG2FIX(0));
+                const bool neg = FIXNUM_P(selfv) ? FIX2LONG(selfv) < 0 : korb_mp_sgn(VAL2BIG(selfv)->z) < 0;
+                return RESULT_OK(LONG2FIX(neg ? 1 : 0));
+            }
         }
         if (VALUE_SLICE_LEN(a) >= 2) {                                      /* n[i, len] */
             korb_sword_t len;
