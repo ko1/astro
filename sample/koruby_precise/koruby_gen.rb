@@ -342,15 +342,18 @@ class KorubyNodeDef < ASTroGen::NodeDef
               # The frame link is the FIRST hole this SD allocates, so it is
               # emitted here, before the children's — hole order is allocation
               # order and the desc table is written from the same accumulator.
-              link_emit = if @operands.any? { |op| op.name == 'flink' }
+              # KORUBY_FLINK=0 at codegen: store the plain zero the frame link
+              # replaced, everything else unchanged — an A/B for the store alone.
+              link_emit = if @operands.any? { |op| op.name == 'flink' } && ENV['KORUBY_FLINK'] != '0'
                             if pool_mode?
-                              # ONE hole for the link, and ONE materialization:
-                              # each HOLE_* expansion is its own movabs (the
-                              # loader needs it opaque), so the store and the
-                              # EVAL argument share a C local.
+                              # The link goes to memory as an immediate: a
+                              # register-materialized hole (movabs, 10 bytes)
+                              # would cost more code than the zero store it
+                              # replaces, which shows up as I-cache in tight
+                              # loops.  korb_flink_make keeps the baked value
+                              # inside the signed 32-bit form this needs.
                               'const uint32_t _flink_hole = astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, "u.' + @name + '.flink", -1);' + "\n" +
-                              '          fprintf(fp, "    const VALUE _flink = (VALUE)HOLE_U64(%u);\\n", _flink_hole);' + "\n" +
-                              '          fprintf(fp, "    slots[-(intptr_t)%u - 2] = _flink;\\n", _cnt);'
+                              '          fprintf(fp, "    HOLE_STORE32(%u, slots[-(intptr_t)%u - 2]);\\n", _flink_hole, _cnt);'
                             else
                               'fprintf(fp, "    slots[-(intptr_t)%u - 2] = %uU;\\n", _cnt, n->u.' + @name + '.flink);'
                             end
@@ -631,8 +634,8 @@ class KorubyNodeDef < ASTroGen::NodeDef
         # The frame link already has a hole, allocated by the @framehdr cursor
         # advance that stores it (see build_children_specializer): reuse that
         # index so the SD materializes the value once, not twice.
-        if self.name == 'flink' && @owner.framehdr?
-          return nil, (pool_mode? ? '    fprintf(fp, "        _flink");'
+        if self.name == 'flink' && @owner.framehdr? && ENV['KORUBY_FLINK'] != '0'
+          return nil, (pool_mode? ? '    fprintf(fp, "        (VALUE)HOLE_U64(%u)", _flink_hole);'
                                   : "    fprintf(fp, \"        (VALUE)%lluULL\", (unsigned long long)n->u.#{name}.flink);")
         end
         # Bare VALUE operand (node_lit): Symbol literals are per-process

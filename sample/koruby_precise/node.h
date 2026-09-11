@@ -320,11 +320,11 @@ void   korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
                             korb_method_blk_fn fn, int32_t arity);
 /* Dispatch `recv.mid(args)`: recv at slots[-argc-1], args at slots[-argc..]. */
 RESULT korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc);
-RESULT korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+RESULT korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                         struct korb_inlcache *ic, VALUE caller_self);   /* caller_self = KORB_UNDEF → no visibility check */
 /* `site` is the call node, or NULL when there is none; read ONLY on the
  * method-miss path (for head.flags.is_vcall), never on the hot path. */
-RESULT korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
+RESULT korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink,
                         struct korb_callcache *cc, struct korb_inlcache *ic,
                         uint32_t argc, VALUE self, const NODE *site);
 /* Implicit-self keyword call: positionals at base[0..pos_argc), keyword VALUEs at
@@ -703,54 +703,55 @@ static inline void korb_frame_magic_check(const VALUE *const base, const enum ko
  * line the call site used to materialize: the cold tails read the line back out
  * of the frame instead of keeping it live across the dispatch.
  *
- * Layout (bit 0 = 1 so the GC root scan reads the cell as an immediate):
- *   bits  1..14  dist_lo   cells down to the caller's frame-top marker (0 = no link)
- *   bits 15..30  line      call site, 0 = unknown (clamped at 65535)
- *   bits 31..46  dist_hi   only ever nonzero for a link computed at run time; a
- *                          baked one stays < 2^31 so it is one immediate store
+ * Layout.  Bit 0 is always 1, so the GC root scan reads the cell as an
+ * immediate; bits 1..2 pick the form, and every pointer form is one OR:
+ *   bit 1 == 0    DIRECT   dist = bits 2..14 (+ bits 31.. for a run-time one),
+ *                          line = bits 15..30.  A baked one stays under 2^31,
+ *                          which is what lets it be stored as an immediate.
+ *   (v & 7) == 3  FORWARD  a link cell elsewhere: read the link there instead
+ *                          (a dispatch that rebuilt the window left it behind).
+ *   (v & 7) == 7  CFRAME   a C method's link cell: the frame is the marker just
+ *                          above it, its position the line that cell carries.
+ * (Bit 2 belongs to `dist`, so only bit 1 may separate the forms; the pointer
+ * forms are 8-aligned addresses, where all three low bits are free.)
  * The link supersedes the frame-magic marker on the frames that carry one.
  * ------------------------------------------------------------------------- */
-#define KORB_FLINK_DIST_LO_BITS 14u
+#define KORB_FLINK_DIST_LO_BITS 13u
+#define KORB_FLINK_DIST_MAX     (1u << KORB_FLINK_DIST_LO_BITS)
 #define KORB_FLINK_LINE_MAX     0xFFFFu
 static inline uint32_t korb_flink_line(const VALUE f) { return (uint32_t)((f >> 15) & KORB_FLINK_LINE_MAX); }
 static inline uint32_t korb_flink_dist(const VALUE f) {
-    return (uint32_t)((f >> 1) & 0x3FFFu) | (uint32_t)(((f >> 31) & 0xFFFFu) << KORB_FLINK_DIST_LO_BITS);
+    return (uint32_t)((f >> 2) & (KORB_FLINK_DIST_MAX - 1u)) |
+           (uint32_t)(((f >> 31) & 0xFFFFu) << KORB_FLINK_DIST_LO_BITS);
 }
-/* Parse-time link: one 31-bit immediate.  A staging depth past the 14-bit field
- * (a call buried in a huge literal) drops the link rather than aiming it wrong. */
+/* Parse-time link: fits a signed 32-bit immediate, so the call site stores it
+ * without materializing it in a register.  A staging depth past the field (a
+ * call buried in a huge literal) drops the link rather than aiming it wrong. */
 static inline uint32_t korb_flink_make(uint32_t line, uint32_t dist) {
-    if (dist >= (1u << KORB_FLINK_DIST_LO_BITS)) dist = 0;
+    if (dist >= KORB_FLINK_DIST_MAX) dist = 0;
     if (line > KORB_FLINK_LINE_MAX) line = KORB_FLINK_LINE_MAX;
-    return (line << 15) | (dist << 1) | 1u;
+    return (line << 15) | (dist << 2) | 1u;
 }
-/* Run-time link (block frames): the distance is a pointer difference, so it gets
- * the wide field too. */
+/* Run-time DIRECT link: the distance is a pointer difference, so it gets the
+ * wide field too (and no longer fits an immediate — which is fine, nothing
+ * stores this one from a call site). */
 static inline VALUE korb_flink_make_wide(uint32_t line, uint64_t dist) {
-    if (dist >= (1ull << 30)) dist = 0;
+    if (dist >= (1ull << 29)) dist = 0;
     if (line > KORB_FLINK_LINE_MAX) line = KORB_FLINK_LINE_MAX;
     return ((VALUE)(dist >> KORB_FLINK_DIST_LO_BITS) << 31) |
-           ((VALUE)line << 15) | ((VALUE)(dist & 0x3FFFu) << 1) | 1u;
+           ((VALUE)line << 15) |
+           ((VALUE)(dist & (KORB_FLINK_DIST_MAX - 1u)) << 2) | 1u;
 }
-
-/* Re-aim a link read at `src` so that it means the same frame when read from
- * `dst` (which must sit above the target).  Used where a frame is placed by C
- * rather than by a call node: the C frame's own link still names the right
- * caller, only the distance changes.  0 = no usable link. */
-static inline VALUE korb_flink_relocate(const VALUE *const src, const VALUE *const dst)
-{
-    if (src == NULL) return 0;
-    const VALUE v = *src;
-    if ((v & 1u) == 0) return 0;
-    const uint32_t d = korb_flink_dist(v);
-    if (d == 0) return 0;
-    const VALUE *const target = src - d;
-    if (dst <= target) return 0;
-    return korb_flink_make_wide(korb_flink_line(v), (uint64_t)(dst - target));
-}
+/* The two pointer forms.  Both are one OR on a cell address (8-aligned, so the
+ * tag bits are free) — that is the whole cost of linking a frame C placed. */
+static inline VALUE korb_flink_fwd(const VALUE *const cell) { return (VALUE)(uintptr_t)cell | 3u; }
+static inline VALUE korb_flink_cframe(const VALUE *const cell) { return (VALUE)(uintptr_t)cell | 7u; }
+static inline const VALUE *korb_flink_ptr(const VALUE f) { return (const VALUE *)(uintptr_t)(f & ~(VALUE)7u); }
 
 /* Park a parse-baked link for a dispatch that builds the callee window itself
- * (a splat call reserves no header cells to store it in).  `slots` is the node's
- * own cursor, which is what the baked distance is measured from. */
+ * (a splat call reserves no header cells to store it in; a yield hands one to
+ * korb_block_yield).  `slots` is the node's own cursor, which is what the baked
+ * distance is measured from. */
 static inline void korb_flink_stage(CTX *c, const VALUE flink, const VALUE *const slots)
 {
     const uint32_t d = korb_flink_dist(flink);
@@ -866,9 +867,8 @@ korb_invoke_entry_ic(CTX *c, VALUE *slots, const struct korb_inlcache *ic, uint3
     korb_ep_set(slots - argc, (VALUE)((uintptr_t)ic->m | 1u));   /* method entry, moved to the frame top by the entry */
     const RESULT r = (*ic->dispatch)(c, ic->body, slots);
     if (LIKELY(r.state == KORB_NORMAL)) return r;
-    /* The call site's line rides the frame link the site stored in base[-3];
-     * reading it back HERE (rather than keeping it live across the dispatch)
-     * is what makes the link free — the cold tail pays for it, nobody else. */
+    /* The site's line rides the frame link it stored in base[-3]; reading it
+     * back here keeps it out of the hot path entirely. */
     return korb_call_ret_cold(c, r, slots[-(korb_sword_t)argc - 3], mid);
 }
 

@@ -1041,13 +1041,6 @@ struct korb_vm {
      * in RESULT.value) */
     struct korb_bt_entry *bt;
     uint32_t bt_cnt, bt_capa;
-    /* Scratch the frame walk materializes into (one allocation, reused). */
-    struct korb_frame_rec *fscratch;
-    /* Address range of everything a frame-top marker may point at (method
-     * entries and AST nodes — all immortal libc allocations).  A marker outside
-     * it is not one of ours, so the walk stops instead of dereferencing it.
-     * Maintained where methods and nodes are created, never on a call path. */
-    uintptr_t bt_lo, bt_hi;
 
     /* Fiber support: list of all live fibers (suspended ones' value-stacks are
      * GC roots), the currently-running fiber (NULL = main), the main stack's
@@ -1183,6 +1176,13 @@ struct korb_vm {
      * parse time.  Node ptrs are immortal (AST); no GC. */
     struct korb_srcloc { struct Node *node; uint32_t file_sym; uint32_t line; } *srclocs;
     uint32_t srcloc_cnt, srcloc_capa;
+    /* Backtrace scratch and bounds.  At the END of the struct on purpose: every
+     * field above keeps the offset it had, so the dispatch path's loads keep
+     * their cache lines. */
+    struct korb_frame_rec *fscratch;   /* the frame walk materializes into this (one allocation, reused) */
+    uintptr_t bt_lo, bt_hi;            /* address range a frame-top marker may point into (method entries,
+                                        * AST nodes — immortal libc); one outside it is not ours, so the
+                                        * walk stops instead of dereferencing it */
 };
 
 /* -----------------------------------------------------------------------------
@@ -1207,20 +1207,6 @@ struct CTX_struct {
      * It is a transient stack pointer: set the instant a return is raised and
      * cleared when consumed; never read across a GC. */
     VALUE *return_target;
-    /* Backtrace only: the frame-link cell of the innermost C method that is
-     * RUNNING A BLOCK (`each`, `instance_exec`, `Proc#call`, ...).  A block
-     * frame it starts has no parse-time link — the C method, not a call node,
-     * placed it — so it copies this one, re-aimed.  Written by the dispatch of
-     * block-taking builtins only (save on entry, restore on return); the call
-     * path proper never touches it.  NULL = unknown → the walk stops there. */
-    const VALUE *cfunc_link;
-    /* Single use: the frame this call comes from, for a dispatch that builds the
-     * callee window itself (korb_send_impl relocates [recv, args]; a splat call
-     * node reserves no header cells) and so cannot be handed a link inside the
-     * window.  carry_top is the caller's frame-top marker cell, carry_line its
-     * position; set immediately before the dispatch, cleared as it is read. */
-    const VALUE *carry_top;
-    uint32_t     carry_line;
     /* The method entry whose define_method body is running, so a `super` inside
      * that body can find the name and owner it was defined under (a block frame
      * carries no method entry).  Saved/restored around the body call. */
@@ -1275,6 +1261,21 @@ struct CTX_struct {
      * needs no GC root.  Cleared on every top-level korb_pat_match. */
     uint32_t  pat_key_mid;
     struct korb_vm *vm;
+    /* Backtrace bookkeeping.  At the END of the struct on purpose: every field
+     * above keeps the offset it had, so the dispatch path's loads (slots_limit,
+     * cstack_limit, vm, ...) keep their cache lines.
+     * cfunc_link: the frame-link cell of the innermost C method that is RUNNING
+     *   A BLOCK (`each`, `instance_exec`, `Proc#call`).  A block frame it starts
+     *   has no parse-time link - a C method, not a call node, placed it - so the
+     *   block frame points at this one.  Written only by the dispatch of
+     *   block-taking builtins (save on entry, restore on return).
+     * carry_top / carry_line: single use - the frame a call comes from, for a
+     *   dispatch that rebuilds the callee window (korb_send_impl) or reserves no
+     *   header cells (a splat call, a yield), and so cannot be handed a link in
+     *   the window.  Set immediately before that dispatch, cleared as read. */
+    const VALUE *cfunc_link;
+    const VALUE *carry_top;
+    uint32_t     carry_line;
 };
 
 /* The block handed to a method lives in the callee's frame (slots), not in

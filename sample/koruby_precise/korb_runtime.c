@@ -5035,7 +5035,7 @@ korb_entry_ret_cold(CTX *c, VALUE *base, uint32_t locals_cnt, RESULT r)
 RESULT
 korb_call_ret_cold(CTX *c, RESULT r, VALUE flink, uint32_t mid)
 {
-    const uint32_t line = korb_flink_line(flink);
+    const uint32_t line = korb_flink_line(flink);   /* decoded once here, not in every inlined tail */
     /* Nothing but line/mid survives the dispatch here by design, so the frame's
      * method entry is gone: the label is the bare name (no owner, no file). */
     if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, NULL);
@@ -7773,6 +7773,22 @@ korb_bt_unwind(CTX *c, KorbException *e, uint32_t line, uint32_t mid, const stru
  * per call.  The walk runs once per backtrace and materializes into fscratch;
  * every consumer then just indexes.
  * ------------------------------------------------------------------------- */
+/* The line a link names, following FORWARD hops (a C frame reached through an
+ * internal re-dispatch has its position one cell further along). */
+static uint32_t
+korb_flink_line_at(const VALUE *cell, const VALUE *lo, const VALUE *hi)
+{
+    for (int guard = 0; guard < 8; guard++) {
+        if (cell < lo || cell >= hi) break;
+        const VALUE v = *cell;
+        if ((v & 1u) == 0) break;
+        if ((v & 6u) == 2u) { cell = korb_flink_ptr(v); continue; }   /* FORWARD */
+        if (v & 2u) break;                                            /* CFRAME: no line of its own */
+        return korb_flink_line(v);
+    }
+    return 0;
+}
+
 static uint32_t
 korb_frames_snapshot_at(CTX *c, const VALUE *top, uint32_t line0, const VALUE *link_cell)
 {
@@ -7784,10 +7800,23 @@ korb_frames_snapshot_at(CTX *c, const VALUE *top, uint32_t line0, const VALUE *l
         if (top == NULL) {                       /* resolve the next frame from the link one level in */
             if (link_cell == NULL || link_cell < lo || link_cell >= hi) break;
             const VALUE link = *link_cell;
-            const uint32_t dist = korb_flink_dist(link);
-            if ((link & 1u) == 0 || dist == 0) break;
-            top = link_cell - dist;
-            line = korb_flink_line(link);
+            if ((link & 1u) == 0) break;
+            if (link & 2u) {                     /* a pointer form (bit 2 is part of dist, so bit 1 alone tags) */
+                const VALUE *const ptr = korb_flink_ptr(link);
+                if ((link & 4u) == 0) {          /* FORWARD: a dispatch rebuilt the window; the link is over there */
+                    if (ptr < lo || ptr >= hi || ptr == link_cell) break;
+                    link_cell = ptr;
+                    continue;
+                }
+                if (ptr + 1 < lo || ptr + 1 >= hi) break;   /* CFRAME: the C method this frame runs under */
+                top = ptr + 1;                   /* its marker sits one cell above its own link */
+                line = korb_flink_line_at(ptr, lo, hi);   /* and it reads at its own call site */
+            } else {
+                const uint32_t dist = korb_flink_dist(link);
+                if (dist == 0) break;
+                top = link_cell - dist;
+                line = korb_flink_line(link);
+            }
         }
         if (top < lo || top >= hi) break;
         const VALUE marker = *top;
@@ -7889,21 +7918,12 @@ korb_flink_hand_on(CTX *c, const VALUE *src)
 }
 
 static VALUE
-korb_flink_carry(CTX *c, const VALUE *src, const VALUE *dst)
+korb_flink_carry(CTX *c, const VALUE *src)
 {
     if (src == NULL || src < c->slots || src >= c->slots_limit) return 0;
-    const VALUE v = korb_flink_relocate(src, dst);
-    if (v == 0) return 0;
-    const VALUE *const top = dst - korb_flink_dist(v);
-    if (top < c->slots || top >= c->slots_limit) return 0;
-    const VALUE marker = *top;
-    const uintptr_t p = (uintptr_t)(marker & ~(VALUE)7u);
-    switch (marker & 7u) {
-      case KORB_FTOP_METHOD: case KORB_FTOP_BLOCK: case KORB_FTOP_CFUNC:
-        return korb_bt_known_ptr(c->vm, p) ? v : 0;
-      case KORB_FTOP_MAIN: return v;
-      default: return 0;
-    }
+    const VALUE v = *src;
+    if ((v & 1u) == 0) return 0;
+    return korb_flink_fwd(src);   /* the cell stays live below us: let the walk read it */
 }
 
 /* Render bt[i] (an unwound frame) as CRuby does: "file:line:in 'label'". */
@@ -8827,10 +8847,11 @@ korb_refined_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t ar
 }
 
 __attribute__((no_stack_protector)) RESULT
-korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
+korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink,
                  struct korb_callcache *cc, struct korb_inlcache *ic,
                  uint32_t argc, VALUE self, const NODE *site)
 {
+    const uint32_t line = korb_flink_line(flink);   /* decoded once here, not at every call site */
     struct korb_vm *const vm = c->vm;
     if (UNLIKELY(vm->refinements_active)) {          /* refined implicit-self call */
         RESULT rr;
@@ -9096,8 +9117,14 @@ korb_block_nil_locals(VALUE *restrict dst, uint32_t n) {
 static VALUE
 korb_block_flink(CTX *c, const NODE *block, VALUE prev, const VALUE *dst)
 {
+    if (c->carry_top != NULL) {                  /* a `yield` handed us its own baked link */
+        const VALUE *const top = c->carry_top;
+        const uint32_t line = c->carry_line;
+        c->carry_top = NULL;
+        if (top < dst) return korb_flink_make_wide(line, (uint64_t)(dst - top));
+    }
     if (c->cfunc_link != NULL && dst > c->cfunc_link + 1)
-        return korb_flink_make_wide(korb_flink_line(*c->cfunc_link), (uint64_t)(dst - (c->cfunc_link + 1)));
+        return korb_flink_cframe(c->cfunc_link);
     if ((prev & 1u) && block != NULL && block != KORB_BLK_CPROC &&
         block->head.kind == &kind_node_entry && block->u.node_entry.def_top_off >= 0) {
         const VALUE *const top = (const VALUE *)(uintptr_t)(prev & ~(VALUE)1u) + block->u.node_entry.def_top_off;
@@ -9712,7 +9739,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
      * recorded, from wherever this dispatch was entered (c->carry_top when the
      * caller already restaged once, else the window we are relocating). */
     slots[0] = c->carry_top ? korb_flink_from_top(c, c->carry_top, c->carry_line, &slots[0])
-                            : korb_flink_carry(c, slots - (korb_sword_t)argc - 3, &slots[0]);
+                            : korb_flink_carry(c, slots - (korb_sword_t)argc - 3);
     c->carry_top = NULL;                                /* single use */
     slots[1] = 0;                                       /* callee base[-2] (EP)      */
     slots += (korb_sword_t)argc + 3;                        /* new cursor: recv at slots[-argc-1], gap below */
@@ -10900,9 +10927,10 @@ korb_send_ic_dispatch(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_
             (ic)->serial == (vm)->method_serial && (ic)->klass == (klass)))
 
 __attribute__((no_stack_protector)) RESULT
-korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                  struct korb_inlcache *ic, VALUE caller_self)
 {
+    const uint32_t line = korb_flink_line(flink);   /* decoded once here, not at every call site */
     struct korb_vm *const vm = c->vm;
     const VALUE recv = slots[-(korb_sword_t)argc - 1];
     if (UNLIKELY(vm->refinements_active)) {          /* refined receiver dispatch */
@@ -13192,7 +13220,7 @@ korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const
     const uint32_t fsym = korb_intern(c->vm, fname, strlen(fname));
     korb_reg_srcloc(c->vm, ast, fsym, 0);
     if (locals > 0) fb[locals - 1] = ((VALUE)fsym << 32) | ((VALUE)(locals + 2) << 3) | KORB_FTOP_MAIN;
-    slots[0] = korb_flink_relocate(req_link, &slots[0]);
+    slots[0] = korb_flink_carry(c, req_link);   /* the require frame's link, read through */
     RESULT mr = korb_obj_new(c, cur, KORB_NIL);        /* fresh `main` self */
     if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
     fb[-1] = mr.value;

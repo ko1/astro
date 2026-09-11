@@ -4755,7 +4755,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             NODE *arr;
             WITH_CHAIN(tc, 1, (arr = build_array(tc, yn->arguments->arguments.nodes, yargc, (uint32_t)yargc)));
             if (depth == 0)
-                return ALLOC_node_yield_splat(line, -4 - (tc->chain + 1), -3 - (tc->chain + 1), -2 - (tc->chain + 1), arr);
+                return ALLOC_node_yield_splat(kp_flink_at(tc, line, 1), -4 - (tc->chain + 1), -3 - (tc->chain + 1), -2 - (tc->chain + 1), arr);
             NODE *yo = ALLOC_node_yield_outer_splat(line, -2 - (tc->chain + 1), depth, -4, arr);
             bake_add(tc, &yo->u.node_yield_outer_splat.prev_off);
             add_bake_to(mf, &yo->u.node_yield_outer_splat.trio_base);
@@ -4764,11 +4764,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
         if (depth == 0) {                        /* yield at method top-level: read this frame's trio */
             if (yargc == 0)
-                return ALLOC_node_yield0(line, -4 - tc->chain, -3 - tc->chain, -2 - tc->chain);
+                return ALLOC_node_yield0(kp_flink_at(tc, line, 0), -4 - tc->chain, -3 - tc->chain, -2 - tc->chain);
             if (yargc == 1) {
                 NODE *a0;
                 WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
-                return ALLOC_node_yield1(line, -4 - (tc->chain + 1), -3 - (tc->chain + 1), -2 - (tc->chain + 1), a0);
+                return ALLOC_node_yield1(kp_flink_at(tc, line, 1), -4 - (tc->chain + 1), -3 - (tc->chain + 1), -2 - (tc->chain + 1), a0);
             }
             NODE **argv = malloc(sizeof(NODE *) * yargc);          /* yield a, b, ... */
             if (!argv) abort();
@@ -4777,7 +4777,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             for (size_t i = 0; i < yargc; i++) argv[i] = transduce(tc, yn->arguments->arguments.nodes[i]);
             tc->chain = saved;
             const int32_t off = tc->chain + (int32_t)yargc;
-            return ALLOC_node_yield_n(line, -4 - off, -3 - off, -2 - off, argv, (uint32_t)yargc);
+            return ALLOC_node_yield_n(kp_flink_at(tc, line, (uint32_t)yargc), -4 - off, -3 - off, -2 - off, argv, (uint32_t)yargc);
         }
         /* yield inside a block: trio_base = method frame_size - 4 (add-baked at
          * the method's pop); prev_off addresses this block frame's PREV cell. */

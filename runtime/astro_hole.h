@@ -51,6 +51,16 @@ typedef const char *astro_pool_ptr_t;
 #define HOLE_U64(k) ((uint64_t)ASTRO_ARCH_HOLE_IMM(k))
 #define HOLE_PTR(k) ((void *)ASTRO_ARCH_HOLE_IMM(k))
 #define ASTRO_SD_INLINE_ATTR __attribute__((always_inline))
+// Store a hole whose value is known to fit the backend's immediate-store form
+// straight to memory, with no register and no wide immediate (x86-64: `movq
+// $imm32, m64`, 8 bytes, against a 32-bit relocation the applier range-checks —
+// versus a 10-byte movabs plus the store).  The VALUE RANGE IS THE CALLER'S
+// BUSINESS: a hole that may not fit must use HOLE_U64.
+#ifdef ASTRO_ARCH_HOLE_STORE32
+#define HOLE_STORE32(k, lv) ASTRO_ARCH_HOLE_STORE32(k, lv)
+#else
+#define HOLE_STORE32(k, lv) ((lv) = ASTRO_ARCH_HOLE_IMM(k))
+#endif
 #elif defined(ASTRO_SD_POOL)
 // Inside an SD translation unit `P` is the pool of the enclosing public SD
 // (root: loaded from n->head.pool; inline SDs receive `P + offset`).
@@ -61,6 +71,7 @@ typedef astro_hole_t const *restrict astro_pool_ptr_t;
 #define HOLE_I32(k) ((int32_t)(uint32_t)P[k])
 #define HOLE_U64(k) ((uint64_t)P[k])
 #define HOLE_PTR(k) ((void *)(uintptr_t)P[k])
+#define HOLE_STORE32(k, lv) ((lv) = P[k])
 #define ASTRO_SD_INLINE_ATTR
 #endif
 

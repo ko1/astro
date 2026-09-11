@@ -53,6 +53,12 @@
 // inline SDs are always_inline in this mode.
 #define ASTRO_ARCH_HOLE_IMM(k) __extension__({ \
     uintptr_t _hv; __asm__("movabsq $%p1, %0" : "=r"(_hv) : "i"(P + (k))); _hv; })
+// Immediate store: `movq $imm32, m64` (8 bytes, no register) carries the hole as
+// an R_X86_64_32S relocation, which astro_arch_reloc_apply range-checks.  Only
+// for hole values that fit a SIGNED 32-bit immediate; the loader refuses the
+// relocation (and the load fails) rather than truncating if one does not.
+#define ASTRO_ARCH_HOLE_STORE32(k, lv) \
+    __asm__("movq $%p1, %0" : "=m"(lv) : "i"(P + (k)))
 #endif
 
 // ---- load side: relocation application ---------------------------------------
