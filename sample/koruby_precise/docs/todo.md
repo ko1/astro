@@ -145,11 +145,22 @@ high-water 0 埋めは `slots_top` より **上** しか見ないので、この
   (分布は非重複)。1 文境界あたり +3.6 命令だが IPC が 3.101 → 3.139 に
   上がっており、予測される独立命令が空き発行スロットに吸収されている。
   branch-miss は増えない。実験の diff は docs/tracepoint_check_experiment.patch。
-  **次の一手**: 「左部分木に call を含むか」を parse 時に焼いた定数オペランドに
-  すれば `if (0 && ...)` が畳まれてチェックが消える。この情報は部分木の構造から
-  決まるので **hash はすでに区別しており、SD variant は増えない**。
-  optcarrot の node_seq 実行のうち pure が何割かを測るのが先。
-  ゼロコストにする別案はコードパッチ (jump label / USDT の nop 方式) のみ。
+  **(2026-09-11 に両案とも計測して却下。`~/ruby/src/trials/2026-09-11-trace-nop/`)**
+  - 定数畳み込み案 (「左部分木に call を含むか」を parse 時定数にして `if (0 && …)` を畳む):
+    optcarrot の文境界 158,678,088 回のうち「直前の文が Ruby コードを走らせ得ない」ものは
+    **0.32%** (演算子も inert とみなす上界でも 0.36%)。畳めるチェックが無い。
+    positive control (`a=1; b=a; c=b` のループ) は 99.80% なので計測側は効いている。
+  - nop パッチ案 (5B nop → `jmp rel32`、Linux の static branch 方式): 実装して動く
+    (走行中のフレームにも効く) が、optcarrot AOT で **cycles +7.8%** と分岐方式 (+6.0%) より遅い。
+    `asm goto` が site ごとに固有ラベルを要求するので traced tail を共有できず、
+    SD の機械語が **+7.3%** (分岐方式は +4.1%)、**L1-icache-load-miss が 2.7 倍**になる。
+  - **分かったこと: 値段はチェックの実行コストではなく、文境界に別の出口があることで
+    融合 SD のコードが膨らむこと (front-end)。** 命令数は nop 方式のほうが 1.6pp 少ないのに
+    cycles は同じか悪い。tak (文境界がほぼ無い) は ±0、ivar (境界が多く SD が小さい) では
+    nop が cycles +0.03% とほぼ無料なので、ワークロード依存でもある。
+  - 次に試すなら: (1) traced tail を SD ごとに 1 つ共有して site を nop 5 byte だけにする、
+    (2) site を全境界でなくループ back-edge と call を含む文の境界だけに置く、
+    (3) TracePoint を張った時点で該当 SD を traced 版に焼き直して差し替える。
 - socket の残り: `recvmsg` / `recvmsg_nonblock` / `sendmsg`、
   `Socket::AncillaryData` の中身、`UDPSocket#local_address` 系。
 
