@@ -5936,9 +5936,9 @@ korb_check_funcall(CTX *c, VALUE *slots, VALUE *v, uint32_t mid)
     if (!korb_responds_to_coerce_p(c, slots, v, mid)) {
         const VALUE dcls = korb_dispatch_class(c, *v);
         if (!KORB_CLASS_P(dcls)) return RESULT_OK(KORB_FALSE);
-        VALUE rt_def = KORB_NIL, rtm_def = KORB_NIL, mm_def = KORB_NIL;
-        (void)korb_class_find_method(dcls, korb_intern(vm, "respond_to?", 11), &rt_def);
-        if (rt_def != KORB_NIL && rt_def != korb_const_get(vm, vm->class_name[KORB_C_OBJECT])) return RESULT_OK(KORB_FALSE);   /* its own #respond_to? said no */
+        VALUE rtm_def = KORB_NIL, mm_def = KORB_NIL;
+        const struct korb_method *const rt = korb_class_find_method(dcls, korb_intern(vm, "respond_to?", 11), NULL);
+        if (rt != NULL && rt->kind != KORB_METHOD_CFUNC) return RESULT_OK(KORB_FALSE);   /* its own #respond_to? said no */
         if (korb_class_find_method(dcls, korb_intern(vm, "respond_to_missing?", 19), &rtm_def) != NULL &&
             rtm_def != korb_const_get(vm, korb_intern(vm, "Kernel", 6))) return RESULT_OK(KORB_FALSE);
         const struct korb_method *const mm = korb_class_find_method(dcls, vm->mid_method_missing, &mm_def);
@@ -7120,7 +7120,7 @@ RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op,
 RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE *rhs, const char *op, uint32_t line, bool *handled) {
     *handled = false;
     const uint32_t coerce_id = korb_intern(c->vm, "coerce", 6);
-    if (!korb_responds_to(c, *rhs, coerce_id)) return RESULT_OK(KORB_NIL);
+    if (!korb_check_funcall_respond_to(c, slots, rhs, coerce_id)) return RESULT_OK(KORB_NIL);   /* an overridden #respond_to? decides (rb_check_funcall) */
     *handled = true;
     slots[0] = *rhs; slots[1] = l;                           /* recv=rhs, arg=l for #coerce */
     RESULT cr = korb_send_impl(c, slots + 2, coerce_id, line, 1, NULL, NULL, NULL);
