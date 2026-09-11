@@ -31,8 +31,17 @@ static uint32_t korb_re_enc_idx(const struct korb_vm *vm, VALUE re, bool *out_fi
     }
     if (f & 512u) { *out_fixed = true; return KORB_ENC_UTF8; }          /* /u */
     if (f & (64u | 256u)) { *out_fixed = true; *out_known = false; return senc; }  /* /e, /s */
-    *out_fixed = (f & KORB_RE_FIXENC) != 0 || !korb_enc_ascii_compat_idx(vm, senc);
+    *out_fixed = (f & KORB_RE_FIXENC) != 0 || !korb_enc_ascii_compat_idx(vm, senc) ||
+                 (KORB_STRING_P(srcv) && !korb_str_bytes_ascii(srcv));   /* non-ASCII source pins its encoding */
     return senc;
+}
+/* CRuby's message shape for a regexp/subject encoding mismatch. */
+static RESULT korb_re_raise_enc_mismatch(CTX *c, VALUE *slots, uint32_t renc, uint32_t senc)
+{
+    char msg[160];
+    snprintf(msg, sizeof msg, "incompatible encoding regexp match (%s regexp with %s string)",
+             korb_enc_idx_name(c->vm, renc), korb_enc_idx_name(c->vm, senc));
+    return korb_raise_enc_compat_msg(c, slots, msg);
 }
 
 /* True when the pattern pins an encoding, so a subject in a different one may
@@ -52,15 +61,17 @@ static RESULT korb_re_check_enc(CTX *c, VALUE *slots, VALUE re, VALUE subj)
 {
     const uint32_t senc = KORB_STR_ENC(subj);
     bool re_fixed = false, re_known = false;
-    const uint32_t renc = korb_re_enc_idx(c->vm, re, &re_fixed, &re_known);
+    uint32_t renc = korb_re_enc_idx(c->vm, re, &re_fixed, &re_known);
+    if (!re_fixed && renc == KORB_ENC_UTF8 && KORB_STRING_P(VAL2RE(re)->source) && korb_str_bytes_ascii(VAL2RE(re)->source))
+        renc = KORB_ENC_USASCII;                          /* CRuby tags a 7-bit pattern US-ASCII */
 
     /* Rule 2 of rb_reg_prepare_enc: an ASCII-incompatible subject (UTF-16 etc.)
      * cannot be searched at all, whatever the pattern is. */
     if (!korb_enc_ascii_compat_idx(c->vm, senc)) {
-        return korb_raise_enc_compat(c, slots, renc, senc);
+        return korb_re_raise_enc_mismatch(c, slots, renc, senc);
     } else if (re_fixed && re_known && renc != senc) {
         if (!korb_enc_ascii_compat_idx(c->vm, renc) || !korb_str_ascii_only_p(c->vm, subj))
-            return korb_raise_enc_compat(c, slots, renc, senc);
+            return korb_re_raise_enc_mismatch(c, slots, renc, senc);
     } else if ((VAL2RE(re)->flags & 128u) && senc != KORB_ENC_BINARY &&
                !korb_str_ascii_only_p(c->vm, subj)) {
         korb_warn(c, slots, "historical binary regexp match /.../n against %s string",
@@ -860,6 +871,13 @@ static RESULT korb_m_str_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     slots[0] = subj; VALUE re; RESULT cr = korb_re_coerce_pat(c, slots + 1, VALUE_SLICE_GET(a, 0), &re);
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     slots[1] = re;
+    if (UNLIKELY(KORB_REGEXP_P(VALUE_SLICE_GET(a, 0)) && !korb_exact_class_p(c, re, KORB_C_REGEXP))) {
+        /* CRuby delegates to pattern.match(self[, pos]), so a subclass override is honoured */
+        const uint32_t argc = VALUE_SLICE_LEN(a) >= 2 ? 2 : 1;
+        slots[2] = re; slots[3] = VALUE_REF_GET(self);
+        if (argc == 2) slots[4] = VALUE_SLICE_GET(a, 1);
+        return korb_send_impl(c, slots + 3 + argc, korb_intern(c->vm, "match", 5), 0, argc, block, def_env, cself);
+    }
     long startc = 0;
     if (VALUE_SLICE_LEN(a) >= 2 && !korb_re_start_char(c, slots[0], VALUE_SLICE_GET(a, 1), &startc))
         { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }   /* out of range → no match */
@@ -1256,7 +1274,10 @@ RESULT korb_re_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE gr
                 if (!korb_to_index(gv, &g))
                     return korb_raise_no_int(c, slots + 4, slots[2]);
             }
-            if (g < 0) g += korb_md_ngroups(VAL2MD(slots[3]));   /* negative capture index counts from the last group */
+            if (g < 0) {                                  /* counts back from the last group; can't reach 0 */
+                g += korb_md_ngroups(VAL2MD(slots[3]));
+                if (g <= 0) return RESULT_OK(KORB_NIL);
+            }
             gi = (int)g;
         }
     }
