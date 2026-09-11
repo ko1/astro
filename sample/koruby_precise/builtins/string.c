@@ -794,6 +794,14 @@ static RESULT korb_str_append_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_RE
             char b = (char)(uint8_t)cp;
             return korb_str_cat(c, slots, self, &b, 1);
         }
+        if (enc != KORB_ENC_UTF8) {              /* multibyte "other" (EUC-JP, SJIS, …): the code IS the byte sequence */
+            if (cp < 0 || cp > 0xFFFFFFFFL) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)cp);
+            if (cp >= 0x80 && cp <= 0xFF)
+                return korb_raise(c, slots, KORB_E_RANGE, 0, "invalid codepoint 0x%lX in %s", (long)cp, korb_enc_name_of(c->vm, enc));
+            char mb[4]; uint32_t n = 0;
+            for (int sh = 24; sh >= 0; sh -= 8) { const int b = (int)((cp >> sh) & 0xFF); if (b || n || sh == 0) mb[n++] = (char)b; }
+            return korb_str_cat(c, slots, self, mb, n);
+        }
         if (cp < 0 || cp > 0x10FFFF) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)cp);
         char buf[4]; uint32_t n = korb_utf8_encode((uint32_t)cp, buf);   /* stable C buffer */
         return korb_str_cat(c, slots, self, buf, n);
@@ -1467,8 +1475,7 @@ static RESULT korb_str_delete_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     if (VAL2STR(VALUE_REF_GET(self))->len == 0)          /* empty → ""/nil, args unvalidated (CRuby) */
         return in_place ? RESULT_OK(KORB_NIL) : korb_str_slice_new(c, slots, self, 0, 0);
-    { RESULT cr = korb_str_sets_coerce(c, slots, a); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
-    { RESULT v = korb_str_sets_validate(c, slots, a); if (UNLIKELY(v.state != KORB_NORMAL)) return v; }
+    CHECK(korb_str_sets_prepare(c, slots, self, a));   /* #to_str, encoding compatibility, ranges */
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t n = s->len;
     KorbString *r = korb_str_alloc(c, slots, n);
@@ -1926,7 +1933,8 @@ static RESULT korb_m_str_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         else if (d[i] == '_' && any_digit && i + 1 < len && KORB_DIG(d[i + 1])) i++;
         else break;
     }
-    if (i < len && d[i] == '.' && i + 1 < len && KORB_DIG(d[i + 1])) {   /* fractional (needs a digit after '.') */
+    if (i < len && d[i] == '.' && i + 1 < len &&
+        (KORB_DIG(d[i + 1]) || (any_digit && (d[i + 1] == 'e' || d[i + 1] == 'E')))) {   /* fractional, or "1.e-2" */
         KORB_PUT('.'); i++;
         while (i < len) {
             if (KORB_DIG(d[i])) { KORB_PUT(d[i]); i++; any_digit = true; }
@@ -1955,8 +1963,7 @@ static RESULT korb_m_str_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(VALUE_SLICE_LEN(a) == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     if (VAL2STR(VALUE_REF_GET(self))->len == 0) return RESULT_OK(LONG2FIX(0));   /* empty → 0, args unvalidated (CRuby) */
-    { RESULT cr = korb_str_sets_coerce(c, slots, a); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
-    { RESULT v = korb_str_sets_validate(c, slots, a); if (UNLIKELY(v.state != KORB_NORMAL)) return v; }
+    CHECK(korb_str_sets_prepare(c, slots, self, a));   /* #to_str, encoding compatibility, ranges */
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     korb_sword_t cnt = 0;
     for (uint32_t i = 0; i < s->len; ) {                  /* iterate by UTF-8 codepoint */
@@ -1988,8 +1995,7 @@ static RESULT korb_str_squeeze_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if (in_place) KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* squeeze! checks frozen upfront */
     if (VAL2STR(VALUE_REF_GET(self))->len == 0)          /* empty → ""/nil, args unvalidated (CRuby) */
         return in_place ? RESULT_OK(KORB_NIL) : korb_str_slice_new(c, slots, self, 0, 0);
-    { RESULT cr = korb_str_sets_coerce(c, slots, a); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
-    { RESULT v = korb_str_sets_validate(c, slots, a); if (UNLIKELY(v.state != KORB_NORMAL)) return v; }
+    CHECK(korb_str_sets_prepare(c, slots, self, a));   /* #to_str, encoding compatibility, ranges */
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t n = s->len;
     bool has_set = VALUE_SLICE_LEN(a) > 0;
