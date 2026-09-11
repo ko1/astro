@@ -385,7 +385,10 @@ static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each"));
         return korb_enum_new(c, slots + 2, VALUE_REF_GET(arr), slots[1]);
     }
-    const uint32_t np = korb_entry_params_cnt(block);
+    /* a forwarded lambda (&lam / &obj.method(:m)) gets ONE [k, v] argument, so
+     * its arity check sees 1 (CRuby yields the pair; only a proc block unpacks) */
+    const bool lambda_blk = def_env == KORB_BLK_FWD && KORB_PROC_P(*captured_self) && VAL2PROC(*captured_self)->is_lambda;
+    const uint32_t np = lambda_blk ? 1 : korb_entry_params_cnt(block);
     for (uint32_t i = 0; ; ) {
         const KorbHash *h = SELF_HASH;
         if (i >= h->len) break;
