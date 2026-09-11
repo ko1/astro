@@ -978,6 +978,7 @@ static RESULT korb_coerce_to_str(CTX *c, VALUE *slots, VALUE *v) {
     return RESULT_OK(KORB_TRUE);
 }
 static RESULT korb_str_idx_conv(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out);   /* fwd: index→long, Bignum too big → RangeError */
+RESULT korb_re_lastmatch_detach(CTX *c, VALUE *slots);   /* regexp.c: $~ gets a frozen subject copy */
 static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE idx, VALUE len_v, bool *found, uint32_t *bs, uint32_t *be, bool write) {
     if (KORB_REGEXP_P(idx))                            /* str[re] / str[re, capture] → matched byte span (sets $~) */
         return korb_re_str_span(c, slots, self, idx, len_v, found, bs, be, write);
@@ -1095,10 +1096,12 @@ static RESULT korb_m_str_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if (UNLIKELY(na < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE idx = VALUE_SLICE_GET(a, 0);
     VALUE len_v = (na >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+    const bool re_idx = KORB_REGEXP_P(idx);            /* decided before the span call allocates (idx is a C local) */
     bool found; uint32_t bs = 0, be = 0;
     RESULT sp = korb_str_target_span(c, slots, self, idx, len_v, &found, &bs, &be, false);
     if (UNLIKELY(sp.state != KORB_NORMAL)) return sp;
     if (!found) return RESULT_OK(KORB_NIL);
+    if (re_idx) CHECK(korb_re_lastmatch_detach(c, slots));   /* $~ keeps the pre-slice text */
     slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, bs, be - bs));   /* removed part */
     CHECK(korb_str_splice(c, slots + 1, self, bs, be, self, false));      /* delete it */
     return RESULT_OK(slots[0]);
@@ -1592,6 +1595,9 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (in_place) KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* gsub!/sub! on a frozen string → FrozenError, even when nothing matches */
     VALUE pv = VALUE_SLICE_GET(a, 0);
     if (KORB_REGEXP_P(pv)) {                            /* regex pattern → astrogre engine (builtins/regexp.c) */
+        const VALUE sv = VALUE_REF_GET(self);           /* a regexp search over a broken UTF-8 subject raises (a String pattern doesn't) */
+        if (UNLIKELY(KORB_STR_ENC(sv) == KORB_ENC_UTF8 && !korb_str_utf8_valid(VAL2STR(sv))))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
         NODE *const eff_block = (VALUE_SLICE_LEN(a) >= 2) ? NULL : block;   /* a replacement arg wins over a block */
         return korb_re_str_gsub(c, slots, self, a, pv, global, in_place, eff_block, def_env, cself);
     }

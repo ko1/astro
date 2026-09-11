@@ -136,6 +136,18 @@ static RESULT korb_re_build_md(CTX *c, VALUE *slots, VALUE subj, VALUE re, const
 static uint32_t korb_re_tilde_sym(struct korb_vm *vm) { return korb_intern(vm, "$~", 2); }
 static void korb_re_set_lastmatch(CTX *c, VALUE md_or_nil) { korb_const_define(c, korb_re_tilde_sym(c->vm), md_or_nil); }
 static VALUE korb_re_get_lastmatch(CTX *c) { return korb_const_get(c->vm, korb_re_tilde_sym(c->vm)); }
+/* Give $~ its own frozen copy of the subject, for callers about to mutate it
+ * in place (gsub!/sub!/slice!): CRuby's MatchData#string is a frozen snapshot. */
+RESULT korb_re_lastmatch_detach(CTX *c, VALUE *slots) {
+    slots[0] = korb_re_get_lastmatch(c);
+    if (!KORB_MATCHDATA_P(slots[0]) || !KORB_STRING_P(VAL2MD(slots[0])->subject)) return RESULT_OK(KORB_NIL);
+    slots[1] = VAL2MD(slots[0])->subject;
+    const uint32_t n = VAL2STR(slots[1])->len;
+    slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, VALUE_REF_AT(&slots[1]), 0, n));
+    ((AroObjectHeader *)(uintptr_t)slots[2])->flags |= KORB_FL_FROZEN;
+    ARO_STORE(c, VAL2MD(slots[0]), (VALUE *)(uintptr_t)&VAL2MD(slots[0])->subject, slots[2]);
+    return RESULT_OK(KORB_NIL);
+}
 
 /* Regexp#=== that also sets $~ (like CRuby's `when /re/` / grep).  Returns the
  * bool result; on a match, $~ becomes the MatchData, else nil.  Only called for
@@ -407,8 +419,13 @@ static RESULT korb_m_md_match_length(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 static RESULT korb_m_md_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(korb_md_ngroups(VAL2MD(VALUE_REF_GET(self))))); }
 static RESULT korb_m_md_string(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; slots[0] = VALUE_REF_GET(self); const KorbString *s = VAL2STR(VAL2MD(slots[0])->subject);
-    return korb_str_new(c, slots + 1, korb_strbuf_data(s->buf), s->len);
+    (void)a; slots[0] = VALUE_REF_GET(self);
+    slots[1] = VAL2MD(slots[0])->subject;
+    if (((const AroObjectHeader *)(uintptr_t)slots[1])->flags & KORB_FL_FROZEN) return RESULT_OK(slots[1]);   /* already a snapshot */
+    const uint32_t n = VAL2STR(slots[1])->len;
+    slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, VALUE_REF_AT(&slots[1]), 0, n));   /* CRuby: a frozen copy */
+    ((AroObjectHeader *)(uintptr_t)slots[2])->flags |= KORB_FL_FROZEN;
+    return RESULT_OK(slots[2]);
 }
 static RESULT korb_m_md_regexp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VAL2MD(VALUE_REF_GET(self))->regexp); }
 static RESULT korb_md_names_into(CTX *c, VALUE *slots, VALUE mdv_or_re, bool is_md, VALUE_REF dst_ary) {
@@ -1056,6 +1073,10 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
             slots[4] = UNWRAP(korb_md_group(c, slots + 4, slots[3], 0));
             RESULT yr = korb_block_yield(c, slots + 5, block, def_env, &slots[4], 1, cself);
             if (UNLIKELY(yr.state != KORB_NORMAL)) { free(src); fclose(ms); free(buf); return yr; }
+            if (in_place && UNLIKELY(VAL2STR(slots[0])->len != sn)) {   /* the block resized self under us */
+                free(src); fclose(ms); free(buf);
+                return korb_raise(c, slots + 4, KORB_E_RUNTIME, 0, "string modified");
+            }
             slots[4] = yr.value;
             if (KORB_STRING_P(slots[4]) && !renc_bad && !korb_str_enc_fold(c->vm, &renc, &rasc, slots[4]))
                 { renc_bad = true; renc_other = KORB_STR_ENC(slots[4]); }
@@ -1085,7 +1106,10 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
     #undef KORB_GSUB_KEEP
     fclose(ms); free(src); free(rep);
     /* $~ = MatchData of the last match (nil if none), for access after gsub returns */
-    if (have_last) { slots[3] = UNWRAP(korb_re_build_md(c, slots + 3, slots[0], slots[1], &last_m)); korb_re_set_lastmatch(c, slots[3]); }
+    if (have_last) {
+        slots[3] = UNWRAP(korb_re_build_md(c, slots + 3, slots[0], slots[1], &last_m)); korb_re_set_lastmatch(c, slots[3]);
+        if (in_place) CHECK(korb_re_lastmatch_detach(c, slots + 4));   /* $~ keeps the pre-substitution text */
+    }
     else korb_re_set_lastmatch(c, KORB_NIL);
     if (renc_bad) { free(buf); return korb_raise_enc_compat(c, slots + 3, KORB_STR_ENC(VALUE_REF_GET(self)), renc_other); }
     RESULT nr = korb_str_new(c, slots + 3, buf ? buf : "", (uint32_t)bz); free(buf);
