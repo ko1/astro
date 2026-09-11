@@ -1104,7 +1104,37 @@ static RESULT korb_m_str_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(slots[0]);
 }
 /* in-place whitespace strip (mode: 0 both, 1 left, 2 right). self if changed else nil. */
-static bool korb_str_sets_match(VALUE_SLICE a, unsigned char ch);
+static bool korb_str_sets_match_cp(VALUE_SLICE a, uint32_t cp);
+static RESULT korb_str_sets_prepare(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static uint32_t korb_utf8_dec1(const char *p, uint32_t avail, uint32_t *clen);
+/* Decode the codepoint ending at byte `end` (start of it in *cs); a broken tail is one raw byte. */
+static uint32_t korb_utf8_dec_last(const char *p, uint32_t start, uint32_t end, uint32_t *cs) {
+    uint32_t b = end - 1;
+    while (b > start && end - b < 4 && ((unsigned char)p[b] & 0xC0) == 0x80) b--;
+    uint32_t cl; const uint32_t cp = korb_utf8_dec1(p + b, end - b, &cl);
+    if (b + cl != end) { *cs = end - 1; return (unsigned char)p[end - 1]; }
+    *cs = b; return cp;
+}
+/* strip's trimmed-span scan (mode 0 both / 1 left / 2 right): whitespace, or
+ * with selector args the codepoints matched by every set. */
+static void korb_str_strip_span(const KorbString *s, VALUE_SLICE a, int mode, uint32_t *lo_out, uint32_t *hi_out) {
+    const char *const d = korb_strbuf_data(s->buf);
+    uint32_t lo = 0, hi = s->len;
+    const bool has_set = VALUE_SLICE_LEN(a) >= 1;
+    if (mode != 2)
+        while (lo < hi) {
+            uint32_t cl = 1;
+            const uint32_t cp = has_set ? korb_utf8_dec1(d + lo, hi - lo, &cl) : (unsigned char)d[lo];
+            if (has_set ? korb_str_sets_match_cp(a, cp) : (korb_is_ws((unsigned char)cp) || cp == 0)) lo += cl; else break;
+        }
+    if (mode != 1)
+        while (hi > lo) {
+            uint32_t cs = hi - 1;
+            const uint32_t cp = has_set ? korb_utf8_dec_last(d, lo, hi, &cs) : (unsigned char)d[hi - 1];
+            if (has_set ? korb_str_sets_match_cp(a, cp) : (korb_is_ws((unsigned char)cp) || cp == 0)) hi = cs; else break;
+        }
+    *lo_out = lo; *hi_out = hi;
+}
 /* strip's encoding checks (mode 0 strip / 1 lstrip / 2 rstrip).  CRuby decodes
  * from the left in #lstrip, so an invalid codepoint at the first non-space
  * position is an ArgumentError; #rstrip rejects any broken string outright with
@@ -1126,11 +1156,10 @@ static RESULT korb_str_strip_enc_check(CTX *c, VALUE *slots, VALUE v, int mode) 
 static RESULT korb_str_strip_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     if (VALUE_SLICE_LEN(a) == 0) CHECK(korb_str_strip_enc_check(c, slots, VALUE_REF_GET(self), mode));
+    else CHECK(korb_str_sets_prepare(c, slots, self, a));
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    uint32_t lo = 0, hi = s->len;
-    bool has_set = VALUE_SLICE_LEN(a) >= 1;
-    if (mode != 2) while (lo < hi && (has_set ? korb_str_sets_match(a, (unsigned char)korb_strbuf_data(s->buf)[lo]) : (unsigned char)korb_strbuf_data(s->buf)[lo] <= ' ')) lo++;
-    if (mode != 1) while (hi > lo && (has_set ? korb_str_sets_match(a, (unsigned char)korb_strbuf_data(s->buf)[hi-1]) : (unsigned char)korb_strbuf_data(s->buf)[hi-1] <= ' ')) hi--;
+    uint32_t lo, hi;
+    korb_str_strip_span(s, a, mode, &lo, &hi);
     if (lo == 0 && hi == s->len) return RESULT_OK(KORB_NIL);   /* unchanged */
     uint32_t nlen = hi - lo;
     if (lo) memmove(korb_strbuf_data(s->buf), korb_strbuf_data(s->buf) + lo, nlen);
@@ -1198,37 +1227,11 @@ static RESULT korb_m_str_chop_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
-/* char-set membership for count/squeeze/delete: supports leading ^ negation and
- * a-z ranges (ASCII-byte level). */
 /* One byte of a tr/charset spec: a leading backslash escapes the next byte, so
  * " \-'" is the three chars ' ', '-', '\'' (CRuby's trnext). */
 static unsigned char korb_charset_next_byte(const char *set, uint32_t n, uint32_t *i) {
     if (set[*i] == '\\' && *i + 1 < n) (*i)++;
     return (unsigned char)set[(*i)++];
-}
-static bool korb_charset_match(const char *set, uint32_t n, unsigned char ch) {
-    bool neg = false; uint32_t i = 0;
-    if (n > 1 && set[0] == '^') { neg = true; i = 1; }   /* a lone "^" is the literal char, not a complement */
-    bool in = false;
-    while (i < n) {
-        const unsigned char lo = korb_charset_next_byte(set, n, &i);
-        if (i < n && set[i] == '-' && i + 1 < n) {       /* lo-hi range */
-            i++;
-            const unsigned char hi = korb_charset_next_byte(set, n, &i);
-            if (lo <= ch && ch <= hi) in = true;
-        } else if (lo == ch) in = true;
-    }
-    return neg ? !in : in;
-}
-/* true if ch is in EVERY set arg (Ruby count/delete intersect multiple sets) */
-static bool korb_str_sets_match(VALUE_SLICE a, unsigned char ch) {
-    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
-        VALUE sv = VALUE_SLICE_GET(a, j);
-        if (!KORB_STRING_P(sv)) continue;
-        const KorbString *set = VAL2STR(sv);
-        if (!korb_charset_match(korb_strbuf_data(set->buf), set->len, ch)) return false;
-    }
-    return true;
 }
 /* Decode one UTF-8 codepoint, but treat an invalid lead / truncated / bad
  * continuation as a single raw byte (so byte-range sets like "\x00-\xFF" and
@@ -1320,6 +1323,18 @@ static RESULT korb_str_sets_validate(CTX *c, VALUE *slots, VALUE_SLICE a) {
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid range \"%c-%c\" in string transliteration", lo, hi);
     }
     return RESULT_OK(KORB_NIL);
+}
+/* Selector-arg prologue shared by strip/lstrip/rstrip: #to_str each set,
+ * reject an encoding-incompatible set, validate the ranges. */
+static RESULT korb_str_sets_prepare(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    CHECK(korb_str_sets_coerce(c, slots, a));
+    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+        const VALUE sv = VALUE_SLICE_GET(a, j);
+        uint32_t ce;
+        if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), sv, &ce)))
+            return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(sv));
+    }
+    return korb_str_sets_validate(c, slots, a);
 }
 /* delete_prefix/suffix (mode 0/1); in_place → bang (self if changed else nil). */
 static RESULT korb_str_delfix(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode, bool in_place) {
@@ -2319,21 +2334,9 @@ static RESULT korb_m_str_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
  * (delete/count-style set with ranges + ^) instead of whitespace. */
 static RESULT korb_str_strip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
     if (VALUE_SLICE_LEN(a) == 0) CHECK(korb_str_strip_enc_check(c, slots, VALUE_REF_GET(self), mode));
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    uint32_t start = 0, end = s->len;
-    bool has_set = VALUE_SLICE_LEN(a) >= 1;
-    if (mode != 2)
-        while (start < end) {
-            unsigned char ch = (unsigned char)korb_strbuf_data(s->buf)[start];
-            if (has_set ? korb_str_sets_match(a, ch) : (korb_is_ws(ch) || ch == '\0')) start++;
-            else break;
-        }
-    if (mode != 1)
-        while (end > start) {
-            unsigned char ch = (unsigned char)korb_strbuf_data(s->buf)[end-1];
-            if (has_set ? korb_str_sets_match(a, ch) : (korb_is_ws(ch) || ch == '\0')) end--;
-            else break;
-        }
+    else CHECK(korb_str_sets_prepare(c, slots, self, a));
+    uint32_t start, end;
+    korb_str_strip_span(VAL2STR(VALUE_REF_GET(self)), a, mode, &start, &end);
     return korb_str_slice_new(c, slots, self, start, end - start);
 }
 static RESULT korb_m_str_strip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_str_strip(c, slots, self, a, 0); }
