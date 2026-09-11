@@ -389,7 +389,7 @@ static bool korb_case_transform_buf(const char *src, uint32_t len, int op, int m
         const unsigned char b = (unsigned char)src[i];
         uint32_t clen = b < 0x80 ? 1 : b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
         if (i + clen > len) clen = 1;
-        if (ascii_only && clen >= 2) { memcpy(dst + w, src + i, clen); w += clen; i += clen; ci++; continue; }
+        if (ascii_only && b >= 0x80) { memcpy(dst + w, src + i, clen); w += clen; i += clen; ci++; continue; }   /* any non-ASCII byte is left alone */
         uint32_t cp;
         switch (clen) {
           case 1:  cp = b; break;
@@ -806,11 +806,36 @@ static RESULT korb_m_str_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * string (or #to_str-able) source, replace self's content with it (like #replace).
  * Returns self.  A trailing kwargs Hash (encoding:/capacity:) is ignored. */
 static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
+static uint32_t korb_enc_index_for_name(struct korb_vm *vm, const char *name);   /* fwd */
+/* String.new(..., encoding: enc): retag self (an Encoding or its name). */
+static RESULT korb_str_init_encoding(CTX *c, VALUE *slots, VALUE_REF self, VALUE kw) {
+    const int32_t hi = korb_hash_find(VAL2HASH(kw), ID2SYM(korb_intern(c->vm, "encoding", 8)));
+    if (hi < 0) return RESULT_OK(KORB_NIL);
+    VALUE ev = korb_items_data(VAL2HASH(kw)->items)[2 * hi + 1];
+    if (ev == KORB_NIL) return RESULT_OK(KORB_NIL);
+    if (!KORB_STRING_P(ev)) {                           /* Encoding object → its #name */
+        slots[0] = ev;
+        RESULT nr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0, NULL, NULL, NULL);
+        if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+        ev = nr.value;
+        if (UNLIKELY(!KORB_STRING_P(ev))) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Encoding)", korb_type_name(slots[0]));
+    }
+    char nm[64]; const KorbString *es = VAL2STR(ev);
+    const uint32_t nl = es->len < sizeof nm - 1 ? es->len : (uint32_t)sizeof nm - 1;
+    memcpy(nm, korb_strbuf_data(es->buf), nl); nm[nl] = '\0';
+    KORB_STR_ENC_SET(VALUE_REF_GET(self), korb_enc_index_for_name(c->vm, nm));
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_str_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (VALUE_SLICE_LEN(a) == 0) return RESULT_OK(VALUE_REF_GET(self));
-    if (KORB_HASH_P(VALUE_SLICE_GET(a, 0))) return RESULT_OK(VALUE_REF_GET(self));   /* kwargs-only (encoding:/capacity:) */
+    const uint32_t na = VALUE_SLICE_LEN(a);
+    if (na == 0) return RESULT_OK(VALUE_REF_GET(self));
+    if (KORB_HASH_P(VALUE_SLICE_GET(a, 0))) {           /* kwargs-only (encoding:/capacity:) */
+        CHECK(korb_str_init_encoding(c, slots, self, VALUE_SLICE_GET(a, 0)));
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
     RESULT r = korb_m_str_replace(c, slots, self, a);   /* replace content from the string source (#replace reads only arg0) */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (na >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) CHECK(korb_str_init_encoding(c, slots, self, VALUE_SLICE_GET(a, na - 1)));
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1481,6 +1506,13 @@ static bool korb_charset_bad_range_cp(const char *s, uint32_t n, uint32_t *lo_ou
 }
 /* String#tr(from, to) — byte-level translate; `^` negation, ranges, to-empty
  * deletes, to-shorter repeats its last char.  (UTF-8 chars beyond ASCII pass.) */
+/* tr/tr_s: both sets must be encoding-compatible with self (CompatibilityError). */
+static RESULT korb_str_tr_enc_check(CTX *c, VALUE *slots, VALUE self, VALUE fv, VALUE tv) {
+    uint32_t ce;
+    if (UNLIKELY(!korb_str_enc_combine(c->vm, self, fv, &ce))) return korb_raise_enc_compat(c, slots, KORB_STR_ENC(self), KORB_STR_ENC(fv));
+    if (UNLIKELY(!korb_str_enc_combine(c->vm, self, tv, &ce))) return korb_raise_enc_compat(c, slots, KORB_STR_ENC(self), KORB_STR_ENC(tv));
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* from_str (coerce via #to_str) */
@@ -1497,6 +1529,7 @@ static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     }
     if (UNLIKELY(!KORB_STRING_P(slots[0]) || !KORB_STRING_P(slots[1])))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    CHECK(korb_str_tr_enc_check(c, slots + 2, VALUE_REF_GET(self), slots[0], slots[1]));
     const VALUE fv = slots[0], tv = slots[1];
     const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
     { uint32_t rlo, rhi;
@@ -1544,6 +1577,7 @@ static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     if (UNLIKELY(!KORB_STRING_P(slots[0]) || !KORB_STRING_P(slots[1])))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    CHECK(korb_str_tr_enc_check(c, slots + 2, VALUE_REF_GET(self), slots[0], slots[1]));
     const VALUE fv = slots[0], tv = slots[1];
     const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
     { uint32_t rlo, rhi;
@@ -1572,6 +1606,7 @@ static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     fclose(ms);
     RESULT r = korb_str_new(c, slots, buf, (uint32_t)sz);
     free(buf);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_STR_ENC(VALUE_REF_GET(self)));
     return r;
 }
 /* gsub/sub with a literal String pattern + String|Hash replacement (no regex/block). */
@@ -1795,7 +1830,7 @@ static RESULT korb_m_str_rpartition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 3));
     VALUE_REF dst = VALUE_REF_AT(&slots[1]);
     if (at < 0) {
-        slots[2] = UNWRAP(korb_str_new(c, slots + 2, "", 0));
+        slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, self, 0, 0));   /* "" in self's encoding */
         CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
         CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
         slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, self, 0, VAL2STR(VALUE_REF_GET(self))->len));   /* fresh copy, plain String */
@@ -1831,7 +1866,7 @@ static RESULT korb_m_str_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (at < 0) {                                     /* not found → [self-copy,"",""] */
         slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, self, 0, VAL2STR(VALUE_REF_GET(self))->len));
         CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
-        slots[2] = UNWRAP(korb_str_new(c, slots + 2, "", 0));
+        slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, self, 0, 0));   /* "" in self's encoding */
         CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
         CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
         return RESULT_OK(VALUE_REF_GET(dst));
@@ -2260,10 +2295,15 @@ static bool korb_str_parse_c_num(CTX *c, VALUE *outslot, const char *d, uint32_t
     uint32_t i = *pi;
     char buf[80]; int bi = 0; bool digit = false, isf = false;
     if (i < len && (d[i] == '+' || d[i] == '-')) buf[bi++] = d[i++];
-    while (i < len && (isdigit((unsigned char)d[i]) || d[i] == '_')) { if (d[i] != '_') { if (bi < 78) buf[bi++] = d[i]; digit = true; } i++; }
+    /* a single '_' between digits is a separator; "__" or a trailing '_' ends the number */
+    #define KORB_C_DIGITS() do { \
+        while (i < len && isdigit((unsigned char)d[i])) { if (bi < 78) buf[bi++] = d[i]; digit = true; i++; \
+            if (i + 1 < len && d[i] == '_' && isdigit((unsigned char)d[i+1])) i++; } \
+    } while (0)
+    KORB_C_DIGITS();
     if (i + 1 < len && d[i] == '.' && isdigit((unsigned char)d[i+1])) {   /* decimal fraction */
         isf = true; if (bi < 78) buf[bi++] = '.'; i++;
-        while (i < len && (isdigit((unsigned char)d[i]) || d[i] == '_')) { if (d[i] != '_' && bi < 78) buf[bi++] = d[i]; i++; }
+        KORB_C_DIGITS();
     }
     if (!digit) return false;
     if (i < len && (d[i] == 'e' || d[i] == 'E')) {                        /* scientific notation */
@@ -2271,9 +2311,10 @@ static bool korb_str_parse_c_num(CTX *c, VALUE *outslot, const char *d, uint32_t
         if (j < len && isdigit((unsigned char)d[j])) {
             isf = true; if (bi < 78) buf[bi++] = 'e'; i++;
             if (i < len && (d[i] == '+' || d[i] == '-')) { if (bi < 78) buf[bi++] = d[i]; i++; }
-            while (i < len && isdigit((unsigned char)d[i])) { if (bi < 78) buf[bi++] = d[i]; i++; }
+            KORB_C_DIGITS();
         }
     }
+    #undef KORB_C_DIGITS
     buf[bi] = '\0';
     if (!isf && i + 1 < len && d[i] == '/' && isdigit((unsigned char)d[i+1])) {   /* integer p/q rational */
         uint32_t j = i + 1; char db[40]; int dbi = 0;
@@ -2416,15 +2457,22 @@ static RESULT korb_split_finish(CTX *c, VALUE *slots, VALUE_REF self, VALUE_REF 
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* Warning[:deprecated] (korb_warn itself handles $VERBOSE == nil). */
+static bool korb_warn_deprecated_p(struct korb_vm *vm) {
+    const VALUE wm = korb_const_get(vm, korb_intern(vm, "Warning", 7));
+    if (!KORB_CLASS_P(wm)) return false;
+    const uint32_t ci = korb_const_index_owned(vm, korb_intern(vm, "CATEGORIES__", 12), wm);
+    if (ci == UINT32_MAX || !KORB_HASH_P(vm->const_vals[ci])) return false;
+    const int32_t hi = korb_hash_find(VAL2HASH(vm->const_vals[ci]), ID2SYM(korb_intern(vm, "deprecated", 10)));
+    return hi >= 0 && KORB_TRUTHY(korb_items_data(VAL2HASH(vm->const_vals[ci])->items)[2 * hi + 1]);
+}
 static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE sepv = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
     if (sepv == KORB_NIL) {                                  /* default: $; (deprecated; warns when set) */
         const uint32_t fs = korb_const_index(c->vm, korb_intern(c->vm, "$;", 2));
         if (fs != UINT32_MAX && c->vm->const_vals[fs] != KORB_NIL) {
             sepv = c->vm->const_vals[fs];
-            const uint32_t vb = korb_const_index(c->vm, korb_intern(c->vm, "$VERBOSE", 8));
-            if (vb != UINT32_MAX && c->vm->const_vals[vb] == KORB_TRUE)   /* deprecation warning: verbose only */
-                korb_warn(c, slots, "$; is set to non-nil value");
+            if (korb_warn_deprecated_p(c->vm)) korb_warn(c, slots, "$; is set to non-nil value");
         }
     }
     {   /* an invalid self can't be split (CRuby) */
@@ -2498,8 +2546,8 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, cpos, cl))));
             cpos += cl;
         }
-        if (limit < 0)                                     /* negative limit keeps the trailing "" (CRuby) */
-            CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_new(c, slots + 1, "", 0))));
+        if (limit < 0 || (limit > 0 && VAL2ARY(VALUE_REF_GET(dst))->len < (uint32_t)limit))   /* a non-zero limit keeps the trailing "" (CRuby) */
+            CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, 0, 0))));
         return korb_split_finish(c, slots + 1, self, dst, block, def_env, cself);
     }
     uint32_t pos = 0;
@@ -2650,7 +2698,11 @@ static RESULT korb_m_str_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
  * is a RangeError; a genuinely non-Integer value is a TypeError. */
 static RESULT korb_str_idx_conv(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out) {
     if (LIKELY(korb_to_index(v, out))) return RESULT_OK(KORB_NIL);
-    if (KORB_BIGNUM_P(v)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
+    if (KORB_BIGNUM_P(v)) {
+        if (!korb_mp_fits_slong_p(VAL2BIG(v)->z)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+        *out = korb_big_to_d(v) < 0 ? -((korb_sword_t)1 << 40) : ((korb_sword_t)1 << 40);   /* beyond any string; sign is what matters */
+        return RESULT_OK(KORB_NIL);
+    }
     if (KORB_OBJECT_P(v)) {                        /* #to_int-convertible index (Range bounds etc.) */
         VALUE cv = v;
         RESULT cr = korb_coerce_to_int(c, slots, &cv);

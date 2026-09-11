@@ -670,6 +670,12 @@ static bool korb_casecmp_compatible(CTX *c, VALUE a, VALUE b) {
     uint32_t out;
     return korb_str_enc_combine(c->vm, a, b, &out);
 }
+/* korb_case_transform_buf mode for casecmp?: Unicode folding when the combined
+ * encoding is UTF-8 (CRuby folds in rb_enc_compatible's result), else ASCII only. */
+static int korb_casecmp_fold_mode(CTX *c, VALUE a, VALUE b) {
+    uint32_t out;
+    return (korb_str_enc_combine(c->vm, a, b, &out) && out == KORB_ENC_UTF8) ? 2 : 1;
+}
 static RESULT korb_m_str_casecmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE o = VALUE_SLICE_GET(a, 0);
     RESULT err = RESULT_OK(KORB_NIL);
@@ -684,11 +690,13 @@ static RESULT korb_m_str_casecmp_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (!korb_casecmp_coerce(c, slots, &o, &err)) return err.state != KORB_NORMAL ? err : RESULT_OK(KORB_NIL);
     if (!korb_casecmp_compatible(c, VALUE_REF_GET(self), o)) return RESULT_OK(KORB_NIL);
     /* #casecmp? is full case FOLDING ("ß".casecmp?("ss") is true), unlike
-     * #casecmp which compares the simple lowercase forms. */
+     * #casecmp which compares the simple lowercase forms.  Non-Unicode
+     * encodings fold ASCII only. */
+    const int mode = korb_casecmp_fold_mode(c, VALUE_REF_GET(self), o);
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *t = VAL2STR(o);
     char *fa, *fb; uint32_t la, lb;
-    korb_case_transform_buf(korb_strbuf_data(s->buf), s->len, 1, 2, &fa, &la);
-    korb_case_transform_buf(korb_strbuf_data(t->buf), t->len, 1, 2, &fb, &lb);
+    korb_case_transform_buf(korb_strbuf_data(s->buf), s->len, 1, mode, &fa, &la);
+    korb_case_transform_buf(korb_strbuf_data(t->buf), t->len, 1, mode, &fb, &lb);
     const bool eq = (la == lb) && memcmp(fa, fb, la) == 0;
     free(fa); free(fb);
     return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);
@@ -1011,10 +1019,20 @@ static RESULT korb_m_sym_casecmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(LONG2FIX(r < 0 ? -1 : (r > 0 ? 1 : 0)));
 }
 static RESULT korb_m_sym_casecmp_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;
     VALUE o = VALUE_SLICE_GET(a, 0);
     if (!SYMBOL_P(o)) return RESULT_OK(KORB_NIL);
-    return RESULT_OK(strcasecmp(korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self))), korb_sym_name(c->vm, SYM2ID(o))) == 0 ? KORB_TRUE : KORB_FALSE);
+    const uint32_t ia = SYM2ID(VALUE_REF_GET(self)), ib = SYM2ID(o);
+    slots[0] = korb_fstr_get(c, slots + 1, korb_sym_name(c->vm, ia), c->vm->sym_lens[ia], c->vm->sym_encs[ia]);
+    slots[1] = korb_fstr_get(c, slots + 2, korb_sym_name(c->vm, ib), c->vm->sym_lens[ib], c->vm->sym_encs[ib]);
+    if (!korb_casecmp_compatible(c, slots[0], slots[1])) return RESULT_OK(KORB_NIL);
+    const int mode = korb_casecmp_fold_mode(c, slots[0], slots[1]);
+    const KorbString *s = VAL2STR(slots[0]), *t = VAL2STR(slots[1]);
+    char *fa, *fb; uint32_t la, lb;
+    korb_case_transform_buf(korb_strbuf_data(s->buf), s->len, 1, mode, &fa, &la);
+    korb_case_transform_buf(korb_strbuf_data(t->buf), t->len, 1, mode, &fb, &lb);
+    const bool eq = (la == lb) && memcmp(fa, fb, la) == 0;
+    free(fa); free(fb);
+    return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_sym_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
@@ -1147,7 +1165,9 @@ static RESULT korb_m_str_ord(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     const uint32_t enc = KORB_STR_ENC(v);
     if (UNLIKELY(KORB_ENC_NEEDS_HOOK(c->vm, enc)) && !korb_str_bytes_ascii(v)) return korb_str_enc_notimpl(c, slots, v);
     const unsigned char *d = (const unsigned char *)korb_strbuf_data(s->buf);
+    if (UNLIKELY(enc == KORB_ENC_USASCII && d[0] >= 0x80)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in US-ASCII");
     if (KORB_ENC_SB(c->vm, enc)) return RESULT_OK(LONG2FIX(d[0]));   /* single-byte: the first byte */
+    if (UNLIKELY(enc == KORB_ENC_UTF8 && korb_utf8_seq_len(d, 0, s->len) == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
     unsigned char c0 = d[0]; uint32_t cp, n;
     if (c0 < 0x80)             { cp = c0;        n = 1; }
     else if ((c0 & 0xE0) == 0xC0) { cp = c0 & 0x1F; n = 2; }

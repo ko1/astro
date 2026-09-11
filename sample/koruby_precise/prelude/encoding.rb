@@ -675,7 +675,7 @@ class String
   # scrub! — scrub を self に反映。変化がなくても self を返す (CRuby)。
   def scrub!(repl = nil, &block)
     r = repl.nil? ? scrub(&block) : scrub(repl, &block)
-    replace(r)
+    replace(r) unless r == self   # a valid (even frozen) string is left untouched
     self
   end
 
