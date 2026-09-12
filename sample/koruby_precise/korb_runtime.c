@@ -4767,7 +4767,6 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     base[-1] = self;                                     /* self at base[-1] (bottom header); needed for Klass.new where base[-1]=class != obj */
     base[locals_cnt - 1] = (VALUE)((uintptr_t)m | 1u);   /* method entry at frame top (tagged -> GC skips); super reads owner, __method__ reads mid */
     korb_ep_set(base, 0);                                        /* EP cell (base[-2]): no open env yet */
-    korb_frame_magic_set(base, KORB_FT_METHOD);                  /* base[-3] integrity marker (no-op unless KORB_FRAME_MAGIC) */
     (void)def_class;
     if (block != NULL && m->uses_block) {
         base[locals_cnt - 4] = (VALUE)((uintptr_t)block | 1u);
@@ -4869,7 +4868,6 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         }
     }
     else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
-    korb_frame_magic_check(base, KORB_FT_METHOD, "korb_invoke");   /* frame integrity (no-op unless KORB_FRAME_MAGIC) */
     if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
     return r;
 }
@@ -4910,7 +4908,6 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     if (locals_cnt > pos_argc) memset(base + pos_argc, 0, (locals_cnt - pos_argc) * sizeof(VALUE));
     base[locals_cnt - 1] = (VALUE)((uintptr_t)m | 1u);   /* method entry at frame top */
     korb_ep_set(base, 0);                                        /* EP cell (base[-2]): no open env yet */
-    korb_frame_magic_set(base, KORB_FT_METHOD);                  /* base[-3] integrity marker (no-op unless KORB_FRAME_MAGIC) */
     (void)self;                                          /* self already at base[-1] (staged receiver, bottom header) */
     /* fast path: all keywords supplied in declared order (the common call shape,
      * e.g. box(x:,y:,z:) on def box(x:,y:,z:)) — direct positional bind, no scan,
@@ -4964,7 +4961,6 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (r.state == KORB_RETURN) { if (c->return_target == NULL || c->return_target == base) { r.state = KORB_NORMAL; c->return_target = NULL; } }
     else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
-    korb_frame_magic_check(base, KORB_FT_METHOD, "korb_invoke");   /* frame integrity (no-op unless KORB_FRAME_MAGIC) */
     if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
     return r;
 }
@@ -7839,7 +7835,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *top, uint32_t line0, const VALUE *l
             r->label = korb_bt_label(c, m->mid, m);
             n++;
             link_cell = (r->kind == KORB_FTOP_CFUNC) ? top - 1
-                                                     : top - (m->locals_cnt - 1) + KORB_MAGIC_OFF;
+                                                     : top - (m->locals_cnt - 1) + KORB_FLINK_OFF;
             top = NULL; line0 = 0;
             continue;
         }
@@ -7851,7 +7847,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *top, uint32_t line0, const VALUE *l
             r->file = korb_bt_node_file(c, e);
             r->label = korb_bt_block_label(c, e, base);
             n++;
-            link_cell = base + KORB_MAGIC_OFF;
+            link_cell = base + KORB_FLINK_OFF;
             top = NULL; line0 = 0;
             continue;
         }
@@ -8477,7 +8473,7 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
             VALUE *const cbase = &slots[-(korb_sword_t)argc];
             const VALUE *const saved = c->cfunc_link;
             cbase[KORB_EP_OFF] = (VALUE)((uintptr_t)m | KORB_FTOP_CFUNC);
-            c->cfunc_link = &cbase[KORB_MAGIC_OFF];
+            c->cfunc_link = &cbase[KORB_FLINK_OFF];
             r = m->rbfn(c, slots, recv, args, block, def_env, captured_self);
             c->cfunc_link = saved;
             cbase[KORB_EP_OFF] = 0;
@@ -8534,7 +8530,7 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         VALUE *const dmbase = &slots[-(korb_sword_t)argc];
         const VALUE *const dm_link_saved = c->cfunc_link;
         dmbase[KORB_EP_OFF] = (VALUE)((uintptr_t)m | KORB_FTOP_CFUNC);
-        c->cfunc_link = &dmbase[KORB_MAGIC_OFF];
+        c->cfunc_link = &dmbase[KORB_FLINK_OFF];
         RESULT r = korb_block_yield_full(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
                                          &slots[-(korb_sword_t)argc], argc, recv_slot,
                                          block, def_env, captured_self, 2);   /* captured_self = receiver slot; 2 = method-shaped binding */
@@ -9173,7 +9169,6 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     bf[-2] = korb_block_flink(c, block, prev, bf - 2);   /* B[-3] frame link (backtrace) */
     bf[-1] = prev;       /* B[-2] EP / PREV link               */
     bf[0]  = 0;          /* B[-1] block lexical self (set below) */
-    korb_frame_magic_set(bf + 1, KORB_FT_BLOCK);
     if (LIKELY(is_lambda || !(np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])))) {   /* scalar bind (lambda never auto-splats) */
         for (uint32_t i = 0; i < np; i++) bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
         if (blocals > np) korb_block_nil_locals(&bf[1 + np], blocals - np);
@@ -9190,7 +9185,6 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     while (UNLIKELY(r.state == KORB_REDO));
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;
     else r = korb_break_claim(c, r, block, is_lambda);   /* a break raised in this body belongs to whoever was handed this block */
-    korb_frame_magic_check(bf + 1, KORB_FT_BLOCK, "korb_block_yield");
     if (UNLIKELY(korb_frame_escaped(bf + 1)))
         r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
     return r;
@@ -9298,7 +9292,6 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
      * self (`proc { |a = a() | }`), and the cell is scanned from here on so a GC
      * during binding forwards it (line below re-reads it fresh anyway). */
     bf[0]  = fwd ? VAL2PROC(*captured_self)->self : *captured_self;
-    korb_frame_magic_set(bf + 1, KORB_FT_BLOCK);   /* B[-3] integrity marker (no-op unless KORB_FRAME_MAGIC) */
     VALUE conv_buf[1];
     if (splat_conv != KORB_UNDEF) { conv_buf[0] = splat_conv; argv = conv_buf; }
     const uint8_t *spec = korb_entry_destructure_spec(block);
@@ -9503,7 +9496,6 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     while (UNLIKELY(r.state == KORB_REDO));
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = block value */
     else r = korb_break_claim(c, r, block, is_lambda);   /* a break here belongs to whoever was handed this block */
-    korb_frame_magic_check(bf + 1, KORB_FT_BLOCK, "korb_block_yield");   /* frame integrity (no-op unless KORB_FRAME_MAGIC) */
     if (UNLIKELY(korb_frame_escaped(bf + 1)))          /* block locals base = bf+1; close its own env if escaped */
         r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
     return r;

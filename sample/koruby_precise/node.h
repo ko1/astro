@@ -655,36 +655,20 @@ _Static_assert(KORB_FRAME_HDR == 2, "the @framehdr staging fills base[-2] and ba
 static inline VALUE korb_ep_get(const VALUE *const base) { return base[KORB_EP_OFF]; }
 static inline void  korb_ep_set(VALUE *const base, const VALUE v) { base[KORB_EP_OFF] = v; }
 
-/* Per-frame "magic" cell at base[-3] (CRuby-style frame integrity marker).  Holds
- * a signature + frame-type tag; the low bit is set so the GC scan treats it as a
- * non-pointer immediate and skips it.  Reserved+zeroed on every frame's setup
- * path already; korb_frame_magic_set writes the marker and korb_frame_magic_check
- * verifies it on return — catching base mismatch / stack corruption / EP underflow.
- * Active under ASTRO_DEBUG (or -DKORB_FRAME_MAGIC); otherwise compiled out (no-op,
- * the cell stays 0 as the reserve paths leave it). */
-#define KORB_MAGIC_OFF (-3)
-enum korb_frame_type {
-    KORB_FT_METHOD = 1, KORB_FT_BLOCK, KORB_FT_EVAL, KORB_FT_TOPLEVEL, KORB_FT_FIBER,
-};
-/* signature in the high bits, frame type in bits 1..7, bit 0 = 1 (GC-skip). */
-#define KORB_FMAGIC(ft) (((VALUE)0xF7A3C5E900ULL) | ((VALUE)(ft) << 1) | 1u)
-#if ASTRO_DEBUG || defined(KORB_FRAME_MAGIC)
-static inline void korb_frame_magic_set(VALUE *const base, const enum korb_frame_type ft) {
-    base[KORB_MAGIC_OFF] = KORB_FMAGIC(ft);
-}
-static inline void korb_frame_magic_check(const VALUE *const base, const enum korb_frame_type ft, const char *const where) {
-    const VALUE got = base[KORB_MAGIC_OFF], want = KORB_FMAGIC(ft);
-    if (UNLIKELY(got != want)) {
-        fprintf(stderr, "koruby_precise: FRAME MAGIC mismatch at %s: base=%p got=0x%llx want=0x%llx "
-                "(frame corruption / wrong base / EP underflow)\n",
-                where, (const void *)base, (unsigned long long)got, (unsigned long long)want);
-        abort();
-    }
-}
-#else
-static inline void korb_frame_magic_set(VALUE *const base, const enum korb_frame_type ft) { (void)base; (void)ft; }
-static inline void korb_frame_magic_check(const VALUE *const base, const enum korb_frame_type ft, const char *const where) { (void)base; (void)ft; (void)where; }
-#endif
+/* Per-frame cell at base[-3]: the frame LINK (see "Frame link" below).
+ *
+ * It used to hold a CRuby-style frame-magic signature (korb_frame_magic_set /
+ * _check, ASTRO_DEBUG only).  That is gone: a cell can only mean one thing, and
+ * the magic was the weaker of the two — it existed only in debug builds, and on
+ * the dispatch paths that build a callee window with NO header gap (korb_send_impl's
+ * `Klass.new` of an exception class copies [args] up and invokes at slots+2, so
+ * base[-3] is the caller's last argument) writing it corrupted a live cell.
+ *
+ * Hence: base[-3] is the link ONLY where a call site or a re-staging dispatch
+ * reserved it.  Everywhere else it holds whatever the caller had there, which is
+ * why the walk validates every hop (tag, slot-stack range, and a frame-top
+ * marker it recognizes) instead of trusting the cell. */
+#define KORB_FLINK_OFF (-3)
 
 /* ---------------------------------------------------------------------------
  * Frame link (backtrace): the caller chain, recorded by no one.
@@ -845,7 +829,6 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     }
     base[locals_cnt - 1] = (VALUE)((uintptr_t)m | 1u);   /* method entry at frame top (tagged); super/__method__ source */
     korb_ep_set(base, 0);                                 /* EP cell (base[-2]): no open env yet */
-    korb_frame_magic_set(base, KORB_FT_METHOD);           /* base[-3] integrity marker (no-op unless KORB_FRAME_MAGIC) */
     /* self is already at base[-1] (the caller's staged receiver) — not copied to a
      * top cell.  Every korb_invoke_simple caller stages self there (bottom header). */
     (void)def_class; (void)self;
@@ -862,7 +845,6 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     }
     else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value))   /* non-exception RAISE payload (thread kill / throw): no backtrace */
         korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
-    korb_frame_magic_check(base, KORB_FT_METHOD, "korb_invoke_simple");   /* frame integrity (no-op unless KORB_FRAME_MAGIC) */
     if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
     return r;
 }

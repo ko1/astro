@@ -1231,10 +1231,8 @@ node_simple_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt
         for (uint32_t i = params_cnt; i < locals_cnt - 1; i++) base[i] = 0;
     base[locals_cnt - 1] = korb_ep_get(base);   /* method entry, staged by the caller in the EP cell */
     korb_ep_set(base, 0);
-    korb_frame_magic_set(base, KORB_FT_METHOD);
     slots = base + locals_cnt;                  /* the body runs above the frame */
     RESULT r = EVAL_ARG(c, body);
-    korb_frame_magic_check(base, KORB_FT_METHOD, "node_simple_entry");
     /* 明示 return は珍しくない (`return x if ...`): 自分宛の RETURN はここで消費し、
      * 関数呼び出しに落とすのは RAISE / 他フレーム宛 / env クローズだけにする */
     if (r.state == KORB_RETURN && (c->return_target == NULL || c->return_target == base)) {
