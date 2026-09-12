@@ -26,6 +26,85 @@ high-water 0 埋めは `slots_top` より **上** しか見ないので、この
 直すには staging 箇所の総点検 (どこで穴が空くか) が要る。検出手段は
 [done.md](./done.md) の ASTRO_GC_EDGE_CHECK にある。
 
+### 2026-09-12: 穴の持ち主を backtrace で特定した (slots_high_water 削除は見送り)
+
+`slots_high_water` を消せるかを調べた結果。**結論: 消さない。**
+probe はブランチ `poison-hw` の後継 `1b6ca700`
+(`-DKORB_SLOT_POISON` のときだけ高水位より下を 0 でなく目印で埋め、root 走査が
+踏んだら backtrace 付きで記録する。既定の挙動は従来どおり)。
+試作は `worktree-agent-a68faa3b554d83c8e` に残してある (マージしない)。
+
+分かったこと:
+
+- **穴の持ち主は「8 箇所の C 関数」ではなく、生成 dispatcher のプロローグ。構造的。**
+  以前の probe は `korb_alloc` の *直接の* 呼び出し元しか記録していなかったので
+  publisher が 8 種に見えていた。full backtrace を取ると、ほとんどの持ち主は
+  ```c
+  slots += slot_count;                                  /* 全セルを予約 */
+  slots[-k] = UNWRAP(dispatch(child0, slots));          /* child0 は、child1..k-1 用の
+                                                           未書き込みセルの上に cursor が
+                                                           居る状態で走る */
+  ```
+  という生成コードで、staged child を持つ全ノードが該当する。
+
+- **直し方は store-then-advance** (子 i は cursor `slots + i` で走らせ、自分のセルは
+  cursor が覆わない最初の 1 つにする)。ストアは増えない。ただし
+  `parse.c` は静的な staging 深さ `tc->chain` に対して全フレームオフセットを bake して
+  いて、「どの子も full advance 後の cursor を見る」前提なので、**chain を子ごとにする
+  改修が要る** (`WITH_CHAIN` 95 箇所 + 手書きの argv ループ約 20 箇所)。
+  `node_begin` の ensure 本体と `node_rescue` の matcher だけは chain+1 が意図的
+  (in-flight 値を slots[0] に park するため)。
+
+- **値段: fib が命令数 +0.86%** (2,508,272,536 → 2,529,807,565, AOT, perf stat -r 5)。
+  子ごとに cursor が違う = staged child 1 つにつきアドレス計算 1 命令、が原理的コスト。
+  `slots[i] = …(slots + i)` + 最後に 1 回 advance という形に変えても消えなかった。
+  他は method_call -0.03% / ackermann -0.49% / ivar -0.02% /
+  optcarrot 180f -0.34% (checksum 59662 一致) で、実ワークロードはむしろ速い。
+
+- **STRESS の残渣 (相異なるスタック数) は 507 → 47 まで落とせた。** 残り 47 は
+  手書き C の 18 経路 (`korb_str_slice_new` の呼び元 / `korb_plus_slow` /
+  `korb_str_gsub_into` / `korb_block_yield_full` / `korb_send_cached` /
+  `korb_hash_make_pair` / `korb_m_cpx_pow` / `korb_m_hash_merge` ほか)。
+  形はすべて同じで cursor を下げれば潰せるが、1 つでも残したまま 0 埋めを外すと
+  stale なビットが生きたポインタとして復活する。
+  なお静的走査は `slots[N] = f(c, slots + M)` 形しか拾えず、「cursor を一度下げて
+  また上げる」形 (File::Constants がそれ) は見つけられない。
+
+- 得られるのは「ポインタ 1 本 (`slots_high_water` / `saved_hw` / `vslots_hw`) と、
+  通常実行では 1 回も回らないループ」の削除。上の値段に見合わないので見送る。
+
+### そのとき露出した use-after-free 2 件 (staging とは独立に直す価値がある)
+
+store-then-advance にすると staging が下に詰まり、死んだフレームのセルが早く
+再利用される。それで以下が顕在化した。**どちらも master に既にあるバグ**で、
+今は「古いバイトがまだ残っている」ことに助けられているだけ。
+
+1. **返ったメソッドフレームへの open handle (`proc { yield }`)**
+   ```ruby
+   def m; proc { yield }; end
+   pr = m { 7 }
+   p pr.call
+   ```
+   `korb_yield_outer` が `prev_handle` (奇数 = live frame handle) を辿って、
+   既に return したメソッドフレームの trio を読む。env が close されていない。
+   master / ブランチで `prev_handle` / `depth` / `trio_base` は完全に同じ値、
+   解決されるフレームアドレスも同じで、**違うのはそのメモリの中身だけ**。
+
+   | ケース | CRuby | master | 試作ブランチ |
+   |---|---|---|---|
+   | `def m; proc { yield }; end; pr = m { 7 }; p pr.call` | 7 | 7 | SEGV |
+   | `def m; Proc.new { yield }; end; p m { 7 }.call` | 7 | LocalJumpError | SEGV |
+   | `o = Object.new; def o.create; Proc.new { yield }; end; p o.create { 7 }.call` | 7 | 7 | 7 |
+   | 同上 + `Proc.new { \|&b\| yield }` | 7 | 7 | 7 |
+
+   落ちるのは `def m` (self 呼び = node_call_blk) の側だけで、singleton def
+   (node_send_blk) は両方とも通る。2 行目の master の LocalJumpError は
+   staging とは無関係の別の不一致。
+
+2. **引数なし `ARGF.seek`** — builtin が staging されていない引数スロットを読む。
+   master は 0 を返し、ブランチは TypeError。CRuby は ArgumentError。
+   `core/argf/seek_spec.rb` の "takes at least one argument (offset)"。
+
 ## 既知バグ (socket / require)
 
 - ~~socket の blocking spec が whole-file timeout~~ **(2026-08-10 解消)**。
