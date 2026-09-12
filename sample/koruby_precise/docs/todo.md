@@ -2505,6 +2505,28 @@ backtrace のフレームリンク (`base[-3]`) が入ったのを機に、user 
    - EP の引っ越し先は今のマーカー位置。EP アクセスは `korb_ep_get/set` の 24 箇所
      (`KORB_EP_OFF` の定義は 1 箇所) なので機械的。
    - 距離は `chain + locals_cnt + 2` になるが 8〜10 bit で足りる (溢れたら今と同じく link=0)。
+   - **[x] 実装した** (worktree-agent-a9d0d43c6381e4fef)。採った形と、そこで分かったこと:
+     - 距離は「コールサイトのカーソル → 呼び出し元の **base**」= `chain + locals_cnt`。
+       `chain` はパース時、`locals_cnt` はスコープ末でしか分からないので、lvar オフセットと
+       同じく pop_frame が足しこむ (`kp_flink` / `KP_LINK` / `kp_flink_add`)。幅は 12 bit の
+       まま。溢れは rubyspec 4,456 ファイル / optcarrot / harness で **0 件**
+       (1,500 重ネストの合成コードで初めて 476 件出る)。
+     - EP を頂に移すと、**外側フレームの EP を実行時に辿る経路**
+       (深さ 2 以上のクロージャ変数、`korb_make_proc` / `korb_make_binding` の鎖の実体化、
+       `korb_outer_frame_base_at`) が `locals_cnt` を定数で持てない。identity から引く
+       `korb_frame_ep` / `korb_frame_ep_cell` を通した。フレーム種別ごとの分岐が要るので、
+       ファイル toplevel の identity には `locals_cnt` を詰めてある。
+     - `node_eget` / `node_eset` / `node_return_outer` は「自分の EP セル」と「自分の base」の
+       両方が要るので、焼き込みオフセットが `ep_off` + `base_off` の 2 本になった。
+     - **性能**: メソッド呼び出し系は命令数が減る (fib -1.8% / method_call -2.3% /
+       ackermann -1.8% / ivar -1.7%)。callee 側の「EP→頂へ移す + EP=0」2 ストアが
+       「EP=0」1 ストアになったため。一方 **block / closure 形は命令数が増える**
+       (closures +3.0% / block +1.4% / iterators +1.4% / object +1.1% / methodchain +1.0%)。
+     - **[ ] 未解決: optcarrot 180f が命令数 -0.42% なのにサイクル +4%** (master 4.60-4.63G →
+       4.79-4.84G、3 回ずつ再現)。L1-dcache-load-miss が +6.1%、branches はほぼ同じ。
+       切り分け実験: identity を `base[-4]` (KORB_FRAME_HDR=3) に置いて EP を `base[-2]` に
+       残す形を作る。歩きの性質は同じまま hot なアクセス位置が master と一致するので、
+       これでサイクルが戻れば原因はフレームのデータ配置、戻らなければ SD のコード配置。
 3. **`slots_high_water` の削除** (下の節参照)
 4. **ローカル名前表を ISEQ 入口へ**
    - いま名前表 (`kp_binding_scope_tbl`) は `binding` を書いた地点にしか焼かれていない。
@@ -2524,8 +2546,15 @@ backtrace のフレームリンク (`base[-3]`) が入ったのを機に、user 
 
 ### 鎖の完全性 (デバッガ前提なら必須)
 
-- [ ] クラス / モジュール / 特異クラス本体のフレームにマーカーが無い
-      (label が `<class:X>` にならず `<main>` に落ちる)
+- [ ] クラス / モジュール / 特異クラス本体のフレームに固有の identity が無い
+      (`korb_class_body` は `korb_block_yield` を通るので `KORB_FID_BLOCK` になり、
+      label が `<class:X>` にならず `block in <main>` に落ちる)
+- [ ] `eval(str, nil, "foo.rb")` のフレームの `Thread::Backtrace::Location#absolute_path`。
+      identity が付いてフレームが backtrace に現れるようになった結果、`#path` は CRuby と
+      同じ `"foo.rb"` になったが、`#absolute_path` は nil でなく cwd からの絶対パスを返す
+      (prelude/exception.rb の判定が「実在しないファイル」を見ていない)。
+      core/thread/backtrace/location/absolute_path_spec.rb の該当例が ERROR → FAIL に変わる
+      (pass 数は 3 で不変)
 - [ ] `method_missing` などの再ステージ経路でリンクを持ち越せず、そこで鎖が切れる
 - [ ] 普通の C メソッドはマーカーを書かない (block を取る builtin だけ)。
       Ruby のローカルが無いので base は不要だが、デバッガ的には「C の中にいる」と
