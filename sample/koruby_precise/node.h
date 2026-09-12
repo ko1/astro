@@ -751,18 +751,28 @@ static inline uint32_t korb_flink_make(uint32_t line, uint32_t dist) {
     if (dist >= KORB_FLINK_DIST_MAX) dist = 0;
     return (korb_flink_line_bits(line) << 14) | (dist << 2) | 1u;
 }
+/* The packed line field of an existing link.  A line that came out of a link
+ * is already clamped, so carrying it in this form (rather than as a signed
+ * line) keeps re-clamping off the paths that rebuild a link. */
+static inline uint32_t korb_flink_line_bits_of(const VALUE f) {
+    return (uint32_t)((f >> 14) & ((1u << KORB_FLINK_LINE_BITS) - 1u));
+}
 /* Run-time DIRECT link: the distance is a pointer difference, so it gets the
  * wide field too (and no longer fits an immediate — which is fine, nothing
  * stores this one from a call site). */
-static inline VALUE korb_flink_make_wide(uint32_t line, uint64_t dist) {
+static inline VALUE korb_flink_make_wide_bits(uint32_t line_bits, uint64_t dist) {
     if (dist >= (1ull << 28)) dist = 0;
     return ((VALUE)(dist >> KORB_FLINK_DIST_LO_BITS) << 31) |
-           ((VALUE)korb_flink_line_bits(line) << 14) |
+           ((VALUE)line_bits << 14) |
            ((VALUE)(dist & (KORB_FLINK_DIST_MAX - 1u)) << 2) | 1u;
+}
+static inline VALUE korb_flink_make_wide(uint32_t line, uint64_t dist) {
+    return korb_flink_make_wide_bits(korb_flink_line_bits(line), dist);
 }
 
 /* The two pointer forms.  Both are one OR on a frame base (8-aligned, so the
- * tag bits are free) — that is the whole cost of linking a frame C placed.
+ * tag bits are free) — and the CFRAME one is ORed once per block-taking C call
+ * (kept in c->cfunc_link), so linking a frame C placed costs a load and a store.
  * FORWARD is the exception: it names a link CELL, not a base. */
 static inline VALUE korb_flink_fwd(const VALUE *const cell) { return (VALUE)(uintptr_t)cell | 3u; }
 static inline VALUE korb_flink_cframe(const VALUE *const base) { return (VALUE)(uintptr_t)base | 7u; }
@@ -780,7 +790,7 @@ static inline const VALUE *korb_flink_base(const VALUE flink, const VALUE *const
 static inline void korb_flink_stage(CTX *c, const VALUE flink, const VALUE *const slots)
 {
     c->carry_base = korb_flink_base(flink, slots);
-    c->carry_line = korb_flink_line(flink);
+    c->carry_line_bits = korb_flink_line_bits_of(flink);
 }
 
 /* The frame base a node addresses through its baked dc_off (which points at the

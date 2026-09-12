@@ -136,6 +136,59 @@ store-then-advance にすると staging が下に詰まり、死んだフレー�
    master は 0 を返し、ブランチは TypeError。CRuby は ArgumentError。
    `core/argf/seek_spec.rb` の "takes at least one argument (offset)"。
 
+## perf: yield 1 回あたりのフレームリンク代 (2026-09-12、一部だけ回収)
+
+フレームリンク導入 (`0d47fdf1` ほか) で `block` +10.7% / `iterators` +10.9% /
+`methodchain` +8.0% (命令数) の退行が残っていた件。**2/3 を回収した。**
+詳細と全数字: `~/ruby/src/trials/2026-09-12-koruby-yield-link/`。
+
+どこに何命令使っていたか (master、`objdump` + カウンタ probe):
+
+- `block` / `iterators` / `methodchain` の yield は **100% が CFRAME 経路**
+  (C メソッドが回すブロック)。実コード (hand corpus 533 本) は **30% が
+  Ruby の `yield` (carry 経路)**。optcarrot は 0.007% しか carry を通らない。
+- 1 yield あたり約 23 命令。うち **中身の計算は 13、残り 10 は
+  `korb_block_flink` を呼ぶための引数・spill・reload**。
+- 下限 (ヘッダ 2 セルに即値を書くだけの probe ビルド) は block 2,605.57M で、
+  リンク導入前の `f2160cbe` (2,717.96M) より下。**ヘッダが 1 枚増えたこと自体は
+  タダ**で、退行は全部リンクの計算だった。
+
+やったこと: (a) CFRAME リンクを `c->cfunc_link` に **タグ付き** で持ち (`| 7` は
+block を取る C メソッドの dispatch で 1 回)、(b) 生きている 2 経路を inline、
+定義フレーム fallback だけ `noinline, cold`、(c) carry の行番号を
+`carry_line_bits` (リンクの 17bit フィールドそのもの) にして再 clamp を廃止、
+(d) 2 つの比較をどちらも `dst + 2` に対して行い、GCC が materialize する
+アドレスを 1 本に。
+
+sp4 (2 ラウンド平均、AOT、`perf stat -r 5`):
+
+| bench | master | 本変更 | Δ | `f2160cbe` 比 |
+|---|---|---|---|---|
+| block | 3,007.93M | 2,812.82M | **−6.49%** | +3.49% (master は +10.7%) |
+| iterators | 7,880.26M | 7,366.24M | **−6.52%** | +3.68% (master は +10.9%) |
+| methodchain | 4,696.91M | 4,490.31M | **−4.40%** | +3.29% (master は +8.0%) |
+| closures | 3,613.53M | 3,592.42M | −0.58% | +1.18% |
+| fib / method_call / ackermann / ivar | — | — | ±0.01% 以内 | — |
+| optcarrot 180f | 17,300.70M | 17,248.33M | −0.30% | fps 276.2/279.5 → 284.0/283.5 |
+
+Ruby の `yield` 主体のマイクロ (20M yields) は **−8.10%**。
+
+**残っている +3〜4% の正体**: ブロックフレームのヘッダ 4 セル
+(identity / link / EP / self) は `each` のループ中ずっと同じ値なのに、
+**毎 yield 書き直している**。`korb_block_yield` は「1 yield = 1 call」の API で
+数百箇所の builtin がそう呼ぶので、これを「フレームを開く / 本体を呼ぶ」に
+割らないと取れない。理論下限は +4 命令/yield (現状 +9〜10)。
+
+**構造的に外せないもの** (数字付き):
+
+- `c->carry_base` の判定 2 命令/yield。yield 側で `cfunc_link` を 0 にすれば
+  消せるが、ブロック本体の実行中ずっと `cfunc_link` が 0 になり
+  `korb_flink_cur_cframe` / `korb_flink_hand_on_cframe` の答えが変わる
+  (backtrace の意味論が変わる)。
+- 範囲チェック `cfunc_link < dst + 2` の 2 命令。`korb_fiber_trampoline` が
+  スタックの底で `korb_block_yield(c, c->slots, …)` を呼ぶ経路があるので、
+  「まず成り立つ」では静かに別フレームを指す。
+
 ## 既知バグ (socket / require)
 
 - ~~socket の blocking spec が whole-file timeout~~ **(2026-08-10 解消)**。

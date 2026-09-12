@@ -453,8 +453,8 @@ typedef struct KorbFiberRep {
     VALUE *vslots_top;               /* saved scan top while suspended */
     VALUE *vslots_limit;
     VALUE *vslots_hw;                /* saved high-water while suspended */
-    const VALUE *vcfunc_base;        /* saved c->cfunc_base — it points INTO this fiber's own slot
-                                      * stack, so it must travel with it */
+    VALUE vcfunc_link;               /* saved c->cfunc_link — it names a frame INSIDE this fiber's own
+                                      * slot stack, so it must travel with it */
     VALUE *def_env;                  /* block's def_env (creator stack, non-moving) */
     struct Node *body;               /* block entry (node_entry, immortal) */
     void  *uctx;                     /* ucontext_t * (fiber's saved context) */
@@ -506,7 +506,7 @@ struct korb_thread {
     struct KorbFiberRep *root_fiber;    /* この thread の root fiber 代役 (Fiber.current / storage; 遅延生成) */
     VALUE int_masks;                 /* handle_interrupt のマスク列 [klass, sym, ..., n] (root; nil まで未使用) */
     uint32_t saved_errinfo_n;        /* $! stack depth (thread-local, like a fiber's) */
-    const VALUE *saved_cfunc_base;   /* c->cfunc_base while suspended: it points into THIS thread's
+    VALUE saved_cfunc_link;          /* c->cfunc_link while suspended: it names a frame in THIS thread's
                                       * slot stack, so leaving it loaded across a switch would let a
                                       * backtrace walk into another thread's frames */
     void  *uctx;                     /* ucontext_t* */
@@ -1272,18 +1272,22 @@ struct CTX_struct {
     /* Backtrace bookkeeping.  At the END of the struct on purpose: every field
      * above keeps the offset it had, so the dispatch path's loads (slots_limit,
      * cstack_limit, vm, ...) keep their cache lines.
-     * cfunc_base: the frame base (argument window) of the innermost C method that is RUNNING
-     *   A BLOCK (`each`, `instance_exec`, `Proc#call`).  A block frame it starts
-     *   has no parse-time link - a C method, not a call node, placed it - so the
-     *   block frame points at this one.  Written only by the dispatch of
-     *   block-taking builtins (save on entry, restore on return).
-     * carry_base / carry_line: single use - the frame a call comes from, for a
-     *   dispatch that rebuilds the callee window (korb_send_impl) or reserves no
+     * cfunc_link: the innermost C method that is RUNNING A BLOCK (`each`,
+     *   `instance_exec`, `Proc#call`), as a ready CFRAME link to its argument
+     *   window; 0 = none.  A block frame it starts has no parse-time link - a C
+     *   method, not a call node, placed it - so the block frame gets this one.
+     *   Kept pre-tagged because a yield stores it as-is: the block path then
+     *   loads and stores, with no arithmetic per yield.  Written only by the
+     *   dispatch of block-taking builtins (save on entry, restore on return).
+     * carry_base / carry_line_bits: single use - the frame a call comes from, for
+     *   a dispatch that rebuilds the callee window (korb_send_impl) or reserves no
      *   header cells (a splat call, a yield), and so cannot be handed a link in
-     *   the window.  Set immediately before that dispatch, cleared as read. */
-    const VALUE *cfunc_base;
+     *   the window.  Set immediately before that dispatch, cleared as read.  The
+     *   line is kept PACKED (a link's 17-bit field, not a signed line) so that
+     *   rebuilding a link from the pair is shifts and ORs - no clamp. */
+    VALUE cfunc_link;
     const VALUE *carry_base;
-    uint32_t     carry_line;
+    uint32_t     carry_line_bits;
 };
 
 /* The block handed to a method lives in the callee's frame (slots), not in

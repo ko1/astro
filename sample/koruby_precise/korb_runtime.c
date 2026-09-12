@@ -2103,7 +2103,7 @@ korb_ivar_remove(CTX *c, VALUE self, VALUE name_sym, bool *found)
     return old;
 }
 
-static VALUE korb_flink_from_base(CTX *c, const VALUE *fbase, uint32_t line, const VALUE *dst);   /* fwd (backtrace section) */
+static VALUE korb_flink_from_base(CTX *c, const VALUE *fbase, uint32_t line_bits, const VALUE *dst);   /* fwd (backtrace section) */
 
 /* korb_bt_unwind / korb_close_ret are declared in node.h (de-static'd so the
  * inlined korb_invoke_simple in the SDs can reach them on cold paths). */
@@ -5163,7 +5163,7 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
     c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
     /* staged HERE, not on entry: the const lookup / `inherited` / `const_added`
      * hooks above are Ruby calls, and the carry is single-use */
-    c->carry_base = caller_base; c->carry_line = caller_line;
+    c->carry_base = caller_base; c->carry_line_bits = korb_flink_line_bits(caller_line);
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
     c->def_definee = saved_definee; c->cvar_cref = saved_cvar;
     korb_refine_pop(c);
@@ -5191,7 +5191,7 @@ korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclo
     const VALUE saved_cvar = c->cvar_cref;
     korb_refine_push(c);                         /* `using` in a body ends with the body */
     c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
-    c->carry_base = caller_base; c->carry_line = caller_line;   /* the body frame's link (see korb_class_body) */
+    c->carry_base = caller_base; c->carry_line_bits = korb_flink_line_bits(caller_line);   /* the body frame's link (see korb_class_body) */
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
     c->def_definee = saved_definee; c->cvar_cref = saved_cvar;
     korb_refine_pop(c);
@@ -5606,7 +5606,7 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         slots[0] = self;
         for (uint32_t i = 0; i < argc; i++) slots[1 + i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];
         c->vm->super_new_skip = def_class;             /* consumed by korb_send_impl's def self.new check */
-        c->carry_base = frame_base; c->carry_line = line;   /* the frame this `super` is in (the restage loses the cell) */
+        c->carry_base = frame_base; c->carry_line_bits = korb_flink_line_bits(line);   /* the frame this `super` is in (the restage loses the cell) */
         RESULT r = korb_send_impl(c, slots + 1 + argc, mid, line, argc, NULL, NULL, NULL);
         c->vm->super_new_skip = KORB_NIL;
         return r;
@@ -5625,7 +5625,7 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             for (uint32_t j = 1; j < argc; j++) slots[1 + j] = slots[-(korb_sword_t)argc + j];
             slots[0] = captured_self;                      /* park in a scanned slot for the cself ptr */
             slots[1] = self;                               /* recv below the shifted args */
-            c->carry_base = frame_base; c->carry_line = line;   /* the frame this `super` is in (the restage loses the cell) */
+            c->carry_base = frame_base; c->carry_line_bits = korb_flink_line_bits(line);   /* the frame this `super` is in (the restage loses the cell) */
             return korb_send_impl(c, slots + argc + 1, rmid, line, argc - 1, block, def_env, &slots[0]);
         }
         /* Nothing above def_class: CRuby runs the #method_missing protocol (the
@@ -5641,7 +5641,7 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             slots[0] = captured_self;                      /* park in a scanned slot for the cself ptr */
             slots[1] = self;                               /* recv, then :name, then the args */
             slots[2] = ID2SYM(mid);
-            c->carry_base = frame_base; c->carry_line = line;   /* the frame this `super` is in (the restage loses the cell) */
+            c->carry_base = frame_base; c->carry_line_bits = korb_flink_line_bits(line);   /* the frame this `super` is in (the restage loses the cell) */
             return korb_send_impl(c, slots + 3 + argc, vm->mid_method_missing, line,
                                   argc + 1, block, def_env, &slots[0]);
         }
@@ -5682,7 +5682,7 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     /* base[-3]: the frame link.  The restage is ours, not a call site's, so the
      * link is built from the frame this `super` is in — without it a backtrace
      * would stop at the super'd method. */
-    slots[1] = korb_flink_from_base(c, frame_base, line, &slots[1]);
+    slots[1] = korb_flink_from_base(c, frame_base, korb_flink_line_bits(line), &slots[1]);
     slots[2] = 0;                                 /* base[-2] (EP)    */
     slots[3] = self;                              /* base[-1]         */
     return korb_invoke_method(c, slots + 4 + argc, m, argc, line, mid, self, found_def, block, def_env, captured_self);
@@ -8092,7 +8092,7 @@ korb_link_base(const CTX *c, const VALUE *cell)
  * look like one must not aim the chain somewhere wrong.  Used where a dispatch
  * rebuilt the callee window and so has to re-derive the link it was handed. */
 static VALUE
-korb_flink_from_base(CTX *c, const VALUE *fbase, uint32_t line, const VALUE *dst)
+korb_flink_from_base(CTX *c, const VALUE *fbase, uint32_t line_bits, const VALUE *dst)
 {
     if (fbase == NULL || fbase < c->slots || fbase >= dst) return 0;
     const VALUE id = korb_id_get(fbase);
@@ -8104,7 +8104,7 @@ korb_flink_from_base(CTX *c, const VALUE *fbase, uint32_t line, const VALUE *dst
       case KORB_FID_MAIN: break;
       default: return 0;
     }
-    return korb_flink_make_wide(line, (uint64_t)(dst - fbase));
+    return korb_flink_make_wide_bits(line_bits, (uint64_t)(dst - fbase));
 }
 
 /* The C method frame we are running in, as a link for a callee window this C
@@ -8115,14 +8115,16 @@ korb_flink_cur_cframe(const CTX *c, const VALUE *dst)
 {
     /* a zero-argument C method's window starts exactly at its rbfn cursor, so
      * the frame it places may sit at the same address — hence <=, not < */
-    return (c->cfunc_base != NULL && c->cfunc_base <= dst) ? korb_flink_cframe(c->cfunc_base) : 0;
+    const VALUE fl = c->cfunc_link;
+    return (fl != 0 && korb_flink_ptr(fl) <= dst) ? fl : 0;
 }
 /* Same, for a dispatch that rebuilds the window and so takes the carry instead. */
 static void
 korb_flink_hand_on_cframe(CTX *c, const VALUE *dst)
 {
-    c->carry_base = (c->cfunc_base != NULL && c->cfunc_base <= dst) ? c->cfunc_base : NULL;
-    c->carry_line = c->carry_base ? korb_flink_line_at(c->carry_base + KORB_FLINK_OFF, c->slots, c->slots_limit) : 0;
+    const VALUE fl = c->cfunc_link;
+    c->carry_base = (fl != 0 && korb_flink_ptr(fl) <= dst) ? korb_flink_ptr(fl) : NULL;
+    c->carry_line_bits = c->carry_base ? korb_flink_line_bits(korb_flink_line_at(c->carry_base + KORB_FLINK_OFF, c->slots, c->slots_limit)) : 0;
 }
 
 /* Hand the frame a link cell names on to the next dispatch, which rebuilds the
@@ -8143,13 +8145,13 @@ korb_flink_hand_on(CTX *c, const VALUE *src)
                 continue;
             }
             c->carry_base = p;                          /* CFRAME: a C method's window is the frame */
-            c->carry_line = korb_flink_line_at(p + KORB_FLINK_OFF, c->slots, c->slots_limit);
+            c->carry_line_bits = korb_flink_line_bits(korb_flink_line_at(p + KORB_FLINK_OFF, c->slots, c->slots_limit));
             return;
         }
         const uint32_t d = korb_flink_dist(v);
         if (d == 0) return;
         c->carry_base = src - d;
-        c->carry_line = korb_flink_line(v);
+        c->carry_line_bits = korb_flink_line_bits_of(v);
         return;
     }
 }
@@ -8712,11 +8714,11 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
              * identity so it reads as a frame base, and name it while the call
              * runs; the block path reads both.  Only this dispatch pays for it. */
             VALUE *const cbase = &slots[-(korb_sword_t)argc];
-            const VALUE *const saved = c->cfunc_base;
+            const VALUE saved = c->cfunc_link;
             korb_id_set(cbase, (VALUE)((uintptr_t)m | KORB_FID_CFUNC));
-            c->cfunc_base = cbase;
+            c->cfunc_link = korb_flink_cframe(cbase);
             r = m->rbfn(c, slots, recv, args, block, def_env, captured_self);
-            c->cfunc_base = saved;
+            c->cfunc_link = saved;
             korb_id_set(cbase, 0);
         } else {
             r = m->rfn(c, slots, recv, args);
@@ -8769,13 +8771,13 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
          * mark the arg window so the block frame links to it (as for a
          * block-taking builtin above) */
         VALUE *const dmbase = &slots[-(korb_sword_t)argc];
-        const VALUE *const dm_link_saved = c->cfunc_base;
+        const VALUE dm_link_saved = c->cfunc_link;
         korb_id_set(dmbase, (VALUE)((uintptr_t)m | KORB_FID_CFUNC));
-        c->cfunc_base = dmbase;
+        c->cfunc_link = korb_flink_cframe(dmbase);
         RESULT r = korb_block_yield_full(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
                                          &slots[-(korb_sword_t)argc], argc, recv_slot,
                                          block, def_env, captured_self, 2);   /* captured_self = receiver slot; 2 = method-shaped binding */
-        c->cfunc_base = dm_link_saved;
+        c->cfunc_link = dm_link_saved;
         korb_id_set(dmbase, 0);
         if (UNLIKELY(dm_definee != KORB_NIL)) c->def_definee = dm_definee;
         c->dm_entry = dm_saved;
@@ -9351,26 +9353,48 @@ korb_block_nil_locals(VALUE *restrict dst, uint32_t n) {
  *     as a frame base;
  *   - failing that, the frame the block was WRITTEN in, while that frame is
  *     still live (an escaped env names no frame, and then there is no link).
- * `prev` is the block's PREV (its EP). */
-static VALUE
-korb_block_flink(CTX *c, const NODE *block, VALUE prev, const VALUE *dst)
+ * `prev` is the block's PREV (its EP).
+ *
+ * Both live cases are inline; only the fallback is a call.  A yield from a
+ * block-taking builtin (block / iterators / methodchain: 100% of 15M-40M
+ * yields) just stores c->cfunc_link, which the dispatch tagged once per `each`
+ * rather than once per yield.  A Ruby-level `yield` stages the frame it is in
+ * (it cannot bake the link: the cell's address depends on the block's frame),
+ * and turning that into a link is a subtract and three shifts — cheaper than
+ * the call it used to take.  Out of line the whole thing cost ~23 instructions
+ * per yield, measured. */
+static __attribute__((noinline, cold)) VALUE
+korb_block_flink_defframe(CTX *c, const NODE *block, VALUE prev, const VALUE *dst)
 {
-    if (c->carry_base != NULL) {                  /* a `yield` handed us its own baked link */
-        const VALUE *const base = c->carry_base;
-        const uint32_t line = c->carry_line;
-        c->carry_base = NULL;
-        if (base < dst) return korb_flink_make_wide(line, (uint64_t)(dst - base));
-    }
-    /* `dst` is this block frame's link cell (B[-3]); the C method's own window
-     * must lie below the frame it is about to run. */
-    if (c->cfunc_base != NULL && c->cfunc_base < dst + 2)
-        return korb_flink_cframe(c->cfunc_base);
+    /* No carry and no C frame below us: the frame the block was WRITTEN in, if
+     * it is still live (an escaped env names no frame, and then there is none). */
     if ((prev & 1u) && block != NULL && block != KORB_BLK_CPROC &&
         block->head.kind == &kind_node_entry && block->u.node_entry.def_top_off == KORB_ID_OFF) {
         const VALUE *const base = (const VALUE *)(uintptr_t)(prev & ~(VALUE)1u);
         if (base < dst && base >= c->slots) return korb_flink_make_wide(block->u.node_entry.def_line, (uint64_t)(dst - base));
     }
     return 0;
+}
+static inline __attribute__((always_inline)) VALUE
+korb_block_flink(CTX *c, const NODE *block, VALUE prev, const VALUE *dst)
+{
+    /* `top` is the block frame's base; both tests are against it, so only one
+     * address is materialized. */
+    const VALUE *const top = dst + 2;
+    const VALUE *const cb = c->carry_base;
+    if (UNLIKELY(cb != NULL)) {                   /* a `yield` handed us the frame it is in */
+        c->carry_base = NULL;                     /* single use */
+        if (LIKELY(cb + 2 < top)) {
+            const uint64_t d = (uint64_t)(top - cb) - 2u;
+            return LIKELY(d < KORB_FLINK_DIST_MAX)
+                 ? (((VALUE)c->carry_line_bits << 14) | ((VALUE)d << 2) | 1u)
+                 : korb_flink_make_wide_bits(c->carry_line_bits, d);
+        }
+    }
+    /* the C method's own window must lie below the frame it is about to run */
+    const VALUE fl = c->cfunc_link;               /* already tagged: stored as-is */
+    if (LIKELY(fl != 0 && fl < (VALUE)(uintptr_t)top)) return fl;
+    return korb_block_flink_defframe(c, block, prev, dst);
 }
 
 __attribute__((no_stack_protector)) RESULT
@@ -9410,7 +9434,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     const uint32_t np = block->u.node_entry.params_cnt;   /* fast path: block is a node_entry (CPROC/non-entry went to _full above) */
     if (UNLIKELY(is_lambda && argc != np))                /* lambda: exact arity (fast path = all-required, no rest/opt) */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u)", argc, np);
-    bf[-3] = (VALUE)(uintptr_t)block | KORB_FID_BLOCK;              /* B[-4] identity */
+    bf[-3] = (VALUE)(uintptr_t)block + KORB_FID_BLOCK;              /* B[-4] identity (8-aligned: + == |, and folds into the address) */
     bf[-2] = korb_block_flink(c, block, prev, bf - 2);              /* B[-3] frame link (backtrace) */
     bf[-1] = prev;                                                  /* B[-2] EP / PREV link */
     bf[0]  = 0;          /* B[-1] block lexical self (set below) */
@@ -10018,7 +10042,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     /* base[-3] is the callee's frame link (node.h): carry the one the call site
      * recorded, from wherever this dispatch was entered (c->carry_base when the
      * caller already restaged once, else the window we are relocating). */
-    slots[1] = c->carry_base ? korb_flink_from_base(c, c->carry_base, c->carry_line, &slots[1])
+    slots[1] = c->carry_base ? korb_flink_from_base(c, c->carry_base, c->carry_line_bits, &slots[1])
                              : korb_flink_carry(c, slots - (korb_sword_t)argc - 3);
     c->carry_base = NULL;                                /* single use */
     slots[2] = 0;                                       /* callee base[-2] (EP) */
