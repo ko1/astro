@@ -79,27 +79,58 @@ store-then-advance にすると staging が下に詰まり、死んだフレー�
 再利用される。それで以下が顕在化した。**どちらも master に既にあるバグ**で、
 今は「古いバイトがまだ残っている」ことに助けられているだけ。
 
-1. **返ったメソッドフレームへの open handle (`proc { yield }`)**
+1. ~~**返ったメソッドフレームへの open handle (`proc { yield }`)**~~
+   **(2026-09-12 修正済)**
    ```ruby
    def m; proc { yield }; end
    pr = m { 7 }
    p pr.call
    ```
    `korb_yield_outer` が `prev_handle` (奇数 = live frame handle) を辿って、
-   既に return したメソッドフレームの trio を読む。env が close されていない。
-   master / ブランチで `prev_handle` / `depth` / `trio_base` は完全に同じ値、
-   解決されるフレームアドレスも同じで、**違うのはそのメモリの中身だけ**。
+   既に return したメソッドフレームの trio を読んでいた。真因は
+   **`yield` が捕捉として数えられず (`max_ref_depth` が上がらず)、
+   proc の env が materialize されないこと**。trio はフレーム頂 =
+   捕捉ローカルの外なので、materialize しても `closed` で失われる。
 
-   | ケース | CRuby | master | 試作ブランチ |
-   |---|---|---|---|
-   | `def m; proc { yield }; end; pr = m { 7 }; p pr.call` | 7 | 7 | SEGV |
-   | `def m; Proc.new { yield }; end; p m { 7 }.call` | 7 | LocalJumpError | SEGV |
-   | `o = Object.new; def o.create; Proc.new { yield }; end; p o.create { 7 }.call` | 7 | 7 | 7 |
-   | 同上 + `Proc.new { \|&b\| yield }` | 7 | 7 | 7 |
+   **上の「落ちるのは `def m` の側だけ」「singleton def は両方とも通る」は誤り。撤回する。**
+   どの形も等しく死んだフレームを読んでいて、7 が返るか LocalJumpError か
+   SEGV かは「そのセルに最後に何が書かれたか」で決まるだけだった。
+   同じ `o.create { 7 }` でも、ローカルに代入すると LocalJumpError、
+   `p o.create { 7 }.call` と直に書くと 7 になる。決定的な再現:
 
-   落ちるのは `def m` (self 呼び = node_call_blk) の側だけで、singleton def
-   (node_send_blk) は両方とも通る。2 行目の master の LocalJumpError は
-   staging とは無関係の別の不一致。
+   ```ruby
+   def m; proc { yield }; end
+   def n; yield; end          # m と同じフレーム形 → trio が同じセルに乗る
+   pr = m { 7 }
+   n { 99 }
+   p pr.call                  # master: SEGV (korb_block_yield の block=0xc6 = FIXNUM(99))
+   ```
+
+   直し方: パーサでブロック中の `yield` / `block_given?` / `defined?(yield)` を
+   メソッドスコープへの参照として数え (`kp_frame.yield_depth` → `node_entry.cap_yield`)、
+   `korb_make_proc` がフレームが生きているうちにそのブロックを Proc へ reify して
+   `KorbEnv.blk` に置く。`yield` はフレームが生きていれば従来どおり trio を、
+   返っていれば env の Proc を使う。回帰テストは
+   `../rubyharness/t/hand/proc_yield_escaped_frame.rb` (steal / bury の撹乱つき)。
+
+   同時に見つかった別のバグも修正: ブロック自身のフレームが env を
+   materialize した後の `yield` は、自分の env で 1 段消費して誤ったスコープを
+   解決していた (`korb_outer_frame_base_at` の leading-own-env スキップが
+   `return` にしか入っていなかった)。
+
+   ```ruby
+   def m; y = 1; [1].each { pr = proc { y }; p(yield) }; end
+   m { 7 }     # master: LocalJumpError / CRuby: 7
+   ```
+
+   計測: core rubyspec 2151 ファイルの実 mspec sweep で退行 0・改善 7 ファイル
+   (`core/proc/call_spec` 14→16、`core/thread/*` は
+   `ThreadSpecs.dying_thread_ensures` が `Thread.new { ... yield ... }` を返す形)。
+   命令数は fib/method_call/ackermann/ivar/optcarrot いずれも ±0.011% 以内、
+   `code_store/op` の .text は同一。`closures` だけ +0.43%
+   (内訳: KorbEnv 48→56B で +0.19%、`cap_yield` の判定で +0.24%)。
+   前者は `loc` と `vals` が排他なので union にすれば取り戻せるが、
+   GC の不変条件に触るので別件にした。
 
 2. **引数なし `ARGF.seek`** — builtin が staging されていない引数スロットを読む。
    master は 0 を返し、ブランチは TypeError。CRuby は ArgumentError。
