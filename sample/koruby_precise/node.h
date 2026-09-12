@@ -797,13 +797,15 @@ static inline uint32_t korb_frame_locals(const VALUE id) {
       default:              return 0;   /* KORB_FID_CFUNC / no identity: no Ruby locals, so no EP */
     }
 }
+/* The cell itself, for the closure-capture walk: it reads, tests and writes the
+ * same frame's EP, and decoding the identity once is the whole saving. */
+static inline VALUE *korb_frame_ep_cell(VALUE *const base) {
+    const uint32_t n = korb_frame_locals(korb_id_get(base));
+    return n ? &base[n - 1] : NULL;
+}
 static inline VALUE korb_frame_ep(const VALUE *const base) {
     const uint32_t n = korb_frame_locals(korb_id_get(base));
     return n ? korb_ep_get(base, n) : 0;
-}
-static inline void korb_frame_ep_set(VALUE *const base, const VALUE v) {
-    const uint32_t n = korb_frame_locals(korb_id_get(base));
-    if (n) korb_ep_set(base, n, v);
 }
 
 /* Cold helpers used by the inlined simple-call fast path below; defined in

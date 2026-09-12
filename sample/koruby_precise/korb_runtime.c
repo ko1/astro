@@ -3317,9 +3317,9 @@ void korb_env_store(CTX *c, KorbEnv *e, uint32_t index, VALUE v) {
 
 /* The frame at `loc` owns an open env iff its EP cell holds a clean even
  * KorbEnv with ->loc == loc (set by korb_make_proc/binding).  Lets multiple
- * procs over the same activation share one env → shared mutation.  No global list. */
-static KorbEnv *korb_open_env_find(VALUE *loc) {
-    const VALUE pv = korb_frame_ep(loc);
+ * procs over the same activation share one env → shared mutation.  No global list.
+ * `pv` is that frame's EP, already read by the caller. */
+static KorbEnv *korb_open_env_find(VALUE *loc, const VALUE pv) {
     if (pv != 0 && (pv & 1u) == 0) {
         KorbEnv *e = VAL2ENV(pv);
         if (!e->closed && e->loc == loc) return e;
@@ -3389,8 +3389,10 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
      * outer_env; slots[1] holds the current outer env (rooted across each alloc). */
     slots[1] = outer_env;
     for (int k = (int)nlive - 1; k >= 0; k--) {
-        const VALUE pv = korb_frame_ep(bases[k]);                 /* original outer link (preserve into e->prev) */
-        KorbEnv *existing = korb_open_env_find(bases[k]);
+        VALUE *const epc = korb_frame_ep_cell(bases[k]);          /* decode the identity once per level */
+        if (epc == NULL) continue;                                /* no locals → no env to own */
+        const VALUE pv = *epc;                                    /* original outer link (preserve into e->prev) */
+        KorbEnv *existing = korb_open_env_find(bases[k], pv);
         if (existing) { slots[1] = (VALUE)(uintptr_t)existing; continue; }   /* share this frame's env */
         KorbEnv *e = korb_alloc(c, slots + 2, sizeof(KorbEnv), KORB_OBJ_ENV);
         e->loc = bases[k];                               /* open: live slots */
@@ -3402,7 +3404,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
          * link so a deeper sibling closure can still walk past this frame. */
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, slots[1] ? slots[1] : pv);
         slots[1] = (VALUE)(uintptr_t)e;
-        korb_frame_ep_set(bases[k], slots[1]);                   /* EP cell: this frame owns its env (clean even; GC roots via slots) */
+        *epc = slots[1];                                         /* EP cell: this frame owns its env (clean even; GC roots via slots) */
     }
     KorbProc *p = korb_alloc(c, slots + 2, sizeof(KorbProc), KORB_OBJ_PROC);
     p->iseq = entry; p->is_lambda = (uint8_t)is_lambda;
@@ -3486,8 +3488,10 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
     }
     slots[1] = outer_env;
     for (int k = (int)nlive - 1; k >= 0; k--) {
-        const VALUE pv = korb_frame_ep(bases[k]);
-        KorbEnv *existing = korb_open_env_find(bases[k]);
+        VALUE *const epc = korb_frame_ep_cell(bases[k]);
+        if (epc == NULL) continue;
+        const VALUE pv = *epc;
+        KorbEnv *existing = korb_open_env_find(bases[k], pv);
         if (existing) { slots[1] = (VALUE)(uintptr_t)existing; continue; }
         KorbEnv *e = korb_alloc(c, slots + 2, sizeof(KorbEnv), KORB_OBJ_ENV);
         e->loc = bases[k];
@@ -3497,7 +3501,7 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, slots[1] ? slots[1] : pv);
         slots[1] = (VALUE)(uintptr_t)e;
-        korb_frame_ep_set(bases[k], slots[1]);           /* frame owns its env */
+        *epc = slots[1];                                 /* frame owns its env */
     }
     /* The cref is resolved HERE, from its baked name, so nothing has to survive
      * the env allocations above (a parked VALUE did not). */
