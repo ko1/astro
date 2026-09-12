@@ -2685,19 +2685,86 @@ backtrace のフレームリンク (`base[-3]`) が入ったのを機に、user 
 
 ### 鎖の完全性 (デバッガ前提なら必須)
 
-- [ ] クラス / モジュール / 特異クラス本体のフレームに固有の identity が無い
+**2026-09-12 の計測** (このマシン・連続測定、`tools/bt_instr.sh` / `tools/bt_optc.sh`、
+master = e94a04e2、各 2 回の平均):
+命令数 fib +0.020% / method_call +0.011% / ackermann +0.010% / ivar +0.012% /
+optcarrot180 +0.030%。`code_store/op` の `.text` は **5 ベンチすべてバイト一致**
+(fib 9,035 / method_call 4,771 / ackermann 10,414 / ivar 11,337 / optcarrot 4,733,965)、
+optcarrot の checksum も一致 (59662)。増分はほぼ定数 (micro 0.4〜0.5M 命令、
+optcarrot 5M) なので、実行時ではなくパース時 (ラベルの intern) のコスト。
+core 2,151 ファイルの実 mspec sweep は **退行ゼロ / 改善 2 ファイル**:
+`thread/backtrace/location/base_label_spec.rb` pass 1→4、
+`.../label_spec.rb` pass 35→36 (TOTAL pass 22,645→22,649、fail 397→393、err 101 で不変)。
+`make test` = 既知 1 件 (`complex_pow_coerce`)、`STRESS=1 TIMEOUT=300` = 既知 2 件
+(+ `core_conv_mm_aware` WCRASH。master の binary でも単体で SEGV することを確認済み)。
+`t/frame_locals.rb` は 31 → **39 チェック** (module 本体 / 特異クラス本体 /
+クラス本体の中のブロック / define_method が捕捉したクラス本体ローカル を追加)。
+
+- [x] クラス / モジュール / 特異クラス本体のフレームに固有の identity が無い
       (`korb_class_body` は `korb_block_yield` を通るので `KORB_FID_BLOCK` になり、
       label が `<class:X>` にならず `block in <main>` に落ちる)
+      — **2026-09-12 実装**。identity セルは `node_entry* | KORB_FID_BLOCK` のままで、
+      ラベルは node_entry の新オペランド `body_label@sym` から読む
+      (パース時に intern した `<class:Foo>` / `<module:Bar>` / `singleton class`)。
+      CRuby のラベルは字句的 (`class A::B` は `<class:B>`) なのでパース時に確定する。
+      `@sym` はハッシュ除外・runtime-ref なので **SD は 1 バイトも変わらない**。
+      本体フレームは呼び出し元へのリンクも持っていなかった (鎖がそこで止まっていた) ので、
+      `node_class` / `node_module` / `node_sclass` に `flink` を足して `KP_LINK` に載せ、
+      `korb_class_body` / `korb_sclass_body` が `korb_block_yield` の**直前**で carry に積む
+      (const 探索・`inherited`・`const_added` が間に走るので入口では積めない)。
+      `define_method` のブロックは定義フレームが返った後に走るため、外側ローカルを 1 つも
+      参照していないと PREV が定義元を指さない。ラベルもまた字句的なので、クラス本体を
+      ブロックだけで辿れるブロックには `blk_label@sym`
+      (`block (2 levels) in <class:Foo>`) をパース時に焼く。
+      `define_method` したメソッドの C フレームは CRuby には無い (ブロック本体がそのフレーム)
+      ので `Proc#call` と同じく live walk から落とした。
 - [ ] `eval(str, nil, "foo.rb")` のフレームの `Thread::Backtrace::Location#absolute_path`。
       identity が付いてフレームが backtrace に現れるようになった結果、`#path` は CRuby と
       同じ `"foo.rb"` になったが、`#absolute_path` は nil でなく cwd からの絶対パスを返す
       (prelude/exception.rb の判定が「実在しないファイル」を見ていない)。
       core/thread/backtrace/location/absolute_path_spec.rb の該当例が ERROR → FAIL に変わる
       (pass 数は 3 で不変)
-- [ ] `method_missing` などの再ステージ経路でリンクを持ち越せず、そこで鎖が切れる
+- [x] `method_missing` などの再ステージ経路でリンクを持ち越せず、そこで鎖が切れる
+      — **2026-09-12 実装**。落ちていたのは 6 箇所:
+      `korb_send_impl` の #method_missing ステージ (`base[-3]` を 0 で埋めていた) /
+      `korb_call_impl` のレシーバ無し #method_missing / `korb_super` → send・
+      #method_missing・`Klass.new` の 3 経路 / `send` の再ディスパッチ / `Method#call`。
+      `korb_flink_hand_on` は DIRECT しか辿れなかったので FORWARD と CFRAME も辿るようにした。
+      `Method#call` はヘッダ 3 セルを自分でステージするようにした
+      (リンクの置き場が無かっただけでなく、EP セルにレシーバが載っていた)。
+      検証は `tools/bt_caller_cmp.sh` (23 ケースに拡張): `caller(0)` /
+      `caller_locations(0)` が **CRuby 4.0.2 と全一致**。
 - [ ] 普通の C メソッドはマーカーを書かない (block を取る builtin だけ)。
       Ruby のローカルが無いので base は不要だが、デバッガ的には「C の中にいる」と
       見せたいので `c->cfunc_me` 相当があると良い
+- [ ] **外側ローカルを 1 つも参照しない Proc は、定義元がメソッドだと鎖から消える**。
+      `def mk = proc { }` を返して後から呼ぶと CRuby `block in Object#mk` に対し
+      koruby は `block in <main>`。cap_depth==0 だと `korb_make_proc` が env を作らず
+      `p->env` が「返ったフレームの base」という生センチネルになるため
+      (捕捉があれば `KorbEnv.id` 経由で正しく出る)。クラス本体側は `blk_label` で
+      パース時に解決したが、メソッドの所有者ラベルは実行時にしか分からないので同じ手は使えない。
+      塞ぐなら `KorbProc` に定義元 identity を 1 セル持たせるのが素直 (未計測)。
+- [ ] **eval 文字列のトップレベルフレームがリンクを持たない**(既存)。
+      `eval("...")` / `class_eval(String)` / `instance_eval(String)` / `eval(str, b)` は
+      どれも `(eval at f.rb:N):1:in '<top (required)>'` で鎖が終わる (CRuby はこの下に
+      `Kernel#eval` と呼び出し元が続き、ラベルも `<main>` か囲むメソッド)。
+      `korb_eval_str_self` / `korb_eval_binding_core` / `korb_eval_str` が
+      `slots[0..3] = 0` でヘッダを作るとき `base[-3]` を 0 にしているため。
+      `c->cfunc_base` で埋めるのは危険: `Kernel#eval` は block を取らない builtin なので
+      `cfunc_base` は**外側の無関係な C フレーム**のまま (`class_eval` /
+      `instance_eval` は block を取るので自分のものが入る)。各入口が自分の窓を
+      渡す形にしないと塞げない。
+      なお `class_eval("class X; ... end")` は、この変更でクラス本体が
+      `<class:X>` と正しく出るようになった代わりに **master より 1 段短くなった**:
+      以前は本体が `c->cfunc_base` 経由で eval フレームを飛び越して
+      `Class#class_eval` に繋がっていた (ただしラベルは `block in <main>`、
+      ファイルも `(eval):25` と誤り)。今は eval フレームで止まる。
+- [ ] **raise のバックトレースはブロックフレームを記録しない**(既存・上とは別経路)。
+      `[1].each { raise }` で CRuby は `block in X` / `Array#each` / `X` を出すが
+      koruby は先頭の `block in X` が無い。`korb_bt_unwind` はメソッド/C フレームしか
+      積まず、`korb_block_yield` は RAISE を素通しするため。`Proc#call` / `define_method` も
+      同じ理由で、live walk では消しているフレームが raise 側には残る
+      (`Proc#call` / `DMR#dm` が出る)。`caller` 側とラベルが食い違うので揃えたい。
 
 ## (2026-09-12) 既存バグ (今日の作業で発覚、未修正)
 
