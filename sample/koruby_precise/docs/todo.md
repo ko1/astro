@@ -2575,10 +2575,13 @@ backtrace のフレームリンク (`base[-3]`) が入ったのを機に、user 
 
 ## (2026-09-12) 既存バグ (今日の作業で発覚、未修正)
 
-- [ ] **fork 系 spec が間欠的に SEGV する**。`tools/one.sh core/kernel/fork_spec.rb` は
-      **master でも**再現 (6 例通った直後に SEGV)。`tools/mspec_real_run.rb` 経由だと
-      通ることもあり、sweep の run によって whole-file 失敗が出たり出なかったりする。
-      backtrace ブランチとは無関係 (両方で同じ)。
+- [x] **fork 系 spec の間欠 SEGV** — 2026-09-12 に切り分け完了。**fork のバグではなく stale store**。
+      まっさらな worktree で今日の 6 コミット (f2160cbe / 163b223b / e66d9c36 / 915b839c /
+      dfb12b1d / 8ae7b064) を全部ビルドして 3 回ずつ走らせると **SEGV 0/3**。
+      現 master もアイドル・CPU 負荷ありの両方で 3/3 完走。再現していたのは
+      「C を編集して make を繰り返した agent の作業ツリー」だけで、`code_store` /
+      `preload_store` を消して作り直すと消える (`preload_store` は起動時に自動で読まれる)。
+      **検証 sweep は必ずストアを消してからビルドすること。**
 - [x] `ASTRO_DEBUG=1` ビルドが `korb_send_impl` の再ステージ経路で **生きている引数セルに
       magic を書いて壊していた** (`base[-3]` は「コールサイトが予約したときだけヘッダ」で、
       再ステージ経路では呼び出し元のデータが居る)。frame magic 廃止で解消。
