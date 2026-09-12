@@ -4976,8 +4976,10 @@ korb_invoke_kw_viahash(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos
 {
     VALUE *const base = slots - (pos_argc + kw_argc);
     VALUE *const cur = slots;                              /* scratch above the staged args */
-    cur[0] = self;                                         /* park: building the hash below GCs,
-    cur[1] = def_class;                                     * and both are bare C locals */
+    /* park: building the kwargs Hash below allocates (so it can move both), and
+     * `self` / `def_class` are bare C locals the GC does not scan. */
+    cur[0] = self;
+    cur[1] = def_class;
     cur[2] = UNWRAP(korb_hash_new(c, cur + 2, kw_argc));
     VALUE_REF h = VALUE_REF_AT(&cur[2]);
     for (uint32_t p = 0; p < kw_argc; p++) {
