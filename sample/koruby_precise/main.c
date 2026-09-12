@@ -1483,7 +1483,7 @@ main(int argc, char *argv[])
         RESULT pm = korb_obj_new(c, pcur, KORB_NIL);
         if (pm.state == KORB_RAISE) { korb_report_uncaught(c, pm.value); korb_io_flush_std(c->vm); return 1; }
         c->slots[-1] = pm.value;                  /* prelude self at base[-1] (bottom header) */
-        korb_id_set(c->slots, korb_fid_main(korb_intern(c->vm, "<prelude>", 9), prelude_locals, true));
+        korb_id_set(c->slots, korb_fid_main(korb_intern(c->vm, "<prelude>", 9), true));
         korb_relocate_object_methods(c, pcur);    /* before: the prelude itself asks Kernel for them */
         RESULT pr = EVAL(c, prelude_ast, pcur);
         if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); korb_io_flush_std(c->vm); return 1; }
@@ -1523,11 +1523,11 @@ main(int argc, char *argv[])
 
     /* Run (unless `--aot-compile` alone — then we bake below without running).
      * Toplevel frame: locals at c->slots[0..L), self at c->slots[-1] and the
-     * frame identity at c->slots[-2]; cursor starts above the locals. */
+     * frame identity at c->slots[-4]; cursor starts above the locals. */
     if (!skip_run) {
         VALUE *toplevel_cursor = c->slots + koruby_toplevel_locals_cnt;
         /* The prelude ran in this same region with its own frame, so start the
-         * program's locals — and its EP, the top cell — from zero. */
+         * program's locals from zero. */
         memset(c->slots, 0, (size_t)koruby_toplevel_locals_cnt * sizeof(VALUE));
         /* builtin/exception class objects are now set up inside korb_ctx_new
          * (they must exist before core-method registration). */
@@ -1541,8 +1541,7 @@ main(int argc, char *argv[])
              * also clears whatever the prelude left in the cell. */
             korb_id_set(c->slots,
                         korb_fid_main(korb_intern(c->vm, c->vm->script_name ? c->vm->script_name : "?",
-                                                  strlen(c->vm->script_name ? c->vm->script_name : "?")),
-                                      koruby_toplevel_locals_cnt, false));
+                                                  strlen(c->vm->script_name ? c->vm->script_name : "?")), false));
         }
         /* TOPLEVEL_BINDING: a Binding over the (persistent) toplevel frame. */
         {

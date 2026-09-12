@@ -159,18 +159,22 @@ static NODE *index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_wri
  * []/[]= desugar, case/when ===, ...).  The staging depth a caller must reserve
  * is the element count (recv + args). */
 /* Frame link baked into a call node (node.h): the call site line plus the
- * distance from the callee's base[-3] down to THIS frame's BASE.  Only the
- * staging part (the node's own cursor depth) is known here; pop_frame adds the
- * frame size through the KP_LINK registration below.  Read tc->chain after the
- * children are transduced (cursor restored).
- * `staged` is the extra advance a node's dispatcher makes over its children
- * before it stores (or hands on) the link. */
+ * distance from the cell the link ends up in down to THIS frame's BASE.  Only
+ * the staging part is known here; pop_frame adds the frame size through the
+ * KP_LINK registration below.  Read tc->chain after the children are transduced
+ * (cursor restored).
+ * `staged` is where that cell sits above the node's own cursor: for a node that
+ * hands the link to the dispatch (korb_flink_stage) it is the dispatcher's own
+ * advance, for one that stores it into the callee's base[-3] it is where that
+ * cell lands. */
 static uint64_t kp_flink_at(const struct kp_ctx *tc, uint32_t line, uint32_t staged) {
     const uint32_t d = (uint32_t)(tc->chain + (int32_t)staged);
     if (d >= KORB_FLINK_DIST_MAX) return 0;   /* no link at all, rather than one aimed short */
     return korb_flink_make(line, d);
 }
-static uint64_t kp_flink(const struct kp_ctx *tc, uint32_t line) { return kp_flink_at(tc, line, 0); }
+/* A @framehdr node: its dispatcher reserves the header, so base[-3] lands
+ * KORB_FRAME_HDR - 2 cells above the cursor. */
+static uint64_t kp_flink(const struct kp_ctx *tc, uint32_t line) { return kp_flink_at(tc, line, KORB_FRAME_HDR - 2); }
 
 /* Register a just-built call node's link for the frame-size fixup.  KP_LINK
  * wraps the ALLOC so the two can never drift apart. */
@@ -467,22 +471,18 @@ add_bake_to(struct kp_frame *f, int32_t *cell)
     f->add_cells[f->add_cnt++] = cell;
 }
 
-/* Returns the frame size.  Every frame reserves self(fs-1) + def_class(fs-2)
- * on top; a yielding frame also reserves the 3-cell block group below them.
- * Layout top-down:
- *   [locals... | block_entry(fs-5) | def_env(fs-4) | captured_self(fs-3)
- *              | def_class(fs-2) | self(fs-1)] */
+/* Returns the frame size.  The frame is exactly its locals — self / EP / link /
+ * identity all live BELOW the base (node.h) — plus, for a yielding frame, the
+ * 3-cell block group at the top:
+ *   [locals... | block_entry(fs-3) | def_env(fs-2) | captured_self(fs-1)] */
 static uint32_t
 pop_frame(struct kp_ctx *tc)
 {
     struct kp_frame *f = tc->frame;
-    /* bottom-header: self lives at base[-1] (not a top cell); the only reserved
-     * top cell is the method entry.  +1u (entry) instead of +2u (entry+self). */
     /* `{ it }`: prism lists no local for the implicit param, but the body binds
-     * it at slot 0 — count it, or the frame's top cell IS that parameter and
-     * whoever writes the reserved cell (the backtrace frame marker) eats it. */
+     * it at slot 0 — count it. */
     const uint32_t it_slot = (f->it_param && f->locals->size == 0) ? 1u : 0u;
-    uint32_t frame_size = (uint32_t)f->locals->size + it_slot + f->synth_cnt + 1u + (f->uses_block ? 3u : 0u);
+    uint32_t frame_size = (uint32_t)f->locals->size + it_slot + f->synth_cnt + (f->uses_block ? 3u : 0u);
     for (uint32_t i = f->bake_base; i < tc->bake_cnt; i++) {
         *tc->bake_list[i] -= (int32_t)frame_size;
     }
@@ -588,22 +588,22 @@ bake_lset(struct kp_ctx *tc, uint32_t index, NODE *rval)
     return n;
 }
 
-/* Outer-variable get/set (depth >= 1).  ep_off addresses the current frame's
+/* Outer-variable get/set (depth >= 1).  prev_off addresses the current frame's
  * PREV cell (bf[0] = base[-1]): baked -1 - chain, pop subtracts frame_size →
  * -(frame_size+1) - chain.  depth/index are constants (no fixup). */
 static NODE *
 bake_eget(struct kp_ctx *tc, uint32_t depth, uint32_t index)
 {
-    NODE *n = ALLOC_node_eget(-1 - tc->chain, -tc->chain, depth, index);
-    bake_add(tc, &n->u.node_eget.base_off);   /* ep_off is the frame top: cursor-relative already */
+    NODE *n = ALLOC_node_eget(-2 - tc->chain, depth, index);
+    bake_add(tc, &n->u.node_eget.prev_off);
     return n;
 }
 
 static NODE *
 bake_eset(struct kp_ctx *tc, uint32_t depth, uint32_t index, NODE *rval)
 {
-    NODE *n = ALLOC_node_eset(-1 - tc->chain, -tc->chain, depth, index, rval);
-    bake_add(tc, &n->u.node_eset.base_off);
+    NODE *n = ALLOC_node_eset(-2 - tc->chain, depth, index, rval);
+    bake_add(tc, &n->u.node_eset.prev_off);
     return n;
 }
 
@@ -634,13 +634,13 @@ bake_ivar_set(struct kp_ctx *tc, uint32_t name, NODE *val)
     bake_add(tc, &n->u.node_ivar_set.self_off);
     return n;
 }
-/* @@x read/write: self at base[-1], the method entry / def_class at base[-2]
+/* @@x read/write: self at base[-1], the method entry / def_class at base[-4]
  * (the frame's identity cell) — both baked -N-chain and finished by pop_frame. */
 static NODE *
 bake_cvar_get(struct kp_ctx *tc, uint32_t name, uint32_t soft)
 {
     kp_needs_definee(tc);
-    NODE *n = ALLOC_node_cvar_get(-1 - tc->chain, -2 - tc->chain, name, soft);
+    NODE *n = ALLOC_node_cvar_get(-1 - tc->chain, -4 - tc->chain, name, soft);
     bake_add(tc, &n->u.node_cvar_get.self_off);
     bake_add(tc, &n->u.node_cvar_get.dc_off);
     return n;
@@ -649,7 +649,7 @@ static NODE *
 bake_cvar_set(struct kp_ctx *tc, uint32_t name, NODE *val)
 {
     kp_needs_definee(tc);
-    NODE *n = ALLOC_node_cvar_set(-1 - tc->chain, -2 - tc->chain, name, val);
+    NODE *n = ALLOC_node_cvar_set(-1 - tc->chain, -4 - tc->chain, name, val);
     bake_add(tc, &n->u.node_cvar_set.self_off);
     bake_add(tc, &n->u.node_cvar_set.dc_off);
     return n;
@@ -1760,8 +1760,9 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
         if (mf->method_mid == 0) { mf = tc->frame; depth = 0; }   /* outside a method: legacy flat path */
         mf->uses_block = true;                                     /* the method reserves the block trio */
         if (depth == 0)
-            return ALLOC_node_block_given(-4 - tc->chain);        /* method top-level: this frame's biseq cell */
-        NODE *bg = ALLOC_node_block_given_outer(-1 - tc->chain, depth, -4);   /* ep_off = this block's env link; trio_base += method frame_size */
+            return ALLOC_node_block_given(-3 - tc->chain);        /* method top-level: this frame's biseq cell */
+        NODE *bg = ALLOC_node_block_given_outer(-2 - tc->chain, depth, -3);   /* prev_off = this block's EP; trio_base += method frame_size */
+        bake_add(tc, &bg->u.node_block_given_outer.prev_off);
         add_bake_to(mf, &bg->u.node_block_given_outer.trio_base);
         return bg;
     }
@@ -1923,7 +1924,7 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                     int32_t proc_off = (int32_t)pslot - tc->chain - 1;
                     NODE *arr;
                     WITH_CHAIN(tc, 1, (arr = build_array(tc, args->arguments.nodes, argc, (uint32_t)argc)));
-                    NODE *_cs = KP_LINK(tc, node_call_splat_blkproc, mid, kp_flink_at(tc, line, 1), self_off, proc_off, arr);
+                    NODE *_cs = KP_LINK(tc, node_call_splat_blkproc, mid, kp_flink_at(tc, line, 2), self_off, proc_off, arr);
                     bake_add(tc, &_cs->u.node_call_splat_blkproc.self_off);
                     bake_add(tc, &_cs->u.node_call_splat_blkproc.proc_off);
                     return pset ? ALLOC_node_seq(pset, _cs) : _cs;
@@ -1957,7 +1958,7 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                 int32_t def_env_off = -tc->chain - 1;    /* caller frame base (tagged |1 at eval) */
                 NODE *arr;
                 WITH_CHAIN(tc, 1, (arr = build_call_args(tc, args->arguments.nodes, argc)));
-                NODE *_cs = KP_LINK(tc, node_call_splat_blk, mid, kp_flink_at(tc, line, 1), self_off, entry, def_env_off, arr);
+                NODE *_cs = KP_LINK(tc, node_call_splat_blk, mid, kp_flink_at(tc, line, 2), self_off, entry, def_env_off, arr);
                 bake_add(tc, &_cs->u.node_call_splat_blk.self_off);
                 bake_add(tc, &_cs->u.node_call_splat_blk.def_env_off);
                 return _cs;
@@ -1979,7 +1980,7 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
         WITH_CHAIN(tc, 1, (arr = (argc == 1)
             ? bake_lget(tc, (uint32_t)tc->frame->fwd_slot)
             : build_array_with_fwd(tc, args->arguments.nodes, argc - 1)));   /* f(a, ..., ...) */
-        NODE *_cs = KP_LINK(tc, node_call_splat_blkproc, mid, kp_flink_at(tc, line, 1), self_off, proc_off, arr);
+        NODE *_cs = KP_LINK(tc, node_call_splat_blkproc, mid, kp_flink_at(tc, line, 2), self_off, proc_off, arr);
         bake_add(tc, &_cs->u.node_call_splat_blkproc.self_off);
         bake_add(tc, &_cs->u.node_call_splat_blkproc.proc_off);
         return _cs;
@@ -1994,7 +1995,7 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
             int32_t self_off = -1 - tc->chain - 1;       /* one staged child: the args array */
             NODE *arr;
             WITH_CHAIN(tc, 1, (arr = build_call_args(tc, args->arguments.nodes, argc)));
-            { NODE *_cs = KP_LINK(tc, node_call_splat, mid, kp_flink_at(tc, line, 1), self_off, arr); bake_add(tc, &_cs->u.node_call_splat.self_off); return _cs; }
+            { NODE *_cs = KP_LINK(tc, node_call_splat, mid, kp_flink_at(tc, line, 2), self_off, arr); bake_add(tc, &_cs->u.node_call_splat.self_off); return _cs; }
         }
     }
 
@@ -2631,14 +2632,14 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     if (blk_param_name) {                  /* `&blk` → materialize the block into the local at body entry */
         tc->frame->uses_block = true;      /* reserve the frame's block cells */
         int32_t dst = (int32_t)lvar_index(tc, (const pm_node_t *)ps->block, blk_param_name) - tc->chain;
-        NODE *bp = ALLOC_node_blkparam(dst, -4 - tc->chain, -3 - tc->chain, -2 - tc->chain);
+        NODE *bp = ALLOC_node_blkparam(dst, -3 - tc->chain, -2 - tc->chain, -1 - tc->chain);
         bake_add(tc, &bp->u.node_blkparam.dst_off);
         body = ALLOC_node_seq(bp, body);
     } else if (tc->frame->fwd_blk_slot >= 0 || tc->frame->anon_blk_slot >= 0) {
         /* `def m(...)` / `def m(&)` → same, into the synth forwarding slot */
         tc->frame->uses_block = true;
         int32_t slot = tc->frame->fwd_blk_slot >= 0 ? tc->frame->fwd_blk_slot : tc->frame->anon_blk_slot;
-        NODE *bp = ALLOC_node_blkparam(slot - tc->chain, -4 - tc->chain, -3 - tc->chain, -2 - tc->chain);
+        NODE *bp = ALLOC_node_blkparam(slot - tc->chain, -3 - tc->chain, -2 - tc->chain, -1 - tc->chain);
         bake_add(tc, &bp->u.node_blkparam.dst_off);
         body = ALLOC_node_seq(bp, body);
     }
@@ -2666,17 +2667,17 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     NODE *def;
     if (mod_func) {
         /* module_function: define as instance method AND as a singleton on self. */
-        NODE *idef = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, -1 - tc->chain, -2 - tc->chain);
+        NODE *idef = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, -1 - tc->chain, -4 - tc->chain);
         bake_add(tc, &idef->u.node_def.self_off);          /* definee = self at base[-1] */
-        bake_add(tc, &idef->u.node_def.dc_off);            /* enclosing method entry = base[-2] */
+        bake_add(tc, &idef->u.node_def.dc_off);            /* enclosing method entry = base[-4] */
         NODE *sdef = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, recv_node);
         def = ALLOC_node_seq(idef, sdef);
     } else if (recv_node) {
         def = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, recv_node);
     } else {
-        def = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, -1 - tc->chain, -2 - tc->chain);
+        def = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, -1 - tc->chain, -4 - tc->chain);
         bake_add(tc, &def->u.node_def.self_off);           /* definee = self at base[-1] */
-        bake_add(tc, &def->u.node_def.dc_off);             /* enclosing method entry = base[-2] */
+        bake_add(tc, &def->u.node_def.dc_off);             /* enclosing method entry = base[-4] */
     }
 
     /* Every method body is its own AOT entry: call sites reach it through
@@ -3118,8 +3119,8 @@ static NODE *
 emit_super_fwd(struct kp_ctx *tc, uint32_t m_mid, uint32_t line, NODE *arr)
 {
     tc->frame->uses_block = true;                         /* reserve the block trio */
-    int32_t soff = -1 - tc->chain - 1, dco = -2 - tc->chain - 1;
-    int32_t bo = -4 - tc->chain - 1, deo = -3 - tc->chain - 1, cso = -2 - tc->chain - 1;
+    int32_t soff = -1 - tc->chain - 1, dco = -4 - tc->chain - 1;
+    int32_t bo = -3 - tc->chain - 1, deo = -2 - tc->chain - 1, cso = -1 - tc->chain - 1;
     NODE *_s = ALLOC_node_super_fwd(m_mid, line, soff, dco, bo, deo, cso, arr);
     bake_add(tc, &_s->u.node_super_fwd.self_off);
     bake_add(tc, &_s->u.node_super_fwd.dc_off);   /* the method entry is base[-2] */
@@ -3482,9 +3483,9 @@ build_const_read(struct kp_ctx *tc, uint32_t name_cid)
      * method frame, so it is baked only there. */
     const bool anon = tc->frame->anon_class_body || tc->frame->anon_cref_method;
     NODE *cn = ALLOC_node_const(name_cid, kp_cref_owner(tc), anon ? -1 - tc->chain : INT32_MIN,
-                                tc->frame->anon_cref_method ? -2 - tc->chain : INT32_MIN);
+                                tc->frame->anon_cref_method ? -4 - tc->chain : INT32_MIN);
     if (anon) bake_add(tc, &cn->u.node_const.self_off);              /* self at base[-1] */
-    if (tc->frame->anon_cref_method) bake_add(tc, &cn->u.node_const.dc_off);   /* method entry at base[-2] */
+    if (tc->frame->anon_cref_method) bake_add(tc, &cn->u.node_const.dc_off);   /* method entry at base[-4] */
     bake_cref_chain(tc, &cn->u.node_const.cache);
     return cn;
 }
@@ -4607,8 +4608,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         /* node_return_outer reads this block frame's EP cell (the frame top) and
          * needs its base too, to recognize an env this very frame owns. */
         NODE *v = kp_jump_args_value(tc, rn->arguments);
-        NODE *ro = ALLOC_node_return_outer(-1 - tc->chain, -tc->chain, depth, v);
-        bake_add(tc, &ro->u.node_return_outer.base_off);
+        NODE *ro = ALLOC_node_return_outer(-2 - tc->chain, depth, v);
+        bake_add(tc, &ro->u.node_return_outer.prev_off);
         return ro;
       }
 
@@ -4696,13 +4697,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             while (mf->method_mid == 0 && mf->prev) { mf = mf->prev; depth++; }
             if (mf->method_mid == 0) { mf = tc->frame; depth = 0; }
             mf->uses_block = true;
-            if (depth == 0) return ALLOC_node_defined_yield(-4 - tc->chain);
-            NODE *dy = ALLOC_node_defined_yield_outer(-1 - tc->chain, depth, -4);
+            if (depth == 0) return ALLOC_node_defined_yield(-3 - tc->chain);
+            NODE *dy = ALLOC_node_defined_yield_outer(-2 - tc->chain, depth, -3);
+            bake_add(tc, &dy->u.node_defined_yield_outer.prev_off);
             add_bake_to(mf, &dy->u.node_defined_yield_outer.trio_base);
             return dy;
         }
         if (PM_NODE_TYPE_P(v, PM_CLASS_VARIABLE_READ_NODE)) {            /* "class variable" iff present */
-            NODE *_d = ALLOC_node_defined_cvar(-1 - tc->chain, -2 - tc->chain,
+            NODE *_d = ALLOC_node_defined_cvar(-1 - tc->chain, -4 - tc->chain,
                                                kp_intern_cid(tc, ((const pm_class_variable_read_node_t *)v)->name));
             bake_add(tc, &_d->u.node_defined_cvar.self_off);
             bake_add(tc, &_d->u.node_defined_cvar.dc_off);
@@ -4713,8 +4715,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
              * self and entry cell are read at the same offsets node_super_fwd uses. */
             uint32_t m_mid = tc->frame->method_mid;
             if (m_mid != 0) {
-                NODE *_d = ALLOC_node_defined_super(m_mid, -1 - tc->chain, -2 - tc->chain);
-                bake_add(tc, &_d->u.node_defined_super.self_off);   /* self at base[-1], entry at base[-2] */
+                NODE *_d = ALLOC_node_defined_super(m_mid, -1 - tc->chain, -4 - tc->chain);
+                bake_add(tc, &_d->u.node_defined_super.self_off);   /* self at base[-1], entry at base[-4] */
                 bake_add(tc, &_d->u.node_defined_super.dc_off);
                 return _d;
             }
@@ -4724,15 +4726,17 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 while (mf->method_mid == 0 && mf->prev && !mf->dm_body) { mf = mf->prev; depth++; }
                 if (mf->dm_body) {   /* a define_method body IS a method, but its name is only known at run time */
                     NODE *_d = ALLOC_node_defined_super(korb_intern(tc->c->vm, "__dm_super__", 12),
-                                                        -1 - tc->chain, -2 - tc->chain);
+                                                        -1 - tc->chain, -4 - tc->chain);
                     bake_add(tc, &_d->u.node_defined_super.self_off);
                     bake_add(tc, &_d->u.node_defined_super.dc_off);
                     return _d;
                 }
                 m_mid = mf->method_mid;
                 if (m_mid == 0 || depth == 0) return ALLOC_node_lit(KORB_NIL);   /* top level */
-                /* the outer method's entry is its base[-2], whatever its size */
-                return ALLOC_node_defined_super_outer(m_mid, -1 - tc->chain, depth, KORB_ID_OFF);
+                /* the outer method's entry is its base[-4], whatever its size */
+                NODE *ds = ALLOC_node_defined_super_outer(m_mid, -2 - tc->chain, depth, KORB_ID_OFF);
+                bake_add(tc, &ds->u.node_defined_super_outer.prev_off);
+                return ds;
             }
         }
         if (PM_NODE_TYPE_P(v, PM_SELF_NODE))  return ALLOC_node_defined(6, 0, 0);   /* "self" */
@@ -4813,19 +4817,20 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             NODE *arr;
             WITH_CHAIN(tc, 1, (arr = build_array(tc, yn->arguments->arguments.nodes, yargc, (uint32_t)yargc)));
             if (depth == 0)
-                return KP_LINK(tc, node_yield_splat, kp_flink_at(tc, line, 1), -4 - (tc->chain + 1), -3 - (tc->chain + 1), -2 - (tc->chain + 1), arr);
-            NODE *yo = ALLOC_node_yield_outer_splat(line, -1 - (tc->chain + 1), depth, -4, arr);
+                return KP_LINK(tc, node_yield_splat, kp_flink_at(tc, line, 1), -3 - (tc->chain + 1), -2 - (tc->chain + 1), -1 - (tc->chain + 1), arr);
+            NODE *yo = ALLOC_node_yield_outer_splat(line, -2 - (tc->chain + 1), depth, -3, arr);
+            bake_add(tc, &yo->u.node_yield_outer_splat.prev_off);
             add_bake_to(mf, &yo->u.node_yield_outer_splat.trio_base);
             return yo;
         }
 
         if (depth == 0) {                        /* yield at method top-level: read this frame's trio */
             if (yargc == 0)
-                return KP_LINK(tc, node_yield0, kp_flink_at(tc, line, 0), -4 - tc->chain, -3 - tc->chain, -2 - tc->chain);
+                return KP_LINK(tc, node_yield0, kp_flink_at(tc, line, 0), -3 - tc->chain, -2 - tc->chain, -1 - tc->chain);
             if (yargc == 1) {
                 NODE *a0;
                 WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
-                return KP_LINK(tc, node_yield1, kp_flink_at(tc, line, 1), -4 - (tc->chain + 1), -3 - (tc->chain + 1), -2 - (tc->chain + 1), a0);
+                return KP_LINK(tc, node_yield1, kp_flink_at(tc, line, 1), -3 - (tc->chain + 1), -2 - (tc->chain + 1), -1 - (tc->chain + 1), a0);
             }
             NODE **argv = malloc(sizeof(NODE *) * yargc);          /* yield a, b, ... */
             if (!argv) abort();
@@ -4834,19 +4839,21 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             for (size_t i = 0; i < yargc; i++) argv[i] = transduce(tc, yn->arguments->arguments.nodes[i]);
             tc->chain = saved;
             const int32_t off = tc->chain + (int32_t)yargc;
-            return KP_LINK(tc, node_yield_n, kp_flink_at(tc, line, (uint32_t)yargc), -4 - off, -3 - off, -2 - off, argv, (uint32_t)yargc);
+            return KP_LINK(tc, node_yield_n, kp_flink_at(tc, line, (uint32_t)yargc), -3 - off, -2 - off, -1 - off, argv, (uint32_t)yargc);
         }
-        /* yield inside a block: trio_base = method frame_size - 4 (add-baked at
-         * the method's pop); ep_off addresses this block frame's EP (frame top). */
+        /* yield inside a block: trio_base = method frame_size - 3 (add-baked at
+         * the method's pop); prev_off addresses this block frame's EP (base[-2]). */
         if (yargc == 0) {
-            NODE *yo = ALLOC_node_yield_outer0(line, -1 - tc->chain, depth, -4);
+            NODE *yo = ALLOC_node_yield_outer0(line, -2 - tc->chain, depth, -3);
+            bake_add(tc, &yo->u.node_yield_outer0.prev_off);     /* this-block fixup */
             add_bake_to(mf, &yo->u.node_yield_outer0.trio_base); /* += method frame_size */
             return yo;
         }
         if (yargc == 1) {
             NODE *a0;
             WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
-            NODE *yo = ALLOC_node_yield_outer1(line, -1 - (tc->chain + 1), depth, -4, a0);
+            NODE *yo = ALLOC_node_yield_outer1(line, -2 - (tc->chain + 1), depth, -3, a0);
+            bake_add(tc, &yo->u.node_yield_outer1.prev_off);
             add_bake_to(mf, &yo->u.node_yield_outer1.trio_base);
             return yo;
         }
@@ -4856,7 +4863,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         tc->chain = saved + (int32_t)yargc;
         for (size_t i = 0; i < yargc; i++) argv[i] = transduce(tc, yn->arguments->arguments.nodes[i]);
         tc->chain = saved;
-        NODE *yo = ALLOC_node_yield_outer_n(line, -1 - (tc->chain + (int32_t)yargc), depth, -4, argv, (uint32_t)yargc);
+        NODE *yo = ALLOC_node_yield_outer_n(line, -2 - (tc->chain + (int32_t)yargc), depth, -3, argv, (uint32_t)yargc);
+        bake_add(tc, &yo->u.node_yield_outer_n.prev_off);
         add_bake_to(mf, &yo->u.node_yield_outer_n.trio_base);
         return yo;
       }
@@ -4896,7 +4904,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t frame_size = pop_frame(tc);
         NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0, -1, 0);
         code_repo_add("sclass", entry, true);       /* its own AOT entry */
-        NODE *_sc = ALLOC_node_sclass(entry, -1 - tc->chain - 1, -2 - tc->chain - 1, recv_node);   /* -1 extra for the staged recv child */
+        NODE *_sc = ALLOC_node_sclass(entry, -1 - tc->chain - 1, -4 - tc->chain - 1, recv_node);   /* -1 extra for the staged recv child */
         bake_add(tc, &_sc->u.node_sclass.self_off);
         bake_add(tc, &_sc->u.node_sclass.dc_off);
         return _sc;
@@ -5192,7 +5200,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 return kp_unsupported(tc, node, "bare & outside a (&) method body");
             uint32_t pslot = anon_blk ? (uint32_t)tc->frame->anon_blk_slot : alloc_synth_local(tc);
             NODE *pset = anon_blk ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
-            int32_t soff = -1 - tc->chain - 1, dco = -2 - tc->chain - 1;
+            int32_t soff = -1 - tc->chain - 1, dco = -4 - tc->chain - 1;
             int32_t poff = (int32_t)pslot - tc->chain - 1;
             NODE *arr;
             WITH_CHAIN(tc, 1, (arr = build_array(tc, args ? args->arguments.nodes : NULL, argc, (uint32_t)argc)));
@@ -5205,7 +5213,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (sn->block) {
             NODE *bentry = kp_block_entry(tc, sn->block);
             if (!bentry) return kp_unsupported(tc, node, "super with a non-literal block");
-            int32_t soff = -1 - tc->chain - 1, dco = -2 - tc->chain - 1, deo = -tc->chain - 1;
+            int32_t soff = -1 - tc->chain - 1, dco = -4 - tc->chain - 1, deo = -tc->chain - 1;
             NODE *arr;
             WITH_CHAIN(tc, 1, (arr = build_array(tc, args ? args->arguments.nodes : NULL, argc, (uint32_t)argc)));
             NODE *_s = ALLOC_node_super_blk(m_mid, line, soff, dco, bentry, deo, arr);
@@ -5270,7 +5278,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (fn->block) {                                  /* `super { ... }` — forwarded args + a literal block */
             NODE *bentry = kp_block_entry(tc, (const pm_node_t *)fn->block);
             if (!bentry) return kp_unsupported(tc, node, "super with a non-literal block");
-            const int32_t soff = -1 - tc->chain - 1, dco = -2 - tc->chain - 1, deo = -tc->chain - 1;
+            const int32_t soff = -1 - tc->chain - 1, dco = -4 - tc->chain - 1, deo = -tc->chain - 1;
             NODE *_s = ALLOC_node_super_blk(m_mid, line, soff, dco, bentry, deo, arr);
             bake_add(tc, &_s->u.node_super_blk.self_off);
             bake_add(tc, &_s->u.node_super_blk.dc_off);

@@ -994,7 +994,7 @@ struct korb_vm {
      * object each call).  KORB_NIL until first use; GC roots (AROH_VISIT_ROOTS). */
     VALUE     str_nil_to_s, str_true_to_s, str_false_to_s;
 
-    /* B3 escape: a frame's open KorbEnv (if any) lives in its EP cell (frame top)
+    /* B3 escape: a frame's open KorbEnv (if any) lives in its EP cell base[-2]
      * (clean even pointer, GC-rooted via the slot scan); closed (slots->vals
      * copied) by that frame's return.  No global registry. */
 
@@ -1308,11 +1308,11 @@ struct CTX_struct {
         for (VALUE *_p = _aro_top; _p < (c)->slots_high_water; _p++)         \
             *_p = 0;                                                         \
     }                                                                        \
-    /* start three cells early: bottom-header frames keep self at base[-1], the   \
-     * identity at base[-2] and the link at base[-3]; the toplevel frame sits at  \
-     * c->slots, so those three lie below it (every other frame's are inside the  \
-     * range already). */                                                         \
-    for (VALUE *_p = (c)->slots - 3; _p < _aro_top; _p++) {                  \
+    /* start four cells early: bottom-header frames keep self at base[-1], the   \
+     * EP at base[-2], the link at base[-3] and the identity at base[-4]; the     \
+     * toplevel frame sits at c->slots, so those four lie below it (every other   \
+     * frame's are inside the range already). */                                  \
+    for (VALUE *_p = (c)->slots - 4; _p < _aro_top; _p++) {                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                            \
     }                                                                        \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->super_new_skip);         \
@@ -1395,7 +1395,7 @@ struct CTX_struct {
     /* main value-stack, suspended while a fiber runs (active stack scanned   \
      * above as c->slots..slots_top). */                                      \
     if ((c)->vm->running_fiber != NULL && (c)->vm->main_slots != NULL) {      \
-        for (VALUE *_p = (c)->vm->main_slots - 3; _p < (c)->vm->main_slots_top; _p++) \
+        for (VALUE *_p = (c)->vm->main_slots - 4; _p < (c)->vm->main_slots_top; _p++) \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                         \
     }                                                                        \
     /* every live fiber's transfer/captured_self roots + (suspended) value    \
@@ -1413,7 +1413,7 @@ struct CTX_struct {
          * stand-in has no stack (vslots NULL). */                               \
         if (_fr->vslots != NULL && _fr != (c)->vm->running_fiber &&              \
             (_fr->fstate == 2 || _fr->fstate == 1)) {                            \
-            for (VALUE *_p = _fr->vslots - 3; _p < _fr->vslots_top; _p++)         \
+            for (VALUE *_p = _fr->vslots - 4; _p < _fr->vslots_top; _p++)         \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
         }                                                                    \
     }                                                                        \
@@ -1435,7 +1435,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tgroup);                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->int_masks);                  \
         if (_t != (c)->vm->cur_thread && _t->started && _t->state != KORB_TH_DEAD) { \
-            for (VALUE *_p = _t->saved_base - 3; _p < _t->saved_top; _p++)    \
+            for (VALUE *_p = _t->saved_base - 4; _p < _t->saved_top; _p++)    \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
         }                                                                    \
     }                                                                        \

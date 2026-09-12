@@ -1158,16 +1158,16 @@ node_return(CTX *c, NODE *n, VALUE *slots, VALUE v@child)
 }
 
 // `return v` from INSIDE a block: a non-local return aimed at the lexically
-// enclosing METHOD (Ruby semantics).  `ep_off`/`depth` reach that method's
+// enclosing METHOD (Ruby semantics).  `prev_off`/`depth` reach that method's
 // frame base via the env chain (like node_yield_outer); set it as the return
 // target so intermediate USER methods (e.g. Enumerable#find calling the
 // includer's each) propagate the return instead of consuming it.  An escaped
 // chain (home frame gone) falls back to nearest-method (target NULL).
 NODE_DEF @nogc
-node_return_outer(CTX *c, NODE *n, VALUE *slots, int32_t ep_off, int32_t base_off, uint32_t depth, VALUE v@child)
+node_return_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, VALUE v@child)
 {
     (void)n;
-    c->return_target = korb_outer_frame_base_at(&slots[base_off], slots[ep_off], depth);
+    c->return_target = korb_outer_frame_base_at(&slots[prev_off - KORB_EP_OFF], slots[prev_off], depth);
     return RESULT_RETURN_(v);
 }
 
@@ -1212,11 +1212,12 @@ node_match_req(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, void *desc)
 // fill (it only installs this entry when the site's argc == params_cnt), the
 // zero-fill becomes straight-line stores, and every frame offset is a constant.
 //
-// The caller has already written the callee's identity into base[-2], where it
-// stays for the life of the frame; all this has to initialize is the EP (the
-// frame's top cell).  RETURN consumption and the escaped-frame close live here
-// too, so the caller need not keep `base` / locals_cnt alive across the dispatch
-// — only a RAISE needs the caller (for its line number in the backtrace).
+// The caller has already written the callee's identity into base[-4], where it
+// stays for the life of the frame, and zeroed the EP (base[-2]) when it reserved
+// the header — so all this has to do is nil the locals.  RETURN consumption and
+// the escaped-frame close live here too, so the caller need not keep `base` /
+// locals_cnt alive across the dispatch — only a RAISE needs the caller (for its
+// line number in the backtrace).
 NODE_DEF
 node_simple_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
 {
@@ -1226,9 +1227,8 @@ node_simple_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt
     if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
                  &cstack_probe < c->cstack_limit))
         return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
-    /* zero the genuine locals and the top cell (the EP: no open env yet) */
     if (locals_cnt > params_cnt)
-        for (uint32_t i = params_cnt; i < locals_cnt; i++) base[i] = 0;
+        for (uint32_t i = params_cnt; i < locals_cnt; i++) base[i] = 0;   /* body locals start nil */
     slots = base + locals_cnt;                  /* the body runs above the frame */
     RESULT r = EVAL_ARG(c, body);
     /* 明示 return は珍しくない (`return x if ...`): 自分宛の RETURN はここで消費し、
@@ -1236,7 +1236,7 @@ node_simple_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt
     if (r.state == KORB_RETURN && (c->return_target == NULL || c->return_target == base)) {
         r.state = KORB_NORMAL; c->return_target = NULL;
     }
-    if (LIKELY(r.state == KORB_NORMAL && !korb_frame_escaped(base, locals_cnt))) return r;
+    if (LIKELY(r.state == KORB_NORMAL && !korb_frame_escaped(base))) return r;
     return korb_entry_ret_cold(c, base, locals_cnt, r);
 }
 
@@ -1792,10 +1792,10 @@ node_defined_super(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, int32_t self
 // defined?(super) from inside a block: the answer is about the enclosing
 // METHOD's frame (self + method entry), reached through `depth` env links.
 NODE_DEF
-node_defined_super_outer(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, int32_t ep_off, uint32_t depth, int32_t entry_off)
+node_defined_super_outer(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, int32_t prev_off, uint32_t depth, int32_t entry_off)
 {
     (void)n;
-    const VALUE *const base = korb_outer_frame_base(slots[ep_off], depth);
+    const VALUE *const base = korb_outer_frame_base(slots[prev_off], depth);
     if (!base || ((uintptr_t)base[entry_off] & 7u) != KORB_FID_METHOD) return RESULT_OK(KORB_NIL);
     if (korb_super_find(c, mid, base[entry_off], base[-1], NULL) == NULL) return RESULT_OK(KORB_NIL);
     RESULT dr = korb_str_new(c, slots, "super", 5);
@@ -1912,10 +1912,10 @@ node_defined_cpath(CTX *c, NODE *n, VALUE *slots, uint32_t owner_name@sym, uint3
 // defined?(yield) inside a block: the answer is the enclosing METHOD's block
 // (like block_given?), reached through `depth` env links.
 NODE_DEF
-node_defined_yield_outer(CTX *c, NODE *n, VALUE *slots, int32_t ep_off, uint32_t depth, int32_t trio_base)
+node_defined_yield_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, int32_t trio_base)
 {
     (void)n;
-    const VALUE *const node = korb_outer_frame_base(slots[ep_off], depth);
+    const VALUE *const node = korb_outer_frame_base(slots[prev_off], depth);
     if (!node || !((uintptr_t)node[trio_base] & 1u)) return RESULT_OK(KORB_NIL);
     RESULT dr = korb_str_new(c, slots, "yield", 5);
     if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
@@ -2101,13 +2101,14 @@ node_call_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t flink,
     VALUE self = slots[self_off];
     VALUE arr = slots[-1];                              /* the staged args array */
     uint32_t N = VAL2ARY(arr)->len;
-    /* reserve the callee's bottom-header meta cells (base[-3]=link, base[-2]=identity)
-     * below self at base[-1]; korb_call's callee = slots+3+N - N = slots+3. */
-    slots[0] = flink;                                   /* base[-3] (frame link) */
-    slots[1] = 0;                                       /* base[-2] (identity) */
-    slots[2] = self;                                    /* base[-1] (self)  */
-    for (uint32_t i = 0; i < N; i++) slots[3 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
-    return korb_call(c, slots + 3 + N, mid, line, cc, N, self);
+    /* reserve the callee's bottom-header meta cells (base[-4]=identity, base[-3]=link,
+     * base[-2]=EP) below self at base[-1]; korb_call's callee = slots+4+N - N = slots+4. */
+    slots[0] = 0;                                       /* base[-4] (identity) */
+    slots[1] = flink;                                   /* base[-3] (frame link) */
+    slots[2] = 0;                                       /* base[-2] (EP)    */
+    slots[3] = self;                                    /* base[-1] (self)  */
+    for (uint32_t i = 0; i < N; i++) slots[4 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    return korb_call(c, slots + 4 + N, mid, line, cc, N, self);
 }
 
 // ---- call-site splat WITH a literal/&:sym block: f(*arr) { ... } -----------
@@ -2128,11 +2129,12 @@ node_call_splat_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t fl
     const VALUE self = slots[self_off];
     const VALUE arr = slots[-1];                          /* the staged args array */
     const uint32_t N = VAL2ARY(arr)->len;
-    slots[0] = flink;                                     /* base[-3] (frame link) */
-    slots[1] = 0;                                         /* base[-2] (identity) */
-    slots[2] = self;                                      /* base[-1] (self)  */
-    for (uint32_t i = 0; i < N; i++) slots[3 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
-    return korb_call_blk(c, slots + 3 + N, mid, line, cc, N, self, block,
+    slots[0] = 0;                                         /* base[-4] (identity) */
+    slots[1] = flink;                                     /* base[-3] (frame link) */
+    slots[2] = 0;                                         /* base[-2] (EP)    */
+    slots[3] = self;                                      /* base[-1] (self)  */
+    for (uint32_t i = 0; i < N; i++) slots[4 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    return korb_call_blk(c, slots + 4 + N, mid, line, cc, N, self, block,
                          (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off]);
 }
 
@@ -2149,14 +2151,15 @@ node_call_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_
     const VALUE self = slots[self_off];
     const VALUE arr = slots[-1];
     const uint32_t N = VAL2ARY(arr)->len;
-    slots[0] = flink;                                     /* base[-3] (frame link) */
-    slots[1] = 0;                                         /* base[-2] (identity) */
-    slots[2] = self;                                      /* base[-1] (self)  */
-    for (uint32_t i = 0; i < N; i++) slots[3 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
-    if (pv == KORB_NIL) return korb_call(c, slots + 3 + N, mid, line, cc, N, self);   /* &nil → no block */
+    slots[0] = 0;                                         /* base[-4] (identity) */
+    slots[1] = flink;                                     /* base[-3] (frame link) */
+    slots[2] = 0;                                         /* base[-2] (EP)    */
+    slots[3] = self;                                      /* base[-1] (self)  */
+    for (uint32_t i = 0; i < N; i++) slots[4 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (pv == KORB_NIL) return korb_call(c, slots + 4 + N, mid, line, cc, N, self);   /* &nil → no block */
     NODE *iseq = VAL2PROC(pv)->iseq;
     if (iseq == NULL) iseq = KORB_BLK_CPROC;
-    return korb_call_blk(c, slots + 3 + N, mid, line, cc, N, self, iseq, KORB_BLK_FWD, &slots[proc_off]);
+    return korb_call_blk(c, slots + 4 + N, mid, line, cc, N, self, iseq, KORB_BLK_FWD, &slots[proc_off]);
 }
 
 // ---- receiver method dispatch (x.foo) — built-in methods on core types -----
@@ -2781,41 +2784,41 @@ node_yield_splat(CTX *c, NODE *n, VALUE *slots, uint64_t flink, int32_t biseq_of
     return korb_yield(c, slots + N, N, line, biseq, denv, &slots[cself_off]);
 }
 
-// yield from INSIDE a block: `ep_off` reads this block frame's EP (PREV handle);
+// yield from INSIDE a block: `prev_off` reads this block frame's EP (PREV handle);
 // korb_yield_outer walks `depth` env links to the enclosing method frame and
 // reads its block trio at node[trio_base..trio_base+2] (trio_base = method
 // frame_size - 5, add-baked at the method's pop).  Unlocks Enumerable mixins
 // (`def each; coll.each { yield }; end`).
 NODE_DEF
-node_yield_outer0(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t ep_off, uint32_t depth, int32_t trio_base)
+node_yield_outer0(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base)
 {
     (void)n;
-    return korb_yield_outer(c, slots, 0, line, slots[ep_off], depth, trio_base);
+    return korb_yield_outer(c, slots, 0, line, slots[prev_off], depth, trio_base);
 }
 
 NODE_DEF
-node_yield_outer1(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t ep_off, uint32_t depth, int32_t trio_base, VALUE_REF a0@child)
+node_yield_outer1(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base, VALUE_REF a0@child)
 {
     (void)n; (void)a0;
-    return korb_yield_outer(c, slots, 1, line, slots[ep_off], depth, trio_base);
+    return korb_yield_outer(c, slots, 1, line, slots[prev_off], depth, trio_base);
 }
 
 // `yield a, b, ...` from inside a block (≥2 values).
 NODE_DEF
-node_yield_outer_n(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t ep_off, uint32_t depth, int32_t trio_base, NODE **argv@children)
+node_yield_outer_n(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base, NODE **argv@children)
 {
     (void)n;
-    return korb_yield_outer(c, slots, argv_cnt, line, slots[ep_off], depth, trio_base);
+    return korb_yield_outer(c, slots, argv_cnt, line, slots[prev_off], depth, trio_base);
 }
 
 // `yield(*arr)` from inside a block: spread the built args Array, then yield to
 // the enclosing method's block (one staged child, like node_yield_outer1).
 NODE_DEF
-node_yield_outer_splat(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t ep_off, uint32_t depth, int32_t trio_base, VALUE_REF args@child)
+node_yield_outer_splat(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base, VALUE_REF args@child)
 {
     (void)n; (void)args;
     const VALUE arr = slots[-1];
-    const VALUE prev = slots[ep_off];
+    const VALUE prev = slots[prev_off];
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
     return korb_yield_outer(c, slots + N, N, line, prev, depth, trio_base);
@@ -2844,10 +2847,10 @@ node_block_given(CTX *c, NODE *n, VALUE *slots, int32_t biseq_off)
 // to the method frame and test its biseq presence bit; an escaped (KorbEnv)
 // chain → no block.
 NODE_DEF @nogc
-node_block_given_outer(CTX *c, NODE *n, VALUE *slots, int32_t ep_off, uint32_t depth, int32_t trio_base)
+node_block_given_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, int32_t trio_base)
 {
     (void)c; (void)n;
-    const VALUE *node = korb_outer_frame_base(slots[ep_off], depth);
+    const VALUE *node = korb_outer_frame_base(slots[prev_off], depth);
     if (!node) return RESULT_OK(KORB_FALSE);
     return RESULT_OK(((uintptr_t)node[trio_base] & 1u) ? KORB_TRUE : KORB_FALSE);
 }
@@ -2962,39 +2965,38 @@ node_cvar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, int32_t dc_off, u
 
 // ---- outer-variable access (depth >= 1, docs/v2_blocks_design.md §3) --------
 //
-// `ep_off` / `base_off` are parse-baked: slots[ep_off] is the current (block)
-// frame's EP cell (its top cell), holding the PREV handle — a tagged-odd pointer
-// to the definer's locals-base — and slots+base_off is this frame's own base.
-// depth 1 reads the definer base directly; deeper levels step frame to frame
-// through korb_frame_ep, whose locals_cnt comes from the frame's identity cell.
-// The odd tag makes the GC root scan skip these slots-internal pointers (they're
-// not heap objects).
+// `prev_off` is parse-baked: slots[prev_off] is the current (block) frame's
+// EP cell (base[-2]), holding the PREV handle — a tagged-odd pointer to the
+// definer's locals-base.  depth 1 reads that base directly; deeper levels walk
+// node[-2] (the next frame's EP, at the same fixed offset).  The odd tag makes
+// the GC root scan skip these slots-internal pointers (they're not heap
+// objects).
 
 // Outer-variable read.  The PREV handle is either a tagged-odd live-slots
 // region (the common yield/non-escape chain — direct access) or an even
 // KorbEnv* (an escaped Proc's captured chain — access via loc when open /
 // vals when the defining frame has returned).  A walk is homogeneous (B3).
 NODE_DEF @nogc
-node_eget(CTX *c, NODE *n, VALUE *slots, int32_t ep_off, int32_t base_off, uint32_t depth, uint32_t index)
+node_eget(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint32_t index)
 {
     (void)c; (void)n;
-    VALUE h = slots[ep_off];                              /* PREV link: odd=live base, even=KorbEnv (mixed walk) */
+    VALUE h = slots[prev_off];                            /* PREV link: odd=live base, even=KorbEnv (mixed walk) */
     /* A frame that created a closure has its OWN open env stored in its EP cell
      * (korb_make_proc, so a sibling closure finds it via korb_open_env_find);
      * loc==base marks it.  That env represents the SAME level as the base (level
      * 0 at the start, level k mid-walk), so step to its parent to keep `depth`
      * aligned with the live/odd case.  Must be applied at EVERY EP read (the
-     * start cell + each korb_frame_ep) — an intermediate promoted frame is the
+     * start cell + each korb_ep_get) — an intermediate promoted frame is the
      * nested-closure bug.  A proc.call EP (parent's env, loc!=base) is used
      * as-is; the materialized env chain (->prev) is already unambiguous. */
     {
-        VALUE *const sb = slots + base_off;               /* this frame's base */
+        VALUE *const sb = slots + prev_off - KORB_EP_OFF;  /* this frame's base */
         if (!(h & 1u)) { const KorbEnv *const e0 = VAL2ENV(h); if (!e0->closed && e0->loc == sb) h = e0->prev; }
     }
     for (uint32_t k = 1; k < depth; k++) {
         if (h & 1u) {
             VALUE *const b = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
-            VALUE pv = korb_frame_ep(b);
+            VALUE pv = korb_ep_get(b);
             if (!(pv & 1u)) { const KorbEnv *const e1 = VAL2ENV(pv); if (!e1->closed && e1->loc == b) pv = e1->prev; }
             h = pv;
         } else h = VAL2ENV(h)->prev;
@@ -3008,20 +3010,20 @@ node_eget(CTX *c, NODE *n, VALUE *slots, int32_t ep_off, int32_t base_off, uint3
 // slots root range → plain store (no WB).  A closed env's vals is a heap
 // VALUE_ARRAY → route through ARO_STORE for the generational backends.
 NODE_DEF @nogc
-node_eset(CTX *c, NODE *n, VALUE *slots, int32_t ep_off, int32_t base_off, uint32_t depth, uint32_t index, VALUE val@child)
+node_eset(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint32_t index, VALUE val@child)
 {
     (void)c; (void)n;
-    VALUE h = slots[ep_off];                              /* PREV link: odd=live base, even=KorbEnv (mixed walk) */
+    VALUE h = slots[prev_off];                            /* PREV link: odd=live base, even=KorbEnv (mixed walk) */
     /* See node_eget: normalize a self-promoted frame's own open env (loc==base)
-     * to its parent at every EP read (start cell + each korb_frame_ep). */
+     * to its parent at every EP read (start cell + each korb_ep_get). */
     {
-        VALUE *const sb = slots + base_off;
+        VALUE *const sb = slots + prev_off - KORB_EP_OFF;
         if (!(h & 1u)) { const KorbEnv *const e0 = VAL2ENV(h); if (!e0->closed && e0->loc == sb) h = e0->prev; }
     }
     for (uint32_t k = 1; k < depth; k++) {
         if (h & 1u) {
             VALUE *const b = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
-            VALUE pv = korb_frame_ep(b);
+            VALUE pv = korb_ep_get(b);
             if (!(pv & 1u)) { const KorbEnv *const e1 = VAL2ENV(pv); if (!e1->closed && e1->loc == b) pv = e1->prev; }
             h = pv;
         } else h = VAL2ENV(h)->prev;

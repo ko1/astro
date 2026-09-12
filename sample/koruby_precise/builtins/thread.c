@@ -731,8 +731,8 @@ korb_thread_init_body(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
     void *vs = mmap(NULL, KORB_FIBER_VSLOTS_BYTES, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (vs == MAP_FAILED) { perror("koruby_precise: mmap thread vslots"); abort(); }
-    t->vslots = (VALUE *)vs + 3;              /* bottom-header slack (base[-1]=self, base[-2]=identity, base[-3]=link) */
-    t->vslots[-1] = 0; t->vslots[-2] = 0; t->vslots[-3] = 0;
+    t->vslots = (VALUE *)vs + 4;              /* bottom-header slack (base[-1]=self, [-2]=EP, [-3]=link, [-4]=identity) */
+    t->vslots[-1] = 0; t->vslots[-2] = 0; t->vslots[-3] = 0; t->vslots[-4] = 0;
     t->vslots_limit = (VALUE *)vs + KORB_FIBER_VSLOTS_BYTES / sizeof(VALUE) - KORB_FIBER_VSLOTS_MARGIN;
     t->cstack = malloc(KORB_FIBER_CSTACK_BYTES);
     if (!t->cstack) abort();
