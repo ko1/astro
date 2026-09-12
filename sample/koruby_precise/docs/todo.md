@@ -2476,6 +2476,71 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
   - **差分ソートネスファザー `tools/fuzz_soundness.rb`**（`--stress` で GC crash 検出）。node.def の slot/frame offset 型バグは静的+動的とも残存無し確認。
 - **残（到達可能）**: `super` block forward は depth==0 のみ（nested block 内 super 未対応）。`X::Foo`(X 非module)→TypeError（node に explicit-path/bare-read 区別が必要）。method/massign の mock-protocol coercion（除外）。
 
+## (2026-09-12) フレームの構造をデバッガに使える形へ — 決めた順番
+
+backtrace のフレームリンク (`base[-3]`) が入ったのを機に、user と設計を詰めた結果。
+**目的はデバッガ: 任意のフレームのローカル変数の現物に、C API から辿り着けること。**
+
+現状の整理:
+- **フレームは構造体ではない**。スロットスタック上の区間についての約束事で、
+  `struct korb_frame` も frame pointer も無い。フレーム内のノードは全部
+  「カーソル相対の焼き込みオフセット」で self / ローカル / entry セルを触る。
+- だから **C 関数からはフレームに手が届かない**。`__method__` が
+  「パース時に焼く」「`c->dm_entry` に別状態を持つ」「それ以外は nil」の 3 本立てに
+  なっているのはこれが理由 (`korb_bi_method_name` は `slots` を `(void)` している)。
+  `eval(str)` が binding を隠し引数で渡すのも同じ理由。
+- フレームリンクが入ると、C からも「自分の窓のヘッダ → リンク → 距離 → マーカー →
+  `korb_method`」で鎖を辿れる。**これが backtrace 本体より大きい**。
+
+### 順番 (user 合意)
+
+1. **caller/backtrace をマージ** (worktree-agent-a78c0291cb6d7cdca)
+2. **identity を `base[-2]` に居座らせ、EP と入れ替える**
+   - いま entry は「呼び出し側が EP セルに `korb_method*` を置く → callee の entry が
+     `base[locals_cnt-1]` へ移して EP を 0 に」という受け渡しをしている。EP の本来の仕事
+     (open env / prev link) があるため退避しているだけ。
+   - identity がリンクの隣 (`base[-2]`) に居れば **歩きから `locals_cnt` 依存が消え**
+     (距離を「カーソル→base」にすれば base に直行できる。これも呼び出し側のパース時定数)、
+     **マーカーという概念自体が要らなくなる**。C からは `base[-2]` を読むだけで自分が分かる。
+   - EP の引っ越し先は今のマーカー位置。EP アクセスは `korb_ep_get/set` の 24 箇所
+     (`KORB_EP_OFF` の定義は 1 箇所) なので機械的。
+   - 距離は `chain + locals_cnt + 2` になるが 8〜10 bit で足りる (溢れたら今と同じく link=0)。
+3. **`slots_high_water` の削除** (下の節参照)
+4. **ローカル名前表を ISEQ 入口へ**
+   - いま名前表 (`kp_binding_scope_tbl`) は `binding` を書いた地点にしか焼かれていない。
+     これを `korb_method` / `node_entry` に付ける (`param_info` と同じ cold-read only の
+     静的データなので実行時コストゼロ)。`binding` 自体もこれを使う形に一本化できる。
+   - これが無いと「名前で読む/書く」ができない = デバッガにならない。
+5. **`c->base_slots`** — C API 用の足場。**cfunc の呼び出し口でだけ維持する** (Ruby→Ruby の
+   hot path には触らない)。2 が済んでいれば `base[-2]` で identity が取れるので、
+   足す状態はこの 1 本だけで済む。`c->cfunc_link` と同じ場所で save/restore する。
+
+### 残る設計判断
+
+デバッガを「Ruby のフック経由でしか入らない」(ブレークポイント型) にするなら今の鎖で足りる。
+「非同期に覗く」(シグナル中・別スレッドから) なら CRuby の `ec->cfp` 相当の常時維持が要り、
+それは 2026-09-02 に +9.25% で却下された形。ただしあの測定は 3 つの変更込みで、
+**現在フレームのポインタ単独の値段はまだ測っていない** (①② は今やタダになった)。
+
+### 鎖の完全性 (デバッガ前提なら必須)
+
+- [ ] クラス / モジュール / 特異クラス本体のフレームにマーカーが無い
+      (label が `<class:X>` にならず `<main>` に落ちる)
+- [ ] `method_missing` などの再ステージ経路でリンクを持ち越せず、そこで鎖が切れる
+- [ ] 普通の C メソッドはマーカーを書かない (block を取る builtin だけ)。
+      Ruby のローカルが無いので base は不要だが、デバッガ的には「C の中にいる」と
+      見せたいので `c->cfunc_me` 相当があると良い
+
+## (2026-09-12) 既存バグ (今日の作業で発覚、未修正)
+
+- [ ] **fork 系 spec が間欠的に SEGV する**。`tools/one.sh core/kernel/fork_spec.rb` は
+      **master でも**再現 (6 例通った直後に SEGV)。`tools/mspec_real_run.rb` 経由だと
+      通ることもあり、sweep の run によって whole-file 失敗が出たり出なかったりする。
+      backtrace ブランチとは無関係 (両方で同じ)。
+- [x] `ASTRO_DEBUG=1` ビルドが `korb_send_impl` の再ステージ経路で **生きている引数セルに
+      magic を書いて壊していた** (`base[-3]` は「コールサイトが予約したときだけヘッダ」で、
+      再ステージ経路では呼び出し元のデータが居る)。frame magic 廃止で解消。
+
 ## (2026-09-11) fiber 越しの thread 切替 / handle_interrupt / _fork
 
 実装した (M1 の「Fiber の中では thread 切替不可」制約を外した):
