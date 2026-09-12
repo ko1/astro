@@ -78,6 +78,15 @@ struct korb_callcache {
 struct korb_param_entry { uint8_t kind; uint32_t name; };
 struct korb_param_info  { uint32_t n; struct korb_param_entry e[]; };
 
+/* Local-variable NAMES of one ISEQ scope, indexed by frame slot — built once at
+ * parse time and hung off the scope's entry: korb_method.locals_info for a
+ * method, node_entry.locals_info for a block / class body / lambda.  This is
+ * what lets C name the locals of an arbitrary live frame (debugger): the frame
+ * identity cell gives the entry, the entry gives the names.  names[i] == 0 is an
+ * anonymous slot; slots at or past `n` are synthetic temporaries and never
+ * named.  Cold-read only, so it costs nothing on any call path. */
+struct korb_locals_info { uint32_t n; uint32_t names[]; };
+
 /* Inline ivar slot-cache — embedded in @ivar nodes via @ref.  Monomorphic:
  * caches the last hit slot; validated by `ivars[2*slot] == name_sym` so it is
  * GC-safe (no class pointer) and self-correcting across object layouts. */
@@ -269,7 +278,7 @@ uint32_t korb_const_in_ancestry_scoped(const struct korb_vm *vm, VALUE recv, uin
 RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj);
 void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry,
                              uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
-                             uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info);
+                             uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info, void *locals_info);
 /* attr_reader/writer/accessor: define a getter/setter on the class. */
 void   korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is_writer);
 RESULT korb_fire_method_added(CTX *c, VALUE *slots, VALUE definee, uint32_t mid);
@@ -388,7 +397,7 @@ struct korb_kw_info  { uint32_t count; int32_t kwrest_slot; struct korb_kw_entry
 /* method machinery */
 void   korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
                           uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
-                          uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info);
+                          uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info, void *locals_info);
 void   korb_builtin_define(CTX *c, const char *name, korb_builtin_fn fn,
                            int32_t params_cnt);
 /* `self` is the callee's receiver (the caller's self for a no-receiver call);
@@ -604,6 +613,7 @@ NODE **korb_embed_nodes(uint32_t cnt, ...);
 uint32_t *korb_embed_syms(CTX *c, uint32_t cnt, ...);
 void *korb_embed_kw_info(CTX *c, uint32_t count, int32_t kwrest_slot, ...);
 void *korb_embed_param_info(CTX *c, uint32_t n, ...);
+void *korb_embed_locals_info(CTX *c, uint32_t n, ...);
 void *korb_embed_u8(uint32_t cnt, ...);
 void *korb_embed_u16(uint32_t cnt, ...);
 void *korb_embed_i32(uint32_t cnt, ...);
@@ -784,6 +794,15 @@ static inline void korb_flink_stage(CTX *c, const VALUE flink, const VALUE *cons
 static inline VALUE korb_fid_main(uint32_t fsym, bool required) {
     return ((VALUE)fsym << 32) | (required ? (VALUE)KORB_FID_MAIN_REQUIRED : 0) | KORB_FID_MAIN;
 }
+
+/* Frame locals by NAME (debugger).  `base` is any live frame's locals base — the
+ * backtrace link chain yields one for every frame.  The names come from the
+ * frame's ISEQ (struct korb_locals_info), so nothing is baked at the reading
+ * site.  A block frame's enclosing scopes are searched too, through the EP
+ * chain.  false = the name is not in scope there. */
+bool korb_frame_local_get(CTX *c, const VALUE *base, uint32_t name_sym, VALUE *out);
+bool korb_frame_local_set(CTX *c, VALUE *base, uint32_t name_sym, VALUE v);
+uint32_t korb_frame_local_names(CTX *c, const VALUE *base, uint32_t *out, uint32_t max);
 
 /* Cold helpers used by the inlined simple-call fast path below; defined in
  * korb_runtime.c (the SD / all.so reaches them as exported symbols, only on

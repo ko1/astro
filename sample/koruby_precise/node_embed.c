@@ -155,6 +155,21 @@ koruby_emit_param_info(FILE *fp, void *p)
     fprintf(fp, ")");
 }
 
+/* locals_info: {n, names[]} - the scope's local names by slot (cold). */
+void
+koruby_emit_locals_info(FILE *fp, void *p)
+{
+    if (p == NULL) { fprintf(fp, "NULL"); return; }
+    const struct korb_locals_info *const li = (const struct korb_locals_info *)p;
+    fprintf(fp, "korb_embed_locals_info(_ectx, %uU", li->n);
+    for (uint32_t i = 0; i < li->n; i++) {
+        fprintf(fp, ", ");
+        if (li->names[i] == 0) fprintf(fp, "NULL, 0U");
+        else koruby_emit_sym_args(fp, li->names[i]);
+    }
+    fprintf(fp, ")");
+}
+
 /* Small scalar arrays behind void* operands. */
 void
 koruby_emit_u8s(FILE *fp, const void *p, uint32_t cnt)

@@ -744,6 +744,9 @@ class KorubyNodeDef < ASTroGen::NodeDef
         %w[node_def param_info]           => ['koruby_emit_param_info', nil],
         %w[node_singleton_def param_info] => ['koruby_emit_param_info', nil],
         %w[node_entry param_info]         => ['koruby_emit_param_info', nil],
+        %w[node_def locals_info]           => ['koruby_emit_locals_info', nil],
+        %w[node_singleton_def locals_info] => ['koruby_emit_locals_info', nil],
+        %w[node_entry locals_info]         => ['koruby_emit_locals_info', nil],
         %w[node_entry destructure_spec] =>
           ['koruby_emit_u8s', 'n->u.node_entry.destr_len'],
         %w[node_entry cap_ns]     => ['koruby_emit_u16s', 'n->u.node_entry.cap_depth'],

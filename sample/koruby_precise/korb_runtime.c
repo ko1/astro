@@ -4119,6 +4119,8 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     m->uses_block = 0; m->rest_slot = -1; m->post_cnt = 0;
     m->param_info = (KORB_PROC_P(slots[1]) && VAL2PROC(slots[1])->iseq)   /* carry the block's params for Method#parameters */
                         ? VAL2PROC(slots[1])->iseq->u.node_entry.param_info : NULL;
+    m->locals_info = (KORB_PROC_P(slots[1]) && VAL2PROC(slots[1])->iseq)   /* the block's local names, for the frame walk */
+                        ? VAL2PROC(slots[1])->iseq->u.node_entry.locals_info : NULL;
     if (UNLIKELY(VAL2CLASS(slots[0])->cur_visibility == 3)) {   /* module_function mode: public copy on the singleton (as `def` does) */
         const VALUE sing = korb_klass_override_get(c->vm, slots[0]);
         if (KORB_CLASS_P(sing)) {
@@ -4390,7 +4392,7 @@ korb_relocate_object_methods(CTX *c, VALUE *slots)
 void
 korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry,
                       uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
-                      uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info)
+                      uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info, void *locals_info)
 {
     korb_check_basic_op_redef(c, klass, mid);
     KorbClass *const k = VAL2CLASS(klass);
@@ -4409,6 +4411,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry
     m->opt_defaults = opt_defaults;
     m->kw_info = kw_info;
     m->param_info = param_info;
+    m->locals_info = locals_info;
     m->bfn = NULL;
     /* fixed positional arity, nothing exotic → streamlined invoke eligible. */
     m->is_simple = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 &&
@@ -7511,7 +7514,7 @@ korb_method_slot(CTX *c, uint32_t mid)
 void
 korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
                    uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
-                   uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info)
+                   uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info, void *locals_info)
 {
     struct korb_method *m = korb_method_slot(c, mid);
     m->kind = KORB_METHOD_ISEQ;
@@ -7526,6 +7529,7 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
     m->opt_defaults = opt_defaults;
     m->kw_info = kw_info;
     m->param_info = param_info;
+    m->locals_info = locals_info;
     m->bfn = NULL;
     m->is_simple = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 &&
                     req_cnt == params_cnt && !uses_block);
@@ -7872,6 +7876,173 @@ korb_frames_snapshot_at(CTX *c, const VALUE *fbase, uint32_t line0, const VALUE 
 static uint32_t korb_frames_snapshot(CTX *c, const VALUE *link_cell)
 {
     return korb_frames_snapshot_at(c, NULL, 0, link_cell);
+}
+
+/* ---------------------------------------------------------------------------
+ * Frame locals BY NAME (the debugger entry point).
+ *
+ * A frame's identity cell names its ISEQ, and the ISEQ carries the local names
+ * by slot (struct korb_locals_info, built at parse time).  So a frame base —
+ * which the link chain above hands out for any live frame — is enough to turn a
+ * name into the actual cell.  Nothing is baked at the reading site, which is
+ * what separates this from `binding`.
+ *
+ * A block frame continues into its enclosing scopes through the EP chain: the
+ * cell holds either a raw handle to the outer frame or this frame's OWN
+ * materialized env, whose ->prev is the outer one.  A scope that has already
+ * returned lives on in a closed env, so the walk reads captured values there.
+ * ------------------------------------------------------------------------- */
+
+/* One lexical level: the live frame (loc) or a closed env's captured values
+ * (env); `id` is that level's identity cell. */
+struct korb_scope_level { VALUE id; VALUE *loc; KorbEnv *env; };
+
+static void korb_scope_at_base(VALUE *const b, struct korb_scope_level *const lv) {
+    lv->id = korb_id_get(b); lv->loc = b; lv->env = NULL;
+}
+
+static void korb_scope_at_handle(const VALUE h, struct korb_scope_level *const lv) {
+    if (h & 1u) { korb_scope_at_base((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u), lv); return; }
+    KorbEnv *const e = VAL2ENV(h);
+    if (e->closed) { lv->id = e->id; lv->loc = NULL; lv->env = e; }
+    else korb_scope_at_base(e->loc, lv);
+}
+
+/* Step out one lexical level; false at a method / file barrier or chain end. */
+static bool korb_scope_outer(const struct korb_scope_level *const lv, struct korb_scope_level *const out) {
+    if ((lv->id & 7u) != KORB_FID_BLOCK) return false;
+    VALUE h = lv->env ? lv->env->prev : korb_ep_get(lv->loc);
+    if (h != 0 && (h & 1u) == 0 && lv->env == NULL) {
+        const KorbEnv *const e = VAL2ENV(h);             /* an even EP is EITHER this frame's own env */
+        if (!e->closed && e->loc == lv->loc) h = e->prev;   /* ... in which case the outer one is its prev */
+    }
+    if (h == 0) return false;
+    korb_scope_at_handle(h, out);
+    return true;
+}
+
+/* A level's local names, from its identity.  NULL for a file / eval top level:
+ * that identity is a packed immediate, with no ISEQ to hang a table on. */
+static const struct korb_locals_info *
+korb_scope_locals(const struct korb_vm *const vm, const struct korb_scope_level *const lv) {
+    const uintptr_t p = (uintptr_t)(lv->id & ~(VALUE)7u);
+    if (!korb_bt_known_ptr(vm, p)) return NULL;
+    switch (lv->id & 7u) {
+      case KORB_FID_METHOD: return ((const struct korb_method *)p)->locals_info;
+      case KORB_FID_BLOCK: {
+        const struct Node *const e = (const struct Node *)p;
+        return e->head.kind == &kind_node_entry ? e->u.node_entry.locals_info : NULL;
+      }
+      default: return NULL;
+    }
+}
+
+#define KORB_SCOPE_DEPTH_MAX 64u   /* the binding walk's cap, for the same reason */
+
+/* Resolve `sym` to (level, slot), innermost scope first. */
+static bool
+korb_frame_local_find(const struct korb_vm *const vm, VALUE *const fbase, const uint32_t sym,
+                      struct korb_scope_level *const out, uint32_t *const out_slot)
+{
+    struct korb_scope_level lv;
+    korb_scope_at_base(fbase, &lv);
+    for (uint32_t d = 0; d < KORB_SCOPE_DEPTH_MAX; d++) {
+        const struct korb_locals_info *const li = korb_scope_locals(vm, &lv);
+        if (li != NULL) {
+            for (uint32_t i = 0; i < li->n; i++)
+                if (li->names[i] == sym) { *out = lv; *out_slot = i; return true; }
+        }
+        struct korb_scope_level nx;
+        if (!korb_scope_outer(&lv, &nx)) return false;
+        lv = nx;
+    }
+    return false;
+}
+
+/* Read the local `name_sym` of the frame at `base` (or of a scope enclosing it).
+ * false = not in scope, or its level closed without capturing that slot. */
+bool
+korb_frame_local_get(CTX *c, const VALUE *base, uint32_t name_sym, VALUE *out)
+{
+    struct korb_scope_level lv;
+    uint32_t slot;
+    VALUE *const b = (VALUE *)(uintptr_t)base;   /* the finder is shared with the setter; this path only reads */
+    if (!korb_frame_local_find(c->vm, b, name_sym, &lv, &slot)) return false;
+    if (lv.env != NULL) {
+        if (slot >= lv.env->n) return false;
+        *out = korb_items_data((KorbArrayItems *)(uintptr_t)lv.env->vals)[slot];
+    }
+    else *out = lv.loc[slot];
+    return true;
+}
+
+/* Write it back.  A closed level goes through the write barrier. */
+bool
+korb_frame_local_set(CTX *c, VALUE *base, uint32_t name_sym, VALUE v)
+{
+    struct korb_scope_level lv;
+    uint32_t slot;
+    if (!korb_frame_local_find(c->vm, base, name_sym, &lv, &slot)) return false;
+    if (lv.env != NULL) {
+        if (slot >= lv.env->n) return false;
+        korb_env_store(c, lv.env, slot, v);
+    }
+    else lv.loc[slot] = v;
+    return true;
+}
+
+/* Every name in scope at `base`, innermost first, an inner name hiding an outer
+ * one — the order Kernel#local_variables reports.  Returns how many were
+ * written (capped at `max`). */
+uint32_t
+korb_frame_local_names(CTX *c, const VALUE *base, uint32_t *out, uint32_t max)
+{
+    struct korb_scope_level lv;
+    korb_scope_at_base((VALUE *)(uintptr_t)base, &lv);
+    uint32_t n = 0;
+    for (uint32_t d = 0; d < KORB_SCOPE_DEPTH_MAX; d++) {
+        const struct korb_locals_info *const li = korb_scope_locals(c->vm, &lv);
+        if (li != NULL) {
+            for (uint32_t i = 0; i < li->n && n < max; i++) {
+                const uint32_t sym = li->names[i];
+                if (sym == 0) continue;
+                bool seen = false;
+                for (uint32_t k = 0; k < n; k++) if (out[k] == sym) { seen = true; break; }
+                if (!seen) out[n++] = sym;
+            }
+        }
+        struct korb_scope_level nx;
+        if (!korb_scope_outer(&lv, &nx)) break;
+        lv = nx;
+    }
+    return n;
+}
+
+/* The base of the frame a link cell points down to — the first hop of the walk
+ * above, without materializing the rest.  NULL when the chain ends here. */
+static VALUE *
+korb_link_base(const CTX *c, const VALUE *cell)
+{
+    const VALUE *const lo = c->slots, *const hi = c->slots_limit;
+    for (int guard = 0; guard < 8; guard++) {
+        if (cell < lo || cell >= hi) return NULL;
+        const VALUE v = *cell;
+        if ((v & 1u) == 0) return NULL;
+        if (v & 2u) {
+            const VALUE *const p = korb_flink_ptr(v);
+            if ((v & 4u) == 0) {                        /* FORWARD: the link is over there */
+                if (p < lo || p >= hi || p == cell) return NULL;
+                cell = p;
+                continue;
+            }
+            return (VALUE *)(uintptr_t)p;               /* CFRAME */
+        }
+        const uint32_t dist = korb_flink_dist(v);
+        if (dist == 0) return NULL;
+        const VALUE *const b = cell - dist;
+        return (b < lo || b >= hi) ? NULL : (VALUE *)(uintptr_t)b;
+    }
+    return NULL;
 }
 
 /* Build a link from an already-resolved (frame base, line) pair, checking that
@@ -15750,6 +15921,47 @@ korb_caller_common(CTX *c, VALUE *slots, VALUE_SLICE args, const VALUE *link, ui
 /* The walk starts at this builtin's own frame link — base[-3] of its argument
  * window, which the call site stored there. */
 static RESULT korb_bi_caller(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_caller_common(c, slots, args, args.p - 3, 0); }
+
+/* __frame_local_get(:name) / __frame_local_set(:name, v) / __frame_locals —
+ * the caller's locals, reached by NAME through its frame identity alone (no
+ * parse-time table at this site, unlike `binding`).  Hidden primitives: the
+ * debugger-facing C API is korb_frame_local_get/set, these only exercise it.
+ * The caller's base is the first hop of our own frame link, as Kernel#caller. */
+static RESULT
+korb_frame_local_prim(CTX *c, VALUE *slots, VALUE_SLICE args, int write)
+{
+    const uint32_t want = write ? 2u : 1u;
+    if (VALUE_SLICE_LEN(args) != want)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u)",
+                          VALUE_SLICE_LEN(args), want);
+    const uint32_t sym = korb_bind_argsym(c, VALUE_SLICE_GET(args, 0));
+    if (sym == UINT32_MAX)
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_coerce_name(c, VALUE_SLICE_GET(args, 0)));
+    VALUE *const fbase = korb_link_base(c, args.p - 3);
+    VALUE v = KORB_NIL;
+    const bool ok = fbase != NULL &&
+                    (write ? korb_frame_local_set(c, fbase, sym, VALUE_SLICE_GET(args, 1))
+                           : korb_frame_local_get(c, fbase, sym, &v));
+    if (!ok)
+        return korb_raise(c, slots, KORB_E_NAME, 0, "local variable `%s' is not defined for the calling frame",
+                          korb_sym_name(c->vm, sym));
+    return RESULT_OK(write ? VALUE_SLICE_GET(args, 1) : v);
+}
+static RESULT korb_bi_frame_local_get(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_frame_local_prim(c, slots, args, 0); }
+static RESULT korb_bi_frame_local_set(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_frame_local_prim(c, slots, args, 1); }
+
+static RESULT
+korb_bi_frame_locals(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)args;
+    uint32_t syms[256];
+    VALUE *const fbase = korb_link_base(c, args.p - 3);
+    const uint32_t n = fbase ? korb_frame_local_names(c, fbase, syms, 256) : 0;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, n));
+    for (uint32_t i = 0; i < n; i++)
+        UNWRAP(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(syms[i])));
+    return RESULT_OK(slots[0]);
+}
 /* The prelude's Kernel#caller_locations is Ruby, so its own frame sits on top
  * of this list — skip it and report positions as its caller sees them. */
 static RESULT korb_bi_caller_strings(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_caller_common(c, slots, args, args.p - 3, 1); }
@@ -15861,6 +16073,10 @@ korb_ctx_new(void)
     korb_builtin_define(c, "fail",  korb_bi_raise, -1);   /* Kernel#fail — alias of raise */
     korb_builtin_define(c, "caller", korb_bi_caller, -1);
     korb_builtin_define(c, "__caller_strings", korb_bi_caller_strings, -1);   /* the prelude's caller_locations reads this */
+    /* frame locals by name — the debugger C API, exposed for its tests */
+    korb_builtin_define(c, "__frame_local_get", korb_bi_frame_local_get, -1);
+    korb_builtin_define(c, "__frame_local_set", korb_bi_frame_local_set, -1);
+    korb_builtin_define(c, "__frame_locals", korb_bi_frame_locals, -1);
     /* the raw writer: Kernel#warn itself is Ruby (prelude/exception.rb) so it can
        delegate to Warning.warn and introspect its arity */
     korb_builtin_define(c, "__warn_raw", korb_bi_warn, -1);
@@ -16067,6 +16283,23 @@ korb_embed_param_info(CTX *c, uint32_t n, ...)
     }
     va_end(ap);
     return pi;
+}
+
+/* locals_info: {n, names[]} — the scope's local names by slot (cold). */
+void *
+korb_embed_locals_info(CTX *c, uint32_t n, ...)
+{
+    struct korb_locals_info *const li = korb_embed_alloc(sizeof(*li) + sizeof(uint32_t) * n);
+    li->n = n;
+    va_list ap;
+    va_start(ap, n);
+    for (uint32_t i = 0; i < n; i++) {
+        const char *const name = va_arg(ap, const char *);
+        const uint32_t len = va_arg(ap, uint32_t);
+        li->names[i] = name ? korb_intern(c->vm, name, len) : 0;
+    }
+    va_end(ap);
+    return li;
 }
 
 void *

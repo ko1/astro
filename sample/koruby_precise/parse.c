@@ -1215,6 +1215,26 @@ alloc_binop(enum kp_binop op, NODE *lhs, NODE *rhs, uint32_t line)
 
 /* ---- calls -------------------------------------------------------------- */
 
+/* Local NAMES of the frame being closed, in slot order (struct korb_locals_info,
+ * node.h).  Hung off the scope's ISEQ entry so that C can name the locals of any
+ * live frame from its identity cell.  Must run BEFORE pop_frame: the frame owns
+ * the prism name list.  Synthetic temporaries sit past the prism locals and are
+ * left out (never user-visible). */
+static void *
+build_locals_info(struct kp_ctx *tc)
+{
+    const struct kp_frame *const f = tc->frame;
+    const uint32_t it_slot = (f->it_param && f->locals->size == 0) ? 1u : 0u;   /* `{ it }` binds slot 0 with no prism local */
+    const uint32_t n = (uint32_t)f->locals->size + it_slot;
+    if (n == 0) return NULL;
+    struct korb_locals_info *const li = malloc(sizeof(*li) + n * sizeof(uint32_t));   /* immortal */
+    if (!li) abort();
+    li->n = n;
+    if (it_slot) li->names[0] = korb_intern(tc->c->vm, "it", 2);
+    for (uint32_t i = it_slot; i < n; i++) li->names[i] = kp_intern_cid(tc, f->locals->ids[i - it_slot]);
+    return li;
+}
+
 /* Build Proc#parameters metadata once at parse time (cold; never touched on the
  * call/yield hot path).  Stored on node_entry.param_info.  Raw kinds (req kept
  * as req); #parameters converts positional req→opt for non-lambda procs. */
@@ -1620,8 +1640,9 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
             encl = encl ? encl->prev : NULL;
         }
     }
+    void *const linfo = build_locals_info(tc);      /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
-    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, destr_len, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), blk_param_slot, post_cnt, -1, 0);
+    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, destr_len, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), linfo, blk_param_slot, post_cnt, -1, 0);
     /* backtrace: KORB_ID_OFF marks "this block has an enclosing frame", which is
      * all the link a C-driven yield rebuilds needs — the PREV handle names that
      * frame's base directly. */
@@ -1670,7 +1691,7 @@ kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
     WITH_CHAIN(tc, KP_SEND0_SC, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
     NODE *body = kp_send0(tc, sym_id, 0, recv);
     uint32_t frame_size = pop_frame(tc);
-    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0, -1, 0);
+    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, NULL, -1, 0, -1, 0);
     code_repo_add("symblock", entry, true);
     return entry;
 }
@@ -2644,6 +2665,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         body = ALLOC_node_seq(bp, body);
     }
     uint32_t uses_block = tc->frame->uses_block ? 1u : 0u;
+    void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);   /* = locals + 2 if the method yields */
 
     uint32_t mid = kp_intern_cid(tc, dn->name);
@@ -2667,15 +2689,15 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     NODE *def;
     if (mod_func) {
         /* module_function: define as instance method AND as a singleton on self. */
-        NODE *idef = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, -1 - tc->chain, -4 - tc->chain);
+        NODE *idef = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain);
         bake_add(tc, &idef->u.node_def.self_off);          /* definee = self at base[-1] */
         bake_add(tc, &idef->u.node_def.dc_off);            /* enclosing method entry = base[-4] */
-        NODE *sdef = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, recv_node);
+        NODE *sdef = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, recv_node);
         def = ALLOC_node_seq(idef, sdef);
     } else if (recv_node) {
-        def = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, recv_node);
+        def = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, recv_node);
     } else {
-        def = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, -1 - tc->chain, -4 - tc->chain);
+        def = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain);
         bake_add(tc, &def->u.node_def.self_off);           /* definee = self at base[-1] */
         bake_add(tc, &def->u.node_def.dc_off);             /* enclosing method entry = base[-4] */
     }
@@ -2736,9 +2758,10 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         body = transduce_statements(tc, (const pm_statements_node_t *)cn->body);
     else
         body = transduce(tc, cn->body);   /* a begin/rescue/ensure body is just another node */
+    void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0, -1, 0);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0);
     code_repo_add("class", entry, true);          /* its own AOT entry */
     NODE *_ncls = ALLOC_node_class(name_sym, entry, lex_top ? INT32_MIN : -1 - tc->chain - 2, path_owner, path_kind, base_node, super_node);   /* self_off = enclosing self (base[-1]); -2 for the staged base+super children */
     korb_reg_srcloc(tc->c->vm, _ncls, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));   /* Module#const_source_location */
@@ -3162,9 +3185,10 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         body = transduce_statements(tc, (const pm_statements_node_t *)mn->body);
     else
         body = transduce(tc, mn->body);   /* a begin/rescue/ensure body is just another node */
+    void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0, -1, 0);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0);
     code_repo_add("module", entry, true);
     NODE *_nmod = ALLOC_node_module(name_sym, entry, lex_top ? INT32_MIN : -1 - tc->chain - 1, path_owner, path_kind, base_node);   /* self_off = enclosing self (base[-1]); -1 for the staged base child */
     korb_reg_srcloc(tc->c->vm, _nmod, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)mn));   /* Module#const_source_location */
@@ -4901,8 +4925,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             body = transduce_statements(tc, (const pm_statements_node_t *)sc->body);
         else
             body = transduce(tc, sc->body);   /* a begin/rescue/ensure body is just another node */
+        void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
         uint32_t frame_size = pop_frame(tc);
-        NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, -1, 0, -1, 0);
+        NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0);
         code_repo_add("sclass", entry, true);       /* its own AOT entry */
         NODE *_sc = ALLOC_node_sclass(entry, -1 - tc->chain - 1, -4 - tc->chain - 1, recv_node);   /* -1 extra for the staged recv child */
         bake_add(tc, &_sc->u.node_sclass.self_off);

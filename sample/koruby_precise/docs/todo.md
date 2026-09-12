@@ -2620,11 +2620,58 @@ backtrace のフレームリンク (`base[-3]`) が入ったのを機に、user 
      読みだが未検証。切り分けるなら `def incr(x)=x+1` のような frame_size==params_cnt の
      callee で SD を objdump して、増えた命令がどこかを見る。
 3. **`slots_high_water` の削除** (下の節参照)
-4. **ローカル名前表を ISEQ 入口へ**
+4. **ローカル名前表を ISEQ 入口へ** — **[x] 実装した** (2026-09-12)
    - いま名前表 (`kp_binding_scope_tbl`) は `binding` を書いた地点にしか焼かれていない。
      これを `korb_method` / `node_entry` に付ける (`param_info` と同じ cold-read only の
      静的データなので実行時コストゼロ)。`binding` 自体もこれを使う形に一本化できる。
    - これが無いと「名前で読む/書く」ができない = デバッガにならない。
+   - **入れた形**: `struct korb_locals_info { uint32_t n; uint32_t names[]; }` (node.h)。
+     スロット番号で引く平坦な名前配列 1 本だけ (深さも重複除去も持たない — 外側は
+     EP チェーンで辿るのが筋)。パース時 `build_locals_info` が `pop_frame` の直前に作る
+     (フレームが prism の名前リストを持っているので pop 前でないと取れない)。
+     置き場所は `korb_method.locals_info` (`param_info` の隣) と
+     `node_entry.locals_info`。ブロック・クラス/モジュール/特異クラス本体・
+     `define_method` 本体は全部 `node_entry` 側で賄える。
+     synth 一時 (`def m(...)` の転送スロット等) は prism locals の後ろなので表に入れない。
+   - **C の入口**: `korb_frame_local_get(CTX*, const VALUE *base, uint32_t sym, VALUE *out)` /
+     `korb_frame_local_set` / `korb_frame_local_names` (korb_runtime.c)。
+     base から identity → ISEQ → 名前表、見つからなければブロックフレームなら EP を
+     1 段外へ。EP セルは「自分の env」か「外側への生ハンドル」かの両方があるので
+     `!closed && e->loc == base` で自分の env を判別してから `->prev` に降りる
+     (ここを間違えると外側が 1 段ずれる)。
+     Ruby から叩くテスト用の隠し primitive: `__frame_local_get` / `__frame_local_set` /
+     `__frame_locals` (呼び出し元フレームが対象。自分の base[-3] のリンクから 1 hop、
+     `Kernel#caller` と同じ入口)。テストは `t/frame_locals.rb` (31 チェック、
+     `./koruby_precise t/frame_locals.rb`)。
+   - **`binding` は寄せなかった**。理由: 名前表をぶら下げられるのは ISEQ を持つ
+     スコープだけで、**ファイル/eval のトップレベルフレームには ISEQ が無い**
+     (identity が `korb_fid_main` の詰め込み即値で、ポインタを置く場所が無い)。
+     `binding` の字句チェーンは「メソッド/クラス本体/**トップレベル**」で止まるので、
+     一番外側がトップレベルになる形 (`binding` をトップレベルや
+     トップレベル直下のブロックで書く、`TOPLEVEL_BINDING`、`eval(str, b)`) が
+     そのまま供給元を失う。ISEQ 側とトップレベル側の二本立てにすると
+     コードは減らずに増えるので、今回は `kp_binding_scope_tbl` をそのまま残した。
+     寄せるならまず「トップレベルフレームにも ISEQ 相当の identity を与える」が要る
+     (② と同じ規模の変更で、フレームヘッダの性能に触る)。
+   - **性能** (master 比、同一マシン・連続測定、`tools/bt_instr.sh` / `tools/bt_optc.sh`):
+     命令数 fib -0.003% / method_call +0.0006% / ackermann -0.005% / ivar -0.002% /
+     optcarrot180 +0.024% (2 回とも +0.02〜0.03%)。`code_store/op` の `.text` は
+     **5 ベンチすべてバイト一致** (fib 9,035 / method_call 4,771 / ackermann 10,414 /
+     ivar 11,337 / optcarrot 4,733,965)。optcarrot の checksum も一致。
+     実行時に増えた命令は無い (オペランドは `(void)` されるだけ)。optcarrot の
+     +0.024% は SD の中ではなく本体側 (LTO のコード配置 + パース時の表作り)。
+     パース時のコストは実測で **1 スコープあたり約 840 命令**
+     (4,000 def + 4,000 block の合成ファイルで 1,442.7M → 1,449.4M)。
+     起動 (`puts 1`) は 221.52M → 221.30M で増えない。
+   - **メモリ**: prelude だけで 1,093 表 / 13.6 KB (malloc 実占有 27.5 KB)、
+     optcarrot バンドル込みで 1,403 表 / 17.4 KB (実占有 35.2 KB)。
+     1 表あたり 4 + 4*n バイト。
+   - **残っている穴**: 「ブロックが外側ローカルを字句的に参照していない」場合、
+     koruby は必要になるまでスコープを捕捉しないので、定義フレームが返った後は
+     その名前に到達できない (`t/frame_locals.rb` 5b)。`binding` はパース時に
+     `max_ref_depth` を上げて捕捉を強制するので、そこだけ答えが食い違う。
+     デバッガから任意のフレームの全ローカルを見たいなら、捕捉を強制する
+     スイッチ (全ブロックの `max_ref_depth` を上げる) が別途要る。
 5. **`c->base_slots`** — C API 用の足場。**cfunc の呼び出し口でだけ維持する** (Ruby→Ruby の
    hot path には触らない)。2 が済んでいれば `base[-2]` で identity が取れるので、
    足す状態はこの 1 本だけで済む。`c->cfunc_link` と同じ場所で save/restore する。
