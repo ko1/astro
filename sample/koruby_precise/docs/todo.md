@@ -2505,28 +2505,41 @@ backtrace のフレームリンク (`base[-3]`) が入ったのを機に、user 
    - EP の引っ越し先は今のマーカー位置。EP アクセスは `korb_ep_get/set` の 24 箇所
      (`KORB_EP_OFF` の定義は 1 箇所) なので機械的。
    - 距離は `chain + locals_cnt + 2` になるが 8〜10 bit で足りる (溢れたら今と同じく link=0)。
-   - **[x] 実装した** (worktree-agent-a9d0d43c6381e4fef)。採った形と、そこで分かったこと:
+   - **[x] 実装した** (worktree-agent-a9d0d43c6381e4fef)。最終形は identity が `base[-4]`、
+     EP は `base[-2]` のまま (下の切り分け参照)。歩きの性質は当初案どおり。
+     分かったこと:
      - 距離は「コールサイトのカーソル → 呼び出し元の **base**」= `chain + locals_cnt`。
        `chain` はパース時、`locals_cnt` はスコープ末でしか分からないので、lvar オフセットと
        同じく pop_frame が足しこむ (`kp_flink` / `KP_LINK` / `kp_flink_add`)。幅は 12 bit の
        まま。溢れは rubyspec 4,456 ファイル / optcarrot / harness で **0 件**
        (1,500 重ネストの合成コードで初めて 476 件出る)。
-     - EP を頂に移すと、**外側フレームの EP を実行時に辿る経路**
-       (深さ 2 以上のクロージャ変数、`korb_make_proc` / `korb_make_binding` の鎖の実体化、
-       `korb_outer_frame_base_at`) が `locals_cnt` を定数で持てない。identity から引く
-       `korb_frame_ep` / `korb_frame_ep_cell` を通した。フレーム種別ごとの分岐が要るので、
-       ファイル toplevel の identity には `locals_cnt` を詰めてある。
-     - `node_eget` / `node_eset` / `node_return_outer` は「自分の EP セル」と「自分の base」の
-       両方が要るので、焼き込みオフセットが `ep_off` + `base_off` の 2 本になった。
-     - **性能**: メソッド呼び出し系は命令数が減る (fib -1.8% / method_call -2.3% /
-       ackermann -1.8% / ivar -1.7%)。callee 側の「EP→頂へ移す + EP=0」2 ストアが
-       「EP=0」1 ストアになったため。一方 **block / closure 形は命令数が増える**
-       (closures +3.0% / block +1.4% / iterators +1.4% / object +1.1% / methodchain +1.0%)。
-     - **[ ] 未解決: optcarrot 180f が命令数 -0.42% なのにサイクル +4%** (master 4.60-4.63G →
-       4.79-4.84G、3 回ずつ再現)。L1-dcache-load-miss が +6.1%、branches はほぼ同じ。
-       切り分け実験: identity を `base[-4]` (KORB_FRAME_HDR=3) に置いて EP を `base[-2]` に
-       残す形を作る。歩きの性質は同じまま hot なアクセス位置が master と一致するので、
-       これでサイクルが戻れば原因はフレームのデータ配置、戻らなければ SD のコード配置。
+     - **一度は EP をフレーム頂に追い出して identity を `base[-2]` に置いた** が、それだと
+       **外側フレームの EP を実行時に辿る経路** (深さ 2 以上のクロージャ変数、
+       `korb_make_proc` / `korb_make_binding` の鎖の実体化、`korb_outer_frame_base_at`)
+       が `locals_cnt` を定数で持てず、identity から引く依存ロードが 1 段増える。
+       これが実測で効いた (下記) ので、identity を 1 段下げる形に変えた。
+     - **性能 (最終形、master 比)**: fib 命令 -0.45%/サイクル -3.7%、
+       ackermann -2.7%/-3.8%、ivar -1.7%/-4.2%、closures -1.5%/-4.8%、
+       block -5.6%/-6.2%、iterators -5.7%/-0.3%、optcarrot180 -1.11%/+0.8%。
+       `code_store/op` の `.text` は optcarrot で +0.09%。
+     - optcarrot 180f が命令数 -0.42% なのにサイクル +4.5% になった。L1-dcache-load-miss
+       +6.1%、branches はほぼ同じ、`.text` は -0.76% (=縮んでいる)。
+   - **[x] 切り分け: 原因はフレームのデータ配置だった。** identity を `base[-4]`
+     (`KORB_FRAME_HDR`=3) に下げ、EP を `base[-2]` に戻す形に作り替えたら、
+     optcarrot のサイクルが +4.5% → **+0.8%** に戻り、dcache-miss も +6.1% → +2.5% に
+     戻った。この形は `.text` が master より **大きい** (+0.09%) のにサイクルは戻るので、
+     SD のコード配置ではなく「EP がフレーム頂にあって、外側フレームの EP を辿るたびに
+     identity → locals_cnt → セルの依存ロードを 1 段踏むこと」が効いていた。
+     block/closure 形の命令数増 (+1.4〜+3.0%) も同時に解消し、むしろ減った
+     (closures -1.5% / block -5.6% / iterators -5.7%)。
+     - 採用形のフレーム頂は空になったので予約セルごと落とした
+       (`pop_frame` の `+1u`、ブロック 3 点セットは fs-3..fs-1)。
+       ヘッダ +1 枠・フレーム -1 枠でスタック消費は差し引きゼロ。
+   - **[ ] 残: `method_call` だけ命令数 +4.7%** (master 4,285M → 4,486M)。
+     ただし **サイクルは -0.07% で並ぶ** (IPC 4.09 → 4.28) ので実時間には出ていない。
+     コールサイトのヘッダゼロ埋めが 1 ストア増えた分が ILP で吸われている、という
+     読みだが未検証。切り分けるなら `def incr(x)=x+1` のような frame_size==params_cnt の
+     callee で SD を objdump して、増えた命令がどこかを見る。
 3. **`slots_high_water` の削除** (下の節参照)
 4. **ローカル名前表を ISEQ 入口へ**
    - いま名前表 (`kp_binding_scope_tbl`) は `binding` を書いた地点にしか焼かれていない。
