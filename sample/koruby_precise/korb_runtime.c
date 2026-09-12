@@ -15161,13 +15161,16 @@ korb_bi_printf(CTX *c, VALUE *slots, VALUE_SLICE args)
     const VALUE first = VALUE_SLICE_GET(args, 0);
     VALUE target; bool def = false;
     RESULT fr;
+    /* The format below builds an Array + a String, so it can move the target;
+     * park it in the slot the format call already roots (it runs at slots + 2). */
     if (KORB_STRING_P(first)) {                           /* printf(format, *args) → $stdout */
-        target = korb_out_target(c, "$stdout", 7, &def);
+        slots[0] = korb_out_target(c, "$stdout", 7, &def);
         fr = korb_bi_format(c, slots + 2, args);
     } else {                                              /* printf(io, format, *args) → io.write(...) */
-        target = first;
+        slots[0] = first;
         fr = korb_bi_format(c, slots + 2, VALUE_SLICE_MAKE(args.p + 1, n - 1));
     }
+    target = slots[0];                                    /* re-read after the format's GC */
     if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
     if (def || target == KORB_NIL || !KORB_OBJECT_P(target)) {   /* default $stdout → raw stdout */
         if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); CHECK(korb_io_wr_checked(c, slots, korb_io_std_rep(c->vm, 1), korb_strbuf_data(s->buf), s->len)); }
