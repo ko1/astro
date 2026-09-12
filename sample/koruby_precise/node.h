@@ -421,9 +421,13 @@ RESULT korb_blockarg_to_proc(CTX *c, VALUE *slots, VALUE *pslot, uint32_t line);
 RESULT korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
                   VALUE block_entry, VALUE def_env, VALUE *captured_self);
 RESULT korb_yield_outer(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
-                        VALUE prev_handle, uint32_t depth, int32_t trio_base);
+                        const VALUE *ep, uint32_t depth, int32_t trio_base);
 VALUE *korb_outer_frame_base(VALUE prev_handle, uint32_t depth);
 VALUE *korb_outer_frame_base_at(VALUE *ep_cell, VALUE prev_handle, uint32_t depth);
+VALUE  korb_outer_handle_at(const VALUE *frame_base, VALUE prev_handle, uint32_t depth);
+/* The enclosing method's block trio, or NULL once that frame returned — then
+ * *proc_out is the Proc its env kept (0 = there is no such block at all). */
+VALUE *korb_outer_trio(const VALUE *ep, uint32_t depth, int32_t trio_base, VALUE *proc_out);
 RESULT korb_exc_ivar_set(CTX *c, VALUE *slots, VALUE_REF excref, VALUE name_sym, VALUE val);   /* set an exception ivar (e.g. @__name), usable from node_eval.c */
 
 /* Pattern-matching (`expr in/ => pattern`) compiled descriptor + runtime matcher.

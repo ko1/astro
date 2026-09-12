@@ -62,6 +62,9 @@ struct kp_frame {
     uint32_t method_post_cnt; /* number of post params (params after *rest), for forwarding super */
     struct korb_kw_info *method_kw_info; /* `def m(k:, ...)` → keyword params, for forwarding super (NULL = none) */
     uint32_t max_ref_depth;   /* B3: deepest outer-scope depth this block's body reads (0=none) */
+    uint32_t yield_depth;     /* B3: env-link depth of the METHOD scope this body yields to (0=none).
+                               * Its block lives in the frame-top trio, outside the captured locals,
+                               * so an escaping closure must reify it before that frame returns. */
     int32_t **add_cells;      /* yield-in-block trio-index cells: fixed up by += frame_size at pop */
     uint32_t add_cnt, add_capa;
     uint32_t flink_base;      /* first kp_ctx.flink_list entry belonging to this frame */
@@ -464,6 +467,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->block_body = false;
     f->anon_cref_method = false;
     f->max_ref_depth = 0;
+    f->yield_depth = 0;
     f->add_cells = NULL;
     f->add_cnt = f->add_capa = 0;
     f->prev = tc->frame;
@@ -540,6 +544,12 @@ pop_frame(struct kp_ctx *tc)
     if (f->prev && f->max_ref_depth >= 1) {
         uint32_t up = f->max_ref_depth - 1;
         if (up > f->prev->max_ref_depth) f->prev->max_ref_depth = up;
+    }
+    /* Likewise for the yield target: reaching it from the parent is one level
+     * nearer, and at 0 the parent IS the method (its trio is its own). */
+    if (f->prev && f->yield_depth >= 2) {
+        uint32_t up = f->yield_depth - 1;
+        if (up > f->prev->yield_depth) f->prev->yield_depth = up;
     }
     tc->frame = f->prev;
     free(f);
@@ -1665,6 +1675,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
      * each one's local count (final prism locals->size — synth temps aren't
      * captured by closures).  Computed before pop_frame (needs the prev chain). */
     uint32_t cap_depth = tc->frame->max_ref_depth;
+    const uint32_t cap_yield = tc->frame->yield_depth;
     uint16_t *cap_ns = NULL;
     if (cap_depth > 0) {
         cap_ns = malloc(sizeof(uint16_t) * cap_depth);
@@ -1677,7 +1688,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
     }
     void *const linfo = build_locals_info(tc);      /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
-    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, destr_len, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), linfo, blk_param_slot, post_cnt, -1, 0, 0, kp_block_label(tc));
+    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, destr_len, cap_depth, cap_ns, cap_yield, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), linfo, blk_param_slot, post_cnt, -1, 0, 0, kp_block_label(tc));
     /* backtrace: KORB_ID_OFF marks "this block has an enclosing frame", which is
      * all the link a C-driven yield rebuilds needs — the PREV handle names that
      * frame's base directly. */
@@ -1726,7 +1737,7 @@ kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
     WITH_CHAIN(tc, KP_SEND0_SC, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
     NODE *body = kp_send0(tc, sym_id, 0, recv);
     uint32_t frame_size = pop_frame(tc);
-    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, NULL, -1, 0, -1, 0, 0, 0);
+    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, NULL, -1, 0, -1, 0, 0, 0);
     code_repo_add("symblock", entry, true);
     return entry;
 }
@@ -1815,6 +1826,10 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
         while (mf->method_mid == 0 && mf->prev) { mf = mf->prev; depth++; }
         if (mf->method_mid == 0) { mf = tc->frame; depth = 0; }   /* outside a method: legacy flat path */
         mf->uses_block = true;                                     /* the method reserves the block trio */
+        if (depth > 0) {   /* the block is in an outer frame: the escape must keep it */
+            if (depth > tc->frame->max_ref_depth) tc->frame->max_ref_depth = depth;
+            if (depth > tc->frame->yield_depth)   tc->frame->yield_depth = depth;
+        }
         if (depth == 0)
             return ALLOC_node_block_given(-3 - tc->chain);        /* method top-level: this frame's biseq cell */
         NODE *bg = ALLOC_node_block_given_outer(-2 - tc->chain, depth, -3);   /* prev_off = this block's EP; trio_base += method frame_size */
@@ -2797,7 +2812,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
     void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0);
     code_repo_add("class", entry, true);          /* its own AOT entry */
     NODE *_ncls = KP_LINK(tc, node_class, name_sym, kp_flink_at(tc, kp_line(tc, (const pm_node_t *)cn), 2), entry, lex_top ? INT32_MIN : -1 - tc->chain - 2, path_owner, path_kind, base_node, super_node);   /* self_off = enclosing self (base[-1]); -2 for the staged base+super children */
     korb_reg_srcloc(tc->c->vm, _ncls, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));   /* Module#const_source_location */
@@ -3225,7 +3240,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
     void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0);
     code_repo_add("module", entry, true);
     NODE *_nmod = KP_LINK(tc, node_module, name_sym, kp_flink_at(tc, kp_line(tc, (const pm_node_t *)mn), 1), entry, lex_top ? INT32_MIN : -1 - tc->chain - 1, path_owner, path_kind, base_node);   /* self_off = enclosing self (base[-1]); -1 for the staged base child */
     korb_reg_srcloc(tc->c->vm, _nmod, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)mn));   /* Module#const_source_location */
@@ -4758,6 +4773,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             while (mf->method_mid == 0 && mf->prev) { mf = mf->prev; depth++; }
             if (mf->method_mid == 0) { mf = tc->frame; depth = 0; }
             mf->uses_block = true;
+            if (depth > 0) {   /* the block is in an outer frame: the escape must keep it */
+                if (depth > tc->frame->max_ref_depth) tc->frame->max_ref_depth = depth;
+                if (depth > tc->frame->yield_depth)   tc->frame->yield_depth = depth;
+            }
             if (depth == 0) return ALLOC_node_defined_yield(-3 - tc->chain);
             NODE *dy = ALLOC_node_defined_yield_outer(-2 - tc->chain, depth, -3);
             bake_add(tc, &dy->u.node_defined_yield_outer.prev_off);
@@ -4868,6 +4887,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         while (mf->method_mid == 0 && mf->prev) { mf = mf->prev; depth++; }
         if (mf->method_mid == 0) { mf = tc->frame; depth = 0; }  /* yield outside a method: legacy path (raises at runtime) */
         mf->uses_block = true;                   /* the method reserves the block trio */
+        if (depth > 0) {   /* the block is in an outer frame: the escape must keep it */
+            if (depth > tc->frame->max_ref_depth) tc->frame->max_ref_depth = depth;
+            if (depth > tc->frame->yield_depth)   tc->frame->yield_depth = depth;
+        }
 
         /* `yield(*arr)` / `yield a, *b` — build the args Array and spread it at
          * the block call (one staged child = the array). */
@@ -4965,7 +4988,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             body = transduce(tc, sc->body);   /* a begin/rescue/ensure body is just another node */
         void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
         uint32_t frame_size = pop_frame(tc);
-        NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0);
+        NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0);
         code_repo_add("sclass", entry, true);       /* its own AOT entry */
         NODE *_sc = KP_LINK(tc, node_sclass, kp_flink_at(tc, kp_line(tc, node), 1), entry, -1 - tc->chain - 1, -4 - tc->chain - 1, recv_node);   /* -1 extra for the staged recv child */
         bake_add(tc, &_sc->u.node_sclass.self_off);

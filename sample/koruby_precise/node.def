@@ -1798,7 +1798,7 @@ NODE_DEF
 node_defined_super_outer(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, int32_t prev_off, uint32_t depth, int32_t entry_off)
 {
     (void)n;
-    const VALUE *const base = korb_outer_frame_base(slots[prev_off], depth);
+    const VALUE *const base = korb_outer_frame_base_at(&slots[prev_off - KORB_EP_OFF], slots[prev_off], depth);
     if (!base || ((uintptr_t)base[entry_off] & 7u) != KORB_FID_METHOD) return RESULT_OK(KORB_NIL);
     if (korb_super_find(c, mid, base[entry_off], base[-1], NULL) == NULL) return RESULT_OK(KORB_NIL);
     RESULT dr = korb_str_new(c, slots, "super", 5);
@@ -1918,8 +1918,9 @@ NODE_DEF
 node_defined_yield_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, int32_t trio_base)
 {
     (void)n;
-    const VALUE *const node = korb_outer_frame_base(slots[prev_off], depth);
-    if (!node || !((uintptr_t)node[trio_base] & 1u)) return RESULT_OK(KORB_NIL);
+    VALUE blk;
+    const VALUE *const trio = korb_outer_trio(&slots[prev_off], depth, trio_base, &blk);
+    if (trio ? !((uintptr_t)trio[0] & 1u) : !KORB_PROC_P(blk)) return RESULT_OK(KORB_NIL);
     RESULT dr = korb_str_new(c, slots, "yield", 5);
     if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
         ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;
@@ -2520,9 +2521,9 @@ node_dstr_concat(CTX *c, NODE *n, VALUE *slots, VALUE_REF acc@child, VALUE part@
 // reads params/locals off it (korb_entry_*) to size the block frame, then
 // dispatches it (EVAL evaluates the body at the block-frame cursor).
 NODE_DEF
-node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t destructure_n, void *destructure_spec, uint32_t destr_len, uint32_t cap_depth, void *cap_ns, int32_t rest_slot, void *opt_defaults, uint32_t req_cnt, void *kw_info, void *param_info, void *locals_info, int32_t blk_param_slot, uint32_t post_cnt, int32_t def_top_off, uint32_t def_line, uint32_t body_label@sym, uint32_t blk_label@sym)
+node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t destructure_n, void *destructure_spec, uint32_t destr_len, uint32_t cap_depth, void *cap_ns, uint32_t cap_yield, int32_t rest_slot, void *opt_defaults, uint32_t req_cnt, void *kw_info, void *param_info, void *locals_info, int32_t blk_param_slot, uint32_t post_cnt, int32_t def_top_off, uint32_t def_line, uint32_t body_label@sym, uint32_t blk_label@sym)
 {
-    (void)n; (void)params_cnt; (void)locals_cnt; (void)destructure_n; (void)destructure_spec; (void)cap_depth; (void)cap_ns; (void)rest_slot; (void)opt_defaults; (void)req_cnt; (void)kw_info; (void)param_info; (void)locals_info; (void)blk_param_slot; (void)def_top_off; (void)def_line; (void)body_label; (void)blk_label;
+    (void)n; (void)params_cnt; (void)locals_cnt; (void)destructure_n; (void)destructure_spec; (void)cap_depth; (void)cap_ns; (void)cap_yield; (void)rest_slot; (void)opt_defaults; (void)req_cnt; (void)kw_info; (void)param_info; (void)locals_info; (void)blk_param_slot; (void)def_top_off; (void)def_line; (void)body_label; (void)blk_label;
     return EVAL_ARG(c, body);
 }
 
@@ -2805,14 +2806,14 @@ NODE_DEF
 node_yield_outer0(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base)
 {
     (void)n;
-    return korb_yield_outer(c, slots, 0, line, slots[prev_off], depth, trio_base);
+    return korb_yield_outer(c, slots, 0, line, &slots[prev_off], depth, trio_base);
 }
 
 NODE_DEF
 node_yield_outer1(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base, VALUE_REF a0@child)
 {
     (void)n; (void)a0;
-    return korb_yield_outer(c, slots, 1, line, slots[prev_off], depth, trio_base);
+    return korb_yield_outer(c, slots, 1, line, &slots[prev_off], depth, trio_base);
 }
 
 // `yield a, b, ...` from inside a block (≥2 values).
@@ -2820,7 +2821,7 @@ NODE_DEF
 node_yield_outer_n(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base, NODE **argv@children)
 {
     (void)n;
-    return korb_yield_outer(c, slots, argv_cnt, line, slots[prev_off], depth, trio_base);
+    return korb_yield_outer(c, slots, argv_cnt, line, &slots[prev_off], depth, trio_base);
 }
 
 // `yield(*arr)` from inside a block: spread the built args Array, then yield to
@@ -2830,10 +2831,10 @@ node_yield_outer_splat(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t pre
 {
     (void)n; (void)args;
     const VALUE arr = slots[-1];
-    const VALUE prev = slots[prev_off];
+    const VALUE *const ep = &slots[prev_off];
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
-    return korb_yield_outer(c, slots + N, N, line, prev, depth, trio_base);
+    return korb_yield_outer(c, slots + N, N, line, ep, depth, trio_base);
 }
 
 // __method__ / __callee__ in a define_method body: the name is bound at run
@@ -2862,9 +2863,10 @@ NODE_DEF @nogc
 node_block_given_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, int32_t trio_base)
 {
     (void)c; (void)n;
-    const VALUE *node = korb_outer_frame_base(slots[prev_off], depth);
-    if (!node) return RESULT_OK(KORB_FALSE);
-    return RESULT_OK(((uintptr_t)node[trio_base] & 1u) ? KORB_TRUE : KORB_FALSE);
+    VALUE blk;
+    const VALUE *const trio = korb_outer_trio(&slots[prev_off], depth, trio_base, &blk);
+    if (trio) return RESULT_OK(((uintptr_t)trio[0] & 1u) ? KORB_TRUE : KORB_FALSE);
+    return RESULT_OK(KORB_PROC_P(blk) ? KORB_TRUE : KORB_FALSE);   /* the method returned: its env kept the block */
 }
 
 // `next [v]` — early-return from a block; korb_yield catches KORB_NEXT.

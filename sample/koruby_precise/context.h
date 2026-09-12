@@ -421,6 +421,10 @@ typedef struct KorbEnv {
     VALUE id;                        /* the captured frame's identity cell (tagged KORB_FID_*, never a bare
                                       * pointer → not a GC edge).  A backtrace names the owner of a block
                                       * whose defining frame has already returned through this. */
+    VALUE ARO_GC_EDGE blk;           /* the method activation's own block, reified as a Proc when a closure
+                                      * over this scope yields: the trio lives at the frame top, outside the
+                                      * captured locals, so `closed` would otherwise lose it.  0 = never
+                                      * needed, nil = the activation was handed no block. */
     uint32_t n;                      /* number of locals captured */
     uint8_t  closed;                 /* 0 = open (use loc), 1 = closed (use vals) */
 } KorbEnv;
@@ -1630,6 +1634,7 @@ struct CTX_struct {
       case KORB_OBJ_ENV: {                                                   \
         KorbEnv *_ev = (KorbEnv *)(payload);                                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ev->prev);   /* odd slots-ptr skipped, KorbEnv* fwd */ \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ev->blk);    /* 0 / nil skipped, reified block Proc fwd */ \
         if (_ev->closed) {                                                   \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ev->vals);  /* open: loc->slots root */ \
             if (_ev->vals) {   /* allocated with exactly n slots */           \

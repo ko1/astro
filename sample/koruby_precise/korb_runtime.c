@@ -3352,6 +3352,8 @@ RESULT __attribute__((noinline)) korb_close_ret(CTX *c, VALUE *scratch, VALUE *f
  * frame (escape).  cap_depth==0 → no outer refs → env left as a tagged slots
  * sentinel (never dereferenced by the body). */
 extern const struct NodeKind kind_node_entry;   /* node_alloc.c; distinguishes a real block entry from a node_unsupported placeholder */
+static RESULT korb_block_to_proc(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *cself);
+static VALUE *korb_env_method_trio(const KorbEnv *e);
 RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda) {
     /* uncompilable block params (e.g. `|&b|`) → node_unsupported placeholder, not a
      * node_entry; surface the NotImplementedError rather than reading a bad union. */
@@ -3398,11 +3400,30 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
         e->n = ns[k];
         e->closed = 0;
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
+        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->blk, 0);   /* the frame's own block: reified only if a closure yields */
         /* outer = materialized-so-far; for the outermost keep the original PREV
          * link so a deeper sibling closure can still walk past this frame. */
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, slots[1] ? slots[1] : pv);
         slots[1] = (VALUE)(uintptr_t)e;
         korb_ep_set(bases[k], slots[1]);                         /* EP cell: this frame owns its env (clean even; GC roots via slots) */
+    }
+    /* The body (or one nested in it) yields to an enclosing method's block.  That
+     * block lives in the method frame's trio, ABOVE the captured locals, so the
+     * frame's return would lose it — reify it into the env now, while the frame
+     * is still live.  korb_block_to_proc materializes the block's OWN chain too,
+     * so a yielded-to block that closes over a dying frame survives as well. */
+    const uint32_t yd = entry->u.node_entry.cap_yield;
+    if (UNLIKELY(yd != 0)) {
+        const VALUE eh = korb_outer_handle_at(NULL, slots[1], yd);
+        if (eh != 0 && (eh & 1u) == 0 && VAL2ENV(eh)->blk == 0 && !VAL2ENV(eh)->closed) {
+            slots[2] = eh;                                    /* root the env across the reify */
+            VALUE *const trio = korb_env_method_trio(VAL2ENV(eh));
+            const VALUE bp = trio ? UNWRAP(korb_block_to_proc(c, slots + 3, (NODE *)(uintptr_t)(trio[0] & ~(uintptr_t)1u),
+                                                              (VALUE *)(uintptr_t)trio[1], &trio[2]))
+                                  : KORB_NIL;                 /* no block was passed: remember that, don't retry */
+            KorbEnv *const oe = VAL2ENV(slots[2]);            /* re-read after GC */
+            ARO_STORE(c, oe, (VALUE *)(uintptr_t)&oe->blk, bp);
+        }
     }
     KorbProc *p = korb_alloc(c, slots + 2, sizeof(KorbProc), KORB_OBJ_PROC);
     p->iseq = entry; p->is_lambda = (uint8_t)is_lambda;
@@ -3495,6 +3516,7 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
         e->n = (uint16_t)scope_tbl[1 + (uint32_t)k];     /* level's full locals count */
         e->closed = 0;
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
+        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->blk, 0);   /* the frame's own block: reified only if a closure yields */
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, slots[1] ? slots[1] : pv);
         slots[1] = (VALUE)(uintptr_t)e;
         korb_ep_set(bases[k], slots[1]);                 /* frame owns its env */
@@ -9738,20 +9760,27 @@ korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
 /* `yield` from INSIDE a block: the block frame carries no method block trio, so
  * walk `depth` env links (like node_eget) to the enclosing method frame and read
  * its trio (block_entry/def_env/captured_self at node[trio_base..trio_base+2]),
- * then yield.  The walk is korb_outer_frame_base's: an OPEN KorbEnv (a Proc
- * captured a local, so the frame materialized while still live) still names its
- * frame through `loc`, and the trio is there.  Only a CLOSED chain — the method
- * has really returned — raises LocalJumpError, matching Ruby.  (node_block_given_outer
- * already used this walk; yield bailing on any even handle was the odd one out.)
+ * then yield.  An OPEN KorbEnv (a Proc captured a local, so the frame
+ * materialized while still live) still names its frame through `loc`, and the
+ * trio is there.  Once the method has really returned the trio cells belong to
+ * whoever ran next, so the answer is the Proc the escape reified into the env —
+ * reading them then was the use-after-free.  `ep` is this block frame's EP cell;
  * args staged at slots[-argc..] as for korb_yield. */
 RESULT
 korb_yield_outer(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
-                 VALUE prev_handle, uint32_t depth, int32_t trio_base)
+                 const VALUE *ep, uint32_t depth, int32_t trio_base)
 {
-    VALUE *const node = korb_outer_frame_base(prev_handle, depth);
-    if (UNLIKELY(node == NULL))
-        return korb_raise(c, slots, KORB_E_LOCALJUMP, line, "no block given (yield)");
-    return korb_yield(c, slots, argc, line, node[trio_base], node[trio_base + 1], &node[trio_base + 2]);
+    VALUE blk;
+    VALUE *const trio = korb_outer_trio(ep, depth, trio_base, &blk);
+    if (LIKELY(trio != NULL))
+        return korb_yield(c, slots, argc, line, trio[0], trio[1], &trio[2]);
+    if (KORB_PROC_P(blk)) {
+        slots[0] = blk;                                /* root it: the block frame starts above */
+        NODE *const iseq = VAL2PROC(blk)->iseq;        /* NULL = Symbol/Method#to_proc → forward as a C-proc */
+        return korb_block_yield(c, slots + 1, iseq ? iseq : KORB_BLK_CPROC, KORB_BLK_FWD,
+                                slots - argc, argc, &slots[0]);
+    }
+    return korb_raise(c, slots, KORB_E_LOCALJUMP, line, "no block given (yield)");
 }
 
 /* Walk `depth` env links (like node_eget / korb_yield_outer) to the enclosing
@@ -9773,22 +9802,59 @@ korb_outer_frame_base(VALUE prev_handle, uint32_t depth)
 VALUE *
 korb_outer_frame_base_at(VALUE *frame_base, VALUE prev_handle, uint32_t depth)
 {
+    const VALUE h = korb_outer_handle_at(frame_base, prev_handle, depth);
+    if (h == 0) return NULL;
+    if (h & 1u) return (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
+    const KorbEnv *const e = VAL2ENV(h);               /* an open env still names its live frame */
+    return e->closed ? NULL : e->loc;
+}
+/* The same walk, stopping at the raw handle: odd = a live frame, even non-zero =
+ * a materialized KorbEnv (open or closed), 0 = the chain ended.  Callers that
+ * must tell "the frame returned" from "there is no such scope" need the handle,
+ * not the base korb_outer_frame_base_at folds both into NULL. */
+VALUE
+korb_outer_handle_at(const VALUE *frame_base, VALUE prev_handle, uint32_t depth)
+{
     VALUE h = prev_handle;
     if (frame_base != NULL && h != 0 && (h & 1u) == 0 &&
         VAL2ENV(h)->closed == 0 && VAL2ENV(h)->loc == frame_base)
         h = VAL2ENV(h)->prev;
     for (uint32_t k = 1; ; k++) {
-        if (h == 0) return NULL;
-        if (h & 1u) {                                  /* raw frame pointer */
-            VALUE *const node = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
-            if (k >= depth) return node;
-            h = korb_ep_get(node);
-            continue;
-        }
-        const KorbEnv *const e = VAL2ENV(h);           /* materialized env: an open one still names its live frame */
-        if (k >= depth) return e->closed ? NULL : e->loc;
-        h = e->prev;
+        if (h == 0 || k >= depth) return h;
+        if (h & 1u) h = korb_ep_get((const VALUE *)(uintptr_t)(h & ~(uintptr_t)1u));
+        else        h = VAL2ENV(h)->prev;
     }
+}
+
+/* The block trio ([entry | def_env | captured_self]) of the METHOD activation
+ * `e` names, or NULL when that activation takes no block or was handed none.
+ * The trio sits at the frame top, which the frame's identity cell sizes. */
+static VALUE *
+korb_env_method_trio(const KorbEnv *const e)
+{
+    if ((e->id & 7u) != KORB_FID_METHOD) return NULL;
+    const struct korb_method *const m = (const struct korb_method *)(uintptr_t)(e->id & ~(VALUE)7u);
+    if (!m->uses_block) return NULL;
+    VALUE *const trio = e->loc + m->locals_cnt - 3;
+    return ((uintptr_t)trio[0] & 1u) ? trio : NULL;    /* even = no block was passed */
+}
+
+/* Resolve the enclosing method's block for a `yield` / `block_given?` /
+ * `defined?(yield)` written inside a block.  `ep` is this block frame's EP cell,
+ * `depth` env links out lies the method scope.  While that activation lives its
+ * trio is in the slots; once it has returned only its env has the block, as the
+ * Proc korb_make_proc reified there (*proc_out). */
+VALUE *
+korb_outer_trio(const VALUE *const ep, uint32_t depth, int32_t trio_base, VALUE *const proc_out)
+{
+    *proc_out = 0;
+    const VALUE h = korb_outer_handle_at(ep - KORB_EP_OFF, *ep, depth);
+    if (h == 0) return NULL;
+    if (h & 1u) return (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u) + trio_base;
+    KorbEnv *const e = VAL2ENV(h);
+    if (!e->closed) return e->loc + trio_base;
+    *proc_out = e->blk;
+    return NULL;
 }
 
 /* ---------------------------------------------------------------------------
