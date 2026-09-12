@@ -705,9 +705,10 @@ static inline void korb_frame_magic_check(const VALUE *const base, const enum ko
  *
  * Layout.  Bit 0 is always 1, so the GC root scan reads the cell as an
  * immediate; bits 1..2 pick the form, and every pointer form is one OR:
- *   bit 1 == 0    DIRECT   dist = bits 2..14 (+ bits 31.. for a run-time one),
- *                          line = bits 15..30.  A baked one stays under 2^31,
- *                          which is what lets it be stored as an immediate.
+ *   bit 1 == 0    DIRECT   dist = bits 2..13 (+ bits 31.. for a run-time one),
+ *                          line = bits 14..30, SIGNED (eval(str, file, -100)).
+ *                          A baked one stays under 2^31, which is what lets it
+ *                          be stored as an immediate.
  *   (v & 7) == 3  FORWARD  a link cell elsewhere: read the link there instead
  *                          (a dispatch that rebuilt the window left it behind).
  *   (v & 7) == 7  CFRAME   a C method's link cell: the frame is the marker just
@@ -716,32 +717,44 @@ static inline void korb_frame_magic_check(const VALUE *const base, const enum ko
  * forms are 8-aligned addresses, where all three low bits are free.)
  * The link supersedes the frame-magic marker on the frames that carry one.
  * ------------------------------------------------------------------------- */
-#define KORB_FLINK_DIST_LO_BITS 13u
+#define KORB_FLINK_DIST_LO_BITS 12u
 #define KORB_FLINK_DIST_MAX     (1u << KORB_FLINK_DIST_LO_BITS)
-#define KORB_FLINK_LINE_MAX     0xFFFFu
-static inline uint32_t korb_flink_line(const VALUE f) { return (uint32_t)((f >> 15) & KORB_FLINK_LINE_MAX); }
+#define KORB_FLINK_LINE_BITS    17u
+#define KORB_FLINK_LINE_MIN     (-(1 << (KORB_FLINK_LINE_BITS - 1)))
+#define KORB_FLINK_LINE_MAX     ((1 << (KORB_FLINK_LINE_BITS - 1)) - 1)
+/* The line is SIGNED: `eval(str, file, -100)` is legal Ruby and its frames
+ * report negative positions, so the field round-trips them. */
+static inline uint32_t korb_flink_line(const VALUE f) {
+    const int32_t v = (int32_t)((f >> 14) & ((1u << KORB_FLINK_LINE_BITS) - 1u));
+    return (uint32_t)((v << (32 - KORB_FLINK_LINE_BITS)) >> (32 - KORB_FLINK_LINE_BITS));
+}
 static inline uint32_t korb_flink_dist(const VALUE f) {
     return (uint32_t)((f >> 2) & (KORB_FLINK_DIST_MAX - 1u)) |
            (uint32_t)(((f >> 31) & 0xFFFFu) << KORB_FLINK_DIST_LO_BITS);
+}
+static inline uint32_t korb_flink_line_bits(uint32_t line) {
+    const int32_t l = (int32_t)line;
+    const int32_t c = l < KORB_FLINK_LINE_MIN ? KORB_FLINK_LINE_MIN
+                    : l > KORB_FLINK_LINE_MAX ? KORB_FLINK_LINE_MAX : l;
+    return (uint32_t)c & ((1u << KORB_FLINK_LINE_BITS) - 1u);
 }
 /* Parse-time link: fits a signed 32-bit immediate, so the call site stores it
  * without materializing it in a register.  A staging depth past the field (a
  * call buried in a huge literal) drops the link rather than aiming it wrong. */
 static inline uint32_t korb_flink_make(uint32_t line, uint32_t dist) {
     if (dist >= KORB_FLINK_DIST_MAX) dist = 0;
-    if (line > KORB_FLINK_LINE_MAX) line = KORB_FLINK_LINE_MAX;
-    return (line << 15) | (dist << 2) | 1u;
+    return (korb_flink_line_bits(line) << 14) | (dist << 2) | 1u;
 }
 /* Run-time DIRECT link: the distance is a pointer difference, so it gets the
  * wide field too (and no longer fits an immediate — which is fine, nothing
  * stores this one from a call site). */
 static inline VALUE korb_flink_make_wide(uint32_t line, uint64_t dist) {
-    if (dist >= (1ull << 29)) dist = 0;
-    if (line > KORB_FLINK_LINE_MAX) line = KORB_FLINK_LINE_MAX;
+    if (dist >= (1ull << 28)) dist = 0;
     return ((VALUE)(dist >> KORB_FLINK_DIST_LO_BITS) << 31) |
-           ((VALUE)line << 15) |
+           ((VALUE)korb_flink_line_bits(line) << 14) |
            ((VALUE)(dist & (KORB_FLINK_DIST_MAX - 1u)) << 2) | 1u;
 }
+
 /* The two pointer forms.  Both are one OR on a cell address (8-aligned, so the
  * tag bits are free) — that is the whole cost of linking a frame C placed. */
 static inline VALUE korb_flink_fwd(const VALUE *const cell) { return (VALUE)(uintptr_t)cell | 3u; }

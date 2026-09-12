@@ -458,7 +458,11 @@ pop_frame(struct kp_ctx *tc)
     struct kp_frame *f = tc->frame;
     /* bottom-header: self lives at base[-1] (not a top cell); the only reserved
      * top cell is the method entry.  +1u (entry) instead of +2u (entry+self). */
-    uint32_t frame_size = (uint32_t)f->locals->size + f->synth_cnt + 1u + (f->uses_block ? 3u : 0u);
+    /* `{ it }`: prism lists no local for the implicit param, but the body binds
+     * it at slot 0 — count it, or the frame's top cell IS that parameter and
+     * whoever writes the reserved cell (the backtrace frame marker) eats it. */
+    const uint32_t it_slot = (f->it_param && f->locals->size == 0) ? 1u : 0u;
+    uint32_t frame_size = (uint32_t)f->locals->size + it_slot + f->synth_cnt + 1u + (f->uses_block ? 3u : 0u);
     for (uint32_t i = f->bake_base; i < tc->bake_cnt; i++) {
         *tc->bake_list[i] -= (int32_t)frame_size;
     }
