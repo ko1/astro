@@ -118,6 +118,43 @@ class CBody
   eq("class body vs binding", __frame_local_get(:cb), binding.local_variable_get(:cb))
 end
 
+# 7b. module / singleton-class bodies, and a block inside a class body reaching
+#     the body's own locals through the EP chain (these frames carry their own
+#     identity now, so the walk names them)
+module MBody
+  mb = 7
+  eq("module body local", __frame_local_get(:mb), 7)
+  eq("module body names", __frame_locals.sort, binding.local_variables.sort)
+end
+class SBody
+  class << self
+    sb = 9
+    eq("sclass body local", __frame_local_get(:sb), 9)
+    eq("sclass body write", __frame_local_set(:sb, 10), 10)
+    eq("sclass body write visible", sb, 10)
+  end
+end
+class CBody2
+  outer = 3
+  [1].each do
+    inner = outer + 1
+    eq("block-in-class own local", __frame_local_get(:inner), 4)
+    eq("block-in-class outer local", __frame_local_get(:outer), 3)
+  end
+end
+
+# 7c. a define_method body reaching the class body's local it captured (the body
+#     must READ it: an uncaptured scope is gone once the body frame returned —
+#     the same hole as 5b)
+class DMBody
+  seed = 21
+  define_method(:dm2) do
+    seed
+    eq("define_method captured class-body local", __frame_local_get(:seed), 21)
+  end
+end
+DMBody.new.dm2
+
 # 8. a name that is not in scope
 def m_missing
   begin

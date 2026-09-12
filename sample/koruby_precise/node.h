@@ -287,8 +287,8 @@ void   korb_class_undef_slot(struct korb_vm *vm, KorbClass *k, VALUE cls, uint32
 /* parse-time descriptor list for node_attr (one entry per generated method). */
 struct korb_attr_desc { uint32_t mid; uint32_t ivar; uint8_t is_writer; };
 /* `class Name ... end`: create/find the class + run its body (self = class). */
-RESULT korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int is_module, VALUE enclosing);
-RESULT korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclosing);
+RESULT korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int is_module, VALUE enclosing, const VALUE *caller_base, uint32_t caller_line);
+RESULT korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclosing, const VALUE *caller_base, uint32_t caller_line);
 RESULT korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods);
 RESULT korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods);
 /* `super`: invoke mid from def_class's superclass, same self.  args at slots[-argc..]. */
@@ -768,10 +768,14 @@ static inline const VALUE *korb_flink_ptr(const VALUE f) { return (const VALUE *
  * (a splat call reserves no header cells to store it in; a yield hands one to
  * korb_block_yield).  `slots` is the node's own cursor, which is what the baked
  * distance is measured from. */
-static inline void korb_flink_stage(CTX *c, const VALUE flink, const VALUE *const slots)
+static inline const VALUE *korb_flink_base(const VALUE flink, const VALUE *const slots)
 {
     const uint32_t d = korb_flink_dist(flink);
-    c->carry_base = d ? slots - d : NULL;
+    return d ? slots - d : NULL;
+}
+static inline void korb_flink_stage(CTX *c, const VALUE flink, const VALUE *const slots)
+{
+    c->carry_base = korb_flink_base(flink, slots);
     c->carry_line = korb_flink_line(flink);
 }
 

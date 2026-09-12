@@ -370,32 +370,43 @@ static RESULT korb_m_meth_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const KorbMethod *m = VAL2METH(VALUE_REF_GET(self));
     if (UNLIKELY(m->unbound)) return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'call' for an UnboundMethod (use #bind)");
     uint32_t mid = m->mid, argc = VALUE_SLICE_LEN(a);
+    /* Method#call is a frame CRuby shows, and the callee window built here has no
+     * call site to link it — aim it at this C method's own argument window. */
     if (UNLIKELY(m->missing)) {   /* CRuby: always method_missing(name, *args), even if the name exists by now */
         slots[0] = m->recv;
         slots[1] = ID2SYM(mid);
         for (uint32_t i = 0; i < argc; i++) slots[2 + i] = VALUE_SLICE_GET(a, i);
+        korb_flink_hand_on_cframe(c, slots);
         return korb_send_impl(c, slots + 2 + argc, korb_intern(c->vm, "method_missing", 14), 0, argc + 1, block, def_env, cself);
     }
     const VALUE owner = m->owner;
     if (UNLIKELY(owner != KORB_NIL && KORB_CLASS_P(owner))) {   /* bound-from-unbound: invoke the FIXED method from its owner (not virtual) */
         struct korb_method *const entry = korb_class_find_method(owner, mid, NULL);
         if (LIKELY(entry != NULL && entry->kind == KORB_METHOD_ISEQ)) {
-            slots[0] = m->recv;                          /* self (the bound receiver) */
-            slots[1] = owner;                            /* def_class for super resolution */
-            for (uint32_t i = 0; i < argc; i++) slots[2 + i] = VALUE_SLICE_GET(a, i);
-            return korb_invoke_method(c, slots + 2 + argc, entry, argc, 0, mid, slots[0], slots[1], block, def_env, KORB_CSELF_VAL(cself));
+            /* korb_invoke_method fills identity + self, so stage the other two
+             * header cells (link, EP) below the receiver ourselves. */
+            slots[0] = 0;                                /* base[-4] (identity) */
+            slots[1] = korb_flink_cur_cframe(c, slots);  /* base[-3] (frame link) */
+            slots[2] = 0;                                /* base[-2] (EP) */
+            slots[3] = m->recv;                          /* base[-1] self (the bound receiver) */
+            for (uint32_t i = 0; i < argc; i++) slots[4 + i] = VALUE_SLICE_GET(a, i);
+            return korb_invoke_method(c, slots + 4 + argc, entry, argc, 0, mid, slots[3], owner, block, def_env, KORB_CSELF_VAL(cself));
         }
         if (entry != NULL) {                             /* builtin (cfunc/attr): still the CAPTURED entry — the
                                                           * receiver may not even respond to the name (a Kernel
                                                           * method bound onto a BasicObject), and a same-named
                                                           * singleton override must not win. */
-            slots[0] = m->recv;                          /* recv, in the slot below the args */
-            for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
-            return korb_dispatch_method(c, slots + 1 + argc, entry, mid, 0, argc, owner, block, def_env, cself);
+            slots[0] = 0;                                /* header, as above: a block-taking builtin reads base[-3] */
+            slots[1] = korb_flink_cur_cframe(c, slots);
+            slots[2] = 0;
+            slots[3] = m->recv;                          /* recv, in the slot below the args */
+            for (uint32_t i = 0; i < argc; i++) slots[4 + i] = VALUE_SLICE_GET(a, i);
+            return korb_dispatch_method(c, slots + 4 + argc, entry, mid, 0, argc, owner, block, def_env, cself);
         }
     }
     slots[0] = m->recv;                                  /* recv below the args */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+    korb_flink_hand_on_cframe(c, slots);
     return korb_send_impl(c, slots + 1 + argc, mid, 0, argc, block, def_env, cself);   /* forward the block to the method */
 }
 static RESULT korb_m_meth_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
