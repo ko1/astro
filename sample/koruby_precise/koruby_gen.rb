@@ -178,14 +178,14 @@ class KorubyNodeDef < ASTroGen::NodeDef
         end
       end)
       # @framehdr: reserve KORB_FRAME_HDR meta cells BELOW the staged children
-      # (the callee frame's EP + magic header at base[-2]/base[-3]).  The cursor
-      # advances by cnt+HDR but only cnt children are dispatched; the header cells
-      # are filled by korb_invoke.
+      # (the callee frame's identity + link at base[-2]/base[-3]).  The cursor
+      # advances by cnt+HDR but only cnt children are dispatched; the identity is
+      # filled by korb_invoke.
       framehdr = @option.include?('@framehdr')
       hdr = framehdr ? ' + KORB_FRAME_HDR' : ''
       # The reserved header cells (base[-2..]) sit in the GC-scanned slot range,
       # so they MUST be filled before any arg eval (which can GC) — a stale value
-      # would be misread as a heap pointer.  korb_invoke fills EP later.
+      # would be misread as a heap pointer.  korb_invoke fills the identity later.
       # base[-3] takes the frame link (node.h) when the node carries one: same
       # store as the zero it replaces, so the backtrace chain costs no call-path
       # instruction.  Nodes without a `flink` operand keep the plain zero.
@@ -337,7 +337,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       # cursor-advance line(s) emitted into the SD body.  @framehdr nodes must
       # reserve + zero KORB_FRAME_HDR meta cells below the staged children, exactly
       # like the interpreted dispatcher (build_children_dispatch) — otherwise the
-      # AOT path leaves EP/magic unreserved and corrupts the callee frame.
+      # AOT path leaves the identity/link unreserved and corrupts the callee frame.
       adv = if @option.include?('@framehdr')
               # The frame link is the FIRST hole this SD allocates, so it is
               # emitted here, before the children's — hole order is allocation

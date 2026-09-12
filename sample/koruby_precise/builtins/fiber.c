@@ -65,9 +65,10 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
     void *vs = mmap(NULL, KORB_FIBER_VSLOTS_BYTES, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (vs == MAP_FAILED) { perror("koruby_precise: mmap fiber vslots"); abort(); }
-    rep->vslots = (VALUE *)vs + 2;                     /* leading slack: bottom-header EP at base[-2] (fiber toplevel → vslots[-2]) */
+    rep->vslots = (VALUE *)vs + 3;                     /* leading slack: bottom-header self/identity/link below the base */
     rep->vslots[-1] = 0;                               /* fiber toplevel self cell (base[-1]; step 2) */
-    rep->vslots[-2] = 0;                               /* fiber toplevel EP (base[-2]) */
+    rep->vslots[-2] = 0;                               /* fiber toplevel identity (base[-2]) */
+    rep->vslots[-3] = 0;                               /* fiber toplevel link (base[-3]) */
     rep->vslots_top = rep->vslots;
     rep->vslots_limit = (VALUE *)vs + KORB_FIBER_VSLOTS_BYTES / sizeof(VALUE) - KORB_FIBER_VSLOTS_MARGIN;
     rep->vslots_hw = rep->vslots;
@@ -114,7 +115,7 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     VALUE *const s_slots = c->slots; VALUE *const s_top = c->slots_top;
     VALUE *const s_limit = c->slots_limit; VALUE *const s_hw = c->slots_high_water;
     const char *const s_cstack = c->cstack_limit;
-    const VALUE *const s_cfunc_link = c->cfunc_link;   /* points into the resumer's stack */
+    const VALUE *const s_cfunc_link = c->cfunc_base;   /* points into the resumer's stack */
     /* While this resumer is suspended, the GC scans its stack up to the recorded
      * top.  Use `slots` (the resume frame's true cursor), not the possibly-lagging
      * c->slots_top (== s_top) — same fix as Fiber.yield.  s_top is still used to
@@ -137,7 +138,7 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     c->slots = rep->vslots; c->slots_top = rep->vslots_top;
     c->slots_limit = rep->vslots_limit; c->slots_high_water = rep->vslots_hw;
     c->cstack_limit = (const char *)rep->cstack + KORB_FIBER_CSTACK_MARGIN;
-    c->cfunc_link = rep->vcfunc_link;                  /* NULL on the first resume: no frames yet */
+    c->cfunc_base = rep->vcfunc_base;                  /* NULL on the first resume: no frames yet */
     korb_re_sync_floor(c);   /* astrogre \g<> guard must use the fiber's stack */
     c->vm->running_fiber = rep;
     /* `$!` is fiber-local: the fiber starts from ITS own errinfo depth, and the
@@ -154,7 +155,7 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     c->vm->running_fiber = prev;
     c->slots = s_slots; c->slots_top = s_top; c->slots_limit = s_limit;
     c->slots_high_water = s_hw; c->cstack_limit = s_cstack;
-    c->cfunc_link = s_cfunc_link;
+    c->cfunc_base = s_cfunc_link;
     korb_re_sync_floor(c);   /* restore the outer stack's floor */
     if (prev == NULL) c->vm->main_slots = NULL;
 
@@ -489,7 +490,7 @@ korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
      * its (unscanned) scratch — the same role c->slots_top plays for the active
      * stack at a korb_alloc-triggered GC. */
     rep->vslots_top = slots; rep->vslots_hw = c->slots_high_water;
-    rep->vcfunc_link = c->cfunc_link;                  /* travels with this fiber's stack */
+    rep->vcfunc_base = c->cfunc_base;                  /* travels with this fiber's stack */
     swapcontext((ucontext_t *)rep->uctx, (ucontext_t *)rep->resume_uctx);  /* === out === */
     /* === resumed: resume() restored c->slots to ours === */
     rep->fstate = 1;

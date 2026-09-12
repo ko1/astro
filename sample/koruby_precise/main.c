@@ -1479,9 +1479,11 @@ main(int argc, char *argv[])
      * so the AOT swap above already patched their dispatchers. */
     if (prelude_ast && !skip_run) {
         VALUE *pcur = c->slots + prelude_locals;
+        memset(c->slots, 0, (size_t)prelude_locals * sizeof(VALUE));   /* locals + EP start clean */
         RESULT pm = korb_obj_new(c, pcur, KORB_NIL);
         if (pm.state == KORB_RAISE) { korb_report_uncaught(c, pm.value); korb_io_flush_std(c->vm); return 1; }
         c->slots[-1] = pm.value;                  /* prelude self at base[-1] (bottom header) */
+        korb_id_set(c->slots, korb_fid_main(korb_intern(c->vm, "<prelude>", 9), prelude_locals, true));
         korb_relocate_object_methods(c, pcur);    /* before: the prelude itself asks Kernel for them */
         RESULT pr = EVAL(c, prelude_ast, pcur);
         if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); korb_io_flush_std(c->vm); return 1; }
@@ -1520,30 +1522,27 @@ main(int argc, char *argv[])
     }
 
     /* Run (unless `--aot-compile` alone — then we bake below without running).
-     * Toplevel frame: locals at c->slots[0..L); the self cell is the frame top
-     * (base[fs-1] = c->slots[koruby_toplevel_locals_cnt-1]) holding the `main`
-     * object; cursor starts above it. */
+     * Toplevel frame: locals at c->slots[0..L), self at c->slots[-1] and the
+     * frame identity at c->slots[-2]; cursor starts above the locals. */
     if (!skip_run) {
         VALUE *toplevel_cursor = c->slots + koruby_toplevel_locals_cnt;
+        /* The prelude ran in this same region with its own frame, so start the
+         * program's locals — and its EP, the top cell — from zero. */
+        memset(c->slots, 0, (size_t)koruby_toplevel_locals_cnt * sizeof(VALUE));
         /* builtin/exception class objects are now set up inside korb_ctx_new
          * (they must exist before core-method registration). */
         {
             RESULT mr = korb_obj_new(c, toplevel_cursor, KORB_NIL);   /* klass=nil → `main` */
             if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); korb_io_flush_std(c->vm); return 1; }
             c->slots[-1] = mr.value;                  /* main self at base[-1] (bottom header) */
-            /* The reserved frame-top cell is the method-entry slot; at top level
-             * there is no entry.  The prelude ran in this same region with a
-             * smaller frame, so leftovers can sit here and korb_cvar_cref would
-             * read one as a tagged method pointer (`class << obj` after ~40
-             * top-level locals used to SEGV). */
-            /* …and the backtrace's bottom frame marker goes there instead: it
-             * names the script and says there is nothing below it (distance 0).
-             * korb_cvar_cref and friends test for the method tag, so this tag
-             * reads as "no method frame" exactly as the zero did. */
-            if (koruby_toplevel_locals_cnt > 0)
-                c->slots[koruby_toplevel_locals_cnt - 1] =
-                    ((VALUE)korb_intern(c->vm, c->vm->script_name ? c->vm->script_name : "?",
-                                        strlen(c->vm->script_name ? c->vm->script_name : "?")) << 32) | KORB_FTOP_MAIN;
+            /* The frame's identity: it names the script and says there is
+             * nothing below it (not require'd).  korb_cvar_cref and friends test
+             * for the method tag, so this tag reads as "no method frame" — which
+             * also clears whatever the prelude left in the cell. */
+            korb_id_set(c->slots,
+                        korb_fid_main(korb_intern(c->vm, c->vm->script_name ? c->vm->script_name : "?",
+                                                  strlen(c->vm->script_name ? c->vm->script_name : "?")),
+                                      koruby_toplevel_locals_cnt, false));
         }
         /* TOPLEVEL_BINDING: a Binding over the (persistent) toplevel frame. */
         {

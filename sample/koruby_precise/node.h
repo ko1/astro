@@ -195,7 +195,7 @@ RESULT korb_str_interp(CTX *c, VALUE *slots, VALUE_REF acc, VALUE part);
 
 /* Array (korb_runtime.c) */
 RESULT korb_ary_new(CTX *c, VALUE *slots, uint32_t capa);
-RESULT korb_capture_backtrace(CTX *c, VALUE *slots, const VALUE *link);   /* position list into the exc at slots[0]; link = the rescuing frame link cell (NULL: unwound frames only) */
+RESULT korb_capture_backtrace(CTX *c, VALUE *slots, const VALUE *fbase);   /* position list into the exc at slots[0]; fbase = the rescuing frame's base (NULL: unwound frames only) */
 RESULT korb_ary_push_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE elem);
 void   korb_ary_store_at(CTX *c, VALUE ary, uint32_t i, VALUE val);   /* in-range ary[i]=val (WB) */
 int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* index of key in pair array, or -1 (Hash#[] fast path) */
@@ -638,36 +638,36 @@ extern size_t node_cnt;
 #endif
 
 /* Per-frame header cells reserved BELOW the locals base (design A bottom header):
- *   base[-1] = self (staged receiver, read directly — no copy to a top cell)
- *   base[-2] = EP   (open closure env / prev link)
- *   base[-3] = magic (frame type/flags/signature — integrity)
+ *   base[-1] = self     (staged receiver, read directly — no copy to a top cell)
+ *   base[-2] = identity (what frame this is: method / block / file / C method)
+ *   base[-3] = link     (where it was called from — see "Frame link" below)
  * @children call nodes reserve KORB_FRAME_HDR cells via the dispatcher; internal
  * dispatch (korb_send_impl/korb_call_impl) reserves them by shifting the frame. */
 #define KORB_FRAME_HDR 2
 _Static_assert(KORB_FRAME_HDR == 2, "the @framehdr staging fills base[-2] and base[-3] by name");
 
-/* Offset (from a frame's locals base) of the EP cell — the open-env / prev-link
- * slot.  All EP reads/writes and the closure PREV-chain walk go through this so
- * the layout is defined in one place.  (Step 1 of the bottom-header migration:
- * EP moved from base[-1] to base[-2]; self still lives at the frame top until
- * Step 2 relocates it into base[-1].) */
-#define KORB_EP_OFF (-2)
-static inline VALUE korb_ep_get(const VALUE *const base) { return base[KORB_EP_OFF]; }
-static inline void  korb_ep_set(VALUE *const base, const VALUE v) { base[KORB_EP_OFF] = v; }
+/* Offset (from a frame's locals base) of the IDENTITY cell.  The caller stores
+ * the callee's method entry here and it STAYS: identity next to the link is what
+ * lets the walk step base → base with no per-kind arithmetic, and what lets a C
+ * function ask which method it is running in.  Every writer tags the low 3 bits
+ * with a KORB_FID_* kind, so the GC root scan reads the cell as an immediate. */
+#define KORB_ID_OFF (-2)
+static inline VALUE korb_id_get(const VALUE *const base) { return base[KORB_ID_OFF]; }
+static inline void  korb_id_set(VALUE *const base, const VALUE v) { base[KORB_ID_OFF] = v; }
+
+/* The EP (open closure env / block PREV link) lives at the frame TOP, the cell
+ * every frame reserves above its locals.  Reaching it needs the frame's
+ * locals_cnt — a parse-time constant wherever a node addresses its OWN frame;
+ * korb_frame_ep below covers the walks that reach an outer frame at run time. */
+static inline VALUE korb_ep_get(const VALUE *const base, const uint32_t locals_cnt) { return base[locals_cnt - 1]; }
+static inline void  korb_ep_set(VALUE *const base, const uint32_t locals_cnt, const VALUE v) { base[locals_cnt - 1] = v; }
 
 /* Per-frame cell at base[-3]: the frame LINK (see "Frame link" below).
  *
- * It used to hold a CRuby-style frame-magic signature (korb_frame_magic_set /
- * _check, ASTRO_DEBUG only).  That is gone: a cell can only mean one thing, and
- * the magic was the weaker of the two — it existed only in debug builds, and on
- * the dispatch paths that build a callee window with NO header gap (korb_send_impl's
- * `Klass.new` of an exception class copies [args] up and invokes at slots+2, so
- * base[-3] is the caller's last argument) writing it corrupted a live cell.
- *
- * Hence: base[-3] is the link ONLY where a call site or a re-staging dispatch
- * reserved it.  Everywhere else it holds whatever the caller had there, which is
- * why the walk validates every hop (tag, slot-stack range, and a frame-top
- * marker it recognizes) instead of trusting the cell. */
+ * base[-3] is the link ONLY where a call site or a re-staging dispatch reserved
+ * it.  Everywhere else it holds whatever the caller had there, which is why the
+ * walk validates every hop (tag, slot-stack range, and an identity it
+ * recognizes) instead of trusting the cell. */
 #define KORB_FLINK_OFF (-3)
 
 /* ---------------------------------------------------------------------------
@@ -681,11 +681,17 @@ static inline void  korb_ep_set(VALUE *const base, const VALUE v) { base[KORB_EP
  * Both come from the cell the call site ALREADY stores to: the callee's
  * base[-3], zeroed before the arguments are evaluated (a live GC-scanned cell
  * must not hold stale bits).  That cell sits exactly at the caller's cursor, so
- * the caller's frame-top marker is a parse-time constant `chain + 1` cells below
- * it — the staging depth of the call site, which the parser knows.  Storing
- * (line, that distance) instead of 0 is the same store, and it REPLACES the
- * line the call site used to materialize: the cold tails read the line back out
- * of the frame instead of keeping it live across the dispatch.
+ * the CALLER'S BASE is a parse-time constant `chain + locals_cnt` cells below
+ * it — the staging depth of the call site plus its frame size, both of which
+ * the parser knows (the frame size only at scope end, so pop_frame folds it in;
+ * see parse.c kp_flink).  Storing (line, that distance) instead of 0 is the
+ * same store, and it REPLACES the line the call site used to materialize: the
+ * cold tails read the line back out of the frame instead of keeping it live
+ * across the dispatch.
+ *
+ * Aiming the distance at the BASE (not at a marker inside the frame) is what
+ * makes the walk uniform: from a base, the identity is base[-2] and the next
+ * link is base[-3], whatever kind of frame it is and however many locals it has.
  *
  * Layout.  Bit 0 is always 1, so the GC root scan reads the cell as an
  * immediate; bits 1..2 pick the form, and every pointer form is one OR:
@@ -695,11 +701,11 @@ static inline void  korb_ep_set(VALUE *const base, const VALUE v) { base[KORB_EP
  *                          be stored as an immediate.
  *   (v & 7) == 3  FORWARD  a link cell elsewhere: read the link there instead
  *                          (a dispatch that rebuilt the window left it behind).
- *   (v & 7) == 7  CFRAME   a C method's link cell: the frame is the marker just
- *                          above it, its position the line that cell carries.
+ *   (v & 7) == 7  CFRAME   a C method's argument window, used as its base: the
+ *                          identity is base[-2] like any frame, and its own
+ *                          position is the line in base[-3].
  * (Bit 2 belongs to `dist`, so only bit 1 may separate the forms; the pointer
  * forms are 8-aligned addresses, where all three low bits are free.)
- * The link supersedes the frame-magic marker on the frames that carry one.
  * ------------------------------------------------------------------------- */
 #define KORB_FLINK_DIST_LO_BITS 12u
 #define KORB_FLINK_DIST_MAX     (1u << KORB_FLINK_DIST_LO_BITS)
@@ -739,10 +745,11 @@ static inline VALUE korb_flink_make_wide(uint32_t line, uint64_t dist) {
            ((VALUE)(dist & (KORB_FLINK_DIST_MAX - 1u)) << 2) | 1u;
 }
 
-/* The two pointer forms.  Both are one OR on a cell address (8-aligned, so the
- * tag bits are free) — that is the whole cost of linking a frame C placed. */
+/* The two pointer forms.  Both are one OR on a frame base (8-aligned, so the
+ * tag bits are free) — that is the whole cost of linking a frame C placed.
+ * FORWARD is the exception: it names a link CELL, not a base. */
 static inline VALUE korb_flink_fwd(const VALUE *const cell) { return (VALUE)(uintptr_t)cell | 3u; }
-static inline VALUE korb_flink_cframe(const VALUE *const cell) { return (VALUE)(uintptr_t)cell | 7u; }
+static inline VALUE korb_flink_cframe(const VALUE *const base) { return (VALUE)(uintptr_t)base | 7u; }
 static inline const VALUE *korb_flink_ptr(const VALUE f) { return (const VALUE *)(uintptr_t)(f & ~(VALUE)7u); }
 
 /* Park a parse-baked link for a dispatch that builds the callee window itself
@@ -752,26 +759,57 @@ static inline const VALUE *korb_flink_ptr(const VALUE f) { return (const VALUE *
 static inline void korb_flink_stage(CTX *c, const VALUE flink, const VALUE *const slots)
 {
     const uint32_t d = korb_flink_dist(flink);
-    c->carry_top = d ? slots - d : NULL;
+    c->carry_base = d ? slots - d : NULL;
     c->carry_line = korb_flink_line(flink);
 }
 
-/* The frame-top marker cell a node addresses through its baked dc_off (the
- * method-entry offset), or NULL when the node has none. */
-#define KORB_FTOP_AT(slots, dc_off) ((dc_off) != INT32_MIN ? &(slots)[dc_off] : NULL)
+/* The frame base a node addresses through its baked dc_off (which points at the
+ * identity cell, base[-2]), or NULL when the node has none. */
+#define KORB_FBASE_AT(slots, dc_off) ((dc_off) != INT32_MIN ? &(slots)[(dc_off) + 2] : NULL)
 
-/* Frame-top markers, distinguished by the low 3 bits (every pointer they carry
- * is 8-aligned).  A method frame's marker is its method entry — already there. */
-#define KORB_FTOP_METHOD 1u   /* korb_method * | 1 */
-#define KORB_FTOP_BLOCK  3u   /* node_entry NODE * | 3 */
-#define KORB_FTOP_MAIN   5u   /* a file's top-level frame: (file sym << 32) | (cells down to its link << 3) | tag */
-#define KORB_FTOP_CFUNC  7u   /* a C method running a block: korb_method * | 7, marking its argument window's
-                               * EP cell — its own link sits in the cell just below the marker */
+/* Frame identity kinds, in the low 3 bits of base[-2] (every pointer they carry
+ * is 8-aligned).  A method frame's identity is its method entry — the cell the
+ * caller already fills to hand the callee over. */
+#define KORB_FID_METHOD 1u   /* korb_method * | 1 */
+#define KORB_FID_BLOCK  3u   /* node_entry NODE * | 3 */
+#define KORB_FID_MAIN   5u   /* a file's top-level frame: (file sym << 32) | (locals << 4) | (required << 3) | tag */
+#define KORB_FID_CFUNC  7u   /* a C method running a block: korb_method * | 7.  Its "frame" is the argument
+                              * window, which has no Ruby locals — so it has no EP. */
+
+/* A file frame's identity packs its own locals_cnt (korb_frame_ep needs it) and
+ * whether the file was require'd (CRuby labels that frame '<top (required)>'). */
+#define KORB_FID_MAIN_LOCALS_SHIFT 4u
+#define KORB_FID_MAIN_REQUIRED     8u
+static inline VALUE korb_fid_main(uint32_t fsym, uint32_t locals, bool required) {
+    return ((VALUE)fsym << 32) | ((VALUE)locals << KORB_FID_MAIN_LOCALS_SHIFT) |
+           (required ? (VALUE)KORB_FID_MAIN_REQUIRED : 0) | KORB_FID_MAIN;
+}
+
+/* The EP of a frame reached at RUN time (the closure PREV-chain walk steps from
+ * one frame base to the next).  Its locals_cnt is not a constant there, so it
+ * comes out of the identity cell.  A node addressing its own frame never needs
+ * this — it bakes the offset. */
+static inline uint32_t korb_frame_locals(const VALUE id) {
+    switch (id & 7u) {
+      case KORB_FID_METHOD: return ((const struct korb_method *)(uintptr_t)(id & ~(VALUE)7u))->locals_cnt;
+      case KORB_FID_BLOCK:  return ((const NODE *)(uintptr_t)(id & ~(VALUE)7u))->u.node_entry.locals_cnt;
+      case KORB_FID_MAIN:   return (uint32_t)((id >> KORB_FID_MAIN_LOCALS_SHIFT) & 0x0FFFFFFFu);
+      default:              return 0;   /* KORB_FID_CFUNC / no identity: no Ruby locals, so no EP */
+    }
+}
+static inline VALUE korb_frame_ep(const VALUE *const base) {
+    const uint32_t n = korb_frame_locals(korb_id_get(base));
+    return n ? korb_ep_get(base, n) : 0;
+}
+static inline void korb_frame_ep_set(VALUE *const base, const VALUE v) {
+    const uint32_t n = korb_frame_locals(korb_id_get(base));
+    if (n) korb_ep_set(base, n, v);
+}
 
 /* Cold helpers used by the inlined simple-call fast path below; defined in
  * korb_runtime.c (the SD / all.so reaches them as exported symbols, only on
  * the rare open-env-close / exception-backtrace paths). */
-RESULT korb_close_ret(CTX *c, VALUE *scratch, VALUE *frame_base, RESULT r);
+RESULT korb_close_ret(CTX *c, VALUE *scratch, VALUE *frame_base, uint32_t locals_cnt, RESULT r);
 RESULT korb_invoke_ret_cold(CTX *c, VALUE *base, uint32_t locals_cnt, RESULT r, uint32_t line, uint32_t mid);
 /* node_simple_entry の冷たい尾: RETURN の消費と脱出フレームのクローズ (callee 側の
  * 事情だけ。line / mid は要らない)。 */
@@ -791,11 +829,10 @@ void   korb_dispatchers_swapped(struct korb_vm *vm);   /* code-store swap → re
  * the dispatch site — both korb_call_cached / korb_send_cached (korb_runtime.c)
  * and node_call's specialized dispatcher (code_store SD) inline it, removing a
  * cross-module call layer on the hot recursive / method-call path. */
-/* True if frame `base` owns an open env in its EP cell base[-1] (a clean even
- * KorbEnv whose loc is this frame) → its return must close it.  base[-1] is the
- * receiver cell (staged by the caller): consumable as the EP once self is read. */
-static inline bool korb_frame_escaped(const VALUE *base) {
-    const VALUE pv = korb_ep_get(base);
+/* True if frame `base` owns an open env in its EP cell (a clean even KorbEnv
+ * whose loc is this frame) → its return must close it. */
+static inline bool korb_frame_escaped(const VALUE *base, const uint32_t locals_cnt) {
+    const VALUE pv = korb_ep_get(base, locals_cnt);
     return pv != 0 && (pv & 1u) == 0 && VAL2ENV(pv)->loc == base;
 }
 
@@ -813,8 +850,8 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                  &cstack_probe < c->cstack_limit))
         return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
     /* zero only the genuine locals (body locals + synth temps) that the body
-     * may read/GC-scan; the top cell (method-entry) is set just below, so zeroing
-     * it is wasted (a hot-path win for arg-only methods like fib).  Inline the
+     * may read/GC-scan; the top cell (the EP) is set just below, so zeroing it
+     * is wasted (a hot-path win for arg-only methods like fib).  Inline the
      * small counts (the vast majority of methods) to skip the __memset PLT call. */
     if (locals_cnt - 1 > argc) {
         const uint32_t nz = locals_cnt - 1 - argc;
@@ -827,8 +864,8 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
             default: memset(z, 0, nz * sizeof(VALUE));
         }
     }
-    base[locals_cnt - 1] = (VALUE)((uintptr_t)m | 1u);   /* method entry at frame top (tagged); super/__method__ source */
-    korb_ep_set(base, 0);                                 /* EP cell (base[-2]): no open env yet */
+    korb_id_set(base, (VALUE)((uintptr_t)m | KORB_FID_METHOD));   /* identity at base[-2]; super/__method__/backtrace source */
+    korb_ep_set(base, locals_cnt, 0);                             /* EP (frame top): no open env yet */
     /* self is already at base[-1] (the caller's staged receiver) — not copied to a
      * top cell.  Every korb_invoke_simple caller stages self there (bottom header). */
     (void)def_class; (void)self;
@@ -845,21 +882,21 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     }
     else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value))   /* non-exception RAISE payload (thread kill / throw): no backtrace */
         korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
-    if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
+    if (UNLIKELY(korb_frame_escaped(base, locals_cnt))) r = korb_close_ret(c, base + locals_cnt, base, locals_cnt, r);
     return r;
 }
 
 
 /* Cache-driven simple invoke.  The frame setup now lives in the callee's
  * node_simple_entry SD (where params_cnt / locals_cnt are constants), so all
- * that remains here is: hand the method entry over in the EP cell (a caller-side
- * constant offset, argc being baked at the site) and dispatch.  Nothing but
- * `line` / `mid` — themselves baked immediates — stays live across the call. */
+ * that remains here is: write the callee's identity into base[-2] — where it
+ * stays for the life of the frame — and dispatch.  Nothing but `line` / `mid`
+ * — themselves baked immediates — stays live across the call. */
 static inline __attribute__((always_inline, no_stack_protector)) RESULT
 korb_invoke_entry_ic(CTX *c, VALUE *slots, const struct korb_inlcache *ic, uint32_t argc,
                      uint32_t mid)
 {
-    korb_ep_set(slots - argc, (VALUE)((uintptr_t)ic->m | 1u));   /* method entry, moved to the frame top by the entry */
+    korb_id_set(slots - argc, (VALUE)((uintptr_t)ic->m | KORB_FID_METHOD));   /* the callee frame's identity */
     const RESULT r = (*ic->dispatch)(c, ic->body, slots);
     if (LIKELY(r.state == KORB_NORMAL)) return r;
     /* The site's line rides the frame link it stored in base[-3]; reading it
@@ -872,7 +909,7 @@ static inline __attribute__((always_inline, no_stack_protector)) RESULT
 korb_invoke_entry_cc(CTX *c, VALUE *slots, const struct korb_callcache *cc, uint32_t argc,
                      uint32_t mid)
 {
-    korb_ep_set(slots - argc, (VALUE)((uintptr_t)cc->m | 1u));
+    korb_id_set(slots - argc, (VALUE)((uintptr_t)cc->m | KORB_FID_METHOD));
     const RESULT r = (*cc->dispatch)(c, cc->body, slots);
     if (LIKELY(r.state == KORB_NORMAL)) return r;
     return korb_call_ret_cold(c, r, slots[-(korb_sword_t)argc - 3], mid);

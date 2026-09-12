@@ -348,7 +348,7 @@ korb_thread_ctx_load(CTX *c, struct korb_thread *t)
     korb_re_sync_floor(c);                    /* astrogre の C-stack floor も切替 */
     vm->root_fiber = t->root_fiber;           /* Fiber.current / storage は thread 毎 */
     /* backtrace: この thread の stack を指すので一緒に載せ替える (未開始なら空) */
-    c->cfunc_link = t->started ? t->saved_cfunc_link : NULL;
+    c->cfunc_base = t->started ? t->saved_cfunc_base : NULL;
     c->errinfo_n = t->saved_errinfo_n;        /* $! is per thread (CRuby); entries below stay owned by their thread */
     if (c->errinfo_n > c->errinfo_live) c->errinfo_live = c->errinfo_n;
 }
@@ -375,7 +375,7 @@ korb_thread_ctx_save(CTX *c, struct korb_thread *cur, VALUE *slots)
         cur->saved_hw = c->slots_high_water; cur->saved_cstack_limit = c->cstack_limit;
     }
     cur->saved_errinfo_n = c->errinfo_n;
-    cur->saved_cfunc_link = c->cfunc_link;
+    cur->saved_cfunc_base = c->cfunc_base;
 }
 
 static void
@@ -731,8 +731,8 @@ korb_thread_init_body(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
     void *vs = mmap(NULL, KORB_FIBER_VSLOTS_BYTES, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (vs == MAP_FAILED) { perror("koruby_precise: mmap thread vslots"); abort(); }
-    t->vslots = (VALUE *)vs + 2;              /* bottom-header slack (base[-1]=self, base[-2]=EP) */
-    t->vslots[-1] = 0; t->vslots[-2] = 0;
+    t->vslots = (VALUE *)vs + 3;              /* bottom-header slack (base[-1]=self, base[-2]=identity, base[-3]=link) */
+    t->vslots[-1] = 0; t->vslots[-2] = 0; t->vslots[-3] = 0;
     t->vslots_limit = (VALUE *)vs + KORB_FIBER_VSLOTS_BYTES / sizeof(VALUE) - KORB_FIBER_VSLOTS_MARGIN;
     t->cstack = malloc(KORB_FIBER_CSTACK_BYTES);
     if (!t->cstack) abort();

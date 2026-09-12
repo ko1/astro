@@ -418,6 +418,9 @@ typedef struct KorbEnv {
     VALUE ARO_GC_EDGE prev;          /* parent env handle (tagged KorbEnv* or tagged slots*, 0=top) */
     VALUE ARO_GC_EDGE vals;          /* closed: KORB_OBJ_VALUE_ARRAY of the captured locals; 0 when open */
     VALUE *loc;                      /* open: frame slots locals base; unused when closed */
+    VALUE id;                        /* the captured frame's identity cell (tagged KORB_FID_*, never a bare
+                                      * pointer → not a GC edge).  A backtrace names the owner of a block
+                                      * whose defining frame has already returned through this. */
     uint32_t n;                      /* number of locals captured */
     uint8_t  closed;                 /* 0 = open (use loc), 1 = closed (use vals) */
 } KorbEnv;
@@ -446,7 +449,7 @@ typedef struct KorbFiberRep {
     VALUE *vslots_top;               /* saved scan top while suspended */
     VALUE *vslots_limit;
     VALUE *vslots_hw;                /* saved high-water while suspended */
-    const VALUE *vcfunc_link;        /* saved c->cfunc_link — it points INTO this fiber's own slot
+    const VALUE *vcfunc_base;        /* saved c->cfunc_base — it points INTO this fiber's own slot
                                       * stack, so it must travel with it */
     VALUE *def_env;                  /* block's def_env (creator stack, non-moving) */
     struct Node *body;               /* block entry (node_entry, immortal) */
@@ -499,7 +502,7 @@ struct korb_thread {
     struct KorbFiberRep *root_fiber;    /* この thread の root fiber 代役 (Fiber.current / storage; 遅延生成) */
     VALUE int_masks;                 /* handle_interrupt のマスク列 [klass, sym, ..., n] (root; nil まで未使用) */
     uint32_t saved_errinfo_n;        /* $! stack depth (thread-local, like a fiber's) */
-    const VALUE *saved_cfunc_link;   /* c->cfunc_link while suspended: it points into THIS thread's
+    const VALUE *saved_cfunc_base;   /* c->cfunc_base while suspended: it points into THIS thread's
                                       * slot stack, so leaving it loaded across a switch would let a
                                       * backtrace walk into another thread's frames */
     void  *uctx;                     /* ucontext_t* */
@@ -893,7 +896,7 @@ struct korb_frame_rec {
     const char *file;    /* the frame's source file; NULL = the file being run */
     const char *label;   /* interned (immortal): "Object#foo", "block in C#bar", "<main>" */
     uint32_t line;       /* this frame's own position */
-    uint32_t kind;       /* the KORB_FTOP_* tag its frame-top marker carried */
+    uint32_t kind;       /* the KORB_FID_* tag in the frame's identity cell */
 };
 #define KORB_FSTACK_MAX 4096u      /* backtrace depth cap, like CRuby's */
 
@@ -991,7 +994,7 @@ struct korb_vm {
      * object each call).  KORB_NIL until first use; GC roots (AROH_VISIT_ROOTS). */
     VALUE     str_nil_to_s, str_true_to_s, str_false_to_s;
 
-    /* B3 escape: a frame's open KorbEnv (if any) lives in its EP cell base[-1]
+    /* B3 escape: a frame's open KorbEnv (if any) lives in its EP cell (frame top)
      * (clean even pointer, GC-rooted via the slot scan); closed (slots->vals
      * copied) by that frame's return.  No global registry. */
 
@@ -1264,17 +1267,17 @@ struct CTX_struct {
     /* Backtrace bookkeeping.  At the END of the struct on purpose: every field
      * above keeps the offset it had, so the dispatch path's loads (slots_limit,
      * cstack_limit, vm, ...) keep their cache lines.
-     * cfunc_link: the frame-link cell of the innermost C method that is RUNNING
+     * cfunc_base: the frame base (argument window) of the innermost C method that is RUNNING
      *   A BLOCK (`each`, `instance_exec`, `Proc#call`).  A block frame it starts
      *   has no parse-time link - a C method, not a call node, placed it - so the
      *   block frame points at this one.  Written only by the dispatch of
      *   block-taking builtins (save on entry, restore on return).
-     * carry_top / carry_line: single use - the frame a call comes from, for a
+     * carry_base / carry_line: single use - the frame a call comes from, for a
      *   dispatch that rebuilds the callee window (korb_send_impl) or reserves no
      *   header cells (a splat call, a yield), and so cannot be handed a link in
      *   the window.  Set immediately before that dispatch, cleared as read. */
-    const VALUE *cfunc_link;
-    const VALUE *carry_top;
+    const VALUE *cfunc_base;
+    const VALUE *carry_base;
     uint32_t     carry_line;
 };
 
@@ -1305,11 +1308,11 @@ struct CTX_struct {
         for (VALUE *_p = _aro_top; _p < (c)->slots_high_water; _p++)         \
             *_p = 0;                                                         \
     }                                                                        \
-    /* start two cells early: bottom-header frames keep EP at base[-2] and the    \
-     * receiver/self at base[-1]; the toplevel frame sits at c->slots so these    \
-     * are c->slots[-2]/c->slots[-1].  (Per-frame magic at base[-3] is zeroed on  \
-     * the reserve paths and, for non-toplevel frames, lies inside this range.) */ \
-    for (VALUE *_p = (c)->slots - 2; _p < _aro_top; _p++) {                  \
+    /* start three cells early: bottom-header frames keep self at base[-1], the   \
+     * identity at base[-2] and the link at base[-3]; the toplevel frame sits at  \
+     * c->slots, so those three lie below it (every other frame's are inside the  \
+     * range already). */                                                         \
+    for (VALUE *_p = (c)->slots - 3; _p < _aro_top; _p++) {                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                            \
     }                                                                        \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->super_new_skip);         \
@@ -1392,7 +1395,7 @@ struct CTX_struct {
     /* main value-stack, suspended while a fiber runs (active stack scanned   \
      * above as c->slots..slots_top). */                                      \
     if ((c)->vm->running_fiber != NULL && (c)->vm->main_slots != NULL) {      \
-        for (VALUE *_p = (c)->vm->main_slots - 2; _p < (c)->vm->main_slots_top; _p++) \
+        for (VALUE *_p = (c)->vm->main_slots - 3; _p < (c)->vm->main_slots_top; _p++) \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                         \
     }                                                                        \
     /* every live fiber's transfer/captured_self roots + (suspended) value    \
@@ -1410,7 +1413,7 @@ struct CTX_struct {
          * stand-in has no stack (vslots NULL). */                               \
         if (_fr->vslots != NULL && _fr != (c)->vm->running_fiber &&              \
             (_fr->fstate == 2 || _fr->fstate == 1)) {                            \
-            for (VALUE *_p = _fr->vslots - 2; _p < _fr->vslots_top; _p++)         \
+            for (VALUE *_p = _fr->vslots - 3; _p < _fr->vslots_top; _p++)         \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
         }                                                                    \
     }                                                                        \
@@ -1432,7 +1435,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tgroup);                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->int_masks);                  \
         if (_t != (c)->vm->cur_thread && _t->started && _t->state != KORB_TH_DEAD) { \
-            for (VALUE *_p = _t->saved_base - 2; _p < _t->saved_top; _p++)    \
+            for (VALUE *_p = _t->saved_base - 3; _p < _t->saved_top; _p++)    \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
         }                                                                    \
     }                                                                        \
