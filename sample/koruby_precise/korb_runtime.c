@@ -11847,6 +11847,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "digits", korb_m_int_digits, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "size", korb_m_int_size, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "bit_length", korb_m_int_bit_length, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "bit_count", korb_m_int_bit_count, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "<<", korb_m_int_lshift, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, ">>", korb_m_int_rshift, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "[]", korb_m_int_bitref, -1);
@@ -11978,6 +11979,20 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "bytesplice", korb_m_str_bytesplice, -1);
     korb_def_cmethod(c, KORB_C_STRING, "insert", korb_m_str_insert, 2);
     korb_def_cmethod(c, KORB_C_STRING, "setbyte", korb_m_str_setbyte, 2);
+    korb_def_cmethod(c, KORB_C_STRING, "bit_count", korb_m_str_bit_count, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "bit_get", korb_m_str_bit_get, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "bit_set?", korb_m_str_bit_setp, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "bit_set", korb_m_str_bit_set, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "bit_clear", korb_m_str_bit_clear, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "bit_flip", korb_m_str_bit_flip, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "bitwise_and", korb_m_str_bitwise_and, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "bitwise_or", korb_m_str_bitwise_or, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "bitwise_xor", korb_m_str_bitwise_xor, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "bitwise_not", korb_m_str_bitwise_not, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "bitwise_and!", korb_m_str_bitwise_and_b, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "bitwise_or!", korb_m_str_bitwise_or_b, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "bitwise_xor!", korb_m_str_bitwise_xor_b, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "bitwise_not!", korb_m_str_bitwise_not_b, 0);
     korb_def_cmethod(c, KORB_C_STRING, "b", korb_m_str_b, 0);
     korb_def_cmethod(c, KORB_C_STRING, "dedup", korb_m_str_uminus, 0);   /* #dedup is an alias of #-@ (frozen, deduplicated) */
     korb_def_cmethod(c, KORB_C_STRING, "encode", korb_m_obj_dup, -1);
@@ -12675,6 +12690,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_MATCHDATA, "byteend", korb_m_md_byteend, 1);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "offset", korb_m_md_offset, 1);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "size", korb_m_md_size, 0);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "integer_at", korb_m_md_integer_at, -1);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "length", korb_m_md_size, 0);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "string", korb_m_md_string, 0);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "regexp", korb_m_md_regexp, 0);

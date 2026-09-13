@@ -450,6 +450,25 @@ static RESULT korb_m_int_bit_length(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     while (n > 0) { len++; n >>= 1; }
     return RESULT_OK(LONG2FIX(len));
 }
+/* Ruby 4.1 population count.  A negative Integer has infinitely many set bits
+ * in two's complement, so CRuby rejects it rather than picking a width. */
+static RESULT korb_m_int_bit_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    if (KORB_BIGNUM_P(VALUE_REF_GET(self))) {
+        korb_mp_t z; korb_to_mpz(VALUE_REF_GET(self), z);
+        if (korb_mp_sgn(z) < 0) { korb_mp_clear(z); goto negative; }
+        korb_sword_t n = 0;
+        const size_t limbs = korb_mp_size(z);
+        for (size_t i = 0; i < limbs; i++)
+            n += __builtin_popcountll((unsigned long long)korb_mp_getlimbn(z, (korb_mp_size_t)i));
+        korb_mp_clear(z);
+        return RESULT_OK(LONG2FIX(n));
+    }
+    if (FIX2LONG(VALUE_REF_GET(self)) >= 0)
+        return RESULT_OK(LONG2FIX(__builtin_popcountll((unsigned long long)FIX2LONG(VALUE_REF_GET(self)))));
+  negative:
+    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "bit_count is undefined for negative integers");
+}
 static RESULT korb_m_int_digits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     korb_sword_t base = 10;
     if (VALUE_SLICE_LEN(a) >= 1) {

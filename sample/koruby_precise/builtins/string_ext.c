@@ -987,6 +987,152 @@ static RESULT korb_m_str_setbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     korb_strbuf_data(s->buf)[idx] = (char)(b & 0xFF);
     return RESULT_OK(VALUE_SLICE_GET(a, 1));                /* returns the original value argument */
 }
+/* --- Ruby 4.1: the byte string as a bit vector ------------------------------
+ * A bit offset counts across the whole byte string: bit `off` lives in byte
+ * off/8.  LSB-first (the default) numbers bit 0 of a byte as its least
+ * significant bit, MSB-first as its most significant; byte order is the same
+ * either way. */
+#define KORB_STR_BITMASK(off, lsb) \
+    ((unsigned char)(1u << ((lsb) ? ((off) & 7u) : (7u - ((off) & 7u)))))
+
+static korb_sword_t korb_popcount_bytes(const unsigned char *const restrict p, const uint32_t len) {
+    korb_sword_t n = 0;
+    uint32_t i = 0;
+    for (; i + 8 <= len; i += 8) { uint64_t w; memcpy(&w, p + i, 8); n += __builtin_popcountll(w); }
+    for (; i < len; i++) n += __builtin_popcount(p[i]);
+    return n;
+}
+
+/* The optional `lsb_first:` keyword (trailing Hash).  CRuby demands literally
+ * true or false — anything else is an ArgumentError, not truthiness. */
+static RESULT korb_str_bit_kw(CTX *c, VALUE *slots, const VALUE kw, bool *const lsb_first) {
+    const VALUE want = ID2SYM(korb_intern(c->vm, "lsb_first", 9));   /* may intern: before items_data */
+    const KorbHash *const h = VAL2HASH(kw);
+    const VALUE *const d = korb_items_data(h->items);
+    for (uint32_t i = 0; i < h->len; i++) {
+        const VALUE k = d[2 * i], v = d[2 * i + 1];
+        if (k != want) {
+            if (SYMBOL_P(k)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keyword: :%s", korb_sym_name(c->vm, SYM2ID(k)));
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keyword");
+        }
+        if (v != KORB_TRUE && v != KORB_FALSE)
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "lsb_first must be true or false");
+        *lsb_first = (v == KORB_TRUE);
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
+/* Shared front end of bit_get/bit_set?/bit_set/bit_clear/bit_flip: one
+ * positional offset plus the optional keyword.  Parks self at slots[0] (the
+ * #to_int dispatch can move it), so callers re-read it from there. */
+static RESULT korb_str_bit_args(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                korb_sword_t *const off, bool *const lsb_first) {
+    slots[0] = VALUE_REF_GET(self);
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    const bool has_kw = (n >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1)));
+    const uint32_t pos = has_kw ? n - 1 : n;
+    if (UNLIKELY(pos != 1))
+        return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1)", pos);
+    if (has_kw) CHECK(korb_str_bit_kw(c, slots + 1, VALUE_SLICE_GET(a, n - 1), lsb_first));
+    VALUE iv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(KORB_BIGNUM_P(iv)))                       /* no byte string is that long */
+        return korb_mp_sgn(VAL2BIG(iv)->z) < 0
+             ? korb_raise(c, slots + 1, KORB_E_INDEX, 0, "bit index out of range")
+             : korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "bit index out of representable range");
+    if (LIKELY(korb_to_index(iv, off))) return RESULT_OK(KORB_NIL);
+    RESULT cr = korb_coerce_to_int(c, slots + 1, &iv);     /* Float truncates; #to_int otherwise */
+    if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    if (UNLIKELY(cr.value == KORB_FALSE || !korb_to_index(iv, off)))
+        return korb_raise_no_int(c, slots + 1, VALUE_SLICE_GET(a, 0));
+    return RESULT_OK(KORB_NIL);
+}
+
+static RESULT korb_m_str_bit_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    const KorbString *const s = VAL2STR(VALUE_REF_GET(self));
+    return RESULT_OK(LONG2FIX(korb_popcount_bytes((const unsigned char *)korb_strbuf_data(s->buf), s->len)));
+}
+
+/* bit_get → 0/1, bit_set? → true/false; past the end is nil for both. */
+static RESULT korb_str_bit_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, const bool as_bool) {
+    korb_sword_t off = 0; bool lsb = true;
+    CHECK(korb_str_bit_args(c, slots, self, a, &off, &lsb));
+    if (UNLIKELY(off < 0)) return korb_raise(c, slots + 1, KORB_E_INDEX, 0, "bit index out of range");
+    const KorbString *const s = VAL2STR(slots[0]);
+    if ((uint64_t)off >= (uint64_t)s->len * 8u) return RESULT_OK(KORB_NIL);
+    const unsigned char b = (unsigned char)korb_strbuf_data(s->buf)[off >> 3];
+    const bool on = (b & KORB_STR_BITMASK(off, lsb)) != 0;
+    return RESULT_OK(as_bool ? (on ? KORB_TRUE : KORB_FALSE) : LONG2FIX(on ? 1 : 0));
+}
+static RESULT korb_m_str_bit_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_str_bit_read(c, slots, self, a, false); }
+static RESULT korb_m_str_bit_setp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_bit_read(c, slots, self, a, true); }
+
+/* op: +1 set, -1 clear, 0 flip.  CRuby checks the range before frozenness, so
+ * a frozen receiver with a bad offset still reports IndexError. */
+static RESULT korb_str_bit_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, const int op) {
+    korb_sword_t off = 0; bool lsb = true;
+    CHECK(korb_str_bit_args(c, slots, self, a, &off, &lsb));
+    if (UNLIKELY(off < 0 || (uint64_t)off >= (uint64_t)VAL2STR(slots[0])->len * 8u))
+        return korb_raise(c, slots + 1, KORB_E_INDEX, 0, "bit index out of range");
+    KORB_CHECK_FROZEN(c, slots + 1, slots[0]);
+    char *const p = &korb_strbuf_data(VAL2STR(slots[0])->buf)[off >> 3];
+    const unsigned char m = KORB_STR_BITMASK(off, lsb);
+    const unsigned char v = (unsigned char)*p;
+    *p = (char)(op > 0 ? (v | m) : op < 0 ? (v & (unsigned char)~m) : (v ^ m));
+    return RESULT_OK(slots[0]);
+}
+static RESULT korb_m_str_bit_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_str_bit_write(c, slots, self, a, +1); }
+static RESULT korb_m_str_bit_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_bit_write(c, slots, self, a, -1); }
+static RESULT korb_m_str_bit_flip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_str_bit_write(c, slots, self, a, 0); }
+
+/* op: 0 and, 1 or, 2 xor, 3 not (no operand).  The non-bang forms always answer
+ * a fresh BINARY String; the bang forms rewrite self and keep its encoding. */
+static RESULT korb_str_bitwise(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                               const int op, const bool in_place) {
+    slots[0] = VALUE_REF_GET(self);                  /* self and the operand are parked: */
+    slots[1] = (op == 3) ? KORB_NIL : VALUE_SLICE_GET(a, 0);   /* both the coercion and the result alloc may move them */
+    if (op != 3 && UNLIKELY(!KORB_STRING_P(slots[1]))) {
+        const char *const cls = korb_coerce_name(c, slots[1]);
+        RESULT cr = korb_coerce_to_str(c, slots + 2, &slots[1]);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (UNLIKELY(cr.value != KORB_TRUE))
+            return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
+    }
+    const uint32_t n = VAL2STR(slots[0])->len;
+    if (op != 3) {
+        const uint32_t on = VAL2STR(slots[1])->len;
+        if (UNLIKELY(n != on))                       /* checked before frozenness, like CRuby */
+            return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0,
+                              "operands must have the same length (%u vs %u)", n, on);
+    }
+    if (in_place) {
+        KORB_CHECK_FROZEN(c, slots + 2, slots[0]);
+        unsigned char *const d = (unsigned char *)korb_strbuf_data(VAL2STR(slots[0])->buf);
+        const unsigned char *const o = (op == 3) ? NULL : (const unsigned char *)korb_strbuf_data(VAL2STR(slots[1])->buf);
+        for (uint32_t i = 0; i < n; i++)
+            d[i] = (unsigned char)(op == 0 ? (d[i] & o[i]) : op == 1 ? (d[i] | o[i]) : op == 2 ? (d[i] ^ o[i]) : (unsigned char)~d[i]);
+        return RESULT_OK(slots[0]);
+    }
+    unsigned char *const out = malloc(n ? n : 1);    /* libc-stable: outlives the alloc below */
+    {
+        const unsigned char *const s = (const unsigned char *)korb_strbuf_data(VAL2STR(slots[0])->buf);
+        const unsigned char *const o = (op == 3) ? NULL : (const unsigned char *)korb_strbuf_data(VAL2STR(slots[1])->buf);
+        for (uint32_t i = 0; i < n; i++)
+            out[i] = (unsigned char)(op == 0 ? (s[i] & o[i]) : op == 1 ? (s[i] | o[i]) : op == 2 ? (s[i] ^ o[i]) : (unsigned char)~s[i]);
+    }
+    RESULT r = korb_str_new(c, slots + 2, (const char *)out, n);
+    free(out);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
+    return r;
+}
+static RESULT korb_m_str_bitwise_and(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_str_bitwise(c, slots, self, a, 0, false); }
+static RESULT korb_m_str_bitwise_or(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_str_bitwise(c, slots, self, a, 1, false); }
+static RESULT korb_m_str_bitwise_xor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_str_bitwise(c, slots, self, a, 2, false); }
+static RESULT korb_m_str_bitwise_not(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_str_bitwise(c, slots, self, a, 3, false); }
+static RESULT korb_m_str_bitwise_and_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_bitwise(c, slots, self, a, 0, true); }
+static RESULT korb_m_str_bitwise_or_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_str_bitwise(c, slots, self, a, 1, true); }
+static RESULT korb_m_str_bitwise_xor_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_bitwise(c, slots, self, a, 2, true); }
+static RESULT korb_m_str_bitwise_not_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_bitwise(c, slots, self, a, 3, true); }
 static RESULT korb_m_sym_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
     slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));

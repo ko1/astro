@@ -360,6 +360,12 @@ class IO
       s.force_encoding(encoding)
     end
 
+    # Ruby 4.1: set bits in [offset, offset+length).  get_string already does
+    # the bounds checking (and its exact ArgumentError messages).
+    def bit_count(offset = 0, length = nil)
+      get_string(offset, length).bit_count
+    end
+
     def set_string(string, offset = 0, length = nil, source_offset = 0)
       raise TypeError, "expected a String" unless string.is_a?(String)
       __writable!

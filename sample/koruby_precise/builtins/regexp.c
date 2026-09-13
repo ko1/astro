@@ -428,6 +428,71 @@ static RESULT korb_m_md_match_length(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     const KorbString *g = VAL2STR(slots[0]);
     return RESULT_OK(LONG2FIX((long)korb_utf8_count(korb_strbuf_data(g->buf), g->len)));
 }
+/* Ruby 4.1: `md.integer_at(n)` is `md[n]&.to_i`, except that a capture with no
+ * digits to parse answers nil rather than 0 (rb_int_parse_cstr semantics). */
+static bool korb_md_int_parsable(const char *const restrict d, const uint32_t len, int base) {
+    uint32_t i = 0;
+    while (i < len && korb_is_ws((unsigned char)d[i])) i++;
+    if (i < len && (d[i] == '+' || d[i] == '-')) i++;
+    if (i + 1 < len && d[i] == '0') {                  /* the base-prefix rule String#to_i uses */
+        const char p = d[i + 1] | 0x20;
+        const int pb = p == 'x' ? 16 : p == 'b' ? 2 : p == 'o' ? 8 : p == 'd' ? 10 : 0;
+        if (pb && (base == 0 || base == pb)) { base = pb; i += 2; }
+        else if (base == 0) base = 8;
+    }
+    if (base == 0) base = 10;
+    if (i >= len) return false;
+    const char ch = d[i];
+    const int dig = (ch >= '0' && ch <= '9') ? ch - '0'
+                  : ((ch | 0x20) >= 'a' && (ch | 0x20) <= 'z') ? (ch | 0x20) - 'a' + 10 : 99;
+    return dig < base;
+}
+static RESULT korb_m_md_integer_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t argc = VALUE_SLICE_LEN(a);
+    if (UNLIKELY(argc < 1 || argc > 2))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", argc);
+    const int n = korb_md_ngroups(VAL2MD(VALUE_REF_GET(self)));
+    const VALUE k = VALUE_SLICE_GET(a, 0);
+    korb_sword_t nth = 0;
+    if (FIXNUM_P(k)) {                                 /* CRuby: only a Fixnum is an index; anything else is a group NAME */
+        nth = FIX2LONG(k);                             /* out of range is nil, never an error */
+        if (nth >= n) return RESULT_OK(KORB_NIL);
+        if (nth < 0 && (nth += n) <= 0) return RESULT_OK(KORB_NIL);
+    }
+    else if (SYMBOL_P(k) || KORB_STRING_P(k)) {
+        const char *nm; uint32_t nl;
+        if (SYMBOL_P(k)) { nm = korb_sym_name(c->vm, SYM2ID(k)); nl = (uint32_t)strlen(nm); }
+        else { nm = korb_strbuf_data(VAL2STR(k)->buf); nl = VAL2STR(k)->len; }
+        const int gi = korb_md_name_idx(c, VALUE_REF_GET(self), nm, nl);
+        if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
+        nth = gi;
+    }
+    else {                                             /* CRuby spells the value itself here; its class is close enough */
+        return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %s", korb_coerce_name(c, k));
+    }
+    korb_sword_t base = 10;
+    if (argc == 2) {
+        VALUE bv = VALUE_SLICE_GET(a, 1);
+        if (UNLIKELY(!korb_to_index(bv, &base))) {
+            RESULT cr = korb_coerce_to_int(c, slots, &bv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (UNLIKELY(cr.value == KORB_FALSE || !korb_to_index(bv, &base)))
+                return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 1));
+        }
+        if (UNLIKELY(base > INT32_MAX || base < INT32_MIN))
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "integer %ld too big to convert to 'int'", (long)base);
+        if (UNLIKELY(base < 0 || (base != 0 && (base < 2 || base > 36))))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %d", (int)base);
+    }
+    slots[0] = UNWRAP(korb_md_group(c, slots, VALUE_REF_GET(self), (int)nth));
+    if (slots[0] == KORB_NIL) return RESULT_OK(KORB_NIL);
+    {
+        const KorbString *const s = VAL2STR(slots[0]);
+        if (!korb_md_int_parsable(korb_strbuf_data(s->buf), s->len, (int)base)) return RESULT_OK(KORB_NIL);
+    }
+    slots[1] = LONG2FIX(base);
+    return korb_m_str_to_i(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1));
+}
 static RESULT korb_m_md_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(korb_md_ngroups(VAL2MD(VALUE_REF_GET(self))))); }
 static RESULT korb_m_md_string(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; slots[0] = VALUE_REF_GET(self);

@@ -27,6 +27,19 @@ class Module
     m
   end
 
+  # Ruby 4.1: every live module/class whose ancestors include self, minus self
+  # and the singleton classes.  A later `include` has to show up here, so this
+  # is a live scan rather than a list maintained at include time.
+  def descendants
+    out = []
+    ObjectSpace.each_object(Module) do |m|
+      next if m.equal?(self)
+      next if m.is_a?(Class) && m.singleton_class?
+      out << m if m.ancestors.include?(self)
+    end
+    out
+  end
+
   # True iff self is a singleton class.  attached_object succeeds only for a
   # singleton class (raises TypeError otherwise), so use it as the predicate.
   def singleton_class?

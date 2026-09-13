@@ -1791,6 +1791,30 @@ class Dir
     raise ArgumentError, "user #{user} doesn't exist"
   end
 
+  # Ruby 4.1: #children paired with each entry's File.ftype.  The lstat path is
+  # built from BINARY copies so a non-UTF-8 entry name still joins cleanly.
+  def self.scan(path, **opts, &blk)
+    dir = File.path(path)
+    pairs = children(dir, **opts).map { |n| [n, __entry_type(dir, n)] }
+    return pairs unless blk
+    pairs.each { |n, t| blk.call(n, t) }
+    nil
+  end
+
+  def self.__entry_type(dir, name)
+    File.ftype(File.join(dir.b, name.b)).to_sym
+  rescue SystemCallError                  # vanished between readdir and lstat
+    :unknown
+  end
+
+  def scan(&blk)
+    dir = path
+    pairs = children.map { |n| [n, Dir.__entry_type(dir, n)] }
+    return pairs unless blk
+    pairs.each { |n, t| blk.call(n, t) }
+    nil
+  end
+
   # Dir.chdir with no argument goes to the home directory (CRuby)
   def self.chdir(path = nil, &blk)
     __chdir(path.nil? ? home : path, &blk)
@@ -2114,6 +2138,12 @@ class << ENV
     nil
   end
   alias has_value? value?    # a real alias: ENV.method(:has_value?) == ENV.method(:value?)
+  # Ruby 4.1: Hash#fetch_values for ENV — a missing name raises KeyError unless
+  # a block supplies its replacement.  ENV.fetch does the name coercion.
+  def fetch_values(*names, &blk)
+    names.map { |name| blk ? fetch(name, &blk) : fetch(name) }
+  end
+
   def inspect = to_h.inspect
 end
 

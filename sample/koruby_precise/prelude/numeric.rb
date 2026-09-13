@@ -206,6 +206,80 @@ class Complex
 end
 
 class Range
+  # Ruby 4.1: a new Range with both bounds clamped to min/max (or to another
+  # Range's bounds).  Direct translation of CRuby range_clamp.
+  def clamp(*args)
+    raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1..2)" unless (1..2).cover?(args.size)
+    min, max = args
+    if args.size == 1
+      arg = min
+      if arg.is_a?(Range)
+        min, max, excl = arg.begin, arg.end, arg.exclude_end?
+      elsif arg.respond_to?(:begin) && arg.respond_to?(:end) && arg.respond_to?(:exclude_end?)
+        min, max, excl = arg.begin, arg.end, !!arg.exclude_end?   # duck-typed Range
+      else
+        # rb_builtin_class_name spells the singletons out rather than naming their class
+        name = arg.nil? || arg.equal?(true) || arg.equal?(false) ? arg.inspect : arg.class
+        raise TypeError, "wrong argument type #{name} (expected Range)"
+      end
+    else
+      excl = false
+    end
+
+    self_beg = self.begin
+    self_end = self.end
+    self_excl = exclude_end?
+    clamp_beg = 0
+    clamp_end = 0
+
+    if !min.nil? && !max.nil? && __clamp_cmp(min, max) > 0
+      raise ArgumentError, "min argument must be less than or equal to max argument"
+    end
+
+    unless min.nil?
+      if self_beg.nil? || __clamp_cmp(self_beg, min) < 0
+        clamp_beg = -1
+        self_beg = min
+      end
+      if !self_end.nil? && __clamp_cmp(self_end, min) < 0
+        clamp_end = -1
+        self_end = min
+      end
+    end
+    unless max.nil?
+      if clamp_beg == 0 && !self_beg.nil? && __clamp_cmp(self_beg, max) > 0
+        clamp_beg = 1
+        self_beg = max
+      end
+      if clamp_end == 0
+        cmp = self_end.nil? ? 1 : __clamp_cmp(self_end, max)
+        if cmp > 0
+          clamp_end = 1
+          self_end = max
+          self_excl = excl
+        elsif cmp == 0
+          self_excl ||= excl
+        end
+      end
+    end
+    # Both ends landed on the same bound: self was entirely outside, so the
+    # answer is the empty range at that bound.
+    self_excl = true if clamp_beg != 0 && clamp_beg == clamp_end
+    Range.new(self_beg, self_end, self_excl)
+  end
+
+  # <=> that reports a nil comparison the way CRuby's rb_cmperr_reason does.
+  def __clamp_cmp(a, b)
+    r = (a <=> b)
+    return r unless r.nil?
+    subject = case b
+              when Float, Integer, Symbol then b.inspect
+              else b.nil? || b.equal?(true) || b.equal?(false) ? b.inspect : b.class
+              end
+    raise ArgumentError, "comparison of #{a.class} with #{subject} failed: comparator returned nil"
+  end
+  private :__clamp_cmp
+
   # A #succ-driven generator for an endless non-Integer range ("a".. etc.);
   # Range#each (C) returns this when it cannot materialize.
   def __each_endless_enum
