@@ -2204,7 +2204,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             WITH_CHAIN(tc, kind_node_aref.slot_count,
                        (recv = transduce(tc, cn->receiver),
                         idx  = transduce(tc, cn->arguments->arguments.nodes[0])));
-            return ALLOC_node_aref(line, recv, idx);
+            return KP_LINK(tc, node_aref, kp_flink_at(tc, line, kind_node_aref.slot_count), recv, idx);
         }
         if (mid == tc->c->vm->mid_aset && argc == 2 &&
             !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE) &&
@@ -2214,7 +2214,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                        (recv = transduce(tc, cn->receiver),
                         idx  = transduce(tc, cn->arguments->arguments.nodes[0]),
                         val  = transduce(tc, cn->arguments->arguments.nodes[1])));
-            return ALLOC_node_aset(line, recv, idx, val);
+            return KP_LINK(tc, node_aset, kp_flink_at(tc, line, kind_node_aset.slot_count), recv, idx, val);
         }
     }
 

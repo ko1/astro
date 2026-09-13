@@ -78,11 +78,43 @@
   揃える nop が 1 個増え**、それが yield 経路にあるので 1 yield あたり 1 命令 (block で +15M =
   ちょうど 1/yield) + cycles +4%。バイナリ全体の逆アセンブルが nop 以外完全一致であることで確認。
 
-### 残り (このレビューの範囲外・設計上の既知)
-- **C の窓の下で鎖が切れる**: `puts` / `p` / `Hash#[]=` / `sort` / `respond_to?` / `bind_call` /
-  `Method#to_proc.call` / `Class.new` の下の `<main>` や C フレーム自身が出ない。
-  全 cfunc の引数窓に identity を書けば繋がるが、コール毎のコストになる (今は block を走らせる
-  builtin だけが `KORB_FID_CFUNC` を書く)。
+### C の窓 — 塞いだ (2026-09-13、同日)
+
+レビュー時点では「`puts` / `p` / `Hash#[]=` / `sort` / `respond_to?` / `bind_call` /
+`Class.new` の下で鎖が終わる」が残っていた。block を走らせる builtin だけが自分の引数窓に
+`KORB_FID_CFUNC` を書いていたため。**全ての C ディスパッチが書くようにした**:
+
+- `korb_cframe_enter/leave` (node.h): 引数窓に identity を書き、`c->cfunc_link` にその窓を指す
+  CFRAME link を置く。C から Ruby に戻る `korb_send_impl` は carry が無ければこれを使う。
+- **ヘッダの無い窓を壊さない門番**: `node_shl` は引数を自分のカーソルに直接積む (ヘッダセルが無い)
+  ので、そこに identity を書くと**呼び出し元のライブなスロットを壊す**。
+  `KORB_FLINK_FRAMED(flink)` =「サイトが距離付き link を焼いた ⟹ @framehdr でヘッダも予約した」
+  で判定し、`korb_dispatch_method` / `korb_send_cached` / `korb_send_ic_dispatch` に `framed` を通す。
+- **C フレームの行番号**: CRuby は C フレームを「1 つ下のフレームの位置」で報告する。
+  自分の link から読むと C→C の入れ子で 0 になったので、歩きの後段で下から伝播させる。
+- **`h[k]` / `h[k]=v` / `a&.b`** が link を渡していなかった (`node_aref` / `node_aset` /
+  `node_send_safe`)。baked flink + `korb_flink_stage` を追加。
+  `staged` は**ノードの `slot_count`** (値渡しの `VALUE @child` は枠を取らないので子の数ではない)。
+
+結果: `Array#index` → `Integer#==` → `K#==`、`K#hash` → `Hash#[]=` → `Object#m` → `<main>` が
+CRuby と一致。実 mspec core は 133c2bf4 と同一条件で pass 22655 → **22658** (err 84 → 81)。
+
+**値段** (133c2bf4 比、ローカル・命令数中央値): fib −0.02% / method_call −0.01% / block −0.01% /
+object +0.32% / iterators +0.48% / closures +1.48% / **methodchain +3.47%**。
+builtin send 1 回あたり ~6 命令 (load + identity store + link store + 復元 2)。
+削るなら: (a) `node_shl` に手でヘッダを積んで `framed` 判定ごと消す (分岐 2 + 2 命令)、
+(b) `korb_cframe_leave` の `korb_id_set(base, 0)` を省く (セルは次の呼び出しで必ず上書きされる)。
+
+### 残り (設計上の既知・別件)
+- **二項演算子ノード** (`node_plus` / `node_lt` / `node_eq` …、`alloc_binop` 経由の 16 種) は
+  link を焼いていないので、deopt 先の Ruby メソッド (`coerce` / `<=>` / ユーザ `==`) で鎖が
+  長さ 1 になる。`node_aref`/`node_aset` と同じ手 (flink オペランド + `korb_flink_stage`) で
+  塞げるが、最もホットなノード群なのでノードサイズ増を測ってから。
+- CRuby が**自分の C フレームを省く**ケースでこちらが多く出す: `Hash#[]=`/`Hash#[]` (CRuby は
+  opt_aset/opt_aref 命令でフレームを積まない)、`Array#include?` (CRuby は `array.rb` の
+  Primitive 実装)。`Array#delete`/`count`/`index`/`Hash#value?` は CRuby も出すので一致。
+- `Class.new { }` の `Class#initialize` / `Class#new` が出ない (専用ディスパッチでフレームを作らない)。
+- `IO#puts` が出ない (こちらは `Kernel#puts` 1 フレームで実装している)。
 - `super` → 既定 `method_missing` の NoMethodError が line 0 (レビュー前から同じ)。
 - raise の unwind 記録にブロックフレームが載らない (`block in Object#m18` が出ない)。
 - `[1].each(&:s13)` が private メソッドを呼べてしまう (Symbol#to_proc の可視性、別件)。

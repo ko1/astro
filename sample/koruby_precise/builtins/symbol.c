@@ -401,7 +401,7 @@ static RESULT korb_m_meth_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             slots[2] = 0;
             slots[3] = m->recv;                          /* recv, in the slot below the args */
             for (uint32_t i = 0; i < argc; i++) slots[4 + i] = VALUE_SLICE_GET(a, i);
-            return korb_dispatch_method(c, slots + 4 + argc, entry, mid, 0, argc, owner, block, def_env, cself);
+            return korb_dispatch_method(c, slots + 4 + argc, entry, mid, 0, argc, owner, block, def_env, cself, true);
         }
     }
     slots[0] = m->recv;                                  /* recv below the args */
@@ -1023,7 +1023,7 @@ static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             slots[2] = 0;
             slots[3] = VALUE_SLICE_GET(a, 0);             /* recv, in the slot below the args */
             for (uint32_t i = 0; i < argc; i++) slots[4 + i] = VALUE_SLICE_GET(a, 1 + i);
-            return korb_dispatch_method(c, slots + 4 + argc, entry, mid, 0, argc, owner, NULL, NULL, NULL);
+            return korb_dispatch_method(c, slots + 4 + argc, entry, mid, 0, argc, owner, NULL, NULL, NULL, true);
         }
     }
     slots[0] = VALUE_SLICE_GET(a, 0);                                /* recv */

@@ -7853,7 +7853,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *fbase, uint32_t line0, const VALUE 
                     continue;
                 }
                 fbase = ptr;                     /* CFRAME: the C method this frame runs under */
-                line = korb_flink_line_at(fbase + KORB_FLINK_OFF, lo, hi);   /* it reads at its own call site */
+                line = 0;                        /* a C frame has no line: the pass below gives it its caller's */
             } else {
                 const uint32_t dist = korb_flink_dist(link);
                 if (dist == 0) break;
@@ -7920,8 +7920,14 @@ korb_frames_snapshot_at(CTX *c, const VALUE *fbase, uint32_t line0, const VALUE 
         n++;                                     /* no identity: the bottom frame, as CRuby's '<main>' */
         break;
     }
-    for (uint32_t i = 0; i < n; i++)             /* a C frame reads at its call site, in the caller's file */
-        if (vm->fscratch[i].kind == KORB_FID_CFUNC && i + 1 < n) vm->fscratch[i].file = vm->fscratch[i + 1].file;
+    /* A C frame has no source of its own: CRuby reports it at the position of the
+     * frame below it — which is its call site, and the same file.  Innermost
+     * first, so a run of nested C frames all take the first Ruby frame below. */
+    for (uint32_t i = n; i-- > 0; )
+        if (vm->fscratch[i].kind == KORB_FID_CFUNC && i + 1 < n) {
+            vm->fscratch[i].file = vm->fscratch[i + 1].file;
+            vm->fscratch[i].line = vm->fscratch[i + 1].line;
+        }
     return n;
 }
 
@@ -8697,7 +8703,7 @@ static RESULT korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *de
 static __attribute__((no_stack_protector)) RESULT
 korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
                      uint32_t line, uint32_t argc, VALUE def_class,
-                     NODE *block, VALUE *def_env, VALUE *captured_self)
+                     NODE *block, VALUE *def_env, VALUE *captured_self, bool framed)
 {
     VALUE *const recv_slot = &slots[-(korb_sword_t)argc - 1];
     const VALUE self = *recv_slot;
@@ -8705,7 +8711,10 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
       case KORB_METHOD_BUILTIN: {   /* global C function reached via send / method_missing / Kernel.x */
         if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc))
             return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
-        RESULT r = m->bfn(c, slots, VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc));
+        VALUE *const bbase = &slots[-(korb_sword_t)argc];
+        const VALUE bsaved = framed ? korb_cframe_enter(c, bbase, m) : 0;
+        RESULT r = m->bfn(c, slots, VALUE_SLICE_MAKE(bbase, argc));
+        if (framed) korb_cframe_leave(c, bsaved);
         if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
         return r;
       }
@@ -8726,22 +8735,14 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
                               "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
         const VALUE_REF recv = VALUE_REF_AT(recv_slot);
         const VALUE_SLICE args = VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc);
-        RESULT r;
-        if (m->uses_block) {
-            /* A block-taking builtin is a frame CRuby shows ("Array#each"), and
-             * the block it runs needs a link to it.  Give the argument window an
-             * identity so it reads as a frame base, and name it while the call
-             * runs; the block path reads both.  Only this dispatch pays for it. */
-            VALUE *const cbase = &slots[-(korb_sword_t)argc];
-            const VALUE saved = c->cfunc_link;
-            korb_id_set(cbase, (VALUE)((uintptr_t)m | KORB_FID_CFUNC));
-            c->cfunc_link = korb_flink_cframe(cbase);
-            r = m->rbfn(c, slots, recv, args, block, def_env, captured_self);
-            c->cfunc_link = saved;
-            korb_id_set(cbase, 0);
-        } else {
-            r = m->rfn(c, slots, recv, args);
-        }
+        /* The window is the frame CRuby shows for this C method ("Array#each",
+         * "Kernel#respond_to?") — what a block it runs, or a Ruby method it calls
+         * back into, links to.  See korb_cframe_enter. */
+        VALUE *const cbase = &slots[-(korb_sword_t)argc];
+        const VALUE saved = framed ? korb_cframe_enter(c, cbase, m) : 0;
+        RESULT r = m->uses_block ? m->rbfn(c, slots, recv, args, block, def_env, captured_self)
+                                 : m->rfn(c, slots, recv, args);
+        if (framed) korb_cframe_leave(c, saved);
         if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
         return r;
       }
@@ -8790,14 +8791,11 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
          * mark the arg window so the block frame links to it (as for a
          * block-taking builtin above) */
         VALUE *const dmbase = &slots[-(korb_sword_t)argc];
-        const VALUE dm_link_saved = c->cfunc_link;
-        korb_id_set(dmbase, (VALUE)((uintptr_t)m | KORB_FID_CFUNC));
-        c->cfunc_link = korb_flink_cframe(dmbase);
+        const VALUE dm_link_saved = framed ? korb_cframe_enter(c, dmbase, m) : 0;
         RESULT r = korb_block_yield_full(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
                                          &slots[-(korb_sword_t)argc], argc, recv_slot,
                                          block, def_env, captured_self, 2);   /* captured_self = receiver slot; 2 = method-shaped binding */
-        c->cfunc_link = dm_link_saved;
-        korb_id_set(dmbase, 0);
+        if (framed) korb_cframe_leave(c, dm_link_saved);
         if (UNLIKELY(dm_definee != KORB_NIL)) c->def_definee = dm_definee;
         c->dm_entry = dm_saved;
         /* A define_method body behaves like a lambda: `return`, `break` and
@@ -9015,7 +9013,9 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                               "wrong number of arguments (given %u, expected %d)",
                               argc, m->params_cnt);
         }
+        const VALUE bsaved = korb_cframe_enter(c, base, m);   /* the frame `puts` shows as */
         RESULT r = m->bfn(c, slots, VALUE_SLICE_MAKE(base, argc));
+        korb_cframe_leave(c, bsaved);
         if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, m->mid, m);
         return r;
     }
@@ -9082,13 +9082,14 @@ korb_invoke_self(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
  * Returns true (with *out set) when an active refinement supplies `mid`. */
 static __attribute__((noinline)) bool
 korb_refined_dispatch(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-                      VALUE recv, NODE *block, VALUE *def_env, VALUE *captured_self, RESULT *out)
+                      VALUE recv, NODE *block, VALUE *def_env, VALUE *captured_self, RESULT *out,
+                      bool framed)
 {
     if (c->refinements == KORB_NIL) return false;
     VALUE rdef = KORB_NIL;
     struct korb_method *const m = korb_refined_find(c, korb_dispatch_class(c, recv), mid, &rdef);
     if (m == NULL) return false;
-    *out = korb_dispatch_method(c, slots, m, mid, line, argc, rdef, block, def_env, captured_self);
+    *out = korb_dispatch_method(c, slots, m, mid, line, argc, rdef, block, def_env, captured_self, framed);
     return true;
 }
 
@@ -10079,7 +10080,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
      * on (c->carry_base).  The cell below a flush [recv, args] window is NOT
      * read: a C caller's window has whatever it had there, and an odd VALUE
      * would walk as a link.  No carry = the chain ends here. */
-    slots[1] = c->carry_base ? korb_flink_from_base(c, c->carry_base, c->carry_line_bits, &slots[1]) : 0;
+    slots[1] = c->carry_base ? korb_flink_from_base(c, c->carry_base, c->carry_line_bits, &slots[1])
+                             : korb_flink_cur_cframe(c, &slots[1]);   /* C called back into Ruby */
     c->carry_base = NULL;                                /* single use */
     slots[2] = 0;                                       /* callee base[-2] (EP) */
     slots += (korb_sword_t)argc + 4;                        /* new cursor: recv at slots[-argc-1], gap below */
@@ -10136,7 +10138,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
 
     if (UNLIKELY(vm->refinements_active)) {   /* refined dispatch (also covers send/__send__/public_send, which re-enter here) */
         RESULT rr;
-        if (korb_refined_dispatch(c, slots, mid, line, argc, self, block, def_env, captured_self, &rr)) return rr;
+        if (korb_refined_dispatch(c, slots, mid, line, argc, self, block, def_env, captured_self, &rr, true)) return rr;
         self = *recv_slot;   /* Defensive, NOT a fix for a live bug: every `return false` inside
                               * korb_refined_dispatch sits BEFORE its only allocating call
                               * (korb_dispatch_method), so today the fall-through path cannot
@@ -10153,7 +10155,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
         VALUE def_class = KORB_NIL;
         struct korb_method *um = korb_mcache_find(vm, korb_obj_dispatch_klass(vm, self), mid, &def_class);
-        if (um) return korb_dispatch_method(c, slots, um, mid, line, argc, def_class, block, def_env, captured_self);
+        if (um) return korb_dispatch_method(c, slots, um, mid, line, argc, def_class, block, def_env, captured_self, true);
     }
     /* class receiver → Klass.new (allocate + initialize). */
     else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_FIBER) &&
@@ -10179,7 +10181,9 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (gm->kind == KORB_METHOD_BUILTIN) {                            /* global C builtin (Integer/Float/p/...) */
                 if (UNLIKELY(gm->params_cnt >= 0 && (uint32_t)gm->params_cnt != argc))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %d)", argc, gm->params_cnt);
+                const VALUE bsaved = korb_cframe_enter(c, base, gm);
                 RESULT r = gm->bfn(c, slots, VALUE_SLICE_MAKE(base, argc));
+                korb_cframe_leave(c, bsaved);
                 if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, gm);
                 return r;
             }
@@ -10194,7 +10198,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             dc = KORB_NIL;
             if (KORB_CLASS_P(meta)) m2 = korb_class_find_method(meta, mid, &dc);
         }
-        if (m2) return korb_dispatch_method(c, slots, m2, mid, line, argc, dc, block, def_env, captured_self);
+        if (m2) return korb_dispatch_method(c, slots, m2, mid, line, argc, dc, block, def_env, captured_self, true);
         return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '%s' for Kernel", korb_sym_name(vm, mid));
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_aref &&
@@ -10424,7 +10428,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
              * node_send_cached, this shared (send/block) path must too. */
             if (snew && (snew->kind == KORB_METHOD_ISEQ || snew->kind == KORB_METHOD_CFUNC ||
                          snew->kind == KORB_METHOD_DM))
-                return korb_dispatch_method(c, slots, snew, mid, line, argc, sdef, block, def_env, captured_self);
+                return korb_dispatch_method(c, slots, snew, mid, line, argc, sdef, block, def_env, captured_self, true);
         }
         uint32_t cname = VAL2CLASS(self)->name_sym;
         if (self == korb_builtin_class_obj(vm, KORB_C_NIL) || self == korb_builtin_class_obj(vm, KORB_C_TRUE) ||
@@ -11047,7 +11051,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
              * Object#initialize, or a builtin) as well as ISEQ; korb_invoke_method
              * is ISEQ-only and would misread a CFUNC's locals_cnt (SIGBUS) — this
              * is the `Klass.new(...) { block }` path, so a block may be present. */
-            RESULT ir = korb_dispatch_method(c, slots, init, init_mid, line, argc, init_def, block, def_env, captured_self);
+            RESULT ir = korb_dispatch_method(c, slots, init, init_mid, line, argc, init_def, block, def_env, captured_self, true);
             if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
             if (UNLIKELY(ir.state == KORB_BREAK) && korb_break_owned(c, block, def_env)) return RESULT_OK(ir.value);   /* `break v` in the block passed to new (its home is new) → new returns v */
             if (UNLIKELY(ir.state == KORB_BREAK)) return ir;
@@ -11077,7 +11081,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
          * before method_missing. */
         {
             struct korb_method *const gm = korb_method_lookup(vm, mid);
-            if (gm) return korb_dispatch_method(c, slots, gm, mid, line, argc, KORB_NIL, block, def_env, captured_self);
+            if (gm) return korb_dispatch_method(c, slots, gm, mid, line, argc, KORB_NIL, block, def_env, captured_self, true);
         }
         /* user-defined method_missing(name, *args) catches the miss. */
         if (KORB_CLASS_P(start_cls)) {
@@ -11093,7 +11097,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 slots[3] = self;                               /* base[-1] (self)  */
                 slots[4] = ID2SYM(mid);                        /* arg0 = missing method name */
                 for (uint32_t j = 0; j < argc; j++) slots[5 + j] = slots[-(korb_sword_t)argc + (korb_sword_t)j];
-                return korb_dispatch_method(c, slots + argc + 5, mm, mm_mid, line, argc + 1, mm_def, block, def_env, captured_self);
+                return korb_dispatch_method(c, slots + argc + 5, mm, mm_mid, line, argc + 1, mm_def, block, def_env, captured_self, true);
             }
         }
         slots[0] = self;                                   /* root receiver across the raise + ivar_set allocs */
@@ -11120,7 +11124,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         return r;
     }
-    return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self);
+    return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self, true);
 }
 
 RESULT
@@ -11223,7 +11227,7 @@ korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t 
             slots[4] = ID2SYM(mid);
             for (uint32_t j = 0; j < argc; j++) slots[5 + j] = slots[-(korb_sword_t)argc + (korb_sword_t)j];
             *mm_handled = true;
-            return korb_dispatch_method(c, slots + argc + 5, mm, mm_mid, line, argc + 1, mm_def, NULL, NULL, NULL);
+            return korb_dispatch_method(c, slots + argc + 5, mm, mm_mid, line, argc + 1, mm_def, NULL, NULL, NULL, true);
         }
     }
     slots[0] = recv;                                   /* root across the raise + ivar_set allocs */
@@ -11249,6 +11253,7 @@ static inline RESULT
 korb_send_ic_dispatch(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                  struct korb_inlcache *ic, VALUE recv, VALUE caller_self)
 {
+    const bool framed = KORB_FLINK_FRAMED(flink);
     if (LIKELY(ic->dispatch)) return korb_invoke_entry_ic(c, slots, ic, argc, mid);
     const uint32_t line = korb_flink_line(flink);
     struct korb_method *const m = ic->m;
@@ -11264,12 +11269,14 @@ korb_send_ic_dispatch(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t 
         return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));
     if (m->kind == KORB_METHOD_CFUNC && !m->uses_block &&       /* builtin (Array#<</[], String#..) — inline the CFUNC call, skip dispatch_method */
         LIKELY(m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
-        RESULT r = m->rfn(c, slots, VALUE_REF_AT(&slots[-(korb_sword_t)argc - 1]),
-                          VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc));
+        VALUE *const cbase = &slots[-(korb_sword_t)argc];
+        const VALUE saved = framed ? korb_cframe_enter(c, cbase, m) : 0;
+        RESULT r = m->rfn(c, slots, VALUE_REF_AT(&cbase[-1]), VALUE_SLICE_MAKE(cbase, argc));
+        if (framed) korb_cframe_leave(c, saved);
         if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
         return r;
     }
-    return korb_dispatch_method(c, slots, m, mid, line, argc, ic->def_class, NULL, NULL, NULL);
+    return korb_dispatch_method(c, slots, m, mid, line, argc, ic->def_class, NULL, NULL, NULL, framed);
 }
 
 #define KORB_IC_INSTANCE_HIT(ic, vm, klass) \
@@ -11281,10 +11288,11 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                  struct korb_inlcache *ic, VALUE caller_self)
 {
     struct korb_vm *const vm = c->vm;
+    const bool framed = KORB_FLINK_FRAMED(flink);   /* node_shl stages flush: no header to mark */
     const VALUE recv = slots[-(korb_sword_t)argc - 1];
     if (UNLIKELY(vm->refinements_active)) {          /* refined receiver dispatch */
         RESULT rr;
-        if (korb_refined_dispatch(c, slots, mid, korb_flink_line(flink), argc, recv, NULL, NULL, NULL, &rr)) return rr;
+        if (korb_refined_dispatch(c, slots, mid, korb_flink_line(flink), argc, recv, NULL, NULL, NULL, &rr, framed)) return rr;
     }
     /* Receiver → class for the common shapes (plain user instance, fixnum, flonum,
      * plain Array/String/Hash) and the ic check come first: a hot builtin send
@@ -11313,8 +11321,10 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
         const struct korb_method *const m = ic->m;
         if (LIKELY(m->kind == KORB_METHOD_CFUNC && !m->uses_block &&
                    (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc))) {
-            const RESULT r = m->rfn(c, slots, VALUE_REF_AT(&slots[-(korb_sword_t)argc - 1]),
-                                    VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc));
+            VALUE *const cbase = &slots[-(korb_sword_t)argc];
+            const VALUE saved = LIKELY(framed) ? korb_cframe_enter(c, cbase, m) : 0;
+            const RESULT r = m->rfn(c, slots, VALUE_REF_AT(&cbase[-1]), VALUE_SLICE_MAKE(cbase, argc));
+            if (LIKELY(framed)) korb_cframe_leave(c, saved);
             if (LIKELY(r.state == KORB_NORMAL)) return r;
             return korb_call_ret_cold(c, r, korb_flink_line(flink), mid);
         }
@@ -11353,7 +11363,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                  * ISEQ; korb_invoke_method is ISEQ-only and would misread a CFUNC's
                  * locals_cnt (SIGBUS). */
                 const RESULT ir = korb_dispatch_method(c, slots, init, vm->mid_initialize, korb_flink_line(flink), argc,
-                                                       idef, NULL, NULL, NULL);
+                                                       idef, NULL, NULL, NULL, framed);
                 if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
                 return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
             }
@@ -11375,7 +11385,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                                                           korb_flink_site_link(flink, slots - (korb_sword_t)argc - 3));
                     if (mm_handled || vr.state != KORB_NORMAL) return vr;
                 }
-                return korb_dispatch_method(c, slots, ic->m, mid, korb_flink_line(flink), argc, ic->def_class, NULL, NULL, NULL);
+                return korb_dispatch_method(c, slots, ic->m, mid, korb_flink_line(flink), argc, ic->def_class, NULL, NULL, NULL, framed);
             }
             const VALUE start_cls = korb_dispatch_class(c, recv);
             VALUE def_class = KORB_NIL;
@@ -11389,7 +11399,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                     if (mm_handled || vr.state != KORB_NORMAL) return vr;
                 }
                 korb_ic_fill(ic, korb_ic_serial(vm), recv, m, def_class, KORB_IC_SMETHOD, argc);
-                return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL);
+                return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL, framed);
             }
             /* miss (method_missing / NoMethodError) → korb_send_impl formats it */
         }
@@ -11414,10 +11424,10 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                                                           korb_flink_site_link(flink, slots - (korb_sword_t)argc - 3));
             if (mm_handled || vr.state != KORB_NORMAL) return vr;
         }
-        return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL);
+        return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL, framed);
     }
     korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE, argc);
-    return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL);
+    return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL, framed);
 }
 
 RESULT

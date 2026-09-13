@@ -779,6 +779,13 @@ static inline VALUE korb_flink_fwd(const VALUE *const cell) { return (VALUE)(uin
 static inline VALUE korb_flink_cframe(const VALUE *const base) { return (VALUE)(uintptr_t)base | 7u; }
 static inline const VALUE *korb_flink_ptr(const VALUE f) { return (const VALUE *)(uintptr_t)(f & ~(VALUE)7u); }
 
+/* True when a baked link carries a distance, which a call site only does when it
+ * also reserved the callee's header cells (@framehdr).  A site that stages its
+ * args flush against its own cursor (node_shl) bakes distance 0 — the cells below
+ * ITS window are the caller's live slots, not a header to write into.  Only the
+ * low field is tested: a baked link never uses the wide one. */
+#define KORB_FLINK_FRAMED(f) (((f) & ((VALUE)(KORB_FLINK_DIST_MAX - 1u) << 2)) != 0)
+
 /* Park a parse-baked link for a dispatch that builds the callee window itself
  * (a splat call reserves no header cells to store it in; a yield hands one to
  * korb_block_yield).  `slots` is the node's own cursor, which is what the baked
@@ -819,6 +826,28 @@ static inline void korb_flink_stage_at(CTX *c, const VALUE *const base, const ui
 #define KORB_FID_MAIN_REQUIRED     8u
 static inline VALUE korb_fid_main(uint32_t fsym, bool required) {
     return ((VALUE)fsym << 32) | (required ? (VALUE)KORB_FID_MAIN_REQUIRED : 0) | KORB_FID_MAIN;
+}
+
+/* A C method's argument window IS the frame CRuby shows for it ("Kernel#puts"),
+ * and it is what a Ruby method called back into from C has to link to — without
+ * it the chain ends at that Ruby method.  So a C dispatch through a framed window
+ * names itself here for as long as it runs: a load, three stores and a restore
+ * per C call, which is what a backtrace that does not stop at `puts` costs.
+ * `base` is the argument window = the callee frame's locals base. */
+static inline VALUE korb_cframe_enter(CTX *c, VALUE *const base, const struct korb_method *const m) {
+    const VALUE saved = c->cfunc_link;
+    korb_id_set(base, (VALUE)((uintptr_t)m | KORB_FID_CFUNC));
+    c->cfunc_link = korb_flink_cframe(base);
+    return saved;
+}
+/* The identity is NOT cleared: the cell is the call site's header, and every
+ * frame built on it writes its own identity first (the @framehdr dispatcher
+ * zeroes it before the args run; korb_invoke_* overwrite it).  It is tagged, so
+ * the GC root scan skips it either way.  (Parking `saved` in the frame's unused
+ * EP cell instead of a C local was tried and measured WORSE: methodchain
+ * +4.01% vs +3.18%.) */
+static inline void korb_cframe_leave(CTX *c, const VALUE saved) {
+    c->cfunc_link = saved;
 }
 
 /* Frame locals by NAME (debugger).  `base` is any live frame's locals base — the
