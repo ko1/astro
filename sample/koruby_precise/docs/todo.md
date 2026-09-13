@@ -4074,11 +4074,8 @@ dynamically on the singleton class」が落ちる (実測: エラー 1 → 2)。
 korb_method 1 件につき VALUE が 1 つ増え、GC の per-method edge 走査も 1 本
 増えるので、この稀なラベルのために払うかは要判断。
 
-**2. `require` / `require_relative` 自身のフレームが出ない。**
-require されたファイルの中で取った backtrace に、CRuby は
-`"...:in 'Kernel#require'"` の行を入れるが、koruby はファイルの top フレームを
-require の窓へ `korb_flink_carry` で直結しているので、その 1 行が落ちる。
-`tools/bt_probe/t1_req.rb` で見える。
+**2. `require` / `require_relative` 自身のフレームが出ない。** — **修正済み**
+(`49675fde`)。下の「require / load のフレーム」の節を見ること。
 
 ## (2026-09-13) `Kernel#tap` を Ruby に移した代償: 起動 +1.37M 命令
 

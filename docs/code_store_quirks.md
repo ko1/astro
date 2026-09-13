@@ -108,3 +108,28 @@ todo (sample/abruby/docs/todo.md §ノードフィールドのロード時解決
 - glibc `elf/dl-open.c` / `elf/dl-load.c` — 実装
 - CPython JIT (PEP 744): 同じ理由で自前ローダーを選択している
 - OpenJ9 Shared Classes Cache: AOT コードの validation + relocation を 2 フェーズロード
+
+## `--compiled-only` の compile-miss は preload_store の焼き順で偽陽性になる (2026-09-13)
+
+`preload_store/` は prelude のボディを焼いたもので、**走らせたプログラムが必要とした分だけ
+遅延的に溜まる**。そのため、A を焼いた後に B を `--compiled-only` で走らせると、
+B が使う prelude のボディがまだ preload に無く、
+
+```
+--compiled-only: AOT compile-miss — interpreter dispatch reached for body 'class'
+(node DISPATCH_node_entry); it was not baked (hash mismatch or not specialized).
+```
+
+が出る。**コードの退行ではない。** 2026-09-13 にこれで 2 回「退行だ」と誤判定した。
+
+正しい手順は、対象プログラムごとに **両方のストアを消してから対象を焼く**:
+
+```sh
+rm -rf <tree>/sample/koruby_precise/preload_store   # prelude 側
+rm -rf code_store                                   # 実行する cwd 側
+<binary> --aot-compile target.rb
+<binary> --compiled-only target.rb
+```
+
+C を変更してビルドし直した直後も同じ (`feedback_stale_code_store_after_c_change`)。
+片方だけ消すと、消していない側が古いまま残って同じ誤検知になる。
