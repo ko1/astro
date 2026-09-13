@@ -1280,7 +1280,14 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entr
         korb_class_def_method(c, slots[0], mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info, locals_info);
         if (nested) VAL2CLASS(slots[0])->cur_visibility = saved_vis;   /* re-read: the def may have moved it */
         /* method_added — or singleton_method_added when the definee is a
-         * singleton class (`class << obj; def m; end; end`). */
+         * singleton class (`class << obj; def m; end; end`).  The hook is
+         * dispatched from C, so hand it THIS frame: without it the hook's
+         * caller_locations starts below the body that defined the method. */
+        {
+            uint32_t fsym = 0, fline = 0;
+            korb_get_srcloc(c->vm, body, &fsym, &fline);
+            korb_flink_stage_at(c, &slots[self_off + 1], fline);
+        }
         CHECK(korb_fire_method_added(c, slots + 1, slots[0], mid));
     } else {
         korb_method_define(c, mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info, locals_info);

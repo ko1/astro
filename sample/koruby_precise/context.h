@@ -1161,6 +1161,9 @@ struct korb_vm {
      * require_relative's base dir) and the set of already-loaded absolute paths
      * (libc-side strings, no GC). */
     const char *cur_load_file;
+    /* Same file, realpath'd when it was read: the CWD may move (Dir.chdir) and a
+     * main script named relatively cannot be resolved again afterwards. */
+    const char *cur_load_abs;
     char **loaded_files; uint32_t loaded_cnt, loaded_capa;
     /* Features currently being loaded, with the green thread that owns each
      * load: a concurrent require of the same feature from another thread
@@ -1191,6 +1194,11 @@ struct korb_vm {
      * parse time.  Node ptrs are immortal (AST); no GC. */
     struct korb_srcloc { struct Node *node; uint32_t file_sym; uint32_t line; } *srclocs;
     uint32_t srcloc_cnt, srcloc_capa;
+    /* Thread::Backtrace::Location#absolute_path: the realpath each file had when
+     * it was read.  A name no file was ever read under (an eval's filename) has
+     * no entry — which is the nil CRuby reports for it. */
+    struct korb_abspath { uint32_t file_sym; uint32_t abs_sym; } *abspaths;
+    uint32_t abspath_cnt, abspath_capa;
     /* Backtrace scratch and bounds.  At the END of the struct on purpose: every
      * field above keeps the offset it had, so the dispatch path's loads keep
      * their cache lines. */
@@ -1747,6 +1755,8 @@ struct koruby_option {
     uint32_t rec_sep_len;
     bool no_deprecated;  /* -W:no-deprecated */
     bool no_experimental;/* -W:no-experimental */
+    bool backtrace_limit_given;  /* --backtrace-limit=N was passed (0 is a valid N) */
+    int32_t backtrace_limit;     /* how many "from" lines an uncaught-exception report may print */
     const char *kcode;   /* -K<letter>: the default external encoding name, or NULL */
     const char *extenc;  /* -E ext[:int] external encoding name, or NULL */
     const char *intenc;  /* -E's internal encoding name, or NULL */

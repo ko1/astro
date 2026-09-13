@@ -107,6 +107,8 @@ class Exception
 end
 class Thread
   class Backtrace
+    # --backtrace-limit=N, or -1 when the option was not given.
+    def self.limit = __backtrace_limit
     # A backtrace position.  koruby builds backtraces as "path:lineno:in 'label'"
     # strings, so a Location is that string with the three fields split back out.
     class Location
@@ -141,10 +143,12 @@ class Thread
         k ? l[(k + 1)..-1] : l
       end
 
-      # nil for a position with no real file behind it (-e, <internal:...>).
+      # The path the file resolved to when it was read (CRuby bakes it into the
+      # iseq), so a later Dir.chdir or unlink cannot change the answer.  nil for
+      # a position with no file behind it: -e, <internal:...>, an eval filename.
       def absolute_path
         return nil if @path.nil? || @path.empty? || @path.start_with?('<') || @path == '-e'
-        File.absolute_path(@path)
+        __source_abs_path(@path)
       end
 
       def to_s = @str

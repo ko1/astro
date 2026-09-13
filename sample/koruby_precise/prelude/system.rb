@@ -85,7 +85,8 @@ class Thread
       __check_ints              # マスクが遅らせた分はブロックを出るときに配る
     end
   end
-  def self.each_caller_location(*args, &blk)
+  def self.each_caller_location(*args, **kw, &blk)
+    raise ArgumentError, "unknown keyword: #{kw.keys.first.inspect}" unless kw.empty?
     raise LocalJumpError, "no block given" unless blk
     (caller_locations(2) || []).each(&blk)
     nil

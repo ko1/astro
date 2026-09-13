@@ -141,7 +141,13 @@ koruby_apply_flag(const char *a, const char *next_arg,
         if (ext) OPTION.extenc = spec; else OPTION.intenc = spec;
         return a[19] == '=' ? 1 : 2;
     }
-    if (strncmp(a, "--backtrace-limit", 17) == 0) return 1;   /* accepted; the report is not trimmed yet */
+    if (strncmp(a, "--backtrace-limit", 17) == 0) {
+        const char *const spec = a[17] == '=' ? a + 18 : (a[17] == '\0' ? next_arg : NULL);
+        if (!spec) return a[17] == '\0' ? 1 : 0;
+        OPTION.backtrace_limit = (int32_t)strtol(spec, NULL, 10);
+        OPTION.backtrace_limit_given = true;
+        return a[17] == '=' ? 1 : 2;
+    }
     if (strncmp(a, "-E", 2) == 0 || strncmp(a, "--encoding=", 11) == 0) {
         const char *spec = a[1] == 'E' ? (a[2] ? a + 2 : next_arg) : a + 11;
         const bool used_next = (a[1] == 'E' && !a[2] && spec);
@@ -1352,6 +1358,7 @@ main(int argc, char *argv[])
     CTX *c = korb_ctx_new();
     c->vm->script_name = src_name;
     c->vm->cur_load_file = src_name;   /* __dir__ / require_relative base for top-level code */
+    c->vm->cur_load_abs = korb_reg_abspath(c->vm, src_name);   /* before any Dir.chdir: a relative name resolves only now */
     /* -s: leading `-name[=value]` arguments become globals and leave ARGV. */
     int argv_start = i;
     if (OPTION.switch_args) {

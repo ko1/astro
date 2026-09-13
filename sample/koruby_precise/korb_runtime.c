@@ -4533,7 +4533,7 @@ korb_fire_method_added(CTX *c, VALUE *slots, VALUE definee, uint32_t mid)
         VALUE att = KORB_UNDEF;
         for (uint32_t i = 0; i < vm->sklass_cnt; i++)
             if (vm->sklass_cls[i] == definee) { att = vm->sklass_obj[i]; break; }
-        if (att == KORB_UNDEF) return RESULT_OK(KORB_NIL);   /* singleton with no live owner */
+        if (att == KORB_UNDEF) { c->carry_base = NULL; return RESULT_OK(KORB_NIL); }   /* singleton with no live owner: drop the caller's staged link */
         recv = att;
         hook = korb_intern(vm, "singleton_method_added", 22);
     }
@@ -8640,9 +8640,11 @@ korb_report_section(CTX *c, const KorbException *e, bool live)
     fprintf(stderr, "%s: %s (%s)\n", korb_report_line(c, cap, e, 0, buf, sizeof buf), msg, cls);
     uint32_t head = n, tail = 0;                 /* elide the middle of very deep unwinds (SystemStackError) */
     if (n > 20) { head = 12; tail = 4; }
+    if (OPTION.backtrace_limit_given && OPTION.backtrace_limit >= 0 &&
+        (uint32_t)OPTION.backtrace_limit + 1 < head) { head = (uint32_t)OPTION.backtrace_limit + 1; tail = 0; }
     for (uint32_t i = 1; i < head; i++)
         fprintf(stderr, "\tfrom %s\n", korb_report_line(c, cap, e, i, buf, sizeof buf));
-    if (tail) {
+    if (head < n) {
         fprintf(stderr, "\t ... %u levels...\n", n - head - tail);
         for (uint32_t i = n - tail; i < n; i++)
             fprintf(stderr, "\tfrom %s\n", korb_report_line(c, cap, e, i, buf, sizeof buf));
@@ -13708,6 +13710,43 @@ korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, uint32
     vm->srclocs[vm->srcloc_cnt].line = line;
     vm->srcloc_cnt++;
 }
+/* Record the realpath `path` resolves to right now, keyed by the name the
+ * program will see it under, and return it (NULL when there is no such file:
+ * "-e", a string eval).  Read back by Location#absolute_path, which must still
+ * answer after a Dir.chdir or after the file is deleted. */
+const char *
+korb_reg_abspath(struct korb_vm *vm, const char *path)
+{
+    char real[4096];
+    if (path == NULL || realpath(path, real) == NULL) return NULL;
+    const uint32_t fsym = korb_intern(vm, path, strlen(path));
+    for (uint32_t i = 0; i < vm->abspath_cnt; i++)
+        if (vm->abspaths[i].file_sym == fsym) return korb_sym_name(vm, vm->abspaths[i].abs_sym);
+    if (vm->abspath_cnt == vm->abspath_capa) {
+        vm->abspath_capa = vm->abspath_capa ? vm->abspath_capa * 2 : 64;
+        vm->abspaths = realloc(vm->abspaths, sizeof(*vm->abspaths) * vm->abspath_capa);
+        if (!vm->abspaths) abort();
+    }
+    const uint32_t asym = korb_intern(vm, real, strlen(real));
+    vm->abspaths[vm->abspath_cnt].file_sym = fsym;
+    vm->abspaths[vm->abspath_cnt].abs_sym = asym;
+    vm->abspath_cnt++;
+    return korb_sym_name(vm, asym);
+}
+
+/* The realpath recorded for `path`, or NULL when no file was ever read under
+ * that name. */
+static const char *
+korb_get_abspath(const struct korb_vm *vm, const char *path, size_t len)
+{
+    for (uint32_t i = 0; i < vm->abspath_cnt; i++) {
+        const char *const nm = korb_sym_name(vm, vm->abspaths[i].file_sym);
+        if (nm && strlen(nm) == len && memcmp(nm, path, len) == 0)
+            return korb_sym_name(vm, vm->abspaths[i].abs_sym);
+    }
+    return NULL;
+}
+
 /* look up a body NODE's source location; false if never registered. */
 bool
 korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line)
@@ -13962,8 +14001,10 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
         korb_loading_add(vm, abspath, vm->cur_thread);  /* claim for cross-thread waiters */
     }
     const char *const saved = vm->cur_load_file;
+    const char *const saved_abs = vm->cur_load_abs;
     char *const abscopy = strdup(abspath);             /* stable across the eval (fname baked into AST) */
     vm->cur_load_file = abscopy;
+    vm->cur_load_abs = korb_reg_abspath(vm, abscopy);  /* resolve now: the file may be a symlink, or be deleted while it runs */
     /* refinement activation is per file: a `using` at the top of the loaded file
      * neither leaks out nor inherits the requiring file's (docs/refinements.md). */
     korb_refine_push(c);
@@ -13971,6 +14012,7 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
     RESULT r = korb_eval_toplevel_wrap(c, slots, buf, got, abscopy, wrapp, req_link);
     korb_refine_pop(c);
     vm->cur_load_file = saved;
+    vm->cur_load_abs = saved_abs;
     free(buf);
     if (dedup) korb_loading_remove(vm, abspath);
     if (UNLIKELY(r.state != KORB_NORMAL)) {
@@ -14054,7 +14096,10 @@ korb_bi_dir(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (!f || strcmp(f, "-e") == 0 || strcmp(f, "-") == 0 || strcmp(f, "(eval)") == 0)
         return RESULT_OK(KORB_NIL);
     char real[4096];
-    if (!realpath(f, real)) { if ((size_t)snprintf(real, sizeof real, "%s", f) >= sizeof real) return RESULT_OK(KORB_NIL); }
+    /* the path resolved when the file was read: a relative main script cannot be
+     * resolved again once Dir.chdir has moved the CWD */
+    if (c->vm->cur_load_abs) snprintf(real, sizeof real, "%s", c->vm->cur_load_abs);
+    else if (!realpath(f, real)) { if ((size_t)snprintf(real, sizeof real, "%s", f) >= sizeof real) return RESULT_OK(KORB_NIL); }
     char *slash = strrchr(real, '/');
     if (slash) *slash = '\0'; else snprintf(real, sizeof real, ".");
     return korb_str_new(c, slots, real, (uint32_t)strlen(real));
@@ -14262,8 +14307,11 @@ korb_bi_require_relative(CTX *c, VALUE *slots, VALUE_SLICE args)
     char namebuf[4096]; uint32_t nl = VAL2STR(nv)->len;
     if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
     memcpy(namebuf, korb_strbuf_data(VAL2STR(nv)->buf), nl); namebuf[nl] = '\0';
-    /* base = dirname of the current load file (or the main script). */
+    /* base = dirname of the current load file (or the main script).  A relative
+     * name is useless as a base — Dir.chdir may have moved out from under it —
+     * so fall back to what it resolved to when it was read. */
     const char *base = c->vm->cur_load_file ? c->vm->cur_load_file : (c->vm->script_name ? c->vm->script_name : ".");
+    if (base[0] != '/' && c->vm->cur_load_abs) base = c->vm->cur_load_abs;
     char basedir[4096]; snprintf(basedir, sizeof basedir, "%s", base);
     char *slash = strrchr(basedir, '/'); if (slash) *slash = '\0'; else snprintf(basedir, sizeof basedir, ".");
     char abspath[4096];
@@ -15116,9 +15164,12 @@ korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VA
     /* require_relative / __dir__ inside the eval resolve against the name the
      * eval was given (its 2nd argument), like CRuby. */
     const char *const saved_load = c->vm->cur_load_file;
+    const char *const saved_abs = c->vm->cur_load_abs;
     c->vm->cur_load_file = fname;
+    c->vm->cur_load_abs = NULL;                         /* an eval's filename names no file on disk */
     RESULT r = EVAL(c, ast, cur);
     c->vm->cur_load_file = saved_load;
+    c->vm->cur_load_abs = saved_abs;
     c->def_definee = saved_definee;
     c->eval_cref = saved_cref;
     if (UNLIKELY(r.state == KORB_RAISE)) {
@@ -15215,6 +15266,8 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     c->vm->script_name = fname;                     /* raises inside report the eval's filename */
     const char *const saved_load = c->vm->cur_load_file;   /* require_relative / __dir__ resolve against it too */
     c->vm->cur_load_file = fname;
+    const char *const saved_abs = c->vm->cur_load_abs;
+    c->vm->cur_load_abs = NULL;                     /* an eval's filename names no file on disk */
     /* the eval'd string INHERITS the body's bare-`private` default but its own
      * changes stay inside (CRuby scopes it to the eval's cref) */
     const uint8_t saved_vis = KORB_CLASS_P(fb[-1]) ? VAL2CLASS(fb[-1])->cur_visibility : 0xffu;
@@ -15227,6 +15280,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
         er.value = cur[0];
     }
     c->vm->cur_load_file = saved_load;
+    c->vm->cur_load_abs = saved_abs;
     c->vm->script_name = saved_name;
     if (UNLIKELY(er.state != KORB_NORMAL)) return er;
     fb[L] = er.value;                               /* park result across writeback allocs */
@@ -16179,6 +16233,26 @@ korb_bi_frame_locals(CTX *c, VALUE *slots, VALUE_SLICE args)
  * of this list — skip it and report positions as its caller sees them. */
 static RESULT korb_bi_caller_strings(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_caller_common(c, slots, args, args.p - 3, 1); }
 
+/* __source_abs_path(path) — the realpath recorded when a file was read under
+ * that name, or nil.  Thread::Backtrace::Location#absolute_path reads it. */
+static RESULT
+korb_bi_source_abs_path(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    const VALUE pv = VALUE_SLICE_GET(args, 0);
+    if (!KORB_STRING_P(pv)) return RESULT_OK(KORB_NIL);
+    const KorbString *const sp = VAL2STR(pv);
+    const char *const abs = korb_get_abspath(c->vm, korb_strbuf_data(sp->buf), sp->len);
+    return abs ? korb_str_new(c, slots, abs, (uint32_t)strlen(abs)) : RESULT_OK(KORB_NIL);
+}
+
+/* __backtrace_limit — Thread::Backtrace.limit: --backtrace-limit=N, else -1. */
+static RESULT
+korb_bi_backtrace_limit(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)c; (void)slots; (void)args;
+    return RESULT_OK(LONG2FIX(OPTION.backtrace_limit_given ? OPTION.backtrace_limit : -1));
+}
+
 /* ---------------------------------------------------------------------------
  * CTX creation (main.c entry helper).
  * ------------------------------------------------------------------------- */
@@ -16286,6 +16360,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "fail",  korb_bi_raise, -1);   /* Kernel#fail — alias of raise */
     korb_builtin_define(c, "caller", korb_bi_caller, -1);
     korb_builtin_define(c, "__caller_strings", korb_bi_caller_strings, -1);   /* the prelude's caller_locations reads this */
+    korb_builtin_define(c, "__source_abs_path", korb_bi_source_abs_path, 1);   /* Location#absolute_path (prelude) */
+    korb_builtin_define(c, "__backtrace_limit", korb_bi_backtrace_limit, 0);   /* Thread::Backtrace.limit (prelude) */
     /* frame locals by name — the debugger C API, exposed for its tests */
     korb_builtin_define(c, "__frame_local_get", korb_bi_frame_local_get, -1);
     korb_builtin_define(c, "__frame_local_set", korb_bi_frame_local_set, -1);
