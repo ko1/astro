@@ -682,6 +682,36 @@ carve-out 入れて全 bench で fold-off 同等以上、sieve の退化は完�
 | `static inline EVAL` + ホスト `-rdynamic` セット | castro / wastro 共通。SD\_ → EVAL → 子 SD\_ の鎖が `.so` 境界を一度も跨がない直接呼びに collapse する |
 | **Boehm GC pre-grow + lazy collect**（`GC_expand_hp(64MB)` + `GC_set_free_space_divisor(1)`）| ascheme `perf.md §20`：list 1.14×、fannkuch 1.13×、fib35 1.14×、nbody 1.10×、deriv 1.08× | Boehm を使う全言語に **直接適用可能**。`perf stat` で `sys` 時間 / page-faults を見て、heap 成長による mmap が支配的なら効く。**確認方法**：`perf stat -e cycles,page-faults ./<lang>-bench`、page-faults × 4KB ≈ heap 成長量 |
 
+### オペランドを「穴」にするか即値で焼くか (koruby、2026-09-13 実測)
+
+`koruby_gen.rb` の `hole?` は **オペランド名が `line` なら穴 (`HOLE_U32`) にする**:
+
+```ruby
+sym? || self.name == 'line' || CACHE_TYPES.include?(@type) || ...
+```
+
+行番号だけが違うサイト同士で **SD を共有する**ためで、その代わり SD は値を実行時に
+プールからロードする。**読むのが cold path だけなら、この共有は割に合わない。**
+
+koruby の caller 対応で二項演算子ノードの `uint32_t line` を `uint64_t flink` に改名したところ、
+名前が `line` でなくなったことで穴の集合から外れ**即値で焼かれる**ようになった。
+fixnum / float の速い経路はその値を読まないので GCC が丸ごと消せる。生成 SD の差はこれだけ:
+
+```
+- HOLE_U32(2)                                    ← 穴 = 実行時にプールからロード
++ (VALUE)16401ULL                                ← 即値 (速い経路は読まないので消える)
+- const uint8_t SD_desc[] = {35U,...             ← 穴 35 個
++ const uint8_t SD_desc[] = {33U,...             ← 33 個
+```
+
+sp4 (133c2bf4 比、命令数中央値): **fib −2.68% / block −1.59% / sieve −2.45% / tak −1.69% /
+optcarrot AOT −0.96%**。共有を失う代償は optcarrot で **SD 895 → 905 (+1.1%)、
+`all.so` 460,240 → 457,112 B (−0.68%)** と無視できた。
+
+**使いどころ**: 「hot path が読まない cold-only オペランド」は穴にせず即値で焼く。
+逆に hot path が読む値や、同じ SD を多数のサイトで共有したい値は穴のまま。
+判定は `code_store/c/SD_*.c` を両ビルドで diff すれば一目で分かる (`HOLE_*` か即値か)。
+
 ## 7. プロファイル駆動 (PG) 全般
 
 - `--pg-compile`: 一度普通に走らせて `head.dispatch_cnt` を集め、
