@@ -3,6 +3,84 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## 既知バグ (caller/backtrace、2026-09-13 のレビューで発覚、未修正)
+
+対象は master `11530756..133c2bf4` (frame link / identity / caller / locals 名前表)。
+自分と codex の両方でレビューし、下は全部 HEAD で再現した。再現スクリプトは
+セッションの scratchpad (`bt_probe/adv.rb`, `adv2.rb`, `cdx.rb`) にある。
+
+### GC 安全性 (STRESS+PURGE で SEGV)
+- `korb_caller_int` (korb_runtime.c:16012-16021): `v` を `to_int` 呼び出し (alloc) をまたいで
+  C ローカルに保持し、raise 時に `korb_coerce_name(c, v)` で deref。
+  `class X; def to_int; Object.new; self; end; end; caller(X.new)` → SEGV (codex 発見)。
+- `korb_caller_common` (16040-16045): `rg` (KorbRange*) が rbegin の `to_int` をまたいで
+  保持され `rg->rend` を読む。`caller(X.new..X.new)` (X は Comparable + alloc する to_int) → SEGV。
+- 同関数: 引数の型変換が `vm->fscratch` へのスナップショットの**後**なので、`to_int` の中で
+  `caller` を呼ぶと scratch が上書きされ、外側の `caller(X.new, 1)` が `X#to_int` を返す。
+  変換を先に済ませる (codex 発見)。
+
+### stale `c->carry_base`
+- `korb_flink_stage` は 18 箇所、消すのは消費側 (`korb_send_impl` / `korb_block_flink` /
+  `korb_flink_from_base`) だけ。`node_yield*` が stage した後に `korb_yield` が raise すると
+  (no block given: 9777、lambda arity: 9435 は `bf[-2] = korb_block_flink` 9438 より前)
+  carry が残り、次の無関係な dispatch が消費する。
+  `def y0; yield; end; def go; y0; rescue LocalJumpError; [1].each { p caller(0) }; end`
+  → `Array#each` が line 0 で鎖が切れる。`send(:g)` でも同じ。raise 経路で carry を消すか、
+  `korb_block_flink` 側で cb を検証する (今は `cb + 2 < top` だけで死んだフレームにも繋ぐ)。
+- `korb_block_yield_full` (9557): `yield obj` で `obj.to_ary` を呼ぶと、その `korb_send_impl` が
+  carry を先に消費し、block は yield 元ではなく定義元に繋がる (`Object#foo` が抜ける)。
+  ヘッダ書き込みを to_ary probe より前にするか、carry を退避する (codex 発見)。
+
+### ゴミを link と信用する経路
+- `korb_send_impl` (10046) の `korb_flink_carry(c, slots - argc - 3)`: `korb_send()` 経由の内部
+  dispatch (to_s / hash / == / <=> / respond_to_missing? …) では recv の 2 つ下は呼び出し元 C 関数の
+  引数など任意の VALUE。奇数なら FORWARD として鎖に入り、`[0x3FFF_FFFF_FFF9, 2].index(obj)` の
+  `==` から `caller(0)` すると `:0:in '<main>'` という幻のフレームが出る。値が `[bt_lo, bt_hi)`
+  (malloc 範囲のヒューリスティック) に入る奇数なら `korb_method*` / `Node*` として deref される。
+  C が組んだ窓には link を置かない (0 を書く) のが筋。
+- rescue 修飾子 (parse.c:5256): `base_off` が `-1 - tc->chain` で `bake_add` されていない →
+  `node_rescue` がローカル変数のセルを rescuing frame の base として `korb_capture_backtrace`
+  に渡す。`def m; e = (raise("x") rescue $!); e.backtrace; end` → `Object#m` が消えて `<main>`。
+  値によっては identity として deref され得る。他 2 箇所 (parse.c:824/838) と同じく
+  `-tc->chain` + `bake_add` にする。
+- `korb_frames_snapshot_at` (7846): FORWARD ホップは `n` を進めずに `continue` → 2 セル以上の
+  サイクルなら無限ループ。他の歩き (`korb_flink_line_at` / `korb_link_base` /
+  `korb_flink_hand_on`) は guard 8。
+
+### 不変条件の綻び (症状は未観測)
+- `korb_invoke_method` から `korb_ep_set(base, 0)` を外し「ヘッダを予約した側が base[-2] を
+  0 にする」前提にしたが、`UnboundMethod#bind_call` (builtins/symbol.c:1011) は
+  `[self, owner, args]` を flush で積む → base[-2] = bind 対象 (偶数ヒープポインタ) が EP として
+  `korb_frame_escaped` / `korb_open_env_find` / `korb_make_proc` (`e->prev = pv`) に読まれる。
+  identity / link は bind_call 自身の引数セル (slots[-2]/[-1]) に書かれる。同 1018 (cfunc 経路) も
+  `korb_dispatch_method` (8718) が cbase[-4] = slots[-3] に CFUNC identity を書く。
+  `Method#call` (symbol.c:370-) と同じヘッダ staging に揃える。
+- `korb_flink_line` (node.h:735): 負の行 (`eval(str, f, -100)`) では `v << 15` が int32 を
+  溢れて UB。unsigned で shift して符号拡張する (codex 発見)。
+
+### 鎖の穴 (設計上の既知だが列挙)
+- `korb_call_send` (8820-8842): `send(:m)` (暗黙 self) の再ステージで `korb_flink_hand_on` を
+  呼ばない → `<main>` が消える。`korb_check_call_vis` (11181) の method_missing は link=0。
+- `node_yield_outer*` (node.def 2806-2836) は stage しない → ブロック内 `yield` で呼ばれた block は
+  `cfunc_link` に繋がり `block in Object#m` が抜ける。
+- `korb_bt_label` の memo (7706-7709) は mid と const_serial だけで検証するので、entry のコピー
+  (alias / define_method / module_function / class_dup / set_visibility) に古いラベルが付いて回る:
+  `C.new.f` で `M#f` を作った後 `module_function :f; M.f` → `M#f` (CRuby は `M.f`)。
+- alias フレームのラベルは `mid` (CRuby 3.4 は `orig_mid`: `C#f`)。
+- Symbol#to_proc の symblock は `block in <main>` line 0 として現れる (CRuby は出さない)。
+- `Thread::Backtrace::Location` (prelude/exception.rb:124) は負の行を parse しない、
+  `Thread#backtrace` (prelude/system.rb:59) は 3 個目以降の引数を無視 (codex 発見)。
+- C 窓の下 (puts / p / Hash / sort / respond_to? / bind_call / Method#to_proc.call) で切れるのは既知。
+
+### perf (codex 指摘、sp4 では計測済みの範囲内)
+- `korb_call_cached` (9094) / `korb_send_cached` (11242) は refinement / IC 判定より前に
+  `korb_flink_line` を decode してスピルする (objdump: prologue の `lea; sar $0xf; mov %eax,8(%rsp)`)。
+  cold 側に押し込める。
+
+### コメントの陳腐化
+identity は base[-4] だが「base[-2]」のまま: node.h:709, 721, 797, 800, 907; parse.c:3200;
+korb_runtime.c:7720。
+
 ## 既知バグ (GC): slots_top より下の未初期化スロット
 
 `ASTRO_GC_EDGE_CHECK=1 ASTRO_GC_STRESS=1 ./koruby_precise -e 'p 1'` で 3 件出る:
