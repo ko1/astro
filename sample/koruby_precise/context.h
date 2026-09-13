@@ -569,6 +569,8 @@ typedef struct KorbException {
     VALUE ARO_GC_EDGE cause; /* the in-flight exception ($!) at raise time, or nil */
     VALUE ARO_GC_EDGE ivars; /* instance variables side-hash {sym→val} | nil (custom Exception subclass data) */
     VALUE ARO_GC_EDGE backtrace; /* Array<String> captured when first rescued/set, or nil (never raised) */
+    uint8_t bt_user;         /* 1 = #backtrace came from set_backtrace, so there are no real
+                              * positions behind it and #backtrace_locations stays nil (CRuby) */
 } KorbException;
 
 /* Array: a header + a separately-allocated growable VALUE[] payload, so push

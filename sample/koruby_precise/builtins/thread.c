@@ -1306,10 +1306,18 @@ korb_m_thread_backtrace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     (void)a;
     const struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
     if (t->state == KORB_TH_DEAD) return RESULT_OK(KORB_NIL);
+    /* A suspended thread always parked inside a C builtin (__check_ints or a
+     * blocking primitive), so its saved cfunc link names the innermost frame and
+     * the chain from there is walkable — in ITS stack, hence the explicit bounds. */
+    if (t->saved_cfunc_link != 0 && t->saved_base != NULL) {
+        const uint32_t d = korb_frames_snapshot_at(c, t->saved_base, t->vslots_limit,
+                                                   korb_flink_ptr(t->saved_cfunc_link), 0, NULL);
+        if (d > 0) return korb_caller_ary(c, slots, d, 0, d);
+    }
     if (t->blocked_in == NULL) return korb_ary_new(c, slots, 1);
-    /* Blocked in a C-level wait: one synthetic frame naming the method, so
-     * introspection like `bt.any? { |f| f.include?("require") }` (rubyspec's
-     * concurrent-require fixture) can see where the thread sits. */
+    /* Blocked in a C-level wait with no frame chain to walk: one synthetic frame
+     * naming the method, so introspection like `bt.any? { |f| f.include?("require") }`
+     * (rubyspec's concurrent-require fixture) can see where the thread sits. */
     char frame[128];
     snprintf(frame, sizeof frame, "<internal>:in '%s'", t->blocked_in);
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 1));

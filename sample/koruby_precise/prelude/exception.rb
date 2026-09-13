@@ -83,6 +83,7 @@ class Exception
   def backtrace_locations
     return @__bt_locs if @__bt_locs
     raw = __backtrace_locations_raw
+    return nil if raw == false   # set_backtrace was given Strings: CRuby keeps no positions
     return @__bt_locs = raw if raw
     b = backtrace
     return nil if b.nil?

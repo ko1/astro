@@ -2261,16 +2261,6 @@ static RESULT korb_m_loop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, N
         return r;
     }
 }
-/* Object#tap — yield self, return self. */
-static RESULT korb_m_obj_tap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a;
-    if (block != NULL) {
-        slots[0] = VALUE_REF_GET(self);
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    }
-    return RESULT_OK(VALUE_REF_GET(self));
-}
 /* Kernel#lambda / #proc — turn the given block into a Proc (lambda-flavoured for
  * #lambda).  No block → ArgumentError. */
 static RESULT korb_m_kernel_makeproc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, uint32_t is_lambda) {
@@ -2527,17 +2517,19 @@ static RESULT korb_m_nme_args(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const VALUE v = korb_exc_ivar_get(VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__args", 7)));
     return KORB_ARRAY_P(v) ? RESULT_OK(v) : korb_ary_new(c, slots, 0);
 }
-/* Exception#backtrace_locations — the Location Array a `raise obj, msg, locs`
- * stored; nil for a String backtrace or none at all (CRuby). */
+/* Exception#backtrace_locations, three answers for the prelude: the Location
+ * Array a `raise obj, msg, locs` / set_backtrace stored; `false` when the user
+ * set STRINGS (CRuby keeps no positions then); nil = derive from #backtrace. */
 static RESULT korb_m_exc_backtrace_locations(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c; (void)slots; (void)a;
     const VALUE v = VALUE_REF_GET(self);
     if (!KORB_EXC_P(v)) return RESULT_OK(KORB_NIL);
     const VALUE bt = VAL2EXC(v)->backtrace;
-    if (!KORB_ARRAY_P(bt)) return RESULT_OK(KORB_NIL);
+    if (!KORB_ARRAY_P(bt)) return RESULT_OK(VAL2EXC(v)->bt_user ? KORB_FALSE : KORB_NIL);
     const KorbArray *const ary = VAL2ARY(bt);
     for (uint32_t i = 0; i < ary->len; i++)
-        if (KORB_STRING_P(korb_items_data(ary->items)[i])) return RESULT_OK(KORB_NIL);
+        if (KORB_STRING_P(korb_items_data(ary->items)[i]))
+            return RESULT_OK(VAL2EXC(v)->bt_user ? KORB_FALSE : KORB_NIL);
     return RESULT_OK(bt);
 }
 static RESULT korb_m_exc_set_backtrace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -2565,6 +2557,7 @@ static RESULT korb_m_exc_set_backtrace(CTX *c, VALUE *slots, VALUE_REF self, VAL
     slots[0] = bt;                                        /* the exception may have moved above */
     KorbException *const e = VAL2EXC(VALUE_REF_GET(self));
     ARO_STORE(c, e, &e->backtrace, slots[0]);
+    e->bt_user = 1;
     return RESULT_OK(slots[0]);
 }
 /* The message as STORED (nil when never set) — Marshal dumps that, not the

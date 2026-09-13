@@ -1327,6 +1327,13 @@ end
 $__at_exit = []
 $__exit_trap = nil        # Signal.trap(:EXIT) handler; parked at the tail (runs first)
 module Kernel
+  # CRuby defines #tap in Ruby (internal:kernel), so it has a source_location and
+  # its frame is labelled "Kernel#tap".  Keep it Ruby here for the same reason.
+  def tap
+    yield(self)
+    self
+  end
+
   def at_exit(&block)
     raise ArgumentError, "called without a block" unless block
     if $__exit_trap && $__at_exit.last.equal?($__exit_trap)

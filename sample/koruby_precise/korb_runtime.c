@@ -456,6 +456,7 @@ static RESULT korb_m_str_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VALUE cref);   /* defined below */
 static const char *korb_recv_desc(CTX *c, VALUE *slots, VALUE v, char *buf, size_t bufsz);   /* fwd: "an instance of Foo" */
 static RESULT korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line, VALUE cref);   /* defined below — for instance/class_eval(String) in set.c */
+static RESULT korb_caller_ary(CTX *c, VALUE *slots, uint32_t d, uint32_t start, uint32_t len);   /* fwd: Thread#backtrace renders another thread's snapshot */
 static RESULT korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
                                      const char *fname, int32_t eline, VALUE *self_slot, VALUE cref,
                                      bool soft_definee);   /* eval with caller binding (set.c uses it too) */
@@ -7743,7 +7744,7 @@ korb_bt_top_block_label(CTX *const c, const uint32_t level, const struct Node *c
  * block's EP names: its identity is that frame's base[-4] while it is live, and
  * the copy KorbEnv kept once it returned. */
 static const char *
-korb_bt_block_label(CTX *c, const struct Node *e, const VALUE *base)
+korb_bt_block_label(CTX *c, const struct Node *e, const VALUE *base, const VALUE *const lo)
 {
     struct korb_vm *const vm = c->vm;
     const char *owner = "<main>";
@@ -7759,7 +7760,7 @@ korb_bt_block_label(CTX *c, const struct Node *e, const VALUE *base)
             /* A PREV that no longer names a live frame (a cap_depth==0 proc keeps
              * its definer base as a bare sentinel) reads as stale slots.  Requiring
              * each step to go strictly outward bounds the walk whatever it finds. */
-            if (dbase < c->slots || dbase >= limit) break;
+            if (dbase < lo || dbase >= limit) break;
             limit = dbase;
             id = korb_id_get(dbase);
             next_prev = korb_ep_get(dbase);
@@ -7802,19 +7803,19 @@ korb_bt_block_label(CTX *c, const struct Node *e, const VALUE *base)
  * run-time PREV chain.  `base` is the block frame's locals base (NULL when the
  * frame is gone, which leaves only the lexical answers). */
 static const char *
-korb_bt_entry_label(CTX *const c, const struct Node *const e, const VALUE *const base)
+korb_bt_entry_label(CTX *const c, const struct Node *const e, const VALUE *const base, const VALUE *const lo)
 {
     if (e->u.node_entry.body_label) return korb_sym_name(c->vm, e->u.node_entry.body_label);
     if (e->u.node_entry.blk_label) return korb_sym_name(c->vm, e->u.node_entry.blk_label);
     if (e->u.node_entry.blk_top_level) return korb_bt_top_block_label(c, e->u.node_entry.blk_top_level, e);
-    return base ? korb_bt_block_label(c, e, base) : NULL;
+    return base ? korb_bt_block_label(c, e, base, lo) : NULL;
 }
 
 /* The label CRuby gives the frame an identity cell names; NULL when the cell
  * names nothing we can label.  `base` is that frame's locals base, or NULL when
  * the frame has returned. */
 static const char *
-korb_bt_id_label(CTX *const c, const VALUE id, const VALUE *const base)
+korb_bt_id_label(CTX *const c, const VALUE id, const VALUE *const base, const VALUE *const lo)
 {
     struct korb_vm *const vm = c->vm;
     const uintptr_t ptr = (uintptr_t)(id & ~(VALUE)7u);
@@ -7831,7 +7832,7 @@ korb_bt_id_label(CTX *const c, const VALUE id, const VALUE *const base)
     }
     if ((id & 7u) != KORB_FID_BLOCK) return NULL;
     const struct Node *const e = (const struct Node *)ptr;
-    return e->head.kind == &kind_node_entry ? korb_bt_entry_label(c, e, base) : NULL;
+    return e->head.kind == &kind_node_entry ? korb_bt_entry_label(c, e, base, lo) : NULL;
 }
 
 /* An eval frame's identity.  CRuby compiles the string into the binding's scope
@@ -7844,7 +7845,7 @@ korb_eval_frame_id(CTX *const c, const VALUE bind)
         const VALUE env = VAL2BIND(bind)->env;
         if (KORB_ENV_P(env)) {
             const KorbEnv *const e = VAL2ENV(env);
-            const char *const lbl = korb_bt_id_label(c, e->id, e->closed ? NULL : e->loc);
+            const char *const lbl = korb_bt_id_label(c, e->id, e->closed ? NULL : e->loc, c->slots);
             if (lbl) return korb_fid_main(korb_intern(c->vm, lbl, strlen(lbl)), true) | KORB_FID_MAIN_LABEL;
         }
     }
@@ -7906,10 +7907,10 @@ korb_flink_line_at(const VALUE *cell, const VALUE *lo, const VALUE *hi)
 }
 
 static uint32_t
-korb_frames_snapshot_at(CTX *c, const VALUE *fbase, uint32_t line0, const VALUE *link_cell)
+korb_frames_snapshot_at(CTX *c, const VALUE *const lo, const VALUE *const hi,
+                        const VALUE *fbase, uint32_t line0, const VALUE *link_cell)
 {
     struct korb_vm *const vm = c->vm;
-    const VALUE *const lo = c->slots, *const hi = c->slots_limit;
     uint32_t n = 0;
     int fwd_hops = 0;                            /* FORWARD hops since the last frame: a cycle must not spin */
     while (n < KORB_FSTACK_MAX) {
@@ -7974,7 +7975,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *fbase, uint32_t line0, const VALUE 
             /* a class/module/singleton body, and a block lexically owned by one,
              * know their label at parse time (node.def) — the PREV chain cannot
              * name a definer frame that has already returned */
-            r->label = korb_bt_entry_label(c, e, fbase);
+            r->label = korb_bt_entry_label(c, e, fbase, lo);
             n++;
             fbase = NULL; line0 = 0;
             continue;
@@ -8015,7 +8016,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *fbase, uint32_t line0, const VALUE 
 /* The frames below a call: start from the link the call site left behind. */
 static uint32_t korb_frames_snapshot(CTX *c, const VALUE *link_cell)
 {
-    return korb_frames_snapshot_at(c, NULL, 0, link_cell);
+    return korb_frames_snapshot_at(c, c->slots, c->slots_limit, NULL, 0, link_cell);
 }
 
 /* ---------------------------------------------------------------------------
@@ -8309,7 +8310,7 @@ korb_capture_backtrace(CTX *c, VALUE *slots, const VALUE *fbase)
     /* [0, nb) are the frames the raise unwound out of, recorded as it went; the
      * rest are the frames still live, starting with the rescuing one — `fbase`
      * is its base and e->line the position the raise reached it at. */
-    const uint32_t d = korb_frames_snapshot_at(c, fbase, VAL2EXC(slots[0])->line, NULL);
+    const uint32_t d = korb_frames_snapshot_at(c, c->slots, c->slots_limit, fbase, VAL2EXC(slots[0])->line, NULL);
     const uint32_t n = nb + d;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n + 1));
     char buf[600];
@@ -12680,7 +12681,6 @@ korb_register_core_methods(CTX *c)
     }
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "then", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "yield_self", korb_m_obj_then, 0);
-    korb_def_cmethod_blk(c, KORB_C_OBJECT, "tap", korb_m_obj_tap, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "lambda", korb_m_kernel_lambda, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "proc", korb_m_kernel_proc, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "instance_exec", korb_m_obj_instance_exec, -1);
