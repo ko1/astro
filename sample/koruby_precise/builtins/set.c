@@ -1232,7 +1232,7 @@ static RESULT korb_m_bind_lvars_own(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++) {
         const uint32_t *const t = KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i);
-        if (t[1] != 0) continue;
+        if (KORB_BIND_DEPTH(t) != 0) continue;
         CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(t[0])));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
@@ -1654,6 +1654,10 @@ static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     if (UNLIKELY(korb_const_index_owned(c->vm, id, slots[1]) != UINT32_MAX))
         korb_warn_const_redef(c, slots + 2, id, slots[1]);   /* CRuby warns on reassignment */
     korb_const_define_owned(c, id, slots[0], slots[1]);   /* libc realloc only → no GC move */
+    {   /* Module#const_source_location reports the const_set CALL site (CRuby) */
+        uint32_t fsym, cline;
+        if (korb_caller_pos(c, a.p - 3, &fsym, &cline)) korb_const_reg_loc(c->vm, id, slots[1], fsym, cline);
+    }
     const VALUE owner = VALUE_REF_GET(self);              /* re-read: the warning may have moved it */
     if (UNLIKELY(KORB_CLASS_P(owner) && korb_mod_hook_custom(c, owner, korb_intern(c->vm, "const_added", 11)))) {
         slots[1] = VALUE_REF_GET(self); slots[2] = ID2SYM(id);   /* slots[0] still roots the value */
@@ -1997,6 +2001,20 @@ static RESULT korb_m_mod_const_source_location(CTX *c, VALUE *slots, VALUE_REF s
     CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]));
     CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), LONG2FIX((korb_sword_t)line)));
     return RESULT_OK(slots[0]);
+}
+/* Module#__const_reg_loc(name, file, line) — the prelude's #autoload records the
+ * registration site here, because CRuby's #const_source_location answers that
+ * position while the constant is still unresolved.  A later real definition
+ * overwrites the entry, so the resolved constant reports its own position. */
+static RESULT korb_m_mod_const_reg_loc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    const VALUE nv = VALUE_SLICE_GET(a, 0), fv = VALUE_SLICE_GET(a, 1), lv = VALUE_SLICE_GET(a, 2);
+    if (SYMBOL_P(nv) && KORB_STRING_P(fv) && FIXNUM_P(lv)) {
+        const KorbString *const fs = VAL2STR(fv);
+        korb_const_reg_loc(c->vm, SYM2ID(nv), VALUE_REF_GET(self),
+                           korb_intern(c->vm, korb_strbuf_data(fs->buf), fs->len), (uint32_t)FIX2LONG(lv));
+    }
+    return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     struct korb_vm *const vm = c->vm;

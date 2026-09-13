@@ -1,0 +1,5 @@
+p(-> { r = binding.implicit_parameter_get(:_1); _1; r }.call(:a))
+p(-> { r = binding.local_variables; _1; r }.call(:a))
+p(-> { r = binding.local_variable_get(:_1); _1; r }.call(:a))
+p(-> { _1; r = binding.local_variable_get(:_1); r }.call(:a))
+p(proc { r = binding.local_variable_get(:_1); _1; r }.call(:a))

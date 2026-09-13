@@ -71,6 +71,10 @@ struct kp_frame {
     struct kp_frame *prev;
 };
 
+/* `{ it }` binds the implicit parameter at slot 0 and prism lists no local for
+ * it, so every prism local of that frame sits one slot higher. */
+static inline uint32_t kp_it_shift(const struct kp_frame *const f) { return (f && f->it_param) ? 1u : 0u; }
+
 /* A call node's baked frame link: the distance it carries is cursor → the
  * CALLER's base, i.e. chain + locals_cnt (node.h).  Only `chain` is known while
  * transducing, so the cell is registered here and pop_frame folds in the frame
@@ -115,6 +119,8 @@ struct kp_ctx {
     const char *syntax_err;   /* a compile-time error found while lowering (bad Regexp literal): parse fails */
     uint32_t eval_aliases[8]; /* `alias x eval`: names that get eval's hidden-binding lowering too */
     uint32_t eval_alias_cnt;
+    uint32_t eval_method_mid; /* eval(str, binding): the method the BINDING was taken in, so `__method__`
+                               * inside the string answers it (CRuby); 0 = none / not an eval. */
 };
 
 /* `alias x eval` seen earlier in this file: x is lowered like eval itself. */
@@ -511,6 +517,34 @@ static uint32_t kp_cref_owner(struct kp_ctx *tc) {
     return 0;
 }
 
+/* The lexically-enclosing class/module as a full constant path ("Outer::A").
+ * kp_cref_owner answers only the innermost name, which any same-named module in
+ * the flat constant table also answers to — so a `binding` taken in Outer::A#m
+ * used to put `eval "class C; end"` into Other::A.  0 = no enclosing class. */
+static uint32_t
+kp_cref_owner_path(struct kp_ctx *tc)
+{
+    uint32_t syms[32], depth = 0;
+    for (const struct kp_frame *f = tc->frame; f; f = f->prev)
+        if (f->class_name_sym != 0) depth++;
+    if (depth == 0) return 0;
+    if (depth > 32) return kp_cref_owner(tc);
+    uint32_t i = depth;                               /* fill innermost→outermost, store outermost at [0] */
+    for (const struct kp_frame *f = tc->frame; f && i > 0; f = f->prev)
+        if (f->class_name_sym != 0) syms[--i] = f->class_name_sym;
+    char buf[512];
+    size_t len = 0;
+    for (uint32_t k = 0; k < depth; k++) {
+        const char *const nm = korb_sym_name(tc->c->vm, syms[k]);
+        const size_t nl = strlen(nm);
+        if (len + nl + 3 > sizeof buf) return kp_cref_owner(tc);
+        if (len) { buf[len++] = ':'; buf[len++] = ':'; }
+        memcpy(buf + len, nm, nl);
+        len += nl;
+    }
+    return korb_intern(tc->c->vm, buf, (uint32_t)len);
+}
+
 /* Register `cell` to be fixed up by `+= frame_size` when frame `f` pops — for a
  * yield-in-block trio index baked relative to the (ancestor) method frame's
  * size (the block trio sits at method node[frame_size-5..-3]). */
@@ -535,7 +569,7 @@ pop_frame(struct kp_ctx *tc)
     struct kp_frame *f = tc->frame;
     /* `{ it }`: prism lists no local for the implicit param, but the body binds
      * it at slot 0 — count it. */
-    const uint32_t it_slot = (f->it_param && f->locals->size == 0) ? 1u : 0u;
+    const uint32_t it_slot = kp_it_shift(f);
     uint32_t frame_size = (uint32_t)f->locals->size + it_slot + f->synth_cnt + (f->uses_block ? 3u : 0u);
     for (uint32_t i = f->bake_base; i < tc->bake_cnt; i++) {
         *tc->bake_list[i] -= (int32_t)frame_size;
@@ -604,7 +638,7 @@ lvar_index(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid)
 {
     const pm_constant_id_list_t *list = tc->frame->locals;
     for (size_t i = 0; i < list->size; i++) {
-        if (list->ids[i] == cid) return (uint32_t)i;
+        if (list->ids[i] == cid) return (uint32_t)i + kp_it_shift(tc->frame);
     }
     kp_failf(tc, node, "koruby_precise: local '%s' not in scope table", kp_cid_cstr(tc, cid));
 }
@@ -619,7 +653,7 @@ lvar_index_at(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, ui
     }
     if (!f) kp_failf(tc, node, "koruby_precise: outer scope depth %u not found", depth);
     for (size_t i = 0; i < f->locals->size; i++) {
-        if (f->locals->ids[i] == cid) return (uint32_t)i;
+        if (f->locals->ids[i] == cid) return (uint32_t)i + kp_it_shift(f);
     }
     kp_failf(tc, node, "koruby_precise: outer local '%s' not at depth %u", kp_cid_cstr(tc, cid), depth);
 }
@@ -637,7 +671,7 @@ bake_lget(struct kp_ctx *tc, uint32_t index)
 static uint32_t
 alloc_synth_local(struct kp_ctx *tc)
 {
-    return (uint32_t)tc->frame->locals->size + tc->frame->synth_cnt++;
+    return (uint32_t)tc->frame->locals->size + kp_it_shift(tc->frame) + tc->frame->synth_cnt++;
 }
 
 static NODE *
@@ -1019,6 +1053,7 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
                         pm_constant_t *ct = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, lid);
                         if (ct->length == klen && memcmp(ct->start, kname, klen) == 0) { li = (int32_t)j; break; }
                     }
+                    if (li >= 0) li += (int32_t)kp_it_shift(tc->frame);
                     if (li < 0) { ok = false; break; }
                     struct korb_pat *bp = calloc(1, sizeof(*bp));
                     if (!bp) abort();
@@ -1290,13 +1325,15 @@ static void *
 build_locals_info(struct kp_ctx *tc)
 {
     const struct kp_frame *const f = tc->frame;
-    const uint32_t it_slot = (f->it_param && f->locals->size == 0) ? 1u : 0u;   /* `{ it }` binds slot 0 with no prism local */
+    const uint32_t it_slot = kp_it_shift(f);   /* `{ it }` binds slot 0 with no prism local */
     const uint32_t n = (uint32_t)f->locals->size + it_slot;
     if (n == 0) return NULL;
     struct korb_locals_info *const li = malloc(sizeof(*li) + n * sizeof(uint32_t));   /* immortal */
     if (!li) abort();
     li->n = n;
-    if (it_slot) li->names[0] = korb_intern(tc->c->vm, "it", 2);
+    /* the implicit `it` is not a local variable (CRuby): leave its slot
+     * unnamed, like the anonymous `*` slot below */
+    if (it_slot) li->names[0] = 0;
     for (uint32_t i = it_slot; i < n; i++) {
         const pm_constant_id_t cid = f->locals->ids[i - it_slot];
         /* cid 0 = the slot kp_param_first_locals reserves for an anonymous `*`;
@@ -1447,10 +1484,52 @@ kp_encode_destr(struct kp_ctx *tc, const pm_node_t *p, struct kp_destr *e)
     for (uint32_t i = 0; i < mt->rights.size; i++) kp_encode_destr(tc, mt->rights.nodes[i], e);
 }
 
+/* `{ r = 1; _1 }` — prism lists a block's locals in SOURCE order, so a numbered
+ * parameter can land past a local written before it, while the ABI binds the
+ * arguments to slots 0..max.  Same remedy as kp_param_first_locals: a private
+ * copy with `_1`.._N first.  NULL = prism's order already works. */
+static const pm_constant_id_list_t *
+kp_numbered_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *const locals, const uint32_t maximum)
+{
+    if (maximum == 0 || maximum > 9 || locals->size < maximum) return NULL;
+    pm_constant_id_t want[9];
+    bool already = true;
+    for (uint32_t i = 0; i < maximum; i++) {
+        const char nm[3] = { '_', (char)('1' + i), '\0' };
+        want[i] = 0;
+        for (size_t k = 0; k < locals->size && want[i] == 0; k++) {
+            if (locals->ids[k] == 0) continue;
+            const pm_constant_t *const ct = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, locals->ids[k]);
+            if (ct->length == 2 && memcmp(ct->start, nm, 2) == 0) { want[i] = locals->ids[k]; already &= (k == i); }
+        }
+        if (want[i] == 0) return NULL;                   /* `_i` not declared: leave the layout alone */
+    }
+    if (already) return NULL;
+    pm_constant_id_t *const ids = malloc(sizeof(*ids) * locals->size);   /* immortal: the frame reads it */
+    if (!ids) abort();
+    memcpy(ids, want, sizeof(*ids) * maximum);
+    uint32_t w = maximum;
+    for (size_t k = 0; k < locals->size; k++) {
+        bool is_param = false;
+        for (uint32_t i = 0; !is_param && i < maximum; i++) is_param = (want[i] == locals->ids[k]);
+        if (!is_param) ids[w++] = locals->ids[k];
+    }
+    if (w != locals->size) { free(ids); return NULL; }   /* duplicate ids: leave it alone */
+    pm_constant_id_list_t *const out = malloc(sizeof(*out));
+    if (!out) abort();
+    out->ids = ids; out->size = locals->size; out->capacity = locals->size;
+    return out;
+}
+
 static NODE *
 transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals,
                       const pm_node_t *blk_params, const pm_node_t *blk_body)
 {
+    if (blk_params && PM_NODE_TYPE_P(blk_params, PM_NUMBERED_PARAMETERS_NODE)) {
+        const pm_constant_id_list_t *const ro = kp_numbered_first_locals(
+            tc, blk_locals, ((const pm_numbered_parameters_node_t *)blk_params)->maximum);
+        if (ro) blk_locals = ro;
+    }
     push_frame(tc, blk_locals);
     tc->frame->block_body = true;
     tc->frame->dm_body = tc->next_block_is_dm;
@@ -1708,7 +1787,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
         if (!cap_ns) abort();
         struct kp_frame *encl = tc->frame->prev;
         for (uint32_t k = 0; k < cap_depth; k++) {
-            cap_ns[k] = encl ? (uint16_t)encl->locals->size : 0;
+            cap_ns[k] = encl ? (uint16_t)(encl->locals->size + kp_it_shift(encl)) : 0;
             encl = encl ? encl->prev : NULL;
         }
     }
@@ -1876,6 +1955,7 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                 if (f->dm_body) return ALLOC_node_dm_name();   /* define_method: named at run time */
                 if (f->method_mid) { mid = f->method_mid; break; }
             }
+            if (mid == 0) mid = tc->eval_method_mid;   /* eval(str, binding): the binding's method */
             return ALLOC_node_lit(mid ? ID2SYM(mid) : KORB_NIL);
         }
     }
@@ -3410,7 +3490,7 @@ kp_binding_scope_tbl(struct kp_ctx *tc, uint32_t *out_name_cnt)
     uint32_t total = 0;
     for (uint32_t d = 0; d < L; d++) {
         const pm_constant_id_list_t *ls = levels[d]->locals;
-        total += (uint32_t)ls->size + ((levels[d]->it_param && ls->size == 0) ? 1u : 0u);
+        total += (uint32_t)ls->size + kp_it_shift(levels[d]);
     }
     uint32_t *tbl = malloc(sizeof(uint32_t) * (1 + L + 3 * (total ? total : 1)));   /* immortal */
     if (!tbl) abort();
@@ -3418,7 +3498,7 @@ kp_binding_scope_tbl(struct kp_ctx *tc, uint32_t *out_name_cnt)
     uint32_t cnt = 0;
     for (uint32_t d = 0; d < L; d++) {
         const pm_constant_id_list_t *ls = levels[d]->locals;
-        const bool it_slot = levels[d]->it_param && ls->size == 0;
+        const bool it_slot = kp_it_shift(levels[d]) != 0;
         tbl[1 + d] = (uint32_t)ls->size + (it_slot ? 1u : 0u);
         for (uint32_t i = 0; i < tbl[1 + d]; i++) {
             const pm_constant_id_t cid = (it_slot && i == 0) ? 0 : ls->ids[i - (it_slot ? 1u : 0u)];
@@ -3433,7 +3513,9 @@ kp_binding_scope_tbl(struct kp_ctx *tc, uint32_t *out_name_cnt)
                 if (tbl[1 + L + 3 * k] == sym) { shadowed = true; break; }
             if (shadowed) continue;
             tbl[1 + L + 3 * cnt]     = sym;
-            tbl[1 + L + 3 * cnt + 1] = d;
+            /* `it` is reachable through #implicit_parameter_* but is not a local
+             * variable, so the entry carries a flag the accessors filter on. */
+            tbl[1 + L + 3 * cnt + 1] = d | ((it_slot && i == 0) ? KORB_BIND_IMPLICIT : 0u);
             tbl[1 + L + 3 * cnt + 2] = i;
             cnt++;
         }
@@ -3459,7 +3541,7 @@ kp_make_binding_node(struct kp_ctx *tc, uint32_t line)
      * baked by name; leave it 0 and let the runtime fall back to self, which IS
      * that class inside the body. */
     const uint32_t cref_name = (tc->frame->anon_class_body || tc->frame->anon_cref_method)
-                             ? 0u : kp_cref_owner(tc);
+                             ? 0u : kp_cref_owner_path(tc);
     NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)tbl, cnt, cref_name);
     bake_add(tc, &nb->u.node_binding.def_env_off);    /* frame base shifts with frame_size */
     bake_add(tc, &nb->u.node_binding.self_off);       /* self at base[-1] (bottom header) */
@@ -5586,7 +5668,7 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool
  * writes them back).  NULL on syntax error. */
 NODE *
 koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line,
-                          const uint32_t *name_syms, uint32_t name_cnt)
+                          const uint32_t *name_syms, uint32_t name_cnt, uint32_t method_mid)
 {
     pm_parser_t parser;
     pm_options_t options = { 0 };
@@ -5610,7 +5692,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
         return NULL;
     }
     struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser),
-                         .fsl_false = kp_fsl_false(src, len) };
+                         .fsl_false = kp_fsl_false(src, len), .eval_method_mid = method_mid };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
     for (uint32_t pi = tc.pre_cnt; pi-- > 0; ) ast = ALLOC_node_seq(tc.pre_list[pi], ast);   /* BEGIN { } first */

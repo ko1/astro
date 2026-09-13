@@ -176,6 +176,11 @@ class Module
     path = path.respond_to?(:to_path) ? path.to_path : (path.is_a?(String) ? path : path.to_str)
     raise ArgumentError, "empty feature name" if path.empty?
     __autoload_table[n] = path
+    # CRuby answers #const_source_location with the autoload REGISTRATION site
+    # until the constant is really defined.
+    if (loc = caller_locations(1, 1)&.first)
+      __const_reg_loc(n, loc.path, loc.lineno)
+    end
     const_added(n) if respond_to?(:const_added, true)   # an autoload defines the constant (CRuby)
     nil
   end

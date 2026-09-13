@@ -3529,6 +3529,18 @@ korb_binding_tbl_flat(const uint32_t *syms, uint32_t cnt)
     return tbl;
 }
 
+/* The baked cref is a full lexical path; a `class A::B` body nests under a name
+ * that path does not spell, so fall back to the last segment there. */
+static VALUE korb_cref_from_path(struct korb_vm *const vm, const uint32_t sym)
+{
+    const VALUE v = korb_const_get_path(vm, sym);
+    if (KORB_CLASS_P(v)) return v;
+    const char *const nm = korb_sym_name(vm, sym);
+    const char *last = nm, *p;
+    while ((p = strstr(last, "::")) != NULL) last = p + 2;
+    return (last == nm) ? v : korb_const_get(vm, korb_intern(vm, last, (uint32_t)strlen(last)));
+}
+
 RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *scope_tbl, uint32_t name_cnt, VALUE self_val, uint32_t cref_name) {
     slots[0] = self_val;                                  /* root self across allocs */
     /* Materialize an env for EVERY captured lexical level (same walk as
@@ -3562,7 +3574,7 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
     }
     /* The cref is resolved HERE, from its baked name, so nothing has to survive
      * the env allocations above (a parked VALUE did not). */
-    VALUE cref = cref_name ? korb_const_get_path(c->vm, cref_name) : KORB_NIL;
+    VALUE cref = cref_name ? korb_cref_from_path(c->vm, cref_name) : KORB_NIL;
     if (!KORB_CLASS_P(cref)) cref = KORB_CLASS_P(slots[0]) ? slots[0] : KORB_NIL;
     slots[2] = cref;
     KorbBinding *b = korb_alloc(c, slots + 3, sizeof(KorbBinding), KORB_OBJ_BINDING);
@@ -3573,6 +3585,24 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->cref, slots[2]);
     return RESULT_OK((VALUE)b);
 }
+/* The method a binding was taken in, for an eval'd `__method__` (CRuby answers
+ * the binding's method, not the eval's).  Walks out of block levels to the
+ * method frame the env chain recorded; 0 at top level or past a closed chain. */
+static bool korb_bt_known_ptr(const struct korb_vm *vm, uintptr_t p);   /* fwd: defined with the backtrace walk */
+static uint32_t korb_bind_method_mid(const struct korb_vm *const vm, const KorbBinding *const b)
+{
+    VALUE ev = b->env;
+    for (uint32_t d = 0; d < 64 && ev != 0 && (ev & 1u) == 0; d++) {
+        const VALUE id = VAL2ENV(ev)->id;
+        const uintptr_t p = (uintptr_t)(id & ~(VALUE)7u);
+        if ((id & 7u) == KORB_FID_METHOD)
+            return korb_bt_known_ptr(vm, p) ? ((const struct korb_method *)p)->mid : 0;
+        if ((id & 7u) != KORB_FID_BLOCK) return 0;      /* class body / file top: no method */
+        ev = VAL2ENV(ev)->prev;
+    }
+    return 0;
+}
+
 /* env of lexical level `depth` in the binding's chain (0 = binding site). */
 static KorbEnv *korb_bind_level(const KorbBinding *b, uint32_t depth) {
     VALUE ev = b->env;
@@ -3586,7 +3616,7 @@ static KorbEnv *korb_bind_level(const KorbBinding *b, uint32_t depth) {
 /* read name index `i` (walks to its level; open → live slots, closed → vals). */
 static VALUE korb_bind_env_get(const KorbBinding *b, uint32_t i) {
     const uint32_t *t = KORB_BIND_TRIPLE(b, i);
-    const KorbEnv *e = korb_bind_level(b, t[1]);
+    const KorbEnv *e = korb_bind_level(b, KORB_BIND_DEPTH(t));
     if (e == NULL) return KORB_NIL;
     const VALUE *base = e->closed ? korb_items_data((KorbArrayItems *)(uintptr_t)e->vals) : e->loc;
     if (e->closed && t[2] >= e->n) return KORB_NIL;      /* level closed with fewer captures */
@@ -3595,17 +3625,21 @@ static VALUE korb_bind_env_get(const KorbBinding *b, uint32_t i) {
 /* write name index `i` (open → live slots, closed → heap vals via WB). */
 static void korb_bind_env_set(CTX *c, const KorbBinding *b, uint32_t i, VALUE v) {
     const uint32_t *t = KORB_BIND_TRIPLE(b, i);
-    KorbEnv *e = korb_bind_level(b, t[1]);
+    KorbEnv *e = korb_bind_level(b, KORB_BIND_DEPTH(t));
     if (e == NULL) return;
     if (e->closed) { if (t[2] < e->n) korb_env_store(c, e, t[2], v); }
     else e->loc[t[2]] = v;
 }
-/* name index of `sym` in the binding's scope, or -1. */
-static int korb_bind_find(const KorbBinding *b, uint32_t sym) {
-    for (uint32_t i = 0; i < b->name_cnt; i++)
-        if (KORB_BIND_TRIPLE(b, i)[0] == sym) return (int)i;
+/* name index of `sym` in the binding's scope, or -1.  `implicit` admits the
+ * implicit-parameter entries, which only #implicit_parameter_* may see. */
+static int korb_bind_find_x(const KorbBinding *b, uint32_t sym, bool implicit) {
+    for (uint32_t i = 0; i < b->name_cnt; i++) {
+        const uint32_t *const t = KORB_BIND_TRIPLE(b, i);
+        if (t[0] == sym && (implicit || (t[1] & KORB_BIND_IMPLICIT) == 0)) return (int)i;
+    }
     return -1;
 }
+static int korb_bind_find(const KorbBinding *b, uint32_t sym) { return korb_bind_find_x(b, sym, false); }
 /* resolve a :sym / "str" arg to an interned id; SIZE_MAX on a type error (caller raises). */
 static uint32_t korb_bind_argsym(CTX *c, VALUE v) {
     if (SYMBOL_P(v)) return SYM2ID(v);
@@ -3637,9 +3671,9 @@ static RESULT korb_bind_check_lvname(CTX *c, VALUE *slots, VALUE_REF self, uint3
     char db[224]; korb_desc_inspect(c, VALUE_REF_GET(self), db, sizeof db);
     return korb_raise(c, slots, KORB_E_NAME, 0, "wrong local variable name '%s' for %s", nm, db);
 }
-static RESULT korb_bind_lvget_sym(CTX *c, VALUE *slots, VALUE_REF self, uint32_t sym) {
+static RESULT korb_bind_lvget_sym(CTX *c, VALUE *slots, VALUE_REF self, uint32_t sym, bool implicit) {
     const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
-    const int i = korb_bind_find(b, sym);
+    const int i = korb_bind_find_x(b, sym, implicit);
     if (i >= 0) return RESULT_OK(korb_bind_env_get(b, (uint32_t)i));
     if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym)); if (hi >= 0) return RESULT_OK(korb_items_data(VAL2HASH(b->extra)->items)[2 * hi + 1]); }
     return korb_raise(c, slots, KORB_E_NAME, 0, "local variable '%s' is not defined for %s", korb_sym_name(c->vm, sym), "an instance of Binding");
@@ -3648,14 +3682,14 @@ static RESULT korb_m_bind_lvget(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     uint32_t sym;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     CHECK(korb_bind_check_numparam(c, slots, sym));
-    return korb_bind_lvget_sym(c, slots, self, sym);
+    return korb_bind_lvget_sym(c, slots, self, sym, false);
 }
 /* Binding#implicit_parameter_get's reader: the same lookup, minus the numbered
  * parameter rejection (its whole point is to reach _1.._9 / it). */
 static RESULT korb_m_bind_lvget_implicit(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t sym;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
-    return korb_bind_lvget_sym(c, slots, self, sym);
+    return korb_bind_lvget_sym(c, slots, self, sym, true);
 }
 static RESULT korb_m_bind_lvdefined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t sym;   /* Symbol/String, or #to_str-coercible */
@@ -3700,8 +3734,11 @@ static RESULT korb_m_bind_lvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const VALUE ex = VAL2BIND(VALUE_REF_GET(self))->extra;
     if (ex != KORB_NIL) for (uint32_t i = 0; i < VAL2HASH(ex)->len; i++)
         CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(VAL2BIND(VALUE_REF_GET(self))->extra)->items)[2 * i]));
-    for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++)
-        CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i)[0])));
+    for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++) {
+        const uint32_t *const t = KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i);
+        if (t[1] & KORB_BIND_IMPLICIT) continue;
+        CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(t[0])));
+    }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 /* Regexp / MatchData / String-regex methods live in builtins/regexp.c
@@ -8098,6 +8135,22 @@ korb_frames_snapshot_at(CTX *c, const VALUE *const lo, const VALUE *const hi,
 static uint32_t korb_frames_snapshot(CTX *c, const VALUE *link_cell)
 {
     return korb_frames_snapshot_at(c, c->slots, c->slots_limit, NULL, 0, link_cell);
+}
+
+/* Where the Ruby code that called this C function sits — the position CRuby
+ * records for a constant defined through const_set.  `link` is the callee's
+ * base[-3].  false when the walk finds no Ruby frame.  Cold: it fills the
+ * shared vm->fscratch, so read the result before running any user code. */
+static bool
+korb_caller_pos(CTX *c, const VALUE *const link, uint32_t *const file_sym, uint32_t *const line)
+{
+    if (korb_frames_snapshot(c, link) == 0) return false;
+    const struct korb_frame_rec *const r = &c->vm->fscratch[0];
+    const char *const f = r->file ? r->file : korb_bt_cur_file(c->vm);
+    if (f == NULL || r->line == 0) return false;
+    *file_sym = korb_intern(c->vm, f, (uint32_t)strlen(f));
+    *line = r->line;
+    return true;
 }
 
 /* ---------------------------------------------------------------------------
@@ -12657,6 +12710,7 @@ korb_register_core_methods(CTX *c)
     (void)korb_m_empty_ary;
     korb_def_cmethod(c, KORB_C_CLASS, "const_get", korb_m_class_const_get, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_source_location", korb_m_mod_const_source_location, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "__const_reg_loc", korb_m_mod_const_reg_loc, 3);   /* prelude: Module#autoload */
     korb_def_cmethod(c, KORB_C_CLASS, "__lexical_parent", korb_m_mod_lexical_parent, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "remove_const", korb_m_class_remove_const, 1);
     { struct korb_method *const m = korb_class_find_method(korb_builtin_class_obj(c->vm, KORB_C_CLASS), korb_intern(c->vm, "remove_const", 12), NULL);
@@ -12702,6 +12756,7 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("const_set", korb_m_class_const_set, 2);
     MOD_CFN("const_get", korb_m_class_const_get, -1);
     MOD_CFN("const_source_location", korb_m_mod_const_source_location, -1);
+    MOD_CFN("__const_reg_loc", korb_m_mod_const_reg_loc, 3);
     MOD_CFN("__lexical_parent", korb_m_mod_lexical_parent, 0);
     MOD_CFN("const_defined?", korb_m_class_const_defined, -1);
     MOD_CFN("class_variable_get", korb_m_class_cvar_get, 1);
@@ -15421,7 +15476,8 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     for (uint32_t i = 0; i < b0->name_cnt; i++) decl[i] = KORB_BIND_TRIPLE(b0, i)[0];
     for (uint32_t i = 0; i < ecnt; i++) decl[b0->name_cnt + i] = SYM2ID(korb_items_data(VAL2HASH(b0->extra)->items)[2 * i]);
     const KorbString *const s = VAL2STR(*src_slot);
-    NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, fname, eline, decl, declc);
+    NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, fname, eline, decl, declc,
+                                            korb_bind_method_mid(c->vm, b0));
     free(decl);
     if (UNLIKELY(entry == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
     const uint32_t L = koruby_toplevel_locals_cnt;
@@ -15435,7 +15491,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     fb[KORB_FLINK_OFF] = korb_flink_cur_cframe(c, fb);  /* the eval builtin's own frame: the walk goes on into its caller */
     for (uint32_t i = 0; i < ncnt; i++) {           /* seed: copy binding values into the eval frame's locals */
         const KorbBinding *b = VAL2BIND(*bind_slot);
-        const int j = korb_bind_find(b, nsyms[i]);
+        const int j = korb_bind_find_x(b, nsyms[i], true);
         if (j >= 0) fb[i] = korb_bind_env_get(b, (uint32_t)j);
         else if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(nsyms[i])); if (hi >= 0) fb[i] = korb_items_data(VAL2HASH(b->extra)->items)[2 * hi + 1]; }
     }
@@ -15477,7 +15533,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
      * below trigger GC, which moves the binding (a cached VALUE goes stale). */
     #define EVAL_BIND VAL2BIND(*bind_slot)
     for (uint32_t i = 0; i < ncnt; i++) {           /* write back: existing → env, new → extra hash */
-        const int j = korb_bind_find(EVAL_BIND, nsyms[i]);
+        const int j = korb_bind_find_x(EVAL_BIND, nsyms[i], true);
         if (j >= 0) { korb_bind_env_set(c, EVAL_BIND, (uint32_t)j, fb[i]); continue; }
         fb[L + 1] = EVAL_BIND->extra;
         if (fb[L + 1] == KORB_NIL) { fb[L + 1] = UNWRAP(korb_hash_new(c, fb + L + 2, 4)); ARO_STORE(c, EVAL_BIND, (VALUE *)(uintptr_t)&EVAL_BIND->extra, fb[L + 1]); }
@@ -16419,6 +16475,101 @@ korb_bi_frame_locals(CTX *c, VALUE *slots, VALUE_SLICE args)
         UNWRAP(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(syms[i])));
     return RESULT_OK(slots[0]);
 }
+/* Kernel#binding reached as a METHOD — `send(:binding)`, `obj.send(:binding)`,
+ * `Kernel.binding`.  A bare `binding` never gets here: parse.c lowers it to
+ * node_binding with its scope table baked at the call site.  Here the site is a
+ * C frame, so the table is rebuilt from the CALLER's frame identity, the same
+ * source __frame_locals reads.  CRuby's rb_f_binding is transparent through
+ * `send` for the same reason: it walks to the nearest Ruby frame. */
+#define KORB_BIND_RT_NAMES 256u   /* names captured at most; a scope this wide is not real code */
+
+/* Intern a runtime scope table on the VM.  A scope is a property of the calling
+ * ISEQ, so without this every call would leak one (the Binding keeps the table
+ * for its whole life and nothing frees it). */
+static const uint32_t *
+korb_bind_tbl_intern(struct korb_vm *const vm, const VALUE id, const uint32_t *const buf, const uint32_t words)
+{
+    for (uint32_t i = 0; i < vm->bind_tbl_cnt; i++)
+        if (vm->bind_tbls[i].id == id && vm->bind_tbls[i].words == words &&
+            memcmp(vm->bind_tbls[i].tbl, buf, (size_t)words * sizeof(uint32_t)) == 0)
+            return vm->bind_tbls[i].tbl;
+    if (vm->bind_tbl_cnt == vm->bind_tbl_capa) {
+        const uint32_t nc = vm->bind_tbl_capa ? vm->bind_tbl_capa * 2u : 8u;
+        struct korb_bind_tbl *const nb = realloc(vm->bind_tbls, (size_t)nc * sizeof(*nb));
+        if (!nb) abort();
+        vm->bind_tbls = nb; vm->bind_tbl_capa = nc;
+    }
+    uint32_t *const t = malloc((size_t)words * sizeof(uint32_t));   /* immortal: the Binding keeps it */
+    if (!t) abort();
+    memcpy(t, buf, (size_t)words * sizeof(uint32_t));
+    vm->bind_tbls[vm->bind_tbl_cnt].tbl = t;
+    vm->bind_tbls[vm->bind_tbl_cnt].words = words;
+    vm->bind_tbls[vm->bind_tbl_cnt].id = id;
+    vm->bind_tbl_cnt++;
+    return t;
+}
+
+static RESULT
+korb_bi_binding(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    if (VALUE_SLICE_LEN(args) != 0)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)",
+                          VALUE_SLICE_LEN(args));
+    VALUE *const fbase = korb_link_base(c, args.p - 3);
+    if (fbase == NULL)
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "Can not create Binding object for non-Ruby caller");
+
+    /* Same packed layout as parse.c kp_binding_scope_tbl: [L, n(0..L), (sym,depth,slot)*]. */
+    uint32_t buf[1 + KORB_SCOPE_DEPTH_MAX + 3 * KORB_BIND_RT_NAMES];
+    const struct korb_locals_info *lis[KORB_SCOPE_DEPTH_MAX];
+    struct korb_scope_level lv, outer;
+    korb_scope_at_base(fbase, &lv);
+    uint32_t L = 0;
+    for (;;) {
+        lis[L] = korb_scope_locals(c->vm, &lv);
+        outer = lv;                                  /* the last level reached: its cref governs */
+        L++;
+        struct korb_scope_level nx;
+        if (L >= KORB_SCOPE_DEPTH_MAX || !korb_scope_outer(&lv, &nx)) break;
+        lv = nx;
+    }
+    buf[0] = L;
+    uint32_t cnt = 0;
+    for (uint32_t d = 0; d < L; d++) {
+        const uint32_t n = lis[d] ? lis[d]->n : 0;
+        buf[1 + d] = n;
+        for (uint32_t i = 0; i < n && cnt < KORB_BIND_RT_NAMES; i++) {
+            const uint32_t sym = lis[d]->names[i];
+            if (sym == 0) continue;                  /* the anonymous `*` slot has no name */
+            bool shadowed = false;                   /* an inner name hides an outer one */
+            for (uint32_t k = 0; k < cnt && !shadowed; k++)
+                if (buf[1 + L + 3 * k] == sym) shadowed = true;
+            if (shadowed) continue;
+            buf[1 + L + 3 * cnt]     = sym;
+            buf[1 + L + 3 * cnt + 1] = d;
+            buf[1 + L + 3 * cnt + 2] = i;
+            cnt++;
+        }
+    }
+    const uint32_t words = 1 + L + 3 * cnt;
+    const uint32_t *const tbl = korb_bind_tbl_intern(c->vm, korb_id_get(fbase), buf, words);
+    /* `outer.id` is a tagged pointer into immortal libc memory, so it survives
+     * the allocations korb_make_binding does (a VALUE would not). */
+    const VALUE oid = outer.id;
+    const RESULT r = korb_make_binding(c, slots, fbase, tbl, cnt, fbase[-1], 0);
+    /* The lexical class: korb_make_binding resolves a cref NAME, which only the
+     * parser has.  The outermost level's method entry carries the class itself. */
+    if (LIKELY(r.state == KORB_NORMAL) && KORB_BINDING_P(r.value) && (oid & 7u) == KORB_FID_METHOD &&
+        korb_bt_known_ptr(c->vm, (uintptr_t)(oid & ~(VALUE)7u))) {
+        const VALUE ow = ((const struct korb_method *)(uintptr_t)(oid & ~(VALUE)7u))->owner;
+        if (KORB_CLASS_P(ow)) {
+            KorbBinding *const b = VAL2BIND(r.value);
+            ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->cref, ow);
+        }
+    }
+    return r;
+}
+
 /* The prelude's Kernel#caller_locations is Ruby, so its own frame sits on top
  * of this list — skip it and report positions as its caller sees them. */
 static RESULT korb_bi_caller_strings(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_caller_common(c, slots, args, args.p - 3, 1); }
@@ -16556,6 +16707,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__frame_local_get", korb_bi_frame_local_get, -1);
     korb_builtin_define(c, "__frame_local_set", korb_bi_frame_local_set, -1);
     korb_builtin_define(c, "__frame_locals", korb_bi_frame_locals, -1);
+    /* `binding` as a method; the bare call is lowered at parse time instead */
+    korb_builtin_define(c, "binding", korb_bi_binding, -1);
     /* the raw writer: Kernel#warn itself is Ruby (prelude/exception.rb) so it can
        delegate to Warning.warn and introspect its arity */
     korb_builtin_define(c, "__warn_raw", korb_bi_warn, -1);

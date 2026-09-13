@@ -87,6 +87,12 @@ struct korb_param_info  { uint32_t n; struct korb_param_entry e[]; };
  * named.  Cold-read only, so it costs nothing on any call path. */
 struct korb_locals_info { uint32_t n; uint32_t names[]; };
 
+/* Binding scope table (parse.c kp_binding_scope_tbl): set on a triple's DEPTH
+ * word for an implicit parameter (`it`), which #implicit_parameter_* reaches
+ * but #local_variable_* must not see. */
+#define KORB_BIND_IMPLICIT 0x80000000u
+#define KORB_BIND_DEPTH(t) ((t)[1] & ~KORB_BIND_IMPLICIT)
+
 /* Inline ivar slot-cache — embedded in @ivar nodes via @ref.  Monomorphic:
  * caches the last hit slot; validated by `ivars[2*slot] == name_sym` so it is
  * GC-safe (no class pointer) and self-correcting across object layouts. */
@@ -607,7 +613,7 @@ void korb_ctx_free(CTX *c);
  * caller (main.c) reads the source (file / -e / stdin). */
 NODE *koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool exit_on_error);
 NODE *koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line,
-                                const uint32_t *name_syms, uint32_t name_cnt);
+                                const uint32_t *name_syms, uint32_t name_cnt, uint32_t method_mid);
 extern uint32_t koruby_toplevel_locals_cnt;
 extern const uint32_t *koruby_toplevel_local_syms;   /* toplevel local-name table (for TOPLEVEL_BINDING) */
 extern uint32_t koruby_toplevel_local_cnt;

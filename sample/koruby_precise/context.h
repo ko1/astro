@@ -1211,6 +1211,12 @@ struct korb_vm {
     uintptr_t bt_lo, bt_hi;            /* address range a frame-top marker may point into (method entries,
                                         * AST nodes — immortal libc); one outside it is not ours, so the
                                         * walk stops instead of dereferencing it */
+    /* Scope tables built by the RUNTIME `binding` (the method form: send /
+     * Kernel.binding).  A Binding keeps its table forever, so they are interned
+     * per calling ISEQ here rather than malloc'd per call.  `id` is a frame
+     * identity cell = a tagged pointer into immortal libc, never a GC object. */
+    struct korb_bind_tbl { const uint32_t *tbl; uint32_t words; VALUE id; } *bind_tbls;
+    uint32_t bind_tbl_cnt, bind_tbl_capa;
 };
 
 /* -----------------------------------------------------------------------------

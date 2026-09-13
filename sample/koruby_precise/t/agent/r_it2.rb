@@ -1,0 +1,7 @@
+p(proc { a = it; binding.implicit_parameters }.call(:x))
+p(proc { r = binding.implicit_parameters; a = it; r }.call(:x))
+p(proc { r = binding.implicit_parameter_defined?(:it); it; r }.call(:x))
+p(-> { r = binding.implicit_parameter_get(:it); it; r }.call(:a))
+p(-> { r = binding.implicit_parameter_get(:_1); _1; r }.call(:a))
+p(proc { a = it; binding.implicit_parameter_get(:it) }.call(:x))
+p(proc { a = it; a }.call(:x))
