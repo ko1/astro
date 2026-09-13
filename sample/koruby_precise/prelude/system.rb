@@ -643,6 +643,7 @@ module ObjectSpace
     else
       entry[1] << callable
       __install_finalizer_hook__
+      __finalizers_active__        # lets #clone know it has to copy entries
       [0, callable]
     end
   end
@@ -656,6 +657,16 @@ module ObjectSpace
     warn "warning: finalizer references object to be finalized" if recv.equal?(obj)
   end
   private_class_method :__warn_self_referential_finalizer__
+
+  # #dup / #clone copy the original's finalizers onto the copy (CRuby does this
+  # in init_copy, which both share).  Called from the C copy path, so it skips
+  # define_finalizer's frozen and immediate checks -- the copy is what it is.
+  def self.__copy_finalizers__(orig, copy)
+    entry = FINALIZERS__.find { |e| e[0].equal?(orig) }
+    return copy if entry.nil? || entry[1].empty?
+    FINALIZERS__ << [copy, entry[1].dup]
+    copy
+  end
 
   def self.undefine_finalizer(obj)
     raise FrozenError, "can't modify frozen #{obj.class}: #{obj.inspect}" if obj.frozen?
@@ -1655,15 +1666,18 @@ class Object
         rescue NameError
           nil
         end
-    # The singleton class *and* the modules included/prepended into it count;
-    # the inherited part of the chain (from the first other Class on) does not.
-    if m
+    # nil/true/false answer #singleton_class with NilClass/TrueClass/FalseClass,
+    # which are ordinary classes -- so they never own a singleton method, however
+    # `def nil.foo` looks.  Without this the ancestor walk below accepts them.
+    if m && sc.singleton_class?
+      # The singleton class *and* the modules included/prepended into it count;
+      # the inherited part of the chain (from the first other Class on) does not.
       sc.ancestors.each do |mod|
         break if mod.is_a?(Class) && !mod.equal?(sc)
         return m if mod.equal?(m.owner)
       end
     end
-    raise NameError.new("undefined singleton method '#{name}' for #{inspect}", sym)
+    raise NameError.new("undefined singleton method '#{name}' for '#{inspect}'", sym)
   end
 end
 

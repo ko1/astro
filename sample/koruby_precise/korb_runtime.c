@@ -16217,6 +16217,17 @@ korb_objspace_visit(void *arg, void *payload)
     s->count++;
 }
 
+/* __finalizers_active__ — ObjectSpace.define_finalizer calls this once it has
+ * registered an entry.  #clone consults the flag instead of the Ruby registry,
+ * so a clone costs nothing until a finalizer actually exists. */
+static RESULT
+korb_bi_finalizers_active(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)slots; (void)args;
+    c->vm->finalizers_active = true;
+    return RESULT_OK(KORB_NIL);
+}
+
 /* __heap_objects__(mod) — Array of every heap object that `is_a? mod`
  * (mod = nil → all of them).  Backs ObjectSpace.each_object.  Like CRuby's
  * heap walk this can also surface garbage that has not been collected yet. */
@@ -16842,6 +16853,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);
     korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);
     korb_builtin_define(c, "__heap_objects__", korb_bi_heap_objects, -1);
+    korb_builtin_define(c, "__finalizers_active__", korb_bi_finalizers_active, 0);
     korb_builtin_define(c, "__gc_stress", korb_bi_gc_stress, -1);
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
     korb_builtin_define(c, "Float", korb_bi_float, -1);

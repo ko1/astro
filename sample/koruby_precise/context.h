@@ -969,6 +969,10 @@ struct korb_vm {
      * paths are untouched; once true the inline/call caches stop being filled so
      * every site re-resolves and can consult the active refinements. */
     bool refinements_active;
+    /* set once ObjectSpace.define_finalizer has registered anything.  Same
+     * deopt-flag shape: while false, #clone never calls back into the Ruby-side
+     * finalizer registry to copy an entry. */
+    bool finalizers_active;
 
     /* constants (class names): parallel name→value arrays.  `const_vals` holds
      * GC objects (classes) and is root-scanned by AROH_VISIT_ROOTS.

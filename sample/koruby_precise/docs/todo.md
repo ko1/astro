@@ -3,6 +3,150 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## rubyspec の「1〜2 例落ち」長い尻尾の共通原因 集計 (2026-09-13)
+
+残る失敗の 82% は「1 ファイルに 1〜2 例だけ落ちている」形で散っている。
+1 ファイルずつ潰すのではなく **複数ファイルに共通する原因** を探すために、
+失敗の**本文**を機械的に集める道具を入れた。
+
+- `tools/spec_sweep/harvest.rb` — sweep TSV から対象ファイルを選び、実 mspec で
+  再実行して失敗ブロック (例外クラス / `Expected ... == ...` / backtrace) を
+  JSON に落とす。
+  `ruby tools/spec_sweep/harvest.rb 6 <sweep.tsv> <raw.json> [minF] [maxF]`
+- `tools/spec_sweep/bucket.rb` — その JSON を 2 通りに束ねる。
+  (1) **正規化したメッセージ署名** (引用符の中身・数値・アドレスを潰す)、
+  (2) **example 説明文の末尾 6 語** — shared spec (`core/*/shared/*.rb`) は
+  どのファイルでも同じ文が出るので、共通原因が 1 行にまとまる。
+  `ruby tools/spec_sweep/bucket.rb <raw.json> [top]`
+
+罠: mspec は mock 検証の失敗を
+`An exception occurred during: Mock.verify_count` という外側ブロックで包み、
+**本当の example 名はその中の 1 行目**に来る。剥がさないと無関係な 13 件が
+1 つの無意味なバケツに潰れる。`bucket.rb` が剥がしている。
+
+### 集計結果 (baseline `3eb124ce`, 範囲外を除いた 412 ファイル / 562 失敗ブロック)
+
+| ファイル数 | 例数 | 原因 | 状態 |
+|---|---|---|---|
+| 56 | 56 | `LoadError: net/ftp` | **CRuby も 0 例。直す価値なし** (下記) |
+| 20 | 20 | `LoadError: syslog` | C 拡張。未実装 |
+| 19 | 19 | `LoadError: openssl` | C 拡張。未実装 |
+| 9 | 9 | `LoadError: yaml` (psych) | C 拡張 + libyaml。未実装 |
+| 8 | 8 | `copies the finalizer` (`#clone`/`#dup` が finalizer を写さない) | **修正済** |
+| 6 | 6 | `LoadError: objspace` | 未実装 |
+| 5 | 5 | `LoadError: coverage` | 未実装 |
+| 5 | 9 | `Kernel` にメソッドが「無い」だけ (下記) | 未修正 |
+| 5 | 5 | OS 境界の文字列が `Encoding.default_internal` を無視 (Dir 2 / ENV 3) | 未修正 |
+| 3 | 3 | `works for eval with a given line` (`eval(str, nil, file, line)`) | **修正済** |
+| 3 | 3 | `singleton_method` が nil/true/false で raise しない | **修正済** |
+| 3 | 3 | Set の反復中の変更が `RuntimeError` にならない | 未修正 |
+| 3 | 3 | `full Unicode case mapping` が UTF-16LE で効かない | 未修正 |
+| 2 | 2 | `LoadError: optparse` / `ripper` / `rubygems` (各 2) | optparse は純 Ruby、可能性あり |
+| 2 | 2 | `Regexp.new` がサブクラスの `#initialize` を呼ばない | 未修正 (観測あり、下記) |
+| 2 | 2 | `UnboundMethod#bind{,_call}` でモジュールメソッドの `super` が引けない | 未修正 |
+| 2 | 2 | `__method__` / `__callee__` が `send` 越しで nil | 未修正 |
+| 2 | 2 | `grapheme_clusters` が UTF-16/32 で違う | 未修正 |
+
+**一番大きい発見: `LoadError` が 121 ファイル (1 例落ちの 310 ファイルの 39%)。**
+これはインタプリタのバグではなく stdlib の有無。うち 56 ファイル (net/ftp) は
+**CRuby 4.1.0dev でも 0 examples / 0 failures** で、直しても意味がない。
+
+### 計測して**却下**した仮説: `RUBY_VERSION` を 4.1.0 に上げる
+
+`korb_runtime.c` の `RUBY_VERSION` は `"4.0.2"`、参照 CRuby は `4.1.0dev`。
+net-ftp spec は `ruby_version_is ""..."4.1"` で囲まれているので、CRuby は
+ブロックごとスキップ (= 0 例)、koruby は中に入って `require "net/ftp"` で
+LoadError になっていた。定数の隣のコメントは「差分テストの CRuby に追従させる」
+と書いてあり、値の方が古びていた ので、上げるのは筋が通って見えた。
+
+**実測 (sweep 全体, 同一 run の pass/ex で比較):**
+
+| | pass | fail | err | WFAIL |
+|---|---|---|---|---|
+| `4.0.2` (baseline) | 30964 | 412 | 217 | 0 |
+| `4.1.0` | **30760** | 457 | **605** | 1 |
+
+**−204 例の純損**。net-ftp の 56 ファイルは改善するが、`ruby_version_is "4.1"`
+で新たに有効になる 70 ファイル分 (core/string 19・core/io 12・core/kernel 6 …) が
+それを大きく上回る。**revert 済み。** 覆る条件: 4.1 の新仕様
+(String / IO / Marshal 周り) を実装したあと再測すれば逆転しうる。
+
+### この回で直したもの
+
+- [x] **`#clone` / `#dup` が finalizer を写さない** (8 ファイル: `core/{binding,method,proc,unboundmethod}/{clone,dup}_spec.rb`)
+      CRuby は `init_copy` → `rb_gc_copy_attributes` で写すので **`#dup` でも写る**
+      (spec 本文は `obj.clone` しか叩かないが、CRuby で直接確かめた)。
+      finalizer レジストリは Ruby 側 (`ObjectSpace::FINALIZERS__`) なので、
+      C の共有コピー経路 `korb_obj_copy_impl` の末尾から
+      `ObjectSpace.__copy_finalizers__(orig, copy)` を呼ぶ。
+      `vm->finalizers_active` (`basic_op_redefined` と同じ deopt フラグの形) を
+      `define_finalizer` が立てるまで、この呼び出しは経路から消えている。
+      末尾に置いたのは、コールバックが alloc するので手前の `sv2` が stale に
+      なるため。
+- [x] **`eval(str, nil, file, line)` が caller の self を失う** (3 ファイル:
+      `core/method/source_location_spec.rb`, `core/unboundmethod/source_location_spec.rb`,
+      `core/module/const_source_location_spec.rb`)
+      `parse.c` の「hidden binding」lowering が **`argc == 1` のときだけ**効いていた。
+      引数が増えると `korb_bi_eval` の素の経路に落ち、そこは**新しい `main` を
+      作って**評価するので、`Class.new { eval('def m; end', nil, "foo", 100) }` の
+      `def` がどこにも定義されない (`class Foo; eval(...); end` でも同じ)。
+      明示的な `nil` binding は「caller の binding」の意味なので、2〜4 引数形も
+      同じ lowering に乗せ、file/line はそのまま後ろに送る。
+      観測: 修正前は `c.instance_methods(false)` が `[:m_nofile]`、CRuby は `[:m, :m_nofile]`。
+- [x] **`nil`/`true`/`false` の `#singleton_method` が raise しない** (3 ファイル)
+      `nil.singleton_class` は `NilClass` という**普通のクラス**なので、
+      prelude の ancestors walk が「singleton が持っている」と誤判定していた。
+      `sc.singleton_class?` で門を立てた。ついでに NameError の文面を CRuby と
+      同じ引用符付き (`for 'nil'`) に揃えた。
+
+### 直していない / 次に効きそうなもの (観測つき)
+
+- [ ] **`Kernel` に名前が無いだけの 5 ファイル 9 例**
+      `block_given?` / `local_variables` / `readlines` / `set_trace_func` / `syscall`。
+      観測 (`Kernel.private_instance_methods(false)` / `Kernel.public_methods(false)`):
+
+      | | koruby priv | koruby 特異 | CRuby |
+      |---|---|---|---|
+      | `block_given?` | true | **false** | true / true |
+      | `local_variables` | **false** | **false** | true / true |
+      | `readlines` | **false** | **false** | true / true |
+      | `set_trace_func` | **false** | **false** | true / true |
+      | `syscall` | **false** | **false** | true / true |
+
+      `korb_runtime.c` の `privnames[]` には 5 つとも**既に載っている**が、
+      あのループは「Kernel のメソッド表に既にある名前」しか拾わない。
+      5 つとも `korb_builtin_define` されていない (`block_given?` / `local_variables`
+      はおそらくパース時ノード) ので表に無く、素通りしている。
+      **手を付けなかった理由**: spec は存在確認だけだが、`block_given?` と
+      `local_variables` は caller のフレームを見る必要があり、prelude の
+      委譲メソッドにすると*委譲先*のフレームを答える嘘になる。
+      `syscall` / `set_trace_func` は中身が無い。`readlines` (= `ARGF.readlines`)
+      だけは正直に書けるが 1 ファイルにしかならない。
+- [ ] **OS 境界の文字列が `Encoding.default_internal` を無視 (5 ファイル)**
+      `core/dir/{children,entries}_spec.rb` — `Encoding.default_internal = Encoding::EUC_KR`
+      のとき `Dir.children(...)` の要素は EUC_KR であるべきが UTF-8。
+      `core/env/{element_reference,shift,each_pair}_spec.rb` — ENV の値は
+      locale encoding で tag され、`default_internal` が立っていればそこへ
+      transcode されるべきが、常に UTF-8。
+      未着手。ENV の encoding は `ENV["HOME"]` 経由で File のパス処理に波及するので
+      先に影響範囲を測ること。
+- [ ] **`Regexp.new` がサブクラスの `#initialize` を呼ばない** (2 ファイル:
+      `core/regexp/{new,compile}_spec.rb`)
+      観測: `class RSub < Regexp; def initialize(*a); super; @args = a; end; end` で
+      `RSub.new("hi")` は `RSub` を返し `source` も `"hi"` だが、
+      `initialize` の中の `$called` が nil のまま = **ユーザの `#initialize` が
+      一度も呼ばれていない**。`r.instance_variables` は `[]` (CRuby は `[:@args]`)。
+- [ ] **Set / Hash の反復中の変更が `RuntimeError` にならない** (3 ファイル:
+      `core/set/{add,merge,replace}_spec.rb`)
+      観測: `h.each { h[:c] = 3 }` は koruby では黙って通る。CRuby は
+      `can't add a new key into hash during iteration`。Set 側も同じ
+      (`can't add a new item into set during iteration`)。
+      Hash 本体に反復フラグを入れると hot path に触るので、まず Set (prelude)
+      だけで閉じるか検討すること。
+
+なお `library/socket` は `SWEEP_TMP` を短いパス (`/tmp/ksw`) にすれば消える
+harness 由来 (sun_path 長)。今回の全 sweep はそれで取っている。
+
 ## require / load のフレーム (2026-09-13)
 
 `require` / `require_relative` / `load` 自身のフレームが backtrace に出るようにした

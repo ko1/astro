@@ -648,6 +648,18 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     }
+    /* CRuby's init_copy carries the source's finalizers to the copy, for #dup as
+     * well as #clone.  The registry is Ruby-side, so hand the pair to
+     * ObjectSpace; the VM flag keeps this off the path until one exists. */
+    if (UNLIKELY(c->vm->finalizers_active) && AROH_IS_GC_OBJECT(slots[1])) {
+        slots[2] = korb_const_get(c->vm, korb_intern(c->vm, "ObjectSpace", 11));
+        slots[3] = VALUE_REF_GET(self);
+        slots[4] = slots[1];
+        const RESULT fr = korb_send_impl(c, slots + 5, korb_intern(c->vm, "__copy_finalizers__", 19),
+                                         0, 2, NULL, NULL, NULL);
+        if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+        slots[1] = slots[4];   /* re-read: the callback allocates and may have moved the copy */
+    }
     return RESULT_OK(slots[1]);
 }
 static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

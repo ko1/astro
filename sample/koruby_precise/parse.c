@@ -1974,25 +1974,36 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
      * lowering (CRuby's eval is special at the call site, not in the method). */
     /* `eval(str)` — CRuby evaluates in the CALLER's binding.  koruby has no
      * runtime frame metadata, so bake a binding for the call site and pass it
-     * as the hidden 2nd argument (only the plain 1-arg form; an explicit
-     * binding / splat form goes through the normal path).  A user-defined
-     * `eval` would see the extra Binding — same caveat as CRuby's own
-     * "eval is special" corners, accepted for compatibility. */
-    if (cn->receiver == NULL && argc == 1 && cn->block == NULL &&
-        !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE) &&
-        !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_FORWARDING_ARGUMENTS_NODE) &&
+     * as the hidden 2nd argument.  `eval(str, nil, file, line)` means the same
+     * thing (an explicit nil binding IS the caller's), so it takes the same
+     * lowering with the file/line arguments carried through — without it the
+     * builtin runs the string against a fresh `main` and a `def` inside is lost.
+     * A real Binding or a splat form goes through the normal path.  A
+     * user-defined `eval` would see the extra Binding — same caveat as CRuby's
+     * own "eval is special" corners, accepted for compatibility. */
+    if (cn->receiver == NULL && argc >= 1 && argc <= 4 && cn->block == NULL &&
+        (argc == 1 || PM_NODE_TYPE_P(cn->arguments->arguments.nodes[1], PM_NIL_NODE)) &&
         (strcmp(kp_cid_cstr(tc, cn->name), "eval") == 0 || kp_is_eval_alias(tc, cn->name))) {
-        const uint32_t line = kp_line(tc, (const pm_node_t *)cn);
-        const uint32_t cnt = 3;                          /* [self, str, binding] */
-        NODE **argv = malloc(sizeof(NODE *) * cnt);
-        if (!argv) abort();
-        int32_t saved = tc->chain;
-        tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;
-        argv[0] = bake_self(tc);
-        argv[1] = transduce(tc, cn->arguments->arguments.nodes[0]);
-        argv[2] = kp_make_binding_node(tc, line);
-        tc->chain = saved;
-        return KP_LINK(tc, node_call, korb_intern(tc->c->vm, "eval", 4), kp_flink(tc, line), argv, cnt);
+        bool plain = true;                               /* no splat/forwarding anywhere */
+        for (uint32_t i = 0; i < (uint32_t)argc && plain; i++)
+            plain = !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[i], PM_SPLAT_NODE) &&
+                    !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[i], PM_FORWARDING_ARGUMENTS_NODE);
+        if (plain) {
+            const uint32_t line = kp_line(tc, (const pm_node_t *)cn);
+            /* [self, str, binding] plus whatever followed the nil (file, line) */
+            const uint32_t cnt = (argc == 1) ? 3 : (uint32_t)argc + 1;
+            NODE **argv = malloc(sizeof(NODE *) * cnt);
+            if (!argv) abort();
+            int32_t saved = tc->chain;
+            tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;
+            argv[0] = bake_self(tc);
+            argv[1] = transduce(tc, cn->arguments->arguments.nodes[0]);
+            argv[2] = kp_make_binding_node(tc, line);    /* replaces the explicit nil */
+            for (uint32_t i = 2; i < (uint32_t)argc; i++)
+                argv[i + 1] = transduce(tc, cn->arguments->arguments.nodes[i]);
+            tc->chain = saved;
+            return KP_LINK(tc, node_call, korb_intern(tc->c->vm, "eval", 4), kp_flink(tc, line), argv, cnt);
+        }
     }
 
     /* bare `instance_eval(str...)` — same hidden-binding contract as the
