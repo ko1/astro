@@ -451,7 +451,10 @@ class Encoding
       raise TypeError, "no implicit conversion of #{v.class} into String" unless v.respond_to?(:to_str)
       r = v.to_str
       raise TypeError, "no implicit conversion of #{v.class} into String" unless r.is_a?(String)
-      @replacement = r
+      # CRuby stores the replacement already converted into the destination
+      # encoding, so a character that encoding cannot show raises here — and the
+      # old replacement is left in place.
+      @replacement = (r.encoding == @destination_encoding) ? r : r.encode(@destination_encoding)
     end
 
     def inspect = "#<Encoding::Converter: #{@src_name} to #{@dst_name}>"
@@ -896,17 +899,14 @@ class Regexp
   # source options need real transcoding and are out of scope.  A 7-bit-ASCII
   # pattern is US-ASCII; otherwise it carries its source String's encoding.
   def encoding
-    src = source
+    # __source_raw, not #source: #source reports THIS method's answer as its tag.
+    src = __source_raw
+    return Encoding::BINARY if src.nil?            # Regexp.allocate: no pattern yet (CRuby)
     # An ASCII-incompatible source (UTF-16 etc.) reports itself directly: the
     # \u scan below would have to match against it, and matching such a String
     # is exactly what raises Encoding::CompatibilityError.
     return src.encoding unless src.encoding.ascii_compatible?
-    # A \u / \u{…} escape whose codepoint is outside 7-bit ASCII forces UTF-8,
-    # even when the escape text itself is ASCII (CRuby).  \u escapes that stay in
-    # 7-bit ASCII (e.g. A) do not.
-    utf8 = src.scan(/\\u(?:\{([0-9a-fA-F][0-9a-fA-F ]*)\}|([0-9a-fA-F]{4}))/).any? do |brace, plain|
-      (brace ? brace.split : [plain]).any? { |h| h.to_i(16) > 0x7f }
-    end
+    utf8 = __utf8_escape?(src)
     o = options
     if (o & 32) != 0                               # /n (NOENCODING)
       # a \xNN escape above 0x7f makes the pattern binary; otherwise it is
@@ -922,5 +922,22 @@ class Regexp
     return Encoding::UTF_8 if utf8
     return src.encoding if fixed_encoding?        # pinned: the source's own encoding
     src.ascii_only? ? Encoding::US_ASCII : src.encoding
+  end
+
+  # A \u / \u{…} escape whose codepoint is outside 7-bit ASCII forces UTF-8, even
+  # when the escape text itself is ASCII (CRuby).  Escapes that stay 7-bit do not.
+  private def __utf8_escape?(src)
+    src.scan(/\\u(?:\{([0-9a-fA-F][0-9a-fA-F ]*)\}|([0-9a-fA-F]{4}))/).any? do |brace, plain|
+      (brace ? brace.split : [plain]).any? { |h| h.to_i(16) > 0x7f }
+    end
+  end
+
+  # CRuby's rb_reg_source hands back the compiled pattern, which carries the
+  # Regexp's own encoding; koruby's literal parser always builds UTF-8 bytes.
+  def source
+    s = __source_raw
+    raise TypeError, "uninitialized Regexp" if s.nil?
+    e = encoding
+    s.encoding == e ? s : s.dup.force_encoding(e)
   end
 end

@@ -128,10 +128,14 @@ class IO
     end
     ext, int = args
     raise TypeError, "no implicit conversion of nil into String" if ext.nil? && !int.nil?
-    if ext.is_a?(String) && !ext.encoding.ascii_compatible?
+    # CRuby's name_for_encoding: the NAME itself must be ASCII-compatible, for
+    # either argument (an encoding name is read as a C string).
+    if (ext.is_a?(String) && !ext.encoding.ascii_compatible?) ||
+       (int.is_a?(String) && !int.encoding.ascii_compatible?)
       raise ArgumentError, "invalid encoding name (non ASCII)"
     end
     __check_newline_opt(opts[:newline]) if opts.key?(:newline)
+    __check_newline_binmode(opts)
     ext = __enc_arg(ext)
     # "-" (or a "ext:-" pair) means "explicitly no internal encoding", which is
     # not the same as leaving it out (that one falls back to the default).
@@ -143,7 +147,10 @@ class IO
     end
     ext = Encoding.find(ext) if ext.is_a?(String)
     int = Encoding.find(int) if int.is_a?(String)
-    if ext.is_a?(Encoding) && !ext.ascii_compatible? && !__io_binmode_raw? && int.nil? && !__io_writable?
+    # CRuby's validate_enc_binmode: an unset external encoding still means
+    # default_external here, so `set_encoding(nil)` is checked too.
+    eff = ext.is_a?(Encoding) ? ext : Encoding.default_external
+    if !eff.ascii_compatible? && !__io_binmode_raw? && int.nil? && !__io_writable?
       raise ArgumentError, "ASCII incompatible encoding needs binmode"
     end
     @__enc_done = true          # an explicit set_encoding wins over the mode string
@@ -164,6 +171,19 @@ class IO
   # whether a written "\n" becomes "\r\n" (:crlf) or "\r" (:cr).
   private def __check_newline_opt(v)
     raise ArgumentError, "newline decorator with binary mode" if __io_binmode_raw?
+    __check_newline_value(v)
+  end
+
+  # The three boolean spellings set the same decorator as :newline, so binary
+  # mode rejects them too (CRuby: rb_econv_prepare_options + validate_enc_binmode).
+  private def __check_newline_binmode(opts)
+    return unless __io_binmode_raw?
+    if opts[:universal_newline] || opts[:crlf_newline] || opts[:cr_newline]
+      raise ArgumentError, "newline decorator with binary mode"
+    end
+  end
+
+  private def __check_newline_value(v)
     unless %i[lf crlf cr universal].include?(v)
       raise ArgumentError, "unexpected value for newline option: #{v}" if v.is_a?(Symbol)
       raise ArgumentError, "unexpected value for newline option"

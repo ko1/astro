@@ -2856,7 +2856,6 @@ static RESULT korb_m_struct_initialize(CTX *c, VALUE *slots, VALUE_REF self, VAL
  * on the base Struct class, once, so `Struct.new(:a) { include M }` lets M
  * override them (CRuby defines them on Struct too).  `pk` is a rooted slot:
  * korb_class_def_cfn interns the name → may GC → re-read the class each call. */
-static uint32_t korb_intern_enc(struct korb_vm *vm, const char *name, size_t len, uint32_t enc);   /* fwd */
 static void korb_def_struct_common(CTX *c, const VALUE *pk) {
     korb_class_def_cfn(c, *pk, "to_a", korb_m_struct_to_a, 0);
     /* no #to_ary: a Struct is not implicitly an Array in CRuby (it must not
@@ -7544,8 +7543,11 @@ korb_intern_enc(struct korb_vm *vm, const char *name, size_t len, uint32_t enc)
     bool ascii_only;
     const uint32_t h = korb_str_hash_ascii(name, len, &ascii_only);
     /* CRuby normalises an ASCII-only name to US-ASCII regardless of the source
-     * String's tag, so `"foo".b.to_sym` and `:foo` are the same Symbol. */
-    const uint8_t want = (uint8_t)(ascii_only ? KORB_ENC_USASCII : enc);
+     * String's tag, so `"foo".b.to_sym` and `:foo` are the same Symbol.  It keys
+     * that off coderange 7BIT, which an ASCII-INcompatible encoding (UTF-16,
+     * ISO-2022-JP, …) never reaches — those keep their own tag. */
+    const uint8_t want = (uint8_t)((ascii_only && korb_enc_ascii_compat_idx(vm, enc))
+                                   ? KORB_ENC_USASCII : enc);
     uint32_t mask = vm->sym_hash_cap - 1;
     for (uint32_t slot = h & mask; ; slot = (slot + 1) & mask) {   /* find-or-miss */
         const uint32_t e = vm->sym_hash[slot];
@@ -12640,6 +12642,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_REGEXP, "===", korb_m_re_case_eq, 1);
     korb_def_cmethod_blk(c, KORB_C_REGEXP, "match", korb_m_re_match, -1);
     korb_def_cmethod(c, KORB_C_REGEXP, "source", korb_m_re_source, 0);
+    korb_def_cmethod(c, KORB_C_REGEXP, "__source_raw", korb_m_re_source_raw, 0);
     korb_def_cmethod(c, KORB_C_REGEXP, "__enc_hint", korb_m_re_enc_hint, 0);
     korb_def_cmethod(c, KORB_C_REGEXP, "to_s", korb_m_re_to_s, 0);
     korb_def_cmethod(c, KORB_C_REGEXP, "inspect", korb_m_re_inspect, 0);
@@ -13171,9 +13174,9 @@ korb_register_core_methods(CTX *c)
  * Printing (CRuby-compatible to_s / inspect, written directly — no GC).
  * ------------------------------------------------------------------------- */
 
-/* Inspect-quote a byte run: "..." with CRuby's escape set. */
+/* Inspect-quote a UTF-8 byte run: "..." with CRuby's escape set. */
 static void
-korb_fprint_quoted_enc(FILE *fp, const char *bytes, uint32_t len, bool binary)
+korb_fprint_quoted(FILE *fp, const char *bytes, uint32_t len)
 {
     fputc('"', fp);
     for (uint32_t i = 0; i < len; i++) {
@@ -13196,11 +13199,7 @@ korb_fprint_quoted_enc(FILE *fp, const char *bytes, uint32_t len, bool binary)
                 fputc('#', fp);
             break;
           default:
-            if (binary) {         /* ASCII-8BIT: printable ASCII as-is, everything else \xHH */
-                if (ch < 0x20 || ch >= 0x7f) fprintf(fp, "\\x%02X", ch);
-                else fputc(ch, fp);
-            }
-            else if (ch < 0x20 || ch == 0x7f) { fprintf(fp, "\\u%04X", ch); }
+            if (ch < 0x20 || ch == 0x7f) { fprintf(fp, "\\u%04X", ch); }
             else if (ch < 0x80) { fputc(ch, fp); }
             else {                /* >= 0x80: pass valid UTF-8 through, escape invalid bytes as \xHH */
                 int n = (ch >= 0xF0) ? 3 : (ch >= 0xE0) ? 2 : (ch >= 0xC0) ? 1 : -1;
@@ -13216,7 +13215,105 @@ korb_fprint_quoted_enc(FILE *fp, const char *bytes, uint32_t len, bool binary)
     }
     fputc('"', fp);
 }
-static void korb_fprint_quoted(FILE *fp, const char *bytes, uint32_t len) { korb_fprint_quoted_enc(fp, bytes, len, false); }
+
+/* CRuby rb_enc_unicode_p: the escape form of a non-ASCII character is \uNNNN
+ * for the Unicode families and \xNN otherwise.  The byte-order-less UTF-16 /
+ * UTF-32 are *dummy* encodings built on ASCII, so they are not Unicode here. */
+static bool
+korb_enc_unicode_p(const struct korb_vm *const vm, const uint32_t enc)
+{
+    bool be;
+    return enc == KORB_ENC_UTF8 || korb_enc_fixed_unit(vm, enc, &be) != 0;
+}
+
+/* One character at p for #inspect: byte length, plus the value the escape is
+ * built from — the Unicode codepoint for a Unicode encoding, the raw bytes
+ * packed big-endian otherwise (CRuby rb_enc_mbc_to_codepoint).  0 = the
+ * encoding rejects these bytes. */
+static uint32_t
+korb_enc_inspect_char(const struct korb_vm *const vm, const uint32_t enc, const bool unicode,
+                      const unsigned char *const p, const uint32_t len, uint32_t *const cp)
+{
+    if (KORB_ENC_SB(vm, enc)) { *cp = p[0]; return 1; }   /* byte == character == codepoint */
+    struct korb_tc tc;
+    if (!korb_tc_find(korb_enc_name_of(vm, enc), &tc)) { *cp = p[0]; return 1; }   /* no table: byte at a time */
+    uint32_t u = 0;
+    const uint32_t n = korb_tc_decode(&tc, p, len, &u);
+    if (n == 0) return 0;
+    if (unicode) { *cp = u; }
+    else { uint32_t v = 0; for (uint32_t i = 0; i < n; i++) v = (v << 8) | p[i]; *cp = v; }
+    return n;
+}
+
+static bool korb_ascii_print_p(const uint32_t cp) { return cp >= 0x20 && cp < 0x7F; }
+
+/* every byte 7-bit (CRuby coderange 7BIT, for an ASCII-compatible encoding)? */
+static bool korb_str_bytes_ascii_p(const char *const s, const uint32_t len)
+{
+    unsigned char hi = 0;
+    for (uint32_t i = 0; i < len; i++) hi |= (unsigned char)s[i];
+    return (hi & 0x80u) == 0;
+}
+
+/* #inspect of a string whose encoding is NOT the result's (koruby always
+ * renders into UTF-8), i.e. CRuby's rb_str_inspect with enc != resenc. */
+static void
+korb_fprint_quoted_other(const struct korb_vm *const vm, FILE *const fp,
+                         const char *const bytes, const uint32_t len, const uint32_t enc)
+{
+    const unsigned char *const p = (const unsigned char *)bytes;
+    const bool unicode = korb_enc_unicode_p(vm, enc);
+    const bool acompat = korb_enc_ascii_compat_idx(vm, enc);
+    bool be = true;
+    const uint32_t unit = KORB_ENC_SB(vm, enc) ? 0u : korb_enc_fixed_unit(vm, enc, &be);
+    const uint32_t minlen = unit ? unit : 1u;            /* CRuby replaces mbminlen bytes per bad run */
+
+    fputc('"', fp);
+    for (uint32_t i = 0; i < len; ) {
+        uint32_t cp = 0;
+        const uint32_t n = korb_enc_inspect_char(vm, enc, unicode, p + i, len - i, &cp);
+        if (n == 0) {
+            uint32_t k = (len - i < minlen) ? len - i : minlen;
+            while (k--) fprintf(fp, "\\x%02X", p[i++]);
+            continue;
+        }
+        if (acompat || unicode) {
+            bool evstr = false;
+            if (cp == '#' && i + n < len) {
+                uint32_t ncp = 0;
+                if (korb_enc_inspect_char(vm, enc, unicode, p + i + n, len - i - n, &ncp))
+                    evstr = (ncp == '$' || ncp == '@' || ncp == '{');
+            }
+            if (cp == '"' || cp == '\\' || evstr) {
+                fputc('\\', fp);
+                if (acompat) { fwrite(p + i, 1, n, fp); i += n; continue; }
+            }
+        }
+        const char *esc = NULL;
+        switch (cp) {
+          case '\n': esc = "\\n"; break;
+          case '\r': esc = "\\r"; break;
+          case '\t': esc = "\\t"; break;
+          case '\f': esc = "\\f"; break;
+          case 013:  esc = "\\v"; break;
+          case 010:  esc = "\\b"; break;
+          case 007:  esc = "\\a"; break;
+          case 033:  esc = "\\e"; break;
+          default: break;
+        }
+        if (esc) { fputs(esc, fp); i += n; continue; }
+        if (acompat && cp < 0x80 && korb_ascii_print_p(cp)) { fwrite(p + i, 1, n, fp); }
+        else if (unicode) {
+            if (korb_ascii_print_p(cp))  fputc((int)cp, fp);
+            else if (cp < 0x10000)       fprintf(fp, "\\u%04X", cp);
+            else                         fprintf(fp, "\\u{%X}", cp);
+        }
+        else if (cp < 0x100) fprintf(fp, "\\x%02X", cp);
+        else                 fprintf(fp, "\\x{%X}", cp);
+        i += n;
+    }
+    fputc('"', fp);
+}
 
 /* Can a symbol name appear bare as a hash label `name:`?  CRuby 3.4+: an
  * identifier optionally ending in ? or ! (not =, not empty, not operator). */
@@ -13621,19 +13718,30 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
     if (v == KORB_TRUE)  { fputs("true", fp); return; }
     if (v == KORB_FALSE) { fputs("false", fp); return; }
     if (SYMBOL_P(v)) {
-        const char *nm = korb_sym_name(c->vm, SYM2ID(v));
-        if (korb_sym_inspect_bare(nm)) fprintf(fp, ":%s", nm);
-        else { fputc(':', fp); korb_fprint_quoted(fp, nm, (uint32_t)strlen(nm)); }
+        const uint32_t id = SYM2ID(v);
+        const char *const nm = korb_sym_name(c->vm, id);
+        const uint32_t len = c->vm->sym_lens[id], enc = c->vm->sym_encs[id];
+        /* CRuby rb_str_symname_p: a name the UTF-8 result cannot show verbatim
+         * — a foreign encoding carrying non-ASCII, or one holding a NUL — is
+         * printed as `:` + the inspected String instead of bare. */
+        const bool shows_raw = len == strlen(nm) &&
+            (enc == KORB_ENC_UTF8 ||
+             (korb_enc_ascii_compat_idx(c->vm, enc) && korb_str_bytes_ascii_p(nm, len)));
+        fputc(':', fp);
+        if (shows_raw && korb_sym_inspect_bare(nm)) fputs(nm, fp);
+        else if (enc == KORB_ENC_UTF8) korb_fprint_quoted(fp, nm, len);
+        else korb_fprint_quoted_other(c->vm, fp, nm, len, enc);
         return;
     }
     if (KORB_FLOAT_P(v)) { char b[40]; korb_float_to_s(korb_float_val(v), b); fputs(b, fp); return; }   /* flonum or heap */
     switch (KORB_OBJ_TYPE(v)) {
       case KORB_OBJ_STRING: {
-        const KorbString *s = VAL2STR(v);
-        /* Non-UTF-8 (ASCII-8BIT or US-ASCII) inspects control/high bytes as \xNN;
-         * UTF-8 passes multibyte through / uses \uNNNN. */
-        bool binary = KORB_STR_ENC(v) != KORB_ENC_UTF8;   /* non-UTF-8 → \xNN escaping */
-        korb_fprint_quoted_enc(fp, korb_strbuf_data(s->buf), s->len, binary);
+        const KorbString *const s = VAL2STR(v);
+        const uint32_t enc = KORB_STR_ENC(v);
+        /* The result is UTF-8, so any other encoding takes CRuby's enc != resenc
+         * path: step characters in `enc` and escape what it cannot show. */
+        if (enc == KORB_ENC_UTF8) korb_fprint_quoted(fp, korb_strbuf_data(s->buf), s->len);
+        else korb_fprint_quoted_other(c->vm, fp, korb_strbuf_data(s->buf), s->len, enc);
         return;
       }
       case KORB_OBJ_RANGE:
@@ -13667,7 +13775,7 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         for (uint32_t i = 0; 2 * i + 1 < off->len; i++) {
             const long b = FIX2LONG(korb_items_data(off->items)[2 * i]), e = FIX2LONG(korb_items_data(off->items)[2 * i + 1]);
             if (i) fprintf(fp, " %u:", i);
-            if (b >= 0) korb_fprint_quoted_enc(fp, korb_strbuf_data(subj->buf) + b, (uint32_t)(e - b), false);
+            if (b >= 0) korb_fprint_quoted(fp, korb_strbuf_data(subj->buf) + b, (uint32_t)(e - b));
             else fputs("nil", fp);
         }
         fputc('>', fp);

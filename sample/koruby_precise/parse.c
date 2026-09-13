@@ -3943,7 +3943,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_SYMBOL_NODE: {
         const pm_symbol_node_t *sn = (const pm_symbol_node_t *)node;
         size_t len = pm_string_length(&sn->unescaped);
-        uint32_t id = korb_intern(tc->c->vm, (const char *)pm_string_source(&sn->unescaped), len);
+        /* a symbol literal carries the file's encoding (CRuby); an ASCII-only
+         * name still normalises to US-ASCII inside korb_intern_enc. */
+        uint32_t id = korb_intern_enc(tc->c->vm, (const char *)pm_string_source(&sn->unescaped), len, tc->src_enc);
         return ALLOC_node_lit(ID2SYM(id));
       }
       case PM_ALIAS_GLOBAL_VARIABLE_NODE: {   /* alias $NEW $OLD — parse 時 alias (English.rb) */

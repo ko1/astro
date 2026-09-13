@@ -30,6 +30,7 @@ static bool korb_str_bytes_ascii(VALUE v) {
 }
 static inline uint32_t korb_str_char_bytes(const struct korb_vm *vm, uint32_t enc, const unsigned char *p, uint32_t i, uint32_t n);   /* fwd */
 static uint32_t korb_enc_char_bytes_other(const struct korb_vm *vm, uint32_t enc, const unsigned char *p, uint32_t i, uint32_t n);   /* fwd */
+static bool korb_enc_bytes_valid(const struct korb_vm *vm, uint32_t enc, const char *bytes, uint32_t len);   /* fwd: builtins/transcode.c */
 /* Is this encoding one byte per character?  The multi-byte families are the
  * short list, so they are the ones named here; everything else (ISO-8859-x,
  * KOI8-x, Windows-125x, IBM/CP 8-bit code pages, TIS-620, macRoman, …) is a
@@ -141,16 +142,19 @@ static bool korb_str_utf8_valid(const KorbString *s) {
     return true;
 }
 /* String#valid_encoding? — true for ASCII-8BIT/US-ASCII-tagged (every byte legal)
- * and for well-formed UTF-8; false for malformed UTF-8. */
+ * and for a well-formed sequence in the string's own encoding. */
 static RESULT korb_m_str_valid_encoding(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c; (void)slots; (void)a;
+    (void)slots; (void)a;
     const VALUE v = VALUE_REF_GET(self);
     const uint32_t enc = KORB_STR_ENC(v);
     if (enc == KORB_ENC_BINARY) return RESULT_OK(KORB_TRUE);   /* every byte legal */
     if (enc == KORB_ENC_USASCII) { const KorbString *s = VAL2STR(v);
         for (uint32_t i = 0; i < s->len; i++) if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) return RESULT_OK(KORB_FALSE);
         return RESULT_OK(KORB_TRUE); }
-    if (enc >= KORB_ENC_OTHER_MIN) return RESULT_OK(KORB_TRUE);   /* "other": assume valid until hooked */
+    if (enc >= KORB_ENC_OTHER_MIN) {   /* "other": decode it with the transcoder's own tables */
+        const KorbString *const s = VAL2STR(v);
+        return RESULT_OK(korb_enc_bytes_valid(c->vm, enc, korb_strbuf_data(s->buf), s->len) ? KORB_TRUE : KORB_FALSE);
+    }
     return RESULT_OK(korb_str_utf8_valid(VAL2STR(v)) ? KORB_TRUE : KORB_FALSE);
 }
 /* String#scrub([repl]) { |bad| } — replace each maximal invalid sub-sequence

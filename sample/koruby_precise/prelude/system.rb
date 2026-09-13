@@ -1940,8 +1940,9 @@ class Regexp
   # エンコーディングを固定する。
   def fixed_encoding?
     return true if (options & Regexp::FIXEDENCODING) != 0
-    src = source
+    src = __source_raw                    # #source asks #encoding, which asks here
     return true unless src.encoding.ascii_compatible?
+    return true if __utf8_escape?(src)    # \u{8768} pins the pattern to UTF-8
     return true unless src.ascii_only?
     src.scan(/\\x([0-9a-fA-F]{1,2})/).any? { |h| h[0].to_i(16) > 0x7f }
   end

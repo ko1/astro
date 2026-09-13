@@ -4475,3 +4475,122 @@ zz = 1
 退行ではない (それ以前は `send(:binding)` が NoMethodError だった) が、
 **spec が通っていても中身が違う**状態なので、`korb_bind_tbl_intern` が
 `kp_binding_scope_tbl` と同じだけ外へ辿るようにすること。
+
+## (2026-09-13) encoding 系 rubyspec の残り
+
+`f22c0b4c` を起点に encoding 系を埋めたときの残件。各項目は
+`ruby tools/spec_sweep/sweep.rb 6 <out.tsv> core language library` の後に
+一例ずつ最小再現を作って CRuby (`~/ruby/install/master/bin/ruby`) と並べて確認した。
+
+### 壊れた String へのマッチが ArgumentError にならない — 3 例
+
+- [ ] `core/regexp/match_spec.rb` 2 例 + `language/regexp/encoding_spec.rb` 1 例。
+      observed:
+
+      ```ruby
+      s = "\x80".dup.force_encoding('UTF-8')
+      s =~ /./          # CRuby: ArgumentError "invalid byte sequence in UTF-8"
+                        # koruby: nil (例外なし)
+      ```
+
+      直さなかった理由は性能。CRuby は coderange を String ヘッダに
+      キャッシュしているので判定がタダだが、koruby にその欄はない。
+      `korb_re_check_enc` (builtins/regexp.c) のコメントに前任者の実測が
+      残っている: 無条件に subject 全体を歩くと **regex 重めのベンチで約 11%**。
+      ヘッダに coderange の 2 bit を足して全変異経路で invalidate する
+      のが本筋だが、`<<` / `[]=` の in-place 成長まで含めて漏れなく潰す必要が
+      あり、このまとまりでは手を出していない。
+      安いプレフィルタ (高位バイトが 1 つも無ければ即 valid) なら
+      全走査より軽いはずだが、**未計測**。
+
+### /s (Windows-31J) のマッチが 1 文字を 2 バイトとして扱う — 3 例
+
+- [ ] `language/regexp/encoding_spec.rb` の "supports /s (Windows_31J encoding)"
+      系 3 例。observed:
+
+      ```ruby
+      /./s.match("\303\251".dup.force_encoding(Encoding::Windows_31J)).to_a
+      # CRuby: ["\xC3"]        (0xC3 は半角カナ域の 1 バイト文字)
+      # koruby: ["\xC3\xA9"]
+      ```
+
+      `korb_re_run` は subject が single-byte 系なら `PR_FLAGS_ASCII_8BIT` を
+      立て、それ以外は UTF-8 として codepoint 単位で歩く。Windows-31J は
+      どちらでもないので、エンジン側に per-encoding の文字送りフックが要る。
+      `korb_enc_char_bytes_other` に SJIS の送り規則はあるので、
+      libastrogre に「1 文字の幅を外から教える」口を足せば届く見込み (未検証)。
+
+### valid_encoding? がテーブルの無い encoding で常に true — 1 例
+
+- [ ] `core/string/valid_encoding_spec.rb` 1 例。
+      `korb_enc_bytes_valid` (builtins/transcode.c) を入れて
+      EUC-JP / Shift_JIS / UTF-16 / UTF-32 / 単バイト系は CRuby と一致する
+      ようになったが、spec は Big5 / CP949 / Emacs-Mule / EUC-TW / GB18030 /
+      GBK / EUC-KR も並べる。これらは `tools/gen_transcode.rb` の `MULTI` に
+      入っていないので `korb_tc_find` が外し、保守的に true を返す。
+      observed: `"\xE6\x9D\x94".force_encoding('Big5').valid_encoding?` は
+      CRuby false / koruby true。
+      gen_transcode.rb のコメントどおり、表を足すと
+      `builtins/transcode_tables.h` (現在 1.67 MB) がさらに膨らむ。
+
+### Big5 の変換器が無い — 3〜4 例
+
+- [ ] `core/encoding/converter/{destination_encoding,source_encoding,last_error}_spec.rb`
+      と `convpath_spec.rb` の 1 例。いずれも
+      `Encoding::Converter.new(*, "Big5")` が
+      `Encoding::ConverterNotFoundError: code converter not found` になる。
+      上と同じ表の話。
+
+### String#scrub が非 UTF-8 encoding を素通しする — 1 例
+
+- [ ] `core/string/scrub_spec.rb` 1 例。observed:
+
+      ```ruby
+      u = ("abc".encode('UTF-16LE').bytes + [0x00, 0xD8]).pack('c*').force_encoding('UTF-16LE')
+      u.scrub("*".encode('UTF-16LE')).bytes
+      # CRuby: [97,0,98,0,99,0,42,0]
+      # koruby: [97,0,98,0,99,0,0,216]   (不正バイト列がそのまま残る)
+      ```
+
+      `korb_m_str_scrub` の走査ループは UTF-8 / US-ASCII 専用
+      (`korb_utf8_seq_len`)。他 encoding に広げるには (1) 文字送り、
+      (2) 不正列のまとめ方 (UTF-16 は mbminlen=2 単位)、
+      (3) 既定の置換文字 (Unicode 系は U+FFFD をその encoding で、他は "?")
+      の 3 つが要る。`valid_encoding?` 側だけ先に直したので、
+      **`korb_str_enc_valid` は意図的に据え置き**にしてある
+      (ここを厳しくすると scrub が「不正」と判定してから UTF-8 用ループに
+      落ち、いまより悪い出力になる)。
+
+### IO#set_encoding の encoding option Hash が効かない — 1 例
+
+- [ ] `core/io/set_encoding_spec.rb` 1 例。
+
+      ```ruby
+      io.set_encoding(Encoding::EUC_JP, Encoding::SHIFT_JIS, invalid: :replace, replace: ".")
+      io.read   # CRuby "."   koruby "\xFF"
+      ```
+
+      `set_encoding` は `invalid:` / `replace:` を捨てている。読み取り経路は
+      `__io_read_xenc_name` が返す encoding 名しか C 側に渡さないので、
+      オプションを保持して `korb_bi_transcode` 相当の置換つき変換に
+      繋ぐ必要がある。
+
+### Encoding::Converter が ISO-2022-JP の復帰エスケープを convert で出す — 1 例
+
+- [ ] `core/encoding/converter/finish_spec.rb` 1 例。observed:
+
+      ```ruby
+      ec = Encoding::Converter.new("utf-8", "iso-2022-jp")
+      ec.convert("\u{9999}").bytes   # CRuby [27,36,66,57,97]  koruby [27,36,66,57,97,27,40,66]
+      ec.finish.bytes                # CRuby [27,40,66]        koruby []
+      ```
+
+      `\e(B` (ASCII 復帰) を `convert` が毎回末尾に付けてしまう。CRuby は
+      状態を持ち越して `finish` で初めて出す。
+
+### MatchData#inspect が名前付きキャプチャを番号で出す — 1 例 (encoding 無関係)
+
+- [ ] `core/matchdata/inspect_spec.rb` 1 例。
+      `#<MatchData "abc def ghi" 1:"abc" 2:"def">` /
+      CRuby は `first:"abc" last:"def"`。`korb_fprint_inspect_s` の
+      MATCHDATA 分岐が名前表を見ていないだけ。

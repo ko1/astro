@@ -565,6 +565,8 @@ bool korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base
 
 /* symbols */
 uint32_t korb_intern(struct korb_vm *vm, const char *name, size_t len);
+/* intern under an explicit encoding (symbol literals carry their file's). */
+uint32_t korb_intern_enc(struct korb_vm *vm, const char *name, size_t len, uint32_t enc);
 bool korb_responds_to_public(CTX *c, VALUE self, uint32_t mid);
 bool korb_responds_to_coerce(CTX *c, VALUE *slots, VALUE self, uint32_t mid);   /* defined in korb_runtime.c; called from node_eval.c (defined?) */
 bool korb_responds_to_coerce_p(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid);

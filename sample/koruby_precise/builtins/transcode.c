@@ -267,6 +267,25 @@ static bool korb_tc_truncated(const struct korb_tc *tc, const unsigned char *p, 
     }
 }
 
+/* Is the whole buffer a well-formed sequence in `enc`?  Encodings koruby has no
+ * table for, and the stateful ISO-2022 family, answer true — there is nothing
+ * better to say than what the caller already assumed. */
+static bool korb_enc_bytes_valid(const struct korb_vm *const vm, const uint32_t enc,
+                                 const char *const bytes, const uint32_t len)
+{
+    struct korb_tc tc;
+    if (!korb_tc_find(korb_enc_name_of(vm, enc), &tc)) return true;
+    if (tc.kind == KTC_ISO2022JP) return true;
+    const unsigned char *const p = (const unsigned char *)bytes;
+    for (uint32_t i = 0; i < len; ) {
+        uint32_t cp = 0;
+        const uint32_t n = korb_tc_decode(&tc, p + i, len - i, &cp);
+        if (n == 0) return false;
+        i += n;
+    }
+    return true;
+}
+
 /* Bytes the first character of `p` spans in `enc`.  0 means the buffer holds
  * only a truncated prefix, so a byte-at-a-time reader must fetch more; anything
  * the encoding rejects reports 1, so such a reader always makes progress. */

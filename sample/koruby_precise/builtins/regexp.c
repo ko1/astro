@@ -651,6 +651,13 @@ static RESULT korb_m_re_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(r.value == KORB_NIL ? KORB_FALSE : KORB_TRUE);
 }
 static RESULT korb_m_re_source(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(VAL2RE(VALUE_REF_GET(self))->source); }
+/* The pattern bytes as stored, nil for a `Regexp.allocate` husk: #encoding and
+ * #source are defined over this so neither has to re-enter the other. */
+static RESULT korb_m_re_source_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)a;
+    const VALUE v = VALUE_REF_GET(self);
+    return RESULT_OK(KORB_REGEXP_P(v) ? VAL2RE(v)->source : KORB_NIL);
+}
 /* prism flag bits → Ruby's Regexp option bits.  The encoding flags (/u /e /s /n)
  * all mean "the pattern's encoding is fixed": Ruby reports FIXEDENCODING (16)
  * for /u /e /s and NOENCODING (32) for /n. */
