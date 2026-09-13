@@ -1007,7 +1007,9 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
                 } else {                                      /* `key:` shorthand → bind local named `key` */
                     int32_t li = -1;
                     for (size_t j = 0; j < tc->frame->locals->size; j++) {
-                        pm_constant_t *ct = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, tc->frame->locals->ids[j]);
+                        const pm_constant_id_t lid = tc->frame->locals->ids[j];
+                        if (lid == 0) continue;            /* anonymous `*` placeholder slot */
+                        pm_constant_t *ct = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, lid);
                         if (ct->length == klen && memcmp(ct->start, kname, klen) == 0) { li = (int32_t)j; break; }
                     }
                     if (li < 0) { ok = false; break; }
@@ -1288,7 +1290,12 @@ build_locals_info(struct kp_ctx *tc)
     if (!li) abort();
     li->n = n;
     if (it_slot) li->names[0] = korb_intern(tc->c->vm, "it", 2);
-    for (uint32_t i = it_slot; i < n; i++) li->names[i] = kp_intern_cid(tc, f->locals->ids[i - it_slot]);
+    for (uint32_t i = it_slot; i < n; i++) {
+        const pm_constant_id_t cid = f->locals->ids[i - it_slot];
+        /* cid 0 = the slot kp_param_first_locals reserves for an anonymous `*`;
+         * it has no name and CRuby keeps it out of local_variables. */
+        li->names[i] = cid ? kp_intern_cid(tc, cid) : 0;
+    }
     return li;
 }
 
@@ -2622,12 +2629,13 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
      * optionals (locals[params_cnt..]) — required-after-optional. */
     const uint32_t post_base = (rest_slot >= 0) ? (uint32_t)rest_slot + 1 : params_cnt;
     if (post_cnt) { tc->frame->method_post_base = (int32_t)post_base; tc->frame->method_post_cnt = post_cnt; }  /* for forwarding super */
+    bool post_destructured = false;    /* a `(b, c)` post shifts every later post's local */
     for (uint32_t i = 0; i < post_cnt; i++) {
         const pm_node_t *p = ps->posts.nodes[i];
-        if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) continue;      /* destructured below */
+        if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) { post_destructured = true; continue; }   /* destructured below */
         if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, p, "non-plain post parameter"); }
         pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-        if (lvar_index(tc, p, cid) != post_base + i
+        if (lvar_index(tc, p, cid) != post_base + i && !post_destructured
             && kp_cid_cstr(tc, cid)[0] != '_') {   /* non-`_` repeat: unsupported (see required-param note) */
             pop_frame(tc); free(opt_defaults);
             return kp_unsupported(tc, p, "repeated parameter name");
@@ -2705,13 +2713,20 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
             }
         }
     }
+    /* Same shift on the post side: `def m(a=1, (b, c), d)` stages d one slot below
+     * its local, because (b, c) spends two.  Prepending left-to-right runs them
+     * rightmost-first, so a destructure never clobbers an argument still to move. */
     for (uint32_t i = 0; i < post_cnt; i++) {
         const pm_node_t *p = ps->posts.nodes[i];
-        if (!PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) continue;
-        const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)p;
-        NODE *const un = massign_general(tc, &mt->lefts, mt->rest, &mt->rights, bake_lget(tc, post_base + i));
-        if (!un) { pop_frame(tc); return kp_unsupported(tc, p, "destructuring parameter"); }
-        body = ALLOC_node_seq(un, body);
+        if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) {
+            const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)p;
+            NODE *const un = massign_general(tc, &mt->lefts, mt->rest, &mt->rights, bake_lget(tc, post_base + i));
+            if (!un) { pop_frame(tc); return kp_unsupported(tc, p, "destructuring parameter"); }
+            body = ALLOC_node_seq(un, body);
+        } else if (post_destructured) {
+            const uint32_t L = lvar_index(tc, p, ((const pm_required_parameter_node_t *)p)->name);
+            if (L != post_base + i) body = ALLOC_node_seq(bake_lset(tc, L, bake_lget(tc, post_base + i)), body);
+        }
     }
 
     if (blk_param_name) {                  /* `&blk` → materialize the block into the local at body entry */
@@ -3348,9 +3363,13 @@ kp_binding_scope_tbl(struct kp_ctx *tc, uint32_t *out_name_cnt)
         const bool it_slot = levels[d]->it_param && ls->size == 0;
         tbl[1 + d] = (uint32_t)ls->size + (it_slot ? 1u : 0u);
         for (uint32_t i = 0; i < tbl[1 + d]; i++) {
+            const pm_constant_id_t cid = (it_slot && i == 0) ? 0 : ls->ids[i - (it_slot ? 1u : 0u)];
+            /* cid 0 with no `it` = the slot reserved for an anonymous `*`: it has
+             * no name, so it gets a slot in the level but no table entry. */
+            if (cid == 0 && !(it_slot && i == 0)) continue;
             const uint32_t sym = (it_slot && i == 0)
                 ? korb_intern(tc->c->vm, "it", 2)
-                : kp_intern_cid(tc, ls->ids[i - (it_slot ? 1u : 0u)]);
+                : kp_intern_cid(tc, cid);
             bool shadowed = false;                       /* inner name wins */
             for (uint32_t k = 0; k < cnt; k++)
                 if (tbl[1 + L + 3 * k] == sym) { shadowed = true; break; }

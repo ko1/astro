@@ -1,0 +1,72 @@
+# rubyspec sweep: run each spec file through the REAL mspec framework with the
+# koruby binary as the interpreter, emit one TSV row per file.
+#
+#   koruby tools/spec_sweep/sweep.rb  -- no.  This script is driven by CRuby
+#   (it only orchestrates); the *spawned* processes are koruby.
+#
+# Usage: ruby tools/spec_sweep/sweep.rb <jobs> <out.tsv> <relpath-or-glob>...
+# TSV columns: rel  ex  F  E  pass        (pass = ex - F - E, WFAIL rows: rel WFAIL)
+require 'fileutils'
+require 'thread'
+
+K        = ENV['KORUBY'] || File.expand_path("../../koruby_precise", __dir__)
+SPECDIR  = ENV['SPECDIR'] || "#{ENV['HOME']}/ruby/src/master/spec/ruby"
+LAUNCHER = File.expand_path("../mspec_launch.rb", __dir__)
+# mspec deletes SPEC_TEMP_DIR on exit, so it must be re-created for every spawn.
+TMPBASE  = "#{ENV['SWEEP_TMP'] || ENV['TMPDIR'] || '/tmp'}/koruby_sweep_#{Process.pid}"
+TIMEOUT  = (ENV['SPEC_TIMEOUT'] || 30).to_i
+
+jobs = (ARGV.shift || 4).to_i
+out  = ARGV.shift or abort "usage: sweep.rb <jobs> <out.tsv> <path>..."
+files = ARGV.flat_map { |a|
+  p0 = a.start_with?("/") ? a : "#{SPECDIR}/#{a}"
+  File.directory?(p0) ? Dir.glob("#{p0}/**/*_spec.rb") : Dir.glob(p0)
+}.uniq.sort
+abort "no spec files" if files.empty?
+
+FileUtils.rm_rf(TMPBASE); FileUtils.mkdir_p(TMPBASE)
+RE = /(\d+) examples?, \d+ expectations?, (\d+) failures?, (\d+) errors?/
+q = Queue.new; files.each { |f| q << f }
+mu = Mutex.new; res = {}; done = 0
+t0 = Time.now
+Array.new([jobs, files.size].min) {
+  Thread.new do
+    while (f = (q.pop(true) rescue nil))
+      rel = f.sub("#{SPECDIR}/", "")
+      td  = "#{TMPBASE}/#{rel.gsub(%r{[/.]}, '_')}"
+      FileUtils.mkdir_p(td)
+      log = "#{td}/.out"
+      pid = Process.spawn({ 'MSPEC_RUNNER' => '1', 'RUBY_FLAGS' => '',
+                            'SPEC_TEMP_DIR' => td },
+                          "timeout", "-k", "5", TIMEOUT.to_s, K, LAUNCHER, f,
+                          chdir: SPECDIR, in: "/dev/null", out: log, err: [:child, :out])
+      _, _st = Process.waitpid2(pid)
+      txt = File.exist?(log) ? File.binread(log) : ""
+      FileUtils.rm_rf(td)
+      m = RE.match(txt.dup.force_encoding("UTF-8").scrub)
+      mu.synchronize do
+        res[rel] = m ? [m[1].to_i, m[2].to_i, m[3].to_i] : nil
+        done += 1
+        $stderr.printf("\r%d/%d %.0fs", done, files.size, Time.now - t0) if done % 25 == 0
+      end
+    end
+  end
+}.each(&:join)
+FileUtils.rm_rf(TMPBASE)
+$stderr.puts
+
+tp = tf = te = tw = 0
+File.open(out, "w") do |io|
+  res.keys.sort.each do |rel|
+    if (r = res[rel])
+      ex, fa, er = r
+      pass = ex - fa - er
+      tp += pass; tf += fa; te += er
+      io.printf("%s\t%d\t%d\t%d\t%d\n", rel, ex, fa, er, pass)
+    else
+      tw += 1
+      io.printf("%s\tWFAIL\t\t\t\n", rel)
+    end
+  end
+end
+puts "files=#{files.size} pass=#{tp} fail=#{tf} err=#{te} WFAIL=#{tw} elapsed=#{(Time.now - t0).round}s"
