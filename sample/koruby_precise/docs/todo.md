@@ -4029,3 +4029,28 @@ chilled にする。直すなら parse.c の PM_INTERPOLATED_STRING_NODE で
   なく、そこから Ruby の Proc を呼ぶと moving GC 越しに dispatch 経路の
   生 VALUE が全部 stale になる。frame push/pop と backtrace 側の作業と
   正面衝突するので、そちらが片付いてから。
+
+## (2026-09-13) backtrace のラベルに残った 2 件
+
+caller / backtrace のレビューと rubyspec 対応を一通り終えた時点で、
+CRuby と食い違ったまま残っている観測が 2 つある。どちらも既存の穴で、
+今回の変更が持ち込んだものではない。
+
+**1. 返ったメソッドが持ち主のブロックは持ち主を間違える。**
+`def meth` の中で作った proc を、そのフレームが返った後に呼ぶと、
+koruby は `"block in Object#run"` (たまたま呼んでいるフレーム) と言い、
+CRuby は `"block in Object#meth"` と言う。ブロックのラベルは持ち主が
+class/module/singleton なら構文解析で決まり (`node_entry.blk_label`)、
+ファイルの top level なら深さだけ焼いて実行時に `<main>` か
+`<top (required)>` かを決める (`blk_top_level`)。メソッドが持ち主の場合だけ
+**持ち主のクラスが実行時にしか分からない**ので、どちらの手も効かない。
+今は PREV チェーンを歩いて答えているが、定義元フレームが返っていると
+そのセルは別物になっている。直すなら持ち主のクラスを焼くのではなく、
+ブロックの entry に「持ち主メソッドの mid」を焼いて、実行時に
+そのフレームの owner と突き合わせる形になる。
+
+**2. `require` / `require_relative` 自身のフレームが出ない。**
+require されたファイルの中で取った backtrace に、CRuby は
+`"...:in 'Kernel#require'"` の行を入れるが、koruby はファイルの top フレームを
+require の窓へ `korb_flink_carry` で直結しているので、その 1 行が落ちる。
+`tools/bt_probe/t1_req.rb` で見える。
