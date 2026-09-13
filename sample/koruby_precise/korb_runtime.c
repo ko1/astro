@@ -4525,7 +4525,9 @@ korb_fire_def_hook(CTX *c, VALUE *slots, VALUE mod, uint32_t mid, const char *ho
 RESULT
 korb_fire_method_added(CTX *c, VALUE *slots, VALUE definee, uint32_t mid)
 {
-    if (!KORB_CLASS_P(definee)) return RESULT_OK(KORB_NIL);
+    /* Both non-dispatching exits drop a staged link: node_def hands one over, and
+     * a link nobody consumes would be picked up by an unrelated later dispatch. */
+    if (!KORB_CLASS_P(definee)) { c->carry_base = NULL; return RESULT_OK(KORB_NIL); }
     struct korb_vm *const vm = c->vm;
     VALUE recv = definee;
     uint32_t hook = korb_intern(vm, "method_added", 12);
