@@ -1043,6 +1043,26 @@ arjsv の境界値事例で明確になった。一方 arjsv の `consts[]` パ�
 
 「AOT-1st が遅い」のは正しい。性能を稼ぎたいなら AOT-cached を見る。
 
+**hot 関数の「開始アドレス」は性能パラメタである。無関係な変更でも動く。**
+2026-09-13 の koruby_precise: caller 修正で block / iterators / methodchain の cycles が
++4%、命令数も block で +0.5% 増えた。`objdump` で hot な `korb_block_yield` を base と
+突き合わせると、**実命令は完全に一致**していて違いは中の nop パディングが 1 個多いことだけ。
+関数の開始が 32 バイト境界から 16 バイトずれ (`0x…ab0` vs `0x…b00`)、その分だけ**中の
+ループ先頭を揃えるためのパディングが 1 命令増えていた**。そのパッドが yield 経路にあるので
+**1 yield あたり 1 命令** (block は 15M yield = +15M 命令、ちょうど 0.5%)、さらにループ先頭が
+揃わない分で cycles +4%。`__attribute__((aligned(32)))` で開始を固定したら両方消えた
+(block: 命令 +0.52% → −0.02%、cycles +4.67% → +2.19%、iterators cycles +2.63% → −0.22%)。
+
+切り分け手順:
+1. `perf stat -e instructions` を見る (負荷に鈍い)。動いていなければ純粋に配置の話。
+2. `objdump -d --no-show-raw-insn` で当該関数を抜き、**ラベルと RIP 相対を正規化**して diff
+   (`sed -E 's/0x[0-9a-f]+\(%rip\)/RIP/g; s/<fn\+0x[0-9a-f]+>/<fn+X>/g'`)。
+3. 実命令が一致していたら**開始アドレスと nop の数**を見る。バイナリ全体を同様に正規化して
+   diff すると「nop 以外は完全一致」が確認できる (この件はそれで裏が取れた)。
+4. 固定するなら `aligned(32)`。**関数の中身が変わったら測り直す**（処方は中身に依存する）。
+
+trials: `~/ruby/src/trials/2026-09-13-koruby-caller-review/`。
+
 「`plain` が比較対象より速い」のは parser-pass の単純化が効いているケース
 （例: 比較対象が bytecode VM で loop opaque、luastro 側は AST が直 C ループに
 落ちて gcc の SCEV が走る）。**この種の「ベンチ上の劇的差」は怪しんでよい**：

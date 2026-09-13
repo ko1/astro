@@ -9418,9 +9418,10 @@ korb_block_flink(CTX *c, const NODE *block, VALUE prev, const VALUE *dst, const 
     return korb_block_flink_defframe(c, block, prev, dst);
 }
 
-/* aligned(32): the yield fast path's loop alignment (hence its per-yield cost)
- * otherwise depends on where the linker happens to put the function — a 16-byte
- * shift measured +4% cycles on block/iterators with byte-identical code. */
+/* aligned(32): the start address decides the loop-head padding INSIDE this
+ * function, and one of those pads sits on the per-yield path — an extra nop
+ * there is an extra executed instruction per yield (block: +15M = 1/yield),
+ * and the misaligned loop head cost ~4% cycles.  Pin the start. */
 __attribute__((no_stack_protector, aligned(32))) RESULT
 korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self)

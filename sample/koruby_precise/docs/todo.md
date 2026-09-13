@@ -74,8 +74,9 @@
 ### perf (codex 指摘) — 修正済み
 - `korb_call_cached` / `korb_send_cached` が refinement / IC 判定より前に `korb_flink_line` を
   decode してスピルしていた (prologue の `lea; sar $0xf; mov %eax,8(%rsp)`)。使う場所だけで decode。
-- `korb_block_yield` に `aligned(32)` を付けた。機械語がバイト一致でも配置が 16 バイトずれると
-  block / iterators の cycles が +4% 動く (計測中に踏んだ。命令数は不変なので配置の問題と切り分け)。
+- `korb_block_yield` に `aligned(32)`。開始が 32 バイト境界から 16 ずれると**関数内のループ先頭を
+  揃える nop が 1 個増え**、それが yield 経路にあるので 1 yield あたり 1 命令 (block で +15M =
+  ちょうど 1/yield) + cycles +4%。バイナリ全体の逆アセンブルが nop 以外完全一致であることで確認。
 
 ### 残り (このレビューの範囲外・設計上の既知)
 - **C の窓の下で鎖が切れる**: `puts` / `p` / `Hash#[]=` / `sort` / `respond_to?` / `bind_call` /
