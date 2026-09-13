@@ -7720,6 +7720,24 @@ korb_bt_label(CTX *c, uint32_t mid, const struct korb_method *m)
     return mm->bt_label;
 }
 
+/* "block in <main>" / "block (2 levels) in <top (required)>": the depth is baked
+ * (node.def blk_top_level), the owner's name is not.  Only the script named on
+ * the command line gets a frame that is not "required", so the block's file decides. */
+static const char *
+korb_bt_top_block_label(CTX *const c, const uint32_t level, const struct Node *const e)
+{
+    struct korb_vm *const vm = c->vm;
+    uint32_t fsym = 0, fline = 0;
+    const bool in_main = korb_get_srcloc(vm, e, &fsym, &fline) && fsym == vm->main_fsym;
+    const char *const owner = in_main ? "<main>" : "<top (required)>";
+    char buf[352];
+    int len = (level == 1) ? snprintf(buf, sizeof buf, "block in %s", owner)
+                           : snprintf(buf, sizeof buf, "block (%u levels) in %s", level, owner);
+    if (len < 0) return "block";
+    if (len >= (int)sizeof buf) len = (int)sizeof buf - 1;
+    return korb_sym_name(vm, korb_intern(vm, buf, (size_t)len));
+}
+
 /* "block in Foo#bar" / "block (2 levels) in Foo#bar".  The owner is lexical, so
  * it comes from the frame the block was WRITTEN in, which the PREV link in the
  * block's EP names: its identity is that frame's base[-4] while it is live, and
@@ -7778,6 +7796,59 @@ korb_bt_block_label(CTX *c, const struct Node *e, const VALUE *base)
     if (len < 0) return "block";
     if (len >= (int)sizeof buf) len = (int)sizeof buf - 1;
     return korb_sym_name(vm, korb_intern(vm, buf, (size_t)len));
+}
+
+/* A block frame's label: lexical when the parser could settle it, else the
+ * run-time PREV chain.  `base` is the block frame's locals base (NULL when the
+ * frame is gone, which leaves only the lexical answers). */
+static const char *
+korb_bt_entry_label(CTX *const c, const struct Node *const e, const VALUE *const base)
+{
+    if (e->u.node_entry.body_label) return korb_sym_name(c->vm, e->u.node_entry.body_label);
+    if (e->u.node_entry.blk_label) return korb_sym_name(c->vm, e->u.node_entry.blk_label);
+    if (e->u.node_entry.blk_top_level) return korb_bt_top_block_label(c, e->u.node_entry.blk_top_level, e);
+    return base ? korb_bt_block_label(c, e, base) : NULL;
+}
+
+/* The label CRuby gives the frame an identity cell names; NULL when the cell
+ * names nothing we can label.  `base` is that frame's locals base, or NULL when
+ * the frame has returned. */
+static const char *
+korb_bt_id_label(CTX *const c, const VALUE id, const VALUE *const base)
+{
+    struct korb_vm *const vm = c->vm;
+    const uintptr_t ptr = (uintptr_t)(id & ~(VALUE)7u);
+    if ((id & 7u) == KORB_FID_MAIN) {
+        const uint32_t sym = (uint32_t)(id >> 32);
+        if (id & KORB_FID_MAIN_LABEL) return korb_sym_name(vm, sym);
+        if (sym == 0) return NULL;                       /* an eval that borrowed no label */
+        return (id & KORB_FID_MAIN_REQUIRED) ? "<top (required)>" : "<main>";
+    }
+    if (!korb_bt_known_ptr(vm, ptr)) return NULL;
+    if ((id & 7u) == KORB_FID_METHOD || (id & 7u) == KORB_FID_CFUNC) {
+        const struct korb_method *const m = (const struct korb_method *)ptr;
+        return korb_bt_label(c, m->mid, m);
+    }
+    if ((id & 7u) != KORB_FID_BLOCK) return NULL;
+    const struct Node *const e = (const struct Node *)ptr;
+    return e->head.kind == &kind_node_entry ? korb_bt_entry_label(c, e, base) : NULL;
+}
+
+/* An eval frame's identity.  CRuby compiles the string into the binding's scope
+ * and names the resulting iseq after it, so the frame borrows that label and
+ * claims no file of its own. */
+static VALUE
+korb_eval_frame_id(CTX *const c, const VALUE bind)
+{
+    if (KORB_BINDING_P(bind)) {
+        const VALUE env = VAL2BIND(bind)->env;
+        if (KORB_ENV_P(env)) {
+            const KorbEnv *const e = VAL2ENV(env);
+            const char *const lbl = korb_bt_id_label(c, e->id, e->closed ? NULL : e->loc);
+            if (lbl) return korb_fid_main(korb_intern(c->vm, lbl, strlen(lbl)), true) | KORB_FID_MAIN_LABEL;
+        }
+    }
+    return korb_fid_main(0, true);   /* no scope to name: the frame below the eval supplies one */
 }
 
 /* Record the frame `mid` (defined by `m`, entered from `line`) that the raise
@@ -7903,17 +7974,17 @@ korb_frames_snapshot_at(CTX *c, const VALUE *fbase, uint32_t line0, const VALUE 
             /* a class/module/singleton body, and a block lexically owned by one,
              * know their label at parse time (node.def) — the PREV chain cannot
              * name a definer frame that has already returned */
-            const uint32_t slabel = e->u.node_entry.body_label ? e->u.node_entry.body_label
-                                                               : e->u.node_entry.blk_label;
-            r->label = slabel ? korb_sym_name(vm, slabel) : korb_bt_block_label(c, e, fbase);
+            r->label = korb_bt_entry_label(c, e, fbase);
             n++;
             fbase = NULL; line0 = 0;
             continue;
         }
         if (r->kind == KORB_FID_MAIN) {          /* a file's top-level frame */
             const uint32_t fsym = (uint32_t)(id >> 32);
-            if (fsym) r->file = korb_sym_name(vm, fsym);
-            r->label = (id & KORB_FID_MAIN_REQUIRED) ? "<top (required)>" : "<main>";   /* CRuby names a required file's frame so */
+            if (id & KORB_FID_MAIN_LABEL) r->label = korb_sym_name(vm, fsym);   /* an eval: a borrowed label, no file */
+            else if (fsym) { r->file = korb_sym_name(vm, fsym);
+                             r->label = (id & KORB_FID_MAIN_REQUIRED) ? "<top (required)>" : "<main>"; }   /* CRuby names a required file's frame so */
+            else r->label = NULL;   /* an eval that borrowed none: take the caller's, below */
             n++;
             if (!(id & KORB_FID_MAIN_REQUIRED)) break;   /* the main script: nothing below it */
             fbase = NULL; line0 = 0;             /* continue into whoever required this file */
@@ -7929,6 +8000,14 @@ korb_frames_snapshot_at(CTX *c, const VALUE *fbase, uint32_t line0, const VALUE 
         if (vm->fscratch[i].kind == KORB_FID_CFUNC && i + 1 < n) {
             vm->fscratch[i].file = vm->fscratch[i + 1].file;
             vm->fscratch[i].line = vm->fscratch[i + 1].line;
+        }
+    /* An eval frame with no borrowed label wears its caller's (past the C frame
+     * of `eval` itself), which is the scope CRuby compiled the string into. */
+    for (uint32_t i = 0; i < n; i++)
+        if (vm->fscratch[i].label == NULL) {
+            vm->fscratch[i].label = "<top (required)>";
+            for (uint32_t j = i + 1; j < n; j++)
+                if (vm->fscratch[j].kind != KORB_FID_CFUNC) { vm->fscratch[i].label = vm->fscratch[j].label; break; }
         }
     return n;
 }
@@ -15144,6 +15223,7 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *
     memset(fb, 0, (size_t)locals * sizeof(VALUE));      /* zero its locals */
     fb[-1] = self_val;                                  /* self cell (base[-1]) */
     korb_id_set(fb, korb_fid_main(0, true));            /* no file of its own: c->vm->script_name names an eval */
+    fb[KORB_FLINK_OFF] = korb_flink_cur_cframe(c, fb);  /* the eval builtin's own frame: the walk goes on into its caller */
     return korb_eval_run(c, slots, ast, cur, fname, cref);   /* raises report the caller's filename */
 }
 
@@ -15245,7 +15325,8 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     VALUE *const fb = slots + 4;
     VALUE *const cur = fb + L;
     memset(fb, 0, (size_t)L * sizeof(VALUE));
-    korb_id_set(fb, korb_fid_main(0, true));
+    korb_id_set(fb, korb_eval_frame_id(c, *bind_slot));
+    fb[KORB_FLINK_OFF] = korb_flink_cur_cframe(c, fb);  /* the eval builtin's own frame: the walk goes on into its caller */
     for (uint32_t i = 0; i < ncnt; i++) {           /* seed: copy binding values into the eval frame's locals */
         const KorbBinding *b = VAL2BIND(*bind_slot);
         const int j = korb_bind_find(b, nsyms[i]);
@@ -15367,6 +15448,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
     VALUE *const cur = fb + locals;                     /* the eval program's body cursor */
     memset(fb, 0, (size_t)locals * sizeof(VALUE));      /* zero its locals */
     korb_id_set(fb, korb_fid_main(0, true));            /* no file of its own: c->vm->script_name names an eval */
+    fb[KORB_FLINK_OFF] = korb_flink_cur_cframe(c, fb);  /* the eval builtin's own frame: the walk goes on into its caller */
     RESULT mr = korb_obj_new(c, cur, KORB_NIL);         /* fresh `main` self */
     if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
     fb[-1] = mr.value;                          /* self cell (base[-1]) */

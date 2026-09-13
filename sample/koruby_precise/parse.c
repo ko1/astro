@@ -194,12 +194,16 @@ static uint32_t kp_body_label(const struct kp_ctx *tc, char kind, uint32_t name_
 
 /* The label of a block whose lexical chain reaches a class / module / singleton
  * body through blocks only (node_entry.blk_label).  0 = not such a block: the
- * owner is a method (or the file top), whose label only the run-time frame chain
- * knows.  Called after the block's own frame is popped, so tc->frame is the
- * scope it was written in — level 1. */
-static uint32_t kp_block_label(const struct kp_ctx *tc)
+ * owner is a method, whose label only the run-time frame chain knows.  Called
+ * after the block's own frame is popped, so tc->frame is the scope it was
+ * written in — level 1.
+ *
+ * `*top_level` is set when the chain reaches the FILE's top level instead: the
+ * depth is lexical, but the owner's name is not (node.def blk_top_level). */
+static uint32_t kp_block_label(const struct kp_ctx *tc, uint32_t *const top_level)
 {
     uint32_t level = 1;
+    *top_level = 0;
     for (const struct kp_frame *f = tc->frame; f != NULL; f = f->prev, level++) {
         if (f->body_label != 0) {
             char buf[352];
@@ -208,9 +212,13 @@ static uint32_t kp_block_label(const struct kp_ctx *tc)
                                          : snprintf(buf, sizeof buf, "block (%u levels) in %s", level, owner);
             return korb_intern(tc->c->vm, buf, (size_t)(len >= (int)sizeof buf ? (int)sizeof buf - 1 : len));
         }
-        if (!f->block_body) return 0;   /* a method body: the owner is a run-time question */
+        if (!f->block_body) {
+            if (f->prev != NULL) return 0;   /* a method body: the owner is a run-time question */
+            *top_level = level;              /* the program scope (PM_PROGRAM_NODE is the root frame) */
+            return 0;
+        }
     }
-    return 0;                           /* the file top level: "block in <main>", which the walk already gives */
+    return 0;                                /* unreachable: the program frame ends every chain */
 }
 
 /* Register a just-built call node's link for the frame-size fixup.  KP_LINK
@@ -1692,7 +1700,9 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
     }
     void *const linfo = build_locals_info(tc);      /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
-    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, destr_len, cap_depth, cap_ns, cap_yield, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), linfo, blk_param_slot, post_cnt, -1, 0, 0, kp_block_label(tc));
+    uint32_t blk_top = 0;
+    const uint32_t blk_label = kp_block_label(tc, &blk_top);
+    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, destr_len, cap_depth, cap_ns, cap_yield, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), linfo, blk_param_slot, post_cnt, -1, 0, 0, blk_label, blk_top);
     /* backtrace: KORB_ID_OFF marks "this block has an enclosing frame", which is
      * all the link a C-driven yield rebuilds needs — the PREV handle names that
      * frame's base directly. */
@@ -1741,7 +1751,7 @@ kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
     WITH_CHAIN(tc, KP_SEND0_SC, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
     NODE *body = kp_send0(tc, sym_id, 0, recv);
     uint32_t frame_size = pop_frame(tc);
-    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, NULL, -1, 0, -1, 0, 0, 0);
+    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, NULL, -1, 0, -1, 0, 0, 0, 0);
     code_repo_add("symblock", entry, true);
     return entry;
 }
@@ -2816,7 +2826,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
     void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0);
     code_repo_add("class", entry, true);          /* its own AOT entry */
     NODE *_ncls = KP_LINK(tc, node_class, name_sym, kp_flink_at(tc, kp_line(tc, (const pm_node_t *)cn), 2), entry, lex_top ? INT32_MIN : -1 - tc->chain - 2, path_owner, path_kind, base_node, super_node);   /* self_off = enclosing self (base[-1]); -2 for the staged base+super children */
     korb_reg_srcloc(tc->c->vm, _ncls, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));   /* Module#const_source_location */
@@ -3244,7 +3254,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
     void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0);
     code_repo_add("module", entry, true);
     NODE *_nmod = KP_LINK(tc, node_module, name_sym, kp_flink_at(tc, kp_line(tc, (const pm_node_t *)mn), 1), entry, lex_top ? INT32_MIN : -1 - tc->chain - 1, path_owner, path_kind, base_node);   /* self_off = enclosing self (base[-1]); -1 for the staged base child */
     korb_reg_srcloc(tc->c->vm, _nmod, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)mn));   /* Module#const_source_location */
@@ -4992,7 +5002,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             body = transduce(tc, sc->body);   /* a begin/rescue/ensure body is just another node */
         void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
         uint32_t frame_size = pop_frame(tc);
-        NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0);
+        NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0);
         code_repo_add("sclass", entry, true);       /* its own AOT entry */
         NODE *_sc = KP_LINK(tc, node_sclass, kp_flink_at(tc, kp_line(tc, node), 1), entry, -1 - tc->chain - 1, -4 - tc->chain - 1, recv_node);   /* -1 extra for the staged recv child */
         bake_add(tc, &_sc->u.node_sclass.self_off);

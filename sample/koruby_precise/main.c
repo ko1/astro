@@ -1357,6 +1357,7 @@ main(int argc, char *argv[])
 
     CTX *c = korb_ctx_new();
     c->vm->script_name = src_name;
+    c->vm->main_fsym = korb_intern(c->vm, src_name, strlen(src_name));   /* eval moves script_name; this stays put */
     c->vm->cur_load_file = src_name;   /* __dir__ / require_relative base for top-level code */
     c->vm->cur_load_abs = korb_reg_abspath(c->vm, src_name);   /* before any Dir.chdir: a relative name resolves only now */
     /* -s: leading `-name[=value]` arguments become globals and leave ARGV. */

@@ -1157,6 +1157,7 @@ struct korb_vm {
     bool    fmt_busy;
 
     const char *script_name; /* for error messages */
+    uint32_t main_fsym;      /* the script named on the command line: the one file whose top frame is '<main>' */
     /* require/require_relative: the file currently being loaded (for
      * require_relative's base dir) and the set of already-loaded absolute paths
      * (libc-side strings, no GC). */

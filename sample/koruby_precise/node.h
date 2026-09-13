@@ -826,6 +826,9 @@ static inline void korb_flink_stage_at(CTX *c, const VALUE *const base, const ui
 /* A file frame's identity: the file, plus whether it was require'd (CRuby labels
  * that frame '<top (required)>'). */
 #define KORB_FID_MAIN_REQUIRED     8u
+/* An eval frame: the symbol is the LABEL it borrows from the scope the string was
+ * compiled into (CRuby names the eval iseq after it), not a file. */
+#define KORB_FID_MAIN_LABEL       16u
 static inline VALUE korb_fid_main(uint32_t fsym, bool required) {
     return ((VALUE)fsym << 32) | (required ? (VALUE)KORB_FID_MAIN_REQUIRED : 0) | KORB_FID_MAIN;
 }
