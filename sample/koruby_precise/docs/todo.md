@@ -4455,3 +4455,23 @@ pass 30927 → 30945 / ex 31593)。以下は**観測まで取って見送った*
       `NoMethodError: undefined method 'const_set' for an instance of Object`。
       binding に `nil` を渡した 4 引数形が呼び出し元の binding を使わず、
       self が `main` のままになる。
+
+## (2026-09-13) `send(:binding)` が外側のスコープを見落とす
+
+`korb_bi_binding` (12144ef5 で追加) は呼び出し元 ISEQ のスコープ表を intern するが、
+**囲みスコープを辿っていない**。素の `binding` (parse 時に表を焼く経路) は辿るので、
+2 つの経路で答えが違う。
+
+```ruby
+zz = 1
+[9].each { |w| v = 1
+  p binding.local_variables.sort        # koruby [:v,:w,:zz]  CRuby [:v,:w,:zz]
+  p send(:binding).local_variables.sort # koruby [:v,:w]      CRuby [:v,:w,:zz]
+}
+```
+トップレベルではさらに悪く、`send(:binding).local_variables` が空になる
+(素の `binding` は `[:zz]`)。
+
+退行ではない (それ以前は `send(:binding)` が NoMethodError だった) が、
+**spec が通っていても中身が違う**状態なので、`korb_bind_tbl_intern` が
+`kp_binding_scope_tbl` と同じだけ外へ辿るようにすること。
