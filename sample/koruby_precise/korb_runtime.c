@@ -3367,9 +3367,47 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
     uint32_t depth = entry->u.node_entry.cap_depth;
     slots[0] = self_val;                                 /* root captured self across allocs */
     if (depth == 0) {                                    /* no captured outer locals */
-        KorbProc *p = korb_alloc(c, slots + 1, sizeof(KorbProc), KORB_OBJ_PROC);
+        /* A block owned by a METHOD has no baked label (blk_label names a
+         * class/module/singleton body, blk_top_level the file top), so the
+         * backtrace has to ask the defining frame — and a Proc outlives it.
+         * Keep an identity-only env for each lexical level up to the owner, the
+         * way a capturing closure already keeps a real one.  Nothing here reads
+         * the scope (depth==0), so every level holds zero locals. */
+        VALUE envh = 0;
+        if (entry->u.node_entry.blk_label == 0 && entry->u.node_entry.blk_top_level == 0) {
+            VALUE *bs[32];
+            uint32_t nb = 0;
+            for (VALUE *b = def_env;;) {
+                bs[nb++] = b;
+                const VALUE oid = korb_id_get(b);
+                if ((oid & 7u) != KORB_FID_BLOCK) break;      /* a method / file top: the label walk ends here */
+                const struct Node *const oe = (const struct Node *)(uintptr_t)(oid & ~(VALUE)7u);
+                if (oe->head.kind != &kind_node_entry || oe->u.node_entry.body_label != 0) break;
+                const VALUE pv = korb_ep_get(b);
+                if (!(pv & 1u) || nb >= 32) break;            /* already a heap env (that one survives on its own) */
+                b = (VALUE *)(uintptr_t)(pv & ~(uintptr_t)1u);
+            }
+            slots[1] = korb_ep_get(bs[nb - 1]);               /* the outermost level keeps its original link */
+            for (int k = (int)nb - 1; k >= 0; k--) {          /* outermost first: each prev is already built */
+                const VALUE oid = korb_id_get(bs[k]);         /* tagged, always odd -> never a GC edge */
+                KorbEnv *e = korb_alloc(c, slots + 2, sizeof(KorbEnv), KORB_OBJ_ENV);
+                /* OPEN and holding no locals: the by-name locals walk still reads the
+                 * raw frame through `loc` and so still goes stale when it returns
+                 * (korb_scope_at_handle), which is what tells a debugger the scope is
+                 * gone.  Only the backtrace reads `id`, and that survives. */
+                e->loc = bs[k]; e->n = 0; e->closed = 0;
+                e->id = oid;
+                ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
+                ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, slots[1]);
+                ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->blk, 0);
+                slots[1] = (VALUE)(uintptr_t)e;
+            }
+            envh = 1;
+        }
+        KorbProc *p = korb_alloc(c, slots + 2, sizeof(KorbProc), KORB_OBJ_PROC);
         p->iseq = entry; p->is_lambda = (uint8_t)is_lambda;
-        ARO_GC_RAW_STORE(&p->env, (VALUE)((uintptr_t)def_env | 1u));   /* sentinel non-pointer (unused by body); WB-exempt */
+        if (envh) ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->env, slots[1]);   /* re-read: the chain head may have moved */
+        else ARO_GC_RAW_STORE(&p->env, (VALUE)((uintptr_t)def_env | 1u));   /* sentinel non-pointer (unused by body); WB-exempt */
         ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, slots[0]);
         return RESULT_OK((VALUE)p);
     }
@@ -4111,8 +4149,9 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be a subclass of %s", onm);
         }
         korb_check_basic_op_redef(c, slots[0], mid);
+        const struct korb_method tmp = *src;             /* src may dangle once the slot array grows; snapshot first */
         struct korb_method *dst = korb_class_method_slot(c->vm, VAL2CLASS(slots[0]), mid);
-        *dst = *src;                                     /* copy the definition */
+        *dst = tmp;                                      /* copy the definition */
         dst->mid = mid; dst->owner = slots[0];           /* rename + re-own */
         /* the copy takes the DEFINING frame's visibility, not the source's */
         dst->visibility = (VAL2CLASS(slots[0])->cur_visibility == 3) ? 1 : VAL2CLASS(slots[0])->cur_visibility;
@@ -7739,6 +7778,17 @@ korb_bt_top_block_label(CTX *const c, const uint32_t level, const struct Node *c
     return korb_sym_name(vm, korb_intern(vm, buf, (size_t)len));
 }
 
+/* An EP cell holds either a live-frame handle (odd) or a KorbEnv.  When that env
+ * is the frame's OWN open env, the enclosing level is its prev, not the env
+ * itself -- the same step korb_scope_outer makes for the locals walk. */
+static VALUE
+korb_bt_outer_handle(const VALUE h, const VALUE *const base)
+{
+    if (h == 0 || (h & 1u) || !KORB_ENV_P(h)) return h;
+    const KorbEnv *const e = VAL2ENV(h);
+    return (!e->closed && e->loc == base) ? e->prev : h;
+}
+
 /* "block in Foo#bar" / "block (2 levels) in Foo#bar".  The owner is lexical, so
  * it comes from the frame the block was WRITTEN in, which the PREV link in the
  * block's EP names: its identity is that frame's base[-4] while it is live, and
@@ -7749,7 +7799,7 @@ korb_bt_block_label(CTX *c, const struct Node *e, const VALUE *base, const VALUE
     struct korb_vm *const vm = c->vm;
     const char *owner = "<main>";
     uint32_t level = 1;
-    VALUE prev = korb_ep_get(base);                      /* the scope the block was written in */
+    VALUE prev = korb_bt_outer_handle(korb_ep_get(base), base);   /* the scope the block was written in */
     const VALUE *limit = base;                           /* frames nest: each definer sits strictly lower */
     for (int guard = 0; guard < 32; guard++) {
         if (e->u.node_entry.def_top_off != KORB_ID_OFF) break;    /* the block has no enclosing frame */
@@ -7763,8 +7813,8 @@ korb_bt_block_label(CTX *c, const struct Node *e, const VALUE *base, const VALUE
             if (dbase < lo || dbase >= limit) break;
             limit = dbase;
             id = korb_id_get(dbase);
-            next_prev = korb_ep_get(dbase);
-        } else if (KORB_ENV_P(prev) && VAL2ENV(prev)->closed) {   /* it returned: the env kept its identity */
+            next_prev = korb_bt_outer_handle(korb_ep_get(dbase), dbase);
+        } else if (KORB_ENV_P(prev)) {                   /* an env names its level, open or closed: `id` outlives the frame */
             id = VAL2ENV(prev)->id;
             next_prev = VAL2ENV(prev)->prev;
         } else {
