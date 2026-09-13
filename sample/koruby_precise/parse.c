@@ -1234,26 +1234,30 @@ kp_binop_kind(const char *name)
     return KP_BINOP_NONE;
 }
 
+/* Every binop node stages the same way (lhs by reference, rhs by value = one
+ * slot) and reserves no header cells, so they all take the same baked link; the
+ * node hands it to whatever dispatch its deopt reaches (node.def KP_DEOPT). */
 static NODE *
-alloc_binop(enum kp_binop op, NODE *lhs, NODE *rhs, uint32_t line)
+alloc_binop(struct kp_ctx *tc, enum kp_binop op, NODE *lhs, NODE *rhs, uint32_t line)
 {
+    const uint64_t fl = kp_flink_at(tc, line, kind_node_plus.slot_count);
     switch (op) {
-      case KP_PLUS:  return ALLOC_node_plus(lhs, rhs, line);
-      case KP_MINUS: return ALLOC_node_minus(lhs, rhs, line);
-      case KP_MUL:   return ALLOC_node_mul(lhs, rhs, line);
-      case KP_DIV:   return ALLOC_node_div(lhs, rhs, line);
-      case KP_MOD:   return ALLOC_node_mod(lhs, rhs, line);
-      case KP_LT:    return ALLOC_node_lt(lhs, rhs, line);
-      case KP_LE:    return ALLOC_node_le(lhs, rhs, line);
-      case KP_GT:    return ALLOC_node_gt(lhs, rhs, line);
-      case KP_GE:    return ALLOC_node_ge(lhs, rhs, line);
-      case KP_EQ:    return ALLOC_node_eq(lhs, rhs);
-      case KP_NEQ:   return ALLOC_node_neq(lhs, rhs);
-      case KP_BAND:  return ALLOC_node_band(lhs, rhs, line);
-      case KP_BOR:   return ALLOC_node_bor(lhs, rhs, line);
-      case KP_BXOR:  return ALLOC_node_bxor(lhs, rhs, line);
-      case KP_SHL:   return ALLOC_node_shl(lhs, rhs, line);
-      case KP_SHR:   return ALLOC_node_shr(lhs, rhs, line);
+      case KP_PLUS:  return KP_LINK(tc, node_plus, lhs, rhs, fl);
+      case KP_MINUS: return KP_LINK(tc, node_minus, lhs, rhs, fl);
+      case KP_MUL:   return KP_LINK(tc, node_mul, lhs, rhs, fl);
+      case KP_DIV:   return KP_LINK(tc, node_div, lhs, rhs, fl);
+      case KP_MOD:   return KP_LINK(tc, node_mod, lhs, rhs, fl);
+      case KP_LT:    return KP_LINK(tc, node_lt, lhs, rhs, fl);
+      case KP_LE:    return KP_LINK(tc, node_le, lhs, rhs, fl);
+      case KP_GT:    return KP_LINK(tc, node_gt, lhs, rhs, fl);
+      case KP_GE:    return KP_LINK(tc, node_ge, lhs, rhs, fl);
+      case KP_EQ:    return KP_LINK(tc, node_eq, lhs, rhs, fl);
+      case KP_NEQ:   return KP_LINK(tc, node_neq, lhs, rhs, fl);
+      case KP_BAND:  return KP_LINK(tc, node_band, lhs, rhs, fl);
+      case KP_BOR:   return KP_LINK(tc, node_bor, lhs, rhs, fl);
+      case KP_BXOR:  return KP_LINK(tc, node_bxor, lhs, rhs, fl);
+      case KP_SHL:   return KP_LINK(tc, node_shl, lhs, rhs, fl);
+      case KP_SHR:   return KP_LINK(tc, node_shr, lhs, rhs, fl);
       default:       abort();
     }
 }
@@ -2186,7 +2190,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         NODE *lhs, *rhs;
         WITH_CHAIN(tc, n_slots, (lhs = transduce(tc, cn->receiver),
                                  rhs = transduce(tc, cn->arguments->arguments.nodes[0])));
-        return alloc_binop(op, lhs, rhs, line);
+        return alloc_binop(tc, op, lhs, rhs, line);
     }
     if (strcmp(name, "-@") == 0 && argc == 0) {
         return ALLOC_node_neg(transduce(tc, cn->receiver), line);
@@ -3096,7 +3100,7 @@ index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw
         get = KP_LINK(tc, node_send_splat, aref, kp_flink_at(tc, line, 2), g_recv, g_arr);
         val = transduce(tc, value);
         newval = logic ? (logic == 1 ? ALLOC_node_or(get, val) : ALLOC_node_and(get, val))
-               : (op != KP_BINOP_NONE) ? alloc_binop(op, get, val, line)
+               : (op != KP_BINOP_NONE) ? alloc_binop(tc, op, get, val, line)
                : kp_send1(tc, opmid, line, get, val);
         newval;
     }));
@@ -3897,7 +3901,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (op != KP_BINOP_NONE) {
             WITH_CHAIN(tc, kind_node_plus.slot_count, (lhs = bake_ivar_get(tc, name),
                                                        rhs = transduce(tc, ow->value)));
-            comb = alloc_binop(op, lhs, rhs, line);
+            comb = alloc_binop(tc, op, lhs, rhs, line);
         } else {   /* &= |= ^= <<= >>= → method send */
             WITH_CHAIN(tc, KP_SEND1_SC, (lhs = bake_ivar_get(tc, name),
                                                         rhs = transduce(tc, ow->value)));
@@ -3942,7 +3946,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (op != KP_BINOP_NONE) {
             WITH_CHAIN(tc, kind_node_plus.slot_count, (lhs = bake_cvar_get(tc, name, 0),
                                                        rhs = transduce(tc, ow->value)));
-            comb = alloc_binop(op, lhs, rhs, line);
+            comb = alloc_binop(tc, op, lhs, rhs, line);
         } else {   /* &= |= ^= <<= >>= → method send */
             WITH_CHAIN(tc, KP_SEND1_SC, (lhs = bake_cvar_get(tc, name, 0),
                                          rhs = transduce(tc, ow->value)));
@@ -4207,7 +4211,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (op != KP_BINOP_NONE) {
             WITH_CHAIN(tc, kind_node_plus.slot_count, (lhs = lvar_read(tc, node, ow->name, ow->depth),
                                                        rhs = transduce(tc, ow->value)));
-            comb = alloc_binop(op, lhs, rhs, line);
+            comb = alloc_binop(tc, op, lhs, rhs, line);
         } else {   /* &= |= ^= <<= >>= → method send */
             WITH_CHAIN(tc, KP_SEND1_SC, (lhs = lvar_read(tc, node, ow->name, ow->depth),
                                                         rhs = transduce(tc, ow->value)));
@@ -4318,7 +4322,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             get = kp_send_n(tc, aref, line, g_recv, g_k, (uint32_t)argc);
             free(g_k);
             val = transduce(tc, iw->value);
-            newval = (op != KP_BINOP_NONE) ? alloc_binop(op, get, val, line) : kp_send1(tc, opmid, line, get, val);
+            newval = (op != KP_BINOP_NONE) ? alloc_binop(tc, op, get, val, line) : kp_send1(tc, opmid, line, get, val);
             newval;
         }));
         NODE *store_newval = bake_lset(tc, t_new, newval);
@@ -4357,7 +4361,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             WITH_CHAIN(tc, KP_SEND0_SC, (g_recv = bake_lget(tc, t0)));
             get = kp_send0(tc, read_mid, line, g_recv);
             val = transduce(tc, cw->value);
-            newval = (op != KP_BINOP_NONE) ? alloc_binop(op, get, val, line) : kp_send1(tc, opmid, line, get, val);
+            newval = (op != KP_BINOP_NONE) ? alloc_binop(tc, op, get, val, line) : kp_send1(tc, opmid, line, get, val);
         }));
         NODE *store_newval = bake_lset(tc, t1, newval);
         /* recv.attr = t1 */
@@ -5099,7 +5103,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             NODE *lhs, *rhs;
             WITH_CHAIN(tc, kind_node_plus.slot_count,
                        (lhs = ALLOC_node_const(name, 0, INT32_MIN, INT32_MIN), rhs = transduce(tc, gw->value)));
-            alloc_binop(op, lhs, rhs, line);
+            alloc_binop(tc, op, lhs, rhs, line);
         }));
         return build_const_set(tc, name, binop);
       }
@@ -5154,7 +5158,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             NODE *lhs, *rhs;
             WITH_CHAIN(tc, kind_node_plus.slot_count,
                        (lhs = build_const_read(tc, name), rhs = transduce(tc, ow->value)));
-            (op != KP_BINOP_NONE) ? alloc_binop(op, lhs, rhs, line) : kp_send1(tc, opmid, line, lhs, rhs);
+            (op != KP_BINOP_NONE) ? alloc_binop(tc, op, lhs, rhs, line) : kp_send1(tc, opmid, line, lhs, rhs);
         }));
         return build_const_set(tc, name, binop);
       }
@@ -5232,7 +5236,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                     lhs2 = kp_send1(tc, korb_intern(tc->c->vm, "const_get", 9), line2, gr, gk);
                     rhs2 = transduce(tc, ow->value);
                 }));
-                v2 = (op2 != KP_BINOP_NONE) ? alloc_binop(op2, lhs2, rhs2, line2) : kp_send1(tc, opmid2, line2, lhs2, rhs2);
+                v2 = (op2 != KP_BINOP_NONE) ? alloc_binop(tc, op2, lhs2, rhs2, line2) : kp_send1(tc, opmid2, line2, lhs2, rhs2);
             }));
             NODE *const setn = kp_send2(tc, korb_intern(tc->c->vm, "const_set", 9), line2, r2, k2, v2);
             return ALLOC_node_seq(store, setn);
@@ -5243,7 +5247,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             NODE *lhs, *rhs;
             WITH_CHAIN(tc, kind_node_plus.slot_count,
                        (lhs = ALLOC_node_const(name, owner, INT32_MIN, INT32_MIN), rhs = transduce(tc, ow->value)));
-            (op != KP_BINOP_NONE) ? alloc_binop(op, lhs, rhs, line) : kp_send1(tc, opmid, line, lhs, rhs);
+            (op != KP_BINOP_NONE) ? alloc_binop(tc, op, lhs, rhs, line) : kp_send1(tc, opmid, line, lhs, rhs);
         }));
         return ALLOC_node_const_set(name, owner, INT32_MIN, binop);
       }

@@ -114,11 +114,33 @@ fps −2.5% と出たが、**同一バイナリ・同一 code_store で新規マ
 `korb_cframe_leave` の identity クリアは既に省いてある (セルは次の呼び出しで必ず上書きされる)。
 退避先を frame の未使用 EP セルにする案は methodchain +4.01% で**悪化**したので不採用。
 
+### 二項演算子ノード — 塞いだ (2026-09-13、同日)
+
+`alloc_binop` 経由の 16 種 (`+ - * / % < <= > >= == != & | ^ << >>`) は link を焼いて
+いなかったので、deopt 先の Ruby メソッド (ユーザ `+` / `==`、`coerce`、`Comparable` の `<=>`) で
+鎖が長さ 1 になっていた。`line` オペランドを `flink` に替え、deopt の直前で `KP_DEOPT`:
+
+```c
+#define KP_DEOPT(c, flink, slots, expr) \
+    __extension__({ korb_flink_stage((c), (flink), (slots)); \
+                    const RESULT _dr_ = (expr); (c)->carry_base = NULL; _dr_; })
+```
+
+**直後に carry を解除するのが要点**: `korb_cmp_slow` / `korb_plus_slow` は fixnum / bignum /
+rational など**ディスパッチせずに返る経路を多数持つ**ので、stage しっぱなしにすると
+「残った carry を無関係な後続のディスパッチが食う」= 本レビューで直したのと同じバグになる。
+解除するぶん、どの cold 呼び出しを包んでも安全 (包みすぎても数ストア無駄になるだけ)。
+
+`staged` は全ノード共通で `slot_count` = 1 (lhs が参照、rhs が値渡しで枠を取らない)。
+`sizeof(NODE)` は 200 のまま (union は `node_send` の 96 が決める)、fixnum / float の
+速い経路は `flink` に触らないので**ホットパスもメモリも増えない**。
+
+`a + 1` / `a == 1` / `a < 1` (Comparable) が CRuby と一致。`1 + a` → `coerce` は
+`["K#coerce", "Object#m", "<main>"]` まで繋がるが `Integer#+` の 1 行は出ない
+(こちらは `+` がノードでメソッド呼び出しではないため、そのフレームが存在しない)。
+実 mspec core は 133c2bf4 と同一条件で pass 22655 → 22658 / err 84 → 81 (C 窓版と同一)。
+
 ### 残り (設計上の既知・別件)
-- **二項演算子ノード** (`node_plus` / `node_lt` / `node_eq` …、`alloc_binop` 経由の 16 種) は
-  link を焼いていないので、deopt 先の Ruby メソッド (`coerce` / `<=>` / ユーザ `==`) で鎖が
-  長さ 1 になる。`node_aref`/`node_aset` と同じ手 (flink オペランド + `korb_flink_stage`) で
-  塞げるが、最もホットなノード群なのでノードサイズ増を測ってから。
 - CRuby が**自分の C フレームを省く**ケースでこちらが多く出す: `Hash#[]=`/`Hash#[]` (CRuby は
   opt_aset/opt_aref 命令でフレームを積まない)、`Array#include?` (CRuby は `array.rb` の
   Primitive 実装)。`Array#delete`/`count`/`index`/`Hash#value?` は CRuby も出すので一致。
