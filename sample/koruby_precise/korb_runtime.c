@@ -7902,6 +7902,23 @@ korb_eval_frame_id(CTX *const c, const VALUE bind)
     return korb_fid_main(0, true);   /* no scope to name: the frame below the eval supplies one */
 }
 
+/* Append one unwound frame (raise path only; `file` is a stable symbol-table or
+ * script-name string, never NULL). */
+static void
+korb_bt_push(struct korb_vm *const vm, const char *const file, const uint32_t line, const char *const name)
+{
+    if (vm->bt_cnt >= KORB_FSTACK_MAX) return;   /* cap: a runaway recursion unwind must not grow without bound */
+    if (vm->bt_cnt == vm->bt_capa) {
+        vm->bt_capa = vm->bt_capa ? vm->bt_capa * 2 : 16;
+        vm->bt = realloc(vm->bt, sizeof(struct korb_bt_entry) * vm->bt_capa);
+        if (!vm->bt) { fprintf(stderr, "koruby_precise: out of memory (backtrace)\n"); abort(); }
+    }
+    vm->bt[vm->bt_cnt].line = line;
+    vm->bt[vm->bt_cnt].name = name;
+    vm->bt[vm->bt_cnt].file = file;
+    vm->bt_cnt++;
+}
+
 /* Record the frame `mid` (defined by `m`, entered from `line`) that the raise
  * riding in `e` just unwound out of, then re-aim e->line at the call site so
  * the next level out records its own position.
@@ -7911,23 +7928,30 @@ korb_eval_frame_id(CTX *const c, const VALUE bind)
 void
 korb_bt_unwind(CTX *c, KorbException *e, uint32_t line, uint32_t mid, const struct korb_method *m)
 {
-    struct korb_vm *const vm = c->vm;
     const char *const file = m ? korb_bt_method_file(c, m) : NULL;
     /* Kernel#raise / #fail never appear in a CRuby backtrace: skip the frame,
      * but still hand the call site to the level above. */
     const bool is_raise = m && m->kind == KORB_METHOD_BUILTIN && m->bfn == korb_bi_raise;
-    if (!is_raise && vm->bt_cnt < KORB_FSTACK_MAX) {   /* cap: a runaway recursion unwind must not grow without bound */
-        if (vm->bt_cnt == vm->bt_capa) {
-            vm->bt_capa = vm->bt_capa ? vm->bt_capa * 2 : 16;
-            vm->bt = realloc(vm->bt, sizeof(struct korb_bt_entry) * vm->bt_capa);
-            if (!vm->bt) { fprintf(stderr, "koruby_precise: out of memory (backtrace)\n"); abort(); }
-        }
-        vm->bt[vm->bt_cnt].line = file ? e->line : line;
-        vm->bt[vm->bt_cnt].name = korb_bt_label(c, mid, m);
-        vm->bt[vm->bt_cnt].file = file;
-        vm->bt_cnt++;
-    }
+    /* A C frame has no file of its own and stands in the file it was called
+     * from.  That is the file being loaded NOW — read it here, because by the
+     * time the list is rendered the require/load this frame is unwinding out of
+     * has already put the requirer's file back. */
+    if (!is_raise)
+        korb_bt_push(c->vm, file ? file : korb_bt_cur_file(c->vm), file ? e->line : line,
+                     korb_bt_label(c, mid, m));
     e->line = line;
+}
+
+/* A required/loaded file's own top-level frame, for a raise that leaves the
+ * file.  Nothing unwinds out of it the way a call does — korb_eval_toplevel_wrap
+ * just returns RAISE — so the frame has to be recorded there, between the last
+ * frame inside the file and the require/load C frame the dispatcher records
+ * next.  e->line is where the raise reached this file's top level, which is the
+ * position CRuby shows (a Ruby frame, so it keeps its own file and line). */
+static void
+korb_bt_unwind_file(CTX *const c, const KorbException *const e, const uint32_t fsym)
+{
+    korb_bt_push(c->vm, korb_sym_name(c->vm, fsym), e->line, "<top (required)>");
 }
 
 /* ---------------------------------------------------------------------------
@@ -13783,6 +13807,9 @@ korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const
      * "return from whoever called require/load" — absorb it here (main.c does
      * the same for the main script).  break/throw still propagate. */
     if (UNLIKELY(r.state == KORB_RETURN)) r = RESULT_OK(KORB_NIL);
+    /* This frame is about to disappear without a dispatcher unwinding out of
+     * it, so record it here or the raise loses the file's '<top (required)>'. */
+    if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind_file(c, VAL2EXC(r.value), fsym);
     return r;
 }
 /* source_location: register a def/block body NODE → (file, line) at parse time. */

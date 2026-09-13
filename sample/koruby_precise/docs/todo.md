@@ -10,18 +10,37 @@
 CRuby と diff する。 CRuby は required 側の `<top (required)>` と requirer の間に
 `Kernel#require` を 1 行入れ、その file:line は**呼び出し側の位置**になる。
 
-残っているギャップ (どちらも本修正の前から存在し、機構が別):
+ギャップ (いずれも `49675fde` の前から存在し、機構が別):
 
-- [ ] **raise が `load` / `require` を貫けると、読み込んだファイルの `<top (required)>` が落ちる。**
-      `load` の C フレーム (`Kernel#load`) は dispatch 側の `korb_bt_unwind` が `vm->bt` に積むが、
-      `korb_eval_toplevel_wrap` は自分のフレームを積まずに RAISE を返すので 1 行消える。
-      観測: `boom.rb` が `raise` し requirer 側で rescue → CRuby は
-      `boom.rb:2:in 'Object#b1'` / `boom.rb:4:in '<top (required)>'` / `edge.rb:37:in 'Kernel#load'` …
-      koruby は 2 行目が無い。 ファイル内で rescue する場合は生きた鎖を歩くので正しい。
+- [x] **raise が `load` / `require` を貫けると、読み込んだファイルの `<top (required)>` が落ちる。**
+      (2026-09-13 修正) `load` の C フレーム (`Kernel#load`) は dispatch 側の `korb_bt_unwind` が
+      `vm->bt` に積むが、`korb_eval_toplevel_wrap` は呼び出しとして巻き戻されないので
+      誰も自分のフレームを積まず 1 行消えていた。 `korb_bt_push` を切り出し、
+      `korb_eval_toplevel_wrap` の出口で RAISE のときだけ
+      `korb_bt_unwind_file` (= `<top (required)>`, file はその `fsym`, line は `e->line`) を積む。
+      同時に、C フレームの file を**巻き戻し時**の `korb_bt_cur_file` で凍結するようにした
+      (以前は整形時に読んでいたので、その require/load を抜けたあとの requirer の file になり、
+      入れ子 require の `Kernel#require_relative` が 1 つ外の file で出ていた)。
+      回帰は `tools/bt_probe/t2_unwind.rb` (+ `t2_unwind_{raise,mid,top}.rb`) — CRuby と byte 一致。
+      hot path は触っていない: `korb_send_cached` は変更前後で命令列一致 (1202 命令)。
 - [ ] **2 つ目のファイルで再定義したメソッドの backtrace の file が最初の定義のまま。**
       `load a.rb; m; load b.rb; m` で `caller_locations(0)[0].path` が CRuby は `b.rb`、
       koruby は `a.rb`。 `Method#source_location` は正しいので、ずれているのは
       `korb_bt_method_file` 側だけ。
+- [ ] **巻き戻し経路にブロックのフレームが積まれない。** 生きた鎖 (`korb_frames_snapshot_at`) は
+      ブロックフレームを歩くが、`vm->bt` には積まれない。 観測:
+      `def show; yield; rescue => e; e.backtrace; end` / `def deep; raise; end` / `show { deep }` で
+      CRuby は `Object#deep` の次に `block in <main>` を出すが koruby は出さず、
+      さらに 1 つ下 (`Object#show`) の line が yield 行でなくブロックの行になる。
+      `[1].each { deep }` でも同じ。 `load` したファイル側でも
+      `block in <top (required)>` が落ちる。 これは `korb_bt_unwind` を呼ぶのが
+      メソッド dispatch だけで、ブロック呼び出し経路が呼んでいないため。
+- [ ] **巻き戻した C フレームの file が「呼び出し元の file」でなく「巻き戻し時に読み込み中の file」。**
+      `a.rb` に `def m; [1].each { raise }; end`、`b.rb` で `require_relative 'a'` してから
+      `m` を rescue すると、CRuby は `a.rb:...:in 'Array#each'`、koruby は `b.rb:...`。
+      原則どおり「1 つ下のフレームの file を借りる」形に直そうとすると、上のブロックフレーム欠落の
+      せいで**逆に悪化する** (下が mspec 側の lib フレームになり、`block in ...` を飛び越える)。
+      実測で確認済み: 先にブロックフレームを積む方を直すこと。
 
 ## caller/backtrace レビュー (2026-09-13) — 指摘は同日に全部修正
 
