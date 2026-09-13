@@ -4377,3 +4377,81 @@ LocalJumpError にならない) と "converted into a proc during a super call"�
 - [ ] **NoMethodError のフレームが `BasicObject#method_missing`。**
       CRuby は呼び出し元 (`block in <main>`) を出す。CRuby の method_missing は
       backtrace に出ない規約。
+
+## (2026-09-13) eval / binding の残り — 測って残った 11 例
+
+`dea1670a` からの作業。埋めた分は commit 側 (rubyspec +18 例、
+pass 30927 → 30945 / ex 31593)。以下は**観測まで取って見送った**もの。
+再現は `tools/one.sh <spec>` と `t/agent/` の小スクリプト。
+
+### core/kernel/eval_spec.rb — 11 例 (4F + 7E)
+
+- [ ] **eval 文字列の匿名パラメータ転送 — 4 例** (`*` / `**` / `&` / `...`)。
+      `def object.bar(*); eval "foo(*)"; end`。観測: prism が
+      `SyntaxError: unexpected `*`; no anonymous rest parameter` を返す
+      (eval の parse スコープに forwarding が宣言されていない)。
+      直すには 2 段要る: (1) `koruby_parse_binding_eval` の
+      `pm_options_scope_*` に forwarding フラグを立てる、(2) 匿名 rest /
+      kwrest / block は `kp_frame.anon_*_slot` の**合成ローカル**に入っていて
+      名前が無い (`build_locals_info` が `names[i] = 0` にする) ので、
+      Binding 側にそのスロットを持たせて eval の宣言スコープから引けるように
+      する。今回の予算では大きすぎたので見送り。
+- [ ] **eval 文字列の `super` — 1 例**。観測:
+      `NotImplementedError: M0 unsupported: super outside a method body`。
+      上の (2) と同じく、eval フレームに呼び出し元メソッドの entry が要る。
+      `__method__` は今回 binding の env->id 経由で解決できるようにしたので
+      (`korb_bind_method_mid`)、`super` も同じ入口から辿れるはず (未検証)。
+- [ ] **`Kernel.eval("self")` が `Kernel` でなく `main` — 1 例**。観測:
+      `Kernel.eval("self")` → `main`。`eval` は `korb_builtin_define` の
+      グローバル関数なのでレシーバを受け取らない。素の `eval(str)` は
+      parse.c が `bake_self(tc)` を隠し引数に積むが、明示レシーバ形は
+      普通の send に落ちて self が差し替わらない。CRuby は `rb_f_eval(self,…)`。
+- [ ] **`frozen_string_literal` がトークンの後にあるときの警告 — 1 例**。
+      観測: 警告が出ない (`""` が返る)。eval の parse で prism の警告リストを
+      拾っていない。
+- [ ] **Proc-style クロージャを抜けて lambda-style から return — 1 例**。
+      観測: `core/kernel/fixtures/eval_return_with_lambda.rb` が
+      `unexpected return (LocalJumpError)` で exit 1。
+- [ ] **`Method#call` 越しの default definee — 1 例**。観測:
+      `EvalSpecs.method_defined?(:eval_spec_method_call)` が false。
+- [ ] **binary encoding のソースを eval したときの定数 — 1 例**。観測:
+      `ensure` の `remove_const` が `TypeError: nil is not a symbol nor a string`
+      (本体が先に落ちている)。encoding 側の話で eval 固有ではない。
+- [ ] **refinement を binding から見る — 1 例** (`core/binding/eval_spec.rb`
+      にも同じものが 1 例)。`docs/refinements.md` の範囲外。
+
+### core/binding/ の残り — 4 例
+
+- [ ] **`Binding#local_variables` の順序 — 1 例**。
+      `proc { |a| b = 1; eval("c = 2; binding.local_variables") }` が
+      CRuby `[:c, :a, :b, :p]`、koruby `[:a, :b, :p, :c]`。observed:
+      eval の宣言スコープは binding の名前表を**フラットに**並べたもの
+      (`korb_m_eval` の `decl[]`) なので、eval で新しくできた `c` が末尾に付く。
+      CRuby は eval スコープが独立した内側スコープ。直すには eval フレームを
+      入れ子として持つ必要があり、seed/writeback の作りごと変わる。
+- [ ] **`Binding#dup` / `#clone` が finalizer を複製しない — 2 例**。
+      `ObjectSpace.define_finalizer` を付けた Binding の複製。observed:
+      `["finalized\n"]` vs `["finalized\n", "finalized\n"]`。
+      Binding 固有ではなく `initialize_copy` と finalizer の話。
+- [ ] **`Binding#dup` の変数リストが元と共有される — 1 例**。
+      observed: dup した binding に `local_variable_set` した名前が元からも
+      読める (NameError を期待して 2 が返る)。`b->extra` の Hash が
+      複製時に共有されている。
+
+### core/module/const_source_location_spec.rb — 2 例
+
+- [ ] **autoload されたファイルの中から未解決の定数を引く — 1 例**。
+      `BEFORE_DEFINE_LOCATION = const_source_location(:ConstSource)` を
+      autoload 先のファイルの先頭で評価する。observed: nil。
+      prelude の `const_missing` が `require` の**前**に
+      `__autoload_table` から消すので、その時点では「定義済みでもなく
+      autoload 登録済みでもない」状態になり、
+      `korb_m_mod_const_source_location` の
+      `if (idx == UINT32_MAX && !korb_autoload_registered_p(...)) return nil`
+      に落ちる。登録位置自体は `__const_reg_loc` で記録済みなので、
+      require が終わるまでテーブルから消さない作りにすれば取れるはず (未検証)。
+- [ ] **`eval('self::C = 1', nil, "foo", 100)` を `Class.new do … end` の中で
+      — 1 例**。observed:
+      `NoMethodError: undefined method 'const_set' for an instance of Object`。
+      binding に `nil` を渡した 4 引数形が呼び出し元の binding を使わず、
+      self が `main` のままになる。
