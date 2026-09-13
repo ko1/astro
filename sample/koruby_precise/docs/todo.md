@@ -4157,6 +4157,7 @@ C の builtin を prelude の Ruby に移すと、この規模の固定費が乗
 
 ```
 files=3747  ex=31593  pass=30920  F=446  E=227  WFAIL=0   → 97.87%
+files=3747  ex=31593  pass=30927  F=440  E=226  WFAIL=0   → 97.89%   (2026-09-13 夕, language 修正後)
 ```
 
 `tools/spec_sweep/{base,after,cruby}.tsv` がファイル別の記録
@@ -4207,3 +4208,149 @@ binding/eval 4。以降は 1〜3 の平らな尾。
 CRuby との差で大きいのは**丸ごと未実装のライブラリ**
 (openssl 173、syslog 75、yaml 61、coverage 53)。これらは個別の穴ではなく、
 実装するかどうかの判断。
+## language/* の残り — 観測と、直さなかった理由 (2026-09-13)
+
+`language/{break,send,method,predefined,def,constants}_spec.rb` の CRuby 差 31 例を
+一つずつ最小再現に落として確認した。うち 7 例を修正 (send 6 / def 1)。
+残り 24 例は下記の通り。**すべて再現を取った上での記述**で、推測は「未確認」と書く。
+
+### 直した (7)
+
+- **`*x` が `#to_a` を呼んでいなかった** (`korb_ary_concat_val`)。
+  `[*{a: 1}]` が `[{a: 1}]` (CRuby は `[[:a, 1]]`)。`to_a` 探索が
+  `KORB_OBJECT_P` に限定されていて Hash / MatchData / Enumerator / Set / Time が
+  素通りしていた。gate を外して `#respond_to?(:to_a)` の判定だけに委ねた。
+  `[*h]` / `a, b = *h` / `f(*h)` の全経路が同じ関数を通るので一箇所で直る。
+- **`&expr` が引数より先に評価されていた** (parse.c の call/send lowering)。
+  `m(*args, &args.pop)` が `[[1], nil]` (CRuby は `[[1, nil], nil]`)。
+  receiver 側の非 splat 経路にだけ `blk_last` の付け替えがあり、
+  implicit-self 側と splat 側 (両方) には無かった。splat 側は引数 Array を
+  synth local に退避してから `&expr` を評価する形にした。
+- **`recv[i, j] = v` が `[]=` の戻り値を返していた**。index が 1 個のときは
+  `node_aset` が代入値を返すが、2 個以上は generic send に落ちてメソッドの
+  戻り値がそのまま式の値になっていた。
+- **`class << X` の中の method body で nested `def` の cref が self になっていた**。
+  `class << self; def mk; def made; end; end; end` の `made` が instance method に
+  なる (CRuby は singleton = class method)。`def self.m` の body とは runtime では
+  区別がつかない (どちらも self がクラス、method owner が singleton) ので、
+  parse 時の `anon_cref_method` を `node_def` に `sclass_cref` として渡した。
+  なお **`class << X` の body 直下の `def` はこの形ではない** — そこは self が
+  すでに singleton で、かつ body の `private`/`public` スコープを引き継がねば
+  ならない (最初 `anon_class_body` も含めたら `def_spec` の
+  "Redefining a singleton method does not inherit a previously set visibility" が
+  新たに落ちた)。
+
+### 直していない
+
+#### language/break_spec.rb — 8 例 (設計変更が要る)
+
+失敗の中心は「孤児 break は `LocalJumpError`」。最小再現:
+
+```ruby
+def capture_block(&b) = b
+b = capture_block { break :break }
+b.call   # CRuby: LocalJumpError "break from proc-closure"
+```
+
+観測でわかったこと:
+
+1. koruby は**メッセージ自体は持っている** (`main.c:1626`) が、raise されるのは
+   break が main まで抜けきったとき。途中の `begin/rescue LocalJumpError` では
+   捕まらない (上の再現を `begin ... rescue` で囲むと CRuby は捕まえ、koruby は
+   top-level で落ちる)。
+2. 間に lambda があると **lambda が食う**。`korb_break_claim` (node.h) が
+   `is_lambda` なら誰の break かを見ずに `KORB_NORMAL` にしてしまうため、
+   `-> { break_in_method }.call` が `:break` を返す。spec の
+   "Expected LocalJumpError but no exception was raised (:break was returned)" は
+   これ。同じ原因で "in a lambda / returns from the call site if the lambda is
+   passed as a block" (`[:before, :unreachable2, :after]`) も落ちる。
+
+`korb_break_claim` を「自分の break (未 claim か自分の entry) だけ食う」に直すと
+(2) は正しくなるが、そのとき (1) の孤児 break が lambda に止められなくなって
+**main まで抜け、spec run ごと落ちる** (実際に試して確認した)。つまり (2) だけ
+直すのは退行。(1) と (2) は同時にしか直せない。
+
+(1) を直すには CRuby と同じ「break の home = そのブロックリテラルを**渡された
+呼び出し**」の生存判定が要る。CRuby は cfp スタックを target ep で検索する。
+koruby の claim 機構は entry NODE の同一性だけを鍵にしていて、home 呼び出しの
+ハンドルをどこにも持っていない。CRuby と挙動が一致することは確認済み:
+
+```ruby
+def m(&b); b.call; end;  m { break 42 }   #=> 42      (home = m の呼び出し、生存)
+def m2(&b); yield; end;  m2 { break 43 }  #=> 43
+proc { break }.call                        #=> LocalJumpError (home = proc の呼び出し、消滅)
+```
+
+つまり「Proc#call を抜ける break は常に孤児」という安い判定は**使えない**。
+必要なのは home 呼び出しのハンドルを `KorbProc` に持たせること
+(`&b` 束縛時 = そのメソッド活性、`proc {}` / `Proc.new {}` は最初から無効)、
+かつその活性の生存判定。ところが koruby の frame ハンドルは
+「奇数 = 生きた slots ポインタ / 偶数 = KorbEnv」で、**エスケープしていない
+frame が返ると奇数ハンドルが dangling** になる (同じ番地に別 frame が来ると
+生きて見える)。`&b` のたびに frame を強制エスケープさせるのは hot path の
+コストになるので採れない。世代番号を振るなら全メソッド活性に counter が要り、
+これも hot path。よって **moving GC 下の KorbProc 拡張 + frame 生存判定の設計**が
+先で、今回のスコープでは手を出さない。
+
+残り 2 例も同系統: "from another thread" (Thread 内の裸 break が
+LocalJumpError にならない) と "converted into a proc during a super call"。
+
+#### language/method_spec.rb — 5 例 (`:strict_unused_block`)
+
+5 例すべて `the block passed to 'NAME' defined at FILE:LINE may be ignored` の
+警告を koruby が出していないこと (前任者の見立ては正しかった)。実装には
+(a) `Warning[:strict_unused_block]` カテゴリ、(b) def 側の file:line、
+(c) **call site ごとに一度だけ**という状態、(d) ブロック付き呼び出し経路での
+判定が要る。(d) が `korb_send_blk` / `korb_dispatch_method` = ブロック付き
+呼び出しの共通路に global flag の分岐を足すことになり、「hot path を遅くしない」
+という制約に正面からぶつかる。加えて yield は警告なし / `block_given?` は警告あり /
+`super` と `initialize` は警告なし、と条件が細かく、koruby の `m->uses_block` は
+その区別を持たない (`yield` と `block_given?` を分けていない — 未確認だが
+少なくとも 1 bit では足りない)。ROI が悪いので見送り。
+
+#### language/def_spec.rb — 6 例
+
+- 2 例 (`defines it on Object with private visibility`, `... after calling public`)
+  と 1 例 (`always resets the visibility to public ... at the toplevel`) は
+  **top-level def が Object に載らない**既知の穴 (c8e442da) と同じ根。
+- 1 例 `creates a method in the surrounding context when evaluated in a def expr.method`:
+  `class C; TARGET = Object.new; def TARGET.defs_method; def inherited_method; end; end; end`
+  で `inherited_method` は **C の instance method** になるべき (cref は字句的に C)。
+  koruby は self が非クラスなので `dc_off` 経由で method owner =
+  `#<Class:TARGET>` を definee にしてしまう。今回入れた `sclass_cref` と同じく
+  parse 時の字句 cref を渡せば直るはずだが、`def recv.m` の body には
+  囲みクラスの**名前**しか parse 時に無く (`class_name_sym`)、無名クラス内では
+  それも無い。別の bake が要る。未着手。
+- 2 例 (eval 内の def)。`eval "def m; end"` が呼び出し元メソッドの cref を
+  継がない。`class << self` の中の instance method では再現し
+  (`[NameError, "undefined local variable or method 'an_eval_class_method'..."]`)、
+  ふつうの instance method では**再現しない** (単体では通る)。
+  eval 側の parse に cref 情報を渡す経路が無いのが原因と見ている (未確認)。
+
+#### language/predefined_spec.rb — 5 例
+
+- `$_` / `$?` が thread-local でない (2 例)。koruby は `$?` を VM の定数表に
+  置いている (`builtins/process.c:711`)。per-thread の格納場所が要る。
+- `$0 = "..."` が実際のプロセス名を変えない (setproctitle 相当が無い)。
+- `$LOAD_PATH` の要素に `@gem_prelude_index` が無い (gem prelude 概念が無い)。
+- `$LOAD_PATH.resolve_feature_path` が `.so` を `:rb` と答える。
+
+いずれも 1 例ずつで独立、koruby 固有の穴というより未実装機能。
+
+#### language/constants_spec.rb — 4 例
+
+- 2 例 `searches Object as a lexical scope only if Object is explicitly opened`:
+  `class ::Object; CS_CONST20 = :const20_1; module ConstantSpecs; ... def self.const20; CS_CONST20; end`
+  で koruby は `:const20_2` (ConstantSpecs 側) を引く。**字句 cref チェーンを
+  名前で焼いている**ため、`class ::Object` の中で開き直した入れ子が
+  元の ConstantSpecs と同一視されている、と見ている (未確認 — 切り分けには
+  cref チェーンの dump が要る)。
+- 1 例 `within a singleton class (class << obj) allows nested modules to have
+  proper resolution` (`[2, 2]` vs `[1, 2]`) — 同じ cref チェーンの話。
+- 1 例 `private_constant marked constants sends #const_missing to the original
+  class or module`。koruby は private 定数参照でその場で NameError を上げる
+  (`node.def:1860` / `korb_runtime.c:8647`)。CRuby は `const_missing` に回し、
+  **既定の `Module#const_missing` が**その NameError を上げる。直すなら
+  「`const_missing` の定義元が `Module` 以外なら dispatch、そうでなければ
+  今まで通り raise」で足りるはず (定義元は `korb_mcache_find` の `def_class` で
+  見られる) だが、1 例なので今回は見送り。

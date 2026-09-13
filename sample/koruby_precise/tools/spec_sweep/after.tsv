@@ -2162,7 +2162,7 @@ language/class_spec.rb	45	2	0	43
 language/class_variable_spec.rb	14	0	1	13
 language/comment_spec.rb	1	0	0	1
 language/constants_spec.rb	100	2	2	96
-language/def_spec.rb	72	4	3	65
+language/def_spec.rb	72	4	2	66
 language/defined_spec.rb	257	0	0	257
 language/delegation_spec.rb	15	0	0	15
 language/encoding_spec.rb	6	1	0	5
@@ -2216,7 +2216,7 @@ language/retry_spec.rb	3	0	0	3
 language/return_spec.rb	43	3	0	40
 language/safe_navigator_spec.rb	13	1	0	12
 language/safe_spec.rb	1	0	0	1
-language/send_spec.rb	78	6	0	72
+language/send_spec.rb	78	0	0	78
 language/singleton_class_spec.rb	53	0	0	53
 language/source_encoding_spec.rb	6	0	0	6
 language/string_spec.rb	39	1	0	38

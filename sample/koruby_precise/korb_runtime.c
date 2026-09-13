@@ -1445,9 +1445,10 @@ korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val)
         return RESULT_OK(VALUE_REF_GET(aref));
     }
     if (val == KORB_NIL) return RESULT_OK(VALUE_REF_GET(aref));
-    /* `*obj` for an object with a to_a (e.g. Struct) spreads its elements
-     * (Ruby `[*x]` / `a, b = *x` semantics); otherwise `*x` is just `[x]`. */
-    if (KORB_OBJECT_P(val)) {
+    /* `*x` for anything else with a #to_a (Struct, Hash, MatchData, Enumerator,
+     * Set, Time…) spreads its elements (Ruby `[*x]` / `a, b = *x`); without one
+     * `*x` is just `[x]`. */
+    {
         const uint32_t to_a_mid = korb_intern(c->vm, "to_a", 4);
         VALUE *const vp = slots;                         /* same cell as vr, for the writeback */
         VALUE_REF vr = SLOTS_PUSH(slots, val);           /* root recv across the respond_to? / to_a dispatch */
@@ -1468,7 +1469,6 @@ korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val)
         }
         return korb_ary_push_val(c, slots, aref, VALUE_REF_GET(vr));   /* re-read: coerce may have moved val */
     }
-    return korb_ary_push_val(c, slots, aref, val);
 }
 
 /* Multiple assignment `a, b = rhs`: coerce a non-Array rhs via #to_ary (an Array

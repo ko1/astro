@@ -262,6 +262,13 @@ static NODE *kp_send_n(struct kp_ctx *tc, uint32_t mid, uint32_t line, NODE *rec
 #define KP_SEND2_SC (3u + KORB_FRAME_HDR)   /* recv + 2 args        */
 #define KP_SENDN_SC(n) ((1u + (n)) + KORB_FRAME_HDR)   /* recv + n args */
 
+/* True when no argument in the list is a `*splat` (fixed-arity lowering is only
+ * valid then). */
+static bool kp_no_splat_p(struct pm_node *const *nodes, size_t n) {
+    for (size_t i = 0; i < n; i++) if (PM_NODE_TYPE_P(nodes[i], PM_SPLAT_NODE)) return false;
+    return true;
+}
+
 /* ---------------------------------------------------------------------- */
 
 static uint32_t
@@ -2005,21 +2012,34 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                 if (anon_blk && tc->frame->anon_blk_slot < 0)
                     return kp_unsupported(tc, (const pm_node_t *)cn, "bare & outside a (&) method body");
                 uint32_t pslot = anon_blk ? (uint32_t)tc->frame->anon_blk_slot : alloc_synth_local(tc);
-                NODE *pset = anon_blk ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
                 bool has_splat = false;
                 for (size_t i = 0; i < argc; i++)
                     if (PM_NODE_TYPE_P(args->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+                /* CRuby evaluates `&expr` LAST (after the arguments).  Only
+                 * materialize that when something here can observe the order —
+                 * otherwise keep the cheap shape. */
+                bool blk_last = argc > 0 && !anon_blk && !kp_order_transparent(ba->expression);
+                for (size_t i = 0; !blk_last && !anon_blk && i < argc; i++)
+                    if (!kp_order_transparent(args->arguments.nodes[i])) blk_last = true;
+                NODE *pset = (anon_blk || blk_last) ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
                 if (has_splat) {
                     /* `f(*arr, &proc)` (implicit self) — build the args Array; one
                      * staged child = the array, self via self_off, proc via proc_off. */
                     int32_t self_off = -1 - tc->chain - 1;
                     int32_t proc_off = (int32_t)pslot - tc->chain - 1;
-                    NODE *arr;
-                    WITH_CHAIN(tc, 1, (arr = build_array(tc, args->arguments.nodes, argc, (uint32_t)argc)));
+                    NODE *arr, *pre = pset;
+                    if (blk_last) {   /* stash the built Array, then evaluate `&expr` */
+                        const uint32_t ta = alloc_synth_local(tc);
+                        NODE *const sa = bake_lset(tc, ta, build_array(tc, args->arguments.nodes, argc, (uint32_t)argc));
+                        pre = ALLOC_node_seq(sa, bake_lset(tc, pslot, transduce(tc, ba->expression)));
+                        WITH_CHAIN(tc, 1, (arr = bake_lget(tc, ta)));
+                    } else {
+                        WITH_CHAIN(tc, 1, (arr = build_array(tc, args->arguments.nodes, argc, (uint32_t)argc)));
+                    }
                     NODE *_cs = KP_LINK(tc, node_call_splat_blkproc, mid, kp_flink_at(tc, line, 2), self_off, proc_off, arr);
                     bake_add(tc, &_cs->u.node_call_splat_blkproc.self_off);
                     bake_add(tc, &_cs->u.node_call_splat_blkproc.proc_off);
-                    return pset ? ALLOC_node_seq(pset, _cs) : _cs;
+                    return pre ? ALLOC_node_seq(pre, _cs) : _cs;
                 }
                 uint32_t cnt = 1u + (uint32_t)argc;     /* self receiver + args */
                 NODE **argv = malloc(sizeof(NODE *) * cnt);
@@ -2029,6 +2049,14 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                 argv[0] = bake_self(tc);   /* self → base[-1] */
                 for (size_t i = 0; i < argc; i++)
                     argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
+                if (blk_last) {
+                    /* thread `&expr` through the LAST staged child: stash that
+                     * child's value, evaluate the block expression, hand it back */
+                    const uint32_t tmp = alloc_synth_local(tc);
+                    NODE *const last = ALLOC_node_seq(bake_lset(tc, pslot, transduce(tc, ba->expression)),
+                                                      bake_lget(tc, tmp));
+                    argv[cnt - 1] = ALLOC_node_seq(bake_lset(tc, tmp, argv[cnt - 1]), last);
+                }
                 tc->chain = saved;
                 NODE *call = KP_LINK(tc, node_call_blkproc, mid, kp_flink(tc, line), (int32_t)pslot - tc->chain - (int32_t)cnt - KORB_FRAME_HDR, argv, cnt);
                 bake_add(tc, &call->u.node_call_blkproc.proc_off);
@@ -2237,6 +2265,23 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                         val  = transduce(tc, cn->arguments->arguments.nodes[1])));
             return KP_LINK(tc, node_aset, kp_flink_at(tc, line, kind_node_aset.slot_count), recv, idx, val);
         }
+        /* `recv[i, j, ...] = v` (more than one index): an element assignment
+         * yields the assigned value, not []='s return.  Stage v in a temp while
+         * the send runs, then hand the temp back. */
+        if (mid == tc->c->vm->mid_aset && argc > 2 && kp_no_splat_p(cn->arguments->arguments.nodes, argc)) {
+            const uint32_t tv = alloc_synth_local(tc);
+            NODE **const av = malloc(sizeof(NODE *) * argc);
+            if (!av) abort();
+            const int32_t saved = tc->chain;
+            tc->chain = saved + (int32_t)KP_SENDN_SC((uint32_t)argc);
+            NODE *const r = transduce(tc, cn->receiver);
+            for (size_t i = 0; i + 1 < argc; i++) av[i] = transduce(tc, cn->arguments->arguments.nodes[i]);
+            av[argc - 1] = bake_lset(tc, tv, transduce(tc, cn->arguments->arguments.nodes[argc - 1]));
+            tc->chain = saved;
+            NODE *const set = kp_send_n(tc, mid, line, r, av, (uint32_t)argc);
+            free(av);
+            return ALLOC_node_seq(set, bake_lget(tc, tv));
+        }
     }
 
     /* receiver method dispatch with a block: recv.mid(args) { ... } or &:sym */
@@ -2273,18 +2318,26 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 if (!blk_last && !anon_blk && !kp_order_transparent(cn->receiver)) blk_last = true;
                 for (size_t i = 0; !blk_last && i < argc; i++)
                     if (!kp_order_transparent(cn->arguments->arguments.nodes[i])) blk_last = true;
-                NODE *pset = (anon_blk || (blk_last && !has_splat))
+                NODE *pset = (anon_blk || blk_last)
                              ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
                 if (has_splat) {
                     /* `recv.m(*arr, &proc)` — build the args Array; node_send_splat_blkproc
                      * coerces the proc and forwards it (2 staged children: recv + array). */
                     int32_t proc_off = (int32_t)pslot - tc->chain - 2;
-                    NODE *recv, *arr;
-                    WITH_CHAIN(tc, 2, (recv = RECV_NODE(),
-                                       arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
+                    NODE *recv, *arr, *pre = pset;
+                    if (blk_last) {   /* stash receiver + built Array, then evaluate `&expr` */
+                        const uint32_t tr = alloc_synth_local(tc), ta = alloc_synth_local(tc);
+                        NODE *const sr = bake_lset(tc, tr, RECV_NODE());
+                        NODE *const sa = bake_lset(tc, ta, build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc));
+                        pre = ALLOC_node_seq(sr, ALLOC_node_seq(sa, bake_lset(tc, pslot, transduce(tc, ba->expression))));
+                        WITH_CHAIN(tc, 2, (recv = bake_lget(tc, tr), arr = bake_lget(tc, ta)));
+                    } else {
+                        WITH_CHAIN(tc, 2, (recv = RECV_NODE(),
+                                           arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
+                    }
                     NODE *_cs = KP_LINK(tc, node_send_splat_blkproc, mid, kp_flink_at(tc, line, 2), proc_off, recv, arr);
                     bake_add(tc, &_cs->u.node_send_splat_blkproc.proc_off);
-                    return SAFE_WRAP(pset ? ALLOC_node_seq(pset, _cs) : _cs);
+                    return SAFE_WRAP(pre ? ALLOC_node_seq(pre, _cs) : _cs);
                 }
                 uint32_t sc = 1u + (uint32_t)argc;
                 NODE **argv = malloc(sizeof(NODE *) * sc);
@@ -2551,6 +2604,11 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     }
 
     const bool anon_cref = tc->frame->anon_class_body || tc->frame->anon_cref_method;
+    /* This def sits in the BODY of a `class << X` method: self there is the
+     * receiver, so the definee must come from the method's cref.  A def in the
+     * `class << X` body itself already has that class as self (and must keep the
+     * body's private/public scope), so it is not this shape. */
+    const uint32_t sclass_cref = tc->frame->anon_cref_method ? 1u : 0u;
     const pm_constant_id_list_t *const reordered = kp_param_first_locals(tc, &dn->locals, ps);
     /* `def m(*, a)`: the posts sit at rest_slot+1, so the anonymous rest needs the
      * slot kp_param_first_locals reserves — without that list there is nowhere to put it. */
@@ -2768,7 +2826,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     NODE *def;
     if (mod_func) {
         /* module_function: define as instance method AND as a singleton on self. */
-        NODE *idef = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain);
+        NODE *idef = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain, sclass_cref);
         bake_add(tc, &idef->u.node_def.self_off);          /* definee = self at base[-1] */
         bake_add(tc, &idef->u.node_def.dc_off);            /* enclosing method entry = base[-4] */
         NODE *sdef = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, recv_node);
@@ -2776,7 +2834,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     } else if (recv_node) {
         def = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, recv_node);
     } else {
-        def = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain);
+        def = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain, sclass_cref);
         bake_add(tc, &def->u.node_def.self_off);           /* definee = self at base[-1] */
         bake_add(tc, &def->u.node_def.dc_off);             /* enclosing method entry = base[-4] */
     }
