@@ -3,6 +3,26 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## require / load のフレーム (2026-09-13)
+
+`require` / `require_relative` / `load` 自身のフレームが backtrace に出るようにした
+(`korb_flink_req_frame`)。 再現・回帰は `tools/bt_probe/t1_req.rb` (+ `t1_req_inner{,2}.rb`) で
+CRuby と diff する。 CRuby は required 側の `<top (required)>` と requirer の間に
+`Kernel#require` を 1 行入れ、その file:line は**呼び出し側の位置**になる。
+
+残っているギャップ (どちらも本修正の前から存在し、機構が別):
+
+- [ ] **raise が `load` / `require` を貫けると、読み込んだファイルの `<top (required)>` が落ちる。**
+      `load` の C フレーム (`Kernel#load`) は dispatch 側の `korb_bt_unwind` が `vm->bt` に積むが、
+      `korb_eval_toplevel_wrap` は自分のフレームを積まずに RAISE を返すので 1 行消える。
+      観測: `boom.rb` が `raise` し requirer 側で rescue → CRuby は
+      `boom.rb:2:in 'Object#b1'` / `boom.rb:4:in '<top (required)>'` / `edge.rb:37:in 'Kernel#load'` …
+      koruby は 2 行目が無い。 ファイル内で rescue する場合は生きた鎖を歩くので正しい。
+- [ ] **2 つ目のファイルで再定義したメソッドの backtrace の file が最初の定義のまま。**
+      `load a.rb; m; load b.rb; m` で `caller_locations(0)[0].path` が CRuby は `b.rb`、
+      koruby は `a.rb`。 `Method#source_location` は正しいので、ずれているのは
+      `korb_bt_method_file` 側だけ。
+
 ## caller/backtrace レビュー (2026-09-13) — 指摘は同日に全部修正
 
 対象は master `11530756..133c2bf4` (frame link / identity / caller / locals 名前表)。

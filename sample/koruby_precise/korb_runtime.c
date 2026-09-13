@@ -8322,6 +8322,21 @@ korb_flink_carry(CTX *c, const VALUE *src)
     return korb_flink_fwd(src);   /* the cell stays live below us: let the walk read it */
 }
 
+/* The link a required file's top-level frame takes.  CRuby shows the require
+ * itself ("Kernel#require", at the requirer's call site) between that file and
+ * its requirer, so the frame links TO the require's argument window instead of
+ * reading through it.  Only the live C frame qualifies: an unframed dispatch
+ * never named this window, and a re-dispatch inside require built another one —
+ * those read through, as before. */
+static VALUE
+korb_flink_req_frame(CTX *c, const VALUE *req_base)
+{
+    if (req_base == NULL) return 0;
+    const VALUE fl = c->cfunc_link;
+    if (fl != 0 && korb_flink_ptr(fl) == req_base) return fl;
+    return korb_flink_carry(c, req_base + KORB_FLINK_OFF);
+}
+
 /* Render bt[i] (an unwound frame) as CRuby does: "file:line:in 'label'". */
 static int
 korb_bt_entry_fmt(const struct korb_vm *vm, uint32_t i, char *buf, size_t bufsz)
@@ -13697,7 +13712,7 @@ korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, struct KorbIORep *rep)
  * constants / methods), like Kernel#eval with no binding.  Used by require/load. */
 static RESULT
 korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const char *fname, VALUE *wrapp,
-                        const VALUE *req_link)
+                        const VALUE *req_base)
 {
     const uint32_t repo_before = code_repo_count();               /* bodies this file adds: [repo_before, count) */
     NODE *ast = koruby_parse_source(c, src, len, fname, false);   /* immortal AST; no GC */
@@ -13718,12 +13733,13 @@ korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const
     VALUE *const cur = fb + locals;
     memset(fb, 0, (size_t)locals * sizeof(VALUE));
     /* Backtrace: this file's top-level frame.  Its identity names the file and
-     * says it was require'd, and its link is the require's — re-aimed — so a
-     * backtrace taken in here walks on into the requirer. */
+     * says it was require'd, and its link is the require's own C frame, so a
+     * backtrace taken in here shows "Kernel#require" and walks on into the
+     * requirer (CRuby). */
     const uint32_t fsym = korb_intern(c->vm, fname, strlen(fname));
     korb_reg_srcloc(c->vm, ast, fsym, 0);
     korb_id_set(fb, korb_fid_main(fsym, true));
-    fb[KORB_FLINK_OFF] = korb_flink_carry(c, req_link);   /* the require frame's link, read through */
+    fb[KORB_FLINK_OFF] = korb_flink_req_frame(c, req_base);
     /* CRuby has ONE top-level `main`, so a `def self.x` here lands on the object
      * TOPLEVEL_BINDING.receiver hands back.  load(file, wrap) is the exception:
      * its self is a throwaway main extended with the wrap module. */
@@ -14097,7 +14113,7 @@ korb_loading_remove(struct korb_vm *vm, const char *abspath)
  * dedup: if true (require), a second require of the same path returns false. */
 static RESULT
 korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *out, VALUE *wrapp,
-                       const VALUE *req_link)
+                       const VALUE *req_base)
 {
     struct korb_vm *const vm = c->vm;
     if (dedup) {
@@ -14151,7 +14167,7 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
      * neither leaks out nor inherits the requiring file's (docs/refinements.md). */
     korb_refine_push(c);
     c->refinements = KORB_NIL;
-    RESULT r = korb_eval_toplevel_wrap(c, slots, buf, got, abscopy, wrapp, req_link);
+    RESULT r = korb_eval_toplevel_wrap(c, slots, buf, got, abscopy, wrapp, req_base);
     korb_refine_pop(c);
     vm->cur_load_file = saved;
     vm->cur_load_abs = saved_abs;
@@ -14167,9 +14183,9 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
     return RESULT_OK(KORB_TRUE);
 }
 static RESULT
-korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *out, const VALUE *req_link)
+korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *out, const VALUE *req_base)
 {
-    return korb_load_abspath_wrap(c, slots, abspath, dedup, out, NULL, req_link);
+    return korb_load_abspath_wrap(c, slots, abspath, dedup, out, NULL, req_base);
 }
 /* Resolve `name` (adding ".rb" if absent) against `base_dir` into `out` (abs),
  * returning true if the file exists. */
@@ -14326,11 +14342,10 @@ static RESULT
 korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     VALUE nv = VALUE_SLICE_GET(args, 0);
-    if (UNLIKELY(!KORB_STRING_P(nv))) {
-        CHECK(korb_load_path_arg(c, slots, &nv));
-        slots[0] = nv;
-        return korb_bi_require(c, slots + 1, VALUE_SLICE_MAKE(&slots[0], 1));
-    }
+    /* Converted in place, as require_relative / load do: re-entering with a
+     * fabricated one-slot window would leave the frame link aimed at a cell no
+     * call site reserved, and the backtrace would stop at this file. */
+    if (UNLIKELY(!KORB_STRING_P(nv))) { CHECK(korb_load_path_arg(c, slots, &nv)); slots[0] = nv; }
     char namebuf[4096]; uint32_t nl = VAL2STR(nv)->len;
     if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
     memcpy(namebuf, korb_strbuf_data(VAL2STR(nv)->buf), nl); namebuf[nl] = '\0';
@@ -14365,7 +14380,7 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
      * would let a stray ./stringio.rb shadow the real feature). */
     if ((namebuf[0] == '/' || namebuf[0] == '.') &&
         korb_resolve_load(".", namebuf, abspath, sizeof abspath)) {
-        VALUE out; return korb_load_abspath(c, slots, abspath, true, &out, args.p - 3);
+        VALUE out; return korb_load_abspath(c, slots, abspath, true, &out, args.p);
     }
     if (namebuf[0] != '/' && namebuf[0] != '.') {          /* search each $LOAD_PATH dir (re-read per iter: #to_path may run Ruby) */
         const uint32_t lp_sym = korb_intern(c->vm, "$LOAD_PATH", 10);
@@ -14381,7 +14396,7 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
             char dir[4096]; uint32_t dl = VAL2STR(e)->len; if (dl >= sizeof dir) dl = sizeof dir - 1;
             memcpy(dir, korb_strbuf_data(VAL2STR(e)->buf), dl); dir[dl] = '\0';
             if (korb_resolve_load(dir, namebuf, abspath, sizeof abspath)) {
-                VALUE out; return korb_load_abspath(c, slots, abspath, true, &out, args.p - 3);
+                VALUE out; return korb_load_abspath(c, slots, abspath, true, &out, args.p);
             }
         }
     }
@@ -14458,7 +14473,7 @@ korb_bi_require_relative(CTX *c, VALUE *slots, VALUE_SLICE args)
     char *slash = strrchr(basedir, '/'); if (slash) *slash = '\0'; else snprintf(basedir, sizeof basedir, ".");
     char abspath[4096];
     if (korb_resolve_load(basedir, namebuf, abspath, sizeof abspath)) {
-        VALUE out; return korb_load_abspath(c, slots, abspath, true, &out, args.p - 3);
+        VALUE out; return korb_load_abspath(c, slots, abspath, true, &out, args.p);
     }
     {   /* CRuby names the resolved absolute path (minus any ".rb" it appended) */
         char full[4096], norm[4096];
@@ -14520,7 +14535,7 @@ korb_bi_load(CTX *c, VALUE *slots, VALUE_SLICE args)
         }
     }
     slots[1] = wrap;                                   /* root it across the load */
-    VALUE out; return korb_load_abspath_wrap(c, slots + 2, abspath, false, &out, &slots[1], args.p - 3);
+    VALUE out; return korb_load_abspath_wrap(c, slots + 2, abspath, false, &out, &slots[1], args.p);
 }
 
 /* Kernel#exit([status]) / exit! — terminate the process (true/nil → 0, false → 1,
