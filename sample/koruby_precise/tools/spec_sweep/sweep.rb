@@ -5,6 +5,17 @@
 #   (it only orchestrates); the *spawned* processes are koruby.
 #
 # Usage: ruby tools/spec_sweep/sweep.rb <jobs> <out.tsv> <relpath-or-glob>...
+#
+# SWEEP_TMP MUST BE A SHORT PATH (e.g. /tmp/ksw).  library/socket binds UNIX
+# sockets under SPEC_TEMP_DIR, and sun_path is capped at ~108 bytes: a long base
+# makes 19 files fail with errors that look like koruby gaps and are not.
+# Measured 2026-09-13: long base -> socket pass 1700 / 59 errors; short base ->
+# 1818 / 0.  CRuby run from the same long base fails identically, so "CRuby
+# errors too" does NOT clear a socket result — shorten the path and re-measure.
+#
+# Report a rate as pass/ex FROM THE SAME RUN.  The example count moves run to
+# run (be_computed_by tables expand differently), so dividing a new pass count
+# by an old example count inflates the figure.
 # TSV columns: rel  ex  F  E  pass        (pass = ex - F - E, WFAIL rows: rel WFAIL)
 require 'fileutils'
 require 'thread'

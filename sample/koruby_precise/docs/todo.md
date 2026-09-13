@@ -4140,3 +4140,38 @@ C の builtin を prelude の Ruby に移すと、この規模の固定費が乗
 起動を詰めるときは、prelude に積んだメソッドのうち
 **互換のために Ruby でなければならないもの**と、単に書きやすくて置いたものを
 分けて見直す。計測: `trials/2026-09-13-koruby-caller-review/README.md` の追記。
+
+## rubyspec の現在地 (2026-09-13 実測)
+
+`tools/spec_sweep/sweep.rb` で全 core / language / library を実 mspec に通した結果。
+**`SWEEP_TMP` は短いパスにすること** (理由は sweep.rb の冒頭コメント)。
+
+```
+files=3747  ex=31593  pass=30920  F=446  E=227  WFAIL=0   → 97.87%
+```
+
+`tools/spec_sweep/{base,after,cruby}.tsv` がファイル別の記録
+(`base` = `7df5f1ad`、`after` = 現在、`cruby` = CRuby 4.1.0dev の参照値)。
+`tools/rubyspec_baseline.txt` は shim runner の古い記録で、**当てにならない**
+(今は 0 失敗で通る `thread/backtrace/location/*` が WFAIL のまま載っている)。
+
+**率を出すときは同じ run の pass と ex で割る。** example 数は run ごとに動く
+(`be_computed_by` の表が展開のたびに変わる) ので、新しい pass を古い ex で
+割ると数字が水増しされる。
+
+**本日の caller/backtrace 一連の効果は確認できた**: `thread/backtrace/*`、
+`kernel/caller*`、`thread/backtrace/location/*` の失敗は 0。
+
+**残りの上位** (fail+err):
+tracepoint/enable 19、kernel/eval 12、language/break 8、language/def 7、
+tracepoint/inspect 7、fiber/current_scheduler 7、language/send 6、
+kernel/binding 6、language/regexp/encoding 5、language/predefined 5、
+language/method 5。そこから先は 1〜4 の非常に平らな尾。
+CRuby との差で見ると、大きいのは**丸ごと未実装のライブラリ**
+(openssl 173、syslog 75、yaml 61、coverage 53、objectspace 46)。
+
+罠 2 件 (どちらも「差」に見えて差ではない):
+- `library/socket` の失敗は **SPEC_TEMP_DIR のパス長**。短くすると 0 になる。
+  CRuby も同じ長いパスなら同じだけ落ちるので、「CRuby も落ちる」は免罪符にならない。
+- `source_range` 系 131 例と `dir/scan` は `ruby_version_is "4.1"` ガード。
+  koruby の `RUBY_VERSION` が 4.0.2 なので走らないだけ。
