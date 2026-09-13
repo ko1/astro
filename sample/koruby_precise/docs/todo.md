@@ -4354,3 +4354,26 @@ LocalJumpError にならない) と "converted into a proc during a super call"�
   「`const_missing` の定義元が `Module` 以外なら dispatch、そうでなければ
   今まで通り raise」で足りるはず (定義元は `korb_mcache_find` の `def_class` で
   見られる) だが、1 例なので今回は見送り。
+
+## (2026-09-13) builtin のフレームと arity — 親が追測で見つけた 4 件
+
+`tools/bt_probe/` の作業中に、C メソッドまわりで CRuby と違う点が 4 つ見えた。
+いずれも小さく、独立している。再現は `show(label) { ... }` で rescue して
+`e.backtrace.first` を CRuby と並べるだけ。
+
+- [ ] **`Array#first` / `Array#last` が余分な引数を黙って受ける。**
+      `[1,2,3].first(1,2)` が koruby では `[1]` を返す (CRuby は ArgumentError)。
+      `Hash#size(1)` や `Integer#abs(9)` は正しく上げるので、可変長 builtin の
+      上限チェック漏れ。**戻り値が変わる実害あり。**
+- [ ] **arity エラーを上げた builtin 自身のフレームが出ない。**
+      `{}.send(:[]=, 1,2,3)` の backtrace 先頭が CRuby は `Hash#[]=`、
+      koruby は呼び出し元。引数チェックがフレームを張る前に走るため。
+      `Kernel#Integer` / `Array#fetch` / `Hash#fetch` のように**本体で**上げるものは
+      正しく自分のフレームを出すので、漏れているのは入口チェックの経路だけ。
+- [ ] **`1 / 0` の ZeroDivisionError に `Integer#/` が出ない。**
+      CRuby は `Integer#/`、koruby は呼び出し元。算術ノードの fast path が
+      ディスパッチせずに上げるため。二項演算子ノードにはリンクを焼いてあるので
+      (`4a37e940`)、deopt せずに上げる経路でもそれを使えるはず。
+- [ ] **NoMethodError のフレームが `BasicObject#method_missing`。**
+      CRuby は呼び出し元 (`block in <main>`) を出す。CRuby の method_missing は
+      backtrace に出ない規約。
