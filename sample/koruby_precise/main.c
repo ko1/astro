@@ -1543,6 +1543,7 @@ main(int argc, char *argv[])
             RESULT mr = korb_obj_new(c, toplevel_cursor, KORB_NIL);   /* klass=nil → `main` */
             if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); korb_io_flush_std(c->vm); return 1; }
             c->slots[-1] = mr.value;                  /* main self at base[-1] (bottom header) */
+            c->vm->top_self = mr.value;               /* every required file's top level runs as this same `main` */
             /* The frame's identity: it names the script and says there is
              * nothing below it (not require'd).  korb_cvar_cref and friends test
              * for the method tag, so this tag reads as "no method frame" — which

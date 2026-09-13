@@ -13670,9 +13670,16 @@ korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const
     korb_reg_srcloc(c->vm, ast, fsym, 0);
     korb_id_set(fb, korb_fid_main(fsym, true));
     fb[KORB_FLINK_OFF] = korb_flink_carry(c, req_link);   /* the require frame's link, read through */
-    RESULT mr = korb_obj_new(c, cur, KORB_NIL);        /* fresh `main` self */
-    if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
-    fb[-1] = mr.value;
+    /* CRuby has ONE top-level `main`, so a `def self.x` here lands on the object
+     * TOPLEVEL_BINDING.receiver hands back.  load(file, wrap) is the exception:
+     * its self is a throwaway main extended with the wrap module. */
+    if (c->vm->top_self != 0 && !(wrapp && KORB_CLASS_P(*wrapp))) {
+        fb[-1] = c->vm->top_self;
+    } else {
+        RESULT mr = korb_obj_new(c, cur, KORB_NIL);    /* fresh `main` self */
+        if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+        fb[-1] = mr.value;
+    }
     /* Park the wrap module in the CTX (a GC root) so nothing here holds a bare
      * VALUE across the extend / EVAL below — a moving GC would strand it. */
     const VALUE saved_definee = c->def_definee;
