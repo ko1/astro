@@ -13754,7 +13754,7 @@ korb_const_reg_loc(struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t 
 {
     /* the prelude stands in for CRuby's C code: those constants have no source
      * location (Module#const_source_location answers []) */
-    if (strcmp(korb_sym_name(vm, file_sym), "<prelude>") == 0) return;
+    if (strcmp(korb_sym_name(vm, file_sym), KORB_PRELUDE_FILE) == 0) return;
     const uint32_t oser = korb_const_owner_serial(vm, owner);
     for (uint32_t i = 0; i < vm->constloc_cnt; i++)
         if (vm->constlocs[i].name == name_sym && vm->constlocs[i].owner_serial == oser) {

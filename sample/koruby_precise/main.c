@@ -1399,7 +1399,7 @@ main(int argc, char *argv[])
     char *prelude_src = OPTION.dump_ast ? NULL : load_prelude_source(&prelude_len);
     if (prelude_src) prelude_src = koruby_prelude_append_features(prelude_src, &prelude_len);
     NODE *prelude_ast = OPTION.dump_ast ? NULL
-                      : koruby_parse_source(c, prelude_src, prelude_len, "<prelude>", true);
+                      : koruby_parse_source(c, prelude_src, prelude_len, KORB_PRELUDE_FILE, true);
     uint32_t prelude_locals = koruby_toplevel_locals_cnt;
     /* Entries synthesized at runtime (attr_reader: node_ivar_get(-1) with the
      * ivar as a hole) all share one shape; register a prototype so preload.so
@@ -1491,7 +1491,7 @@ main(int argc, char *argv[])
         RESULT pm = korb_obj_new(c, pcur, KORB_NIL);
         if (pm.state == KORB_RAISE) { korb_report_uncaught(c, pm.value); korb_io_flush_std(c->vm); return 1; }
         c->slots[-1] = pm.value;                  /* prelude self at base[-1] (bottom header) */
-        korb_id_set(c->slots, korb_fid_main(korb_intern(c->vm, "<prelude>", 9), true));
+        korb_id_set(c->slots, korb_fid_main(korb_intern(c->vm, KORB_PRELUDE_FILE, sizeof KORB_PRELUDE_FILE - 1), true));
         korb_relocate_object_methods(c, pcur);    /* before: the prelude itself asks Kernel for them */
         RESULT pr = EVAL(c, prelude_ast, pcur);
         if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); korb_io_flush_std(c->vm); return 1; }

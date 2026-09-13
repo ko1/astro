@@ -825,6 +825,10 @@ static inline void korb_flink_stage_at(CTX *c, const VALUE *const base, const ui
 
 /* A file frame's identity: the file, plus whether it was require'd (CRuby labels
  * that frame '<top (required)>'). */
+/* The prelude stands in for CRuby's core methods written in Ruby, which live in
+ * files named "<internal:...>" — specs test for that prefix. */
+#define KORB_PRELUDE_FILE "<internal:prelude>"
+
 #define KORB_FID_MAIN_REQUIRED     8u
 /* An eval frame: the symbol is the LABEL it borrows from the scope the string was
  * compiled into (CRuby names the eval iseq after it), not a file. */
