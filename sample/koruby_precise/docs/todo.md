@@ -4036,21 +4036,39 @@ caller / backtrace のレビューと rubyspec 対応を一通り終えた時点
 CRuby と食い違ったまま残っている観測が 2 つある。どちらも既存の穴で、
 今回の変更が持ち込んだものではない。
 
-**1. 返ったメソッドが持ち主のブロックは持ち主を間違える。**
-`def meth` の中で作った proc を、そのフレームが返った後に呼ぶと、
-koruby は `"block in Object#run"` (たまたま呼んでいるフレーム) と言い、
-CRuby は `"block in Object#meth"` と言う。ブロックのラベルは持ち主が
-class/module/singleton なら構文解析で決まり (`node_entry.blk_label`)、
-ファイルの top level なら深さだけ焼いて実行時に `<main>` か
-`<top (required)>` かを決める (`blk_top_level`)。メソッドが持ち主の場合だけ
-**持ち主のクラスが実行時にしか分からない**ので、どちらの手も効かない。
-今は PREV チェーンを歩いて答えているが、定義元フレームが返っていると
-そのセルは別物になっている。直すなら持ち主のクラスを焼くのではなく、
-ブロックの entry に「持ち主メソッドの mid」を焼いて、実行時に
-そのフレームの owner と突き合わせる形になる。
+**1. 返ったメソッドが持ち主のブロックは持ち主を間違える。** — **修正済み** (`6fb97dfc`)。
+持ち主がメソッドのブロックに限り、何も捕捉しない Proc にも各字句レベルの
+identity だけを持つ open env を付けた。フレームが返った後も
+`block in Object#meth` を出せる。env を open のままにしてあるので、名前による
+ローカル参照は従来どおり生フレームを読み、フレームが返れば届かなくなる
+(`t/frame_locals.rb` の「uncaptured scope is gone」が要求する振る舞い)。
+CRuby も字句ではなく def 実行時の owner を使う (`Bar.class_eval { def ce; }` は
+`Bar#ce`) ので、焼き込みでは答えられないことが計測で分かった。
+
+**1b. 残り: `define_method(:x, Foo.instance_method(:y))` のラベル。**
+CRuby は元の持ち主 `Foo#y` を出すが、koruby は定義先の持ち主を出す
+(名前 `y` は `orig_mid` で合っている)。alias と同じ `super_owner` を流用すると
+`super` の再開位置まで変わり、`language/super_spec` の「method defined
+dynamically on the singleton class」が落ちる (実測: エラー 1 → 2)。
+ラベル用の「元の持ち主」は `super` 用とは別のフィールドが要る。
+korb_method 1 件につき VALUE が 1 つ増え、GC の per-method edge 走査も 1 本
+増えるので、この稀なラベルのために払うかは要判断。
 
 **2. `require` / `require_relative` 自身のフレームが出ない。**
 require されたファイルの中で取った backtrace に、CRuby は
 `"...:in 'Kernel#require'"` の行を入れるが、koruby はファイルの top フレームを
 require の窓へ `korb_flink_carry` で直結しているので、その 1 行が落ちる。
 `tools/bt_probe/t1_req.rb` で見える。
+
+## (2026-09-13) `Kernel#tap` を Ruby に移した代償: 起動 +1.37M 命令
+
+`Kernel#tap` は CRuby でも `<internal:kernel>` の Ruby 定義で、
+`source_location` を持ち `Kernel#tap` というラベルで backtrace に出る。
+それに合わせて C 実装 (`korb_m_obj_tap`) を捨て prelude に移した。
+sp4 で空スクリプトだけを測ると 235.74M → 237.11M 命令 (**+0.58%**)。
+定常状態は不変 (マイクロ 11 本 +0.001〜+0.015%、optcarrot AOT −0.013%)。
+
+C の builtin を prelude の Ruby に移すと、この規模の固定費が乗る。
+起動を詰めるときは、prelude に積んだメソッドのうち
+**互換のために Ruby でなければならないもの**と、単に書きやすくて置いたものを
+分けて見直す。計測: `trials/2026-09-13-koruby-caller-review/README.md` の追記。
