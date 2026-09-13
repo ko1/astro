@@ -100,9 +100,11 @@
 CRuby と一致。実 mspec core は 133c2bf4 と同一条件で pass 22655 → **22658** (err 84 → 81)。
 
 **値段**: builtin send 1 回あたり数命令 (identity store + `c->cfunc_link` の退避/復元)。
-ベンチ別 (sp4、133c2bf4 比、命令数中央値): fib / method_call / block / ivar / tak / ackermann は
-+0.01%、object +0.37% / iterators +0.45% / closures +1.02% / **methodchain +3.20%** /
-**optcarrot AOT +0.15%**。
+3 段階ぜんぶ入れた最終形の sp4 回帰 (133c2bf4 比、命令数中央値) は
+**退行が methodchain +3.17% だけ**で、他は 0 か改善側 (fib −2.68% / block −1.59% /
+iterators −1.17% / sieve −2.45% / **optcarrot AOT −0.96%、fps 290.5 → 294.3**)。
+ただし ±1〜3% には実行される nop パディングが混ざるので、言えるのは
+「methodchain 以外に系統的なコストは無い」まで。
 
 **cycles と fps は別ビルド同士で比べてはいけない。** 最初 sp4 で optcarrot AOT の cycles +6.18% /
 fps −2.5% と出たが、**同一バイナリ・同一 code_store で新規マーキングだけを実行時に ON/OFF**
