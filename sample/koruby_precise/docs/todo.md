@@ -4101,6 +4101,15 @@ chilled にする。直すなら parse.c の PM_INTERPOLATED_STRING_NODE で
   生 VALUE が全部 stale になる。frame push/pop と backtrace 側の作業と
   正面衝突するので、そちらが片付いてから。
 
+  **2026-09-13 追記: この「そちらが片付いてから」の条件は外れた。** backtrace 側は
+  一通り終わり (フレーム連結・ラベル・require フレーム・巻き戻し)、
+  `korb_cframe_enter` / `c->cfunc_link` という C メソッド側の choke point も
+  既にある。ただし **TracePoint 自体は `docs/todo.md` のスコープ表で「範囲外」**
+  であり、`:line` は 2 回計測して却下済み (常時 off のチェックで optcarrot AOT
+  命令数 +3.13% / cycles +1.8%、2026-09-11 の改良案 2 つも却下)。
+  やるなら `:call` / `:return` だけを、`:line` とは切り離して判断すること。
+  rubyspec の `core/tracepoint/*` 47 例は**範囲外として数えない**。
+
 ## (2026-09-13) backtrace のラベルに残った 2 件
 
 caller / backtrace のレビューと rubyspec 対応を一通り終えた時点で、
@@ -4175,3 +4184,26 @@ CRuby との差で見ると、大きいのは**丸ごと未実装のライブラ
   CRuby も同じ長いパスなら同じだけ落ちるので、「CRuby も落ちる」は免罪符にならない。
 - `source_range` 系 131 例と `dir/scan` は `ruby_version_is "4.1"` ガード。
   koruby の `RUBY_VERSION` が 4.0.2 なので走らないだけ。
+
+
+## rubyspec: 範囲外を除いた現在地 (2026-09-13)
+
+スコープ表で「範囲外」としているもの (TracePoint / RubyVM、Fiber Scheduler、
+Ractor、Refinements、ObjectSpace 詳細、GC 内部、ruby2_keywords) と、
+`library/socket` のパス長由来の見かけ上の失敗を除くと:
+
+```
+pass=30041 / ex=30641 = 98.04%   (F=378  E=222)
+範囲外に落ちる分: pass=879 / ex=952
+```
+
+**対象内の残り 600 例の上位**:
+kernel/eval 12、language/break 8、language/def 7、language/send 6、
+kernel/binding 6、language/regexp/encoding 5、language/predefined 5、
+language/method 5、language/constants 4、module/const_source_location 4、
+marshal/load 4、kernel/trace_var 4、kernel/autoload 4、io/set_encoding 4、
+binding/eval 4。以降は 1〜3 の平らな尾。
+
+CRuby との差で大きいのは**丸ごと未実装のライブラリ**
+(openssl 173、syslog 75、yaml 61、coverage 53)。これらは個別の穴ではなく、
+実装するかどうかの判断。
