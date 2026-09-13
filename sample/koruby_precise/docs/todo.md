@@ -99,11 +99,20 @@
 結果: `Array#index` → `Integer#==` → `K#==`、`K#hash` → `Hash#[]=` → `Object#m` → `<main>` が
 CRuby と一致。実 mspec core は 133c2bf4 と同一条件で pass 22655 → **22658** (err 84 → 81)。
 
-**値段** (133c2bf4 比、ローカル・命令数中央値): fib −0.02% / method_call −0.01% / block −0.01% /
-object +0.32% / iterators +0.48% / closures +1.48% / **methodchain +3.47%**。
-builtin send 1 回あたり ~6 命令 (load + identity store + link store + 復元 2)。
-削るなら: (a) `node_shl` に手でヘッダを積んで `framed` 判定ごと消す (分岐 2 + 2 命令)、
-(b) `korb_cframe_leave` の `korb_id_set(base, 0)` を省く (セルは次の呼び出しで必ず上書きされる)。
+**値段**: builtin send 1 回あたり数命令 (identity store + `c->cfunc_link` の退避/復元)。
+ベンチ別 (sp4、133c2bf4 比、命令数中央値): fib / method_call / block / ivar / tak / ackermann は
++0.01%、object +0.37% / iterators +0.45% / closures +1.02% / **methodchain +3.20%** /
+**optcarrot AOT +0.15%**。
+
+**cycles と fps は別ビルド同士で比べてはいけない。** 最初 sp4 で optcarrot AOT の cycles +6.18% /
+fps −2.5% と出たが、**同一バイナリ・同一 code_store で新規マーキングだけを実行時に ON/OFF**
+する対照 (`KORUBY_CFRAME` の一時スイッチ) を取ると **命令 +0.12% / fps +0.81% (劣化なし)**。
+差は**コード配置**だった (同日の `korb_block_yield` アライメントと同じ現象)。
+`~/ruby/src/trials/2026-09-13-koruby-caller-review/` §同一バイナリ対照。
+
+削る余地 (未実施): `node_shl` に手でヘッダを積めば `framed` 判定ごと消せる。
+`korb_cframe_leave` の identity クリアは既に省いてある (セルは次の呼び出しで必ず上書きされる)。
+退避先を frame の未使用 EP セルにする案は methodchain +4.01% で**悪化**したので不採用。
 
 ### 残り (設計上の既知・別件)
 - **二項演算子ノード** (`node_plus` / `node_lt` / `node_eq` …、`alloc_binop` 経由の 16 種) は
