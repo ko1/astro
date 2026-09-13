@@ -886,15 +886,14 @@ struct korb_method {
     korb_method_blk_fn rbfn;
     /* Backtrace memos, both on the unwind path (a raise-heavy program walks the
      * same frames over and over).  bt_file: the def's source file — resolving it
-     * scans the srcloc table, and a def site never moves.  bt_label: the interned
-     * "Owner#name", rebuilt when an alias or a constant assignment may have
-     * (re)named the owner. */
+     * scans the srcloc table.  bt_label: the interned "Owner#name", rebuilt when
+     * an alias or a constant assignment may have (re)named the owner. */
     const char *bt_file;
+    const struct Node *bt_file_node;   /* the body bt_file was resolved from: a redefinition reuses this entry with a new body */
     const char *bt_label;
     uint32_t    bt_label_mid;
     VALUE       bt_label_owner;   /* compared only, never dereferenced (a copy re-owned by alias / module_function must not keep the memo) */
     uint64_t    bt_label_serial;
-    uint8_t     bt_file_done;
 };
 
 struct korb_bt_entry {       /* one unwind frame for the uncaught-exception report */

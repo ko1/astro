@@ -23,10 +23,20 @@ CRuby と diff する。 CRuby は required 側の `<top (required)>` と requir
       入れ子 require の `Kernel#require_relative` が 1 つ外の file で出ていた)。
       回帰は `tools/bt_probe/t2_unwind.rb` (+ `t2_unwind_{raise,mid,top}.rb`) — CRuby と byte 一致。
       hot path は触っていない: `korb_send_cached` は変更前後で命令列一致 (1202 命令)。
-- [ ] **2 つ目のファイルで再定義したメソッドの backtrace の file が最初の定義のまま。**
+- [x] **2 つ目のファイルで再定義したメソッドの backtrace の file が最初の定義のまま。** (2026-09-13 修正)
       `load a.rb; m; load b.rb; m` で `caller_locations(0)[0].path` が CRuby は `b.rb`、
-      koruby は `a.rb`。 `Method#source_location` は正しいので、ずれているのは
-      `korb_bt_method_file` 側だけ。
+      koruby は `a.rb`。 真因は `korb_bt_method_file` のメモ (`bt_file` / `bt_file_done`):
+      `korb_class_method_slot` / `korb_method_slot` は **再定義でエントリを使い回す**ので
+      `m->body` だけ差し替わり、最初の backtrace が焼いた `bt_file` がそのまま残っていた。
+      観測で確定した: 2 つの load の**間で backtrace を取らない**と正しく `b.rb` が出る
+      (メモが埋まらないから) — `tools/bt_probe/redef.rb` の `load2/call` と `load2/nocall`。
+      メモのキーを「解決に使った body NODE」に変えた (`bt_file_node`)。 AST ノードは
+      immortal (`node.c`: never freed) なのでアドレスの使い回しは起きず、キーとして健全。
+      `body == NULL` (builtin / attr) は srcloc を引く必要がないのでメモ自体をやめた。
+      hot path のコストはゼロ (`korb_send_cached` は変更前後で機械語バイト一致)。
+      回帰は `tools/bt_probe/redef.rb` を CRuby と diff (load / require / require_relative /
+      class body / eval / class_eval を網羅)。
+
 - [ ] **巻き戻し経路にブロックのフレームが積まれない。** 生きた鎖 (`korb_frames_snapshot_at`) は
       ブロックフレームを歩くが、`vm->bt` には積まれない。 観測:
       `def show; yield; rescue => e; e.backtrace; end` / `def deep; raise; end` / `show { deep }` で
@@ -41,6 +51,16 @@ CRuby と diff する。 CRuby は required 側の `<top (required)>` と requir
       原則どおり「1 つ下のフレームの file を借りる」形に直そうとすると、上のブロックフレーム欠落の
       せいで**逆に悪化する** (下が mspec 側の lib フレームになり、`block in ...` を飛び越える)。
       実測で確認済み: 先にブロックフレームを積む方を直すこと。
+- [ ] **`define_method` がトップレベル `def` を上書きできない (backtrace ではなく dispatch のバグ)。**
+      上の修正中に発見。 `def m2; end; Object.send(:define_method, :m2) { ... }; m2` で
+      **古い `def` の body が走る**。 `send(:m2)` 経由や、クラス内 (`K.send(:define_method, :x)`)
+      は正しく上書きされる。 `Method#source_location` / `method(:m2).owner` も新しい方を指す。
+      機構: トップレベル `def` は `korb_method_slot` (`vm->methods`、グローバル関数表) に
+      **Object のメソッド表とは別のエントリ**を作る。 `Module#define_method` は
+      `korb_class_method_slot` で Object 側だけを更新するので、裸の名前呼び出しが通る
+      `korb_method_lookup(vm->methods)` は古い ISEQ を返し続ける。
+      再現: `tools/bt_probe/redef.rb` の `postdm` 行 (CRuby `redef.rb:64` / koruby `d2.rb:4` —
+      d2.rb の body が実際に走っているので backtrace の方は正しい)。
 
 ## caller/backtrace レビュー (2026-09-13) — 指摘は同日に全部修正
 

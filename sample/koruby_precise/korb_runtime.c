@@ -7675,17 +7675,20 @@ korb_bt_node_file(CTX *c, const struct Node *node)
 
 /* Source file the method's body was written in, or NULL when there is none (a
  * C-defined builtin, attr_accessor, ...).  The srcloc lookup is a linear scan,
- * so the answer is memoized on the (immortal) entry. */
+ * so the answer is memoized on the (immortal) entry — keyed on the body node it
+ * came from, because a redefinition reuses the entry with a new body (AST nodes
+ * are immortal, so an address never comes back as a different body). */
 static const char *
 korb_bt_method_file(CTX *c, const struct korb_method *m)
 {
     if (m == NULL) return NULL;
-    if (!m->bt_file_done) {
+    const struct Node *body = m->body;
+    if (m->kind == KORB_METHOD_DM && KORB_PROC_P(m->dm_proc)) body = VAL2PROC(m->dm_proc)->iseq;
+    if (body == NULL) return NULL;                     /* builtin / attr: no scan, nothing to memoize */
+    if (m->bt_file_node != body) {
         struct korb_method *const mm = (struct korb_method *)(uintptr_t)m;   /* memo only; the entry is immortal libc */
-        const struct Node *body = m->body;
-        if (m->kind == KORB_METHOD_DM && KORB_PROC_P(m->dm_proc)) body = VAL2PROC(m->dm_proc)->iseq;
         mm->bt_file = korb_bt_node_file(c, body);
-        mm->bt_file_done = 1;
+        mm->bt_file_node = body;
     }
     return m->bt_file;
 }
