@@ -455,6 +455,9 @@ typedef struct KorbFiberRep {
     VALUE *vslots_hw;                /* saved high-water while suspended */
     VALUE vcfunc_link;               /* saved c->cfunc_link — it names a frame INSIDE this fiber's own
                                       * slot stack, so it must travel with it */
+    const VALUE *vcarry_base;        /* saved c->carry_base — same reason (a staged link into this
+                                      * fiber's stack); the line bits travel with it */
+    uint32_t vcarry_line_bits;
     VALUE *def_env;                  /* block's def_env (creator stack, non-moving) */
     struct Node *body;               /* block entry (node_entry, immortal) */
     void  *uctx;                     /* ucontext_t * (fiber's saved context) */
@@ -509,6 +512,9 @@ struct korb_thread {
     VALUE saved_cfunc_link;          /* c->cfunc_link while suspended: it names a frame in THIS thread's
                                       * slot stack, so leaving it loaded across a switch would let a
                                       * backtrace walk into another thread's frames */
+    const VALUE *saved_carry_base;   /* c->carry_base while suspended — same reason: a staged link names
+                                      * a frame in THIS thread's stack */
+    uint32_t saved_carry_line_bits;
     void  *uctx;                     /* ucontext_t* */
     void  *cstack;                   /* malloc native stack (NULL = main/process stack) */
     /* scheduling */

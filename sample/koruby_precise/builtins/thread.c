@@ -349,6 +349,8 @@ korb_thread_ctx_load(CTX *c, struct korb_thread *t)
     vm->root_fiber = t->root_fiber;           /* Fiber.current / storage は thread 毎 */
     /* backtrace: この thread の stack を指すので一緒に載せ替える (未開始なら空) */
     c->cfunc_link = t->started ? t->saved_cfunc_link : 0;
+    c->carry_base = t->started ? t->saved_carry_base : NULL;
+    c->carry_line_bits = t->started ? t->saved_carry_line_bits : 0;
     c->errinfo_n = t->saved_errinfo_n;        /* $! is per thread (CRuby); entries below stay owned by their thread */
     if (c->errinfo_n > c->errinfo_live) c->errinfo_live = c->errinfo_n;
 }
@@ -376,6 +378,8 @@ korb_thread_ctx_save(CTX *c, struct korb_thread *cur, VALUE *slots)
     }
     cur->saved_errinfo_n = c->errinfo_n;
     cur->saved_cfunc_link = c->cfunc_link;
+    cur->saved_carry_base = c->carry_base;
+    cur->saved_carry_line_bits = c->carry_line_bits;
 }
 
 static void

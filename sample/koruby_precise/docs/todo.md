@@ -142,6 +142,18 @@ rational など**ディスパッチせずに返る経路を多数持つ**ので�
 (こちらは `+` がノードでメソッド呼び出しではないため、そのフレームが存在しない)。
 実 mspec core は 133c2bf4 と同一条件で pass 22655 → 22658 / err 84 → 81 (C 窓版と同一)。
 
+### staged link はスレッド/ファイバと一緒に載せ替える (2026-09-13)
+
+`c->cfunc_link` は切替で退避されていたが **`c->carry_base` / `carry_line_bits` は退避されていなかった**。
+stage と消費の間で切替が起きると、別スレッドが他人の carry を食い得る。
+
+影響は限定的だった (消費側の範囲チェック `fbase >= c->slots && fbase < dst` が効き、別スレッドの
+スタックは別 mmap 領域なので弾かれる → 鎖が切れるだけで壊れない) が、`cfunc_link` と非対称なのは
+危険なので揃えた。`korb_thread` / `KorbFiberRep` に退避先を足し、
+`korb_thread_ctx_save/load` と `korb_fiber_switch_in` / `Fiber.yield` で保存・復元する。
+回帰テスト: `tools/bt_probe/thread_carry.rb` (4 スレッド + ファイバで caller / hash / ユーザ `+` を
+撃ち続け、他スレッドのフレームが混ざったら raise)。STRESS+PURGE 込みで通る。
+
 ### 残り (設計上の既知・別件)
 - CRuby が**自分の C フレームを省く**ケースでこちらが多く出す: `Hash#[]=`/`Hash#[]` (CRuby は
   opt_aset/opt_aref 命令でフレームを積まない)、`Array#include?` (CRuby は `array.rb` の

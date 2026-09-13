@@ -117,6 +117,8 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     VALUE *const s_limit = c->slots_limit; VALUE *const s_hw = c->slots_high_water;
     const char *const s_cstack = c->cstack_limit;
     const VALUE s_cfunc_link = c->cfunc_link;          /* names a frame in the resumer's stack */
+    const VALUE *const s_carry_base = c->carry_base;   /* same, for a staged (not yet consumed) link */
+    const uint32_t s_carry_line = c->carry_line_bits;
     /* While this resumer is suspended, the GC scans its stack up to the recorded
      * top.  Use `slots` (the resume frame's true cursor), not the possibly-lagging
      * c->slots_top (== s_top) — same fix as Fiber.yield.  s_top is still used to
@@ -140,6 +142,7 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     c->slots_limit = rep->vslots_limit; c->slots_high_water = rep->vslots_hw;
     c->cstack_limit = (const char *)rep->cstack + KORB_FIBER_CSTACK_MARGIN;
     c->cfunc_link = rep->vcfunc_link;                  /* 0 on the first resume: no frames yet */
+    c->carry_base = rep->vcarry_base; c->carry_line_bits = rep->vcarry_line_bits;
     korb_re_sync_floor(c);   /* astrogre \g<> guard must use the fiber's stack */
     c->vm->running_fiber = rep;
     /* `$!` is fiber-local: the fiber starts from ITS own errinfo depth, and the
@@ -157,6 +160,7 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     c->slots = s_slots; c->slots_top = s_top; c->slots_limit = s_limit;
     c->slots_high_water = s_hw; c->cstack_limit = s_cstack;
     c->cfunc_link = s_cfunc_link;
+    c->carry_base = s_carry_base; c->carry_line_bits = s_carry_line;
     korb_re_sync_floor(c);   /* restore the outer stack's floor */
     if (prev == NULL) c->vm->main_slots = NULL;
 
@@ -492,6 +496,7 @@ korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
      * stack at a korb_alloc-triggered GC. */
     rep->vslots_top = slots; rep->vslots_hw = c->slots_high_water;
     rep->vcfunc_link = c->cfunc_link;                  /* travels with this fiber's stack */
+    rep->vcarry_base = c->carry_base; rep->vcarry_line_bits = c->carry_line_bits;
     swapcontext((ucontext_t *)rep->uctx, (ucontext_t *)rep->resume_uctx);  /* === out === */
     /* === resumed: resume() restored c->slots to ours === */
     rep->fstate = 1;
