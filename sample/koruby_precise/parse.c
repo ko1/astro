@@ -3197,7 +3197,7 @@ emit_super_fwd(struct kp_ctx *tc, uint32_t m_mid, uint32_t line, NODE *arr)
     int32_t bo = -3 - tc->chain - 1, deo = -2 - tc->chain - 1, cso = -1 - tc->chain - 1;
     NODE *_s = ALLOC_node_super_fwd(m_mid, line, soff, dco, bo, deo, cso, arr);
     bake_add(tc, &_s->u.node_super_fwd.self_off);
-    bake_add(tc, &_s->u.node_super_fwd.dc_off);   /* the method entry is base[-2] */
+    bake_add(tc, &_s->u.node_super_fwd.dc_off);   /* the method entry is base[-4] */
     return _s;
 }
 
@@ -5253,7 +5253,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *body = transduce(tc, rm->expression);
         NODE *cls = ALLOC_node_const(korb_intern(tc->c->vm, "StandardError", 13), 0, INT32_MIN, INT32_MIN);
         NODE *resc = transduce(tc, rm->rescue_expression);
-        NODE *rescues = ALLOC_node_rescue(cls, resc, ALLOC_node_reraise(), 0, 0u, -1 - tc->chain);  /* catch StandardError */
+        NODE *rescues = ALLOC_node_rescue(cls, resc, ALLOC_node_reraise(), 0, 0u, -tc->chain);  /* catch StandardError */
+        bake_add(tc, &rescues->u.node_rescue.base_off);   /* base_off: this frame's own base (backtrace), as build_rescue_chain */
         return ALLOC_node_begin(body, rescues, lit_nil(), lit_nil(), 1u);
       }
 

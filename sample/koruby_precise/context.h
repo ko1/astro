@@ -884,6 +884,7 @@ struct korb_method {
     const char *bt_file;
     const char *bt_label;
     uint32_t    bt_label_mid;
+    VALUE       bt_label_owner;   /* compared only, never dereferenced (a copy re-owned by alias / module_function must not keep the memo) */
     uint64_t    bt_label_serial;
     uint8_t     bt_file_done;
 };

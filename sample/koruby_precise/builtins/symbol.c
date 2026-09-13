@@ -1004,22 +1004,31 @@ static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     const VALUE owner = slots[0];                          /* the resolved defining class */
     if (owner != KORB_NIL && KORB_CLASS_P(owner)) {        /* invoke the FIXED method from its owner */
         struct korb_method *const entry = korb_class_find_method(owner, mid, NULL);
+        /* the callee window is built here, so its header (identity / link / EP)
+         * is staged here too, as Method#call does: korb_invoke_method fills the
+         * identity and relies on a zeroed EP */
         if (LIKELY(entry != NULL && entry->kind == KORB_METHOD_ISEQ)) {
-            slots[0] = VALUE_SLICE_GET(a, 0);             /* self (the bind target) */
-            slots[1] = owner;
-            for (uint32_t i = 0; i < argc; i++) slots[2 + i] = VALUE_SLICE_GET(a, 1 + i);
-            return korb_invoke_method(c, slots + 2 + argc, entry, argc, 0, mid, slots[0], slots[1], NULL, NULL, KORB_NIL);
+            slots[0] = 0;                                 /* base[-4] (identity) */
+            slots[1] = korb_flink_cur_cframe(c, slots);   /* base[-3] (frame link) */
+            slots[2] = 0;                                 /* base[-2] (EP) */
+            slots[3] = VALUE_SLICE_GET(a, 0);             /* base[-1] self (the bind target) */
+            for (uint32_t i = 0; i < argc; i++) slots[4 + i] = VALUE_SLICE_GET(a, 1 + i);
+            return korb_invoke_method(c, slots + 4 + argc, entry, argc, 0, mid, slots[3], owner, NULL, NULL, KORB_NIL);
         }
         if (entry != NULL) {                              /* builtin (cfunc/attr): still the CAPTURED entry, not a
                                                            * re-dispatch — a singleton override of the same name on
                                                            * the target must not win (Module#name is the classic). */
-            slots[0] = VALUE_SLICE_GET(a, 0);             /* recv, in the slot below the args */
-            for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, 1 + i);
-            return korb_dispatch_method(c, slots + 1 + argc, entry, mid, 0, argc, owner, NULL, NULL, NULL);
+            slots[0] = 0;                                 /* header, as above: a block-taking builtin marks base[-4] */
+            slots[1] = korb_flink_cur_cframe(c, slots);
+            slots[2] = 0;
+            slots[3] = VALUE_SLICE_GET(a, 0);             /* recv, in the slot below the args */
+            for (uint32_t i = 0; i < argc; i++) slots[4 + i] = VALUE_SLICE_GET(a, 1 + i);
+            return korb_dispatch_method(c, slots + 4 + argc, entry, mid, 0, argc, owner, NULL, NULL, NULL);
         }
     }
     slots[0] = VALUE_SLICE_GET(a, 0);                                /* recv */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, 1 + i);
+    korb_flink_hand_on_cframe(c, slots);
     return korb_send(c, slots + 1 + argc, mid, 0, argc);
 }
 

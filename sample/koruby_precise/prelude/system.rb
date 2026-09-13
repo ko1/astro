@@ -47,12 +47,16 @@ class Thread
   # the caller's, labelled with the method.  Below it is Kernel#caller's list.
   # __caller_strings(1) drops both this frame and the #backtrace frame.
   private def __bt_current(label, args)
+    raise ArgumentError, "wrong number of arguments (given #{args.length}, expected 0..2)" if args.length > 2
     list = __caller_strings(1)
     return nil unless list
     list.unshift(list[0].sub(/:in '.*'\z/, ":in '" + label + "'")) unless list.empty?
     return list if args.empty?
     a = args[0]
-    return list[a] if a.is_a?(Range)
+    if a.is_a?(Range)
+      raise ArgumentError, "wrong number of arguments (given #{args.length}, expected 0..2)" if args.length > 1
+      return list[a]
+    end
     start = a.to_int
     raise ArgumentError, "negative level (#{start})" if start < 0
     return nil if start > list.length

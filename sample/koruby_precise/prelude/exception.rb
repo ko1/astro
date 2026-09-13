@@ -121,7 +121,7 @@ class Thread
           @label = nil
         end
         j = head.rindex(':')
-        if j && head[(j + 1)..-1] =~ /\A\d+\z/
+        if j && head[(j + 1)..-1] =~ /\A-?\d+\z/   # eval(str, file, -100) reports negative lines
           @path = head[0, j]
           @lineno = head[(j + 1)..-1].to_i
         else

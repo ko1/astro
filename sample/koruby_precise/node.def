@@ -2281,7 +2281,7 @@ node_send_splat_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t fl
     slots[0] = rv;
     for (uint32_t i = 0; i < N; i++) slots[1 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
     return korb_send_blk(c, slots + N + 1, mid, line, N, block,
-                         (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off]);
+                         (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off], 0);
 }
 
 // `recv.m(*arr, &proc)` — receiver call with splat AND a forwarded runtime Proc.
@@ -2293,10 +2293,10 @@ NODE_DEF @noinline
 node_send_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t flink, int32_t proc_off, VALUE_REF recv@child, VALUE_REF args@child)
 {
     const uint32_t line = korb_flink_line(flink);
-    korb_flink_stage(c, flink, slots);   /* no header cells here: hand the link to the dispatch */
     (void)n; (void)recv; (void)args;
     RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc */
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+    korb_flink_stage(c, flink, slots);   /* no header cells here: hand the link to the dispatch (after #to_proc, which is Ruby) */
     const VALUE pv = slots[proc_off];
     const VALUE rv = slots[-2];
     const VALUE arr = slots[-1];
@@ -2306,7 +2306,7 @@ node_send_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_
     if (pv == KORB_NIL) return korb_send(c, slots + N + 1, mid, line, N);   /* &nil → no block */
     NODE *iseq = VAL2PROC(pv)->iseq;
     if (iseq == NULL) iseq = KORB_BLK_CPROC;             /* Symbol/Method#to_proc: forward as a C-proc block */
-    return korb_send_blk(c, slots + N + 1, mid, line, N, iseq, KORB_BLK_FWD, &slots[proc_off]);
+    return korb_send_blk(c, slots + N + 1, mid, line, N, iseq, KORB_BLK_FWD, &slots[proc_off], 0);   /* link staged above */
 }
 
 // `recv[idx]` — type-fast-path for Array + fixnum index (the hot case); any
@@ -2728,7 +2728,7 @@ node_send_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t flink, i
     const uint32_t line = korb_flink_line(flink);   /* cold paths only: the hot path never needs it */
     (void)n; (void)block_dispatcher;
     return korb_send_blk(c, slots, mid, line, argv_cnt - 1, block,
-                         (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off]);
+                         (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off], flink);
 }
 
 // `recv.mid(args, &proc)` — forward a runtime Proc as the block.  `proc_off` is a
@@ -2746,7 +2746,7 @@ node_send_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t flin
     if (pv == KORB_NIL) return korb_send(c, slots, mid, line, argv_cnt - 1);   /* &nil → no block */
     NODE *iseq = VAL2PROC(pv)->iseq;
     if (iseq == NULL) iseq = KORB_BLK_CPROC;             /* Symbol/Method#to_proc: forward as a C-proc block */
-    return korb_send_blk(c, slots, mid, line, argv_cnt - 1, iseq, KORB_BLK_FWD, &slots[proc_off]);
+    return korb_send_blk(c, slots, mid, line, argv_cnt - 1, iseq, KORB_BLK_FWD, &slots[proc_off], flink);
 }
 
 // yield to the current method's block.  `biseq_off` / `def_env_off` /
@@ -2806,6 +2806,7 @@ NODE_DEF
 node_yield_outer0(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base)
 {
     (void)n;
+    korb_flink_stage_at(c, &slots[prev_off - KORB_EP_OFF], line);   /* the block frame links to THIS (block) frame */
     return korb_yield_outer(c, slots, 0, line, &slots[prev_off], depth, trio_base);
 }
 
@@ -2813,6 +2814,7 @@ NODE_DEF
 node_yield_outer1(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base, VALUE_REF a0@child)
 {
     (void)n; (void)a0;
+    korb_flink_stage_at(c, &slots[prev_off - KORB_EP_OFF], line);   /* the block frame links to THIS (block) frame */
     return korb_yield_outer(c, slots, 1, line, &slots[prev_off], depth, trio_base);
 }
 
@@ -2821,6 +2823,7 @@ NODE_DEF
 node_yield_outer_n(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base, NODE **argv@children)
 {
     (void)n;
+    korb_flink_stage_at(c, &slots[prev_off - KORB_EP_OFF], line);   /* the block frame links to THIS (block) frame */
     return korb_yield_outer(c, slots, argv_cnt, line, &slots[prev_off], depth, trio_base);
 }
 
@@ -2834,6 +2837,7 @@ node_yield_outer_splat(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t pre
     const VALUE *const ep = &slots[prev_off];
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    korb_flink_stage_at(c, &slots[prev_off - KORB_EP_OFF], line);   /* the block frame links to THIS (block) frame */
     return korb_yield_outer(c, slots + N, N, line, ep, depth, trio_base);
 }
 

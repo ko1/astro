@@ -2103,7 +2103,7 @@ korb_ivar_remove(CTX *c, VALUE self, VALUE name_sym, bool *found)
     return old;
 }
 
-static VALUE korb_flink_from_base(CTX *c, const VALUE *fbase, uint32_t line_bits, const VALUE *dst);   /* fwd (backtrace section) */
+static inline VALUE korb_flink_from_base(const CTX *c, const VALUE *fbase, uint32_t line_bits, const VALUE *dst);   /* fwd (backtrace section) */
 
 /* korb_bt_unwind / korb_close_ret are declared in node.h (de-static'd so the
  * inlined korb_invoke_simple in the SDs can reach them on cold paths). */
@@ -7658,6 +7658,7 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static VALUE
 korb_bt_owner(CTX *c, const struct korb_method *m)
 {
+    if (KORB_CLASS_P(m->super_owner)) return m->super_owner;   /* an alias: CRuby names the ORIGINAL definer */
     if (KORB_CLASS_P(m->owner)) return m->owner;
     if (m->kind == KORB_METHOD_BUILTIN) return korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
     return korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
@@ -7671,7 +7672,7 @@ static const char *
 korb_bt_label_slow(CTX *c, uint32_t mid, const struct korb_method *m)
 {
     struct korb_vm *const vm = c->vm;
-    const char *const nm = korb_sym_name(vm, mid);
+    const char *const nm = korb_sym_name(vm, m->orig_mid ? m->orig_mid : mid);   /* an alias frame shows the original name (CRuby 3.4) */
     VALUE owner = korb_bt_owner(c, m);
     if (!KORB_CLASS_P(owner)) return nm;
     char sep = '#';
@@ -7706,18 +7707,20 @@ static const char *
 korb_bt_label(CTX *c, uint32_t mid, const struct korb_method *m)
 {
     if (m == NULL) return korb_sym_name(c->vm, mid);
-    if (m->bt_label != NULL && m->bt_label_mid == mid && m->bt_label_serial == c->vm->const_serial)
+    if (m->bt_label != NULL && m->bt_label_mid == mid && m->bt_label_owner == m->owner &&
+        m->bt_label_serial == c->vm->const_serial)
         return m->bt_label;
     struct korb_method *const mm = (struct korb_method *)(uintptr_t)m;   /* memo only; the entry is immortal libc */
     mm->bt_label = korb_bt_label_slow(c, mid, m);
     mm->bt_label_mid = mid;
+    mm->bt_label_owner = m->owner;   /* an entry copy (alias, module_function) carries the memo but not the owner */
     mm->bt_label_serial = c->vm->const_serial;
     return mm->bt_label;
 }
 
 /* "block in Foo#bar" / "block (2 levels) in Foo#bar".  The owner is lexical, so
  * it comes from the frame the block was WRITTEN in, which the PREV link in the
- * block's EP names: its identity is that frame's base[-2] while it is live, and
+ * block's EP names: its identity is that frame's base[-4] while it is live, and
  * the copy KorbEnv kept once it returned. */
 static const char *
 korb_bt_block_label(CTX *c, const struct Node *e, const VALUE *base)
@@ -7835,6 +7838,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *fbase, uint32_t line0, const VALUE 
     struct korb_vm *const vm = c->vm;
     const VALUE *const lo = c->slots, *const hi = c->slots_limit;
     uint32_t n = 0;
+    int fwd_hops = 0;                            /* FORWARD hops since the last frame: a cycle must not spin */
     while (n < KORB_FSTACK_MAX) {
         uint32_t line = line0;
         if (fbase == NULL) {                     /* resolve the next frame from the link one level in */
@@ -7844,7 +7848,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *fbase, uint32_t line0, const VALUE 
             if (link & 2u) {                     /* a pointer form (bit 2 is part of dist, so bit 1 alone tags) */
                 const VALUE *const ptr = korb_flink_ptr(link);
                 if ((link & 4u) == 0) {          /* FORWARD: a dispatch rebuilt the window; the link is over there */
-                    if (ptr < lo || ptr >= hi || ptr == link_cell) break;
+                    if (ptr < lo || ptr >= hi || ptr == link_cell || ++fwd_hops > 8) break;
                     link_cell = ptr;
                     continue;
                 }
@@ -7866,6 +7870,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *fbase, uint32_t line0, const VALUE 
         r->file = NULL;
         r->label = "<main>";
         link_cell = fbase + KORB_FLINK_OFF;      /* every frame's next link, whatever kind it is */
+        fwd_hops = 0;
         if ((r->kind == KORB_FID_METHOD || r->kind == KORB_FID_CFUNC) && korb_bt_known_ptr(vm, ptr)) {
             const struct korb_method *const m = (const struct korb_method *)ptr;
             /* Neither Proc#call nor a define_method'd method is a frame of its
@@ -7886,6 +7891,12 @@ korb_frames_snapshot_at(CTX *c, const VALUE *fbase, uint32_t line0, const VALUE 
             const struct Node *const e = (const struct Node *)ptr;
             if (e->head.kind != &kind_node_entry) break;
             if (fbase + e->u.node_entry.locals_cnt > hi) break;
+            /* a Symbol#to_proc body (kp_symbol_block: no defining frame, no
+             * label) is not a frame CRuby shows */
+            if (e->u.node_entry.def_top_off != KORB_ID_OFF && e->u.node_entry.body_label == 0) {
+                fbase = NULL; line0 = 0;
+                continue;
+            }
             r->file = korb_bt_node_file(c, e);
             /* a class/module/singleton body, and a block lexically owned by one,
              * know their label at parse time (node.def) — the PREV chain cannot
@@ -8087,24 +8098,19 @@ korb_link_base(const CTX *c, const VALUE *cell)
     return NULL;
 }
 
-/* Build a link from an already-resolved (frame base, line) pair, checking that
- * the base still holds an identity we recognize — a scratch cell that happens to
- * look like one must not aim the chain somewhere wrong.  Used where a dispatch
- * rebuilt the callee window and so has to re-derive the link it was handed. */
-static VALUE
-korb_flink_from_base(CTX *c, const VALUE *fbase, uint32_t line_bits, const VALUE *dst)
+/* Build a link from an already-resolved (frame base, line) pair.  Used where a
+ * dispatch rebuilt the callee window and so has to re-derive the link it was
+ * handed.  Every carry comes from a real base (a baked distance, a header cell,
+ * a C method's window) and a raise between staging and here drops it
+ * (korb_raise), so only the range is checked — this runs once per block-taking
+ * send. */
+static inline VALUE
+korb_flink_from_base(const CTX *c, const VALUE *fbase, uint32_t line_bits, const VALUE *dst)
 {
     if (fbase == NULL || fbase < c->slots || fbase >= dst) return 0;
-    const VALUE id = korb_id_get(fbase);
-    const uintptr_t p = (uintptr_t)(id & ~(VALUE)7u);
-    switch (id & 7u) {
-      case KORB_FID_METHOD: case KORB_FID_BLOCK: case KORB_FID_CFUNC:
-        if (!korb_bt_known_ptr(c->vm, p)) return 0;
-        break;
-      case KORB_FID_MAIN: break;
-      default: return 0;
-    }
-    return korb_flink_make_wide_bits(line_bits, (uint64_t)(dst - fbase));
+    const uint64_t d = (uint64_t)(dst - fbase);
+    return LIKELY(d < KORB_FLINK_DIST_MAX) ? (((VALUE)line_bits << 14) | ((VALUE)d << 2) | 1u)
+                                           : korb_flink_make_wide_bits(line_bits, d);
 }
 
 /* The C method frame we are running in, as a link for a callee window this C
@@ -8154,6 +8160,15 @@ korb_flink_hand_on(CTX *c, const VALUE *src)
         c->carry_line_bits = korb_flink_line_bits_of(v);
         return;
     }
+}
+
+/* The link a node_send-family site stored in its header cell, as a FORWARD to
+ * that cell — or 0 when the site baked no link (a distance past the field, or a
+ * node that reserves no header: node_shl's String fast path). */
+static inline VALUE
+korb_flink_site_link(const VALUE flink, const VALUE *const cell)
+{
+    return korb_flink_dist(flink) ? korb_flink_fwd(cell) : 0;
 }
 
 static VALUE
@@ -8236,6 +8251,10 @@ korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+    /* A staged frame link (node.h: c->carry_base) is armed only between a call
+     * site and the dispatch that consumes it; a raise in that window means the
+     * consumer never runs, so drop it here rather than at every early exit. */
+    c->carry_base = NULL;
 
     /* A `case/in` whose last clause failed only on an absent hash key raises
      * NoMatchingPatternKeyError (a NoMatchingPatternError subclass). */
@@ -8838,6 +8857,7 @@ korb_call_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     }
     for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(korb_sword_t)argc + j];
     slots[0] = self;                            /* recv below the args */
+    korb_flink_hand_on(c, slots - (korb_sword_t)argc - 3);   /* the call site's frame, past the restage */
     return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
 }
 
@@ -9091,11 +9111,10 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink,
                  struct korb_callcache *cc, struct korb_inlcache *ic,
                  uint32_t argc, VALUE self, const NODE *site)
 {
-    const uint32_t line = korb_flink_line(flink);   /* decoded once here, not at every call site */
     struct korb_vm *const vm = c->vm;
     if (UNLIKELY(vm->refinements_active)) {          /* refined implicit-self call */
         RESULT rr;
-        if (korb_refined_call(c, slots, mid, line, argc, self, &rr)) return rr;
+        if (korb_refined_call(c, slots, mid, korb_flink_line(flink), argc, self, &rr)) return rr;
     }
     if (LIKELY(KORB_OBJECT_P(self))) {
         /* A receiverless call still dispatches through the object's SINGLETON
@@ -9112,16 +9131,16 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink,
             } else {
                 def_class = KORB_NIL;
                 m = korb_mcache_find(vm, klass, mid, &def_class);
-                if (UNLIKELY(m == NULL)) return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL, site);
+                if (UNLIKELY(m == NULL)) return korb_call_impl(c, slots, mid, korb_flink_line(flink), cc, argc, self, NULL, NULL, NULL, site);
                 korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE, argc);
             }
             if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple)) {  /* hot path: inlines */
                 if (LIKELY(!vm->refinements_active))
-                    return korb_invoke_simple(c, slots, m, argc, line, mid, self, def_class);
+                    return korb_invoke_simple(c, slots, m, argc, korb_flink_line(flink), mid, self, def_class);
                 m->is_simple = 0; m->simple_entry = NULL;                     /* see korb_dispatch_method */
             }
             RESULT r;
-            if (korb_invoke_self(c, slots, m, argc, line, mid, self, def_class, &r))
+            if (korb_invoke_self(c, slots, m, argc, korb_flink_line(flink), mid, self, def_class, &r))
                 return r;   /* ATTR / non-simple ISEQ */
             /* CFUNC → fall through to korb_call_impl */
         } else if (LIKELY(cc->serial == vm->method_serial && cc->dispatch)) {
@@ -9133,7 +9152,7 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink,
             return korb_invoke_entry_cc(c, slots, cc, argc, mid);
         }
     }
-    return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL, site);
+    return korb_call_impl(c, slots, mid, korb_flink_line(flink), cc, argc, self, NULL, NULL, NULL, site);
 }
 
 /* Implicit-self keyword call `f(pos..., k: v...)`.  Positionals at
@@ -9239,8 +9258,10 @@ static RESULT korb_cproc_yield(CTX *c, VALUE *restrict slots, VALUE procv,
         slots[0] = recv;
         return korb_send_impl(c, slots + 1 + argc, mid, 0, argc, NULL, NULL, NULL);
     }
-    if (UNLIKELY(argc < 1))                              /* Symbol#to_proc: args[0].mid(args[1..]) */
+    if (UNLIKELY(argc < 1)) {                            /* Symbol#to_proc: args[0].mid(args[1..]) */
+        c->carry_base = NULL;                            /* the yield's link dies with it */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no receiver is available");
+    }
     for (int32_t i = (int32_t)argc - 1; i >= 0; i--) slots[i] = argv[i];
     return korb_send_impl(c, slots + argc, mid, 0, argc - 1, NULL, NULL, NULL);
 }
@@ -9376,14 +9397,14 @@ korb_block_flink_defframe(CTX *c, const NODE *block, VALUE prev, const VALUE *ds
     return 0;
 }
 static inline __attribute__((always_inline)) VALUE
-korb_block_flink(CTX *c, const NODE *block, VALUE prev, const VALUE *dst)
+korb_block_flink(CTX *c, const NODE *block, VALUE prev, const VALUE *dst, const VALUE *const cb)
 {
-    /* `top` is the block frame's base; both tests are against it, so only one
-     * address is materialized. */
+    /* `top` is the cell above the block frame's self; both tests are against
+     * it, so only one address is materialized.  `cb` is the carry the caller
+     * took at its entry (a `yield` handed it the frame it is in), or NULL. */
     const VALUE *const top = dst + 2;
-    const VALUE *const cb = c->carry_base;
-    if (UNLIKELY(cb != NULL)) {                   /* a `yield` handed us the frame it is in */
-        c->carry_base = NULL;                     /* single use */
+    if (UNLIKELY(cb != NULL)) {
+        c->carry_base = NULL;                     /* single use (the slow path cleared it already) */
         if (LIKELY(cb + 2 < top)) {
             const uint64_t d = (uint64_t)(top - cb) - 2u;
             return LIKELY(d < KORB_FLINK_DIST_MAX)
@@ -9397,7 +9418,10 @@ korb_block_flink(CTX *c, const NODE *block, VALUE prev, const VALUE *dst)
     return korb_block_flink_defframe(c, block, prev, dst);
 }
 
-__attribute__((no_stack_protector)) RESULT
+/* aligned(32): the yield fast path's loop alignment (hence its per-yield cost)
+ * otherwise depends on where the linker happens to put the function — a 16-byte
+ * shift measured +4% cycles on block/iterators with byte-identical code. */
+__attribute__((no_stack_protector, aligned(32))) RESULT
 korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self)
 {
@@ -9428,6 +9452,8 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     const uint32_t blocals = korb_entry_locals_cnt(block);
     VALUE *const bf = slots + 3;                             /* block frame: base B = bf+1 */
     char cstack_probe;
+    /* a raise before the header is written drops the staged link (a `yield`
+     * node's own frame) — korb_raise does that, out of line */
     if (UNLIKELY(bf + 1 + blocals + KORB_FRAME_SLACK > c->slots_limit ||
                  &cstack_probe < c->cstack_limit))
         return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
@@ -9435,7 +9461,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     if (UNLIKELY(is_lambda && argc != np))                /* lambda: exact arity (fast path = all-required, no rest/opt) */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u)", argc, np);
     bf[-3] = (VALUE)(uintptr_t)block + KORB_FID_BLOCK;              /* B[-4] identity (8-aligned: + == |, and folds into the address) */
-    bf[-2] = korb_block_flink(c, block, prev, bf - 2);              /* B[-3] frame link (backtrace) */
+    bf[-2] = korb_block_flink(c, block, prev, bf - 2, c->carry_base);   /* B[-3] frame link (backtrace); the carry is read late, at the store */
     bf[-1] = prev;                                                  /* B[-2] EP / PREV link */
     bf[0]  = 0;          /* B[-1] block lexical self (set below) */
     if (LIKELY(is_lambda || !(np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])))) {   /* scalar bind (lambda never auto-splats) */
@@ -9468,13 +9494,20 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self,
                  NODE *bp_blk, VALUE *bp_denv, VALUE *bp_self, uint32_t is_lam)
 {
-    if (UNLIKELY(block == NULL))                         /* builtin / yield with no block passed (folded here from the fast path) */
+    if (UNLIKELY(block == NULL)) {                       /* builtin / yield with no block passed (folded here from the fast path) */
+        c->carry_base = NULL;                            /* the yield's link dies with it */
         return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
+    }
+    if (UNLIKELY(block == KORB_BLK_CPROC))               /* forwarded Symbol/Method#to_proc: no frame, dispatch a send (which takes the carry) */
+        return korb_cproc_yield(c, slots, *captured_self, argv, argc);
+    /* The staged link (a `yield` node's own frame) is taken NOW: everything below
+     * can raise or run Ruby (`to_ary`), and a carry left armed would be consumed
+     * by some unrelated dispatch, aimed at a frame that has since returned. */
+    const VALUE *const cb = c->carry_base;
+    if (UNLIKELY(cb != NULL)) c->carry_base = NULL;
     /* A block whose params we couldn't compile (e.g. `|&b|`) is a node_unsupported
      * placeholder, not a node_entry — running it raises NotImplementedError instead
      * of dereferencing node_entry fields off the wrong union member (→ SEGV). */
-    if (UNLIKELY(block == KORB_BLK_CPROC))               /* forwarded Symbol/Method#to_proc: no frame, dispatch a send */
-        return korb_cproc_yield(c, slots, *captured_self, argv, argc);
     if (UNLIKELY(block->head.kind != &kind_node_entry)) return EVAL(c, block, slots);
     /* &block forward: re-read prev (proc->env) from the rooted Proc slot each
      * call so a GC-moved escaped env is never stale. */
@@ -9554,7 +9587,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
      * move the env the EP names — so read it once, here, from the rooted Proc. */
     bf[-3] = (VALUE)(uintptr_t)block | KORB_FID_BLOCK;                          /* B[-4] identity */
     bf[-1] = fwd ? VAL2PROC(*captured_self)->env : (VALUE)(uintptr_t)def_env;   /* B[-2] (EP / PREV link) */
-    bf[-2] = korb_block_flink(c, block, bf[-1], bf - 2);                        /* B[-3] frame link (backtrace) */
+    bf[-2] = korb_block_flink(c, block, bf[-1], bf - 2, cb);                    /* B[-3] frame link (backtrace) */
     /* B[-1] block lexical self.  Set here, not just before dispatch: an
      * optional's default expression runs in this frame and may call a method on
      * self (`proc { |a = a() | }`), and the cell is scanned from here on so a GC
@@ -9774,6 +9807,7 @@ korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
 {
     /* Frame cells are odd-tagged when a block is present; nil (0) = none. */
     if (UNLIKELY(((uintptr_t)block_cell & 1u) == 0)) {
+        c->carry_base = NULL;                            /* the yield's link dies with it */
         return korb_raise(c, slots, KORB_E_LOCALJUMP, line, "no block given (yield)");
     }
     NODE  *entry   = (NODE  *)(uintptr_t)((uintptr_t)block_cell & ~(uintptr_t)1u);
@@ -9804,6 +9838,7 @@ korb_yield_outer(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
         return korb_block_yield(c, slots + 1, iseq ? iseq : KORB_BLK_CPROC, KORB_BLK_FWD,
                                 slots - argc, argc, &slots[0]);
     }
+    c->carry_base = NULL;                                /* the yield's link dies with it */
     return korb_raise(c, slots, KORB_E_LOCALJUMP, line, "no block given (yield)");
 }
 
@@ -10039,11 +10074,11 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
      * @framehdr fast path inlines korb_invoke_simple and never gets here. */
     memmove(slots + 3, slots - (korb_sword_t)argc - 1, ((size_t)argc + 1) * sizeof(VALUE));
     slots[0] = 0;                                       /* callee base[-4] (identity) */
-    /* base[-3] is the callee's frame link (node.h): carry the one the call site
-     * recorded, from wherever this dispatch was entered (c->carry_base when the
-     * caller already restaged once, else the window we are relocating). */
-    slots[1] = c->carry_base ? korb_flink_from_base(c, c->carry_base, c->carry_line_bits, &slots[1])
-                             : korb_flink_carry(c, slots - (korb_sword_t)argc - 3);
+    /* base[-3] is the callee's frame link (node.h): only what the caller handed
+     * on (c->carry_base).  The cell below a flush [recv, args] window is NOT
+     * read: a C caller's window has whatever it had there, and an odd VALUE
+     * would walk as a link.  No carry = the chain ends here. */
+    slots[1] = c->carry_base ? korb_flink_from_base(c, c->carry_base, c->carry_line_bits, &slots[1]) : 0;
     c->carry_base = NULL;                                /* single use */
     slots[2] = 0;                                       /* callee base[-2] (EP) */
     slots += (korb_sword_t)argc + 4;                        /* new cursor: recv at slots[-argc-1], gap below */
@@ -10445,6 +10480,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                     slots[2] = slots[1];                      /* the new module/class (rooted across the dispatch) */
                     slots[3] = slots[2];                      /* receiver */
                     for (uint32_t i = 0; i < argc; i++) slots[4 + i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];
+                    korb_flink_hand_on(c, slots - (korb_sword_t)argc - 3);   /* the .new call's frame, past the restage */
                     RESULT ir = korb_send_impl(c, slots + 4 + argc, vm->mid_initialize, line, argc, block, def_env, captured_self);
                     if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
                     return RESULT_OK(slots[2]);
@@ -10897,6 +10933,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                     if (uinit && uinit->kind == KORB_METHOD_ISEQ) {
                         slots[2] = slots[1];                   /* recv = the new instance */
                         for (uint32_t k = 0; k < argc; k++) slots[3 + k] = slots[-(korb_sword_t)argc + (korb_sword_t)k];
+                        korb_flink_hand_on(c, slots - (korb_sword_t)argc - 3);   /* the .new call's frame, past the restage */
                         RESULT ir = korb_send_impl(c, slots + 3 + argc, vm->mid_initialize, line, argc,
                                                    block, def_env, captured_self);
                         if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
@@ -11157,7 +11194,7 @@ static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VA
 static RESULT
 korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t mid,
                     uint32_t line, VALUE recv, VALUE caller_self, VALUE def_class,
-                    uint32_t argc, bool *mm_handled)
+                    uint32_t argc, bool *mm_handled, VALUE link)
 {
     bool viol;
     if (m->visibility == 1) {                          /* private */
@@ -11176,9 +11213,10 @@ korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t 
         VALUE mm_def = KORB_NIL;
         struct korb_method *const mm = korb_mcache_find(c->vm, cls, mm_mid, &mm_def);
         if (mm && !(mm->kind == KORB_METHOD_CFUNC && mm->rfn == korb_m_obj_method_missing)) {   /* user-defined only, not the default raiser */
-            /* stage [identity | link | EP | self | :name | args...] */
+            /* stage [identity | link | EP | self | :name | args...]: #method_missing
+             * stands in for the call that missed, so it takes that call's link */
             slots[0] = 0;
-            slots[1] = 0;
+            slots[1] = link;
             slots[2] = 0;
             slots[3] = recv;
             slots[4] = ID2SYM(mid);
@@ -11207,14 +11245,16 @@ korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t 
  * KORB_IC_INSTANCE_HIT).  Split out so korb_send_cached can test the cache both
  * before and after the class-receiver / send-family cascade. */
 static inline RESULT
-korb_send_ic_dispatch(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+korb_send_ic_dispatch(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                  struct korb_inlcache *ic, VALUE recv, VALUE caller_self)
 {
     if (LIKELY(ic->dispatch)) return korb_invoke_entry_ic(c, slots, ic, argc, mid);
+    const uint32_t line = korb_flink_line(flink);
     struct korb_method *const m = ic->m;
     if (UNLIKELY(ic->kind == KORB_IC_INSTANCE_VIS && caller_self != KORB_UNDEF)) {   /* cached private/protected — guard the cached entry (no re-lookup) */
         bool mm_handled = false;
-        const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, ic->def_class, argc, &mm_handled);
+        const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, ic->def_class, argc, &mm_handled,
+                                              korb_flink_site_link(flink, slots - (korb_sword_t)argc - 3));
         if (mm_handled || vr.state != KORB_NORMAL) return vr;
     }
     if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines invoke_simple, skips dispatch_method PLT */
@@ -11239,12 +11279,11 @@ __attribute__((no_stack_protector)) RESULT
 korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                  struct korb_inlcache *ic, VALUE caller_self)
 {
-    const uint32_t line = korb_flink_line(flink);   /* decoded once here, not at every call site */
     struct korb_vm *const vm = c->vm;
     const VALUE recv = slots[-(korb_sword_t)argc - 1];
     if (UNLIKELY(vm->refinements_active)) {          /* refined receiver dispatch */
         RESULT rr;
-        if (korb_refined_dispatch(c, slots, mid, line, argc, recv, NULL, NULL, NULL, &rr)) return rr;
+        if (korb_refined_dispatch(c, slots, mid, korb_flink_line(flink), argc, recv, NULL, NULL, NULL, &rr)) return rr;
     }
     /* Receiver → class for the common shapes (plain user instance, fixnum, flonum,
      * plain Array/String/Hash) and the ic check come first: a hot builtin send
@@ -11276,12 +11315,12 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
             const RESULT r = m->rfn(c, slots, VALUE_REF_AT(&slots[-(korb_sword_t)argc - 1]),
                                     VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc));
             if (LIKELY(r.state == KORB_NORMAL)) return r;
-            return korb_call_ret_cold(c, r, line, mid);
+            return korb_call_ret_cold(c, r, korb_flink_line(flink), mid);
         }
-        return korb_send_ic_dispatch(c, slots, mid, line, argc, ic, recv, caller_self);
+        return korb_send_ic_dispatch(c, slots, mid, flink, argc, ic, recv, caller_self);
     }
     if (klass != KORB_NIL && KORB_IC_INSTANCE_HIT(ic, vm, klass))   /* INSTANCE_VIS (private/protected, guarded) */
-        return korb_send_ic_dispatch(c, slots, mid, line, argc, ic, recv, caller_self);
+        return korb_send_ic_dispatch(c, slots, mid, flink, argc, ic, recv, caller_self);
     /* class receivers (Klass.new / Fiber.yield / Struct / class methods) and the
      * send/__send__/public_send family need korb_send_impl's special handling. */
     if (UNLIKELY(KORB_CLASS_P(recv) ||
@@ -11304,7 +11343,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                 VALUE *const base = slots - argc;
                 if (LIKELY(init->is_simple)) {     /* fixed-arity initialize → streamlined invoke (skips kw/opt/rest handling) */
                     base[-1] = obj;                /* stage obj as self at the frame's bottom header */
-                    const RESULT ir = korb_invoke_simple(c, slots, init, argc, line, vm->mid_initialize, obj, idef);
+                    const RESULT ir = korb_invoke_simple(c, slots, init, argc, korb_flink_line(flink), vm->mid_initialize, obj, idef);
                     if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
                     return RESULT_OK(base[-1]);    /* the (possibly moved) obj */
                 }
@@ -11312,13 +11351,13 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                 /* korb_dispatch_method handles CFUNC (e.g. Random#initialize) as well as
                  * ISEQ; korb_invoke_method is ISEQ-only and would misread a CFUNC's
                  * locals_cnt (SIGBUS). */
-                const RESULT ir = korb_dispatch_method(c, slots, init, vm->mid_initialize, line, argc,
+                const RESULT ir = korb_dispatch_method(c, slots, init, vm->mid_initialize, korb_flink_line(flink), argc,
                                                        idef, NULL, NULL, NULL);
                 if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
                 return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
             }
             if (UNLIKELY(argc != 0))
-                return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                return korb_raise(c, slots, KORB_E_ARGUMENT, korb_flink_line(flink),
                                   "wrong number of arguments (given %u, expected 0)", argc);
             return RESULT_OK(obj);
         }
@@ -11331,10 +11370,11 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
             if (LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == vm->method_serial && ic->klass == recv)) {
                 if (UNLIKELY(ic->m->visibility != 0 && caller_self != KORB_UNDEF)) {   /* private_class_method guard */
                     bool mm_handled = false;
-                    const RESULT vr = korb_check_call_vis(c, slots, ic->m, mid, line, recv, caller_self, ic->def_class, argc, &mm_handled);
+                    const RESULT vr = korb_check_call_vis(c, slots, ic->m, mid, korb_flink_line(flink), recv, caller_self, ic->def_class, argc, &mm_handled,
+                                                          korb_flink_site_link(flink, slots - (korb_sword_t)argc - 3));
                     if (mm_handled || vr.state != KORB_NORMAL) return vr;
                 }
-                return korb_dispatch_method(c, slots, ic->m, mid, line, argc, ic->def_class, NULL, NULL, NULL);
+                return korb_dispatch_method(c, slots, ic->m, mid, korb_flink_line(flink), argc, ic->def_class, NULL, NULL, NULL);
             }
             const VALUE start_cls = korb_dispatch_class(c, recv);
             VALUE def_class = KORB_NIL;
@@ -11343,44 +11383,50 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
             if (LIKELY(m != NULL)) {
                 if (UNLIKELY(m->visibility != 0 && caller_self != KORB_UNDEF)) {   /* private_class_method guard */
                     bool mm_handled = false;
-                    const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class, argc, &mm_handled);
+                    const RESULT vr = korb_check_call_vis(c, slots, m, mid, korb_flink_line(flink), recv, caller_self, def_class, argc, &mm_handled,
+                                                          korb_flink_site_link(flink, slots - (korb_sword_t)argc - 3));
                     if (mm_handled || vr.state != KORB_NORMAL) return vr;
                 }
                 korb_ic_fill(ic, korb_ic_serial(vm), recv, m, def_class, KORB_IC_SMETHOD, argc);
-                return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
+                return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL);
             }
             /* miss (method_missing / NoMethodError) → korb_send_impl formats it */
         }
-        return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
+        { korb_flink_stage(c, flink, slots - (korb_sword_t)argc - 3); return korb_send_impl(c, slots, mid, korb_flink_line(flink), argc, NULL, NULL, NULL); }
     }
 
     if (klass == KORB_NIL) {                             /* main / singleton override / exception / … */
         klass = korb_dispatch_class(c, recv);
         if (KORB_IC_INSTANCE_HIT(ic, vm, klass))
-            return korb_send_ic_dispatch(c, slots, mid, line, argc, ic, recv, caller_self);
+            return korb_send_ic_dispatch(c, slots, mid, flink, argc, ic, recv, caller_self);
     }
     VALUE def_class = KORB_NIL;
     struct korb_method *const m =
         KORB_CLASS_P(klass) ? korb_mcache_find(vm, klass, mid, &def_class) : NULL;
     if (UNLIKELY(m == NULL))   /* NoMethodError (rare) — let korb_send_impl format/raise */
-        return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
+        { korb_flink_stage(c, flink, slots - (korb_sword_t)argc - 3); return korb_send_impl(c, slots, mid, korb_flink_line(flink), argc, NULL, NULL, NULL); }
     if (UNLIKELY(m->visibility != 0)) {   /* private/protected: cache as _VIS (resolved) — node_send's inline fast path won't match it, so it always routes here to be guarded */
         korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE_VIS, argc);
         if (caller_self != KORB_UNDEF) {
             bool mm_handled = false;
-            const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class, argc, &mm_handled);
+            const RESULT vr = korb_check_call_vis(c, slots, m, mid, korb_flink_line(flink), recv, caller_self, def_class, argc, &mm_handled,
+                                                          korb_flink_site_link(flink, slots - (korb_sword_t)argc - 3));
             if (mm_handled || vr.state != KORB_NORMAL) return vr;
         }
-        return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
+        return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL);
     }
     korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE, argc);
-    return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
+    return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL);
 }
 
 RESULT
 korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
-              uint32_t argc, NODE *block, VALUE *def_env, VALUE *captured_self)
+              uint32_t argc, NODE *block, VALUE *def_env, VALUE *captured_self, VALUE flink)
 {
+    /* `flink` is the site's baked link when its window has a header cell (the
+     * distance is measured from that cell); a splat site passes 0 and staged its
+     * link itself.  Staging from the baked value is a subtract, not a walk. */
+    if (flink != 0) korb_flink_stage(c, flink, slots - (korb_sword_t)argc - 3);
     RESULT r = korb_send_impl(c, slots, mid, line, argc, block, def_env, captured_self);
     if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;   /* `break [v]` in the block = call's value (only if this site gave the block) */
     return r;
@@ -16013,12 +16059,13 @@ korb_caller_int(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out)
 {
     double d;                                   /* CRuby's NUM2LONG: caller(1.1) is caller(1) */
     if (KORB_FLOAT_P(v) && korb_num_to_d(v, &d)) { *out = (korb_sword_t)d; return RESULT_OK(KORB_NIL); }
-    slots[0] = v;
-    CHECK(korb_coerce_to_int_pub(c, slots + 1, &slots[0]));
-    if (!FIXNUM_P(slots[0]))
-        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
-                          korb_coerce_name(c, v));
-    *out = FIX2LONG(slots[0]);
+    slots[0] = v;                               /* park: #to_int is Ruby and can move it */
+    slots[1] = v;
+    CHECK(korb_coerce_to_int_pub(c, slots + 2, &slots[1]));
+    if (!FIXNUM_P(slots[1]))
+        return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
+                          korb_coerce_name(c, slots[0]));
+    *out = FIX2LONG(slots[1]);
     return RESULT_OK(KORB_NIL);
 }
 
@@ -16029,35 +16076,43 @@ korb_caller_int(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out)
 static RESULT
 korb_caller_common(CTX *c, VALUE *slots, VALUE_SLICE args, const VALUE *link, uint32_t skip)
 {
+    const uint32_t nargs = VALUE_SLICE_LEN(args);
+    /* Coerce the arguments FIRST: a user #to_int is Ruby, so it may move the
+     * Range (re-read it through its rooted arg slot after each call) and may
+     * itself call `caller`, which would overwrite the shared vm->fscratch that
+     * the snapshot below fills. */
+#define KORB_CALLER_RANGE() ((const KorbRange *)(uintptr_t)VALUE_SLICE_GET(args, 0))
+    const bool is_range = nargs >= 1 && KORB_RANGE_P(VALUE_SLICE_GET(args, 0));
+    bool has_b = false, has_e = false, has_len = false, excl = false;
+    korb_sword_t b = 0, e = 0, start = 1, len = 0;
+    if (is_range) {
+        if (nargs > 1) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..2)", nargs);
+        excl = KORB_CALLER_RANGE()->exclude_end != 0;
+        if (KORB_CALLER_RANGE()->rbegin != KORB_NIL) { has_b = true; UNWRAP(korb_caller_int(c, slots, KORB_CALLER_RANGE()->rbegin, &b)); }
+        if (KORB_CALLER_RANGE()->rend != KORB_NIL)   { has_e = true; UNWRAP(korb_caller_int(c, slots, KORB_CALLER_RANGE()->rend, &e)); }
+    } else {
+        if (nargs > 2) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..2)", nargs);
+        if (nargs >= 1) UNWRAP(korb_caller_int(c, slots, VALUE_SLICE_GET(args, 0), &start));
+        if (nargs >= 2 && VALUE_SLICE_GET(args, 1) != KORB_NIL) { has_len = true; UNWRAP(korb_caller_int(c, slots, VALUE_SLICE_GET(args, 1), &len)); }
+        if (start < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative level (%ld)", (long)start);
+        if (has_len && len < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative size (%ld)", (long)len);
+    }
+#undef KORB_CALLER_RANGE
+
     const uint32_t d0 = korb_frames_snapshot(c, link);
     const uint32_t d = d0 > skip ? d0 - skip : 0;
     const uint32_t total = d;
-    const uint32_t nargs = VALUE_SLICE_LEN(args);
-    korb_sword_t start = 1, len = (korb_sword_t)total;
-
-    if (nargs >= 1 && KORB_RANGE_P(VALUE_SLICE_GET(args, 0))) {
-        if (nargs > 1) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..2)", nargs);
-        const KorbRange *const rg = (const KorbRange *)(uintptr_t)VALUE_SLICE_GET(args, 0);
-        const bool excl = rg->exclude_end != 0;
-        korb_sword_t b = 0, e = (korb_sword_t)total - 1;
-        if (rg->rbegin != KORB_NIL) UNWRAP(korb_caller_int(c, slots, rg->rbegin, &b));
-        if (rg->rend != KORB_NIL) {
-            UNWRAP(korb_caller_int(c, slots, rg->rend, &e));
-            if (e < 0) e += (korb_sword_t)total;
-            if (excl) e--;
-        }
+    if (is_range) {
+        if (!has_b) b = 0;
+        if (!has_e) e = (korb_sword_t)total - 1;
+        else { if (e < 0) e += (korb_sword_t)total; if (excl) e--; }
         if (b < 0) b += (korb_sword_t)total;
         if (b < 0 || b > (korb_sword_t)total) return RESULT_OK(KORB_NIL);
         start = b;
         len = e - b + 1;
         if (len < 0) len = 0;
     } else {
-        if (nargs >= 1) UNWRAP(korb_caller_int(c, slots, VALUE_SLICE_GET(args, 0), &start));
-        if (nargs >= 2 && VALUE_SLICE_GET(args, 1) != KORB_NIL)
-            UNWRAP(korb_caller_int(c, slots, VALUE_SLICE_GET(args, 1), &len));
-        if (nargs > 2) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..2)", nargs);
-        if (start < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative level (%ld)", (long)start);
-        if (len < 0)   return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative size (%ld)", (long)len);
+        if (!has_len) len = (korb_sword_t)total;
         if (start > (korb_sword_t)total) return RESULT_OK(KORB_NIL);
     }
     if (start + len > (korb_sword_t)total) len = (korb_sword_t)total - start;
