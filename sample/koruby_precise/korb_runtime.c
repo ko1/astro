@@ -7982,10 +7982,14 @@ korb_frames_snapshot_at(CTX *c, const VALUE *const lo, const VALUE *const hi,
         }
         if (r->kind == KORB_FID_MAIN) {          /* a file's top-level frame */
             const uint32_t fsym = (uint32_t)(id >> 32);
-            if (id & KORB_FID_MAIN_LABEL) r->label = korb_sym_name(vm, fsym);   /* an eval: a borrowed label, no file */
-            else if (fsym) { r->file = korb_sym_name(vm, fsym);
-                             r->label = (id & KORB_FID_MAIN_REQUIRED) ? "<top (required)>" : "<main>"; }   /* CRuby names a required file's frame so */
-            else r->label = NULL;   /* an eval that borrowed none: take the caller's, below */
+            if (id & KORB_FID_MAIN_LABEL) {
+                r->label = korb_sym_name(vm, fsym);          /* an eval: a borrowed label, and no file of its own */
+            } else if (fsym) {
+                r->file = korb_sym_name(vm, fsym);
+                r->label = (id & KORB_FID_MAIN_REQUIRED) ? "<top (required)>" : "<main>";   /* CRuby names a required file's frame so */
+            } else {
+                r->label = NULL;                             /* an eval that borrowed none: the caller's, below */
+            }
             n++;
             if (!(id & KORB_FID_MAIN_REQUIRED)) break;   /* the main script: nothing below it */
             fbase = NULL; line0 = 0;             /* continue into whoever required this file */
@@ -8006,7 +8010,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *const lo, const VALUE *const hi,
      * of `eval` itself), which is the scope CRuby compiled the string into. */
     for (uint32_t i = 0; i < n; i++)
         if (vm->fscratch[i].label == NULL) {
-            vm->fscratch[i].label = "<top (required)>";
+            vm->fscratch[i].label = "<top (required)>";   /* nothing below it to borrow from */
             for (uint32_t j = i + 1; j < n; j++)
                 if (vm->fscratch[j].kind != KORB_FID_CFUNC) { vm->fscratch[i].label = vm->fscratch[j].label; break; }
         }
