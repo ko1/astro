@@ -61,6 +61,18 @@ CRuby と diff する。 CRuby は required 側の `<top (required)>` と requir
       `korb_method_lookup(vm->methods)` は古い ISEQ を返し続ける。
       再現: `tools/bt_probe/redef.rb` の `postdm` 行 (CRuby `redef.rb:64` / koruby `d2.rb:4` —
       d2.rb の body が実際に走っているので backtrace の方は正しい)。
+      **さらに根が深い** (2026-09-13 追記、親が追測): koruby ではトップレベルの `def` が
+      **Object のメソッド表に存在しない**。 `def tl; end` のあと
+      `Object.instance_method(:tl)` が NameError になる (CRuby は private メソッドとして
+      持つ: `Object.private_instance_methods(false).include?(:tl)` が true)。
+      `define_method` が効かないのはその帰結で、真の食い違いは「トップレベル `def` が
+      Object に載らない」こと。 なお `def` が先に無ければ
+      `Object.send(:define_method, :x) { }` のあとの裸呼びは正しく動く
+      (グローバル表に古いエントリが無いため)。
+      直すには裸呼びの解決を Object のメソッド表経由にする必要があり、
+      **`vm->methods` の線形走査を前提にした現在の高速路に触る**。
+      `fib` / `tak` の経路なので、性能を測りながらの独立した作業にすること。
+      [[feedback_koruby_fastpath_no_slowdown]]
 
 ## caller/backtrace レビュー (2026-09-13) — 指摘は同日に全部修正
 
