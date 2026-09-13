@@ -1879,7 +1879,7 @@ exit 時に c->sp restore。 captured proc は snapshot_env_maybe で libc
 | 項目 | 理由 |
 |---|---|
 | Regexp (`=~` / `/.../` / `match` / `scan`) | astrorge 経由で integrate する方針 |
-| Encoding-aware String (`String#encoding`, `force_encoding`, multi-byte succ, m17n) | byte sequence のみ |
+| Encoding-aware String (`String#encoding`, `force_encoding`, multi-byte succ, m17n) | **この行は古い。** 実トランスコーダ (`builtins/transcode.c` + CRuby 生成表) が入り、`encode` / `Encoding::Converter` / ISO-2022-JP / encoding 対応の `inspect` まで動く。残るのは変換表の無い encoding (Big5 / GBK / EUC-KR) と `/s` の SJIS マッチ。2026-09-13 時点で `core/encoding` `core/string/inspect` `core/symbol/inspect` は CRuby と同点 |
 | Thread / Mutex / Queue / ConditionVariable / SizedQueue | single-threaded only |
 | Fiber Scheduler / Async I/O | 範囲外 |
 | ObjectSpace 走査 / 詳細 | excluded |
@@ -1943,7 +1943,7 @@ CRuby は block 内 raise の backtrace を `:in 'block in foo'` (or `:in 'block
 - [ ] **ArrayLshiftRedef** (`test/test_basic_op_redef.rb`) — Array#<< の redef guard が発火しない (4/4 fail)
 - [ ] **Float#floor(n) の Float 精度** — Float 表現の本質 (291.4.floor(2) は 291.39 になる)
 - [ ] **proc/lambda の post-rest の parameter 名** が `[:req]` のまま
-- [ ] **m17n strings**: encoding を真面目に処理してないので multi-byte 周りで slot wrap や split で誤動作
+- [済] **m17n strings** (この項目は古い): transcode.c で encoding を実装済み。誤動作の具体例が残っているなら、それは個別の bug として別に立てること
 - [ ] **`def f(&nil)` / `def f(**nil)`** (Ruby 3.4) — PM_MISSING_NODE で吸収済みだが parameters に反映されない
 
 ## §D Module / Class 内部
