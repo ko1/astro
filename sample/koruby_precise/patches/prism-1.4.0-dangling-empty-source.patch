@@ -1,0 +1,40 @@
+diff --git a/src/util/pm_string.c b/src/util/pm_string.c
+index 75422fbd..66227c85 100644
+--- a/src/util/pm_string.c
++++ b/src/util/pm_string.c
+@@ -133,7 +133,7 @@ pm_string_mapped_init(pm_string_t *string, const char *filepath) {
+     // the source to a constant empty string and return.
+     if (file_size == 0) {
+         pm_string_file_handle_close(&handle);
+-        const uint8_t source[] = "";
++        static const uint8_t source[] = "";   /* static: the pointer below outlives this function */
+         *string = (pm_string_t) { .type = PM_STRING_CONSTANT, .source = source, .length = 0 };
+         return PM_STRING_INIT_SUCCESS;
+     }
+@@ -182,7 +182,7 @@ pm_string_mapped_init(pm_string_t *string, const char *filepath) {
+ 
+     if (size == 0) {
+         close(fd);
+-        const uint8_t source[] = "";
++        static const uint8_t source[] = "";   /* static: the pointer below outlives this function */
+         *string = (pm_string_t) { .type = PM_STRING_CONSTANT, .source = source, .length = 0 };
+         return PM_STRING_INIT_SUCCESS;
+     }
+@@ -225,7 +225,7 @@ pm_string_file_init(pm_string_t *string, const char *filepath) {
+     // the source to a constant empty string and return.
+     if (file_size == 0) {
+         pm_string_file_handle_close(&handle);
+-        const uint8_t source[] = "";
++        static const uint8_t source[] = "";   /* static: the pointer below outlives this function */
+         *string = (pm_string_t) { .type = PM_STRING_CONSTANT, .source = source, .length = 0 };
+         return PM_STRING_INIT_SUCCESS;
+     }
+@@ -278,7 +278,7 @@ pm_string_file_init(pm_string_t *string, const char *filepath) {
+     size_t size = (size_t) sb.st_size;
+     if (size == 0) {
+         close(fd);
+-        const uint8_t source[] = "";
++        static const uint8_t source[] = "";   /* static: the pointer below outlives this function */
+         *string = (pm_string_t) { .type = PM_STRING_CONSTANT, .source = source, .length = 0 };
+         return PM_STRING_INIT_SUCCESS;
+     }

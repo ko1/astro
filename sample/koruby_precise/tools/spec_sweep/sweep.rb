@@ -13,6 +13,13 @@
 # 1818 / 0.  CRuby run from the same long base fails identically, so "CRuby
 # errors too" does NOT clear a socket result — shorten the path and re-measure.
 #
+# CLAMP pass AT ZERO WHEN TOTALLING.  A file that dies at load reports ex=0 with
+# E=1, so pass = ex - F - E = -1.  124 such files (missing stdlib) currently
+# subtract 124 from the total and understate the rate by 0.39 points.  Worse, a
+# file that dies mid-load can report ex=0 E=83 = -83, which makes an unrelated
+# change look like +/-83 examples.  The per-file column stays as computed; the
+# TOTAL clamps.
+#
 # Report a rate as pass/ex FROM THE SAME RUN.  The example count moves run to
 # run (be_computed_by tables expand differently), so dividing a new pass count
 # by an old example count inflates the figure.
@@ -72,7 +79,7 @@ File.open(out, "w") do |io|
     if (r = res[rel])
       ex, fa, er = r
       pass = ex - fa - er
-      tp += pass; tf += fa; te += er
+      tp += [pass, 0].max; tf += fa; te += er   # clamp: a load failure is ex=0/E=1 = -1 (see header)
       io.printf("%s\t%d\t%d\t%d\t%d\n", rel, ex, fa, er, pass)
     else
       tw += 1
