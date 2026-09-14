@@ -4022,6 +4022,21 @@ korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mi
     m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0; m->dm_proc = KORB_NIL;
     m->simple_entry = NULL;                       /* 再定義でスロットを使い回すので必ず落とす */
     m->super_owner = KORB_NIL;             /* a redefinition drops any inherited alias origin */
+    /* A top-level `def` lands in vm->methods (the global function table), which a
+     * bare-name call reads FIRST.  Defining the same name on Object through the
+     * class table (define_method, alias_method, attr_*) used to be invisible to
+     * bare calls: the old ISEQ kept running.  Unlink the global entry so the call
+     * falls through to Object/Kernel and finds this one.  Only an ISEQ entry is
+     * unlinked -- the builtins (puts, require, ...) live there too and boot
+     * relocates Object's methods onto Kernel through this same slot. */
+    if (k == VAL2CLASS(korb_builtin_class_obj(vm, KORB_C_OBJECT))) {
+        for (uint32_t i = 0; i < vm->method_cnt; i++)
+            if (vm->methods[i]->mid == mid && vm->methods[i]->kind == KORB_METHOD_ISEQ && vm->methods[i] != m) {
+                vm->methods[i] = vm->methods[--vm->method_cnt];   /* unlink only; frames may still point at it */
+                vm->method_serial++;
+                break;
+            }
+    }
     return m;
 }
 
