@@ -47,10 +47,16 @@ class Proc
     pr.singleton_class.class_eval do
       define_method(:parameters) { |**| [[:rest]] }
       define_method(:source_location) { nil }
+      define_method(:source_range) { nil }
       define_method(:binding) { raise ArgumentError, "Can't create Binding from C level Proc" }
     end
     pr
   end
+  # Ruby 4.1: where this proc's block or lambda was written, or nil when it has
+  # no Ruby source of its own (a C method turned into a proc).
+  def source_range = Ruby::SourceRange.__send__(:__build, __source_range_info)
+  private :__source_range_info
+
   # Function composition: (f >> g).(x) == g(f(x)); (f << g).(x) == f(g(x)).
   # The result is a lambda iff the first-executed proc is (matches CRuby):
   # for >> that is self, for << that is the argument g.
@@ -58,7 +64,12 @@ class Proc
   def >>(g); raise TypeError, "callable object is expected" unless g.respond_to?(:call); f = self; lambda? ? ->(*a, &b) { g.call(f.call(*a, &b)) } : proc { |*a, &b| g.call(f.call(*a, &b)) }; end
   def <<(g); raise TypeError, "callable object is expected" unless g.respond_to?(:call); f = self; (g.respond_to?(:lambda?) ? g.lambda? : true) ? ->(*a, &b) { f.call(g.call(*a, &b)) } : proc { |*a, &b| f.call(g.call(*a, &b)) }; end
 end
+# Ruby 4.1 #source_range: where the `def` (or the define_method block) was
+# written, or nil for a method with no Ruby source.
 class Method
+  def source_range = Ruby::SourceRange.__send__(:__build, __source_range_info)
+  private :__source_range_info
+
   def >>(g); raise TypeError, "callable object is expected" unless g.respond_to?(:call); m = self; ->(*a, &b) { g.call(m.call(*a, &b)) }; end
   def <<(g); raise TypeError, "callable object is expected" unless g.respond_to?(:call); m = self; (g.respond_to?(:lambda?) ? g.lambda? : true) ? ->(*a, &b) { m.call(g.call(*a, &b)) } : proc { |*a, &b| m.call(g.call(*a, &b)) }; end
   # Method#curry — curry the method's lambda form.  Uses the *method's* arity
@@ -82,4 +93,9 @@ class Method
     end
     to_proc.curry(n)
   end
+end
+
+class UnboundMethod
+  def source_range = Ruby::SourceRange.__send__(:__build, __source_range_info)
+  private :__source_range_info
 end

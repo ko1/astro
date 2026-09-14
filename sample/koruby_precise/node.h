@@ -584,6 +584,10 @@ void korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, u
 /* Record what `path` resolves to now (Location#absolute_path); NULL if no such file. */
 const char *korb_reg_abspath(struct korb_vm *vm, const char *path);
 bool korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);
+/* Ruby 4.1 #source_range: the extent of a def/block/lambda node (see korb_srcrange). */
+void korb_reg_srcrange(struct korb_vm *vm, struct Node *node, uint32_t start_col, uint32_t end_line, uint32_t end_col);
+bool korb_get_srcrange(const struct korb_vm *restrict vm, const struct Node *node,
+                       uint32_t *restrict start_col, uint32_t *restrict end_line, uint32_t *restrict end_col);
 RESULT korb_coerce_to_int_pub(CTX *c, VALUE *slots, VALUE *v);
 RESULT korb_str_dup_pub(CTX *c, VALUE *slots, VALUE *src);
 void korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v);

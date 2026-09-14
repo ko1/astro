@@ -1223,6 +1223,14 @@ struct korb_vm {
      * identity cell = a tagged pointer into immortal libc, never a GC object. */
     struct korb_bind_tbl { const uint32_t *tbl; uint32_t words; VALUE id; } *bind_tbls;
     uint32_t bind_tbl_cnt, bind_tbl_capa;
+    /* Ruby 4.1 #source_range: the full extent of a def/block/lambda node.  Kept
+     * apart from `srclocs` because only three of its nine registrants have an
+     * extent, and because srclocs is linear-scanned on the unwind path — a wider
+     * stride there would cost every backtrace.  Last in the struct, like the
+     * fields above, so no existing offset moves.  Columns are 0-based byte
+     * offsets into the line; end_col is exclusive (CRuby's rb_code_location_t). */
+    struct korb_srcrange { struct Node *node; uint32_t start_col, end_line, end_col; } *srcranges;
+    uint32_t srcrange_cnt, srcrange_capa;
 };
 
 /* -----------------------------------------------------------------------------

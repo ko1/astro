@@ -610,6 +610,19 @@ static RESULT korb_m_proc_source_location(CTX *c, VALUE *slots, VALUE_REF self, 
     }
     return korb_srcloc_result(c, slots, p->iseq);
 }
+/* Proc#__source_range_info — [path, start_line, start_column, end_line, end_column]
+ * or nil.  Same body-node resolution as #source_location; the prelude wraps it. */
+static RESULT korb_m_proc_source_range_info(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbProc *const p = VAL2PROC(VALUE_REF_GET(self));
+    if (p->iseq == NULL && p->self != KORB_NIL) {          /* method proc: recv + mid, no body */
+        const VALUE klass = korb_dispatch_class(c, p->self);
+        const struct korb_method *km = KORB_CLASS_P(klass) ? korb_class_find_method(klass, p->sym_mid, NULL) : NULL;
+        if (km == NULL) km = korb_method_lookup(c->vm, p->sym_mid);
+        return korb_srcrange_result(c, slots, korb_method_srcloc_node(km));
+    }
+    return korb_srcrange_result(c, slots, p->iseq);
+}
 /* Proc#parameters — [[kind, name], ...] from the parse-time param_info (cold;
  * never on the call/yield hot path).  A non-lambda proc reports a required
  * positional as :opt (CRuby semantics); keyreq/rest/block keep their kind. */
@@ -718,6 +731,12 @@ static RESULT korb_m_meth_source_location(CTX *c, VALUE *slots, VALUE_REF self, 
     (void)a;
     const struct korb_method *const km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
     return korb_srcloc_result(c, slots, korb_method_srcloc_node(km));
+}
+/* Method/UnboundMethod#__source_range_info — see the Proc one. */
+static RESULT korb_m_meth_source_range_info(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const struct korb_method *const km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
+    return korb_srcrange_result(c, slots, korb_method_srcloc_node(km));
 }
 /* #original_name: the name at original definition, surviving aliases. */
 static RESULT korb_m_meth_original_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

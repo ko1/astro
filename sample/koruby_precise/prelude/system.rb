@@ -2005,6 +2005,55 @@ module Ruby
   PLATFORM       = RUBY_PLATFORM
   RELEASE_DATE   = RUBY_RELEASE_DATE
   REVISION       = RUBY_REVISION
+
+  # Ruby 4.1: the source extent of a method, block or lambda.  Lines are 1-based
+  # and columns are 0-based BYTE offsets into their line; end_column is exclusive.
+  # Built only by #source_range, so there is no public constructor (as in CRuby).
+  class SourceRange
+    attr_reader :path, :absolute_path, :start_line, :start_column, :end_line, :end_column
+
+    class << self
+      # Instances come only from #source_range, so CRuby leaves this class with
+      # neither a constructor nor an allocator.  __alloc keeps the real one.
+      alias_method :__alloc, :allocate
+      private :__alloc
+
+      # CRuby undefines the constructor and leaves #allocate raising.  koruby's
+      # undef_method does not reach an inherited `new`, so shadow it instead —
+      # same exception, but it stays visible in .methods.
+      def new(*) = raise(NoMethodError, "undefined method 'new' for class Ruby::SourceRange")
+      def allocate = raise(TypeError, "allocator undefined for Ruby::SourceRange")
+
+      # info = [path, start_line, start_column, end_line, end_column], or nil.
+      def __build(info)
+        return nil unless info
+        r = __alloc
+        r.__send__(:__init, info)
+        r
+      end
+      private :__build
+    end
+
+    def inspect
+      "#<Ruby::SourceRange #{@absolute_path || @path}:(#{@start_line},#{@start_column})-(#{@end_line},#{@end_column})>"
+    end
+
+    private def __init(info)
+      @path = info[0]
+      # nil for a name no file was ever read under (an eval filename, -e), which
+      # is the same rule Thread::Backtrace::Location#absolute_path follows.
+      @absolute_path =
+        if @path.empty? || @path.start_with?('<') || @path == '-e'
+          nil
+        else
+          __source_abs_path(@path)
+        end
+      @start_line   = info[1]
+      @start_column = info[2]
+      @end_line     = info[3]
+      @end_column   = info[4]
+    end
+  end
 end
 
 # Random's class-level RNG functions are public singleton methods in CRuby

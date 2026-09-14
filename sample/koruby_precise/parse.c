@@ -286,6 +286,20 @@ kp_line(struct kp_ctx *tc, const pm_node_t *node)
     return (uint32_t)line;                  /* eval can set a negative first line: kept as-is, printed signed */
 }
 
+/* Ruby 4.1 #source_range: register the full extent of a def/block/lambda node.
+ * Columns are 0-based BYTE offsets into their line (what the spec asks for, and
+ * what prism counts), and the end is exclusive — location.start + length is the
+ * first byte past the construct, so its column is already the exclusive end. */
+static void
+kp_reg_srcrange(struct kp_ctx *tc, NODE *n, const pm_node_t *node)
+{
+    const pm_newline_list_t *const nl = &tc->parser->newline_list;
+    const int32_t sl = tc->parser->start_line;
+    const pm_line_column_t beg = pm_newline_list_line_column(nl, node->location.start, sl);
+    const pm_line_column_t end = pm_newline_list_line_column(nl, node->location.end, sl);
+    korb_reg_srcrange(tc->c->vm, n, beg.column, (uint32_t)end.line, end.column);
+}
+
 static __attribute__((noreturn)) void
 kp_failf(struct kp_ctx *tc, const pm_node_t *node, const char *fmt, ...)
 {
@@ -1836,6 +1850,7 @@ transduce_block(struct kp_ctx *tc, const pm_block_node_t *blk)
 {
     NODE *e = transduce_block_parts(tc, &blk->locals, blk->parameters, blk->body);
     korb_reg_srcloc(tc->c->vm, e, korb_intern(tc->c->vm, tc->fname, strlen(tc->fname)), kp_line(tc, (const pm_node_t *)blk));
+    kp_reg_srcrange(tc, e, (const pm_node_t *)blk);   /* Proc#source_range: the `{ }` / `do end` extent */
     if (e->head.kind == &kind_node_entry) e->u.node_entry.def_line = kp_line(tc, (const pm_node_t *)blk);
     return e;
 }
@@ -2910,6 +2925,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     uint32_t mid = kp_intern_cid(tc, dn->name);
     /* Method#source_location: remember the (file, line) of this def's body. */
     korb_reg_srcloc(tc->c->vm, body, korb_intern(tc->c->vm, tc->fname, strlen(tc->fname)), kp_line(tc, (const pm_node_t *)dn));
+    kp_reg_srcrange(tc, body, (const pm_node_t *)dn);   /* Method#source_range: `def` .. `end` */
     /* full param list (names + kinds) for Method#parameters — cold-read only, like the block node_entry's. */
     void *pinfo = build_param_info(tc, dn->parameters ? (const pm_node_t *)dn->parameters : NULL);
     /* Simple methods (fixed positional arity, nothing exotic) get a
@@ -4741,6 +4757,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *entry = transduce_block_parts(tc, &ln->locals, ln->parameters, ln->body);
         if (entry->head.kind != &kind_node_entry) return entry;   /* unsupported params → propagate (don't reify a non-entry) */
         korb_reg_srcloc(tc->c->vm, entry, korb_intern(tc->c->vm, tc->fname, strlen(tc->fname)), kp_line(tc, node));   /* Proc#source_location */
+        kp_reg_srcrange(tc, entry, node);   /* Proc#source_range: the whole `-> () { }` */
         entry->u.node_entry.def_line = kp_line(tc, node);
         int32_t self_off = -1 - tc->chain;
         NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, 1u);

@@ -11738,6 +11738,7 @@ static RESULT korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args);   /* Kern
 static RESULT korb_arithseq_new(CTX *c, VALUE *slots, VALUE recv, VALUE a0, VALUE a1, uint8_t nargs, uint8_t is_pct);
 static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv, VALUE *stepv, bool *excl);
 static RESULT korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body);   /* fwd (defined near require) */
+static RESULT korb_srcrange_result(CTX *c, VALUE *slots, const struct Node *body);   /* fwd (defined near require) */
 static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv, VALUE *stepv, bool *excl);   /* fwd (arithseq.c) */
 
 static RESULT korb_time_make(CTX *c, VALUE *slots, VALUE cls, double epoch, bool utc);   /* fwd (time.c) — used by File::Stat */
@@ -12482,6 +12483,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_PROC, "arity", korb_m_proc_arity, 0);
     korb_def_cmethod(c, KORB_C_PROC, "parameters", korb_m_proc_parameters, -1);
     korb_def_cmethod(c, KORB_C_PROC, "source_location", korb_m_proc_source_location, 0);
+    korb_def_cmethod(c, KORB_C_PROC, "__source_range_info", korb_m_proc_source_range_info, 0);   /* prelude wraps: Proc#source_range */
     korb_def_cmethod(c, KORB_C_PROC, "==",  korb_m_proc_eq, 1);     /* #eql? is an alias of #== (same rfn) */
     korb_def_cmethod(c, KORB_C_PROC, "eql?", korb_m_proc_eq, 1);
     korb_def_cmethod(c, KORB_C_PROC, "to_s", korb_m_proc_to_s, 0);   /* #inspect is an alias of #to_s */
@@ -12500,6 +12502,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "bind_call", korb_m_meth_bind_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "parameters", korb_m_meth_parameters, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "source_location", korb_m_meth_source_location, 0);
+    korb_def_cmethod(c, KORB_C_METHOD, "__source_range_info", korb_m_meth_source_range_info, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "to_s", korb_m_obj_to_s, 0);      /* #inspect is an alias of #to_s (same rfn → == ) */
     korb_def_cmethod(c, KORB_C_METHOD, "inspect", korb_m_obj_to_s, 0);
     /* UnboundMethod: same reflection surface as Method minus call/receiver;
@@ -12516,6 +12519,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "bind_call", korb_m_meth_bind_call, -1);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "parameters", korb_m_meth_parameters, 0);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "source_location", korb_m_meth_source_location, 0);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "__source_range_info", korb_m_meth_source_range_info, 0);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "to_s", korb_m_obj_to_s, 0);   /* #inspect is an alias of #to_s */
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "inspect", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_get", korb_m_bind_lvget, 1);
@@ -14144,6 +14148,42 @@ korb_get_abspath(const struct korb_vm *vm, const char *path, size_t len)
     return NULL;
 }
 
+/* Record the extent of a def/block/lambda NODE (Ruby 4.1 #source_range).  The
+ * node is already in `srclocs` for the (file, line) half; this adds the rest. */
+void
+korb_reg_srcrange(struct korb_vm *vm, struct Node *node, uint32_t start_col, uint32_t end_line, uint32_t end_col)
+{
+    if (!node) return;
+    if (vm->srcrange_cnt == vm->srcrange_capa) {
+        vm->srcrange_capa = vm->srcrange_capa ? vm->srcrange_capa * 2 : 256;
+        vm->srcranges = realloc(vm->srcranges, sizeof(*vm->srcranges) * vm->srcrange_capa);
+        if (!vm->srcranges) abort();
+    }
+    vm->srcranges[vm->srcrange_cnt].node = node;
+    vm->srcranges[vm->srcrange_cnt].start_col = start_col;
+    vm->srcranges[vm->srcrange_cnt].end_line = end_line;
+    vm->srcranges[vm->srcrange_cnt].end_col = end_col;
+    vm->srcrange_cnt++;
+}
+
+/* look up a NODE's extent; false if it has none (a C method, or a registrant
+ * that only had a line).  Newest-first, like korb_get_srcloc: a redefinition
+ * shadows.  Cold: only #source_range reads it. */
+bool
+korb_get_srcrange(const struct korb_vm *restrict vm, const struct Node *node,
+                  uint32_t *restrict start_col, uint32_t *restrict end_line, uint32_t *restrict end_col)
+{
+    if (!node) return false;
+    for (uint32_t i = vm->srcrange_cnt; i-- > 0; )
+        if (vm->srcranges[i].node == node) {
+            *start_col = vm->srcranges[i].start_col;
+            *end_line  = vm->srcranges[i].end_line;
+            *end_col   = vm->srcranges[i].end_col;
+            return true;
+        }
+    return false;
+}
+
 /* look up a body NODE's source location; false if never registered. */
 bool
 korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line)
@@ -14166,6 +14206,26 @@ korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body)
     CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
     CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
     return RESULT_OK(slots[2]);
+}
+/* [path, start_line, start_column, end_line, end_column] for a def/block/lambda
+ * NODE, or nil.  The prelude turns it into a Ruby::SourceRange; absolute_path is
+ * resolved there through __source_abs_path, exactly as Location#absolute_path is.
+ * Lines are signed (eval can start at a negative one); columns never are. */
+static RESULT
+korb_srcrange_result(CTX *c, VALUE *slots, const struct Node *body)
+{
+    uint32_t fsym, line, scol, eline, ecol;
+    if (!korb_get_srcloc(c->vm, body, &fsym, &line)) return RESULT_OK(KORB_NIL);
+    if (!korb_get_srcrange(c->vm, body, &scol, &eline, &ecol)) return RESULT_OK(KORB_NIL);
+    const char *const fname = korb_sym_name(c->vm, fsym);
+    slots[0] = UNWRAP(korb_str_new(c, slots, fname, (uint32_t)strlen(fname)));
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 5));
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX((korb_sword_t)(int32_t)line)));
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX((korb_sword_t)scol)));
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX((korb_sword_t)(int32_t)eline)));
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX((korb_sword_t)ecol)));
+    return RESULT_OK(slots[1]);
 }
 /* remember an absolute path as loaded (libc side; no GC). */
 static bool korb_mark_loaded(struct korb_vm *vm, const char *abspath) {
