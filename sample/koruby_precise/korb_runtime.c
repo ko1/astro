@@ -14570,18 +14570,27 @@ korb_bi_dir(CTX *c, VALUE *slots, VALUE_SLICE args)
      * reverts to the requirer once the defining file finishes loading, so a
      * method defined in a/b/helper.rb answered with the caller's directory. */
     bool from_caller = false;
-    {
-        uint32_t csym = 0, cline = 0;
-        if (korb_caller_pos(c, args.p + KORB_FLINK_OFF, &csym, &cline)) {
-            const char *const cf = korb_sym_name(c->vm, csym);
-            /* absolute only: a relative caller name cannot be resolved again once
-             * Dir.chdir moved the CWD, which is what cur_load_abs is for. */
-            if (cf && cf[0] == '/') { f = cf; from_caller = true; }
-        }
+    if (korb_frames_snapshot(c, args.p + KORB_FLINK_OFF) > 0) {
+        const struct korb_frame_rec *const r = &c->vm->fscratch[0];
+        /* an eval frame is a MAIN frame with no file of its own.  A NAMED eval does
+         * have one -- the name -- and __FILE__ already tells them apart, so read
+         * the same source: "(eval at ...)" means CRuby answers nil, a name means
+         * dirname of that name. */
+        if (r->kind == KORB_FID_MAIN && r->file == NULL) {
+            const char *const ef = korb_bt_cur_file(c->vm);
+            if (!ef || strncmp(ef, "(eval", 5) == 0) return RESULT_OK(KORB_NIL);
+            f = ef; from_caller = true;
+        } else
+        /* absolute only: a relative caller name cannot be resolved again once
+         * Dir.chdir moved the CWD, which is what cur_load_abs is for. */
+        if (r->file && r->file[0] == '/') { f = r->file; from_caller = true; }
     }
-    if (!f || strcmp(f, "-e") == 0 || strcmp(f, "-") == 0 || strcmp(f, "(eval)") == 0)
-        return RESULT_OK(KORB_NIL);
+    /* CRuby answers nil only for an eval with no file of its own; `-e` and stdin
+     * get File.dirname of the name, which is ".".  Measured, not assumed. */
+    if (!f || strcmp(f, "(eval)") == 0) return RESULT_OK(KORB_NIL);
+    const bool no_path = (strcmp(f, "-e") == 0 || strcmp(f, "-") == 0);
     char real[4096];
+    if (no_path) return korb_str_new(c, slots, ".", 1);
     /* the path resolved when the file was read: a relative main script cannot be
      * resolved again once Dir.chdir has moved the CWD */
     if (!from_caller && c->vm->cur_load_abs) snprintf(real, sizeof real, "%s", c->vm->cur_load_abs);
