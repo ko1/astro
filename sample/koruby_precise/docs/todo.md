@@ -4898,3 +4898,29 @@ pass は **+106**。ex が +413 増える (`ruby_version_is "4.1"` が開く) �
 が −99 あり、その大半は 4.1 で削除された `Socket.gethostby*` (−54) と
 `chilled_string` (−8)。残る 4.1 の未対応は本ファイル前節の「残っている
 4.1 の穴」を参照。
+
+## (2026-09-14) RUBY_VERSION を 4.1.0 に上げた
+
+実装 (`8118458b`) → `&nil` と型変換文言 (`dc42bec4`) → prism の dangling 修正と
+sweep のクランプ (`8dc0e089`) → 版上げ (`6111d527`) の順。
+
+**親が自分で測った結果 (クランプ集計)**:
+
+| | pass | ex | 率 |
+|---|---:|---:|---:|
+| 4.0.2 のまま | 31104 | 31596 | 98.443% |
+| **4.1.0 に上げた後** | **31153** | 32009 | 97.326% |
+
+**pass は +49。** 率が下がるのは `ruby_version_is "4.1"` で ex が 413 開くためで、
+通る数は増えている。**率だけを見ると誤る。**
+
+`make test` は参照 ruby を 4.1.0dev に固定すれば版上げ前後で完全に同一
+(hand 5444/8、method 89612/468、spec 5614/58、syntax 1123/13)。
+**参照を 4.0.2 にすると hand が 5 件落ちる** (`core_conv_mm_aware:16`、
+`int_shift_coerce:5`、`socket_misc_compat:9,10,16`)。koruby が 4.1 の文言に
+合った結果なので退行ではない。**差分テストの参照 ruby は 4.1 側に揃えること。**
+
+残っている損 (版上げで開いて通らないもの): `source_range`/`syntax_tree` 系 95、
+`Thread.handle_interrupt` 7 (ファイルごとタイムアウト = WFAIL 1)、
+`IO::Buffer` の 4.1 API 9、`Symbol#to_s` frozen 2、`marshal/load` FrozenError 2、
+`tmpdir` 2、`Regexp#initialize` 3、ほか 1〜2 例が 8 件。
