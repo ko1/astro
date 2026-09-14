@@ -8882,8 +8882,12 @@ korb_frozen_with_recv(CTX *c, VALUE *slots, RESULT fe)
     return fe;
 }
 
+/* `line` is where the write was written.  A write refused inside a C method has
+ * none (0): CRuby reports that frame at its call site, which the dispatch fills
+ * in.  An inline write (a[i]=, a << x, obj.attr=) has no dispatch to do that, so
+ * it passes its own — without it the raise carries line 0 into the backtrace. */
 RESULT
-korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
+korb_raise_frozen_at(CTX *c, VALUE *slots, VALUE v, uint32_t line)
 {
     if (UNLIKELY(KORB_STRING_P(v) && (((AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_CHILLED)))
         return korb_unchill(c, slots, v);          /* reached from the non-macro callers */
@@ -8894,24 +8898,30 @@ korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
     if (v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE) {
         const char *const cn = (v == KORB_NIL) ? "NilClass" : (v == KORB_TRUE) ? "TrueClass" : "FalseClass";
         const char *const iv = (v == KORB_NIL) ? "nil" : (v == KORB_TRUE) ? "true" : "false";
-        return korb_frozen_with_recv(c, slots, korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %s", cn, iv));
+        return korb_frozen_with_recv(c, slots, korb_raise(c, slots + 1, KORB_E_FROZEN, line, "can't modify frozen %s: %s", cn, iv));
     }
     if (KORB_OBJECT_P(slots[0])) {                     /* an object renders through its own #inspect */
         const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0);
         if (ir.state == KORB_NORMAL && KORB_STRING_P(ir.value)) {
             const KorbString *const is = VAL2STR(ir.value);
             return korb_frozen_with_recv(c, slots,
-                       korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %.*s",
+                       korb_raise(c, slots + 1, KORB_E_FROZEN, line, "can't modify frozen %s: %.*s",
                                   korb_coerce_name(c, slots[0]), (int)is->len, korb_strbuf_data(is->buf)));
         }
     }
     char *ibuf = NULL; size_t ilen = 0;
     FILE *ims = open_memstream(&ibuf, &ilen);
     if (ims) { korb_fprint_inspect_s(c, slots + 1, ims, slots[0]); fclose(ims); }
-    RESULT r = korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %s",
+    RESULT r = korb_raise(c, slots + 1, KORB_E_FROZEN, line, "can't modify frozen %s: %s",
                           korb_coerce_name(c, slots[0]), ibuf ? ibuf : "");
     free(ibuf);
     return korb_frozen_with_recv(c, slots, r);
+}
+
+RESULT
+korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
+{
+    return korb_raise_frozen_at(c, slots, v, 0);
 }
 
 /* Guard a method definition against a frozen definee.  Adding a method to a
@@ -9077,7 +9087,7 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         if (UNLIKELY(argc != 1))
             return korb_raise(c, slots, KORB_E_ARGUMENT, line,
                               "wrong number of arguments (given %u, expected 1)", argc);
-        KORB_CHECK_FROZEN(c, slots, *recv_slot);
+        KORB_CHECK_FROZEN_AT(c, slots, *recv_slot, line);
         const VALUE v = slots[-(korb_sword_t)argc];
         CHECK(korb_ivar_set(c, slots, VALUE_REF_AT(recv_slot), ID2SYM(m->attr_ivar), v));
         return RESULT_OK(slots[-(korb_sword_t)argc]);

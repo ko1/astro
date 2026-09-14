@@ -553,33 +553,38 @@ VALUE korb_cref_resolve(struct korb_vm *vm, const uint32_t *chain, uint32_t chai
 /* mutation guard: raise FrozenError (returning from the caller) if `v` is a
  * frozen heap object.  Used at the top of in-place mutators. */
 RESULT korb_raise_frozen(CTX *c, VALUE *slots, VALUE v);   /* "can't modify frozen <Type>: <inspect>" */
+/* Same, but reported at `line` — for a write done inline, which has no dispatch
+ * to re-aim the raise at its call site. */
+RESULT korb_raise_frozen_at(CTX *c, VALUE *slots, VALUE v, uint32_t line);
 RESULT korb_unchill(CTX *c, VALUE *slots, VALUE v);   /* chilled String: warn once, drop the mark, allow the mutation */
 RESULT korb_check_def_frozen(CTX *c, VALUE *slots, VALUE definee);   /* def on a frozen class / singleton-of-frozen-obj → FrozenError */
 /* The genuinely-frozen path stays a plain tail return, so the guard's shape is
  * unchanged for it.  Only a CHILLED String (a Ruby 3.4 literal) takes the second
  * bit test and the warn-then-continue call — and that happens once per object,
  * since korb_unchill clears the mark. */
-#define KORB_CHECK_FROZEN(c, slots, v) do {                                    \
+#define KORB_CHECK_FROZEN_AT(c, slots, v, line) do {                           \
     const VALUE _kf = (v);                                                     \
     if (UNLIKELY(AROH_IS_GC_OBJECT(_kf) &&                                     \
                  (((const AroObjectHeader *)(uintptr_t)_kf)->flags & KORB_FL_FROZEN))) { \
         if (((const AroObjectHeader *)(uintptr_t)_kf)->flags & KORB_FL_CHILLED) \
             { const RESULT _fr = korb_unchill((c), (slots), _kf);              \
               if (UNLIKELY(_fr.state != KORB_NORMAL)) return _fr; }            \
-        else return korb_raise_frozen((c), (slots), _kf);                      \
+        else return korb_raise_frozen_at((c), (slots), _kf, (line));           \
     }                                                                          \
 } while (0)
+#define KORB_CHECK_FROZEN(c, slots, v) KORB_CHECK_FROZEN_AT((c), (slots), (v), 0)
 /* leaner variant for hot paths where `v` is already known to be a heap object
  * of a known type (skips the tag check). */
-#define KORB_CHECK_FROZEN_HEAP(c, slots, v, tname) do {                        \
+#define KORB_CHECK_FROZEN_HEAP_AT(c, slots, v, tname, line) do {               \
     const uint16_t _hf = ((const AroObjectHeader *)(uintptr_t)(v))->flags;     \
     if (UNLIKELY(_hf & KORB_FL_FROZEN)) {                                      \
         if (_hf & KORB_FL_CHILLED)                                             \
             { const RESULT _fr = korb_unchill((c), (slots), (v));              \
               if (UNLIKELY(_fr.state != KORB_NORMAL)) return _fr; }            \
-        else return korb_raise_frozen((c), (slots), (v));                      \
+        else return korb_raise_frozen_at((c), (slots), (v), (line));           \
     }                                                                          \
 } while (0)
+#define KORB_CHECK_FROZEN_HEAP(c, slots, v, tname) KORB_CHECK_FROZEN_HEAP_AT((c), (slots), (v), (tname), 0)
 
 /* string→integer parse (Fixnum or, on overflow with GMP, a Bignum); base 0 =
  * auto-detect 0x/0b/0o/leading-0.  Used by node_bignum (beyond-Fixnum literal). */

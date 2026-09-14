@@ -655,7 +655,7 @@ node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, st
         }
         /* len == capa: full OR frozen (freeze sets capa = len).  Frozen check on
          * this cold grow path only — keeps the hot `a << x` fast path free. */
-        KORB_CHECK_FROZEN_HEAP(c, slots, l, "Array");
+        KORB_CHECK_FROZEN_HEAP_AT(c, slots, l, "Array", korb_flink_line(flink));   /* inline write: no dispatch to place the raise */
         return korb_ary_push_val(c, slots, lhs, rhs);           /* grow path (no Ruby dispatch) */
     }
     slots[0] = rhs;   /* recv rooted at slots[-1] (lhs); stage only the arg */
@@ -2398,7 +2398,7 @@ node_aset(CTX *c, NODE *n, VALUE *slots, uint64_t flink, VALUE_REF recv@child, V
     const VALUE r = VALUE_REF_GET(recv);
     const VALUE iv = VALUE_REF_GET(idx);
     if (LIKELY(KORB_ARRAY_P(r) && FIXNUM_P(iv) && !c->vm->aref_redefined)) {
-        KORB_CHECK_FROZEN_HEAP(c, slots, r, "Array");
+        KORB_CHECK_FROZEN_HEAP_AT(c, slots, r, "Array", korb_flink_line(flink));   /* inline write: no dispatch to place the raise */
         const KorbArray *const a = VAL2ARY(r);
         korb_sword_t i = FIX2LONG(iv);
         if (i < 0) i += (korb_sword_t)a->len;

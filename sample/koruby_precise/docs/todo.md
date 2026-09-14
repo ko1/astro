@@ -215,6 +215,34 @@ CRuby と diff する。 CRuby は required 側の `<top (required)>` と requir
       せいで**逆に悪化する** (下が mspec 側の lib フレームになり、`block in ...` を飛び越える)。
       実測で確認済み: 先にブロックフレームを積む方を直すこと。
       **前提条件は 2026-09-14 に解消済み** (上のブロックフレームの項目)。 未着手。
+- [ ] **インラインの frozen チェックが raise の行を 0 にする。** (2026-09-14 に一部修正)
+      `korb_raise_frozen` は `korb_raise(..., 0, ...)` で上げるので、C メソッドの中から
+      上げる分には問題ない (dispatch が呼び出し側の行に付け替える) が、**dispatch を
+      通らないインラインの書き込み**は誰も付け替えないので backtrace の行が 0 になる。
+      再現は `tools/bt_probe/froz_line.rb` (CRuby と diff)。
+      `korb_raise_frozen_at` / `KORB_CHECK_FROZEN{,_HEAP}_AT` を足して、行が手元にある
+      3 経路 (`node_aset` / `node_shl` の grow / dispatch の ATTR_W) は直した。
+      **残り 2 経路**: `node_ivar_set` (`@x = v`) と `node_singleton_def`
+      (`def frozen_obj.m`) は NODE に `line` オペランドが無い。 足すと
+      **同じ形の node が行ごとに別 SD になり SD 数が増える**ので、そのままでは採れない
+      (srcloc テーブルはメソッド本体しか登録しないので引けない)。
+- [ ] **`opt_aref` / `opt_aset` / `opt_ltlt` 相当でフレームを積みすぎる (逆方向のずれ)。**
+      CRuby の規則は実測した: **`recv[idx]` 構文 + 引数ちょうど 1 + レシーバが Array か
+      Hash + 未再定義** なら opt_aref がインラインで処理しフレームを作らない。
+      `[].send(:[], nil)` や `[][0, nil]` (2 引数) は普通の send なのでフレームが出る。
+      `[]=` も同様 (Array は fixnum 添字のときだけ、Hash は常に)。 `String#<<` /
+      `Array#<<` も opt_ltlt でフレーム無し。
+      koruby は deopt 時に `korb_send` へ落とすので、その dispatch が
+      `Array#[]` / `Hash#[]=` / `String#<<` を積んでしまう。
+      観測: `tools/bt_probe/froz_line.rb` の 7 / 8、`[][nil]`、`Hash.new { raise }[Object.new]`。
+      直すには「この dispatch はフレームを作らない」を deopt 経路から dispatch へ
+      伝える必要があり、carry (flink) のビットは据え置き決定済みなので別の口が要る。
+      未着手。
+- [ ] **Enumerable のメソッドの owner が Array になっている。** `[1].method(:each_with_object).owner`
+      が koruby `Array`、CRuby `Enumerable`。 `inject` / `each_entry` も同じ。
+      koruby は Enumerable の各メソッドを Array に直接 C で実装しているため。
+      backtrace のラベルにも出る (`Array#inject` vs `Enumerable#inject` + `Array#each`)。
+      未着手 (owner を直すには Enumerable 側に実体を置く必要があり広い)。
 - [ ] **`define_method` がトップレベル `def` を上書きできない (backtrace ではなく dispatch のバグ)。**
       上の修正中に発見。 `def m2; end; Object.send(:define_method, :m2) { ... }; m2` で
       **古い `def` の body が走る**。 `send(:m2)` 経由や、クラス内 (`K.send(:define_method, :x)`)
