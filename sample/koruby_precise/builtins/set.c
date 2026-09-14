@@ -1999,7 +1999,9 @@ static RESULT korb_m_mod_const_source_location(CTX *c, VALUE *slots, VALUE_REF s
     const char *const f = korb_sym_name(vm, fsym);
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, f, (uint32_t)strlen(f)));
     CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]));
-    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), LONG2FIX((korb_sword_t)line)));
+    /* the table holds uint32_t; eval(str, file, -7) stores a negative line, so
+     * widen through int32_t or it comes back as 4.29e9 (same as source_location) */
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), LONG2FIX((korb_sword_t)(int32_t)line)));
     return RESULT_OK(slots[0]);
 }
 /* Module#__const_reg_loc(name, file, line) — the prelude's #autoload records the

@@ -14201,7 +14201,9 @@ korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body)
     if (!korb_get_srcloc(c->vm, body, &fsym, &line)) return RESULT_OK(KORB_NIL);
     const char *fname = korb_sym_name(c->vm, fsym);
     slots[0] = UNWRAP(korb_str_new(c, slots, fname, (uint32_t)strlen(fname)));
-    slots[1] = LONG2FIX((korb_sword_t)line);
+    /* the table holds the line as uint32_t, but eval(str, file, -100) stores a
+     * negative one: widen through int32_t so it comes back negative, not 4.29e9 */
+    slots[1] = LONG2FIX((korb_sword_t)(int32_t)line);
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
     CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
     CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
@@ -14548,14 +14550,26 @@ korb_bi_method_name(CTX *c, VALUE *slots, VALUE_SLICE args)
 static RESULT
 korb_bi_dir(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    (void)args;
     const char *f = c->vm->cur_load_file ? c->vm->cur_load_file : c->vm->script_name;
+    /* the file the CALL SITE is written in, like require_relative: cur_load_file
+     * reverts to the requirer once the defining file finishes loading, so a
+     * method defined in a/b/helper.rb answered with the caller's directory. */
+    bool from_caller = false;
+    {
+        uint32_t csym = 0, cline = 0;
+        if (korb_caller_pos(c, args.p + KORB_FLINK_OFF, &csym, &cline)) {
+            const char *const cf = korb_sym_name(c->vm, csym);
+            /* absolute only: a relative caller name cannot be resolved again once
+             * Dir.chdir moved the CWD, which is what cur_load_abs is for. */
+            if (cf && cf[0] == '/') { f = cf; from_caller = true; }
+        }
+    }
     if (!f || strcmp(f, "-e") == 0 || strcmp(f, "-") == 0 || strcmp(f, "(eval)") == 0)
         return RESULT_OK(KORB_NIL);
     char real[4096];
     /* the path resolved when the file was read: a relative main script cannot be
      * resolved again once Dir.chdir has moved the CWD */
-    if (c->vm->cur_load_abs) snprintf(real, sizeof real, "%s", c->vm->cur_load_abs);
+    if (!from_caller && c->vm->cur_load_abs) snprintf(real, sizeof real, "%s", c->vm->cur_load_abs);
     else if (!realpath(f, real)) { if ((size_t)snprintf(real, sizeof real, "%s", f) >= sizeof real) return RESULT_OK(KORB_NIL); }
     char *slash = strrchr(real, '/');
     if (slash) *slash = '\0'; else snprintf(real, sizeof real, ".");
@@ -14763,10 +14777,19 @@ korb_bi_require_relative(CTX *c, VALUE *slots, VALUE_SLICE args)
     char namebuf[4096]; uint32_t nl = VAL2STR(nv)->len;
     if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
     memcpy(namebuf, korb_strbuf_data(VAL2STR(nv)->buf), nl); namebuf[nl] = '\0';
-    /* base = dirname of the current load file (or the main script).  A relative
-     * name is useless as a base — Dir.chdir may have moved out from under it —
-     * so fall back to what it resolved to when it was read. */
+    /* base = dirname of the file the CALL SITE is written in, which is what CRuby
+     * resolves against.  vm->cur_load_file is the file being loaded NOW, and that
+     * reverts to the requirer as soon as the defining file finishes: a method
+     * defined in a/b/helper.rb and called later resolved against the caller.
+     * Fall back to it when the walk finds no Ruby frame (eval, a C-driven call). */
     const char *base = c->vm->cur_load_file ? c->vm->cur_load_file : (c->vm->script_name ? c->vm->script_name : ".");
+    {
+        uint32_t csym = 0, cline = 0;
+        if (korb_caller_pos(c, args.p + KORB_FLINK_OFF, &csym, &cline)) {
+            const char *const cf = korb_sym_name(c->vm, csym);
+            if (cf && cf[0] == '/') base = cf;   /* absolute only: see __dir__ */
+        }
+    }
     if (base[0] != '/' && c->vm->cur_load_abs) base = c->vm->cur_load_abs;
     char basedir[4096]; snprintf(basedir, sizeof basedir, "%s", base);
     char *slash = strrchr(basedir, '/'); if (slash) *slash = '\0'; else snprintf(basedir, sizeof basedir, ".");
