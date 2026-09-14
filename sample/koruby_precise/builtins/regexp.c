@@ -684,10 +684,12 @@ static RESULT korb_m_str_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     }
     return korb_re_match_set(c, slots, pat, VALUE_REF_GET(self));
 }
-/* `Regexp.allocate` leaves a plain object behind: every Regexp method must
- * refuse it rather than quietly answer nil. */
+/* `Regexp.allocate` leaves a plain object behind, and a subclass whose
+ * #initialize never reached `super` leaves a KORB_RE_UNINIT payload: every
+ * Regexp method must refuse both rather than quietly answer nil / //. */
 #define KORB_RE_CHECK(c, slots, self) do { \
-    if (UNLIKELY(!KORB_REGEXP_P(VALUE_REF_GET(self)))) \
+    if (UNLIKELY(!KORB_REGEXP_P(VALUE_REF_GET(self)) || \
+                 (VAL2RE(VALUE_REF_GET(self))->flags & KORB_RE_UNINIT))) \
         return korb_raise((c), (slots), KORB_E_TYPE, 0, "uninitialized Regexp"); \
 } while (0)
 static RESULT korb_m_re_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { KORB_RE_CHECK(c, slots, self); return korb_re_match_set(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); }
@@ -1413,6 +1415,18 @@ static RESULT korb_m_re_escape(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return r;
 }
 static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(korb_sub_overrides_init_p(c, VALUE_REF_GET(self),
+                                           korb_builtin_class_obj(c->vm, KORB_C_REGEXP)))) {
+        /* Regexp subclass with its own #initialize: give it an uninitialized
+         * payload and let `super` (the prelude's #initialize → #__init_pattern)
+         * fill in the source and flags, as CRuby's allocate + #initialize does. */
+        slots[0] = VALUE_REF_GET(self);                    /* root the subclass */
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, "", 0));
+        slots[1] = UNWRAP(korb_re_alloc(c, slots + 2, slots[1], KORB_RE_UNINIT));
+        ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_HAS_KLASS;
+        korb_klass_override_set(c, slots[1], slots[0]);    /* both rooted; set does not GC */
+        return korb_sub_new_init(c, slots + 2, VALUE_REF_AT(&slots[1]), a, NULL, NULL, NULL);
+    }
     VALUE src = VALUE_SLICE_GET(a, 0); uint32_t flags = 0;
     bool from_regexp = false;
     if (KORB_REGEXP_P(src)) { slots[0] = VAL2RE(src)->source; flags = VAL2RE(src)->flags; from_regexp = true; }
@@ -1500,6 +1514,29 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     }
     return rr;
 }
+/* Fill the payload `new` allocated for a Regexp subclass (KORB_RE_UNINIT).  A
+ * Regexp's whole state is source + flags, so a throwaway built by the normal
+ * constructor supplies both; an already-built Regexp is CRuby's TypeError.
+ * Reached only as `super` from a subclass's #initialize (see the prelude). */
+static RESULT korb_m_re_init_pattern(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(!KORB_REGEXP_P(VALUE_REF_GET(self)) ||
+                 !(VAL2RE(VALUE_REF_GET(self))->flags & KORB_RE_UNINIT)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "already initialized regexp");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || VALUE_SLICE_LEN(a) > 3))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..3)",
+                          VALUE_SLICE_LEN(a));
+    slots[0] = korb_builtin_class_obj(c->vm, KORB_C_REGEXP);   /* the throwaway is a plain Regexp */
+    const RESULT dr = korb_m_re_new(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+    if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+    slots[1] = dr.value;
+    KorbRegexp *const me = VAL2RE(VALUE_REF_GET(self));        /* re-read: korb_m_re_new allocates */
+    const KorbRegexp *const built = VAL2RE(slots[1]);
+    me->flags = built->flags;                                  /* clears KORB_RE_UNINIT */
+    me->ci    = built->ci;
+    ARO_STORE(c, me, (VALUE *)(uintptr_t)&me->source, built->source);
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
 /* the name of a header encoding index, for the union's error message */
 static const char *korb_enc_idx_name(const struct korb_vm *vm, uint32_t idx) {
     if (idx == KORB_ENC_UTF8) return "UTF-8";

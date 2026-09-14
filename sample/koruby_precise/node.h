@@ -466,6 +466,19 @@ uint32_t korb_entry_locals_cnt(NODE *entry);
 NODE    *korb_entry_body(NODE *entry);
 
 /* raise + uncaught-exception report */
+/* A C method's argument-count check runs before its frame is entered, so a plain
+ * korb_raise there unwinds with no frame of its own and the backtrace starts at
+ * the caller; CRuby names the method ("Hash#[]=").  Raises ArgumentError and
+ * pushes that frame, the same one the post-call unwind pushes. */
+RESULT korb_raise_arity(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t mid,
+                        uint32_t line, const char *fmt, ...)
+                        __attribute__((format(printf, 6, 7)));
+/* An operator node (node_plus / node_div / node_lt …) whose cold path answered
+ * with a raise having dispatched nothing: a frame is pushed only at a dispatch
+ * site, so the method CRuby shows ("Integer#/") would be missing.  No-op unless
+ * nothing has named a frame for this exception yet AND the receiver really has
+ * that operator — `nil + 1` raises at the call site in CRuby too. */
+void korb_op_bt(CTX *c, RESULT r, VALUE recv, const char *op, uint32_t oplen, uint32_t line);
 RESULT korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
                   const char *fmt, ...) __attribute__((format(printf, 5, 6)));
 void   korb_report_uncaught(CTX *c, VALUE exc);

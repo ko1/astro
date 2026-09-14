@@ -25,6 +25,18 @@
     __extension__({ korb_flink_stage((c), (flink), (slots)); \
                     const RESULT _dr_ = (expr); (c)->carry_base = NULL; _dr_; })
 
+/* KP_DEOPT for a binary-operator node, plus the frame CRuby names for the
+ * operator itself ("Integer#/" for `1/0`).  A cold path that raises without
+ * dispatching pushes nothing, so the backtrace would start at the caller;
+ * korb_op_bt supplies it (and stays silent when a dispatch already named one,
+ * or when the receiver has no such operator).  Cold paths only — the fixnum /
+ * float fast paths return before reaching one. */
+#define KP_OPD(c, flink, slots, lhs, op, expr) \
+    __extension__({ korb_flink_stage((c), (flink), (slots)); \
+                    const RESULT _od_ = (expr); (c)->carry_base = NULL; \
+                    korb_op_bt((c), _od_, VALUE_REF_GET(lhs), (op), sizeof(op) - 1, \
+                               korb_flink_line(flink)); _od_; })
+
 NODE_DEF @nogc
 node_lit(CTX *c, NODE *n, VALUE *slots, VALUE v)
 {
@@ -451,17 +463,17 @@ node_plus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, u
         korb_sword_t s;
         if (LIKELY(!__builtin_add_overflow((korb_sword_t)l, (korb_sword_t)rhs - 1, &s)))
             return RESULT_OK((VALUE)s);
-        return KP_DEOPT(c, flink, slots, korb_int_arith(c, slots, l, rhs, 0, korb_flink_line(flink)));
+        return KP_OPD(c, flink, slots, lhs, "+", korb_int_arith(c, slots, l, rhs, 0, korb_flink_line(flink)));
     }
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
-        return KP_DEOPT(c, flink, slots, korb_int_arith(c, slots, l, rhs, 0, korb_flink_line(flink)));
+        return KP_OPD(c, flink, slots, lhs, "+", korb_int_arith(c, slots, l, rhs, 0, korb_flink_line(flink)));
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float+Float inline (skip korb_num_arith dispatch) */
         return korb_flo(c, slots, korb_float_val(l) + korb_float_val(rhs));
     if (KORB_FLOAT_P(l) && FIXNUM_P(rhs))                    /* Float+Integer inline */
         return korb_flo(c, slots, korb_float_val(l) + (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer+Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) + korb_float_val(rhs));
-    return KP_DEOPT(c, flink, slots, korb_plus_slow(c, slots, lhs, rhs, korb_flink_line(flink)));
+    return KP_OPD(c, flink, slots, lhs, "+", korb_plus_slow(c, slots, lhs, rhs, korb_flink_line(flink)));
 }
 
 NODE_DEF
@@ -476,17 +488,17 @@ node_minus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, 
         korb_sword_t s;
         if (LIKELY(!__builtin_sub_overflow((korb_sword_t)l, (korb_sword_t)rhs - 1, &s)))
             return RESULT_OK((VALUE)s);
-        return KP_DEOPT(c, flink, slots, korb_int_arith(c, slots, l, rhs, 1, korb_flink_line(flink)));
+        return KP_OPD(c, flink, slots, lhs, "-", korb_int_arith(c, slots, l, rhs, 1, korb_flink_line(flink)));
     }
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
-        return KP_DEOPT(c, flink, slots, korb_int_arith(c, slots, l, rhs, 1, korb_flink_line(flink)));
+        return KP_OPD(c, flink, slots, lhs, "-", korb_int_arith(c, slots, l, rhs, 1, korb_flink_line(flink)));
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float-Float inline */
         return korb_flo(c, slots, korb_float_val(l) - korb_float_val(rhs));
     if (KORB_FLOAT_P(l) && FIXNUM_P(rhs))                    /* Float-Integer inline */
         return korb_flo(c, slots, korb_float_val(l) - (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer-Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) - korb_float_val(rhs));
-    return KP_DEOPT(c, flink, slots, korb_minus_slow(c, slots, lhs, rhs, korb_flink_line(flink)));   /* complex/rat/array/user/raise out-of-line → small SD */
+    return KP_OPD(c, flink, slots, lhs, "-", korb_minus_slow(c, slots, lhs, rhs, korb_flink_line(flink)));   /* complex/rat/array/user/raise out-of-line → small SD */
 }
 
 NODE_DEF
@@ -501,17 +513,17 @@ node_mul(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         korb_sword_t p;
         if (LIKELY(!__builtin_mul_overflow(FIX2LONG(l), (korb_sword_t)rhs - 1, &p)))
             return RESULT_OK((VALUE)(p | 1));
-        return KP_DEOPT(c, flink, slots, korb_int_arith(c, slots, l, rhs, 2, korb_flink_line(flink)));
+        return KP_OPD(c, flink, slots, lhs, "*", korb_int_arith(c, slots, l, rhs, 2, korb_flink_line(flink)));
     }
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
-        return KP_DEOPT(c, flink, slots, korb_int_arith(c, slots, l, rhs, 2, korb_flink_line(flink)));
+        return KP_OPD(c, flink, slots, lhs, "*", korb_int_arith(c, slots, l, rhs, 2, korb_flink_line(flink)));
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float*Float inline */
         return korb_flo(c, slots, korb_float_val(l) * korb_float_val(rhs));
     if (KORB_FLOAT_P(l) && FIXNUM_P(rhs))                    /* Float*Integer inline */
         return korb_flo(c, slots, korb_float_val(l) * (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer*Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) * korb_float_val(rhs));
-    return KP_DEOPT(c, flink, slots, korb_mul_slow(c, slots, lhs, rhs, korb_flink_line(flink)));
+    return KP_OPD(c, flink, slots, lhs, "*", korb_mul_slow(c, slots, lhs, rhs, korb_flink_line(flink)));
 }
 
 // CRuby floor semantics for / and % (sign follows the divisor).
@@ -524,16 +536,16 @@ node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         korb_sword_t a = FIX2LONG(l), b = FIX2LONG(rhs);
         if (UNLIKELY(b == 0))
-            return korb_raise(c, slots, KORB_E_ZERODIV, korb_flink_line(flink), "divided by 0");
+            return KP_OPD(c, flink, slots, lhs, "/", korb_raise(c, slots, KORB_E_ZERODIV, korb_flink_line(flink), "divided by 0"));
         korb_sword_t q = a / b;
         if ((a % b != 0) && ((a ^ b) < 0)) q--;
         if (UNLIKELY(!FIXABLE(q)))
-            return KP_DEOPT(c, flink, slots, korb_int_arith(c, slots, l, rhs, 3, korb_flink_line(flink)));
+            return KP_OPD(c, flink, slots, lhs, "/", korb_int_arith(c, slots, l, rhs, 3, korb_flink_line(flink)));
         return RESULT_OK(LONG2FIX(q));
     }
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
-        return KP_DEOPT(c, flink, slots, korb_int_arith(c, slots, l, rhs, 3, korb_flink_line(flink)));
-    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return KP_DEOPT(c, flink, slots, korb_cpx_arith(c, slots, l, rhs, 3));   /* before Float (a Complex/Float must not fall into korb_num_arith) */
+        return KP_OPD(c, flink, slots, lhs, "/", korb_int_arith(c, slots, l, rhs, 3, korb_flink_line(flink)));
+    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return KP_OPD(c, flink, slots, lhs, "/", korb_cpx_arith(c, slots, l, rhs, 3));   /* before Float (a Complex/Float must not fall into korb_num_arith) */
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float/Float inline */
         return korb_flo(c, slots, korb_float_val(l) / korb_float_val(rhs));
     if (KORB_FLOAT_P(l) && FIXNUM_P(rhs))                    /* Float/Integer inline */
@@ -543,16 +555,16 @@ node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     /* Only a NUMERIC lhs goes to the numeric paths: `obj / 1.5` on a user class
      * that defines #/ must reach korb_user_binop below, not "can't be coerced". */
     if (KORB_FLOAT_P(l) || (KORB_FLOAT_P(rhs) && (KORB_INTEGER_P(l) || KORB_RATIONAL_P(l))))
-        return KP_DEOPT(c, flink, slots, korb_num_arith(c, slots, l, rhs, 3, korb_flink_line(flink)));
+        return KP_OPD(c, flink, slots, lhs, "/", korb_num_arith(c, slots, l, rhs, 3, korb_flink_line(flink)));
     if (KORB_RATIONAL_P(l) || (KORB_RATIONAL_P(rhs) && (KORB_INTEGER_P(l) || KORB_FLOAT_P(l))))
-        return KP_DEOPT(c, flink, slots, korb_rat_arith(c, slots, l, rhs, 3));
+        return KP_OPD(c, flink, slots, lhs, "/", korb_rat_arith(c, slots, l, rhs, 3));
     if (KORB_INTEGER_P(l)) {                            /* Fixnum or Bignum: coerce protocol, else TypeError */
         bool h; RESULT cr = korb_try_coerce(c, slots, l, &rhs, "/", korb_flink_line(flink), &h);
         if (h) return cr;
-        return korb_raise(c, slots, KORB_E_TYPE, korb_flink_line(flink), "%s can't be coerced into Integer", korb_type_name(rhs));
+        return KP_OPD(c, flink, slots, lhs, "/", korb_raise(c, slots, KORB_E_TYPE, korb_flink_line(flink), "%s can't be coerced into Integer", korb_type_name(rhs)));
     }
     { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "/", &h); if (h) return ur; }
-    return korb_raise(c, slots, KORB_E_NOMETHOD, korb_flink_line(flink), "undefined method '/' for %s", korb_a_type_name(l));
+    return KP_OPD(c, flink, slots, lhs, "/", korb_raise(c, slots, KORB_E_NOMETHOD, korb_flink_line(flink), "undefined method '/' for %s", korb_a_type_name(l)));
 }
 
 NODE_DEF
@@ -564,22 +576,22 @@ node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         korb_sword_t a = FIX2LONG(l), b = FIX2LONG(rhs);
         if (UNLIKELY(b == 0))
-            return korb_raise(c, slots, KORB_E_ZERODIV, korb_flink_line(flink), "divided by 0");
+            return KP_OPD(c, flink, slots, lhs, "%", korb_raise(c, slots, KORB_E_ZERODIV, korb_flink_line(flink), "divided by 0"));
         korb_sword_t r = a % b;
         if (r != 0 && ((r ^ b) < 0)) r += b;
         return RESULT_OK(LONG2FIX(r));
     }
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
-        return KP_DEOPT(c, flink, slots, korb_int_arith(c, slots, l, rhs, 4, korb_flink_line(flink)));
-    if (KORB_STRING_P(l)) return KP_DEOPT(c, flink, slots, korb_str_mod(c, slots, lhs, rhs));   /* "fmt" % args */
+        return KP_OPD(c, flink, slots, lhs, "%", korb_int_arith(c, slots, l, rhs, 4, korb_flink_line(flink)));
+    if (KORB_STRING_P(l)) return KP_OPD(c, flink, slots, lhs, "%", korb_str_mod(c, slots, lhs, rhs));   /* "fmt" % args */
     if ((KORB_INTEGER_P(l) || KORB_FLOAT_P(l)) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) && !KORB_OBJECT_P(rhs)) {   /* numeric l (incl. Bignum), float involved (a user-object rhs → the % method, which coerces) */
         double rd;
         if (korb_num_to_d(rhs, &rd) && rd == 0.0)       /* Float modulo by zero → ZeroDivisionError (not NaN) */
-            return korb_raise(c, slots, KORB_E_ZERODIV, korb_flink_line(flink), "divided by 0");
-        return KP_DEOPT(c, flink, slots, korb_num_arith(c, slots, l, rhs, 4, korb_flink_line(flink)));
+            return KP_OPD(c, flink, slots, lhs, "%", korb_raise(c, slots, KORB_E_ZERODIV, korb_flink_line(flink), "divided by 0"));
+        return KP_OPD(c, flink, slots, lhs, "%", korb_num_arith(c, slots, l, rhs, 4, korb_flink_line(flink)));
     }
     if (KORB_INTEGER_P(l) && !KORB_OBJECT_P(rhs))       /* Integer % non-object (nil/true/...) → TypeError, not NoMethodError */
-        return korb_raise(c, slots, KORB_E_TYPE, korb_flink_line(flink), "%s can't be coerced into Integer", korb_type_name(rhs));
+        return KP_OPD(c, flink, slots, lhs, "%", korb_raise(c, slots, KORB_E_TYPE, korb_flink_line(flink), "%s can't be coerced into Integer", korb_type_name(rhs)));
     slots[0] = l; slots[1] = rhs;                       /* Integer#% (coerces obj#coerce) / Range#% / user-defined % via dispatch */
     return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), korb_flink_line(flink), 1));
 }
@@ -702,7 +714,7 @@ node_lt(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
         return RESULT_OK((korb_sword_t)l < (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float<Float inline */
         return RESULT_OK(korb_float_val(l) < korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
-    return KP_DEOPT(c, flink, slots, korb_cmp_slow(c, slots, l, rhs, 0, korb_flink_line(flink)));
+    return KP_OPD(c, flink, slots, lhs, "<", korb_cmp_slow(c, slots, l, rhs, 0, korb_flink_line(flink)));
 }
 
 NODE_DEF
@@ -715,7 +727,7 @@ node_le(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
         return RESULT_OK((korb_sword_t)l <= (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float<=Float inline */
         return RESULT_OK(korb_float_val(l) <= korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
-    return KP_DEOPT(c, flink, slots, korb_cmp_slow(c, slots, l, rhs, 1, korb_flink_line(flink)));
+    return KP_OPD(c, flink, slots, lhs, "<=", korb_cmp_slow(c, slots, l, rhs, 1, korb_flink_line(flink)));
 }
 
 NODE_DEF
@@ -728,7 +740,7 @@ node_gt(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
         return RESULT_OK((korb_sword_t)l > (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float>Float inline */
         return RESULT_OK(korb_float_val(l) > korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
-    return KP_DEOPT(c, flink, slots, korb_cmp_slow(c, slots, l, rhs, 2, korb_flink_line(flink)));
+    return KP_OPD(c, flink, slots, lhs, ">", korb_cmp_slow(c, slots, l, rhs, 2, korb_flink_line(flink)));
 }
 
 NODE_DEF
@@ -741,7 +753,7 @@ node_ge(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
         return RESULT_OK((korb_sword_t)l >= (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float>=Float inline */
         return RESULT_OK(korb_float_val(l) >= korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
-    return KP_DEOPT(c, flink, slots, korb_cmp_slow(c, slots, l, rhs, 3, korb_flink_line(flink)));
+    return KP_OPD(c, flink, slots, lhs, ">=", korb_cmp_slow(c, slots, l, rhs, 3, korb_flink_line(flink)));
 }
 
 // == / != : immediate identity / String content compare by default.  When a

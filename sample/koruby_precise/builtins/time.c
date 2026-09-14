@@ -647,7 +647,17 @@ static int korb_time_iso_parse(const char *s, uint32_t len, korb_sword_t comp[6]
     return 0;
 }
 
+/* Time#initialize — `super` from a Time subclass's own #initialize (Time.new on
+ * a plain Time never reaches it).  A Time's whole state is ivars, so build a
+ * plain one the normal way and adopt its ivars. */
+static RESULT korb_m_time_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+
 static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(korb_sub_overrides_init_p(c, VALUE_REF_GET(self),
+                                           korb_const_get(c->vm, korb_intern(c->vm, "Time", 4))))) {
+        slots[0] = UNWRAP(korb_obj_new(c, slots, VALUE_REF_GET(self)));   /* a Time is all ivars */
+        return korb_sub_new_init(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, NULL);
+    }
     uint32_t n = VALUE_SLICE_LEN(a);
     VALUE prec_v = KORB_NIL;
     /* A trailing Hash is keyword arguments (in:, precision:); Time.new never
@@ -1298,6 +1308,9 @@ void korb_init_time(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "mktime",  korb_m_time_local, -1);
     korb_class_def_cfn(c, slots[1], "new",     korb_m_time_new,   -1);
     const VALUE t = slots[0];
+    korb_class_def_cfn(c, t, "initialize", korb_m_time_initialize, -1);
+    { struct korb_method *const mi = korb_class_own_method(t, korb_intern(vm, "initialize", 10));
+      if (mi) mi->visibility = 1; }                    /* #initialize is private */
     korb_class_def_cfn(c, t, "to_i",  korb_m_time_to_i,  0);
     korb_class_def_cfn(c, t, "to_f",  korb_m_time_to_f,  0);
     korb_class_def_cfn(c, t, "year",  korb_m_time_year,  0);
@@ -1356,4 +1369,12 @@ void korb_init_time(CTX *c, VALUE *slots) {
     /* Comparable derives < <= > >= between/clamp from Time#<=>. */
     const VALUE comp = korb_const_get(vm, korb_intern(vm, "Comparable", 10));
     if (KORB_CLASS_P(comp)) { slots[1] = comp; (void)korb_do_include(c, slots + 2, slots[0], VALUE_SLICE_MAKE(&slots[1], 1)); }
+}
+
+static RESULT korb_m_time_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Time", 4));   /* Time, not the subclass: that re-enters here */
+    const RESULT tr = korb_m_time_new(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+    if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+    slots[1] = tr.value;
+    return korb_adopt_ivars(c, slots + 2, self, VALUE_REF_AT(&slots[1]));
 }

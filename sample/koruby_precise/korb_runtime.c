@@ -4680,6 +4680,18 @@ static struct korb_method *korb_mro_seg_find(VALUE klass, uint32_t mid, VALUE *o
     }
     return NULL;
 }
+/* The entry `cls` defines itself, or NULL.  Unlike korb_class_method_slot this
+ * only looks: that one clears rfn/rbfn on the slot it returns, so using it to
+ * touch an already-registered method unhooks the function. */
+static struct korb_method *
+korb_class_own_method(const VALUE cls, const uint32_t mid)
+{
+    if (!KORB_CLASS_P(cls)) return NULL;
+    const KorbClass *const k = VAL2CLASS(cls);
+    for (uint32_t i = 0; i < k->method_cnt; i++)
+        if (k->methods[i]->mid == mid) return k->methods[i];
+    return NULL;
+}
 static struct korb_method *
 korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def)
 {
@@ -5763,8 +5775,8 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         return RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
     if (m->kind == KORB_METHOD_CFUNC) {           /* super into a builtin (e.g. Exception#initialize) */
         if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc))
-            return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                              "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+            return korb_raise_arity(c, slots, m, mid, line,
+                                    "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
         slots[0] = self;                          /* receiver in scratch (rooted below the rfn cursor) */
         const VALUE_REF recv = VALUE_REF_AT(&slots[0]);
         const VALUE_SLICE args = VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc);
@@ -8020,6 +8032,21 @@ korb_bt_unwind(CTX *c, KorbException *e, uint32_t line, uint32_t mid, const stru
     e->line = line;
 }
 
+/* See node.h.  bt_cnt == 0 means the raise has not been named yet: a cold path
+ * that dispatched (a redefined operator, #coerce, a user #+) already pushed its
+ * own frame and must not be relabelled. */
+void
+korb_op_bt(CTX *const c, const RESULT r, const VALUE recv, const char *const op,
+           const uint32_t oplen, const uint32_t line)
+{
+    if (LIKELY(r.state != KORB_RAISE) || c->vm->bt_cnt != 0 || !KORB_EXC_P(r.value)) return;
+    const VALUE dcls = korb_dispatch_class(c, recv);
+    if (!KORB_CLASS_P(dcls)) return;
+    const uint32_t op_mid = korb_intern(c->vm, op, oplen);
+    const struct korb_method *const m = korb_class_find_method(dcls, op_mid, NULL);
+    if (m != NULL) korb_bt_unwind(c, VAL2EXC(r.value), line, op_mid, m);
+}
+
 /* A required/loaded file's own top-level frame, for a raise that leaves the
  * file.  Nothing unwinds out of it the way a call does — korb_eval_toplevel_wrap
  * just returns RAISE — so the frame has to be recorded there, between the last
@@ -8553,6 +8580,21 @@ korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
     return RESULT_RAISE_((VALUE)e);
 }
 
+/* See node.h. */
+RESULT
+korb_raise_arity(CTX *c, VALUE *const slots, const struct korb_method *const m,
+                 const uint32_t mid, const uint32_t line, const char *const fmt, ...)
+{
+    char buf[192];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    const RESULT r = korb_raise(c, slots, KORB_E_ARGUMENT, line, "%s", buf);
+    if (LIKELY(KORB_EXC_P(r.value))) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
+    return r;
+}
+
 static const char *
 korb_etype_name(unsigned int etype)
 {
@@ -8981,7 +9023,7 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
     switch (m->kind) {
       case KORB_METHOD_BUILTIN: {   /* global C function reached via send / method_missing / Kernel.x */
         if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc))
-            return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+            return korb_raise_arity(c, slots, m, mid, line, "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
         VALUE *const bbase = &slots[-(korb_sword_t)argc];
         const VALUE bsaved = framed ? korb_cframe_enter(c, bbase, m) : 0;
         RESULT r = m->bfn(c, slots, VALUE_SLICE_MAKE(bbase, argc));
@@ -9002,8 +9044,8 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
       }
       case KORB_METHOD_CFUNC: {
         if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc))
-            return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                              "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+            return korb_raise_arity(c, slots, m, mid, line,
+                                    "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
         const VALUE_REF recv = VALUE_REF_AT(recv_slot);
         const VALUE_SLICE args = VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc);
         /* The window is the frame CRuby shows for this C method ("Array#each",
@@ -9284,9 +9326,9 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 
     if (m->kind == KORB_METHOD_BUILTIN) {
         if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc)) {
-            return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                              "wrong number of arguments (given %u, expected %d)",
-                              argc, m->params_cnt);
+            return korb_raise_arity(c, slots, m, m->mid, line,
+                                    "wrong number of arguments (given %u, expected %d)",
+                                    argc, m->params_cnt);
         }
         const VALUE bsaved = korb_cframe_enter(c, base, m);   /* the frame `puts` shows as */
         RESULT r = m->bfn(c, slots, VALUE_SLICE_MAKE(base, argc));
@@ -10340,6 +10382,58 @@ static bool korb_range_default_init_p(CTX *c, VALUE cls) {
            found_def == korb_const_get(c->vm, korb_intern(c->vm, "BasicObject", 11));
 }
 
+/* Copy every instance variable of `src` onto `dst`.  A builtin whose whole state
+ * lives in ivars (Time / File / IO) initializes the object `new` allocated for a
+ * subclass this way: build a throwaway by the normal route, then adopt it. */
+static RESULT
+korb_adopt_ivars(CTX *const c, VALUE *const slots, VALUE_REF dst, VALUE_REF src)
+{
+    if (!KORB_OBJECT_P(VALUE_REF_GET(src))) return RESULT_OK(VALUE_REF_GET(dst));
+    const uint32_t n = c->vm->shapes[VAL2OBJ(VALUE_REF_GET(src))->shape_id].ivar_count;
+    for (uint32_t i = 1; i <= n; i++) {
+        uint32_t sym = 0;                                /* the ivar placed at index i (leaf→root walk) */
+        for (uint32_t sid = VAL2OBJ(VALUE_REF_GET(src))->shape_id; sid; sid = c->vm->shapes[sid].parent)
+            if (c->vm->shapes[sid].ivar_count == i) { sym = c->vm->shapes[sid].edge_sym; break; }
+        if (sym == 0) continue;
+        slots[0] = korb_ivar_get(c, VALUE_REF_GET(src), ID2SYM(sym));
+        CHECK(korb_ivar_set(c, slots + 1, dst, ID2SYM(sym), slots[0]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
+/* koruby builds Regexp/Time/File/Dir/IO from a CFUNC singleton `new`; CRuby
+ * reaches those constructors through Class#new, so a subclass's own #initialize
+ * runs and `super` lands on the builtin's.  True when `cls` is a subclass of
+ * `base` that defines #initialize below it — such a class must get the
+ * allocate + #initialize route instead of the built object.  (An #initialize
+ * the builtin itself would use — its own, or an inherited default above it —
+ * is not an override.) */
+static bool
+korb_sub_overrides_init_p(CTX *const c, const VALUE cls, const VALUE base)
+{
+    if (!KORB_CLASS_P(cls) || !KORB_CLASS_P(base) || cls == base) return false;
+    VALUE idef = KORB_NIL;
+    const struct korb_method *const init = korb_class_find_method(cls, c->vm->mid_initialize, &idef);
+    return init != NULL && init->kind == KORB_METHOD_ISEQ &&
+           KORB_CLASS_P(idef) && idef != base && !korb_class_le(base, idef);
+}
+
+/* The Class#new such a subclass should have had: run its #initialize on `inst`
+ * with the constructor's own arguments.  `super` in it reaches the builtin's
+ * #initialize, which fills the object in place. */
+static RESULT
+korb_sub_new_init(CTX *c, VALUE *const slots, VALUE_REF instref, const VALUE_SLICE a,
+                  NODE *block, VALUE *def_env, VALUE *captured_self)
+{
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    slots[0] = VALUE_REF_GET(instref);                 /* receiver, below the args (send layout) */
+    for (uint32_t i = 0; i < n; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+    const RESULT r = korb_send_impl(c, slots + 1 + n, c->vm->mid_initialize, 0, n,
+                                    block, def_env, captured_self);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(slots[0]);                        /* the (possibly moved) instance */
+}
+
 static RESULT
 korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                NODE *block, VALUE *def_env, VALUE *captured_self)
@@ -10458,7 +10552,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             VALUE *const base = slots - argc;
             if (gm->kind == KORB_METHOD_BUILTIN) {                            /* global C builtin (Integer/Float/p/...) */
                 if (UNLIKELY(gm->params_cnt >= 0 && (uint32_t)gm->params_cnt != argc))
-                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %d)", argc, gm->params_cnt);
+                    return korb_raise_arity(c, slots, gm, mid, line, "wrong number of arguments (given %u, expected %d)", argc, gm->params_cnt);
                 const VALUE bsaved = korb_cframe_enter(c, base, gm);
                 RESULT r = gm->bfn(c, slots, VALUE_SLICE_MAKE(base, argc));
                 korb_cframe_leave(c, bsaved);
@@ -12717,6 +12811,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_REGEXP, "==", korb_m_re_eq, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "eql?", korb_m_re_eq, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "hash", korb_m_re_hash, 0);
+    korb_def_cmethod(c, KORB_C_REGEXP, "__init_pattern", korb_m_re_init_pattern, -1);   /* the prelude's #initialize calls this */
+    { struct korb_method *const mi = korb_class_own_method(korb_builtin_class_obj(c->vm, KORB_C_REGEXP),
+                                                          korb_intern(c->vm, "__init_pattern", 14));
+      if (mi) mi->visibility = 1; }
     korb_def_cmethod(c, KORB_C_MATCHDATA, "[]", korb_m_md_aref, -1);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "to_s", korb_m_md_to_s, 0);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "to_a", korb_m_md_to_a, 0);

@@ -769,6 +769,11 @@ static inline ARO_BORROW char  *korb_str_data   (VALUE v)           { return kor
 #define KORB_SET_P(v)      (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_SET)
 #define VAL2SET(v)         ((KorbSet *)(uintptr_t)KORB_SC(v))
 #define KORB_REGEXP_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_REGEXP)
+/* KorbRegexp::flags bit for an allocated-but-not-yet-#initialize'd payload (a
+ * Regexp subclass whose own #initialize runs before `super`).  The source is a
+ * valid empty String so nothing dereferences nil; the bit is what makes Regexp
+ * methods refuse it, and it is invisible to #options. */
+#define KORB_RE_UNINIT     0x20000u
 #define VAL2RE(v)          ((KorbRegexp *)(uintptr_t)KORB_SC(v))
 #define KORB_METHOD_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_METHOD)
 #define VAL2METH(v)        ((KorbMethod *)(uintptr_t)KORB_SC(v))

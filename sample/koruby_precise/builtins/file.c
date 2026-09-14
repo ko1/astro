@@ -2056,9 +2056,9 @@ static RESULT korb_dir_fill(CTX *c, VALUE *slots, VALUE_REF obj, const char *pat
     return RESULT_OK(VALUE_REF_GET(obj));
 }
 /* Build a Dir instance over `path` (rooted in the caller's slots on return). */
-static RESULT korb_dir_make(CTX *c, VALUE *slots, const char *path, uint32_t plen, uint32_t enc) {
-    const VALUE dcls = korb_const_get(c->vm, korb_intern(c->vm, "Dir", 3));
-    slots[0] = UNWRAP(korb_obj_new(c, slots + 1, dcls));         /* the Dir (rooted) */
+static RESULT korb_dir_make(CTX *c, VALUE *slots, VALUE cls, const char *path, uint32_t plen, uint32_t enc) {
+    if (!KORB_CLASS_P(cls)) cls = korb_const_get(c->vm, korb_intern(c->vm, "Dir", 3));
+    slots[0] = UNWRAP(korb_obj_new(c, slots + 1, cls));          /* the Dir (rooted); a subclass keeps its class */
     return korb_dir_fill(c, slots + 1, VALUE_REF_AT(&slots[0]), path, plen, enc);
 }
 /* Dir#initialize(path) — Dir.new goes through the C builder, but Marshal's 'd'
@@ -2080,9 +2080,23 @@ static RESULT korb_m_dir_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(VALUE_REF_GET(self));
 }
 /* Dir.new(path) / Dir.open(path) [ { |dir| } ] */
+/* Dir.open's block tail: yield the directory, then close it whatever happened. */
+static RESULT korb_dir_open_yield(CTX *c, VALUE *slots, VALUE_REF dir,
+                                  struct Node *block, VALUE *def_env, VALUE *captured_self) {
+    slots[0] = VALUE_REF_GET(dir);                               /* Dir.open(block) → block value, dir closed after */
+    RESULT br = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+    slots[0] = br.value;                                         /* root across the ivar write (raised value included) */
+    const RESULT cr = korb_ivar_set(c, slots + 1, dir, ID2SYM(korb_dir_closed_id(c)), KORB_TRUE);
+    br.value = slots[0];
+    if (br.state != KORB_NORMAL) return br;
+    CHECK(cr);
+    return br;
+}
+/* Dir.open — CRuby's dir_s_open allocates the receiver class and runs Dir's own
+ * C #initialize, so a subclass's #initialize does NOT run here (only Dir.new,
+ * which goes through Class#new, reaches it). */
 static RESULT korb_m_dir_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                               struct Node *block, VALUE *def_env, VALUE *captured_self) {
-    (void)self;
     uint32_t denc = UINT32_MAX;
     if (VALUE_SLICE_LEN(a) >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1))) {
         CHECK(korb_dir_enc_kw(c, slots, VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1), &denc));
@@ -2091,21 +2105,26 @@ static RESULT korb_m_dir_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
     char pbuf[4096]; size_t pl = strlen(path); if (pl >= sizeof pbuf) pl = sizeof pbuf - 1;
     memcpy(pbuf, path, pl); pbuf[pl] = '\0';                     /* path is a movable interior ptr */
-    slots[0] = UNWRAP(korb_dir_make(c, slots, pbuf, (uint32_t)pl, denc));
+    slots[0] = UNWRAP(korb_dir_make(c, slots, VALUE_REF_GET(self), pbuf, (uint32_t)pl, denc));
     VALUE_REF dir = VALUE_REF_AT(&slots[0]);
     if (KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {                  /* #to_path answers in the argument's encoding */
         const VALUE pv = korb_ivar_get(c, VALUE_REF_GET(dir), ID2SYM(korb_dir_path_id(c)));
         if (KORB_STRING_P(pv)) KORB_STR_ENC_SET(pv, KORB_STR_ENC(VALUE_SLICE_GET(a, 0)));
     }
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(dir));
-    slots[1] = VALUE_REF_GET(dir);                               /* Dir.open(block) → block value, dir closed after */
-    RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
-    slots[1] = br.value;                                         /* root across the ivar write (raised value included) */
-    const RESULT cr = korb_ivar_set(c, slots + 2, dir, ID2SYM(korb_dir_closed_id(c)), KORB_TRUE);
-    br.value = slots[1];
-    if (br.state != KORB_NORMAL) return br;
-    CHECK(cr);
-    return br;
+    return korb_dir_open_yield(c, slots + 1, dir, block, def_env, captured_self);
+}
+/* Dir.new(path) — Class#new, so a subclass's own #initialize runs (`super`
+ * reaches Dir#initialize) and a block is ignored, unlike Dir.open. */
+static RESULT korb_m_dir_s_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                               struct Node *block, VALUE *def_env, VALUE *cself) {
+    (void)block; (void)def_env; (void)cself;
+    if (UNLIKELY(korb_sub_overrides_init_p(c, VALUE_REF_GET(self),
+                                           korb_const_get(c->vm, korb_intern(c->vm, "Dir", 3))))) {
+        slots[0] = UNWRAP(korb_obj_new(c, slots, VALUE_REF_GET(self)));   /* a Dir is all ivars */
+        return korb_sub_new_init(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, NULL);
+    }
+    return korb_m_dir_open(c, slots, self, a, NULL, NULL, NULL);
 }
 static const KorbArray *korb_dir_ents(CTX *c, VALUE self) { const VALUE e = korb_ivar_get(c, self, ID2SYM(korb_dir_ents_id(c))); return KORB_ARRAY_P(e) ? VAL2ARY(e) : NULL; }
 /* Dir#read → next entry name (advancing the cursor), or nil at end. */
@@ -2699,7 +2718,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn_blk(c, slots[3], "fchdir", korb_m_dir_fchdir, -1);
     korb_class_def_cfn(c, slots[3], "chroot",    korb_m_dir_chroot,    1);
     korb_class_def_cfn_blk(c, slots[3], "open", korb_m_dir_open,    -1);   /* Dir.open [ {|d|} ] */
-    korb_class_def_cfn_blk(c, slots[3], "new",  korb_m_dir_open,    -1);   /* Dir.new */
+    korb_class_def_cfn_blk(c, slots[3], "new",  korb_m_dir_s_new,   -1);   /* Dir.new (Class#new: no block, runs #initialize) */
     /* Dir instance methods (eager-entry cursor object). */
     korb_class_def_cfn(c, slots[2], "initialize", korb_m_dir_initialize, -1);
     korb_class_def_cfn(c, slots[2], "read",       korb_m_dir_read,       0);

@@ -626,18 +626,32 @@ static RESULT korb_m_io_s_pipe(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* IO#initialize(fd[, mode][, **opts]) (private) — re-associate this IO object
  * with `fd`.  CRuby lets a subclass (or a re-init) point an existing IO at a
  * different descriptor; the object identity is kept. */
+static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                 struct Node *block, VALUE *def_env, VALUE *cself);   /* fwd (below) */
+static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                               struct Node *block, VALUE *def_env, VALUE *captured_self);   /* fwd (below) */
+
+/* IO#initialize — `super` from an IO subclass's own #initialize.  An IO's whole
+ * state is ivars, so wrap the descriptor the same way IO.new does and adopt it;
+ * doing it by hand here dropped mode: / binmode: / path:. */
 static RESULT korb_m_io_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    uint32_t n = VALUE_SLICE_LEN(a);
-    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1)) &&
-        (VAL2HASH(VALUE_SLICE_GET(a, n - 1))->head.flags & KORB_FL_KWARGS)) n--;   /* keyword options */
-    if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
-    if (UNLIKELY(n > 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", n);
-    korb_sword_t fdv;
-    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &fdv));
-    if (UNLIKELY(fcntl((int)fdv, F_GETFD) == -1)) return korb_raise_errno(c, slots, errno, "fcntl", NULL);
-    const uint32_t idx = korb_io_register(c->vm, (int)fdv, false);
-    CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_fp_mid(c)), LONG2FIX((korb_sword_t)idx)));
-    return RESULT_OK(VALUE_REF_GET(self));
+    slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "IO", 2));   /* IO, not the subclass: that re-enters here */
+    const RESULT nr = korb_m_io_s_new_fd(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, NULL);
+    if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+    slots[1] = nr.value;
+    return korb_adopt_ivars(c, slots + 2, self, VALUE_REF_AT(&slots[1]));
+}
+
+/* File#initialize — `super` from a File subclass's own #initialize.  File.open
+ * (no block) does the path/mode work; the fresh IO's ivars are the whole state. */
+static RESULT korb_m_file_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..3)");
+    slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "File", 4));   /* File, not the subclass: that re-enters here */
+    const RESULT fr = korb_m_file_open(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, NULL);
+    if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+    slots[1] = fr.value;
+    return korb_adopt_ivars(c, slots + 2, self, VALUE_REF_AT(&slots[1]));
 }
 
 /* An ASCII-8BIT String on its way into a transcoding stream: CRuby routes every
@@ -2422,6 +2436,18 @@ static RESULT korb_m_io_s_sysopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 
 /* IO.new(fd, mode = "r") / IO.for_fd — wrap an already-open descriptor.  A
  * trailing options Hash (autoclose:, encoding:, …) is accepted and ignored. */
+/* IO.new(fd) — Class#new, so a subclass's own #initialize runs.  IO.for_fd does
+ * not (CRuby's rb_io_s_for_fd calls rb_io_initialize in C), so it keeps
+ * korb_m_io_s_new_fd directly. */
+static RESULT korb_m_io_s_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                              struct Node *block, VALUE *def_env, VALUE *cself) {
+    if (UNLIKELY(korb_sub_overrides_init_p(c, VALUE_REF_GET(self),
+                                           korb_const_get(c->vm, korb_intern(c->vm, "IO", 2))))) {
+        slots[0] = UNWRAP(korb_obj_new(c, slots, VALUE_REF_GET(self)));   /* an IO is all ivars */
+        return korb_sub_new_init(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, NULL);
+    }
+    return korb_m_io_s_new_fd(c, slots, self, a, block, def_env, cself);
+}
 static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                  struct Node *block, VALUE *def_env, VALUE *cself) {
     (void)def_env; (void)cself;
@@ -2601,6 +2627,13 @@ static RESULT korb_file_open_yield(CTX *c, VALUE *slots, VALUE_REF io,
 
 static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                struct Node *block, VALUE *def_env, VALUE *captured_self) {
+    if (UNLIKELY(korb_sub_overrides_init_p(c, VALUE_REF_GET(self),
+                                           korb_const_get(c->vm, korb_intern(c->vm, "File", 4))))) {
+        slots[0] = UNWRAP(korb_obj_new(c, slots, VALUE_REF_GET(self)));   /* a File is all ivars */
+        CHECK(korb_sub_new_init(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, NULL));
+        if (block == NULL) return RESULT_OK(slots[0]);
+        return korb_file_open_yield(c, slots + 1, VALUE_REF_AT(&slots[0]), block, def_env, captured_self);
+    }
     VALUE pv = VALUE_SLICE_GET(a, 0);
     /* File.open(fd[, mode]) wraps an existing descriptor, exactly like IO.new. */
     if (FIXNUM_P(pv)) {
@@ -2786,7 +2819,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, io_sing, "select",    korb_m_io_s_select,    -1);   /* POLL blop (thread.c) */
     korb_class_def_cfn_blk(c, io_sing, "pipe",  korb_m_io_s_pipe,      -1);
     korb_class_def_cfn(c, io_sing, "sysopen",   korb_m_io_s_sysopen,   -1);
-    korb_class_def_cfn_blk(c, io_sing, "new",   korb_m_io_s_new_fd,    -1);
+    korb_class_def_cfn_blk(c, io_sing, "new",   korb_m_io_s_new,       -1);
     korb_class_def_cfn_blk(c, io_sing, "for_fd", korb_m_io_s_new_fd, -1);
 #undef IOM
 #undef IOB
@@ -2811,6 +2844,9 @@ void korb_init_io(CTX *c, VALUE *slots) {
         const VALUE fsing = slots[3];
         korb_class_def_cfn_blk(c, fsing, "open", korb_m_file_open, -1);   /* File.open (block) */
         korb_class_def_cfn_blk(c, fsing, "new", korb_m_file_new, -1);     /* File.new = open, a block only warns */
+        korb_class_def_cfn(c, file_cls, "initialize", korb_m_file_initialize, -1);
+        { struct korb_method *const mi = korb_class_own_method(file_cls, korb_intern(vm, "initialize", 10));
+          if (mi) mi->visibility = 1; }                /* #initialize is private */
     }
     /* $stdout / $stderr / $stdin + STDOUT / STDERR / STDIN — IO objects on the std slots. */
     /* rw: STDIN is read-only, STDOUT/STDERR write-only — CRuby raises IOError

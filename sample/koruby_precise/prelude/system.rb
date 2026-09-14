@@ -1985,11 +1985,12 @@ class Regexp
     src.scan(/\\x([0-9a-fA-F]{1,2})/).any? { |h| h[0].to_i(16) > 0x7f }
   end
 
-  # Regexp.new/.compile build the object outright, so #initialize is only ever
-  # reachable via #send on an already-built Regexp — which CRuby always rejects.
-  def initialize(*)
+  # Regexp.new/.compile build the object outright, so #initialize only ever runs
+  # as `super` from a Regexp subclass's own #initialize — on the uninitialized
+  # payload .new handed it.  Anything else is CRuby's "already initialized".
+  def initialize(*args)
     raise FrozenError.new("can't modify frozen Regexp: #{inspect}", receiver: self) if frozen?
-    raise TypeError, "already initialized regexp"
+    __init_pattern(*args)
   end
   private :initialize
 end
