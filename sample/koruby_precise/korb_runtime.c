@@ -16950,8 +16950,8 @@ korb_ctx_new(void)
      * CRuby the differential tests run against so version guards behave the same. */
     {
         static const char *const rc[][2] = {
-            {"RUBY_VERSION", "4.0.2"}, {"RUBY_ENGINE", "ruby"},
-            {"RUBY_PLATFORM", "x86_64-linux"}, {"RUBY_ENGINE_VERSION", "4.0.2"},
+            {"RUBY_VERSION", "4.1.0"}, {"RUBY_ENGINE", "ruby"},
+            {"RUBY_PLATFORM", "x86_64-linux"}, {"RUBY_ENGINE_VERSION", "4.1.0"},
             {"RUBY_DESCRIPTION", KORUBY_RUBY_DESCRIPTION},
             {"RUBY_COPYRIGHT", "ruby - Copyright (C) 1993-2026 Yukihiro Matsumoto"},
             {"RUBY_RELEASE_DATE", "2026-01-01"}, {"RUBY_REVISION", "0000000000000000000000000000000000000000"},

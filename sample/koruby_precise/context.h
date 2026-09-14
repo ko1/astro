@@ -1744,7 +1744,7 @@ struct CTX_struct {
  * --------------------------------------------------------------------------- */
 /* $RUBY_DESCRIPTION — the `-v` banner and the RUBY_DESCRIPTION constant must
  * agree (command_line/rubyopt_spec compares them). */
-#define KORUBY_RUBY_DESCRIPTION "ruby 4.0.2 (koruby/ASTro) [x86_64-linux]"
+#define KORUBY_RUBY_DESCRIPTION "ruby 4.1.0 (koruby/ASTro) [x86_64-linux]"
 
 struct koruby_option {
     bool plain;          /* --plain: ignore the code store */

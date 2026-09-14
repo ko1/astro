@@ -4878,3 +4878,23 @@ HEAD のままの版上げは pass 30979 → 30988 (**+9**)。
 なぜ prism の再コンパイルだけで source_range_spec の到達点が変わるのかは
 **未確認** (同一ソース・同一バージョン 1.4.0、違いは gcc とフラグ
 `-Wno-error` のみ)。潜在的な UB を疑う根拠としてここに残す。
+
+## RUBY_VERSION を 4.1.0 に上げた (2026-09-14)
+
+`RUBY_VERSION` / `RUBY_ENGINE_VERSION` / `KORUBY_RUBY_DESCRIPTION` を
+4.0.2 → 4.1.0。`RbConfig::CONFIG` の `ruby_version`/MAJOR/MINOR/TEENY と
+`Gem::VERSION` 相当は `RUBY_VERSION` から導かれるので追随する。
+
+sweep (core + language + library, 3747 file, pass は sweep の生値
+`ex - F - E`。率は同じ run の pass と ex で割る):
+
+| | pass | fail | err | WFAIL | ex | 率 |
+|---|---|---|---|---|---|---|
+| 4.0.2 | 30980 | 403 | 213 | 0 | 31596 | 98.051% |
+| 4.1.0 | 31086 | 449 | 474 | 1 | 32009 | 97.116% |
+
+pass は **+106**。ex が +413 増える (`ruby_version_is "4.1"` が開く) ので率は
+下がるが、実際に通る数は増えている。版上げで閉じる古い spec (退行ではない)
+が −99 あり、その大半は 4.1 で削除された `Socket.gethostby*` (−54) と
+`chilled_string` (−8)。残る 4.1 の未対応は本ファイル前節の「残っている
+4.1 の穴」を参照。
