@@ -1424,6 +1424,7 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         slots[1] = UNWRAP(korb_str_new(c, slots + 1, "", 0));
         slots[1] = UNWRAP(korb_re_alloc(c, slots + 2, slots[1], KORB_RE_UNINIT));
         ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_HAS_KLASS;
+        ((AroObjectHeader *)(uintptr_t)slots[1])->flags &= ~(uint32_t)KORB_FL_FROZEN;   /* only a plain Regexp is frozen (CRuby re.c) */
         korb_klass_override_set(c, slots[1], slots[0]);    /* both rooted; set does not GC */
         return korb_sub_new_init(c, slots + 2, VALUE_REF_AT(&slots[1]), a, NULL, NULL, NULL);
     }
@@ -1509,6 +1510,7 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         slots[1] = rr.value;
         slots[2] = VALUE_REF_GET(self);
         ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_HAS_KLASS;
+        ((AroObjectHeader *)(uintptr_t)slots[1])->flags &= ~(uint32_t)KORB_FL_FROZEN;   /* only a plain Regexp is frozen (CRuby re.c) */
         korb_klass_override_set(c, slots[1], slots[2]);   /* both rooted; set does not GC */
         return RESULT_OK(slots[1]);
     }

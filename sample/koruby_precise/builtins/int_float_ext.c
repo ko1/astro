@@ -662,9 +662,19 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
     }
     return RESULT_OK(slots[1]);
 }
+/* A copied Regexp comes back frozen: CRuby freezes it in #initialize_copy
+ * (re.c reg_copy), so even clone(freeze: false) is frozen.  A subclass instance
+ * is the one exception, the same class test as every other Regexp path. */
+static RESULT korb_re_copy_freeze(const RESULT r) {
+    if (r.state == KORB_NORMAL && AROH_IS_GC_OBJECT(r.value) &&
+        KORB_OBJ_TYPE(r.value) == KORB_OBJ_REGEXP &&
+        !(((const AroObjectHeader *)(uintptr_t)r.value)->flags & KORB_FL_HAS_KLASS))
+        ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;
+    return r;
+}
 static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    return korb_obj_copy_impl(c, slots, self, korb_intern(c->vm, "initialize_dup", 14), NULL);
+    return korb_re_copy_freeze(korb_obj_copy_impl(c, slots, self, korb_intern(c->vm, "initialize_dup", 14), NULL));
 }
 /* Object#clone(freeze: nil) — like dup, but copies the frozen state (unless
  * freeze: false), and freeze: true forces it.  (Singleton-class copy not done.) */
@@ -709,7 +719,7 @@ static RESULT korb_m_obj_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         ((AroObjectHeader *)(uintptr_t)r.value)->flags |=
             (uint16_t)(KORB_FL_CHILLED | KORB_FL_FROZEN |
                        (((const AroObjectHeader *)(uintptr_t)sv2)->flags & KORB_FL_CHILLED_SYM));
-    return r;
+    return korb_re_copy_freeze(r);
 }
 
 /* in-place reverse of items[lo, hi) — no alloc, so pointers are stable. */

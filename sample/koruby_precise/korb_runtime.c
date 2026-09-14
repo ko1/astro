@@ -445,6 +445,7 @@ static RESULT korb_m_rat_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_rat_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RAT->num == LONG2FIX(0) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_rat_integerp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
 static void korb_class_qname_into(CTX *c, VALUE cls, char *out, size_t outsz);   /* defined below */
+static RESULT korb_raise_attr_arity(CTX *c, VALUE *slots, uint32_t line, uint32_t argc);   /* defined below */
 int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* defined below; non-static so node_eval.c's Hash#[] fast path can call it (LTO still inlines) */
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* defined below; builtins emit rb_warn-style warnings */
 void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const char *fmt, ...);   /* with a source position */
@@ -3283,22 +3284,23 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
 static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb_re_match_t *m);
 static RESULT korb_re_build_md(CTX *c, VALUE *slots, VALUE subj, VALUE re, const korb_re_match_t *m);
 static void korb_re_set_lastmatch(CTX *c, VALUE md_or_nil);
+/* CRuby freezes a Regexp at the end of every initialization path (literal,
+ * Regexp.new, .union, init_copy) — but only when its class is exactly Regexp
+ * (re.c: `if (RBASIC_CLASS(obj) == rb_cRegexp) OBJ_FREEZE(obj)`).  Everything
+ * built here starts plain-classed, so the freeze belongs here; the two sites in
+ * korb_m_re_new that hand the payload to a subclass take it back off. */
 static RESULT korb_re_alloc(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
     VALUE_REF sref = SLOTS_PUSH(slots, source);          /* root source across alloc */
     KorbRegexp *r = korb_alloc(c, slots, sizeof(KorbRegexp), KORB_OBJ_REGEXP);
     r->flags = flags;
     r->ci = (flags & 4u) ? 1u : 0u;
     ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->source, VALUE_REF_GET(sref));
+    r->head.flags |= KORB_FL_FROZEN;
     return RESULT_OK((VALUE)r);
 }
-/* node.def's `/pat/` and `/#{}/` reach only this entry point, and a Regexp
- * literal is frozen in CRuby — so the freeze lives here and every other
- * constructor (Regexp.new / .union / String coercion) uses korb_re_alloc. */
+/* node.def's `/pat/` and `/#{}/` reach only this entry point. */
 RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
-    const RESULT r = korb_re_alloc(c, slots, source, flags);
-    if (LIKELY(r.state == KORB_NORMAL))
-        ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;
-    return r;
+    return korb_re_alloc(c, slots, source, flags);
 }
 /* obj.method(:sym) → a bound Method object (receiver + method id). */
 RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid) {
@@ -5771,8 +5773,10 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                           "super: no superclass method '%s'", korb_sym_name(vm, mid));
     }
-    if (m->kind == KORB_METHOD_ATTR_R)
+    if (m->kind == KORB_METHOD_ATTR_R) {
+        if (UNLIKELY(argc != 0)) return korb_raise_attr_arity(c, slots, line, argc);
         return RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
+    }
     if (m->kind == KORB_METHOD_CFUNC) {           /* super into a builtin (e.g. Exception#initialize) */
         if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc))
             return korb_raise_arity(c, slots, m, mid, line,
@@ -8621,6 +8625,15 @@ korb_raise_arity(CTX *c, VALUE *const slots, const struct korb_method *const m,
     return r;
 }
 
+/* An attr_reader takes no arguments.  CRuby raises at the CALL SITE (no frame
+ * for the reader itself), the way korb_dispatch_method's ATTR_W case does. */
+static RESULT
+korb_raise_attr_arity(CTX *const c, VALUE *const slots, const uint32_t line, const uint32_t argc)
+{
+    return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                      "wrong number of arguments (given %u, expected 0)", argc);
+}
+
 static const char *
 korb_etype_name(unsigned int etype)
 {
@@ -9058,6 +9071,7 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         return r;
       }
       case KORB_METHOD_ATTR_R:
+        if (UNLIKELY(argc != 0)) return korb_raise_attr_arity(c, slots, line, argc);
         return RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
       case KORB_METHOD_ATTR_W: {
         if (UNLIKELY(argc != 1))
@@ -9223,8 +9237,10 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
         VALUE def_class = KORB_NIL;
         struct korb_method *um = korb_mcache_find(vm, korb_obj_dispatch_klass(vm, self), mid, &def_class);
         if (um) {
-            if (um->kind == KORB_METHOD_ATTR_R)
+            if (um->kind == KORB_METHOD_ATTR_R) {
+                if (UNLIKELY(argc != 0)) return korb_raise_attr_arity(c, slots, line, argc);
                 return RESULT_OK(korb_ivar_get(c, self, ID2SYM(um->attr_ivar)));
+            }
             if (um->kind == KORB_METHOD_ATTR_W) {
                 if (UNLIKELY(argc != 1))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line,
@@ -9391,7 +9407,8 @@ korb_invoke_self(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
 {
     switch (m->kind) {
       case KORB_METHOD_ATTR_R:
-        *out = RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
+        *out = UNLIKELY(argc != 0) ? korb_raise_attr_arity(c, slots, line, argc)
+                                   : RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
         return true;
       case KORB_METHOD_ATTR_W:
         if (UNLIKELY(argc != 1)) {
@@ -11679,8 +11696,10 @@ korb_send_ic_dispatch(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t 
     }
     if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines invoke_simple, skips dispatch_method PLT */
         return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
-    if (m->kind == KORB_METHOD_ATTR_R)                          /* attr/struct reader: inline ivar load, skip dispatch_method PLT */
+    if (m->kind == KORB_METHOD_ATTR_R) {                        /* attr/struct reader: inline ivar load, skip dispatch_method PLT */
+        if (UNLIKELY(argc != 0)) return korb_raise_attr_arity(c, slots, line, argc);
         return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));
+    }
     if (m->kind == KORB_METHOD_CFUNC && !m->uses_block &&       /* builtin (Array#<</[], String#..) — inline the CFUNC call, skip dispatch_method */
         LIKELY(m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
         VALUE *const cbase = &slots[-(korb_sword_t)argc];

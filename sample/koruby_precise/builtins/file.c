@@ -2159,6 +2159,26 @@ static RESULT korb_m_dir_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_dir_path(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a; return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_dir_path_id(c))));
 }
+/* Dir#inspect -> "#<Dir:/etc>" (CRuby dir.c: the REAL class name, and the path
+ * survives #close).  Without a path (an uninitialized Dir) CRuby falls back to
+ * #to_s, which is Object's. */
+static RESULT korb_m_dir_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const VALUE pv = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_dir_path_id(c)));
+    if (!KORB_STRING_P(pv)) return korb_send_impl(c, slots, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+    char nm[192];
+    korb_cvar_class_name(c, korb_dispatch_class(c, VALUE_REF_GET(self)), nm, sizeof nm);
+    slots[0] = pv;                                   /* root the path across the alloc below */
+    const KorbString *const ps = VAL2STR(slots[0]);
+    const size_t need = strlen(nm) + ps->len + 5;    /* "#<" ":" ">" NUL */
+    char *const buf = malloc(need);
+    if (buf == NULL) { fprintf(stderr, "koruby_precise: out of memory (Dir#inspect)\n"); abort(); }
+    int n = snprintf(buf, need, "#<%s:%.*s>", nm, (int)ps->len, korb_strbuf_data(ps->buf));
+    if (n < 0) n = 0;
+    const RESULT r = korb_str_new(c, slots + 1, buf, (uint32_t)n);
+    free(buf);
+    return r;
+}
 static RESULT korb_m_dir_pos(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; KORB_DIR_CHECK_OPEN(c, slots, self); const VALUE p = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_dir_pos_id(c)));
     return RESULT_OK(FIXNUM_P(p) ? p : LONG2FIX(0));
@@ -2725,6 +2745,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn_blk(c, slots[2], "each",   korb_m_dir_each,       0);
     korb_class_def_cfn(c, slots[2], "path",       korb_m_dir_path,       0);
     korb_class_def_cfn(c, slots[2], "to_path",    korb_m_dir_path,       0);
+    korb_class_def_cfn(c, slots[2], "inspect",    korb_m_dir_inspect,    0);
     korb_class_def_cfn(c, slots[2], "pos",        korb_m_dir_pos,        0);
     korb_class_def_cfn(c, slots[2], "tell",       korb_m_dir_pos,        0);
     korb_class_def_cfn(c, slots[2], "pos=",       korb_m_dir_pos_set,    1);
