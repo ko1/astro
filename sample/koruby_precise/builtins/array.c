@@ -113,6 +113,10 @@ static RESULT korb_m_ary_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(slots[0]);
 }
 static RESULT korb_m_ary_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    /* registered variadic (-1) so the upper bound is not checked for us;
+     * without this `[1,2,3].first(1, 2)` quietly answered [1]. */
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* first(n) → first n as array */
         korb_sword_t n;
         if (UNLIKELY(KORB_BIGNUM_P(VALUE_SLICE_GET(a, 0)))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
@@ -132,6 +136,10 @@ static RESULT korb_m_ary_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const KorbArray *ary = SELF_ARY; return RESULT_OK(ary->len ? korb_items_data(ary->items)[0] : KORB_NIL);
 }
 static RESULT korb_m_ary_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  {
+    /* registered variadic (-1) so the upper bound is not checked for us;
+     * without this `[1,2,3].first(1, 2)` quietly answered [1]. */
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* last(n) → last n as array */
         korb_sword_t n;
         if (UNLIKELY(KORB_BIGNUM_P(VALUE_SLICE_GET(a, 0)))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");

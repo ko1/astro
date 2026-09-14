@@ -4924,3 +4924,11 @@ sweep のクランプ (`8dc0e089`) → 版上げ (`6111d527`) の順。
 `Thread.handle_interrupt` 7 (ファイルごとタイムアウト = WFAIL 1)、
 `IO::Buffer` の 4.1 API 9、`Symbol#to_s` frozen 2、`marshal/load` FrozenError 2、
 `tmpdir` 2、`Regexp#initialize` 3、ほか 1〜2 例が 8 件。
+
+
+## (2026-09-14) Regexp.new がサブクラスの #initialize を呼ばない — 真因
+
+`Regexp.new` は Regexp の**特異メソッドとして C で**定義されており、サブクラスが
+それを継承するため、`initialize` を呼ぶ既定のアロケータ経路に落ちない。
+String / Array / Hash は特異 `new` を持たないので通る (実測)。
+**Time / File / Dir も同じ形**なので同時に確認すること。

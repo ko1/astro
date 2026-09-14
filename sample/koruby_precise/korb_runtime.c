@@ -7991,11 +7991,15 @@ korb_bt_unwind(CTX *c, KorbException *e, uint32_t line, uint32_t mid, const stru
     /* Kernel#raise / #fail never appear in a CRuby backtrace: skip the frame,
      * but still hand the call site to the level above. */
     const bool is_raise = m && m->kind == KORB_METHOD_BUILTIN && m->bfn == korb_bi_raise;
+    /* The DEFAULT method_missing is invisible too: CRuby raises NoMethodError at
+     * the call site, not inside BasicObject#method_missing.  A user-defined one
+     * does appear, so the test is on the function, not the name. */
+    const bool is_default_mm = m && m->rfn == korb_m_obj_method_missing;
     /* A C frame has no file of its own and stands in the file it was called
      * from.  That is the file being loaded NOW — read it here, because by the
      * time the list is rendered the require/load this frame is unwinding out of
      * has already put the requirer's file back. */
-    if (!is_raise)
+    if (!is_raise && !is_default_mm)
         korb_bt_push(c->vm, file ? file : korb_bt_cur_file(c->vm), file ? e->line : line,
                      korb_bt_label(c, mid, m));
     e->line = line;
