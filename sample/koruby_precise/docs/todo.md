@@ -181,20 +181,40 @@ CRuby と diff する。 CRuby は required 側の `<top (required)>` と requir
       回帰は `tools/bt_probe/redef.rb` を CRuby と diff (load / require / require_relative /
       class body / eval / class_eval を網羅)。
 
-- [ ] **巻き戻し経路にブロックのフレームが積まれない。** 生きた鎖 (`korb_frames_snapshot_at`) は
-      ブロックフレームを歩くが、`vm->bt` には積まれない。 観測:
-      `def show; yield; rescue => e; e.backtrace; end` / `def deep; raise; end` / `show { deep }` で
-      CRuby は `Object#deep` の次に `block in <main>` を出すが koruby は出さず、
-      さらに 1 つ下 (`Object#show`) の line が yield 行でなくブロックの行になる。
-      `[1].each { deep }` でも同じ。 `load` したファイル側でも
-      `block in <top (required)>` が落ちる。 これは `korb_bt_unwind` を呼ぶのが
-      メソッド dispatch だけで、ブロック呼び出し経路が呼んでいないため。
+- [x] **巻き戻し経路にブロックのフレームが積まれない。** (2026-09-14 修正)
+      生きた鎖 (`korb_frames_snapshot_at`) はブロックフレームを歩くが、`vm->bt` には積まれず、
+      `block in <main>` が落ちた上に 1 つ下 (`Object#show`) の line が yield 行でなく
+      ブロックの行になっていた。 真因は `korb_bt_unwind` を呼ぶのがメソッド dispatch だけで、
+      ブロック呼び出し経路が呼んでいないこと。
+      直し方: ブロック呼び出しの唯一の合流点である `korb_block_yield` /
+      `korb_block_yield_full` の尾に `korb_bt_unwind_block` を足した。 やることは
+      dispatch 側の `korb_bt_unwind` と対称で、(1) `e->line` (= ブロック内で raise が
+      届いた位置) でフレームを 1 本積み、(2) `e->line` を **yield 位置**に付け替える。
+      yield 位置は生きた鎖と同じセル — このフレーム自身の `base[-3]` のリンク — から
+      `korb_flink_line_at` で読む。 C の呼び出し元 (CFRAME リンク) は自分の行を
+      持たないので `e->line` はそのまま (その C フレーム自身の unwind が付け替える)。
+      ラベル / file は生きた鎖と同じ `korb_bt_entry_label` / `korb_bt_node_file`、
+      **生きた鎖が出さないフレーム (Symbol#to_proc の body) は同じ条件で飛ばす**ので
+      2 つの経路が同じ一覧を出す。
+      同時に `korb_bt_unwind` 側も生きた鎖に合わせて `Proc#call` と define_method された
+      メソッドを飛ばすようにした (CRuby ではどちらもフレームにならず、走るブロック本体が
+      その位置に立つ)。 これで `pr.call` が `Proc#call` でなく `block in <main>`、
+      `define_method` の body が `block in <class:Bar>` になる。
+      ホットパス: `korb_break_claim` 呼び出しを `r.state != KORB_NORMAL` の一本の判定に
+      まとめて冷たい `korb_block_leave_cold` へ出したので、`korb_block_yield` は
+      303 → 292 命令と**短くなった**。 `korb_send_cached` は変更前後で命令列一致 (1202 命令)。
+      回帰は `tools/bt_probe/blk_unwind.rb` (20 シナリオ) を CRuby と diff — 20 中 18 が
+      byte 一致。 残り 2 は別機構: `Class.new { }` (koruby は `Class#new`/`Class#initialize` の
+      Ruby フレームを通らない) と `Array#inject` (koruby は C 実装、CRuby は
+      `Enumerable#inject` が `each` を回す)。
+      `tools/bt_probe/adv.rb` の `18 raise in block` も CRuby と一致するようになった。
 - [ ] **巻き戻した C フレームの file が「呼び出し元の file」でなく「巻き戻し時に読み込み中の file」。**
       `a.rb` に `def m; [1].each { raise }; end`、`b.rb` で `require_relative 'a'` してから
       `m` を rescue すると、CRuby は `a.rb:...:in 'Array#each'`、koruby は `b.rb:...`。
       原則どおり「1 つ下のフレームの file を借りる」形に直そうとすると、上のブロックフレーム欠落の
       せいで**逆に悪化する** (下が mspec 側の lib フレームになり、`block in ...` を飛び越える)。
       実測で確認済み: 先にブロックフレームを積む方を直すこと。
+      **前提条件は 2026-09-14 に解消済み** (上のブロックフレームの項目)。 未着手。
 - [ ] **`define_method` がトップレベル `def` を上書きできない (backtrace ではなく dispatch のバグ)。**
       上の修正中に発見。 `def m2; end; Object.send(:define_method, :m2) { ... }; m2` で
       **古い `def` の body が走る**。 `send(:m2)` 経由や、クラス内 (`K.send(:define_method, :x)`)

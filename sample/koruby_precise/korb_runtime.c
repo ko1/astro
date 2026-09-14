@@ -8022,11 +8022,15 @@ korb_bt_unwind(CTX *c, KorbException *e, uint32_t line, uint32_t mid, const stru
      * the call site, not inside BasicObject#method_missing.  A user-defined one
      * does appear, so the test is on the function, not the name. */
     const bool is_default_mm = m && m->rfn == korb_m_obj_method_missing;
+    /* Neither Proc#call nor a define_method'd method is a frame of its own in
+     * CRuby: the block body they run stands in its place — the same rule the
+     * live walk applies, so both paths list the same frames. */
+    const bool is_block_host = m && (m->rbfn == korb_m_proc_call || m->kind == KORB_METHOD_DM);
     /* A C frame has no file of its own and stands in the file it was called
      * from.  That is the file being loaded NOW — read it here, because by the
      * time the list is rendered the require/load this frame is unwinding out of
      * has already put the requirer's file back. */
-    if (!is_raise && !is_default_mm)
+    if (!is_raise && !is_default_mm && !is_block_host)
         korb_bt_push(c->vm, file ? file : korb_bt_cur_file(c->vm), file ? e->line : line,
                      korb_bt_label(c, mid, m));
     e->line = line;
@@ -8083,6 +8087,28 @@ korb_flink_line_at(const VALUE *cell, const VALUE *lo, const VALUE *hi)
         return korb_flink_line(v);
     }
     return 0;
+}
+
+/* Record the block frame a raise just unwound out of, then re-aim e->line at the
+ * yield site so the frame below reports its own position (a method dispatch does
+ * the same in korb_bt_unwind; a block has no dispatch site to do it from).  The
+ * yield site rides the link its caller left in this frame's base[-3] — the same
+ * cell the live walk reads.  A C caller's link carries no line of its own; that
+ * frame's own unwind supplies one.  Frames the live walk does not show are
+ * skipped here on the same tests, so both paths list the same frames. */
+static void
+korb_bt_unwind_block(CTX *const c, KorbException *const e, const struct Node *const blk,
+                     const VALUE *const base)
+{
+    if (blk->head.kind != &kind_node_entry) return;
+    /* a Symbol#to_proc body: no defining frame, no label — not a CRuby frame */
+    if (blk->u.node_entry.def_top_off != KORB_ID_OFF && blk->u.node_entry.body_label == 0) return;
+    const char *const label = korb_bt_entry_label(c, blk, base, c->slots);
+    if (label == NULL) return;
+    const char *const file = korb_bt_node_file(c, blk);
+    korb_bt_push(c->vm, file ? file : korb_bt_cur_file(c->vm), e->line, label);
+    const uint32_t line = korb_flink_line_at(base + KORB_FLINK_OFF, c->slots, c->slots_limit);
+    if (line != 0) e->line = line;
 }
 
 static uint32_t
@@ -9739,6 +9765,20 @@ korb_block_flink(CTX *c, const NODE *block, VALUE prev, const VALUE *dst, const 
     return korb_block_flink_defframe(c, block, prev, dst);
 }
 
+/* The abnormal tail of a block call: a `break` to claim, or a raise that must
+ * leave this block's frame behind in the backtrace.  Out of line so the yield
+ * path tests only "did the body return normally". */
+static __attribute__((noinline, cold)) RESULT
+korb_block_leave_cold(CTX *const c, RESULT r, struct Node *const block,
+                      const VALUE *const base, const bool is_lambda)
+{
+    if (r.state == KORB_RAISE) {
+        if (LIKELY(KORB_EXC_P(r.value))) korb_bt_unwind_block(c, VAL2EXC(r.value), block, base);
+        return r;
+    }
+    return korb_break_claim(c, r, block, is_lambda);
+}
+
 /* aligned(32): the start address decides the loop-head padding INSIDE this
  * function, and one of those pads sits on the per-yield path — an extra nop
  * there is an extra executed instruction per yield (block: +15M = 1/yield),
@@ -9800,7 +9840,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     do { r = (*block->head.dispatcher)(c, block, bf + 1 + blocals); }   /* `redo`: same bindings, run again */
     while (UNLIKELY(r.state == KORB_REDO));
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;
-    else r = korb_break_claim(c, r, block, is_lambda);   /* a break raised in this body belongs to whoever was handed this block */
+    else if (UNLIKELY(r.state != KORB_NORMAL)) r = korb_block_leave_cold(c, r, block, bf + 1, is_lambda);
     if (UNLIKELY(korb_frame_escaped(bf + 1)))
         r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
     return r;
@@ -10117,7 +10157,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     do { r = (*block->head.dispatcher)(c, block, bf + 1 + blocals); }   /* `redo`: same bindings, run again */
     while (UNLIKELY(r.state == KORB_REDO));
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = block value */
-    else r = korb_break_claim(c, r, block, is_lambda);   /* a break here belongs to whoever was handed this block */
+    else if (UNLIKELY(r.state != KORB_NORMAL)) r = korb_block_leave_cold(c, r, block, bf + 1, is_lambda);
     if (UNLIKELY(korb_frame_escaped(bf + 1)))          /* block locals base = bf+1; close its own env if escaped */
         r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
     return r;
