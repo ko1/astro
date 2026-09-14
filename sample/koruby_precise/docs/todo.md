@@ -4738,3 +4738,143 @@ zz = 1
       `#<MatchData "abc def ghi" 1:"abc" 2:"def">` /
       CRuby は `first:"abc" last:"def"`。`korb_fprint_inspect_s` の
       MATCHDATA 分岐が名前表を見ていないだけ。
+
+## Ruby 4.1 への地ならし: `&nil` と型変換エラーの文言 (2026-09-14)
+
+`RUBY_VERSION` を 4.1 に上げると開く穴のうち、大きい 2 つを潰した。版上げ
+そのものは別コミット。sweep (core + language + library, 3747 file, `pass` は
+sweep が出す生の値 = `ex - F - E`。ファイルごと落ちた行は負になる):
+
+| ビルド | pass | fail | err | WFAIL | ex |
+|---|---|---|---|---|---|
+| HEAD, 4.0.2            | 30979 | 403 | 214 | 0 | 31596 |
+| HEAD, 4.1.0            | 30988 | 448 | 520 | 1 | 31956 |
+| 本コミット, 4.0.2      | 30980 | 403 | 213 | 0 | 31596 |
+| 本コミット + 版 4.1    | 31086 | 449 | 474 | 1 | 32009 |
+
+4.0.2 のままでの差は **+1 / 退行 0**（文言変更は 4.1 未満の
+`raise_consistent_error` がメッセージを捨てるので基本的に無影響）。
+4.1 では **+98 / 退行 0**。
+
+### `&nil` (Ruby 4.1: ブロックを取らない宣言) — +56 例
+
+vendored prism は 1.4.0 で、`&nil` を表す `NoBlockParameterNode` を持たない
+(upstream は 1.9.0 で追加)。`ParametersNode#block` の型が
+`BlockParameterNode *` 固定なので、ノード種別を増やす代わりに
+**名前なし `BlockParameterNode` + 新フラグ `PM_PARAMETER_FLAGS_NO_BLOCK`**
+で表すことにした (`prism/src/prism.c` の `PM_TOKEN_UAMPERSAND` 分岐と
+`prism/include/prism/ast.h`)。ast.h は生成物なので、templates/ から
+再生成するとこの enum は消える。
+
+prism は submodule なのでこのコミットには入らない。差分は
+`patches/prism-1.4.0-no-block-parameter.patch` に置いた。適用手順:
+
+```sh
+cd sample/naruby/prism && patch -p1 < ../../koruby_precise/patches/prism-1.4.0-no-block-parameter.patch
+CFLAGS=-Wno-error make static     # -Wno-error は pm_string.c の既存警告 (新 gcc) 用
+```
+
+koruby 側:
+
+- `parse.c` — `kp_no_block_param()`。`&nil` は局所変数も `&` 転送も作らない。
+  `#parameters` 用の kind に 8 (`:noblock`) を追加。
+- `builtins/symbol.c` — `knames[]` に `"noblock"`。
+- `korb_method.no_block` (`attr_ivar` の後ろのパディングに置いた。他の
+  フィールドのオフセットは動かない = `korb_send_cached` の命令列不変)。
+  `param_info` の末尾 kind から def 時に導くので node_def の ABI 変更は不要。
+- ブロックを渡したら `ArgumentError: no block accepted`。`&nil` メソッドは
+  `is_simple` から外して必ず `korb_invoke_method` を通す (streamlined path は
+  block を受け取らないので、そこでは弾けない)。proc / lambda / `define_method`
+  にも同じ検査を `block != NULL` の内側で入れた。
+
+CRuby 4.1 実物で確認した挙動: `parameters` は `[[:noblock]]`、`m{}` も
+`m(&proc{})` も `ArgumentError("no block accepted")`、`m(&nil)` は OK、
+`yield` は書けて実行時 `LocalJumpError`、`block_given?` は false、
+`&nil` の後ろに `**nil` は SyntaxError、`&nil` のスコープで `foo(&)` は
+SyntaxError。
+
+### 型変換 TypeError の文言を CRuby 4.1 に合わせる — +42 例
+
+mspec の `raise_consistent_error` は `RUBY_ENGINE == "ruby"` かつ 4.1 未満の
+とき期待メッセージを捨てる (`spec/mspec/lib/mspec/matchers/raise_error.rb`)。
+4.1 以上では本文が厳密一致になるので、長年のズレが一斉に出る。
+
+CRuby 4.1 の規則は `error.c` の `type_err_raise` /
+`rb_cant_convert_invalid_return` に集約されている:
+
+- 名前は `nil` / `true` / `false`、それ以外は `rb_obj_class(val)` (特異クラスは辿らない)。
+- `no implicit conversion of <名前> into <型>` — 変換メソッドを持たない場合。
+- `can't convert <名前> into <型>` / `can't convert <名前> into <型> (<名前>#<meth> gives <名前>)`
+  — 変換メソッドが違う型を返した場合。
+
+合わせた点:
+
+- `can't convert X to Y` → **`into`** (C 17 ファイル + prelude/lib の .rb 7 ファイル)。
+- `can't convert` 系メッセージの名前を `korb_type_name` → `korb_coerce_name` に。
+  前者は特異クラス持ちを `Object`、nil を `NilClass` と出していた
+  (mspec の mock が全部 `Object` になっていた原因)。
+- `korb_raise_no_int` の nil 専用文 `no implicit conversion from nil to integer`
+  を廃止 (4.1 で統合された)。rubyspec に旧文言を期待する spec は無い。
+- `sprintf`/`printf`/`String#%` の `%c`: `#to_str` / `#to_int` が違う型を
+  返したときに `can't convert X into String (X#to_str gives Y)` を出す。
+- `Kernel#Integer`: `#to_str` が非 String なら**そこで止めて** gives 付きで
+  raise (CRuby は `#to_i` を試さない)、`#to_i` が非 Integer なら
+  `(X#to_i gives Y)`。`#to_i` が Float を返したのを受理していたのも直した。
+- `Kernel#Rational`: `#to_r` が非 Rational/Integer なら gives 付きでそこで止める。
+- `instance_eval` / `module_eval` / `class_eval` の src・filename・lineno。
+- `korb_alias_argsym` (メソッド名引数の `#to_str`)、`define_method`、
+  `Data.new` のキー、`Struct/Data#deconstruct_keys`、`&obj` の `#to_proc`、
+  `IO#lineno=`。
+
+### ついでに直した既存の GC バグ: `Kernel#Integer` の stale `a0`
+
+`korb_bi_integer` が `#to_int` をディスパッチしたあとに C ローカルの `a0` を
+`slots[0]` に書き戻していた。moving GC で `a0` は stale になるので、
+`BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1` で
+
+```ruby
+o = Foo.new; def o.to_int; "s"; end; def o.to_str; :s; end
+20.times { Integer(o) rescue nil }
+```
+
+が SEGV する (HEAD でも同じ。`korb_dispatch_class` で落ちる)。
+`VALUE_SLICE_GET(args, 0)` から読み直すように変更。
+
+### 残っている 4.1 の穴 (このコミットでは触っていない)
+
+- [ ] メソッド名引数の `#to_str` が非 String を返したときの文言が、
+      `send` / `respond_to?` / `method` / `attr_accessor` /
+      `instance_variable_get` ではまだ
+      `#<Foo:0x...> is not a symbol nor a string`。CRuby は
+      `can't convert Foo into String (Foo#to_str gives Integer)`。
+      これらは `korb_alias_argsym` ではなく別の名前解決を通っている。
+      rubyspec での実害は今のところ観測されていない (4.1 でも 0 例)。
+- [ ] `Thread.handle_interrupt(SignalException => :never)` — 7 例、ファイルごと
+      タイムアウト (WFAIL)。
+- [ ] `Symbol#to_s` が frozen String を返さない — 2 例。
+- [ ] `IO::Buffer` の 4.1 API — 9 例。
+- [ ] `core/marshal/load` の FrozenError 2 例、`tmpdir/mktmpdir` 2 例、
+      `Regexp#initialize` 再初期化の FrozenError 3 例、
+      `Fiber#fiber_interrupt` 1 例、`require` の `$LOADED_FEATURES` 1 例、
+      `Enumerable#to_set` の引数 2 例、`net-http` の Content-Length 1 例、
+      `language/for` 1 例、`String#unpack{,1}` 2 例。
+- [ ] `source_range` / `syntax_tree` (prism AST の公開) — 範囲外。
+
+### 計測上の注意: vendored libprism.a の再ビルドで sweep が動く
+
+`sample/naruby/prism/build/libprism.a` はリポジトリに 2026-05-07 ビルドの
+バイナリが入っている (ソースは 2025-07-21 で、stale ではない)。`&nil` を
+入れるために同じソースを今の gcc で再ビルドしたところ、**koruby のソースが
+同一でも 4.1 の sweep が pass 30890 → 31040 に動いた**。内訳はほぼ全部
+`core/thread/backtrace/location/source_range_spec.rb` で、
+「0 examples / 83 errors」→「115 examples / 113 errors / 2 failures」。
+どちらも実 pass は 0 で、`pass = ex - F - E` が前者で −83 になるのが原因
+(= 指標のアーティファクト)。`syntax_tree` 系 (−5/−3/−3/−1)、
+`core/string/tr_spec.rb`、`core/thread/element_set_spec.rb` も同様に動いた。
+
+したがって「版を 4.1 に上げると pass −88」という以前の記録は、**その −88 の
+うち 95 前後がこの指標アーティファクト**である。prism を揃えて測り直すと
+HEAD のままの版上げは pass 30979 → 30988 (**+9**)。
+なぜ prism の再コンパイルだけで source_range_spec の到達点が変わるのかは
+**未確認** (同一ソース・同一バージョン 1.4.0、違いは gcc とフラグ
+`-Wno-error` のみ)。潜在的な UB を疑う根拠としてここに残す。

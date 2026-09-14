@@ -478,7 +478,7 @@ static RESULT korb_m_int_coerce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             RESULT fr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_f", 4), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
             if (UNLIKELY(!KORB_FLOAT_P(fr.value)))           /* #to_f must return a Float (slots[0]=o, re-read after the dispatch's GC) */
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(slots[0]));
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_coerce_name(c, slots[0]));
             slots[0] = fr.value;
         } else {
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't coerce %s into Integer", korb_type_name(o));

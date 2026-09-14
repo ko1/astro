@@ -47,7 +47,7 @@ class BasicSocket < IO
     return n if n.is_a?(Integer)
     raise TypeError, "no implicit conversion of #{n.class} into Integer" unless n.respond_to?(:to_int)
     v = n.to_int
-    raise TypeError, "can't convert #{n.class} to Integer" unless v.is_a?(Integer)
+    raise TypeError, "can't convert #{n.class} into Integer" unless v.is_a?(Integer)
     v
   end
 
@@ -117,7 +117,7 @@ class BasicSocket < IO
     return v if v.is_a?(String)
     raise TypeError, "no implicit conversion of #{v.class} into String" unless v.respond_to?(:to_str)
     r = v.to_str
-    raise TypeError, "can't convert #{v.class} to String (#{v.class}#to_str gives #{r.class})" unless r.is_a?(String)
+    raise TypeError, "can't convert #{v.class} into String (#{v.class}#to_str gives #{r.class})" unless r.is_a?(String)
     r
   end
 

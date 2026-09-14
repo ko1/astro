@@ -798,7 +798,7 @@ korb_m_thread_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         const VALUE v = VALUE_SLICE_GET(a, 0);
         if (FIXNUM_P(v)) tmo = (double)FIX2LONG(v);
         else if (KORB_FLOAT_P(v)) tmo = korb_float_val(v);
-        else return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into time interval", korb_type_name(v));
+        else return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into time interval", korb_coerce_name(c, v));
     }
     korb_thread_boot(c);
     if (UNLIKELY(!t->started && t->blk == KORB_NIL))

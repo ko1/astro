@@ -31,7 +31,7 @@ class TracePoint
     raise TypeError, "no implicit conversion of #{e.class} into Symbol" unless e.respond_to?(:to_sym)
     s = e.to_sym
     return s if s.is_a?(Symbol)
-    raise TypeError, "can't convert #{e.class} to Symbol (#{e.class}#to_sym gives #{s.class})"
+    raise TypeError, "can't convert #{e.class} into Symbol (#{e.class}#to_sym gives #{s.class})"
   end
 
   def self.trace(*events, &block)

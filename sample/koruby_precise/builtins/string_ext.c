@@ -150,8 +150,8 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
             if (KORB_ARRAY_P(ar.value)) slots[1] = ar.value;   /* use the array (rooted in slots[1]) */
             else if (ar.value != KORB_NIL)                     /* to_ary gave a non-Array → TypeError (CRuby) */
-                return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)",
-                                  onm, onm, korb_type_name(ar.value));
+                return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "can't convert %s into Array (%s#to_ary gives %s)",
+                                  onm, onm, korb_coerce_name(c, ar.value));
             /* to_ary → nil: keep the object itself (slots[1] auto-forwarded by GC) as the single arg */
         }
         self = VALUE_REF_AT(&slots[0]);                  /* self re-rooted after the possible GC */
@@ -570,6 +570,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                  * dispatches — a bare C-local would go stale when a prior arg's
                  * allocation triggers a moving GC (real bug, hit by mock chains). */
                 slots[1] = arg;
+                const char *const cnm = korb_coerce_name(c, slots[1]);   /* interned: outlives the dispatches below */
                 const uint32_t c_to_str = korb_intern(c->vm, "to_str", 6), c_to_ary = korb_intern(c->vm, "to_ary", 6);
                 uint32_t cm = korb_responds_to_coerce(c, slots + 2, slots[1], c_to_str) ? c_to_str
                             : korb_responds_to_coerce(c, slots + 2, slots[1], c_to_ary) ? c_to_ary
@@ -589,7 +590,13 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                     if (cs->len == 0) { coerce_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "%%c requires a character"); has_coerce_err = true; err = true; break; }
                     cnbytes = (int)korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(cs->buf), 0, cs->len); if (cnbytes <= 0) cnbytes = 1;
                     cbytes = korb_strbuf_data(cs->buf); }
-                else { coerce_err = korb_raise_no_int(c, slots + 1, arg); has_coerce_err = true; err = true; break; }
+                else if (cm == c_to_str || cm == fmt_to_int) {   /* CRuby names the converter it actually called */
+                    const char *const want = (cm == c_to_str) ? "String" : "Integer";
+                    const char *const meth = (cm == c_to_str) ? "to_str" : "to_int";
+                    coerce_err = korb_raise(c, slots + 2, KORB_E_TYPE, 0, "can't convert %s into %s (%s#%s gives %s)",
+                                            cnm, want, cnm, meth, korb_coerce_name(c, cv));
+                    has_coerce_err = true; err = true; break; }
+                else { coerce_err = korb_raise_no_int(c, slots + 1, slots[1]); has_coerce_err = true; err = true; break; }
             }
             else { coerce_err = korb_raise_no_int(c, slots + 1, arg); has_coerce_err = true; err = true; break; }
             char enc[4];

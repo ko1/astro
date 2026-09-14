@@ -344,7 +344,7 @@ static RESULT korb_spawn_to_str(CTX *c, VALUE *s) {
     const RESULT r = korb_send(c, s + 2, to_str, 0, 0);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (UNLIKELY(!KORB_STRING_P(r.value)))
-        return korb_raise(c, s, KORB_E_TYPE, 0, "can't convert %s to String", korb_type_name(s[1]));
+        return korb_raise(c, s, KORB_E_TYPE, 0, "can't convert %s into String", korb_coerce_name(c, s[1]));
     s[0] = r.value;
     return RESULT_OK(s[0]);
 }

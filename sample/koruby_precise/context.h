@@ -857,6 +857,8 @@ struct korb_method {
     int32_t  rest_slot;      /* ISEQ: *rest local slot (collects surplus positionals), -1 none */
     uint32_t locals_cnt;     /* ISEQ: frame size (params first, +2 if uses_block) */
     uint32_t attr_ivar;      /* ATTR_R/W: the @ivar symbol id */
+    uint8_t  no_block;       /* ISEQ: declared `&nil` (Ruby 4.1) — passing a block is an ArgumentError.
+                              * Sits in the pad before `body` so no other field's offset moves. */
     struct Node *body;       /* ISEQ */
     /* 呼び出しの入口。どちらも同じ本体ノードを指し、AOT が焼くのはこちら側。
      * 充填時に (site の argc, callee の形状) で片方を選んで cc/ic に載せる。 */

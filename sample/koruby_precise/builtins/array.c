@@ -21,7 +21,7 @@ static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             if (korb_responds_to_coerce_p(c, slots + 1, &slots[0], to_ary)) {
                 RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);   /* receiver at slots[0] */
                 if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
-                if (UNLIKELY(!KORB_ARRAY_P(ar.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array", korb_type_name(slots[0]));
+                if (UNLIKELY(!KORB_ARRAY_P(ar.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Array", korb_coerce_name(c, slots[0]));
                 slots[0] = ar.value;
             }
         }
@@ -364,7 +364,7 @@ static RESULT korb_ary_aset_rhs(CTX *c, VALUE *slots, VALUE rhs) {
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     if (cr.value == KORB_FALSE || cv == KORB_NIL) return RESULT_OK(slots[0]);   /* not convertible → one element */
     if (UNLIKELY(!KORB_ARRAY_P(cv)))
-        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)", korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_type_name(cv));
+        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s into Array (%s#to_ary gives %s)", korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_coerce_name(c, cv));
     slots[0] = cv;
     return RESULT_OK(cv);
 }

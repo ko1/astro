@@ -94,7 +94,7 @@ module Digest
     return obj if obj.is_a?(String)
     raise TypeError, "no implicit conversion of #{obj.class} into String" unless obj.respond_to?(:to_str)
     s = obj.to_str
-    raise TypeError, "can't convert #{obj.class} to String" unless s.is_a?(String)
+    raise TypeError, "can't convert #{obj.class} into String" unless s.is_a?(String)
     s
   end
 

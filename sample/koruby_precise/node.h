@@ -74,9 +74,18 @@ struct korb_callcache {
 /* Block/lambda parameter introspection (Proc#parameters) — built once at parse
  * time and hung off node_entry.param_info; read ONLY by the cold #parameters
  * method, so it adds nothing to the call/yield hot path.  kind: 0 req, 1 opt,
- * 2 rest, 3 keyreq, 4 key, 5 keyrest, 6 block.  name=0 → anonymous. */
+ * 2 rest, 3 keyreq, 4 key, 5 keyrest, 6 block, 7 nokey (`**nil`),
+ * 8 noblock (`&nil`).  name=0 → anonymous. */
 struct korb_param_entry { uint8_t kind; uint32_t name; };
 struct korb_param_info  { uint32_t n; struct korb_param_entry e[]; };
+
+/* `&nil` is always the last entry, so the "refuses a block" test is one load. */
+static inline bool
+korb_pi_no_block(const void *const param_info)
+{
+    const struct korb_param_info *const pi = (const struct korb_param_info *)param_info;
+    return pi != NULL && pi->n != 0 && pi->e[pi->n - 1].kind == 8;
+}
 
 /* Local-variable NAMES of one ISEQ scope, indexed by frame slot — built once at
  * parse time and hung off the scope's entry: korb_method.locals_info for a

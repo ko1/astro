@@ -514,7 +514,7 @@ static RESULT korb_io_arg_int(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out) 
     if (LIKELY(korb_to_index(v, out))) return RESULT_OK(KORB_TRUE);
     if (UNLIKELY(KORB_BIGNUM_P(v)))                    /* an Integer, just not one that fits a C off_t */
         return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
-    const char *const cls = korb_type_name(v);         /* capture before dispatch (v may move) */
+    const char *const cls = korb_coerce_name(c, v);    /* capture before dispatch (v may move) */
     VALUE t = v;
     const RESULT r = korb_coerce_to_int(c, slots, &t);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -1784,8 +1784,8 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         slots[0] = cr.value;
         if (UNLIKELY(!KORB_OBJECT_P(slots[0]) || korb_io_rep(c, slots[0]) == NULL))
-            return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s to IO (%s#to_io gives %s)",
-                              cls, cls, korb_type_name(slots[0]));
+            return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s into IO (%s#to_io gives %s)",
+                              cls, cls, korb_coerce_name(c, slots[0]));
     }
     if (UNLIKELY(was_closed)) return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "closed stream");
     KorbIORep *const other = korb_io_rep(c, slots[0]);

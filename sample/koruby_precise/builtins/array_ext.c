@@ -51,12 +51,13 @@ static RESULT korb_pack_int_val(CTX *c, VALUE *sc, VALUE e, int64_t *out) {
     if (KORB_FLOAT_P(e)) { *out = (int64_t)korb_float_val(e); return RESULT_OK(KORB_NIL); }
     if (KORB_BIGNUM_P(e)) { korb_mp_t z; korb_to_mpz(e, z); uint64_t lo = (uint64_t)korb_mp_get_ui(z); *out = (korb_mp_sgn(z) < 0) ? -(int64_t)lo : (int64_t)lo; korb_mp_clear(z); return RESULT_OK(KORB_NIL); }
     if (KORB_OBJECT_P(e) && korb_responds_to_coerce(c, sc, e, korb_intern(c->vm, "to_int", 6))) {
+        const char *const on = korb_coerce_name(c, e);   /* interned: survives the dispatch below, unlike `e` */
         sc[0] = e;
         RESULT r = korb_send_impl(c, sc + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (FIXNUM_P(r.value)) { *out = FIX2LONG(r.value); return RESULT_OK(KORB_NIL); }
         if (KORB_BIGNUM_P(r.value)) { korb_mp_t z; korb_to_mpz(r.value, z); uint64_t lo = (uint64_t)korb_mp_get_ui(z); *out = (korb_mp_sgn(z) < 0) ? -(int64_t)lo : (int64_t)lo; korb_mp_clear(z); return RESULT_OK(KORB_NIL); }
-        return korb_raise(c, sc, KORB_E_TYPE, 0, "can't convert Object to Integer (Object#to_int gives %s)", korb_type_name(r.value));
+        return korb_raise(c, sc, KORB_E_TYPE, 0, "can't convert %s into Integer (%s#to_int gives %s)", on, on, korb_coerce_name(c, r.value));
     }
     return korb_raise_no_int(c, sc, e);
 }

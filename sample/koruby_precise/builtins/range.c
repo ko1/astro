@@ -239,7 +239,7 @@ static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
                 RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 if (!KORB_STRING_P(sr.value))
-                    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to String (%s#to_str gives %s)", onm, onm, korb_type_name(sr.value));
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into String (%s#to_str gives %s)", onm, onm, korb_coerce_name(c, sr.value));
                 slots[1] = sr.value;
             } else return RESULT_OK(KORB_FALSE);
         }

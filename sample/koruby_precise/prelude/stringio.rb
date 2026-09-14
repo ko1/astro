@@ -190,14 +190,14 @@ class StringIO
     return v if v.is_a?(Integer)
     raise TypeError, "no implicit conversion of #{v.class} into #{what}" unless v.respond_to?(:to_int)
     r = v.to_int
-    raise TypeError, "can't convert #{v.class} to Integer (#{v.class}#to_int gives #{r.class})" unless r.is_a?(Integer)
+    raise TypeError, "can't convert #{v.class} into Integer (#{v.class}#to_int gives #{r.class})" unless r.is_a?(Integer)
     r
   end
   def __to_str(v)
     return v if v.is_a?(String)
     raise TypeError, "no implicit conversion of #{v.class} into String" unless v.respond_to?(:to_str)
     r = v.to_str
-    raise TypeError, "can't convert #{v.class} to String (#{v.class}#to_str gives #{r.class})" unless r.is_a?(String)
+    raise TypeError, "can't convert #{v.class} into String (#{v.class}#to_str gives #{r.class})" unless r.is_a?(String)
     r
   end
   private :__to_int, :__to_str

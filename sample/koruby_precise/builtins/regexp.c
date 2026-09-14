@@ -1299,7 +1299,7 @@ RESULT korb_re_str_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE gr
             RESULT cr = korb_coerce_to_int(c, slots + 4, &gv);   /* self/re/group/md stay rooted in slots[0..3] */
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (cr.value == KORB_FALSE)
-                return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "can't convert %s to Integer (%s#to_int gives %s)", on, on, korb_type_name(gv));
+                return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "can't convert %s into Integer (%s#to_int gives %s)", on, on, korb_coerce_name(c, gv));
             korb_sword_t g = 0; korb_to_index(gv, &g);
             /* a negative capture index counts back from the last group; -n is out
              * of range as soon as n reaches the group count (group 0 included). */
@@ -1572,7 +1572,7 @@ static RESULT korb_m_re_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             if (UNLIKELY(rr.state != KORB_NORMAL)) { fclose(ms); free(buf); return rr; }
             if (UNLIKELY(!KORB_REGEXP_P(rr.value))) {
                 fclose(ms); free(buf);
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Regexp", korb_re_arg_type(slots[4]));
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Regexp", korb_re_arg_type(slots[4]));
             }
             slots[4] = rr.value;
         }

@@ -448,6 +448,9 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return korb_send_impl(c, slots + argc, mid, 0, argc - 1, block, def_env, cself);
     }
     NODE *entry = p->iseq;
+    /* `|&nil|` (Ruby 4.1): this proc refuses a block. */
+    if (UNLIKELY(block != NULL) && entry != KORB_BLK_CPROC && korb_pi_no_block(korb_entry_param_info(entry)))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block accepted");
     /* Lambdas enforce arity (unlike plain procs/blocks).  Positional-only check
      * (skip when the lambda declares keywords — the trailing kw Hash would skew
      * the count). */
@@ -624,7 +627,7 @@ static RESULT korb_m_proc_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         if (li >= 0 && korb_items_data(h->items)[2 * li + 1] != KORB_NIL) lam = KORB_TRUTHY(korb_items_data(h->items)[2 * li + 1]);
     }
     const bool symproc = (p->iseq == NULL);
-    static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block", "nokey" };
+    static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block", "nokey", "noblock" };
     const uint32_t n = pi ? pi->n : 0;
     slots[0] = UNWRAP(korb_ary_new(c, slots, n ? n : 1));
     VALUE_REF res = VALUE_REF_AT(&slots[0]);
@@ -864,7 +867,7 @@ static RESULT korb_m_meth_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
      * immortal libc (no GC). NULL (e.g. define_method) → fall back to the counts. */
     const struct korb_param_info *const pi = (const struct korb_param_info *)km->param_info;
     if ((km->kind == KORB_METHOD_ISEQ || km->kind == KORB_METHOD_DM) && pi != NULL) {   /* define_method carries its block's params */
-        static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block", "nokey" };
+        static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block", "nokey", "noblock" };
         for (uint32_t i = 0; i < pi->n; i++) {
             const uint8_t kind = pi->e[i].kind;
             const char *const kn = knames[kind];

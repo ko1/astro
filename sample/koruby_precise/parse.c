@@ -1346,6 +1346,14 @@ build_locals_info(struct kp_ctx *tc)
 /* Build Proc#parameters metadata once at parse time (cold; never touched on the
  * call/yield hot path).  Stored on node_entry.param_info.  Raw kinds (req kept
  * as req); #parameters converts positional req→opt for non-lambda procs. */
+/* `&nil` (Ruby 4.1): a nameless BlockParameterNode flagged by the vendored
+ * prism (PM_PARAMETER_FLAGS_NO_BLOCK) — declares that no block is taken. */
+static inline bool
+kp_no_block_param(const pm_block_parameter_node_t *const b)
+{
+    return b != NULL && PM_NODE_FLAG_P(b, PM_PARAMETER_FLAGS_NO_BLOCK);
+}
+
 static void *
 build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
 {
@@ -1405,7 +1413,9 @@ build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
     } else if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_NO_KEYWORDS_PARAMETER_NODE)) {   /* `**nil` → :nokey */
         pi->e[k].kind = 7; pi->e[k].name = 0; k++;
     }
-    if (ps->block) {   /* anonymous `&` → :& */
+    if (kp_no_block_param(ps->block)) {   /* `&nil` → :noblock */
+        pi->e[k].kind = 8; pi->e[k].name = 0; k++;
+    } else if (ps->block) {   /* anonymous `&` → :& */
         const pm_constant_id_t bn = ((const pm_block_parameter_node_t *)ps->block)->name;
         pi->e[k].kind = 6; pi->e[k].name = bn ? kp_intern_cid(tc, bn) : korb_intern(tc->c->vm, "&", 1); k++;
     }
@@ -1572,7 +1582,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
             return kp_unsupported(tc, blk_params, "unsupported block parameters");
         }
         if (ps) {
-            if (ps->block) {                            /* `|&blk|`: bind the forwarded block as a Proc into its local */
+            if (ps->block && !kp_no_block_param(ps->block)) {   /* `|&blk|`: bind the forwarded block into its local (`&nil` binds nothing) */
                 const pm_node_t *const bpn = (const pm_node_t *)ps->block;
                 if (!((const pm_block_parameter_node_t *)bpn)->name) {
                     pop_frame(tc);
@@ -2681,7 +2691,8 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     pm_constant_id_t blk_param_name = 0;   /* &blk param name (0 = none) */
     bool anon_blk_param = false;           /* `def m(&)` — slot allocated after push_frame */
     if (ps) {
-        if (ps->block) {
+        if (kp_no_block_param(ps->block)) { /* `&nil`: no local, no forwarding — korb_method.no_block carries it */ }
+        else if (ps->block) {
             if (!ps->block->name) anon_blk_param = true;
             else                  blk_param_name = ps->block->name;
         }

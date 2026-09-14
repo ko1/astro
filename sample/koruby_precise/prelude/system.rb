@@ -106,7 +106,7 @@ class Queue
       else
         raise TypeError, "can't convert #{enum.class} into Array" unless enum.respond_to?(:to_a)
         arr = enum.to_a
-        raise TypeError, "can't convert #{enum.class} to Array (#{enum.class}#to_a gives #{arr.class})" unless arr.is_a?(Array)
+        raise TypeError, "can't convert #{enum.class} into Array (#{enum.class}#to_a gives #{arr.class})" unless arr.is_a?(Array)
         @__items.concat(arr)
       end
     end
@@ -301,7 +301,7 @@ module Process
     return v if v.is_a?(Integer)
     raise TypeError, "no implicit conversion of #{v.class} into Integer" unless v.respond_to?(:to_int)
     n = v.to_int
-    raise TypeError, "can't convert #{v.class} to Integer" unless n.is_a?(Integer)
+    raise TypeError, "can't convert #{v.class} into Integer" unless n.is_a?(Integer)
     n
   end
   private_class_method :__int_arg
@@ -334,7 +334,7 @@ module Process
     end
     raise TypeError, "no implicit conversion of #{v.nil? ? 'nil' : v.class} into Integer" unless v.respond_to?(:to_int)
     i = v.to_int
-    raise TypeError, "can't convert #{v.class} to Integer (#{v.class}#to_int gives #{i.class})" unless i.is_a?(Integer)
+    raise TypeError, "can't convert #{v.class} into Integer (#{v.class}#to_int gives #{i.class})" unless i.is_a?(Integer)
     i
   end
   private_class_method :__as_rlimit_int
@@ -1436,7 +1436,7 @@ module Process
     return v if v.is_a?(Integer)
     raise TypeError, "no implicit conversion of #{v.class} into Integer" unless v.respond_to?(:to_int)
     n = v.to_int
-    raise TypeError, "can't convert #{v.class} to Integer" unless n.is_a?(Integer)
+    raise TypeError, "can't convert #{v.class} into Integer" unless n.is_a?(Integer)
     n
   end
   def self.setsid = __setsid
@@ -1938,7 +1938,7 @@ class Regexp
     return obj if obj.is_a?(Regexp)
     return nil unless obj.respond_to?(:to_regexp)
     r = obj.to_regexp
-    raise TypeError, "can't convert #{obj.class} to Regexp (#{obj.class}#to_regexp gives #{r.class})" unless r.is_a?(Regexp) || r.nil?
+    raise TypeError, "can't convert #{obj.class} into Regexp (#{obj.class}#to_regexp gives #{r.class})" unless r.is_a?(Regexp) || r.nil?
     r
   end
 end

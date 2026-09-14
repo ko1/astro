@@ -639,8 +639,8 @@ static RESULT korb_m_ary_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
                 RESULT tr = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);   /* recv at slots[0] */
                 if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
                 if (UNLIKELY(tr.value != KORB_NIL && !KORB_ARRAY_P(tr.value)))
-                    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)",
-                                      korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_type_name(tr.value));
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Array (%s#to_ary gives %s)",
+                                      korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_coerce_name(c, tr.value));
                 if (KORB_ARRAY_P(tr.value)) slots[0] = tr.value;   /* nil → keep the original element as-is */
             }
         }
@@ -1363,7 +1363,7 @@ static RESULT korb_ary_flatten_depth(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (cr.value == KORB_TRUE && cv != KORB_NIL) {   /* nil → not coercible: leave the element as a leaf */
                 if (UNLIKELY(!KORB_ARRAY_P(cv)))
-                    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)", korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_type_name(cv));
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Array (%s#to_ary gives %s)", korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_coerce_name(c, cv));
                 e = cv;
             }
         }

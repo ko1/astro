@@ -171,7 +171,7 @@ static RESULT korb_int_shift_arg(CTX *c, VALUE *slots, VALUE_REF self, VALUE o, 
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (UNLIKELY(!KORB_INTEGER_P(r.value))) {
             const char *on = korb_coerce_name(c, slots[1]);
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Integer (%s#to_int gives %s)", on, on, korb_type_name(r.value));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Integer (%s#to_int gives %s)", on, on, korb_coerce_name(c, r.value));
         }
         o = r.value;                                     /* Fixnum or Bignum → loop once more */
     }
@@ -784,12 +784,12 @@ static RESULT korb_m_hash_default_proc_set(CTX *c, VALUE *slots, VALUE_REF self,
     if (p != KORB_NIL && !KORB_PROC_P(p)) {                   /* coerce via #to_proc, else TypeError */
         const uint32_t to_proc = korb_intern(c->vm, "to_proc", 7);
         if (!korb_responds_to_coerce_p(c, slots, &p, to_proc))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Proc", korb_type_name(p));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Proc", korb_coerce_name(c, p));
         slots[0] = p;
         RESULT pr = korb_send_impl(c, slots + 1, to_proc, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
         if (UNLIKELY(!KORB_PROC_P(pr.value)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Proc", korb_type_name(slots[0]));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Proc", korb_coerce_name(c, slots[0]));
         p = pr.value;
     }
     if (p != KORB_NIL && VAL2PROC(p)->is_lambda) {           /* a lambda default_proc must accept exactly 2 args */

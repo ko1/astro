@@ -1,0 +1,54 @@
+# Ruby 4.1 `&nil` (no-block parameter) for the vendored prism 1.4.0.
+# Apply in sample/naruby/prism (the prism submodule), then rebuild:
+#     cd sample/naruby/prism && CFLAGS=-Wno-error make static
+# Upstream prism 1.9.0 models this with a NoBlockParameterNode; 1.4.0's
+# ParametersNode#block is typed BlockParameterNode*, so this marks a nameless
+# BlockParameterNode with a new parameter flag instead.  include/prism/ast.h is
+# a generated file - regenerating from templates/ drops the enumerator.
+#
+--- a/src/prism.c	2025-07-21 02:53:49.384009101 +0000
++++ b/src/prism.c	2026-09-14 05:32:19.109273816 +0000
+@@ -14565,7 +14565,13 @@
+                 pm_token_t name;
+ 
+                 bool repeated = false;
+-                if (accept1(parser, PM_TOKEN_IDENTIFIER)) {
++                const uint8_t *no_block_end = NULL;
++                if (accept1(parser, PM_TOKEN_KEYWORD_NIL)) {
++                    /* Ruby 4.1 `&nil`: declares that no block is accepted, so it
++                     * neither names a local nor enables `&` forwarding. */
++                    no_block_end = parser->previous.end;
++                    name = not_provided(parser);
++                } else if (accept1(parser, PM_TOKEN_IDENTIFIER)) {
+                     name = parser->previous;
+                     repeated = pm_parser_parameter_name_check(parser, &name);
+                     pm_parser_local_add_token(parser, &name, 1);
+@@ -14578,6 +14584,10 @@
+                 if (repeated) {
+                     pm_node_flag_set_repeated_parameter((pm_node_t *)param);
+                 }
++                if (no_block_end != NULL) {
++                    pm_node_flag_set((pm_node_t *)param, PM_PARAMETER_FLAGS_NO_BLOCK);
++                    param->base.location.end = no_block_end;
++                }
+                 if (params->block == NULL) {
+                     pm_parameters_node_block_set(params, param);
+                 } else {
+--- a/include/prism/ast.h	2025-07-21 02:55:50.909573986 +0000
++++ b/include/prism/ast.h	2026-09-14 05:08:42.875566117 +0000
+@@ -7886,6 +7886,15 @@
+ typedef enum pm_parameter_flags {
+     /** a parameter name that has been repeated in the method signature */
+     PM_PARAMETER_FLAGS_REPEATED_PARAMETER = 4,
++
++    /**
++     * koruby-local backport of Ruby 4.1 `&nil`.  Upstream prism 1.9 models it
++     * with a NoBlockParameterNode; this tree is 1.4, where ParametersNode#block
++     * is typed as a BlockParameterNode, so `&nil` is a nameless
++     * BlockParameterNode carrying this flag instead.  Re-generating ast.h from
++     * templates/ drops this enumerator.
++     */
++    PM_PARAMETER_FLAGS_NO_BLOCK = 8,
+ } pm_parameter_flags_t;
+ 
+ /**

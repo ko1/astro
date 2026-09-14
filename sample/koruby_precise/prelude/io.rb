@@ -267,7 +267,7 @@ class IO
           next [o, o] if o.is_a?(IO)
           raise TypeError, "can't convert #{o.class} into IO" unless o.respond_to?(:to_io)
           io = o.to_io
-          raise TypeError, "can't convert #{o.class} to IO (#{o.class}#to_io gives #{io.class})" unless io.is_a?(IO)
+          raise TypeError, "can't convert #{o.class} into IO (#{o.class}#to_io gives #{io.class})" unless io.is_a?(IO)
           [o, io]
         }
       }
@@ -402,7 +402,7 @@ class IO
     # a BasicObject has no #is_a?/#respond_to? of its own — reach them through Object
     return nil unless ::Object.instance_method(:respond_to?).bind_call(obj, :to_io)
     io = obj.to_io
-    raise TypeError, "can't convert #{obj.class} to IO (#{obj.class}#to_io gives #{io.class})" unless io.is_a?(IO)
+    raise TypeError, "can't convert #{obj.class} into IO (#{obj.class}#to_io gives #{io.class})" unless io.is_a?(IO)
     io
   end
 
@@ -473,7 +473,7 @@ class IO
     end
     n = v.to_int
     unless n.is_a?(Integer)
-      raise TypeError, "can't convert #{v.class} to Integer (#{v.class}#to_int gives #{n.class})"
+      raise TypeError, "can't convert #{v.class} into Integer (#{v.class}#to_int gives #{n.class})"
     end
     n
   end
