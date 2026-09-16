@@ -206,6 +206,7 @@ enum korb_obj_type {
 };
 /* `flags` is a dedicated 16-bit sample-owned field; low 5 bits = type tag
  * (1..16; widened from 4 bits to make room for KORB_OBJ_METHOD). */
+#define KORB_OID_CACHE 1024u   /* direct-mapped lookup hint for the oid table */
 #define KORB_OBJ_TYPE_MASK 0x1Fu
 /* bit 5: this heap object has a per-instance class override (subclass instance /
  * extended / singleton-method'd) recorded in the VM's sklass table.  Gates both
@@ -223,6 +224,8 @@ enum korb_obj_type {
 /* bit 15 (avoids the STR_ENC field 0x7000 so strings can use it too): a
  * non-KorbObject (String/Array/Hash/Proc/...) carries @ivars in the vm generic-ivar
  * side table.  Cheap "has ivars?" gate before the linear scan. */
+/* #object_id has been assigned and lives in the vm's oid side table. */
+#define KORB_FL_HAS_OID    0x2000u
 #define KORB_FL_HAS_IVARS  0x8000u
 /* bit 9 (Hash only): the lookup index is permanently disabled because a key
  * with ambiguous hash/equality (Float / heap object) was inserted — stay linear. */
@@ -1017,6 +1020,16 @@ struct korb_vm {
     VALUE    *objivar_obj;
     VALUE    *objivar_hash;
     uint32_t  objivar_cnt, objivar_capa;
+    /* #object_id side table (same lockstep-forwarded pattern).  A moving GC has
+     * no per-object id slot and the address changes under it, so the id is a
+     * serial assigned on first ask and kept here; oid_cache is a direct-mapped
+     * address hint that a GC invalidates by itself (the entry stops matching).
+     * Same pinning caveat as the two tables above. */
+    VALUE    *oid_obj;
+    VALUE    *oid_val;
+    uint32_t  oid_cnt, oid_capa;
+    uint64_t  oid_next;
+    uint32_t  oid_cache[KORB_OID_CACHE];   /* index + 1, 0 = empty */
     /* cached frozen result of nil/true/false #to_s (CRuby returns the same frozen
      * object each call).  KORB_NIL until first use; GC roots (AROH_VISIT_ROOTS). */
     VALUE     str_nil_to_s, str_true_to_s, str_false_to_s;
@@ -1435,6 +1448,10 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->objivar_obj[_oi]);    \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->objivar_hash[_oi]);   \
     }                                                                        \
+    /* #object_id table: only the object column is a heap edge (the id is a      \
+     * Fixnum), and forwarding it is what keeps the id attached to the object.  */\
+    for (uint32_t _di = 0; _di < (c)->vm->oid_cnt; _di++)                     \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->oid_obj[_di]);         \
     /* open closure envs now live in each frame's EP cell (base[-2]), scanned    \
      * as part of the slot range above — no separate registry. */               \
     /* Enumerator::Yielder class object (KORB_NIL before enum init). */        \

@@ -1944,6 +1944,46 @@ static void korb_objivar_register(CTX *c, VALUE obj, VALUE h) {   /* libc reallo
     vm->objivar_cnt++;
     ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_IVARS;
 }
+/* ---- #object_id ----------------------------------------------------------
+ * A moving GC changes an object's address, so an address-derived id is not the
+ * id Ruby promises (stable for the object's life).  Assign a serial on first
+ * ask and keep it in a side table whose object column the GC forwards.
+ *
+ * Shape of the value: heap ids are 8n + 2, which no other #object_id can take —
+ * Fixnum ids are odd (2n+1) and nil/false/true/Symbol are all 0 or 4 mod 8.
+ *
+ * The lookup is a linear scan (only objects that ever asked are in the table)
+ * behind a direct-mapped address cache.  The cache needs no GC hook: after a
+ * move the hinted entry simply stops matching and the scan refills it. */
+static VALUE korb_oid_find(const struct korb_vm *vm, const VALUE obj) {
+    if (!(((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_OID)) return KORB_NIL;
+    const uint32_t slot = (uint32_t)(((korb_word_t)obj >> 4) & (KORB_OID_CACHE - 1u));
+    const uint32_t hint = vm->oid_cache[slot];
+    if (hint != 0 && hint <= vm->oid_cnt && vm->oid_obj[hint - 1] == obj) return vm->oid_val[hint - 1];
+    for (uint32_t i = 0; i < vm->oid_cnt; i++)
+        if (vm->oid_obj[i] == obj) {
+            ((struct korb_vm *)vm)->oid_cache[slot] = i + 1;   /* hint only: no semantic state */
+            return vm->oid_val[i];
+        }
+    return KORB_NIL;
+}
+/* libc realloc only — not a GC point, so the caller's `obj` stays valid. */
+static VALUE korb_oid_assign(struct korb_vm *const vm, const VALUE obj) {
+    if (vm->oid_cnt == vm->oid_capa) {
+        const uint32_t nc = vm->oid_capa ? vm->oid_capa * 2 : 16;
+        vm->oid_obj = realloc(vm->oid_obj, sizeof(VALUE) * nc);
+        vm->oid_val = realloc(vm->oid_val, sizeof(VALUE) * nc);
+        if (!vm->oid_obj || !vm->oid_val) { fprintf(stderr, "koruby_precise: oom (oid)\n"); abort(); }
+        vm->oid_capa = nc;
+    }
+    const VALUE id = LONG2FIX((korb_sword_t)((++vm->oid_next << 3) | 2u));
+    vm->oid_obj[vm->oid_cnt] = obj;
+    vm->oid_val[vm->oid_cnt] = id;
+    vm->oid_cache[((korb_word_t)obj >> 4) & (KORB_OID_CACHE - 1u)] = vm->oid_cnt + 1;
+    vm->oid_cnt++;
+    ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_OID;
+    return id;
+}
 static RESULT korb_objivar_set(CTX *c, VALUE *slots, VALUE_REF objref, VALUE name_sym, VALUE val) {
     VALUE_REF vref = SLOTS_PUSH(slots, val);          /* root val/name across hash alloc/grow */
     VALUE_REF nref = SLOTS_PUSH(slots, name_sym);

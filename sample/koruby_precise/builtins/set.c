@@ -361,10 +361,11 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_obj_class(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a; return RESULT_OK(korb_class_obj_of(c, VALUE_REF_GET(self)));
 }
-/* Object#object_id / __id__.  Immediates match CRuby exactly; heap objects use an
- * address-derived id (stable within a GC epoch — moving GC has no per-object id slot). */
+/* Object#object_id / __id__.  Immediates match CRuby exactly; a heap object gets
+ * a serial assigned on first ask (korb_oid_find / korb_oid_assign) — its address
+ * is not stable under a moving GC, and Ruby promises the id is. */
 static RESULT korb_m_obj_object_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a;
+    (void)slots;(void)a;
     const VALUE v = VALUE_REF_GET(self);
     if (FIXNUM_P(v)) {
         const korb_sword_t n = FIX2LONG(v);
@@ -379,7 +380,11 @@ static RESULT korb_m_obj_object_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (v == KORB_FALSE) return RESULT_OK(LONG2FIX(0));
     if (v == KORB_TRUE)  return RESULT_OK(LONG2FIX(20));
     if (SYMBOL_P(v))     return RESULT_OK(LONG2FIX((korb_sword_t)(((uintptr_t)SYM2ID(v) << 8) | 0x1c)));   /* consistent per symbol */
-    return RESULT_OK(LONG2FIX((korb_sword_t)((uintptr_t)v >> 2)));
+    if (LIKELY(AROH_IS_GC_OBJECT(v))) {
+        const VALUE id = korb_oid_find(c->vm, v);
+        return RESULT_OK(id != KORB_NIL ? id : korb_oid_assign(c->vm, v));   /* assign does not GC */
+    }
+    return RESULT_OK(LONG2FIX((korb_sword_t)((uintptr_t)v >> 2)));   /* Flonum: the value IS the identity */
 }
 /* `sv is_a? target` — target must already be known to be a class/module.
  * Allocation-free, so the ObjectSpace heap walk can use it as a filter. */

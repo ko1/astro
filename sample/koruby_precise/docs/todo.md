@@ -54,6 +54,43 @@ DOOM で検出 0。フックが生きていることは条件を `== 0` に反�
 define が効かない。SD が inline する korb_invoke_simple は @framehdr を張った call site
 専用の速い経路で、ヘッダは構造上必ずある。
 
+## 既知バグ (修正済 2026-09-16): #object_id が moving GC で変わる
+
+`Object#object_id` / `__id__` はアドレス由来 (`(uintptr_t)v >> 2`) だった。moving GC が
+オブジェクトを動かすとアドレスが変わるので、**同じオブジェクトが別の id を返していた**。
+STRESS 限定ではなく通常 GC でも起きる (実測: 67 回の GC の間に 3 個の id、STRESS+PURGE では
+1 個のオブジェクトに 788 個)。
+
+影響。`obj.__id__` をキーにする Ruby コードが全部壊れる。実際、rubyspec の
+`library/zlib/gzipreader/rewind_spec.rb` が STRESS+PURGE でだけ落ちていた件
+(「Mock 'io': method get_io called with unexpected arguments ()」) の真因がこれで、
+mspec の `Mock.replaced_key` が `[obj.__id__, sym]` を Hash のキーにしている。
+
+修正。初回要求時に serial を採番して `korb_vm` の side table に持つ
+(`korb_oid_find` / `korb_oid_assign`、korb_runtime.c)。table の object 列は
+`AROH_VISIT_ROOTS` が forward するので、オブジェクトが動いても id が付いて回る。
+`KORB_FL_HAS_OID` (0x2000) で「一度でも聞かれた」オブジェクトだけが scan に乗る。
+線形 scan の前にアドレス直マップのキャッシュ (`vm->oid_cache`, 1024 entry) を置いた。
+GC 後はヒント先が一致しなくなるだけなので GC フックは要らない。
+
+id の形。ヒープは `8n + 2`。Fixnum は奇数 (2n+1)、nil/false/true/Symbol は 0 か 4 mod 8
+なので衝突しない。Flonum は値そのものが同一性なので従来式のまま。
+
+sklass / objivar と同じく object 列は強参照なので、id を聞かれたオブジェクトはプロセスの
+最後まで残る (既存 2 テーブルと同じ制限。weak-ref 化は将来)。
+
+確認。CRuby と 15 項目一致 (immediate の値、5000 個の一意性、Fixnum id と非衝突、GC.start
+越しの保存、frozen、dup が別 id、equal?)。`make test` の FAIL 集合は前後完全一致 (532)。
+rubyspec sweep 31296/32009 で **変化した行 0**。gzipreader/rewind は STRESS+PURGE で 3/3 PASS
+に回復。optcarrot AOT checksum 59662、DOOM plain/AOT 17930386881013214317。
+
+## 既知バグ (未修正): STRESS+PURGE で `Array#flatten` が SEGV
+
+`t/hand/core_conv_mm_aware.rb` が STRESS+PURGE で落ちる (HEAD でも落ちるので既存)。
+`builtins/array_enum.c:1364` の `korb_ary_flatten_depth` で、`#to_ary` を dispatch した
+あとの `cr.value` / `cv` を C ローカルの VALUE のまま読んでいる (dispatch を跨いで
+VALUE を保持しない規約違反)。
+
 ## rubyspec の「1〜2 例落ち」長い尻尾の共通原因 集計 (2026-09-13)
 
 残る失敗の 82% は「1 ファイルに 1〜2 例だけ落ちている」形で散っている。
