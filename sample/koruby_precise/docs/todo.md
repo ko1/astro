@@ -286,6 +286,32 @@ b = +"zz"; [1,2].pack("C @4 C", buffer: b)
 (spec が無く、先頭 `@N` を特別扱いする既存のハックと絡むため)。
 直すなら `bufbase` をループに通して `@` も同じ基準にすること。
 
+## moving GC バグ狩り: rubyspec 全体を BARUBY_GC_STRESS=64 + PURGE で回す (2026-09-16)
+
+`BARUBY_GC_STRESS=N` (N>1) は「N alloc ごとに GC」なので、STRESS=1 では終わらない
+rubyspec 全体も現実的な時間で回せる (4 並列、SPEC_TIMEOUT=120 で約 3〜5 分)。
+`sweep.rb` は spawn の env を 3 つしか上書きしないので、親の環境変数がそのまま子に届く。
+
+    BARUBY_GC_STRESS=64 BARUBY_GC_PURGE=1 SWEEP_TMP=/tmp/ksw SPEC_TIMEOUT=120 \
+      ruby tools/spec_sweep/sweep.rb 4 /tmp/ksw/stress.tsv 'core/**' 'language/**' 'library/**'
+
+通常 run の TSV と突き合わせて **新たに WFAIL になったファイル**が moving GC バグの候補。
+初回 (2026-09-16): 37 ファイル。gdb で 3 つの別々の真因が見えた。
+
+1. **`Range#cover?` が `#<=>` の dispatch を跨いで C ローカルに beg/end/x を持っていた**
+   (修正済)。`korb_m_range_cover` は slots[0..2] に root していたが、
+   `korb_range_cover_value` に**値渡し**していたので、下限比較の `#<=>` で GC が起きると
+   上限比較が stale な値を読む。スロットへのポインタ渡しにして各 dispatch 後に読み直す。
+   これで 37 → 25 ファイル (stringscanner 7 / range 3 / fork 系 2 が解消)。
+   mspec の `ruby_version_is` が SpecVersion の Range を使うので影響が広かった。
+
+残り 25 ファイル。gdb で見えている別の真因:
+- `korb_fprint_inspect_s` / `korb_fprint_ary_d` (korb_runtime.c) — Array/Hash の inspect が
+  要素の `#inspect` dispatch を跨いで何かを保持している (`core/array/inspect_spec.rb`、
+  `core/hash/inspect_spec.rb`、`core/kernel/p_spec.rb`、`core/io/print_spec.rb` 系)。
+- `EVAL_node_const_set` (node_eval.c) が block yield の中で落ちる
+  (`core/string/lines_spec.rb`、`language/constants_spec.rb` 系)。
+
 ## rubyspec の「1〜2 例落ち」長い尻尾の共通原因 集計 (2026-09-13)
 
 残る失敗の 82% は「1 ファイルに 1〜2 例だけ落ちている」形で散っている。

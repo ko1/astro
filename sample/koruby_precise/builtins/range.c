@@ -133,19 +133,21 @@ static RESULT korb_range_cmp(CTX *c, VALUE *slots, VALUE a, VALUE b, int *out) {
     return korb_comparable_cmp(c, slots, a, b, out);   /* dispatch a.<=>(b) */
 }
 /* Does the range [beg,end] (excl for right-open) cover the single value x?
- * nil begin/end = unbounded on that side.  slots[0..] are scratch; beg/end/x
- * must be caller-rooted (this only dispatches #<=>, which may GC).  *out set. */
-static RESULT korb_range_cover_value(CTX *c, VALUE *slots, VALUE beg, VALUE end, bool excl, VALUE x, bool *out) {
+ * nil begin/end = unbounded on that side.  slots[0..] are scratch.  beg/end/x
+ * are SLOT POINTERS into the caller's rooted region, not values: the #<=> below
+ * runs Ruby, so the lower-bound compare can move all three before the upper one
+ * reads them.  *out set. */
+static RESULT korb_range_cover_value(CTX *c, VALUE *slots, const VALUE *beg, const VALUE *end, bool excl, const VALUE *x, bool *out) {
     /* short-circuit like CRuby's r_cover_p: once the lower bound rules x out,
      * the upper #<=> is never dispatched (it may raise for a foreign type). */
     *out = false;
-    if (beg != KORB_NIL) {
-        int lc; RESULT cl = korb_range_cmp(c, slots, beg, x, &lc);
+    if (*beg != KORB_NIL) {
+        int lc; RESULT cl = korb_range_cmp(c, slots, *beg, *x, &lc);
         if (UNLIKELY(cl.state != KORB_NORMAL)) return cl;
         if (lc == 2 || lc > 0) return RESULT_OK(KORB_NIL);
     }
-    if (end != KORB_NIL) {
-        int uc; RESULT cu = korb_range_cmp(c, slots, x, end, &uc);
+    if (*end != KORB_NIL) {                       /* re-read: the compare above may have moved them */
+        int uc; RESULT cu = korb_range_cmp(c, slots, *x, *end, &uc);
         if (UNLIKELY(cu.state != KORB_NORMAL)) return cu;
         if (uc == 2 || (excl ? uc >= 0 : uc > 0)) return RESULT_OK(KORB_NIL);
     }
@@ -169,7 +171,7 @@ static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             if (cbe == 2 || cbe > (o_excl ? -1 : 0)) return RESULT_OK(KORB_FALSE);
         }
         if (!vb_nil) {                                           /* other.begin must fall inside self */
-            bool cov; RESULT cc = korb_range_cover_value(c, slots + 5, slots[0], slots[1], excl, slots[3], &cov);
+            bool cov; RESULT cc = korb_range_cover_value(c, slots + 5, &slots[0], &slots[1], excl, &slots[3], &cov);
             if (UNLIKELY(cc.state != KORB_NORMAL)) return cc;
             if (!cov) return RESULT_OK(KORB_FALSE);
         }
@@ -199,7 +201,7 @@ static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         }
         return RESULT_OK(res ? KORB_TRUE : KORB_FALSE);
     }
-    bool cov; RESULT cc = korb_range_cover_value(c, slots + 3, slots[0], slots[1], excl, slots[2], &cov);
+    bool cov; RESULT cc = korb_range_cover_value(c, slots + 3, &slots[0], &slots[1], excl, &slots[2], &cov);
     if (UNLIKELY(cc.state != KORB_NORMAL)) return cc;
     return RESULT_OK(cov ? KORB_TRUE : KORB_FALSE);
 }
