@@ -3330,7 +3330,7 @@ void korb_env_store(CTX *c, KorbEnv *e, uint32_t index, VALUE v) {
  * procs over the same activation share one env → shared mutation.  No global list. */
 static KorbEnv *korb_open_env_find(VALUE *loc) {
     const VALUE pv = korb_ep_get(loc);
-    if (pv != 0 && (pv & 1u) == 0) {
+    if (pv != 0 && (pv & 7u) == 0) {
         KorbEnv *e = VAL2ENV(pv);
         if (!e->closed && e->loc == loc) return e;
     }
@@ -3463,7 +3463,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
     const uint32_t yd = entry->u.node_entry.cap_yield;
     if (UNLIKELY(yd != 0)) {
         const VALUE eh = korb_outer_handle_at(NULL, slots[1], yd);
-        if (eh != 0 && (eh & 1u) == 0 && VAL2ENV(eh)->blk == 0 && !VAL2ENV(eh)->closed) {
+        if (eh != 0 && (eh & 7u) == 0 && VAL2ENV(eh)->blk == 0 && !VAL2ENV(eh)->closed) {
             slots[2] = eh;                                    /* root the env across the reify */
             VALUE *const trio = korb_env_method_trio(VAL2ENV(eh));
             const VALUE bp = trio ? UNWRAP(korb_block_to_proc(c, slots + 3, (NODE *)(uintptr_t)(trio[0] & ~(uintptr_t)1u),
@@ -3601,7 +3601,7 @@ static bool korb_bt_known_ptr(const struct korb_vm *vm, uintptr_t p);   /* fwd: 
 static uint32_t korb_bind_method_mid(const struct korb_vm *const vm, const KorbBinding *const b)
 {
     VALUE ev = b->env;
-    for (uint32_t d = 0; d < 64 && ev != 0 && (ev & 1u) == 0; d++) {
+    for (uint32_t d = 0; d < 64 && ev != 0 && (ev & 7u) == 0; d++) {
         const VALUE id = VAL2ENV(ev)->id;
         const uintptr_t p = (uintptr_t)(id & ~(VALUE)7u);
         if ((id & 7u) == KORB_FID_METHOD)
@@ -8292,7 +8292,7 @@ static void korb_scope_at_handle(const VALUE h, struct korb_scope_level *const l
 static bool korb_scope_outer(const struct korb_scope_level *const lv, struct korb_scope_level *const out) {
     if ((lv->id & 7u) != KORB_FID_BLOCK) return false;
     VALUE h = lv->env ? lv->env->prev : korb_ep_get(lv->loc);
-    if (h != 0 && (h & 1u) == 0 && lv->env == NULL) {
+    if (h != 0 && (h & 7u) == 0 && lv->env == NULL) {
         const KorbEnv *const e = VAL2ENV(h);             /* an even EP is EITHER this frame's own env */
         if (!e->closed && e->loc == lv->loc) h = e->prev;   /* ... in which case the outer one is its prev */
     }
@@ -10278,13 +10278,14 @@ VALUE
 korb_outer_handle_at(const VALUE *frame_base, VALUE prev_handle, uint32_t depth)
 {
     VALUE h = prev_handle;
-    if (frame_base != NULL && h != 0 && (h & 1u) == 0 &&
+    if (frame_base != NULL && h != 0 && (h & 7u) == 0 &&
         VAL2ENV(h)->closed == 0 && VAL2ENV(h)->loc == frame_base)
         h = VAL2ENV(h)->prev;
     for (uint32_t k = 1; ; k++) {
         if (h == 0 || k >= depth) return h;
-        if (h & 1u) h = korb_ep_get((const VALUE *)(uintptr_t)(h & ~(uintptr_t)1u));
-        else        h = VAL2ENV(h)->prev;
+        if (h & 1u)             h = korb_ep_get((const VALUE *)(uintptr_t)(h & ~(uintptr_t)1u));
+        else if ((h & 7u) == 0) h = VAL2ENV(h)->prev;
+        else                    return 0;   /* an immediate is no env: the chain ends */
     }
 }
 
@@ -11002,14 +11003,30 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                         }
                         ((AroObjectHeader *)(uintptr_t)slots[0])->flags |= KORB_FL_KWARGS;   /* written as keywords, so **kw collects it */
                         slots[1] = UNWRAP(korb_obj_new(c, slots + 1, *recv_slot));   /* instance (allocated last, rooted) */
-                        VALUE *const ibase = slots + 2;
+                        /* This #initialize frame sits ABOVE the window korb_send_impl laid out, so
+                         * the cells below it are live caller slots, not a header.  Stage one:
+                         * korb_invoke_method fills only the identity and self, and a stale even
+                         * VALUE left in the EP cell is read back as an open KorbEnv. */
+                        slots[2] = 0;                                  /* base[-4] (identity) */
+                        slots[3] = korb_flink_carry(c, slots - (korb_sword_t)argc - 3);   /* base[-3]: the site's own link */
+                        slots[4] = 0;                                  /* base[-2] (EP)       */
+                        slots[5] = slots[1];                                  /* base[-1] (self)     */
+                        VALUE *const ibase = slots + 6;
                         ibase[0] = slots[0];               /* the single kwargs Hash → override's **kw */
                         RESULT ir = korb_invoke_method(c, ibase + 1, duinit, 1, line, vm->mid_initialize, slots[1], didef, block, def_env, KORB_CSELF_VAL(captured_self));
                         if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
                         return RESULT_OK(slots[1]);
                     }
                     slots[0] = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* the instance (rooted) */
-                    VALUE *const ibase = slots + 1;
+                    /* This #initialize frame sits ABOVE the window korb_send_impl laid out, so
+                     * the cells below it are live caller slots, not a header.  Stage one:
+                     * korb_invoke_method fills only the identity and self, and a stale even
+                     * VALUE left in the EP cell is read back as an open KorbEnv. */
+                    slots[1] = 0;                                  /* base[-4] (identity) */
+                    slots[2] = korb_flink_carry(c, slots - (korb_sword_t)argc - 3);   /* base[-3]: the site's own link */
+                    slots[3] = 0;                                  /* base[-2] (EP)       */
+                    slots[4] = slots[0];                                  /* base[-1] (self)     */
+                    VALUE *const ibase = slots + 5;
                     for (uint32_t i = 0; i < argc; i++) ibase[i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];   /* forward args (post-alloc, GC-safe) */
                     RESULT ir = korb_invoke_method(c, ibase + argc, duinit, argc, line, vm->mid_initialize, slots[0], didef, block, def_env, KORB_CSELF_VAL(captured_self));
                     if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
@@ -11020,7 +11037,15 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 struct korb_method *const suinit = korb_class_find_method(*recv_slot, vm->mid_initialize, &sudef);
                 if (suinit && suinit->kind == KORB_METHOD_ISEQ) {   /* a real override (the built-in korb_m_struct_initialize is a CFUNC) */
                     slots[0] = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* the instance (rooted) */
-                    VALUE *const ibase = slots + 1;
+                    /* This #initialize frame sits ABOVE the window korb_send_impl laid out, so
+                     * the cells below it are live caller slots, not a header.  Stage one:
+                     * korb_invoke_method fills only the identity and self, and a stale even
+                     * VALUE left in the EP cell is read back as an open KorbEnv. */
+                    slots[1] = 0;                                  /* base[-4] (identity) */
+                    slots[2] = korb_flink_carry(c, slots - (korb_sword_t)argc - 3);   /* base[-3]: the site's own link */
+                    slots[3] = 0;                                  /* base[-2] (EP)       */
+                    slots[4] = slots[0];                                  /* base[-1] (self)     */
+                    VALUE *const ibase = slots + 5;
                     for (uint32_t i = 0; i < argc; i++) ibase[i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];   /* forward args (post-alloc, GC-safe) */
                     RESULT ir = korb_invoke_method(c, ibase + argc, suinit, argc, line, vm->mid_initialize, slots[0], sudef, block, def_env, KORB_CSELF_VAL(captured_self));
                     if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
@@ -11482,7 +11507,15 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             VALUE eidef = KORB_NIL;
             struct korb_method *const euinit = korb_class_find_method(slots[0], vm->mid_initialize, &eidef);
             if (euinit && euinit->kind == KORB_METHOD_ISEQ) {
-                VALUE *const ibase = slots + 2;
+                /* This #initialize frame sits ABOVE the window korb_send_impl laid out, so
+                 * the cells below it are live caller slots, not a header.  Stage one:
+                 * korb_invoke_method fills only the identity and self, and a stale even
+                 * VALUE left in the EP cell is read back as an open KorbEnv. */
+                slots[2] = 0;                                  /* base[-4] (identity) */
+                slots[3] = korb_flink_carry(c, slots - (korb_sword_t)argc - 3);   /* base[-3]: the site's own link */
+                slots[4] = 0;                                  /* base[-2] (EP)       */
+                slots[5] = slots[1];                                  /* base[-1] (self)     */
+                VALUE *const ibase = slots + 6;
                 for (uint32_t i = 0; i < argc; i++) ibase[i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];
                 RESULT ir = korb_invoke_method(c, ibase + argc, euinit, argc, line, vm->mid_initialize, slots[1], eidef, block, def_env, KORB_CSELF_VAL(captured_self));
                 if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
@@ -16799,8 +16832,15 @@ korb_exc_build(CTX *c, VALUE *slots, VALUE_SLICE args)
             /* CRuby passes only the message to the constructor — a third arg is
              * the backtrace, applied below, never an #initialize argument. */
             const uint32_t iargc = (n >= 2) ? 1 : 0;
-            if (iargc) slots[2] = VALUE_SLICE_GET(args, 1);
-            VALUE *const icur = slots + 2 + iargc;
+            /* the callee window is built here, so stage its header too:
+             * korb_invoke_method fills only the identity and self, and a stale
+             * even VALUE left in the EP cell is read back as an open KorbEnv. */
+            slots[2] = 0;                                /* base[-4] (identity) */
+            slots[3] = korb_flink_cur_cframe(c, slots + 3);   /* base[-3] (frame link) */
+            slots[4] = 0;                                /* base[-2] (EP)       */
+            slots[5] = slots[1];                         /* base[-1] (self)     */
+            if (iargc) slots[6] = VALUE_SLICE_GET(args, 1);
+            VALUE *const icur = slots + 6 + iargc;
             RESULT ir = korb_invoke_method(c, icur, uinit, iargc, 0, init_mid, slots[1], idef, NULL, NULL, KORB_NIL);
             if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
             slots[1] = (icur - iargc)[-1];           /* the (moved) exception */

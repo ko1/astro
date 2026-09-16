@@ -3,6 +3,45 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## 既知バグ (修正済 2026-09-16): 再ステージした #initialize フレームのヘッダ未初期化 — DOOM が SEGV
+
+`make doom` が exit 139 で落ちていた。この session の作業より前から (4a37e940 / 6fb97dfc /
+6bfc16a8 / HEAD すべてで再現)。
+
+真因。`korb_send_impl` は先頭で `[recv, args]` を memmove して **その呼び先のヘッダ 3 セル
+(identity/link/EP) を 0 で置いてから** dispatch する。ところが Struct / Data / 例外サブクラスに
+ユーザ定義の `#initialize` がある経路は、インスタンスを alloc したあとに **その上にもう 1 枚**
+フレームを組み直す (`ibase = slots + 1` など)。この 2 枚目の下にあるセルは呼び出し側の生きた
+スロット (＝引数) であってヘッダではないのに、ヘッダを置き直していなかった。
+`korb_invoke_method` が埋めるのは identity と self だけなので、EP セル base[-2] には直前の
+引数がそのまま残る。
+
+`korb_frame_escaped()` は EP を「0 でなく偶数ならオープンな KorbEnv」と読んで逆参照する。
+DOOM は最後の引数が `false` (= `KORB_FALSE` = 4、0 でなく偶数) の Struct を作っていたので、
+アドレス 4 を `KorbEnv*` として触って SEGV。引数がヒープオブジェクトのときは落ちないが、
+`KorbHash`/`KorbClass` を `KorbEnv` として読む (site A/D/E はまさにこれ) ので、
+落ちないだけで同じく壊れている。
+
+修正は 2 つ。
+
+1. 再ステージする 5 箇所に、同じ関数の method_missing 経路 (korb_runtime.c) が既にやっている
+   `[identity | link | EP | self]` のステージングを入れた。link は `korb_flink_carry()` で
+   その call site 自身のリンクセルへの FORWARD にする (C 側の raise 経路だけ
+   `korb_flink_cur_cframe`)。
+   - Data `new` (kwargs 形 / positional 形)、Struct `new`、例外サブクラス `new`、
+     `raise Class, msg` の中の `#initialize` 呼び出し。
+2. EP を読む側のポインタ判定を `(v & 1u) == 0` から **`(v & 7u) == 0`** に締めた
+   (`korb_frame_escaped` / `korb_open_env_find` / `korb_outer_handle_at` ほか計 6 箇所)。
+   ヒープポインタの条件は `(v & 7) == 0 && v != 0` であって偶数ではない。flonum は `&7 ∈ {2,6}`、
+   special (false/true/undef) は `&7 == 4` で、どちらも「偶数」を通っていた。
+
+効果。`make doom` が完走し checksum が CRuby と一致 (17930386881013214317)。
+`S#initialize` のバックトレースも `["S#initialize@3", "<main>@7"]` と CRuby 一致になった
+(link セルがゴミでなくなったため)。回帰テスト: `t/hand/restage_initialize_frame.rb`。
+
+残り: Data の `D.new` / 例外の `Exception.exception` という中間 C フレームは koruby には無いので
+`caller_locations` に出ない。これは別のギャップ (C メソッドのフレーム化) で、本件とは無関係。
+
 ## rubyspec の「1〜2 例落ち」長い尻尾の共通原因 集計 (2026-09-13)
 
 残る失敗の 82% は「1 ファイルに 1〜2 例だけ落ちている」形で散っている。

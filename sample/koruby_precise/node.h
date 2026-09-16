@@ -934,7 +934,7 @@ void   korb_dispatchers_swapped(struct korb_vm *vm);   /* code-store swap → re
  * whose loc is this frame) → its return must close it. */
 static inline bool korb_frame_escaped(const VALUE *base) {
     const VALUE pv = korb_ep_get(base);
-    return pv != 0 && (pv & 1u) == 0 && VAL2ENV(pv)->loc == base;
+    return pv != 0 && (pv & 7u) == 0 && VAL2ENV(pv)->loc == base;
 }
 
 static inline __attribute__((always_inline, no_stack_protector)) RESULT
