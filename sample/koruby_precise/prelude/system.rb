@@ -1619,6 +1619,12 @@ module Kernel
   end
   private :respond_to_missing?
 
+  # Ruby 4.x: the default #inspect asks this which ivars to show.  nil = all,
+  # which is what the default answers; the C side only dispatches when the
+  # definition it finds is NOT this one.
+  def instance_variables_to_inspect = nil
+  private :instance_variables_to_inspect
+
   def trap(sig, command = nil, &blk) = Signal.trap(sig, command, &blk)
   module_function :trap
 

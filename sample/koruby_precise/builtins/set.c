@@ -306,7 +306,7 @@ static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    const VALUE v0 = VALUE_REF_GET(self);
+    VALUE v0 = VALUE_REF_GET(self);
     /* A plain object inspects as "#<Class:0x.. @a=1, @b=2>" — and as "#<Class:0x..>"
      * with no ivars.  The zero-ivar case must NOT fall through to the generic
      * formatter below: that one ends at #to_s, but CRuby's default #inspect never
@@ -317,11 +317,54 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         char *buf = NULL; size_t sz = 0;
         FILE *ms = open_memstream(&buf, &sz);
         if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
-        const uint32_t sid0 = VAL2OBJ(v0)->shape_id;
-        const uint32_t nvv = c->vm->shapes[sid0].ivar_count;
-        const uint32_t n = nvv < 64 ? nvv : 64;
-        uint32_t syms[64];
-        for (uint32_t sid = sid0; sid; ) { const struct korb_shape *s = &c->vm->shapes[sid]; if (s->ivar_count >= 1 && s->ivar_count <= n) syms[s->ivar_count - 1] = s->edge_sym; sid = s->parent; }
+        uint32_t syms[64]; uint32_t n = 0;
+        /* Ruby 4.x: a private #instance_variables_to_inspect picks which ivars to
+         * show.  nil = all (what Kernel's own default answers, so only a real
+         * override is dispatched); an Array names them in ITS order, skipping
+         * ones the object does not have; anything else is a TypeError. */
+        bool listed = false;
+        {
+            VALUE hook_owner = KORB_NIL;
+            const uint32_t mid_ivti = korb_intern(c->vm, "instance_variables_to_inspect", 29);
+            const VALUE dcls = korb_dispatch_class(c, v0);
+            if (UNLIKELY(KORB_CLASS_P(dcls) &&
+                         korb_class_find_method(dcls, mid_ivti, &hook_owner) != NULL &&
+                         hook_owner != korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6)))) {
+                slots[0] = v0;                              /* root across the dispatch */
+                const RESULT hr = korb_send_impl(c, slots + 1, mid_ivti, 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(hr.state != KORB_NORMAL)) { fclose(ms); free(buf); return hr; }
+                v0 = slots[0];                              /* it ran Ruby: re-read */
+                if (hr.value != KORB_NIL) {
+                    if (UNLIKELY(!KORB_ARRAY_P(hr.value))) {
+                        fclose(ms); free(buf);
+                        return korb_raise(c, slots + 1, KORB_E_TYPE, 0,
+                                          "Expected #instance_variables_to_inspect to return an Array or nil, but it returned %s",
+                                          korb_coerce_name(c, hr.value));
+                    }
+                    /* the list FILTERS; the object's own ivar order is kept (CRuby) */
+                    slots[1] = hr.value;                    /* root the list */
+                    const uint32_t sid0 = VAL2OBJ(v0)->shape_id;
+                    const uint32_t nvv = c->vm->shapes[sid0].ivar_count;
+                    const uint32_t nall = nvv < 64 ? nvv : 64;
+                    uint32_t all[64];
+                    for (uint32_t sid = sid0; sid; ) { const struct korb_shape *sh = &c->vm->shapes[sid]; if (sh->ivar_count >= 1 && sh->ivar_count <= nall) all[sh->ivar_count - 1] = sh->edge_sym; sid = sh->parent; }
+                    const KorbArray *const la = VAL2ARY(slots[1]);
+                    for (uint32_t i = 0; i < nall; i++) {
+                        bool want = false;
+                        for (uint32_t j = 0; j < la->len && !want; j++)
+                            if (korb_items_data(la->items)[j] == ID2SYM(all[i])) want = true;
+                        if (want) syms[n++] = all[i];
+                    }
+                    listed = true;
+                }
+            }
+        }
+        if (!listed) {
+            const uint32_t sid0 = VAL2OBJ(v0)->shape_id;
+            const uint32_t nvv = c->vm->shapes[sid0].ivar_count;
+            n = nvv < 64 ? nvv : 64;
+            for (uint32_t sid = sid0; sid; ) { const struct korb_shape *s = &c->vm->shapes[sid]; if (s->ivar_count >= 1 && s->ivar_count <= n) syms[s->ivar_count - 1] = s->edge_sym; sid = s->parent; }
+        }
         fputs("#<", ms);
         korb_fprint_class_desc(c, ms, VAL2OBJ(v0)->klass);
         fprintf(ms, ":0x%016lx", (unsigned long)(uintptr_t)v0);
@@ -334,8 +377,9 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             for (uint32_t i = 0; i < n; i++) {
                 fputs(i == 0 ? " " : ", ", ms);
                 fputs(korb_sym_name(c->vm, syms[i]), ms); fputc('=', ms);
-                const KorbObject *const oo = VAL2OBJ(slots[0]);  /* re-read: dispatch may move it */
-                korb_fprint_inspect_d(c, slots + 1, ms, oo->ivars ? korb_items_data(oo->ivars)[i] : KORB_NIL, 1);
+                /* by name, not by index: the hook may reorder / omit.  slots[0] is
+                 * re-read because the element dispatch below moves it. */
+                korb_fprint_inspect_d(c, slots + 2, ms, korb_ivar_get(c, slots[0], ID2SYM(syms[i])), 1);
             }
             ((AroObjectHeader *)(uintptr_t)slots[0])->flags &= ~KORB_FL_JOIN_VISITING;
         }
