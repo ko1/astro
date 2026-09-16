@@ -264,7 +264,10 @@ node_void_warn(CTX *c, NODE *n, VALUE *slots, void *warn, VALUE val@child)
     struct korb_dupkey_warn *const w = (struct korb_dupkey_warn *)warn;
     if (!w->done) {
         w->done = 1;
-        korb_warn_at(c, slots, w->file, w->line, "possibly useless use of defined? in void context");
+        slots[0] = val;                  /* park: the warning goes out through $stderr, which a
+                                          * harness can replace with a Ruby object */
+        korb_warn_at(c, slots + 1, w->file, w->line, "possibly useless use of defined? in void context");
+        return RESULT_OK(slots[0]);      /* re-read (may have moved) */
     }
     return RESULT_OK(val);
 }
@@ -277,13 +280,15 @@ node_dupkey_warn(CTX *c, NODE *n, VALUE *slots, void *warns, uint32_t cnt, VALUE
 {
     (void)n;
     struct korb_dupkey_warn *const w = (struct korb_dupkey_warn *)warns;
+    bool warned = false;
     for (uint32_t i = 0; i < cnt; i++) {
         if (w[i].done) continue;
         w[i].done = 1;
-        korb_warn_at(c, slots, w[i].file, w[i].line,
+        if (!warned) { slots[0] = val; warned = true; }   /* park: $stderr can be a Ruby object */
+        korb_warn_at(c, slots + 1, w[i].file, w[i].line,
                      "key %s is duplicated and overwritten on line %u", w[i].key, w[i].line2);
     }
-    return RESULT_OK(val);
+    return RESULT_OK(warned ? slots[0] : val);            /* re-read (the warning ran Ruby) */
 }
 
 NODE_DEF @noinline

@@ -349,9 +349,17 @@ rubyspec 全体も現実的な時間で回せる (4 並列、SPEC_TIMEOUT=120 �
    `korb_md_arg_gi` (MatchData 自身)、**`IO.popen` の spawn plan 引数スライスが C 配列**、
    `File.readlines` の区切り (limit の `#to_int` を跨いで sep が stale)。
 
-ここまでで **37 → 1 ファイル**。残り: `language/hash_spec.rb`。
-node_send の `recv = slots[-argc-1]` が stale で落ちる (node_eq → `korb_send` の先、
-ユーザ `==` の本体の中)。まだ真因未特定。
+11. **`node_dupkey_warn` / `node_void_warn`** (修正済)。`node_deprecated_gvar_warn` と
+   同じ形で、`korb_warn_at` ($stderr 経由で Ruby が走る) を跨いで `val` を C ローカルで
+   持っていた。最小再現は「eval + 重複キーの警告 + $stderr を Ruby オブジェクトに差し替え」
+   の 3 つが揃ったとき。
+
+**結果: 37 → 0 ファイル。** rubyspec 全体 (3747 ファイル) を
+`BARUBY_GC_STRESS=64 BARUBY_GC_PURGE=1` で回して、通常 run より新たに落ちるファイルは無い。
+t/hand + t/enc の 534 ファイルは `BARUBY_GC_STRESS=1`(毎 alloc) + PURGE でも非ゼロ終了 0。
+
+残る差: STRESS 下の pass は 31271、通常は 31335 で **64 例少ない**。crash ではなく個別の
+期待値ずれ (GC 回数や ObjectSpace 依存の例が多い見込み)。未調査。
 
 ## rubyspec の「1〜2 例落ち」長い尻尾の共通原因 集計 (2026-09-13)
 
