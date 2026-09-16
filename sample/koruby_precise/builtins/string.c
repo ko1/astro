@@ -1637,11 +1637,158 @@ static bool korb_charset_bad_range_cp(const char *s, uint32_t n, uint32_t *lo_ou
 /* tr/tr_s: both sets must be encoding-compatible with self (CompatibilityError). */
 static RESULT korb_str_tr_enc_check(CTX *c, VALUE *slots, VALUE self, VALUE fv, VALUE tv) {
     uint32_t ce;
+    /* the whole tr/tr_s/delete/squeeze/count family refuses a broken receiver */
+    if (UNLIKELY(KORB_STR_ENC(self) == KORB_ENC_UTF8 && !korb_str_utf8_valid(VAL2STR(self))))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
     if (UNLIKELY(!korb_str_enc_combine(c->vm, self, fv, &ce))) return korb_raise_enc_compat(c, slots, KORB_STR_ENC(self), KORB_STR_ENC(fv));
     if (UNLIKELY(!korb_str_enc_combine(c->vm, self, tv, &ce))) return korb_raise_enc_compat(c, slots, KORB_STR_ENC(self), KORB_STR_ENC(tv));
     return RESULT_OK(KORB_NIL);
 }
+/* --- Ruby 4.1 String#tr(hash) -------------------------------------------
+ * Each single-codepoint key is replaced by its value (any length; "" deletes).
+ * Unlike the two-set form there are no ranges and no `^`, and the result takes
+ * the COMBINED encoding of the receiver and every key and value.
+ *
+ * CRuby 4.1.0dev (2026-09-11) gets the empty-hash case wrong — `"x".tr({})`
+ * answers nil and `tr!` empties the receiver — and fails its own tr_spec on it
+ * (4 failures).  This follows the spec, which is the contract.
+ *
+ * Non-ASCII-compatible encodings (UTF-16/32) go through UTF-8 and back, the
+ * same round trip korb_str_case_wide uses. */
+static RESULT korb_tc_convert(CTX *c, VALUE *slots, VALUE src, const char *fromb, const char *tob, bool *ok);   /* fwd (transcode.c) */
+
+/* Every key must be exactly one character.  Checked on the UTF-8 forms, so a
+ * UTF-16 key is measured after the round trip, not on its raw bytes. */
+static RESULT korb_tr_hash_keys_ok(CTX *c, VALUE *slots, const KorbArray *pairs)
+{
+    for (uint32_t k = 0; k < pairs->len / 2; k++) {
+        const KorbString *const ks = VAL2STR(korb_items_data(pairs->items)[2 * k]);
+        uint32_t cl = 0;
+        if (ks->len) (void)korb_utf8_dec1(korb_strbuf_data(ks->buf), ks->len, &cl);
+        if (UNLIKELY(ks->len == 0 || cl != ks->len))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "keys must be of size 1");
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
+/* Scan `sv` (UTF-8 bytes) replacing each char that equals one of `n` keys.
+ * keys/vals are flat in `pairs` ([k0,v0,k1,v1,…], all UTF-8 Strings).
+ * *changed reports whether anything was replaced.  No GC: writes to `ms`. */
+static void korb_tr_hash_scan(FILE *ms, const KorbString *s, const KorbArray *pairs, bool *changed)
+{
+    const uint32_t n = pairs->len / 2;
+    for (uint32_t i = 0; i < s->len; ) {
+        uint32_t cl; (void)korb_utf8_dec1(korb_strbuf_data(s->buf) + i, s->len - i, &cl);
+        const char *const cp_bytes = korb_strbuf_data(s->buf) + i;
+        uint32_t hit = n;
+        for (uint32_t k = 0; k < n; k++) {
+            const KorbString *const ks = VAL2STR(korb_items_data(pairs->items)[2 * k]);
+            if (ks->len == cl && memcmp(korb_strbuf_data(ks->buf), cp_bytes, cl) == 0) { hit = k; break; }
+        }
+        if (hit == n) { fwrite(cp_bytes, 1, cl, ms); i += cl; continue; }
+        const KorbString *const vs = VAL2STR(korb_items_data(pairs->items)[2 * hit + 1]);
+        if (vs->len) fwrite(korb_strbuf_data(vs->buf), 1, vs->len, ms);
+        *changed = true;
+        i += cl;
+    }
+}
+
+/* *out = the translated String (encoding already set).  *changed says whether
+ * any character was replaced, which is what tr! reports. */
+static RESULT korb_str_tr_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE hv, VALUE *out, bool *changed)
+{
+    struct korb_vm *const vm = c->vm;
+    *changed = false;
+    slots[0] = hv;                                        /* root the hash across the coercions */
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 8));     /* flat [k0,v0,…], all coerced */
+    VALUE_REF pairs = VALUE_REF_AT(&slots[1]);
+    uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
+    slots[4] = VALUE_REF_GET(self);                       /* representative of the running encoding */
+    for (uint32_t i = 0; ; i++) {
+        if (i >= VAL2HASH(slots[0])->len) break;          /* re-read: a #to_str below runs Ruby */
+        for (uint32_t half = 0; half < 2; half++) {
+            slots[2] = korb_items_data(VAL2HASH(slots[0])->items)[2 * i + half];
+            if (!KORB_STRING_P(slots[2])) {               /* #to_str, else TypeError (CRuby wording) */
+                VALUE cv = slots[2];
+                const RESULT cr = korb_coerce_to_str(c, slots + 3, &cv);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                if (UNLIKELY(cr.value != KORB_TRUE))
+                    return korb_raise(c, slots + 3, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
+                                      korb_coerce_name(c, cv));
+                slots[2] = cv;
+            }
+            /* every key and value joins the result encoding; slots[4] carries a
+             * string IN the running combination so the fold is associative */
+            uint32_t ce;
+            if (UNLIKELY(!korb_str_enc_combine(vm, slots[4], slots[2], &ce)))
+                return korb_raise_enc_compat(c, slots + 5, KORB_STR_ENC(slots[4]), KORB_STR_ENC(slots[2]));
+            if (ce != KORB_STR_ENC(slots[4])) slots[4] = slots[2];   /* the wider side becomes the representative */
+            enc = ce;
+            CHECK(korb_ary_push_val(c, slots + 5, pairs, slots[2]));
+        }
+    }
+    /* a broken receiver is an error even when the hash is empty (CRuby's own
+     * implementation short-circuits here and misses it; the spec does not) */
+    if (UNLIKELY(KORB_STR_ENC(VALUE_REF_GET(self)) == KORB_ENC_UTF8 &&
+                 !korb_str_utf8_valid(VAL2STR(VALUE_REF_GET(self)))))
+        return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
+    const bool wide = !korb_enc_ascii_compat_idx(vm, KORB_STR_ENC(VALUE_REF_GET(self)));
+    if (wide) {                                           /* UTF-16/32: work in UTF-8 and convert back */
+        const char *const ename = korb_enc_name_of(vm, KORB_STR_ENC(VALUE_REF_GET(self)));
+        bool ok = false;
+        slots[2] = UNWRAP(korb_tc_convert(c, slots + 2, VALUE_REF_GET(self), ename, "UTF-8", &ok));
+        if (!ok) return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", ename);
+        VALUE_REF u8self = VALUE_REF_AT(&slots[2]);
+        slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 8));
+        VALUE_REF u8pairs = VALUE_REF_AT(&slots[3]);
+        for (uint32_t k = 0; ; k++) {
+            if (k >= VAL2ARY(VALUE_REF_GET(pairs))->len) break;
+            slots[5] = korb_items_data(VAL2ARY(VALUE_REF_GET(pairs))->items)[k];
+            slots[5] = UNWRAP(korb_tc_convert(c, slots + 5, slots[5], korb_enc_name_of(vm, KORB_STR_ENC(slots[5])), "UTF-8", &ok));
+            if (!ok) return korb_raise(c, slots + 6, KORB_E_ARGUMENT, 0, "invalid byte sequence");
+            CHECK(korb_ary_push_val(c, slots + 6, u8pairs, slots[5]));
+        }
+        char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+        if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+        CHECK(korb_tr_hash_keys_ok(c, slots + 6, VAL2ARY(VALUE_REF_GET(u8pairs))));   /* on the UTF-8 forms */
+        korb_tr_hash_scan(ms, VAL2STR(VALUE_REF_GET(u8self)), VAL2ARY(VALUE_REF_GET(u8pairs)), changed);
+        fclose(ms);
+        RESULT nr = korb_str_new(c, slots + 5, buf ? buf : "", (uint32_t)sz);
+        free(buf);
+        if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+        slots[5] = nr.value; KORB_STR_ENC_SET(slots[5], KORB_ENC_UTF8);
+        slots[5] = UNWRAP(korb_tc_convert(c, slots + 6, slots[5], "UTF-8", korb_enc_name_of(vm, enc), &ok));
+        if (!ok) return korb_raise(c, slots + 6, KORB_E_ARGUMENT, 0, "invalid byte sequence");
+        *out = slots[5];
+        return RESULT_OK(*out);
+    }
+    CHECK(korb_tr_hash_keys_ok(c, slots + 2, VAL2ARY(VALUE_REF_GET(pairs))));
+    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    korb_tr_hash_scan(ms, VAL2STR(VALUE_REF_GET(self)), VAL2ARY(VALUE_REF_GET(pairs)), changed);
+    fclose(ms);
+    RESULT nr = korb_str_new(c, slots + 2, buf ? buf : "", (uint32_t)sz);
+    free(buf);
+    if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+    KORB_STR_ENC_SET(nr.value, enc);
+    *out = nr.value;
+    return RESULT_OK(*out);
+}
+
 static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t na = VALUE_SLICE_LEN(a);
+    if (UNLIKELY(na != 1 && na != 2))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", na);
+    if (na == 1) {                                       /* Ruby 4.1 hash form */
+        if (UNLIKELY(!KORB_HASH_P(VALUE_SLICE_GET(a, 0))))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Hash)",
+                              korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+        VALUE out = KORB_NIL; bool changed = false;
+        CHECK(korb_str_tr_hash(c, slots, self, VALUE_SLICE_GET(a, 0), &out, &changed));
+        return RESULT_OK(out);
+    }
+    if (UNLIKELY(KORB_HASH_P(VALUE_SLICE_GET(a, 0))))    /* a Hash with a 2nd arg is the two-set form */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of Hash into String");
     const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* from_str (coerce via #to_str) */
     if (!KORB_STRING_P(slots[0]) && KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) {
@@ -3061,6 +3208,19 @@ static bool korb_str_tr_matched(VALUE_REF self, VALUE fv) {
 }
 static RESULT korb_m_str_tr_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    if (VALUE_SLICE_LEN(a) == 1) {                       /* Ruby 4.1 hash form */
+        if (UNLIKELY(!KORB_HASH_P(VALUE_SLICE_GET(a, 0))))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Hash)",
+                              korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+        VALUE out = KORB_NIL; bool changed = false;
+        CHECK(korb_str_tr_hash(c, slots, self, VALUE_SLICE_GET(a, 0), &out, &changed));
+        if (!changed) return RESULT_OK(KORB_NIL);        /* CRuby leaves the receiver alone */
+        const uint32_t renc = KORB_STR_ENC(out);         /* the combined encoding travels with the bytes */
+        RESULT r = korb_str_bang_from(c, slots, self, RESULT_OK(out), false);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        KORB_STR_ENC_SET(VALUE_REF_GET(self), renc);
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
     const bool matched = korb_str_tr_matched(self, VALUE_SLICE_GET(a, 0));
     RESULT r = korb_str_bang_from(c, slots, self, korb_m_str_tr(c, slots, self, a), false);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;

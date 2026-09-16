@@ -92,6 +92,30 @@ dispatch し、変換できなかった場合にその stale な `e` を `KORB_A
 に渡していた。`slots[0]` に park して dispatch 後に読み直す。エラー文の受け手名も
 dispatch 後の scratch (`slots[0]`) ではなく `e` を使うようにした。
 
+## String#tr の Hash 形 (Ruby 4.1) を実装 (2026-09-16)
+
+`"hello".tr("e" => "E", "l" => "")` — 1 引数の Hash で「1 文字キー → 置換文字列」。
+2 セット形と違って範囲も `^` も無く、結果は**レシーバと全キー・全値の複合 encoding**。
+
+**CRuby 4.1.0dev (2026-09-11) はここにバグがあり、自分の tr_spec を 4 件落とす**:
+`"x".tr({})` が nil を返し、`tr!` が空 Hash / 無マッチでレシーバを空にする。
+spec が契約なので、koruby は spec のとおりに実装した (**tr_spec 40/40**、CRuby は 36/40)。
+`t/hand/string_tr_hash.rb` はこの 2 ケースを**入れていない** (corpus は CRuby と差分を
+取るため)。
+
+実装 (builtins/string.c):
+- キー・値は `#to_str` で強制変換 (型違いは TypeError)。
+- キーは 1 文字ちょうど。**UTF-8 形に直してから**数えるので UTF-16 のキーも通る。
+- encoding は「走行中の複合 encoding を表す文字列」を 1 つ持ち回って畳む
+  (`korb_str_enc_combine` は VALUE を 2 つ取るため)。非互換は CompatibilityError。
+- ASCII 非互換 (UTF-16/32) は UTF-8 に変換して処理し戻す (`korb_str_case_wide` と同じ往復)。
+- `tr!` は変化があったときだけレシーバを書き換え、複合 encoding も移す。
+
+あわせて、**tr/tr_s/delete/squeeze/count のどれもレシーバの encoding が壊れていたら
+ArgumentError**(CRuby と同じ) を共通の encoding チェックに足した。
+
+効果: rubyspec 31337 → 31349 (+12、退行 0)。
+
 ## 変換プロトコル 続報: `#to_X` が nil を返したときの扱い (2026-09-16、自分の退行)
 
 上の変換プロトコル整理 (`5311c17c`) で、`korb_coerce_to_{ary,hash}` が

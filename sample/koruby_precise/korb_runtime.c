@@ -12290,7 +12290,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "clamp", korb_m_str_clamp, -1);
     korb_def_cmethod(c, KORB_C_STRING, "delete", korb_m_str_delete, -1);
     korb_def_cmethod(c, KORB_C_STRING, "delete!", korb_m_str_delete_b, -1);
-    korb_def_cmethod(c, KORB_C_STRING, "tr", korb_m_str_tr, 2);
+    korb_def_cmethod(c, KORB_C_STRING, "tr", korb_m_str_tr, -1);   /* 4.1: 1 arg = the hash form */
     korb_def_cmethod(c, KORB_C_STRING, "tr_s", korb_m_str_tr_s, 2);
     korb_def_cmethod(c, KORB_C_STRING, "tr_s!", korb_m_str_tr_s_bang, 2);
     korb_def_cmethod_blk(c, KORB_C_STRING, "gsub", korb_m_str_gsub, -1);
@@ -12318,7 +12318,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "next", korb_m_str_succ, 0);
     korb_def_cmethod(c, KORB_C_STRING, "succ!", korb_m_str_succ_bang, 0);
     korb_def_cmethod(c, KORB_C_STRING, "next!", korb_m_str_succ_bang, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "tr!", korb_m_str_tr_bang, 2);
+    korb_def_cmethod(c, KORB_C_STRING, "tr!", korb_m_str_tr_bang, -1);   /* 4.1: 1 arg = the hash form */
     korb_def_cmethod_blk(c, KORB_C_STRING, "grapheme_clusters", korb_m_str_graphemes_b, 0);
     korb_def_cmethod(c, KORB_C_STRING, "<=>", korb_m_str_cmp, 1);
     korb_def_cmethod(c, KORB_C_STRING, "===", korb_m_cmpbl_eq, 1);   /* #=== is an alias of #== (both resolve to the Comparable rfn → instance_method ==) */
