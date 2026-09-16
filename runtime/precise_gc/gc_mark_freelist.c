@@ -129,7 +129,8 @@ aro_gc_init(CTX *c)
     gc->region_end = gc->region_base + REGION_BYTES;
     if (getenv("BARUBY_GC_STRESS")) {
         gc->common.stress = true;
-        fprintf(stderr, "[aro_gc=mark_freelist] STRESS mode: collect on every alloc\n");
+        if (getenv("ARO_GC_QUIET") == NULL)   /* opt-in silence: a spec may compare a child's stderr */
+            fprintf(stderr, "[aro_gc=mark_freelist] STRESS mode: collect on every alloc\n");
     }
     if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
 }

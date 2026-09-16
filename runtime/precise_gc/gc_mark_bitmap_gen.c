@@ -200,7 +200,8 @@ aro_gc_init(CTX *c)
     if (getenv("BARUBY_GC_STRESS")) {
         gc->common.stress = true;
         old_major_threshold = 0;
-        fprintf(stderr, "[aro_gc=mark_bitmap_gen] STRESS mode: collect on every alloc\n");
+        if (getenv("ARO_GC_QUIET") == NULL)   /* opt-in silence: a spec may compare a child's stderr */
+            fprintf(stderr, "[aro_gc=mark_bitmap_gen] STRESS mode: collect on every alloc\n");
     }
     if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
 }

@@ -33,7 +33,8 @@ aro_gc_init(CTX *c)
     if (!gc) { perror("calloc ASTroGC"); abort(); }
     c->astro_gc = gc;
     if (getenv("BARUBY_GC_STRESS")) {
-        fprintf(stderr, "[aro_gc=none] STRESS mode requested but "
+        if (getenv("ARO_GC_QUIET") == NULL)   /* opt-in silence: a spec may compare a child's stderr */
+            fprintf(stderr, "[aro_gc=none] STRESS mode requested but "
                         "ignored — no collector to stress\n");
     }
     if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;

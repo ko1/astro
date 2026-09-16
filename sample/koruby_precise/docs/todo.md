@@ -358,8 +358,22 @@ rubyspec 全体も現実的な時間で回せる (4 並列、SPEC_TIMEOUT=120 �
 `BARUBY_GC_STRESS=64 BARUBY_GC_PURGE=1` で回して、通常 run より新たに落ちるファイルは無い。
 t/hand + t/enc の 534 ファイルは `BARUBY_GC_STRESS=1`(毎 alloc) + PURGE でも非ゼロ終了 0。
 
-残る差: STRESS 下の pass は 31271、通常は 31335 で **64 例少ない**。crash ではなく個別の
-期待値ずれ (GC 回数や ObjectSpace 依存の例が多い見込み)。未調査。
+残る差 (調査済): STRESS 下の pass が通常より少ない件は、**大半が GC の banner** だった。
+`[aro_gc=copy] STRESS ...` は stderr に出るので、子インタプリタの stderr を 1 バイト単位で
+比べる spec (`Kernel#exit!` / `IO.popen` / backtick / `at_exit` / `END` ほか) が軒並み落ちる。
+`ARO_GC_QUIET=1` で banner だけ黙らせる opt-in を runtime/precise_gc の全 backend に足した
+(既定は出る。「STRESS が効いたか」を確かめるのに要るので
+[[feedback_verify_env_var_takes_effect]])。
+
+    ARO_GC_QUIET=1 BARUBY_GC_STRESS=64 BARUBY_GC_PURGE=1 ... sweep.rb ...
+
+これで **64 例 → 14 例 / 13 ファイル**。残りは:
+core/thread/raise (-2)、core/exception/frozen_error、core/fiber/raise、core/gc/stress、
+core/io/puts、core/kernel/inspect、core/kernel/raise、core/module/to_s、
+core/objectspace/each_object、core/queue/freeze、core/sizedqueue/freeze、
+language/def、library/stringio/puts (各 -1)。
+`core/gc/stress` と `core/objectspace/each_object` は GC を強制している以上当然ずれる。
+残りは未調査。
 
 性能影響は計測済み (`~/ruby/src/trials/2026-09-16-koruby-gc-stress-fixes/`)。
 `4c9cd25e` を worktree に出してツリーごと make し、AOT 5 ベンチと起動を

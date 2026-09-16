@@ -46,7 +46,8 @@ aro_gc_init(CTX *c)
     gc->region_top = gc->region_base;
     gc->region_end = gc->region_base + REGION_BYTES;
     if (getenv("BARUBY_GC_STRESS")) {
-        fprintf(stderr, "[aro_gc=bump] STRESS mode requested but ignored — "
+        if (getenv("ARO_GC_QUIET") == NULL)   /* opt-in silence: a spec may compare a child's stderr */
+            fprintf(stderr, "[aro_gc=bump] STRESS mode requested but ignored — "
                         "no collector to stress\n");
     }
     if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;

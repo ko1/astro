@@ -292,7 +292,11 @@ aro_gc_init(CTX *c)
         gc->active_top  = gc->space0;
         gc->active_end  = gc->space0 + gc->region_bytes;
     }
-    if (stress || purge) {
+    /* The banner is how a run proves STRESS/PURGE actually took effect, so it
+     * stays on by default.  ARO_GC_QUIET=1 silences it for the one case where it
+     * is harmful: a spec that compares a CHILD interpreter's stderr byte for byte
+     * (Kernel#exit!, IO.popen, backtick ...) sees the banner as output. */
+    if ((stress || purge) && getenv("ARO_GC_QUIET") == NULL) {
         char stress_buf[64] = "";
         if (stress) {
             uint64_t iv = ARO_GC_COMMON(c)->stress_interval;
