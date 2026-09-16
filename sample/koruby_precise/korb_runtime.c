@@ -13742,12 +13742,14 @@ static bool
 korb_fprint_user_inspect(CTX *c, VALUE *slots, FILE *fp, VALUE v)
 {
     if (slots == NULL || !KORB_OBJECT_P(v) || VAL2OBJ(v)->klass == KORB_NIL) return false;
-    slots[0] = v;                                                /* root across the dispatch */
+    slots[0] = v;                                                /* root across the dispatch; stays the object,
+                                                                  * so a false return leaves the caller a live
+                                                                  * `slots[0]` to re-read (its `v` is stale). */
     RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
     if (r.state != KORB_NORMAL) return false;
     if (!KORB_STRING_P(r.value)) {                               /* non-String #inspect → coerce via #to_s (never #to_str) */
-        slots[0] = r.value;
-        RESULT r2 = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+        slots[1] = r.value;
+        RESULT r2 = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
         if (r2.state != KORB_NORMAL || !KORB_STRING_P(r2.value)) return false;   /* → default representation */
         fwrite(korb_strbuf_data(VAL2STR(r2.value)->buf), 1, VAL2STR(r2.value)->len, fp);
         return true;
@@ -13854,6 +13856,7 @@ korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
                 return;
             }
             if (korb_fprint_user_inspect(c, slots, fp, v)) return;   /* plain object → its (overridable) #inspect */
+            if (slots) v = slots[0];   /* it dispatched Ruby before giving up: re-read the (moved) object */
             break;
           }
           default: break;
@@ -15437,7 +15440,7 @@ korb_bi_warn(CTX *c, VALUE *slots, VALUE_SLICE args)
         n--;
     }
     if (n == 0) return RESULT_OK(KORB_NIL);
-    bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
+    bool def; (void)korb_out_target(c, "$stderr", 7, &def);
     KorbIORep mem = KORB_IO_MEM_SINK;
     KorbIORep *const sink = def ? korb_io_std_rep(c->vm, 2) : &mem;
     for (uint32_t i = 0; i < n; i++) {
@@ -15445,6 +15448,7 @@ korb_bi_warn(CTX *c, VALUE *slots, VALUE_SLICE args)
         if (UNLIKELY(r.state != KORB_NORMAL)) { free(mem.wbuf); return r; }
     }
     if (def) return RESULT_OK(KORB_NIL);
+    bool def2; const VALUE out = korb_out_target(c, "$stderr", 7, &def2);   /* re-read: #to_s above runs Ruby */
     RESULT er = korb_out_emit(c, slots, out, 2, mem.wbuf, mem.wlen);
     free(mem.wbuf);
     return er;
@@ -15940,7 +15944,6 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
     if (n == 0) return RESULT_OK(KORB_NIL);              /* p() → nil, no output */
-    bool def; const VALUE outobj = korb_out_target(c, "$stdout", 7, &def);
     /* Always render into memory first: the inspect printers are FILE*-based, but
      * the bytes have to reach the same sink Kernel#puts uses, or the two
      * buffers would deliver a program's output out of order. */
@@ -15964,6 +15967,9 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
         fputc('\n', out);
     }
     fclose(ms);
+    /* $stdout is read HERE, not before the loop: the #inspect dispatches above
+     * run Ruby, and a moving GC relocates the IO object under a C local. */
+    bool def; const VALUE outobj = korb_out_target(c, "$stdout", 7, &def);
     if (def) { const RESULT wr = korb_io_wr_checked(c, slots, korb_io_std_rep(c->vm, 1), buf, sz); if (UNLIKELY(wr.state != KORB_NORMAL)) { free(buf); return wr; } }
     else { RESULT er = korb_out_emit(c, slots, outobj, 1, buf, sz); if (UNLIKELY(er.state != KORB_NORMAL)) { free(buf); return er; } }
     free(buf);

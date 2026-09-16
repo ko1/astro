@@ -305,12 +305,25 @@ rubyspec 全体も現実的な時間で回せる (4 並列、SPEC_TIMEOUT=120 �
    これで 37 → 25 ファイル (stringscanner 7 / range 3 / fork 系 2 が解消)。
    mspec の `ruby_version_is` が SpecVersion の Range を使うので影響が広かった。
 
-残り 25 ファイル。gdb で見えている別の真因:
-- `korb_fprint_inspect_s` / `korb_fprint_ary_d` (korb_runtime.c) — Array/Hash の inspect が
-  要素の `#inspect` dispatch を跨いで何かを保持している (`core/array/inspect_spec.rb`、
-  `core/hash/inspect_spec.rb`、`core/kernel/p_spec.rb`、`core/io/print_spec.rb` 系)。
-- `EVAL_node_const_set` (node_eval.c) が block yield の中で落ちる
-  (`core/string/lines_spec.rb`、`language/constants_spec.rb` 系)。
+2. **`korb_fprint_user_inspect` が false を返したあと呼び出し側が stale な `v` を使う**
+   (修正済)。ユーザ `#inspect` を dispatch してから「String を返さなかった」と諦める経路で、
+   `korb_fprint_inspect_d` が C ローカルの `v` をそのまま既定表現に流していた。
+   helper が `slots[0]` をオブジェクトのまま保つようにして (中間値は `slots[1]` へ)、
+   呼び出し側が `v = slots[0]` と読み直す。
+3. **`Kernel#p` / `Kernel#warn` が `$stdout`/`$stderr` を先に C ローカルに読んでいた**
+   (修正済)。要素の `#inspect` / `#to_s` を dispatch したあとに使うので、その間に IO が動く。
+   `Kernel#puts` / `Kernel#print` は既に「ループのあとに読み直す」形だったので、それに揃えた。
+4. **`node_deprecated_gvar_warn` が `Warning[:deprecated]` の dispatch を跨いで `val` を
+   C ローカルで持っていた** (修正済)。`$/ = "x"` の警告経路。隣の `node_dollar_eq` は
+   正しく park していたので、それに揃えた。これが `warn` / `print` / `lines` /
+   `predefined` / `constants` など 8 ファイル分の真因だった。
+
+ここまでで 37 → **16 ファイル**。残り:
+core/env/slice_spec (korb_m_env_slice → korb_hash_set の key が stale)、core/io/popen、
+core/io/readlines、core/kernel/binding、core/matchdata/byteend、core/module/descendants、
+core/module/module_function、core/string/rindex、core/time/at、core/time/comparison、
+language/def、language/hash、language/if、library/csv/generate、
+library/delegate/delegator/method、library/erb/new。
 
 ## rubyspec の「1〜2 例落ち」長い尻尾の共通原因 集計 (2026-09-13)
 

@@ -294,15 +294,19 @@ node_deprecated_gvar_warn(CTX *c, NODE *n, VALUE *slots, const char *name, VALUE
      * independent of $VERBOSE (mspec's `complain` matcher sets $VERBOSE=false
      * while still expecting deprecation warnings). */
     if (val != KORB_NIL) {
-        slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
+        slots[0] = val;                               /* park: the Warning[] dispatch and the warning itself
+                                                       * run Ruby ($stderr can be a mock), so `val` cannot
+                                                       * stay a C local across them */
+        slots[1] = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
         bool dep_on = false;
-        if (KORB_CLASS_P(slots[0])) {
-            slots[1] = ID2SYM(korb_intern(c->vm, "deprecated", 10));
-            RESULT wr = korb_send(c, slots + 2, korb_intern(c->vm, "[]", 2), 0, 1);
+        if (KORB_CLASS_P(slots[1])) {
+            slots[2] = ID2SYM(korb_intern(c->vm, "deprecated", 10));
+            RESULT wr = korb_send(c, slots + 3, korb_intern(c->vm, "[]", 2), 0, 1);
             if (UNLIKELY(wr.state != KORB_NORMAL)) return wr;
             dep_on = KORB_TRUTHY(wr.value);
         }
-        if (dep_on) korb_warn_ignore_verbose(c, slots, "non-nil '%s' is deprecated", name);
+        if (dep_on) korb_warn_ignore_verbose(c, slots + 1, "non-nil '%s' is deprecated", name);
+        return RESULT_OK(slots[0]);                   /* re-read (may have moved) */
     }
     return RESULT_OK(val);
 }
@@ -1988,17 +1992,21 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
      * inside an eval'd string the cref the eval was given wins (CRuby) */
     /* a global ($x) shares this table but is never owned by a module */
     const bool is_gvar = korb_sym_name(c->vm, name_sym)[0] == '$';
-    const VALUE ownc = is_gvar ? KORB_NIL
+    VALUE ownc = is_gvar ? KORB_NIL
                      : KORB_CLASS_P(owner) ? owner
                      : KORB_CLASS_P(c->eval_cref) ? c->eval_cref
                      : (self_off != INT32_MIN && KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL);
     /* the typed predefined globals are checked on assignment (CRuby) */
     { const char *const gn = korb_sym_name(c->vm, name_sym);
       if (UNLIKELY(gn[0] == '$')) {
-          if ((strcmp(gn, "$stdout") == 0 || strcmp(gn, "$stderr") == 0) &&
-              !korb_responds_to(c, val, korb_intern(c->vm, "write", 5)))
-              return korb_raise(c, slots, KORB_E_TYPE, 0, "%s must have write method, %s given",
-                                gn, korb_type_name(val));
+          if (strcmp(gn, "$stdout") == 0 || strcmp(gn, "$stderr") == 0) {
+              slots[0] = val;                       /* park: #respond_to_missing? can run Ruby */
+              const bool writable = korb_responds_to(c, slots[0], korb_intern(c->vm, "write", 5));
+              val = slots[0];                       /* re-read (the probe may have moved it) */
+              if (!writable)
+                  return korb_raise(c, slots, KORB_E_TYPE, 0, "%s must have write method, %s given",
+                                    gn, korb_type_name(val));
+          }
           if (strcmp(gn, "$~") == 0 && val != KORB_NIL && !KORB_MATCHDATA_P(val))
               return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected MatchData)",
                                 korb_coerce_name(c, val));
@@ -2040,8 +2048,11 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
     if (UNLIKELY(korb_const_index_owned(c->vm, name_sym, ownc) != UINT32_MAX) &&
         korb_sym_name(c->vm, name_sym)[0] != '$')
         { uint32_t wf, wl;                                /* warn with this assignment's position */
-          if (korb_get_srcloc(c->vm, n, &wf, &wl)) korb_warn_const_redef_at(c, slots, name_sym, ownc, korb_sym_name(c->vm, wf), wl);
-          else korb_warn_const_redef(c, slots, name_sym, ownc); }
+          slots[0] = val; slots[1] = ownc;                /* park: the warning goes out through $stderr,
+                                                           * which a harness can replace with a Ruby object */
+          if (korb_get_srcloc(c->vm, n, &wf, &wl)) korb_warn_const_redef_at(c, slots + 2, name_sym, slots[1], korb_sym_name(c->vm, wf), wl);
+          else korb_warn_const_redef(c, slots + 2, name_sym, slots[1]);
+          val = slots[0]; ownc = slots[1]; }              /* re-read: the warning ran Ruby */
     korb_const_define_owned(c, name_sym, val, ownc);
     { uint32_t fsym, fline;                              /* Module#const_source_location */
       if (korb_get_srcloc(c->vm, n, &fsym, &fline)) korb_const_reg_loc(c->vm, name_sym, ownc, fsym, fline); }
