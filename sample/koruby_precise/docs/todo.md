@@ -133,10 +133,19 @@ dispatch 後の scratch (`slots[0]`) ではなく `e` を使うようにした�
 (どちらのゲートもここで直した形を踏んでいない)。STRESS+PURGE 534 ファイル非ゼロ終了 0。
 optcarrot AOT 59662 / DOOM AOT 17930386881013214317。
 
-**残: `File.open(path, mode)` の mode を強制変換していない。** `#to_str` を持つオブジェクトを
-渡すと黙って "r" になる (CRuby は `#to_str`、型違いなら TypeError)。mode は
-`korb_file_mode_val` が引数スライスから何度も読み直す作りなので、先頭で 1 度強制変換して
-書き戻す改修が要る。IO の open 経路なので分けて行う。
+~~**残: `File.open(path, mode)` の mode を強制変換していない。**~~ **(修正済 2026-09-16)**
+`#to_str` を持つオブジェクトを渡すと黙って "r" になっていた (positional 形も `mode:` 形も)。
+CRuby は `#to_str` を聞き、型違いなら TypeError。
+
+`korb_m_file_open` の先頭で mode を **1 度だけ確定**させ、結果を C の配列に写す形にした
+(`char modestr[128]` + `mode_is_int`)。以前は `korb_file_mode_val` を 7 回呼び直していたが、
+それは「alloc を跨ぐと VALUE が動く」からで、C に写せばその読み直しごと要らなくなる。
+`@__io_modestr` に入れる String だけは写しから作り直す (prelude が encoding 接尾辞を
+読み戻すのに使う)。coerce は Ruby を走らせるので、そのあと `pv` と `fopts` を読み直す。
+
+CRuby と一致を確認: mode が String / nil / `#to_str` 持ち / `#to_str` が型違い /
+`#to_str` 無し、を positional と `mode:` の両形で (9 形)。さらに read/write/append/
+binmode/encoding 接尾辞/整数フラグ/File.new/不正 mode の 13 形も一致。
 
 ## rubyspec 長い尻尾の共通原因 集計 (2026-09-16)
 

@@ -2662,16 +2662,39 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (FIXNUM_P(fv)) extra_flags = (int)FIX2LONG(fv);
         }
     }
+    /* Settle the mode ONCE, here.  CRuby asks a non-String, non-Integer mode for
+     * #to_str and treats a wrong-typed answer as an error; koruby used to ignore
+     * such a mode and open "r" silently.  The result is snapshotted into C
+     * storage, so nothing below holds a VALUE across the allocations that follow
+     * (which is why the reads used to re-look-up the argument every time). */
+    char modestr[128] = ""; bool have_modestr = false;
+    bool mode_is_int = false; long mode_int = 0;
+    {
+        VALUE mv = korb_file_mode_val(c, a, npos, fopts_idx);
+        if (FIXNUM_P(mv)) { mode_is_int = true; mode_int = (long)FIX2LONG(mv); }
+        else if (mv != KORB_NIL) {
+            if (!KORB_STRING_P(mv)) {
+                const RESULT mr = korb_coerce_to_str(c, slots + 1, &mv);
+                if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+                if (mr.value != KORB_TRUE)
+                    return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
+                                      korb_coerce_name(c, mv));
+                pv = VALUE_SLICE_GET(a, 0); slots[0] = pv;   /* the probe ran Ruby: re-read */
+                if (fopts_idx >= 0) fopts = VALUE_SLICE_GET(a, (uint32_t)fopts_idx);
+            }
+            const KorbString *const ms = VAL2STR(mv);
+            const uint32_t ml = ms->len < sizeof modestr - 1 ? ms->len : (uint32_t)(sizeof modestr - 1);
+            memcpy(modestr, korb_strbuf_data(ms->buf), ml); modestr[ml] = '\0';
+            have_modestr = true;
+        }
+    }
     {   /* binmode:/textmode: must not restate what the mode string already says */
-        char mbuf[32] = "";
-        const VALUE mv = korb_file_mode_val(c, a, npos, fopts_idx);
-        if (KORB_STRING_P(mv)) snprintf(mbuf, sizeof mbuf, "%.*s", (int)VAL2STR(mv)->len, korb_strbuf_data(VAL2STR(mv)->buf));
-        CHECK(korb_io_check_bt_opts(c, slots + 2, mbuf, fopts));
+        CHECK(korb_io_check_bt_opts(c, slots + 2, modestr, fopts));
     }
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     int rw = 0; bool binary = false; int fd;
-    if (FIXNUM_P(korb_file_mode_val(c, a, npos, fopts_idx))) {   /* integer O_* flags → open(2) */
-        const int fl = (int)FIX2LONG(korb_file_mode_val(c, a, npos, fopts_idx));
+    if (mode_is_int) {                                          /* integer O_* flags → open(2) */
+        const int fl = (int)mode_int;
         const mode_t perm = korb_file_perm_val(c, a, npos, fopts_idx);
         const int acc = fl & 3;   /* O_RDONLY=0 / O_WRONLY=1 / O_RDWR=2 */
         rw = acc == 1 ? 2 : acc == 2 ? 3 : 1;
@@ -2684,8 +2707,8 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
     } else {
         char mode[8] = "r";
-        if (KORB_STRING_P(korb_file_mode_val(c, a, npos, fopts_idx))) {
-            uint32_t ml; const char *m = korb_str_cstr_len(korb_file_mode_val(c, a, npos, fopts_idx), &ml);
+        if (have_modestr) {
+            uint32_t ml = (uint32_t)strlen(modestr); const char *const m = modestr;
             /* "r:utf-8:euc-jp" — the encoding suffix is not part of the fopen
                mode; the prelude reads it back off @__io_modestr. */
             for (uint32_t i = 0; i < ml; i++) if (m[i] == ':') { ml = i; break; }
@@ -2714,9 +2737,10 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
     CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_path", 10)),
                         VALUE_SLICE_GET(a, 0)));   /* File#path / #to_path */
-    if (KORB_STRING_P(korb_file_mode_val(c, a, npos, fopts_idx)))
-        CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)),
-                            korb_file_mode_val(c, a, npos, fopts_idx)));
+    if (have_modestr) {                                  /* the prelude parses the encoding suffix back off this */
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, modestr, (uint32_t)strlen(modestr)));
+        CHECK(korb_ivar_set(c, slots + 2, io, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)), slots[1]));
+    }
     CHECK(korb_io_capture_default_internal(c, slots + 1, io));
     if (fopts_idx >= 0) {                                /* encoding: / autoclose: → the prelude */
         slots[1] = VALUE_REF_GET(io);
