@@ -394,7 +394,30 @@ t/hand + t/enc の 534 ファイルは `BARUBY_GC_STRESS=1`(毎 alloc) + PURGE �
   GC を強制すると env が閉じるタイミングが変わるため。
 - `core/io/puts` の 1 例だけ**未解明**: `IO#puts` が非 String に `#to_ary` を聞く経路で、
   STRESS 下だと mock が 1 度も呼ばれない。最小再現は作れていない
-  (mspec の Mock 機構ごとでないと出ない)。
+  (`method_missing` + `respond_to_missing?` を手書きした等価物では再現せず、
+  mspec の Mock 機構ごとでないと出ない)。
+
+## 実アプリの検証状況 (2026-09-16)
+
+`sample/rubyharness` の実アプリ 9 本を plain と AOT の両方で CRuby と checksum 比較した。
+**全部一致**:
+
+| app | checksum |
+|---|---|
+| DOOM (20 frames) | 17930386881013214317 |
+| optcarrot (180 frames) | 59662 |
+| rubyboy (60 frames) | 4747678158831331132 |
+| rubykon | 9790906500116479299 |
+| ruby-json | 14207606204983450109 |
+| protoboeuf | 12033451650 |
+| etanni | 13803342 |
+| json-parse | 416604592 |
+| knucleotide | 13378 |
+
+罠: **AOT の一括検証でバッチを二重に走らせない**。`code_store` を奪い合って
+「compile-miss」に見える (rubykon で一度そう誤判定した。単体で回せば通る)。
+`-j32` の SD コンパイルはメモリを食うので、harness の bg タスクは "low memory" で
+殺されることがある。`nohup` で切り離してログファイルを見るほうが確実。
 
 性能影響は計測済み (`~/ruby/src/trials/2026-09-16-koruby-gc-stress-fixes/`)。
 `4c9cd25e` を worktree に出してツリーごと make し、AOT 5 ベンチと起動を
