@@ -976,6 +976,22 @@ static RESULT korb_perm_rec(CTX *c, VALUE *scratch, VALUE_REF self, VALUE_REF ou
     }
     return RESULT_OK(KORB_NIL);
 }
+/* CRuby's blockless permutation/combination Enumerator re-reads the array when
+ * it RUNS, so a later mutation shows through; handing it the tuples built now
+ * freezes them.  Only #size is settled here, from the count just computed. */
+static RESULT korb_ary_enum_for(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                const char *meth, korb_sword_t size) {
+    const bool has_arg = VALUE_SLICE_LEN(a) > 0;
+    const VALUE arg = has_arg ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    slots[0] = VALUE_REF_GET(self);
+    slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth)));
+    if (has_arg) slots[2] = arg;
+    const RESULT er = korb_send(c, slots + (has_arg ? 3 : 2), korb_intern(c->vm, "to_enum", 7), 0, has_arg ? 2 : 1);
+    if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+    slots[0] = er.value;
+    slots[1] = LONG2FIX(size);
+    return korb_send(c, slots + 2, korb_intern(c->vm, "__set_size", 10), 0, 1);
+}
 static RESULT korb_m_ary_permutation(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     uint32_t len = SELF_ARY->len;
     korb_sword_t want = len;
@@ -993,10 +1009,8 @@ static RESULT korb_m_ary_permutation(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         free(used);
         if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
     }
-    if (block == NULL) {
-        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "permutation"));
-        return korb_enum_new(c, slots + 2, VALUE_REF_GET(out), slots[1]);
-    }
+    if (block == NULL)
+        return korb_ary_enum_for(c, slots + 2, self, a, "permutation", VAL2ARY(VALUE_REF_GET(out))->len);
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
         VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(out))->items)[i];
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &e, 1, cself);
@@ -1035,10 +1049,8 @@ static RESULT korb_m_ary_combination(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         VALUE_REF cur = VALUE_REF_AT(&slots[1]);
         CHECK(korb_comb_rec(c, slots + 2, self, out, cur, (uint32_t)want, 0, 0));
     }
-    if (block == NULL) {
-        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "combination"));
-        return korb_enum_new(c, slots + 2, VALUE_REF_GET(out), slots[1]);
-    }
+    if (block == NULL)
+        return korb_ary_enum_for(c, slots + 2, self, a, "combination", VAL2ARY(VALUE_REF_GET(out))->len);
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
         VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(out))->items)[i];
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &e, 1, cself);
@@ -1093,10 +1105,10 @@ static RESULT korb_m_ary_repeated(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         CHECK(perm ? korb_rperm_rec(c, slots + 2, self, out, cur, (uint32_t)want, 0)
                    : korb_rcomb_rec(c, slots + 2, self, out, cur, (uint32_t)want, 0, 0));
     }
-    if (block == NULL) {
-        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), perm ? "repeated_permutation" : "repeated_combination"));
-        return korb_enum_new(c, slots + 2, VALUE_REF_GET(out), slots[1]);
-    }
+    if (block == NULL)
+        return korb_ary_enum_for(c, slots + 2, self, a,
+                                 perm ? "repeated_permutation" : "repeated_combination",
+                                 VAL2ARY(VALUE_REF_GET(out))->len);
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
         VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(out))->items)[i];
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &e, 1, cself);
