@@ -5030,3 +5030,19 @@ module.rb +18、encoding.rb +17、proc.rb +16、io_buffer.rb +6、exception.rb +
 
 `methodchain` のセッション全体 +3.57% は**ほぼこの 1 コミットで説明できる**。
 `Proc#call` も C メソッドなので closures にも乗る。fib は C を通らないのでゼロ。
+
+## (2026-09-16) Hash / Set の反復中変更 — 壊れてはいない (優先度を下げる)
+
+CRuby は `Hash#each` 中の**新キー追加**だけを `RuntimeError` にする
+(更新・削除・`select` 中の追加は許す。`Set` も同じ形で
+"can't add a new item into set during iteration")。koruby は raise しない。
+
+**ただし koruby は壊れていない。** 実測: 反復中に新キーを足すと、
+そのまま伸びたハッシュを訪れ続け (`[:a,:b,:c,:xa,:xb,:xc,:xxa,:xxb]`)、
+ハッシュ自体も無傷 (size 8、キー一致)。CRuby は 1 件目で raise する。
+**メモリ安全性の問題ではなく、互換性の差。**
+
+直すなら: KorbHash に反復カウンタを持ち、`each` の入口/出口で増減、
+**新キー挿入の経路だけ**で検査する (既存キーの更新は許されるので、
+ルックアップの fast path には触らない)。`Set` も同様。
+優先度は「バグ」ではなく「互換」。
