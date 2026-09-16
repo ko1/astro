@@ -15229,7 +15229,9 @@ korb_drain_at_exit(CTX *c, VALUE *slots)
  * keyword Hash, e.g. uplevel:/category:, is ignored). */
 static VALUE korb_out_target(CTX *c, const char *gv, uint32_t gvlen, bool *is_default);   /* fwd (defined below) */
 static RESULT korb_out_emit(CTX *c, VALUE *slots, VALUE out, uint32_t stdidx, const char *data, size_t len);   /* fwd */
-/* Kernel#gets / #readline — read a line from $stdin (forwarding any sep/limit). */
+/* Kernel#gets / #readline / #readlines — read from $stdin (forwarding any
+ * sep/limit).  CRuby reads ARGF; koruby has no ARGV-file stream, so $stdin is
+ * what ARGF would be with no file arguments. */
 static RESULT korb_bi_gets_impl(CTX *c, VALUE *slots, VALUE_SLICE args, const char *meth, uint32_t mlen) {
     const VALUE in = korb_const_get(c->vm, korb_intern(c->vm, "$stdin", 6));
     if (UNLIKELY(!KORB_OBJECT_P(in))) return RESULT_OK(KORB_NIL);
@@ -15240,6 +15242,7 @@ static RESULT korb_bi_gets_impl(CTX *c, VALUE *slots, VALUE_SLICE args, const ch
 }
 static RESULT korb_bi_gets(CTX *c, VALUE *slots, VALUE_SLICE args)     { return korb_bi_gets_impl(c, slots, args, "gets", 4); }
 static RESULT korb_bi_readline(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_bi_gets_impl(c, slots, args, "readline", 8); }
+static RESULT korb_bi_readlines(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_bi_gets_impl(c, slots, args, "readlines", 9); }
 /* Kernel#global_variables — every defined $-global as a Symbol.  Globals reuse the
  * const table with a $-prefixed name (see parse.c), so scan it for those. */
 /* Assign a global variable by name, bypassing the parse-time read-only check —
@@ -17156,6 +17159,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "puts",  korb_bi_puts,  -1);
     korb_builtin_define(c, "gets",  korb_bi_gets,  -1);
     korb_builtin_define(c, "readline", korb_bi_readline, -1);
+    korb_builtin_define(c, "readlines", korb_bi_readlines, -1);
     korb_builtin_define(c, "p",     korb_bi_p,     -1);
     korb_builtin_define(c, "print", korb_bi_print, -1);
     korb_builtin_define(c, "raise", korb_bi_raise, -1);

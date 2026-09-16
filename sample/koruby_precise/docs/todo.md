@@ -254,6 +254,47 @@ CRuby と diff する。 CRuby は required 側の `<top (required)>` と requir
       直すには「この dispatch はフレームを作らない」を deopt 経路から dispatch へ
       伝える必要があり、carry (flink) のビットは据え置き決定済みなので別の口が要る。
       未着手。
+## Kernel に無いメソッド (2026-09-16 調査)
+
+`Kernel.private_instance_methods(false)` に CRuby では出るのに koruby では出ない、
+という報告を追った結果:
+
+- [x] **`readlines`** (2026-09-16 実装)。 `gets` / `readline` と同じ形で `$stdin` に
+      委譲する `korb_bi_readlines` を足した (`korb_bi_gets_impl(..., "readlines", 9)`)。
+      CRuby は ARGF を読むが koruby に ARGV ファイルのストリームは無く、`gets` /
+      `readline` が既に `$stdin` 直行なので同じ規約に揃えた (ARGV 無しの ARGF と同義)。
+      `core/kernel/readlines_spec` が 0/2 → 2/2。
+- [x] **`block_given?` は既に出ている** (報告は古い)。 `builtins/set.c` の
+      `korb_kernel_priv_funcs[]` が名前を足しているので `private_instance_methods` には
+      載る。 **ただし実体は無い**: `send(:block_given?)` は NoMethodError、
+      `respond_to?(:block_given?, true)` は false、`method(:block_given?)` は NameError
+      (CRuby はどれも通る)。
+- [ ] **`block_given?` を本物のメソッドにするには呼び出し規約を触る必要がある** (未実施)。
+      C 側から「呼び出し元のフレームがブロックを渡されたか」は**原理的に読めない**。
+      観測: `korb_runtime.c` の invoke は `if (block != NULL && m->uses_block)` の
+      ときだけブロック trio をフレームに置く (4922 行)。 `uses_block` は
+      **パース時に `yield` / `block_given?` を字句的に見たか**のフラグ (`parse.c:36`)
+      なので、`def m; send(:block_given?); end` の `m` は trio を予約せず、
+      渡されたブロックの記録がフレームに残らない。 常に trio を置けば読めるが、
+      それは dispatch の規約そのもの = ホットパス。 半分だけ正しい実装
+      (字句的に `block_given?` を書いた場合だけ真、それ以外は false) は嘘を返すので採らない。
+- [ ] **`local_variables` も同じ理由で C 実装にできない** (未実施)。 現状は
+      `parse.c:2060` が裸の `local_variables` を `binding.local_variables` に脱糖しており、
+      **これは CRuby と完全一致する** (メソッド / ブロック / トップレベル / 暗黙パラメータまで
+      確認)。 一方 C 側のフレーム走査 (`__frame_locals` = `korb_bi_frame_locals`) は
+      **トップレベルで空を返す**: `korb_scope_locals` は「file / eval の top level は
+      パックされた即値の identity で、locals テーブルをぶら下げる ISEQ が無い」ため
+      NULL を返す (8302 行のコメントどおり)。 観測: `z = 9; p local_variables` は
+      `[:z]`、同じ位置の `__frame_locals` は `[]`。 なので
+      `Kernel#local_variables` を `korb_bi_frame_locals` で登録すると
+      トップレベルで嘘をつく。 直すならトップレベルフレームの identity に
+      locals_info を持たせる側の作業。
+- [ ] **`set_trace_func` / `syscall`** 未着手。 `set_trace_func` は
+      6 引数コールバック (event/file/line/id/binding/classname) をイベント毎に組む必要があり、
+      TracePoint 層の上に薄く被せるだけでは済まない。 `syscall` は Linux の CRuby では
+      実際に raw syscall を発行するので、NotImplementedError を上げるだけの stub は
+      挙動が違う。 どちらも「名前だけ生やす」のは避けた。
+
 - [ ] **Enumerable のメソッドの owner が Array になっている。** `[1].method(:each_with_object).owner`
       が koruby `Array`、CRuby `Enumerable`。 `inject` / `each_entry` も同じ。
       koruby は Enumerable の各メソッドを Array に直接 C で実装しているため。
