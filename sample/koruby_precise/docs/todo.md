@@ -5129,3 +5129,16 @@ CRuby は `Hash#each` 中の**新キー追加**だけを `RuntimeError` にす�
 多いのに)。上の「起動が +6.9%」は**同じツリーで両ストアを消してから測った 2 点**なので
 有効だが、別ツリー同士の起動値を並べてはいけない。
 **起動を測るなら、同じツリーで `rm -rf code_store preload_store` してから。**
+
+## (2026-09-16) optcarrot の checksum はフレーム数で変わる (食い違いではない)
+
+sub agent が「checksum 59662 が合わない、30 フレームだと 60838」と報告したので実測した:
+
+```
+tools/optcarrot.sh  30 フレーム → checksum: 60838
+tools/optcarrot.sh 180 フレーム → checksum: 59662
+```
+
+**どちらも正しい。** ゲートに使うときは**フレーム数を明記すること**。
+`docs/done.md` / `resume_prompt.md` の 60838 は 30 フレーム、
+`docs/perf.md` 系の 59662 は 180 フレーム。
