@@ -208,13 +208,29 @@ CRuby と diff する。 CRuby は required 側の `<top (required)>` と requir
       Ruby フレームを通らない) と `Array#inject` (koruby は C 実装、CRuby は
       `Enumerable#inject` が `each` を回す)。
       `tools/bt_probe/adv.rb` の `18 raise in block` も CRuby と一致するようになった。
-- [ ] **巻き戻した C フレームの file が「呼び出し元の file」でなく「巻き戻し時に読み込み中の file」。**
-      `a.rb` に `def m; [1].each { raise }; end`、`b.rb` で `require_relative 'a'` してから
-      `m` を rescue すると、CRuby は `a.rb:...:in 'Array#each'`、koruby は `b.rb:...`。
-      原則どおり「1 つ下のフレームの file を借りる」形に直そうとすると、上のブロックフレーム欠落の
-      せいで**逆に悪化する** (下が mspec 側の lib フレームになり、`block in ...` を飛び越える)。
-      実測で確認済み: 先にブロックフレームを積む方を直すこと。
-      **前提条件は 2026-09-14 に解消済み** (上のブロックフレームの項目)。 未着手。
+- [x] **巻き戻した C フレームの file が「呼び出し元の file」でなく「巻き戻し時に読み込み中の file」。**
+      (2026-09-16 修正) `a.rb` に `def m; [1].each { raise }; end`、`b.rb` で
+      `require_relative 'a'` してから `m` を rescue すると、CRuby は
+      `a.rb:...:in 'Array#each'`、koruby は `b.rb:...`。 行は合っていて file だけ違った。
+      直し方: `korb_bt_unwind` は C フレーム (= `korb_bt_method_file` が NULL を返す
+      メソッド) の file を `korb_bt_cur_file` で凍結するのをやめ、**file = NULL で積む**。
+      巻き戻しは innermost から積むので「1 つ下」はまだ無い — なので**借りるのを後回しにして
+      `korb_bt_push` の側で解決する**: file を持つフレームが積まれた時点で、その上に溜まって
+      いる NULL の run をまとめて埋める (`vm->bt[i-1].file == NULL` の間さかのぼる)。
+      これで「下が積まれるまで待つ」だけで済み、生きた鎖の後処理 (`KORB_FID_CFUNC` の巡回) と
+      同じ答えになる。
+      最後まで埋まらない run は「巻き戻したフレーム全部の下」にいるので、生きた鎖の先頭
+      (`fscratch[0].file`) から借りる — `korb_bt_entry_fmt` に `below` 引数を足して
+      `korb_frames_at` が渡す。 未捕捉の報告 (`korb_report_line`) は下が `<main>` なので
+      従来どおり `korb_bt_cur_file` に落ちる。
+      `m == NULL` (dispatch を跨いでメソッドエントリが残らなかったフレーム) は C フレームでは
+      なく **file 不明の Ruby フレーム**なので、従来どおり `korb_bt_cur_file` のまま
+      (借りると呼び出し元の file を名乗る嘘になる)。
+      回帰は `tools/bt_probe/cfile.rb` (+ `cfile_lib.rb` / `cfile_raiser.rb`、6 シナリオ) を
+      CRuby と diff — 修正前は 7 行が違い、修正後は byte 一致。
+      ホットパス: `korb_send_cached` は変更前後で命令列一致 (1202 命令、差は関数自身が
+      0x80 ずれたことによる RIP 相対変位のみで、絶対アドレスは同一)。
+      起動の命令数も変わらない (base 144.40M / fix 144.39M、±0.05M のばらつきの内側)。
 - [ ] **インラインの frozen チェックが raise の行を 0 にする。** (2026-09-14 に一部修正)
       `korb_raise_frozen` は `korb_raise(..., 0, ...)` で上げるので、C メソッドの中から
       上げる分には問題ない (dispatch が呼び出し側の行に付け替える) が、**dispatch を

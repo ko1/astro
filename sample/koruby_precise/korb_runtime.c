@@ -7992,8 +7992,13 @@ korb_eval_frame_id(CTX *const c, const VALUE bind)
     return korb_fid_main(0, true);   /* no scope to name: the frame below the eval supplies one */
 }
 
-/* Append one unwound frame (raise path only; `file` is a stable symbol-table or
- * script-name string, never NULL). */
+/* Append one unwound frame (raise path only).  `file` NULL means the frame has
+ * no source of its own and stands in the file of the frame BELOW it — CRuby's
+ * rule for a C frame, and what korb_frames_snapshot_at's tail pass does for the
+ * live chain.  The unwind runs innermost first, so "below" is pushed later:
+ * every push that brings a file settles the run of pending frames above it.
+ * Any still pending when the list is rendered sit below everything unwound, and
+ * borrow from the first live frame there (korb_frames_at). */
 static void
 korb_bt_push(struct korb_vm *const vm, const char *const file, const uint32_t line, const char *const name)
 {
@@ -8007,6 +8012,9 @@ korb_bt_push(struct korb_vm *const vm, const char *const file, const uint32_t li
     vm->bt[vm->bt_cnt].name = name;
     vm->bt[vm->bt_cnt].file = file;
     vm->bt_cnt++;
+    if (file != NULL)
+        for (uint32_t i = vm->bt_cnt - 1; i > 0 && vm->bt[i - 1].file == NULL; )
+            vm->bt[--i].file = file;
 }
 
 /* Record the frame `mid` (defined by `m`, entered from `line`) that the raise
@@ -8018,7 +8026,7 @@ korb_bt_push(struct korb_vm *const vm, const char *const file, const uint32_t li
 void
 korb_bt_unwind(CTX *c, KorbException *e, uint32_t line, uint32_t mid, const struct korb_method *m)
 {
-    const char *const file = m ? korb_bt_method_file(c, m) : NULL;
+    const char *const mfile = m ? korb_bt_method_file(c, m) : NULL;
     /* Kernel#raise / #fail never appear in a CRuby backtrace: skip the frame,
      * but still hand the call site to the level above. */
     const bool is_raise = m && m->kind == KORB_METHOD_BUILTIN && m->bfn == korb_bi_raise;
@@ -8030,13 +8038,13 @@ korb_bt_unwind(CTX *c, KorbException *e, uint32_t line, uint32_t mid, const stru
      * CRuby: the block body they run stands in its place — the same rule the
      * live walk applies, so both paths list the same frames. */
     const bool is_block_host = m && (m->rbfn == korb_m_proc_call || m->kind == KORB_METHOD_DM);
-    /* A C frame has no file of its own and stands in the file it was called
-     * from.  That is the file being loaded NOW — read it here, because by the
-     * time the list is rendered the require/load this frame is unwinding out of
-     * has already put the requirer's file back. */
+    /* A C frame has no file of its own and stands in the file of the frame below
+     * it (korb_bt_push borrows it once that frame is unwound).  A frame whose
+     * method entry did not survive the dispatch (m == NULL) is a Ruby frame of
+     * unknown file, not a C one: the file being run stays the best guess. */
+    const char *const file = mfile ? mfile : (m ? NULL : korb_bt_cur_file(c->vm));
     if (!is_raise && !is_default_mm && !is_block_host)
-        korb_bt_push(c->vm, file ? file : korb_bt_cur_file(c->vm), file ? e->line : line,
-                     korb_bt_label(c, mid, m));
+        korb_bt_push(c->vm, file, mfile ? e->line : line, korb_bt_label(c, mid, m));
     e->line = line;
 }
 
@@ -8512,13 +8520,17 @@ korb_flink_req_frame(CTX *c, const VALUE *req_base)
     return korb_flink_carry(c, req_base + KORB_FLINK_OFF);
 }
 
-/* Render bt[i] (an unwound frame) as CRuby does: "file:line:in 'label'". */
+/* Render bt[i] (an unwound frame) as CRuby does: "file:line:in 'label'".
+ * `below` is the file of the frame under the whole unwound run, for an entry
+ * still waiting to borrow one (korb_bt_push); NULL falls back to the file being
+ * run, which is where the '<main>' frame that closes the report sits. */
 static int
-korb_bt_entry_fmt(const struct korb_vm *vm, uint32_t i, char *buf, size_t bufsz)
+korb_bt_entry_fmt(const struct korb_vm *vm, uint32_t i, const char *const below, char *buf, size_t bufsz)
 {
     const struct korb_bt_entry *const e = &vm->bt[i];
+    const char *const file = e->file ? e->file : below;
     int len = snprintf(buf, bufsz, "%s:%d:in '%s'",
-                       e->file ? e->file : korb_bt_cur_file(vm), (int32_t)e->line, e->name);
+                       file ? file : korb_bt_cur_file(vm), (int32_t)e->line, e->name);
     if (len < 0) len = 0;
     return len < (int)bufsz ? len : (int)bufsz - 1;
 }
@@ -8530,7 +8542,7 @@ static int
 korb_frames_at(CTX *c, uint32_t nb, uint32_t d, uint32_t i, char *buf, size_t bufsz)
 {
     const struct korb_vm *const vm = c->vm;
-    if (i < nb) return korb_bt_entry_fmt(vm, i, buf, bufsz);
+    if (i < nb) return korb_bt_entry_fmt(vm, i, d ? vm->fscratch[0].file : NULL, buf, bufsz);
     if (i - nb >= d) { buf[0] = '\0'; return 0; }
     const struct korb_frame_rec *const r = &vm->fscratch[i - nb];
     int len = snprintf(buf, bufsz, "%s:%d:in '%s'",
@@ -8970,7 +8982,7 @@ korb_report_line(CTX *c, const KorbArray *cap, const KorbException *e, uint32_t 
         const VALUE s = korb_items_data(cap->items)[i];
         return KORB_STRING_P(s) ? korb_strbuf_data(VAL2STR(s)->buf) : "?";
     }
-    if (i < vm->bt_cnt) { korb_bt_entry_fmt(vm, i, buf, bufsz); return buf; }
+    if (i < vm->bt_cnt) { korb_bt_entry_fmt(vm, i, NULL, buf, bufsz); return buf; }   /* '<main>' closes it: the file being run */
     snprintf(buf, bufsz, "%s:%d:in '<main>'", korb_bt_cur_file(vm), (int32_t)e->line);
     return buf;
 }
