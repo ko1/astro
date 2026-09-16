@@ -92,6 +92,36 @@ dispatch し、変換できなかった場合にその stale な `e` を `KORB_A
 に渡していた。`slots[0]` に park して dispatch 後に読み直す。エラー文の受け手名も
 dispatch 後の scratch (`slots[0]`) ではなく `e` を使うようにした。
 
+## 変換プロトコル 続報: `#to_X` が nil を返したときの扱い (2026-09-16、自分の退行)
+
+上の変換プロトコル整理 (`5311c17c`) で、`korb_coerce_to_{ary,hash}` が
+「Array/Hash でない答え」を一律に conversion_mismatch にしてしまった。CRuby は
+**nil だけ別扱い**で、`rb_check_*_type` 系の呼び出し側は「変換できない」として
+フォールバックする。そのため
+
+    io.puts(obj)   # obj#to_ary が nil を返す
+
+が `IO#puts` で TypeError になっていた (CRuby は `#to_s` を出す)。STRESS sweep の
+「未解明の 1 例」として残っていたものを追ったら、**STRESS とは無関係に plain でも出る**
+自分の退行だった。
+
+`nil_ok` 付きの `korb_coerce_to_ary_x` / `korb_coerce_to_hash_x` を足し、
+CRuby が check 系なのを確認した 4 箇所だけに使う:
+
+| 呼び出し側 | nil のとき CRuby は |
+|---|---|
+| `IO#puts` (korb_puts_one_to) | `#to_s` を出す |
+| `Array.new(obj)` (2 経路) | サイズ形に落ちて `no implicit conversion of A into Integer` |
+| `Kernel#Hash(obj)` | `can't convert G into Hash` ("gives" 節なし) |
+| `Hash#to_h { }` の要素 | `wrong element type A (expected array)` |
+
+それ以外 (`ary+` / `concat` / `replace` / `union` / `intersection` / `difference` /
+`str+` / `pack` / `sub` / `ary[]` / `str*` / `merge`) は convert 系なので
+`can't convert A into Array (A#to_ary gives nil)` のまま。
+`try_convert` 3 種は元から nil を返す。
+
+回帰テスト: `t/hand/conv_nil_answer.rb` (20 形、CRuby と完全一致)。
+
 ## 変換プロトコルの CRuby 一致 (2026-09-16) — と、比較対象を間違えた撤回
 
 **まず撤回。** この作業の前半、PATH の `ruby` (rbenv shim の **4.0.2**) を CRuby の正解として

@@ -1084,18 +1084,25 @@ static RESULT korb_coerce_to_int_x(CTX *c, VALUE *slots, VALUE *v, bool raise_mi
 }
 static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v) { return korb_coerce_to_int_x(c, slots, v, true); }
 /* If *v isn't an Array, try #to_ary; returns TRUE (with *v the Array) or FALSE (leaves *v). */
-static RESULT korb_coerce_to_ary(CTX *c, VALUE *slots, VALUE *v) {
+/* nil_ok mirrors rb_check_array_type (CRuby's "check" family): a #to_ary that
+ * answers nil means "not an Array", not a type error, and the caller falls back
+ * (IO#puts prints #to_s; Array.new reads the argument as a size).  Every other
+ * caller follows rb_convert_type, where a nil answer IS the error. */
+static RESULT korb_coerce_to_ary_x(CTX *c, VALUE *slots, VALUE *v, bool nil_ok) {
     if (KORB_ARRAY_P(*v)) return RESULT_OK(KORB_TRUE);
     const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
     slots[0] = *v;
     if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_ary)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
     RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (!KORB_ARRAY_P(r.value))
+    if (!KORB_ARRAY_P(r.value)) {
+        if (nil_ok && r.value == KORB_NIL) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }   /* the (moved) receiver */
         return korb_raise_conv_mismatch(c, slots + 1, slots[0], r.value, "Array", "to_ary");
+    }
     *v = r.value;
     return RESULT_OK(KORB_TRUE);
 }
+static RESULT korb_coerce_to_ary(CTX *c, VALUE *slots, VALUE *v) { return korb_coerce_to_ary_x(c, slots, v, false); }
 /* If *v isn't a String, try #to_str; returns TRUE (with *v the String) or FALSE (leaves *v). */
 static RESULT korb_coerce_to_str(CTX *c, VALUE *slots, VALUE *v) {
     if (KORB_STRING_P(*v)) return RESULT_OK(KORB_TRUE);
@@ -1111,18 +1118,21 @@ static RESULT korb_coerce_to_str(CTX *c, VALUE *slots, VALUE *v) {
 }
 /* If *v isn't a Hash, try #to_hash; TRUE (with *v the Hash), FALSE (no #to_hash,
  * *v left), or the mismatch raise. */
-static RESULT korb_coerce_to_hash(CTX *c, VALUE *slots, VALUE *v) {
+static RESULT korb_coerce_to_hash_x(CTX *c, VALUE *slots, VALUE *v, bool nil_ok) {
     if (KORB_HASH_P(*v)) return RESULT_OK(KORB_TRUE);
     const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
     slots[0] = *v;
     if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_hash)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
     RESULT r = korb_send_impl(c, slots + 1, to_hash, 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (!KORB_HASH_P(r.value))
+    if (!KORB_HASH_P(r.value)) {
+        if (nil_ok && r.value == KORB_NIL) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }   /* Kernel#Hash keeps its own wording */
         return korb_raise_conv_mismatch(c, slots + 1, slots[0], r.value, "Hash", "to_hash");
+    }
     *v = r.value;
     return RESULT_OK(KORB_TRUE);
 }
+static RESULT korb_coerce_to_hash(CTX *c, VALUE *slots, VALUE *v) { return korb_coerce_to_hash_x(c, slots, v, false); }
 static RESULT korb_str_idx_conv(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out);   /* fwd: index→long, Bignum too big → RangeError */
 RESULT korb_re_lastmatch_detach(CTX *c, VALUE *slots);   /* regexp.c: $~ gets a frozen subject copy */
 static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE idx, VALUE len_v, bool *found, uint32_t *bs, uint32_t *be, bool write) {

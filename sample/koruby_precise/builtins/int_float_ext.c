@@ -239,7 +239,7 @@ static RESULT korb_m_hash_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         slots[3] = r.value;
         if (UNLIKELY(!KORB_ARRAY_P(slots[3]))) {          /* a pair may be any #to_ary object */
             const char *const cls = korb_coerce_name(c, slots[3]);
-            const RESULT cr = korb_coerce_to_ary(c, slots + 4, &slots[3]);
+            const RESULT cr = korb_coerce_to_ary_x(c, slots + 4, &slots[3], true);   /* nil → "wrong element type" below */
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (UNLIKELY(cr.value != KORB_TRUE) || !KORB_ARRAY_P(slots[3]))
                 return korb_raise(c, slots + 4, KORB_E_TYPE, 0,

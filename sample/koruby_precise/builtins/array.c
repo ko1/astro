@@ -17,9 +17,9 @@ static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* a0 (rooted across #to_ary/#to_int dispatch) */
     if (argc == 1 && !FIXNUM_P(slots[0])) {              /* 1-arg form may be an Array copy (Array or #to_ary) */
         if (!KORB_ARRAY_P(slots[0]) && KORB_OBJECT_P(slots[0])) {
-            {   /* #to_ary (a wrong-typed one raises with CRuby's wording) */
+            {   /* #to_ary; nil → fall through to the size form (CRuby) */
                 VALUE av = slots[0];
-                const RESULT ar = korb_coerce_to_ary(c, slots + 1, &av);
+                const RESULT ar = korb_coerce_to_ary_x(c, slots + 1, &av, true);
                 if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
                 slots[0] = av;
             }

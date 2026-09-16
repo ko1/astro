@@ -243,7 +243,9 @@ static void korb_cref_pop(CTX *c);    /* fwd */
 static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_int coercion, usable from the main body */
 static RESULT korb_coerce_to_int_x(CTX *c, VALUE *slots, VALUE *v, bool raise_mismatch);   /* fwd (string.c) — false: a wrong-typed #to_int is a plain FALSE, not a raise */
 static RESULT korb_coerce_to_hash(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_hash coercion */
+static RESULT korb_coerce_to_hash_x(CTX *c, VALUE *slots, VALUE *v, bool nil_ok);   /* fwd — nil_ok: rb_check_hash_type semantics */
 static RESULT korb_coerce_to_ary(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_ary coercion */
+static RESULT korb_coerce_to_ary_x(CTX *c, VALUE *slots, VALUE *v, bool nil_ok);   /* fwd — nil_ok: rb_check_array_type semantics */
 RESULT korb_check_funcall(CTX *c, VALUE *slots, VALUE *v, uint32_t mid);   /* fwd — rb_check_funcall-style conversion probe (defined below) */
 static bool korb_check_funcall_respond_to(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid);   /* fwd — rb_check_funcall's #respond_to? probe */
 
@@ -11272,8 +11274,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (UNLIKELY(argc >= 3)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 0..2)", argc);
             if (argc == 1) {                               /* Array.new(ary) / #to_ary-able → a copy */
                 VALUE av = slots[-(korb_sword_t)argc];
-                if (!KORB_ARRAY_P(av) && KORB_OBJECT_P(av)) {   /* #to_ary (a wrong-typed one raises) */
-                    const RESULT r = korb_coerce_to_ary(c, slots, &av);
+                if (!KORB_ARRAY_P(av) && KORB_OBJECT_P(av)) {   /* #to_ary; nil → fall through to the size form */
+                    const RESULT r = korb_coerce_to_ary_x(c, slots, &av, true);
                     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 }
                 if (KORB_ARRAY_P(av)) {
@@ -14243,7 +14245,7 @@ korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, struct KorbIORep *rep)
          * per line) and only then falls back to #to_s. */
         VALUE av = v;
         slots[0] = v;                                   /* root across the coercion dispatch */
-        RESULT ar = korb_coerce_to_ary(c, slots + 1, &av);
+        RESULT ar = korb_coerce_to_ary_x(c, slots + 1, &av, true);   /* rb_check_array_type: nil → print #to_s */
         if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
         if (ar.value == KORB_TRUE) return korb_puts_one_to(c, slots + 1, av, rep);
         slots[0] = v;
@@ -16549,7 +16551,7 @@ korb_bi_hash(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (KORB_ARRAY_P(a0) && VAL2ARY(a0)->len == 0) return korb_hash_new(c, slots, 0);   /* Hash([]) → {} */
     {   /* #to_hash — a wrong-typed answer names the method that misbehaved */
         VALUE hv = a0;
-        const RESULT cr = korb_coerce_to_hash(c, slots, &hv);
+        const RESULT cr = korb_coerce_to_hash_x(c, slots, &hv, true);   /* nil → the wording below, no "gives" clause */
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         if (cr.value == KORB_TRUE) return RESULT_OK(hv);
         a0 = hv;                                          /* the probe dispatched: re-read */
