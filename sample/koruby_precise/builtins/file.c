@@ -1504,12 +1504,14 @@ static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
     slots[0] = pv;                                     /* park: parsing the arguments dispatches */
+    struct korb_line_args la;
+    /* the separator is coerced BEFORE the mode is judged: CRuby calls #to_str on
+     * it even when `mode:` makes the stream unreadable */
+    CHECK(korb_io_line_args(c, slots + 1, a, 1, &la));  /* separator → slots[1] */
     {   const uint32_t pl0 = VAL2STR(slots[0])->len;
         char pb0[PATH_MAX];
         snprintf(pb0, sizeof pb0, "%.*s", (int)pl0, korb_strbuf_data(VAL2STR(slots[0])->buf));
-        CHECK(korb_io_lines_mode_check(c, slots + 1, a, pb0)); }
-    struct korb_line_args la;
-    CHECK(korb_io_line_args(c, slots + 1, a, 1, &la));  /* separator → slots[1] */
+        CHECK(korb_io_lines_mode_check(c, slots + 2, a, pb0)); }
     if (UNLIKELY(la.limit == 0))
         return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "invalid limit: 0 for readlines");
     const VALUE_REF sepref = VALUE_REF_AT(&slots[1]);
@@ -1540,12 +1542,14 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
     slots[0] = pv;                                     /* park: parsing the arguments dispatches */
+    struct korb_line_args la;
+    /* the separator is coerced BEFORE the mode is judged: CRuby calls #to_str on
+     * it even when `mode:` makes the stream unreadable */
+    CHECK(korb_io_line_args(c, slots + 1, a, 1, &la));  /* separator → slots[1] */
     {   const uint32_t pl0 = VAL2STR(slots[0])->len;
         char pb0[PATH_MAX];
         snprintf(pb0, sizeof pb0, "%.*s", (int)pl0, korb_strbuf_data(VAL2STR(slots[0])->buf));
-        CHECK(korb_io_lines_mode_check(c, slots + 1, a, pb0)); }
-    struct korb_line_args la;
-    CHECK(korb_io_line_args(c, slots + 1, a, 1, &la));  /* separator → slots[1] */
+        CHECK(korb_io_lines_mode_check(c, slots + 2, a, pb0)); }
     if (UNLIKELY(la.limit == 0))
         return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "invalid limit: 0 for foreach");
     const VALUE_REF sepref = VALUE_REF_AT(&slots[1]);
