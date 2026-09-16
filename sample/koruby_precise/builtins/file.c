@@ -1354,16 +1354,18 @@ korb_io_line_args(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t from, struct kor
     if (UNLIKELY(np > 2))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..2)", np);
     VALUE sep = KORB_UNDEF, lim = KORB_NIL;
+    bool sep_from_args = false;                    /* the limit's #to_int below runs Ruby */
     if (np == 1) {
         const VALUE v = VALUE_SLICE_GET(a, from);
         /* String-ish → separator, anything else → limit (CRuby tries the String
          * conversion first, non-raising) */
         if (v == KORB_NIL || KORB_STRING_P(v) ||
-            (KORB_OBJECT_P(v) && korb_responds_to(c, v, korb_intern(c->vm, "to_str", 6)))) sep = v;
+            (KORB_OBJECT_P(v) && korb_responds_to(c, v, korb_intern(c->vm, "to_str", 6)))) { sep = v; sep_from_args = true; }
         else lim = v;
     } else if (np == 2) {
         sep = VALUE_SLICE_GET(a, from);
         lim = VALUE_SLICE_GET(a, from + 1);
+        sep_from_args = true;
     }
     if (lim != KORB_NIL) {
         korb_sword_t n2;
@@ -1381,6 +1383,7 @@ korb_io_line_args(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t from, struct kor
             n2 = FIX2LONG(ir.value);
         }
         o->limit = n2 < 0 ? -1 : n2;                                   /* a negative limit means "no limit" */
+        if (sep_from_args) sep = VALUE_SLICE_GET(a, from);          /* re-read: the #to_int above ran Ruby */
     }
     if (sep == KORB_NIL) { o->slurp = true; slots[0] = KORB_NIL; return RESULT_OK(KORB_NIL); }
     if (sep == KORB_UNDEF) {                                           /* default: $/ */

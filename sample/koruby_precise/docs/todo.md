@@ -339,11 +339,19 @@ rubyspec 全体も現実的な時間で回せる (4 並列、SPEC_TIMEOUT=120 �
    `class << self` 本体 / eval(str) / eval(str, binding) / load(file, wrap) /
    korb_invoke_method / 任意引数のデフォルト。
 
-ここまでで 37 → **10 ファイル**。残り:
-core/env/slice (korb_m_env_slice → korb_hash_set の key が stale)、core/io/popen、
-core/io/readlines、core/matchdata/byteend (korb_md_arg_gi)、core/module/module_function、
-core/time/comparison、language/hash、library/csv/generate、
-library/delegate/delegator/method、library/erb/new。
+9. **キーワード引数のエラー順序** (修正済)。CRuby は引数エラーを「どのデフォルトも
+   走らせる前」に確定させ、missing keyword を unknown keyword より先に報告する。
+   koruby は逆で、デフォルトの副作用が先に出ていた。順序を直したことで、unknown の
+   走査が kwargs Hash を dispatch より前に読むようになり、moving GC のバグも 1 つ消えた。
+10. **さらに 8 箇所** (修正済): `Time#<=>` の非 Time 経路 (比較結果を C ローカルで
+   2 回使う)、`ENV.slice` (キーを C ローカルで持ったまま値を引く/引数スライスが C ローカル
+   1 個)、`Module#module_function` と `Object#method` の名前引数、`korb_arg_to_mid`、
+   `korb_md_arg_gi` (MatchData 自身)、**`IO.popen` の spawn plan 引数スライスが C 配列**、
+   `File.readlines` の区切り (limit の `#to_int` を跨いで sep が stale)。
+
+ここまでで **37 → 1 ファイル**。残り: `language/hash_spec.rb`。
+node_send の `recv = slots[-argc-1]` が stale で落ちる (node_eq → `korb_send` の先、
+ユーザ `==` の本体の中)。まだ真因未特定。
 
 ## rubyspec の「1〜2 例落ち」長い尻尾の共通原因 集計 (2026-09-13)
 
