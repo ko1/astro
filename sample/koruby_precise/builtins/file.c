@@ -182,7 +182,7 @@ static RESULT korb_path_nul_check(CTX *c, VALUE *slots, VALUE v) {
 static RESULT korb_path_coerce(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t idx) {
     VALUE v = VALUE_SLICE_GET(a, idx);
     if (LIKELY(KORB_STRING_P(v))) { CHECK(korb_path_enc_check(c, slots, v)); return korb_path_nul_check(c, slots, v); }
-    const char *const tname = (v == KORB_NIL) ? "nil" : korb_type_name(v);   /* capture before any dispatch can move `v` */
+    const char *const tname = korb_coerce_name(c, v);   /* interned: capture before any dispatch can move `v` */
     static const struct { const char *name; uint32_t len; } conv[] = { { "to_path", 7 }, { "to_str", 6 } };
     for (size_t i = 0; i < sizeof conv / sizeof conv[0] && !KORB_STRING_P(v); i++) {
         const uint32_t mid = korb_intern(c->vm, conv[i].name, conv[i].len);
@@ -191,6 +191,9 @@ static RESULT korb_path_coerce(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t idx
         const RESULT r = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         v = r.value;
+        if (UNLIKELY(!KORB_STRING_P(v)))           /* it answered, with the wrong type (CRuby names the method) */
+            return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s into String (%s#%s gives %s)",
+                              tname, tname, conv[i].name, korb_coerce_name(c, v));
     }
     if (UNLIKELY(!KORB_STRING_P(v)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", tname);
@@ -458,7 +461,7 @@ static RESULT korb_file_join_str(CTX *c, VALUE *slots, VALUE pv, char *buf, size
             pv = r.value;
         }
         if (UNLIKELY(!KORB_STRING_P(pv)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, pv));
         slots[0] = pv;                                  /* root: buf below borrows its bytes */
     }
     { const uint32_t e = KORB_STR_ENC(pv);             /* the result takes the first non-default component encoding */
@@ -770,7 +773,7 @@ static RESULT korb_m_file_fnmatch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             }
         }
         if (UNLIKELY(!KORB_STRING_P(v)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, i)));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, i)));
     }
     long rf = 0;
     if (VALUE_SLICE_LEN(a) >= 3) {                     /* the flags are NUM2INT: #to_int only */

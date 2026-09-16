@@ -92,23 +92,52 @@ dispatch し、変換できなかった場合にその stale な `e` を `KORB_A
 に渡していた。`slots[0]` に park して dispatch 後に読み直す。エラー文の受け手名も
 dispatch 後の scratch (`slots[0]`) ではなく `e` を使うようにした。
 
-## 未修正: 変換失敗の TypeError 文面が CRuby と系統的に違う
+## 変換プロトコルの CRuby 一致 (2026-09-16) — と、比較対象を間違えた撤回
 
-CRuby は「`#to_X` は呼べたが戻り値の型が違う」とき
-`can't convert <Recv> to <Target> (<Recv>#to_X gives <Result>)` を出す
-(`Integer()` と `%d` だけは "gives" 節なしの `can't convert C into Integer`)。
-koruby は 3 通りにずれる。実測 (2026-09-16、`to_ary`/`to_str`/`to_int`/`to_proc`/`to_hash`/`to_a`
-を持つが違う型を返すクラスで 19 形):
+**まず撤回。** この作業の前半、PATH の `ruby` (rbenv shim の **4.0.2**) を CRuby の正解として
+`can't convert X into Y (X#to_Z gives W)` を `... to Y (...)` に 47 箇所書き換えた。
+**4.0 が `to`、4.1 が `into`** で、koruby は元から正しかった。rubyspec (master = 4.1.0dev) が
+−42 例で捕まえたので全部戻した。`make test` は `RUBY ?= ruby` なので 4.0.2 相手に差分を取って
+おり「改善」に見えていた。**2 つのゲートが違う ruby を見ていた**のが原因。
+以後、期待値は `~/ruby/install/master/bin/ruby` (4.1.0dev) で採り、`make test` にも
+`RUBY=` を渡す。同様に `nil` の index 変換は 4.0 が
+`no implicit conversion from nil to integer`、4.1 は `no implicit conversion of nil into Integer`。
 
-1. 前置詞が `into`。CRuby は "gives" 形のときだけ `to`。flatten / Array() / Regexp.new /
-   `&proc` / splat の 5 箇所が該当。
-2. 受け手のクラス名が `Object` になる (Array()、sub、pack、merge、concat)。
-   dispatch のあとの scratch スロットを `korb_coerce_name` に渡しているため。
-3. そもそも "gives" 形でなく `no implicit conversion of X into Y` を出す
-   (concat / `[] + x` / `"x" + y` / `"x" * n` / `ary[n]` / sub / first / pack /
-   merge / values_at)。「`to_X` を持たない」と「`to_X` が違う型を返した」を
-   変換ヘルパが区別していない。
-4. `String(B.new)` (B#to_str が Integer を返す) が **例外を上げない**。
+**実際に直したもの** (すべて 4.1.0dev と直接 diff して一致を確認):
+
+1. **`#to_X` が型違いを返したのは「変換できない」ではなく固有のエラー**。CRuby の
+   conversion_mismatch は `can't convert <Recv> into <Target> (<Recv>#to_X gives <Result>)`、
+   「そもそも `#to_X` を持たない」だけが `no implicit conversion of X into Y`。
+   koruby は両方を後者にまとめていた。`korb_coerce_to_{int,ary,str}` と新設の
+   `korb_coerce_to_hash` が型違いを自分で raise するようにして、手書きしていた呼び出し側
+   (`Array#concat` / `Array#replace` / `Array.new` の 2 経路 / `Array#pack` /
+   `Hash#merge` / `Kernel#Hash` / `String#sub`・`gsub` の置換 / `String#[]=` /
+   `File` のパス引数 / `String#+`) をそこへ寄せた。
+   例外は `Kernel#Integer` で、型違いの `#to_int` のあと `#to_str` → `#to_i` と進むので
+   `korb_coerce_to_int_x(..., raise_mismatch=false)` を使う (`Integer(obj)` は
+   `#to_int` が "s" でも `#to_str` が "42" なら 42)。
+2. **Bignum は型違いではない**。`#to_int` が index に収まらない Integer を返した場合は
+   呼び出し側の RangeError ("bignum too big to convert into 'long'") に任せる。
+   1 の途中でこれを取りこぼし、`make test` が 532 → 564 に退行して発覚した。
+3. **メッセージ中のクラス名**。`korb_type_name` は user instance を `Object`、nil を
+   `NilClass` と書く。CRuby は実クラス名 / `nil`。変換メッセージ 68 箇所を
+   `korb_coerce_name` に変えた。
+4. **`Kernel#String` が `#to_str` を見ていなかった**。CRuby の rb_String は `#to_str` が先で、
+   それが型違いならエラー。koruby はいきなり `#to_s` に行くので `String(obj)` が
+   例外を出さずに `#<B:...>` を返していた。
+5. **`Regexp#match` の pos を黙って無視していた**。Integer でなければ `#to_int`、
+   それも無ければ TypeError。
+6. `Integer.sqrt(nil)` の文面を `no implicit conversion of nil into Integer` に。
+
+計測: rubyspec 31335/32009 で**変化 0**、`make test` (RUBY=4.1.0dev) 547 で**変化 0**
+(どちらのゲートもここで直した形を踏んでいない)。STRESS+PURGE 534 ファイル非ゼロ終了 0。
+optcarrot AOT 59662 / DOOM AOT 17930386881013214317。
+
+**残: `File.open(path, mode)` の mode を強制変換していない。** `#to_str` を持つオブジェクトを
+渡すと黙って "r" になる (CRuby は `#to_str`、型違いなら TypeError)。mode は
+`korb_file_mode_val` が引数スライスから何度も読み直す作りなので、先頭で 1 度強制変換して
+書き戻す改修が要る。IO の open 経路なので分けて行う。
+
 ## rubyspec 長い尻尾の共通原因 集計 (2026-09-16)
 
 baseline `4c9cd25e` = **pass 31296 / ex 32009 = 97.77%**、

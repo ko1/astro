@@ -271,7 +271,7 @@ static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (UNLIKELY(!korb_to_index(lv, &len))) {
                 RESULT cr = korb_coerce_to_int(c, slots, &lv);
                 if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-                if (!korb_to_index(lv, &len)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+                if (!korb_to_index(lv, &len)) return korb_raise_no_int(c, slots, lv);
                 selfv = VALUE_REF_GET(self);
             }
             if (len == 0) zero = true; else if (len > 0) mask_len = len;   /* len<0 ⇒ no upper mask (all bits) */
@@ -408,7 +408,7 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (slots[1] != KORB_NIL && UNLIKELY(!korb_to_index(slots[1], &b))) {   /* beginless → 0; else coerce via #to_int */
             RESULT cr = korb_coerce_to_int(c, slots + 3, &slots[1]);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(slots[1], &b)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+            if (!korb_to_index(slots[1], &b)) return korb_raise_no_int(c, slots, slots[1]);
             n = VAL2ARY(VALUE_REF_GET(self))->len;
         }
         const korb_sword_t braw = b;
@@ -420,7 +420,7 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             if (UNLIKELY(!korb_to_index(slots[2], &e))) {
                 RESULT cr = korb_coerce_to_int(c, slots + 3, &slots[2]);
                 if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-                if (!korb_to_index(slots[2], &e)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+                if (!korb_to_index(slots[2], &e)) return korb_raise_no_int(c, slots, slots[2]);
                 n = VAL2ARY(VALUE_REF_GET(self))->len;
             }
             if (e < 0) e += n;
@@ -906,7 +906,7 @@ static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             ov = hr.value;
         }
         if (UNLIKELY(!KORB_HASH_P(ov)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
     }
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));            /* re-check (self could move under the dispatch) */
     if (ov == VALUE_REF_GET(self)) return RESULT_OK(VALUE_REF_GET(self));   /* h.replace(h) is a no-op (clear-then-copy would empty it) */

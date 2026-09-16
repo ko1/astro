@@ -18,7 +18,7 @@ ARO_BORROW static const char *korb_env_name_at(CTX *c, VALUE *slots, uint32_t pa
             v = r.value;
         }
         if (UNLIKELY(!KORB_STRING_P(v))) {
-            *err = korb_raise(c, slots + park, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(v));
+            *err = korb_raise(c, slots + park, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, v));
             return NULL;
         }
     }
@@ -313,7 +313,7 @@ static RESULT korb_m_env_reject_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 static RESULT korb_m_env_merge_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
         slots[0] = VALUE_SLICE_GET(a, k);
-        if (UNLIKELY(!KORB_HASH_P(slots[0]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(slots[0]));
+        if (UNLIKELY(!KORB_HASH_P(slots[0]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_coerce_name(c, slots[0]));
         for (uint32_t i = 0; ; i++) {
             const KorbHash *h = VAL2HASH(slots[0]);
             if (i >= h->len) break;
@@ -472,7 +472,7 @@ static RESULT korb_m_env_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* ENV.replace(hash) → clear ENV, then set every pair from hash; returns ENV. */
 static RESULT korb_m_env_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE hv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_HASH_P(hv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(hv));
+    if (UNLIKELY(!KORB_HASH_P(hv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_coerce_name(c, hv));
     { RESULT cr = korb_m_env_clear(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     slots[0] = hv;                                           /* root the source hash */
     for (uint32_t i = 0; ; i++) {

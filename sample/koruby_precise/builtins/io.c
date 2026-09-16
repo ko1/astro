@@ -1724,7 +1724,7 @@ static RESULT korb_io_mode_coerce(CTX *c, VALUE *slots, VALUE *mv, char *mode, s
         }
     }
     /* neither a mode string/Integer nor convertible to one */
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(*mv));
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, *mv));
 #undef KORB_IO_BAD_MODE
 }
 

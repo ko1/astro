@@ -887,7 +887,7 @@ korb_m_thread_name_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
                 if (KORB_STRING_P(sr.value)) v = sr.value;
             }
             if (UNLIKELY(!KORB_STRING_P(v)))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
         }
         const KorbString *const ns = VAL2STR(v);
         if (UNLIKELY(memchr(korb_strbuf_data(ns->buf), 0, ns->len) != NULL))

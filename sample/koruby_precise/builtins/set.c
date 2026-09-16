@@ -2031,7 +2031,7 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     const bool inherit = !(VALUE_SLICE_LEN(a) >= 2 && !KORB_TRUTHY(VALUE_SLICE_GET(a, 1)));
     if (!SYMBOL_P(name) && !KORB_STRING_P(name)) {          /* coerce a name via #to_str */
         if (UNLIKELY(!korb_responds_to_coerce_p(c, slots, &name, korb_intern(vm, "to_str", 6))))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, name));
         slots[0] = name;
         RESULT sr = korb_send(c, slots + 1, korb_intern(vm, "to_str", 6), 0, 0);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
@@ -2215,9 +2215,9 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
             slots[0] = name;
             RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-            if (UNLIKELY(!KORB_STRING_P(sr.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            if (UNLIKELY(!KORB_STRING_P(sr.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
             name = sr.value;
-        } else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
+        } else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, name));
     }
     const bool inherit = (VALUE_SLICE_LEN(a) < 2) || KORB_TRUTHY(VALUE_SLICE_GET(a, 1));   /* coerce the inherit flag to a boolean (nil/false → no inherit) */
     if (SYMBOL_P(name)) {
@@ -2250,7 +2250,7 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
         }
         return RESULT_OK(KORB_TRUE);
     }
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, name));
 }
 /* Object#then / yield_self — yield self, return the block's value (no block → self). */
 static RESULT korb_m_obj_then(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {

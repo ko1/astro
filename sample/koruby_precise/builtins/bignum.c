@@ -212,8 +212,8 @@ static RESULT korb_m_integer_sqrt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     VALUE n = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(n)) n = LONG2FIX((korb_sword_t)korb_float_val(n));   /* Integer.sqrt(8.5) → isqrt(8) (CRuby truncates) */
     else if (!KORB_INTEGER_P(n)) CHECK(korb_coerce_to_int(c, slots, &n));   /* #to_int */
-    if (UNLIKELY(!KORB_INTEGER_P(n)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(!KORB_INTEGER_P(n)))   /* Integer.sqrt words this one "of X into Integer" */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
     korb_mp_t z, r;
     korb_to_mpz(n, z);
     if (UNLIKELY(korb_mp_sgn(z) < 0)) { korb_mp_clear(z); return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"isqrt\""); }

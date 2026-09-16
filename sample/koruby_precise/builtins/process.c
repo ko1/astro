@@ -339,7 +339,7 @@ static RESULT korb_spawn_to_str(CTX *c, VALUE *s) {
     if (KORB_STRING_P(s[0])) return RESULT_OK(s[0]);
     const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
     if (UNLIKELY(!KORB_OBJECT_P(s[0]) || !korb_responds_to(c, s[0], to_str)))
-        return korb_raise(c, s, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(s[0]));
+        return korb_raise(c, s, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, s[0]));
     s[1] = s[0];
     const RESULT r = korb_send(c, s + 2, to_str, 0, 0);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;

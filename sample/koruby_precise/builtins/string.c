@@ -105,11 +105,11 @@ static RESULT korb_m_str_force_encoding(CTX *c, VALUE *slots, VALUE_REF self, VA
             slots[0] = enc;
             RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-            if (!KORB_STRING_P(sr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            if (!KORB_STRING_P(sr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
             enc = sr.value;
         } else {
             const VALUE nm = KORB_OBJECT_P(enc) ? korb_ivar_get(c, enc, ID2SYM(korb_intern(c->vm, "@name", 5))) : KORB_NIL;
-            if (!KORB_STRING_P(nm)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(enc));
+            if (!KORB_STRING_P(nm)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, enc));
             enc = nm;
         }
     }
@@ -188,7 +188,7 @@ static RESULT korb_m_str_scrub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const bool use_arg = VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL;
     if (use_arg) {
         if (UNLIKELY(!KORB_STRING_P(VALUE_SLICE_GET(a, 0))))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
         const KorbString *const rs = VAL2STR(VALUE_SLICE_GET(a, 0));
         if (UNLIKELY(!korb_str_enc_valid(rs, KORB_STR_ENC(VALUE_SLICE_GET(a, 0)))))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "replacement must be valid byte sequence '%.*s'",
@@ -222,7 +222,7 @@ static RESULT korb_m_str_scrub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (UNLIKELY(br.state != KORB_NORMAL)) { free(out); return br; }
             if (UNLIKELY(!KORB_STRING_P(br.value))) {
                 free(out);
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(br.value));
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, br.value));
             }
             const KorbString *const bs = VAL2STR(br.value);
             SCRUB_PUT(korb_strbuf_data(bs->buf), bs->len);
@@ -848,7 +848,7 @@ static RESULT korb_str_append_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_RE
           }
       }
     }
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(o));
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, o));
 }
 static RESULT korb_m_str_ltlt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
@@ -917,7 +917,7 @@ static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             if (LIKELY(KORB_STRING_P(sr.value))) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); o = sr.value; self = VALUE_REF_AT(&slots[0]); }
         }
-        if (UNLIKELY(!KORB_STRING_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        if (UNLIKELY(!KORB_STRING_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
     }
     if (o == VALUE_REF_GET(self)) return RESULT_OK(VALUE_REF_GET(self));   /* s.replace(s) is a no-op (clear-then-append would empty it) */
     const uint32_t oenc = KORB_STR_ENC(o);             /* self takes other's encoding (CRuby), invalidity included */
@@ -942,7 +942,7 @@ static RESULT korb_m_str_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 slots[1] = sr.value;
             }
-            if (!KORB_STRING_P(slots[1])) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, j)));
+            if (!KORB_STRING_P(slots[1])) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, j)));
         }
         CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
     }
@@ -1048,18 +1048,41 @@ static RESULT korb_str_splice(CTX *c, VALUE *slots, VALUE_REF self, uint32_t bs,
  * (len_v = KORB_NIL if absent). *found=false ⇒ no match / out of range. */
 /* If *v isn't already an integer but responds to #to_int, replace it with the
  * coerced value (may GC — call before reading the receiver string). */
-static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v) {
+/* CRuby's conversion_mismatch: a #to_X that ANSWERS WITH THE WRONG TYPE is an
+ * error of its own, named after the method that misbehaved — distinct from the
+ * receiver simply not having #to_X, which is the caller's "no implicit
+ * conversion of X into Y".  `recv` must be read after the dispatch (it moves).
+ * Kernel#Integer is the exception: a wrong-typed #to_int there is not fatal
+ * (it goes on to #to_str / #to_i), so it passes raise_mismatch = false. */
+static RESULT korb_raise_conv_mismatch(CTX *c, VALUE *slots, VALUE recv, VALUE got,
+                                       const char *const target, const char *const meth) {
+    const char *const rn = korb_coerce_name(c, recv);   /* interned / literal: no GC hazard */
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into %s (%s#%s gives %s)",
+                      rn, target, rn, meth, korb_coerce_name(c, got));
+}
+/* raise_mismatch = false leaves a wrong-typed #to_int as a plain FALSE, for the
+ * one caller that goes on to another protocol (Kernel#Integer tries #to_str and
+ * #to_i next: Integer(obj) is 42 when #to_int misbehaves but #to_str gives "42"). */
+static RESULT korb_coerce_to_int_x(CTX *c, VALUE *slots, VALUE *v, bool raise_mismatch) {
     korb_sword_t tmp;
     if (korb_to_index(*v, &tmp)) return RESULT_OK(KORB_TRUE);
+    /* a Bignum IS an Integer, just past the index range — the caller's RangeError,
+     * never a conversion mismatch, and nothing to ask #to_int about. */
+    if (KORB_BIGNUM_P(*v)) return RESULT_OK(KORB_FALSE);
     const uint32_t to_int = korb_intern(c->vm, "to_int", 6);
     slots[0] = *v;                                    /* root the receiver across respond_to?/to_int dispatch */
     if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_int)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
     RESULT r = korb_send_impl(c, slots + 1, to_int, 0, 0, NULL, NULL, NULL);   /* receiver at slots[0] */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (!korb_to_index(r.value, &tmp)) { *v = r.value; return RESULT_OK(KORB_FALSE); }
+    if (!korb_to_index(r.value, &tmp)) {
+        if (raise_mismatch && !KORB_BIGNUM_P(r.value))   /* an out-of-range Integer answer is not a type mismatch */
+            return korb_raise_conv_mismatch(c, slots + 1, slots[0], r.value, "Integer", "to_int");
+        *v = r.value; return RESULT_OK(KORB_FALSE);
+    }
     *v = r.value;
     return RESULT_OK(KORB_TRUE);
 }
+static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v) { return korb_coerce_to_int_x(c, slots, v, true); }
 /* If *v isn't an Array, try #to_ary; returns TRUE (with *v the Array) or FALSE (leaves *v). */
 static RESULT korb_coerce_to_ary(CTX *c, VALUE *slots, VALUE *v) {
     if (KORB_ARRAY_P(*v)) return RESULT_OK(KORB_TRUE);
@@ -1068,7 +1091,8 @@ static RESULT korb_coerce_to_ary(CTX *c, VALUE *slots, VALUE *v) {
     if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_ary)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
     RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (!KORB_ARRAY_P(r.value)) { *v = r.value; return RESULT_OK(KORB_FALSE); }
+    if (!KORB_ARRAY_P(r.value))
+        return korb_raise_conv_mismatch(c, slots + 1, slots[0], r.value, "Array", "to_ary");
     *v = r.value;
     return RESULT_OK(KORB_TRUE);
 }
@@ -1080,7 +1104,22 @@ static RESULT korb_coerce_to_str(CTX *c, VALUE *slots, VALUE *v) {
     if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
     RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);   /* receiver at slots[0] */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (!KORB_STRING_P(r.value)) { *v = r.value; return RESULT_OK(KORB_FALSE); }
+    if (!KORB_STRING_P(r.value))
+        return korb_raise_conv_mismatch(c, slots + 1, slots[0], r.value, "String", "to_str");
+    *v = r.value;
+    return RESULT_OK(KORB_TRUE);
+}
+/* If *v isn't a Hash, try #to_hash; TRUE (with *v the Hash), FALSE (no #to_hash,
+ * *v left), or the mismatch raise. */
+static RESULT korb_coerce_to_hash(CTX *c, VALUE *slots, VALUE *v) {
+    if (KORB_HASH_P(*v)) return RESULT_OK(KORB_TRUE);
+    const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
+    slots[0] = *v;
+    if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_hash)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
+    RESULT r = korb_send_impl(c, slots + 1, to_hash, 0, 0, NULL, NULL, NULL);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (!KORB_HASH_P(r.value))
+        return korb_raise_conv_mismatch(c, slots + 1, slots[0], r.value, "Hash", "to_hash");
     *v = r.value;
     return RESULT_OK(KORB_TRUE);
 }
@@ -1176,14 +1215,12 @@ static RESULT korb_m_str_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(sp.state != KORB_NORMAL)) return sp;
     }
     slots[0] = VALUE_SLICE_GET(a, na - 1);             /* replacement — #to_str it (may run Ruby → keep it rooted here) */
-    if (UNLIKELY(!KORB_STRING_P(slots[0]))) {
-        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
-        if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) {
-            RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
-            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            slots[0] = cr.value;
-        }
-        if (!KORB_STRING_P(slots[0])) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, na - 1)));
+    if (UNLIKELY(!KORB_STRING_P(slots[0]))) {          /* #to_str (a wrong-typed one raises) */
+        VALUE repl = slots[0];
+        const RESULT cr = korb_coerce_to_str(c, slots + 1, &repl);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        slots[0] = repl;
+        if (cr.value != KORB_TRUE) return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, repl));
     }
     if (!span_first) {
         RESULT sp = korb_str_target_span(c, slots + 1, self, idx, len_v, &found, &bs, &be, true);   /* slots+1: preserve repl in slots[0] */
@@ -1401,7 +1438,7 @@ static RESULT korb_str_sets_coerce(CTX *c, VALUE *slots, VALUE_SLICE a) {
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             if (KORB_STRING_P(sr.value)) { VALUE_REF_SET(VALUE_SLICE_REF(a, j), sr.value); continue; }
         }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, j)));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, j)));
     }
     return RESULT_OK(KORB_NIL);
 }
@@ -1458,7 +1495,7 @@ static RESULT korb_str_delfix(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             pv = sr.value;
         }
-        if (!KORB_STRING_P(pv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        if (!KORB_STRING_P(pv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
     }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *p = VAL2STR(pv);
     uint32_t bs = 0, be = s->len; bool match = false;
@@ -1723,7 +1760,7 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             slots[0] = pv;                             /* recv for the #to_str dispatch (self stays the caller's rooted VALUE_REF) */
             RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-            if (!KORB_STRING_P(sr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            if (!KORB_STRING_P(sr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
             pv = sr.value;                             /* the coerced String pattern; downstream roots it like the literal-String path */
         } else return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_type_name(pv));
     }
@@ -1776,6 +1813,14 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 2))
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#gsub/sub without a replacement (Enumerator) is not supported");
     VALUE rv = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!KORB_STRING_P(rv) && !KORB_HASH_P(rv))) {   /* CRuby asks the replacement for #to_str */
+        slots[0] = pv;                                 /* park the pattern: the probe below runs Ruby */
+        const RESULT cr = korb_coerce_to_str(c, slots + 1, &rv);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        pv = slots[0];                                 /* re-read (the dispatch may have moved it) */
+        if (UNLIKELY(cr.value != KORB_TRUE))
+            return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, rv));
+    }
     /* snapshot pattern + replacement bytes into stable C buffers (survive grows) */
     const KorbString *ps = VAL2STR(pv);
     uint32_t pn = ps->len; char *pat = malloc(pn ? pn : 1); memcpy(pat, korb_strbuf_data(ps->buf), pn);
@@ -1795,7 +1840,7 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         }
     } else {
         free(pat);
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(rv));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, rv));
     }
     /* build result into a C buffer (no GC during the scan) */
     char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
@@ -1897,7 +1942,7 @@ static RESULT korb_m_str_rpartition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             sv = r.value;
         }
-        if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(slots[0]));
+        if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, slots[0]));
     }
     slots[0] = sv;                                     /* the (possibly coerced) separator, kept for the result */
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *sep = VAL2STR(slots[0]);
@@ -1936,7 +1981,7 @@ static RESULT korb_m_str_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             sv = r.value;
         }
-        if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(slots[0]));
+        if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, slots[0]));
     }
     slots[0] = sv;                                     /* the (possibly coerced) separator, kept for the result */
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *sep = VAL2STR(slots[0]);
@@ -2096,7 +2141,7 @@ static RESULT korb_m_str_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (UNLIKELY(!KORB_STRING_P(sv))) {                  /* coerce the needle via #to_str */
         RESULT cr = korb_coerce_to_str(c, slots, &sv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-        if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
     }
     { uint32_t ce;
       if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), sv, &ce)))
@@ -2124,7 +2169,7 @@ static RESULT korb_m_str_start_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (UNLIKELY(!KORB_STRING_P(pv))) {              /* coerce a prefix via #to_str */
             RESULT cr = korb_coerce_to_str(c, slots, &pv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, i)));
+            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, i)));
         }
         { uint32_t ce;
           if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), pv, &ce)))
@@ -2144,7 +2189,7 @@ static RESULT korb_m_str_end_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         if (UNLIKELY(!KORB_STRING_P(pv))) {              /* coerce a suffix via #to_str */
             RESULT cr = korb_coerce_to_str(c, slots, &pv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, i)));
+            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, i)));
         }
         { uint32_t ce;
           if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), pv, &ce)))
@@ -2202,12 +2247,12 @@ static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(!KORB_STRING_P(sv))) {               /* coerce via #to_str, else TypeError (never #to_int) */
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
         if (!korb_responds_to_coerce_p(c, slots, &sv, to_str))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, sv));
         slots[0] = sv;
         RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         if (UNLIKELY(!KORB_STRING_P(cr.value)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(slots[0]));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, slots[0]));
         sv = cr.value;
     }
     { uint32_t ce;                                    /* incompatible encodings: CompatibilityError, not a miss */
@@ -2229,7 +2274,7 @@ static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             VALUE bv = VALUE_SLICE_GET(a, 0);
             RESULT cr = korb_coerce_to_int(c, slots, &bv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(bv, &b)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+            if (!korb_to_index(bv, &b)) return korb_raise_no_int(c, slots, bv);
         }
         base = (int)b; have_base = true;
     }
@@ -2482,7 +2527,7 @@ static RESULT korb_m_str_chomp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 slots[1] = sr.value;
             }
-            if (UNLIKELY(!KORB_STRING_P(slots[1]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            if (UNLIKELY(!KORB_STRING_P(slots[1]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
             self = VALUE_REF_AT(&slots[0]); sv = slots[1];   /* self re-rooted; sv now the coerced String */
         }
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));
@@ -2605,7 +2650,7 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             }
             if (UNLIKELY(!KORB_STRING_P(sepv)))
                 return SYMBOL_P(sepv) ? korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type Symbol (expected Regexp)")
-                                      : korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sepv));
+                                      : korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, sepv));
         }
         const KorbString *sp = VAL2STR(sepv);
         if (sp->len == 1 && korb_strbuf_data(sp->buf)[0] == ' ') ws = true;   /* " " behaves as whitespace */
@@ -3154,7 +3199,7 @@ static RESULT korb_line_coerce_sep(CTX *c, VALUE *slots, VALUE_SLICE a) {
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
         if (LIKELY(KORB_STRING_P(sr.value))) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); return RESULT_OK(KORB_NIL); }
     }
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(s0));
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, s0));
 }
 /* CRuby converts the DEFAULT separator into the receiver's encoding before
  * searching (rb_str_enumerate_lines).  With a non-ASCII-compatible encoding that
@@ -3267,7 +3312,7 @@ static RESULT korb_m_str_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             slots[0] = VALUE_REF_GET(self);  /* re-read after dispatch */
         }
         if (!KORB_STRING_P(slots[1]))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
     }
     if (block == NULL) slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 8));   /* collect for the Enumerator */
     /* single-byte begin AND end → iterate by byte value (CRuby fast path:

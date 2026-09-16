@@ -108,14 +108,13 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(na < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     slots[0] = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(slots[0]))) {             /* coerce the template via #to_str */
-        if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], korb_intern(c->vm, "to_str", 6))) {
-            RESULT sr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
-            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-            slots[0] = sr.value;
-        }
-        if (UNLIKELY(!KORB_STRING_P(slots[0])))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(!KORB_STRING_P(slots[0]))) {             /* #to_str (a wrong-typed one raises) */
+        VALUE tv = slots[0];
+        const RESULT cr = korb_coerce_to_str(c, slots + 1, &tv);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        slots[0] = tv;
+        if (UNLIKELY(cr.value != KORB_TRUE))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, tv));
     }
     size_t bufbase = 0;                                  /* bytes already in `buffer:` */
     /* CRuby rejects a non-String `buffer:` before packing anything, so check it
@@ -352,7 +351,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             else if (!coerce && KORB_OBJECT_P(e)) {       /* a/A/Z/B/b/H/h: coerce the element via #to_str */
                 slots[1] = e;
                 if (!korb_responds_to_coerce(c, slots + 2, slots[1], korb_intern(c->vm, "to_str", 6))) {
-                    snprintf(errbuf, sizeof errbuf, "no implicit conversion of %s into String", korb_type_name(slots[1]));
+                    snprintf(errbuf, sizeof errbuf, "no implicit conversion of %s into String", korb_coerce_name(c, slots[1]));
                     errtype = KORB_E_TYPE; errmsg = errbuf; break;
                 }
                 RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
@@ -528,7 +527,7 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             slots[0] = sr.value;
         }
         if (UNLIKELY(!KORB_STRING_P(slots[0])))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
     }
     const VALUE tv = slots[0];
     long off = 0;                                        /* optional offset: keyword */
@@ -1197,7 +1196,7 @@ static RESULT korb_m_ary_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (UNLIKELY(!KORB_ARRAY_P(ov))) {
             RESULT cr = korb_coerce_to_ary(c, slots, &ov);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, k)));
+            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_coerce_name(c, VALUE_SLICE_GET(a, k)));
             VALUE_REF_SET(VALUE_SLICE_REF(a, k), ov);
         }
     }
@@ -1222,7 +1221,7 @@ static RESULT korb_m_ary_intersect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         if (UNLIKELY(!KORB_ARRAY_P(ov))) {
             RESULT cr = korb_coerce_to_ary(c, slots, &ov);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, k)));
+            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_coerce_name(c, VALUE_SLICE_GET(a, k)));
             VALUE_REF_SET(VALUE_SLICE_REF(a, k), ov);
         }
     }

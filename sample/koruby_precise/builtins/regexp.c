@@ -257,7 +257,7 @@ static RESULT korb_m_md_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     const int n = korb_md_ngroups(VAL2MD(mdv));
     if (VALUE_SLICE_LEN(a) >= 2) {                        /* [start, length] → Array */
         korb_sword_t st = 0, ln = 0;
-        if (!korb_to_index(k, &st) || !korb_to_index(VALUE_SLICE_GET(a, 1), &ln)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (!korb_to_index(k, &st) || !korb_to_index(VALUE_SLICE_GET(a, 1), &ln)) return korb_raise_no_int(c, slots, k);
         if (st < 0) st += n;
         if (st < 0 || st > n || ln < 0) return RESULT_OK(KORB_NIL);
         return korb_md_group_slice(c, slots, mdv, st, ln);
@@ -265,9 +265,9 @@ static RESULT korb_m_md_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (KORB_RANGE_P(k)) {                                /* [range] → Array */
         const KorbRange *r = VAL2RANGE(k);
         korb_sword_t b = 0, e;
-        if (r->rbegin != KORB_NIL) { if (!korb_to_index(r->rbegin, &b)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); }
+        if (r->rbegin != KORB_NIL) { if (!korb_to_index(r->rbegin, &b)) return korb_raise_no_int(c, slots, r->rbegin); }
         if (b < 0) b += n;
-        if (r->rend == KORB_NIL) e = n; else { if (!korb_to_index(r->rend, &e)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (e < 0) e += n; if (!r->exclude_end) e += 1; }
+        if (r->rend == KORB_NIL) e = n; else { if (!korb_to_index(r->rend, &e)) return korb_raise_no_int(c, slots, r->rend); if (e < 0) e += n; if (!r->exclude_end) e += 1; }
         if (b < 0 || b > n) return RESULT_OK(KORB_NIL);
         long len = e - b; if (len < 0) len = 0;
         return korb_md_group_slice(c, slots, mdv, b, len);
@@ -883,7 +883,18 @@ static RESULT korb_m_re_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNWRAP(korb_re_subject(c, slots + 2, VALUE_SLICE_GET(a, 0), &subj)) != KORB_TRUE)
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(VALUE_SLICE_GET(a, 0)));
     slots[1] = subj;
-    long startc = 0; if (VALUE_SLICE_LEN(a) >= 2) { korb_sword_t p = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &p)) startc = (long)p; }
+    long startc = 0;
+    if (VALUE_SLICE_LEN(a) >= 2) {                  /* pos: #to_int'd, not silently ignored */
+        korb_sword_t p = 0;
+        VALUE pv0 = VALUE_SLICE_GET(a, 1);
+        if (UNLIKELY(!korb_to_index(pv0, &p))) {
+            const RESULT cr = korb_coerce_to_int(c, slots + 2, &pv0);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cr.value != KORB_TRUE || !korb_to_index(pv0, &p))
+                return korb_raise_no_int(c, slots + 2, VALUE_SLICE_GET(a, 1));
+        }
+        startc = (long)p;
+    }
     const KorbString *s = VAL2STR(slots[1]);
     /* pos is a character index in the subject's encoding — a byte index for
      * single-byte encodings (US-ASCII / ASCII-8BIT), else a UTF-8 char index. */
@@ -1128,9 +1139,14 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
                 slots[3] = rv;
                 RESULT sr = korb_send_impl(c, slots + 4, to_str, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) { free(src); return sr; }
-                if (!KORB_STRING_P(sr.value)) { free(src); return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(rv)); }
+                if (!KORB_STRING_P(sr.value)) {   /* it answered, with the wrong type: CRuby names the method */
+                    free(src);
+                    const char *const rn0 = korb_coerce_name(c, slots[3]);
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into String (%s#to_str gives %s)",
+                                      rn0, rn0, korb_coerce_name(c, sr.value));
+                }
                 const KorbString *rs = VAL2STR(sr.value); rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, korb_strbuf_data(rs->buf), rn);
-            } else { free(src); return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(rv)); }
+            } else { free(src); return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, rv)); }
         }
     }
     char *buf = NULL; size_t bz = 0; FILE *ms = open_memstream(&buf, &bz);

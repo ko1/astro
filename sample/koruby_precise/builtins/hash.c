@@ -486,16 +486,11 @@ static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
         VALUE ov = VALUE_SLICE_GET(a, k);
-        if (UNLIKELY(!KORB_HASH_P(ov))) {                        /* coerce via #to_hash (Hash subclasses are already KORB_HASH_P) */
-            const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
-            if (KORB_OBJECT_P(ov) && korb_responds_to_coerce_p(c, slots, &ov, to_hash)) {
-                slots[1] = ov;
-                RESULT hr = korb_send_impl(c, slots + 2, to_hash, 0, 0, NULL, NULL, NULL);
-                if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
-                ov = hr.value;
-            }
-            if (UNLIKELY(!KORB_HASH_P(ov)))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(VALUE_SLICE_GET(a, k)));
+        if (UNLIKELY(!KORB_HASH_P(ov))) {                        /* coerce via #to_hash (a wrong-typed one raises) */
+            const RESULT cr = korb_coerce_to_hash(c, slots + 1, &ov);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (UNLIKELY(cr.value != KORB_TRUE))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_coerce_name(c, ov));
         }
         slots[1] = ov;                                           /* root the arg hash */
         for (uint32_t i = 0; ; i++) {
@@ -529,16 +524,11 @@ static RESULT korb_m_hash_update(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
         VALUE ov = VALUE_SLICE_GET(a, k);
-        if (UNLIKELY(!KORB_HASH_P(ov))) {                        /* coerce via #to_hash (Hash subclasses are already KORB_HASH_P) */
-            const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
-            if (KORB_OBJECT_P(ov) && korb_responds_to_coerce_p(c, slots, &ov, to_hash)) {
-                slots[1] = ov;
-                RESULT hr = korb_send_impl(c, slots + 2, to_hash, 0, 0, NULL, NULL, NULL);
-                if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
-                ov = hr.value;
-            }
-            if (UNLIKELY(!KORB_HASH_P(ov)))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(VALUE_SLICE_GET(a, k)));
+        if (UNLIKELY(!KORB_HASH_P(ov))) {                        /* coerce via #to_hash (a wrong-typed one raises) */
+            const RESULT cr = korb_coerce_to_hash(c, slots + 1, &ov);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (UNLIKELY(cr.value != KORB_TRUE))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_coerce_name(c, ov));
         }
         slots[0] = ov;                                           /* root the arg hash */
         for (uint32_t i = 0; ; i++) {
@@ -612,7 +602,7 @@ static RESULT korb_hash_cmp_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             ov = hr.value;
         }
         if (UNLIKELY(!KORB_HASH_P(ov)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
     }
     slots[0] = ov;                                              /* root the (possibly coerced) operand across the compare */
     const KorbHash *me = VAL2HASH(VALUE_REF_GET(self)), *other = VAL2HASH(slots[0]);

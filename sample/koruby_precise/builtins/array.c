@@ -17,12 +17,11 @@ static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* a0 (rooted across #to_ary/#to_int dispatch) */
     if (argc == 1 && !FIXNUM_P(slots[0])) {              /* 1-arg form may be an Array copy (Array or #to_ary) */
         if (!KORB_ARRAY_P(slots[0]) && KORB_OBJECT_P(slots[0])) {
-            const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
-            if (korb_responds_to_coerce_p(c, slots + 1, &slots[0], to_ary)) {
-                RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);   /* receiver at slots[0] */
+            {   /* #to_ary (a wrong-typed one raises with CRuby's wording) */
+                VALUE av = slots[0];
+                const RESULT ar = korb_coerce_to_ary(c, slots + 1, &av);
                 if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
-                if (UNLIKELY(!KORB_ARRAY_P(ar.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Array", korb_coerce_name(c, slots[0]));
-                slots[0] = ar.value;
+                slots[0] = av;
             }
         }
         if (KORB_ARRAY_P(slots[0])) {                    /* copy another array */
@@ -677,7 +676,7 @@ static RESULT korb_m_ary_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(!KORB_ARRAY_P(ov))) {                   /* coerce the operand via #to_ary (self is a VALUE_REF) */
         RESULT cr = korb_coerce_to_ary(c, slots, &ov);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-        if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
         slots[0] = ov;
         return korb_ary_plus_ref(c, slots + 1, self, VALUE_REF_AT(&slots[0]));
     }

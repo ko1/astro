@@ -17,7 +17,7 @@ static RESULT korb_m_zlib_sum(CTX *c, VALUE *slots, VALUE_SLICE a, bool adler) {
     if (n >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
         const VALUE s = VALUE_SLICE_GET(a, 0);
         if (UNLIKELY(!KORB_STRING_P(s)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(s));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, s));
         const KorbString *const ks = VAL2STR(s);
         sum = adler ? adler32(sum, (const Bytef *)korb_strbuf_data(ks->buf), ks->len)
                     : crc32(sum, (const Bytef *)korb_strbuf_data(ks->buf), ks->len);
@@ -50,7 +50,7 @@ static RESULT korb_m_zlib_deflate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     (void)self;
     const VALUE sv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(sv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, sv));
     const int level = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
     const int wbits = (int)FIX2LONG(VALUE_SLICE_GET(a, 2));
     const KorbString *const ks = VAL2STR(sv);
@@ -79,7 +79,7 @@ static RESULT korb_m_zlib_inflate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     (void)self;
     const VALUE sv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(sv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, sv));
     const int wbits = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
     const KorbString *const ks = VAL2STR(sv);
     z_stream zs; memset(&zs, 0, sizeof zs);
@@ -243,7 +243,7 @@ static RESULT korb_m_zstream_set_dict(CTX *c, VALUE *slots, VALUE_REF self, VALU
     if (!z) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "closed zstream");
     const VALUE dv = VALUE_SLICE_GET(a, 1);
     if (UNLIKELY(!KORB_STRING_P(dv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(dv));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, dv));
     const KorbString *const ds = VAL2STR(dv);         /* no alloc between here and the zlib call */
     const Bytef *const d = (const Bytef *)korb_strbuf_data(ds->buf);
     const int rc = z->deflating ? deflateSetDictionary(&z->zs, d, ds->len)
