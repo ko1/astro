@@ -61,6 +61,29 @@ static RESULT korb_pack_int_val(CTX *c, VALUE *sc, VALUE e, int64_t *out) {
     }
     return korb_raise_no_int(c, sc, e);
 }
+/* Same coercion for the LEB128 directives (r/R), but full precision: the int64
+ * path above truncates a Bignum, and pack("r") is specified over any Integer.
+ * Initialises `out` only on success (the caller korb_mp_clear's it). */
+static RESULT korb_pack_mpz_val(CTX *c, VALUE *sc, VALUE e, korb_mp_t out) {
+    if (FIXNUM_P(e)) { korb_mp_init_set_si(out, (long)FIX2LONG(e)); return RESULT_OK(KORB_NIL); }
+    if (KORB_BIGNUM_P(e)) { korb_to_mpz(e, out); return RESULT_OK(KORB_NIL); }
+    if (KORB_FLOAT_P(e)) {
+        const double dv = korb_float_val(e);
+        if (UNLIKELY(!isfinite(dv)))                       /* Integer() of Inf/NaN, as CRuby's rb_to_int */
+            return korb_raise(c, sc, KORB_E_FLOAT_DOMAIN, 0, "%s", isnan(dv) ? "NaN" : (dv < 0 ? "-Infinity" : "Infinity"));
+        korb_mp_init_set_d(out, dv);                       /* truncates toward zero */
+        return RESULT_OK(KORB_NIL);
+    }
+    if (KORB_OBJECT_P(e) && korb_responds_to_coerce(c, sc, e, korb_intern(c->vm, "to_int", 6))) {
+        const char *const on = korb_coerce_name(c, e);     /* interned: survives the dispatch below */
+        sc[0] = e;
+        const RESULT r = korb_send_impl(c, sc + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (FIXNUM_P(r.value) || KORB_BIGNUM_P(r.value)) { korb_to_mpz(r.value, out); return RESULT_OK(KORB_NIL); }
+        return korb_raise(c, sc, KORB_E_TYPE, 0, "can't convert %s into Integer (%s#to_int gives %s)", on, on, korb_coerce_name(c, r.value));
+    }
+    return korb_raise_no_int(c, sc, e);
+}
 static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     /* Template lives in slots[0] for the whole call (rooted) so it survives an
      * element #to_str dispatch; self is a rooted VALUE_REF (GC re-reads it), so
@@ -229,6 +252,41 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 tmp[n++] = (uint8_t)(v & 0x7f); v >>= 7;
                 while (v) { tmp[n++] = (uint8_t)((v & 0x7f) | 0x80); v >>= 7; }
                 while (n) PK_PUT(tmp[--n]);                /* big-endian, high bit on all but last */
+            }
+        } else if (d == 'r' || d == 'R') {                /* LEB128: 'r' signed (SLEB128), 'R' unsigned (ULEB128) */
+            const uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
+            for (uint32_t rr = 0; rr < emit; rr++) {
+                if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
+                const VALUE e = korb_items_data(ary->items)[ai++];
+                korb_mp_t z;
+                const RESULT ir = korb_pack_mpz_val(c, slots + 2, e, z);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
+                ary = SELF_ARY;                          /* re-read after a possible #to_int GC */
+                const int sgn = korb_mp_sgn(z);
+                if (d == 'R' && sgn < 0) {
+                    korb_mp_clear(z);
+                    errtype = KORB_E_ARGUMENT; errmsg = "can't encode negative numbers in ULEB128"; break;
+                }
+                /* CRuby sizes the payload from |value| (rb_absint_numwords, 7-bit
+                 * words) and, for 'r', adds a sign-extension byte when the top
+                 * word has no spare bit — so [-64].pack("r") is "\xc0\x7f", not
+                 * the canonical minimal "\x40". */
+                korb_mp_t az; korb_mp_init(az); korb_mp_abs(az, z);
+                const size_t nbits = (sgn == 0) ? 0 : korb_mp_sizeinbase(az, 2);
+                korb_mp_clear(az);
+                size_t nw = (nbits + 6) / 7; if (nw == 0) nw = 1;
+                const bool signext = (d == 'r' && nbits > 0 && nbits % 7 == 0);
+                const size_t start = olen;
+                korb_mp_t w, low, chunk;
+                korb_mp_init_set(w, z); korb_mp_init_set_ui(low, 0x7f); korb_mp_init(chunk);
+                for (size_t k = 0; k < nw; k++) {          /* 7-bit words, little-endian; 'r' rides mpz's two's complement */
+                    korb_mp_and(chunk, w, low);
+                    PK_PUT((uint8_t)korb_mp_get_ui(chunk));
+                    korb_mp_fdiv_q_2exp(w, w, 7);
+                }
+                korb_mp_clear(w); korb_mp_clear(low); korb_mp_clear(chunk); korb_mp_clear(z);
+                if (signext) PK_PUT(sgn < 0 ? 0x7f : 0x00);
+                for (size_t k = start; k + 1 < olen; k++) ob[k] |= 0x80;   /* continuation bit on all but the last */
             }
         } else if (d == 'P' || d == 'p') {                /* pointer: 1-based side-table index (0 = nil) */
             if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
@@ -647,6 +705,36 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 slots[3] = UNWRAP(korb_float_new(c, slots + 3, dv));
                 CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
             }
+        } else if (d == 'r' || d == 'R') {                /* LEB128: 'r' signed (SLEB128), 'R' unsigned (ULEB128) */
+            long reps = star ? (long)(slen - si) : cnt;
+            uint32_t s0 = si;
+            while (reps > 0 && si < VAL2STR(slots[1])->len) {
+                if ((unsigned char)korb_strbuf_data(VAL2STR(slots[1])->buf)[si] & 0x80) { si++; continue; }
+                si++;
+                /* 7-bit words, little-endian; 'r' sign-extends from the last one.
+                 * No allocation until the push, so the byte reads stay valid. */
+                korb_mp_t z; korb_mp_init(z);
+                for (uint32_t k = si; k > s0; k--) {
+                    korb_mp_mul_2exp(z, z, 7);
+                    korb_mp_add_ui(z, z, (unsigned long)((unsigned char)korb_strbuf_data(VAL2STR(slots[1])->buf)[k - 1] & 0x7f));
+                }
+                if (d == 'r' && ((unsigned char)korb_strbuf_data(VAL2STR(slots[1])->buf)[si - 1] & 0x40)) {
+                    korb_mp_t m; korb_mp_init_set_ui(m, 1);
+                    korb_mp_mul_2exp(m, m, (korb_mp_bitcnt_t)(7 * (si - s0)));
+                    korb_mp_sub(z, z, m); korb_mp_clear(m);
+                }
+                const RESULT br = korb_big_from_mpz(c, slots + 4, z);   /* may GC: si/s0 are indices */
+                korb_mp_clear(z);
+                if (UNLIKELY(br.state != KORB_NORMAL)) return br;
+                CHECK(korb_ary_push_val(c, slots + 3, res, br.value));
+                reps--; s0 = si;
+            }
+            if (!star) {                                  /* a trailing incomplete run, then the unread values, are nil (CRuby) */
+                if (s0 != si && reps > 0) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); reps--; }
+                while (reps-- > 0) CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL));
+            }
+        } else if (d == '^') {                            /* the offset the last decode ended at; count / '*' are ignored */
+            CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((korb_sword_t)si)));
         } else if (d == 'w') {                            /* BER compressed integer */
             for (long r = 0; (star || r < cnt); r++) {
                 const KorbString *s = VAL2STR(slots[1]);

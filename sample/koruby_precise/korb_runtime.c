@@ -452,6 +452,7 @@ void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const c
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
 static RESULT korb_block_to_proc(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *cself);   /* defined below */
+static RESULT korb_m_mod_autoload_relative(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* defined below */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
 static RESULT korb_m_str_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* string.c — for String.new(non-String source) */
 static RESULT korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VALUE cref);   /* defined below */
@@ -4475,7 +4476,8 @@ korb_relocate_object_methods(CTX *c, VALUE *slots)
     static const char *const privnames[] = {
         "Array", "Complex", "Float", "Hash", "Integer", "Pathname",
         "Rational", "String", "__callee__", "__dir__", "__method__", "`",
-        "abort", "at_exit", "autoload", "autoload?", "binding", "block_given?",
+        "abort", "at_exit", "autoload", "autoload?", "autoload_relative",
+        "binding", "block_given?",
         "caller", "caller_locations", "catch", "eval", "exec", "exit",
         "exit!", "fail", "fork", "format", "gem", "gem_original_require",
         "gets", "global_variables", "initialize_clone", "initialize_copy",
@@ -12959,6 +12961,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "const_source_location", korb_m_mod_const_source_location, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "__const_reg_loc", korb_m_mod_const_reg_loc, 3);   /* prelude: Module#autoload */
     korb_def_cmethod(c, KORB_C_CLASS, "__lexical_parent", korb_m_mod_lexical_parent, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "autoload_relative", korb_m_mod_autoload_relative, 2);
     korb_def_cmethod(c, KORB_C_CLASS, "remove_const", korb_m_class_remove_const, 1);
     { struct korb_method *const m = korb_class_find_method(korb_builtin_class_obj(c->vm, KORB_C_CLASS), korb_intern(c->vm, "remove_const", 12), NULL);
       if (m) m->visibility = 1; }                         /* Module#remove_const is private (CRuby) */
@@ -13005,6 +13008,7 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("const_source_location", korb_m_mod_const_source_location, -1);
     MOD_CFN("__const_reg_loc", korb_m_mod_const_reg_loc, 3);
     MOD_CFN("__lexical_parent", korb_m_mod_lexical_parent, 0);
+    MOD_CFN("autoload_relative", korb_m_mod_autoload_relative, 2);
     MOD_CFN("const_defined?", korb_m_class_const_defined, -1);
     MOD_CFN("class_variable_get", korb_m_class_cvar_get, 1);
     MOD_CFN("class_variable_set", korb_m_class_cvar_set, 2);
@@ -15013,6 +15017,66 @@ korb_bi_require_relative(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_raise_load_error(c, slots, norm);
     }
 }
+/* autoload_relative(const, file) — Ruby 4.1.  Resolve `file` against the
+ * directory of the file the CALL SITE is written in (require_relative's rule),
+ * then register the ABSOLUTE path with the ordinary #autoload: CRuby expands at
+ * registration time, so Module#autoload? answers the absolute path.  `mod` is
+ * the receiver for Module#autoload_relative, Object for the Kernel form (which
+ * is where koruby's Kernel#autoload registers too). */
+static RESULT
+korb_autoload_relative_common(CTX *c, VALUE *slots, const VALUE modv, VALUE_SLICE a)
+{
+    slots[0] = modv;                                   /* park: the #to_path dispatch below may GC */
+    VALUE nv = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!KORB_STRING_P(nv))) CHECK(korb_load_path_arg(c, slots + 2, &nv));
+    slots[1] = nv;
+    char namebuf[4096];
+    uint32_t nl = VAL2STR(slots[1])->len;
+    if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
+    memcpy(namebuf, korb_strbuf_data(VAL2STR(slots[1])->buf), nl); namebuf[nl] = '\0';
+    /* CRuby takes rb_current_realfilepath(), which is nil for an eval'd frame —
+     * koruby names such a frame "(eval at FILE:LINE)", so a leading '(' is the
+     * same "no file context" answer. */
+    char base[4096];
+    {
+        uint32_t csym = 0, cline = 0;
+        const char *const cf = korb_caller_pos(c, a.p + KORB_FLINK_OFF, &csym, &cline)
+                             ? korb_sym_name(c->vm, csym) : NULL;
+        if (UNLIKELY(cf == NULL || cf[0] == '\0' || cf[0] == '('))
+            return korb_raise(c, slots + 2, KORB_E_LOADERR, 0,
+                              "cannot infer basepath (autoload_relative called without file context)");
+        if (cf[0] == '/') snprintf(base, sizeof base, "%s", cf);
+        else {
+            char cwd[4096];
+            if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
+            snprintf(base, sizeof base, "%s/%s", cwd, cf);
+        }
+    }
+    char *const slash = strrchr(base, '/');
+    if (slash) *slash = '\0';
+    char full[4096], abspath[4096];
+    if (namebuf[0] == '/') snprintf(full, sizeof full, "%s", namebuf);
+    else                   snprintf(full, sizeof full, "%s/%s", base, namebuf);
+    korb_path_lexnorm(full, abspath, sizeof abspath);
+    slots[1] = UNWRAP(korb_str_new(c, slots + 2, abspath, (uint32_t)strlen(abspath)));
+    slots[2] = slots[0];                               /* receiver below the staged args */
+    slots[3] = VALUE_SLICE_GET(a, 0);                  /* the constant name, checked by #autoload */
+    slots[4] = slots[1];
+    CHECK(korb_send(c, slots + 5, korb_intern(c->vm, "autoload", 8), 0, 2));
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT
+korb_bi_autoload_relative(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    return korb_autoload_relative_common(c, slots, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), args);
+}
+static RESULT korb_m_kernel_autoload_relative(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; return korb_autoload_relative_common(c, slots, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), a);
+}
+static RESULT korb_m_mod_autoload_relative(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_autoload_relative_common(c, slots, VALUE_REF_GET(self), a);
+}
+
 /* load(name): always (re)load; returns true. */
 static RESULT
 korb_bi_load(CTX *c, VALUE *slots, VALUE_SLICE args)
@@ -17187,6 +17251,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__callee__", korb_bi_method_name, 0);
     korb_builtin_define(c, "require", korb_bi_require, -1);
     korb_builtin_define(c, "require_relative", korb_bi_require_relative, -1);
+    korb_builtin_define(c, "autoload_relative", korb_bi_autoload_relative, 2);
     korb_builtin_define(c, "load", korb_bi_load, -1);
     korb_builtin_define(c, "eval",  korb_bi_eval,  -1);
     korb_builtin_define(c, "__transcode",    korb_bi_transcode,  -1);
@@ -17228,6 +17293,7 @@ korb_ctx_new(void)
             korb_class_def_cfn(c, kmod, "require",          korb_m_kernel_require,          -1);
             korb_class_def_cfn(c, kmod, "require_relative", korb_m_kernel_require_relative, -1);
             korb_class_def_cfn(c, kmod, "load",             korb_m_kernel_load,             -1);
+            korb_class_def_cfn(c, kmod, "autoload_relative", korb_m_kernel_autoload_relative, 2);
         }
     }
     korb_init_exception_classes(c, c->slots);
