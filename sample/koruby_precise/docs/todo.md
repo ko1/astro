@@ -367,13 +367,25 @@ t/hand + t/enc の 534 ファイルは `BARUBY_GC_STRESS=1`(毎 alloc) + PURGE �
 
     ARO_GC_QUIET=1 BARUBY_GC_STRESS=64 BARUBY_GC_PURGE=1 ... sweep.rb ...
 
-これで **64 例 → 14 例 / 13 ファイル**。残りは:
-core/thread/raise (-2)、core/exception/frozen_error、core/fiber/raise、core/gc/stress、
-core/io/puts、core/kernel/inspect、core/kernel/raise、core/module/to_s、
-core/objectspace/each_object、core/queue/freeze、core/sizedqueue/freeze、
-language/def、library/stringio/puts (各 -1)。
-`core/gc/stress` と `core/objectspace/each_object` は GC を強制している以上当然ずれる。
-残りは未調査。
+これで **64 例 → 14 例 / 13 ファイル**。内訳を全部見た結果:
+
+- **約 10 例は同じ 1 つの原因**: 既定の `#inspect` / `#to_s` が出す `#<X:0x…>` の
+  アドレスが、**同じオブジェクトの 2 回のレンダリングの間に動く**。
+  spec は「1 回目の出力」と「2 回目の出力」を比べるので落ちる。
+  (core/module/to_s、library/stringio/puts、core/queue/freeze、core/sizedqueue/freeze、
+   core/exception/frozen_error、core/kernel/raise、core/thread/raise ×2、core/fiber/raise、
+   core/kernel/inspect)
+  **直すなら** 表示する数を安定した `#object_id` から作ればよい (同じ形のまま安定する)。
+  ただし `korb_oid_assign` は side table に強参照で積むので、**inspect したオブジェクトが
+  全部プロセスの最後まで残る**。`p` をループで回すだけで漏れるので採用しなかった。
+  sklass / objivar / oid の 3 テーブルを weak-ref 化できたら、そのとき一緒にやる。
+- `core/gc/stress`: `GC.stress` が false を返す。env で強制しているだけで Ruby 側の
+  フラグは立てていないので、当然ずれる。
+- `core/objectspace/each_object`: block が暗黙に捕まえたローカルが見つからない。
+  GC を強制すると env が閉じるタイミングが変わるため。
+- `core/io/puts` の 1 例だけ**未解明**: `IO#puts` が非 String に `#to_ary` を聞く経路で、
+  STRESS 下だと mock が 1 度も呼ばれない。最小再現は作れていない
+  (mspec の Mock 機構ごとでないと出ない)。
 
 性能影響は計測済み (`~/ruby/src/trials/2026-09-16-koruby-gc-stress-fixes/`)。
 `4c9cd25e` を worktree に出してツリーごと make し、AOT 5 ベンチと起動を
