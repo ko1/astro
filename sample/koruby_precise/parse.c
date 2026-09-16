@@ -3808,6 +3808,20 @@ build_const_set_at(struct kp_ctx *tc, uint32_t name_cid, NODE *val, const pm_nod
     return cn;
 }
 
+/* A constant path names its module statically only when EVERY step is a constant.
+ * `A::B` does; `a::B` (a local holding a module) does not — the rightmost name
+ * alone would resolve through the cref chain and find some other `B`. */
+static bool
+kp_const_path_static_p(const pm_node_t *n)
+{
+    while (PM_NODE_TYPE_P(n, PM_CONSTANT_PATH_NODE)) {
+        const pm_node_t *const parent = ((const pm_constant_path_node_t *)n)->parent;
+        if (parent == NULL) return true;                         /* `::A` */
+        n = parent;
+    }
+    return PM_NODE_TYPE_P(n, PM_CONSTANT_READ_NODE);
+}
+
 /* Resolve the owner module name for a `PARENT::NAME` constant-path target with a
  * STATIC parent (a constant read or nested constant path).  Returns true and sets
  * *owner_name; returns false for a dynamic parent (`expr::NAME`, unsupported for
@@ -3817,7 +3831,7 @@ const_path_static_owner(struct kp_ctx *tc, const pm_node_t *parent, uint32_t fra
 {
     if (parent == NULL) { *owner_name = frame_default; return true; }   /* `::X` — top-level frame default */
     if (PM_NODE_TYPE_P(parent, PM_CONSTANT_READ_NODE)) { *owner_name = kp_intern_cid(tc, ((const pm_constant_read_node_t *)parent)->name); return true; }
-    if (PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE)) { *owner_name = kp_intern_cid(tc, ((const pm_constant_path_node_t *)parent)->name); return true; }
+    if (PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE) && kp_const_path_static_p(parent)) { *owner_name = kp_intern_cid(tc, ((const pm_constant_path_node_t *)parent)->name); return true; }
     return false;   /* dynamic owner */
 }
 
@@ -5380,7 +5394,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_node_t *const parent = cpw->target->parent;
         if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_READ_NODE))
             owner_name = kp_intern_cid(tc, ((const pm_constant_read_node_t *)parent)->name);
-        else if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE))
+        else if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE) && kp_const_path_static_p(parent))
             owner_name = kp_intern_cid(tc, ((const pm_constant_path_node_t *)parent)->name);   /* rightmost of the parent path */
         else if (parent) {   /* dynamic owner (`expr::N = v`, e.g. a local holding an anon module) → expr.const_set(:N, v) so N nests under the runtime owner */
             const uint32_t line = kp_line(tc, node);

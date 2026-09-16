@@ -35,6 +35,21 @@ static const char *korb_pack_ptr_lookup(const CTX *const c, const uint64_t idx1,
     return vm->pack_ptr_bufs[idx1 - 1];
 }
 
+/* 4.1 `x!`/`@!` alignment: the natural alignment of a directive, 0 = not one.
+ * The alignment is the directive's native width, which is what CRuby asks the
+ * platform for. */
+static long korb_pack_align_of(char d) {
+    switch (d) {
+      case 'C': case 'c':                                             return 1;
+      case 'S': case 's': case 'n': case 'v':                         return 2;
+      case 'I': case 'i': case 'L': case 'l': case 'N': case 'V':
+      case 'F': case 'f': case 'e': case 'g':                         return 4;
+      case 'Q': case 'q': case 'J': case 'j': case 'D': case 'd':
+      case 'E': case 'G': case 'P': case 'p':                         return 8;
+      default:                                                        return 0;
+    }
+}
+
 /* Array#pack — template engine over a manually-managed byte buffer (so X can
  * truncate).  Supports C/c, x, X, a/A/Z (strings), B/b (bits), H/h (hex),
  * M (quoted-printable), m (base64), u (uuencode), w (BER), P/p (pointer: a
@@ -102,6 +117,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(!KORB_STRING_P(slots[0])))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
+    size_t bufbase = 0;                                  /* bytes already in `buffer:` */
     /* CRuby rejects a non-String `buffer:` before packing anything, so check it
      * up front rather than after the directives have had a chance to raise. */
     if (na >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) {
@@ -111,6 +127,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             const VALUE bv = korb_items_data(kh->items)[2 * bi + 1];
             if (UNLIKELY(!KORB_STRING_P(bv)))
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "buffer must be String, not %s", korb_type_name(bv));
+            bufbase = VAL2STR(bv)->len;     /* '@!' aligns the position in the WHOLE output */
         }
     }
     const KorbString *t = VAL2STR(slots[0]);
@@ -137,6 +154,27 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         }
         if ((force_little || force_big) && !strchr("sSiIlLqQjJ", d)) {   /* `<`/`>` only after integer types */
             errtype = KORB_E_ARGUMENT; errmsg = "'<' allowed only after types sSiIlLqQjJ"; break;
+        }
+        /* 4.1: `x!` / `@!` take an alignment — a positive count or a directive
+         * whose natural alignment is used.  Consumed here so the `!` check below
+         * (which only knows the native-size meaning) does not see it. */
+        long align = 0;
+        if (bang && bangch == '!' && (d == 'x' || d == '@')) {
+            if (ti < t->len && korb_strbuf_data(t->buf)[ti] >= '0' && korb_strbuf_data(t->buf)[ti] <= '9') {
+                while (ti < t->len && korb_strbuf_data(t->buf)[ti] >= '0' && korb_strbuf_data(t->buf)[ti] <= '9')
+                    align = align * 10 + (korb_strbuf_data(t->buf)[ti++] - '0');
+                if (align <= 0) { errtype = KORB_E_RANGE; errmsg = "invalid alignment"; break; }
+            } else {
+                const char ac = (ti < t->len) ? korb_strbuf_data(t->buf)[ti] : ' ';
+                align = korb_pack_align_of(ac);
+                if (align == 0) {
+                    snprintf(errbuf, sizeof errbuf, "unknown alignment directive '%c' in '%.*s'",
+                             ac, (int)t->len, korb_strbuf_data(t->buf));
+                    errtype = KORB_E_ARGUMENT; errmsg = errbuf; break;
+                }
+                ti++;
+            }
+            bang = false;
         }
         if (bang && !strchr("sSiIlLqQjJ", d)) {                         /* `!`/`_` only after integer types (not floats/strings) */
             errtype = KORB_E_ARGUMENT; errmsg = (bangch == '_') ? "'_' allowed only after types sSiIlLqQjJ" : "'!' allowed only after types sSiIlLqQjJ"; break;
@@ -227,14 +265,19 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 else { PK_PUT(0xFC | (cp >> 30)); PK_PUT(0x80 | ((cp >> 24) & 0x3F)); PK_PUT(0x80 | ((cp >> 18) & 0x3F)); PK_PUT(0x80 | ((cp >> 12) & 0x3F)); PK_PUT(0x80 | ((cp >> 6) & 0x3F)); PK_PUT(0x80 | (cp & 0x3F)); }
             }
         } else if (d == 'x') {
-            uint32_t emit = star ? 0 : (uint32_t)cnt;
-            for (uint32_t k = 0; k < emit; k++) PK_PUT(0);
+            if (align) { while (olen % (size_t)align) PK_PUT(0); }   /* `x!N`: pad this pack's output up to N */
+            else { uint32_t emit = star ? 0 : (uint32_t)cnt;
+                   for (uint32_t k = 0; k < emit; k++) PK_PUT(0); }
         } else if (d == 'X') {                            /* back up cnt bytes (X* → 0) */
             size_t back = star ? 0 : (size_t)cnt;
             if (back > olen) { errtype = KORB_E_ARGUMENT; errmsg = "X outside of string"; break; }
             olen -= back;
         } else if (d == '@') {                            /* absolute output position: NUL-fill or truncate (@* → 0) */
-            const size_t pos = star ? 0 : (size_t)cnt;
+            size_t pos = star ? 0 : (size_t)cnt;
+            if (align) {                                  /* `@!N`: round the WHOLE output's length up to N */
+                const size_t abs = bufbase + olen;
+                pos = (abs + (size_t)align - 1) / (size_t)align * (size_t)align - bufbase;
+            }
             if (pos > olen) { PK_RESERVE(pos - olen); memset(ob + olen, 0, pos - olen); }
             olen = pos;
         } else if (d == 'w') {                            /* BER-compressed integer (star/count → all/n) */
@@ -434,7 +477,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             size_t skip = 0;
             { uint32_t k = 0;
               while (k < t->len && isspace((unsigned char)korb_strbuf_data(t->buf)[k])) k++;
-              if (k < t->len && korb_strbuf_data(t->buf)[k] == '@') {
+              if (k + 1 < t->len && korb_strbuf_data(t->buf)[k] == '@' && korb_strbuf_data(t->buf)[k + 1] != '!') {
                   k++;
                   size_t n = 0; bool any = false;
                   if (k < t->len && korb_strbuf_data(t->buf)[k] == '*') { k++; any = true; }
@@ -525,6 +568,22 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
         if ((force_little || force_big) && !strchr("sSiIlLqQjJ", d))
             return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "'<' allowed only after types sSiIlLqQjJ");
+        long align = 0;                                  /* 4.1 `x!`/`@!` alignment (see korb_pack_align_of) */
+        if (bang && bangch == '!' && (d == 'x' || d == '@')) {
+            if (ti < t->len && korb_strbuf_data(t->buf)[ti] >= '0' && korb_strbuf_data(t->buf)[ti] <= '9') {
+                while (ti < t->len && korb_strbuf_data(t->buf)[ti] >= '0' && korb_strbuf_data(t->buf)[ti] <= '9')
+                    align = align * 10 + (korb_strbuf_data(t->buf)[ti++] - '0');
+                if (UNLIKELY(align <= 0)) return korb_raise(c, slots + 3, KORB_E_RANGE, 0, "invalid alignment");
+            } else {
+                const char ac = (ti < t->len) ? korb_strbuf_data(t->buf)[ti] : ' ';
+                align = korb_pack_align_of(ac);
+                if (UNLIKELY(align == 0))
+                    return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "unknown alignment directive '%c' in '%.*s'",
+                                      ac, (int)t->len, korb_strbuf_data(t->buf));
+                ti++;
+            }
+            bang = false;
+        }
         if (bang && !strchr("sSiIlLqQjJ", d))
             return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "'%c' allowed only after types sSiIlLqQjJ", bangch);
         bool star = false, ucnt = false; long cnt = (d == '@') ? 0 : 1;   /* a bare '@' means position 0 (CRuby) */
@@ -553,6 +612,7 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             si += take;
         } else if (d == 'x') {                            /* skip bytes forward (no value) */
             uint32_t skip = star ? (slen - si) : (uint32_t)cnt;
+            if (align) skip = (uint32_t)((si + (uint32_t)align - 1) / (uint32_t)align * (uint32_t)align) - si;
             if (UNLIKELY(si + skip > slen)) return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "x outside of string");
             si += skip;
         } else if (d == 'X') {                            /* move the read index back (no value) */
@@ -560,7 +620,8 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (UNLIKELY(back > si)) return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "X outside of string");
             si -= back;
         } else if (d == '@') {                            /* absolute read index (no value) */
-            const uint32_t pos = star ? (slen - si) : (uint32_t)cnt;
+            const uint32_t pos = align ? (si + (uint32_t)align - 1) / (uint32_t)align * (uint32_t)align
+                                       : (star ? (slen - si) : (uint32_t)cnt);
             if (UNLIKELY(pos > slen)) return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "@ outside of string");
             si = pos;
         } else if (d == 'C' || d == 'c') {                /* unsigned / signed byte */
