@@ -161,7 +161,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 int64_t b;
                 RESULT ir = korb_pack_int_val(c, slots + 2, e, &b);
                 if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
-                ary = SELF_ARY;                          /* re-read after a possible #to_int GC */
+                ary = SELF_ARY; t = VAL2STR(slots[0]);   /* re-read: the #to_int dispatch may have moved BOTH */
                 PK_PUT(b & 0xFF);
             }
         } else if (d == 'N' || d == 'n' || d == 'V' || d == 'v' || d == 'L' || d == 'l' ||
@@ -184,7 +184,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 int64_t iv;
                 RESULT ir = korb_pack_int_val(c, slots + 2, e, &iv);
                 if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
-                ary = SELF_ARY;                          /* re-read after a possible #to_int GC */
+                ary = SELF_ARY; t = VAL2STR(slots[0]);   /* re-read: the #to_int dispatch may have moved BOTH */
                 const uint64_t v = (uint64_t)iv;
                 for (int b = 0; b < sz; b++) PK_PUT((v >> (8 * (big ? (sz - 1 - b) : b))) & 0xFF);
             }
@@ -216,7 +216,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 int64_t cpv;
                 RESULT ir = korb_pack_int_val(c, slots + 2, e, &cpv);   /* #to_int coercion / TypeError */
                 if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
-                ary = SELF_ARY;                          /* re-read after a possible #to_int GC */
+                ary = SELF_ARY; t = VAL2STR(slots[0]);   /* re-read: the #to_int dispatch may have moved BOTH */
                 if (cpv < 0 || cpv > 0x7FFFFFFF) { errtype = KORB_E_RANGE; errmsg = "pack(U): value out of range"; break; }
                 const uint32_t cp = (uint32_t)cpv;
                 if (cp < 0x80) PK_PUT(cp);
@@ -245,7 +245,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 int64_t iv;
                 RESULT ir = korb_pack_int_val(c, slots + 2, e, &iv);   /* #to_int; nil/true/false → TypeError */
                 if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
-                ary = SELF_ARY;                          /* re-read after a possible #to_int GC */
+                ary = SELF_ARY; t = VAL2STR(slots[0]);   /* re-read: the #to_int dispatch may have moved BOTH */
                 if (iv < 0) { errtype = KORB_E_ARGUMENT; errmsg = "can't compress negative numbers"; break; }
                 uint64_t v = (uint64_t)iv;
                 uint8_t tmp[16]; int n = 0;
@@ -261,7 +261,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 korb_mp_t z;
                 const RESULT ir = korb_pack_mpz_val(c, slots + 2, e, z);
                 if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
-                ary = SELF_ARY;                          /* re-read after a possible #to_int GC */
+                ary = SELF_ARY; t = VAL2STR(slots[0]);   /* re-read: the #to_int dispatch may have moved BOTH */
                 const int sgn = korb_mp_sgn(z);
                 if (d == 'R' && sgn < 0) {
                     korb_mp_clear(z);

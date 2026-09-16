@@ -35,12 +35,12 @@ class ToI
 end
 50.times { |i| raise "to_int" if [ToI.new(i), 1, 2].pack("R*").bytesize < 3 }
 
-# autoload_relative: registration expands the path, the constant loads the file
-File.write("/tmp/kbsw/r41_al_target.rb", "module R41AL; module Leaf; def self.v = 42; end; end\n")
+# autoload_relative: the path is expanded AT REGISTRATION against this file's
+# directory, and the constant then loads it.
 module R41AL; end
-R41AL.autoload_relative :Leaf, "../../../../../../tmp/kbsw/r41_al_target.rb"
+R41AL.autoload_relative :Leaf, "./sub/../r41_repro_autoload.rb"
 p0 = R41AL.autoload?(:Leaf)
-raise "autoload? #{p0.inspect}" unless p0 == "/tmp/kbsw/r41_al_target.rb"
+raise "autoload? #{p0.inspect}" unless p0 == File.expand_path("r41_repro_autoload.rb", __dir__)
 raise "autoload load" unless R41AL::Leaf.v == 42
 begin
   eval('autoload_relative :R41Nope, "x.rb"')
