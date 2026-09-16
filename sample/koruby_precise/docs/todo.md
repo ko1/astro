@@ -5142,3 +5142,17 @@ tools/optcarrot.sh 180 フレーム → checksum: 59662
 **どちらも正しい。** ゲートに使うときは**フレーム数を明記すること**。
 `docs/done.md` / `resume_prompt.md` の 60838 は 30 フレーム、
 `docs/perf.md` 系の 59662 は 180 フレーム。
+
+## (2026-09-16) 非互換 encoding のメッセージが `BINARY (ASCII-8BIT)` にならない
+
+```ruby
+b = [256].pack("R")   # BINARY
+u = "\xFF"            # UTF-8 (不正バイト)
+b + u
+# CRuby : incompatible character encodings: BINARY (ASCII-8BIT) and UTF-8
+# koruby: incompatible character encodings: ASCII-8BIT and UTF-8
+```
+`encoding.to_s` はどちらも `"ASCII-8BIT"` なので、**この例外メッセージの中だけ**
+CRuby が `BINARY (ASCII-8BIT)` と書く。他の経路 (`Encoding::Converter` など) では
+差が出ないことを確認済み。**mspec は 4.1 でメッセージの完全一致を要求する**ので、
+`Encoding::CompatibilityError` を期待する spec に効く可能性がある (未確認)。
