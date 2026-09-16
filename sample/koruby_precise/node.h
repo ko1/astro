@@ -930,6 +930,17 @@ void   korb_dispatchers_swapped(struct korb_vm *vm);   /* code-store swap → re
  * the dispatch site — both korb_call_cached / korb_send_cached (korb_runtime.c)
  * and node_call's specialized dispatcher (code_store SD) inline it, removing a
  * cross-module call layer on the hot recursive / method-call path. */
+/* -DKORB_FRAME_AUDIT: a METHOD frame's EP cell must be 0 on entry — an open env
+ * only appears once korb_make_proc runs in it, and a block's PREV link is odd.
+ * Anything else means the dispatch reused live caller slots as the header. */
+#ifdef KORB_FRAME_AUDIT
+void korb_frame_audit_ep(const VALUE *base, uint32_t mid, const char *where);
+#define KORB_AUDIT_EP(base, mid) \
+    do { if (korb_ep_get(base) != 0) korb_frame_audit_ep((base), (mid), __func__); } while (0)
+#else
+#define KORB_AUDIT_EP(base, mid) ((void)0)
+#endif
+
 /* True if frame `base` owns an open env in its EP cell (a clean even KorbEnv
  * whose loc is this frame) → its return must close it. */
 static inline bool korb_frame_escaped(const VALUE *base) {
@@ -945,6 +956,7 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         return korb_raise(c, slots, KORB_E_ARGUMENT, line,
                           "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
     VALUE *const base = slots - argc;
+    KORB_AUDIT_EP(base, mid);
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;
     if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||

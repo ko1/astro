@@ -42,6 +42,18 @@ DOOM は最後の引数が `false` (= `KORB_FALSE` = 4、0 でなく偶数) の 
 残り: Data の `D.new` / 例外の `Exception.exception` という中間 C フレームは koruby には無いので
 `caller_locations` に出ない。これは別のギャップ (C メソッドのフレーム化) で、本件とは無関係。
 
+探索ツール: `make CPPFLAGS_EXTRA=-DKORB_FRAME_AUDIT` でメソッドフレーム進入時に
+EP セルが 0 であることを検査するビルドになる (`KORB_AUDIT_EP`、node.h)。0 でなければ
+`stale EP <値> entering mid=<mid> via <関数>` を stderr に出す。`KORB_FRAME_AUDIT_LOG=<path>`
+を渡すとそのファイルに追記するので、子プロセスの stderr を読む sweep でも使える。
+通常ビルドでは何も生成しない (マクロが `((void)0)`)。
+
+この修正後に測った結果: rubyspec sweep 全 3747 ファイル + 手書きコーパス 1796 ファイル +
+DOOM で検出 0。フックが生きていることは条件を `== 0` に反転して 240 件出ることで確認済み
+(無出力は「異常なし」を意味しないため)。なお code_store の SD は別コンパイルなのでこの
+define が効かない。SD が inline する korb_invoke_simple は @framehdr を張った call site
+専用の速い経路で、ヘッダは構造上必ずある。
+
 ## rubyspec の「1〜2 例落ち」長い尻尾の共通原因 集計 (2026-09-13)
 
 残る失敗の 82% は「1 ファイルに 1〜2 例だけ落ちている」形で散っている。

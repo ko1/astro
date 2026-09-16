@@ -4840,6 +4840,20 @@ korb_eval_param_default(CTX *c, NODE *dflt, VALUE *restrict cursor)
  * instance dispatch, implicit self-calls, global calls, super, and new's init.
  * Frame reserved cells top-down: self(fs-1), def_class(fs-2), then the block
  * group {block_entry(fs-5), def_env(fs-4), captured_self(fs-3)} if it yields. */
+#ifdef KORB_FRAME_AUDIT
+void korb_frame_audit_ep(const VALUE *const base, const uint32_t mid, const char *const where)
+{
+    /* KORB_FRAME_AUDIT_LOG=<path>: append there instead of stderr, so a sweep
+     * that parses each child's stderr still sees clean output. */
+    const char *const path = getenv("KORB_FRAME_AUDIT_LOG");
+    FILE *const fp = path ? fopen(path, "a") : stderr;
+    if (fp == NULL) return;
+    fprintf(fp, "KORB_FRAME_AUDIT: stale EP %#llx entering mid=%u via %s\n",
+            (unsigned long long)korb_ep_get(base), mid, where);
+    if (path) fclose(fp);
+}
+#endif
+
 static __attribute__((no_stack_protector)) RESULT
 korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                    uint32_t line, uint32_t mid, VALUE self, VALUE def_class,
@@ -4848,6 +4862,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     struct korb_vm *const vm = c->vm;
     const struct korb_kw_info *const kw = (const struct korb_kw_info *)m->kw_info;
     VALUE *const base = slots - argc;
+    KORB_AUDIT_EP(base, mid);
     /* a method with keyword params consumes a trailing Hash arg as kwargs. */
     uint32_t pos_argc = argc;
     VALUE kwhash = KORB_NIL;
