@@ -920,6 +920,7 @@ struct korb_frame_rec {
     const char *label;   /* interned (immortal): "Object#foo", "block in C#bar", "<main>" */
     uint32_t line;       /* this frame's own position */
     uint32_t kind;       /* the KORB_FID_* tag in the frame's identity cell */
+    uint32_t mid;        /* a method frame's name id (0 for every other kind) */
 };
 #define KORB_FSTACK_MAX 4096u      /* backtrace depth cap, like CRuby's */
 

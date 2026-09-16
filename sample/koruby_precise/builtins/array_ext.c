@@ -497,8 +497,8 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (UNLIKELY(!FIXNUM_P(ov)))
                 return korb_raise_no_int(c, slots, ov);
             off = FIX2LONG(ov);
-            if (UNLIKELY(off < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "offset can't be negative");
-            if (UNLIKELY((uint32_t)off > VAL2STR(VALUE_REF_GET(self))->len))
+            if (off < 0) off += (long)VAL2STR(VALUE_REF_GET(self))->len;   /* 4.1: counts from the end */
+            if (UNLIKELY(off < 0 || (uint32_t)off > VAL2STR(VALUE_REF_GET(self))->len))
                 return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "offset outside of string");
         }
     }

@@ -8217,6 +8217,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *const lo, const VALUE *const hi,
         r->kind = (uint32_t)(id & 7u);
         r->file = NULL;
         r->label = "<main>";
+        r->mid = 0;
         link_cell = fbase + KORB_FLINK_OFF;      /* every frame's next link, whatever kind it is */
         fwd_hops = 0;
         if ((r->kind == KORB_FID_METHOD || r->kind == KORB_FID_CFUNC) && korb_bt_known_ptr(vm, ptr)) {
@@ -8231,6 +8232,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *const lo, const VALUE *const hi,
              * site, whose file is the caller's (filled in below) */
             r->file = (r->kind == KORB_FID_METHOD) ? korb_bt_method_file(c, m) : NULL;
             r->label = korb_bt_label(c, m->mid, m);
+            r->mid = m->mid;
             n++;
             fbase = NULL; line0 = 0;
             continue;
@@ -14828,8 +14830,13 @@ static bool korb_resolve_load(const char *base_dir, const char *name, char *out,
 static RESULT
 korb_bi_method_name(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    (void)slots; (void)args;
-    return RESULT_OK(c->dm_entry ? ID2SYM(c->dm_entry->mid) : KORB_NIL);
+    (void)slots;
+    if (c->dm_entry) return RESULT_OK(ID2SYM(c->dm_entry->mid));
+    /* reached as a method object (send / method(:__method__)): the caller's own
+     * frame names it */
+    if (korb_frames_snapshot(c, args.p + KORB_FLINK_OFF) > 0 && c->vm->fscratch[0].mid != 0)
+        return RESULT_OK(ID2SYM(c->vm->fscratch[0].mid));
+    return RESULT_OK(KORB_NIL);
 }
 /* Kernel#__dir__ → the directory of the current source file (realpath'd), or nil
  * when there is no file (e.g. -e).  Uses the file being loaded / the main script. */
