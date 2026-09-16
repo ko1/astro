@@ -318,11 +318,31 @@ rubyspec 全体も現実的な時間で回せる (4 並列、SPEC_TIMEOUT=120 �
    正しく park していたので、それに揃えた。これが `warn` / `print` / `lines` /
    `predefined` / `constants` など 8 ファイル分の真因だった。
 
-ここまでで 37 → **16 ファイル**。残り:
-core/env/slice_spec (korb_m_env_slice → korb_hash_set の key が stale)、core/io/popen、
-core/io/readlines、core/kernel/binding、core/matchdata/byteend、core/module/descendants、
-core/module/module_function、core/string/rindex、core/time/at、core/time/comparison、
-language/def、language/hash、language/if、library/csv/generate、
+5. **`String#rindex` / `Time.at`** が引数を coerce する dispatch のあと、別の引数を
+   C ローカルのまま使っていた (修正済)。
+6. **`korb_invoke_method` が `**kwrest` の無いメソッドで kwargs Hash を任意引数の
+   デフォルト式を跨いで C ローカルに持っていた** (修正済)。kwrest があるときはその frame
+   slot が root になるが、無いときは置き場所が無い (フレームのどのローカルも「これから
+   埋めるパラメータ」か「デフォルト式から nil として見える変数」)。CTX に `kwargs_park` を
+   置いて GC root にし、save/restore で入れ子に耐えるようにした。ERB.new がこの形。
+7. **`vm->methods` から entry を unlink していたのがルート集合の穴だった** (修正済)。
+   top-level `def` を `define_method` が覆うとき、global function table から外して
+   「bare な呼び出しが Object/Kernel へ落ちる」ようにしていたが、AROH_VISIT_ROOTS が
+   見るのはこのテーブルだけなので、外した瞬間 entry の `owner` / `dm_proc` / `refine_set`
+   がルートから消える。frame の identity セル (base[-4]) や env の `id` はまだ指している。
+   外さずに `retired` 印を付け、lookup 側で飛ばす。
+8. **`c->def_definee` / `c->cvar_cref` / `c->eval_cref` を C ローカルに退避していた 10 箇所**
+   (修正済)。Ruby を走らせてから書き戻すので、moving GC が動かした後の **stale な値を
+   CTX に戻していた**。隣にある `korb_refine_push/pop` と同じ形の
+   `korb_cref_push/pop` (CTX が持つ配列、AROH_VISIT_ROOTS が走査) に揃えた。
+   instance_eval / instance_exec / class_eval / class_exec / refine / クラス本体 /
+   `class << self` 本体 / eval(str) / eval(str, binding) / load(file, wrap) /
+   korb_invoke_method / 任意引数のデフォルト。
+
+ここまでで 37 → **10 ファイル**。残り:
+core/env/slice (korb_m_env_slice → korb_hash_set の key が stale)、core/io/popen、
+core/io/readlines、core/matchdata/byteend (korb_md_arg_gi)、core/module/module_function、
+core/time/comparison、language/hash、library/csv/generate、
 library/delegate/delegator/method、library/erb/new。
 
 ## rubyspec の「1〜2 例落ち」長い尻尾の共通原因 集計 (2026-09-13)

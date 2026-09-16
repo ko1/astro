@@ -865,6 +865,10 @@ struct korb_method {
     int32_t  rest_slot;      /* ISEQ: *rest local slot (collects surplus positionals), -1 none */
     uint32_t locals_cnt;     /* ISEQ: frame size (params first, +2 if uses_block) */
     uint32_t attr_ivar;      /* ATTR_R/W: the @ivar symbol id */
+    uint8_t  retired;        /* a top-level `def` this entry shadowed is gone: a bare-name call must
+                              * fall through to Object/Kernel.  The entry STAYS in vm->methods so the
+                              * GC keeps forwarding its owner / dm_proc / refine_set — live frames and
+                              * envs still name it through their identity cell. */
     uint8_t  no_block;       /* ISEQ: declared `&nil` (Ruby 4.1) — passing a block is an ArgumentError.
                               * Sits in the pad before `body` so no other field's offset moves. */
     struct Node *body;       /* ISEQ */
@@ -1326,6 +1330,12 @@ struct CTX_struct {
      * enclosing set here, where the root visitor forwards it. */
     VALUE    *refine_saved;
     uint32_t  refine_n, refine_cap;
+    /* Saved (def_definee, cvar_cref) pairs for scopes that rebind them around
+     * Ruby execution.  They cannot be kept in C locals: a moving collection
+     * during the body would leave the restore writing a stale pointer back into
+     * the context.  Same shape as refine_saved above. */
+    VALUE    *cref_saved;
+    uint32_t  cref_n, cref_cap;
     VALUE    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
     uint32_t  errinfo_live;          /* GC-scan depth: max over the running + all suspended threads */
@@ -1433,6 +1443,9 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->cvar_cref);              \
     if ((c)->refinements != KORB_NIL)                                        \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->refinements);            \
+    for (uint32_t _ci = 0; _ci < (c)->cref_n; _ci++)                         \
+        if ((c)->cref_saved[_ci] != KORB_NIL)                                \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->cref_saved[_ci]);     \
     for (uint32_t _ri = 0; _ri < (c)->refine_n; _ri++) {                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->refine_saved[_ri]);       \
     }                                                                        \

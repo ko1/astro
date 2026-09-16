@@ -2332,20 +2332,19 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     slots[0] = VALUE_REF_GET(self);                      /* new self = receiver (rooted self cell) */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
     /* same default definee as instance_eval: `def` lands on the singleton */
-    const VALUE saved_definee = c->def_definee;
-    if (singleton_definee) {
+    VALUE definee = slots[0];
+    if (singleton_definee && korb_singleton_able(slots[0])) {
         /* a value with no singleton is left as the definee itself: `def` inside
          * raises then, not on entry (CRuby only fails at the definition) */
-        if (korb_singleton_able(slots[0])) {
-            const RESULT sr = korb_obj_singleton(c, slots + 1 + argc, slots[0]);
-            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-            c->def_definee = sr.value;
-        } else c->def_definee = slots[0];
-    } else c->def_definee = slots[0];              /* class_exec/module_exec: the class itself */
+        const RESULT sr = korb_obj_singleton(c, slots + 1 + argc, slots[0]);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;   /* nothing pushed yet */
+        definee = sr.value;
+    }
+    korb_cref_push(c);                             /* after the probe above, which can return early */
+    c->def_definee = definee;              /* class_exec/module_exec: the class itself */
     const uint8_t saved_vis = korb_vis_enter(slots[0]);
     /* @@vars keep resolving against the block's definition scope, which self no
      * longer names once the receiver is bound in. */
-    const VALUE saved_cvar_cref = c->cvar_cref;
     if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
         c->cvar_cref = korb_cvar_self_class_pub(c, def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC
                                                    ? VAL2PROC(*cself)->self : KORB_CSELF_VAL(cself));
@@ -2356,9 +2355,8 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     } else {
         r = korb_block_yield(c, slots + 1 + argc, block, def_env, &slots[1], argc, &slots[0]);
     }
-    c->cvar_cref = saved_cvar_cref;
     korb_vis_leave(slots[0], saved_vis);
-    c->def_definee = saved_definee;
+    korb_cref_pop(c);
     return r;
 }
 static RESULT korb_m_obj_instance_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
@@ -2452,7 +2450,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         const uint8_t saved_vis = korb_vis_enter(VALUE_REF_GET(self));
         /* @@vars in the source resolve against the CALLER's class, which the
          * hidden caller binding is the only record of here. */
-        const VALUE saved_cvar_cref = c->cvar_cref;
+        korb_cref_push(c);
         korb_refine_push(c);                         /* `using` in the eval'd source ends with it */
         if (singleton_definee && bind_ptr)
             c->cvar_cref = korb_cvar_self_class_pub(c, VAL2BIND(*bind_ptr)->self);
@@ -2465,7 +2463,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         } else {
             er = korb_eval_str_self(c, slots, src, VALUE_REF_GET(self), fname, line, cref);
         }
-        c->cvar_cref = saved_cvar_cref;
+        korb_cref_pop(c);
         korb_refine_pop(c);
         korb_vis_leave(VALUE_REF_GET(self), saved_vis);
         return er;
@@ -2476,16 +2474,15 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     /* default definee: instance_eval → the receiver's SINGLETON class (a `def`
      * there is a singleton method); class_eval/module_eval → the class itself
      * (a plain instance method).  Restored on the way out. */
-    const VALUE saved_definee = c->def_definee;
-    if (singleton_definee) {
-        if (korb_singleton_able(slots[0])) {       /* see korb_obj_exec_impl: `def` fails lazily */
-            const RESULT sr = korb_obj_singleton(c, slots + 1, slots[0]);
-            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-            c->def_definee = sr.value;
-        } else c->def_definee = slots[0];
-    } else c->def_definee = slots[0];
+    VALUE definee = slots[0];
+    if (singleton_definee && korb_singleton_able(slots[0])) {   /* see korb_obj_exec_impl: `def` fails lazily */
+        const RESULT sr = korb_obj_singleton(c, slots + 1, slots[0]);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;       /* nothing pushed yet */
+        definee = sr.value;
+    }
+    korb_cref_push(c);                                    /* after the probe above, which can return early */
+    c->def_definee = definee;
     const uint8_t saved_vis = korb_vis_enter(slots[0]);
-    const VALUE saved_cvar_cref = c->cvar_cref;           /* @@vars: the block's definition scope (see korb_obj_exec_impl) */
     korb_refine_push(c);                                  /* `using` in the block ends with it */
     if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
         c->cvar_cref = korb_cvar_self_class_pub(c, def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC
@@ -2502,10 +2499,9 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, &slots[0]);
         }
     }
-    c->cvar_cref = saved_cvar_cref;
     korb_refine_pop(c);
     korb_vis_leave(slots[0], saved_vis);
-    c->def_definee = saved_definee;
+    korb_cref_pop(c);
     return r;
 }
 
@@ -2766,8 +2762,6 @@ static RESULT korb_m_mod_refine(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
     slots[0] = refi;                                  /* R: the block's self and the return value */
     VALUE_REF rref = VALUE_REF_AT(&slots[0]);
-    const VALUE saved_definee = c->def_definee;
-    const VALUE saved_cvar = c->cvar_cref;
     /* Inside a refine block ALL of the owner's refinements are active, and a
      * refine that runs LATER joins them (CRuby resolves through the module, not
      * a snapshot) — so record a late-bound (nil, nil, owner) entry. */
@@ -2781,6 +2775,7 @@ static RESULT korb_m_mod_refine(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
       CHECK(korb_ary_push_val(c, slots + 2, dst, KORB_NIL));
       CHECK(korb_ary_push_val(c, slots + 2, dst, KORB_NIL));
       CHECK(korb_ary_push_val(c, slots + 2, dst, VALUE_REF_GET(oref))); }
+    korb_cref_push(c);
     korb_refine_push(c);                              /* nothing may raise between here and the pop */
     c->refinements = slots[1];
     c->def_definee = VALUE_REF_GET(rref);             /* `def` lands on the refinement module */
@@ -2795,7 +2790,7 @@ static RESULT korb_m_mod_refine(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         r = korb_block_yield(c, slots + 4, block, (VALUE *)(uintptr_t)slots[3], &slots[2], 1, &slots[0]);
     } else
         r = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, &slots[0]);
-    c->def_definee = saved_definee; c->cvar_cref = saved_cvar;
+    korb_cref_pop(c);
     korb_refine_pop(c);
     if (UNLIKELY(r.state != KORB_NORMAL && r.state != KORB_BREAK)) return r;
     /* a refined basic operator has to deopt the arithmetic/compare nodes, which

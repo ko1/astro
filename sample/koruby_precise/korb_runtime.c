@@ -238,6 +238,8 @@ static korb_sword_t korb_gcd_pos(korb_sword_t a, korb_sword_t b) {   /* gcd of |
  * forward-declare so the Rational core can reduce Bignum num/den. */
 static void korb_to_mpz(VALUE v, korb_mp_t out);
 static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const korb_mp_t src);
+static void korb_cref_push(CTX *c);   /* fwd — park (def_definee, cvar_cref, eval_cref) where the GC visits them */
+static void korb_cref_pop(CTX *c);    /* fwd */
 static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_int coercion, usable from the main body */
 static RESULT korb_coerce_to_int_x(CTX *c, VALUE *slots, VALUE *v, bool raise_mismatch);   /* fwd (string.c) — false: a wrong-typed #to_int is a plain FALSE, not a raise */
 static RESULT korb_coerce_to_hash(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_hash coercion */
@@ -3046,11 +3048,11 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     korb_class_def_cfn(c, slots[3], "[]", korb_m_class_new_bracket, -1);   /* Rec[...] == Rec.new(...) */
     if (block != NULL) {                                      /* Struct.new(...) do ... end → class-body methods */
         slots[2] = VALUE_REF_GET(cls);                       /* root the class as the block's self/cref */
-        const VALUE saved_definee = c->def_definee;   /* a class body: `def` lands on the class */
+        korb_cref_push(c);                            /* a class body: `def` lands on the class */
         c->def_definee = KORB_NIL;
         slots[3] = slots[2];                                 /* CRuby passes the new class to the block */
         RESULT br = korb_block_yield(c, slots + 4, block, def_env, &slots[3], 1, &slots[2]);
-        c->def_definee = saved_definee;
+        korb_cref_pop(c);
         if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;   /* someone else's break passes through */
         if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
     }
@@ -3245,10 +3247,10 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     korb_class_def_cfn(c, slots[3], "[]", korb_m_class_new_bracket, -1);   /* D[...] == D.new(...) */
     if (block != NULL) {                                      /* Data.define(...) do ... end → class-body methods */
         slots[2] = VALUE_REF_GET(cls);
-        const VALUE saved_definee = c->def_definee;   /* a class body: `def` lands on the class */
+        korb_cref_push(c);                            /* a class body: `def` lands on the class */
         c->def_definee = KORB_NIL;
         RESULT br = korb_block_yield(c, slots + 3, block, def_env, NULL, 0, &slots[2]);
-        c->def_definee = saved_definee;
+        korb_cref_pop(c);
         if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;   /* someone else's break passes through */
         if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
     }
@@ -4076,8 +4078,11 @@ korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mi
      * relocates Object's methods onto Kernel through this same slot. */
     if (k == VAL2CLASS(korb_builtin_class_obj(vm, KORB_C_OBJECT))) {
         for (uint32_t i = 0; i < vm->method_cnt; i++)
-            if (vm->methods[i]->mid == mid && vm->methods[i]->kind == KORB_METHOD_ISEQ && vm->methods[i] != m) {
-                vm->methods[i] = vm->methods[--vm->method_cnt];   /* unlink only; frames may still point at it */
+            if (vm->methods[i]->mid == mid && vm->methods[i]->kind == KORB_METHOD_ISEQ &&
+                vm->methods[i] != m && !vm->methods[i]->retired) {
+                vm->methods[i]->retired = 1;   /* keep it in the table: dropping it would take its
+                                                * owner / dm_proc out of the GC root set while live
+                                                * frames still point at it through base[-4] */
                 vm->method_serial++;
                 break;
             }
@@ -4816,6 +4821,27 @@ static void korb_refine_pop(CTX *c) {
     c->refinements = c->refine_n ? c->refine_saved[--c->refine_n] : KORB_NIL;
 }
 
+/* Same, for the pair a scope rebinds around Ruby execution: the default definee
+ * (`def` target) and the cvar cref.  Both are VALUEs, so the save cannot live in
+ * a C local across the body — the restore would put a stale pointer back. */
+static void korb_cref_push(CTX *c) {
+    if (c->cref_n + 3 > c->cref_cap) {
+        c->cref_cap = c->cref_cap ? c->cref_cap * 2 : 48;
+        c->cref_saved = realloc(c->cref_saved, sizeof(VALUE) * c->cref_cap);
+        if (!c->cref_saved) { fprintf(stderr, "koruby_precise: out of memory (cref scopes)\n"); abort(); }
+    }
+    c->cref_saved[c->cref_n++] = c->def_definee;
+    c->cref_saved[c->cref_n++] = c->cvar_cref;
+    c->cref_saved[c->cref_n++] = c->eval_cref;
+}
+static void korb_cref_pop(CTX *c) {
+    if (LIKELY(c->cref_n >= 3)) {
+        c->eval_cref   = c->cref_saved[--c->cref_n];
+        c->cvar_cref   = c->cref_saved[--c->cref_n];
+        c->def_definee = c->cref_saved[--c->cref_n];
+    } else { c->eval_cref = KORB_NIL; c->cvar_cref = KORB_NIL; c->def_definee = KORB_NIL; }
+}
+
 /* Try one (refined class, refinement module) pair against the receiver class. */
 static struct korb_method *
 korb_refined_try(VALUE klass, VALUE target, VALUE refi, uint32_t mid, VALUE *out_def)
@@ -4869,11 +4895,12 @@ korb_refined_find(CTX *c, VALUE klass, uint32_t mid, VALUE *out_def)
 static inline RESULT
 korb_eval_param_default(CTX *c, NODE *dflt, VALUE *restrict cursor)
 {
-    const VALUE sd = c->def_definee, sc = c->cvar_cref;
-    if (LIKELY(sd == KORB_NIL && sc == KORB_NIL)) return (*dflt->head.dispatcher)(c, dflt, cursor);
+    if (LIKELY(c->def_definee == KORB_NIL && c->cvar_cref == KORB_NIL))
+        return (*dflt->head.dispatcher)(c, dflt, cursor);
+    korb_cref_push(c);   /* the default runs Ruby: the pair cannot ride in C locals */
     c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
     const RESULT r = (*dflt->head.dispatcher)(c, dflt, cursor);
-    c->def_definee = sd; c->cvar_cref = sc;
+    korb_cref_pop(c);
     return r;
 }
 
@@ -5068,16 +5095,14 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     }
     /* a method body has its own default definee (its class), so an enclosing
      * instance_eval's must not leak into it */
-    const VALUE saved_definee = c->def_definee, saved_cvar = c->cvar_cref;
+    const bool cref_scope = UNLIKELY(c->def_definee != KORB_NIL || c->cvar_cref != KORB_NIL);
     /* refinements are lexical: the callee sees the set active where it was
      * DEFINED, never the caller's (docs/refinements.md). */
     const bool refine_scope = UNLIKELY(vm->refinements_active);
-    if (UNLIKELY(saved_definee != KORB_NIL)) c->def_definee = KORB_NIL;
-    if (UNLIKELY(saved_cvar != KORB_NIL)) c->cvar_cref = KORB_NIL;
+    if (cref_scope) { korb_cref_push(c); c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL; }
     if (refine_scope) { korb_refine_push(c); c->refinements = m->refine_set; }
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
-    if (UNLIKELY(saved_definee != KORB_NIL)) c->def_definee = saved_definee;
-    if (UNLIKELY(saved_cvar != KORB_NIL)) c->cvar_cref = saved_cvar;
+    if (cref_scope) korb_cref_pop(c);
     if (refine_scope) korb_refine_pop(c);
     else if (UNLIKELY(c->refinements != KORB_NIL)) c->refinements = KORB_NIL;   /* the body turned refinements on */
     if (r.state == KORB_RETURN) {
@@ -5354,14 +5379,14 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
     VAL2CLASS(cls)->cur_visibility = 0;          /* each (re)opened body starts public */
     /* a class body's default definee is the class itself — an enclosing
      * instance_eval's definee must not reach into it */
-    const VALUE saved_definee = c->def_definee, saved_cvar = c->cvar_cref;
+    korb_cref_push(c);
     korb_refine_push(c);                         /* `using` in a body ends with the body */
     c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
     /* staged HERE, not on entry: the const lookup / `inherited` / `const_added`
      * hooks above are Ruby calls, and the carry is single-use */
     c->carry_base = caller_base; c->carry_line_bits = korb_flink_line_bits(caller_line);
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
-    c->def_definee = saved_definee; c->cvar_cref = saved_cvar;
+    korb_cref_pop(c);
     korb_refine_pop(c);
     return br;
 }
@@ -5383,13 +5408,12 @@ korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclo
     if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[0])->enclosing == KORB_NIL)
         ARO_STORE(c, VAL2CLASS(slots[0]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->enclosing, slots[1]);
     VAL2CLASS(slots[0])->cur_visibility = 0;     /* each (re)opened body starts public, as a class body does */
-    const VALUE saved_definee = c->def_definee;  /* the body defines on the singleton, via self */
-    const VALUE saved_cvar = c->cvar_cref;
+    korb_cref_push(c);                           /* the body defines on the singleton, via self */
     korb_refine_push(c);                         /* `using` in a body ends with the body */
     c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
     c->carry_base = caller_base; c->carry_line_bits = korb_flink_line_bits(caller_line);   /* the body frame's link (see korb_class_body) */
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
-    c->def_definee = saved_definee; c->cvar_cref = saved_cvar;
+    korb_cref_pop(c);
     korb_refine_pop(c);
     return br;
 }
@@ -7727,8 +7751,8 @@ static struct korb_method *
 korb_method_slot(CTX *c, uint32_t mid)
 {
     struct korb_vm *const vm = c->vm;
-    for (uint32_t i = 0; i < vm->method_cnt; i++) {
-        if (vm->methods[i]->mid == mid) return vm->methods[i];
+    for (uint32_t i = 0; i < vm->method_cnt; i++) {   /* a retired entry is not reused: live frames still name it */
+        if (vm->methods[i]->mid == mid && !vm->methods[i]->retired) return vm->methods[i];
     }
     if (vm->method_cnt == vm->method_capa) {
         vm->method_capa = vm->method_capa ? vm->method_capa * 2 : 32;
@@ -7787,7 +7811,7 @@ static struct korb_method *
 korb_method_lookup(struct korb_vm *vm, uint32_t mid)
 {
     for (uint32_t i = 0; i < vm->method_cnt; i++) {
-        if (vm->methods[i]->mid == mid) return vm->methods[i];
+        if (vm->methods[i]->mid == mid && !vm->methods[i]->retired) return vm->methods[i];
     }
     return NULL;
 }
@@ -11028,12 +11052,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 }
             }
             if (block != NULL) {                            /* body block: def's land on the new class/module */
-                const VALUE saved_definee = c->def_definee;   /* a class body, not an instance_eval */
+                korb_cref_push(c);                            /* a class body, not an instance_eval */
                 korb_refine_push(c);                          /* `using` in the body ends with it */
                 c->def_definee = KORB_NIL;
                 slots[2] = slots[1];                        /* CRuby passes the new class/module to the block */
                 RESULT br = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, &slots[1]);
-                c->def_definee = saved_definee;
+                korb_cref_pop(c);
                 korb_refine_pop(c);
                 if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;
                 if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
@@ -14294,15 +14318,14 @@ korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const
     }
     /* Park the wrap module in the CTX (a GC root) so nothing here holds a bare
      * VALUE across the extend / EVAL below — a moving GC would strand it. */
-    const VALUE saved_definee = c->def_definee;
-    const VALUE saved_cref = c->eval_cref;
+    korb_cref_push(c);
     const VALUE wrap = wrapp ? *wrapp : KORB_NIL;      /* read AFTER the allocs above: the caller's slot is scanned */
     c->def_definee = KORB_CLASS_P(wrap) ? wrap : KORB_NIL;   /* `def` / constants land in the wrap module */
     c->eval_cref    = KORB_CLASS_P(wrap) ? wrap : KORB_NIL;
     if (KORB_CLASS_P(c->eval_cref)) {                  /* load(file, wrap): self extends the module */
         cur[0] = fb[-1]; cur[1] = c->eval_cref;
         RESULT er = korb_send_impl(c, cur + 2, korb_intern(c->vm, "extend", 6), 0, 1, NULL, NULL, NULL);
-        if (UNLIKELY(er.state != KORB_NORMAL)) { c->def_definee = saved_definee; c->eval_cref = saved_cref; return er; }
+        if (UNLIKELY(er.state != KORB_NORMAL)) { korb_cref_pop(c); return er; }
         fb[-1] = cur[0];
         cur[0] = 0; cur[1] = 0;
     }
@@ -14319,8 +14342,7 @@ korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const
      * captured its locals must have the env closed (heap-copied) first */
     if (UNLIKELY(korb_frame_escaped(fb))) r = korb_close_ret(c, cur, fb, r);
     if (KORB_CLASS_P(c->eval_cref)) VAL2CLASS(c->eval_cref)->cur_visibility = saved_vis;   /* re-read: it may have moved */
-    c->def_definee = saved_definee;
-    c->eval_cref = saved_cref;
+    korb_cref_pop(c);
     /* `return` at the top level of a file means "stop loading this file", not
      * "return from whoever called require/load" — absorb it here (main.c does
      * the same for the main script).  break/throw still propagate. */
@@ -16022,8 +16044,7 @@ static RESULT
 korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VALUE cref)
 {
     const char *const saved = c->vm->script_name;
-    const VALUE saved_definee = c->def_definee;
-    const VALUE saved_cref = c->eval_cref;
+    korb_cref_push(c);
     c->def_definee = cref;                              /* instance_eval/class_eval(String): `def` lands here */
     c->eval_cref = cref;                                /* … and so do constants */
     c->vm->script_name = fname;
@@ -16036,8 +16057,7 @@ korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VA
     RESULT r = EVAL(c, ast, cur);
     c->vm->cur_load_file = saved_load;
     c->vm->cur_load_abs = saved_abs;
-    c->def_definee = saved_definee;
-    c->eval_cref = saved_cref;
+    korb_cref_pop(c);
     if (UNLIKELY(r.state == KORB_RAISE)) {
         slots[0] = r.value;                             /* park: capture allocates */
         (void)korb_capture_backtrace(c, slots, NULL);   /* eval frame: the unwound frames only */
@@ -16119,8 +16139,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
         else if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(nsyms[i])); if (hi >= 0) fb[i] = korb_items_data(VAL2HASH(b->extra)->items)[2 * hi + 1]; }
     }
     fb[-1] = self_slot ? *self_slot : VAL2BIND(*bind_slot)->self;   /* self cell (base[-1]) */
-    const VALUE saved_definee = c->def_definee;
-    const VALUE saved_cref = c->eval_cref;
+    korb_cref_push(c);
     const char *const saved_name = c->vm->script_name;
     /* instance_eval/class_eval(String) name the definee outright, so their cref
      * sets both.  A cref that merely came from the BINDING (`eval(str)`) is
@@ -16141,7 +16160,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     const uint8_t saved_vis = KORB_CLASS_P(fb[-1]) ? VAL2CLASS(fb[-1])->cur_visibility : 0xffu;
     RESULT er = EVAL(c, entry, cur);
     if (saved_vis != 0xffu && KORB_CLASS_P(fb[-1])) VAL2CLASS(fb[-1])->cur_visibility = saved_vis;
-    if (cref != KORB_UNDEF) { c->def_definee = saved_definee; c->eval_cref = saved_cref; }
+    korb_cref_pop(c);   /* pushed unconditionally, so pop unconditionally */
     if (UNLIKELY(er.state == KORB_RAISE)) {
         cur[0] = er.value;                          /* park: capture allocates */
         (void)korb_capture_backtrace(c, cur, NULL);   /* eval frame: the unwound frames only */
