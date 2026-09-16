@@ -361,6 +361,13 @@ t/hand + t/enc の 534 ファイルは `BARUBY_GC_STRESS=1`(毎 alloc) + PURGE �
 残る差: STRESS 下の pass は 31271、通常は 31335 で **64 例少ない**。crash ではなく個別の
 期待値ずれ (GC 回数や ObjectSpace 依存の例が多い見込み)。未調査。
 
+性能影響は計測済み (`~/ruby/src/trials/2026-09-16-koruby-gc-stress-fixes/`)。
+`4c9cd25e` を worktree に出してツリーごと make し、AOT 5 ベンチと起動を
+`perf stat -e instructions` で比較した。ベンチの差 (+39万〜+94万命令) は起動の差
+(+63万、+0.25%) とほぼ同じ絶対値でベンチ長に比例しないので、**ループは変わっておらず
+差は全部起動時**。起動の +0.25% は `vm->methods` の線形 scan に `retired` の比較が
+1 つ増えたのが主因と見ているが未確認 (perf record していない)。
+
 ## rubyspec の「1〜2 例落ち」長い尻尾の共通原因 集計 (2026-09-13)
 
 残る失敗の 82% は「1 ファイルに 1〜2 例だけ落ちている」形で散っている。
