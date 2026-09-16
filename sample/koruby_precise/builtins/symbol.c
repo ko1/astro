@@ -329,14 +329,15 @@ static RESULT korb_m_obj_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     uint32_t mid;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_arg_to_mid(c, slots, VALUE_SLICE_GET(a, 0), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     const VALUE recv = VALUE_REF_GET(self);
-    const VALUE cls = korb_dispatch_class(c, recv);
     /* an unknown name is a NameError unless #respond_to_missing? claims it
      * (method_missing alone is not enough — CRuby asks respond_to?).
      * korb_responds_to also covers the dispatch special cases (new / send / …)
      * that have no table entry but are real methods all the same. */
     const bool defined = korb_responds_to(c, recv, mid) || korb_method_lookup(c->vm, mid) != NULL;
     if (!defined && !korb_responds_to_coerce(c, slots, recv, mid)) {
-        char cnm[192]; korb_class_desc_into(c, cls, cnm, sizeof cnm);
+        /* the probe above can run #respond_to_missing?: name the class from the
+         * rooted self cell, not from a C local read before it */
+        char cnm[192]; korb_class_desc_into(c, korb_dispatch_class(c, VALUE_REF_GET(self)), cnm, sizeof cnm);
         return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",
                           korb_sym_name(c->vm, mid), cnm);
     }

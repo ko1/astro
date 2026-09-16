@@ -429,11 +429,11 @@ static RESULT korb_m_env_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static RESULT korb_m_env_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = UNWRAP(korb_hash_new(c, slots, VALUE_SLICE_LEN(a)));
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
-        VALUE one = VALUE_SLICE_GET(a, i);
-        RESULT r = korb_m_env_aref(c, slots + 1, self, VALUE_SLICE_MAKE(&one, 1));
+        slots[1] = VALUE_SLICE_GET(a, i);              /* the key, in a scanned slot: the lookup allocates */
+        RESULT r = korb_m_env_aref(c, slots + 2, self, VALUE_SLICE_MAKE(&slots[1], 1));
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (r.value == KORB_NIL) continue;
-        slots[1] = one; slots[2] = r.value;
+        slots[2] = r.value;
         CHECK(korb_hash_set(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]), slots[2]));
     }
     return RESULT_OK(slots[0]);

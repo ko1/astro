@@ -1030,7 +1030,10 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             av[an++] = cmdv;
         }
         if (hi < VALUE_SLICE_LEN(a) && merged == KORB_NIL) av[an++] = VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1);
-        CHECK(korb_spawn_plan_build(c, slots, VALUE_SLICE_MAKE(av, an), &plan));
+        /* the plan builder dispatches #to_path / #to_io, so the argument slice
+         * must live in scanned slots — a C array would go stale under a move */
+        for (uint32_t i = 0; i < an; i++) slots[i] = av[i];
+        CHECK(korb_spawn_plan_build(c, slots + an, VALUE_SLICE_MAKE(slots, an), &plan));
     }
 
     const bool reading = (mode[0] == 'r');

@@ -1398,8 +1398,8 @@ korb_io_line_args(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t from, struct kor
         slots[0] = sep;
         const RESULT sr = korb_send(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-        if (!KORB_STRING_P(sr.value))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, sep));
+        if (!KORB_STRING_P(sr.value))   /* the dispatch ran Ruby: name the receiver from the rooted slot */
+            return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, slots[0]));
         sep = sr.value;
     }
     if (VAL2STR(sep)->len == 0) {                                      /* "" → paragraph mode */

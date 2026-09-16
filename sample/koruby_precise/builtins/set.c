@@ -875,7 +875,7 @@ static RESULT korb_m_class_attr_n(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 if (!KORB_STRING_P(sr.value)) return korb_raise_not_sym(c, slots, VALUE_SLICE_GET(a, i));
                 sym = sr.value;
-            } else return korb_raise_not_sym(c, slots, sym);
+            } else return korb_raise_not_sym(c, slots, VALUE_SLICE_GET(a, i));   /* the probe dispatched: re-read */
         }
         if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len));
         const char *nm = korb_sym_name(vm, SYM2ID(sym));

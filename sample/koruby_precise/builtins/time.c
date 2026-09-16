@@ -1028,12 +1028,13 @@ static RESULT korb_time_cmp_other(CTX *c, VALUE *slots, VALUE_REF self, VALUE o)
     RESULT r = korb_send(c, slots + 2, cmp, 0, 1);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (r.value == KORB_NIL) return RESULT_OK(KORB_NIL);
-    slots[0] = r.value; slots[1] = LONG2FIX(0);        /* (other <=> self) > 0 → self is smaller */
-    RESULT gt = korb_send(c, slots + 2, korb_intern(c->vm, ">", 1), 0, 1);
+    slots[0] = r.value;                               /* park below the cursor: the > dispatch runs Ruby */
+    slots[1] = slots[0]; slots[2] = LONG2FIX(0);      /* (other <=> self) > 0 → self is smaller */
+    RESULT gt = korb_send(c, slots + 3, korb_intern(c->vm, ">", 1), 0, 1);
     if (UNLIKELY(gt.state != KORB_NORMAL)) return gt;
     if (KORB_TRUTHY(gt.value)) return RESULT_OK(LONG2FIX(-1));
-    slots[0] = r.value; slots[1] = LONG2FIX(0);
-    RESULT lt = korb_send(c, slots + 2, korb_intern(c->vm, "<", 1), 0, 1);
+    slots[1] = slots[0]; slots[2] = LONG2FIX(0);      /* re-read the parked comparison result */
+    RESULT lt = korb_send(c, slots + 3, korb_intern(c->vm, "<", 1), 0, 1);
     if (UNLIKELY(lt.state != KORB_NORMAL)) return lt;
     if (KORB_TRUTHY(lt.value)) return RESULT_OK(LONG2FIX(1));
     return RESULT_OK(LONG2FIX(0));

@@ -6741,6 +6741,7 @@ static RESULT korb_arg_to_mid(CTX *c, VALUE *slots, VALUE v, uint32_t *mid_out) 
         RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
         if (KORB_STRING_P(sr.value)) { *mid_out = korb_intern(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len); return RESULT_OK(KORB_NIL); }
+        v = slots[0];                                  /* the dispatch ran Ruby: re-read the (moved) receiver */
     }
     return korb_raise_not_sym(c, slots, v);
 }

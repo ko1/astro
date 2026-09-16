@@ -377,9 +377,11 @@ static RESULT korb_md_arg_gi(CTX *c, VALUE *slots, VALUE mdv, VALUE arg, int *gi
     }
     korb_sword_t i = 0;
     if (!korb_to_index(arg, &i)) {                        /* coerce via #to_int */
-        VALUE av = arg; RESULT cr = korb_coerce_to_int(c, slots, &av);
+        slots[0] = mdv;                                   /* park: the probe below runs Ruby */
+        VALUE av = arg; RESULT cr = korb_coerce_to_int(c, slots + 1, &av);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-        if (!korb_to_index(av, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_re_arg_type(arg));
+        mdv = slots[0];                                   /* re-read the (moved) MatchData */
+        if (!korb_to_index(av, &i)) return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_re_arg_type(av));
     }
     const int n = korb_md_ngroups(VAL2MD(mdv));           /* begin/end/offset take no negative index */
     if (i < 0 || i >= n) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %d out of matches", (int)i);
