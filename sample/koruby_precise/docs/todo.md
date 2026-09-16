@@ -93,7 +93,13 @@ VALUE を保持しない規約違反)。
 ## rubyspec 長い尻尾の共通原因 集計 (2026-09-16)
 
 baseline `4c9cd25e` = **pass 31296 / ex 32009 = 97.77%**、
-このセッション終了時 = **pass 31335 / ex 32009 = 97.89%** (退行 0)。
+このセッション終了時 = **pass 31335 / ex 32009 = 97.89%** (退行 0、25 ファイル +39 例)。
+
+計測の注記: 最終 sweep は load average 16〜23 の共有マシンで取った。
+jobs=6 の 1 回だけ `core/file/open_spec.rb` が E=1 になったが、
+単独で 9 回 (sweep 3 + 実 mspec 6) 回して毎回 86/86 なので **harness 由来の
+ゆらぎ**と判断した。 報告値は jobs=4 / SPEC_TIMEOUT=60 で取り直した方
+(`files=3747 pass=31335 fail=412 err=330 WFAIL=1`)。
 
 道具は `tools/spec_sweep/{sweep,harvest,bucket}.rb`。 今回 `bucket.rb` のバグを
 1 つ直した: mock の unwrap (`An exception occurred during: Mock.verify_count` の
