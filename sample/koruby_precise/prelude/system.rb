@@ -324,6 +324,8 @@ module Process
     return v if v.is_a?(Integer)
     # A Symbol/String names a resource (:CORE / "CORE") or a special limit value
     # (:INFINITY).  __rlimit_table keys are "RLIMIT_CORE", "INFINITY", …
+    # CRuby asks anything else for #to_str first, and only then for #to_int.
+    v = String.try_convert(v) || v unless v.is_a?(Symbol) || v.is_a?(String)
     if v.is_a?(Symbol) || v.is_a?(String)
       key = v.to_s
       tbl = __rlimit_table

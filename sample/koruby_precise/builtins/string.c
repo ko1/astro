@@ -485,6 +485,27 @@ static bool korb_case_transform_buf(const char *src, uint32_t len, int op, int m
     return changed;
 }
 
+/* korb_case_transform_buf decodes UTF-8, so a string in a non-ASCII-compatible
+ * encoding (UTF-16/32) has to go through UTF-8 and back.  sp[0..] is scratch;
+ * the mapped copy is returned, or KORB_NIL when the round trip is unavailable. */
+static RESULT korb_tc_convert(CTX *c, VALUE *slots, VALUE src, const char *fromb, const char *tob, bool *ok);   /* fwd (transcode.c) */
+static RESULT korb_str_case_wide(CTX *c, VALUE *sp, VALUE_REF self, int op, int mode) {
+    const char *const ename = korb_enc_name_of(c->vm, KORB_STR_ENC(VALUE_REF_GET(self)));
+    bool ok = false;
+    sp[0] = UNWRAP(korb_tc_convert(c, sp, VALUE_REF_GET(self), ename, "UTF-8", &ok));
+    if (!ok) return RESULT_OK(KORB_NIL);
+    char *buf; uint32_t blen;
+    { const KorbString *const u = VAL2STR(sp[0]);
+      korb_case_transform_buf(korb_strbuf_data(u->buf), u->len, op, mode, &buf, &blen); }
+    const RESULT nr = korb_str_new(c, sp + 1, buf, blen);
+    free(buf);
+    if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+    sp[0] = nr.value;
+    KORB_STR_ENC_SET(sp[0], KORB_ENC_UTF8);
+    sp[0] = UNWRAP(korb_tc_convert(c, sp + 1, sp[0], "UTF-8", ename, &ok));
+    return RESULT_OK(ok ? sp[0] : KORB_NIL);
+}
+
 /* transform-into-new-string helper (op: 0=upcase 1=downcase 2=capitalize 3=swapcase, else reverse) */
 static RESULT korb_str_transform(CTX *c, VALUE *slots, VALUE_REF self, int op, int mode) {
     uint32_t len = SELF_STR->len;
@@ -492,6 +513,10 @@ static RESULT korb_str_transform(CTX *c, VALUE *slots, VALUE_REF self, int op, i
     const KorbString *s = SELF_STR;   /* re-read after alloc (GC may have moved it) */
     KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC((VALUE)s));   /* preserve encoding */
     if (op >= 0 && op <= 4) {                       /* the mapped form may be longer, so build it first */
+        if (UNLIKELY(!korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(VALUE_REF_GET(self))))) {
+            const RESULT wr = korb_str_case_wide(c, slots, self, op, mode);
+            if (UNLIKELY(wr.state != KORB_NORMAL) || wr.value != KORB_NIL) return wr;
+        }
         char *buf; uint32_t blen;
         korb_case_transform_buf(korb_strbuf_data(s->buf), len, op, mode, &buf, &blen);
         RESULT nr = korb_str_new(c, slots, buf, blen);
@@ -960,6 +985,20 @@ static RESULT korb_str_transform_bang(CTX *c, VALUE *slots, VALUE_REF self, int 
         }
         memcpy(korb_strbuf_data(s->buf), tmp, len); free(tmp);
         return RESULT_OK(VALUE_REF_GET(self));
+    }
+    if (UNLIKELY(!korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(VALUE_REF_GET(self))))) {
+        const RESULT wr = korb_str_case_wide(c, slots, self, op, mode);
+        if (UNLIKELY(wr.state != KORB_NORMAL)) return wr;
+        if (wr.value != KORB_NIL) {
+            slots[0] = wr.value;                       /* rooted: the splice below allocates */
+            s = VAL2STR(VALUE_REF_GET(self));
+            const KorbString *const m = VAL2STR(slots[0]);
+            if (m->len == s->len && memcmp(korb_strbuf_data(m->buf), korb_strbuf_data(s->buf), m->len) == 0)
+                return RESULT_OK(KORB_NIL);
+            s->len = 0;
+            CHECK(korb_str_append_str(c, slots + 1, self, VALUE_REF_AT(&slots[0])));
+            return RESULT_OK(VALUE_REF_GET(self));
+        }
     }
     /* the mapped bytes can be longer ("ß".upcase! is "SS"), so build into a
      * scratch buffer and splice the result back in */
