@@ -252,6 +252,11 @@ module Zlib
       super(false, 0, window_bits)
     end
 
+    # Input past the stream's end is passed through to the output, not left
+    # pending, so nothing is waiting to be inflated once the stream has ended.
+    # (Before the end a leftover is real: NeedDict parks its input here.)
+    def avail_in = stream_end? ? 0 : super
+
     def <<(str)
       __check_open
       if str.nil?
@@ -262,7 +267,7 @@ module Zlib
         s = str.to_s.b
         @out << __run(s, NO_FLUSH)
         # the stream may have ended mid-argument: the rest passes through
-        n = avail_in
+        n = __stat[3]                    # the raw leftover (avail_in now reports 0 here)
         @passthrough << s.byteslice(s.bytesize - n, n) if n > 0
       end
       self

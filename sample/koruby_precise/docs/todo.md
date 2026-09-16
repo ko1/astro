@@ -955,11 +955,14 @@ matrix / ipaddr / resolv / getoptlong / open3 / random/formatter を vendor
   borrow-escape 修正 (ef23a58b) 前の binary でも同じく落ちるので zlib ではない。
   `should_receive(:get_io).any_number_of_times` の引数照合が GC ストレス下で
   壊れる経路 (mspec mock / singleton def) を追うこと。
-- **`Zlib::Inflate#avail_in` がストリーム終端後に残った入力を数える**。
-  `z << (deflated + "TRAILING")` の後、CRuby は残りを出力へ素通しして
-  `avail_in == 0`、koruby は出力は一致するが `avail_in == 8` を返す
-  (lib/zlib.rb の `<<` が `@passthrough` に回した分を `__stat[3]` から引いて
-  いない)。
+- ~~**`Zlib::Inflate#avail_in` がストリーム終端後に残った入力を数える**~~
+  **(修正済 2026-09-16)**。`Zlib::Inflate#avail_in` を `stream_end? ? 0 : super`
+  にした。終端より先の入力は出力へ素通しするので待っている入力は無い、というのが
+  CRuby の意味。終端前の残りは本物 (NeedDict が入力をそこに park する) なので
+  `super` のまま。`<<` の中でだけ生の残量が要るので、そこは `__stat[3]` を直接読む。
+  CRuby と一致を確認: `d + "TRAILING"` / 終端後の `<< "MORE"` / 分割入力 + 末尾ゴミ /
+  NeedDict (avail_in=14 → set_dictionary → 0) の 4 形すべて。
+  library/zlib spec は 148/148 で前後変化なし。
 
 ## 既知バグ (メソッドオブジェクト)
 
