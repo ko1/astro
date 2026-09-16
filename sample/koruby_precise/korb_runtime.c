@@ -5048,16 +5048,13 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
             int32_t idx = (kwhash != KORB_NIL) ? korb_hash_find(VAL2HASH(kwhash), ID2SYM(kw->entries[j].mid)) : -1;
             if (idx >= 0) { base[kw->entries[j].slot] = korb_items_data(VAL2HASH(kwhash)->items)[2*idx+1]; if (j < 64) present |= (1ull << j); }
         }
-        for (uint32_t j = 0; j < kw->count; j++) {                  /* pass 2: defaults / required check */
-            if (j < 64 && (present & (1ull << j))) continue;
-            if (kw->entries[j].deflt) {
-                RESULT dr = korb_eval_param_default(c, kw->entries[j].deflt, base + locals_cnt);
-                if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-                base[kw->entries[j].slot] = dr.value;
-            } else {
+        /* CRuby settles the argument ERRORS before running any default: a missing
+         * required keyword wins over an unknown one, and neither lets a default's
+         * side effect happen first.  Doing the scans here also keeps `kwhash` off
+         * the far side of the dispatches below, where it would go stale. */
+        for (uint32_t j = 0; j < kw->count; j++)                    /* missing required */
+            if (!(j < 64 && (present & (1ull << j))) && !kw->entries[j].deflt)
                 return korb_raise_missing_kw(c, slots, line, kw, present);
-            }
-        }
         if (kw->kwrest_slot == -1 && kwhash != KORB_NIL) {          /* no **rest: every key must be declared */
             const KorbHash *const kh = VAL2HASH(kwhash);
             for (uint32_t i = 0; i < kh->len; i++) {
@@ -5072,6 +5069,12 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                                       (int)VAL2STR(key)->len, korb_strbuf_data(VAL2STR(key)->buf));
                 return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: %s", korb_type_name(key));
             }
+        }
+        for (uint32_t j = 0; j < kw->count; j++) {                  /* pass 2: defaults (kwhash is done with) */
+            if (j < 64 && (present & (1ull << j))) continue;
+            RESULT dr = korb_eval_param_default(c, kw->entries[j].deflt, base + locals_cnt);
+            if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+            base[kw->entries[j].slot] = dr.value;
         }
         if (kw->kwrest_slot >= 0) {                                 /* collect undeclared keys into **rest */
             VALUE *cur = base + locals_cnt;
@@ -5178,8 +5181,12 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
         for (uint32_t p = 0; p < kw_argc; p++)
             if (kw_syms[p] == kw->entries[j].mid) { base[kw->entries[j].slot] = kwbuf[p]; if (j < 64) present |= (1ull << j); break; }
     }
-    /* unknown-keyword check (no **rest here) */
-    for (uint32_t p = 0; p < kw_argc; p++) {
+    /* CRuby settles the argument ERRORS before any default runs, and a missing
+     * required keyword wins over an unknown one. */
+    for (uint32_t j = 0; j < kw->count; j++)
+        if (!(j < 64 && (present & (1ull << j))) && !kw->entries[j].deflt)
+            return korb_raise_missing_kw(c, slots, line, kw, present);
+    for (uint32_t p = 0; p < kw_argc; p++) {                 /* unknown keyword (no **rest here) */
         bool declared = false;
         for (uint32_t j = 0; j < kw->count; j++) if (kw_syms[p] == kw->entries[j].mid) { declared = true; break; }
         if (UNLIKELY(!declared)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: :%s", korb_sym_name(vm, kw_syms[p]));
@@ -5191,16 +5198,11 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
         if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
         base[pi] = dr.value;
     }
-    /* keyword defaults / required-missing check */
-    for (uint32_t j = 0; j < kw->count; j++) {
+    for (uint32_t j = 0; j < kw->count; j++) {               /* keyword defaults */
         if (j < 64 && (present & (1ull << j))) continue;
-        if (kw->entries[j].deflt) {
-            RESULT dr = korb_eval_param_default(c, kw->entries[j].deflt, base + locals_cnt);
-            if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-            base[kw->entries[j].slot] = dr.value;
-        } else {
-            return korb_raise_missing_kw(c, slots, line, kw, present);
-        }
+        RESULT dr = korb_eval_param_default(c, kw->entries[j].deflt, base + locals_cnt);
+        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+        base[kw->entries[j].slot] = dr.value;
     }
   run_body:;
     NODE *const body = m->body;
