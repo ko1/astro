@@ -17302,6 +17302,8 @@ korb_ctx_new(void)
     c->vm = calloc(1, sizeof(struct korb_vm));
     if (!c->vm) { fprintf(stderr, "koruby_precise: out of memory (VM)\n"); abort(); }
     c->vm->sigfd = -1;                                  /* calloc's 0 is a real fd */
+    c->vm->enc_locale = KORB_ENC_UTF8;                  /* until the prelude reads the locale */
+    c->vm->enc_internal = UINT32_MAX;                   /* Encoding.default_internal is nil */
     c->vm->mcache = calloc(KORB_MCACHE_N, sizeof(*c->vm->mcache));
     if (!c->vm->mcache) { fprintf(stderr, "koruby_precise: out of memory (mcache)\n"); abort(); }
     c->vm->shapes = calloc(64, sizeof(*c->vm->shapes));   /* [0]=unused, [1]=root */
@@ -17338,6 +17340,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__warn_raw", korb_bi_warn, -1);
     korb_builtin_define(c, "global_variables", korb_bi_global_variables, 0);
     korb_builtin_define(c, "__set_gvar", korb_bi_set_gvar, 2);
+    korb_builtin_define(c, "__enc_sync__", korb_bi_enc_sync, -1);   /* Encoding hands down locale + default_internal */
     korb_builtin_define(c, "__autoload_feature_loaded?", korb_bi_autoload_feature_loaded, 1);
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "__refinement_import", korb_bi_refinement_import, 2);   /* Refinement#import_methods (prelude) */

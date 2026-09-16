@@ -585,3 +585,63 @@ static uint32_t korb_tc_bytes_chr(const char *enc, uint32_t v, unsigned char *ou
     }
     return 0;
 }
+
+/* --- OS boundary strings (CRuby rb_external_str_new_with_enc) --------------
+ * ENV values and readdir names arrive as bytes with no encoding of their own:
+ * they carry the locale encoding and are converted to Encoding.default_internal
+ * when that is set.  Both live in the VM (see `enc_locale`); the prelude keeps
+ * them current through __enc_sync__. */
+
+/* sp[0] holds the string (rooted by the caller) and is replaced in place;
+ * sp[1..] is scratch.  `from` names what the bytes are. */
+static RESULT korb_ext_str_conv(CTX *c, VALUE *sp, uint32_t from)
+{
+    if (from == KORB_ENC_USASCII && !korb_str_ascii_only_p(c->vm, sp[0]))
+        from = KORB_ENC_BINARY;                    /* CRuby: 8-bit bytes are not US-ASCII */
+    KORB_STR_ENC_SET(sp[0], from);
+    const uint32_t to = c->vm->enc_internal;
+    if (to == UINT32_MAX || to == from) return RESULT_OK(sp[0]);
+    if (korb_enc_ascii_compat_idx(c->vm, to) && korb_str_ascii_only_p(c->vm, sp[0])) {
+        KORB_STR_ENC_SET(sp[0], to);               /* 7-bit content needs no converter */
+        return RESULT_OK(sp[0]);
+    }
+    bool ok = false;
+    const RESULT r = korb_tc_convert(c, sp + 1, sp[0], korb_enc_name_of(c->vm, from),
+                                     korb_enc_name_of(c->vm, to), &ok);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    sp[0] = r.value;                               /* left alone when not convertible (CRuby) */
+    return RESULT_OK(sp[0]);
+}
+
+/* korb_str_new + korb_ext_str_conv; sp[0..] is scratch and holds the result. */
+static RESULT korb_ext_str_new(CTX *c, VALUE *sp, const char *p, uint32_t len, uint32_t from)
+{
+    sp[0] = UNWRAP(korb_str_new(c, sp, p, len));
+    return korb_ext_str_conv(c, sp, from);
+}
+
+/* Encoding.__enc_sync__(locale, internal) — the prelude hands both down
+ * whenever either can have changed.  nil internal means "no conversion". */
+static RESULT korb_bi_enc_sync(CTX *c, VALUE *slots, VALUE_SLICE a)
+{
+    for (uint32_t i = 0; i < 2 && i < VALUE_SLICE_LEN(a); i++) {
+        uint32_t idx = UINT32_MAX;
+        const VALUE e = VALUE_SLICE_GET(a, i);
+        if (e != KORB_NIL) {
+            slots[0] = e;
+            const RESULT nm = korb_send(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0);
+            if (UNLIKELY(nm.state != KORB_NORMAL)) return nm;
+            if (LIKELY(KORB_STRING_P(nm.value))) {
+                char eb[64];
+                uint32_t el = VAL2STR(nm.value)->len;
+                if (el >= sizeof eb) el = sizeof eb - 1;
+                memcpy(eb, korb_strbuf_data(VAL2STR(nm.value)->buf), el);
+                eb[el] = '\0';
+                idx = korb_enc_index_pub(c->vm, eb);
+            }
+        }
+        if (i == 0) { if (idx != UINT32_MAX) c->vm->enc_locale = idx; }
+        else c->vm->enc_internal = idx;
+    }
+    return RESULT_OK(KORB_NIL);
+}

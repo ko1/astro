@@ -261,7 +261,7 @@ class Encoding
   Stateless_ISO_2022_JP = STATELESS_ISO_2022_JP unless const_defined?(:Stateless_ISO_2022_JP, false)
   STATELESS_ISO_2022_JP_KDDI = Encoding.new("stateless-ISO-2022-JP-KDDI") unless const_defined?(:STATELESS_ISO_2022_JP_KDDI, false)
   Stateless_ISO_2022_JP_KDDI = STATELESS_ISO_2022_JP_KDDI unless const_defined?(:Stateless_ISO_2022_JP_KDDI, false)
-  @@default_external = UTF_8
+  @@default_external = @@locale = UTF_8
   @@default_internal = nil
   def self.default_external; @@default_external; end
   # Both setters take an Encoding, a String, or anything with #to_str; anything
@@ -281,7 +281,7 @@ class Encoding
     @@default_external = __to_enc(e, :external)
   end
   def self.default_internal; @@default_internal; end
-  def self.default_internal=(e); @@default_internal = (e.nil? ? nil : __to_enc(e, :internal)); end
+  def self.default_internal=(e); __enc_sync__(@@locale, @@default_internal = (e.nil? ? nil : __to_enc(e, :internal))); end
   # Encoding.find(name) → the Encoding constant whose #name matches (case-folded),
   # else a fresh Encoding of that name (used by String#encoding for "other").
   def self.find(name)
@@ -293,7 +293,8 @@ class Encoding
         else raise TypeError, "no implicit conversion of #{name.class} into String"
         end
     raise ArgumentError, "invalid encoding name (non ASCII)" unless n.encoding.ascii_compatible?
-    return default_external if n == 'external' || n == 'filesystem' || n == 'locale'
+    return default_external if n == 'external' || n == 'filesystem'
+    return @@locale if n == 'locale'   # fixed at startup; default_external= must not move it
     return default_internal if n == 'internal'
     # Resolve an alias first, so find("BINARY") is Encoding::ASCII_8BIT itself
     # rather than a fresh Encoding that merely prints the same.
@@ -335,6 +336,9 @@ class Encoding
     end
   end
   private_constant :LOCALE_CHARMAP__
+  # CRuby fixes Encoding.find('locale') at startup: default_external= must not
+  # move it, and every string that crosses the OS boundary carries it.
+  __enc_sync__(@@locale = (LOCALE_CHARMAP__ == "ANSI_X3.4-1968" ? US_ASCII : UTF_8), @@default_internal)
   def self.locale_charmap; LOCALE_CHARMAP__ || default_external.name; end
   # This encoding's canonical name plus any aliases pointing to it.
   # This encoding's canonical name plus every alias pointing to it (CRuby lists

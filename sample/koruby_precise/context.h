@@ -1219,6 +1219,11 @@ struct korb_vm {
     uint32_t deprconst_cnt, deprconst_capa;
     uint32_t str_enc_names[KORB_STR_ENC_MAX];
     uint32_t str_enc_sb_mask;        /* bit i: index i is a single-byte encoding (byte == character) */
+    /* The OS boundary (ENV, readdir): bytes arrive in `enc_locale` and are
+     * converted to `enc_internal` (UINT32_MAX = Encoding.default_internal is
+     * nil).  Kept here rather than read back from the prelude's class variables
+     * so a listing costs no sends; Encoding.__enc_sync__ writes both. */
+    uint32_t enc_locale, enc_internal;
     /* source_location: def/block body NODE → (file symbol, line), populated at
      * parse time.  Node ptrs are immortal (AST); no GC. */
     struct korb_srcloc { struct Node *node; uint32_t file_sym; uint32_t line; } *srclocs;

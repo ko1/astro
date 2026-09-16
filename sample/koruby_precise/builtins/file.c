@@ -2000,11 +2000,13 @@ static RESULT korb_dir_list(CTX *c, VALUE *slots, VALUE_SLICE a, bool with_dots)
     if (!d) return korb_raise_errno(c, slots, errno, "opendir", path);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
     VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    /* names come from the OS: the `encoding:` option (or the locale) says what
+     * they are, Encoding.default_internal says what they must become */
+    const uint32_t from = (enc == UINT32_MAX) ? c->vm->enc_locale : enc;
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         if (!with_dots && (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)) continue;
-        slots[1] = UNWRAP(korb_str_new(c, slots + 1, ent->d_name, (uint32_t)strlen(ent->d_name)));
-        if (enc != UINT32_MAX) KORB_STR_ENC_SET(slots[1], enc);
+        if (korb_ext_str_new(c, slots + 1, ent->d_name, (uint32_t)strlen(ent->d_name), from).state != KORB_NORMAL) break;
         if (korb_ary_push_val(c, slots + 2, arr, slots[1]).state != KORB_NORMAL) break;
     }
     closedir(d);
@@ -2042,10 +2044,12 @@ static RESULT korb_dir_fill(CTX *c, VALUE *slots, VALUE_REF obj, const char *pat
     DIR *d = opendir(path);
     if (!d) return korb_raise_errno(c, slots, errno, "opendir", path);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 16));            /* entries (rooted) */
+    /* names come from the OS: the `encoding:` option (or the locale) says what
+     * they are, Encoding.default_internal says what they must become */
+    const uint32_t from = (enc == UINT32_MAX) ? c->vm->enc_locale : enc;
     { VALUE_REF arr = VALUE_REF_AT(&slots[0]); struct dirent *ent;
       while ((ent = readdir(d)) != NULL) {
-        slots[1] = UNWRAP(korb_str_new(c, slots + 1, ent->d_name, (uint32_t)strlen(ent->d_name)));
-        if (enc != UINT32_MAX) KORB_STR_ENC_SET(slots[1], enc);
+        if (korb_ext_str_new(c, slots + 1, ent->d_name, (uint32_t)strlen(ent->d_name), from).state != KORB_NORMAL) break;
         if (korb_ary_push_val(c, slots + 2, arr, slots[1]).state != KORB_NORMAL) break;
       } }
     closedir(d);

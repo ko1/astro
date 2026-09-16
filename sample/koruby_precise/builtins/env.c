@@ -30,6 +30,15 @@ ARO_BORROW static const char *korb_env_name(CTX *c, VALUE *slots, VALUE v, RESUL
     return korb_env_name_at(c, slots, 0, v, err);
 }
 
+/* Every name and value here crossed the OS boundary: CRuby tags them with the
+ * locale encoding and converts them to Encoding.default_internal when set.
+ * The bytes are copied before any of that runs, so the caller's environ /
+ * getenv pointer is not held across it.  sp[0..] is scratch and holds the
+ * result. */
+static RESULT korb_env_str_new(CTX *c, VALUE *sp, const char *p, uint32_t len) {
+    return korb_ext_str_new(c, sp, p, len, c->vm->enc_locale);
+}
+
 /* ENV[name] → the value String, or nil. */
 static RESULT korb_m_env_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -37,7 +46,7 @@ static RESULT korb_m_env_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (!name) return err;
     const char *v = getenv(name);
     if (!v) return RESULT_OK(KORB_NIL);
-    const RESULT r = korb_str_new(c, slots + 1, v, (uint32_t)strlen(v));
+    const RESULT r = korb_env_str_new(c, slots + 1, v, (uint32_t)strlen(v));
     if (LIKELY(r.state == KORB_NORMAL))
         ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;   /* CRuby: ENV values are frozen */
     return r;
@@ -74,7 +83,7 @@ static RESULT korb_m_env_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     RESULT err; const char *name = korb_env_name(c, slots, VALUE_SLICE_GET(a, 0), &err);
     if (!name) return err;
     const char *v = getenv(name);
-    if (v) return korb_str_new(c, slots, v, (uint32_t)strlen(v));
+    if (v) return korb_env_str_new(c, slots, v, (uint32_t)strlen(v));
     if (block != NULL) {
         if (VALUE_SLICE_LEN(a) >= 2) korb_warn(c, slots + 1, "block supersedes default value argument");
         slots[0] = VALUE_SLICE_GET(a, 0); return korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
@@ -97,8 +106,8 @@ static RESULT korb_env_collect(CTX *c, VALUE *slots, bool want_val) {
     VALUE_REF arr = VALUE_REF_AT(&slots[0]);
     for (char **e = environ; *e; e++) {
         uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
-        slots[1] = want_val ? UNWRAP(korb_str_new(c, slots + 1, val, (uint32_t)strlen(val)))
-                            : UNWRAP(korb_str_new(c, slots + 1, key, klen));
+        slots[1] = want_val ? UNWRAP(korb_env_str_new(c, slots + 1, val, (uint32_t)strlen(val)))
+                            : UNWRAP(korb_env_str_new(c, slots + 1, key, klen));
         CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
     }
     return RESULT_OK(VALUE_REF_GET(arr));
@@ -113,8 +122,8 @@ static RESULT korb_m_env_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     VALUE_REF h = VALUE_REF_AT(&slots[0]);
     for (char **e = environ; *e; e++) {
         uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
-        slots[1] = UNWRAP(korb_str_new(c, slots + 1, key, klen));
-        slots[2] = UNWRAP(korb_str_new(c, slots + 2, val, (uint32_t)strlen(val)));
+        slots[1] = UNWRAP(korb_env_str_new(c, slots + 1, key, klen));
+        slots[2] = UNWRAP(korb_env_str_new(c, slots + 2, val, (uint32_t)strlen(val)));
         CHECK(korb_hash_set(c, slots + 3, h, VALUE_REF_AT(&slots[1]), slots[2]));
     }
     return RESULT_OK(VALUE_REF_GET(h));
@@ -126,8 +135,8 @@ static RESULT korb_m_env_to_h_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     VALUE_REF h = VALUE_REF_AT(&slots[0]);
     for (char **e = environ; *e; e++) {
         uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
-        slots[1] = UNWRAP(korb_str_new(c, slots + 1, key, klen));
-        slots[2] = UNWRAP(korb_str_new(c, slots + 2, val, (uint32_t)strlen(val)));
+        slots[1] = UNWRAP(korb_env_str_new(c, slots + 1, key, klen));
+        slots[2] = UNWRAP(korb_env_str_new(c, slots + 2, val, (uint32_t)strlen(val)));
         RESULT r = korb_block_yield(c, slots + 3, block, def_env, &slots[1], 2, cself);   /* yield(k, v) as separate args */
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[1] = r.value;                              /* the returned pair (rooted) */
@@ -155,8 +164,8 @@ static RESULT korb_m_env_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));   /* (no Enumerator yet) */
     for (char **e = environ; *e; e++) {
         uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
-        slots[0] = UNWRAP(korb_str_new(c, slots, key, klen));
-        slots[1] = UNWRAP(korb_str_new(c, slots + 1, val, (uint32_t)strlen(val)));
+        slots[0] = UNWRAP(korb_env_str_new(c, slots, key, klen));
+        slots[1] = UNWRAP(korb_env_str_new(c, slots + 1, val, (uint32_t)strlen(val)));
         VALUE argv[2] = { slots[0], slots[1] };
         CHECK(korb_block_yield(c, slots + 2, block, def_env, argv, 2, captured_self));
     }
@@ -175,7 +184,7 @@ static RESULT korb_m_env_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     memcpy(name, name0, nl + 1);
     const char *v = getenv(name);
     if (!v) return RESULT_OK(KORB_NIL);
-    slots[0] = UNWRAP(korb_str_new(c, slots, v, (uint32_t)strlen(v)));
+    slots[0] = UNWRAP(korb_env_str_new(c, slots, v, (uint32_t)strlen(v)));
     unsetenv(name);
     return RESULT_OK(slots[0]);
 }
@@ -315,7 +324,7 @@ static RESULT korb_m_env_merge_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
                 if (!name) return er;
                 const char *old = getenv(name);
                 if (old != NULL) {
-                    slots[3] = UNWRAP(korb_str_new(c, slots + 4, old, (uint32_t)strlen(old)));
+                    slots[3] = UNWRAP(korb_env_str_new(c, slots + 4, old, (uint32_t)strlen(old)));
                     VALUE argv[3] = { slots[1], slots[3], slots[2] };
                     RESULT yr = korb_block_yield(c, slots + 4, block, def_env, argv, 3, cself);
                     if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
@@ -334,8 +343,8 @@ static RESULT korb_m_env_each_kv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
     for (char **e = environ; *e; e++) {
         uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
-        slots[0] = want_key ? UNWRAP(korb_str_new(c, slots, key, klen))
-                            : UNWRAP(korb_str_new(c, slots, val, (uint32_t)strlen(val)));
+        slots[0] = want_key ? UNWRAP(korb_env_str_new(c, slots, key, klen))
+                            : UNWRAP(korb_env_str_new(c, slots, val, (uint32_t)strlen(val)));
         CHECK(korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself));
     }
     return RESULT_OK(VALUE_REF_GET(self));
@@ -351,7 +360,7 @@ static RESULT korb_m_env_key(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     for (char **e = environ; *e; e++) {
         uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
         if (strlen(val) == wl && memcmp(val, want, wl) == 0)
-            return korb_str_new(c, slots + 1, key, klen);
+            return korb_env_str_new(c, slots + 1, key, klen);
     }
     return RESULT_OK(KORB_NIL);
 }
@@ -363,8 +372,8 @@ static RESULT korb_m_env_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     char nm[1024]; size_t nl = strlen(name0); if (nl >= sizeof nm) nl = sizeof nm - 1; memcpy(nm, name0, nl); nm[nl] = '\0';
     const char *v = getenv(nm);
     if (!v) return RESULT_OK(KORB_NIL);
-    slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)nl));
-    slots[1] = UNWRAP(korb_str_new(c, slots + 1, v, (uint32_t)strlen(v)));
+    slots[0] = UNWRAP(korb_env_str_new(c, slots, nm, (uint32_t)nl));
+    slots[1] = UNWRAP(korb_env_str_new(c, slots + 1, v, (uint32_t)strlen(v)));
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
     CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
     CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
@@ -382,8 +391,8 @@ static RESULT korb_m_env_rassoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     for (char **e = environ; *e; e++) {
         uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
         if (strlen(val) == wl && memcmp(val, ws, wl) == 0) {
-            slots[1] = UNWRAP(korb_str_new(c, slots + 1, key, klen));
-            slots[2] = UNWRAP(korb_str_new(c, slots + 2, val, (uint32_t)strlen(val)));
+            slots[1] = UNWRAP(korb_env_str_new(c, slots + 1, key, klen));
+            slots[2] = UNWRAP(korb_env_str_new(c, slots + 2, val, (uint32_t)strlen(val)));
             slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[1]));
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[2]));
@@ -398,8 +407,8 @@ static RESULT korb_m_env_invert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     slots[0] = UNWRAP(korb_hash_new(c, slots, 16));
     for (char **e = environ; *e; e++) {
         uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
-        slots[1] = UNWRAP(korb_str_new(c, slots + 1, val, (uint32_t)strlen(val)));   /* new key = value */
-        slots[2] = UNWRAP(korb_str_new(c, slots + 2, key, klen));                    /* new value = key */
+        slots[1] = UNWRAP(korb_env_str_new(c, slots + 1, val, (uint32_t)strlen(val)));   /* new key = value */
+        slots[2] = UNWRAP(korb_env_str_new(c, slots + 2, key, klen));                    /* new value = key */
         CHECK(korb_hash_set(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]), slots[2]));
     }
     return RESULT_OK(slots[0]);
@@ -441,8 +450,8 @@ static RESULT korb_m_env_except(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (KORB_STRING_P(one) && VAL2STR(one)->len == klen && memcmp(korb_strbuf_data(VAL2STR(one)->buf), key, klen) == 0) { excluded = true; break; }
         }
         if (excluded) continue;
-        slots[1] = UNWRAP(korb_str_new(c, slots + 1, key, klen));
-        slots[2] = UNWRAP(korb_str_new(c, slots + 2, val, (uint32_t)strlen(val)));
+        slots[1] = UNWRAP(korb_env_str_new(c, slots + 1, key, klen));
+        slots[2] = UNWRAP(korb_env_str_new(c, slots + 2, val, (uint32_t)strlen(val)));
         CHECK(korb_hash_set(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]), slots[2]));
     }
     return RESULT_OK(slots[0]);
