@@ -1302,6 +1302,11 @@ struct CTX_struct {
     /* `def` inside instance_eval/instance_exec attaches to the receiver's
      * SINGLETON class, not to self's class — the "default definee" CRuby tracks
      * per frame.  KORB_NIL means "use self", which is every other case. */
+    /* A kwargs Hash parked across the optional-default expressions of the call
+     * in flight.  Those run Ruby, and a method with keyword params but no
+     * **kwrest has no frame slot to keep the Hash in (the kwrest slot is what
+     * roots it otherwise).  Saved/restored around each use, so recursion nests. */
+    VALUE     kwargs_park;
     VALUE     def_definee;
     /* The cref an eval'd STRING runs under (instance_eval → the receiver's
      * singleton class, class_eval/module_eval → the module itself).  KORB_NIL
@@ -1418,6 +1423,8 @@ struct CTX_struct {
     }                                                                        \
     if ((c)->throw_tag != KORB_NIL)                                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->throw_tag);              \
+    if ((c)->kwargs_park != KORB_NIL)                                        \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->kwargs_park);            \
     if ((c)->def_definee != KORB_NIL)                                        \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->def_definee);            \
     if ((c)->eval_cref != KORB_NIL)                                          \

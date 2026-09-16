@@ -4984,6 +4984,13 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         base[locals_cnt - 1] = captured_self;
     }
     if (kw && kw->kwrest_slot >= 0) base[kw->kwrest_slot] = kwhash;   /* root kwhash across the GC below (kwrest slot is never a positional/keyword slot) */
+    /* No **kwrest: there is no frame slot free for the Hash (every local either
+     * is a parameter the defaults below may fill, or is nil-visible to them), so
+     * park it on the context.  Saved/restored, so a default that calls another
+     * keyword method nests. */
+    const VALUE kw_park_saved = c->kwargs_park;
+    const bool kw_parked = kw != NULL && kw->kwrest_slot < 0 && kwhash != KORB_NIL;
+    if (UNLIKELY(kw_parked)) c->kwargs_park = kwhash;
     /* Snapshot what the rest of this invocation reads out of the entry.  A
      * default expression may redefine this very method, and korb_class_def_method
      * reuses the entry in place — the call in flight must still finish as the OLD
@@ -4996,12 +5003,17 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     const uint32_t opt_req_cnt = m->req_cnt, opt_params_cnt = (uint32_t)m->params_cnt;
     /* fill missing optional params by evaluating their defaults in method scope
      * (cursor = body cursor; defaults may reference earlier params + self). */
+    RESULT opt_err = RESULT_OK(KORB_NIL);
     for (uint32_t pi = avail; pi < opt_params_cnt; pi++) {   /* optionals past the provided front get defaults */
         NODE *const dflt = opt_defaults[pi - opt_req_cnt];
         RESULT dr = korb_eval_param_default(c, dflt, base + locals_cnt);
-        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+        if (UNLIKELY(dr.state != KORB_NORMAL)) { opt_err = dr; break; }
         base[pi] = dr.value;              /* below cursor → rooted for later defaults/body */
     }
+    /* unpark before any exit, so a raising default cannot leave an outer
+     * invocation's parked Hash overwritten */
+    if (UNLIKELY(kw_parked)) { kwhash = c->kwargs_park; c->kwargs_park = kw_park_saved; }
+    if (UNLIKELY(opt_err.state != KORB_NORMAL)) return opt_err;
     if (kw) {
         if (kw->kwrest_slot >= 0) kwhash = base[kw->kwrest_slot];   /* re-read (GC during opt-fill) */
         uint64_t present = 0;

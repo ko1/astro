@@ -1388,6 +1388,7 @@ static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (stop < 0) return RESULT_OK(KORB_NIL);
         stopb = (int32_t)korb_str_char_to_byte(s0, stop);   /* byte offset survives a later GC move */
         have_stop = true;
+        sv = VALUE_SLICE_GET(a, 0);                     /* re-read: the #to_int above ran Ruby */
     }
     if (UNLIKELY(!KORB_STRING_P(sv))) {               /* coerce via #to_str, else TypeError (never #to_int) */
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);

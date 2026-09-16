@@ -386,6 +386,7 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", cls);
         }
     }
+    v = VALUE_SLICE_GET(a, 0);                          /* re-read: the #to_r / #to_int probes above ran Ruby */
     const bool first_is_time = KORB_OBJECT_P(v) && korb_ivar_get(c, v, korb_time_t_sym(c->vm)) != KORB_NIL;
     /* a trailing Hash is kwargs (only `in:`), never a positional argument */
     uint32_t alen = VALUE_SLICE_LEN(a);
