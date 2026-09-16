@@ -90,6 +90,147 @@ rubyspec sweep 31296/32009 で **変化した行 0**。gzipreader/rewind は STR
 `builtins/array_enum.c:1364` の `korb_ary_flatten_depth` で、`#to_ary` を dispatch した
 あとの `cr.value` / `cv` を C ローカルの VALUE のまま読んでいる (dispatch を跨いで
 VALUE を保持しない規約違反)。
+## rubyspec 長い尻尾の共通原因 集計 (2026-09-16)
+
+baseline `4c9cd25e` = **pass 31296 / ex 32009 = 97.77%**、
+このセッション終了時 = **pass 31335 / ex 32009 = 97.89%** (退行 0)。
+
+道具は `tools/spec_sweep/{sweep,harvest,bucket}.rb`。 今回 `bucket.rb` のバグを
+1 つ直した: mock の unwrap (`An exception occurred during: Mock.verify_count` の
+外側を剥がす処理) が `An exception occurred during: loading <path>` にも効いて
+しまい、**LoadError 68 件の本文を消して 1 つの空バケツに潰していた**。
+`Mock.verify_count` / `before` / `after` のときだけ剥がすようにし、
+`LoadError:` で始まるブロックは別枠で数えて本体から落とすようにした。
+`bucket.rb` に 3 つ目の view (**backtrace に出る shared spec ファイル**で束ねる)
+を足した — 「1 つの shared spec が N ファイルで落ちる」を正確に名指しする。
+
+### 現在地の内訳 (`harvest.rb 6 <sweep.tsv> raw.json 1 30` = 範囲外を除いた全部)
+
+```
+失敗ブロック 557 / 340 ファイル
+  うち LoadError (stdlib 不在, 直す価値なし)    69 ブロック / 69 ファイル
+  残り                                        488 ブロック / 271 ファイル
+```
+
+LoadError の内訳: syslog 20 / openssl 19 / yaml 9 / objspace 6 / coverage 5 /
+optparse 2 / ripper 2 / rubygems 2 / drb 1 / expect 1 / fiddle 1 / symlink 1。
+
+残り 488 の形:
+
+| 例数/ファイル | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 10 | 11 | 12 | 27 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ファイル数 | 167 | 69 | 18 | 4 | 4 | 3 | 1 | 1 | 1 | 1 | 1 | 1 |
+
+失敗の種類 (メッセージ 1 行目):
+
+| 種類 | 数 |
+|---|---|
+| 素の期待値ずれ (`Expected X == Y`) | 374 |
+| NoMethodError | 51 |
+| NameError | 18 |
+| ArgumentError | 12 |
+| NotImplementedError | 10 |
+| SyntaxError | 5 |
+| Encoding::ConverterNotFoundError | 4 |
+| TypeError | 4 |
+| IO::Buffer::{Allocation,Locked}Error | 5 |
+| その他 | 2 |
+
+**メッセージ署名 (bucket.rb の view 1) は尻尾の原因探しには効かない。**
+`scrub` が引用符の中身と数値を潰すので `Expected "S" == "S"` に 22 ファイルが
+集まるが、中身は全部別の原因。 **役に立つのは view 2 (example 説明文の末尾) と
+view 3 (shared spec)**。 今回直したものは全部 view 2 か view 3 で見つけた。
+
+### 2 ファイル以上にまたがる原因 (view 2 / view 3、現在地)
+
+| ファイル | 例 | 原因 | 状態 |
+|---|---|---|---|
+| 3 | 11 | `Method/Proc/UnboundMethod#syntax_tree` が無い | 未着手 (下記) |
+| 3 | 3 | Set の反復中変更が RuntimeError にならない | **直さないと決定済** |
+| 2 | 6 | `core/argf/shared/gets.rb` — ARGF の in-place edit (`-i`) | 未着手 |
+| 2 | 4 | `Time#{getlocal,localtime}` の Rational 秒 offset | 未着手 (下記) |
+| 2 | 2 | `grapheme_clusters` が ZWJ 絵文字列を分割する (GB11) | 未着手 |
+| 2 | 2 | `Array#inspect`/`Hash#inspect` が `#to_s` の例外を握り潰す | 未着手 (下記) |
+| 2 | 2 | 同 — 結果が default external でないときの扱い | 未着手 |
+| 2 | 2 | `String#{rindex,byterindex}` の `\G` | 未着手 (下記) |
+| 2 | 2 | `UnboundMethod#{bind,bind_call}` 後の module メソッドの super | 未着手 |
+| 2 | 2 | `Float#numerator`/`Numeric#numerator` (巨大 Float の to_r) | 未着手 |
+| 2 | 2 | WeakRef (本物の弱参照が無い) | 未着手 |
+| 2 | 2 | `at_exit`/`END` — 本体がパースエラーのときのメッセージ | 未着手 |
+| 2 | 2 | `Enumerator::Lazy#{chunk,zip}` のネスト lazy | 未着手 |
+
+### この回で直したもの (21 ファイル / 39 例、退行 0)
+
+| ファイル | 例 | 原因 |
+|---|---|---|
+| 6 | 10 | **OS 境界の文字列の encoding** (ENV / readdir) — 下記 |
+| 3 | 3 | ASCII 非互換 encoding (UTF-16/32) の大文字小文字変換 |
+| 2 | 6 | pack/unpack の `x!` / `@!` 整列 (4.1) |
+| 2 | 6 | `Process.{get,set}rlimit` が `#to_str` より先に `#to_int` を呼ぶ |
+| 2 | 4 | `String#unpack{,1}` の負 `offset:` (4.1) |
+| 2 | 2 | 動的 scope の const path 代入 (`a::B::C = c`) の owner 解決 |
+| 2 | 2 | `a.permutation(2)` の Enumerator が配列を凍結していた |
+| 2 | 2 | `Regexp.new` の TypeError 文面 (とクラス名が Object になる件) |
+| 2 | 2 | `send "__method__"` が nil |
+| 2 | 2 | `IO.{readlines,foreach}` が mode 判定より後に区切りを `#to_str` |
+
+一番大きかった **OS 境界** は 3 つの別々の食い違いが 1 つの根に集まっていた:
+`Encoding.find('locale')` が `default_external` を返していた (CRuby では
+`'filesystem'` だけが追従する)、ENV の値が常に UTF-8 tag、readdir の名前が
+`Encoding.default_internal` へ変換されない。 CRuby の
+`rb_external_str_new_with_enc` に相当する経路 (`korb_ext_str_new` /
+`korb_ext_str_conv`, `builtins/transcode.c`) を 1 本入れて env.c の 23 箇所と
+Dir の 2 箇所を通した。 locale と default_internal は `korb_vm` に持たせ、
+prelude の `Encoding.__enc_sync__` が書く (一覧の 1 要素ごとに send しないため)。
+
+### 直せなかったもの (観測と理由)
+
+- [ ] **`Array#inspect` / `Hash#inspect` が `#to_s` の例外を握り潰す** (2 ファイル)
+      観測: `obj#inspect` が非 String を返し `obj#to_s` が raise する要素を入れると、
+      CRuby は例外を伝えるが koruby は `#<O:0x...>` を書いて続ける。
+      機構は分かっている: `korb_fprint_user_inspect` は `#to_s` を**呼んでいる**が
+      (`korb_runtime.c`)、整形器が `void` + `FILE *` で**エラーを返す口が無い**ため
+      `if (r.state != KORB_NORMAL) return false;` で捨てている。
+      直すには `korb_fprint_inspect*` 一式に RESULT を通す必要があり、
+      同じ整形器を例外メッセージ組み立て (`korb_raise_frozen_at` など) も使っている
+      ので、**そこでは握り潰しの方が正しい**。 2 ファイルのために全体を通すのは
+      割に合わないと判断した。
+- [ ] **`__callee__` が alias 名を返さない** (1 ファイル 1 例)
+      観測: `def ca; __callee__; end; alias_method :cb, :ca` で `T.new.cb` は
+      CRuby `:cb`、koruby `:ca`。 `send "__callee__"` 経由なら **フレームが
+      alias 名を持っているので正しく `:cb` になる** (この回の修正で確認済み)。
+      裸の `__callee__` は `parse.c` がパース時に定義名へ畳むため嘘になる。
+      直すには `__callee__` 専用のランタイムノード (baked な字句的答えを引数に
+      持ち、フレームを優先する) が要る = **SD が 1 つ増える**。
+      [[feedback_no_wrapper_nodes]] の趣旨からも 1 例には見合わない。
+- [ ] **`String#{rindex,byterindex}` の `\G`** (2 ファイル 2 例)
+      観測: `"helloYOU.".rindex(/YOU\G/, 8)` が CRuby `5`、koruby `nil`;
+      `"helloworldhello".rindex(/\Ghello/, 5)` が CRuby `nil`、koruby `0`。
+      koruby の `\G` は「マッチ開始位置」に固定されているが、rindex は開始位置から
+      **後ろ向きに**走査するので、CRuby は `\G` を*与えられた pos* に固定したまま
+      各候補を試す。 astrogre 側 (`\G` の錨の渡し方) と rindex の走査の両方に
+      手が要るので着手しなかった。
+- [ ] **`Method#syntax_tree`** (3 ファイル 11 例) — prism を Ruby 側に露出する
+      必要がある。 koruby は prism を vendor しているが Prism::Node を Ruby の
+      オブジェクトとして持っていない。 単独の作業として切り出すべき大きさ。
+- [ ] **`Time#{getlocal,localtime}` の Rational 秒 offset** (2 ファイル 4 例)
+      観測: `t.getlocal(Rational(-1,2) + 3600)` が CRuby
+      `2007-01-09 12:59:59.5 +0100`、koruby は秒に丸めて `13:00:00`。
+      utc_offset を整数秒で持っている構造の問題。
+
+### pack の `@` と `buffer:` (この回で気づいた既存のずれ、未修正)
+
+`@!` を入れるとき実測して分かったこと: koruby の pack は `buffer:` を
+**最後に連結する**だけで、途中の `@N` は「この pack の出力の先頭」から数えている。
+CRuby は `buffer:` の中身も含めた**出力全体の先頭**から数える。
+
+```ruby
+b = +"zz"; [1,2].pack("C @4 C", buffer: b)
+# CRuby : b == "zz\x01\x00\x02"   (@4 は絶対位置 4 = 詰め物 1 バイト)
+```
+`@!` の方は今回 `bufbase` を足して CRuby に合わせたが、**素の `@` は据え置き**
+(spec が無く、先頭 `@N` を特別扱いする既存のハックと絡むため)。
+直すなら `bufbase` をループに通して `@` も同じ基準にすること。
 
 ## rubyspec の「1〜2 例落ち」長い尻尾の共通原因 集計 (2026-09-13)
 
