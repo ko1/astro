@@ -307,12 +307,13 @@ static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const VALUE v0 = VALUE_REF_GET(self);
-    /* A plain object with instance variables inspects as "#<Class:0x.. @a=1, @b=2>"
-     * (the default #inspect, distinct from #to_s which omits the ivars).  Struct/
-     * Data render their members via the shared inspect formatter below. */
+    /* A plain object inspects as "#<Class:0x.. @a=1, @b=2>" — and as "#<Class:0x..>"
+     * with no ivars.  The zero-ivar case must NOT fall through to the generic
+     * formatter below: that one ends at #to_s, but CRuby's default #inspect never
+     * consults #to_s (`class T; def to_s = "TS"; end; T.new.inspect` is
+     * "#<T:0x…>", not "TS").  Struct/Data render their members below. */
     if (KORB_OBJECT_P(v0) && VAL2OBJ(v0)->klass != KORB_NIL &&
-        !KORB_ARRAY_P(VAL2CLASS(VAL2OBJ(v0)->klass)->members) &&
-        c->vm->shapes[VAL2OBJ(v0)->shape_id].ivar_count > 0) {
+        !KORB_ARRAY_P(VAL2CLASS(VAL2OBJ(v0)->klass)->members)) {
         char *buf = NULL; size_t sz = 0;
         FILE *ms = open_memstream(&buf, &sz);
         if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
