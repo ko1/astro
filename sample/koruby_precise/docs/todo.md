@@ -84,12 +84,31 @@ sklass / objivar と同じく object 列は強参照なので、id を聞かれ�
 rubyspec sweep 31296/32009 で **変化した行 0**。gzipreader/rewind は STRESS+PURGE で 3/3 PASS
 に回復。optcarrot AOT checksum 59662、DOOM plain/AOT 17930386881013214317。
 
-## 既知バグ (未修正): STRESS+PURGE で `Array#flatten` が SEGV
+## 既知バグ (修正済 2026-09-16): STRESS+PURGE で `Array#flatten` が SEGV
 
-`t/hand/core_conv_mm_aware.rb` が STRESS+PURGE で落ちる (HEAD でも落ちるので既存)。
-`builtins/array_enum.c:1364` の `korb_ary_flatten_depth` で、`#to_ary` を dispatch した
-あとの `cr.value` / `cv` を C ローカルの VALUE のまま読んでいる (dispatch を跨いで
-VALUE を保持しない規約違反)。
+`t/hand/core_conv_mm_aware.rb` が STRESS+PURGE で落ちていた。`korb_ary_flatten_depth`
+(builtins/array_enum.c) が要素 `e` を C ローカルの VALUE のまま持ったまま `#to_ary` を
+dispatch し、変換できなかった場合にその stale な `e` を `KORB_ARRAY_P` / `korb_ary_push_val`
+に渡していた。`slots[0]` に park して dispatch 後に読み直す。エラー文の受け手名も
+dispatch 後の scratch (`slots[0]`) ではなく `e` を使うようにした。
+
+## 未修正: 変換失敗の TypeError 文面が CRuby と系統的に違う
+
+CRuby は「`#to_X` は呼べたが戻り値の型が違う」とき
+`can't convert <Recv> to <Target> (<Recv>#to_X gives <Result>)` を出す
+(`Integer()` と `%d` だけは "gives" 節なしの `can't convert C into Integer`)。
+koruby は 3 通りにずれる。実測 (2026-09-16、`to_ary`/`to_str`/`to_int`/`to_proc`/`to_hash`/`to_a`
+を持つが違う型を返すクラスで 19 形):
+
+1. 前置詞が `into`。CRuby は "gives" 形のときだけ `to`。flatten / Array() / Regexp.new /
+   `&proc` / splat の 5 箇所が該当。
+2. 受け手のクラス名が `Object` になる (Array()、sub、pack、merge、concat)。
+   dispatch のあとの scratch スロットを `korb_coerce_name` に渡しているため。
+3. そもそも "gives" 形でなく `no implicit conversion of X into Y` を出す
+   (concat / `[] + x` / `"x" + y` / `"x" * n` / `ary[n]` / sub / first / pack /
+   merge / values_at)。「`to_X` を持たない」と「`to_X` が違う型を返した」を
+   変換ヘルパが区別していない。
+4. `String(B.new)` (B#to_str が Integer を返す) が **例外を上げない**。
 ## rubyspec 長い尻尾の共通原因 集計 (2026-09-16)
 
 baseline `4c9cd25e` = **pass 31296 / ex 32009 = 97.77%**、

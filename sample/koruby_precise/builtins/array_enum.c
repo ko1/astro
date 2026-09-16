@@ -1370,12 +1370,14 @@ static RESULT korb_ary_flatten_depth(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_
     for (uint32_t i = 0; i < n; i++) {
         VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(src))->items)[i];
         if (depth != 0 && !KORB_ARRAY_P(e) && KORB_OBJECT_P(e)) {        /* non-Array element with #to_ary → flatten its result */
+            slots[0] = e;                                    /* park: the probe below runs Ruby, so `e` cannot stay a C local */
             VALUE cv = e;                                    /* rb_check_array_type: respond_to?- and method_missing-aware */
-            const RESULT cr = korb_check_funcall(c, slots, &cv, korb_intern(c->vm, "to_ary", 6));
+            const RESULT cr = korb_check_funcall(c, slots + 1, &cv, korb_intern(c->vm, "to_ary", 6));
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            e = slots[0];                                    /* re-read the (possibly moved) element */
             if (cr.value == KORB_TRUE && cv != KORB_NIL) {   /* nil → not coercible: leave the element as a leaf */
                 if (UNLIKELY(!KORB_ARRAY_P(cv)))
-                    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Array (%s#to_ary gives %s)", korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_coerce_name(c, cv));
+                    return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s into Array (%s#to_ary gives %s)", korb_coerce_name(c, e), korb_coerce_name(c, e), korb_coerce_name(c, cv));
                 e = cv;
             }
         }
