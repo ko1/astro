@@ -5781,24 +5781,49 @@ Symbol 側は encoding を持てている (`"x".b.to_sym != :x` は一致する)
 切り替える — ただし ASCII のみの名前を US-ASCII にする規則も要る (全 Symbol の
 encoding が動くので影響範囲が広い)。
 
-## 既知の間欠バグ: fork 系 spec が SEGV することがある
+## 未修正バグ: doom-aot が焼いた preload_store が mspec を SEGV させる
 
 `core/kernel/fork_spec.rb` / `core/process/fork_spec.rb` /
-`core/process/setpgid_spec.rb` が、同じバイナリ・同じ手順でも通ったり
-SEGV (exit 139) したりする。2026-09-17 の sweep 9 本のうち 2 本で WFAIL。
+`core/process/setpgid_spec.rb` が SEGV (exit 139) する。当初「間欠」に見えたが、
+**preload_store の中身で決まる決定的な挙動**だった。
 
-再現したときの frame (gdb, `--plain` でなく通常モード):
+再現手順 (2026-09-17 に確定):
 
 ```
-#0  0x00005555456b78e0 in ?? ()                    ← 壊れた関数ポインタ
-#1  korb_invoke_entry_ic (..., mid=957) at node.h:1013
-#2  EVAL_node_send ... node_eval.c:2267
-    ("[Detaching after fork from child process]" の直後、親プロセス側)
+cd sample/koruby_precise
+rm -rf preload_store && ./koruby_precise -e 'p 1'     # 最小の焼き方
+(cd ~/ruby/src/master/spec/ruby && MSPEC_RUNNER=1 SPEC_TEMP_DIR=$(mktemp -d) \
+   ./koruby_precise tools/mspec_launch.rb core/process/setpgid_spec.rb)   # → 通る
+
+make doom-aot                                          # preload_store を焼き直す
+(同じコマンド)                                          # → 必ず SEGV
 ```
 
-inline cache が持っている entry dispatcher のポインタが壊れている形。
-stale store ではない (crash 時 code_store 無し、preload_store はバイナリより新しい)。
-**この session の変更による退行ではない**ことは、変更前のバイナリ
-(worktree `b33a05cf`) で同じ SEGV が出ることで確認済み。
-別 worktree の `curframe` ブランチに「fork 系 spec の間欠 SEGV は stale store
-だったと記録」というコミットがあるが、今回はそれには当たらない。
+判明していること:
+
+- `--plain` は通る。SD を使うモードだけ落ちる。
+- `ASTRO_CS_LOADER_ONLY` は 0 / 1 のどちらでも落ちる (hole-pool ローダ固有ではない)。
+- crash は **ノードの dispatcher そのものが不正なアドレス**を指している:
+  ```
+  #0  0x00005555456b78e0 in ?? ()
+  #1  korb_invoke_entry_ic (..., mid=957 "state") at node.h:1013
+  ic = {serial=3156, m=0x…, body=0x555555af02e0, dispatch=0x5555456b78e0}
+  ic->body->head.dispatcher      == 0x5555456b78e0   (IC は body と一致)
+  ic->body->head.dispatcher_name == "SD_367e5f89b68ef8e5"
+  ```
+  つまり inline cache の stale ではなく、**ローダが SD をマップされていない
+  アドレスに束ねている**。
+- その SD は `EVAL_node_ivar_get` の pool SD。`preload_store/all.so` に
+  `SD_367e5f89b68ef8e5_desc` (R) はあるが `T SD_…` は無い — pool 方式では
+  全 SD がそうなので (`nm all.so | grep -c ' T SD_'` = 0)、それ自体は正常。
+- doom-aot が焼いた store は SD 2095 個。最小の store はずっと少ない。
+  **store のサイズ/内容に依存する**ので、pool の配置 (オフセット幅・容量) を
+  疑うのが次の一手。
+
+**この session の変更による退行ではない**: 変更前のバイナリ (worktree `b33a05cf`)
+でも同じ SEGV が出る。`const char *` オペランドをハッシュ対象外にする案も試したが
+**直らなかった** (revert 済み)。
+
+**計測上の注意**: `make doom-aot` の後に sweep を回すと、この 3 ファイルが WFAIL
+になる。2026-09-17 の sweep 9 本のうち 2 本がその状態だった。ゲートを取るときは
+doom-aot の後に `rm -rf preload_store` してから sweep する。
