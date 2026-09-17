@@ -269,7 +269,7 @@ module ASTroGen
           when 'uintptr_t'
             "    fprintf(fp, \"(uintptr_t)%lluULL\", (unsigned long long)#{field});"
           when 'double'
-            "    fprintf(fp, \"%.17g\", #{field});"
+            "    astro_fprint_double(fp, #{field});"   # not %.17g: keeps -0.0's sign
           when 'const char *'
             "    astro_fprintf_cstr(fp, #{field});"
           when 'VALUE'
@@ -355,7 +355,9 @@ module ASTroGen
           when 'const char *'
             "    astro_fprint_cstr(fp, n->u.#{name}.#{self.name});"
           when 'double'
-            "    fprintf(fp, \"        %.17g\", n->u.#{name}.#{self.name});"
+            # NOT plain %.17g: "-0" would be an integer token and lose the sign
+            # of negative zero (astro_fprint_double).
+            "    fputs(\"        \", fp); astro_fprint_double(fp, n->u.#{name}.#{self.name});"
           when 'void *'
             # Pointers can't be safely baked into a code-store SD —
             # the value is per-process.  Emit NULL; nodes that take

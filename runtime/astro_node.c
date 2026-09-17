@@ -152,6 +152,27 @@ DUMP(FILE *fp, NODE *n, bool oneline)
 }
 
 // ---------------------------------------------------------------------------
+// Print a double as a C source literal (used by generated node_specialize.c)
+// ---------------------------------------------------------------------------
+
+// "%.17g" round-trips the value but is NOT always a floating literal: when the
+// shortest form has no '.' or exponent the token is an INTEGER ("0", "-0", "3"),
+// and `-0` converts to +0.0 — the sign of negative zero is lost, so a baked
+// `-0.0` literal comes back as `0.0`.  Non-finite values have no literal syntax
+// at all.  Both are handled here.
+__attribute__((unused)) static void
+astro_fprint_double(FILE *fp, double d)
+{
+    if (d != d)                       { fputs("(0.0/0.0)", fp); return; }   // NaN
+    if (d > 1.7976931348623157e308)   { fputs("(1.0/0.0)", fp);  return; }  // +Inf
+    if (d < -1.7976931348623157e308)  { fputs("(-1.0/0.0)", fp); return; }  // -Inf
+    char buf[40];
+    snprintf(buf, sizeof buf, "%.17g", d);
+    fputs(buf, fp);
+    if (strpbrk(buf, ".eE") == NULL) fputs(".0", fp);   // make an integer-looking token a double
+}
+
+// ---------------------------------------------------------------------------
 // Print a C string literal with proper escaping (used by generated node_specialize.c)
 // ---------------------------------------------------------------------------
 

@@ -5780,3 +5780,25 @@ Symbol 側は encoding を持てている (`"x".b.to_sym != :x` は一致する)
 直すなら parse.c の名前 intern を `korb_intern_enc(vm, …, tc->src_enc)` に
 切り替える — ただし ASCII のみの名前を US-ASCII にする規則も要る (全 Symbol の
 encoding が動くので影響範囲が広い)。
+
+## 既知の間欠バグ: fork 系 spec が SEGV することがある
+
+`core/kernel/fork_spec.rb` / `core/process/fork_spec.rb` /
+`core/process/setpgid_spec.rb` が、同じバイナリ・同じ手順でも通ったり
+SEGV (exit 139) したりする。2026-09-17 の sweep 9 本のうち 2 本で WFAIL。
+
+再現したときの frame (gdb, `--plain` でなく通常モード):
+
+```
+#0  0x00005555456b78e0 in ?? ()                    ← 壊れた関数ポインタ
+#1  korb_invoke_entry_ic (..., mid=957) at node.h:1013
+#2  EVAL_node_send ... node_eval.c:2267
+    ("[Detaching after fork from child process]" の直後、親プロセス側)
+```
+
+inline cache が持っている entry dispatcher のポインタが壊れている形。
+stale store ではない (crash 時 code_store 無し、preload_store はバイナリより新しい)。
+**この session の変更による退行ではない**ことは、変更前のバイナリ
+(worktree `b33a05cf`) で同じ SEGV が出ることで確認済み。
+別 worktree の `curframe` ブランチに「fork 系 spec の間欠 SEGV は stale store
+だったと記録」というコミットがあるが、今回はそれには当たらない。
