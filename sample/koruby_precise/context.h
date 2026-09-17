@@ -1345,6 +1345,11 @@ struct CTX_struct {
     VALUE    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
     uint32_t  errinfo_live;          /* GC-scan depth: max over the running + all suspended threads */
+    /* An exception a container's element #inspect / #to_s raised.  The formatter
+     * chain writes to a FILE* and cannot return a RESULT, so it parks the
+     * exception here and the #inspect entry point re-raises it (CRuby does not
+     * swallow it).  KORB_NIL = none. */
+    VALUE     inspect_exc;
     VALUE     throw_tag;     /* active `throw` tag while a KORB_THROW unwinds (GC-visited) */
     VALUE    *catch_tags;    /* stack of tags of the active `catch` blocks (GC-visited) */
     uint32_t  catch_n, catch_cap;
@@ -1451,6 +1456,8 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->refinements);            \
     if ((c)->refine_sealed != KORB_NIL)                                      \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->refine_sealed);          \
+    if ((c)->inspect_exc != KORB_NIL)                                        \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->inspect_exc);            \
     for (uint32_t _ci = 0; _ci < (c)->cref_n; _ci++)                         \
         if ((c)->cref_saved[_ci] != KORB_NIL)                                \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->cref_saved[_ci]);     \

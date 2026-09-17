@@ -1299,6 +1299,7 @@ korb_str_repeat_ref(CTX *c, VALUE *slots, VALUE_REF src, korb_sword_t cnt, uint3
 static uint32_t korb_fmt_int(korb_sword_t n, int base, char *buf);   /* defined below */
 
 void korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v);   /* fwd: slots-aware inspect/to_s (container elements dispatch #inspect) */
+static RESULT korb_inspect_take_exc(CTX *c);   /* fwd: re-raise what an element's #inspect raised */
 static void korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v);
 /* String interpolation step: acc (a String) + to_s(part).  String parts take
  * the direct concat path; other values render through korb_fprint_to_s_s (whose
@@ -13787,6 +13788,20 @@ korb_fprint_range(CTX *c, FILE *fp, VALUE v, bool insp)
 #define KORB_PRINT_DEPTH_MAX 48
 static void korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth);
 
+/* Park an exception an element's #inspect / #to_s raised, for the #inspect entry
+ * point to re-raise once the (FILE*-based, RESULT-less) formatter has finished.
+ * First one wins: the outermost entry point re-raises what the innermost hit. */
+static void korb_inspect_park_exc(CTX *c, RESULT r) {
+    if (r.state == KORB_RAISE && c->inspect_exc == KORB_NIL) c->inspect_exc = r.value;
+}
+/* The parked exception, as a RESULT to return, or OK(nil) when there is none. */
+static RESULT korb_inspect_take_exc(CTX *c) {
+    if (LIKELY(c->inspect_exc == KORB_NIL)) return RESULT_OK(KORB_NIL);
+    const VALUE e = c->inspect_exc;
+    c->inspect_exc = KORB_NIL;
+    return RESULT_RAISE_(e);
+}
+
 /* Render a plain user object via its (possibly overridden) #inspect.  Returns
  * true if it dispatched and wrote the result; false if the caller should use the
  * default "#<Class>" form.  `slots` must be a rooted region (>= 4 slots); NULL
@@ -13800,11 +13815,12 @@ korb_fprint_user_inspect(CTX *c, VALUE *slots, FILE *fp, VALUE v)
                                                                   * so a false return leaves the caller a live
                                                                   * `slots[0]` to re-read (its `v` is stale). */
     RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
-    if (r.state != KORB_NORMAL) return false;
+    if (r.state != KORB_NORMAL) { korb_inspect_park_exc(c, r); return false; }
     if (!KORB_STRING_P(r.value)) {                               /* non-String #inspect → coerce via #to_s (never #to_str) */
         slots[1] = r.value;
         RESULT r2 = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
-        if (r2.state != KORB_NORMAL || !KORB_STRING_P(r2.value)) return false;   /* → default representation */
+        if (r2.state != KORB_NORMAL) { korb_inspect_park_exc(c, r2); return false; }
+        if (!KORB_STRING_P(r2.value)) return false;              /* → default representation */
         fwrite(korb_strbuf_data(VAL2STR(r2.value)->buf), 1, VAL2STR(r2.value)->len, fp);
         return true;
     }
@@ -13911,6 +13927,14 @@ korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
             }
             if (korb_fprint_user_inspect(c, slots, fp, v)) return;   /* plain object → its (overridable) #inspect */
             if (slots) v = slots[0];   /* it dispatched Ruby before giving up: re-read the (moved) object */
+            if (UNLIKELY(c->inspect_exc != KORB_NIL)) {   /* its #inspect/#to_s raised: write the default form and
+                                                          * stop — the fall-through would dispatch #to_s again, and
+                                                          * the entry point re-raises what was parked. */
+                fputs("#<", fp);
+                korb_fprint_class_desc(c, fp, VAL2OBJ(v)->klass);
+                fprintf(fp, ":0x%016lx>", (unsigned long)(uintptr_t)v);
+                return;
+            }
             break;
           }
           default: break;
@@ -15996,6 +16020,7 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
     if (n == 0) return RESULT_OK(KORB_NIL);              /* p() → nil, no output */
+    c->inspect_exc = KORB_NIL;                           /* see korb_m_obj_inspect */
     /* Always render into memory first: the inspect printers are FILE*-based, but
      * the bytes have to reach the same sink Kernel#puts uses, or the two
      * buffers would deliver a program's output out of order. */
@@ -16012,7 +16037,13 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
             RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) { fclose(ms); free(buf); return r; }
             if (LIKELY(KORB_STRING_P(r.value))) fwrite(korb_strbuf_data(VAL2STR(r.value)->buf), 1, VAL2STR(r.value)->len, out);
-            else korb_fprint_inspect(c, out, r.value);
+            else {                                   /* non-String #inspect → #to_s, as rb_inspect does */
+                slots[1] = r.value;
+                RESULT r2 = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(r2.state != KORB_NORMAL)) { fclose(ms); free(buf); return r2; }
+                if (KORB_STRING_P(r2.value)) fwrite(korb_strbuf_data(VAL2STR(r2.value)->buf), 1, VAL2STR(r2.value)->len, out);
+                else korb_fprint_inspect(c, out, slots[1]);
+            }
         } else {
             korb_fprint_inspect_s(c, slots, out, v);   /* containers dispatch element #inspect */
         }
@@ -16025,6 +16056,8 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (def) { const RESULT wr = korb_io_wr_checked(c, slots, korb_io_std_rep(c->vm, 1), buf, sz); if (UNLIKELY(wr.state != KORB_NORMAL)) { free(buf); return wr; } }
     else { RESULT er = korb_out_emit(c, slots, outobj, 1, buf, sz); if (UNLIKELY(er.state != KORB_NORMAL)) { free(buf); return er; } }
     free(buf);
+    { const RESULT pe = korb_inspect_take_exc(c);   /* an argument's #inspect raised: propagate it */
+      if (UNLIKELY(pe.state != KORB_NORMAL)) return pe; }
     if (!def) {                                          /* CRuby's rb_p flushes; a File sink would otherwise hold the bytes */
         bool def2;
         slots[0] = korb_out_target(c, "$stdout", 7, &def2);   /* re-read: #write above ran Ruby */

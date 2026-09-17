@@ -5742,3 +5742,23 @@ astrogen のノードハッシュは `hash_cstr(name_syms)` を通る。parse.c 
 通る**ので (1) 最初の NUL で切れる (2) バッファの未初期化部分を読む、の 2 つの罠が
 残っている。新しく同じ形のオペランドを足すときは必ず calloc し、末尾に余白を
 作らないこと。
+
+## 未実装: Array#inspect / Hash#inspect の結果 encoding — 4 examples
+
+`core/array/inspect_spec.rb` / `core/hash/inspect_spec.rb` に各 2 例。
+
+CRuby の規則:
+- `String#inspect` の結果 encoding は **resenc** = `default_internal || default_external`
+  (ASCII 互換なら、そうでなければ US-ASCII)。
+- `rb_ary_inspect` は US-ASCII のバッファで始め、**最初の要素で `rb_enc_copy(str, s)`**
+  してその要素の inspect 結果の encoding をバッファに移す。だから
+  `[jp_euc, utf8].inspect.encoding` は default_external (UTF-8) になり、
+  `[].inspect` は US-ASCII のまま。
+- 要素の inspect 結果が結果 encoding と違い ASCII-only でもないとき、非 ASCII は
+  `\uXXXX` に**エスケープし直す**。`[utf_16be_str].inspect` が
+  `'["utf_16be あ"]'` になるのはこれ。
+
+koruby の formatter は FILE* に UTF-8 バイトを書き、`korb_m_obj_inspect` が
+「全部 7bit なら US-ASCII」とだけタグ付けしている。上記を満たすには
+formatter に結果 encoding の概念を入れて、要素の inspect 結果を結果 encoding へ
+トランスコード/エスケープする必要がある。

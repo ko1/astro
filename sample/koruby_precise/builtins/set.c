@@ -306,6 +306,10 @@ static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    /* Start clean: a formatter call that does NOT re-raise (korb_raise_frozen_at
+     * builds its message this way) can leave one parked, and it must not surface
+     * here.  Nested #inspect clears before anything of ours is parked. */
+    c->inspect_exc = KORB_NIL;
     VALUE v0 = VALUE_REF_GET(self);
     /* A plain object inspects as "#<Class:0x.. @a=1, @b=2>" — and as "#<Class:0x..>"
      * with no ivars.  The zero-ivar case must NOT fall through to the generic
@@ -385,6 +389,8 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         }
         fputc('>', ms);
         fclose(ms);
+        { const RESULT pe = korb_inspect_take_exc(c);   /* an ivar's #inspect raised: CRuby does not swallow it */
+          if (UNLIKELY(pe.state != KORB_NORMAL)) { free(buf); return pe; } }
         RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
         free(buf);
         return r;
@@ -394,6 +400,8 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     korb_fprint_inspect_s(c, slots, ms, VALUE_REF_GET(self));   /* containers dispatch element #inspect */
     fclose(ms);
+    { const RESULT pe = korb_inspect_take_exc(c);   /* an element's #inspect raised: CRuby does not swallow it */
+      if (UNLIKELY(pe.state != KORB_NORMAL)) { free(buf); return pe; } }
     /* CRuby tags an all-7-bit #inspect result US-ASCII (`[].inspect`, `{}.inspect`) */
     bool ascii = true;
     for (size_t i = 0; i < sz && ascii; i++) if ((unsigned char)buf[i] >= 0x80) ascii = false;
