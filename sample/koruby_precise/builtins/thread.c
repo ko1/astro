@@ -636,6 +636,34 @@ korb_bi_sleep(CTX *c, VALUE *slots, VALUE_SLICE args)
 }
 
 /* ---- thread body (runs on the thread's own stacks) ----------------------- */
+static RESULT korb_m_thread_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (defined below) */
+static VALUE  korb_out_target(CTX *c, const char *name, uint32_t len, bool *is_default);   /* fwd (korb_runtime.c) */
+static RESULT korb_out_emit(CTX *c, VALUE *slots, VALUE out, uint32_t stdidx, const char *data, size_t len);   /* fwd */
+static void   korb_report_uncaught_fp(CTX *c, FILE *fp, VALUE exc, bool synth_main);   /* fwd (korb_runtime.c) */
+/* report_on_exception: CRuby prefixes the thread's own inspect line and sends the
+ * whole thing through $stderr (a test harness replaces it), so render to memory
+ * first.  The exception is read back from t->exc — building the inspect String
+ * allocates, so a C local would go stale. */
+static void
+korb_thread_report(CTX *c, VALUE *base, struct korb_thread *t)
+{
+    base[0] = t->thval;
+    const RESULT ts = korb_m_thread_to_s(c, base + 1, VALUE_REF_AT(&base[0]), VALUE_SLICE_MAKE(NULL, 0));
+    char *rbuf = NULL; size_t rlen = 0;
+    FILE *const ms = open_memstream(&rbuf, &rlen);
+    if (ms == NULL) return;
+    if (ts.state == KORB_NORMAL && KORB_STRING_P(ts.value))
+        fprintf(ms, "%.*s terminated with exception (report_on_exception is true):\n",
+                (int)VAL2STR(ts.value)->len, korb_strbuf_data(VAL2STR(ts.value)->buf));
+    korb_report_uncaught_fp(c, ms, t->exc, false);   /* no '<main>' closer: a thread's bottom is its block */
+    fclose(ms);
+    bool def;
+    const VALUE out = korb_out_target(c, "$stderr", 7, &def);
+    if (def) { if (rlen) (void)fwrite(rbuf, 1, rlen, stderr); }
+    else     { (void)korb_out_emit(c, base, out, 2, rbuf ? rbuf : "", rlen); }
+    free(rbuf);
+}
+
 static void
 korb_thread_trampoline(unsigned hi, unsigned lo)
 {
@@ -662,11 +690,10 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
             /* SystemExit ends the whole program, so it is delivered to the main
              * thread even without abort_on_exception (CRuby). */
             const bool sysexit = korb_system_exit_status(c, r.value) >= 0;
+            if (t->roe && !sysexit) korb_thread_report(c, base, t);   /* report BEFORE the hand-off (CRuby) */
             if (t->aoe || c->vm->thread_aoe_global || sysexit) {   /* abort_on_exception: main へ転送 */
                 if (c->vm->main_thread != t)
-                    (void)korb_thread_interrupt(c, c->slots, c->vm->main_thread, r.value);
-            } else if (t->roe) {
-                korb_report_uncaught(c, r.value);           /* report_on_exception */
+                    (void)korb_thread_interrupt(c, c->slots, c->vm->main_thread, t->exc);
             }
         }
     } else {
