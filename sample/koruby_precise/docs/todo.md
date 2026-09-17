@@ -5762,3 +5762,21 @@ koruby の formatter は FILE* に UTF-8 バイトを書き、`korb_m_obj_inspec
 「全部 7bit なら US-ASCII」とだけタグ付けしている。上記を満たすには
 formatter に結果 encoding の概念を入れて、要素の inspect 結果を結果 encoding へ
 トランスコード/エスケープする必要がある。
+
+## 未実装: 識別子・定数名の Symbol が source encoding を持たない
+
+`core/kernel/eval_spec.rb` の "ignores the magic encoding comment if it is after a
+frozen_string_literal magic comment" 1 例。
+
+2026-09-17 に eval の source encoding (String の encoding を prism に渡す) と
+「マジックコメントは 1 行目だけ」の規則を入れたので、**文字列リテラル**の encoding は
+CRuby と完全一致するようになった。残るのは **識別子 / 定数名の Symbol** で、
+parse.c は `korb_intern()` (= 常に UTF-8) で intern している。CRuby は
+source encoding で intern する (ASCII だけの名前は US-ASCII)。
+
+そのため BINARY のソースを eval して `Vπx = 1` すると、CRuby は
+`:"V\xCF\x80x"` (ASCII-8BIT)、koruby は `:Vπx` (UTF-8) という別の Symbol になる。
+Symbol 側は encoding を持てている (`"x".b.to_sym != :x` は一致する) ので、
+直すなら parse.c の名前 intern を `korb_intern_enc(vm, …, tc->src_enc)` に
+切り替える — ただし ASCII のみの名前を US-ASCII にする規則も要る (全 Symbol の
+encoding が動くので影響範囲が広い)。

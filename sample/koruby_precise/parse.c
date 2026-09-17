@@ -135,18 +135,45 @@ kp_is_eval_alias(const struct kp_ctx *tc, pm_constant_id_t name)
     return false;
 }
 
-/* The file's `# encoding:` magic comment, as prism resolved it, mapped onto the
+/* Is there an `# encoding:` magic comment where CRuby looks for one? */
+static bool
+kp_enc_comment_first_line(const char *const src, const size_t len)
+{
+    size_t i = 0;
+    if (len >= 2 && src[0] == '#' && src[1] == '!') {          /* a shebang lets it slip to line 2 */
+        while (i < len && src[i] != '\n') i++;
+        if (i < len) i++;
+    }
+    if (i >= len || src[i] != '#') return false;
+    size_t eol = i;
+    while (eol < len && src[eol] != '\n') eol++;
+    /* `coding` — with any prefix (encoding:, fileencoding=, -*- coding: -*-) —
+     * followed by ':' or '=' is what CRuby's parser_magic_comment accepts. */
+    for (size_t k = i; k + 6 <= eol; k++) {
+        if (strncasecmp(src + k, "coding", 6) != 0) continue;   /* `# CODING:` is accepted too */
+        size_t t = k + 6;
+        while (t < eol && (src[t] == ' ' || src[t] == '\t')) t++;
+        if (t < eol && (src[t] == ':' || src[t] == '=')) return true;
+    }
+    return false;
+}
+
+/* The source's `# encoding:` magic comment, as prism resolved it, mapped onto the
  * string encoding tag (a name koruby has no tag for is registered on the spot;
  * the literal's bytes are unaffected either way). */
 static uint8_t
-kp_src_enc(CTX *c, const pm_parser_t *parser)
+kp_src_enc(CTX *c, const pm_parser_t *parser, const char *const src, const size_t len, const char *const seed)
 {
+    /* prism honours an `# encoding:` magic comment anywhere in the leading
+     * comment block; CRuby only on the first line (second after a shebang), so
+     * the position is checked here.  `seed` is the encoding the source already
+     * had (eval's String); NULL = the parser default. */
+    const char *const name = (parser->encoding && kp_enc_comment_first_line(src, len)) ? parser->encoding->name : NULL;
     /* -K<letter> sets the script encoding too, unless a magic comment already
-     * picked one (prism reports UTF-8 for "no comment"). */
-    const char *const name = parser->encoding ? parser->encoding->name : NULL;
+     * picked one. */
     if (OPTION.kcode && (name == NULL || strcmp(name, "UTF-8") == 0))
         return (uint8_t)korb_enc_index_pub(c->vm, OPTION.kcode);
-    if (name == NULL) return KORB_ENC_UTF8;
+    if (name == NULL) return seed ? (uint8_t)korb_enc_index_pub(c->vm, seed) : KORB_ENC_UTF8;
     return (uint8_t)korb_enc_index_pub(c->vm, name);
 }
 
@@ -5663,12 +5690,17 @@ kp_fsl_false(const char *src, size_t len)
 }
 
 NODE *
-koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, bool exit_on_error)
+koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, bool exit_on_error,
+                       const char *src_enc)
 {
     pm_parser_t parser;
     pm_options_t options = { 0 };
     if (OPTION.frozen_literals) pm_options_frozen_string_literal_set(&options, true);   /* --enable-frozen-string-literal */
     pm_options_filepath_set(&options, fname);
+    /* eval(str): the program starts in the STRING's encoding, which a magic
+     * comment on the first line may then override (prism applies the same
+     * first-line rule CRuby does).  NULL = the parser's own default (UTF-8). */
+    if (src_enc) pm_options_encoding_set(&options, src_enc);
     pm_options_line_set(&options, first_line);
 
     pm_parser_init(&parser, (const uint8_t *)src, len, &options);
@@ -5697,7 +5729,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
         .parser = &parser,
         .c = c,
         .fname = fname,
-        .src_enc = kp_src_enc(c, &parser),
+        .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
         .fsl_false = kp_fsl_false(src, len),
     };
     NODE *ast = transduce(&tc, root);
@@ -5729,7 +5761,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
 NODE *
 koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool exit_on_error)
 {
-    return koruby_parse_source_at(c, src, len, fname, 1, exit_on_error);
+    return koruby_parse_source_at(c, src, len, fname, 1, exit_on_error, NULL);
 }
 
 /* Parse `src` for eval(str, binding): the binding's local names are declared as
@@ -5738,13 +5770,17 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool
  * set to the eval program's frame (caller seeds those slots from the binding and
  * writes them back).  NULL on syntax error. */
 NODE *
-koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line,
+koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, const char *src_enc,
                           const uint32_t *name_syms, uint32_t name_cnt, uint32_t method_mid)
 {
     pm_parser_t parser;
     pm_options_t options = { 0 };
     if (OPTION.frozen_literals) pm_options_frozen_string_literal_set(&options, true);   /* --enable-frozen-string-literal */
     pm_options_filepath_set(&options, fname);
+    /* eval(str): the program starts in the STRING's encoding, which a magic
+     * comment on the first line may then override (prism applies the same
+     * first-line rule CRuby does).  NULL = the parser's own default (UTF-8). */
+    if (src_enc) pm_options_encoding_set(&options, src_enc);
     pm_options_line_set(&options, first_line);
     /* declare the binding's locals so the eval code recognises them as locals
      * (prism folds a single declared scope into the parsed program's own scope). */
@@ -5762,7 +5798,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
         pm_node_destroy(&parser, root); pm_parser_free(&parser); pm_options_free(&options);
         return NULL;
     }
-    struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser),
+    struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
                          .fsl_false = kp_fsl_false(src, len), .eval_method_mid = method_mid };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();

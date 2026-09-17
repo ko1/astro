@@ -16080,7 +16080,8 @@ static RESULT
 korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line, VALUE cref)
 {
     const KorbString *const s = VAL2STR(str);
-    NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, line, false);   /* immortal AST; no GC */
+    NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, line, false,
+                                       korb_enc_name_of(c->vm, KORB_STR_ENC(str)));   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */
@@ -16179,7 +16180,8 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     for (uint32_t i = 0; i < b0->name_cnt; i++) decl[i] = KORB_BIND_TRIPLE(b0, i)[0];
     for (uint32_t i = 0; i < ecnt; i++) decl[b0->name_cnt + i] = SYM2ID(korb_items_data(VAL2HASH(b0->extra)->items)[2 * i]);
     const KorbString *const s = VAL2STR(*src_slot);
-    NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, fname, eline, decl, declc,
+    NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, fname, eline,
+                                            korb_enc_name_of(c->vm, KORB_STR_ENC(*src_slot)), decl, declc,
                                             korb_bind_method_mid(c->vm, b0));
     free(decl);
     if (UNLIKELY(entry == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
@@ -16304,7 +16306,8 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_eval_binding_core(c, slots + 2, &slots[0], &slots[1], fname, eline, NULL,
                                       KORB_CLASS_P(bcref) ? bcref : KORB_UNDEF, true);   /* lexical only */
     }
-    NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, eline, false);   /* immortal AST; no GC */
+    NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, eline, false,
+                                       korb_enc_name_of(c->vm, KORB_STR_ENC(sv)));   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */

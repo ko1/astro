@@ -537,7 +537,8 @@ bool korb_const_deprecated_p(const struct korb_vm *vm, VALUE owner, uint32_t sym
 void korb_const_deprecated_warn(CTX *c, VALUE *slots, VALUE owner, uint32_t sym);
 void korb_class_desc_into(CTX *c, VALUE cls, char *out, size_t outsz);
 void korb_name_error_where(CTX *c, VALUE *slots, VALUE *excp, uint32_t name, VALUE recv);
-NODE *koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, bool exit_on_error);
+NODE *koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, bool exit_on_error,
+                             const char *src_enc);
 RESULT korb_rescue_splat_list(CTX *c, VALUE *slots, VALUE *listslot);
 bool korb_defined_call_p(CTX *c, VALUE *slots, uint32_t mid, int32_t self_off);
 VALUE korb_cvar_cref(VALUE self, VALUE entry_cell);
@@ -645,7 +646,7 @@ void korb_ctx_free(CTX *c);
 /* parser entry (parse.c).  `fname` is used for diagnostics only; the
  * caller (main.c) reads the source (file / -e / stdin). */
 NODE *koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool exit_on_error);
-NODE *koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line,
+NODE *koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, const char *src_enc,
                                 const uint32_t *name_syms, uint32_t name_cnt, uint32_t method_mid);
 extern uint32_t koruby_toplevel_locals_cnt;
 extern const uint32_t *koruby_toplevel_local_syms;   /* toplevel local-name table (for TOPLEVEL_BINDING) */
