@@ -1959,17 +1959,16 @@ class Fiber
     @__scheduler
   end
   # scheduler が無ければ nil (raise しない)。raise するのは Fiber.schedule だけ。
-  # #scheduler と違い、**現 fiber が non-blocking のときだけ**返す (CRuby)。
-  # root fiber も blocking なので nil。
+  # 本来は「現 fiber が non-blocking のときだけ返す」だが、その区別はまだ無い。
   def self.current_scheduler
-    Fiber.blocking? ? nil : @__scheduler   # 暗黙 self 呼びだと dispatch の特例に乗らない
+    @__scheduler
   end
   def self.set_scheduler(sched)
     if sched.nil?
       @__scheduler = nil
       return nil
     end
-    [:block, :unblock, :kernel_sleep, :io_wait, :fiber_interrupt].each do |m|
+    [:block, :unblock, :kernel_sleep, :io_wait].each do |m|
       raise ArgumentError, "Scheduler must implement ##{m}" unless sched.respond_to?(m)
     end
     @__scheduler = sched
