@@ -26,6 +26,8 @@ class IO
     READONLY = 128
 
     PAGE_SIZE    = 4096
+    # mmap の offset に要求される整列単位 (CRuby では実行時のページサイズ)
+    MAP_ALIGNMENT = 4096
     DEFAULT_SIZE = 65536
 
     # type → [byte size, pack format]  (大文字 = big-endian / network order)
@@ -80,11 +82,26 @@ class IO
         raise ArgumentError, "Flags can't be negative!" if flags < 0
       end
       if size == 0
-        __setup(nil, 0, 0, 0, false, nil)
+        __setup(nil, 0, 0, 0, false, nil)        # size 0 は flags を丸ごと無視する
       else
-        flags ||= (size < PAGE_SIZE ? INTERNAL : MAPPED)
-        if (flags & (INTERNAL | MAPPED)) == 0     # メモリの出所が決まらない
-          raise AllocationError, "Could not allocate buffer!"
+        flags ||= 0
+        # Ruby 4.1: 矛盾する組み合わせは ArgumentError、足りない分は推論する
+        # (4.0 までは「出所が決まらない」= AllocationError だった)。
+        raise ArgumentError, "IO::Buffer::EXTERNAL can't be used with IO::Buffer.new!" if (flags & EXTERNAL) != 0
+        if (flags & INTERNAL) != 0 && (flags & MAPPED) != 0
+          raise ArgumentError, "Flags can't include both IO::Buffer::INTERNAL and IO::Buffer::MAPPED!"
+        end
+        if (flags & SHARED) != 0 && (flags & PRIVATE) != 0
+          raise ArgumentError, "Flags can't include both IO::Buffer::SHARED and IO::Buffer::PRIVATE!"
+        end
+        if (flags & (SHARED | PRIVATE)) != 0
+          if (flags & INTERNAL) != 0
+            raise ArgumentError, "IO::Buffer::SHARED and IO::Buffer::PRIVATE require IO::Buffer::MAPPED!"
+          end
+          flags |= MAPPED                         # SHARED / PRIVATE は MAPPED を含意する
+        end
+        if (flags & (INTERNAL | MAPPED)) == 0     # 指定が無ければ大きさで決める
+          flags |= (size < PAGE_SIZE ? INTERNAL : MAPPED)
         end
         __setup("\0".b * size, 0, size, flags, false, nil)
       end
@@ -144,12 +161,33 @@ class IO
       unless offset.is_a?(Integer)
         raise TypeError, "no implicit conversion of #{offset.class} into Integer"
       end
-      raise ArgumentError, "Offset can't be negative!" if offset < 0
+      raise ArgumentError, "Offset (#{offset}) can't be negative!" if offset < 0
+      if offset % MAP_ALIGNMENT != 0
+        raise ArgumentError,
+              "Offset (#{offset}) must be a multiple of IO::Buffer::MAP_ALIGNMENT (#{MAP_ALIGNMENT})!"
+      end
+      # 出所と共有モードの矛盾は mmap する前に弾く (CRuby io_buffer_map_file)
+      raise ArgumentError, "IO::Buffer::INTERNAL can't be used with IO::Buffer.map!" if (flags & INTERNAL) != 0
+      raise ArgumentError, "IO::Buffer::EXTERNAL can't be used with IO::Buffer.map!" if (flags & EXTERNAL) != 0
+      if (flags & SHARED) != 0 && (flags & PRIVATE) != 0
+        raise ArgumentError, "Flags can't include both IO::Buffer::SHARED and IO::Buffer::PRIVATE!"
+      end
       total = file.size
       raise ArgumentError, "Invalid negative or zero file size!" if total <= 0
       # CRuby はサイズ超過を先に見て、その後 offset+size のはみ出しを見る
-      raise ArgumentError, "Size can't be larger than file size!" if size && size > total
-      raise ArgumentError, "Offset too large!" if offset + (size || 0) > total
+      if size && size > total
+        raise ArgumentError, "Size (#{size}) can't be larger than file size (#{total})"
+      end
+      if offset >= total
+        raise ArgumentError, "Offset (#{offset}) can't be larger than file size (#{total})"
+      end
+      if size && offset + size > total
+        # 許される最大 offset は MAP_ALIGNMENT の倍数に切り下げたもの (CRuby)
+        max_off = ((total - size) / MAP_ALIGNMENT) * MAP_ALIGNMENT
+        max_off = 0 if max_off < 0
+        raise ArgumentError,
+              "Offset (#{offset}) can't be larger than #{max_off} for requested size (#{size})"
+      end
       # PRIVATE (= copy-on-write) は読み取り専用ファイルでも許される。共有
       # マップだけが書き込み権限を要求する。
       if (flags & (READONLY | PRIVATE)) == 0 && !__writable_io?(file)
@@ -526,33 +564,41 @@ class IO
       s
     end
 
-    def read(io, length = nil, offset = 0)
+    # Ruby 4.1 swapped the order to (offset, length) and made an explicit
+    # length of 0 mean zero bytes (it used to mean "to the end of the buffer").
+    def read(io, offset = 0, length = nil)
       __writable!
-      data = length ? io.read(length) : io.read(@size - offset)
+      length = @size - offset if length.nil?
+      return 0 if length == 0
+      data = io.read(length)
       return 0 if data.nil?
       set_string(data, offset)
     end
 
-    # A length of 0 (or none) means "to the end of the buffer" (Ruby < 4.1).
-    def write(io, length = nil, offset = 0)
-      length = @size - offset if length.nil? || length == 0
+    def write(io, offset = 0, length = nil)
+      length = @size - offset if length.nil?
+      return 0 if length == 0
       io.write(get_string(offset, length))
     end
 
-    def pread(io, from, length = nil, offset = 0)
+    def pread(io, from, offset = 0, length = nil)
       __writable!
+      length = @size - offset if length.nil?
+      return 0 if length == 0
       pos = io.pos
       io.seek(from)
-      data = io.read(length || (@size - offset))
+      data = io.read(length)
       io.seek(pos)
       return 0 if data.nil?
       set_string(data, offset)
     end
 
-    def pwrite(io, to, length = nil, offset = 0)
+    def pwrite(io, to, offset = 0, length = nil)
+      length = @size - offset if length.nil?
+      return 0 if length == 0
       pos = io.pos
       io.seek(to)
-      n = io.write(get_string(offset, length || (@size - offset)))
+      n = io.write(get_string(offset, length))
       io.seek(pos)
       n
     end

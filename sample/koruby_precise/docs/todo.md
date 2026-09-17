@@ -92,6 +92,36 @@ dispatch し、変換できなかった場合にその stale な `e` を `KORB_A
 に渡していた。`slots[0]` に park して dispatch 後に読み直す。エラー文の受け手名も
 dispatch 後の scratch (`slots[0]`) ではなく `e` を使うようにした。
 
+## IO::Buffer の Ruby 4.1 追従 (2026-09-17)
+
+1. **`read` / `write` / `pread` / `pwrite` の引数順が `(offset, length)` に入れ替わった**
+   (4.0 までは `(length, offset)`)。さらに **明示の length 0 は「0 バイト」**になった
+   (以前は「バッファの終わりまで」)。
+2. **`IO::Buffer.new(size, flags)` は矛盾した flags を ArgumentError にする**
+   (4.0 までは出所が決まらないと `AllocationError`)。
+   - `EXTERNAL` → "IO::Buffer::EXTERNAL can't be used with IO::Buffer.new!"
+   - `INTERNAL|MAPPED` → "Flags can't include both IO::Buffer::INTERNAL and IO::Buffer::MAPPED!"
+   - `SHARED|PRIVATE` → "Flags can't include both IO::Buffer::SHARED and IO::Buffer::PRIVATE!"
+   - `INTERNAL` + (`SHARED`|`PRIVATE`) → "IO::Buffer::SHARED and IO::Buffer::PRIVATE require IO::Buffer::MAPPED!"
+   - `SHARED` / `PRIVATE` は `MAPPED` を含意する。どちらも無ければ大きさで推論
+     (`size < PAGE_SIZE` なら INTERNAL、以上なら MAPPED)。size 0 は flags を丸ごと無視。
+3. **`IO::Buffer.map`**: `MAP_ALIGNMENT` 定数、offset の整列チェック、`INTERNAL`/`EXTERNAL`/
+   `SHARED|PRIVATE` の拒否、そしてエラー文面が数値入りに
+   ("Size (8192) can't be larger than file size (9)" など)。
+   offset+size がはみ出すときの上限は **MAP_ALIGNMENT の倍数に切り下げた `total - size`**
+   (CRuby から逆算。file 4112 / size 17 で 0、file 12288 / size 10 で 8192)。
+
+効果: rubyspec 31349 → 31368 (+19、退行 0)。`make test` は 547 → 545。
+起動命令数 251,582,625 → 252,365,455 (+0.31%、prelude が約 20 行増えた分)。
+回帰テスト `t/hand/io_buffer_41.rb`。
+
+**残り 15 例 (5 ファイル) は slice の共有意味論**: 入れ子ロック、slice と source の
+ロック伝播、`free` / `.for` ブロック終了時の slice 無効化、String を掴んでいる間の
+"can't modify string; temporarily locked"。koruby の IO::Buffer は Ruby レベルの
+エミュレーションで実メモリを共有していないので、slice が root を参照してロックと
+有効性を共有する作りに変える必要がある。`map_spec` の「プロセス間で共有される」1 例は
+実 mmap が要るので対象外。
+
 ## String#tr の Hash 形 (Ruby 4.1) を実装 (2026-09-16)
 
 `"hello".tr("e" => "E", "l" => "")` — 1 引数の Hash で「1 文字キー → 置換文字列」。
