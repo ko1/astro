@@ -2388,6 +2388,10 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     korb_cref_push(c);                             /* after the probe above, which can return early */
     c->def_definee = definee;              /* class_exec/module_exec: the class itself */
     const uint8_t saved_vis = korb_vis_enter(slots[0]);
+    /* instance_exec(&pr) on a Proc#refined copy runs the body under its set. */
+    const bool refined = cself != NULL && def_env == KORB_BLK_FWD &&
+                         KORB_PROC_P(*cself) && VAL2PROC(*cself)->refine_set != KORB_NIL;
+    if (UNLIKELY(refined)) { korb_refine_push(c); c->refinements = VAL2PROC(*cself)->refine_set; c->refine_sealed = c->refinements; }
     /* @@vars keep resolving against the block's definition scope, which self no
      * longer names once the receiver is bound in. */
     if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
@@ -2400,6 +2404,7 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     } else {
         r = korb_block_yield(c, slots + 1 + argc, block, def_env, &slots[1], argc, &slots[0]);
     }
+    if (UNLIKELY(refined)) korb_refine_pop(c);
     korb_vis_leave(slots[0], saved_vis);
     korb_cref_pop(c);
     return r;
@@ -2529,6 +2534,12 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     c->def_definee = definee;
     const uint8_t saved_vis = korb_vis_enter(slots[0]);
     korb_refine_push(c);                                  /* `using` in the block ends with it */
+    /* instance_eval(&pr) / class_eval(&pr) on a Proc#refined copy: its set. */
+    if (cself != NULL && (def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC) &&
+        KORB_PROC_P(*cself) && VAL2PROC(*cself)->refine_set != KORB_NIL) {
+        c->refinements = VAL2PROC(*cself)->refine_set;
+        c->refine_sealed = c->refinements;
+    }
     if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
         c->cvar_cref = korb_cvar_self_class_pub(c, def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC
                                                    ? VAL2PROC(*cself)->self : KORB_CSELF_VAL(cself));
@@ -2858,6 +2869,10 @@ static RESULT korb_m_mod_using(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(!KORB_CLASS_P(mod) || !VAL2CLASS(mod)->is_module))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)",
                           korb_type_name(mod));
+    /* A Proc#refined body carries its own activation set and is not a toplevel
+     * scope, so `using` there is refused (CRuby raises the same for a method). */
+    if (UNLIKELY(c->refine_sealed != KORB_NIL && c->refinements == c->refine_sealed))
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "Module#using is not permitted in methods");
     VALUE_REF mref = SLOTS_PUSH(slots, mod);
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
@@ -2870,6 +2885,53 @@ static RESULT korb_m_mod_using(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     c->refinements = VALUE_REF_GET(dst);
     if (!vm->refinements_active) { vm->refinements_active = true; vm->method_serial++; }
     return RESULT_OK(VALUE_REF_GET(self));
+}
+
+/* Proc#refined(*mods) (Ruby 4.1) — a copy of the receiver whose body runs with
+ * `mods`' refinements activated, on top of whatever set the receiver already
+ * carries (so chaining accumulates and the last module wins).  No modules at all
+ * answers the receiver itself; only a block-backed Proc can be refined. */
+static RESULT korb_m_proc_refined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    struct korb_vm *const vm = c->vm;
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    if (n == 0) return RESULT_OK(VALUE_REF_GET(self));
+    for (uint32_t i = 0; i < n; i++) {
+        const VALUE m = VALUE_SLICE_GET(a, i);
+        if (UNLIKELY(!KORB_CLASS_P(m) || !VAL2CLASS(m)->is_module))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)",
+                              korb_type_name(m));
+    }
+    { const struct Node *const iseq = VAL2PROC(VALUE_REF_GET(self))->iseq;
+      if (UNLIKELY(iseq == NULL || iseq == KORB_BLK_CPROC))
+          return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "Proc is not created from a Ruby block"); }
+
+    slots[0] = VALUE_REF_GET(self);                   /* the source proc, rooted across every alloc */
+    /* The class override a Proc subclass instance carries — read before the
+     * copy, dropped when it is a singleton (those methods are not inherited). */
+    slots[1] = (((const AroObjectHeader *)(uintptr_t)slots[0])->flags & KORB_FL_HAS_KLASS)
+               ? korb_klass_override_get(vm, slots[0]) : KORB_NIL;
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 3, 8));
+    VALUE_REF dst = VALUE_REF_AT(&slots[2]);
+    for (uint32_t i = 0; ; i++) {                     /* the receiver's own set first: a later module wins */
+        const VALUE cur = VAL2PROC(slots[0])->refine_set;
+        if (!KORB_ARRAY_P(cur) || i >= VAL2ARY(cur)->len) break;
+        CHECK(korb_ary_push_val(c, slots + 3, dst, korb_items_data(VAL2ARY(cur)->items)[i]));
+    }
+    for (uint32_t i = 0; i < n; i++)
+        CHECK(korb_refine_collect(c, slots + 3, dst, VALUE_SLICE_GET(a, i), 0));
+
+    KorbProc *const np = korb_alloc(c, slots + 3, sizeof(KorbProc), KORB_OBJ_PROC);
+    const KorbProc *const sp = VAL2PROC(slots[0]);    /* re-read: the alloc may have moved it */
+    np->iseq = sp->iseq; np->sym_mid = sp->sym_mid; np->is_lambda = sp->is_lambda;
+    ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->env,        sp->env);
+    ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->self,       sp->self);
+    ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->refine_set, VALUE_REF_GET(dst));
+    slots[3] = (VALUE)np;
+    if (KORB_CLASS_P(slots[1]) && !VAL2CLASS(slots[1])->is_singleton)
+        korb_klass_override_set(c, slots[3], slots[1]);
+    if (!vm->refinements_active) { vm->refinements_active = true; vm->method_serial++; }
+    return RESULT_OK(slots[3]);
 }
 
 /* Module.used_refinements / Module.used_modules — column 1 / column 2 of the

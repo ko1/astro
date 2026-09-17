@@ -581,6 +581,7 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         np->iseq = sp->iseq; np->sym_mid = sp->sym_mid; np->is_lambda = sp->is_lambda;
         ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->env,  sp->env);
         ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->self, sp->self);
+        ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->refine_set, sp->refine_set);   /* a Proc#refined copy stays refined */
         slots[1] = (VALUE)np;
         CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
         gen_done = true;

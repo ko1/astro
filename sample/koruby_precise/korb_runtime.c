@@ -4287,6 +4287,10 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     } else {
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Proc object without a block");
     }
+    /* A Proc#refined copy carries an activation set a method entry has nowhere to
+     * put, so CRuby refuses it here rather than silently losing the refinements. */
+    if (UNLIKELY(KORB_PROC_P(slots[1]) && VAL2PROC(slots[1])->refine_set != KORB_NIL))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cannot define a method from a refined Proc");
     korb_check_basic_op_redef(c, slots[0], mid);
     struct korb_method *m = korb_class_method_slot(c->vm, VAL2CLASS(slots[0]), mid);
     m->kind = KORB_METHOD_DM;
@@ -12800,6 +12804,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_PROC, "()", korb_m_proc_call, -1);
     korb_def_cmethod_blk(c, KORB_C_PROC, "yield", korb_m_proc_call, -1);
     korb_def_cmethod_blk(c, KORB_C_PROC, "===", korb_m_proc_call, -1);
+    korb_def_cmethod(c, KORB_C_PROC, "refined", korb_m_proc_refined, -1);
     korb_def_cmethod(c, KORB_C_PROC, "lambda?", korb_m_proc_lambda_q, 0);
     korb_def_cmethod(c, KORB_C_PROC, "binding", korb_m_proc_binding, 0);
     korb_def_cmethod(c, KORB_C_PROC, "arity", korb_m_proc_arity, 0);

@@ -469,6 +469,10 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         }
     }
     VALUE penv = p->env;                                 /* already tagged: odd=slots / even=KorbEnv */
+    /* Proc#refined: the body runs under the set the copy carries.  Nothing may
+     * raise between the push and the pop below. */
+    const bool refined = p->refine_set != KORB_NIL;
+    if (UNLIKELY(refined)) { korb_refine_push(c); c->refinements = p->refine_set; c->refine_sealed = c->refinements; }
     slots[0] = p->self;                                  /* captured self (rooted) */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
     /* If this proc has a `|&b|` param and the call site passed a (real) block,
@@ -484,6 +488,7 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
                                   &slots[1], argc, &slots[0], NULL, NULL, NULL, 1);
     else
         r = korb_block_yield(c, slots + 1 + argc, entry, (VALUE *)(uintptr_t)penv, &slots[1], argc, &slots[0]);
+    if (UNLIKELY(refined)) korb_refine_pop(c);
     if (UNLIKELY(is_lam && r.state == KORB_RETURN)) {    /* lambda boundary consumes its own `return` */
         c->return_target = NULL;
         r.state = KORB_NORMAL;
@@ -526,7 +531,8 @@ static RESULT korb_m_proc_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (!KORB_PROC_P(o)) return RESULT_OK(KORB_FALSE);
     const KorbProc *const x = VAL2PROC(s), *const y = VAL2PROC(o);
     const bool eq = x->iseq == y->iseq && x->env == y->env && x->self == y->self &&
-                    x->sym_mid == y->sym_mid && x->is_lambda == y->is_lambda;
+                    x->sym_mid == y->sym_mid && x->is_lambda == y->is_lambda &&
+                    x->refine_set == y->refine_set;   /* a Proc#refined copy is not its source */
     return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_proc_lambda_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

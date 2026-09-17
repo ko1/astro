@@ -439,6 +439,8 @@ typedef struct KorbProc {
     struct Node *iseq;               /* block node_entry (immortal; not scanned); NULL for a symbol proc */
     VALUE ARO_GC_EDGE env;           /* captured env handle (KorbEnv* tagged) or 0 */
     VALUE ARO_GC_EDGE self;          /* captured lexical self */
+    VALUE ARO_GC_EDGE refine_set;    /* Proc#refined: the refinement activation set this proc's body runs
+                                      * under (same shape as CTX.refinements).  KORB_NIL = none. */
     uint32_t sym_mid;                /* Symbol#to_proc: send this mid to arg0 (iseq==NULL) */
     uint8_t  is_lambda;              /* lambda semantics (strict arity, return-from-proc) */
 } KorbProc;
@@ -1330,6 +1332,10 @@ struct CTX_struct {
      * enclosing set here, where the root visitor forwards it. */
     VALUE    *refine_saved;
     uint32_t  refine_n, refine_cap;
+    /* The set a Proc#refined body installed, while that body is running.  `using`
+     * is not permitted there (CRuby: the proc's cref is not a toplevel one), and
+     * identity is the test — any nested scope that installs its own set clears it. */
+    VALUE     refine_sealed;
     /* Saved (def_definee, cvar_cref) pairs for scopes that rebind them around
      * Ruby execution.  They cannot be kept in C locals: a moving collection
      * during the body would leave the restore writing a stale pointer back into
@@ -1443,6 +1449,8 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->cvar_cref);              \
     if ((c)->refinements != KORB_NIL)                                        \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->refinements);            \
+    if ((c)->refine_sealed != KORB_NIL)                                      \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->refine_sealed);          \
     for (uint32_t _ci = 0; _ci < (c)->cref_n; _ci++)                         \
         if ((c)->cref_saved[_ci] != KORB_NIL)                                \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->cref_saved[_ci]);     \
@@ -1744,6 +1752,7 @@ struct CTX_struct {
         KorbProc *_pr = (KorbProc *)(payload);                              \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_pr->env);    /* odd slots-ptr skipped, KorbEnv* fwd */ \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_pr->self);                   \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_pr->refine_set);             \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

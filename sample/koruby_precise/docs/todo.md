@@ -5666,3 +5666,27 @@ b + u
 CRuby が `BINARY (ASCII-8BIT)` と書く。他の経路 (`Encoding::Converter` など) では
 差が出ないことを確認済み。**mspec は 4.1 でメッセージの完全一致を要求する**ので、
 `Encoding::CompatibilityError` を期待する spec に効く可能性がある (未確認)。
+
+## 未実装 (大物): `Thread::Backtrace::Location#source_range` — 115 examples
+
+`core/thread/backtrace/location/source_range_spec.rb` は現在 115 例中 113 error /
+2 fail で、残っている単一ファイルとしては最大のクラスタ。
+
+素材は揃っている。`Ruby::SourceRange` クラスも `vm->srcranges` 側テーブルも既にあり、
+`Proc#source_range` / `Method#source_range` / `UnboundMethod#source_range` は実装済み。
+足りないのは **backtrace の位置からその位置の NODE を引く手段** だけである。
+
+- backtrace は `(file, line, name)` の文字列として組まれ (`korb_bt_push`)、
+  `Thread::Backtrace::Location` は prelude でその文字列を 3 つに割り戻している。
+  NODE の同一性はどこにも残らない。
+- 呼び出し位置の行番号はフレームリンク (`base[-3]`) に **パックされて** 運ばれる
+  (`korb_flink_make`: line bits << 14 | dist << 2 | 1)。パース時にコールサイトへ
+  即値として焼くため 32 bit に収める設計で、node id を足す空きが無い。
+- `vm->srcranges` は def / block の **body ノード** しか登録していない。コールサイトの
+  範囲を引くには全 call ノードを登録する必要もある。
+
+つまり実装には (1) 全 call ノードの extent 登録 (2) フレームリンク表現の拡張か
+フレームごとの node 表を別に持つ、の 2 つが要る。(2) は optcarrot +6.3% を出した
+ホットパスの表現そのものなので、115 examples のために触るのは割に合わないと判断した
+(2026-09-17)。CRuby はファイルを prism で **読み直して** node_id で引いており、
+同じ道を採るなら NodeHead に prism の node_id を 1 語持たせるのが最も安い。
