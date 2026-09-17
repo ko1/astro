@@ -52,6 +52,8 @@ struct kp_frame {
     bool depth_shift;         /* END { } body: prism resolved its locals against the ENCLOSING scope
                                * (depth 0), but the body runs as a closure, so every reference is one
                                * level out. */
+    bool lambda_body;         /* `-> { }` / `lambda { }` body: a `return` boundary like a method, so the
+                               * walk for a non-local return stops here. */
     int32_t  fwd_slot;        /* `def m(...)` → synth rest local holding all positional args (-1 = none) */
     int32_t  fwd_blk_slot;    /* `def m(...)` → synth local holding the caller's block as a Proc (-1 = none) */
     int32_t  anon_rest_slot;  /* `def m(*)` → synth local holding the anonymous rest; bare `*` forwards it (-1 = none) */
@@ -114,6 +116,7 @@ struct kp_ctx {
     uint32_t flink_cnt, flink_capa;
     bool syntax_error;        /* transduce-time SyntaxError (e.g. binding in alternative pattern) */
     bool pending_depth_shift; /* the next pushed frame is an END { } body (see kp_frame.depth_shift) */
+    bool pending_lambda_body; /* the next pushed frame is a lambda body (see kp_frame.lambda_body) */
     uint8_t src_enc;          /* KORB_ENC_* for this file's string literals (from the magic comment) */
     bool fsl_false;           /* an explicit `# frozen_string_literal: false` — literals are plain, not chilled */
     const char *syntax_err;   /* a compile-time error found while lowering (bad Regexp literal): parse fails */
@@ -487,6 +490,8 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->dm_body = false;
     f->method_params = 0;
     f->depth_shift = tc->pending_depth_shift;
+    f->lambda_body = tc->pending_lambda_body;
+    tc->pending_lambda_body = false;   /* single-use: a block nested in the lambda body is not one */
     f->fwd_slot = -1;
     f->fwd_blk_slot = -1;
     f->anon_rest_slot = -1;
@@ -2110,7 +2115,9 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
             const char *cnm = kp_cid_cstr(tc, cn->name);
             int is_lam = !strcmp(cnm, "lambda");
             if (is_lam || !strcmp(cnm, "proc")) {
+                tc->pending_lambda_body = is_lam != 0;
                 NODE *entry = transduce_block(tc, (const pm_block_node_t *)cn->block);
+                tc->pending_lambda_body = false;
                 if (entry->head.kind != &kind_node_entry) return entry;   /* unsupported params → propagate (don't reify a non-entry) */
                 int32_t self_off = -1 - tc->chain;
                 NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, (uint32_t)is_lam);
@@ -4768,7 +4775,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_LAMBDA_NODE: {   /* ->(args) { body } — a lambda Proc */
         const pm_lambda_node_t *ln = (const pm_lambda_node_t *)node;
+        tc->pending_lambda_body = true;
         NODE *entry = transduce_block_parts(tc, &ln->locals, ln->parameters, ln->body);
+        tc->pending_lambda_body = false;
         if (entry->head.kind != &kind_node_entry) return entry;   /* unsupported params → propagate (don't reify a non-entry) */
         korb_reg_srcloc(tc->c->vm, entry, korb_intern(tc->c->vm, tc->fname, strlen(tc->fname)), kp_line(tc, node));   /* Proc#source_location */
         kp_reg_srcrange(tc, entry, node);   /* Proc#source_range: the whole `-> () { }` */
@@ -4895,12 +4904,15 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
          * env depth; depth 0 (method top-level or no method) → plain return. */
         struct kp_frame *mf = tc->frame;
         uint32_t depth = 0;
-        while (mf->method_mid == 0 && mf->prev && !mf->class_name_sym && !mf->anon_class_body) { mf = mf->prev; depth++; }
+        /* A lambda body is a return boundary of its own, so the walk stops there
+         * as it does at a `def`. */
+        while (mf->method_mid == 0 && !mf->lambda_body && mf->prev &&
+               !mf->class_name_sym && !mf->anon_class_body) { mf = mf->prev; depth++; }
         /* No method: the top-level program frame IS the home (`proc { return }` at
          * top level ends the file), but a class/module body is not — a `return`
          * that reaches one has nowhere to go (LocalJumpError). */
         if (mf->method_mid == 0 && (mf->class_name_sym || mf->anon_class_body)) depth = 0;
-        else if (mf->method_mid == 0 && rn->arguments)     /* top-level return yields no value */
+        else if (mf->method_mid == 0 && !mf->lambda_body && depth == 0 && rn->arguments)   /* bare top-level return yields no value (CRuby warns only there) */
             fprintf(stderr, "%s: warning: argument of top-level return is ignored\n", tc->fname);
         if (depth == 0) {
             return ALLOC_node_return(kp_jump_args_value(tc, rn->arguments));

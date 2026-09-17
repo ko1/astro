@@ -472,16 +472,16 @@ static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     struct korb_vm *const vm = c->vm;
     uint32_t mid;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_arg_to_mid(c, slots, VALUE_SLICE_GET(a, 0), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
-    VALUE sv = VALUE_REF_GET(self);
     const VALUE incv = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_FALSE;
     const bool include_priv = (incv != KORB_NIL && incv != KORB_FALSE);
-    if (korb_responds_to(c, sv, mid)) {
-        /* private/protected methods are not "responded to" unless include_all. */
-        const VALUE dcls = korb_dispatch_class(c, sv);
+    if (korb_responds_to(c, VALUE_REF_GET(self), mid)) {
+        /* Private/protected methods are not "responded to" unless include_all —
+         * but CRuby still asks #respond_to_missing? about them, so fall through
+         * instead of answering false here. */
+        const VALUE dcls = korb_dispatch_class(c, VALUE_REF_GET(self));
         VALUE mdef = KORB_NIL;
         const struct korb_method *const me = KORB_CLASS_P(dcls) ? korb_class_find_method(dcls, mid, &mdef) : NULL;
-        if (me != NULL && me->visibility != 0 && !include_priv) return RESULT_OK(KORB_FALSE);
-        return RESULT_OK(KORB_TRUE);
+        if (me == NULL || me->visibility == 0 || include_priv) return RESULT_OK(KORB_TRUE);
     }
     /* Kernel-private builtins (puts/print/require/... live in the global table,
      * not a class method table) are private methods of every object. */
@@ -491,10 +491,10 @@ static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     }
     /* respond_to_missing?(name, include_private) fallback (pairs with method_missing). */
     const uint32_t rtm = korb_intern(vm, "respond_to_missing?", 19);
-    const VALUE dcls = korb_dispatch_class(c, sv);
+    const VALUE dcls = korb_dispatch_class(c, VALUE_REF_GET(self));
     VALUE rtm_def = KORB_NIL;
     if (KORB_CLASS_P(dcls) && korb_class_find_method(dcls, rtm, &rtm_def)) {
-        slots[0] = sv;
+        slots[0] = VALUE_REF_GET(self);
         slots[1] = ID2SYM(mid);
         slots[2] = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_FALSE;
         const RESULT r = korb_send_impl(c, slots + 3, rtm, 0, 2, NULL, NULL, NULL);

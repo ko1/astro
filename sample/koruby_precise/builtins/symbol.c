@@ -350,20 +350,31 @@ static RESULT korb_m_obj_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_obj_public_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t mid;
     { RESULT nr = korb_arg_to_mid(c, slots, VALUE_SLICE_GET(a, 0), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
-    const VALUE recv = VALUE_REF_GET(self);
-    const VALUE cls = korb_dispatch_class(c, recv);
+    const VALUE cls = korb_dispatch_class(c, VALUE_REF_GET(self));
     const struct korb_method *const m = KORB_CLASS_P(cls) ? korb_class_find_method(cls, mid, NULL) : NULL;
     if (m != NULL && m->visibility != 0) {
         char cnm[192]; korb_class_desc_into(c, cls, cnm, sizeof cnm);
         return korb_raise(c, slots, KORB_E_NAME, 0, "method '%s' for class '%s' is %s",
                           korb_sym_name(c->vm, mid), cnm, m->visibility == 1 ? "private" : "protected");
     }
-    if (m == NULL && !korb_responds_to(c, recv, mid)) {   /* method_missing-backed names still answer */
-        char cnm[192]; korb_class_desc_into(c, cls, cnm, sizeof cnm);
-        return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",
-                          korb_sym_name(c->vm, mid), cnm);
+    /* Same fallback as #method: an unknown name still answers when the object
+     * claims it — but asked PUBLICLY (`respond_to?(name, false)`), so a name only
+     * #respond_to_missing? admits for private access stays a NameError. */
+    const bool defined = m != NULL || korb_responds_to(c, VALUE_REF_GET(self), mid);
+    if (!defined) {
+        slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(mid); slots[2] = KORB_FALSE;
+        const RESULT rr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "respond_to?", 11), 0, 2, NULL, NULL, NULL);
+        if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+        if (!KORB_TRUTHY(rr.value)) {
+            /* the probe ran Ruby: name the class from the rooted self cell */
+            char cnm[192]; korb_class_desc_into(c, korb_dispatch_class(c, VALUE_REF_GET(self)), cnm, sizeof cnm);
+            return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",
+                              korb_sym_name(c->vm, mid), cnm);
+        }
     }
-    return korb_method_new(c, slots, VALUE_REF_GET(self), mid);
+    RESULT r = korb_method_new(c, slots, VALUE_REF_GET(self), mid);
+    if (!defined && LIKELY(r.state == KORB_NORMAL)) VAL2METH(r.value)->missing = 1;   /* method_missing-backed */
+    return r;
 }
 /* Method#call / #[] — re-dispatch to recv.mid(*args).  Stage [recv | args...]
  * below a fresh cursor and reuse the send machinery (polymorphic with Array#[]). */
@@ -489,7 +500,12 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     else
         r = korb_block_yield(c, slots + 1 + argc, entry, (VALUE *)(uintptr_t)penv, &slots[1], argc, &slots[0]);
     if (UNLIKELY(refined)) korb_refine_pop(c);
-    if (UNLIKELY(is_lam && r.state == KORB_RETURN)) {    /* lambda boundary consumes its own `return` */
+    /* A lambda consumes only a `return` aimed at a frame staged above this call's
+     * cursor — its own body, or a block inside it.  One a plain proc the lambda
+     * merely CALLED carries up aims at a frame below us and flows through
+     * (KernelSpecs::Lambda#outer).  A NULL target is the nearest method = us. */
+    if (UNLIKELY(is_lam && r.state == KORB_RETURN) &&
+        (c->return_target == NULL || c->return_target >= slots)) {
         c->return_target = NULL;
         r.state = KORB_NORMAL;
     }

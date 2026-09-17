@@ -5690,3 +5690,31 @@ CRuby が `BINARY (ASCII-8BIT)` と書く。他の経路 (`Encoding::Converter` 
 ホットパスの表現そのものなので、115 examples のために触るのは割に合わないと判断した
 (2026-09-17)。CRuby はファイルを prism で **読み直して** node_id で引いており、
 同じ道を採るなら NodeHead に prism の node_id を 1 語持たせるのが最も安い。
+
+## 未実装: 捕捉した Proc からの `break` が LocalJumpError にならない — 8 examples
+
+`language/break_spec.rb` の 8 例。CRuby は「その block リテラルを受け取った
+**呼び出し（home invocation）がまだスタック上にあるか**」で `break` の可否を決め、
+無ければ `LocalJumpError: break from proc-closure` を **その場で** 上げる
+(だから `rescue LocalJumpError` で捕まる)。
+
+koruby の break は `c->break_blk`(block entry) の同一性だけを持ち、**home フレーム
+を持たない**。所有者のいない break はそのまま上まで抜けて、最後に main.c が
+LocalJumpError を出す — rescue の外なので捕まらない。
+
+2026-09-17 に「Proc#call を抜ける break は LocalJumpError」という単純規則を試して
+revert した。5 例直るが 2 例壊す:
+
+```ruby
+def self.meth_with_block_call(&b); b.call; fail; end
+def self.invoking_method2(&b); meth_with_block_call(&b); fail; end
+BreakTest.invoking_method2 { break }     # break は invoking_method2 から返る = 合法
+```
+
+`b.call` を抜ける break でも home (`invoking_method2`) が生きていれば合法なので、
+Proc#call 単体では判定できない。lambda 側で判定する案も
+`def mid(&b); ->{ b.call }.call; end; mid { break }` で同じ理由で破綻する。
+
+正しくやるには break に `return_target` 相当の **home フレーム** を持たせ、
+その frame が死んでいたら raise する必要がある。break の伝播規約
+(`korb_break_owned`) 全体に触る変更になる。

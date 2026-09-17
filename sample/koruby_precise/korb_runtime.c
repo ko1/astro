@@ -5384,7 +5384,10 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
         cls = slots[1];                          /* the (possibly forwarded) new class */
     }
     slots[0] = cls;                              /* root for the body run + capture */
-    VAL2CLASS(cls)->cur_visibility = 0;          /* each (re)opened body starts public */
+    /* Each (re)opened body starts public, and the enclosing scope's visibility is
+     * restored on the way out: a `private` inside must not outlive the body. */
+    const uint8_t saved_vis = VAL2CLASS(cls)->cur_visibility;
+    VAL2CLASS(cls)->cur_visibility = 0;
     /* a class body's default definee is the class itself — an enclosing
      * instance_eval's definee must not reach into it */
     korb_cref_push(c);
@@ -5394,6 +5397,7 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
      * hooks above are Ruby calls, and the carry is single-use */
     c->carry_base = caller_base; c->carry_line_bits = korb_flink_line_bits(caller_line);
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
+    VAL2CLASS(slots[0])->cur_visibility = saved_vis;   /* re-read: the body may have moved the class */
     korb_cref_pop(c);
     korb_refine_pop(c);
     return br;
@@ -5415,12 +5419,16 @@ korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclo
      * through `enclosing`, as Module.nesting does in CRuby. */
     if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[0])->enclosing == KORB_NIL)
         ARO_STORE(c, VAL2CLASS(slots[0]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->enclosing, slots[1]);
-    VAL2CLASS(slots[0])->cur_visibility = 0;     /* each (re)opened body starts public, as a class body does */
+    /* As a class body: public on entry, the enclosing scope's visibility back on
+     * exit — otherwise a `private` here leaks into the `def self.x` that follows. */
+    const uint8_t saved_vis = VAL2CLASS(slots[0])->cur_visibility;
+    VAL2CLASS(slots[0])->cur_visibility = 0;
     korb_cref_push(c);                           /* the body defines on the singleton, via self */
     korb_refine_push(c);                         /* `using` in a body ends with the body */
     c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL;
     c->carry_base = caller_base; c->carry_line_bits = korb_flink_line_bits(caller_line);   /* the body frame's link (see korb_class_body) */
     const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
+    VAL2CLASS(slots[0])->cur_visibility = saved_vis;   /* re-read: the body may have moved the singleton */
     korb_cref_pop(c);
     korb_refine_pop(c);
     return br;
@@ -16017,9 +16025,18 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (def) { const RESULT wr = korb_io_wr_checked(c, slots, korb_io_std_rep(c->vm, 1), buf, sz); if (UNLIKELY(wr.state != KORB_NORMAL)) { free(buf); return wr; } }
     else { RESULT er = korb_out_emit(c, slots, outobj, 1, buf, sz); if (UNLIKELY(er.state != KORB_NORMAL)) { free(buf); return er; } }
     free(buf);
-    /* M0: p(a) → a; p() → nil; p(a, b, ...) returns an Array in CRuby —
-     * arrays land in M1, return the first arg until then. */
-    return RESULT_OK(VALUE_SLICE_GET(args, 0));
+    if (!def) {                                          /* CRuby's rb_p flushes; a File sink would otherwise hold the bytes */
+        bool def2;
+        slots[0] = korb_out_target(c, "$stdout", 7, &def2);   /* re-read: #write above ran Ruby */
+        const uint32_t fl = korb_intern(c->vm, "flush", 5);
+        if (!def2 && AROH_IS_GC_OBJECT(slots[0]) && korb_responds_to(c, slots[0], fl))
+            CHECK(korb_send(c, slots + 1, fl, 0, 0));    /* slots[0] is the receiver */
+    }
+    if (n == 1) return RESULT_OK(VALUE_SLICE_GET(args, 0));   /* p(a) → a */
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, n));         /* p(a, b, ...) → [a, b, ...] */
+    for (uint32_t i = 0; i < n; i++)
+        CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_GET(args, i)));
+    return RESULT_OK(slots[0]);
 }
 
 /* Parse + run `str` (a String) as a top-level program with `self_val` as self.
@@ -17396,6 +17413,9 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__frame_local_get", korb_bi_frame_local_get, -1);
     korb_builtin_define(c, "__frame_local_set", korb_bi_frame_local_set, -1);
     korb_builtin_define(c, "__frame_locals", korb_bi_frame_locals, -1);
+    /* Kernel#local_variables — the same walk (own frame + enclosing scopes);
+     * reached directly, so the builtin's own frame link already names the caller. */
+    korb_builtin_define(c, "local_variables", korb_bi_frame_locals, 0);
     /* `binding` as a method; the bare call is lowered at parse time instead */
     korb_builtin_define(c, "binding", korb_bi_binding, -1);
     /* the raw writer: Kernel#warn itself is Ruby (prelude/exception.rb) so it can
