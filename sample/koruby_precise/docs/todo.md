@@ -5718,3 +5718,27 @@ Proc#call 単体では判定できない。lambda 側で判定する案も
 正しくやるには break に `return_target` 相当の **home フレーム** を持たせ、
 その frame が死んでいたら raise する必要がある。break の伝播規約
 (`korb_break_owned`) 全体に触る変更になる。
+
+## 修正済 (2026-09-17): top-level `Module.nesting` が AOT で compile-miss
+
+`t/` 全ファイルの AOT-vs-interp 差分で唯一出た実バグ。`p Module.nesting` のような
+**top-level の `Module.nesting`** を含むファイルは `--aot-compile` 後の
+`--compiled-only` が
+`AOT compile-miss — interpreter dispatch reached for body '(program root)'`
+で落ちていた (exit 7)。
+
+真因。`node_nesting` の `name_syms` オペランドは **`const char *` 型**なので、
+astrogen のノードハッシュは `hash_cstr(name_syms)` を通る。parse.c は
+`malloc(sizeof(uint32_t) * (n ? n : 1))` で確保しており、**top-level (n == 0) では
+その 4 バイトが未初期化**。ハッシュがプロセスごとに変わるので、bake した SD と
+実行時に探す SD の名前が一致しなかった。`calloc` にして決定的にした
+(`node_undef` の mids も同じ形なので併せて直した。こちらは cnt が 0 にならないので
+実害は無かった)。
+
+**一般化された注意**: `const char *` オペランドに **バイナリ (uint32 配列)** を
+入れているノードが 4 つある — `node_call_kw` の kw_syms、`node_undef` の mids、
+`node_nesting` の name_syms、`node_binding` の name_syms。値そのものは SD に焼かれず
+`n->u.…` から実行時参照されるので動作は正しいが、**ハッシュだけは `hash_cstr` を
+通る**ので (1) 最初の NUL で切れる (2) バッファの未初期化部分を読む、の 2 つの罠が
+残っている。新しく同じ形のオペランドを足すときは必ず calloc し、末尾に余白を
+作らないこと。

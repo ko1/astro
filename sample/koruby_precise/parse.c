@@ -2343,7 +2343,11 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         uint32_t syms[64]; uint32_t n = 0;
         for (struct kp_frame *f = tc->frame; f && n < 64; f = f->prev)
             if (f->class_name_sym != 0) syms[n++] = f->class_name_sym;
-        uint32_t *baked = malloc(sizeof(uint32_t) * (n ? n : 1));   /* immortal (baked into the node) */
+        /* calloc, not malloc: the operand is typed `const char *`, so the node
+         * hash runs hash_cstr over these bytes.  At top level n == 0 and the
+         * one-element padding would be uninitialized — a per-process hash, which
+         * makes --compiled-only miss the SD the bake produced. */
+        uint32_t *baked = calloc(n ? n : 1, sizeof(uint32_t));   /* immortal (baked into the node) */
         if (!baked) abort();
         for (uint32_t i = 0; i < n; i++) baked[i] = syms[i];
         return ALLOC_node_nesting((const char *)(const void *)baked, n);
@@ -4055,7 +4059,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_UNDEF_NODE: {          /* undef foo, bar — retire methods on the enclosing class */
         const pm_undef_node_t *un = (const pm_undef_node_t *)node;
         const uint32_t cnt = (uint32_t)un->names.size;
-        uint32_t *mids = malloc(sizeof(uint32_t) * (cnt ? cnt : 1));   /* immortal (baked into the node) */
+        uint32_t *mids = calloc(cnt ? cnt : 1, sizeof(uint32_t));   /* immortal (baked); calloc so the hash_cstr over these bytes is deterministic */
         if (!mids) abort();
         for (uint32_t i = 0; i < cnt; i++) {
             const pm_node_t *nm = un->names.nodes[i];
