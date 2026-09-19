@@ -1785,7 +1785,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                 destructure_n = (uint32_t)mt->lefts.size;
             } else {
                 bparams = (uint32_t)ps->requireds.size;
-                bool any_destr = false;
+                bool any_destr = false, flat_dup = false;
                 for (uint32_t i = 0; i < bparams; i++)
                     if (PM_NODE_TYPE_P(ps->requireds.nodes[i], PM_MULTI_TARGET_NODE)) { any_destr = true; break; }
                 if (!any_destr) {
@@ -1798,13 +1798,30 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                         pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
                         /* A repeated name (only `_` is legal) makes prism reuse ONE
                          * slot, so every parameter after it has slot != position and
-                         * the positional ABI would bind them one short.  Fall through
-                         * to the destructure spec, which names the target slot for
-                         * each parameter explicitly. */
-                        if (lvar_index(tc, p, cid) != i) { any_destr = true; break; }
+                         * the positional ABI would bind them one short. */
+                        if (lvar_index(tc, p, cid) != i) { flat_dup = true; break; }
                     }
                 }
-                if (any_destr) {
+                if (flat_dup) {
+                    /* Bind through the destructure spec, which names the target slot
+                     * per parameter (0x00 <slot>).  A REPEATED name keeps the FIRST
+                     * occurrence (`proc { |_, _| _ }` reads argument 1, CRuby), so
+                     * later duplicates are sent to a scratch local instead. */
+                    struct kp_destr enc = { NULL, 0, 0, 0, false };
+                    uint8_t used[256] = { 0 };
+                    for (uint32_t i = 0; i < bparams && !enc.bad; i++) {
+                        const pm_node_t *p = ps->requireds.nodes[i];
+                        const pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
+                        uint32_t li = lvar_index(tc, p, cid);
+                        if (li > 254) { enc.bad = true; break; }
+                        if (used[li]) { li = alloc_synth_local(tc); if (li > 254) { enc.bad = true; break; } }
+                        used[li] = 1;
+                        kp_destr_put(&enc, 0x00); kp_destr_put(&enc, li);
+                    }
+                    if (enc.bad) { free(enc.buf); pop_frame(tc); return kp_unsupported(tc, (const pm_node_t *)ps, "repeated block parameter name"); }
+                    destructure_spec = enc.buf;
+                    destr_len = enc.len;
+                } else if (any_destr) {
                     /* mixed scalar + |(...)| destructuring params, e.g. |a, (k, v)|
                      * or nested |(a, (b, c))|.  The spec is a byte stream, one
                      * entry per top-level param: 0x00 <local> = scalar, 0xFF <k>
@@ -4368,8 +4385,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 } else if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE) ||
                            PM_NODE_TYPE_P(t, PM_INDEX_TARGET_NODE) ||
                            PM_NODE_TYPE_P(t, PM_GLOBAL_VARIABLE_TARGET_NODE) ||
+                           PM_NODE_TYPE_P(t, PM_CLASS_VARIABLE_TARGET_NODE) ||
                            PM_NODE_TYPE_P(t, PM_CONSTANT_PATH_TARGET_NODE) ||
-                           PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {   /* nested `(a,b)` / $g / M::X / recv.x= / recv[k]= → general desugar */
+                           PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {   /* nested `(a,b)` / $g / @@cv / M::X / recv.x= / recv[k]= → general desugar */
                     all_local = false; needs_general = true;
                 } else {
                     return kp_unsupported(tc, t, "non-local multi-assign target");
