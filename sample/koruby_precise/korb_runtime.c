@@ -10444,7 +10444,17 @@ korb_outer_handle_at(const VALUE *frame_base, VALUE prev_handle, uint32_t depth)
         h = VAL2ENV(h)->prev;
     for (uint32_t k = 1; ; k++) {
         if (h == 0 || k >= depth) return h;
-        if (h & 1u)             h = korb_ep_get((const VALUE *)(uintptr_t)(h & ~(uintptr_t)1u));
+        if (h & 1u) {
+            const VALUE *const fb = (const VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
+            h = korb_ep_get(fb);
+            /* Same own-env case as above, but reached mid-walk: once a Proc has
+             * escaped over this frame its EP cell names the frame ITSELF, not the
+             * parent, so following it blindly leaves the walk one level short
+             * (`def m; wrap { helper { yield } }; end` with wrap reifying its
+             * block landed on the block frame and read its locals as the trio). */
+            if (h != 0 && (h & 7u) == 0 && VAL2ENV(h)->closed == 0 && VAL2ENV(h)->loc == fb)
+                h = VAL2ENV(h)->prev;
+        }
         else if ((h & 7u) == 0) h = VAL2ENV(h)->prev;
         else                    return 0;   /* an immediate is no env: the chain ends */
     }
