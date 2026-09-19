@@ -64,6 +64,11 @@ struct kp_frame {
     uint32_t method_post_cnt; /* number of post params (params after *rest), for forwarding super */
     struct korb_kw_info *method_kw_info; /* `def m(k:, ...)` → keyword params, for forwarding super (NULL = none) */
     uint32_t max_ref_depth;   /* B3: deepest outer-scope depth this block's body reads (0=none) */
+    /* B3: a closure normally captures only this frame's DECLARED locals (synth
+     * temps are compiler scratch nobody can name).  `...` forwarding breaks that
+     * — its args Array and block Proc live in synth slots that a block inside
+     * the body genuinely reads — so a read like that raises the floor here. */
+    uint32_t cap_min;
     uint32_t yield_depth;     /* B3: env-link depth of the METHOD scope this body yields to (0=none).
                                * Its block lives in the frame-top trio, outside the captured locals,
                                * so an escaping closure must reify it before that frame returns. */
@@ -529,6 +534,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     tc->pending_lambda_body = false;   /* single-use: a block nested in the lambda body is not one */
     f->fwd_slot = -1;
     f->fwd_blk_slot = -1;
+    f->cap_min = 0;
     f->anon_rest_slot = -1;
     f->anon_blk_slot = -1;
     f->anon_kwrest_slot = -1;
@@ -762,12 +768,20 @@ static NODE *build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, siz
  * Rack::Builder#use does `@use << proc { middleware.new(app, ...) }`).  Find the
  * enclosing method frame that owns the forwarding slots and how many env links
  * out it lies; a `def`/class body in between is a scope barrier. */
+static struct kp_frame *kp_fwd_owner;   /* set by kp_fwd_find, read by the emitters below */
 static bool
 kp_fwd_find(struct kp_ctx *tc, uint32_t *depth_out, int32_t *slot_out, int32_t *blk_out)
 {
     uint32_t d = tc->frame->depth_shift ? 1u : 0u;
     for (struct kp_frame *f = tc->frame; f; f = f->prev) {
-        if (f->fwd_slot >= 0) { *depth_out = d; *slot_out = f->fwd_slot; *blk_out = f->fwd_blk_slot; return true; }
+        if (f->fwd_slot >= 0) {
+            *depth_out = d; *slot_out = f->fwd_slot; *blk_out = f->fwd_blk_slot;
+            kp_fwd_owner = f;
+            /* both slots must survive into the closed env if a block escapes */
+            const uint32_t need = (uint32_t)(f->fwd_slot > f->fwd_blk_slot ? f->fwd_slot : f->fwd_blk_slot) + 1u;
+            if (d > 0 && need > f->cap_min) f->cap_min = need;
+            return true;
+        }
         if (f->method_mid || f->class_name_sym || f->anon_class_body) return false;
         d++;
     }
@@ -1923,7 +1937,9 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
         if (!cap_ns) abort();
         struct kp_frame *encl = tc->frame->prev;
         for (uint32_t k = 0; k < cap_depth; k++) {
-            cap_ns[k] = encl ? (uint16_t)(encl->locals->size + kp_it_shift(encl)) : 0;
+            uint32_t n_enc = encl ? (uint32_t)(encl->locals->size + kp_it_shift(encl)) : 0;
+            if (encl && encl->cap_min > n_enc) n_enc = encl->cap_min;   /* `...` synth slots read from inside */
+            cap_ns[k] = (uint16_t)n_enc;
             encl = encl ? encl->prev : NULL;
         }
     }

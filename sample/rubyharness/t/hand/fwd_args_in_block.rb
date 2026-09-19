@@ -52,3 +52,34 @@ def two(...)
   proc { proc { target(...) }.call }.call
 end
 p two(1, n: 2)
+
+# 転送を使う proc がメソッドの外へ逃げるケース (rack の Builder#use はこれ)。
+# 転送スロットは synth local なので、素ではクロージャに捕捉されず SEGV していた。
+class Mw
+  def initialize(*a, **k, &b); @a = a; @k = k; @b = b; end
+  def to_a; [@a, @k, @b ? @b.call : nil]; end
+end
+class Builder
+  def initialize; @use = []; @map = nil; end
+  def generate_map(app, m); [:map, app, m]; end
+  def use(middleware, ...)
+    if @map
+      mapping, @map = @map, nil
+      @use << proc { |app| generate_map(app, mapping) }
+    end
+    @use << proc { |app| middleware.new(app, ...) }
+    nil
+  end
+  def to_app; @use.reverse.inject(:INNER) { |a, e| e[a] }; end
+end
+b = Builder.new
+b.use(Mw, 1, x: 2)
+p b.to_app.to_a
+c = Builder.new
+c.use(Mw) { :blk }
+p c.to_app.to_a
+def escaping(...)
+  proc { target(...) }
+end
+p escaping(5, s: 6).call
+p(escaping(7) { :esc }.call)
