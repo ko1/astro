@@ -116,7 +116,7 @@ class Time
   end
   alias xmlschema iso8601
 
-  def rfc2822 = strftime("%a, %-d %b %Y %H:%M:%S ") + (utc? ? "-0000" : strftime("%z"))
+  def rfc2822 = strftime("%a, %d %b %Y %H:%M:%S ") + (utc? ? "-0000" : strftime("%z"))   # CRuby は日を 0 埋めする (%02d)
   alias rfc822 rfc2822
 
   def httpdate = getutc.strftime("%a, %d %b %Y %H:%M:%S GMT")

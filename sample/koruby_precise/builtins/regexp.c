@@ -1192,6 +1192,8 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
         } else if (hashrep != KORB_NIL) {
             const uint32_t ml = (uint32_t)(me0 - ms0);
             slots[3] = UNWRAP(korb_str_new(c, slots + 3, src + ms0, ml));   /* whole match = hash key */
+            KORB_STR_ENC_SET(slots[3], senc);   /* the match carries the SUBJECT's encoding, or a binary
+                                                 * high-byte key misses a binary table (URI's escape table) */
             slots[4] = slots[2];                                            /* hash recv     (base[-1]) */
             slots[5] = slots[3];                                           /* key arg       */
             RESULT hr = korb_send_impl(c, slots + 6, korb_intern(c->vm, "[]", 2), 0, 1, NULL, NULL, NULL);  /* respects default / default_proc */

@@ -491,7 +491,7 @@ class Date
   def iso8601 = to_s
   alias_method :xmlschema, :iso8601
   def rfc3339 = format("%04d-%02d-%02dT%02d:%02d:%02d%s", year, mon, mday, hour, min, sec, zone)
-  def rfc2822 = strftime("%a, %-d %b %Y %T %z")
+  def rfc2822 = strftime("%a, %-d %b %Y %T %z")   # Date は 0 埋めしない (Time#rfc2822 とは非対称)
   alias_method :rfc822, :rfc2822
   def httpdate = strftime("%a, %d %b %Y %T GMT")
   def jisx0301 = __jisx0301_date
