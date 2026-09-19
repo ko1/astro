@@ -124,6 +124,14 @@ struct kp_ctx {
     uint32_t eval_alias_cnt;
     uint32_t eval_method_mid; /* eval(str, binding): the method the BINDING was taken in, so `__method__`
                                * inside the string answers it (CRuby); 0 = none / not an eval. */
+    /* class_eval/module_eval(String): the receiver's lexical nesting, seeded into
+     * the program frame so a `def` inside the string resolves constants the way a
+     * `module Foo` body would (CRuby pushes the receiver onto the caller's cref).
+     * `seed_class_name` is the receiver itself; `seed_chain` is what encloses it,
+     * outermost first. */
+    uint32_t seed_class_name;
+    const uint32_t *seed_chain;
+    uint32_t seed_chain_len;
 };
 
 /* `alias x eval` seen earlier in this file: x is lowered like eval itself. */
@@ -2400,6 +2408,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         uint32_t syms[64]; uint32_t n = 0;
         for (struct kp_frame *f = tc->frame; f && n < 64; f = f->prev)
             if (f->class_name_sym != 0) syms[n++] = f->class_name_sym;
+        for (uint32_t k = tc->seed_chain_len; k-- > 0 && n < 64; ) syms[n++] = tc->seed_chain[k];   /* eval(String) cref */
         /* calloc, not malloc: the operand is typed `const char *`, so the node
          * hash runs hash_cstr over these bytes.  At top level n == 0 and the
          * one-element padding would be uninitialized — a per-process hash, which
@@ -3811,15 +3820,16 @@ build_dstr(struct kp_ctx *tc, struct pm_node **parts, size_t n)
 static void
 bake_cref_chain(struct kp_ctx *tc, struct korb_constcache *cache)
 {
-    uint32_t depth = 0;
+    uint32_t depth = tc->seed_chain_len;                        /* eval(String): what encloses the receiver */
     for (struct kp_frame *f = tc->frame; f; f = f->prev)
         if (f->class_name_sym != 0) depth++;
     if (depth == 0) return;
     uint32_t *const chain = malloc(sizeof(uint32_t) * depth);   /* immortal (compile-time) */
     if (chain == NULL) return;
     uint32_t i = depth;                                         /* fill innermost→outermost; store outermost at [0] */
-    for (struct kp_frame *f = tc->frame; f && i > 0; f = f->prev)
+    for (struct kp_frame *f = tc->frame; f && i > tc->seed_chain_len; f = f->prev)
         if (f->class_name_sym != 0) chain[--i] = f->class_name_sym;
+    for (uint32_t k = tc->seed_chain_len; k-- > 0; ) chain[--i] = tc->seed_chain[k];
     cache->owner_chain = chain;
     cache->chain_len = depth;
 }
@@ -3918,6 +3928,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             tl_syms[i] = kp_intern_cid(tc, pn->locals.ids[i]);
         koruby_toplevel_local_syms = tl_syms;
         push_frame(tc, &pn->locals);
+        tc->frame->class_name_sym = tc->seed_class_name;   /* eval(String) under a named cref */
         NODE *body = transduce_statements(tc, pn->statements);
         koruby_toplevel_locals_cnt = pop_frame(tc);   /* frame_size for main's cursor */
         return body;
@@ -5722,7 +5733,7 @@ kp_fsl_false(const char *src, size_t len)
 
 NODE *
 koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, bool exit_on_error,
-                       const char *src_enc)
+                       const char *src_enc, uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len)
 {
     pm_parser_t parser;
     pm_options_t options = { 0 };
@@ -5762,6 +5773,9 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
         .fname = fname,
         .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
         .fsl_false = kp_fsl_false(src, len),
+        .seed_class_name = cref_name,
+        .seed_chain = cref_chain,
+        .seed_chain_len = cref_chain_len,
     };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
@@ -5792,7 +5806,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
 NODE *
 koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool exit_on_error)
 {
-    return koruby_parse_source_at(c, src, len, fname, 1, exit_on_error, NULL);
+    return koruby_parse_source_at(c, src, len, fname, 1, exit_on_error, NULL, 0, NULL, 0);
 }
 
 /* Parse `src` for eval(str, binding): the binding's local names are declared as

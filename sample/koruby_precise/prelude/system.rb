@@ -1441,6 +1441,17 @@ module RbConfig
   CONFIG["prefix"] = __pfx
   CONFIG["exec_prefix"] = __pfx
   CONFIG["bindir"] = "#{__pfx}/bin"
+  # bindir / ruby_install_name は「いま走っているインタプリタ」を指す。
+  # KORUBY_PREFIX は stdlib の置き場の指定であって binary の置き場ではないので、
+  # prefix から組み立てると実在しないパスになる。rubygems は
+  # Gem.ruby = File.join(bindir, ruby_install_name + EXEEXT) で子プロセスを起動する
+  # (rake のサブプロセステストはこれが実在しないと全滅する)。
+  __exe = ENV["RUBY_EXE"]
+  if __exe && !__exe.empty? && File.exist?(__exe)
+    CONFIG["bindir"] = File.dirname(__exe)
+    CONFIG["ruby_install_name"] = File.basename(__exe)
+    CONFIG["RUBY_INSTALL_NAME"] = CONFIG["ruby_install_name"]
+  end
   CONFIG["libdir"] = "#{__pfx}/lib"
   CONFIG["libexecdir"] = "#{__pfx}/libexec"
   CONFIG["datarootdir"] = "#{__pfx}/share"

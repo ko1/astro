@@ -16127,8 +16127,20 @@ static RESULT
 korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line, VALUE cref)
 {
     const KorbString *const s = VAL2STR(str);
+    /* CRuby pushes the receiver onto the cref for class_eval/module_eval(String),
+     * so a `def` inside the string resolves constants exactly as a `module Foo`
+     * body would (rake's FileUtilsExt generates its methods this way and then
+     * names FileUtilsExt from inside them).  Seed the parse with that name. */
+    const uint32_t cref_name = KORB_CLASS_P(cref) ? VAL2CLASS(cref)->name_sym : 0;
+    uint32_t encl[16]; uint32_t nencl = 0;                      /* what encloses it, innermost first for now */
+    for (VALUE o = cref_name ? VAL2CLASS(cref)->enclosing : KORB_NIL;
+         KORB_CLASS_P(o) && VAL2CLASS(o)->name_sym != 0 && nencl < 16; o = VAL2CLASS(o)->enclosing)
+        encl[nencl++] = VAL2CLASS(o)->name_sym;
+    for (uint32_t i = 0, j = nencl; i < j; i++, j--)            /* → outermost first */
+        { const uint32_t t = encl[i]; encl[i] = encl[j - 1]; encl[j - 1] = t; }
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, line, false,
-                                       korb_enc_name_of(c->vm, KORB_STR_ENC(str)));   /* immortal AST; no GC */
+                                       korb_enc_name_of(c->vm, KORB_STR_ENC(str)), cref_name,
+                                       nencl ? encl : NULL, nencl);   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */
@@ -16354,7 +16366,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
                                       KORB_CLASS_P(bcref) ? bcref : KORB_UNDEF, true);   /* lexical only */
     }
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, eline, false,
-                                       korb_enc_name_of(c->vm, KORB_STR_ENC(sv)));   /* immortal AST; no GC */
+                                       korb_enc_name_of(c->vm, KORB_STR_ENC(sv)), 0, NULL, 0);   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */
