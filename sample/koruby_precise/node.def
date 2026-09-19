@@ -482,6 +482,10 @@ node_plus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, u
         return korb_flo(c, slots, korb_float_val(l) + (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer+Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) + korb_float_val(rhs));
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, "+", 1)))) {   /* a builtin subclass defines its own + */
+        slots[0] = l; slots[1] = rhs;
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "+", 1), korb_flink_line(flink), 1));
+    }
     return KP_OPD(c, flink, slots, lhs, "+", korb_plus_slow(c, slots, lhs, rhs, korb_flink_line(flink)));
 }
 
@@ -507,6 +511,10 @@ node_minus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, 
         return korb_flo(c, slots, korb_float_val(l) - (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer-Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) - korb_float_val(rhs));
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, "-", 1)))) {   /* a builtin subclass defines its own - */
+        slots[0] = l; slots[1] = rhs;
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "-", 1), korb_flink_line(flink), 1));
+    }
     return KP_OPD(c, flink, slots, lhs, "-", korb_minus_slow(c, slots, lhs, rhs, korb_flink_line(flink)));   /* complex/rat/array/user/raise out-of-line → small SD */
 }
 
@@ -532,6 +540,10 @@ node_mul(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return korb_flo(c, slots, korb_float_val(l) * (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer*Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) * korb_float_val(rhs));
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, "*", 1)))) {   /* a builtin subclass defines its own * */
+        slots[0] = l; slots[1] = rhs;
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "*", 1), korb_flink_line(flink), 1));
+    }
     return KP_OPD(c, flink, slots, lhs, "*", korb_mul_slow(c, slots, lhs, rhs, korb_flink_line(flink)));
 }
 
@@ -655,7 +667,7 @@ node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, st
         }
         /* overflow / wide / negative shift → Integer#<< (bignum promote, or >>) */
     }
-    if (LIKELY(KORB_ARRAY_P(l) && !c->vm->arr_shl_redefined)) {  /* a << x → push (skips the full send dispatch) */
+    if (LIKELY(KORB_ARRAY_P(l) && KORB_PLAIN_BUILTIN(l) && !c->vm->arr_shl_redefined)) {  /* a << x → push (skips the full send dispatch); a subclass may override #<< */
         KorbArray *const arr = VAL2ARY(l);
         if (LIKELY(arr->len < arr->capa)) {                     /* room → inline store (LTO-inlinable, no grow/GC) */
             korb_ary_store_at(c, l, arr->len, rhs);
@@ -723,6 +735,10 @@ node_lt(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
         return RESULT_OK((korb_sword_t)l < (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float<Float inline */
         return RESULT_OK(korb_float_val(l) < korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, "<", 1)))) {   /* a builtin subclass defines its own < */
+        slots[0] = l; slots[1] = rhs;
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "<", 1), korb_flink_line(flink), 1));
+    }
     return KP_OPD(c, flink, slots, lhs, "<", korb_cmp_slow(c, slots, l, rhs, 0, korb_flink_line(flink)));
 }
 
@@ -736,6 +752,10 @@ node_le(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
         return RESULT_OK((korb_sword_t)l <= (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float<=Float inline */
         return RESULT_OK(korb_float_val(l) <= korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, "<=", 2)))) {   /* a builtin subclass defines its own <= */
+        slots[0] = l; slots[1] = rhs;
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "<=", 2), korb_flink_line(flink), 1));
+    }
     return KP_OPD(c, flink, slots, lhs, "<=", korb_cmp_slow(c, slots, l, rhs, 1, korb_flink_line(flink)));
 }
 
@@ -749,6 +769,10 @@ node_gt(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
         return RESULT_OK((korb_sword_t)l > (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float>Float inline */
         return RESULT_OK(korb_float_val(l) > korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, ">", 1)))) {   /* a builtin subclass defines its own > */
+        slots[0] = l; slots[1] = rhs;
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, ">", 1), korb_flink_line(flink), 1));
+    }
     return KP_OPD(c, flink, slots, lhs, ">", korb_cmp_slow(c, slots, l, rhs, 2, korb_flink_line(flink)));
 }
 
@@ -762,6 +786,10 @@ node_ge(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
         return RESULT_OK((korb_sword_t)l >= (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float>=Float inline */
         return RESULT_OK(korb_float_val(l) >= korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, ">=", 2)))) {   /* a builtin subclass defines its own >= */
+        slots[0] = l; slots[1] = rhs;
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, ">=", 2), korb_flink_line(flink), 1));
+    }
     return KP_OPD(c, flink, slots, lhs, ">=", korb_cmp_slow(c, slots, l, rhs, 3, korb_flink_line(flink)));
 }
 
@@ -2368,7 +2396,7 @@ node_aref(CTX *c, NODE *n, VALUE *slots, uint64_t flink, VALUE_REF recv@child, V
 {
     (void)n;
     const VALUE r = VALUE_REF_GET(recv);
-    if (LIKELY(KORB_ARRAY_P(r) && FIXNUM_P(idx) && !c->vm->aref_redefined)) {
+    if (LIKELY(KORB_ARRAY_P(r) && KORB_PLAIN_BUILTIN(r) && FIXNUM_P(idx) && !c->vm->aref_redefined)) {
         const KorbArray *const a = VAL2ARY(r);
         korb_sword_t i = FIX2LONG(idx);
         if (i < 0) i += (korb_sword_t)a->len;
@@ -2382,7 +2410,7 @@ node_aref(CTX *c, NODE *n, VALUE *slots, uint64_t flink, VALUE_REF recv@child, V
         if (i >= 63) return RESULT_OK(LONG2FIX(n < 0 ? 1 : 0));/* beyond Fixnum width = sign extension */
         return RESULT_OK(LONG2FIX((n >> i) & 1));
     }
-    if (LIKELY(KORB_HASH_P(r) && !c->vm->hash_aref_redefined && !KORB_OBJECT_P(idx))) {   /* hash[key] → inline lookup, skip the send + dispatch (user-object key falls to the CTX-aware method for custom eql?/hash) */
+    if (LIKELY(KORB_HASH_P(r) && KORB_PLAIN_BUILTIN(r) && !c->vm->hash_aref_redefined && !KORB_OBJECT_P(idx))) {   /* hash[key] → inline lookup, skip the send + dispatch (user-object key falls to the CTX-aware method for custom eql?/hash) */
         const KorbHash *const h = VAL2HASH(r);
         const int32_t hi = korb_hash_find(h, idx);
         if (hi >= 0) return RESULT_OK(korb_items_data(h->items)[2 * hi + 1]);
@@ -2413,7 +2441,7 @@ node_aset(CTX *c, NODE *n, VALUE *slots, uint64_t flink, VALUE_REF recv@child, V
     (void)n;
     const VALUE r = VALUE_REF_GET(recv);
     const VALUE iv = VALUE_REF_GET(idx);
-    if (LIKELY(KORB_ARRAY_P(r) && FIXNUM_P(iv) && !c->vm->aref_redefined)) {
+    if (LIKELY(KORB_ARRAY_P(r) && KORB_PLAIN_BUILTIN(r) && FIXNUM_P(iv) && !c->vm->aref_redefined)) {
         KORB_CHECK_FROZEN_HEAP_AT(c, slots, r, "Array", korb_flink_line(flink));   /* inline write: no dispatch to place the raise */
         const KorbArray *const a = VAL2ARY(r);
         korb_sword_t i = FIX2LONG(iv);

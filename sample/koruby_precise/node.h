@@ -317,6 +317,7 @@ void korb_init_builtin_classes(CTX *c, VALUE *slots);   /* Object/Integer/String
 bool korb_exc_matches(CTX *c, VALUE exc, VALUE rescue_class);   /* exc kind_of? rescue_class */
 
 /* binop slow paths (fast paths live in node.def bodies) */
+bool korb_subclass_op_p(CTX *c, VALUE l, uint32_t mid);   /* builtin subclass with a Ruby-level operator */
 RESULT korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_sub_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);

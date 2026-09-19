@@ -7436,6 +7436,25 @@ static RESULT korb_m_set_psuperset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 /* If `l` is a user class/instance defining the binary operator `op`, dispatch
  * l.op(rhs) and report handled=true.  Guarded to KORB_CLASS_P/KORB_OBJECT_P so
  * builtin types whose operator routes back through the slow path can't recurse. */
+/* Does this receiver's class define `mid` in Ruby?  A builtin SUBCLASS instance
+ * (or an extended object) may, and the operator nodes' builtin ladders would
+ * otherwise run the builtin behaviour and never look.  `KORB_FL_HAS_KLASS` gates
+ * it, so a plain builtin pays one bit test.  Asked from the NODES only: the
+ * builtin CFUNCs call the same ladders, and checking there re-enters the
+ * override forever. */
+bool
+korb_subclass_op_p(CTX *const c, const VALUE l, const uint32_t mid)
+{
+    if (LIKELY(!AROH_IS_GC_OBJECT(l) || KORB_PLAIN_BUILTIN(l) || KORB_OBJECT_P(l))) return false;
+    const VALUE ov = korb_klass_override_get(c->vm, l);
+    if (!KORB_CLASS_P(ov)) return false;
+    /* Only a RUBY-level definition counts.  The builtin's own entry is reachable
+     * from the subclass too, and dispatching to it comes straight back through
+     * the ladder (String#+ looped until the stack ran out). */
+    const struct korb_method *const um = korb_class_find_method(ov, mid, NULL);
+    return um != NULL && (um->kind == KORB_METHOD_ISEQ || um->kind == KORB_METHOD_DM);
+}
+
 RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, bool *handled) {
     /* The last rung of the arithmetic ladders: every builtin case for this
      * operator has already been tried and declined, so a method the receiver's
@@ -10832,6 +10851,18 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         if (m2) return korb_dispatch_method(c, slots, m2, mid, line, argc, dc, block, def_env, captured_self, true);
         return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '%s' for Kernel", korb_sym_name(vm, mid));
+    }
+    /* A user `def self.[]` on a builtin subclass wins over the builtin class
+     * constructors below (Rack::Headers defines one and its whole key
+     * normalization hangs off it).  The builtin classes have no table entry for
+     * `[]`, so a hit here is always a user definition. */
+    else if (KORB_CLASS_P(self) && mid == vm->mid_aref &&
+             ({ const VALUE _sing = korb_dispatch_class(c, self);
+                KORB_CLASS_P(_sing) && korb_class_find_method(_sing, mid, NULL) != NULL; })) {
+        VALUE dc = KORB_NIL;
+        const VALUE sing = korb_dispatch_class(c, self);
+        struct korb_method *const um = korb_class_find_method(sing, mid, &dc);
+        return korb_dispatch_method(c, slots, um, mid, line, argc, dc, block, def_env, captured_self, true);
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_aref &&
              self == korb_builtin_class_obj(vm, KORB_C_SET)) {       /* Set[a, b, ...] */

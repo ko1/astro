@@ -683,6 +683,11 @@ typedef struct KorbClass {
 #define KORB_EXC_P(v)      (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_EXCEPTION)
 #define KORB_ARRAY_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ARRAY)
 #define KORB_HASH_P(v)     (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_HASH)
+/* A builtin instance with no subclass / singleton override, i.e. one whose
+ * operators can only have been redefined on the builtin class itself (which the
+ * vm-wide deopt flags already see).  The type test that precedes every use has
+ * already loaded `flags`, so this costs one test on a live word. */
+#define KORB_PLAIN_BUILTIN(v) (!(((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_FL_HAS_KLASS))
 #define KORB_RANGE_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RANGE)
 #define KORB_OBJECT_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_OBJECT)
 #define KORB_CLASS_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_CLASS)
