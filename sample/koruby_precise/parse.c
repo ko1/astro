@@ -2419,10 +2419,16 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return ALLOC_node_nesting((const char *)(const void *)baked, n);
     }
 
+    /* `recv&.m(...)`.  The operator / aref fast paths below build nodes that
+     * dispatch unconditionally, so a safe call must skip them and take the
+     * generic node_send_safe path; the splat and `...` forms have no such node
+     * and get an explicit temp + nil guard instead. */
+    const bool sn = (cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) != 0;
+
     /* operator calls → dedicated binop / unary nodes (a splat arg has no fixed
      * arity, so it falls through to the generic splat send below) */
     enum kp_binop op = kp_binop_kind(name);
-    if (op != KP_BINOP_NONE && argc == 1 &&
+    if (!sn && op != KP_BINOP_NONE && argc == 1 &&
         !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE)) {
         uint32_t n_slots = kind_node_plus.slot_count;   /* lhs staging (all binops alike) */
         NODE *lhs, *rhs;
@@ -2430,16 +2436,16 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                                  rhs = transduce(tc, cn->arguments->arguments.nodes[0])));
         return alloc_binop(tc, op, lhs, rhs, line);
     }
-    if (strcmp(name, "-@") == 0 && argc == 0) {
+    if (!sn && strcmp(name, "-@") == 0 && argc == 0) {
         return ALLOC_node_neg(transduce(tc, cn->receiver), line);
     }
-    if (strcmp(name, "!") == 0 && argc == 0) {
+    if (!sn && strcmp(name, "!") == 0 && argc == 0) {
         return ALLOC_node_not(transduce(tc, cn->receiver));
     }
 
     /* recv[idx] / recv[idx] = val → type-fast-path nodes (Array+fixnum inline,
      * else deopt to a real send).  No block, no splat args. */
-    if (!cn->block) {
+    if (!cn->block && !sn) {
         if (mid == tc->c->vm->mid_aref && argc == 1 &&
             !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE)) {
             NODE *recv, *idx;
@@ -2602,13 +2608,16 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         if (tc->frame->fwd_slot < 0)
             return kp_unsupported(tc, (const pm_node_t *)cn, "... forwarding outside a (...) method body");
         int32_t proc_off = tc->frame->fwd_blk_slot - tc->chain - 2;
-        NODE *recv, *arr;
-        WITH_CHAIN(tc, 2, (recv = transduce(tc, cn->receiver),
+        int32_t sn_tmp = sn ? (int32_t)alloc_synth_local(tc) : -1;
+        NODE *sn_set = NULL, *recv, *arr;
+        if (sn) sn_set = bake_lset(tc, (uint32_t)sn_tmp, transduce(tc, cn->receiver));
+        WITH_CHAIN(tc, 2, (recv = sn ? bake_lget(tc, (uint32_t)sn_tmp) : transduce(tc, cn->receiver),
                            arr  = (argc == 1)
                                ? bake_lget(tc, (uint32_t)tc->frame->fwd_slot)
                                : build_array_with_fwd(tc, cn->arguments->arguments.nodes, argc - 1)));
         NODE *_cs = KP_LINK(tc, node_send_splat_blkproc, mid, kp_flink_at(tc, line, 2), proc_off, recv, arr);
         bake_add(tc, &_cs->u.node_send_splat_blkproc.proc_off);
+        if (sn) return ALLOC_node_seq(sn_set, ALLOC_node_nil_guard(bake_lget(tc, (uint32_t)sn_tmp), _cs));
         return _cs;
     }
     /* actual `*splat` receiver call recv.m(*arr): build args Array, dynamic dispatch */
@@ -2617,14 +2626,18 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         for (size_t i = 0; i < argc; i++)
             if (PM_NODE_TYPE_P(cn->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
         if (has_splat) {
-            NODE *recv, *arr;
-            WITH_CHAIN(tc, 2, (recv = transduce(tc, cn->receiver),
+            const int32_t sn_tmp = sn ? (int32_t)alloc_synth_local(tc) : -1;
+            NODE *sn_set = NULL, *recv, *arr;
+            if (sn) sn_set = bake_lset(tc, (uint32_t)sn_tmp, transduce(tc, cn->receiver));
+            WITH_CHAIN(tc, 2, (recv = sn ? bake_lget(tc, (uint32_t)sn_tmp) : transduce(tc, cn->receiver),
                                arr  = build_call_args(tc, cn->arguments->arguments.nodes, argc)));
             /* an element assignment evaluates to the assigned value, not to []='s
              * return value, even when the index list is splatted */
-            if (mid == tc->c->vm->mid_aset)
-                return KP_LINK(tc, node_send_splat_aset, mid, kp_flink_at(tc, line, 2), recv, arr);
-            return KP_LINK(tc, node_send_splat, mid, kp_flink_at(tc, line, 2), recv, arr);
+            NODE *_sp = (mid == tc->c->vm->mid_aset)
+                      ? KP_LINK(tc, node_send_splat_aset, mid, kp_flink_at(tc, line, 2), recv, arr)
+                      : KP_LINK(tc, node_send_splat, mid, kp_flink_at(tc, line, 2), recv, arr);
+            if (sn) return ALLOC_node_seq(sn_set, ALLOC_node_nil_guard(bake_lget(tc, (uint32_t)sn_tmp), _sp));
+            return _sp;
         }
     }
     /* instance_eval / class_eval / module_eval with positional args (the String
