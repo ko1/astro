@@ -241,6 +241,131 @@ Thread.const_set(:Queue, Queue)
 Thread.const_set(:SizedQueue, SizedQueue)
 Thread.const_set(:ConditionVariable, ConditionVariable)
 
+# Monitor — CRuby では monitor.c の C 実装。stdlib の monitor.rb は
+# MonitorMixin だけを足し、Monitor 本体と Monitor::ConditionVariable が
+# 既にあることを前提にするので、ここで core として用意する。
+class Monitor
+  def initialize
+    @__mutex = Mutex.new
+    @__owner = nil
+    @__count = 0
+  end
+
+  def enter
+    @__mutex.lock unless @__owner == Thread.current
+    @__owner = Thread.current
+    @__count += 1
+    nil
+  end
+  alias mon_enter enter
+
+  def try_enter
+    if @__owner == Thread.current
+      @__count += 1
+      return true
+    end
+    return false unless @__mutex.try_lock
+    @__owner = Thread.current
+    @__count = 1
+    true
+  end
+  alias mon_try_enter try_enter
+  alias try_mon_enter try_enter
+
+  def exit
+    mon_check_owner
+    @__count -= 1
+    if @__count == 0
+      @__owner = nil
+      @__mutex.unlock
+    end
+    nil
+  end
+  alias mon_exit exit
+
+  def mon_locked?
+    @__mutex.locked?
+  end
+
+  def mon_owned?
+    @__owner == Thread.current
+  end
+
+  def mon_check_owner
+    raise ThreadError, "current fiber not owner" unless @__owner == Thread.current
+    nil
+  end
+
+  def synchronize
+    enter
+    begin
+      yield
+    ensure
+      exit
+    end
+  end
+  alias mon_synchronize synchronize
+
+  def new_cond
+    ConditionVariable.new(self)
+  end
+
+  # ConditionVariable#wait: 再入回数ごと手放して待ち、起きたら同じ深さまで取り直す。
+  def wait_for_cond(cond, timeout)
+    mon_check_owner
+    count = @__count
+    @__owner = nil
+    @__count = 0
+    begin
+      cond.__wait(@__mutex, timeout)
+    ensure
+      @__owner = Thread.current
+      @__count = count
+    end
+  end
+
+  class ConditionVariable
+    def initialize(monitor)
+      @__monitor = monitor
+      @__cond = ::ConditionVariable.new
+    end
+
+    def wait(timeout = nil)
+      @__monitor.wait_for_cond(self, timeout)
+    end
+
+    def wait_until
+      until yield
+        wait
+      end
+    end
+
+    def wait_while
+      while yield
+        wait
+      end
+    end
+
+    def signal
+      @__monitor.mon_check_owner
+      @__cond.signal
+      self
+    end
+
+    def broadcast
+      @__monitor.mon_check_owner
+      @__cond.broadcast
+      self
+    end
+
+    def __wait(mutex, timeout)   # :nodoc: Monitor#wait_for_cond からのみ
+      @__cond.wait(mutex, timeout)
+    end
+  end
+end
+
+Thread.const_set(:Monitor, Monitor)
+
 module Process
   # clock_gettime(2) の clockid_t (Linux)。koruby は実際には _clk を無視して
   # monotonic を返すが、定数は本物の値で揃えておく。
@@ -1295,6 +1420,72 @@ module RbConfig
   CONFIG["AR"] = "ar"
   CONFIG["STRIP"] = "strip -S -x"
   CONFIG["archdir"] = CONFIG["rubylibdir"]
+
+  # --- paths -----------------------------------------------------------------
+  # koruby runs out of its build directory rather than an installed prefix, so
+  # the whole layout is derived from ONE root.  rubygems (Gem.default_dir and
+  # friends) and mkmf read these, and they must be mutually consistent or
+  # rubygems dies on a nil in File.join.  KORUBY_PREFIX overrides the root.
+  __pfx = ENV["KORUBY_PREFIX"] || "/usr"
+  # CRuby's "ruby_version" is the ABI version, which for a dev build carries a
+  # "+N" suffix (4.1.0+4).  rubygems joins it into Gem.default_dir, so pointing
+  # KORUBY_PREFIX at such an install must use the directory that is really
+  # there or every default gem goes missing.
+  __rv  = RUBY_VERSION
+  unless File.directory?("#{__pfx}/lib/ruby/#{__rv}")
+    __abi = Dir.glob("#{__pfx}/lib/ruby/#{__rv}+*").sort.last
+    __rv = File.basename(__abi) if __abi
+  end
+  CONFIG["ruby_version"] = __rv
+  __arch = CONFIG["arch"]
+  CONFIG["prefix"] = __pfx
+  CONFIG["exec_prefix"] = __pfx
+  CONFIG["bindir"] = "#{__pfx}/bin"
+  CONFIG["libdir"] = "#{__pfx}/lib"
+  CONFIG["libexecdir"] = "#{__pfx}/libexec"
+  CONFIG["datarootdir"] = "#{__pfx}/share"
+  CONFIG["datadir"] = "#{__pfx}/share"
+  CONFIG["sysconfdir"] = "#{__pfx}/etc"
+  CONFIG["localstatedir"] = "/var"
+  CONFIG["includedir"] = "#{__pfx}/include"
+  CONFIG["rubylibprefix"] = "#{__pfx}/lib/ruby"
+  CONFIG["rubylibdir"] = "#{__pfx}/lib/ruby/#{__rv}"
+  CONFIG["rubyarchprefix"] = "#{__pfx}/lib/ruby/#{__arch}"
+  CONFIG["rubyarchdir"] = "#{__pfx}/lib/ruby/#{__rv}/#{__arch}"
+  CONFIG["archdir"] = CONFIG["rubyarchdir"]
+  CONFIG["sitedir"] = "#{__pfx}/lib/ruby/site_ruby"
+  CONFIG["sitelibdir"] = "#{__pfx}/lib/ruby/site_ruby/#{__rv}"
+  CONFIG["sitearchdir"] = "#{__pfx}/lib/ruby/site_ruby/#{__rv}/#{__arch}"
+  CONFIG["vendordir"] = "#{__pfx}/lib/ruby/vendor_ruby"
+  CONFIG["vendorlibdir"] = "#{__pfx}/lib/ruby/vendor_ruby/#{__rv}"
+  CONFIG["vendorarchdir"] = "#{__pfx}/lib/ruby/vendor_ruby/#{__rv}/#{__arch}"
+  CONFIG["rubyhdrdir"] = "#{__pfx}/include/ruby-#{__rv}"
+  CONFIG["rubyarchhdrdir"] = "#{__pfx}/include/ruby-#{__rv}/#{__arch}"
+  CONFIG["sitehdrdir"] = "#{__pfx}/include/ruby-#{__rv}/site_ruby"
+  CONFIG["vendorhdrdir"] = "#{__pfx}/include/ruby-#{__rv}/vendor_ruby"
+  CONFIG["mandir"] = "#{__pfx}/share/man"
+  CONFIG["docdir"] = "#{__pfx}/share/doc/$(PACKAGE)"
+  CONFIG["RUBY_BASE_NAME"] = "ruby"
+  CONFIG["RUBY_PROGRAM_VERSION"] = __rv
+  CONFIG["RUBY_API_VERSION"] = __rv.split(".")[0, 2].join(".")
+  CONFIG["RUBY_SO_NAME"] = "koruby"
+  CONFIG["LIBRUBY_A"] = "libkoruby.a"
+  CONFIG["LIBRUBYARG"] = "-lkoruby"
+  CONFIG["LIBRUBYARG_SHARED"] = "-lkoruby"
+  CONFIG["LIBRUBYARG_STATIC"] = "-lkoruby-static"
+  CONFIG["LIBEXT"] = "a"
+  CONFIG["OBJEXT"] = "o"
+  CONFIG["NULLCMD"] = ":"
+  CONFIG["PATH_SEPARATOR"] = ":"
+  CONFIG["SOEXT"] = "so"
+  CONFIG["host"] = __arch
+  CONFIG["host_vendor"] = "pc"
+  CONFIG["target"] = __arch
+  CONFIG["target_vendor"] = "pc"
+  CONFIG["build"] = __arch
+  CONFIG["build_os"] = CONFIG["host_os"]
+  CONFIG["build_cpu"] = CONFIG["host_cpu"]
+  CONFIG["build_vendor"] = "pc"
   # CRuby leaves the values unfrozen even under --enable-frozen-string-literal.
   CONFIG.transform_values! { |v| v.frozen? ? +v : v }
 

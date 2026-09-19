@@ -990,6 +990,10 @@ struct korb_vm {
      * deopt-flag shape: while false, #clone never calls back into the Ruby-side
      * finalizer registry to copy an entry. */
     bool finalizers_active;
+    /* prelude has finished: user code may now shadow a global builtin
+     * (`module Kernel; def require`) — see korb_class_method_slot. */
+    bool boot_done;
+    VALUE kernel_mod;        /* the Kernel module, cached by korb_relocate_object_methods */
 
     /* constants (class names): parallel name→value arrays.  `const_vals` holds
      * GC objects (classes) and is root-scanned by AROH_VISIT_ROOTS.
@@ -1415,6 +1419,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                            \
     }                                                                        \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->super_new_skip);         \
+    ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->kernel_mod);            \
     if ((c)->vm->top_self != 0)                                              \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->top_self);           \
     /* constants (class values) + their defining-module owners are roots too */ \

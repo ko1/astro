@@ -1,120 +1,216 @@
-# 純 Ruby MonitorMixin / Monitor — koruby の Thread::Mutex 上の再入 lock。
-# (CRuby の monitor.so 相当を green-thread 前提で単純化)
+# frozen_string_literal: false
+# = monitor.rb
+#
+# Copyright (C) 2001  Shugo Maeda <shugo@ruby-lang.org>
+#
+# This library is distributed under the terms of the Ruby license.
+# You can freely distribute/modify this library.
+#
+#
+# In concurrent programming, a monitor is an object or module intended to be
+# used safely by more than one thread. The defining characteristic of a
+# monitor is that its methods are executed with mutual exclusion. That is, at
+# each point in time, at most one thread may be executing any of its methods.
+# This mutual exclusion greatly simplifies reasoning about the implementation
+# of monitors compared to reasoning about parallel code that updates a data
+# structure.
+#
+# You can read more about the general principles on the Wikipedia page for
+# Monitors[https://en.wikipedia.org/wiki/Monitor_%28synchronization%29].
+#
+# == Examples
+#
+# === Simple object.extend
+#
+#   require 'monitor.rb'
+#
+#   buf = []
+#   buf.extend(MonitorMixin)
+#   empty_cond = buf.new_cond
+#
+#   # consumer
+#   Thread.start do
+#     loop do
+#       buf.synchronize do
+#         empty_cond.wait_while { buf.empty? }
+#         print buf.shift
+#       end
+#     end
+#   end
+#
+#   # producer
+#   while line = ARGF.gets
+#     buf.synchronize do
+#       buf.push(line)
+#       empty_cond.signal
+#     end
+#   end
+#
+# The consumer thread waits for the producer thread to push a line to buf
+# while <tt>buf.empty?</tt>. The producer thread (main thread) reads a
+# line from ARGF and pushes it into buf then calls <tt>empty_cond.signal</tt>
+# to notify the consumer thread of new data.
+#
+# === Simple Class include
+#
+#   require 'monitor'
+#
+#   class SynchronizedArray < Array
+#
+#     include MonitorMixin
+#
+#     def initialize(*args)
+#       super(*args)
+#     end
+#
+#     alias :old_shift :shift
+#     alias :old_unshift :unshift
+#
+#     def shift(n=1)
+#       self.synchronize do
+#         self.old_shift(n)
+#       end
+#     end
+#
+#     def unshift(item)
+#       self.synchronize do
+#         self.old_unshift(item)
+#       end
+#     end
+#
+#     # other methods ...
+#   end
+#
+# +SynchronizedArray+ implements an Array with synchronized access to items.
+# This Class is implemented as subclass of Array which includes the
+# MonitorMixin module.
+#
 module MonitorMixin
-  class ConditionVariable
-    def initialize(monitor)
-      @monitor = monitor
-      @cond = ::ConditionVariable.new
-    end
-    def wait(timeout = nil)
-      @monitor.__send__(:mon_check_owner)
-      count = @monitor.__send__(:mon_exit_for_cond)
-      begin
-        @cond.wait(@monitor.__send__(:mon_mutex), timeout)
-        true
-      ensure
-        @monitor.__send__(:mon_enter_for_cond, count)
-      end
-    end
-    def wait_while; wait while yield; end
-    def wait_until; wait until yield; end
-    def signal; @monitor.__send__(:mon_check_owner); @cond.signal; self; end
-    def broadcast; @monitor.__send__(:mon_check_owner); @cond.broadcast; self; end
-  end
+  ConditionVariable = Monitor::ConditionVariable # :nodoc:
 
-  def self.extend_object(obj)
-    super
+  #
+  # FIXME: This isn't documented in Nutshell.
+  #
+  # Since MonitorMixin.new_cond returns a ConditionVariable, and the example
+  # above calls while_wait and signal, this class should be documented.
+  #
+
+  def self.extend_object(obj) # :nodoc:
+    super(obj)
     obj.__send__(:mon_initialize)
   end
 
+  #
+  # Attempts to enter exclusive section.  Returns +false+ if lock fails.
+  #
   def mon_try_enter
-    if @mon_owner == Thread.current
-      @mon_count += 1
-      true
-    elsif @mon_mutex.try_lock
-      @mon_owner = Thread.current
-      @mon_count = 1
-      true
-    else
-      false
-    end
+    @mon_data.try_enter
   end
+  # For backward compatibility
   alias try_mon_enter mon_try_enter
-  alias try_enter mon_try_enter
 
+  #
+  # Enters exclusive section.
+  #
   def mon_enter
-    if @mon_owner == Thread.current
-      @mon_count += 1
-    else
-      @mon_mutex.lock
-      @mon_owner = Thread.current
-      @mon_count = 1
-    end
-    nil
+    @mon_data.enter
   end
-  alias enter mon_enter
 
+  #
+  # Leaves exclusive section.
+  #
   def mon_exit
     mon_check_owner
-    @mon_count -= 1
-    if @mon_count == 0
-      @mon_owner = nil
-      @mon_mutex.unlock
-    end
-    nil
+    @mon_data.exit
   end
-  alias exit mon_exit
 
-  def mon_locked?; @mon_mutex.locked?; end
-  def mon_owned?; @mon_owner == Thread.current; end
+  #
+  # Returns true if this monitor is locked by any thread
+  #
+  def mon_locked?
+    @mon_data.mon_locked?
+  end
 
-  def mon_synchronize
-    mon_enter
-    begin
-      yield
-    ensure
-      mon_exit
-    end
+  #
+  # Returns true if this monitor is locked by current thread.
+  #
+  def mon_owned?
+    @mon_data.mon_owned?
+  end
+
+  #
+  # Enters exclusive section and executes the block.  Leaves the exclusive
+  # section automatically when the block exits.  See example under
+  # +MonitorMixin+.
+  #
+  def mon_synchronize(&b)
+    @mon_data.synchronize(&b)
   end
   alias synchronize mon_synchronize
 
-  def new_cond; ConditionVariable.new(self); end
+  #
+  # Creates a new MonitorMixin::ConditionVariable associated with the
+  # Monitor object.
+  #
+  def new_cond
+    unless defined?(@mon_data)
+      mon_initialize
+      @mon_initialized_by_new_cond = true
+    end
+    return ConditionVariable.new(@mon_data)
+  end
 
   private
 
-  def mon_initialize
-    @mon_mutex = ::Thread::Mutex.new
-    @mon_owner = nil
-    @mon_count = 0
-    self
-  end
-
-  def initialize(*args, &blk)
+  # Use <tt>extend MonitorMixin</tt> or <tt>include MonitorMixin</tt> instead
+  # of this constructor.  Have look at the examples above to understand how to
+  # use this module.
+  def initialize(...)
     super
     mon_initialize
   end
 
+  # Initializes the MonitorMixin after being included in a class or when an
+  # object has been extended with the MonitorMixin
+  def mon_initialize
+    if defined?(@mon_data)
+      if defined?(@mon_initialized_by_new_cond)
+        return # already initialized.
+      elsif @mon_data_owner_object_id == self.object_id
+        raise ThreadError, "already initialized"
+      end
+    end
+    @mon_data = ::Monitor.new
+    @mon_data_owner_object_id = self.object_id
+  end
+
+  # Ensures that the MonitorMixin is owned by the current thread,
+  # otherwise raises an exception.
   def mon_check_owner
-    raise ThreadError, "current thread not owner" unless @mon_owner == Thread.current
-  end
-  def mon_mutex; @mon_mutex; end
-  def mon_exit_for_cond
-    count = @mon_count
-    @mon_owner = nil
-    @mon_count = 0
-    count
-  end
-  def mon_enter_for_cond(count)
-    @mon_owner = Thread.current
-    @mon_count = count
+    @mon_data.mon_check_owner
   end
 end
 
-class Monitor
-  include MonitorMixin
-  alias try_enter mon_try_enter
-  alias enter mon_enter
-  alias exit mon_exit
-  # 上の alias は MonitorMixin 側の public alias と同じ (CRuby API 表面)
-  def initialize; mon_initialize; end
+class Monitor # :nodoc:
+  alias try_mon_enter try_enter
+  alias mon_try_enter try_enter
+  alias mon_enter enter
+  alias mon_exit exit
+  alias mon_synchronize synchronize
 end
+
+# Documentation comments:
+#  - All documentation comes from Nutshell.
+#  - MonitorMixin.new_cond appears in the example, but is not documented in
+#    Nutshell.
+#  - All the internals (internal modules Accessible and Initializable, class
+#    ConditionVariable) appear in RDoc.  It might be good to hide them, by
+#    making them private, or marking them :nodoc:, etc.
+#  - RDoc doesn't recognise aliases, so we have mon_synchronize documented, but
+#    not synchronize.
+#  - mon_owner is in Nutshell, but appears as an accessor in a separate module
+#    here, so is hard/impossible to RDoc.  Some other useful accessors
+#    (mon_count and some queue stuff) are also in this module, and don't appear
+#    directly in the RDoc output.
+#  - in short, it may be worth changing the code layout in this file to make the
+#    documentation easier

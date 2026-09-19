@@ -4076,13 +4076,15 @@ korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mi
      * bare-name call reads FIRST.  Defining the same name on Object through the
      * class table (define_method, alias_method, attr_*) used to be invisible to
      * bare calls: the old ISEQ kept running.  Unlink the global entry so the call
-     * falls through to Object/Kernel and finds this one.  Only an ISEQ entry is
-     * unlinked -- the builtins (puts, require, ...) live there too and boot
-     * relocates Object's methods onto Kernel through this same slot. */
-    if (k == VAL2CLASS(korb_builtin_class_obj(vm, KORB_C_OBJECT))) {
+     * falls through to Object/Kernel and finds this one.  During boot only an
+     * ISEQ entry is unlinked, because relocation mirrors the builtins onto
+     * Kernel through this same slot; once the prelude is done a user
+     * `module Kernel; def require` shadows the builtin too, as in CRuby. */
+    if (k == VAL2CLASS(korb_builtin_class_obj(vm, KORB_C_OBJECT)) ||
+        (vm->kernel_mod != KORB_NIL && k == VAL2CLASS(vm->kernel_mod))) {
         for (uint32_t i = 0; i < vm->method_cnt; i++)
-            if (vm->methods[i]->mid == mid && vm->methods[i]->kind == KORB_METHOD_ISEQ &&
-                vm->methods[i] != m && !vm->methods[i]->retired) {
+            if (vm->methods[i]->mid == mid && vm->methods[i] != m && !vm->methods[i]->retired &&
+                (vm->boot_done || vm->methods[i]->kind == KORB_METHOD_ISEQ)) {
                 vm->methods[i]->retired = 1;   /* keep it in the table: dropping it would take its
                                                 * owner / dm_proc out of the GC root set while live
                                                 * frames still point at it through base[-4] */
@@ -4479,6 +4481,7 @@ korb_relocate_object_methods(CTX *c, VALUE *slots)
     slots[2] = korb_const_get(vm, korb_intern(vm, "BasicObject", 11));
     if (!KORB_CLASS_P(slots[0]) || !KORB_CLASS_P(slots[1]) || !KORB_CLASS_P(slots[2])) return;
     const VALUE objc = slots[0], kmod = slots[1], bobj = slots[2];
+    vm->kernel_mod = kmod;             /* korb_class_method_slot's global-shadow check */
     /* BasicObject's own methods (CRuby's BasicObject.instance_methods(false)
      * plus its private ones); everything else on Object belongs to Kernel. */
     static const char *const basic[] = {

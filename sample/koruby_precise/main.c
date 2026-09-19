@@ -1496,6 +1496,7 @@ main(int argc, char *argv[])
         RESULT pr = EVAL(c, prelude_ast, pcur);
         if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); korb_io_flush_std(c->vm); return 1; }
         korb_relocate_object_methods(c, pcur);  /* Object's own table is empty in CRuby: move to Kernel/BasicObject */
+        c->vm->boot_done = true;                /* user `module Kernel; def require` may now shadow the builtin */
         korb_seed_provided_features(c, pcur);   /* CRuby-parity: fiber/pathname preload + pseudo $LOADED_FEATURES */
         if (OPTION.debug) korb_const_define(c, korb_intern(c->vm, "$DEBUG", 6), KORB_TRUE);
         if (OPTION.kcode || OPTION.extenc || OPTION.intenc) {   /* -K<letter> / -E ext[:int] / -U */
