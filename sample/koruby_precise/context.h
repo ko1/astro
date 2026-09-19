@@ -368,6 +368,9 @@ typedef struct KorbRegexp {
     uint8_t ci;                      /* case-insensitive flag (== flags & 4) */
     uint32_t flags;                  /* prism regex flags (IGNORE_CASE=4/EXTENDED=8/MULTI_LINE=16) */
 } KorbRegexp;
+/* the flag bits that take part in Regexp identity (bit 7 is the "source is
+ * already the literal's encoding" marker, not part of ==) */
+#define KORB_RE_ID_FLAGS(f) ((f) & ~128u)
 
 /* MatchData: the subject, the source Regexp, and per-group byte spans.
  * `offsets` is a KorbArray of Integers [b0,e0,b1,e1,...] (byte offsets into

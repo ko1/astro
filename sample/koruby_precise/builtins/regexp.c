@@ -864,7 +864,6 @@ static RESULT korb_m_re_named_captures(CTX *c, VALUE *slots, VALUE_REF self, VAL
 }
 /* == and hash ignore the /n (NOENCODING, 128) flag — CRuby treats it as
  * encoding metadata, not part of the compiled-pattern identity. */
-#define KORB_RE_ID_FLAGS(f) ((f) & ~128u)
 static RESULT korb_m_re_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; const VALUE o = VALUE_SLICE_GET(a, 0), s = VALUE_REF_GET(self);
     if (!KORB_REGEXP_P(o) || KORB_RE_ID_FLAGS(VAL2RE(s)->flags) != KORB_RE_ID_FLAGS(VAL2RE(o)->flags)) return RESULT_OK(KORB_FALSE);

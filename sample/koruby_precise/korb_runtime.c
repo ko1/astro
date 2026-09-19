@@ -6921,6 +6921,13 @@ korb_value_eq(VALUE a, VALUE b)
         x->head.flags &= ~KORB_FL_JOIN_VISITING;
         return eq;
     }
+    if (KORB_REGEXP_P(a) && KORB_REGEXP_P(b)) {       /* Regexp#==: same source bytes + same identity flags */
+        const KorbRegexp *const x = VAL2RE(a), *const y = VAL2RE(b);
+        if (KORB_RE_ID_FLAGS(x->flags) != KORB_RE_ID_FLAGS(y->flags)) return false;
+        const KorbString *const xs = VAL2STR(x->source), *const ys = VAL2STR(y->source);
+        return xs->len == ys->len &&
+               memcmp(korb_strbuf_data(xs->buf), korb_strbuf_data(ys->buf), xs->len) == 0;
+    }
     if (KORB_RANGE_P(a) && KORB_RANGE_P(b)) {         /* Range#==: == begin/end + same exclude_end */
         const KorbRange *const x = VAL2RANGE(a), *const y = VAL2RANGE(b);
         return x->exclude_end == y->exclude_end && korb_value_eq(x->rbegin, y->rbegin) && korb_value_eq(x->rend, y->rend);
