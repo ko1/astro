@@ -1537,6 +1537,11 @@ module RbConfig
   def self.ruby; File.join(CONFIG["bindir"], CONFIG["ruby_install_name"] + CONFIG["EXEEXT"]); end
 end
 
+# CRuby の rbconfig.rb はこれを **top-level** に置く。bundler の rubygems_ext.rb
+# が `CROSS_COMPILING || RUBY_PLATFORM` と裸で参照するので、無いと gem の解決が
+# NameError で止まる (i18n のテストが全滅していた)。
+CROSS_COMPILING = nil unless defined?(CROSS_COMPILING)
+
 # at_exit: register a block to run (in reverse order) when the program ends.  The
 # C main loop drains $__at_exit after the top-level program returns.
 $__at_exit = []
