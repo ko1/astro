@@ -5827,3 +5827,30 @@ make doom-aot                                          # preload_store を焼き
 **計測上の注意**: `make doom-aot` の後に sweep を回すと、この 3 ファイルが WFAIL
 になる。2026-09-17 の sweep 9 本のうち 2 本がその状態だった。ゲートを取るときは
 doom-aot の後に `rm -rf preload_store` してから sweep する。
+
+## Method の早期束縛: 同じクラス内での再定義だけ未対応 (2026-09-19)
+
+`korb_meth_pin` で Method / UnboundMethod は捕まえた時点の `struct korb_method *`
+を保持するようになり、**あとから singleton を生やす / `def self.new` を足す**
+パターンは CRuby と一致するようになった (rspec-support の
+`NEW_MUTEX_METHOD = Mutex.method(:new)` がこれを要求する)。
+
+残っているのは**同じクラスで同じ名前を上書き定義**した場合:
+
+```ruby
+class Baz; def hi = :base; end
+m = Baz.new.method(:hi)
+class Baz; def hi = :redef; end
+m.call   # CRuby: :base / koruby: :redef
+```
+
+`korb_class_method_slot` が再定義でエントリを**使い回す**ため、pin したポインタが
+新しい body を指してしまう。CRuby は再定義で新しい method entry を作る。
+
+直すには再定義時に新エントリを calloc して `k->methods[i]` を差し替える必要が
+あるが、**古いエントリをテーブルから外すと `owner` / `dm_proc` が GC のルート
+集合から落ちる** (グローバル表の retire 処理に同じ注意書きがある)。古い方を
+`retired` のままテーブルに残して新しいものを append する形なら安全だが、
+`korb_class_find_method` / `korb_class_method_slot` の全走査に retired スキップを
+入れる必要があり、メソッド表が再定義のたびに伸びる。優先度は低い (実 gem で
+踏んだ例はまだ無い)。

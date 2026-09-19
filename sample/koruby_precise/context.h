@@ -401,11 +401,15 @@ typedef struct KorbBinding {
 typedef struct KorbMethod {
     AroObjectHeader head;            /* KORB_OBJ_METHOD */
     VALUE ARO_GC_EDGE recv;          /* bound: the receiver; unbound: the owner class */
-    VALUE ARO_GC_EDGE owner;         /* bound-from-unbound: the class to invoke from (fixed, not virtual); nil = virtual re-dispatch by mid */
+    VALUE ARO_GC_EDGE owner;         /* the class to invoke from (fixed, not virtual); nil = virtual re-dispatch by mid */
+    struct korb_method *entry;       /* the definition this Method was pinned to at capture (immortal, never
+                                      * moved/freed); NULL = none was found.  Not a GC edge. */
     uint32_t mid;                    /* interned method name */
     uint8_t  unbound;                /* 1 = UnboundMethod (recv holds the owner class) */
     uint8_t  missing;                /* 1 = name has no definition; respond_to_missing? vouched for it,
                                       * so #call always routes through method_missing (CRuby mnew_missing) */
+    uint8_t  default_new;            /* `new` on a class: a dispatch special case with no table entry, so
+                                      * #call must run the default allocator even if `def self.new` came later */
 } KorbMethod;
 
 /* Closure env (one captured scope activation), materialized when a Proc escapes

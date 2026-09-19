@@ -3351,17 +3351,53 @@ RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
     return korb_re_alloc(c, slots, source, flags);
 }
 /* obj.method(:sym) → a bound Method object (receiver + method id). */
+static VALUE korb_dispatch_class(CTX *c, VALUE self);                                         /* fwd */
+static struct korb_method *korb_method_lookup(struct korb_vm *vm, uint32_t mid);              /* fwd */
+static struct korb_method *korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def);  /* fwd */
+/* Early-bind a Method to the definition it resolved to, as CRuby does: a
+ * singleton (or any def) added AFTER the capture must not change what #call
+ * runs.  Entries are immortal, so the raw pointer survives a redefinition or a
+ * remove_method.  `owner` doubles as the class #call dispatches from, so a
+ * caller that already fixed one (bind, super_method) re-pins from there. */
+static void korb_meth_pin(CTX *const c, const VALUE mv) {
+    KorbMethod *const m = VAL2METH(mv);
+    if (m->missing) return;                      /* lives behind method_missing */
+    const VALUE from = (m->owner != KORB_NIL) ? m->owner
+                     : (m->unbound ? m->recv : korb_dispatch_class(c, m->recv));
+    VALUE def = KORB_NIL;
+    struct korb_method *const km =
+        KORB_CLASS_P(from) ? korb_class_find_method(from, m->mid, &def) : NULL;
+    if (km == NULL) {
+        m->entry = korb_method_lookup(c->vm, m->mid);   /* global fn table (top-level def, `p`) */
+        /* `new` on a class has no table entry (korb_send_impl special-cases it):
+         * remember that this Method IS the default allocator. */
+        if (m->entry == NULL && m->mid == c->vm->mid_new && KORB_CLASS_P(m->recv)) m->default_new = 1;
+        return;
+    }
+    m->entry = km;
+    if (m->owner == KORB_NIL && KORB_CLASS_P(def))
+        ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->owner, def);
+}
 RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid) {
     VALUE_REF rref = SLOTS_PUSH(slots, recv);            /* root recv across alloc */
     KorbMethod *m = korb_alloc(c, slots, sizeof(KorbMethod), KORB_OBJ_METHOD);
-    m->mid = mid; m->unbound = 0; m->missing = 0;
+    m->mid = mid; m->unbound = 0; m->missing = 0; m->default_new = 0; m->entry = NULL;
     ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv, VALUE_REF_GET(rref));
+    korb_meth_pin(c, (VALUE)m);
     return RESULT_OK((VALUE)m);
 }
 /* UnboundMethod: recv holds the OWNER class (no instance); bind re-attaches it. */
 RESULT korb_unbound_new(CTX *c, VALUE *slots, VALUE owner, uint32_t mid) {
     RESULT r = korb_method_new(c, slots, owner, mid);
-    if (LIKELY(r.state == KORB_NORMAL)) VAL2METH(r.value)->unbound = 1;
+    if (LIKELY(r.state == KORB_NORMAL)) {
+        /* korb_method_new pinned this as a BOUND method, i.e. through the class
+         * object's own singleton chain (Class/Module/Kernel).  Drop that and
+         * re-resolve with `recv` read as the owner class. */
+        KorbMethod *const m = VAL2METH(r.value);
+        m->unbound = 1; m->entry = NULL; m->default_new = 0;
+        ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->owner, KORB_NIL);
+        korb_meth_pin(c, r.value);
+    }
     return r;
 }
 

@@ -391,8 +391,21 @@ static RESULT korb_m_meth_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         korb_flink_hand_on_cframe(c, slots);
         return korb_send_impl(c, slots + 2 + argc, korb_intern(c->vm, "method_missing", 14), 0, argc + 1, block, def_env, cself);
     }
+    if (UNLIKELY(m->default_new)) {
+        /* `Foo.method(:new)` captured the default allocator; a `def self.new`
+         * added afterwards must not swallow the call (rspec-support does
+         * exactly this and recursed forever).  Same one-shot marker the `super`
+         * path uses to reach past such an override. */
+        slots[0] = m->recv;
+        for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+        c->vm->super_new_skip = korb_dispatch_class(c, slots[0]);
+        korb_flink_hand_on_cframe(c, slots);
+        const RESULT nr = korb_send_impl(c, slots + 1 + argc, mid, 0, argc, block, def_env, cself);
+        c->vm->super_new_skip = KORB_NIL;
+        return nr;
+    }
     const VALUE owner = m->owner;
-    if (UNLIKELY(owner != KORB_NIL && KORB_CLASS_P(owner))) {   /* bound-from-unbound: invoke the FIXED method from its owner (not virtual) */
+    if (UNLIKELY(owner != KORB_NIL && KORB_CLASS_P(owner))) {   /* invoke the PINNED method from its owner (not virtual) */
         struct korb_method *const entry = korb_class_find_method(owner, mid, NULL);
         if (LIKELY(entry != NULL && entry->kind == KORB_METHOD_ISEQ)) {
             /* korb_invoke_method fills identity + self, so stage the other two
@@ -697,6 +710,7 @@ static RESULT korb_m_meth_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * then the global function table (top-level def / builtin like `p`). */
 static const struct korb_method *korb_meth_resolve(CTX *c, const KorbMethod *m) {
     if (m->missing) return NULL;                 /* no definition: it lives behind method_missing */
+    if (LIKELY(m->entry != NULL)) return m->entry;   /* pinned at capture (korb_meth_pin) */
     /* unbound: recv IS the owner class → look the method up directly there. */
     const VALUE klass = m->unbound ? m->recv : korb_dispatch_class(c, m->recv);
     const struct korb_method *km = KORB_CLASS_P(klass) ? korb_class_find_method(klass, m->mid, NULL) : NULL;
@@ -852,7 +866,11 @@ static RESULT korb_m_meth_super_method(CTX *c, VALUE *slots, VALUE_REF self, VAL
     (void)a;
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
     const struct korb_method *const km = korb_meth_resolve(c, m);
-    const VALUE cur_owner = (m->owner != KORB_NIL) ? m->owner : (km ? km->owner : KORB_NIL);
+    /* The entry's own ->owner is where the definition really lives, which is
+     * what super resolution needs: `public :m` on an inherited private method
+     * puts a COPY in the reopening class, and #owner reports that copy's class
+     * (m->owner), but super has to start from the original module. */
+    const VALUE cur_owner = (km != NULL && km->owner != KORB_NIL) ? km->owner : m->owner;
     if (!KORB_CLASS_P(cur_owner)) return RESULT_OK(KORB_NIL);
     const VALUE start = m->unbound ? m->recv : korb_dispatch_class(c, m->recv);
     /* CRuby searches for the ORIGINAL name: an alias's super is what the
@@ -877,6 +895,7 @@ static RESULT korb_m_meth_super_method(CTX *c, VALUE *slots, VALUE_REF self, VAL
         RESULT r = korb_method_new(c, slots + 1, recv, mid);        /* bound: keep recv, fix the super-owner */
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         ARO_STORE(c, VAL2METH(r.value), (VALUE *)(uintptr_t)&VAL2METH(r.value)->owner, slots[0]);
+        korb_meth_pin(c, r.value);                                  /* pin to the super definition, not the overridden one */
         return r;
     }
     return RESULT_OK(KORB_NIL);
@@ -1033,6 +1052,7 @@ static RESULT korb_m_meth_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     RESULT r = korb_method_new(c, slots + 2, slots[1], mid);       /* bound: recv = obj */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     ARO_STORE(c, VAL2METH(r.value), (VALUE *)(uintptr_t)&VAL2METH(r.value)->owner, slots[0]);   /* fix the dispatch to the unbound's owner */
+    korb_meth_pin(c, r.value);
     return r;
 }
 /* UnboundMethod#bind_call(obj, *args) → bind then call. */
