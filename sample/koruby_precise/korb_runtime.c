@@ -4433,6 +4433,7 @@ korb_find_bang_override(CTX *c, VALUE v)
 
 extern const struct NodeKind kind_node_ivar_get;   /* auto-attr detection */
 static VALUE korb_klass_override_get(const struct korb_vm *vm, VALUE obj);   /* fwd (singleton lookup, no alloc) */
+static VALUE korb_copy_klass(CTX *c, VALUE ov, VALUE src);                   /* fwd (defined in builtins/int_float_ext.c) */
 
 /* Module#dup / Class#dup: an anonymous copy that owns its own method table.
  * Sharing the source's entries would let the copy's undef_method/alias reach
@@ -11737,6 +11738,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                     return RESULT_OK(slots[1]);
                 }
                 if (!uinit && base == KORB_C_HASH && (argc >= 1 || block != NULL)) {   /* Hash subclass: default value / default_proc */
+                    if (block != NULL && argc >= 1)   /* same rule as Hash.new: one or the other, not both */
+                        return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 0)", argc);
                     if (block != NULL) {
                         slots[2] = UNWRAP(korb_make_proc(c, slots + 2, block, def_env, KORB_CSELF_VAL(captured_self), 0));
                         ARO_STORE(c, VAL2HASH(slots[1]), (VALUE *)(uintptr_t)&VAL2HASH(slots[1])->default_proc, slots[2]);

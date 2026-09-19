@@ -473,6 +473,21 @@ static RESULT korb_copy_gen_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE *p
 /* Shared body of #dup and #clone.  `hook_mid` is the copy hook CRuby runs on the
  * new object (initialize_dup / initialize_clone); `hook_kw` is the freeze: Hash
  * clone passes along, or nil. */
+/* The class a copy should carry.  A singleton class is transparent here: #dup
+ * drops the singleton but KEEPS the real class under it (CRuby), so a Hash
+ * subclass that had `def h.foo` still dups to the subclass — koruby's override
+ * table holds only ONE class per object, so the singleton had been hiding it.
+ * KORB_NIL when the copy needs no entry (a plain builtin). */
+static VALUE korb_copy_klass(CTX *c, VALUE ov, VALUE src)
+{
+    /* A Module/Class is the exception: its singleton holds its CLASS METHODS,
+     * and Module#initialize_copy carries those over (rubyspec:
+     * "should retain singleton methods when duped"). */
+    if (KORB_CLASS_P(src)) return KORB_CLASS_P(ov) ? ov : KORB_NIL;
+    while (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) ov = VAL2CLASS(ov)->superclass;
+    if (!KORB_CLASS_P(ov)) return KORB_NIL;
+    return (ov == korb_builtin_class_obj(c->vm, korb_class_of(src))) ? KORB_NIL : ov;
+}
 static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t hook_mid, const VALUE *hook_kw) {
     const VALUE v = VALUE_REF_GET(self);
     /* preserve the subclass: a builtin-subclass instance dups to the same class */
@@ -585,8 +600,10 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         slots[1] = (VALUE)np;
         CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
         gen_done = true;
-        if (sub && !(KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_singleton))
-            korb_klass_override_set(c, slots[1], slots[0]);   /* a Proc subclass: its own #initialize_dup/clone must see the class */
+        if (sub) {   /* a Proc subclass: its own #initialize_dup/clone must see the class.
+                      * self is re-read: the copy's alloc may have moved the source. */
+            const VALUE dk = korb_copy_klass(c, slots[0], VALUE_REF_GET(self));
+            if (dk != KORB_NIL) { slots[0] = dk; korb_klass_override_set(c, slots[1], slots[0]); } }
         /* CRuby calls #initialize_copy(orig) after copying (default no-op; a user override runs). */
         slots[2] = VALUE_REF_GET(self);
         RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
@@ -641,8 +658,10 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         return RESULT_OK(v);   /* immediate / no special copy */
     }
     if (!gen_done) CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
-    if (sub && !(KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_singleton))
-        korb_klass_override_set(c, slots[1], slots[0]);   /* dup keeps a builtin-subclass class but NOT a singleton class */
+    if (sub) {   /* dup keeps the builtin-subclass class but NOT the singleton.
+                  * self is re-read: the copy's alloc may have moved the source. */
+        const VALUE dk = korb_copy_klass(c, slots[0], VALUE_REF_GET(self));
+        if (dk != KORB_NIL) { slots[0] = dk; korb_klass_override_set(c, slots[1], slots[0]); } }
     if (need_initcopy && sub) {                           /* String/Array/Hash/Set subclass: run the (possibly overridden) hook now that the class is set */
         RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
