@@ -1603,6 +1603,21 @@ main(int argc, char *argv[])
             }
         }
         for (int k = nload_dirs; k-- > 0; ) korb_load_path_unshift(c, toplevel_cursor, load_dirs[k]);
+        /* CRuby loads rubygems at startup unless --disable-gems, and a program
+         * that requires a gem by name needs its Kernel#require hook installed
+         * before -r and before the program runs.  A koruby install with no
+         * rubygems on the load path simply has none, so a LoadError here is the
+         * normal case and stays quiet; anything else is a real failure. */
+        if (!OPTION.no_gems) {
+            const RESULT gr = korb_require_feature(c, toplevel_cursor, "rubygems");
+            if (gr.state == KORB_RAISE) {
+                char enm[128];
+                korb_class_desc_into(c, korb_class_obj_of(c, gr.value), enm, sizeof enm);
+                if (strcmp(enm, "LoadError") != 0) {
+                    korb_report_uncaught(c, gr.value); korb_io_flush_std(c->vm); return 1;
+                }
+            }
+        }
         for (int k = 0; k < nreq_libs; k++) {
             const RESULT rr = korb_require_feature(c, toplevel_cursor, req_libs[k]);
             if (rr.state == KORB_RAISE) { korb_report_uncaught(c, rr.value); korb_io_flush_std(c->vm); return 1; }

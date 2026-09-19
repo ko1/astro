@@ -1501,6 +1501,9 @@ kp_encode_destr(struct kp_ctx *tc, const pm_node_t *p, struct kp_destr *e)
     if (kp_destr_leaf_cid(p, &cid)) {
         const uint32_t li = lvar_index(tc, p, cid);
         if (li > 254) { e->bad = true; return; }
+        /* A repeated name shares ONE prism slot.  Unlike flat block params
+         * (where CRuby keeps the FIRST), a destructuring target is a masgn and
+         * assigns left to right, so the LAST write wins — emit the slot twice. */
         kp_destr_put(e, 0x00); kp_destr_put(e, li);
         e->loc++;
         return;
@@ -1760,6 +1763,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                             if (PM_NODE_TYPE_P(m0->lefts.nodes[z], PM_MULTI_TARGET_NODE)) flat = false;
                         flat; })) {
                 const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)ps->requireds.nodes[0];
+                bool dup_names = false;
                 if (mt->rest || mt->rights.size) {
                     pop_frame(tc);
                     return kp_unsupported(tc, ps->requireds.nodes[0], "block param with splat/post destructure");
@@ -1777,12 +1781,18 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     }
                     /* the destructure writes position j into locals[j]; a repeated
                      * name (`|(_, a, _)|`) makes prism reuse a slot, so the
-                     * identity mapping no longer holds — refuse instead of
-                     * writing into the wrong local (raises when the block runs). */
-                    if (lvar_index(tc, t, cid) != i) { pop_frame(tc); return kp_unsupported(tc, t, "repeated name in a destructuring block parameter"); }
+                     * identity mapping no longer holds.  Bind through an explicit
+                     * spec instead (the encoder sends duplicates to scratch). */
+                    if (lvar_index(tc, t, cid) != i) dup_names = true;
                 }
                 bparams = 1;
-                destructure_n = (uint32_t)mt->lefts.size;
+                if (dup_names) {
+                    struct kp_destr enc = { NULL, 0, 0, 0, false };
+                    kp_encode_destr(tc, ps->requireds.nodes[0], &enc);
+                    if (enc.bad) { free(enc.buf); pop_frame(tc); return kp_unsupported(tc, (const pm_node_t *)ps, "repeated name in a destructuring block parameter"); }
+                    destructure_spec = enc.buf;
+                    destr_len = enc.len;
+                } else destructure_n = (uint32_t)mt->lefts.size;
             } else {
                 bparams = (uint32_t)ps->requireds.size;
                 bool any_destr = false, flat_dup = false;
