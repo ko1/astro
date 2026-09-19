@@ -1669,12 +1669,39 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
                 const VALUE o = korb_cref_resolve(vm, cache->owner_chain, (uint32_t)i + 1, 0);
                 if (KORB_CLASS_P(o)) idx = korb_const_index_owned(vm, name_sym, o);
             }
+            /* A pending `autoload` on a lexically enclosing module answers HERE —
+             * in the lexical step, before the cref's ancestors and the top-level
+             * fallback, as CRuby does.  Firing its const_missing runs the require.
+             * rspec registers RSpec::Core::DidYouMean this way, and a bare
+             * `DidYouMean` inside RSpec::Core reached the top-level module. */
+            for (int32_t i = (int32_t)cache->chain_len - 1; idx == UINT32_MAX && i >= 0; i--) {
+                const VALUE o = korb_cref_resolve(vm, cache->owner_chain, (uint32_t)i + 1, 0);
+                if (!KORB_CLASS_P(o) || !korb_autoload_registered_p(c, o, name_sym)) continue;
+                slots[0] = o;                                  /* rooted across the require */
+                slots[1] = ID2SYM(name_sym);
+                const RESULT cm = korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), 0, 1);
+                /* The file may define the constant in a DIFFERENT lexical scope
+                 * than the one that registered the autoload — const_missing then
+                 * raises NameError for ITS module while the name IS now visible
+                 * from here.  Redo the walk either way and only propagate when
+                 * it is still missing (CRuby: "searches for the constant like
+                 * the original lookup"). */
+                for (int32_t j = (int32_t)cache->chain_len - 1; idx == UINT32_MAX && j >= 0; j--) {
+                    const VALUE o2 = korb_cref_resolve(vm, cache->owner_chain, (uint32_t)j + 1, 0);
+                    if (KORB_CLASS_P(o2)) idx = korb_const_index_owned(vm, name_sym, o2);
+                }
+                if (idx == UINT32_MAX) return cm;
+            }
         } else {
             for (VALUE o = cref; idx == UINT32_MAX && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing)
                 idx = korb_const_index_owned(vm, name_sym, o);
         }
         if (idx == UINT32_MAX)                                                  /* then the innermost class's ancestry (MRO order) */
             idx = korb_const_in_ancestry(vm, cref, name_sym);
+        /* A pending `autoload` on a lexically enclosing module answers BEFORE the
+         * top-level fallback: firing its const_missing runs the require.  rspec
+         * registers RSpec::Core::DidYouMean this way, and a bare `DidYouMean`
+         * inside RSpec::Core reached the top-level module instead. */
         if (idx == UINT32_MAX) idx = korb_const_index_owned(vm, name_sym, KORB_NIL);   /* then top-level / builtin (owner nil) */
         /* …and finally Object's own ancestry, which is what makes a constant of a
          * module `include`d at top level visible unqualified.  There is NO flat
