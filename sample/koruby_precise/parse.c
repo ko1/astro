@@ -755,6 +755,47 @@ bake_eset(struct kp_ctx *tc, uint32_t depth, uint32_t index, NODE *rval)
     return n;
 }
 
+static void kp_note_depth(struct kp_ctx *tc, uint32_t depth);                       /* fwd */
+static NODE *build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n,
+                                  uint32_t depth, int32_t slot);                     /* fwd */
+/* `...` may be written inside a block nested in the `def m(...)` body (rack's
+ * Rack::Builder#use does `@use << proc { middleware.new(app, ...) }`).  Find the
+ * enclosing method frame that owns the forwarding slots and how many env links
+ * out it lies; a `def`/class body in between is a scope barrier. */
+static bool
+kp_fwd_find(struct kp_ctx *tc, uint32_t *depth_out, int32_t *slot_out, int32_t *blk_out)
+{
+    uint32_t d = tc->frame->depth_shift ? 1u : 0u;
+    for (struct kp_frame *f = tc->frame; f; f = f->prev) {
+        if (f->fwd_slot >= 0) { *depth_out = d; *slot_out = f->fwd_slot; *blk_out = f->fwd_blk_slot; return true; }
+        if (f->method_mid || f->class_name_sym || f->anon_class_body) return false;
+        d++;
+    }
+    return false;
+}
+/* The forwarded positional Array, read from wherever kp_fwd_find placed it. */
+static NODE *
+kp_fwd_args(struct kp_ctx *tc, uint32_t depth, int32_t slot)
+{
+    if (depth == 0) return bake_lget(tc, (uint32_t)slot);
+    kp_note_depth(tc, depth);
+    return bake_eget(tc, depth, (uint32_t)slot);
+}
+/* The call nodes address the forwarded block by a plain offset in THIS frame,
+ * so an outer one is copied into a synth local first.  Returns the local and,
+ * through *pre, the copy that must run before the call (NULL at depth 0). */
+static int32_t
+kp_fwd_blk_local(struct kp_ctx *tc, uint32_t depth, int32_t blk, NODE **pre)
+{
+    *pre = NULL;
+    if (depth == 0) return blk;
+    const int32_t local = (int32_t)alloc_synth_local(tc);
+    kp_note_depth(tc, depth);
+    *pre = bake_lset(tc, (uint32_t)local, bake_eget(tc, depth, (uint32_t)blk));
+    return local;
+}
+
+
 /* node_self reading the frame's self cell at base[-1] (bottom header).  The
  * initial offset -1-chain is fixed up by pop_frame (-= frame_size) to
  * -(frame_size+1)-chain = base[-1].  Other self_off readers (ivar/def/attr/
@@ -1303,7 +1344,8 @@ kp_dyn_const_opassign(struct kp_ctx *tc, const pm_node_t *node, const pm_node_t 
 
 extern const struct NodeKind kind_node_const_set;    /* FOO = expr */
 static NODE *build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa);
-static NODE *build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n);
+static NODE *build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n,
+                                  uint32_t depth, int32_t slot);
 static NODE *build_call_args(struct kp_ctx *tc, struct pm_node **elems, size_t n);
 static NODE *kp_make_binding_node(struct kp_ctx *tc, uint32_t line);
 extern const struct NodeKind kind_node_hash_merge;   /* hash literal ** splat chain */
@@ -2280,18 +2322,20 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
      * from the synth forwarding slot.  node_call_splat_blkproc treats a nil proc
      * as "no block", so the blockless call needs no separate node. */
     if (argc >= 1 && PM_NODE_TYPE_P(args->arguments.nodes[argc - 1], PM_FORWARDING_ARGUMENTS_NODE)) {
-        if (tc->frame->fwd_slot < 0)
+        uint32_t fdep; int32_t fslot, fblk;
+        if (!kp_fwd_find(tc, &fdep, &fslot, &fblk))
             return kp_unsupported(tc, (const pm_node_t *)cn, "... forwarding outside a (...) method body");
+        NODE *blk_pre; const int32_t blk_local = kp_fwd_blk_local(tc, fdep, fblk, &blk_pre);
         int32_t self_off = -1 - tc->chain - 1;
-        int32_t proc_off = tc->frame->fwd_blk_slot - tc->chain - 1;
+        int32_t proc_off = blk_local - tc->chain - 1;
         NODE *arr;
         WITH_CHAIN(tc, 1, (arr = (argc == 1)
-            ? bake_lget(tc, (uint32_t)tc->frame->fwd_slot)
-            : build_array_with_fwd(tc, args->arguments.nodes, argc - 1)));   /* f(a, ..., ...) */
+            ? kp_fwd_args(tc, fdep, fslot)
+            : build_array_with_fwd(tc, args->arguments.nodes, argc - 1, fdep, fslot)));   /* f(a, ..., ...) */
         NODE *_cs = KP_LINK(tc, node_call_splat_blkproc, mid, kp_flink_at(tc, line, 2), self_off, proc_off, arr);
         bake_add(tc, &_cs->u.node_call_splat_blkproc.self_off);
         bake_add(tc, &_cs->u.node_call_splat_blkproc.proc_off);
-        return _cs;
+        return blk_pre ? ALLOC_node_seq(blk_pre, _cs) : _cs;
     }
 
     /* actual `*splat` call f(*arr): build the args Array, dispatch dynamically */
@@ -2605,20 +2649,23 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     /* `recv.m(...)` — same forwarding as the implicit-self case, with the receiver
      * as the extra staged child. */
     if (argc >= 1 && PM_NODE_TYPE_P(cn->arguments->arguments.nodes[argc - 1], PM_FORWARDING_ARGUMENTS_NODE)) {
-        if (tc->frame->fwd_slot < 0)
+        uint32_t fdep; int32_t fslot, fblk;
+        if (!kp_fwd_find(tc, &fdep, &fslot, &fblk))
             return kp_unsupported(tc, (const pm_node_t *)cn, "... forwarding outside a (...) method body");
-        int32_t proc_off = tc->frame->fwd_blk_slot - tc->chain - 2;
+        NODE *blk_pre; const int32_t blk_local = kp_fwd_blk_local(tc, fdep, fblk, &blk_pre);
+        int32_t proc_off = blk_local - tc->chain - 2;
         int32_t sn_tmp = sn ? (int32_t)alloc_synth_local(tc) : -1;
         NODE *sn_set = NULL, *recv, *arr;
         if (sn) sn_set = bake_lset(tc, (uint32_t)sn_tmp, transduce(tc, cn->receiver));
         WITH_CHAIN(tc, 2, (recv = sn ? bake_lget(tc, (uint32_t)sn_tmp) : transduce(tc, cn->receiver),
                            arr  = (argc == 1)
-                               ? bake_lget(tc, (uint32_t)tc->frame->fwd_slot)
-                               : build_array_with_fwd(tc, cn->arguments->arguments.nodes, argc - 1)));
+                               ? kp_fwd_args(tc, fdep, fslot)
+                               : build_array_with_fwd(tc, cn->arguments->arguments.nodes, argc - 1, fdep, fslot)));
         NODE *_cs = KP_LINK(tc, node_send_splat_blkproc, mid, kp_flink_at(tc, line, 2), proc_off, recv, arr);
         bake_add(tc, &_cs->u.node_send_splat_blkproc.proc_off);
-        if (sn) return ALLOC_node_seq(sn_set, ALLOC_node_nil_guard(bake_lget(tc, (uint32_t)sn_tmp), _cs));
-        return _cs;
+        NODE *_out = blk_pre ? ALLOC_node_seq(blk_pre, _cs) : _cs;
+        if (sn) return ALLOC_node_seq(sn_set, ALLOC_node_nil_guard(bake_lget(tc, (uint32_t)sn_tmp), _out));
+        return _out;
     }
     /* actual `*splat` receiver call recv.m(*arr): build args Array, dynamic dispatch */
     {
@@ -3576,12 +3623,12 @@ build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
 /* Leading positionals + forwarded rest: `f(a, b, ...)` → [a, b, *fwd_rest].
  * Same staging shape as build_array's splat member. */
 static NODE *
-build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n)
+build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t depth, int32_t slot)
 {
     NODE *acc, *fwd;
     uint32_t sc = kind_node_ary_push.slot_count;
     WITH_CHAIN(tc, sc, (acc = build_array(tc, elems, n, (uint32_t)n),
-                        fwd = bake_lget(tc, (uint32_t)tc->frame->fwd_slot)));
+                        fwd = kp_fwd_args(tc, depth, slot)));
     return ALLOC_node_ary_concat(acc, fwd);
 }
 
@@ -5639,12 +5686,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
          * args into its synth rest local; the block rides the frame's block cells,
          * which super_fwd forwards anyway. */
         if (argc >= 1 && PM_NODE_TYPE_P(args->arguments.nodes[argc - 1], PM_FORWARDING_ARGUMENTS_NODE)) {
-            if (tc->frame->fwd_slot < 0)
+            uint32_t fdep; int32_t fslot, fblk;
+            if (!kp_fwd_find(tc, &fdep, &fslot, &fblk))
                 return kp_unsupported(tc, node, "... forwarding outside a (...) method body");
             NODE *farr;
             WITH_CHAIN(tc, 1, (farr = (argc == 1)
-                ? bake_lget(tc, (uint32_t)tc->frame->fwd_slot)
-                : build_array_with_fwd(tc, args->arguments.nodes, argc - 1)));
+                ? kp_fwd_args(tc, fdep, fslot)
+                : build_array_with_fwd(tc, args->arguments.nodes, argc - 1, fdep, fslot)));
             return emit_super_fwd(tc, m_mid, line, farr);
         }
         /* `super(args)` with no literal block — build the args Array and forward
