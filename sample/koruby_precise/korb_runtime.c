@@ -5814,7 +5814,11 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     if (UNLIKELY(mid == c->vm->mid_dm_super)) {   /* `super` in a define_method body */
         if (UNLIKELY(c->dm_entry == NULL))
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "super called outside of method");
-        mid = c->dm_entry->mid;
+        /* An ALIAS of a define_method'd method carries the alias name in `mid`;
+         * `super` must search for the name the body was DEFINED under (CRuby
+         * uses the entry's original id), so use orig_mid.  A plain entry has
+         * orig_mid == mid. */
+        mid = c->dm_entry->orig_mid ? c->dm_entry->orig_mid : c->dm_entry->mid;
         entry_cell = (VALUE)((uintptr_t)c->dm_entry | 1u);
     } else if (UNLIKELY(!(((uintptr_t)entry_cell & 7u) == KORB_FID_METHOD))) {
         /* `super` inside a block: the block's frame carries no method entry, so
@@ -11044,10 +11048,11 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (UNLIKELY(!is_mod && (!KORB_CLASS_P(slots[0]) || VAL2CLASS(slots[0])->is_module || VAL2CLASS(slots[0])->is_singleton)))
                 { char rdb[224];   /* a Module or a metaclass is not a valid superclass */
                   return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be an instance of Class (given %s)", korb_recv_desc(c, slots + 1, slots[0], rdb, sizeof rdb)); }
-            if (UNLIKELY(!is_mod && (slots[0] == korb_builtin_class_obj(vm, KORB_C_CLASS) ||
-                                     slots[0] == korb_const_get(vm, vm->name_module))))   /* Class/Module are not subclassable */
-                return korb_raise(c, slots, KORB_E_TYPE, line, "can't make subclass of %s",
-                                  slots[0] == korb_builtin_class_obj(vm, KORB_C_CLASS) ? "Class" : "Module");
+            /* Only Class is un-subclassable.  `Class.new(Module)` IS legal — its
+             * instances are Modules (rspec-mocks builds its prepended module
+             * that way), the same shape the literal `class X < Module` takes. */
+            if (UNLIKELY(!is_mod && slots[0] == korb_builtin_class_obj(vm, KORB_C_CLASS)))
+                return korb_raise(c, slots, KORB_E_TYPE, line, "can't make subclass of Class");
             slots[1] = UNWRAP(korb_class_new(c, slots + 1, 0, is_mod ? KORB_NIL : slots[0]));   /* anonymous (name_sym 0) */
             if (is_mod) VAL2CLASS(slots[1])->is_module = 1;
             if (recv_is_subclass) {                          /* a Module/Class SUBCLASS reports itself as #class */

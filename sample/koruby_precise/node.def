@@ -2589,7 +2589,13 @@ NODE_DEF
 node_alias(CTX *c, NODE *n, VALUE *slots, uint32_t new_sym@sym, uint32_t old_sym@sym, int32_t self_off)
 {
     (void)n;
-    return korb_do_alias(c, slots, slots[self_off], new_sym, old_sym);
+    /* `alias` is a keyword: it targets the DEFAULT DEFINEE, exactly as `def`
+     * does.  Inside instance_eval / instance_exec that is the receiver's
+     * SINGLETON class, not self's class — `def foo; end; alias bar foo` in one
+     * instance_exec block must find the `foo` it just defined.  (`alias_method`
+     * is a Module method and keeps using its receiver.) */
+    const VALUE definee = KORB_CLASS_P(c->def_definee) ? c->def_definee : slots[self_off];
+    return korb_do_alias(c, slots, definee, new_sym, old_sym);
 }
 
 // `undef foo, bar` — retire the named instance methods on the enclosing class
@@ -2600,13 +2606,14 @@ NODE_DEF
 node_undef(CTX *c, NODE *n, VALUE *slots, const char *mids, uint32_t cnt, int32_t self_off)
 {
     (void)n;
-    const VALUE cls = slots[self_off];
+    /* same definee rule as `alias` / `def` */
+    const VALUE cls = KORB_CLASS_P(c->def_definee) ? c->def_definee : slots[self_off];
     if (UNLIKELY(!KORB_CLASS_P(cls)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "undef outside a class/module body");
     const uint32_t *const ids = (const uint32_t *)(const void *)mids;
     /* `undef` is undef_method: it leaves a tombstone, so an INHERITED method is
      * hidden too (and `super` past it finds nothing). */
-    for (uint32_t j = 0; j < cnt; j++) CHECK(korb_undef_one(c, slots, slots[self_off], ids[j]));
+    for (uint32_t j = 0; j < cnt; j++) CHECK(korb_undef_one(c, slots, cls, ids[j]));
     c->vm->method_serial++;                             /* method table changed → flush caches */
     return RESULT_OK(KORB_NIL);
 }

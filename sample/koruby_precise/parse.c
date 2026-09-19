@@ -1796,12 +1796,15 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                             return kp_unsupported(tc, p, "destructuring block parameter");
                         }
                         pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-                        if (lvar_index(tc, p, cid) != i && kp_cid_cstr(tc, cid)[0] != '_') {   /* `_`-repeat: legal, binds positionally */
-                            pop_frame(tc);
-                            return kp_unsupported(tc, p, "repeated block parameter name");
-                        }
+                        /* A repeated name (only `_` is legal) makes prism reuse ONE
+                         * slot, so every parameter after it has slot != position and
+                         * the positional ABI would bind them one short.  Fall through
+                         * to the destructure spec, which names the target slot for
+                         * each parameter explicitly. */
+                        if (lvar_index(tc, p, cid) != i) { any_destr = true; break; }
                     }
-                } else {
+                }
+                if (any_destr) {
                     /* mixed scalar + |(...)| destructuring params, e.g. |a, (k, v)|
                      * or nested |(a, (b, c))|.  The spec is a byte stream, one
                      * entry per top-level param: 0x00 <local> = scalar, 0xFF <k>
