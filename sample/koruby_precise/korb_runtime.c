@@ -11074,6 +11074,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
         if (UNLIKELY(VAL2CLASS(self)->is_singleton))   /* a metaclass has no instances (CRuby) */
             return korb_raise(c, slots, KORB_E_TYPE, line, "can't create instance of singleton class");
+        if (UNLIKELY(VAL2CLASS(self)->is_module)) {   /* a module is not instantiable: Module has no ::new */
+            char mnm[192]; korb_class_qname_into(c, self, mnm, sizeof mnm);
+            return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for module %s", mnm);
+        }
         /* A user-defined `def self.new` (e.g. the Thread stub) overrides the built-in
          * allocator: dispatch it with the args + block.  The non-block path resolves
          * this in node_send_cached; this shared path (block / send) must too. */

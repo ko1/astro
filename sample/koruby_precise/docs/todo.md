@@ -5863,3 +5863,24 @@ m.call   # CRuby: :base / koruby: :redef
 再現)。書き手スレッドが書く前に読み手が sysread に入るとこうなる — green thread
 のスケジューリング依存。sweep の per-file 差分を取るときはこの 1 本のぶれを
 勘定に入れる。
+
+## ripper が無いのが rspec-support の spec の 13/15 を止めている (2026-09-19)
+
+rspec-support 自身の spec を rspec ランナー経由で回すと、CRuby が走る 24 本のうち
+koruby で完走できない 15 本の **13 本が `cannot load such file -- ripper.so`** 一本
+の理由で落ちる (残り 2 本は `thread_order` gem 未インストールと File.read 絡み)。
+
+必要な API は 2 つだけ:
+
+- `Ripper.sexp(source)` — `RSpec::Support::Source#ast`
+- `Ripper.lex(source)` — `RSpec::Support::Source#tokens`
+  (戻り値は `[[lineno, col], type, token, state]` の配列)
+
+rspec は `RubyFeatures.ripper_supported?` を RUBY_VERSION と RUBY_ENGINE から
+決めており、koruby は MRI を名乗るので必ず require しに来る。drop-in を名乗る
+以上ここで別エンジンを名乗る手は取れない。
+
+koruby は prism を C で持っているので、prism の結果を Ruby に出す primitive を
+足して `Ripper.lex` / `Ripper.sexp` を組む道はある。ただし CRuby の
+`prism/translation/ripper` が 3000 行あることからも分かるとおり、Ripper 互換の
+S 式・トークン列に変換する層は軽くない。**やるなら独立した仕事として計画する。**
