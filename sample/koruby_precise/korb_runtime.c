@@ -9072,10 +9072,16 @@ korb_raise_frozen_at(CTX *c, VALUE *slots, VALUE v, uint32_t line)
         const char *const iv = (v == KORB_NIL) ? "nil" : (v == KORB_TRUE) ? "true" : "false";
         return korb_frozen_with_recv(c, slots, korb_raise(c, slots + 1, KORB_E_FROZEN, line, "can't modify frozen %s: %s", cn, iv));
     }
+    if (UNLIKELY(c->in_frozen_msg))                     /* re-entered from the object's own #inspect */
+        return korb_frozen_with_recv(c, slots,
+                   korb_raise(c, slots + 1, KORB_E_FROZEN, line, "can't modify frozen %s",
+                              korb_coerce_name(c, slots[0])));
+    c->in_frozen_msg = true;
     if (KORB_OBJECT_P(slots[0])) {                     /* an object renders through its own #inspect */
         const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0);
         if (ir.state == KORB_NORMAL && KORB_STRING_P(ir.value)) {
             const KorbString *const is = VAL2STR(ir.value);
+            c->in_frozen_msg = false;
             return korb_frozen_with_recv(c, slots,
                        korb_raise(c, slots + 1, KORB_E_FROZEN, line, "can't modify frozen %s: %.*s",
                                   korb_coerce_name(c, slots[0]), (int)is->len, korb_strbuf_data(is->buf)));
@@ -9084,6 +9090,7 @@ korb_raise_frozen_at(CTX *c, VALUE *slots, VALUE v, uint32_t line)
     char *ibuf = NULL; size_t ilen = 0;
     FILE *ims = open_memstream(&ibuf, &ilen);
     if (ims) { korb_fprint_inspect_s(c, slots + 1, ims, slots[0]); fclose(ims); }
+    c->in_frozen_msg = false;
     RESULT r = korb_raise(c, slots + 1, KORB_E_FROZEN, line, "can't modify frozen %s: %s",
                           korb_coerce_name(c, slots[0]), ibuf ? ibuf : "");
     free(ibuf);
@@ -14031,13 +14038,13 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         korb_fprint_range(c, fp, v, false);
         return;
       case KORB_OBJ_OBJECT: {
-        const KorbObject *o = VAL2OBJ(v);
-        if (o->klass == KORB_NIL) { fputs("main", fp); return; }       /* top-level self */
+        if (VAL2OBJ(v)->klass == KORB_NIL) { fputs("main", fp); return; }   /* top-level self */
         /* a user #to_s wins over the C printer (Encoding#to_s, and any object a
          * program renders with `print`); only possible when we have slots */
         if (slots != NULL) {
             VALUE def = KORB_NIL;
-            const struct korb_method *const m = korb_mcache_find(c->vm, o->klass, korb_intern(c->vm, "to_s", 4), &def);
+            const struct korb_method *const m =
+                korb_mcache_find(c->vm, VAL2OBJ(v)->klass, korb_intern(c->vm, "to_s", 4), &def);
             if (m != NULL && m->kind != KORB_METHOD_CFUNC) {   /* a CFUNC to_s is the default → it calls back here */
                 slots[0] = v;
                 const RESULT tsr = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);
@@ -14046,10 +14053,11 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
                     fwrite(korb_strbuf_data(ts->buf), 1, ts->len, fp);
                     return;
                 }
+                v = slots[0];        /* the #to_s ran Ruby: a moving GC may have relocated it */
             }
         }
         fputs("#<", fp);
-        korb_fprint_class_desc(c, fp, o->klass);             /* qualified (M::C), or the anonymous class's own #to_s */
+        korb_fprint_class_desc(c, fp, VAL2OBJ(v)->klass);    /* qualified (M::C), or the anonymous class's own #to_s */
         fprintf(fp, ":0x%016lx>", (unsigned long)(uintptr_t)v);   /* to_s: "#<Foo:0x…>" (no ivars) */
         return;
       }

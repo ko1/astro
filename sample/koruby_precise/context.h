@@ -1357,6 +1357,11 @@ struct CTX_struct {
      * chain writes to a FILE* and cannot return a RESULT, so it parks the
      * exception here and the #inspect entry point re-raises it (CRuby does not
      * swallow it).  KORB_NIL = none. */
+    /* building a FrozenError message runs the object's own #inspect, which can
+     * modify it again (rake's FileList#to_s resolves lazily) — the second
+     * FrozenError would then inspect it again, forever.  Name the class only
+     * while one is already being built. */
+    bool      in_frozen_msg;
     VALUE     inspect_exc;
     VALUE     throw_tag;     /* active `throw` tag while a KORB_THROW unwinds (GC-visited) */
     VALUE    *catch_tags;    /* stack of tags of the active `catch` blocks (GC-visited) */

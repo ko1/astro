@@ -5854,3 +5854,12 @@ m.call   # CRuby: :base / koruby: :redef
 `korb_class_find_method` / `korb_class_method_slot` の全走査に retired スキップを
 入れる必要があり、メソッド表が再定義のたびに伸びる。優先度は低い (実 gem で
 踏んだ例はまだ無い)。
+
+## core/file/open_spec.rb の FIFO テストが flaky (2026-09-19)
+
+`File.open on a FIFO opens it as a normal file` が 4 回に 1 回くらい
+`EOFError: end of file reached` (IO#sysread, open_spec.rb:659) で error になる。
+**同じバイナリで結果が揺れる**ので退行ではない (SPEC_TEMP_DIR を毎回新しくしても
+再現)。書き手スレッドが書く前に読み手が sysread に入るとこうなる — green thread
+のスケジューリング依存。sweep の per-file 差分を取るときはこの 1 本のぶれを
+勘定に入れる。
