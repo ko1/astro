@@ -461,6 +461,12 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             break;
           }
           case 's': {
+            /* fprintf stops at a NUL; a Ruby String may carry one.  A bare "%s"
+             * (no width/precision) can write the bytes straight through. */
+            #define KORB_FMT_S_WRITE(out, sp, buf, len) do { \
+                if ((buf) != NULL && strcmp((sp), "%s") == 0) fwrite((buf), 1, (len), (out)); \
+                else fprintf((out), (sp), (buf) ? (buf) : ""); \
+            } while (0)
             spec[si++] = 's'; spec[si] = '\0';
             if (KORB_STRING_P(arg)) {
                 if (!korb_str_ascii_only_p(c->vm, arg)) {   /* only a non-7-bit argument decides */
@@ -511,7 +517,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                     if (left) for (int p2 = 0; p2 < pad; p2++) fputc(' ', ms);
                     break;
                 }
-                fprintf(ms, spec, korb_strbuf_data(VAL2STR(arg)->buf));
+                KORB_FMT_S_WRITE(ms, spec, korb_strbuf_data(VAL2STR(arg)->buf), VAL2STR(arg)->len);
             }
             else if ((KORB_OBJECT_P(arg) || KORB_CLASS_P(arg)) && fmt_stable) {   /* user object / class: dispatch #to_s (honours overrides) */
                 slots[1] = arg;
@@ -524,12 +530,12 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                     else korb_fprint_to_s(c, tms, sr.value);
                     fclose(tms);
                 }
-                fprintf(ms, spec, tb ? tb : ""); free(tb);
+                KORB_FMT_S_WRITE(ms, spec, tb, tsz); free(tb);
             }
             else {
                 char *tb = NULL; size_t tsz = 0; FILE *tms = open_memstream(&tb, &tsz);
                 if (tms) { korb_fprint_to_s(c, tms, arg); fclose(tms); }
-                fprintf(ms, spec, tb ? tb : ""); free(tb);
+                KORB_FMT_S_WRITE(ms, spec, tb, tsz); free(tb);
             }
             break;
           }

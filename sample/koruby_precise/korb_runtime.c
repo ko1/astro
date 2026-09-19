@@ -17173,8 +17173,13 @@ korb_exc_build(CTX *c, VALUE *slots, VALUE_SLICE args)
         slots[0] = a0;                               /* root the class across korb_raise's allocs */
         RESULT r;
         if (n >= 2 && KORB_STRING_P(VALUE_SLICE_GET(args, 1))) {
-            const KorbString *const s = VAL2STR(VALUE_SLICE_GET(args, 1));
-            r = korb_raise(c, slots + 1, (unsigned)et, 0, "%.*s", (int)s->len, korb_strbuf_data(s->buf));
+            /* Store the String OBJECT, not a C round-trip: korb_raise formats
+             * into a char buffer and measures it with strlen, so a message
+             * carrying a NUL would be cut there (rack's Rack::Lint raises
+             * "invalid header name: \0") and its encoding would be lost. */
+            r = korb_raise(c, slots + 1, (unsigned)et, 0, "%s", "");
+            if (LIKELY(KORB_EXC_P(r.value)))
+                ARO_STORE(c, VAL2EXC(r.value), &VAL2EXC(r.value)->msg, VALUE_SLICE_GET(args, 1));
         } else {
             char cbuf[256];                          /* anonymous class → its #to_s ("#<Class:0x...>") */
             const char *cname;
