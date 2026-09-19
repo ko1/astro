@@ -1379,6 +1379,14 @@ struct CTX_struct {
      * upgraded to NoMatchingPatternKeyError.  A plain id, not a VALUE, so it
      * needs no GC root.  Cleared on every top-level korb_pat_match. */
     uint32_t  pat_key_mid;
+    /* Why the last `in` clause failed, for NoMatchingPatternError's message
+     * (CRuby appends ": <reason>").  Recorded without allocating — a failing
+     * clause is the common case — and rendered only if a raise happens.
+     * 0 = none, 1 = length mismatch, 2 = `===` returned false. */
+    uint8_t   pat_fail_kind;
+    uint32_t  pat_fail_given, pat_fail_expected;
+    VALUE     pat_fail_a;     /* kind 1: the deconstructed Array; kind 2: the pattern */
+    VALUE     pat_fail_b;     /* kind 2: the subject */
     struct korb_vm *vm;
     /* Backtrace bookkeeping.  At the END of the struct on purpose: every field
      * above keeps the offset it had, so the dispatch path's loads (slots_limit,
@@ -1437,6 +1445,8 @@ struct CTX_struct {
     }                                                                        \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->super_new_skip);         \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->kernel_mod);            \
+    ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->pat_fail_a);                \
+    ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->pat_fail_b);                \
     if ((c)->vm->top_self != 0)                                              \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->top_self);           \
     /* constants (class values) + their defining-module owners are roots too */ \

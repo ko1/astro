@@ -7069,6 +7069,21 @@ korb_pat_responds_to(CTX *c, VALUE *cur, VALUE_REF subjref, uint32_t mid, bool *
 
 static RESULT korb_pat_match_1(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct korb_pat *p);
 
+/* Remember why a sub-pattern failed, for the NoMatchingPatternError message.
+ * The LAST failure wins, which is what CRuby reports: an alternative pattern
+ * (`in Integer | Float`) names the branch it tried last, and a container that
+ * fails after its element did leaves the element's (more specific) reason
+ * standing because the container itself notes nothing. */
+static void korb_pat_note_len(CTX *const c, const VALUE ary, const uint32_t given, const uint32_t expected)
+{
+    c->pat_fail_kind = 1; c->pat_fail_a = ary; c->pat_fail_b = KORB_NIL;
+    c->pat_fail_given = given; c->pat_fail_expected = expected;
+}
+static void korb_pat_note_eqq(CTX *const c, const VALUE pat, const VALUE subj)
+{
+    c->pat_fail_kind = 2; c->pat_fail_a = pat; c->pat_fail_b = subj;
+}
+
 /* Entry point for node_match_pred/req.  kind 255 is the synthetic always-fail
  * descriptor parse.c puts at the tail of an else-less `case/in`; it must not
  * clear the key-miss note the preceding clause left behind. */
@@ -7077,6 +7092,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
 {
     if (p->kind == 255) return RESULT_OK(KORB_FALSE);
     c->pat_key_mid = 0;
+    c->pat_fail_kind = 0; c->pat_fail_a = KORB_NIL; c->pat_fail_b = KORB_NIL;
     return korb_pat_match_1(c, base, cur, subjref, p);
 }
 
@@ -7106,7 +7122,9 @@ korb_pat_match_1(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struc
             if (UNLIKELY(er.state != KORB_NORMAL)) return er;
             return RESULT_OK(KORB_TRUTHY(er.value) ? KORB_TRUE : KORB_FALSE);
         }
-        return RESULT_OK(korb_case_eq(c, pv.value, VALUE_REF_GET(subjref)) ? KORB_TRUE : KORB_FALSE);
+        if (korb_case_eq(c, pv.value, VALUE_REF_GET(subjref))) return RESULT_OK(KORB_TRUE);
+        korb_pat_note_eqq(c, pv.value, VALUE_REF_GET(subjref));
+        return RESULT_OK(KORB_FALSE);
       }
       case 7: {                                          /* pin `^var`: EVAL in the match frame (base) so the
                                                           * pinned local resolves (its EP is base[-2], not cur[-2]),
@@ -7131,7 +7149,10 @@ korb_pat_match_1(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struc
             if (!KORB_ARRAY_P(dr.value)) return korb_raise(c, cur, KORB_E_TYPE, 0, "deconstruct must return Array (%s given)", korb_type_name(dr.value));
             cur[0] = dr.value;
         }
-        if (VAL2ARY(cur[0])->len != p->n) return RESULT_OK(KORB_FALSE);
+        if (VAL2ARY(cur[0])->len != p->n) {
+            korb_pat_note_len(c, cur[0], VAL2ARY(cur[0])->len, p->n);
+            return RESULT_OK(KORB_FALSE);
+        }
         for (uint32_t i = 0; i < p->n; i++) {
             cur[1] = korb_items_data(VAL2ARY(cur[0])->items)[i];    /* element at cur[1]; cur[0] keeps the array rooted */
             RESULT r = korb_pat_match_1(c, base, cur + 2, VALUE_REF_AT(&cur[1]), p->elems[i]);
@@ -8793,6 +8814,30 @@ korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
         snprintf(buf + n, sizeof(buf) - n, ": key not found: :%s", korb_sym_name(c->vm, c->pat_key_mid));
         etype = KORB_E_NO_MATCHING_PATTERN_KEY;
         c->pat_key_mid = 0;
+        c->pat_fail_kind = 0;
+    }
+    /* CRuby spells out WHY the last `in` clause failed after the subject:
+     * "[1, 2, 3]: [1, 2, 3] length mismatch (given 3, expected 2)". */
+    else if (UNLIKELY(etype == KORB_E_NO_MATCHING_PATTERN) && c->pat_fail_kind != 0) {
+        char *ib = NULL; size_t il = 0;
+        FILE *const ms = open_memstream(&ib, &il);
+        if (ms) {
+            if (c->pat_fail_kind == 1) {
+                korb_fprint_inspect_s(c, slots, ms, c->pat_fail_a);
+                fprintf(ms, " length mismatch (given %u, expected %u)",
+                        c->pat_fail_given, c->pat_fail_expected);
+            } else {
+                korb_fprint_inspect_s(c, slots, ms, c->pat_fail_a);
+                fputs(" === ", ms);
+                korb_fprint_inspect_s(c, slots, ms, c->pat_fail_b);
+                fputs(" does not return true", ms);
+            }
+            fclose(ms);
+            const size_t n = strlen(buf);
+            snprintf(buf + n, sizeof(buf) - n, ": %s", ib ? ib : "");
+            free(ib);
+        }
+        c->pat_fail_kind = 0; c->pat_fail_a = KORB_NIL; c->pat_fail_b = KORB_NIL;
     }
 
     c->vm->bt_cnt = 0;     /* fresh unwind */
