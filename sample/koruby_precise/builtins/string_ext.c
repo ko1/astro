@@ -513,7 +513,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 }
                 fprintf(ms, spec, korb_strbuf_data(VAL2STR(arg)->buf));
             }
-            else if (KORB_OBJECT_P(arg) && fmt_stable) {   /* user object: dispatch #to_s (honours overrides) */
+            else if ((KORB_OBJECT_P(arg) || KORB_CLASS_P(arg)) && fmt_stable) {   /* user object / class: dispatch #to_s (honours overrides) */
                 slots[1] = arg;
                 RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) { coerce_err = sr; has_coerce_err = true; err = true; break; }

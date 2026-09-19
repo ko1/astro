@@ -895,7 +895,7 @@ static RESULT korb_join_rec(CTX *c, VALUE *slots, FILE *ms, VALUE_REF aref, VALU
             korb_join_enc_merge(c, sv, enc, asc, bad);
             fwrite(korb_strbuf_data(VAL2STR(sv)->buf), 1, VAL2STR(sv)->len, ms);   /* String element / #to_str result */
         }
-        else korb_fprint_to_s(c, ms, slots[0]);                        /* immediate / builtin / non-String #to_s */
+        else korb_fprint_to_s_s(c, slots + 1, ms, slots[0]);           /* immediate / builtin / non-String #to_s (slots: a Class may override it) */
         *first = false;
     }
   done:

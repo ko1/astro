@@ -14161,6 +14161,26 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         return;
       }
       case KORB_OBJ_CLASS:
+        /* a user `def self.to_s` wins over the C printer, exactly as it does for
+         * a plain object above (minitest's Spec classes name themselves this way
+         * and then build nested names with Array#join) */
+        if (slots != NULL) {
+            const uint32_t mid_ts = korb_intern(c->vm, "to_s", 4);
+            const VALUE sing = korb_dispatch_class(c, v);
+            VALUE def = KORB_NIL;
+            const struct korb_method *const m =
+                KORB_CLASS_P(sing) ? korb_class_find_method(sing, mid_ts, &def) : NULL;
+            if (m != NULL && m->kind != KORB_METHOD_CFUNC) {   /* a CFUNC to_s is Module#to_s → the printer below */
+                slots[0] = v;
+                const RESULT tsr = korb_send(c, slots + 1, mid_ts, 0, 0);
+                if (tsr.state == KORB_NORMAL && KORB_STRING_P(tsr.value)) {
+                    const KorbString *const ts = VAL2STR(tsr.value);
+                    fwrite(korb_strbuf_data(ts->buf), 1, ts->len, fp);
+                    return;
+                }
+                v = slots[0];      /* the #to_s ran Ruby: a moving GC may have relocated it */
+            }
+        }
         korb_fprint_class_tostr(c, fp, v);   /* qualified name (M::C), `#<Class:obj>` for a singleton, else `#<Class:0x…>` */
         return;
       case KORB_OBJ_FLOAT: {
@@ -14411,6 +14431,12 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         else { fprintf(fp, "#<%s: ", cn); fwrite(msg, 1, mlen, fp); fputc('>', fp); }
         return;
       }
+      case KORB_OBJ_CLASS:
+        /* Module#inspect is its OWN method in CRuby: a class that overrides only
+         * #to_s still inspects as `#<Class:0x…>`, so this must not fall through
+         * to the to_s printer (which does honour the override). */
+        korb_fprint_class_tostr(c, fp, v);
+        return;
     }
     korb_fprint_to_s_s(c, slots, fp, v);
 }
