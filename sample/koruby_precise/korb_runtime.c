@@ -11171,9 +11171,21 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (block != NULL) {                            /* body block: def's land on the new class/module */
                 korb_cref_push(c);                            /* a class body, not an instance_eval */
                 korb_refine_push(c);                          /* `using` in the body ends with it */
-                c->def_definee = KORB_NIL;
+                /* CRuby runs the body as `mod.module_eval(&blk)`: the new class is
+                 * both self AND the default definee.  Naming the definee outright
+                 * is what makes a FORWARDED proc (`Class.new(Base, &blk)`) work —
+                 * korb_block_yield keeps a forwarded proc's own self, so relying
+                 * on self alone put the `def` nowhere (minitest builds its fake
+                 * test classes exactly this way). */
+                c->def_definee = slots[1];
                 slots[2] = slots[1];                        /* CRuby passes the new class/module to the block */
-                RESULT br = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, &slots[1]);
+                RESULT br;
+                if (def_env == KORB_BLK_FWD && block != KORB_BLK_CPROC) {
+                    slots[3] = VAL2PROC(KORB_CSELF_VAL(captured_self))->env;   /* keep ITS closure env, rebind self */
+                    br = korb_block_yield(c, slots + 4, block, (VALUE *)(uintptr_t)slots[3], &slots[2], 1, &slots[1]);
+                } else {
+                    br = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, &slots[1]);
+                }
                 korb_cref_pop(c);
                 korb_refine_pop(c);
                 if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;
