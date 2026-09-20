@@ -143,7 +143,7 @@ end
 # rouge's lexers use XID_Start / XID_Continue for identifiers), and the
 # scripts.  Cs is empty by construction (no
 # surrogate can appear in the scan) so it is hard-coded.
-CATEGORIES = %w[L Lu Ll Lt Lm Lo M Mn Mc Me N Nd Nl No
+CATEGORIES = %w[L LC Lu Ll Lt Lm Lo M Mn Mc Me N Nd Nl No
                 P Pc Pd Ps Pe Pi Pf Po S Sm Sc Sk So
                 Z Zs Zl Zp C Cc Cf Co Cn]
 LONG_NAMES = %w[Alpha Word Space Upper Lower Alnum Graph Print Punct
@@ -156,6 +156,15 @@ LONG_NAMES = %w[Alpha Word Space Upper Lower Alnum Graph Print Punct
                 Default_Ignorable_Code_Point Deprecated Soft_Dotted
                 Logical_Order_Exception Variation_Selector
                 Pattern_White_Space Pattern_Syntax Cased Case_Ignorable
+                Cased_Letter Combining_Mark Unassigned
+                Other_Alphabetic Other_Lowercase Other_Uppercase Other_Math
+                Other_ID_Start Other_ID_Continue Other_Grapheme_Extend
+                Other_Default_Ignorable_Code_Point
+                Prepended_Concatenation_Mark
+                IDS_Binary_Operator IDS_Trinary_Operator
+                Changes_When_Casefolded Changes_When_Casemapped
+                Changes_When_Lowercased Changes_When_Titlecased
+                Changes_When_Uppercased
                 Grapheme_Base Grapheme_Extend Grapheme_Link
                 Bidi_Control Noncharacter_Code_Point Regional_Indicator
                 Emoji Emoji_Presentation Emoji_Modifier Emoji_Modifier_Base

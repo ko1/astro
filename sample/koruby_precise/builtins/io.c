@@ -368,17 +368,22 @@ static off_t korb_io_seek_rep(KorbIORep *const rep, off_t off, int whence) {
 }
 
 /* Flush, close the descriptor and release the buffers.  Idempotent. */
-static void korb_io_close_rep(struct korb_vm *const vm, KorbIORep *const rep) {
+/* keep_fd: `autoclose = false` detaches the object from the descriptor without
+ * closing it (webrick hands the fd to TCPServer.for_fd, then closes the Socket). */
+static void korb_io_close_rep_fd(struct korb_vm *const vm, KorbIORep *const rep, const bool keep_fd) {
     if (!rep) return;
     if (rep->fd >= 0) {
         (void)korb_io_flush_rep(rep);
         korb_blop_wake_fd(vm, rep->fd);   /* 閉じる前に: 番号が再利用されると起こせない */
-        close(rep->fd);
+        if (!keep_fd) close(rep->fd);
     }
     rep->fd = -1;
     free(rep->rbuf); rep->rbuf = NULL; rep->rcapa = rep->rpos = rep->rlen = 0;
     free(rep->wbuf); rep->wbuf = NULL; rep->wcapa = rep->wlen = 0;
     rep->eof = 0;
+}
+static void korb_io_close_rep(struct korb_vm *const vm, KorbIORep *const rep) {
+    korb_io_close_rep_fd(vm, rep, false);
 }
 
 /* Push out whatever the std streams still hold.  With stdio gone nothing does
@@ -1187,7 +1192,9 @@ static RESULT korb_m_io_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             const VALUE pidv = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__io_pid", 9)));
             errno = 0;
             const bool epipe = !korb_io_flush_rep(rep) && errno == EPIPE;   /* pending bytes, reader gone */
-            korb_io_close_rep(c->vm, rep);
+            /* autoclose = false leaves the descriptor open for whoever else holds it */
+            const VALUE acv = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@autoclose", 10)));
+            korb_io_close_rep_fd(c->vm, rep, acv == KORB_FALSE);
             if (epipe) return korb_raise_errno(c, slots, EPIPE, "write", "");
             if (FIXNUM_P(pidv)) {          /* popen'd: reap the child and publish $? */
                 int raw = 0;

@@ -209,8 +209,7 @@ class BasicSocket < IO
     super
   end
 
-  # koruby always closes the descriptor with the IO, so autoclose is a recorded
-  # preference rather than a behaviour switch.
+  # autoclose = false detaches #close from the descriptor (IO#close honours it).
   def autoclose? = @autoclose.nil? ? true : @autoclose
   def autoclose=(v); @autoclose = v ? true : false; v; end
 
