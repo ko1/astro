@@ -502,15 +502,16 @@ uni_shorthand_prop(const re_parser_t *q, int e)
     }
 }
 
-/* Complement a class operand.  A class with no codepoint members keeps the
- * historical byte-level flip (`[^a]` stays a 256-bit bitmap, which is what
- * the SIMD prefilters and the first-byte analysis can use).  Once any
- * member reaches past U+007F the class is a codepoint matcher anyway, so
- * complement ASCII in the bitmap and the rest over [0x80, U+10FFFF]. */
+/* Complement a class operand.  In UTF-8 mode `[^a]` matches one CHARACTER, so
+ * the complement has to run over the codepoint space even when every member is
+ * ASCII — a byte-level flip made `[^ -~]` match the LEAD BYTE of a multi-byte
+ * character and hand the block a broken String (builder's to_xs).
+ * ASCII/binary mode (cps == NULL) keeps the byte-level flip, which is what the
+ * SIMD prefilters and the first-byte analysis can use. */
 static void
 cls_negate(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps)
 {
-    if (cps == NULL || cps->n == 0) { bm_invert(bm); return; }
+    if (cps == NULL) { bm_invert(bm); return; }
     bm[0] = ~bm[0];
     bm[1] = ~bm[1];
     bm[2] = bm[3] = 0;                    /* UTF-8 mode: 0x80.. are not whole characters */

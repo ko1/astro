@@ -203,6 +203,7 @@ kp_src_enc(CTX *c, const pm_parser_t *parser, const char *const src, const size_
 })
 
 static NODE *transduce(struct kp_ctx *tc, const pm_node_t *node);
+static bool kp_kernel_const_p(struct kp_ctx *tc, const pm_node_t *recv);
 static NODE *build_const_set(struct kp_ctx *tc, uint32_t name_cid, NODE *val);
 static NODE *index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw, const pm_node_t *node,
                                   const pm_arguments_node_t *args, const pm_node_t *value);
@@ -2075,8 +2076,11 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
 
     /* block_given? — reaches the enclosing METHOD's block, not a nested block's.
      * Walk up to the method frame (like yield); flat read at method level, else
-     * resolve through `depth` env links to the method frame's biseq. */
+     * resolve through `depth` env links to the method frame's biseq.
+     * `Kernel.block_given?` / `::Kernel::block_given?` mean the same thing and
+     * take the same lowering (builder writes it that way). */
     if (argc == 0 && cn->block == NULL &&
+        (cn->receiver == NULL || kp_kernel_const_p(tc, cn->receiver)) &&
         strcmp(kp_cid_cstr(tc, cn->name), "block_given?") == 0) {
         struct kp_frame *mf = tc->frame;
         uint32_t depth = 0;
@@ -2458,6 +2462,11 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     if (cn->receiver == NULL) {
         return transduce_func_call(tc, cn);
     }
+    /* `Kernel.block_given?` / `::Kernel::block_given?` mean the bare form
+     * (builder writes it that way); the receiver is only a namespace here. */
+    if (cn->arguments == NULL && cn->block == NULL && kp_kernel_const_p(tc, cn->receiver) &&
+        strcmp(kp_cid_cstr(tc, cn->name), "block_given?") == 0)
+        return transduce_func_call(tc, cn);
 
     const char *name = kp_cid_cstr(tc, cn->name);
     uint32_t mid = kp_intern_cid(tc, cn->name);
@@ -3931,6 +3940,23 @@ kp_re_forced_flags(pm_node_flags_t flags)
     if (flags & PM_REGULAR_EXPRESSION_FLAGS_FORCED_BINARY_ENCODING) return PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT;
     if (flags & PM_REGULAR_EXPRESSION_FLAGS_FORCED_UTF8_ENCODING)   return PM_REGULAR_EXPRESSION_FLAGS_UTF_8;
     return 0;
+}
+
+/* `Kernel` / `::Kernel` written as a call receiver (Kernel.block_given? etc). */
+static bool
+kp_kernel_const_p(struct kp_ctx *tc, const pm_node_t *recv)
+{
+    pm_constant_id_t cid;
+    if (PM_NODE_TYPE_P(recv, PM_CONSTANT_READ_NODE)) {
+        cid = ((const pm_constant_read_node_t *)recv)->name;
+    } else if (PM_NODE_TYPE_P(recv, PM_CONSTANT_PATH_NODE)) {
+        const pm_constant_path_node_t *const cp = (const pm_constant_path_node_t *)recv;
+        if (cp->parent != NULL) return false;                    /* only a top-level ::Kernel */
+        cid = cp->name;
+    } else {
+        return false;
+    }
+    return strcmp(kp_cid_cstr(tc, cid), "Kernel") == 0;
 }
 
 /* Interpolated string `"a#{x}b"` → inside-out concat chain (same shape as

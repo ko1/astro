@@ -7054,7 +7054,9 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
         if (UNLIKELY(fn == NULL)) return false;
         korb_re_sync_floor(c);
         const KorbString *const p = VAL2STR(VAL2RE(pat)->source);
-        return fn(korb_strbuf_data(p->buf), p->len, VAL2RE(pat)->flags, sdata, slen, 0, NULL) == 1;
+        unsigned eff = VAL2RE(pat)->flags;   /* see korb_re_run: a single-byte subject matches byte-wise */
+        if (KORB_STRING_P(val) && KORB_ENC_SB(c->vm, KORB_STR_ENC(val))) eff |= 128u;
+        return fn(korb_strbuf_data(p->buf), p->len, eff, sdata, slen, 0, NULL) == 1;
     }
     return korb_value_eq(pat, val);
 }

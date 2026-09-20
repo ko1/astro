@@ -181,7 +181,9 @@ bool korb_re_caseeq_backref(CTX *c, VALUE *slots, VALUE pat, VALUE val) {
     korb_re_match_t m;
     { const KorbString *const s = VAL2STR(slots[0]);       /* re-derive: str_new above may have GC'd */
       const KorbString *const p = VAL2STR(VAL2RE(slots[1])->source);
-      const int r = fn(korb_strbuf_data(p->buf), p->len, VAL2RE(slots[1])->flags,
+      unsigned eff = VAL2RE(slots[1])->flags;             /* see korb_re_run: a single-byte subject matches byte-wise */
+      if (KORB_ENC_SB(c->vm, KORB_STR_ENC(slots[0]))) eff |= 128u;
+      const int r = fn(korb_strbuf_data(p->buf), p->len, eff,
                        korb_strbuf_data(s->buf), s->len, 0, &m);   /* fn does not allocate → borrows stable */
       if (r != 1) { korb_re_set_lastmatch(c, KORB_NIL); return false; } }
     const RESULT mdr = korb_re_build_md(c, slots + 2, slots[0], slots[1], &m);
@@ -1052,7 +1054,9 @@ static RESULT korb_m_str_scan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         }
         else CHECK(korb_ary_push_val(c, slots + 5, VALUE_REF_AT(&slots[2]), slots[4]));
         off = (m.ends[0] > m.starts[0]) ? m.ends[0] : m.starts[0] + 1;
-        {   /* an empty match advances one CHARACTER, not one byte */
+        if (!KORB_ENC_SB(c->vm, KORB_STR_ENC(slots[0]))) {   /* an empty match advances one CHARACTER,
+                                                              * not one byte — but a single-byte encoding
+                                                              * has no continuation bytes to skip */
             const KorbString *s2 = VAL2STR(slots[0]);
             while (off < (long)s2->len && ((unsigned char)korb_strbuf_data(s2->buf)[off] & 0xC0) == 0x80) off++;
         }
@@ -1208,7 +1212,17 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
         }
         replaced = true;
         if (me0 > ms0) off = me0;
-        else { if (ms0 < (long)sn) { uint32_t cl = korb_utf8_seq_len((const unsigned char *)src, (uint32_t)ms0, sn); if (!cl) cl = 1; KORB_GSUB_KEEP(src + ms0, cl); off = ms0 + cl; } else off = ms0 + 1; }
+        else {
+            if (ms0 < (long)sn) {
+                uint32_t cl = KORB_ENC_SB(c->vm, senc) ? 1u
+                            : korb_utf8_seq_len((const unsigned char *)src, (uint32_t)ms0, sn);
+                if (!cl) cl = 1;
+                KORB_GSUB_KEEP(src + ms0, cl);
+                off = ms0 + cl;
+            } else {
+                off = ms0 + 1;
+            }
+        }
         if (!global) break;
     }
     if (off <= (long)sn) KORB_GSUB_KEEP(src + off, (size_t)(sn - off));
