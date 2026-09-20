@@ -3919,10 +3919,57 @@ static inline uint32_t korb_const_owner_serial(const struct korb_vm *vm, VALUE o
 }
 /* index of the constant named `name_sym` owned by `owner` (nil = top-level), or
  * UINT32_MAX.  For owner-aware scoped reads (M::X) and class find-or-create. */
+/* Hash of a (name, owner) constant key.  The owner is keyed by its class SERIAL,
+ * which a moving GC leaves alone — the VALUE itself may move between the insert
+ * and the lookup. */
+static inline uint32_t korb_cidx_hash(uint32_t name_sym, uint32_t oser)
+{
+    uint32_t h = name_sym * 2654435761u;
+    h ^= (oser + 0x9E3779B9u) * 2246822519u;
+    return h ^ (h >> 15);
+}
+static inline uint32_t korb_cidx_owner_serial(const struct korb_vm *vm, VALUE owner_key)
+{
+    (void)vm;
+    return KORB_CLASS_P(owner_key) ? VAL2CLASS(owner_key)->serial : 0u;
+}
+/* Rebuild the whole index from the table.  Called when it is missing, out of
+ * step (remove_const tombstoned a row) or too full. */
+void
+korb_const_index_sync(struct korb_vm *const vm)
+{
+    uint32_t cap = 64;
+    while (cap < vm->const_cnt * 2u) cap *= 2;
+    if (vm->cidx == NULL || vm->cidx_mask + 1u != cap) {
+        free(vm->cidx);
+        vm->cidx = calloc(cap, sizeof(uint32_t));
+        if (!vm->cidx) { vm->cidx_mask = 0; vm->cidx_n = UINT32_MAX; return; }   /* no index: lookups stay linear */
+        vm->cidx_mask = cap - 1u;
+    } else {
+        memset(vm->cidx, 0, (size_t)cap * sizeof(uint32_t));
+    }
+    for (uint32_t i = 0; i < vm->const_cnt; i++) {
+        if (vm->const_names[i] == 0) continue;                 /* remove_const tombstone */
+        uint32_t h = korb_cidx_hash(vm->const_names[i], korb_cidx_owner_serial(vm, vm->const_owners[i])) & vm->cidx_mask;
+        while (vm->cidx[h] != 0) h = (h + 1u) & vm->cidx_mask;
+        vm->cidx[h] = i + 1u;
+    }
+    vm->cidx_n = vm->const_cnt;
+}
 uint32_t
 korb_const_index_owned(const struct korb_vm *vm, uint32_t name_sym, VALUE owner)
 {
     owner = korb_const_owner_key(vm, owner);
+    if (LIKELY(vm->cidx != NULL && vm->cidx_n == vm->const_cnt)) {
+        uint32_t h = korb_cidx_hash(name_sym, korb_cidx_owner_serial(vm, owner)) & vm->cidx_mask;
+        for (;;) {
+            const uint32_t e = vm->cidx[h];
+            if (e == 0) return UINT32_MAX;
+            const uint32_t i = e - 1u;
+            if (vm->const_names[i] == name_sym && vm->const_owners[i] == owner) return i;
+            h = (h + 1u) & vm->cidx_mask;
+        }
+    }
     for (uint32_t i = 0; i < vm->const_cnt; i++)
         if (vm->const_names[i] == name_sym && vm->const_owners[i] == owner) return i;
     return UINT32_MAX;
@@ -4103,6 +4150,15 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
     vm->const_vals[vm->const_cnt] = val;      /* root cell (scanned); no WB needed */
     vm->const_owners[vm->const_cnt] = owner;
     vm->const_cnt++;
+    if (LIKELY(vm->cidx != NULL && vm->cidx_n + 1u == vm->const_cnt &&
+               vm->const_cnt * 2u <= vm->cidx_mask + 1u)) {      /* index still in step: insert the new row */
+        uint32_t h = korb_cidx_hash(name_sym, korb_cidx_owner_serial(vm, owner)) & vm->cidx_mask;
+        while (vm->cidx[h] != 0) h = (h + 1u) & vm->cidx_mask;
+        vm->cidx[h] = vm->const_cnt;                             /* index+1 of the row just written */
+        vm->cidx_n = vm->const_cnt;
+    } else {
+        korb_const_index_sync(vm);
+    }
 }
 void
 korb_const_define(CTX *c, uint32_t name_sym, VALUE val)

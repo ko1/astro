@@ -1030,6 +1030,14 @@ struct korb_vm {
     VALUE    *const_vals;
     VALUE    *const_owners;
     uint32_t  const_cnt, const_capa;
+    /* Open-addressed index over the table above: (name_sym, owner class serial)
+     * → entry+1.  The table is append-only apart from remove_const, so the index
+     * is grown in step with it and only trusted while `cidx_n == const_cnt`.
+     * Without it every miss walks the whole table — 65% of a rouge spec's time,
+     * because a `class X < BasicObject` body reaches Object only through
+     * const_missing → Object.const_get (delegate.rb's `case target when Object`). */
+    uint32_t *cidx;
+    uint32_t  cidx_mask, cidx_n;
     /* boxed Float-literal pool: non-flonum literals (2.0/-2.0/out-of-range) are
      * boxed once and reused (deduped by bit value) instead of heap-boxed on every
      * eval.  Root-scanned by AROH_VISIT_ROOTS so the boxes are GC-forwarded. */

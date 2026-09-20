@@ -2225,6 +2225,7 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
             slots[0] = vm->const_vals[i];      /* park: the deprecation warning allocates */
             korb_const_deprecated_warn(c, slots + 1, vm->const_owners[i], id);
             vm->const_names[i] = 0;            /* tombstone (interned ids are >0) */
+            korb_const_index_sync(vm);         /* the (name, owner) index must drop the row */
             vm->const_vals[i] = KORB_NIL;
             vm->method_serial++;
             vm->const_serial++;               /* invalidate const caches */
