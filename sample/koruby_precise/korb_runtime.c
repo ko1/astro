@@ -13294,6 +13294,21 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "<=>", korb_m_obj_cmp, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "inspect", korb_m_obj_inspect, 0);
+    /* The generic implementation also serves these, but CRuby OWNS #inspect /
+     * #hash / #to_s on the class itself — and code reads that: pp's
+     * ObjectMixin#pretty_print falls back to pp_object when the owner is
+     * Kernel, which rendered `[:unknown]` as `[unknown>]`. */
+    korb_def_cmethod(c, KORB_C_STRING, "inspect", korb_m_obj_inspect, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "inspect", korb_m_obj_inspect, 0);
+    korb_def_cmethod(c, KORB_C_NIL,    "inspect", korb_m_obj_inspect, 0);
+    korb_def_cmethod(c, KORB_C_RANGE,  "inspect", korb_m_obj_inspect, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "hash", korb_m_obj_hash, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT,  "hash", korb_m_obj_hash, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY,  "hash", korb_m_obj_hash, 0);
+    korb_def_cmethod(c, KORB_C_HASH,   "hash", korb_m_obj_hash, 0);
+    korb_def_cmethod(c, KORB_C_RANGE,  "hash", korb_m_obj_hash, 0);
+    korb_def_cmethod(c, KORB_C_PROC,   "hash", korb_m_obj_hash, 0);
+    korb_def_cmethod(c, KORB_C_RANGE,  "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "initialize", korb_m_lit_nil, 0);   /* default no-op (so `super()` in a user #initialize resolves) */
     korb_def_cmethod(c, KORB_C_OBJECT, "class", korb_m_obj_class, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "object_id", korb_m_obj_object_id, 0);
