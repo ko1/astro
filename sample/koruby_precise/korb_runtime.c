@@ -14074,22 +14074,44 @@ korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
           case KORB_OBJ_SET:   korb_fprint_set_d(c, slots, fp, v, depth);  return;
           case KORB_OBJ_OBJECT: {                                   /* Struct/Data element → "#<struct Name f=v, …>" */
             const VALUE klass = VAL2OBJ(v)->klass;
+            /* ... unless the struct class (or a subclass) defines #inspect in Ruby:
+             * `Struct.new(:text) { def inspect = text }` is a common formatter idiom
+             * and CRuby dispatches it like any other object. */
+            if (klass != KORB_NIL && KORB_ARRAY_P(VAL2CLASS(klass)->members)) {
+                const struct korb_method *const um =
+                    korb_class_find_method(klass, korb_intern(c->vm, "inspect", 7), NULL);
+                if (um != NULL && (um->kind == KORB_METHOD_ISEQ || um->kind == KORB_METHOD_DM)) {
+                    if (korb_fprint_user_inspect(c, slots, fp, v)) return;
+                    if (slots) v = slots[0];
+                }
+            }
             if (klass != KORB_NIL && KORB_ARRAY_P(VAL2CLASS(klass)->members)) {
                 const KorbClass *const k = VAL2CLASS(klass);
+                /* a struct that contains itself renders as "#<struct S:...>" (CRuby) */
+                if (UNLIKELY(VAL2OBJ(v)->head.flags & KORB_FL_JOIN_VISITING)) {
+                    fputc('#', fp); fputc('<', fp); fputs(k->is_data ? "data" : "struct", fp);
+                    if (k->name_sym) { fputc(' ', fp); fputs(korb_sym_name(c->vm, k->name_sym), fp); }
+                    fputs(":...>", fp);
+                    return;
+                }
                 if (UNLIKELY(depth >= KORB_PRINT_DEPTH_MAX)) {      /* cycle safety net (direct self-refs are handled precisely upstream) */
                     fputs(k->is_data ? "#<data ...>" : "#<struct ...>", fp); return;
                 }
                 fputc('#', fp); fputc('<', fp); fputs(k->is_data ? "data" : "struct", fp);
                 if (k->name_sym) { fputc(' ', fp); fputs(korb_sym_name(c->vm, k->name_sym), fp); }
                 const KorbArray *const mem = VAL2ARY(k->members);    /* no GC below (formatter only writes to fp) */
+                if (slots) slots[0] = v;                             /* root across member dispatch */
+                VAL2OBJ(slots ? slots[0] : v)->head.flags |= KORB_FL_JOIN_VISITING;
                 for (uint32_t i = 0; i < mem->len; i++) {
+                    const VALUE sv = slots ? slots[0] : v;
                     const VALUE msym = korb_items_data(mem->items)[i];
-                    const VALUE mval = korb_ivar_get(c, v, korb_member_ivar_sym(c->vm, msym));
+                    const VALUE mval = korb_ivar_get(c, sv, korb_member_ivar_sym(c->vm, msym));
                     fputs(i == 0 ? " " : ", ", fp);
                     fputs(korb_sym_name(c->vm, SYM2ID(msym)), fp);
                     fputc('=', fp);
                     korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp, mval, depth + 1);
                 }
+                VAL2OBJ(slots ? slots[0] : v)->head.flags &= ~KORB_FL_JOIN_VISITING;
                 fputc('>', fp);
                 return;
             }
