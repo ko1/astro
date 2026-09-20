@@ -1645,10 +1645,15 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
      * body, or a method defined in one).  There the answer depends on which
      * object is running — two singleton classes share the node — so the per-node
      * cache must not be used at all. */
-    if (LIKELY(c->eval_cref == KORB_NIL && self_off == INT32_MIN)) {   /* per-node cache */
+    /* An eval cref governs only reads LEXICALLY inside the eval/load — those have
+     * no baked enclosing module.  A method REACHED from the eval keeps its own
+     * chain: CRuby's cref rides the iseq, not the call stack.  (node_const_set
+     * already prefers the baked owner the same way.) */
+    const bool eval_scope = UNLIKELY(c->eval_cref != KORB_NIL) && owner_name == 0;
+    if (LIKELY(!eval_scope && self_off == INT32_MIN)) {   /* per-node cache */
         if (LIKELY(cache->idx_plus1 != 0 && cache->serial == vm->const_serial))
             return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
-    } else if (c->eval_cref != KORB_NIL) {
+    } else if (eval_scope) {
         /* instance_eval/class_eval(String): the eval cref (the receiver's
          * singleton / the module) and its ancestry come FIRST, and the answer is
          * context-dependent so it is never cached on the node. */
@@ -1716,6 +1721,15 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
         }
         if (idx == UINT32_MAX)                                                  /* then the innermost class's ancestry (MRO order) */
             idx = korb_const_in_ancestry(vm, cref, name_sym);
+        /* An eval / `load(f, true)` cref is the OUTERMOST lexical scope of the
+         * code it runs, so it answers after the baked chain and before top level
+         * (`MAIN = self` at the wrapper's top level, read from a `module X` in
+         * the same file).  It must NOT come first: a method merely REACHED from
+         * the eval keeps its own chain. */
+        if (idx == UINT32_MAX && UNLIKELY(c->eval_cref != KORB_NIL)) {
+            idx = korb_const_index_owned(vm, name_sym, c->eval_cref);
+            if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, c->eval_cref, name_sym);
+        }
         /* A pending `autoload` on a lexically enclosing module answers BEFORE the
          * top-level fallback: firing its const_missing runs the require.  rspec
          * registers RSpec::Core::DidYouMean this way, and a bare `DidYouMean`

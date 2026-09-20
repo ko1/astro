@@ -245,7 +245,7 @@ module Enumerable
   end
   def filter_map(&blk); return __to_enum_sized(:filter_map) unless blk; r = []; each { |*ar| v = blk.call(*ar); r << v if v }; r; end
   alias collect_concat flat_map
-  def reverse_each; return __to_enum_sized(:reverse_each) unless block_given?; to_a.reverse.each { |x| yield x }; self; end
+  def reverse_each(*args); return __to_enum_sized(:reverse_each, *args) unless block_given?; a = []; each(*args) { |*x| a << (x.size == 1 ? x[0] : x) }; a.reverse.each { |x| yield x }; self; end
   def uniq; seen = {}; r = []; __each_el { |x| k = block_given? ? yield(x) : x; unless seen.key?(k); seen[k] = true; r << x; end }; r; end
   def each_entry(*args)
     return __to_enum_sized(:each_entry, *args) unless block_given?

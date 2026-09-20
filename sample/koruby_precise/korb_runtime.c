@@ -12795,9 +12795,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "to_h", korb_m_ary_to_h, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "cycle", korb_m_ary_cycle, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "permutation", korb_m_ary_permutation, -1);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "combination", korb_m_ary_combination, -1);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "repeated_combination", korb_m_ary_repeated_combination, -1);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "repeated_permutation", korb_m_ary_repeated_permutation, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "combination", korb_m_ary_combination, 1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "repeated_combination", korb_m_ary_repeated_combination, 1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "repeated_permutation", korb_m_ary_repeated_permutation, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "to_ary", korb_m_ary_self, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "entries", korb_m_obj_dup, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "sort!", korb_m_ary_sort_bang, 0);
@@ -12845,8 +12845,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "collect_concat", korb_m_ary_flat_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "partition", korb_m_ary_partition, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "group_by", korb_m_ary_group_by, 0);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "grep", korb_m_ary_grep, -1);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "grep_v", korb_m_ary_grep_v, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "grep", korb_m_ary_grep, 1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "grep_v", korb_m_ary_grep_v, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "clear", korb_m_ary_clear, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "intersect?", korb_m_ary_intersect_q, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "+", korb_m_ary_plus, 1);
@@ -12856,7 +12856,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "rassoc", korb_m_ary_rassoc, 1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "count", korb_m_ary_count, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "sum", korb_m_ary_sum_b, -1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "pack", korb_m_ary_pack, -1);   /* template + optional buffer: kwarg */
+    korb_def_cmethod(c, KORB_C_ARRAY, "pack", korb_m_ary_pack, -2);   /* template + optional buffer: kwarg */
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "min", korb_m_ary_min, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "max", korb_m_ary_max, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "minmax", korb_m_ary_minmax, 0);
@@ -12892,7 +12892,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "zip", korb_m_ary_zip, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "deconstruct", korb_m_ary_self, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "insert", korb_m_ary_insert, -1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "|", korb_m_ary_union, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "|", korb_m_ary_union, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "union", korb_m_ary_union, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "&", korb_m_ary_intersect, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "intersection", korb_m_ary_intersect, -1);
@@ -13340,7 +13340,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "superclass", korb_m_class_superclass, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "allocate", korb_m_class_allocate, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "name", korb_m_class_name, 0);
-    korb_def_cmethod(c, KORB_C_CLASS, "set_temporary_name", korb_m_module_set_temp_name, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "set_temporary_name", korb_m_module_set_temp_name, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "constants", korb_m_mod_constants, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "to_s", korb_m_class_to_s, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "inspect", korb_m_class_to_s, 0);
@@ -13371,8 +13371,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_SYMBOL, "match", korb_m_str_match, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "match?", korb_m_str_match_q, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "scan", korb_m_str_scan, 1);
-    korb_def_cmethod(c, KORB_C_STRING, "unpack", korb_m_str_unpack, -1);
-    korb_def_cmethod(c, KORB_C_STRING, "unpack1", korb_m_str_unpack1, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "unpack", korb_m_str_unpack, -2);
+    korb_def_cmethod(c, KORB_C_STRING, "unpack1", korb_m_str_unpack1, -2);
     korb_def_cmethod(c, KORB_C_REGEXP, "=~", korb_m_re_match_op, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "match?", korb_m_re_match_q, -1);
     korb_def_cmethod(c, KORB_C_REGEXP, "===", korb_m_re_case_eq, 1);
@@ -13479,7 +13479,7 @@ korb_register_core_methods(CTX *c)
     #define MOD_CFN(nm, fn, ar)     korb_class_def_cfn(c, korb_const_get(c->vm, c->vm->name_module), nm, fn, ar)
     #define MOD_CFN_BLK(nm, fn, ar) korb_class_def_cfn_blk(c, korb_const_get(c->vm, c->vm->name_module), nm, fn, ar)
     MOD_CFN("name", korb_m_class_name, 0);
-    MOD_CFN("set_temporary_name", korb_m_module_set_temp_name, -1);
+    MOD_CFN("set_temporary_name", korb_m_module_set_temp_name, 1);
     MOD_CFN("constants", korb_m_mod_constants, -1);
     MOD_CFN("to_s", korb_m_class_to_s, 0);
     MOD_CFN("inspect", korb_m_class_to_s, 0);
@@ -14755,6 +14755,14 @@ korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const
      * its self is a throwaway main extended with the wrap module. */
     if (c->vm->top_self != 0 && !(wrapp && KORB_CLASS_P(*wrapp))) {
         fb[-1] = c->vm->top_self;
+    } else if (c->vm->top_self != 0) {
+        /* CRuby CLONES main here, so whatever was extended onto it (rake's
+         * `extend Rake::DSL`) still answers inside the wrapper. */
+        cur[0] = c->vm->top_self;
+        RESULT cr = korb_send_impl(c, cur + 1, korb_intern(c->vm, "clone", 5), 0, 0, NULL, NULL, NULL);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        fb[-1] = cr.value;
+        cur[0] = 0;
     } else {
         RESULT mr = korb_obj_new(c, cur, KORB_NIL);    /* fresh `main` self */
         if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
