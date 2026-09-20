@@ -651,7 +651,8 @@ void korb_ctx_free(CTX *c);
  * caller (main.c) reads the source (file / -e / stdin). */
 NODE *koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool exit_on_error);
 NODE *koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, const char *src_enc,
-                                const uint32_t *name_syms, uint32_t name_cnt, uint32_t method_mid);
+                                const uint32_t *name_syms, uint32_t name_cnt, uint32_t method_mid,
+                                uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len);
 extern uint32_t koruby_toplevel_locals_cnt;
 extern const uint32_t *koruby_toplevel_local_syms;   /* toplevel local-name table (for TOPLEVEL_BINDING) */
 extern uint32_t koruby_toplevel_local_cnt;

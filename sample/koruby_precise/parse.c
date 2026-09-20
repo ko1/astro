@@ -1326,12 +1326,34 @@ static bool
 kp_lexical_class_owner(struct kp_ctx *tc, uint32_t *owner)
 {
     bool in_block = false;
+    const struct kp_frame *inner = NULL;
     for (const struct kp_frame *f = tc->frame; f; f = f->prev) {
         if (f->anon_class_body) return false;      /* `class << obj`: only self names that cref */
-        if (f->class_name_sym) { *owner = f->class_name_sym; return in_block; }
+        if (f->class_name_sym) { inner = f; break; }
         if (f->block_body) in_block = true;
     }
-    *owner = 0;                                    /* no enclosing class body → top level */
+    if (inner == NULL) { *owner = 0; return in_block; }   /* no enclosing class body → top level */
+    /* The WHOLE nesting path, not just the innermost name: the constant table is
+     * flat, so a bare `A` would also answer for an unrelated `M2::A`
+     * (`Temple::ERB` answered the `ERB` of `class ERB::Compiler`). */
+    uint32_t syms[32], depth = 0;
+    for (const struct kp_frame *f = inner; f; f = f->prev)
+        if (f->class_name_sym != 0) depth++;
+    if (depth == 0 || depth > 32) { *owner = inner->class_name_sym; return in_block; }
+    uint32_t i = depth;
+    for (const struct kp_frame *f = inner; f && i > 0; f = f->prev)
+        if (f->class_name_sym != 0) syms[--i] = f->class_name_sym;
+    char buf[512];
+    size_t len = 0;
+    for (uint32_t k = 0; k < depth; k++) {
+        const char *const nm = korb_sym_name(tc->c->vm, syms[k]);
+        const size_t nl = strlen(nm);
+        if (len + nl + 3 > sizeof buf) { *owner = inner->class_name_sym; return in_block; }
+        if (len) { buf[len++] = ':'; buf[len++] = ':'; }
+        memcpy(buf + len, nm, nl);
+        len += nl;
+    }
+    *owner = korb_intern(tc->c->vm, buf, (uint32_t)len);
     return in_block;
 }
 
@@ -2192,10 +2214,13 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
         }
     }
 
-    /* bare `instance_eval(str...)` — same hidden-binding contract as the
-     * explicit-receiver lowering in transduce_call (caller locals). */
+    /* bare `instance_eval(str...)` / `class_eval` / `module_eval` — same hidden
+     * binding contract as the explicit-receiver lowering in transduce_call
+     * (caller locals; faraday generates methods with `class_eval <<-RUBY`). */
     if (cn->block == NULL && argc >= 1 && argc <= 3 &&
-        strcmp(kp_cid_cstr(tc, cn->name), "instance_eval") == 0) {
+        (strcmp(kp_cid_cstr(tc, cn->name), "instance_eval") == 0 ||
+         strcmp(kp_cid_cstr(tc, cn->name), "class_eval") == 0 ||
+         strcmp(kp_cid_cstr(tc, cn->name), "module_eval") == 0)) {
         bool plain = true;
         for (size_t i = 0; i < argc; i++) {
             const pm_node_t *an = cn->arguments->arguments.nodes[i];
@@ -5889,6 +5914,12 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return emit_super_fwd(tc, m_mid, line, arr);
       }
 
+      /* `# shareable_constant_value: literal` wraps the constant write.  koruby
+       * has no Ractors, so shareability is a no-op — but the write itself must
+       * still run (CRuby's time.rb carries the comment). */
+      case PM_SHAREABLE_CONSTANT_NODE:
+        return transduce(tc, ((const pm_shareable_constant_node_t *)node)->write);
+
       default: {
         char what[64];
         snprintf(what, sizeof(what), "syntax (prism node %d)", (int)PM_NODE_TYPE(node));
@@ -6017,7 +6048,8 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool
  * writes them back).  NULL on syntax error. */
 NODE *
 koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, const char *src_enc,
-                          const uint32_t *name_syms, uint32_t name_cnt, uint32_t method_mid)
+                          const uint32_t *name_syms, uint32_t name_cnt, uint32_t method_mid,
+                          uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len)
 {
     pm_parser_t parser;
     pm_options_t options = { 0 };
@@ -6045,7 +6077,8 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
         return NULL;
     }
     struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
-                         .fsl_false = kp_fsl_false(src, len), .eval_method_mid = method_mid };
+                         .fsl_false = kp_fsl_false(src, len), .eval_method_mid = method_mid,
+                         .seed_class_name = cref_name, .seed_chain = cref_chain, .seed_chain_len = cref_chain_len };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
     for (uint32_t pi = tc.pre_cnt; pi-- > 0; ) ast = ALLOC_node_seq(tc.pre_list[pi], ast);   /* BEGIN { } first */

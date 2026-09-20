@@ -3855,8 +3855,16 @@ korb_const_get_path(struct korb_vm *vm, uint32_t name_sym)
 {
     const char *const nm = korb_sym_name(vm, name_sym);
     const char *sep = strstr(nm, "::");
-    if (sep == NULL) return korb_const_get(vm, name_sym);
-    VALUE cur = korb_const_get(vm, korb_intern(vm, nm, (uint32_t)(sep - nm)));
+    /* the head of a baked path is a TOP-LEVEL name: a real top-level constant
+     * wins over a nested same-named one the flat table happens to hold first
+     * (`Temple::ERB` was answering the `ERB` of `class ERB::Compiler`). */
+    VALUE cur;
+    {
+        const uint32_t id = sep ? korb_intern(vm, nm, (uint32_t)(sep - nm)) : name_sym;
+        const uint32_t j = korb_const_index_owned(vm, id, KORB_NIL);
+        cur = (j != UINT32_MAX) ? vm->const_vals[j] : korb_const_get(vm, id);
+    }
+    if (sep == NULL) return cur;
     for (const char *p = sep + 2; KORB_CLASS_P(cur); ) {
         const char *const next = strstr(p, "::");
         const uint32_t len = next ? (uint32_t)(next - p) : (uint32_t)strlen(p);
@@ -16564,9 +16572,20 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     for (uint32_t i = 0; i < b0->name_cnt; i++) decl[i] = KORB_BIND_TRIPLE(b0, i)[0];
     for (uint32_t i = 0; i < ecnt; i++) decl[b0->name_cnt + i] = SYM2ID(korb_items_data(VAL2HASH(b0->extra)->items)[2 * i]);
     const KorbString *const s = VAL2STR(*src_slot);
+    /* class_eval/module_eval(String) push the receiver onto the cref, so a `def`
+     * inside the string resolves constants as a `module Foo` body would (psych's
+     * TreeBuilder generates start_sequence that way and names Psych::Nodes). */
+    const uint32_t cref_name = (cref != KORB_UNDEF && KORB_CLASS_P(cref)) ? VAL2CLASS(cref)->name_sym : 0;
+    uint32_t encl[16]; uint32_t nencl = 0;                      /* innermost first for now */
+    for (VALUE o = cref_name ? VAL2CLASS(cref)->enclosing : KORB_NIL;
+         KORB_CLASS_P(o) && VAL2CLASS(o)->name_sym != 0 && nencl < 16; o = VAL2CLASS(o)->enclosing)
+        encl[nencl++] = VAL2CLASS(o)->name_sym;
+    for (uint32_t i = 0, j = nencl; i < j; i++, j--)            /* → outermost first */
+        { const uint32_t t = encl[i]; encl[i] = encl[j - 1]; encl[j - 1] = t; }
     NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, fname, eline,
                                             korb_enc_name_of(c->vm, KORB_STR_ENC(*src_slot)), decl, declc,
-                                            korb_bind_method_mid(c->vm, b0));
+                                            korb_bind_method_mid(c->vm, b0),
+                                            cref_name, nencl ? encl : NULL, nencl);
     free(decl);
     if (UNLIKELY(entry == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
     const uint32_t L = koruby_toplevel_locals_cnt;

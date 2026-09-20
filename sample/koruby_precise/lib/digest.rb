@@ -456,3 +456,20 @@ module Digest
     def inspect = "#<#{self.class.name}:#{@bitlen} #{hexdigest}>"
   end
 end
+
+# Kernel#Digest("SHA256") — the class for a digest name, loading digest/<name>
+# on demand (pstore picks its checksum algorithm this way).
+def Digest(name)
+  const = name.to_sym
+  if Digest.const_defined?(const)
+    Digest.const_get(const)
+  else
+    begin
+      require "digest/#{const.to_s.downcase}"
+    rescue LoadError
+      raise LoadError, "library not found for class Digest::#{const} -- digest/#{const.to_s.downcase}"
+    end
+    raise LoadError, "library not found for class Digest::#{const} -- digest/#{const.to_s.downcase}" unless Digest.const_defined?(const)
+    Digest.const_get(const)
+  end
+end
