@@ -74,6 +74,10 @@ class StringIO
       raise FrozenError, "can't modify frozen String: #{@buf.inspect}"
     end
     @buf.clear if (mode.start_with?("w") && !@int_mode__) || truncate_int
+    # "bom|utf-8" asks that a leading BOM be honoured (and skipped) on read; with
+    # no BOM the named encoding stands.  CSV.open sets this for every StringIO.
+    bom_spec = enc_spec.is_a?(String) && enc_spec.downcase.start_with?("bom|")
+    enc_spec = enc_spec[4..] if bom_spec
     if enc_spec                                     # "w:ISO-8859-1" / encoding: keyword
       @buf.force_encoding(enc_spec.split(":").first)
     elsif mode.include?("b")
@@ -86,6 +90,7 @@ class StringIO
     @enc = nil                                       # only #set_encoding / #binmode set it
     @closed_read = false
     @closed_write = false
+    set_encoding_by_bom if bom_spec && !@buf.frozen?
     if block_given?
       warn "warning: StringIO::new() does not take block; use StringIO::open() instead"
     end

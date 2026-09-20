@@ -66,6 +66,16 @@ static uint32_t korb_enc_index_for_name(struct korb_vm *vm, const char *name) {
     }
     return 7;   /* registry full (>5 distinct "other" encodings): reuse the last slot */
 }
+/* Look up only: the index a name already has, or UINT32_MAX.  force_encoding
+ * uses it to skip re-validating a name the registry has already seen. */
+static uint32_t korb_enc_index_known(const struct korb_vm *vm, const char *name) {
+    if (strcasecmp(name, "ASCII-8BIT") == 0 || strcasecmp(name, "BINARY") == 0) return KORB_ENC_BINARY;
+    if (strcasecmp(name, "US-ASCII") == 0 || strcasecmp(name, "ASCII") == 0 || strcasecmp(name, "ANSI_X3.4-1968") == 0) return KORB_ENC_USASCII;
+    if (strcasecmp(name, "UTF-8") == 0) return KORB_ENC_UTF8;   /* "UTF8" is NOT a CRuby alias: let find() reject it */
+    for (uint32_t i = KORB_ENC_OTHER_MIN; i < KORB_STR_ENC_MAX; i++)
+        if (vm->str_enc_names[i] != 0 && strcasecmp(korb_sym_name(vm, vm->str_enc_names[i]), name) == 0) return i;
+    return UINT32_MAX;
+}
 /* Register (or look up) an encoding name → its header index.  Exported for
  * parse.c, which needs the file's `# encoding:` name as a tag. */
 uint32_t korb_enc_index_pub(struct korb_vm *vm, const char *name) { return korb_enc_index_for_name(vm, name); }
@@ -116,6 +126,27 @@ static RESULT korb_m_str_force_encoding(CTX *c, VALUE *slots, VALUE_REF self, VA
     { const KorbString *es = VAL2STR(enc);
       uint32_t l = es->len < sizeof nbuf - 1 ? es->len : (uint32_t)sizeof nbuf - 1;
       memcpy(nbuf, korb_strbuf_data(es->buf), l); }
+    /* A name no registry knows is an ArgumentError in CRuby, and an alias has to
+     * land on the canonical encoding — both answers live in Encoding.find
+     * (prelude).  Ask it once per distinct name; a name already in the registry
+     * was validated when it got there. */
+    if (UNLIKELY(korb_enc_index_known(c->vm, nbuf) == UINT32_MAX)) {
+        const VALUE encm = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
+        if (KORB_CLASS_P(encm)) {                     /* nil while the prelude itself is loading */
+            slots[0] = encm; slots[1] = enc;
+            RESULT fr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "find", 4), 0, 1, NULL, NULL, NULL);
+            if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+            slots[0] = fr.value;                      /* root across the ivar read */
+            const VALUE nm = korb_ivar_get(c, slots[0], ID2SYM(korb_intern(c->vm, "@name", 5)));
+            if (KORB_STRING_P(nm)) {
+                const KorbString *const cs = VAL2STR(nm);
+                const uint32_t l = cs->len < sizeof nbuf - 1 ? cs->len : (uint32_t)sizeof nbuf - 1;
+                memset(nbuf, 0, sizeof nbuf);
+                memcpy(nbuf, korb_strbuf_data(cs->buf), l);
+            }
+            slots[0] = 0; slots[1] = 0;
+        }
+    }
     KORB_STR_ENC_SET(VALUE_REF_GET(self), korb_enc_index_for_name(c->vm, nbuf));
     return RESULT_OK(VALUE_REF_GET(self));
 }

@@ -204,8 +204,29 @@ class IO
   # encoding option の値: Encoding / nil はそのまま、他は #to_str で String に。
   private def __enc_opt(v)
     v = v.to_str if !v.nil? && !v.is_a?(Encoding) && !v.is_a?(String) && v.respond_to?(:to_str)
-    v = v[4..-1] if v.is_a?(String) && v.downcase.start_with?("bom|")   # BOM は読み取り時の話
+    if v.is_a?(String) && v.downcase.start_with?("bom|")   # BOM は読み取り時の話
+      @__bom_req = true
+      v = v[4..-1]
+    end
     v == "-" ? nil : v      # "-" は「指定なし」を意味する (CRuby)
+  end
+
+  # "bom|utf-8": consume a leading BOM if there is one and let it name the
+  # external encoding; with no BOM the named encoding stands (CRuby).
+  private def __apply_bom_opt
+    @__bom_req = nil
+    name = __io_bom_encoding
+    set_encoding(name) if name
+  end
+
+  # The open path only WARNS about an encoding nobody knows and carries on;
+  # String#force_encoding is the strict one (CRuby rb_io_extract_modeenc).
+  private def __open_enc(v)
+    return v unless v.is_a?(String)
+    Encoding.find(v)
+  rescue ArgumentError
+    warn("Unsupported encoding #{v} ignored", uplevel: 2)
+    nil
   end
 
   def __apply_open_opts(opts)
@@ -235,10 +256,10 @@ class IO
       # the open path is CRuby's rb_io_ext_int_to_encs directly: an internal
       # encoding alone still leaves the external one "not given"
       @__enc_done = true
-      __enc_pair(ext.is_a?(String) ? Encoding.find(ext) : ext,
-                 int.is_a?(String) ? Encoding.find(int) : int,
+      __enc_pair(__open_enc(ext), __open_enc(int),
                  Encoding.default_external, Encoding.default_internal)
     end
+    __apply_bom_opt if @__bom_req
     self
   end
 end

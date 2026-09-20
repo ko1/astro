@@ -314,8 +314,29 @@ class Encoding
   end
   # Alias → canonical encoding name.
   def self.aliases
-    { 'BINARY' => 'ASCII-8BIT', 'ASCII' => 'US-ASCII', 'ANSI_X3.4-1968' => 'US-ASCII',
-      'UTF8' => 'UTF-8', 'SJIS' => 'Shift_JIS', 'CP932' => 'Windows-31J', 'eucJP' => 'EUC-JP',
+    { '646'                  => 'US-ASCII', 'ANSI_X3.4-1968'       => 'US-ASCII', 'ASCII'                => 'US-ASCII',
+      'BINARY'               => 'ASCII-8BIT', 'Big5-HKSCS:2008'      => 'Big5-HKSCS', 'CP1250'               => 'Windows-1250',
+      'CP1251'               => 'Windows-1251', 'CP1252'               => 'Windows-1252', 'CP1253'               => 'Windows-1253',
+      'CP1254'               => 'Windows-1254', 'CP1255'               => 'Windows-1255', 'CP1256'               => 'Windows-1256',
+      'CP1257'               => 'Windows-1257', 'CP1258'               => 'Windows-1258', 'CP437'                => 'IBM437',
+      'CP65000'              => 'UTF-7', 'CP65001'              => 'UTF-8', 'CP720'                => 'IBM720',
+      'CP737'                => 'IBM737', 'CP775'                => 'IBM775', 'CP857'                => 'IBM857',
+      'CP860'                => 'IBM860', 'CP861'                => 'IBM861', 'CP862'                => 'IBM862',
+      'CP863'                => 'IBM863', 'CP864'                => 'IBM864', 'CP865'                => 'IBM865',
+      'CP866'                => 'IBM866', 'CP869'                => 'IBM869', 'CP874'                => 'Windows-874',
+      'CP878'                => 'KOI8-R', 'CP932'                => 'Windows-31J', 'CP936'                => 'GBK',
+      'EUC-CN'               => 'GB2312', 'EUC-JISX0213'         => 'EUC-JIS-2004', 'IBM850'               => 'CP850',
+      'ISO2022-JP'           => 'ISO-2022-JP', 'ISO2022-JP2'          => 'ISO-2022-JP-2', 'ISO8859-1'            => 'ISO-8859-1',
+      'ISO8859-10'           => 'ISO-8859-10', 'ISO8859-11'           => 'ISO-8859-11', 'ISO8859-13'           => 'ISO-8859-13',
+      'ISO8859-14'           => 'ISO-8859-14', 'ISO8859-15'           => 'ISO-8859-15', 'ISO8859-16'           => 'ISO-8859-16',
+      'ISO8859-2'            => 'ISO-8859-2', 'ISO8859-3'            => 'ISO-8859-3', 'ISO8859-4'            => 'ISO-8859-4',
+      'ISO8859-5'            => 'ISO-8859-5', 'ISO8859-6'            => 'ISO-8859-6', 'ISO8859-7'            => 'ISO-8859-7',
+      'ISO8859-8'            => 'ISO-8859-8', 'ISO8859-9'            => 'ISO-8859-9', 'MacJapan'             => 'MacJapanese',
+      'PCK'                  => 'Windows-31J', 'SJIS'                 => 'Windows-31J', 'UCS-2BE'              => 'UTF-16BE',
+      'UCS-4BE'              => 'UTF-32BE', 'UCS-4LE'              => 'UTF-32LE', 'UTF-8-HFS'            => 'UTF8-MAC',
+      'UTF-8-MAC'            => 'UTF8-MAC', 'csWindows31J'         => 'Windows-31J', 'ebcdic-cp-us'         => 'IBM037',
+      'euc-jp-ms'            => 'eucJP-ms', 'eucCN'                => 'GB2312', 'eucJP'                => 'EUC-JP',
+      'eucKR'                => 'EUC-KR', 'eucTW'                => 'EUC-TW',
       'external' => default_external.name, 'locale' => default_external.name,
       'filesystem' => default_external.name }
   end
