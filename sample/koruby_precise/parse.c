@@ -2949,6 +2949,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
                 const pm_optional_parameter_node_t *op =
                     (const pm_optional_parameter_node_t *)dn->parameters->optionals.nodes[j];
                 if (lvar_index(tc, (const pm_node_t *)op, op->name) != req_cnt + j
+                    && !has_destructured                        /* a `(a, b)` param shifts every later local */
                     && kp_cid_cstr(tc, op->name)[0] != '_') {   /* non-`_` repeat: unsupported (see required-param note) */
                     pop_frame(tc); free(opt_defaults);
                     return kp_unsupported(tc, (const pm_node_t *)op, "repeated parameter name");
@@ -3077,6 +3078,15 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
                 const uint32_t L = lvar_index(tc, p, ((const pm_required_parameter_node_t *)p)->name);
                 if (L != i) body = ALLOC_node_seq(bake_lset(tc, L, bake_lget(tc, i)), body);
             }
+        }
+        /* An optional parameter is filled at its POSITIONAL slot (req_cnt + j) by
+         * the invoke path, so it needs the same move.  Emitted after the required
+         * ones: prepending reverses, and these sit further right. */
+        for (uint32_t j = 0; j < opt_cnt; j++) {
+            const pm_optional_parameter_node_t *const op =
+                (const pm_optional_parameter_node_t *)dn->parameters->optionals.nodes[j];
+            const uint32_t L = lvar_index(tc, (const pm_node_t *)op, op->name);
+            if (L != req_cnt + j) body = ALLOC_node_seq(bake_lset(tc, L, bake_lget(tc, req_cnt + j)), body);
         }
     }
     /* Same shift on the post side: `def m(a=1, (b, c), d)` stages d one slot below
