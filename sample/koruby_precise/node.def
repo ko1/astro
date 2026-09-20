@@ -2978,6 +2978,39 @@ node_dm_name(CTX *c, NODE *n, VALUE *slots)
     return RESULT_OK(c->dm_entry ? ID2SYM(c->dm_entry->mid) : KORB_NIL);
 }
 
+// `__callee__` written directly in a method body: the name the frame was CALLED
+// under, which an alias / define_method(name, unbound) copy renames.  The frame
+// identity cell (base[-4]) carries that entry.  `fallback` is the lexical name,
+// used when the frame is not a method frame (an eval'd body).
+NODE_DEF @nogc
+node_callee(CTX *c, NODE *n, VALUE *slots, int32_t dc_off, uint32_t fallback@sym)
+{
+    (void)n; (void)c;
+    const VALUE id = slots[dc_off];
+    if ((id & 7u) == KORB_FID_METHOD) {
+        const struct korb_method *const m = (const struct korb_method *)(uintptr_t)(id & ~(VALUE)7u);
+        if (m->mid != 0) return RESULT_OK(ID2SYM(m->mid));
+    }
+    return RESULT_OK(fallback ? ID2SYM(fallback) : KORB_NIL);
+}
+
+// Same, written inside a block: the enclosing METHOD frame is `depth` env links
+// out, and its identity cell names the entry the call was dispatched through.
+NODE_DEF @nogc
+node_callee_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint32_t fallback@sym)
+{
+    (void)n; (void)c;
+    const VALUE h = korb_outer_handle_at(slots + prev_off - KORB_EP_OFF, slots[prev_off], depth);
+    VALUE id = 0;
+    if (h & 1u)       id = korb_id_get((const VALUE *)(uintptr_t)(h & ~(uintptr_t)1u));
+    else if (h != 0)  id = VAL2ENV(h)->id;
+    if ((id & 7u) == KORB_FID_METHOD) {
+        const struct korb_method *const m = (const struct korb_method *)(uintptr_t)(id & ~(VALUE)7u);
+        if (m->mid != 0) return RESULT_OK(ID2SYM(m->mid));
+    }
+    return RESULT_OK(fallback ? ID2SYM(fallback) : KORB_NIL);
+}
+
 // block_given? — reads the frame-top biseq cell (odd-tagged when a block was
 // passed; nil when not).
 NODE_DEF @nogc

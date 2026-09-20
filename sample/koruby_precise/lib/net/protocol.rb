@@ -80,6 +80,13 @@ module Net # :nodoc:
   # :startdoc:
 
   ##
+  # ReadLimitExceeded, a subclass of ProtocolError, is raised if the
+  # terminator is not found within the byte limit given to
+  # Net::BufferedIO#readuntil.
+
+  class ReadLimitExceeded < ProtocolError; end
+
+  ##
   # OpenTimeout, a subclass of Timeout::Error, is raised if a connection cannot
   # be created within the open_timeout.
 
@@ -205,14 +212,31 @@ module Net # :nodoc:
       dest
     end
 
-    def readuntil(terminator, ignore_eof = false)
+    def readuntil(terminator, ignore_eof = false, limit: nil)
+      unless limit.nil? || (Integer === limit && limit > 0)
+        # Integer === calls nothing on limit, and only an Integer is
+        # echoed back, so validation never runs the caller's code.
+        got = Integer === limit ? limit : "a non-Integer"
+        raise ArgumentError, "limit must be a positive Integer, got #{got}"
+      end
       offset = @rbuf_offset
       begin
         until idx = @rbuf.index(terminator, offset)
-          offset = @rbuf.bytesize
+          if limit && rbuf_size > limit
+            raise ReadLimitExceeded, "exceeded the #{limit} byte read limit"
+          end
+          # Rewind so a terminator split across reads is still found. The
+          # floor guards two things. String#index reads a negative offset
+          # as counting from the end, and an offset below @rbuf_offset
+          # matches inside bytes already returned.
+          offset = [@rbuf.bytesize - terminator.bytesize + 1, @rbuf_offset].max
           rbuf_fill
         end
-        return rbuf_consume(idx + terminator.bytesize - @rbuf_offset)
+        len = idx + terminator.bytesize - @rbuf_offset
+        if limit && len > limit
+          raise ReadLimitExceeded, "exceeded the #{limit} byte read limit"
+        end
+        return rbuf_consume(len)
       rescue EOFError
         raise unless ignore_eof
         return rbuf_consume

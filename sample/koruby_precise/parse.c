@@ -2106,6 +2106,30 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                 if (f->method_mid) { mid = f->method_mid; break; }
             }
             if (mid == 0) mid = tc->eval_method_mid;   /* eval(str, binding): the binding's method */
+            /* `__callee__` is the name the frame was CALLED under, which an alias
+             * or `define_method(name, unbound)` copy renames — read it off the
+             * frame's method entry.  (`__method__` stays the definition name.)
+             * Only when the body IS the method's: inside a block the entry cell
+             * belongs to the block frame, so keep the lexical bake there. */
+            if (nm[2] == 'c' && mid != 0) {
+                uint32_t cdepth = 0;
+                for (const struct kp_frame *f = tc->frame; f; f = f->prev) {
+                    if (f->dm_body) { cdepth = UINT32_MAX; break; }
+                    if (f->method_mid) break;
+                    cdepth++;
+                }
+                if (cdepth == 0) {
+                    NODE *cl = ALLOC_node_callee(-4 - tc->chain, mid);
+                    bake_add(tc, &cl->u.node_callee.dc_off);   /* method entry at base[-4] */
+                    return cl;
+                }
+                if (cdepth != UINT32_MAX) {
+                    if (cdepth > tc->frame->max_ref_depth) tc->frame->max_ref_depth = cdepth;
+                    NODE *cl = ALLOC_node_callee_outer(-2 - tc->chain, cdepth, mid);
+                    bake_add(tc, &cl->u.node_callee_outer.prev_off);   /* this block's EP cell */
+                    return cl;
+                }
+            }
             return ALLOC_node_lit(mid ? ID2SYM(mid) : KORB_NIL);
         }
     }
