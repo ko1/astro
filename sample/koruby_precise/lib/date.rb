@@ -830,12 +830,37 @@ class Date
   class << self; alias_method :rfc822, :rfc2822; end
   def self.httpdate(str = "Mon, 01 Jan -4712 00:00:00 GMT", sg = ITALY) = __fmt_parse(str, sg)
 
-  # "+09:00" / "+0900" / "Z" / "UTC" → seconds; an unknown zone name → nil.
+  # Named zones CRuby's Date.zone_to_diff knows (the common civil + military
+  # ones); values are seconds east of UTC.
+  ZONE_OFFSETS__ = {
+    "ut" => 0, "gmt" => 0, "utc" => 0, "z" => 0,
+    "est" => -5*3600, "edt" => -4*3600, "cst" => -6*3600, "cdt" => -5*3600,
+    "mst" => -7*3600, "mdt" => -6*3600, "pst" => -8*3600, "pdt" => -7*3600,
+    "ast" => -4*3600, "adt" => -3*3600, "nst" => -3*3600 - 1800, "ndt" => -2*3600 - 1800,
+    "wet" => 0, "west" => 3600, "bst" => 3600, "cet" => 3600, "cest" => 2*3600,
+    "eet" => 2*3600, "eest" => 3*3600, "msk" => 3*3600, "msd" => 4*3600,
+    "ist" => 5*3600 + 1800, "jst" => 9*3600, "kst" => 9*3600,
+    "aest" => 10*3600, "aedt" => 11*3600, "acst" => 9*3600 + 1800, "acdt" => 10*3600 + 1800,
+    "awst" => 8*3600, "nzst" => 12*3600, "nzdt" => 13*3600, "hst" => -10*3600,
+    "akst" => -9*3600, "akdt" => -8*3600, "brt" => -3*3600, "sast" => 2*3600,
+    "a" => 3600, "b" => 2*3600, "c" => 3*3600, "d" => 4*3600, "e" => 5*3600,
+    "f" => 6*3600, "g" => 7*3600, "h" => 8*3600, "i" => 9*3600, "k" => 10*3600,
+    "l" => 11*3600, "m" => 12*3600, "n" => -3600, "o" => -2*3600, "p" => -3*3600,
+    "q" => -4*3600, "r" => -5*3600, "s" => -6*3600, "t" => -7*3600, "u" => -8*3600,
+    "v" => -9*3600, "w" => -10*3600, "x" => -11*3600, "y" => -12*3600,
+  }.freeze
+  private_constant :ZONE_OFFSETS__
+
+  # "+9" / "+09:00" / "+0900" / "+09:00:30" / "Z" / "JST" → seconds;
+  # an unknown zone name → nil.
   def self.__zone_to_offset(z)
-    return 0 if z == "Z" || z.casecmp("UTC").zero? || z.casecmp("GMT").zero?
-    m = /\A([-+])(\d{2}):?(\d{2})?:?(\d{2})?\z/.match(z) or return nil
-    sign = m[1] == "-" ? -1 : 1
-    sign * (m[2].to_i * 3600 + m[3].to_i * 60 + m[4].to_i)
+    z = z.to_s.strip
+    m = /\A([-+])(\d{1,2})(?::?(\d{2}))?(?::?(\d{2}))?\z/.match(z)
+    if m
+      sign = m[1] == "-" ? -1 : 1
+      return sign * (m[2].to_i * 3600 + m[3].to_i * 60 + m[4].to_i)
+    end
+    ZONE_OFFSETS__[z.downcase]
   end
 
   def self._strptime(str, fmt = "%F")
@@ -1076,17 +1101,16 @@ class DateTime < Date
     [0, h * 3600 + min * 60 + sec, ns.is_a?(Float) ? ns.round : ns]
   end
 
-  # Accepts a seconds count, a day fraction, or a "+09:00" string.
+  # Accepts a day fraction or a zone string ("+9" / "+09:00" / "Z" / "JST").
+  # A numeric outside (-1, 1) is not a day fraction — CRuby answers 0 there.
   def self.__offset_seconds(of)
     case of
     when String
-      m = /\A([-+])(\d{2}):?(\d{2})?\z/.match(of) or
-        (return 0 if of == "Z" || of == "UTC" || of == "GMT")
-      raise Date::Error, "invalid offset" unless m
-      sign = m[1] == "-" ? -1 : 1
-      sign * (m[2].to_i * 3600 + (m[3] ? m[3].to_i : 0) * 60)
-    when Integer then of.zero? ? 0 : (of.abs < 24 ? of * 3600 : of)
-    when Numeric then (of * 86400).round
+      sec = __zone_to_offset(of) or raise Date::Error, "invalid offset"
+      sec
+    when Numeric
+      return 0 if of <= -1 || of >= 1
+      (of * 86400).round
     else 0
     end
   end
@@ -1126,13 +1150,17 @@ class DateTime < Date
     h = _parse(str, comp)
     raise Date::Error, "invalid date" unless h[:year] || h[:mon] || h[:mday] || h[:yday] || h[:wday]
     y, m, d = Date.__complete_ymd(h, sg)
-    civil(y, m, d, h[:hour] || 0, h[:min] || 0, h[:sec] || 0, h[:offset] || 0, sg)
+    # _parse reports the zone in SECONDS (#civil's `of` is a DAY FRACTION) and
+    # keeps the sub-second part in its own key.
+    sec = (h[:sec] || 0) + (h[:sec_fraction] || 0)
+    civil(y, m, d, h[:hour] || 0, h[:min] || 0, sec, Rational(h[:offset] || 0, 86400), sg)
   end
 
   def self.strptime(str = "-4712-01-01T00:00:00+00:00", fmt = "%FT%T%z", sg = ITALY)
     h = _strptime(str, fmt) or raise Date::Error, "invalid date"
     civil(h[:year] || -4712, h[:mon] || 1, h[:mday] || 1,
-          h[:hour] || 0, h[:min] || 0, h[:sec] || 0, h[:offset] || 0, sg)
+          h[:hour] || 0, h[:min] || 0, (h[:sec] || 0) + (h[:sec_fraction] || 0),
+          Rational(h[:offset] || 0, 86400), sg)
   end
 end
 
