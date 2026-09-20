@@ -653,6 +653,15 @@ class Date
   # Separators accepted between the fields of a textual date ("23/feb/2008",
   # "november.5th.2005").  A leading "-" stays with the year, so it is not here.
   SEP__ = %r{[.\s/]}
+  # month-NAME forms also take "-" as a separator ("09-Nov-99", "Jan-2010").
+  SEPM__ = %r{[-.\s/]}
+  # ... and then the year's own leading "-" must not be eaten as that separator:
+  # try whitespace/comma first, so " -4712" keeps its sign while "-99" does not.
+  # A number followed by ":" is a clock, not a year ("Nov  9 23:12:40 1999").
+  YEAR__ = %r{(?:[,\s]+|\s*[-.\/]\s*)(-?\d{1,4})(?![\d:])}
+  # 月名のあとの "." は略記の印 ("Nov. 9") だが、"5th.november.-2005" のように
+  # 直後が年なら区切りの "." なので YEAR__ に残す。
+  ABBR__ = %r{(?:\.(?![-\d]))?}
 
   def self._parse(str, comp = true)
     str = str.to_str if !str.is_a?(String) && str.respond_to?(:to_str)
@@ -678,17 +687,19 @@ class Date
         h[:year], h[:mon], h[:mday] = a.to_i, b.to_i, cc.to_i
       end
       s = m.pre_match + m.post_match
-    elsif (m = /(-?\d{4})#{SEP__}+([A-Za-z]{3,})\.?#{SEP__}+(\d{1,2})(?:st|nd|rd|th)?/.match(s)) && __month_index(m[2])
+    elsif (m = /(-?\d{4})#{SEPM__}+([A-Za-z]{3,})#{ABBR__}#{SEPM__}+(\d{1,2})(?:st|nd|rd|th)?/.match(s)) && __month_index(m[2])
       h[:year], h[:mon], h[:mday] = m[1].to_i, __month_index(m[2]), m[3].to_i   # "YYYY mmm DD"
       s = m.pre_match + m.post_match
-    elsif (m = /(\d{1,2})(?:st|nd|rd|th)?#{SEP__}+([A-Za-z]{3,})\.?(?:[,\s]*#{SEP__}*(-?\d{1,4}))?/.match(s)) && __month_index(m[2])
+    # "-" 区切りは序数の接尾辞と両立しない: CRuby の VMS 形式 (parse_vms) は
+    # 裸の数字しか取らないので "5th-november-2005" には日が付かない。
+    elsif (m = /(\d{1,2})(?:(?:st|nd|rd|th)#{SEP__}+|#{SEPM__}+)([A-Za-z]{3,})#{ABBR__}(?:#{YEAR__})?/.match(s)) && __month_index(m[2])
       h[:mday], h[:mon] = m[1].to_i, __month_index(m[2])                        # "DD mmm[ YYYY]"
       h[:year] = m[3].to_i if m[3]
       s = m.pre_match + m.post_match
-    elsif (m = /([A-Za-z]{3,})\.?#{SEP__}*(-?\d{4})(?![\d])/.match(s)) && __month_index(m[1])
+    elsif (m = /([A-Za-z]{3,})#{ABBR__}(?:[,\s]+|\s*[-.\/]\s*|)(-?\d{4})(?![\d:])/.match(s)) && __month_index(m[1])
       h[:mon], h[:year] = __month_index(m[1]), m[2].to_i                        # "mmm[.]YYYY" (4 digits = year)
       s = m.pre_match + m.post_match
-    elsif (m = /([A-Za-z]{3,})\.?#{SEP__}*(\d{1,2})(?!\d)(?:st|nd|rd|th)?(?:[,\s]*#{SEP__}*(-?\d{1,4}))?/.match(s)) && __month_index(m[1])
+    elsif (m = /([A-Za-z]{3,})#{ABBR__}[-.,\s\/]*(\d{1,2})(?!\d)(?:st|nd|rd|th)?(?:#{YEAR__})?/.match(s)) && __month_index(m[1])
       h[:mon], h[:mday] = __month_index(m[1]), m[2].to_i                        # "mmm[.]DD[, YYYY]"
       h[:year] = m[3].to_i if m[3]
       s = m.pre_match + m.post_match
@@ -720,6 +731,15 @@ class Date
       h[:hour], h[:min] = m[1].to_i, m[2].to_i
       h[:sec] = m[3].to_i if m[3]
       h[:sec_fraction] = Rational(m[4].to_i, 10**m[4].length) if m[4]
+      s = m.pre_match + m.post_match
+    end
+
+    # asctime ("Thu Nov  9 23:12:40 1999") puts the year AFTER the clock, where
+    # the month branch could not take it without swallowing the hour.  A bare
+    # 4-digit run left over now is that year — but not one carrying a sign,
+    # which is a zone offset.
+    if h[:year].nil? && h[:mon] && (m = /(?<![-+\d:])(\d{4})(?![\d:])/.match(s))
+      h[:year] = m[1].to_i
       s = m.pre_match + m.post_match
     end
 

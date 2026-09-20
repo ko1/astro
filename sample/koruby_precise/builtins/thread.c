@@ -736,15 +736,14 @@ korb_thread_init_body(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
         return korb_raise_thread_error(c, slots, "already initialized thread");
     if (UNLIKELY(block == NULL))
         return korb_raise_thread_error(c, slots, "must be called with a block");
-    if (UNLIKELY(block == KORB_BLK_CPROC))
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Thread.new with a forwarded C proc");
     const uint32_t n = VALUE_SLICE_LEN(a);
     slots[0] = UNWRAP(korb_ary_new(c, slots, n ? n : 1));   /* args (rooted) */
     { VALUE_REF ar = VALUE_REF_AT(&slots[0]);
       for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, ar, VALUE_SLICE_GET(a, i))); }
     /* body を Proc に close する: 作成フレームが thread 実行前に死ぬのが普通
      * (n.times { Thread.new {…} }) なので、生の def_env は保持できない。 */
-    if (def_env == KORB_BLK_FWD) slots[1] = *captured_self;   /* &blk: 既に Proc */
+    /* &blk / &method(:m) / &sym: どちらも既に Proc が captured_self にある */
+    if (def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC) slots[1] = KORB_CSELF_VAL(captured_self);
     else slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
     t->args = slots[0];
     t->blk = slots[1];
