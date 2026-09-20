@@ -2224,7 +2224,7 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                     if (mode != 1) { descs[di].mid = rmid; descs[di].ivar = ivar; descs[di].is_writer = 0; di++; }
                     if (mode != 0) { descs[di].mid = wmid; descs[di].ivar = ivar; descs[di].is_writer = 1; di++; }
                 }
-                { NODE *_na = ALLOC_node_attr(-1 - tc->chain, descs, count); bake_add(tc, &_na->u.node_attr.self_off); return _na; }
+                { NODE *_na = ALLOC_node_attr(-1 - tc->chain, descs, count, kp_line(tc, (const pm_node_t *)cn)); bake_add(tc, &_na->u.node_attr.self_off); return _na; }
             }
         }
     }
@@ -4214,7 +4214,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                                       pm_string_length(&sn->unescaped));
             if (cid != 0) tc->eval_aliases[tc->eval_alias_cnt++] = (uint32_t)cid;
         }
-        NODE *na = ALLOC_node_alias(nm, om, -1 - tc->chain);   /* self (the class) at base[-1] */
+        NODE *na = ALLOC_node_alias(nm, om, -1 - tc->chain, kp_line(tc, node));   /* self (the class) at base[-1] */
         bake_add(tc, &na->u.node_alias.self_off);
         return na;
       }

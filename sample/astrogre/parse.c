@@ -748,6 +748,19 @@ static ire_node_t *parse_class(re_parser_t *q) {
 static ire_node_t *parse_quantifier_target(re_parser_t *q);
 static ire_node_t *parse_concat(re_parser_t *q);
 
+/* Encode one codepoint as UTF-8 (RFC 3629); returns the byte count (1..4).
+ * Callers have already rejected cp >= 0x110000. */
+static uint32_t re_utf8_encode(uint32_t cp, uint8_t *out)
+{
+    if (cp < 0x80)    { out[0] = (uint8_t)cp; return 1; }
+    if (cp < 0x800)   { out[0] = (uint8_t)(0xC0 | (cp >> 6));  out[1] = (uint8_t)(0x80 | (cp & 0x3F)); return 2; }
+    if (cp < 0x10000) { out[0] = (uint8_t)(0xE0 | (cp >> 12)); out[1] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+                        out[2] = (uint8_t)(0x80 | (cp & 0x3F)); return 3; }
+    out[0] = (uint8_t)(0xF0 | (cp >> 18)); out[1] = (uint8_t)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F)); out[3] = (uint8_t)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
 /* Append (name, idx) to the parser's names table.  `name` is duped. */
 static void
 re_register_name(re_parser_t *q, const uint8_t *name_start, size_t name_len, int idx)
@@ -1255,22 +1268,42 @@ static ire_node_t *parse_atom(re_parser_t *q) {
              * UTF-8 input without any class-side multibyte support. */
             uint32_t cp = 0;
             if (q->p < q->end && *q->p == '{') {
+                /* `\u{H...}` takes a SPACE-SEPARATED LIST of codepoints and matches
+                 * their concatenation (`/\u{30c6 30b9 30c8}/` is /テスト/). */
                 q->p++;
-                int n = 0;
-                while (q->p < q->end && *q->p != '}' && n < 8) {
-                    const int c = *q->p;
-                    int d;
-                    if (c >= '0' && c <= '9') d = c - '0';
-                    else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
-                    else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
-                    else { re_error(q, "invalid Unicode list"); return NULL; }
-                    cp = (cp << 4) | (uint32_t)d;
-                    q->p++;
-                    n++;
+                uint8_t seq[256];
+                uint32_t slen = 0;
+                for (;;) {
+                    while (q->p < q->end && (*q->p == ' ' || *q->p == '\t')) q->p++;
+                    if (q->p < q->end && *q->p == '}') break;
+                    int n = 0;
+                    cp = 0;
+                    while (q->p < q->end && n < 8) {
+                        const int c = *q->p;
+                        int d;
+                        if (c >= '0' && c <= '9') d = c - '0';
+                        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+                        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+                        else break;
+                        cp = (cp << 4) | (uint32_t)d;
+                        q->p++;
+                        n++;
+                    }
+                    if (n == 0) { re_error(q, "invalid Unicode list"); return NULL; }
+                    if (cp >= 0x110000) { re_error(q, "invalid Unicode range"); return NULL; }
+                    const uint32_t need = cp < 0x80 ? 1u : cp < 0x800 ? 2u : cp < 0x10000 ? 3u : 4u;
+                    if (slen + need > sizeof seq) { re_error(q, "invalid Unicode list"); return NULL; }
+                    slen += re_utf8_encode(cp, seq + slen);
                 }
                 if (q->p >= q->end || *q->p != '}') { re_error(q, "invalid Unicode list"); return NULL; }
-                if (n == 0) { re_error(q, "invalid Unicode list"); return NULL; }   /* \u{} with no digits */
+                if (slen == 0) { re_error(q, "invalid Unicode list"); return NULL; }   /* \u{} with no digits */
                 q->p++;
+                ire_node_t *ln = ire_new(IRE_LIT);
+                ln->u.lit.bytes = (char *)malloc(slen);
+                memcpy(ln->u.lit.bytes, seq, slen);
+                ln->u.lit.len = slen;
+                ln->u.lit.ci = q->case_insensitive;
+                return ln;
             } else {
                 if (q->p + 4 > q->end) { re_error(q, "invalid Unicode escape"); return NULL; }
                 for (int n = 0; n < 4; n++) {
