@@ -3867,6 +3867,27 @@ build_hash(struct kp_ctx *tc, struct pm_node **assocs, size_t n, uint32_t capa)
     return ALLOC_node_hash_set(acc, key, val);
 }
 
+/* The encoding a literal ends up in: prism marks a literal whose escapes force
+ * it off the file's encoding (`\u` above U+7F → UTF-8; `\xNN` above 0x7F in a
+ * US-ASCII source → binary).  The two flag bits are the same on every node kind. */
+static uint8_t
+kp_forced_enc(pm_node_flags_t flags, uint8_t src_enc)
+{
+    if (flags & PM_ENCODING_FLAGS_FORCED_UTF8_ENCODING)   return KORB_ENC_UTF8;
+    if (flags & PM_ENCODING_FLAGS_FORCED_BINARY_ENCODING) return KORB_ENC_BINARY;
+    return src_enc;
+}
+
+/* Same for a regexp literal, where the encoding rides on the modifier bits:
+ * a forced binary source reads as /n, a forced UTF-8 one as /u. */
+static uint32_t
+kp_re_forced_flags(pm_node_flags_t flags)
+{
+    if (flags & PM_REGULAR_EXPRESSION_FLAGS_FORCED_BINARY_ENCODING) return PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT;
+    if (flags & PM_REGULAR_EXPRESSION_FLAGS_FORCED_UTF8_ENCODING)   return PM_REGULAR_EXPRESSION_FLAGS_UTF_8;
+    return 0;
+}
+
 /* Interpolated string `"a#{x}b"` → inside-out concat chain (same shape as
  * build_array).  The accumulator is always a String; each part is appended
  * via its to_s inside node_dstr_concat. */
@@ -3878,7 +3899,7 @@ build_dstr_enc(struct kp_ctx *tc, struct pm_node **parts, size_t n, uint8_t seed
      * upward from there), and seeding UTF-8 would drag every one to UTF-8.
      * A regexp source is the exception — there an /u /e /s /n modifier decides,
      * so its caller passes UTF-8 and lets the modifier apply. */
-    if (n == 0) return seed_enc != KORB_ENC_UTF8 ? ALLOC_node_str_enc("", 0, seed_enc)
+    if (n == 0) return seed_enc != KORB_ENC_UTF8 ? ALLOC_node_str_enc("", 0, seed_enc, 0)
                                                  : ALLOC_node_str("", 0);
     NODE *acc, *part;
     uint32_t sc = kind_node_dstr_concat.slot_count;
@@ -4102,25 +4123,16 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_string_node_t *sn = (const pm_string_node_t *)node;
         uint32_t len;
         const char *bytes = kp_strdup_pm(&sn->unescaped, &len);
-        /* a \u escape makes the literal UTF-8 whatever the file's encoding is —
-         * but only when it actually produces a non-ASCII byte (CRuby keeps the
-         * source encoding for `"\u0061"`). */
-        uint8_t lenc = tc->src_enc;
-        if (lenc != KORB_ENC_UTF8) {
-            bool non_ascii = false;
-            for (uint32_t i = 0; i < len; i++) if ((unsigned char)bytes[i] >= 0x80) { non_ascii = true; break; }
-            if (non_ascii) {
-                const char *const src = (const char *)sn->base.location.start;
-                const size_t slen = (size_t)(sn->base.location.end - sn->base.location.start);
-                for (size_t i = 0; i + 1 < slen; i++)
-                    if (src[i] == '\\' && src[i + 1] == 'u') { lenc = KORB_ENC_UTF8; break; }
-            }
-        }
-        if (lenc != KORB_ENC_UTF8) return ALLOC_node_str_enc(bytes, len, lenc);
-        if (sn->base.flags & PM_STRING_FLAGS_FROZEN) return ALLOC_node_str_frozen(bytes, len);   /* # frozen_string_literal: true */
-        /* no magic comment either way → chilled (Ruby 3.4+); an explicit
-         * `frozen_string_literal: false` opts out. */
-        if (!tc->fsl_false) return ALLOC_node_str_chilled(bytes, len);
+        /* An escape can force the literal away from the file's encoding: `\uNNNN`
+         * above U+7F makes it UTF-8, and `\xNN` above 0x7F in a US-ASCII source
+         * makes it binary (prism already decided which). */
+        const uint8_t lenc = kp_forced_enc(sn->base.flags, tc->src_enc);
+        /* # frozen_string_literal: true → frozen; no comment either way →
+         * chilled (Ruby 3.4+); an explicit `false` opts out. */
+        const uint32_t mode = (sn->base.flags & PM_STRING_FLAGS_FROZEN) ? 2u : (tc->fsl_false ? 0u : 1u);
+        if (lenc != KORB_ENC_UTF8) return ALLOC_node_str_enc(bytes, len, lenc, mode);
+        if (mode == 2) return ALLOC_node_str_frozen(bytes, len);
+        if (mode == 1) return ALLOC_node_str_chilled(bytes, len);
         return ALLOC_node_str(bytes, len);
       }
       case PM_REGULAR_EXPRESSION_NODE: {   /* /pat/ → Regexp (matching via astrogre) */
@@ -4136,6 +4148,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                                            PM_REGULAR_EXPRESSION_FLAGS_EUC_JP |
                                            PM_REGULAR_EXPRESSION_FLAGS_WINDOWS_31J |
                                            PM_REGULAR_EXPRESSION_FLAGS_UTF_8);
+        flags |= kp_re_forced_flags(rn->base.flags);
         /* CRuby rejects a bad pattern while COMPILING, so a literal the engine
          * refuses is a SyntaxError, not a first-evaluation RegexpError. */
         if (tc->syntax_err == NULL) {
@@ -4155,7 +4168,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         size_t len = pm_string_length(&sn->unescaped);
         /* a symbol literal carries the file's encoding (CRuby); an ASCII-only
          * name still normalises to US-ASCII inside korb_intern_enc. */
-        uint32_t id = korb_intern_enc(tc->c->vm, (const char *)pm_string_source(&sn->unescaped), len, tc->src_enc);
+        uint32_t id = korb_intern_enc(tc->c->vm, (const char *)pm_string_source(&sn->unescaped), len,
+                                      (sn->base.flags & PM_SYMBOL_FLAGS_FORCED_US_ASCII_ENCODING)
+                                          ? KORB_ENC_USASCII : kp_forced_enc(sn->base.flags, tc->src_enc));
         return ALLOC_node_lit(ID2SYM(id));
       }
       case PM_ALIAS_GLOBAL_VARIABLE_NODE: {   /* alias $NEW $OLD — parse 時 alias (English.rb) */
@@ -4401,6 +4416,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_INTERPOLATED_STRING_NODE: {
         const pm_interpolated_string_node_t *in = (const pm_interpolated_string_node_t *)node;
+        /* the node's own flag bits are FROZEN/MUTABLE here, not forced encoding:
+         * each part carries its own, and the concat negotiates from there */
         return build_dstr(tc, in->parts.nodes, in->parts.size);
       }
       case PM_INTERPOLATED_SYMBOL_NODE: {     /* :"...#{ }..." → dstr.to_sym */
@@ -4420,6 +4437,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                                            PM_REGULAR_EXPRESSION_FLAGS_EUC_JP |
                                            PM_REGULAR_EXPRESSION_FLAGS_WINDOWS_31J |
                                            PM_REGULAR_EXPRESSION_FLAGS_UTF_8);
+        flags |= kp_re_forced_flags(in->base.flags);
         NODE *src;
         WITH_CHAIN(tc, kind_node_regexp_dyn.slot_count, (src = build_dstr_enc(tc, in->parts.nodes, in->parts.size, KORB_ENC_UTF8)));   /* the /u /e /s /n modifier decides, not the file */
         return ALLOC_node_regexp_dyn(flags, src);

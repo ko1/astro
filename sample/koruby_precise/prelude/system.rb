@@ -1470,6 +1470,12 @@ module RbConfig
   CONFIG["vendordir"] = "#{__pfx}/lib/ruby/vendor_ruby"
   CONFIG["vendorlibdir"] = "#{__pfx}/lib/ruby/vendor_ruby/#{__rv}"
   CONFIG["vendorarchdir"] = "#{__pfx}/lib/ruby/vendor_ruby/#{__rv}/#{__arch}"
+  # CRuby's default $LOAD_PATH tail (site → vendor → rubylibdir; koruby's own
+  # lib stands in for the last).  rubygems inserts an activated gem's lib at the
+  # index of sitelibdir and falls back to 0 — IN FRONT of -I — when that entry
+  # is missing, which shadowed a checked-out gem with its installed copy.
+  $LOAD_PATH.unshift(CONFIG["sitelibdir"], CONFIG["sitearchdir"],
+                     CONFIG["vendorlibdir"], CONFIG["vendorarchdir"])
   CONFIG["rubyhdrdir"] = "#{__pfx}/include/ruby-#{__rv}"
   CONFIG["rubyarchhdrdir"] = "#{__pfx}/include/ruby-#{__rv}/#{__arch}"
   CONFIG["sitehdrdir"] = "#{__pfx}/include/ruby-#{__rv}/site_ruby"
@@ -1486,6 +1492,7 @@ module RbConfig
   CONFIG["LIBRUBYARG_STATIC"] = "-lkoruby-static"
   CONFIG["LIBEXT"] = "a"
   CONFIG["OBJEXT"] = "o"
+  CONFIG["EXECUTABLE_EXTS"] = ""            # "" on unix; optparse splits it
   CONFIG["NULLCMD"] = ":"
   CONFIG["PATH_SEPARATOR"] = ":"
   CONFIG["SOEXT"] = "so"

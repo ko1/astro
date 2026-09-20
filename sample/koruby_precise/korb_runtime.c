@@ -1180,8 +1180,7 @@ korb_str_enc_combine(const struct korb_vm *vm, VALUE av, VALUE bv, uint32_t *out
     if (VAL2STR(bv)->len == 0) { *out = ea; return true; }                 /* an empty side yields (CRuby) */
     if (VAL2STR(av)->len == 0) { *out = (ca && ab) ? ea : eb; return true; }   /* CRuby: enc1 only if str2 is 7-bit */
     if (!ca || !cb) return false;
-    if (aa && ab) { *out = (ea == KORB_ENC_USASCII) ? eb : ea; return true; }
-    if (ab) { *out = ea; return true; }
+    if (ab) { *out = ea; return true; }   /* a 7-bit right side yields, US-ASCII included */
     if (aa) { *out = eb; return true; }
     return false;
 }
@@ -1194,8 +1193,7 @@ korb_str_enc_fold_raw(const struct korb_vm *vm, uint32_t *renc, bool *rasc, uint
 {
     if (eb == *renc) { *rasc = *rasc && ab; return true; }
     if (!korb_enc_ascii_compat_idx(vm, *renc) || !korb_enc_ascii_compat_idx(vm, eb)) return false;
-    if (*rasc && ab) { if (*renc == KORB_ENC_USASCII) *renc = eb; return true; }
-    if (ab) return true;                                   /* the 7-bit side yields */
+    if (ab) return true;                                   /* the 7-bit right side yields */
     if (*rasc) { *renc = eb; *rasc = false; return true; }
     return false;                                          /* both non-7-bit, different encodings */
 }
@@ -15309,6 +15307,17 @@ void korb_load_path_unshift(CTX *c, VALUE *slots, const char *dir)
     const VALUE lp = korb_const_get(c->vm, korb_intern(c->vm, "$LOAD_PATH", 10));
     if (!KORB_ARRAY_P(lp)) return;
     slots[0] = lp;
+    /* CRuby expands a -I path at startup (ruby_incpush_expand), so $LOAD_PATH
+     * entries are absolute whatever the process later chdir's to. */
+    char abs[4096], buf[4096];
+    if (dir[0] != '/') {
+        char cwd[4096];
+        if (getcwd(cwd, sizeof cwd)) {
+            snprintf(buf, sizeof buf, "%s/%s", cwd, dir);
+            korb_path_lexnorm(buf, abs, sizeof abs);
+            dir = abs;
+        }
+    }
     const RESULT sr = korb_str_new(c, slots + 1, dir, (uint32_t)strlen(dir));
     if (UNLIKELY(sr.state != KORB_NORMAL)) return;
     slots[1] = sr.value;

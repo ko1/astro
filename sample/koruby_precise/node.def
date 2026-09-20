@@ -79,14 +79,20 @@ node_str_frozen(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len)
     return RESULT_OK(korb_fstr_get(c, slots, bytes, len, KORB_ENC_UTF8));
 }
 
-// Same, for a source file whose `# encoding:` magic comment is not UTF-8: the
-// literal carries the file's encoding tag (`enc` is a KORB_ENC_* index).
+// Same, for a literal whose encoding is not UTF-8: the file's `# encoding:`
+// magic comment, or a `\xNN`/`\uNNNN` escape that forced binary/UTF-8.
+// `enc` is a KORB_ENC_* index; `mode` is 0 mutable / 1 chilled / 2 frozen.
 NODE_DEF
-node_str_enc(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len, uint32_t enc)
+node_str_enc(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len, uint32_t enc, uint32_t mode)
 {
     (void)n;
+    if (mode == 2) return RESULT_OK(korb_fstr_get(c, slots, bytes, len, enc));
     const RESULT r = korb_str_new(c, slots, bytes, len);
-    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, enc);
+    if (LIKELY(r.state == KORB_NORMAL)) {
+        KORB_STR_ENC_SET(r.value, enc);
+        if (mode == 1)
+            ((AroObjectHeader *)(uintptr_t)r.value)->flags |= (KORB_FL_FROZEN | KORB_FL_CHILLED);
+    }
     return r;
 }
 

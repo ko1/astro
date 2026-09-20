@@ -870,6 +870,8 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 if (qn == 4) { out[olen++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4)); out[olen++] = (unsigned char)((quad[1] << 4) | (quad[2] >> 2)); out[olen++] = (unsigned char)((quad[2] << 6) | quad[3]); qn = 0; }
             }
             if (strict && !bad && qn != 0 && !padded) bad = true;   /* unpadded tail */
+            /* a partial unit's unused low bits must be zero ("AB==" / "AAB=") */
+            if (strict && !bad && ((qn == 2 && (quad[1] & 0x0F)) || (qn == 3 && (quad[2] & 0x03)))) bad = true;
             if (bad) { free(out); return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid base64"); }
             if (qn >= 2) { out[olen++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4)); if (qn >= 3) out[olen++] = (unsigned char)((quad[1] << 4) | (quad[2] >> 2)); }
             KorbString *r = korb_str_alloc(c, slots + 3, olen);   /* may move slots; out is libc-stable */
