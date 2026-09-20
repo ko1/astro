@@ -15052,6 +15052,32 @@ static void korb_loaded_features_pop(CTX *c, VALUE *slots, const char *path)
     }
 }
 
+/* Same file through a different route?  Two $LOAD_PATH entries can reach one
+ * file through a symlink (a fallback-stdlib tree, an rbenv shim) and CRuby
+ * loads it once.  $LOADED_FEATURES stays the authority — only the entries whose
+ * BASENAME matches are resolved, so this costs a realpath() on a handful of
+ * candidates and a program that edits the array still forces a reload. */
+static bool korb_feature_real_loaded_p(CTX *c, const char *const path, const char *const realkey)
+{
+    const char *const base = strrchr(path, '/');
+    if (base == NULL) return false;
+    const VALUE lf = korb_const_get(c->vm, korb_intern(c->vm, "$LOADED_FEATURES", 16));
+    if (!KORB_ARRAY_P(lf)) return false;
+    const size_t blen = strlen(base);
+    const KorbArray *const a = VAL2ARY(lf);
+    for (uint32_t i = 0; i < a->len; i++) {
+        const VALUE e = korb_items_data(a->items)[i];
+        if (!KORB_STRING_P(e) || VAL2STR(e)->len < blen || VAL2STR(e)->len >= 4096) continue;
+        char buf[4096], real[4096];
+        const uint32_t n = VAL2STR(e)->len;
+        memcpy(buf, korb_strbuf_data(VAL2STR(e)->buf), n); buf[n] = '\0';
+        if (memcmp(buf + n - blen, base, blen) != 0) continue;   /* different file name */
+        if (strcmp(buf, path) == 0) continue;                    /* the plain check already answered */
+        if (realpath(buf, real) != NULL && strcmp(real, realkey) == 0) return true;
+    }
+    return false;
+}
+
 /* Has `path` already been required?  $LOADED_FEATURES is the authority when it
  * exists — Ruby code (mspec's load-path fixtures, `require`-guards) manipulates
  * that array and expects the answer to follow; the C-side list only covers the
@@ -15223,8 +15249,7 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
      * keep the path the require actually used, as CRuby reports them. */
     char realbuf[4096];
     const char *const realkey = (realpath(abspath, realbuf) != NULL) ? realbuf : abspath;
-    if (dedup && strcmp(realkey, abspath) != 0 && korb_feature_loaded_p(c, realkey))
-        { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
+    if (dedup && korb_feature_real_loaded_p(c, abspath, realkey)) { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
     size_t got = 0;
     char *buf = korb_file_slurp(abspath, &got);
     if (!buf) return korb_raise_load_error(c, slots, abspath);

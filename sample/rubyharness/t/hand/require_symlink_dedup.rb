@@ -5,6 +5,7 @@ base = File.join(Dir.tmpdir, "korb_sl_#{Process.pid}")
 Dir.mkdir(base); Dir.mkdir(File.join(base, "real")); Dir.mkdir(File.join(base, "link"))
 File.write(File.join(base, "real", "sl_m.rb"), "$sl_n = ($sl_n || 0) + 1\n")
 File.symlink(File.join(base, "real", "sl_m.rb"), File.join(base, "link", "sl_m.rb"))
+# real → link の順
 $LOAD_PATH.unshift File.join(base, "link")
 $LOAD_PATH.unshift File.join(base, "real")
 p require("sl_m")
@@ -12,6 +13,17 @@ $LOAD_PATH.shift
 p require("sl_m")
 p $sl_n
 p $LOADED_FEATURES.grep(/sl_m/).map { |f| f.sub(base, "") }
+# link → real の順 (別ファイル名で仕切り直す)
+File.write(File.join(base, "real", "sl_n.rb"), "$sl_m = ($sl_m || 0) + 1\n")
+File.symlink(File.join(base, "real", "sl_n.rb"), File.join(base, "link", "sl_n.rb"))
+$LOAD_PATH.unshift File.join(base, "link")
+p require("sl_n")
+$LOAD_PATH.shift
+p require("sl_n")
+p $sl_m
+p $LOADED_FEATURES.grep(/sl_n/).map { |f| f.sub(base, "") }
+File.unlink(File.join(base, "link", "sl_n.rb"))
+File.unlink(File.join(base, "real", "sl_n.rb"))
 File.unlink(File.join(base, "link", "sl_m.rb"))
 File.unlink(File.join(base, "real", "sl_m.rb"))
 Dir.rmdir(File.join(base, "link")); Dir.rmdir(File.join(base, "real")); Dir.rmdir(base)
