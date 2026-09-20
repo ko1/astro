@@ -42,7 +42,10 @@ class Module
 
   # True iff self is a singleton class.  attached_object succeeds only for a
   # singleton class (raises TypeError otherwise), so use it as the predicate.
+  # It is a Class method, so a plain Module answers false outright (calling it
+  # there would be a NameError, not a TypeError).
   def singleton_class?
+    return false unless is_a?(Class)
     attached_object
     true
   rescue TypeError

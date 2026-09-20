@@ -28,3 +28,11 @@ p SumZ.ancestors.size == SumZ.ancestors.uniq.size
 p SumZ::Sub.ancestors.size == SumZ::Sub.ancestors.uniq.size
 p SumZ::Sub.new.freeze.frozen?
 p SumZ::Sub.instance_method(:freeze).super_method.owner
+# Module#singleton_class? — attached_object は Class メソッドなので、
+# 素の Module では NameError ではなく false を返す (pry の safe_send が
+# Module.instance_method(:singleton_class?) を bind する)。
+m = Module.new
+p m.singleton_class?
+p Module.instance_method(:singleton_class?).bind(m).call
+c = Class.new
+p c.singleton_class.singleton_class?, c.singleton_class?, Integer.singleton_class?
