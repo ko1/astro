@@ -507,7 +507,29 @@ static RESULT korb_str_case_wide(CTX *c, VALUE *sp, VALUE_REF self, int op, int 
 }
 
 /* transform-into-new-string helper (op: 0=upcase 1=downcase 2=capitalize 3=swapcase, else reverse) */
+/* CRuby refuses to case-map a string whose bytes are not well formed in its own
+ * encoding ("input string invalid").  ASCII-8BIT is exempt: every byte is legal
+ * there and only the ASCII range is mapped. */
+static bool korb_str_case_invalid(CTX *c, VALUE v)
+{
+    const uint32_t enc = KORB_STR_ENC(v);
+    /* Only a MULTI-byte encoding can be broken in a way CRuby refuses: in a
+     * single-byte one (ASCII-8BIT, US-ASCII, Latin-1) every byte stands on its
+     * own, and an out-of-repertoire byte is simply left alone. */
+    if (KORB_ENC_SB(c->vm, enc)) return false;
+    const KorbString *const s = VAL2STR(v);
+    if (enc >= KORB_ENC_OTHER_MIN) return !korb_enc_bytes_valid(c->vm, enc, korb_strbuf_data(s->buf), s->len);
+    return !korb_str_utf8_valid(s);
+}
 static RESULT korb_str_transform(CTX *c, VALUE *slots, VALUE_REF self, int op, int mode) {
+    if (op >= 0 && op <= 3 && UNLIKELY(korb_str_case_invalid(c, VALUE_REF_GET(self))))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "input string invalid");
+    /* ASCII-8BIT / US-ASCII hold no multi-byte characters and no accented
+     * repertoire: CRuby maps only the ASCII range and leaves high bytes alone. */
+    if (op >= 0 && op <= 3 && mode == 0) {
+        const uint32_t e_ = KORB_STR_ENC(VALUE_REF_GET(self));
+        if (e_ == KORB_ENC_BINARY || e_ == KORB_ENC_USASCII) mode = 1;
+    }
     uint32_t len = SELF_STR->len;
     KorbString *r = korb_str_alloc(c, slots, len);
     const KorbString *s = SELF_STR;   /* re-read after alloc (GC may have moved it) */
@@ -972,6 +994,14 @@ static RESULT korb_m_str_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * returns self if changed, else nil (Ruby bang convention) — reverse! always self. */
 static RESULT korb_str_transform_bang(CTX *c, VALUE *slots, VALUE_REF self, int op, int mode) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));     /* bang mutators check frozen upfront */
+    if (op >= 0 && op <= 3 && UNLIKELY(korb_str_case_invalid(c, VALUE_REF_GET(self))))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "input string invalid");
+    /* ASCII-8BIT / US-ASCII hold no multi-byte characters and no accented
+     * repertoire: CRuby maps only the ASCII range and leaves high bytes alone. */
+    if (op >= 0 && op <= 3 && mode == 0) {
+        const uint32_t e_ = KORB_STR_ENC(VALUE_REF_GET(self));
+        if (e_ == KORB_ENC_BINARY || e_ == KORB_ENC_USASCII) mode = 1;
+    }
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t len = s->len; bool changed = false;
     if (op == 4) {                                     /* reverse! (UTF-8 char-aware) */

@@ -777,9 +777,6 @@ kp_fwd_find(struct kp_ctx *tc, uint32_t *depth_out, int32_t *slot_out, int32_t *
         if (f->fwd_slot >= 0) {
             *depth_out = d; *slot_out = f->fwd_slot; *blk_out = f->fwd_blk_slot;
             kp_fwd_owner = f;
-            /* both slots must survive into the closed env if a block escapes */
-            const uint32_t need = (uint32_t)(f->fwd_slot > f->fwd_blk_slot ? f->fwd_slot : f->fwd_blk_slot) + 1u;
-            if (d > 0 && need > f->cap_min) f->cap_min = need;
             return true;
         }
         if (f->method_mid || f->class_name_sym || f->anon_class_body) return false;
@@ -2945,6 +2942,12 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         rest_slot = (int32_t)alloc_synth_local(tc);
         tc->frame->fwd_slot = rest_slot;
         tc->frame->fwd_blk_slot = (int32_t)alloc_synth_local(tc);
+        /* Raise the capture floor HERE, not where a `...` is first read: the
+         * blocks in this body share ONE materialized env, and the first one to
+         * close it fixes its size.  A block written before the one that
+         * forwards would otherwise seal a shorter env and the forwarding read
+         * would run past its end. */
+        tc->frame->cap_min = (uint32_t)tc->frame->fwd_blk_slot + 1u;
     }
     /* anonymous `&` → a synth local the body can't name; a bare `&` at a call
      * site inside the body forwards it. */

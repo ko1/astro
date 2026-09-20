@@ -83,3 +83,33 @@ def escaping(...)
 end
 p escaping(5, s: 6).call
 p(escaping(7) { :esc }.call)
+
+# 同じメソッドに複数のブロックがあり、`...` を使うのが後ろのほうのケース。
+# ブロックは 1 つの env を共有するので、先に閉じたほうがサイズを決めてしまう
+# → 捕捉下限は def の時点で立てる必要がある (rack の Builder#use は
+#    @map があるときに先へもう 1 つ proc を積む)。
+def two_procs(mw, ...)
+  m = 1
+  pr1 = proc { |x| [x, m] }
+  pr2 = proc { |x| mw.new(x, ...) }
+  [pr1, pr2]
+end
+class Mw2
+  def initialize(*a, **k, &b); @a = a; @k = k; end
+  def to_a; [@a, @k]; end
+end
+a, b = two_procs(Mw2, 7, r: 8)
+p a.call(:A)
+p b.call(:B).to_a
+
+def cond_procs(mw, ...)
+  if true
+    mapping = 5
+    pr1 = proc { |x| [x, mapping] }
+  end
+  pr2 = proc { |x| mw.new(x, ...) }
+  [pr1, pr2]
+end
+c, d = cond_procs(Mw2, 9)
+p c.call(:C)
+p d.call(:D).to_a
