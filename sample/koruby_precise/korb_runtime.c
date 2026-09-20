@@ -12357,6 +12357,7 @@ static void korb_blop_wake_fd(struct korb_vm *vm, int fd);
 #include "builtins/thread.c"
 #include "builtins/arithseq.c"
 #include "builtins/prism_bridge.c"
+#include "builtins/yaml_bridge.c"
 #include "builtins/string_ext.c"
 korb_register_core_methods(CTX *c)
 {
@@ -13487,6 +13488,7 @@ korb_register_core_methods(CTX *c)
     /* Exception#backtrace_locations is Ruby (prelude/exception.rb); this answers
      * only the Location Array a `raise obj, msg, locs` stored verbatim. */
     korb_def_cmethod(c, KORB_C_EXCEPTION, "__backtrace_locations_raw", korb_m_exc_backtrace_locations, 0);
+    korb_def_cmethod(c, KORB_C_EXCEPTION, "__set_message", korb_m_exc_set_message, 1);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "message", korb_m_exc_message_via_to_s, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "to_s", korb_m_exc_message, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "__raw_mesg", korb_m_exc_raw_mesg, 0);
@@ -17772,6 +17774,10 @@ korb_ctx_new(void)
     korb_builtin_define(c, "srand", korb_bi_srand, -1);
     korb_builtin_define(c, "__binread", korb_bi_binread, 1);
     korb_builtin_define(c, "__prism_dump", korb_bi_prism_dump, -1);   /* lib/prism/prism.rb が Prism の API を組む */
+#ifdef KORB_HAVE_YAML
+    korb_builtin_define(c, "__yaml_parse", korb_bi_yaml_parse, 1);    /* lib/psych/parser.rb / emitter.rb が使う */
+    korb_builtin_define(c, "__yaml_emit",  korb_bi_yaml_emit, -1);
+#endif
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);
     korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);

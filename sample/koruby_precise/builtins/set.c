@@ -1031,6 +1031,12 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
           case KORB_C_STRING: inst = korb_str_new(c, slots + 1, "", 0); break;
           case KORB_C_ARRAY:  inst = korb_ary_new(c, slots + 1, 0); break;
           case KORB_C_HASH:   inst = korb_hash_new(c, slots + 1, 0); break;
+          case KORB_C_EXCEPTION: {                   /* Marshal / psych build exceptions this way */
+            KorbException *const e = korb_alloc(c, slots + 1, sizeof(KorbException), KORB_OBJ_EXCEPTION);
+            e->etype = (uint32_t)KORB_E_RUNTIME;     /* exc_class below is what #class / rescue read */
+            inst = RESULT_OK((VALUE)e);
+            break;
+          }
           case KORB_C_RANGE:  slots[1] = KORB_NIL;   /* nil..nil until #initialize; not frozen yet */
                               inst = korb_range_new(c, slots + 2, VALUE_REF_AT(&slots[1]), KORB_NIL, 0);
                               if (inst.state == KORB_NORMAL && inst.value != KORB_NIL)
@@ -1041,7 +1047,9 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (inst.value != KORB_NIL) {
             if (UNLIKELY(inst.state != KORB_NORMAL)) return inst;
             slots[1] = inst.value;
-            korb_klass_override_set(c, slots[1], slots[0]);
+            /* an exception names its class in its own field, not the side table */
+            if (base == KORB_C_EXCEPTION) ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->exc_class, slots[0]);
+            else korb_klass_override_set(c, slots[1], slots[0]);
             return RESULT_OK(slots[1]);
         }
     }
@@ -2663,6 +2671,16 @@ static RESULT korb_m_exc_raw_mesg(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     (void)c; (void)slots; (void)a;
     const VALUE v = VALUE_REF_GET(self);
     return RESULT_OK(KORB_EXC_P(v) ? VAL2EXC(v)->msg : KORB_NIL);
+}
+/* Exception#__set_message — 生成済みの例外にメッセージだけ入れる。CRuby の
+ * 例外はメッセージを (@ の付かない) ivar "mesg" に持つので psych の
+ * build_exception が rb_iv_set で直接書ける。koruby は専用フィールドなので
+ * 同じことをする入口をここに出す (private)。 */
+static RESULT korb_m_exc_set_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    KorbException *const e = VAL2EXC(VALUE_REF_GET(self));
+    ARO_STORE(c, e, &e->msg, VALUE_SLICE_GET(a, 0));
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;

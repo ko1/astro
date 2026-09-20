@@ -121,12 +121,15 @@ KORUBY_CPPFLAGS = -I. -I./prism/include -I$(RUNTIME) \
 # build without it just leaves `require "zlib"` a LoadError.
 ZLIB_OK   := $(shell $(CC) -E -include zlib.h -xc /dev/null >/dev/null 2>&1 && echo yes)
 ZLIB_FLAGS := $(if $(ZLIB_OK),-DKORB_HAVE_ZLIB -lz,)
+# libyaml is optional in the same way: without it `require "yaml"` is a LoadError.
+YAML_OK   := $(shell $(CC) -E -include yaml.h -xc /dev/null >/dev/null 2>&1 && echo yes)
+YAML_FLAGS := $(if $(YAML_OK),-DKORB_HAVE_YAML -lyaml,)
 
 # $@ = output binary; $(1) = extra flags/sources
 define KORUBY_LINK
 	$(CC) $(KORUBY_CPPFLAGS) $(optflags) -flto=auto -ggdb3 -Wall -Wextra \
 	    -Wno-unused-parameter -rdynamic -fno-plt \
-	    -o $@ $(SRCS) $(1) $(GC_COMMON_SRC) $(GC_SRC) ./prism/build/libprism.a -ldl -lm $(BIGNUM_LIBS) -lcrypt $(ZLIB_FLAGS)
+	    -o $@ $(SRCS) $(1) $(GC_COMMON_SRC) $(GC_SRC) ./prism/build/libprism.a -ldl -lm $(BIGNUM_LIBS) -lcrypt $(ZLIB_FLAGS) $(YAML_FLAGS)
 endef
 
 koruby_precise: $(KORUBY_DEPS)

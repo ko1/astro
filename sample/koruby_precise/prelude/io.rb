@@ -98,8 +98,14 @@ class IO
     spec = @__io_modestr
     if spec && (i = spec.index(":"))
       e, n = spec[(i + 1)..-1].split(":", 2)
+      # "r:bom|utf-8": the BOM prefix only asks that a leading BOM be honoured
+      bom = e.is_a?(String) && e.downcase.start_with?("bom|")
+      e = e[4..-1] if bom
       ext = Encoding.find(e) if e && !e.empty? && e != "-"
       int = Encoding.find(n) if n && !n.empty? && n != "-"
+      if bom && (name = __io_bom_encoding)
+        ext = Encoding.find(name)                 # the BOM wins over the named encoding (CRuby)
+      end
     end
     ext = Encoding::BINARY if ext.nil? && __io_binmode_raw?
     # the defaults as they were when the stream was created (captured in C)

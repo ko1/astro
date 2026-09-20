@@ -299,6 +299,10 @@ static RESULT korb_m_obj_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, n));           /* (frees syms below; minor leak only on OOM) */
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < n; i++) {
+        /* a name without a leading "@" is an internal slot (koruby stores IO's
+         * fd / mode there), which CRuby also keeps out of #instance_variables */
+        const char *const nm = korb_sym_name(c->vm, syms[i]);
+        if (nm == NULL || nm[0] != '@') continue;
         slots[1] = ID2SYM(syms[i]);                             /* syms is libc memory, stable across GC */
         CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
     }
