@@ -944,11 +944,15 @@ void korb_frame_audit_ep(const VALUE *base, uint32_t mid, const char *where);
 #define KORB_AUDIT_EP(base, mid) ((void)0)
 #endif
 
-/* True if frame `base` owns an open env in its EP cell (a clean even KorbEnv
- * whose loc is this frame) → its return must close it. */
+/* True if frame `base` owns an OPEN env in its EP cell (a clean even KorbEnv
+ * whose loc is this frame) → its return must close it.  `closed` matters: a
+ * later frame can land on the same slots address while holding an env that was
+ * closed at ITS defining frame's return (a define_method body's EP is the proc's
+ * env, whose loc is that long-gone frame).  Re-closing copies the new frame's
+ * locals over the captured ones — the values silently change under the closure. */
 static inline bool korb_frame_escaped(const VALUE *base) {
     const VALUE pv = korb_ep_get(base);
-    return pv != 0 && (pv & 7u) == 0 && VAL2ENV(pv)->loc == base;
+    return pv != 0 && (pv & 7u) == 0 && VAL2ENV(pv)->loc == base && !VAL2ENV(pv)->closed;
 }
 
 static inline __attribute__((always_inline, no_stack_protector)) RESULT
