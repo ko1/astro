@@ -554,6 +554,7 @@ RESULT korb_cvar_check_overtaken(CTX *c, VALUE *slots, VALUE front, VALUE top, u
 void korb_cvar_class_name(CTX *c, VALUE cls, char *out, size_t outsz);
 struct korb_method *korb_super_find(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_def_class);
 VALUE korb_cref_resolve(struct korb_vm *vm, const uint32_t *chain, uint32_t chain_len, uint32_t owner_name);
+bool korb_const_object_fallback_p(const struct korb_vm *vm, VALUE cref);   /* a Class whose chain misses Object gets no top-level fallback */
 
 /* mutation guard: raise FrozenError (returning from the caller) if `v` is a
  * frozen heap object.  Used at the top of in-place mutators. */

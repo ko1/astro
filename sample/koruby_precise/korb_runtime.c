@@ -3991,6 +3991,19 @@ korb_cref_resolve(struct korb_vm *vm, const uint32_t *chain, uint32_t chain_len,
     return cref;
 }
 
+/* CRuby's rb_const_search_from tail: after the cref's own ancestry a MODULE
+ * retries the search in Object, a CLASS does not.  So a `class X < BasicObject`
+ * body sees NO top-level constants — builder's XmlBase relies on a bare
+ * `Exception` being a NameError, and catches it to pick its fallback path. */
+bool
+korb_const_object_fallback_p(const struct korb_vm *vm, const VALUE cref)
+{
+    if (!KORB_CLASS_P(cref) || VAL2CLASS(cref)->is_module) return true;
+    const VALUE objc = korb_builtin_class_obj(vm, KORB_C_OBJECT);
+    for (VALUE k = cref; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass)
+        if (k == objc) return true;
+    return false;
+}
 /* Search a constant through `cref`'s ancestry (self + modules, then up the
  * superclass chain) in Ruby's constant-lookup order.  UINT32_MAX if absent. */
 uint32_t
@@ -9742,6 +9755,11 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     struct korb_method *m = cc->m;
     if (UNLIKELY(cc->serial != vm->method_serial)) {
         m = korb_method_lookup(vm, mid);
+        /* Kernel's global functions are Object's PRIVATE methods, so a receiver
+         * whose chain skips Object must miss into #method_missing instead —
+         * builder's XmlBase (< BasicObject) turns `raise` / `p` into XML tags
+         * that way, and relies on `raise` NOT raising. */
+        if (UNLIKELY(m != NULL && !korb_kernel_reachable_p(c, korb_dispatch_class(c, self)))) m = NULL;
         if (UNLIKELY(m == NULL)) {
             /* `main` (klass=nil): no global def by this name — fall back to
              * Object/Kernel methods (to_s, inspect, class, freeze, ...) so the
@@ -9982,7 +10000,11 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
             }
         } else {                                         /* main / top-level global function */
             if (LIKELY(cc->serial == vm->method_serial && cc->m != NULL)) m = cc->m;
-            else { m = korb_method_lookup(vm, mid); if (m) korb_cc_fill(cc, korb_ic_serial(vm), m, UINT32_MAX); }
+            else {
+                m = korb_method_lookup(vm, mid);
+                if (m && !korb_kernel_reachable_p(c, korb_dispatch_class(c, self))) m = NULL;   /* BasicObject gets no Kernel globals */
+                if (m) korb_cc_fill(cc, korb_ic_serial(vm), m, UINT32_MAX);
+            }
         }
     }
     if (LIKELY(m != NULL && m->kind == KORB_METHOD_ISEQ)) {

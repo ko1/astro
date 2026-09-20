@@ -5908,6 +5908,27 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         }
         if (m_mid == 0) return kp_unsupported(tc, node, "super outside a method body");
         uint32_t line = kp_line(tc, node);
+        /* `def m(...)` has no named params to walk: everything the caller passed
+         * is already in the synth rest local, so a bare `super` forwards exactly
+         * what `super(...)` would. */
+        if (mf->fwd_slot >= 0) {
+            uint32_t fdep; int32_t fslot, fblk;
+            if (kp_fwd_find(tc, &fdep, &fslot, &fblk)) {
+                NODE *farr;
+                WITH_CHAIN(tc, 1, (farr = kp_fwd_args(tc, fdep, fslot)));
+                if (fn->block) {
+                    NODE *bentry = kp_block_entry(tc, (const pm_node_t *)fn->block);
+                    if (!bentry) return kp_unsupported(tc, node, "super with a non-literal block");
+                    const int32_t soff = -1 - tc->chain - 1, dco = -4 - tc->chain - 1, deo = -tc->chain - 1;
+                    NODE *_sb = ALLOC_node_super_blk(m_mid, line, soff, dco, bentry, deo, farr);
+                    bake_add(tc, &_sb->u.node_super_blk.self_off);
+                    bake_add(tc, &_sb->u.node_super_blk.dc_off);
+                    bake_add(tc, &_sb->u.node_super_blk.def_env_off);
+                    return _sb;
+                }
+                return emit_super_fwd(tc, m_mid, line, farr);
+            }
+        }
         const uint32_t np = mf->method_params;
         const int32_t rest_slot = mf->method_rest_slot;
         const uint32_t pc = mf->method_post_cnt;

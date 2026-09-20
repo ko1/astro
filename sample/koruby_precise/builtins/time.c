@@ -747,9 +747,13 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (pos_off || has_in) {
         struct tm tm; memset(&tm, 0, sizeof tm);
         korb_sword_t comp[6] = { 1970, 1, 1, 0, 0, 0 };
+        double subsec = 0.0;                                 /* Float / Rational seconds keep their fraction */
         for (uint32_t i = 0; i < 6 && i < n; i++) {
             const VALUE cv = VALUE_SLICE_GET(a, i);
             if (FIXNUM_P(cv)) comp[i] = FIX2LONG(cv);
+            else if (i == 5 && (KORB_FLOAT_P(cv) || KORB_RATIONAL_P(cv))) {
+                double sv = 0; if (korb_num_to_d(cv, &sv)) { comp[5] = (korb_sword_t)sv; subsec = sv - (double)comp[5]; }
+            }
             else if (KORB_FLOAT_P(cv)) comp[i] = (korb_sword_t)korb_float_val(cv);
         }
         if (comp[1] < 1 || comp[1] > 12 || comp[2] < 1 || comp[2] > 31 ||
@@ -766,7 +770,9 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         CHECK(korb_time_zone_arg(c, slots, pos_off ? VALUE_SLICE_GET(a, 6) : in_zv, VALUE_REF_GET(self), wall, true, &off, &utcish));
         double offd = (double)off;
         if (slots[1] != KORB_NIL) korb_num_to_d(slots[1], &offd);      /* exact fractional offset */
-        slots[2] = UNWRAP(korb_time_make(c, slots + 2, VALUE_REF_GET(self), wall - offd, utcish));
+        long nsec = (long)(subsec * 1e9 + 0.5);
+        if (nsec < 0) nsec = 0; else if (nsec > 999999999) nsec = 999999999;
+        slots[2] = UNWRAP(korb_time_make_ns(c, slots + 2, VALUE_REF_GET(self), wall - offd, nsec, utcish));
         return korb_time_set_zone(c, slots + 3, VALUE_REF_AT(&slots[2]), off,
                                   VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]));
     }

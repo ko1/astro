@@ -1725,7 +1725,8 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * top-level fallback: firing its const_missing runs the require.  rspec
          * registers RSpec::Core::DidYouMean this way, and a bare `DidYouMean`
          * inside RSpec::Core reached the top-level module instead. */
-        if (idx == UINT32_MAX) idx = korb_const_index_owned(vm, name_sym, KORB_NIL);   /* then top-level / builtin (owner nil) */
+        if (idx == UINT32_MAX && korb_const_object_fallback_p(vm, cref))
+            idx = korb_const_index_owned(vm, name_sym, KORB_NIL);   /* then top-level / builtin (owner nil) */
         /* An eval / `load(f, true)` cref answers LAST for a read that already has
          * a named namespace: `MAIN = self` written at a wrapper's top level and
          * read from a `module X` in the same file.  It must not come earlier —
@@ -1740,7 +1741,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * module `include`d at top level visible unqualified.  There is NO flat
          * by-name fallback: answering from an unrelated namespace would make
          * `does not search the lexical scope of the caller` pass when it must raise. */
-        if (idx == UINT32_MAX) {
+        if (idx == UINT32_MAX && korb_const_object_fallback_p(vm, cref)) {
             const VALUE objc = korb_const_get(vm, vm->class_name[KORB_C_OBJECT]);
             if (KORB_CLASS_P(objc)) idx = korb_const_in_ancestry(vm, objc, name_sym);
         }
@@ -1767,10 +1768,12 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * `Enumerator::Chain` answer a user's bare `Chain` just because it was
          * registered first.  The flat fallback stays: koruby still exposes
          * nested constants unqualified. */
-        if (idx == UINT32_MAX) idx = korb_const_index_owned(vm, name_sym, KORB_NIL);
-        if (idx == UINT32_MAX) {                       /* Object's ancestry (a module included at top level) */
-            const VALUE objc = korb_const_get(vm, vm->class_name[KORB_C_OBJECT]);
-            if (KORB_CLASS_P(objc)) idx = korb_const_in_ancestry(vm, objc, name_sym);
+        if (korb_const_object_fallback_p(vm, cref)) {
+            if (idx == UINT32_MAX) idx = korb_const_index_owned(vm, name_sym, KORB_NIL);
+            if (idx == UINT32_MAX) {                   /* Object's ancestry (a module included at top level) */
+                const VALUE objc = korb_const_get(vm, vm->class_name[KORB_C_OBJECT]);
+                if (KORB_CLASS_P(objc)) idx = korb_const_in_ancestry(vm, objc, name_sym);
+            }
         }
     }
     if (UNLIKELY(idx == UINT32_MAX)) {
