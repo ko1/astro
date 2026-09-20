@@ -116,7 +116,11 @@ class Module
       inspect
     end
     msg = self.equal?(Object) ? "uninitialized constant #{name}" : "uninitialized constant #{label}::#{name}"
-    raise NameError.new(msg, name, receiver: self)   # NameError#name / #receiver reflect the missing constant
+    # CRuby's default const_missing pops its own frame (rb_mod_const_missing), so
+    # the NameError is reported at the REFERENCE, not inside const_missing.
+    e = NameError.new(msg, name, receiver: self)   # NameError#name / #receiver reflect the missing constant
+    e.set_backtrace(caller)
+    raise e
   end
 
   # ---- autoload -------------------------------------------------------------

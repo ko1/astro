@@ -1637,7 +1637,7 @@ node_errinfo(CTX *c, NODE *n, VALUE *slots)
 // is append-only so a name's index is permanent; cache it (idx+1, 0 = empty) and
 // re-derive const_vals[idx] each read (sees reassignment + GC forwarding).
 NODE_DEF
-node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_name@sym, int32_t self_off, int32_t dc_off, struct korb_constcache *cache@ref)
+node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_name@sym, int32_t self_off, int32_t dc_off, uint32_t line, int32_t fb_off, struct korb_constcache *cache@ref)
 {
     (void)n;
     struct korb_vm *const vm = c->vm;
@@ -1700,7 +1700,8 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
                 if (!KORB_CLASS_P(o) || !korb_autoload_registered_p(c, o, name_sym)) continue;
                 slots[0] = o;                                  /* rooted across the require */
                 slots[1] = ID2SYM(name_sym);
-                const RESULT cm = korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), 0, 1);
+                korb_flink_stage_at(c, &slots[fb_off], line);
+                const RESULT cm = korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), line, 1);
                 /* The file may define the constant in a DIFFERENT lexical scope
                  * than the one that registered the autoload — const_missing then
                  * raises NameError for ITS module while the name IS now visible
@@ -1776,7 +1777,8 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
             if (KORB_CLASS_P(owner_cls)) {
                 slots[0] = owner_cls;
                 slots[1] = ID2SYM(name_sym);
-                return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), 0, 1);
+                korb_flink_stage_at(c, &slots[fb_off], line);
+                return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), line, 1);
             }
             RESULT nr = korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s::%s", korb_sym_name(vm, owner_name), korb_sym_name(vm, name_sym));
             if (LIKELY(KORB_EXC_P(nr.value))) {          /* NameError#name = the missing constant symbol */
@@ -1793,7 +1795,8 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
             if (KORB_CLASS_P(objc)) {
                 slots[0] = objc;
                 slots[1] = ID2SYM(name_sym);
-                return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), 0, 1);
+                korb_flink_stage_at(c, &slots[fb_off], line);
+                return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), line, 1);
             }
         }
         RESULT nr = korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, name_sym));
@@ -1931,7 +1934,7 @@ node_defined_super_outer(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, int32_
 // its ancestors (never in the parent's lexical surroundings, and never by bare
 // name).  A miss goes through const_missing, which is what fires an autoload.
 NODE_DEF @noinline
-node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, NODE *parent)
+node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, uint32_t line, int32_t fb_off, NODE *parent)
 {
     (void)n;
     const RESULT pr = EVAL_ARG(c, parent);
@@ -1978,7 +1981,8 @@ node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, NODE *parent)
         return RESULT_OK(vm->const_vals[idx]);
     }
     slots[1] = ID2SYM(name);                              /* <owner>.const_missing(:name) — autoload's entry point */
-    return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), 0, 1);
+    korb_flink_stage_at(c, &slots[fb_off], line);         /* the hook's `caller` must start at the reference */
+    return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), line, 1);
 }
 
 // defined?(A::B::C) — a nested (or otherwise non-bare) parent: evaluate the parent
