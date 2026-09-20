@@ -2361,8 +2361,9 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
                 } else {
                     return ALLOC_node_re_greedy_dot(n->u.rep.min, n->u.rep.max, tail, ml);
                 }
-            } else if (L->enc != AGRE_ENC_UTF8) {
-                /* Lazy UTF-8 uncommon; fall back to the generic path. */
+            } else if (L->enc == AGRE_ENC_UTF8) {
+                return ALLOC_node_re_lazy_dot_utf8(n->u.rep.min, n->u.rep.max, tail, ml);
+            } else {
                 return ALLOC_node_re_lazy_dot(n->u.rep.min, n->u.rep.max, tail, ml);
             }
         }
@@ -2561,6 +2562,28 @@ re_parser_free_names(re_parser_t *q)
 /* Public entry points                                                 */
 /* ------------------------------------------------------------------ */
 
+/* A pattern whose first thing to match is an unbounded multiline `.` run
+ * (`.*` / `.*?`, min 0) can never succeed at start s+1 after failing at s:
+ * that leading run already covers everything from s onwards.  So the
+ * for-each-start-position search loop only has to try ONE position.
+ * Without this, `(.*?\r\n)\r\n` over a 1 MB buffer is quadratic — rack's
+ * multipart parser hung on exactly that. */
+static bool ire_leading_any_run(const ire_node_t *n)
+{
+    while (n) {
+        switch (n->kind) {
+          case IRE_CONCAT: if (n->u.cat.n == 0) return false; n = n->u.cat.xs[0]; continue;
+          case IRE_GROUP:   n = n->u.group.body; continue;
+          case IRE_NCGROUP: n = n->u.nc.body;    continue;
+          case IRE_REP:
+            return n->u.rep.min == 0 && n->u.rep.max == -1 &&
+                   n->u.rep.body && n->u.rep.body->kind == IRE_DOT && n->u.rep.body->u.dot.ml;
+          default: return false;
+        }
+    }
+    return false;
+}
+
 /* Message from the most recent failed astrogre_parse.  The library does not
  * print it: `are` reports it to the user, and an embedder (koruby's Regexp)
  * turns it into its own exception message. */
@@ -2705,6 +2728,7 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     NODE *root;
     ac_t *ac_handle = NULL;       /* set when AC scan is selected */
     uint32_t a = anchored_bos ? 1 : 0;
+    if (!a && ire_leading_any_run(ir)) a = 2;   /* leading `.*` → one start position is enough */
 
     /* Try AC build up-front when the leading edge is alt-of-literals
      * that won't fit in the 8-entry byteset (or the literals share
