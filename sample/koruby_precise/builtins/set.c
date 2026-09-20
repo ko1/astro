@@ -1265,6 +1265,10 @@ static RESULT korb_m_class_ancestors(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return RESULT_OK(VALUE_REF_GET(out));
 }
 static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask);  /* fwd */
+/* Same, for the Module#*instance_methods family: with inherit=false those report
+ * ONLY the receiver's own table, even when the receiver is a singleton class
+ * (`K.singleton_class.instance_methods(false)` is [:a], not all of Class's). */
+static RESULT korb_collect_imethods_own(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask);  /* fwd */
 /* Binding#__lvars_own — only the names of the binding site's OWN scope (baked
  * depth 0), not the enclosing ones #local_variables also reports.  The implicit
  * (numbered / it) parameter API is scope-exact in CRuby and needs this. */
@@ -1284,7 +1288,7 @@ static RESULT korb_m_bind_lvars_own(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_m_class_instance_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     /* public + protected (not private); walks prepended/included modules + the
      * superclass chain via the shared collector. */
-    return korb_collect_methods_from(c, slots, VALUE_REF_GET(self), a, (1u << 0) | (1u << 2));
+    return korb_collect_imethods_own(c, slots, VALUE_REF_GET(self), a, (1u << 0) | (1u << 2));
 }
 /* push the visibility-matching method names of `klass_ref`'s class into `result`
  * (with dedup).  vis_mask bit v set ⇒ include methods of visibility v.  Re-reads
@@ -1337,7 +1341,14 @@ static RESULT korb_append_names(CTX *c, VALUE *slots, VALUE_REF result, const ch
 }
 static const char *const korb_kernel_priv_funcs[] = { "loop", "catch", "throw", "lambda", "proc", "block_given?", "iterator?" };
 static const char *const korb_kernel_pub_funcs[]  = { "loop", "catch", "throw", "lambda", "proc" };
+static RESULT korb_collect_methods_ex(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask, bool own_only);
 static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask) {
+    return korb_collect_methods_ex(c, slots, start_class, a, vis_mask, false);
+}
+static RESULT korb_collect_imethods_own(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask) {
+    return korb_collect_methods_ex(c, slots, start_class, a, vis_mask, true);
+}
+static RESULT korb_collect_methods_ex(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask, const bool own_only) {
     const bool inherit = VALUE_SLICE_LEN(a) < 1 || KORB_TRUTHY(VALUE_SLICE_GET(a, 0));   /* nil counts as false, like CRuby's RTEST */
     const uint32_t priv_mids[] = {                                  /* method names that are always reported private */
         c->vm->mid_initialize,
@@ -1394,7 +1405,7 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
                 CHECK(korb_push_vis_methods(c, slots + 4, result, blocked, VALUE_REF_AT(&slots[2]), vis_mask, priv_mids, priv_n));
             }
         }
-        if (!inherit && !is_sing) break;                           /* false: stop after the first non-singleton class */
+        if (!inherit && (own_only || !is_sing)) break;              /* false: stop after the first non-singleton class */
         slots[1] = VAL2CLASS(slots[1])->superclass;
     }
     /* Kernel-private builtins (puts/require/... in the global table) are private
@@ -1491,9 +1502,9 @@ static RESULT korb_m_obj_singleton_methods(CTX *c, VALUE *slots, VALUE_REF self,
     return RESULT_OK(VALUE_REF_GET(result));
 }
 /* Module#*_instance_methods: walk the module/class itself (not a singleton). */
-static RESULT korb_m_class_public_imethods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_collect_methods_from(c, slots, VALUE_REF_GET(self), a, (1u<<0)); }
-static RESULT korb_m_class_private_imethods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_collect_methods_from(c, slots, VALUE_REF_GET(self), a, (1u<<1)); }
-static RESULT korb_m_class_protected_imethods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_collect_methods_from(c, slots, VALUE_REF_GET(self), a, (1u<<2)); }
+static RESULT korb_m_class_public_imethods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_collect_imethods_own(c, slots, VALUE_REF_GET(self), a, (1u<<0)); }
+static RESULT korb_m_class_private_imethods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_collect_imethods_own(c, slots, VALUE_REF_GET(self), a, (1u<<1)); }
+static RESULT korb_m_class_protected_imethods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_collect_imethods_own(c, slots, VALUE_REF_GET(self), a, (1u<<2)); }
 /* true if `sub` is `sup` or has `sup` among its ancestors (class chain + modules). */
 static bool korb_class_is_descendant(VALUE sub, VALUE sup) {
     VALUE cls = sub;
