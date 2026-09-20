@@ -4839,32 +4839,6 @@ korb_fire_method_added(CTX *c, VALUE *slots, VALUE definee, uint32_t mid)
 
 /* lookup mid up the superclass chain; *out_def (if non-NULL) gets the class
  * that defines the found method (for `super`). */
-/* Search ONE class/module's local MRO segment — its prepended modules (reverse,
- * recursively so a prepended module's own prepends/includes join the chain),
- * then its own methods, then its included modules (reverse, recursively).  Does
- * NOT follow `superclass` (the caller walks that).  `depth` bounds pathological
- * cycles. */
-static struct korb_method *korb_mro_seg_find(VALUE klass, uint32_t mid, VALUE *out_def, int depth) {
-    if (!KORB_CLASS_P(klass) || depth > 64) return NULL;
-    KorbClass *const k = VAL2CLASS(klass);
-    if (k->prepended != KORB_NIL) {                          /* prepended: most-recently-prepended first */
-        const KorbArray *pre = VAL2ARY(k->prepended);
-        for (int32_t j = (int32_t)pre->len - 1; j >= 0; j--) {
-            struct korb_method *m = korb_mro_seg_find(korb_items_data(pre->items)[j], mid, out_def, depth + 1);
-            if (m) return m;
-        }
-    }
-    for (uint32_t i = 0; i < k->method_cnt; i++)
-        if (k->methods[i]->mid == mid) { if (out_def) *out_def = klass; return k->methods[i]; }
-    if (k->included != KORB_NIL) {                           /* included: most-recently-included first */
-        const KorbArray *inc = VAL2ARY(k->included);
-        for (int32_t j = (int32_t)inc->len - 1; j >= 0; j--) {
-            struct korb_method *m = korb_mro_seg_find(korb_items_data(inc->items)[j], mid, out_def, depth + 1);
-            if (m) return m;
-        }
-    }
-    return NULL;
-}
 /* The entry `cls` defines itself, or NULL.  Unlike korb_class_method_slot this
  * only looks: that one clears rfn/rbfn on the slot it returns, so using it to
  * touch an already-registered method unhooks the function. */
@@ -4877,13 +4851,53 @@ korb_class_own_method(const VALUE cls, const uint32_t mid)
         if (k->methods[i]->mid == mid) return k->methods[i];
     return NULL;
 }
+static struct korb_method *korb_mro_seg_find(VALUE klass, uint32_t mid, VALUE *out_def, int depth) {
+    if (!KORB_CLASS_P(klass) || depth > 64) return NULL;
+    KorbClass *const k = VAL2CLASS(klass);
+    if (k->prepended != KORB_NIL) {
+        const KorbArray *pre = VAL2ARY(k->prepended);
+        for (int32_t j = (int32_t)pre->len - 1; j >= 0; j--) {
+            struct korb_method *m = korb_mro_seg_find(korb_items_data(pre->items)[j], mid, out_def, depth + 1);
+            if (m) return m;
+        }
+    }
+    for (uint32_t i = 0; i < k->method_cnt; i++)
+        if (k->methods[i]->mid == mid) { if (out_def) *out_def = klass; return k->methods[i]; }
+    if (k->included != KORB_NIL) {
+        const KorbArray *inc = VAL2ARY(k->included);
+        for (int32_t j = (int32_t)inc->len - 1; j >= 0; j--) {
+            struct korb_method *m = korb_mro_seg_find(korb_items_data(inc->items)[j], mid, out_def, depth + 1);
+            if (m) return m;
+        }
+    }
+    return NULL;
+}
+static int korb_linearize_mro(VALUE klass, VALUE *buf, int max);   /* fwd */
+/* `include` keeps the DEEPEST copy of a module that is already in the chain, so
+ * where one lands at two depths the segment DFS answers from the shallow one
+ * (rake re-includes FileUtils above Rake::DSL).  Rare enough to pay for the full
+ * deduped linearization only on a chain that has been flagged. */
+static struct korb_method *
+korb_class_find_dedup(VALUE klass, uint32_t mid, VALUE *out_def)
+{
+    VALUE mro[256];
+    const int n = korb_linearize_mro(klass, mro, (int)(sizeof mro / sizeof mro[0]));
+    for (int i = 0; i < n; i++) {
+        struct korb_method *const m = korb_class_own_method(mro[i], mid);
+        if (m) {
+            if (out_def) *out_def = mro[i];
+            return m->kind == KORB_METHOD_UNDEF ? NULL : m;
+        }
+    }
+    return NULL;
+}
 static struct korb_method *
 korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def)
 {
-    while (KORB_CLASS_P(klass)) {
-        struct korb_method *m = korb_mro_seg_find(klass, mid, out_def, 0);
+    for (VALUE k = klass; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
+        if (UNLIKELY(VAL2CLASS(k)->mro_dup)) return korb_class_find_dedup(klass, mid, out_def);
+        struct korb_method *m = korb_mro_seg_find(k, mid, out_def, 0);
         if (m) return m->kind == KORB_METHOD_UNDEF ? NULL : m;   /* undef tombstone: stop, report missing */
-        klass = VAL2CLASS(klass)->superclass;
     }
     return NULL;
 }
@@ -5702,6 +5716,19 @@ korb_include_collect(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE 
 static RESULT
 korb_include_apply(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE mod, bool prepend)
 {
+    /* Flag the target when this include puts a module that is already in the
+     * chain at a second depth — a `prepend` is exempt (CRuby inserts a fresh
+     * iclass for it).  Neither helper allocates, so no re-read is needed. */
+    if (!prepend && KORB_CLASS_P(mod) && !VAL2CLASS(VALUE_REF_GET(cref))->mro_dup) {
+        bool dup = VAL2CLASS(mod)->mro_dup;
+        if (!dup) {
+            VALUE mbuf[256];
+            const int mn = korb_linearize_mro(mod, mbuf, (int)(sizeof mbuf / sizeof mbuf[0]));
+            for (int i = 0; i < mn && !dup; i++)
+                dup = korb_class_has_ancestor(VALUE_REF_GET(cref), mbuf[i]);
+        }
+        if (dup) VAL2CLASS(VALUE_REF_GET(cref))->mro_dup = 1;
+    }
     const uint32_t before = VAL2ARY(VALUE_REF_GET(dst))->len;
     int32_t at = -1;
     for (uint32_t i = 0; i < before; i++)

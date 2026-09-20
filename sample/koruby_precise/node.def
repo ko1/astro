@@ -1721,20 +1721,21 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
         }
         if (idx == UINT32_MAX)                                                  /* then the innermost class's ancestry (MRO order) */
             idx = korb_const_in_ancestry(vm, cref, name_sym);
-        /* An eval / `load(f, true)` cref is the OUTERMOST lexical scope of the
-         * code it runs, so it answers after the baked chain and before top level
-         * (`MAIN = self` at the wrapper's top level, read from a `module X` in
-         * the same file).  It must NOT come first: a method merely REACHED from
-         * the eval keeps its own chain. */
-        if (idx == UINT32_MAX && UNLIKELY(c->eval_cref != KORB_NIL)) {
-            idx = korb_const_index_owned(vm, name_sym, c->eval_cref);
-            if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, c->eval_cref, name_sym);
-        }
         /* A pending `autoload` on a lexically enclosing module answers BEFORE the
          * top-level fallback: firing its const_missing runs the require.  rspec
          * registers RSpec::Core::DidYouMean this way, and a bare `DidYouMean`
          * inside RSpec::Core reached the top-level module instead. */
         if (idx == UINT32_MAX) idx = korb_const_index_owned(vm, name_sym, KORB_NIL);   /* then top-level / builtin (owner nil) */
+        /* An eval / `load(f, true)` cref answers LAST for a read that already has
+         * a named namespace: `MAIN = self` written at a wrapper's top level and
+         * read from a `module X` in the same file.  It must not come earlier —
+         * a method merely REACHED from the eval has its own chain, and a
+         * `module Rake` the wrapper happens to hold would shadow the real one
+         * for every Rake::DSL method the loaded file calls. */
+        if (idx == UINT32_MAX && UNLIKELY(c->eval_cref != KORB_NIL)) {
+            idx = korb_const_index_owned(vm, name_sym, c->eval_cref);
+            if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, c->eval_cref, name_sym);
+        }
         /* …and finally Object's own ancestry, which is what makes a constant of a
          * module `include`d at top level visible unqualified.  There is NO flat
          * by-name fallback: answering from an unrelated namespace would make
