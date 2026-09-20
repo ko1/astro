@@ -301,6 +301,7 @@ RESULT korb_fire_def_hook(CTX *c, VALUE *slots, VALUE mod, uint32_t mid, const c
 void   korb_class_undef_slot(struct korb_vm *vm, KorbClass *k, VALUE cls, uint32_t mid);
 /* parse-time descriptor list for node_attr (one entry per generated method). */
 struct korb_attr_desc { uint32_t mid; uint32_t ivar; uint8_t is_writer; };
+bool korb_attr_overridden_p(CTX *c, VALUE klass, uint32_t mid);
 /* `class Name ... end`: create/find the class + run its body (self = class). */
 RESULT korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int is_module, VALUE enclosing, const VALUE *caller_base, uint32_t caller_line);
 RESULT korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclosing, const VALUE *caller_base, uint32_t caller_line);

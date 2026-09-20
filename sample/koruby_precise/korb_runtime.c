@@ -7485,6 +7485,17 @@ korb_subclass_op_p(CTX *const c, const VALUE l, const uint32_t mid)
     return um != NULL && (um->kind == KORB_METHOD_ISEQ || um->kind == KORB_METHOD_DM);
 }
 
+/* True when `attr_reader` / `attr_writer` / `attr_accessor` is defined in RUBY on
+ * the class's singleton (or a module it extends) — then node_attr must dispatch
+ * instead of defining the accessors itself. */
+bool korb_attr_overridden_p(CTX *c, VALUE klass, uint32_t mid)
+{
+    const VALUE sing = korb_klass_override_get(c->vm, klass);
+    if (!KORB_CLASS_P(sing)) return false;
+    const struct korb_method *const m = korb_class_find_method(sing, mid, NULL);
+    return m != NULL && (m->kind == KORB_METHOD_ISEQ || m->kind == KORB_METHOD_DM);
+}
+
 RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, bool *handled) {
     /* The last rung of the arithmetic ladders: every builtin case for this
      * operator has already been tried and declined, so a method the receiver's

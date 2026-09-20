@@ -1484,7 +1484,7 @@ node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint64_t flink
 // `descs` is a parse-time immortal array (count entries); @noinline (pointer
 // operand isn't bakeable).
 NODE_DEF @noinline
-node_attr(CTX *c, NODE *n, VALUE *slots, int32_t self_off, void *descs, uint32_t count, uint32_t line)
+node_attr(CTX *c, NODE *n, VALUE *slots, int32_t self_off, void *descs, uint32_t count, uint32_t line, uint32_t attr_mid@sym, void *names, uint32_t nnames)
 {
     VALUE cls = slots[self_off];
     if (UNLIKELY(!KORB_CLASS_P(cls)))
@@ -1492,6 +1492,14 @@ node_attr(CTX *c, NODE *n, VALUE *slots, int32_t self_off, void *descs, uint32_t
     { RESULT fr = korb_check_def_frozen(c, slots, cls); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* attr_* in a frozen class → FrozenError */
     const struct korb_attr_desc *d = (const struct korb_attr_desc *)descs;
     (void)n;
+    /* a class (or a module it extends) may define attr_reader itself — then the
+     * call is an ordinary send, not this node (equatable collects the names that
+     * way).  Only a RUBY-level definition counts: the builtin is this node. */
+    if (UNLIKELY(korb_attr_overridden_p(c, cls, attr_mid))) {
+        slots[0] = cls;
+        for (uint32_t i = 0; i < nnames; i++) slots[1 + i] = ID2SYM(((const uint32_t *)names)[i]);
+        return korb_send(c, slots + 1 + nnames, attr_mid, line, nnames);
+    }
     for (uint32_t i = 0; i < count; i++) {
         /* re-read self each round: the method_added hook is Ruby code and may move the class */
         korb_class_def_attr(c, slots[self_off], d[i].mid, d[i].ivar, d[i].is_writer);
@@ -1500,7 +1508,11 @@ node_attr(CTX *c, NODE *n, VALUE *slots, int32_t self_off, void *descs, uint32_t
         korb_flink_stage_at(c, &slots[self_off + 1], line);
         CHECK(korb_fire_method_added(c, slots, slots[self_off], d[i].mid));
     }
-    return RESULT_OK(KORB_NIL);
+    /* the defined names, in definition order (Ruby 3.0+): `private attr_reader :x` */
+    slots[0] = UNWRAP(korb_ary_new(c, slots, count));
+    { VALUE_REF r = VALUE_REF_AT(&slots[0]);
+      for (uint32_t i = 0; i < count; i++) CHECK(korb_ary_push_val(c, slots + 1, r, ID2SYM(d[i].mid))); }
+    return RESULT_OK(slots[0]);
 }
 
 // `super` — `self_off`/`dc_off` read the frame's self + def_class cells; mid is

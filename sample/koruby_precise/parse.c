@@ -2248,7 +2248,18 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                     if (mode != 1) { descs[di].mid = rmid; descs[di].ivar = ivar; descs[di].is_writer = 0; di++; }
                     if (mode != 0) { descs[di].mid = wmid; descs[di].ivar = ivar; descs[di].is_writer = 1; di++; }
                 }
-                { NODE *_na = ALLOC_node_attr(-1 - tc->chain, descs, count, kp_line(tc, (const pm_node_t *)cn)); bake_add(tc, &_na->u.node_attr.self_off); return _na; }
+                /* the ORIGINAL argument names, so a class that overrides
+                 * attr_reader/writer/accessor can still be dispatched */
+                uint32_t *names = malloc(sizeof(uint32_t) * argc);
+                if (!names) abort();
+                for (size_t i = 0; i < argc; i++) {
+                    const pm_symbol_node_t *sn2 = (const pm_symbol_node_t *)args->arguments.nodes[i];
+                    names[i] = korb_intern(tc->c->vm, (const char *)pm_string_source(&sn2->unescaped),
+                                           (uint32_t)pm_string_length(&sn2->unescaped));
+                }
+                { NODE *_na = ALLOC_node_attr(-1 - tc->chain, descs, count, kp_line(tc, (const pm_node_t *)cn),
+                                              kp_intern_cid(tc, cn->name), names, (uint32_t)argc);
+                  bake_add(tc, &_na->u.node_attr.self_off); return _na; }
             }
         }
     }
