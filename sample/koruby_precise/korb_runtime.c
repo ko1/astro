@@ -4908,6 +4908,20 @@ korb_mcache_find(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def)
     return m;
 }
 
+/* Kernel's global functions (puts / p / raise / format / ...) are Object's
+ * PRIVATE methods, so a BasicObject subclass must not get them — builder's
+ * XmlBase needs `xml.p` to reach its #method_missing.  A klass-less receiver
+ * (top-level `main`) keeps the old behaviour: that is where they live. */
+static bool
+korb_kernel_reachable_p(CTX *c, const VALUE start_cls)
+{
+    if (!KORB_CLASS_P(start_cls)) return true;
+    const VALUE objc = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    for (VALUE k = start_cls; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass)
+        if (k == objc) return true;
+    return false;
+}
+
 /* Cached "does the receiver's class define its own send/__send__/public_send?"
  * — the reflective forms live in no method table, so a hit is a real user
  * definition.  Uncached, this walk scanned Object/Kernel's whole table on every
@@ -11997,7 +12011,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
          * private Object methods in CRuby, so an implicit-self call reaches them
          * from ANY object (not just the toplevel main).  Try the global table
          * before method_missing. */
-        {
+        if (korb_kernel_reachable_p(c, start_cls)) {   /* BasicObject gets no Kernel globals */
             struct korb_method *const gm = korb_method_lookup(vm, mid);
             if (gm) return korb_dispatch_method(c, slots, gm, mid, line, argc, KORB_NIL, block, def_env, captured_self, true);
         }

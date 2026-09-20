@@ -1369,6 +1369,8 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
     const VALUE kernel_mod = korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
     const bool is_kernel = KORB_CLASS_P(start_class) && start_class == kernel_mod;
     const bool is_bare_module = KORB_CLASS_P(start_class) && VAL2CLASS(start_class)->is_module && !is_kernel;
+    const bool is_basicobj = KORB_CLASS_P(start_class) &&
+                             start_class == korb_const_get(c->vm, korb_intern(c->vm, "BasicObject", 11));
     slots[1] = start_class;                                         /* MRO cursor (rooted) — set before any alloc */
     slots[0] = UNWRAP(korb_ary_new(c, slots + 2, 8));              /* result (rooted at slots[0]) */
     const VALUE_REF result = VALUE_REF_AT(&slots[0]);
@@ -1411,6 +1413,14 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
         }
         if (is_kernel)   /* Kernel's own private module_function block-methods */
             CHECK(korb_append_names(c, slots + 3, result, korb_kernel_priv_funcs, (uint32_t)(sizeof korb_kernel_priv_funcs / sizeof *korb_kernel_priv_funcs)));
+    }
+    /* __send__ is a dispatch special case with no table entry, but every object
+     * has it (BasicObject owns it in CRuby).  send / public_send stay out: they
+     * would land in `Delegator.public_api`'s complement and make DelegateClass
+     * generate a #send that forwards to the not-yet-set delegate. */
+    if ((vis_mask & (1u << 0)) && (is_basicobj || (inherit && !is_bare_module))) {
+        static const char *const bo_send[] = { "__send__" };
+        CHECK(korb_append_names(c, slots + 3, result, bo_send, 1));
     }
     return RESULT_OK(VALUE_REF_GET(result));
 }
