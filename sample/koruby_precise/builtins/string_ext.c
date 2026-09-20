@@ -1348,8 +1348,16 @@ static RESULT korb_m_str_ord(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     const KorbString *s = VAL2STR(v);
     if (UNLIKELY(s->len == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "empty string");
     const uint32_t enc = KORB_STR_ENC(v);
-    if (UNLIKELY(KORB_ENC_NEEDS_HOOK(c->vm, enc)) && !korb_str_bytes_ascii(v)) return korb_str_enc_notimpl(c, slots, v);
     const unsigned char *d = (const unsigned char *)korb_strbuf_data(s->buf);
+    /* A multi-byte encoding koruby can step: CRuby reports the character's own
+     * bytes read big-endian for the legacy charsets (EUC-JP "あ" is 0xA4A2), and
+     * the Unicode scalar for the UTF-16/32 families. */
+    if (UNLIKELY(KORB_ENC_NEEDS_HOOK(c->vm, enc)) && korb_enc_char_steppable(c->vm, enc)) {
+        uint32_t cl = 0;
+        const uint32_t cp = korb_enc_codepoint_at(c->vm, enc, d, 0, s->len, &cl);
+        return RESULT_OK(LONG2FIX((korb_sword_t)cp));
+    }
+    if (UNLIKELY(KORB_ENC_NEEDS_HOOK(c->vm, enc)) && !korb_str_bytes_ascii(v)) return korb_str_enc_notimpl(c, slots, v);
     if (UNLIKELY(enc == KORB_ENC_USASCII && d[0] >= 0x80)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in US-ASCII");
     if (KORB_ENC_SB(c->vm, enc)) return RESULT_OK(LONG2FIX(d[0]));   /* single-byte: the first byte */
     if (UNLIKELY(enc == KORB_ENC_UTF8 && korb_utf8_seq_len(d, 0, s->len) == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
