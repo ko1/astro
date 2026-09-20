@@ -1084,7 +1084,10 @@ static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     }
     const VALUE owner = slots[0];                          /* the resolved defining class */
     if (owner != KORB_NIL && KORB_CLASS_P(owner)) {        /* invoke the FIXED method from its owner */
-        struct korb_method *const entry = korb_class_find_method(owner, mid, NULL);
+        /* the entry PINNED at capture, not a fresh name lookup: tilt captures a
+         * compiled template method and removes it right away, then binds it */
+        struct korb_method *const entry = m->entry ? (struct korb_method *)(uintptr_t)m->entry
+                                                   : korb_class_find_method(owner, mid, NULL);
         /* the callee window is built here, so its header (identity / link / EP)
          * is staged here too, as Method#call does: korb_invoke_method fills the
          * identity and relies on a zeroed EP */
