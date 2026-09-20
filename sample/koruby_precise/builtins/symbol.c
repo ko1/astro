@@ -406,7 +406,9 @@ static RESULT korb_m_meth_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     const VALUE owner = m->owner;
     if (UNLIKELY(owner != KORB_NIL && KORB_CLASS_P(owner))) {   /* invoke the PINNED method from its owner (not virtual) */
-        struct korb_method *const entry = korb_class_find_method(owner, mid, NULL);
+        /* the entry pinned at capture, not a fresh lookup: a redefinition of the
+         * same name leaves this Method on the definition it was made from (CRuby) */
+        struct korb_method *const entry = m->entry ? m->entry : korb_class_find_method(owner, mid, NULL);
         if (LIKELY(entry != NULL && entry->kind == KORB_METHOD_ISEQ)) {
             /* korb_invoke_method fills identity + self, so stage the other two
              * header cells (link, EP) below the receiver ourselves. */
@@ -1049,10 +1051,12 @@ static RESULT korb_m_meth_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         char onm[192]; korb_class_qname_into(c, slots[0], onm, sizeof onm);   /* the owner's NAME, not "Class" */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be an instance of %s", onm);
     }
+    struct korb_method *const pinned = VAL2METH(VALUE_REF_GET(self))->entry;   /* carry the unbound's definition over */
     RESULT r = korb_method_new(c, slots + 2, slots[1], mid);       /* bound: recv = obj */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     ARO_STORE(c, VAL2METH(r.value), (VALUE *)(uintptr_t)&VAL2METH(r.value)->owner, slots[0]);   /* fix the dispatch to the unbound's owner */
     korb_meth_pin(c, r.value);
+    if (pinned != NULL) VAL2METH(r.value)->entry = pinned;         /* the bind must not re-resolve a redefined name */
     return r;
 }
 /* UnboundMethod#bind_call(obj, *args) → bind then call. */

@@ -879,6 +879,8 @@ struct korb_method {
     int32_t  rest_slot;      /* ISEQ: *rest local slot (collects surplus positionals), -1 none */
     uint32_t locals_cnt;     /* ISEQ: frame size (params first, +2 if uses_block) */
     uint32_t attr_ivar;      /* ATTR_R/W: the @ivar symbol id */
+    uint8_t  pinned;         /* a live Method/UnboundMethod was made from this entry: a redefinition
+                              * must leave it intact (korb_class_method_slot orphans it instead) */
     uint8_t  retired;        /* a top-level `def` this entry shadowed is gone: a bare-name call must
                               * fall through to Object/Kernel.  The entry STAYS in vm->methods so the
                               * GC keeps forwarding its owner / dm_proc / refine_set — live frames and
@@ -969,6 +971,10 @@ struct korb_vm {
     /* global function table (no-receiver calls: puts, p, user `def foo`) */
     struct korb_method **methods;
     uint32_t method_cnt, method_capa;
+    /* entries a redefinition pushed out of a class table while a Method still
+     * pins them: immortal, and their VALUE fields stay roots (AROH_VISIT_ROOTS) */
+    struct korb_method **orphans;
+    uint32_t orphan_cnt, orphan_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
     /* bumped whenever constant *resolution* could change: a new (name, owner)
      * entry, a remove_const, or an include/prepend/extend that alters an
@@ -1442,6 +1448,12 @@ struct CTX_struct {
      * frame's are inside the range already). */                                  \
     for (VALUE *_p = (c)->slots - 4; _p < _aro_top; _p++) {                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                            \
+    }                                                                        \
+    for (uint32_t _oi = 0; _oi < (c)->vm->orphan_cnt; _oi++) {               \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->orphans[_oi]->owner);  \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->orphans[_oi]->super_owner); \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->orphans[_oi]->dm_proc); \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->orphans[_oi]->refine_set); \
     }                                                                        \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->super_new_skip);         \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->kernel_mod);            \

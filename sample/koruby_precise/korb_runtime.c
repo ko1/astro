@@ -3368,12 +3368,15 @@ static void korb_meth_pin(CTX *const c, const VALUE mv) {
         KORB_CLASS_P(from) ? korb_class_find_method(from, m->mid, &def) : NULL;
     if (km == NULL) {
         m->entry = korb_method_lookup(c->vm, m->mid);   /* global fn table (top-level def, `p`) */
+        if (m->entry) m->entry->pinned = 1;             /* a redefinition must not overwrite it */
         /* `new` on a class has no table entry (korb_send_impl special-cases it):
          * remember that this Method IS the default allocator. */
         if (m->entry == NULL && m->mid == c->vm->mid_new && KORB_CLASS_P(m->recv)) m->default_new = 1;
         return;
     }
     m->entry = km;
+    km->pinned = 1;
+    if (getenv("KORB_PIN_DEBUG")) fprintf(stderr, "[pin] mid=%s km=%p\n", korb_sym_name(c->vm, m->mid), (void*)km);                                     /* a redefinition orphans this entry instead */
     if (m->owner == KORB_NIL && KORB_CLASS_P(def))
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->owner, def);
 }
@@ -4087,12 +4090,42 @@ korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
  * calloc'd immortal objects (never moved/freed) so a frame- or cache-held
  * korb_method* stays valid across method-table growth; the table itself is a
  * realloc'able libc array of entry pointers. */
+/* Park a method entry a live Method pinned but the table no longer holds.  It
+ * stays libc-immortal (a Method's `entry` and a frame's base[-4] point at it)
+ * and its VALUE fields stay GC roots through this list. */
+static void korb_vm_orphan_method(struct korb_vm *vm, struct korb_method *m)
+{
+    if (vm->orphan_cnt == vm->orphan_capa) {
+        const uint32_t nc = vm->orphan_capa ? vm->orphan_capa * 2 : 8;
+        vm->orphans = realloc(vm->orphans, sizeof(struct korb_method *) * nc);
+        if (!vm->orphans) { fprintf(stderr, "koruby_precise: oom (orphan methods)\n"); abort(); }
+        vm->orphan_capa = nc;
+    }
+    vm->orphans[vm->orphan_cnt++] = m;
+}
+
 static struct korb_method *
 korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mid)
 {
     struct korb_method *m = NULL;
+    uint32_t slot = 0;
     for (uint32_t i = 0; i < k->method_cnt; i++)
-        if (k->methods[i]->mid == mid) { m = k->methods[i]; break; }
+        if (k->methods[i]->mid == mid) { m = k->methods[i]; slot = i; break; }
+    /* A live Method/UnboundMethod pinned this definition.  CRuby keeps such an
+     * entry alive across a redefinition (`m = o.method(:x); def o.x; end` still
+     * calls the old body), so hand the redefinition a FRESH entry and move the
+     * old one out of the table — orphans stay GC-rooted through vm->orphans. */
+    if (m != NULL && m->pinned) {
+        korb_vm_orphan_method(vm, m);
+        m = NULL;
+        struct korb_method *const nm = calloc(1, sizeof(struct korb_method));
+        if (!nm) { fprintf(stderr, "koruby_precise: oom (method entry)\n"); abort(); }
+        korb_bt_note_ptr(vm, nm);
+        nm->mid = mid; nm->orig_mid = mid;
+        k->methods[slot] = nm;
+        m = nm;
+        vm->method_serial++;
+    }
     if (!m) {
         if (k->method_cnt == k->method_capa) {
             uint32_t nc = k->method_capa ? k->method_capa * 2 : 8;
@@ -4280,7 +4313,12 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         const KorbMethod *const mo = VAL2METH(VALUE_SLICE_GET(a, 1));
         VALUE owner = mo->unbound ? mo->recv : korb_dispatch_class(c, mo->recv);
         bool owner_mod = KORB_CLASS_P(owner) && VAL2CLASS(owner)->is_module;
-        const struct korb_method *src = KORB_CLASS_P(owner) ? korb_class_find_method(owner, mo->mid, NULL) : NULL;
+        /* the entry this Method was pinned to when it was taken: a redefinition
+         * orphans the old entry rather than overwriting it, so this still names
+         * the definition the Method was made from (rspec-mocks undef_method's
+         * the original and then define_method's it back from the saved one). */
+        const struct korb_method *src = mo->entry;
+        if (src == NULL && KORB_CLASS_P(owner)) src = korb_class_find_method(owner, mo->mid, NULL);
         if (src == NULL) src = korb_method_lookup(c->vm, mo->mid);
         if (src == NULL && owner_mod) {                  /* Kernel's methods live on Object in koruby */
             const VALUE objc = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
