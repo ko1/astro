@@ -15217,12 +15217,21 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
             korb_warn(c, slots, "loading in progress, circular require considered harmful - %s", abspath);
     }
     if (dedup && korb_feature_loaded_p(c, abspath)) { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
+    /* Two load-path entries can reach the SAME file through a symlink (a
+     * fallback-stdlib tree, an rbenv shim): CRuby loads it once.  The C-side
+     * mark is keyed on the real path for that; $LOADED_FEATURES and __FILE__
+     * keep the path the require actually used, as CRuby reports them. */
+    char realbuf[4096];
+    const char *const realkey = (realpath(abspath, realbuf) != NULL) ? realbuf : abspath;
+    if (dedup && strcmp(realkey, abspath) != 0 && korb_feature_loaded_p(c, realkey))
+        { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
     size_t got = 0;
     char *buf = korb_file_slurp(abspath, &got);
     if (!buf) return korb_raise_load_error(c, slots, abspath);
     /* record before eval so a circular require returns false rather than reloading. */
     if (dedup) {
         korb_mark_loaded(vm, abspath);
+        if (strcmp(realkey, abspath) != 0) korb_mark_loaded(vm, realkey);
         korb_loaded_features_push(c, slots, abspath);   /* keep $LOADED_FEATURES in step */
         korb_loading_add(vm, abspath, vm->cur_thread);  /* claim for cross-thread waiters */
     }
@@ -15244,7 +15253,9 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
     if (UNLIKELY(r.state != KORB_NORMAL)) {
         /* a load that raised did not happen: CRuby leaves neither the C-side
          * record nor $LOADED_FEATURES behind, so the next require retries */
-        if (dedup) { korb_unmark_loaded(vm, abspath); korb_loaded_features_pop(c, slots, abspath); }
+        if (dedup) { korb_unmark_loaded(vm, abspath);
+                     if (strcmp(realkey, abspath) != 0) korb_unmark_loaded(vm, realkey);
+                     korb_loaded_features_pop(c, slots, abspath); }
         return r;
     }
     *out = KORB_TRUE;
