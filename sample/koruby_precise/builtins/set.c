@@ -2131,6 +2131,16 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
                          }
             else         idx = korb_const_index_owned(vm, cid, owner);
         }
+        /* A pending autoload on the receiver fires BEFORE the top-level
+         * fallback — otherwise `Kramdown::Converter.const_get(:Kramdown)` hands
+         * back the TOP-LEVEL Kramdown instead of loading the nested one. */
+        if (idx == UINT32_MAX && KORB_CLASS_P(owner) && korb_autoload_registered_p(c, owner, cid)) {
+            slots[0] = owner;                                /* rooted across the require */
+            CHECK(korb_autoload_fire(c, slots + 1, slots[0], cid, 0, NULL));
+            owner = slots[0];
+            idx = korb_const_index_owned(vm, cid, owner);
+            if (idx == UINT32_MAX && inherit) idx = korb_const_in_ancestry(vm, owner, cid);
+        }
         /* top-level fallback: for a leading `::`, or (with inherit) a first
          * component whose owner search missed — but never for inherit=false. */
         if (idx == UINT32_MAX && (leading_top || (inherit && first)))

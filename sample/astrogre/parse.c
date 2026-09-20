@@ -606,7 +606,9 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps)
             }
             agre_cpsetb_free(&ncps);
             first = false;
-            prev_is_set = true;
+            /* NOT prev_is_set: Ruby rejects `[[:alpha:]-z]` and `[\d-x]` but
+             * takes the `-` after a NESTED class as a literal
+             * (`[[[:alnum:]]-_.]` is kramdown's autolink pattern). */
             continue;
         }
 
