@@ -1953,7 +1953,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
     uint32_t blk_top = 0;
     const uint32_t blk_label = kp_block_label(tc, &blk_top);
-    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, destr_len, cap_depth, cap_ns, cap_yield, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), linfo, blk_param_slot, post_cnt, -1, 0, 0, blk_label, blk_top);
+    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, destr_len, cap_depth, cap_ns, cap_yield, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), linfo, blk_param_slot, post_cnt, -1, 0, 0, blk_label, blk_top, 0);
     /* backtrace: KORB_ID_OFF marks "this block has an enclosing frame", which is
      * all the link a C-driven yield rebuilds needs — the PREV handle names that
      * frame's base directly. */
@@ -2003,7 +2003,7 @@ kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
     WITH_CHAIN(tc, KP_SEND0_SC, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
     NODE *body = kp_send0(tc, sym_id, 0, recv);
     uint32_t frame_size = pop_frame(tc);
-    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, NULL, -1, 0, -1, 0, 0, 0, 0);
+    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, NULL, -1, 0, -1, 0, 0, 0, 0, sym_id);
     code_repo_add("symblock", entry, true);
     return entry;
 }
@@ -2624,7 +2624,9 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                  * observe the order — otherwise keep the cheap shape. */
                 bool blk_last = !anon_blk && !kp_order_transparent(ba->expression);
                 if (!blk_last && !anon_blk && !kp_order_transparent(cn->receiver)) blk_last = true;
-                for (size_t i = 0; !blk_last && i < argc; i++)
+                /* a bare `&` reads a slot — there is no expression to order, and
+                 * NULLing through the blk_last path would crash the transducer */
+                for (size_t i = 0; !blk_last && !anon_blk && i < argc; i++)
                     if (!kp_order_transparent(cn->arguments->arguments.nodes[i])) blk_last = true;
                 NODE *pset = (anon_blk || blk_last)
                              ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
@@ -3235,7 +3237,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
     void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0, 0);
     code_repo_add("class", entry, true);          /* its own AOT entry */
     NODE *_ncls = KP_LINK(tc, node_class, name_sym, kp_flink_at(tc, kp_line(tc, (const pm_node_t *)cn), 2), entry, lex_top ? INT32_MIN : -1 - tc->chain - 2, path_owner, path_kind, base_node, super_node);   /* self_off = enclosing self (base[-1]); -2 for the staged base+super children */
     korb_reg_srcloc(tc->c->vm, _ncls, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));   /* Module#const_source_location */
@@ -3663,7 +3665,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
     void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0, 0);
     code_repo_add("module", entry, true);
     NODE *_nmod = KP_LINK(tc, node_module, name_sym, kp_flink_at(tc, kp_line(tc, (const pm_node_t *)mn), 1), entry, lex_top ? INT32_MIN : -1 - tc->chain - 1, path_owner, path_kind, base_node);   /* self_off = enclosing self (base[-1]); -1 for the staged base child */
     korb_reg_srcloc(tc->c->vm, _nmod, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)mn));   /* Module#const_source_location */
@@ -5477,7 +5479,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             body = transduce(tc, sc->body);   /* a begin/rescue/ensure body is just another node */
         void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
         uint32_t frame_size = pop_frame(tc);
-        NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0);
+        NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0, 0);
         code_repo_add("sclass", entry, true);       /* its own AOT entry */
         NODE *_sc = KP_LINK(tc, node_sclass, kp_flink_at(tc, kp_line(tc, node), 1), entry, -1 - tc->chain - 1, -4 - tc->chain - 1, recv_node);   /* -1 extra for the staged recv child */
         bake_add(tc, &_sc->u.node_sclass.self_off);

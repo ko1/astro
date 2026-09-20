@@ -528,6 +528,7 @@ const char *korb_a_type_name(VALUE v);
 const char *korb_coerce_name(CTX *c, VALUE v);
 /* a constant name registered for autoload on `mod` but not yet loaded */
 bool korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym);
+RESULT korb_autoload_fire(CTX *c, VALUE *slots, VALUE mod, uint32_t sym, uint32_t line, const VALUE *fbase);
 void korb_const_set_private(CTX *c, VALUE owner, uint32_t sym, bool private_p);   /* private_constant */
 bool korb_const_private_p(const struct korb_vm *vm, VALUE owner, uint32_t sym);
 RESULT korb_check_const_path_private(CTX *c, VALUE *slots, VALUE enclosing, uint32_t sym, bool scoped);

@@ -94,6 +94,21 @@ koruby_apply_feature(const char *const name, const bool on)
                     "syntax_suggest, rubyopt, frozen_string_literal, yjit, zjit].\n");
 }
 
+/* -I / -r lists: CRuby caps neither, and a fixed array silently DROPS the
+ * extras (a bundler-style invocation easily passes 150 -I flags and then fails
+ * with "cannot load such file"). */
+struct strvec { const char **v; int n, capa; };
+static void
+strvec_push(struct strvec *const sv, const char *const s)
+{
+    if (sv->n == sv->capa) {
+        sv->capa = sv->capa ? sv->capa * 2 : 16;
+        sv->v = realloc(sv->v, sizeof(*sv->v) * (size_t)sv->capa);
+        if (!sv->v) abort();
+    }
+    sv->v[sv->n++] = s;
+}
+
 /* One CRuby-compatible command-line flag.  Shared by the argv loop and RUBYOPT
  * (which accepts a subset).  `next_arg` supplies the separate-word form of
  * -I/-r/-E/--*-encoding when there is one; RUBYOPT passes NULL (only the joined
@@ -101,17 +116,16 @@ koruby_apply_feature(const char *const name, const bool on)
  * 2 when handled *and* `next_arg` was consumed. */
 static int
 koruby_apply_flag(const char *a, const char *next_arg,
-                  const char **load_dirs, int *nload_dirs,
-                  const char **req_libs, int *nreq_libs)
+                  struct strvec *const load_dirs, struct strvec *const req_libs)
 {
     if (strncmp(a, "-I", 2) == 0) {
         const char *const dir = a[2] ? a + 2 : next_arg;
-        if (dir && *nload_dirs < 64) load_dirs[(*nload_dirs)++] = dir;
+        if (dir) strvec_push(load_dirs, dir);
         return (a[2] || !dir) ? 1 : 2;
     }
     if (strncmp(a, "-r", 2) == 0) {
         const char *const lib = a[2] ? a + 2 : next_arg;
-        if (lib && *nreq_libs < 64) req_libs[(*nreq_libs)++] = lib;
+        if (lib) strvec_push(req_libs, lib);
         return (a[2] || !lib) ? 1 : 2;
     }
     if (strcmp(a, "-w") == 0 || strncmp(a, "-W", 2) == 0) {
@@ -1125,8 +1139,8 @@ main(int argc, char *argv[])
     const bool skip_run = bcfg.aot_compile && !bcfg.run && !bcfg.pg_compile;
 
     /* sample flags + positional script */
-    const char *load_dirs[64]; int nload_dirs = 0;    /* -I */
-    const char *req_libs[64];  int nreq_libs  = 0;    /* -r */
+    struct strvec load_dirs = { NULL, 0, 0 };         /* -I */
+    struct strvec req_libs  = { NULL, 0, 0 };         /* -r */
     int i = 1;
 #ifdef KORUBY_EMBED
     /* Embedded executable: the program is baked in — argv[1..] is Ruby ARGV. */
@@ -1168,7 +1182,7 @@ main(int argc, char *argv[])
          * accepted so an invocation that only decorates itself with them runs. */
         else if (a[0] == '-' && a[1] != '\0' &&
                  (handled = koruby_apply_flag(a, i + 1 < argc ? argv[i + 1] : NULL,
-                                              load_dirs, &nload_dirs, req_libs, &nreq_libs)) != 0) {
+                                              &load_dirs, &req_libs)) != 0) {
             if (handled == 2) i++;                      /* the flag took the next argv word */
         }
         else if (a[0] == '-' && a[1] != '\0') {
@@ -1212,7 +1226,7 @@ main(int argc, char *argv[])
                 }
                 if (strcmp(tok, "-v") == 0) { printf("%s\n", KORUBY_RUBY_DESCRIPTION); fflush(stdout); continue; }
                 const int before = OPTION.verbose_warn;
-                if (!koruby_apply_flag(tok, NULL, load_dirs, &nload_dirs, req_libs, &nreq_libs))
+                if (!koruby_apply_flag(tok, NULL, &load_dirs, &req_libs))
                     { fprintf(stderr, "koruby_precise: invalid switch in RUBYOPT: %s (RuntimeError)\n", tok); return 1; }
                 if (cli_verbose_warn != 0) OPTION.verbose_warn = before;   /* the cli switch wins */
             }
@@ -1569,12 +1583,12 @@ main(int argc, char *argv[])
             if (rl && *rl) {
                 char *const dup = strdup(rl);
                 if (!dup) abort();
-                uint32_t ndirs = 0;
-                char *dirs[64];
+                struct strvec dirs = { NULL, 0, 0 };
                 char *save = NULL;
-                for (char *t = strtok_r(dup, ":", &save); t && ndirs < 64; t = strtok_r(NULL, ":", &save))
-                    if (*t) dirs[ndirs++] = t;
-                while (ndirs-- > 0) korb_load_path_unshift(c, toplevel_cursor, dirs[ndirs]);
+                for (char *t = strtok_r(dup, ":", &save); t; t = strtok_r(NULL, ":", &save))
+                    if (*t) strvec_push(&dirs, t);
+                while (dirs.n-- > 0) korb_load_path_unshift(c, toplevel_cursor, dirs.v[dirs.n]);
+                free(dirs.v);
                 free(dup);
             }
         }
@@ -1602,7 +1616,7 @@ main(int argc, char *argv[])
                     korb_const_define(c, korb_intern(c->vm, "DATA", 4), toplevel_cursor[0]);
             }
         }
-        for (int k = nload_dirs; k-- > 0; ) korb_load_path_unshift(c, toplevel_cursor, load_dirs[k]);
+        for (int k = load_dirs.n; k-- > 0; ) korb_load_path_unshift(c, toplevel_cursor, load_dirs.v[k]);
         /* CRuby loads rubygems at startup unless --disable-gems, and a program
          * that requires a gem by name needs its Kernel#require hook installed
          * before -r and before the program runs.  A koruby install with no
@@ -1618,8 +1632,8 @@ main(int argc, char *argv[])
                 }
             }
         }
-        for (int k = 0; k < nreq_libs; k++) {
-            const RESULT rr = korb_require_feature(c, toplevel_cursor, req_libs[k]);
+        for (int k = 0; k < req_libs.n; k++) {
+            const RESULT rr = korb_require_feature(c, toplevel_cursor, req_libs.v[k]);
             if (rr.state == KORB_RAISE) { korb_report_uncaught(c, rr.value); korb_io_flush_std(c->vm); return 1; }
         }
         struct timespec t0, t1;

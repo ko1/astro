@@ -1692,27 +1692,23 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
             }
             /* A pending `autoload` on a lexically enclosing module answers HERE —
              * in the lexical step, before the cref's ancestors and the top-level
-             * fallback, as CRuby does.  Firing its const_missing runs the require.
-             * rspec registers RSpec::Core::DidYouMean this way, and a bare
-             * `DidYouMean` inside RSpec::Core reached the top-level module. */
+             * fallback, as CRuby does.  CRuby runs the require at LOOKUP time,
+             * NOT through const_missing: a module that defines its own
+             * const_missing (dry-types) would otherwise never see its autoloads
+             * — and recurse, since the hook reads the very constant it is
+             * missing.  rspec registers RSpec::Core::DidYouMean this way. */
             for (int32_t i = (int32_t)cache->chain_len - 1; idx == UINT32_MAX && i >= 0; i--) {
                 const VALUE o = korb_cref_resolve(vm, cache->owner_chain, (uint32_t)i + 1, 0);
                 if (!KORB_CLASS_P(o) || !korb_autoload_registered_p(c, o, name_sym)) continue;
-                slots[0] = o;                                  /* rooted across the require */
-                slots[1] = ID2SYM(name_sym);
-                korb_flink_stage_at(c, &slots[fb_off], line);
-                const RESULT cm = korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), line, 1);
+                CHECK(korb_autoload_fire(c, slots, o, name_sym, line, &slots[fb_off]));
                 /* The file may define the constant in a DIFFERENT lexical scope
-                 * than the one that registered the autoload — const_missing then
-                 * raises NameError for ITS module while the name IS now visible
-                 * from here.  Redo the walk either way and only propagate when
-                 * it is still missing (CRuby: "searches for the constant like
-                 * the original lookup"). */
+                 * than the one that registered the autoload, so redo the whole
+                 * walk (CRuby: "searches for the constant like the original
+                 * lookup").  Still missing → the normal miss path below. */
                 for (int32_t j = (int32_t)cache->chain_len - 1; idx == UINT32_MAX && j >= 0; j--) {
                     const VALUE o2 = korb_cref_resolve(vm, cache->owner_chain, (uint32_t)j + 1, 0);
                     if (KORB_CLASS_P(o2)) idx = korb_const_index_owned(vm, name_sym, o2);
                 }
-                if (idx == UINT32_MAX) return cm;
             }
         } else {
             for (VALUE o = cref; idx == UINT32_MAX && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing)
@@ -1980,7 +1976,15 @@ node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, uint32_t line,
         }
         return RESULT_OK(vm->const_vals[idx]);
     }
-    slots[1] = ID2SYM(name);                              /* <owner>.const_missing(:name) — autoload's entry point */
+    /* A pending autoload runs at LOOKUP time (before const_missing), the same
+     * way CRuby resolves `A::B` — the owner may define its own hook. */
+    if (korb_autoload_registered_p(c, slots[0], name)) {
+        CHECK(korb_autoload_fire(c, slots + 1, slots[0], name, line, &slots[fb_off]));
+        idx = korb_const_index_owned(vm, name, slots[0]);
+        if (idx == UINT32_MAX) idx = korb_const_in_ancestry_scoped(vm, slots[0], name);
+        if (idx != UINT32_MAX) return RESULT_OK(vm->const_vals[idx]);
+    }
+    slots[1] = ID2SYM(name);                              /* <owner>.const_missing(:name) */
     korb_flink_stage_at(c, &slots[fb_off], line);         /* the hook's `caller` must start at the reference */
     return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), line, 1);
 }
@@ -2657,9 +2661,9 @@ node_dstr_concat(CTX *c, NODE *n, VALUE *slots, VALUE_REF acc@child, VALUE part@
 // reads params/locals off it (korb_entry_*) to size the block frame, then
 // dispatches it (EVAL evaluates the body at the block-frame cursor).
 NODE_DEF
-node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t destructure_n, void *destructure_spec, uint32_t destr_len, uint32_t cap_depth, void *cap_ns, uint32_t cap_yield, int32_t rest_slot, void *opt_defaults, uint32_t req_cnt, void *kw_info, void *param_info, void *locals_info, int32_t blk_param_slot, uint32_t post_cnt, int32_t def_top_off, uint32_t def_line, uint32_t body_label@sym, uint32_t blk_label@sym, uint32_t blk_top_level)
+node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t destructure_n, void *destructure_spec, uint32_t destr_len, uint32_t cap_depth, void *cap_ns, uint32_t cap_yield, int32_t rest_slot, void *opt_defaults, uint32_t req_cnt, void *kw_info, void *param_info, void *locals_info, int32_t blk_param_slot, uint32_t post_cnt, int32_t def_top_off, uint32_t def_line, uint32_t body_label@sym, uint32_t blk_label@sym, uint32_t blk_top_level, uint32_t symproc_mid@sym)
 {
-    (void)n; (void)params_cnt; (void)locals_cnt; (void)destructure_n; (void)destructure_spec; (void)cap_depth; (void)cap_ns; (void)cap_yield; (void)rest_slot; (void)opt_defaults; (void)req_cnt; (void)kw_info; (void)param_info; (void)locals_info; (void)blk_param_slot; (void)def_top_off; (void)def_line; (void)body_label; (void)blk_label; (void)blk_top_level;
+    (void)n; (void)params_cnt; (void)locals_cnt; (void)destructure_n; (void)destructure_spec; (void)cap_depth; (void)cap_ns; (void)cap_yield; (void)rest_slot; (void)opt_defaults; (void)req_cnt; (void)kw_info; (void)param_info; (void)locals_info; (void)blk_param_slot; (void)def_top_off; (void)def_line; (void)body_label; (void)blk_label; (void)blk_top_level; (void)symproc_mid;
     return EVAL_ARG(c, body);
 }
 

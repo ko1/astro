@@ -70,15 +70,9 @@ class Module
     # An `autoload :Const, "path"` registration gets its chance here: require the
     # file (once) and retry the constant.  Ancestors are searched too, matching
     # CRuby (an autoload on a superclass answers a subclass's lookup).
-    owner, path = __autoload_owner_for(name)
-    if path
-      # require が失敗したら登録は残す (CRuby と同じ: 次の参照でも LoadError。
-      # 先に消すと、同じ定数を待っている別スレッドが登録を見失って NameError
-      # になる)。成功したときだけ一度きりの登録を外す。
-      Module.__autoload_require(path)                 # main.require (CRuby; mockable in specs)
-      __autoload_table.delete(name)
-      owner.__autoload_table.delete(name) if owner
-      ancestors.each { |m| m.__autoload_table.delete(name) if m.respond_to?(:__autoload_table, true) }
+    fired = __autoload_fire(name)
+    if fired
+      owner, path = fired
       # koruby の const 表は top-level 定数を Object 所有として持たないので、
       # const_defined? ではなく実際に引いてみる (テーブルからは既に外して
       # あるので、まだ無ければ通常の NameError に落ちる)。
@@ -99,8 +93,7 @@ class Module
       scope = __lexical_parent
       while scope
         begin
-          v = scope.const_get(name, false)
-          warn "warning: Expected #{path} to define #{self}::#{name} but it didn't" if $VERBOSE
+          v = scope.const_get(name, false)   # __autoload_fire already warned in verbose mode
           return v
         rescue NameError
         end
@@ -123,11 +116,50 @@ class Module
     raise e
   end
 
+  # CRuby fires a pending autoload at LOOKUP time, not through const_missing.  A
+  # module with its own const_missing (dry-types) must still get its autoloads,
+  # so the constant-read path calls this hook directly and retries the lookup.
+  # Returns [owner module, path], or nil when there was no registration.
+  def __autoload_fire(name)
+    owner, path = __autoload_owner_for(name)
+    return nil unless path
+    # require が失敗したら登録は残す (CRuby と同じ: 次の参照でも LoadError。
+    # 先に消すと、同じ定数を待っている別スレッドが登録を見失って NameError
+    # になる)。成功したときだけ一度きりの登録を外す。
+    Module.__autoload_require(path)                 # main.require (CRuby; mockable in specs)
+    __autoload_drop(name)
+    owner.__autoload_drop(name) if owner
+    ancestors.each { |m| m.__autoload_drop(name) if m.respond_to?(:__autoload_drop, true) }
+    __autoload_warn_parent(name, path) if $VERBOSE
+    [owner, path]
+  end
+
+  # CRuby warns (verbose only) when the required file defined the constant in an
+  # ENCLOSING scope instead of the one that registered the autoload.
+  private def __autoload_warn_parent(name, path)
+    return if const_defined?(name, false)
+    scope = __lexical_parent
+    while scope
+      if scope.const_defined?(name, false)
+        warn "warning: Expected #{path} to define #{self}::#{name} but it didn't"
+        return
+      end
+      scope = scope.__lexical_parent
+    end
+  end
+
   # ---- autoload -------------------------------------------------------------
   # koruby resolves constants eagerly, so `autoload` is recorded per module and
   # honoured from #const_missing (rather than at constant-table lookup time).
   def __autoload_table
     @__autoloads ||= {}
+  end
+
+  # Drop one registration WITHOUT creating the table: a frozen module can still
+  # be an ancestor of the one whose autoload just fired.
+  def __autoload_drop(name)
+    t = instance_variable_defined?(:@__autoloads) ? @__autoloads : nil
+    t.delete(name) if t
   end
 
   # CRuby loads an autoload file through main's #require, so a spec can mock it.

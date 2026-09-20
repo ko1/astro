@@ -9141,6 +9141,20 @@ korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym)
     return !(KORB_STRING_P(pathv) && korb_autoload_feature_loaded_p(c, pathv));
 }
 
+/* Run a pending autoload on `mod` for `sym` (the prelude hook requires the file
+ * and drops the registration).  `slots` is a free cursor: [0] = recv, [1] = arg.
+ * `fbase` is the referencing frame's base, so the require's backtrace continues
+ * from the constant reference. */
+RESULT
+korb_autoload_fire(CTX *c, VALUE *const slots, const VALUE mod, const uint32_t sym,
+                   const uint32_t line, const VALUE *const fbase)
+{
+    slots[0] = mod;                                   /* rooted across the require */
+    slots[1] = ID2SYM(sym);
+    korb_flink_stage_at(c, fbase, line);
+    return korb_send(c, slots + 2, korb_intern(c->vm, "__autoload_fire", 15), line, 1);
+}
+
 /* A CHILLED String literal (Ruby 3.4+) is not really frozen: warn once for this
  * object, drop the mark, and let the caller mutate it. */
 RESULT
@@ -9956,6 +9970,20 @@ static int32_t  korb_entry_rest_slot(NODE *entry) { return entry->u.node_entry.r
  * `|x,|` (-3) binds the same way but is NOT a rest — CRuby leaves it out of
  * #arity / #parameters and keeps a lambda's arity check exact. */
 static bool korb_entry_has_rest(NODE *entry) { const int32_t r = entry->u.node_entry.rest_slot; return r >= 0 || r == -2; }
+/* `&:sym`: the synthesized block IS Symbol#to_proc — never a real frame. */
+static uint32_t korb_entry_symproc(NODE *entry) { return entry->u.node_entry.symproc_mid; }
+
+/* `recv.sym(rest...)`, exactly what Symbol#to_proc does: no auto-splat (the proc
+ * is a lambda in CRuby) and no block frame at all. */
+static RESULT
+korb_symproc_yield(CTX *c, VALUE *const slots, const uint32_t mid,
+                   const VALUE *const argv, const uint32_t argc)
+{
+    if (UNLIKELY(argc == 0))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no receiver given");
+    for (uint32_t i = 0; i < argc; i++) slots[i] = argv[i];
+    return korb_send(c, slots + argc, mid, 0, argc - 1);
+}
 /* Bind one destructuring-spec entry (see parse.c): 0x00 = scalar leaf,
  * 0xFF <k> = a group of k nested entries.  Returns the next entry. */
 static const uint8_t *korb_bind_destr_entry(CTX *c, VALUE *bf, uint32_t nlocals, uint32_t *loc, const uint8_t *sp, VALUE pv)
@@ -10126,6 +10154,8 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     if (UNLIKELY(block == NULL || block == KORB_BLK_CPROC)) 
         return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL, 0);   /* NULL → _full raises; keeps the cold epilogue out of the hot path */
     if (UNLIKELY(!block->head.flags.yield_simple)) {
+        if (block->head.kind == &kind_node_entry && korb_entry_symproc(block))
+            return korb_symproc_yield(c, slots, korb_entry_symproc(block), argv, argc);
         if (block->head.kind != &kind_node_entry ||
             korb_entry_kw_info(block) || korb_entry_destructure_spec(block) ||
             korb_entry_destructure_n(block) || korb_entry_rest_slot(block) != -1 ||
@@ -10195,6 +10225,8 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     }
     if (UNLIKELY(block == KORB_BLK_CPROC))               /* forwarded Symbol/Method#to_proc: no frame, dispatch a send (which takes the carry) */
         return korb_cproc_yield(c, slots, *captured_self, argv, argc);
+    if (UNLIKELY(block->head.kind == &kind_node_entry && korb_entry_symproc(block)))
+        return korb_symproc_yield(c, slots, korb_entry_symproc(block), argv, argc);
     /* The staged link (a `yield` node's own frame) is taken NOW: everything below
      * can raise or run Ruby (`to_ary`), and a carry left armed would be consumed
      * by some unrelated dispatch, aimed at a frame that has since returned. */
