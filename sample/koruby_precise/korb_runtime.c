@@ -25,6 +25,7 @@
 #include "node.h"
 #include "korb_runtime.h"
 #include "precise_gc/gc.h"
+#include "prism.h"     /* builtins/prism_bridge.c: serialize API だけ使う */
 
 /* Frame-push headroom: covers in-frame expression staging without a per-node
  * check.  Deeper-than-slack staging without an intervening call lands on the
@@ -3520,10 +3521,12 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
      * outer_env; slots[1] holds the current outer env (rooted across each alloc). */
     slots[1] = outer_env;
     for (int k = (int)nlive - 1; k >= 0; k--) {
-        const VALUE pv = korb_ep_get(bases[k]);                   /* original outer link (preserve into e->prev) */
         KorbEnv *existing = korb_open_env_find(bases[k]);
         if (existing) { slots[1] = (VALUE)(uintptr_t)existing; continue; }   /* share this frame's env */
         KorbEnv *e = korb_alloc(c, slots + 2, sizeof(KorbEnv), KORB_OBJ_ENV);
+        /* the original outer link, read AFTER the alloc: when it names a KorbEnv
+         * a GC there moves it, and the cell (a scanned root) is what was fixed up */
+        const VALUE pv = korb_ep_get(bases[k]);
         e->loc = bases[k];                               /* open: live slots */
         e->id = korb_id_get(bases[k]);                   /* survives the frame: a backtrace still names the owner */
         e->n = ns[k];
@@ -3648,10 +3651,10 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
     }
     slots[1] = outer_env;
     for (int k = (int)nlive - 1; k >= 0; k--) {
-        const VALUE pv = korb_ep_get(bases[k]);
         KorbEnv *existing = korb_open_env_find(bases[k]);
         if (existing) { slots[1] = (VALUE)(uintptr_t)existing; continue; }
         KorbEnv *e = korb_alloc(c, slots + 2, sizeof(KorbEnv), KORB_OBJ_ENV);
+        const VALUE pv = korb_ep_get(bases[k]);                   /* alloc 後に読む (上と同じ理由) */
         e->loc = bases[k];
         e->id = korb_id_get(bases[k]);
         e->n = (uint16_t)scope_tbl[1 + (uint32_t)k];     /* level's full locals count */
@@ -12304,6 +12307,7 @@ static void korb_blop_wake_fd(struct korb_vm *vm, int fd);
 #include "builtins/fiber.c"
 #include "builtins/thread.c"
 #include "builtins/arithseq.c"
+#include "builtins/prism_bridge.c"
 #include "builtins/string_ext.c"
 korb_register_core_methods(CTX *c)
 {
@@ -17696,6 +17700,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "rand",  korb_bi_rand,  -1);
     korb_builtin_define(c, "srand", korb_bi_srand, -1);
     korb_builtin_define(c, "__binread", korb_bi_binread, 1);
+    korb_builtin_define(c, "__prism_dump", korb_bi_prism_dump, -1);   /* lib/prism/prism.rb が Prism の API を組む */
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);
     korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);

@@ -244,10 +244,14 @@ void korb_define_argv(CTX *c, int n, char *const *args, const char *prog) {
     slots[1] = korb_ary_new(c, slots + 1, 0).value;
     /* bundled pure-Ruby stdlib: `require 'delegate'` etc. resolve to koruby's
      * own lib/ regardless of CWD (compiled-in absolute src dir). */
+    /* prism/lib は CRuby の default gem "prism" と同じ位置づけ: Prism の Ruby API
+     * 一式が載り、lib/ripper.rb がその Translation::Ripper を使う。 */
     {
-        static const char lib_dir[] = KORUBY_SRC_DIR "/lib";
-        slots[2] = korb_str_new(c, slots + 2, lib_dir, (uint32_t)(sizeof lib_dir - 1)).value;
-        korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]);
+        static const char *const dirs[] = { KORUBY_SRC_DIR "/lib", KORUBY_SRC_DIR "/prism/lib" };
+        for (uint32_t i = 0; i < sizeof dirs / sizeof dirs[0]; i++) {
+            slots[2] = korb_str_new(c, slots + 2, dirs[i], (uint32_t)strlen(dirs[i])).value;
+            korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]);
+        }
     }
     korb_const_define(c, korb_intern(c->vm, "$LOAD_PATH", 10), slots[1]);
     korb_const_define(c, korb_intern(c->vm, "$:", 2), slots[1]);
