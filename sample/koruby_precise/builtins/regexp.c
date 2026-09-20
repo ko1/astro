@@ -1511,6 +1511,7 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (!from_regexp && VALUE_SLICE_LEN(a) >= 2) {
         VALUE opt = VALUE_SLICE_GET(a, 1);
         if (opt == KORB_NIL || opt == KORB_FALSE) {}
+        else if (opt == KORB_TRUE) flags |= 4u;           /* the documented boolean form: no warning */
         else if (FIXNUM_P(opt)) { const long o = FIX2LONG(opt);
             if (o & 1)  flags |= 4u;
             if (o & 2)  flags |= 8u;
