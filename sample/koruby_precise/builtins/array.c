@@ -900,6 +900,7 @@ static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), LONG2FIX(i)));
+            korb_enum_mark_multi(slots[2]);                 /* [elem, i] keeps its arity for a 1-param block */
             CHECK(korb_ary_push_val(c, slots + 3, pairs, slots[2]));
         }
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each_with_index"));

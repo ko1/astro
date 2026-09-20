@@ -255,6 +255,12 @@ enum korb_obj_type {
 /* bit 11 (transient): object is on the current Comparable#== path — breaks the
  * Comparable#== → #<=> → Object#<=> → #== recursion for a Comparable with no #<=>. */
 #define KORB_FL_CMP_VISITING 0x800u
+/* bit 12 (Array only — 0x1000 is Hash's KWARGS and part of String's encoding
+ * field, and an Array has neither): this Array is the PACKED form of a
+ * MULTI-value yield (`y.yield(a, b)`, each_with_index, with_object), so an
+ * Enumerator re-spreads it when it feeds a block.  CRuby keeps the arity by
+ * re-driving the source; koruby materializes, so the arity rides on the pair. */
+#define KORB_FL_ENUM_MULTI 0x1000u
 /* bits 12-14 (String only): the string's encoding, as a 3-bit index.  Header
  * flags survive GC (copied with the object), so this needs no GC support.  The
  * index drives every character-level operation (length / [] / each_char / …):

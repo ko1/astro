@@ -26,6 +26,29 @@ korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc)
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->desc,   slots[1]);
     return RESULT_OK((VALUE)e);
 }
+/* A materialized element that came from a MULTI-value yield keeps its arity:
+ * `each_with_index.map { |x| }` must see the element, not the [elem, i] pair
+ * (CRuby re-drives the source, which keeps the arity naturally).  `cur` is free
+ * scratch; returns what the block returned. */
+static bool korb_enum_el_multi(const VALUE v) {
+    return KORB_ARRAY_P(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_ENUM_MULTI) != 0;
+}
+static void korb_enum_mark_multi(const VALUE v) {
+    if (KORB_ARRAY_P(v)) ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_ENUM_MULTI;
+}
+static RESULT
+korb_enum_yield_el(CTX *c, VALUE *const cur, NODE *block, VALUE *def_env, VALUE *cself, const VALUE el)
+{
+    if (UNLIKELY(korb_enum_el_multi(el))) {
+        const KorbArray *const a = VAL2ARY(el);
+        const uint32_t n = a->len <= 8 ? a->len : 8;
+        for (uint32_t i = 0; i < n; i++) cur[i] = korb_items_data(a->items)[i];
+        return korb_block_yield(c, cur + n, block, def_env, cur, n, cself);
+    }
+    cur[0] = el;
+    return korb_block_yield(c, cur + 1, block, def_env, cur, 1, cself);
+}
+
 /* Enumerator::Yielder#yield / #<< — append the yielded value(s) to the collector
  * array stashed in the yielder's @__c ivar.  Multiple args → an array element;
  * none → nil.  Returns self (`y << v << w` chains).  Eager model: the block runs
@@ -62,6 +85,7 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
         slots[2] = UNWRAP(korb_ary_new(c, slots + 2, ac));
         for (uint32_t i = 0; i < ac; i++)
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), VALUE_SLICE_GET(a, i)));
+        korb_enum_mark_multi(slots[2]);          /* the pair keeps its arity (see korb_enum_yield_el) */
         v = slots[2];
     }
     /* y.yield(a,b) keeps its arity for a streaming block: `each { |x| }` must
@@ -726,7 +750,8 @@ static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             const KorbArray *v = VAL2ARY(SELF_ENUM->values);
             if (i >= v->len) break;
             slots[0] = korb_items_data(v->items)[i];            /* slots advanced by SLOTS_PUSH; dst is below */
-            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+            RESULT r = (op == 3) ? korb_enum_yield_el(c, slots + 1, block, def_env, cself, slots[0])
+                                 : korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);   /* flat_map spreads; select/reject/find gather */
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (op == 3) {                            /* flat_map: flatten the block result one level */
                 slots[1] = r.value;
@@ -748,7 +773,7 @@ static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         const KorbArray *v = VAL2ARY(SELF_ENUM->values);
         if (i >= v->len) break;
         slots[0] = korb_items_data(v->items)[i];
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+        RESULT r = korb_enum_yield_el(c, slots + 1, block, def_env, cself, slots[0]);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));
@@ -860,7 +885,11 @@ static RESULT korb_lazy_op(CTX *c, VALUE *slots, VALUE_REF self, const char *op,
             CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
             continue;
         }
-        RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
+        /* map / filter_map SPREAD a multi-value element (a 1-param block sees the
+         * first value); select / reject / take_while / drop_while GATHER it. */
+        RESULT r = (is_map || !strcmp(op, "filter_map"))
+                 ? korb_enum_yield_el(c, slots + 2, block, def_env, cself, slots[1])
+                 : korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         const bool sel = (op[0] == 's' || op[0] == 'f');   /* select / filter / filter_map */
         if (is_map) CHECK(korb_ary_push_val(c, slots + 2, dst, r.value));
@@ -1013,7 +1042,7 @@ static RESULT korb_m_enum_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const KorbArray *v = VAL2ARY(SELF_ENUM->values);
         if (i >= v->len) break;
         slots[1] = korb_items_data(v->items)[i];
-        RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
+        RESULT r = korb_enum_yield_el(c, slots + 2, block, def_env, cself, slots[1]);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         CHECK(korb_ary_push_val(c, slots + 2, dst, r.value));
     }
@@ -1039,6 +1068,10 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         if (block != NULL) { slots[1] = UNWRAP(korb_block_to_proc(c, slots + 1, block, def_env, cself)); }
         return korb_lazy_chain2(c, slots + 2, self, "with_index", slots[0], slots[1]);
     }
+    /* Lazy#with_index pairs a PACKED value with the index (one yielded value),
+     * while the plain Enumerator#with_index yields two — only the latter's pair
+     * carries the multi mark. */
+    const bool lazy_src = (SELF_ENUM->mode == 1 || SELF_ENUM->mode == 4);
     /* lazy/cycle enums carry no materialized `values`; force them first (finite). */
     if (SELF_ENUM->mode != 0) { RESULT vr = korb_lazy_drive(c, slots, self, -1); if (UNLIKELY(vr.state != KORB_NORMAL)) return vr; slots[0] = vr.value; }
     else slots[0] = SELF_ENUM->values;
@@ -1071,6 +1104,7 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
             slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[2]));
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), LONG2FIX(off + (korb_sword_t)i)));
+            if (!lazy_src) korb_enum_mark_multi(slots[3]);  /* [value, idx] keeps its arity (not for Lazy) */
             CHECK(korb_ary_push_val(c, slots + 4, dst, slots[3]));
         }
     }
@@ -1106,6 +1140,7 @@ static RESULT korb_m_enum_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALU
             VALUE_REF pr = VALUE_REF_AT(&slots[4]);
             CHECK(korb_ary_push_val(c, slots + 5, pr, slots[3]));
             CHECK(korb_ary_push_val(c, slots + 5, pr, slots[1]));
+            korb_enum_mark_multi(VALUE_REF_GET(pr));                 /* the pair keeps its arity */
             CHECK(korb_ary_push_val(c, slots + 5, dst, VALUE_REF_GET(pr)));
         }
         slots[3] = UNWRAP(korb_enum_desc(c, slots + 3, VALUE_REF_GET(self), "with_object"));
