@@ -3853,28 +3853,31 @@ korb_const_get(struct korb_vm *vm, uint32_t name_sym)
 VALUE
 korb_const_get_path(struct korb_vm *vm, uint32_t name_sym)
 {
+    /* The path is baked with its LEXICAL nesting in front (parse.c
+     * kp_qualify_owner), so resolving it is the lexical walk: try the whole
+     * path, then drop one leading segment at a time.  Each attempt resolves its
+     * head as a TOP-LEVEL name first — a real top-level constant wins over a
+     * nested same-named one the flat table happens to hold first (`Temple::ERB`
+     * was answering the `ERB` of `class ERB::Compiler`). */
     const char *const nm = korb_sym_name(vm, name_sym);
-    const char *sep = strstr(nm, "::");
-    /* the head of a baked path is a TOP-LEVEL name: a real top-level constant
-     * wins over a nested same-named one the flat table happens to hold first
-     * (`Temple::ERB` was answering the `ERB` of `class ERB::Compiler`). */
-    VALUE cur;
-    {
-        const uint32_t id = sep ? korb_intern(vm, nm, (uint32_t)(sep - nm)) : name_sym;
+    for (const char *start = nm; start != NULL; ) {
+        const char *const sep = strstr(start, "::");
+        const uint32_t hlen = sep ? (uint32_t)(sep - start) : (uint32_t)strlen(start);
+        const uint32_t id = korb_intern(vm, start, hlen);
         const uint32_t j = korb_const_index_owned(vm, id, KORB_NIL);
-        cur = (j != UINT32_MAX) ? vm->const_vals[j] : korb_const_get(vm, id);
+        VALUE cur = (j != UINT32_MAX) ? vm->const_vals[j] : korb_const_get(vm, id);
+        for (const char *p = sep ? sep + 2 : NULL; p != NULL && KORB_CLASS_P(cur); ) {
+            const char *const next = strstr(p, "::");
+            const uint32_t len = next ? (uint32_t)(next - p) : (uint32_t)strlen(p);
+            const uint32_t idx = korb_const_index_owned(vm, korb_intern(vm, p, len), cur);
+            if (idx == UINT32_MAX) { cur = KORB_NIL; break; }
+            cur = vm->const_vals[idx];
+            p = next ? next + 2 : NULL;
+        }
+        if (cur != KORB_NIL) return cur;
+        start = sep ? sep + 2 : NULL;               /* drop one enclosing level and retry */
     }
-    if (sep == NULL) return cur;
-    for (const char *p = sep + 2; KORB_CLASS_P(cur); ) {
-        const char *const next = strstr(p, "::");
-        const uint32_t len = next ? (uint32_t)(next - p) : (uint32_t)strlen(p);
-        const uint32_t idx = korb_const_index_owned(vm, korb_intern(vm, p, len), cur);
-        if (idx == UINT32_MAX) return KORB_NIL;
-        cur = vm->const_vals[idx];
-        if (next == NULL) break;
-        p = next + 2;
-    }
-    return cur;
+    return KORB_NIL;
 }
 
 /* `$!` stack (per-CTX, realloc-backed; rescue bodies only).  Top == `$!`.

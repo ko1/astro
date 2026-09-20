@@ -3221,16 +3221,33 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
  * itself resolved lexically, which the chain walk cannot express: keep the bare
  * name there. */
 static uint32_t
+kp_join_path(struct kp_ctx *tc, uint32_t head, uint32_t tail)
+{
+    if (head == 0) return tail;
+    char buf[512];
+    const int n = snprintf(buf, sizeof buf, "%s::%s", korb_sym_name(tc->c->vm, head),
+                           korb_sym_name(tc->c->vm, tail));
+    if (n <= 0 || n >= (int)sizeof buf) return tail;
+    return korb_intern(tc->c->vm, buf, (uint32_t)n);
+}
+static uint32_t
 kp_nesting_sym(struct kp_ctx *tc, uint32_t path_owner, uint32_t name_sym)
 {
     if (path_owner == 0) return name_sym;
     for (const struct kp_frame *f = tc->frame; f; f = f->prev)
         if (f->class_name_sym != 0 || f->anon_class_body) return name_sym;
-    char buf[512];
-    const int n = snprintf(buf, sizeof buf, "%s::%s", korb_sym_name(tc->c->vm, path_owner),
-                           korb_sym_name(tc->c->vm, name_sym));
-    if (n <= 0 || n >= (int)sizeof buf) return name_sym;
-    return korb_intern(tc->c->vm, buf, (uint32_t)n);
+    return kp_join_path(tc, path_owner, name_sym);
+}
+/* `module Ruby::Patterns` inside `module CodeRay::Scanners` resolves its `Ruby`
+ * LEXICALLY, so bake the enclosing nesting in front of it; korb_const_get_path
+ * drops leading segments until the path resolves, which is that same walk. */
+static uint32_t
+kp_qualify_owner(struct kp_ctx *tc, uint32_t path_owner)
+{
+    if (path_owner == 0) return 0;
+    uint32_t encl = 0;
+    (void)kp_lexical_class_owner(tc, &encl);
+    return encl ? kp_join_path(tc, encl, path_owner) : path_owner;
 }
 
 /* `class Name ... end` → node_class carrying the class name + a node_entry for
@@ -3256,6 +3273,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
     }
     const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B */
     const uint32_t nest_sym = kp_nesting_sym(tc, path_owner, name_sym);   /* before the lexical-owner fallback below */
+    if (!abs_top) path_owner = kp_qualify_owner(tc, path_owner);
 
     /* a bare `class X` inside a block nests lexically, not by self */
     bool lex_top = abs_top;
@@ -3691,6 +3709,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
     }
     const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B */
     const uint32_t nest_sym = kp_nesting_sym(tc, path_owner, name_sym);   /* before the lexical-owner fallback below */
+    if (!abs_top) path_owner = kp_qualify_owner(tc, path_owner);
     bool lex_top = abs_top;                          /* see node_class: lexical nesting inside a block */
     if (!abs_top && path_owner == 0 && dyn_base == NULL) {
         uint32_t lex = 0;

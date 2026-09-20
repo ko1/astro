@@ -24,3 +24,17 @@ module NsA
 end
 p NsA::Inner::Deep2.new.d
 p Inner.constants, NsA::Inner.constants
+# `module A::B` の A は「囲む名前空間から外向きに」解決する。
+# coderay の patterns.rb が `module CodeRay; module Scanners; module Ruby::Patterns`
+# と書く一方、koruby には top-level の Ruby があるので両方要る。
+module Rby; end                        # top-level の同名 (koruby には実在の Ruby もある)
+module CodeRay2
+  module Scanners2
+    class Rby; end
+    module Rby::Patterns
+      KEY = :key
+    end
+  end
+end
+p CodeRay2::Scanners2::Rby::Patterns::KEY
+p Rby.constants, CodeRay2::Scanners2::Rby.constants

@@ -2090,11 +2090,16 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
       if (UNLIKELY(gn[0] == '$')) {
           if (strcmp(gn, "$stdout") == 0 || strcmp(gn, "$stderr") == 0) {
               slots[0] = val;                       /* park: #respond_to_missing? can run Ruby */
-              const bool writable = korb_responds_to(c, slots[0], korb_intern(c->vm, "write", 5));
+              /* a mock answers through its own #respond_to? / #respond_to_missing?
+               * (rspec doubles are handed to $stdout in tty-screen's specs) */
+              const bool writable = korb_responds_to_coerce_p(c, slots + 1, &slots[0], korb_intern(c->vm, "write", 5));
               val = slots[0];                       /* re-read (the probe may have moved it) */
-              if (!writable)
-                  return korb_raise(c, slots, KORB_E_TYPE, 0, "%s must have write method, %s given",
-                                    gn, korb_type_name(val));
+              if (!writable) {   /* CRuby names the CLASS: "NilClass given", not "nil given" */
+                  const char *const vn = (val == KORB_NIL) ? "NilClass"
+                                       : (val == KORB_TRUE) ? "TrueClass"
+                                       : (val == KORB_FALSE) ? "FalseClass" : korb_coerce_name(c, val);
+                  return korb_raise(c, slots, KORB_E_TYPE, 0, "%s must have write method, %s given", gn, vn);
+              }
           }
           if (strcmp(gn, "$~") == 0 && val != KORB_NIL && !KORB_MATCHDATA_P(val))
               return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected MatchData)",
