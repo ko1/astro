@@ -17673,6 +17673,28 @@ korb_bind_tbl_intern(struct korb_vm *const vm, const VALUE id, const uint32_t *c
     return t;
 }
 
+/* Kernel#block_given? as a real method.  `block_given?` is normally a parse
+ * node reading this frame's block trio, but CRuby also exposes a method (ostruct
+ * does `alias_method :block_given!, :block_given?`), so answer for the CALLER's
+ * frame.  A method that never mentions block_given?/yield reserves no trio and
+ * cannot be asked — false, which is what koruby's own ostruct assumed. */
+static RESULT
+korb_bi_block_given_p(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    if (UNLIKELY(VALUE_SLICE_LEN(args) != 0))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)",
+                          VALUE_SLICE_LEN(args));
+    const VALUE *fbase = korb_link_base(c, args.p - 3);
+    if (fbase == NULL) return RESULT_OK(KORB_FALSE);
+    struct korb_scope_level lv, nx;
+    korb_scope_at_base((VALUE *)(uintptr_t)fbase, &lv);
+    while (korb_scope_outer(&lv, &nx)) lv = nx;      /* block_given? asks about the enclosing METHOD */
+    if (lv.loc == NULL || (lv.id & 7u) != KORB_FID_METHOD) return RESULT_OK(KORB_FALSE);
+    const struct korb_method *const m = (const struct korb_method *)(uintptr_t)(lv.id & ~(VALUE)7u);
+    if (!korb_bt_known_ptr(c->vm, (uintptr_t)m) || !m->uses_block) return RESULT_OK(KORB_FALSE);
+    return RESULT_OK(((uintptr_t)lv.loc[(korb_sword_t)m->locals_cnt - 3] & 1u) ? KORB_TRUE : KORB_FALSE);
+}
+
 static RESULT
 korb_bi_binding(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -17890,6 +17912,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__refinement_import", korb_bi_refinement_import, 2);   /* Refinement#import_methods (prelude) */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "__method__", korb_bi_method_name, 0);
+    korb_builtin_define(c, "block_given?", korb_bi_block_given_p, 0);
+    korb_builtin_define(c, "iterator?", korb_bi_block_given_p, 0);
     korb_builtin_define(c, "__callee__", korb_bi_method_name, 0);
     korb_builtin_define(c, "require", korb_bi_require, -1);
     korb_builtin_define(c, "require_relative", korb_bi_require_relative, -1);
