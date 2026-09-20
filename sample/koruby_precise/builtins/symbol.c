@@ -967,6 +967,14 @@ static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self,
         if (KORB_CLASS_P(cls) && mid == c->vm->mid_new &&
             (cls == korb_builtin_class_obj(c->vm, KORB_C_CLASS) || VAL2CLASS(cls)->is_singleton))
             return korb_unbound_new(c, slots, cls, mid);
+        /* same for send / __send__ / public_send: universal forms with no entry.
+         * CRuby owns __send__ on BasicObject and the other two on Kernel. */
+        if (KORB_CLASS_P(cls) && korb_universal_send_p(c->vm, mid)) {
+            const VALUE own = korb_const_get(c->vm, korb_intern(c->vm,
+                                  mid == c->vm->mid___send__ ? "BasicObject" : "Kernel",
+                                  mid == c->vm->mid___send__ ? 11 : 6));
+            return korb_unbound_new(c, slots, KORB_CLASS_P(own) ? own : cls, mid);
+        }
         if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym == korb_intern(c->vm, "Kernel", 6)) {
             const VALUE objc = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
             if (KORB_CLASS_P(objc) && korb_class_find_method(objc, mid, NULL) != NULL)

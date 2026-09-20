@@ -3188,6 +3188,26 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     return def;
 }
 
+/* `class A::B` / `module A::B` at a scope with no enclosing class body: the
+ * nesting entry is the WHOLE path (CRuby's Module.nesting is [A::B]), and the
+ * cref chain has to carry it — baking only `B` lets any same-named `B` in the
+ * flat table answer, so `Zeitwerk::Loader::Config`'s constants landed in
+ * `Dry::Container::Config`.  Inside an enclosing class body the path's head is
+ * itself resolved lexically, which the chain walk cannot express: keep the bare
+ * name there. */
+static uint32_t
+kp_nesting_sym(struct kp_ctx *tc, uint32_t path_owner, uint32_t name_sym)
+{
+    if (path_owner == 0) return name_sym;
+    for (const struct kp_frame *f = tc->frame; f; f = f->prev)
+        if (f->class_name_sym != 0 || f->anon_class_body) return name_sym;
+    char buf[512];
+    const int n = snprintf(buf, sizeof buf, "%s::%s", korb_sym_name(tc->c->vm, path_owner),
+                           korb_sym_name(tc->c->vm, name_sym));
+    if (n <= 0 || n >= (int)sizeof buf) return name_sym;
+    return korb_intern(tc->c->vm, buf, (uint32_t)n);
+}
+
 /* `class Name ... end` → node_class carrying the class name + a node_entry for
  * the body (its own scope, run with self = the class). */
 static NODE *
@@ -3210,6 +3230,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         if (path_owner == 0 && !abs_top) dyn_base = parent;
     }
     const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B */
+    const uint32_t nest_sym = kp_nesting_sym(tc, path_owner, name_sym);   /* before the lexical-owner fallback below */
 
     /* a bare `class X` inside a block nests lexically, not by self */
     bool lex_top = abs_top;
@@ -3225,7 +3246,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
                                                    : ALLOC_node_lit(KORB_NIL)));
 
     push_frame(tc, &cn->locals);
-    tc->frame->class_name_sym = name_sym;       /* for Module.nesting */
+    tc->frame->class_name_sym = nest_sym;       /* for Module.nesting (the whole path for `class A::B`) */
     const uint32_t blabel = tc->frame->body_label = kp_body_label(tc, 'c', name_sym);   /* backtrace label; blocks inside read it */
     NODE *body;
     if (cn->body == NULL)
@@ -3644,6 +3665,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         if (path_owner == 0 && !abs_top) dyn_base = parent;
     }
     const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B */
+    const uint32_t nest_sym = kp_nesting_sym(tc, path_owner, name_sym);   /* before the lexical-owner fallback below */
     bool lex_top = abs_top;                          /* see node_class: lexical nesting inside a block */
     if (!abs_top && path_owner == 0 && dyn_base == NULL) {
         uint32_t lex = 0;
@@ -3653,7 +3675,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
     NODE *base_node;
     WITH_CHAIN(tc, 1, (base_node = dyn_base ? transduce(tc, dyn_base) : ALLOC_node_lit(KORB_NIL)));
     push_frame(tc, &mn->locals);
-    tc->frame->class_name_sym = name_sym;       /* for Module.nesting */
+    tc->frame->class_name_sym = nest_sym;       /* for Module.nesting (the whole path for `class A::B`) */
     const uint32_t blabel = tc->frame->body_label = kp_body_label(tc, 'm', name_sym);
     NODE *body;
     if (mn->body == NULL)

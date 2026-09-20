@@ -139,14 +139,27 @@ if ARGV.include?("--gcb")
 end
 
 # `\p{...}` names.  General categories (one- and two-letter), the long
-# names Ruby accepts, and the scripts.  Cs is empty by construction (no
+# names Ruby accepts (including the derived properties real code asks for —
+# rouge's lexers use XID_Start / XID_Continue for identifiers), and the
+# scripts.  Cs is empty by construction (no
 # surrogate can appear in the scan) so it is hard-coded.
 CATEGORIES = %w[L Lu Ll Lt Lm Lo M Mn Mc Me N Nd Nl No
                 P Pc Pd Ps Pe Pi Pf Po S Sm Sc Sk So
                 Z Zs Zl Zp C Cc Cf Co Cn]
 LONG_NAMES = %w[Alpha Word Space Upper Lower Alnum Graph Print Punct
                 Digit Cntrl Blank XDigit ASCII Any Assigned
-                Alphabetic Uppercase Lowercase White_Space Newline]
+                Alphabetic Uppercase Lowercase White_Space Newline
+                ID_Start ID_Continue XID_Start XID_Continue
+                Math Hex_Digit ASCII_Hex_Digit Dash Quotation_Mark
+                Terminal_Punctuation Sentence_Terminal Diacritic Extender
+                Join_Control Ideographic Radical Unified_Ideograph
+                Default_Ignorable_Code_Point Deprecated Soft_Dotted
+                Logical_Order_Exception Variation_Selector
+                Pattern_White_Space Pattern_Syntax Cased Case_Ignorable
+                Grapheme_Base Grapheme_Extend Grapheme_Link
+                Bidi_Control Noncharacter_Code_Point Regional_Indicator
+                Emoji Emoji_Presentation Emoji_Modifier Emoji_Modifier_Base
+                Emoji_Component Extended_Pictographic]
 SCRIPTS    = %w[Latin Greek Cyrillic Armenian Hebrew Arabic Syriac Thaana
                 Devanagari Bengali Gurmukhi Gujarati Oriya Tamil Telugu
                 Kannada Malayalam Sinhala Thai Lao Tibetan Myanmar Georgian

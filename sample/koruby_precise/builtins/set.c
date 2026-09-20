@@ -1248,45 +1248,21 @@ static RESULT korb_m_mod_constants(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     return RESULT_OK(VALUE_REF_GET(arr));
 }
-/* Append one MRO segment (a class/module with its own prepended and included
- * modules) to `out`, in method-lookup order — the same walk korb_mro_seg_find
- * does, so `ancestors` and dispatch agree.  A prepended module brings its own
- * prepends along, hence the recursion.  Duplicates are dropped (a module keeps
- * its first, nearest position). */
-static RESULT korb_ancestors_seg(CTX *c, VALUE *slots, VALUE_REF out, VALUE klass, int depth) {
-    if (!KORB_CLASS_P(klass) || depth > 64) return RESULT_OK(KORB_NIL);
-    slots[0] = klass;                                        /* the segment's class (rooted) */
-    VALUE lst = VAL2CLASS(slots[0])->prepended;              /* prepended: most-recently-prepended first */
-    if (lst != KORB_NIL) {
-        slots[1] = lst;
-        for (uint32_t j = VAL2ARY(slots[1])->len; j-- > 0; )
-            CHECK(korb_ancestors_seg(c, slots + 2, out, korb_items_data(VAL2ARY(slots[1])->items)[j], depth + 1));
-    }
-    {   /* A module can appear twice — prepended to a subclass and included by a
-         * superclass — so only an immediate repeat is dropped (CRuby). */
-        const KorbArray *const d = VAL2ARY(VALUE_REF_GET(out));
-        if (d->len == 0 || korb_items_data(d->items)[d->len - 1] != slots[0])
-            CHECK(korb_ary_push_val(c, slots + 1, out, slots[0]));
-    }
-    lst = VAL2CLASS(slots[0])->included;                     /* included: most-recently-included first */
-    if (lst != KORB_NIL) {
-        slots[1] = lst;
-        for (uint32_t j = VAL2ARY(slots[1])->len; j-- > 0; )
-            CHECK(korb_ancestors_seg(c, slots + 2, out, korb_items_data(VAL2ARY(slots[1])->items)[j], depth + 1));
-    }
-    return RESULT_OK(KORB_NIL);
-}
-/* Module#ancestors — each class of the superclass chain as a segment (its
- * prepends, itself, its includes).  Singleton classes skipped. */
+/* Module#ancestors — the linearized MRO (korb_linearize_mro is the same walk
+ * korb_mro_seg_find does, so `ancestors` and dispatch agree). */
 static RESULT korb_m_class_ancestors(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));        /* result (rooted) */
-    slots[1] = VALUE_REF_GET(self);                          /* current class (rooted) */
-    while (KORB_CLASS_P(slots[1])) {
-        CHECK(korb_ancestors_seg(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1], 0));
-        slots[1] = VAL2CLASS(slots[1])->superclass;
+    VALUE mro[256];
+    const int n = korb_linearize_mro(VALUE_REF_GET(self), mro, 256);
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, (uint32_t)n));   /* result (rooted) */
+    VALUE_REF out = VALUE_REF_AT(&slots[0]);
+    /* the push may GC and MOVE the classes, and mro[] is a C local: re-walk from
+     * the (rooted) receiver each time instead of holding the vector */
+    for (int i = 0; i < n; i++) {
+        if (korb_linearize_mro(VALUE_REF_GET(self), mro, 256) != n) break;   /* unreachable: nothing above mutates the MRO */
+        CHECK(korb_ary_push_val(c, slots + 1, out, mro[i]));
     }
-    return RESULT_OK(slots[0]);
+    return RESULT_OK(VALUE_REF_GET(out));
 }
 static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask);  /* fwd */
 /* Binding#__lvars_own — only the names of the binding site's OWN scope (baked
@@ -1970,6 +1946,10 @@ static RESULT korb_method_defined_vis(CTX *c, VALUE *slots, VALUE_REF self, VALU
         const struct korb_method *const gm = korb_method_lookup(c->vm, mid);
         if (gm != NULL && gm->kind == KORB_METHOD_BUILTIN)
             return RESULT_OK((want == 1) ? KORB_TRUE : KORB_FALSE);
+        /* send / __send__ / public_send have no table entry (dispatch special
+         * cases) but are public instance methods of every object in CRuby. */
+        if (korb_universal_send_p(c->vm, mid))
+            return RESULT_OK((want <= 0) ? KORB_TRUE : KORB_FALSE);
         return RESULT_OK(KORB_FALSE);
     }
     const bool ok = (want < 0) ? (me->visibility != 1) : (me->visibility == want);

@@ -4188,6 +4188,30 @@ static bool korb_class_has_ancestor(VALUE klass, VALUE anc) {
 /* Copy the method `oldm` (found on klass / its ancestors / the global table) into
  * a new slot `newm` on klass.  Shared by Module#alias_method and `alias`. */
 static VALUE korb_refinement_target(struct korb_vm *vm, VALUE mod);   /* fwd */
+/* The three universal reflective sends: dispatch special cases, no table entry. */
+static bool korb_universal_send_p(const struct korb_vm *const vm, const uint32_t mid) {
+    return mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send;
+}
+
+/* send / __send__ / public_send are dispatch special-cases with no table entry,
+ * so `alias my_send send` (racc, sequel) gets a trampoline that re-enters the
+ * dispatch under the original name.  `slots` is the cfunc's free cursor. */
+static RESULT
+korb_send_alias_tramp(CTX *c, VALUE *const slots, const VALUE_REF self, const VALUE_SLICE a,
+                      NODE *const block, VALUE *const def_env, VALUE *const cself, const uint32_t orig)
+{
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    slots[0] = VALUE_REF_GET(self);
+    for (uint32_t i = 0; i < n; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+    return korb_send_impl(c, slots + 1 + n, orig, 0, n, block, def_env, cself);
+}
+static RESULT korb_m_alias_send(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)
+{ return korb_send_alias_tramp(c, slots, self, a, block, def_env, cself, c->vm->mid_send); }
+static RESULT korb_m_alias_send2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)
+{ return korb_send_alias_tramp(c, slots, self, a, block, def_env, cself, c->vm->mid___send__); }
+static RESULT korb_m_alias_public_send(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)
+{ return korb_send_alias_tramp(c, slots, self, a, block, def_env, cself, c->vm->mid_public_send); }
+
 RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t oldm) {
     if (!KORB_CLASS_P(klass)) klass = korb_dispatch_class(c, klass);   /* top-level (self=main) → alias on its class (Object) */
     if (UNLIKELY(!KORB_CLASS_P(klass)))
@@ -4219,6 +4243,19 @@ RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t 
         dst->rest_slot = -1;
         dst->owner = KORB_NIL; dst->dm_proc = KORB_NIL;
         dst->rfn = korb_m_class_new_bracket;
+        c->vm->method_serial++;
+        return RESULT_OK(KORB_NIL);
+    }
+    if (src == NULL && korb_universal_send_p(c->vm, oldm)) {
+        struct korb_method *dst = korb_class_method_slot(c->vm, VAL2CLASS(klass), newm);
+        memset(dst, 0, sizeof *dst);
+        dst->mid = newm; dst->orig_mid = oldm;
+        dst->kind = KORB_METHOD_CFUNC; dst->params_cnt = -1;
+        dst->rest_slot = -1; dst->uses_block = 1;
+        dst->owner = KORB_NIL; dst->dm_proc = KORB_NIL;
+        dst->rbfn = (oldm == c->vm->mid_public_send) ? korb_m_alias_public_send
+                  : (oldm == c->vm->mid___send__)    ? korb_m_alias_send2
+                                                     : korb_m_alias_send;
         c->vm->method_serial++;
         return RESULT_OK(KORB_NIL);
     }
@@ -5792,36 +5829,56 @@ static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VA
  * a prepended module brings its own prepends), the class, then its includes.
  * Same order as korb_mro_seg_find; a repeat keeps its first (nearest) slot. */
 static int
-korb_linearize_seg(VALUE klass, VALUE *buf, int n, int max, int depth)
+korb_linearize_seg(VALUE klass, VALUE *buf, uint8_t *pre, int n, int max, int depth, uint8_t in_prep)
 {
     if (!KORB_CLASS_P(klass) || depth > 64 || n >= max) return n;
     const KorbClass *const k = VAL2CLASS(klass);
     if (k->prepended != KORB_NIL) {
         const KorbArray *const pa = VAL2ARY(k->prepended);
         for (int32_t j = (int32_t)pa->len - 1; j >= 0; j--)
-            n = korb_linearize_seg(korb_items_data(pa->items)[j], buf, n, max, depth + 1);
+            n = korb_linearize_seg(korb_items_data(pa->items)[j], buf, pre, n, max, depth + 1, 1);
     }
     if (n < max) {
-        /* A module can legitimately appear twice — prepended here and included
-         * by an ancestor — so only skip an immediate repeat (a self-cycle). */
-        if (n == 0 || buf[n - 1] != klass) buf[n++] = klass;
+        if (n == 0 || buf[n - 1] != klass) { pre[n] = in_prep; buf[n++] = klass; }
     }
     if (k->included != KORB_NIL) {
         const KorbArray *const ia = VAL2ARY(k->included);
         for (int32_t j = (int32_t)ia->len - 1; j >= 0; j--)
-            n = korb_linearize_seg(korb_items_data(ia->items)[j], buf, n, max, depth + 1);
+            n = korb_linearize_seg(korb_items_data(ia->items)[j], buf, pre, n, max, depth + 1, in_prep);
     }
     return n;
+}
+/* `include` never re-inserts a module already in the chain: the one already
+ * there — the DEEPEST occurrence — keeps its place (CRuby rb_include_modules_at).
+ * koruby expands the include lists here instead, so the duplicates are dropped
+ * here, keeping the last.  A PREPENDED entry is exempt: prepend inserts a fresh
+ * iclass even when the module is already included further up, and `M, B, A, M`
+ * is what CRuby reports.  Without this, `super` from the first copy found the
+ * second and recursed forever (dry-types' Equalizer modules). */
+static int
+korb_mro_dedup(VALUE *buf, const uint8_t *pre, int n)
+{
+    int w = n;
+    for (int i = n; i-- > 0; ) {
+        bool dup = false;
+        if (!pre[i])
+            for (int j = i + 1; j < n && !dup; j++) dup = (buf[j] == buf[i]);
+        if (!dup) buf[--w] = buf[i];
+    }
+    if (w > 0) memmove(buf, buf + w, sizeof(VALUE) * (size_t)(n - w));
+    return n - w;
 }
 static int
 korb_linearize_mro(VALUE klass, VALUE *buf, int max)
 {
+    uint8_t pre[256];
+    if (max > (int)sizeof pre) max = (int)sizeof pre;
     int n = 0;
     while (KORB_CLASS_P(klass) && n < max) {
-        n = korb_linearize_seg(klass, buf, n, max, 0);
+        n = korb_linearize_seg(klass, buf, pre, n, max, 0, 0);
         klass = VAL2CLASS(klass)->superclass;
     }
-    return n;
+    return korb_mro_dedup(buf, pre, n);
 }
 
 /* Resolve what `super` would call from the frame whose entry cell is
@@ -5923,11 +5980,13 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
          * the caller's own def-singleton temporarily hidden is intrusive.
          * Instead mark re-entry: stash the defining singleton so the smethod
          * override check skips it once. */
-        slots[0] = self;
-        for (uint32_t i = 0; i < argc; i++) slots[1 + i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];
+        slots[0] = captured_self;                      /* park in a scanned slot for the cself ptr */
+        slots[1] = self;                               /* recv below the shifted args */
+        for (uint32_t i = 0; i < argc; i++) slots[2 + i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];
         c->vm->super_new_skip = def_class;             /* consumed by korb_send_impl's def self.new check */
         c->carry_base = frame_base; c->carry_line_bits = korb_flink_line_bits(line);   /* the frame this `super` is in (the restage loses the cell) */
-        RESULT r = korb_send_impl(c, slots + 1 + argc, mid, line, argc, NULL, NULL, NULL);
+        /* the block rides along: `def self.new(*a, &b) = super` must reach #initialize */
+        RESULT r = korb_send_impl(c, slots + 2 + argc, mid, line, argc, block, def_env, &slots[0]);
         c->vm->super_new_skip = KORB_NIL;
         return r;
     }

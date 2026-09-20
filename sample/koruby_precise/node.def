@@ -2714,7 +2714,8 @@ node_nesting(CTX *c, NODE *n, VALUE *slots, const char *name_syms, uint32_t name
     slots[0] = UNWRAP(korb_ary_new(c, slots, name_cnt));
     VALUE_REF arr = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < name_cnt; i++) {
-        const VALUE cls = korb_const_get(c->vm, ids[i]);
+        /* a `class A::B` header bakes the whole path as one element */
+        const VALUE cls = korb_cref_resolve(c->vm, &ids[i], 1, ids[i]);
         if (KORB_CLASS_P(cls)) CHECK(korb_ary_push_val(c, slots + 1, arr, cls));
     }
     return RESULT_OK(VALUE_REF_GET(arr));
