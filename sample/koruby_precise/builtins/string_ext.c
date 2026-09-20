@@ -1388,11 +1388,10 @@ static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (!korb_to_index(sv, &stop)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 1));
         }
-        const KorbString *const s0 = VAL2STR(VALUE_REF_GET(self));
-        uint32_t ncp = korb_utf8_count(korb_strbuf_data(s0->buf), s0->len);
+        const uint32_t ncp = korb_str_bchars(c, VALUE_REF_GET(self), VAL2STR(VALUE_REF_GET(self))->len);
         if (stop < 0) stop += ncp;
         if (stop < 0) return RESULT_OK(KORB_NIL);
-        stopb = (int32_t)korb_str_char_to_byte(s0, stop);   /* byte offset survives a later GC move */
+        stopb = (int32_t)korb_str_cbyte(c, VALUE_REF_GET(self), stop);   /* byte offset survives a later GC move */
         have_stop = true;
         sv = VALUE_SLICE_GET(a, 0);                     /* re-read: the #to_int above ran Ruby */
     }
@@ -1416,7 +1415,7 @@ static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (have_stop && stopb < hi) hi = stopb;
     for (int32_t i = hi; i >= 0; i--)
         if (memcmp(korb_strbuf_data(s->buf) + i, korb_strbuf_data(n->buf), n->len) == 0)
-            return RESULT_OK(LONG2FIX(korb_utf8_count(korb_strbuf_data(s->buf), (uint32_t)i)));
+            return RESULT_OK(LONG2FIX(korb_str_bchars(c, VALUE_REF_GET(self), (uint32_t)i)));
     return RESULT_OK(KORB_NIL);
 }
 /* String#dump — like #inspect but ASCII-only: multibyte chars become \uHHHH /

@@ -2399,6 +2399,21 @@ static uint32_t korb_str_char_to_byte(const KorbString *s, korb_sword_t cidx) {
     }
     return b;
 }
+/* char index <-> byte offset, honouring the encoding.  A single-byte encoding
+ * (BINARY / US-ASCII / …) indexes by BYTE, so the UTF-8 walk would mis-count
+ * every 0x80+ byte — String#index on binary data came back short by the number
+ * of continuation-looking bytes before the hit (rubyzip's central directory). */
+static uint32_t korb_str_bchars(CTX *c, VALUE v, uint32_t boff) {
+    return KORB_ENC_SB(c->vm, KORB_STR_ENC(v)) ? boff
+         : korb_utf8_count(korb_strbuf_data(VAL2STR(v)->buf), boff);
+}
+static uint32_t korb_str_cbyte(CTX *c, VALUE v, korb_sword_t cidx) {
+    const KorbString *const s = VAL2STR(v);
+    if (!KORB_ENC_SB(c->vm, KORB_STR_ENC(v))) return korb_str_char_to_byte(s, cidx);
+    if (cidx < 0) return 0;
+    return (uint32_t)(cidx > (korb_sword_t)s->len ? s->len : cidx);
+}
+
 static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t boff = 0;
     if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0))) {       /* index(regexp[, start]) → char index of the match (builtins/regexp.c) */
@@ -2424,11 +2439,10 @@ static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (!korb_to_index(sv, &start)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 1));
         }
-        const KorbString *const s0 = VAL2STR(VALUE_REF_GET(self));
-        uint32_t ncp = korb_utf8_count(korb_strbuf_data(s0->buf), s0->len);
+        const uint32_t ncp = korb_str_bchars(c, VALUE_REF_GET(self), VAL2STR(VALUE_REF_GET(self))->len);
         if (start < 0) start += ncp;
         if (start < 0 || start > (korb_sword_t)ncp) return RESULT_OK(KORB_NIL);   /* out of range → nil (needle not coerced) */
-        boff = korb_str_char_to_byte(s0, start);
+        boff = korb_str_cbyte(c, VALUE_REF_GET(self), start);
     }
     VALUE sv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(sv))) {               /* coerce via #to_str, else TypeError (never #to_int) */
@@ -2448,7 +2462,7 @@ static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const KorbString *const s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);   /* re-read s after coercion's GC */
     int32_t b = korb_byte_find(korb_strbuf_data(s->buf) + boff, s->len - boff, korb_strbuf_data(n->buf), n->len);
     if (b < 0) return RESULT_OK(KORB_NIL);
-    return RESULT_OK(LONG2FIX(korb_utf8_count(korb_strbuf_data(s->buf), boff + (uint32_t)b)));   /* char index */
+    return RESULT_OK(LONG2FIX(korb_str_bchars(c, VALUE_REF_GET(self), boff + (uint32_t)b)));   /* char index */
 }
 
 static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
