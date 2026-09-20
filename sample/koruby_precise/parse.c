@@ -462,6 +462,9 @@ kp_gvar_alias_seed(struct kp_ctx *tc)
         { "$PREMATCH", "$`" }, { "$POSTMATCH", "$'" },
         { "$LAST_PAREN_MATCH", "$+" }, { "$LOADED_FEATURES", "$\"" },
         { "$PROGRAM_NAME", "$0" },
+        /* $> IS $stdout in CRuby (one slot), so `$stdout = io` must retarget it —
+         * pp.rb's `def PP.pp(obj, out=$>)` picks up a replaced $stdout that way. */
+        { "$>", "$stdout" },
         /* command-line switch aliases (CRuby exposes these as the same slot) */
         { "$-d", "$DEBUG" }, { "$-v", "$VERBOSE" }, { "$-w", "$VERBOSE" },
         { "$-I", "$LOAD_PATH" }, { "$:", "$LOAD_PATH" },

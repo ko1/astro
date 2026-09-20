@@ -1583,10 +1583,11 @@ class Object
 end
 
 module Kernel
-  # pp(*objs) — pretty-print each and return the argument(s) (Kernel#pp).
+  # pp(*objs) — CRuby's Kernel#pp autoloads the real pretty-printer on first use
+  # and then re-dispatches to the definition lib/pp.rb installs over this one.
   def pp(*objs)
-    objs.each { |obj| $stdout.write(obj.pretty_inspect) }
-    objs.size <= 1 ? objs.first : objs
+    require 'pp'
+    pp(*objs)
   end
   private :pp
 end

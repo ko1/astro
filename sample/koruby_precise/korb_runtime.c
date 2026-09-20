@@ -5472,8 +5472,14 @@ RESULT
 korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int is_module, VALUE enclosing,
                 const VALUE *caller_base, uint32_t caller_line)
 {
-    if (superclass != KORB_NIL && !KORB_CLASS_P(superclass))
+    /* A module or a metaclass is not a valid superclass — Class.new's path already
+     * refuses both, and letting `class X < SomeModule` through built a class whose
+     * chain never reaches Object (pry's ColorPrinter < ::PP found that hole). */
+    if (superclass != KORB_NIL && (!KORB_CLASS_P(superclass) ||
+                                   VAL2CLASS(superclass)->is_module || VAL2CLASS(superclass)->is_singleton))
         { char rdb[224];
+          if (KORB_CLASS_P(superclass) && VAL2CLASS(superclass)->is_module)   /* CRuby names the CLASS of the value */
+              return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass must be an instance of Class (given an instance of Module)");
           return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass must be an instance of Class (given %s)", korb_recv_desc(c, slots + 1, superclass, rdb, sizeof rdb)); }
     const bool super_given = (superclass != KORB_NIL);   /* `class C < X` vs plain `class C` */
     /* a class with no explicit superclass derives from Object, so its instances'
@@ -11408,6 +11414,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             slots[0] = (!is_mod && argc >= 1) ? slots[-(korb_sword_t)argc] : korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* super (rooted) */
             if (UNLIKELY(!is_mod && (!KORB_CLASS_P(slots[0]) || VAL2CLASS(slots[0])->is_module || VAL2CLASS(slots[0])->is_singleton)))
                 { char rdb[224];   /* a Module or a metaclass is not a valid superclass */
+                  if (KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_module)   /* CRuby names the CLASS of the value */
+                      return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be an instance of Class (given an instance of Module)");
                   return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be an instance of Class (given %s)", korb_recv_desc(c, slots + 1, slots[0], rdb, sizeof rdb)); }
             /* Only Class is un-subclassable.  `Class.new(Module)` IS legal — its
              * instances are Modules (rspec-mocks builds its prepended module
