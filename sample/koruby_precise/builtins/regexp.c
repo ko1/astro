@@ -697,6 +697,23 @@ static RESULT korb_m_str_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         return korb_raise((c), (slots), KORB_E_TYPE, 0, "uninitialized Regexp"); \
 } while (0)
 static RESULT korb_m_re_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { KORB_RE_CHECK(c, slots, self); return korb_re_match_set(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); }
+/* A character index in the SUBJECT's own encoding → a byte offset.  Only UTF-8
+ * needs the stepping walk: a single-byte encoding (BINARY / US-ASCII /
+ * ISO-8859-x) indexes by byte.  Walking a BINARY string as UTF-8 made
+ * `bin.index(/x/, pos)` skip past every multi-byte-looking run in it — marcel's
+ * XML sniffer scans a transcoded prefix exactly that way. */
+static size_t korb_re_startb(VALUE sv, long startc) {
+    if (startc <= 0) return 0;
+    const KorbString *const s = VAL2STR(sv);
+    if (KORB_STR_ENC(sv) != KORB_ENC_UTF8) return (size_t)startc < (size_t)s->len ? (size_t)startc : (size_t)s->len;
+    return korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)startc);
+}
+/* Character count in the subject's own encoding (same rule as above). */
+static long korb_re_ncp(VALUE sv) {
+    const KorbString *const s = VAL2STR(sv);
+    return (KORB_STR_ENC(sv) == KORB_ENC_UTF8)
+             ? (long)korb_utf8_count(korb_strbuf_data(s->buf), s->len) : (long)s->len;
+}
 static RESULT korb_m_re_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* match?(str[, pos]) — no $~ */
     KORB_RE_CHECK(c, slots, self);
     VALUE subj; slots[0] = VALUE_REF_GET(self);
@@ -705,10 +722,10 @@ static RESULT korb_m_re_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     size_t startb = 0;
     if (VALUE_SLICE_LEN(a) >= 2) {                    /* optional char start position */
         korb_sword_t pos = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &pos)) {
-            const KorbString *s = VAL2STR(slots[1]); const long ncp = (long)korb_utf8_count(korb_strbuf_data(s->buf), s->len);
+            const long ncp = korb_re_ncp(slots[1]);
             if (pos < 0) pos += ncp;
             if (pos < 0 || pos > ncp) return RESULT_OK(KORB_FALSE);
-            startb = (pos == 0) ? 0 : korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)pos);
+            startb = korb_re_startb(slots[1], (long)pos);
         }
     }
     korb_re_match_t m;
@@ -996,7 +1013,7 @@ static RESULT korb_m_str_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     long startc = 0;
     if (VALUE_SLICE_LEN(a) >= 2 && !korb_re_start_char(c, slots[0], VALUE_SLICE_GET(a, 1), &startc))
         { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }   /* out of range → no match */
-    const KorbString *s = VAL2STR(slots[0]); size_t startb = (startc <= 0) ? 0 : korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)startc);
+    size_t startb = korb_re_startb(slots[0], startc);
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], startb, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
@@ -1015,7 +1032,7 @@ static RESULT korb_m_str_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     long startc = 0;
     if (VALUE_SLICE_LEN(a) >= 2 && !korb_re_start_char(c, slots[0], VALUE_SLICE_GET(a, 1), &startc))
         return RESULT_OK(KORB_FALSE);                    /* out of range → no match */
-    const KorbString *s = VAL2STR(slots[0]); size_t startb = (startc <= 0) ? 0 : korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)startc);
+    size_t startb = korb_re_startb(slots[0], startc);
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], startb, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
@@ -1418,10 +1435,10 @@ RESULT korb_re_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE gr
 RESULT korb_re_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long startc, bool bytes) {
     slots[0] = VALUE_REF_GET(self); slots[1] = re;
     const KorbString *s = VAL2STR(slots[0]);
-    const long ncp = bytes ? (long)s->len : (long)korb_utf8_count(korb_strbuf_data(s->buf), s->len);
+    const long ncp = bytes ? (long)s->len : korb_re_ncp(slots[0]);
     if (startc < 0) startc += ncp;
     if (startc < 0 || startc > ncp) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
-    size_t startb = bytes ? (size_t)startc : ((startc == 0) ? 0 : korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)startc));
+    size_t startb = bytes ? (size_t)startc : korb_re_startb(slots[0], startc);
     korb_re_match_t m; RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], startb, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
     if (rr.value != KORB_TRUE) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
@@ -1433,11 +1450,11 @@ RESULT korb_re_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long st
 RESULT korb_re_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long stop, bool bytes, bool have_stop) {
     slots[0] = VALUE_REF_GET(self); slots[1] = re;
     const KorbString *s0 = VAL2STR(slots[0]); const long slen = (long)s0->len;
-    const long ncp = bytes ? slen : (long)korb_utf8_count(korb_strbuf_data(s0->buf), slen);
+    const long ncp = bytes ? slen : korb_re_ncp(slots[0]);
     if (!have_stop) stop = ncp;
     if (stop < 0) stop += ncp;
     if (stop < 0) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
-    const long stopb = bytes ? stop : (stop >= ncp ? slen : (long)korb_utf8_byteoff(korb_strbuf_data(s0->buf), slen, (uint32_t)stop));
+    const long stopb = bytes ? stop : (stop >= ncp ? slen : (long)korb_re_startb(slots[0], stop));
     korb_re_match_t last_m; bool have = false; long off = 0;
     while (off <= slen) {
         korb_re_match_t m; RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], (size_t)off, &m);
