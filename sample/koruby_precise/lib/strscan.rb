@@ -82,9 +82,10 @@ class StringScanner
       m = pattern.match(rest)
       (m && m.begin(0) == 0) ? [m[0], m] : nil
     else
-      cp = __cpos
-      m = pattern.match(@string, cp)
-      (m && m.begin(0) == cp) ? [m[0], m] : nil
+      # BYTE-offset match: converting @pos to a character index here walked the
+      # subject on every scan, which made scanning a large string O(n^2).
+      m = pattern.__match_byte(@string, @pos)
+      (m && m.byteoffset(0)[0] == @pos) ? [m[0], m] : nil
     end
   end
   private :try
@@ -151,11 +152,10 @@ class StringScanner
       stop_b = @pos + m.byteoffset(0)[1]
       ncp = nil
     else
-      cp = __cpos
-      m = __to_pattern(re).match(@string, cp) or return (@md = nil)
+      m = __to_pattern(re).__match_byte(@string, @pos) or return (@md = nil)
       @md = m
       stop_b = m.byteoffset(0)[1]        # end of the match, absolute bytes
-      ncp = m.end(0)
+      ncp = nil                          # character cursor is recomputed on demand
     end
     s = @string.byteslice(@pos, stop_b - @pos)
     @prev = @pos

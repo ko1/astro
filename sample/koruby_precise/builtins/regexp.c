@@ -914,6 +914,33 @@ static RESULT korb_m_re_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(slots[2]);
 }
 
+/* Regexp#__match_byte(str, byteoff) — #match with the position given in BYTES.
+ * StringScanner keeps a byte cursor; converting it to a character index for
+ * #match walked the subject on every scan, which made scanning a large string
+ * O(n^2) (crack's 2.4MB JSON took >5 min instead of 1.5s).  Private: the public
+ * #match keeps its character-index contract. */
+static RESULT korb_m_re_match_byte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_RE_CHECK(c, slots, self);
+    slots[0] = VALUE_REF_GET(self);
+    VALUE subj;
+    if (UNWRAP(korb_re_subject(c, slots + 2, VALUE_SLICE_GET(a, 0), &subj)) != KORB_TRUE)
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(VALUE_SLICE_GET(a, 0)));
+    slots[1] = subj;
+    korb_sword_t off = 0;
+    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &off)))
+        return korb_raise_no_int(c, slots + 2, VALUE_SLICE_GET(a, 1));
+    const KorbString *const s = VAL2STR(slots[1]);
+    if (off < 0) off += (korb_sword_t)s->len;
+    if (off < 0 || off > (korb_sword_t)s->len) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
+    korb_re_match_t m;
+    RESULT rr = korb_re_run(c, slots + 2, slots[0], slots[1], (size_t)off, &m);
+    if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+    if (rr.value != KORB_TRUE) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
+    slots[2] = UNWRAP(korb_re_build_md(c, slots + 2, slots[1], slots[0], &m));
+    korb_re_set_lastmatch(c, slots[2]);
+    return RESULT_OK(slots[2]);
+}
+
 /* ---- String#match / match? ----------------------------------------------- */
 static RESULT korb_re_coerce_pat(CTX *c, VALUE *slots, VALUE pv, VALUE *out) {
     if (KORB_REGEXP_P(pv)) { *out = pv; return RESULT_OK(KORB_TRUE); }

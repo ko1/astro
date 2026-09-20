@@ -13389,6 +13389,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_REGEXP, "==", korb_m_re_eq, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "eql?", korb_m_re_eq, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "hash", korb_m_re_hash, 0);
+    korb_def_cmethod(c, KORB_C_REGEXP, "__match_byte", korb_m_re_match_byte, 2);   /* strscan: byte-offset match */
     korb_def_cmethod(c, KORB_C_REGEXP, "__init_pattern", korb_m_re_init_pattern, -1);   /* the prelude's #initialize calls this */
     { struct korb_method *const mi = korb_class_own_method(korb_builtin_class_obj(c->vm, KORB_C_REGEXP),
                                                           korb_intern(c->vm, "__init_pattern", 14));

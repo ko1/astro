@@ -588,12 +588,31 @@ static inline bool korb_is_ws(unsigned char ch) {
     return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' || ch == '\v';
 }
 
+/* Are the first `n` bytes all ASCII?  Word-at-a-time: the high-bit test is what
+ * decides whether a character index can be used as a byte index unchanged. */
+static bool
+korb_ascii_span(const unsigned char *const p, const uint32_t n)
+{
+    uint32_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t w;
+        memcpy(&w, p + i, 8);
+        if (w & 0x8080808080808080ULL) return false;
+    }
+    for (; i < n; i++) if (p[i] & 0x80u) return false;
+    return true;
+}
+
 /* count UTF-8 codepoints in the first nbytes bytes (lead bytes only) */
 static uint32_t
 korb_utf8_count(const char *b, uint32_t nbytes)
 {
     /* A broken sequence counts one character PER BYTE (CRuby): the lead byte is
      * only a character with all its continuation bytes present. */
+    /* All-ASCII is the common case and the answer is the byte count; the
+     * word-at-a-time test replaces a per-character decode of the whole buffer
+     * (81% of crack's 2.4MB JSON conversion was spent right here). */
+    if (korb_ascii_span((const unsigned char *)b, nbytes)) return nbytes;
     uint32_t n = 0, i = 0;
     while (i < nbytes) {
         const unsigned char c0 = (unsigned char)b[i];
@@ -772,10 +791,15 @@ static uint32_t korb_str_last_char_bytes(const struct korb_vm *vm, VALUE sv) {
     return len - n;
 }
 
+
 /* byte offset of codepoint index ci (clamped to [0, len]) */
 static uint32_t
 korb_utf8_byteoff(const char *b, uint32_t len, uint32_t ci)
 {
+    /* ASCII prefix: a character index IS the byte index while every byte is
+     * < 0x80, and the word-at-a-time test costs a memory scan instead of a
+     * per-character decode (StringScanner / String#[] on a big ASCII subject). */
+    if (ci <= len && korb_ascii_span((const unsigned char *)b, ci)) return ci;
     uint32_t i = 0, n = 0;
     while (i < len && n < ci) {
         const uint32_t l = korb_utf8_seq_len((const unsigned char *)b, i, len);
