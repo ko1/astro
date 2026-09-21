@@ -133,11 +133,14 @@ module Prism
     end
 
     def dump_options_version(version)
+      # "current" は「走っている ruby の文法で」の意 (prism の Ripper 翻訳器が
+      # 使う)。koruby が抱える prism は最新版なので 3.5 以降は 0 と同じ。
+      version = RUBY_VERSION if version == "current"
       case version
       when nil, "latest" then 0
       when /\A3\.3(\.\d+)?\z/ then 1
       when /\A3\.4(\.\d+)?\z/ then 2
-      when /\A3\.5(\.\d+)?\z/ then 0
+      when /\A3\.5(\.\d+)?\z/, /\A4\.\d+(\.\d+)?\z/ then 0
       else raise ArgumentError, "invalid version: #{version}"
       end
     end
