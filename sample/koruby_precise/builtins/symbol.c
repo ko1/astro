@@ -40,7 +40,7 @@ static RESULT korb_m_sym_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_sym_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a;
     const uint32_t id = SYM2ID(VALUE_REF_GET(self));   /* sym_lens, not strlen: a name may hold NUL */
-    return RESULT_OK(LONG2FIX(korb_utf8_count(korb_sym_name(c->vm, id), c->vm->sym_lens[id])));
+    return RESULT_OK(LONG2FIX(korb_enc_charcount(c->vm, c->vm->sym_encs[id], korb_sym_name(c->vm, id), c->vm->sym_lens[id])));
 }
 
 /* ---- nil / true / false methods ------------------------------------------ */

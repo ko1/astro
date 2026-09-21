@@ -836,10 +836,10 @@ static RESULT korb_m_str_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), slots[1], &renc)))
         return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(slots[1]));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    uint32_t ncp = korb_utf8_count(korb_strbuf_data(s->buf), s->len);
+    uint32_t ncp = korb_str_bchars(c, VALUE_REF_GET(self), s->len);
     korb_sword_t pos = idx >= 0 ? idx : (korb_sword_t)ncp + idx + 1;
     if (UNLIKELY(pos < 0 || pos > (korb_sword_t)ncp)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)idx);
-    uint32_t boff = korb_str_char_to_byte(s, (uint32_t)pos);
+    uint32_t boff = korb_str_cbyte(c, VALUE_REF_GET(self), pos);
     uint32_t inn = VAL2STR(slots[1])->len, newlen = s->len + inn;
     char *out = malloc(newlen ? newlen : 1);
     s = VAL2STR(VALUE_REF_GET(self));
@@ -1634,8 +1634,7 @@ static RESULT korb_str_pad(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, 
     const KorbString *padstr = (padv != KORB_NIL) ? VAL2STR(padv) : NULL;
     if (padstr && padstr->len == 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "zero width padding");
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    const uint32_t senc = KORB_STR_ENC(VALUE_REF_GET(self));
-    uint32_t ncp = KORB_ENC_SB(c->vm, senc) ? s->len : korb_utf8_count(korb_strbuf_data(s->buf), s->len);
+    const uint32_t ncp = korb_str_bchars(c, VALUE_REF_GET(self), s->len);
     if (width <= (korb_sword_t)ncp) return korb_str_slice_new(c, slots, self, 0, s->len);
     uint32_t total_pad = (uint32_t)width - ncp;
     uint32_t left = mode == 1 ? total_pad : mode == 2 ? total_pad / 2 : 0;

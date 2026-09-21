@@ -608,14 +608,22 @@ static RESULT korb_m_str_reverse(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK((VALUE)r);
 }
 
-/* byte-substring search: index of needle in hay[0..hlen), or -1 (empty matches at 0) */
+/* byte-substring search: index of needle in hay[0..hlen), or -1 (empty matches at 0).
+ * memchr picks the candidate starts — a memcmp per byte left index/include?/split
+ * scanning one byte at a time. */
 static int32_t
-korb_byte_find(const char *hay, uint32_t hlen, const char *needle, uint32_t nlen)
+korb_byte_find(const char *const hay, const uint32_t hlen, const char *const needle, const uint32_t nlen)
 {
     if (nlen == 0) return 0;
     if (nlen > hlen) return -1;
-    for (uint32_t i = 0; i + nlen <= hlen; i++)
-        if (memcmp(hay + i, needle, nlen) == 0) return (int32_t)i;
+    const char *const last = hay + (hlen - nlen);
+    const int c0 = (unsigned char)needle[0];
+    for (const char *p = hay; p <= last; ) {
+        const char *const q = (const char *)memchr(p, c0, (size_t)(last - p) + 1);
+        if (q == NULL) return -1;
+        if (nlen == 1 || memcmp(q + 1, needle + 1, nlen - 1) == 0) return (int32_t)(q - hay);
+        p = q + 1;
+    }
     return -1;
 }
 
@@ -846,9 +854,6 @@ static uint32_t korb_enc_step_fwd(const struct korb_vm *const vm, const uint32_t
 /* Character index → byte offset in `enc` (clamped to [0, len]). */
 static uint32_t korb_enc_byteoff(const struct korb_vm *vm, uint32_t enc, const char *b, uint32_t len, uint32_t ci) {
     return korb_enc_step_fwd(vm, enc, b, len, 0, ci);
-}
-static uint32_t korb_utf8_byteoff(const char *const b, const uint32_t len, const uint32_t ci) {
-    return korb_utf8_step_fwd(b, len, 0, ci);
 }
 /* Is byte offset `off` the head of a character?  0 and len always are.  Decided
  * for UTF-8 and the UTF-16/32 families; other multi-byte encodings answer true
@@ -2543,28 +2548,18 @@ static RESULT korb_m_str_end_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(KORB_FALSE);
 }
 
-/* byte offset of the cidx-th codepoint (clamped to len). */
-static uint32_t korb_str_char_to_byte(const KorbString *s, korb_sword_t cidx) {
-    uint32_t b = 0;
-    for (korb_sword_t k = 0; k < cidx && b < s->len; k++) {
-        const uint32_t l = korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(s->buf), b, s->len);
-        b += l ? l : 1;
-    }
-    return b;
-}
 /* char index <-> byte offset, honouring the encoding.  A single-byte encoding
  * (BINARY / US-ASCII / …) indexes by BYTE, so the UTF-8 walk would mis-count
  * every 0x80+ byte — String#index on binary data came back short by the number
  * of continuation-looking bytes before the hit (rubyzip's central directory). */
 static uint32_t korb_str_bchars(CTX *c, VALUE v, uint32_t boff) {
-    return KORB_ENC_SB(c->vm, KORB_STR_ENC(v)) ? boff
-         : korb_utf8_count(korb_strbuf_data(VAL2STR(v)->buf), boff);
+    return korb_enc_charcount(c->vm, KORB_STR_ENC(v), korb_strbuf_data(VAL2STR(v)->buf), boff);
 }
 static uint32_t korb_str_cbyte(CTX *c, VALUE v, korb_sword_t cidx) {
     const KorbString *const s = VAL2STR(v);
-    if (!KORB_ENC_SB(c->vm, KORB_STR_ENC(v))) return korb_str_char_to_byte(s, cidx);
     if (cidx < 0) return 0;
-    return (uint32_t)(cidx > (korb_sword_t)s->len ? s->len : cidx);
+    if (cidx >= (korb_sword_t)s->len) return s->len;   /* a char index never exceeds the byte count */
+    return korb_enc_byteoff(c->vm, KORB_STR_ENC(v), korb_strbuf_data(s->buf), s->len, (uint32_t)cidx);
 }
 
 static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
