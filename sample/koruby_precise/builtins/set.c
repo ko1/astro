@@ -442,7 +442,8 @@ static RESULT korb_m_obj_object_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 /* `sv is_a? target` — target must already be known to be a class/module.
  * Allocation-free, so the ObjectSpace heap walk can use it as a filter. */
 static bool korb_obj_kind_of_p(CTX *c, VALUE sv, VALUE target) {
-    if (target == korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT])) return true;
+    /* No `target == Object → true` shortcut: a BasicObject (or a subclass of it)
+     * is NOT an Object, and tilt branches on exactly that. */
     /* start from the RAW override (singleton included) so extended modules count.
      * For a class with no own metaclass yet, CRuby still has one (it makes them
      * eagerly), so walk to the nearest materialized one instead of stopping at

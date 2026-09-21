@@ -7385,7 +7385,8 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
         return lower && upper;
     }
     if (KORB_CLASS_P(pat)) {                              /* Module#=== ⟺ val.is_a?(pat): walk ancestors incl. modules */
-        if (pat == korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT])) return true;
+        /* no `pat == Object → true` shortcut: BasicObject and its subclasses
+         * are not Objects (tilt picks its scope path with `case scope when Object`) */
         VALUE cls = (AROH_IS_GC_OBJECT(val) && (((const AroObjectHeader *)(uintptr_t)val)->flags & KORB_FL_HAS_KLASS))
                       ? korb_klass_override_get(c->vm, val)   /* singleton/extended modules count */
                       : korb_class_obj_of(c, val);
@@ -13458,7 +13459,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "hash", korb_m_meth_hash, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "unbind", korb_m_meth_unbind, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "bind", korb_m_meth_bind, 1);
-    korb_def_cmethod(c, KORB_C_METHOD, "bind_call", korb_m_meth_bind_call, -1);
+    korb_def_cmethod_blk(c, KORB_C_METHOD, "bind_call", korb_m_meth_bind_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "parameters", korb_m_meth_parameters, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "source_location", korb_m_meth_source_location, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "__source_range_info", korb_m_meth_source_range_info, 0);
@@ -13475,7 +13476,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "eql?", korb_m_meth_eq, 1);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "hash", korb_m_meth_hash, 0);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "bind", korb_m_meth_bind, 1);
-    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "bind_call", korb_m_meth_bind_call, -1);
+    korb_def_cmethod_blk(c, KORB_C_UNBOUND_METHOD, "bind_call", korb_m_meth_bind_call, -1);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "parameters", korb_m_meth_parameters, 0);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "source_location", korb_m_meth_source_location, 0);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "__source_range_info", korb_m_meth_source_range_info, 0);

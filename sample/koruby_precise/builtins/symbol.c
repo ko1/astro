@@ -1071,8 +1071,10 @@ static RESULT korb_m_meth_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (pinned != NULL) VAL2METH(r.value)->entry = pinned;         /* the bind must not re-resolve a redefined name */
     return r;
 }
-/* UnboundMethod#bind_call(obj, *args) → bind then call. */
-static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+/* UnboundMethod#bind_call(obj, *args, &blk) → bind then call.  The block rides
+ * along like Method#call's (tilt binds a compiled template method and yields). */
+static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                    NODE *block, VALUE *def_env, VALUE *cself) {
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     const uint32_t mid = m->mid, argc = VALUE_SLICE_LEN(a) - 1;
@@ -1097,7 +1099,7 @@ static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             slots[2] = 0;                                 /* base[-2] (EP) */
             slots[3] = VALUE_SLICE_GET(a, 0);             /* base[-1] self (the bind target) */
             for (uint32_t i = 0; i < argc; i++) slots[4 + i] = VALUE_SLICE_GET(a, 1 + i);
-            return korb_invoke_method(c, slots + 4 + argc, entry, argc, 0, mid, slots[3], owner, NULL, NULL, KORB_NIL);
+            return korb_invoke_method(c, slots + 4 + argc, entry, argc, 0, mid, slots[3], owner, block, def_env, KORB_CSELF_VAL(cself));
         }
         if (entry != NULL) {                              /* builtin (cfunc/attr): still the CAPTURED entry, not a
                                                            * re-dispatch — a singleton override of the same name on
@@ -1107,13 +1109,13 @@ static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             slots[2] = 0;
             slots[3] = VALUE_SLICE_GET(a, 0);             /* recv, in the slot below the args */
             for (uint32_t i = 0; i < argc; i++) slots[4 + i] = VALUE_SLICE_GET(a, 1 + i);
-            return korb_dispatch_method(c, slots + 4 + argc, entry, mid, 0, argc, owner, NULL, NULL, NULL, true);
+            return korb_dispatch_method(c, slots + 4 + argc, entry, mid, 0, argc, owner, block, def_env, cself, true);
         }
     }
     slots[0] = VALUE_SLICE_GET(a, 0);                                /* recv */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, 1 + i);
     korb_flink_hand_on_cframe(c, slots);
-    return korb_send(c, slots + 1 + argc, mid, 0, argc);
+    return korb_send_impl(c, slots + 1 + argc, mid, 0, argc, block, def_env, cself);
 }
 
 /* generic to_s / inspect — render via the printer into a fresh String.
