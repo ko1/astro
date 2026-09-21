@@ -48,3 +48,24 @@ p [r2.message, r2.name, (r2.receiver rescue $!.class)]
 begin; nosuchlocal; rescue NameError => e3; end
 r3 = Marshal.load(Marshal.dump(e3))
 p [r3.class, r3.message, r3.name, (r3.receiver rescue $!.class)]
+
+# `st[:nope]` is a NameError that names the member and carries the struct
+S9 = Struct.new(:does_exist)
+v9 = S9.new(1)
+begin
+  v9[:doesnt_exist]
+rescue NameError => e
+  p [e.class, e.name, e.receiver]
+end
+begin
+  v9[:doesnt_exist] = 2
+rescue NameError => e
+  p [e.class, e.name, e.receiver]
+end
+begin
+  v9["nope"]
+rescue NameError => e
+  p [e.name, e.receiver.class]
+end
+p [v9[:does_exist], v9[0], (v9[9] rescue $!.class)]
+# (known gap: NameError#local_variables is not implemented)

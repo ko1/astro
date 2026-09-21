@@ -2706,6 +2706,23 @@ static RESULT korb_m_struct_keyword_init_p(CTX *c, VALUE *slots, VALUE_REF self,
     const uint8_t ki = VAL2CLASS(VALUE_REF_GET(self))->struct_kwinit;
     return RESULT_OK(ki == 1 ? KORB_TRUE : (ki == 2 ? KORB_FALSE : KORB_NIL));
 }
+/* `st[:nope]` — a NameError that names the member and carries the struct, as
+ * CRuby's does (did_you_mean asks for both to suggest a sibling member). */
+static RESULT korb_raise_struct_member(CTX *c, VALUE *slots, VALUE recv, uint32_t sym, VALUE key)
+{
+    slots[0] = recv;                                     /* root across the raise + ivar_set allocs */
+    slots[1] = key;                                      /* #name keeps the form it was given (a String stays a String) */
+    RESULT r = korb_raise(c, slots + 2, KORB_E_NAME, 0, "no member '%s' in struct", korb_sym_name(c->vm, sym));
+    if (LIKELY(KORB_EXC_P(r.value))) {
+        slots[2] = r.value;
+        VALUE_REF eref = VALUE_REF_AT(&slots[2]);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__name", 7)), slots[1]);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
+        r.value = VALUE_REF_GET(eref);
+    }
+    return r;
+}
 static RESULT korb_m_struct_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE mems = STRUCT_MEMBERS(self);
     const KorbArray *mem = VAL2ARY(mems);
@@ -2721,7 +2738,7 @@ static RESULT korb_m_struct_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : korb_intern(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len);
     for (uint32_t i = 0; i < mem->len; i++)
         if (SYM2ID(korb_items_data(mem->items)[i]) == sym) return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i])));
-    return korb_raise(c, slots, KORB_E_NAME, 0, "no member '%s' in struct", korb_sym_name(c->vm, sym));
+    return korb_raise_struct_member(c, slots, VALUE_REF_GET(self), sym, k);
 }
 /* Struct/Data#dig(key, *rest) — self[key], then recurse #dig on the result.
  * Lenient like CRuby's rb_struct_lookup: a non-member name digs to nil. */
@@ -2763,7 +2780,7 @@ static RESULT korb_m_struct_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     } else if (SYMBOL_P(k) || KORB_STRING_P(k)) {         /* member name → NameError when unknown */
         const uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : korb_intern(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len);
         for (uint32_t i = 0; i < mem->len; i++) if (SYM2ID(korb_items_data(mem->items)[i]) == sym) { idx = i; break; }
-        if (UNLIKELY(idx < 0)) return korb_raise(c, slots, KORB_E_NAME, 0, "no member '%s' in struct", korb_sym_name(c->vm, sym));
+        if (UNLIKELY(idx < 0)) return korb_raise_struct_member(c, slots, VALUE_REF_GET(self), sym, k);
     } else {                                              /* neither Integer/Float nor a name → no implicit Integer conversion */
         return korb_raise_no_int(c, slots, k);
     }
