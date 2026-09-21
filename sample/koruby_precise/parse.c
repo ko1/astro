@@ -3735,8 +3735,25 @@ build_fwd_args(struct kp_ctx *tc, uint32_t np, int32_t rest_slot, uint32_t post_
 static NODE *
 emit_super_fwd(struct kp_ctx *tc, uint32_t m_mid, uint32_t line, NODE *arr)
 {
-    tc->frame->uses_block = true;                         /* reserve the block trio */
+    /* The block `super` forwards is the enclosing METHOD's, which is `depth`
+     * scopes out when the super is written inside a block
+     * (`lock.synchronize { super }` — concurrent-ruby's map backends). */
+    struct kp_frame *mf = tc->frame;
+    uint32_t depth = 0;
+    while (mf->method_mid == 0 && !mf->dm_body && mf->prev) { mf = mf->prev; depth++; }
+    if (mf->method_mid == 0 && !mf->dm_body) { mf = tc->frame; depth = 0; }
+    mf->uses_block = true;                                /* reserve the block trio */
     int32_t soff = -1 - tc->chain - 1, dco = -4 - tc->chain - 1;
+    if (depth > 0) {                                      /* read the method frame's trio through the env chain */
+        if (depth > tc->frame->max_ref_depth) tc->frame->max_ref_depth = depth;
+        if (depth > tc->frame->yield_depth)   tc->frame->yield_depth = depth;
+        NODE *_so = ALLOC_node_super_fwd_outer(m_mid, line, soff, dco, -2 - tc->chain - 1, depth, -3, arr);
+        bake_add(tc, &_so->u.node_super_fwd_outer.self_off);
+        bake_add(tc, &_so->u.node_super_fwd_outer.dc_off);
+        bake_add(tc, &_so->u.node_super_fwd_outer.prev_off);
+        add_bake_to(mf, &_so->u.node_super_fwd_outer.trio_base);   /* += method frame_size */
+        return _so;
+    }
     int32_t bo = -3 - tc->chain - 1, deo = -2 - tc->chain - 1, cso = -1 - tc->chain - 1;
     NODE *_s = ALLOC_node_super_fwd(m_mid, line, soff, dco, bo, deo, cso, arr);
     bake_add(tc, &_s->u.node_super_fwd.self_off);

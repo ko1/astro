@@ -1657,6 +1657,35 @@ node_super_fwd(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, i
     return korb_super(c, slots + N, mid, line, N, dc, self, block, def_env, cself, KORB_FBASE_AT(slots, dc_off));
 }
 
+// `super` written INSIDE a block: the block to forward belongs to the enclosing
+// METHOD frame, `depth` scopes out.  prev_off reads this block frame's EP and
+// trio_base the method frame's block trio (add-baked at its pop) — the same walk
+// node_yield_outer does.  self / def_class still come from this frame.
+NODE_DEF
+node_super_fwd_outer(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t prev_off, uint32_t depth, int32_t trio_base, VALUE_REF args@child)
+{
+    (void)n; (void)args;
+    const VALUE arr  = slots[-1];                         /* the staged args array */
+    const VALUE dc   = slots[dc_off];
+    const VALUE self = slots[self_off];
+    VALUE bproc = 0;
+    VALUE *const trio = korb_outer_trio(&slots[prev_off], depth, trio_base, &bproc);
+    NODE *block = NULL; VALUE *def_env = NULL; VALUE cself = KORB_NIL;
+    if (trio != NULL && ((uintptr_t)trio[0] & 1u)) {      /* the method frame is live: forward its block verbatim */
+        block   = (NODE *)((uintptr_t)trio[0] & ~(uintptr_t)1u);
+        def_env = (VALUE *)(uintptr_t)trio[1];
+        cself   = trio[2];
+    } else if (KORB_PROC_P(bproc)) {                      /* it returned: the block was reified into the env */
+        NODE *const iseq = VAL2PROC(bproc)->iseq;
+        block   = iseq ? iseq : KORB_BLK_CPROC;
+        def_env = KORB_BLK_FWD;
+        cself   = bproc;
+    }
+    const uint32_t N = VAL2ARY(arr)->len;
+    for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    return korb_super(c, slots + N, mid, line, N, dc, self, block, def_env, cself, KORB_FBASE_AT(slots, dc_off));
+}
+
 // constant read (`Foo`) — classes only for now.  Inline cache: the const table
 // `$!` — the current exception (top of the per-CTX errinfo stack, pushed by the
 // active rescue body), nil when none.  O(1) read; no const-table involvement.
