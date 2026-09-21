@@ -3055,6 +3055,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         slots[3] = slots[2];                                 /* CRuby passes the new class to the block */
         RESULT br = korb_block_yield(c, slots + 4, block, def_env, &slots[3], 1, &slots[2]);
         korb_cref_pop(c);
+        VAL2CLASS(slots[2])->cur_visibility = 0;             /* the body's bare `private` dies with it (CRuby scopes it to the cref) */
         if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;   /* someone else's break passes through */
         if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
     }
@@ -3253,6 +3254,7 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         c->def_definee = KORB_NIL;
         RESULT br = korb_block_yield(c, slots + 3, block, def_env, NULL, 0, &slots[2]);
         korb_cref_pop(c);
+        VAL2CLASS(slots[2])->cur_visibility = 0;             /* see korb_struct_define */
         if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;   /* someone else's break passes through */
         if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
     }
@@ -3671,7 +3673,16 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
     /* The cref is resolved HERE, from its baked name, so nothing has to survive
      * the env allocations above (a parked VALUE did not). */
     VALUE cref = cref_name ? korb_cref_from_path(c->vm, cref_name) : KORB_NIL;
-    if (!KORB_CLASS_P(cref)) cref = KORB_CLASS_P(slots[0]) ? slots[0] : KORB_NIL;
+    if (!KORB_CLASS_P(cref)) {
+        /* No baked name: inside an eval'd string the cref it installed is the
+         * lexical scope; otherwise self names it, but ONLY in a real class body
+         * (`class << obj`), where def_definee is left nil.  A class_eval/
+         * module_exec BLOCK names its definee outright, and there self is a
+         * rebinding, not the lexical scope -- CRuby keeps the block's own. */
+        if (KORB_CLASS_P(c->eval_cref)) cref = c->eval_cref;
+        else if (c->def_definee == KORB_NIL && KORB_CLASS_P(slots[0])) cref = slots[0];
+        else cref = KORB_NIL;
+    }
     slots[2] = cref;
     KorbBinding *b = korb_alloc(c, slots + 3, sizeof(KorbBinding), KORB_OBJ_BINDING);
     b->name_syms = scope_tbl; b->name_cnt = name_cnt;
@@ -5585,6 +5596,8 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
     /* A module or a metaclass is not a valid superclass — Class.new's path already
      * refuses both, and letting `class X < SomeModule` through built a class whose
      * chain never reaches Object (pry's ColorPrinter < ::PP found that hole). */
+    if (UNLIKELY(superclass == korb_builtin_class_obj(c->vm, KORB_C_CLASS)))   /* only Class itself is un-subclassable */
+        return korb_raise(c, slots, KORB_E_TYPE, caller_line, "can't make subclass of Class");
     if (superclass != KORB_NIL && (!KORB_CLASS_P(superclass) ||
                                    VAL2CLASS(superclass)->is_module || VAL2CLASS(superclass)->is_singleton))
         { char rdb[224];
@@ -11576,8 +11589,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (is_mod) VAL2CLASS(slots[1])->is_module = 1;
             if (recv_is_subclass) {                          /* a Module/Class SUBCLASS reports itself as #class */
                 korb_klass_override_set(c, slots[1], *recv_slot);   /* rooted receiver slot: self may have moved */
+                /* A Ruby-defined #initialize anywhere in the MRO wins over the default
+                 * allocator (CRuby's Module.new always dispatches it).  rspec-mocks'
+                 * `class ClassVerifyingDouble < Module` gets its #initialize from an
+                 * included module, so an owner==receiver test misses it. */
                 const struct korb_method *const im = korb_class_find_method(*recv_slot, vm->mid_initialize, NULL);
-                if (im != NULL && im->owner == *recv_slot) {   /* the subclass defines #initialize → CRuby runs it instead */
+                if (im != NULL && (im->kind == KORB_METHOD_ISEQ || im->kind == KORB_METHOD_DM)) {
                     slots[2] = slots[1];                      /* the new module/class (rooted across the dispatch) */
                     slots[3] = slots[2];                      /* receiver */
                     for (uint32_t i = 0; i < argc; i++) slots[4 + i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];
@@ -11616,6 +11633,9 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 }
                 korb_cref_pop(c);
                 korb_refine_pop(c);
+                VAL2CLASS(slots[1])->cur_visibility = 0;     /* the body's bare `private` dies with it: a later
+                                                              * define_method/attr on the class is public (CRuby
+                                                              * keeps the default on the cref, koruby on the class) */
                 if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;
                 if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
             }
@@ -16757,7 +16777,7 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *
         { const uint32_t t = encl[i]; encl[i] = encl[j - 1]; encl[j - 1] = t; }
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, line, false,
                                        korb_enc_name_of(c->vm, KORB_STR_ENC(str)), cref_name,
-                                       nencl ? encl : NULL, nencl);   /* immortal AST; no GC */
+                                       nencl ? encl : NULL, nencl, true);   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */
@@ -16994,7 +17014,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
                                       KORB_CLASS_P(bcref) ? bcref : KORB_UNDEF, true);   /* lexical only */
     }
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, eline, false,
-                                       korb_enc_name_of(c->vm, KORB_STR_ENC(sv)), 0, NULL, 0);   /* immortal AST; no GC */
+                                       korb_enc_name_of(c->vm, KORB_STR_ENC(sv)), 0, NULL, 0, true);   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */

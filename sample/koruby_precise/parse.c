@@ -137,6 +137,8 @@ struct kp_ctx {
     uint32_t seed_class_name;
     const uint32_t *seed_chain;
     uint32_t seed_chain_len;
+    bool in_eval;             /* eval(String): the program's namespace is the cref the eval
+                               * installed, never the running self (it can be rebound). */
 };
 
 /* `alias x eval` seen earlier in this file: x is lowered like eval itself. */
@@ -1335,29 +1337,34 @@ kp_lexical_class_owner(struct kp_ctx *tc, uint32_t *owner)
         if (f->class_name_sym) { inner = f; break; }
         if (f->block_body) in_block = true;
     }
-    if (inner == NULL) { *owner = 0; return in_block; }   /* no enclosing class body → top level */
+    /* eval(str, binding): the program frame carries the binding's cref name, and
+     * THAT names the namespace even with no block in between -- self can have
+     * been rebound (module_exec) and CRuby nests by the cref, not by self. */
+    const bool seeded = tc->seed_class_name != 0;
+    if (inner == NULL) { *owner = 0; return in_block || tc->in_eval; }   /* no enclosing class body → top level */
     /* The WHOLE nesting path, not just the innermost name: the constant table is
      * flat, so a bare `A` would also answer for an unrelated `M2::A`
      * (`Temple::ERB` answered the `ERB` of `class ERB::Compiler`). */
-    uint32_t syms[32], depth = 0;
+    uint32_t syms[32], depth = tc->seed_chain_len;   /* eval(String): what encloses the seeded cref */
     for (const struct kp_frame *f = inner; f; f = f->prev)
         if (f->class_name_sym != 0) depth++;
-    if (depth == 0 || depth > 32) { *owner = inner->class_name_sym; return in_block; }
+    if (depth == 0 || depth > 32) { *owner = inner->class_name_sym; return in_block || seeded; }
     uint32_t i = depth;
-    for (const struct kp_frame *f = inner; f && i > 0; f = f->prev)
+    for (const struct kp_frame *f = inner; f && i > tc->seed_chain_len; f = f->prev)
         if (f->class_name_sym != 0) syms[--i] = f->class_name_sym;
+    for (uint32_t k = tc->seed_chain_len; k-- > 0; ) syms[--i] = tc->seed_chain[k];
     char buf[512];
     size_t len = 0;
     for (uint32_t k = 0; k < depth; k++) {
         const char *const nm = korb_sym_name(tc->c->vm, syms[k]);
         const size_t nl = strlen(nm);
-        if (len + nl + 3 > sizeof buf) { *owner = inner->class_name_sym; return in_block; }
+        if (len + nl + 3 > sizeof buf) { *owner = inner->class_name_sym; return in_block || seeded; }
         if (len) { buf[len++] = ':'; buf[len++] = ':'; }
         memcpy(buf + len, nm, nl);
         len += nl;
     }
     *owner = korb_intern(tc->c->vm, buf, (uint32_t)len);
-    return in_block;
+    return in_block || seeded;
 }
 
 
@@ -6019,7 +6026,8 @@ kp_fsl_false(const char *src, size_t len)
 
 NODE *
 koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, bool exit_on_error,
-                       const char *src_enc, uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len)
+                       const char *src_enc, uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len,
+                       bool in_eval)
 {
     pm_parser_t parser;
     pm_options_t options = { 0 };
@@ -6062,6 +6070,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
         .seed_class_name = cref_name,
         .seed_chain = cref_chain,
         .seed_chain_len = cref_chain_len,
+        .in_eval = in_eval,
     };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
@@ -6092,7 +6101,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
 NODE *
 koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool exit_on_error)
 {
-    return koruby_parse_source_at(c, src, len, fname, 1, exit_on_error, NULL, 0, NULL, 0);
+    return koruby_parse_source_at(c, src, len, fname, 1, exit_on_error, NULL, 0, NULL, 0, false);
 }
 
 /* Parse `src` for eval(str, binding): the binding's local names are declared as
@@ -6132,7 +6141,8 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
     }
     struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
                          .fsl_false = kp_fsl_false(src, len), .eval_method_mid = method_mid,
-                         .seed_class_name = cref_name, .seed_chain = cref_chain, .seed_chain_len = cref_chain_len };
+                         .seed_class_name = cref_name, .seed_chain = cref_chain, .seed_chain_len = cref_chain_len,
+                         .in_eval = true };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
     for (uint32_t pi = tc.pre_cnt; pi-- > 0; ) ast = ALLOC_node_seq(tc.pre_list[pi], ast);   /* BEGIN { } first */
