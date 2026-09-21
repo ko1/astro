@@ -1,4 +1,5 @@
 #include <sys/ioctl.h>
+#include <limits.h>
 #include <sys/socket.h>
 #include <errno.h>
 #include <sys/wait.h>
@@ -26,6 +27,7 @@ typedef struct KorbIORep {
     int      enc_idx;                /* memo: the encoding a read result carries (-1 = ask the prelude) */
     int      benc_idx;               /* memo: the encoding the raw bytes arrive in (the external one) */
     int      wenc_idx;               /* memo: what writes transcode into (-1 = nothing; see korb_io_write_enc) */
+    char    *path;                   /* NUL-terminated copy of the opened path, NULL if unnamed (errno messages) */
     char    *rbuf; uint32_t rpos, rlen, rcapa;   /* read-ahead: live bytes are [rpos, rlen) */
     char    *wbuf; uint32_t wlen, wcapa;         /* write-behind: wlen bytes pending */
 } KorbIORep;
@@ -56,6 +58,21 @@ static uint32_t korb_io_register(struct korb_vm *vm, int fd, bool sync) {
     rep->wenc_idx = KORB_IO_ENC_UNSET;                  /* -1 already means "do not transcode" */
     return korb_io_register_rep(vm, rep);
 }
+static void korb_io_rep_set_path(KorbIORep *const rep, const char *const path) {
+    free(rep->path);
+    rep->path = path ? strdup(path) : NULL;
+}
+
+/* CRuby names the stream differently per layer: the buffered fill prints
+ * "fd:N path", the bulk read just the path. */
+static const char *korb_io_err_where(const KorbIORep *const rep, const bool with_fd,
+                                     char *const buf, const size_t n) {
+    if (!with_fd) return rep->path ? rep->path : "";
+    if (rep->path) snprintf(buf, n, "fd:%d %s", rep->fd, rep->path);
+    else           snprintf(buf, n, "fd:%d", rep->fd);
+    return buf;
+}
+
 static uint32_t korb_io_fp_mid(CTX *c) { return korb_intern(c->vm, "__io_fp", 7); }
 static uint32_t korb_io_mode_mid(CTX *c) { return korb_intern(c->vm, "__io_mode", 9); }
 static uint32_t korb_io_bin_mid(CTX *c) { return korb_intern(c->vm, "__io_bin", 8); }
@@ -274,8 +291,10 @@ static uint32_t korb_io_fill_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESUL
             }
             /* a real read(2) failure (EISDIR, EIO, EBADF, ...) is an exception,
              * not EOF — swallowing it made `File.open(dir).read` return nil */
-            if (perr && c != NULL && !korb_io_would_block(errno))
-                *perr = korb_raise_errno(c, slots, errno, "io_fread", "");
+            if (perr && c != NULL && !korb_io_would_block(errno)) {
+                char wb[PATH_MAX + 32];
+                *perr = korb_raise_errno(c, slots, errno, "io_fillbuf", korb_io_err_where(rep, true, wb, sizeof wb));
+            }
             return 0;
         }
         if (n == 0) { rep->eof = 1; return 0; }
@@ -444,7 +463,8 @@ static RESULT korb_io_read_bytes(CTX *c, VALUE *slots, KorbIORep *rep, uint32_t 
                         return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "stream closed in another thread");
                     continue;
                 }
-                return korb_raise_errno(c, slots + 1, errno, "io_fread", "");
+                { char wb[PATH_MAX + 32];
+                  return korb_raise_errno(c, slots + 1, errno, "io_fread", korb_io_err_where(rep, false, wb, sizeof wb)); }
             }
             if (n == 0) { rep->eof = 1; break; }
             len += (uint32_t)n;
@@ -1792,6 +1812,7 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             close(nfd);
         }
         korb_io_drop_rbuf(rep);
+        korb_io_rep_set_path(rep, path);
         if (rep->fd > 2) (void)fcntl(rep->fd, F_SETFD, FD_CLOEXEC);   /* fd 0/1/2 must survive exec: `STDOUT.reopen path` then system() */
         /* the reopened stream takes the new mode's direction: `f.reopen(p, "r")`
            on a write-only IO is readable afterwards */
@@ -2709,12 +2730,12 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     int rw = 0; bool binary = false; int fd;
+    char pbuf[4096];                                       /* stack copy: the open may park → GC moves the String */
     if (mode_is_int) {                                          /* integer O_* flags → open(2) */
         const int fl = (int)mode_int;
         const mode_t perm = korb_file_perm_val(c, a, npos, fopts_idx);
         const int acc = fl & 3;   /* O_RDONLY=0 / O_WRONLY=1 / O_RDWR=2 */
         rw = acc == 1 ? 2 : acc == 2 ? 3 : 1;
-        char pbuf[4096];                                   /* stack copy: the open may park → GC moves the String */
         snprintf(pbuf, sizeof pbuf, "%.*s", (int)plen, path);
         RESULT operr;
         fd = korb_open_no_stall(c, slots, pbuf, fl | extra_flags, perm, &operr);
@@ -2738,7 +2759,6 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         /* 'x' (O_EXCL) is only meaningful when the open creates the file */
         if (strchr(mode, 'x') != NULL && b != 'w')
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode %s", mode);
-        char pbuf[4096];
         snprintf(pbuf, sizeof pbuf, "%.*s", (int)plen, path);
         RESULT operr;
         const mode_t perm2 = korb_file_perm_val(c, a, npos, fopts_idx);
@@ -2748,6 +2768,7 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
     }
     slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fd, rw));   /* self = the File class */
+    korb_io_rep_set_path(korb_io_rep(c, slots[0]), pbuf);
     VALUE_REF io = VALUE_REF_AT(&slots[0]);
     if (binary)   /* remember binary mode → reads produce ASCII-8BIT strings */
         CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));

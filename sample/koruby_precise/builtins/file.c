@@ -1027,7 +1027,10 @@ static char *korb_fd_slurp(int fd, size_t *out_len) {
             buf = nb;
         }
         const ssize_t got = read(fd, buf + len, cap - len - 1);
-        if (got < 0) { if (errno == EINTR) continue; break; }
+        /* a real read(2) failure is an exception, not EOF: reading a DIRECTORY
+         * fails with EISDIR after open(2) succeeds, and swallowing it made
+         * File.readlines(dir) answer [] instead of raising. */
+        if (got < 0) { if (errno == EINTR) continue; free(buf); *out_len = 0; return NULL; }
         if (got == 0) break;
         len += (size_t)got;
     }
@@ -1232,7 +1235,7 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const int fd = open(path, O_RDONLY);
     if (fd < 0) return korb_raise_errno(c, slots + 1, errno, "rb_sysopen", path);
     { struct stat rst;                                 /* open(2) opens a directory; read(2) is what fails */
-      if (fstat(fd, &rst) == 0 && S_ISDIR(rst.st_mode)) { close(fd); return korb_raise_errno(c, slots + 1, EISDIR, "read", path); } }
+      if (fstat(fd, &rst) == 0 && S_ISDIR(rst.st_mode)) { close(fd); return korb_raise_errno(c, slots + 1, EISDIR, "io_fread", path); } }
     if (has_off) (void)lseek(fd, (off_t)off, SEEK_SET);
     RESULT r;
     if (has_len) {                                                    /* bounded read */
@@ -1264,12 +1267,21 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 /* slurp the whole file into a malloc'd buffer (caller frees); NULL on open fail. */
-static char *korb_file_slurp(const char *path, size_t *out_len) {
+/* `read_err` (optional) tells apart "could not open" from "opened but the read
+ * failed", which CRuby labels differently in the message. */
+static char *korb_file_slurp_e(const char *path, size_t *out_len, int *read_err_fd) {
+    if (read_err_fd) *read_err_fd = -1;
     const int fd = open(path, O_RDONLY);
     if (fd < 0) { *out_len = 0; return NULL; }
     char *const buf = korb_fd_slurp(fd, out_len);
+    const int e = errno;
     close(fd);
+    if (!buf && read_err_fd) *read_err_fd = fd;
+    errno = e;
     return buf;
+}
+static char *korb_file_slurp(const char *path, size_t *out_len) {
+    return korb_file_slurp_e(path, out_len, NULL);
 }
 
 /* IO.write(path, string[, offset], **opts) → the byte count.  An offset writes
@@ -1524,8 +1536,13 @@ static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "invalid limit: 0 for readlines");
     const VALUE_REF sepref = VALUE_REF_AT(&slots[1]);
     uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: it may have moved */
-    size_t len; char *const buf = korb_file_slurp(path, &len);                    /* libc only, no GC */
-    if (!buf) return korb_raise_errno(c, slots + 2, errno, "rb_sysopen", path);
+    size_t len; int rdfd = -1;
+    char *const buf = korb_file_slurp_e(path, &len, &rdfd);                       /* libc only, no GC */
+    if (!buf) {
+        if (rdfd < 0) return korb_raise_errno(c, slots + 2, errno, "rb_sysopen", path);
+        char wb[4160]; snprintf(wb, sizeof wb, "fd:%d %s", rdfd, path);           /* CRuby's io_fillbuf shape */
+        return korb_raise_errno(c, slots + 2, errno, "io_fillbuf", wb);
+    }
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 16));
     const VALUE_REF arr = VALUE_REF_AT(&slots[2]);
     RESULT r = RESULT_OK(KORB_NIL);
@@ -1562,8 +1579,13 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "invalid limit: 0 for foreach");
     const VALUE_REF sepref = VALUE_REF_AT(&slots[1]);
     uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: it may have moved */
-    size_t len; char *const buf = korb_file_slurp(path, &len);                    /* libc only, no GC */
-    if (!buf) return korb_raise_errno(c, slots + 2, errno, "rb_sysopen", path);
+    size_t len; int rdfd = -1;
+    char *const buf = korb_file_slurp_e(path, &len, &rdfd);                       /* libc only, no GC */
+    if (!buf) {
+        if (rdfd < 0) return korb_raise_errno(c, slots + 2, errno, "rb_sysopen", path);
+        char wb[4160]; snprintf(wb, sizeof wb, "fd:%d %s", rdfd, path);           /* CRuby's io_fillbuf shape */
+        return korb_raise_errno(c, slots + 2, errno, "io_fillbuf", wb);
+    }
     slots[2] = KORB_NIL;
     VALUE_REF arr = VALUE_REF_AT(&slots[2]);
     if (block == NULL) {                               /* no block → an Enumerator of the records */
