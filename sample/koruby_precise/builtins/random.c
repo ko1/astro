@@ -63,6 +63,14 @@ static double korb_mt_real(KorbMT *const st) {
     const uint32_t a = korb_mt_next(st) >> 5, b = korb_mt_next(st) >> 6;
     return (a * 67108864.0 + b) * (1.0 / 9007199254740992.0);
 }
+/* [0,1] with 53-bit resolution — CRuby's int_pair_to_real_inclusive, which an
+ * INCLUSIVE Float range draws from (the half-open form above is a shade off). */
+static double korb_mt_real_closed(KorbMT *const st) {
+    const uint32_t a = korb_mt_next(st), b = korb_mt_next(st);
+    const __uint128_t m = ((__uint128_t)1 << 53) | 1;
+    const __uint128_t x = ((__uint128_t)a << 32) | b;
+    return ldexp((double)(uint64_t)((x * m) >> 64), -53);
+}
 
 /* seed an MT from a non-negative Integer (Fixnum or Bignum), CRuby rand_init. */
 static void korb_mt_seed_int(KorbMT *const st, VALUE seed) {
@@ -239,6 +247,17 @@ static RESULT korb_rand_core_x(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a, 
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid argument - %s", db);
         }
         if (KORB_BIGNUM_P(arg0)) return korb_rand_below_big(c, slots, st, VAL2BIG(arg0)->z);
+        if (KORB_RANGE_P(arg0)) {                  /* an empty/reversed Range is an ArgumentError here */
+            slots[0] = arg0;                       /* root: the message below allocates nothing, but the call may */
+            const RESULT rr = korb_rand_core(c, slots + 1, st, a);
+            if (UNLIKELY(rr.state != KORB_NORMAL) || rr.value != KORB_NIL) return rr;
+            char *rb = NULL; size_t rz = 0;
+            FILE *const ms = open_memstream(&rb, &rz);
+            if (ms) { korb_fprint_to_s(c, ms, slots[0]); fclose(ms); }
+            const RESULT er = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "invalid argument - %s", rb ? rb : "");
+            free(rb);
+            return er;
+        }
     }
     return korb_rand_core(c, slots, st, a);
 }
@@ -259,7 +278,11 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a) {
         double dlo, dhi;                              /* otherwise a Float in [lo, hi) */
         if (korb_num_to_d(lo, &dlo) && korb_num_to_d(hi, &dhi)) {
             if (dhi < dlo || (dhi == dlo && excl)) return RESULT_OK(KORB_NIL);
-            return korb_float_new(c, slots, dlo + korb_mt_real(st) * (dhi - dlo));
+            if (UNLIKELY(isinf(dlo) || isinf(dhi)))   /* CRuby's domain_error() */
+                return korb_raise_errno(c, slots, EDOM, NULL, NULL);
+            if (dhi == dlo) return korb_float_new(c, slots, dlo);   /* zero width: no draw at all (CRuby) */
+            const double r = excl ? korb_mt_real(st) : korb_mt_real_closed(st);
+            return korb_float_new(c, slots, r * (dhi - dlo) + dlo);
         }
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "bad value for range");
     }

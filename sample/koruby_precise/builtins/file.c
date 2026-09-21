@@ -138,8 +138,10 @@ static RESULT korb_m_errno_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
  * func it is the "message @ func - path" shape the IO/File layer uses. */
 static RESULT korb_raise_errno(CTX *c, VALUE *slots, int e, const char *func, const char *path) {
     char msg[4096];
-    /* CRuby: "msg @ func - path" with a path, "msg - func" without one */
-    if (func && path == NULL) snprintf(msg, sizeof msg, "%s - %s", strerror(e), func);
+    /* CRuby: "msg @ func - path" with a path, "msg - func" without one, the
+     * bare strerror text when neither is given (domain_error()). */
+    if (!func && !path)       snprintf(msg, sizeof msg, "%s", strerror(e));
+    else if (func && path == NULL) snprintf(msg, sizeof msg, "%s - %s", strerror(e), func);
     else if (func)            snprintf(msg, sizeof msg, "%s @ %s - %s", strerror(e), func, path);   /* format now: path is a movable-String interior ptr, korb_raise allocs */
     else                      snprintf(msg, sizeof msg, "%s - %s", strerror(e), path);
     const char *cn = korb_errno_name(e);
