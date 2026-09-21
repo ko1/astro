@@ -456,8 +456,15 @@ static RESULT korb_raise_attr_arity(CTX *c, VALUE *slots, uint32_t line, uint32_
 int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* defined below; non-static so node_eval.c's Hash#[] fast path can call it (LTO still inlines) */
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* defined below; builtins emit rb_warn-style warnings */
 void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const char *fmt, ...);   /* with a source position */
-static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-                             NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
+/* `caller_self` is the self of the calling frame, for the private/protected
+ * guard on an explicit receiver; KORB_UNDEF (what the korb_send_impl wrapper
+ * passes) means "internal dispatch, no check". */
+static RESULT korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                                 NODE *block, VALUE *def_env, VALUE *captured_self, VALUE caller_self);   /* defined below */
+static inline RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                                    NODE *block, VALUE *def_env, VALUE *captured_self) {
+    return korb_send_impl_vis(c, slots, mid, line, argc, block, def_env, captured_self, KORB_UNDEF);
+}
 static RESULT korb_block_to_proc(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *cself);   /* defined below */
 static RESULT korb_m_mod_autoload_relative(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* defined below */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
@@ -7815,8 +7822,8 @@ static RESULT korb_m_set_subset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_set_superset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_set_psubset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_set_psuperset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
-static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-                             NODE *block, VALUE *def_env, VALUE *captured_self);
+static RESULT korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                                 NODE *block, VALUE *def_env, VALUE *captured_self, VALUE caller_self);
 
 RESULT
 korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
@@ -9792,8 +9799,8 @@ void korb_report_uncaught(CTX *c, VALUE exc) { korb_report_uncaught_fp(c, stderr
 static VALUE  korb_set_elems_of(VALUE v);
 static RESULT korb_set_new(CTX *c, VALUE *slots, VALUE elems);
 static RESULT korb_set_from_array(CTX *c, VALUE *slots, VALUE_REF src);
-static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-                             NODE *block, VALUE *def_env, VALUE *captured_self);
+static RESULT korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                                 NODE *block, VALUE *def_env, VALUE *captured_self, VALUE caller_self);
 static RESULT korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *captured_self);
 RESULT korb_fiber_check_storage(CTX *c, VALUE *slots, VALUE h);   /* fwd (builtins/fiber.c) */
 static RESULT korb_thread_s_new(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self);   /* thread.c */
@@ -10353,8 +10360,8 @@ korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 
 /* ---- node_entry accessors + yield ----------------------------------------- */
 
-static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-                             NODE *block, VALUE *def_env, VALUE *captured_self);
+static RESULT korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                                 NODE *block, VALUE *def_env, VALUE *captured_self, VALUE caller_self);
 
 /* Coerce a `&obj` block argument to a Proc (CRuby calls obj.to_proc).  No-op for a
  * Proc or nil; otherwise sends #to_proc and writes the result back to *pslot — a
@@ -11290,9 +11297,24 @@ korb_sub_new_init(CTX *c, VALUE *const slots, VALUE_REF instref, const VALUE_SLI
     return RESULT_OK(slots[0]);                        /* the (possibly moved) instance */
 }
 
+/* fwd (defined with korb_send_cached): the private/protected guard itself. */
+static RESULT korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t mid,
+                                  uint32_t line, VALUE recv, VALUE caller_self, VALUE def_class,
+                                  uint32_t argc, bool *mm_handled, VALUE link);
+/* The block / splat / safe-nav sends land here rather than in korb_send_cached,
+ * so the guard has to run at this layer too — on the resolved method, so a
+ * public send pays one predictable branch and no second lookup. */
+#define KORB_SEND_VIS_GUARD(m_, dc_) do {                                                     \
+    if (UNLIKELY((m_)->visibility != 0 && caller_self != KORB_UNDEF)) {                        \
+        bool mm_handled_ = false;                                                             \
+        const RESULT vr_ = korb_check_call_vis(c, slots, (m_), mid, line, self, caller_self,   \
+                                               (dc_), argc, &mm_handled_, 0);                 \
+        if (mm_handled_ || vr_.state != KORB_NORMAL) return vr_;                               \
+    } } while (0)
+
 static RESULT
-korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-               NODE *block, VALUE *def_env, VALUE *captured_self)
+korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                   NODE *block, VALUE *def_env, VALUE *captured_self, const VALUE caller_self)
 {
     struct korb_vm *const vm = c->vm;
     /* Internal C dispatch stages [recv, args] flush against the caller's cursor
@@ -11384,7 +11406,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
         VALUE def_class = KORB_NIL;
         struct korb_method *um = korb_mcache_find(vm, korb_obj_dispatch_klass(vm, self), mid, &def_class);
-        if (um) return korb_dispatch_method(c, slots, um, mid, line, argc, def_class, block, def_env, captured_self, true);
+        if (um) {
+            KORB_SEND_VIS_GUARD(um, def_class);
+            return korb_dispatch_method(c, slots, um, mid, line, argc, def_class, block, def_env, captured_self, true);
+        }
     }
     /* class receiver → Klass.new (allocate + initialize). */
     else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_FIBER) &&
@@ -12436,13 +12461,23 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         return r;
     }
+    KORB_SEND_VIS_GUARD(m, def_class);
     return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self, true);
 }
+#undef KORB_SEND_VIS_GUARD
 
 RESULT
 korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc)
 {
     return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
+}
+
+/* `recv.m(*a)` / `recv&.m(...)`: no block, but an explicit receiver, so the
+ * caller's self decides whether a private/protected method is reachable. */
+RESULT
+korb_send_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc, VALUE caller_self)
+{
+    return korb_send_impl_vis(c, slots, mid, line, argc, NULL, NULL, NULL, caller_self);
 }
 
 /* Classify a class for `.new` (cached in cls->new_kind; the inputs — the class
@@ -12746,13 +12781,14 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
 
 RESULT
 korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
-              uint32_t argc, NODE *block, VALUE *def_env, VALUE *captured_self, VALUE flink)
+              uint32_t argc, NODE *block, VALUE *def_env, VALUE *captured_self, VALUE flink,
+              VALUE caller_self)
 {
     /* `flink` is the site's baked link when its window has a header cell (the
      * distance is measured from that cell); a splat site passes 0 and staged its
      * link itself.  Staging from the baked value is a subtract, not a walk. */
     if (flink != 0) korb_flink_stage(c, flink, slots - (korb_sword_t)argc - 3);
-    RESULT r = korb_send_impl(c, slots, mid, line, argc, block, def_env, captured_self);
+    RESULT r = korb_send_impl_vis(c, slots, mid, line, argc, block, def_env, captured_self, caller_self);
     if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;   /* `break [v]` in the block = call's value (only if this site gave the block) */
     return r;
 }
