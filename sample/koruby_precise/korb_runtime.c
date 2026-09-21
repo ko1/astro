@@ -14447,20 +14447,24 @@ korb_sym_inspect_bare(const char *nm)
  * (1..) => "1..", (..5) => "..5", but (nil..nil) => "nil..nil".  to_s renders
  * both endpoints via to_s, where nil.to_s == "" (so (nil..nil) => ".."). */
 static void
-korb_fprint_range(CTX *c, FILE *fp, VALUE v, bool insp)
+korb_fprint_range(CTX *c, VALUE *slots, FILE *fp, VALUE v, bool insp)
 {
-    const KorbRange *r = VAL2RANGE(v);
-    const bool beg_nil = (r->rbegin == KORB_NIL), end_nil = (r->rend == KORB_NIL);
-    if (insp) {
-        if (!beg_nil || end_nil) korb_fprint_inspect(c, fp, r->rbegin);
-        fputs(r->exclude_end ? "..." : "..", fp);
-        if (!end_nil || beg_nil) korb_fprint_inspect(c, fp, r->rend);
+    if (slots) slots[0] = v;                             /* root across the bound dispatch */
+    VALUE *const bs = slots ? slots + 1 : NULL;
+    #define KORB_RNG (slots ? VAL2RANGE(slots[0]) : VAL2RANGE(v))   /* re-read: dispatch may move it */
+    const bool beg_nil = (KORB_RNG->rbegin == KORB_NIL), end_nil = (KORB_RNG->rend == KORB_NIL);
+    const bool excl = KORB_RNG->exclude_end;
+    if (insp) {   /* a bound's own #inspect wins (a Date range) */
+        if (!beg_nil || end_nil) korb_fprint_inspect_d(c, bs, fp, KORB_RNG->rbegin, 1);
+        fputs(excl ? "..." : "..", fp);
+        if (!end_nil || beg_nil) korb_fprint_inspect_d(c, bs, fp, KORB_RNG->rend, 1);
     }
     else {
-        korb_fprint_to_s(c, fp, r->rbegin);
-        fputs(r->exclude_end ? "..." : "..", fp);
-        korb_fprint_to_s(c, fp, r->rend);
+        korb_fprint_to_s_s(c, bs, fp, KORB_RNG->rbegin);
+        fputs(excl ? "..." : "..", fp);
+        korb_fprint_to_s_s(c, bs, fp, KORB_RNG->rend);
     }
+    #undef KORB_RNG
 }
 
 /* Self-referential containers (`a=[]; a<<a; a.inspect`) would recurse forever.
@@ -14676,7 +14680,7 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         korb_fprint_hash(c, slots, fp, v);
         return;
       case KORB_OBJ_RANGE:
-        korb_fprint_range(c, fp, v, false);
+        korb_fprint_range(c, slots, fp, v, false);
         return;
       case KORB_OBJ_OBJECT: {
         if (VAL2OBJ(v)->klass == KORB_NIL) { fputs("main", fp); return; }   /* top-level self */
@@ -14889,7 +14893,7 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         return;
       }
       case KORB_OBJ_RANGE:
-        korb_fprint_range(c, fp, v, true);   /* inspect endpoints */
+        korb_fprint_range(c, slots, fp, v, true);   /* inspect endpoints */
         return;
       case KORB_OBJ_REGEXP: {                            /* inspect: /source/opts */
         const KorbRegexp *const re = VAL2RE(v);

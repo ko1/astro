@@ -251,12 +251,16 @@ static RESULT korb_rand_core_x(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a, 
             slots[0] = arg0;                       /* root: the message below allocates nothing, but the call may */
             const RESULT rr = korb_rand_core(c, slots + 1, st, a);
             if (UNLIKELY(rr.state != KORB_NORMAL) || rr.value != KORB_NIL) return rr;
-            char *rb = NULL; size_t rz = 0;
-            FILE *const ms = open_memstream(&rb, &rz);
-            if (ms) { korb_fprint_to_s(c, ms, slots[0]); fclose(ms); }
-            const RESULT er = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "invalid argument - %s", rb ? rb : "");
-            free(rb);
-            return er;
+            const RESULT tr = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);   /* the bounds' own #to_s (Date) */
+            if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+            slots[0] = tr.value;
+            char rb[256] = "";
+            if (KORB_STRING_P(slots[0])) {                /* copy out: korb_raise allocates */
+                const KorbString *const rs = VAL2STR(slots[0]);
+                const uint32_t n = rs->len < sizeof rb - 1 ? rs->len : (uint32_t)(sizeof rb - 1);
+                memcpy(rb, korb_strbuf_data(rs->buf), n); rb[n] = '\0';
+            }
+            return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "invalid argument - %s", rb);
         }
     }
     return korb_rand_core(c, slots, st, a);
@@ -275,8 +279,11 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a) {
             if (span <= 0) return RESULT_OK(KORB_NIL);
             return RESULT_OK(LONG2FIX(lv + korb_rand_below(st, (uintptr_t)span)));
         }
-        double dlo, dhi;                              /* otherwise a Float in [lo, hi) */
-        if (korb_num_to_d(lo, &dlo) && korb_num_to_d(hi, &dhi)) {
+        /* CRuby decides on `hi - lo`: a Float span draws a Float, anything else
+         * that converts to an Integer draws an Integer.  A Float bound is the
+         * cheap way to know the span is a Float without a dispatch. */
+        double dlo, dhi;
+        if ((KORB_FLOAT_P(lo) || KORB_FLOAT_P(hi)) && korb_num_to_d(lo, &dlo) && korb_num_to_d(hi, &dhi)) {
             if (dhi < dlo || (dhi == dlo && excl)) return RESULT_OK(KORB_NIL);
             if (UNLIKELY(isinf(dlo) || isinf(dhi)))   /* CRuby's domain_error() */
                 return korb_raise_errno(c, slots, EDOM, NULL, NULL);
@@ -284,7 +291,40 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a) {
             const double r = excl ? korb_mt_real(st) : korb_mt_real_closed(st);
             return korb_float_new(c, slots, r * (dhi - dlo) + dlo);
         }
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "bad value for range");
+        /* Everything else (Rational, Bignum, Date, Time, a Comparable of one's
+         * own): draw over `hi - lo` and answer `lo + n`. */
+        slots[0] = arg;                                   /* root the Range across the dispatches */
+        slots[1] = hi; slots[2] = lo;
+        {
+            const RESULT sr = korb_send(c, slots + 3, korb_intern(c->vm, "-", 1), 0, 1);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            slots[1] = sr.value;                          /* the span */
+        }
+        korb_sword_t n;
+        if (!KORB_FLOAT_P(slots[1]) && !korb_to_index(slots[1], &n)) {   /* Date#- gives a Rational; ask for #to_int */
+            const uint32_t to_int = korb_intern(c->vm, "to_int", 6);
+            if (korb_responds_to(c, slots[1], to_int)) {
+                slots[2] = slots[1];
+                const RESULT ir = korb_send(c, slots + 3, to_int, 0, 0);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+                slots[1] = ir.value;
+            }
+        }
+        if (!KORB_FLOAT_P(slots[1]) && korb_to_index(slots[1], &n)) {
+            const korb_sword_t top = n - (excl ? 1 : 0);
+            if (top < 0) return RESULT_OK(KORB_NIL);
+            slots[2] = LONG2FIX(top == 0 ? 0 : korb_rand_below(st, (uintptr_t)top + 1));   /* limit 0 draws nothing (CRuby) */
+        } else {
+            double dspan;
+            if (!korb_num_to_d(slots[1], &dspan)) return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "bad value for range");
+            if (dspan < 0 || (dspan == 0 && excl)) return RESULT_OK(KORB_NIL);
+            const double r = excl ? korb_mt_real(st) : korb_mt_real_closed(st);
+            const RESULT fr = korb_float_new(c, slots + 2, r * dspan);
+            if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+            slots[2] = fr.value;
+        }
+        slots[1] = VAL2RANGE(slots[0])->rbegin;           /* re-read: the dispatches above may have moved it */
+        return korb_send(c, slots + 3, korb_intern(c->vm, "+", 1), 0, 1);
     }
     if (!FIXNUM_P(arg) && !KORB_FLOAT_P(arg) && KORB_OBJECT_P(arg) &&    /* coerce via #to_int */
         korb_responds_to_coerce_p(c, slots, &arg, korb_intern(c->vm, "to_int", 6))) {
