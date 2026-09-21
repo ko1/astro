@@ -123,6 +123,14 @@ module Marshal
       _symdump(:begin, out, st); _dump(o.begin, out, st)
       _symdump(:end, out, st);   _dump(o.end, out, st)
     when Struct then _dump_struct(o, out, st)
+    when Set                                           # CRuby: a plain object carrying @hash
+      snm = _class_name(o.class)
+      raise TypeError, "can't dump anonymous class #{o.class}" if snm.nil?
+      h = {}
+      o.each { |e| h[e] = true }
+      out << "o"
+      _symdump(snm.to_sym, out, st); _long(1, out)
+      _symdump(:@hash, out, st); _dump(h, out, st)
     when Rational                                      # 'U' user-marshal
       out << "U"; _symdump(:Rational, out, st); _dump([o.numerator, o.denominator], out, st)
     when Complex
@@ -821,6 +829,9 @@ module Marshal
                               : klass.new(ivars[:mesg])
           obj.set_backtrace(ivars[:bt]) if ivars[:bt] && obj.respond_to?(:set_backtrace)
           ivars.each { |name, val| obj.instance_variable_set(name, val) if name.to_s.start_with?("@") }
+        elsif klass <= Set                               # builtin Set: rebuild from @hash's keys
+          obj = klass.new(ivars[:@hash].is_a?(Hash) ? ivars[:@hash].keys : [])
+          ivars.each { |name, val| obj.instance_variable_set(name, val) unless name == :@hash }
         else
           obj = klass.allocate
           ivars.each { |name, val| obj.instance_variable_set(name, val) }
@@ -858,7 +869,10 @@ module Marshal
             when :Complex  then Complex(data[0], data[1])
             else
               o = _const(cls).allocate
-              o.marshal_load(data) if o.respond_to?(:marshal_load)
+              # CRuby calls it with rb_funcall, which ignores visibility —
+              # OpenStruct#marshal_load is private, so a public-only probe
+              # silently built an empty object.
+              o.__send__(:marshal_load, data) if o.respond_to?(:marshal_load, true)
               o
             end
       st[:nocb][obj] = true                              # ditto for marshal_load-built objects
