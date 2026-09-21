@@ -2921,7 +2921,10 @@ node_send_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t flin
     RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc (slots[0..] is free scratch) */
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
     const VALUE pv = slots[proc_off];
-    if (pv == KORB_NIL) return korb_send(c, slots, mid, line, argv_cnt - 1);   /* &nil → no block */
+    if (pv == KORB_NIL) {   /* &nil → no block; the link still has to reach this frame */
+        korb_flink_stage(c, flink, slots - (korb_sword_t)argv_cnt - 2);
+        return korb_send(c, slots, mid, line, argv_cnt - 1);
+    }
     NODE *iseq = VAL2PROC(pv)->iseq;
     if (iseq == NULL) iseq = KORB_BLK_CPROC;             /* Symbol/Method#to_proc: forward as a C-proc block */
     return korb_send_blk(c, slots, mid, line, argv_cnt - 1, iseq, KORB_BLK_FWD, &slots[proc_off], flink);

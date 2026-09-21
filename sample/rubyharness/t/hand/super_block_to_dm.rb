@@ -52,3 +52,28 @@ begin
 rescue ArgumentError => e
   p e.message
 end
+
+# a literal `&:sym` reifies as Symbol#to_proc (a lambda of arity -2), not as an
+# anonymous 0-arity block -- rspec's `match(&:tall?)` branches on `arity.zero?`
+def grab(&b) = [b.class, b.arity, b.lambda?, b.parameters]
+p grab(&:upcase)
+def pass_through(&b) = b
+pr = pass_through(&:upcase)
+p [pr.arity, pr.call("ab"), pr.lambda?]
+p pass_through(&:upcase).inspect.sub(/0x\h+/, "0xX")
+
+# ... and `super` into a define_method whose body IS such a proc
+class G
+  define_method(:shout, &:upcase)
+end
+class H < G
+  def shout(*a) = [:h, super(*a)]
+end
+p H.new.shout("hi")
+class I0
+  define_method(:call_it, &"xy".method(:sub))
+end
+class J0 < I0
+  def call_it(*a) = [:j, super(*a)]
+end
+p J0.new.call_it("x", "Z")

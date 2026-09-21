@@ -3456,6 +3456,16 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
      * node_entry; surface the NotImplementedError rather than reading a bad union. */
     if (UNLIKELY(entry == KORB_BLK_CPROC)) return RESULT_OK(self_val);   /* forwarded Symbol/Method#to_proc: already a Proc (held in self_val) */
     if (UNLIKELY(entry->head.kind != &kind_node_entry)) return EVAL(c, entry, slots);
+    /* a literal `&:sym` compiles to a synthesized entry, but reifying it (`def
+     * m(&b)`) must hand back what Symbol#to_proc builds: a lambda of arity -2,
+     * not an anonymous 0-arity block (rspec's `match(&:tall?)` branches on it). */
+    if (UNLIKELY(entry->u.node_entry.symproc_mid != 0)) {
+        KorbProc *const sp = korb_alloc(c, slots, sizeof(KorbProc), KORB_OBJ_PROC);
+        sp->iseq = NULL; sp->sym_mid = entry->u.node_entry.symproc_mid; sp->is_lambda = 1;
+        ARO_STORE(c, sp, (VALUE *)(uintptr_t)&sp->env, 0);
+        ARO_STORE(c, sp, (VALUE *)(uintptr_t)&sp->self, KORB_NIL);
+        return RESULT_OK((VALUE)sp);
+    }
     /* def_env is a live slots base; some callers (node_send_blk → a builtin that
      * reifies its block, e.g. Hash.new {…}) hand it in odd-tagged.  Strip the tag
      * so the capture walk reads a real frame base (idempotent for untagged callers). */
@@ -6140,6 +6150,7 @@ static VALUE korb_bt_outer_handle(const VALUE h, const VALUE *const base);   /* 
 static RESULT korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                                     const VALUE *argv, uint32_t argc, VALUE *captured_self,
                                     NODE *bp_blk, VALUE *bp_denv, VALUE *bp_self, uint32_t is_lam);   /* fwd (super into a define_method'd body) */
+static RESULT korb_cproc_yield(CTX *c, VALUE *slots, VALUE pv, const VALUE *argv, uint32_t argc);   /* fwd (same) */
 
 /* A define_method'd method enforces arity like a method whatever the source was
  * (CRuby converts proc arity to method arity); `|&nil|` refuses a block.
@@ -6309,6 +6320,10 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     if (m->kind == KORB_METHOD_DM) {              /* super into a define_method'd method → run its Proc body */
         const KorbProc *const p = VAL2PROC(m->dm_proc);
         CHECK(korb_dm_call_check(c, slots, p->iseq, argc, line, block != NULL));
+        if (UNLIKELY(p->iseq == NULL || p->iseq == KORB_BLK_CPROC)) {   /* define_method(&:sym) / (&meth): a send, no frame */
+            slots[0] = m->dm_proc;                /* root the proc; args live below at slots[-argc] */
+            return korb_cproc_yield(c, slots + 1, slots[0], &slots[-(korb_sword_t)argc], argc);
+        }
         slots[0] = self;                          /* captured_self = receiver (rooted scanned slot) */
         slots[1] = captured_self;                 /* park for the forwarded block's cself pointer */
         const struct korb_method *const dm_saved = c->dm_entry;
