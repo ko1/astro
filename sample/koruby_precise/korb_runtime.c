@@ -3565,24 +3565,43 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
     const uint16_t *ns = (const uint16_t *)entry->u.node_entry.cap_ns;
     if (depth > 64) depth = 64;                          /* sanity bound on nesting */
     VALUE *bases[64];
-    /* Walk the PREV chain (slots base[-1], odd-tagged for a live frame).  An
-     * ancestor that already escaped has an even KorbEnv* there — its chain is
-     * already materialized, so stop and reuse it as the outer env (do NOT treat
-     * the KorbEnv pointer as a slots base — that was the deep-capture bug). */
-    bases[0] = def_env;                                  /* immediate enclosing scope locals */
-    uint32_t nlive = 1;
-    VALUE outer_env = 0;                                 /* existing KorbEnv chain to graft, or 0 */
-    for (uint32_t k = 1; k < depth; k++) {
-        const VALUE pv = korb_ep_get(bases[k-1]);
-        if (pv & 1u) { bases[k] = (VALUE *)(uintptr_t)(pv & ~(uintptr_t)1u); nlive++; }
-        else { outer_env = pv; break; }                 /* reached an already-materialized KorbEnv */
+    /* Walk out `depth` lexical scopes, collecting each one's frame base.  The EP
+     * cell (base[-2]) is odd for a live frame that has not escaped (the link to
+     * the enclosing scope), and otherwise holds a KorbEnv: either this frame's
+     * OWN env (loc == base — then the link out is its prev), or, for a frame
+     * entered through a proc call, the ENCLOSING scope's env, which is the next
+     * level itself.  Walking THROUGH envs matters: a shallower sibling closure
+     * materializes only as far as it reads and leaves the rest of the chain as
+     * raw frame bases, so stopping at the first env would leave this (deeper)
+     * closure reading an enclosing scope off a frame that is about to die.
+     * Only bases are kept here — a KorbEnv* would go stale across the allocs
+     * below (moving GC), so the loop re-finds each env by base. */
+    uint32_t nlive = 0;
+    VALUE link = (VALUE)((uintptr_t)def_env | 1u);       /* level 0 = immediate enclosing scope */
+    while (nlive < depth && link != 0) {
+        if (link & 1u) {
+            VALUE *const b = (VALUE *)(uintptr_t)(link & ~(uintptr_t)1u);
+            const KorbEnv *const own = korb_open_env_find(b);
+            bases[nlive++] = b;
+            link = own ? own->prev : korb_ep_get(b);
+        } else {
+            const KorbEnv *const e = VAL2ENV(link);
+            if (e->closed) break;                        /* returned frame: its chain is already final */
+            bases[nlive++] = e->loc;
+            link = e->prev;
+        }
     }
-    /* materialize the live levels outermost -> innermost, grafting onto
-     * outer_env; slots[1] holds the current outer env (rooted across each alloc). */
-    slots[1] = outer_env;
+    /* materialize the live levels outermost -> innermost, grafting onto whatever
+     * env the walk ended on; slots[1] holds the current outer env (rooted across
+     * each alloc).  A raw base left over stays the outermost level's own link. */
+    slots[1] = (link & 1u) ? 0 : link;
     for (int k = (int)nlive - 1; k >= 0; k--) {
         KorbEnv *existing = korb_open_env_find(bases[k]);
-        if (existing) { slots[1] = (VALUE)(uintptr_t)existing; continue; }   /* share this frame's env */
+        if (existing) {   /* share this frame's env — and graft the outer levels we just built under it */
+            if (slots[1]) ARO_STORE(c, existing, (VALUE *)(uintptr_t)&existing->prev, slots[1]);
+            slots[1] = (VALUE)(uintptr_t)existing;
+            continue;
+        }
         KorbEnv *e = korb_alloc(c, slots + 2, sizeof(KorbEnv), KORB_OBJ_ENV);
         /* the original outer link, read AFTER the alloc: when it names a KorbEnv
          * a GC there moves it, and the cell (a scanned root) is what was fixed up */

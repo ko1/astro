@@ -708,6 +708,10 @@ typedef struct KorbClass {
 #define KORB_RANGE_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RANGE)
 #define KORB_OBJECT_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_OBJECT)
 #define KORB_CLASS_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_CLASS)
+/* `x == x` can still have to dispatch: a user instance, or a Class/Module whose
+ * singleton mixes in a #==.  One header load for both (see node_eq). */
+#define KORB_USER_EQ_CANDIDATE(v) \
+    (AROH_IS_GC_OBJECT(v) && (KORB_OBJ_TYPE(v) == KORB_OBJ_OBJECT || KORB_OBJ_TYPE(v) == KORB_OBJ_CLASS))
 #define KORB_FLOAT_P(v)    (FLONUM_P(v) || (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FLOAT))
 #define KORB_HEAP_FLOAT_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FLOAT)
 /* KORB_STALE_CHECK (debug build): ask the collector, at every dereference,
