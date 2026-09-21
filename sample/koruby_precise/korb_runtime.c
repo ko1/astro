@@ -12938,6 +12938,8 @@ korb_register_core_methods(CTX *c)
      * registering the same fn makes instance_method(:===) == instance_method(:==)
      * and keeps case/when (`5 === x`) behaviourally identical. */
     korb_def_cmethod(c, KORB_C_INTEGER, "==", korb_m_num_eq, 1);   /* reflexive for a non-numeric other (overrides Comparable#==) */
+    korb_def_cmethod(c, KORB_C_SYMBOL, "==", korb_m_obj_equal, 1);   /* identity, like CRuby — not Comparable#== */
+    korb_def_cmethod(c, KORB_C_SYMBOL, "===", korb_m_obj_equal, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "===", korb_m_num_eq, 1);  /* #=== is the same method as #== */
     korb_def_cmethod(c, KORB_C_FLOAT,   "==", korb_m_num_eq, 1);
     korb_def_cmethod(c, KORB_C_FLOAT,   "===", korb_m_num_eq, 1);
@@ -13044,6 +13046,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "size", korb_m_str_charlen, 0);
     korb_def_cmethod(c, KORB_C_STRING, "bytesize", korb_m_str_len, 0);
     korb_def_cmethod(c, KORB_C_STRING, "eql?", korb_m_str_eql, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "==", korb_m_str_eq_pub, 1);   /* not Comparable#== (it would run the other's #<=>) */
+    korb_def_cmethod(c, KORB_C_STRING, "===", korb_m_str_eq_pub, 1);
     korb_def_cmethod(c, KORB_C_STRING, "empty?", korb_m_str_empty, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_s", korb_m_str_to_s, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_str", korb_m_str_to_s, 0);   /* CRuby: to_str is rb_str_to_s too */

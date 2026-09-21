@@ -3201,6 +3201,23 @@ static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
  * (the Hash key path) on purpose: that one has no vm, so it cannot ask whether
  * an encoding is ASCII-compatible, and making it able to would cost the index
  * scan.  Here CTX gives us the vm for free. */
+static RESULT korb_m_str_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (just below) */
+/* String#== — a real method, not Comparable#==: the inherited one answers via
+ * #<=>, which for a non-String other runs the REVERSE comparison and so lets an
+ * unrelated object's #<=> raise (diff-lcs compares a Change against the action
+ * Strings through Array#include?). */
+static RESULT korb_m_str_eq_pub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    if (KORB_STRING_P(o)) return korb_m_str_eql(c, slots, self, a);
+    if (KORB_OBJECT_P(o) && korb_responds_to(c, o, korb_intern(c->vm, "to_str", 6))) {
+        slots[0] = o;                                  /* a #to_str object answers for itself (CRuby) */
+        slots[1] = VALUE_REF_GET(self);
+        const RESULT r = korb_send(c, slots + 2, c->vm->mid_eq, 0, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_TRUE : KORB_FALSE);   /* rb_equal: the ANSWER, not what #== returned */
+    }
+    return RESULT_OK(KORB_FALSE);
+}
 static RESULT korb_m_str_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;
     const VALUE o = VALUE_SLICE_GET(a, 0);
