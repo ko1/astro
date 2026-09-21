@@ -16440,6 +16440,8 @@ void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...) {
     const int bl = vsnprintf(body, sizeof body, fmt, ap);
     va_end(ap);
     if (bl < 0) return;
+    /* TODO: CRuby prefixes "file:line: ".  Reaching the caller's frame needs a
+     * link cell, which the korb_warn call sites do not thread yet. */
     char msg[256];
     const int ml = snprintf(msg, sizeof msg, "warning: %s\n", body);
     if (ml < 0) return;
