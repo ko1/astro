@@ -5962,7 +5962,7 @@ korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
     for (int32_t i = (int32_t)VALUE_SLICE_LEN(mods) - 1; i >= 0; i--) {   /* reverse: `include A, B` → A nearest */
         const VALUE mv = VALUE_SLICE_GET(mods, i);
         if (UNLIKELY(!KORB_CLASS_P(mv) || !VAL2CLASS(mv)->is_module))   /* a Class (not Module) → TypeError, like CRuby */
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(mv));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_coerce_name(c, mv));
         if (UNLIKELY(c->vm->refinements_active) && KORB_CLASS_P(korb_refinement_target(c->vm, mv)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "Cannot include refinement");
         if (UNLIKELY(korb_class_has_ancestor(mv, VALUE_REF_GET(kref))))   /* mod already has us as an ancestor → cycle */
@@ -6008,7 +6008,7 @@ korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
     for (int32_t i = (int32_t)VALUE_SLICE_LEN(mods) - 1; i >= 0; i--) {   /* reverse: `include A, B` → A nearest */
         const VALUE mv = VALUE_SLICE_GET(mods, i);
         if (UNLIKELY(!KORB_CLASS_P(mv) || !VAL2CLASS(mv)->is_module))   /* a Class (not Module) → TypeError, like CRuby */
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(mv));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_coerce_name(c, mv));
         if (UNLIKELY(c->vm->refinements_active) && KORB_CLASS_P(korb_refinement_target(c->vm, mv)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "Cannot prepend refinement");
         if (UNLIKELY(korb_class_has_ancestor(mv, VALUE_REF_GET(kref))))
@@ -6042,7 +6042,7 @@ static RESULT korb_mod_features(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (UNLIKELY(!KORB_CLASS_P(VALUE_REF_GET(self)) || !VAL2CLASS(VALUE_REF_GET(self))->is_module))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s_features must be called for modules", prepend ? "prepend" : "append");
     if (UNLIKELY(!KORB_CLASS_P(base)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(base));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_coerce_name(c, base));
     if (UNLIKELY(base == VALUE_REF_GET(self) || korb_class_has_ancestor(VALUE_REF_GET(self), base)))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cyclic include detected");
     KORB_CHECK_FROZEN(c, slots, base);           /* frozen target → FrozenError before any change */
@@ -7085,6 +7085,12 @@ korb_type_name(VALUE v)
       case KORB_OBJ_SET: return "Set";
       case KORB_OBJ_MATCHDATA: return "MatchData";
       case KORB_OBJ_BINDING:   return "Binding";
+      case KORB_OBJ_PROC:      return "Proc";
+      case KORB_OBJ_REGEXP:    return "Regexp";
+      case KORB_OBJ_FIBER:     return "Fiber";
+      case KORB_OBJ_THREAD:    return "Thread";
+      case KORB_OBJ_MUTEX:     return "Thread::Mutex";
+      case KORB_OBJ_CONDVAR:   return "Thread::ConditionVariable";
     }
     return "Object";
 }

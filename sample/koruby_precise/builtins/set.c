@@ -1664,7 +1664,7 @@ static RESULT korb_m_cmpbl_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_class_include_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE target = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_CLASS_P(target) || !VAL2CLASS(target)->is_module))   /* a Class (not Module) or non-class → TypeError, like CRuby */
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(target));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_coerce_name(c, target));
     VALUE cls = VALUE_REF_GET(self);
     while (KORB_CLASS_P(cls)) {                              /* pure reads → no GC, no rooting */
         VALUE inc = VAL2CLASS(cls)->included;
@@ -2939,7 +2939,7 @@ static RESULT korb_m_proc_refined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         const VALUE m = VALUE_SLICE_GET(a, i);
         if (UNLIKELY(!KORB_CLASS_P(m) || !VAL2CLASS(m)->is_module))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)",
-                              korb_type_name(m));
+                              korb_coerce_name(c, m));
     }
     { const struct Node *const iseq = VAL2PROC(VALUE_REF_GET(self))->iseq;
       if (UNLIKELY(iseq == NULL || iseq == KORB_BLK_CPROC))
