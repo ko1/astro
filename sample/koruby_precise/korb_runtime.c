@@ -9804,8 +9804,12 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         /* like any method body, this one has its own default definee (a nested
          * `def` uses the block's lexical def-class) — an enclosing
          * instance_eval's must not leak in (cf. korb_invoke_method) */
-        const VALUE dm_definee = c->def_definee;
-        if (UNLIKELY(dm_definee != KORB_NIL)) c->def_definee = KORB_NIL;
+        /* Park it on the cref stack, never in a C local: the body below runs
+         * Ruby, and a moving GC relocates the definee class — restoring a bare
+         * VALUE afterwards installs a stale pointer, and the next `def` in the
+         * enclosing class_eval/module_exec body lands in freed memory. */
+        const bool dm_cref = UNLIKELY(c->def_definee != KORB_NIL);
+        if (dm_cref) { korb_cref_push(c); c->def_definee = KORB_NIL; }
         /* the body IS this method's frame as far as a backtrace is concerned:
          * mark the arg window so the block frame links to it (as for a
          * block-taking builtin above) */
@@ -9815,7 +9819,7 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
                                          &slots[-(korb_sword_t)argc], argc, recv_slot,
                                          block, def_env, captured_self, 2);   /* captured_self = receiver slot; 2 = method-shaped binding */
         if (framed) korb_cframe_leave(c, dm_link_saved);
-        if (UNLIKELY(dm_definee != KORB_NIL)) c->def_definee = dm_definee;
+        if (dm_cref) korb_cref_pop(c);
         c->dm_entry = dm_saved;
         /* A define_method body behaves like a lambda: `return`, `break` and
          * `next` all just leave the method with that value (a bare `break` in a
