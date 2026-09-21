@@ -3848,6 +3848,38 @@ korb_const_get(struct korb_vm *vm, uint32_t name_sym)
     return KORB_NIL;
 }
 
+/* Where a dotted constant path first fails to resolve, as "A" / "A::B".  Only
+ * the path as written (no lexical prefix dropping) is walked: that is what
+ * CRuby's `class A::B::C` NameError names.  false = the whole path resolved
+ * (possibly to a non-module value, which is a TypeError instead). */
+bool
+korb_const_path_missing(struct korb_vm *vm, uint32_t name_sym, char *out, size_t outsz)
+{
+    const char *const nm = korb_sym_name(vm, name_sym);
+    VALUE cur = KORB_NIL;
+    size_t used = 0;
+    for (const char *p = nm; p != NULL; ) {
+        const char *const sep = strstr(p, "::");
+        const uint32_t len = sep ? (uint32_t)(sep - p) : (uint32_t)strlen(p);
+        const uint32_t id = korb_intern(vm, p, len);
+        uint32_t idx;
+        if (used == 0) {                                   /* head: top level, then the flat name */
+            idx = korb_const_index_owned(vm, id, KORB_NIL);
+            if (idx == UINT32_MAX) idx = korb_const_index(vm, id);
+        } else {
+            idx = KORB_CLASS_P(cur) ? korb_const_index_owned(vm, id, cur) : UINT32_MAX;
+        }
+        if (used + len + 3 < outsz) {
+            if (used) { out[used++] = ':'; out[used++] = ':'; }
+            memcpy(out + used, p, len); used += len; out[used] = 0;
+        }
+        if (idx == UINT32_MAX) return true;                /* this segment is the missing one */
+        cur = vm->const_vals[idx];
+        p = sep ? sep + 2 : NULL;
+    }
+    return false;
+}
+
 /* Resolve a baked dotted constant path ("Net::HTTP") one component at a time.
  * A bare name (no "::") is the ordinary by-name lookup. */
 VALUE

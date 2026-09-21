@@ -1411,6 +1411,9 @@ node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint64_t flink,
                     : (path_owner ? korb_const_get_path(c->vm, path_owner)
                                   : (self_off == INT32_MIN ? KORB_NIL : slots[self_off]));
     if (UNLIKELY(dyn_base == 2 && !KORB_CLASS_P(enclosing))) {   /* `class A::B` where A is not a module */
+        char miss[256];
+        if (enclosing == KORB_NIL && korb_const_path_missing(c->vm, path_owner, miss, sizeof miss))
+            return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", miss);
         char db[224]; korb_desc_inspect(c, enclosing, db, sizeof db);
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a class/module", db);
     }
@@ -1463,6 +1466,9 @@ node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint64_t flink
                     : (path_owner ? korb_const_get_path(c->vm, path_owner)
                                   : (self_off == INT32_MIN ? KORB_NIL : slots[self_off]));
     if (UNLIKELY(dyn_base == 2 && !KORB_CLASS_P(enclosing))) {   /* `class A::B` where A is not a module */
+        char miss[256];
+        if (enclosing == KORB_NIL && korb_const_path_missing(c->vm, path_owner, miss, sizeof miss))
+            return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", miss);
         char db[224]; korb_desc_inspect(c, enclosing, db, sizeof db);
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a class/module", db);
     }
