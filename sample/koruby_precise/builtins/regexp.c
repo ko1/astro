@@ -1051,10 +1051,19 @@ static RESULT korb_re_coerce_pat_literal(CTX *c, VALUE *slots, VALUE pv, VALUE *
     if (KORB_REGEXP_P(pv)) { *out = pv; return RESULT_OK(KORB_TRUE); }
     if (KORB_STRING_P(pv)) {                             /* a Symbol is a TypeError, like any non-String */
         const char *b = korb_strbuf_data(VAL2STR(pv)->buf); const uint32_t n = VAL2STR(pv)->len;
+        const uint32_t penc = KORB_STR_ENC(pv);          /* read before any alloc moves pv */
         char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
-        for (uint32_t i = 0; i < n; i++) { unsigned char ch = (unsigned char)b[i]; if (strchr("\\.*+?()[]{}|-^$", ch)) fputc('\\', ms); fputc(ch, ms); }
+        /* Step CHARACTERS: a Shift_JIS trail byte can be '^' or '-', and escaping
+         * it would cut the character in half. */
+        for (uint32_t i = 0; i < n; ) {
+            const uint32_t cl = korb_str_char_bytes(c->vm, penc, (const unsigned char *)b, i, n);
+            if (cl == 1 && strchr("\\.*+?()[]{}|-^$", (unsigned char)b[i])) fputc('\\', ms);
+            fwrite(b + i, 1, cl, ms);
+            i += cl ? cl : 1;
+        }
         fclose(ms);
         slots[0] = UNWRAP(korb_str_new(c, slots, buf ? buf : "", (uint32_t)z)); free(buf);
+        KORB_STR_ENC_SET(slots[0], penc);                /* the literal pattern keeps the string's encoding */
         *out = UNWRAP(korb_re_alloc(c, slots + 1, slots[0], 0));
         return RESULT_OK(KORB_TRUE);
     }

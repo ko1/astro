@@ -729,8 +729,8 @@ static RESULT korb_m_str_casecmp_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     const int mode = korb_casecmp_fold_mode(c, VALUE_REF_GET(self), o);
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *t = VAL2STR(o);
     char *fa, *fb; uint32_t la, lb;
-    korb_case_transform_buf(korb_strbuf_data(s->buf), s->len, 1, mode, &fa, &la);
-    korb_case_transform_buf(korb_strbuf_data(t->buf), t->len, 1, mode, &fb, &lb);
+    korb_case_transform_buf(c->vm, KORB_STR_ENC(VALUE_REF_GET(self)), korb_strbuf_data(s->buf), s->len, 1, mode, &fa, &la);
+    korb_case_transform_buf(c->vm, KORB_STR_ENC(o), korb_strbuf_data(t->buf), t->len, 1, mode, &fb, &lb);
     const bool eq = (la == lb) && memcmp(fa, fb, la) == 0;
     free(fa); free(fb);
     return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);
@@ -1208,8 +1208,8 @@ static RESULT korb_m_sym_casecmp_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     const int mode = korb_casecmp_fold_mode(c, slots[0], slots[1]);
     const KorbString *s = VAL2STR(slots[0]), *t = VAL2STR(slots[1]);
     char *fa, *fb; uint32_t la, lb;
-    korb_case_transform_buf(korb_strbuf_data(s->buf), s->len, 1, mode, &fa, &la);
-    korb_case_transform_buf(korb_strbuf_data(t->buf), t->len, 1, mode, &fb, &lb);
+    korb_case_transform_buf(c->vm, KORB_STR_ENC(slots[0]), korb_strbuf_data(s->buf), s->len, 1, mode, &fa, &la);
+    korb_case_transform_buf(c->vm, KORB_STR_ENC(slots[1]), korb_strbuf_data(t->buf), t->len, 1, mode, &fb, &lb);
     const bool eq = (la == lb) && memcmp(fa, fb, la) == 0;
     free(fa); free(fb);
     return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);

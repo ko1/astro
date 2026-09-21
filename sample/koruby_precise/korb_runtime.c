@@ -1297,6 +1297,7 @@ korb_str_repeat_ref(CTX *c, VALUE *slots, VALUE_REF src, korb_sword_t cnt, uint3
         return korb_raise(c, slots, KORB_E_ARGUMENT, line, "argument too big");
     KorbString *s = korb_str_alloc(c, slots, (uint32_t)total);
     const KorbString *ss = VAL2STR(VALUE_REF_GET(src));
+    KORB_STR_ENC_SET((VALUE)s, KORB_STR_ENC(VALUE_REF_GET(src)));   /* the copy keeps the source's encoding */
     if (total == 0) return RESULT_OK((VALUE)s);          /* "" * huge and str * 0: the 0-byte payload must not take the memcpy below */
     char *const dst = korb_strbuf_data(s->buf);
     if (len == 1) {                                      /* "\0" * 848640 was 848640 one-byte memcpy calls */

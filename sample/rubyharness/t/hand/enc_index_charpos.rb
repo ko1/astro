@@ -36,3 +36,19 @@ p [s.byteindex("い"), s.byterindex("い"), s.index("い"), s.rindex("い")]
   end
 end
 p ["あいう".to_sym.length, "あいう".encode("EUC-JP").to_sym.length, :abc.length]
+
+# String#* keeps the encoding; a String pattern becomes a Regexp in the
+# receiver's encoding; chop / split("") / upcase step characters; strip does not
+# eat the NUL bytes inside a UTF-16/32 code unit.
+%w[UTF-8 EUC-JP Shift_JIS Windows-31J UTF-16BE UTF-16LE UTF-32LE UTF-32BE US-ASCII ASCII-8BIT ISO-8859-1].each do |e|
+  s = (begin; "あbいcう".encode(e); rescue; "XbYcZ".encode(e); end)
+  p [e, (s * 2).encoding.name, (s * 2).bytesize, (s * 0).encoding.name]
+  p [e, s.chop.bytes, s.split("").map(&:bytes), s.split(s[2]).map(&:bytes)]
+  p [e, s.upcase.bytes, s.downcase.bytes, s.swapcase.bytes, s.capitalize.bytes]
+  p [e, (begin; s.sub(s[2], s[0]).bytes; rescue => x; x.class; end)]
+  p [e, (s[0] + s + s[0]).strip.bytes, s.rstrip.bytes, s.lstrip.bytes]
+  p [e, s.casecmp?(s.dup), s.casecmp(s.dup)]
+end
+# Shift_JIS trail bytes that look like ASCII letters must survive case mapping
+sj = "\x83\x41\x83\x61\x82\x60".dup.force_encoding("Shift_JIS")
+p [sj.valid_encoding?, sj.upcase.bytes, sj.downcase.bytes, sj.swapcase.bytes]
