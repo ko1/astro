@@ -6101,6 +6101,7 @@ korb_super_find(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_d
     return m;
 }
 
+static VALUE korb_bt_outer_handle(const VALUE h, const VALUE *const base);   /* fwd (backtrace lexical walk) */
 /* `super` — invoke `mid` starting from after def_class in self's MRO, keeping
  * self.  `entry_cell` is the frame's fs-2 cell: the running method's entry
  * (tagged korb_method*); its owner is the def_class whose MRO successor runs. */
@@ -6119,13 +6120,50 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         mid = c->dm_entry->orig_mid ? c->dm_entry->orig_mid : c->dm_entry->mid;
         entry_cell = (VALUE)((uintptr_t)c->dm_entry | 1u);
     } else if (UNLIKELY(!(((uintptr_t)entry_cell & 7u) == KORB_FID_METHOD))) {
-        /* `super` inside a block: the block's frame carries no method entry, so
-         * take the one the name currently resolves to on the receiver and search
-         * above its owner.  (A block outliving a redefinition can pick the newer
-         * definition — CRuby tracks the block's home method exactly.) */
-        VALUE odef = KORB_NIL;
-        const struct korb_method *const own = korb_class_find_method(korb_dispatch_class(c, self), mid, &odef);
-        if (own != NULL) entry_cell = (VALUE)((uintptr_t)own | 1u);
+        /* A block that BECAME a method body: `define_method(:x, &blk)` where blk
+         * was written inside some other method bakes THAT method's name (the
+         * parser cannot know the block's fate), but at run time the body IS this
+         * entry.  The frame's block identity naming the entry's own proc is what
+         * says so — rspec's define_user_override builds its matchers this way. */
+        bool in_dm_body = false;
+        if (UNLIKELY(c->dm_entry != NULL && KORB_PROC_P(c->dm_entry->dm_proc) &&
+                     VAL2PROC(c->dm_entry->dm_proc)->iseq != NULL && frame_base != NULL)) {
+            /* The body's own frame, or any block WRITTEN inside it: the same
+             * lexical walk the backtrace uses for "block in Foo#bar" reaches that
+             * frame's identity.  (rspec's `match` block sits two blocks deep
+             * inside the define_method'd body.) */
+            const VALUE want = (VALUE)((uintptr_t)VAL2PROC(c->dm_entry->dm_proc)->iseq | (VALUE)KORB_FID_BLOCK);
+            in_dm_body = (entry_cell == want);
+            const VALUE *const lo = c->slots;
+            const VALUE *limit = frame_base;
+            VALUE prev = korb_bt_outer_handle(korb_ep_get(frame_base), frame_base);
+            for (int guard = 0; !in_dm_body && guard < 32; guard++) {
+                VALUE id;
+                if (prev & 1u) {                          /* the defining frame is still live */
+                    const VALUE *const dbase = (const VALUE *)(uintptr_t)(prev & ~(VALUE)1u);
+                    if (dbase < lo || dbase >= limit) break;
+                    limit = dbase;
+                    id = korb_id_get(dbase);
+                    prev = korb_bt_outer_handle(korb_ep_get(dbase), dbase);
+                } else if (KORB_ENV_P(prev)) {            /* it returned; the env keeps its identity */
+                    id = VAL2ENV(prev)->id;
+                    prev = VAL2ENV(prev)->prev;
+                } else break;
+                if (id == want) in_dm_body = true;
+            }
+        }
+        if (in_dm_body) {
+            mid = c->dm_entry->orig_mid ? c->dm_entry->orig_mid : c->dm_entry->mid;
+            entry_cell = (VALUE)((uintptr_t)c->dm_entry | 1u);
+        } else {
+            /* `super` inside a block: the block's frame carries no method entry, so
+             * take the one the name currently resolves to on the receiver and search
+             * above its owner.  (A block outliving a redefinition can pick the newer
+             * definition — CRuby tracks the block's home method exactly.) */
+            VALUE odef = KORB_NIL;
+            const struct korb_method *const own = korb_class_find_method(korb_dispatch_class(c, self), mid, &odef);
+            if (own != NULL) entry_cell = (VALUE)((uintptr_t)own | 1u);
+        }
     }
     VALUE found_def = KORB_NIL;
     struct korb_method *const m = korb_super_find(c, mid, entry_cell, self, &found_def);
