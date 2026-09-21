@@ -2710,7 +2710,6 @@ void korb_init_file(CTX *c, VALUE *slots) {
                                korb_const_get(vm, korb_intern(vm, "Object", 6)))).value;
     korb_const_define_owned(c, korb_intern(vm, "Stat", 4), slots[2], slots[0]);   /* File::Stat */
     ARO_STORE(c, VAL2CLASS(slots[2]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[2])->enclosing, slots[0]);
-    korb_const_define(c, korb_intern(vm, "File::Stat", 10), slots[2]);
     korb_class_def_cfn(c, slots[2], "size",      korb_m_stat_size,     0);
     korb_class_def_cfn(c, slots[2], "mode",      korb_m_stat_mode,     0);
     korb_class_def_cfn(c, slots[2], "ino",       korb_m_stat_ino,      0);

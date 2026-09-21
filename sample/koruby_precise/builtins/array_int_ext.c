@@ -1549,9 +1549,16 @@ static RESULT korb_m_hash_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 static RESULT korb_m_hash_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     uint32_t op_mid;
-    /* A trailing operator Symbol/String selects the symbol form, overriding any block. */
+    /* argc 2 → sym form (op=a[1], init=a[0]), block IGNORED; argc 1 + no block →
+     * sym form (op=a[0]); argc 1 + block → block form with init (the arg is the
+     * seed even when it is a String — `h.inject("") { … }`); argc 0 → block. */
     const uint32_t na0 = VALUE_SLICE_LEN(a);
-    const bool sym_form = na0 >= 1 && korb_reduce_op(c, VALUE_SLICE_GET(a, na0 - 1), &op_mid);
+    bool sym_form = false;
+    if (na0 >= 2 || (na0 == 1 && block == NULL)) {
+        bool ok; RESULT rr = korb_reduce_resolve_op(c, slots, VALUE_SLICE_GET(a, na0 - 1), &op_mid, &ok);
+        if (UNLIKELY(!ok)) return rr;
+        sym_form = true;
+    }
     if (block == NULL && !sym_form)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block or operator symbol given");
     if (sym_form) {                               /* reduce(:+) / reduce(init, :+) on [k,v] pairs [block ignored] */

@@ -1388,6 +1388,13 @@ static RESULT korb_collect_methods_ex(CTX *c, VALUE *slots, VALUE start_class, V
     const bool is_bare_module = KORB_CLASS_P(start_class) && VAL2CLASS(start_class)->is_module && !is_kernel;
     const bool is_basicobj = KORB_CLASS_P(start_class) &&
                              start_class == korb_const_get(c->vm, korb_intern(c->vm, "BasicObject", 11));
+    /* Does this MRO carry Kernel's API?  Either it reaches Object, or it mixes in
+     * a COPY of Kernel — which is what delegate.rb does on top of BasicObject,
+     * and Delegator.public_api must list send/public_send or DelegateClass
+     * generates a #send that forwards to the not-yet-set delegate. */
+    const bool has_kernel = !is_bare_module && KORB_CLASS_P(start_class) &&
+        (korb_kernel_reachable_p(c, start_class) ||
+         korb_class_find_method(start_class, korb_intern(c->vm, "respond_to?", 11), NULL) != NULL);
     slots[1] = start_class;                                         /* MRO cursor (rooted) — set before any alloc */
     slots[0] = UNWRAP(korb_ary_new(c, slots + 2, 8));              /* result (rooted at slots[0]) */
     const VALUE_REF result = VALUE_REF_AT(&slots[0]);
@@ -1431,13 +1438,18 @@ static RESULT korb_collect_methods_ex(CTX *c, VALUE *slots, VALUE start_class, V
         if (is_kernel)   /* Kernel's own private module_function block-methods */
             CHECK(korb_append_names(c, slots + 3, result, korb_kernel_priv_funcs, (uint32_t)(sizeof korb_kernel_priv_funcs / sizeof *korb_kernel_priv_funcs)));
     }
-    /* __send__ is a dispatch special case with no table entry, but every object
-     * has it (BasicObject owns it in CRuby).  send / public_send stay out: they
-     * would land in `Delegator.public_api`'s complement and make DelegateClass
-     * generate a #send that forwards to the not-yet-set delegate. */
+    /* send / __send__ / public_send are dispatch special cases with no table
+     * entry, but every object has them — and a blank-slate class built by
+     * `instance_methods.each { |m| undef_method m }` (commander's Options) only
+     * gets to hide them if they are listed.  __send__ belongs to BasicObject,
+     * send / public_send to Kernel. */
     if ((vis_mask & (1u << 0)) && (is_basicobj || (inherit && !is_bare_module))) {
         static const char *const bo_send[] = { "__send__" };
         CHECK(korb_append_names(c, slots + 3, result, bo_send, 1));
+    }
+    if ((vis_mask & (1u << 0)) && (is_kernel || (inherit && has_kernel))) {
+        static const char *const k_send[] = { "send", "public_send" };
+        CHECK(korb_append_names(c, slots + 3, result, k_send, 2));
     }
     return RESULT_OK(VALUE_REF_GET(result));
 }
