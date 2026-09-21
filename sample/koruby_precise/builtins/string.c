@@ -626,7 +626,18 @@ static inline bool korb_is_ws(unsigned char ch) {
 /* Length of the leading all-ASCII run within the first `n` bytes.  Word-at-a-time:
  * over that run a character index IS the byte index, so every character walk can
  * skip it. */
-static uint32_t
+/* All of the first `n` bytes ASCII?  Kept separate from korb_ascii_prefix: with
+ * no index to carry out, gcc vectorises this loop. */
+static inline bool
+korb_ascii_span(const unsigned char *const p, const uint32_t n)
+{
+    uint64_t acc = 0;
+    uint32_t i = 0;
+    for (; i + 8 <= n; i += 8) { uint64_t w; memcpy(&w, p + i, 8); acc |= w; }
+    for (; i < n; i++) acc |= p[i];
+    return (acc & 0x8080808080808080ULL) == 0;
+}
+static inline uint32_t
 korb_ascii_prefix(const unsigned char *const p, const uint32_t n)
 {
     uint32_t i = 0;
@@ -648,8 +659,8 @@ korb_utf8_count(const char *b, uint32_t nbytes)
     /* All-ASCII is the common case and the answer is the byte count; the
      * word-at-a-time test replaces a per-character decode of the whole buffer
      * (81% of crack's 2.4MB JSON conversion was spent right here). */
+    if (korb_ascii_span((const unsigned char *)b, nbytes)) return nbytes;
     const uint32_t asc = korb_ascii_prefix((const unsigned char *)b, nbytes);
-    if (asc == nbytes) return nbytes;
     uint32_t n = asc, i = asc;
     while (i < nbytes) {
         const unsigned char c0 = (unsigned char)b[i];
@@ -813,7 +824,8 @@ static uint32_t korb_utf8_step_fwd(const char *const b, const uint32_t len, uint
     if (UNLIKELY(off >= len)) return len;
     const unsigned char *const p = (const unsigned char *)b;
     const uint32_t rest = len - off;
-    const uint32_t asc = korb_ascii_prefix(p + off, rest < n ? rest : n);   /* over an ASCII run a char index IS a byte index */
+    const uint32_t want = rest < n ? rest : n;                 /* over an ASCII run a char index IS a byte index */
+    const uint32_t asc = korb_ascii_span(p + off, want) ? want : korb_ascii_prefix(p + off, want);
     off += asc; n -= asc;
     while (off < len && n > 0) {
         const uint32_t l = korb_utf8_seq_len(p, off, len);
