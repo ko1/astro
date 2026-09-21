@@ -131,7 +131,7 @@ static bool korb_is_random(CTX *const c, VALUE v) {
 
 /* A random source for shuffle/sample: an MT generator, or a user object passed
  * via `random:` whose #rand(n) is dispatched. */
-typedef struct { KorbMT *mt; VALUE obj; } KorbRandSrc;
+typedef struct { KorbMT *mt; VALUE obj; } KorbRandSrc;   /* obj == KORB_UNDEF → use mt (nil is a legal custom value) */
 static KorbRandSrc korb_rand_src_from_kwargs(CTX *const c, VALUE_SLICE a) {
     const uint32_t n = VALUE_SLICE_LEN(a);
     if (n >= 1) {
@@ -140,12 +140,13 @@ static KorbRandSrc korb_rand_src_from_kwargs(CTX *const c, VALUE_SLICE a) {
             const int32_t hi = korb_hash_find(VAL2HASH(last), ID2SYM(korb_intern(c->vm, "random", 6)));
             if (hi >= 0) {
                 const VALUE rng = korb_items_data(VAL2HASH(last)->items)[2 * hi + 1];
-                if (korb_is_random(c, rng)) { KorbMT *st = korb_rng_of(c, rng); if (st) { KorbRandSrc s = { st, KORB_NIL }; return s; } }
-                else if (KORB_OBJECT_P(rng)) { KorbRandSrc s = { NULL, rng }; return s; }   /* custom RNG → dispatch #rand */
+                if (korb_is_random(c, rng)) { KorbMT *st = korb_rng_of(c, rng); if (st) { KorbRandSrc s = { st, KORB_UNDEF }; return s; } }
+                else { KorbRandSrc s = { NULL, rng }; return s; }   /* any other value: CRuby dispatches #rand on it
+                                                                     * (a Module counts — ffaker passes FFaker::Random) */
             }
         }
     }
-    KorbRandSrc s = { korb_default_rng(c->vm), KORB_NIL };
+    KorbRandSrc s = { korb_default_rng(c->vm), KORB_UNDEF };
     return s;
 }
 /* Draw an integer in [0, bound] inclusive.  Re-resolves the source from `a` each
@@ -153,12 +154,26 @@ static KorbRandSrc korb_rand_src_from_kwargs(CTX *const c, VALUE_SLICE a) {
  * across the #rand dispatch's GC); the MT path allocates nothing. */
 static RESULT korb_rand_upto(CTX *const c, VALUE *slots, VALUE_SLICE a, uint32_t bound, uint32_t *out) {
     KorbRandSrc src = korb_rand_src_from_kwargs(c, a);
-    if (src.obj == KORB_NIL) { *out = korb_mt_limited(src.mt, bound); return RESULT_OK(KORB_NIL); }
-    if (UNLIKELY(!korb_responds_to(c, src.obj, korb_intern(c->vm, "rand", 4)))) {   /* CRuby: NoMethodError, not a silent fallback */
-        slots[0] = src.obj;
-        char rd[224];
-        return korb_raise(c, slots + 1, KORB_E_NOMETHOD, 0, "undefined method 'rand' for %s",
-                          korb_nomethod_recv_desc(c, slots + 1, slots[0], rd, sizeof rd));
+    if (src.obj == KORB_UNDEF) { *out = korb_mt_limited(src.mt, bound); return RESULT_OK(KORB_NIL); }
+    {   /* CRuby calls #rand publicly: Kernel#rand is private, so a plain object
+         * (nil, 5, Object, …) is a NoMethodError, not a silent fallback. */
+        const uint32_t rand_mid = korb_intern(c->vm, "rand", 4);
+        const VALUE dcls = korb_dispatch_class(c, src.obj);
+        VALUE mdef = KORB_NIL;
+        const struct korb_method *const me = KORB_CLASS_P(dcls) ? korb_class_find_method(dcls, rand_mid, &mdef) : NULL;
+        if (UNLIKELY(me == NULL)) {
+            slots[0] = src.obj;
+            char rd[224];
+            return korb_raise(c, slots + 1, KORB_E_NOMETHOD, 0, "undefined method 'rand' for %s",
+                              korb_nomethod_recv_desc(c, slots + 1, slots[0], rd, sizeof rd));
+        }
+        if (UNLIKELY(me->visibility != 0)) {
+            slots[0] = src.obj;
+            char rd[224];
+            return korb_raise(c, slots + 1, KORB_E_NOMETHOD, 0, "%s method 'rand' called for %s",
+                              me->visibility == 1 ? "private" : "protected",
+                              korb_nomethod_recv_desc(c, slots + 1, slots[0], rd, sizeof rd));
+        }
     }
     slots[0] = src.obj; slots[1] = LONG2FIX((korb_sword_t)bound + 1);   /* rng.rand(bound+1) → [0, bound] */
     RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "rand", 4), 0, 1);
