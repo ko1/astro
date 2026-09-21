@@ -988,6 +988,9 @@ struct korb_vm {
     struct korb_method **orphans;
     uint32_t orphan_cnt, orphan_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
+    uint32_t send_undef_cnt; /* how many `undef :send` / :__send__ / :public_send / :new tombstones exist.
+                              * Those names are special-dispatched (no table entry), so the dispatch has to
+                              * look for a tombstone — but only once a program has actually made one. */
     /* bumped whenever constant *resolution* could change: a new (name, owner)
      * entry, a remove_const, or an include/prepend/extend that alters an
      * ancestry.  Reassigning an existing constant does not move its index, so it
@@ -1174,6 +1177,7 @@ struct korb_vm {
      * send path tests them with integer compares instead of korb_sym_name+strcmp
      * on every call (send/__send__/public_send check ran for every arg call). */
     uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize, mid_eqq;
+    uint32_t mid___id__, mid_object_id;   /* the identity primitives CRuby warns about redefining */
     uint32_t mid_method_missing;
     uint32_t mid_dm_super;   /* sentinel name a `super` with no lexical `def` is baked with:
                               * a define_method body IS a method, but only at run time. */

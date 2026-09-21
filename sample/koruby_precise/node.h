@@ -624,6 +624,7 @@ void korb_relocate_object_methods(CTX *c, VALUE *slots);
 RESULT korb_singleton_copy(CTX *c, VALUE *slots, VALUE dst, VALUE src_sing);
 RESULT korb_class_dup(CTX *c, VALUE *slots, VALUE src);
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);
+void korb_warn_serious(CTX *c, VALUE *slots, uint32_t mid, bool undefining);   /* __send__ / __id__ / object_id / initialize */
 void korb_warn_ignore_verbose(CTX *c, VALUE *slots, const char *fmt, ...);   /* category warnings ($VERBOSE-independent) */
 void korb_warn_deprecated(CTX *c, VALUE *slots, const char *msg);   /* gated on Warning[:deprecated] */
 void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const char *fmt, ...);

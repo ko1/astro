@@ -1902,13 +1902,18 @@ korb_undef_one(CTX *c, VALUE *slots, VALUE cls, uint32_t mid)
             const VALUE objc = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
             const bool on_object = KORB_CLASS_P(objc) && korb_class_find_method(objc, mid, NULL) != NULL;
             const char *const nm = korb_sym_name(c->vm, mid);
+            /* send / __send__ / public_send / new are special-dispatched, so they
+             * are in no method table — `undef :send` must still be allowed
+             * (rspec-core's OutputWrapper spec does exactly that). */
             const bool intrinsic = !strcmp(nm, "to_s") || !strcmp(nm, "inspect") || !strcmp(nm, "!~") ||
-                                   !strcmp(nm, "<=>") || !strcmp(nm, "!") || !strcmp(nm, "!=");
+                                   !strcmp(nm, "<=>") || !strcmp(nm, "!") || !strcmp(nm, "!=") ||
+                                   korb_universal_send_p(c->vm, mid) || mid == c->vm->mid_new;
             if (!on_object && !intrinsic)
             {   char cnm[256]; korb_undef_class_desc(c, cls, cnm, sizeof cnm);
                 return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
                                   korb_sym_name(c->vm, mid), k->is_module ? "module" : "class", cnm); }
         }
+        korb_warn_serious(c, slots, mid, true);
         korb_class_undef_slot(c->vm, k, cls, mid);
         c->vm->method_serial++;
     }

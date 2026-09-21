@@ -1338,6 +1338,7 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entr
          * protected scope the enclosing class body was left in (CRuby) */
         const uint8_t saved_vis = VAL2CLASS(slots[0])->cur_visibility;
         if (nested) VAL2CLASS(slots[0])->cur_visibility = 0;
+        korb_warn_serious(c, slots + 1, mid, false);   /* redefining __send__ / __id__ / object_id */
         korb_class_def_method(c, slots[0], mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info, locals_info);
         if (nested) VAL2CLASS(slots[0])->cur_visibility = saved_vis;   /* re-read: the def may have moved it */
         /* method_added — or singleton_method_added when the definee is a
@@ -1375,6 +1376,7 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, 
     slots[0] = sing;                                     /* park: the check formats the receiver */
     { RESULT fr = korb_check_def_frozen(c, slots + 1, slots[0]); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* `obj.singleton_class.freeze` */
     sing = slots[0];
+    korb_warn_serious(c, slots + 1, mid, false);
     korb_class_def_method(c, sing, mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info, locals_info);
     /* fire the BasicObject#singleton_method_added(name) hook — only when the
      * object actually defines it (no default → no per-def cost otherwise; and

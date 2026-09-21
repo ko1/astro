@@ -4505,6 +4505,8 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         klass = VALUE_REF_GET(self);                     /* to_str dispatch may have moved the class (self is rooted) */
     }
     slots[0] = klass;                                    /* root class across allocs */
+    korb_warn_serious(c, slots + 1, mid, false);         /* redefining __send__ / __id__ / object_id */
+    klass = slots[0];                                    /* re-read: the warning is Ruby (Warning.warn) */
     /* An explicit 2nd argument wins over a block (CRuby): `define_method(:x, pr) { }`
      * defines pr, not the block. */
     const bool arg_body = VALUE_SLICE_LEN(a) >= 2 &&
@@ -4957,11 +4959,24 @@ korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is
     c->vm->method_serial++;
 }
 
+/* CRuby warns when a program redefines or undefines the identity primitives.
+ * `undef` also warns about #initialize (undefining only). */
+void
+korb_warn_serious(CTX *c, VALUE *slots, uint32_t mid, bool undefining)
+{
+    const struct korb_vm *const vm = c->vm;
+    const bool ident = mid == vm->mid___send__ || mid == vm->mid___id__ || mid == vm->mid_object_id;
+    if (LIKELY(!ident && !(undefining && mid == vm->mid_initialize))) return;
+    if (undefining) korb_warn(c, slots, "undefining '%s' may cause serious problems", korb_sym_name(vm, mid));
+    if (ident)      korb_warn(c, slots, "redefining '%s' may cause serious problems", korb_sym_name(vm, mid));
+}
+
 /* Install an undef tombstone for `mid` on `k` (owner `cls`). */
 void
 korb_class_undef_slot(struct korb_vm *vm, KorbClass *k, VALUE cls, uint32_t mid)
 {
     struct korb_method *const um = korb_class_method_slot(vm, k, mid);   /* libc alloc, no GC */
+    if (UNLIKELY(korb_universal_send_p(vm, mid))) vm->send_undef_cnt++;   /* `new` is not tracked: its dispatch is the hot path */
     um->mid = mid; um->orig_mid = mid;
     um->kind = KORB_METHOD_UNDEF; um->owner = cls; um->visibility = 0;
     um->params_cnt = -1; um->req_cnt = 0; um->post_cnt = 0; um->rest_slot = -1;
@@ -5083,6 +5098,20 @@ korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def)
         if (m) return m->kind == KORB_METHOD_UNDEF ? NULL : m;   /* undef tombstone: stop, report missing */
     }
     return NULL;
+}
+
+/* Was `mid` explicitly `undef`d somewhere in klass's chain?  korb_class_find_method
+ * reports a tombstone as "missing", which is right for the table-driven names —
+ * but send / __send__ / public_send / new are dispatched without a table entry,
+ * so only this can hide them. */
+static bool
+korb_method_undefed_p(VALUE klass, uint32_t mid)
+{
+    for (VALUE k = klass; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
+        const struct korb_method *const m = korb_mro_seg_find(k, mid, NULL, 0);
+        if (m) return m->kind == KORB_METHOD_UNDEF;
+    }
+    return false;
 }
 
 #define KORB_MCACHE_N 4096u   /* direct-mapped, power of two */
@@ -6581,9 +6610,9 @@ korb_responds_to(CTX *c, VALUE self, uint32_t mid)
     if (mid == c->vm->mid_new && KORB_CLASS_P(self) && !VAL2CLASS(self)->is_module)
         return true;
     /* send / __send__ / public_send are also special-dispatched (not registered);
-     * every object responds to them. */
+     * every object responds to them unless one was explicitly undef'd. */
     if (mid == c->vm->mid_send || mid == c->vm->mid___send__ || mid == c->vm->mid_public_send)
-        return true;
+        return !(UNLIKELY(c->vm->send_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid));
     const VALUE start = korb_dispatch_class(c, self);
     if (!KORB_CLASS_P(start)) return false;
     if (korb_class_find_method(start, mid, NULL) != NULL) return true;
@@ -9947,7 +9976,8 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 
     /* implicit-self send / __send__ / public_send → re-dispatch with self as the
      * receiver (korb_send_impl shifts arg0 = the target method name). */
-    if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send)) {
+    if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
+        !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid))) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         return korb_call_send(c, slots, mid, line, argc, self, block, def_env, captured_self);
     }
@@ -11286,7 +11316,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
      * the reflective one), and that must win — the universal forms are not
      * registered in any method table, so any hit here is a real definition. */
     if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
-        korb_send_user_defined(vm, korb_class_obj_of(c, self), mid) == NULL) {
+        korb_send_user_defined(vm, korb_class_obj_of(c, self), mid) == NULL &&
+        !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid))) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         {
             VALUE name = slots[-(korb_sword_t)argc];           /* arg0 */
@@ -18408,6 +18439,8 @@ korb_ctx_new(void)
     c->vm->mid_method_missing = korb_intern(c->vm, "method_missing", 14);
     c->vm->mid_new         = korb_intern(c->vm, "new", 3);
     c->vm->mid_initialize  = korb_intern(c->vm, "initialize", 10);
+    c->vm->mid___id__      = korb_intern(c->vm, "__id__", 6);
+    c->vm->mid_object_id   = korb_intern(c->vm, "object_id", 9);
     c->vm->mid_yield       = korb_intern(c->vm, "yield", 5);
     c->vm->name_fiber      = korb_intern(c->vm, "Fiber", 5);
     c->vm->name_thread     = korb_intern(c->vm, "Thread", 6);
