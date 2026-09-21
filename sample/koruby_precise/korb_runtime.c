@@ -17943,7 +17943,12 @@ static RESULT
 korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     const RESULT r = korb_exc_build_with_cause(c, slots, args);
-    return (r.state == KORB_NORMAL) ? RESULT_RAISE_(r.value) : r;
+    /* Start a fresh unwind, as korb_raise does.  Without this the capture at the
+     * rescue prepends whatever an EARLIER (already handled) raise left in
+     * vm->bt — `raise SomeError.new(...)` never went through korb_raise, so the
+     * list still held the prelude's own require frames. */
+    if (LIKELY(r.state == KORB_NORMAL)) { c->vm->bt_cnt = 0; return RESULT_RAISE_(r.value); }
+    return r;
 }
 
 /* Kernel#caller positions [start, start+len) as an Array of Strings.  The list
