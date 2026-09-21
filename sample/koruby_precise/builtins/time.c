@@ -259,7 +259,7 @@ static long korb_time_nsec_of(CTX *c, VALUE t) {
     const VALUE nv = korb_ivar_get(c, t, korb_time_ns_sym(c->vm));
     if (FIXNUM_P(nv)) return (long long)FIX2LONG(nv);
     const double e = korb_time_epoch(c, t);            /* fallback: reconstruct from the (lossy) epoch */
-    long ns = (long)((e - (double)(time_t)e) * 1e9 + 0.5);
+    long ns = (long)llround((e - floor(e)) * 1e9);     /* floor, not truncate: -1.5 is -2 + 0.5 */
     return ns < 0 ? 0 : ns > 999999999 ? 999999999 : ns;
 }
 /* Whole (floored) seconds, recovered exactly.  floor(@__t) is not enough: a
@@ -281,12 +281,12 @@ static RESULT korb_time_make_ns(CTX *c, VALUE *slots, VALUE cls, double sec_int,
 static void korb_time_tm(CTX *c, VALUE t, struct tm *out) {
     korb_sword_t off;
     if (korb_time_fixed_off(c, t, &off)) {          /* fixed-offset time: wall clock = UTC(epoch + off) */
-        const time_t s = (time_t)(korb_time_epoch(c, t) + off);
+        const time_t s = (time_t)(korb_time_sec_of(c, t) + off);   /* floored: a plain cast rounds a pre-1970 stamp toward zero */
         gmtime_r(&s, out);
         out->tm_gmtoff = off; out->tm_isdst = 0;
         return;
     }
-    const time_t s = (time_t)korb_time_epoch(c, t);
+    const time_t s = (time_t)korb_time_sec_of(c, t);   /* floored (see above) */
     /* No tzset() here: like CRuby, a local Time renders in the zone it was built
        (or explicitly converted) in, so the zone is picked up at those points —
        localtime_r deliberately does not re-read TZ. */
