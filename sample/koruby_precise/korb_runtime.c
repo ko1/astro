@@ -9827,8 +9827,19 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         c->dm_entry = dm_saved;
         /* A define_method body behaves like a lambda: `return`, `break` and
          * `next` all just leave the method with that value (a bare `break` in a
-         * plain block would unwind past it and end the program). */
-        if (r.state == KORB_RETURN || r.state == KORB_BREAK) { r.state = KORB_NORMAL; c->return_target = NULL; }
+         * plain block would unwind past it and end the program).  A `return`
+         * aimed at a LIVE outer method is not ours, though -- it came from a
+         * block the caller handed in and has to keep unwinding (rspec's
+         * `RSpec.describe` is define_method'd and its spec returns out of the
+         * group block). */
+        if (r.state == KORB_BREAK) { r.state = KORB_NORMAL; c->return_target = NULL; }
+        else if (r.state == KORB_RETURN) {
+            /* ... unless the `return` came from a block the CALLER handed in and
+             * is aimed at a method still on the stack: that one keeps unwinding
+             * (rspec's `RSpec.describe` is define_method'd, and a spec returns
+             * out of the group block it passes). */
+            if (c->return_target == NULL || block == NULL) { r.state = KORB_NORMAL; c->return_target = NULL; }
+        }
         else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value))   /* a non-exception RAISE payload (e.g. thread kill) carries no line */
             korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
         return r;
