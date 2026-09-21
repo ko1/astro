@@ -623,19 +623,20 @@ static inline bool korb_is_ws(unsigned char ch) {
     return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' || ch == '\v';
 }
 
-/* Are the first `n` bytes all ASCII?  Word-at-a-time: the high-bit test is what
- * decides whether a character index can be used as a byte index unchanged. */
-static bool
-korb_ascii_span(const unsigned char *const p, const uint32_t n)
+/* Length of the leading all-ASCII run within the first `n` bytes.  Word-at-a-time:
+ * over that run a character index IS the byte index, so every character walk can
+ * skip it. */
+static uint32_t
+korb_ascii_prefix(const unsigned char *const p, const uint32_t n)
 {
     uint32_t i = 0;
     for (; i + 8 <= n; i += 8) {
         uint64_t w;
         memcpy(&w, p + i, 8);
-        if (w & 0x8080808080808080ULL) return false;
+        if (w & 0x8080808080808080ULL) break;
     }
-    for (; i < n; i++) if (p[i] & 0x80u) return false;
-    return true;
+    for (; i < n; i++) if (p[i] & 0x80u) break;
+    return i;
 }
 
 /* count UTF-8 codepoints in the first nbytes bytes (lead bytes only) */
@@ -647,8 +648,9 @@ korb_utf8_count(const char *b, uint32_t nbytes)
     /* All-ASCII is the common case and the answer is the byte count; the
      * word-at-a-time test replaces a per-character decode of the whole buffer
      * (81% of crack's 2.4MB JSON conversion was spent right here). */
-    if (korb_ascii_span((const unsigned char *)b, nbytes)) return nbytes;
-    uint32_t n = 0, i = 0;
+    const uint32_t asc = korb_ascii_prefix((const unsigned char *)b, nbytes);
+    if (asc == nbytes) return nbytes;
+    uint32_t n = asc, i = asc;
     while (i < nbytes) {
         const unsigned char c0 = (unsigned char)b[i];
         if (LIKELY(c0 < 0x80)) { n++; i++; continue; }
@@ -773,7 +775,6 @@ static uint32_t korb_enc_char_bytes_other(const struct korb_vm *vm, uint32_t enc
     }
     return 0;
 }
-static uint32_t korb_utf8_byteoff(const char *b, uint32_t len, uint32_t ci);   /* fwd */
 /* Character count in `enc` — the generic counterpart of korb_utf8_count. */
 static uint32_t korb_enc_charcount(const struct korb_vm *vm, uint32_t enc, const char *b, uint32_t len) {
     if (KORB_ENC_SB(vm, enc)) return len;
@@ -806,14 +807,36 @@ static uint32_t korb_enc_codepoint_at(const struct korb_vm *vm, uint32_t enc,
     for (uint32_t i = 0; i < cl; i++) v = (v << 8) | p[o + i];
     return v;
 }
-/* Character index → byte offset in `enc` — the generic korb_utf8_byteoff. */
-static uint32_t korb_enc_byteoff(const struct korb_vm *vm, uint32_t enc, const char *b, uint32_t len, uint32_t ci) {
-    if (KORB_ENC_SB(vm, enc)) return ci < len ? ci : len;
-    if (LIKELY(enc == KORB_ENC_UTF8)) return korb_utf8_byteoff(b, len, ci);
+/* Advance `n` characters from byte offset `off` (clamped to len).  Resumable so a
+ * caller that already knows one anchor never rewalks the prefix. */
+static uint32_t korb_utf8_step_fwd(const char *const b, const uint32_t len, uint32_t off, uint32_t n) {
+    if (UNLIKELY(off >= len)) return len;
     const unsigned char *const p = (const unsigned char *)b;
-    uint32_t i = 0, n = 0;
-    while (i < len && n < ci) { i += korb_str_char_bytes(vm, enc, p, i, len); n++; }
-    return i;
+    const uint32_t rest = len - off;
+    const uint32_t asc = korb_ascii_prefix(p + off, rest < n ? rest : n);   /* over an ASCII run a char index IS a byte index */
+    off += asc; n -= asc;
+    while (off < len && n > 0) {
+        const uint32_t l = korb_utf8_seq_len(p, off, len);
+        off += l ? l : 1;   /* a broken sequence is one character PER BYTE, as korb_utf8_count counts it */
+        n--;
+    }
+    return off;
+}
+static uint32_t korb_enc_step_fwd(const struct korb_vm *const vm, const uint32_t enc, const char *const b,
+                                  const uint32_t len, uint32_t off, uint32_t n) {
+    if (UNLIKELY(off >= len)) return len;
+    if (KORB_ENC_SB(vm, enc)) return (len - off > n) ? off + n : len;
+    if (LIKELY(enc == KORB_ENC_UTF8)) return korb_utf8_step_fwd(b, len, off, n);
+    const unsigned char *const p = (const unsigned char *)b;
+    while (off < len && n > 0) { off += korb_str_char_bytes(vm, enc, p, off, len); n--; }
+    return off;
+}
+/* Character index → byte offset in `enc` (clamped to [0, len]). */
+static uint32_t korb_enc_byteoff(const struct korb_vm *vm, uint32_t enc, const char *b, uint32_t len, uint32_t ci) {
+    return korb_enc_step_fwd(vm, enc, b, len, 0, ci);
+}
+static uint32_t korb_utf8_byteoff(const char *const b, const uint32_t len, const uint32_t ci) {
+    return korb_utf8_step_fwd(b, len, 0, ci);
 }
 /* Is byte offset `off` the head of a character?  0 and len always are.  Decided
  * for UTF-8 and the UTF-16/32 families; other multi-byte encodings answer true
@@ -882,23 +905,6 @@ static uint32_t korb_str_last_char_bytes(const struct korb_vm *vm, VALUE sv) {
     return len - n;
 }
 
-
-/* byte offset of codepoint index ci (clamped to [0, len]) */
-static uint32_t
-korb_utf8_byteoff(const char *b, uint32_t len, uint32_t ci)
-{
-    /* ASCII prefix: a character index IS the byte index while every byte is
-     * < 0x80, and the word-at-a-time test costs a memory scan instead of a
-     * per-character decode (StringScanner / String#[] on a big ASCII subject). */
-    if (ci <= len && korb_ascii_span((const unsigned char *)b, ci)) return ci;
-    uint32_t i = 0, n = 0;
-    while (i < len && n < ci) {
-        const uint32_t l = korb_utf8_seq_len((const unsigned char *)b, i, len);
-        i += l ? l : 1;   /* a broken sequence is one character PER BYTE, as korb_utf8_count counts it */
-        n++;
-    }
-    return i;
-}
 
 /* alloc a fresh String = self->buf->data[start, start+len); re-reads self after the
  * alloc-GC (source may have moved) — THE safe substring primitive. */
@@ -1280,6 +1286,12 @@ static RESULT korb_coerce_to_hash_x(CTX *c, VALUE *slots, VALUE *v, bool nil_ok)
 static RESULT korb_coerce_to_hash(CTX *c, VALUE *slots, VALUE *v) { return korb_coerce_to_hash_x(c, slots, v, false); }
 static RESULT korb_str_idx_conv(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out);   /* fwd: index→long, Bignum too big → RangeError */
 RESULT korb_re_lastmatch_detach(CTX *c, VALUE *slots);   /* regexp.c: $~ gets a frozen subject copy */
+/* Character count of the whole string — an O(n) walk, so the span code pulls it
+ * only when a negative or open bound actually needs it. */
+static uint32_t korb_span_ncp(CTX *const c, const KorbString *const s, const uint32_t enc, uint32_t *const cache) {
+    if (*cache == UINT32_MAX) *cache = korb_enc_charcount(c->vm, enc, korb_strbuf_data(s->buf), s->len);
+    return *cache;
+}
 static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE idx, VALUE len_v, bool *found, uint32_t *bs, uint32_t *be, bool write) {
     if (KORB_REGEXP_P(idx))                            /* str[re] / str[re, capture] → matched byte span (sets $~) */
         return korb_re_str_span(c, slots, self, idx, len_v, found, bs, be, write);
@@ -1299,7 +1311,7 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
     const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
     if (UNLIKELY(KORB_ENC_NEEDS_HOOK(c->vm, enc)) && !korb_enc_char_steppable(c->vm, enc)
         && !korb_str_bytes_ascii(VALUE_REF_GET(self))) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
-    uint32_t ncp = korb_enc_charcount(c->vm, enc, korb_strbuf_data(s->buf), s->len);
+    uint32_t ncp_cache = UINT32_MAX;
     *found = true;
     if (KORB_STRING_P(idx)) {                          /* substring target */
         const KorbString *sub = VAL2STR(idx);
@@ -1320,27 +1332,40 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
         korb_sword_t b, e;
         if (beginless) b = 0;
         else { RESULT cr = korb_str_idx_conv(c, slots, r->rbegin, &b); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
-        if (endless) e = (korb_sword_t)ncp;
+        if (endless) e = (korb_sword_t)korb_span_ncp(c, s, enc, &ncp_cache);
         else { RESULT cr = korb_str_idx_conv(c, slots, r->rend, &e); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
         const korb_sword_t b_raw = b;
-        if (b < 0) b += ncp;
-        if (write && (b < 0 || b > (korb_sword_t)ncp)) {     /* []= : an out-of-range Range begin is a RangeError (not IndexError) */
+        if (b < 0) b += korb_span_ncp(c, s, enc, &ncp_cache);
+        if (write && (b < 0 || b > (korb_sword_t)korb_span_ncp(c, s, enc, &ncp_cache))) {     /* []= : an out-of-range Range begin is a RangeError (not IndexError) */
             char lo[24] = "", hi[24] = "";               /* the range as written, CRuby's message shape ("-9..1 out of range") */
             if (!beginless) snprintf(lo, sizeof lo, "%ld", (long)b_raw);
             if (!endless)   snprintf(hi, sizeof hi, "%ld", (long)e);
             return korb_raise(c, slots, KORB_E_RANGE, 0, "%s%s%s out of range", lo, r->exclude_end ? "..." : "..", hi);
         }
-        if (!endless && e < 0) e += ncp;
+        if (!endless && e < 0) e += korb_span_ncp(c, s, enc, &ncp_cache);
         st = b; ln = ((endless || r->exclude_end) ? e - 1 : e) - b + 1; if (ln < 0) ln = 0;
     } else {
         if (UNLIKELY(!korb_to_index(idx, &st))) return korb_raise_no_int(c, slots, idx);
         st_raw = st;                                                 /* the index as written, for the error message */
-        if (st < 0) st += ncp;
+        if (st < 0) st += korb_span_ncp(c, s, enc, &ncp_cache);
         if (len_v != KORB_NIL) {
             if (UNLIKELY(!korb_to_index(len_v, &ln))) return korb_raise_no_int(c, slots, len_v);
         } else ln = 1;
     }
     const bool single = (len_v == KORB_NIL && !KORB_RANGE_P(idx));   /* str[i]: one char, nil at end (read only) */
+    /* Resolve the start byte first: ncp <= s->len, so a start that lands before
+     * the last byte already satisfies every bound below and the O(n) character
+     * count is never needed. */
+    if (LIKELY(st >= 0 && ln >= 0 && st <= (korb_sword_t)s->len)) {
+        const uint32_t bs0 = korb_enc_step_fwd(c->vm, enc, korb_strbuf_data(s->buf), s->len, 0, (uint32_t)st);
+        if (LIKELY(bs0 < s->len)) {
+            if (ln > (korb_sword_t)s->len) ln = (korb_sword_t)s->len;   /* stepping clamps at len anyway */
+            *bs = bs0;
+            *be = korb_enc_step_fwd(c->vm, enc, korb_strbuf_data(s->buf), s->len, bs0, (uint32_t)ln);
+            return RESULT_OK(KORB_NIL);
+        }
+    }
+    const uint32_t ncp = korb_span_ncp(c, s, enc, &ncp_cache);
     if (st < 0 || st > (korb_sword_t)ncp || ln < 0 || (single && !write && st == (korb_sword_t)ncp)) {
         *found = false;
         if (write && ln < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "negative length %ld", (long)ln);
@@ -1348,6 +1373,7 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
         return RESULT_OK(KORB_NIL);
     }
     if (single && write && st == (korb_sword_t)ncp) ln = 0;              /* str[len]=x → append (empty span at end) */
+    if (ln > (korb_sword_t)ncp) ln = (korb_sword_t)ncp;                  /* before st + ln, which would overflow */
     if (st + ln > (korb_sword_t)ncp) ln = (korb_sword_t)ncp - st;
     *bs = korb_enc_byteoff(c->vm, enc, korb_strbuf_data(s->buf), s->len, (uint32_t)st);
     *be = korb_enc_byteoff(c->vm, enc, korb_strbuf_data(s->buf), s->len, (uint32_t)(st + ln));
@@ -3173,8 +3199,11 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
     if (UNLIKELY(KORB_ENC_NEEDS_HOOK(c->vm, enc)) && !korb_enc_char_steppable(c->vm, enc)
         && !korb_str_bytes_ascii(VALUE_REF_GET(self))) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
-    uint32_t ncp = korb_enc_charcount(c->vm, enc, korb_strbuf_data(s->buf), s->len);
+    uint32_t ncp_cache = UINT32_MAX;
     #define BOFF(ci) korb_enc_byteoff(c->vm, enc, korb_strbuf_data(s->buf), s->len, (uint32_t)(ci))
+    /* ncp <= s->len, so a start byte that lands before the last byte is already
+     * in range: the O(n) character count stays unread on every in-range read. */
+    #define STEP(off, n) korb_enc_step_fwd(c->vm, enc, korb_strbuf_data(s->buf), s->len, (off), (uint32_t)(n))
 
     if (KORB_STRING_P(i0)) {                       /* s[substr] → copy of substr if present */
         const KorbString *sub = VAL2STR(i0);
@@ -3188,22 +3217,25 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         korb_sword_t b, e;                                     /* Float/to_int bounds coerce via korb_to_index */
         if (beginless) b = 0;
         else { RESULT cr = korb_str_idx_conv(c, slots, r->rbegin, &b); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
-        if (endless) e = (korb_sword_t)ncp;
+        if (endless) e = (korb_sword_t)korb_span_ncp(c, s, enc, &ncp_cache);
         else { RESULT cr = korb_str_idx_conv(c, slots, r->rend, &e); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
-        if (b < 0) b += ncp;
-        if (!endless && e < 0) e += ncp;
-        if (b < 0 || b > (korb_sword_t)ncp) return RESULT_OK(KORB_NIL);
+        if (b < 0) b += korb_span_ncp(c, s, enc, &ncp_cache);
+        if (!endless && e < 0) e += korb_span_ncp(c, s, enc, &ncp_cache);
+        if (b < 0) return RESULT_OK(KORB_NIL);
         korb_sword_t last = (endless || r->exclude_end) ? e - 1 : e;
         korb_sword_t cnt = last - b + 1;
         if (cnt < 0) cnt = 0;
-        if (b + cnt > (korb_sword_t)ncp) cnt = (korb_sword_t)ncp - b;
-        uint32_t bs = BOFF(b);
-        uint32_t es = BOFF(b + cnt);
+        if (cnt > (korb_sword_t)s->len) cnt = (korb_sword_t)s->len;   /* stepping clamps at len anyway */
+        uint32_t bs = s->len, es = s->len;
+        if (b <= (korb_sword_t)s->len) bs = BOFF(b);
+        if (bs < s->len) es = STEP(bs, cnt);
+        else if (b > (korb_sword_t)korb_span_ncp(c, s, enc, &ncp_cache)) return RESULT_OK(KORB_NIL);
+                                                                      /* b == ncp → "" at the end */
         return korb_str_slice_new(c, slots, self, bs, es - bs);
     }
     korb_sword_t i;
     { RESULT cr = korb_str_idx_conv(c, slots, i0, &i); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
-    if (i < 0) i += ncp;
+    if (i < 0) i += korb_span_ncp(c, s, enc, &ncp_cache);
 
     if (VALUE_SLICE_LEN(a) >= 2) {                  /* s[start, len] */
         VALUE lv = VALUE_SLICE_GET(a, 1);
@@ -3214,16 +3246,21 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             { RESULT icr = korb_str_idx_conv(c, slots, lv, &len); if (UNLIKELY(icr.state != KORB_NORMAL)) return icr; }
             s = SELF_STR;                           /* re-read after dispatch */
         }
-        if (len < 0 || i < 0 || i > (korb_sword_t)ncp) return RESULT_OK(KORB_NIL);
-        if (i + len > (korb_sword_t)ncp) len = (korb_sword_t)ncp - i;
-        uint32_t bs = BOFF(i);
-        uint32_t es = BOFF(i + len);
+        if (len < 0 || i < 0) return RESULT_OK(KORB_NIL);
+        if (len > (korb_sword_t)s->len) len = (korb_sword_t)s->len;
+        uint32_t bs = s->len, es = s->len;
+        if (i <= (korb_sword_t)s->len) bs = BOFF(i);
+        if (bs < s->len) es = STEP(bs, len);
+        else if (i > (korb_sword_t)korb_span_ncp(c, s, enc, &ncp_cache)) return RESULT_OK(KORB_NIL);
+                                                                      /* i == ncp → "" at the end */
         return korb_str_slice_new(c, slots, self, bs, es - bs);
     }
-    if (i < 0 || i >= (korb_sword_t)ncp) return RESULT_OK(KORB_NIL);   /* single codepoint */
-    uint32_t bs = BOFF(i);
-    uint32_t es = BOFF(i + 1);
+    if (i < 0 || i > (korb_sword_t)s->len) return RESULT_OK(KORB_NIL);   /* single codepoint */
+    const uint32_t bs = BOFF(i);
+    if (bs >= s->len) return RESULT_OK(KORB_NIL);                        /* i >= ncp */
+    const uint32_t es = STEP(bs, 1);
     return korb_str_slice_new(c, slots, self, bs, es - bs);
+    #undef STEP
     #undef BOFF
 }
 
