@@ -1045,7 +1045,20 @@ korb_to_index(VALUE v, korb_sword_t *out)
         if (isnan(d) || d >= 9.223372036854776e18 || d <= -9.223372036854776e18) return false;
         *out = (korb_sword_t)d; return true;
     }
+    /* koruby's Fixnum is 62-bit, so 2**62 .. 2**63-1 are Bignums that still fit
+     * a C long -- CRuby takes them as indices (liquid clamps a length to
+     * exactly 2**63-1 and slices with it). */
+    if (KORB_BIGNUM_P(v) && korb_mp_fits_slong_p(VAL2BIG(v)->z)) {
+        *out = (korb_sword_t)korb_mp_get_si(VAL2BIG(v)->z); return true;
+    }
     return false;
+}
+
+/* A Bignum that no C long can hold — the only one an index argument refuses. */
+bool
+korb_big_over_long(VALUE v)
+{
+    return KORB_BIGNUM_P(v) && !korb_mp_fits_slong_p(VAL2BIG(v)->z);
 }
 
 /* CRuby-style Float#to_s: shortest round-tripping decimal, always with a '.'
@@ -11933,6 +11946,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                     if (!korb_to_index(nv, &n)) return korb_raise_no_int(c, slots, nv);
                 }
                 if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative array size");
+                if (UNLIKELY(n > (korb_sword_t)UINT32_MAX)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "array size too big");   /* koruby's array length is 32-bit */
             }
             /* same rb_warn pair as Array#initialize (the fast path skips it) */
             if (UNLIKELY(block != NULL && argc != 1))

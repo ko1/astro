@@ -43,6 +43,7 @@ static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             return korb_raise_no_int(c, slots, slots[0]);
     }
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+    if (UNLIKELY(n > (korb_sword_t)UINT32_MAX)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "array size too big");   /* koruby's array length is 32-bit */
     if (block != NULL && argc >= 2) korb_warn(c, slots, "block supersedes default value argument");
     slots[0] = (!block && argc >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;   /* default (rooted) */
     for (korb_sword_t i = 0; i < n; i++) {
@@ -118,16 +119,17 @@ static RESULT korb_m_ary_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* first(n) → first n as array */
         korb_sword_t n;
-        if (UNLIKELY(KORB_BIGNUM_P(VALUE_SLICE_GET(a, 0)))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
+        if (UNLIKELY(korb_big_over_long(VALUE_SLICE_GET(a, 0)))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) {   /* coerce count via #to_int */
             VALUE nv = VALUE_SLICE_GET(a, 0);
             RESULT cr = korb_coerce_to_int(c, slots, &nv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (UNLIKELY(KORB_BIGNUM_P(nv))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
+            if (UNLIKELY(korb_big_over_long(nv))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
             if (!korb_to_index(nv, &n)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
         }
         if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
-        uint32_t take = (uint32_t)n; if (take > SELF_ARY->len) take = SELF_ARY->len;
+        if (n > (korb_sword_t)SELF_ARY->len) n = (korb_sword_t)SELF_ARY->len;   /* clamp BEFORE narrowing: a 62-bit count truncates to 0 */
+        const uint32_t take = (uint32_t)n;
         VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, take)));
         for (uint32_t i = 0; i < take; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(SELF_ARY->items)[i]));
         return RESULT_OK(VALUE_REF_GET(dst));
@@ -141,7 +143,7 @@ static RESULT korb_m_ary_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* last(n) → last n as array */
         korb_sword_t n;
-        if (UNLIKELY(KORB_BIGNUM_P(VALUE_SLICE_GET(a, 0)))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
+        if (UNLIKELY(korb_big_over_long(VALUE_SLICE_GET(a, 0)))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) {   /* coerce count via #to_int */
             VALUE nv = VALUE_SLICE_GET(a, 0);
             RESULT cr = korb_coerce_to_int(c, slots, &nv);
@@ -150,7 +152,8 @@ static RESULT korb_m_ary_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         }
         if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
         uint32_t len = SELF_ARY->len;
-        uint32_t take = (uint32_t)n; if (take > len) take = len;
+        if (n > (korb_sword_t)len) n = (korb_sword_t)len;   /* clamp before narrowing */
+        const uint32_t take = (uint32_t)n;
         VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, take)));
         for (uint32_t i = len - take; i < len; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(SELF_ARY->items)[i]));
         return RESULT_OK(VALUE_REF_GET(dst));
@@ -518,7 +521,8 @@ static RESULT korb_m_ary_pop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             if (!korb_to_index(nv, &n)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
         }
         if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
-        uint32_t take = (uint32_t)n; if (take > SELF_ARY->len) take = SELF_ARY->len;
+        if (n > (korb_sword_t)SELF_ARY->len) n = (korb_sword_t)SELF_ARY->len;   /* clamp before narrowing */
+        const uint32_t take = (uint32_t)n;
         uint32_t start = SELF_ARY->len - take;
         VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, take)));
         for (uint32_t i = 0; i < take; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(SELF_ARY->items)[start + i]));
@@ -747,6 +751,10 @@ static RESULT korb_m_ary_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (!korb_to_index(nv, &n)) return korb_raise_no_int(c, slots, nv);
     }
     if (UNLIKELY(n <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid slice size");
+    /* a window wider than the array is one slice of everything; clamp before
+     * narrowing, or a 62-bit size truncates to 0 and the loop never advances */
+    if (n > (korb_sword_t)VAL2ARY(VALUE_REF_GET(self))->len) n = (korb_sword_t)VAL2ARY(VALUE_REF_GET(self))->len;
+    if (n <= 0) n = 1;
     /* slots[0]=out, slots[1]=captured_self (heap VALUE — must be rooted across the
      * slice-building allocs, else STRESS GC moves `main` and the later yield uses a
      * stale self), slots[2]=current slice, yield/scratch at slots+3. */
@@ -783,6 +791,7 @@ static RESULT korb_m_ary_each_cons(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         if (!korb_to_index(nv, &n)) return korb_raise_no_int(c, slots, nv);
     }
     if (UNLIKELY(n <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid size");
+    if (n > (korb_sword_t)VAL2ARY(VALUE_REF_GET(self))->len) n = (korb_sword_t)VAL2ARY(VALUE_REF_GET(self))->len + 1;   /* clamp before narrowing: no window fits */
     slots[0] = UNWRAP(korb_ary_new(c, slots, 0));
     slots[1] = KORB_CSELF_VAL(captured_self);                                    /* rooted across the build allocs */
     VALUE_REF out = VALUE_REF_AT(&slots[0]);

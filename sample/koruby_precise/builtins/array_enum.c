@@ -173,7 +173,8 @@ static RESULT korb_ary_minmax_n(CTX *c, VALUE *slots, VALUE_REF self, int want, 
         KorbArrayItems *const it = VAL2ARY(VALUE_REF_GET(tmp))->items;
         ARO_STORE(c, it, &korb_items_data(it)[j], slots[1]);
     }
-    uint32_t take = (uint32_t)n; if (take > len) take = len;
+    if (n > (korb_sword_t)len) n = (korb_sword_t)len;   /* clamp before narrowing */
+    const uint32_t take = (uint32_t)n;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, take));
     VALUE_REF dst = VALUE_REF_AT(slots + 1);              /* tmp(slots[0]) stays rooted below */
     for (uint32_t i = 0; i < take; i++) {

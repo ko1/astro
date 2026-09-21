@@ -399,6 +399,16 @@ static RESULT korb_m_int_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_int_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { return KORB_BIGNUM_P(VALUE_REF_GET(self)) ? korb_bigint_round_to(c, slots, VALUE_REF_GET(self), 1, a) : korb_int_round_to(c, slots, SELF_INT, 1, a); }
 static RESULT korb_m_int_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return KORB_BIGNUM_P(VALUE_REF_GET(self)) ? korb_bigint_round_to(c, slots, VALUE_REF_GET(self), 2, a) : korb_int_round_to(c, slots, SELF_INT, 2, a); }
 static RESULT korb_m_int_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return KORB_BIGNUM_P(VALUE_REF_GET(self)) ? korb_bigint_round_to(c, slots, VALUE_REF_GET(self), 3, a) : korb_int_round_to(c, slots, SELF_INT, 3, a); }
+/* Exact ordering for Integer#clamp: the generic korb_cmp_values routes two
+ * Fixnums through double, which loses the low bits near 2**62, and a Bignum
+ * bound compared as a double rounds 2**63-1 up to 2**63 -- liquid's `slice`
+ * filter clamps to exactly that and retried forever when clamp returned the
+ * value unchanged.  2 = incomparable. */
+static int korb_int_clamp_cmp(VALUE a, VALUE b) {
+    if (FIXNUM_P(a) && FIXNUM_P(b)) { const korb_sword_t x = FIX2LONG(a), y = FIX2LONG(b); return (x > y) - (x < y); }
+    if (KORB_INTEGER_P(a) && KORB_INTEGER_P(b)) return korb_int_cmp(a, b);
+    return korb_cmp_values(a, b);
+}
 static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE lo, hi;
     if (VALUE_SLICE_LEN(a) == 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {   /* clamp(lo..hi) */
@@ -407,20 +417,19 @@ static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         lo = r->rbegin; hi = r->rend;
     } else { lo = VALUE_SLICE_GET(a, 0); hi = VALUE_SLICE_GET(a, 1); }
     if (lo != KORB_NIL && hi != KORB_NIL) {            /* CRuby: min must be <= max */
-        bool bad;
-        if (FIXNUM_P(lo) && FIXNUM_P(hi)) bad = FIX2LONG(lo) > FIX2LONG(hi);
-        else { double al, ah; bad = korb_num_to_d(lo, &al) && korb_num_to_d(hi, &ah) && al > ah; }
-        if (UNLIKELY(bad)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be less than or equal to max argument");
+        const int lh = korb_int_clamp_cmp(lo, hi);
+        if (UNLIKELY(lh == 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be less than or equal to max argument");
     }
-    korb_sword_t n = SELF_INT;
-    double lod, hid;
+    const VALUE sv = VALUE_REF_GET(self);
     if (lo != KORB_NIL) {                              /* nil bound = unbounded on that side */
-        if (FIXNUM_P(lo)) { if (n < FIX2LONG(lo)) return RESULT_OK(lo); }
-        else { if (UNLIKELY(!korb_num_to_d(lo, &lod))) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed"); if ((double)n < lod) return RESULT_OK(lo); }
+        const int cl = korb_int_clamp_cmp(sv, lo);
+        if (UNLIKELY(cl == 2)) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed");
+        if (cl < 0) return RESULT_OK(lo);
     }
     if (hi != KORB_NIL) {
-        if (FIXNUM_P(hi)) { if (n > FIX2LONG(hi)) return RESULT_OK(hi); }
-        else { if (UNLIKELY(!korb_num_to_d(hi, &hid))) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed"); if ((double)n > hid) return RESULT_OK(hi); }
+        const int ch = korb_int_clamp_cmp(sv, hi);
+        if (UNLIKELY(ch == 2)) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed");
+        if (ch > 0) return RESULT_OK(hi);
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }

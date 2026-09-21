@@ -923,7 +923,7 @@ static RESULT korb_m_str_unpack1(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_ary_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
     korb_sword_t n;
-    if (UNLIKELY(KORB_BIGNUM_P(nv))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
+    if (UNLIKELY(korb_big_over_long(nv))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
     if (UNLIKELY(!korb_to_index(nv, &n))) {              /* coerce count via #to_int (like Array#drop) */
         RESULT cr = korb_coerce_to_int(c, slots, &nv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
@@ -931,7 +931,7 @@ static RESULT korb_m_ary_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to take negative size");
     uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
-    if ((uint32_t)n > len) n = len;
+    if (n > (korb_sword_t)len) n = (korb_sword_t)len;   /* clamp before narrowing */
     return korb_ary_subseq(c, slots, self, 0, (uint32_t)n);
 }
 /* Array#sample([n][, random:]) — CRuby-exact via the MT19937 generator.
@@ -956,7 +956,7 @@ static RESULT korb_m_ary_sample(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
     }
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative sample number");
-    if ((uint32_t)n > (korb_sword_t)len) n = len;
+    if (n > (korb_sword_t)len) n = (korb_sword_t)len;   /* clamp before narrowing */
     if (n == 0) return korb_ary_new(c, slots, 0);
 
     if (n <= 10) {
@@ -1019,7 +1019,7 @@ static RESULT korb_m_ary_shuffle_bang(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_m_ary_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
     korb_sword_t n;
-    if (UNLIKELY(KORB_BIGNUM_P(nv))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
+    if (UNLIKELY(korb_big_over_long(nv))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
     if (UNLIKELY(!korb_to_index(nv, &n))) {              /* coerce count via #to_int */
         RESULT cr = korb_coerce_to_int(c, slots, &nv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
@@ -1027,7 +1027,7 @@ static RESULT korb_m_ary_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to drop negative size");
     uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
-    if ((uint32_t)n > len) n = len;
+    if (n > (korb_sword_t)len) n = (korb_sword_t)len;   /* clamp before narrowing */
     return korb_ary_subseq(c, slots, self, (uint32_t)n, len - (uint32_t)n);
 }
 static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {

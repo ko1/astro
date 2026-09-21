@@ -29,7 +29,8 @@ static RESULT korb_m_ary_shift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (!korb_to_index(nv, &n)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 0));
         }
         if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
-        uint32_t take = (uint32_t)n; if (take > VAL2ARY(VALUE_REF_GET(self))->len) take = VAL2ARY(VALUE_REF_GET(self))->len;
+        if (n > (korb_sword_t)VAL2ARY(VALUE_REF_GET(self))->len) n = (korb_sword_t)VAL2ARY(VALUE_REF_GET(self))->len;   /* clamp before narrowing */
+        const uint32_t take = (uint32_t)n;
         VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, take)));
         for (uint32_t i = 0; i < take; i++)
             CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i]));

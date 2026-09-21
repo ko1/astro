@@ -381,11 +381,11 @@ static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
              * from begin (capped by a Fixnum end); no materialization. */
             if (FIXNUM_P(r->rbegin)) {
                 const korb_sword_t b = FIX2LONG(r->rbegin);
-                uint32_t take = (uint32_t)n;
-                if (r->rend != KORB_NIL && FIXNUM_P(r->rend)) {
+                if (r->rend != KORB_NIL && FIXNUM_P(r->rend)) {   /* clamp before narrowing */
                     const korb_sword_t e = r->exclude_end ? FIX2LONG(r->rend) : FIX2LONG(r->rend) + 1;
-                    take = (korb_sword_t)take > e - b ? (uint32_t)(e > b ? e - b : 0) : take;
+                    if (n > e - b) n = e > b ? e - b : 0;
                 }
+                const uint32_t take = (uint32_t)n;
                 return korb_range_seq(c, slots, b, take, 1);
             }
             /* endless range with a non-Integer begin can't be iterated from begin */
@@ -394,7 +394,8 @@ static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
             return korb_m_ary_min(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, NULL);
         }
-        uint32_t take = (uint32_t)n; if ((korb_sword_t)take > hi - lo) take = (uint32_t)(hi > lo ? hi - lo : 0);
+        if (n > hi - lo) n = hi > lo ? hi - lo : 0;   /* clamp before narrowing */
+        const uint32_t take = (uint32_t)n;
         return korb_range_seq(c, slots, lo, take, 1);
     }
     if (korb_range_int_bounds(r, &lo, &hi)) return RESULT_OK(hi > lo ? LONG2FIX(lo) : KORB_NIL);
@@ -487,7 +488,8 @@ static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         }
         if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
         if (!korb_range_int_bounds(r, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
-        uint32_t take = (uint32_t)n; if ((korb_sword_t)take > hi - lo) take = (uint32_t)(hi > lo ? hi - lo : 0);
+        if (n > hi - lo) n = hi > lo ? hi - lo : 0;   /* clamp before narrowing */
+        const uint32_t take = (uint32_t)n;
         return korb_range_seq(c, slots, hi - 1, take, -1);
     }
     if (korb_range_int_bounds(r, &lo, &hi)) return RESULT_OK(hi > lo ? LONG2FIX(hi - 1) : KORB_NIL);

@@ -269,6 +269,7 @@ void   korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner
 bool   korb_mod_hook_custom(CTX *c, VALUE mod, uint32_t mid);
 bool   korb_rescue_custom_eqq(CTX *c, VALUE cls);   /* rescue clause must dispatch a user #=== */
 bool   korb_default_eq_p(CTX *c, VALUE v, uint32_t mid);   /* #== / #!= is still the identity default */
+bool   korb_big_over_long(VALUE v);   /* a Bignum no C long can hold (index args refuse only these) */
 const char *korb_enc_name_of(const struct korb_vm *vm, uint32_t idx);
 const char *korb_enc_inspect_name_of(const struct korb_vm *vm, uint32_t idx);   /* "BINARY (ASCII-8BIT)" in error messages */
 uint32_t korb_enc_index_pub(struct korb_vm *vm, const char *name);   /* encoding name → header index (registers) */            /* encoding index → name */
