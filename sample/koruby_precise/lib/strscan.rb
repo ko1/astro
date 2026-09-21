@@ -171,7 +171,11 @@ class StringScanner
 
   def getch
     return nil if eos?
-    c = @string[__cpos]
+    # Slice by BYTES: @string[__cpos] walked the subject from the start on every
+    # call, which made scanning a large multibyte string O(n^2).  No character is
+    # wider than 4 bytes in any encoding koruby knows, so the first character of
+    # a 4-byte window is always whole.
+    c = @string.byteslice(@pos, 4)[0]
     @prev = @pos
     @pos += c.bytesize
     @cpos += 1 if @cpos
