@@ -155,7 +155,8 @@ static RESULT korb_m_set_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 /* set ops: op 0=union 1=intersection 2=difference 3=xor */
 static RESULT korb_set_binop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int op) {
-    VALUE ov = korb_set_elems_of(VALUE_SLICE_GET(a, 0));
+    VALUE ov;                                            /* any enumerable, not just a Set/Array */
+    CHECK(korb_set_other_elems(c, slots, VALUE_SLICE_GET(a, 0), &ov));
     if (UNLIKELY(ov == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be enumerable");
     slots[0] = ov;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));
@@ -186,7 +187,8 @@ static RESULT korb_m_set_diff(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_set_xor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_set_binop(c, slots, self, a, 3); }
 static RESULT korb_m_set_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {       /* merge(*enums) — each Set or Array */
-        VALUE ov = korb_set_elems_of(VALUE_SLICE_GET(a, k));
+        VALUE ov;                                         /* any enumerable, not just a Set/Array */
+        CHECK(korb_set_other_elems(c, slots, VALUE_SLICE_GET(a, k), &ov));
         if (UNLIKELY(ov == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be enumerable");
         slots[0] = ov;
         for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {

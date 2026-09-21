@@ -821,6 +821,31 @@ kp_fwd_blk_local(struct kp_ctx *tc, uint32_t depth, int32_t blk, NODE **pre)
 }
 
 
+/* Bare `&` / `*` / `**` may be written inside a block nested in the `def m(&)`
+ * body (simplecov: `def synchronize(&) = LOCK.synchronize { with_flock(&) }`).
+ * Find the enclosing method frame owning the synth slot and how many env links
+ * out it lies; a def/class body in between is a scope barrier.  A read from
+ * outside raises that frame's capture floor, like `...` does. */
+enum kp_anon_kind { KP_ANON_BLK, KP_ANON_REST, KP_ANON_KWREST };
+static bool
+kp_anon_find(struct kp_ctx *const tc, const enum kp_anon_kind kind, uint32_t *const depth_out, int32_t *const slot_out)
+{
+    uint32_t d = tc->frame->depth_shift ? 1u : 0u;
+    for (struct kp_frame *f = tc->frame; f; f = f->prev) {
+        const int32_t slot = kind == KP_ANON_BLK  ? f->anon_blk_slot
+                           : kind == KP_ANON_REST ? f->anon_rest_slot
+                                                  : f->anon_kwrest_slot;
+        if (slot >= 0) {
+            *depth_out = d; *slot_out = slot;
+            if (d > 0 && f->cap_min < (uint32_t)slot + 1u) f->cap_min = (uint32_t)slot + 1u;
+            return true;
+        }
+        if (f->method_mid || f->class_name_sym || f->anon_class_body) return false;
+        d++;
+    }
+    return false;
+}
+
 /* node_self reading the frame's self cell at base[-1] (bottom header).  The
  * initial offset -1-chain is fixed up by pop_frame (-= frame_size) to
  * -(frame_size+1)-chain = base[-1].  Other self_off readers (ivar/def/attr/
@@ -2334,9 +2359,11 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
             const pm_block_argument_node_t *ba = (const pm_block_argument_node_t *)cn->block;
             if (!ba->expression || !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
                 const bool anon_blk = (ba->expression == NULL);
-                if (anon_blk && tc->frame->anon_blk_slot < 0)
+                uint32_t anon_d = 0; int32_t anon_s = -1; NODE *anon_pre = NULL;
+                if (anon_blk && !kp_anon_find(tc, KP_ANON_BLK, &anon_d, &anon_s))
                     return kp_unsupported(tc, (const pm_node_t *)cn, "bare & outside a (&) method body");
-                uint32_t pslot = anon_blk ? (uint32_t)tc->frame->anon_blk_slot : alloc_synth_local(tc);
+                uint32_t pslot = anon_blk ? (uint32_t)kp_fwd_blk_local(tc, anon_d, anon_s, &anon_pre)
+                                          : alloc_synth_local(tc);
                 bool has_splat = false;
                 for (size_t i = 0; i < argc; i++)
                     if (PM_NODE_TYPE_P(args->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
@@ -2346,7 +2373,8 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                 bool blk_last = argc > 0 && !anon_blk && !kp_order_transparent(ba->expression);
                 for (size_t i = 0; !blk_last && !anon_blk && i < argc; i++)
                     if (!kp_order_transparent(args->arguments.nodes[i])) blk_last = true;
-                NODE *pset = (anon_blk || blk_last) ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
+                NODE *pset = anon_blk ? anon_pre
+                           : (blk_last ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression)));
                 if (has_splat) {
                     /* `f(*arr, &proc)` (implicit self) — build the args Array; one
                      * staged child = the array, self via self_off, proc via proc_off. */
@@ -2648,9 +2676,11 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             const pm_block_argument_node_t *ba = (const pm_block_argument_node_t *)cn->block;
             if (!ba->expression || !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
                 const bool anon_blk = (ba->expression == NULL);
-                if (anon_blk && tc->frame->anon_blk_slot < 0)
+                uint32_t anon_d = 0; int32_t anon_s = -1; NODE *anon_pre = NULL;
+                if (anon_blk && !kp_anon_find(tc, KP_ANON_BLK, &anon_d, &anon_s))
                     return kp_unsupported(tc, (const pm_node_t *)cn, "bare & outside a (&) method body");
-                uint32_t pslot = anon_blk ? (uint32_t)tc->frame->anon_blk_slot : alloc_synth_local(tc);
+                uint32_t pslot = anon_blk ? (uint32_t)kp_fwd_blk_local(tc, anon_d, anon_s, &anon_pre)
+                                          : alloc_synth_local(tc);
                 bool has_splat = false;
                 for (size_t i = 0; i < argc; i++)
                     if (PM_NODE_TYPE_P(cn->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
@@ -2663,8 +2693,8 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                  * NULLing through the blk_last path would crash the transducer */
                 for (size_t i = 0; !blk_last && !anon_blk && i < argc; i++)
                     if (!kp_order_transparent(cn->arguments->arguments.nodes[i])) blk_last = true;
-                NODE *pset = (anon_blk || blk_last)
-                             ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
+                NODE *pset = anon_blk ? anon_pre
+                           : (blk_last ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression)));
                 if (has_splat) {
                     /* `recv.m(*arr, &proc)` — build the args Array; node_send_splat_blkproc
                      * coerces the proc and forwards it (2 staged children: recv + array). */
@@ -3760,12 +3790,12 @@ build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
     bool splat = PM_NODE_TYPE_P(last, PM_SPLAT_NODE);
     const pm_node_t *expr = splat ? (const pm_node_t *)((const pm_splat_node_t *)last)->expression : last;
     if (splat && expr == NULL) {                        /* bare `*` — anonymous rest forward */
-        const int32_t ars = tc->frame->anon_rest_slot;
-        if (ars < 0) return build_array(tc, elems, n - 1, capa);   /* no anon rest in scope → nothing */
+        uint32_t ard = 0; int32_t ars = -1;
+        if (!kp_anon_find(tc, KP_ANON_REST, &ard, &ars)) return build_array(tc, elems, n - 1, capa);   /* no anon rest in scope → nothing */
         NODE *acc0, *elem0;
         uint32_t sc0 = kind_node_ary_push.slot_count;
         WITH_CHAIN(tc, sc0, (acc0  = build_array(tc, elems, n - 1, capa),
-                             elem0 = bake_lget(tc, (uint32_t)ars)));   /* splat the collected rest array */
+                             elem0 = kp_fwd_args(tc, ard, ars)));   /* splat the collected rest array */
         return ALLOC_node_ary_concat(acc0, elem0);
     }
     NODE *acc, *elem;
@@ -3984,12 +4014,12 @@ build_hash(struct kp_ctx *tc, struct pm_node **assocs, size_t n, uint32_t capa)
     if (PM_NODE_TYPE_P(last, PM_ASSOC_SPLAT_NODE)) {       /* `**h` → merge */
         const pm_node_t *expr = (const pm_node_t *)((const pm_assoc_splat_node_t *)last)->value;
         if (expr == NULL) {                                 /* bare `**` — anonymous kwrest forward */
-            const int32_t aks = tc->frame->anon_kwrest_slot;
-            if (aks < 0) return build_hash(tc, assocs, n - 1, capa);   /* no anon kwrest in scope → nothing */
+            uint32_t akd = 0; int32_t aks = -1;
+            if (!kp_anon_find(tc, KP_ANON_KWREST, &akd, &aks)) return build_hash(tc, assocs, n - 1, capa);   /* no anon kwrest in scope → nothing */
             NODE *acc0, *src0;
             uint32_t sc0 = kind_node_hash_merge.slot_count;
             WITH_CHAIN(tc, sc0, (acc0 = build_hash(tc, assocs, n - 1, capa),
-                                 src0 = bake_lget(tc, (uint32_t)aks)));
+                                 src0 = kp_fwd_args(tc, akd, aks)));
             return ALLOC_node_hash_merge(acc0, src0);
         }
         NODE *acc, *src;
@@ -5861,10 +5891,12 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
              * expression into a rooted synth local; the node #to_proc's it. */
             const pm_block_argument_node_t *ba = (const pm_block_argument_node_t *)sn->block;
             const bool anon_blk = (ba->expression == NULL);
-            if (anon_blk && tc->frame->anon_blk_slot < 0)
+            uint32_t anon_d = 0; int32_t anon_s = -1; NODE *anon_pre = NULL;
+            if (anon_blk && !kp_anon_find(tc, KP_ANON_BLK, &anon_d, &anon_s))
                 return kp_unsupported(tc, node, "bare & outside a (&) method body");
-            uint32_t pslot = anon_blk ? (uint32_t)tc->frame->anon_blk_slot : alloc_synth_local(tc);
-            NODE *pset = anon_blk ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
+            uint32_t pslot = anon_blk ? (uint32_t)kp_fwd_blk_local(tc, anon_d, anon_s, &anon_pre)
+                                      : alloc_synth_local(tc);
+            NODE *pset = anon_blk ? anon_pre : bake_lset(tc, pslot, transduce(tc, ba->expression));
             int32_t soff = -1 - tc->chain - 1, dco = -4 - tc->chain - 1;
             int32_t poff = (int32_t)pslot - tc->chain - 1;
             NODE *arr;
