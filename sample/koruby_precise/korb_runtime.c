@@ -11734,9 +11734,12 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             VALUE sdef = KORB_NIL;
             struct korb_method *snew =
                 KORB_CLASS_P(sing) ? korb_class_find_method(sing, vm->mid_new, &sdef) : NULL;
-            /* super from inside that very `def self.new` (marker set by the
-             * super path): skip the override once so the default allocator runs. */
-            if (snew && vm->super_new_skip != KORB_NIL && sdef == vm->super_new_skip) snew = NULL;
+            /* super from inside a `def self.new` (marker set by the super path):
+             * skip every override at or BELOW the defining singleton, not just
+             * that one — `class Lazy < Task` where both define `self.new` would
+             * otherwise find Lazy's again and spin (dry-monads). */
+            if (snew && vm->super_new_skip != KORB_NIL &&
+                (sdef == vm->super_new_skip || korb_class_has_ancestor(sdef, vm->super_new_skip))) snew = NULL;
             /* A user `def self.new` (ISEQ), a builtin singleton `new` (CFUNC —
              * Regexp/Time/File/Dir) or a `define_method(:new, ...)` singleton (DM)
              * all override the default allocator; the direct path resolves this in
