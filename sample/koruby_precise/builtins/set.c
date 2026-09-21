@@ -546,7 +546,10 @@ RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj) {
     }
     if (((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_KLASS) {
         VALUE ov = korb_klass_override_get(vm, obj);
-        if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) return RESULT_OK(ov);   /* reuse */
+        if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) {
+            VAL2CLASS(ov)->eval_only = 0;                /* asked for explicitly → a real materialization */
+            return RESULT_OK(ov);
+        }
     }
     slots[0] = obj;                                                              /* root self across class alloc */
     VALUE cur;
@@ -2398,6 +2401,18 @@ static void korb_vis_leave(VALUE cls, uint8_t saved) {
     if (saved != KORB_VIS_NONE && KORB_CLASS_P(cls)) VAL2CLASS(cls)->cur_visibility = saved;
 }
 
+/* instance_eval / instance_exec need the singleton as the default definee, but
+ * CRuby does not MATERIALIZE one just for that: a NameError raised inside still
+ * reads "an instance of Foo", not "#<Foo:0x…>".  Mark a singleton born here so
+ * the message helper can tell them apart; korb_obj_singleton clears the mark
+ * for every other caller (`class << obj`, `def obj.m`, #extend, …). */
+static RESULT korb_obj_singleton_for_eval(CTX *c, VALUE *slots, VALUE obj) {
+    const VALUE pre = korb_own_singleton_class(c->vm, obj);
+    const bool stays = (pre == KORB_NIL) || VAL2CLASS(pre)->eval_only;
+    const RESULT r = korb_obj_singleton(c, slots, obj);
+    if (stays && r.state == KORB_NORMAL && KORB_CLASS_P(r.value)) VAL2CLASS(r.value)->eval_only = 1;
+    return r;
+}
 static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool singleton_definee) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
     const uint32_t argc = VALUE_SLICE_LEN(a);
@@ -2412,7 +2427,7 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (singleton_definee && korb_singleton_able(slots[0])) {
         /* a value with no singleton is left as the definee itself: `def` inside
          * raises then, not on entry (CRuby only fails at the definition) */
-        const RESULT sr = korb_obj_singleton(c, slots + 1 + argc, slots[0]);
+        const RESULT sr = korb_obj_singleton_for_eval(c, slots + 1 + argc, slots[0]);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;   /* nothing pushed yet */
         definee = sr.value;
     }
@@ -2523,7 +2538,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (singleton_definee) {
             if (korb_singleton_able(VALUE_REF_GET(self))) {
                 slots[0] = src;                            /* park across the singleton's alloc */
-                const RESULT sr = korb_obj_singleton(c, slots + 1, VALUE_REF_GET(self));
+                const RESULT sr = korb_obj_singleton_for_eval(c, slots + 1, VALUE_REF_GET(self));
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 cref = sr.value; src = slots[0];
             }
@@ -2557,7 +2572,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
      * (a plain instance method).  Restored on the way out. */
     VALUE definee = slots[0];
     if (singleton_definee && korb_singleton_able(slots[0])) {   /* see korb_obj_exec_impl: `def` fails lazily */
-        const RESULT sr = korb_obj_singleton(c, slots + 1, slots[0]);
+        const RESULT sr = korb_obj_singleton_for_eval(c, slots + 1, slots[0]);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;       /* nothing pushed yet */
         definee = sr.value;
     }

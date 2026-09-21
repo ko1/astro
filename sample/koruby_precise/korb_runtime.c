@@ -4281,6 +4281,7 @@ static void korb_vm_orphan_method(struct korb_vm *vm, struct korb_method *m)
 static struct korb_method *
 korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mid)
 {
+    k->eval_only = 0;                /* a real `def` here materializes the singleton for good */
     struct korb_method *m = NULL;
     uint32_t slot = 0;
     for (uint32_t i = 0; i < k->method_cnt; i++)
@@ -7207,7 +7208,8 @@ korb_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
 static const char *
 korb_nomethod_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
 {
-    if (KORB_OBJECT_P(v) && korb_own_singleton_class(c->vm, v) != KORB_NIL) {
+    const VALUE sing = KORB_OBJECT_P(v) ? korb_own_singleton_class(c->vm, v) : KORB_NIL;
+    if (sing != KORB_NIL && !VAL2CLASS(sing)->eval_only) {
         const VALUE cls = VAL2OBJ(v)->klass;
         if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) {
             char nm[192]; korb_class_qname_into(c, cls, nm, sizeof nm);

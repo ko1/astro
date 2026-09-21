@@ -671,6 +671,9 @@ typedef struct KorbClass {
     uint32_t method_cnt, method_capa;
     uint8_t  is_module;              /* 1 = module (mixin, not instantiable) */
     uint8_t  is_singleton;           /* 1 = per-object singleton class (transparent to .class) */
+    uint8_t  eval_only;              /* singleton materialized ONLY to be instance_eval's definee.  CRuby
+                                      * does not materialize one for that, so a NameError raised inside
+                                      * still names the object's real class ("an instance of Foo"). */
     uint8_t  new_kind;               /* .new dispatch cache: 0=unknown, 1=plain user class, 2=special (Fiber/Struct/builtin/module) */
     uint8_t  struct_kwinit;          /* Struct.new(..., keyword_init: true) → .new takes a kwargs hash */
     uint8_t  is_data;                /* 1 = Data.define class (immutable; .new accepts positional OR keyword) */
