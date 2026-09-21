@@ -849,7 +849,13 @@ static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VA
         if (src != NULL) {
             const struct korb_method tmp = *src;           /* snapshot: the slot-array grow may dangle src */
             struct korb_method *dst = korb_class_method_slot(c->vm, VAL2CLASS(slots[0]), mid);
-            *dst = tmp; dst->mid = mid; dst->owner = slots[0]; dst->visibility = vis;
+            *dst = tmp; dst->mid = mid; dst->visibility = vis;
+            /* `super` from the copy must resume AFTER the module that really
+             * defined it — otherwise it finds the same body again and spins
+             * (concurrent-ruby: `private_class_method :new` under a singleton
+             * that mixes in SafeInitialization#new, which calls super). */
+            if (dst->super_owner == KORB_NIL) dst->super_owner = tmp.owner;
+            dst->owner = slots[0];
             continue;
         }
         /* .new / .allocate は method entry でなく korb_send_impl の特例 dispatch —
