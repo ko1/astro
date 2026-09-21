@@ -675,6 +675,8 @@ typedef struct KorbClass {
                                       * does not materialize one for that, so a NameError raised inside
                                       * still names the object's real class ("an instance of Foo"). */
     uint8_t  new_kind;               /* .new dispatch cache: 0=unknown, 1=plain user class, 2=special (Fiber/Struct/builtin/module) */
+    uint32_t new_kind_serial;        /* method_serial the new_kind above was classified at: a later `def self.new`
+                                      * (or an rspec stub) turns a plain class into a special one */
     uint8_t  struct_kwinit;          /* Struct.new(..., keyword_init: true) → .new takes a kwargs hash */
     uint8_t  is_data;                /* 1 = Data.define class (immutable; .new accepts positional OR keyword) */
     uint8_t  cur_visibility;         /* default visibility for `def` in this class body: 0 pub / 1 priv / 2 prot */

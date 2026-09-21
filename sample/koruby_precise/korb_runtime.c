@@ -4378,6 +4378,23 @@ static bool korb_universal_send_p(const struct korb_vm *const vm, const uint32_t
 /* send / __send__ / public_send are dispatch special-cases with no table entry,
  * so `alias my_send send` (racc, sequel) gets a trampoline that re-enters the
  * dispatch under the original name.  `slots` is the cfunc's free cursor. */
+/* `alias orig_new new` (net/http, and every gem that wraps a constructor):
+ * CRuby's alias captures Class#new itself, so the alias must allocate and run
+ * #initialize.  Re-dispatching `new` — what Class#[] does — would reach a later
+ * override, i.e. the very method that calls the alias: infinite recursion. */
+static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (builtins/set.c) */
+static RESULT korb_sub_new_init(CTX *c, VALUE *slots, VALUE_REF instref, VALUE_SLICE a,
+                                NODE *block, VALUE *def_env, VALUE *captured_self);          /* fwd (defined below) */
+static RESULT
+korb_m_class_new_alias(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                       NODE *block, VALUE *def_env, VALUE *cself)
+{
+    const RESULT ar = korb_m_class_allocate(c, slots, self, VALUE_SLICE_MAKE(NULL, 0));
+    if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+    slots[0] = ar.value;                                   /* root the instance across #initialize */
+    return korb_sub_new_init(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+}
+
 static RESULT
 korb_send_alias_tramp(CTX *c, VALUE *const slots, const VALUE_REF self, const VALUE_SLICE a,
                       NODE *const block, VALUE *const def_env, VALUE *const cself, const uint32_t orig)
@@ -4422,9 +4439,9 @@ RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t 
         memset(dst, 0, sizeof *dst);
         dst->mid = newm; dst->orig_mid = oldm;
         dst->kind = KORB_METHOD_CFUNC; dst->params_cnt = -1;
-        dst->rest_slot = -1;
+        dst->rest_slot = -1; dst->uses_block = 1;          /* `Foo.orig_new { }` hands the block to #initialize */
         dst->owner = KORB_NIL; dst->dm_proc = KORB_NIL;
-        dst->rfn = korb_m_class_new_bracket;
+        dst->rbfn = korb_m_class_new_alias;
         c->vm->method_serial++;
         return RESULT_OK(KORB_NIL);
     }
@@ -12480,15 +12497,16 @@ korb_send_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc, 
     return korb_send_impl_vis(c, slots, mid, line, argc, NULL, NULL, NULL, caller_self);
 }
 
-/* Classify a class for `.new` (cached in cls->new_kind; the inputs — the class
- * identity, is_module, members, builtin-base — are all fixed once the class
- * exists, so a one-shot classification stays valid).  1 = plain user class (generic alloc +
- * initialize), 2 = special (Fiber / Struct factory / Struct subclass / a builtin
- * class or subclass / module) that needs korb_send_impl's bespoke handling. */
+/* Classify a class for `.new` (cached in cls->new_kind, stamped with the
+ * method_serial: a `def self.new` — or a test double stubbing it — arrives after
+ * the class exists and turns a plain class into a special one).  1 = plain user
+ * class (generic alloc + initialize), 2 = special (Fiber / Struct factory /
+ * Struct subclass / a builtin class or subclass / module) that needs
+ * korb_send_impl's bespoke handling. */
 static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
     struct korb_vm *const vm = c->vm;
     KorbClass *const k = VAL2CLASS(cls);
-    if (LIKELY(k->new_kind != 0)) return k->new_kind;
+    if (LIKELY(k->new_kind != 0 && k->new_kind_serial == vm->method_serial)) return k->new_kind;
     uint8_t kind = 1;
     if (k->is_module || k->is_singleton ||   /* a metaclass takes the slow path, which raises */
         k->members != KORB_NIL || cls == korb_builtin_class_obj(vm, KORB_C_FIBER) ||
@@ -12526,6 +12544,7 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
             kind = 2;
     }
     k->new_kind = kind;
+    k->new_kind_serial = vm->method_serial;
     return kind;
 }
 
