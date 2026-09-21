@@ -6137,6 +6137,36 @@ static VALUE korb_bt_outer_handle(const VALUE h, const VALUE *const base);   /* 
 /* `super` — invoke `mid` starting from after def_class in self's MRO, keeping
  * self.  `entry_cell` is the frame's fs-2 cell: the running method's entry
  * (tagged korb_method*); its owner is the def_class whose MRO successor runs. */
+static RESULT korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
+                                    const VALUE *argv, uint32_t argc, VALUE *captured_self,
+                                    NODE *bp_blk, VALUE *bp_denv, VALUE *bp_self, uint32_t is_lam);   /* fwd (super into a define_method'd body) */
+
+/* A define_method'd method enforces arity like a method whatever the source was
+ * (CRuby converts proc arity to method arity); `|&nil|` refuses a block.
+ * Positional-only: skip when keywords are declared (a trailing kw Hash skews the
+ * count).  Shared by the ordinary dispatch and by `super` into such a body. */
+static RESULT
+korb_dm_call_check(CTX *const c, VALUE *const slots, const NODE *const iseq,
+                   const uint32_t argc, const uint32_t line, const bool has_block)
+{
+    if (iseq == NULL || iseq == KORB_BLK_CPROC || iseq->head.kind != &kind_node_entry) return RESULT_OK(KORB_NIL);
+    if (UNLIKELY(has_block) && korb_pi_no_block(iseq->u.node_entry.param_info))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no block accepted");
+    if (iseq->u.node_entry.kw_info != NULL) return RESULT_OK(KORB_NIL);
+    const uint32_t pc = iseq->u.node_entry.params_cnt;
+    const bool has_rest = iseq->u.node_entry.rest_slot >= 0;
+    const bool variable = (iseq->u.node_entry.opt_defaults != NULL) || has_rest;
+    const uint32_t req = variable ? iseq->u.node_entry.req_cnt : pc;
+    if (UNLIKELY(argc < req || (!has_rest && argc > pc))) {
+        char exp[32];
+        if (has_rest)       snprintf(exp, sizeof exp, "%u+", req);
+        else if (req == pc) snprintf(exp, sizeof exp, "%u", req);
+        else                snprintf(exp, sizeof exp, "%u..%u", req, pc);
+        return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %s)", argc, exp);
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
 RESULT
 korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
            VALUE entry_cell, VALUE self, NODE *block, VALUE *def_env, VALUE captured_self,
@@ -6278,11 +6308,18 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     }
     if (m->kind == KORB_METHOD_DM) {              /* super into a define_method'd method → run its Proc body */
         const KorbProc *const p = VAL2PROC(m->dm_proc);
+        CHECK(korb_dm_call_check(c, slots, p->iseq, argc, line, block != NULL));
         slots[0] = self;                          /* captured_self = receiver (rooted scanned slot) */
+        slots[1] = captured_self;                 /* park for the forwarded block's cself pointer */
         const struct korb_method *const dm_saved = c->dm_entry;
         c->dm_entry = m;                          /* chained super out of this body */
-        RESULT r = korb_block_yield(c, slots + 1, p->iseq, (VALUE *)(uintptr_t)p->env,
-                                    &slots[-(korb_sword_t)argc], argc, &slots[0]);
+        /* The block rides along and the body binds its args method-shaped, as
+         * the ordinary DM dispatch does — `super(*a) { }` into a
+         * define_method'd parent must reach its `&blk` (rspec-core redefines
+         * `it` that way over its own define_method'd one). */
+        RESULT r = korb_block_yield_full(c, slots + 2, p->iseq, (VALUE *)(uintptr_t)p->env,
+                                         &slots[-(korb_sword_t)argc], argc, &slots[0],
+                                         block, def_env, &slots[1], 2);
         c->dm_entry = dm_saved;
         if (r.state == KORB_RETURN) { r.state = KORB_NORMAL; c->return_target = NULL; }   /* return-from-method */
         return r;
@@ -9726,25 +9763,7 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
          * whether the source was a block, lambda or plain proc (CRuby converts
          * proc arity to method arity).  Positional-only; skip when keywords are
          * declared (a trailing kw Hash would skew the count). */
-        /* `define_method { |&nil| }` — Ruby 4.1: the method refuses a block. */
-        if (UNLIKELY(block != NULL) && p->iseq != NULL && p->iseq != KORB_BLK_CPROC &&
-            p->iseq->head.kind == &kind_node_entry && korb_pi_no_block(p->iseq->u.node_entry.param_info))
-            return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no block accepted");
-        if (p->iseq != NULL && p->iseq != KORB_BLK_CPROC &&
-            p->iseq->head.kind == &kind_node_entry && p->iseq->u.node_entry.kw_info == NULL) {
-            const NODE *const e = p->iseq;
-            const uint32_t pc = e->u.node_entry.params_cnt;
-            const bool has_rest = e->u.node_entry.rest_slot >= 0;
-            const bool variable = (e->u.node_entry.opt_defaults != NULL) || has_rest;
-            const uint32_t req = variable ? e->u.node_entry.req_cnt : pc;
-            if (UNLIKELY(argc < req || (!has_rest && argc > pc))) {
-                char exp[32];
-                if (has_rest)       snprintf(exp, sizeof exp, "%u+", req);
-                else if (req == pc) snprintf(exp, sizeof exp, "%u", req);
-                else                snprintf(exp, sizeof exp, "%u..%u", req, pc);
-                return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %s)", argc, exp);
-            }
-        }
+        CHECK(korb_dm_call_check(c, slots, p->iseq, argc, line, block != NULL));
         /* A Method#to_proc / Symbol#to_proc body (KORB_BLK_CPROC) has no node_entry:
          * it dispatches a send instead, and needs the PROC (not the receiver) as
          * its "captured self".  korb_block_yield's CPROC branch reads that from
