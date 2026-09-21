@@ -11620,12 +11620,23 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         return RESULT_OK(KORB_NIL);
     }
     else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_HASH) &&
-             mid == korb_intern(vm, "ruby2_keywords_hash?", 20)) {          /* koruby doesn't flag ruby2_keywords */
-        return RESULT_OK(KORB_FALSE);
-    }
-    else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_HASH) &&
-             mid == korb_intern(vm, "ruby2_keywords_hash", 19)) {           /* return the hash unchanged (no flag tracked) */
-        return RESULT_OK(argc >= 1 ? slots[-(korb_sword_t)argc] : KORB_NIL);
+             (mid == korb_intern(vm, "ruby2_keywords_hash?", 20) ||
+              mid == korb_intern(vm, "ruby2_keywords_hash", 19))) {
+        /* These read/write the keyword-argument mark (KORB_FL_KWARGS) that a call
+         * site puts on a Hash.  They MUST stay C: a Ruby definition would bind the
+         * argument to a named parameter, and that binding is exactly where the
+         * mark is dropped. */
+        const VALUE h = argc >= 1 ? slots[-(korb_sword_t)argc] : KORB_NIL;
+        if (UNLIKELY(!KORB_HASH_P(h)))
+            return korb_raise(c, slots, KORB_E_TYPE, line, "wrong argument type %s (expected Hash)", korb_coerce_name(c, h));
+        if (mid == korb_intern(vm, "ruby2_keywords_hash?", 20))
+            return RESULT_OK(korb_kwargs_hash_p(h) ? KORB_TRUE : KORB_FALSE);
+        slots[0] = h;                                                       /* dup, then mark the copy */
+        const RESULT dr = korb_send(c, slots + 1, korb_intern(vm, "dup", 3), line, 0);
+        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+        if (LIKELY(AROH_IS_GC_OBJECT(dr.value)))
+            ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_KWARGS;
+        return dr;
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new &&
              korb_builtin_base_class(vm, self) == KORB_C_RANGE &&
