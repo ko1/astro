@@ -10049,6 +10049,10 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                 korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__name", 7)), ID2SYM(mid));
                 korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__has_recv", 11)), KORB_TRUE);
                 korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__receiver", 11)), slots[0]);
+                /* NoMethodError#private_call? — this path IS the receiverless one,
+                 * the only shape CRuby reports true for (did_you_mean only offers
+                 * private methods and reserved words like `yield` when it is). */
+                korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__priv_call", 12)), KORB_TRUE);
                 RESULT ar = korb_ary_new(c, slots + 2, argc);   /* @__args = the args passed to the missing method */
                 if (LIKELY(ar.state == KORB_NORMAL)) {
                     slots[2] = ar.value;

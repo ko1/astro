@@ -409,6 +409,12 @@ class NoMethodError
   def initialize(msg = nil, name = nil, args = nil, priv = false, receiver: NameError::UNSET__)
     super(msg, name, receiver: receiver)
     @__args = args
+    @__priv_call = priv ? true : false
+  end
+  # true when the call that missed had NO explicit receiver, so a private
+  # method (or a reserved word taking an argument) could have been meant.
+  def private_call?
+    defined?(@__priv_call) ? !!@__priv_call : false
   end
 end
 class KeyError

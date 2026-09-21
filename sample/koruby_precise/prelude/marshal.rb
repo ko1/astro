@@ -327,6 +327,13 @@ module Marshal
     st[:objs][o] = st[:objs].size unless st[:objs].key?(o)
   end
 
+  # NameError's receiver is NOT dumped (CRuby keeps it in a hidden ivar that
+  # Marshal skips, so `receiver` raises "no receiver is available" after a
+  # round trip).  Dumping it would also make an ordinary NoMethodError
+  # undumpable whenever the receiver is, say, a File -- rspec-support's
+  # `in_sub_process` marshals exceptions back over a pipe.
+  EXC_SKIP_IVARS__ = [:@__receiver, :@__has_recv, :@__priv_call].freeze
+
   # Exception: CRuby stores the message and backtrace as the pseudo-ivars
   # :mesg and :bt (no '@'), ahead of any real instance variables.
   def self._dump_exception(o, out, st)
@@ -334,7 +341,7 @@ module Marshal
     raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
     _wrap_prefix(o, o.class, out, st)
     out << "o"; _symdump(name.to_sym, out, st)
-    uiv = o.instance_variables
+    uiv = o.instance_variables - EXC_SKIP_IVARS__
     cause = (o.cause rescue nil)                       # only set on a raised exception
     _long(2 + (cause ? 1 : 0) + uiv.length, out)
     _symdump(:mesg, out, st); _dump(o.respond_to?(:__raw_mesg) ? o.__raw_mesg : o.message, out, st)
