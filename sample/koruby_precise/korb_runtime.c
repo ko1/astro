@@ -17147,9 +17147,24 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     /* class_eval/module_eval(String) push the receiver onto the cref, so a `def`
      * inside the string resolves constants as a `module Foo` body would (psych's
      * TreeBuilder generates start_sequence that way and names Psych::Nodes). */
-    const uint32_t cref_name = (cref != KORB_UNDEF && KORB_CLASS_P(cref)) ? VAL2CLASS(cref)->name_sym : 0;
+    uint32_t cref_name = (cref != KORB_UNDEF && KORB_CLASS_P(cref)) ? VAL2CLASS(cref)->name_sym : 0;
+    VALUE cref_encl = cref_name ? VAL2CLASS(cref)->enclosing : KORB_NIL;
+    /* CRuby pushes the receiver onto the CALLER's cref, so an ANONYMOUS receiver
+     * (a `Module.new`, or instance_eval's singleton) still leaves the source
+     * seeing the lexical scope the eval was written in — which is the only way
+     * dry-monads' generated method body can name a constant of its own module.
+     * A named receiver keeps naming itself: koruby's cref is one nesting path,
+     * so the two cannot be chained.  instance_eval is excluded (its cref is the
+     * receiver's singleton): CRuby looks in the singleton and the receiver's
+     * class hierarchy BEFORE the caller's scope, and a flat const table cannot
+     * express that ordering — answering from the caller would be worse. */
+    if (cref_name == 0 && KORB_CLASS_P(cref) && !VAL2CLASS(cref)->is_singleton &&
+        KORB_CLASS_P(b0->cref) && VAL2CLASS(b0->cref)->name_sym != 0) {
+        cref_name = VAL2CLASS(b0->cref)->name_sym;
+        cref_encl = VAL2CLASS(b0->cref)->enclosing;
+    }
     uint32_t encl[16]; uint32_t nencl = 0;                      /* innermost first for now */
-    for (VALUE o = cref_name ? VAL2CLASS(cref)->enclosing : KORB_NIL;
+    for (VALUE o = cref_encl;
          KORB_CLASS_P(o) && VAL2CLASS(o)->name_sym != 0 && nencl < 16; o = VAL2CLASS(o)->enclosing)
         encl[nencl++] = VAL2CLASS(o)->name_sym;
     for (uint32_t i = 0, j = nencl; i < j; i++, j--)            /* → outermost first */
