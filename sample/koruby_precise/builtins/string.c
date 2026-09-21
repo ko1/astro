@@ -2968,6 +2968,11 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
                 return SYMBOL_P(sepv) ? korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type Symbol (expected Regexp)")
                                       : korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, sepv));
         }
+        {   /* receiver and separator must share an encoding (CRuby's rb_enc_check) */
+            uint32_t renc;
+            if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), sepv, &renc)))
+                return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(sepv));
+        }
         const KorbString *sp = VAL2STR(sepv);
         if (sp->len == 1 && korb_strbuf_data(sp->buf)[0] == ' ') ws = true;   /* " " behaves as whitespace */
     }

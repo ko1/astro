@@ -40,7 +40,7 @@ static RESULT korb_re_raise_enc_mismatch(CTX *c, VALUE *slots, uint32_t renc, ui
 {
     char msg[160];
     snprintf(msg, sizeof msg, "incompatible encoding regexp match (%s regexp with %s string)",
-             korb_enc_idx_name(c->vm, renc), korb_enc_idx_name(c->vm, senc));
+             korb_enc_inspect_name_of(c->vm, renc), korb_enc_inspect_name_of(c->vm, senc));
     return korb_raise_enc_compat_msg(c, slots, msg);
 }
 

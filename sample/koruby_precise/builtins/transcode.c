@@ -433,6 +433,14 @@ static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
             const uint32_t esc = korb_tc_jis_esc(src + i, slen - i, &smode);
             if (esc) { i += esc; continue; }
         }
+        /* CRuby has no ASCII-8BIT→X converter for the high half: such a byte is
+         * an UNDEFINED CONVERSION naming the raw byte, not a Latin-1 codepoint. */
+        if (UNLIKELY(from.kind == KTC_BINARY && to.kind != KTC_BINARY && src[i] >= 0x80)) {
+            if (!(flags & 2u)) { errcode = 4; errpos = i; errcp = 0; errlen = 1; break; }
+            korb_tc_put(&out, replb, repl_len);
+            i += 1;
+            continue;
+        }
         const uint32_t used = (from.kind == KTC_ISO2022JP)
             ? korb_tc_jis_decode(&from, src + i, slen - i, &cp, smode)
             : korb_tc_decode(&from, src + i, slen - i, &cp);
@@ -447,9 +455,12 @@ static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
             continue;
         }
         unsigned char buf[8];
-        const uint32_t wrote = (to.kind == KTC_ISO2022JP)
+        uint32_t wrote = (to.kind == KTC_ISO2022JP)
             ? korb_tc_jis_encode(&to, cp, buf, &dmode)
             : korb_tc_encode(&to, cp, buf);
+        /* ASCII-8BIT is a destination only for bytes that ARE ASCII: CRuby has no
+         * X→ASCII-8BIT converter for U+0080.. (a BINARY→BINARY copy is identity). */
+        if (UNLIKELY(wrote > 0 && to.kind == KTC_BINARY && from.kind != KTC_BINARY && cp >= 0x80)) wrote = 0;
         if (wrote > 0 && maxb >= 0 && (korb_sword_t)(out.len + wrote) > maxb) { errcode = 2; errpos = i; errlen = 0; break; }
         if (wrote == 0) {                                 /* not representable in the target */
             if (flags & 4u) {                             /* xml: :text / :attr → numeric charref */

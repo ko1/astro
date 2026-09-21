@@ -564,8 +564,14 @@ class Encoding
         :invalid_byte_sequence
       when 1
         @errinfo = [:undefined_conversion, "UTF-8".b, @dst_name.b, __err_char(errb, cp).b, +"".b]
-        @last_error = Encoding::UndefinedConversionError.new(format("U+%04X from %s to %s", cp, @src_name, @dst_name))
+        @last_error = Encoding::UndefinedConversionError.new(__undef_msg(format("U+%04X", cp), @dst_name))
                         .__set_info("UTF-8", @dst_name, __err_char(errb, cp))
+        if src.is_a?(String) && !src.frozen? then src.replace(rest); src.force_encoding(src_enc) end
+        :undefined_conversion
+      when 4                                        # a source byte with no Unicode mapping (ASCII-8BIT)
+        @errinfo = [:undefined_conversion, @src_name.b, "UTF-8".b, errb.b, +"".b]
+        @last_error = Encoding::UndefinedConversionError.new(__undef_msg(errb.b.inspect, "UTF-8"))
+                        .__set_info(@src_name, "UTF-8", errb.b)
         if src.is_a?(String) && !src.frozen? then src.replace(rest); src.force_encoding(src_enc) end
         :undefined_conversion
       when 2
@@ -610,6 +616,18 @@ class Encoding
     end
     private :__read_again
 
+    # CRuby names the LEG that failed.  A conversion that pivots through UTF-8
+    # reads "<char> to <leg dst> in conversion from <src> to UTF-8 to <dst>";
+    # a single-leg one (either side already UTF-8) just "<char> from <src> to <dst>".
+    def __undef_msg(what, leg_dst)
+      if @src_name.upcase == "UTF-8" || @dst_name.upcase == "UTF-8"
+        "#{what} from #{@src_name} to #{@dst_name}"
+      else
+        "#{what} to #{leg_dst} in conversion from #{@src_name} to UTF-8 to #{@dst_name}"
+      end
+    end
+    private :__undef_msg
+
     # An undefined conversion is always detected on the Unicode side of the
     # pivot, so CRuby reports UTF-8 as the failing stage's source encoding and
     # the offending character in UTF-8 (ISO-8859-1 -> UTF-8 -> EUC-JP etc.).
@@ -640,8 +658,14 @@ class Encoding
         raise e
       when 1
         @errinfo = [:undefined_conversion, "UTF-8".b, @dst_name.b, __err_char(errb, cp).b, +"".b]
-        e = Encoding::UndefinedConversionError.new(format("U+%04X from %s to %s", cp, @src_name, @dst_name))
+        e = Encoding::UndefinedConversionError.new(__undef_msg(format("U+%04X", cp), @dst_name))
               .__set_info("UTF-8", @dst_name, __err_char(errb, cp))
+        @last_error = e
+        raise e
+      when 4                                        # a source byte with no Unicode mapping (ASCII-8BIT)
+        @errinfo = [:undefined_conversion, @src_name.b, "UTF-8".b, errb.b, +"".b]
+        e = Encoding::UndefinedConversionError.new(__undef_msg(errb.b.inspect, "UTF-8"))
+              .__set_info(@src_name, "UTF-8", errb.b)
         @last_error = e
         raise e
       else                                          # truncated tail: keep it for the next call
@@ -751,6 +775,18 @@ class String
   # encode([to][, from][, opts]) — real byte-level transcoding via __transcode
   # (builtins/transcode.c).  Encodings koruby has no converter for still convert
   # when the content is 7-bit, exactly as CRuby does.
+  # CRuby names the LEG of the conversion that failed: one that pivots through
+  # UTF-8 reads "<char> to <leg dst> in conversion from <src> to UTF-8 to <dst>",
+  # a single-leg one (either side already UTF-8) just "<char> from <src> to <dst>".
+  def __undef_msg(what, leg_dst, src, dst)
+    if src.upcase == "UTF-8" || dst.upcase == "UTF-8"
+      "#{what} from #{src} to #{dst}"
+    else
+      "#{what} to #{leg_dst} in conversion from #{src} to UTF-8 to #{dst}"
+    end
+  end
+  private :__undef_msg
+
   def __enc_arg(v)                            # Encoding / String / #to_str → name
     return nil if v.nil?
     return v.name if v.is_a?(Encoding)
@@ -860,9 +896,13 @@ class String
       end
       rep = __encode_fallback(fb, ch)
       if rep.nil?
+        # code 4: a SOURCE byte with no Unicode mapping (ASCII-8BIT's high half),
+        # so the failing leg is src -> UTF-8 and the char is the raw byte.
         raise Encoding::UndefinedConversionError
-                .new(format("U+%04X from %s to %s", cp, senc.name, tenc.name))
-                .__set_info("UTF-8", tenc.name, cp ? cp.chr(Encoding::UTF_8) : ch.dup.force_encoding(Encoding::UTF_8))
+                .new(code == 4 ? __undef_msg(ch.b.inspect, "UTF-8", senc.name, tenc.name)
+                               : __undef_msg(format("U+%04X", cp), tenc.name, senc.name, tenc.name))
+                .__set_info(*(code == 4 ? [senc.name, "UTF-8", ch.b]
+                                        : ["UTF-8", tenc.name, cp ? cp.chr(Encoding::UTF_8) : ch.dup.force_encoding(Encoding::UTF_8)]))
       end
       conv = __transcode(rep, rep.encoding.name, to_name, 0, repl)
       raise ArgumentError, "too big fallback string" unless conv.is_a?(String)

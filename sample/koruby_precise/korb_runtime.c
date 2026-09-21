@@ -1140,6 +1140,13 @@ korb_enc_name_of(const struct korb_vm *vm, uint32_t idx)
     if (idx == KORB_ENC_BINARY) return "ASCII-8BIT";
     return (idx < KORB_STR_ENC_MAX && vm->str_enc_names[idx]) ? korb_sym_name(vm, vm->str_enc_names[idx]) : "unknown";
 }
+/* How CRuby NAMES an encoding inside an error message (rb_enc_inspect_name):
+ * the binary encoding reads as "BINARY (ASCII-8BIT)" there, not as its #name. */
+const char *
+korb_enc_inspect_name_of(const struct korb_vm *vm, uint32_t idx)
+{
+    return idx == KORB_ENC_BINARY ? "BINARY (ASCII-8BIT)" : korb_enc_name_of(vm, idx);
+}
 /* the UTF-16/32, UTF-7 and stateful families are not ASCII-compatible */
 bool
 korb_enc_ascii_compat_idx(const struct korb_vm *vm, uint32_t idx)
@@ -1242,7 +1249,7 @@ korb_raise_enc_compat(CTX *c, VALUE *slots, uint32_t ea, uint32_t eb)
 {
     char msg[160];
     snprintf(msg, sizeof msg, "incompatible character encodings: %s and %s",
-             korb_enc_name_of(c->vm, ea), korb_enc_name_of(c->vm, eb));
+             korb_enc_inspect_name_of(c->vm, ea), korb_enc_inspect_name_of(c->vm, eb));
     return korb_raise_enc_compat_msg(c, slots, msg);
 }
 
