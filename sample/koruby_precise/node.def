@@ -1674,6 +1674,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
         if (eidx != UINT32_MAX) return RESULT_OK(vm->const_vals[eidx]);
     }
     uint32_t idx;
+    VALUE miss_cref = KORB_NIL;                       /* the cref a miss must report / hand const_missing */
     if (owner_name != 0) {                            /* scoped `M::X` or bare read in a namespace */
         /* owner_name = the innermost enclosing module (bare) or the path parent
          * (M::X); walk its lexical `enclosing` chain, then fall back to flat
@@ -1692,6 +1693,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * UNIQUE innermost cref class, so a same-named class in another namespace
          * (M::C vs M::Inner::C) doesn't shadow it via a flat name lookup. */
         const VALUE cref = korb_cref_resolve(vm, cache->owner_chain, cache->chain_len, owner_name);
+        miss_cref = cref;
         /* every read that reaches here is a BARE one now (`A::B` goes through
          * node_const_path), so the lexical walk applies.  Walk the BAKED chain
          * (Module.nesting), not the classes' `enclosing` links: `class A::B`
@@ -1759,6 +1761,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
         const VALUE cref = (self_off == INT32_MIN) ? KORB_NIL
                          : (dc_off != INT32_MIN ? korb_const_cref(slots[self_off], slots[dc_off])   /* method frame: entry->owner */
                                                 : (KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL));
+        miss_cref = cref;
         idx = KORB_CLASS_P(cref) ? korb_const_index_owned(vm, name_sym, cref) : UINT32_MAX;
         if (idx == UINT32_MAX && KORB_CLASS_P(cref)) idx = korb_const_in_ancestry(vm, cref, name_sym);
         /* No baked chain reaches an UNNAMED cref (`class << obj`, or a method
@@ -1793,7 +1796,11 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
             /* Fire the const_missing hook on the owning module: <owner>.const_missing(:name).
              * The prelude default re-raises NameError (so an unhandled miss behaves as
              * before); a user override returns a value. */
-            const VALUE owner_cls = korb_const_get(vm, owner_name);
+            /* The cref resolved above IS the owner.  Re-resolving owner_name in the
+             * flat table finds the FIRST module with that short name, so with a
+             * Test::Unit::Color loaded, a miss inside FFaker::Color fired
+             * Test::Unit::Color.const_missing (ffaker). */
+            const VALUE owner_cls = KORB_CLASS_P(miss_cref) ? miss_cref : korb_const_get(vm, owner_name);
             if (KORB_CLASS_P(owner_cls)) {
                 slots[0] = owner_cls;
                 slots[1] = ID2SYM(name_sym);
