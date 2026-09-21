@@ -312,6 +312,25 @@ class Enumerator
 end
 
 class Enumerator
+  # CRuby wraps `Enumerator.new`'s block in one of these.  koruby keeps the Proc
+  # itself as the source, but the constant has to exist and #inspect has to name
+  # it (a gem may match on the shape).
+  class Generator; end
+
+  # CRuby names an enum_for/to_enum enumerator after what built it, arguments
+  # and all ("#<Enumerator: #<OpenStruct a=1>:each_pair>").  The C printer only
+  # knows the desc string a BUILTIN enumerator carries, so use the recorded
+  # source when there is one.
+  def inspect
+    return __inspect_orig unless defined?(@__src_recv)
+    r = @__src_recv.inspect
+    s = +"#<#{self.class}: #{r}:#{@__src_meth}"
+    s << "(#{@__src_args.map(&:inspect).join(', ')})" if @__src_args && !@__src_args.empty?
+    s << ">"
+  rescue NoMethodError
+    __inspect_orig
+  end
+
   # Remember what an enum_for/to_enum enumerator was built from, so
   # `enum.each(extra...)` can re-drive `receiver.meth(*args, *extra)` (CRuby).
   def __set_source(recv, meth, args)

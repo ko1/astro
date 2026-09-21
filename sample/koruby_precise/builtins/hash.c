@@ -369,7 +369,11 @@ static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(removed);
 }
 
+static RESULT korb_m_hash_each_named(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, const char *ename);
 static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
+    return korb_m_hash_each_named(c, slots, self, a, block, def_env, captured_self, "each");
+}
+static RESULT korb_m_hash_each_named(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, const char *ename) {
     (void)a;
     if (block == NULL) {                                 /* no block → Enumerator over [k,v] pairs */
         slots[0] = UNWRAP(korb_ary_new(c, slots, SELF_HASH->len));
@@ -383,7 +387,7 @@ static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[2]));
             CHECK(korb_ary_push_val(c, slots + 4, arr, slots[3]));
         }
-        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each"));
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), ename));
         return korb_enum_new(c, slots + 2, VALUE_REF_GET(arr), slots[1]);
     }
     /* a forwarded lambda (&lam / &obj.method(:m)) gets ONE [k, v] argument, so

@@ -719,6 +719,10 @@ static RESULT korb_m_enum_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (ms) {
         /* Enumerator.allocate without #initialize has no source at all */
         if (SELF_ENUM->values == KORB_NIL && SELF_ENUM->source == KORB_NIL) fprintf(ms, "#<%s: uninitialized>", nm);
+        else if (SELF_ENUM->mode == 3 && KORB_PROC_P(SELF_ENUM->source))
+            /* Enumerator.new { |y| … }: CRuby wraps the block in an
+             * Enumerator::Generator and names the enumerator after it. */
+            fprintf(ms, "#<%s: #<Enumerator::Generator:0x%016zx>:each>", nm, (size_t)(uintptr_t)SELF_ENUM->source);
         else if (SELF_ENUM->source != KORB_NIL) { fprintf(ms, "#<%s: ", nm); korb_fprint_inspect(c, ms, SELF_ENUM->source); fputc('>', ms); }
         else fprintf(ms, "#<%s>", nm);
         fclose(ms);

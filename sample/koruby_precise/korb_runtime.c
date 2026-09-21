@@ -13371,7 +13371,9 @@ korb_register_core_methods(CTX *c)
      * identity hashes comparing array keys by Array#== — 50M calls in optcarrot). */
     korb_def_cmethod(c, KORB_C_HASH, "drop", korb_m_hash_drop, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each", korb_m_hash_each, 0);
-    korb_def_cmethod_blk(c, KORB_C_HASH, "each_pair", korb_m_hash_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "each_pair", korb_m_hash_each, 0);   /* the SAME entry: the spec checks #each == #each_pair.
+                                                                              * CRuby names the enumerator after the CALLED name; koruby
+                                                                              * has no invoked-mid accessor in a cfunc, so it says "each". */
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_value", korb_m_hash_each_value, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_key", korb_m_hash_each_key, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "map", korb_m_hash_map, 0);
@@ -14155,11 +14157,13 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "force", korb_m_enum_to_a, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "size", korb_m_enum_size, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "__set_size", korb_m_enum_set_size, 1);
-    korb_def_cmethod(c, KORB_C_ENUMERATOR, "to_s", korb_m_enum_inspect, 0);
+    /* NOT #to_s: CRuby's Enumerator#to_s is Object#to_s ("#<Enumerator:0x…>"),
+     * only #inspect names the source. */
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "inspect", korb_m_enum_inspect, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "initialize", korb_m_enum_initialize, -1);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each", korb_m_enum_each, -1);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "__each_orig", korb_m_enum_each, -1);   /* prelude Enumerator#each falls back to this */
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "__inspect_orig", korb_m_enum_inspect, 0);  /* ditto for #inspect */
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "map", korb_m_enum_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "collect", korb_m_enum_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "with_index", korb_m_enum_with_index, -1);
@@ -14819,9 +14823,11 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         return;
       }
       case KORB_OBJ_ENUMERATOR: {
-        const KorbEnumerator *e = VAL2ENUM(v);
-        if (KORB_STRING_P(e->desc)) fwrite(korb_strbuf_data(VAL2STR(e->desc)->buf), 1, VAL2STR(e->desc)->len, fp);
-        else fputs("#<Enumerator>", fp);
+        /* #to_s is the DEFAULT object form in CRuby ("#<Enumerator:0x…>"); only
+         * #inspect names the source. */
+        char nm[192];
+        korb_class_qname_into(c, korb_dispatch_class(c, v), nm, sizeof nm);
+        fprintf(fp, "#<%s:0x%016lx>", nm, (unsigned long)(uintptr_t)v);
         return;
       }
       case KORB_OBJ_SET:                               /* Set[a, b, c] (elements via inspect) */
@@ -14958,6 +14964,11 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       case KORB_OBJ_RANGE:
         korb_fprint_range(c, slots, fp, v, true);   /* inspect endpoints */
         return;
+      case KORB_OBJ_ENUMERATOR: {                    /* #inspect names the source; #to_s does not */
+        const KorbEnumerator *const e = VAL2ENUM(v);
+        if (KORB_STRING_P(e->desc)) { fwrite(korb_strbuf_data(VAL2STR(e->desc)->buf), 1, VAL2STR(e->desc)->len, fp); return; }
+        break;                                       /* no desc: fall through to the slots-aware #inspect below */
+      }
       case KORB_OBJ_REGEXP: {                            /* inspect: /source/opts */
         const KorbRegexp *const re = VAL2RE(v);
         const KorbString *const src = KORB_STRING_P(re->source) ? VAL2STR(re->source) : NULL;

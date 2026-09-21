@@ -212,7 +212,7 @@ static korb_sword_t korb_rand_below(KorbMT *st, uintptr_t n) {
     uint64_t v; do { v = ((uint64_t)korb_mt_next(st) | ((uint64_t)korb_mt_next(st) << 32)) & mask; } while (v > lim);
     return (korb_sword_t)v;
 }
-static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a);   /* fwd */
+static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, VALUE_SLICE a);   /* fwd */
 /* draw an Integer in [0, n) for a Bignum n (rejection sampling on whole limbs). */
 static RESULT korb_rand_below_big(CTX *c, VALUE *slots, KorbMT *st, const korb_mp_t n) {
     const size_t bits = korb_mp_sizeinbase(n, 2);
@@ -232,7 +232,7 @@ static RESULT korb_rand_below_big(CTX *c, VALUE *slots, KorbMT *st, const korb_m
 }
 /* `strict` = Random#rand: 0 / negative / a reversed Range is an ArgumentError,
  * where Kernel#rand takes the magnitude and treats 0 as "give me a Float". */
-static RESULT korb_rand_core_x(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a, bool strict) {
+static RESULT korb_rand_core_x(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, VALUE_SLICE a, bool strict) {
     if (strict && VALUE_SLICE_LEN(a) >= 1) {
         const VALUE arg0 = VALUE_SLICE_GET(a, 0);
         bool bad = false;
@@ -249,7 +249,7 @@ static RESULT korb_rand_core_x(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a, 
         if (KORB_BIGNUM_P(arg0)) return korb_rand_below_big(c, slots, st, VAL2BIG(arg0)->z);
         if (KORB_RANGE_P(arg0)) {                  /* an empty/reversed Range is an ArgumentError here */
             slots[0] = arg0;                       /* root: the message below allocates nothing, but the call may */
-            const RESULT rr = korb_rand_core(c, slots + 1, st, a);
+            const RESULT rr = korb_rand_core(c, slots + 1, st, rng_owner, a);
             if (UNLIKELY(rr.state != KORB_NORMAL) || rr.value != KORB_NIL) return rr;
             const RESULT tr = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);   /* the bounds' own #to_s (Date) */
             if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
@@ -263,9 +263,13 @@ static RESULT korb_rand_core_x(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a, 
             return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "invalid argument - %s", rb);
         }
     }
-    return korb_rand_core(c, slots, st, a);
+    return korb_rand_core(c, slots, st, rng_owner, a);
 }
-static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a) {
+/* `rng_owner` is the Random object whose state `st` points INTO (nil for the
+ * default generator, which is vm-owned and never moves).  Every path that can
+ * dispatch Ruby has to re-resolve `st` through it afterwards: the state lives in
+ * a String's payload and a moving GC relocates it. */
+static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, VALUE_SLICE a) {
     if (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL)
         return korb_float_new(c, slots, korb_mt_real(st));
     VALUE arg = VALUE_SLICE_GET(a, 0);
@@ -293,38 +297,43 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a) {
         }
         /* Everything else (Rational, Bignum, Date, Time, a Comparable of one's
          * own): draw over `hi - lo` and answer `lo + n`. */
-        slots[0] = arg;                                   /* root the Range across the dispatches */
-        slots[1] = hi; slots[2] = lo;
+        slots[0] = rng_owner;                             /* root: the state String moves under the dispatches */
+        slots[1] = arg;                                   /* root the Range too */
+        slots[2] = hi; slots[3] = lo;
         {
-            const RESULT sr = korb_send(c, slots + 3, korb_intern(c->vm, "-", 1), 0, 1);
+            const RESULT sr = korb_send(c, slots + 4, korb_intern(c->vm, "-", 1), 0, 1);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-            slots[1] = sr.value;                          /* the span */
+            slots[2] = sr.value;                          /* the span */
         }
         korb_sword_t n;
-        if (!KORB_FLOAT_P(slots[1]) && !korb_to_index(slots[1], &n)) {   /* Date#- gives a Rational; ask for #to_int */
+        if (!KORB_FLOAT_P(slots[2]) && !korb_to_index(slots[2], &n)) {   /* Date#- gives a Rational; ask for #to_int */
             const uint32_t to_int = korb_intern(c->vm, "to_int", 6);
-            if (korb_responds_to(c, slots[1], to_int)) {
-                slots[2] = slots[1];
-                const RESULT ir = korb_send(c, slots + 3, to_int, 0, 0);
+            if (korb_responds_to(c, slots[2], to_int)) {
+                slots[3] = slots[2];
+                const RESULT ir = korb_send(c, slots + 4, to_int, 0, 0);
                 if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
-                slots[1] = ir.value;
+                slots[2] = ir.value;
             }
         }
-        if (!KORB_FLOAT_P(slots[1]) && korb_to_index(slots[1], &n)) {
+        if (slots[0] != KORB_NIL) {                       /* the dispatches above may have relocated the state */
+            st = korb_rng_of(c, slots[0]);
+            if (UNLIKELY(st == NULL)) return korb_raise(c, slots + 4, KORB_E_RUNTIME, 0, "uninitialized Random");
+        }
+        if (!KORB_FLOAT_P(slots[2]) && korb_to_index(slots[2], &n)) {
             const korb_sword_t top = n - (excl ? 1 : 0);
             if (top < 0) return RESULT_OK(KORB_NIL);
-            slots[2] = LONG2FIX(top == 0 ? 0 : korb_rand_below(st, (uintptr_t)top + 1));   /* limit 0 draws nothing (CRuby) */
+            slots[3] = LONG2FIX(top == 0 ? 0 : korb_rand_below(st, (uintptr_t)top + 1));   /* limit 0 draws nothing (CRuby) */
         } else {
             double dspan;
-            if (!korb_num_to_d(slots[1], &dspan)) return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "bad value for range");
+            if (!korb_num_to_d(slots[2], &dspan)) return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "bad value for range");
             if (dspan < 0 || (dspan == 0 && excl)) return RESULT_OK(KORB_NIL);
             const double r = excl ? korb_mt_real(st) : korb_mt_real_closed(st);
-            const RESULT fr = korb_float_new(c, slots + 2, r * dspan);
+            const RESULT fr = korb_float_new(c, slots + 3, r * dspan);
             if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
-            slots[2] = fr.value;
+            slots[3] = fr.value;
         }
-        slots[1] = VAL2RANGE(slots[0])->rbegin;           /* re-read: the dispatches above may have moved it */
-        return korb_send(c, slots + 3, korb_intern(c->vm, "+", 1), 0, 1);
+        slots[2] = VAL2RANGE(slots[1])->rbegin;           /* re-read: the dispatches above may have moved it */
+        return korb_send(c, slots + 4, korb_intern(c->vm, "+", 1), 0, 1);
     }
     if (!FIXNUM_P(arg) && !KORB_FLOAT_P(arg) && KORB_OBJECT_P(arg) &&    /* coerce via #to_int */
         korb_responds_to_coerce_p(c, slots, &arg, korb_intern(c->vm, "to_int", 6))) {
@@ -378,7 +387,7 @@ static RESULT korb_m_random_init(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_random_rand(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbMT *const st = korb_rng_of(c, VALUE_REF_GET(self));
     if (UNLIKELY(st == NULL)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "uninitialized Random");
-    return korb_rand_core_x(c, slots, st, a, true);
+    return korb_rand_core_x(c, slots, st, VALUE_REF_GET(self), a, true);
 }
 static RESULT korb_m_random_seed(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
@@ -438,7 +447,7 @@ static KorbMT *korb_default_rng(struct korb_vm *const vm) {
     return &vm->default_rng;
 }
 static RESULT korb_bi_rand(CTX *c, VALUE *slots, VALUE_SLICE a) {
-    return korb_rand_core(c, slots, korb_default_rng(c->vm), a);
+    return korb_rand_core(c, slots, korb_default_rng(c->vm), KORB_NIL, a);
 }
 static RESULT korb_bi_srand(CTX *c, VALUE *slots, VALUE_SLICE a) {
     const VALUE old = c->vm->default_rng_seeded ? c->vm->default_rng_seed : LONG2FIX(0);

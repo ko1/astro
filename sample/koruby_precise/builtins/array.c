@@ -700,6 +700,7 @@ static RESULT korb_m_str_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
+static RESULT korb_enum_desc_args(CTX *c, VALUE *slots, VALUE recv, const char *meth, VALUE_SLICE args);
 static RESULT korb_m_ary_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
     if (block == NULL) {                              /* → Enumerator over the elements */
@@ -769,7 +770,7 @@ static RESULT korb_m_ary_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         CHECK(korb_ary_push_val(c, slots + 3, out, VALUE_REF_GET(slice)));
     }
     if (block == NULL) {
-        slots[2] = UNWRAP(korb_enum_desc(c, slots + 2, VALUE_REF_GET(self), "each_slice"));
+        slots[2] = UNWRAP(korb_enum_desc_args(c, slots + 2, VALUE_REF_GET(self), "each_slice", a));   /* CRuby shows the size: "…:each_slice(2)" */
         return korb_enum_new(c, slots + 3, VALUE_REF_GET(out), slots[2]);
     }
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
@@ -803,7 +804,7 @@ static RESULT korb_m_ary_each_cons(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         CHECK(korb_ary_push_val(c, slots + 3, out, VALUE_REF_GET(win)));
     }
     if (block == NULL) {
-        slots[2] = UNWRAP(korb_enum_desc(c, slots + 2, VALUE_REF_GET(self), "each_cons"));
+        slots[2] = UNWRAP(korb_enum_desc_args(c, slots + 2, VALUE_REF_GET(self), "each_cons", a));   /* CRuby shows the size: "…:each_cons(2)" */
         return korb_enum_new(c, slots + 3, VALUE_REF_GET(out), slots[2]);
     }
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
