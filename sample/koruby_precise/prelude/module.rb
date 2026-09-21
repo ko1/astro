@@ -65,7 +65,8 @@ class Module
     end
     out
   end
-  def undefined_instance_methods; []; end
+  # (Module#undefined_instance_methods is the C one; it used to be stubbed here
+  # and only worked because Class carried its own copy of the C entry.)
 
   # Default hooks (private).  const_added is a no-op; const_missing raises.
   # (The automatic firing of these hooks is a separate C concern.)

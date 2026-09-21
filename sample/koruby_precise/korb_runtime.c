@@ -13934,6 +13934,30 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("using", korb_m_mod_using, -1);
     #undef MOD_CFN
     #undef MOD_CFN_BLK
+    {   /* Class INHERITS from Module, so a method registered identically on both
+         * is a duplicate that SHADOWS the Module one.  That made
+         * `class Module; public :remove_const; end` (pry's spec_helper) change
+         * Module's entry while `SomeClass.remove_const` kept finding Class's
+         * private copy — and the same for any redefinition of a Module method.
+         * Drop the copies; the ancestry answers.  A copy that differs (a real
+         * Class-specific override, or an undef tombstone) is kept. */
+        const VALUE clsv = korb_builtin_class_obj(c->vm, KORB_C_CLASS);
+        const VALUE modv = korb_const_get(c->vm, korb_intern(c->vm, "Module", 6));
+        if (KORB_CLASS_P(clsv) && KORB_CLASS_P(modv) && VAL2CLASS(clsv)->superclass == modv) {
+            KorbClass *const kc = VAL2CLASS(clsv);
+            uint32_t w = 0;
+            for (uint32_t i = 0; i < kc->method_cnt; i++) {
+                const struct korb_method *const mine = kc->methods[i];
+                const struct korb_method *const theirs = korb_class_own_method(modv, mine->mid);
+                const bool dup = theirs != NULL && theirs->kind == mine->kind &&
+                                 theirs->rfn == mine->rfn && theirs->rbfn == mine->rbfn &&
+                                 theirs->bfn == mine->bfn && theirs->body == mine->body;
+                if (!dup) kc->methods[w++] = kc->methods[i];
+            }
+            kc->method_cnt = w;
+            c->vm->method_serial++;
+        }
+    }
     {   /* CRuby undefines the module-only definition methods on Class, so
          * Class.private_instance_methods doesn't list them and an UnboundMethod
          * rebound to a Class raises. */
