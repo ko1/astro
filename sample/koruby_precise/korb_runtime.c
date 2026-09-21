@@ -5657,12 +5657,18 @@ korb_entry_ret_cold(CTX *c, VALUE *base, uint32_t locals_cnt, RESULT r)
 /* 呼び出し側に残る冷たい尾: 例外にこのサイトの行番号を積むだけ。base も
  * locals_cnt も要らないので、dispatch をまたいで生存する値が無くなる。 */
 RESULT
-korb_call_ret_cold(CTX *c, RESULT r, VALUE flink, uint32_t mid)
+korb_call_ret_cold(CTX *c, RESULT r, VALUE flink, uint32_t mid, VALUE fid)
 {
     const uint32_t line = korb_flink_line(flink);   /* decoded once here, not in every inlined tail */
-    /* Nothing but line/mid survives the dispatch here by design, so the frame's
-     * method entry is gone: the label is the bare name (no owner, no file). */
-    if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, NULL);
+    /* Nothing but line/mid/fid survives the dispatch by design.  `fid` is the
+     * callee frame's identity word, which the caller already wrote into base[-4]
+     * (or, for a C method, the entry it ran) — without it the label lost its
+     * owner and the position fell back to the CALL SITE's line, so the same
+     * method raised from a different line the second time it was called. */
+    const struct korb_method *m = NULL;
+    if ((fid & 7u) == KORB_FID_METHOD || (fid & 7u) == KORB_FID_CFUNC)
+        m = (const struct korb_method *)(uintptr_t)(fid & ~(VALUE)7u);
+    if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
     return r;
 }
 
@@ -12623,7 +12629,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
             const RESULT r = m->rfn(c, slots, VALUE_REF_AT(&cbase[-1]), VALUE_SLICE_MAKE(cbase, argc));
             if (LIKELY(framed)) korb_cframe_leave(c, saved);
             if (LIKELY(r.state == KORB_NORMAL)) return r;
-            return korb_call_ret_cold(c, r, korb_flink_line(flink), mid);
+            return korb_call_ret_cold(c, r, korb_flink_line(flink), mid, (VALUE)((uintptr_t)m | KORB_FID_CFUNC));
         }
         return korb_send_ic_dispatch(c, slots, mid, flink, argc, ic, recv, caller_self);
     }

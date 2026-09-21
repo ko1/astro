@@ -930,7 +930,7 @@ RESULT korb_invoke_ret_cold(CTX *c, VALUE *base, uint32_t locals_cnt, RESULT r, 
 RESULT korb_entry_ret_cold(CTX *c, VALUE *base, uint32_t locals_cnt, RESULT r);
 /* 呼び出し側に残る冷たい尾: RAISE のバックトレースだけ。base も locals_cnt も
  * 要らないので、dispatch をまたいで生存させる値が無くなる。 */
-RESULT korb_call_ret_cold(CTX *c, RESULT r, VALUE flink, uint32_t mid);
+RESULT korb_call_ret_cold(CTX *c, RESULT r, VALUE flink, uint32_t mid, VALUE fid);
 /* main.c: a node synthesized at runtime (attr_reader entry) — bind to a baked SD / instantiate like a parsed body. */
 void   korb_synth_node_ready(NODE *n);
 void   korb_bt_unwind(CTX *c, KorbException *e, uint32_t line, uint32_t mid, const struct korb_method *m);
@@ -1030,7 +1030,7 @@ korb_invoke_entry_ic(CTX *c, VALUE *slots, const struct korb_inlcache *ic, uint3
     if (LIKELY(r.state == KORB_NORMAL)) return r;
     /* The site's line rides the frame link it stored in base[-3]; reading it
      * back here keeps it out of the hot path entirely. */
-    return korb_call_ret_cold(c, r, slots[-(korb_sword_t)argc - 3], mid);
+    return korb_call_ret_cold(c, r, slots[-(korb_sword_t)argc - 3], mid, korb_id_get(slots - argc));
 }
 
 /* Mirror for the top-level call cache. */
@@ -1041,7 +1041,7 @@ korb_invoke_entry_cc(CTX *c, VALUE *slots, const struct korb_callcache *cc, uint
     korb_id_set(slots - argc, (VALUE)((uintptr_t)cc->m | KORB_FID_METHOD));
     const RESULT r = (*cc->dispatch)(c, cc->body, slots);
     if (LIKELY(r.state == KORB_NORMAL)) return r;
-    return korb_call_ret_cold(c, r, slots[-(korb_sword_t)argc - 3], mid);
+    return korb_call_ret_cold(c, r, slots[-(korb_sword_t)argc - 3], mid, korb_id_get(slots - argc));
 }
 
 /* Builtin receiver → class object (2 loads); mirrors korb_runtime.c's korb_builtin_class_obj. */
