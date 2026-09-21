@@ -480,10 +480,11 @@ static RESULT korb_copy_gen_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE *p
  * KORB_NIL when the copy needs no entry (a plain builtin). */
 static VALUE korb_copy_klass(CTX *c, VALUE ov, VALUE src)
 {
-    /* A Module/Class is the exception: its singleton holds its CLASS METHODS,
-     * and Module#initialize_copy carries those over (rubyspec:
-     * "should retain singleton methods when duped"). */
-    if (KORB_CLASS_P(src)) return KORB_CLASS_P(ov) ? ov : KORB_NIL;
+    /* A Module/Class needs no entry: korb_class_dup already gave the copy its
+     * OWN singleton holding copies of the source's class methods.  Handing back
+     * the source's singleton would share it, so the copy's undef/define would
+     * reach the original (rspec-expectations dups RSpec and undefs .configuration). */
+    if (KORB_CLASS_P(src)) return KORB_NIL;
     while (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) ov = VAL2CLASS(ov)->superclass;
     if (!KORB_CLASS_P(ov)) return KORB_NIL;
     return (ov == korb_builtin_class_obj(c->vm, korb_class_of(src))) ? KORB_NIL : ov;
@@ -717,13 +718,17 @@ static RESULT korb_m_obj_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     RESULT r = korb_obj_copy_impl(c, slots + 1, self, korb_intern(c->vm, "initialize_clone", 16), &slots[0]);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     const VALUE sv2 = VALUE_REF_GET(self);   /* re-fetch: korb_m_obj_dup GC-moved the receiver; `sv` is stale */
-    /* clone (unlike dup) carries the singleton class, so singleton methods survive. */
-    const bool self_sub = AROH_IS_GC_OBJECT(sv2) && (((const AroObjectHeader *)(uintptr_t)sv2)->flags & KORB_FL_HAS_KLASS);
+    /* clone (unlike dup) carries the singleton class, so singleton methods
+     * survive.  A Module/Class copy already got its own from korb_class_dup. */
+    const bool self_sub = AROH_IS_GC_OBJECT(sv2) && !KORB_CLASS_P(sv2) &&
+                          (((const AroObjectHeader *)(uintptr_t)sv2)->flags & KORB_FL_HAS_KLASS);
     if (self_sub && AROH_IS_GC_OBJECT(r.value)) {
         const VALUE ov = korb_klass_override_get(c->vm, sv2);
         if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) {
             slots[0] = r.value;
-            korb_klass_override_set(c, slots[0], ov);
+            slots[1] = ov;
+            const RESULT scr = korb_singleton_copy(c, slots + 2, slots[0], slots[1]);
+            if (UNLIKELY(scr.state != KORB_NORMAL)) return scr;
             r.value = slots[0];
         }
     }

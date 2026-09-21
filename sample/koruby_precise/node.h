@@ -619,6 +619,7 @@ RESULT korb_str_dup_pub(CTX *c, VALUE *slots, VALUE *src);
 void korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v);
 bool korb_find_bang_override(CTX *c, VALUE v);
 void korb_relocate_object_methods(CTX *c, VALUE *slots);
+RESULT korb_singleton_copy(CTX *c, VALUE *slots, VALUE dst, VALUE src_sing);
 RESULT korb_class_dup(CTX *c, VALUE *slots, VALUE src);
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);
 void korb_warn_ignore_verbose(CTX *c, VALUE *slots, const char *fmt, ...);   /* category warnings ($VERBOSE-independent) */

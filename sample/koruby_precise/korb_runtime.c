@@ -4626,6 +4626,41 @@ extern const struct NodeKind kind_node_ivar_get;   /* auto-attr detection */
 static VALUE korb_klass_override_get(const struct korb_vm *vm, VALUE obj);   /* fwd (singleton lookup, no alloc) */
 static VALUE korb_copy_klass(CTX *c, VALUE ov, VALUE src);                   /* fwd (defined in builtins/int_float_ext.c) */
 
+/* Give `dst` its own singleton class holding copies of `src_sing`'s entries.
+ * Sharing the source's singleton instead would let the copy's def/undef reach
+ * back into the original (CRuby clones the singleton class). */
+RESULT
+korb_singleton_copy(CTX *c, VALUE *slots, VALUE dst, VALUE src_sing)
+{
+    slots[0] = dst;
+    slots[1] = src_sing;
+    const RESULT sr = korb_obj_singleton(c, slots + 3, slots[0]);
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    slots[2] = sr.value;
+    {   /* `extend`ed modules live on the singleton too */
+        KorbClass *const ds = VAL2CLASS(slots[2]);
+        const KorbClass *const ss = VAL2CLASS(slots[1]);
+        ARO_STORE(c, ds, (VALUE *)(uintptr_t)&ds->included,  ss->included);
+        ARO_STORE(c, ds, (VALUE *)(uintptr_t)&ds->prepended, ss->prepended);
+    }
+    const uint32_t sn = VAL2CLASS(slots[1])->method_cnt;
+    for (uint32_t i = 0; i < sn; i++) {
+        const struct korb_method src_m = *VAL2CLASS(slots[1])->methods[i];   /* snapshot: the slot below may realloc */
+        struct korb_method *const dm = korb_class_method_slot(c->vm, VAL2CLASS(slots[2]), src_m.mid);
+        *dm = src_m;
+        dm->owner = slots[2];
+    }
+    /* constants defined in `class << obj` come along too (rubyspec:
+     * "copies constants defined in the singleton class") */
+    struct korb_vm *const vm = c->vm;
+    const uint32_t cn = vm->const_cnt;                /* the loop appends; only copy the originals */
+    for (uint32_t i = 0; i < cn; i++)
+        if (vm->const_owners[i] == slots[1])
+            korb_const_define_owned(c, vm->const_names[i], vm->const_vals[i], slots[2]);
+    vm->method_serial++;
+    return RESULT_OK(slots[2]);
+}
+
 /* Module#dup / Class#dup: an anonymous copy that owns its own method table.
  * Sharing the source's entries would let the copy's undef_method/alias reach
  * back into the original (delegate.rb builds Delegator's superclass by dup'ing
@@ -4671,23 +4706,7 @@ korb_class_dup(CTX *c, VALUE *slots, VALUE src)
         const VALUE ov = korb_klass_override_get(vm, slots[0]);
         if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) ssing = ov;
     }
-    if (ssing != KORB_NIL) {
-        slots[2] = ssing;                             /* root: the alloc below may move it */
-        slots[3] = UNWRAP(korb_obj_singleton(c, slots + 4, slots[1]));
-        {   /* `extend`ed modules live on the singleton too */
-            KorbClass *const ds = VAL2CLASS(slots[3]);
-            const KorbClass *const ss = VAL2CLASS(slots[2]);
-            ARO_STORE(c, ds, (VALUE *)(uintptr_t)&ds->included,  ss->included);
-            ARO_STORE(c, ds, (VALUE *)(uintptr_t)&ds->prepended, ss->prepended);
-        }
-        const uint32_t sn = VAL2CLASS(slots[2])->method_cnt;
-        for (uint32_t i = 0; i < sn; i++) {
-            const struct korb_method src_m = *VAL2CLASS(slots[2])->methods[i];
-            struct korb_method *const dm = korb_class_method_slot(c->vm, VAL2CLASS(slots[3]), src_m.mid);
-            *dm = src_m;
-            dm->owner = slots[3];
-        }
-    }
+    if (ssing != KORB_NIL) CHECK(korb_singleton_copy(c, slots + 2, slots[1], ssing));
     vm->method_serial++;
     return RESULT_OK(slots[1]);
 }
