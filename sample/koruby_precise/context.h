@@ -1375,10 +1375,10 @@ struct CTX_struct {
      * is not permitted there (CRuby: the proc's cref is not a toplevel one), and
      * identity is the test — any nested scope that installs its own set clears it. */
     VALUE     refine_sealed;
-    /* Saved (def_definee, cvar_cref) pairs for scopes that rebind them around
-     * Ruby execution.  They cannot be kept in C locals: a moving collection
-     * during the body would leave the restore writing a stale pointer back into
-     * the context.  Same shape as refine_saved above. */
+    /* Saved (def_definee, cvar_cref, eval_cref, kwargs_park) frames for scopes
+     * that rebind them around Ruby execution.  They cannot be kept in C locals:
+     * a moving collection during the body would leave the restore writing a
+     * stale pointer back into the context.  Same shape as refine_saved above. */
     VALUE    *cref_saved;
     uint32_t  cref_n, cref_cap;
     VALUE    *errinfo;

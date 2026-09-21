@@ -5138,7 +5138,7 @@ static void korb_refine_pop(CTX *c) {
  * (`def` target) and the cvar cref.  Both are VALUEs, so the save cannot live in
  * a C local across the body — the restore would put a stale pointer back. */
 static void korb_cref_push(CTX *c) {
-    if (c->cref_n + 3 > c->cref_cap) {
+    if (c->cref_n + 4 > c->cref_cap) {
         c->cref_cap = c->cref_cap ? c->cref_cap * 2 : 48;
         c->cref_saved = realloc(c->cref_saved, sizeof(VALUE) * c->cref_cap);
         if (!c->cref_saved) { fprintf(stderr, "koruby_precise: out of memory (cref scopes)\n"); abort(); }
@@ -5146,13 +5146,15 @@ static void korb_cref_push(CTX *c) {
     c->cref_saved[c->cref_n++] = c->def_definee;
     c->cref_saved[c->cref_n++] = c->cvar_cref;
     c->cref_saved[c->cref_n++] = c->eval_cref;
+    c->cref_saved[c->cref_n++] = c->kwargs_park;
 }
 static void korb_cref_pop(CTX *c) {
-    if (LIKELY(c->cref_n >= 3)) {
+    if (LIKELY(c->cref_n >= 4)) {
+        c->kwargs_park = c->cref_saved[--c->cref_n];
         c->eval_cref   = c->cref_saved[--c->cref_n];
         c->cvar_cref   = c->cref_saved[--c->cref_n];
         c->def_definee = c->cref_saved[--c->cref_n];
-    } else { c->eval_cref = KORB_NIL; c->cvar_cref = KORB_NIL; c->def_definee = KORB_NIL; }
+    } else { c->eval_cref = KORB_NIL; c->cvar_cref = KORB_NIL; c->def_definee = KORB_NIL; c->kwargs_park = KORB_NIL; }
 }
 
 /* Try one (refined class, refinement module) pair against the receiver class. */
@@ -5328,9 +5330,11 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
      * is a parameter the defaults below may fill, or is nil-visible to them), so
      * park it on the context.  Saved/restored, so a default that calls another
      * keyword method nests. */
-    const VALUE kw_park_saved = c->kwargs_park;
+    /* The OUTER park cannot ride in a C local across the defaults below: they
+     * run Ruby, and a moving collection would leave the restore writing a stale
+     * Hash back (same rule as the cref pair -- hence the shared stack). */
     const bool kw_parked = kw != NULL && kw->kwrest_slot < 0 && kwhash != KORB_NIL;
-    if (UNLIKELY(kw_parked)) c->kwargs_park = kwhash;
+    if (UNLIKELY(kw_parked)) { korb_cref_push(c); c->kwargs_park = kwhash; }
     /* Snapshot what the rest of this invocation reads out of the entry.  A
      * default expression may redefine this very method, and korb_class_def_method
      * reuses the entry in place — the call in flight must still finish as the OLD
@@ -5352,7 +5356,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     }
     /* unpark before any exit, so a raising default cannot leave an outer
      * invocation's parked Hash overwritten */
-    if (UNLIKELY(kw_parked)) { kwhash = c->kwargs_park; c->kwargs_park = kw_park_saved; }
+    if (UNLIKELY(kw_parked)) { kwhash = c->kwargs_park; korb_cref_pop(c); }
     if (UNLIKELY(opt_err.state != KORB_NORMAL)) return opt_err;
     if (kw) {
         if (kw->kwrest_slot >= 0) kwhash = base[kw->kwrest_slot];   /* re-read (GC during opt-fill) */
