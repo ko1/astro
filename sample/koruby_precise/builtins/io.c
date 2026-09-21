@@ -370,6 +370,15 @@ static off_t korb_io_seek_rep(KorbIORep *const rep, off_t off, int whence) {
 /* Flush, close the descriptor and release the buffers.  Idempotent. */
 /* keep_fd: `autoclose = false` detaches the object from the descriptor without
  * closing it (webrick hands the fd to TCPServer.for_fd, then closes the Socket). */
+/* Case-insensitive "bom|" in a mode string ("r:bom|utf-8").  CRuby consumes the
+ * BOM at OPEN time, so a plain binary read has to already be past it. */
+static bool korb_modestr_has_bom(const char *m)
+{
+    for (const char *p = m; *p; p++)
+        if ((p[0] == 'b' || p[0] == 'B') && (p[1] == 'o' || p[1] == 'O') &&
+            (p[2] == 'm' || p[2] == 'M') && p[3] == '|') return true;
+    return false;
+}
 static void korb_io_close_rep_fd(struct korb_vm *const vm, KorbIORep *const rep, const bool keep_fd) {
     if (!rep) return;
     if (rep->fd >= 0) {
@@ -2747,6 +2756,10 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (have_modestr) {                                  /* the prelude parses the encoding suffix back off this */
         slots[1] = UNWRAP(korb_str_new(c, slots + 1, modestr, (uint32_t)strlen(modestr)));
         CHECK(korb_ivar_set(c, slots + 2, io, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)), slots[1]));
+        if (UNLIKELY(korb_modestr_has_bom(modestr))) {   /* eat the BOM now, not on the first encoding query */
+            slots[1] = VALUE_REF_GET(io);
+            CHECK(korb_send(c, slots + 2, korb_intern(c->vm, "__apply_bom_opt", 15), 0, 0));
+        }
     }
     CHECK(korb_io_capture_default_internal(c, slots + 1, io));
     if (fopts_idx >= 0) {                                /* encoding: / autoclose: → the prelude */

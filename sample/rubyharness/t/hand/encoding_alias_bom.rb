@@ -31,6 +31,11 @@ Dir.mktmpdir do |d|
   path = File.join(d, "bom.txt")
   File.binwrite(path, "\xEF\xBB\xBFhello\n")
   File.open(path, "r", encoding: "bom|utf-8") { |f| p [f.external_encoding, f.pos, f.read] }
+  # the mode-string spelling consumes the BOM at OPEN time too (dotenv reads
+  # its .env with File.open(path, "rb:bom|utf-8"))
+  p File.open(path, "rb:bom|utf-8", &:read)
+  p File.open(path, "r:bom|utf-8", &:read)
+  p File.read(path, mode: "rb:bom|utf-8")
   plain = File.join(d, "plain.txt")
   File.binwrite(plain, "hello\n")
   File.open(plain, "r", encoding: "bom|utf-8") { |f| p [f.external_encoding, f.pos, f.read] }

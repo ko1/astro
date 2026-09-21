@@ -213,7 +213,7 @@ class IO
 
   # "bom|utf-8": consume a leading BOM if there is one and let it name the
   # external encoding; with no BOM the named encoding stands (CRuby).
-  private def __apply_bom_opt
+  def __apply_bom_opt   # called from the C open path too
     @__bom_req = nil
     name = __io_bom_encoding
     set_encoding(name) if name

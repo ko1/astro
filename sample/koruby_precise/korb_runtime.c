@@ -4034,7 +4034,10 @@ korb_cref_resolve(struct korb_vm *vm, const uint32_t *chain, uint32_t chain_len,
         for (uint32_t i = 1; KORB_CLASS_P(cref) && i < chain_len; i++)
             cref = korb_cref_step(vm, cref, chain[i]);
     }
-    if (!KORB_CLASS_P(cref) && owner_name != 0) cref = korb_const_get(vm, owner_name);
+    /* No usable chain: resolve the baked owner NAME itself.  korb_cref_step walks
+     * a dotted path ("Diff::LCS") owner-scoped, so a same-named module in another
+     * namespace cannot answer first — korb_const_get's flat by-name lookup could. */
+    if (!KORB_CLASS_P(cref) && owner_name != 0) cref = korb_cref_step(vm, KORB_NIL, owner_name);
     return cref;
 }
 
