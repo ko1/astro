@@ -6098,11 +6098,46 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 static void
 kp_stash_syntax_msg(CTX *c, const pm_parser_t *parser, const char *fname)
 {
-    const pm_diagnostic_t *const d = (const pm_diagnostic_t *)parser->error_list.head;
-    if (d == NULL) return;
-    static char buf[256];
-    const int32_t line = pm_newline_list_line(&parser->newline_list, d->location.start, parser->start_line);
-    snprintf(buf, sizeof buf, "%s:%d: %s", fname ? fname : "(eval)", line, d->message);
+    const pm_diagnostic_t *const d0 = (const pm_diagnostic_t *)parser->error_list.head;
+    if (d0 == NULL) return;
+    /* CRuby's shape (prism's own formatter):
+     *   file:LINE: syntax error(s) found
+     *   > LINE | <the source line>
+     *          |    ^ <what went wrong>
+     * Several diagnostics on one line share the source line. */
+    static char buf[4096];
+    size_t n = 0;
+    const int32_t line0 = pm_newline_list_line(&parser->newline_list, d0->location.start, parser->start_line);
+    n += (size_t)snprintf(buf + n, sizeof buf - n, "%s:%d: syntax error%s found\n",
+                          fname ? fname : "(eval)", line0,
+                          parser->error_list.size > 1 ? "s" : "");
+    int32_t shown = -1;
+    for (const pm_diagnostic_t *d = d0; d != NULL && n + 64 < sizeof buf;
+         d = (const pm_diagnostic_t *)d->node.next) {
+        const int32_t line = pm_newline_list_line(&parser->newline_list, d->location.start, parser->start_line);
+        /* the line's text, without its newline */
+        const size_t lidx = (size_t)(line - parser->start_line);
+        const uint8_t *const lstart = (lidx < parser->newline_list.size)
+                                    ? parser->start + parser->newline_list.offsets[lidx] : parser->start;
+        const uint8_t *lend = lstart;
+        while (lend < parser->end && *lend != '\n') lend++;
+        const int gutter = snprintf(NULL, 0, "%d", line);
+        if (line != shown) {
+            n += (size_t)snprintf(buf + n, sizeof buf - n, "> %d | %.*s\n", line,
+                                  (int)(lend - lstart), (const char *)lstart);
+            shown = line;
+        }
+        size_t col = (size_t)(d->location.start - lstart);
+        if (col > 200) col = 200;
+        n += (size_t)snprintf(buf + n, sizeof buf - n, "%*s | ", gutter + 2, "");
+        for (size_t k = 0; k < col && n + 2 < sizeof buf; k++) buf[n++] = ' ';
+        size_t span = (size_t)(d->location.end - d->location.start);   /* ^~~~ covers the offending text */
+        if (span > 80) span = 80;
+        if (n + 2 < sizeof buf) buf[n++] = '^';
+        for (size_t k = 1; k < span && n + 2 < sizeof buf; k++) buf[n++] = '~';
+        n += (size_t)snprintf(buf + n, sizeof buf - n, " %s\n", d->message);
+    }
+    buf[n < sizeof buf ? n : sizeof buf - 1] = '\0';
     c->vm->last_syntax_msg = buf;
 }
 
@@ -6160,14 +6195,18 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
             pm_options_free(&options);
             return NULL;
         }
-        /* main program: CRuby-compatible exit path — SyntaxError → stderr + exit 1 */
-        for (const pm_diagnostic_t *d = (const pm_diagnostic_t *)parser.error_list.head;
-             d != NULL; d = (const pm_diagnostic_t *)d->node.next) {
-            int32_t line = pm_newline_list_line(&parser.newline_list,
-                                                d->location.start, parser.start_line);
-            fprintf(stderr, "%s:%d: %s\n", fname, line, d->message);
+        /* main program: CRuby-compatible exit path — SyntaxError → stderr + exit 1.
+         * Same block eval's SyntaxError#message carries, then the summary line
+         * CRuby ends with. */
+        kp_stash_syntax_msg(c, &parser, fname);
+        const pm_diagnostic_t *const d0 = (const pm_diagnostic_t *)parser.error_list.head;
+        const int32_t line0 = d0 ? pm_newline_list_line(&parser.newline_list, d0->location.start, parser.start_line) : 0;
+        if (c->vm->last_syntax_msg) {   /* the snippet only: the summary line below says the rest */
+            const char *const nl = strchr(c->vm->last_syntax_msg, '\n');
+            fputs(nl ? nl + 1 : c->vm->last_syntax_msg, stderr);
         }
-        fprintf(stderr, "%s: syntax error (SyntaxError)\n", fname);
+        fprintf(stderr, "%s:%d: syntax error%s found (SyntaxError)\n",
+                fname, line0, parser.error_list.size > 1 ? "s" : "");
         exit(1);
     }
 
