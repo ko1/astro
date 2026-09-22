@@ -404,6 +404,8 @@ typedef struct KorbBinding {
     const uint32_t *name_syms;       /* immortal: name_syms[i] = sym of local at env index i */
     uint32_t name_cnt;
     const struct Node *src_node;     /* immortal: the `binding` call node (for #source_location); NULL if unknown */
+    uint32_t method_mid;             /* the method this binding was taken in, resolved at capture (an eval'd
+                                      * `__method__` answers it); 0 at top level */
 } KorbBinding;
 
 /* bound Method object (obj.method(:sym)): receiver + interned method id. */

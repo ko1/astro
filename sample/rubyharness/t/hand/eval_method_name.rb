@@ -24,3 +24,19 @@ class Deep
 end
 p Deep.new.m
 p (Kernel.instance_method(:method).bind(b.eval('self')).call(b.eval('::Kernel.__method__')).name)
+
+# a binding CAPTURED inside an eval'd string keeps the method name it was taken
+# in (pry's Object#__binding__ is `class_eval("binding")` inside a method)
+class Obj2
+  def grab
+    (class << self; self; end).class_eval("def __pb__; binding; end", __FILE__, __LINE__)
+    __pb__
+  end
+  def grab2 = self.class.class_eval("binding", __FILE__, __LINE__)
+end
+p Obj2.new.grab.eval("::Kernel.__method__")
+p Obj2.new.grab2.eval("::Kernel.__method__")
+module Mod2
+  def self.grab = class_eval("binding", __FILE__, __LINE__)
+end
+p Mod2.grab.eval("::Kernel.__method__")

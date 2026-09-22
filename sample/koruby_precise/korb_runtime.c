@@ -3713,6 +3713,7 @@ static VALUE korb_cref_from_path(struct korb_vm *const vm, const uint32_t sym)
     return (last == nm) ? v : korb_const_get(vm, korb_intern(vm, last, (uint32_t)strlen(last)));
 }
 
+static uint32_t korb_bind_method_mid_walk(const struct korb_vm *vm, const KorbBinding *b);   /* fwd (just below) */
 RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *scope_tbl, uint32_t name_cnt, VALUE self_val, uint32_t cref_name) {
     slots[0] = self_val;                                  /* root self across allocs */
     /* Materialize an env for EVERY captured lexical level (same walk as
@@ -3764,6 +3765,10 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->self, slots[0]);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->extra, KORB_NIL);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->cref, slots[2]);
+    /* Resolve the owning method NOW: a binding taken inside an eval'd string has
+     * an eval frame at the head of its chain and could never name it later. */
+    { const uint32_t mm = korb_bind_method_mid_walk(c->vm, b);
+      b->method_mid = mm ? mm : c->eval_mid; }
     return RESULT_OK((VALUE)b);
 }
 /* The method a binding was taken in, for an eval'd `__method__` (CRuby answers
@@ -3771,6 +3776,11 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
  * method frame the env chain recorded; 0 at top level or past a closed chain. */
 static bool korb_bt_known_ptr(const struct korb_vm *vm, uintptr_t p);   /* fwd: defined with the backtrace walk */
 static uint32_t korb_bind_method_mid(const struct korb_vm *const vm, const KorbBinding *const b)
+{
+    (void)vm;
+    return b->method_mid;                              /* resolved at capture (korb_make_binding) */
+}
+static uint32_t korb_bind_method_mid_walk(const struct korb_vm *const vm, const KorbBinding *const b)
 {
     VALUE ev = b->env;
     for (uint32_t d = 0; d < 64 && ev != 0 && (ev & 7u) == 0; d++) {
