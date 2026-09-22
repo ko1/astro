@@ -1652,6 +1652,19 @@ main(int argc, char *argv[])
                 }
             }
         }
+        /* did_you_mean is a default gem CRuby loads at startup; it prepends
+         * Correctable to NameError/KeyError/… so `error.corrections` and the
+         * "Did you mean?" line exist.  Same LoadError-is-normal rule as above. */
+        if (!OPTION.no_did_you_mean) {
+            const RESULT dr = korb_require_feature(c, toplevel_cursor, "did_you_mean");
+            if (dr.state == KORB_RAISE) {
+                char enm[128];
+                korb_class_desc_into(c, korb_class_obj_of(c, dr.value), enm, sizeof enm);
+                if (strcmp(enm, "LoadError") != 0) {
+                    korb_report_uncaught(c, dr.value); korb_io_flush_std(c->vm); return 1;
+                }
+            }
+        }
         for (int k = 0; k < req_libs.n; k++) {
             const RESULT rr = korb_require_feature(c, toplevel_cursor, req_libs.v[k]);
             if (rr.state == KORB_RAISE) { korb_report_uncaught(c, rr.value); korb_io_flush_std(c->vm); return 1; }
