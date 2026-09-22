@@ -1477,6 +1477,12 @@ struct CTX_struct {
     VALUE cfunc_link;
     const VALUE *carry_base;
     uint32_t     carry_line_bits;
+    /* `zork` with no receiver misses as NameError, not NoMethodError — the mark
+     * is on the call node.  A USER #method_missing that hands it on with `super`
+     * reaches the default raiser with no node in sight, so pass the mid here
+     * (CRuby's ec->method_missing_reason).  Matching the mid keeps a stale value
+     * inert; the default raiser clears it. */
+    uint32_t     mm_vcall_mid;
 };
 
 /* The block handed to a method lives in the callee's frame (slots), not in

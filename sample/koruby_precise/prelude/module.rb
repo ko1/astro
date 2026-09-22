@@ -281,22 +281,13 @@ class Module
   # `Module.private_method_defined?(:ruby2_keywords)`.
   private def ruby2_keywords(*names)
     names.each do |n|
-      unless method_defined?(n) || private_method_defined?(n) || respond_to?(n, true)
-        raise NameError.new("undefined method '#{n}' for class '#{self}'", n)
-      end
-      # the flag only means anything on a `*rest`-only signature: the splat has
-      # to be the last positional one (post args would eat the marked Hash) and
-      # there must be no keywords
-      params = (instance_method(n).parameters rescue [])
-      ri = params.index { |t, _| t == :rest }
-      ok = !ri.nil? &&
-           params.none? { |t, _| t == :key || t == :keyreq || t == :keyrest } &&
-           params[(ri + 1)..].none? { |t, _| t == :req || t == :opt }
-      unless ok
-        warn "Skipping set of ruby2_keywords flag for #{n} (method accepts keywords " \
-             "or method does not accept argument splat)", uplevel: 1
-      else
-        __set_ruby2_keywords(self, n)
+      # the lookup and the shape check are C: asking SELF for #method_defined? /
+      # #instance_method would be visible to a partial double stubbing them
+      case __set_ruby2_keywords(self, n)
+      when 0 then raise NameError.new("undefined method '#{n}' for class '#{self}'", n)
+      when 3 then raise TypeError, "#{n.inspect} is not a symbol nor a string"
+      when 2 then warn "Skipping set of ruby2_keywords flag for #{n} (method accepts keywords " \
+                       "or method does not accept argument splat)", uplevel: 1
       end
     end
     nil

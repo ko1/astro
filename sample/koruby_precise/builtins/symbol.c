@@ -85,7 +85,13 @@ static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VA
     const VALUE recv = VALUE_REF_GET(self);
     char buf[256];   /* CRuby-shaped: "class Foo" / "module Bar" / "an instance of Foo" / … */
     const char *tn = korb_nomethod_recv_desc(c, slots, recv, buf, sizeof buf);
-    RESULT r = korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for %s", nm, tn);
+    /* A bare-name miss the user's #method_missing handed on with `super` keeps
+     * CRuby's NameError shape; the mid must match, so a stale mark is inert. */
+    const bool vcall = c->mm_vcall_mid != 0 && SYMBOL_P(name) && SYM2ID(name) == c->mm_vcall_mid;
+    c->mm_vcall_mid = 0;
+    RESULT r = vcall
+        ? korb_raise(c, slots, KORB_E_NAME, 0, "undefined local variable or method '%s' for %s", nm, tn)
+        : korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for %s", nm, tn);
     if (LIKELY(KORB_EXC_P(r.value))) {                    /* attach #name / #receiver metadata */
         slots[0] = r.value;
         VALUE_REF eref = VALUE_REF_AT(&slots[0]);
@@ -922,12 +928,21 @@ static RESULT korb_m_meth_super_method(CTX *c, VALUE *slots, VALUE_REF self, VAL
         if (!KORB_CLASS_P(mro[i])) continue;
         if (!korb_class_owns_method(VAL2CLASS(mro[i]), mid, NULL)) continue;
         slots[0] = mro[i];                                          /* root super-owner across the alloc */
-        if (unbound)                                                /* unbound: recv IS the owner class */
-            return korb_unbound_new(c, slots + 1, slots[0], mid);
-        RESULT r = korb_method_new(c, slots + 1, recv, mid);        /* bound: keep recv, fix the super-owner */
+        slots[1] = start;                                           /* the class whose MRO the chain walks */
+        /* Keep the ORIGINAL class as the unbound recv: it is what the next
+         * #super_method searches, and restarting from the super owner would end
+         * the chain at the first module (its own MRO is just itself). */
+        RESULT r = unbound ? korb_unbound_new(c, slots + 2, slots[1], mid)
+                           : korb_method_new(c, slots + 2, recv, mid);       /* bound: keep recv, fix the super-owner */
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        ARO_STORE(c, VAL2METH(r.value), (VALUE *)(uintptr_t)&VAL2METH(r.value)->owner, slots[0]);
-        korb_meth_pin(c, r.value);                                  /* pin to the super definition, not the overridden one */
+        ARO_STORE(c, VAL2METH(r.value), (VALUE *)(uintptr_t)&VAL2METH(r.value)->owner, slots[0]);   /* #owner is where the super definition lives */
+        /* Pin to the definition mro[i] OWNS.  Resolving by name from that class
+         * instead would walk its own prepends and hand back the very method we
+         * are stepping off — `m = m.super_method` then never terminates
+         * (dry-cli's .auto_initialize_keywords walks exactly that chain). */
+        struct korb_method *const sm = korb_class_own_method(slots[0], mid);   /* slots[0] re-read: the alloc above can move it */
+        if (LIKELY(sm != NULL)) { VAL2METH(r.value)->entry = sm; sm->pinned = 1; }
+        else korb_meth_pin(c, r.value);
         return r;
     }
     return RESULT_OK(KORB_NIL);

@@ -6572,6 +6572,7 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             slots[0] = captured_self;                      /* park in a scanned slot for the cself ptr */
             slots[1] = self;                               /* recv, then :name, then the args */
             slots[2] = ID2SYM(mid);
+            c->mm_vcall_mid = 0;                           /* `super` is never a bare-name miss */
             c->carry_base = frame_base; c->carry_line_bits = korb_flink_line_bits(line);   /* the frame this `super` is in (the restage loses the cell) */
             return korb_send_impl(c, slots + 3 + argc, vm->mid_method_missing, line,
                                   argc + 1, block, def_env, &slots[0]);
@@ -6583,6 +6584,17 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     if (m->kind == KORB_METHOD_ATTR_R) {
         if (UNLIKELY(argc != 0)) return korb_raise_attr_arity(c, slots, line, argc);
         return RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
+    }
+    if (m->kind == KORB_METHOD_BUILTIN) {         /* super into a global C fn (Kernel#abort, #raise, …) */
+        if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc))
+            return korb_raise_arity(c, slots, m, mid, line,
+                                    "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+        VALUE *const bbase = &slots[-(korb_sword_t)argc];
+        const VALUE bsaved = korb_cframe_enter(c, bbase, m);
+        RESULT r = m->bfn(c, slots, VALUE_SLICE_MAKE(bbase, argc));
+        korb_cframe_leave(c, bsaved);
+        if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
+        return r;
     }
     if (m->kind == KORB_METHOD_CFUNC) {           /* super into a builtin (e.g. Exception#initialize) */
         if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc))
@@ -9700,34 +9712,59 @@ korb_bi_autoload_feature_loaded(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(korb_autoload_feature_loaded_p(c, pv) ? KORB_TRUE : KORB_FALSE);
 }
 
+/* Can a method of this shape carry the ruby2_keywords flag?  The splat has to be
+ * the last positional parameter (a post arg would eat the marked Hash) and there
+ * must be no keyword parameter at all (CRuby warns and skips otherwise). */
+static const void *korb_entry_param_info(NODE *entry);   /* defined with the other node_entry accessors */
+static bool korb_entry_has_rest(NODE *entry);            /* ditto */
+static uint32_t korb_entry_post_cnt(NODE *entry);
+static const struct korb_kw_info *korb_entry_kw_info(NODE *entry);
+static bool
+korb_r2k_shape_ok(const struct korb_method *const m)
+{
+    if (m->kind == KORB_METHOD_ISEQ) return m->rest_slot >= 0 && m->post_cnt == 0 && m->kw_info == NULL;
+    if (m->kind == KORB_METHOD_DM && KORB_PROC_P(m->dm_proc)) {
+        NODE *const iseq = VAL2PROC(m->dm_proc)->iseq;
+        if (iseq == NULL || iseq == KORB_BLK_CPROC) return false;
+        return korb_entry_has_rest(iseq) && korb_entry_post_cnt(iseq) == 0 && korb_entry_kw_info(iseq) == NULL;
+    }
+    return false;                                        /* a C method has no ISEQ to flag */
+}
+
 /* __set_ruby2_keywords(target, name) — the primitive behind Module#ruby2_keywords
  * and Proc#ruby2_keywords.  A flagged callee keeps the persistent mark on the
  * kwargs Hash it collects into its *rest, so re-splatting it is keywords again.
- * Returns false when the name resolves to nothing (the caller already checked). */
-static const void *korb_entry_param_info(NODE *entry);   /* defined with the other node_entry accessors */
+ * The name resolution AND the shape check live here, not in the prelude: the
+ * prelude asked the target module for #method_defined? / #instance_method, and a
+ * partial double stubbing those (rspec-mocks does) saw those calls.
+ * 0 = no such method (NameError), 1 = flagged, 2 = shape cannot carry it (warn),
+ * 3 = the name is neither a Symbol nor a String (TypeError). */
 static RESULT
 korb_bi_set_ruby2_keywords(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     (void)slots;
     const VALUE tgt = VALUE_SLICE_GET(args, 0);
     if (KORB_PROC_P(tgt)) {
+        NODE *const iseq = VAL2PROC(tgt)->iseq;
+        if (iseq == NULL || iseq == KORB_BLK_CPROC ||
+            !korb_entry_has_rest(iseq) || korb_entry_post_cnt(iseq) != 0 || korb_entry_kw_info(iseq) != NULL)
+            return RESULT_OK(LONG2FIX(2));
         VAL2PROC(tgt)->ruby2_kw = 1;
         /* CRuby flags the ISEQ, so a Proc dup'd BEFORE this call has it too. */
-        NODE *const iseq = VAL2PROC(tgt)->iseq;
-        struct korb_param_info *const pi =
-            (iseq != NULL && iseq != KORB_BLK_CPROC) ? (struct korb_param_info *)(uintptr_t)korb_entry_param_info(iseq) : NULL;
+        struct korb_param_info *const pi = (struct korb_param_info *)(uintptr_t)korb_entry_param_info(iseq);
         if (pi != NULL) pi->r2k = 1;
-        return RESULT_OK(KORB_TRUE);
+        return RESULT_OK(LONG2FIX(1));
     }
-    if (!KORB_CLASS_P(tgt)) return RESULT_OK(KORB_FALSE);
+    if (!KORB_CLASS_P(tgt)) return RESULT_OK(LONG2FIX(0));
     const VALUE nm = VALUE_SLICE_LEN(args) >= 2 ? VALUE_SLICE_GET(args, 1) : KORB_NIL;
     uint32_t mid;
     if (SYMBOL_P(nm))            mid = SYM2ID(nm);
     else if (KORB_STRING_P(nm))  mid = korb_intern(c->vm, korb_strbuf_data(VAL2STR(nm)->buf), VAL2STR(nm)->len);
-    else                         return RESULT_OK(KORB_FALSE);
+    else                         return RESULT_OK(LONG2FIX(3));   /* not a Symbol nor a String */
     VALUE def = KORB_NIL;
     struct korb_method *const m = korb_class_find_method(tgt, mid, &def);
-    if (m == NULL) return RESULT_OK(KORB_FALSE);
+    if (m == NULL || m->kind == KORB_METHOD_UNDEF) return RESULT_OK(LONG2FIX(0));
+    if (!korb_r2k_shape_ok(m)) return RESULT_OK(LONG2FIX(2));
     m->ruby2_kw = 1;
     if (KORB_PROC_P(m->dm_proc)) {        /* define_method body: the flag belongs to its ISEQ */
         NODE *const dseq = VAL2PROC(m->dm_proc)->iseq;
@@ -9743,7 +9780,7 @@ korb_bi_set_ruby2_keywords(CTX *c, VALUE *slots, VALUE_SLICE args)
         for (uint32_t i = 0; i < k->method_cnt; i++)
             if (k->methods[i]->body == m->body) k->methods[i]->ruby2_kw = 1;
     }
-    return RESULT_OK(KORB_TRUE);
+    return RESULT_OK(LONG2FIX(1));
 }
 
 /* private_constant / public_constant: mark (owner, name) as unreachable through
@@ -10374,6 +10411,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                     for (uint32_t j = 0; j < argc; j++) slots[2 + j] = slots[-(korb_sword_t)argc + j];
                     slots[0] = self;                       /* recv, then :name, then the args */
                     slots[1] = ID2SYM(mid);
+                    c->mm_vcall_mid = (site != NULL && site->head.flags.is_vcall) ? mid : 0;   /* `super` from a user mm lands on the default raiser */
                     korb_flink_hand_on(c, slots - (korb_sword_t)argc - 3);   /* the call site's frame, past the restage */
                     return korb_send_impl(c, slots + 2 + argc, vm->mid_method_missing, line,
                                           argc + 1, block, def_env, captured_self);
@@ -12894,6 +12932,7 @@ korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t 
             slots[2] = 0;
             slots[3] = recv;
             slots[4] = ID2SYM(mid);
+            c->mm_vcall_mid = 0;                           /* `recv.priv` is not a bare-name miss */
             for (uint32_t j = 0; j < argc; j++) slots[5 + j] = slots[-(korb_sword_t)argc + (korb_sword_t)j];
             *mm_handled = true;
             return korb_dispatch_method(c, slots + argc + 5, mm, mm_mid, line, argc + 1, mm_def, NULL, NULL, NULL, true);

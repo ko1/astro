@@ -5,14 +5,7 @@ class Proc
   # skips) when the shape cannot carry the flag: no *rest, or any keyword/
   # keyrest, or a post argument after the *rest.
   def ruby2_keywords
-    ps = parameters
-    rest = ps.index { |p| p[0] == :rest }
-    ok = !rest.nil? &&
-         ps.none? { |p| p[0] == :key || p[0] == :keyreq || p[0] == :keyrest } &&
-         ps[(rest + 1)..].none? { |p| p[0] == :req || p[0] == :opt }
-    if ok
-      __set_ruby2_keywords(self)
-    else
+    if __set_ruby2_keywords(self) == 2        # the shape check is C (see Module#ruby2_keywords)
       warn "Skipping set of ruby2_keywords flag for proc (proc accepts keywords or proc does not accept argument splat)"
     end
     self
