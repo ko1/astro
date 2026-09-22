@@ -284,10 +284,10 @@ static RESULT korb_m_flt_coerce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * self already below min is NOT an error). */
 static RESULT korb_num_between(CTX *c, VALUE *slots, VALUE self, VALUE lo, VALUE hi) {
     int c1 = korb_cmp_full(c, self, lo);
-    if (UNLIKELY(c1 == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(self), korb_type_name(lo));
+    if (UNLIKELY(c1 == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_coerce_name(c, self), korb_coerce_name(c, lo));
     if (c1 < 0) return RESULT_OK(KORB_FALSE);
     int c2 = korb_cmp_full(c, self, hi);
-    if (UNLIKELY(c2 == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(self), korb_type_name(hi));
+    if (UNLIKELY(c2 == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_coerce_name(c, self), korb_coerce_name(c, hi));
     return RESULT_OK(c2 <= 0 ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_int_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

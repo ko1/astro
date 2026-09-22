@@ -223,6 +223,7 @@ korb_bi_yaml_emit(CTX *c, VALUE *slots, VALUE_SLICE args)
     yaml_emitter_set_unicode(&em, 1);
 
     const char *err = NULL;
+    char errbuf[96]; bool err_arg = false;   /* invalid bytes are an ArgumentError, like CRuby */
     const KorbArray *const ea = VAL2ARY(evs);
     for (uint32_t i = 0; i < ea->len && err == NULL; i++) {
         const VALUE evv = korb_items_data(ea->items)[i];
@@ -289,13 +290,30 @@ korb_bi_yaml_emit(CTX *c, VALUE *slots, VALUE_SLICE args)
           case 9: ok = yaml_stream_end_event_initialize(&ev); break;
           default: ok = 0; break;
         }
-        if (!ok) err = "failed to initialize a YAML event";
+        if (!ok) {
+            /* libyaml refuses a scalar whose bytes are not valid UTF-8; CRuby's
+             * Psych reports that as ArgumentError, and vcr rescues exactly that
+             * to add its `preserve_exact_body_bytes` hint. */
+            err = "failed to initialize a YAML event";
+            if (kind == 4 && KORB_STRING_P(f[1])) {
+                const uint32_t enc = KORB_STR_ENC(f[1]);
+                const KorbString *const sv = VAL2STR(f[1]);
+                const bool bad = (enc == KORB_ENC_BINARY) ? false
+                               : (enc >= KORB_ENC_OTHER_MIN)
+                                   ? !korb_enc_bytes_valid(c->vm, enc, korb_strbuf_data(sv->buf), sv->len)
+                                   : !korb_str_utf8_valid(sv);
+                if (bad) {
+                    snprintf(errbuf, sizeof errbuf, "invalid byte sequence in %s", korb_enc_name_of(c->vm, enc));
+                    err = errbuf; err_arg = true;
+                }
+            }
+        }
         else if (!yaml_emitter_emit(&em, &ev)) err = em.problem ? em.problem : "emitter error";
         free(a); free(t); free(val);
         for (uint32_t k = 0; k < td_free; k++) { free(td_saved[k].handle); free(td_saved[k].prefix); }
     }
     yaml_emitter_delete(&em);
-    if (err != NULL) { free(out.buf); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%s", err); }
+    if (err != NULL) { free(out.buf); return korb_raise(c, slots, err_arg ? KORB_E_ARGUMENT : KORB_E_RUNTIME, 0, "%s", err); }
     const RESULT r = korb_str_new(c, slots, out.buf ? out.buf : "", (uint32_t)out.len);
     free(out.buf);
     return r;

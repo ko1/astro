@@ -188,7 +188,9 @@ module Warning
   # A categorised warning is suppressed when its category flag is off (CRuby).
   def warn(msg, category: nil)
     return nil if category && CATEGORIES__.key?(category) && !CATEGORIES__[category]
-    $stderr.print(msg) if $stderr
+    # #write, not #print: CRuby's rb_write_error_str writes, and a replacement
+    # $stderr that only counts writes (rspec-support's StdErrSplitter) must see it
+    $stderr.write(msg) if $stderr
     nil
   end
   extend self

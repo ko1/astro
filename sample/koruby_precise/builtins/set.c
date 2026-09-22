@@ -1670,7 +1670,7 @@ static RESULT korb_m_cmpbl_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (cmp == 2) {                                       /* <=> returned nil */
         if (op == 4) return RESULT_OK(KORB_FALSE);        /* == → false */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed",
-                          korb_type_name(VALUE_REF_GET(self)), korb_type_name(VALUE_SLICE_GET(a, 0)));
+                          korb_coerce_name(c, VALUE_REF_GET(self)), korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
     }
     bool t;
     switch (op) { case 0: t = cmp < 0; break; case 1: t = cmp <= 0; break;

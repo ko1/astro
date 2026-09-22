@@ -8493,7 +8493,23 @@ korb_intern_enc(struct korb_vm *vm, const char *name, size_t len, uint32_t enc)
         vm->sym_hash_cap = 1024;
         vm->sym_hash = calloc(vm->sym_hash_cap, sizeof(uint32_t));
         if (!vm->sym_hash) { fprintf(stderr, "koruby_precise: oom (sym hash)\n"); abort(); }
-        for (uint32_t i = 0; i < vm->sym_cnt; i++) korb_sym_hash_put(vm, i);   /* index any pre-existing */
+        for (uint32_t i = 1; i < vm->sym_cnt; i++) korb_sym_hash_put(vm, i);   /* index any pre-existing (never id 0) */
+    }
+    if (UNLIKELY(vm->sym_cnt == 0)) {
+        /* Burn id 0 on a reserved entry the index never holds.  0 is the "no
+         * symbol" sentinel everywhere — an anonymous parameter, an unnamed
+         * class, `super` outside a method body — and the FIRST name interned
+         * used to take it: `:puts` was id 0, so `def m(puts)` reported an
+         * anonymous parameter and `super` inside a `def puts` was refused. */
+        vm->sym_capa = 64;
+        vm->sym_names = realloc(vm->sym_names, sizeof(char *) * vm->sym_capa);
+        vm->sym_lens  = realloc(vm->sym_lens,  sizeof(uint32_t) * vm->sym_capa);
+        vm->sym_encs  = realloc(vm->sym_encs,  sizeof(uint8_t)  * vm->sym_capa);
+        char *const rz = malloc(1);
+        if (!vm->sym_names || !vm->sym_lens || !vm->sym_encs || !rz) { fprintf(stderr, "koruby_precise: out of memory (symbols)\n"); abort(); }
+        rz[0] = '\0';
+        vm->sym_names[0] = rz; vm->sym_lens[0] = 0; vm->sym_encs[0] = KORB_ENC_USASCII;
+        vm->sym_cnt = 1;                              /* unindexed: `:""` still gets an id of its own */
     }
     bool ascii_only;
     const uint32_t h = korb_str_hash_ascii(name, len, &ascii_only);
@@ -8532,7 +8548,7 @@ korb_intern_enc(struct korb_vm *vm, const char *name, size_t len, uint32_t enc)
         vm->sym_hash = realloc(vm->sym_hash, sizeof(uint32_t) * vm->sym_hash_cap);
         if (!vm->sym_hash) { fprintf(stderr, "koruby_precise: oom (sym hash)\n"); abort(); }
         memset(vm->sym_hash, 0, sizeof(uint32_t) * vm->sym_hash_cap);
-        for (uint32_t i = 0; i < vm->sym_cnt; i++) korb_sym_hash_put(vm, i);
+        for (uint32_t i = 1; i < vm->sym_cnt; i++) korb_sym_hash_put(vm, i);   /* id 0 stays out of the index */
     } else {
         korb_sym_hash_put(vm, id);
     }
@@ -10308,8 +10324,12 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     struct korb_vm *const vm = c->vm;
 
     /* implicit-self send / __send__ / public_send → re-dispatch with self as the
-     * receiver (korb_send_impl shifts arg0 = the target method name). */
+     * receiver (korb_send_impl shifts arg0 = the target method name).  A class
+     * that defines its own #send wins, exactly as on the receiver path — the
+     * universal forms are in no method table, so any hit is a real definition
+     * (concurrent-ruby's Agent#send! calls its own `send { }`). */
     if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
+        korb_send_user_defined(vm, korb_class_obj_of(c, self), mid) == NULL &&
         !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid))) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         return korb_call_send(c, slots, mid, line, argc, self, block, def_env, captured_self);
@@ -16957,8 +16977,26 @@ korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
         for (uint32_t i = 0; i < n; i++) CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), rep));
         return RESULT_OK(KORB_NIL);
     }
-    /* redirected → capture, then $stdout.write (NOT $stdout.puts, which is
-     * Kernel#puts on a plain object and would recurse forever). */
+    /* redirected → $stdout.puts when the stand-in defines one of its own (CRuby's
+     * rb_f_puts forwards the call; pry asserts `expect(STDOUT).to receive(:puts)`).
+     * The guard is CRuby's: self IS $stdout means this call came from that very
+     * #puts through `super`, so writing is the only way out of the recursion.
+     * args.p[-1] is the receiver cell the dispatch staged below the arguments. */
+    {
+        const VALUE out0 = korb_out_target(c, "$stdout", 7, &(bool){false});
+        if (AROH_IS_GC_OBJECT(out0) && out0 != args.p[-1]) {
+            const uint32_t mid_puts = korb_intern(c->vm, "puts", 4);
+            const struct korb_method *const pm =
+                korb_class_find_method(korb_dispatch_class(c, out0), mid_puts, NULL);
+            if (pm != NULL && pm->kind != KORB_METHOD_BUILTIN) {   /* BUILTIN = Kernel#puts itself */
+                slots[0] = out0;
+                for (uint32_t i = 0; i < n; i++) slots[1 + i] = VALUE_SLICE_GET(args, i);
+                CHECK(korb_send(c, slots + 1 + n, mid_puts, 0, n));
+                return RESULT_OK(KORB_NIL);
+            }
+        }
+    }
+    /* otherwise capture and hand the bytes to $stdout.write */
     KorbIORep mem = KORB_IO_MEM_SINK;
     if (n == 0) (void)korb_io_wr(&mem, "\n", 1);
     else for (uint32_t i = 0; i < n; i++) {

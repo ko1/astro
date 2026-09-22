@@ -112,7 +112,7 @@ static RESULT korb_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, int want) {
             e = slots[1];                                            /* re-read (may have moved) */
         } else {
             cmp = korb_cmp_full(c, e, slots[0]);
-            if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(e), korb_type_name(slots[0]));
+            if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_coerce_name(c, e), korb_coerce_name(c, slots[0]));
         }
         if (cmp == want) slots[0] = e;
     }
@@ -157,14 +157,14 @@ static RESULT korb_ary_minmax_n(CTX *c, VALUE *slots, VALUE_REF self, int want, 
                 VALUE cmpargs[2] = { left, slots[1] };
                 RESULT cr = korb_block_yield(c, slots + 2, block, def_env, cmpargs, 2, cself);
                 if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-                if (UNLIKELY(cr.value == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(left), korb_type_name(slots[1]));
+                if (UNLIKELY(cr.value == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_coerce_name(c, left), korb_coerce_name(c, slots[1]));
                 const korb_sword_t cv = FIX2LONG(cr.value);
                 cmp = cv < 0 ? -1 : cv > 0 ? 1 : 0;
             } else if (UNLIKELY(KORB_OBJECT_P(left) || KORB_OBJECT_P(slots[1]))) {
                 CHECK(korb_cmp_spaceship(c, slots + 2, left, slots[1], &cmp));
             } else {
                 cmp = korb_cmp_full(c, left, slots[1]);
-                if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(left), korb_type_name(slots[1]));
+                if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_coerce_name(c, left), korb_coerce_name(c, slots[1]));
             }
             if (cmp <= 0) break;
             KorbArrayItems *const it = VAL2ARY(VALUE_REF_GET(tmp))->items;   /* re-fetch (dispatch may have moved tmp) */
@@ -294,7 +294,7 @@ static RESULT korb_cmp_block(CTX *c, VALUE *slots, VALUE lhs, VALUE rhs,
     if (LIKELY(korb_num_to_d(r.value, &d))) { *out = d < 0 ? -1 : d > 0 ? 1 : 0; return RESULT_OK(KORB_NIL); }
     if (UNLIKELY(r.value == KORB_NIL))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed",
-                          korb_type_name(slots[0]), korb_type_name(slots[1]));
+                          korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[1]));
     /* CRuby's rb_cmpint: a non-numeric result is asked `> 0`, then `< 0`. */
     slots[2] = r.value; slots[3] = LONG2FIX(0);
     RESULT gr = korb_send(c, slots + 4, korb_intern(c->vm, ">", 1), 0, 1);
@@ -361,7 +361,7 @@ static RESULT korb_cmp_spaceship(CTX *c, VALUE *slots, VALUE a, VALUE b, int *ou
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (UNLIKELY(!FIXNUM_P(r.value)))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed",
-                          korb_type_name(slots[0]), korb_type_name(slots[1]));
+                          korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[1]));
     const korb_sword_t v = FIX2LONG(r.value);
     *out = (v > 0) - (v < 0);
     return RESULT_OK(KORB_NIL);
@@ -423,7 +423,7 @@ static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(sc.err)) {
             const VALUE *dd = korb_items_data(VAL2ARY(VALUE_REF_GET(dst))->items);
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed",
-                              korb_type_name(dd[0]), korb_type_name(d->len > 1 ? dd[1] : KORB_NIL));
+                              korb_coerce_name(c, dd[0]), korb_coerce_name(c, d->len > 1 ? dd[1] : KORB_NIL));
         }
         return RESULT_OK(VALUE_REF_GET(dst));
     }
@@ -771,7 +771,7 @@ static RESULT korb_m_ary_sort_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             VALUE key = data[i]; uint32_t j = i;
             while (j > 0) {
                 int cmp = korb_cmp_full(c, data[j-1], key);
-                if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(data[j-1]), korb_type_name(key));
+                if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_coerce_name(c, data[j-1]), korb_coerce_name(c, key));
                 if (cmp <= 0) break;
                 ARO_STORE(c, dit, &data[j], data[j-1]); j--;
             }

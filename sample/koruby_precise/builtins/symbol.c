@@ -30,7 +30,7 @@ static RESULT korb_m_sym_all_symbols(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     const uint32_t n = c->vm->sym_cnt;                /* snapshot: no interning happens in the loop */
     slots[0] = UNWRAP(korb_ary_new(c, slots, n));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
-    for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(i)));
+    for (uint32_t i = 1; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(i)));   /* id 0 is the reserved sentinel */
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_sym_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
