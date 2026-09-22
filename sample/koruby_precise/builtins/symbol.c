@@ -121,6 +121,15 @@ static RESULT korb_m_obj_neq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_FALSE : KORB_TRUE);
 }
+/* Kernel#!~ = !(self =~ other).  C, not Ruby: `$~` is frame-local, and a Ruby
+ * body here would keep the match in ITS OWN frame and drop it on return —
+ * CRuby's is an intrinsic, so `x !~ re` leaves `$~` set for the caller. */
+static RESULT korb_m_obj_nmatch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    slots[0] = VALUE_REF_GET(self); slots[1] = VALUE_SLICE_GET(a, 0);
+    const RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "=~", 2), 0, 1);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_FALSE : KORB_TRUE);
+}
 static RESULT korb_m_obj_equal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(VALUE_REF_GET(self) == VALUE_SLICE_GET(a,0) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_obj_itself(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 /* freeze: no-op (koruby has no frozen state) → self.  frozen?: true only for

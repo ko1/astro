@@ -13753,6 +13753,7 @@ korb_register_core_methods(CTX *c)
       if (m) m->visibility = 1; }                         /* BasicObject#method_missing is private (CRuby) */
     korb_def_cmethod(c, KORB_C_OBJECT, "==", korb_m_obj_eq, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "!",  korb_m_obj_not, 0);   /* node_not handles `!x` inline; this is for reflection + send */
+    korb_def_cmethod(c, KORB_C_OBJECT, "!~", korb_m_obj_nmatch, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "===", korb_m_obj_case_eq, 1);   /* default: self == other, honouring an overridden #== (Class/Range/Regexp/Set override) */
     korb_def_cmethod(c, KORB_C_OBJECT, "!=", korb_m_obj_neq, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "equal?", korb_m_obj_equal, 1);
