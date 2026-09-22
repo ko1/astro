@@ -858,11 +858,24 @@ static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VA
             dst->owner = slots[0];
             continue;
         }
-        /* .new / .allocate は method entry でなく korb_send_impl の特例 dispatch —
-         * 可視性 mark 先が無い (Singleton module 等の private_class_method :new,
-         * :allocate はこれ)。enforcement は失うが no-op で通す。 */
+        /* .new / .allocate are dispatch special cases with no table entry, so
+         * there is nothing to mark — install the equivalent entry (allocate +
+         * #initialize, the same body an `alias` of new gets) and mark THAT, so
+         * `private_class_method :new` both enforces and shows up in
+         * respond_to? / singleton_methods (Singleton's pattern). */
         { const char *const nm = korb_sym_name(c->vm, mid);
-          if (nm && (strcmp(nm, "new") == 0 || strcmp(nm, "allocate") == 0)) continue; }
+          if (nm && strcmp(nm, "new") == 0) {
+              struct korb_method *const dst = korb_class_method_slot(c->vm, VAL2CLASS(slots[0]), mid);
+              memset(dst, 0, sizeof *dst);
+              dst->mid = mid; dst->orig_mid = mid;
+              dst->kind = KORB_METHOD_CFUNC; dst->params_cnt = -1;
+              dst->rest_slot = -1; dst->uses_block = 1;
+              dst->owner = slots[0]; dst->dm_proc = KORB_NIL;
+              dst->rbfn = korb_m_class_new_alias;
+              dst->visibility = vis;
+              continue;
+          }
+          if (nm && strcmp(nm, "allocate") == 0) continue; }   /* no equivalent body to install */
         return korb_raise(c, slots + 2, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* not a class method → NameError */
                           korb_sym_name(c->vm, mid), korb_type_name(VALUE_REF_GET(self)));
     }

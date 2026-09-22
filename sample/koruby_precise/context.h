@@ -996,9 +996,12 @@ struct korb_vm {
     struct korb_method **orphans;
     uint32_t orphan_cnt, orphan_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
-    uint32_t send_undef_cnt; /* how many `undef :send` / :__send__ / :public_send / :new tombstones exist.
-                              * Those names are special-dispatched (no table entry), so the dispatch has to
-                              * look for a tombstone — but only once a program has actually made one. */
+    /* how many `undef :send` / :__send__ / :public_send (send_undef_cnt) and
+     * `undef :new` (new_undef_cnt) tombstones exist.  Those names are
+     * special-dispatched (no table entry), so the dispatch has to look for a
+     * tombstone — but only once a program has actually made one. */
+    uint32_t send_undef_cnt;
+    uint32_t new_undef_cnt;
     /* bumped whenever constant *resolution* could change: a new (name, owner)
      * entry, a remove_const, or an include/prepend/extend that alters an
      * ancestry.  Reassigning an existing constant does not move its index, so it

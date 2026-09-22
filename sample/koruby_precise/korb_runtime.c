@@ -5045,7 +5045,8 @@ void
 korb_class_undef_slot(struct korb_vm *vm, KorbClass *k, VALUE cls, uint32_t mid)
 {
     struct korb_method *const um = korb_class_method_slot(vm, k, mid);   /* libc alloc, no GC */
-    if (UNLIKELY(korb_universal_send_p(vm, mid))) vm->send_undef_cnt++;   /* `new` is not tracked: its dispatch is the hot path */
+    if (UNLIKELY(korb_universal_send_p(vm, mid))) vm->send_undef_cnt++;
+    else if (UNLIKELY(mid == vm->mid_new)) vm->new_undef_cnt++;   /* .new is a dispatch special case too */
     um->mid = mid; um->orig_mid = mid;
     um->kind = KORB_METHOD_UNDEF; um->owner = cls; um->visibility = 0;
     um->params_cnt = -1; um->req_cnt = 0; um->post_cnt = 0; um->rest_slot = -1;
@@ -6683,7 +6684,7 @@ korb_responds_to(CTX *c, VALUE self, uint32_t mid)
     /* `new` is dispatched by a special case (not a registered method), so the
      * MRO walk misses it — every non-module class still responds to it. */
     if (mid == c->vm->mid_new && KORB_CLASS_P(self) && !VAL2CLASS(self)->is_module)
-        return true;
+        return !(UNLIKELY(c->vm->new_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid));
     /* send / __send__ / public_send are also special-dispatched (not registered);
      * every object responds to them unless one was explicitly undef'd. */
     if (mid == c->vm->mid_send || mid == c->vm->mid___send__ || mid == c->vm->mid_public_send)
@@ -11774,6 +11775,12 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                          snew->kind == KORB_METHOD_DM))
                 return korb_dispatch_method(c, slots, snew, mid, line, argc, sdef, block, def_env, captured_self, true);
         }
+        if (UNLIKELY(vm->new_undef_cnt != 0) &&       /* `undef_method :new` hides the default allocator too */
+            korb_method_undefed_p(korb_dispatch_class(c, self), vm->mid_new)) {
+            char unm[192]; korb_class_qname_into(c, self, unm, sizeof unm);
+            return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for %s %s",
+                              VAL2CLASS(self)->is_module ? "module" : "class", unm);
+        }
         if (UNLIKELY(VAL2CLASS(self)->is_module)) {   /* a module is not instantiable: Module has no ::new */
             char mnm[192]; korb_class_qname_into(c, self, mnm, sizeof mnm);
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for module %s", mnm);
@@ -12585,6 +12592,9 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
             for (VALUE sc = cls; KORB_CLASS_P(sc); sc = VAL2CLASS(sc)->superclass)
                 if (sc == korb_const_get(vm, vm->name_struct)) { kind = 2; break; }
     }
+    if (kind == 1 && UNLIKELY(vm->new_undef_cnt != 0) &&
+        korb_method_undefed_p(korb_dispatch_class(c, cls), vm->mid_new))
+        kind = 2;                                      /* `undef_method :new`: the slow path raises */
     if (kind == 1) {   /* a user/builtin `new` singleton method (def self.new / Time.new) overrides the default allocator → route to the smethod path */
         const VALUE sing = korb_dispatch_class(c, cls);
         VALUE mdef = KORB_NIL;
