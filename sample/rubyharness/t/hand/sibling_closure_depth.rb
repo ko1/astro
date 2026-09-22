@@ -93,3 +93,30 @@ class Kls
 end
 p [Kls == [], Kls == Kls]
 p [String == String, String == Integer, Comparable == Comparable]
+
+# a Binding taken after a shallower closure escaped must still see the outer
+# locals (korb_make_binding walks the same chain as korb_make_proc)
+def take2(&b) = b
+def bm
+  x = 1
+  r = nil
+  [1].each do |i|
+    [2].each do |j|
+      take2 { j }
+      r = binding
+    end
+  end
+  [r, x]
+end
+bnd, _ = bm
+p bnd.local_variables.sort
+p [bnd.eval("x"), bnd.eval("i"), bnd.eval("j")]
+bnd.eval("x = 99")
+p bnd.eval("x")
+def bm2
+  y = 5
+  q = nil
+  [1].each { |i| q = binding }
+  q
+end
+p bm2.eval("y")

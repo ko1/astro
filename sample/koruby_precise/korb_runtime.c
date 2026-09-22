@@ -3721,18 +3721,34 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
      * and writable — through the chain even after their frames return. */
     const uint32_t L = scope_tbl[0];
     VALUE *bases[64];
-    bases[0] = frame_base;
-    uint32_t nlive = 1;
-    VALUE outer_env = 0;
-    for (uint32_t k = 1; k < L && k < 64; k++) {
-        const VALUE pv = korb_ep_get(bases[k - 1]);
-        if (pv & 1u) { bases[k] = (VALUE *)(uintptr_t)(pv & ~(uintptr_t)1u); nlive++; }
-        else { outer_env = pv; break; }                  /* already-materialized chain */
+    /* Walk out L lexical levels.  The EP cell is odd for a live frame that has
+     * not escaped, this frame's OWN env once it has (the link out is then its
+     * prev), or — for a frame entered through a proc call — the ENCLOSING env,
+     * which is the next level itself.  Walking THROUGH envs matters: a shallower
+     * closure materializes only as far as it reads (see korb_make_proc). */
+    uint32_t nlive = 0;
+    VALUE link = (VALUE)((uintptr_t)frame_base | 1u);
+    while (nlive < L && nlive < 64 && link != 0) {
+        if (link & 1u) {
+            VALUE *const bb = (VALUE *)(uintptr_t)(link & ~(uintptr_t)1u);
+            const KorbEnv *const own = korb_open_env_find(bb);
+            bases[nlive++] = bb;
+            link = own ? own->prev : korb_ep_get(bb);
+        } else {
+            const KorbEnv *const e = VAL2ENV(link);
+            if (e->closed) break;                        /* returned frame: its chain is final */
+            bases[nlive++] = e->loc;
+            link = e->prev;
+        }
     }
-    slots[1] = outer_env;
+    slots[1] = (link & 1u) ? 0 : link;
     for (int k = (int)nlive - 1; k >= 0; k--) {
         KorbEnv *existing = korb_open_env_find(bases[k]);
-        if (existing) { slots[1] = (VALUE)(uintptr_t)existing; continue; }
+        if (existing) {   /* graft the outer levels just built under the env this frame already has */
+            if (slots[1]) ARO_STORE(c, existing, (VALUE *)(uintptr_t)&existing->prev, slots[1]);
+            slots[1] = (VALUE)(uintptr_t)existing;
+            continue;
+        }
         KorbEnv *e = korb_alloc(c, slots + 2, sizeof(KorbEnv), KORB_OBJ_ENV);
         const VALUE pv = korb_ep_get(bases[k]);                   /* alloc 後に読む (上と同じ理由) */
         e->loc = bases[k];
