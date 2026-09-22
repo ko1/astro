@@ -7515,7 +7515,9 @@ korb_value_eq(VALUE a, VALUE b)
         if (x->len != y->len) return false;
         for (uint32_t i = 0; i < x->len; i++) {
             bool found = false;
-            for (uint32_t j = 0; j < y->len; j++) if (korb_value_eq(korb_items_data(x->items)[i], korb_items_data(y->items)[j])) { found = true; break; }
+            /* membership is the SET's own comparison (eql?, like the Hash it is
+             * built on), not `==`: Set[1] and Set[1.0] are different sets */
+            for (uint32_t j = 0; j < y->len; j++) if (korb_value_eql(korb_items_data(x->items)[i], korb_items_data(y->items)[j])) { found = true; break; }
             if (!found) return false;
         }
         return true;

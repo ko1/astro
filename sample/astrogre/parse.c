@@ -521,6 +521,24 @@ cls_negate(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps)
         re_error(q, "out of memory in char-class");
 }
 
+static void parse_class_body(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps);   /* fwd */
+/* A nested `[...]` inside a char class — its members join the enclosing set.
+ * The opening `[` is already consumed. */
+static void parse_nested_class(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps) {
+    uint64_t nbm[4] = {0};
+    agre_cpsetb_t ncps = { 0 };
+    bool nneg = false;
+    if (re_peek(q) == '^') { nneg = true; q->p++; }
+    parse_class_body(q, nbm, cps ? &ncps : NULL);
+    if (nneg) cls_negate(q, nbm, cps ? &ncps : NULL);
+    bm_or(bm, nbm);
+    if (cps != NULL) {
+        const agre_cpset_t v = { ncps.r, ncps.n };
+        if (!agre_cpsetb_add_set(cps, &v)) re_error(q, "out of memory in char-class");
+    }
+    agre_cpsetb_free(&ncps);
+}
+
 static void parse_class_body(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps) {
     bool first = true;
     /* Previous member was a whole set (POSIX class / nested class / `\d` /
@@ -593,18 +611,7 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps)
          * `&&` (e.g. `[a-z&&[^aeiou]]`). */
         if (c == '[') {
             q->p++;  /* consume '[' */
-            uint64_t nbm[4] = {0};
-            agre_cpsetb_t ncps = { 0 };
-            bool nneg = false;
-            if (re_peek(q) == '^') { nneg = true; q->p++; }
-            parse_class_body(q, nbm, cps ? &ncps : NULL);
-            if (nneg) cls_negate(q, nbm, cps ? &ncps : NULL);
-            bm_or(bm, nbm);
-            if (cps != NULL) {
-                const agre_cpset_t v = { ncps.r, ncps.n };
-                if (!agre_cpsetb_add_set(cps, &v)) re_error(q, "out of memory in char-class");
-            }
-            agre_cpsetb_free(&ncps);
+            parse_nested_class(q, bm, cps);
             first = false;
             /* NOT prev_is_set: Ruby rejects `[[:alpha:]-z]` and `[\d-x]` but
              * takes the `-` after a NESTED class as a literal
@@ -659,6 +666,16 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps)
             uint32_t hi_cp = 0;
             uint8_t hi = 0;
             int c2 = re_peek(q);
+            /* `a-[bc]` — Onigmo does not make a range here; the nested class
+             * REPLACES the pending low operand (`/[a-[bc]]/` matches b and c,
+             * not a and not `-`).  Odd, but it is what CRuby compiles, and a
+             * gem's regex must not fail to compile over it. */
+            if (c2 == '[') {
+                q->p++;
+                parse_nested_class(q, bm, cps);
+                first = false;
+                continue;
+            }
             if (c2 == '\\') {
                 q->p++;
                 uint64_t dummy[4] = {0};
