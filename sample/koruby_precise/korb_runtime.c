@@ -6518,8 +6518,9 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             return korb_send_impl(c, slots + 3 + argc, vm->mid_method_missing, line,
                                   argc + 1, block, def_env, &slots[0]);
         }
-        return korb_raise(c, slots, KORB_E_NOMETHOD, line,
-                          "super: no superclass method '%s'", korb_sym_name(vm, mid));
+        { char rdb[128];
+          return korb_raise(c, slots, KORB_E_NOMETHOD, line, "super: no superclass method '%s' for %s",
+                            korb_sym_name(vm, mid), korb_recv_desc(c, slots, self, rdb, sizeof rdb)); }
     }
     if (m->kind == KORB_METHOD_ATTR_R) {
         if (UNLIKELY(argc != 0)) return korb_raise_attr_arity(c, slots, line, argc);

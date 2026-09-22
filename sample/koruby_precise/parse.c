@@ -6046,7 +6046,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             uint32_t fdep; int32_t fslot, fblk;
             if (kp_fwd_find(tc, &fdep, &fslot, &fblk)) {
                 NODE *farr;
-                WITH_CHAIN(tc, 1, (farr = kp_fwd_args(tc, fdep, fslot)));
+                /* `def m(a, ...)` keeps `a` as a named param, so the synth rest
+                 * holds only what follows it: forward [a, ..., *rest]. */
+                const uint32_t lead = mf->method_params;
+                WITH_CHAIN(tc, 1, (farr = lead ? build_fwd_args(tc, lead, fslot, 0, 0, NULL, lead + 1, fdep)
+                                               : kp_fwd_args(tc, fdep, fslot)));
                 if (fn->block) {
                     NODE *bentry = kp_block_entry(tc, (const pm_node_t *)fn->block);
                     if (!bentry) return kp_unsupported(tc, node, "super with a non-literal block");
