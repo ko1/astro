@@ -3769,9 +3769,12 @@ build_fwd_args(struct kp_ctx *tc, uint32_t np, int32_t rest_slot, uint32_t post_
     const uint32_t sc = kind_node_ary_push.slot_count;
     if (has_kw && bi == np + has_rest + pc) {             /* trailing kwargs hash element */
         NODE *acc, *kwh;
-        WITH_CHAIN(tc, sc, (acc = build_fwd_args(tc, np, rest_slot, post_base, pc, kw, total - 1, depth),
-                            kwh = build_fwd_kwargs(tc, kw, kw->count, depth)));
-        return ALLOC_node_ary_push(acc, ALLOC_node_kwargs_mark(kwh));   /* forwarded as keywords */
+        WITH_CHAIN(tc, sc,                             /* _kw shares node_ary_push's layout */
+                   (acc = build_fwd_args(tc, np, rest_slot, post_base, pc, kw, total - 1, depth),
+                    kwh = build_fwd_kwargs(tc, kw, kw->count, depth)));
+        /* _kw: an EMPTY forwarded kwargs Hash is dropped, as at any other call
+         * site — `def m(*, **); super; end` must reach a 0-arity parent. */
+        return ALLOC_node_ary_push_kw(acc, ALLOC_node_kwargs_mark(kwh));
     }
     bool is_rest = false; int32_t slot;
     if (bi < np)                          slot = (int32_t)bi;                          /* positional */
