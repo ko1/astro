@@ -940,6 +940,11 @@ struct korb_method {
     VALUE refine_set;        /* refinements active where this method was defined (CTX.refinements
                               * snapshot), nil for the usual case.  Installed on the callee by
                               * korb_invoke_method.  Manually GC-forwarded next to owner. */
+    VALUE def_cref;          /* the cref an eval'd String installed while this `def` ran (nil otherwise).
+                              * It is what `eval("def ...", binding)` inside the method must land on, and
+                              * the ONLY thing separating `obj.instance_eval("def m; binding; end")` (cref =
+                              * obj's singleton) from `TOPLEVEL_BINDING.eval("def self.m; binding; end")`
+                              * (cref = Object, though the owner is main's singleton).  Forwarded next to owner. */
     struct Node **opt_defaults;  /* ISEQ: default-value exprs for optionals (len = params_cnt-req_cnt), NULL if none */
     void *kw_info;           /* ISEQ: struct korb_kw_info * (keyword params), NULL if none */
     void *param_info;        /* ISEQ: struct korb_param_info * (full param list for #parameters), NULL if none — cold-read only */
@@ -1524,6 +1529,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->orphans[_oi]->super_owner); \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->orphans[_oi]->dm_proc); \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->orphans[_oi]->refine_set); \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->orphans[_oi]->def_cref); \
     }                                                                        \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->super_new_skip);         \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->kernel_mod);            \
@@ -1593,6 +1599,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->super_owner); \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->dm_proc); \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->refine_set); \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->def_cref); \
     }                                                                        \
     /* per-instance class override table: forward both columns in lockstep   \
      * so the (object, class) pairing survives compaction. */                \
@@ -1853,6 +1860,7 @@ struct CTX_struct {
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->super_owner); \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->dm_proc); \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->refine_set); \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->def_cref); \
         }                                                                  \
         (void)(payload_size);                                               \
         break;                                                               \

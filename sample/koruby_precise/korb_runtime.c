@@ -4426,6 +4426,7 @@ korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mi
     }
     m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0; m->dm_proc = KORB_NIL;
     m->ruby2_kw = 0;                              /* a redefinition drops the ruby2_keywords flag */
+    m->def_cref = KORB_NIL;                       /* … and the eval cref it was defined under */
     m->simple_entry = NULL;                       /* 再定義でスロットを使い回すので必ず落とす */
     m->super_owner = KORB_NIL;             /* a redefinition drops any inherited alias origin */
     /* A top-level `def` lands in vm->methods (the global function table), which a
@@ -5057,6 +5058,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry
     m->visibility = (k->cur_visibility == 3) ? 1 : k->cur_visibility;   /* mode 3 = module_function: private instance method */
     m->owner = klass;        /* super's def_class + __method__ source (frame fs-2) */
     m->refine_set = c->refinements;   /* refinements are lexical: capture the defining scope's */
+    m->def_cref = KORB_CLASS_P(c->eval_cref) ? c->eval_cref : KORB_NIL;   /* an eval'd String's cref (see the field) */
     m->uses_block = (uint8_t)(uses_block & KORB_DEFF_USES_BLOCK);
     m->uses_backref = (uint8_t)((uses_block & KORB_DEFF_USES_BACKREF) != 0);
     m->ruby2_kw = (uint8_t)((uses_block & KORB_DEFF_FWD_ALL) != 0);   /* `def m(...)` carries keywords through its synth *rest */
@@ -8584,6 +8586,7 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
     struct korb_method *m = korb_method_slot(c, mid);
     m->kind = KORB_METHOD_ISEQ;
     m->refine_set = c->refinements;   /* see korb_class_def_method */
+    m->def_cref = KORB_CLASS_P(c->eval_cref) ? c->eval_cref : KORB_NIL;
     m->uses_block = (uint8_t)(uses_block & KORB_DEFF_USES_BLOCK);
     m->uses_backref = (uint8_t)((uses_block & KORB_DEFF_USES_BACKREF) != 0);
     m->ruby2_kw = (uint8_t)((uses_block & KORB_DEFF_FWD_ALL) != 0);   /* `def m(...)` carries keywords through its synth *rest */

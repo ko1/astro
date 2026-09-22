@@ -3012,8 +3012,22 @@ node_binding(CTX *c, NODE *n, VALUE *slots, int32_t def_env_off, int32_t self_of
      * eval(str, <this binding>), and that cref is what puts a `def` / `class` /
      * constant inside the eval'd string in the enclosing class. */
     RESULT r = korb_make_binding(c, slots, &slots[def_env_off], (const uint32_t *)(const void *)name_syms, name_cnt, slots[self_off], owner_name);
-    if (LIKELY(r.state == KORB_NORMAL) && KORB_OBJ_TYPE(r.value) == KORB_OBJ_BINDING)
+    if (LIKELY(r.state == KORB_NORMAL) && KORB_OBJ_TYPE(r.value) == KORB_OBJ_BINDING) {
         VAL2BIND(r.value)->src_node = n;   /* record the call site for Binding#source_location */
+        /* No name to bake: a method defined from an eval'd String carries the cref
+         * that eval installed, and that is where `eval("def ...", binding)` must
+         * land (pry's __binding__).  base[-4] holds the frame's method entry. */
+        if (VAL2BIND(r.value)->cref == KORB_NIL) {
+            const VALUE ec = slots[self_off - 3];
+            if (((uintptr_t)ec & 7u) == KORB_FID_METHOD) {
+                const VALUE dc = ((const struct korb_method *)(uintptr_t)(ec & ~(VALUE)7u))->def_cref;
+                if (KORB_CLASS_P(dc)) {
+                    KorbBinding *const b = VAL2BIND(r.value);
+                    ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->cref, dc);
+                }
+            }
+        }
+    }
     return r;
 }
 

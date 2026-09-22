@@ -44,7 +44,21 @@ def bb; binding; end
 def bc; Kernel.send(:binding); end
 p [ba.source_location, bb.source_location, bc.source_location]
 
-# 3. `class_eval(String)` names the cref, so `eval("def ...", b)` lands on it.
+# 3. A binding taken in a method that was itself defined from an eval'd String
+#    carries the cref that eval installed — the only thing separating
+#    `obj.instance_eval("def m; binding; end")` (cref = obj's singleton) from
+#    `TOPLEVEL_BINDING.eval("def self.m; binding; end")` (cref = Object).
+o = Object.new
+o.instance_eval("def __pry__; binding; end", "g", 1)
+eval("def hello3; end", o.__pry__)
+p o.methods(false).sort
+
+main = TOPLEVEL_BINDING.eval("self")
+main.instance_eval("def __tl__; binding; end", "g", 1)
+eval("class DogFromEval; end", main.__tl__)
+p [Object.const_defined?(:DogFromEval, false), main.singleton_class.const_defined?(:DogFromEval, false)]
+
+# `class_eval(String)` names the cref, so `eval("def ...", b)` lands on it.
 h = Class.new
 eval("def hello4; end", h.class_eval("binding", "f", 1))
 p h.instance_methods(false)
