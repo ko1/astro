@@ -2663,6 +2663,10 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     bool anchored_bos = (pat_len >= 2 && pat[0] == '\\' && pat[1] == 'A');
 
     ire_node_t *ir = parse_alt(&q);
+    /* `\A'|'\z` starts with \A but only its FIRST branch is anchored: the
+     * whole pattern still has to be tried at every position ("abc".gsub(/\Aa|c\z/)
+     * must replace both ends).  A top-level alternation is never bos-anchored. */
+    if (anchored_bos && ir != NULL && ir->kind == IRE_ALT) anchored_bos = false;
     /* Numeric references are only checkable now that the group count is
      * final — and a single named group turns them all into errors. */
     if (!q.error && q.used_num_ref) {

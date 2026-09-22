@@ -44,3 +44,15 @@ class Sub3
   def greet(msg, ...) = [1].map { super }.first
 end
 p Sub3.new.greet("q", 8, k: 1)
+
+# `def m(...)` reports the three anonymous parameters it stands for
+class Params
+  def a(...) = 1
+  def b(x, ...) = 2
+  def c(x, y = 1, ...) = 3
+  def d(*) = 4
+  def e(**) = 5
+  def f(&) = 6
+end
+%i[a b c d e f].each { |m| p [m, Params.instance_method(m).arity, Params.instance_method(m).parameters] }
+p Params.new.method(:a).parameters

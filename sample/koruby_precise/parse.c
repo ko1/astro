@@ -1582,8 +1582,12 @@ build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
     if (!ps) return NULL;
     /* `|x,|` (implicit rest) is not a parameter at all in CRuby's #parameters */
     const bool has_rest_param = ps->rest && !PM_NODE_TYPE_P(ps->rest, PM_IMPLICIT_REST_NODE);
+    /* `...` reports as the three anonymous parameters it stands for (CRuby):
+     *  [[:rest, :*], [:keyrest, :**], [:block, :&]] */
+    const bool fwd = ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_FORWARDING_PARAMETER_NODE);
     uint32_t n = (uint32_t)(ps->requireds.size + ps->optionals.size + (has_rest_param ? 1 : 0) +
-                            ps->posts.size + ps->keywords.size + (ps->keyword_rest ? 1 : 0) + (ps->block ? 1 : 0));
+                            ps->posts.size + ps->keywords.size + (ps->keyword_rest ? (fwd ? 3 : 1) : 0) +
+                            (ps->block ? 1 : 0));
     if (n == 0) return NULL;
     struct korb_param_info *pi = malloc(sizeof(*pi) + n * sizeof(struct korb_param_entry));
     if (!pi) abort();
@@ -1613,6 +1617,10 @@ build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
         pi->e[k].kind = 5; pi->e[k].name = kn ? kp_intern_cid(tc, kn) : korb_intern(tc->c->vm, "**", 2); k++;
     } else if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_NO_KEYWORDS_PARAMETER_NODE)) {   /* `**nil` → :nokey */
         pi->e[k].kind = 7; pi->e[k].name = 0; k++;
+    } else if (fwd) {                                  /* `...` → *, **, & */
+        pi->e[k].kind = 2; pi->e[k].name = korb_intern(tc->c->vm, "*", 1);  k++;
+        pi->e[k].kind = 5; pi->e[k].name = korb_intern(tc->c->vm, "**", 2); k++;
+        pi->e[k].kind = 6; pi->e[k].name = korb_intern(tc->c->vm, "&", 1);  k++;
     }
     if (kp_no_block_param(ps->block)) {   /* `&nil` → :noblock */
         pi->e[k].kind = 8; pi->e[k].name = 0; k++;
