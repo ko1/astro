@@ -320,15 +320,9 @@ static RESULT korb_m_str_uminus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             memcmp(korb_strbuf_data(f->buf), korb_strbuf_data(s->buf), len) == 0)
             return RESULT_OK(vm->fstr_vals[i]);
     }
-    if (frozen) {                                       /* a bare frozen string becomes the pool entry */
-        if (vm->fstr_cnt == vm->fstr_capa) {
-            vm->fstr_capa = vm->fstr_capa ? vm->fstr_capa * 2 : 16;
-            vm->fstr_vals = realloc(vm->fstr_vals, sizeof(VALUE) * vm->fstr_capa);
-            if (!vm->fstr_vals) abort();
-        }
-        vm->fstr_vals[vm->fstr_cnt++] = sv;
-        return RESULT_OK(sv);
-    }
+    /* CRuby never adopts the receiver: a frozen string that is not already a
+     * pool entry gets a fresh one (`"x".dup.freeze` then `-it` are different
+     * objects).  Only a literal's compile-time `.freeze` is the entry itself. */
     char *const bytes = malloc(len ? len : 1);          /* stable across the pool's alloc (self may move) */
     if (!bytes) abort();
     memcpy(bytes, korb_strbuf_data(s->buf), len);

@@ -2568,6 +2568,8 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
     }
 }
 
+static uint8_t kp_forced_enc(pm_node_flags_t flags, uint8_t src_enc);   /* fwd (literal `.freeze`) */
+
 static NODE *
 transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
 {
@@ -2585,6 +2587,21 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     uint32_t line = kp_line(tc, (const pm_node_t *)cn);
     kp_note_backref_call(tc, name);   /* a name that can set `$~` makes this method save/restore it */
     size_t argc = cn->arguments ? cn->arguments->arguments.size : 0;
+
+    /* `"lit".freeze` IS the fstring-pool entry (CRuby's opt_str_freeze), so
+     * `-"lit".freeze` gives back the same object.  Without this a literal
+     * `.freeze` yields a private frozen copy and `-it` finds an unrelated pool
+     * entry instead (rubyspec core/string/uminus). */
+    if (argc == 0 && cn->block == NULL && strcmp(name, "freeze") == 0 &&
+        !(cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) &&
+        PM_NODE_TYPE_P(cn->receiver, PM_STRING_NODE)) {
+        const pm_string_node_t *const sn = (const pm_string_node_t *)cn->receiver;
+        uint32_t slen;
+        const char *const sbytes = kp_strdup_pm(&sn->unescaped, &slen);
+        const uint8_t senc = kp_forced_enc(sn->base.flags, tc->src_enc);
+        return (senc != KORB_ENC_UTF8) ? ALLOC_node_str_enc(sbytes, slen, senc, 2u)
+                                       : ALLOC_node_str_frozen(sbytes, slen);
+    }
 
     /* `recv.attr = v` is an assignment: it yields v, not whatever the setter
      * returns.  Stage v in a temp, call the setter, hand the temp back.  With
