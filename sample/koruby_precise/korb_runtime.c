@@ -1344,7 +1344,8 @@ korb_str_interp(CTX *c, VALUE *slots, VALUE_REF aref, VALUE part)
      *    getting it wrong silently corrupts composed patterns;
      *  - Class / Module, whose #to_s a program may override (the printer would
      *    always print the real name). */
-    if (KORB_OBJECT_P(p) || KORB_REGEXP_P(p) || KORB_MATCHDATA_P(p) || KORB_CLASS_P(p)) {
+    if (KORB_OBJECT_P(p) || KORB_REGEXP_P(p) || KORB_MATCHDATA_P(p) || KORB_CLASS_P(p) ||
+        UNLIKELY(c->vm->to_s_redefined || c->vm->refinements_active)) {   /* a user/refined #to_s wins over the printer */
         RESULT tsr = korb_send(c, slots, korb_intern(c->vm, "to_s", 4), 0, 0);   /* recv = pref slot */
         if (UNLIKELY(tsr.state != KORB_NORMAL)) return tsr;
         VALUE_REF_SET(pref, tsr.value);                  /* reuse the rooted slot to hold the result */
@@ -4742,6 +4743,10 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
         for (size_t i = 0; i < sizeof(eq_classes) / sizeof(eq_classes[0]); i++)
             if (klass == korb_builtin_class_obj(vm, eq_classes[i])) { vm->value_eq_redefined = true; break; }
     }
+    /* `to_s` reopened on a builtin the interpolation printer renders in C (Hash,
+     * Array, Integer, …): `"#{x}"` must dispatch instead.  A REFINEMENT of #to_s
+     * lands here too (a refine block defines into the refinement module). */
+    if (!vm->to_s_redefined && mid == korb_intern(vm, "to_s", 4)) vm->to_s_redefined = true;
     if (vm->basic_op_redefined) return;   /* already deopted */
     if (klass != korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
         klass != korb_builtin_class_obj(vm, KORB_C_FLOAT)) return;

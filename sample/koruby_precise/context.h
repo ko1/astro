@@ -1003,6 +1003,7 @@ struct korb_vm {
      * tombstone — but only once a program has actually made one. */
     uint32_t send_undef_cnt;
     uint32_t new_undef_cnt;
+    bool     to_s_redefined;         /* some class reopened (or refined) #to_s → interpolation dispatches */
     /* bumped whenever constant *resolution* could change: a new (name, owner)
      * entry, a remove_const, or an include/prepend/extend that alters an
      * ancestry.  Reassigning an existing constant does not move its index, so it
