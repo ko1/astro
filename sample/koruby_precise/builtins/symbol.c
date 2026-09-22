@@ -751,6 +751,7 @@ static RESULT korb_m_meth_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * then the global function table (top-level def / builtin like `p`). */
 static const struct korb_method *korb_meth_resolve(CTX *c, const KorbMethod *m) {
     if (m->missing) return NULL;                 /* no definition: it lives behind method_missing */
+    if (m->default_new) return NULL;             /* the allocator has no table entry — never a later `def self.new` */
     if (LIKELY(m->entry != NULL)) return m->entry;   /* pinned at capture (korb_meth_pin) */
     /* unbound: recv IS the owner class → look the method up directly there. */
     const VALUE klass = m->unbound ? m->recv : korb_dispatch_class(c, m->recv);
@@ -867,6 +868,8 @@ static RESULT korb_m_meth_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_meth_owner(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a;
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
+    if (m->default_new)                                             /* the default allocator is Class#new, */
+        return RESULT_OK(korb_builtin_class_obj(c->vm, KORB_C_CLASS));   /* never the singleton it was read from */
     if (m->owner != KORB_NIL) return RESULT_OK(m->owner);           /* fixed owner (e.g. from super_method) */
     if (m->missing) return RESULT_OK(korb_dispatch_class(c, m->recv));   /* CRuby: the receiver's class */
     /* the class whose table actually holds the entry: `public :m` on an
@@ -1021,6 +1024,10 @@ static RESULT korb_m_meth_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
     VALUE_REF res = VALUE_REF_AT(&slots[0]);
     if (missing) { CHECK(korb_param_push(c, slots + 1, res, "rest")); return RESULT_OK(VALUE_REF_GET(res)); }   /* method_missing forwards everything */
+    if (km == NULL && VAL2METH(VALUE_REF_GET(self))->default_new) {   /* Class#new is variadic (rspec verifies arity through it) */
+        CHECK(korb_param_push(c, slots + 1, res, "rest"));
+        return RESULT_OK(VALUE_REF_GET(res));
+    }
     return korb_push_method_params(c, slots, res, km);
 }
 /* Module#instance_method(name) → UnboundMethod owned by the class. */
@@ -1100,6 +1107,8 @@ static RESULT korb_m_meth_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_meth_unbind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
     if (m->unbound) return RESULT_OK(VALUE_REF_GET(self));
+    if (m->default_new)                                  /* Class#new, so it rebinds to any class (rspec-mocks) */
+        return korb_unbound_new(c, slots, korb_builtin_class_obj(c->vm, KORB_C_CLASS), m->mid);
     return korb_unbound_new(c, slots, korb_dispatch_class(c, m->recv), m->mid);
 }
 /* CRuby's bind check, shared by #bind and #bind_call.  slots[0] holds the class
@@ -1138,6 +1147,12 @@ static RESULT korb_m_meth_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     ARO_STORE(c, VAL2METH(r.value), (VALUE *)(uintptr_t)&VAL2METH(r.value)->owner, slots[0]);   /* fix the dispatch to the unbound's owner */
     korb_meth_pin(c, r.value);
     if (pinned != NULL) VAL2METH(r.value)->entry = pinned;         /* the bind must not re-resolve a redefined name */
+    if (VAL2METH(VALUE_REF_GET(self))->default_new) {   /* rebinding Class#new runs the ALLOCATOR on the target, not its
+                                             * own `def self.new` — rspec-mocks reaches the original this way */
+        KorbMethod *const bm = VAL2METH(r.value);
+        bm->default_new = 1; bm->entry = NULL;
+        ARO_STORE(c, bm, (VALUE *)(uintptr_t)&bm->owner, KORB_NIL);
+    }
     return r;
 }
 /* UnboundMethod#bind_call(obj, *args, &blk) → bind then call.  The block rides
@@ -1152,6 +1167,15 @@ static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if (KORB_CLASS_P(slots[0]) && UNLIKELY(!korb_meth_bind_ok(c, slots, mid))) {   /* same test as #bind */
         char onm[192]; korb_class_qname_into(c, slots[0], onm, sizeof onm);
         return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be an instance of %s", onm);
+    }
+    if (UNLIKELY(VAL2METH(VALUE_REF_GET(self))->default_new)) {   /* Class#new rebound: run the allocator */
+        slots[0] = VALUE_SLICE_GET(a, 0);
+        for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, 1 + i);
+        c->vm->super_new_skip = korb_dispatch_class(c, slots[0]);
+        korb_flink_hand_on_cframe(c, slots);
+        const RESULT nr = korb_send_impl(c, slots + 1 + argc, mid, 0, argc, block, def_env, cself);
+        c->vm->super_new_skip = KORB_NIL;
+        return nr;
     }
     const VALUE owner = slots[0];                          /* the resolved defining class */
     if (owner != KORB_NIL && KORB_CLASS_P(owner)) {        /* invoke the FIXED method from its owner */

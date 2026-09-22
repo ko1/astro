@@ -15308,6 +15308,7 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         const struct korb_method *km = KORB_CLASS_P(start) ? korb_class_find_method(start, m->mid, &def_cls) : NULL;
         if (km == NULL) km = korb_method_lookup(c->vm, m->mid);   /* top-level (global function) method */
         if (m->owner != KORB_NIL) def_cls = m->owner;             /* fixed owner (bound-from-unbound / super_method) */
+        if (m->default_new) { km = NULL; def_cls = korb_builtin_class_obj(c->vm, KORB_C_CLASS); }   /* Class#new */
         fprintf(fp, "#<%s: ", m->unbound ? "UnboundMethod" : "Method");
         const char *sharp = "#";
         if (m->unbound) {                                /* CRuby prints only the defining module */
@@ -15373,6 +15374,8 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
             for (int32_t i = 0; i < nreq; i++) fputs(i ? ", _" : "_", fp);
             if (rest) fputs("*", fp);
             fputc(')', fp);
+        } else if (m->default_new) {
+            fputs("(*)", fp);                           /* Class#new is variadic */
         }
         fputc('>', fp);
         return;
