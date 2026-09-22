@@ -993,8 +993,8 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                    uint32_t line, uint32_t mid, VALUE self, VALUE def_class)
 {
     if (UNLIKELY(argc != (uint32_t)m->params_cnt))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                          "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+        return korb_raise_arity(c, slots, m, mid, line,
+                                "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
     VALUE *const base = slots - argc;
     KORB_AUDIT_EP(base, mid);
     const uint32_t locals_cnt = m->locals_cnt;

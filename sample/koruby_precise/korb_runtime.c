@@ -1128,9 +1128,31 @@ korb_num_arith(CTX *c, VALUE *slots, VALUE l, VALUE rhs, int op, uint32_t line)
     return korb_float_new(c, slots, r);
 }
 
+/* CRuby appends a method's REQUIRED keywords to a positional arity error:
+ * "(given 2, expected 1; required keyword: k)".  Writes "" when there are none. */
+static void
+korb_req_kw_suffix(const struct korb_vm *const vm, const struct korb_kw_info *const kw,
+                   char *const buf, const size_t n)
+{
+    buf[0] = '\0';
+    if (kw == NULL) return;
+    uint32_t cnt = 0;
+    for (uint32_t j = 0; j < kw->count; j++) if (kw->entries[j].deflt == NULL) cnt++;
+    if (cnt == 0) return;
+    int off = snprintf(buf, n, "; required keyword%s:", cnt > 1 ? "s" : "");
+    bool first = true;
+    for (uint32_t j = 0; j < kw->count && off > 0 && (size_t)off < n; j++) {
+        if (kw->entries[j].deflt != NULL) continue;
+        off += snprintf(buf + off, n - (size_t)off, "%s %s", first ? "" : ",",
+                        korb_sym_name(vm, kw->entries[j].mid));
+        first = false;
+    }
+}
+
 /* CRuby names every unbound required keyword at once: "missing keywords: :a, :b". */
 static RESULT
-korb_raise_missing_kw(CTX *c, VALUE *slots, uint32_t line, const struct korb_kw_info *kw, uint64_t present)
+korb_raise_missing_kw(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t mid,
+                      uint32_t line, const struct korb_kw_info *kw, uint64_t present)
 {
     char buf[512];
     uint32_t n = 0;
@@ -1146,7 +1168,9 @@ korb_raise_missing_kw(CTX *c, VALUE *slots, uint32_t line, const struct korb_kw_
                         korb_sym_name(c->vm, kw->entries[j].mid));
         first = false;
     }
-    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "%s", buf);
+    /* Named like any other binding error: the callee's `def` is the top frame. */
+    return m != NULL ? korb_raise_arity(c, slots, m, mid, line, "%s", buf)
+                     : korb_raise(c, slots, KORB_E_ARGUMENT, line, "%s", buf);
 }
 
 /* ---- string encoding negotiation ---------------------------------------- */
@@ -5430,14 +5454,16 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     const uint32_t min_pos = m->req_cnt + m->post_cnt;   /* posts are required too */
     const uint32_t max_pos = (uint32_t)m->params_cnt + m->post_cnt;   /* req+opt fixed slots + posts */
     if (UNLIKELY(pos_argc < min_pos || (m->rest_slot < 0 && pos_argc > max_pos))) {
+        char rk[256];
+        korb_req_kw_suffix(vm, kw, rk, sizeof rk);
         if (m->rest_slot >= 0)
-            return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                              "wrong number of arguments (given %u, expected %u+)", pos_argc, min_pos);
+            return korb_raise_arity(c, slots, m, mid, line,
+                                    "wrong number of arguments (given %u, expected %u+%s)", pos_argc, min_pos, rk);
         if (min_pos == max_pos)
-            return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                              "wrong number of arguments (given %u, expected %u)", pos_argc, max_pos);
-        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                          "wrong number of arguments (given %u, expected %u..%u)", pos_argc, min_pos, max_pos);
+            return korb_raise_arity(c, slots, m, mid, line,
+                                    "wrong number of arguments (given %u, expected %u%s)", pos_argc, max_pos, rk);
+        return korb_raise_arity(c, slots, m, mid, line,
+                                "wrong number of arguments (given %u, expected %u..%u%s)", pos_argc, min_pos, max_pos, rk);
     }
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;
@@ -5539,7 +5565,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
          * the far side of the dispatches below, where it would go stale. */
         for (uint32_t j = 0; j < kw->count; j++)                    /* missing required */
             if (!(j < 64 && (present & (1ull << j))) && !kw->entries[j].deflt)
-                return korb_raise_missing_kw(c, slots, line, kw, present);
+                return korb_raise_missing_kw(c, slots, m, mid, line, kw, present);
         if (kw->kwrest_slot == -1 && kwhash != KORB_NIL) {          /* no **rest: every key must be declared */
             const KorbHash *const kh = VAL2HASH(kwhash);
             for (uint32_t i = 0; i < kh->len; i++) {
@@ -5548,11 +5574,11 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                 for (uint32_t j = 0; j < kw->count; j++) if (key == ID2SYM(kw->entries[j].mid)) { declared = true; break; }
                 if (declared) continue;
                 if (SYMBOL_P(key))
-                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: :%s", korb_sym_name(vm, SYM2ID(key)));
+                    return korb_raise_arity(c, slots, m, mid, line, "unknown keyword: :%s", korb_sym_name(vm, SYM2ID(key)));
                 if (KORB_STRING_P(key))                             /* a String key is reported quoted (CRuby) */
-                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: \"%.*s\"",
-                                      (int)VAL2STR(key)->len, korb_strbuf_data(VAL2STR(key)->buf));
-                return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: %s", korb_type_name(key));
+                    return korb_raise_arity(c, slots, m, mid, line, "unknown keyword: \"%.*s\"",
+                                            (int)VAL2STR(key)->len, korb_strbuf_data(VAL2STR(key)->buf));
+                return korb_raise_arity(c, slots, m, mid, line, "unknown keyword: %s", korb_type_name(key));
             }
         }
         for (uint32_t j = 0; j < kw->count; j++) {                  /* pass 2: defaults (kwhash is done with) */
@@ -5633,9 +5659,13 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     const struct korb_kw_info *const kw = (const struct korb_kw_info *)m->kw_info;
     VALUE *const base = slots - (pos_argc + kw_argc);
     (void)def_class;
-    if (UNLIKELY(pos_argc < m->req_cnt || pos_argc > (uint32_t)m->params_cnt))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                          "wrong number of arguments (given %u, expected %u..%d)", pos_argc, m->req_cnt, m->params_cnt);
+    if (UNLIKELY(pos_argc < m->req_cnt || pos_argc > (uint32_t)m->params_cnt)) {
+        char rk[256];
+        korb_req_kw_suffix(vm, kw, rk, sizeof rk);
+        return korb_raise_arity(c, slots, m, mid, line,
+                                "wrong number of arguments (given %u, expected %u..%d%s)",
+                                pos_argc, m->req_cnt, m->params_cnt, rk);
+    }
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;
     if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit || &cstack_probe < c->cstack_limit))
@@ -5673,11 +5703,11 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
      * required keyword wins over an unknown one. */
     for (uint32_t j = 0; j < kw->count; j++)
         if (!(j < 64 && (present & (1ull << j))) && !kw->entries[j].deflt)
-            return korb_raise_missing_kw(c, slots, line, kw, present);
+            return korb_raise_missing_kw(c, slots, m, mid, line, kw, present);
     for (uint32_t p = 0; p < kw_argc; p++) {                 /* unknown keyword (no **rest here) */
         bool declared = false;
         for (uint32_t j = 0; j < kw->count; j++) if (kw_syms[p] == kw->entries[j].mid) { declared = true; break; }
-        if (UNLIKELY(!declared)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: :%s", korb_sym_name(vm, kw_syms[p]));
+        if (UNLIKELY(!declared)) return korb_raise_arity(c, slots, m, mid, line, "unknown keyword: :%s", korb_sym_name(vm, kw_syms[p]));
     }
     /* optional positional defaults (after the provided positionals) */
     for (uint32_t pi = pos_argc; pi < (uint32_t)m->params_cnt; pi++) {
@@ -9460,7 +9490,15 @@ korb_raise_arity(CTX *c, VALUE *const slots, const struct korb_method *const m,
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
     const RESULT r = korb_raise(c, slots, KORB_E_ARGUMENT, line, "%s", buf);
-    if (LIKELY(KORB_EXC_P(r.value))) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
+    if (LIKELY(KORB_EXC_P(r.value))) {
+        /* The callee's frame never ran, but CRuby still blames it: the top of the
+         * backtrace is the `def` line, not the call site (the line korb_raise
+         * recorded, which korb_bt_unwind hands back to the level above). */
+        uint32_t fsym, dline;
+        if (m != NULL && m->body != NULL && korb_get_srcloc(c->vm, m->body, &fsym, &dline))
+            VAL2EXC(r.value)->line = dline;
+        korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
+    }
     return r;
 }
 
@@ -11031,7 +11069,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                 if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
                 bf[1 + kw->entries[j].slot] = dr.value;
             } else {
-                return korb_raise_missing_kw(c, slots, 0, kw, present);
+                return korb_raise_missing_kw(c, slots, NULL, 0, 0, kw, present);
             }
         }
         if (kw->kwrest_slot >= 0) {                      /* collect undeclared keys into **rest (like korb_invoke_method) */
