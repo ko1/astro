@@ -837,17 +837,19 @@ static RESULT korb_m_meth_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     /* bound methods must share the receiver object; unbound ones only need the
      * same underlying definition (extracting from different subclasses is equal). */
     if (!m1->unbound && m1->recv != m2->recv) return RESULT_OK(KORB_FALSE);
-    /* same owner + name is trivially the same method; cross-owner unbound
-     * (e.g. a subclass that overrides) must fall through to resolve the actual
-     * definition so an override compares unequal. */
-    if (m1->recv == m2->recv && m1->mid == m2->mid) return RESULT_OK(KORB_TRUE);
+    /* same owner + name is trivially the same method; cross-owner (a subclass
+     * that overrides, or a superclass UnboundMethod rebound onto the same
+     * object) must fall through to resolve the actual definition so an override
+     * compares unequal — pry walks `guess == guess.super` to find the frame's
+     * real method and stopped at the first step. */
+    if (m1->recv == m2->recv && m1->mid == m2->mid && m1->owner == m2->owner) return RESULT_OK(KORB_TRUE);
     const struct korb_method *const e1 = korb_meth_resolve(c, m1);
     const struct korb_method *const e2 = korb_meth_resolve(c, m2);
     /* `.new` has no table entry (it is a dispatch special case), so an alias of
      * it resolves to the trampoline while the original resolves to nothing —
      * match them through the alias's recorded original name. */
-    if (e1 == NULL && e2 != NULL && e2->orig_mid == m1->mid) return RESULT_OK(KORB_TRUE);
-    if (e2 == NULL && e1 != NULL && e1->orig_mid == m2->mid) return RESULT_OK(KORB_TRUE);
+    if (e1 == NULL && e2 != NULL && e2->mid != m1->mid && e2->orig_mid == m1->mid) return RESULT_OK(KORB_TRUE);
+    if (e2 == NULL && e1 != NULL && e1->mid != m2->mid && e1->orig_mid == m2->mid) return RESULT_OK(KORB_TRUE);
     if (e1 == NULL || e2 == NULL) return RESULT_OK(e1 == e2 ? KORB_TRUE : KORB_FALSE);
     if (e1->kind != e2->kind) return RESULT_OK(KORB_FALSE);
     bool same;
