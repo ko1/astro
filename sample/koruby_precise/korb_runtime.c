@@ -12027,8 +12027,23 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
              * skip every override at or BELOW the defining singleton, not just
              * that one — `class Lazy < Task` where both define `self.new` would
              * otherwise find Lazy's again and spin (dry-monads). */
-            if (snew && vm->super_new_skip != KORB_NIL &&
-                (sdef == vm->super_new_skip || korb_class_has_ancestor(sdef, vm->super_new_skip))) snew = NULL;
+            if (snew && vm->super_new_skip != KORB_NIL) {
+                /* `super` from a user `new`: skip every `new` at or BEFORE the
+                 * defining class in the receiver's singleton MRO, not just that
+                 * class.  An `extend`ed module's `new` sits earlier in the MRO
+                 * and is a sibling of the defining class, not its descendant —
+                 * re-dispatching to it is an infinite recursion
+                 * (concurrent-ruby's Synchronization::SafeInitialization). */
+                VALUE smro[256];
+                const int sn = korb_linearize_mro(korb_dispatch_class(c, self), smro, 256);
+                int si = -1, sdi = -1;
+                for (int i = 0; i < sn; i++) {
+                    if (si < 0 && smro[i] == sdef) si = i;
+                    if (sdi < 0 && smro[i] == vm->super_new_skip) sdi = i;
+                }
+                if (sdef == vm->super_new_skip || (si >= 0 && sdi >= 0 && si <= sdi) ||
+                    korb_class_has_ancestor(sdef, vm->super_new_skip)) snew = NULL;
+            }
             /* A user `def self.new` (ISEQ), a builtin singleton `new` (CFUNC —
              * Regexp/Time/File/Dir) or a `define_method(:new, ...)` singleton (DM)
              * all override the default allocator; the direct path resolves this in
