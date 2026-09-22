@@ -502,7 +502,9 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     /* Proc#refined: the body runs under the set the copy carries.  Nothing may
      * raise between the push and the pop below. */
     const bool refined = p->refine_set != KORB_NIL;
-    if (UNLIKELY(refined)) { korb_refine_push(c); c->refinements = p->refine_set; c->refine_sealed = c->refinements; }
+    const bool sealed  = refined && p->refined_copy;   /* only a Proc#refined body refuses `using` */
+    if (UNLIKELY(refined)) { korb_refine_push(c); c->refinements = p->refine_set;
+                             if (sealed) c->refine_sealed = c->refinements; }
     slots[0] = p->self;                                  /* captured self (rooted) */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
     /* If this proc has a `|&b|` param and the call site passed a (real) block,

@@ -595,6 +595,7 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         KorbProc *np = korb_alloc(c, slots + 2, sizeof(KorbProc), KORB_OBJ_PROC);
         const KorbProc *sp = VAL2PROC(slots[1]);           /* re-read: alloc may have GC-moved the source */
         np->iseq = sp->iseq; np->sym_mid = sp->sym_mid; np->is_lambda = sp->is_lambda;
+        np->refined_copy = sp->refined_copy;
         ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->env,  sp->env);
         ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->self, sp->self);
         ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->refine_set, sp->refine_set);   /* a Proc#refined copy stays refined */

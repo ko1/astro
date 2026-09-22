@@ -3497,6 +3497,13 @@ RESULT __attribute__((noinline)) korb_close_ret(CTX *c, VALUE *scratch, VALUE *f
 extern const struct NodeKind kind_node_entry;   /* node_alloc.c; distinguishes a real block entry from a node_unsupported placeholder */
 static RESULT korb_block_to_proc(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *cself);
 static VALUE *korb_env_method_trio(const KorbEnv *e);
+/* Refinements are lexical, so a Proc has to carry the set active where its body
+ * was WRITTEN: rspec stores an example block and calls it from its own (unrefined)
+ * files, where the dynamic scope no longer has the `using`. */
+static void korb_proc_capture_refinements(CTX *const c, KorbProc *const p) {
+    if (UNLIKELY(c->vm->refinements_active) && c->refinements != KORB_NIL)
+        ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->refine_set, c->refinements);
+}
 RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda) {
     /* uncompilable block params (e.g. `|&b|`) → node_unsupported placeholder, not a
      * node_entry; surface the NotImplementedError rather than reading a bad union. */
@@ -3510,6 +3517,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
         sp->iseq = NULL; sp->sym_mid = entry->u.node_entry.symproc_mid; sp->is_lambda = 1;
         ARO_STORE(c, sp, (VALUE *)(uintptr_t)&sp->env, 0);
         ARO_STORE(c, sp, (VALUE *)(uintptr_t)&sp->self, KORB_NIL);
+        korb_proc_capture_refinements(c, sp);
         return RESULT_OK((VALUE)sp);
     }
     /* def_env is a live slots base; some callers (node_send_blk → a builtin that
@@ -3561,6 +3569,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
         if (envh) ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->env, slots[1]);   /* re-read: the chain head may have moved */
         else ARO_GC_RAW_STORE(&p->env, (VALUE)((uintptr_t)def_env | 1u));   /* sentinel non-pointer (unused by body); WB-exempt */
         ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, slots[0]);
+        korb_proc_capture_refinements(c, p);
         return RESULT_OK((VALUE)p);
     }
     const uint16_t *ns = (const uint16_t *)entry->u.node_entry.cap_ns;
@@ -3641,6 +3650,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
     p->iseq = entry; p->is_lambda = (uint8_t)is_lambda;
     ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->env, slots[1]);   /* innermost env (even = KorbEnv) */
     ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, slots[0]);
+    korb_proc_capture_refinements(c, p);
     return RESULT_OK((VALUE)p);
 }
 /* The Proc for a block argument.  A FORWARDED block (`m(&blk)` where blk came in
@@ -4669,8 +4679,10 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Proc object without a block");
     }
     /* A Proc#refined copy carries an activation set a method entry has nowhere to
-     * put, so CRuby refuses it here rather than silently losing the refinements. */
-    if (UNLIKELY(KORB_PROC_P(slots[1]) && VAL2PROC(slots[1])->refine_set != KORB_NIL))
+     * put, so CRuby refuses it here rather than silently losing the refinements.
+     * A plain block written in a refined scope is fine: the entry keeps its own
+     * lexical set (korb_class_def_method). */
+    if (UNLIKELY(KORB_PROC_P(slots[1]) && VAL2PROC(slots[1])->refined_copy))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cannot define a method from a refined Proc");
     korb_check_basic_op_redef(c, slots[0], mid);
     struct korb_method *m = korb_class_method_slot(c->vm, VAL2CLASS(slots[0]), mid);

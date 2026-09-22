@@ -454,10 +454,12 @@ typedef struct KorbProc {
     struct Node *iseq;               /* block node_entry (immortal; not scanned); NULL for a symbol proc */
     VALUE ARO_GC_EDGE env;           /* captured env handle (KorbEnv* tagged) or 0 */
     VALUE ARO_GC_EDGE self;          /* captured lexical self */
-    VALUE ARO_GC_EDGE refine_set;    /* Proc#refined: the refinement activation set this proc's body runs
-                                      * under (same shape as CTX.refinements).  KORB_NIL = none. */
+    VALUE ARO_GC_EDGE refine_set;    /* the refinement activation set this proc's body runs under (same shape
+                                      * as CTX.refinements): captured lexically at creation, or handed over by
+                                      * Proc#refined.  KORB_NIL = none. */
     uint32_t sym_mid;                /* Symbol#to_proc: send this mid to arg0 (iseq==NULL) */
     uint8_t  is_lambda;              /* lambda semantics (strict arity, return-from-proc) */
+    uint8_t  refined_copy;           /* refine_set came from Proc#refined, not from the defining scope */
 } KorbProc;
 
 /* Fiber: a stackful coroutine.  The moving GC object is a thin handle; all

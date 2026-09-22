@@ -2486,7 +2486,8 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     /* instance_exec(&pr) on a Proc#refined copy runs the body under its set. */
     const bool refined = cself != NULL && def_env == KORB_BLK_FWD &&
                          KORB_PROC_P(*cself) && VAL2PROC(*cself)->refine_set != KORB_NIL;
-    if (UNLIKELY(refined)) { korb_refine_push(c); c->refinements = VAL2PROC(*cself)->refine_set; c->refine_sealed = c->refinements; }
+    if (UNLIKELY(refined)) { korb_refine_push(c); c->refinements = VAL2PROC(*cself)->refine_set;
+                             if (VAL2PROC(*cself)->refined_copy) c->refine_sealed = c->refinements; }
     /* @@vars keep resolving against the block's definition scope, which self no
      * longer names once the receiver is bound in. */
     if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
@@ -2633,7 +2634,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (cself != NULL && (def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC) &&
         KORB_PROC_P(*cself) && VAL2PROC(*cself)->refine_set != KORB_NIL) {
         c->refinements = VAL2PROC(*cself)->refine_set;
-        c->refine_sealed = c->refinements;
+        if (VAL2PROC(*cself)->refined_copy) c->refine_sealed = c->refinements;
     }
     if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
         c->cvar_cref = korb_cvar_self_class_pub(c, def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC
@@ -3029,6 +3030,7 @@ static RESULT korb_m_proc_refined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     KorbProc *const np = korb_alloc(c, slots + 3, sizeof(KorbProc), KORB_OBJ_PROC);
     const KorbProc *const sp = VAL2PROC(slots[0]);    /* re-read: the alloc may have moved it */
     np->iseq = sp->iseq; np->sym_mid = sp->sym_mid; np->is_lambda = sp->is_lambda;
+    np->refined_copy = 1;
     ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->env,        sp->env);
     ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->self,       sp->self);
     ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->refine_set, VALUE_REF_GET(dst));

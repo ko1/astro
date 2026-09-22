@@ -270,7 +270,8 @@ module JSON
   end
 end
 
-# Object#to_json + core-type conveniences (delegate to JSON.generate).
+# Object#to_json — the json gem's default is the object's #to_s as a JSON string
+# (generating `self` would come straight back here).
 class Object
-  def to_json(*) = JSON.generate(self)
+  def to_json(*) = JSON.generate(to_s)
 end
