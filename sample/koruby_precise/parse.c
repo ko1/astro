@@ -5376,12 +5376,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         }
         const int32_t self_off = -1 - tc->chain;
         if (PM_NODE_TYPE_P(v, PM_LOCAL_VARIABLE_READ_NODE) || PM_NODE_TYPE_P(v, PM_IT_LOCAL_VARIABLE_READ_NODE))
-            return ALLOC_node_defined(4, 0, 0);                          /* "local-variable" */
+            return ALLOC_node_defined(4, 0, 0, INT32_MIN);                          /* "local-variable" */
         if (PM_NODE_TYPE_P(v, PM_CONSTANT_READ_NODE))
             /* self_off: inside a module body self is the module, which is where a
              * pending autoload for this name would be registered */
-            { NODE *_d = ALLOC_node_defined(1, kp_intern_cid(tc, ((const pm_constant_read_node_t *)v)->name), self_off);
-              bake_add(tc, &_d->u.node_defined.self_off); return _d; }
+            { NODE *_d = ALLOC_node_defined(1, kp_intern_cid(tc, ((const pm_constant_read_node_t *)v)->name), self_off,
+                                             -4 - tc->chain);
+              bake_add(tc, &_d->u.node_defined.self_off); bake_add(tc, &_d->u.node_defined.dc_off); return _d; }
         if (PM_NODE_TYPE_P(v, PM_CONSTANT_PATH_NODE)) {             /* `A::B` */
             const pm_constant_path_node_t *cp = (const pm_constant_path_node_t *)v;
             if (cp->parent && PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_READ_NODE))   /* static `A::B` → owner-aware check */
@@ -5394,30 +5395,30 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             return ALLOC_node_defined_cpath(korb_intern(tc->c->vm, "Object", 6), kp_intern_cid(tc, cp->name));
         }
         if (PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_READ_NODE))
-            { NODE *_d = ALLOC_node_defined(2, kp_intern_cid(tc, ((const pm_instance_variable_read_node_t *)v)->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d; }
+            { NODE *_d = ALLOC_node_defined(2, kp_intern_cid(tc, ((const pm_instance_variable_read_node_t *)v)->name), self_off, INT32_MIN); bake_add(tc, &_d->u.node_defined.self_off); return _d; }
         if (PM_NODE_TYPE_P(v, PM_GLOBAL_VARIABLE_READ_NODE)) {
             const uint32_t gn = kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)v)->name);
             if (gn == korb_intern(tc->c->vm, "$~", 2) ||        /* always-defined specials */
                 gn == korb_intern(tc->c->vm, "$!", 2) ||
                 gn == korb_intern(tc->c->vm, "$@", 2))
-                return ALLOC_node_defined(12, 200, 0);
-            return ALLOC_node_defined(3, gn, 0);
+                return ALLOC_node_defined(12, 200, 0, INT32_MIN);
+            return ALLOC_node_defined(3, gn, 0, INT32_MIN);
         }
         if (PM_NODE_TYPE_P(v, PM_NUMBERED_REFERENCE_READ_NODE))          /* $1..$9 → gv iff that group matched */
-            return ALLOC_node_defined(12, 100u + ((const pm_numbered_reference_read_node_t *)v)->number, 0);
+            return ALLOC_node_defined(12, 100u + ((const pm_numbered_reference_read_node_t *)v)->number, 0, INT32_MIN);
         if (PM_NODE_TYPE_P(v, PM_BACK_REFERENCE_READ_NODE)) {            /* $& $` $' $+ → gv iff non-nil */
             const uint32_t nm = kp_intern_cid(tc, ((const pm_back_reference_read_node_t *)v)->name);
             uint32_t rk = 0;
             if      (nm == korb_intern(tc->c->vm, "$`", 2)) rk = 1;
             else if (nm == korb_intern(tc->c->vm, "$'", 2)) rk = 2;
             else if (nm == korb_intern(tc->c->vm, "$+", 2)) rk = 3;
-            return ALLOC_node_defined(12, rk, 0);
+            return ALLOC_node_defined(12, rk, 0, INT32_MIN);
         }
         if (PM_NODE_TYPE_P(v, PM_CALL_NODE)) {                           /* method call */
             const pm_call_node_t *cn = (const pm_call_node_t *)v;
             if (cn->receiver != NULL) {                                  /* recv.meth: eval recv, check it responds */
                 if (PM_NODE_TYPE_P(cn->receiver, PM_SELF_NODE)) {         /* self.meth sees private/protected too */
-                    NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d;
+                    NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off, INT32_MIN); bake_add(tc, &_d->u.node_defined.self_off); return _d;
                 }
                 NODE *recv = transduce(tc, cn->receiver);
                 NODE *_dc = ALLOC_node_defined_call(recv, kp_intern_cid(tc, cn->name), self_off);
@@ -5438,7 +5439,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 return _dc;
             }
             /* bareword (possibly with args): "method" iff self responds to it. */
-            NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d;
+            NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off, INT32_MIN); bake_add(tc, &_d->u.node_defined.self_off); return _d;
         }
         if (PM_NODE_TYPE_P(v, PM_YIELD_NODE)) {   /* "yield" iff the enclosing METHOD got a block */
             struct kp_frame *mf = tc->frame;
@@ -5492,10 +5493,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 return ds;
             }
         }
-        if (PM_NODE_TYPE_P(v, PM_SELF_NODE))  return ALLOC_node_defined(6, 0, 0);   /* "self" */
-        if (PM_NODE_TYPE_P(v, PM_NIL_NODE))   return ALLOC_node_defined(8, 0, 0);   /* "nil" */
-        if (PM_NODE_TYPE_P(v, PM_TRUE_NODE))  return ALLOC_node_defined(9, 0, 0);   /* "true" */
-        if (PM_NODE_TYPE_P(v, PM_FALSE_NODE)) return ALLOC_node_defined(10, 0, 0);  /* "false" */
+        if (PM_NODE_TYPE_P(v, PM_SELF_NODE))  return ALLOC_node_defined(6, 0, 0, INT32_MIN);   /* "self" */
+        if (PM_NODE_TYPE_P(v, PM_NIL_NODE))   return ALLOC_node_defined(8, 0, 0, INT32_MIN);   /* "nil" */
+        if (PM_NODE_TYPE_P(v, PM_TRUE_NODE))  return ALLOC_node_defined(9, 0, 0, INT32_MIN);   /* "true" */
+        if (PM_NODE_TYPE_P(v, PM_FALSE_NODE)) return ALLOC_node_defined(10, 0, 0, INT32_MIN);  /* "false" */
         if (PM_NODE_TYPE_P(v, PM_LOCAL_VARIABLE_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_LOCAL_VARIABLE_AND_WRITE_NODE) ||
             PM_NODE_TYPE_P(v, PM_LOCAL_VARIABLE_OR_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE) ||
             PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_AND_WRITE_NODE) ||
@@ -5514,7 +5515,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             PM_NODE_TYPE_P(v, PM_CALL_AND_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_CALL_OR_WRITE_NODE) ||
             PM_NODE_TYPE_P(v, PM_CALL_OPERATOR_WRITE_NODE) ||
             PM_NODE_TYPE_P(v, PM_MULTI_WRITE_NODE))
-            return ALLOC_node_defined(11, 0, 0);                        /* "assignment" (not evaluated) */
+            return ALLOC_node_defined(11, 0, 0, INT32_MIN);                        /* "assignment" (not evaluated) */
         if (PM_NODE_TYPE_P(v, PM_ARRAY_NODE)) {
             /* `defined?([a, b])` is nil when ANY element is undefined: fold the
              * elements' own defined? checks with && and answer "expression". */
@@ -5530,11 +5531,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             }
             if (chain) {
                 NODE *expr;
-                WITH_CHAIN(tc, 1, (expr = ALLOC_node_defined(5, 0, 0)));
+                WITH_CHAIN(tc, 1, (expr = ALLOC_node_defined(5, 0, 0, INT32_MIN)));
                 return ALLOC_node_and(chain, expr);                         /* nil if any element is undefined */
             }
         }
-        return ALLOC_node_defined(5, 0, 0);                             /* literals / expr → "expression" */
+        return ALLOC_node_defined(5, 0, 0, INT32_MIN);                             /* literals / expr → "expression" */
       }
       case PM_YIELD_NODE: {
         const pm_yield_node_t *yn = (const pm_yield_node_t *)node;
@@ -5813,7 +5814,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *set = build_const_set(tc, name, val);
         /* `defined?(X) && X || (X = v)`: the `&&` short-circuits before the read
          * when X is undefined (no NameError); a truthy X is kept, else assign. */
-        NODE *guarded = ALLOC_node_and(ALLOC_node_defined(1, name, 0), build_const_read(tc, name, kp_line(tc, node)));
+        NODE *dfn = ALLOC_node_defined(1, name, -1 - tc->chain, -4 - tc->chain);
+        bake_add(tc, &dfn->u.node_defined.self_off); bake_add(tc, &dfn->u.node_defined.dc_off);
+        NODE *guarded = ALLOC_node_and(dfn, build_const_read(tc, name, kp_line(tc, node)));
         return ALLOC_node_or(guarded, set);
       }
       case PM_CONSTANT_AND_WRITE_NODE: { /* `X &&= v` — read (raises if undefined), assign when truthy */
@@ -5880,7 +5883,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, ow->value)));
         NODE *set = ALLOC_node_const_set(name, owner, INT32_MIN, val);
         /* guard the read with a flat defined? probe of the rightmost name (no NameError) */
-        NODE *guarded = ALLOC_node_and(ALLOC_node_defined(1, name, 0), KP_CONST(tc, name, owner, INT32_MIN, INT32_MIN, kp_line(tc, node)));
+        NODE *dfn = ALLOC_node_defined(1, name, -1 - tc->chain, -4 - tc->chain);
+        bake_add(tc, &dfn->u.node_defined.self_off); bake_add(tc, &dfn->u.node_defined.dc_off);
+        NODE *guarded = ALLOC_node_and(dfn, KP_CONST(tc, name, owner, INT32_MIN, INT32_MIN, kp_line(tc, node)));
         return ALLOC_node_or(guarded, set);
       }
       case PM_CONSTANT_PATH_AND_WRITE_NODE: {  /* `A::B &&= v` (static owner) — read raises if undefined */
