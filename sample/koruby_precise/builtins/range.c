@@ -1489,8 +1489,11 @@ static RESULT korb_m_range_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_range_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { (void)a; return korb_range_filter(c, slots, self, block, def_env, captured_self, false); }
 
 static RESULT korb_m_range_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a;
-    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "find", 4)); return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1); }
+    if (UNLIKELY(block == NULL)) {
+        slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "find", 4));
+        if (VALUE_SLICE_LEN(a) >= 1) { slots[2] = VALUE_SLICE_GET(a, 0); return korb_send(c, slots + 3, korb_intern(c->vm, "__to_enum_sized", 15), 0, 2); }
+        return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1);
+    }
     korb_sword_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
@@ -1502,7 +1505,7 @@ static RESULT korb_m_range_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value)) return RESULT_OK(LONG2FIX(i));
     }
-    return RESULT_OK(KORB_NIL);
+    return korb_find_ifnone(c, slots, a);   /* find(ifnone) — same contract as Array#find */
 }
 
 /* any? (0) / all? (1) / none? (2) over an integer range, with block */

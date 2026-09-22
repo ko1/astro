@@ -13531,8 +13531,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "minmax_by", korb_m_hash_minmax_by, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "filter_map", korb_m_hash_filter_map, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "partition", korb_m_hash_partition, 0);
-    korb_def_cmethod_blk(c, KORB_C_HASH, "find", korb_m_hash_find, 0);
-    korb_def_cmethod_blk(c, KORB_C_HASH, "detect", korb_m_hash_find, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "find", korb_m_hash_find, -1);     /* find([ifnone]) */
+    korb_def_cmethod_blk(c, KORB_C_HASH, "detect", korb_m_hash_find, -1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "find_all", korb_m_hash_find_all, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "find_index", korb_m_hash_find_index, -1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "group_by", korb_m_hash_group_by, 0);
@@ -13605,8 +13605,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "filter", korb_m_range_select, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "find_all", korb_m_range_select, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "reject", korb_m_range_reject, 0);
-    korb_def_cmethod_blk(c, KORB_C_RANGE, "find", korb_m_range_find, 0);
-    korb_def_cmethod_blk(c, KORB_C_RANGE, "detect", korb_m_range_find, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "find", korb_m_range_find, -1);   /* find([ifnone]) */
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "detect", korb_m_range_find, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "drop", korb_m_range_drop, 1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "zip", korb_m_range_zip, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "one?", korb_m_range_one, -1);

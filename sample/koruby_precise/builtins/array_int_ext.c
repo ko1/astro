@@ -1343,9 +1343,15 @@ static RESULT korb_m_hash_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     CHECK(korb_ary_push_val(c, slots + 3, out, slots[1]));
     return RESULT_OK(VALUE_REF_GET(out));
 }
-/* find/detect → the first [k,v] pair whose block is truthy, else nil */
+/* find/detect → the first [k,v] pair whose block is truthy; find(ifnone) calls
+ * that proc when nothing matched (rspec's include matcher passes one). */
+static RESULT korb_find_ifnone(CTX *c, VALUE *slots, VALUE_SLICE a);   /* fwd (builtins/array_enum.c) */
 static RESULT korb_m_hash_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a; if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "find", 4)); return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1); }
+    if (UNLIKELY(block == NULL)) {
+        slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "find", 4));
+        if (VALUE_SLICE_LEN(a) >= 1) { slots[2] = VALUE_SLICE_GET(a, 0); return korb_send(c, slots + 3, korb_intern(c->vm, "__to_enum_sized", 15), 0, 2); }
+        return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1);
+    }
     uint32_t np = korb_entry_params_cnt(block);
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
@@ -1358,7 +1364,7 @@ static RESULT korb_m_hash_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             return RESULT_OK(slots[2]);
         }
     }
-    return RESULT_OK(KORB_NIL);
+    return korb_find_ifnone(c, slots, a);
 }
 /* find_all/select(Enumerable) → array of [k,v] pairs where block truthy */
 static RESULT korb_m_hash_find_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
