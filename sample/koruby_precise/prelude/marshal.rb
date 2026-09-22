@@ -154,11 +154,14 @@ module Marshal
   # 'e' (extend module) and 'C' (subclass) prefixes, outermost after any 'I'.
   # Also enforces the TypeErrors CRuby raises for un-dumpable singletons.
   def self._wrap_prefix(o, base, out, st)
+    # __own_singleton__, not #singleton_class: materializing one would unchill a
+    # chilled String literal (and warn under -w) just for being dumped.
+    sing = (o.__own_singleton__ rescue nil)
     unless (o.singleton_methods(false) rescue []).empty? &&
-           (o.singleton_class.instance_variables rescue []).empty?
+           (sing.nil? || (sing.instance_variables rescue []).empty?)
       raise TypeError, "singleton can't be dumped"
     end
-    exts = (o.singleton_class.included_modules - o.class.included_modules rescue [])
+    exts = (sing ? (sing.included_modules - o.class.included_modules rescue []) : [])
     exts.each do |m|
       nm = m.name
       raise TypeError, "can't dump anonymous class #{m}" if nm.nil?

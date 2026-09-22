@@ -6071,6 +6071,15 @@ kp_stash_syntax_msg(CTX *c, const pm_parser_t *parser, const char *fname)
 /* An explicit `# frozen_string_literal: false` opts the file out of chilled
  * literals; no comment at all means chilled (Ruby 3.4+).  prism only reports the
  * `true` case through PM_STRING_FLAGS_FROZEN, so scan the magic-comment area. */
+/* koruby's own prelude stands in for CRuby's C implementation: mutating a
+ * literal in there is an implementation detail no CRuby program can see, so it
+ * is not chilled (`Marshal.dump` built its buffer with `out = ""; out << …` and
+ * the chilled-literal warning reached the user under -w). */
+static bool
+kp_internal_source(const char *const fname)
+{
+    return fname != NULL && strcmp(fname, KORB_PRELUDE_FILE) == 0;
+}
 static bool
 kp_fsl_false(const char *src, size_t len)
 {
@@ -6129,7 +6138,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
         .c = c,
         .fname = fname,
         .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
-        .fsl_false = kp_fsl_false(src, len),
+        .fsl_false = kp_fsl_false(src, len) || kp_internal_source(fname),
         .seed_class_name = cref_name,
         .seed_chain = cref_chain,
         .seed_chain_len = cref_chain_len,

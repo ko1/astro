@@ -13826,6 +13826,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "private_methods", korb_m_obj_private_methods, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "protected_methods", korb_m_obj_protected_methods, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "singleton_methods", korb_m_obj_singleton_methods, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "__own_singleton__", korb_m_obj_own_singleton, 0);   /* prelude-internal: never materializes */
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
     korb_def_cmethod_blk(c, KORB_C_CLASS, "define_method", korb_m_define_method, -1);
     /* class_eval/module_eval (block) rebind self=class, so `def` inside targets the

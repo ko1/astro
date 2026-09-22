@@ -1503,6 +1503,15 @@ static RESULT korb_m_obj_protected_methods(CTX *c, VALUE *slots, VALUE_REF self,
 /* Object#singleton_methods(all=true) → only the object's singleton class methods
  * (public/protected); all=false excludes modules extended into the singleton.
  * Never includes the regular class's methods. */
+/* The object's singleton class IF IT ALREADY EXISTS, else nil — reflection that
+ * must not materialize one.  #singleton_class does materialize, and on a chilled
+ * String literal that also unchills it and warns, so the prelude (Marshal, and
+ * #singleton_method) asks through here instead. */
+static RESULT korb_m_obj_own_singleton(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    const VALUE d = korb_dispatch_class(c, VALUE_REF_GET(self));
+    return RESULT_OK(KORB_CLASS_P(d) && VAL2CLASS(d)->is_singleton ? d : KORB_NIL);
+}
 static RESULT korb_m_obj_singleton_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const bool all = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
     const uint32_t mid_init = c->vm->mid_initialize;
