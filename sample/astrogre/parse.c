@@ -310,6 +310,21 @@ static uint8_t parse_octal_escape(re_parser_t *q, int first) {
     return (uint8_t)v;
 }
 
+/* `\cX` / `\C-X` — the control character X stands for (Onigmo: X & 0x1F).
+ * Returns false (with the error set) when the escape is truncated or is the
+ * control-META form `\c\`, which this engine does not implement. */
+static bool parse_ctrl_escape(re_parser_t *q, bool dashed, uint8_t *out) {
+    if (dashed) {
+        if (re_peek(q) != '-') { re_error(q, "too short escape sequence"); return false; }
+        q->p++;
+    }
+    const int x = re_get(q);
+    if (x < 0) { re_error(q, "too short escape sequence"); return false; }
+    if (x == '\\') { re_error(q, "too short escape sequence"); return false; }   /* \c\M-x etc. */
+    *out = (uint8_t)(x & 0x1F);
+    return true;
+}
+
 /* Parse a single escape inside a class.  Returns 1 if handled (already set
  * bits), 0 if it was a single character (write *out_byte).  `cps` collects
  * members at or above U+0080; NULL when the caller can't take any. */
@@ -322,6 +337,7 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps
         bm_add_special(bm, c);
         return 1;
     case 'p': case 'P':
+        if (re_peek(q) != '{') { *out_byte = (uint8_t)c; return 0; }   /* no `{name}`: the letter itself (CRuby warns) */
         if (q->encoding != AGRE_ENC_UTF8) { re_error(q, "\\p needs UTF-8 mode"); return 1; }
         parse_prop_ref(q, c == 'P', bm, cps);
         return 1;
@@ -335,6 +351,9 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps
         *out_byte = parse_octal_escape(q, c); return 0;
     case 'a': *out_byte = '\a'; return 0;
     case 'e': *out_byte = 0x1b; return 0;
+    case 'c': case 'C':                                /* control char: \cX / \C-X */
+        if (!parse_ctrl_escape(q, c == 'C', out_byte)) return 1;   /* error already set */
+        return 0;
     /* Inside a class, `\b` is backspace (0x08), not word-boundary. */
     case 'b': *out_byte = '\b'; return 0;
     case 'x':
@@ -394,6 +413,23 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps
     case '[':  *out_byte = '[';  return 0;
     case '.':  *out_byte = '.';  return 0;
     default:
+        /* `\§` — an escaped multi-byte character is that character (CRuby).
+         * Taking only the lead byte here left the continuation bytes to be
+         * read as members, which then failed as "invalid UTF-8". */
+        if (q->encoding == AGRE_ENC_UTF8 && c >= 0x80) {
+            uint32_t cp = 0; int need = 0;
+            if      ((c & 0xE0) == 0xC0) { cp = (uint32_t)(c & 0x1F); need = 1; }
+            else if ((c & 0xF0) == 0xE0) { cp = (uint32_t)(c & 0x0F); need = 2; }
+            else if ((c & 0xF8) == 0xF0) { cp = (uint32_t)(c & 0x07); need = 3; }
+            else { *out_byte = (uint8_t)c; return 0; }   /* stray continuation byte: keep it as a byte */
+            for (int k = 0; k < need; k++) {
+                if (q->p >= q->end || (*q->p & 0xC0) != 0x80) { *out_byte = (uint8_t)c; return 0; }
+                cp = (cp << 6) | (uint32_t)(*q->p & 0x3F);
+                q->p++;
+            }
+            *out_cp = cp;
+            return 0;
+        }
         *out_byte = (uint8_t)c;
         return 0;
     }
@@ -1232,6 +1268,16 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         case 'X':
             return ire_new(IRE_GRAPHEME);
         case 'p': case 'P': {
+            /* `\p` with no `{name}` is not a property at all — CRuby warns
+             * ("invalid Unicode Property") and matches the letter itself. */
+            if (re_peek(q) != '{') {
+                ire_node_t *n = ire_new(IRE_LIT);
+                n->u.lit.bytes = (char *)malloc(1);
+                n->u.lit.bytes[0] = (char)e;
+                n->u.lit.len = 1;
+                n->u.lit.ci = q->case_insensitive;
+                return n;
+            }
             if (q->encoding != AGRE_ENC_UTF8) { re_error(q, "\\p needs UTF-8 mode"); return NULL; }
             uint64_t bm[4] = {0};
             agre_cpsetb_t cps = { 0 };
@@ -1374,9 +1420,13 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         case '(': case ')': case '[': case ']':
         case '{': case '}': case '|': case '*': case '+':
         case '?': case '-': case ' ':
+        case 'c': case 'C':
         case 'x': {
             uint8_t b;
             switch (e) {
+            case 'c': case 'C':
+                if (!parse_ctrl_escape(q, e == 'C', &b)) return NULL;
+                break;
             case 'n': b = '\n'; break;
             case 't': b = '\t'; break;
             case 'r': b = '\r'; break;
