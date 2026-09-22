@@ -1793,21 +1793,12 @@ static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     const bool has_pat = VALUE_SLICE_LEN(a) >= 1;
     if (has_pat && block != NULL) korb_warn(c, slots, "given block not used");   /* pattern arg wins */
     slots[0] = has_pat ? VALUE_SLICE_GET(a, 0) : KORB_NIL;           /* pattern (rooted across dispatch) */
-    const bool pat_obj = has_pat && KORB_OBJECT_P(slots[0]);         /* user object → dispatch #=== (korb_case_eq can't) */
-    const uint32_t ceq = pat_obj ? korb_intern(c->vm, "===", 3) : 0;
     for (uint32_t i = 0; ; i++) {
         if (i >= VAL2ARY(VALUE_REF_GET(self))->len) break;           /* re-read len each iter (dispatch may GC) */
         slots[1] = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i];
         bool t;
         if (has_pat) {
-            if (pat_obj) {                                          /* pattern.===(element) */
-                slots[2] = slots[0]; slots[3] = slots[1];
-                RESULT r = korb_send_impl(c, slots + 4, ceq, 0, 1, NULL, NULL, NULL);
-                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-                t = KORB_TRUTHY(r.value);
-            } else {
-                t = korb_case_eq(c, slots[0], slots[1]);            /* Range/Class/Regexp/== fast path */
-            }
+            CHECK(korb_pat_eq(c, slots + 2, slots[0], slots[1], &t));   /* pattern === element */
         } else if (block != NULL) {                                 /* truthiness of block result */
             RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;

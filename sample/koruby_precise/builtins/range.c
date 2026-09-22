@@ -1273,7 +1273,8 @@ static RESULT korb_range_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (korb_sword_t i = lo; i < hi; i++) {
         slots[0] = LONG2FIX(i);
-        if (korb_case_eq(c, VALUE_SLICE_GET(a, 0), slots[0]) == keep) {
+        bool gm; CHECK(korb_pat_eq(c, slots + 1, VALUE_SLICE_GET(a, 0), slots[0], &gm));
+        if (gm == keep) {
             if (block != NULL) {
                 RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;

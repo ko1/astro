@@ -519,14 +519,22 @@ static RESULT korb_m_hash_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     return RESULT_OK(cur);
 }
+static RESULT korb_m_hash_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (hash.c) */
 static RESULT korb_m_hash_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t k = VALUE_SLICE_LEN(a);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, k)));
     for (uint32_t j = 0; j < k; j++) {
         RESULT ferr; int32_t idx = korb_hash_find_ctx(c, slots, self, VALUE_SLICE_GET(a, j), &ferr);   /* CTX-aware key */
         if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
+        if (idx < 0) {   /* a miss takes the same default path as #[] — a default_proc runs (CRuby) */
+            slots[1] = VALUE_SLICE_GET(a, j);
+            const RESULT dr = korb_m_hash_aref(c, slots + 2, self, VALUE_SLICE_MAKE(&slots[1], 1));
+            if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+            CHECK(korb_ary_push_val(c, slots + 1, dst, dr.value));
+            continue;
+        }
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));   /* re-read after possible eql? dispatch */
-        CHECK(korb_ary_push_val(c, slots + 1, dst, idx < 0 ? h->default_val : korb_items_data(h->items)[2 * idx + 1]));
+        CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(h->items)[2 * idx + 1]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
@@ -1393,8 +1401,8 @@ static RESULT korb_hash_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (i >= h->len) break;
         slots[0] = korb_items_data(h->items)[2*i]; slots[1] = korb_items_data(h->items)[2*i+1];
         CHECK(korb_hash_make_pair(c, slots + 3, &slots[0], &slots[1], &slots[2]));   /* pair at slots[2] */
-        if (korb_case_eq(c, VALUE_SLICE_GET(a, 0), slots[2]) == keep)
-            CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
+        bool gm; CHECK(korb_pat_eq(c, slots + 3, VALUE_SLICE_GET(a, 0), slots[2], &gm));
+        if (gm == keep) CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }

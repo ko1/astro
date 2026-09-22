@@ -80,7 +80,10 @@ static RESULT korb_set_other_elems(CTX *c, VALUE *slots, VALUE o, VALUE *out) {
     const VALUE direct = korb_set_elems_of(o);
     if (direct != KORB_NIL) { *out = direct; return RESULT_OK(KORB_NIL); }
     slots[0] = o;                                       /* root across the respond_to?/to_a dispatch */
-    if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], korb_intern(c->vm, "each", 4))) {
+    /* Any enumerable, not just a user object: a Range / Hash / Enumerator is a
+     * builtin type and answers #each too (`set.merge(1..3)` is rubocop's
+     * CodeLengthCalculator). */
+    if (korb_responds_to_coerce(c, slots + 1, slots[0], korb_intern(c->vm, "each", 4))) {
         RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_ARRAY_P(r.value)) { slots[0] = r.value; *out = slots[0]; return RESULT_OK(KORB_NIL); }
@@ -120,7 +123,8 @@ static RESULT korb_m_set_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if (UNLIKELY(n > 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", n);
     if (n == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL) return RESULT_OK(VALUE_REF_GET(self));
-    const VALUE src = korb_set_elems_of(VALUE_SLICE_GET(a, 0));
+    VALUE src;
+    CHECK(korb_set_other_elems(c, slots, VALUE_SLICE_GET(a, 0), &src));
     if (UNLIKELY(src == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be enumerable");
     slots[0] = src;                                    /* root: the block below can allocate */
     for (uint32_t i = 0; ; i++) {

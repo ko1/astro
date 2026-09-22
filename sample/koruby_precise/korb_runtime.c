@@ -7634,12 +7634,15 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
     return korb_value_eq(pat, val);
 }
 
-/* `pat === val` for the quantifier builtins, dispatching #=== when pat is a
- * user object (korb_case_eq is alloc-free and so can't call back into Ruby). */
+/* `pat === val` for the quantifier builtins, dispatching #=== when korb_case_eq
+ * (alloc-free, so it cannot call back into Ruby) does not know the pattern's
+ * own #===: a user object, a Proc/Method (calls it), a Set (membership).
+ * `grep(->(x){…})` and `any?(proc)` are how rubocop selects alignment styles. */
 static RESULT
 korb_pat_eq(CTX *c, VALUE *slots, VALUE pat, VALUE val, bool *const out)
 {
-    if (LIKELY(!KORB_OBJECT_P(pat))) { *out = korb_case_eq(c, pat, val); return RESULT_OK(KORB_NIL); }
+    if (LIKELY(!KORB_OBJECT_P(pat) && !KORB_PROC_P(pat) && !KORB_SET_P(pat) && !KORB_METHOD_P(pat)))
+        { *out = korb_case_eq(c, pat, val); return RESULT_OK(KORB_NIL); }
     slots[0] = pat;
     slots[1] = val;
     const RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "===", 3), 0, 1, NULL, NULL, NULL);
