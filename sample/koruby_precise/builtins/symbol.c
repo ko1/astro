@@ -938,6 +938,14 @@ static RESULT korb_param_push(CTX *c, VALUE *slots, VALUE_REF res, const char *k
     CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(c->vm, kind, (uint32_t)strlen(kind)))));
     return korb_ary_push_val(c, slots + 1, res, slots[0]);
 }
+/* [kind, name] — like korb_param_push, but with a name (an anonymous `**` etc.). */
+static RESULT korb_param_push2(CTX *c, VALUE *slots, VALUE_REF res, const char *kind, uint32_t name) {
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
+    VALUE_REF sub = VALUE_REF_AT(&slots[0]);
+    CHECK(korb_ary_push_val(c, slots + 1, sub, ID2SYM(korb_intern(c->vm, kind, (uint32_t)strlen(kind)))));
+    CHECK(korb_ary_push_val(c, slots + 1, sub, ID2SYM(name)));
+    return korb_ary_push_val(c, slots + 1, res, VALUE_REF_GET(sub));
+}
 /* Method/UnboundMethod#parameters — C methods are nameless: variadic → [[:rest]],
  * fixed-arity → [[:req]]×n; ISEQ → positional kinds (names not retained). */
 /* Push `km`'s parameter descriptors into `res` — shared by Method#parameters and
@@ -957,8 +965,17 @@ static RESULT korb_push_method_params(CTX *c, VALUE *slots, VALUE_REF res, const
     const struct korb_param_info *const pi = (const struct korb_param_info *)km->param_info;
     if ((km->kind == KORB_METHOD_ISEQ || km->kind == KORB_METHOD_DM) && pi != NULL) {   /* define_method carries its block's params */
         static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block", "nokey", "noblock" };
+        /* ruby2_keywords adds an anonymous `**` before the block param (CRuby):
+         * rspec-support reads #parameters to decide whether a double takes kwargs. */
+        bool r2k_pending = km->ruby2_kw != 0;
+        if (r2k_pending)                                   /* `def m(...)` already lists one */
+            for (uint32_t i = 0; i < pi->n; i++) if (pi->e[i].kind == 5) { r2k_pending = false; break; }
         for (uint32_t i = 0; i < pi->n; i++) {
             const uint8_t kind = pi->e[i].kind;
+            if (r2k_pending && (kind == 6 || kind == 8)) {
+                CHECK(korb_param_push2(c, slots + 1, res, "keyrest", korb_intern(c->vm, "**", 2)));
+                r2k_pending = false;
+            }
             const char *const kn = knames[kind];
             const uint32_t nm = pi->e[i].name;
             slots[1] = UNWRAP(korb_ary_new(c, slots + 1, nm ? 2 : 1));
@@ -967,6 +984,7 @@ static RESULT korb_push_method_params(CTX *c, VALUE *slots, VALUE_REF res, const
             if (nm) CHECK(korb_ary_push_val(c, slots + 2, sub, ID2SYM(nm)));
             CHECK(korb_ary_push_val(c, slots + 2, res, VALUE_REF_GET(sub)));
         }
+        if (r2k_pending) CHECK(korb_param_push2(c, slots + 1, res, "keyrest", korb_intern(c->vm, "**", 2)));
         return RESULT_OK(VALUE_REF_GET(res));
     }
     for (uint32_t i = 0; i < km->req_cnt; i++) CHECK(korb_param_push(c, slots + 1, res, "req"));

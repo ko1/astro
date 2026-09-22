@@ -277,7 +277,9 @@ class Module
   # ruby2_keywords marks methods to pass a bare kwargs hash through *args: the
   # flagged method makes the mark on the collected Hash persistent, and a splat
   # call site turns it back into keywords.
-  def ruby2_keywords(*names)
+  # private, like CRuby: rspec-mocks gates its proxy on
+  # `Module.private_method_defined?(:ruby2_keywords)`.
+  private def ruby2_keywords(*names)
     names.each do |n|
       unless method_defined?(n) || private_method_defined?(n) || respond_to?(n, true)
         raise NameError.new("undefined method '#{n}' for class '#{self}'", n)

@@ -1339,7 +1339,7 @@ node_simple_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt
 // `self_off` reads the default definee: inside a `class` body self is the
 // class (def attaches to it); elsewhere self is main/an instance → global table.
 NODE_DEF @noinline
-node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entry, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, void *locals_info, int32_t self_off, int32_t dc_off, uint32_t sclass_cref)
+node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entry, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, void *locals_info, int32_t self_off, int32_t dc_off, uint32_t sclass_cref, uint32_t cref_name@sym)
 {
     (void)body_dispatcher; (void)entry_dispatcher;
     /* default definee: instance_eval/class_eval's cref if set, else self when it
@@ -1357,6 +1357,11 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entr
             { const VALUE cr = korb_const_cref(definee, slots[dc_off]); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
         else if (!KORB_CLASS_P(definee) && dc_off != INT32_MIN)
             { const VALUE cr = korb_cvar_cref(definee, slots[dc_off]); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
+        /* Written inside a BLOCK: this frame's identity names the block, not a
+         * method, so the cref is the lexically enclosing class/module — the
+         * parser baked its name (`[1].each { def m; end }` in a class body). */
+        if (!KORB_CLASS_P(definee) && cref_name != 0)
+            { const VALUE cr = korb_cref_from_path(c->vm, cref_name); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
     }
     if (UNLIKELY(!KORB_CLASS_P(definee) && c->def_definee != KORB_NIL))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* instance_eval on a value with no singleton */

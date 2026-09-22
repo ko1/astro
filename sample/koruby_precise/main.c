@@ -109,6 +109,26 @@ strvec_push(struct strvec *const sv, const char *const s)
     sv->v[sv->n++] = s;
 }
 
+/* A single -I may carry several directories separated by the platform PATH
+ * separator (rspec-support builds `-I#{$LOAD_PATH.join(":")}` that way). */
+static void
+strvec_push_path_list(struct strvec *const sv, const char *const s)
+{
+    const char *p = s;
+    for (;;) {
+        const char *const sep = strchr(p, ':');
+        if (sep == NULL) { if (*p) strvec_push(sv, p); return; }
+        if (sep != p) {
+            char *const dup = malloc((size_t)(sep - p) + 1);
+            if (!dup) abort();
+            memcpy(dup, p, (size_t)(sep - p));
+            dup[sep - p] = '\0';
+            strvec_push(sv, dup);
+        }
+        p = sep + 1;
+    }
+}
+
 /* One CRuby-compatible command-line flag.  Shared by the argv loop and RUBYOPT
  * (which accepts a subset).  `next_arg` supplies the separate-word form of
  * -I/-r/-E/--*-encoding when there is one; RUBYOPT passes NULL (only the joined
@@ -120,7 +140,7 @@ koruby_apply_flag(const char *a, const char *next_arg,
 {
     if (strncmp(a, "-I", 2) == 0) {
         const char *const dir = a[2] ? a + 2 : next_arg;
-        if (dir) strvec_push(load_dirs, dir);
+        if (dir) strvec_push_path_list(load_dirs, dir);   /* one -I may carry a PATH-separated list (CRuby) */
         return (a[2] || !dir) ? 1 : 2;
     }
     if (strncmp(a, "-r", 2) == 0) {

@@ -3738,7 +3738,7 @@ korb_binding_tbl_flat(const uint32_t *syms, uint32_t cnt)
 
 /* The baked cref is a full lexical path; a `class A::B` body nests under a name
  * that path does not spell, so fall back to the last segment there. */
-static VALUE korb_cref_from_path(struct korb_vm *const vm, const uint32_t sym)
+VALUE korb_cref_from_path(struct korb_vm *const vm, const uint32_t sym)
 {
     const VALUE v = korb_const_get_path(vm, sym);
     if (KORB_CLASS_P(v)) return v;
@@ -3831,6 +3831,7 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
     slots[2] = cref;
     KorbBinding *b = korb_alloc(c, slots + 3, sizeof(KorbBinding), KORB_OBJ_BINDING);
     b->name_syms = scope_tbl; b->name_cnt = name_cnt;
+    b->src_node = NULL; b->src_file = 0; b->src_line = 0;   /* the caller records the site it knows */
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->env,  slots[1]);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->self, slots[0]);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->extra, KORB_NIL);
@@ -3911,11 +3912,14 @@ static RESULT korb_m_bind_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2BIND(VALUE_REF_GET(self))->self);
 }
 static RESULT korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body);   /* fwd */
+static RESULT korb_srcloc_pair(CTX *c, VALUE *slots, uint32_t fsym, uint32_t line);   /* fwd */
 static RESULT korb_m_bind_source_location(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    const struct Node *const node = VAL2BIND(VALUE_REF_GET(self))->src_node;   /* the `binding` call site */
-    if (node == NULL) return RESULT_OK(KORB_NIL);
-    return korb_srcloc_result(c, slots, node);
+    const KorbBinding *const b = VAL2BIND(VALUE_REF_GET(self));
+    const struct Node *const node = b->src_node;   /* the `binding` call site */
+    if (node != NULL) return korb_srcloc_result(c, slots, node);
+    if (b->src_file != 0) return korb_srcloc_pair(c, slots, b->src_file, b->src_line);
+    return RESULT_OK(KORB_NIL);
 }
 /* A binding's local names are plain identifiers: $global / @ivar / $~ and the
  * like are a NameError, not a fresh local (CRuby's check_local_id). */
@@ -15765,10 +15769,8 @@ korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym,
 }
 /* [file, line] for a body NODE, or nil.  Result rooted by caller's slots. */
 static RESULT
-korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body)
+korb_srcloc_pair(CTX *c, VALUE *slots, uint32_t fsym, uint32_t line)
 {
-    uint32_t fsym, line;
-    if (!korb_get_srcloc(c->vm, body, &fsym, &line)) return RESULT_OK(KORB_NIL);
     const char *fname = korb_sym_name(c->vm, fsym);
     slots[0] = UNWRAP(korb_str_new(c, slots, fname, (uint32_t)strlen(fname)));
     /* the table holds the line as uint32_t, but eval(str, file, -100) stores a
@@ -15778,6 +15780,13 @@ korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body)
     CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
     CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
     return RESULT_OK(slots[2]);
+}
+static RESULT
+korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body)
+{
+    uint32_t fsym, line;
+    if (!korb_get_srcloc(c->vm, body, &fsym, &line)) return RESULT_OK(KORB_NIL);
+    return korb_srcloc_pair(c, slots, fsym, line);
 }
 /* [path, start_line, start_column, end_line, end_column] for a def/block/lambda
  * NODE, or nil.  The prelude turns it into a Ruby::SourceRange; absolute_path is
@@ -17433,8 +17442,8 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
 {
     if (strcmp(fname, "(eval)") == 0) {                 /* CRuby 3.3+: default is "(eval at FILE:LINE)" (callsite ≈ the binding's site) */
         const struct Node *const sn = VAL2BIND(*bind_slot)->src_node;
-        uint32_t fsym, ln;
-        if (sn && korb_get_srcloc(c->vm, sn, &fsym, &ln)) {
+        uint32_t fsym = VAL2BIND(*bind_slot)->src_file, ln = VAL2BIND(*bind_slot)->src_line;
+        if ((sn && korb_get_srcloc(c->vm, sn, &fsym, &ln)) || fsym != 0) {
             char buf[512];
             const int n = snprintf(buf, sizeof buf, "(eval at %s:%u)", korb_sym_name(c->vm, fsym), ln);
             if (n > 0 && (size_t)n < sizeof buf)
@@ -18644,7 +18653,13 @@ korb_bi_binding(CTX *c, VALUE *slots, VALUE_SLICE args)
     /* `outer.id` is a tagged pointer into immortal libc memory, so it survives
      * the allocations korb_make_binding does (a VALUE would not). */
     const VALUE oid = outer.id;
+    /* #source_location: no call node on this path, so record the caller's own
+     * position (korb_caller_pos fills vm->fscratch — read it before allocating). */
+    uint32_t bfile = 0, bline = 0;
+    if (!korb_caller_pos(c, args.p - 3, &bfile, &bline)) bfile = 0;
     const RESULT r = korb_make_binding(c, slots, fbase, tbl, cnt, fbase[-1], 0);
+    if (LIKELY(r.state == KORB_NORMAL) && KORB_BINDING_P(r.value) && bfile != 0)
+        { KorbBinding *const nb = VAL2BIND(r.value); nb->src_file = bfile; nb->src_line = bline; }
     /* The lexical class: korb_make_binding resolves a cref NAME, which only the
      * parser has.  The outermost level's method entry carries the class itself. */
     if (LIKELY(r.state == KORB_NORMAL) && KORB_BINDING_P(r.value) && (oid & 7u) == KORB_FID_METHOD &&

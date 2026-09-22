@@ -3278,11 +3278,15 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         entry = ALLOC_node_simple_entry(body, params_cnt, frame_size,
                                         (uses_block & KORB_DEFF_USES_BACKREF) ? 1u : 0u);
 
-    /* self at the def site (enclosing frame) = the default definee */
+    /* self at the def site (enclosing frame) = the default definee.  A `def`
+     * inside a block has no method entry of its own to name the cref, so bake
+     * the lexically enclosing class/module path for that case (0 = none). */
+    const uint32_t def_cref_name = (tc->frame->anon_class_body || tc->frame->anon_cref_method)
+                                 ? 0u : kp_cref_owner_path(tc);
     NODE *def;
     if (mod_func) {
         /* module_function: define as instance method AND as a singleton on self. */
-        NODE *idef = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain, sclass_cref);
+        NODE *idef = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain, sclass_cref, def_cref_name);
         bake_add(tc, &idef->u.node_def.self_off);          /* definee = self at base[-1] */
         bake_add(tc, &idef->u.node_def.dc_off);            /* enclosing method entry = base[-4] */
         NODE *sdef = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, recv_node);
@@ -3290,7 +3294,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     } else if (recv_node) {
         def = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, recv_node);
     } else {
-        def = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain, sclass_cref);
+        def = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain, sclass_cref, def_cref_name);
         bake_add(tc, &def->u.node_def.self_off);           /* definee = self at base[-1] */
         bake_add(tc, &def->u.node_def.dc_off);             /* enclosing method entry = base[-4] */
     }
