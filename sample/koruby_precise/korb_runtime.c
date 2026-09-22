@@ -10329,7 +10329,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
      * universal forms are in no method table, so any hit is a real definition
      * (concurrent-ruby's Agent#send! calls its own `send { }`). */
     if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
-        korb_send_user_defined(vm, korb_class_obj_of(c, self), mid) == NULL &&
+        korb_send_user_defined(vm, korb_dispatch_class(c, self), mid) == NULL &&
         !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid))) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         return korb_call_send(c, slots, mid, line, argc, self, block, def_env, captured_self);
@@ -11693,7 +11693,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
      * the reflective one), and that must win — the universal forms are not
      * registered in any method table, so any hit here is a real definition. */
     if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
-        korb_send_user_defined(vm, korb_class_obj_of(c, self), mid) == NULL &&
+        korb_send_user_defined(vm, korb_dispatch_class(c, self), mid) == NULL &&
         !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid))) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         {

@@ -413,7 +413,30 @@ class Enumerator::Lazy
   def filter_map(&blk) = super
   def take_while(&blk) = super
   def drop_while(&blk) = super
-  def flat_map(&blk) = super
+  # The C op-chain fans an Array block result out one level, but the GENERATOR
+  # path applies ops one-value-at-a-time and cannot emit more than one — so a
+  # generator-backed lazy (`obj.lazy` on a user Enumerable, `Enumerator.new {}`)
+  # dropped the fanout entirely.  Stream it here instead; the chain is built
+  # once, so this costs a frame per chain, not per element.
+  def flat_map(&blk)
+    raise ArgumentError, "tried to call lazy flat_map without a block" unless blk
+    # CRuby flattens an Array, and anything that answers BOTH #each and #force
+    # (i.e. another lazy); everything else is one element.
+    __lazy_gen do |y|
+      each do |x|
+        r = blk.call(x)
+        # koruby registers the lazy ops on Enumerator itself, so a PLAIN
+        # Enumerator answers #force too — CRuby's duck test would wrongly
+        # flatten it (the spec keeps `each_char` elements whole).
+        if r.is_a?(Array) ||
+           (r.respond_to?(:each) && r.respond_to?(:force) && !r.instance_of?(::Enumerator))
+          r.each { |e| y << e }
+        else
+          y << r
+        end
+      end
+    end
+  end
   alias collect_concat flat_map
   def uniq(&blk) = super
   def compact = super

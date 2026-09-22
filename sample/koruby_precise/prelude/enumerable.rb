@@ -40,7 +40,9 @@ module Enumerable
     end
     r
   end
-  def lazy; to_a.lazy; end   # finite-source lazy (an infinite custom #each would need a true lazy driver)
+  # Stream through #each: materialising with #to_a hangs on an infinite custom
+  # source (`Inf.new.lazy.map { }.first(3)`), which is the whole point of lazy.
+  def lazy = to_enum(:each).lazy
   def to_h(*args, &blk); h = {}; each(*args) { |*a| pair = blk ? blk.call(*a) : (a.size <= 1 ? a[0] : a); pair = pair.to_ary if !pair.is_a?(Array) && pair.respond_to?(:to_ary); raise TypeError, "wrong element type #{pair.class} (expected array)" unless pair.is_a?(Array); raise ArgumentError, "element has wrong array length (expected 2, was #{pair.size})" unless pair.size == 2; h[pair[0]] = pair[1] }; h; end
   alias entries to_a
   def count(*args, &blk); raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1; n = 0; if args.size > 0; warn "given block not used" if blk; item = args[0]; __each_el { |x| n += 1 if x == item }; elsif blk; each { |*a| n += 1 if blk.call(*a) }; else; each { |*a| n += 1 }; end; n; end
