@@ -668,6 +668,7 @@ static RESULT korb_m_proc_source_range_info(CTX *c, VALUE *slots, VALUE_REF self
 /* Proc#parameters — [[kind, name], ...] from the parse-time param_info (cold;
  * never on the call/yield hot path).  A non-lambda proc reports a required
  * positional as :opt (CRuby semantics); keyreq/rest/block keep their kind. */
+static RESULT korb_push_method_params(CTX *c, VALUE *slots, VALUE_REF res, const struct korb_method *km);   /* fwd (below) */
 static RESULT korb_m_proc_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     /* Capture everything off the proc BEFORE the first alloc — korb_ary_new GCs
      * and may move the KorbObject, so `p` must not be dereferenced afterwards.
@@ -682,11 +683,19 @@ static RESULT korb_m_proc_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         if (li >= 0 && korb_items_data(h->items)[2 * li + 1] != KORB_NIL) lam = KORB_TRUTHY(korb_items_data(h->items)[2 * li + 1]);
     }
     const bool symproc = (p->iseq == NULL);
+    const VALUE mproc_self = symproc ? p->self : KORB_NIL;   /* non-nil ⇒ a Method#to_proc, not a Symbol#to_proc */
+    const uint32_t mproc_mid = symproc ? p->sym_mid : 0;
     static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block", "nokey", "noblock" };
     const uint32_t n = pi ? pi->n : 0;
     slots[0] = UNWRAP(korb_ary_new(c, slots, n ? n : 1));
     VALUE_REF res = VALUE_REF_AT(&slots[0]);
     if (!pi) {                                            /* symbol proc → [[:req], [:rest]]; no params → [] */
+        if (symproc && mproc_self != KORB_NIL) {          /* Method#to_proc: report the bound method's own signature */
+            const VALUE dc = korb_dispatch_class(c, mproc_self);
+            const struct korb_method *const km =
+                KORB_CLASS_P(dc) ? korb_class_find_method(dc, mproc_mid, NULL) : NULL;
+            return korb_push_method_params(c, slots, res, km);
+        }
         if (symproc) {
             const char *const sp[] = { "req", "rest" };
             for (int j = 0; j < 2; j++) {
@@ -914,13 +923,9 @@ static RESULT korb_param_push(CTX *c, VALUE *slots, VALUE_REF res, const char *k
 }
 /* Method/UnboundMethod#parameters — C methods are nameless: variadic → [[:rest]],
  * fixed-arity → [[:req]]×n; ISEQ → positional kinds (names not retained). */
-static RESULT korb_m_meth_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
-    const bool missing = VAL2METH(VALUE_REF_GET(self))->missing;
-    const struct korb_method *km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
-    slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
-    VALUE_REF res = VALUE_REF_AT(&slots[0]);
-    if (missing) { CHECK(korb_param_push(c, slots + 1, res, "rest")); return RESULT_OK(VALUE_REF_GET(res)); }   /* method_missing forwards everything */
+/* Push `km`'s parameter descriptors into `res` — shared by Method#parameters and
+ * Proc#parameters for a Method#to_proc (which carries no iseq of its own). */
+static RESULT korb_push_method_params(CTX *c, VALUE *slots, VALUE_REF res, const struct korb_method *km) {
     if (km == NULL) return RESULT_OK(VALUE_REF_GET(res));
     if (km->kind == KORB_METHOD_ATTR_W) { CHECK(korb_param_push(c, slots + 1, res, "req")); return RESULT_OK(VALUE_REF_GET(res)); }
     if (km->kind == KORB_METHOD_ATTR_R) return RESULT_OK(VALUE_REF_GET(res));
@@ -953,6 +958,15 @@ static RESULT korb_m_meth_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     if (km->rest_slot >= 0) CHECK(korb_param_push(c, slots + 1, res, "rest"));
     for (uint32_t i = 0; i < km->post_cnt; i++) CHECK(korb_param_push(c, slots + 1, res, "req"));
     return RESULT_OK(VALUE_REF_GET(res));
+}
+static RESULT korb_m_meth_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const bool missing = VAL2METH(VALUE_REF_GET(self))->missing;
+    const struct korb_method *const km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
+    VALUE_REF res = VALUE_REF_AT(&slots[0]);
+    if (missing) { CHECK(korb_param_push(c, slots + 1, res, "rest")); return RESULT_OK(VALUE_REF_GET(res)); }   /* method_missing forwards everything */
+    return korb_push_method_params(c, slots, res, km);
 }
 /* Module#instance_method(name) → UnboundMethod owned by the class. */
 static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
