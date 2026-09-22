@@ -8560,8 +8560,16 @@ korb_method_lookup(struct korb_vm *vm, uint32_t mid)
  * ------------------------------------------------------------------------- */
 
 /* Record an address a frame-top marker may later point at (method entries and
- * AST nodes — immortal libc allocations).  The walk rejects anything outside
- * this range instead of dereferencing it.  Definition-time only. */
+ * AST nodes — immortal libc allocations).  Definition-time only, so the set may
+ * be as simple as this; the walk rejects anything not in it instead of
+ * dereferencing it. */
+static uint32_t korb_bt_ptr_slot(const uintptr_t *const tab, const uint32_t cap, const uintptr_t a)
+{
+    uint32_t i = (uint32_t)((a >> 4) * 0x9e3779b1u) & (cap - 1);
+    while (tab[i] != 0 && tab[i] != a) i = (i + 1) & (cap - 1);
+    return i;
+}
+
 void
 korb_bt_note_ptr(struct korb_vm *vm, const void *p)
 {
@@ -8569,8 +8577,24 @@ korb_bt_note_ptr(struct korb_vm *vm, const void *p)
     if (a == 0) return;
     if (vm->bt_lo == 0 || a < vm->bt_lo) vm->bt_lo = a;
     if (a >= vm->bt_hi) vm->bt_hi = a + 1;
+    if ((vm->bt_ptr_cnt + 1) * 4 >= vm->bt_ptr_cap * 3) {        /* grow past 75% load */
+        const uint32_t ncap = vm->bt_ptr_cap ? vm->bt_ptr_cap * 2 : 1024;
+        uintptr_t *const nt = calloc(ncap, sizeof(uintptr_t));
+        if (nt == NULL) { fprintf(stderr, "koruby_precise: out of memory (backtrace markers)\n"); abort(); }
+        for (uint32_t i = 0; i < vm->bt_ptr_cap; i++)
+            if (vm->bt_ptrs[i]) nt[korb_bt_ptr_slot(nt, ncap, vm->bt_ptrs[i])] = vm->bt_ptrs[i];
+        free(vm->bt_ptrs);
+        vm->bt_ptrs = nt; vm->bt_ptr_cap = ncap;
+    }
+    uintptr_t *const slot = &vm->bt_ptrs[korb_bt_ptr_slot(vm->bt_ptrs, vm->bt_ptr_cap, a)];
+    if (*slot == 0) { *slot = a; vm->bt_ptr_cnt++; }
 }
-static bool korb_bt_known_ptr(const struct korb_vm *vm, uintptr_t p) { return p >= vm->bt_lo && p < vm->bt_hi; }
+
+static bool korb_bt_known_ptr(const struct korb_vm *vm, uintptr_t p)
+{
+    if (p < vm->bt_lo || p >= vm->bt_hi) return false;           /* cheap reject first */
+    return vm->bt_ptrs[korb_bt_ptr_slot(vm->bt_ptrs, vm->bt_ptr_cap, p)] == p;
+}
 
 /* The file the running program is currently reading frames out of: a required /
  * loaded file while it executes, else the script named on the command line. */

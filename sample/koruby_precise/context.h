@@ -1307,8 +1307,12 @@ struct korb_vm {
      * their cache lines. */
     struct korb_frame_rec *fscratch;   /* the frame walk materializes into this (one allocation, reused) */
     uintptr_t bt_lo, bt_hi;            /* address range a frame-top marker may point into (method entries,
-                                        * AST nodes — immortal libc); one outside it is not ours, so the
-                                        * walk stops instead of dereferencing it */
+                                        * AST nodes — immortal libc): the cheap reject before the set below */
+    uintptr_t *bt_ptrs;                /* open-addressed set of the registered addresses themselves (0 = empty).
+                                        * The range alone has holes, so it answered "known" for unrelated
+                                        * allocations and the label a backtrace printed moved with libc's
+                                        * layout (ideas/idea/koruby-frame-identity-address-range.md) */
+    uint32_t bt_ptr_cap, bt_ptr_cnt;
     /* Scope tables built by the RUNTIME `binding` (the method form: send /
      * Kernel.binding).  A Binding keeps its table forever, so they are interned
      * per calling ISEQ here rather than malloc'd per call.  `id` is a frame

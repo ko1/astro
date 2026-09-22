@@ -3386,6 +3386,9 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0, 0);
     code_repo_add("class", entry, true);          /* its own AOT entry */
+    /* the BODY's own srcloc: a backtrace has to recognise this node as one of
+     * ours to label the class-body frame `<class:Foo>` (korb_bt_known_ptr) */
+    korb_reg_srcloc(tc->c->vm, entry, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));
     NODE *_ncls = KP_LINK(tc, node_class, name_sym, kp_flink_at(tc, kp_line(tc, (const pm_node_t *)cn), 2), entry, lex_top ? INT32_MIN : -1 - tc->chain - 2, path_owner, path_kind, base_node, super_node);   /* self_off = enclosing self (base[-1]); -2 for the staged base+super children */
     korb_reg_srcloc(tc->c->vm, _ncls, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));   /* Module#const_source_location */
     if (!lex_top) bake_add(tc, &_ncls->u.node_class.self_off);
@@ -3833,6 +3836,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0, 0);
     code_repo_add("module", entry, true);
+    korb_reg_srcloc(tc->c->vm, entry, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)mn));   /* see transduce_class */
     NODE *_nmod = KP_LINK(tc, node_module, name_sym, kp_flink_at(tc, kp_line(tc, (const pm_node_t *)mn), 1), entry, lex_top ? INT32_MIN : -1 - tc->chain - 1, path_owner, path_kind, base_node);   /* self_off = enclosing self (base[-1]); -1 for the staged base child */
     korb_reg_srcloc(tc->c->vm, _nmod, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)mn));   /* Module#const_source_location */
     if (!lex_top) bake_add(tc, &_nmod->u.node_module.self_off);
@@ -5659,6 +5663,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t frame_size = pop_frame(tc);
         NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0, 0);
         code_repo_add("sclass", entry, true);       /* its own AOT entry */
+        korb_reg_srcloc(tc->c->vm, entry, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, node));   /* see transduce_class */
         NODE *_sc = KP_LINK(tc, node_sclass, kp_flink_at(tc, kp_line(tc, node), 1), entry, -1 - tc->chain - 1, -4 - tc->chain - 1, recv_node);   /* -1 extra for the staged recv child */
         bake_add(tc, &_sc->u.node_sclass.self_off);
         bake_add(tc, &_sc->u.node_sclass.dc_off);
