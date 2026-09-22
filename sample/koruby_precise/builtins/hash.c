@@ -10,7 +10,7 @@
  * recurses the same path each call, so the result stays deterministic and two
  * structurally-equal recursive containers still hash alike. */
 #define KORB_DEEP_HASH_MAX 96u
-static uint64_t korb_deep_hash_d(VALUE v, uint32_t depth, bool *cycle) {
+static uint64_t korb_deep_hash_d(CTX *c, VALUE v, uint32_t depth, bool *cycle) {
     if (FIXNUM_P(v) || SYMBOL_P(v) || KORB_STRING_P(v) || v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE)
         return korb_value_hash(v);
     if (KORB_FLOAT_P(v)) {
@@ -25,7 +25,7 @@ static uint64_t korb_deep_hash_d(VALUE v, uint32_t depth, bool *cycle) {
         if (a->head.flags & KORB_FL_JOIN_VISITING) { *cycle = true; return 0xC0FFEEULL; }   /* recursive → constant (no exponential blowup) */
         a->head.flags |= KORB_FL_JOIN_VISITING;
         uint64_t h = 0x345678ULL + a->len;
-        for (uint32_t i = 0; i < a->len; i++) h = h * 31u + korb_deep_hash_d(korb_items_data(a->items)[i], depth + 1, cycle);
+        for (uint32_t i = 0; i < a->len; i++) h = h * 31u + korb_deep_hash_d(c, korb_items_data(a->items)[i], depth + 1, cycle);
         a->head.flags &= ~KORB_FL_JOIN_VISITING;         /* pure computation: no GC, `a` stays valid */
         return h;
     }
@@ -35,29 +35,29 @@ static uint64_t korb_deep_hash_d(VALUE v, uint32_t depth, bool *cycle) {
         hh->head.flags |= KORB_FL_JOIN_VISITING;
         uint64_t h = 0x9e3779b9ULL + hh->len;
         for (uint32_t i = 0; i < hh->len; i++)
-            h ^= korb_deep_hash_d(korb_items_data(hh->items)[2*i], depth + 1, cycle) * 31u + korb_deep_hash_d(korb_items_data(hh->items)[2*i+1], depth + 1, cycle);
+            h ^= korb_deep_hash_d(c, korb_items_data(hh->items)[2*i], depth + 1, cycle) * 31u + korb_deep_hash_d(c, korb_items_data(hh->items)[2*i+1], depth + 1, cycle);
         hh->head.flags &= ~KORB_FL_JOIN_VISITING;
         return h;
     }
     if (KORB_SET_P(v)) {                              /* order-independent (xor of element hashes) */
         const KorbArray *a = VAL2ARY(VAL2SET(v)->elems);
         uint64_t h = 0x517cc1b7ULL + a->len;
-        for (uint32_t i = 0; i < a->len; i++) h ^= korb_deep_hash_d(korb_items_data(a->items)[i], depth + 1, cycle);
+        for (uint32_t i = 0; i < a->len; i++) h ^= korb_deep_hash_d(c, korb_items_data(a->items)[i], depth + 1, cycle);
         return h;
     }
     if (KORB_RATIONAL_P(v)) {                          /* reduced num/den → equal Rationals hash alike */
         const KorbRational *rt = VAL2RAT(v);
-        return korb_deep_hash_d(rt->num, depth + 1, cycle) * 31u + korb_deep_hash_d(rt->den, depth + 1, cycle);
+        return korb_deep_hash_d(c, rt->num, depth + 1, cycle) * 31u + korb_deep_hash_d(c, rt->den, depth + 1, cycle);
     }
     if (KORB_COMPLEX_P(v)) {
         const KorbComplex *cx = VAL2CPX(v);
-        return korb_deep_hash_d(cx->re, depth + 1, cycle) * 31u + korb_deep_hash_d(cx->im, depth + 1, cycle);
+        return korb_deep_hash_d(c, cx->re, depth + 1, cycle) * 31u + korb_deep_hash_d(c, cx->im, depth + 1, cycle);
     }
     if (KORB_RANGE_P(v)) {                             /* == begin/end + exclude_end */
         const KorbRange *r = VAL2RANGE(v);
         uint64_t h = 0x9e3779b1ULL + (r->exclude_end ? 1u : 0u);
-        h = h * 31u + korb_deep_hash_d(r->rbegin, depth + 1, cycle);
-        h = h * 31u + korb_deep_hash_d(r->rend, depth + 1, cycle);
+        h = h * 31u + korb_deep_hash_d(c, r->rbegin, depth + 1, cycle);
+        h = h * 31u + korb_deep_hash_d(c, r->rend, depth + 1, cycle);
         return h;
     }
     if (KORB_BIGNUM_P(v)) {
@@ -68,17 +68,11 @@ static uint64_t korb_deep_hash_d(VALUE v, uint32_t depth, bool *cycle) {
         korb_mp_clear(z);
         return h;
     }
-    return (uint64_t)(uintptr_t)v;                     /* identity (user objects etc.) */
-}
-static uint64_t korb_deep_hash(VALUE v) {
-    bool cycle = false;
-    const uint64_t h = korb_deep_hash_d(v, 0, &cycle);
-    /* CRuby drives Array#hash through rb_exec_recursive_outer: a cycle anywhere
-     * below collapses the WHOLE result to a function of the outermost array's
-     * length, so rec.hash == [rec].hash == [[rec]].hash. */
-    if (UNLIKELY(cycle && KORB_ARRAY_P(v))) return 0x9E3779B97F4A7C15ULL + VAL2ARY(v)->len * 31u;
-    if (UNLIKELY(cycle && KORB_HASH_P(v)))  return 0xBEEFULL + VAL2HASH(v)->len * 31u;   /* same rule for Hash: h.hash == {x: h}.hash */
-    return h;
+    /* identity — the OBJECT_ID, not the address: a moving GC relocates the
+     * object and `obj.hash` must not change under it. */
+    { const VALUE oid = korb_oid_find(c->vm, v);
+      const VALUE id = (oid != KORB_NIL) ? oid : korb_oid_assign(c->vm, v);   /* assign does not GC */
+      return FIXNUM_P(id) ? (uint64_t)FIX2LONG(id) * 0x9e3779b97f4a7c15ULL : (uint64_t)(uintptr_t)v; }
 }
 
 /* #hash is salted per process (CVE-2011-4815): an attacker must not be able to
@@ -103,9 +97,85 @@ korb_hash_salt(void)
     return salt;
 }
 
+/* True when `v`'s class answers #hash with Ruby code of its own — then the
+ * value's hash is whatever that returns, not the structural one below. */
+static bool korb_has_user_hash(CTX *c, VALUE v) {
+    const VALUE cls = korb_dispatch_class(c, v);
+    if (!KORB_CLASS_P(cls)) return false;
+    const struct korb_method *const m = korb_class_find_method(cls, korb_intern(c->vm, "hash", 4), NULL);
+    return m != NULL && m->kind != KORB_METHOD_CFUNC;
+}
+
+/* korb_deep_hash_d cannot call back into Ruby, so it hashes an element with a
+ * user-defined #hash by identity.  CRuby dispatches, so containers of such
+ * objects compare by value ([node, …].hash is how rubocop's duplicate-key cop
+ * finds two identical AST nodes).  Walk the containers here and hand the leaves
+ * to the alloc-free version.  depth 0 is the receiver itself: dispatching there
+ * would re-enter the very #hash this implements. */
+static RESULT korb_deep_hash_r(CTX *c, VALUE *slots, VALUE v, uint32_t depth, bool *cycle, uint64_t *out) {
+    if (depth >= KORB_DEEP_HASH_MAX) { *out = 0xC0FFEEULL; return RESULT_OK(KORB_NIL); }
+    if (depth > 0 && korb_has_user_hash(c, v)) {
+        slots[0] = v;
+        const RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "hash", 4), 0, 0);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        *out = FIXNUM_P(r.value) ? (uint64_t)FIX2LONG(r.value) : korb_deep_hash_d(c, r.value, depth, cycle);
+        return RESULT_OK(KORB_NIL);
+    }
+    if (KORB_ARRAY_P(v) || KORB_SET_P(v)) {
+        const bool set = !KORB_ARRAY_P(v);
+        slots[0] = set ? VAL2SET(v)->elems : v;            /* root: a dispatch below may move it */
+        KorbArray *const a0 = VAL2ARY(slots[0]);
+        if (a0->head.flags & KORB_FL_JOIN_VISITING) { *cycle = true; *out = 0xC0FFEEULL; return RESULT_OK(KORB_NIL); }
+        a0->head.flags |= KORB_FL_JOIN_VISITING;
+        uint64_t h = (set ? 0x517cc1b7ULL : 0x345678ULL) + a0->len;
+        RESULT err = RESULT_OK(KORB_NIL);
+        for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
+            uint64_t eh;
+            err = korb_deep_hash_r(c, slots + 1, korb_items_data(VAL2ARY(slots[0])->items)[i], depth + 1, cycle, &eh);
+            if (UNLIKELY(err.state != KORB_NORMAL)) break;
+            h = set ? (h ^ eh) : (h * 31u + eh);
+        }
+        VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING;   /* re-read: a dispatch may have moved it */
+        if (UNLIKELY(err.state != KORB_NORMAL)) return err;
+        *out = h;
+        return RESULT_OK(KORB_NIL);
+    }
+    if (KORB_HASH_P(v)) {
+        slots[0] = v;
+        KorbHash *const h0 = VAL2HASH(slots[0]);
+        if (h0->head.flags & KORB_FL_JOIN_VISITING) { *cycle = true; *out = 0xBEEFULL; return RESULT_OK(KORB_NIL); }
+        h0->head.flags |= KORB_FL_JOIN_VISITING;
+        uint64_t h = 0x9e3779b9ULL + h0->len;
+        RESULT err = RESULT_OK(KORB_NIL);
+        for (uint32_t i = 0; i < VAL2HASH(slots[0])->len; i++) {
+            uint64_t kh, vh;
+            err = korb_deep_hash_r(c, slots + 1, korb_items_data(VAL2HASH(slots[0])->items)[2*i], depth + 1, cycle, &kh);
+            if (UNLIKELY(err.state != KORB_NORMAL)) break;
+            err = korb_deep_hash_r(c, slots + 1, korb_items_data(VAL2HASH(slots[0])->items)[2*i+1], depth + 1, cycle, &vh);
+            if (UNLIKELY(err.state != KORB_NORMAL)) break;
+            h ^= kh * 31u + vh;
+        }
+        VAL2HASH(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING;
+        if (UNLIKELY(err.state != KORB_NORMAL)) return err;
+        *out = h;
+        return RESULT_OK(KORB_NIL);
+    }
+    *out = korb_deep_hash_d(c, v, depth, cycle);
+    return RESULT_OK(KORB_NIL);
+}
+
 static RESULT korb_m_obj_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a;
-    uint64_t h = korb_deep_hash(VALUE_REF_GET(self)) ^ korb_hash_salt();
+    (void)a;
+    bool cycle = false;
+    uint64_t h;
+    const RESULT r = korb_deep_hash_r(c, slots, VALUE_REF_GET(self), 0, &cycle, &h);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    /* CRuby drives Array#hash through rb_exec_recursive_outer: a cycle anywhere
+     * below collapses the WHOLE result to a function of the outermost length. */
+    const VALUE sv = VALUE_REF_GET(self);
+    if (UNLIKELY(cycle && KORB_ARRAY_P(sv))) h = 0x9E3779B97F4A7C15ULL + VAL2ARY(sv)->len * 31u;
+    else if (UNLIKELY(cycle && KORB_HASH_P(sv))) h = 0xBEEFULL + VAL2HASH(sv)->len * 31u;
+    h ^= korb_hash_salt();
     h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 29;
     return RESULT_OK(LONG2FIX((korb_sword_t)(h >> 2)));   /* >>2 keeps it FIXABLE */
 }

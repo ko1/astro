@@ -17619,6 +17619,19 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
     if (KORB_RATIONAL_P(a0))                                /* Integer(Rational) → truncate toward zero */
         return korb_rat_intdiv(c, slots, VAL2RAT(a0)->num, VAL2RAT(a0)->den, 2);
+    if (KORB_COMPLEX_P(a0)) {                               /* a real Complex converts; an imaginary one is a RangeError */
+        if (UNLIKELY(!korb_value_eq(VAL2CPX(a0)->im, LONG2FIX(0)))) {
+            char *ib = NULL; size_t il = 0;
+            FILE *ims = open_memstream(&ib, &il);
+            if (ims) { korb_fprint_to_s(c, ims, a0); fclose(ims); }   /* CRuby names it with #to_s (no parens) */
+            RESULT er = exc ? korb_raise(c, slots, KORB_E_RANGE, 0, "can't convert %s into Integer", ib ? ib : "")
+                            : RESULT_OK(KORB_NIL);
+            free(ib);
+            return er;
+        }
+        slots[0] = VAL2CPX(a0)->re;
+        return korb_bi_integer(c, slots + 1, VALUE_SLICE_MAKE(&slots[0], 1));
+    }
     /* Optional base (2nd arg): valid only with a String (or #to_str) value;
      * coerced via #to_int; range 2..36 (0 = auto-detect). */
     int base = 0; bool base_given = (n >= 2);
