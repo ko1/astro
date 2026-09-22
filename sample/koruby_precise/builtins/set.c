@@ -1445,13 +1445,17 @@ static RESULT korb_collect_methods_ex(CTX *c, VALUE *slots, VALUE start_class, V
      * module (its ancestors are just itself + its own includes, not Kernel).
      * Kernel itself is the exception: it owns them. (is_bare_module computed at
      * function entry — start_class is stale here after the loop's GCs.) */
-    if ((vis_mask & (1u << 1)) && (inherit ? !is_bare_module : is_kernel)) {   /* inherit=false lists only Kernel's OWN builtins */
+    if ((vis_mask & (1u << 1)) && (inherit ? has_kernel : is_kernel)) {   /* inherit=false lists only Kernel's OWN builtins */
         for (uint32_t i = 0; i < c->vm->method_cnt; i++) {
             if (c->vm->methods[i]->kind != KORB_METHOD_BUILTIN) continue;
             const VALUE sym = ID2SYM(c->vm->methods[i]->mid);
             bool dup = false;
             const KorbArray *const r = VAL2ARY(VALUE_REF_GET(result));
             for (uint32_t j = 0; j < r->len; j++) if (korb_items_data(r->items)[j] == sym) { dup = true; break; }
+            if (!dup) {   /* an `undef_method :puts` nearer in the MRO hides it (delegate.rb undefs the lot) */
+                const KorbArray *const b = VAL2ARY(VALUE_REF_GET(blocked));
+                for (uint32_t j = 0; j < b->len; j++) if (korb_items_data(b->items)[j] == sym) { dup = true; break; }
+            }
             if (!dup) CHECK(korb_ary_push_val(c, slots + 3, result, sym));
         }
         if (is_kernel)   /* Kernel's own private module_function block-methods */

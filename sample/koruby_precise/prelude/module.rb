@@ -159,6 +159,13 @@ class Module
     @__autoloads ||= {}
   end
 
+  # Read-only view: `autoload?` / the resolver must not create the table, since
+  # a FROZEN module (the singleton class of a frozen object, say) can still be
+  # asked — CRuby's autoload? never writes.
+  def __autoload_table_r
+    @__autoloads || {}
+  end
+
   # Drop one registration WITHOUT creating the table: a frozen module can still
   # be an ancestor of the one whose autoload just fired.
   def __autoload_drop(name)
@@ -194,12 +201,12 @@ class Module
     n = name.to_sym
     scope = self
     while scope
-      t = scope.__autoload_table
+      t = scope.__autoload_table_r
       return [scope, t[n]] if t.key?(n)
       scope.ancestors.each do |m|
         next if m.equal?(scope)
-        next unless m.respond_to?(:__autoload_table, true)
-        tbl = m.__autoload_table
+        next unless m.respond_to?(:__autoload_table_r, true)
+        tbl = m.__autoload_table_r
         return [m, tbl[n]] if tbl.key?(n)
       end
       scope = scope.__lexical_parent
@@ -242,16 +249,16 @@ class Module
     n = name.is_a?(Symbol) ? name : name.to_str.to_sym
     # 自分の登録が先: const_defined? は未ロードの autoload も真を返すので、
     # 先に問うと自分の登録を見失う
-    if __autoload_table.key?(n)
-      p0 = __autoload_table[n]
+    if __autoload_table_r.key?(n)
+      p0 = __autoload_table_r[n]
       return __autoload_loaded?(p0) ? nil : p0     # 既に require 済みなら nil (CRuby)
     end
     return nil if const_defined?(n, false)
     return nil unless inherit
     ancestors.each do |m|
       next if m.equal?(self)
-      next unless m.respond_to?(:__autoload_table, true)
-      tbl = m.__autoload_table
+      next unless m.respond_to?(:__autoload_table_r, true)
+      tbl = m.__autoload_table_r
       # const_defined? counts a PENDING autoload as defined, so it cannot be used
       # to tell "already loaded" here — __autoload_loaded? below does that.
       next unless tbl.key?(n)
