@@ -519,7 +519,8 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 }
                 KORB_FMT_S_WRITE(ms, spec, korb_strbuf_data(VAL2STR(arg)->buf), VAL2STR(arg)->len);
             }
-            else if ((KORB_OBJECT_P(arg) || KORB_CLASS_P(arg)) && fmt_stable) {   /* user object / class: dispatch #to_s (honours overrides) */
+            else if ((KORB_OBJECT_P(arg) || KORB_CLASS_P(arg) || KORB_REGEXP_P(arg) ||
+                      KORB_MATCHDATA_P(arg)) && fmt_stable) {   /* user object / class / the types the C printer has no form for: dispatch #to_s */
                 slots[1] = arg;
                 RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) { coerce_err = sr; has_coerce_err = true; err = true; break; }

@@ -15188,6 +15188,18 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         fputc('>', fp);
         return;
       }
+      case KORB_OBJ_REGEXP:                            /* "(?-mix:re)" — a composed pattern is built from these */
+      case KORB_OBJ_MATCHDATA:
+        if (slots != NULL) {                           /* no C form: ask the object (String#% / Array#join land here) */
+            slots[0] = v;
+            const RESULT tsr = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);
+            if (tsr.state == KORB_NORMAL && KORB_STRING_P(tsr.value)) {
+                const KorbString *const ts = VAL2STR(tsr.value);
+                fwrite(korb_strbuf_data(ts->buf), 1, ts->len, fp);
+                return;
+            }
+        }
+        break;
     }
     fputs("#<Object>", fp);
 }
