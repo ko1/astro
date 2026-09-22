@@ -179,6 +179,18 @@ SCRIPTS    = %w[Latin Greek Cyrillic Armenian Hebrew Arabic Syriac Thaana
                 Ugaritic Buginese Glagolitic Kharoshthi Syloti_Nagri
                 New_Tai_Lue Tifinagh Old_Persian Balinese Cuneiform
                 Nko Phags_Pa Phoenician]
+# Short aliases from PropertyAliases.txt for the binary properties above.
+# Generated code asks for these (unicode-emoji's REGEX_WELL_FORMED uses
+# `\p{RI}`).  Anything the host Ruby rejects is skipped, like every other
+# name here, so the list costs nothing where Onigmo has no alias.
+ALIASES    = %w[RI Bidi_C CI CWCF CWCM CWL CWT CWU DI Dep Dia Ext
+                EBase EComp EMod EPres ExtPict
+                Gr_Base Gr_Ext Gr_Link Hex AHex IDC IDS IDSB IDST Ideo
+                Join_C LOE NChar OAlpha ODI OGr_Ext OIDC OIDS OLower
+                OMath OUpper PCM Pat_Syn Pat_WS QMark SD STerm Term
+                UIdeo VS WSpace XIDC XIDS]
+# Still absent, because no gem has asked yet: the ~350 block names (`\p{InHebrew}`)
+# and `\p{Age=X.Y}`.  Both are mechanical to add here if one does.
 # POSIX bracket classes — `[[:name:]]`.  Not always the same set as the
 # same-named `\p{}` property (e.g. [[:punct:]] also takes the ASCII
 # symbol characters that \p{Punct} rejects), so they get their own list.
@@ -202,7 +214,7 @@ intern = lambda do |ranges|
 end
 
 props = []
-(CATEGORIES + LONG_NAMES + SCRIPTS).each do |name|
+(CATEGORIES + LONG_NAMES + ALIASES + SCRIPTS).each do |name|
   ranges = ranges_for("\\p{#{name}}")
   next if ranges.empty?
   off, len = intern.call(ranges)
