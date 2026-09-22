@@ -10,10 +10,23 @@ struct korb_gen_sink {
     VALUE *def_env;
     VALUE *cself;
     VALUE *break_slot;   /* rooted slot on the driver's frame for the break value */
-    VALUE *collect;      /* take_while: rooted slot holding the result Array */
+    VALUE *collect;      /* take_while / map / select / …: rooted slot holding the result Array */
     int    kind;
     bool   broke;
+    struct korb_gen_sink *prev;   /* the sink this one suspended (drives nest) */
+    uint32_t depth;               /* 1-based; a yielder records the depth it was created at */
 };
+/* The sink a yielder belongs to.  One VM-global `gen_sink` is not enough: a
+ * generator whose body drives ANOTHER generator leaves its own yielder live
+ * while the inner drive's sink is installed, and the outer `y.yield` would then
+ * feed the inner block (Lazy#eager: `Enumerator.new { |y| lazy.each { |*a|
+ * y.yield(*a) } }` fed itself and recursed).  Each yielder records its depth. */
+static struct korb_gen_sink *korb_gen_sink_at(const CTX *c, VALUE depth) {
+    if (!FIXNUM_P(depth) || FIX2LONG(depth) <= 0) return NULL;
+    struct korb_gen_sink *s = c->vm->gen_sink;
+    while (s != NULL && s->depth != (uint32_t)FIX2LONG(depth)) s = s->prev;
+    return s;
+}
 /* ---- Enumerator (eager): values materialized at creation ----------------- */
 /* Build from a values Array + a desc String (or nil).  vals/desc must be rooted
  * by the caller's slots region; we root-copy into the new object. */
@@ -107,10 +120,11 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
         slots[1] = korb_ivar_get(c, VALUE_REF_GET(self), csym);   /* re-read after op dispatch GC */
         slots[0] = korb_items_data(VAL2ARY(slots[1])->items)[0];
     }
-    if (keep && FIXNUM_P(limv) && FIX2LONG(limv) == -2 && c->vm->gen_sink) {
+    struct korb_gen_sink *const sink =
+        (VAL2ARY(slots[1])->len >= 5) ? korb_gen_sink_at(c, korb_items_data(VAL2ARY(slots[1])->items)[4]) : NULL;
+    if (keep && FIXNUM_P(limv) && FIX2LONG(limv) == -2 && sink != NULL) {
         /* streaming-each sink: hand the value to the user block instead of
          * collecting.  A block break / StopIteration stops the whole drive. */
-        struct korb_gen_sink *const sink = c->vm->gen_sink;
         slots[2] = v;                                         /* root across the yield */
         uint32_t yn = 1;
         if (multi) {                                          /* re-spread so block arity rules apply */
@@ -127,6 +141,15 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
                 return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit");
             slots[3] = slots[2];                              /* the value (block result was the predicate) */
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(sink->collect), slots[3]));
+        } else if (sink->kind >= 2) {                         /* map(2) / select(3) / reject(4) / filter_map(5) */
+            bool push = true;
+            switch (sink->kind) {
+              case 2: slots[3] = yr.value; break;
+              case 3: push = KORB_TRUTHY(yr.value);  slots[3] = slots[2]; break;
+              case 4: push = !KORB_TRUTHY(yr.value); slots[3] = slots[2]; break;
+              default: push = KORB_TRUTHY(yr.value); slots[3] = yr.value; break;
+            }
+            if (push) CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(sink->collect), slots[3]));
         }
         if (term) return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit");   /* take's last value: streamed, now stop */
         return RESULT_OK(want_value ? yr.value : VALUE_REF_GET(self));
@@ -195,12 +218,15 @@ static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, korb_sword
         }
     }
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 8));         /* collector (returned) */
-    slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 4));        /* @__c = [collector, limit, ops, op_state] */
+    slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 5));        /* @__c = [collector, limit, ops, op_state, sink_depth] */
     { VALUE_REF pr = VALUE_REF_AT(&slots[3]);
       CHECK(korb_ary_push_val(c, slots + 4, pr, slots[2]));
       CHECK(korb_ary_push_val(c, slots + 4, pr, LONG2FIX(limit)));
       CHECK(korb_ary_push_val(c, slots + 4, pr, slots[0]));
-      CHECK(korb_ary_push_val(c, slots + 4, pr, slots[1])); }
+      CHECK(korb_ary_push_val(c, slots + 4, pr, slots[1]));
+      /* this run's sink is the one installed now; a nested drive gets its own */
+      CHECK(korb_ary_push_val(c, slots + 4, pr,
+                              LONG2FIX(vm->gen_sink ? (korb_sword_t)vm->gen_sink->depth : 0))); }
     slots[4] = UNWRAP(korb_obj_new(c, slots + 4, vm->yielder_class));
     CHECK(korb_ivar_set(c, slots + 5, VALUE_REF_AT(&slots[4]), korb_intern(vm, "@__c", 4), slots[3]));
     if (limit == 0) return RESULT_OK(slots[2]);               /* take(0): no run */
@@ -223,14 +249,16 @@ static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, korb_sword
 static RESULT korb_enum_gen_drive_block(CTX *c, VALUE *slots, VALUE_REF self, int kind,
                                         NODE *block, VALUE *def_env, VALUE *cself) {
     slots[0] = KORB_NIL;                                      /* [0] = rooted break-value slot */
-    slots[1] = (kind == 1) ? UNWRAP(korb_ary_new(c, slots + 1, 8)) : KORB_NIL;   /* [1] = take_while collector */
-    struct korb_gen_sink sink = { block, def_env, cself, &slots[0], &slots[1], kind, false };
+    slots[1] = (kind >= 1) ? UNWRAP(korb_ary_new(c, slots + 1, 8)) : KORB_NIL;   /* [1] = result collector */
     struct korb_gen_sink *const prev = c->vm->gen_sink;       /* save (nesting) */
+    struct korb_gen_sink sink = { block, def_env, cself, &slots[0], &slots[1], kind, false,
+                                  prev, prev ? prev->depth + 1u : 1u };
     c->vm->gen_sink = &sink;
     RESULT r = korb_enum_gen_run(c, slots + 2, self, -2);
     c->vm->gen_sink = prev;                                   /* restore */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (kind == 1) return RESULT_OK(slots[1]);               /* take_while → the collected Array */
+    if (kind >= 2) return sink.broke ? RESULT_OK(slots[0]) : RESULT_OK(slots[1]);   /* map/select/… → collected (a break wins) */
     return sink.broke ? RESULT_OK(slots[0]) : RESULT_OK(r.value);   /* natural end → the generator block's return value */
 }
 static RESULT korb_enum_gen_each_stream(CTX *c, VALUE *slots, VALUE_REF self,
@@ -871,7 +899,19 @@ static RESULT korb_lazy_op(CTX *c, VALUE *slots, VALUE_REF self, const char *op,
         slots[1] = ID2SYM(korb_intern(c->vm, op, (uint32_t)strlen(op)));
         return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1);
     }
-    if (SELF_ENUM->mode == 3) { RESULT fr = korb_enum_force_gen(c, slots, self); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }
+    if (SELF_ENUM->mode == 3) {
+        /* Stream the generator and apply the op per value: CRuby runs the block
+         * INSIDE the source's yield, and the interleaving is observable when the
+         * source keeps state between yields (rubocop-ast's NodePattern counts
+         * captures across union branches that way).  Forcing first would run the
+         * whole source before the first block call. */
+        const int k = !strcmp(op, "map") || !strcmp(op, "collect")            ? 2
+                    : !strcmp(op, "select") || !strcmp(op, "filter") || !strcmp(op, "find_all") ? 3
+                    : !strcmp(op, "reject")                                   ? 4
+                    : !strcmp(op, "filter_map")                               ? 5 : 0;
+        if (k != 0) return korb_enum_gen_drive_block(c, slots, self, k, block, def_env, cself);
+        RESULT fr = korb_enum_force_gen(c, slots, self); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+    }
     if (SELF_ENUM->mode != 0) {                                  /* lazy(1)/cycle(2)/lazy-generator(4): defer (chain) */
         slots[0] = UNWRAP(korb_block_to_proc(c, slots, block, def_env, cself));
         return korb_lazy_chain(c, slots + 1, self, op, slots[0]);
