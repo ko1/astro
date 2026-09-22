@@ -110,6 +110,32 @@ static RESULT korb_m_set_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (!found) { slots[0] = SELF_SET->elems; CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1])); }   /* slots[1] = rooted needle */
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* Set#initialize(enum = nil, &block) — private, and only reachable through a
+ * subclass's own #initialize calling `super` (Set.new builds the payload
+ * itself).  Without it that `super` fell through to BasicObject#initialize,
+ * which takes no arguments (concurrent-ruby wraps ::Set exactly this way). */
+static RESULT korb_m_set_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                    NODE *block, VALUE *def_env, VALUE *cself) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    if (UNLIKELY(n > 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", n);
+    if (n == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL) return RESULT_OK(VALUE_REF_GET(self));
+    const VALUE src = korb_set_elems_of(VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(src == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be enumerable");
+    slots[0] = src;                                    /* root: the block below can allocate */
+    for (uint32_t i = 0; ; i++) {
+        if (i >= VAL2ARY(slots[0])->len) break;
+        slots[1] = korb_items_data(VAL2ARY(slots[0])->items)[i];
+        if (block != NULL) {
+            const RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
+            if (UNLIKELY(br.state != KORB_NORMAL)) return br;
+            slots[1] = br.value;
+        }
+        const RESULT ar = korb_m_set_add(c, slots + 2, self, VALUE_SLICE_MAKE(&slots[1], 1));
+        if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_set_add_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     bool found; RESULT r = korb_set_member_disp(c, slots, SELF_SET->elems, SELF_SET->by_identity, VALUE_SLICE_GET(a, 0), &found);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;

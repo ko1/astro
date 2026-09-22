@@ -324,10 +324,12 @@ static NODE *kp_send_n(struct kp_ctx *tc, uint32_t mid, uint32_t line, NODE *rec
 #define KP_SEND2_SC (3u + KORB_FRAME_HDR)   /* recv + 2 args        */
 #define KP_SENDN_SC(n) ((1u + (n)) + KORB_FRAME_HDR)   /* recv + n args */
 
-/* True when no argument in the list is a `*splat` (fixed-arity lowering is only
- * valid then). */
+/* True when every argument has a fixed shape — no `*splat` and no `...`.  Only
+ * then may a call be lowered to a fixed-arity node (binop / aref / aset). */
 static bool kp_no_splat_p(struct pm_node *const *nodes, size_t n) {
-    for (size_t i = 0; i < n; i++) if (PM_NODE_TYPE_P(nodes[i], PM_SPLAT_NODE)) return false;
+    for (size_t i = 0; i < n; i++)
+        if (PM_NODE_TYPE_P(nodes[i], PM_SPLAT_NODE) || PM_NODE_TYPE_P(nodes[i], PM_FORWARDING_ARGUMENTS_NODE))
+            return false;
     return true;
 }
 
@@ -2628,7 +2630,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
      * arity, so it falls through to the generic splat send below) */
     enum kp_binop op = kp_binop_kind(name);
     if (!sn && op != KP_BINOP_NONE && argc == 1 &&
-        !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE)) {
+        kp_no_splat_p(cn->arguments->arguments.nodes, 1)) {
         uint32_t n_slots = kind_node_plus.slot_count;   /* lhs staging (all binops alike) */
         NODE *lhs, *rhs;
         WITH_CHAIN(tc, n_slots, (lhs = transduce(tc, cn->receiver),
@@ -2646,7 +2648,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
      * else deopt to a real send).  No block, no splat args. */
     if (!cn->block && !sn) {
         if (mid == tc->c->vm->mid_aref && argc == 1 &&
-            !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE)) {
+            kp_no_splat_p(cn->arguments->arguments.nodes, 1)) {
             NODE *recv, *idx;
             WITH_CHAIN(tc, kind_node_aref.slot_count,
                        (recv = transduce(tc, cn->receiver),
@@ -2654,8 +2656,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             return KP_LINK(tc, node_aref, kp_flink_at(tc, line, kind_node_aref.slot_count), recv, idx);
         }
         if (mid == tc->c->vm->mid_aset && argc == 2 &&
-            !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE) &&
-            !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[1], PM_SPLAT_NODE)) {
+            kp_no_splat_p(cn->arguments->arguments.nodes, 2)) {
             NODE *recv, *idx, *val;
             WITH_CHAIN(tc, kind_node_aset.slot_count,
                        (recv = transduce(tc, cn->receiver),

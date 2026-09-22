@@ -270,8 +270,13 @@ module JSON
   end
 end
 
-# Object#to_json — the json gem's default is the object's #to_s as a JSON string
-# (generating `self` would come straight back here).
+# #to_json: the types the generator writes natively answer with their own JSON;
+# everything else gets the json gem's default, which is the object's #to_s as a
+# JSON *string* (generating `self` would come straight back into the generator).
+[Hash, Array, String, Integer, Float, Symbol, NilClass, TrueClass, FalseClass].each do |k|
+  k.class_eval { def to_json(*) = JSON.generate(self) }
+end
+
 class Object
   def to_json(*) = JSON.generate(to_s)
 end

@@ -12452,6 +12452,27 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                 }
                 return RESULT_OK(slots[1]);
             }
+            /* Range subclass with its OWN #initialize: build the real (still
+             * empty) Range payload so the `super(b, e)` inside it has something
+             * to fill.  A subclass without one took the Range.new path above. */
+            if (base == KORB_C_RANGE) {
+                VALUE idef = KORB_NIL;
+                struct korb_method *const uinit = korb_class_find_method(*recv_slot, vm->mid_initialize, &idef);
+                if (uinit != NULL && uinit->kind == KORB_METHOD_ISEQ) {
+                    slots[0] = *recv_slot;                     /* root the subclass */
+                    slots[1] = KORB_NIL;
+                    RESULT rr = korb_range_new(c, slots + 2, VALUE_REF_AT(&slots[1]), KORB_NIL, 0);
+                    if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+                    slots[1] = rr.value;
+                    ((AroObjectHeader *)(uintptr_t)slots[1])->flags &= ~(uint32_t)KORB_FL_FROZEN;   /* #initialize writes it */
+                    korb_klass_override_set(c, slots[1], slots[0]);
+                    VALUE *const ibase = slots - argc;
+                    RESULT ir = korb_invoke_method(c, slots, uinit, argc, line, vm->mid_initialize,
+                                                   slots[1], idef, block, def_env, KORB_CSELF_VAL(captured_self));
+                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    return RESULT_OK(ibase[-1]);   /* a Range SUBCLASS is not frozen (CRuby) */
+                }
+            }
             if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET) {
                 uint32_t imid = vm->mid_initialize;
                 VALUE idef = KORB_NIL;
@@ -14475,6 +14496,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SET, "add?", korb_m_set_add_q, 1);
     korb_def_cmethod(c, KORB_C_SET, "delete", korb_m_set_delete, 1);
     korb_def_cmethod(c, KORB_C_SET, "delete?", korb_m_set_delete_q, 1);
+    korb_def_cmethod_blk(c, KORB_C_SET, "initialize", korb_m_set_initialize, -1);
+    { struct korb_method *const mi = korb_cmethod_slot(c->vm, KORB_C_SET, "initialize"); if (mi) mi->visibility = 1; }
     korb_def_cmethod_blk(c, KORB_C_SET, "each", korb_m_set_each, 0);
     korb_def_cmethod_blk(c, KORB_C_SET, "map", korb_m_set_map, 0);
     korb_def_cmethod_blk(c, KORB_C_SET, "collect", korb_m_set_map, 0);
