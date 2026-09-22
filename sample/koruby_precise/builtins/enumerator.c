@@ -213,6 +213,7 @@ static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, korb_sword
             if (!strcmp(opn, "uniq")) { slots[4] = UNWRAP(korb_hash_new(c, slots + 5, 8)); CHECK(korb_ary_push_val(c, slots + 5, st, slots[4])); continue; }   /* uniq: seen-Hash state */
             korb_sword_t init = 0;
             if (!strcmp(opn, "take") || !strcmp(opn, "drop")) init = FIX2LONG(korb_items_data(pair->items)[1]);
+            else if (!strcmp(opn, "with_index")) init = FIX2LONG(korb_items_data(pair->items)[1]);   /* running index (starts at the offset) */
             else if (!strcmp(opn, "drop_while")) init = 1;
             CHECK(korb_ary_push_val(c, slots + 2, st, LONG2FIX(init)));
         }
@@ -433,6 +434,23 @@ static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, uint32_t src_
             }
             continue;
         }
+        if (!strcmp(opn, "with_index")) {                       /* value → [value, idx], or block(value, idx) */
+            const korb_sword_t idx = FIX2LONG(korb_items_data(VAL2ARY(slots[voff + 2])->items)[oi]);
+            korb_ary_store_at(c, slots[voff + 2], oi, LONG2FIX(idx + 1));
+            slots[voff + 3] = (pair->len >= 3) ? korb_items_data(pair->items)[2] : KORB_NIL;   /* proc (rooted: the call GCs) */
+            if (slots[voff + 3] != KORB_NIL) {
+                /* Lazy#with_index runs the block for its side effect only — the
+                 * element that flows on is the ORIGINAL one (CRuby). */
+                RESULT wr = korb_call2(c, slots + voff + 4, slots[voff + 3], slots[voff], LONG2FIX(idx));
+                if (UNLIKELY(wr.state != KORB_NORMAL)) return wr;
+            } else {
+                slots[voff + 3] = UNWRAP(korb_ary_new(c, slots + voff + 4, 2));
+                CHECK(korb_ary_push_val(c, slots + voff + 4, VALUE_REF_AT(&slots[voff + 3]), slots[voff]));
+                CHECK(korb_ary_push_val(c, slots + voff + 4, VALUE_REF_AT(&slots[voff + 3]), LONG2FIX(idx)));
+                slots[voff] = slots[voff + 3];
+            }
+            continue;
+        }
         if (!strcmp(opn, "uniq")) {                             /* dedup by value (or block result); op_state[oi] holds a seen-Hash */
             slots[voff + 3] = slots[voff];                      /* key = value */
             if (korb_items_data(pair->items)[1] != KORB_NIL) {             /* uniq(&block): key = block.call(value) */
@@ -525,10 +543,9 @@ static RESULT korb_lazy_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE value, u
             const korb_sword_t idx = (oi < 64) ? op_state[oi]++ : 0;
             const VALUE blk = (pair->len >= 3) ? korb_items_data(pair->items)[2] : KORB_NIL;
             if (blk != KORB_NIL) {
-                slots[1] = blk;
+                slots[1] = blk;                               /* block is a side effect; the value passes through */
                 RESULT wr = korb_call2(c, slots + 2, slots[1], slots[0], LONG2FIX(idx));
                 if (UNLIKELY(wr.state != KORB_NORMAL)) return wr;
-                slots[0] = wr.value;
             } else {
                 slots[1] = LONG2FIX(idx);
                 VALUE p = UNWRAP(korb_ary_new(c, slots + 2, 2));   /* [value, idx] */
@@ -1106,7 +1123,7 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
             korb_to_index(ov, &off);   /* ov is now Integer/Float — extract (truncating Float) */
         }
     }
-    if (SELF_ENUM->mode == 1) {                                  /* lazy (source): chain "with_index" [offset, block] */
+    if (SELF_ENUM->mode == 1 || SELF_ENUM->mode == 4) {          /* lazy (source or generator): chain "with_index" [offset, block] */
         slots[0] = LONG2FIX(off);
         slots[1] = KORB_NIL;
         if (block != NULL) { slots[1] = UNWRAP(korb_block_to_proc(c, slots + 1, block, def_env, cself)); }
