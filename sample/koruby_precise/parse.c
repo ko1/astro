@@ -1450,6 +1450,7 @@ static NODE *build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, siz
                                   uint32_t depth, int32_t slot);
 static NODE *build_call_args(struct kp_ctx *tc, struct pm_node **elems, size_t n);
 static NODE *kp_make_binding_node(struct kp_ctx *tc, uint32_t line);
+static NODE *kp_make_binding_node_x(struct kp_ctx *tc, uint32_t line, uint32_t user_dispatch);
 extern const struct NodeKind kind_node_hash_merge;   /* hash literal ** splat chain */
 extern const struct NodeKind kind_node_dstr_concat;  /* string-interp concat chain */
 extern const struct NodeKind kind_node_hash_set;     /* hash-literal set chain */
@@ -2235,7 +2236,7 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
      * enclosing locals stay reachable (and writable) even after frames close. */
     if (cn->receiver == NULL && argc == 0 && cn->block == NULL &&
         strcmp(kp_cid_cstr(tc, cn->name), "binding") == 0) {
-        return kp_make_binding_node(tc, kp_line(tc, (const pm_node_t *)cn));
+        return kp_make_binding_node_x(tc, kp_line(tc, (const pm_node_t *)cn), 1u);   /* a user's #binding wins */
     }
 
     /* `alias my_eval eval` in this file: the alias gets the same hidden-binding
@@ -3951,7 +3952,7 @@ kp_binding_scope_tbl(struct kp_ctx *tc, uint32_t *out_name_cnt)
 }
 
 static NODE *
-kp_make_binding_node(struct kp_ctx *tc, uint32_t line)
+kp_make_binding_node_x(struct kp_ctx *tc, uint32_t line, uint32_t user_dispatch)
 {
     uint32_t cnt = 0;
     uint32_t *tbl = kp_binding_scope_tbl(tc, &cnt);
@@ -3965,12 +3966,15 @@ kp_make_binding_node(struct kp_ctx *tc, uint32_t line)
      * that class inside the body. */
     const uint32_t cref_name = (tc->frame->anon_class_body || tc->frame->anon_cref_method)
                              ? 0u : kp_cref_owner_path(tc);
-    NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)tbl, cnt, cref_name);
+    NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)tbl, cnt, cref_name, user_dispatch);
     bake_add(tc, &nb->u.node_binding.def_env_off);    /* frame base shifts with frame_size */
     bake_add(tc, &nb->u.node_binding.self_off);       /* self at base[-1] (bottom header) */
     korb_reg_srcloc(tc->c->vm, nb, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), line);  /* for Binding#source_location */
     return nb;
 }
+/* the hidden binding eval(str) / class_eval(String) is lowered with: never a
+ * user's #binding */
+static NODE *kp_make_binding_node(struct kp_ctx *tc, uint32_t line) { return kp_make_binding_node_x(tc, line, 0u); }
 
 /* Value of `return` / `next` / `break` arguments: none → nil, one plain arg →
  * that value, splat or multiple args → an Array (CRuby wraps even a 1-element

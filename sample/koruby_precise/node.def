@@ -2952,8 +2952,16 @@ node_kwargs_mark(CTX *c, NODE *n, VALUE *slots, VALUE h@child)
 // def_env_off = frame base (locals at base[0..name_cnt)), self_off = lexical self,
 // name_syms = immortal sym table (a const char* runtime-ref so the SD stays shared).
 NODE_DEF
-node_binding(CTX *c, NODE *n, VALUE *slots, int32_t def_env_off, int32_t self_off, const char *name_syms, uint32_t name_cnt, uint32_t owner_name@sym)
+node_binding(CTX *c, NODE *n, VALUE *slots, int32_t def_env_off, int32_t self_off, const char *name_syms, uint32_t name_cnt, uint32_t owner_name@sym, uint32_t user_dispatch)
 {
+    /* `binding` is an ordinary Kernel method, so a class of its own (rubocop-ast
+     * has `attr_reader :binding`) wins — but only for a `binding` the program
+     * wrote, never for the hidden one eval(str) is lowered with. */
+    if (UNLIKELY(user_dispatch != 0)) {
+        bool handled = false;
+        const RESULT ur = korb_binding_user_method(c, slots, slots[self_off], &handled);
+        if (handled) return ur;
+    }
     /* The binding remembers the LEXICAL class it was taken in (by NAME — it is
      * resolved after the env allocations): `eval(str)` lowers to
      * eval(str, <this binding>), and that cref is what puts a `def` / `class` /

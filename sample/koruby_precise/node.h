@@ -335,6 +335,9 @@ RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op,
 RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE *rhs, const char *op, uint32_t line, bool *handled);   /* node_div coerce path */
 RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda);
 RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *scope_tbl, uint32_t name_cnt, VALUE self_val, uint32_t cref_name);
+/* `binding` is an ordinary Kernel method: dispatch a class's own #binding when
+ * it has one (*handled = true), else leave the node to build the Binding. */
+RESULT korb_binding_user_method(CTX *c, VALUE *slots, VALUE self, bool *handled);
 const uint32_t *korb_binding_tbl_flat(const uint32_t *syms, uint32_t cnt);   /* single-level packed scope table */
 void   korb_env_store(CTX *c, struct KorbEnv *e, uint32_t index, VALUE v);
 RESULT korb_str_mod(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs);
