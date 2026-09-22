@@ -142,10 +142,22 @@ static RESULT korb_re_build_md(CTX *c, VALUE *slots, VALUE subj, VALUE re, const
     return RESULT_OK((VALUE)md);
 }
 
-/* $~ : stored in the flat const table under "$~". */
+/* $~ : stored in the flat const table under "$~".  The table is append-only, so
+ * the row is found once and then addressed directly — a match used to pay a
+ * linear scan (get) plus the whole const_define path (set). */
 static uint32_t korb_re_tilde_sym(struct korb_vm *vm) { return korb_intern(vm, "$~", 2); }
-static void korb_re_set_lastmatch(CTX *c, VALUE md_or_nil) { korb_const_define(c, korb_re_tilde_sym(c->vm), md_or_nil); }
-static VALUE korb_re_get_lastmatch(CTX *c) { return korb_const_get(c->vm, korb_re_tilde_sym(c->vm)); }
+VALUE *korb_re_tilde_cell(CTX *c) {
+    struct korb_vm *const vm = c->vm;
+    if (UNLIKELY(vm->tilde_idx1 == 0)) {
+        const uint32_t sym = korb_re_tilde_sym(vm);
+        uint32_t ix = korb_const_index(vm, sym);
+        if (ix == UINT32_MAX) { korb_const_define(c, sym, KORB_NIL); ix = korb_const_index(vm, sym); }
+        vm->tilde_idx1 = ix + 1;
+    }
+    return &vm->const_vals[vm->tilde_idx1 - 1];
+}
+static void korb_re_set_lastmatch(CTX *c, VALUE md_or_nil) { *korb_re_tilde_cell(c) = md_or_nil; }
+static VALUE korb_re_get_lastmatch(CTX *c) { return *korb_re_tilde_cell(c); }
 /* Give $~ its own frozen copy of the subject, for callers about to mutate it
  * in place (gsub!/sub!/slice!): CRuby's MatchData#string is a frozen snapshot. */
 RESULT korb_re_lastmatch_detach(CTX *c, VALUE *slots) {

@@ -34,6 +34,8 @@ struct kp_frame {
     int32_t saved_chain;
     uint32_t synth_cnt;       /* synthetic temporaries appended after prism locals (e.g. case subject) */
     bool uses_block;          /* yield / block_given? seen → reserve 2 frame-top cells */
+    bool uses_backref;        /* the body can set `$~` (regexp literal / =~ / a matching method
+                               * name) → the invoke path saves and restores the caller's */
     bool it_param;            /* `{ it * 2 }` — slot 0 is the implicit `it` (prism lists no name for it) */
     bool module_function_mode; /* no-arg `module_function` seen in this class/module body */
     uint32_t method_mid;      /* enclosing def's name (0 = not a method body) — for super */
@@ -538,6 +540,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->saved_chain = tc->chain;
     f->synth_cnt = 0;
     f->uses_block = false;
+    f->uses_backref = false;
     f->it_param = false;
     f->module_function_mode = false;
     f->method_mid = 0;
@@ -577,6 +580,28 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
  * reserves the frame cells to match.  Only the enclosing method frame matters:
  * class/sclass bodies and blocks are entered through paths that already
  * save/restore it. */
+/* Mark the enclosing METHOD frame as "can set $~".  Ruby scopes the backref to
+ * the method frame, so only such a method has to save/restore the caller's —
+ * everything else cannot clobber it.  Blocks belong to their enclosing method
+ * (CRuby shares the frame), which is why the walk goes out to it. */
+static void kp_note_backref(struct kp_ctx *tc) {
+    struct kp_frame *mf = tc->frame;
+    while (mf && mf->method_mid == 0 && !mf->dm_body && mf->prev) mf = mf->prev;
+    if (mf) mf->uses_backref = true;
+}
+/* Method names whose builtin sets `$~` (CRuby sets the backref in the CALLER's
+ * frame from a C method, so a Ruby method that calls one must own the save).
+ * A regexp literal in the same body already marks it; this catches the shapes
+ * that pass a Regexp around in a variable. */
+static void kp_note_backref_call(struct kp_ctx *tc, const char *name) {
+    static const char *const setters[] = {
+        "=~", "!~", "match", "scan", "gsub", "gsub!", "sub", "sub!", "split",
+        "grep", "grep_v", "index", "rindex", "partition", "rpartition",
+        "last_match", "start_with?", "end_with?", "slice", "slice!", NULL,
+    };
+    for (uint32_t i = 0; setters[i]; i++)
+        if (strcmp(name, setters[i]) == 0) { kp_note_backref(tc); return; }
+}
 static void kp_needs_definee(struct kp_ctx *tc) {
     struct kp_frame *mf = tc->frame;
     while (mf->method_mid == 0 && mf->prev) mf = mf->prev;
@@ -2542,6 +2567,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     const char *name = kp_cid_cstr(tc, cn->name);
     uint32_t mid = kp_intern_cid(tc, cn->name);
     uint32_t line = kp_line(tc, (const pm_node_t *)cn);
+    kp_note_backref_call(tc, name);   /* a name that can set `$~` makes this method save/restore it */
     size_t argc = cn->arguments ? cn->arguments->arguments.size : 0;
 
     /* `recv.attr = v` is an assignment: it yields v, not whatever the setter
@@ -3217,7 +3243,8 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         bake_add(tc, &bp->u.node_blkparam.dst_off);
         body = ALLOC_node_seq(bp, body);
     }
-    uint32_t uses_block = tc->frame->uses_block ? 1u : 0u;
+    uint32_t uses_block = (tc->frame->uses_block ? KORB_DEFF_USES_BLOCK : 0u) |
+                          (tc->frame->uses_backref ? KORB_DEFF_USES_BACKREF : 0u);
     void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);   /* = locals + 2 if the method yields */
 
@@ -3237,7 +3264,8 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
      * ブロック付きの呼び出しは別ノード (node_call_blk) を通るので無関係。 */
     NODE *entry = NULL;
     if (kw_info == NULL && rest_slot < 0 && post_cnt == 0 && req_cnt == params_cnt)
-        entry = ALLOC_node_simple_entry(body, params_cnt, frame_size);
+        entry = ALLOC_node_simple_entry(body, params_cnt, frame_size,
+                                        (uses_block & KORB_DEFF_USES_BACKREF) ? 1u : 0u);
 
     /* self at the def site (enclosing frame) = the default definee */
     NODE *def;
@@ -4358,6 +4386,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return ALLOC_node_str(bytes, len);
       }
       case PM_REGULAR_EXPRESSION_NODE: {   /* /pat/ → Regexp (matching via astrogre) */
+        kp_note_backref(tc);
         const pm_regular_expression_node_t *rn = (const pm_regular_expression_node_t *)node;
         uint32_t len;
         const char *bytes = kp_strdup_pm(&rn->unescaped, &len);
@@ -4650,6 +4679,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return kp_send0(tc, to_sym, kp_line(tc, node), str);
       }
       case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE: {   /* /...#{ }.../ → Regexp(dstr, flags) */
+        kp_note_backref(tc);
         extern const struct NodeKind kind_node_regexp_dyn;
         const pm_interpolated_regular_expression_node_t *in = (const pm_interpolated_regular_expression_node_t *)node;
         uint32_t flags = in->base.flags & (PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE |
@@ -5181,6 +5211,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return mk;
       }
       case PM_MATCH_WRITE_NODE: {
+        kp_note_backref(tc);
         /* `/(?<n>…)/ =~ str` — the ONE form where a regexp literal binds its named
          * captures to local variables.  prism hands us the `=~` call plus one
          * local-variable target per name; desugar to
@@ -5207,12 +5238,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return ALLOC_node_seq(seq, bake_lget(tc, tmp));
       }
       case PM_MATCH_PREDICATE_NODE: {                /* `expr in pattern` → bool */
+        kp_note_backref(tc);
         const pm_match_predicate_node_t *mp = (const pm_match_predicate_node_t *)node;
         struct korb_pat *desc = build_pattern_desc(tc, mp->pattern);
         NODE *subj = transduce(tc, mp->value);
         return ALLOC_node_match_pred(subj, (void *)desc);
       }
       case PM_MATCH_REQUIRED_NODE: {                 /* `expr => pattern` → nil / raise */
+        kp_note_backref(tc);
         const pm_match_required_node_t *mr = (const pm_match_required_node_t *)node;
         struct korb_pat *desc = build_pattern_desc(tc, mr->pattern);
         NODE *subj = transduce(tc, mr->value);
@@ -5658,19 +5691,22 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const uint32_t gn = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)node)->name));
         if (gn == korb_intern(tc->c->vm, "$!", 2)) return ALLOC_node_errinfo();   /* $! = current exception */
         if (gn == korb_intern(tc->c->vm, "$@", 2)) return ALLOC_node_errinfo_bt(0);   /* $@ = $!.backtrace */
-        if (gn == korb_intern(tc->c->vm, "$&", 2)) return ALLOC_node_backref(0);  /* alias 経由 ($MATCH 等) */
-        if (gn == korb_intern(tc->c->vm, "$`", 2)) return ALLOC_node_backref(1);
-        if (gn == korb_intern(tc->c->vm, "$'", 2)) return ALLOC_node_backref(2);
-        if (gn == korb_intern(tc->c->vm, "$+", 2)) return ALLOC_node_backref(3);
+        if (gn == korb_intern(tc->c->vm, "$~", 2)) kp_note_backref(tc);           /* reading it starts the frame at nil */
+        if (gn == korb_intern(tc->c->vm, "$&", 2)) { kp_note_backref(tc); return ALLOC_node_backref(0); }  /* alias 経由 ($MATCH 等) */
+        if (gn == korb_intern(tc->c->vm, "$`", 2)) { kp_note_backref(tc); return ALLOC_node_backref(1); }
+        if (gn == korb_intern(tc->c->vm, "$'", 2)) { kp_note_backref(tc); return ALLOC_node_backref(2); }
+        if (gn == korb_intern(tc->c->vm, "$+", 2)) { kp_note_backref(tc); return ALLOC_node_backref(3); }
         if (gn == korb_intern(tc->c->vm, "$=", 2))                /* removed: warns, always false */
             return ALLOC_node_dollar_eq(0, ALLOC_node_lit(KORB_FALSE));
         return KP_CONST(tc, gn, 0, INT32_MIN, INT32_MIN, 0);
       }
       case PM_NUMBERED_REFERENCE_READ_NODE: {   /* $1..$9 → group n of the last match ($~) */
         const uint32_t num = ((const pm_numbered_reference_read_node_t *)node)->number;
+        kp_note_backref(tc);
         return ALLOC_node_backref(100u + num);
       }
       case PM_BACK_REFERENCE_READ_NODE: {       /* $& / $` / $' / $+ */
+        kp_note_backref(tc);
         const uint32_t nm = kp_intern_cid(tc, ((const pm_back_reference_read_node_t *)node)->name);
         uint32_t kind = 0;
         if      (nm == korb_intern(tc->c->vm, "$&", 2)) kind = 0;
@@ -5681,6 +5717,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_GLOBAL_VARIABLE_WRITE_NODE: {
         { NODE *ro = kp_gvar_readonly_write(tc, node, ((const pm_global_variable_write_node_t *)node)->name); if (ro) return ro; }
+        if ((kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, ((const pm_global_variable_write_node_t *)node)->name))
+            == korb_intern(tc->c->vm, "$~", 2)) kp_note_backref(tc);   /* `$~ = v` is frame-local too */
         if ((kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, ((const pm_global_variable_write_node_t *)node)->name))
             == korb_intern(tc->c->vm, "$@", 2)) {                /* `$@ = v` → $!.set_backtrace(v) */
             /* the value is an @child evaluated at this node's own cursor

@@ -4966,7 +4966,8 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry
     m->visibility = (k->cur_visibility == 3) ? 1 : k->cur_visibility;   /* mode 3 = module_function: private instance method */
     m->owner = klass;        /* super's def_class + __method__ source (frame fs-2) */
     m->refine_set = c->refinements;   /* refinements are lexical: capture the defining scope's */
-    m->uses_block = (uint8_t)uses_block;
+    m->uses_block = (uint8_t)(uses_block & KORB_DEFF_USES_BLOCK);
+    m->uses_backref = (uint8_t)((uses_block & KORB_DEFF_USES_BACKREF) != 0);
     m->no_block = korb_pi_no_block(param_info);
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;
@@ -5552,7 +5553,10 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     const bool refine_scope = UNLIKELY(vm->refinements_active);
     if (cref_scope) { korb_cref_push(c); c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL; }
     if (refine_scope) { korb_refine_push(c); c->refinements = m->refine_set; }
+    const bool bref_scope = UNLIKELY(m->uses_backref != 0);   /* $~ is per method frame */
+    if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell); *bcell = KORB_NIL; }
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
+    if (bref_scope) *korb_re_tilde_cell(c) = korb_bref_pop(c);
     if (cref_scope) korb_cref_pop(c);
     if (refine_scope) korb_refine_pop(c);
     else if (UNLIKELY(c->refinements != KORB_NIL)) c->refinements = KORB_NIL;   /* the body turned refinements on */
@@ -5654,7 +5658,10 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     }
   run_body:;
     NODE *const body = m->body;
+    const bool bref_scope = UNLIKELY(m->uses_backref != 0);   /* $~ is per method frame */
+    if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell); *bcell = KORB_NIL; }
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
+    if (bref_scope) *korb_re_tilde_cell(c) = korb_bref_pop(c);
     if (r.state == KORB_RETURN) { if (c->return_target == NULL || c->return_target == base) { r.state = KORB_NORMAL; c->return_target = NULL; } }
     else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
     if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
@@ -8435,7 +8442,8 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
     struct korb_method *m = korb_method_slot(c, mid);
     m->kind = KORB_METHOD_ISEQ;
     m->refine_set = c->refinements;   /* see korb_class_def_method */
-    m->uses_block = (uint8_t)uses_block;
+    m->uses_block = (uint8_t)(uses_block & KORB_DEFF_USES_BLOCK);
+    m->uses_backref = (uint8_t)((uses_block & KORB_DEFF_USES_BACKREF) != 0);
     m->no_block = korb_pi_no_block(param_info);
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;

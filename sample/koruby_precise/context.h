@@ -891,6 +891,7 @@ struct korb_method {
     uint8_t  visibility;     /* 0 public / 1 private / 2 protected */
     uint8_t  kind;           /* enum korb_method_kind */
     uint8_t  uses_block;     /* ISEQ: reserves 2 frame-top cells for yield/block_given? */
+    uint8_t  uses_backref;   /* ISEQ: the body can touch `$~`, so the invoke saves the caller's */
     uint8_t  is_simple;      /* ISEQ: fixed positional arity, no rest/opt/post/kw/block —
                               * eligible for the streamlined korb_invoke_simple path. */
     int32_t  params_cnt;     /* total positional (req+opt); -1 = variadic (builtins only) */
@@ -1045,6 +1046,7 @@ struct korb_vm {
      * for Module#constants; also root-scanned (owners are classes). */
     uint32_t *const_names;
     VALUE    *const_vals;
+    uint32_t  tilde_idx1;            /* const-table index of "$~", +1 (0 = not resolved yet) */
     VALUE    *const_owners;
     uint32_t  const_cnt, const_capa;
     /* Open-addressed index over the table above: (name_sym, owner class serial)
@@ -1402,6 +1404,11 @@ struct CTX_struct {
      * stale pointer back into the context.  Same shape as refine_saved above. */
     VALUE    *cref_saved;
     uint32_t  cref_n, cref_cap;
+    /* `$~` is per METHOD frame in Ruby: a callee's match must not overwrite the
+     * caller's.  The invoke paths park the caller's MatchData here (a C local
+     * would go stale across a moving collection) and put it back on the way out. */
+    VALUE    *bref_saved;
+    uint32_t  bref_n, bref_cap;
     VALUE    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
     uint32_t  errinfo_live;          /* GC-scan depth: max over the running + all suspended threads */
@@ -1543,6 +1550,9 @@ struct CTX_struct {
     for (uint32_t _ci = 0; _ci < (c)->cref_n; _ci++)                         \
         if ((c)->cref_saved[_ci] != KORB_NIL)                                \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->cref_saved[_ci]);     \
+    for (uint32_t _bi = 0; _bi < (c)->bref_n; _bi++)                         \
+        if ((c)->bref_saved[_bi] != KORB_NIL && (c)->bref_saved[_bi] != 0)   \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->bref_saved[_bi]);     \
     for (uint32_t _ri = 0; _ri < (c)->refine_n; _ri++) {                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->refine_saved[_ri]);       \
     }                                                                        \

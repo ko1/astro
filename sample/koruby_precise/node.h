@@ -295,6 +295,9 @@ void korb_const_index_sync(struct korb_vm *vm);   /* rebuild the (name, owner) i
 uint32_t korb_const_in_ancestry(const struct korb_vm *vm, VALUE cref, uint32_t name_sym);    /* cref's ancestry (MRO order) */
 uint32_t korb_const_in_ancestry_scoped(const struct korb_vm *vm, VALUE recv, uint32_t name_sym);   /* Recv::NAME — skips Object */
 RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj);
+/* `uses_block` operand of node_def/node_singleton_def: a small flags word. */
+#define KORB_DEFF_USES_BLOCK   1u
+#define KORB_DEFF_USES_BACKREF 2u
 void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry,
                              uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
                              uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info, void *locals_info);
@@ -962,6 +965,21 @@ void korb_frame_audit_ep(const VALUE *base, uint32_t mid, const char *where);
  * closed at ITS defining frame's return (a define_method body's EP is the proc's
  * env, whose loc is that long-gone frame).  Re-closing copies the new frame's
  * locals over the captured ones — the values silently change under the closure. */
+/* The `$~` cell (builtins/regexp.c).  Ruby scopes the backref to the METHOD
+ * frame: an ISEQ invoke parks the caller's and starts at nil. */
+VALUE *korb_re_tilde_cell(CTX *c);
+static inline void korb_bref_push(CTX *c, VALUE v) {
+    if (UNLIKELY(c->bref_n == c->bref_cap)) {
+        c->bref_cap = c->bref_cap ? c->bref_cap * 2 : 64;
+        c->bref_saved = realloc(c->bref_saved, sizeof(VALUE) * c->bref_cap);
+        if (!c->bref_saved) { fprintf(stderr, "koruby_precise: out of memory (backref scopes)\n"); abort(); }
+    }
+    c->bref_saved[c->bref_n++] = v;
+}
+static inline VALUE korb_bref_pop(CTX *c) {
+    return LIKELY(c->bref_n != 0) ? c->bref_saved[--c->bref_n] : KORB_NIL;
+}
+
 static inline bool korb_frame_escaped(const VALUE *base) {
     const VALUE pv = korb_ep_get(base);
     return pv != 0 && (pv & 7u) == 0 && VAL2ENV(pv)->loc == base && !VAL2ENV(pv)->closed;
@@ -1001,7 +1019,10 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
      * top cell.  Every korb_invoke_simple caller stages self there (bottom header). */
     (void)def_class; (void)self;
     NODE *const body = m->body;
+    const bool bref_scope = UNLIKELY(m->uses_backref != 0);   /* $~ is per method frame */
+    if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell); *bcell = KORB_NIL; }
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
+    if (bref_scope) *korb_re_tilde_cell(c) = korb_bref_pop(c);   /* re-read: the table may have grown */
     if (r.state == KORB_RETURN) {
         /* Consume only a return targeted at this method (NULL = nearest-method,
          * the common case) — a block's `return` aimed at an outer method passes

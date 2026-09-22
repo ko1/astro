@@ -1309,7 +1309,7 @@ node_match_req(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, void *desc)
 // locals_cnt alive across the dispatch — only a RAISE needs the caller (for its
 // line number in the backtrace).
 NODE_DEF
-node_simple_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+node_simple_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t uses_backref)
 {
     (void)n;
     VALUE *const base = slots - params_cnt;
@@ -1320,7 +1320,10 @@ node_simple_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt
     if (locals_cnt > params_cnt)
         for (uint32_t i = params_cnt; i < locals_cnt; i++) base[i] = 0;   /* body locals start nil */
     slots = base + locals_cnt;                  /* the body runs above the frame */
+    const bool bref_scope = UNLIKELY(uses_backref != 0);   /* $~ is per method frame */
+    if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell); *bcell = KORB_NIL; }
     RESULT r = EVAL_ARG(c, body);
+    if (bref_scope) *korb_re_tilde_cell(c) = korb_bref_pop(c);
     /* 明示 return は珍しくない (`return x if ...`): 自分宛の RETURN はここで消費し、
      * 関数呼び出しに落とすのは RAISE / 他フレーム宛 / env クローズだけにする */
     if (r.state == KORB_RETURN && (c->return_target == NULL || c->return_target == base)) {
