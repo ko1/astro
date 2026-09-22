@@ -1341,6 +1341,9 @@ struct CTX_struct {
      * that body can find the name and owner it was defined under (a block frame
      * carries no method entry).  Saved/restored around the body call. */
     const struct korb_method *dm_entry;
+    uint32_t eval_mid;                 /* eval(str, binding): the method the binding was taken in, so an
+                                        * eval'd `::Kernel.__method__` (explicit receiver — the bare form is
+                                        * baked at parse time) answers it.  0 outside such an eval. */
     /* Break target: a `break` in a block body belongs to the call that was
      * *given* that block, not to whatever intermediate call happens to be
      * running it (`m { break }` where m does `arr.each { b.call(x) }` must

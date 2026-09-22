@@ -15858,8 +15858,13 @@ korb_bi_method_name(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (c->dm_entry) return RESULT_OK(ID2SYM(c->dm_entry->mid));
     /* reached as a method object (send / method(:__method__)): the caller's own
      * frame names it */
-    if (korb_frames_snapshot(c, args.p + KORB_FLINK_OFF) > 0 && c->vm->fscratch[0].mid != 0)
-        return RESULT_OK(ID2SYM(c->vm->fscratch[0].mid));
+    if (korb_frames_snapshot(c, args.p + KORB_FLINK_OFF) > 0) {
+        if (c->vm->fscratch[0].mid != 0) return RESULT_OK(ID2SYM(c->vm->fscratch[0].mid));
+        /* an eval frame is a MAIN frame with no file of its own; CRuby answers
+         * the method the BINDING was taken in, not the eval */
+        if (c->eval_mid != 0 && c->vm->fscratch[0].kind == KORB_FID_MAIN && c->vm->fscratch[0].file == NULL)
+            return RESULT_OK(ID2SYM(c->eval_mid));
+    }
     return RESULT_OK(KORB_NIL);
 }
 /* Kernel#__dir__ → the directory of the current source file (realpath'd), or nil
@@ -17176,9 +17181,14 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
         encl[nencl++] = VAL2CLASS(o)->name_sym;
     for (uint32_t i = 0, j = nencl; i < j; i++, j--)            /* → outermost first */
         { const uint32_t t = encl[i]; encl[i] = encl[j - 1]; encl[j - 1] = t; }
+    /* A binding taken INSIDE an eval'd string has an eval (MAIN) frame at the
+     * top of its env chain and so names no method; the answer is then whatever
+     * the enclosing eval already resolved. */
+    const uint32_t bind_mid0 = korb_bind_method_mid(c->vm, b0);
+    const uint32_t bind_mid = bind_mid0 ? bind_mid0 : c->eval_mid;
     NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, fname, eline,
                                             korb_enc_name_of(c->vm, KORB_STR_ENC(*src_slot)), decl, declc,
-                                            korb_bind_method_mid(c->vm, b0),
+                                            bind_mid,
                                             cref_name, nencl ? encl : NULL, nencl);
     free(decl);
     if (UNLIKELY(entry == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
@@ -17217,7 +17227,10 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     /* the eval'd string INHERITS the body's bare-`private` default but its own
      * changes stay inside (CRuby scopes it to the eval's cref) */
     const uint8_t saved_vis = KORB_CLASS_P(fb[-1]) ? VAL2CLASS(fb[-1])->cur_visibility : 0xffu;
+    const uint32_t saved_emid = c->eval_mid;        /* `::Kernel.__method__` in the string (the bare form is baked) */
+    c->eval_mid = bind_mid;
     RESULT er = EVAL(c, entry, cur);
+    c->eval_mid = saved_emid;
     if (saved_vis != 0xffu && KORB_CLASS_P(fb[-1])) VAL2CLASS(fb[-1])->cur_visibility = saved_vis;
     korb_cref_pop(c);   /* pushed unconditionally, so pop unconditionally */
     if (UNLIKELY(er.state == KORB_RAISE)) {
