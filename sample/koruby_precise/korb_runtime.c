@@ -17530,10 +17530,12 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
      * receiver's singleton): CRuby looks in the singleton and the receiver's
      * class hierarchy BEFORE the caller's scope, and a flat const table cannot
      * express that ordering — answering from the caller would be worse. */
+    bool cref_is_caller = false;
     if (cref_name == 0 && KORB_CLASS_P(cref) && !VAL2CLASS(cref)->is_singleton &&
         KORB_CLASS_P(b0->cref) && VAL2CLASS(b0->cref)->name_sym != 0) {
         cref_name = VAL2CLASS(b0->cref)->name_sym;
         cref_encl = VAL2CLASS(b0->cref)->enclosing;
+        cref_is_caller = true;                          /* constants only: a `binding` must not report it */
     }
     uint32_t encl[16]; uint32_t nencl = 0;                      /* innermost first for now */
     for (VALUE o = cref_encl;
@@ -17549,7 +17551,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, fname, eline,
                                             korb_enc_name_of(c->vm, KORB_STR_ENC(*src_slot)), decl, declc,
                                             bind_mid,
-                                            cref_name, nencl ? encl : NULL, nencl);
+                                            cref_name, nencl ? encl : NULL, nencl, cref_is_caller);
     free(decl);
     if (UNLIKELY(entry == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
     const uint32_t L = koruby_toplevel_locals_cnt;

@@ -63,6 +63,21 @@ h = Class.new
 eval("def hello4; end", h.class_eval("binding", "f", 1))
 p h.instance_methods(false)
 
+# …including when the class_eval runs inside a method of some OTHER class: the
+# eval'd source falls back to the CALLER's cref for constant lookup when the
+# receiver is anonymous, but a `binding` it takes must still report the receiver
+# (pry's Object#__binding__ is `class_eval("binding")` on a Class.new).
+class Object
+  def obj_binding = class_eval("binding", "core_ext.rb", 9)
+end
+class Holder
+  def self.h(k) = k.class_eval("binding", "f", 1)
+end
+k1 = Class.new; k1.obj_binding.eval("def b1; end", "(e)", 1)
+k2 = Class.new; Holder.h(k2).eval("def c1; end", "(e)", 1)
+p [k1.instance_methods(false), k2.instance_methods(false),
+   Object.instance_methods(false).include?(:b1), Holder.instance_methods(false)]
+
 # 4. Module#ruby2_keywords is private (rspec-mocks gates on
 #    `Module.private_method_defined?(:ruby2_keywords)`), and a flagged method
 #    reports the anonymous `**` in #parameters.

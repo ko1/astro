@@ -136,6 +136,11 @@ struct kp_ctx {
      * `module Foo` body would (CRuby pushes the receiver onto the caller's cref).
      * `seed_class_name` is the receiver itself; `seed_chain` is what encloses it,
      * outermost first. */
+    /* The seeded cref names the CALLER's scope, not the eval'd one: an ANONYMOUS
+     * class_eval receiver falls back to it so constants in the source still
+     * resolve, but a `binding` the source takes must NOT report it as its cref
+     * (pry's Object#__binding__ is `class_eval("binding")` on a Class.new). */
+    bool seed_cref_is_caller;
     uint32_t seed_class_name;
     const uint32_t *seed_chain;
     uint32_t seed_chain_len;
@@ -3982,7 +3987,8 @@ kp_make_binding_node_x(struct kp_ctx *tc, uint32_t line, uint32_t user_dispatch)
     /* An UNNAMED cref (`class << obj`, or a method defined in one) cannot be
      * baked by name; leave it 0 and let the runtime fall back to self, which IS
      * that class inside the body. */
-    const uint32_t cref_name = (tc->frame->anon_class_body || tc->frame->anon_cref_method)
+    const uint32_t cref_name = (tc->frame->anon_class_body || tc->frame->anon_cref_method ||
+                                tc->seed_cref_is_caller)
                              ? 0u : kp_cref_owner_path(tc);
     NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)tbl, cnt, cref_name, user_dispatch);
     bake_add(tc, &nb->u.node_binding.def_env_off);    /* frame base shifts with frame_size */
@@ -6293,7 +6299,8 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool
 NODE *
 koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, const char *src_enc,
                           const uint32_t *name_syms, uint32_t name_cnt, uint32_t method_mid,
-                          uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len)
+                          uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len,
+                          bool cref_is_caller)
 {
     pm_parser_t parser;
     pm_options_t options = { 0 };
@@ -6323,6 +6330,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
     struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
                          .fsl_false = kp_fsl_false(src, len), .eval_method_mid = method_mid,
                          .seed_class_name = cref_name, .seed_chain = cref_chain, .seed_chain_len = cref_chain_len,
+                         .seed_cref_is_caller = cref_is_caller,
                          .in_eval = true };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
