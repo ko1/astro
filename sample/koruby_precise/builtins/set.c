@@ -1987,12 +1987,12 @@ korb_undef_one(CTX *c, VALUE *slots, VALUE cls, uint32_t mid)
                 return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
                                   korb_sym_name(c->vm, mid), k->is_module ? "module" : "class", cnm); }
         }
-        korb_warn_serious(c, slots, mid, true);
-        korb_class_undef_slot(c->vm, k, cls, mid);
+        slots[0] = cls;                              /* the warning is Ruby code (Warning#warn): root the class */
+        korb_warn_serious(c, slots + 1, mid, true);
+        korb_class_undef_slot(c->vm, VAL2CLASS(slots[0]), slots[0], mid);   /* re-read: the warn may have moved it */
         c->vm->method_serial++;
     }
-    slots[0] = cls;                                  /* the hook is Ruby code: re-root the class */
-    CHECK(korb_fire_def_hook(c, slots + 1, slots[0], mid, "method_undefined", 16));
+    CHECK(korb_fire_def_hook(c, slots + 1, slots[0], mid, "method_undefined", 16));   /* the hook is Ruby code too */
     return RESULT_OK(KORB_NIL);
 }
 

@@ -11,9 +11,15 @@ static RESULT korb_m_str_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     (void)a;
     const VALUE v = VALUE_REF_GET(self);
     if (LIKELY(korb_exact_class_p(c, v, KORB_C_STRING))) return RESULT_OK(v);
-    const KorbString *const s = VAL2STR(v);
-    RESULT r = korb_str_new(c, slots, korb_strbuf_data(s->buf), s->len);
-    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_STR_ENC(v));
+    /* korb_str_new allocates, so the receiver's buffer can MOVE under it: copy
+     * the bytes out first (the pattern String#-@ uses). */
+    const uint32_t len = VAL2STR(v)->len;
+    char *const bytes = malloc(len ? len : 1);
+    if (!bytes) abort();
+    memcpy(bytes, korb_strbuf_data(VAL2STR(v)->buf), len);
+    RESULT r = korb_str_new(c, slots, bytes, len);
+    free(bytes);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_STR_ENC(VALUE_REF_GET(self)));
     return r;
 }
 static inline bool korb_str_is_frozen(VALUE v) {

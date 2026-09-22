@@ -706,25 +706,28 @@ static RESULT korb_m_proc_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         if (li >= 0 && korb_items_data(h->items)[2 * li + 1] != KORB_NIL) lam = KORB_TRUTHY(korb_items_data(h->items)[2 * li + 1]);
     }
     const bool symproc = (p->iseq == NULL);
-    const VALUE mproc_self = symproc ? p->self : KORB_NIL;   /* non-nil ⇒ a Method#to_proc, not a Symbol#to_proc */
     const uint32_t mproc_mid = symproc ? p->sym_mid : 0;
     static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block", "nokey", "noblock" };
     const uint32_t n = pi ? pi->n : 0;
-    slots[0] = UNWRAP(korb_ary_new(c, slots, n ? n : 1));
-    VALUE_REF res = VALUE_REF_AT(&slots[0]);
+    /* A Method#to_proc carries its receiver; that VALUE must be ROOTED, not held
+     * in a C local — the Array alloc below moves the object and the dispatch
+     * class lookup would read a freed address. */
+    slots[0] = symproc ? p->self : KORB_NIL;              /* non-nil ⇒ a Method#to_proc, not a Symbol#to_proc */
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n ? n : 1));
+    VALUE_REF res = VALUE_REF_AT(&slots[1]);
     if (!pi) {                                            /* symbol proc → [[:req], [:rest]]; no params → [] */
-        if (symproc && mproc_self != KORB_NIL) {          /* Method#to_proc: report the bound method's own signature */
-            const VALUE dc = korb_dispatch_class(c, mproc_self);
+        if (symproc && slots[0] != KORB_NIL) {            /* Method#to_proc: report the bound method's own signature */
+            const VALUE dc = korb_dispatch_class(c, slots[0]);
             const struct korb_method *const km =
                 KORB_CLASS_P(dc) ? korb_class_find_method(dc, mproc_mid, NULL) : NULL;
-            return korb_push_method_params(c, slots, res, km);
+            return korb_push_method_params(c, slots + 2, res, km);
         }
         if (symproc) {
             const char *const sp[] = { "req", "rest" };
             for (int j = 0; j < 2; j++) {
-                slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 1));
-                CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), ID2SYM(korb_intern(c->vm, sp[j], (uint32_t)strlen(sp[j])))));
-                CHECK(korb_ary_push_val(c, slots + 2, res, slots[1]));
+                slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 1));
+                CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), ID2SYM(korb_intern(c->vm, sp[j], (uint32_t)strlen(sp[j])))));
+                CHECK(korb_ary_push_val(c, slots + 3, res, slots[2]));
             }
         }
         return RESULT_OK(VALUE_REF_GET(res));
@@ -733,11 +736,11 @@ static RESULT korb_m_proc_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         const uint8_t kind = pi->e[i].kind;
         const char *kn = (kind == 0 && !lam) ? "opt" : knames[kind];
         const uint32_t nm = pi->e[i].name;
-        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, nm ? 2 : 1));
-        VALUE_REF sub = VALUE_REF_AT(&slots[1]);
-        CHECK(korb_ary_push_val(c, slots + 2, sub, ID2SYM(korb_intern(c->vm, kn, (uint32_t)strlen(kn)))));
-        if (nm) CHECK(korb_ary_push_val(c, slots + 2, sub, ID2SYM(nm)));
-        CHECK(korb_ary_push_val(c, slots + 2, res, VALUE_REF_GET(sub)));
+        slots[2] = UNWRAP(korb_ary_new(c, slots + 2, nm ? 2 : 1));
+        VALUE_REF sub = VALUE_REF_AT(&slots[2]);
+        CHECK(korb_ary_push_val(c, slots + 3, sub, ID2SYM(korb_intern(c->vm, kn, (uint32_t)strlen(kn)))));
+        if (nm) CHECK(korb_ary_push_val(c, slots + 3, sub, ID2SYM(nm)));
+        CHECK(korb_ary_push_val(c, slots + 3, res, VALUE_REF_GET(sub)));
     }
     return RESULT_OK(VALUE_REF_GET(res));
 }
