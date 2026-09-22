@@ -87,8 +87,63 @@ class Ripper
 
     def lex(src, filename = "-", lineno = 1, raise_errors: false)
       return BOM_PROBE_ANSWER if src.is_a?(String) && src.b == BOM_PROBE.b
-      Prism::Translation::Ripper.lex(__source(src), filename, lineno, raise_errors: raise_errors)
+      s = __source(src)
+      __fill_sp(s, Prism::Translation::Ripper.lex(s, filename, lineno, raise_errors: raise_errors))
     end
+
+    # 同梱の prism (lex_compat.rb) は :on_sp を作らない。CRuby の prism 1.9 に
+    # 入った post_process_tokens と同じく、トークン間の隙間を空白トークンで
+    # 埋める。行継続 (`\\` + 改行) だけは Ripper が 3 つに割るので合わせる。
+    def __fill_sp(src, tokens)
+      return tokens unless tokens.is_a?(Array) && src.is_a?(String)
+      bom = src.byteslice(0, 3) == "\xEF\xBB\xBF".b
+      starts = [0]                                  # 各行の先頭バイトオフセット
+      src.each_line { |l| starts << starts.last + l.bytesize }
+      state = Lexer::State.new(EXPR_BEG)
+      prev_end = bom ? 3 : 0
+      out = []
+      loc = lambda do |off|                         # バイトオフセット → [行, 桁]
+        i = (starts.bsearch_index { |st| st > off } || starts.size) - 1
+        i = 0 if i < 0
+        col = off - starts[i]
+        [i + 1, (i.zero? && bom) ? col - 3 : col]
+      end
+      tokens.each do |tok|
+        line, column = tok[0]
+        beg = (starts[line - 1] || 0) + column
+        beg += 3 if line == 1 && bom               # 桁は BOM を数えない
+        if beg > prev_end
+          gap = src.byteslice(prev_end, beg - prev_end)
+          gline, gcol = loc.call(prev_end)
+          cont = gap.byteindex("\\")
+          if cont
+            nxt = cont + 1
+            nxt += 1 if gap.byteslice(nxt, 1) == "\r"
+            nxt += 1
+            head = gap.byteslice(0, cont)
+            tail = gap.byteslice(nxt, gap.bytesize - nxt) || ""
+            out << [[gline, gcol], :on_sp, head, state] unless head.empty?
+            out << [[gline, gcol + cont], :on_sp, gap.byteslice(cont, nxt - cont), state]
+            out << [[gline + 1, 0], :on_sp, tail, state] unless tail.empty?
+          else
+            out << [[gline, gcol], :on_sp, gap, state]
+          end
+        end
+        out << tok
+        state = tok[3]
+        prev_end = beg + tok[2].to_s.bytesize
+      end
+      # 末尾の空白 (`__END__` の後ろの本文は空白ではないので除かれる)
+      if prev_end < src.bytesize
+        rest = src.byteslice(prev_end, src.bytesize - prev_end)
+        if !rest.empty? && rest.match?(/\A[^\S\n]+\z/)
+          rline, rcol = loc.call(prev_end)
+          out << [[rline, rcol], :on_sp, rest, state]
+        end
+      end
+      out
+    end
+    private :__fill_sp
     def tokenize(src, filename = "-", lineno = 1, raise_errors: false)
       lex(src, filename, lineno, raise_errors: raise_errors).map { |_, _, token, _| token }
     end
