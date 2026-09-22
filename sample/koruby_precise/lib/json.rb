@@ -215,7 +215,9 @@ module JSON
     out
   end
 
-  def self.gen(obj, indent, cur)
+  # `as_json` (when a JSON::Coder is driving) is called for every object the
+  # generator cannot write natively, with (object, hash_key?).  Nil elsewhere.
+  def self.gen(obj, indent, cur, as_json = nil, as_key = false)
     case obj
     when nil     then "null"
     when true    then "true"
@@ -227,26 +229,44 @@ module JSON
     when Array
       return "[]" if obj.empty?
       if indent.empty?
-        "[" + obj.map { |e| gen(e, indent, cur) }.join(",") + "]"
+        "[" + obj.map { |e| gen(e, indent, cur, as_json) }.join(",") + "]"
       else
         nxt = cur + indent
-        "[\n" + obj.map { |e| nxt + gen(e, indent, nxt) }.join(",\n") + "\n" + cur + "]"
+        "[\n" + obj.map { |e| nxt + gen(e, indent, nxt, as_json) }.join(",\n") + "\n" + cur + "]"
       end
     when Hash
       return "{}" if obj.empty?
       if indent.empty?
-        "{" + obj.map { |k, v| escape(k.to_s) + ":" + gen(v, indent, cur) }.join(",") + "}"
+        "{" + obj.map { |k, v| __key(k, indent, cur, as_json) + ":" + gen(v, indent, cur, as_json) }.join(",") + "}"
       else
         nxt = cur + indent
-        "{\n" + obj.map { |k, v| nxt + escape(k.to_s) + ": " + gen(v, indent, nxt) }.join(",\n") + "\n" + cur + "}"
+        "{\n" + obj.map { |k, v| nxt + __key(k, indent, nxt, as_json) + ": " + gen(v, indent, nxt, as_json) }.join(",\n") + "\n" + cur + "}"
       end
     else
+      if as_json
+        converted = as_json.call(obj, as_key)
+        # the replacement is generated with the SAME callback: a tagged Hash may
+        # hold more objects the generator does not know (dry-monads nests monads)
+        return gen(converted, indent, cur, as_json) unless converted.equal?(obj)
+      end
       if obj.respond_to?(:to_json)
         obj.to_json
       else
         escape(obj.to_s)
       end
     end
+  end
+
+  # A Hash key is always written as a String; a key the generator does not know
+  # goes through `as_json` with the key flag set.
+  def self.__key(k, indent, cur, as_json)
+    return escape(k.to_s) if k.is_a?(String) || k.is_a?(Symbol) || k.is_a?(Integer) ||
+                             k.is_a?(Float) || k.nil? || k == true || k == false
+    if as_json
+      converted = as_json.call(k, true)
+      return escape(converted.to_s) unless converted.equal?(k)
+    end
+    escape(k.to_s)
   end
 
   def self.parse(source, symbolize_names: false, **_opts)
@@ -267,6 +287,41 @@ module JSON
 
   def self.pretty_generate(obj, *_)
     gen(obj, "  ", "")
+  end
+
+  # JSON::Coder — a generator/parser pair with its own callbacks, so a library
+  # can teach JSON about its own types without patching anything globally.
+  #
+  #   coder = JSON::Coder.new { |object, as_key| object.to_s }
+  #   coder.dump(obj) / coder.load(str)
+  class Coder
+    # `as_json` runs for every object the generator cannot write natively, with
+    # (object, hash_key?).  `on_load:` runs for every parsed value, innermost
+    # first, so a tagged Hash can be rebuilt into the object it came from.
+    def initialize(on_load: nil, indent: "", **_opts, &as_json)
+      @as_json = as_json
+      @on_load = on_load
+      @indent = indent
+    end
+
+    def dump(obj) = JSON.gen(obj, @indent, "", @as_json)
+    alias generate dump
+
+    def load(source) = __revive(JSON.parse(source))
+    alias parse load
+
+    def load_file(path) = load(File.read(path))
+
+    private
+
+    def __revive(value)
+      value = case value
+              when ::Hash  then value.each_with_object({}) { |(k, v), h| h[k] = __revive(v) }
+              when ::Array then value.map { |v| __revive(v) }
+              else value
+              end
+      @on_load ? @on_load.call(value) : value
+    end
   end
 end
 

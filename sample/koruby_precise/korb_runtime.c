@@ -4871,12 +4871,38 @@ korb_class_dup(CTX *c, VALUE *slots, VALUE src)
     d->struct_kwinit = s->struct_kwinit;
     d->exc_etype = s->exc_etype;
     d->cur_visibility = 0;                            /* a fresh body starts public */
-    ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->included,  s->included);
-    ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->prepended, s->prepended);
-    ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->members,   s->members);
-    ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->cvars,     s->cvars);
-    ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->class_ivars, s->class_ivars);
+    ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->members,   s->members);      /* Struct members never change after definition */
     ARO_STORE(c, d, (VALUE *)(uintptr_t)&d->enclosing, s->enclosing);
+    /* The mutable containers get COPIES: the copy must be able to include a
+     * module, set a class ivar or a class variable without writing through to
+     * the source (`K.dup.instance_variable_set(:@x, 1)` changed K). */
+    { const KorbClass *const s1 = VAL2CLASS(slots[0]);   /* re-read: every block below allocates */
+      const VALUE lists[2] = { s1->included, s1->prepended };
+      for (int li = 0; li < 2; li++) {
+          if (!KORB_ARRAY_P(lists[li])) continue;
+          slots[2] = lists[li];
+          slots[3] = UNWRAP(korb_ary_new(c, slots + 4, VAL2ARY(slots[2])->len));
+          VALUE_REF dst = VALUE_REF_AT(&slots[3]);
+          for (uint32_t i = 0; i < VAL2ARY(slots[2])->len; i++)
+              CHECK(korb_ary_push_val(c, slots + 4, dst, korb_items_data(VAL2ARY(slots[2])->items)[i]));
+          KorbClass *const dd = VAL2CLASS(slots[1]);           /* re-read: the allocs above may have moved it */
+          ARO_STORE(c, dd, (VALUE *)(uintptr_t)(li == 0 ? &dd->included : &dd->prepended), slots[3]);
+      } }
+    { const KorbClass *const s2 = VAL2CLASS(slots[0]);   /* re-read after the array copies above */
+      const VALUE srcs[2] = { s2->cvars, s2->class_ivars };
+      for (int hi = 0; hi < 2; hi++) {
+          if (!KORB_HASH_P(srcs[hi])) continue;
+          slots[2] = srcs[hi];
+          slots[3] = UNWRAP(korb_hash_new(c, slots + 4, VAL2HASH(slots[2])->len + 1));
+          VALUE_REF dst = VALUE_REF_AT(&slots[3]);
+          for (uint32_t i = 0; i < VAL2HASH(slots[2])->len; i++) {
+              slots[4] = korb_items_data(VAL2HASH(slots[2])->items)[2 * i];
+              slots[5] = korb_items_data(VAL2HASH(slots[2])->items)[2 * i + 1];
+              CHECK(korb_hash_set(c, slots + 6, dst, VALUE_REF_AT(&slots[4]), slots[5]));
+          }
+          KorbClass *const dd = VAL2CLASS(slots[1]);
+          ARO_STORE(c, dd, (VALUE *)(uintptr_t)(hi == 0 ? &dd->cvars : &dd->class_ivars), slots[3]);
+      } }
     const uint32_t n = VAL2CLASS(slots[0])->method_cnt;
     for (uint32_t i = 0; i < n; i++) {
         const struct korb_method src_m = *VAL2CLASS(slots[0])->methods[i];   /* snapshot: the slot below may realloc */
