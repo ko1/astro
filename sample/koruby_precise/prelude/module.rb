@@ -274,9 +274,9 @@ class Module
   end
   private def const_added(name); end
 
-  # ruby2_keywords marks methods to pass a bare kwargs hash through *args.  koruby
-  # tags every keyword Hash at the call site and the tag rides through splat, so
-  # the delegation already works; this only validates the names.
+  # ruby2_keywords marks methods to pass a bare kwargs hash through *args: the
+  # flagged method makes the mark on the collected Hash persistent, and a splat
+  # call site turns it back into keywords.
   def ruby2_keywords(*names)
     names.each do |n|
       unless method_defined?(n) || private_method_defined?(n) || respond_to?(n, true)
@@ -293,6 +293,8 @@ class Module
       unless ok
         warn "Skipping set of ruby2_keywords flag for #{n} (method accepts keywords " \
              "or method does not accept argument splat)", uplevel: 1
+      else
+        __set_ruby2_keywords(self, n)
       end
     end
     nil

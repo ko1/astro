@@ -77,7 +77,7 @@ struct korb_callcache {
  * 2 rest, 3 keyreq, 4 key, 5 keyrest, 6 block, 7 nokey (`**nil`),
  * 8 noblock (`&nil`).  name=0 → anonymous. */
 struct korb_param_entry { uint8_t kind; uint32_t name; };
-struct korb_param_info  { uint32_t n; struct korb_param_entry e[]; };
+struct korb_param_info  { uint32_t n; uint8_t r2k; struct korb_param_entry e[]; };   /* r2k: Proc#ruby2_keywords — per ISEQ, so a dup'd Proc shares it */
 
 /* `&nil` is always the last entry, so the "refuses a block" test is one load. */
 static inline bool
@@ -298,6 +298,9 @@ RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj);
 /* `uses_block` operand of node_def/node_singleton_def: a small flags word. */
 #define KORB_DEFF_USES_BLOCK   1u
 #define KORB_DEFF_USES_BACKREF 2u
+/* `def m(...)`: koruby compiles the forwarding parameter to a plain *rest, so the
+ * method has to carry keywords through it exactly the way ruby2_keywords does. */
+#define KORB_DEFF_FWD_ALL      4u
 void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry,
                              uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
                              uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info, void *locals_info);
@@ -504,6 +507,31 @@ void   korb_io_flush_std(struct korb_vm *vm);     /* flush stdout/stderr (no std
 /* a Hash the call site wrote as keyword arguments (KORB_FL_KWARGS) */
 static inline bool korb_kwargs_hash_p(VALUE v) {
     return KORB_HASH_P(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_KWARGS) != 0;
+}
+
+/* CRuby's "these were keywords" is a property of the call, not of the Hash.  We
+ * carry it on the object, so a Hash bound to a fixed positional parameter has to
+ * lose it here — otherwise `def o(a,h); i(a,h); end; o(1, k => v)` would still
+ * reach `i`'s keyword params.  A `*rest` binding keeps the mark: that is exactly
+ * what ruby2_keywords forwarding rides on. */
+static inline void korb_kwargs_unmark(VALUE v) {
+    if (UNLIKELY(korb_kwargs_hash_p(v)))
+        ((AroObjectHeader *)(uintptr_t)v)->flags &= (uint16_t)~KORB_FL_KWARGS;
+}
+
+/* The persistent ruby2_keywords mark (Hash.ruby2_keywords_hash?). */
+static inline bool korb_r2k_hash_p(VALUE v) {
+    return KORB_HASH_P(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_R2K) != 0;
+}
+static inline void korb_r2k_set(VALUE v) {
+    ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_R2K;
+}
+
+/* A splat call site (`f(*args)`) is the one place a ruby2_keywords-marked Hash
+ * becomes keywords again: re-arm the call-scoped mark on the last spread
+ * element.  Everywhere else the persistent mark is inert. */
+static inline void korb_splat_kwmark(VALUE *const last) {
+    if (UNLIKELY(korb_r2k_hash_p(*last))) ((AroObjectHeader *)(uintptr_t)*last)->flags |= KORB_FL_KWARGS;
 }
 
 enum korb_etype {
@@ -996,6 +1024,7 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         return korb_raise_arity(c, slots, m, mid, line,
                                 "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
     VALUE *const base = slots - argc;
+    if (argc != 0) korb_kwargs_unmark(base[argc - 1]);   /* fixed positional: the call-site kwargs mark stops here */
     KORB_AUDIT_EP(base, mid);
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;

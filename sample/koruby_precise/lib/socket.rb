@@ -12,11 +12,11 @@ class BasicSocket < IO
   # IO.new is a C singleton that wraps a descriptor, so socket subclasses cannot
   # inherit it (their ::new takes a host/port/path).  Route ::new back through
   # allocate + #initialize, and attach the fd with IO#__init_fd.
-  def self.new(*args, &blk)
+  def self.new(*args, **kw, &blk)
     # IO.new's rb_warn, inherited by every socket class: only ::open takes a block
     warn "warning: #{self}::new() does not take block; use #{self}::open() instead" if blk && !$VERBOSE.nil?
     s = allocate
-    s.__send__(:initialize, *args, &blk)
+    s.__send__(:initialize, *args, **kw, &blk)
     s
   end
 
@@ -350,8 +350,8 @@ class TCPSocket < IPSocket
     __init_fd(fd, "r+b")
   end
 
-  def self.open(*args)
-    s = new(*args)
+  def self.open(*args, **kw)
+    s = new(*args, **kw)
     return s unless block_given?
     begin
       yield s
@@ -423,8 +423,8 @@ class TCPServer < TCPSocket
     end
   end
 
-  def self.open(*args)
-    s = new(*args)
+  def self.open(*args, **kw)
+    s = new(*args, **kw)
     return s unless block_given?
     begin
       yield s

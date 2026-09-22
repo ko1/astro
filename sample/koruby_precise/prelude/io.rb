@@ -267,8 +267,8 @@ end
 class IO
   # IO.open(fd, mode) — like ::new, but a block form closes the stream after.
   # (File overrides this on its own singleton with the path-taking version.)
-  def self.open(*args)
-    io = new(*args)
+  def self.open(*args, **kw)
+    io = new(*args, **kw)
     return io unless block_given?
     begin
       yield io

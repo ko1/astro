@@ -234,6 +234,13 @@ enum korb_obj_type {
  * callee binds it to keyword parameters.  A plain trailing Hash argument is
  * positional (Ruby 3 semantics). */
 #define KORB_FL_KWARGS     0x1000u
+/* bit 14 (Hash only — free for the same reason KWARGS is: the 0x7000 field is
+ * the String encoding): the PERSISTENT ruby2_keywords mark, what
+ * Hash.ruby2_keywords_hash? reports.  KWARGS above is a property of the call in
+ * flight and is dropped the moment the Hash binds to a positional parameter;
+ * this one rides on the object and is what makes a `*rest` element become
+ * keywords again at a splat call site. */
+#define KORB_FL_R2K        0x4000u
 #define KORB_FL_HASH_NOINDEX 0x200u
 /* bit 9 (String only — shares the bit with Hash's HASH_NOINDEX, which is never
  * examined here): the String is CHILLED (Ruby 3.4+).  A chilled String also has
@@ -460,6 +467,7 @@ typedef struct KorbProc {
     uint32_t sym_mid;                /* Symbol#to_proc: send this mid to arg0 (iseq==NULL) */
     uint8_t  is_lambda;              /* lambda semantics (strict arity, return-from-proc) */
     uint8_t  refined_copy;           /* refine_set came from Proc#refined, not from the defining scope */
+    uint8_t  ruby2_kw;               /* Proc#ruby2_keywords — same meaning as korb_method.ruby2_kw */
 } KorbProc;
 
 /* Fiber: a stackful coroutine.  The moving GC object is a thin handle; all
@@ -910,6 +918,8 @@ struct korb_method {
                               * envs still name it through their identity cell. */
     uint8_t  no_block;       /* ISEQ: declared `&nil` (Ruby 4.1) — passing a block is an ArgumentError.
                               * Sits in the pad before `body` so no other field's offset moves. */
+    uint8_t  ruby2_kw;       /* Module#ruby2_keywords: a kwargs Hash this method collects into its
+                              * *rest keeps the persistent R2K mark, so re-splatting it is keywords. */
     struct Node *body;       /* ISEQ */
     /* 呼び出しの入口。どちらも同じ本体ノードを指し、AOT が焼くのはこちら側。
      * 充填時に (site の argc, callee の形状) で片方を選んで cc/ic に載せる。 */

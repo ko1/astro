@@ -514,6 +514,12 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const bool sealed  = refined && p->refined_copy;   /* only a Proc#refined body refuses `using` */
     if (UNLIKELY(refined)) { korb_refine_push(c); c->refinements = p->refine_set;
                              if (sealed) c->refine_sealed = c->refinements; }
+    /* Proc#ruby2_keywords: make the call-scoped mark persistent, so the Hash this
+     * body collects into its *rest is keywords again when re-splatted. */
+    const struct korb_param_info *const r2pi =
+        (entry != KORB_BLK_CPROC) ? (const struct korb_param_info *)korb_entry_param_info(entry) : NULL;
+    if (UNLIKELY(p->ruby2_kw || (r2pi != NULL && r2pi->r2k)) && argc >= 1 && korb_kwargs_hash_p(VALUE_SLICE_GET(a, argc - 1)))
+        korb_r2k_set(VALUE_SLICE_GET(a, argc - 1));
     slots[0] = p->self;                                  /* captured self (rooted) */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
     /* If this proc has a `|&b|` param and the call site passed a (real) block,

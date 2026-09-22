@@ -1313,6 +1313,7 @@ node_simple_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt
 {
     (void)n;
     VALUE *const base = slots - params_cnt;
+    if (params_cnt != 0) korb_kwargs_unmark(base[params_cnt - 1]);   /* fixed positional: the call-site kwargs mark stops here */
     char cstack_probe;
     if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
                  &cstack_probe < c->cstack_limit))
@@ -1593,6 +1594,7 @@ node_super_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line,
     const VALUE self = slots[self_off];
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     return korb_super(c, slots + N, mid, line, N, dc, self, NULL, NULL, KORB_NIL, KORB_FBASE_AT(slots, dc_off));
 }
 
@@ -1610,6 +1612,7 @@ node_super_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, i
     const VALUE self = slots[self_off];
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     return korb_super(c, slots + N, mid, line, N, dc, self, block,
                       (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), self, KORB_FBASE_AT(slots, dc_off));
 }
@@ -1628,6 +1631,7 @@ node_super_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t lin
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
     const VALUE pv = slots[proc_off];
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     if (pv == KORB_NIL)                                   /* &nil → no block at all */
         return korb_super(c, slots + N, mid, line, N, dc, self, NULL, NULL, KORB_NIL, KORB_FBASE_AT(slots, dc_off));
     NODE *iseq = VAL2PROC(pv)->iseq;
@@ -1657,6 +1661,7 @@ node_super_fwd(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, i
     }
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     return korb_super(c, slots + N, mid, line, N, dc, self, block, def_env, cself, KORB_FBASE_AT(slots, dc_off));
 }
 
@@ -1686,6 +1691,7 @@ node_super_fwd_outer(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t l
     }
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     return korb_super(c, slots + N, mid, line, N, dc, self, block, def_env, cself, KORB_FBASE_AT(slots, dc_off));
 }
 
@@ -2369,6 +2375,7 @@ node_call_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t flink,
     slots[2] = 0;                                       /* base[-2] (EP)    */
     slots[3] = self;                                    /* base[-1] (self)  */
     for (uint32_t i = 0; i < N; i++) slots[4 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[4 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     return korb_call(c, slots + 4 + N, mid, line, cc, N, self);
 }
 
@@ -2395,6 +2402,7 @@ node_call_splat_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t fl
     slots[2] = 0;                                         /* base[-2] (EP)    */
     slots[3] = self;                                      /* base[-1] (self)  */
     for (uint32_t i = 0; i < N; i++) slots[4 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[4 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     return korb_call_blk(c, slots + 4 + N, mid, line, cc, N, self, block,
                          (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off]);
 }
@@ -2417,6 +2425,7 @@ node_call_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_
     slots[2] = 0;                                         /* base[-2] (EP)    */
     slots[3] = self;                                      /* base[-1] (self)  */
     for (uint32_t i = 0; i < N; i++) slots[4 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[4 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     if (pv == KORB_NIL) return korb_call(c, slots + 4 + N, mid, line, cc, N, self);   /* &nil → no block */
     NODE *iseq = VAL2PROC(pv)->iseq;
     if (iseq == NULL) iseq = KORB_BLK_CPROC;
@@ -2499,6 +2508,7 @@ node_send_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t flink,
     uint32_t N = VAL2ARY(arr)->len;
     slots[0] = rv;
     for (uint32_t i = 0; i < N; i++) slots[1 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[1 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     return korb_send_vis(c, slots + N + 1, mid, line, N,
                          self_off == INT32_MIN ? KORB_UNDEF : slots[self_off]);
 }
@@ -2516,6 +2526,7 @@ node_send_splat_aset(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t f
     const uint32_t N = VAL2ARY(arr)->len;
     slots[0] = rv;
     for (uint32_t i = 0; i < N; i++) slots[1 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[1 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     CHECK(korb_send(c, slots + N + 1, mid, line, N));
     /* re-read from the staged args array (slots[-1] is scanned, so a GC during
      * the call forwarded it): its last element is the assigned value */
@@ -2539,6 +2550,7 @@ node_send_splat_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t fl
     const uint32_t N = VAL2ARY(arr)->len;
     slots[0] = rv;
     for (uint32_t i = 0; i < N; i++) slots[1 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[1 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     return korb_send_blk(c, slots + N + 1, mid, line, N, block,
                          (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off], 0, slots[self_off]);
 }
@@ -2562,6 +2574,7 @@ node_send_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_
     const uint32_t N = VAL2ARY(arr)->len;
     slots[0] = rv;
     for (uint32_t i = 0; i < N; i++) slots[1 + i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[1 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     if (pv == KORB_NIL) return korb_send_vis(c, slots + N + 1, mid, line, N, slots[self_off]);   /* &nil → no block */
     NODE *iseq = VAL2PROC(pv)->iseq;
     if (iseq == NULL) iseq = KORB_BLK_CPROC;             /* Symbol/Method#to_proc: forward as a C-proc block */
@@ -3078,6 +3091,7 @@ node_yield_splat(CTX *c, NODE *n, VALUE *slots, uint64_t flink, int32_t biseq_of
     const VALUE denv  = slots[def_env_off];
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     return korb_yield(c, slots + N, N, line, biseq, denv, &slots[cself_off]);
 }
 
@@ -3121,6 +3135,7 @@ node_yield_outer_splat(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t pre
     const VALUE *const ep = &slots[prev_off];
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
+    if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     korb_flink_stage_at(c, &slots[prev_off - KORB_EP_OFF], line);   /* the block frame links to THIS (block) frame */
     return korb_yield_outer(c, slots + N, N, line, ep, depth, trio_base);
 }

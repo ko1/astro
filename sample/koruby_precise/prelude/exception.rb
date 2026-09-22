@@ -275,12 +275,16 @@ class Object
     e.__set_source(this, meth, args)                        # Enumerator#each(*extra) re-drives the source
     e
   end
+  # keywords must survive the trip through `args` (CRuby's to_enum is C and does
+  # the same).  Module#ruby2_keywords is defined later in the prelude, so call the
+  # primitive it wraps.
+  __set_ruby2_keywords(self, :to_enum)
   alias_method :enum_for, :to_enum    # CRuby: the same definition, not a copy
 
   # What a block-less builtin returns: CRuby's own enumerator for `meth`, whose
   # #size is the receiver's — except for the predicate-driven ones, where how
   # many elements survive is not knowable up front.
-  private def __to_enum_sized(meth, *args)
+  private def __to_enum_sized(meth, *args)   # ruby2_keywords below
     e = to_enum(meth, *args)
     return e unless respond_to?(:size) && (args.empty? || meth == :each_with_object)   # each_with_object's arg is the memo, not a size-changing one
     case meth
@@ -288,6 +292,7 @@ class Object
     else e.__set_size(size)
     end
   end
+  __set_ruby2_keywords(self, :__to_enum_sized)
 
   def display(port = $stdout)
     port.write(to_s)

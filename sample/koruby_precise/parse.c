@@ -1563,7 +1563,7 @@ build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
         uint32_t n = ((const pm_numbered_parameters_node_t *)blk_params)->maximum;
         struct korb_param_info *pi = malloc(sizeof(*pi) + n * sizeof(struct korb_param_entry));
         if (!pi) abort();
-        pi->n = n;
+        pi->n = n; pi->r2k = 0;
         for (uint32_t i = 0; i < n; i++) { char nm[8]; snprintf(nm, sizeof(nm), "_%u", i + 1);
             pi->e[i].kind = 0; pi->e[i].name = korb_intern(tc->c->vm, nm, (uint32_t)strlen(nm)); }
         return pi;
@@ -1571,7 +1571,7 @@ build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
     if (PM_NODE_TYPE_P(blk_params, PM_IT_PARAMETERS_NODE)) {
         struct korb_param_info *pi = malloc(sizeof(*pi) + sizeof(struct korb_param_entry));
         if (!pi) abort();
-        pi->n = 1; pi->e[0].kind = 0; pi->e[0].name = 0;   /* `it` is anonymous */
+        pi->n = 1; pi->r2k = 0; pi->e[0].kind = 0; pi->e[0].name = 0;   /* `it` is anonymous */
         return pi;
     }
     const pm_parameters_node_t *ps = NULL;
@@ -1629,7 +1629,7 @@ build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
         pi->e[k].kind = 6; pi->e[k].name = bn ? kp_intern_cid(tc, bn) : korb_intern(tc->c->vm, "&", 1); k++;
     }
     #undef PI_ADD
-    pi->n = k;
+    pi->n = k; pi->r2k = 0;
     return pi;
 }
 
@@ -3254,7 +3254,8 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         body = ALLOC_node_seq(bp, body);
     }
     uint32_t uses_block = (tc->frame->uses_block ? KORB_DEFF_USES_BLOCK : 0u) |
-                          (tc->frame->uses_backref ? KORB_DEFF_USES_BACKREF : 0u);
+                          (tc->frame->uses_backref ? KORB_DEFF_USES_BACKREF : 0u) |
+                          (tc->frame->fwd_slot >= 0 ? KORB_DEFF_FWD_ALL : 0u);
     void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);   /* = locals + 2 if the method yields */
 

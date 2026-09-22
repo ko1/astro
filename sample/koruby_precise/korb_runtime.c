@@ -4421,6 +4421,7 @@ korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mi
         k->methods[k->method_cnt++] = m;
     }
     m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0; m->dm_proc = KORB_NIL;
+    m->ruby2_kw = 0;                              /* a redefinition drops the ruby2_keywords flag */
     m->simple_entry = NULL;                       /* 再定義でスロットを使い回すので必ず落とす */
     m->super_owner = KORB_NIL;             /* a redefinition drops any inherited alias origin */
     /* A top-level `def` lands in vm->methods (the global function table), which a
@@ -5054,6 +5055,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry
     m->refine_set = c->refinements;   /* refinements are lexical: capture the defining scope's */
     m->uses_block = (uint8_t)(uses_block & KORB_DEFF_USES_BLOCK);
     m->uses_backref = (uint8_t)((uses_block & KORB_DEFF_USES_BACKREF) != 0);
+    m->ruby2_kw = (uint8_t)((uses_block & KORB_DEFF_FWD_ALL) != 0);   /* `def m(...)` carries keywords through its synth *rest */
     m->no_block = korb_pi_no_block(param_info);
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;
@@ -5477,6 +5479,13 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no block accepted");
     if (kw && kw->kwrest_slot != -3 && argc >= 1 && korb_kwargs_hash_p(base[argc - 1]))
         { kwhash = base[argc - 1]; pos_argc = argc - 1; }
+    else if (argc >= 1 && UNLIKELY(korb_kwargs_hash_p(base[argc - 1]))) {
+        /* Not consumed as keywords.  A ruby2_keywords method keeps the fact on the
+         * Hash (persistently) so re-splatting it is keywords again; the call-scoped
+         * mark ends here either way. */
+        if (m->ruby2_kw) korb_r2k_set(base[argc - 1]);
+        korb_kwargs_unmark(base[argc - 1]);
+    }
     const uint32_t min_pos = m->req_cnt + m->post_cnt;   /* posts are required too */
     const uint32_t max_pos = (uint32_t)m->params_cnt + m->post_cnt;   /* req+opt fixed slots + posts */
     if (UNLIKELY(pos_argc < min_pos || (m->rest_slot < 0 && pos_argc > max_pos))) {
@@ -5594,18 +5603,29 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                 return korb_raise_missing_kw(c, slots, m, mid, line, kw, present);
         if (kw->kwrest_slot == -1 && kwhash != KORB_NIL) {          /* no **rest: every key must be declared */
             const KorbHash *const kh = VAL2HASH(kwhash);
+            /* CRuby reports ALL of them in one message: "unknown keywords: :a, :b, :c". */
+            char ukb[512]; int uko = 0; uint32_t ukn = 0;
             for (uint32_t i = 0; i < kh->len; i++) {
                 const VALUE key = korb_items_data(kh->items)[2 * i];
                 bool declared = false;
                 for (uint32_t j = 0; j < kw->count; j++) if (key == ID2SYM(kw->entries[j].mid)) { declared = true; break; }
                 if (declared) continue;
-                if (SYMBOL_P(key))
-                    return korb_raise_arity(c, slots, m, mid, line, "unknown keyword: :%s", korb_sym_name(vm, SYM2ID(key)));
-                if (KORB_STRING_P(key))                             /* a String key is reported quoted (CRuby) */
-                    return korb_raise_arity(c, slots, m, mid, line, "unknown keyword: \"%.*s\"",
-                                            (int)VAL2STR(key)->len, korb_strbuf_data(VAL2STR(key)->buf));
-                return korb_raise_arity(c, slots, m, mid, line, "unknown keyword: %s", korb_type_name(key));
+                if (uko < (int)sizeof ukb - 1) {
+                    const char *const sep = ukn ? ", " : "";
+                    if (SYMBOL_P(key))
+                        uko += snprintf(ukb + uko, sizeof ukb - uko, "%s:%s", sep, korb_sym_name(vm, SYM2ID(key)));
+                    else if (KORB_STRING_P(key))                    /* a String key is reported quoted (CRuby) */
+                        uko += snprintf(ukb + uko, sizeof ukb - uko, "%s\"%.*s\"", sep,
+                                        (int)VAL2STR(key)->len, korb_strbuf_data(VAL2STR(key)->buf));
+                    else if (FIXNUM_P(key))
+                        uko += snprintf(ukb + uko, sizeof ukb - uko, "%s%lld", sep, (long long)FIX2LONG(key));
+                    else
+                        uko += snprintf(ukb + uko, sizeof ukb - uko, "%s%s", sep, korb_coerce_name(c, key));
+                }
+                ukn++;
             }
+            if (UNLIKELY(ukn != 0))
+                return korb_raise_arity(c, slots, m, mid, line, "unknown keyword%s: %s", ukn > 1 ? "s" : "", ukb);
         }
         for (uint32_t j = 0; j < kw->count; j++) {                  /* pass 2: defaults (kwhash is done with) */
             if (j < 64 && (present & (1ull << j))) continue;
@@ -5730,10 +5750,18 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     for (uint32_t j = 0; j < kw->count; j++)
         if (!(j < 64 && (present & (1ull << j))) && !kw->entries[j].deflt)
             return korb_raise_missing_kw(c, slots, m, mid, line, kw, present);
-    for (uint32_t p = 0; p < kw_argc; p++) {                 /* unknown keyword (no **rest here) */
-        bool declared = false;
-        for (uint32_t j = 0; j < kw->count; j++) if (kw_syms[p] == kw->entries[j].mid) { declared = true; break; }
-        if (UNLIKELY(!declared)) return korb_raise_arity(c, slots, m, mid, line, "unknown keyword: :%s", korb_sym_name(vm, kw_syms[p]));
+    {                                                       /* unknown keywords (no **rest here) — CRuby names them all at once */
+        char ukb[512]; int uko = 0; uint32_t ukn = 0;
+        for (uint32_t p = 0; p < kw_argc; p++) {
+            bool declared = false;
+            for (uint32_t j = 0; j < kw->count; j++) if (kw_syms[p] == kw->entries[j].mid) { declared = true; break; }
+            if (LIKELY(declared)) continue;
+            if (uko < (int)sizeof ukb - 1)
+                uko += snprintf(ukb + uko, sizeof ukb - uko, "%s:%s", ukn ? ", " : "", korb_sym_name(vm, kw_syms[p]));
+            ukn++;
+        }
+        if (UNLIKELY(ukn != 0))
+            return korb_raise_arity(c, slots, m, mid, line, "unknown keyword%s: %s", ukn > 1 ? "s" : "", ukb);
     }
     /* optional positional defaults (after the provided positionals) */
     for (uint32_t pi = pos_argc; pi < (uint32_t)m->params_cnt; pi++) {
@@ -8542,6 +8570,7 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
     m->refine_set = c->refinements;   /* see korb_class_def_method */
     m->uses_block = (uint8_t)(uses_block & KORB_DEFF_USES_BLOCK);
     m->uses_backref = (uint8_t)((uses_block & KORB_DEFF_USES_BACKREF) != 0);
+    m->ruby2_kw = (uint8_t)((uses_block & KORB_DEFF_FWD_ALL) != 0);   /* `def m(...)` carries keywords through its synth *rest */
     m->no_block = korb_pi_no_block(param_info);
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;
@@ -9665,6 +9694,52 @@ korb_bi_autoload_feature_loaded(CTX *c, VALUE *slots, VALUE_SLICE args)
     const VALUE pv = VALUE_SLICE_GET(args, 0);
     if (!KORB_STRING_P(pv)) return RESULT_OK(KORB_FALSE);
     return RESULT_OK(korb_autoload_feature_loaded_p(c, pv) ? KORB_TRUE : KORB_FALSE);
+}
+
+/* __set_ruby2_keywords(target, name) — the primitive behind Module#ruby2_keywords
+ * and Proc#ruby2_keywords.  A flagged callee keeps the persistent mark on the
+ * kwargs Hash it collects into its *rest, so re-splatting it is keywords again.
+ * Returns false when the name resolves to nothing (the caller already checked). */
+static const void *korb_entry_param_info(NODE *entry);   /* defined with the other node_entry accessors */
+static RESULT
+korb_bi_set_ruby2_keywords(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)slots;
+    const VALUE tgt = VALUE_SLICE_GET(args, 0);
+    if (KORB_PROC_P(tgt)) {
+        VAL2PROC(tgt)->ruby2_kw = 1;
+        /* CRuby flags the ISEQ, so a Proc dup'd BEFORE this call has it too. */
+        NODE *const iseq = VAL2PROC(tgt)->iseq;
+        struct korb_param_info *const pi =
+            (iseq != NULL && iseq != KORB_BLK_CPROC) ? (struct korb_param_info *)(uintptr_t)korb_entry_param_info(iseq) : NULL;
+        if (pi != NULL) pi->r2k = 1;
+        return RESULT_OK(KORB_TRUE);
+    }
+    if (!KORB_CLASS_P(tgt)) return RESULT_OK(KORB_FALSE);
+    const VALUE nm = VALUE_SLICE_LEN(args) >= 2 ? VALUE_SLICE_GET(args, 1) : KORB_NIL;
+    uint32_t mid;
+    if (SYMBOL_P(nm))            mid = SYM2ID(nm);
+    else if (KORB_STRING_P(nm))  mid = korb_intern(c->vm, korb_strbuf_data(VAL2STR(nm)->buf), VAL2STR(nm)->len);
+    else                         return RESULT_OK(KORB_FALSE);
+    VALUE def = KORB_NIL;
+    struct korb_method *const m = korb_class_find_method(tgt, mid, &def);
+    if (m == NULL) return RESULT_OK(KORB_FALSE);
+    m->ruby2_kw = 1;
+    if (KORB_PROC_P(m->dm_proc)) {        /* define_method body: the flag belongs to its ISEQ */
+        NODE *const dseq = VAL2PROC(m->dm_proc)->iseq;
+        struct korb_param_info *const dpi =
+            (dseq != NULL && dseq != KORB_BLK_CPROC) ? (struct korb_param_info *)(uintptr_t)korb_entry_param_info(dseq) : NULL;
+        VAL2PROC(m->dm_proc)->ruby2_kw = 1;
+        if (dpi != NULL) dpi->r2k = 1;
+    }
+    /* CRuby's flag lives on the def, so an alias made BEFORE this call gets it
+     * too (one made after copies the entry).  Same body == same def. */
+    if (m->body != NULL && KORB_CLASS_P(def)) {
+        KorbClass *const k = VAL2CLASS(def);
+        for (uint32_t i = 0; i < k->method_cnt; i++)
+            if (k->methods[i]->body == m->body) k->methods[i]->ruby2_kw = 1;
+    }
+    return RESULT_OK(KORB_TRUE);
 }
 
 /* private_constant / public_constant: mark (owner, name) as unreachable through
@@ -10907,6 +10982,14 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no keywords accepted");
     const bool has_kw_hash = (kw && kw->kwrest_slot != -3 && argc >= 1 && korb_kwargs_hash_p(argv[argc - 1]));
     if (has_kw_hash) argc--;   /* positional binding below sees only positionals */
+    else if (argc >= 1 && UNLIKELY(korb_kwargs_hash_p(argv[argc - 1]))) {
+        /* Proc#ruby2_keywords (and a ruby2_keywords'd define_method body) — same
+         * rule as a method's; the flag lives on the Proc and on its ISEQ. */
+        const struct korb_param_info *const r2pi = (const struct korb_param_info *)korb_entry_param_info(block);
+        if ((fwd && VAL2PROC(*captured_self)->ruby2_kw) || (r2pi != NULL && r2pi->r2k))
+            korb_r2k_set(argv[argc - 1]);
+        korb_kwargs_unmark(argv[argc - 1]);
+    }
     /* A lambda forwarded as a block enforces its positional arity (unlike a plain
      * block/proc) and never auto-splats a single Array.  The proc is reachable via
      * captured_self on the FWD path (the only path that can carry a lambda). */
@@ -11848,20 +11931,19 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
     else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_HASH) &&
              (mid == korb_intern(vm, "ruby2_keywords_hash?", 20) ||
               mid == korb_intern(vm, "ruby2_keywords_hash", 19))) {
-        /* These read/write the keyword-argument mark (KORB_FL_KWARGS) that a call
-         * site puts on a Hash.  They MUST stay C: a Ruby definition would bind the
-         * argument to a named parameter, and that binding is exactly where the
-         * mark is dropped. */
+        /* These read/write the PERSISTENT ruby2_keywords mark (KORB_FL_R2K), not
+         * the call-scoped KORB_FL_KWARGS one — the latter is already gone by the
+         * time the argument has been bound to this cfunc's parameter. */
         const VALUE h = argc >= 1 ? slots[-(korb_sword_t)argc] : KORB_NIL;
         if (UNLIKELY(!KORB_HASH_P(h)))
             return korb_raise(c, slots, KORB_E_TYPE, line, "wrong argument type %s (expected Hash)", korb_coerce_name(c, h));
         if (mid == korb_intern(vm, "ruby2_keywords_hash?", 20))
-            return RESULT_OK(korb_kwargs_hash_p(h) ? KORB_TRUE : KORB_FALSE);
+            return RESULT_OK(korb_r2k_hash_p(h) ? KORB_TRUE : KORB_FALSE);
         slots[0] = h;                                                       /* dup, then mark the copy */
         const RESULT dr = korb_send(c, slots + 1, korb_intern(vm, "dup", 3), line, 0);
         if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
         if (LIKELY(AROH_IS_GC_OBJECT(dr.value)))
-            ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_KWARGS;
+            ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_R2K;
         return dr;
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new &&
@@ -18728,6 +18810,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__set_gvar", korb_bi_set_gvar, 2);
     korb_builtin_define(c, "__enc_sync__", korb_bi_enc_sync, -1);   /* Encoding hands down locale + default_internal */
     korb_builtin_define(c, "__autoload_feature_loaded?", korb_bi_autoload_feature_loaded, 1);
+    korb_builtin_define(c, "__set_ruby2_keywords", korb_bi_set_ruby2_keywords, -1);
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "__refinement_import", korb_bi_refinement_import, 2);   /* Refinement#import_methods (prelude) */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
