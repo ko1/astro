@@ -749,6 +749,13 @@ static RESULT korb_m_meth_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 /* Resolve a bound Method to its korb_method entry: receiver-class MRO first,
  * then the global function table (top-level def / builtin like `p`). */
+/* Does this Method denote the DEFAULT allocator?  Either it was captured while
+ * `new` still had no table entry, or it resolves to the trampoline that an
+ * `alias` — or `private_class_method :new` — installs in its place. */
+static bool korb_meth_default_new_p(const KorbMethod *m, const struct korb_method *e) {
+    return m->default_new ||
+           (e != NULL && e->kind == KORB_METHOD_CFUNC && e->rbfn == korb_m_class_new_alias);
+}
 static const struct korb_method *korb_meth_resolve(CTX *c, const KorbMethod *m) {
     if (m->missing) return NULL;                 /* no definition: it lives behind method_missing */
     if (m->default_new) return NULL;             /* the allocator has no table entry — never a later `def self.new` */
@@ -847,10 +854,12 @@ static RESULT korb_m_meth_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     const struct korb_method *const e1 = korb_meth_resolve(c, m1);
     const struct korb_method *const e2 = korb_meth_resolve(c, m2);
     /* `.new` has no table entry (it is a dispatch special case), so an alias of
-     * it resolves to the trampoline while the original resolves to nothing —
-     * match them through the alias's recorded original name. */
-    if (e1 == NULL && e2 != NULL && e2->mid != m1->mid && e2->orig_mid == m1->mid) return RESULT_OK(KORB_TRUE);
-    if (e2 == NULL && e1 != NULL && e1->mid != m2->mid && e1->orig_mid == m2->mid) return RESULT_OK(KORB_TRUE);
+     * it — or `private_class_method :new` — resolves to a trampoline while the
+     * original resolves to nothing.  Both denote the SAME definition, the default
+     * allocator, and rspec-mocks decides how to verify a stubbed `new` with
+     * exactly `klass.method(:new) == Class.instance_method(:new).bind(klass)`. */
+    {   const bool d1 = korb_meth_default_new_p(m1, e1), d2 = korb_meth_default_new_p(m2, e2);
+        if (d1 || d2) return RESULT_OK(d1 && d2 ? KORB_TRUE : KORB_FALSE);   }
     if (e1 == NULL || e2 == NULL) return RESULT_OK(e1 == e2 ? KORB_TRUE : KORB_FALSE);
     if (e1->kind != e2->kind) return RESULT_OK(KORB_FALSE);
     bool same;
