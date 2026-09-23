@@ -1183,7 +1183,7 @@ static RESULT korb_m_sym_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 /* relational op on Symbols by name. op: 0='<' 1='<=' 2='>' 3='>=' */
 static RESULT korb_m_sym_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int op) {
     VALUE o = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!SYMBOL_P(o))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of Symbol with %s failed", korb_type_name(o));
+    if (UNLIKELY(!SYMBOL_P(o))) return korb_raise_cmperr(c, slots, 0, VALUE_REF_GET(self), o, false);
     int r = strcmp(korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self))), korb_sym_name(c->vm, SYM2ID(o)));
     bool t = op == 0 ? r < 0 : op == 1 ? r <= 0 : op == 2 ? r > 0 : r >= 0;
     return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);

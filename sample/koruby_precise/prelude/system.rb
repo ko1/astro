@@ -1554,6 +1554,18 @@ CROSS_COMPILING = nil unless defined?(CROSS_COMPILING)
 $__at_exit = []
 $__exit_trap = nil        # Signal.trap(:EXIT) handler; parked at the tail (runs first)
 module Kernel
+  # CRuby's rb_cmperr: the left operand is named by its class, the right one by
+  # #inspect when it is an immediate or a Float.  `coercion` picks the Ruby 3.4
+  # reason suffix (a refused numeric #coerce vs a nil <=>).
+  def self.__cmperr(a, b, coercion: false)
+    subject = case b
+              when ::Float, ::Integer, ::Symbol then b.inspect
+              else b.nil? || b.equal?(true) || b.equal?(false) ? b.inspect : b.class
+              end
+    raise ::ArgumentError, "comparison of #{a.class} with #{subject} failed: " \
+                           "#{coercion ? 'coercion was not possible' : 'comparator returned nil'}"
+  end
+
   # CRuby defines #tap in Ruby (internal:kernel), so it has a source_location and
   # its frame is labelled "Kernel#tap".  Keep it Ruby here for the same reason.
   def tap

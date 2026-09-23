@@ -1768,11 +1768,11 @@ static RESULT korb_m_str_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2)", (unsigned)VALUE_SLICE_LEN(a));
     VALUE s = VALUE_REF_GET(self);
     if (lo != KORB_NIL) {                              /* nil bound = unbounded that side */
-        if (UNLIKELY(!KORB_STRING_P(lo))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+        if (UNLIKELY(!KORB_STRING_P(lo))) return korb_raise_cmperr(c, slots, 0, s, lo, false);
         if (korb_cmp_values(s, lo) < 0) return RESULT_OK(lo);
     }
     if (hi != KORB_NIL) {
-        if (UNLIKELY(!KORB_STRING_P(hi))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+        if (UNLIKELY(!KORB_STRING_P(hi))) return korb_raise_cmperr(c, slots, 0, s, hi, false);
         if (korb_cmp_values(s, hi) > 0) return RESULT_OK(hi);
     }
     return RESULT_OK(s);

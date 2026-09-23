@@ -103,8 +103,8 @@ module Enumerable
   # min/max: (), (n), { cmp }, (n) { cmp }.  n → the n smallest/largest as an Array.
   # Running min/max (not sort-based): honours a degenerate comparator block that
   # keeps the first element (CRuby semantics). The n form returns the n smallest/largest.
-  def min(n = nil, &blk); return (blk ? to_a.sort(&blk) : to_a.sort).first(n) if n; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = blk ? blk.call(x, r) : (x <=> r); raise ArgumentError, "comparison of #{x.class} with #{r.class} failed" if c.nil?; r = x if c < 0; end }; r; end
-  def max(n = nil, &blk); return (blk ? to_a.sort(&blk) : to_a.sort).last(n).reverse if n; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = blk ? blk.call(x, r) : (x <=> r); raise ArgumentError, "comparison of #{x.class} with #{r.class} failed" if c.nil?; r = x if c > 0; end }; r; end
+  def min(n = nil, &blk); return (blk ? to_a.sort(&blk) : to_a.sort).first(n) if n; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = blk ? blk.call(x, r) : (x <=> r); ::Kernel.__cmperr(x, r) if c.nil?; r = x if c < 0; end }; r; end
+  def max(n = nil, &blk); return (blk ? to_a.sort(&blk) : to_a.sort).last(n).reverse if n; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = blk ? blk.call(x, r) : (x <=> r); ::Kernel.__cmperr(x, r) if c.nil?; r = x if c > 0; end }; r; end
   # the 1-element form runs a running min/max so a tie keeps the element that
   # came first out of #each (a sort would hand back the last of the tie group).
   def min_by(n = nil); return __to_enum_sized(:min_by) unless block_given?; return sort_by { |x| yield(x) }.first(n) if n; __by_extreme(-1) { |x| yield(x) }; end
@@ -117,7 +117,7 @@ module Enumerable
         best = x; bk = k; f = false
       else
         cmp = (k <=> bk)
-        raise ArgumentError, "comparison of #{k.class} with #{bk.class} failed" if cmp.nil?
+        ::Kernel.__cmperr(k, bk) if cmp.nil?
         if (want > 0 ? cmp > 0 : cmp < 0); best = x; bk = k; end
       end
     }

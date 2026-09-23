@@ -1669,8 +1669,7 @@ static RESULT korb_m_cmpbl_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (cmp == 2) {                                       /* <=> returned nil */
         if (op == 4) return RESULT_OK(KORB_FALSE);        /* == → false */
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed",
-                          korb_coerce_name(c, VALUE_REF_GET(self)), korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+        return korb_raise_cmperr(c, slots, 0, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), false);
     }
     bool t;
     switch (op) { case 0: t = cmp < 0; break; case 1: t = cmp <= 0; break;
@@ -1711,10 +1710,14 @@ static RESULT korb_m_num_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 static RESULT korb_m_cmpbl_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     int c1; RESULT r = korb_comparable_cmp(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), &c1);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (c1 == 2 || c1 < 0) return RESULT_OK(KORB_FALSE);   /* self < min */
+    if (UNLIKELY(c1 == 2))                                 /* a nil <=> is an error, not "not between" */
+        return korb_raise_cmperr(c, slots, 0, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), false);
+    if (c1 < 0) return RESULT_OK(KORB_FALSE);              /* self < min */
     int c2; r = korb_comparable_cmp(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 1), &c2);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    return RESULT_OK((c2 != 2 && c2 <= 0) ? KORB_TRUE : KORB_FALSE);
+    if (UNLIKELY(c2 == 2))
+        return korb_raise_cmperr(c, slots, 0, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 1), false);
+    return RESULT_OK(c2 <= 0 ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_cmpbl_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (VALUE_SLICE_LEN(a) == 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {
@@ -1728,14 +1731,22 @@ static RESULT korb_m_cmpbl_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (slots[0] != KORB_NIL && slots[1] != KORB_NIL) {  /* both bounds present → min must be <= max */
         int clh; RESULT rb = korb_comparable_cmp(c, slots + 2, slots[0], slots[1], &clh);
         if (UNLIKELY(rb.state != KORB_NORMAL)) return rb;
-        if (clh == 2 || clh > 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be less than or equal to max argument");
+        if (UNLIKELY(clh == 2))                           /* CRuby blames the two BOUNDS here */
+            return korb_raise_cmperr(c, slots + 2, 0, slots[0], slots[1], false);
+        if (clh > 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be less than or equal to max argument");
     }
-    int cl; RESULT r = korb_comparable_cmp(c, slots + 2, VALUE_REF_GET(self), slots[0], &cl);
-    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (cl != 2 && cl < 0) return RESULT_OK(slots[0]);    /* self < lo → lo */
-    int ch; r = korb_comparable_cmp(c, slots + 2, VALUE_REF_GET(self), slots[1], &ch);
-    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (ch != 2 && ch > 0) return RESULT_OK(slots[1]);    /* self > hi → hi */
+    if (slots[0] != KORB_NIL) {
+        int cl; RESULT r = korb_comparable_cmp(c, slots + 2, VALUE_REF_GET(self), slots[0], &cl);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (UNLIKELY(cl == 2)) return korb_raise_cmperr(c, slots + 2, 0, VALUE_REF_GET(self), slots[0], false);
+        if (cl < 0) return RESULT_OK(slots[0]);           /* self < lo → lo */
+    }
+    if (slots[1] != KORB_NIL) {
+        int ch; RESULT r = korb_comparable_cmp(c, slots + 2, VALUE_REF_GET(self), slots[1], &ch);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (UNLIKELY(ch == 2)) return korb_raise_cmperr(c, slots + 2, 0, VALUE_REF_GET(self), slots[1], false);
+        if (ch > 0) return RESULT_OK(slots[1]);           /* self > hi → hi */
+    }
     return RESULT_OK(VALUE_REF_GET(self));
 }
 /* Module#include?(mod) — true if mod is included in self or any ancestor

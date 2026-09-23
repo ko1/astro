@@ -122,7 +122,7 @@ class Integer
   # n.upto(bad) / n.downto(bad) without a block: CRuby hands back the
   # Enumerator and only #size / #each raise the comparison error.
   def __iter_enum_bad(meth, lim)
-    to_enum(meth, lim) { raise ArgumentError, "comparison of Integer with #{lim.nil? ? 'nil' : lim.class} failed" }
+    to_enum(meth, lim) { ::Kernel.__cmperr(self, lim, coercion: true) }
   end
 end
 class Float
@@ -272,11 +272,7 @@ class Range
   def __clamp_cmp(a, b)
     r = (a <=> b)
     return r unless r.nil?
-    subject = case b
-              when Float, Integer, Symbol then b.inspect
-              else b.nil? || b.equal?(true) || b.equal?(false) ? b.inspect : b.class
-              end
-    raise ArgumentError, "comparison of #{a.class} with #{subject} failed: comparator returned nil"
+    ::Kernel.__cmperr(a, b)
   end
   private :__clamp_cmp
 

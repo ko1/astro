@@ -8021,13 +8021,29 @@ static const char *const korb_cmp_op_name[] = { "<", "<=", ">", ">=" };
 
 /* CRuby rb_cmperr flavor: immediates render via inspect, others by class. */
 static void
-korb_cmperr_operand(VALUE v, char *buf, size_t cap)
+korb_cmperr_operand(CTX *const c, VALUE v, char *buf, size_t cap)
 {
     if (FIXNUM_P(v))          snprintf(buf, cap, "%lld", (long long)FIX2LONG(v));
     else if (v == KORB_NIL)   snprintf(buf, cap, "nil");
     else if (v == KORB_TRUE)  snprintf(buf, cap, "true");
     else if (v == KORB_FALSE) snprintf(buf, cap, "false");
-    else                      snprintf(buf, cap, "%s", korb_type_name(v));
+    else if (SYMBOL_P(v))     snprintf(buf, cap, ":%s", korb_sym_name(c->vm, SYM2ID(v)));
+    else if (KORB_FLOAT_P(v)) { char fb[32]; korb_float_to_s(korb_float_val(v), fb); snprintf(buf, cap, "%s", fb); }
+    else                      korb_class_desc_into(c, korb_class_obj_of(c, v), buf, cap);
+}
+
+/* CRuby's rb_cmperr.  The LEFT operand is always named by its class (so an
+ * anonymous one prints as `#<Class:0x…>`), the RIGHT one by #inspect when it is
+ * an immediate or a Float — `"a" < 1` blames `1`, not `Integer`.  `coercion`
+ * picks the Ruby 3.4 reason suffix: a refused numeric coerce, else a nil <=>. */
+RESULT
+korb_raise_cmperr(CTX *c, VALUE *slots, uint32_t line, VALUE l, VALUE r, bool coercion)
+{
+    char lnm[192], rnm[192];
+    korb_class_desc_into(c, korb_class_obj_of(c, l), lnm, sizeof lnm);
+    korb_cmperr_operand(c, r, rnm, sizeof rnm);
+    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "comparison of %s with %s failed: %s",
+                      lnm, rnm, coercion ? "coercion was not possible" : "comparator returned nil");
 }
 
 static bool korb_hash_is_subset(const KorbHash *sub, const KorbHash *sup);
@@ -8133,10 +8149,11 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
         if (h) return cr;
     }
     if (KORB_INTEGER_P(l) || KORB_FLOAT_P(l) || KORB_RATIONAL_P(l) || KORB_STRING_P(l) || SYMBOL_P(l)) {
-        char rdesc[64];                                  /* numeric/String/Symbol vs incomparable → ArgumentError */
-        korb_cmperr_operand(r, rdesc, sizeof(rdesc));
-        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                          "comparison of %s with %s failed", korb_type_name(l), rdesc);
+        /* numeric/String/Symbol vs incomparable → ArgumentError.  A NUMERIC left
+         * operand got here through the refused #coerce above, everything else
+         * through a nil <=> — CRuby names the two reasons differently. */
+        const bool coercion = KORB_INTEGER_P(l) || KORB_FLOAT_P(l);   /* Rational compares through <=> */
+        return korb_raise_cmperr(c, slots, line, l, r, coercion);
     }
     return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                       "undefined method '%s' for %s",

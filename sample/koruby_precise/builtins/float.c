@@ -284,10 +284,10 @@ static RESULT korb_m_flt_coerce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * self already below min is NOT an error). */
 static RESULT korb_num_between(CTX *c, VALUE *slots, VALUE self, VALUE lo, VALUE hi) {
     int c1 = korb_cmp_full(c, self, lo);
-    if (UNLIKELY(c1 == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_coerce_name(c, self), korb_coerce_name(c, lo));
+    if (UNLIKELY(c1 == 2)) return korb_raise_cmperr(c, slots, 0, self, lo, false);
     if (c1 < 0) return RESULT_OK(KORB_FALSE);
     int c2 = korb_cmp_full(c, self, hi);
-    if (UNLIKELY(c2 == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_coerce_name(c, self), korb_coerce_name(c, hi));
+    if (UNLIKELY(c2 == 2)) return korb_raise_cmperr(c, slots, 0, self, hi, false);
     return RESULT_OK(c2 <= 0 ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_int_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -423,12 +423,12 @@ static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const VALUE sv = VALUE_REF_GET(self);
     if (lo != KORB_NIL) {                              /* nil bound = unbounded on that side */
         const int cl = korb_int_clamp_cmp(sv, lo);
-        if (UNLIKELY(cl == 2)) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed");
+        if (UNLIKELY(cl == 2)) return korb_raise_cmperr(c, slots, 0, sv, lo, false);
         if (cl < 0) return RESULT_OK(lo);
     }
     if (hi != KORB_NIL) {
         const int ch = korb_int_clamp_cmp(sv, hi);
-        if (UNLIKELY(ch == 2)) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed");
+        if (UNLIKELY(ch == 2)) return korb_raise_cmperr(c, slots, 0, sv, hi, false);
         if (ch > 0) return RESULT_OK(hi);
     }
     return RESULT_OK(VALUE_REF_GET(self));

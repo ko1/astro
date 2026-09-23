@@ -275,6 +275,9 @@ const char *korb_enc_inspect_name_of(const struct korb_vm *vm, uint32_t idx);   
 uint32_t korb_enc_index_pub(struct korb_vm *vm, const char *name);   /* encoding name → header index (registers) */            /* encoding index → name */
 bool   korb_enc_ascii_compat_idx(const struct korb_vm *vm, uint32_t idx);        /* ASCII-compatible encoding? */
 bool   korb_str_enc_combine(const struct korb_vm *vm, VALUE a, VALUE b, uint32_t *out);   /* shared encoding */
+/* CRuby rb_cmperr: "comparison of <class of l> with <inspect-or-class of r>
+ * failed: <coercion was not possible | comparator returned nil>". */
+RESULT korb_raise_cmperr(CTX *c, VALUE *slots, uint32_t line, VALUE l, VALUE r, bool coercion);
 RESULT korb_raise_enc_compat(CTX *c, VALUE *slots, uint32_t ea, uint32_t eb);
 RESULT korb_raise_enc_compat_msg(CTX *c, VALUE *slots, const char *msg);
 RESULT korb_raise_nested(CTX *c, VALUE *slots, const char *owner, const char *name, const char *msg);   /* Encoding::CompatibilityError */    /* Encoding::CompatibilityError */   /* module overrides a Module hook (const_added) */   /* owner = defining module (nil = top-level) — for Module#constants */
