@@ -284,7 +284,10 @@ class Range
   # Range#each (C) returns this when it cannot materialize.
   def __each_endless_enum
     r = self
-    Enumerator.new do |y|
+    # CRuby's Range#each enumerator sizes a numeric range as Infinity and a
+    # String (or other #succ-driven) one as nil.
+    sz = r.begin.is_a?(::Numeric) ? ::Float::INFINITY : nil
+    Enumerator.new(sz) do |y|
       cur = r.begin
       loop { y << cur; cur = cur.succ }
     end

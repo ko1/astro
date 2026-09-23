@@ -3411,12 +3411,19 @@ static RESULT korb_m_str_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             else { i--; if (i < 0) break; else continue; }
             if (!carried) break;
             int j = i - 1;
+            bool skipped = false;                            /* crossed a non-alnum on the way left */
             while (j >= 0) {
                 unsigned char cj = (unsigned char)buf[j];
                 if ((cj>='0'&&cj<='9')||(cj>='a'&&cj<='z')||(cj>='A'&&cj<='Z')) break;
-                j--;
+                skipped = true; j--;
             }
             if (j < 0) { insert_pos = (uint32_t)i; break; }   /* carry out → insert before leftmost alnum */
+            /* A carry crosses a separator only into the SAME kind of character:
+             * `"Collision_9".succ` is `"Collision_10"`, not `"Collisioo_0"`
+             * (CRuby stops at the letter/digit change and grows the run). */
+            if (skipped && ((buf[i] >= '0' && buf[i] <= '9') != (buf[j] >= '0' && buf[j] <= '9'))) {
+                insert_pos = (uint32_t)i; break;
+            }
             i = j; carry_ch = 0;
         }
     }

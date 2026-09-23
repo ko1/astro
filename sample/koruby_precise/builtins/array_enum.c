@@ -1770,10 +1770,18 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         }
     } else {
-        korb_sword_t s = FIX2LONG(selfv), lim = FIX2LONG(limv), st = FIX2LONG(stepv);
+        /* A nil limit means ENDLESS (`1.step { }`), and a non-numeric one is
+         * CRuby's comparison ArgumentError — FIX2LONG on a String pointer used
+         * to make `1.step("a") { }` spin instead of raising. */
+        const bool endless = (limv == KORB_NIL);
+        if (!endless && !FIXNUM_P(limv) && !KORB_BIGNUM_P(limv))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0,
+                              "comparison of %s with %s failed: coercion was not possible",
+                              korb_coerce_name(c, selfv), korb_coerce_name(c, limv));
+        korb_sword_t s = FIX2LONG(selfv), lim = endless ? 0 : FIX2LONG(limv), st = FIX2LONG(stepv);
         if (st == 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
         if (collect) { slots[0] = UNWRAP(korb_ary_new(c, slots, 8)); dst = VALUE_REF_AT(&slots[0]); }
-        for (korb_sword_t i = s; st > 0 ? i <= lim : i >= lim; i += st) {
+        for (korb_sword_t i = s; endless || (st > 0 ? i <= lim : i >= lim); i += st) {
             if (collect) { CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i))); continue; }
             slots[0] = LONG2FIX(i);
             RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);

@@ -595,15 +595,23 @@ static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth)
 static RESULT korb_m_range_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
     if (block == NULL) {                              /* → Enumerator over the range's elements */
-        if (SELF_RANGE->rend == KORB_NIL && !FIXNUM_P(SELF_RANGE->rbegin)) {
-            /* endless non-Integer range: a materializing enumerator can't work —
-             * hand back a #succ-driven generator (prelude __each_endless_enum). */
+        /* Anything with no upper bound — `(1..)` as much as `(1..Float::INFINITY)`
+         * — must NOT be materialized: hand back a #succ-driven generator
+         * (prelude __each_endless_enum), as CRuby's lazily-sized enumerator does. */
+        const VALUE rb0 = SELF_RANGE->rbegin, re0 = SELF_RANGE->rend;
+        const bool numeric_begin = FIXNUM_P(rb0) || KORB_BIGNUM_P(rb0) || KORB_FLOAT_P(rb0);
+        if (rb0 != KORB_NIL &&
+            (re0 == KORB_NIL || (KORB_FLOAT_P(re0) && isinf(korb_float_val(re0)) && korb_float_val(re0) > 0))) {
             slots[0] = VALUE_REF_GET(self);
             return korb_send_impl(c, slots + 1, korb_intern(c->vm, "__each_endless_enum", 19), 0, 0, NULL, NULL, NULL);
         }
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each"));
-        return korb_enum_new(c, slots + 2, slots[0], slots[1]);
+        const RESULT er = korb_enum_new(c, slots + 2, slots[0], slots[1]);
+        /* CRuby's Range#each enumerator answers #size only for a NUMERIC range
+         * (`("a".."c").each.size` is nil, not 3). */
+        if (LIKELY(er.state == KORB_NORMAL) && !numeric_begin) VAL2ENUM(er.value)->size_unknown = 1;
+        return er;
     }
     if (SELF_RANGE->rend == KORB_NIL && !FIXNUM_P(SELF_RANGE->rbegin)) {
         /* endless String/etc. range with a block: drive by #succ, re-reading the
