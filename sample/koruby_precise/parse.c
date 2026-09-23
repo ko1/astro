@@ -2926,16 +2926,31 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
      * at eval.  Safe navigation (recv&.m) nil-checks recv before dispatch. */
     {
         bool safe = (cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) != 0;
+        /* `recv&.m(args)`: node_send_safe stages its children before it can look
+         * at the receiver, so with ARGUMENTS the nil check has to come first —
+         * CRuby never evaluates them for a nil receiver (bundler's
+         * `@sorted&.insert(@sorted.bsearch_index { … })` is exactly this shape).
+         * Evaluate the receiver into a temp and guard the whole call on it, the
+         * way the block form (SAFE_WRAP) already does. */
+        int32_t safe_tmp = -1;
+        NODE *safe_set = NULL;
+        if (safe && argc > 0) {
+            safe_tmp = (int32_t)alloc_synth_local(tc);
+            safe_set = bake_lset(tc, (uint32_t)safe_tmp, transduce(tc, cn->receiver));
+            safe = false;                                  /* the guard replaces node_send_safe */
+        }
         uint32_t cnt = 1u + (uint32_t)argc;
         int32_t self_off = -1 - tc->chain - (int32_t)cnt - KORB_FRAME_HDR;   /* caller self at base[-1], from the +HDR-shifted cursor */
         NODE **argv = malloc(sizeof(NODE *) * cnt);
         if (!argv) abort();
         int32_t saved = tc->chain;
         tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;   /* @framehdr: cursor +HDR (node_send/safe reserve a frame header) */
-        argv[0] = transduce(tc, cn->receiver);
+        argv[0] = safe_tmp >= 0 ? bake_lget(tc, (uint32_t)safe_tmp) : transduce(tc, cn->receiver);
         for (size_t i = 0; i < argc; i++)
             argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
         tc->chain = saved;
+        #define KP_SAFE_GUARD(call) (safe_tmp >= 0 \
+            ? ALLOC_node_seq(safe_set, ALLOC_node_nil_guard(bake_lget(tc, (uint32_t)safe_tmp), (call))) : (call))
         if (safe) { NODE *sf = KP_LINK(tc, node_send_safe, mid, kp_flink(tc, line), self_off, argv, cnt);
                     bake_add(tc, &sf->u.node_send_safe.self_off);   /* recv&.m still honours private/protected */
                     return sf; }
@@ -2943,11 +2958,12 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         if (argc >= 1 && PM_NODE_TYPE_P(cn->arguments->arguments.nodes[argc - 1], PM_KEYWORD_HASH_NODE)) {
             NODE *ckws = KP_LINK(tc, node_send_kws, mid, kp_flink(tc, line), self_off, argv, cnt);
             bake_add(tc, &ckws->u.node_send_kws.self_off);
-            return ckws;
+            return KP_SAFE_GUARD(ckws);
         }
         NODE *call = KP_LINK(tc, node_send, mid, kp_flink(tc, line), self_off, argv, cnt);
         bake_add(tc, &call->u.node_send.self_off);    /* fixed up by the caller frame_size (base[-1] = self) */
-        return call;
+        return KP_SAFE_GUARD(call);
+        #undef KP_SAFE_GUARD
     }
 }
 
