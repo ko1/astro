@@ -294,11 +294,18 @@ static RESULT korb_m_obj_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (h0 == KORB_NIL) return korb_ary_new(c, slots, 0);
         slots[0] = UNWRAP(korb_ary_new(c, slots + 1, VAL2HASH(h0)->len));   /* alloc may GC → re-read via self below */
         VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+        /* A module's autoload table is koruby's own state kept in an ivar; CRuby
+         * has no such ivar, and `instance_variables.each { remove_instance_variable }`
+         * (bundler's Plugin.reset!) would otherwise wipe every autoload. */
+        const VALUE hidden = ID2SYM(korb_intern(c->vm, "@__autoloads", 12));
         /* re-read the hash after every push: the allocation may move it */
         #define KORB_IVH() (KORB_CLASS_P(VALUE_REF_GET(self)) ? VAL2CLASS(VALUE_REF_GET(self))->class_ivars \
                                                              : korb_objivar_hash_of(c->vm, VALUE_REF_GET(self)))
-        for (uint32_t i = 0; i < VAL2HASH(KORB_IVH())->len; i++)
-            CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(KORB_IVH())->items)[2 * i]));
+        for (uint32_t i = 0; i < VAL2HASH(KORB_IVH())->len; i++) {
+            const VALUE k = korb_items_data(VAL2HASH(KORB_IVH())->items)[2 * i];
+            if (UNLIKELY(k == hidden)) continue;
+            CHECK(korb_ary_push_val(c, slots + 1, dst, k));
+        }
         #undef KORB_IVH
         return RESULT_OK(VALUE_REF_GET(dst));
     }
