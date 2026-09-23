@@ -6587,6 +6587,16 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         if (UNLIKELY(argc != 0)) return korb_raise_attr_arity(c, slots, line, argc);
         return RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
     }
+    if (m->kind == KORB_METHOD_ATTR_W) {          /* `super` into an inherited attr_writer */
+        if (UNLIKELY(argc != 1))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                              "wrong number of arguments (given %u, expected 1)", argc);
+        slots[0] = self;                          /* rooted: the ivar store can GC */
+        KORB_CHECK_FROZEN_AT(c, slots + 1, slots[0], line);
+        CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(m->attr_ivar),
+                            slots[-(korb_sword_t)argc]));
+        return RESULT_OK(slots[-(korb_sword_t)argc]);
+    }
     if (m->kind == KORB_METHOD_BUILTIN) {         /* super into a global C fn (Kernel#abort, #raise, …) */
         if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc))
             return korb_raise_arity(c, slots, m, mid, line,
