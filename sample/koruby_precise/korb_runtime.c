@@ -11791,7 +11791,10 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
     else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_FIBER) &&
              (mid == vm->mid_yield || mid == korb_intern(vm, "current", 7) ||
               mid == korb_intern(vm, "[]", 2) || mid == korb_intern(vm, "[]=", 3) ||
-              mid == korb_intern(vm, "blocking?", 9))) {
+              mid == korb_intern(vm, "blocking?", 9)) &&
+             /* same rule as the Kernel shortcut below: a definition ON the Fiber
+              * class object itself (an rspec stub) wins over the C special case */
+             korb_class_own_method(korb_dispatch_class(c, self), mid) == NULL) {
         const VALUE_SLICE fa = VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc);
         if (mid == vm->mid_yield)
             return korb_m_fiber_yield(c, slots, VALUE_REF_AT(recv_slot), fa);
@@ -12045,7 +12048,15 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new &&
              korb_builtin_base_class(vm, self) == KORB_C_RANGE &&
-             korb_range_default_init_p(c, self)) {
+             korb_range_default_init_p(c, self) &&
+             /* a `def self.new` / stub ON the class itself wins over the C fast
+              * path (the generic `new` branch below checks this; this one sits
+              * in front of it and has to as well) — except when a `super` from
+              * inside that very `new` is deliberately skipping it, which is how
+              * `class R < Range; def self.new(a,b) = super(a,b,false); end` gets
+              * back to the real allocator. */
+             (vm->super_new_skip != KORB_NIL ||
+              korb_class_own_method(korb_dispatch_class(c, self), mid) == NULL)) {
         /* Range.new(begin, end, exclude_end=false) — also for Range subclasses
          * with no #initialize of their own (a real Range payload is built and
          * the subclass identity is recorded in the override table, the same
