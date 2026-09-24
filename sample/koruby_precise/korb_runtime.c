@@ -11804,7 +11804,12 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
         return korb_m_fiber_s_current(c, slots, VALUE_REF_AT(recv_slot), fa);
     }
     else if (KORB_CLASS_P(self) && VAL2CLASS(self)->is_module &&
-             VAL2CLASS(self)->name_sym == korb_intern(vm, "Kernel", 6)) {     /* Kernel.Integer / .Float / .puts ... → the global function */
+             VAL2CLASS(self)->name_sym == korb_intern(vm, "Kernel", 6) &&
+             /* …unless something is defined ON the Kernel module object itself:
+              * `def Kernel.foo`, or an rspec `allow(Kernel).to receive(:exec)`.
+              * Only its OWN singleton table counts — the MRO above it reaches
+              * Kernel's instance methods and would disable the shortcut. */
+             korb_class_own_method(korb_dispatch_class(c, self), mid) == NULL) {   /* Kernel.Integer / .Float / .puts ... → the global function */
         struct korb_method *gm = korb_method_lookup(vm, mid);
         if (gm) {
             VALUE *const base = slots - argc;
