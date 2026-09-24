@@ -1783,20 +1783,21 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * (Module.nesting), not the classes' `enclosing` links: `class A::B`
          * nests as [.., A::B] — A itself is NOT in the nesting. */
         if (cache->chain_len > 0 && cache->owner_chain != NULL) {
+            /* ONE walk from the innermost cref outward.  A pending `autoload` at a
+             * level counts as "the constant lives here", so it beats a real
+             * constant further OUT — `module Bundler::Plugin` with
+             * `autoload :Index` must not resolve a bare `Index` to Bundler::Index.
+             * CRuby runs the require at LOOKUP time, not through const_missing: a
+             * module with its own const_missing (dry-types) would otherwise never
+             * see its autoloads, and would recurse since the hook reads the very
+             * constant it is missing.  rspec registers RSpec::Core::DidYouMean
+             * this way. */
             for (int32_t i = (int32_t)cache->chain_len - 1; idx == UINT32_MAX && i >= 0; i--) {
                 const VALUE o = korb_cref_resolve(vm, cache->owner_chain, (uint32_t)i + 1, 0);
-                if (KORB_CLASS_P(o)) idx = korb_const_index_owned(vm, name_sym, o);
-            }
-            /* A pending `autoload` on a lexically enclosing module answers HERE —
-             * in the lexical step, before the cref's ancestors and the top-level
-             * fallback, as CRuby does.  CRuby runs the require at LOOKUP time,
-             * NOT through const_missing: a module that defines its own
-             * const_missing (dry-types) would otherwise never see its autoloads
-             * — and recurse, since the hook reads the very constant it is
-             * missing.  rspec registers RSpec::Core::DidYouMean this way. */
-            for (int32_t i = (int32_t)cache->chain_len - 1; idx == UINT32_MAX && i >= 0; i--) {
-                const VALUE o = korb_cref_resolve(vm, cache->owner_chain, (uint32_t)i + 1, 0);
-                if (!KORB_CLASS_P(o) || !korb_autoload_registered_p(c, o, name_sym)) continue;
+                if (!KORB_CLASS_P(o)) continue;
+                idx = korb_const_index_owned(vm, name_sym, o);
+                if (idx != UINT32_MAX) break;
+                if (!korb_autoload_registered_p(c, o, name_sym)) continue;
                 CHECK(korb_autoload_fire(c, slots, o, name_sym, line, &slots[fb_off]));
                 /* The file may define the constant in a DIFFERENT lexical scope
                  * than the one that registered the autoload, so redo the whole
