@@ -1175,13 +1175,24 @@ main(int argc, char *argv[])
     int handled;
     for (; i < argc; i++) {
         const char *a = argv[i];
-        if (strcmp(a, "-e") == 0) {
-            if (eval_code) {
-                fprintf(stderr, "koruby_precise: multiple -e is not supported in M0\n");
-                return 2;
+        if (strncmp(a, "-e", 2) == 0) {
+            /* CRuby takes both `-e code` and the JOINED `-ecode` (a gem shelling
+             * out writes `-e'...'`), and CONCATENATES repeats with a newline. */
+            const char *piece;
+            if (a[2]) piece = a + 2;
+            else {
+                if (i + 1 >= argc) { fprintf(stderr, "koruby_precise: -e requires an argument\n"); return 2; }
+                piece = argv[++i];
             }
-            if (i + 1 >= argc) { fprintf(stderr, "koruby_precise: -e requires an argument\n"); return 2; }
-            eval_code = argv[++i];
+            if (eval_code == NULL) eval_code = piece;
+            else {
+                const size_t n0 = strlen(eval_code), n1 = strlen(piece);
+                char *const joined = malloc(n0 + n1 + 2);
+                if (!joined) { fprintf(stderr, "koruby_precise: out of memory\n"); return 2; }
+                memcpy(joined, eval_code, n0); joined[n0] = '\n';
+                memcpy(joined + n0 + 1, piece, n1); joined[n0 + 1 + n1] = '\0';
+                eval_code = joined;                    /* leaked on purpose: lives for the process */
+            }
         }
         else if (strcmp(a, "--dump-ast") == 0) {
             OPTION.dump_ast = true;
