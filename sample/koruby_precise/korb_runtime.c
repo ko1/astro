@@ -9954,6 +9954,43 @@ korb_autoload_fire(CTX *c, VALUE *const slots, const VALUE mod, const uint32_t s
     return korb_send(c, slots + 2, korb_intern(c->vm, "__autoload_fire", 15), line, 1);
 }
 
+/* `class Top::Mid::Leaf` where `Top::Mid` is only registered as an autoload:
+ * korb_const_get_path is a pure table walk (it takes no CTX and cannot run
+ * Ruby), so the intermediate component never fired its require and the whole
+ * path came back nil.  Walk the baked dotted path here and fire the first
+ * pending autoload on it; the caller re-resolves afterwards.  Returns true when
+ * something was required, so a miss costs one failed walk and nothing else. */
+RESULT
+korb_const_path_autoload(CTX *c, VALUE *const slots, const uint32_t path_sym, bool *const fired)
+{
+    struct korb_vm *const vm = c->vm;
+    *fired = false;
+    const char *const nm = korb_sym_name(vm, path_sym);
+    for (const char *start = nm; start != NULL; ) {              /* same lexical walk as korb_const_get_path */
+        const char *const sep = strstr(start, "::");
+        const uint32_t hlen = sep ? (uint32_t)(sep - start) : (uint32_t)strlen(start);
+        const uint32_t head = korb_intern(vm, start, hlen);
+        const uint32_t j = korb_const_index_owned(vm, head, KORB_NIL);
+        VALUE cur = (j != UINT32_MAX) ? vm->const_vals[j] : korb_const_get(vm, head);
+        for (const char *p = sep ? sep + 2 : NULL; p != NULL && KORB_CLASS_P(cur); ) {
+            const char *const next = strstr(p, "::");
+            const uint32_t len = next ? (uint32_t)(next - p) : (uint32_t)strlen(p);
+            const uint32_t comp = korb_intern(vm, p, len);
+            const uint32_t idx = korb_const_index_owned(vm, comp, cur);
+            if (idx == UINT32_MAX) {
+                if (!korb_autoload_registered_p(c, cur, comp)) break;
+                CHECK(korb_autoload_fire(c, slots, cur, comp, 0, NULL));
+                *fired = true;
+                return RESULT_OK(KORB_NIL);                      /* the caller re-walks the whole path */
+            }
+            cur = vm->const_vals[idx];
+            p = next ? next + 2 : NULL;
+        }
+        start = sep ? sep + 2 : NULL;
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
 /* A CHILLED String literal (Ruby 3.4+) is not really frozen: warn once for this
  * object, drop the mark, and let the caller mutate it. */
 RESULT

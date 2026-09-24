@@ -1446,6 +1446,13 @@ node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint64_t flink,
     VALUE enclosing = dyn_base == 1 ? VALUE_REF_GET(path_base)
                     : (path_owner ? korb_const_get_path(c->vm, path_owner)
                                   : (self_off == INT32_MIN ? KORB_NIL : slots[self_off]));
+    /* `class Top::Mid::Leaf` where `Top::Mid` is only an autoload registration:
+     * the path walk cannot run Ruby, so fire it here and resolve again. */
+    if (UNLIKELY(enclosing == KORB_NIL && path_owner && dyn_base != 1)) {
+        bool fired = false;
+        CHECK(korb_const_path_autoload(c, slots, path_owner, &fired));
+        if (fired) enclosing = korb_const_get_path(c->vm, path_owner);
+    }
     if (UNLIKELY(dyn_base == 2 && !KORB_CLASS_P(enclosing))) {   /* `class A::B` where A is not a module */
         char miss[256];
         if (enclosing == KORB_NIL && korb_const_path_missing(c->vm, path_owner, miss, sizeof miss))
@@ -1501,6 +1508,13 @@ node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint64_t flink
     VALUE enclosing = dyn_base == 1 ? VALUE_REF_GET(path_base)
                     : (path_owner ? korb_const_get_path(c->vm, path_owner)
                                   : (self_off == INT32_MIN ? KORB_NIL : slots[self_off]));
+    /* `class Top::Mid::Leaf` where `Top::Mid` is only an autoload registration:
+     * the path walk cannot run Ruby, so fire it here and resolve again. */
+    if (UNLIKELY(enclosing == KORB_NIL && path_owner && dyn_base != 1)) {
+        bool fired = false;
+        CHECK(korb_const_path_autoload(c, slots, path_owner, &fired));
+        if (fired) enclosing = korb_const_get_path(c->vm, path_owner);
+    }
     if (UNLIKELY(dyn_base == 2 && !KORB_CLASS_P(enclosing))) {   /* `class A::B` where A is not a module */
         char miss[256];
         if (enclosing == KORB_NIL && korb_const_path_missing(c->vm, path_owner, miss, sizeof miss))

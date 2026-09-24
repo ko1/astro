@@ -278,6 +278,8 @@ bool   korb_str_enc_combine(const struct korb_vm *vm, VALUE a, VALUE b, uint32_t
 /* CRuby rb_cmperr: "comparison of <class of l> with <inspect-or-class of r>
  * failed: <coercion was not possible | comparator returned nil>". */
 RESULT korb_raise_cmperr(CTX *c, VALUE *slots, uint32_t line, VALUE l, VALUE r, bool coercion);
+/* Fire a pending autoload on an intermediate component of a baked class path. */
+RESULT korb_const_path_autoload(CTX *c, VALUE *slots, uint32_t path_sym, bool *fired);
 RESULT korb_raise_enc_compat(CTX *c, VALUE *slots, uint32_t ea, uint32_t eb);
 RESULT korb_raise_enc_compat_msg(CTX *c, VALUE *slots, const char *msg);
 RESULT korb_raise_nested(CTX *c, VALUE *slots, const char *owner, const char *name, const char *msg);   /* Encoding::CompatibilityError */    /* Encoding::CompatibilityError */   /* module overrides a Module hook (const_added) */   /* owner = defining module (nil = top-level) — for Module#constants */
