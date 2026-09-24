@@ -1071,7 +1071,7 @@ static size_t korb_fd_write_all(int fd, const char *p, size_t n) {
  * other option).  An `open_args:` without a mode leaves the default "r" in
  * place — that is exactly why `IO.write(f, s, open_args: [{…}])` is an IOError. */
 static const char *korb_io_bom_at(const char *p, uint32_t n, uint32_t *blen);   /* fwd (builtins/io.c) */
-struct korb_open_args { char mode[32]; int enc; bool bom; };   /* bom: a "BOM|enc" mode prefix */
+struct korb_open_args { char mode[32]; int enc; int enc2; bool bom; };   /* enc2: internal (transcode target); bom: a "BOM|enc" mode prefix */
 
 /* the encoding name of an `encoding:` value (an Encoding or a String) */
 static RESULT korb_open_enc_name(CTX *c, VALUE *slots, VALUE v, char *out, size_t cap) {
@@ -1104,10 +1104,15 @@ static RESULT korb_open_args_hash(CTX *c, VALUE *slots, VALUE h, struct korb_ope
         if (ix < 0) continue;
         if (mode_has_enc)                              /* "w:UTF-16BE" plus encoding: (CRuby) */
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "encoding specified twice");
-        if (i == 2) continue;                          /* internal_encoding names the other side */
         char nm[64];
         CHECK(korb_open_enc_name(c, slots, korb_items_data(VAL2HASH(h)->items)[2 * ix + 1], nm, sizeof nm));
-        if (nm[0]) o->enc = (int)korb_enc_index_for_name(c->vm, nm);
+        if (!nm[0]) continue;
+        if (i == 2) { o->enc2 = (int)korb_enc_index_for_name(c->vm, nm); continue; }   /* internal_encoding: */
+        /* `encoding: "EUC-JP:UTF-8"` names BOTH sides — the read is tagged with
+         * the first and transcoded into the second (CRuby rb_io_ext_int_to_encs). */
+        char *const colon = strchr(nm, ':');
+        if (colon) { *colon = '\0'; if (colon[1]) o->enc2 = (int)korb_enc_index_for_name(c->vm, colon + 1); }
+        o->enc = (int)korb_enc_index_for_name(c->vm, nm);
     }
     return RESULT_OK(KORB_NIL);
 }
@@ -1144,6 +1149,7 @@ static RESULT
 korb_io_open_args(CTX *c, VALUE *slots, VALUE opts, const char *defmode, struct korb_open_args *o) {
     snprintf(o->mode, sizeof o->mode, "%s", defmode);
     o->enc = -1;
+    o->enc2 = -1;
     o->bom = false;
     if (!KORB_HASH_P(opts)) return RESULT_OK(KORB_NIL);
     const int32_t ox = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(c->vm, "open_args", 9)));
@@ -1166,6 +1172,8 @@ korb_io_open_args(CTX *c, VALUE *slots, VALUE opts, const char *defmode, struct 
         *colon = '\0';
         char *ename = colon + 1;
         if (strncasecmp(ename, "BOM|", 4) == 0) { o->bom = true; ename += 4; }
+        char *const colon2 = strchr(ename, ':');       /* "r:ext:int" — the second names the internal one */
+        if (colon2) { *colon2 = '\0'; if (colon2[1]) o->enc2 = (int)korb_enc_index_for_name(c->vm, colon2 + 1); }
         if (*ename) o->enc = (int)korb_enc_index_for_name(c->vm, ename);
     }
     return RESULT_OK(KORB_NIL);
@@ -1263,6 +1271,15 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     r = korb_str_new(c, slots + 1, data, (uint32_t)len);
     free(buf);
     if (LIKELY(r.state == KORB_NORMAL) && enc >= 0) KORB_STR_ENC_SET(r.value, (uint32_t)enc);
+    /* an ext→int pair transcodes the bytes, it does not merely tag them */
+    if (LIKELY(r.state == KORB_NORMAL) && enc >= 0 && oa.enc2 >= 0 && oa.enc2 != enc) {
+        slots[1] = r.value;                            /* rooted across the converter's allocs */
+        bool ok = false;
+        const RESULT tr = korb_tc_convert(c, slots + 2, slots[1], korb_enc_name_of(c->vm, (uint32_t)enc),
+                                          korb_enc_name_of(c->vm, (uint32_t)oa.enc2), &ok);
+        if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+        if (ok) r = RESULT_OK(tr.value);
+    }
     return r;
 }
 
@@ -1519,6 +1536,31 @@ static RESULT korb_io_lines_mode_check(CTX *c, VALUE *slots, VALUE_SLICE a, cons
     return korb_raise(c, slots, KORB_E_IOERROR, 0, "not opened for reading");
 }
 
+/* File.readlines / File.foreach slurp and split the file themselves, so the
+ * `encoding:` option has to be honoured HERE: tag each record with the external
+ * encoding and transcode it into the internal one when a pair was given. */
+static RESULT korb_file_line_enc(CTX *c, VALUE *slots, VALUE_SLICE a, int *ext, int *intr) {
+    *ext = -1; *intr = -1;
+    const uint32_t na = VALUE_SLICE_LEN(a);
+    if (na < 2) return RESULT_OK(KORB_NIL);
+    const VALUE last = VALUE_SLICE_GET(a, na - 1);
+    if (!KORB_HASH_P(last) || !korb_kwargs_hash_p(last)) return RESULT_OK(KORB_NIL);
+    struct korb_open_args oa;
+    CHECK(korb_io_open_args(c, slots, last, "r", &oa));
+    *ext = oa.enc; *intr = oa.enc2;
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_file_line_apply_enc(CTX *c, VALUE *slots, VALUE *vslot, int ext, int intr) {
+    if (ext < 0) return RESULT_OK(*vslot);
+    KORB_STR_ENC_SET(*vslot, (uint32_t)ext);
+    if (intr < 0 || intr == ext) return RESULT_OK(*vslot);
+    bool ok = false;
+    const RESULT tr = korb_tc_convert(c, slots, *vslot, korb_enc_name_of(c->vm, (uint32_t)ext),
+                                      korb_enc_name_of(c->vm, (uint32_t)intr), &ok);
+    if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+    if (ok) *vslot = tr.value;
+    return RESULT_OK(*vslot);
+}
 static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     VALUE pv;
@@ -1534,6 +1576,8 @@ static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         CHECK(korb_io_lines_mode_check(c, slots + 2, a, pb0)); }
     if (UNLIKELY(la.limit == 0))
         return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "invalid limit: 0 for readlines");
+    int lext = -1, lint = -1;
+    CHECK(korb_file_line_enc(c, slots + 2, a, &lext, &lint));
     const VALUE_REF sepref = VALUE_REF_AT(&slots[1]);
     uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: it may have moved */
     size_t len; int rdfd = -1;
@@ -1552,6 +1596,8 @@ static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
                           la.slurp ? "" : korb_strbuf_data(VAL2STR(VALUE_REF_GET(sepref))->buf),
                           la.slurp ? 0 : VAL2STR(VALUE_REF_GET(sepref))->len, &la, &rs, &re)) {
         slots[3] = UNWRAP(korb_str_new(c, slots + 3, buf + rs, (uint32_t)(re - rs)));
+        r = korb_file_line_apply_enc(c, slots + 4, &slots[3], lext, lint);
+        if (UNLIKELY(r.state != KORB_NORMAL)) break;
         r = korb_ary_push_val(c, slots + 4, arr, slots[3]);
         if (UNLIKELY(r.state != KORB_NORMAL)) break;
     }
@@ -1577,6 +1623,8 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         CHECK(korb_io_lines_mode_check(c, slots + 2, a, pb0)); }
     if (UNLIKELY(la.limit == 0))
         return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "invalid limit: 0 for foreach");
+    int lext = -1, lint = -1;
+    CHECK(korb_file_line_enc(c, slots + 2, a, &lext, &lint));
     const VALUE_REF sepref = VALUE_REF_AT(&slots[1]);
     uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: it may have moved */
     size_t len; int rdfd = -1;
@@ -1599,6 +1647,8 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
                           la.slurp ? "" : korb_strbuf_data(VAL2STR(VALUE_REF_GET(sepref))->buf),
                           la.slurp ? 0 : VAL2STR(VALUE_REF_GET(sepref))->len, &la, &rs, &re)) {
         slots[3] = UNWRAP(korb_str_new(c, slots + 3, buf + rs, (uint32_t)(re - rs)));
+        r = korb_file_line_apply_enc(c, slots + 4, &slots[3], lext, lint);
+        if (UNLIKELY(r.state != KORB_NORMAL)) break;
         if (block) korb_const_define(c, korb_intern(c->vm, "$.", 2), LONG2FIX((korb_sword_t)++lineno));   /* CRuby updates $. per yield */
         r = block ? korb_block_yield(c, slots + 4, block, def_env, &slots[3], 1, captured_self)
                   : korb_ary_push_val(c, slots + 4, arr, slots[3]);
