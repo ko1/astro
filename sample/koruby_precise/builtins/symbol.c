@@ -606,13 +606,28 @@ static RESULT korb_m_proc_lambda_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 /* Proc#binding: the proc's captured env + self.  Local NAMES are not recorded
  * in the proc, so the binding exposes self/cref (enough for class-defining
  * eval) but no locals table. */
+static struct Node *korb_method_srcloc_node(const struct korb_method *km);   /* fwd (defined below) */
 static const uint32_t korb_proc_binding_scope_tbl[2] = { 1, 0 };   /* L=1, ns[0]=0 */
 static RESULT korb_m_proc_binding(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     slots[0] = VALUE_REF_GET(self);                       /* root proc across alloc */
+    {   const KorbProc *const p0 = VAL2PROC(slots[0]);     /* Symbol#to_proc has no Ruby body at all */
+        if (p0->iseq == NULL && p0->self == KORB_NIL)
+            return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "Can't create Binding from C level Proc");   }
     KorbBinding *b = korb_alloc(c, slots + 1, sizeof(KorbBinding), KORB_OBJ_BINDING);
     const KorbProc *p = VAL2PROC(slots[0]);
-    b->name_syms = korb_proc_binding_scope_tbl; b->name_cnt = 0; b->src_node = NULL;
+    b->name_syms = korb_proc_binding_scope_tbl; b->name_cnt = 0;
+    /* #source_location of a proc's binding is where the BLOCK was written, the
+     * same node Proc#source_location reports (bundler filters its own
+     * post_reset_hooks with `proc.binding.source_location[0] == __FILE__`). */
+    b->src_node = (p->iseq != NULL && p->iseq != KORB_BLK_CPROC) ? p->iseq : NULL;
+    if (b->src_node == NULL && p->iseq == NULL) {         /* Method#to_proc: the bound method's own def */
+        const VALUE mklass = korb_dispatch_class(c, p->self);
+        const struct korb_method *mkm = KORB_CLASS_P(mklass) ? korb_class_find_method(mklass, p->sym_mid, NULL) : NULL;
+        if (mkm == NULL) mkm = korb_method_lookup(c->vm, p->sym_mid);
+        b->src_node = korb_method_srcloc_node(mkm);
+    }
+    b->src_file = 0; b->src_line = 0;
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->env,  p->env);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->self, p->self);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->extra, KORB_NIL);
