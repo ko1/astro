@@ -1140,7 +1140,12 @@ static RESULT korb_m_meth_unbind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (m->unbound) return RESULT_OK(VALUE_REF_GET(self));
     if (m->default_new)                                  /* Class#new, so it rebinds to any class (rspec-mocks) */
         return korb_unbound_new(c, slots, korb_builtin_class_obj(c->vm, KORB_C_CLASS), m->mid);
-    return korb_unbound_new(c, slots, korb_dispatch_class(c, m->recv), m->mid);
+    const RESULT r = korb_unbound_new(c, slots, korb_dispatch_class(c, m->recv), m->mid);
+    /* keep the definition this Method captured: re-resolving by name would pick
+     * up a later redefinition (rspec-mocks unbinds the stashed original) */
+    struct korb_method *const pinned = VAL2METH(VALUE_REF_GET(self))->entry;   /* re-read after the alloc */
+    if (LIKELY(r.state == KORB_NORMAL) && pinned != NULL) VAL2METH(r.value)->entry = pinned;
+    return r;
 }
 /* CRuby's bind check, shared by #bind and #bind_call.  slots[0] holds the class
  * the UnboundMethod was retrieved from on entry and the class the method is
