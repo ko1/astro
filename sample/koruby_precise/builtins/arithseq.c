@@ -61,8 +61,14 @@ static RESULT korb_aseq_to_array(CTX *c, VALUE *slots, VALUE_REF self) {
             return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
         if (st == 0.0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
     } else {
-        if (UNLIKELY(!FIXNUM_P(beginv) || !FIXNUM_P(limv) || !FIXNUM_P(stepv)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
+        if (UNLIKELY(!FIXNUM_P(beginv) || !FIXNUM_P(limv) || !FIXNUM_P(stepv) ||
+                     (FIX2LONG(stepv) > 0 ? FIX2LONG(limv) > FIXNUM_MAX - FIX2LONG(stepv)
+                                          : FIX2LONG(limv) < FIXNUM_MIN - FIX2LONG(stepv)))) {
+            if (!KORB_INTEGER_P(beginv) || !KORB_INTEGER_P(limv) || !KORB_INTEGER_P(stepv))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
+            slots[0] = beginv;                                        /* a value leaves the Fixnum range */
+            return korb_int_step_wide_x(c, slots + 1, VALUE_REF_AT(&slots[0]), limv, stepv, NULL, NULL, NULL, true, excl, true);
+        }
         is = FIX2LONG(beginv); ilim = FIX2LONG(limv); ist = FIX2LONG(stepv);
         if (ist == 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
     }

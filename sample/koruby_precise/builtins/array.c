@@ -961,9 +961,40 @@ static RESULT korb_m_int_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+/* upto / downto past the Fixnum range (a Bignum receiver or limit): step with
+ * Integer#+ / #- and test with #> / #< so the values widen into Bignums. */
+static RESULT korb_int_iter_wide_x(CTX *c, VALUE *slots, VALUE_REF self, VALUE lim, NODE *block, VALUE *def_env, VALUE *cself,
+                                   bool up, const char *meth, bool excl, bool want_ary) {
+    struct korb_vm *const vm = c->vm;
+    const uint32_t past = excl ? korb_intern(vm, up ? ">=" : "<=", 2) : korb_intern(vm, up ? ">" : "<", 1);
+    const uint32_t step = korb_intern(vm, up ? "+" : "-", 1);
+    slots[0] = VALUE_REF_GET(self);                   /* i */
+    slots[1] = lim;
+    slots[2] = block == NULL ? UNWRAP(korb_ary_new(c, slots + 2, 8)) : KORB_NIL;
+    for (;;) {
+        slots[3] = slots[0]; slots[4] = slots[1];
+        const VALUE done = UNWRAP(korb_send(c, slots + 5, past, 0, 1));
+        if (KORB_TRUTHY(done)) break;
+        if (block == NULL) CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+        else CHECK(korb_block_yield(c, slots + 3, block, def_env, &slots[0], 1, cself));
+        slots[3] = slots[0]; slots[4] = LONG2FIX(1);
+        slots[0] = UNWRAP(korb_send(c, slots + 5, step, 0, 1));
+    }
+    if (block != NULL) return RESULT_OK(VALUE_REF_GET(self));
+    if (want_ary) return RESULT_OK(slots[2]);
+    slots[3] = UNWRAP(korb_enum_desc(c, slots + 3, VALUE_REF_GET(self), meth));
+    return korb_enum_new(c, slots + 4, slots[2], slots[3]);
+}
+static RESULT korb_int_iter_wide(CTX *c, VALUE *slots, VALUE_REF self, VALUE lim, NODE *block, VALUE *def_env, VALUE *cself, bool up, const char *meth) {
+    return korb_int_iter_wide_x(c, slots, self, lim, block, def_env, cself, up, meth, false, false);
+}
+
 /* up==true: self upto to (ascending); else downto (descending). */
 static RESULT korb_int_iter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool up, const char *meth) {
     VALUE lv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || KORB_BIGNUM_P(lv) ||
+                 (KORB_FLOAT_P(lv) && isfinite(korb_float_val(lv)) && fabs(korb_float_val(lv)) >= 4.0e18)))
+        return korb_int_iter_wide(c, slots, self, lv, block, def_env, cself, up, meth);
     /* n.upto(Float::INFINITY) without a block → an endless ArithmeticSequence
      * (begin=n, step=+1); zip/first/take pull it lazily by index without
      * materializing.  (CRuby returns an Enumerator; an ArithSeq suffices here.) */

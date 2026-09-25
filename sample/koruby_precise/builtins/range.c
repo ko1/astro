@@ -663,6 +663,11 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         for (korb_sword_t i = lo; i < hi; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
         return RESULT_OK(VALUE_REF_GET(dst));
     }
+    if (KORB_INTEGER_P(SELF_RANGE->rbegin) && KORB_INTEGER_P(SELF_RANGE->rend)) {   /* a Bignum end: widen as it goes */
+        slots[0] = SELF_RANGE->rbegin;
+        return korb_int_iter_wide_x(c, slots + 1, VALUE_REF_AT(&slots[0]), SELF_RANGE->rend, NULL, NULL, NULL,
+                                    true, "to_a", SELF_RANGE->exclude_end, true);
+    }
     if (KORB_STRING_P(SELF_RANGE->rbegin) && KORB_STRING_P(SELF_RANGE->rend)) {   /* String range via succ */
         if (VAL2STR(SELF_RANGE->rbegin)->len == 1 && VAL2STR(SELF_RANGE->rend)->len == 1) {   /* single byte → codepoint iterate (CRuby: "A".."z" spans 58, incl. punctuation) */
             const uint8_t b0 = (uint8_t)korb_strbuf_data(VAL2STR(SELF_RANGE->rbegin)->buf)[0];

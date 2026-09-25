@@ -1690,6 +1690,41 @@ static RESULT korb_m_ary_map_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 /* Integer#step / Float#step (generic over numeric self) */
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
+/* Integer#step where a value leaves the Fixnum range (a Bignum end point or
+ * step, or a limit within one step of the edge): Integer#+ and #> / #< widen. */
+static RESULT korb_int_step_wide_x(CTX *c, VALUE *slots, VALUE_REF self, VALUE limv, VALUE stepv,
+                                   NODE *block, VALUE *def_env, VALUE *cself, bool collect, bool excl, bool want_ary) {
+    struct korb_vm *const vm = c->vm;
+    slots[0] = VALUE_REF_GET(self);                   /* i */
+    slots[1] = limv;
+    slots[2] = stepv;
+    slots[3] = collect ? UNWRAP(korb_ary_new(c, slots + 3, 8)) : KORB_NIL;
+    slots[4] = stepv; slots[5] = LONG2FIX(0);
+    if (KORB_TRUTHY(UNWRAP(korb_send(c, slots + 6, korb_intern(vm, "==", 2), 0, 1))))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+    slots[4] = stepv; slots[5] = LONG2FIX(0);
+    const bool down = KORB_TRUTHY(UNWRAP(korb_send(c, slots + 6, korb_intern(vm, "<", 1), 0, 1)));
+    const uint32_t past = excl ? korb_intern(vm, down ? "<=" : ">=", 2) : korb_intern(vm, down ? "<" : ">", 1);
+    const uint32_t plus = korb_intern(vm, "+", 1);
+    for (;;) {
+        if (slots[1] != KORB_NIL) {
+            slots[4] = slots[0]; slots[5] = slots[1];
+            if (KORB_TRUTHY(UNWRAP(korb_send(c, slots + 6, past, 0, 1)))) break;
+        }
+        if (collect) CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[0]));
+        else CHECK(korb_block_yield(c, slots + 4, block, def_env, &slots[0], 1, cself));
+        slots[4] = slots[0]; slots[5] = slots[2];
+        slots[0] = UNWRAP(korb_send(c, slots + 6, plus, 0, 1));
+    }
+    if (!collect) return RESULT_OK(VALUE_REF_GET(self));
+    if (want_ary) return RESULT_OK(slots[3]);
+    slots[4] = UNWRAP(korb_enum_desc(c, slots + 4, VALUE_REF_GET(self), "step"));
+    return korb_enum_new(c, slots + 5, slots[3], slots[4]);
+}
+static RESULT korb_int_step_wide(CTX *c, VALUE *slots, VALUE_REF self, VALUE limv, VALUE stepv,
+                                 NODE *block, VALUE *def_env, VALUE *cself, bool collect) {
+    return korb_int_step_wide_x(c, slots, self, limv, stepv, block, def_env, cself, collect, false, false);
+}
 static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     /* keyword form `step(to:, by:)`: a trailing Hash with :to / :by maps to the
      * limit / step (limit nil ⇒ endless). */
@@ -1778,6 +1813,10 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0,
                               "comparison of %s with %s failed: coercion was not possible",
                               korb_coerce_name(c, selfv), korb_coerce_name(c, limv));
+        if (UNLIKELY(!FIXNUM_P(selfv) || !FIXNUM_P(stepv) || (!endless && !FIXNUM_P(limv)) ||
+                     (!endless && (FIX2LONG(stepv) > 0 ? FIX2LONG(limv) > FIXNUM_MAX - FIX2LONG(stepv)
+                                                       : FIX2LONG(limv) < FIXNUM_MIN - FIX2LONG(stepv)))))
+            return korb_int_step_wide(c, slots, self, limv, stepv, block, def_env, cself, collect);
         korb_sword_t s = FIX2LONG(selfv), lim = endless ? 0 : FIX2LONG(limv), st = FIX2LONG(stepv);
         if (st == 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
         if (collect) { slots[0] = UNWRAP(korb_ary_new(c, slots, 8)); dst = VALUE_REF_AT(&slots[0]); }

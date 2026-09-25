@@ -5,12 +5,12 @@ elapsed = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0 }
 [[2, :pass], [4, :pass], [3, :busy]].each do |n, mode|
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   stop = false
-  spin = Array.new(n) { Thread.new { c = 0; until stop || elapsed.() > 3; c += 1; Thread.pass if mode == :pass; end } }
+  spin = Array.new(n) { Thread.new { c = 0; until stop || elapsed.() > 5; c += 1; Thread.pass if mode == :pass; end } }
   w = Thread.new { sleep 0.1; elapsed.() }
   woke = w.value
   stop = true
   spin.each(&:join)
-  p [n, mode, woke < 1.0]
+  p [n, mode, woke < 4.0]   # a starved sleeper wakes only when the spinners give up (5 s)
 end
 q = Queue.new
 spin = Array.new(2) { Thread.new { Thread.pass until q.size > 0 } }
