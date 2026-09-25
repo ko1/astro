@@ -503,16 +503,21 @@ module Marshal
 
   def self.load(data, proc = nil, freeze: false)
     from_io = false
+    io = nil
     if data.respond_to?(:read) && !data.is_a?(String)
       from_io = true
       data.binmode if data.respond_to?(:binmode)   # CRuby switches the stream to bytes first
-      data = data.read
+      # NOT `data.read`: a stream can carry several dumps back to back and stay
+      # open (the `parallel` gem feeds forked workers that way), so slurping it
+      # waits for an EOF that never comes.  Pull only what each object needs.
+      io = data
+      data = "".b
     end
     data = data.string if data.respond_to?(:string)
-    if data.nil? || data.bytesize == 0
+    if io.nil? && (data.nil? || data.bytesize == 0)
       raise from_io ? EOFError.new("end of file reached") : ArgumentError.new("marshal data too short")
     end
-    st = { s: data, i: 0, syms: [], objs: [],
+    st = { s: data, i: 0, io: io, syms: [], objs: [],
            # objects registered but not yet finished (CRuby's partial_objects):
            # a link to one of these is a back-reference inside a cycle, so it
            # fires neither the caller's proc nor the freeze/dedup step.
@@ -542,7 +547,24 @@ module Marshal
     raise ArgumentError, "undefined class/module #{name}"
   end
 
+  # Top up the buffer from the stream (no-op for a String source).  Running dry
+  # before the first byte is EOF; running dry mid-object is a truncated dump —
+  # the same two errors CRuby reports.
+  def self._need(st, n)
+    io = st[:io]
+    return if io.nil?
+    while st[:s].bytesize - st[:i] < n
+      chunk = io.read(n - (st[:s].bytesize - st[:i]))
+      if chunk.nil? || chunk.empty?
+        raise EOFError, "end of file reached" if st[:i] == 0 && st[:s].empty?
+        raise ArgumentError, "marshal data too short"
+      end
+      st[:s] << chunk
+    end
+  end
+
   def self._byte(st)
+    _need(st, 1)
     b = st[:s].getbyte(st[:i])
     raise ArgumentError, "marshal data too short" if b.nil?
     st[:i] += 1
@@ -658,6 +680,7 @@ module Marshal
   end
 
   def self._read0(st)
+    _need(st, 1)
     t = st[:s].getbyte(st[:i])
     v = _read_body(st)
     st[:link] = false unless t == 0x40 || t == 0x3b
@@ -711,6 +734,7 @@ module Marshal
       h.default = _read(st) if t == 0x7d
       h
     when 0x49                                            # 'I' ivar-wrapped
+      _need(st, 1)
       if st[:s].getbyte(st[:i]) == 0x75                  # 'u' user _dump
         # CRuby attaches these ivars to the _dump payload String and only then
         # calls ::_load — that is how Time picks up its @offset / @zone.
@@ -897,6 +921,7 @@ module Marshal
   end
 
   def self._bytes(st, n)
+    _need(st, n)
     r = st[:s].byteslice(st[:i], n)
     # a truncated stream is a data error, not a nil payload
     raise ArgumentError, "marshal data too short" if r.nil? || r.bytesize < n
