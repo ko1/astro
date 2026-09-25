@@ -1508,6 +1508,16 @@ struct CTX_struct {
     VALUE cfunc_link;
     const VALUE *carry_base;
     uint32_t     carry_line_bits;
+    /* bi_caller_base: the Ruby frame a GLOBAL C function (korb_bi_*) was reached
+     *   from, for the four that ask who called them (Kernel#binding,
+     *   #block_given?, the frame-local primitives).  They normally read the link
+     *   cell the call site baked at args[-3]; `super` into a C global rebuilds
+     *   no header cells, so there is nothing there and `def binding; super; end`
+     *   (rubocop's HTMLFormatter::ERBContext) could not build a Binding.  NULL
+     *   when the caller is not known; saved/restored around every builtin
+     *   dispatch so a stale frame never leaks into an unrelated call. */
+    const VALUE *bi_caller_base;
+    uint32_t     bi_caller_line;   /* the `super` line, for Binding#source_location */
     /* `zork` with no receiver misses as NameError, not NoMethodError — the mark
      * is on the call node.  A USER #method_missing that hands it on with `super`
      * reaches the default raiser with no node in sight, so pass the mid here

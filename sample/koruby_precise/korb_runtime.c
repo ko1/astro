@@ -6611,7 +6611,13 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                                     "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
         VALUE *const bbase = &slots[-(korb_sword_t)argc];
         const VALUE bsaved = korb_cframe_enter(c, bbase, m);
+        /* This dispatch reserves no header cells, so the callee cannot be handed
+         * a link in its window; the frame the `super` is in travels in CTX. */
+        const VALUE *const cb_saved = c->bi_caller_base;
+        const uint32_t cl_saved = c->bi_caller_line;
+        c->bi_caller_base = frame_base; c->bi_caller_line = line;
         RESULT r = m->bfn(c, slots, VALUE_SLICE_MAKE(bbase, argc));
+        c->bi_caller_base = cb_saved; c->bi_caller_line = cl_saved;
         korb_cframe_leave(c, bsaved);
         if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
         return r;
@@ -10239,7 +10245,11 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
             return korb_raise_arity(c, slots, m, mid, line, "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
         VALUE *const bbase = &slots[-(korb_sword_t)argc];
         const VALUE bsaved = framed ? korb_cframe_enter(c, bbase, m) : 0;
+        const VALUE *const cb_saved = c->bi_caller_base;
+        const uint32_t cl_saved = c->bi_caller_line;
+        c->bi_caller_base = NULL; c->bi_caller_line = 0;   /* this path has the link cell; don't inherit a `super`'s frame */
         RESULT r = m->bfn(c, slots, VALUE_SLICE_MAKE(bbase, argc));
+        c->bi_caller_base = cb_saved; c->bi_caller_line = cl_saved;
         if (framed) korb_cframe_leave(c, bsaved);
         if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
         return r;
@@ -18714,7 +18724,8 @@ korb_frame_local_prim(CTX *c, VALUE *slots, VALUE_SLICE args, int write)
     const uint32_t sym = korb_bind_argsym(c, VALUE_SLICE_GET(args, 0));
     if (sym == UINT32_MAX)
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_coerce_name(c, VALUE_SLICE_GET(args, 0)));
-    VALUE *const fbase = korb_link_base(c, args.p - 3);
+    VALUE *fbase = korb_link_base(c, args.p - 3);
+    if (fbase == NULL) fbase = (VALUE *)(uintptr_t)c->bi_caller_base;
     VALUE v = KORB_NIL;
     const bool ok = fbase != NULL &&
                     (write ? korb_frame_local_set(c, fbase, sym, VALUE_SLICE_GET(args, 1))
@@ -18732,7 +18743,8 @@ korb_bi_frame_locals(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     (void)args;
     uint32_t syms[256];
-    VALUE *const fbase = korb_link_base(c, args.p - 3);
+    VALUE *fbase = korb_link_base(c, args.p - 3);
+    if (fbase == NULL) fbase = (VALUE *)(uintptr_t)c->bi_caller_base;
     const uint32_t n = fbase ? korb_frame_local_names(c, fbase, syms, 256) : 0;
     slots[0] = UNWRAP(korb_ary_new(c, slots, n));
     for (uint32_t i = 0; i < n; i++)
@@ -18785,6 +18797,7 @@ korb_bi_block_given_p(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)",
                           VALUE_SLICE_LEN(args));
     const VALUE *fbase = korb_link_base(c, args.p - 3);
+    if (fbase == NULL) fbase = c->bi_caller_base;          /* reached by `super`: the frame travels in CTX */
     if (fbase == NULL) return RESULT_OK(KORB_FALSE);
     struct korb_scope_level lv, nx;
     korb_scope_at_base((VALUE *)(uintptr_t)fbase, &lv);
@@ -18801,9 +18814,10 @@ korb_bi_binding(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (VALUE_SLICE_LEN(args) != 0)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)",
                           VALUE_SLICE_LEN(args));
-    VALUE *const fbase = korb_link_base(c, args.p - 3);
+    VALUE *fbase = korb_link_base(c, args.p - 3);
+    if (fbase == NULL) fbase = (VALUE *)(uintptr_t)c->bi_caller_base;   /* reached by `super` */
     if (fbase == NULL)
-        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "Can not create Binding object for non-Ruby caller");
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "Cannot create Binding object for non-Ruby caller");
 
     /* Same packed layout as parse.c kp_binding_scope_tbl: [L, n(0..L), (sym,depth,slot)*]. */
     uint32_t buf[1 + KORB_SCOPE_DEPTH_MAX + 3 * KORB_BIND_RT_NAMES];
@@ -18845,7 +18859,17 @@ korb_bi_binding(CTX *c, VALUE *slots, VALUE_SLICE args)
     /* #source_location: no call node on this path, so record the caller's own
      * position (korb_caller_pos fills vm->fscratch — read it before allocating). */
     uint32_t bfile = 0, bline = 0;
-    if (!korb_caller_pos(c, args.p - 3, &bfile, &bline)) bfile = 0;
+    if (!korb_caller_pos(c, args.p - 3, &bfile, &bline)) {
+        /* `super` path: no link cell, so snapshot the frame CTX carried and take
+         * the position of the `super` itself (what CRuby reports). */
+        bfile = 0;
+        if (c->bi_caller_base != NULL &&
+            korb_frames_snapshot_at(c, c->slots, c->slots_limit, c->bi_caller_base, c->bi_caller_line, NULL) > 0 &&
+            c->vm->fscratch[0].file != NULL && c->vm->fscratch[0].line != 0) {
+            bfile = korb_intern(c->vm, c->vm->fscratch[0].file, (uint32_t)strlen(c->vm->fscratch[0].file));
+            bline = c->vm->fscratch[0].line;
+        }
+    }
     const RESULT r = korb_make_binding(c, slots, fbase, tbl, cnt, fbase[-1], 0);
     if (LIKELY(r.state == KORB_NORMAL) && KORB_BINDING_P(r.value) && bfile != 0)
         { KorbBinding *const nb = VAL2BIND(r.value); nb->src_file = bfile; nb->src_line = bline; }
