@@ -1232,6 +1232,8 @@ struct korb_vm {
     struct korb_blop *blop_pending;
     uint32_t blop_npending;
     int64_t blop_next_poll_ns;         /* earliest next non-blocking pump while others are runnable */
+    uint32_t block_tick;               /* block returns since the last preemption check (korb_block_preempt) */
+    uint8_t sched_busy;                /* runq_head || blop_npending: one load for the preemption guards */
     int sigfd;                         /* signalfd(2): pending-signal readiness for the pump. -1 = not armed */
     uint8_t thread_aoe_global;         /* Thread.abort_on_exception (class-level) */
 

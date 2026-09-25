@@ -67,6 +67,10 @@ korb_blop_deadline_passed(const struct korb_blop *b, const struct timespec *now)
            (now->tv_sec == b->deadline.tv_sec && now->tv_nsec >= b->deadline.tv_nsec);
 }
 
+static inline void korb_sched_refresh(struct korb_vm *vm) {
+    vm->sched_busy = vm->runq_head != NULL || vm->blop_npending != 0;
+}
+
 /* engine への登録 (M2: pending リストに繋ぐだけ; fd 系の kernel 登録は M3) */
 static void
 korb_blop_prep(struct korb_vm *vm, struct korb_blop *b)
@@ -76,6 +80,7 @@ korb_blop_prep(struct korb_vm *vm, struct korb_blop *b)
     if (vm->blop_pending) vm->blop_pending->bl_prev = b;
     vm->blop_pending = b;
     vm->blop_npending++;
+    korb_sched_refresh(vm);
 }
 
 /* 完了: 登録を外し result を書き、waiter を runnable に (二重 wake は state 検査で冪等) */
@@ -87,6 +92,7 @@ korb_blop_post(struct korb_vm *vm, struct korb_blop *b, ssize_t result)
     if (b->bl_next) b->bl_next->bl_prev = b->bl_prev;
     b->bl_prev = b->bl_next = NULL;
     vm->blop_npending--;
+    korb_sched_refresh(vm);
     b->result = result;
     b->flags |= KORB_BLOP_F_DONE;
     struct korb_thread *const w = b->waiter;
@@ -271,6 +277,7 @@ korb_thread_runq_push(struct korb_vm *vm, struct korb_thread *t)
     t->rq_next = NULL;
     if (vm->runq_tail) vm->runq_tail->rq_next = t; else vm->runq_head = t;
     vm->runq_tail = t;
+    vm->sched_busy = 1;
 }
 
 /* t の #join 待ちを全員起こす。既に runnable な待ち手は queue に入れ直さない:
@@ -296,6 +303,7 @@ korb_thread_runq_pop(struct korb_vm *vm)
         if (t == NULL) return NULL;
         vm->runq_head = t->rq_next;
         if (vm->runq_head == NULL) vm->runq_tail = NULL;
+        korb_sched_refresh(vm);
         t->rq_next = NULL;
         if (t->state != KORB_TH_DEAD) return t;   /* killed-before-start: skip */
     }

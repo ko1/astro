@@ -34,6 +34,7 @@
  * program asks for it: Signal.trap blocks it (see __signal_block), and
  * Process.kill blocks it around a send to our own pid (korb_kill_self).
  * Signals arriving from outside an untrapped process keep the OS default. */
+static void korb_fork_child_threads(struct korb_vm *vm);   /* fwd: every child that goes on running Ruby */
 static const int korb_sig_deliverable[] = {
     SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, SIGALRM,
     SIGVTALRM, SIGXCPU, SIGXFSZ, SIGPROF, SIGWINCH, SIGCONT,
@@ -1055,6 +1056,7 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         korb_io_flush_std(c->vm);   /* the child would otherwise re-emit our buffer */
         pid = fork();
         if (pid == 0) {                                  /* child: nil back, pipe as its std stream */
+            korb_fork_child_threads(c->vm);
             const int keep = duplex ? fds[1] : fds[reading ? 1 : 0];
             const int drop = duplex ? fds[0] : fds[reading ? 0 : 1];
             if (duplex) { (void)dup2(keep, 0); (void)dup2(keep, 1); }
@@ -1392,6 +1394,7 @@ static RESULT korb_m_process_daemon(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     const pid_t pid = fork();
     if (pid < 0) return korb_raise_errno(c, slots, errno, "fork", "");
     if (pid > 0) _exit(0);                          /* parent: no at_exit handlers */
+    korb_fork_child_threads(c->vm);
     if (setsid() < 0) return korb_raise_errno(c, slots, errno, "setsid", "");
     if (!nochdir && chdir("/") != 0) return korb_raise_errno(c, slots, errno, "chdir", "/");
     if (!noclose) {
@@ -1491,6 +1494,10 @@ static RESULT korb_m_signal_signo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
  * thread is marked dead, its pending blop dropped, and the run queue emptied. */
 static void korb_blop_cancel(struct korb_vm *vm, struct korb_blop *b, int neg_errno);   /* fwd (thread.c) */
 static void korb_fork_child_threads(struct korb_vm *vm) {
+    /* $$ is a constant set at boot; the child has its own pid (concurrent-ruby's
+       pools detect a fork by comparing it) */
+    const uint32_t pix = korb_const_index(vm, korb_intern(vm, "$$", 2));
+    if (pix != UINT32_MAX) vm->const_vals[pix] = LONG2FIX((korb_sword_t)getpid());
     /* a signalfd reports the *reader's* pending signals, but the parent may
        still hold one queued in it — re-arm ours rather than reason about that */
     if (vm->sigfd >= 0) { close(vm->sigfd); vm->sigfd = -1; }
@@ -1503,6 +1510,7 @@ static void korb_fork_child_threads(struct korb_vm *vm) {
         t->joiners = NULL;
     }
     vm->runq_head = vm->runq_tail = NULL;
+    vm->sched_busy = vm->blop_npending != 0;   /* runq just emptied (korb_sched_refresh is in thread.c) */
     vm->main_thread = me;
 }
 

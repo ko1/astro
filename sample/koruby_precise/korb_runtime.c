@@ -11182,6 +11182,21 @@ static int32_t korb_entry_blk_param_slot(NODE *entry) { return entry->u.node_ent
 static const uint8_t *korb_entry_destructure_spec(NODE *entry) { return (const uint8_t *)entry->u.node_entry.destructure_spec; }
 NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
 
+/* Preemption point for C-driven iteration (times/each/...): green threads are
+ * cooperative, and a spinning block body with no loop of its own never reaches
+ * the while-loop check.  Same guard as there: free in a single-threaded run. */
+static __attribute__((noinline, cold)) RESULT korb_block_preempt_slow(CTX *c, VALUE *slots, RESULT r) {
+    if (r.state != KORB_NORMAL || (++c->vm->block_tick & 63u) != 0) return r;
+    slots[0] = r.value;                                  /* the block's value, rooted across the switch */
+    CHECK(korb_loop_yield(c, slots + 1));
+    r.value = slots[0];
+    return r;
+}
+static inline RESULT korb_block_preempt(CTX *c, VALUE *slots, RESULT r) {
+    if (LIKELY(!c->vm->sched_busy)) return r;
+    return korb_block_preempt_slow(c, slots, r);
+}
+
 /* bp_blk (NULL = none) is a block FORWARDED to this block via `|&b|` — proc.call
  * passes the block given at its call site so the body's &b local binds to it as a
  * Proc.  Only the (non-hot) full path takes it; the simple wrapper passes NULL,
@@ -11346,7 +11361,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     else if (UNLIKELY(r.state != KORB_NORMAL)) r = korb_block_leave_cold(c, r, block, bf + 1, is_lambda);
     if (UNLIKELY(korb_frame_escaped(bf + 1)))
         r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
-    return r;
+    return korb_block_preempt(c, slots, r);
 }
 
 /* Core block invocation: lay out the block frame at cursor `slots` and
@@ -11679,7 +11694,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     else if (UNLIKELY(r.state != KORB_NORMAL)) r = korb_block_leave_cold(c, r, block, bf + 1, is_lambda);
     if (UNLIKELY(korb_frame_escaped(bf + 1)))          /* block locals base = bf+1; close its own env if escaped */
         r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
-    return r;
+    return korb_block_preempt(c, slots, r);
 }
 
 RESULT
