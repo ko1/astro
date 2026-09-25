@@ -28,31 +28,15 @@ class Set
     enum.each { |x| delete(x) }
     self
   end
-  # in-place filters: collect the targets into a fresh array first (Set#to_a aliases
-  # internal storage, so deleting while iterating it would skip elements).
-  def delete_if; return to_enum(:delete_if) { size } unless block_given?; rm = []; each { |x| rm << x if yield(x) }; rm.each { |x| delete(x) }; self; end
-  def keep_if; return to_enum(:keep_if) { size } unless block_given?; rm = []; each { |x| rm << x unless yield(x) }; rm.each { |x| delete(x) }; self; end
+  # in-place filters: collect the positions first, then drop them back to front.
+  def delete_if; return to_enum(:delete_if) { size } unless block_given?; rm = []; each_with_index { |x, i| rm << i if yield(x) }; rm.reverse_each { |i| __delete_at(i) }; self; end
+  def keep_if; return to_enum(:keep_if) { size } unless block_given?; rm = []; each_with_index { |x, i| rm << i unless yield(x) }; rm.reverse_each { |i| __delete_at(i) }; self; end
   def reject!; return to_enum(:reject!) { size } unless block_given?; n = size; delete_if { |x| yield(x) }; size == n ? nil : self; end
   def select!; return to_enum(:select!) { size } unless block_given?; n = size; keep_if { |x| yield(x) }; size == n ? nil : self; end
   alias filter! select!                    # CRuby: #filter! is the same UnboundMethod as #select!
-  def collect!; return to_enum(:collect!) { size } unless block_given?; old = []; each { |x| old << x }; nw = old.map { |e| yield(e) }; old.each { |x| delete(x) }; nw.each { |x| self << x }; self; end
+  def collect!; return to_enum(:collect!) { size } unless block_given?; old = []; each { |x| old << x }; nw = old.map { |e| yield(e) }; clear; nw.each { |x| self << x }; self; end
   alias map! collect!                      # CRuby: #map! and #collect! share one UnboundMethod
   def classify; return to_enum(:classify) { size } unless block_given?; h = {}; each { |e| k = yield(e); (h[k] ||= self.class.new) << e }; h; end
-  # remove every element, returning self.
-  def clear
-    rm = []
-    each { |x| rm << x }
-    rm.each { |x| delete(x) }
-    self
-  end
-  # Re-index after an element was mutated in place: re-insert everything, which
-  # drops the duplicates the mutation created (CRuby rehashes the backing Hash).
-  def reset
-    raise FrozenError, "can't modify frozen #{self.class}: #{inspect}" if frozen?
-    elems = []
-    each { |x| elems << x }
-    replace(elems)
-  end
   # replace self's contents with the given enumerable's, in place.
   def replace(enum)
     raise ArgumentError, "value must be enumerable" unless enum.respond_to?(:each)

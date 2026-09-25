@@ -372,6 +372,7 @@ typedef struct KorbBignum {
 typedef struct KorbSet {
     AroObjectHeader head;            /* KORB_OBJ_SET */
     VALUE ARO_GC_EDGE elems;         /* KorbArray of unique members */
+    VALUE ARO_GC_EDGE tbl;           /* KorbHash member → true, same order as elems (CRuby's buckets) */
     uint8_t by_identity;             /* compare_by_identity: members compared by object identity */
 } KorbSet;
 
@@ -1834,6 +1835,7 @@ struct CTX_struct {
       case KORB_OBJ_SET: {                                                   \
         KorbSet *_st = (KorbSet *)(payload);                                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_st->elems);                  \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_st->tbl);                    \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

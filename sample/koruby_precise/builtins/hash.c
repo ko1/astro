@@ -413,16 +413,8 @@ static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         }
         return RESULT_OK(KORB_NIL);
     }
-    KorbArrayItems *it = h->items;
-    VALUE removed = korb_items_data(it)[2 * idx + 1];               /* held; no GC before return */
-    for (uint32_t i = (uint32_t)idx; i + 1 < h->len; i++) {  /* shift to keep order */
-        ARO_STORE(c, it, &korb_items_data(it)[2 * i],     korb_items_data(it)[2 * (i + 1)]);
-        ARO_STORE(c, it, &korb_items_data(it)[2 * i + 1], korb_items_data(it)[2 * (i + 1) + 1]);
-    }
-    h->len--;
-    ARO_STORE(c, it, &korb_items_data(it)[2 * h->len], KORB_NIL);   /* drop tail refs (nil = no WB) */
-    ARO_STORE(c, it, &korb_items_data(it)[2 * h->len + 1], KORB_NIL);
-    KORB_HASH_DROP_INDEX(h);                             /* pairs shifted → index stale */
+    const VALUE removed = korb_items_data(h->items)[2 * idx + 1];   /* held; no GC before return */
+    korb_hash_remove_at(c, h, (uint32_t)idx);
     return RESULT_OK(removed);
 }
 

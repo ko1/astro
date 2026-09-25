@@ -2,9 +2,8 @@ require "set"
 s = Set.new([[1], [2]])
 a = s.to_a[0]
 a << 9
-# NOTE: before #reset, CRuby answers false here (the mutated element sits in a
-# stale bucket of the backing Hash).  koruby's Set is an element ARRAY, so the
-# linear scan finds it — a divergence #reset cannot paper over.  Not asserted.
+# before #reset the mutated element sits in a stale bucket: not found
+p s.include?([1, 9]), s.include?([1])
 p s.reset.equal?(s)
 p s.include?([1, 9])
 p s.to_a

@@ -538,7 +538,7 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         VALUE_REF cp = VALUE_REF_AT(&slots[1]);
         for (uint32_t i = 0; i < sn; i++)
             CHECK(korb_ary_push_val(c, slots + 2, cp, korb_items_data(VAL2ARY(korb_set_elems_of(VALUE_REF_GET(self)))->items)[i]));
-        RESULT sr = korb_set_from_array(c, slots + 2, cp);
+        RESULT sr = korb_set_from_array_id(c, slots + 2, cp, VAL2SET(VALUE_REF_GET(self))->by_identity);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
         slots[1] = sr.value;
         need_initcopy = true;

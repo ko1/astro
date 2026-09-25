@@ -1898,6 +1898,34 @@ korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE val)
     return RESULT_OK(VALUE_REF_GET(href));
 }
 
+/* Remove pair `idx` keeping insertion order.  The index is rebuilt in place and
+ * the key hints shift with the pairs, so later lookups stay O(1) and a mutated
+ * key stays unreachable (dropping them made every lookup after a delete linear). */
+static void
+korb_hash_remove_at(CTX *c, KorbHash *restrict h, const uint32_t idx)
+{
+    KorbArrayItems *const it = h->items;
+    for (uint32_t i = idx; i + 1 < h->len; i++) {
+        ARO_STORE(c, it, &korb_items_data(it)[2 * i],     korb_items_data(it)[2 * (i + 1)]);
+        ARO_STORE(c, it, &korb_items_data(it)[2 * i + 1], korb_items_data(it)[2 * (i + 1) + 1]);
+    }
+    const bool hints_ok = h->khints && h->khint_len == h->len;
+    h->len--;
+    ARO_STORE(c, it, &korb_items_data(it)[2 * h->len], KORB_NIL);       /* drop tail refs (nil = no WB) */
+    ARO_STORE(c, it, &korb_items_data(it)[2 * h->len + 1], KORB_NIL);
+    if (hints_ok) {
+        uint64_t *const hints = (uint64_t *)korb_strbuf_data(h->khints);
+        memmove(hints + idx, hints + idx + 1, (size_t)(h->len - idx) * sizeof(uint64_t));
+        h->khint_len = h->len;
+    } else if (h->khints) {
+        KORB_HASH_DROP_KHINTS(h);
+    }
+    if (h->idx_mask) {                                  /* pair indices shifted: refill, no alloc */
+        memset(korb_strbuf_data(h->index), 0, (size_t)(h->idx_mask + 1) * sizeof(uint32_t));
+        for (uint32_t i = 0; i < h->len; i++) korb_hash_index_put(h, i);
+    }
+}
+
 /* ---------------------------------------------------------------------------
  * Object + instance variables.  ivars are a lazily-allocated [sym,val] pair
  * payload (same shape as Hash storage); names are interned symbols compared by
@@ -14956,6 +14984,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SET, "add?", korb_m_set_add_q, 1);
     korb_def_cmethod(c, KORB_C_SET, "delete", korb_m_set_delete, 1);
     korb_def_cmethod(c, KORB_C_SET, "delete?", korb_m_set_delete_q, 1);
+    korb_def_cmethod(c, KORB_C_SET, "clear", korb_m_set_clear, 0);
+    korb_def_cmethod(c, KORB_C_SET, "reset", korb_m_set_reset, 0);
+    korb_def_cmethod(c, KORB_C_SET, "__delete_at", korb_m_set_delete_at, 1);
     korb_def_cmethod_blk(c, KORB_C_SET, "initialize", korb_m_set_initialize, -1);
     { struct korb_method *const mi = korb_cmethod_slot(c->vm, KORB_C_SET, "initialize"); if (mi) mi->visibility = 1; }
     korb_def_cmethod_blk(c, KORB_C_SET, "each", korb_m_set_each, 0);
