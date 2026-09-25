@@ -2624,7 +2624,7 @@ node_aref(CTX *c, NODE *n, VALUE *slots, uint64_t flink, VALUE_REF recv@child, V
         if (i >= 63) return RESULT_OK(LONG2FIX(n < 0 ? 1 : 0));/* beyond Fixnum width = sign extension */
         return RESULT_OK(LONG2FIX((n >> i) & 1));
     }
-    if (LIKELY(KORB_HASH_P(r) && KORB_PLAIN_BUILTIN(r) && !c->vm->hash_aref_redefined && !KORB_OBJECT_P(idx))) {   /* hash[key] → inline lookup, skip the send + dispatch (user-object key falls to the CTX-aware method for custom eql?/hash) */
+    if (LIKELY(KORB_HASH_P(r) && KORB_PLAIN_BUILTIN(r) && !c->vm->hash_aref_redefined && !korb_eq_needs_send(idx))) {   /* hash[key] → inline lookup, skip the send + dispatch (a key whose equality Ruby owns falls to the CTX-aware method) */
         const KorbHash *const h = VAL2HASH(r);
         const int32_t hi = korb_hash_find(h, idx);
         if (hi >= 0) return RESULT_OK(korb_items_data(h->items)[2 * hi + 1]);

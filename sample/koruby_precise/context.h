@@ -816,6 +816,32 @@ static inline ARO_BORROW char  *korb_str_data   (VALUE v)           { return kor
 #define KORB_ENUM_P(v)     (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ENUMERATOR)
 #define VAL2ENUM(v)        ((KorbEnumerator *)(uintptr_t)KORB_SC(v))
 #define KORB_SET_P(v)      (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_SET)
+
+/* True when only Ruby code can decide `a == b` / `a.eql? b` for this value: a
+ * user object (Struct / Data / Time / anything with its own ==), or a container
+ * that holds one.  korb_value_eq settles everything else from its type cascade,
+ * so the callers keep their CTX-free fast path for everything this rejects.
+ *
+ * Arrays are scanned element-wise so an all-immediate array key (hot: optcarrot
+ * uses them) stays on the fast path; a Hash / Set as a member is rare enough to
+ * take the slow path outright.  `depth` bounds the walk — a self-referential
+ * array answers "yes" and is then decided by the dispatching comparison, which
+ * carries its own cycle guard. */
+static inline bool korb_eq_needs_send_d(VALUE v, int depth)
+{
+    if (KORB_OBJECT_P(v) || KORB_EXC_P(v)) return true;
+    if (KORB_ARRAY_P(v)) {
+        if (depth >= 4) return true;
+        const KorbArray *const arr__ = VAL2ARY(v);
+        for (uint32_t i = 0; i < arr__->len; i++)
+            if (korb_eq_needs_send_d(korb_items_data(arr__->items)[i], depth + 1)) return true;
+        return false;
+    }
+    return KORB_HASH_P(v) || KORB_SET_P(v);
+}
+static inline bool korb_eq_needs_send(VALUE v) {
+    return AROH_IS_GC_OBJECT(v) && korb_eq_needs_send_d(v, 0);   /* immediates never dispatch */
+}
 #define VAL2SET(v)         ((KorbSet *)(uintptr_t)KORB_SC(v))
 #define KORB_REGEXP_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_REGEXP)
 /* KorbRegexp::flags bit for an allocated-but-not-yet-#initialize'd payload (a

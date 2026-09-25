@@ -80,7 +80,7 @@ static RESULT korb_m_ary_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     for (uint32_t i = 0; i < m; i++) {
         const VALUE xi = korb_items_data(VAL2ARY(slots[0])->items)[i], yi = korb_items_data(VAL2ARY(slots[1])->items)[i];
         if (xi == yi && !KORB_FLOAT_P(xi)) continue;   /* identical (also breaks self-referential) */
-        if (UNLIKELY(KORB_OBJECT_P(xi) || KORB_OBJECT_P(yi))) {   /* user/Comparable element → dispatch <=> */
+        if (UNLIKELY(korb_eq_needs_send(xi) || korb_eq_needs_send(yi))) {   /* user/Comparable element → dispatch <=> */
             slots[2] = xi; slots[3] = yi;
             RESULT cr = korb_send(c, slots + 4, c->vm->mid_cmp, 0, 1);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
@@ -596,8 +596,7 @@ static RESULT korb_m_ary_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     for (uint32_t i = 0; i < n; i++) {
         const VALUE v = korb_items_data(VAL2ARY(slots[0])->items)[i], v2 = korb_items_data(VAL2ARY(slots[1])->items)[i];
         if (v == v2) continue;                                            /* rb_equal's identity shortcut ([NaN] == [NaN] is true) */
-        if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
-            KORB_OBJECT_P(v2) || KORB_ARRAY_P(v2) || KORB_HASH_P(v2)) {   /* dispatch == (recurses for nested) */
+        if (korb_eq_needs_send(v) || korb_eq_needs_send(v2)) {   /* dispatch == (recurses for nested) */
             slots[2] = v; slots[3] = v2;
             RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
@@ -628,8 +627,7 @@ static RESULT korb_m_ary_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     VALUE result = KORB_TRUE;
     for (uint32_t i = 0; i < n; i++) {
         const VALUE v = korb_items_data(VAL2ARY(slots[0])->items)[i], v2 = korb_items_data(VAL2ARY(slots[1])->items)[i];
-        if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
-            KORB_OBJECT_P(v2) || KORB_ARRAY_P(v2) || KORB_HASH_P(v2)) {
+        if (korb_eq_needs_send(v) || korb_eq_needs_send(v2)) {
             slots[2] = v; slots[3] = v2;
             RESULT r = korb_send_impl(c, slots + 4, mid_eql, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
@@ -652,7 +650,7 @@ static RESULT korb_m_ary_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     for (uint32_t i = 0; i < n; i++) {
         const VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i];   /* re-read each iter */
         if (e == slots[0]) return RESULT_OK(KORB_TRUE);     /* identity short-circuit (CRuby rb_equal; catches NaN's own bits) */
-        if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (element == needle) */
+        if (korb_eq_needs_send(e) || korb_eq_needs_send(slots[0])) {  /* user == → dispatch (element == needle) */
             slots[1] = e; slots[2] = slots[0];
             RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;

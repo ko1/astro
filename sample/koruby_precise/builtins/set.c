@@ -23,7 +23,7 @@ static RESULT korb_set_member_disp(CTX *c, VALUE *slots, VALUE elems, bool by_id
     for (uint32_t i = 0; i < n; i++) {
         const VALUE e = korb_items_data(VAL2ARY(slots[0])->items)[i];
         if (by_id) { if (e == slots[1]) { *found = true; return RESULT_OK(KORB_NIL); } continue; }
-        if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[1])) {          /* user #eql? → dispatch */
+        if (korb_eq_needs_send(e) || korb_eq_needs_send(slots[1])) {          /* user #eql? → dispatch */
             slots[2] = e; slots[3] = slots[1];
             RESULT r = korb_send_impl(c, slots + 4, korb_intern(c->vm, "eql?", 4), 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;

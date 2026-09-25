@@ -1679,15 +1679,16 @@ korb_hash_find(const KorbHash *h, VALUE key)
     return -1;
 }
 
-/* CTX-aware find: a user object key (which may define a custom eql?/hash) is
- * matched by dispatching `stored.eql?(searched)` over a linear scan; every other
- * key type uses the CTX-free fast find.  `href` is the rooted Hash (re-read each
- * step since eql? may GC).  On a dispatch error *out_err carries it (result -1). */
+/* CTX-aware find: a key whose equality Ruby code owns (a user object, or a
+ * container holding one) is matched by dispatching `stored.eql?(searched)` over
+ * a linear scan; every other key type uses the CTX-free fast find.  `href` is
+ * the rooted Hash (re-read each step since eql? may GC).  On a dispatch error
+ * *out_err carries it (result -1). */
 static int32_t
 korb_hash_find_ctx(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *out_err)
 {
     *out_err = RESULT_OK(KORB_NIL);
-    if (LIKELY(!KORB_OBJECT_P(key)))
+    if (LIKELY(!korb_eq_needs_send(key)))
         return korb_hash_find(VAL2HASH(VALUE_REF_GET(href)), key);
     if (VAL2HASH(VALUE_REF_GET(href))->head.flags & KORB_FL_CMP_BY_ID) {   /* compare_by_identity: pointer only */
         const KorbHash *const h = VAL2HASH(VALUE_REF_GET(href));
