@@ -24,7 +24,7 @@ class Time
       sec += h[:sec_fraction].to_r if h[:sec_fraction]
       off = h[:offset]
       if off
-        utc(year, mon, mday, hour, min, sec) - off
+        __force_zone(utc(year, mon, mday, hour, min, sec) - off, h[:zone], off)
       else
         local(year, mon, mday, hour, min, sec)
       end
@@ -53,8 +53,14 @@ class Time
         local(m[1].to_i, m[2].to_i, m[3].to_i, m[4].to_i, m[5].to_i, sec)
       else
         off = m[8] == 'Z' ? 0 : __zone_offset_str(m[8])
-        utc(m[1].to_i, m[2].to_i, m[3].to_i, m[4].to_i, m[5].to_i, sec) - off
+        __force_zone(utc(m[1].to_i, m[2].to_i, m[3].to_i, m[4].to_i, m[5].to_i, sec) - off, m[8], off)
       end
+    end
+
+    # CRuby's force_zone!: a UTC designator gives a UTC time, any other offset a
+    # fixed-offset one (so #iso8601 writes "+00:00", not "Z").
+    private def __force_zone(t, zone, off)
+      zone && zone.match?(/\A(?:-00:00|-0000|-00|UTC|Z|UT)\z/i) ? t.utc : t.localtime(off)
     end
     alias_method :iso8601, :xmlschema
 
@@ -82,7 +88,7 @@ class Time
             else RFC2822_ZONES__[m[7].upcase] or
                  raise ArgumentError, "not RFC 2822 compliant date: #{date.inspect}"
             end
-      utc(year, mon, m[1].to_i, m[4].to_i, m[5].to_i, m[6].to_i) - off
+      __force_zone(utc(year, mon, m[1].to_i, m[4].to_i, m[5].to_i, m[6].to_i) - off, m[7], off)
     end
     alias_method :rfc822, :rfc2822
 

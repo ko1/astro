@@ -10727,6 +10727,11 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
      * slots[0], args above).  Otherwise fall through to the global function
      * table (p/puts/top-level defs).  `main` (klass=nil) is excluded so
      * top-level keeps using globals. */
+    /* main's `include` is a singleton method there (CRuby), so it wins over any
+     * #include an included module gave Object (RSpec::Matchers has one) */
+    if (UNLIKELY(argc >= 1 && KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) &&
+        strcmp(korb_sym_name(vm, mid), "include") == 0)
+        return korb_do_include(c, slots, korb_builtin_class_obj(vm, KORB_C_OBJECT), VALUE_SLICE_MAKE(slots - argc, argc));
     if ((AROH_IS_GC_OBJECT(self) &&
          (!(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) || block != NULL))
         || !AROH_IS_GC_OBJECT(self)) {

@@ -755,6 +755,9 @@ class Date
         sign = m[0][0] == "-" ? -1 : 1
         h[:offset] = sign * (m[1].to_i.abs * 3600 + (m[2] ? m[2].to_i : 0) * 60)
       end
+    elsif h[:hour] && (z = s.scan(/\b[A-Za-z]{2,5}\b/).find { |w| ZONE_OFFSETS__.key?(w.downcase) })   # "10:00 PST": a zone follows a time
+      h[:zone] = z
+      h[:offset] = ZONE_OFFSETS__[z.downcase]
     end
 
     if (m = /\b([A-Za-z]{3,})\b/.match(s)) && (w = __wday_index(m[1]))

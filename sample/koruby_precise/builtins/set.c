@@ -650,6 +650,12 @@ static RESULT korb_m_obj_instance_of(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     if (UNLIKELY(!KORB_CLASS_P(target))) return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");
     return RESULT_OK(korb_class_obj_of(c, VALUE_REF_GET(self)) == target ? KORB_TRUE : KORB_FALSE);
 }
+/* main's private singleton #include: into Object.  It is a singleton method in
+ * CRuby, so it wins over an #include a module mixed into Object defines. */
+static RESULT korb_m_main_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    return korb_do_include(c, slots, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), a);
+}
 /* Get-or-create obj's singleton class (a per-instance class whose superclass is
  * obj's current class, is_singleton=1), recorded in the override table.  obj must
  * be a heap object.  Returns the singleton (rooted via the table). */
@@ -708,6 +714,12 @@ RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj) {
     if (((const AroObjectHeader *)(uintptr_t)slots[0])->flags & KORB_FL_FROZEN)   /* a frozen object's singleton is frozen */
         ((AroObjectHeader *)(uintptr_t)slots[2])->flags |= KORB_FL_FROZEN;
     korb_klass_override_set(c, slots[0], slots[2]);                               /* obj/sing rooted, no GC in set */
+    if (UNLIKELY(KORB_OBJECT_P(slots[0]) && VAL2OBJ(slots[0])->klass == KORB_NIL)) {   /* main */
+        korb_class_def_cfn(c, slots[2], "include", korb_m_main_include, -1);
+        const KorbClass *const sk = VAL2CLASS(slots[2]);
+        const uint32_t inc = korb_intern(vm, "include", 7);
+        for (uint32_t i = 0; i < sk->method_cnt; i++) if (sk->methods[i]->mid == inc) sk->methods[i]->visibility = 1;
+    }
     return RESULT_OK(slots[2]);
 }
 /* Object#singleton_class — the object's (lazily-created) singleton class. */
