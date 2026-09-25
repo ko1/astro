@@ -693,7 +693,9 @@ class Date
       s = m.pre_match + m.post_match
     # "-" 区切りは序数の接尾辞と両立しない: CRuby の VMS 形式 (parse_vms) は
     # 裸の数字しか取らないので "5th-november-2005" には日が付かない。
-    elsif (m = /(\d{1,2})(?:(?:st|nd|rd|th)#{SEP__}+|#{SEPM__}+)([A-Za-z]{3,})#{ABBR__}(?:#{YEAR__})?/.match(s)) && __month_index(m[2])
+    # 序数のあとはコンマでも区切れる ("18th, November 1983")。SEP__ 自体には
+    # 入れない: コンマは他の分岐で年の区切りとして使うので、ここだけ許す。
+    elsif (m = /(\d{1,2})(?:(?:st|nd|rd|th),?#{SEP__}*|#{SEPM__}+)([A-Za-z]{3,})#{ABBR__}(?:#{YEAR__})?/.match(s)) && __month_index(m[2])
       h[:mday], h[:mon] = m[1].to_i, __month_index(m[2])                        # "DD mmm[ YYYY]"
       h[:year] = m[3].to_i if m[3]
       s = m.pre_match + m.post_match
