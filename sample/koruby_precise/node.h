@@ -1035,9 +1035,10 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     KORB_AUDIT_EP(base, mid);
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;
-    if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
-                 &cstack_probe < c->cstack_limit))
+    VALUE *const resv = base + locals_cnt + KORB_FRAME_SLACK;
+    if (UNLIKELY(resv > c->slots_limit || &cstack_probe < c->cstack_limit))
         return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
+    if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
     /* zero the genuine locals (body locals + synth temps) that the body may
      * read/GC-scan.  Inline the small counts (the vast majority of methods) to
      * skip the __memset PLT call.  The EP needs no store: whoever reserved the

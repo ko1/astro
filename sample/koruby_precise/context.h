@@ -1507,16 +1507,19 @@ struct CTX_struct {
  * top then).  If the mutator later claims such a slot and publishes past
  * it without storing first, the stale bits would be scanned.  Zeroing
  * [top, high_water) at every collection makes unwritten claimed slots
- * read as nil (= 0, skipped by the edge filter). */
+ * read as nil (= 0, skipped by the edge filter).
+ *
+ * `slots_high_water` therefore has to be the deepest point the MUTATOR has
+ * reached, not the deepest top seen at a collection: korb_alloc and every
+ * frame reservation raise it.  Tracking only collection tops left the region
+ * between them dirty, and a deep expression chain (a 27k-element array
+ * literal in the parser gem) published a top above it — the scan then read
+ * dangling pointers and the collector copied garbage without bound
+ * (rubocop: 240 MB -> 25 GB in seconds). */
 #define AROH_VISIT_ROOTS(c, ctx, edge_visit) do {                            \
     VALUE *_aro_top = (c)->slots_top;                                        \
-    if ((c)->slots_high_water == NULL || _aro_top > (c)->slots_high_water) { \
-        (c)->slots_high_water = _aro_top;                                    \
-    }                                                                        \
-    else {                                                                   \
-        for (VALUE *_p = _aro_top; _p < (c)->slots_high_water; _p++)         \
-            *_p = 0;                                                         \
-    }                                                                        \
+    if (_aro_top > (c)->slots_high_water) (c)->slots_high_water = _aro_top;  \
+    for (VALUE *_p = _aro_top; _p < (c)->slots_high_water; _p++) *_p = 0;    \
     /* start four cells early: bottom-header frames keep self at base[-1], the   \
      * EP at base[-2], the link at base[-3] and the identity at base[-4]; the     \
      * toplevel frame sits at c->slots, so those four lie below it (every other   \

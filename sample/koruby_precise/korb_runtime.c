@@ -90,6 +90,10 @@ korb_alloc(CTX *c, VALUE *slots, size_t size, unsigned int type)
 {
     ASTRO_ASSERT(slots >= c->slots && slots <= c->slots_limit);
     c->slots_top = slots;                 /* publish: live values are below */
+    /* Deepest point the mutator has reached on THIS stack.  The root scan's
+     * stale-residue zeroing uses it as the upper bound, so it must follow the
+     * mutator, not just the tops seen at collections (see AROH_VISIT_ROOTS). */
+    if (UNLIKELY(slots > c->slots_high_water)) c->slots_high_water = slots;
     /* The copy GC overlays each forwarded object's new address at payload
      * offset 0 (= object offset 8, sizeof(AroObjectHeader)).  An object smaller
      * than header+8 = 16 bytes therefore has its forward overlay spill into the
@@ -5508,10 +5512,11 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     }
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;
-    if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
-                 &cstack_probe < c->cstack_limit)) {
+    VALUE *const resv = base + locals_cnt + KORB_FRAME_SLACK;
+    if (UNLIKELY(resv > c->slots_limit || &cstack_probe < c->cstack_limit)) {
         return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
     }
+    if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
     /* *rest: collect surplus positionals BEFORE memset / writing the self+def_class
      * frame-top cells, which would clobber high arg slots when argc is large.
      * A trailing kwhash sits at base[pos_argc] (= base[argc-1]); rest scratch
@@ -5720,8 +5725,10 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     }
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;
-    if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit || &cstack_probe < c->cstack_limit))
+    VALUE *const resv = base + locals_cnt + KORB_FRAME_SLACK;
+    if (UNLIKELY(resv > c->slots_limit || &cstack_probe < c->cstack_limit))
         return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
+    if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
     VALUE kwbuf[64];
     if (UNLIKELY(kw_argc > 64)) return korb_raise(c, slots, KORB_E_NOTIMPL, line, "too many keyword arguments");
     for (uint32_t p = 0; p < kw_argc; p++) kwbuf[p] = base[pos_argc + p];   /* capture before memset */
@@ -11031,9 +11038,10 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     char cstack_probe;
     /* a raise before the header is written drops the staged link (a `yield`
      * node's own frame) — korb_raise does that, out of line */
-    if (UNLIKELY(bf + 1 + blocals + KORB_FRAME_SLACK > c->slots_limit ||
-                 &cstack_probe < c->cstack_limit))
+    VALUE *const resv = bf + 1 + blocals + KORB_FRAME_SLACK;
+    if (UNLIKELY(resv > c->slots_limit || &cstack_probe < c->cstack_limit))
         return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
+    if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
     const uint32_t np = block->u.node_entry.params_cnt;   /* fast path: block is a node_entry (CPROC/non-entry went to _full above) */
     if (UNLIKELY(is_lambda && argc != np))                /* lambda: exact arity (fast path = all-required, no rest/opt) */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u)", argc, np);

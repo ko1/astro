@@ -1315,9 +1315,10 @@ node_simple_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt
     VALUE *const base = slots - params_cnt;
     if (params_cnt != 0) korb_kwargs_unmark(base[params_cnt - 1]);   /* fixed positional: the call-site kwargs mark stops here */
     char cstack_probe;
-    if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
-                 &cstack_probe < c->cstack_limit))
+    VALUE *const resv = base + locals_cnt + KORB_FRAME_SLACK;
+    if (UNLIKELY(resv > c->slots_limit || &cstack_probe < c->cstack_limit))
         return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
+    if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
     if (locals_cnt > params_cnt)
         for (uint32_t i = params_cnt; i < locals_cnt; i++) base[i] = 0;   /* body locals start nil */
     slots = base + locals_cnt;                  /* the body runs above the frame */
