@@ -17,10 +17,11 @@ class Set
     raise ArgumentError, "tried to flatten recursive Set" if seen.any? { |s| s.equal?(self) }
     seen.push(self)
     r = self.class.new
-    each { |e| e.is_a?(Set) ? e.__flatten(seen).each { |x| r << x } : (r << e) }
+    each { |e| e.is_a?(Set) ? e.send(:__flatten, seen).each { |x| r << x } : (r << e) }
     seen.pop
     r
   end
+  private :__flatten
   # subtract — remove every element of the enumerable in place, returning self.
   def subtract(enum)
     raise ArgumentError, "value must be enumerable" unless enum.respond_to?(:each)

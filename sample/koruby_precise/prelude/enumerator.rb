@@ -201,10 +201,15 @@ class Enumerator
   # every yield.  Eager and lazy enumerators keep the C path: lazy #each cannot
   # stream an infinite source, but its bounded re-drive can.
   alias_method :__c_next, :next
+  private :__c_next
   alias_method :__c_peek, :peek
+  private :__c_peek
   alias_method :__c_next_values, :next_values
+  private :__c_next_values
   alias_method :__c_peek_values, :peek_values
+  private :__c_peek_values
   alias_method :__c_rewind, :rewind
+  private :__c_rewind
 
   def next
     return __c_next if __enum_mode < 3 && !@__ext_fed
@@ -356,6 +361,7 @@ class Enumerator
     @__src_args = args
     self
   end
+  private :__set_source
 
   def each(*extra, &block)
     return self if block.nil? && extra.empty?
@@ -381,7 +387,7 @@ class Enumerator::Lazy
   def self.new(receiver, size = nil, &block)
     raise ArgumentError, "tried to call lazy new without a block" unless block
     e = Enumerator.new { |y| receiver.each { |*values| block.call(y, *values) } }.lazy
-    e.__set_size(size) if size.is_a?(Integer)   # derived lazies inherit this C-level size
+    e.send(:__set_size, size) if size.is_a?(Integer)   # derived lazies inherit this C-level size
     e.instance_variable_set(:@__lazy_size, size)
     e
   end
@@ -676,6 +682,7 @@ class Enumerator
   # remember their source can do this; the rest keep the C behaviour (re-drive
   # the materialized values).
   alias_method :__with_index_c, :with_index
+  private :__with_index_c
 
   private def __wi_offset(off)
     return 0 if off.nil?

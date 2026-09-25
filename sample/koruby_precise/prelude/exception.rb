@@ -274,7 +274,7 @@ class Object
       src = this.respond_to?(meth, true) ? this : e
       src.send(meth, *args) { |*vs| y.yield(*vs) }
     }
-    e.__set_source(this, meth, args)                        # Enumerator#each(*extra) re-drives the source
+    e.send(:__set_source, this, meth, args)                        # Enumerator#each(*extra) re-drives the source
     e
   end
   # keywords must survive the trip through `args` (CRuby's to_enum is C and does
@@ -291,7 +291,7 @@ class Object
     return e unless respond_to?(:size) && (args.empty? || meth == :each_with_object)   # each_with_object's arg is the memo, not a size-changing one
     case meth
     when :find, :detect, :find_index, :take_while, :drop_while then e
-    else e.__set_size(size)
+    else e.send(:__set_size, size)
     end
   end
   __set_ruby2_keywords(self, :__to_enum_sized)
@@ -453,10 +453,12 @@ class Object
     ary.each { |p| return true if p }
     false
   end
+  private :__korb_when_splat_truthy
   def __korb_when_splat(subj)
     arr = is_a?(Array) ? self : (respond_to?(:to_a) ? to_a : [self])
     arr.any? { |pat| pat === subj }
   end
+  private :__korb_when_splat
 end
 
 # LoadError#path — the feature/path that could not be loaded (the C raise sites

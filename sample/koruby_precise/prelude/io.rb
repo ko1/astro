@@ -40,12 +40,14 @@ class IO
   def __io_read_enc_name
     (internal_encoding || external_encoding || Encoding::UTF_8).name
   end
+  private :__io_read_enc_name
   # The encoding the raw bytes on the stream are in (#getc sizes a character by
   # it).  Always the external one, whether or not a transcoding pair is set.
   def __io_byte_enc_name
     __resolve_enc
     (@__enc2 || @__enc || Encoding.default_external).name
   end
+  private :__io_byte_enc_name
   # When an ext→int pair is set, the bytes arrive in the EXTERNAL encoding and
   # the C read path converts them to the tagged (internal) one.  nil = no pair.
   def __io_read_xenc_name
@@ -54,6 +56,7 @@ class IO
     n = @__enc2.name
     __transcodable?(n) ? n : nil
   end
+  private :__io_read_xenc_name
 
   def external_encoding
     __resolve_enc
@@ -172,6 +175,7 @@ class IO
     e = @__enc2 || @__enc
     (e && e != Encoding::BINARY && __transcodable?(e.name)) ? e.name : nil
   end
+  private :__io_write_enc_name
 
   # Accepts the option and records it: the C write path reads @__nl to decide
   # whether a written "\n" becomes "\r\n" (:crlf) or "\r" (:cr).
@@ -213,7 +217,7 @@ class IO
 
   # "bom|utf-8": consume a leading BOM if there is one and let it name the
   # external encoding; with no BOM the named encoding stands (CRuby).
-  def __apply_bom_opt   # called from the C open path too
+  private def __apply_bom_opt   # called from the C open path too (C dispatch ignores visibility)
     @__bom_req = nil
     name = __io_bom_encoding
     set_encoding(name) if name
@@ -229,7 +233,7 @@ class IO
     nil
   end
 
-  def __apply_open_opts(opts)
+  private def __apply_open_opts(opts)
     return self unless opts.is_a?(Hash) && !opts.empty?
     @autoclose = opts[:autoclose] ? true : false if opts.key?(:autoclose)
     # the newline decorator is rejected against the mode the stream was OPENED

@@ -206,7 +206,7 @@ class IO
 
     def self.__writable_io?(file)
       # 空文字列の write は権限を見ない (CRuby も同じ) ので、モードのビットを直接見る
-      return file.__io_writable? if file.is_a?(IO)
+      return file.send(:__io_writable?) if file.is_a?(IO)
       return true unless file.respond_to?(:write)
       begin
         file.write("")     # IO 以外は書き込みを試すしかない

@@ -84,7 +84,7 @@ class StringScanner
     else
       # BYTE-offset match: converting @pos to a character index here walked the
       # subject on every scan, which made scanning a large string O(n^2).
-      m = pattern.__match_byte(@string, @pos)
+      m = pattern.send(:__match_byte, @string, @pos)
       (m && m.byteoffset(0)[0] == @pos) ? [m[0], m] : nil
     end
   end
@@ -152,7 +152,7 @@ class StringScanner
       stop_b = @pos + m.byteoffset(0)[1]
       ncp = nil
     else
-      m = __to_pattern(re).__match_byte(@string, @pos) or return (@md = nil)
+      m = __to_pattern(re).send(:__match_byte, @string, @pos) or return (@md = nil)
       @md = m
       stop_b = m.byteoffset(0)[1]        # end of the match, absolute bytes
       ncp = nil                          # character cursor is recomputed on demand

@@ -156,7 +156,7 @@ module Marshal
   def self._wrap_prefix(o, base, out, st)
     # __own_singleton__, not #singleton_class: materializing one would unchill a
     # chilled String literal (and warn under -w) just for being dumped.
-    sing = (o.__own_singleton__ rescue nil)
+    sing = (o.send(:__own_singleton__) rescue nil)
     unless (o.singleton_methods(false) rescue []).empty? &&
            (sing.nil? || (sing.instance_variables rescue []).empty?)
       raise TypeError, "singleton can't be dumped"
@@ -355,7 +355,7 @@ module Marshal
     uiv = o.instance_variables - EXC_SKIP_IVARS__
     cause = (o.cause rescue nil)                       # only set on a raised exception
     _long(2 + (cause ? 1 : 0) + uiv.length, out)
-    _symdump(:mesg, out, st); _dump(o.respond_to?(:__raw_mesg) ? o.__raw_mesg : o.message, out, st)
+    _symdump(:mesg, out, st); _dump(o.respond_to?(:__raw_mesg, true) ? o.send(:__raw_mesg) : o.message, out, st)
     _symdump(:bt, out, st);   _dump(o.backtrace, out, st)
     if cause
       _symdump(:cause, out, st); _dump(cause, out, st)

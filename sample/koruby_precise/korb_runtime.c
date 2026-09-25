@@ -2590,19 +2590,36 @@ static bool korb_auto_private_name_p(const struct korb_vm *vm, uint32_t mid)
         if (strcmp(nm, names[i]) == 0) return true;
     return false;
 }
+/* koruby names its own internal helpers __foo.  CRuby exposes only __id__ /
+ * __send__ (and Kernel's __method__ / __callee__ / __dir__), so every other one
+ * is noise in obj.methods / respond_to? / instance_methods that a gem doing
+ * method introspection can trip over.  Applied only in the C definers below —
+ * a user's `def __foo` stays public, as in CRuby.  prelude/ and lib/ reach these
+ * through #send (or respond_to?(name, true)) where they need an explicit
+ * receiver; C dispatch ignores visibility. */
+static bool korb_internal_helper_name_p(const char *const name)
+{
+    if (name[0] != '_' || name[1] != '_') return false;
+    static const char *const keep[] = {
+        "__id__", "__send__", "__method__", "__callee__", "__dir__",
+    };
+    for (size_t i = 0; i < sizeof keep / sizeof keep[0]; i++)
+        if (strcmp(name, keep[i]) == 0) return false;
+    return true;
+}
 /* add a CFUNC method to a specific class object (struct classes get these). */
 static void korb_class_def_cfn(CTX *c, VALUE klass, const char *name, korb_method_fn fn, int32_t arity) {
     struct korb_method *m = korb_class_method_slot(c->vm, VAL2CLASS(klass), korb_intern(c->vm, name, strlen(name)));
     m->kind = KORB_METHOD_CFUNC; m->uses_block = 0; m->params_cnt = arity;
     m->rfn = fn; m->rbfn = NULL; m->body = NULL; m->owner = klass;
-    if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid))) m->visibility = 1;
+    if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid) || korb_internal_helper_name_p(name))) m->visibility = 1;
     c->vm->method_serial++;
 }
 static void korb_class_def_cfn_blk(CTX *c, VALUE klass, const char *name, korb_method_blk_fn fn, int32_t arity) {
     struct korb_method *m = korb_class_method_slot(c->vm, VAL2CLASS(klass), korb_intern(c->vm, name, strlen(name)));
     m->kind = KORB_METHOD_CFUNC; m->uses_block = 1; m->params_cnt = arity;
     m->rbfn = fn; m->rfn = NULL; m->body = NULL; m->owner = klass;
-    if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid))) m->visibility = 1;
+    if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid) || korb_internal_helper_name_p(name))) m->visibility = 1;
     c->vm->method_serial++;
 }
 /* Struct instance methods — read the receiver's class `members` + the matching
@@ -11769,7 +11786,7 @@ korb_def_cmethod(CTX *c, enum korb_class cls, const char *name,
     m->rfn = fn;
     m->rbfn = NULL;
     m->body = NULL;
-    if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid))) m->visibility = 1;
+    if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid) || korb_internal_helper_name_p(name))) m->visibility = 1;
 }
 
 void
@@ -11784,7 +11801,7 @@ korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
     m->rfn = NULL;
     m->rbfn = fn;
     m->body = NULL;
-    if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid))) m->visibility = 1;
+    if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid) || korb_internal_helper_name_p(name))) m->visibility = 1;
 }
 
 /* Shared receiver dispatch.  `block`/`def_env` are NULL for a plain send;

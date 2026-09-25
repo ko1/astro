@@ -13,7 +13,7 @@ class ThreadGroup
     raise ThreadError, "can't move to the enclosed thread group" if @enclosed
     g = thread.group
     raise ThreadError, "can't move from the enclosed thread group" if g && g.enclosed?
-    thread.__set_group(self)
+    thread.send(:__set_group, self)
     self
   end
   def list; Thread.list.select { |t| t.group.equal?(self) }; end
@@ -76,12 +76,12 @@ class Thread
       raise ArgumentError, "unknown mask signature" unless [:immediate, :on_blocking, :never].include?(v)
     end
     th = current
-    th.__int_mask_push(hash)
+    th.send(:__int_mask_push, hash)
     begin
       __check_ints              # :immediate になった pending はブロックの前に走る
       yield
     ensure
-      th.__int_mask_pop
+      th.send(:__int_mask_pop)
       __check_ints              # マスクが遅らせた分はブロックを出るときに配る
     end
   end
@@ -150,7 +150,7 @@ class Queue
     self
   end
   def closed?; @__closed; end
-  def num_waiting; @__cond.__num_waiting; end
+  def num_waiting; @__cond.send(:__num_waiting); end
   def __q_tmo(t)                      # CRuby: 入口で Float 化 (nil のみ「無期限」)
     return nil if t.nil?
     unless t.is_a?(Numeric)
@@ -172,7 +172,7 @@ class SizedQueue < Queue
     @__max = max
     @__cond_full = ConditionVariable.new
   end
-  def num_waiting; @__cond.__num_waiting + @__cond_full.__num_waiting; end
+  def num_waiting; @__cond.send(:__num_waiting) + @__cond_full.send(:__num_waiting); end
   def max; @__max; end
   def max=(v)
     raise ArgumentError, "queue size must be positive" unless v.is_a?(Integer) && v > 0
@@ -1393,6 +1393,7 @@ end
 # argument it is the ordinary Module#constants.
 class << Module
   alias_method :__constants_of, :constants
+  private :__constants_of
   def constants(*args) = args.empty? ? Object.constants : __constants_of(*args)
 end
 
@@ -1619,7 +1620,7 @@ module Process
       rescue Errno::ECHILD
         Process.__mkstatus(-1, 0)
       ensure
-        Process.__set_last_status(saved)
+        Process.send(:__set_last_status, saved)
       end
     end
     def initialize(pid, raw)

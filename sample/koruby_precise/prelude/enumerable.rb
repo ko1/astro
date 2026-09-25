@@ -259,6 +259,7 @@ module Enumerable
     self
   end
   def compact; r = []; __each_el { |x| r << x unless x.nil? }; r; end
+  private :__each_el, :__as_int   # koruby internals, not part of the public API
 end
 
 # MatchData pattern-matching support.

@@ -124,6 +124,7 @@ class Integer
   def __iter_enum_bad(meth, lim)
     to_enum(meth, lim) { ::Kernel.__cmperr(self, lim, coercion: true) }
   end
+  private :__iter_enum_bad
 end
 class Float
   def arg
@@ -288,4 +289,5 @@ class Range
       loop { y << cur; cur = cur.succ }
     end
   end
+  private :__each_endless_enum
 end

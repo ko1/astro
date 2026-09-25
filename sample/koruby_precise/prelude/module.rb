@@ -101,7 +101,7 @@ class Module
           return v
         rescue NameError
         end
-        scope = scope.__lexical_parent
+        scope = scope.send(:__lexical_parent)
       end
     end
     # CRuby names the namespace with #name when it has one, else #inspect
@@ -132,11 +132,12 @@ class Module
     # になる)。成功したときだけ一度きりの登録を外す。
     Module.__autoload_require(path)                 # main.require (CRuby; mockable in specs)
     __autoload_drop(name)
-    owner.__autoload_drop(name) if owner
-    ancestors.each { |m| m.__autoload_drop(name) if m.respond_to?(:__autoload_drop, true) }
+    owner.send(:__autoload_drop, name) if owner
+    ancestors.each { |m| m.send(:__autoload_drop, name) if m.respond_to?(:__autoload_drop, true) }
     __autoload_warn_parent(name, path) if $VERBOSE
     [owner, path]
   end
+  private :__autoload_fire
 
   # CRuby warns (verbose only) when the required file defined the constant in an
   # ENCLOSING scope instead of the one that registered the autoload.
@@ -148,7 +149,7 @@ class Module
         warn "warning: Expected #{path} to define #{self}::#{name} but it didn't"
         return
       end
-      scope = scope.__lexical_parent
+      scope = scope.send(:__lexical_parent)
     end
   end
 
@@ -158,6 +159,7 @@ class Module
   def __autoload_table
     @__autoloads ||= {}
   end
+  private :__autoload_table
 
   # Read-only view: `autoload?` / the resolver must not create the table, since
   # a FROZEN module (the singleton class of a frozen object, say) can still be
@@ -165,6 +167,7 @@ class Module
   def __autoload_table_r
     @__autoloads || {}
   end
+  private :__autoload_table_r
 
   # Drop one registration WITHOUT creating the table: a frozen module can still
   # be an ancestor of the one whose autoload just fired.
@@ -172,6 +175,7 @@ class Module
     t = instance_variable_defined?(:@__autoloads) ? @__autoloads : nil
     t.delete(name) if t
   end
+  private :__autoload_drop
 
   # CRuby loads an autoload file through main's #require, so a spec can mock it.
   def self.__autoload_require(path)
@@ -201,15 +205,15 @@ class Module
     n = name.to_sym
     scope = self
     while scope
-      t = scope.__autoload_table_r
+      t = scope.send(:__autoload_table_r)
       return [scope, t[n]] if t.key?(n)
       scope.ancestors.each do |m|
         next if m.equal?(scope)
         next unless m.respond_to?(:__autoload_table_r, true)
-        tbl = m.__autoload_table_r
+        tbl = m.send(:__autoload_table_r)
         return [m, tbl[n]] if tbl.key?(n)
       end
-      scope = scope.__lexical_parent
+      scope = scope.send(:__lexical_parent)
     end
     [nil, nil]
   end
@@ -226,6 +230,7 @@ class Module
     __autoload_table.delete(name.to_sym)
     nil
   end
+  private :__autoload_open
 
   def autoload(name, path)
     n = name.is_a?(Symbol) ? name : name.to_str.to_sym
@@ -258,7 +263,7 @@ class Module
     ancestors.each do |m|
       next if m.equal?(self)
       next unless m.respond_to?(:__autoload_table_r, true)
-      tbl = m.__autoload_table_r
+      tbl = m.send(:__autoload_table_r)
       # const_defined? counts a PENDING autoload as defined, so it cannot be used
       # to tell "already loaded" here — __autoload_loaded? below does that.
       next unless tbl.key?(n)
