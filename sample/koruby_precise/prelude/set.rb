@@ -45,6 +45,14 @@ class Set
     rm.each { |x| delete(x) }
     self
   end
+  # Re-index after an element was mutated in place: re-insert everything, which
+  # drops the duplicates the mutation created (CRuby rehashes the backing Hash).
+  def reset
+    raise FrozenError, "can't modify frozen #{self.class}: #{inspect}" if frozen?
+    elems = []
+    each { |x| elems << x }
+    replace(elems)
+  end
   # replace self's contents with the given enumerable's, in place.
   def replace(enum)
     raise ArgumentError, "value must be enumerable" unless enum.respond_to?(:each)

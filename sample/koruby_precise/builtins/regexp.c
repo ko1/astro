@@ -763,6 +763,19 @@ static RESULT korb_m_re_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(r.value == KORB_NIL ? KORB_FALSE : KORB_TRUE);
 }
 static RESULT korb_m_re_source(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(VAL2RE(VALUE_REF_GET(self))->source); }
+/* Regexp#timeout — what Regexp.new(timeout:) was given, nil otherwise.  koruby
+ * does not abort a long match on it (the Regexp.timeout global is the same);
+ * astrogre's backtrack floor is what bounds a runaway pattern. */
+static RESULT korb_m_re_timeout(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(VAL2RE(VALUE_REF_GET(self))->timeout); }
+/* Regexp#~ — match against $_, like `$_ =~ self`. */
+static RESULT korb_m_re_match_lastline(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; KORB_RE_CHECK(c, slots, self);
+    slots[0] = VALUE_REF_GET(self);
+    const VALUE ll = korb_const_get(c->vm, korb_intern(c->vm, "$_", 2));
+    if (!KORB_STRING_P(ll)) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
+    slots[1] = ll;
+    return korb_re_match_set(c, slots + 2, slots[0], slots[1]);
+}
 /* The pattern bytes as stored, nil for a `Regexp.allocate` husk: #encoding and
  * #source are defined over this so neither has to re-enter the other. */
 static RESULT korb_m_re_source_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1563,6 +1576,7 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
             slots[0] = r.value;
         } else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, src));
     }
+    VALUE timeout_v = KORB_NIL;                           /* Regexp.new(src, timeout:) — reported, not enforced */
     /* A Regexp first argument carries its own options; any 2nd/3rd arg is ignored (with a warning, as in CRuby). */
     if (from_regexp && VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL)
         korb_warn(c, slots + 1, "flags ignored");
@@ -1588,6 +1602,20 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
                     return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown regexp option: %.*s", (int)fs->len, korb_strbuf_data(fs->buf));
                 }
             }
+        }
+        else if (KORB_HASH_P(opt) && (((const AroObjectHeader *)(uintptr_t)opt)->flags & KORB_FL_KWARGS)) {
+            /* Regexp.new(src, options = 0, timeout: nil): the keyword arrives as
+             * a kwargs Hash, not as the positional `options`. */
+            const KorbHash *const oh = VAL2HASH(opt);
+            for (uint32_t k = 0; k < oh->len; k++) {
+                const VALUE key = korb_items_data(oh->items)[2 * k];
+                if (SYMBOL_P(key) && SYM2ID(key) == korb_intern(c->vm, "timeout", 7)) continue;
+                slots[1] = key;
+                return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "unknown keyword: :%s",
+                                  SYMBOL_P(key) ? korb_sym_name(c->vm, SYM2ID(key)) : "?");
+            }
+            const int32_t ti = korb_hash_find(VAL2HASH(opt), ID2SYM(korb_intern(c->vm, "timeout", 7)));
+            if (ti >= 0) timeout_v = korb_items_data(VAL2HASH(opt)->items)[2 * ti + 1];
         }
         else {
             flags |= 4u;                                  /* any other truthy value → IGNORECASE, with CRuby's warning */
@@ -1625,6 +1653,8 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     }
     const RESULT rr = korb_re_alloc(c, slots + 1, slots[0], flags);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+    if (timeout_v != KORB_NIL)                            /* no alloc between here and the store */
+        ARO_STORE(c, (KorbRegexp *)(uintptr_t)rr.value, &VAL2RE(rr.value)->timeout, timeout_v);
     /* Regexp subclass: tag the instance with the receiver class (the same
      * side-table route Range/String/Array subclasses take). */
     if (KORB_CLASS_P(VALUE_REF_GET(self)) &&

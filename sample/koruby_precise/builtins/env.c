@@ -1,7 +1,7 @@
 /* ENV — a hash-like view of the process environment (getenv/setenv/environ).
  * Defined as a module (like Math) whose singleton methods back `ENV[...]`.
  * Included into korb_runtime.c after math.c, so it shares its static helpers
- * (korb_def_modfunc, korb_str_cstr_len, UNWRAP/CHECK, ...). */
+ * (korb_def_modfunc_vis, korb_str_cstr_len, UNWRAP/CHECK, ...). */
 
 extern char **environ;
 

@@ -11988,24 +11988,6 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
         }
     }
     /* class receiver → Klass.new (allocate + initialize). */
-    else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_FIBER) &&
-             (mid == vm->mid_yield || mid == korb_intern(vm, "current", 7) ||
-              mid == korb_intern(vm, "[]", 2) || mid == korb_intern(vm, "[]=", 3) ||
-              mid == korb_intern(vm, "blocking?", 9)) &&
-             /* same rule as the Kernel shortcut below: a definition ON the Fiber
-              * class object itself (an rspec stub) wins over the C special case */
-             korb_class_own_method(korb_dispatch_class(c, self), mid) == NULL) {
-        const VALUE_SLICE fa = VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc);
-        if (mid == vm->mid_yield)
-            return korb_m_fiber_yield(c, slots, VALUE_REF_AT(recv_slot), fa);
-        if (mid == korb_intern(vm, "[]", 2))
-            return korb_m_fiber_s_aref(c, slots, VALUE_REF_AT(recv_slot), fa);
-        if (mid == korb_intern(vm, "[]=", 3))
-            return korb_m_fiber_s_aset(c, slots, VALUE_REF_AT(recv_slot), fa);
-        if (mid == korb_intern(vm, "blocking?", 9))
-            return korb_m_fiber_s_blocking_p(c, slots, VALUE_REF_AT(recv_slot), fa);
-        return korb_m_fiber_s_current(c, slots, VALUE_REF_AT(recv_slot), fa);
-    }
     else if (KORB_CLASS_P(self) && VAL2CLASS(self)->is_module &&
              VAL2CLASS(self)->name_sym == korb_intern(vm, "Kernel", 6) &&
              /* …unless something is defined ON the Kernel module object itself:
@@ -13611,7 +13593,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, ">=", korb_m_num_ge, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "gcd", korb_m_int_gcd, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "lcm", korb_m_int_lcm, 1);
-    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_INTEGER), "sqrt", korb_m_integer_sqrt, 1);   /* Integer.sqrt class method */
+    korb_def_classfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_INTEGER), "sqrt", korb_m_integer_sqrt, 1);   /* Integer.sqrt class method */
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "step", korb_m_num_step, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "finite?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "fdiv", korb_m_int_fdiv, 1);
@@ -13802,7 +13784,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_codepoint", korb_m_str_each_codepoint, 0);
 
     /* Symbol */
-    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_SYMBOL), "all_symbols", korb_m_sym_all_symbols, 0);   /* Symbol.all_symbols class method */
+    korb_def_classfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_SYMBOL), "all_symbols", korb_m_sym_all_symbols, 0);   /* Symbol.all_symbols class method */
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_s", korb_m_sym_to_s, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "id2name", korb_m_sym_to_s, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "slice", korb_m_sym_slice, -1);
@@ -14293,6 +14275,16 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FIBER, "to_s", korb_m_fiber_inspect, 0);
     korb_def_cmethod(c, KORB_C_FIBER, "storage", korb_m_fiber_storage, 0);
     korb_def_cmethod(c, KORB_C_FIBER, "storage=", korb_m_fiber_storage_set, 1);
+    {   /* Fiber's class methods as real singleton entries, so respond_to? and
+         * singleton_methods see them (they used to be a special case in the
+         * dispatch cascade, invisible to reflection). */
+        const VALUE fib = korb_builtin_class_obj(c->vm, KORB_C_FIBER);
+        korb_def_classfunc(c, c->slots, fib, "yield",     korb_m_fiber_yield,        -1);
+        korb_def_classfunc(c, c->slots, fib, "current",   korb_m_fiber_s_current,     0);
+        korb_def_classfunc(c, c->slots, fib, "[]",        korb_m_fiber_s_aref,        1);
+        korb_def_classfunc(c, c->slots, fib, "[]=",       korb_m_fiber_s_aset,        2);
+        korb_def_classfunc(c, c->slots, fib, "blocking?", korb_m_fiber_s_blocking_p,  0);
+    }
     korb_def_cmethod(c, KORB_C_FIBER, "blocking?", korb_m_fiber_blocking_p, 0);
     /* Fiber.blocking { |fiber| … } — 走っている fiber を blocking 扱いにして呼ぶ。 */
     { VALUE fsing = korb_obj_singleton(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_FIBER)).value;
@@ -14348,12 +14340,12 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CONDVAR, "signal", korb_m_condvar_signal, 0);
     korb_def_cmethod(c, KORB_C_CONDVAR, "broadcast", korb_m_condvar_broadcast, 0);
     korb_def_cmethod(c, KORB_C_CONDVAR, "__num_waiting", korb_m_condvar_num_waiting, 0);
-    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "current", korb_m_thread_s_current, 0);
-    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "main", korb_m_thread_s_main, 0);
-    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "pass", korb_m_thread_s_pass, 0);
-    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "list", korb_m_thread_s_list, 0);
-    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "stop", korb_m_thread_s_stop, 0);
-    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "pending_interrupt?", korb_m_thread_pending_interrupt_p, -1);
+    korb_def_classfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "current", korb_m_thread_s_current, 0);
+    korb_def_classfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "main", korb_m_thread_s_main, 0);
+    korb_def_classfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "pass", korb_m_thread_s_pass, 0);
+    korb_def_classfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "list", korb_m_thread_s_list, 0);
+    korb_def_classfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "stop", korb_m_thread_s_stop, 0);
+    korb_def_classfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "pending_interrupt?", korb_m_thread_pending_interrupt_p, -1);
     korb_class_def_cfn_blk(c, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "initialize", korb_thread_init_body, -1);   /* subclass の super 到達先 */
     korb_def_cmethod(c, KORB_C_THREAD, "__int_mask_push", korb_m_thread_int_mask_push, 1);   /* handle_interrupt のマスク */
     korb_def_cmethod(c, KORB_C_THREAD, "__int_mask_pop",  korb_m_thread_int_mask_pop,  0);
@@ -14366,10 +14358,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANDOM, "initialize", korb_m_random_init, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "rand", korb_m_random_rand, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "seed", korb_m_random_seed, 0);
-    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_RANDOM), "urandom", korb_m_random_urandom, 1);   /* Random.urandom class method */
+    korb_def_classfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_RANDOM), "urandom", korb_m_random_urandom, 1);   /* Random.urandom class method */
     korb_def_cmethod(c, KORB_C_RANDOM, "bytes", korb_m_random_bytes, 1);      /* instance: MT-derived, seed-reproducible */
     korb_def_cmethod(c, KORB_C_RANDOM, "state", korb_m_random_state, 0);
-    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_RANDOM), "new_seed", korb_m_random_new_seed, 0);
+    korb_def_classfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_RANDOM), "new_seed", korb_m_random_new_seed, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "<=>", korb_m_obj_cmp, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "inspect", korb_m_obj_inspect, 0);
@@ -14458,6 +14450,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_REGEXP, "===", korb_m_re_case_eq, 1);
     korb_def_cmethod_blk(c, KORB_C_REGEXP, "match", korb_m_re_match, -1);
     korb_def_cmethod(c, KORB_C_REGEXP, "source", korb_m_re_source, 0);
+    korb_def_cmethod(c, KORB_C_REGEXP, "timeout", korb_m_re_timeout, 0);
+    korb_def_cmethod(c, KORB_C_REGEXP, "~", korb_m_re_match_lastline, 0);
     korb_def_cmethod(c, KORB_C_REGEXP, "__source_raw", korb_m_re_source_raw, 0);
     korb_def_cmethod(c, KORB_C_REGEXP, "__enc_hint", korb_m_re_enc_hint, 0);
     korb_def_cmethod(c, KORB_C_REGEXP, "to_s", korb_m_re_to_s, 0);

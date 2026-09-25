@@ -196,9 +196,15 @@ static void korb_def_modfunc_vis(CTX *c, VALUE *slots, VALUE modobj, const char 
     im->visibility = vis;   /* module_function makes the instance half private; a plain
                              * class method (Random.bytes, Thread.pass, …) does not */
 }
-/* Default: the instance half stays public — only Math uses module_function. */
-static void korb_def_modfunc(CTX *c, VALUE *slots, VALUE modobj, const char *name, korb_method_fn fn, int32_t arity) {
-    korb_def_modfunc_vis(c, slots, modobj, name, fn, arity, 0);
+/* A plain class method (Thread.current, Integer.sqrt, ...): the SINGLETON half
+ * only.  A Class is not a Module you can `include`, so a module_function-style
+ * instance half would make `some_thread.current` answer — CRuby raises
+ * NoMethodError, and the name shows up in Thread#methods either way. */
+static void korb_def_classfunc(CTX *c, VALUE *slots, VALUE clsobj, const char *name, korb_method_fn fn, int32_t arity) {
+    slots[0] = clsobj;                                         /* root across the singleton alloc */
+    const VALUE sing = korb_obj_singleton(c, slots + 1, slots[0]).value;
+    struct korb_method *const m = korb_class_method_slot(c->vm, VAL2CLASS(sing), korb_intern(c->vm, name, strlen(name)));
+    m->kind = KORB_METHOD_CFUNC; m->owner = sing; m->params_cnt = arity; m->rfn = fn; m->rbfn = NULL; m->uses_block = 0;
 }
 
 void korb_init_math(CTX *c, VALUE *slots) {

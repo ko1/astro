@@ -380,6 +380,10 @@ typedef struct KorbRegexp {
     VALUE ARO_GC_EDGE source;        /* the pattern as a String */
     uint8_t ci;                      /* case-insensitive flag (== flags & 4) */
     uint32_t flags;                  /* prism regex flags (IGNORE_CASE=4/EXTENDED=8/MULTI_LINE=16) */
+    /* Regexp.new(src, timeout:) — reported by #timeout, nil when unset.  koruby
+     * does not abort a long match on it (neither does the Regexp.timeout global
+     * here); astrogre's backtrack floor is what bounds a runaway pattern. */
+    VALUE ARO_GC_EDGE timeout;
 } KorbRegexp;
 /* the flag bits that take part in Regexp identity (bit 7 is the "source is
  * already the literal's encoding" marker, not part of ==) */
@@ -1836,6 +1840,7 @@ struct CTX_struct {
       case KORB_OBJ_REGEXP: {                                                \
         KorbRegexp *_re = (KorbRegexp *)(payload);                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_re->source);                 \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_re->timeout);                \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

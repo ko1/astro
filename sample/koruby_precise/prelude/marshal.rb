@@ -946,4 +946,13 @@ module Marshal
       n
     end
   end
+  # CRuby's Marshal exposes only dump / load / restore; the rest is machinery.
+  private_class_method(*%i[
+    __resym _bignum _byte _bytes _check_o_type _class_name _const _dump _dump0 _dump_array
+    _dump_class _dump_data _dump_exception _dump_generic _dump_hash _dump_ivars _dump_named
+    _dump_regexp _dump_string _dump_struct _dump_udump _dump_umarshal _dump_val _enc_marker
+    _exc_with_cause _float_str _klass _long _need _raise_if_undumpable _read _read0 _read_body
+    _reclass _reg _rlong _str_enc_marker _symdump _time_zone_name _uclass_check _udump_route?
+    _wrap_prefix _write_enc
+  ])
 end
