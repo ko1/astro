@@ -2134,101 +2134,103 @@ korb_raise_key(CTX *c, VALUE *slots, VALUE recv, VALUE key, const char *msg)
     return r;
 }
 
+/* ---- weak identity tables (korb_wtab) --------------------------------------
+ * Per-object data an object has no slot for.  The key column is weak: the
+ * tables used to be GC roots, which pinned every object that was ever hashed,
+ * got an @ivar, a singleton class or a builtin-subclass class — for good.  Keys
+ * are indexed by address (the scans were O(n), so e.g. building n Hash-subclass
+ * instances was O(n^2)); a moving GC changes addresses, so korb_weak_walk
+ * rebuilds the index after dropping the dead. */
+static inline uint32_t korb_wtab_slot(const VALUE obj, const uint32_t mask) {
+    return (uint32_t)((((uint64_t)(korb_word_t)obj >> 3) * 0x9e3779b97f4a7c15ULL) >> 32) & mask;
+}
+static void korb_wtab_index_put(korb_wtab *restrict t, const uint32_t i) {
+    uint32_t slot = korb_wtab_slot(t->obj[i], t->idx_mask);
+    while (t->idx[slot]) slot = (slot + 1) & t->idx_mask;
+    t->idx[slot] = i + 1;
+}
+static void korb_wtab_rebuild(korb_wtab *restrict t) {
+    uint32_t cap = 64; while ((size_t)cap < (size_t)t->cnt * 2) cap <<= 1;
+    if (t->idx == NULL || cap - 1 != t->idx_mask) {
+        free(t->idx);
+        t->idx = malloc(sizeof(uint32_t) * cap);
+        if (!t->idx) { fprintf(stderr, "koruby_precise: oom (wtab)\n"); abort(); }
+        t->idx_mask = cap - 1;
+    }
+    memset(t->idx, 0, sizeof(uint32_t) * cap);
+    for (uint32_t i = 0; i < t->cnt; i++) korb_wtab_index_put(t, i);
+}
+static int32_t korb_wtab_find(const korb_wtab *t, const VALUE obj) {
+    if (t->idx == NULL) return -1;
+    for (uint32_t slot = korb_wtab_slot(obj, t->idx_mask); ; slot = (slot + 1) & t->idx_mask) {
+        const uint32_t e = t->idx[slot];
+        if (e == 0) return -1;
+        if (t->obj[e - 1] == obj) return (int32_t)(e - 1);
+    }
+}
+/* insert or replace; libc realloc only — not a GC point. */
+static void korb_wtab_put(korb_wtab *restrict t, const VALUE obj, const VALUE val) {
+    const int32_t i = korb_wtab_find(t, obj);
+    if (i >= 0) { t->val[i] = val; return; }
+    if (t->cnt == t->capa) {
+        const uint32_t nc = t->capa ? t->capa * 2 : 16;
+        t->obj = realloc(t->obj, sizeof(VALUE) * nc);
+        t->val = realloc(t->val, sizeof(VALUE) * nc);
+        if (!t->obj || !t->val) { fprintf(stderr, "koruby_precise: oom (wtab)\n"); abort(); }
+        t->capa = nc;
+    }
+    t->obj[t->cnt] = obj;
+    t->val[t->cnt] = val;
+    t->cnt++;
+    if (t->idx == NULL || (size_t)t->cnt * 2 > (size_t)t->idx_mask + 1) korb_wtab_rebuild(t);
+    else korb_wtab_index_put(t, t->cnt - 1);
+}
+static void korb_wtab_sweep(CTX *c, korb_wtab *restrict t) {
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < t->cnt; i++) {
+        void *const np = aro_gc_finalize_check(c, (void *)(uintptr_t)t->obj[i]);
+        if (np == NULL) continue;
+        t->obj[w] = (VALUE)(uintptr_t)np;
+        t->val[w] = t->val[i];
+        w++;
+    }
+    t->cnt = w;
+    if (t->idx) korb_wtab_rebuild(t);
+}
+/* AROH_WEAK_WALK: runs after mark/forward in every backend, before sweep. */
+void korb_weak_walk(CTX *c) {
+    korb_wtab_sweep(c, &c->vm->sklass);
+    korb_wtab_sweep(c, &c->vm->objivar);
+    korb_wtab_sweep(c, &c->vm->oid);
+}
+
 /* Generic-ivar side table for objects without a struct ivar slot (String/Array/
- * Hash/Proc/...).  Same lockstep-forwarded pattern as the sklass override table:
- * both columns are GC roots (see AROH_VISIT_ROOTS), so `obj == objivar_obj[i]`
- * stays a valid identity test across compaction. */
+ * Hash/Proc/...): val is a Hash {sym=>val}. */
 static VALUE korb_objivar_hash_of(const struct korb_vm *vm, VALUE obj) {
     if (!(((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_IVARS)) return KORB_NIL;
-    for (uint32_t i = 0; i < vm->objivar_cnt; i++)
-        if (vm->objivar_obj[i] == obj) return vm->objivar_hash[i];
-    return KORB_NIL;
+    const int32_t i = korb_wtab_find(&vm->objivar, obj);
+    return i >= 0 ? vm->objivar.val[i] : KORB_NIL;
 }
 static void korb_objivar_register(CTX *c, VALUE obj, VALUE h) {   /* libc realloc, not a GC point */
-    struct korb_vm *const vm = c->vm;
-    if (vm->objivar_cnt == vm->objivar_capa) {
-        uint32_t nc = vm->objivar_capa ? vm->objivar_capa * 2 : 16;
-        vm->objivar_obj  = realloc(vm->objivar_obj,  sizeof(VALUE) * nc);
-        vm->objivar_hash = realloc(vm->objivar_hash, sizeof(VALUE) * nc);
-        if (!vm->objivar_obj || !vm->objivar_hash) { fprintf(stderr, "koruby_precise: oom (objivar)\n"); abort(); }
-        vm->objivar_capa = nc;
-    }
-    vm->objivar_obj[vm->objivar_cnt]  = obj;
-    vm->objivar_hash[vm->objivar_cnt] = h;
-    vm->objivar_cnt++;
+    korb_wtab_put(&c->vm->objivar, obj, h);
     ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_IVARS;
 }
 /* ---- #object_id ----------------------------------------------------------
  * A moving GC changes an object's address, so an address-derived id is not the
  * id Ruby promises (stable for the object's life).  Assign a serial on first
- * ask and keep it in a side table whose object column the GC forwards.
+ * ask and keep it in a weak side table.
  *
  * Shape of the value: heap ids are 8n + 2, which no other #object_id can take —
- * Fixnum ids are odd (2n+1) and nil/false/true/Symbol are all 0 or 4 mod 8.
- *
- * The table is weak (korb_oid_weak_walk drops dead objects after each GC) and
- * indexed by address; the index is rebuilt there, once addresses are final. */
-static inline uint32_t korb_oid_slot(const VALUE obj, const uint32_t mask) {
-    uint64_t x = (uint64_t)(korb_word_t)obj >> 3;
-    x *= 0x9e3779b97f4a7c15ULL;
-    return (uint32_t)(x >> 32) & mask;
-}
-static void korb_oid_index_put(struct korb_vm *restrict vm, const uint32_t i) {
-    uint32_t slot = korb_oid_slot(vm->oid_obj[i], vm->oid_idx_mask);
-    while (vm->oid_idx[slot]) slot = (slot + 1) & vm->oid_idx_mask;
-    vm->oid_idx[slot] = i + 1;
-}
-static void korb_oid_index_rebuild(struct korb_vm *restrict vm) {
-    uint32_t cap = 64; while ((size_t)cap < (size_t)vm->oid_cnt * 2) cap <<= 1;
-    if (cap - 1 != vm->oid_idx_mask) {
-        free(vm->oid_idx);
-        vm->oid_idx = malloc(sizeof(uint32_t) * cap);
-        if (!vm->oid_idx) { fprintf(stderr, "koruby_precise: oom (oid)\n"); abort(); }
-        vm->oid_idx_mask = cap - 1;
-    }
-    memset(vm->oid_idx, 0, sizeof(uint32_t) * cap);
-    for (uint32_t i = 0; i < vm->oid_cnt; i++) korb_oid_index_put(vm, i);
-}
-/* AROH_WEAK_WALK: runs after mark/forward in every backend.  An entry whose
- * object died goes away (the table used to be a root and pinned every object
- * that was ever hashed or asked for #object_id); survivors take their new address. */
-void korb_oid_weak_walk(CTX *c) {
-    struct korb_vm *const vm = c->vm;
-    uint32_t w = 0;
-    for (uint32_t i = 0; i < vm->oid_cnt; i++) {
-        void *const np = aro_gc_finalize_check(c, (void *)(uintptr_t)vm->oid_obj[i]);
-        if (np == NULL) continue;
-        vm->oid_obj[w] = (VALUE)(uintptr_t)np;
-        vm->oid_val[w] = vm->oid_val[i];
-        w++;
-    }
-    vm->oid_cnt = w;
-    if (vm->oid_idx) korb_oid_index_rebuild(vm);
-}
+ * Fixnum ids are odd (2n+1) and nil/false/true/Symbol are all 0 or 4 mod 8. */
 static VALUE korb_oid_find(const struct korb_vm *vm, const VALUE obj) {
     if (!(((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_OID)) return KORB_NIL;
-    if (vm->oid_idx == NULL) return KORB_NIL;
-    for (uint32_t slot = korb_oid_slot(obj, vm->oid_idx_mask); ; slot = (slot + 1) & vm->oid_idx_mask) {
-        const uint32_t e = vm->oid_idx[slot];
-        if (e == 0) return KORB_NIL;
-        if (vm->oid_obj[e - 1] == obj) return vm->oid_val[e - 1];
-    }
+    const int32_t i = korb_wtab_find(&vm->oid, obj);
+    return i >= 0 ? vm->oid.val[i] : KORB_NIL;
 }
 /* libc realloc only — not a GC point, so the caller's `obj` stays valid. */
 static VALUE korb_oid_assign(struct korb_vm *const vm, const VALUE obj) {
-    if (vm->oid_cnt == vm->oid_capa) {
-        const uint32_t nc = vm->oid_capa ? vm->oid_capa * 2 : 16;
-        vm->oid_obj = realloc(vm->oid_obj, sizeof(VALUE) * nc);
-        vm->oid_val = realloc(vm->oid_val, sizeof(VALUE) * nc);
-        if (!vm->oid_obj || !vm->oid_val) { fprintf(stderr, "koruby_precise: oom (oid)\n"); abort(); }
-        vm->oid_capa = nc;
-    }
     const VALUE id = LONG2FIX((korb_sword_t)((++vm->oid_next << 3) | 2u));
-    vm->oid_obj[vm->oid_cnt] = obj;
-    vm->oid_val[vm->oid_cnt] = id;
-    vm->oid_cnt++;
-    if (vm->oid_idx == NULL || (size_t)vm->oid_cnt * 2 > (size_t)vm->oid_idx_mask + 1) korb_oid_index_rebuild(vm);
-    else korb_oid_index_put(vm, vm->oid_cnt - 1);
+    korb_wtab_put(&vm->oid, obj, id);
     ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_OID;
     return id;
 }
@@ -2572,8 +2574,8 @@ static VALUE korb_cvar_scope(CTX *c, VALUE cref)
 {
     if (!KORB_CLASS_P(cref) || !VAL2CLASS(cref)->is_singleton) return cref;
     const struct korb_vm *const vm = c->vm;
-    for (uint32_t i = 0; i < vm->sklass_cnt; i++)
-        if (vm->sklass_cls[i] == cref && KORB_CLASS_P(vm->sklass_obj[i])) return vm->sklass_obj[i];
+    for (uint32_t i = 0; i < vm->sklass.cnt; i++)
+        if (vm->sklass.val[i] == cref && KORB_CLASS_P(vm->sklass.obj[i])) return vm->sklass.obj[i];
     return cref;
 }
 
@@ -5421,8 +5423,8 @@ korb_fire_def_hook(CTX *c, VALUE *slots, VALUE mod, uint32_t mid, const char *ho
     if (VAL2CLASS(mod)->is_singleton) {                  /* singleton class → attached object's singleton_method_* */
         struct korb_vm *const vm = c->vm;
         VALUE att = KORB_UNDEF;
-        for (uint32_t i = 0; i < vm->sklass_cnt; i++)
-            if (vm->sklass_cls[i] == mod) { att = vm->sklass_obj[i]; break; }
+        for (uint32_t i = 0; i < vm->sklass.cnt; i++)
+            if (vm->sklass.val[i] == mod) { att = vm->sklass.obj[i]; break; }
         if (att == KORB_UNDEF) return RESULT_OK(KORB_NIL);
         recv = att;
         snprintf(sname, sizeof sname, "singleton_%.*s", (int)hook_len, hook);
@@ -5448,8 +5450,8 @@ korb_fire_method_added(CTX *c, VALUE *slots, VALUE definee, uint32_t mid)
     uint32_t hook = korb_intern(vm, "method_added", 12);
     if (VAL2CLASS(definee)->is_singleton) {
         VALUE att = KORB_UNDEF;
-        for (uint32_t i = 0; i < vm->sklass_cnt; i++)
-            if (vm->sklass_cls[i] == definee) { att = vm->sklass_obj[i]; break; }
+        for (uint32_t i = 0; i < vm->sklass.cnt; i++)
+            if (vm->sklass.val[i] == definee) { att = vm->sklass.obj[i]; break; }
         if (att == KORB_UNDEF) { c->carry_base = NULL; return RESULT_OK(KORB_NIL); }   /* singleton with no live owner: drop the caller's staged link */
         recv = att;
         hook = korb_intern(vm, "singleton_method_added", 22);
@@ -6962,12 +6964,11 @@ korb_exc_matches(CTX *c, VALUE exc, VALUE rescue_class)
     return korb_class_le(exc_class, rescue_class);
 }
 
-/* Per-instance class override table (subclass instances / extended objects).
- * Linear scan, but only ever reached for objects with KORB_FL_HAS_KLASS set. */
+/* Per-instance class override (subclass instances / extended objects /
+ * singleton classes): only reached for objects with KORB_FL_HAS_KLASS set. */
 static VALUE korb_klass_override_get(const struct korb_vm *vm, VALUE obj) {
-    for (uint32_t i = 0; i < vm->sklass_cnt; i++)
-        if (vm->sklass_obj[i] == obj) return vm->sklass_cls[i];
-    return KORB_NIL;
+    const int32_t i = korb_wtab_find(&vm->sklass, obj);
+    return i >= 0 ? vm->sklass.val[i] : KORB_NIL;
 }
 /* The value's OWN singleton class, if one has been materialized (nil otherwise).
  * The override table also holds plain subclasses for extended builtins, so the
@@ -6989,19 +6990,7 @@ static inline VALUE korb_obj_dispatch_klass(const struct korb_vm *vm, VALUE self
     return VAL2OBJ(self)->klass;
 }
 static void korb_klass_override_set(CTX *c, VALUE obj, VALUE cls) {
-    struct korb_vm *const vm = c->vm;
-    for (uint32_t i = 0; i < vm->sklass_cnt; i++)        /* replace if present */
-        if (vm->sklass_obj[i] == obj) { vm->sklass_cls[i] = cls; return; }
-    if (vm->sklass_cnt == vm->sklass_capa) {             /* libc realloc, not a GC point */
-        uint32_t nc = vm->sklass_capa ? vm->sklass_capa * 2 : 16;
-        vm->sklass_obj = realloc(vm->sklass_obj, sizeof(VALUE) * nc);
-        vm->sklass_cls = realloc(vm->sklass_cls, sizeof(VALUE) * nc);
-        if (!vm->sklass_obj || !vm->sklass_cls) { fprintf(stderr, "koruby_precise: oom (sklass)\n"); abort(); }
-        vm->sklass_capa = nc;
-    }
-    vm->sklass_obj[vm->sklass_cnt] = obj;
-    vm->sklass_cls[vm->sklass_cnt] = cls;
-    vm->sklass_cnt++;
+    korb_wtab_put(&c->vm->sklass, obj, cls);             /* libc realloc, not a GC point */
     ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_KLASS;
 }
 
@@ -9059,8 +9048,8 @@ korb_bt_label_slow(CTX *c, uint32_t mid, const struct korb_method *m)
     if (VAL2CLASS(owner)->is_singleton) {         /* `def self.x` / `class << self` → "Owner.x" */
         sep = '.';
         VALUE att = KORB_NIL;
-        for (uint32_t i = 0; i < vm->sklass_cnt; i++)
-            if (vm->sklass_cls[i] == owner) { att = vm->sklass_obj[i]; break; }
+        for (uint32_t i = 0; i < vm->sklass.cnt; i++)
+            if (vm->sklass.val[i] == owner) { att = vm->sklass.obj[i]; break; }
         if (!KORB_CLASS_P(att)) return nm;        /* singleton of a plain object: CRuby prints the bare name */
         owner = att;
     }
@@ -10357,8 +10346,8 @@ korb_check_def_frozen(CTX *c, VALUE *slots, VALUE definee)
     VALUE target = definee;
     if (KORB_CLASS_P(definee) && VAL2CLASS(definee)->is_singleton) {   /* singleton → its attached object governs */
         struct korb_vm *const vm = c->vm;
-        for (uint32_t i = 0; i < vm->sklass_cnt; i++)
-            if (vm->sklass_cls[i] == definee) { target = vm->sklass_obj[i]; break; }
+        for (uint32_t i = 0; i < vm->sklass.cnt; i++)
+            if (vm->sklass.val[i] == definee) { target = vm->sklass.obj[i]; break; }
     }
     #define KORB_FROZEN_OBJ_P(v) (AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_FL_FROZEN))
     /* a directly frozen definee counts too (`obj.singleton_class.freeze`), and

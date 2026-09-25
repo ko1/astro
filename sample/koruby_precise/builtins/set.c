@@ -743,8 +743,8 @@ static RESULT korb_m_obj_define_singleton_method(CTX *c, VALUE *slots, VALUE_REF
 static RESULT korb_m_class_attached_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; struct korb_vm *const vm = c->vm; VALUE cls = VALUE_REF_GET(self);
     if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->is_singleton)
-        for (uint32_t i = 0; i < vm->sklass_cnt; i++)
-            if (vm->sklass_cls[i] == cls) return RESULT_OK(vm->sklass_obj[i]);
+        for (uint32_t i = 0; i < vm->sklass.cnt; i++)
+            if (vm->sklass.val[i] == cls) return RESULT_OK(vm->sklass.obj[i]);
     return korb_raise(c, slots, KORB_E_TYPE, 0, "'attached_object' called on a non-singleton class");
 }
 /* Class#subclasses — direct (immediate) non-singleton subclasses, order unspecified. */
@@ -1270,8 +1270,8 @@ static RESULT korb_m_class_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * singleton class (or the pairing was never recorded). */
 static VALUE korb_singleton_attached(CTX *c, VALUE cls) {
     if (!KORB_CLASS_P(cls) || !VAL2CLASS(cls)->is_singleton) return KORB_NIL;
-    for (uint32_t i = 0; i < c->vm->sklass_cnt; i++)
-        if (c->vm->sklass_cls[i] == cls) return c->vm->sklass_obj[i];
+    for (uint32_t i = 0; i < c->vm->sklass.cnt; i++)
+        if (c->vm->sklass.val[i] == cls) return c->vm->sklass.obj[i];
     return KORB_NIL;
 }
 static void korb_fprint_class_tostr(CTX *c, FILE *ms, VALUE cls);
@@ -2063,9 +2063,9 @@ static RESULT korb_m_class_remove_method(CTX *c, VALUE *slots, VALUE_REF self, V
 static void korb_undef_class_desc(CTX *c, VALUE cls, char *out, size_t outsz) {
     VALUE named = cls;
     if (VAL2CLASS(cls)->is_singleton)
-        for (uint32_t i = 0; i < c->vm->sklass_cnt; i++)
-            if (c->vm->sklass_cls[i] == cls) {
-                if (KORB_CLASS_P(c->vm->sklass_obj[i])) named = c->vm->sklass_obj[i];
+        for (uint32_t i = 0; i < c->vm->sklass.cnt; i++)
+            if (c->vm->sklass.val[i] == cls) {
+                if (KORB_CLASS_P(c->vm->sklass.obj[i])) named = c->vm->sklass.obj[i];
                 break;
             }
     char *b = NULL; size_t sz = 0;

@@ -1036,6 +1036,17 @@ struct korb_frame_rec {
  * vm can embed the Kernel#rand default generator.  Operations: builtins/random.c. */
 typedef struct KorbMT { uint32_t mt[624]; uint32_t mti; } KorbMT;
 
+/* Weak identity side table: obj[i] is a weak key (dropped after the GC that
+ * finds it dead, moved otherwise — korb_weak_walk), val[i] is a strong edge.
+ * idx maps an address to i + 1 and is rebuilt once addresses are final. */
+typedef struct korb_wtab {
+    VALUE    *obj;
+    VALUE    *val;
+    uint32_t  cnt, capa;
+    uint32_t *idx;
+    uint32_t  idx_mask;
+} korb_wtab;
+
 struct korb_vm {
     /* symbol intern table: id -> name (libc strings, never freed).  `sym_lens`
      * caches each name's length; `sym_hash` is an open-addressing index
@@ -1136,32 +1147,14 @@ struct korb_vm {
     VALUE    *fstr_vals;
     uint32_t  fstr_cnt, fstr_capa;
 
-    /* per-instance class override table (subclass instances / extended objects /
-     * singleton methods).  sklass_obj[i] is the heap object, sklass_cls[i] its
-     * override class.  BOTH columns are forwarded as roots in AROH_VISIT_ROOTS,
-     * so the moving GC rewrites them in lockstep and `self == sklass_obj[i]`
-     * stays valid across compaction (no GC-core hook needed).  Only objects with
-     * KORB_FL_HAS_KLASS appear here, so the common path never touches this.
-     * NB: the obj column is a strong root → an overridden object is pinned for
-     * the program's life (acceptable: such objects are rare; weak-ref later). */
-    VALUE    *sklass_obj;
-    VALUE    *sklass_cls;
-    uint32_t  sklass_cnt, sklass_capa;
-    /* generic-ivar side table (same lockstep-forwarded pattern as sklass): lets a
-     * String/Array/Hash/Proc/... carry @ivars it has no struct slot for.  objivar_hash[i]
-     * is a Hash {sym=>val} for objivar_obj[i].  Keeps such objects alive (weak-ref later). */
-    VALUE    *objivar_obj;
-    VALUE    *objivar_hash;
-    uint32_t  objivar_cnt, objivar_capa;
-    /* #object_id side table.  A moving GC has no per-object id slot and the
-     * address changes under it, so the id is a serial assigned on first ask and
-     * kept here.  Weak: korb_oid_weak_walk drops dead objects after each GC. */
-    VALUE    *oid_obj;
-    VALUE    *oid_val;
-    uint32_t  oid_cnt, oid_capa;
+    /* Per-object data with no slot in the object, as weak identity tables
+     * (korb_wtab): the class override of a builtin instance / an object with a
+     * singleton class (val = the class), generic @ivars of String/Array/Hash/...
+     * (val = a Hash {sym=>val}), and #object_id (val = the Fixnum id). */
+    korb_wtab sklass;
+    korb_wtab objivar;
+    korb_wtab oid;
     uint64_t  oid_next;
-    uint32_t *oid_idx;                    /* address → index + 1 (0 = empty), rebuilt after GC */
-    uint32_t  oid_idx_mask;
     /* cached frozen result of nil/true/false #to_s (CRuby returns the same frozen
      * object each call).  KORB_NIL until first use; GC roots (AROH_VISIT_ROOTS). */
     VALUE     str_nil_to_s, str_true_to_s, str_false_to_s;
@@ -1665,19 +1658,12 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->refine_set); \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->def_cref); \
     }                                                                        \
-    /* per-instance class override table: forward both columns in lockstep   \
-     * so the (object, class) pairing survives compaction. */                \
-    for (uint32_t _si = 0; _si < (c)->vm->sklass_cnt; _si++) {               \
-        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_obj[_si]);     \
-        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_cls[_si]);     \
-    }                                                                        \
-    /* generic-ivar side table: forward object + its ivar-hash in lockstep    \
-     * so identity keys survive compaction (same rule as sklass). */          \
-    for (uint32_t _oi = 0; _oi < (c)->vm->objivar_cnt; _oi++) {              \
-        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->objivar_obj[_oi]);    \
-        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->objivar_hash[_oi]);   \
-    }                                                                        \
-    /* #object_id table: weak — korb_oid_weak_walk (AROH_WEAK_WALK) forwards it. */\
+    /* weak side tables: only the value column is an edge (korb_weak_walk      \
+     * handles the keys); #object_id values are Fixnums. */                    \
+    for (uint32_t _si = 0; _si < (c)->vm->sklass.cnt; _si++)                 \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass.val[_si]);     \
+    for (uint32_t _oi = 0; _oi < (c)->vm->objivar.cnt; _oi++)                \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->objivar.val[_oi]);    \
     /* open closure envs now live in each frame's EP cell (base[-2]), scanned    \
      * as part of the slot range above — no separate registry. */               \
     /* Enumerator::Yielder class object (KORB_NIL before enum init). */        \
@@ -1986,8 +1972,8 @@ struct CTX_struct {
         korb_mp_free(_aro_bz->z);                                              \
         break;                                                                 \
       }
-void korb_oid_weak_walk(CTX *c);
-#define AROH_WEAK_WALK(c) korb_oid_weak_walk(c)
+void korb_weak_walk(CTX *c);
+#define AROH_WEAK_WALK(c) korb_weak_walk(c)
 #define AROH_FINALIZE(payload) do {                                            \
     AroObjectHeader *_aro_h = (AroObjectHeader *)(payload);                    \
     switch (_aro_h->flags & KORB_OBJ_TYPE_MASK) {                              \
