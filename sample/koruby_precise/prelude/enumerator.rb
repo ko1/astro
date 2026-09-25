@@ -6,6 +6,12 @@ class Enumerator
       y = self
       ->(*a) { y.yield(*a) }
     end
+
+    # The collector tuple lives in @__c, which is koruby's own bookkeeping —
+    # CRuby's Yielder has no instance variables, and a gem that inspects one
+    # must not see ours.
+    def instance_variables = []
+    private def instance_variables_to_inspect = []
   end
 end
 

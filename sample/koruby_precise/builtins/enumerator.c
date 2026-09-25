@@ -13,6 +13,7 @@ struct korb_gen_sink {
     VALUE *collect;      /* take_while / map / select / …: rooted slot holding the result Array */
     int    kind;
     bool   broke;
+    bool   passthru;     /* an unowned break went through: it belongs to an outer call site */
     struct korb_gen_sink *prev;   /* the sink this one suspended (drives nest) */
     uint32_t depth;               /* 1-based; a yielder records the depth it was created at */
 };
@@ -87,7 +88,7 @@ static RESULT korb_m_yielder_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool want_value) {
     const uint32_t ac = VALUE_SLICE_LEN(a);
-    const uint32_t csym = korb_intern(c->vm, "@__c", 4);   /* @__c = [collector, limit, ops, op_state] */
+    const VALUE csym = ID2SYM(korb_intern(c->vm, "@__c", 4));   /* @__c = [collector, limit, ops, op_state] */
     slots[1] = korb_ivar_get(c, VALUE_REF_GET(self), csym);     /* the tuple (rooted) */
     slots[0] = korb_items_data(VAL2ARY(slots[1])->items)[0];              /* collector (rooted in slots[0]) */
     const VALUE limv = korb_items_data(VAL2ARY(slots[1])->items)[1];     /* limit (fixnum, immediate) */
@@ -135,6 +136,10 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
                                      multi ? &slots[3] : &slots[2], yn, sink->cself);
         if (yr.state == KORB_BREAK && korb_break_owned(c, sink->block, sink->def_env)) { sink->broke = true; *sink->break_slot = yr.value;
             return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit"); }
+        /* Not ours: the prelude's Enumerator#each forwards the caller's literal
+         * block (`&block`), so the break belongs to the `enum.each { break }`
+         * site.  Mark it so the driver re-raises instead of ending the drive. */
+        if (yr.state == KORB_BREAK) sink->passthru = true;
         if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;     /* StopIteration / real error propagates */
         if (sink->kind == 1) {                                /* take_while: collect while truthy */
             if (!KORB_TRUTHY(yr.value))
@@ -229,13 +234,20 @@ static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, korb_sword
       CHECK(korb_ary_push_val(c, slots + 4, pr,
                               LONG2FIX(vm->gen_sink ? (korb_sword_t)vm->gen_sink->depth : 0))); }
     slots[4] = UNWRAP(korb_obj_new(c, slots + 4, vm->yielder_class));
-    CHECK(korb_ivar_set(c, slots + 5, VALUE_REF_AT(&slots[4]), korb_intern(vm, "@__c", 4), slots[3]));
+    /* korb_ivar_set/get take a SYMBOL, not a raw ID: passing the ID stored the
+     * tuple under SYM2ID(id), so reflection named it after an unrelated symbol. */
+    CHECK(korb_ivar_set(c, slots + 5, VALUE_REF_AT(&slots[4]), ID2SYM(korb_intern(vm, "@__c", 4)), slots[3]));
     if (limit == 0) return RESULT_OK(slots[2]);               /* take(0): no run */
     slots[5] = SELF_ENUM->source;                            /* the generator proc */
     slots[6] = slots[4];                                     /* arg0 = yielder */
     RESULT br = korb_send_impl(c, slots + 7, korb_intern(vm, "call", 4), 0, 1, NULL, NULL, NULL);
     if (br.state == KORB_RAISE && KORB_EXC_P(br.value) && VAL2EXC(br.value)->etype == KORB_E_STOP_ITERATION)
         return RESULT_OK(slots[2]);                           /* hit the bound (or natural end) → collector */
+    /* A break the consumer's block raised is not this drive's to swallow — it
+     * has to reach the call site that wrote the literal block.  Only a `break`
+     * inside the generator body itself ends the run with the collector. */
+    if (br.state == KORB_BREAK && limit == -2 && c->vm->gen_sink != NULL && c->vm->gen_sink->passthru)
+        return br;
     if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
     /* Streaming each (limit -2) wants the generator block's OWN return value —
      * for a to_enum generator that is the underlying method's return (CRuby
@@ -252,7 +264,7 @@ static RESULT korb_enum_gen_drive_block(CTX *c, VALUE *slots, VALUE_REF self, in
     slots[0] = KORB_NIL;                                      /* [0] = rooted break-value slot */
     slots[1] = (kind >= 1) ? UNWRAP(korb_ary_new(c, slots + 1, 8)) : KORB_NIL;   /* [1] = result collector */
     struct korb_gen_sink *const prev = c->vm->gen_sink;       /* save (nesting) */
-    struct korb_gen_sink sink = { block, def_env, cself, &slots[0], &slots[1], kind, false,
+    struct korb_gen_sink sink = { block, def_env, cself, &slots[0], &slots[1], kind, false, false,
                                   prev, prev ? prev->depth + 1u : 1u };
     c->vm->gen_sink = &sink;
     RESULT r = korb_enum_gen_run(c, slots + 2, self, -2);
