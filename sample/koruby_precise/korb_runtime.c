@@ -17943,7 +17943,7 @@ korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VA
     korb_cref_pop(c);
     if (UNLIKELY(r.state == KORB_RAISE)) {
         slots[0] = r.value;                             /* park: capture allocates */
-        (void)korb_capture_backtrace(c, slots, NULL);   /* eval frame: the unwound frames only */
+        (void)korb_capture_backtrace(c, slots, slots + 4);   /* from the eval frame on, through Kernel#eval into its callers */
         r.value = slots[0];
     }
     c->vm->script_name = saved;
@@ -18108,7 +18108,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     korb_cref_pop(c);   /* pushed unconditionally, so pop unconditionally */
     if (UNLIKELY(er.state == KORB_RAISE)) {
         cur[0] = er.value;                          /* park: capture allocates */
-        (void)korb_capture_backtrace(c, cur, NULL);   /* eval frame: the unwound frames only */
+        (void)korb_capture_backtrace(c, cur, fb);   /* from the eval frame on, through Kernel#eval into its callers */
         er.value = cur[0];
     }
     c->vm->cur_load_file = saved_load;
