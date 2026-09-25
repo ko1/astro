@@ -328,6 +328,7 @@ static bool parse_ctrl_escape(re_parser_t *q, bool dashed, uint8_t *out) {
 /* Parse a single escape inside a class.  Returns 1 if handled (already set
  * bits), 0 if it was a single character (write *out_byte).  `cps` collects
  * members at or above U+0080; NULL when the caller can't take any. */
+static void cls_cp_add(re_parser_t *q, agre_cpsetb_t *cps, uint32_t lo, uint32_t hi);   /* fwd (defined below) */
 static int parse_class_escape(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps, uint8_t *out_byte, uint32_t *out_cp) {
     *out_cp = 0;
     int c = re_get(q);
@@ -368,19 +369,45 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps
         uint32_t cp = 0;
         if (q->p < q->end && *q->p == '{') {
             q->p++;
-            int n = 0;
-            while (q->p < q->end && *q->p != '}' && n < 8) {
-                const int ch = *q->p;
-                int d;
-                if (ch >= '0' && ch <= '9') d = ch - '0';
-                else if (ch >= 'a' && ch <= 'f') d = ch - 'a' + 10;
-                else if (ch >= 'A' && ch <= 'F') d = ch - 'A' + 10;
-                else { re_error(q, "invalid Unicode list"); return 0; }
-                cp = (cp << 4) | (uint32_t)d;
-                q->p++; n++;
+            /* Onigmo allows a WHITESPACE-SEPARATED LIST here, and inside a class
+             * every codepoint in it is its own member (`[\u{61 62}]` = [ab]).
+             * Reading only one run of digits rejected the whole pattern
+             * ("invalid Unicode list"), which is how rubocop's
+             * Style/RedundantRegexpCharacterClass spec failed to even parse. */
+            uint32_t list[16]; int ncp = 0;
+            for (;;) {
+                while (q->p < q->end && (*q->p == ' ' || *q->p == '\t')) q->p++;
+                if (q->p >= q->end || *q->p == '}') break;
+                uint32_t v = 0; int n = 0;
+                while (q->p < q->end && n < 8) {
+                    const int ch = *q->p;
+                    int d;
+                    if (ch >= '0' && ch <= '9') d = ch - '0';
+                    else if (ch >= 'a' && ch <= 'f') d = ch - 'a' + 10;
+                    else if (ch >= 'A' && ch <= 'F') d = ch - 'A' + 10;
+                    else break;
+                    v = (v << 4) | (uint32_t)d;
+                    q->p++; n++;
+                }
+                if (n == 0 || ncp == (int)(sizeof list / sizeof list[0])) {
+                    re_error(q, "invalid Unicode list"); return 0;
+                }
+                list[ncp++] = v;
             }
-            if (q->p >= q->end || *q->p != '}') { re_error(q, "invalid Unicode list"); return 0; }
+            if (q->p >= q->end || *q->p != '}' || ncp == 0) { re_error(q, "invalid Unicode list"); return 0; }
             q->p++;
+            if (ncp > 1) {                      /* a list is a SET of members, not one */
+                if (cps == NULL) { re_error(q, "char-class value at end of range"); return 0; }
+                for (int i = 0; i < ncp; i++) {
+                    const uint32_t v = list[i];
+                    if (v < 0x80) bm_set_ci(bm, (uint8_t)v, q->case_insensitive);
+                    else if (q->encoding != AGRE_ENC_UTF8) {
+                        re_error(q, "multi-byte \\u inside [] needs UTF-8 mode"); return 1;
+                    } else cls_cp_add(q, cps, v, v);
+                }
+                return 1;                       /* set applied */
+            }
+            cp = list[0];
         } else {
             if (q->p + 4 > q->end) { re_error(q, "invalid Unicode escape"); return 0; }
             for (int n = 0; n < 4; n++) {
