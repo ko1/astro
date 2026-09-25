@@ -126,6 +126,9 @@ struct kp_ctx {
     bool pending_lambda_body; /* the next pushed frame is a lambda body (see kp_frame.lambda_body) */
     uint8_t src_enc;          /* KORB_ENC_* for this file's string literals (from the magic comment) */
     bool fsl_false;           /* an explicit `# frozen_string_literal: false` — literals are plain, not chilled */
+    bool fsl_true;            /* an explicit `# frozen_string_literal: true` (or --enable-frozen-string-literal).
+                               * prism reports it per StringNode, but NOT on an InterpolatedStringNode whose parts
+                               * are all literal (a `<<~` heredoc), so that case reads the file's setting here. */
     const char *syntax_err;   /* a compile-time error found while lowering (bad Regexp literal): parse fails */
     uint32_t eval_aliases[8]; /* `alias x eval`: names that get eval's hidden-binding lowering too */
     uint32_t eval_alias_cnt;
@@ -4733,6 +4736,38 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_interpolated_string_node_t *in = (const pm_interpolated_string_node_t *)node;
         /* the node's own flag bits are FROZEN/MUTABLE here, not forced encoding:
          * each part carries its own, and the concat negotiates from there */
+        /* All-literal parts (a heredoc with no interpolation, `"a" "b"`): CRuby
+         * makes ONE static literal out of them, so `# frozen_string_literal: true`
+         * freezes it and it is not rebuilt per evaluation.  Concatenating at
+         * parse time needs every part to agree on the encoding. */
+        {
+            uint8_t lenc = tc->src_enc; bool all_lit = true; size_t total = 0;
+            for (size_t i = 0; i < in->parts.size; i++) {
+                const pm_node_t *const pt = in->parts.nodes[i];
+                if (!PM_NODE_TYPE_P(pt, PM_STRING_NODE)) { all_lit = false; break; }
+                const uint8_t e = kp_forced_enc(pt->flags, tc->src_enc);
+                if (i == 0) lenc = e; else if (e != lenc) { all_lit = false; break; }
+                total += pm_string_length(&((const pm_string_node_t *)pt)->unescaped);
+            }
+            if (all_lit) {
+                char *const bytes = malloc(total + 1);
+                if (bytes == NULL) abort();
+                size_t off = 0;
+                for (size_t i = 0; i < in->parts.size; i++) {
+                    const pm_string_t *const u = &((const pm_string_node_t *)in->parts.nodes[i])->unescaped;
+                    const size_t l = pm_string_length(u);
+                    memcpy(bytes + off, pm_string_source(u), l);
+                    off += l;
+                }
+                bytes[total] = '\0';
+                const uint32_t mode = ((in->base.flags & PM_STRING_FLAGS_FROZEN) || tc->fsl_true) ? 2u
+                                    : (tc->fsl_false ? 0u : 1u);
+                if (lenc != KORB_ENC_UTF8) return ALLOC_node_str_enc(bytes, (uint32_t)total, lenc, mode);
+                if (mode == 2) return ALLOC_node_str_frozen(bytes, (uint32_t)total);
+                if (mode == 1) return ALLOC_node_str_chilled(bytes, (uint32_t)total);
+                return ALLOC_node_str(bytes, (uint32_t)total);
+            }
+        }
         return build_dstr(tc, in->parts.nodes, in->parts.size);
       }
       case PM_INTERPOLATED_SYMBOL_NODE: {     /* :"...#{ }..." → dstr.to_sym */
@@ -6227,8 +6262,10 @@ kp_internal_source(const char *const fname)
 {
     return fname != NULL && strcmp(fname, KORB_PRELUDE_FILE) == 0;
 }
+/* `want_true` picks which explicit value to report; both answer false when the
+ * magic comment is absent. */
 static bool
-kp_fsl_false(const char *src, size_t len)
+kp_fsl_is(const char *src, size_t len, bool want_true)
 {
     const size_t scan = len < 4096 ? len : 4096;
     for (size_t i = 0; i + 24 < scan; i++) {
@@ -6237,11 +6274,13 @@ kp_fsl_false(const char *src, size_t len)
         while (j < scan && (src[j] == ' ' || src[j] == '\t')) j++;
         if (j < scan && src[j] == ':') j++;
         while (j < scan && (src[j] == ' ' || src[j] == '\t')) j++;
-        if (j + 5 <= scan && memcmp(src + j, "false", 5) == 0) return true;
-        return false;
+        if (want_true) return j + 4 <= scan && memcmp(src + j, "true", 4) == 0;
+        return j + 5 <= scan && memcmp(src + j, "false", 5) == 0;
     }
     return false;
 }
+static bool kp_fsl_false(const char *src, size_t len) { return kp_fsl_is(src, len, false); }
+static bool kp_fsl_true(const char *src, size_t len)  { return kp_fsl_is(src, len, true); }
 
 NODE *
 koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, bool exit_on_error,
@@ -6290,6 +6329,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
         .fname = fname,
         .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
         .fsl_false = kp_fsl_false(src, len) || kp_internal_source(fname),
+        .fsl_true = kp_fsl_true(src, len) || OPTION.frozen_literals,
         .seed_class_name = cref_name,
         .seed_chain = cref_chain,
         .seed_chain_len = cref_chain_len,
@@ -6364,7 +6404,8 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
         return NULL;
     }
     struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
-                         .fsl_false = kp_fsl_false(src, len), .eval_method_mid = method_mid,
+                         .fsl_false = kp_fsl_false(src, len), .fsl_true = kp_fsl_true(src, len) || OPTION.frozen_literals,
+                         .eval_method_mid = method_mid,
                          .seed_class_name = cref_name, .seed_chain = cref_chain, .seed_chain_len = cref_chain_len,
                          .seed_cref_is_caller = cref_is_caller,
                          .in_eval = true };
