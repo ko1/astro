@@ -1720,6 +1720,23 @@ korb_hash_find_ctx_h(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *ou
     slots[1] = khr.value;                                 /* searched key's #hash (rooted) */
     const uint64_t khint = korb_value_hash(khr.value) | 1u;   /* 0 is reserved for "not recorded" */
     if (out_hint) *out_hint = khint;
+    const uint32_t kmask = VAL2HASH(VALUE_REF_GET(href))->kidx_mask;
+    if (kmask) {                                          /* probe only the pairs stored under this #hash */
+        const uint32_t len0 = VAL2HASH(VALUE_REF_GET(href))->len;
+        for (uint32_t slot = (uint32_t)(khint >> 1) & kmask; ; slot = (slot + 1) & kmask) {
+            const KorbHash *const h = VAL2HASH(VALUE_REF_GET(href));
+            if (h->kidx_mask != kmask || h->len != len0) break;   /* an #eql? reshaped the table: rescan */
+            const uint32_t e = ((const uint32_t *)korb_strbuf_data(h->kindex))[slot];
+            if (e == 0) return -1;
+            if (((const uint64_t *)korb_strbuf_data(h->khints))[e - 1] != khint) continue;
+            const VALUE existing = korb_items_data(h->items)[2 * (e - 1)];
+            if (existing == slots[0]) return (int32_t)(e - 1);
+            slots[3] = slots[0]; slots[4] = existing;
+            const RESULT r = korb_send_impl(c, slots + 5, eqm, 0, 1, NULL, NULL, NULL);   /* searched.eql?(stored) */
+            if (UNLIKELY(r.state != KORB_NORMAL)) { *out_err = r; return -1; }
+            if (KORB_TRUTHY(r.value)) return (int32_t)(e - 1);
+        }
+    }
     for (uint32_t i = 0; ; i++) {
         const KorbHash *const h = VAL2HASH(VALUE_REF_GET(href));
         if (i >= h->len) return -1;
@@ -1754,6 +1771,30 @@ korb_hash_find_ctx(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *out_
     return korb_hash_find_ctx_h(c, slots, href, key, out_err, NULL);
 }
 
+static void korb_hash_kindex_put(KorbHash *restrict h, const uint32_t pi) {
+    uint32_t *const tab = (uint32_t *)korb_strbuf_data(h->kindex);
+    const uint32_t mask = h->kidx_mask;
+    uint32_t slot = (uint32_t)(((const uint64_t *)korb_strbuf_data(h->khints))[pi] >> 1) & mask;
+    while (tab[slot]) slot = (slot + 1) & mask;
+    tab[slot] = pi + 1;
+}
+/* (Re)build the khint index when every pair has a hint; otherwise leave none. */
+static RESULT korb_hash_kindex_build(CTX *c, VALUE *slots, VALUE_REF href) {
+    KorbHash *h = VAL2HASH(VALUE_REF_GET(href));
+    KORB_HASH_DROP_KINDEX(h);
+    if (!h->khints || h->khint_len != h->len) return RESULT_OK(KORB_NIL);
+    const uint64_t *hints = (const uint64_t *)korb_strbuf_data(h->khints);
+    for (uint32_t i = 0; i < h->len; i++) if (hints[i] == 0) return RESULT_OK(KORB_NIL);
+    uint32_t cap = 16; while ((size_t)cap < (size_t)h->len * 2) cap <<= 1;
+    KorbStrBuf *const idx = korb_alloc(c, slots, sizeof(KorbStrBuf) + (size_t)cap * sizeof(uint32_t), KORB_OBJ_STR_BUF);
+    memset(korb_strbuf_data(idx), 0, (size_t)cap * sizeof(uint32_t));
+    h = VAL2HASH(VALUE_REF_GET(href));                /* re-read after alloc/GC */
+    ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->kindex, (VALUE)(uintptr_t)idx);
+    h->kidx_mask = cap - 1;
+    for (uint32_t i = 0; i < h->len; i++) korb_hash_kindex_put(h, i);
+    return RESULT_OK(KORB_NIL);
+}
+
 /* Record pair `pi`'s insertion-time key hash (0 = none), keeping khint_len in
  * step with len; the buffer grows with the pair array.  Called right after the
  * pair is stored, so a GC here is safe. */
@@ -1773,6 +1814,13 @@ korb_hash_khint_put(CTX *c, VALUE *slots, VALUE_REF href, uint32_t pi, uint64_t 
     }
     ((uint64_t *)korb_strbuf_data(h->khints))[pi] = hint;
     h->khint_len = pi + 1;
+    if (hint == 0) { KORB_HASH_DROP_KINDEX(h); return RESULT_OK(KORB_NIL); }
+    if (h->kidx_mask) {
+        if (UNLIKELY((size_t)h->len * 10 > (size_t)(h->kidx_mask + 1) * 7)) return korb_hash_kindex_build(c, slots, href);
+        korb_hash_kindex_put(h, pi);
+    } else if (h->len >= 16 && (h->len & (h->len - 1)) == 0) {   /* retry at powers of two: amortized O(1) */
+        return korb_hash_kindex_build(c, slots, href);
+    }
     return RESULT_OK(KORB_NIL);
 }
 
@@ -1917,6 +1965,10 @@ korb_hash_remove_at(CTX *c, KorbHash *restrict h, const uint32_t idx)
         uint64_t *const hints = (uint64_t *)korb_strbuf_data(h->khints);
         memmove(hints + idx, hints + idx + 1, (size_t)(h->len - idx) * sizeof(uint64_t));
         h->khint_len = h->len;
+        if (h->kidx_mask) {
+            memset(korb_strbuf_data(h->kindex), 0, (size_t)(h->kidx_mask + 1) * sizeof(uint32_t));
+            for (uint32_t i = 0; i < h->len; i++) korb_hash_kindex_put(h, i);
+        }
     } else if (h->khints) {
         KORB_HASH_DROP_KHINTS(h);
     }
@@ -2114,20 +2166,53 @@ static void korb_objivar_register(CTX *c, VALUE obj, VALUE h) {   /* libc reallo
  * Shape of the value: heap ids are 8n + 2, which no other #object_id can take —
  * Fixnum ids are odd (2n+1) and nil/false/true/Symbol are all 0 or 4 mod 8.
  *
- * The lookup is a linear scan (only objects that ever asked are in the table)
- * behind a direct-mapped address cache.  The cache needs no GC hook: after a
- * move the hinted entry simply stops matching and the scan refills it. */
+ * The table is weak (korb_oid_weak_walk drops dead objects after each GC) and
+ * indexed by address; the index is rebuilt there, once addresses are final. */
+static inline uint32_t korb_oid_slot(const VALUE obj, const uint32_t mask) {
+    uint64_t x = (uint64_t)(korb_word_t)obj >> 3;
+    x *= 0x9e3779b97f4a7c15ULL;
+    return (uint32_t)(x >> 32) & mask;
+}
+static void korb_oid_index_put(struct korb_vm *restrict vm, const uint32_t i) {
+    uint32_t slot = korb_oid_slot(vm->oid_obj[i], vm->oid_idx_mask);
+    while (vm->oid_idx[slot]) slot = (slot + 1) & vm->oid_idx_mask;
+    vm->oid_idx[slot] = i + 1;
+}
+static void korb_oid_index_rebuild(struct korb_vm *restrict vm) {
+    uint32_t cap = 64; while ((size_t)cap < (size_t)vm->oid_cnt * 2) cap <<= 1;
+    if (cap - 1 != vm->oid_idx_mask) {
+        free(vm->oid_idx);
+        vm->oid_idx = malloc(sizeof(uint32_t) * cap);
+        if (!vm->oid_idx) { fprintf(stderr, "koruby_precise: oom (oid)\n"); abort(); }
+        vm->oid_idx_mask = cap - 1;
+    }
+    memset(vm->oid_idx, 0, sizeof(uint32_t) * cap);
+    for (uint32_t i = 0; i < vm->oid_cnt; i++) korb_oid_index_put(vm, i);
+}
+/* AROH_WEAK_WALK: runs after mark/forward in every backend.  An entry whose
+ * object died goes away (the table used to be a root and pinned every object
+ * that was ever hashed or asked for #object_id); survivors take their new address. */
+void korb_oid_weak_walk(CTX *c) {
+    struct korb_vm *const vm = c->vm;
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < vm->oid_cnt; i++) {
+        void *const np = aro_gc_finalize_check(c, (void *)(uintptr_t)vm->oid_obj[i]);
+        if (np == NULL) continue;
+        vm->oid_obj[w] = (VALUE)(uintptr_t)np;
+        vm->oid_val[w] = vm->oid_val[i];
+        w++;
+    }
+    vm->oid_cnt = w;
+    if (vm->oid_idx) korb_oid_index_rebuild(vm);
+}
 static VALUE korb_oid_find(const struct korb_vm *vm, const VALUE obj) {
     if (!(((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_OID)) return KORB_NIL;
-    const uint32_t slot = (uint32_t)(((korb_word_t)obj >> 4) & (KORB_OID_CACHE - 1u));
-    const uint32_t hint = vm->oid_cache[slot];
-    if (hint != 0 && hint <= vm->oid_cnt && vm->oid_obj[hint - 1] == obj) return vm->oid_val[hint - 1];
-    for (uint32_t i = 0; i < vm->oid_cnt; i++)
-        if (vm->oid_obj[i] == obj) {
-            ((struct korb_vm *)vm)->oid_cache[slot] = i + 1;   /* hint only: no semantic state */
-            return vm->oid_val[i];
-        }
-    return KORB_NIL;
+    if (vm->oid_idx == NULL) return KORB_NIL;
+    for (uint32_t slot = korb_oid_slot(obj, vm->oid_idx_mask); ; slot = (slot + 1) & vm->oid_idx_mask) {
+        const uint32_t e = vm->oid_idx[slot];
+        if (e == 0) return KORB_NIL;
+        if (vm->oid_obj[e - 1] == obj) return vm->oid_val[e - 1];
+    }
 }
 /* libc realloc only — not a GC point, so the caller's `obj` stays valid. */
 static VALUE korb_oid_assign(struct korb_vm *const vm, const VALUE obj) {
@@ -2141,8 +2226,9 @@ static VALUE korb_oid_assign(struct korb_vm *const vm, const VALUE obj) {
     const VALUE id = LONG2FIX((korb_sword_t)((++vm->oid_next << 3) | 2u));
     vm->oid_obj[vm->oid_cnt] = obj;
     vm->oid_val[vm->oid_cnt] = id;
-    vm->oid_cache[((korb_word_t)obj >> 4) & (KORB_OID_CACHE - 1u)] = vm->oid_cnt + 1;
     vm->oid_cnt++;
+    if (vm->oid_idx == NULL || (size_t)vm->oid_cnt * 2 > (size_t)vm->oid_idx_mask + 1) korb_oid_index_rebuild(vm);
+    else korb_oid_index_put(vm, vm->oid_cnt - 1);
     ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_OID;
     return id;
 }

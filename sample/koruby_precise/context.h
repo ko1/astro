@@ -206,7 +206,6 @@ enum korb_obj_type {
 };
 /* `flags` is a dedicated 16-bit sample-owned field; low 5 bits = type tag
  * (1..16; widened from 4 bits to make room for KORB_OBJ_METHOD). */
-#define KORB_OID_CACHE 1024u   /* direct-mapped lookup hint for the oid table */
 #define KORB_OBJ_TYPE_MASK 0x1Fu
 /* bit 5: this heap object has a per-instance class override (subclass instance /
  * extended / singleton-method'd) recorded in the VM's sklass table.  Gates both
@@ -647,6 +646,11 @@ typedef struct KorbHash {
      * khint_len == len; any structural mutation drops the buffer. */
     KorbStrBuf *ARO_GC_EDGE khints;
     uint32_t khint_len, khint_capa;
+    /* Open-addressing index over khints (pair_idx + 1; 0 = empty) for keys whose
+     * equality Ruby owns — the dispatching lookup probes it instead of scanning.
+     * Valid only while every pair has a recorded hint (kidx_mask != 0). */
+    KorbStrBuf *ARO_GC_EDGE kindex;
+    uint32_t kidx_mask;
 } KorbHash;
 /* Drop the lookup index — call after any structural mutation that removes or
  * reorders pairs (delete/shift/clear/reject!) so pair indices can't go stale.
@@ -655,7 +659,9 @@ typedef struct KorbHash {
 #define KORB_HASH_DROP_INDEX(h) do { ARO_GC_RAW_STORE(&(h)->index, NULL); (h)->idx_mask = 0; \
                                      KORB_HASH_DROP_KHINTS(h); } while (0)
 #define KORB_HASH_DROP_KHINTS(h) do { ARO_GC_RAW_STORE(&(h)->khints, NULL); \
-                                      (h)->khint_len = 0; (h)->khint_capa = 0; } while (0)
+                                      (h)->khint_len = 0; (h)->khint_capa = 0; \
+                                      KORB_HASH_DROP_KINDEX(h); } while (0)
+#define KORB_HASH_DROP_KINDEX(h) do { ARO_GC_RAW_STORE(&(h)->kindex, NULL); (h)->kidx_mask = 0; } while (0)
 
 /* Range: begin/end + exclusivity.  Endpoints are arbitrary values (GC edges). */
 typedef struct KorbRange {
@@ -1147,16 +1153,15 @@ struct korb_vm {
     VALUE    *objivar_obj;
     VALUE    *objivar_hash;
     uint32_t  objivar_cnt, objivar_capa;
-    /* #object_id side table (same lockstep-forwarded pattern).  A moving GC has
-     * no per-object id slot and the address changes under it, so the id is a
-     * serial assigned on first ask and kept here; oid_cache is a direct-mapped
-     * address hint that a GC invalidates by itself (the entry stops matching).
-     * Same pinning caveat as the two tables above. */
+    /* #object_id side table.  A moving GC has no per-object id slot and the
+     * address changes under it, so the id is a serial assigned on first ask and
+     * kept here.  Weak: korb_oid_weak_walk drops dead objects after each GC. */
     VALUE    *oid_obj;
     VALUE    *oid_val;
     uint32_t  oid_cnt, oid_capa;
     uint64_t  oid_next;
-    uint32_t  oid_cache[KORB_OID_CACHE];   /* index + 1, 0 = empty */
+    uint32_t *oid_idx;                    /* address → index + 1 (0 = empty), rebuilt after GC */
+    uint32_t  oid_idx_mask;
     /* cached frozen result of nil/true/false #to_s (CRuby returns the same frozen
      * object each call).  KORB_NIL until first use; GC roots (AROH_VISIT_ROOTS). */
     VALUE     str_nil_to_s, str_true_to_s, str_false_to_s;
@@ -1672,10 +1677,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->objivar_obj[_oi]);    \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->objivar_hash[_oi]);   \
     }                                                                        \
-    /* #object_id table: only the object column is a heap edge (the id is a      \
-     * Fixnum), and forwarding it is what keeps the id attached to the object.  */\
-    for (uint32_t _di = 0; _di < (c)->vm->oid_cnt; _di++)                     \
-        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->oid_obj[_di]);         \
+    /* #object_id table: weak — korb_oid_weak_walk (AROH_WEAK_WALK) forwards it. */\
     /* open closure envs now live in each frame's EP cell (base[-2]), scanned    \
      * as part of the slot range above — no separate registry. */               \
     /* Enumerator::Yielder class object (KORB_NIL before enum init). */        \
@@ -1805,6 +1807,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_hh->default_proc);           \
         if (_hh->index) ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->index); /* raw uint32 table */ \
         if (_hh->khints) ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->khints); /* raw uint64 table */ \
+        if (_hh->kindex) ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->kindex); /* raw uint32 table */ \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \
@@ -1983,6 +1986,8 @@ struct CTX_struct {
         korb_mp_free(_aro_bz->z);                                              \
         break;                                                                 \
       }
+void korb_oid_weak_walk(CTX *c);
+#define AROH_WEAK_WALK(c) korb_oid_weak_walk(c)
 #define AROH_FINALIZE(payload) do {                                            \
     AroObjectHeader *_aro_h = (AroObjectHeader *)(payload);                    \
     switch (_aro_h->flags & KORB_OBJ_TYPE_MASK) {                              \

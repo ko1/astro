@@ -132,6 +132,9 @@ aro_gc_finalize_walk(CTX *c)
         }
     }
     cs->finalize_count = write;
+#ifdef AROH_WEAK_WALK
+    AROH_WEAK_WALK(c);   /* sample's weak side tables, same liveness query */
+#endif
 }
 
 void
