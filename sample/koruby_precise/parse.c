@@ -6216,10 +6216,21 @@ kp_stash_syntax_msg(CTX *c, const pm_parser_t *parser, const char *fname)
      * Several diagnostics on one line share the source line. */
     static char buf[4096];
     size_t n = 0;
+    /* snprintf returns what it WOULD have written, so `n +=` can run past the
+     * buffer and make the next `sizeof buf - n` underflow to a huge size_t —
+     * _FORTIFY_SOURCE then aborts the process.  A 16 KB source line in an eval
+     * did exactly that.  Clamp on every append. */
+    #define KP_MSG_APPEND(...) do {                                            \
+        if (n + 1 < sizeof buf) {                                              \
+            const int w_ = snprintf(buf + n, sizeof buf - n, __VA_ARGS__);     \
+            if (w_ > 0) n = (n + (size_t)w_ < sizeof buf) ? n + (size_t)w_     \
+                                                          : sizeof buf - 1;    \
+        }                                                                      \
+    } while (0)
     const int32_t line0 = pm_newline_list_line(&parser->newline_list, d0->location.start, parser->start_line);
-    n += (size_t)snprintf(buf + n, sizeof buf - n, "%s:%d: syntax error%s found\n",
-                          fname ? fname : "(eval)", line0,
-                          parser->error_list.size > 1 ? "s" : "");
+    KP_MSG_APPEND("%s:%d: syntax error%s found\n",
+                  fname ? fname : "(eval)", line0,
+                  parser->error_list.size > 1 ? "s" : "");
     int32_t shown = -1;
     for (const pm_diagnostic_t *d = d0; d != NULL && n + 64 < sizeof buf;
          d = (const pm_diagnostic_t *)d->node.next) {
@@ -6232,20 +6243,22 @@ kp_stash_syntax_msg(CTX *c, const pm_parser_t *parser, const char *fname)
         while (lend < parser->end && *lend != '\n') lend++;
         const int gutter = snprintf(NULL, 0, "%d", line);
         if (line != shown) {
-            n += (size_t)snprintf(buf + n, sizeof buf - n, "> %d | %.*s\n", line,
-                                  (int)(lend - lstart), (const char *)lstart);
+            size_t ltext = (size_t)(lend - lstart);       /* a long line would fill the whole buffer */
+            if (ltext > 200) ltext = 200;
+            KP_MSG_APPEND("> %d | %.*s\n", line, (int)ltext, (const char *)lstart);
             shown = line;
         }
         size_t col = (size_t)(d->location.start - lstart);
         if (col > 200) col = 200;
-        n += (size_t)snprintf(buf + n, sizeof buf - n, "%*s | ", gutter + 2, "");
+        KP_MSG_APPEND("%*s | ", gutter + 2, "");
         for (size_t k = 0; k < col && n + 2 < sizeof buf; k++) buf[n++] = ' ';
         size_t span = (size_t)(d->location.end - d->location.start);   /* ^~~~ covers the offending text */
         if (span > 80) span = 80;
         if (n + 2 < sizeof buf) buf[n++] = '^';
         for (size_t k = 1; k < span && n + 2 < sizeof buf; k++) buf[n++] = '~';
-        n += (size_t)snprintf(buf + n, sizeof buf - n, " %s\n", d->message);
+        KP_MSG_APPEND(" %s\n", d->message);
     }
+    #undef KP_MSG_APPEND
     buf[n < sizeof buf ? n : sizeof buf - 1] = '\0';
     c->vm->last_syntax_msg = buf;
 }
