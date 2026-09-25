@@ -149,6 +149,13 @@ struct kp_ctx {
     uint32_t seed_chain_len;
     bool in_eval;             /* eval(String): the program's namespace is the cref the eval
                                * installed, never the running self (it can be rebound). */
+    /* eval under a binding: the binding's lexical levels, nearest first.  They sit
+     * outside the program frame for LOCAL RESOLUTION only (kp_frame_at); the
+     * program frame's prev stays NULL, so method / block / class walks still stop
+     * at the eval's own top.  Caller locals are then depth >= 1 references into
+     * the binding's env chain, which the eval frame's EP points at. */
+    struct kp_frame *eval_outer;
+    uint32_t eval_outer_cnt;
 };
 
 /* `alias x eval` seen earlier in this file: x is lowered like eval itself. */
@@ -752,14 +759,27 @@ lvar_index(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid)
     kp_failf(tc, node, "koruby_precise: local '%s' not in scope table", kp_cid_cstr(tc, cid));
 }
 
+/* The frame `depth` scopes out, continuing past an eval program's top into the
+ * binding's levels (tc->eval_outer). */
+static struct kp_frame *
+kp_frame_at(struct kp_ctx *tc, uint32_t depth)
+{
+    struct kp_frame *f = tc->frame;
+    for (uint32_t d = 0; d < depth && f; d++) {
+        if (f->prev == NULL && tc->eval_outer_cnt != 0) {
+            const uint32_t v = depth - d - 1;
+            return v < tc->eval_outer_cnt ? &tc->eval_outer[v] : NULL;
+        }
+        f = f->prev;
+    }
+    return f;
+}
+
 /* Index of an outer variable `depth` enclosing scopes out (prism depth). */
 static uint32_t
 lvar_index_at(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, uint32_t depth)
 {
-    struct kp_frame *f = tc->frame;
-    for (uint32_t d = 0; d < depth; d++) {
-        f = f ? f->prev : NULL;
-    }
+    struct kp_frame *f = kp_frame_at(tc, depth);
     if (!f) kp_failf(tc, node, "koruby_precise: outer scope depth %u not found", depth);
     for (size_t i = 0; i < f->locals->size; i++) {
         if (f->locals->ids[i] == cid) return (uint32_t)i + kp_it_shift(f);
@@ -2042,12 +2062,11 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
     if (cap_depth > 0) {
         cap_ns = malloc(sizeof(uint16_t) * cap_depth);
         if (!cap_ns) abort();
-        struct kp_frame *encl = tc->frame->prev;
         for (uint32_t k = 0; k < cap_depth; k++) {
+            const struct kp_frame *const encl = kp_frame_at(tc, k + 1);
             uint32_t n_enc = encl ? (uint32_t)(encl->locals->size + kp_it_shift(encl)) : 0;
             if (encl && encl->cap_min > n_enc) n_enc = encl->cap_min;   /* `...` synth slots read from inside */
             cap_ns[k] = (uint16_t)n_enc;
-            encl = encl ? encl->prev : NULL;
         }
     }
     void *const linfo = build_locals_info(tc);      /* before pop_frame: it frees the frame */
@@ -3971,6 +3990,10 @@ kp_binding_scope_tbl(struct kp_ctx *tc, uint32_t *out_name_cnt)
     uint32_t L = 0;
     for (struct kp_frame *f = tc->frame; f && L < 64; f = f->prev) {
         levels[L++] = f;
+        if (f->prev == NULL && tc->eval_outer_cnt != 0) {   /* eval top: the binding's own levels follow */
+            for (uint32_t v = 0; v < tc->eval_outer_cnt && L < 64; v++) levels[L++] = &tc->eval_outer[v];
+            break;
+        }
         if (f->method_mid || f->class_name_sym || f->anon_class_body) break;   /* scope barrier */
     }
     uint32_t total = 0;
@@ -6387,7 +6410,9 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool
  * writes them back).  NULL on syntax error. */
 NODE *
 koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, const char *src_enc,
-                          const uint32_t *name_syms, uint32_t name_cnt, uint32_t method_mid,
+                          const uint32_t *name_syms, uint32_t name_cnt,
+                          const uint32_t *outer_names, const uint32_t *outer_cnt, uint32_t outer_levels,
+                          uint32_t method_mid,
                           uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len,
                           bool cref_is_caller)
 {
@@ -6400,10 +6425,35 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
      * first-line rule CRuby does).  NULL = the parser's own default (UTF-8). */
     if (src_enc) pm_options_encoding_set(&options, src_enc);
     pm_options_line_set(&options, first_line);
-    /* declare the binding's locals so the eval code recognises them as locals
-     * (prism folds a single declared scope into the parsed program's own scope). */
-    pm_options_scopes_init(&options, 1);
-    pm_options_scope_t *scope = &options.scopes[0];
+    /* The binding's levels become prism's OUTER scopes (outermost first), each
+     * naming its env slots in index order, so a caller local resolves to depth >= 1
+     * and reaches the real env.  A slot with no name (shadowed / implicit / synth)
+     * gets a placeholder no source can spell.  The last scope is the program's
+     * own: the names a previous eval on this binding added (`extra`). */
+    pm_options_scopes_init(&options, outer_levels + 1);
+    char (*dummy)[24] = NULL;
+    uint32_t outer_total = 0;
+    for (uint32_t v = 0; v < outer_levels; v++) outer_total += outer_cnt[v];
+    if (outer_total) { dummy = malloc(sizeof *dummy * outer_total); if (!dummy) abort(); }
+    for (uint32_t v = 0, off = 0; v < outer_levels; v++) {
+        const uint32_t lv = outer_levels - 1 - v;                 /* scopes[0] = outermost level */
+        uint32_t loff = 0;
+        for (uint32_t k = 0; k < lv; k++) loff += outer_cnt[k];
+        pm_options_scope_t *const sc = &options.scopes[v];
+        pm_options_scope_init(sc, outer_cnt[lv]);
+        for (uint32_t i = 0; i < outer_cnt[lv]; i++) {
+            const uint32_t sym = outer_names[loff + i];
+            if (sym != 0) {
+                const char *const nm = korb_sym_name(c->vm, sym);
+                pm_string_constant_init(&sc->locals[i], nm, strlen(nm));
+            } else {
+                snprintf(dummy[off], sizeof dummy[off], "#%u.%u", lv, i);
+                pm_string_constant_init(&sc->locals[i], dummy[off], strlen(dummy[off]));
+                off++;
+            }
+        }
+    }
+    pm_options_scope_t *scope = &options.scopes[outer_levels];
     pm_options_scope_init(scope, name_cnt);
     for (uint32_t i = 0; i < name_cnt; i++) {
         const char *nm = korb_sym_name(c->vm, name_syms[i]);
@@ -6414,15 +6464,35 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
     if (parser.error_list.size > 0) {
         kp_stash_syntax_msg(c, &parser, fname);
         pm_node_destroy(&parser, root); pm_parser_free(&parser); pm_options_free(&options);
+        free(dummy);
         return NULL;
+    }
+    /* the levels as frames for local resolution (nearest first) */
+    struct kp_frame *outer = outer_levels ? calloc(outer_levels, sizeof *outer) : NULL;
+    pm_constant_id_list_t *outer_lists = outer_levels ? calloc(outer_levels, sizeof *outer_lists) : NULL;
+    if (outer_levels && (!outer || !outer_lists)) abort();
+    for (uint32_t lv = 0, loff = 0; lv < outer_levels; loff += outer_cnt[lv], lv++) {
+        pm_constant_id_list_t *const ls = &outer_lists[lv];
+        ls->size = ls->capacity = outer_cnt[lv];
+        ls->ids = outer_cnt[lv] ? calloc(outer_cnt[lv], sizeof *ls->ids) : NULL;
+        for (uint32_t i = 0; i < outer_cnt[lv]; i++) {
+            const uint32_t sym = outer_names[loff + i];
+            if (sym == 0) continue;                                 /* placeholder: never matched */
+            const char *const nm = korb_sym_name(c->vm, sym);
+            ls->ids[i] = pm_constant_pool_find(&parser.constant_pool, (const uint8_t *)nm, strlen(nm));
+        }
+        outer[lv].locals = ls;
+        outer[lv].fwd_slot = outer[lv].fwd_blk_slot = outer[lv].anon_rest_slot = -1;
     }
     struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
                          .fsl_false = kp_fsl_false(src, len), .fsl_true = kp_fsl_true(src, len) || OPTION.frozen_literals,
                          .eval_method_mid = method_mid,
                          .seed_class_name = cref_name, .seed_chain = cref_chain, .seed_chain_len = cref_chain_len,
                          .seed_cref_is_caller = cref_is_caller,
-                         .in_eval = true };
+                         .in_eval = true, .eval_outer = outer, .eval_outer_cnt = outer_levels };
     NODE *ast = transduce(&tc, root);
+    for (uint32_t lv = 0; lv < outer_levels; lv++) free(outer_lists[lv].ids);
+    free(outer_lists); free(outer); free(dummy);
     if (ast == NULL) ast = lit_nil();
     for (uint32_t pi = tc.pre_cnt; pi-- > 0; ) ast = ALLOC_node_seq(tc.pre_list[pi], ast);   /* BEGIN { } first */
     free(tc.pre_list);
