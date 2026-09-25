@@ -2750,18 +2750,8 @@ NODE_DEF
 node_hash_set(CTX *c, NODE *n, VALUE *slots, VALUE_REF hash@child, VALUE_REF key@child, VALUE val@child)
 {
     (void)n;
-    const VALUE k = VALUE_REF_GET(key);
-    /* A mutable String key is stored frozen (like Hash#[]=), so mutating the
-     * key object afterwards cannot reach into the Hash. */
-    if (UNLIKELY(KORB_STRING_P(k) && !(((const AroObjectHeader *)(uintptr_t)k)->flags & KORB_FL_FROZEN))) {
-        slots[0] = val;                                   /* park: #dup allocates */
-        slots[1] = k;
-        RESULT dr = korb_send(c, slots + 2, korb_intern(c->vm, "dup", 3), 0, 0);
-        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-        slots[1] = dr.value;
-        if (AROH_IS_GC_OBJECT(slots[1])) ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_FROZEN;
-        return korb_hash_set(c, slots + 2, hash, VALUE_REF_AT(&slots[1]), slots[0]);
-    }
+    /* The frozen private copy of a mutable String key is korb_hash_set's job —
+     * every other insert path (#store, #merge, #to_h, Hash[...]) needs it too. */
     return korb_hash_set(c, slots, hash, key, val);
 }
 

@@ -469,6 +469,7 @@ static inline RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t
                                     NODE *block, VALUE *def_env, VALUE *captured_self) {
     return korb_send_impl_vis(c, slots, mid, line, argc, block, def_env, captured_self, KORB_UNDEF);
 }
+static bool korb_exact_class_p(CTX *c, VALUE v, int cls);   /* fwd (builtins/array.c) */
 static RESULT korb_block_to_proc(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *cself);   /* defined below */
 static RESULT korb_m_mod_autoload_relative(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* defined below */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
@@ -1852,6 +1853,20 @@ korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE val)
         KorbArrayItems *it = h->items;
         ARO_STORE(c, it, &korb_items_data(it)[2 * idx + 1], VALUE_REF_GET(vref));
         return RESULT_OK(VALUE_REF_GET(href));
+    }
+    /* CRuby stores a frozen private copy of a mutable String key (rb_hash_aset →
+     * rb_str_new_frozen), so mutating the caller's String can't strand the pair
+     * in another bucket.  Insert only; compare_by_identity keeps the caller's
+     * object, and a subclass / ivar-carrying String is left alone. */
+    if (UNLIKELY(KORB_STRING_P(VALUE_REF_GET(kref))) && !(h->head.flags & KORB_FL_CMP_BY_ID) &&
+        ({ const uint16_t kf__ = ((const AroObjectHeader *)(uintptr_t)VALUE_REF_GET(kref))->flags;
+           !(kf__ & KORB_FL_FROZEN) || (kf__ & KORB_FL_CHILLED); }) &&   /* chilled is unfrozen, as #frozen? reports */
+        korb_exact_class_p(c, VALUE_REF_GET(kref), KORB_C_STRING)) {     /* a subclass key stays as it is (CRuby) */
+        slots[0] = VALUE_REF_GET(kref);
+        const RESULT dr = korb_str_dup_pub(c, slots + 1, &slots[0]);
+        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+        kref = SLOTS_PUSH(slots, dr.value);
+        ((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(kref))->flags |= KORB_FL_FROZEN;
     }
     CHECK(korb_hash_ensure(c, slots, href, 1));
     h = VAL2HASH(VALUE_REF_GET(href));                /* re-read after grow */
@@ -12095,17 +12110,17 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
         return RESULT_OK(slots[1]);
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_aref && korb_builtin_base_class(vm, self) == KORB_C_SET) {
-        /* SubSet[a, b, ...] → a Set-subclass instance with the (deduped) elements. */
-        slots[0] = self;                                   /* root the subclass */
+        /* SubSet[a, b, ...].  CRuby's Set.[] is Ruby (`def self.[](*ary) = new(ary)`),
+         * so a subclass's own #initialize runs — concurrent-ruby's Set wrapper sets
+         * its monitor there and every later call asserts on it. */
         VALUE *const abase = &slots[-(korb_sword_t)argc];
+        slots[0] = self;                                   /* root the subclass */
         slots[1] = UNWRAP(korb_ary_new(c, slots + 1, argc));
         VALUE_REF arr = VALUE_REF_AT(&slots[1]);
         for (uint32_t i = 0; i < argc; i++) CHECK(korb_ary_push_val(c, slots + 2, arr, abase[i]));
-        RESULT sr = korb_set_from_array(c, slots + 2, arr);
-        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-        slots[1] = sr.value;
-        korb_klass_override_set(c, slots[1], slots[0]);
-        return RESULT_OK(slots[1]);
+        slots[2] = slots[0];                               /* receiver */
+        slots[3] = VALUE_REF_GET(arr);                     /* the single argument */
+        return korb_send_impl(c, slots + 4, korb_intern(vm, "new", 3), line, 1, NULL, NULL, NULL);
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_aref && korb_builtin_base_class(vm, self) == KORB_C_HASH) {
         /* SubHash[k,v,...] | SubHash[[[k,v],...]] | SubHash[{...}] → subclass instance. */
@@ -12113,6 +12128,17 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
         VALUE *const abase = &slots[-(korb_sword_t)argc];
         slots[1] = UNWRAP(korb_hash_new(c, slots + 1, argc));
         VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+        if (argc == 1 && !KORB_HASH_P(abase[0]) && !KORB_ARRAY_P(abase[0]) && KORB_OBJECT_P(abase[0])) {
+            const uint32_t to_hash = korb_intern(vm, "to_hash", 7), to_ary = korb_intern(vm, "to_ary", 6);
+            const uint32_t conv = korb_responds_to_coerce(c, slots + 3, abase[0], to_hash) ? to_hash
+                                : korb_responds_to_coerce(c, slots + 3, abase[0], to_ary)  ? to_ary : 0;
+            if (conv) {                                    /* SubHash[obj] → obj.to_hash, else obj.to_ary */
+                slots[2] = abase[0];
+                const RESULT cr = korb_send_impl(c, slots + 3, conv, 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                if (KORB_HASH_P(cr.value) || KORB_ARRAY_P(cr.value)) abase[0] = cr.value;
+            }
+        }
         if (argc == 1 && KORB_HASH_P(abase[0])) {          /* copy an existing Hash */
             const uint32_t n = VAL2HASH(abase[0])->len;
             for (uint32_t i = 0; i < n; i++) {
@@ -12125,6 +12151,8 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             for (uint32_t i = 0; i < n; i++) {
                 const VALUE pr = korb_items_data(VAL2ARY(abase[0])->items)[i];
                 if (UNLIKELY(!KORB_ARRAY_P(pr))) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_coerce_name(c, pr), i);
+                if (UNLIKELY(VAL2ARY(pr)->len < 1 || VAL2ARY(pr)->len > 2))
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "invalid number of elements (%u for 1..2)", VAL2ARY(pr)->len);
                 slots[2] = korb_items_data(VAL2ARY(pr)->items)[0];
                 slots[3] = VAL2ARY(pr)->len >= 2 ? korb_items_data(VAL2ARY(pr)->items)[1] : KORB_NIL;
                 CHECK(korb_hash_set(c, slots + 4, dst, VALUE_REF_AT(&slots[2]), slots[3]));
