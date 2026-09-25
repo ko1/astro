@@ -1178,6 +1178,36 @@ korb_raise_missing_kw(CTX *c, VALUE *slots, const struct korb_method *m, uint32_
                      : korb_raise(c, slots, KORB_E_ARGUMENT, line, "%s", buf);
 }
 
+/* Undeclared keys of a kwargs Hash bound to params without **rest; CRuby names
+ * them all at once: "unknown keywords: :a, :b".  Writes the list into buf and
+ * returns how many there are (0 = none). */
+static uint32_t
+korb_unknown_kw_list(CTX *c, const KorbHash *kh, const struct korb_kw_info *kw, char *buf, size_t bsz)
+{
+    int off = 0; uint32_t n = 0;
+    buf[0] = '\0';
+    for (uint32_t i = 0; i < kh->len; i++) {
+        const VALUE key = korb_items_data(kh->items)[2 * i];
+        bool declared = false;
+        for (uint32_t j = 0; j < kw->count; j++) if (key == ID2SYM(kw->entries[j].mid)) { declared = true; break; }
+        if (declared) continue;
+        if (off < (int)bsz - 1) {
+            const char *const sep = n ? ", " : "";
+            if (SYMBOL_P(key))
+                off += snprintf(buf + off, bsz - off, "%s:%s", sep, korb_sym_name(c->vm, SYM2ID(key)));
+            else if (KORB_STRING_P(key))                    /* a String key is reported quoted (CRuby) */
+                off += snprintf(buf + off, bsz - off, "%s\"%.*s\"", sep,
+                                (int)VAL2STR(key)->len, korb_strbuf_data(VAL2STR(key)->buf));
+            else if (FIXNUM_P(key))
+                off += snprintf(buf + off, bsz - off, "%s%lld", sep, (long long)FIX2LONG(key));
+            else
+                off += snprintf(buf + off, bsz - off, "%s%s", sep, korb_coerce_name(c, key));
+        }
+        n++;
+    }
+    return n;
+}
+
 /* ---- string encoding negotiation ---------------------------------------- */
 
 /* the canonical name of a header encoding index */
@@ -5872,28 +5902,8 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
             if (!(j < 64 && (present & (1ull << j))) && !kw->entries[j].deflt)
                 return korb_raise_missing_kw(c, slots, m, mid, line, kw, present);
         if (kw->kwrest_slot == -1 && kwhash != KORB_NIL) {          /* no **rest: every key must be declared */
-            const KorbHash *const kh = VAL2HASH(kwhash);
-            /* CRuby reports ALL of them in one message: "unknown keywords: :a, :b, :c". */
-            char ukb[512]; int uko = 0; uint32_t ukn = 0;
-            for (uint32_t i = 0; i < kh->len; i++) {
-                const VALUE key = korb_items_data(kh->items)[2 * i];
-                bool declared = false;
-                for (uint32_t j = 0; j < kw->count; j++) if (key == ID2SYM(kw->entries[j].mid)) { declared = true; break; }
-                if (declared) continue;
-                if (uko < (int)sizeof ukb - 1) {
-                    const char *const sep = ukn ? ", " : "";
-                    if (SYMBOL_P(key))
-                        uko += snprintf(ukb + uko, sizeof ukb - uko, "%s:%s", sep, korb_sym_name(vm, SYM2ID(key)));
-                    else if (KORB_STRING_P(key))                    /* a String key is reported quoted (CRuby) */
-                        uko += snprintf(ukb + uko, sizeof ukb - uko, "%s\"%.*s\"", sep,
-                                        (int)VAL2STR(key)->len, korb_strbuf_data(VAL2STR(key)->buf));
-                    else if (FIXNUM_P(key))
-                        uko += snprintf(ukb + uko, sizeof ukb - uko, "%s%lld", sep, (long long)FIX2LONG(key));
-                    else
-                        uko += snprintf(ukb + uko, sizeof ukb - uko, "%s%s", sep, korb_coerce_name(c, key));
-                }
-                ukn++;
-            }
+            char ukb[512];
+            const uint32_t ukn = korb_unknown_kw_list(c, VAL2HASH(kwhash), kw, ukb, sizeof ukb);
             if (UNLIKELY(ukn != 0))
                 return korb_raise_arity(c, slots, m, mid, line, "unknown keyword%s: %s", ukn > 1 ? "s" : "", ukb);
         }
@@ -9495,6 +9505,20 @@ korb_caller_pos(CTX *c, const VALUE *const link, uint32_t *const file_sym, uint3
     return true;
 }
 
+/* Position of the Ruby code a C function runs for: through the call's link
+ * cell when it was dispatched (`link`), else through the frame an operator node
+ * staged (`carry`, c->carry_base taken at entry, and its line bits).  `scratch`
+ * is a free value-stack cell for the synthesized link. */
+static bool
+korb_cur_pos(CTX *c, VALUE *scratch, const VALUE *link, const VALUE *carry, uint32_t carry_line_bits,
+             uint32_t *const file_sym, uint32_t *const line)
+{
+    if (link != NULL) return korb_caller_pos(c, link, file_sym, line);
+    if (carry == NULL || carry >= scratch) return false;
+    *scratch = korb_flink_make_wide_bits(carry_line_bits, (uint64_t)(scratch - carry));
+    return korb_caller_pos(c, scratch, file_sym, line);
+}
+
 /* ---------------------------------------------------------------------------
  * Frame locals BY NAME (the debugger entry point).
  *
@@ -11594,15 +11618,21 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
             int32_t idx = (kwhash != KORB_NIL) ? korb_hash_find(VAL2HASH(kwhash), ID2SYM(kw->entries[j].mid)) : -1;
             if (idx >= 0) { bf[1 + kw->entries[j].slot] = korb_items_data(VAL2HASH(kwhash)->items)[2 * idx + 1]; if (j < 64) present |= (1ull << j); }
         }
-        for (uint32_t j = 0; j < kw->count; j++) {      /* pass 2: defaults / required check */
-            if (j < 64 && (present & (1ull << j))) continue;
-            if (kw->entries[j].deflt) {
-                RESULT dr = (*kw->entries[j].deflt->head.dispatcher)(c, kw->entries[j].deflt, kcur);
-                if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-                bf[1 + kw->entries[j].slot] = dr.value;
-            } else {
+        /* errors before any default runs, missing over unknown (as for methods) */
+        for (uint32_t j = 0; j < kw->count; j++)
+            if (!(j < 64 && (present & (1ull << j))) && !kw->entries[j].deflt)
                 return korb_raise_missing_kw(c, slots, NULL, 0, 0, kw, present);
-            }
+        if (kw->kwrest_slot == -1 && kwhash != KORB_NIL) {
+            char ukb[512];
+            const uint32_t ukn = korb_unknown_kw_list(c, VAL2HASH(kwhash), kw, ukb, sizeof ukb);
+            if (UNLIKELY(ukn != 0))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keyword%s: %s", ukn > 1 ? "s" : "", ukb);
+        }
+        for (uint32_t j = 0; j < kw->count; j++) {      /* pass 2: defaults */
+            if (j < 64 && (present & (1ull << j))) continue;
+            RESULT dr = (*kw->entries[j].deflt->head.dispatcher)(c, kw->entries[j].deflt, kcur);
+            if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+            bf[1 + kw->entries[j].slot] = dr.value;
         }
         if (kw->kwrest_slot >= 0) {                      /* collect undeclared keys into **rest (like korb_invoke_method) */
             VALUE *cur = bf + 1 + blocals;              /* scratch above the block frame */
@@ -17267,9 +17297,27 @@ static RESULT korb_out_emit(CTX *c, VALUE *slots, VALUE out, uint32_t stdidx, co
     RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "write", 5), 0, 1);
     return (r.state == KORB_NORMAL) ? RESULT_OK(KORB_NIL) : r;
 }
-/* Emit `warning: ...\n` to $stderr, suppressed only when $VERBOSE is nil (-W0);
- * routed through $stderr so mspec's `complain` matcher (which reassigns $stderr)
- * captures it.  Fire-and-forget: any write error from the sink is ignored. */
+/* rb_warn hands the finished line to Warning.warn — the hook programs override
+ * to filter or collect warnings; the default writes it to $stderr.  Before the
+ * prelude has defined Warning, write to $stderr directly.  Fire-and-forget: an
+ * error from the hook or the sink is dropped (callers have no RESULT to carry it). */
+static void korb_warn_emit(CTX *c, VALUE *slots, const char *msg, size_t len) {
+    static uint32_t id_warning, id_warn;
+    if (UNLIKELY(id_warning == 0)) {
+        id_warning = korb_intern(c->vm, "Warning", 7);
+        id_warn    = korb_intern(c->vm, "warn", 4);
+    }
+    slots[0] = korb_const_get(c->vm, id_warning);
+    if (KORB_CLASS_P(slots[0]) && korb_responds_to(c, slots[0], id_warn)) {
+        const RESULT sr = korb_str_new(c, slots + 1, msg, (uint32_t)len);
+        if (sr.state != KORB_NORMAL) return;
+        slots[1] = sr.value;
+        (void)korb_send(c, slots + 2, id_warn, 0, 1);
+        return;
+    }
+    bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
+    (void)korb_out_emit(c, slots, out, 2, msg, len);
+}
 /* rb_warn with a source position: "file:line: warning: msg" (CRuby's shape). */
 void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const char *fmt, ...) {
     if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
@@ -17282,8 +17330,7 @@ void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const c
     const int ml = file ? snprintf(msg, sizeof msg, "%s:%u: warning: %s\n", file, line, body)
                         : snprintf(msg, sizeof msg, "warning: %s\n", body);
     if (ml < 0) return;
-    bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
-    (void)korb_out_emit(c, slots, out, 2, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
+    korb_warn_emit(c, slots, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
 }
 /* like korb_warn, but for category warnings whose own flag is the gate */
 void korb_warn_ignore_verbose(CTX *c, VALUE *slots, const char *fmt, ...) {
@@ -17295,8 +17342,7 @@ void korb_warn_ignore_verbose(CTX *c, VALUE *slots, const char *fmt, ...) {
     char msg[256];
     const int ml = snprintf(msg, sizeof msg, "warning: %s\n", body);
     if (ml < 0) return;
-    bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
-    (void)korb_out_emit(c, slots, out, 2, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
+    korb_warn_emit(c, slots, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
 }
 /* rb_warn_deprecated: gated on Warning[:deprecated] ALONE (the category flag is
  * independent of $VERBOSE — mspec's `complain` sets $VERBOSE=false and still
@@ -17341,8 +17387,7 @@ void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...) {
     char msg[256];
     const int ml = snprintf(msg, sizeof msg, "warning: %s\n", body);
     if (ml < 0) return;
-    bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
-    (void)korb_out_emit(c, slots, out, 2, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
+    korb_warn_emit(c, slots, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
 }
 static RESULT
 korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
@@ -18338,7 +18383,7 @@ korb_bi_format(CTX *c, VALUE *slots, VALUE_SLICE args)
     VALUE_REF arr = VALUE_REF_AT(&slots[1]);
     for (uint32_t i = 0; i < n; i++)
         CHECK(korb_ary_push_val(c, slots + 2, arr, VALUE_SLICE_GET(args, i + 1)));
-    return korb_m_str_format(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1));
+    return korb_str_format_at(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1), args.p + KORB_FLINK_OFF);
 }
 /* Kernel#printf(fmt, *args) — write sprintf(fmt, *args) to stdout, return nil.
  * (The printf(io, fmt, ...) form and $stdout redirection are not supported.) */

@@ -124,7 +124,7 @@ static int korb_fmt_named_arg(CTX *c, VALUE *slots, const char *fmt, uint32_t fl
     while (i < flen && fmt[i] != '>') i++;
     const VALUE nh = (argn >= 1) ? args[0] : KORB_NIL;
     if (i >= flen || !KORB_HASH_P(nh)) {
-        *out_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "one hash required");
+        *out_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, i >= flen ? "malformed name - unmatched parenthesis" : "one hash required");
         return -1;
     }
     const VALUE key_sym = ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart));
@@ -139,7 +139,25 @@ static int korb_fmt_named_arg(CTX *c, VALUE *slots, const char *fmt, uint32_t fl
     return 1;
 }
 
-static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+/* CRuby's check_name_arg: a %{name} / %<name> after a positional directive.
+ * fmt[open] is the opening brace; the name is quoted with its braces. */
+static const char *korb_fmt_name_mix(char *buf, size_t bsz, const char *fmt, uint32_t flen, uint32_t open,
+                                     bool saw_unnumbered, bool saw_numbered, uint32_t unnumbered_cnt) {
+    if (!saw_unnumbered && !saw_numbered) return NULL;
+    const char closer = fmt[open] == '{' ? '}' : '>';
+    uint32_t e = open + 1;
+    while (e < flen && fmt[e] != closer) e++;
+    const int nl = (int)((e < flen ? e + 1 : flen) - open);
+    if (saw_unnumbered) snprintf(buf, bsz, "named%.*s after unnumbered(%u)", nl, fmt + open, unnumbered_cnt);
+    else                snprintf(buf, bsz, "named%.*s after numbered", nl, fmt + open);
+    return buf;
+}
+
+/* `link` is the calling frame's link cell, or NULL when an operator node staged
+ * the frame in c->carry_base instead — only needed to place a warning. */
+static RESULT korb_str_format_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, const VALUE *link) {
+    const VALUE *const carry = link ? NULL : c->carry_base;
+    const uint32_t carry_lb = c->carry_line_bits;
     VALUE single = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
     if (VALUE_SLICE_LEN(a) == 1 && !KORB_ARRAY_P(single) && KORB_OBJECT_P(single)) {   /* a single non-Array arg is coerced via #to_ary (before caching fmt → GC-safe) */
         slots[0] = VALUE_REF_GET(self);                  /* root self across the dispatch */
@@ -195,7 +213,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     /* CRuby refuses to mix `%1$s` with `%s` in one format string; which one came
      * first decides the wording of the error. */
     bool saw_numbered = false, saw_unnumbered = false, saw_named = false;
-    char mixmsg[64];
+    char mixmsg[128];
     RESULT coerce_err = RESULT_OK(KORB_NIL); bool has_coerce_err = false;   /* a #to_int/#to_f arg coercion that raised */
     const uint32_t fmt_to_int = korb_intern(c->vm, "to_int", 6);   /* %c fallback coercion */
     for (uint32_t i = 0; i < flen; i++) {
@@ -209,18 +227,23 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
          * flags, width, precision) — see TRY_NAMED, applied at each stage. */
         VALUE named_arg = KORB_NIL; bool has_named = false;
         #define TRY_NAMED() do { \
-            if (!has_named && i < flen && fmt[i] == '<') { \
+            if (!has_named && i < flen && fmt[i] == '<' && \
+                (errmsg = korb_fmt_name_mix(mixmsg, sizeof mixmsg, fmt, flen, i, saw_unnumbered, saw_numbered, ai))) \
+                err = true; \
+            else if (!has_named && i < flen && fmt[i] == '<') { \
                 int _nr = korb_fmt_named_arg(c, slots, fmt, flen, &i, args, argn, &named_arg, &coerce_err); \
                 if (_nr < 0) { has_coerce_err = true; err = true; } \
                 else if (_nr > 0) has_named = true; \
             } \
         } while (0)
         if (i < flen && fmt[i] == '{') {                   /* %{name}: to_s, no type/width/precision */
+            if ((errmsg = korb_fmt_name_mix(mixmsg, sizeof mixmsg, fmt, flen, i, saw_unnumbered, saw_numbered, ai))) { err = true; break; }
             saw_named = true;                              /* named: the Hash argument is not "unused" */
             i++; const uint32_t nstart = i;
             while (i < flen && fmt[i] != '}') i++;
             const VALUE nh = (argn >= 1) ? args[0] : KORB_NIL;
-            if (i >= flen || !KORB_HASH_P(nh)) { err = true; errmsg = "malformed format sequence"; break; }
+            if (i >= flen) { err = true; errmsg = "malformed name - unmatched parenthesis"; break; }
+            if (!KORB_HASH_P(nh)) { err = true; errmsg = "one hash required"; break; }
             const VALUE key_sym = ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart));
             const int32_t hidx = korb_hash_find(VAL2HASH(nh), key_sym);
             if (hidx >= 0) {
@@ -340,11 +363,13 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
         char conv;
         if (fmt[i] == '{') {                               /* %[flags][width][.prec]{name}: named value to_s (implicit 's') */
+            if ((errmsg = korb_fmt_name_mix(mixmsg, sizeof mixmsg, fmt, flen, i, saw_unnumbered, saw_numbered, ai))) { err = true; break; }
             saw_named = true;
             i++; const uint32_t nstart = i;
             while (i < flen && fmt[i] != '}') i++;
             const VALUE nh = (argn >= 1) ? args[0] : KORB_NIL;
-            if (i >= flen || !KORB_HASH_P(nh)) { err = true; errmsg = "malformed format sequence"; break; }
+            if (i >= flen) { err = true; errmsg = "malformed name - unmatched parenthesis"; break; }
+            if (!KORB_HASH_P(nh)) { err = true; errmsg = "one hash required"; break; }
             const VALUE ksym = ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart));
             const int32_t hidx = korb_hash_find(VAL2HASH(nh), ksym);
             if (UNLIKELY(hidx < 0)) {
@@ -364,9 +389,11 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (conv != '%' && !has_named) {
             if (explicit_idx >= 0) {
                 if (saw_unnumbered) { snprintf(mixmsg, sizeof mixmsg, "numbered(%d) after unnumbered(%u)", explicit_idx + 1, ai); errmsg = mixmsg; err = true; break; }
+                if (saw_named) { snprintf(mixmsg, sizeof mixmsg, "numbered(%d) after named", explicit_idx + 1); errmsg = mixmsg; err = true; break; }
                 saw_numbered = true;
             } else {
                 if (saw_numbered) { snprintf(mixmsg, sizeof mixmsg, "unnumbered(%u) mixed with numbered", ai + 1); errmsg = mixmsg; err = true; break; }
+                if (saw_named) { snprintf(mixmsg, sizeof mixmsg, "unnumbered(%u) mixed with named", ai + 1); errmsg = mixmsg; err = true; break; }
                 saw_unnumbered = true;
             }
         } else if (has_named) saw_named = true;
@@ -635,12 +662,6 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     /* A lone trailing Hash is keyword arguments, never a surplus operand (CRuby
      * bug #20593): `format("test", k: 1)` must not complain. */
     const bool lone_kwargs = argn == 1 && KORB_HASH_P(args[0]);
-    /* $DEBUG turns a format string that consumed fewer arguments than it was
-     * given into an error (CRuby); positional/named directives opt out. */
-    if (!err && !saw_numbered && !saw_named && !lone_kwargs && ai < argn &&
-        KORB_TRUTHY(korb_const_get(vm, korb_intern(vm, "$DEBUG", 6)))) {
-        err = true; errmsg = "too many arguments for format string";
-    }
     #undef FMT_REREAD_ARGS
     if (has_coerce_err) {                                /* a #to_int/#to_f arg coercion raised → propagate it */
         if (shared) vm->fmt_busy = false; else free(buf);
@@ -665,7 +686,13 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     if (UNLIKELY(!saw_numbered && !saw_named && !lone_kwargs && ai < argn &&
                  korb_const_get(vm, korb_intern(vm, "$VERBOSE", 8)) == KORB_TRUE))   /* only in verbose mode (CRuby) */
-        korb_warn(c, slots, "too many arguments for format string");
+    {
+        uint32_t wf, wl;
+        if (korb_cur_pos(c, slots + 1, link, carry, carry_lb, &wf, &wl))
+            korb_warn_at(c, slots + 1, korb_sym_name(vm, wf), wl, "too many arguments for format string");
+        else
+            korb_warn(c, slots + 1, "too many arguments for format string");
+    }
     RESULT r = korb_str_new(c, slots, out ? out : "", (uint32_t)outlen);
     if (shared) vm->fmt_busy = false; else free(buf);
     /* the result carries the format's encoding, widened by the arguments (CRuby) */
@@ -673,9 +700,13 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return r;
 }
 
+static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_str_format_at(c, slots, self, a, a.p + KORB_FLINK_OFF);
+}
+
 RESULT korb_str_mod(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs) {
     slots[0] = rhs;
-    return korb_m_str_format(c, slots + 1, lhs, VALUE_SLICE_MAKE(slots, 1));
+    return korb_str_format_at(c, slots + 1, lhs, VALUE_SLICE_MAKE(slots, 1), NULL);
 }
 
 static int korb_ci_cmp(const char *a, uint32_t al, const char *b, uint32_t bl) {
