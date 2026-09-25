@@ -178,7 +178,22 @@ static uint32_t korb_utf8_seq_len(const unsigned char *p, uint32_t i, uint32_t n
 }
 static bool korb_str_utf8_valid(const KorbString *s) {
     const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
-    for (uint32_t i = 0; i < s->len; ) { const uint32_t l = korb_utf8_seq_len(p, i, s->len); if (!l) return false; i += l; }
+    const uint32_t n = s->len;
+    uint32_t i = 0;
+    while (i < n) {
+        if (p[i] < 0x80) {                                  /* ASCII runs dominate: 8 bytes a step */
+            while (n - i >= 8) {
+                uint64_t w; memcpy(&w, p + i, 8);
+                if (w & 0x8080808080808080ULL) break;
+                i += 8;
+            }
+            while (i < n && p[i] < 0x80) i++;
+            continue;
+        }
+        const uint32_t l = korb_utf8_seq_len(p, i, n);
+        if (!l) return false;
+        i += l;
+    }
     return true;
 }
 /* String#valid_encoding? — true for ASCII-8BIT/US-ASCII-tagged (every byte legal)

@@ -83,6 +83,19 @@ static RESULT korb_re_check_enc(CTX *c, VALUE *slots, VALUE re, VALUE subj)
     return RESULT_OK(KORB_NIL);
 }
 
+/* CRuby buckets a match by the subject's coderange first, so a subject whose
+ * bytes are not valid in its own encoding is an ArgumentError whatever the
+ * pattern matches.  sub/gsub/split/scan/index check at their own entry; this is
+ * for the plain match forms.  Deliberately NOT inside korb_re_run — the looping
+ * methods call that once per match, and checking there would be O(n^2). */
+static bool korb_str_utf8_valid(const KorbString *s);   /* fwd (builtins/string.c) */
+static RESULT korb_re_check_subject(CTX *c, VALUE *slots, VALUE subj)
+{
+    if (LIKELY(!KORB_STRING_P(subj) || KORB_STR_ENC(subj) != KORB_ENC_UTF8)) return RESULT_OK(KORB_NIL);
+    if (LIKELY(korb_str_utf8_valid(VAL2STR(subj)))) return RESULT_OK(KORB_NIL);
+    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
+}
+
 /* ---- low-level engine call (no koruby alloc inside → subject bytes stable) */
 static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb_re_match_t *m) {
     if (UNLIKELY(!KORB_REGEXP_P(re) || !KORB_STRING_P(subj))) return RESULT_OK(KORB_FALSE);
@@ -677,6 +690,7 @@ static RESULT korb_re_match_set(CTX *c, VALUE *slots, VALUE re, VALUE str) {
         re = slots[0];
     }
     slots[0] = re; slots[1] = str;
+    CHECK(korb_re_check_subject(c, slots + 2, slots[1]));
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[0], slots[1], 0, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
@@ -737,6 +751,7 @@ static RESULT korb_m_re_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             startb = korb_re_startb(c->vm, slots[1], (long)pos);
         }
     }
+    CHECK(korb_re_check_subject(c, slots + 2, slots[1]));
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[0], slots[1], startb, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
@@ -928,6 +943,7 @@ static RESULT korb_m_re_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
      * where a character IS a byte). */
     if (startc < 0) startc += korb_re_ncp(c->vm, slots[1]);
     size_t startb = (startc <= 0) ? 0 : korb_re_startb(c->vm, slots[1], startc);
+    CHECK(korb_re_check_subject(c, slots + 2, slots[1]));
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[0], slots[1], startb, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
@@ -1019,6 +1035,7 @@ static RESULT korb_m_str_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (VALUE_SLICE_LEN(a) >= 2 && !korb_re_start_char(c, slots[0], VALUE_SLICE_GET(a, 1), &startc))
         { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }   /* out of range → no match */
     size_t startb = korb_re_startb(c->vm, slots[0], startc);
+    CHECK(korb_re_check_subject(c, slots + 2, slots[0]));
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], startb, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
@@ -1038,6 +1055,7 @@ static RESULT korb_m_str_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (VALUE_SLICE_LEN(a) >= 2 && !korb_re_start_char(c, slots[0], VALUE_SLICE_GET(a, 1), &startc))
         return RESULT_OK(KORB_FALSE);                    /* out of range → no match */
     size_t startb = korb_re_startb(c->vm, slots[0], startc);
+    CHECK(korb_re_check_subject(c, slots + 2, slots[0]));
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], startb, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
@@ -1096,6 +1114,7 @@ static RESULT korb_m_str_scan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     korb_re_set_lastmatch(c, KORB_NIL);              /* $~ ← nil, then last match (or stays nil if none) */
     slots[0] = VALUE_REF_GET(self); slots[1] = re;
+    CHECK(korb_re_check_subject(c, slots + 2, slots[0]));
     slots[2] = block ? KORB_NIL : UNWRAP(korb_ary_new(c, slots + 2, 0));
     long off = 0;
     for (;;) {
@@ -1455,6 +1474,7 @@ RESULT korb_re_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE gr
 }
 RESULT korb_re_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long startc, bool bytes) {
     slots[0] = VALUE_REF_GET(self); slots[1] = re;
+    CHECK(korb_re_check_subject(c, slots + 2, slots[0]));
     const KorbString *s = VAL2STR(slots[0]);
     const long ncp = bytes ? (long)s->len : korb_re_ncp(c->vm, slots[0]);
     if (startc < 0) startc += ncp;

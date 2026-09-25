@@ -715,6 +715,7 @@ static RESULT korb_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
         if (KORB_REGEXP_P(_grep_pat)) {
             slots[1] = _grep_pat;                                   /* root the pattern (a Regexp is movable) across the build */
             if (LIKELY(KORB_STRING_P(slots[0]) || SYMBOL_P(slots[0]))) {
+                CHECK(korb_re_check_subject(c, slots + 2, slots[0]));   /* broken subject → ArgumentError, as Regexp#=== */
                 _m = korb_re_caseeq_backref(c, slots + 2, VALUE_REF_GET(VALUE_REF_AT(&slots[1])), slots[0]);
             } else {                                                /* anything else: full Regexp#===, which coerces through #to_str */
                 slots[2] = slots[0];
