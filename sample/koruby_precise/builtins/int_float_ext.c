@@ -448,7 +448,27 @@ static RESULT korb_m_hash_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (below) */
 /* Run the copy hook on the new object at slots[1] with the original as its one
  * positional argument (plus clone's freeze: Hash when there is one). */
+/* clone: give the copy at slots[1] its own copy of the source's singleton class,
+ * unless it already has one.  Uses slots[2..]. */
+static RESULT korb_clone_singleton(CTX *c, VALUE *slots, VALUE_REF self) {
+    const VALUE src = VALUE_REF_GET(self);
+    if (!AROH_IS_GC_OBJECT(src) || KORB_CLASS_P(src) || !AROH_IS_GC_OBJECT(slots[1]) ||
+        !(((const AroObjectHeader *)(uintptr_t)src)->flags & KORB_FL_HAS_KLASS)) return RESULT_OK(KORB_NIL);
+    const VALUE ov = korb_klass_override_get(c->vm, src);
+    if (!KORB_CLASS_P(ov) || !VAL2CLASS(ov)->is_singleton) return RESULT_OK(KORB_NIL);
+    if (((const AroObjectHeader *)(uintptr_t)slots[1])->flags & KORB_FL_HAS_KLASS) {
+        const VALUE dv = korb_klass_override_get(c->vm, slots[1]);
+        if (KORB_CLASS_P(dv) && VAL2CLASS(dv)->is_singleton) return RESULT_OK(KORB_NIL);
+    }
+    slots[2] = slots[1]; slots[3] = ov;
+    CHECK(korb_singleton_copy(c, slots + 4, slots[2], slots[3]));
+    slots[1] = slots[2];
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_copy_hook(CTX *c, VALUE *slots, VALUE_REF self, uint32_t hook_mid, const VALUE *hook_kw) {
+    /* clone copies the singleton class BEFORE the hook: a singleton
+     * #initialize_copy runs, and sees its methods (CRuby rb_obj_clone) */
+    if (hook_kw != NULL) CHECK(korb_clone_singleton(c, slots, self));
     slots[2] = VALUE_REF_GET(self);                      /* orig (arg); recv = the new object at slots[1] */
     if (hook_kw == NULL || *hook_kw == KORB_NIL) return korb_send_impl(c, slots + 3, hook_mid, 0, 1, NULL, NULL, NULL);
     slots[3] = *hook_kw;                                 /* clone's freeze: keywords — read from the caller's rooted slot */
@@ -755,15 +775,10 @@ static RESULT korb_m_obj_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
      * survive.  A Module/Class copy already got its own from korb_class_dup. */
     const bool self_sub = AROH_IS_GC_OBJECT(sv2) && !KORB_CLASS_P(sv2) &&
                           (((const AroObjectHeader *)(uintptr_t)sv2)->flags & KORB_FL_HAS_KLASS);
-    if (self_sub && AROH_IS_GC_OBJECT(r.value)) {
-        const VALUE ov = korb_klass_override_get(c->vm, sv2);
-        if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) {
-            slots[0] = r.value;
-            slots[1] = ov;
-            const RESULT scr = korb_singleton_copy(c, slots + 2, slots[0], slots[1]);
-            if (UNLIKELY(scr.state != KORB_NORMAL)) return scr;
-            r.value = slots[0];
-        }
+    if (self_sub && AROH_IS_GC_OBJECT(r.value)) {   /* a copy whose kind ran no hook: attach it now */
+        slots[1] = r.value;
+        CHECK(korb_clone_singleton(c, slots, self));
+        r.value = slots[1];
     }
     if (((fmode == 1) || (fmode == -1 && self_frozen)) && AROH_IS_GC_OBJECT(r.value))
         ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;

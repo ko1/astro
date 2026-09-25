@@ -588,6 +588,7 @@ typedef struct KorbThread {
 typedef struct KorbMutex {
     AroObjectHeader head;            /* KORB_OBJ_MUTEX */
     struct korb_thread *owner;       /* NULL = unlocked */
+    struct KorbFiberRep *owner_fiber; /* the fiber of `owner` holding it (NULL = its root): Ruby 3.0+ locks per fiber */
     struct korb_thread *wq_head, *wq_tail;
 } KorbMutex;
 

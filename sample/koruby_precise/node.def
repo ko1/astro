@@ -1877,7 +1877,11 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * nil is a legitimate constant value, distinct from "not defined".
          * global variables ($x) share this table but are nil (not NameError) when
          * unset; constants raise.  The interned name keeps the leading '$'. */
-        if (owner_name == 0 && korb_sym_name(vm, name_sym)[0] == '$') return RESULT_OK(KORB_NIL);
+        if (owner_name == 0 && korb_sym_name(vm, name_sym)[0] == '$') {
+            if (UNLIKELY(korb_const_get(vm, korb_intern(vm, "$VERBOSE", 8)) == KORB_TRUE))   /* -w only (CRuby) */
+                korb_warn(c, slots, "global variable '%s' not initialized", korb_sym_name(vm, name_sym));
+            return RESULT_OK(KORB_NIL);
+        }
         if (owner_name != 0) {
             /* Fire the const_missing hook on the owning module: <owner>.const_missing(:name).
              * The prelude default re-raises NameError (so an unhandled miss behaves as

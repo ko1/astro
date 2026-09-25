@@ -145,7 +145,7 @@ module JSON
           when "u"  then out << parse_unicode
           else err("invalid escape \\#{e}")
           end
-          @i += 1 unless e == "u" # parse_unicode already advanced past the hex
+          @i += 1                 # hex4 leaves @i ON the last hex digit
         else
           out << c
           @i += 1
@@ -201,6 +201,14 @@ module JSON
   }.freeze
 
   def self.escape(str)
+    unless str.encoding == Encoding::UTF_8 && str.valid_encoding?
+      # the json gem writes UTF-8 only: BINARY / ASCII bytes are taken as UTF-8,
+      # other encodings are transcoded, and malformed input is an error
+      e = str.encoding
+      str = (e == Encoding::UTF_8 || e == Encoding::BINARY || e == Encoding::US_ASCII) ?
+              str.dup.force_encoding(Encoding::UTF_8) : str.encode(Encoding::UTF_8)
+      raise GeneratorError, "source sequence is illegal/malformed utf-8" unless str.valid_encoding?
+    end
     out = +'"'
     str.each_char do |c|
       if (m = ESCAPE_MAP[c])

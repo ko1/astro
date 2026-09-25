@@ -1553,9 +1553,11 @@ korb_mutex_lock_core(CTX *c, VALUE *slots, VALUE_REF self, bool interruptible)
     for (;;) {
         KorbMutex *m = VAL2MUTEX(VALUE_REF_GET(self));      /* park 跨ぎ毎に再導出 */
         struct korb_thread *const cur = vm->cur_thread;
-        if (korb_mutex_owner(m) == NULL) { m->owner = cur; return RESULT_OK(VALUE_REF_GET(self)); }
+        if (korb_mutex_owner(m) == NULL) { m->owner = cur; m->owner_fiber = vm->running_fiber; return RESULT_OK(VALUE_REF_GET(self)); }
         if (UNLIKELY(m->owner == cur))
-            return korb_raise_thread_error(c, slots, "deadlock; recursive locking");
+            return korb_raise_thread_error(c, slots, m->owner_fiber == vm->running_fiber
+                                           ? "deadlock; recursive locking"
+                                           : "deadlock; lock already owned by another fiber belonging to the same thread");
         korb_waitq_push(&m->wq_head, &m->wq_tail, cur);     /* ここから park まで alloc なし */
         cur->state = KORB_TH_PENDED;
         RESULT r = korb_thread_yield_cpu(c, slots);
@@ -1578,9 +1580,9 @@ korb_mutex_unlock_core(CTX *c, VALUE *slots, VALUE_REF self)
     KorbMutex *const m = VAL2MUTEX(VALUE_REF_GET(self));
     if (UNLIKELY(korb_mutex_owner(m) == NULL))
         return korb_raise_thread_error(c, slots, "Attempt to unlock a mutex which is not locked");
-    if (UNLIKELY(m->owner != vm->cur_thread))
-        return korb_raise_thread_error(c, slots, "Attempt to unlock a mutex which is locked by another thread");
-    m->owner = NULL;
+    if (UNLIKELY(m->owner != vm->cur_thread || m->owner_fiber != vm->running_fiber))
+        return korb_raise_thread_error(c, slots, "Attempt to unlock a mutex which is locked by another thread/fiber");
+    m->owner = NULL; m->owner_fiber = NULL;
     korb_waitq_wake_one(vm, &m->wq_head, &m->wq_tail);
     return RESULT_OK(VALUE_REF_GET(self));
 }
@@ -1600,7 +1602,7 @@ korb_m_mutex_try_lock(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     korb_thread_boot(c);
     KorbMutex *const m = VAL2MUTEX(VALUE_REF_GET(self));
     if (korb_mutex_owner(m) != NULL) return RESULT_OK(KORB_FALSE);
-    m->owner = c->vm->cur_thread;
+    m->owner = c->vm->cur_thread; m->owner_fiber = c->vm->running_fiber;
     return RESULT_OK(KORB_TRUE);
 }
 
@@ -1616,7 +1618,8 @@ korb_m_mutex_owned_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     (void)slots; (void)a;
     korb_thread_boot(c);
-    return RESULT_OK(korb_mutex_owner(VAL2MUTEX(VALUE_REF_GET(self))) == c->vm->cur_thread ? KORB_TRUE : KORB_FALSE);
+    const KorbMutex *const m = VAL2MUTEX(VALUE_REF_GET(self));
+    return RESULT_OK(korb_mutex_owner(m) == c->vm->cur_thread && m->owner_fiber == c->vm->running_fiber ? KORB_TRUE : KORB_FALSE);
 }
 
 /* Mutex#synchronize { … } — lock; yield; ensure unlock (block の例外でも解放) */

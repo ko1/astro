@@ -5137,6 +5137,9 @@ korb_singleton_copy(CTX *c, VALUE *slots, VALUE dst, VALUE src_sing)
         struct korb_method *const dm = korb_class_method_slot(c->vm, VAL2CLASS(slots[2]), src_m.mid);
         *dm = src_m;
         dm->owner = slots[2];
+        /* CRuby fills the copy before flagging it a singleton, so its method
+         * table gets the ordinary rule: initialize & co. become private */
+        if (dm->visibility == 0 && korb_auto_private_name_p(c->vm, src_m.mid)) dm->visibility = 1;
     }
     /* constants defined in `class << obj` come along too (rubyspec:
      * "copies constants defined in the singleton class") */

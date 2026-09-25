@@ -1774,9 +1774,10 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(na_ > 2 && !KORB_HASH_P(VALUE_SLICE_GET(a, na_ - 1))))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", na_);
     slots[0] = VALUE_SLICE_GET(a, 0);
-    /* A non-String, non-IO target that answers #to_path is a path (CRuby tries
-       #to_path before #to_io), so convert it up front. */
+    /* A non-String, non-IO target is an IO when it answers #to_io (CRuby's
+       rb_io_check_io, one-argument form only), else a path via #to_path. */
     if (!KORB_STRING_P(slots[0]) && KORB_OBJECT_P(slots[0]) && korb_io_rep(c, slots[0]) == NULL &&
+        !(na_ == 1 && korb_responds_to(c, slots[0], korb_intern(c->vm, "to_io", 5))) &&
         korb_responds_to(c, slots[0], korb_intern(c->vm, "to_path", 7))) {
         const RESULT pr = korb_send(c, slots + 1, korb_intern(c->vm, "to_path", 7), 0, 0);
         if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
@@ -1874,6 +1875,9 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         KorbObject *const so = VAL2OBJ(VALUE_REF_GET(self));
         if (KORB_CLASS_P(ocls) && so->klass != ocls)
             ARO_STORE(c, so, (VALUE *)(uintptr_t)&so->klass, ocls);
+        /* RBASIC_SET_CLASS: a singleton class the receiver had goes away with the old class */
+        if (KORB_CLASS_P(ocls) && (so->head.flags & KORB_FL_HAS_KLASS))
+            korb_klass_override_set(c, VALUE_REF_GET(self), ocls);
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
