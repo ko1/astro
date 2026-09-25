@@ -483,8 +483,9 @@ class Date
   end
 
   private def __sg_str
-    return "-Infinity" if @sg == GREGORIAN
-    return "Infinity" if @sg == JULIAN
+    # CRuby's Date#inspect abbreviates the calendar-reform point
+    return "-Inf" if @sg == GREGORIAN
+    return "Inf" if @sg == JULIAN
     @sg.to_s
   end
 
