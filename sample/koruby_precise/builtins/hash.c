@@ -97,13 +97,16 @@ korb_hash_salt(void)
     return salt;
 }
 
-/* True when `v`'s class answers #hash with Ruby code of its own — then the
- * value's hash is whatever that returns, not the structural one below. */
+static RESULT korb_m_obj_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
+/* True when `v`'s class answers #hash with anything but the generic structural
+ * one below — Ruby code of its own, or another builtin (Struct#hash,
+ * Regexp#hash, ...).  Only the generic one can be folded into this walk. */
 static bool korb_has_user_hash(CTX *c, VALUE v) {
     const VALUE cls = korb_dispatch_class(c, v);
     if (!KORB_CLASS_P(cls)) return false;
     const struct korb_method *const m = korb_class_find_method(cls, korb_intern(c->vm, "hash", 4), NULL);
-    return m != NULL && m->kind != KORB_METHOD_CFUNC;
+    if (m == NULL) return false;
+    return !(m->kind == KORB_METHOD_CFUNC && m->rfn == korb_m_obj_hash);
 }
 
 /* korb_deep_hash_d cannot call back into Ruby, so it hashes an element with a

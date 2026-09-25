@@ -1674,6 +1674,18 @@ korb_hash_find(const KorbHash *h, VALUE key)
             if (d[2 * i] == key) return (int32_t)i;
         return -1;
     }
+    /* Array keys are mutable, so a pair stored under a different content hash
+     * sits in another bucket and CRuby never compares it — the linear scan has
+     * to honour that (the index path already does, by probing). */
+    if (UNLIKELY(h->khints != NULL) && h->khint_len == h->len && KORB_ARRAY_P(key)) {
+        const uint64_t *const hints = (const uint64_t *)korb_strbuf_data((KorbStrBuf *)h->khints);
+        const uint64_t want = korb_value_hash(key) | 1u;
+        for (uint32_t i = 0; i < h->len; i++) {
+            if (hints[i] != 0 && hints[i] != want) continue;
+            if (korb_value_eql(d[2 * i], key)) return (int32_t)i;
+        }
+        return -1;
+    }
     for (uint32_t i = 0; i < h->len; i++)
         if (korb_value_eql(d[2 * i], key)) return (int32_t)i;   /* eql?: 1 and 1.0 are distinct keys */
     return -1;
@@ -1685,9 +1697,10 @@ korb_hash_find(const KorbHash *h, VALUE key)
  * the rooted Hash (re-read each step since eql? may GC).  On a dispatch error
  * *out_err carries it (result -1). */
 static int32_t
-korb_hash_find_ctx(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *out_err)
+korb_hash_find_ctx_h(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *out_err, uint64_t *out_hint)
 {
     *out_err = RESULT_OK(KORB_NIL);
+    if (out_hint) *out_hint = 0;
     if (LIKELY(!korb_eq_needs_send(key)))
         return korb_hash_find(VAL2HASH(VALUE_REF_GET(href)), key);
     if (VAL2HASH(VALUE_REF_GET(href))->head.flags & KORB_FL_CMP_BY_ID) {   /* compare_by_identity: pointer only */
@@ -1704,10 +1717,19 @@ korb_hash_find_ctx(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *out_
     RESULT khr = korb_send_impl(c, slots + 3, hashm, 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(khr.state != KORB_NORMAL)) { *out_err = khr; return -1; }
     slots[1] = khr.value;                                 /* searched key's #hash (rooted) */
+    const uint64_t khint = korb_value_hash(khr.value) | 1u;   /* 0 is reserved for "not recorded" */
+    if (out_hint) *out_hint = khint;
     for (uint32_t i = 0; ; i++) {
         const KorbHash *const h = VAL2HASH(VALUE_REF_GET(href));
         if (i >= h->len) return -1;
         const VALUE existing = korb_items_data(h->items)[2 * i];
+        /* A pair stored under a different #hash is in another bucket, so CRuby
+         * never compares it — not even by identity.  That is what makes an
+         * entry whose key was mutated after insertion unreachable. */
+        if (h->khints && h->khint_len == h->len) {
+            const uint64_t stored = ((const uint64_t *)korb_strbuf_data(h->khints))[i];
+            if (stored != 0 && stored != khint) continue;
+        }
         if (existing == slots[0]) return (int32_t)i;      /* identity shortcut (no dispatch) */
         if (KORB_OBJECT_P(existing)) {                    /* both are objects → compare their #hash */
             slots[3] = existing;
@@ -1723,6 +1745,34 @@ korb_hash_find_ctx(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *out_
         if (UNLIKELY(r.state != KORB_NORMAL)) { *out_err = r; return -1; }
         if (KORB_TRUTHY(r.value)) return (int32_t)i;
     }
+}
+
+static int32_t
+korb_hash_find_ctx(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *out_err)
+{
+    return korb_hash_find_ctx_h(c, slots, href, key, out_err, NULL);
+}
+
+/* Record pair `pi`'s insertion-time key hash (0 = none), keeping khint_len in
+ * step with len; the buffer grows with the pair array.  Called right after the
+ * pair is stored, so a GC here is safe. */
+static RESULT
+korb_hash_khint_put(CTX *c, VALUE *slots, VALUE_REF href, uint32_t pi, uint64_t hint)
+{
+    KorbHash *h = VAL2HASH(VALUE_REF_GET(href));
+    if (h->khint_len != pi) { KORB_HASH_DROP_KHINTS(h); return RESULT_OK(KORB_NIL); }   /* out of step: give up rather than lie */
+    if (h->khints == NULL || h->khint_capa <= pi) {
+        const uint32_t ncapa = h->capa > pi + 1 ? h->capa : pi + 1;
+        KorbStrBuf *nb = korb_alloc(c, slots, sizeof(KorbStrBuf) + (size_t)ncapa * sizeof(uint64_t), KORB_OBJ_STR_BUF);
+        memset(korb_strbuf_data(nb), 0, (size_t)ncapa * sizeof(uint64_t));
+        h = VAL2HASH(VALUE_REF_GET(href));            /* re-read after GC */
+        if (h->khints) memcpy(korb_strbuf_data(nb), korb_strbuf_data(h->khints), (size_t)pi * sizeof(uint64_t));
+        ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->khints, (VALUE)(uintptr_t)nb);
+        h->khint_capa = ncapa;
+    }
+    ((uint64_t *)korb_strbuf_data(h->khints))[pi] = hint;
+    h->khint_len = pi + 1;
+    return RESULT_OK(KORB_NIL);
 }
 
 /* Insert pair `pi` into an existing index (no alloc; caller ensures capacity). */
@@ -1794,7 +1844,8 @@ RESULT
 korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE val)
 {
     VALUE_REF vref = SLOTS_PUSH(slots, val);          /* root val across grow / eql? GC */
-    RESULT ferr; int32_t idx = korb_hash_find_ctx(c, slots, href, VALUE_REF_GET(kref), &ferr);
+    uint64_t khint = 0;
+    RESULT ferr; int32_t idx = korb_hash_find_ctx_h(c, slots, href, VALUE_REF_GET(kref), &ferr, &khint);
     if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
     KorbHash *h = VAL2HASH(VALUE_REF_GET(href));      /* re-read after possible eql? dispatch GC */
     if (idx >= 0) {
@@ -1809,6 +1860,10 @@ korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE val)
     ARO_STORE(c, it, &korb_items_data(it)[2 * i],     VALUE_REF_GET(kref));
     ARO_STORE(c, it, &korb_items_data(it)[2 * i + 1], VALUE_REF_GET(vref));
     h->len++;
+    if (!khint && KORB_ARRAY_P(VALUE_REF_GET(kref)))   /* mutable key with a C-computed content hash */
+        khint = korb_value_hash(VALUE_REF_GET(kref)) | 1u;
+    if (khint || h->khints) CHECK(korb_hash_khint_put(c, slots, href, i, khint));
+    h = VAL2HASH(VALUE_REF_GET(href));                /* re-read after khint alloc */
     /* O(1) index maintenance.  An ambiguous key (Float/heap) permanently drops
      * the index; otherwise build at the threshold and incrementally fill,
      * rebuilding bigger when the load factor exceeds ~0.7. */
