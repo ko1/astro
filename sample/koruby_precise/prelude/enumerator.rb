@@ -241,6 +241,17 @@ class Enumerator
     __c_rewind
   end
 
+  # A copy runs its own external iteration: the Fiber and the value it has
+  # buffered belong to the original (CRuby resets them in initialize_copy).
+  def initialize_copy(other)
+    %i[@__ext_fiber @__ext_started @__ext_fresh @__ext_buf @__ext_have
+       @__ext_done @__ext_feed @__ext_fed].each do |iv|
+      remove_instance_variable(iv) if instance_variable_defined?(iv)
+    end
+    self
+  end
+  private :initialize_copy
+
   # The value the source's `yield` returns on the NEXT step.  Our external
   # iteration is a Fiber, so it is simply the next #resume argument.
   def feed(value)

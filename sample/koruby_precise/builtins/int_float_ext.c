@@ -577,6 +577,38 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         slots[2] = VALUE_REF_GET(self);                    /* CRuby calls #initialize_copy(orig) after copying */
         RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
+    } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_MATCHDATA) {   /* MatchData → fresh shallow copy (was aliasing self) */
+        slots[1] = v;                                      /* root the source across the alloc */
+        KorbMatchData *nm = korb_alloc(c, slots + 2, sizeof(KorbMatchData), KORB_OBJ_MATCHDATA);
+        const KorbMatchData *sm = (const KorbMatchData *)(uintptr_t)slots[1];   /* re-read: alloc may have GC-moved the source */
+        ARO_STORE(c, nm, (VALUE *)(uintptr_t)&nm->subject, sm->subject);
+        ARO_STORE(c, nm, (VALUE *)(uintptr_t)&nm->regexp,  sm->regexp);
+        ARO_STORE(c, nm, (VALUE *)(uintptr_t)&nm->offsets, sm->offsets);
+        slots[1] = (VALUE)nm;
+        CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
+        gen_done = true;
+        slots[2] = VALUE_REF_GET(self);                    /* CRuby calls #initialize_copy(orig) after copying */
+        RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
+        if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
+    } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ENUMERATOR) {   /* Enumerator → fresh copy (was aliasing self, so a dup shared the iteration cursor) */
+        slots[1] = v;                                      /* root the source across the alloc */
+        KorbEnumerator *ne = korb_alloc(c, slots + 2, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
+        const KorbEnumerator *se = (const KorbEnumerator *)(uintptr_t)slots[1];   /* re-read: alloc may have GC-moved the source */
+        ne->cursor = 0;                                    /* a copy starts its own external iteration (CRuby) */
+        ne->mode = se->mode; ne->op = se->op;
+        ne->size_inf = se->size_inf; ne->size_unknown = se->size_unknown;
+        ne->size = se->size;
+        ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->values,    se->values);
+        ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->desc,      se->desc);
+        ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->source,    se->source);
+        ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->ops,       se->ops);
+        ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->size_proc, se->size_proc);
+        slots[1] = (VALUE)ne;
+        CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
+        gen_done = true;
+        slots[2] = VALUE_REF_GET(self);                    /* CRuby calls #initialize_copy(orig) after copying */
+        RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);
+        if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_BINDING) {   /* Binding → fresh (unfrozen) shallow copy */
         slots[1] = v;                                      /* root the source across the alloc */
         KorbBinding *nb = korb_alloc(c, slots + 2, sizeof(KorbBinding), KORB_OBJ_BINDING);
