@@ -2502,17 +2502,37 @@ static inline VALUE korb_builtin_class_obj(const struct korb_vm *vm, enum korb_c
 
 static struct korb_method *korb_class_method_slot(struct korb_vm *vm, KorbClass *k, uint32_t mid);   /* fwd (defined below) */
 static void korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid);        /* fwd (defined below) */
+/* CRuby forces these names PRIVATE at definition time, wherever they are
+ * defined (vm_method.c): a later explicit `public :name` still wins, because
+ * that runs after the `def`.  Applying it in the definers (and in the Ruby `def`
+ * path) is what makes #method_defined? / #private_method_defined? / #respond_to?
+ * agree with #private_instance_methods, which a name-based listing filter could
+ * never do. */
+static bool korb_auto_private_name_p(const struct korb_vm *vm, uint32_t mid)
+{
+    static const char *const names[] = {
+        "initialize", "initialize_copy", "initialize_clone", "initialize_dup",
+        "respond_to_missing?",
+    };
+    const char *const nm = korb_sym_name(vm, mid);
+    if (nm == NULL || (nm[0] != 'i' && nm[0] != 'r')) return false;   /* cheap reject */
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (strcmp(nm, names[i]) == 0) return true;
+    return false;
+}
 /* add a CFUNC method to a specific class object (struct classes get these). */
 static void korb_class_def_cfn(CTX *c, VALUE klass, const char *name, korb_method_fn fn, int32_t arity) {
     struct korb_method *m = korb_class_method_slot(c->vm, VAL2CLASS(klass), korb_intern(c->vm, name, strlen(name)));
     m->kind = KORB_METHOD_CFUNC; m->uses_block = 0; m->params_cnt = arity;
     m->rfn = fn; m->rbfn = NULL; m->body = NULL; m->owner = klass;
+    if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid))) m->visibility = 1;
     c->vm->method_serial++;
 }
 static void korb_class_def_cfn_blk(CTX *c, VALUE klass, const char *name, korb_method_blk_fn fn, int32_t arity) {
     struct korb_method *m = korb_class_method_slot(c->vm, VAL2CLASS(klass), korb_intern(c->vm, name, strlen(name)));
     m->kind = KORB_METHOD_CFUNC; m->uses_block = 1; m->params_cnt = arity;
     m->rbfn = fn; m->rfn = NULL; m->body = NULL; m->owner = klass;
+    if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid))) m->visibility = 1;
     c->vm->method_serial++;
 }
 /* Struct instance methods — read the receiver's class `members` + the matching
@@ -4605,6 +4625,10 @@ RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t 
      * UnboundMethod#owner reports.  A chained alias keeps the first origin. */
     if (dst->super_owner == KORB_NIL) dst->super_owner = tmp.owner;
     dst->owner = klass;
+    /* the NEW name decides: `alias initialize foo` is a definition of
+     * `initialize`, which CRuby makes private however it was written */
+    if (dst->visibility == 0 && !VAL2CLASS(klass)->is_singleton &&
+        UNLIKELY(korb_auto_private_name_p(c->vm, newm))) dst->visibility = 1;
     c->vm->method_serial++;
     slots[0] = klass;                      /* park: the hook is Ruby code */
     CHECK(korb_fire_method_added(c, slots + 1, slots[0], newm));   /* an alias is a definition too */
@@ -4722,6 +4746,8 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         dst->mid = mid; dst->owner = slots[0];           /* rename + re-own */
         /* the copy takes the DEFINING frame's visibility, not the source's */
         dst->visibility = (VAL2CLASS(slots[0])->cur_visibility == 3) ? 1 : VAL2CLASS(slots[0])->cur_visibility;
+        if (dst->visibility == 0 && !VAL2CLASS(slots[0])->is_singleton &&
+            UNLIKELY(korb_auto_private_name_p(c->vm, mid))) dst->visibility = 1;
         if (UNLIKELY(VAL2CLASS(slots[0])->cur_visibility == 3)) {   /* module_function mode: public copy on the singleton (as `def` does) */
             const VALUE sing = korb_klass_override_get(c->vm, slots[0]);
             if (KORB_CLASS_P(sing)) {
@@ -4750,6 +4776,8 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     m->dm_proc = slots[1];
     m->owner = slots[0];
     m->visibility = (VAL2CLASS(slots[0])->cur_visibility == 3) ? 1 : VAL2CLASS(slots[0])->cur_visibility;   /* honor the current private/protected scope */
+    if (m->visibility == 0 && !VAL2CLASS(slots[0])->is_singleton &&
+        UNLIKELY(korb_auto_private_name_p(c->vm, mid))) m->visibility = 1;
     m->params_cnt = -1;                                  /* lenient arity (block semantics) */
     m->uses_block = 0; m->rest_slot = -1; m->post_cnt = 0;
     m->param_info = (KORB_PROC_P(slots[1]) && VAL2PROC(slots[1])->iseq)   /* carry the block's params for Method#parameters */
@@ -5086,6 +5114,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry
     struct korb_method *m = korb_class_method_slot(c->vm, k, mid);
     m->kind = KORB_METHOD_ISEQ;
     m->visibility = (k->cur_visibility == 3) ? 1 : k->cur_visibility;   /* mode 3 = module_function: private instance method */
+    if (m->visibility == 0 && !k->is_singleton && UNLIKELY(korb_auto_private_name_p(c->vm, mid))) m->visibility = 1;
     m->owner = klass;        /* super's def_class + __method__ source (frame fs-2) */
     m->refine_set = c->refinements;   /* refinements are lexical: capture the defining scope's */
     m->def_cref = KORB_CLASS_P(c->eval_cref) ? c->eval_cref : KORB_NIL;   /* an eval'd String's cref (see the field) */
@@ -5141,6 +5170,7 @@ korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is
     m->body = NULL;
     m->bfn = NULL;
     m->visibility = k->cur_visibility;   /* attr_reader/writer inside `private`/`protected` inherits it */
+    if (m->visibility == 0 && !k->is_singleton && UNLIKELY(korb_auto_private_name_p(c->vm, mid))) m->visibility = 1;
     if (!is_writer) {
         /* The reader's entry is the ivar read itself (recv = slots[-1]): a leaf
          * needs no frame or stack check, so no node_simple_entry.  Registered
@@ -11669,6 +11699,7 @@ korb_def_cmethod(CTX *c, enum korb_class cls, const char *name,
     m->rfn = fn;
     m->rbfn = NULL;
     m->body = NULL;
+    if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid))) m->visibility = 1;
 }
 
 void
@@ -11683,6 +11714,7 @@ korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
     m->rfn = NULL;
     m->rbfn = fn;
     m->body = NULL;
+    if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid))) m->visibility = 1;
 }
 
 /* Shared receiver dispatch.  `block`/`def_env` are NULL for a plain send;

@@ -1405,12 +1405,12 @@ static RESULT korb_collect_imethods_own(CTX *c, VALUE *slots, VALUE start_class,
 }
 static RESULT korb_collect_methods_ex(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask, const bool own_only) {
     const bool inherit = VALUE_SLICE_LEN(a) < 1 || KORB_TRUTHY(VALUE_SLICE_GET(a, 0));   /* nil counts as false, like CRuby's RTEST */
+    /* The `initialize*` / `respond_to_missing?` family is NOT here: CRuby makes
+     * those private at DEFINITION time, which koruby now does too
+     * (korb_auto_private_name_p), so the entry's own visibility answers — and an
+     * explicit `public def initialize_dup` stays public, which a name filter
+     * could not express. */
     const uint32_t priv_mids[] = {                                  /* method names that are always reported private */
-        c->vm->mid_initialize,
-        korb_intern(c->vm, "initialize_copy", 15),
-        korb_intern(c->vm, "initialize_clone", 16),
-        korb_intern(c->vm, "initialize_dup", 14),
-        korb_intern(c->vm, "respond_to_missing?", 19),
         korb_intern(c->vm, "public", 6),                            /* Module's visibility helpers are private instance methods */
         korb_intern(c->vm, "private", 7),
         korb_intern(c->vm, "protected", 9),
