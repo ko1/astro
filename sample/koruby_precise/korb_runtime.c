@@ -15511,11 +15511,12 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
          * — a foreign encoding carrying non-ASCII, or one holding a NUL — is
          * printed as `:` + the inspected String instead of bare. */
         const bool shows_raw = len == strlen(nm) &&
-            (enc == KORB_ENC_UTF8 ||
+            ((enc == KORB_ENC_UTF8 && (c->vm->enc_external == KORB_ENC_UTF8 ||
+                                       korb_str_bytes_ascii_p(nm, len))) ||
              (korb_enc_ascii_compat_idx(c->vm, enc) && korb_str_bytes_ascii_p(nm, len)));
         fputc(':', fp);
         if (shows_raw && korb_sym_inspect_bare(nm)) fputs(nm, fp);
-        else if (enc == KORB_ENC_UTF8) korb_fprint_quoted(fp, nm, len);
+        else if (enc == KORB_ENC_UTF8 && c->vm->enc_external == KORB_ENC_UTF8) korb_fprint_quoted(fp, nm, len);
         else korb_fprint_quoted_other(c->vm, fp, nm, len, enc);
         return;
     }
@@ -15524,9 +15525,12 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       case KORB_OBJ_STRING: {
         const KorbString *const s = VAL2STR(v);
         const uint32_t enc = KORB_STR_ENC(v);
-        /* The result is UTF-8, so any other encoding takes CRuby's enc != resenc
-         * path: step characters in `enc` and escape what it cannot show. */
-        if (enc == KORB_ENC_UTF8) korb_fprint_quoted(fp, korb_strbuf_data(s->buf), s->len);
+        /* CRuby's resenc is Encoding.default_external; a string whose encoding is
+         * not that one takes the escaping path (rubocop renders `%W(\u0412…)`
+         * from it under a US-ASCII external).  koruby renders into UTF-8, so the
+         * verbatim path also needs the external to BE UTF-8. */
+        if (enc == KORB_ENC_UTF8 && c->vm->enc_external == KORB_ENC_UTF8)
+            korb_fprint_quoted(fp, korb_strbuf_data(s->buf), s->len);
         else korb_fprint_quoted_other(c->vm, fp, korb_strbuf_data(s->buf), s->len, enc);
         return;
       }
@@ -18997,6 +19001,7 @@ korb_ctx_new(void)
     c->vm->sigfd = -1;                                  /* calloc's 0 is a real fd */
     c->vm->enc_locale = KORB_ENC_UTF8;                  /* until the prelude reads the locale */
     c->vm->enc_internal = UINT32_MAX;                   /* Encoding.default_internal is nil */
+    c->vm->enc_external = KORB_ENC_UTF8;                /* until Encoding.default_external= says otherwise */
     c->vm->mcache = calloc(KORB_MCACHE_N, sizeof(*c->vm->mcache));
     if (!c->vm->mcache) { fprintf(stderr, "koruby_precise: out of memory (mcache)\n"); abort(); }
     c->vm->shapes = calloc(64, sizeof(*c->vm->shapes));   /* [0]=unused, [1]=root */

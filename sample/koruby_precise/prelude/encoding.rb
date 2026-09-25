@@ -278,10 +278,11 @@ class Encoding
   end
   def self.default_external=(e)
     raise ArgumentError, "default external cannot be nil" if e.nil?
-    @@default_external = __to_enc(e, :external)
+    # the C side mirrors it: #inspect escapes a string whose encoding is not this
+    __enc_sync__(@@locale, @@default_internal, @@default_external = __to_enc(e, :external))
   end
   def self.default_internal; @@default_internal; end
-  def self.default_internal=(e); __enc_sync__(@@locale, @@default_internal = (e.nil? ? nil : __to_enc(e, :internal))); end
+  def self.default_internal=(e); __enc_sync__(@@locale, @@default_internal = (e.nil? ? nil : __to_enc(e, :internal)), @@default_external); end
   # Encoding.find(name) → the Encoding constant whose #name matches (case-folded),
   # else a fresh Encoding of that name (used by String#encoding for "other").
   def self.find(name)
@@ -359,7 +360,7 @@ class Encoding
   private_constant :LOCALE_CHARMAP__
   # CRuby fixes Encoding.find('locale') at startup: default_external= must not
   # move it, and every string that crosses the OS boundary carries it.
-  __enc_sync__(@@locale = (LOCALE_CHARMAP__ == "ANSI_X3.4-1968" ? US_ASCII : UTF_8), @@default_internal)
+  __enc_sync__(@@locale = (LOCALE_CHARMAP__ == "ANSI_X3.4-1968" ? US_ASCII : UTF_8), @@default_internal, @@default_external)
   def self.locale_charmap; LOCALE_CHARMAP__ || default_external.name; end
   # This encoding's canonical name plus any aliases pointing to it.
   # This encoding's canonical name plus every alias pointing to it (CRuby lists

@@ -631,11 +631,11 @@ static RESULT korb_ext_str_new(CTX *c, VALUE *sp, const char *p, uint32_t len, u
     return korb_ext_str_conv(c, sp, from);
 }
 
-/* Encoding.__enc_sync__(locale, internal) — the prelude hands both down
- * whenever either can have changed.  nil internal means "no conversion". */
+/* Encoding.__enc_sync__(locale, internal[, external]) — the prelude hands them
+ * down whenever any can have changed.  nil internal means "no conversion". */
 static RESULT korb_bi_enc_sync(CTX *c, VALUE *slots, VALUE_SLICE a)
 {
-    for (uint32_t i = 0; i < 2 && i < VALUE_SLICE_LEN(a); i++) {
+    for (uint32_t i = 0; i < 3 && i < VALUE_SLICE_LEN(a); i++) {
         uint32_t idx = UINT32_MAX;
         const VALUE e = VALUE_SLICE_GET(a, i);
         if (e != KORB_NIL) {
@@ -652,7 +652,8 @@ static RESULT korb_bi_enc_sync(CTX *c, VALUE *slots, VALUE_SLICE a)
             }
         }
         if (i == 0) { if (idx != UINT32_MAX) c->vm->enc_locale = idx; }
-        else c->vm->enc_internal = idx;
+        else if (i == 1) c->vm->enc_internal = idx;
+        else { if (idx != UINT32_MAX) c->vm->enc_external = idx; }
     }
     return RESULT_OK(KORB_NIL);
 }

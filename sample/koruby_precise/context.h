@@ -1336,6 +1336,10 @@ struct korb_vm {
      * nil).  Kept here rather than read back from the prelude's class variables
      * so a listing costs no sends; Encoding.__enc_sync__ writes both. */
     uint32_t enc_locale, enc_internal;
+    /* Encoding.default_external, mirrored here because #inspect needs it on a
+     * path that must not send Ruby: CRuby renders a string whose encoding is not
+     * the default external with \uXXXX escapes (rb_str_inspect's enc != resenc). */
+    uint32_t enc_external;
     /* source_location: def/block body NODE → (file symbol, line), populated at
      * parse time.  Node ptrs are immortal (AST); no GC. */
     struct korb_srcloc { struct Node *node; uint32_t file_sym; uint32_t line; } *srclocs;
