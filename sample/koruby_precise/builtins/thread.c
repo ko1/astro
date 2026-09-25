@@ -214,6 +214,22 @@ korb_blop_pump(struct korb_vm *vm, int block)
     return posted;
 }
 
+/* Collect finished timers / ready fds without sleeping, at a yield point.  With
+ * others runnable the run queue never drains, so without this two spinning
+ * threads starve every sleeper; that case is rate-limited to once a millisecond. */
+static void
+korb_blop_pump_at_yield(struct korb_vm *vm)
+{
+    if (vm->blop_npending == 0) return;
+    if (vm->runq_head != NULL) {
+        struct timespec now; korb_blop_now(&now);
+        const int64_t ns = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
+        if (ns < vm->blop_next_poll_ns) return;
+        vm->blop_next_poll_ns = ns + 1000000;
+    }
+    (void)korb_blop_pump(vm, 0);
+}
+
 /* POLL blop 1 発: fds (stable メモリ) の readiness を待つ。timeout_sec < 0 =
  * 無期限。*out_ready = ready fd 数 (0 = timeout)。per-fd 結果は fds[i].revents。 */
 static RESULT korb_blop_wait(CTX *c, VALUE *slots, struct korb_blop *b);   /* fwd */
@@ -1151,10 +1167,9 @@ bool korb_loop_wants_yield(const CTX *c) {
 RESULT korb_loop_yield(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
     if (vm->cur_thread == NULL) return RESULT_OK(KORB_NIL);
-    /* Nobody is on the run queue but somebody is waiting on a timer or an fd:
-     * collect what is ready (never sleeping) so their wait can actually end —
-     * a spinning loop is the one place that never reaches the pump otherwise. */
-    if (vm->runq_head == NULL && vm->blop_npending != 0) (void)korb_blop_pump(vm, 0);
+    /* somebody waits on a timer or an fd: a spinning loop is the one place that
+     * never reaches the blocking pump, so collect what is ready here */
+    korb_blop_pump_at_yield(vm);
     if (vm->runq_head != NULL) {
         struct korb_thread *const cur = vm->cur_thread;
         cur->state = KORB_TH_READY;
@@ -1170,13 +1185,10 @@ korb_m_thread_s_pass(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     (void)self; (void)a;
     struct korb_vm *const vm = c->vm;
     if (vm->cur_thread == NULL) return RESULT_OK(KORB_NIL);
-    if (vm->runq_head == NULL) {
-        /* runq が空でも engine には一度回す。`Thread.pass while cond` という
-           spin loop は、これが無いと blop 待ちの thread を永久に飢えさせる
-           (CRuby の thread は native なので pass 無しでも進む)。 */
-        if (vm->blop_npending) korb_blop_pump(vm, 0);
-        if (vm->runq_head == NULL) return korb_thread_check_ints_nb(c, slots);
-    }
+    /* `Thread.pass while cond` を回す thread が何本いても、blop 待ちの thread を
+       飢えさせないよう engine を回す (CRuby の thread は native なので進む)。 */
+    korb_blop_pump_at_yield(vm);
+    if (vm->runq_head == NULL) return korb_thread_check_ints_nb(c, slots);
     struct korb_thread *const cur = vm->cur_thread;
     cur->state = KORB_TH_READY;
     korb_thread_runq_push(vm, cur);
