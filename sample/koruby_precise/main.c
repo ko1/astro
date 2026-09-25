@@ -1119,20 +1119,15 @@ main(int argc, char *argv[])
     /* `-v` is Ruby's "print the version banner and be verbose"; the ASTro
      * framework spells its own diagnostic switch --verbose, so tell them apart
      * before the framework eats the flag. */
-    bool ruby_dash_v = false;
-    for (int k = 1; k < argc; k++) {
-        if (strcmp(argv[k], "--") == 0) break;
-        if (strcmp(argv[k], "-v") == 0) ruby_dash_v = true;
+    bool ruby_dash_v = false, framework_verbose = false;
+    for (int k = 1; k < argc; k++) {                 /* the option words only: stop at the script */
+        const char *const a = argv[k];
+        if (strcmp(a, "--") == 0 || a[0] != '-' || a[1] == '\0') break;
+        if (strcmp(a, "-v") == 0) ruby_dash_v = true;
+        else if (strcmp(a, "--verbose") == 0) framework_verbose = true;
+        else if (a[2] == '\0' && strchr("eIrCEF", a[1])) k++;   /* takes the next word (`-e CODE -v`) */
     }
     if (astro_build_extract_flags(&argc, argv, &bcfg) != 0) return 2;
-
-    /* Point RUBY_EXE at this interpreter (unless already set) so ruby/spec's mspec
-     * can resolve the executable and run.  Harmless for normal programs. */
-    if (!getenv("RUBY_EXE")) {
-        char exe[4096];
-        ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
-        if (n > 0) { exe[n] = '\0'; setenv("RUBY_EXE", exe, 0); }
-    }
 
     if (bcfg.help_requested)    { usage(stdout); return 0; }
     if (bcfg.version_requested) {
@@ -1150,7 +1145,7 @@ main(int argc, char *argv[])
     if (bcfg.aot_compile)   OPTION.aot_compile   = true;
     if (bcfg.pg_compile)  OPTION.pg_compile  = true;   /* M0: same bake as AOT */
     if (bcfg.quiet)       OPTION.quiet       = true;
-    if (bcfg.verbose)     OPTION.verbose     = true;
+    if (bcfg.verbose && (framework_verbose || !ruby_dash_v)) OPTION.verbose = true;   /* Ruby's -v is not the framework's chatter */
 
     /* Run convention (docs/sample_cli.md): `--aot-compile` alone bakes WITHOUT
      * running; `--run` (or `--pg-compile`) opts the run back in.  koruby
@@ -1193,6 +1188,10 @@ main(int argc, char *argv[])
                 memcpy(joined + n0 + 1, piece, n1); joined[n0 + 1 + n1] = '\0';
                 eval_code = joined;                    /* leaked on purpose: lives for the process */
             }
+        }
+        else if (strcmp(a, "-v") == 0) {
+            /* after `-e CODE` the framework's scan has stopped; the banner and
+               $VERBOSE were set up front */
         }
         else if (strcmp(a, "--dump-ast") == 0) {
             OPTION.dump_ast = true;

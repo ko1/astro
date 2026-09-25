@@ -470,6 +470,7 @@ typedef struct KorbProc {
     VALUE ARO_GC_EDGE refine_set;    /* the refinement activation set this proc's body runs under (same shape
                                       * as CTX.refinements): captured lexically at creation, or handed over by
                                       * Proc#refined.  KORB_NIL = none. */
+    VALUE ARO_GC_EDGE meth;          /* Method#to_proc: the Method (its captured definition), else 0 */
     uint32_t sym_mid;                /* Symbol#to_proc: send this mid to arg0 (iseq==NULL) */
     uint8_t  is_lambda;              /* lambda semantics (strict arity, return-from-proc) */
     uint8_t  refined_copy;           /* refine_set came from Proc#refined, not from the defining scope */
@@ -1236,6 +1237,7 @@ struct korb_vm {
     uint8_t sched_busy;                /* runq_head || blop_npending: one load for the preemption guards */
     int sigfd;                         /* signalfd(2): pending-signal readiness for the pump. -1 = not armed */
     uint8_t thread_aoe_global;         /* Thread.abort_on_exception (class-level) */
+    uint8_t thread_roe_off;            /* !Thread.report_on_exception (class-level; zero = CRuby's default true) */
 
     /* direct-mapped user-object method cache (klass,mid)→method.  Valid while
      * serial == method_serial (bumped on def AND on GC, so a moved/reused class
@@ -1939,6 +1941,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_pr->env);    /* odd slots-ptr skipped, KorbEnv* fwd */ \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_pr->self);                   \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_pr->refine_set);             \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_pr->meth);                   \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

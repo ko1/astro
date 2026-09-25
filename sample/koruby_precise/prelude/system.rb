@@ -91,8 +91,6 @@ class Thread
     (caller_locations(2) || []).each(&blk)
     nil
   end
-  def self.report_on_exception; @roe.nil? ? true : @roe; end
-  def self.report_on_exception=(v); @roe = v; end
 end
 
 # Queue / SizedQueue — Mutex + ConditionVariable (C 実装) の上の純 Ruby。
@@ -1447,7 +1445,10 @@ module RbConfig
   # prefix から組み立てると実在しないパスになる。rubygems は
   # Gem.ruby = File.join(bindir, ruby_install_name + EXEEXT) で子プロセスを起動する
   # (rake のサブプロセステストはこれが実在しないと全滅する)。
-  __exe = ENV["RUBY_EXE"]
+  # The running binary itself, not an env var: setting RUBY_EXE at startup leaked
+  # it into every child's environment (rspec-core's with_clean_environment).
+  # mspec finds us through bindir/ruby_install_name the same way.
+  __exe = (File.readlink("/proc/self/exe") rescue nil) || ENV["RUBY_EXE"]
   if __exe && !__exe.empty? && File.exist?(__exe)
     CONFIG["bindir"] = File.dirname(__exe)
     CONFIG["ruby_install_name"] = File.basename(__exe)

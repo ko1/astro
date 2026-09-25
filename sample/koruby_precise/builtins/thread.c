@@ -742,7 +742,7 @@ korb_thread_alloc_handle(CTX *c, VALUE *slots)
     t->result = KORB_NIL; t->exc = KORB_NIL; t->tls = KORB_NIL; t->tvars = KORB_NIL;
     t->name = KORB_NIL; t->pending_ints = KORB_NIL; t->int_masks = KORB_NIL;
     t->tgroup = c->vm->cur_thread ? c->vm->cur_thread->tgroup : KORB_NIL;   /* 親 group を継承 (CRuby) */
-    t->roe = 1;
+    t->roe = !c->vm->thread_roe_off;         /* a new thread takes the class-level default (CRuby) */
     t->state = KORB_TH_DEAD;                 /* 初期化まで scheduler から不可視 (queue にも入れない) */
     t->next = c->vm->thread_list; c->vm->thread_list = t;
     CHECK(korb_thread_handle(c, slots, t));
@@ -1326,6 +1326,21 @@ korb_m_thread_s_aoe_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     (void)slots; (void)self;
     c->vm->thread_aoe_global = KORB_TRUTHY(VALUE_SLICE_GET(a, 0)) ? 1 : 0;
+    return RESULT_OK(VALUE_SLICE_GET(a, 0));
+}
+
+static RESULT
+korb_m_thread_s_roe(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)slots; (void)self; (void)a;
+    return RESULT_OK(c->vm->thread_roe_off ? KORB_FALSE : KORB_TRUE);
+}
+
+static RESULT
+korb_m_thread_s_roe_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)slots; (void)self;
+    c->vm->thread_roe_off = KORB_TRUTHY(VALUE_SLICE_GET(a, 0)) ? 0 : 1;
     return RESULT_OK(VALUE_SLICE_GET(a, 0));
 }
 

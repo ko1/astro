@@ -11080,11 +11080,17 @@ RESULT korb_blockarg_to_proc(CTX *c, VALUE *slots, VALUE *restrict pslot, uint32
  * frame to build — dispatch the captured send with the yielded args.  `procv` is read
  * fresh from the FWD-rooted slot by the caller, so a GC move before this is safe.
  * Args are copied high-to-low so an argv that aliases the cursor below isn't clobbered. */
+static RESULT korb_m_meth_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* fwd (symbol.c) */
 static RESULT korb_cproc_yield(CTX *c, VALUE *restrict slots, VALUE procv,
                                const VALUE *restrict argv, uint32_t argc) {
     const KorbProc *const p = VAL2PROC(procv);
     const uint32_t mid = p->sym_mid;
-    if (p->self != KORB_NIL) {                           /* Method#to_proc (bound receiver): recv.mid(args...) */
+    if (p->meth != 0) {                                  /* Method#to_proc: Method#call on the captured definition */
+        for (int32_t i = (int32_t)argc - 1; i >= 0; i--) slots[1 + i] = argv[i];
+        slots[0] = p->meth;
+        return korb_m_meth_call(c, slots + 1 + argc, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], argc), NULL, NULL, NULL);
+    }
+    if (p->self != KORB_NIL) {                           /* bound receiver: recv.mid(args...) */
         const VALUE recv = p->self;
         for (int32_t i = (int32_t)argc - 1; i >= 0; i--) slots[1 + i] = argv[i];
         slots[0] = recv;
@@ -14502,6 +14508,8 @@ korb_register_core_methods(CTX *c)
       korb_class_def_cfn_blk(c, tsing, "fork",  korb_m_thread_s_start, -1);
       korb_class_def_cfn(c, tsing, "abort_on_exception",  korb_m_thread_s_aoe, 0);
       korb_class_def_cfn(c, tsing, "abort_on_exception=", korb_m_thread_s_aoe_set, 1);
+      korb_class_def_cfn(c, tsing, "report_on_exception",  korb_m_thread_s_roe, 0);
+      korb_class_def_cfn(c, tsing, "report_on_exception=", korb_m_thread_s_roe_set, 1);
       korb_class_def_cfn(c, tsing, "__check_ints", korb_m_thread_s_check_ints, 0); }   /* 非 blocking な配送点 */
     korb_def_cmethod(c, KORB_C_RANDOM, "initialize", korb_m_random_init, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "rand", korb_m_random_rand, -1);
@@ -18787,8 +18795,9 @@ korb_exc_build(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
     const VALUE a0 = VALUE_SLICE_GET(args, 0);
     if (KORB_STRING_P(a0) && n == 1) {               /* raise "msg" → RuntimeError; `raise "m", extra` is a TypeError (String is not a class) */
-        const KorbString *const s = VAL2STR(a0);
-        const RESULT r = korb_raise(c, slots, KORB_E_RUNTIME, 0, "%.*s", (int)s->len, korb_strbuf_data(s->buf));
+        slots[0] = a0;                                /* the message IS this String (encoding, NULs), as in CRuby */
+        const RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", "");
+        if (LIKELY(KORB_EXC_P(r.value))) ARO_STORE(c, VAL2EXC(r.value), &VAL2EXC(r.value)->msg, slots[0]);
         return RESULT_OK(r.value);
     }
     if (UNLIKELY(n > 3))
