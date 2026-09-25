@@ -3758,20 +3758,45 @@ static uint32_t korb_bind_method_mid_walk(const struct korb_vm *vm, const KorbBi
 static RESULT korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid, uint32_t line,
                                    uint32_t argc, VALUE def_class, NODE *block, VALUE *def_env,
                                    VALUE *captured_self, bool framed);   /* fwd (defined below) */
-RESULT korb_binding_user_method(CTX *c, VALUE *slots, VALUE self, bool *handled)
+/* A Kernel name the parser LOWERS to a node (`binding`, `block_given?`, `proc`,
+ * `lambda`, `__method__`) is still an ordinary method: a class of its own wins.
+ * `rspec`'s `let(:proc)` / `let(:binding)` and rubocop-ast's
+ * `attr_reader :binding` are exactly that.  koruby's own Kernel entry is a
+ * BUILTIN and means "no override" — the node itself is the implementation.
+ * All of these take no positional arguments; a block is forwarded as given. */
+RESULT korb_kernel_user_method(CTX *c, VALUE *slots, VALUE self, uint32_t mid,
+                               NODE *block, VALUE *def_env, VALUE *cself, bool *handled)
 {
     *handled = false;
     const VALUE dc = korb_dispatch_class(c, self);
     if (!KORB_CLASS_P(dc)) return RESULT_OK(KORB_NIL);
-    const uint32_t mid = korb_intern(c->vm, "binding", 7);
     VALUE def = KORB_NIL;
     struct korb_method *const um = korb_class_find_method(dc, mid, &def);
-    /* koruby's own Kernel#binding entry exists only for the reflective forms
-     * (`method(:binding)`); the node itself is what builds a real Binding. */
-    if (um == NULL || um->kind == KORB_METHOD_BUILTIN) return RESULT_OK(KORB_NIL);
+    /* Only a RUBY-defined method counts as an override: koruby's own Kernel
+     * entries are BUILTIN (`binding`) or CFUNC (`proc` / `lambda`), and
+     * dispatching those instead of the node is both slower and wrong. */
+    if (um == NULL || !(um->kind == KORB_METHOD_ISEQ || um->kind == KORB_METHOD_DM ||
+                        um->kind == KORB_METHOD_ATTR_R || um->kind == KORB_METHOD_ATTR_W))
+        return RESULT_OK(KORB_NIL);
     *handled = true;
-    slots[0] = self;
-    return korb_dispatch_method(c, slots + 1, um, mid, 0, 0, def, NULL, NULL, NULL, true);
+    (void)def;
+    /* Reserve the callee's header cells out of THIS node's scratch: these nodes
+     * are not @framehdr call sites, so writing them at slots[-1..-3] would land
+     * on the caller's live slots and the block's home frame would be lost (a
+     * `return` inside it then raised LocalJumpError).  base[-1] self, [-2] EP,
+     * [-3] link, [-4] identity — korb_invoke fills the identity. */
+    VALUE *const base = slots + KORB_FRAME_HDR + 1;
+    base[-4] = 0; base[-3] = 0; base[-2] = 0;
+    base[-1] = self;                                    /* staged receiver */
+    /* Go through the normal send so the literal block is handed over exactly as a
+     * call site does.  caller_self = self keeps it an implicit-receiver call, so a
+     * private override is still reachable. */
+    return korb_send_impl_vis(c, base, mid, 0, 0, block, def_env, cself, self);
+}
+RESULT korb_binding_user_method(CTX *c, VALUE *slots, VALUE self, bool *handled)
+{
+    return korb_kernel_user_method(c, slots, self, korb_intern(c->vm, "binding", 7),
+                                   NULL, NULL, NULL, handled);
 }
 RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *scope_tbl, uint32_t name_cnt, VALUE self_val, uint32_t cref_name) {
     slots[0] = self_val;                                  /* root self across allocs */
@@ -14488,6 +14513,21 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("using", korb_m_mod_using, -1);
     #undef MOD_CFN
     #undef MOD_CFN_BLK
+    {   /* CRuby keeps #refine / #using PRIVATE, so `mod.methods` does not list
+         * them (transproc asserts exactly that on a Registry's singleton). */
+        static const char *const rp[] = { "refine", "using" };
+        const VALUE holders[] = { korb_const_get(c->vm, korb_intern(c->vm, "Module", 6)),
+                                  korb_builtin_class_obj(c->vm, KORB_C_CLASS),
+                                  korb_builtin_class_obj(c->vm, KORB_C_OBJECT) };
+        for (size_t h = 0; h < sizeof holders / sizeof holders[0]; h++) {
+            if (!KORB_CLASS_P(holders[h])) continue;
+            for (size_t i = 0; i < sizeof rp / sizeof rp[0]; i++) {
+                struct korb_method *const m =
+                    korb_class_own_method(holders[h], korb_intern(c->vm, rp[i], (uint32_t)strlen(rp[i])));
+                if (m != NULL && m->kind != KORB_METHOD_UNDEF) m->visibility = 1;
+            }
+        }
+    }
     {   /* Class INHERITS from Module, so a method registered identically on both
          * is a duplicate that SHADOWS the Module one.  That made
          * `class Module; public :remove_const; end` (pry's spec_helper) change

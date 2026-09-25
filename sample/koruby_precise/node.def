@@ -2950,9 +2950,25 @@ node_blkparam(CTX *c, NODE *n, VALUE *slots, int32_t dst_off, int32_t biseq_off,
 // `block` is the block's node_entry; def_env_off = the defining frame base
 // (captured env), self_off = the lexical self.  Captures, does not invoke.
 NODE_DEF @noinline
-node_make_proc(CTX *c, NODE *n, VALUE *slots, NODE *block, int32_t def_env_off, int32_t self_off, uint32_t is_lambda)
+node_make_proc(CTX *c, NODE *n, VALUE *slots, NODE *block, int32_t def_env_off, int32_t self_off, uint32_t is_lambda, uint32_t user_dispatch)
 {
     (void)n; (void)block_dispatcher;
+    /* `proc`/`lambda` are ordinary Kernel methods, so a class of its own wins
+     * (rspec's `let(:proc)`).  `->{}` is syntax and never checks (user_dispatch 0). */
+    if (UNLIKELY(user_dispatch != 0)) {
+        bool handled = false;
+        const uint32_t mid = is_lambda ? korb_intern(c->vm, "lambda", 6) : korb_intern(c->vm, "proc", 4);
+        /* hand the literal block over exactly as a call site does: the def_env is
+         * the LIVE frame base, tagged odd (an even pointer means an escaped env),
+         * and the frame link has to name THIS frame — without it the callee's
+         * chain does not reach us and a `return` inside the block finds no home
+         * frame (LocalJumpError). */
+        korb_flink_stage_at(c, &slots[def_env_off], 0);
+        const RESULT ur = korb_kernel_user_method(c, slots, slots[self_off], mid, block,
+                                                  (VALUE *)((uintptr_t)&slots[def_env_off] | 1u),
+                                                  &slots[self_off], &handled);
+        if (handled) return ur;
+    }
     return korb_make_proc(c, slots, block, &slots[def_env_off], slots[self_off], is_lambda);
 }
 

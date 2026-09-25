@@ -2391,7 +2391,7 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                 tc->pending_lambda_body = false;
                 if (entry->head.kind != &kind_node_entry) return entry;   /* unsupported params → propagate (don't reify a non-entry) */
                 int32_t self_off = -1 - tc->chain;
-                NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, (uint32_t)is_lam);
+                NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, (uint32_t)is_lam, 1u);
                 bake_add(tc, &mk->u.node_make_proc.def_env_off);
         bake_add(tc, &mk->u.node_make_proc.self_off);   /* self at base[-1] */
                 return mk;
@@ -5304,7 +5304,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         kp_reg_srcrange(tc, entry, node);   /* Proc#source_range: the whole `-> () { }` */
         entry->u.node_entry.def_line = kp_line(tc, node);
         int32_t self_off = -1 - tc->chain;
-        NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, 1u);
+        NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, 1u, 0u);   /* `->{}` is syntax: no user override */
         bake_add(tc, &mk->u.node_make_proc.def_env_off);
         bake_add(tc, &mk->u.node_make_proc.self_off);   /* self at base[-1] */
         return mk;

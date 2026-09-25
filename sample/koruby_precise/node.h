@@ -346,6 +346,10 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
 /* `binding` is an ordinary Kernel method: dispatch a class's own #binding when
  * it has one (*handled = true), else leave the node to build the Binding. */
 RESULT korb_binding_user_method(CTX *c, VALUE *slots, VALUE self, bool *handled);
+/* A Kernel name the parser lowers to a node is still an ordinary method: when the
+ * receiver's class defines its own, dispatch that instead (*handled = true). */
+RESULT korb_kernel_user_method(CTX *c, VALUE *slots, VALUE self, uint32_t mid,
+                               NODE *block, VALUE *def_env, VALUE *cself, bool *handled);
 const uint32_t *korb_binding_tbl_flat(const uint32_t *syms, uint32_t cnt);   /* single-level packed scope table */
 void   korb_env_store(CTX *c, struct KorbEnv *e, uint32_t index, VALUE v);
 RESULT korb_str_mod(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs);
