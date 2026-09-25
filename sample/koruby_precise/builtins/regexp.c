@@ -1137,8 +1137,15 @@ static void korb_re_expand_repl(CTX *c, FILE *ms, const char *rep, uint32_t rn, 
                 uint32_t j = i + 3; while (j < rn && rep[j] != '>') j++;
                 int gi = -1; korb_re_named_fn_t nf = (korb_re_named_fn_t)c->vm->re_named_fn;
                 if (nf && KORB_REGEXP_P(re)) { const KorbString *pat = VAL2STR(VAL2RE(re)->source); const uint32_t fl = VAL2RE(re)->flags;
+                    /* A name may be on SEVERAL groups (one per alternative, as in
+                     * rubocop's `(?<name>..)::#<Class:\k<name>>|#<Class:(?<name>..)>`);
+                     * the one that took part is the answer, last match winning —
+                     * same rule MatchData#[name] follows.  Stopping at the first
+                     * name match emitted the empty unmatched alternative. */
                     for (int k = 0; ; k++) { int idx = -1; const char *gn = nf(korb_strbuf_data(pat->buf), pat->len, fl, k, &idx); if (!gn) break;
-                        if (strlen(gn) == j - (i + 3) && memcmp(gn, rep + i + 3, j - (i + 3)) == 0) { gi = idx; break; } } }
+                        if (strlen(gn) != j - (i + 3) || memcmp(gn, rep + i + 3, j - (i + 3)) != 0) continue;
+                        if (idx <= m->n_groups && m->starts[idx] >= 0) gi = idx;   /* participated */
+                        else if (gi < 0) gi = idx; } }
                 if (gi >= 0 && gi <= m->n_groups && m->starts[gi] >= 0) fwrite(subj + m->starts[gi], 1, (size_t)(m->ends[gi] - m->starts[gi]), ms);
                 i = j; continue;
             }
