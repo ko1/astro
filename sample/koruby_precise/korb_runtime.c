@@ -17936,6 +17936,8 @@ korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VA
     c->vm->cur_load_file = fname;
     c->vm->cur_load_abs = NULL;                         /* an eval's filename names no file on disk */
     RESULT r = EVAL(c, ast, cur);
+    VALUE *const fb = slots + 4;                        /* both callers lay the eval frame out there */
+    if (UNLIKELY(korb_frame_escaped(fb))) r = korb_close_ret(c, cur, fb, r);   /* the frame dies: close its env */
     c->vm->cur_load_file = saved_load;
     c->vm->cur_load_abs = saved_abs;
     korb_cref_pop(c);
@@ -18076,6 +18078,10 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     const uint32_t saved_emid = c->eval_mid;        /* `::Kernel.__method__` in the string (the bare form is baked) */
     c->eval_mid = bind_mid;
     RESULT er = EVAL(c, entry, cur);
+    /* the eval frame goes away here: a closure over its locals needs its env
+     * closed (heap-copied) first, or it reads a dead stack later.  fb stays
+     * intact for the write-back below. */
+    if (UNLIKELY(korb_frame_escaped(fb))) er = korb_close_ret(c, cur, fb, er);
     c->eval_mid = saved_emid;
     if (saved_vis != 0xffu && KORB_CLASS_P(fb[-1])) VAL2CLASS(fb[-1])->cur_visibility = saved_vis;
     korb_cref_pop(c);   /* pushed unconditionally, so pop unconditionally */
