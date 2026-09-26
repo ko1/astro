@@ -5904,3 +5904,5 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
   LocalJumpError、koruby は BREAK が外まで抜けて <main> で LocalJumpError になる。`proc { }` /
   Proc.new のブロックは brk_orphan で対処済み（`&b` で作った Proc は作ったメソッドが戻った時点で
   孤児になる — 戻りの境界で判定するには、ブロックの node_entry から定義メソッドの本体を引ける必要がある）。
+- **全スレッドが Queue#pop で止まってもデッドロックと判定しない**: CRuby は
+  "No live threads left. Deadlock? (fatal)"、koruby はハングする（blop の待ちが無い状態の検出）。
