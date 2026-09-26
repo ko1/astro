@@ -330,13 +330,23 @@ static bool parse_ctrl_escape(re_parser_t *q, bool dashed, uint8_t *out) {
  * bits), 0 if it was a single character (write *out_byte).  `cps` collects
  * members at or above U+0080; NULL when the caller can't take any. */
 static void cls_cp_add(re_parser_t *q, agre_cpsetb_t *cps, uint32_t lo, uint32_t hi);   /* fwd (defined below) */
+/* In UTF-8 a negated shorthand takes a whole non-ASCII char, not its bytes. */
+static void shorthand_add(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps, int e) {
+    uint64_t sb[4] = {0};
+    bm_add_special(sb, e);
+    if (cps != NULL && isupper(e)) {
+        sb[2] = sb[3] = 0;
+        cls_cp_add(q, cps, 0x80, AGRE_CP_MAX);
+    }
+    bm_or(bm, sb);
+}
 static int parse_class_escape(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps, uint8_t *out_byte, uint32_t *out_cp) {
     *out_cp = 0;
     int c = re_get(q);
     switch (c) {
     case 'd': case 'D': case 'w': case 'W': case 's': case 'S':
     case 'h': case 'H':
-        bm_add_special(bm, c);
+        shorthand_add(q, bm, cps, c);
         return 1;
     case 'p': case 'P':
         if (re_peek(q) != '{') { *out_byte = (uint8_t)c; return 0; }   /* no `{name}`: the letter itself (CRuby warns) */
@@ -1285,9 +1295,14 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             /* (?u) widens \d \w \s to their Unicode properties; \h (hex) is
              * ASCII in Ruby whatever the mode. */
             const char *const prop = uni_shorthand_prop(q, e);
-            if (prop == NULL) return n;
             agre_cpsetb_t cps = { 0 };
-            posix_class_unicode(q, prop, strlen(prop), isupper(e) != 0, &cps);
+            if (prop == NULL) {
+                if (q->encoding != AGRE_ENC_UTF8 || !isupper(e)) return n;
+                n->u.cls.bm[2] = n->u.cls.bm[3] = 0;
+                cls_cp_add(q, &cps, 0x80, AGRE_CP_MAX);
+            } else {
+                posix_class_unicode(q, prop, strlen(prop), isupper(e) != 0, &cps);
+            }
             if (cps.n == 0) { agre_cpsetb_free(&cps); return n; }
             ire_node_t *const u = ire_uniclass(n->u.cls.bm, &cps);
             ire_free(n);

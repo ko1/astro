@@ -188,6 +188,16 @@ typedef struct CTX_struct {
     bool stack_overflow;
 } CTX;
 
+/* The memo key (id, pos) omits rep counters, so it is only sound while every
+ * enclosing rep's continuation state is the saturated (min 0, unbounded) one. */
+static inline bool
+memo_key_sound(const CTX *c)
+{
+    for (const struct rep_frame *f = c->rep_top; f; f = f->prev)
+        if (f->min != 0 || f->max != -1) return false;
+    return true;
+}
+
 struct astrogre_option {
     /* exec mode (mirrored from calc/koruby for ASTro framework hooks) */
     bool static_lang;

@@ -1139,7 +1139,8 @@ NODE_DEF
 node_re_alt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t id)
 {
     const size_t bit = (size_t)id * (c->str_len + 1) + c->pos;
-    if (c->memo && (c->memo[bit >> 3] & (uint8_t)(1u << (bit & 7)))) return MR_FAIL;
+    const bool memo_ok = c->memo && memo_key_sound(c);
+    if (memo_ok && (c->memo[bit >> 3] & (uint8_t)(1u << (bit & 7)))) return MR_FAIL;
 
     const size_t saved = c->pos;
     if (EVAL_ARG(c, left)) return MR_STOP;
@@ -1152,7 +1153,7 @@ node_re_alt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32
             const size_t bits = (size_t)c->n_branches * (c->str_len + 1);
             c->memo = (uint8_t *)calloc(1, (bits + 7) / 8);
         }
-        if (c->memo) c->memo[bit >> 3] |= (uint8_t)(1u << (bit & 7));
+        if (c->memo && (memo_ok || memo_key_sound(c))) c->memo[bit >> 3] |= (uint8_t)(1u << (bit & 7));
     }
     return MR_FAIL;
 }
@@ -1316,7 +1317,8 @@ node_re_rep_cont(CTX * restrict c, NODE * restrict n)
 {
     struct rep_frame *f = c->rep_top;
     const size_t bit = (size_t)f->id * (c->str_len + 1) + c->pos;
-    if (c->memo && (c->memo[bit >> 3] & (uint8_t)(1u << (bit & 7)))) return MR_FAIL;
+    const bool memo_ok = c->memo && memo_key_sound(c);
+    if (memo_ok && (c->memo[bit >> 3] & (uint8_t)(1u << (bit & 7)))) return MR_FAIL;
 
     /* Stack-floor guard: repetition recurses one C frame per iteration, so a
        long greedy match over a huge string overflows here, not in g-subroutine
@@ -1332,7 +1334,7 @@ node_re_rep_cont(CTX * restrict c, NODE * restrict n)
             const size_t bits = (size_t)c->n_branches * (c->str_len + 1);
             c->memo = (uint8_t *)calloc(1, (bits + 7) / 8);
         }
-        if (c->memo) c->memo[bit >> 3] |= (uint8_t)(1u << (bit & 7));
+        if (c->memo && (memo_ok || memo_key_sound(c))) c->memo[bit >> 3] |= (uint8_t)(1u << (bit & 7));
     }
     return r;
 }
