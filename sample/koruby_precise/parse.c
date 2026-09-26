@@ -4439,6 +4439,55 @@ const_path_static_owner(struct kp_ctx *tc, const pm_node_t *parent, uint32_t fra
 
 /* ---- main dispatch -------------------------------------------------------- */
 
+/* case/when whose `when`s are all Fixnum literals (enough of them to matter):
+ * the count of when-values, else 0. */
+#define KP_CASE_SPLIT_MIN 8
+static size_t
+kp_case_split_count(const pm_case_node_t *cn)
+{
+    size_t n = 0;
+    for (size_t wi = 0; wi < cn->conditions.size; wi++) {
+        const pm_when_node_t *wn = (const pm_when_node_t *)cn->conditions.nodes[wi];
+        for (size_t ci = 0; ci < wn->conditions.size; ci++) {
+            const pm_node_t *const cv = wn->conditions.nodes[ci];
+            korb_sword_t v;
+            if (!PM_NODE_TYPE_P(cv, PM_INTEGER_NODE) || !kp_integer_value(&((const pm_integer_node_t *)cv)->value, &v))
+                return 0;
+            n++;
+        }
+    }
+    return n >= KP_CASE_SPLIT_MIN ? n : 0;
+}
+struct kp_case_val { korb_sword_t v; NODE *body; const pm_node_t *lit; };
+static int
+kp_case_val_cmp(const void *a, const void *b)
+{
+    const struct kp_case_val *const x = a, *const y = b;
+    if (x->v != y->v) return x->v < y->v ? -1 : 1;
+    return x->lit->location.start < y->lit->location.start ? -1 : x->lit->location.start > y->lit->location.start;
+}
+static NODE *transduce(struct kp_ctx *tc, const pm_node_t *node);
+/* vals[lo, hi) sorted and distinct: split in halves; a few left → `when v` tests
+ * straight to the bodies (the subject is a Fixnum here, so nothing else matches). */
+static NODE *
+kp_case_split(struct kp_ctx *tc, const struct kp_case_val *const vals, size_t lo, size_t hi,
+              uint32_t tmp, NODE *const else_n, NODE *const other)
+{
+    if (hi - lo <= 3) {
+        NODE *leaf = else_n;
+        for (size_t i = hi; i-- > lo; ) {
+            NODE *vn, *targ;
+            WITH_CHAIN(tc, kind_node_caseeq.slot_count, (vn = transduce(tc, vals[i].lit), targ = bake_lget(tc, tmp)));
+            leaf = ALLOC_node_if(ALLOC_node_caseeq(vn, targ), vals[i].body, leaf);
+        }
+        return leaf;
+    }
+    const size_t mid = lo + (hi - lo) / 2;
+    NODE *const l = kp_case_split(tc, vals, lo, mid, tmp, else_n, other);
+    NODE *const h = kp_case_split(tc, vals, mid, hi, tmp, else_n, other);
+    return ALLOC_node_case_split(bake_lget(tc, tmp), (uint64_t)(int64_t)vals[mid].v, l, h, other);
+}
+
 static NODE *
 transduce(struct kp_ctx *tc, const pm_node_t *node)
 {
@@ -5337,9 +5386,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *chain = cn->else_clause
             ? transduce_statements(tc, cn->else_clause->statements)
             : lit_nil();
+        NODE *const else_n = chain;
+        const size_t nsplit = has_subj ? kp_case_split_count(cn) : 0;
+        NODE **const bodies = nsplit ? calloc(cn->conditions.size, sizeof(NODE *)) : NULL;
         for (size_t wi = cn->conditions.size; wi-- > 0; ) {  /* fold last → first */
             const pm_when_node_t *wn = (const pm_when_node_t *)cn->conditions.nodes[wi];
             NODE *body = transduce_statements(tc, wn->statements);
+            if (bodies) bodies[wi] = body;
             NODE *cond = NULL;
             for (size_t ci = 0; ci < wn->conditions.size; ci++) {
                 const pm_node_t *cv = wn->conditions.nodes[ci];
@@ -5377,6 +5430,25 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             }
             if (cond == NULL) cond = lit_nil();
             chain = ALLOC_node_if(cond, body, chain);
+        }
+        if (bodies) {
+            struct kp_case_val *const vals = malloc(nsplit * sizeof *vals);
+            size_t nv = 0;
+            for (size_t wi = 0; wi < cn->conditions.size; wi++) {
+                const pm_when_node_t *wn = (const pm_when_node_t *)cn->conditions.nodes[wi];
+                for (size_t ci = 0; ci < wn->conditions.size; ci++) {
+                    const pm_node_t *const cv = wn->conditions.nodes[ci];
+                    korb_sword_t v;
+                    (void)kp_integer_value(&((const pm_integer_node_t *)cv)->value, &v);
+                    vals[nv++] = (struct kp_case_val){ v, bodies[wi], cv };
+                }
+            }
+            qsort(vals, nv, sizeof *vals, kp_case_val_cmp);   /* stable by (value, source order) */
+            size_t nu = 0;
+            for (size_t i = 0; i < nv; i++)                     /* a repeated value: the first `when` wins */
+                if (nu == 0 || vals[nu - 1].v != vals[i].v) vals[nu++] = vals[i];
+            chain = kp_case_split(tc, vals, 0, nu, tmp, else_n, chain);
+            free(vals); free(bodies);
         }
         return has_subj ? ALLOC_node_seq(assign, chain) : chain;
       }

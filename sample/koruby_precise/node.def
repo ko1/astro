@@ -920,8 +920,13 @@ node_caseeq(CTX *c, NODE *n, VALUE *slots, VALUE_REF wv@child, VALUE subj@child)
     /* No identity short-circuit: for a Class/Module when-value `w === subj` is
      * is_a?, not identity (`Symbol === Symbol` is false), and NaN === NaN is false
      * even for the same boxed object — both must reach the real === / value_eq. */
-    if (!AROH_IS_GC_OBJECT(w))                             /* fixnum / symbol / nil / true / false */
+    if (!AROH_IS_GC_OBJECT(w)) {                           /* fixnum / symbol / nil / true / false */
+        if (UNLIKELY(FIXNUM_P(w) && KORB_OBJECT_P(subj))) {   /* Integer#== asks a user object: subj == w */
+            slots[0] = w; slots[1] = subj;
+            return korb_send(c, slots + 2, c->vm->mid_eqq, 0, 1);
+        }
         return RESULT_OK(korb_value_eq(w, subj) ? KORB_TRUE : KORB_FALSE);
+    }
     switch (KORB_OBJ_TYPE(w)) {
       case KORB_OBJ_STRING: case KORB_OBJ_ARRAY: case KORB_OBJ_HASH:
       case KORB_OBJ_FLOAT:  case KORB_OBJ_BIGNUM:
@@ -930,6 +935,19 @@ node_caseeq(CTX *c, NODE *n, VALUE *slots, VALUE_REF wv@child, VALUE subj@child)
         slots[0] = w; slots[1] = subj;
         return korb_send(c, slots + 2, c->vm->mid_eqq, 0, 1);
     }
+}
+
+// case/when over Fixnum literals: a balanced split on the subject picks the few
+// `when`s that can match (CRuby's opt_case_dispatch).  Any other subject takes
+// `other`, the plain when-chain (1.0 / Rational / user objects may still ===).
+// pivot is a korb_sword_t (cast: no signed 64-bit operand type).
+NODE_DEF @nogc
+node_case_split(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, uint64_t pivot, NODE *lo, NODE *hi, NODE *other)
+{
+    (void)n;
+    if (UNLIKELY(!FIXNUM_P(subj))) return EVAL_ARG(c, other);
+    if (FIX2LONG(subj) < (korb_sword_t)(int64_t)pivot) return EVAL_ARG(c, lo);
+    return EVAL_ARG(c, hi);
 }
 
 // ---- boolean ---------------------------------------------------------------
