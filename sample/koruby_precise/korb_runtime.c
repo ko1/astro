@@ -5169,6 +5169,7 @@ static RESULT korb_m_obj_not(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(KORB_TRUTHY(VALUE_REF_GET(self)) ? KORB_FALSE : KORB_TRUE);
 }
 
+static struct korb_method *korb_find_method_c(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def);   /* fwd */
 /* True when `v`'s class (or singleton) defines `!` — node_not's deopt check.
  * Only reached while vm->bang_redefined is set. */
 bool
@@ -5176,7 +5177,7 @@ korb_find_bang_override(CTX *c, VALUE v)
 {
     const VALUE k = korb_dispatch_class(c, v);
     if (!KORB_CLASS_P(k)) return false;
-    const struct korb_method *const m = korb_class_find_method(k, korb_intern(c->vm, "!", 1), NULL);
+    const struct korb_method *const m = korb_find_method_c(c->vm, k, korb_intern(c->vm, "!", 1), NULL);
     return m != NULL && m->kind != KORB_METHOD_CFUNC;   /* the CFUNC one IS the default */
 }
 
@@ -5663,6 +5664,17 @@ korb_mcache_find(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def)
     korb_mid_looked(vm, mid);
     e->serial = vm->method_serial; e->klass = klass; e->mid = mid; e->m = m; e->def_class = def;
     *out_def = def;
+    return m;
+}
+/* korb_class_find_method through the method cache, for lookups a hot path
+ * makes on every call (respond_to?, Hash#[]'s #default check, class-receiver
+ * dispatch, …). */
+static struct korb_method *
+korb_find_method_c(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def)
+{
+    VALUE def = KORB_NIL;
+    struct korb_method *const m = korb_mcache_find(vm, klass, mid, &def);
+    if (out_def) *out_def = def;
     return m;
 }
 
@@ -7197,7 +7209,7 @@ korb_responds_to(CTX *c, VALUE self, uint32_t mid)
         return !(UNLIKELY(c->vm->send_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid));
     const VALUE start = korb_dispatch_class(c, self);
     if (!KORB_CLASS_P(start)) return false;
-    if (korb_class_find_method(start, mid, NULL) != NULL) return true;
+    if (korb_find_method_c(c->vm, start, mid, NULL) != NULL) return true;
     /* a refinement active in the running scope also answers (#respond_to? /
      * #method / #public_method all come through here) */
     return UNLIKELY(c->vm->refinements_active) && korb_refined_find(c, start, mid, NULL) != NULL;
@@ -7255,11 +7267,11 @@ korb_responds_to_coerce_p(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid)
     const VALUE dcls = korb_dispatch_class(c, *selfp);
     if (!KORB_CLASS_P(dcls)) return false;
     VALUE rt_def = KORB_NIL, rtm_def = KORB_NIL;
-    (void)korb_class_find_method(dcls, korb_intern(c->vm, "respond_to?", 11), &rt_def);
+    (void)korb_find_method_c(c->vm, dcls, korb_intern(c->vm, "respond_to?", 11), &rt_def);
     const bool custom_rt = rt_def != KORB_NIL && rt_def != korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
     /* Kernel's own #respond_to_missing? always answers false — only an override
      * is worth a dispatch. */
-    const bool has_rtm = korb_class_find_method(dcls, korb_intern(c->vm, "respond_to_missing?", 19), &rtm_def) != NULL &&
+    const bool has_rtm = korb_find_method_c(c->vm, dcls, korb_intern(c->vm, "respond_to_missing?", 19), &rtm_def) != NULL &&
                          rtm_def != korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
     if (!(custom_rt || has_rtm)) return false;
     slots[0] = *selfp; slots[1] = ID2SYM(mid); slots[2] = KORB_TRUE;
@@ -7333,11 +7345,11 @@ korb_responds_to_coerce(CTX *c, VALUE *slots, VALUE self, uint32_t mid)
      * dispatch.  Dispatching #respond_to? (not #respond_to_missing? directly) means
      * a proxy/mock that overrides either one is honored correctly. */
     VALUE rt_def = KORB_NIL, rtm_def = KORB_NIL;
-    (void)korb_class_find_method(dcls, korb_intern(c->vm, "respond_to?", 11), &rt_def);
+    (void)korb_find_method_c(c->vm, dcls, korb_intern(c->vm, "respond_to?", 11), &rt_def);
     const bool custom_rt = rt_def != KORB_NIL && rt_def != korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
     /* Kernel's own #respond_to_missing? always answers false — only an override
      * is worth a dispatch. */
-    const bool has_rtm = korb_class_find_method(dcls, korb_intern(c->vm, "respond_to_missing?", 19), &rtm_def) != NULL &&
+    const bool has_rtm = korb_find_method_c(c->vm, dcls, korb_intern(c->vm, "respond_to_missing?", 19), &rtm_def) != NULL &&
                          rtm_def != korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
     if (custom_rt || has_rtm) {
         /* include_private = true: a conversion protocol (#to_int / #to_str / …)
@@ -12291,7 +12303,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
         VALUE dc = KORB_NIL;
         struct korb_method *m2 = NULL;
         const VALUE meta = korb_dispatch_class(c, self);
-        if (KORB_CLASS_P(meta)) m2 = korb_class_find_method(meta, mid, &dc);
+        if (KORB_CLASS_P(meta)) m2 = korb_find_method_c(vm, meta, mid, &dc);
         if (!m2) { dc = KORB_NIL; m2 = korb_mcache_find(vm, self, mid, &dc); }
         if (m2) return korb_dispatch_method(c, slots, m2, mid, line, argc, dc, block, def_env, captured_self, true);
         return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '%s' for Kernel", korb_sym_name(vm, mid));
@@ -12302,10 +12314,10 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
      * `[]`, so a hit here is always a user definition. */
     else if (KORB_CLASS_P(self) && mid == vm->mid_aref &&
              ({ const VALUE _sing = korb_dispatch_class(c, self);
-                KORB_CLASS_P(_sing) && korb_class_find_method(_sing, mid, NULL) != NULL; })) {
+                KORB_CLASS_P(_sing) && korb_find_method_c(vm, _sing, mid, NULL) != NULL; })) {
         VALUE dc = KORB_NIL;
         const VALUE sing = korb_dispatch_class(c, self);
-        struct korb_method *const um = korb_class_find_method(sing, mid, &dc);
+        struct korb_method *const um = korb_find_method_c(vm, sing, mid, &dc);
         return korb_dispatch_method(c, slots, um, mid, line, argc, dc, block, def_env, captured_self, true);
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_aref &&
@@ -12558,7 +12570,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             const VALUE sing = korb_dispatch_class(c, self);
             VALUE sdef = KORB_NIL;
             struct korb_method *snew =
-                KORB_CLASS_P(sing) ? korb_class_find_method(sing, vm->mid_new, &sdef) : NULL;
+                KORB_CLASS_P(sing) ? korb_find_method_c(vm, sing, vm->mid_new, &sdef) : NULL;
             /* super from inside a `def self.new` (marker set by the super path):
              * skip every override at or BELOW the defining singleton, not just
              * that one — `class Lazy < Task` where both define `self.new` would
@@ -12655,7 +12667,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                  * allocator (CRuby's Module.new always dispatches it).  rspec-mocks'
                  * `class ClassVerifyingDouble < Module` gets its #initialize from an
                  * included module, so an owner==receiver test misses it. */
-                const struct korb_method *const im = korb_class_find_method(*recv_slot, vm->mid_initialize, NULL);
+                const struct korb_method *const im = korb_find_method_c(vm, *recv_slot, vm->mid_initialize, NULL);
                 if (im != NULL && (im->kind == KORB_METHOD_ISEQ || im->kind == KORB_METHOD_DM)) {
                     slots[2] = slots[1];                      /* the new module/class (rooted across the dispatch) */
                     slots[3] = slots[2];                      /* receiver */
@@ -12720,7 +12732,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             const bool is_data = VAL2CLASS(*recv_slot)->is_data;
             if (is_data) {                                 /* user-overridden Data#initialize (ISEQ) → allocate + dispatch it */
                 VALUE didef = KORB_NIL;
-                struct korb_method *const duinit = korb_class_find_method(*recv_slot, vm->mid_initialize, &didef);
+                struct korb_method *const duinit = korb_find_method_c(vm, *recv_slot, vm->mid_initialize, &didef);
                 if (duinit && duinit->kind == KORB_METHOD_ISEQ) {   /* the default is a CFUNC, so ISEQ ⇒ a real override */
                     const uint32_t nmem = VAL2ARY(VAL2CLASS(*recv_slot)->members)->len;
                     const bool kw_form = argc == 1 && KORB_HASH_P(slots[-(korb_sword_t)argc]) &&
@@ -12770,7 +12782,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                 }
             } else {                                       /* Struct: dispatch a user-overridden #initialize (ISEQ); default is the CFUNC */
                 VALUE sudef = KORB_NIL;
-                struct korb_method *const suinit = korb_class_find_method(*recv_slot, vm->mid_initialize, &sudef);
+                struct korb_method *const suinit = korb_find_method_c(vm, *recv_slot, vm->mid_initialize, &sudef);
                 if (suinit && suinit->kind == KORB_METHOD_ISEQ) {   /* a real override (the built-in korb_m_struct_initialize is a CFUNC) */
                     slots[0] = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* the instance (rooted) */
                     /* This #initialize frame sits ABOVE the window korb_send_impl laid out, so
@@ -13090,7 +13102,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                 slots[1] = UNWRAP(korb_thread_alloc_handle(c, slots + 2));   /* 未初期化 thread */
                 korb_klass_override_set(c, slots[1], slots[0]);
                 VALUE tidef = KORB_NIL;
-                struct korb_method *const tinit = korb_class_find_method(slots[0], vm->mid_initialize, &tidef);
+                struct korb_method *const tinit = korb_find_method_c(vm, slots[0], vm->mid_initialize, &tidef);
                 if (tinit != NULL && tinit->kind == KORB_METHOD_ISEQ) {
                     /* user #initialize(args…) — super は Thread class obj 上の cfn (init_body) に届く。
                      * invoke_method が [self|args] を組み直し recv slot に instance を書く
@@ -13149,7 +13161,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                      * object already exists, so this is a plain dispatch. */
                     VALUE idef = KORB_NIL;
                     const struct korb_method *const uinit =
-                        korb_class_find_method(slots[0], vm->mid_initialize, &idef);
+                        korb_find_method_c(vm, slots[0], vm->mid_initialize, &idef);
                     if (uinit && uinit->kind == KORB_METHOD_ISEQ) {
                         slots[2] = slots[1];                   /* recv = the new instance */
                         for (uint32_t k = 0; k < argc; k++) slots[3 + k] = slots[-(korb_sword_t)argc + (korb_sword_t)k];
@@ -13166,7 +13178,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
              * to fill.  A subclass without one took the Range.new path above. */
             if (base == KORB_C_RANGE) {
                 VALUE idef = KORB_NIL;
-                struct korb_method *const uinit = korb_class_find_method(*recv_slot, vm->mid_initialize, &idef);
+                struct korb_method *const uinit = korb_find_method_c(vm, *recv_slot, vm->mid_initialize, &idef);
                 if (uinit != NULL && uinit->kind == KORB_METHOD_ISEQ) {
                     slots[0] = *recv_slot;                     /* root the subclass */
                     slots[1] = KORB_NIL;
@@ -13263,7 +13275,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             if (VAL2CLASS(slots[0])->exc_etype < 0)                 /* user subclass → tag instance */
                 ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->exc_class, slots[0]);
             VALUE eidef = KORB_NIL;
-            struct korb_method *const euinit = korb_class_find_method(slots[0], vm->mid_initialize, &eidef);
+            struct korb_method *const euinit = korb_find_method_c(vm, slots[0], vm->mid_initialize, &eidef);
             if (euinit && euinit->kind == KORB_METHOD_ISEQ) {
                 /* This #initialize frame sits ABOVE the window korb_send_impl laid out, so
                  * the cells below it are live caller slots, not a header.  Stage one:
@@ -19838,6 +19850,7 @@ korb_ctx_new(void)
     c->vm->mid_shr         = korb_intern(c->vm, ">>", 2);
     c->vm->mid_cmp         = korb_intern(c->vm, "<=>", 3);
     c->vm->mid_eq          = korb_intern(c->vm, "==", 2);
+    c->vm->mid_hash        = korb_intern(c->vm, "hash", 4);
 
     return c;
 }

@@ -629,7 +629,7 @@ static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
          * instead of answering false here. */
         const VALUE dcls = korb_dispatch_class(c, VALUE_REF_GET(self));
         VALUE mdef = KORB_NIL;
-        const struct korb_method *const me = KORB_CLASS_P(dcls) ? korb_class_find_method(dcls, mid, &mdef) : NULL;
+        const struct korb_method *const me = KORB_CLASS_P(dcls) ? korb_find_method_c(c->vm, dcls, mid, &mdef) : NULL;
         if (me == NULL || me->visibility == 0 || include_priv) return RESULT_OK(KORB_TRUE);
     }
     /* Kernel-private builtins (puts/print/require/... live in the global table,
@@ -644,7 +644,7 @@ static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     const uint32_t rtm = korb_intern(vm, "respond_to_missing?", 19);
     const VALUE dcls = korb_dispatch_class(c, VALUE_REF_GET(self));
     VALUE rtm_def = KORB_NIL;
-    if (KORB_CLASS_P(dcls) && korb_class_find_method(dcls, rtm, &rtm_def)) {
+    if (KORB_CLASS_P(dcls) && korb_find_method_c(c->vm, dcls, rtm, &rtm_def)) {
         slots[0] = VALUE_REF_GET(self);
         slots[1] = ID2SYM(mid);
         slots[2] = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_FALSE;

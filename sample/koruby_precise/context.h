@@ -1281,6 +1281,7 @@ struct korb_vm {
                               * a define_method body IS a method, but only at run time. */
     uint32_t mid_band, mid_bor, mid_bxor, mid_shl, mid_shr;   /* bit-op dispatch fallbacks (avoid per-call korb_intern) */
     uint32_t mid_eq;                                          /* "==" — node_eq/node_neq user-object dispatch (avoid per-call korb_intern) */
+    uint32_t mid_hash;                                        /* "hash" — Array#hash / Hash#hash deciding per element */
     uint32_t mid_cmp;                                         /* "<=>" — Array#sort of user/Comparable objects */
     uint32_t name_fiber;   /* class name_sym of Fiber (class-receiver fast check) */
     uint32_t name_struct;  /* class name_sym of Struct (class-receiver fast check) */

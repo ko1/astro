@@ -104,7 +104,8 @@ static RESULT korb_m_obj_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static bool korb_has_user_hash(CTX *c, VALUE v) {
     const VALUE cls = korb_dispatch_class(c, v);
     if (!KORB_CLASS_P(cls)) return false;
-    const struct korb_method *const m = korb_class_find_method(cls, korb_intern(c->vm, "hash", 4), NULL);
+    VALUE def = KORB_NIL;   /* once per element of every hashed container: cached lookup */
+    const struct korb_method *const m = korb_mcache_find(c->vm, cls, c->vm->mid_hash, &def);
     if (m == NULL) return false;
     return !(m->kind == KORB_METHOD_CFUNC && m->rfn == korb_m_obj_hash);
 }
@@ -234,7 +235,7 @@ static RESULT korb_m_hash_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     {   /* a miss goes through #default(key), which a subclass may override */
         const uint32_t dmid = korb_intern(c->vm, "default", 7);
         const VALUE cls = korb_dispatch_class(c, VALUE_REF_GET(self));
-        const struct korb_method *const dm = KORB_CLASS_P(cls) ? korb_class_find_method(cls, dmid, NULL) : NULL;
+        const struct korb_method *const dm = KORB_CLASS_P(cls) ? korb_find_method_c(c->vm, cls, dmid, NULL) : NULL;
         if (UNLIKELY(dm != NULL && dm->kind == KORB_METHOD_ISEQ)) {   /* only a Ruby override is observable */
             slots[0] = VALUE_REF_GET(self);
             slots[1] = VALUE_SLICE_GET(a, 0);
