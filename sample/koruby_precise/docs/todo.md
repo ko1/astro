@@ -5919,3 +5919,10 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
   見ない（`def message = ""` の例外で CRuby は "E"、koruby は "E (E)"）。
 - simplecov static_coverage_extractor_spec の 1 失敗は prism のバージョン差（koruby は 1.4.0 の
   Prism::Visitor = compact_child_nodes、CRuby master の prism は each_child_node）。
+- (codex レビュー 2026-09-26 の残り) blocking fd の read を readiness で待ってから読むので、同じ blocking
+  fd を別の reader が先に空にすると VM 全体が read で止まる（11bc8996 以前は常に止まっていた）。
+  FIONREAD で読める分だけ読めば閉じる。
+- デッドロックの fatal を C の exit(1) で出している: CRuby は main thread に `fatal` を raise して at_exit
+  （$! 付き）を走らせ、スレッドのダンプも出す。
+- `each_line("aa", 1)` の limit の意味が CRuby と違う（CRuby は `["ababa"]`、koruby は 1 バイトずつ）。
+- Kernel#caller / 例外のバックトレースは作るたびに全フレームのラベルを組む（CRuby は遅延）。
