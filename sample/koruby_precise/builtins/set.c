@@ -428,6 +428,12 @@ static RESULT korb_m_proc_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    if (UNLIKELY(KORB_CLASS_P(VALUE_REF_GET(self)))) {   /* Kernel#to_s bound to a class: rb_any_to_s, not Module#to_s */
+        char b[48];
+        const int n = snprintf(b, sizeof b, "#<%s:0x%016zx>", VAL2CLASS(VALUE_REF_GET(self))->is_module ? "Module" : "Class",
+                               (size_t)(uintptr_t)VALUE_REF_GET(self));
+        return korb_str_new(c, slots, b, (uint32_t)n);
+    }
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
@@ -444,6 +450,7 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
      * here.  Nested #inspect clears before anything of ours is parked. */
     c->inspect_exc = KORB_NIL;
     VALUE v0 = VALUE_REF_GET(self);
+    if (UNLIKELY(KORB_CLASS_P(v0))) return korb_m_obj_to_s(c, slots, self, a);   /* bound to a class: rb_any_to_s */
     /* A plain object inspects as "#<Class:0x.. @a=1, @b=2>" — and as "#<Class:0x..>"
      * with no ivars.  The zero-ivar case must NOT fall through to the generic
      * formatter below: that one ends at #to_s, but CRuby's default #inspect never
@@ -1330,6 +1337,26 @@ static RESULT korb_m_class_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     (void)a;
     const VALUE cls = VALUE_REF_GET(self);
     const KorbClass *const k = VAL2CLASS(cls);
+    if (UNLIKELY(k->is_singleton)) {   /* a class/module attachee is shown by its own #inspect (CRuby rb_class_path) */
+        VALUE att = KORB_UNDEF;
+        for (uint32_t i = 0; i < c->vm->sklass.cnt; i++)
+            if (c->vm->sklass.val[i] == cls) { att = c->vm->sklass.obj[i]; break; }
+        if (KORB_CLASS_P(att)) {
+            slots[0] = att;
+            const VALUE iv = UNWRAP(korb_send(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0));
+            slots[0] = iv;
+            if (!KORB_STRING_P(slots[0])) { slots[0] = UNWRAP(korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0)); }
+            if (!KORB_STRING_P(slots[0])) return RESULT_OK(slots[0]);
+            const uint32_t il = VAL2STR(slots[0])->len;
+            const char *const ib = korb_strbuf_data(VAL2STR(slots[0])->buf);
+            char *const b = malloc((size_t)il + 11);
+            if (!b) abort();
+            memcpy(b, "#<Class:", 8); memcpy(b + 8, ib, il); b[8 + il] = '>';
+            const RESULT r = korb_str_new(c, slots + 1, b, il + 9);
+            free(b);
+            return r;
+        }
+    }
     if (k->name_sym == 0 || KORB_CLASS_P(korb_refinement_target(c->vm, cls))) {   /* anonymous / singleton / refinement → formatted form */
         char *buf = NULL; size_t sz = 0;
         FILE *ms = open_memstream(&buf, &sz);

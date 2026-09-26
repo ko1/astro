@@ -833,7 +833,10 @@ class String
     end
     if to_name.nil?
       di = Encoding.default_internal
-      return __encode_decorate(dup, opts).force_encoding(from_name) if di.nil?
+      if di.nil?   # no conversion; invalid: :replace still scrubs (CRuby)
+        s = __encode_decorate(dup, opts).force_encoding(from_name)
+        return opts[:invalid] == :replace ? s.scrub(*[opts[:replace]].compact) : s
+      end
       to_name = di.name
     end
     tenc = Encoding.__find_or_nil(to_name)
@@ -861,6 +864,9 @@ class String
     flags |= 1 if opts[:invalid] == :replace
     flags |= 2 if opts[:undef] == :replace
     flags |= 4 if xml
+    if same && !xml && opts[:invalid] == :replace && !__transcodable?(to_name)   # nothing to convert: scrub
+      return src.scrub(*[opts[:replace]].compact).force_encoding(to_name)
+    end
     unless __transcodable?(to_name) && __transcodable?(from_name)
       # 7-bit content needs no converter at all (CRuby allows it)
       return src.force_encoding(to_name) if src.ascii_only? && tenc.ascii_compatible?

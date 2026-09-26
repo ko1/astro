@@ -12173,13 +12173,13 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                 return gm->is_simple ? korb_invoke_simple(c, slots, gm, argc, line, mid, self, KORB_NIL)
                                      : korb_invoke_method(c, slots, gm, argc, line, mid, self, KORB_NIL, block, def_env, KORB_CSELF_VAL(captured_self));
         }
-        VALUE dc = KORB_NIL;                                                  /* else a Kernel-own or Module-level method */
-        struct korb_method *m2 = korb_mcache_find(vm, self, mid, &dc);
-        if (!m2) {                                                            /* Module-level (ancestors/name/method_added/...): the metaclass, like korb_send_cached */
-            const VALUE meta = korb_dispatch_class(c, self);
-            dc = KORB_NIL;
-            if (KORB_CLASS_P(meta)) m2 = korb_class_find_method(meta, mid, &dc);
-        }
+        /* else a Module-level method first (to_s / name / ancestors: Kernel is a
+         * Module), then a Kernel-own instance method used module_function style */
+        VALUE dc = KORB_NIL;
+        struct korb_method *m2 = NULL;
+        const VALUE meta = korb_dispatch_class(c, self);
+        if (KORB_CLASS_P(meta)) m2 = korb_class_find_method(meta, mid, &dc);
+        if (!m2) { dc = KORB_NIL; m2 = korb_mcache_find(vm, self, mid, &dc); }
         if (m2) return korb_dispatch_method(c, slots, m2, mid, line, argc, dc, block, def_env, captured_self, true);
         return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '%s' for Kernel", korb_sym_name(vm, mid));
     }

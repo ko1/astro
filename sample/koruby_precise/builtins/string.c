@@ -68,12 +68,19 @@ static uint32_t korb_enc_index_for_name(struct korb_vm *vm, const char *name) {
     for (uint32_t i = KORB_ENC_OTHER_MIN; i < KORB_STR_ENC_MAX; i++)
         if (vm->str_enc_names[i] != 0 &&
             (vm->str_enc_names[i] == sym || strcasecmp(korb_sym_name(vm, vm->str_enc_names[i]), name) == 0)) return i;
-    for (uint32_t i = KORB_ENC_OTHER_MIN; i < KORB_STR_ENC_MAX; i++) if (vm->str_enc_names[i] == 0) {
+    for (uint32_t i = KORB_ENC_OTHER_MIN; i < KORB_STR_ENC_MAX - 1; i++) if (vm->str_enc_names[i] == 0) {
         vm->str_enc_names[i] = sym;
         if (korb_enc_name_single_byte(name)) vm->str_enc_sb_mask |= (1u << i);   /* byte == character */
         return i;
     }
-    return 7;   /* registry full (>5 distinct "other" encodings): reuse the last slot */
+    /* Registry full: the last slot is an overflow slot that takes the latest name
+     * (and its byte/character nature).  Older strings in it are misreported, but
+     * one about to be used is judged as its own encoding, not some other slot's. */
+    const uint32_t ov = KORB_STR_ENC_MAX - 1;
+    vm->str_enc_names[ov] = sym;
+    if (korb_enc_name_single_byte(name)) vm->str_enc_sb_mask |= (1u << ov);
+    else vm->str_enc_sb_mask &= ~(1u << ov);
+    return ov;
 }
 /* Look up only: the index a name already has, or UINT32_MAX.  force_encoding
  * uses it to skip re-validating a name the registry has already seen. */
@@ -196,6 +203,37 @@ static bool korb_str_utf8_valid(const KorbString *s) {
     }
     return true;
 }
+#include "enc_trans.h"
+/* The CRuby (Onigmo) byte-structure table of a multi-byte encoding, or NULL. */
+static const signed char (*korb_enc_trans_of(const struct korb_vm *vm, uint32_t enc))[256] {
+    if (enc < KORB_ENC_OTHER_MIN) return NULL;
+    const char *const nm = korb_enc_name_of(vm, enc);
+    if (nm == NULL) return NULL;
+    for (size_t i = 0; i < sizeof korb_enc_trans_tab / sizeof korb_enc_trans_tab[0]; i++)
+        if (strcasecmp(nm, korb_enc_trans_tab[i].name) == 0) return korb_enc_trans_tab[i].trans;
+    return NULL;
+}
+/* Bytes of the character at p[i]: > 0 a valid one; < 0 an invalid run of that
+ * many bytes (the prefix before the byte that broke it, at least 1; a truncated
+ * tail as a whole) — the unit CRuby's scrub replaces once. */
+static int32_t korb_enc_trans_len(const signed char (*const trans)[256], const unsigned char *restrict p,
+                                  const uint32_t i, const uint32_t n) {
+    int s = 0;
+    for (uint32_t k = i; k < n; k++) {
+        s = trans[s][p[k]];
+        if (s == -1) return (int32_t)(k - i + 1);
+        if (s == -2) return -(int32_t)(k > i ? k - i : 1);
+    }
+    return -(int32_t)(n - i);
+}
+static bool korb_enc_trans_valid(const signed char (*const trans)[256], const unsigned char *restrict p, const uint32_t n) {
+    for (uint32_t i = 0; i < n; ) {
+        const int32_t l = korb_enc_trans_len(trans, p, i, n);
+        if (l < 0) return false;
+        i += (uint32_t)l;
+    }
+    return true;
+}
 /* String#valid_encoding? — true for ASCII-8BIT/US-ASCII-tagged (every byte legal)
  * and for a well-formed sequence in the string's own encoding. */
 static RESULT korb_m_str_valid_encoding(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -206,8 +244,11 @@ static RESULT korb_m_str_valid_encoding(CTX *c, VALUE *slots, VALUE_REF self, VA
     if (enc == KORB_ENC_USASCII) { const KorbString *s = VAL2STR(v);
         for (uint32_t i = 0; i < s->len; i++) if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) return RESULT_OK(KORB_FALSE);
         return RESULT_OK(KORB_TRUE); }
-    if (enc >= KORB_ENC_OTHER_MIN) {   /* "other": decode it with the transcoder's own tables */
+    if (enc >= KORB_ENC_OTHER_MIN) {   /* "other": CRuby's byte structure, else the transcoder's tables */
         const KorbString *const s = VAL2STR(v);
+        const signed char (*const trans)[256] = korb_enc_trans_of(c->vm, enc);
+        if (trans != NULL)
+            return RESULT_OK(korb_enc_trans_valid(trans, (const unsigned char *)korb_strbuf_data(s->buf), s->len) ? KORB_TRUE : KORB_FALSE);
         return RESULT_OK(korb_enc_bytes_valid(c->vm, enc, korb_strbuf_data(s->buf), s->len) ? KORB_TRUE : KORB_FALSE);
     }
     return RESULT_OK(korb_str_utf8_valid(VAL2STR(v)) ? KORB_TRUE : KORB_FALSE);
@@ -215,19 +256,24 @@ static RESULT korb_m_str_valid_encoding(CTX *c, VALUE *slots, VALUE_REF self, VA
 /* String#scrub([repl]) { |bad| } — replace each maximal invalid sub-sequence
  * with `repl`, the block's result, or the default (U+FFFD for UTF-8, "?" for
  * US-ASCII).  Always returns a fresh plain String in self's encoding. */
-static bool korb_str_enc_valid(const KorbString *s, uint32_t enc) {
+static bool korb_str_enc_valid(const struct korb_vm *vm, const KorbString *s, uint32_t enc) {
     if (enc == KORB_ENC_USASCII) {
         for (uint32_t i = 0; i < s->len; i++)
             if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) return false;
         return true;
     }
-    if (enc == KORB_ENC_BINARY || enc >= KORB_ENC_OTHER_MIN) return true;
+    if (enc >= KORB_ENC_OTHER_MIN) {
+        const signed char (*const trans)[256] = korb_enc_trans_of(vm, enc);
+        return trans == NULL || korb_enc_trans_valid(trans, (const unsigned char *)korb_strbuf_data(s->buf), s->len);
+    }
+    if (enc == KORB_ENC_BINARY) return true;
     return korb_str_utf8_valid(s);
 }
 static RESULT korb_m_str_scrub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
     const bool us_ascii = (enc == KORB_ENC_USASCII);   /* US-ASCII: high bytes are invalid */
-    if (korb_str_enc_valid(VAL2STR(VALUE_REF_GET(self)), enc)) {
+    const signed char (*const trans)[256] = korb_enc_trans_of(c->vm, enc);   /* a legacy multi-byte encoding */
+    if (korb_str_enc_valid(c->vm, VAL2STR(VALUE_REF_GET(self)), enc)) {
         /* valid (or unvalidatable) → a fresh plain String copy; the replacement
          * is NOT validated in this case (CRuby checks it only when used). */
         const KorbString *const s = VAL2STR(VALUE_REF_GET(self));
@@ -238,14 +284,14 @@ static RESULT korb_m_str_scrub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return RESULT_OK((VALUE)r);
     }
     char repbuf[64]; const char *rep; uint32_t replen;
-    if (us_ascii) { rep = "?"; replen = 1; }
+    if (us_ascii || trans != NULL) { rep = "?"; replen = 1; }
     else          { rep = "\xEF\xBF\xBD"; replen = 3; }   /* U+FFFD */
     const bool use_arg = VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL;
     if (use_arg) {
         if (UNLIKELY(!KORB_STRING_P(VALUE_SLICE_GET(a, 0))))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
         const KorbString *const rs = VAL2STR(VALUE_SLICE_GET(a, 0));
-        if (UNLIKELY(!korb_str_enc_valid(rs, KORB_STR_ENC(VALUE_SLICE_GET(a, 0)))))
+        if (UNLIKELY(!korb_str_enc_valid(c->vm, rs, KORB_STR_ENC(VALUE_SLICE_GET(a, 0)))))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "replacement must be valid byte sequence '%.*s'",
                               (int)(rs->len < 32 ? rs->len : 32), korb_strbuf_data(rs->buf));
         replen = rs->len < sizeof repbuf ? rs->len : (uint32_t)sizeof repbuf;
@@ -261,11 +307,13 @@ static RESULT korb_m_str_scrub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         const KorbString *const s = VAL2STR(VALUE_REF_GET(self));
         const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
         const uint32_t n = s->len;
-        const uint32_t l = us_ascii ? (p[i] < 0x80 ? 1u : 0u) : korb_utf8_seq_len(p, i, n);
+        const int32_t tl = trans != NULL ? korb_enc_trans_len(trans, p, i, n) : 0;
+        const uint32_t l = trans != NULL ? (tl > 0 ? (uint32_t)tl : 0u)
+                         : us_ascii ? (p[i] < 0x80 ? 1u : 0u) : korb_utf8_seq_len(p, i, n);
         if (l) { SCRUB_PUT(p + i, l); i += l; continue; }
         /* one replacement per maximal invalid sequence (US-ASCII: per byte) */
-        uint32_t bad_end = i + 1;
-        if (!us_ascii && p[i] >= 0xC2 && p[i] <= 0xF4)   /* truncated lead → consume its (too-few) continuations */
+        uint32_t bad_end = trans != NULL ? i + (uint32_t)-tl : i + 1;
+        if (trans == NULL && !us_ascii && p[i] >= 0xC2 && p[i] <= 0xF4)   /* truncated lead → consume its (too-few) continuations */
             while (bad_end < n && (p[bad_end] & 0xC0) == 0x80) bad_end++;
         if (use_blk) {                                   /* block form: bad bytes (BINARY) → replacement String */
             char badbuf[64];                             /* stack copy: korb_str_new allocs first → p would be stale */
@@ -362,7 +410,7 @@ static RESULT korb_m_str_to_sym(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const VALUE sv = VALUE_REF_GET(self);
     const KorbString *const s = VAL2STR(sv);
     const uint32_t enc = KORB_STR_ENC(sv);
-    if (UNLIKELY(!korb_str_enc_valid(s, enc))) {
+    if (UNLIKELY(!korb_str_enc_valid(c->vm, s, enc))) {
         const char *const d = korb_strbuf_data(s->buf);
         char esc[128];
         uint32_t o = 0;
@@ -3378,7 +3426,7 @@ static RESULT korb_m_str_each_codepoint(CTX *c, VALUE *slots, VALUE_REF self, VA
     {   /* with a block CRuby validates the whole string before yielding */
         const VALUE v = VALUE_REF_GET(self);
         const uint32_t enc = KORB_STR_ENC(v);
-        if (UNLIKELY(!korb_str_enc_valid(VAL2STR(v), enc)))
+        if (UNLIKELY(!korb_str_enc_valid(c->vm, VAL2STR(v), enc)))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", korb_enc_name_of(c->vm, enc));
     }
     const bool sb = KORB_ENC_SB(c->vm, KORB_STR_ENC(VALUE_REF_GET(self)));   /* one byte = one codepoint */
@@ -3524,7 +3572,7 @@ static RESULT korb_str_codepoints_impl(CTX *c, VALUE *slots, VALUE_REF self, boo
     if (check) {                                      /* CRuby scans before yielding anything */
         const VALUE v = VALUE_REF_GET(self);
         const uint32_t enc = KORB_STR_ENC(v);
-        if (!korb_str_enc_valid(VAL2STR(v), enc))
+        if (!korb_str_enc_valid(c->vm, VAL2STR(v), enc))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", korb_enc_name_of(c->vm, enc));
     }
     const uint32_t cenc = KORB_STR_ENC(VALUE_REF_GET(self));
