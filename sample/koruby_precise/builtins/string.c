@@ -205,13 +205,14 @@ static bool korb_str_utf8_valid(const KorbString *s) {
 }
 #include "enc_trans.h"
 /* The CRuby (Onigmo) byte-structure table of a multi-byte encoding, or NULL. */
-static const signed char (*korb_enc_trans_of(const struct korb_vm *vm, uint32_t enc))[256] {
-    if (enc < KORB_ENC_OTHER_MIN) return NULL;
-    const char *const nm = korb_enc_name_of(vm, enc);
+static const signed char (*korb_enc_trans_by_name(const char *nm))[256] {
     if (nm == NULL) return NULL;
     for (size_t i = 0; i < sizeof korb_enc_trans_tab / sizeof korb_enc_trans_tab[0]; i++)
         if (strcasecmp(nm, korb_enc_trans_tab[i].name) == 0) return korb_enc_trans_tab[i].trans;
     return NULL;
+}
+static const signed char (*korb_enc_trans_of(const struct korb_vm *vm, uint32_t enc))[256] {
+    return enc < KORB_ENC_OTHER_MIN ? NULL : korb_enc_trans_by_name(korb_enc_name_of(vm, enc));
 }
 /* Bytes of the character at p[i]: > 0 a valid one; < 0 an invalid run of that
  * many bytes (the prefix before the byte that broke it, at least 1; a truncated

@@ -2171,13 +2171,18 @@ node_defined_cpath(CTX *c, NODE *n, VALUE *slots, uint32_t owner_name@sym, uint3
 {
     (void)n;
     struct korb_vm *const vm = c->vm;
-    const VALUE owner = korb_const_get(vm, owner_name);
-    if (!KORB_CLASS_P(owner)) return RESULT_OK(KORB_NIL);         /* parent undefined / not a module */
-    {   /* the flat table also holds constants of anonymous modules, which no bare name reaches */
+    VALUE owner = korb_const_get(vm, owner_name);
+    {   /* the flat table also holds constants of anonymous modules, which no bare
+         * name reaches: then only a top-level one of that name counts */
         const uint32_t oi = korb_const_index(vm, owner_name);
         const VALUE oo = oi != UINT32_MAX ? vm->const_owners[oi] : KORB_NIL;
-        if (KORB_CLASS_P(oo) && VAL2CLASS(oo)->name_sym == 0) return RESULT_OK(KORB_NIL);
+        if (KORB_CLASS_P(oo) && VAL2CLASS(oo)->name_sym == 0) {
+            uint32_t ti = korb_const_index_owned(vm, owner_name, KORB_NIL);
+            if (ti == UINT32_MAX) ti = korb_const_index_owned(vm, owner_name, korb_const_get(vm, vm->class_name[KORB_C_OBJECT]));
+            owner = ti != UINT32_MAX ? vm->const_vals[ti] : KORB_NIL;
+        }
     }
+    if (!KORB_CLASS_P(owner)) return RESULT_OK(KORB_NIL);         /* parent undefined / not a module */
     uint32_t idx = korb_const_index_owned(vm, name, owner);
     if (idx == UINT32_MAX) idx = korb_const_in_ancestry_scoped(vm, owner, name);   /* inherited constants count; Object's own do not */
     if (idx == UINT32_MAX && !korb_autoload_registered_p(c, owner, name))   /* a pending autoload counts too */

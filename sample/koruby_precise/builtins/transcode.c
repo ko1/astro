@@ -444,6 +444,18 @@ static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
         const uint32_t used = (from.kind == KTC_ISO2022JP)
             ? korb_tc_jis_decode(&from, src + i, slen - i, &cp, smode)
             : korb_tc_decode(&from, src + i, slen - i, &cp);
+        if (used == 0) {
+            /* well-formed in the source encoding but with no Unicode mapping: an
+             * undefined conversion of the whole character, not invalid bytes (CRuby) */
+            const signed char (*const tr)[256] = korb_enc_trans_by_name(fromb);
+            const int32_t sl = tr != NULL ? korb_enc_trans_len(tr, src, (uint32_t)i, (uint32_t)slen) : 0;
+            if (sl > 0) {
+                if (!(flags & 2u)) { errcode = 4; errpos = i; errcp = 0; errlen = (uint32_t)sl; break; }
+                korb_tc_put(&out, replb, repl_len);
+                i += (size_t)sl;
+                continue;
+            }
+        }
         if (used == 0) {                                  /* invalid byte sequence in the source */
             /* a truncated tail is only "incomplete input" when the caller
              * still wants to hear about it; invalid: :replace replaces it */
