@@ -19858,8 +19858,8 @@ korb_ctx_new(void)
 #ifdef KORB_HAVE_YAML
     korb_builtin_define(c, "__yaml_parse", korb_bi_yaml_parse, 1);    /* lib/psych/parser.rb / emitter.rb が使う */
     korb_builtin_define(c, "__yaml_emit",  korb_bi_yaml_emit, -1);
-    korb_builtin_define(c, "__marshal_fast_load", korb_bi_marshal_fast_load, 1);   /* prelude/marshal.rb: plain data */
 #endif
+    korb_builtin_define(c, "__marshal_fast_load", korb_bi_marshal_fast_load, 1);   /* prelude/marshal.rb: plain data */
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);
     korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);
