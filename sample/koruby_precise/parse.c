@@ -5935,7 +5935,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, gw->name));
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
-        return ALLOC_node_or(KP_CONST(tc, name, 0, INT32_MIN, INT32_MIN, kp_line(tc, node)), build_const_set(tc, name, val));
+        return ALLOC_node_or(KP_CONST(tc, name, 0, INT32_MIN, KORB_GVAR_QUIET, kp_line(tc, node)), build_const_set(tc, name, val));
       }
       case PM_GLOBAL_VARIABLE_AND_WRITE_NODE: {         /* `$x &&= v` */
         const pm_global_variable_and_write_node_t *gw = (const pm_global_variable_and_write_node_t *)node;

@@ -1322,6 +1322,7 @@ struct korb_vm {
      * require_relative's base dir) and the set of already-loaded absolute paths
      * (libc-side strings, no GC). */
     const char *cur_load_file;
+    bool main_public;        /* a bare `public` at this file's top level: its later defs are public */
     /* Same file, realpath'd when it was read: the CWD may move (Dir.chdir) and a
      * main script named relatively cannot be resolved again afterwards. */
     const char *cur_load_abs;

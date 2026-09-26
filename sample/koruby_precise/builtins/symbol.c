@@ -1088,6 +1088,9 @@ static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self,
                                   mid == c->vm->mid___send__ ? 11 : 6));
             return korb_unbound_new(c, slots, KORB_CLASS_P(own) ? own : cls, mid);
         }
+        if (KORB_CLASS_P(cls) && korb_toplevel_def(c->vm, mid) &&
+            korb_class_has_ancestor(cls, korb_builtin_class_obj(c->vm, KORB_C_OBJECT)))
+            return korb_unbound_new(c, slots, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), mid);
         if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym == korb_intern(c->vm, "Kernel", 6)) {
             const VALUE objc = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
             if (KORB_CLASS_P(objc) && korb_class_find_method(objc, mid, NULL) != NULL)

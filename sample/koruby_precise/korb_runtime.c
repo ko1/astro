@@ -3699,6 +3699,8 @@ static void korb_meth_pin(CTX *const c, const VALUE mv) {
     if (km == NULL) {
         m->entry = korb_method_lookup(c->vm, m->mid);   /* global fn table (top-level def, `p`) */
         if (m->entry) m->entry->pinned = 1;             /* a redefinition must not overwrite it */
+        if (m->entry && m->entry->visibility == 1 && m->entry->kind == KORB_METHOD_ISEQ && m->owner == KORB_NIL)
+            ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->owner, korb_builtin_class_obj(c->vm, KORB_C_OBJECT));   /* top-level def */
         /* `new` on a class has no table entry (korb_send_impl special-cases it):
          * remember that this Method IS the default allocator. */
         if (m->entry == NULL && m->mid == c->vm->mid_new && KORB_CLASS_P(m->recv)) m->default_new = 1;
@@ -8896,7 +8898,8 @@ korb_method_slot(CTX *c, uint32_t mid)
 void
 korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
                    uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
-                   uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info, void *locals_info)
+                   uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info, void *locals_info,
+                   const bool priv)
 {
     struct korb_method *m = korb_method_slot(c, mid);
     m->kind = KORB_METHOD_ISEQ;
@@ -8920,7 +8923,22 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
     m->is_simple = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 &&
                     req_cnt == params_cnt && !uses_block && !m->no_block);
     m->simple_entry = m->no_block ? NULL : entry;   /* parser-built node_simple_entry (uses_block も可; `&nil` は除外) */
+    /* a user top-level def is a private Object method (korb_toplevel_def); the prelude's stay hidden */
+    m->visibility = priv ? 1 : 0;
     c->vm->method_serial++;   /* invalidate call caches */
+}
+
+/* The top-level def `mid` as a private Object instance method, or NULL.  It
+ * stays in the global table for the bare-call fast path; reflection and
+ * explicit-receiver calls on Object's descendants consult it here. */
+static const struct korb_method *
+korb_toplevel_def(const struct korb_vm *const vm, const uint32_t mid)
+{
+    for (uint32_t i = 0; i < vm->method_cnt; i++) {
+        const struct korb_method *const m = vm->methods[i];
+        if (m->mid == mid && !m->retired) return (m->kind == KORB_METHOD_ISEQ && m->visibility == 1) ? m : NULL;
+    }
+    return NULL;
 }
 
 void
@@ -12114,7 +12132,8 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             if (mid == vm->mid_public_send) {              /* public_send refuses private/protected methods */
                 const VALUE dcls = korb_dispatch_class(c, self);
                 VALUE mdef = KORB_NIL;
-                const struct korb_method *const me = KORB_CLASS_P(dcls) ? korb_class_find_method(dcls, rmid, &mdef) : NULL;
+                const struct korb_method *me = KORB_CLASS_P(dcls) ? korb_class_find_method(dcls, rmid, &mdef) : NULL;
+                if (me == NULL && korb_kernel_reachable_p(c, dcls)) me = korb_toplevel_def(vm, rmid);
                 if (me != NULL && me->visibility != 0)
                     return korb_raise(c, slots, KORB_E_NOMETHOD, line, "%s method '%s' called for %s",
                                       me->visibility == 1 ? "private" : "protected", korb_sym_name(vm, rmid), korb_a_type_name(self));
@@ -13211,7 +13230,10 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
          * before method_missing. */
         if (korb_kernel_reachable_p(c, start_cls)) {   /* BasicObject gets no Kernel globals */
             struct korb_method *const gm = korb_method_lookup(vm, mid);
-            if (gm) return korb_dispatch_method(c, slots, gm, mid, line, argc, KORB_NIL, block, def_env, captured_self, true);
+            if (gm) {
+                KORB_SEND_VIS_GUARD(gm, KORB_NIL);     /* a top-level def is private: `obj.tl` is refused */
+                return korb_dispatch_method(c, slots, gm, mid, line, argc, KORB_NIL, block, def_env, captured_self, true);
+            }
         }
         /* user-defined method_missing(name, *args) catches the miss. */
         if (KORB_CLASS_P(start_cls)) {
@@ -13562,8 +13584,8 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
     VALUE def_class = KORB_NIL;
     struct korb_method *const m =
         KORB_CLASS_P(klass) ? korb_mcache_find(vm, klass, mid, &def_class) : NULL;
-    if (UNLIKELY(m == NULL))   /* NoMethodError (rare) — let korb_send_impl format/raise */
-        { korb_flink_stage(c, flink, slots - (korb_sword_t)argc - 3); return korb_send_impl(c, slots, mid, korb_flink_line(flink), argc, NULL, NULL, NULL); }
+    if (UNLIKELY(m == NULL))   /* NoMethodError (rare) or a top-level def — korb_send_impl_vis formats/raises/guards */
+        { korb_flink_stage(c, flink, slots - (korb_sword_t)argc - 3); return korb_send_impl_vis(c, slots, mid, korb_flink_line(flink), argc, NULL, NULL, NULL, caller_self); }
     if (UNLIKELY(m->visibility != 0)) {   /* private/protected: cache as _VIS (resolved) — node_send's inline fast path won't match it, so it always routes here to be guarded */
         korb_ic_fill(ic, korb_ic_serial(vm), klass, m, def_class, KORB_IC_INSTANCE_VIS, argc);
         if (caller_self != KORB_UNDEF) {
@@ -16628,7 +16650,10 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
      * neither leaks out nor inherits the requiring file's (docs/refinements.md). */
     korb_refine_push(c);
     c->refinements = KORB_NIL;
+    const bool saved_pub = vm->main_public;           /* each file's top level starts private */
+    vm->main_public = false;
     RESULT r = korb_eval_toplevel_wrap(c, slots, buf, got, abscopy, wrapp, req_base);
+    vm->main_public = saved_pub;
     korb_refine_pop(c);
     vm->cur_load_file = saved;
     vm->cur_load_abs = saved_abs;

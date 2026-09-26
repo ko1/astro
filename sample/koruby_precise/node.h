@@ -438,7 +438,8 @@ struct korb_kw_info  { uint32_t count; int32_t kwrest_slot; struct korb_kw_entry
 /* method machinery */
 void   korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
                           uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
-                          uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info, void *locals_info);
+                          uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info, void *locals_info,
+                          bool priv);
 void   korb_builtin_define(CTX *c, const char *name, korb_builtin_fn fn,
                            int32_t params_cnt);
 /* `self` is the callee's receiver (the caller's self for a no-receiver call);
@@ -920,6 +921,8 @@ static inline void korb_flink_stage_at(CTX *c, const VALUE *const base, const ui
  * caller already fills to hand the callee over. */
 #define KORB_FID_METHOD 1u   /* korb_method * | 1 */
 #define KORB_FID_BLOCK  3u   /* node_entry NODE * | 3 */
+/* node_const dc_off of the `$x ||=` / `$x &&=` read: it does not warn when $x is unset */
+#define KORB_GVAR_QUIET INT32_MAX
 #define KORB_FID_MAIN   5u   /* a file's top-level frame: (file sym << 32) | (locals << 4) | (required << 3) | tag */
 #define KORB_FID_CFUNC  7u   /* a C method running a block: korb_method * | 7.  Its "frame" is the argument
                               * window, which has no Ruby locals — so it has no EP. */

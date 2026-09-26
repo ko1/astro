@@ -1363,9 +1363,22 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entr
          * parser baked its name (`[1].each { def m; end }` in a class body). */
         if (!KORB_CLASS_P(definee) && cref_name != 0)
             { const VALUE cr = korb_cref_from_path(c->vm, cref_name); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
+        /* The body of a define_method'd block: its cref is where the block was
+         * written, i.e. the class that was self then (rspec's `let { def m; end }`). */
+        if (!KORB_CLASS_P(definee) && dc_off != INT32_MIN && c->dm_entry != NULL && KORB_PROC_P(c->dm_entry->dm_proc)) {
+            const KorbProc *const dp = VAL2PROC(c->dm_entry->dm_proc);
+            if (dp->iseq != NULL && slots[dc_off] == ((VALUE)(uintptr_t)dp->iseq | (VALUE)KORB_FID_BLOCK) && KORB_CLASS_P(dp->self))
+                { definee = dp->self; nested = true; }
+        }
     }
     if (UNLIKELY(!KORB_CLASS_P(definee) && c->def_definee != KORB_NIL))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* instance_eval on a value with no singleton */
+    /* A top-level def is a private Object method kept in the global table (the
+     * bare-call fast path).  A public one — after a bare `public`, or nested in a
+     * method body — goes into Object's own table instead. */
+    if (!KORB_CLASS_P(definee) && c->vm->boot_done &&
+        (c->vm->main_public || (dc_off != INT32_MIN && ((uintptr_t)slots[dc_off] & 7u) == KORB_FID_METHOD)))
+        { definee = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]); nested = true; }
     if (KORB_CLASS_P(definee)) {
         { RESULT fr = korb_check_def_frozen(c, slots, definee); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* frozen class / metaclass-of-frozen → FrozenError */
         slots[0] = definee;                               /* park: the hook is Ruby code */
@@ -1387,7 +1400,11 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entr
         }
         CHECK(korb_fire_method_added(c, slots + 1, slots[0], mid));
     } else {
-        korb_method_define(c, mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info, locals_info);
+        /* private only when written for main: a block run with another self (define_method)
+         * whose cref koruby does not track keeps the old public global */
+        const VALUE dself = slots[self_off];
+        const bool priv = c->vm->boot_done && KORB_OBJECT_P(dself) && VAL2OBJ(dself)->klass == KORB_NIL;
+        korb_method_define(c, mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info, locals_info, priv);
     }
     return RESULT_OK(ID2SYM(mid));
 }
@@ -1878,7 +1895,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * global variables ($x) share this table but are nil (not NameError) when
          * unset; constants raise.  The interned name keeps the leading '$'. */
         if (owner_name == 0 && korb_sym_name(vm, name_sym)[0] == '$') {
-            if (UNLIKELY(korb_const_get(vm, korb_intern(vm, "$VERBOSE", 8)) == KORB_TRUE))   /* -w only (CRuby) */
+            if (UNLIKELY(korb_const_get(vm, korb_intern(vm, "$VERBOSE", 8)) == KORB_TRUE) && dc_off != KORB_GVAR_QUIET)   /* -w only (CRuby) */
                 korb_warn(c, slots, "global variable '%s' not initialized", korb_sym_name(vm, name_sym));
             return RESULT_OK(KORB_NIL);
         }
