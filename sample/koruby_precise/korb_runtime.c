@@ -17506,8 +17506,9 @@ static RESULT
 korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
-    bool def; (void)korb_out_target(c, "$stdout", 7, &def);
-    if (def) {                                           /* default $stdout → straight to the descriptor */
+    bool def; const VALUE dout = korb_out_target(c, "$stdout", 7, &def);
+    /* default $stdout → straight to the descriptor, unless it has a singleton (`def STDOUT.puts`) */
+    if (def && !(AROH_IS_GC_OBJECT(dout) && (((const AroObjectHeader *)(uintptr_t)dout)->flags & KORB_FL_HAS_KLASS))) {
         KorbIORep *const rep = korb_io_std_rep(c->vm, 1);
         if (n == 0) return korb_io_wr_checked(c, slots, rep, "\n", 1);
         for (uint32_t i = 0; i < n; i++) CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), rep));
