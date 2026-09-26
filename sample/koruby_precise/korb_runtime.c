@@ -1750,6 +1750,11 @@ korb_hash_find(const KorbHash *h, VALUE key)
         }
         return -1;
     }
+    if (SYMBOL_P(key) || FIXNUM_P(key) || key == KORB_NIL || key == KORB_TRUE || key == KORB_FALSE) {
+        for (uint32_t i = 0; i < h->len; i++)   /* an immediate is eql? only to itself: small-hash lookups are mostly these */
+            if (d[2 * i] == key) return (int32_t)i;
+        return -1;
+    }
     for (uint32_t i = 0; i < h->len; i++)
         if (korb_value_eql(d[2 * i], key)) return (int32_t)i;   /* eql?: 1 and 1.0 are distinct keys */
     return -1;
@@ -13960,6 +13965,7 @@ static RESULT korb_waitpid_park(CTX *c, VALUE *slots, const pid_t want, const in
 #include "builtins/arithseq.c"
 #include "builtins/prism_bridge.c"
 #include "builtins/yaml_bridge.c"
+#include "builtins/marshal_fast.c"
 #include "builtins/string_ext.c"
 korb_register_core_methods(CTX *c)
 {
@@ -19830,6 +19836,7 @@ korb_ctx_new(void)
 #ifdef KORB_HAVE_YAML
     korb_builtin_define(c, "__yaml_parse", korb_bi_yaml_parse, 1);    /* lib/psych/parser.rb / emitter.rb が使う */
     korb_builtin_define(c, "__yaml_emit",  korb_bi_yaml_emit, -1);
+    korb_builtin_define(c, "__marshal_fast_load", korb_bi_marshal_fast_load, 1);   /* prelude/marshal.rb: plain data */
 #endif
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);

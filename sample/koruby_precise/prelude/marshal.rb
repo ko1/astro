@@ -410,7 +410,14 @@ module Marshal
       _symdump(:E, out, st); _dump(enc[1], out, st)
     else
       _symdump(:encoding, out, st)
-      out << "\""; _long(enc[1].bytesize, out); out << enc[1]
+      # the name is an object of the stream: one per encoding, a repeat links (CRuby)
+      nm = ((st[:encnames] ||= {})[enc[1]] ||= enc[1].b)
+      if (id = st[:objs][nm])
+        out << "@"; _long(id, out)
+      else
+        st[:objs][nm] = st[:objs].size
+        out << "\""; _long(nm.bytesize, out); out << nm
+      end
     end
   end
 
@@ -502,6 +509,11 @@ module Marshal
   # --- load ------------------------------------------------------------------
 
   def self.load(data, proc = nil, freeze: false)
+    # plain data (nil/true/false/Integer/Float/String/Symbol/Array/Hash) is
+    # decoded in C; anything else comes back nil and is read below from scratch
+    if proc.nil? && !freeze && data.instance_of?(String) && (r = __marshal_fast_load(data))
+      return r[0]
+    end
     from_io = false
     io = nil
     if data.respond_to?(:read) && !data.is_a?(String)
