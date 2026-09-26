@@ -674,7 +674,7 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
 /* Everything a child does between fork and exec: signal mask, chdir, redirects,
  * descriptor hygiene, environment.  Returns false with errno set instead of
  * exiting, because Process.exec runs this in the calling process itself. */
-static bool korb_spawn_child_setup(const struct korb_spawn_plan *p, int keep_fd, bool *at_chdir) {
+static bool korb_spawn_child_setup(const struct korb_spawn_plan *p, int keep_fd, bool *at_chdir, const bool apply_env) {
     korb_child_reset_signals();                     /* the mask survives execve — the child must not start with signals blocked */
     if (p->pgroup >= 0 && setpgid(0, p->pgroup) != 0) return false;
     if (p->umask_val >= 0) umask((mode_t)p->umask_val);
@@ -710,6 +710,7 @@ static bool korb_spawn_child_setup(const struct korb_spawn_plan *p, int keep_fd,
             if (!kept) close(fd);
         }
     }
+    if (!apply_env) return true;                    /* a vfork child execs with an env built by the parent */
     for (uint32_t i = 0; p->envp[i] != NULL; i++) putenv(p->envp[i]);
     if (p->unsetenv_others) { extern char **environ; environ = NULL; }   /* start from nothing */
     for (uint32_t i = 0; i < p->nunset; i++) unsetenv(p->unsetv[i]);
@@ -720,6 +721,83 @@ static bool korb_spawn_child_setup(const struct korb_spawn_plan *p, int keep_fd,
 /* The file to execute: the [cmdname, argv0] form names it separately. */
 static const char *korb_spawn_file(const struct korb_spawn_plan *p) {
     return p->exec_path[0] != '\0' ? p->exec_path : p->argv[0];
+}
+
+/* The child's environment, built in the parent: a vfork child shares our
+ * memory, so it must not putenv into our environ.  Ours minus the unset and
+ * overridden names, then the plan's own (the last one of a name wins). */
+static char **korb_spawn_build_env(const struct korb_spawn_plan *p) {
+    extern char **environ;
+    size_t n = 0, m = 0;
+    if (!p->unsetenv_others && environ != NULL) while (environ[n] != NULL) n++;
+    while (p->envp[m] != NULL) m++;
+    char **const env = malloc(sizeof(char *) * (n + m + 1));
+    if (env == NULL) return NULL;
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        const char *const e = environ[i];
+        const char *const eq = strchr(e, '=');
+        const size_t nl = eq ? (size_t)(eq - e) : strlen(e);
+        bool drop = false;
+        for (uint32_t u = 0; u < p->nunset && !drop; u++)
+            drop = strlen(p->unsetv[u]) == nl && memcmp(p->unsetv[u], e, nl) == 0;
+        for (size_t j = 0; j < m && !drop; j++)
+            drop = strncmp(p->envp[j], e, nl) == 0 && p->envp[j][nl] == '=';
+        if (!drop) env[k++] = environ[i];
+    }
+    for (size_t j = 0; j < m; j++) {
+        const char *const eq = strchr(p->envp[j], '=');
+        const size_t nl = eq ? (size_t)(eq - p->envp[j]) : strlen(p->envp[j]);
+        bool later = false;
+        for (size_t l = j + 1; l < m && !later; l++)
+            later = strncmp(p->envp[l], p->envp[j], nl) == 0 && p->envp[l][nl] == '=';
+        if (!later) env[k++] = p->envp[j];
+    }
+    env[k] = NULL;
+    return env;
+}
+
+/* execvp's PATH search, done in the parent against the child's environment.
+ * 0 and the file in buf, or ENOENT (CRuby reports a found-but-not-executable
+ * name as not found too). */
+static int korb_spawn_resolve(const char *const file, char *const *env, char *const buf, const size_t cap) {
+    if (strchr(file, '/') != NULL) {
+        if (strlen(file) >= cap) return ENAMETOOLONG;
+        memcpy(buf, file, strlen(file) + 1);
+        return 0;
+    }
+    if (file[0] == '\0') return ENOENT;
+    const char *path = "/bin:/usr/bin";                  /* glibc's default when PATH is unset */
+    for (size_t i = 0; env[i] != NULL; i++)
+        if (strncmp(env[i], "PATH=", 5) == 0) { path = env[i] + 5; break; }
+    const size_t fl = strlen(file);
+    for (const char *s = path; ; ) {
+        const char *const e = strchr(s, ':');
+        const size_t dl = e ? (size_t)(e - s) : strlen(s);
+        if (dl + 1 + fl < cap) {
+            if (dl == 0) memcpy(buf, file, fl + 1);          /* an empty entry is the current directory */
+            else { memcpy(buf, s, dl); buf[dl] = '/'; memcpy(buf + dl + 1, file, fl + 1); }
+            struct stat st;
+            if (stat(buf, &st) == 0 && S_ISREG(st.st_mode) && access(buf, X_OK) == 0) return 0;
+        }
+        if (e == NULL) break;
+        s = e + 1;
+    }
+    return ENOENT;
+}
+
+/* A relative PATH entry names a directory relative to the child's cwd, which a
+ * chdir: option changes after the parent's lookup: leave those to execvp. */
+static bool korb_spawn_needs_fork(const struct korb_spawn_plan *p) {
+    if (p->chdir[0] == '\0' || strchr(korb_spawn_file(p), '/') != NULL) return false;
+    const char *const path = getenv("PATH");
+    if (path == NULL || p->have_env) return true;          /* can't tell cheaply: stay on the old path */
+    for (const char *s = path; ; ) {
+        const char *const e = strchr(s, ':');
+        if (s[0] != '/') return true;
+        if (e == NULL) return false;
+        s = e + 1;
+    }
 }
 
 /* fork + exec.  Returns the child pid, or -1 with errno set.  *cerr (when the
@@ -734,6 +812,56 @@ static pid_t korb_spawn_run_r(const struct korb_spawn_plan *p, int *cerr, bool *
         if (pipe2(ep, O_CLOEXEC) != 0) { ep[0] = ep[1] = -1; }
     }
     fflush(NULL);
+    if (!korb_spawn_needs_fork(p)) {
+        /* vfork: the child borrows our memory until it execs, so a big heap costs
+         * nothing to spawn (fork copied its page tables: ~11 ms per spawn), and
+         * the PATH search happens here once instead of as failed execs there */
+        char **const env = korb_spawn_build_env(p);
+        uint32_t argc = 0;
+        while (p->argv[argc] != NULL) argc++;
+        char **const sh_argv = malloc(sizeof(char *) * (argc + 2));   /* no #! line: run it with /bin/sh, as execvp does */
+        char path[PATH_MAX];
+        if (env != NULL && sh_argv != NULL) {
+            const int rerr = korb_spawn_resolve(korb_spawn_file(p), env, path, sizeof path);
+            sh_argv[0] = (char *)"/bin/sh"; sh_argv[1] = path;
+            for (uint32_t i = 1; i <= argc; i++) sh_argv[i + 1] = p->argv[i];
+            const pid_t vpid = vfork();
+            if (vpid == 0) {                                  /* only syscalls from here: our memory is shared */
+                if (ep[0] >= 0) close(ep[0]);
+                int msg[2] = { 0, 0 };
+                bool at_chdir = false;
+                if (!korb_spawn_child_setup(p, ep[1], &at_chdir, false)) msg[0] = errno;
+                else if (rerr != 0) msg[0] = rerr;
+                else {
+                    execve(path, p->argv, env);
+                    if (errno == ENOEXEC) execve("/bin/sh", sh_argv, env);
+                    msg[0] = errno;
+                }
+                msg[1] = at_chdir ? 1 : 0;
+                if (ep[1] >= 0) { const ssize_t w = write(ep[1], msg, sizeof msg); (void)w; }
+                _exit(127);
+            }
+            free(sh_argv);
+            free(env);
+            if (vpid < 0) {
+                if (ep[0] >= 0) { close(ep[0]); close(ep[1]); }
+                return vpid;
+            }
+            if (ep[1] >= 0) {
+                close(ep[1]);
+                int msg[2] = { 0, 0 };
+                const ssize_t n = read(ep[0], msg, sizeof msg);  /* EOF: the exec took */
+                close(ep[0]);
+                if (n == (ssize_t)sizeof msg) {
+                    *cerr = msg[0];
+                    if (cchdir != NULL) *cchdir = msg[1] != 0;
+                }
+            }
+            return vpid;
+        }
+        free(sh_argv);
+        free(env);                                            /* out of memory: the fork path below */
+    }
     const pid_t pid = fork();
     if (pid < 0) {
         if (ep[0] >= 0) { close(ep[0]); close(ep[1]); }
@@ -743,7 +871,7 @@ static pid_t korb_spawn_run_r(const struct korb_spawn_plan *p, int *cerr, bool *
         if (ep[0] >= 0) close(ep[0]);
         int msg[2] = { 0, 0 };
         bool at_chdir = false;
-        if (!korb_spawn_child_setup(p, ep[1], &at_chdir)) msg[0] = errno;
+        if (!korb_spawn_child_setup(p, ep[1], &at_chdir, true)) msg[0] = errno;
         else {
             execvp(korb_spawn_file(p), p->argv);
             /* CRuby searches PATH itself, so a file that is there but not
@@ -841,7 +969,7 @@ static RESULT korb_m_process_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     sigset_t mask_old;
     (void)sigaction(SIGPIPE, NULL, &pipe_old);
     (void)pthread_sigmask(SIG_SETMASK, NULL, &mask_old);
-    const bool setup_ok = korb_spawn_child_setup(&plan, -1, NULL);
+    const bool setup_ok = korb_spawn_child_setup(&plan, -1, NULL, true);
     if (setup_ok) execvp(korb_spawn_file(&plan), plan.argv);
     const int e = errno;
     (void)sigaction(SIGPIPE, &pipe_old, NULL);
@@ -975,16 +1103,33 @@ static RESULT korb_m_kernel_backtick(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     fcntl(efd[1], F_SETFD, FD_CLOEXEC);
     fflush(NULL);
     korb_io_flush_std(c->vm);   /* the child inherits our write buffer: drain it first */
-    const pid_t pid = fork();
+    /* everything the child needs is prepared here: it is a vfork child (see korb_spawn_run_r) */
+    extern char **environ;
+    char path[PATH_MAX];
+    char *sh_argv[sizeof argv / sizeof argv[0] + 2];      /* no #! line: /bin/sh FILE ARGS…, as execvp does */
+    char *const shell_argv[] = { (char *)"sh", (char *)"-c", cmd, NULL };
+    int rerr = 0;
+    if (!shell) {
+        rerr = korb_spawn_resolve(argv[0], environ, path, sizeof path);
+        size_t n = 0;
+        sh_argv[n++] = (char *)"/bin/sh"; sh_argv[n++] = path;
+        for (size_t i = 1; argv[i] != NULL && n + 1 < sizeof sh_argv / sizeof sh_argv[0]; i++) sh_argv[n++] = argv[i];
+        sh_argv[n] = NULL;
+    }
+    const pid_t pid = vfork();
     if (pid < 0) { const int e = errno; close(fds[0]); close(fds[1]); close(efd[0]); close(efd[1]);
                    return korb_raise_errno(c, slots, e, "fork", ""); }
-    if (pid == 0) {
+    if (pid == 0) {                                       /* only syscalls from here: our memory is shared */
         korb_child_reset_signals();
         close(fds[0]); close(efd[0]);
         if (fds[1] != 1) { dup2(fds[1], 1); close(fds[1]); }
-        if (shell) execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-        else       execvp(argv[0], argv);
-        const int e = errno;
+        int e = rerr;
+        if (shell) { execve("/bin/sh", shell_argv, environ); e = errno; }
+        else if (rerr == 0) {
+            execve(path, argv, environ);
+            if (errno == ENOEXEC) execve("/bin/sh", sh_argv, environ);
+            e = errno;
+        }
         ssize_t wr = write(efd[1], &e, sizeof e);
         (void)wr;
         _exit(127);
