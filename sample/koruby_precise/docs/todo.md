@@ -5904,3 +5904,18 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
   LocalJumpError、koruby は BREAK が外まで抜けて <main> で LocalJumpError になる。`proc { }` /
   Proc.new のブロックは brk_orphan で対処済み（`&b` で作った Proc は作ったメソッドが戻った時点で
   孤児になる — 戻りの境界で判定するには、ブロックの node_entry から定義メソッドの本体を引ける必要がある）。
+- **Fiber#transfer でルート Fiber へ戻る経路が swapcontext の失敗に頼っている**: ルートの
+  KorbFiberRep は uctx が NULL で、`swapcontext(&here, NULL)` は sigprocmask の段で EFAULT になり
+  切り替えずに -1 で戻る — その「戻った」ことで transfer が成立している。入れ子の transfer
+  （`Fiber.new { f = Fiber.current; Fiber.new { f.transfer(:x) }.transfer }.resume`）は SEGV / stack
+  smashing（core/fiber/current_spec の 1 失敗と同じ）。ルートにも本物の ucontext を持たせるべき。
+- **CPU を回している最中の外からのシグナルは OS の既定のまま**（kill）: 未 trap の INT/TERM などを
+  例外にするのは pump で眠っている間だけ（ea797363 の次）。CRuby は割り込みフラグをバックエッジ・
+  呼び出しで見るので、CPU ループでも Interrupt になり ensure / at_exit が走る。koruby で同じことを
+  するには、シグナルハンドラから VM に届く書き込み先（プロセス大域）か、ループ側の検査が要る。
+- `$stdout.reopen(w)` 後の STDOUT の EPIPE: CRuby は reopen で「EPIPE で SIGPIPE」の印を落とす
+  （捕まらなければ Errno::EPIPE を表示して exit 1）、koruby は fd 1 の rep で判定するので無言で 141。
+- 捕まらなかった例外の報告は Ruby を呼ばないので、`#message` / `#detailed_message` の上書きを
+  見ない（`def message = ""` の例外で CRuby は "E"、koruby は "E (E)"）。
+- simplecov static_coverage_extractor_spec の 1 失敗は prism のバージョン差（koruby は 1.4.0 の
+  Prism::Visitor = compact_child_nodes、CRuby master の prism は each_child_node）。

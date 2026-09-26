@@ -24,6 +24,8 @@ typedef struct KorbIORep {
     uint8_t  sync;                   /* flush after every write */
     uint8_t  nonblk;                 /* O_NONBLOCK: block by parking, not by stalling */
     uint8_t  fifo_rd;                /* a FIFO opened read-only: the first read waits for a writer */
+    uint8_t  slow;                   /* fd (as of slow_fd1) is a pipe/tty/socket: see korb_io_slow_p */
+    int      slow_fd1;               /* fd + 1 that `slow` was worked out for; 0 = not yet */
     uint32_t lineno;                 /* IO#lineno: lines handed out by #gets */
     int      enc_idx;                /* memo: the encoding a read result carries (-1 = ask the prelude) */
     int      benc_idx;               /* memo: the encoding the raw bytes arrive in (the external one) */
@@ -272,6 +274,17 @@ static bool korb_io_wr(KorbIORep *const rep, const char *p, size_t n) {
  * MAY GC when it parks (see korb_io_park): a caller must re-derive any pointer
  * into a movable object afterwards.  The destination buffer here is the rep's
  * own, which is why the refill itself is safe.  `c` NULL = must not park. */
+/* A blocking read(2) on a pipe / tty / socket can wait forever, and nothing
+ * interrupts it: waiting in the pump first lets a signal (Ctrl-C) and the
+ * other green threads through.  Regular files are always ready. */
+static bool korb_io_slow_p(KorbIORep *const rep) {
+    if (rep->slow_fd1 != rep->fd + 1) {
+        struct stat st;
+        rep->slow = fstat(rep->fd, &st) == 0 && !S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode) && !S_ISBLK(st.st_mode);
+        rep->slow_fd1 = rep->fd + 1;
+    }
+    return rep->slow;
+}
 static uint32_t korb_io_fill_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESULT *perr) {
     if (rep->rpos < rep->rlen) return rep->rlen - rep->rpos;
     rep->rpos = rep->rlen = 0;
@@ -286,6 +299,14 @@ static uint32_t korb_io_fill_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESUL
         rep->rcapa = KORB_IO_BUFSZ;
     }
     { const RESULT fr = korb_io_fifo_wait(c, slots, rep); if (UNLIKELY(fr.state != KORB_NORMAL)) { if (perr) *perr = fr; return 0; } }
+    if (!rep->nonblk && c != NULL && korb_io_slow_p(rep)) {
+        const RESULT pr = korb_io_park(c, slots, rep, POLLIN);   /* may GC */
+        if (UNLIKELY(pr.state != KORB_NORMAL)) { if (perr) *perr = pr; return 0; }
+        if (UNLIKELY(!korb_io_open_p(rep))) {
+            if (perr) *perr = korb_raise(c, slots, KORB_E_IOERROR, 0, "stream closed in another thread");
+            return 0;
+        }
+    }
     for (;;) {
         const ssize_t n = read(rep->fd, rep->rbuf, rep->rcapa);
         if (n < 0) {

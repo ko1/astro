@@ -97,3 +97,7 @@ KORB_WASI_MISSING int system(const char *cmd) { (void)cmd; errno = ENOTSUP; retu
 KORB_WASI_MISSING int chroot(const char *path) { (void)path; errno = ENOTSUP; return -1; }
 KORB_WASI_MISSING int fchdir(int fd)           { (void)fd;   errno = ENOTSUP; return -1; }
 KORB_WASI_MISSING void tzset(void)             { }
+/* One process, nobody to contend with: every lock is granted. */
+KORB_WASI_MISSING int flock(int fd, int op) {
+    (void)fd; (void)op; return 0;
+}

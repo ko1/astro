@@ -1674,10 +1674,10 @@ module Process
 end
 
 module Signal
-  # Signals are blocked process-wide and reaped at interpreter check points
-  # (builtins/process.c); this is where the policy lives.  Trapping a signal
-  # also blocks it, so INT/QUIT — left unblocked at startup so Ctrl-C stays
-  # prompt — become koruby-delivered as soon as a program traps them.
+  # Signals are reaped at interpreter check points (builtins/process.c) and
+  # delivered here on the main thread.  Trapping a signal blocks it; an
+  # untrapped HUP/INT/QUIT/TERM/ALRM/USR1/USR2 is caught only while the
+  # process sleeps (a CPU-bound loop still dies by it, so Ctrl-C stays prompt).
   @@handlers = {}
 
   # Ruby installs its own handlers for these, so a program may not trap them.
@@ -1769,14 +1769,14 @@ module Signal
     # never trapped → Ruby's default disposition (raise), which is NOT the same
     # as trap(sig, nil), whose stored nil means "ignore"
     unless @@handlers.key?(nm)
-      raise(signo == Signal.list["INT"] ? Interrupt.new : SignalException.new(signo))
+      raise(signo == Signal.list["INT"] ? Interrupt.new("") : SignalException.new(signo))
     end
     case (h = @@handlers[nm])
     when "IGNORE", "SIG_IGN" then nil
     when "EXIT"              then exit(0)
     when nil                 then nil          # trap(sig, nil) → ignore
     when "DEFAULT", "SIG_DFL", "SYSTEM_DEFAULT"
-      raise(signo == Signal.list["INT"] ? Interrupt.new : SignalException.new(signo))
+      raise(signo == Signal.list["INT"] ? Interrupt.new("") : SignalException.new(signo))
     else
       __trap_ctx(true)   # Mutex#lock refuses inside the handler (CRuby's trap context)
       begin

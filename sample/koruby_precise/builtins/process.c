@@ -30,10 +30,11 @@
 /* Nothing is blocked at startup.  A blocked signal waits for the next check
  * point and a pure-CPU loop has none, so blocking up front would make
  * `timeout`, Ctrl-C and `kill` unable to stop a runaway script — a worse bug
- * than the one this delivers.  A signal becomes koruby-delivered only when the
- * program asks for it: Signal.trap blocks it (see __signal_block), and
- * Process.kill blocks it around a send to our own pid (korb_kill_self).
- * Signals arriving from outside an untrapped process keep the OS default. */
+ * than the one this delivers.  A signal becomes koruby-delivered when the
+ * program asks for it (Signal.trap blocks it, see __signal_block), around a
+ * send to our own pid (korb_kill_self), and — for the ones CRuby arms at
+ * startup — while the process sleeps in the pump (korb_signal_sleep_begin).
+ * Anything else arriving from outside keeps the OS default. */
 static void korb_fork_child_threads(struct korb_vm *vm);   /* fwd: every child that goes on running Ruby */
 static const int korb_sig_deliverable[] = {
     SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, SIGALRM,
@@ -72,9 +73,73 @@ static int korb_signal_wait_fd(struct korb_vm *vm) {
         if (!any) return -1;
         sigset_t set;
         korb_sigset_deliverable(&set);
-        vm->sigfd = signalfd(-1, &set, SFD_NONBLOCK | SFD_CLOEXEC);
+        const int fd = signalfd(-1, &set, SFD_NONBLOCK | SFD_CLOEXEC);
+        /* kept above the low numbers so a script's fds don't shift by one */
+        const int hi = fd >= 0 ? fcntl(fd, F_DUPFD_CLOEXEC, 100) : -1;
+        if (hi >= 0) { close(fd); vm->sigfd = hi; }
+        else vm->sigfd = fd;
     }
     return vm->sigfd;
+}
+
+/* CRuby arms these at startup, so one arriving from outside raises
+ * SignalException (Interrupt for INT) — unless inherited as ignored (nohup). */
+static const int korb_sig_armed_default[] = { SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGALRM, SIGUSR1, SIGUSR2 };
+
+/* Record the blocked set after changing it (see vm->sigmask). */
+static void korb_sigmask_sync(struct korb_vm *vm) {
+    (void)pthread_sigmask(SIG_SETMASK, NULL, &vm->sigmask);
+    vm->sigmask_gen++;
+}
+
+static void korb_signal_arm_init(struct korb_vm *vm) {
+    korb_sigmask_sync(vm);
+    vm->sig_armed = vm->sig_caught = 0;
+    for (size_t i = 0; i < sizeof korb_sig_armed_default / sizeof korb_sig_armed_default[0]; i++) {
+        const int s = korb_sig_armed_default[i];
+        struct sigaction sa;
+        if (sigaction(s, NULL, &sa) == 0 && sa.sa_handler == SIG_DFL) vm->sig_armed |= 1u << s;
+    }
+}
+
+static void korb_sigset_of_bits(sigset_t *const set, uint32_t bits) {
+    sigemptyset(set);
+    for (int s = 1; bits != 0 && s < 32; s++)
+        if (bits & (1u << s)) { sigaddset(set, s); bits &= ~(1u << s); }
+}
+
+/* Around the pump's native sleep the armed signals are blocked, so one that
+ * arrives lands on the signalfd and is raised instead of killing us.  Outside a
+ * sleep they keep the OS default: a CPU-bound loop has no check point, and
+ * `timeout` / Ctrl-C must still stop it. */
+static bool korb_signal_sleep_begin(struct korb_vm *vm, sigset_t *const old) {
+    if (vm->sig_armed == 0) return false;
+    sigset_t set;
+    korb_sigset_of_bits(&set, vm->sig_armed);
+    return pthread_sigmask(SIG_BLOCK, &set, old) == 0;
+}
+
+/* Take `sig` off the pending set if it is there (it must be blocked). */
+static bool korb_signal_take(int sig) {
+    sigset_t one;
+    sigemptyset(&one);
+    sigaddset(&one, sig);
+    const struct timespec zero = { 0, 0 };
+    return sigtimedwait(&one, NULL, &zero) == sig;
+}
+
+/* One that arrived is reaped into vm->sig_caught before the rest go back to the
+ * default: left pending, a context switch restoring an older mask would let it
+ * kill us.  Trapped ones were blocked before and stay. */
+static void korb_signal_sleep_end(struct korb_vm *vm, const sigset_t *const old) {
+    sigset_t un;
+    korb_sigset_of_bits(&un, 0);
+    for (int s = 1; s < 32; s++) {
+        if (!(vm->sig_armed & (1u << s)) || sigismember(old, s)) continue;
+        if (korb_signal_take(s)) vm->sig_caught |= 1u << s;
+        sigaddset(&un, s);
+    }
+    (void)pthread_sigmask(SIG_UNBLOCK, &un, NULL);
 }
 
 /* Reap one pending deliverable signal without blocking; 0 = none pending. */
@@ -88,6 +153,7 @@ static int korb_signal_reap(void) {
 }
 
 static int korb_signo_of(CTX *c, VALUE v);        /* fwd (defined with the trap builtins below) */
+static int korb_blop_signal_wake(struct korb_vm *vm);   /* fwd (thread.c) */
 static int korb_signo_of_name(const char *nm);    /* fwd (同上) */
 RESULT korb_signal_deliver(CTX *c, VALUE *slots);   /* fwd (defined just below korb_kill_self) */
 
@@ -118,6 +184,8 @@ static RESULT korb_m_signal_block(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     sigemptyset(&one);
     sigaddset(&one, sig);
     (void)pthread_sigmask(on ? SIG_BLOCK : SIG_UNBLOCK, &one, NULL);
+    if (sig < 32 && !on) c->vm->sig_armed &= ~(1u << sig);   /* IGNORE / SYSTEM_DEFAULT: the OS decides now */
+    korb_sigmask_sync(c->vm);
     (void)slots;
     return RESULT_OK(on ? KORB_TRUE : KORB_FALSE);
 }
@@ -137,6 +205,18 @@ static RESULT korb_kill_self(CTX *c, VALUE *slots, int sig) {
     sigemptyset(&one);
     sigaddset(&one, sig);
     (void)pthread_sigmask(SIG_BLOCK, &one, &old);
+    if (c->vm->cur_thread != NULL && c->vm->cur_thread != c->vm->main_thread) {
+        /* for the main thread to deliver at its next check point */
+        const int r = kill(getpid(), sig);
+        const int e = errno;
+        if (r == 0 && korb_signal_take(sig) && sig < 32) {
+            c->vm->sig_caught |= 1u << sig;
+            (void)korb_blop_signal_wake(c->vm);
+        }
+        (void)pthread_sigmask(SIG_SETMASK, &old, NULL);
+        if (r != 0) return korb_raise_errno(c, slots, e, "kill", "");
+        return RESULT_OK(KORB_NIL);
+    }
     const int r = kill(getpid(), sig);
     const int e = errno;
     RESULT d = (r == 0) ? korb_signal_deliver(c, slots) : RESULT_OK(KORB_NIL);
@@ -148,8 +228,16 @@ static RESULT korb_kill_self(CTX *c, VALUE *slots, int sig) {
 /* Interpreter check point: hand one pending signal to Signal.__deliver, which
  * runs the trap handler or raises.  RESULT_OK(nil) when nothing was pending. */
 RESULT korb_signal_deliver(CTX *c, VALUE *slots) {
-    const int sig = korb_signal_reap();
+    /* CRuby runs traps and raises on the main thread only; others leave it pending */
+    if (c->vm->cur_thread != NULL && c->vm->cur_thread != c->vm->main_thread) return RESULT_OK(KORB_NIL);
+    int sig = 0;
+    if (UNLIKELY(c->vm->sig_caught != 0)) {
+        sig = __builtin_ctz(c->vm->sig_caught);
+        c->vm->sig_caught &= ~(1u << sig);
+    } else sig = korb_signal_reap();
     if (LIKELY(sig == 0)) return RESULT_OK(KORB_NIL);
+    struct sigaction sa;   /* Linux queues an ignored signal while it is blocked (nohup's HUP to $$) */
+    if (sigaction(sig, NULL, &sa) == 0 && sa.sa_handler == SIG_IGN) return RESULT_OK(KORB_NIL);
     const VALUE sigmod = korb_const_get(c->vm, korb_intern(c->vm, "Signal", 6));
     if (UNLIKELY(!KORB_CLASS_P(sigmod))) return RESULT_OK(KORB_NIL);   /* prelude not up yet */
     slots[0] = sigmod;
@@ -1533,6 +1621,7 @@ static void korb_fork_child_threads(struct korb_vm *vm) {
     /* a signalfd reports the *reader's* pending signals, but the parent may
        still hold one queued in it — re-arm ours rather than reason about that */
     if (vm->sigfd >= 0) { close(vm->sigfd); vm->sigfd = -1; }
+    vm->sig_caught = 0;   /* the parent's, as pending signals are */
     struct korb_thread *const me = vm->cur_thread;
     if (me == NULL) return;
     for (struct korb_thread *t = vm->thread_list; t; t = t->next) {

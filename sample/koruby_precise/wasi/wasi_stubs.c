@@ -53,3 +53,5 @@ void korb_init_process(CTX *c, VALUE *slots) {
  * 配送されないので、届いていない = 何もしないでよい。 */
 static RESULT korb_signal_deliver(CTX *c, VALUE *slots) { (void)c; (void)slots; return RESULT_OK(KORB_NIL); }
 static int korb_signal_wait_fd(struct korb_vm *vm) { (void)vm; return -1; }
+static bool korb_signal_sleep_begin(struct korb_vm *vm, void *old) { (void)vm; (void)old; return false; }
+static void korb_signal_sleep_end(struct korb_vm *vm, const void *old) { (void)vm; (void)old; }

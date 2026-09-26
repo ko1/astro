@@ -20,6 +20,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <signal.h>
 #include "builtins/bignum_backend.h"   /* korb_mp_*: 多倍長整数 backend (KORB_OBJ_BIGNUM) */
 #include <string.h>
 #include <stdlib.h>
@@ -1248,6 +1249,10 @@ struct korb_vm {
     uint64_t slice_start_ns;           /* when the running thread was switched in: preemption waits out a quantum */
     uint32_t tl_gv_sym[2];             /* $_ / $? — swapped per thread at a switch */
     int sigfd;                         /* signalfd(2): pending-signal readiness for the pump. -1 = not armed */
+    uint32_t sig_armed;                /* bit s: untrapped, raises SignalException when it arrives during a sleep */
+    uint32_t sig_caught;               /* bit s: reaped (during a sleep / from another thread), for the main thread to deliver */
+    sigset_t sigmask;                  /* the blocked set: swapcontext restores a stale one, so resumers re-apply it */
+    uint32_t sigmask_gen;              /* bumped whenever sigmask changes */
     uint8_t thread_aoe_global;         /* Thread.abort_on_exception (class-level) */
     uint8_t thread_roe_off;            /* !Thread.report_on_exception (class-level; zero = CRuby's default true) */
 

@@ -10498,14 +10498,24 @@ korb_report_section(CTX *c, FILE *const fp, const KorbException *e, bool live, b
         cls = clsbuf;
     }
     const char *msg = (e->msg != KORB_NIL) ? korb_strbuf_data(VAL2STR(e->msg)->buf) : cls;
+    /* CRuby's rb_decorate_message: an empty message prints just the class
+     * ("unhandled exception" for RuntimeError); otherwise the class follows the
+     * first line of the message. */
+    char mhead[1024];
+    const char *const nl = strchr(msg, '\n');
+    const bool anon = KORB_CLASS_P(e->exc_class) && !VAL2CLASS(e->exc_class)->name_sym;   /* adds no "(Class)" */
+    if (msg[0] == '\0') snprintf(mhead, sizeof mhead, "%s", strcmp(cls, "RuntimeError") == 0 ? "unhandled exception" : cls);
+    else if (anon) snprintf(mhead, sizeof mhead, "%s", msg);
+    else if (nl != NULL) snprintf(mhead, sizeof mhead, "%.*s (%s)%s", (int)(nl - msg), msg, cls, nl);
+    else snprintf(mhead, sizeof mhead, "%s (%s)", msg, cls);
 
     char buf[600];
     /* The frames: what the exception captured at a rescue, else — only for the
      * one actually being unwound — the live unwind record. */
     const KorbArray *const cap = KORB_ARRAY_P(e->backtrace) ? VAL2ARY(e->backtrace) : NULL;
     const uint32_t n = cap ? cap->len : (live ? vm->bt_cnt + (synth_main ? 1u : 0u) : 0);
-    if (n == 0) { fprintf(fp, "%s (%s)\n", msg, cls); return; }
-    fprintf(fp, "%s: %s (%s)\n", korb_report_line(c, cap, e, 0, buf, sizeof buf), msg, cls);
+    if (n == 0) { fprintf(fp, "%s\n", mhead); return; }
+    fprintf(fp, "%s: %s\n", korb_report_line(c, cap, e, 0, buf, sizeof buf), mhead);
     uint32_t head = n, tail = 0;                 /* elide the middle of very deep unwinds (SystemStackError) */
     if (n > 20) { head = 12; tail = 4; }
     if (OPTION.backtrace_limit_given && OPTION.backtrace_limit >= 0 &&
@@ -19630,6 +19640,9 @@ korb_ctx_new(void)
     c->vm = calloc(1, sizeof(struct korb_vm));
     if (!c->vm) { fprintf(stderr, "koruby_precise: out of memory (VM)\n"); abort(); }
     c->vm->sigfd = -1;                                  /* calloc's 0 is a real fd */
+#ifndef KORB_WASI
+    korb_signal_arm_init(c->vm);
+#endif
     c->vm->enc_locale = KORB_ENC_UTF8;                  /* until the prelude reads the locale */
     c->vm->enc_internal = UINT32_MAX;                   /* Encoding.default_internal is nil */
     c->vm->enc_external = KORB_ENC_UTF8;                /* until Encoding.default_external= says otherwise */

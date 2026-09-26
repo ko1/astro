@@ -5,6 +5,16 @@
  * scanned via the vm fiber list (see AROH_VISIT_ROOTS).  <ucontext.h> is
  * included at the top of korb_runtime.c (before koruby macros). */
 
+/* swapcontext brings back the signal mask saved when this context switched
+ * out; a trap or a parked signal since then (gen moved) must survive it. */
+static inline void korb_sigmask_resume(const struct korb_vm *const vm, const uint32_t gen_out) {
+#ifndef KORB_WASI
+    if (vm->sigmask_gen != gen_out) (void)pthread_sigmask(SIG_SETMASK, &vm->sigmask, NULL);
+#else
+    (void)vm; (void)gen_out;
+#endif
+}
+
 #define KORB_FIBER_VSLOTS_BYTES ((size_t)2 << 20)   /* per-fiber value stack */
 #define KORB_FIBER_CSTACK_BYTES ((size_t)1 << 20)   /* per-fiber native stack (1 MiB) */
 #define KORB_FIBER_VSLOTS_MARGIN 1024               /* slots reserved below limit */
@@ -29,6 +39,7 @@ korb_fiber_trampoline(unsigned hi, unsigned lo)
 {
     CTX *const c = (CTX *)(uintptr_t)(((uint64_t)hi << 32) | (uint64_t)lo);
     KorbFiberRep *const rep = c->vm->starting_fiber;
+    korb_sigmask_resume(c->vm, c->vm->sigmask_gen - 1);   /* the context was built with an older mask */
     rep->fstate = 1;                                  /* running */
     VALUE arg = rep->transfer;                        /* value from the first resume */
     RESULT r = korb_block_yield(c, c->slots, rep->body, rep->def_env, &arg, 1, &rep->captured_self);
@@ -151,7 +162,9 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     c->errinfo_n = rep->errinfo_n;
     if (c->errinfo_n > c->errinfo_live) c->errinfo_live = c->errinfo_n;   /* the suspended side's entries stay rooted */
 
+    const uint32_t mask_gen = c->vm->sigmask_gen;
     swapcontext(&here, (ucontext_t *)rep->uctx);       /* === into the fiber === */
+    korb_sigmask_resume(c->vm, mask_gen);
 
     /* === back: fiber yielded or finished === */
     rep->errinfo_n = c->errinfo_n;                     /* keep the fiber's depth for its next resume */
@@ -497,7 +510,9 @@ korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     rep->vslots_top = slots; rep->vslots_hw = c->slots_high_water;
     rep->vcfunc_link = c->cfunc_link;                  /* travels with this fiber's stack */
     rep->vcarry_base = c->carry_base; rep->vcarry_line_bits = c->carry_line_bits;
+    const uint32_t mask_gen = c->vm->sigmask_gen;
     swapcontext((ucontext_t *)rep->uctx, (ucontext_t *)rep->resume_uctx);  /* === out === */
+    korb_sigmask_resume(c->vm, mask_gen);
     /* === resumed: resume() restored c->slots to ours === */
     rep->fstate = 1;
     if (UNLIKELY(rep->killing)) {                      /* Fiber#kill: unwind (ensure blocks run) */

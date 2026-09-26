@@ -153,20 +153,18 @@ static void korb_blop_wake_fd(struct korb_vm *vm, int fd)
     }
 }
 
-/* pending signal で 1 thread を runnable にする。ここでは Ruby は動かせないので、
+/* pending signal で main thread を runnable にする。ここでは Ruby は動かせないので、
  * 起こすだけ — 配送は起きた側の check point (korb_blop_wait → check_ints)。
- * CRuby は trap handler を main thread で走らせるので main を優先する。
- * 戻り値: 起こした数 (0 = 誰も起こせなかった)。 */
+ * CRuby は trap handler を main thread でしか走らせない (他の thread は配送しない)。
+ * thread 未起動なら待っているのは main だけ。戻り値: 起こした数。 */
 static int
 korb_blop_signal_wake(struct korb_vm *vm)
 {
     struct korb_thread *t = vm->main_thread;
-    if (t == NULL || t->state != KORB_TH_PENDED) {
-        t = NULL;
-        for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
-            if (b->waiter && b->waiter->state == KORB_TH_PENDED) { t = b->waiter; break; }
-    }
-    if (t == NULL) return 0;
+    if (t == NULL)
+        for (const struct korb_blop *b = vm->blop_pending; b && t == NULL; b = b->bl_next)
+            if (b->waiter && b->waiter->state == KORB_TH_PENDED) t = b->waiter;
+    if (t == NULL || t->state != KORB_TH_PENDED) return 0;
     if (t->blop) korb_blop_post(vm, t->blop, -EINTR);   /* wait 側が配送後に待ち直す */
     else { t->state = KORB_TH_READY; korb_thread_runq_push(vm, t); }
     return 1;
@@ -181,6 +179,8 @@ korb_blop_pump(struct korb_vm *vm, int block)
     int posted = korb_blop_expire(vm);
     /* 眠る側だけ signalfd を見る: blocked signal は poll(2) から見えないので、
      * これが無いと trap 済みプロセスの sleep が kill(2) を寝過ごす。 */
+    sigset_t sig_old;
+    const bool sig_armed = block && korb_signal_sleep_begin(vm, &sig_old);
     const int sigfd = block ? korb_signal_wait_fd(vm) : -1;
     /* fd 収集 (POLL blops) */
     nfds_t total = (sigfd >= 0) ? 1 : 0;
@@ -210,8 +210,13 @@ korb_blop_pump(struct korb_vm *vm, int block)
             if (ms < 0 || d < ms) ms = (int)d;
         }
     }
-    if (total == 0 && ms == 0) { if (pf != sbuf) free(pf); return posted; }
+    if (total == 0 && ms == 0) {
+        if (sig_armed) korb_signal_sleep_end(vm, &sig_old);
+        if (pf != sbuf) free(pf);
+        return posted;
+    }
     const int rc = poll(pf, total, ms);
+    if (sig_armed) korb_signal_sleep_end(vm, &sig_old);
     /* signal の起床は revents 書き戻しの後: blop を list から外すと pf[] の
        index 対応が崩れる */
     const bool sig_ready = (rc > 0 && sigfd >= 0 && pf[0].revents != 0);
@@ -457,6 +462,7 @@ korb_thread_deadlock_fatal(void)
 static bool
 korb_blop_deadlocked(const struct korb_vm *const vm)
 {
+    if (vm->sig_caught != 0) return false;   /* a signal is on its way to the main thread */
     for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
         if (!(b->flags & KORB_BLOP_F_DEADLOCKABLE)) return false;
     return true;
@@ -489,7 +495,9 @@ korb_thread_yield_cpu(CTX *c, VALUE *slots)
     vm->cur_thread = next;
     next->state = KORB_TH_RUNNING;
     korb_thread_ctx_load(c, next);
+    const uint32_t mask_gen = vm->sigmask_gen;
     swapcontext((ucontext_t *)cur->uctx, (ucontext_t *)next->uctx);
+    korb_sigmask_resume(vm, mask_gen);
     /* === 再開: 切替元が我々の saved_* を c に載せてから swap してきている === */
     return RESULT_OK(KORB_NIL);
 }
@@ -743,6 +751,7 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
     CTX *const c = (CTX *)(uintptr_t)(((uint64_t)hi << 32) | (uint64_t)lo);
     struct korb_thread *const t = c->vm->cur_thread;
     t->started = 1;
+    korb_sigmask_resume(c->vm, c->vm->sigmask_gen - 1);   /* the context was built with an older mask */
     /* body Proc を自分の (scan される) value stack で proc.call(*args) する。
      * recv = base[0], args = base[1..n] → korb_send(base+1+n, :call, n)。 */
     VALUE *const base = c->slots;
