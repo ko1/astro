@@ -18,3 +18,6 @@ srv = TCPServer.new("127.0.0.1", 0); port = srv.addr[1]
 th = Thread.new { s = srv.accept; l = s.gets; s.puts "echo #{l}"; s.close }
 pid = fork { c = TCPSocket.new("127.0.0.1", port); c.puts "x"; $stdout.sync = true; puts c.gets; exit!(0) }
 Process.wait(pid); p $?.exitstatus; th.join
+q2 = []
+t4 = Thread.new { 3.times { |i| q2 << i; sleep 0.05 } }
+p `sleep 0.3; echo bt`, q2                         # backtick reads and reaps without stalling t4

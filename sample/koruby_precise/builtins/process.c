@@ -894,6 +894,7 @@ static RESULT korb_m_kernel_backtick(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     size_t cap = 4096, len = 0;
     char *buf = malloc(cap);
     if (!buf) { close(fds[0]); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); }
+    { const int fl = fcntl(fds[0], F_GETFL); if (fl >= 0) (void)fcntl(fds[0], F_SETFL, fl | O_NONBLOCK); }   /* park, don't stall the other threads */
     for (;;) {
         if (len + 4096 > cap) {
             char *nb = realloc(buf, cap * 2);
@@ -901,12 +902,20 @@ static RESULT korb_m_kernel_backtick(CTX *c, VALUE *slots, VALUE_REF self, VALUE
             buf = nb; cap *= 2;
         }
         const ssize_t r = read(fds[0], buf + len, cap - len);
+        if (r < 0 && errno == EINTR) continue;
+        if (r < 0 && korb_io_would_block(errno)) {
+            struct pollfd pf; pf.fd = fds[0]; pf.events = POLLIN; pf.revents = 0;
+            ssize_t ready = 0;
+            const RESULT pr = korb_blop_poll_wait(c, slots, &pf, 1, -1.0, &ready);
+            if (UNLIKELY(pr.state != KORB_NORMAL)) { free(buf); close(fds[0]); return pr; }
+            continue;
+        }
         if (r <= 0) break;
         len += (size_t)r;
     }
     close(fds[0]);
-    int raw = 0;
-    waitpid(pid, &raw, 0);
+    int raw = 0; pid_t got;
+    CHECK(korb_waitpid_park(c, slots, pid, 0, &raw, &got));
     CHECK(korb_status_make(c, slots, pid, raw));
     const RESULT sr = korb_str_new(c, slots, buf, (uint32_t)len);
     free(buf);
