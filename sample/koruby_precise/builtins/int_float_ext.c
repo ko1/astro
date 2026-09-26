@@ -170,32 +170,23 @@ static RESULT korb_m_ary_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+/* Hash#sort without a block: by key; an incomparable pair keeps its order */
+static RESULT korb_hash_sort_cmp_key(CTX *c, VALUE *slots, VALUE a, VALUE b, const void *ud, int *out) {
+    (void)slots; (void)ud;
+    *out = korb_cmp_full(c, korb_items_data(VAL2ARY(a)->items)[0], korb_items_data(VAL2ARY(b)->items)[0]) == 1 ? 1 : 0;
+    return RESULT_OK(KORB_NIL);
+}
 /* Hash#sort → array of [k,v] pairs sorted by key; fetch_values(*keys) */
 static RESULT korb_m_hash_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     RESULT ar = korb_m_hash_to_a(c, slots, self, a);     /* pairs array (rooted via return) */
     if (ar.state != KORB_NORMAL) return ar;
     VALUE_REF dst = SLOTS_PUSH(slots, ar.value);
-    const uint32_t len = VAL2ARY(VALUE_REF_GET(dst))->len;   /* insertion sort by pair (block comparator or <=>) */
-    for (uint32_t i = 1; i < len; i++) {
-        slots[0] = korb_items_data(VAL2ARY(VALUE_REF_GET(dst))->items)[i];   /* key pair, rooted across yields */
-        uint32_t j = i;
-        while (j > 0) {
-            KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
-            const VALUE pa = korb_items_data(d->items)[j-1], pb = slots[0];
-            int cmp;
-            if (block != NULL) {                          /* compare whole pairs (CRuby yields the [k,v] arrays) */
-                RESULT cr = korb_cmp_block(c, slots + 1, pa, pb, block, def_env, cself, &cmp);
-                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            } else {
-                cmp = korb_cmp_full(c, korb_items_data(VAL2ARY(pa)->items)[0], korb_items_data(VAL2ARY(pb)->items)[0]);
-            }
-            if (cmp != 1) break;
-            d = VAL2ARY(VALUE_REF_GET(dst));              /* re-fetch: a block yield may have moved the array */
-            ARO_STORE(c, d->items, &korb_items_data(d->items)[j], korb_items_data(d->items)[j-1]); j--;
-        }
-        KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
-        ARO_STORE(c, d->items, &korb_items_data(d->items)[j], slots[0]);
+    if (block != NULL) {                                /* compare whole pairs (CRuby yields the [k,v] arrays) */
+        const struct korb_msort_blk k = { block, def_env, cself };
+        CHECK(korb_ary_msort(c, slots, dst, korb_msort_cmp_block, &k));
+    } else {
+        CHECK(korb_ary_msort(c, slots, dst, korb_hash_sort_cmp_key, NULL));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }

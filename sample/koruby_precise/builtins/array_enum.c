@@ -99,6 +99,11 @@ static RESULT korb_m_ary_sum_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 
 /* min (want=-1) / max (want=1) by <=> */
 static RESULT korb_cmp_spaceship(CTX *c, VALUE *slots, VALUE a, VALUE b, int *out);   /* fwd */
+struct korb_msort_blk { NODE *block; VALUE *def_env; VALUE *cself; };
+typedef RESULT (*korb_msort_cmp_fn)(CTX *c, VALUE *slots, VALUE a, VALUE b, const void *ud, int *out);
+static RESULT korb_ary_msort(CTX *c, VALUE *slots, VALUE_REF aref, korb_msort_cmp_fn cmp, const void *ud);   /* fwd */
+static RESULT korb_msort_cmp_block(CTX *c, VALUE *slots, VALUE a, VALUE b, const void *ud, int *out);       /* fwd */
+static RESULT korb_msort_cmp_spaceship(CTX *c, VALUE *slots, VALUE a, VALUE b, const void *ud, int *out);   /* fwd */
 static RESULT korb_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, int want) {
     const uint32_t len = SELF_ARY->len;
     if (len == 0) return RESULT_OK(KORB_NIL);
@@ -144,34 +149,11 @@ static RESULT korb_ary_minmax_n(CTX *c, VALUE *slots, VALUE_REF self, int want, 
     slots[0] = UNWRAP(korb_ary_new(c, slots, len));        /* sorted-ascending working copy */
     VALUE_REF tmp = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < len; i++) CHECK(korb_ary_push_val(c, slots + 1, tmp, korb_items_data(SELF_ARY->items)[i]));
-    /* insertion sort ascending.  A user/Comparable element needs <=> dispatch
-     * (may GC/move tmp) → re-fetch the items pointer each step and root the key
-     * in slots[1]; native types stay on the GC-free korb_cmp_full path. */
-    for (uint32_t i = 1; i < len; i++) {
-        slots[1] = korb_items_data(VAL2ARY(VALUE_REF_GET(tmp))->items)[i];   /* key (rooted) */
-        uint32_t j = i;
-        while (j > 0) {
-            const VALUE left = korb_items_data(VAL2ARY(VALUE_REF_GET(tmp))->items)[j-1];
-            int cmp;
-            if (block != NULL) {                             /* min(n)/max(n) { |a,b| ... } — block is the comparator */
-                VALUE cmpargs[2] = { left, slots[1] };
-                RESULT cr = korb_block_yield(c, slots + 2, block, def_env, cmpargs, 2, cself);
-                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-                if (UNLIKELY(cr.value == KORB_NIL)) return korb_raise_cmperr(c, slots, 0, left, slots[1], false);
-                const korb_sword_t cv = FIX2LONG(cr.value);
-                cmp = cv < 0 ? -1 : cv > 0 ? 1 : 0;
-            } else if (UNLIKELY(korb_eq_needs_send(left) || korb_eq_needs_send(slots[1]))) {
-                CHECK(korb_cmp_spaceship(c, slots + 2, left, slots[1], &cmp));
-            } else {
-                cmp = korb_cmp_full(c, left, slots[1]);
-                if (UNLIKELY(cmp == 2)) return korb_raise_cmperr(c, slots, 0, left, slots[1], false);
-            }
-            if (cmp <= 0) break;
-            KorbArrayItems *const it = VAL2ARY(VALUE_REF_GET(tmp))->items;   /* re-fetch (dispatch may have moved tmp) */
-            ARO_STORE(c, it, &korb_items_data(it)[j], korb_items_data(it)[j-1]); j--;
-        }
-        KorbArrayItems *const it = VAL2ARY(VALUE_REF_GET(tmp))->items;
-        ARO_STORE(c, it, &korb_items_data(it)[j], slots[1]);
+    if (block != NULL) {                                 /* min(n)/max(n) { |a,b| ... } — block is the comparator */
+        const struct korb_msort_blk k = { block, def_env, cself };
+        CHECK(korb_ary_msort(c, slots + 1, tmp, korb_msort_cmp_block, &k));
+    } else {
+        CHECK(korb_ary_msort(c, slots + 1, tmp, korb_msort_cmp_spaceship, NULL));
     }
     if (n > (korb_sword_t)len) n = (korb_sword_t)len;   /* clamp before narrowing */
     const uint32_t take = (uint32_t)n;
@@ -370,6 +352,76 @@ static RESULT korb_cmp_spaceship(CTX *c, VALUE *slots, VALUE a, VALUE b, int *ou
     return RESULT_OK(KORB_NIL);
 }
 
+/* ---- merge sort whose comparisons may run Ruby -------------------------------
+ * Insertion sorts here were O(n^2) (sort_by { rand } on 20k elements: 3 s).  The
+ * order lives in a libc index permutation, so a comparison that yields / GCs
+ * moves nothing it depends on: both operands are re-read from the rooted array
+ * before every call, and the array is rewritten once at the end. */
+/* Stable (ties keep input order): the permutation of *aref's indices, or NULL
+ * after a raise (*err).  The caller frees it.  Uses slots[0..1] + the callee's. */
+static uint32_t *korb_ary_msort_perm(CTX *c, VALUE *slots, VALUE_REF aref, korb_msort_cmp_fn cmp,
+                                     const void *ud, RESULT *err) {
+    const uint32_t n = VAL2ARY(VALUE_REF_GET(aref))->len;
+    uint32_t *const perm = malloc(sizeof(uint32_t) * 2u * (n ? n : 1));
+    if (!perm) { *err = korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); return NULL; }
+    uint32_t *src = perm, *dst = perm + n;
+    for (uint32_t i = 0; i < n; i++) src[i] = i;
+    for (uint32_t w = 1; w < n; w *= 2) {
+        for (uint32_t lo = 0; lo < n; lo += 2 * w) {
+            const uint32_t mid = lo + w < n ? lo + w : n, hi = lo + 2 * w < n ? lo + 2 * w : n;
+            uint32_t i = lo, j = mid, o = lo;
+            while (i < mid && j < hi) {
+                const KorbArray *const ar = VAL2ARY(VALUE_REF_GET(aref));   /* re-read: the last compare may have GC'd */
+                slots[0] = korb_items_data(ar->items)[src[i]];
+                slots[1] = korb_items_data(ar->items)[src[j]];
+                int r = 0;
+                const RESULT cr = cmp(c, slots + 2, slots[0], slots[1], ud, &r);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) { free(perm); *err = cr; return NULL; }
+                dst[o++] = (r <= 0) ? src[i++] : src[j++];
+            }
+            while (i < mid) dst[o++] = src[i++];
+            while (j < hi) dst[o++] = src[j++];
+        }
+        uint32_t *const t = src; src = dst; dst = t;
+    }
+    if (src != perm) memcpy(perm, src, sizeof(uint32_t) * n);
+    return perm;
+}
+/* Reorder *aref by perm (from korb_ary_msort_perm on an array of the same length).
+ * Nothing here allocates on the GC heap. */
+static bool korb_ary_apply_perm(CTX *c, VALUE_REF aref, const uint32_t *const perm) {
+    KorbArray *const ar = VAL2ARY(VALUE_REF_GET(aref));
+    const uint32_t n = ar->len;
+    VALUE *const snap = malloc(sizeof(VALUE) * (n ? n : 1));
+    if (!snap) return false;
+    memcpy(snap, korb_items_data(ar->items), sizeof(VALUE) * n);
+    for (uint32_t i = 0; i < n; i++) ARO_STORE(c, ar->items, &korb_items_data(ar->items)[i], snap[perm[i]]);
+    free(snap);
+    return true;
+}
+/* Sort the rooted *aref in place (stable). */
+static RESULT korb_ary_msort(CTX *c, VALUE *slots, VALUE_REF aref, korb_msort_cmp_fn cmp, const void *ud) {
+    RESULT err = RESULT_OK(KORB_NIL);
+    uint32_t *const perm = korb_ary_msort_perm(c, slots, aref, cmp, ud, &err);
+    if (!perm) return err;
+    const bool ok = korb_ary_apply_perm(c, aref, perm);
+    free(perm);
+    return ok ? RESULT_OK(KORB_NIL) : korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
+}
+/* comparators */
+static RESULT korb_msort_cmp_block(CTX *c, VALUE *slots, VALUE a, VALUE b, const void *ud, int *out) {
+    const struct korb_msort_blk *const k = ud;
+    return korb_cmp_block(c, slots, a, b, k->block, k->def_env, k->cself, out);
+}
+static RESULT korb_msort_cmp_spaceship(CTX *c, VALUE *slots, VALUE a, VALUE b, const void *ud, int *out) {
+    (void)ud;
+    if (UNLIKELY(korb_eq_needs_send(a) || korb_eq_needs_send(b))) return korb_cmp_spaceship(c, slots, a, b, out);
+    const int r = korb_cmp_full(c, a, b);
+    if (UNLIKELY(r == 2)) return korb_raise_cmperr(c, slots, 0, a, b, false);
+    *out = r;
+    return RESULT_OK(KORB_NIL);
+}
+
 static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                               NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
@@ -397,28 +449,8 @@ static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             if (dn > 1) korb_fix_qsort(dd0, 0, (korb_sword_t)dn - 1);
             return RESULT_OK(VALUE_REF_GET(dst));
         }
-        if (has_obj) {
-            /* user/Comparable objects: dispatch <=> per compare (may GC/move dst →
-             * re-fetch the items pointer each time, key rooted in slots[1]).  Stable
-             * binary-insertion sort: O(n log n) dispatches (the dispatch dominates;
-             * the element shifts are cheap pointer writes).  `cmp<=0` keeps the key
-             * after equal elements → stable. */
-            const uint32_t len = d->len;
-            for (uint32_t i = 1; i < len; i++) {
-                slots[1] = korb_items_data(VAL2ARY(VALUE_REF_GET(dst))->items)[i];   /* key (rooted) */
-                uint32_t lo = 0, hi = i;
-                while (lo < hi) {                                         /* find insertion point in [0,i) */
-                    const uint32_t mid = (lo + hi) >> 1;
-                    const VALUE mv = korb_items_data(VAL2ARY(VALUE_REF_GET(dst))->items)[mid];
-                    int cmp = 0;
-                    CHECK(korb_cmp_spaceship(c, slots + 2, mv, slots[1], &cmp));   /* dst[mid] <=> key */
-                    if (cmp <= 0) lo = mid + 1; else hi = mid;
-                }
-                KorbArrayItems *dit = VAL2ARY(VALUE_REF_GET(dst))->items;  /* no dispatch below → stable ptr */
-                for (uint32_t j = i; j > lo; j--)
-                    ARO_STORE(c, dit, &korb_items_data(dit)[j], korb_items_data(dit)[j-1]);     /* shift [lo,i) right by 1 */
-                ARO_STORE(c, dit, &korb_items_data(dit)[lo], slots[1]);
-            }
+        if (has_obj) {                     /* user/Comparable objects: <=> per compare (may GC) */
+            CHECK(korb_ary_msort(c, slots + 1, dst, korb_msort_cmp_spaceship, NULL));
             return RESULT_OK(VALUE_REF_GET(dst));
         }
         struct korb_sortctx sc = { c, 0, KORB_NIL, KORB_NIL };
@@ -426,23 +458,9 @@ static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(sc.err)) return korb_raise_cmperr(c, slots, 0, sc.bad_l, sc.bad_r, false);
         return RESULT_OK(VALUE_REF_GET(dst));
     }
-    /* comparator-block insertion sort: each compare yields → may GC/move dst.
-     * Re-fetch the items pointer after every yield; the lifted key is rooted in
-     * slots[1].  Matches CRuby's stable insertion order for these inputs. */
-    uint32_t len = d->len;
-    for (uint32_t i = 1; i < len; i++) {
-        slots[1] = korb_items_data(VAL2ARY(VALUE_REF_GET(dst))->items)[i];   /* key (rooted) */
-        uint32_t j = i;
-        while (j > 0) {
-            VALUE left = korb_items_data(VAL2ARY(VALUE_REF_GET(dst))->items)[j-1];
-            int cmp;
-            CHECK(korb_cmp_block(c, slots + 2, left, slots[1], block, def_env, cself, &cmp));
-            if (cmp <= 0) break;
-            KorbArray *dd = VAL2ARY(VALUE_REF_GET(dst));           /* re-fetch post-yield */
-            ARO_STORE(c, dd->items, &korb_items_data(dd->items)[j], korb_items_data(dd->items)[j-1]); j--;
-        }
-        KorbArrayItems *dit = VAL2ARY(VALUE_REF_GET(dst))->items;
-        ARO_STORE(c, dit, &korb_items_data(dit)[j], slots[1]);
+    {   /* comparator block: each compare yields (may GC) */
+        const struct korb_msort_blk k = { block, def_env, cself };
+        CHECK(korb_ary_msort(c, slots + 1, dst, korb_msort_cmp_block, &k));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
@@ -462,46 +480,56 @@ static RESULT korb_m_ary_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         CHECK(korb_ary_push_val(c, slots + 4, vals, slots[2]));
         CHECK(korb_ary_push_val(c, slots + 4, keys, slots[3]));
     }
-    KorbArray *vd = VAL2ARY(VALUE_REF_GET(vals)), *kd = VAL2ARY(VALUE_REF_GET(keys));
-    KorbArrayItems *const vit = vd->items, *const kit = kd->items;
-    const VALUE *vdat = korb_items_data(vit), *kdat = korb_items_data(kit);
-    for (uint32_t i = 1; i < vd->len; i++) {             /* fast lockstep insertion sort by scalar key, no alloc/GC */
-        VALUE vk = vdat[i], kk = kdat[i]; uint32_t j = i;
-        while (j > 0) {
-            int cmp = korb_cmp_full(c, kdat[j-1], kk);
-            if (UNLIKELY(cmp == 2)) goto dispatch_sort;  /* key not comparable by value → redo via <=> (GC-safe) */
-            if (cmp <= 0) break;
-            ARO_STORE(c, vit, &vdat[j], vdat[j-1]); ARO_STORE(c, kit, &kdat[j], kdat[j-1]); j--;
-        }
-        ARO_STORE(c, vit, &vdat[j], vk); ARO_STORE(c, kit, &kdat[j], kk);
-    }
-    return RESULT_OK(VALUE_REF_GET(vals));
-
-  dispatch_sort:;   /* a block key needs <=> dispatch (Comparable user object): index-based
-                     * insertion sort, re-reading the (movable) arrays each step and rooting the
-                     * in-flight val/key in slots.  Matches Array#sort's object path. */
-    {
-        const uint32_t len = VAL2ARY(VALUE_REF_GET(keys))->len;
-        for (uint32_t i = 1; i < len; i++) {
-            slots[2] = korb_items_data(VAL2ARY(VALUE_REF_GET(vals))->items)[i];   /* val_i (rooted) */
-            slots[3] = korb_items_data(VAL2ARY(VALUE_REF_GET(keys))->items)[i];   /* key_i (rooted) */
-            uint32_t j = i;
-            while (j > 0) {
-                const VALUE prevk = korb_items_data(VAL2ARY(VALUE_REF_GET(keys))->items)[j-1];
-                int cmp = 0;
-                CHECK(korb_cmp_spaceship(c, slots + 4, prevk, slots[3], &cmp));   /* keys[j-1] <=> key_i */
-                if (cmp <= 0) break;
-                KorbArray *const vv = VAL2ARY(VALUE_REF_GET(vals));
-                ARO_STORE(c, vv->items, &korb_items_data(vv->items)[j], korb_items_data(vv->items)[j-1]);
-                KorbArray *const kq = VAL2ARY(VALUE_REF_GET(keys));
-                ARO_STORE(c, kq->items, &korb_items_data(kq->items)[j], korb_items_data(kq->items)[j-1]);
-                j--;
+    {   /* scalar keys: stable merge sort of an index permutation — korb_cmp_full allocates
+         * nothing, so no GC can move the arrays until the write-back below */
+        KorbArray *const vd = VAL2ARY(VALUE_REF_GET(vals)), *const kd = VAL2ARY(VALUE_REF_GET(keys));
+        const uint32_t n = vd->len;
+        const VALUE *const kdat = korb_items_data(kd->items);
+        uint32_t *const perm = malloc(sizeof(uint32_t) * 2u * (n ? n : 1));
+        if (!perm) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
+        uint32_t *src = perm, *dst = perm + n;
+        for (uint32_t i = 0; i < n; i++) src[i] = i;
+        bool bail = false;
+        for (uint32_t w = 1; w < n && !bail; w *= 2) {
+            for (uint32_t lo = 0; lo < n && !bail; lo += 2 * w) {
+                const uint32_t mid = lo + w < n ? lo + w : n, hi = lo + 2 * w < n ? lo + 2 * w : n;
+                uint32_t i = lo, j = mid, o = lo;
+                while (i < mid && j < hi) {
+                    const int cmp = korb_cmp_full(c, kdat[src[i]], kdat[src[j]]);
+                    if (UNLIKELY(cmp == 2)) { bail = true; break; }   /* not comparable by value: <=> below */
+                    dst[o++] = (cmp <= 0) ? src[i++] : src[j++];      /* ties keep input order */
+                }
+                if (bail) break;
+                while (i < mid) dst[o++] = src[i++];
+                while (j < hi) dst[o++] = src[j++];
             }
-            KorbArray *const vv = VAL2ARY(VALUE_REF_GET(vals));
-            ARO_STORE(c, vv->items, &korb_items_data(vv->items)[j], slots[2]);
-            KorbArray *const kq = VAL2ARY(VALUE_REF_GET(keys));
-            ARO_STORE(c, kq->items, &korb_items_data(kq->items)[j], slots[3]);
+            uint32_t *const t = src; src = dst; dst = t;
         }
+        if (bail) { free(perm); goto dispatch_sort; }
+        VALUE *const old = malloc(sizeof(VALUE) * 2u * (n ? n : 1));   /* libc copy of both columns */
+        if (!old) { free(perm); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); }
+        memcpy(old, korb_items_data(vd->items), sizeof(VALUE) * n);
+        memcpy(old + n, kdat, sizeof(VALUE) * n);
+        KorbArrayItems *const vit = vd->items, *const kit = kd->items;
+        VALUE *const vdat = korb_items_data(vit), *const kdw = korb_items_data(kit);
+        for (uint32_t i = 0; i < n; i++) {
+            ARO_STORE(c, vit, &vdat[i], old[src[i]]);
+            ARO_STORE(c, kit, &kdw[i], old[n + src[i]]);
+        }
+        free(old);
+        free(perm);
+        return RESULT_OK(VALUE_REF_GET(vals));
+    }
+
+  dispatch_sort:;   /* a key needs <=> dispatch (Comparable user object): sort the keys'
+                     * indices, then reorder both columns the same way */
+    {
+        RESULT err = RESULT_OK(KORB_NIL);
+        uint32_t *const perm = korb_ary_msort_perm(c, slots + 2, keys, korb_msort_cmp_spaceship, NULL, &err);
+        if (!perm) return err;
+        const bool ok = korb_ary_apply_perm(c, vals, perm) && korb_ary_apply_perm(c, keys, perm);
+        free(perm);
+        if (!ok) return korb_raise(c, slots + 2, KORB_E_RUNTIME, 0, "out of memory");
         return RESULT_OK(VALUE_REF_GET(vals));
     }
 }

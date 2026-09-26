@@ -1271,19 +1271,12 @@ static RESULT korb_m_hash_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         CHECK(korb_ary_push_val(c, slots + 6, vals, slots[4]));
         CHECK(korb_ary_push_val(c, slots + 6, keys, slots[5]));
     }
-    KorbArray *vd = VAL2ARY(VALUE_REF_GET(vals)), *kd = VAL2ARY(VALUE_REF_GET(keys));
-    KorbArrayItems *const vit = vd->items, *const kit = kd->items;
-    const VALUE *vdat = korb_items_data(vit), *kdat = korb_items_data(kit);
-    for (uint32_t i = 1; i < vd->len; i++) {
-        VALUE vk = vdat[i], kk = kdat[i]; uint32_t j = i;
-        while (j > 0) {
-            int cmp = korb_cmp_full(c, kdat[j-1], kk);
-            if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
-            if (cmp <= 0) break;
-            ARO_STORE(c, vit, &vdat[j], vdat[j-1]); ARO_STORE(c, kit, &kdat[j], kdat[j-1]); j--;
-        }
-        ARO_STORE(c, vit, &vdat[j], vk); ARO_STORE(c, kit, &kdat[j], kk);
-    }
+    RESULT err = RESULT_OK(KORB_NIL);                    /* sort the keys' indices, reorder both columns */
+    uint32_t *const perm = korb_ary_msort_perm(c, slots + 2, keys, korb_msort_cmp_spaceship, NULL, &err);
+    if (!perm) return err;
+    const bool ok = korb_ary_apply_perm(c, vals, perm) && korb_ary_apply_perm(c, keys, perm);
+    free(perm);
+    if (!ok) return korb_raise(c, slots + 2, KORB_E_RUNTIME, 0, "out of memory");
     return RESULT_OK(VALUE_REF_GET(vals));
 }
 /* min_by/max_by → the [k,v] pair with the extreme block key */
