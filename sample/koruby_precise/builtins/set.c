@@ -1498,7 +1498,7 @@ static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALU
     const uint32_t n = VAL2CLASS(VALUE_REF_GET(klass_ref))->method_cnt;
     for (uint32_t i = 0; i < n; i++) {
         const struct korb_method *const m = VAL2CLASS(VALUE_REF_GET(klass_ref))->methods[i];   /* entries are immortal (libc) */
-        if (m->mid == UINT32_MAX) continue;
+        if (m->mid == UINT32_MAX || m->hidden) continue;
         const VALUE sym = ID2SYM(m->mid);
         if (m->kind == KORB_METHOD_UNDEF) { CHECK(korb_ary_push_val(c, slots, blocked, sym)); continue; }
         { const KorbArray *const b = VAL2ARY(VALUE_REF_GET(blocked));
@@ -1524,7 +1524,7 @@ static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALU
     if (VALUE_REF_GET(klass_ref) == korb_builtin_class_obj(c->vm, KORB_C_OBJECT) && (vis_mask & (1u << 1))) {
         for (uint32_t i = 0; i < c->vm->method_cnt; i++) {       /* top-level defs: Object's private methods */
             const struct korb_method *const m = c->vm->methods[i];
-            if (m->retired || m->kind != KORB_METHOD_ISEQ || m->visibility != 1) continue;
+            if (m->retired || m->hidden || m->kind != KORB_METHOD_ISEQ || m->visibility != 1) continue;
             const VALUE sym = ID2SYM(m->mid);
             bool seen = false;
             const KorbArray *const b = VAL2ARY(VALUE_REF_GET(blocked));
@@ -1634,7 +1634,7 @@ static RESULT korb_collect_methods_ex(CTX *c, VALUE *slots, VALUE start_class, V
      * function entry — start_class is stale here after the loop's GCs.) */
     if ((vis_mask & (1u << 1)) && (inherit ? has_kernel : is_kernel)) {   /* inherit=false lists only Kernel's OWN builtins */
         for (uint32_t i = 0; i < c->vm->method_cnt; i++) {
-            if (c->vm->methods[i]->kind != KORB_METHOD_BUILTIN) continue;
+            if (c->vm->methods[i]->kind != KORB_METHOD_BUILTIN || c->vm->methods[i]->hidden) continue;   /* koruby plumbing is not listed */
             const VALUE sym = ID2SYM(c->vm->methods[i]->mid);
             bool dup = false;
             const KorbArray *const r = VAL2ARY(VALUE_REF_GET(result));
@@ -1678,7 +1678,7 @@ static RESULT korb_m_obj_public_methods(CTX *c, VALUE *slots, VALUE_REF self, VA
         slots[0] = r.value;
         const VALUE_REF res = VALUE_REF_AT(&slots[0]);
         for (uint32_t i = 0; i < c->vm->method_cnt; i++) {
-            if (c->vm->methods[i]->kind != KORB_METHOD_BUILTIN) continue;
+            if (c->vm->methods[i]->kind != KORB_METHOD_BUILTIN || c->vm->methods[i]->hidden) continue;   /* koruby plumbing is not listed */
             const VALUE sym = ID2SYM(c->vm->methods[i]->mid);
             bool dup = false; const KorbArray *const rr = VAL2ARY(VALUE_REF_GET(res));
             for (uint32_t j = 0; j < rr->len; j++) if (korb_items_data(rr->items)[j] == sym) { dup = true; break; }

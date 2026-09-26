@@ -2820,6 +2820,7 @@ static void korb_class_def_cfn(CTX *c, VALUE klass, const char *name, korb_metho
     m->kind = KORB_METHOD_CFUNC; m->uses_block = 0; m->params_cnt = arity;
     m->rfn = fn; m->rbfn = NULL; m->body = NULL; m->owner = klass;
     if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid) || korb_internal_helper_name_p(name))) m->visibility = 1;
+    if (UNLIKELY(korb_internal_helper_name_p(name))) m->hidden = 1;   /* koruby's own plumbing: not listed by reflection */
     c->vm->method_serial++;
 }
 static void korb_class_def_cfn_blk(CTX *c, VALUE klass, const char *name, korb_method_blk_fn fn, int32_t arity) {
@@ -2827,6 +2828,7 @@ static void korb_class_def_cfn_blk(CTX *c, VALUE klass, const char *name, korb_m
     m->kind = KORB_METHOD_CFUNC; m->uses_block = 1; m->params_cnt = arity;
     m->rbfn = fn; m->rfn = NULL; m->body = NULL; m->owner = klass;
     if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid) || korb_internal_helper_name_p(name))) m->visibility = 1;
+    if (UNLIKELY(korb_internal_helper_name_p(name))) m->hidden = 1;   /* koruby's own plumbing: not listed by reflection */
     c->vm->method_serial++;
 }
 /* Struct instance methods — read the receiver's class `members` + the matching
@@ -5483,6 +5485,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry
     KorbClass *const k = VAL2CLASS(klass);
     struct korb_method *m = korb_class_method_slot(c->vm, k, mid);
     m->kind = KORB_METHOD_ISEQ;
+    m->hidden = !c->vm->boot_done && korb_internal_helper_name_p(korb_sym_name(c->vm, mid));   /* prelude's `def __x` */
     m->visibility = (k->cur_visibility == 3) ? 1 : k->cur_visibility;   /* mode 3 = module_function: private instance method */
     if (m->visibility == 0 && !k->is_singleton && UNLIKELY(korb_auto_private_name_p(c->vm, mid))) m->visibility = 1;
     m->owner = klass;        /* super's def_class + __method__ source (frame fs-2) */
@@ -9121,6 +9124,7 @@ korb_builtin_define(CTX *c, const char *name, korb_builtin_fn fn, int32_t params
     m->locals_cnt = 0;
     m->body = NULL;
     m->bfn = fn;
+    m->hidden = korb_internal_helper_name_p(name);   /* koruby's own plumbing: not listed by reflection */
     c->vm->method_serial++;
 }
 
@@ -12187,6 +12191,7 @@ korb_def_cmethod(CTX *c, enum korb_class cls, const char *name,
     m->rbfn = NULL;
     m->body = NULL;
     if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid) || korb_internal_helper_name_p(name))) m->visibility = 1;
+    if (UNLIKELY(korb_internal_helper_name_p(name))) m->hidden = 1;   /* koruby's own plumbing: not listed by reflection */
 }
 
 void
@@ -12202,6 +12207,7 @@ korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
     m->rbfn = fn;
     m->body = NULL;
     if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid) || korb_internal_helper_name_p(name))) m->visibility = 1;
+    if (UNLIKELY(korb_internal_helper_name_p(name))) m->hidden = 1;   /* koruby's own plumbing: not listed by reflection */
 }
 
 /* Shared receiver dispatch.  `block`/`def_env` are NULL for a plain send;

@@ -974,6 +974,7 @@ struct korb_method {
     int32_t  rest_slot;      /* ISEQ: *rest local slot (collects surplus positionals), -1 none */
     uint32_t locals_cnt;     /* ISEQ: frame size (params first, +2 if uses_block) */
     uint32_t attr_ivar;      /* ATTR_R/W: the @ivar symbol id */
+    uint8_t  hidden;         /* koruby's own `__` plumbing (C builtins, prelude defs at boot): reflection skips it */
     uint8_t  pinned;         /* a live Method/UnboundMethod was made from this entry: a redefinition
                               * must leave it intact (korb_class_method_slot orphans it instead) */
     uint8_t  retired;        /* a top-level `def` this entry shadowed is gone: a bare-name call must
