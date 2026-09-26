@@ -1524,6 +1524,20 @@ RESULT korb_re_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long s
 }
 
 /* ---- Regexp class methods ------------------------------------------------ */
+/* One byte of Regexp.escape (also a String part of Regexp.union). */
+static void korb_re_escape_byte(FILE *const ms, const unsigned char ch) {
+    switch (ch) {
+      case '\n': fputs("\\n", ms); return;
+      case '\r': fputs("\\r", ms); return;
+      case '\t': fputs("\\t", ms); return;
+      case '\f': fputs("\\f", ms); return;
+      case '\v': fputs("\\v", ms); return;
+      case ' ':  fputs("\\ ", ms); return;
+      default:
+        if (ch != 0 && strchr("\\.*+?()[]{}|-^$#", ch)) fputc('\\', ms);   /* `#` too: it would start #{ } */
+        fputc(ch, ms);
+    }
+}
 static RESULT korb_m_re_escape(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; VALUE v = VALUE_SLICE_GET(a, 0);
     if (SYMBOL_P(v)) { const char *nm = korb_sym_name(c->vm, SYM2ID(v)); slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm))); }
@@ -1531,11 +1545,7 @@ static RESULT korb_m_re_escape(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(v));
     const KorbString *s = VAL2STR(slots[0]);
     char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
-    for (uint32_t i = 0; i < s->len; i++) { unsigned char ch = (unsigned char)korb_strbuf_data(s->buf)[i];
-        if (strchr("\\.*+?()[]{}|-^$", ch)) { fputc('\\', ms); fputc(ch, ms); }
-        else if (ch == '\n') fputs("\\n", ms); else if (ch == '\r') fputs("\\r", ms);
-        else if (ch == '\t') fputs("\\t", ms); else if (ch == '\f') fputs("\\f", ms);
-        else if (ch == ' ') fputs("\\ ", ms); else fputc(ch, ms); }
+    for (uint32_t i = 0; i < s->len; i++) korb_re_escape_byte(ms, (unsigned char)korb_strbuf_data(s->buf)[i]);
     fclose(ms);
     /* The escape keeps the source's encoding, except that an all-ASCII input
      * yields US-ASCII whatever it was tagged with (CRuby). */
@@ -1793,8 +1803,7 @@ static RESULT korb_m_re_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             for (uint32_t j = 0; j < s2->len; j++) {
                 const unsigned char ch = (unsigned char)korb_strbuf_data(s2->buf)[j];
                 if (ch >= 0x80) nonascii = true;
-                if (strchr("\\.*+?()[]{}|-^$", ch)) fputc('\\', ms);
-                fputc(ch, ms);
+                korb_re_escape_byte(ms, ch);
             }
             e = KORB_STR_ENC(slots[4]);
             part_fixed = nonascii;                       /* a non-ASCII String pins its encoding */

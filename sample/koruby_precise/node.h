@@ -526,6 +526,11 @@ static inline bool korb_kwargs_hash_p(VALUE v) {
     return KORB_HASH_P(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_KWARGS) != 0;
 }
 
+/* an empty `**h` at a call site: no argument at all (CRuby 3.0) */
+static inline bool korb_empty_kwsplat_p(VALUE v) {
+    return korb_kwargs_hash_p(v) && VAL2HASH(v)->len == 0;
+}
+
 /* CRuby's "these were keywords" is a property of the call, not of the Hash.  We
  * carry it on the object, so a Hash bound to a fixed positional parameter has to
  * lose it here — otherwise `def o(a,h); i(a,h); end; o(1, k => v)` would still

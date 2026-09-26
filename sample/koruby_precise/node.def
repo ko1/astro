@@ -2967,8 +2967,10 @@ node_call_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t flin
         iseq = VAL2PROC(pv)->iseq;
         if (iseq == NULL) iseq = KORB_BLK_CPROC;         /* Symbol/Method#to_proc: forward as a C-proc block */
     }
+    /* an empty `**h` is no argument (CRuby 3.0), also next to `&blk` */
+    const bool kw0 = korb_empty_kwsplat_p(slots[-1]) && argv_cnt > 1;
     /* self staged as receiver (argv[0]) → base[-1]. */
-    return korb_call_blk(c, slots, mid, line, cc, argv_cnt - 1, slots[-(korb_sword_t)argv_cnt], iseq,
+    return korb_call_blk(c, kw0 ? slots - 1 : slots, mid, line, cc, argv_cnt - 1 - kw0, slots[-(korb_sword_t)argv_cnt], iseq,
                          iseq ? KORB_BLK_FWD : NULL, &slots[proc_off]);
 }
 
@@ -3143,13 +3145,15 @@ node_send_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t flin
     RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc (slots[0..] is free scratch) */
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
     const VALUE pv = slots[proc_off];
+    const bool kw0 = korb_empty_kwsplat_p(slots[-1]) && argv_cnt > 1;   /* an empty `**h` is no argument */
+    VALUE *const cur = kw0 ? slots - 1 : slots;
     if (pv == KORB_NIL) {   /* &nil → no block; the link still has to reach this frame */
         korb_flink_stage(c, flink, slots - (korb_sword_t)argv_cnt - 2);
-        return korb_send_vis(c, slots, mid, line, argv_cnt - 1, slots[self_off]);
+        return korb_send_vis(c, cur, mid, line, argv_cnt - 1 - kw0, slots[self_off]);
     }
     NODE *iseq = VAL2PROC(pv)->iseq;
     if (iseq == NULL) iseq = KORB_BLK_CPROC;             /* Symbol/Method#to_proc: forward as a C-proc block */
-    return korb_send_blk(c, slots, mid, line, argv_cnt - 1, iseq, KORB_BLK_FWD, &slots[proc_off], flink, slots[self_off]);
+    return korb_send_blk(c, cur, mid, line, argv_cnt - 1 - kw0, iseq, KORB_BLK_FWD, &slots[proc_off], flink, slots[self_off]);
 }
 
 // yield to the current method's block.  `biseq_off` / `def_env_off` /

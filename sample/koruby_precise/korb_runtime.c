@@ -19466,6 +19466,15 @@ korb_exc_build_with_cause(CTX *c, VALUE *slots, VALUE_SLICE args)
         ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->cause, slots[0]);   /* override (incl. explicit nil) */
         return RESULT_OK(slots[1]);
     }
+    /* `raise obj` inside a rescue: $! becomes the cause (as `raise Cls` does) unless
+     * the exception already has one — also on a re-raise (CRuby). */
+    KorbException *const e = KORB_EXC_P(rr.value) ? VAL2EXC(rr.value) : NULL;
+    if (e != NULL && e->cause == KORB_NIL) {
+        const VALUE cv = korb_errinfo_top(c);
+        bool circular = false;
+        for (VALUE cc = cv; KORB_EXC_P(cc) && !circular; cc = VAL2EXC(cc)->cause) circular = (cc == rr.value);
+        if (cv != KORB_NIL && !circular) ARO_STORE(c, e, &e->cause, cv);
+    }
     return rr;
 }
 /* Kernel#raise — build, then deliver in the calling context. */

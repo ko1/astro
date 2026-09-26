@@ -71,7 +71,21 @@ class StringScanner
   # Matches via Regexp#match(string, pos) + begin(0)==pos so there is NO O(n)
   # substring copy per scan (the naive `@string[@pos..]` slice made scanning a
   # large subject O(n^2)).
+  # A Regexp match on a broken string raises (a String pattern does not).  The
+  # validity is cached per (bytesize, encoding): valid_encoding? walks the string.
+  def __check_encoding(pattern)
+    return unless pattern.is_a?(Regexp)
+    sz = @string.bytesize
+    enc = @string.encoding
+    unless @venc_size == sz && @venc_enc == enc
+      @venc_size = sz; @venc_enc = enc; @venc_ok = @string.valid_encoding?
+    end
+    raise ArgumentError, "invalid byte sequence in #{enc}" unless @venc_ok
+  end
+  private :__check_encoding
+
   def try(pattern)
+    __check_encoding(pattern)
     # A String pattern still produces match data in CRuby (#matched? is true and
     # #[0] is the text), so it goes through an escaped Regexp.
     pattern = __to_pattern(pattern)
@@ -80,11 +94,13 @@ class StringScanner
       # so those patterns have to match a real slice (the offset form below
       # would anchor them to the original string).
       m = pattern.match(rest)
+      @md_base = @pos                    # m was taken on the rest: #pre_match puts the head back
       (m && m.begin(0) == 0) ? [m[0], m] : nil
     else
       # BYTE-offset match: converting @pos to a character index here walked the
       # subject on every scan, which made scanning a large string O(n^2).
       m = pattern.send(:__match_byte, @string, @pos)
+      @md_base = 0
       (m && m.byteoffset(0)[0] == @pos) ? [m[0], m] : nil
     end
   end
@@ -145,15 +161,18 @@ class StringScanner
   end
 
   def scan_until(re)
+    __check_encoding(re)
     if !@fixed_anchor && re.is_a?(Regexp) && __anchored?(re)
       sub = rest
       m = re.match(sub) or return (@md = nil)
       @md = m
+      @md_base = @pos
       stop_b = @pos + m.byteoffset(0)[1]
       ncp = nil
     else
       m = __to_pattern(re).send(:__match_byte, @string, @pos) or return (@md = nil)
       @md = m
+      @md_base = 0
       stop_b = m.byteoffset(0)[1]        # end of the match, absolute bytes
       ncp = nil                          # character cursor is recomputed on demand
     end
@@ -210,7 +229,9 @@ class StringScanner
   def matched;    @md && (@md.is_a?(String) ? @md : @md[0]); end
   def matched?;   !@md.nil?; end
   def pre_match
-    @md && (@md.is_a?(String) ? @string.byteslice(0, @pos - @md.bytesize) : @md.pre_match)
+    return nil unless @md
+    return @string.byteslice(0, @pos - @md.bytesize) if @md.is_a?(String)
+    @md_base.to_i > 0 ? @string.byteslice(0, @md_base) + @md.pre_match : @md.pre_match
   end
   def post_match; @md && (@md.is_a?(String) ? rest : @md.post_match); end
 
