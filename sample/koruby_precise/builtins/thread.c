@@ -457,6 +457,30 @@ korb_thread_deadlock_fatal(void)
     fprintf(stderr, "No live threads left. Deadlock? (fatal)\n");   /* CRuby's fatal */
     exit(1);
 }
+static RESULT korb_thread_interrupt(CTX *c, VALUE *slots, struct korb_thread *t, VALUE exc);
+/* CRuby raises `fatal` in the main thread, so its ensure / at_exit run.  An
+ * interrupt main has not taken (masked) means nothing can change any more. */
+static void
+korb_thread_deadlock(CTX *c, VALUE *slots)
+{
+    struct korb_thread *const main = c->vm->main_thread;
+    if (main == NULL || main->state == KORB_TH_DEAD
+        || (main->pending_ints != KORB_NIL && VAL2ARY(main->pending_ints)->len > 0)) korb_thread_deadlock_fatal();
+    const VALUE cls = korb_const_get(c->vm, korb_intern(c->vm, "fatal", 5));
+    slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
+    char dump[400];   /* CRuby's message carries a thread dump; this is its outline */
+    uint32_t n = 0;
+    for (const struct korb_thread *t = c->vm->thread_list; t; t = t->next) n += t->state != KORB_TH_DEAD;
+    int len = snprintf(dump, sizeof dump, "%u threads, %u sleeps current:%p main thread:%p\n",
+                       n, n, (const void *)c->vm->cur_thread, (const void *)main);
+    for (const struct korb_thread *t = c->vm->thread_list; t && len > 0 && (size_t)len < sizeof dump; t = t->next)
+        if (t->state != KORB_TH_DEAD)
+            len += snprintf(dump + len, sizeof dump - (size_t)len, "* #<Thread:%p sleep_forever>\n", (const void *)t);
+    const RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "No live threads left. Deadlock?\n%s", dump);
+    if (!KORB_CLASS_P(slots[0]) || !KORB_EXC_P(r.value)) korb_thread_deadlock_fatal();
+    ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+    if (korb_thread_interrupt(c, slots, main, r.value).state != KORB_NORMAL) korb_thread_deadlock_fatal();
+}
 /* Nothing left that could wake anyone: no pending blop, or only untimed
  * Mutex#sleep ones (Queue#pop, ConditionVariable#wait).  A bare Kernel#sleep is
  * not one of them — CRuby lets `sleep` wait forever. */
@@ -486,7 +510,11 @@ korb_thread_yield_cpu(CTX *c, VALUE *slots)
         /* PENDED で他に runnable 無し: blop の完了を pump で待つ (native thread が
          * 眠る唯一の場所)。待てる blop も無ければ本物の deadlock。 */
         for (;;) {
-            if (korb_blop_deadlocked(vm)) korb_thread_deadlock_fatal();
+            if (korb_blop_deadlocked(vm)) {       /* wakes main with `fatal` */
+                korb_thread_deadlock(c, slots);
+                if ((next = korb_thread_runq_pop(vm)) != NULL) break;
+                continue;
+            }
             korb_blop_pump(vm, 1);
             next = korb_thread_runq_pop(vm);
             if (next) break;
@@ -513,7 +541,7 @@ korb_thread_exit_switch(CTX *c)
     struct korb_vm *const vm = c->vm;
     struct korb_thread *next = korb_thread_runq_pop(vm);
     while (next == NULL) {                         /* 残りは全員 blop 待ち → pump */
-        if (korb_blop_deadlocked(vm)) korb_thread_deadlock_fatal();
+        if (korb_blop_deadlocked(vm)) { korb_thread_deadlock(c, c->slots); next = korb_thread_runq_pop(vm); continue; }   /* wakes main */
         korb_blop_pump(vm, 1);
         next = korb_thread_runq_pop(vm);
     }

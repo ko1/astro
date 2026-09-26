@@ -7700,6 +7700,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "NoMemoryError",       -1,                "Exception" },
         { "SecurityError",       -1,                "Exception" },
         { "SystemExit",          -1,                "Exception" },
+        { "fatal",               -1,                "Exception" },   /* deadlock (thread.c) */
         { "SignalException",     -1,                "Exception" },
         { "Interrupt",           -1,                "SignalException" },
         { "EncodingError",       -1,                "StandardError" },
