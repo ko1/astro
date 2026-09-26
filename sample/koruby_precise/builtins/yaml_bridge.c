@@ -6,7 +6,7 @@
  * lib/psych/ 以下の Ruby 実装がそのまま載る。
  *
  *   __yaml_parse(src)      -> [[kind, ...], ...]  (パースエラーは配列でなく
- *                             [:error, message, line, column] を返す)
+ *                             [[:error, problem, context, line, column, offset]] を返す)
  *   __yaml_emit(events, opts) -> String
  *
  * イベントの並びは Psych::Handler のコールバックと 1:1:
@@ -55,24 +55,30 @@ korb_bi_yaml_parse(CTX *c, VALUE *slots, VALUE_SLICE args)
 
     slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
     VALUE_REF out = VALUE_REF_AT(&slots[0]);
-    VALUE *const sp = slots + 1;                 /* 以降の一時領域 */
     for (;;) {
         yaml_event_t ev;
         if (!yaml_parser_parse(&parser, &ev)) {
-            const char *const msg = parser.problem ? parser.problem : "unknown error";
-            const size_t line = parser.problem_mark.line + 1, col = parser.problem_mark.column + 1;
-            const char *const ctxs = parser.context;
-            char buf[512];
-            snprintf(buf, sizeof buf, "%s%s%s", ctxs ? ctxs : "", ctxs ? ": " : "", msg);
+            /* what psych's make_exception hands Psych::SyntaxError.new: the CONTEXT
+             * mark's position, problem_offset, and problem / context apart */
+            char pbuf[256], cbuf[256];
+            snprintf(pbuf, sizeof pbuf, "%s", parser.problem ? parser.problem : "");
+            snprintf(cbuf, sizeof cbuf, "%s", parser.context ? parser.context : "");
+            const bool has_p = parser.problem != NULL, has_c = parser.context != NULL;
+            const size_t line = parser.context_mark.line + 1, col = parser.context_mark.column + 1;
+            const size_t off = parser.problem_offset;
             yaml_parser_delete(&parser); free(src);
-            VALUE e[4];
+            VALUE e[6];
             e[0] = ID2SYM(korb_intern(c->vm, "error", 5));
-            e[1] = UNWRAP(korb_str_new(c, sp, buf, (uint32_t)strlen(buf)));
-            e[2] = LONG2FIX((korb_sword_t)line);
-            e[3] = LONG2FIX((korb_sword_t)col);
-            slots[0] = UNWRAP(korb_ary_new(c, slots, 1));          /* [[:error, msg, line, col]] */
+            e[1] = KORB_NIL; e[2] = KORB_NIL;
+            e[3] = LONG2FIX((korb_sword_t)line);
+            e[4] = LONG2FIX((korb_sword_t)col);
+            e[5] = LONG2FIX((korb_sword_t)off);
+            slots[0] = UNWRAP(korb_ary_new(c, slots, 1));          /* [[:error, problem, context, line, col, offset]] */
+            slots[1] = has_p ? UNWRAP(korb_str_new(c, slots + 1, pbuf, (uint32_t)strlen(pbuf))) : KORB_NIL;
+            slots[2] = has_c ? UNWRAP(korb_str_new(c, slots + 2, cbuf, (uint32_t)strlen(cbuf))) : KORB_NIL;
+            e[1] = slots[1]; e[2] = slots[2];
             { VALUE_REF r = VALUE_REF_AT(&slots[0]);
-              CHECK(korb_yaml_ev(c, slots + 1, r, e, 4)); }
+              CHECK(korb_yaml_ev(c, slots + 3, r, e, 6)); }
             return RESULT_OK(slots[0]);
         }
         /* alloc を跨いで C ローカルに VALUE を持たない: イベント配列を先に作り、

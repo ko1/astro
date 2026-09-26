@@ -60,9 +60,9 @@ module Psych
       src = __yaml_source(yaml)
       events = __yaml_parse(src)
       if events[0] && events[0][0] == :error
-        _, problem, line, column = events[0]
-        @mark = Mark.new(0, line - 1, column - 1)
-        raise Psych::SyntaxError.new(path, line, column, 0, problem, nil)
+        _, problem, context, line, column, offset = events[0]
+        @mark = Mark.new(offset, line - 1, column - 1)
+        raise Psych::SyntaxError.new(path, line, column, offset, problem, context)
       end
       located = handler.respond_to?(:event_location)
       events.each do |ev|
