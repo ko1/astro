@@ -2525,12 +2525,19 @@ static RESULT korb_register_subclass(CTX *c, VALUE *slots, VALUE super_cls, VALU
 /* The lexical cref for a constant read: like korb_cvar_cref, but a method
  * defined in a `class << obj` body reports that (unnamed) singleton, not the
  * object — its body's constants live there. */
+static VALUE korb_own_singleton_class(const struct korb_vm *vm, VALUE v);   /* fwd */
 VALUE
-korb_const_cref(VALUE self, VALUE entry_cell)
+korb_const_cref(const struct korb_vm *const vm, VALUE self, VALUE entry_cell)
 {
     if (((uintptr_t)entry_cell & 7u) == KORB_FID_METHOD) {
         const struct korb_method *const m = (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)7u);
         if (KORB_CLASS_P(m->owner) && VAL2CLASS(m->owner)->is_singleton) return m->owner;
+    }
+    /* a block written in a `class << x` method (the parser bakes the cell only
+     * there): its self is still x, whose singleton IS that cref */
+    if (((uintptr_t)entry_cell & 7u) == KORB_FID_BLOCK) {
+        const VALUE sing = korb_own_singleton_class(vm, self);
+        if (KORB_CLASS_P(sing)) return sing;
     }
     return korb_cvar_cref(self, entry_cell);
 }

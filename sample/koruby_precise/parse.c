@@ -1846,6 +1846,8 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
     }
     push_frame(tc, blk_locals);
     tc->frame->block_body = true;
+    /* a block in a `class << x` method shares its unnamed cref (constants resolve at run time) */
+    tc->frame->anon_cref_method = tc->frame->prev != NULL && tc->frame->prev->anon_cref_method;
     tc->frame->dm_body = tc->next_block_is_dm;
     tc->next_block_is_dm = false;
 

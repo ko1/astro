@@ -602,7 +602,7 @@ RESULT korb_rescue_splat_list(CTX *c, VALUE *slots, VALUE *listslot);
 bool korb_defined_call_p(CTX *c, VALUE *slots, uint32_t mid, int32_t self_off);
 VALUE korb_cvar_cref(VALUE self, VALUE entry_cell);
 VALUE korb_cvar_self_class_pub(CTX *c, VALUE self);   /* @@var fallback scope for a rebound self */
-VALUE korb_const_cref(VALUE self, VALUE entry_cell);   /* like korb_cvar_cref, but keeps a `class << obj` singleton */
+VALUE korb_const_cref(const struct korb_vm *vm, VALUE self, VALUE entry_cell);   /* like korb_cvar_cref, but keeps a `class << obj` singleton */
 VALUE korb_body_cref(CTX *c, VALUE self, VALUE entry_cell, uint32_t cref_name);   /* cref of a def/undef in a method body */
 void  korb_mark_sdef(VALUE klass, uint32_t mid);   /* the entry was written `def recv.m` */
 VALUE korb_cref_from_path(struct korb_vm *vm, uint32_t sym);   /* "A::B" (one interned path) → the class/module, nil if unresolved */
