@@ -374,6 +374,7 @@ module Zlib
       @deflate = Zlib::Deflate.new(@level, -MAX_WBITS)     # raw deflate: we write the gzip wrapper
       @crc = 0
       @size = 0
+      @pending = +"".b
       @mtime = nil
     end
 
@@ -403,7 +404,8 @@ module Zlib
         s = a.to_s.b
         @crc = Zlib.crc32(s, @crc)
         @size += s.bytesize
-        __emit(@deflate.deflate(s, NO_FLUSH))
+        @pending << @deflate.deflate(s, NO_FLUSH)   # the data is in zlib before the header goes out
+        __emit
         n += s.bytesize
       end
       n
@@ -421,18 +423,19 @@ module Zlib
     alias tell pos
     # the compressed data so far reaches the IO (CRuby: Z_SYNC_FLUSH by default)
     def flush(flush = SYNC_FLUSH)
-      __emit(@deflate.flush(flush), true) unless flush == NO_FLUSH
+      @pending << @deflate.flush(flush) unless flush == NO_FLUSH
+      __emit
       @io.flush if @io.respond_to?(:flush)
       self
     end
 
-    # ends the stream and returns the IO without closing it
+    # ends the stream (the rest and the trailer in one write) and returns the IO without closing it
     def finish
       return @io if @closed
       @closed = true
-      __emit(@deflate.finish, true)
+      @pending << @deflate.finish << [@crc, @size & 0xffffffff].pack("VV")
       @deflate.close
-      @io.write([@crc, @size & 0xffffffff].pack("VV"))
+      __emit
       @io
     end
 
@@ -442,14 +445,17 @@ module Zlib
       io
     end
 
-    # the header goes out with the first data that does (CRuby buffers both)
-    private def __emit(data, force = false)
-      return if data.empty? && !force
+    # the header goes out on the first write, then whatever output is pending;
+    # a raising IO leaves the data in zlib / the pending buffer, not lost (CRuby)
+    private def __emit
       unless @header_out
         @header_out = true
         @io.write(__gzip_header)
       end
-      @io.write(data) unless data.empty?
+      return if @pending.empty?
+      out = @pending
+      @pending = +"".b
+      @io.write(out)
     end
 
     private def __gzip_header
@@ -457,7 +463,7 @@ module Zlib
       flg |= 0x08 if @orig_name
       flg |= 0x10 if @comment
       xfl = @level == BEST_COMPRESSION ? 2 : (@level == BEST_SPEED ? 4 : 0)
-      h = [0x1f, 0x8b, 8, flg, (@mtime ? @mtime.to_i : 0), xfl, @os_code].pack("CCCCVCC")
+      h = [0x1f, 0x8b, 8, flg, (@mtime ? @mtime.to_i : Time.now.to_i), xfl, @os_code].pack("CCCCVCC")
       h << @orig_name.b << "\0" if @orig_name
       h << @comment.b << "\0" if @comment
       h
