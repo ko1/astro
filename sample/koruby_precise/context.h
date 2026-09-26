@@ -412,6 +412,8 @@ typedef struct KorbBinding {
                                       * `eval(str)` lowers to eval(str, <hidden binding>), so this is what
                                       * makes `def` / `class` / a constant inside the eval'd string land in
                                       * the enclosing class instead of at top level. */
+    VALUE ARO_GC_EDGE outer_cref;    /* taken in a class_eval(String): the caller's cref, which CRuby's cref
+                                      * chain still holds under the receiver — a later eval searches it too */
     const uint32_t *name_syms;       /* immortal: name_syms[i] = sym of local at env index i */
     uint32_t name_cnt;
     const struct Node *src_node;     /* immortal: the `binding` call node (for #source_location); NULL if unknown */
@@ -1460,6 +1462,9 @@ struct CTX_struct {
      * outside such an eval; a constant assignment with no parse-time cref uses
      * it as the owner, which is how `mod.module_eval("X = 1")` lands in mod. */
     VALUE     eval_cref;
+    /* …and the caller's cref it sits on (class_eval(String) on a named
+     * receiver): a `binding` taken there keeps it (KorbBinding.outer_cref). */
+    VALUE     eval_outer_cref;
     /* instance_eval/instance_exec rebind self to a non-class receiver, which
      * loses the class scope @@vars resolve against.  CRuby keeps the caller's
      * (block definition's) cref for them; this is that cref, KORB_NIL outside. */
@@ -1638,6 +1643,8 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->def_definee);            \
     if ((c)->eval_cref != KORB_NIL)                                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->eval_cref);              \
+    if ((c)->eval_outer_cref != KORB_NIL)                                    \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->eval_outer_cref);        \
     if ((c)->cvar_cref != KORB_NIL)                                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->cvar_cref);              \
     if ((c)->refinements != KORB_NIL)                                        \
@@ -1867,6 +1874,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->self);                    \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->extra);                   \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->cref);                    \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->outer_cref);              \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

@@ -637,6 +637,9 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->env,   sb->env);
         ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->self,  sb->self);
         ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->extra, sb->extra);
+        ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->cref,  sb->cref);
+        ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->outer_cref, sb->outer_cref);
+        nb->method_mid = sb->method_mid;
         slots[1] = (VALUE)nb;
         CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
         gen_done = true;

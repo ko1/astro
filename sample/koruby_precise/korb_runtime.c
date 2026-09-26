@@ -4133,6 +4133,8 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->self, slots[0]);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->extra, KORB_NIL);
     ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->cref, slots[2]);
+    if (KORB_CLASS_P(c->eval_outer_cref) && slots[2] == c->eval_cref)   /* taken right in a class_eval(String) */
+        ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->outer_cref, c->eval_outer_cref);
     /* Resolve the owning method NOW: a binding taken inside an eval'd string has
      * an eval frame at the head of its chain and could never name it later. */
     { const uint32_t mm = korb_bind_method_mid_walk(c->vm, b);
@@ -5676,7 +5678,7 @@ static void korb_refine_pop(CTX *c) {
  * (`def` target) and the cvar cref.  Both are VALUEs, so the save cannot live in
  * a C local across the body — the restore would put a stale pointer back. */
 static void korb_cref_push(CTX *c) {
-    if (c->cref_n + 4 > c->cref_cap) {
+    if (c->cref_n + 5 > c->cref_cap) {
         c->cref_cap = c->cref_cap ? c->cref_cap * 2 : 48;
         c->cref_saved = realloc(c->cref_saved, sizeof(VALUE) * c->cref_cap);
         if (!c->cref_saved) { fprintf(stderr, "koruby_precise: out of memory (cref scopes)\n"); abort(); }
@@ -5685,14 +5687,16 @@ static void korb_cref_push(CTX *c) {
     c->cref_saved[c->cref_n++] = c->cvar_cref;
     c->cref_saved[c->cref_n++] = c->eval_cref;
     c->cref_saved[c->cref_n++] = c->kwargs_park;
+    c->cref_saved[c->cref_n++] = c->eval_outer_cref;
 }
 static void korb_cref_pop(CTX *c) {
-    if (LIKELY(c->cref_n >= 4)) {
+    if (LIKELY(c->cref_n >= 5)) {
+        c->eval_outer_cref = c->cref_saved[--c->cref_n];
         c->kwargs_park = c->cref_saved[--c->cref_n];
         c->eval_cref   = c->cref_saved[--c->cref_n];
         c->cvar_cref   = c->cref_saved[--c->cref_n];
         c->def_definee = c->cref_saved[--c->cref_n];
-    } else { c->eval_cref = KORB_NIL; c->cvar_cref = KORB_NIL; c->def_definee = KORB_NIL; c->kwargs_park = KORB_NIL; }
+    } else { c->eval_cref = KORB_NIL; c->cvar_cref = KORB_NIL; c->def_definee = KORB_NIL; c->kwargs_park = KORB_NIL; c->eval_outer_cref = KORB_NIL; }
 }
 
 /* Try one (refined class, refinement module) pair against the receiver class. */
@@ -18144,6 +18148,16 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     for (VALUE o = cref_encl;
          KORB_CLASS_P(o) && VAL2CLASS(o)->name_sym != 0 && nencl < 16; o = VAL2CLASS(o)->enclosing)
         encl[nencl++] = VAL2CLASS(o)->name_sym;
+    /* A named receiver's chain still sits on the CALLER's cref: it is searched
+     * after the receiver's own (`module M; String.class_eval("X")` sees M::X),
+     * and so does a binding taken in such an eval (pry's BasicObject session). */
+    const bool outer_is_caller = !cref_is_caller && cref_name != 0 && KORB_CLASS_P(cref) &&
+                                 !VAL2CLASS(cref)->is_singleton && KORB_CLASS_P(b0->cref) && b0->cref != cref;
+    const bool outer_is_bound = !outer_is_caller && cref == b0->cref && KORB_CLASS_P(b0->outer_cref);
+    if (outer_is_caller || outer_is_bound)
+        for (VALUE o = outer_is_caller ? b0->cref : b0->outer_cref;
+             KORB_CLASS_P(o) && VAL2CLASS(o)->name_sym != 0 && nencl < 16; o = VAL2CLASS(o)->enclosing)
+            encl[nencl++] = VAL2CLASS(o)->name_sym;
     for (uint32_t i = 0, j = nencl; i < j; i++, j--)            /* → outermost first */
         { const uint32_t t = encl[i]; encl[i] = encl[j - 1]; encl[j - 1] = t; }
     /* A binding taken INSIDE an eval'd string has an eval (MAIN) frame at the
@@ -18186,6 +18200,8 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
         c->eval_cref = KORB_CLASS_P(cref) ? cref : KORB_NIL;
         if (!soft_definee || c->def_definee == KORB_NIL) c->def_definee = cref;
     }
+    c->eval_outer_cref = outer_is_caller ? VAL2BIND(*bind_slot)->cref
+                       : outer_is_bound ? VAL2BIND(*bind_slot)->outer_cref : KORB_NIL;
     c->vm->script_name = fname;                     /* raises inside report the eval's filename */
     const char *const saved_load = c->vm->cur_load_file;   /* require_relative / __dir__ resolve against it too */
     c->vm->cur_load_file = fname;
