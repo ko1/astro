@@ -319,9 +319,21 @@ static int korb_io_getb_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESULT *pe
     return (unsigned char)rep->rbuf[rep->rpos++];
 }
 
+/* Raise a write error.  EPIPE on stdout carries SIGPIPE: uncaught, the process
+ * then dies by that signal without a message (CRuby's FMODE_SIGNAL_ON_EPIPE). */
+static RESULT korb_raise_write_errno(CTX *c, VALUE *slots, const KorbIORep *const rep, const int e) {
+    RESULT r = korb_raise_errno(c, slots, e, "write", "");
+    if (e == EPIPE && rep != NULL && rep == korb_io_std_rep(c->vm, 1) && KORB_EXC_P(r.value)) {
+        slots[0] = r.value;
+        CHECK(korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(c->vm, "__signo", 7)), LONG2FIX(SIGPIPE)));
+        r.value = slots[0];
+    }
+    return r;
+}
+
 /* Write to a sink, reporting a vanished reader as Errno::EPIPE.
  *
- * SIGPIPE is ignored process-wide (see korb_init_io), so nothing kills us on a
+ * SIGPIPE is caught by a no-op (see korb_init_io), so nothing kills us on a
  * broken pipe any more — the write path itself has to notice.  Without this a
  * `loop { puts }` into a closed pipe would spin forever instead of ending the
  * program, which is what CRuby does. */
@@ -330,7 +342,7 @@ static RESULT korb_io_wr_checked(CTX *c, VALUE *slots, KorbIORep *const rep, con
     errno = 0;
     if (!korb_io_wr_p(c, slots, rep, p, n, &werr)) {
         if (UNLIKELY(werr.state != KORB_NORMAL)) return werr;
-        if (errno == EPIPE) return korb_raise_errno(c, slots, EPIPE, "write", "");
+        if (errno == EPIPE) return korb_raise_write_errno(c, slots, rep, EPIPE);
     }
     return RESULT_OK(KORB_NIL);
 }
@@ -346,7 +358,7 @@ static RESULT korb_io_wr_checked(CTX *c, VALUE *slots, KorbIORep *const rep, con
        here, and turning those into raises changes unrelated paths. */          \
     if (UNLIKELY(!wok__ && (errno == EPIPE || errno == EMSGSIZE))) {            \
         (rep_)->wlen = 0;    /* a direct write keeps nothing; only #flush's buffered bytes stay */ \
-        return korb_raise_errno((c_), (slots_), errno, "write", "");           \
+        return korb_raise_write_errno((c_), (slots_), (rep_), errno);          \
     }                                                                          \
 } while (0)
 
@@ -1264,7 +1276,7 @@ static RESULT korb_m_io_flush(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     errno = 0;
     if (rep && !korb_io_flush_rep(rep) && errno == EPIPE)   /* a vanished reader, like KORB_IO_WR */
-        return korb_raise_errno(c, slots, EPIPE, "write", "");
+        return korb_raise_write_errno(c, slots, rep, EPIPE);
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_io_eof_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -2825,14 +2837,27 @@ static RESULT korb_m_file_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return korb_m_file_open(c, slots, self, a, NULL, NULL, NULL);
 }
 
+#ifndef KORB_WASI
+static void korb_sigpipe_noop(int sig) { (void)sig; }
+
+/* A write to a pipe whose reader has gone must surface as Errno::EPIPE, not
+ * kill the interpreter.  Caught rather than ignored (as CRuby does): execve
+ * resets a caught signal, so `yes | head` in a child isn't left with EPIPE. */
+static void korb_sigpipe_catch(void) {
+    const struct sigaction sa = { .sa_handler = korb_sigpipe_noop, .sa_flags = SA_RESTART };
+    (void)sigaction(SIGPIPE, &sa, NULL);
+}
+#endif
+
 void korb_init_io(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
     /* index 0/1/2 = the std streams (never closed).  stderr is sync so a
        diagnostic is on the descriptor before anything that follows it. */
-    /* A write to a pipe whose reader has gone must surface as Errno::EPIPE, not
-       kill the interpreter — same as CRuby, which also runs with SIGPIPE
-       ignored.  Without this, `koruby ... | head` dies on signal 13. */
+#ifdef KORB_WASI
     signal(SIGPIPE, SIG_IGN);
+#else
+    korb_sigpipe_catch();
+#endif
     korb_io_register(vm, STDIN_FILENO, false);
     /* On a terminal stdout is sync so a prompt written without a newline is
        visible before the read that follows it; piped output stays buffered. */

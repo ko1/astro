@@ -52,6 +52,7 @@ static void korb_child_reset_signals(void) {
     sigset_t empty;
     sigemptyset(&empty);
     (void)pthread_sigmask(SIG_SETMASK, &empty, NULL);
+    (void)signal(SIGPIPE, SIG_DFL);   /* even under trap("PIPE", "IGNORE"), as CRuby */
 }
 
 /* poll(2) is blind to a blocked signal, so the blop pump (thread.c) waits on
@@ -733,9 +734,15 @@ static RESULT korb_m_process_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (probe != 0) return korb_raise_errno(c, slots, probe, NULL, korb_spawn_file(&plan));
     korb_io_flush_std(c->vm);   /* our write buffer would otherwise die with the image */
     fflush(NULL);
-    if (!korb_spawn_child_setup(&plan, -1, NULL)) return korb_raise_errno(c, slots, errno, NULL, korb_spawn_file(&plan));
+    if (!korb_spawn_child_setup(&plan, -1, NULL)) {
+        const int e = errno;
+        korb_sigpipe_catch();
+        return korb_raise_errno(c, slots, e, NULL, korb_spawn_file(&plan));
+    }
     execvp(korb_spawn_file(&plan), plan.argv);
-    return korb_raise_errno(c, slots, errno, NULL, korb_spawn_file(&plan));
+    const int e = errno;
+    korb_sigpipe_catch();   /* still us: undo the child's SIGPIPE reset */
+    return korb_raise_errno(c, slots, e, NULL, korb_spawn_file(&plan));
 }
 
 static RESULT korb_m_process_spawn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -977,6 +984,24 @@ static RESULT korb_m_process_kill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(LONG2FIX(n));
 }
 
+/* A forked child's uncaught `exc`: its exit status, reported unless CRuby is
+ * quiet about it; *die_sig = the signal it should end by instead (or 0). */
+static int korb_child_uncaught(CTX *c, VALUE exc, int *die_sig) {
+    const int se = korb_system_exit_status(c, exc);      /* exit(n) in the block: n is the status */
+    if (se >= 0) return se;
+    bool quiet = false;
+    *die_sig = korb_uncaught_signo(c, exc, &quiet);
+    if (!quiet) korb_report_uncaught(c, exc);
+    return 1;
+}
+
+static _Noreturn void korb_child_end(CTX *c, VALUE *slots, const int status, const int die_sig) {
+    korb_drain_at_exit(c, slots);
+    korb_io_flush_std(c->vm);
+    if (die_sig > 0) korb_die_by_signal(die_sig);
+    _exit(status);
+}
+
 /* IO.popen(cmd, mode = "r") [ { |io| ... } ] — pipe + fork + exec, so the IO
  * carries the child's #pid and #close reaps it into $?.  `cmd` is one positional
  * (String or argv Array); an env Hash may precede it and an options Hash follow. */
@@ -1077,14 +1102,9 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (block == NULL) return RESULT_OK(KORB_NIL);
             slots[0] = KORB_NIL;
             RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
-            int status = 0;                              /* CRuby's child exits when the block returns */
-            if (r.state == KORB_RAISE) {
-                status = korb_system_exit_status(c, r.value);
-                if (status < 0) { korb_report_uncaught(c, r.value); status = 1; }
-            }
-            korb_drain_at_exit(c, slots);
-            korb_io_flush_std(c->vm);
-            _exit(status);
+            int status = 0, die_sig = 0;                 /* CRuby's child exits when the block returns */
+            if (r.state == KORB_RAISE) status = korb_child_uncaught(c, r.value, &die_sig);
+            korb_child_end(c, slots, status, die_sig);
         }
     } else {
         /* The pipe redirect is applied BEFORE the option ones, so `err: [:child, :out]`
@@ -1461,6 +1481,7 @@ static RESULT korb_m_signal_trap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         dflt = (n == 7 && !memcmp(p, "DEFAULT", 7)) || (n == 7 && !memcmp(p, "SIG_DFL", 7));
     }
     void (*prev)(int) = signal(sig, dflt ? SIG_DFL : SIG_IGN);
+    if (sig == SIGPIPE && dflt) korb_sigpipe_catch();   /* CRuby's DEFAULT here is its own no-op, not death */
     const char *pname = prev == SIG_DFL ? "DEFAULT" : prev == SIG_IGN ? "IGNORE" : "DEFAULT";
     return korb_str_new(c, slots, pname, (uint32_t)strlen(pname));
 }
@@ -1541,16 +1562,10 @@ static RESULT korb_m_process_fork_raw(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_m_process_fork_finish(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     const VALUE v = VALUE_SLICE_GET(a, 0);
-    int status = 0;
+    int status = 0, die_sig = 0;
     if (FIXNUM_P(v)) status = (int)FIX2LONG(v);
-    else if (KORB_EXC_P(v)) {
-        const int se = korb_system_exit_status(c, v);      /* exit(n) in the block: n is the status */
-        if (se >= 0) status = se;
-        else { korb_report_uncaught(c, v); status = 1; }
-    }
-    korb_drain_at_exit(c, slots);
-    korb_io_flush_std(c->vm);
-    _exit(status);
+    else if (KORB_EXC_P(v)) status = korb_child_uncaught(c, v, &die_sig);
+    korb_child_end(c, slots, status, die_sig);
 }
 
 static RESULT korb_m_process_fork(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
@@ -1563,14 +1578,9 @@ static RESULT korb_m_process_fork(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         korb_fork_child_threads(c->vm);
         if (block == NULL) return RESULT_OK(KORB_NIL);
         RESULT r = korb_block_yield(c, slots, block, def_env, NULL, 0, cself);
-        int status = 0;
-        if (r.state == KORB_RAISE) {
-            status = korb_system_exit_status(c, r.value);   /* `exit N` inside the block */
-            if (status < 0) { korb_report_uncaught(c, r.value); status = 1; }
-        }
-        korb_drain_at_exit(c, slots);
-        korb_io_flush_std(c->vm);
-        _exit(status);
+        int status = 0, die_sig = 0;
+        if (r.state == KORB_RAISE) status = korb_child_uncaught(c, r.value, &die_sig);
+        korb_child_end(c, slots, status, die_sig);
     }
     /* Process._fork's hook point in CRuby; koruby has no at_fork callbacks. */
     return RESULT_OK(LONG2FIX((korb_sword_t)pid));

@@ -17301,6 +17301,41 @@ korb_system_exit_status(CTX *c, VALUE exc)
     return FIXNUM_P(st) ? (int)FIX2LONG(st) : 0;
 }
 
+/* The signal an uncaught `exc` ends the process by, or 0: a SignalException's
+ * signo, or SIGPIPE for EPIPE on stdout.  *quiet: CRuby prints no message
+ * (a plain SignalException, the EPIPE) — subclasses such as Interrupt do print. */
+int
+korb_uncaught_signo(CTX *c, VALUE exc, bool *quiet)
+{
+    *quiet = false;
+    if (!KORB_EXC_P(exc)) return 0;
+    const VALUE mark = korb_ivar_get(c, exc, ID2SYM(korb_intern(c->vm, "__signo", 7)));
+    if (FIXNUM_P(mark)) { *quiet = true; return (int)FIX2LONG(mark); }
+    const VALUE cls = korb_const_get(c->vm, korb_intern(c->vm, "SignalException", 15));
+    const VALUE ec = VAL2EXC(exc)->exc_class;
+    if (!KORB_CLASS_P(cls) || !KORB_CLASS_P(ec) || !korb_class_le(ec, cls)) return 0;
+    const VALUE sig = korb_ivar_get(c, exc, ID2SYM(korb_intern(c->vm, "@signo", 6)));
+    if (!FIXNUM_P(sig)) return 0;
+    *quiet = ec == cls;
+    return (int)FIX2LONG(sig);
+}
+
+/* End the process by `sig` itself, so the parent's wait sees WIFSIGNALED. */
+void
+korb_die_by_signal(const int sig)
+{
+#ifndef __wasi__
+    (void)signal(sig, SIG_DFL);   /* a trap("…", "IGNORE") doesn't hold here either */
+    sigset_t one;
+    sigemptyset(&one);
+    sigaddset(&one, sig);
+    (void)sigprocmask(SIG_UNBLOCK, &one, NULL);   /* trapped signals are kept blocked for the signalfd */
+    (void)raise(sig);
+#else
+    (void)sig;
+#endif
+}
+
 /* Kernel#exit — raises SystemExit (rescuable, runs ensure blocks); the process
  * only ends when it reaches the top level uncaught (main.c) .  Returning an
  * exception rather than calling exit(3) is what lets a test framework — or any

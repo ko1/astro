@@ -515,6 +515,8 @@ RESULT korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
                   const char *fmt, ...) __attribute__((format(printf, 5, 6)));
 void   korb_report_uncaught(CTX *c, VALUE exc);
 int    korb_system_exit_status(CTX *c, VALUE exc);   /* SystemExit → its status, else -1 */
+int    korb_uncaught_signo(CTX *c, VALUE exc, bool *quiet);   /* signal an uncaught exc dies by, else 0 */
+void   korb_die_by_signal(int sig);   /* returns only if the default action does not kill */
 int    korb_drain_at_exit(CTX *c, VALUE *slots);   /* run at_exit blocks (main.c); >=0 = exit status a handler asked for */
 int    korb_drain_at_exit_x(CTX *c, VALUE *slots, bool *exited);   /* same, plus "a handler called exit" */
 void   korb_io_flush_std(struct korb_vm *vm);     /* flush stdout/stderr (no stdio to do it at exit) */

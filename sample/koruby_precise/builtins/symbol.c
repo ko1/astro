@@ -284,8 +284,12 @@ static RESULT korb_m_obj_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (VAL2EXC(sv)->ivars == KORB_NIL) return korb_ary_new(c, slots, 0);
         slots[0] = UNWRAP(korb_ary_new(c, slots + 1, VAL2HASH(VAL2EXC(sv)->ivars)->len));   /* alloc may GC → re-read self below */
         VALUE_REF dst = VALUE_REF_AT(&slots[0]);
-        for (uint32_t i = 0; i < VAL2HASH(VAL2EXC(VALUE_REF_GET(self))->ivars)->len; i++)
-            CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(VAL2EXC(VALUE_REF_GET(self))->ivars)->items)[2 * i]));
+        for (uint32_t i = 0; i < VAL2HASH(VAL2EXC(VALUE_REF_GET(self))->ivars)->len; i++) {
+            const VALUE k = korb_items_data(VAL2HASH(VAL2EXC(VALUE_REF_GET(self))->ivars)->items)[2 * i];
+            const char *const nm = SYMBOL_P(k) ? korb_sym_name(c->vm, SYM2ID(k)) : NULL;
+            if (nm != NULL && nm[0] != '@') continue;           /* internal slot, as for objects below */
+            CHECK(korb_ary_push_val(c, slots + 1, dst, k));
+        }
         return RESULT_OK(VALUE_REF_GET(dst));
     }
     if (!KORB_OBJECT_P(sv)) {                                   /* class / container / heap object → side-hash keys */

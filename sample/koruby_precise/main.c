@@ -1712,11 +1712,18 @@ main(int argc, char *argv[])
         bool handler_exited = false;
         const int handler_status = korb_drain_at_exit_x(c, toplevel_cursor + 4, &handler_exited);
         if (handler_status >= 0) exit_status = handler_status;   /* a handler's exit wins */
+        bool sig_quiet = false;
+        const int die_sig = uncaught ? korb_uncaught_signo(c, toplevel_cursor[0], &sig_quiet) : 0;
         /* CRuby reports the uncaught exception AFTER at_exit, and not at all when
          * a handler called exit.  A handler that merely RAISED does not suppress
          * it — both are printed.  Read the (possibly moved) exception back. */
-        if (uncaught && !handler_exited) korb_report_uncaught(c, toplevel_cursor[0]);
+        if (uncaught && !handler_exited && !sig_quiet) korb_report_uncaught(c, toplevel_cursor[0]);
         fflush(stdout);
+        if (die_sig > 0) {   /* even over an at_exit's exit, as CRuby */
+            korb_io_flush_std(c->vm);
+            korb_die_by_signal(die_sig);
+            return 1;   /* the signal's default didn't kill (CHLD, WINCH): CRuby's EXIT_FAILURE */
+        }
         if (exit_status >= 0) {
             korb_io_flush_std(c->vm);
             return exit_status;
