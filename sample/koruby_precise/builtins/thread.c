@@ -20,7 +20,8 @@
  * join timeout) + pump (poll(2) ベース)。POLL/READ/WRITE の fd 系は M3。 */
 
 enum korb_blop_kind  { KORB_BLOP_POLL, KORB_BLOP_READ, KORB_BLOP_WRITE, KORB_BLOP_TIMER, KORB_BLOP_CFUNC };
-enum korb_blop_flags { KORB_BLOP_F_TIMEOUT = 1, KORB_BLOP_F_DONE = 2 };
+enum korb_blop_flags { KORB_BLOP_F_TIMEOUT = 1, KORB_BLOP_F_DONE = 2,
+                       KORB_BLOP_F_DEADLOCKABLE = 4 /* Mutex#sleep forever: only another thread can end it */ };
 
 static void korb_thread_runq_push(struct korb_vm *vm, struct korb_thread *t);   /* fwd (下の scheduler 節) */
 static RESULT korb_bi_exit(CTX *c, VALUE *slots, VALUE_SLICE args);            /* fwd (korb_runtime.c) */
@@ -447,8 +448,18 @@ korb_thread_ctx_save(CTX *c, struct korb_thread *cur, VALUE *slots)
 static void
 korb_thread_deadlock_fatal(void)
 {
-    fprintf(stderr, "koruby_precise: deadlock detected (no runnable thread; all waiting)\n");
-    exit(2);
+    fprintf(stderr, "No live threads left. Deadlock? (fatal)\n");   /* CRuby's fatal */
+    exit(1);
+}
+/* Nothing left that could wake anyone: no pending blop, or only untimed
+ * Mutex#sleep ones (Queue#pop, ConditionVariable#wait).  A bare Kernel#sleep is
+ * not one of them — CRuby lets `sleep` wait forever. */
+static bool
+korb_blop_deadlocked(const struct korb_vm *const vm)
+{
+    for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
+        if (!(b->flags & KORB_BLOP_F_DEADLOCKABLE)) return false;
+    return true;
 }
 
 /* 現 thread から離れる。呼び出し側が cur->state を設定済みであること
@@ -467,7 +478,7 @@ korb_thread_yield_cpu(CTX *c, VALUE *slots)
         /* PENDED で他に runnable 無し: blop の完了を pump で待つ (native thread が
          * 眠る唯一の場所)。待てる blop も無ければ本物の deadlock。 */
         for (;;) {
-            if (vm->blop_npending == 0) korb_thread_deadlock_fatal();
+            if (korb_blop_deadlocked(vm)) korb_thread_deadlock_fatal();
             korb_blop_pump(vm, 1);
             next = korb_thread_runq_pop(vm);
             if (next) break;
@@ -490,7 +501,7 @@ korb_thread_exit_switch(CTX *c)
     struct korb_vm *const vm = c->vm;
     struct korb_thread *next = korb_thread_runq_pop(vm);
     while (next == NULL) {                         /* 残りは全員 blop 待ち → pump */
-        if (vm->blop_npending == 0) korb_thread_deadlock_fatal();
+        if (korb_blop_deadlocked(vm)) korb_thread_deadlock_fatal();
         korb_blop_pump(vm, 1);
         next = korb_thread_runq_pop(vm);
     }
@@ -1707,6 +1718,7 @@ korb_m_mutex_sleep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     struct korb_blop b; memset(&b, 0, sizeof b);
     b.kind = KORB_BLOP_TIMER;
     if (sec >= 0) korb_blop_deadline_in(&b, sec);
+    else b.flags |= KORB_BLOP_F_DEADLOCKABLE;
     struct timespec t0; korb_blop_now(&t0);
     RESULT sr = korb_blop_wait(c, slots, &b);
     RESULT lr = korb_mutex_lock_core(c, slots, self, false);     /* raise でも必ず再 lock を試す */
