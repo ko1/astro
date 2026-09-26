@@ -1085,6 +1085,8 @@ struct korb_vm {
     struct korb_method **orphans;
     uint32_t orphan_cnt, orphan_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
+    uint8_t *mid_looked;     /* [mid]: some method lookup asked for it, so a cache may hold it (korb_mid_looked) */
+    uint32_t mid_looked_cap;
     /* how many `undef :send` / :__send__ / :public_send (send_undef_cnt) and
      * `undef :new` (new_undef_cnt) tombstones exist.  Those names are
      * special-dispatched (no table entry), so the dispatch has to look for a
