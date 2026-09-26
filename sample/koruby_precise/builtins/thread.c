@@ -177,6 +177,7 @@ static int
 korb_blop_pump(struct korb_vm *vm, int block)
 {
     int posted = korb_blop_expire(vm);
+    if (UNLIKELY(vm->sig_caught != 0)) posted += korb_blop_signal_wake(vm);   /* reaped before a context switch */
     /* 眠る側だけ signalfd を見る: blocked signal は poll(2) から見えないので、
      * これが無いと trap 済みプロセスの sleep が kill(2) を寝過ごす。 */
     sigset_t sig_old;
@@ -460,8 +461,9 @@ korb_thread_deadlock_fatal(void)
  * Mutex#sleep ones (Queue#pop, ConditionVariable#wait).  A bare Kernel#sleep is
  * not one of them — CRuby lets `sleep` wait forever. */
 static bool
-korb_blop_deadlocked(const struct korb_vm *const vm)
+korb_blop_deadlocked(struct korb_vm *const vm)
 {
+    korb_signal_park_pending(vm);            /* a trapped signal still pending in the kernel counts too */
     if (vm->sig_caught != 0) return false;   /* a signal is on its way to the main thread */
     for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
         if (!(b->flags & KORB_BLOP_F_DEADLOCKABLE)) return false;
@@ -496,6 +498,8 @@ korb_thread_yield_cpu(CTX *c, VALUE *slots)
     next->state = KORB_TH_RUNNING;
     korb_thread_ctx_load(c, next);
     const uint32_t mask_gen = vm->sigmask_gen;
+    cur->mask_gen = mask_gen;
+    if (next->mask_gen != mask_gen) korb_signal_park_pending(vm);   /* next's saved mask predates a trap */
     swapcontext((ucontext_t *)cur->uctx, (ucontext_t *)next->uctx);
     korb_sigmask_resume(vm, mask_gen);
     /* === 再開: 切替元が我々の saved_* を c に載せてから swap してきている === */
@@ -516,6 +520,7 @@ korb_thread_exit_switch(CTX *c)
     vm->cur_thread = next;
     next->state = KORB_TH_RUNNING;
     korb_thread_ctx_load(c, next);
+    if (next->mask_gen != vm->sigmask_gen) korb_signal_park_pending(vm);
     setcontext((ucontext_t *)next->uctx);     /* never returns */
 }
 

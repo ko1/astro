@@ -548,7 +548,7 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const bool refined = p->refine_set != KORB_NIL;
     const bool sealed  = refined && p->refined_copy;   /* only a Proc#refined body refuses `using` */
     if (UNLIKELY(refined)) { korb_refine_push(c); c->refinements = p->refine_set;
-                             if (sealed) c->refine_sealed = c->refinements; }
+                             if (sealed) { c->refine_sealed = c->refinements; c->vm->method_serial++; } }   /* the copy shares the original's AST and caches */
     /* Proc#ruby2_keywords: make the call-scoped mark persistent, so the Hash this
      * body collects into its *rest is keywords again when re-splatted. */
     const struct korb_param_info *const r2pi =

@@ -2695,7 +2695,7 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const bool refined = cself != NULL && def_env == KORB_BLK_FWD &&
                          KORB_PROC_P(*cself) && VAL2PROC(*cself)->refine_set != KORB_NIL;
     if (UNLIKELY(refined)) { korb_refine_push(c); c->refinements = VAL2PROC(*cself)->refine_set;
-                             if (VAL2PROC(*cself)->refined_copy) c->refine_sealed = c->refinements; }
+                             if (VAL2PROC(*cself)->refined_copy) { c->refine_sealed = c->refinements; c->vm->method_serial++; } }
     /* @@vars keep resolving against the block's definition scope, which self no
      * longer names once the receiver is bound in. */
     if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
@@ -2844,7 +2844,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (cself != NULL && (def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC) &&
         KORB_PROC_P(*cself) && VAL2PROC(*cself)->refine_set != KORB_NIL) {
         c->refinements = VAL2PROC(*cself)->refine_set;
-        if (VAL2PROC(*cself)->refined_copy) c->refine_sealed = c->refinements;
+        if (VAL2PROC(*cself)->refined_copy) { c->refine_sealed = c->refinements; c->vm->method_serial++; }
     }
     if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
         c->cvar_cref = korb_cvar_self_class_pub(c, def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC
@@ -3152,7 +3152,8 @@ static RESULT korb_m_mod_refine(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     c->refinements = slots[1];
     c->def_definee = VALUE_REF_GET(rref);             /* `def` lands on the refinement module */
     c->cvar_cref = KORB_NIL;
-    if (!vm->refinements_active) { vm->refinements_active = true; vm->method_serial++; }
+    vm->refinements_active = true;
+    vm->method_serial++;   /* every activation: a site cached while no set was active may now be under one */
     RESULT r;
     slots[2] = VALUE_REF_GET(rref);                   /* the block's argument */
     if (block == KORB_BLK_CPROC)
@@ -3199,7 +3200,8 @@ static RESULT korb_m_mod_using(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     CHECK(korb_refine_collect(c, slots + 1, dst, VALUE_REF_GET(mref), 0));
     c->refinements = VALUE_REF_GET(dst);
-    if (!vm->refinements_active) { vm->refinements_active = true; vm->method_serial++; }
+    vm->refinements_active = true;
+    vm->method_serial++;   /* every activation: a site cached while no set was active may now be under one */
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
@@ -3247,7 +3249,8 @@ static RESULT korb_m_proc_refined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     slots[3] = (VALUE)np;
     if (KORB_CLASS_P(slots[1]) && !VAL2CLASS(slots[1])->is_singleton)
         korb_klass_override_set(c, slots[3], slots[1]);
-    if (!vm->refinements_active) { vm->refinements_active = true; vm->method_serial++; }
+    vm->refinements_active = true;
+    vm->method_serial++;   /* every activation: a site cached while no set was active may now be under one */
     return RESULT_OK(slots[3]);
 }
 

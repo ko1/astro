@@ -7198,12 +7198,28 @@ korb_class_obj_of(CTX *c, VALUE self)
     return korb_const_get(c->vm, c->vm->class_name[korb_class_of(self)]);
 }
 
+/* The builtin's constant was removed (its row is a nil tombstone) and maybe
+ * assigned again under the same name in a new row: follow it there. */
+static __attribute__((noinline, cold)) VALUE
+korb_builtin_class_obj_moved(const struct korb_vm *vm, enum korb_class e)
+{
+    const uint32_t name = vm->class_name[e];
+    if (name == 0) return KORB_NIL;
+    for (uint32_t i = 0; i < vm->const_cnt; i++)
+        if (vm->const_names[i] == name && vm->const_owners[i] == KORB_NIL && KORB_CLASS_P(vm->const_vals[i])) {
+            ((struct korb_vm *)(uintptr_t)vm)->class_obj_idx[e] = i;   /* a cache repair, not a semantic change */
+            return vm->const_vals[i];
+        }
+    return KORB_NIL;
+}
 /* O(1) class object for a builtin tag enum (see vm->class_obj_idx). */
 static inline VALUE
 korb_builtin_class_obj(const struct korb_vm *vm, enum korb_class e)
 {
     const uint32_t idx = vm->class_obj_idx[e];
-    return (idx == UINT32_MAX) ? KORB_NIL : vm->const_vals[idx];
+    if (UNLIKELY(idx == UINT32_MAX)) return KORB_NIL;
+    const VALUE v = vm->const_vals[idx];
+    return LIKELY(v != KORB_NIL) ? v : korb_builtin_class_obj_moved(vm, e);
 }
 
 /* Starting class object for receiver dispatch of `self` (the head of its MRO).
@@ -10606,6 +10622,17 @@ korb_report_line(CTX *c, const KorbArray *cap, const KorbException *e, uint32_t 
     return buf;
 }
 
+/* CRuby's rb_decorate_message, written straight out (a message has no length
+ * limit): an empty one prints just the class ("unhandled exception" for
+ * RuntimeError); otherwise the class follows the message's first line. */
+static void korb_report_message(FILE *const fp, const char *const msg, const char *const nl,
+                                const char *const cls, const bool anon) {
+    if (msg[0] == '\0') fprintf(fp, "%s\n", strcmp(cls, "RuntimeError") == 0 ? "unhandled exception" : cls);
+    else if (anon) fprintf(fp, "%s\n", msg);
+    else if (nl != NULL) fprintf(fp, "%.*s (%s)%s\n", (int)(nl - msg), msg, cls, nl);
+    else fprintf(fp, "%s (%s)\n", msg, cls);
+}
+
 /* One "<frame>: <message> (<Class>)" section plus its `from` lines. */
 static void
 korb_report_section(CTX *c, FILE *const fp, const KorbException *e, bool live, bool synth_main)
@@ -10624,21 +10651,16 @@ korb_report_section(CTX *c, FILE *const fp, const KorbException *e, bool live, b
     /* CRuby's rb_decorate_message: an empty message prints just the class
      * ("unhandled exception" for RuntimeError); otherwise the class follows the
      * first line of the message. */
-    char mhead[1024];
     const char *const nl = strchr(msg, '\n');
     const bool anon = KORB_CLASS_P(e->exc_class) && !VAL2CLASS(e->exc_class)->name_sym;   /* adds no "(Class)" */
-    if (msg[0] == '\0') snprintf(mhead, sizeof mhead, "%s", strcmp(cls, "RuntimeError") == 0 ? "unhandled exception" : cls);
-    else if (anon) snprintf(mhead, sizeof mhead, "%s", msg);
-    else if (nl != NULL) snprintf(mhead, sizeof mhead, "%.*s (%s)%s", (int)(nl - msg), msg, cls, nl);
-    else snprintf(mhead, sizeof mhead, "%s (%s)", msg, cls);
 
     char buf[600];
     /* The frames: what the exception captured at a rescue, else — only for the
      * one actually being unwound — the live unwind record. */
     const KorbArray *const cap = KORB_ARRAY_P(e->backtrace) ? VAL2ARY(e->backtrace) : NULL;
     const uint32_t n = cap ? cap->len : (live ? vm->bt_cnt + (synth_main ? 1u : 0u) : 0);
-    if (n == 0) { fprintf(fp, "%s\n", mhead); return; }
-    fprintf(fp, "%s: %s\n", korb_report_line(c, cap, e, 0, buf, sizeof buf), mhead);
+    if (n != 0) fprintf(fp, "%s: ", korb_report_line(c, cap, e, 0, buf, sizeof buf));
+    korb_report_message(fp, msg, nl, cls, anon);
     uint32_t head = n, tail = 0;                 /* elide the middle of very deep unwinds (SystemStackError) */
     if (n > 20) { head = 12; tail = 4; }
     if (OPTION.backtrace_limit_given && OPTION.backtrace_limit >= 0 &&

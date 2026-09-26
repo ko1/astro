@@ -25,6 +25,7 @@ typedef struct KorbIORep {
     uint8_t  nonblk;                 /* O_NONBLOCK: block by parking, not by stalling */
     uint8_t  fifo_rd;                /* a FIFO opened read-only: the first read waits for a writer */
     uint8_t  slow;                   /* fd (as of slow_fd1) is a pipe/tty/socket: see korb_io_slow_p */
+    uint8_t  sig_epipe;              /* the process's own STDOUT: an uncaught EPIPE ends by SIGPIPE (reopen drops it) */
     int      slow_fd1;               /* fd + 1 that `slow` was worked out for; 0 = not yet */
     uint32_t lineno;                 /* IO#lineno: lines handed out by #gets */
     int      enc_idx;                /* memo: the encoding a read result carries (-1 = ask the prelude) */
@@ -300,7 +301,7 @@ static uint32_t korb_io_fill_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESUL
     }
     { const RESULT fr = korb_io_fifo_wait(c, slots, rep); if (UNLIKELY(fr.state != KORB_NORMAL)) { if (perr) *perr = fr; return 0; } }
     struct pollfd now = { .fd = rep->fd, .events = POLLIN, .revents = 0 };
-    if (!rep->nonblk && c != NULL && korb_io_slow_p(rep) && poll(&now, 1, 0) == 0) {   /* parks only when nothing is there yet */
+    if (!rep->nonblk && c != NULL && korb_io_slow_p(rep) && poll(&now, 1, 0) < 1) {   /* EINTR too: never fall into a blocking read */   /* parks only when nothing is there yet */
         const RESULT pr = korb_io_park(c, slots, rep, POLLIN);   /* may GC */
         if (UNLIKELY(pr.state != KORB_NORMAL)) { if (perr) *perr = pr; return 0; }
         if (UNLIKELY(!korb_io_open_p(rep))) {
@@ -345,7 +346,7 @@ static int korb_io_getb_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESULT *pe
  * then dies by that signal without a message (CRuby's FMODE_SIGNAL_ON_EPIPE). */
 static RESULT korb_raise_write_errno(CTX *c, VALUE *slots, const KorbIORep *const rep, const int e) {
     RESULT r = korb_raise_errno(c, slots, e, "write", "");
-    if (e == EPIPE && rep != NULL && rep == korb_io_std_rep(c->vm, 1) && KORB_EXC_P(r.value)) {
+    if (e == EPIPE && rep != NULL && rep->sig_epipe && KORB_EXC_P(r.value)) {
         slots[0] = r.value;
         CHECK(korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(c->vm, "__signo", 7)), LONG2FIX(SIGPIPE)));
         r.value = slots[0];
@@ -1820,6 +1821,10 @@ static RESULT korb_io_mode_coerce(CTX *c, VALUE *slots, VALUE *mv, char *mode, s
 static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     const bool was_closed = !korb_io_open_p(rep);      /* a path can reopen a closed stream (CRuby) */
+    if (rep != NULL) {
+        rep->sig_epipe = 0;                             /* CRuby's reopen drops FMODE_SIGNAL_ON_EPIPE */
+        rep->slow_fd1 = 0;                              /* same fd number, another file: ask again */
+    }
     const uint32_t na_ = VALUE_SLICE_LEN(a);
     if (UNLIKELY(na_ < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     if (UNLIKELY(na_ > 2 && !KORB_HASH_P(VALUE_SLICE_GET(a, na_ - 1))))
@@ -2890,6 +2895,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     /* On a terminal stdout is sync so a prompt written without a newline is
        visible before the read that follows it; piped output stays buffered. */
     korb_io_register(vm, STDOUT_FILENO, isatty(STDOUT_FILENO) != 0);
+    korb_io_std_rep(vm, 1)->sig_epipe = 1;
     korb_io_register(vm, STDERR_FILENO, true);
 
     const VALUE obj_cls = korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* IO < Object → inherits class/inspect/... */

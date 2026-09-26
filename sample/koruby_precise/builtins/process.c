@@ -132,15 +132,27 @@ static bool korb_signal_take(int sig) {
  * default: left pending, a context switch restoring an older mask would let it
  * kill us.  Trapped ones were blocked before and stay. */
 static void korb_signal_sleep_end(struct korb_vm *vm, const sigset_t *const old) {
-    sigset_t un, pend;
+    sigset_t un;                                 /* the ones this sleep blocked: armed and not trapped */
     korb_sigset_of_bits(&un, 0);
-    if (sigpending(&pend) != 0) sigemptyset(&pend);
-    for (int s = 1; s < 32; s++) {
-        if (!(vm->sig_armed & (1u << s)) || sigismember(old, s)) continue;
-        if (sigismember(&pend, s) && korb_signal_take(s)) vm->sig_caught |= 1u << s;
-        sigaddset(&un, s);
-    }
+    for (int s = 1; s < 32; s++)
+        if ((vm->sig_armed & (1u << s)) && !sigismember(old, s)) sigaddset(&un, s);
+    const struct timespec zero = { 0, 0 };
+    int s;
+    while ((s = sigtimedwait(&un, NULL, &zero)) > 0)   /* one call when nothing came; right before the unblock */
+        if (s < 32) vm->sig_caught |= 1u << s;
     (void)pthread_sigmask(SIG_UNBLOCK, &un, NULL);
+}
+
+/* Before switching into a context whose saved signal mask is older than the
+ * current one (a trap came since): swapcontext would unblock what the trap
+ * blocked, so take anything pending now and deliver it from vm->sig_caught. */
+static void korb_signal_park_pending(struct korb_vm *vm) {
+    sigset_t set;
+    korb_sigset_deliverable(&set);
+    const struct timespec zero = { 0, 0 };
+    int s;
+    while ((s = sigtimedwait(&set, NULL, &zero)) > 0)
+        if (s < 32) vm->sig_caught |= 1u << s;
 }
 
 /* Reap one pending deliverable signal without blocking; 0 = none pending. */
@@ -823,14 +835,17 @@ static RESULT korb_m_process_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (probe != 0) return korb_raise_errno(c, slots, probe, NULL, korb_spawn_file(&plan));
     korb_io_flush_std(c->vm);   /* our write buffer would otherwise die with the image */
     fflush(NULL);
-    if (!korb_spawn_child_setup(&plan, -1, NULL)) {
-        const int e = errno;
-        korb_sigpipe_catch();
-        return korb_raise_errno(c, slots, e, NULL, korb_spawn_file(&plan));
-    }
-    execvp(korb_spawn_file(&plan), plan.argv);
+    /* the child setup resets SIGPIPE and the mask for the new image; if exec
+       fails we are still this process and put back exactly what was there */
+    struct sigaction pipe_old;
+    sigset_t mask_old;
+    (void)sigaction(SIGPIPE, NULL, &pipe_old);
+    (void)pthread_sigmask(SIG_SETMASK, NULL, &mask_old);
+    const bool setup_ok = korb_spawn_child_setup(&plan, -1, NULL);
+    if (setup_ok) execvp(korb_spawn_file(&plan), plan.argv);
     const int e = errno;
-    korb_sigpipe_catch();   /* still us: undo the child's SIGPIPE reset */
+    (void)sigaction(SIGPIPE, &pipe_old, NULL);
+    (void)pthread_sigmask(SIG_SETMASK, &mask_old, NULL);
     return korb_raise_errno(c, slots, e, NULL, korb_spawn_file(&plan));
 }
 

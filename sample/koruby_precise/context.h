@@ -485,6 +485,7 @@ typedef struct KorbProc {
  * mutable state + GC roots live in a libc-malloc'd (stable) KorbFiberRep, so
  * the VM's C-side fiber pointers never dangle when the handle moves. */
 typedef struct KorbFiberRep {
+    uint32_t mask_gen, resumer_mask_gen;   /* vm->sigmask_gen when this fiber / its resumer switched out */
     VALUE transfer;                  /* value passed across resume/yield (root) */
     VALUE captured_self;             /* the block's lexical self (root) */
     VALUE fibobj;                    /* the Fiber object owning this rep (root) — Fiber.current */
@@ -527,6 +528,7 @@ typedef struct KorbFiber {
 struct korb_blop;                    /* blop 層 (M2) — fwd */
 enum korb_thread_state { KORB_TH_READY = 0, KORB_TH_RUNNING, KORB_TH_PENDED, KORB_TH_DEAD };
 struct korb_thread {
+    uint32_t mask_gen;               /* vm->sigmask_gen when it switched out (its saved uc_sigmask's age) */
     /* GC roots (AROH_VISIT_ROOTS が thread_list 経由で visit) */
     VALUE thval;                     /* KorbThread handle (movable) */
     VALUE args;                      /* Thread.new の引数 Array (起動後 nil) */

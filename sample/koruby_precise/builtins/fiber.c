@@ -50,6 +50,7 @@ korb_fiber_trampoline(unsigned hi, unsigned lo)
     if (r.state == KORB_RAISE && r.value == KORB_UNDEF) r = RESULT_OK(KORB_NIL);   /* #kill sentinel */
     rep->raised = (r.state == KORB_RAISE) ? 1u : 0u;
     rep->transfer = (r.state == KORB_NORMAL || r.state == KORB_RAISE) ? r.value : KORB_NIL;
+    if (rep->resumer_mask_gen != c->vm->sigmask_gen) korb_signal_park_pending(c->vm);
     swapcontext((ucontext_t *)rep->uctx, (ucontext_t *)rep->resume_uctx);  /* never returns */
 }
 
@@ -163,6 +164,8 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     if (c->errinfo_n > c->errinfo_live) c->errinfo_live = c->errinfo_n;   /* the suspended side's entries stay rooted */
 
     const uint32_t mask_gen = c->vm->sigmask_gen;
+    rep->resumer_mask_gen = mask_gen;
+    if (rep->mask_gen != mask_gen) korb_signal_park_pending(c->vm);   /* its saved mask predates a trap */
     swapcontext(&here, (ucontext_t *)rep->uctx);       /* === into the fiber === */
     korb_sigmask_resume(c->vm, mask_gen);
 
@@ -511,6 +514,8 @@ korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     rep->vcfunc_link = c->cfunc_link;                  /* travels with this fiber's stack */
     rep->vcarry_base = c->carry_base; rep->vcarry_line_bits = c->carry_line_bits;
     const uint32_t mask_gen = c->vm->sigmask_gen;
+    rep->mask_gen = mask_gen;
+    if (rep->resumer_mask_gen != mask_gen) korb_signal_park_pending(c->vm);
     swapcontext((ucontext_t *)rep->uctx, (ucontext_t *)rep->resume_uctx);  /* === out === */
     korb_sigmask_resume(c->vm, mask_gen);
     /* === resumed: resume() restored c->slots to ours === */
