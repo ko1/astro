@@ -1243,6 +1243,7 @@ struct korb_vm {
     int64_t blop_next_poll_ns;         /* earliest next non-blocking pump while others are runnable */
     uint32_t block_tick;               /* block returns since the last preemption check (korb_block_preempt) */
     uint8_t sched_busy;                /* runq_head || blop_npending: one load for the preemption guards */
+    uint64_t slice_start_ns;           /* when the running thread was switched in: preemption waits out a quantum */
     int sigfd;                         /* signalfd(2): pending-signal readiness for the pump. -1 = not armed */
     uint8_t thread_aoe_global;         /* Thread.abort_on_exception (class-level) */
     uint8_t thread_roe_off;            /* !Thread.report_on_exception (class-level; zero = CRuby's default true) */

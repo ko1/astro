@@ -46,6 +46,20 @@ korb_blop_now(struct timespec *ts)
     clock_gettime(CLOCK_MONOTONIC, ts);
 }
 
+#define KORB_TIME_QUANTUM_NS 100000000ull   /* CRuby's TIME_QUANTUM_MSEC (100) */
+/* coarse (a few ms) is plenty for a 100ms slice and costs no syscall */
+static uint64_t
+korb_mono_coarse_ns(void)
+{
+    struct timespec ts;
+#ifdef CLOCK_MONOTONIC_COARSE
+    clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+#else
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
 /* deadline = now + sec (秒は double) */
 static void
 korb_blop_deadline_in(struct korb_blop *b, double sec)
@@ -317,6 +331,7 @@ korb_thread_boot(CTX *c)
     if (vm->cur_thread) return vm->cur_thread;
     struct korb_thread *m = calloc(1, sizeof *m);
     if (!m) { fprintf(stderr, "koruby_precise: oom (thread rep)\n"); abort(); }
+    vm->slice_start_ns = korb_mono_coarse_ns();   /* main's slice starts with the first thread */
     m->thval = KORB_NIL; m->args = KORB_NIL; m->blk = KORB_NIL; m->captured_self = KORB_NIL;
     m->result = KORB_NIL; m->exc = KORB_NIL; m->tls = KORB_NIL; m->tvars = KORB_NIL;
     m->name = KORB_NIL; m->pending_ints = KORB_NIL; m->tgroup = KORB_NIL;
@@ -352,6 +367,7 @@ korb_thread_ctx_load(CTX *c, struct korb_thread *t)
 {
     struct korb_vm *const vm = c->vm;
     KorbFiberRep *const f = t->saved_fiber;
+    vm->slice_start_ns = korb_mono_coarse_ns();
     if (!t->started) {                        /* 初走: 新品の stack */
         c->slots = t->vslots; c->slots_top = t->vslots;
         c->slots_limit = t->vslots_limit; c->slots_high_water = t->vslots;
@@ -1178,7 +1194,9 @@ RESULT korb_loop_yield(CTX *c, VALUE *slots) {
     /* somebody waits on a timer or an fd: a spinning loop is the one place that
      * never reaches the blocking pump, so collect what is ready here */
     korb_blop_pump_at_yield(vm);
-    if (vm->runq_head != NULL) {
+    /* CRuby's timeslice: a thread keeps the CPU for its quantum, so a new thread
+     * does not run until its creator blocks or 100ms pass (code races on it) */
+    if (vm->runq_head != NULL && korb_mono_coarse_ns() - vm->slice_start_ns >= KORB_TIME_QUANTUM_NS) {
         struct korb_thread *const cur = vm->cur_thread;
         cur->state = KORB_TH_READY;
         korb_thread_runq_push(vm, cur);
