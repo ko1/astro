@@ -299,7 +299,8 @@ static uint32_t korb_io_fill_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESUL
         rep->rcapa = KORB_IO_BUFSZ;
     }
     { const RESULT fr = korb_io_fifo_wait(c, slots, rep); if (UNLIKELY(fr.state != KORB_NORMAL)) { if (perr) *perr = fr; return 0; } }
-    if (!rep->nonblk && c != NULL && korb_io_slow_p(rep)) {
+    struct pollfd now = { .fd = rep->fd, .events = POLLIN, .revents = 0 };
+    if (!rep->nonblk && c != NULL && korb_io_slow_p(rep) && poll(&now, 1, 0) == 0) {   /* parks only when nothing is there yet */
         const RESULT pr = korb_io_park(c, slots, rep, POLLIN);   /* may GC */
         if (UNLIKELY(pr.state != KORB_NORMAL)) { if (perr) *perr = pr; return 0; }
         if (UNLIKELY(!korb_io_open_p(rep))) {
@@ -1016,6 +1017,12 @@ korb_io_read_sep(CTX *c, VALUE *slots, KorbIORep *rep, VALUE_REF sepref, const s
         if (avail == 0) break;
         uint32_t take = avail;
         if (la->limit >= 0 && len + take > (uint32_t)la->limit) take = (uint32_t)la->limit - len;
+        if (!la->slurp) {   /* copy only up to a separator inside this chunk, not the whole buffer */
+            const KorbString *const sp = VAL2STR(VALUE_REF_GET(sepref));
+            const char *const at = rep->rbuf + rep->rpos;
+            const char *const hit = sp->len ? memmem(at, take, korb_strbuf_data(sp->buf), sp->len) : NULL;
+            if (hit) take = (uint32_t)(hit - at) + sp->len;
+        }
         KorbString *s = korb_str_ensure(c, slots + 1, sref, len + take);   /* may GC; rep is libc-stable */
         memcpy(korb_strbuf_data(s->buf) + len, rep->rbuf + rep->rpos, take);
         rep->rpos += take;

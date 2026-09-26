@@ -132,11 +132,12 @@ static bool korb_signal_take(int sig) {
  * default: left pending, a context switch restoring an older mask would let it
  * kill us.  Trapped ones were blocked before and stay. */
 static void korb_signal_sleep_end(struct korb_vm *vm, const sigset_t *const old) {
-    sigset_t un;
+    sigset_t un, pend;
     korb_sigset_of_bits(&un, 0);
+    if (sigpending(&pend) != 0) sigemptyset(&pend);
     for (int s = 1; s < 32; s++) {
         if (!(vm->sig_armed & (1u << s)) || sigismember(old, s)) continue;
-        if (korb_signal_take(s)) vm->sig_caught |= 1u << s;
+        if (sigismember(&pend, s) && korb_signal_take(s)) vm->sig_caught |= 1u << s;
         sigaddset(&un, s);
     }
     (void)pthread_sigmask(SIG_UNBLOCK, &un, NULL);
