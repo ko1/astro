@@ -5270,11 +5270,15 @@ korb_singleton_copy(CTX *c, VALUE *slots, VALUE dst, VALUE src_sing)
     const RESULT sr = korb_obj_singleton(c, slots + 3, slots[0]);
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
     slots[2] = sr.value;
-    {   /* `extend`ed modules live on the singleton too */
-        KorbClass *const ds = VAL2CLASS(slots[2]);
-        const KorbClass *const ss = VAL2CLASS(slots[1]);
-        ARO_STORE(c, ds, (VALUE *)(uintptr_t)&ds->included,  ss->included);
-        ARO_STORE(c, ds, (VALUE *)(uintptr_t)&ds->prepended, ss->prepended);
+    for (int li = 0; li < 2; li++) {   /* `extend`ed modules live on the singleton too: copies, not shared */
+        const VALUE lst = li == 0 ? VAL2CLASS(slots[1])->included : VAL2CLASS(slots[1])->prepended;
+        if (!KORB_ARRAY_P(lst)) continue;
+        slots[3] = lst;
+        slots[4] = UNWRAP(korb_ary_new(c, slots + 5, VAL2ARY(slots[3])->len));
+        for (uint32_t i = 0; i < VAL2ARY(slots[3])->len; i++)
+            CHECK(korb_ary_push_val(c, slots + 5, VALUE_REF_AT(&slots[4]), korb_items_data(VAL2ARY(slots[3])->items)[i]));
+        KorbClass *const ds = VAL2CLASS(slots[2]);          /* re-read: the allocs above may have moved it */
+        ARO_STORE(c, ds, (VALUE *)(uintptr_t)(li == 0 ? &ds->included : &ds->prepended), slots[4]);
     }
     const uint32_t sn = VAL2CLASS(slots[1])->method_cnt;
     for (uint32_t i = 0; i < sn; i++) {
@@ -7923,6 +7927,7 @@ korb_raise_not_sym(CTX *c, VALUE *slots, VALUE v)
     return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", db);
 }
 
+static const char *korb_etype_name(unsigned int etype);   /* fwd (defined below) */
 static const char *
 korb_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
 {
@@ -7945,6 +7950,15 @@ korb_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
             snprintf(buf, sz, "an instance of #<Class:0x%016zx>", (size_t)(uintptr_t)cls);
         else
             snprintf(buf, sz, "an instance of Object");
+        return buf;
+    }
+    if (KORB_EXC_P(v)) {                                 /* a user exception class names itself */
+        const VALUE cls = VAL2EXC(v)->exc_class;
+        char nm[192];
+        if (KORB_CLASS_P(cls) && korb_class_display_name(c, scratch, cls, nm, sizeof nm)) snprintf(buf, sz, "an instance of %s", nm);
+        else if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) { korb_class_qname_into(c, cls, nm, sizeof nm); snprintf(buf, sz, "an instance of %s", nm); }
+        else if (KORB_CLASS_P(cls)) snprintf(buf, sz, "an instance of #<Class:0x%016zx>", (size_t)(uintptr_t)cls);
+        else snprintf(buf, sz, "an instance of %s", korb_etype_name(VAL2EXC(v)->etype));
         return buf;
     }
     return korb_a_type_name(v);
