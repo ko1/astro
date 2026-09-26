@@ -1608,9 +1608,12 @@ main(int argc, char *argv[])
                 korb_const_define(c, korb_intern(c->vm, "TOPLEVEL_BINDING", 16), tb.value);
         }
         /* -I directories join $LOAD_PATH and -r libraries are required before
-         * the program runs, as CRuby does.  RUBYLIB sits below the -I entries. */
-        {
-            const char *const rl = getenv("RUBYLIB");
+         * the program runs, as CRuby does.  RUBYLIB sits below the -I entries,
+         * and KORUBY_RUBYLIB (koruby's own: a CRuby child doesn't pick it up)
+         * below RUBYLIB. */
+        static const char *const lib_envs[] = { "KORUBY_RUBYLIB", "RUBYLIB" };
+        for (size_t e = 0; e < sizeof lib_envs / sizeof lib_envs[0]; e++) {
+            const char *const rl = getenv(lib_envs[e]);
             if (rl && *rl) {
                 char *const dup = strdup(rl);
                 if (!dup) abort();
