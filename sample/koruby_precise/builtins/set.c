@@ -1434,7 +1434,7 @@ static RESULT korb_m_mod_constants(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     /* a pending autoload is already a constant to CRuby — it shows up in
      * #constants before the file is required. */
-    slots[0] = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(vm, "@__autoloads", 12)));
+    slots[0] = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(vm->mid_autoloads));
     if (KORB_HASH_P(slots[0])) {
         for (uint32_t i = 0; i < VAL2HASH(slots[0])->len; i++) {
             const VALUE key = korb_items_data(VAL2HASH(slots[0])->items)[2 * i];   /* Symbol: immediate, GC-stable */
@@ -2462,7 +2462,7 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
  * too — otherwise restoring $LOADED_FEATURES resurrects a stale autoload. */
 static RESULT korb_autoload_unregister(CTX *c, VALUE *slots, VALUE mod, uint32_t id) {
     struct korb_vm *const vm = c->vm;
-    const VALUE t = korb_ivar_get(c, mod, ID2SYM(korb_intern(vm, "@__autoloads", 12)));
+    const VALUE t = korb_ivar_get(c, mod, ID2SYM(vm->mid_autoloads));
     if (!KORB_HASH_P(t)) return RESULT_OK(KORB_NIL);
     slots[0] = t; slots[1] = ID2SYM(id);
     return korb_send(c, slots + 2, korb_intern(vm, "delete", 6), 0, 1);

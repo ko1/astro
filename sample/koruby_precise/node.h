@@ -265,6 +265,7 @@ void   korb_const_define(CTX *c, uint32_t name_sym, VALUE val);
 VALUE  korb_const_get_path(struct korb_vm *vm, uint32_t name_sym);
 bool   korb_const_path_missing(struct korb_vm *vm, uint32_t name_sym, char *out, size_t outsz);   /* first unresolvable segment of a dotted path */
 VALUE  korb_fstr_get(CTX *c, VALUE *slots, const char *bytes, uint32_t len, uint32_t enc);
+VALUE  korb_fstr_find(const struct korb_vm *vm, const char *bytes, uint32_t len, uint32_t enc);   /* the pool entry, or 0 */
 void   korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner);
 bool   korb_mod_hook_custom(CTX *c, VALUE mod, uint32_t mid);
 bool   korb_rescue_custom_eqq(CTX *c, VALUE cls);   /* rescue clause must dispatch a user #=== */

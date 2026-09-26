@@ -297,7 +297,7 @@ static RESULT korb_m_obj_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         /* A module's autoload table is koruby's own state kept in an ivar; CRuby
          * has no such ivar, and `instance_variables.each { remove_instance_variable }`
          * (bundler's Plugin.reset!) would otherwise wipe every autoload. */
-        const VALUE hidden = ID2SYM(korb_intern(c->vm, "@__autoloads", 12));
+        const VALUE hidden = ID2SYM(c->vm->mid_autoloads);
         /* re-read the hash after every push: the allocation may move it */
         #define KORB_IVH() (KORB_CLASS_P(VALUE_REF_GET(self)) ? VAL2CLASS(VALUE_REF_GET(self))->class_ivars \
                                                              : korb_objivar_hash_of(c->vm, VALUE_REF_GET(self)))

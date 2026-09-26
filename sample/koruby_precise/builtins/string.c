@@ -378,12 +378,7 @@ static RESULT korb_m_str_uminus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
         return r;
     }
-    for (uint32_t i = 0; i < vm->fstr_cnt; i++) {
-        const KorbString *const f = VAL2STR(vm->fstr_vals[i]);
-        if (f->len == len && KORB_STR_ENC(vm->fstr_vals[i]) == enc &&
-            memcmp(korb_strbuf_data(f->buf), korb_strbuf_data(s->buf), len) == 0)
-            return RESULT_OK(vm->fstr_vals[i]);
-    }
+    { const VALUE hit = korb_fstr_find(vm, korb_strbuf_data(s->buf), len, enc); if (hit) return RESULT_OK(hit); }
     /* CRuby never adopts the receiver: a frozen string that is not already a
      * pool entry gets a fresh one (`"x".dup.freeze` then `-it` are different
      * objects).  Only a literal's compile-time `.freeze` is the entry itself. */

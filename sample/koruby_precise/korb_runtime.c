@@ -202,17 +202,33 @@ VALUE korb_flit_get(CTX *c, VALUE *slots, double d) {
 }
 
 /* Frozen String-literal pool: one shared frozen String per (bytes, encoding),
- * like CRuby's fstring table.  Linear scan — the pool only ever holds the
- * program's distinct frozen literals, and lookups happen once per literal
- * NODE (the node caches the result). */
+ * like CRuby's fstring table.  Every evaluation of a frozen literal looks it up
+ * (a node cannot hold a VALUE), so the pool is hashed: a linear scan made a
+ * file with thousands of frozen literals quadratic (rouge's lexers). */
+static uint32_t korb_fstr_hash(const char *const bytes, const uint32_t len, const uint32_t enc) {
+    uint32_t h = 2166136261u ^ enc;
+    for (uint32_t i = 0; i < len; i++) h = (h ^ (unsigned char)bytes[i]) * 16777619u;
+    return h;
+}
+VALUE korb_fstr_find(const struct korb_vm *const vm, const char *const bytes, const uint32_t len, const uint32_t enc) {
+    if (vm->fstr_idx == NULL) return 0;
+    for (uint32_t slot = korb_fstr_hash(bytes, len, enc) & vm->fstr_idx_mask; ; slot = (slot + 1) & vm->fstr_idx_mask) {
+        const uint32_t e = vm->fstr_idx[slot];
+        if (e == 0) return 0;
+        const VALUE v = vm->fstr_vals[e - 1];
+        const KorbString *const s = VAL2STR(v);
+        if (s->len == len && KORB_STR_ENC(v) == enc && memcmp(korb_strbuf_data(s->buf), bytes, len) == 0) return v;
+    }
+}
+static void korb_fstr_index_put(struct korb_vm *const vm, const uint32_t i) {
+    const KorbString *const s = VAL2STR(vm->fstr_vals[i]);
+    uint32_t slot = korb_fstr_hash(korb_strbuf_data(s->buf), s->len, KORB_STR_ENC(vm->fstr_vals[i])) & vm->fstr_idx_mask;
+    while (vm->fstr_idx[slot] != 0) slot = (slot + 1) & vm->fstr_idx_mask;
+    vm->fstr_idx[slot] = i + 1;
+}
 VALUE korb_fstr_get(CTX *c, VALUE *slots, const char *bytes, uint32_t len, uint32_t enc) {
     struct korb_vm *const vm = c->vm;
-    for (uint32_t i = 0; i < vm->fstr_cnt; i++) {
-        const KorbString *const s = VAL2STR(vm->fstr_vals[i]);
-        if (s->len == len && KORB_STR_ENC(vm->fstr_vals[i]) == enc &&
-            memcmp(korb_strbuf_data(s->buf), bytes, len) == 0)
-            return vm->fstr_vals[i];
-    }
+    { const VALUE hit = korb_fstr_find(vm, bytes, len, enc); if (hit) return hit; }
     const VALUE v = korb_str_new(c, slots, bytes, len).value;   /* may GC; the pool is a root */
     KORB_STR_ENC_SET(v, enc);
     ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_FROZEN;
@@ -222,14 +238,24 @@ VALUE korb_fstr_get(CTX *c, VALUE *slots, const char *bytes, uint32_t len, uint3
         if (!vm->fstr_vals) abort();
     }
     vm->fstr_vals[vm->fstr_cnt++] = v;
+    if ((vm->fstr_cnt + 1) * 2 > vm->fstr_idx_mask + 1 || vm->fstr_idx == NULL) {   /* keep the load under 1/2 */
+        const uint32_t n = vm->fstr_idx ? (vm->fstr_idx_mask + 1) * 2 : 64;
+        free(vm->fstr_idx);
+        vm->fstr_idx = calloc(n, sizeof(uint32_t));
+        if (!vm->fstr_idx) abort();
+        vm->fstr_idx_mask = n - 1;
+        for (uint32_t i = 0; i < vm->fstr_cnt; i++) korb_fstr_index_put(vm, i);
+    } else {
+        korb_fstr_index_put(vm, vm->fstr_cnt - 1);
+    }
     return v;
 }
 
 /* An interned (fstring) String — a pool entry: CRuby gives it no singleton class. */
 bool korb_fstring_p(const struct korb_vm *const vm, const VALUE v) {
     if (!KORB_STRING_P(v) || !(((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_FROZEN)) return false;
-    for (uint32_t i = 0; i < vm->fstr_cnt; i++) if (vm->fstr_vals[i] == v) return true;
-    return false;
+    const KorbString *const s = VAL2STR(v);
+    return korb_fstr_find(vm, korb_strbuf_data(s->buf), s->len, KORB_STR_ENC(v)) == v;
 }
 
 RESULT
@@ -4514,8 +4540,8 @@ korb_cref_step(struct korb_vm *vm, VALUE owner, uint32_t elem)
     VALUE cur = owner;
     for (;;) {
         const char *const sep = strstr(p, "::");
-        const uint32_t len = sep ? (uint32_t)(sep - p) : (uint32_t)strlen(p);
-        const uint32_t id = korb_intern(vm, p, len);
+        /* a plain name IS the element: interning it again costs a string hash per lookup */
+        const uint32_t id = (p == nm && !sep) ? elem : korb_intern(vm, p, sep ? (uint32_t)(sep - p) : (uint32_t)strlen(p));
         uint32_t j = korb_const_index_owned(vm, id, KORB_CLASS_P(cur) ? cur : KORB_NIL);
         if (j == UINT32_MAX && cur == KORB_NIL) j = korb_const_index(vm, id);   /* top-level: allow the flat name */
         if (j == UINT32_MAX) return KORB_NIL;
@@ -10251,7 +10277,7 @@ bool
 korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym)
 {
     if (!KORB_CLASS_P(mod)) return false;
-    const VALUE t = korb_ivar_get(c, mod, ID2SYM(korb_intern(c->vm, "@__autoloads", 12)));
+    const VALUE t = korb_ivar_get(c, mod, ID2SYM(c->vm->mid_autoloads));
     if (!KORB_HASH_P(t)) return false;
     const int32_t idx = korb_hash_find(VAL2HASH(t), ID2SYM(sym));
     if (idx < 0) return false;
@@ -19681,6 +19707,7 @@ korb_ctx_new(void)
     c->vm->mid_method_missing = korb_intern(c->vm, "method_missing", 14);
     c->vm->mid_new         = korb_intern(c->vm, "new", 3);
     c->vm->mid_initialize  = korb_intern(c->vm, "initialize", 10);
+    c->vm->mid_autoloads   = korb_intern(c->vm, "@__autoloads", 12);
     c->vm->mid___id__      = korb_intern(c->vm, "__id__", 6);
     c->vm->mid_object_id   = korb_intern(c->vm, "object_id", 9);
     c->vm->mid_yield       = korb_intern(c->vm, "yield", 5);

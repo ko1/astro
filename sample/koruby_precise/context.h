@@ -1153,6 +1153,8 @@ struct korb_vm {
      * table does.  Root-scanned alongside flit_vals. */
     VALUE    *fstr_vals;
     uint32_t  fstr_cnt, fstr_capa;
+    uint32_t *fstr_idx;               /* open-addressing index into fstr_vals (entry+1, 0 = empty) */
+    uint32_t  fstr_idx_mask;
 
     /* Per-object data with no slot in the object, as weak identity tables
      * (korb_wtab): the class override of a builtin instance / an object with a
@@ -1261,6 +1263,7 @@ struct korb_vm {
      * send path tests them with integer compares instead of korb_sym_name+strcmp
      * on every call (send/__send__/public_send check ran for every arg call). */
     uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize, mid_eqq;
+    uint32_t mid_autoloads;          /* @__autoloads: every A::B lookup asks it once private_constant is in play */
     uint32_t mid___id__, mid_object_id;   /* the identity primitives CRuby warns about redefining */
     uint32_t mid_method_missing;
     uint32_t mid_dm_super;   /* sentinel name a `super` with no lexical `def` is baked with:
