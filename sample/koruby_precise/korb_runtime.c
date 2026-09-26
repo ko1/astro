@@ -4222,7 +4222,7 @@ static void korb_bind_env_set(CTX *c, const KorbBinding *b, uint32_t i, VALUE v)
 static int korb_bind_find_x(const KorbBinding *b, uint32_t sym, bool implicit) {
     for (uint32_t i = 0; i < b->name_cnt; i++) {
         const uint32_t *const t = KORB_BIND_TRIPLE(b, i);
-        if (t[0] == sym && (implicit || (t[1] & KORB_BIND_IMPLICIT) == 0)) return (int)i;
+        if (t[0] == sym && !(t[1] & KORB_BIND_ANON) && (implicit || (t[1] & KORB_BIND_IMPLICIT) == 0)) return (int)i;
     }
     return -1;
 }
@@ -4326,7 +4326,7 @@ static RESULT korb_m_bind_lvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(VAL2BIND(VALUE_REF_GET(self))->extra)->items)[2 * i]));
     for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++) {
         const uint32_t *const t = KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i);
-        if (t[1] & KORB_BIND_IMPLICIT) continue;
+        if (t[1] & (KORB_BIND_IMPLICIT | KORB_BIND_ANON)) continue;
         CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(t[0])));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
@@ -18196,7 +18196,8 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     const uint32_t declc = ecnt + (outer_levels ? 0 : b0->name_cnt);   /* no env: the names are plain locals */
     uint32_t *decl = declc ? malloc(sizeof(uint32_t) * declc) : NULL;
     uint32_t dn = 0;
-    if (!outer_levels) for (uint32_t i = 0; i < b0->name_cnt; i++) decl[dn++] = KORB_BIND_TRIPLE(b0, i)[0];
+    if (!outer_levels) for (uint32_t i = 0; i < b0->name_cnt; i++)
+        if (!(KORB_BIND_TRIPLE(b0, i)[1] & KORB_BIND_ANON)) decl[dn++] = KORB_BIND_TRIPLE(b0, i)[0];
     for (uint32_t i = 0; i < ecnt; i++) decl[dn++] = SYM2ID(korb_items_data(VAL2HASH(b0->extra)->items)[2 * i]);
     const KorbString *const s = VAL2STR(*src_slot);
     /* class_eval/module_eval(String) push the receiver onto the cref, so a `def`
@@ -18242,7 +18243,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     const uint32_t bind_mid0 = korb_bind_method_mid(c->vm, b0);
     const uint32_t bind_mid = bind_mid0 ? bind_mid0 : c->eval_mid;
     NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, fname, eline,
-                                            korb_enc_name_of(c->vm, KORB_STR_ENC(*src_slot)), decl, declc,
+                                            korb_enc_name_of(c->vm, KORB_STR_ENC(*src_slot)), decl, dn,
                                             outer_names, outer_cnt, outer_levels,
                                             bind_mid,
                                             cref_name, nencl ? encl : NULL, nencl, cref_is_caller);

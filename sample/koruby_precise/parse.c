@@ -837,23 +837,53 @@ bake_eset(struct kp_ctx *tc, uint32_t depth, uint32_t index, NODE *rval)
 static void kp_note_depth(struct kp_ctx *tc, uint32_t depth);                       /* fwd */
 static NODE *build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n,
                                   uint32_t depth, int32_t slot);                     /* fwd */
+/* The binding table's names for anonymous parameter slots (kp_binding_scope_tbl):
+ * 0 `*`, 1 `**`, 2 `&`, 3 `...` (its args), 4 `...&` (its block); -1 = a real name. */
+static int
+kp_anon_name_kind(const char *const nm)
+{
+    static const char *const names[5] = { "*", "**", "&", "...", "...&" };
+    for (int k = 0; k < 5; k++) if (strcmp(nm, names[k]) == 0) return k;
+    return -1;
+}
+
 /* `...` may be written inside a block nested in the `def m(...)` body (rack's
  * Rack::Builder#use does `@use << proc { middleware.new(app, ...) }`).  Find the
  * enclosing method frame that owns the forwarding slots and how many env links
  * out it lies; a `def`/class body in between is a scope barrier. */
 static struct kp_frame *kp_fwd_owner;   /* set by kp_fwd_find, read by the emitters below */
+/* The top frame of an eval'd string: its class name only seeds constant lookup
+ * (class_eval / a method's cref), it is no scope barrier to the binding. */
+static bool
+kp_eval_top_p(const struct kp_ctx *const tc, const struct kp_frame *const f)
+{
+    return f->prev == NULL && tc->eval_outer_cnt != 0 && !(f >= tc->eval_outer && f < tc->eval_outer + tc->eval_outer_cnt);
+}
+/* The frame one link out from `f`: past the top of an eval'd string that is the
+ * binding's innermost level (the eval frame's EP). */
+static struct kp_frame *
+kp_frame_outer(struct kp_ctx *const tc, struct kp_frame *const f)
+{
+    if (f->prev != NULL || tc->eval_outer_cnt == 0) return f->prev;
+    if (f >= tc->eval_outer && f < tc->eval_outer + tc->eval_outer_cnt) {   /* already among the levels */
+        const uint32_t v = (uint32_t)(f - tc->eval_outer) + 1u;
+        return v < tc->eval_outer_cnt ? &tc->eval_outer[v] : NULL;
+    }
+    return &tc->eval_outer[0];
+}
 static bool
 kp_fwd_find(struct kp_ctx *tc, uint32_t *depth_out, int32_t *slot_out, int32_t *blk_out)
 {
     uint32_t d = tc->frame->depth_shift ? 1u : 0u;
-    for (struct kp_frame *f = tc->frame; f; f = f->prev) {
+    for (struct kp_frame *f = tc->frame; f; ) {
         if (f->fwd_slot >= 0) {
             *depth_out = d; *slot_out = f->fwd_slot; *blk_out = f->fwd_blk_slot;
             kp_fwd_owner = f;
             return true;
         }
-        if (f->method_mid || f->class_name_sym || f->anon_class_body) return false;
+        if ((f->method_mid || f->class_name_sym || f->anon_class_body) && !kp_eval_top_p(tc, f)) return false;
         d++;
+        f = kp_frame_outer(tc, f);
     }
     return false;
 }
@@ -890,7 +920,7 @@ static bool
 kp_anon_find(struct kp_ctx *const tc, const enum kp_anon_kind kind, uint32_t *const depth_out, int32_t *const slot_out)
 {
     uint32_t d = tc->frame->depth_shift ? 1u : 0u;
-    for (struct kp_frame *f = tc->frame; f; f = f->prev) {
+    for (struct kp_frame *f = tc->frame; f; ) {
         const int32_t slot = kind == KP_ANON_BLK  ? f->anon_blk_slot
                            : kind == KP_ANON_REST ? f->anon_rest_slot
                                                   : f->anon_kwrest_slot;
@@ -899,8 +929,9 @@ kp_anon_find(struct kp_ctx *const tc, const enum kp_anon_kind kind, uint32_t *co
             if (d > 0 && f->cap_min < (uint32_t)slot + 1u) f->cap_min = (uint32_t)slot + 1u;
             return true;
         }
-        if (f->method_mid || f->class_name_sym || f->anon_class_body) return false;
+        if ((f->method_mid || f->class_name_sym || f->anon_class_body) && !kp_eval_top_p(tc, f)) return false;
         d++;
+        f = kp_frame_outer(tc, f);
     }
     return false;
 }
@@ -4034,15 +4065,19 @@ kp_binding_scope_tbl(struct kp_ctx *tc, uint32_t *out_name_cnt)
         const pm_constant_id_list_t *ls = levels[d]->locals;
         total += (uint32_t)ls->size + kp_it_shift(levels[d]);
     }
-    uint32_t *tbl = malloc(sizeof(uint32_t) * (1 + L + 3 * (total ? total : 1)));   /* immortal */
+    uint32_t *tbl = malloc(sizeof(uint32_t) * (1 + L + 3 * (total + 5 * L + 1)));   /* immortal; +5/level: anonymous slots */
     if (!tbl) abort();
     tbl[0] = L;
     uint32_t cnt = 0;
     for (uint32_t d = 0; d < L; d++) {
         const pm_constant_id_list_t *ls = levels[d]->locals;
         const bool it_slot = kp_it_shift(levels[d]) != 0;
-        tbl[1 + d] = (uint32_t)ls->size + (it_slot ? 1u : 0u);
-        for (uint32_t i = 0; i < tbl[1 + d]; i++) {
+        const uint32_t named = (uint32_t)ls->size + (it_slot ? 1u : 0u);
+        const int32_t anon[5] = { levels[d]->anon_rest_slot, levels[d]->anon_kwrest_slot, levels[d]->anon_blk_slot,
+                                  levels[d]->fwd_slot, levels[d]->fwd_blk_slot };
+        tbl[1 + d] = named;                              /* the env must reach the anonymous slots too */
+        for (uint32_t k = 0; k < 5; k++) if (anon[k] >= 0 && (uint32_t)anon[k] + 1u > tbl[1 + d]) tbl[1 + d] = (uint32_t)anon[k] + 1u;
+        for (uint32_t i = 0; i < named; i++) {
             const pm_constant_id_t cid = (it_slot && i == 0) ? 0 : ls->ids[i - (it_slot ? 1u : 0u)];
             /* cid 0 with no `it` = the slot reserved for an anonymous `*`: it has
              * no name, so it gets a slot in the level but no table entry. */
@@ -4059,6 +4094,15 @@ kp_binding_scope_tbl(struct kp_ctx *tc, uint32_t *out_name_cnt)
              * variable, so the entry carries a flag the accessors filter on. */
             tbl[1 + L + 3 * cnt + 1] = d | ((it_slot && i == 0) ? KORB_BIND_IMPLICIT : 0u);
             tbl[1 + L + 3 * cnt + 2] = i;
+            cnt++;
+        }
+        /* anonymous `*` / `**` / `&` / `...` slots: an eval'd string may forward them */
+        static const char *const anon_nm[5] = { "*", "**", "&", "...", "...&" };
+        for (uint32_t k = 0; k < 5; k++) {
+            if (anon[k] < 0) continue;
+            tbl[1 + L + 3 * cnt]     = korb_intern(tc->c->vm, anon_nm[k], (uint32_t)strlen(anon_nm[k]));
+            tbl[1 + L + 3 * cnt + 1] = d | KORB_BIND_ANON;
+            tbl[1 + L + 3 * cnt + 2] = (uint32_t)anon[k];
             cnt++;
         }
     }
@@ -6110,10 +6154,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             /* Walk out: a define_method body is a method in its own right (its
              * name is only known at run time — bake a sentinel), while a plain
              * block borrows the name of the def it sits in. */
+            bool dm = false;
             for (const struct kp_frame *f = tc->frame; f && m_mid == 0; f = f->prev) {
-                if (f->dm_body) break;
+                if (f->dm_body) { dm = true; break; }
                 m_mid = f->method_mid;
             }
+            /* an eval'd string's top: the method the binding was taken in */
+            if (m_mid == 0 && !dm && tc->in_eval) m_mid = tc->eval_method_mid;
             if (m_mid == 0) m_mid = korb_intern(tc->c->vm, "__dm_super__", 12);
         }
         uint32_t line = kp_line(tc, node);
@@ -6481,9 +6528,19 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
         for (uint32_t k = 0; k < lv; k++) loff += outer_cnt[k];
         pm_options_scope_t *const sc = &options.scopes[v];
         pm_options_scope_init(sc, outer_cnt[lv]);
+        uint8_t fwd = PM_OPTIONS_SCOPE_FORWARDING_NONE;
         for (uint32_t i = 0; i < outer_cnt[lv]; i++) {
             const uint32_t sym = outer_names[loff + i];
-            if (sym != 0) {
+            const int ak = sym ? kp_anon_name_kind(korb_sym_name(c->vm, sym)) : -1;
+            if (ak >= 0) {                                  /* the slot stays unnamed; the scope forwards it */
+                static const uint8_t flag[5] = { PM_OPTIONS_SCOPE_FORWARDING_POSITIONALS, PM_OPTIONS_SCOPE_FORWARDING_KEYWORDS,
+                                                 PM_OPTIONS_SCOPE_FORWARDING_BLOCK, PM_OPTIONS_SCOPE_FORWARDING_ALL,
+                                                 PM_OPTIONS_SCOPE_FORWARDING_ALL };
+                fwd |= flag[ak];
+                snprintf(dummy[off], sizeof dummy[off], "#%u.%u", lv, i);
+                pm_string_constant_init(&sc->locals[i], dummy[off], strlen(dummy[off]));
+                off++;
+            } else if (sym != 0) {
                 const char *const nm = korb_sym_name(c->vm, sym);
                 pm_string_constant_init(&sc->locals[i], nm, strlen(nm));
             } else {
@@ -6492,6 +6549,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
                 off++;
             }
         }
+        if (fwd != PM_OPTIONS_SCOPE_FORWARDING_NONE) pm_options_scope_forwarding_set(sc, fwd);
     }
     pm_options_scope_t *scope = &options.scopes[outer_levels];
     pm_options_scope_init(scope, name_cnt);
@@ -6515,14 +6573,23 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
         pm_constant_id_list_t *const ls = &outer_lists[lv];
         ls->size = ls->capacity = outer_cnt[lv];
         ls->ids = outer_cnt[lv] ? calloc(outer_cnt[lv], sizeof *ls->ids) : NULL;
+        outer[lv].fwd_slot = outer[lv].fwd_blk_slot = outer[lv].anon_rest_slot = -1;
+        outer[lv].anon_kwrest_slot = outer[lv].anon_blk_slot = -1;
         for (uint32_t i = 0; i < outer_cnt[lv]; i++) {
             const uint32_t sym = outer_names[loff + i];
             if (sym == 0) continue;                                 /* placeholder: never matched */
             const char *const nm = korb_sym_name(c->vm, sym);
+            switch (kp_anon_name_kind(nm)) {                        /* where a bare `*` / `**` / `&` / `...` reads */
+              case 0: outer[lv].anon_rest_slot = (int32_t)i; continue;
+              case 1: outer[lv].anon_kwrest_slot = (int32_t)i; continue;
+              case 2: outer[lv].anon_blk_slot = (int32_t)i; continue;
+              case 3: outer[lv].fwd_slot = (int32_t)i; continue;
+              case 4: outer[lv].fwd_blk_slot = (int32_t)i; continue;
+              default: break;
+            }
             ls->ids[i] = pm_constant_pool_find(&parser.constant_pool, (const uint8_t *)nm, strlen(nm));
         }
         outer[lv].locals = ls;
-        outer[lv].fwd_slot = outer[lv].fwd_blk_slot = outer[lv].anon_rest_slot = -1;
     }
     struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
                          .fsl_false = kp_fsl_false(src, len), .fsl_true = kp_fsl_true(src, len) || OPTION.frozen_literals,

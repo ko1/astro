@@ -1477,7 +1477,7 @@ static RESULT korb_m_bind_lvars_own(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++) {
         const uint32_t *const t = KORB_BIND_TRIPLE(VAL2BIND(VALUE_REF_GET(self)), i);
-        if (KORB_BIND_DEPTH(t) != 0) continue;
+        if (KORB_BIND_DEPTH(t) != 0 || (t[1] & KORB_BIND_ANON)) continue;
         CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(t[0])));
     }
     return RESULT_OK(VALUE_REF_GET(dst));

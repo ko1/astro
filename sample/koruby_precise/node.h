@@ -100,7 +100,10 @@ struct korb_locals_info { uint32_t n; uint32_t names[]; };
  * word for an implicit parameter (`it`), which #implicit_parameter_* reaches
  * but #local_variable_* must not see. */
 #define KORB_BIND_IMPLICIT 0x80000000u
-#define KORB_BIND_DEPTH(t) ((t)[1] & ~KORB_BIND_IMPLICIT)
+/* …and for an anonymous parameter slot (`*`, `**`, `&`, `...`): only an eval'd
+ * string's forwarding reaches it, never #local_variable_* */
+#define KORB_BIND_ANON     0x40000000u
+#define KORB_BIND_DEPTH(t) ((t)[1] & ~(KORB_BIND_IMPLICIT | KORB_BIND_ANON))
 
 /* Inline ivar slot-cache — embedded in @ivar nodes via @ref.  Monomorphic:
  * caches the last hit slot; validated by `ivars[2*slot] == name_sym` so it is

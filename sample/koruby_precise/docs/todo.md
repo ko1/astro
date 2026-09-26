@@ -5884,3 +5884,18 @@ koruby は prism を C で持っているので、prism の結果を Ruby に出
 足して `Ripper.lex` / `Ripper.sexp` を組む道はある。ただし CRuby の
 `prism/translation/ripper` が 3000 行あることからも分かるとおり、Ripper 互換の
 S 式・トークン列に変換する層は軽くない。**やるなら独立した仕事として計画する。**
+
+## 2026-09-26 gem drop-in キャンペーンで出た残り（未着手）
+
+- **eval の中の引数なし `super`**（zsuper）: `def m(a, b:) = eval("super")` が NotImplementedError。
+  eval のパーサはメソッドの引数並び（method_params / rest / kw_info）を知らない。binding 表に
+  持たせるか、実行時に binding のメソッド entry から組む（rubyspec core/kernel/eval_spec 1 例）。
+  匿名 `*` / `**` / `&` / `...` の転送と `super(args)` は対応済み（binding 表の KORB_BIND_ANON）。
+- **Thread::Backtrace::Location#source_range**（Ruby 4.1、`Ruby::SourceRange`）: 呼び出し位置の
+  桁範囲が要る。koruby のフレームは行番号しか持たない（core/thread/backtrace/location/source_range_spec
+  113 例が全部 NoMethodError）。Proc/Method#syntax_tree も同系統。
+- `:s.to_s.freeze` を CRuby は fstring として扱う（singleton_class / def が TypeError）。koruby は
+  FrozenError。62aa8337 でプールに入る fstring だけ TypeError にした残り。
+- Ripper のサブクラスのイベント（`class P < Ripper; def on_ident(t)…`）は prism の翻訳器に
+  渡っていない（lib/ripper.rb の @impl は素の Prism::Translation::Ripper）。
+- Ractor が無い（`defined?(Ractor)` で分岐する gem は別経路を通る。concurrent-ruby map_spec の 1 例）。
