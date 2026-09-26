@@ -6032,6 +6032,8 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
 {
     struct korb_vm *const vm = c->vm;
     const struct korb_kw_info *const kw = (const struct korb_kw_info *)m->kw_info;
+    NODE *const body = m->body;                              /* a default may redefine the method: this call keeps its body */
+    const bool bref_scope = UNLIKELY(m->uses_backref != 0);   /* $~ is per method frame */
     VALUE *const base = slots - (pos_argc + kw_argc);
     (void)def_class;
     if (UNLIKELY(pos_argc < m->req_cnt || pos_argc > (uint32_t)m->params_cnt)) {
@@ -6108,8 +6110,6 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
         base[kw->entries[j].slot] = dr.value;
     }
   run_body:;
-    NODE *const body = m->body;
-    const bool bref_scope = UNLIKELY(m->uses_backref != 0);   /* $~ is per method frame */
     if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell); *bcell = KORB_NIL; }
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (bref_scope) *korb_re_tilde_cell(c) = korb_bref_pop(c);
@@ -11064,7 +11064,9 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
     struct korb_vm *const vm = c->vm;
     struct korb_method *m = NULL; VALUE def_class = KORB_NIL;
     if (LIKELY(KORB_OBJECT_P(self))) {
-        const VALUE klass = VAL2OBJ(self)->klass;
+        /* the singleton class when there is one (a stubbed private method), as korb_call_cached */
+        const VALUE klass = UNLIKELY(((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS)
+                          ? korb_dispatch_class(c, self) : VAL2OBJ(self)->klass;
         if (LIKELY(klass != KORB_NIL)) {                 /* user-instance self-call */
             if (LIKELY(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
                 m = ic->m; def_class = ic->def_class;
