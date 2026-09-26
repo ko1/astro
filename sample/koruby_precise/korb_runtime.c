@@ -7090,8 +7090,8 @@ static void korb_klass_override_set(CTX *c, VALUE obj, VALUE cls) {
  * chain contains no registered builtin class. */
 static enum korb_class korb_builtin_base_class(struct korb_vm *vm, VALUE cls) {
     while (KORB_CLASS_P(cls)) {
-        for (int k = 0; k < KORB_NCLASS; k++)
-            if (vm->class_name[k] != 0 && korb_const_get(vm, vm->class_name[k]) == cls)
+        for (int k = 0; k < KORB_NCLASS; k++)   /* the constant's slot, not a by-name lookup per candidate */
+            if (korb_builtin_class_obj(vm, (enum korb_class)k) == cls)
                 return (enum korb_class)k;
         cls = VAL2CLASS(cls)->superclass;
     }
