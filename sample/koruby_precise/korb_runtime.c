@@ -225,6 +225,13 @@ VALUE korb_fstr_get(CTX *c, VALUE *slots, const char *bytes, uint32_t len, uint3
     return v;
 }
 
+/* An interned (fstring) String — a pool entry: CRuby gives it no singleton class. */
+bool korb_fstring_p(const struct korb_vm *const vm, const VALUE v) {
+    if (!KORB_STRING_P(v) || !(((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_FROZEN)) return false;
+    for (uint32_t i = 0; i < vm->fstr_cnt; i++) if (vm->fstr_vals[i] == v) return true;
+    return false;
+}
+
 RESULT
 korb_float_new(CTX *c, VALUE *slots, double d)
 {
@@ -17991,7 +17998,7 @@ korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VA
     const char *const saved = c->vm->script_name;
     korb_cref_push(c);
     c->def_definee = cref;                              /* instance_eval/class_eval(String): `def` lands here */
-    c->eval_cref = cref;                                /* … and so do constants */
+    c->eval_cref = KORB_CLASS_P(cref) ? cref : KORB_NIL;   /* … and so do constants */
     c->vm->script_name = fname;
     /* require_relative / __dir__ inside the eval resolve against the name the
      * eval was given (its 2nd argument), like CRuby. */
@@ -18149,7 +18156,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
      * target (ERB does `mod.module_eval { eval(src, binding) }` and expects
      * `def` to land on mod), so it fills that in only when nothing else has. */
     if (cref != KORB_UNDEF) {
-        c->eval_cref = cref;
+        c->eval_cref = KORB_CLASS_P(cref) ? cref : KORB_NIL;
         if (!soft_definee || c->def_definee == KORB_NIL) c->def_definee = cref;
     }
     c->vm->script_name = fname;                     /* raises inside report the eval's filename */

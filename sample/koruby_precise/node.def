@@ -1419,10 +1419,11 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, 
         /* nil/true/false have a sole instance, so a singleton def lands on their class;
          * other immediates (Integer/Float/Symbol) genuinely can't take one. */
         if (UNLIKELY(obj != KORB_NIL && obj != KORB_TRUE && obj != KORB_FALSE))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton method for %s", korb_type_name(obj));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");
         korb_class_def_method(c, korb_class_obj_of(c, obj), mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info, locals_info);
         return RESULT_OK(ID2SYM(mid));
     }
+    if (UNLIKELY(korb_fstring_p(c->vm, obj))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* before the frozen check (CRuby) */
     KORB_CHECK_FROZEN(c, slots, obj);                    /* `def frozen_obj.m` → FrozenError */
     VALUE sing = UNWRAP(korb_obj_singleton(c, slots, obj));
     slots[0] = sing;                                     /* park: the check formats the receiver */

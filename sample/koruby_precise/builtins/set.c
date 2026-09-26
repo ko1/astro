@@ -677,6 +677,7 @@ RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj) {
             return RESULT_OK(korb_class_obj_of(c, obj));
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");
     }
+    if (UNLIKELY(korb_fstring_p(vm, obj))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");
     /* Giving a CHILLED literal a singleton class ends its chilled status, with the
      * same warning a mutation gets (CRuby) — otherwise the singleton would be
      * born frozen and `"lit".extend(M)` would raise. */
@@ -786,9 +787,9 @@ static RESULT korb_m_class_subclasses(CTX *c, VALUE *slots, VALUE_REF self, VALU
 }
 /* Can this value take a singleton class?  nil/true/false borrow their own class;
  * numerics and Symbols cannot (CRuby raises), heap or not. */
-static bool korb_singleton_able(VALUE v) {
+static bool korb_singleton_able(const struct korb_vm *const vm, VALUE v) {
     if (!AROH_IS_GC_OBJECT(v)) return v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE;
-    return !(KORB_BIGNUM_P(v) || KORB_FLOAT_P(v) || KORB_RATIONAL_P(v) || KORB_COMPLEX_P(v));
+    return !(KORB_BIGNUM_P(v) || KORB_FLOAT_P(v) || KORB_RATIONAL_P(v) || KORB_COMPLEX_P(v) || korb_fstring_p(vm, v));
 }
 
 /* Object#extend(*mods) — mix the modules into the object's singleton class. */
@@ -2678,7 +2679,7 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
     /* same default definee as instance_eval: `def` lands on the singleton */
     VALUE definee = slots[0];
-    if (singleton_definee && korb_singleton_able(slots[0])) {
+    if (singleton_definee && korb_singleton_able(c->vm, slots[0])) {
         /* a value with no singleton is left as the definee itself: `def` inside
          * raises then, not on entry (CRuby only fails at the definition) */
         const RESULT sr = korb_obj_singleton_for_eval(c, slots + 1 + argc, slots[0]);
@@ -2791,11 +2792,13 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
          * singleton class, class_eval/module_eval → the module itself */
         VALUE cref = KORB_NIL;
         if (singleton_definee) {
-            if (korb_singleton_able(VALUE_REF_GET(self))) {
+            if (korb_singleton_able(c->vm, VALUE_REF_GET(self))) {
                 slots[0] = src;                            /* park across the singleton's alloc */
                 const RESULT sr = korb_obj_singleton_for_eval(c, slots + 1, VALUE_REF_GET(self));
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 cref = sr.value; src = slots[0];
+            } else {
+                cref = VALUE_REF_GET(self);                /* no singleton (Integer/Symbol/Float): a `def` raises */
             }
         } else if (KORB_CLASS_P(VALUE_REF_GET(self))) cref = VALUE_REF_GET(self);
         const uint8_t saved_vis = korb_vis_enter(VALUE_REF_GET(self));
@@ -2826,7 +2829,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
      * there is a singleton method); class_eval/module_eval → the class itself
      * (a plain instance method).  Restored on the way out. */
     VALUE definee = slots[0];
-    if (singleton_definee && korb_singleton_able(slots[0])) {   /* see korb_obj_exec_impl: `def` fails lazily */
+    if (singleton_definee && korb_singleton_able(c->vm, slots[0])) {   /* see korb_obj_exec_impl: `def` fails lazily */
         const RESULT sr = korb_obj_singleton_for_eval(c, slots + 1, slots[0]);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;       /* nothing pushed yet */
         definee = sr.value;

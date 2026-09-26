@@ -436,6 +436,7 @@ struct korb_kw_entry { uint32_t mid; uint32_t slot; struct Node *deflt; };
 struct korb_kw_info  { uint32_t count; int32_t kwrest_slot; struct korb_kw_entry *entries; };
 
 /* method machinery */
+bool   korb_fstring_p(const struct korb_vm *vm, VALUE v);
 void   korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
                           uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
                           uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info, void *locals_info,
