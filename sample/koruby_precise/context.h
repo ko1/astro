@@ -477,6 +477,7 @@ typedef struct KorbProc {
     uint8_t  is_lambda;              /* lambda semantics (strict arity, return-from-proc) */
     uint8_t  refined_copy;           /* refine_set came from Proc#refined, not from the defining scope */
     uint8_t  ruby2_kw;               /* Proc#ruby2_keywords — same meaning as korb_method.ruby2_kw */
+    uint8_t  brk_orphan;             /* made by `proc { }` / Proc.new: its `break` target (that call) is gone */
 } KorbProc;
 
 /* Fiber: a stackful coroutine.  The moving GC object is a thin handle; all

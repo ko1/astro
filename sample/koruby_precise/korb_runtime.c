@@ -11116,6 +11116,11 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
     return korb_call(c, base + pos_argc + 1, mid, line, cc, pos_argc + 1, base[-1]);
 }
 
+static RESULT korb_raise_break_lje(CTX *c, VALUE *slots, VALUE value);   /* fwd (builtins/symbol.c) */
+/* A `&pr` of a `proc { }` came back breaking: the call it would end is gone. */
+static inline bool korb_break_orphan_p(VALUE *const def_env, VALUE *const captured_self) {
+    return def_env == KORB_BLK_FWD && captured_self != NULL && KORB_PROC_P(*captured_self) && VAL2PROC(*captured_self)->brk_orphan;
+}
 RESULT
 korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
               struct korb_callcache *cc, uint32_t argc,
@@ -11126,6 +11131,7 @@ korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
      * from the block *this* call site handed over (a break from a block merely
      * forwarded through here belongs to an outer call). */
     if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;
+    if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(def_env, captured_self)) return korb_raise_break_lje(c, slots, r.value);
     return r;
 }
 
@@ -12920,7 +12926,10 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             if (def_env == KORB_BLK_FWD)
                 return RESULT_OK(KORB_CSELF_VAL(captured_self));
             /* block-arg def_env arrives tagged (base|1); korb_make_proc wants the raw base. */
-            return korb_block_to_proc(c, slots, block, def_env, captured_self);
+            RESULT pr = korb_block_to_proc(c, slots, block, def_env, captured_self);
+            if (LIKELY(pr.state == KORB_NORMAL) && KORB_PROC_P(pr.value) && !VAL2PROC(pr.value)->is_lambda)
+                VAL2PROC(pr.value)->brk_orphan = 1;             /* its break target, Proc.new, has returned */
+            return pr;
         }
         if (self == korb_builtin_class_obj(vm, KORB_C_ENUMERATOR) && block != NULL) {   /* Enumerator.new([size]) { |y| ... } — deferred generator */
             slots[0] = UNWRAP(korb_block_to_proc(c, slots, block, def_env, captured_self));
@@ -13664,6 +13673,7 @@ korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     if (flink != 0) korb_flink_stage(c, flink, slots - (korb_sword_t)argc - 3);
     RESULT r = korb_send_impl_vis(c, slots, mid, line, argc, block, def_env, captured_self, caller_self);
     if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;   /* `break [v]` in the block = call's value (only if this site gave the block) */
+    if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(def_env, captured_self)) return korb_raise_break_lje(c, slots, r.value);
     return r;
 }
 

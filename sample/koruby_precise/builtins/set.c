@@ -2634,7 +2634,9 @@ static RESULT korb_m_kernel_makeproc(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         return RESULT_OK(fwd);
     }
     VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);   /* block-arg def_env arrives tagged (base|1) */
-    return korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(cself), is_lambda);
+    RESULT r = korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(cself), is_lambda);
+    if (LIKELY(r.state == KORB_NORMAL) && !is_lambda && KORB_PROC_P(r.value)) VAL2PROC(r.value)->brk_orphan = 1;
+    return r;
 }
 static RESULT korb_m_kernel_lambda(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_m_kernel_makeproc(c, slots, self, a, block, def_env, cself, 1); }
 static RESULT korb_m_kernel_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)   { return korb_m_kernel_makeproc(c, slots, self, a, block, def_env, cself, 0); }

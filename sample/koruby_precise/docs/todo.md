@@ -5899,3 +5899,8 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
 - Ripper のサブクラスのイベント（`class P < Ripper; def on_ident(t)…`）は prism の翻訳器に
   渡っていない（lib/ripper.rb の @impl は素の Prism::Translation::Ripper）。
 - Ractor が無い（`defined?(Ractor)` で分岐する gem は別経路を通る。concurrent-ruby map_spec の 1 例）。
+- **捕まえたブロックの break が LocalJumpError にならない**（language/break_spec 5 例）:
+  `b = capture(&blk) { break }` で capture が戻った後に b.call / yield(&b) すると、CRuby は
+  LocalJumpError、koruby は BREAK が外まで抜けて <main> で LocalJumpError になる。`proc { }` /
+  Proc.new のブロックは brk_orphan で対処済み（`&b` で作った Proc は作ったメソッドが戻った時点で
+  孤児になる — 戻りの境界で判定するには、ブロックの node_entry から定義メソッドの本体を引ける必要がある）。

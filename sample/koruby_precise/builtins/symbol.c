@@ -486,6 +486,18 @@ static RESULT korb_m_meth_to_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 /* Proc#call / [] / .() / === — invoke the captured block body.  Stage A: env is
  * a tagged-odd live-slots pointer (correct while the defining frame is alive). */
+/* LocalJumpError for a `break` whose target call is gone (CRuby's "break from proc-closure") */
+static RESULT korb_raise_break_lje(CTX *c, VALUE *slots, VALUE value) {
+    slots[0] = value;                                    /* the value given to `break` (rooted) */
+    RESULT lj = korb_raise(c, slots + 1, KORB_E_LOCALJUMP, 0, "break from proc-closure");
+    if (lj.state == KORB_RAISE && KORB_EXC_P(lj.value)) {   /* #reason / #exit_value (prelude readers) */
+        slots[1] = lj.value;
+        CHECK(korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]), ID2SYM(korb_intern(c->vm, "@reason", 7)), ID2SYM(korb_intern(c->vm, "break", 5))));
+        CHECK(korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]), ID2SYM(korb_intern(c->vm, "@exit_value", 11)), slots[0]));
+        lj.value = slots[1];
+    }
+    return lj;
+}
 static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     KorbProc *p = VAL2PROC(VALUE_REF_GET(self));
     const bool is_lam = p->is_lambda;                    /* captured before the body runs (a lambda's `return` returns from the lambda) */
@@ -565,6 +577,8 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         r.state = KORB_NORMAL;
     }
     if (UNLIKELY(is_lam && r.state == KORB_BREAK)) r.state = KORB_NORMAL;   /* a lambda's `break` acts like `return` */
+    if (UNLIKELY(r.state == KORB_BREAK && KORB_PROC_P(VALUE_REF_GET(self)) && VAL2PROC(VALUE_REF_GET(self))->brk_orphan))
+        return korb_raise_break_lje(c, slots, r.value);   /* `proc { break }`: the `proc` call it would end is gone */
     if (UNLIKELY(r.state == KORB_RETURN && c->return_target == NULL && !is_lam)) {
         /* A non-local `return` always names its home method frame; a NULL target
          * here means the chain was closed — the method already returned, so this
