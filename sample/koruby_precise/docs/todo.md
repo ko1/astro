@@ -5924,7 +5924,8 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
   走る）。ダンプは CRuby の外形だけ（各スレッドの backtrace は出さない）。handle_interrupt で fatal が
   マスクされたままなら従来どおり C から exit（CRuby はそのまま永久に止まる）。CRuby は rescue した後の
   2 回目のデッドロックで止まる（検出が 1 回きり）が、koruby は再度 fatal を出す。
-- `Class#subclasses` が組み込みクラスの子を返さない（`Exception.subclasses` が `[]`）: 登録は
-  korb_register_subclass でユーザ定義の経路だけ。boot 時のクラス表からも登録が要る。
-- `each_line("aa", 1)` の limit の意味が CRuby と違う（CRuby は `["ababa"]`、koruby は 1 バイトずつ）。
+- ~~`Class#subclasses` が組み込みクラスの子を返さない~~ → ad5e2286 で初回に heap を走査して登録。
+- `IO#each_line("aa", 1)`: CRuby の IO は複数文字 sep + limit 1 で `["ababa"]`（StringIO は 1 バイトずつで
+  koruby と同じ）。CRuby IO 側の癖とみて追わない。`String#each_line` / `#lines` に limit を渡すと
+  CRuby は ArgumentError（koruby は受けていた → 直した）。
 - Kernel#caller / 例外のバックトレースは作るたびに全フレームのラベルを組む（CRuby は遅延）。
