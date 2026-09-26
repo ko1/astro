@@ -3169,7 +3169,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         params_cnt = req_cnt + opt_cnt;   /* positional fixed slots; rest/keywords follow */
     }
 
-    const bool anon_cref = tc->frame->anon_class_body || tc->frame->anon_cref_method;
+    const bool anon_cref = tc->frame->anon_class_body || tc->frame->anon_cref_method || tc->frame->anon_class_block;
     /* This def sits in the BODY of a `class << X` method: self there is the
      * receiver, so the definee must come from the method's cref.  A def in the
      * `class << X` body itself already has that class as self (and must keep the
