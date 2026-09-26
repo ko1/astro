@@ -1774,8 +1774,8 @@ korb_hash_find_ctx_h(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *ou
         return -1;
     }
     slots[0] = key;                                       /* root searched key across dispatch */
-    const uint32_t eqm = korb_intern(c->vm, "eql?", 4);
-    const uint32_t hashm = korb_intern(c->vm, "hash", 4);
+    const uint32_t eqm = c->vm->mid_eql;
+    const uint32_t hashm = c->vm->mid_hash;
     /* CRuby buckets by #hash first, so a key whose #hash differs is never
      * compared with #eql? (mocks in the spec suite assert exactly that). */
     slots[2] = slots[0];
@@ -2752,8 +2752,19 @@ static uint32_t korb_member_ivar_id(struct korb_vm *vm, const char *member_name)
     const int n = snprintf(buf, sizeof buf, "@!%s", member_name);
     return korb_intern(vm, buf, n > 0 && (size_t)n < sizeof buf ? (size_t)n : strlen(buf));
 }
+/* Every Struct accessor call asks for it: build the name once per member. */
 static VALUE korb_member_ivar_sym(struct korb_vm *vm, VALUE member_sym) {
-    return ID2SYM(korb_member_ivar_id(vm, korb_sym_name(vm, SYM2ID(member_sym))));
+    const uint32_t id = SYM2ID(member_sym);
+    if (UNLIKELY(id >= vm->member_ivar_cap)) {
+        uint32_t cap = vm->member_ivar_cap ? vm->member_ivar_cap : 1024;
+        while (cap <= id) cap *= 2;
+        uint32_t *const p = realloc(vm->member_ivar, cap * sizeof *p);
+        if (!p) { fprintf(stderr, "koruby_precise: oom (member ivar)\n"); abort(); }
+        memset(p + vm->member_ivar_cap, 0, (cap - vm->member_ivar_cap) * sizeof *p);
+        vm->member_ivar = p; vm->member_ivar_cap = cap;
+    }
+    if (UNLIKELY(vm->member_ivar[id] == 0)) vm->member_ivar[id] = korb_member_ivar_id(vm, korb_sym_name(vm, id));
+    return ID2SYM(vm->member_ivar[id]);
 }
 
 /* Struct.new(*members) — build an anonymous class with attr_accessor per member
@@ -19851,6 +19862,7 @@ korb_ctx_new(void)
     c->vm->mid_cmp         = korb_intern(c->vm, "<=>", 3);
     c->vm->mid_eq          = korb_intern(c->vm, "==", 2);
     c->vm->mid_hash        = korb_intern(c->vm, "hash", 4);
+    c->vm->mid_eql         = korb_intern(c->vm, "eql?", 4);
 
     return c;
 }

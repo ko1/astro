@@ -1282,6 +1282,9 @@ struct korb_vm {
     uint32_t mid_band, mid_bor, mid_bxor, mid_shl, mid_shr;   /* bit-op dispatch fallbacks (avoid per-call korb_intern) */
     uint32_t mid_eq;                                          /* "==" — node_eq/node_neq user-object dispatch (avoid per-call korb_intern) */
     uint32_t mid_hash;                                        /* "hash" — Array#hash / Hash#hash deciding per element */
+    uint32_t mid_eql;                                         /* "eql?" — Hash key lookup with a user #hash */
+    uint32_t *member_ivar;   /* [member sym id] → its "@!name" ivar id, 0 = not made yet (korb_member_ivar_sym) */
+    uint32_t member_ivar_cap;
     uint32_t mid_cmp;                                         /* "<=>" — Array#sort of user/Comparable objects */
     uint32_t name_fiber;   /* class name_sym of Fiber (class-receiver fast check) */
     uint32_t name_struct;  /* class name_sym of Struct (class-receiver fast check) */
