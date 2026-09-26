@@ -23,6 +23,7 @@ typedef struct KorbIORep {
     uint8_t  eof;                    /* a read(2) returned 0 */
     uint8_t  sync;                   /* flush after every write */
     uint8_t  nonblk;                 /* O_NONBLOCK: block by parking, not by stalling */
+    uint8_t  fifo_rd;                /* a FIFO opened read-only: the first read waits for a writer */
     uint32_t lineno;                 /* IO#lineno: lines handed out by #gets */
     int      enc_idx;                /* memo: the encoding a read result carries (-1 = ask the prelude) */
     int      benc_idx;               /* memo: the encoding the raw bytes arrive in (the external one) */
@@ -165,6 +166,14 @@ static RESULT korb_io_park(CTX *c, VALUE *slots, const KorbIORep *const rep, sho
 }
 /* true when the errno from a just-failed syscall means "would block". */
 static bool korb_io_would_block(int e) { return e == EAGAIN || e == EWOULDBLOCK; }
+/* The open of a read-only FIFO returned without waiting for a writer (it cannot
+ * stall the scheduler), and read(2) there says EOF while none has attached.
+ * Park until data or a hang-up instead: Linux reports neither before a writer. */
+static RESULT korb_io_fifo_wait(CTX *c, VALUE *slots, KorbIORep *const rep) {
+    if (LIKELY(!rep->fifo_rd) || c == NULL) return RESULT_OK(KORB_NIL);
+    rep->fifo_rd = 0;
+    return korb_io_park(c, slots, rep, POLLIN);
+}
 
 /* Push the pending output out.  false (with errno set) on a write error; an
  * in-memory sink never flushes, so its bytes simply accumulate.
@@ -276,6 +285,7 @@ static uint32_t korb_io_fill_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESUL
         if (!rep->rbuf) return 0;
         rep->rcapa = KORB_IO_BUFSZ;
     }
+    { const RESULT fr = korb_io_fifo_wait(c, slots, rep); if (UNLIKELY(fr.state != KORB_NORMAL)) { if (perr) *perr = fr; return 0; } }
     for (;;) {
         const ssize_t n = read(rep->fd, rep->rbuf, rep->rcapa);
         if (n < 0) {
@@ -452,6 +462,7 @@ static RESULT korb_io_read_bytes(CTX *c, VALUE *slots, KorbIORep *rep, uint32_t 
          * would make a following #sysread skip what we buffered (CRuby). */
         if (rep->rpos >= rep->rlen && !rep->eof && korb_io_open_p(rep) && rep->fd >= 0) {
             if (rep->wlen > 0) (void)korb_io_flush_rep(rep);        /* duplex: don't deadlock the peer */
+            CHECK(korb_io_fifo_wait(c, slots + 1, rep));           /* may GC: sref is rooted */
             KorbString *const s = VAL2STR(VALUE_REF_GET(sref));
             const ssize_t n = read(rep->fd, korb_strbuf_data(s->buf) + len, want - len);
             if (n < 0) {
@@ -2016,6 +2027,7 @@ static RESULT korb_m_io_sysread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         return korb_str_new(c, slots, "", 0);
     }
     slots[0] = (VALUE)korb_str_alloc(c, slots, (uint32_t)want);
+    CHECK(korb_io_fifo_wait(c, slots + 1, rep));
     ssize_t r;
     for (;;) {
         /* re-derive each round: the park below may GC and move the String.
@@ -2773,6 +2785,8 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fd, rw));   /* self = the File class */
     korb_io_rep_set_path(korb_io_rep(c, slots[0]), pbuf);
+    { struct stat fst;
+      if (rw == 1 && fstat(fd, &fst) == 0 && S_ISFIFO(fst.st_mode)) korb_io_rep(c, slots[0])->fifo_rd = 1; }
     VALUE_REF io = VALUE_REF_AT(&slots[0]);
     if (binary)   /* remember binary mode → reads produce ASCII-8BIT strings */
         CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
