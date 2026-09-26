@@ -114,6 +114,7 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
     c.sub_chains   = p->sub_chains;
     c.sub_chains_n = p->sub_chains_n;
     c.sub_top      = NULL;
+    if (p->sub_chains_n) memset(c.open_cnt, 0, sizeof c.open_cnt);
     c.sub_depth    = 0;
     c.stack_base  = astrogre_stack_floor();   /* absolute low address the guard must not cross */
     c.stack_limit = 0;                        /* unused now (guard compares against stack_base directly) */

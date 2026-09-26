@@ -72,6 +72,11 @@ typedef enum {
 struct sub_call_frame {
     struct Node *return_to;
     struct sub_call_frame *prev;
+    /* a call into group idx while idx is open (recursion): the outer instance's
+     * start comes back when the call returns, so its end pairs with it (Onigmo) */
+    size_t saved_start;
+    uint32_t idx;
+    bool restore;
 };
 
 /* One frame on the repetition stack.  Pushed by node_re_rep when entering
@@ -117,6 +122,9 @@ typedef struct CTX_struct {
     size_t ends[ASTROGRE_MAX_GROUPS];
     bool   valid[ASTROGRE_MAX_GROUPS];
     int    n_groups;
+    /* entered-but-not-ended instances per group; kept only when the pattern has
+     * subroutine calls (sub_chains_n != 0) */
+    uint16_t open_cnt[ASTROGRE_MAX_GROUPS];
 
     /* Repetition stack. */
     struct rep_frame *rep_top;

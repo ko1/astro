@@ -134,6 +134,7 @@ typedef struct re_parser {
      * references can resolve.  Forward references error out. */
     struct ire_node **groups_by_idx;
     int               cap_groups;
+    int               n_subcalls;   /* `\g<…>` references seen */
 } re_parser_t;
 
 static void re_error(re_parser_t *q, const char *msg) {
@@ -1347,7 +1348,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             const int idx = re_resolve_ref(q, ns, nend, kind);
             if (idx < 0) return NULL;
             ire_node_t *n = ire_new(kind == REF_CALL ? IRE_SUBROUTINE : IRE_BACKREF);
-            if (kind == REF_CALL) n->u.sub.idx = idx;
+            if (kind == REF_CALL) { n->u.sub.idx = idx; q->n_subcalls++; }
             else                  n->u.backref.idx = idx;
             return n;
         }
@@ -2288,6 +2289,9 @@ typedef struct lower_ctx {
      * ALLOC site since that's where we know the role. */
     struct Node **entries;
     int n_entries, entries_cap;
+    /* the pattern has `\g<…>` calls: captures use the _rec nodes, which pair a
+     * recursive call's end with the right start */
+    bool has_calls;
 } lower_ctx_t;
 
 static void
@@ -2421,6 +2425,10 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
     }
     case IRE_GROUP: {
         /* cap_start; body; cap_end; tail */
+        if (L->has_calls) {
+            NODE *body = lower(L, n->u.group.body, ALLOC_node_re_cap_end_rec(n->u.group.idx, tail));
+            return ALLOC_node_re_cap_start_rec(n->u.group.idx, body);
+        }
         NODE *body = lower(L, n->u.group.body,
                            ALLOC_node_re_cap_end(n->u.group.idx, tail));
         return ALLOC_node_re_cap_start(n->u.group.idx, body);
@@ -2789,8 +2797,9 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     NODE *succ = ALLOC_node_re_succ();
     /* Wrap the whole pattern in capture group 0 so the matcher records
      * the final-match span automatically through cap_end. */
-    NODE *body = lower(&L, ir, ALLOC_node_re_cap_end(0, succ));
-    body = ALLOC_node_re_cap_start(0, body);
+    L.has_calls = q.n_subcalls > 0;
+    NODE *body = lower(&L, ir, L.has_calls ? ALLOC_node_re_cap_end_rec(0, succ) : ALLOC_node_re_cap_end(0, succ));
+    body = L.has_calls ? ALLOC_node_re_cap_start_rec(0, body) : ALLOC_node_re_cap_start(0, body);
 
     /* Lower may register errors (variable-width lookbehind without
      * fallback, undefined subroutine target).  Bail before building
