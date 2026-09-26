@@ -15203,6 +15203,19 @@ korb_register_core_methods(CTX *c)
  * Printing (CRuby-compatible to_s / inspect, written directly — no GC).
  * ------------------------------------------------------------------------- */
 
+#include "builtins/unicode_print.h"
+/* Onigmo's printable test (CR_Print), which String#inspect escapes by. */
+static bool korb_uc_printable(const uint32_t cp) {
+    uint32_t lo = 0, hi = sizeof korb_uc_print / sizeof korb_uc_print[0];
+    while (lo < hi) {
+        const uint32_t mid = lo + (hi - lo) / 2;
+        if (cp < korb_uc_print[mid][0]) hi = mid;
+        else if (cp > korb_uc_print[mid][1]) lo = mid + 1;
+        else return true;
+    }
+    return false;
+}
+
 /* Inspect-quote a UTF-8 byte run: "..." with CRuby's escape set. */
 static void
 korb_fprint_quoted(FILE *fp, const char *bytes, uint32_t len)
@@ -15234,9 +15247,14 @@ korb_fprint_quoted(FILE *fp, const char *bytes, uint32_t len)
                 int n = (ch >= 0xF0) ? 3 : (ch >= 0xE0) ? 2 : (ch >= 0xC0) ? 1 : -1;
                 bool valid = n >= 0 && i + (uint32_t)n < len;
                 for (int k = 1; valid && k <= n; k++) if (((unsigned char)bytes[i+k] & 0xC0) != 0x80) valid = false;
-                /* U+0080..U+009F (the C1 controls) are not printable: \uNNNN */
-                if (valid && ch == 0xC2 && (unsigned char)bytes[i+1] <= 0x9F)
-                    { fprintf(fp, "\\u%04X", (unsigned char)bytes[i+1]); i += 1; }
+                /* a codepoint Onigmo does not call printable (C1 controls, line/paragraph
+                 * separators, unassigned, noncharacters) is written as \uNNNN (CRuby) */
+                uint32_t cp = valid ? (uint32_t)(ch & (0x7Fu >> (n + 1))) : 0;
+                for (int k = 1; valid && k <= n; k++) cp = (cp << 6) | ((unsigned char)bytes[i+k] & 0x3Fu);
+                if (valid && !korb_uc_printable(cp)) {
+                    if (cp <= 0xFFFF) fprintf(fp, "\\u%04X", cp); else fprintf(fp, "\\u{%X}", cp);
+                    i += (uint32_t)n;
+                }
                 else if (valid) { fputc(ch, fp); for (int k = 1; k <= n; k++) fputc(bytes[i+k], fp); i += (uint32_t)n; }
                 else fprintf(fp, "\\x%02X", ch);
             }
@@ -15350,6 +15368,19 @@ korb_fprint_quoted_other(const struct korb_vm *const vm, FILE *const fp,
  * so Unicode identifiers like :äöü print bare (no quoting), matching CRuby. */
 static inline bool korb_id_start(unsigned char ch) { return ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch >= 0x80; }
 static inline bool korb_id_cont(unsigned char ch)  { return korb_id_start(ch) || (ch >= '0' && ch <= '9'); }
+/* every UTF-8 character in nm is printable (CRuby's sym_printable) */
+static bool korb_utf8_printable_all(const char *nm) {
+    const unsigned char *p = (const unsigned char *)nm;
+    while (*p) {
+        if (*p < 0x80) { p++; continue; }
+        const int n = (*p >= 0xF0) ? 3 : (*p >= 0xE0) ? 2 : (*p >= 0xC0) ? 1 : 0;
+        uint32_t cp = (uint32_t)(*p & (0x7Fu >> (n + 1)));
+        for (int k = 1; k <= n; k++) { if ((p[k] & 0xC0) != 0x80) return false; cp = (cp << 6) | (p[k] & 0x3Fu); }
+        if (n == 0 || !korb_uc_printable(cp)) return false;
+        p += n + 1;
+    }
+    return true;
+}
 static bool
 korb_sym_label_bare(const char *nm)
 {
@@ -15357,7 +15388,7 @@ korb_sym_label_bare(const char *nm)
     const char *p = nm + 1;
     while (korb_id_cont((unsigned char)*p)) p++;
     if (*p == '?' || *p == '!') p++;
-    return *p == '\0';
+    return *p == '\0' && korb_utf8_printable_all(nm);
 }
 /* Symbol prints bare in inspect (`:foo`, `:+`) vs quoted (`:"a b"`, `:"123"`). */
 static bool

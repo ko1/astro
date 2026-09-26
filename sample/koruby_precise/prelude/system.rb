@@ -1587,14 +1587,8 @@ module Kernel
   module_function :at_exit   # private Kernel#at_exit and public Kernel.at_exit, as in CRuby
 end
 
-# pp / pretty_inspect — mspec's failure formatter calls #pretty_inspect; without
-# it a genuine failure is reported as an error.  A plain inspect (+ newline, as pp
-# does) is enough for spec messages.
-class Object
-  def pretty_inspect; inspect + "\n"; end
-  def pretty_print(q); q.text(inspect); end
-  def pretty_print_cycle(q); q.text(inspect); end
-end
+# #pretty_inspect / #pretty_print exist only once pp is loaded (CRuby); Kernel#pp
+# below loads it on first use, and mspec requires it for its failure formatter.
 
 module Kernel
   # pp(*objs) — CRuby's Kernel#pp autoloads the real pretty-printer on first use
