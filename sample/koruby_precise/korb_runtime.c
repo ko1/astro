@@ -7329,7 +7329,8 @@ korb_responds_to(CTX *c, VALUE self, uint32_t mid)
     /* `new` is dispatched by a special case (not a registered method), so the
      * MRO walk misses it — every non-module class still responds to it. */
     if (mid == c->vm->mid_new && KORB_CLASS_P(self) && !VAL2CLASS(self)->is_module)
-        return !(UNLIKELY(c->vm->new_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid));
+        return !VAL2CLASS(self)->no_new &&
+               !(UNLIKELY(c->vm->new_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid));
     /* send / __send__ / public_send are also special-dispatched (not registered);
      * every object responds to them unless one was explicitly undef'd. */
     if (mid == c->vm->mid_send || mid == c->vm->mid___send__ || mid == c->vm->mid_public_send)
@@ -12740,6 +12741,8 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
         if (UNLIKELY(VAL2CLASS(self)->is_singleton))   /* a metaclass has no instances (CRuby) */
             return korb_raise(c, slots, KORB_E_TYPE, line, "can't create instance of singleton class");
+        if (UNLIKELY(VAL2CLASS(self)->no_new))          /* undefined: no inherited `self.new` answers either */
+            return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for class %s", korb_sym_name(vm, VAL2CLASS(self)->name_sym));
         /* A user-defined `def self.new` (e.g. the Thread stub) overrides the built-in
          * allocator: dispatch it with the args + block.  The non-block path resolves
          * this in node_send_cached; this shared path (block / send) must too.  A
@@ -12790,10 +12793,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for module %s", mnm);
         }
         uint32_t cname = VAL2CLASS(self)->name_sym;
-        if (self == korb_builtin_class_obj(vm, KORB_C_NIL) || self == korb_builtin_class_obj(vm, KORB_C_TRUE) ||
-            self == korb_builtin_class_obj(vm, KORB_C_FALSE) || self == korb_builtin_class_obj(vm, KORB_C_INTEGER) ||
-            self == korb_builtin_class_obj(vm, KORB_C_FLOAT) || self == korb_builtin_class_obj(vm, KORB_C_SYMBOL) ||
-            self == korb_builtin_class_obj(vm, KORB_C_RATIONAL) || self == korb_builtin_class_obj(vm, KORB_C_COMPLEX))   /* #new is undefined (built via Rational()/Complex()) */
+        if (UNLIKELY(VAL2CLASS(self)->no_new))           /* #new is undefined (built via Rational()/Complex()/BigDecimal()) */
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for class %s", korb_sym_name(vm, cname));
         if (self == korb_builtin_class_obj(vm, KORB_C_FIBER)) {
             const RESULT fr = korb_fiber_new(c, slots, block, def_env, captured_self);
@@ -13623,9 +13623,9 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
             for (VALUE sc = cls; KORB_CLASS_P(sc); sc = VAL2CLASS(sc)->superclass)
                 if (sc == korb_const_get(vm, vm->name_struct)) { kind = 2; break; }
     }
-    if (kind == 1 && UNLIKELY(vm->new_undef_cnt != 0) &&
-        korb_method_undefed_p(korb_dispatch_class(c, cls), vm->mid_new))
-        kind = 2;                                      /* `undef_method :new`: the slow path raises */
+    if (kind == 1 && (UNLIKELY(VAL2CLASS(cls)->no_new) || (UNLIKELY(vm->new_undef_cnt != 0) &&
+                                                         korb_method_undefed_p(korb_dispatch_class(c, cls), vm->mid_new))))
+        kind = 2;                                      /* `undef_method :new` / no_new: the slow path raises */
     if (kind == 1) {   /* a user/builtin `new` singleton method (def self.new / Time.new) overrides the default allocator → route to the smethod path */
         const VALUE sing = korb_dispatch_class(c, cls);
         VALUE mdef = KORB_NIL;
@@ -19245,6 +19245,18 @@ korb_bi_finalizers_active(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(KORB_NIL);
 }
 
+/* __undef_new(klass) — a Ruby-level class whose ::new CRuby undefines
+ * (BigDecimal): respond_to?(:new) is false and calling it raises. */
+static RESULT
+korb_bi_undef_new(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)slots;
+    const VALUE k = VALUE_SLICE_GET(args, 0);
+    if (KORB_CLASS_P(k)) VAL2CLASS(k)->no_new = 1;
+    c->vm->method_serial++;                          /* a cached new_kind must be recomputed */
+    return RESULT_OK(KORB_NIL);
+}
+
 /* __heap_objects__(mod) — Array of every heap object that `is_a? mod`
  * (mod = nil → all of them).  Backs ObjectSpace.each_object.  Like CRuby's
  * heap walk this can also surface garbage that has not been collected yet. */
@@ -19993,6 +20005,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);
     korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);
     korb_builtin_define(c, "__heap_objects__", korb_bi_heap_objects, -1);
+    korb_builtin_define(c, "__undef_new", korb_bi_undef_new, 1);
     korb_builtin_define(c, "__finalizers_active__", korb_bi_finalizers_active, 0);
     korb_builtin_define(c, "__gc_stress", korb_bi_gc_stress, -1);
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
@@ -20064,6 +20077,14 @@ korb_ctx_new(void)
         }
     }
 
+    {   /* classes built only by literals / Kernel#Rational etc.: CRuby undefines ::new */
+        static const enum korb_class nonew[] = { KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_INTEGER,
+                                                         KORB_C_FLOAT, KORB_C_SYMBOL, KORB_C_RATIONAL, KORB_C_COMPLEX };
+        for (size_t i = 0; i < sizeof nonew / sizeof nonew[0]; i++) {
+            const VALUE k = korb_builtin_class_obj(c->vm, nonew[i]);
+            if (KORB_CLASS_P(k)) VAL2CLASS(k)->no_new = 1;
+        }
+    }
     /* resolve dispatch-hot method names once (see struct korb_vm). */
     c->vm->mid_send        = korb_intern(c->vm, "send", 4);
     c->vm->mid___send__    = korb_intern(c->vm, "__send__", 8);

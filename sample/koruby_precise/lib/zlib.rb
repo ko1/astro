@@ -371,7 +371,9 @@ module Zlib
       super()
       @io = io
       @level = level.nil? || level == DEFAULT_COMPRESSION ? 6 : level
-      @buf = +"".b
+      @deflate = Zlib::Deflate.new(@level, -MAX_WBITS)     # raw deflate: we write the gzip wrapper
+      @crc = 0
+      @size = 0
       @mtime = nil
     end
 
@@ -397,7 +399,13 @@ module Zlib
     def write(*args)
       @header_written = true
       n = 0
-      args.each { |a| s = a.to_s.b; @buf << s; n += s.bytesize }
+      args.each do |a|
+        s = a.to_s.b
+        @crc = Zlib.crc32(s, @crc)
+        @size += s.bytesize
+        __emit(@deflate.deflate(s, NO_FLUSH))
+        n += s.bytesize
+      end
       n
     end
     def <<(s) = (write(s); self)
@@ -409,20 +417,39 @@ module Zlib
       args.flatten.each { |a| s = a.to_s; write(s); write("\n") unless s.end_with?("\n") }
       nil
     end
-    def pos = @buf.bytesize
+    def pos = @size
     alias tell pos
-    def flush(v = nil) = self
+    # the compressed data so far reaches the IO (CRuby: Z_SYNC_FLUSH by default)
+    def flush(flush = SYNC_FLUSH)
+      __emit(@deflate.flush(flush), true) unless flush == NO_FLUSH
+      @io.flush if @io.respond_to?(:flush)
+      self
+    end
 
-    def close
+    # ends the stream and returns the IO without closing it
+    def finish
       return @io if @closed
       @closed = true
-      @crc = Zlib.crc32(@buf)
-      @io.write(__gzip_header)
-      body = __zlib_deflate(@buf, @level, -MAX_WBITS)      # raw deflate: we write the wrapper
-      @io.write(body)
-      @io.write([@crc, @buf.bytesize & 0xffffffff].pack("VV"))
-      @io.close if @io.respond_to?(:close)
+      __emit(@deflate.finish, true)
+      @deflate.close
+      @io.write([@crc, @size & 0xffffffff].pack("VV"))
       @io
+    end
+
+    def close
+      io = finish
+      io.close if io.respond_to?(:close)
+      io
+    end
+
+    # the header goes out with the first data that does (CRuby buffers both)
+    private def __emit(data, force = false)
+      return if data.empty? && !force
+      unless @header_out
+        @header_out = true
+        @io.write(__gzip_header)
+      end
+      @io.write(data) unless data.empty?
     end
 
     private def __gzip_header

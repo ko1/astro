@@ -1,351 +1,452 @@
 # frozen_string_literal: true
-#
-# json.rb — a pure-Ruby JSON parser + generator for koruby_precise.
-#
-# koruby ships no C json extension; this provides the common surface:
-#   JSON.parse(str, symbolize_names: false)  → Ruby objects
-#   JSON.generate(obj) / obj.to_json         → JSON text
-#   JSON.pretty_generate(obj)                → indented JSON text
-#   JSON.dump / JSON.load                    → aliases
-# Conforms to RFC 8259 for the value grammar (objects, arrays, strings with
-# \uXXXX + surrogate pairs, numbers, true/false/null).
+require 'json/common'
 
+##
+# = JavaScript \Object Notation (\JSON)
+#
+# \JSON is a lightweight data-interchange format.
+#
+# \JSON is easy for us humans to read and write,
+# and equally simple for machines to read (parse) and write (generate).
+#
+# \JSON is language-independent, making it an ideal interchange format
+# for applications in differing programming languages
+# and on differing operating systems.
+#
+# == \JSON Values
+#
+# A \JSON value is one of the following:
+# - Double-quoted text:  <tt>"foo"</tt>.
+# - Number:  +1+, +1.0+, +2.0e2+.
+# - Boolean:  +true+, +false+.
+# - Null: +null+.
+# - \Array: an ordered list of values, enclosed by square brackets:
+#     ["foo", 1, 1.0, 2.0e2, true, false, null]
+#
+# - \Object: a collection of name/value pairs, enclosed by curly braces;
+#   each name is double-quoted text;
+#   the values may be any \JSON values:
+#     {"a": "foo", "b": 1, "c": 1.0, "d": 2.0e2, "e": true, "f": false, "g": null}
+#
+# A \JSON array or object may contain nested arrays, objects, and scalars
+# to any depth:
+#   {"foo": {"bar": 1, "baz": 2}, "bat": [0, 1, 2]}
+#   [{"foo": 0, "bar": 1}, ["baz", 2]]
+#
+# == Using \Module \JSON
+#
+# To make module \JSON available in your code, begin with:
+#   require 'json'
+#
+# All examples here assume that this has been done.
+#
+# === Parsing \JSON
+#
+# You can parse a \String containing \JSON data using
+# either of two methods:
+# - <tt>JSON.parse(source, **opts)</tt>
+# - <tt>JSON.parse!(source, **opts)</tt>
+#
+# where
+# - +source+ is a Ruby object.
+# - +opts+ are keyword arguments that control both input
+#   allowed and output formatting.
+#
+# The difference between the two methods
+# is that JSON.parse! omits some checks
+# and may not be safe for some +source+ data;
+# use it only for data from trusted sources.
+# Use the safer method JSON.parse for less trusted sources.
+#
+# ==== Parsing \JSON Arrays
+#
+# When +source+ is a \JSON array, JSON.parse by default returns a Ruby \Array:
+#   json = '["foo", 1, 1.0, 2.0e2, true, false, null]'
+#   ruby = JSON.parse(json)
+#   ruby # => ["foo", 1, 1.0, 200.0, true, false, nil]
+#   ruby.class # => Array
+#
+# The \JSON array may contain nested arrays, objects, and scalars
+# to any depth:
+#   json = '[{"foo": 0, "bar": 1}, ["baz", 2]]'
+#   JSON.parse(json) # => [{"foo"=>0, "bar"=>1}, ["baz", 2]]
+#
+# ==== Parsing \JSON \Objects
+#
+# When the source is a \JSON object, JSON.parse by default returns a Ruby \Hash:
+#   json = '{"a": "foo", "b": 1, "c": 1.0, "d": 2.0e2, "e": true, "f": false, "g": null}'
+#   ruby = JSON.parse(json)
+#   ruby # => {"a"=>"foo", "b"=>1, "c"=>1.0, "d"=>200.0, "e"=>true, "f"=>false, "g"=>nil}
+#   ruby.class # => Hash
+#
+# The \JSON object may contain nested arrays, objects, and scalars
+# to any depth:
+#   json = '{"foo": {"bar": 1, "baz": 2}, "bat": [0, 1, 2]}'
+#   JSON.parse(json) # => {"foo"=>{"bar"=>1, "baz"=>2}, "bat"=>[0, 1, 2]}
+#
+# ==== Parsing \JSON Scalars
+#
+# When the source is a \JSON scalar (not an array or object),
+# JSON.parse returns a Ruby scalar.
+#
+# \String:
+#   ruby = JSON.parse('"foo"')
+#   ruby # => 'foo'
+#   ruby.class # => String
+# \Integer:
+#   ruby = JSON.parse('1')
+#   ruby # => 1
+#   ruby.class # => Integer
+# \Float:
+#   ruby = JSON.parse('1.0')
+#   ruby # => 1.0
+#   ruby.class # => Float
+#   ruby = JSON.parse('2.0e2')
+#   ruby # => 200.0
+#   ruby.class # => Float
+# Boolean:
+#   ruby = JSON.parse('true')
+#   ruby # => true
+#   ruby.class # => TrueClass
+#   ruby = JSON.parse('false')
+#   ruby # => false
+#   ruby.class # => FalseClass
+# Null:
+#   ruby = JSON.parse('null')
+#   ruby # => nil
+#   ruby.class # => NilClass
+#
+# ==== Parsing Options
+#
+# ====== Input Options
+#
+# Option +max_nesting+ (\Integer) specifies the maximum nesting depth allowed;
+# defaults to +100+;
+# You can set it to +false+ to disable depth checking entirely, but that is dangerous
+# when parsing untrusted input.
+#
+# With the default, +100+:
+#   source = '[0, [1, [2, [3]]]]'
+#   ruby = JSON.parse(source)
+#   ruby # => [0, [1, [2, [3]]]]
+# Too deep:
+#   # Raises JSON::NestingError (nesting of 2 is too deep):
+#   JSON.parse(source, max_nesting: 1)
+# Bad value:
+#   # Raises TypeError (no implicit conversion of Symbol into Integer):
+#   JSON.parse(source, max_nesting: :foo)
+#
+# ---
+#
+# Option +allow_duplicate_key+ specifies whether duplicate keys in objects
+# should be ignored or cause an error to be raised:
+#
+# When set to +false+, the default:
+#   JSON.parse('{"a": 1, "a": 2}') # duplicate key "a" at line 1 column 1 (JSON::ParserError)
+#
+# When set to +true+:
+#   # The last value is used.
+#   JSON.parse('{"a": 1, "a": 2}', allow_duplicate_key: true) # => {"a" => 2}
+#
+# ---
+#
+# Option +allow_nan+ (boolean) specifies whether to allow
+# NaN, Infinity, and MinusInfinity in +source+;
+# defaults to +false+.
+#
+# With the default, +false+:
+#   # Raises JSON::ParserError (unexpected token 'NaN]' at line 1 column 2):
+#   JSON.parse('[NaN]')
+#   # Raises JSON::ParserError (unexpected token 'Infinity]' at line 1 column 2):
+#   JSON.parse('[Infinity]')
+#   # Raises JSON::ParserError (invalid number: '-Infinity]' at line 1 column 2):
+#   JSON.parse('[-Infinity]')
+# Allow:
+#   source = '[NaN, Infinity, -Infinity]'
+#   ruby = JSON.parse(source, allow_nan: true)
+#   ruby # => [NaN, Infinity, -Infinity]
+#
+# ---
+#
+# Option +allow_trailing_comma+ (boolean) specifies whether to allow
+# trailing commas in objects and arrays;
+# defaults to +false+.
+#
+# With the default, +false+:
+#   JSON.parse('[1,]') # unexpected character: ']' at line 1 column 4 (JSON::ParserError)
+#
+# When enabled:
+#   JSON.parse('[1,]', allow_trailing_comma: true) # => [1]
+#
+# ---
+#
+# Option +allow_comments+ (boolean) specifies whether to allow
+# JavaScript style comments (either <tt>// comment</tt> or <tt>/* comment */</tt>);
+# defaults to +false+.
+#
+# When set to +false+, the default:
+#   JSON.parse('/* comment */ {"a": 1, "a": 2}') # unexpected token '/*' at line 1 column 1 (JSON::ParserError)
+#
+# When set to +true+, comments are ignored:
+#   JSON.parse('/* comment */ {"a": 1} // more comment', allow_comments: true) # => {"a" => 1}
+#
+# ---
+#
+# Option +allow_control_characters+ (boolean) specifies whether to allow
+# unescaped ASCII control characters, such as newlines, in strings;
+# defaults to +false+.
+#
+# With the default, +false+:
+#   JSON.parse(%{"Hello\nWorld"}) # invalid ASCII control character in string: \nWorld" at line 2 column 0 (JSON::ParserError)
+#
+# When enabled:
+#   JSON.parse(%{"Hello\nWorld"}, allow_control_characters: true) # => "Hello\nWorld"
+#
+# ---
+#
+# Option +allow_invalid_escape+ (boolean) specifies whether to ignore backslahes that are followed
+# by an invalid escape character in strings;
+# defaults to +false+.
+#
+# With the default, +false+:
+#   JSON.parse('"Hell\o"') # invalid escape character in string: '\o"' at line 1 column 6 (JSON::ParserError)
+#
+# When enabled:
+#   JSON.parse('"Hell\o"', allow_invalid_escape: true) # => "Hello"
+#
+# ====== Output Options
+#
+# Option +freeze+ (boolean) specifies whether the returned objects will be frozen;
+# defaults to +false+.
+#
+# Option +symbolize_names+ (boolean) specifies whether returned \Hash keys
+# should be Symbols;
+# defaults to +false+ (use Strings).
+#
+# With the default, +false+:
+#   source = '{"a": "foo", "b": 1.0, "c": true, "d": false, "e": null}'
+#   ruby = JSON.parse(source)
+#   ruby # => {"a"=>"foo", "b"=>1.0, "c"=>true, "d"=>false, "e"=>nil}
+# Use Symbols:
+#   ruby = JSON.parse(source, symbolize_names: true)
+#   ruby # => {a: "foo", b: 1.0, c: true, d: false, e: nil}
+#
+# ---
+#
+# Option +object_class+ (\Class) specifies the Ruby class to be used
+# for each \JSON object;
+# defaults to \Hash.
+#
+# With the default, \Hash:
+#   source = '{"a": "foo", "b": 1.0, "c": true, "d": false, "e": null}'
+#   ruby = JSON.parse(source)
+#   ruby.class # => Hash
+# Use class \OpenStruct:
+#   ruby = JSON.parse(source, object_class: OpenStruct)
+#   ruby # => #<OpenStruct a="foo", b=1.0, c=true, d=false, e=nil>
+#
+# ---
+#
+# Option +array_class+ (\Class) specifies the Ruby class to be used
+# for each \JSON array;
+# defaults to \Array.
+#
+# With the default, \Array:
+#   source = '["foo", 1.0, true, false, null]'
+#   ruby = JSON.parse(source)
+#   ruby.class # => Array
+# Use class \Set:
+#   ruby = JSON.parse(source, array_class: Set)
+#   ruby # => Set["foo", 1.0, true, false, nil]
+#
+# === Generating \JSON
+#
+# To generate a Ruby \String containing \JSON data,
+# use method <tt>JSON.generate(source, opts)</tt>, where
+# - +source+ is a Ruby object.
+# - +opts+ is a \Hash object containing options
+#   that control both input allowed and output formatting.
+#
+# ==== Generating \JSON from Arrays
+#
+# When the source is a Ruby \Array, JSON.generate returns
+# a \String containing a \JSON array:
+#   ruby = [0, 's', :foo]
+#   json = JSON.generate(ruby)
+#   json # => '[0,"s","foo"]'
+#
+# The Ruby \Array array may contain nested arrays, hashes, and scalars
+# to any depth:
+#   ruby = [0, [1, 2], {foo: 3, bar: 4}]
+#   json = JSON.generate(ruby)
+#   json # => '[0,[1,2],{"foo":3,"bar":4}]'
+#
+# ==== Generating \JSON from Hashes
+#
+# When the source is a Ruby \Hash, JSON.generate returns
+# a \String containing a \JSON object:
+#   ruby = {foo: 0, bar: 's', baz: :bat}
+#   json = JSON.generate(ruby)
+#   json # => '{"foo":0,"bar":"s","baz":"bat"}'
+#
+# The Ruby \Hash array may contain nested arrays, hashes, and scalars
+# to any depth:
+#   ruby = {foo: [0, 1], bar: {baz: 2, bat: 3}, bam: :bad}
+#   json = JSON.generate(ruby)
+#   json # => '{"foo":[0,1],"bar":{"baz":2,"bat":3},"bam":"bad"}'
+#
+# ==== Generating \JSON from Other Objects
+#
+# When the source is neither an \Array nor a \Hash,
+# the generated \JSON data depends on the class of the source.
+#
+# When the source is a Ruby \Integer or \Float, JSON.generate returns
+# a \String containing a \JSON number:
+#   JSON.generate(42) # => '42'
+#   JSON.generate(0.42) # => '0.42'
+#
+# When the source is a Ruby \String, JSON.generate returns
+# a \String containing a \JSON string (with double-quotes):
+#   JSON.generate('A string') # => '"A string"'
+#
+# When the source is +true+, +false+ or +nil+, JSON.generate returns
+# a \String containing the corresponding \JSON token:
+#   JSON.generate(true) # => 'true'
+#   JSON.generate(false) # => 'false'
+#   JSON.generate(nil) # => 'null'
+#
+# When the source is none of the above, JSON.generate returns
+# a \String containing a \JSON string representation of the source:
+#   JSON.generate(:foo) # => '"foo"'
+#   JSON.generate(Complex(0, 0)) # => '"0+0i"'
+#   JSON.generate(Dir.new('.')) # => '"#<Dir:0x...>"'
+#
+# ==== Generating Options
+#
+# ====== Input Options
+#
+# Option +allow_nan+ (boolean) specifies whether
+# +NaN+, +Infinity+, and +-Infinity+ may be generated;
+# defaults to +false+.
+#
+# With the default, +false+:
+#   # Raises JSON::GeneratorError (NaN not allowed in JSON):
+#   JSON.generate(JSON::NaN)
+#   # Raises JSON::GeneratorError (Infinity not allowed in JSON):
+#   JSON.generate(JSON::Infinity)
+#   # Raises JSON::GeneratorError (-Infinity not allowed in JSON):
+#   JSON.generate(JSON::MinusInfinity)
+#
+# Allow:
+#   ruby = [Float::NAN, Float::INFINITY, JSON::NaN, JSON::Infinity, JSON::MinusInfinity]
+#   JSON.generate(ruby, allow_nan: true) # => '[NaN,Infinity,NaN,Infinity,-Infinity]'
+#
+# ---
+#
+# Option +allow_duplicate_key+ (boolean) specifies whether
+# hashes with duplicate keys should be allowed or produce an error.
+# Defaults to +false+, which raises an error.
+#
+# With the default, +false+:
+#   JSON.generate({foo: 1, "foo" => 2})
+#   # detected duplicate key "foo" in {foo: 1, "foo" => 2} (JSON::GeneratorError)
+#
+# With +true+:
+#   JSON.generate({foo: 1, "foo" => 2}, allow_duplicate_key: true)
+#   # => '{"foo":1,"foo":2}'
+#
+# ---
+#
+# Option +max_nesting+ (\Integer) specifies the maximum nesting depth
+# in +obj+; defaults to +100+.
+#
+# With the default, +100+:
+#   obj = [[[[[[0]]]]]]
+#   JSON.generate(obj) # => '[[[[[[0]]]]]]'
+#
+# Too deep:
+#   # Raises JSON::NestingError (nesting of 2 is too deep. Did you try to serialize objects with circular references?):
+#   JSON.generate(obj, max_nesting: 2)
+#
+# With +false+:
+#   obj = []
+#   obj[0] = obj
+#   # Raises SystemStackError (stack level too deep):
+#   JSON.generate(obj, max_nesting: false)
+#
+# Setting +max_nesting+ to +false+ or a very large number can lead to a stack overflow
+# which may leave the process in an unrecoverable state.
+# It is highly discouraged.
+#
+# ====== Escaping Options
+#
+# Options +script_safe+ (boolean) specifies wether <tt>'\u2028'</tt>, <tt>'\u2029'</tt>
+# and <tt>'/'</tt> should be escaped as to make the JSON object safe to interpolate in script
+# tags.
+#
+# Options +ascii_only+ (boolean) specifies wether all characters outside the ASCII range
+# should be escaped.
+#
+# ====== Output Options
+#
+# The default formatting options generate the most compact
+# \JSON data, all on one line and with no whitespace.
+#
+# You can use these formatting options to generate
+# \JSON data in a more open format, using whitespace.
+# See also JSON.pretty_generate.
+#
+# - Option +array_nl+ (\String) specifies a string (usually a newline)
+#   to be inserted after each \JSON array; defaults to the empty \String, <tt>''</tt>.
+# - Option +object_nl+ (\String) specifies a string (usually a newline)
+#   to be inserted after each \JSON object; defaults to the empty \String, <tt>''</tt>.
+# - Option +indent+ (\String) specifies the string (usually spaces) to be
+#   used for indentation; defaults to the empty \String, <tt>''</tt>;
+#   has no effect unless options +array_nl+ or +object_nl+ specify newlines.
+# - Option +space+ (\String) specifies a string (usually a space) to be
+#   inserted after the colon in each \JSON object's pair;
+#   defaults to the empty \String, <tt>''</tt>.
+# - Option +space_before+ (\String) specifies a string (usually a space) to be
+#   inserted before the colon in each \JSON object's pair;
+#   defaults to the empty \String, <tt>''</tt>.
+# - Option +sort_keys+ (boolean or \Proc) controls whether and how the keys of a
+#   hash are sorted when generating the output; defaults to +false+.
+#   When +true+, keys are sorted lexicographically. When a \Proc, it receives
+#   the entire \Hash and must return a \Hash with its pairs in the desired
+#   order, allowing for arbitrary sort orders.
+#
+# In this example, +obj+ is used first to generate the shortest
+# \JSON data (no whitespace), then again with all formatting options
+# specified:
+#
+#   obj = {foo: [:bar, :baz], bat: {bam: 0, bad: 1}}
+#   json = JSON.generate(obj)
+#   puts 'Compact:', json
+#   opts = {
+#     array_nl: "\n",
+#     object_nl: "\n",
+#     indent: '  ',
+#     space_before: ' ',
+#     space: ' '
+#   }
+#   puts 'Open:', JSON.generate(obj, opts)
+#
+# Output:
+#   Compact:
+#   {"foo":["bar","baz"],"bat":{"bam":0,"bad":1}}
+#   Open:
+#   {
+#     "foo" : [
+#       "bar",
+#       "baz"
+#     ],
+#     "bat" : {
+#       "bam" : 0,
+#       "bad" : 1
+#     }
+#   }
+#
 module JSON
-  VERSION = "2.20.0"
-  class ParserError < StandardError; end
-  class GeneratorError < StandardError; end
-
-  # ---- parsing -------------------------------------------------------------
-  class Parser
-    def initialize(source, symbolize_names: false)
-      # Index a char ARRAY, not the String: String#[i] is O(i) (it walks to the
-      # i-th character), so char-by-char parsing of a large document would be
-      # O(n^2).  Array#[i] is O(1); the one-time #chars is O(n).
-      src  = source.to_str
-      # CRuby's parser reads UTF-8: a binary source (IO#read) is taken as UTF-8
-      # bytes, any other encoding is transcoded (the strings it yields are UTF-8).
-      unless src.encoding == ::Encoding::UTF_8
-        src = src.encoding == ::Encoding::BINARY ? src.dup.force_encoding(::Encoding::UTF_8) : src.encode(::Encoding::UTF_8)
-      end
-      @s   = src.chars
-      @i   = 0
-      @len = @s.length
-      @sym = symbolize_names
-    end
-
-    def parse
-      skip_ws
-      v = parse_value
-      skip_ws
-      err("unexpected trailing character") if @i < @len
-      v
-    end
-
-    private
-
-    def err(msg)
-      raise ParserError, "#{msg} at position #{@i}"
-    end
-
-    def skip_ws
-      @i += 1 while @i < @len && (c = @s[@i]) && (c == " " || c == "\t" || c == "\n" || c == "\r")
-    end
-
-    def parse_value
-      c = @s[@i]
-      err("unexpected end of input") if c.nil?
-      case c
-      when "{" then parse_object
-      when "[" then parse_array
-      when '"' then parse_string
-      when "t" then lit("true", true)
-      when "f" then lit("false", false)
-      when "n" then lit("null", nil)
-      else
-        if c == "-" || (c >= "0" && c <= "9")
-          parse_number
-        else
-          err("unexpected character #{c.inspect}")
-        end
-      end
-    end
-
-    def lit(word, val)
-      if @s[@i, word.length]&.join == word
-        @i += word.length
-        val
-      else
-        err("invalid literal")
-      end
-    end
-
-    def parse_object
-      @i += 1 # {
-      obj = {}
-      skip_ws
-      if @s[@i] == "}"
-        @i += 1
-        return obj
-      end
-      loop do
-        skip_ws
-        err("expected string key") unless @s[@i] == '"'
-        key = parse_string
-        key = key.to_sym if @sym
-        skip_ws
-        err("expected ':'") unless @s[@i] == ":"
-        @i += 1
-        skip_ws
-        obj[key] = parse_value
-        skip_ws
-        case @s[@i]
-        when "," then @i += 1
-        when "}" then @i += 1; break
-        else err("expected ',' or '}'")
-        end
-      end
-      obj
-    end
-
-    def parse_array
-      @i += 1 # [
-      arr = []
-      skip_ws
-      if @s[@i] == "]"
-        @i += 1
-        return arr
-      end
-      loop do
-        skip_ws
-        arr << parse_value
-        skip_ws
-        case @s[@i]
-        when "," then @i += 1
-        when "]" then @i += 1; break
-        else err("expected ',' or ']'")
-        end
-      end
-      arr
-    end
-
-    def parse_string
-      @i += 1 # opening "
-      out = +""
-      while @i < @len
-        c = @s[@i]
-        if c == '"'
-          @i += 1
-          return out
-        elsif c == "\\"
-          @i += 1
-          e = @s[@i]
-          case e
-          when '"'  then out << '"'
-          when "\\" then out << "\\"
-          when "/"  then out << "/"
-          when "b"  then out << "\b"
-          when "f"  then out << "\f"
-          when "n"  then out << "\n"
-          when "r"  then out << "\r"
-          when "t"  then out << "\t"
-          when "u"  then out << parse_unicode
-          else err("invalid escape \\#{e}")
-          end
-          @i += 1                 # hex4 leaves @i ON the last hex digit
-        else
-          out << c
-          @i += 1
-        end
-      end
-      err("unterminated string")
-    end
-
-    def hex4
-      h = @s[@i + 1, 4]
-      err("invalid \\u escape") unless h && h.length == 4
-      @i += 4
-      h.join.to_i(16)
-    end
-
-    def parse_unicode
-      cp = hex4
-      if cp >= 0xD800 && cp <= 0xDBFF          # high surrogate → expect a low surrogate
-        if @s[@i + 1] == "\\" && @s[@i + 2] == "u"
-          @i += 2
-          lo = hex4
-          cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
-        end
-      end
-      cp.chr(Encoding::UTF_8)
-    end
-
-    def parse_number
-      start = @i
-      @i += 1 if @s[@i] == "-"
-      @i += 1 while @i < @len && (d = @s[@i]) && d >= "0" && d <= "9"
-      is_float = false
-      if @s[@i] == "."
-        is_float = true
-        @i += 1
-        @i += 1 while @i < @len && (d = @s[@i]) && d >= "0" && d <= "9"
-      end
-      if (e = @s[@i]) && (e == "e" || e == "E")
-        is_float = true
-        @i += 1
-        @i += 1 if (sg = @s[@i]) && (sg == "+" || sg == "-")
-        @i += 1 while @i < @len && (d = @s[@i]) && d >= "0" && d <= "9"
-      end
-      tok = @s[start...@i].join
-      is_float ? tok.to_f : tok.to_i
-    end
-  end
-
-  # ---- generation ----------------------------------------------------------
-  ESCAPE_MAP = {
-    '"'  => '\\"', "\\" => "\\\\", "\b" => '\\b', "\f" => '\\f',
-    "\n" => '\\n', "\r" => '\\r', "\t" => '\\t'
-  }.freeze
-
-  def self.escape(str)
-    unless str.encoding == Encoding::UTF_8 && str.valid_encoding?
-      # the json gem writes UTF-8 only: BINARY / ASCII bytes are taken as UTF-8,
-      # other encodings are transcoded, and malformed input is an error
-      e = str.encoding
-      str = (e == Encoding::UTF_8 || e == Encoding::BINARY || e == Encoding::US_ASCII) ?
-              str.dup.force_encoding(Encoding::UTF_8) : str.encode(Encoding::UTF_8)
-      raise GeneratorError, +"source sequence is illegal/malformed utf-8" unless str.valid_encoding?   # unfrozen: vcr appends a note
-    end
-    out = +'"'
-    str.each_char do |c|
-      if (m = ESCAPE_MAP[c])
-        out << m
-      elsif c < " "
-        out << format('\\u%04x', c.ord)
-      else
-        out << c
-      end
-    end
-    out << '"'
-    out
-  end
-
-  # `as_json` (when a JSON::Coder is driving) is called for every object the
-  # generator cannot write natively, with (object, hash_key?).  Nil elsewhere.
-  def self.gen(obj, indent, cur, as_json = nil, as_key = false)
-    case obj
-    when nil     then "null"
-    when true    then "true"
-    when false   then "false"
-    when String  then escape(obj)
-    when Integer then obj.to_s
-    when Float   then obj.to_s
-    when Symbol  then escape(obj.to_s)
-    when Array
-      return "[]" if obj.empty?
-      if indent.empty?
-        "[" + obj.map { |e| gen(e, indent, cur, as_json) }.join(",") + "]"
-      else
-        nxt = cur + indent
-        "[\n" + obj.map { |e| nxt + gen(e, indent, nxt, as_json) }.join(",\n") + "\n" + cur + "]"
-      end
-    when Hash
-      return "{}" if obj.empty?
-      if indent.empty?
-        "{" + obj.map { |k, v| __key(k, indent, cur, as_json) + ":" + gen(v, indent, cur, as_json) }.join(",") + "}"
-      else
-        nxt = cur + indent
-        "{\n" + obj.map { |k, v| nxt + __key(k, indent, nxt, as_json) + ": " + gen(v, indent, nxt, as_json) }.join(",\n") + "\n" + cur + "}"
-      end
-    else
-      if as_json
-        converted = as_json.call(obj, as_key)
-        # the replacement is generated with the SAME callback: a tagged Hash may
-        # hold more objects the generator does not know (dry-monads nests monads)
-        return gen(converted, indent, cur, as_json) unless converted.equal?(obj)
-      end
-      if obj.respond_to?(:to_json)
-        obj.to_json
-      else
-        escape(obj.to_s)
-      end
-    end
-  end
-
-  # A Hash key is always written as a String; a key the generator does not know
-  # goes through `as_json` with the key flag set.
-  def self.__key(k, indent, cur, as_json)
-    return escape(k.to_s) if k.is_a?(String) || k.is_a?(Symbol) || k.is_a?(Integer) ||
-                             k.is_a?(Float) || k.nil? || k == true || k == false
-    if as_json
-      converted = as_json.call(k, true)
-      return escape(converted.to_s) unless converted.equal?(k)
-    end
-    escape(k.to_s)
-  end
-
-  def self.parse(source, symbolize_names: false, **_opts)
-    Parser.new(source, symbolize_names: symbolize_names).parse
-  end
-
-  def self.generate(obj, *_)
-    gen(obj, "", "")
-  end
-
-  def self.dump(obj, *_)
-    generate(obj)
-  end
-
-  def self.load(source, *_)
-    parse(source)
-  end
-
-  def self.pretty_generate(obj, *_)
-    gen(obj, "  ", "")
-  end
-
-  # JSON::Coder — a generator/parser pair with its own callbacks, so a library
-  # can teach JSON about its own types without patching anything globally.
-  #
-  #   coder = JSON::Coder.new { |object, as_key| object.to_s }
-  #   coder.dump(obj) / coder.load(str)
-  class Coder
-    # `as_json` runs for every object the generator cannot write natively, with
-    # (object, hash_key?).  `on_load:` runs for every parsed value, innermost
-    # first, so a tagged Hash can be rebuilt into the object it came from.
-    def initialize(on_load: nil, indent: "", **_opts, &as_json)
-      @as_json = as_json
-      @on_load = on_load
-      @indent = indent
-    end
-
-    def dump(obj) = JSON.gen(obj, @indent, "", @as_json)
-    alias generate dump
-
-    def load(source) = __revive(JSON.parse(source))
-    alias parse load
-
-    def load_file(path) = load(File.read(path))
-
-    private
-
-    def __revive(value)
-      value = case value
-              when ::Hash  then value.each_with_object({}) { |(k, v), h| h[k] = __revive(v) }
-              when ::Array then value.map { |v| __revive(v) }
-              else value
-              end
-      @on_load ? @on_load.call(value) : value
-    end
-  end
-end
-
-# #to_json: the types the generator writes natively answer with their own JSON;
-# everything else gets the json gem's default, which is the object's #to_s as a
-# JSON *string* (generating `self` would come straight back into the generator).
-[Hash, Array, String, Integer, Float, Symbol, NilClass, TrueClass, FalseClass].each do |k|
-  k.class_eval { def to_json(*) = JSON.generate(self) }
-end
-
-class Object
-  def to_json(*) = JSON.generate(to_s)
+  require 'json/version'
+  require 'json/ext'
 end

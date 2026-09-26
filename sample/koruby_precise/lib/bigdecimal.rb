@@ -6,6 +6,7 @@
 # BigDecimal#to_s prints ("0.15e1"), so the string round-trip is direct.
 # Non-finite values carry digits == 0 and a `special` tag.
 class BigDecimal < Numeric
+  __undef_new(self)   # CRuby undefines BigDecimal.new: use Kernel#BigDecimal
   ROUND_UP          = 1
   ROUND_DOWN        = 2
   ROUND_HALF_UP     = 3

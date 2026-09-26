@@ -716,6 +716,7 @@ typedef struct KorbClass {
     int32_t  exc_etype;              /* builtin exception class → its etype, else -1 */
     uint32_t method_cnt, method_capa;
     uint8_t  is_module;              /* 1 = module (mixin, not instantiable) */
+    uint8_t  no_new;                 /* 1 = ::new is undefined (Integer, Rational, BigDecimal, ...) */
     uint8_t  is_singleton;           /* 1 = per-object singleton class (transparent to .class) */
     uint8_t  eval_only;              /* singleton materialized ONLY to be instance_eval's definee.  CRuby
                                       * does not materialize one for that, so a NameError raised inside
