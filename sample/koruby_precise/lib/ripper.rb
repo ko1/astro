@@ -64,11 +64,23 @@ class Ripper
   end
 end
 
-require "prism"
-require "prism/translation/ripper"
-
 class Ripper
-  # 実体は prism 側。定数 (EXPR_*) は上で置いたものを使う。
+  # 実体は prism 側。定数 (EXPR_*) は上で置いたものを使う。prism は最初に使う時に
+  # 読む: CRuby の ripper.so は prism に依らないので、require "ripper" だけで
+  # Prism が定義されてはいけない (simplecov の unloadable_prism)。
+  def self.__impl
+    @__impl ||= begin
+      require "prism"
+      require "prism/translation/ripper"
+      Prism::Translation::Ripper
+    end
+  end
+
+  def self.const_missing(name)
+    return const_set(name, __impl.const_get(name)) if name == :SexpBuilder || name == :SexpBuilderPP
+    super
+  end
+
   class << self
     # CRuby の ripper.so は StringValue() でソースを取るので String そのもので
     # なくてもよい (rspec は EncodedString、IO を渡す使い方もある)。prism の
@@ -78,7 +90,7 @@ class Ripper
       String.try_convert(src) || (src.respond_to?(:read) ? src.read : src.to_s)
     end
 
-    def parse(src, filename = "(ripper)", lineno = 1) = Prism::Translation::Ripper.parse(__source(src), filename, lineno)
+    def parse(src, filename = "(ripper)", lineno = 1) = __impl.parse(__source(src), filename, lineno)
     # prism/lex_compat.rb は「本物の Ripper が BOM を先に流すか」を Ripper.lex に
     # 訊きに来る。ここでは Ripper の実体がその lex_compat なので、その 1 回だけは
     # 再入せず CRuby 3.x の答え (流す = 先頭 token は桁 0) を返す。
@@ -88,7 +100,7 @@ class Ripper
     def lex(src, filename = "-", lineno = 1, raise_errors: false)
       return BOM_PROBE_ANSWER if src.is_a?(String) && src.b == BOM_PROBE.b
       s = __source(src)
-      __fill_sp(s, Prism::Translation::Ripper.lex(s, filename, lineno, raise_errors: raise_errors))
+      __fill_sp(s, __impl.lex(s, filename, lineno, raise_errors: raise_errors))
     end
 
     # 同梱の prism (lex_compat.rb) は :on_sp を作らない。CRuby の prism 1.9 に
@@ -148,9 +160,9 @@ class Ripper
       lex(src, filename, lineno, raise_errors: raise_errors).map { |_, _, token, _| token }
     end
     def sexp(src, filename = "-", lineno = 1, raise_errors: false) =
-      Prism::Translation::Ripper.sexp(__source(src), filename, lineno, raise_errors: raise_errors)
+      __impl.sexp(__source(src), filename, lineno, raise_errors: raise_errors)
     def sexp_raw(src, filename = "-", lineno = 1, raise_errors: false) =
-      Prism::Translation::Ripper.sexp_raw(__source(src), filename, lineno, raise_errors: raise_errors)
+      __impl.sexp_raw(__source(src), filename, lineno, raise_errors: raise_errors)
     # Ripper.slice は TokenPattern (ripper/lexer.rb) が要る。prism の翻訳器には
     # 無いので未実装 — 黙って nil を返すと「一致しなかった」と読めてしまう。
     def slice(src, pattern, n = 0)
@@ -158,11 +170,8 @@ class Ripper
     end
   end
 
-  SexpBuilder = Prism::Translation::Ripper::SexpBuilder
-  SexpBuilderPP = Prism::Translation::Ripper::SexpBuilderPP
-
   def initialize(src, filename = "(ripper)", lineno = 1)
-    @impl = Prism::Translation::Ripper.new(self.class.__source(src), filename, lineno)
+    @impl = Ripper.__impl.new(Ripper.__source(src), filename, lineno)
   end
 
   def parse = @impl.parse
