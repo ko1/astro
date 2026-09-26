@@ -4739,16 +4739,19 @@ static void korb_vm_orphan_method(struct korb_vm *vm, struct korb_method *m)
 /* Every method-table lookup records its mid: a (re)definition of a mid no
  * lookup ever asked for cannot have a cache entry to invalidate, so it skips
  * the global method_serial bump (korb_method_changed).  Miss paths only. */
-static void korb_mid_looked(struct korb_vm *vm, const uint32_t mid) {
-    if (UNLIKELY(mid >= vm->mid_looked_cap)) {
-        uint32_t cap = vm->mid_looked_cap ? vm->mid_looked_cap : 4096;
-        while (cap <= mid) cap *= 2;
-        uint8_t *const p = realloc(vm->mid_looked, cap);
-        if (!p) { fprintf(stderr, "koruby_precise: oom (mid_looked)\n"); abort(); }
-        memset(p + vm->mid_looked_cap, 0, cap - vm->mid_looked_cap);
-        vm->mid_looked = p; vm->mid_looked_cap = cap;
-    }
+static __attribute__((noinline, cold)) void korb_mid_looked_grow(struct korb_vm *vm, const uint32_t mid) {
+    uint32_t cap = vm->mid_looked_cap ? vm->mid_looked_cap : 4096;
+    while (cap <= mid) cap *= 2;
+    uint8_t *const p = realloc(vm->mid_looked, cap);
+    if (!p) { fprintf(stderr, "koruby_precise: oom (mid_looked)\n"); abort(); }
+    memset(p + vm->mid_looked_cap, 0, cap - vm->mid_looked_cap);
+    vm->mid_looked = p; vm->mid_looked_cap = cap;
     vm->mid_looked[mid] = 1;
+}
+/* on every cache fill, which a megamorphic site does per call: keep it a load and a store */
+static inline void korb_mid_looked(struct korb_vm *vm, const uint32_t mid) {
+    if (LIKELY(mid < vm->mid_looked_cap)) vm->mid_looked[mid] = 1;
+    else korb_mid_looked_grow(vm, mid);
 }
 /* The method table entry for `mid` changed somewhere. */
 static void korb_method_changed(struct korb_vm *vm, const uint32_t mid) {
@@ -5776,6 +5779,10 @@ void korb_dispatchers_swapped(struct korb_vm *vm) { vm->method_serial++; }
  * other file has refinements on (rexml's xpath_parser did that for everyone). */
 static inline uint32_t korb_ic_serial(CTX *c, const uint32_t mid) {
     korb_mid_looked(c->vm, mid);   /* this cache now holds mid's resolution */
+    return LIKELY(c->refinements == KORB_NIL) ? c->vm->method_serial : 0u;
+}
+/* The same, when the method came from korb_mcache_find (its fill marked mid). */
+static inline uint32_t korb_ic_serial_mc(const CTX *c) {
     return LIKELY(c->refinements == KORB_NIL) ? c->vm->method_serial : 0u;
 }
 
@@ -11190,7 +11197,7 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink,
                 def_class = KORB_NIL;
                 m = korb_mcache_find(vm, klass, mid, &def_class);
                 if (UNLIKELY(m == NULL)) return korb_call_impl(c, slots, mid, korb_flink_line(flink), cc, argc, self, NULL, NULL, NULL, site);
-                korb_ic_fill(ic, korb_ic_serial(c, mid), klass, m, def_class, KORB_IC_INSTANCE, argc);
+                korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, argc);
             }
             if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple)) {  /* hot path: inlines */
                 if (LIKELY(!vm->refinements_active))
@@ -11236,7 +11243,7 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
                 m = korb_mcache_find(vm, klass, mid, &def_class);
                 /* kwargs 経路は simple entry を使わない (argc の意味が違う)。
                  * 決して一致しない値を渡して高速路の設置だけ抑える。 */
-                if (m) korb_ic_fill(ic, korb_ic_serial(c, mid), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);
+                if (m) korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);
             }
         } else {                                         /* main / top-level global function */
             if (LIKELY(cc->serial == vm->method_serial && cc->m != NULL)) m = cc->m;
@@ -13806,7 +13813,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
     if (UNLIKELY(m == NULL))   /* NoMethodError (rare) or a top-level def — korb_send_impl_vis formats/raises/guards */
         { korb_flink_stage(c, flink, slots - (korb_sword_t)argc - 3); return korb_send_impl_vis(c, slots, mid, korb_flink_line(flink), argc, NULL, NULL, NULL, caller_self); }
     if (UNLIKELY(m->visibility != 0)) {   /* private/protected: cache as _VIS (resolved) — node_send's inline fast path won't match it, so it always routes here to be guarded */
-        korb_ic_fill(ic, korb_ic_serial(c, mid), klass, m, def_class, KORB_IC_INSTANCE_VIS, argc);
+        korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE_VIS, argc);
         if (caller_self != KORB_UNDEF) {
             bool mm_handled = false;
             const RESULT vr = korb_check_call_vis(c, slots, m, mid, korb_flink_line(flink), recv, caller_self, def_class, argc, &mm_handled,
@@ -13815,7 +13822,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
         }
         return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL, framed);
     }
-    korb_ic_fill(ic, korb_ic_serial(c, mid), klass, m, def_class, KORB_IC_INSTANCE, argc);
+    korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, argc);
     return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL, framed);
 }
 
