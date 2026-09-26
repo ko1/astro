@@ -16330,6 +16330,12 @@ korb_const_get_loc(const struct korb_vm *vm, uint32_t name_sym, VALUE owner, uin
     return false;
 }
 
+static uint32_t korb_srcloc_slot(const struct korb_vm *const vm, const struct Node *const node) {
+    uint32_t slot = (uint32_t)(((uintptr_t)node >> 4) * 0x9e3779b1u) & vm->srcloc_idx_mask;
+    while (vm->srcloc_idx[slot] != 0 && vm->srclocs[vm->srcloc_idx[slot] - 1].node != node)
+        slot = (slot + 1) & vm->srcloc_idx_mask;
+    return slot;
+}
 void
 korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, uint32_t line)
 {
@@ -16344,6 +16350,17 @@ korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, uint32
     vm->srclocs[vm->srcloc_cnt].file_sym = file_sym;
     vm->srclocs[vm->srcloc_cnt].line = line;
     vm->srcloc_cnt++;
+    /* the lookup runs per frame on every backtrace: index it (newest entry wins) */
+    if (vm->srcloc_idx == NULL || (vm->srcloc_cnt + 1) * 2 > vm->srcloc_idx_mask + 1) {
+        const uint32_t n = vm->srcloc_idx ? (vm->srcloc_idx_mask + 1) * 2 : 1024;
+        free(vm->srcloc_idx);
+        vm->srcloc_idx = calloc(n, sizeof(uint32_t));
+        if (!vm->srcloc_idx) abort();
+        vm->srcloc_idx_mask = n - 1;
+        for (uint32_t i = 0; i < vm->srcloc_cnt; i++) vm->srcloc_idx[korb_srcloc_slot(vm, vm->srclocs[i].node)] = i + 1;
+    } else {
+        vm->srcloc_idx[korb_srcloc_slot(vm, node)] = vm->srcloc_cnt;
+    }
 }
 /* Record the realpath `path` resolves to right now, keyed by the name the
  * program will see it under, and return it (NULL when there is no such file:
@@ -16422,10 +16439,11 @@ korb_get_srcrange(const struct korb_vm *restrict vm, const struct Node *node,
 bool
 korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line)
 {
-    if (!node) return false;
-    for (uint32_t i = vm->srcloc_cnt; i-- > 0; )   /* newest-first: a redefinition shadows */
-        if (vm->srclocs[i].node == node) { *file_sym = vm->srclocs[i].file_sym; *line = vm->srclocs[i].line; return true; }
-    return false;
+    if (!node || vm->srcloc_idx == NULL) return false;
+    const uint32_t e = vm->srcloc_idx[korb_srcloc_slot(vm, node)];   /* the newest entry: a redefinition shadows */
+    if (e == 0) return false;
+    *file_sym = vm->srclocs[e - 1].file_sym; *line = vm->srclocs[e - 1].line;
+    return true;
 }
 /* [file, line] for a body NODE, or nil.  Result rooted by caller's slots. */
 static RESULT

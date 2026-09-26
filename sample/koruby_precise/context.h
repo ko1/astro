@@ -1375,6 +1375,8 @@ struct korb_vm {
      * parse time.  Node ptrs are immortal (AST); no GC. */
     struct korb_srcloc { struct Node *node; uint32_t file_sym; uint32_t line; } *srclocs;
     uint32_t srcloc_cnt, srcloc_capa;
+    uint32_t *srcloc_idx;             /* node pointer → newest srclocs entry + 1 (open addressing) */
+    uint32_t  srcloc_idx_mask;
     /* Thread::Backtrace::Location#absolute_path: the realpath each file had when
      * it was read.  A name no file was ever read under (an eval's filename) has
      * no entry — which is the nil CRuby reports for it. */
