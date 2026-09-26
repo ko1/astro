@@ -67,7 +67,7 @@ static RESULT korb_ary_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE key, ui
         }
         if (VAL2ARY(slots[1])->len <= idx) continue;
         const VALUE el = korb_items_data(VAL2ARY(slots[1])->items)[idx];
-        if (korb_eq_needs_send(el) || korb_eq_needs_send(slots[0])) {  /* user == → dispatch (el == key) */
+        if (korb_eq_send_p(el, slots[0])) {  /* user == → dispatch (el == key) */
             slots[2] = el; slots[3] = slots[0];              /* recv, arg */
             RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;

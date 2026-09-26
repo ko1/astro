@@ -273,6 +273,13 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, 
     if (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL)
         return korb_float_new(c, slots, korb_mt_real(st));
     VALUE arg = VALUE_SLICE_GET(a, 0);
+    if (KORB_BIGNUM_P(arg)) {                         /* Kernel#rand(big): below its magnitude */
+        if (korb_mp_sgn(VAL2BIG(arg)->z) > 0) return korb_rand_below_big(c, slots, st, VAL2BIG(arg)->z);
+        slots[0] = arg;
+        const RESULT ar = korb_send(c, slots + 1, korb_intern(c->vm, "abs", 3), 0, 0);   /* rng_owner is nil here: st stays put */
+        if (UNLIKELY(ar.state != KORB_NORMAL) || !KORB_BIGNUM_P(ar.value)) return ar;
+        return korb_rand_below_big(c, slots, st, VAL2BIG(ar.value)->z);
+    }
     if (KORB_RANGE_P(arg)) {                          /* rand(a..b) / rand(a...b) */
         const KorbRange *const r = VAL2RANGE(arg);
         const VALUE lo = r->rbegin, hi = r->rend;
@@ -447,6 +454,13 @@ static KorbMT *korb_default_rng(struct korb_vm *const vm) {
     return &vm->default_rng;
 }
 static RESULT korb_bi_rand(CTX *c, VALUE *slots, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) >= 1 && KORB_FLOAT_P(VALUE_SLICE_GET(a, 0))) {   /* Kernel#rand(1.5) is rand(1): truncated (Random#rand keeps the Float) */
+        slots[0] = VALUE_SLICE_GET(a, 0);
+        const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "to_i", 4), 0, 0);
+        if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+        slots[0] = ir.value == LONG2FIX(0) ? KORB_NIL : ir.value;   /* 0 → a Float in [0, 1) */
+        return korb_rand_core(c, slots + 1, korb_default_rng(c->vm), KORB_NIL, VALUE_SLICE_MAKE(slots, 1));
+    }
     return korb_rand_core(c, slots, korb_default_rng(c->vm), KORB_NIL, a);
 }
 static RESULT korb_bi_srand(CTX *c, VALUE *slots, VALUE_SLICE a) {

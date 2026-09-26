@@ -2546,6 +2546,7 @@ korb_const_cref(const struct korb_vm *const vm, VALUE self, VALUE entry_cell)
 {
     if (((uintptr_t)entry_cell & 7u) == KORB_FID_METHOD) {
         const struct korb_method *const m = (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)7u);
+        if (KORB_CLASS_P(m->def_cref)) return m->def_cref;   /* defined in a class_eval(String): that cref (`def self.x` too) */
         if (KORB_CLASS_P(m->owner) && VAL2CLASS(m->owner)->is_singleton) return m->owner;
     }
     /* a block written in a `class << x` method (the parser bakes the cell only
@@ -18374,9 +18375,11 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *
         encl[nencl++] = VAL2CLASS(o)->name_sym;
     for (uint32_t i = 0, j = nencl; i < j; i++, j--)            /* → outermost first */
         { const uint32_t t = encl[i]; encl[i] = encl[j - 1]; encl[j - 1] = t; }
+    c->vm->parse_anon_cref = KORB_CLASS_P(cref) && cref_name == 0 && !VAL2CLASS(cref)->is_singleton;   /* class_eval on an unnamed class */
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, line, false,
                                        korb_enc_name_of(c->vm, KORB_STR_ENC(str)), cref_name,
                                        nencl ? encl : NULL, nencl, true);   /* immortal AST; no GC */
+    c->vm->parse_anon_cref = false;
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */
@@ -18539,11 +18542,14 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
      * the enclosing eval already resolved. */
     const uint32_t bind_mid0 = korb_bind_method_mid(c->vm, b0);
     const uint32_t bind_mid = bind_mid0 ? bind_mid0 : c->eval_mid;
+    c->vm->parse_anon_cref = cref != KORB_UNDEF && KORB_CLASS_P(cref) && VAL2CLASS(cref)->name_sym == 0 &&
+                             !VAL2CLASS(cref)->is_singleton;   /* class_eval on an unnamed class */
     NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, fname, eline,
                                             korb_enc_name_of(c->vm, KORB_STR_ENC(*src_slot)), decl, dn,
                                             outer_names, outer_cnt, outer_levels,
                                             bind_mid,
                                             cref_name, nencl ? encl : NULL, nencl, cref_is_caller);
+    c->vm->parse_anon_cref = false;
     free(decl); free(outer_names); free(outer_cnt);
     if (UNLIKELY(entry == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
     const uint32_t L = koruby_toplevel_locals_cnt;

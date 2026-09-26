@@ -248,6 +248,16 @@ static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         const bool excl = VAL2RANGE(slots[0])->exclude_end;
         slots[2] = VAL2RANGE(slots[0])->rbegin;          /* current = begin (rooted) */
         const VALUE end = VAL2RANGE(slots[0])->rend;
+        {   /* single ASCII bytes compare by code, not by #succ ("A".."z" holds "_") — CRuby */
+            const KorbString *const bs = VAL2STR(slots[2]), *const es = VAL2STR(end), *const vs = VAL2STR(slots[1]);
+            if (bs->len == 1 && es->len == 1 && vs->len <= 1) {
+                if (vs->len == 0) return RESULT_OK(KORB_FALSE);
+                const unsigned char b = (unsigned char)korb_strbuf_data(bs->buf)[0], e = (unsigned char)korb_strbuf_data(es->buf)[0],
+                                    v = (unsigned char)korb_strbuf_data(vs->buf)[0];
+                if (b < 0x80 && e < 0x80 && v < 0x80)
+                    return RESULT_OK((b <= v && v < e) || (!excl && v == e) ? KORB_TRUE : KORB_FALSE);
+            }
+        }
         slots[3] = end;                                  /* end (rooted) */
         const uint32_t el = korb_utf8_count(korb_strbuf_data(VAL2STR(end)->buf), VAL2STR(end)->len);
         const uint32_t mid_succ = korb_intern(c->vm, "succ", 4);

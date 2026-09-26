@@ -315,8 +315,12 @@ class Date
   def sec_fraction = 0
   def offset = Rational(@of, 86400)
   def zone = Date.__zone_str(@of)
+  # time-of-day and zone are DateTime's; a Date keeps them for its own use
+  # (i18n tells a Time-like value by respond_to?(:sec))
+  private :hour, :min, :sec, :offset, :zone
 
-  private def __civil = (@civil ||= Date.jd_to_civil(@jd, @sg))
+  # a frozen Date cannot memoize (faker freezes what it returns)
+  private def __civil = frozen? ? Date.jd_to_civil(@jd, @sg) : (@civil ||= Date.jd_to_civil(@jd, @sg))
 
   def self.__zone_str(of)
     sign = of < 0 ? "-" : "+"
@@ -1053,6 +1057,11 @@ class DateTime < Date
   class << self; alias_method :new, :civil; end
 
   def self.jd(jd = 0, h = 0, min = nil, s = 0, of = 0, sg = ITALY)
+    if jd.is_a?(Numeric) && !jd.is_a?(Integer) && h == 0 && min.nil?   # a day fraction is the time of day
+      whole = jd.floor
+      h = (jd - whole) * 24
+      jd = whole
+    end
     carry, df, sf = __time_parts(h, min, s)
     new!(jd + carry, df, sf, __offset_seconds(of), sg)
   end
@@ -1119,6 +1128,14 @@ class DateTime < Date
       (of * 86400).round
     else 0
     end
+  end
+
+  public :offset, :zone
+  # the same instant under another offset
+  def new_offset(of = 0)
+    nof = DateTime.__offset_seconds(of)
+    carry, df = (@df - @of + nof).divmod(86400)
+    self.class.new!(@jd + carry, df, @sf, nof, @sg)
   end
 
   def hour = @df / 3600

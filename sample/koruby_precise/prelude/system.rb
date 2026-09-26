@@ -850,22 +850,6 @@ class IO
     s.is_a?(String) ? (+s.dup) : s
   end
   alias path to_path            # CRuby: #path IS #to_path
-  def size; stat.size; end
-  # The open file's times.  koruby re-stats the path it was opened with, which
-  # is all the fd-less File::Stat representation can offer.
-  def atime = File.atime(__time_path)
-  def ctime = File.ctime(__time_path)
-  def mtime = File.mtime(__time_path)
-  def birthtime = File.birthtime(__time_path)
-  private def __time_path
-    raise IOError, "closed stream" if closed?
-    @__io_path or raise NotImplementedError, "file times are unavailable for a descriptor with no path"
-  end
-  # File#lstat — stat の symlink 版。開いているのはファイル本体なので、
-  # 開いたときのパスを lstat し直す (パスがなければ #stat と同じ)。
-  def lstat
-    @__io_path ? File.lstat(@__io_path) : stat
-  end
   # io/wait: IO#wait.  CRuby's io_wait has two shapes: exactly (events, timeout)
   # with no Symbol answers the ready-event mask; anything else is the legacy
   # form (Symbols + at most one timeout) and answers self / nil.
@@ -914,6 +898,23 @@ class IO
 end
 
 class File
+  # File-only in CRuby (an IO / pipe has no #size or file times)
+  def size; stat.size; end
+  # The open file's times.  koruby re-stats the path it was opened with, which
+  # is all the fd-less File::Stat representation can offer.
+  def atime = File.atime(__time_path)
+  def ctime = File.ctime(__time_path)
+  def mtime = File.mtime(__time_path)
+  def birthtime = File.birthtime(__time_path)
+  private def __time_path
+    raise IOError, "closed stream" if closed?
+    @__io_path or raise NotImplementedError, "file times are unavailable for a descriptor with no path"
+  end
+  # File#lstat — stat の symlink 版。開いているのはファイル本体なので、
+  # 開いたときのパスを lstat し直す (パスがなければ #stat と同じ)。
+  def lstat
+    @__io_path ? File.lstat(@__io_path) : stat
+  end
   # NULL / LOCK_* / SEPARATOR* are defined in C (File::Constants / File).
   # LOCK_NB answers false when the lock is held elsewhere; without it, wait.
   def flock(op)

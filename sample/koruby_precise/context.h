@@ -863,7 +863,8 @@ static inline ARO_BORROW char  *korb_str_data   (VALUE v)           { return kor
  * carries its own cycle guard. */
 static inline bool korb_eq_needs_send_d(VALUE v, int depth)
 {
-    if (KORB_OBJECT_P(v) || KORB_EXC_P(v)) return true;
+    if (!AROH_IS_GC_OBJECT(v)) return false;             /* immediates (array elements reach here) */
+    if (KORB_OBJECT_P(v) || KORB_EXC_P(v) || KORB_OBJ_TYPE(v) == KORB_OBJ_PROC || KORB_OBJ_TYPE(v) == KORB_OBJ_METHOD) return true;
     if (KORB_ARRAY_P(v)) {
         if (depth >= 4) return true;
         const KorbArray *const arr__ = VAL2ARY(v);
@@ -875,6 +876,11 @@ static inline bool korb_eq_needs_send_d(VALUE v, int depth)
 }
 static inline bool korb_eq_needs_send(VALUE v) {
     return AROH_IS_GC_OBJECT(v) && korb_eq_needs_send_d(v, 0);   /* immediates never dispatch */
+}
+/* `a == b` must be sent (rb_equal): not for the same object, which is equal
+ * without asking — a user #== answering false for itself still matches. */
+static inline bool korb_eq_send_p(VALUE a, VALUE b) {
+    return a != b && (korb_eq_needs_send(a) || korb_eq_needs_send(b));
 }
 #define VAL2SET(v)         ((KorbSet *)(uintptr_t)KORB_SC(v))
 #define KORB_REGEXP_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_REGEXP)
@@ -1115,6 +1121,7 @@ struct korb_vm {
     uint32_t class_serial;   /* monotonic id handed to each new class (see KorbClass.serial) */
     uint32_t boot_class_serial;   /* class_serial when the prelude finished: classes up to it are koruby's own */
     bool c_subclasses_filed;      /* Class#subclasses has filed the classes made in C (set.c) */
+    bool parse_anon_cref;         /* the eval(String) being parsed runs under an unnamed class (class_eval) */
     struct korb_file_locals { uint32_t fsym; const struct korb_locals_info *li; } *file_locals;   /* a file's top-level local names (Proc#binding) */
     uint32_t file_locals_cnt, file_locals_cap;
     struct korb_shtrans_ent { uint32_t shape, sym, child; } *shtrans;   /* (shape, ivar) → child shape (korb_shape_transition) */

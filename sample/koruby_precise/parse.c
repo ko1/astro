@@ -4529,6 +4529,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (!tc->in_eval) kp_note_file_locals(tc, tl_syms, koruby_toplevel_local_cnt);
         push_frame(tc, &pn->locals);
         tc->frame->class_name_sym = tc->seed_class_name;   /* eval(String) under a named cref */
+        /* …or an unnamed one: read constants through self / the def, as in `class << obj` */
+        tc->frame->anon_class_body = tc->in_eval && tc->c->vm->parse_anon_cref;
         NODE *body = transduce_statements(tc, pn->statements);
         koruby_toplevel_locals_cnt = pop_frame(tc);   /* frame_size for main's cursor */
         return body;
