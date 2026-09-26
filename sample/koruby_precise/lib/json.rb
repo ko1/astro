@@ -21,7 +21,13 @@ module JSON
       # Index a char ARRAY, not the String: String#[i] is O(i) (it walks to the
       # i-th character), so char-by-char parsing of a large document would be
       # O(n^2).  Array#[i] is O(1); the one-time #chars is O(n).
-      @s   = source.to_str.chars
+      src  = source.to_str
+      # CRuby's parser reads UTF-8: a binary source (IO#read) is taken as UTF-8
+      # bytes, any other encoding is transcoded (the strings it yields are UTF-8).
+      unless src.encoding == ::Encoding::UTF_8
+        src = src.encoding == ::Encoding::BINARY ? src.dup.force_encoding(::Encoding::UTF_8) : src.encode(::Encoding::UTF_8)
+      end
+      @s   = src.chars
       @i   = 0
       @len = @s.length
       @sym = symbolize_names
