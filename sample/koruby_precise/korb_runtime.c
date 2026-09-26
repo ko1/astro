@@ -9261,6 +9261,36 @@ korb_bt_label(CTX *c, uint32_t mid, const struct korb_method *m)
     return mm->bt_label;
 }
 
+/* The backtrace strings — one per frame for every raise and every `caller` —
+ * are built by hand: the printf engine was a visible share of that work. */
+struct korb_fmtbuf { char *const p; const size_t cap; size_t len; };
+static void korb_fb_str(struct korb_fmtbuf *const b, const char *s) {
+    while (*s && b->len + 1 < b->cap) b->p[b->len++] = *s++;
+}
+static void korb_fb_int(struct korb_fmtbuf *const b, const int64_t v) {
+    char t[24]; int n = 0;
+    uint64_t u = v < 0 ? (uint64_t)0 - (uint64_t)v : (uint64_t)v;
+    do { t[n++] = (char)('0' + u % 10); u /= 10; } while (u);
+    if (v < 0) t[n++] = '-';
+    while (n > 0 && b->len + 1 < b->cap) b->p[b->len++] = t[--n];
+}
+static int korb_fb_done(struct korb_fmtbuf *const b) { b->p[b->len] = '\0'; return (int)b->len; }
+/* "FILE:LINE:in 'LABEL'" */
+static int korb_fmt_loc(char *const buf, const size_t bufsz, const char *const file, const int32_t line, const char *const label) {
+    struct korb_fmtbuf b = { buf, bufsz, 0 };
+    korb_fb_str(&b, file); korb_fb_str(&b, ":"); korb_fb_int(&b, line);
+    korb_fb_str(&b, ":in '"); korb_fb_str(&b, label); korb_fb_str(&b, "'");
+    return korb_fb_done(&b);
+}
+/* "block in OWNER" / "block (N levels) in OWNER" */
+static int korb_fmt_block_label(char *const buf, const size_t bufsz, const uint32_t level, const char *const owner) {
+    struct korb_fmtbuf b = { buf, bufsz, 0 };
+    if (level == 1) korb_fb_str(&b, "block in ");
+    else { korb_fb_str(&b, "block ("); korb_fb_int(&b, level); korb_fb_str(&b, " levels) in "); }
+    korb_fb_str(&b, owner);
+    return korb_fb_done(&b);
+}
+
 /* "block in <main>" / "block (2 levels) in <top (required)>": the depth is baked
  * (node.def blk_top_level), the owner's name is not.  Only the script named on
  * the command line gets a frame that is not "required", so the block's file decides. */
@@ -9272,8 +9302,7 @@ korb_bt_top_block_label(CTX *const c, const uint32_t level, const struct Node *c
     const bool in_main = korb_get_srcloc(vm, e, &fsym, &fline) && fsym == vm->main_fsym;
     const char *const owner = in_main ? "<main>" : "<top (required)>";
     char buf[352];
-    int len = (level == 1) ? snprintf(buf, sizeof buf, "block in %s", owner)
-                           : snprintf(buf, sizeof buf, "block (%u levels) in %s", level, owner);
+    int len = korb_fmt_block_label(buf, sizeof buf, level, owner);
     if (len < 0) return "block";
     if (len >= (int)sizeof buf) len = (int)sizeof buf - 1;
     return korb_sym_name(vm, korb_intern(vm, buf, (size_t)len));
@@ -9343,8 +9372,7 @@ korb_bt_block_label(CTX *c, const struct Node *e, const VALUE *base, const VALUE
         level++;
     }
     char buf[352];
-    int len = (level == 1) ? snprintf(buf, sizeof buf, "block in %s", owner)
-                           : snprintf(buf, sizeof buf, "block (%u levels) in %s", level, owner);
+    int len = korb_fmt_block_label(buf, sizeof buf, level, owner);
     if (len < 0) return "block";
     if (len >= (int)sizeof buf) len = (int)sizeof buf - 1;
     return korb_sym_name(vm, korb_intern(vm, buf, (size_t)len));
@@ -9956,8 +9984,7 @@ korb_bt_entry_fmt(const struct korb_vm *vm, uint32_t i, const char *const below,
 {
     const struct korb_bt_entry *const e = &vm->bt[i];
     const char *const file = e->file ? e->file : below;
-    int len = snprintf(buf, bufsz, "%s:%d:in '%s'",
-                       file ? file : korb_bt_cur_file(vm), (int32_t)e->line, e->name);
+    int len = korb_fmt_loc(buf, bufsz, file ? file : korb_bt_cur_file(vm), (int32_t)e->line, e->name);
     if (len < 0) len = 0;
     return len < (int)bufsz ? len : (int)bufsz - 1;
 }
@@ -9972,8 +9999,7 @@ korb_frames_at(CTX *c, uint32_t nb, uint32_t d, uint32_t i, char *buf, size_t bu
     if (i < nb) return korb_bt_entry_fmt(vm, i, d ? vm->fscratch[0].file : NULL, buf, bufsz);
     if (i - nb >= d) { buf[0] = '\0'; return 0; }
     const struct korb_frame_rec *const r = &vm->fscratch[i - nb];
-    int len = snprintf(buf, bufsz, "%s:%d:in '%s'",
-                       r->file ? r->file : korb_bt_cur_file(vm), (int32_t)r->line, r->label);
+    int len = korb_fmt_loc(buf, bufsz, r->file ? r->file : korb_bt_cur_file(vm), (int32_t)r->line, r->label);
     if (len < 0) len = 0;
     return len < (int)bufsz ? len : (int)bufsz - 1;
 }
