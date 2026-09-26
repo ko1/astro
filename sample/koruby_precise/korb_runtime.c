@@ -16131,14 +16131,7 @@ korb_eval_toplevel_wrap(CTX *c, VALUE *slots, const char *src, size_t len, const
     const uint32_t repo_before = code_repo_count();               /* bodies this file adds: [repo_before, count) */
     NODE *ast = koruby_parse_source(c, src, len, fname, false);   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) {
-        RESULT sr = korb_raise(c, slots, KORB_E_SYNTAX, 0, "syntax error in %s", fname);
-        if (LIKELY(KORB_EXC_P(sr.value))) {               /* SyntaxError#path is the file we were reading */
-            slots[0] = sr.value;
-            slots[1] = UNWRAP(korb_str_new(c, slots + 1, fname, (uint32_t)strlen(fname)));
-            korb_exc_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(c->vm, "@__path", 7)), slots[1]);
-            sr.value = slots[0];
-        }
-        return sr;
+        return korb_raise_syntax_at(c, slots, "syntax error", fname);   /* prism's diagnostics, as CRuby; #path = the file */
     }
     korb_load_time_specialize(ast, repo_before, fname);          /* AOT: bind (+compile when producing) at load */
     const uint32_t locals = koruby_toplevel_locals_cnt;

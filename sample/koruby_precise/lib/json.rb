@@ -207,7 +207,7 @@ module JSON
       e = str.encoding
       str = (e == Encoding::UTF_8 || e == Encoding::BINARY || e == Encoding::US_ASCII) ?
               str.dup.force_encoding(Encoding::UTF_8) : str.encode(Encoding::UTF_8)
-      raise GeneratorError, "source sequence is illegal/malformed utf-8" unless str.valid_encoding?
+      raise GeneratorError, +"source sequence is illegal/malformed utf-8" unless str.valid_encoding?   # unfrozen: vcr appends a note
     end
     out = +'"'
     str.each_char do |c|
