@@ -14546,6 +14546,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_THREAD, "to_s", korb_m_thread_to_s, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "inspect", korb_m_thread_to_s, 0);
     korb_def_cmethod(c, KORB_C_MUTEX, "lock", korb_m_mutex_lock, 0);
+    korb_class_def_cfn(c, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), "__trap_ctx", korb_m_trap_ctx, 1);
     korb_def_cmethod(c, KORB_C_MUTEX, "unlock", korb_m_mutex_unlock, 0);
     korb_def_cmethod(c, KORB_C_MUTEX, "try_lock", korb_m_mutex_try_lock, 0);
     korb_def_cmethod(c, KORB_C_MUTEX, "locked?", korb_m_mutex_locked_p, 0);

@@ -1778,7 +1778,12 @@ module Signal
     when "DEFAULT", "SIG_DFL", "SYSTEM_DEFAULT"
       raise(signo == Signal.list["INT"] ? Interrupt.new : SignalException.new(signo))
     else
-      h.call(signo)   # a non-callable handler is a NoMethodError at the point of use (CRuby)
+      __trap_ctx(true)   # Mutex#lock refuses inside the handler (CRuby's trap context)
+      begin
+        h.call(signo)   # a non-callable handler is a NoMethodError at the point of use (CRuby)
+      ensure
+        __trap_ctx(false)
+      end
     end
   end
 

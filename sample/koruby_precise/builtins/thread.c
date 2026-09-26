@@ -1550,6 +1550,8 @@ korb_mutex_lock_core(CTX *c, VALUE *slots, VALUE_REF self, bool interruptible)
 {
     struct korb_vm *const vm = c->vm;
     korb_thread_boot(c);
+    if (UNLIKELY(interruptible && vm->cur_thread->in_trap))
+        return korb_raise_thread_error(c, slots, "can't be called from trap context");
     for (;;) {
         KorbMutex *m = VAL2MUTEX(VALUE_REF_GET(self));      /* park 跨ぎ毎に再導出 */
         struct korb_thread *const cur = vm->cur_thread;
@@ -1585,6 +1587,18 @@ korb_mutex_unlock_core(CTX *c, VALUE *slots, VALUE_REF self)
     m->owner = NULL; m->owner_fiber = NULL;
     korb_waitq_wake_one(vm, &m->wq_head, &m->wq_tail);
     return RESULT_OK(VALUE_REF_GET(self));
+}
+
+/* __trap_ctx(bool) — Signal.__deliver brackets a trap handler with it */
+static RESULT
+korb_m_trap_ctx(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)slots; (void)self;
+    korb_thread_boot(c);
+    struct korb_thread *const cur = c->vm->cur_thread;
+    if (KORB_TRUTHY(VALUE_SLICE_GET(a, 0))) cur->in_trap++;
+    else if (cur->in_trap > 0) cur->in_trap--;
+    return RESULT_OK(KORB_NIL);
 }
 
 static RESULT
