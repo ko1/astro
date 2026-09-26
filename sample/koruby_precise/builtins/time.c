@@ -755,6 +755,11 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 double sv = 0; if (korb_num_to_d(cv, &sv)) { comp[5] = (korb_sword_t)sv; subsec = sv - (double)comp[5]; }
             }
             else if (KORB_FLOAT_P(cv)) comp[i] = (korb_sword_t)korb_float_val(cv);
+            else if (KORB_STRING_P(cv)) {                    /* "1979" / "may": as the plain path parses them */
+                const KorbString *const cs = VAL2STR(cv);
+                if (!korb_parse_time_str(korb_strbuf_data(cs->buf), cs->len, i == 1, &comp[i]))
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "argument out of range");
+            }
         }
         if (comp[1] < 1 || comp[1] > 12 || comp[2] < 1 || comp[2] > 31 ||
             comp[3] < 0 || comp[3] > 24 || comp[4] < 0 || comp[4] > 59 || comp[5] < 0 || comp[5] > 60)

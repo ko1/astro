@@ -855,6 +855,15 @@ module Marshal
     when 0x6f                                            # 'o' generic object
       idx = st[:objs].size; st[:objs] << nil
       cls = _read0(st)
+      klass = cls == :Range ? nil : _const(cls)
+      if klass && !(klass <= Exception) && !(klass <= Set)
+        # a plain object exists before its ivars, so a back-reference inside
+        # them (o.@a = [o]) finds it (CRuby allocates, then reads the ivars)
+        _check_o_type(klass)
+        obj = st[:objs][idx] = klass.allocate
+        _rlong(st).times { name = _read0(st); obj.instance_variable_set(name, _read(st)) }
+        return obj
+      end
       ni = _rlong(st)
       ivars = {}
       ni.times { name = _read0(st); ivars[name] = _read(st) }
@@ -888,9 +897,15 @@ module Marshal
       idx = st[:objs].size; st[:objs] << nil
       cls = _read0(st)
       n = _rlong(st)
+      k = _const(cls)
+      unless k.respond_to?(:members) && k.ancestors.include?(Data)
+        # registered before its members, so one referring back to it finds it
+        o = st[:objs][idx] = k.allocate
+        n.times { nm = _read0(st); v = _read(st); (o[nm] = v) rescue nil }
+        return o
+      end
       names = []; vals = []
       n.times { names << _read0(st); vals << _read(st) }
-      k = _const(cls)
       # CRuby fills the members directly — a user-defined #initialize must NOT
       # run.  Data has no member writer, so it goes through .new (kwargs).
       o = if k.respond_to?(:members) && k.ancestors.include?(Data)
