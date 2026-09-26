@@ -2088,12 +2088,22 @@ korb_shape_new(struct korb_vm *vm, uint32_t parent, uint32_t edge_sym)
 }
 
 /* find-or-create the child shape reached by adding ivar `sym` to `shape`. */
+#define KORB_SHTRANS_N 4096u
 static uint32_t
 korb_shape_transition(struct korb_vm *vm, uint32_t shape, uint32_t sym)
 {
+    /* The root shape has an edge per class's first ivar, so its list gets long
+     * and every new object's first `@x =` walked it.  Shapes are immutable: a
+     * (shape, sym) → child entry never goes stale. */
+    if (UNLIKELY(vm->shtrans == NULL)) {
+        vm->shtrans = calloc(KORB_SHTRANS_N, sizeof *vm->shtrans);
+        if (!vm->shtrans) { fprintf(stderr, "koruby_precise: oom (shape cache)\n"); abort(); }
+    }
+    struct korb_shtrans_ent *const ce = &vm->shtrans[(shape * 2654435761u ^ sym * 40503u) & (KORB_SHTRANS_N - 1u)];
+    if (LIKELY(ce->child != 0 && ce->shape == shape && ce->sym == sym)) return ce->child;
     struct korb_shape *s = &vm->shapes[shape];
     for (uint32_t i = 0; i < s->edge_cnt; i++)
-        if (s->edges[i].sym == sym) return s->edges[i].child;
+        if (s->edges[i].sym == sym) { ce->shape = shape; ce->sym = sym; ce->child = s->edges[i].child; return ce->child; }
     uint32_t child = korb_shape_new(vm, shape, sym);  /* may realloc vm->shapes */
     s = &vm->shapes[shape];                            /* re-read after possible realloc */
     if (s->edge_cnt == s->edge_capa) {
