@@ -1494,21 +1494,26 @@ static RESULT korb_m_str_dump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     char *out = malloc(cap);
     if (!out) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
     #define DUMP_PUT(...) do { if (olen + 16 > cap) { cap *= 2; char *nb = realloc(out, cap); if (!nb) { free(out); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); } out = nb; } olen += (size_t)snprintf(out + olen, cap - olen, __VA_ARGS__); } while (0)
+    /* two bytes without snprintf: nearly every character of a dump is plain */
+    #define DUMP_2(a_, b_) do { if (olen + 16 > cap) DUMP_PUT("%c%c", (a_), (b_)); else { out[olen++] = (char)(a_); out[olen++] = (char)(b_); } } while (0)
     DUMP_PUT("\"");
     const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s0->buf);
     const uint32_t n = s0->len;
     for (uint32_t i = 0; i < n; ) {
         const unsigned char b = p[i];
-        if (b == '"' || b == '\\') { DUMP_PUT("\\%c", b); i++; continue; }
-        if (b == '#' && i + 1 < n && (p[i+1] == '{' || p[i+1] == '$' || p[i+1] == '@')) { DUMP_PUT("\\#"); i++; continue; }
+        if (b == '"' || b == '\\') { DUMP_2('\\', b); i++; continue; }
+        if (b == '#' && i + 1 < n && (p[i+1] == '{' || p[i+1] == '$' || p[i+1] == '@')) { DUMP_2('\\', '#'); i++; continue; }
         switch (b) {
-            case '\n': DUMP_PUT("\\n"); i++; continue;   case '\t': DUMP_PUT("\\t"); i++; continue;
-            case '\r': DUMP_PUT("\\r"); i++; continue;   case 7:    DUMP_PUT("\\a"); i++; continue;
-            case 8:    DUMP_PUT("\\b"); i++; continue;   case 11:   DUMP_PUT("\\v"); i++; continue;
-            case 12:   DUMP_PUT("\\f"); i++; continue;   case 27:   DUMP_PUT("\\e"); i++; continue;
+            case '\n': DUMP_2('\\', 'n'); i++; continue;   case '\t': DUMP_2('\\', 't'); i++; continue;
+            case '\r': DUMP_2('\\', 'r'); i++; continue;   case 7:    DUMP_2('\\', 'a'); i++; continue;
+            case 8:    DUMP_2('\\', 'b'); i++; continue;   case 11:   DUMP_2('\\', 'v'); i++; continue;
+            case 12:   DUMP_2('\\', 'f'); i++; continue;   case 27:   DUMP_2('\\', 'e'); i++; continue;
         }
         if (b < 0x20 || b == 0x7F) { DUMP_PUT("\\x%02X", b); i++; continue; }
-        if (b < 0x80) { DUMP_PUT("%c", b); i++; continue; }
+        if (b < 0x80) {
+            if (olen + 16 > cap) DUMP_PUT("%c", b); else out[olen++] = (char)b;
+            i++; continue;
+        }
         if (!bytes_only && enc == KORB_ENC_UTF8) {       /* multibyte char → \uHHHH / \u{...} */
             const uint32_t l = korb_utf8_seq_len(p, i, n);
             if (l >= 2) {
@@ -1521,7 +1526,8 @@ static RESULT korb_m_str_dump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         DUMP_PUT("\\x%02X", b); i++;                     /* raw / invalid high byte */
     }
     DUMP_PUT("\"");
-    if (fe_suffix) DUMP_PUT(".force_encoding(\"%s\")", fe_suffix);
+    if (fe_suffix) DUMP_PUT(".dup.force_encoding(\"%s\")", fe_suffix);   /* Ruby 4.1: .dup keeps it unfrozen */
+    #undef DUMP_2
     #undef DUMP_PUT
     RESULT r = korb_str_new(c, slots, out, (uint32_t)olen);
     free(out);
@@ -1615,6 +1621,7 @@ static RESULT korb_m_str_undump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (!closed) UNDUMP_FAIL("unterminated dumped string");
     if (i < s->len) {                                           /* only a `.force_encoding("NAME")` suffix may follow */
         static const char pre[] = ".force_encoding(\"";
+        if (s->len - i > 4 && memcmp(korb_strbuf_data(s->buf) + i, ".dup", 4) == 0) i += 4;   /* 4.1 dumps `.dup.force_encoding` */
         const char *const rest = korb_strbuf_data(s->buf) + i;
         const uint32_t rlen = s->len - i;
         if (rlen <= sizeof pre - 1 + 2 || strncmp(rest, pre, sizeof pre - 1) != 0 ||
