@@ -107,7 +107,11 @@ class Ripper
     # 入った post_process_tokens と同じく、トークン間の隙間を空白トークンで
     # 埋める。行継続 (`\\` + 改行) だけは Ripper が 3 つに割るので合わせる。
     def __fill_sp(src, tokens)
-      return tokens unless tokens.is_a?(Array) && src.is_a?(String)
+      return tokens unless tokens.is_a?(Array)
+      # prism の LexCompat::Token は Array の SimpleDelegator。CRuby の Ripper.lex は
+      # 素の Array を返す (委譲越しだと token[1] が毎回 method_missing を通る)。
+      tokens = tokens.map { |t| t.respond_to?(:__getobj__) ? t.__getobj__ : t }
+      return tokens unless src.is_a?(String)
       bom = src.byteslice(0, 3) == "\xEF\xBB\xBF".b
       starts = [0]                                  # 各行の先頭バイトオフセット
       src.each_line { |l| starts << starts.last + l.bytesize }
