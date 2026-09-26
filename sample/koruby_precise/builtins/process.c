@@ -778,8 +778,8 @@ static RESULT korb_process_wait_common(CTX *c, VALUE *slots, VALUE_SLICE a, bool
         CHECK(korb_process_int_arg(c, slots, VALUE_SLICE_GET(a, 0), &want));
     if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL)
         CHECK(korb_process_int_arg(c, slots, VALUE_SLICE_GET(a, 1), &flags));
-    int raw = 0;
-    const pid_t got = waitpid((pid_t)want, &raw, (int)flags);
+    int raw = 0; pid_t got;
+    CHECK(korb_waitpid_park(c, slots, (pid_t)want, (int)flags, &raw, &got));
     if (got < 0) return korb_raise_errno(c, slots, errno, "waitpid", "");
     if (got == 0) return RESULT_OK(KORB_NIL);            /* WNOHANG, still running */
     slots[0] = UNWRAP(korb_status_make(c, slots, got, raw));
@@ -808,8 +808,9 @@ static RESULT korb_m_kernel_system(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     int cerr = 0;
     const pid_t pid = korb_spawn_run_r(&plan, &cerr, NULL);
     if (pid < 0) return RESULT_OK(KORB_NIL);
-    int raw = 0;
-    if (waitpid(pid, &raw, 0) < 0) return RESULT_OK(KORB_NIL);
+    int raw = 0; pid_t got;
+    CHECK(korb_waitpid_park(c, slots, pid, 0, &raw, &got));
+    if (got < 0) return RESULT_OK(KORB_NIL);
     CHECK(korb_status_make(c, slots, pid, raw));
     if (cerr != 0) {                                                            /* never ran */
         if (plan.exception) return korb_raise_errno(c, slots, cerr, NULL, korb_spawn_file(&plan));
@@ -1063,6 +1064,7 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             else (void)dup2(keep, reading ? 1 : 0);
             if (keep > 2) close(keep);
             if (drop > 2) close(drop);
+            korb_io_std_rep(c->vm, 1)->sync = 1;          /* CRuby synchronizes the child's stdout: `puts; exit!` arrives */
             if (block == NULL) return RESULT_OK(KORB_NIL);
             slots[0] = KORB_NIL;
             RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);

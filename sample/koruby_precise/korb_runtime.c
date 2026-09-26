@@ -13729,6 +13729,41 @@ static RESULT korb_blop_poll_wait(CTX *c, VALUE *slots, struct pollfd *fds, nfds
                                   double timeout_sec, ssize_t *out_ready);
 /* wake whoever is parked on `fd`, because we are about to close it (thread.c) */
 static void korb_blop_wake_fd(struct korb_vm *vm, int fd);
+#include <sys/wait.h>
+#ifdef __linux__
+#include <sys/syscall.h>   /* SYS_pidfd_open */
+#endif
+/* waitpid(2) that lets the other green threads run while the child lives
+ * (a blocking one froze them all: a DRb server thread starved its forked
+ * client).  A pidfd is polled through the blop layer; `pid <= 0` (any child /
+ * a group) has none, so it re-probes WNOHANG between short timed parks. */
+static RESULT korb_waitpid_park(CTX *c, VALUE *slots, const pid_t want, const int flags, int *const restrict raw,
+                                pid_t *const restrict got)
+{
+    if (flags & WNOHANG) {
+        do { *got = waitpid(want, raw, flags); } while (*got < 0 && errno == EINTR);
+        return RESULT_OK(KORB_NIL);
+    }
+    int pfd = -1;
+#if defined(__linux__) && defined(SYS_pidfd_open)
+    if (want > 0) pfd = (int)syscall(SYS_pidfd_open, want, 0);
+#endif
+    double nap = 0.001;
+    for (;;) {
+        *got = waitpid(want, raw, flags | WNOHANG);
+        if (*got < 0 && errno == EINTR) continue;
+        if (*got != 0) break;
+        struct pollfd pf; pf.fd = pfd; pf.events = POLLIN; pf.revents = 0;   /* fd -1: a pure timed park */
+        ssize_t ready = 0;
+        const RESULT pr = korb_blop_poll_wait(c, slots, &pf, 1, pfd >= 0 ? -1.0 : nap, &ready);
+        if (UNLIKELY(pr.state != KORB_NORMAL)) { if (pfd >= 0) close(pfd); return pr; }
+        if (nap < 0.02) nap *= 2;
+    }
+    const int saved = errno;
+    if (pfd >= 0) close(pfd);
+    errno = saved;
+    return RESULT_OK(KORB_NIL);
+}
 #include "builtins/io.c"
 #ifdef KORB_WASI
 #  include "wasi/wasi_stubs.c"      /* WASI: プロセスもソケットも無い */
@@ -17240,8 +17275,7 @@ korb_bi_exit_bang(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     int code = 0;
     CHECK(korb_exit_status_arg(c, slots, args, &code));
-    korb_io_flush_std(c->vm);   /* _exit skips at_exit, but buffered output is still ours to deliver */
-    _exit(code);
+    _exit(code);                /* unflushed output is dropped, as CRuby does */
 }
 /* Kernel#abort([msg]) — write msg to stderr (if given) and exit(1). */
 static VALUE korb_out_target(CTX *c, const char *gv, uint32_t gvlen, bool *is_default);   /* fwd */
@@ -17956,7 +17990,12 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
     /* $stdout is read HERE, not before the loop: the #inspect dispatches above
      * run Ruby, and a moving GC relocates the IO object under a C local. */
     bool def; const VALUE outobj = korb_out_target(c, "$stdout", 7, &def);
-    if (def) { const RESULT wr = korb_io_wr_checked(c, slots, korb_io_std_rep(c->vm, 1), buf, sz); if (UNLIKELY(wr.state != KORB_NORMAL)) { free(buf); return wr; } }
+    if (def) {
+        KorbIORep *const rep1 = korb_io_std_rep(c->vm, 1);
+        const RESULT wr = korb_io_wr_checked(c, slots, rep1, buf, sz);
+        if (UNLIKELY(wr.state != KORB_NORMAL)) { free(buf); return wr; }
+        (void)korb_io_flush_rep(rep1);                   /* rb_p flushes (a forked child's `p; exit!` still shows) */
+    }
     else { RESULT er = korb_out_emit(c, slots, outobj, 1, buf, sz); if (UNLIKELY(er.state != KORB_NORMAL)) { free(buf); return er; } }
     free(buf);
     { const RESULT pe = korb_inspect_take_exc(c);   /* an argument's #inspect raised: propagate it */

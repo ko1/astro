@@ -1237,8 +1237,8 @@ static RESULT korb_m_io_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             korb_io_close_rep_fd(c->vm, rep, acv == KORB_FALSE);
             if (epipe) return korb_raise_errno(c, slots, EPIPE, "write", "");
             if (FIXNUM_P(pidv)) {          /* popen'd: reap the child and publish $? */
-                int raw = 0;
-                const pid_t got = waitpid((pid_t)FIX2LONG(pidv), &raw, 0);
+                int raw = 0; pid_t got;
+                CHECK(korb_waitpid_park(c, slots, (pid_t)FIX2LONG(pidv), 0, &raw, &got));
                 if (got > 0) {
                     slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Process", 7));
                     if (slots[0] != KORB_NIL) {
@@ -1862,6 +1862,7 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (dup2(other->fd, rep->fd) < 0) return korb_raise_errno(c, slots, errno, "dup2", "");
     if (ooff >= 0 && (off_t)opend <= ooff) (void)lseek(rep->fd, ooff - (off_t)opend, SEEK_SET);
     korb_io_drop_rbuf(rep);
+    rep->sync = other->sync;                             /* CRuby copies the donor's mode, FMODE_SYNC included */
     if (rep->fd > 2) (void)fcntl(rep->fd, F_SETFD, FD_CLOEXEC);   /* non-STDIO only: fd 0/1/2 must survive exec */
     /* The receiver takes on the other stream's mode and path, so a read after
      * `w.reopen(r)` works and #path reports the new file. */
