@@ -16921,6 +16921,23 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
     return false;
 }
 
+/* A gem that ships `name` as a C extension (`<dir>/name.rb` beside `name.so`,
+ * like bigdecimal) cannot load here; when koruby carries its own `name`, that
+ * one stands in for the whole feature. */
+static void
+korb_prefer_own_lib(const char *const restrict name, char *const restrict abspath, const size_t sz)
+{
+    const size_t al = strlen(abspath);
+    if (al < 3 || strcmp(abspath + al - 3, ".rb") != 0 || strncmp(abspath, KORUBY_SRC_DIR "/", strlen(KORUBY_SRC_DIR) + 1) == 0) return;
+    char so[4096];
+    if (al >= sizeof so) return;
+    memcpy(so, abspath, al - 3); memcpy(so + al - 3, ".so", 4);
+    struct stat st;
+    if (stat(so, &st) != 0) return;
+    char own[4096];
+    if (korb_resolve_load(KORUBY_SRC_DIR "/lib", name, own, sizeof own)) snprintf(abspath, sz, "%s", own);
+}
+
 /* require(name): search CWD / $LOAD_PATH; load once (false if already loaded). */
 static RESULT
 korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
@@ -16980,6 +16997,7 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
             char dir[4096]; uint32_t dl = VAL2STR(e)->len; if (dl >= sizeof dir) dl = sizeof dir - 1;
             memcpy(dir, korb_strbuf_data(VAL2STR(e)->buf), dl); dir[dl] = '\0';
             if (korb_resolve_load(dir, namebuf, abspath, sizeof abspath)) {
+                korb_prefer_own_lib(namebuf, abspath, sizeof abspath);
                 VALUE out; return korb_load_abspath(c, slots, abspath, true, &out, args.p);
             }
         }
