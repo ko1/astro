@@ -729,6 +729,8 @@ typedef struct KorbClass {
                                       * walk the deduped linearization.  Sticky, propagated on include. */
     uint32_t serial;                 /* monotonic per-class id (GC-stable identity for #hash of anonymous Struct/Data classes) */
     struct korb_method **methods;    /* libc array of immortal entry ptrs (owner edge GC-forwarded) */
+    uint32_t *mid_idx;               /* libc index mid → slot+1 of a big table, else NULL (korb_mtab_slot) */
+    uint32_t mid_idx_mask;
     VALUE ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
     VALUE ARO_GC_EDGE included;      /* KorbArray of included modules | nil */
     VALUE ARO_GC_EDGE prepended;     /* KorbArray of prepended modules | nil (searched before own methods) */
@@ -2024,6 +2026,7 @@ void korb_weak_walk(CTX *c);
         for (uint32_t _mi = 0; _mi < _aro_cl->method_cnt; _mi++)              \
             free(_aro_cl->methods[_mi]);   /* per-class calloc'd entries */    \
         free(_aro_cl->methods);            /* the libc method-ptr array */     \
+        free(_aro_cl->mid_idx);                                                \
         break;                                                                 \
       }                                                                        \
       KORB_FINALIZE_BIGNUM_CASE                                                \

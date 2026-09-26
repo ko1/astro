@@ -2099,7 +2099,7 @@ static RESULT korb_m_class_remove_method(CTX *c, VALUE *slots, VALUE_REF self, V
         KorbClass *const k = VAL2CLASS(VALUE_REF_GET(self));   /* re-read: the coercion may have GC-moved the class */
         bool found = false;
         for (uint32_t i = 0; i < k->method_cnt; i++)
-            if (k->methods[i]->mid == mid) { k->methods[i]->mid = UINT32_MAX; found = true; break; }
+            if (k->methods[i]->mid == mid) { k->methods[i]->mid = UINT32_MAX; found = true; korb_mtab_reindex(k); break; }
         if (!found && VALUE_REF_GET(self) == korb_builtin_class_obj(c->vm, KORB_C_OBJECT) && korb_toplevel_def(c->vm, mid)) {
             korb_method_lookup(c->vm, mid)->retired = 1;   /* kept in the table: live frames may still name it */
             found = true;

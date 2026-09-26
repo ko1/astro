@@ -4750,14 +4750,56 @@ static void korb_method_changed(struct korb_vm *vm, const uint32_t mid) {
     if (mid >= vm->mid_looked_cap || vm->mid_looked[mid]) vm->method_serial++;
 }
 
+/* Method tables are arrays scanned linearly; a big one (Object, Kernel, a
+ * class carrying many modules' worth) also gets a hash index, so a lookup
+ * walking past it — usually looking for a name it lacks — doesn't compare
+ * every entry.  The index names the FIRST slot holding a mid, like the scan.
+ * It must be rebuilt (korb_mtab_reindex) whenever an entry's mid changes or
+ * entries go away; appends go through korb_mtab_appended. */
+#define KORB_MTAB_INDEX_MIN 16u
+static inline uint32_t korb_mtab_hash(const uint32_t mid) { return mid * 2654435761u; }
+static void korb_mtab_index_put(KorbClass *const k, const uint32_t slot) {
+    const uint32_t mid = k->methods[slot]->mid;
+    for (uint32_t h = korb_mtab_hash(mid) & k->mid_idx_mask; ; h = (h + 1) & k->mid_idx_mask) {
+        const uint32_t e = k->mid_idx[h];
+        if (e == 0) { k->mid_idx[h] = slot + 1; return; }
+        if (k->methods[e - 1]->mid == mid) return;         /* an earlier slot already answers */
+    }
+}
+static void korb_mtab_reindex(KorbClass *const k) {
+    free(k->mid_idx); k->mid_idx = NULL; k->mid_idx_mask = 0;
+    if (k->method_cnt < KORB_MTAB_INDEX_MIN) return;
+    uint32_t cap = 64;
+    while (cap < k->method_cnt * 4) cap *= 2;              /* load <= 1/4: short probes */
+    uint32_t *const idx = calloc(cap, sizeof *idx);
+    if (!idx) return;                                      /* no index: the scan still answers */
+    k->mid_idx = idx; k->mid_idx_mask = cap - 1;
+    for (uint32_t i = 0; i < k->method_cnt; i++) korb_mtab_index_put(k, i);
+}
+static void korb_mtab_appended(KorbClass *const k) {
+    if (k->mid_idx == NULL || k->method_cnt * 4 > k->mid_idx_mask + 1) korb_mtab_reindex(k);
+    else korb_mtab_index_put(k, k->method_cnt - 1);
+}
+/* The first slot holding `mid`, or -1. */
+static inline int32_t korb_mtab_slot(const KorbClass *const k, const uint32_t mid) {
+    if (k->mid_idx != NULL) {
+        for (uint32_t h = korb_mtab_hash(mid) & k->mid_idx_mask; ; h = (h + 1) & k->mid_idx_mask) {
+            const uint32_t e = k->mid_idx[h];
+            if (e == 0) return -1;
+            if (k->methods[e - 1]->mid == mid) return (int32_t)(e - 1);
+        }
+    }
+    for (uint32_t i = 0; i < k->method_cnt; i++) if (k->methods[i]->mid == mid) return (int32_t)i;
+    return -1;
+}
+
 static struct korb_method *
 korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mid)
 {
     k->eval_only = 0;                /* a real `def` here materializes the singleton for good */
     struct korb_method *m = NULL;
     uint32_t slot = 0;
-    for (uint32_t i = 0; i < k->method_cnt; i++)
-        if (k->methods[i]->mid == mid) { m = k->methods[i]; slot = i; break; }
+    { const int32_t s = korb_mtab_slot(k, mid); if (s >= 0) { m = k->methods[s]; slot = (uint32_t)s; } }
     /* A live Method/UnboundMethod pinned this definition.  CRuby keeps such an
      * entry alive across a redefinition (`m = o.method(:x); def o.x; end` still
      * calls the old body), so hand the redefinition a FRESH entry and move the
@@ -4785,6 +4827,7 @@ korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mi
         korb_bt_note_ptr(vm, m);   /* backtrace: a frame-top marker may point here */
         m->mid = mid; m->orig_mid = mid;
         k->methods[k->method_cnt++] = m;
+        korb_mtab_appended(k);
     }
     m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0; m->dm_proc = KORB_NIL;
     m->ruby2_kw = 0;                              /* a redefinition drops the ruby2_keywords flag */
@@ -5356,8 +5399,10 @@ korb_relocate_object_methods(CTX *c, VALUE *slots)
         }
         m->owner = target;                      /* `super` and #owner follow the move */
         kt->methods[kt->method_cnt++] = m;
+        korb_mtab_appended(kt);
     }
     ko->method_cnt = 0;
+    korb_mtab_reindex(ko);
     /* Kernel-level global functions (putc/caller/binding/...) are registered in
      * the global function table, which reflection cannot see.  Mirror them onto
      * Kernel as private instance methods, as CRuby has them. */
@@ -5588,9 +5633,8 @@ korb_class_own_method(const VALUE cls, const uint32_t mid)
 {
     if (!KORB_CLASS_P(cls)) return NULL;
     const KorbClass *const k = VAL2CLASS(cls);
-    for (uint32_t i = 0; i < k->method_cnt; i++)
-        if (k->methods[i]->mid == mid) return k->methods[i];
-    return NULL;
+    const int32_t s = korb_mtab_slot(k, mid);
+    return s >= 0 ? k->methods[s] : NULL;
 }
 static struct korb_method *korb_mro_seg_find(VALUE klass, uint32_t mid, VALUE *out_def, int depth) {
     if (!KORB_CLASS_P(klass) || depth > 64) return NULL;
@@ -5602,8 +5646,8 @@ static struct korb_method *korb_mro_seg_find(VALUE klass, uint32_t mid, VALUE *o
             if (m) return m;
         }
     }
-    for (uint32_t i = 0; i < k->method_cnt; i++)
-        if (k->methods[i]->mid == mid) { if (out_def) *out_def = klass; return k->methods[i]; }
+    { const int32_t s = korb_mtab_slot(k, mid);
+      if (s >= 0) { if (out_def) *out_def = klass; return k->methods[s]; } }
     if (k->included != KORB_NIL) {
         const KorbArray *inc = VAL2ARY(k->included);
         for (int32_t j = (int32_t)inc->len - 1; j >= 0; j--) {
@@ -11073,7 +11117,7 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink,
                  uint32_t argc, VALUE self, const NODE *site)
 {
     struct korb_vm *const vm = c->vm;
-    if (UNLIKELY(vm->refinements_active)) {          /* refined implicit-self call */
+    if (UNLIKELY(vm->refinements_active) && c->refinements != KORB_NIL) {   /* refined implicit-self call (only under `using`) */
         RESULT rr;
         if (korb_refined_call(c, slots, mid, korb_flink_line(flink), argc, self, &rr)) return rr;
     }
@@ -12261,7 +12305,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
         }
     }
 
-    if (UNLIKELY(vm->refinements_active)) {   /* refined dispatch (also covers send/__send__/public_send, which re-enter here) */
+    if (UNLIKELY(vm->refinements_active) && c->refinements != KORB_NIL) {   /* refined dispatch (also covers send/__send__/public_send, which re-enter here) */
         RESULT rr;
         if (korb_refined_dispatch(c, slots, mid, line, argc, self, block, def_env, captured_self, &rr, true)) return rr;
         self = *recv_slot;   /* Defensive, NOT a fix for a live bug: every `return false` inside
@@ -13581,7 +13625,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
     struct korb_vm *const vm = c->vm;
     const bool framed = KORB_FLINK_FRAMED(flink);   /* node_shl stages flush: no header to mark */
     const VALUE recv = slots[-(korb_sword_t)argc - 1];
-    if (UNLIKELY(vm->refinements_active)) {          /* refined receiver dispatch */
+    if (UNLIKELY(vm->refinements_active) && c->refinements != KORB_NIL) {   /* refined receiver dispatch (only under `using`) */
         RESULT rr;
         if (korb_refined_dispatch(c, slots, mid, korb_flink_line(flink), argc, recv, NULL, NULL, NULL, &rr, framed)) return rr;
     }
@@ -15037,7 +15081,7 @@ korb_register_core_methods(CTX *c)
                                  theirs->bfn == mine->bfn && theirs->body == mine->body;
                 if (!dup) kc->methods[w++] = kc->methods[i];
             }
-            kc->method_cnt = w;
+            kc->method_cnt = w; korb_mtab_reindex(kc);
             c->vm->method_serial++;
         }
     }
