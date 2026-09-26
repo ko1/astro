@@ -4085,7 +4085,12 @@ kp_make_binding_node_x(struct kp_ctx *tc, uint32_t line, uint32_t user_dispatch)
     const uint32_t cref_name = (tc->frame->anon_class_body || tc->frame->anon_cref_method ||
                                 tc->seed_cref_is_caller)
                              ? 0u : kp_cref_owner_path(tc);
-    NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)tbl, cnt, cref_name, user_dispatch);
+    /* inside an eval'd string with no method of its own: the method the eval ran
+     * in (the binding may be taken after that eval returned — a proc in it) */
+    uint32_t eval_mid = tc->eval_method_mid;
+    for (const struct kp_frame *f = tc->frame; f && eval_mid; f = f->prev)
+        if (f->dm_body || f->method_mid) eval_mid = 0;
+    NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)tbl, cnt, cref_name, user_dispatch, eval_mid);
     bake_add(tc, &nb->u.node_binding.def_env_off);    /* frame base shifts with frame_size */
     bake_add(tc, &nb->u.node_binding.self_off);       /* self at base[-1] (bottom header) */
     korb_reg_srcloc(tc->c->vm, nb, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), line);  /* for Binding#source_location */
