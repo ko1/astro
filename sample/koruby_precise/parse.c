@@ -4603,8 +4603,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             const pm_symbol_node_t *s = (const pm_symbol_node_t *)nm;
             mids[i] = korb_intern(tc->c->vm, (const char *)pm_string_source(&s->unescaped), pm_string_length(&s->unescaped));
         }
-        NODE *nu = ALLOC_node_undef((const char *)(const void *)mids, cnt, -1 - tc->chain);   /* self (the class) at base[-1] */
+        const uint32_t cref_name = (tc->frame->anon_class_body || tc->frame->anon_cref_method) ? 0u : kp_cref_owner_path(tc);
+        NODE *nu = ALLOC_node_undef((const char *)(const void *)mids, cnt, -1 - tc->chain, -4 - tc->chain, cref_name);   /* self at base[-1], method entry at base[-4] */
         bake_add(tc, &nu->u.node_undef.self_off);
+        bake_add(tc, &nu->u.node_undef.dc_off);
         return nu;
       }
       case PM_NIL_NODE:   return ALLOC_node_lit(KORB_NIL);

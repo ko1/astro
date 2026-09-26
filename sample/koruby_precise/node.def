@@ -1357,7 +1357,7 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entr
         if (sclass_cref && dc_off != INT32_MIN)
             { const VALUE cr = korb_const_cref(definee, slots[dc_off]); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
         else if (!KORB_CLASS_P(definee) && dc_off != INT32_MIN)
-            { const VALUE cr = korb_cvar_cref(definee, slots[dc_off]); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
+            { const VALUE cr = korb_body_cref(c, definee, slots[dc_off], cref_name); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
         /* Written inside a BLOCK: this frame's identity names the block, not a
          * method, so the cref is the lexically enclosing class/module — the
          * parser baked its name (`[1].each { def m; end }` in a class body). */
@@ -1431,6 +1431,7 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, 
     sing = slots[0];
     korb_warn_serious(c, slots + 1, mid, false);
     korb_class_def_method(c, sing, mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info, locals_info);
+    korb_mark_sdef(sing, mid);
     /* fire the BasicObject#singleton_method_added(name) hook — only when the
      * object actually defines it (no default → no per-def cost otherwise; and
      * since the method is added first, defining the hook fires it for itself). */
@@ -2868,13 +2869,20 @@ node_alias(CTX *c, NODE *n, VALUE *slots, uint32_t new_sym@sym, uint32_t old_sym
 // the SD stays shared).  Retiring a slot's mid lets lookup fall through; a name
 // not defined on this class is tolerated (no NameError, eases drop-in loading).
 NODE_DEF
-node_undef(CTX *c, NODE *n, VALUE *slots, const char *mids, uint32_t cnt, int32_t self_off)
+node_undef(CTX *c, NODE *n, VALUE *slots, const char *mids, uint32_t cnt, int32_t self_off, int32_t dc_off, uint32_t cref_name@sym)
 {
     (void)n;
-    /* same definee rule as `alias` / `def` */
-    const VALUE cls = KORB_CLASS_P(c->def_definee) ? c->def_definee : slots[self_off];
-    if (UNLIKELY(!KORB_CLASS_P(cls)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "undef outside a class/module body");
+    /* the cref, as for `def`: an eval's definee, a class body's self, the
+     * enclosing method's owner, or Object at the top level */
+    const VALUE self = slots[self_off];
+    VALUE cls = KORB_CLASS_P(c->def_definee) ? c->def_definee : self;
+    if (!KORB_CLASS_P(cls) && c->def_definee == KORB_NIL) {
+        cls = korb_body_cref(c, self, slots[dc_off], cref_name);
+        if (!KORB_CLASS_P(cls) && KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL)
+            cls = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
+    }
+    if (UNLIKELY(!KORB_CLASS_P(cls)))   /* an eval's definee with no singleton (Integer/Symbol/…) */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, c->def_definee != KORB_NIL ? "can't define singleton" : "undef outside a class/module body");
     const uint32_t *const ids = (const uint32_t *)(const void *)mids;
     /* `undef` is undef_method: it leaves a tombstone, so an INHERITED method is
      * hidden too (and `super` past it finds nothing). */

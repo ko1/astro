@@ -4721,6 +4721,7 @@ korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mi
     m->def_cref = KORB_NIL;                       /* … and the eval cref it was defined under */
     m->simple_entry = NULL;                       /* 再定義でスロットを使い回すので必ず落とす */
     m->super_owner = KORB_NIL;             /* a redefinition drops any inherited alias origin */
+    m->sdef = 0;
     /* A top-level `def` lands in vm->methods (the global function table), which a
      * bare-name call reads FIRST.  Defining the same name on Object through the
      * class table (define_method, alias_method, attr_*) used to be invisible to
@@ -13683,6 +13684,24 @@ RESULT korb_str_dup_pub(CTX *c, VALUE *slots, VALUE *src) {
 #include "builtins/symbol.c"
 #include "builtins/enumerator.c"
 #include "builtins/set.c"
+/* Mark klass's own `mid` as written `def recv.m` (see korb_method.sdef). */
+void korb_mark_sdef(VALUE klass, uint32_t mid)
+{
+    const KorbClass *const k = VAL2CLASS(klass);
+    for (uint32_t i = 0; i < k->method_cnt; i++)
+        if (k->methods[i]->mid == mid) { k->methods[i]->sdef = 1; return; }
+}
+/* The cref a `def` / `undef` in a method body acts on: the method's owner — but
+ * a `def obj.m` body (owner = the singleton of a non-class) has its lexical one,
+ * the baked enclosing class or Object at the top level. */
+VALUE korb_body_cref(CTX *c, VALUE self, VALUE entry_cell, uint32_t cref_name)
+{
+    const VALUE own = korb_cvar_cref(self, entry_cell);
+    if (!KORB_CLASS_P(own) || !VAL2CLASS(own)->is_singleton || KORB_CLASS_P(korb_singleton_attached(c, own)) ||
+        !((const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)7u))->sdef) return own;   /* instance_eval's def: the singleton IS the cref */
+    const VALUE lex = cref_name ? korb_cref_from_path(c->vm, cref_name) : KORB_NIL;
+    return KORB_CLASS_P(lex) ? lex : korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
+}
 #include "builtins/math.c"
 #include "builtins/regexp.c"
 #include "builtins/file.c"

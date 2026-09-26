@@ -956,6 +956,8 @@ struct korb_method {
     uint8_t  uses_backref;   /* ISEQ: the body can touch `$~`, so the invoke saves the caller's */
     uint8_t  is_simple;      /* ISEQ: fixed positional arity, no rest/opt/post/kw/block —
                               * eligible for the streamlined korb_invoke_simple path. */
+    uint8_t  sdef;           /* written `def recv.m`: a def/undef in its body acts on the lexical
+                              * cref, not on this singleton (korb_body_cref).  In is_simple's pad. */
     int32_t  params_cnt;     /* total positional (req+opt); -1 = variadic (builtins only) */
     uint32_t req_cnt;        /* ISEQ: required positional count (== params_cnt if no opts) */
     uint32_t post_cnt;       /* ISEQ: post (after-rest) required params; slots at rest_slot+1.. */
