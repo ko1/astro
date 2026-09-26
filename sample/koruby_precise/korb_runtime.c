@@ -6873,6 +6873,30 @@ korb_super_find(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_d
 }
 
 static VALUE korb_bt_outer_handle(const VALUE h, const VALUE *const base);   /* fwd (backtrace lexical walk) */
+/* The identity cell (tagged korb_method *) of the method a block frame was
+ * written in, through live frames or returned envs; nil if none. */
+static VALUE
+korb_home_method_id(CTX *c, const VALUE *const frame_base)
+{
+    const VALUE *const lo = c->slots;
+    const VALUE *limit = frame_base;
+    VALUE prev = korb_bt_outer_handle(korb_ep_get(frame_base), frame_base);
+    for (int guard = 0; guard < 64; guard++) {
+        VALUE id;
+        if (prev & 1u) {                          /* the defining frame is still live */
+            const VALUE *const dbase = (const VALUE *)(uintptr_t)(prev & ~(VALUE)1u);
+            if (dbase < lo || dbase >= limit) break;
+            limit = dbase;
+            id = korb_id_get(dbase);
+            prev = korb_bt_outer_handle(korb_ep_get(dbase), dbase);
+        } else if (KORB_ENV_P(prev)) {            /* it returned; the env keeps its identity */
+            id = VAL2ENV(prev)->id;
+            prev = VAL2ENV(prev)->prev;
+        } else break;
+        if (((uintptr_t)id & 7u) == KORB_FID_METHOD) return id;
+    }
+    return KORB_NIL;
+}
 /* `super` — invoke `mid` starting from after def_class in self's MRO, keeping
  * self.  `entry_cell` is the frame's fs-2 cell: the running method's entry
  * (tagged korb_method*); its owner is the def_class whose MRO successor runs. */
@@ -6894,7 +6918,7 @@ korb_dm_call_check(CTX *const c, VALUE *const slots, const NODE *const iseq,
         return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no block accepted");
     if (iseq->u.node_entry.kw_info != NULL) return RESULT_OK(KORB_NIL);
     const uint32_t pc = iseq->u.node_entry.params_cnt;
-    const bool has_rest = iseq->u.node_entry.rest_slot >= 0;
+    const bool has_rest = iseq->u.node_entry.rest_slot >= 0 || iseq->u.node_entry.rest_slot == -2;   /* -2: anonymous `*` */
     const bool variable = (iseq->u.node_entry.opt_defaults != NULL) || has_rest;
     const uint32_t req = variable ? iseq->u.node_entry.req_cnt : pc;
     if (UNLIKELY(argc < req || (!has_rest && argc > pc))) {
@@ -6958,13 +6982,16 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             mid = c->dm_entry->orig_mid ? c->dm_entry->orig_mid : c->dm_entry->mid;
             entry_cell = (VALUE)((uintptr_t)c->dm_entry | 1u);
         } else {
-            /* `super` inside a block: the block's frame carries no method entry, so
-             * take the one the name currently resolves to on the receiver and search
-             * above its owner.  (A block outliving a redefinition can pick the newer
-             * definition — CRuby tracks the block's home method exactly.) */
-            VALUE odef = KORB_NIL;
-            const struct korb_method *const own = korb_class_find_method(korb_dispatch_class(c, self), mid, &odef);
-            if (own != NULL) entry_cell = (VALUE)((uintptr_t)own | 1u);
+            /* `super` inside a block: search above the block's home method, found by
+             * the lexical walk.  Not the name's current resolution on the receiver —
+             * a method reached by `super` would find itself again. */
+            const VALUE home = frame_base ? korb_home_method_id(c, frame_base) : KORB_NIL;
+            if (home != KORB_NIL) entry_cell = home;
+            else {
+                VALUE odef = KORB_NIL;
+                const struct korb_method *const own = korb_class_find_method(korb_dispatch_class(c, self), mid, &odef);
+                if (own != NULL) entry_cell = (VALUE)((uintptr_t)own | 1u);
+            }
         }
     }
     VALUE found_def = KORB_NIL;
@@ -9800,6 +9827,12 @@ static bool korb_scope_outer(const struct korb_scope_level *const lv, struct kor
  * that identity is a packed immediate, with no ISEQ to hang a table on. */
 static const struct korb_locals_info *
 korb_scope_locals(const struct korb_vm *const vm, const struct korb_scope_level *const lv) {
+    if ((lv->id & 7u) == KORB_FID_MAIN) {                /* a file's top level: the names its parse noted */
+        const uint32_t fsym = (uint32_t)(lv->id >> 32);
+        for (uint32_t i = 0; i < vm->file_locals_cnt; i++)
+            if (vm->file_locals[i].fsym == fsym) return vm->file_locals[i].li;
+        return NULL;
+    }
     const uintptr_t p = (uintptr_t)(lv->id & ~(VALUE)7u);
     if (!korb_bt_known_ptr(vm, p)) return NULL;
     switch (lv->id & 7u) {
@@ -15802,7 +15835,11 @@ static RESULT korb_inspect_take_exc(CTX *c) {
 static bool
 korb_fprint_user_inspect(CTX *c, VALUE *slots, FILE *fp, VALUE v)
 {
-    if (slots == NULL || !KORB_OBJECT_P(v) || VAL2OBJ(v)->klass == KORB_NIL) return false;
+    if (slots == NULL) return false;
+    if (KORB_CLASS_P(v)) {                                       /* a class only when its #inspect is Ruby-defined */
+        const struct korb_method *const m = korb_class_find_method(korb_dispatch_class(c, v), korb_intern(c->vm, "inspect", 7), NULL);
+        if (m == NULL || (m->kind != KORB_METHOD_ISEQ && m->kind != KORB_METHOD_DM)) return false;
+    } else if (!KORB_OBJECT_P(v) || VAL2OBJ(v)->klass == KORB_NIL) return false;
     slots[0] = v;                                                /* root across the dispatch; stays the object,
                                                                   * so a false return leaves the caller a live
                                                                   * `slots[0]` to re-read (its `v` is stale). */
@@ -16298,20 +16335,27 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       }
       case KORB_OBJ_EXCEPTION: {                         /* inspect: #<Class: message> (bare Class when empty) */
         const KorbException *const e = VAL2EXC(v);
-        const char *const cn = (e->exc_class != KORB_NIL && KORB_CLASS_P(e->exc_class))
-                                   ? korb_sym_name(c->vm, VAL2CLASS(e->exc_class)->name_sym)
-                                   : korb_etype_name(e->etype);
+        char *cn = NULL; size_t cnlen = 0;               /* the full path (A::B), as Module#to_s prints it */
+        FILE *const cms = open_memstream(&cn, &cnlen);
+        if (cms) {
+            if (e->exc_class != KORB_NIL && KORB_CLASS_P(e->exc_class)) korb_fprint_class_tostr(c, cms, e->exc_class);
+            else fputs(korb_etype_name(e->etype), cms);
+            fclose(cms);
+        }
+        const char *const cname = cn ? cn : korb_etype_name(e->etype);
         const char *msg; size_t mlen;
         if (e->msg != KORB_NIL && KORB_STRING_P(e->msg)) { msg = korb_strbuf_data(VAL2STR(e->msg)->buf); mlen = VAL2STR(e->msg)->len; }
-        else { msg = cn; mlen = strlen(cn); }            /* default message = class name */
-        if (mlen == 0) fputs(cn, fp);
-        else { fprintf(fp, "#<%s: ", cn); fwrite(msg, 1, mlen, fp); fputc('>', fp); }
+        else { msg = cname; mlen = strlen(cname); }      /* default message = class name */
+        if (mlen == 0) fputs(cname, fp);
+        else { fprintf(fp, "#<%s: ", cname); fwrite(msg, 1, mlen, fp); fputc('>', fp); }
+        free(cn);
         return;
       }
       case KORB_OBJ_CLASS:
         /* Module#inspect is its OWN method in CRuby: a class that overrides only
          * #to_s still inspects as `#<Class:0x…>`, so this must not fall through
          * to the to_s printer (which does honour the override). */
+        if (korb_fprint_user_inspect(c, slots, fp, v)) return;   /* `def self.inspect` */
         korb_fprint_class_tostr(c, fp, v);
         return;
     }
@@ -19601,6 +19645,36 @@ korb_bind_tbl_intern(struct korb_vm *const vm, const VALUE id, const uint32_t *c
     return t;
 }
 
+/* The packed table [L, n(0..L), (sym,depth,slot)*] for lexical levels whose
+ * locals are lis[0..L) (innermost first); an inner name hides an outer one. */
+static const uint32_t *
+korb_bind_tbl_from_levels(struct korb_vm *const vm, const struct korb_locals_info *const *const lis, const uint32_t L,
+                          const VALUE key_id, uint32_t *const out_cnt)
+{
+    uint32_t buf[1 + KORB_SCOPE_DEPTH_MAX + 3 * KORB_BIND_RT_NAMES];
+    buf[0] = L;
+    uint32_t cnt = 0;
+    for (uint32_t d = 0; d < L; d++) {
+        const uint32_t n = lis[d] ? lis[d]->n : 0;
+        buf[1 + d] = n;
+        for (uint32_t i = 0; i < n && cnt < KORB_BIND_RT_NAMES; i++) {
+            const uint32_t sym = lis[d]->names[i];
+            if (sym == 0) continue;                  /* the anonymous `*` slot has no name */
+            bool shadowed = false;                   /* an inner name hides an outer one */
+            for (uint32_t k = 0; k < cnt && !shadowed; k++)
+                if (buf[1 + L + 3 * k] == sym) shadowed = true;
+            if (shadowed) continue;
+            buf[1 + L + 3 * cnt]     = sym;
+            buf[1 + L + 3 * cnt + 1] = d;
+            buf[1 + L + 3 * cnt + 2] = i;
+            cnt++;
+        }
+    }
+    *out_cnt = cnt;
+    const uint32_t words = 1 + L + 3 * cnt;
+    return korb_bind_tbl_intern(vm, key_id, buf, words);
+}
+
 /* Kernel#block_given? as a real method.  `block_given?` is normally a parse
  * node reading this frame's block trio, but CRuby also exposes a method (ostruct
  * does `alias_method :block_given!, :block_given?`), so answer for the CALLER's
@@ -19624,6 +19698,59 @@ korb_bi_block_given_p(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(((uintptr_t)lv.loc[(korb_sword_t)m->locals_cnt - 3] & 1u) ? KORB_TRUE : KORB_FALSE);
 }
 
+/* Is `target` a frame on the call chain from `from` (itself or a caller)? */
+static bool
+korb_frame_on_chain(const CTX *c, const VALUE *const from, const VALUE *const target)
+{
+    uint32_t guard = 0;
+    for (const VALUE *fb = from; fb != NULL && guard < (1u << 20); fb = korb_link_base(c, fb - 3), guard++)
+        if (fb == target) return true;
+    return false;
+}
+/* A Binding over the live frame `fbase` and its lexical levels (Kernel#binding;
+ * Proc#binding of a closure that captured nothing, while its frame lives). */
+static RESULT
+korb_binding_at_frame(CTX *c, VALUE *slots, VALUE *fbase, VALUE self, uint32_t bfile, uint32_t bline)
+{
+    /* Same packed layout as parse.c kp_binding_scope_tbl: [L, n(0..L), (sym,depth,slot)*]. */
+    const struct korb_locals_info *lis[KORB_SCOPE_DEPTH_MAX];
+    struct korb_scope_level lv, outer;
+    korb_scope_at_base(fbase, &lv);
+    uint32_t L = 0;
+    for (;;) {
+        lis[L] = korb_scope_locals(c->vm, &lv);
+        outer = lv;                                  /* the last level reached: its cref governs */
+        L++;
+        struct korb_scope_level nx;
+        if (L >= KORB_SCOPE_DEPTH_MAX || !korb_scope_outer(&lv, &nx)) break;
+        /* A raw outer link can name a frame that has returned (a define_method'd
+         * block that captured nothing): step onto a stack frame only while it is
+         * still on the call chain. */
+        if (nx.loc != NULL && !korb_frame_on_chain(c, fbase, nx.loc)) break;
+        lv = nx;
+    }
+    uint32_t cnt = 0;
+    const uint32_t *const tbl = korb_bind_tbl_from_levels(c->vm, lis, L, korb_id_get(fbase), &cnt);
+
+    /* `outer.id` is a tagged pointer into immortal libc memory, so it survives
+     * the allocations korb_make_binding does (a VALUE would not). */
+    const VALUE oid = outer.id;
+    const RESULT r = korb_make_binding(c, slots, fbase, tbl, cnt, self, 0);
+    if (LIKELY(r.state == KORB_NORMAL) && KORB_BINDING_P(r.value) && bfile != 0)
+        { KorbBinding *const nb = VAL2BIND(r.value); nb->src_file = bfile; nb->src_line = bline; }
+    /* The lexical class: korb_make_binding resolves a cref NAME, which only the
+     * parser has.  The outermost level's method entry carries the class itself. */
+    if (LIKELY(r.state == KORB_NORMAL) && KORB_BINDING_P(r.value) && (oid & 7u) == KORB_FID_METHOD &&
+        korb_bt_known_ptr(c->vm, (uintptr_t)(oid & ~(VALUE)7u))) {
+        const VALUE ow = ((const struct korb_method *)(uintptr_t)(oid & ~(VALUE)7u))->owner;
+        if (KORB_CLASS_P(ow)) {
+            KorbBinding *const b = VAL2BIND(r.value);
+            ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->cref, ow);
+        }
+    }
+    return r;
+}
+
 static RESULT
 korb_bi_binding(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -19635,43 +19762,6 @@ korb_bi_binding(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (fbase == NULL)
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "Cannot create Binding object for non-Ruby caller");
 
-    /* Same packed layout as parse.c kp_binding_scope_tbl: [L, n(0..L), (sym,depth,slot)*]. */
-    uint32_t buf[1 + KORB_SCOPE_DEPTH_MAX + 3 * KORB_BIND_RT_NAMES];
-    const struct korb_locals_info *lis[KORB_SCOPE_DEPTH_MAX];
-    struct korb_scope_level lv, outer;
-    korb_scope_at_base(fbase, &lv);
-    uint32_t L = 0;
-    for (;;) {
-        lis[L] = korb_scope_locals(c->vm, &lv);
-        outer = lv;                                  /* the last level reached: its cref governs */
-        L++;
-        struct korb_scope_level nx;
-        if (L >= KORB_SCOPE_DEPTH_MAX || !korb_scope_outer(&lv, &nx)) break;
-        lv = nx;
-    }
-    buf[0] = L;
-    uint32_t cnt = 0;
-    for (uint32_t d = 0; d < L; d++) {
-        const uint32_t n = lis[d] ? lis[d]->n : 0;
-        buf[1 + d] = n;
-        for (uint32_t i = 0; i < n && cnt < KORB_BIND_RT_NAMES; i++) {
-            const uint32_t sym = lis[d]->names[i];
-            if (sym == 0) continue;                  /* the anonymous `*` slot has no name */
-            bool shadowed = false;                   /* an inner name hides an outer one */
-            for (uint32_t k = 0; k < cnt && !shadowed; k++)
-                if (buf[1 + L + 3 * k] == sym) shadowed = true;
-            if (shadowed) continue;
-            buf[1 + L + 3 * cnt]     = sym;
-            buf[1 + L + 3 * cnt + 1] = d;
-            buf[1 + L + 3 * cnt + 2] = i;
-            cnt++;
-        }
-    }
-    const uint32_t words = 1 + L + 3 * cnt;
-    const uint32_t *const tbl = korb_bind_tbl_intern(c->vm, korb_id_get(fbase), buf, words);
-    /* `outer.id` is a tagged pointer into immortal libc memory, so it survives
-     * the allocations korb_make_binding does (a VALUE would not). */
-    const VALUE oid = outer.id;
     /* #source_location: no call node on this path, so record the caller's own
      * position (korb_caller_pos fills vm->fscratch — read it before allocating). */
     uint32_t bfile = 0, bline = 0;
@@ -19686,20 +19776,7 @@ korb_bi_binding(CTX *c, VALUE *slots, VALUE_SLICE args)
             bline = c->vm->fscratch[0].line;
         }
     }
-    const RESULT r = korb_make_binding(c, slots, fbase, tbl, cnt, fbase[-1], 0);
-    if (LIKELY(r.state == KORB_NORMAL) && KORB_BINDING_P(r.value) && bfile != 0)
-        { KorbBinding *const nb = VAL2BIND(r.value); nb->src_file = bfile; nb->src_line = bline; }
-    /* The lexical class: korb_make_binding resolves a cref NAME, which only the
-     * parser has.  The outermost level's method entry carries the class itself. */
-    if (LIKELY(r.state == KORB_NORMAL) && KORB_BINDING_P(r.value) && (oid & 7u) == KORB_FID_METHOD &&
-        korb_bt_known_ptr(c->vm, (uintptr_t)(oid & ~(VALUE)7u))) {
-        const VALUE ow = ((const struct korb_method *)(uintptr_t)(oid & ~(VALUE)7u))->owner;
-        if (KORB_CLASS_P(ow)) {
-            KorbBinding *const b = VAL2BIND(r.value);
-            ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->cref, ow);
-        }
-    }
-    return r;
+    return korb_binding_at_frame(c, slots, fbase, fbase[-1], bfile, bline);
 }
 
 /* The prelude's Kernel#caller_locations is Ruby, so its own frame sits on top

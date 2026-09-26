@@ -1115,6 +1115,8 @@ struct korb_vm {
     uint32_t class_serial;   /* monotonic id handed to each new class (see KorbClass.serial) */
     uint32_t boot_class_serial;   /* class_serial when the prelude finished: classes up to it are koruby's own */
     bool c_subclasses_filed;      /* Class#subclasses has filed the classes made in C (set.c) */
+    struct korb_file_locals { uint32_t fsym; const struct korb_locals_info *li; } *file_locals;   /* a file's top-level local names (Proc#binding) */
+    uint32_t file_locals_cnt, file_locals_cap;
     struct korb_shtrans_ent { uint32_t shape, sym, child; } *shtrans;   /* (shape, ivar) → child shape (korb_shape_transition) */
     /* set when a user redefines a node-fastpathed basic op (+,-,*,/,%,<,<=,>,>=)
      * on Integer/Float; the arithmetic/compare nodes then deopt to a real send

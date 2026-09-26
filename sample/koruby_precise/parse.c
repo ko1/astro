@@ -50,6 +50,7 @@ struct kp_frame {
                                * owned via the runtime self instead of a baked name */
     bool anon_cref_method;    /* a method defined in such a body: its cref is that unnamed class, which only
                                * the frame's method-entry cell can name at runtime */
+    bool anon_class_block;    /* a block written in such a body: self (the class) names the cref */
     uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
     bool depth_shift;         /* END { } body: prism resolved its locals against the ENCLOSING scope
                                * (depth 0), but the body runs as a closure, so every reference is one
@@ -585,6 +586,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->anon_class_body = false;
     f->block_body = false;
     f->anon_cref_method = false;
+    f->anon_class_block = false;
     f->max_ref_depth = 0;
     f->yield_depth = 0;
     f->add_cells = NULL;
@@ -1848,6 +1850,8 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
     tc->frame->block_body = true;
     /* a block in a `class << x` method shares its unnamed cref (constants resolve at run time) */
     tc->frame->anon_cref_method = tc->frame->prev != NULL && tc->frame->prev->anon_cref_method;
+    tc->frame->anon_class_block = tc->frame->prev != NULL &&
+                                  (tc->frame->prev->anon_class_body || tc->frame->prev->anon_class_block);
     tc->frame->dm_body = tc->next_block_is_dm;
     tc->next_block_is_dm = false;
 
@@ -4366,7 +4370,7 @@ build_const_read(struct kp_ctx *tc, uint32_t name_cid, uint32_t line)
      * be found at runtime: self IS the class in the body, and in a method the
      * frame's method-entry cell names it.  The entry cell is only meaningful in a
      * method frame, so it is baked only there. */
-    const bool anon = tc->frame->anon_class_body || tc->frame->anon_cref_method;
+    const bool anon = tc->frame->anon_class_body || tc->frame->anon_cref_method || tc->frame->anon_class_block;
     NODE *cn = KP_CONST(tc, name_cid, kp_cref_owner(tc), anon ? -1 - tc->chain : INT32_MIN,
                         tc->frame->anon_cref_method ? -4 - tc->chain : INT32_MIN, line);
     if (anon) bake_add(tc, &cn->u.node_const.self_off);              /* self at base[-1] */
@@ -4488,6 +4492,28 @@ kp_case_split(struct kp_ctx *tc, const struct kp_case_val *const vals, size_t lo
     return ALLOC_node_case_split(bake_lget(tc, tmp), (uint64_t)(int64_t)vals[mid].v, l, h, other);
 }
 
+/* A file's top-level names, found by its frame identity (korb_fid_main packs the
+ * file symbol) when a closure written there is asked for its binding. */
+static void
+kp_note_file_locals(struct kp_ctx *tc, const uint32_t *const syms, const uint32_t n)
+{
+    struct korb_vm *const vm = tc->c->vm;
+    struct korb_locals_info *const li = malloc(sizeof *li + sizeof(uint32_t) * n);   /* immortal */
+    if (li == NULL) return;
+    li->n = n;
+    for (uint32_t i = 0; i < n; i++) li->names[i] = syms[i];
+    const uint32_t fsym = korb_intern(vm, tc->fname, (uint32_t)strlen(tc->fname));
+    for (uint32_t i = 0; i < vm->file_locals_cnt; i++)
+        if (vm->file_locals[i].fsym == fsym) { vm->file_locals[i].li = li; return; }   /* loaded again */
+    if (vm->file_locals_cnt == vm->file_locals_cap) {
+        const uint32_t cap = vm->file_locals_cap ? vm->file_locals_cap * 2 : 16;
+        struct korb_file_locals *const nt = realloc(vm->file_locals, sizeof *nt * cap);
+        if (nt == NULL) return;
+        vm->file_locals = nt; vm->file_locals_cap = cap;
+    }
+    vm->file_locals[vm->file_locals_cnt++] = (struct korb_file_locals){ fsym, li };
+}
+
 static NODE *
 transduce(struct kp_ctx *tc, const pm_node_t *node)
 {
@@ -4500,6 +4526,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         for (uint32_t i = 0; i < koruby_toplevel_local_cnt; i++)
             tl_syms[i] = kp_intern_cid(tc, pn->locals.ids[i]);
         koruby_toplevel_local_syms = tl_syms;
+        if (!tc->in_eval) kp_note_file_locals(tc, tl_syms, koruby_toplevel_local_cnt);
         push_frame(tc, &pn->locals);
         tc->frame->class_name_sym = tc->seed_class_name;   /* eval(String) under a named cref */
         NODE *body = transduce_statements(tc, pn->statements);

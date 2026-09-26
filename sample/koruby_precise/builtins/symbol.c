@@ -627,20 +627,59 @@ static RESULT korb_m_proc_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_proc_lambda_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2PROC(VALUE_REF_GET(self))->is_lambda ? KORB_TRUE : KORB_FALSE);
 }
-/* Proc#binding: the proc's captured env + self.  Local NAMES are not recorded
- * in the proc, so the binding exposes self/cref (enough for class-defining
- * eval) but no locals table. */
+/* Proc#binding: the proc's captured env + self; its locals are the levels of
+ * that env chain up to the method / file (a raw frame beyond it has no names). */
 static struct Node *korb_method_srcloc_node(const struct korb_method *km);   /* fwd (defined below) */
+static const uint32_t *korb_bind_tbl_from_levels(struct korb_vm *vm, const struct korb_locals_info *const *lis, uint32_t L,
+                                                 VALUE key_id, uint32_t *out_cnt);   /* fwd (korb_runtime.c) */
+static RESULT korb_binding_at_frame(CTX *c, VALUE *slots, VALUE *fbase, VALUE self, uint32_t bfile, uint32_t bline);   /* fwd */
 static const uint32_t korb_proc_binding_scope_tbl[2] = { 1, 0 };   /* L=1, ns[0]=0 */
+/* A closure that read no outer local keeps no real env: only its defining frame
+ * has the locals, usable while that frame is on the current call chain (walked
+ * from `cell`, the caller link of Proc#binding's own window).  NULL otherwise. */
+static VALUE *korb_link_base(const CTX *c, const VALUE *cell);   /* fwd (korb_runtime.c) */
+static bool korb_frame_on_chain(const CTX *c, const VALUE *from, const VALUE *target);   /* fwd (korb_runtime.c) */
+static VALUE *korb_proc_live_home(CTX *c, const VALUE env, const VALUE *const cell) {
+    VALUE *base;
+    if (env & 1u) base = (VALUE *)(uintptr_t)(env & ~(VALUE)1u);
+    else if (env != 0) {
+        const KorbEnv *const e = VAL2ENV(env);
+        if (e->closed || e->n != 0) return NULL;         /* a real env: the table walk handles it */
+        base = e->loc;
+    } else return NULL;
+    VALUE *const fb = korb_link_base(c, cell);
+    return (fb != NULL && korb_frame_on_chain(c, fb, base)) ? base : NULL;
+}
+static const uint32_t *korb_proc_binding_tbl(struct korb_vm *const vm, const VALUE env, uint32_t *const cnt) {
+    const struct korb_locals_info *lis[KORB_SCOPE_DEPTH_MAX];
+    uint32_t L = 0;
+    for (VALUE ev = env; L < KORB_SCOPE_DEPTH_MAX && ev != 0 && !(ev & 1u); ) {
+        const KorbEnv *const e = VAL2ENV(ev);
+        const struct korb_scope_level lv = { e->id, NULL, (KorbEnv *)(uintptr_t)e };
+        lis[L++] = e->n != 0 ? korb_scope_locals(vm, &lv) : NULL;   /* an identity-only env holds no locals */
+        if ((e->id & 7u) != KORB_FID_BLOCK) break;      /* method / file: the lexical barrier */
+        ev = e->prev;
+    }
+    *cnt = 0;
+    if (L == 0) return korb_proc_binding_scope_tbl;
+    return korb_bind_tbl_from_levels(vm, lis, L, VAL2ENV(env)->id, cnt);
+}
 static RESULT korb_m_proc_binding(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
     slots[0] = VALUE_REF_GET(self);                       /* root proc across alloc */
     {   const KorbProc *const p0 = VAL2PROC(slots[0]);     /* Symbol#to_proc has no Ruby body at all */
         if (p0->iseq == NULL && p0->self == KORB_NIL)
             return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "Can't create Binding from C level Proc");   }
+    VALUE *const home = korb_proc_live_home(c, VAL2PROC(slots[0])->env, a.p - 3);
+    if (home != NULL) {
+        const RESULT hr = korb_binding_at_frame(c, slots + 1, home, VAL2PROC(slots[0])->self, 0, 0);
+        if (hr.state != KORB_NORMAL || !KORB_BINDING_P(hr.value)) return hr;
+        const KorbProc *const hp = VAL2PROC(slots[0]);
+        VAL2BIND(hr.value)->src_node = (hp->iseq != NULL && hp->iseq != KORB_BLK_CPROC) ? hp->iseq : NULL;
+        return hr;
+    }
     KorbBinding *b = korb_alloc(c, slots + 1, sizeof(KorbBinding), KORB_OBJ_BINDING);
     const KorbProc *p = VAL2PROC(slots[0]);
-    b->name_syms = korb_proc_binding_scope_tbl; b->name_cnt = 0;
+    b->name_syms = korb_proc_binding_tbl(c->vm, p->env, &b->name_cnt);
     /* #source_location of a proc's binding is where the BLOCK was written, the
      * same node Proc#source_location reports (bundler filters its own
      * post_reset_hooks with `proc.binding.source_location[0] == __FILE__`). */
@@ -838,7 +877,7 @@ static korb_sword_t korb_method_arity(const struct korb_method *km) {
         if (p->iseq == NULL) return -2;
         const NODE *e = p->iseq;
         bool kreq, kopt, kwrest; korb_kw_arity_flags(e->u.node_entry.kw_info, &kreq, &kopt, &kwrest);
-        const bool varpos = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0);
+        const bool varpos = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0 || e->u.node_entry.rest_slot == -2);
         const uint32_t req = (varpos ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt) + (kreq ? 1u : 0u);
         const bool var = varpos || ((kopt || kwrest) && !kreq);
         return var ? -((korb_sword_t)req + 1) : (korb_sword_t)req;

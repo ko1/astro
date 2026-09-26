@@ -5929,3 +5929,7 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
   koruby と同じ）。CRuby IO 側の癖とみて追わない。`String#each_line` / `#lines` に limit を渡すと
   CRuby は ArgumentError（koruby は受けていた → 直した）。
 - Kernel#caller / 例外のバックトレースは作るたびに全フレームのラベルを組む（CRuby は遅延）。
+- Proc#binding: 外側の local を 1 つも読まない block の Proc は実 env を持たない (identity だけ)。作った
+  フレームが呼び出し連鎖上に生きている間は Kernel#binding と同じ経路で見えるが、フレームが返った後は
+  見えない (`def m(a) = -> {}; eval("a", m(1).binding)` が NameError、CRuby は 1)。Proc 生成時に実 env を
+  作れば直るが、その Proc を作るフレームの return に close のコピーが乗る。rubyspec core/proc/binding_spec 1 例。

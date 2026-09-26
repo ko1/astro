@@ -207,7 +207,7 @@ module Forwardable
       accessor = "(#{accessor}())"
     end
 
-    args = '*args, &block'   # koruby: `...` forwarding 未対応 → 明示展開 (kwargs は *args 経由)
+    args = '...'
     method_call = ".__send__(:#{method}, #{args})"
     if method.match?(/\A[_a-zA-Z]\w*[?!]?\z/)
       loc, = caller_locations(2,1)

@@ -807,7 +807,7 @@ static RESULT korb_m_hash_default_proc_set(CTX *c, VALUE *slots, VALUE_REF self,
         if (pp->iseq == NULL) n = -2;                        /* symbol/method proc */
         else {
             const NODE *const e = pp->iseq;
-            const bool var = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0);
+            const bool var = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0 || e->u.node_entry.rest_slot == -2);
             const uint32_t reqc = var ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt;
             n = var ? -((korb_sword_t)reqc + 1) : (korb_sword_t)reqc;
         }
