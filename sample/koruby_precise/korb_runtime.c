@@ -3768,8 +3768,7 @@ static void korb_meth_pin(CTX *const c, const VALUE mv) {
         return;
     }
     m->entry = km;
-    km->pinned = 1;
-    if (getenv("KORB_PIN_DEBUG")) fprintf(stderr, "[pin] mid=%s km=%p\n", korb_sym_name(c->vm, m->mid), (void*)km);                                     /* a redefinition orphans this entry instead */
+    km->pinned = 1;                                     /* a redefinition orphans this entry instead */
     if (m->owner == KORB_NIL && KORB_CLASS_P(def))
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->owner, def);
 }

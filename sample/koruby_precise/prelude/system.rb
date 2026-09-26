@@ -1388,11 +1388,12 @@ end
 
 # `Module.constants` (no arguments) is a special form: it answers the constants
 # visible at the caller's scope, which at top level is Object's.  With an
-# argument it is the ordinary Module#constants.
+# argument it is the ordinary Module#constants.  Only for Module itself: Class
+# and every class's singleton class inherit this method (rb_mod_s_constants).
 class << Module
   alias_method :__constants_of, :constants
   private :__constants_of
-  def constants(*args) = args.empty? ? Object.constants : __constants_of(*args)
+  def constants(*args) = (args.empty? && equal?(Module)) ? Object.constants : __constants_of(*args)
 end
 
 module RbConfig
