@@ -1325,6 +1325,7 @@ struct korb_vm {
      * (libc-side strings, no GC). */
     const char *cur_load_file;
     bool main_public;        /* a bare `public` at this file's top level: its later defs are public */
+    bool sing_hash_redef;    /* some singleton defines #hash / #eql?: Class/Module keys dispatch too */
     /* Same file, realpath'd when it was read: the CWD may move (Dir.chdir) and a
      * main script named relatively cannot be resolved again afterwards. */
     const char *cur_load_abs;

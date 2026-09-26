@@ -1739,7 +1739,8 @@ korb_hash_find_ctx_h(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *ou
 {
     *out_err = RESULT_OK(KORB_NIL);
     if (out_hint) *out_hint = 0;
-    if (LIKELY(!korb_eq_needs_send(key)))
+    const bool cls_key = UNLIKELY(c->vm->sing_hash_redef) && KORB_CLASS_P(key);
+    if (LIKELY(!korb_eq_needs_send(key)) && !cls_key)
         return korb_hash_find(VAL2HASH(VALUE_REF_GET(href)), key);
     if (VAL2HASH(VALUE_REF_GET(href))->head.flags & KORB_FL_CMP_BY_ID) {   /* compare_by_identity: pointer only */
         const KorbHash *const h = VAL2HASH(VALUE_REF_GET(href));
@@ -1754,10 +1755,14 @@ korb_hash_find_ctx_h(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *ou
     slots[2] = slots[0];
     RESULT khr = korb_send_impl(c, slots + 3, hashm, 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(khr.state != KORB_NORMAL)) { *out_err = khr; return -1; }
+    if (UNLIKELY(!FIXNUM_P(khr.value) && !KORB_BIGNUM_P(khr.value))) {   /* CRuby: rb_to_int on the result */
+        *out_err = korb_raise(c, slots + 3, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, khr.value));
+        return -1;
+    }
     slots[1] = khr.value;                                 /* searched key's #hash (rooted) */
     const uint64_t khint = korb_value_hash(khr.value) | 1u;   /* 0 is reserved for "not recorded" */
     if (out_hint) *out_hint = khint;
-    const uint32_t kmask = VAL2HASH(VALUE_REF_GET(href))->kidx_mask;
+    const uint32_t kmask = cls_key ? 0 : VAL2HASH(VALUE_REF_GET(href))->kidx_mask;   /* a class key may predate its hint */
     if (kmask) {                                          /* probe only the pairs stored under this #hash */
         const uint32_t len0 = VAL2HASH(VALUE_REF_GET(href))->len;
         for (uint32_t slot = (uint32_t)(khint >> 1) & kmask; ; slot = (slot + 1) & kmask) {
@@ -4722,6 +4727,7 @@ korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mi
     m->simple_entry = NULL;                       /* 再定義でスロットを使い回すので必ず落とす */
     m->super_owner = KORB_NIL;             /* a redefinition drops any inherited alias origin */
     m->sdef = 0;
+    if (k->is_singleton && (mid == korb_intern(vm, "hash", 4) || mid == korb_intern(vm, "eql?", 4))) vm->sing_hash_redef = true;
     /* A top-level `def` lands in vm->methods (the global function table), which a
      * bare-name call reads FIRST.  Defining the same name on Object through the
      * class table (define_method, alias_method, attr_*) used to be invisible to
