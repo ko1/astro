@@ -2076,6 +2076,10 @@ static RESULT korb_m_class_cvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
          * plain index walk is stable; keys are immediate Symbols (no rooting). */
         for (uint32_t i = 0; VAL2CLASS(slots[1])->cvars != KORB_NIL && i < VAL2HASH(VAL2CLASS(slots[1])->cvars)->len; i++) {
             const VALUE key = korb_items_data(VAL2HASH(VAL2CLASS(slots[1])->cvars)->items)[2 * i];
+            if (VAL2CLASS(slots[1])->serial <= c->vm->boot_class_serial && SYMBOL_P(key)) {
+                const char *const nm = korb_sym_name(c->vm, SYM2ID(key));   /* the prelude's own @@__ state */
+                if (nm != NULL && strncmp(nm, "@@__", 4) == 0) continue;
+            }
             bool dup = false;                            /* de-dup across ancestors */
             for (uint32_t j = 0; j < VAL2ARY(slots[0])->len; j++)
                 if (korb_items_data(VAL2ARY(slots[0])->items)[j] == key) { dup = true; break; }

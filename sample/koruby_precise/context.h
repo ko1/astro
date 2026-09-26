@@ -1113,6 +1113,7 @@ struct korb_vm {
                               * so `def self.x` in a required file lands on TOPLEVEL_BINDING.receiver.
                               * 0 until the program's frame is built. */
     uint32_t class_serial;   /* monotonic id handed to each new class (see KorbClass.serial) */
+    uint32_t boot_class_serial;   /* class_serial when the prelude finished: classes up to it are koruby's own */
     /* set when a user redefines a node-fastpathed basic op (+,-,*,/,%,<,<=,>,>=)
      * on Integer/Float; the arithmetic/compare nodes then deopt to a real send
      * so the redefinition is honored (CRuby basic-op-redefined semantics). */

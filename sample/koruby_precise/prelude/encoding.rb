@@ -261,9 +261,9 @@ class Encoding
   Stateless_ISO_2022_JP = STATELESS_ISO_2022_JP unless const_defined?(:Stateless_ISO_2022_JP, false)
   STATELESS_ISO_2022_JP_KDDI = Encoding.new("stateless-ISO-2022-JP-KDDI") unless const_defined?(:STATELESS_ISO_2022_JP_KDDI, false)
   Stateless_ISO_2022_JP_KDDI = STATELESS_ISO_2022_JP_KDDI unless const_defined?(:Stateless_ISO_2022_JP_KDDI, false)
-  @@default_external = @@locale = UTF_8
-  @@default_internal = nil
-  def self.default_external; @@default_external; end
+  @@__default_external = @@__locale = UTF_8
+  @@__default_internal = nil
+  def self.default_external; @@__default_external; end
   # Both setters take an Encoding, a String, or anything with #to_str; anything
   # else is a TypeError, and default_external may not be nil (CRuby).
   def self.__to_enc(v, what)
@@ -279,10 +279,10 @@ class Encoding
   def self.default_external=(e)
     raise ArgumentError, "default external cannot be nil" if e.nil?
     # the C side mirrors it: #inspect escapes a string whose encoding is not this
-    __enc_sync__(@@locale, @@default_internal, @@default_external = __to_enc(e, :external))
+    __enc_sync__(@@__locale, @@__default_internal, @@__default_external = __to_enc(e, :external))
   end
-  def self.default_internal; @@default_internal; end
-  def self.default_internal=(e); __enc_sync__(@@locale, @@default_internal = (e.nil? ? nil : __to_enc(e, :internal)), @@default_external); end
+  def self.default_internal; @@__default_internal; end
+  def self.default_internal=(e); __enc_sync__(@@__locale, @@__default_internal = (e.nil? ? nil : __to_enc(e, :internal)), @@__default_external); end
   # Encoding.find(name) → the Encoding constant whose #name matches (case-folded),
   # else a fresh Encoding of that name (used by String#encoding for "other").
   def self.find(name)
@@ -295,14 +295,17 @@ class Encoding
         end
     raise ArgumentError, "invalid encoding name (non ASCII)" unless n.encoding.ascii_compatible?
     return default_external if n == 'external' || n == 'filesystem'
-    return @@locale if n == 'locale'   # fixed at startup; default_external= must not move it
+    return @@__locale if n == 'locale'   # fixed at startup; default_external= must not move it
     return default_internal if n == 'internal'
+    key = n.upcase
+    hit = (@@__find_memo ||= {})[key]   # scanning every alias and constant per call was hot (rspec)
+    return hit if hit
     # Resolve an alias first, so find("BINARY") is Encoding::ASCII_8BIT itself
     # rather than a fresh Encoding that merely prints the same.
-    aliases.each { |a, canon| (n = canon; break) if a.upcase == n.upcase }
+    aliases.each { |a, canon| (n = canon; break) if a.upcase == key }
     constants.each do |cn|
       e = const_get(cn)
-      return e if e.is_a?(Encoding) && (e.name == n || e.name.upcase == n.upcase)
+      return @@__find_memo[key] = e if e.is_a?(Encoding) && (e.name == n || e.name.upcase == n.upcase)
     end
     raise ArgumentError, "unknown encoding name - #{n}"
   end
@@ -360,7 +363,7 @@ class Encoding
   private_constant :LOCALE_CHARMAP__
   # CRuby fixes Encoding.find('locale') at startup: default_external= must not
   # move it, and every string that crosses the OS boundary carries it.
-  __enc_sync__(@@locale = (LOCALE_CHARMAP__ == "ANSI_X3.4-1968" ? US_ASCII : UTF_8), @@default_internal, @@default_external)
+  __enc_sync__(@@__locale = (LOCALE_CHARMAP__ == "ANSI_X3.4-1968" ? US_ASCII : UTF_8), @@__default_internal, @@__default_external)
   def self.locale_charmap; LOCALE_CHARMAP__ || default_external.name; end
   # This encoding's canonical name plus any aliases pointing to it.
   # This encoding's canonical name plus every alias pointing to it (CRuby lists
