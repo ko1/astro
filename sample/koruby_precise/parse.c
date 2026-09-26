@@ -156,6 +156,10 @@ struct kp_ctx {
      * the binding's env chain, which the eval frame's EP points at. */
     struct kp_frame *eval_outer;
     uint32_t eval_outer_cnt;
+    /* while building a pattern descriptor: how far above the match node's slots
+     * the matcher evaluates this level's value nodes (korb_pat_match: cur =
+     * base + 1, each nested element level + 2) */
+    int32_t pat_cur;
 };
 
 /* `alias x eval` seen earlier in this file: x is lowered like eval itself. */
@@ -1161,8 +1165,37 @@ pattern_binds_var(struct kp_ctx *tc, const pm_node_t *pat)
 /* Compile a prism pattern into a korb_pat descriptor (immortal; walked by the
  * runtime matcher).  Supports binding / array / hash / value (=== ) patterns;
  * rest/post/constant/find patterns fall back to an unsupported value node. */
+static struct korb_pat *build_pattern_desc_r(struct kp_ctx *tc, const pm_node_t *pat);
+/* A value node the matcher EVALs at its cursor, not at the match node's slots:
+ * transduce it at that chain so its baked offsets (frame base, scratch) agree. */
+static NODE *
+kp_pat_value(struct kp_ctx *tc, const pm_node_t *node)
+{
+    tc->chain += tc->pat_cur;
+    NODE *const v = transduce(tc, node);
+    tc->chain -= tc->pat_cur;
+    return v;
+}
 static struct korb_pat *
 build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
+{
+    const int32_t saved = tc->pat_cur;
+    tc->pat_cur = 1;
+    struct korb_pat *const d = build_pattern_desc_r(tc, pat);
+    tc->pat_cur = saved;
+    return d;
+}
+/* an element of an array / hash / find pattern: matched two cells further up */
+static struct korb_pat *
+build_pattern_elem(struct kp_ctx *tc, const pm_node_t *pat)
+{
+    tc->pat_cur += 2;
+    struct korb_pat *const d = build_pattern_desc_r(tc, pat);
+    tc->pat_cur -= 2;
+    return d;
+}
+static struct korb_pat *
+build_pattern_desc_r(struct kp_ctx *tc, const pm_node_t *pat)
 {
     struct korb_pat *p = calloc(1, sizeof(*p));
     if (!p) abort();
@@ -1180,18 +1213,18 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
         const pm_array_pattern_node_t *ap = (const pm_array_pattern_node_t *)pat;
         if (!ap->rest && ap->posts.size == 0) {
             p->kind = 2; p->n = (uint32_t)ap->requireds.size;
-            if (ap->constant) p->value_node = transduce(tc, ap->constant);   /* `Const[...]` → Const === subject first */
+            if (ap->constant) p->value_node = kp_pat_value(tc, ap->constant);   /* `Const[...]` → Const === subject first */
             p->elems = calloc(p->n ? p->n : 1, sizeof(struct korb_pat *));
-            for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_desc(tc, ap->requireds.nodes[i]);
+            for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_elem(tc, ap->requireds.nodes[i]);
             return p;
         }
         if (ap->rest) {                                       /* `[pre..., *rest, post...]` (optionally `Const[...]`) */
             p->kind = 6; p->n = (uint32_t)ap->requireds.size; p->npost = (uint32_t)ap->posts.size;
-            if (ap->constant) p->value_node = transduce(tc, ap->constant);
+            if (ap->constant) p->value_node = kp_pat_value(tc, ap->constant);
             const uint32_t total = p->n + p->npost;
             p->elems = calloc(total ? total : 1, sizeof(struct korb_pat *));
-            for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_desc(tc, ap->requireds.nodes[i]);
-            for (uint32_t i = 0; i < p->npost; i++) p->elems[p->n + i] = build_pattern_desc(tc, ap->posts.nodes[i]);
+            for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_elem(tc, ap->requireds.nodes[i]);
+            for (uint32_t i = 0; i < p->npost; i++) p->elems[p->n + i] = build_pattern_elem(tc, ap->posts.nodes[i]);
             p->bind_off = INT32_MIN;                          /* anonymous `*` (no bind); valid offsets are negative */
             if (PM_NODE_TYPE_P(ap->rest, PM_SPLAT_NODE)) {
                 const pm_splat_node_t *sp = (const pm_splat_node_t *)ap->rest;
@@ -1206,9 +1239,9 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
         const pm_find_pattern_node_t *fp = (const pm_find_pattern_node_t *)pat;
         {
             p->kind = 8; p->n = (uint32_t)fp->requireds.size;
-            if (fp->constant) p->value_node = transduce(tc, fp->constant);   /* `Const[*, …, *]` */
+            if (fp->constant) p->value_node = kp_pat_value(tc, fp->constant);   /* `Const[*, …, *]` */
             p->elems = calloc(p->n ? p->n : 1, sizeof(struct korb_pat *));
-            for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_desc(tc, fp->requireds.nodes[i]);
+            for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_elem(tc, fp->requireds.nodes[i]);
             p->bind_off = INT32_MIN;                              /* leading `*pre` slot (or anonymous) */
             if (fp->left && fp->left->expression && PM_NODE_TYPE_P(fp->left->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
                 const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)fp->left->expression;
@@ -1232,7 +1265,7 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
             bool ok = true;
             p->kind = 3; p->n = (uint32_t)hp->elements.size;
             p->npost = 0; p->bind_off = INT32_MIN;        /* rest mode: 0=none, 1=**rest, 2=**nil */
-            if (hp->constant) p->value_node = transduce(tc, hp->constant);   /* `Const(k: …)` → Const === subject */
+            if (hp->constant) p->value_node = kp_pat_value(tc, hp->constant);   /* `Const(k: …)` → Const === subject */
             p->keys  = calloc(p->n ? p->n : 1, sizeof(VALUE));
             p->elems = calloc(p->n ? p->n : 1, sizeof(struct korb_pat *));
             for (uint32_t i = 0; i < p->n; i++) {
@@ -1244,7 +1277,7 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
                 size_t klen = pm_string_length(&sn->unescaped);
                 p->keys[i] = ID2SYM(korb_intern(tc->c->vm, kname, klen));
                 if (as->value) {                              /* `key: pattern` */
-                    p->elems[i] = build_pattern_desc(tc, as->value);
+                    p->elems[i] = build_pattern_elem(tc, as->value);
                 } else {                                      /* `key:` shorthand → bind local named `key` */
                     int32_t li = -1;
                     for (size_t j = 0; j < tc->frame->locals->size; j++) {
@@ -1284,7 +1317,7 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
         if (cp->target->depth == 0) {
             p->kind = 4; p->n = 1;
             p->elems = calloc(1, sizeof(struct korb_pat *));
-            p->elems[0] = build_pattern_desc(tc, cp->value);
+            p->elems[0] = build_pattern_desc_r(tc, cp->value);
             p->bind_off = (int32_t)lvar_index(tc, (const pm_node_t *)cp->target, cp->target->name) - tc->chain;
             bake_add(tc, &p->bind_off);
             return p;
@@ -1295,8 +1328,8 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
             tc->syntax_error = true;   /* CRuby: "illegal variable in alternative pattern" → SyntaxError */
         p->kind = 5; p->n = 2;
         p->elems = calloc(2, sizeof(struct korb_pat *));
-        p->elems[0] = build_pattern_desc(tc, ap->left);
-        p->elems[1] = build_pattern_desc(tc, ap->right);
+        p->elems[0] = build_pattern_desc_r(tc, ap->left);
+        p->elems[1] = build_pattern_desc_r(tc, ap->right);
         return p;
     } else if (PM_NODE_TYPE_P(pat, PM_PINNED_VARIABLE_NODE)) {      /* `^var` → var === subject */
         p->kind = 7;   /* pin: value_node is a frame-local read → must EVAL in the match frame (base), not cur */
@@ -1304,12 +1337,12 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
         return p;
     } else if (PM_NODE_TYPE_P(pat, PM_PINNED_EXPRESSION_NODE)) {    /* `^(expr)` */
         p->kind = 1;
-        p->value_node = transduce(tc, (const pm_node_t *)((const pm_pinned_expression_node_t *)pat)->expression);
+        p->value_node = kp_pat_value(tc, (const pm_node_t *)((const pm_pinned_expression_node_t *)pat)->expression);
         return p;
     }
     /* value pattern: `pattern === subject` (constant / literal / range / etc.) */
     p->kind = 1;
-    p->value_node = transduce(tc, pat);
+    p->value_node = kp_pat_value(tc, pat);
     return p;
 }
 
