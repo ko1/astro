@@ -286,6 +286,24 @@ static bool korb_io_slow_p(KorbIORep *const rep) {
     }
     return rep->slow;
 }
+/* Before a read(2) on a blocking pipe / tty / socket: a blocking read would
+ * stop every green thread, so wait in the pump, and cap *want at what is
+ * there — readiness is no reservation, another reader (thread or process) may
+ * drain the fd first.  No-op for regular files. */
+static RESULT korb_io_slow_wait(CTX *c, VALUE *slots, KorbIORep *const rep, size_t *const want) {
+    if (!korb_io_slow_p(rep)) return RESULT_OK(KORB_NIL);
+    for (;;) {
+        struct pollfd now = { .fd = rep->fd, .events = POLLIN, .revents = 0 };
+        if (poll(&now, 1, 0) == 1) {                      /* EINTR / nothing yet: park below */
+            int avail = 0;   /* ready and empty is EOF / error (a half-closed socket has no POLLHUP): read reports it */
+            if (ioctl(rep->fd, FIONREAD, &avail) == 0 && avail > 0 && (size_t)avail < *want) *want = (size_t)avail;
+            return RESULT_OK(KORB_NIL);
+        }
+        CHECK(korb_io_park(c, slots, rep, POLLIN));      /* may GC */
+        if (UNLIKELY(!korb_io_open_p(rep)))
+            return korb_raise(c, slots, KORB_E_IOERROR, 0, "stream closed in another thread");
+    }
+}
 static uint32_t korb_io_fill_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESULT *perr) {
     if (rep->rpos < rep->rlen) return rep->rlen - rep->rpos;
     rep->rpos = rep->rlen = 0;
@@ -300,17 +318,13 @@ static uint32_t korb_io_fill_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESUL
         rep->rcapa = KORB_IO_BUFSZ;
     }
     { const RESULT fr = korb_io_fifo_wait(c, slots, rep); if (UNLIKELY(fr.state != KORB_NORMAL)) { if (perr) *perr = fr; return 0; } }
-    struct pollfd now = { .fd = rep->fd, .events = POLLIN, .revents = 0 };
-    if (!rep->nonblk && c != NULL && korb_io_slow_p(rep) && poll(&now, 1, 0) < 1) {   /* EINTR too: never fall into a blocking read */   /* parks only when nothing is there yet */
-        const RESULT pr = korb_io_park(c, slots, rep, POLLIN);   /* may GC */
-        if (UNLIKELY(pr.state != KORB_NORMAL)) { if (perr) *perr = pr; return 0; }
-        if (UNLIKELY(!korb_io_open_p(rep))) {
-            if (perr) *perr = korb_raise(c, slots, KORB_E_IOERROR, 0, "stream closed in another thread");
-            return 0;
-        }
+    size_t want = rep->rcapa;
+    if (!rep->nonblk && c != NULL) {
+        const RESULT wr = korb_io_slow_wait(c, slots, rep, &want);   /* may GC */
+        if (UNLIKELY(wr.state != KORB_NORMAL)) { if (perr) *perr = wr; return 0; }
     }
     for (;;) {
-        const ssize_t n = read(rep->fd, rep->rbuf, rep->rcapa);
+        const ssize_t n = read(rep->fd, rep->rbuf, want);
         if (n < 0) {
             if (errno == EINTR) continue;
             if (korb_io_would_block(errno) && rep->nonblk && c != NULL) {
@@ -498,8 +512,10 @@ static RESULT korb_io_read_bytes(CTX *c, VALUE *slots, KorbIORep *rep, uint32_t 
         if (rep->rpos >= rep->rlen && !rep->eof && korb_io_open_p(rep) && rep->fd >= 0) {
             if (rep->wlen > 0) (void)korb_io_flush_rep(rep);        /* duplex: don't deadlock the peer */
             CHECK(korb_io_fifo_wait(c, slots + 1, rep));           /* may GC: sref is rooted */
+            size_t chunk = want - len;
+            if (!rep->nonblk) CHECK(korb_io_slow_wait(c, slots + 1, rep, &chunk));   /* may GC: sref is rooted */
             KorbString *const s = VAL2STR(VALUE_REF_GET(sref));
-            const ssize_t n = read(rep->fd, korb_strbuf_data(s->buf) + len, want - len);
+            const ssize_t n = read(rep->fd, korb_strbuf_data(s->buf) + len, chunk);
             if (n < 0) {
                 if (errno == EINTR) continue;
                 if (korb_io_would_block(errno) && rep->nonblk) {
