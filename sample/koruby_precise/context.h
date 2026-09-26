@@ -1114,6 +1114,7 @@ struct korb_vm {
                               * 0 until the program's frame is built. */
     uint32_t class_serial;   /* monotonic id handed to each new class (see KorbClass.serial) */
     uint32_t boot_class_serial;   /* class_serial when the prelude finished: classes up to it are koruby's own */
+    bool c_subclasses_filed;      /* Class#subclasses has filed the classes made in C (set.c) */
     struct korb_shtrans_ent { uint32_t shape, sym, child; } *shtrans;   /* (shape, ivar) → child shape (korb_shape_transition) */
     /* set when a user redefines a node-fastpathed basic op (+,-,*,/,%,<,<=,>,>=)
      * on Integer/Float; the arithmetic/compare nodes then deopt to a real send

@@ -769,9 +769,36 @@ static RESULT korb_m_class_attached_object(CTX *c, VALUE *slots, VALUE_REF self,
             if (vm->sklass.val[i] == cls) return RESULT_OK(vm->sklass.obj[i]);
     return korb_raise(c, slots, KORB_E_TYPE, 0, "'attached_object' called on a non-singleton class");
 }
+static RESULT korb_bi_heap_objects(CTX *c, VALUE *slots, VALUE_SLICE args);   /* fwd (korb_runtime.c) */
+static bool korb_subclass_listed(const VALUE super_cls, const VALUE sub_cls) {
+    const VALUE list = VAL2CLASS(super_cls)->subclasses;
+    if (list == KORB_NIL) return false;
+    const KorbArray *const la = VAL2ARY(list);
+    for (uint32_t i = 0; i < la->len; i++)
+        if (korb_items_data(la->items)[i] == sub_cls) return true;
+    return false;
+}
+/* Classes made in C (boot, lazily built ones) never went through
+ * korb_register_subclass: file them on the first #subclasses, not at startup. */
+static RESULT korb_file_c_subclasses(CTX *c, VALUE *slots) {
+    c->vm->c_subclasses_filed = true;
+    slots[0] = korb_builtin_class_obj(c->vm, KORB_C_CLASS);
+    const RESULT hr = korb_bi_heap_objects(c, slots + 1, VALUE_SLICE_MAKE(slots, 1));
+    if (hr.state != KORB_NORMAL) return RESULT_OK(KORB_NIL);   /* backend cannot walk: keep the registered ones */
+    slots[0] = hr.value;
+    for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
+        const VALUE k = korb_items_data(VAL2ARY(slots[0])->items)[i];
+        if (!KORB_CLASS_P(k) || VAL2CLASS(k)->is_singleton || VAL2CLASS(k)->is_module) continue;
+        const VALUE sup = VAL2CLASS(k)->superclass;
+        if (!KORB_CLASS_P(sup) || korb_subclass_listed(sup, k)) continue;
+        CHECK(korb_register_subclass(c, slots + 1, sup, k));
+    }
+    return RESULT_OK(KORB_NIL);
+}
 /* Class#subclasses — direct (immediate) non-singleton subclasses, order unspecified. */
 static RESULT korb_m_class_subclasses(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    if (UNLIKELY(!c->vm->c_subclasses_filed)) CHECK(korb_file_c_subclasses(c, slots));
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     const VALUE list = KORB_CLASS_P(VALUE_REF_GET(self)) ? VAL2CLASS(VALUE_REF_GET(self))->subclasses : KORB_NIL;
