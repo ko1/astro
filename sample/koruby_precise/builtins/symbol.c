@@ -329,6 +329,9 @@ static RESULT korb_m_obj_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
          * fd / mode there), which CRuby also keeps out of #instance_variables */
         const char *const nm = korb_sym_name(c->vm, syms[i]);
         if (nm == NULL || nm[0] != '@') continue;
+        /* koruby's own classes keep state in @__x ivars (Queue's @__items) that
+         * CRuby's C classes do not have: a name the prelude interned is hidden */
+        if (nm[1] == '_' && nm[2] == '_' && syms[i] < c->vm->boot_sym_cnt) continue;
         slots[1] = ID2SYM(syms[i]);                             /* syms is libc memory, stable across GC */
         CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
     }

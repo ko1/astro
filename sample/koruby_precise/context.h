@@ -1122,6 +1122,7 @@ struct korb_vm {
     uint32_t class_serial;   /* monotonic id handed to each new class (see KorbClass.serial) */
     uint32_t boot_class_serial;   /* class_serial when the prelude finished: classes up to it are koruby's own */
     bool c_subclasses_filed;      /* Class#subclasses has filed the classes made in C (set.c) */
+    uint32_t boot_sym_cnt;        /* sym_cnt when the prelude finished: an @__x named before it is koruby's own */
     bool parse_anon_cref;         /* the eval(String) being parsed runs under an unnamed class (class_eval) */
     struct korb_file_locals { uint32_t fsym; const struct korb_locals_info *li; } *file_locals;   /* a file's top-level local names (Proc#binding) */
     uint32_t file_locals_cnt, file_locals_cap;

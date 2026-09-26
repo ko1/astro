@@ -1430,6 +1430,7 @@ main(int argc, char *argv[])
      * `c`).  No parse: the exe starts straight into evaluation. */
     const long data_offset = -1;             /* no __END__ / DATA in an embedded exe (no script file) */
     NODE *prelude_ast = koruby_embed_prelude_ast(c);
+    c->vm->boot_sym_cnt = c->vm->sym_cnt;    /* before the program's own names */
     uint32_t prelude_locals = koruby_embed_prelude_locals;
     g_prelude_repo_count = code_repo_count();   /* the exe registers no bodies at build time */
     NODE *ast = koruby_embed_program_ast(c);
@@ -1444,6 +1445,7 @@ main(int argc, char *argv[])
     if (prelude_src) prelude_src = koruby_prelude_append_features(prelude_src, &prelude_len);
     NODE *prelude_ast = OPTION.dump_ast ? NULL
                       : koruby_parse_source(c, prelude_src, prelude_len, KORB_PRELUDE_FILE, true);
+    c->vm->boot_sym_cnt = c->vm->sym_cnt;    /* the prelude's names only: the program's come after */
     uint32_t prelude_locals = koruby_toplevel_locals_cnt;
     /* Entries synthesized at runtime (attr_reader: node_ivar_get(-1) with the
      * ivar as a hole) all share one shape; register a prototype so preload.so

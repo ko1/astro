@@ -238,6 +238,7 @@ Thread.const_set(:Mutex, Mutex)
 Thread.const_set(:Queue, Queue)
 Thread.const_set(:SizedQueue, SizedQueue)
 Thread.const_set(:ConditionVariable, ConditionVariable)
+[Mutex, Queue, SizedQueue, ConditionVariable].each { __nest_under(_1, Thread) }   # named Thread::Mutex etc.
 
 # Monitor — CRuby では monitor.c の C 実装。stdlib の monitor.rb は
 # MonitorMixin だけを足し、Monitor 本体と Monitor::ConditionVariable が
@@ -363,6 +364,7 @@ class Monitor
 end
 
 Thread.const_set(:Monitor, Monitor)
+__nest_under(Monitor, Thread)
 
 module Process
   # clock_gettime(2) の clockid_t (Linux)。koruby は実際には _clk を無視して

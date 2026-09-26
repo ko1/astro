@@ -16227,6 +16227,13 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
             }
         }
         break;
+      case KORB_OBJ_MUTEX: case KORB_OBJ_CONDVAR: {   /* C objects with no payload to show: #<Thread::Mutex:0x…> */
+        VALUE k = korb_dispatch_class(c, v);
+        while (KORB_CLASS_P(k) && VAL2CLASS(k)->is_singleton) k = VAL2CLASS(k)->superclass;
+        if (!KORB_CLASS_P(k)) break;
+        fputs("#<", fp); korb_fprint_class_qname(c, fp, k); fprintf(fp, ":0x%016zx>", (size_t)(uintptr_t)v);
+        return;
+      }
     }
     fputs("#<Object>", fp);
 }
@@ -19245,6 +19252,17 @@ korb_bi_finalizers_active(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(KORB_NIL);
 }
 
+/* __nest_under(klass, outer) — a class CRuby keeps under `outer` with a
+ * top-level alias (Thread::Mutex): its name becomes "Outer::Name". */
+static RESULT
+korb_bi_nest_under(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)slots;
+    const VALUE k = VALUE_SLICE_GET(args, 0), o = VALUE_SLICE_GET(args, 1);
+    if (KORB_CLASS_P(k) && KORB_CLASS_P(o)) ARO_STORE(c, VAL2CLASS(k), (VALUE *)(uintptr_t)&VAL2CLASS(k)->enclosing, o);
+    return RESULT_OK(KORB_NIL);
+}
+
 /* __undef_new(klass) — a Ruby-level class whose ::new CRuby undefines
  * (BigDecimal): respond_to?(:new) is false and calling it raises. */
 static RESULT
@@ -20006,6 +20024,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);
     korb_builtin_define(c, "__heap_objects__", korb_bi_heap_objects, -1);
     korb_builtin_define(c, "__undef_new", korb_bi_undef_new, 1);
+    korb_builtin_define(c, "__nest_under", korb_bi_nest_under, 2);
     korb_builtin_define(c, "__finalizers_active__", korb_bi_finalizers_active, 0);
     korb_builtin_define(c, "__gc_stress", korb_bi_gc_stress, -1);
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
