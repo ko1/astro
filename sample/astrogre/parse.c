@@ -2374,8 +2374,8 @@ lower_class(lower_ctx_t *L, ire_node_t *n, NODE *tail)
 
 /* The range array outlives the IR (which is freed right after lowering),
  * so copy it into pattern-owned storage. */
-static NODE *
-lower_uniclass(lower_ctx_t *L, ire_node_t *n, NODE *tail)
+static agre_cpset_t *
+lower_cpset(const ire_node_t *n)
 {
     const size_t bytes = (size_t)n->u.uni.n * sizeof(agre_cprange_t);
     agre_cprange_t *const r = (agre_cprange_t *)malloc(bytes);
@@ -2385,6 +2385,12 @@ lower_uniclass(lower_ctx_t *L, ire_node_t *n, NODE *tail)
     astrogre_own(s);
     s->r = r;
     s->n = n->u.uni.n;
+    return s;
+}
+static NODE *
+lower_uniclass(lower_ctx_t *L, ire_node_t *n, NODE *tail)
+{
+    agre_cpset_t *const s = lower_cpset(n);
     return ALLOC_node_re_uniclass(n->u.uni.bm[0], n->u.uni.bm[1], agre_cpset_hash(s), s, tail);
 }
 
@@ -2565,6 +2571,12 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
                     cls->u.cls.bm[2], cls->u.cls.bm[3],
                     n->u.rep.min, n->u.rep.max, tail);
             }
+        }
+        if (peeked && peeked->kind == IRE_UNICLASS && wrap_cap_idx == 0) {   /* a loop, not a C frame per character */
+            agre_cpset_t *const s = lower_cpset(peeked);
+            return n->u.rep.greedy
+                ? ALLOC_node_re_greedy_uniclass(peeked->u.uni.bm[0], peeked->u.uni.bm[1], agre_cpset_hash(s), s, n->u.rep.min, n->u.rep.max, tail)
+                : ALLOC_node_re_lazy_uniclass(peeked->u.uni.bm[0], peeked->u.uni.bm[1], agre_cpset_hash(s), s, n->u.rep.min, n->u.rep.max, tail);
         }
         NODE *body = lower(L, n->u.rep.body, L->rep_cont);
         /* rep_cont_inner reads `f->body` and `f->outer_next` from the

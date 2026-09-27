@@ -893,6 +893,87 @@ node_re_greedy_class_cap(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint
     return MR_FAIL;
 }
 
+/* Greedy `[…]*` over a class with non-ASCII members (node_re_uniclass body):
+ * a loop instead of one rep_cont C frame per character, which overflowed the
+ * stack on long inputs (rexml's VALID_XML_CHARS on 5 MB).  UTF-8 only, like
+ * node_re_uniclass; backtracks one codepoint at a time. */
+NODE_DEF
+node_re_greedy_uniclass(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t bm1, uint64_t set_hash, void *set, int32_t min, int32_t max, NODE *next)
+{
+    (void)set; (void)set_hash;
+    const agre_cpset_t *const s = (const agre_cpset_t *)n->u.node_re_greedy_uniclass.set;
+    const size_t start = c->pos;
+    const size_t total = c->str_len;
+    const uint8_t *const str = c->str;
+    size_t pos = start;
+    int32_t count = 0;
+    const int32_t cap = (max == -1) ? INT32_MAX : max;
+    while (pos < total && count < cap) {
+        const uint8_t b = str[pos];
+        int adv;
+        if (LIKELY(b < 0x80)) {
+            if (!((((b < 64) ? bm0 : bm1) >> (b & 63)) & 1ULL)) break;
+            adv = 1;
+        }
+        else {
+            uint32_t cp;
+            adv = agre_utf8_decode(str + pos, total - pos, &cp);
+            if (adv == 0 || !agre_cpset_contains(s, cp)) break;
+        }
+        pos += (size_t)adv;
+        count++;
+    }
+    if (count < min) { c->pos = start; return MR_FAIL; }
+    for (;;) {
+        c->pos = pos;
+        const VALUE r = EVAL_ARG(c, next);
+        if (r) return MR_STOP;
+        if (count <= min || pos <= start) break;
+        do { pos--; } while (pos > start && (str[pos] & 0xC0) == 0x80);
+        count--;
+    }
+    c->pos = start;
+    return MR_FAIL;
+}
+
+/* Lazy variant of greedy_uniclass: shortest first. */
+NODE_DEF
+node_re_lazy_uniclass(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t bm1, uint64_t set_hash, void *set, int32_t min, int32_t max, NODE *next)
+{
+    (void)set; (void)set_hash;
+    const agre_cpset_t *const s = (const agre_cpset_t *)n->u.node_re_lazy_uniclass.set;
+    const size_t start = c->pos;
+    const size_t total = c->str_len;
+    const uint8_t *const str = c->str;
+    size_t pos = start;
+    int32_t count = 0;
+    const int32_t cap = (max == -1) ? INT32_MAX : max;
+    for (;;) {
+        if (count >= min) {
+            c->pos = pos;
+            const VALUE r = EVAL_ARG(c, next);
+            if (r) return MR_STOP;
+            if (count >= cap) break;
+        }
+        if (pos >= total) break;
+        const uint8_t b = str[pos];
+        int adv;
+        if (LIKELY(b < 0x80)) {
+            if (!((((b < 64) ? bm0 : bm1) >> (b & 63)) & 1ULL)) break;
+            adv = 1;
+        }
+        else {
+            uint32_t cp;
+            adv = agre_utf8_decode(str + pos, total - pos, &cp);
+            if (adv == 0 || !agre_cpset_contains(s, cp)) break;
+        }
+        pos += (size_t)adv;
+        count++;
+    }
+    c->pos = start;
+    return MR_FAIL;
+}
+
 /* Lazy variant of greedy_class: shortest first. */
 NODE_DEF
 node_re_lazy_class(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t bm1, uint64_t bm2, uint64_t bm3, int32_t min, int32_t max, NODE *next)
