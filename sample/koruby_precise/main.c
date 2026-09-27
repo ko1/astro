@@ -149,9 +149,10 @@ koruby_apply_flag(const char *a, const char *next_arg,
         return (a[2] || !lib) ? 1 : 2;
     }
     if (strcmp(a, "-w") == 0 || strncmp(a, "-W", 2) == 0) {
-        if (strcmp(a, "-W:no-deprecated") == 0)        { OPTION.no_deprecated = true;  return 1; }
-        if (strcmp(a, "-W:no-experimental") == 0)      { OPTION.no_experimental = true; return 1; }
-        if (strncmp(a, "-W:", 3) == 0)                 return 1;   /* other categories: accepted */
+        if (strncmp(a, "-W:", 3) == 0) {
+            if (OPTION.wcat_cnt < sizeof OPTION.wcat / sizeof OPTION.wcat[0]) OPTION.wcat[OPTION.wcat_cnt++] = a + 3;
+            return 1;
+        }
         if (strcmp(a, "-w") == 0 || strcmp(a, "-W") == 0 || strcmp(a, "-W2") == 0) OPTION.verbose_warn = 1;
         else if (strcmp(a, "-W0") == 0) OPTION.verbose_warn = -1;
         else if (strcmp(a, "-W1") == 0) OPTION.verbose_warn = 2;       /* explicit default ($VERBOSE=false) */
@@ -1574,6 +1575,23 @@ main(int argc, char *argv[])
                         (void)korb_send(c, pcur + 3, korb_intern(c->vm, "[]=", 3), 0, 2);
                     }
                 }
+            }
+        }
+        if (OPTION.wcat_cnt != 0) {             /* -W:performance / -W:no-deprecated ... (an unknown name warns, as in CRuby) */
+            const VALUE wm = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
+            for (uint32_t wi = 0; KORB_CLASS_P(wm) && wi < OPTION.wcat_cnt; wi++) {
+                const char *nm = OPTION.wcat[wi];
+                const bool on = strncmp(nm, "no-", 3) != 0;
+                if (!on) nm += 3;
+                if (strcmp(nm, "deprecated") != 0 && strcmp(nm, "experimental") != 0 && strcmp(nm, "performance") != 0 &&
+                    strcmp(nm, "strict_unused_block") != 0) {
+                    fprintf(stderr, "%s: warning: unknown warning category: '%s'\n", argv[0], nm);
+                    continue;
+                }
+                pcur[0] = wm;
+                pcur[1] = ID2SYM(korb_intern(c->vm, nm, (uint32_t)strlen(nm)));
+                pcur[2] = on ? KORB_TRUE : KORB_FALSE;
+                (void)korb_send(c, pcur + 3, korb_intern(c->vm, "[]=", 3), 0, 2);
             }
         }
     }

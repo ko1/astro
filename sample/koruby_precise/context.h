@@ -2100,8 +2100,8 @@ struct koruby_option {
     bool rec_sep_given;  /* -0[octal] was given: rec_sep/rec_sep_len are $/ (NULL = nil) */
     const char *rec_sep;
     uint32_t rec_sep_len;
-    bool no_deprecated;  /* -W:no-deprecated */
-    bool no_experimental;/* -W:no-experimental */
+    const char *wcat[8]; /* -W:[no-]category in order ("no-" kept), applied as Warning[cat] = !no after -w */
+    uint32_t wcat_cnt;
     bool backtrace_limit_given;  /* --backtrace-limit=N was passed (0 is a valid N) */
     int32_t backtrace_limit;     /* how many "from" lines an uncaught-exception report may print */
     const char *kcode;   /* -K<letter>: the default external encoding name, or NULL */

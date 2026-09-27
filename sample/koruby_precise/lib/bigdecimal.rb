@@ -260,7 +260,8 @@ class BigDecimal < Numeric
   def coerce(other)
     case other
     when BigDecimal then [other, self]
-    when Integer, Rational then [BigDecimal(other, 0), self]
+    when Integer then [BigDecimal(other, 0), self]
+    when Rational then [BigDecimal(other, __coerce_prec), self]
     when Float then [BigDecimal(other.to_s), self]
     else raise TypeError, "#{other.class} can't be coerced into BigDecimal"
     end
@@ -288,9 +289,19 @@ class BigDecimal < Numeric
     when BigDecimal then other
     when Integer    then BigDecimal(other, 0)
     when Float      then BigDecimal(other.to_s)
-    when Rational   then BigDecimal(other.numerator, 0).div(BigDecimal(other.denominator, 0), DEFAULT_PREC)
+    when Rational   then BigDecimal(other, __coerce_prec)
     else nil
     end
+  end
+
+  # CRuby's GetCoercePrec: the receiver's precision in 9-digit words, at least 32 digits
+  private def __coerce_prec
+    return 32 unless finite? && !zero?
+    n = __ndigits; e = @exp
+    ip = e > 0 ? (e + 8) / 9 : 0
+    fd = n - e
+    fp = fd > 0 ? (fd + 8) / 9 - (e < 0 ? -e / 9 : 0) : 0
+    [(ip + fp) * 9, 32].max
   end
 
   private def __from_scaled(iv, e)
