@@ -3436,6 +3436,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
       if (!KORB_CLASS_P(st)) st = korb_const_get(vm, korb_intern(vm, "Struct", 6));
       if (!KORB_CLASS_P(st)) st = korb_builtin_class_obj(vm, KORB_C_OBJECT);
       slots[0] = UNWRAP(korb_class_new(c, slots, 0, st)); }
+    CHECK(korb_register_subclass(c, slots + 1, VAL2CLASS(slots[0])->superclass, slots[0]));   /* Struct.subclasses sees it */
     VALUE_REF cls = VALUE_REF_AT(&slots[0]);
     slots[1] = korb_const_get(vm, korb_intern(vm, "Enumerable", 10));   /* Struct includes Enumerable */
     { RESULT ir = korb_do_include(c, slots + 2, VALUE_REF_GET(cls), VALUE_SLICE_MAKE(&slots[1], 1)); if (UNLIKELY(ir.state != KORB_NORMAL)) return ir; }
@@ -3695,6 +3696,7 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     { VALUE dt = korb_const_get(vm, korb_intern(vm, "Data", 4));        /* anon class, super Data (is_a?(Data)) */
       if (!KORB_CLASS_P(dt)) dt = korb_builtin_class_obj(vm, KORB_C_OBJECT);
       slots[0] = UNWRAP(korb_class_new(c, slots, 0, dt)); }
+    CHECK(korb_register_subclass(c, slots + 1, VAL2CLASS(slots[0])->superclass, slots[0]));   /* Data.subclasses sees it */
     VALUE_REF cls = VALUE_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, VALUE_SLICE_LEN(a)));
     VALUE_REF mem = VALUE_REF_AT(&slots[1]);
@@ -5408,7 +5410,7 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
         klass != korb_builtin_class_obj(vm, KORB_C_FLOAT)) return;
     static const char *const ops[] = {
         "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "-@",
-        "&", "|", "^", "<<", ">>",
+        "&", "|", "^", "<<", ">>", "===",
     };
     const char *const nm = korb_sym_name(vm, mid);
     for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++)
@@ -5498,6 +5500,8 @@ korb_class_dup(CTX *c, VALUE *slots, VALUE src)
     RESULT nr = korb_class_new(c, slots + 1, 0, sup); /* anonymous, same superclass */
     if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
     slots[1] = nr.value;
+    if (KORB_CLASS_P(VAL2CLASS(slots[1])->superclass) && !VAL2CLASS(slots[0])->is_module)
+        CHECK(korb_register_subclass(c, slots + 2, VAL2CLASS(slots[1])->superclass, slots[1]));   /* a dup is a sibling (CRuby) */
     KorbClass *const d = VAL2CLASS(slots[1]);
     const KorbClass *const s = VAL2CLASS(slots[0]);
     d->is_module = s->is_module;
@@ -7552,13 +7556,27 @@ korb_dispatch_class(CTX *c, VALUE self)
 }
 
 /* True if `self` responds to `mid` (own MRO incl. inherited builtins). */
+/* `new` undefined on cls: a no_new class (Integer, Rational, BigDecimal) up the
+ * chain, unless a singleton `def self.new` there answers first (CRuby's lookup:
+ * Class.new(Integer).new is NoMethodError, `def Integer.new` makes it work). */
+static bool
+korb_new_undefined_p(CTX *c, VALUE cls)
+{
+    VALUE k = cls;
+    while (KORB_CLASS_P(k) && !VAL2CLASS(k)->no_new) k = VAL2CLASS(k)->superclass;
+    if (!KORB_CLASS_P(k)) return false;
+    VALUE def = KORB_NIL;
+    const struct korb_method *const m = korb_class_find_method(korb_dispatch_class(c, cls), c->vm->mid_new, &def);
+    return m == NULL || m->kind == KORB_METHOD_UNDEF;
+}
+
 bool
 korb_responds_to(CTX *c, VALUE self, uint32_t mid)
 {
     /* `new` is dispatched by a special case (not a registered method), so the
      * MRO walk misses it — every non-module class still responds to it. */
     if (mid == c->vm->mid_new && KORB_CLASS_P(self) && !VAL2CLASS(self)->is_module)
-        return !VAL2CLASS(self)->no_new &&
+        return !korb_new_undefined_p(c, self) &&
                !(UNLIKELY(c->vm->new_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid));
     /* send / __send__ / public_send are also special-dispatched (not registered);
      * every object responds to them unless one was explicitly undef'd. */
@@ -13063,8 +13081,10 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
         if (UNLIKELY(VAL2CLASS(self)->is_singleton))   /* a metaclass has no instances (CRuby) */
             return korb_raise(c, slots, KORB_E_TYPE, line, "can't create instance of singleton class");
-        if (UNLIKELY(VAL2CLASS(self)->no_new))          /* undefined: no inherited `self.new` answers either */
-            return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for class %s", korb_sym_name(vm, VAL2CLASS(self)->name_sym));
+        if (UNLIKELY(korb_new_undefined_p(c, self))) {   /* undefined up the chain, no `self.new` answers */
+            char cnm[192]; if (VAL2CLASS(self)->name_sym) korb_class_qname_into(c, self, cnm, sizeof cnm); else korb_desc_inspect(c, self, cnm, sizeof cnm);
+            return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for class %s", cnm);
+        }
         /* A user-defined `def self.new` (e.g. the Thread stub) overrides the built-in
          * allocator: dispatch it with the args + block.  The non-block path resolves
          * this in node_send_cached; this shared path (block / send) must too.  A
@@ -13114,9 +13134,10 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             char mnm[192]; korb_class_qname_into(c, self, mnm, sizeof mnm);
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for module %s", mnm);
         }
-        uint32_t cname = VAL2CLASS(self)->name_sym;
-        if (UNLIKELY(VAL2CLASS(self)->no_new))           /* #new is undefined (built via Rational()/Complex()/BigDecimal()) */
-            return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for class %s", korb_sym_name(vm, cname));
+        if (UNLIKELY(korb_new_undefined_p(c, self))) {  /* #new is undefined (built via Rational()/Complex()/BigDecimal()) */
+            char cnm[192]; if (VAL2CLASS(self)->name_sym) korb_class_qname_into(c, self, cnm, sizeof cnm); else korb_desc_inspect(c, self, cnm, sizeof cnm);
+            return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for class %s", cnm);
+        }
         if (self == korb_builtin_class_obj(vm, KORB_C_FIBER)) {
             const RESULT fr = korb_fiber_new(c, slots, block, def_env, captured_self);
             if (LIKELY(fr.state == KORB_NORMAL) && argc >= 1) {   /* Fiber.new(storage: h) { … } */
@@ -13955,7 +13976,7 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
             for (VALUE sc = cls; KORB_CLASS_P(sc); sc = VAL2CLASS(sc)->superclass)
                 if (sc == korb_const_get(vm, vm->name_struct)) { kind = 2; break; }
     }
-    if (kind == 1 && (UNLIKELY(VAL2CLASS(cls)->no_new) || (UNLIKELY(vm->new_undef_cnt != 0) &&
+    if (kind == 1 && (UNLIKELY(korb_new_undefined_p(c, cls)) || (UNLIKELY(vm->new_undef_cnt != 0) &&
                                                          korb_method_undefed_p(korb_dispatch_class(c, cls), vm->mid_new))))
         kind = 2;                                      /* `undef_method :new` / no_new: the slow path raises */
     if (kind == 1) {   /* a user/builtin `new` singleton method (def self.new / Time.new) overrides the default allocator → route to the smethod path */

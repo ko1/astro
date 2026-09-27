@@ -5960,9 +5960,10 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
   マスクされたままなら従来どおり C から exit（CRuby はそのまま永久に止まる）。CRuby は rescue した後の
   2 回目のデッドロックで止まる（検出が 1 回きり）が、koruby は再度 fatal を出す。
 - ~~`Class#subclasses` が組み込みクラスの子を返さない~~ → ad5e2286 で初回に heap を走査して登録。
+  走査後に Struct.new / Data.define / Class#dup で作ったクラスが漏れていた（登録しない factory）→ 作る場所で登録。
 - `IO#each_line("aa", 1)`: CRuby の IO は複数文字 sep + limit 1 で `["ababa"]`（StringIO は 1 バイトずつで
   koruby と同じ）。CRuby IO 側の癖とみて追わない。`String#each_line` / `#lines` に limit を渡すと
-  CRuby は ArgumentError（koruby は受けていた → 直した）。
+  CRuby は ArgumentError（koruby は受けていた → 直した。block 付き each_line が漏れていたのも直した）。
 - Kernel#caller / 例外のバックトレースは作るたびに全フレームのラベルを組む（CRuby は遅延）。
 - Proc#binding: 外側の local を 1 つも読まない block の Proc は実 env を持たない (identity だけ)。作った
   フレームが呼び出し連鎖上に生きている間は Kernel#binding と同じ経路で見えるが、フレームが返った後は

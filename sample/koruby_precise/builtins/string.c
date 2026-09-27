@@ -3747,8 +3747,16 @@ static RESULT korb_line_sep_conv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     memcpy(sepbuf, korb_strbuf_data(cs->buf), *seplen);
     return RESULT_OK(KORB_NIL);
 }
+/* String#lines / #each_line take no limit, unlike IO#each_line */
+static RESULT korb_str_lines_argc(CTX *c, VALUE *slots, VALUE_SLICE a) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    const uint32_t pos = n - (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1)));
+    if (UNLIKELY(pos > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", pos);
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_lines, "each_line", a);
+    CHECK(korb_str_lines_argc(c, slots, a));
     if (SELF_STR->len > 0)
         { RESULT cr = korb_line_coerce_sep(c, slots, a); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     if (korb_line_sep_is_nil(c, a)) {   /* nil separator (or $/ == nil) → yield the whole string once */
@@ -3777,11 +3785,7 @@ static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    {   /* no limit argument, unlike IO#each_line */
-        const uint32_t n = VALUE_SLICE_LEN(a);
-        const uint32_t pos = n - (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1)));
-        if (UNLIKELY(pos > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", pos);
-    }
+    CHECK(korb_str_lines_argc(c, slots, a));
     if (SELF_STR->len > 0)   /* an empty string short-circuits to [] without validating the separator (CRuby) */
         { RESULT cr = korb_line_coerce_sep(c, slots, a); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     if (korb_line_sep_is_nil(c, a)) {   /* nil sep (or $/ == nil) → whole string as one line */

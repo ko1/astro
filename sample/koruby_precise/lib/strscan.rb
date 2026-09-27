@@ -31,6 +31,7 @@ class StringScanner
 
   def string=(s)
     @string = s.to_str
+    @venc_size = nil
     @pos = 0
     @cpos = 0
     @prev = 0
@@ -58,8 +59,10 @@ class StringScanner
   def eos?; @pos >= @string.bytesize; end
   def rest; @string.byteslice(@pos, @string.bytesize - @pos) || ""; end
   def rest_size; @string.bytesize - @pos; end
-  def reset; @pos = 0; @cpos = 0; @prev = 0; @md = nil; self; end
-  def terminate; @pos = @string.bytesize; @cpos = nil; @md = nil; self; end
+  # reset / terminate / string= / << forget the cached validity: the subject may
+  # have been mutated in between (same length included)
+  def reset; @pos = 0; @cpos = 0; @prev = 0; @md = nil; @venc_size = nil; self; end
+  def terminate; @pos = @string.bytesize; @cpos = nil; @md = nil; @venc_size = nil; self; end
   def beginning_of_line?
     @pos == 0 || @string.byteslice(@pos - 1, 1) == "\n"
   end
@@ -361,7 +364,7 @@ class StringScanner
   # << / concat — append to the scanned string (position untouched).
   def concat(str)
     raise TypeError, "no implicit conversion of #{str.class} into String" unless str.is_a?(String)
-    @string = @string + str
+    @string << str                                     # the caller's String grows too (FrozenError if frozen)
     self
   end
   alias << concat
