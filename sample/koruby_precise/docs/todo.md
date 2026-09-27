@@ -5987,3 +5987,7 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
   anon_class_block の定数は実行時の self で cref を引くので、instance_exec / class_eval で self が変わると別の
   cref になる。`proc { def m; C; end }` を他所で評価したときの anon_cref_method も同じ（codex r2 の 5 番）。
   ブロック生成時の cref をブロックフレームから辿れるようにするのが本筋。
+- Ractor は green thread の上の最小実装（prelude/ractor.rb）: 分離が無い（Ractor 間で任意のオブジェクトが見える、
+  Ractor.new のブロックが外側のローカルを参照しても IsolationError にならない）、`shareable_proc(self:)` は self を
+  差し替えられない（Proc の self のまま freeze）、move: は無視、Ractor 内の例外報告の場所表示が prelude の行になる。
+  ライブラリの「Ractor の中でも動く」テスト（ostruct / delegate / matrix / prime / time / csv / rack）はこれで通る。

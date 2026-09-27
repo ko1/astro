@@ -39,7 +39,7 @@ struct koruby_option OPTION;
 __attribute__((unused)) static const char *const KORUBY_PRELUDE_FILES[] = {
     "enumerable.rb", "enumerator.rb", "proc.rb", "hash.rb", "set.rb", "encoding.rb", "exception.rb", "numeric.rb",
     "module.rb", "time.rb", "io.rb", "io_buffer.rb", "stringio.rb", "marshal.rb", "system.rb",
-    "tracepoint.rb",
+    "tracepoint.rb", "ractor.rb",
 };
 
 static void
