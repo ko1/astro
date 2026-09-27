@@ -1480,8 +1480,10 @@ module RbConfig
   # lib stands in for the last).  rubygems inserts an activated gem's lib at the
   # index of sitelibdir and falls back to 0 — IN FRONT of -I — when that entry
   # is missing, which shadowed a checked-out gem with its installed copy.
-  $LOAD_PATH.unshift(CONFIG["sitelibdir"], CONFIG["sitearchdir"],
-                     CONFIG["vendorlibdir"], CONFIG["vendorarchdir"])
+  # copies, as in CRuby: did_you_mean deep-freezes the load path it snapshots
+  # (Ractor.make_shareable), which must not freeze CONFIG's own values
+  $LOAD_PATH.unshift(CONFIG["sitelibdir"].dup, CONFIG["sitearchdir"].dup,
+                     CONFIG["vendorlibdir"].dup, CONFIG["vendorarchdir"].dup)
   CONFIG["rubyhdrdir"] = "#{__pfx}/include/ruby-#{__rv}"
   CONFIG["rubyarchhdrdir"] = "#{__pfx}/include/ruby-#{__rv}/#{__arch}"
   CONFIG["sitehdrdir"] = "#{__pfx}/include/ruby-#{__rv}/site_ruby"

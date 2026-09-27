@@ -5991,3 +5991,6 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
   Ractor.new のブロックが外側のローカルを参照しても IsolationError にならない）、`shareable_proc(self:)` は self を
   差し替えられない（Proc の self のまま freeze）、move: は無視、Ractor 内の例外報告の場所表示が prelude の行になる。
   ライブラリの「Ractor の中でも動く」テスト（ostruct / delegate / matrix / prime / time / csv / rack）はこれで通る。
+- did_you_mean を起動時に require している（main.c）。CRuby 4.1 は DidYouMean / ErrorHighlight / SyntaxSuggest を
+  autoload にした（Feature #21951）ので、`Object.autoload?(:DidYouMean)` や、DidYouMean を触る前の $LOAD_PATH 要素の
+  frozen? が違う（did_you_mean の require_path_checker が load path を make_shareable する）。
