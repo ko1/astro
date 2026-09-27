@@ -2593,6 +2593,16 @@ korb_const_defined_in(CTX *c, VALUE owner, uint32_t id, bool inherit, VALUE *val
     return true;
 }
 
+/* The module holding a pending autoload for `id` as seen from `mod`: itself, then
+ * (inherit) its superclasses and Object, which a constant lookup falls back to. */
+static VALUE korb_autoload_owner(CTX *c, VALUE mod, uint32_t id, bool inherit) {
+    if (korb_autoload_registered_p(c, mod, id)) return mod;
+    if (!inherit || !KORB_CLASS_P(mod)) return KORB_NIL;
+    for (VALUE k = VAL2CLASS(mod)->superclass; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass)
+        if (korb_autoload_registered_p(c, k, id)) return k;
+    const VALUE objc = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
+    return korb_autoload_registered_p(c, objc, id) ? objc : KORB_NIL;
+}
 static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     struct korb_vm *const vm = c->vm;
     VALUE name = VALUE_SLICE_GET(a, 0);
@@ -2612,16 +2622,19 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
         const char *const sn = korb_sym_name(vm, id);      /* a Symbol name is atomic — validate the whole thing */
         if (UNLIKELY(!korb_valid_const_name(sn, (uint32_t)strlen(sn))))
             return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", sn);
-        if (korb_autoload_registered_p(c, VALUE_REF_GET(self), id)) return RESULT_OK(KORB_TRUE);
+        if (korb_autoload_owner(c, VALUE_REF_GET(self), id, inherit) != KORB_NIL) return RESULT_OK(KORB_TRUE);
         return RESULT_OK(korb_const_defined_in(c, VALUE_REF_GET(self), id, inherit, NULL) ? KORB_TRUE : KORB_FALSE);
     }
     if (KORB_STRING_P(name)) {
         const KorbString *const s = VAL2STR(name);
-        const char *p = korb_strbuf_data(s->buf); uint32_t len = s->len;
+        char nbuf[512];                                   /* a copy: running an autoload below can move the String */
+        if (UNLIKELY(s->len >= sizeof nbuf)) return RESULT_OK(KORB_FALSE);
+        memcpy(nbuf, korb_strbuf_data(s->buf), s->len);
+        const char *p = nbuf; uint32_t len = s->len;
         /* scoped name "A::B::C" / leading "::Top": each segment is resolved in
          * the namespace the previous one named, exactly like `A::B::C` would. */
         if (len >= 2 && p[0] == ':' && p[1] == ':') { p += 2; len -= 2; }
-        VALUE cur = VALUE_REF_GET(self);
+        slots[0] = VALUE_REF_GET(self);                   /* the current namespace (rooted) */
         uint32_t seg = 0;
         for (uint32_t i = 0; i <= len; i++) {
             if (i != len && !(i + 1 < len && p[i] == ':' && p[i + 1] == ':')) continue;
@@ -2630,9 +2643,15 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
                 return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)(i - seg), p + seg);
             const uint32_t sid = korb_intern(vm, p + seg, i - seg);
             VALUE val = KORB_NIL;
-            if (!korb_autoload_registered_p(c, cur, sid) &&
-                !korb_const_defined_in(c, cur, sid, inherit, &val)) return RESULT_OK(KORB_FALSE);
-            cur = val;                                    /* the next segment lives in it */
+            const VALUE owner = korb_autoload_owner(c, slots[0], sid, inherit);
+            if (owner != KORB_NIL) {
+                if (i == len) return RESULT_OK(KORB_TRUE);   /* the last segment: pending counts, nothing runs */
+                slots[1] = owner; slots[2] = ID2SYM(sid);   /* an inner segment: CRuby resolves it, which loads it */
+                const RESULT gr = korb_send(c, slots + 3, korb_intern(vm, "const_get", 9), 0, 1);
+                if (UNLIKELY(gr.state != KORB_NORMAL)) return gr;
+                val = gr.value;
+            } else if (!korb_const_defined_in(c, slots[0], sid, inherit, &val)) return RESULT_OK(KORB_FALSE);
+            slots[0] = val;                               /* the next segment lives in it */
             i++; seg = i + 1;                             /* skip the second ':' */
         }
         return RESULT_OK(KORB_TRUE);

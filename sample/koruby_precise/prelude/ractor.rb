@@ -44,10 +44,12 @@ class Ractor
 
   def self.new(*args, name: nil, &blk)
     raise ArgumentError, "must be called with a block" unless blk
-    if !@__warned && Warning[:experimental]
+    unless @__warned                                  # once, even when $VERBOSE = nil silenced it (CRuby)
       @__warned = true
-      loc = caller_locations(1, 1)&.first
-      Warning.warn("#{loc&.path}:#{loc&.lineno}: warning: Ractor API is experimental and may change in future versions of Ruby.\n", category: :experimental)
+      if !$VERBOSE.nil? && Warning[:experimental]
+        loc = caller_locations(1, 1)&.first
+        Warning.warn("#{loc&.path}:#{loc&.lineno}: warning: Ractor API is experimental and may change in future versions of Ruby.\n", category: :experimental)
+      end
     end
     raise TypeError, "no implicit conversion of #{name.class} into String" unless name.nil? || name.is_a?(String)
     r = allocate
