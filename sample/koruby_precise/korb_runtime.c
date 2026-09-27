@@ -4227,6 +4227,7 @@ VALUE korb_cref_from_path(struct korb_vm *const vm, const uint32_t sym)
 }
 
 static uint32_t korb_bind_method_mid_walk(const struct korb_vm *vm, const KorbBinding *b);   /* fwd (just below) */
+static VALUE korb_env_chain_method_owner(const struct korb_vm *vm, VALUE ev);   /* fwd (just below) */
 /* rubocop-ast has `attr_reader :binding`; CRuby finds that before Kernel#binding. */
 static RESULT korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid, uint32_t line,
                                    uint32_t argc, VALUE def_class, NODE *block, VALUE *def_env,
@@ -4328,8 +4329,12 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
          * module_exec BLOCK names its definee outright, and there self is a
          * rebinding, not the lexical scope -- CRuby keeps the block's own. */
         if (KORB_CLASS_P(c->eval_cref)) cref = c->eval_cref;
-        else if (c->def_definee == KORB_NIL && KORB_CLASS_P(slots[0])) cref = slots[0];
-        else cref = KORB_NIL;
+        else {
+            const VALUE mo = korb_env_chain_method_owner(c->vm, slots[1]);   /* a method of `class << X` */
+            if (KORB_CLASS_P(mo) && VAL2CLASS(mo)->is_singleton) cref = mo;
+            else if (c->def_definee == KORB_NIL && KORB_CLASS_P(slots[0])) cref = slots[0];
+            else cref = KORB_NIL;
+        }
     }
     slots[2] = cref;
     KorbBinding *b = korb_alloc(c, slots + 3, sizeof(KorbBinding), KORB_OBJ_BINDING);
@@ -4368,6 +4373,28 @@ static uint32_t korb_bind_method_mid_walk(const struct korb_vm *const vm, const 
         ev = VAL2ENV(ev)->prev;
     }
     return 0;
+}
+
+/* The owner of the method at the head of an env chain (through its blocks),
+ * or nil when the chain reaches a class body / file top first. */
+static VALUE korb_env_chain_method_owner(const struct korb_vm *const vm, VALUE ev)
+{
+    for (uint32_t d = 0; d < 64 && ev != 0 && (ev & 7u) == 0; d++) {
+        const VALUE id = VAL2ENV(ev)->id;
+        const uintptr_t p = (uintptr_t)(id & ~(VALUE)7u);
+        if ((id & 7u) == KORB_FID_METHOD)
+            return korb_bt_known_ptr(vm, p) ? ((const struct korb_method *)p)->owner : KORB_NIL;
+        if ((id & 7u) != KORB_FID_BLOCK) return KORB_NIL;
+        ev = VAL2ENV(ev)->prev;
+    }
+    return KORB_NIL;
+}
+/* Taken right in a method body (not a block in one): that method's cref owns
+ * the eval's `def`, whatever class_eval encloses the call. */
+static bool korb_bind_in_method_body(const KorbBinding *const b)
+{
+    const VALUE ev = b->env;
+    return ev != 0 && (ev & 7u) == 0 && (VAL2ENV(ev)->id & 7u) == KORB_FID_METHOD;
 }
 
 /* env of lexical level `depth` in the binding's chain (0 = binding site). */
@@ -19034,6 +19061,12 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
      * TreeBuilder generates start_sequence that way and names Psych::Nodes). */
     uint32_t cref_name = (cref != KORB_UNDEF && KORB_CLASS_P(cref)) ? VAL2CLASS(cref)->name_sym : 0;
     VALUE cref_encl = cref_name ? VAL2CLASS(cref)->enclosing : KORB_NIL;
+    /* a binding in a `class << Klass` method: the parse is seeded by Klass's path
+     * (the singleton has none); the `def` target stays the singleton */
+    if (cref_name == 0 && self_slot == NULL && KORB_CLASS_P(cref) && VAL2CLASS(cref)->is_singleton) {
+        const VALUE at = korb_singleton_attached(c, cref);
+        if (KORB_CLASS_P(at) && VAL2CLASS(at)->name_sym != 0) { cref_name = VAL2CLASS(at)->name_sym; cref_encl = VAL2CLASS(at)->enclosing; }
+    }
     /* CRuby pushes the receiver onto the CALLER's cref, so an ANONYMOUS receiver
      * (a `Module.new`, or instance_eval's singleton) still leaves the source
      * seeing the lexical scope the eval was written in — which is the only way
@@ -19107,7 +19140,8 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
      * `def` to land on mod), so it fills that in only when nothing else has. */
     if (cref != KORB_UNDEF) {
         c->eval_cref = KORB_CLASS_P(cref) ? cref : KORB_NIL;
-        if (!soft_definee || c->def_definee == KORB_NIL) c->def_definee = cref;
+        if (!soft_definee || c->def_definee == KORB_NIL || korb_bind_in_method_body(VAL2BIND(*bind_slot)))
+            c->def_definee = cref;
     }
     c->eval_outer_cref = outer_is_caller ? VAL2BIND(*bind_slot)->cref
                        : outer_is_bound ? VAL2BIND(*bind_slot)->outer_cref : KORB_NIL;
