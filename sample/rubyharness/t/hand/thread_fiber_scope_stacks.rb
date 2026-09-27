@@ -24,3 +24,15 @@ g.resume
 Kx.class_eval { def from_main = 2 }
 g.resume
 p Kx.instance_methods(false).sort
+qa = Queue.new; qb = Queue.new; oa = Queue.new; ob = Queue.new
+ta = Thread.new { begin; raise "A"; rescue; oa << 1; qa.pop; $!.message; end }
+oa.pop
+tb = Thread.new { begin; raise "B"; rescue; ob << 1; qb.pop; $!.message; end }
+ob.pop
+qa << 1; ra = ta.value
+qb << 1; rb = tb.value
+p ra, rb, $!
+f = Fiber.new { begin; raise "F"; rescue; Fiber.yield; $!.message; end }
+f.resume
+r = begin; raise "M"; rescue; x = f.resume; [x, $!.message]; end
+p r, $!

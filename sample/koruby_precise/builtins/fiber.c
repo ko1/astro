@@ -157,16 +157,11 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     c->carry_base = rep->vcarry_base; c->carry_line_bits = rep->vcarry_line_bits;
     korb_re_sync_floor(c);   /* astrogre \g<> guard must use the fiber's stack */
     c->vm->running_fiber = rep;
-    /* `$!` is fiber-local: the fiber starts from ITS own errinfo depth, and the
-     * resumer's stack is hidden while it runs (and restored on the way back). */
-    const uint32_t s_errinfo_n = c->errinfo_n;
-    c->errinfo_n = rep->errinfo_n;
-    if (c->errinfo_n > c->errinfo_live) c->errinfo_live = c->errinfo_n;   /* the suspended side's entries stay rooted */
 
     const uint32_t mask_gen = c->vm->sigmask_gen;
     rep->resumer_mask_gen = mask_gen;
     if (rep->mask_gen != mask_gen) korb_signal_park_pending(c->vm);   /* its saved mask predates a trap */
-    korb_scope_stacks_swap(c, &rep->ss);               /* the fiber's own save stacks and $~ while it runs */
+    korb_scope_stacks_swap(c, &rep->ss);               /* the fiber's own $!, save stacks and $~ while it runs */
     { VALUE *const tc = korb_re_tilde_cell(c); const VALUE t = *tc; *tc = rep->tilde; rep->tilde = t; }
     swapcontext(&here, (ucontext_t *)rep->uctx);       /* === into the fiber === */
     korb_sigmask_resume(c->vm, mask_gen);
@@ -174,8 +169,6 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     { VALUE *const tc = korb_re_tilde_cell(c); const VALUE t = *tc; *tc = rep->tilde; rep->tilde = t; }
 
     /* === back: fiber yielded or finished === */
-    rep->errinfo_n = c->errinfo_n;                     /* keep the fiber's depth for its next resume */
-    c->errinfo_n = s_errinfo_n;
     c->vm->running_fiber = prev;
     c->slots = s_slots; c->slots_top = s_top; c->slots_limit = s_limit;
     c->slots_high_water = s_hw; c->cstack_limit = s_cstack;

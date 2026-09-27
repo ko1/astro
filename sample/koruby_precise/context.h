@@ -491,12 +491,13 @@ typedef struct KorbProc {
  * mutable state + GC roots live in a libc-malloc'd (stable) KorbFiberRep, so
  * the VM's C-side fiber pointers never dangle when the handle moves. */
 /* A switched-out green thread's / fiber's own scope save stacks (CTX refine_saved /
- * cref_saved / bref_saved).  Each returns from its scopes in its own order, so they
+ * cref_saved / bref_saved, and the `$!` stack).  Each returns from its scopes in its own order, so they
  * cannot share one stack: a switch exchanges them with CTX. */
 struct korb_scope_stacks {
     VALUE *refine_saved; uint32_t refine_n, refine_cap;
     VALUE *cref_saved;   uint32_t cref_n, cref_cap;
     VALUE *bref_saved;   uint32_t bref_n, bref_cap;
+    VALUE *errinfo;      uint32_t errinfo_n, errinfo_cap;
 };
 
 typedef struct KorbFiberRep {
@@ -520,7 +521,6 @@ typedef struct KorbFiberRep {
     void  *uctx;                     /* ucontext_t * (fiber's saved context) */
     void  *resume_uctx;              /* ucontext_t * to switch back to on yield */
     void  *cstack;                   /* malloc'd native stack for the fiber */
-    uint32_t errinfo_n;              /* the fiber's own `$!` stack depth (fiber-local) */
     struct korb_scope_stacks ss;     /* its scope save stacks while it is not running */
     VALUE tilde;                     /* its `$~` while it is not running (root; nil at start) */
     uint8_t fstate;                  /* 0 created, 1 running, 2 suspended, 3 done */
@@ -569,7 +569,6 @@ struct korb_thread {
     struct KorbFiberRep *saved_fiber;   /* fiber の中で suspend した: 再開時に running_fiber へ戻す (stack tuple は fiber 側) */
     struct KorbFiberRep *root_fiber;    /* この thread の root fiber 代役 (Fiber.current / storage; 遅延生成) */
     VALUE int_masks;                 /* handle_interrupt のマスク列 [klass, sym, ..., n] (root; nil まで未使用) */
-    uint32_t saved_errinfo_n;        /* $! stack depth (thread-local, like a fiber's) */
     VALUE saved_cfunc_link;          /* c->cfunc_link while suspended: it names a frame in THIS thread's
                                       * slot stack, so leaving it loaded across a switch would let a
                                       * backtrace walk into another thread's frames */
@@ -1579,7 +1578,6 @@ struct CTX_struct {
     uint32_t  bref_n, bref_cap;
     VALUE    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
-    uint32_t  errinfo_live;          /* GC-scan depth: max over the running + all suspended threads */
     /* An exception a container's element #inspect / #to_s raised.  The formatter
      * chain writes to a FILE* and cannot return a RESULT, so it parks the
      * exception here and the #inspect entry point re-raises it (CRuby does not
@@ -1655,9 +1653,11 @@ static inline void korb_scope_stacks_swap(CTX *const c, struct korb_scope_stacks
     s->refine_saved = c->refine_saved; s->refine_n = c->refine_n; s->refine_cap = c->refine_cap;
     s->cref_saved = c->cref_saved;     s->cref_n = c->cref_n;     s->cref_cap = c->cref_cap;
     s->bref_saved = c->bref_saved;     s->bref_n = c->bref_n;     s->bref_cap = c->bref_cap;
+    s->errinfo = c->errinfo;           s->errinfo_n = c->errinfo_n; s->errinfo_cap = c->errinfo_cap;
     c->refine_saved = t.refine_saved; c->refine_n = t.refine_n; c->refine_cap = t.refine_cap;
     c->cref_saved = t.cref_saved;     c->cref_n = t.cref_n;     c->cref_cap = t.cref_cap;
     c->bref_saved = t.bref_saved;     c->bref_n = t.bref_n;     c->bref_cap = t.bref_cap;
+    c->errinfo = t.errinfo;           c->errinfo_n = t.errinfo_n; c->errinfo_cap = t.errinfo_cap;
 }
 
 /* The block handed to a method lives in the callee's frame (slots), not in
@@ -1695,6 +1695,8 @@ static inline void korb_scope_stacks_swap(CTX *const c, struct korb_scope_stacks
     for (uint32_t _k = 0; _k < (s)->bref_n; _k++)                            \
         if ((s)->bref_saved[_k] != KORB_NIL && (s)->bref_saved[_k] != 0)     \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &(s)->bref_saved[_k]);      \
+    for (uint32_t _k = 0; _k < (s)->errinfo_n; _k++)                         \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(s)->errinfo[_k]);             \
 } while (0)
 
 #define AROH_VISIT_ROOTS(c, ctx, edge_visit) do {                            \
@@ -1743,10 +1745,9 @@ static inline void korb_scope_stacks_swap(CTX *const c, struct korb_scope_stacks
     for (uint32_t _di = 0; _di < (c)->vm->deprconst_cnt; _di++) {            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->deprconsts[_di].owner); \
     }                                                                        \
-    /* `$!` stack: exceptions being handled.  Scan to errinfo_live, not the
-     * current depth — suspended threads keep their own (deeper) depths and
-     * their entries must stay rooted while they are away. */                \
-    for (uint32_t _xi = 0; _xi < (c)->errinfo_live; _xi++) {                 \
+    /* `$!` stack: exceptions being handled (a suspended thread's / fiber's    \
+     * own stack is in its korb_scope_stacks, visited with it). */            \
+    for (uint32_t _xi = 0; _xi < (c)->errinfo_n; _xi++) {                    \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->errinfo[_xi]);            \
     }                                                                        \
     if ((c)->throw_tag != KORB_NIL)                                          \

@@ -4637,7 +4637,6 @@ void korb_errinfo_push(CTX *c, VALUE v) {
         c->errinfo_cap = nc;
     }
     c->errinfo[c->errinfo_n++] = v;
-    if (c->errinfo_n > c->errinfo_live) c->errinfo_live = c->errinfo_n;
 }
 void korb_errinfo_pop(CTX *c) { if (c->errinfo_n) c->errinfo_n--; }
 VALUE korb_errinfo_top(const CTX *c) { return c->errinfo_n ? c->errinfo[c->errinfo_n - 1] : KORB_NIL; }
