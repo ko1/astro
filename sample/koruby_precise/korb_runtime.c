@@ -2911,6 +2911,7 @@ static inline VALUE korb_builtin_class_obj(const struct korb_vm *vm, enum korb_c
 static struct korb_method *korb_class_method_slot(struct korb_vm *vm, KorbClass *k, uint32_t mid);   /* fwd (defined below) */
 static void korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid);        /* fwd (defined below) */
 static RESULT korb_r2k_unmarked_copy(CTX *c, VALUE *slots, VALUE *cell);          /* fwd (defined below) */
+static RESULT korb_comparable_cmp(CTX *c, VALUE *slots, VALUE self, VALUE other, int *out);   /* fwd (set.c) */
 /* CRuby forces these names PRIVATE at definition time, wherever they are
  * defined (vm_method.c): a later explicit `public :name` still wins, because
  * that runs after the `def`.  Applying it in the definers (and in the Ruby `def`
@@ -9077,6 +9078,16 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
     if ((KORB_INTEGER_P(l) || KORB_FLOAT_P(l) || KORB_RATIONAL_P(l)) && KORB_OBJECT_P(r)) {
         bool h; RESULT cr = korb_try_coerce(c, slots, l, &r, korb_cmp_op_name[op], line, &h);   /* a, b = r.coerce(l); a OP b */
         if (h) return cr;
+    }
+    if (KORB_STRING_P(l) && !KORB_STRING_P(r)) {       /* Comparable#< on a String: String#<=> asks `r <=> l` (rb_invcmp) */
+        int cmp;
+        const RESULT cr = korb_comparable_cmp(c, slots, l, r, &cmp);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (cmp != 2) {
+            const bool t = op == 0 ? cmp < 0 : op == 1 ? cmp <= 0 : op == 2 ? cmp > 0 : cmp >= 0;
+            return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+        }
+        l = slots[0]; r = slots[1];                      /* the dispatch may have moved them */
     }
     if (KORB_INTEGER_P(l) || KORB_FLOAT_P(l) || KORB_RATIONAL_P(l) || KORB_STRING_P(l) || SYMBOL_P(l)) {
         /* numeric/String/Symbol vs incomparable → ArgumentError.  A NUMERIC left
