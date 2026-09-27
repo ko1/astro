@@ -632,11 +632,12 @@ class Socket < BasicSocket
     end
     # CRuby checks the payload really is one int before decoding it.
     def int
-      raise TypeError, "size differ. expected as sizeof(int)=4 but #{@data.bytesize}" if @data.bytesize != 4
+      raise TypeError, "size differ.  expected as sizeof(int)=4 but #{@data.bytesize}" if @data.bytesize != 4
       @data.unpack("i")[0]
     end
-    def bool
-      raise TypeError, "size differ. expected as sizeof(int)=4 but #{@data.bytesize}" if @data.bytesize != 4
+    def bool   # an int, or the one byte some options use (CRuby)
+      return @data.getbyte(0) != 0 if @data.bytesize == 1
+      raise TypeError, "size differ.  expected as sizeof(int)=4 but #{@data.bytesize}" if @data.bytesize != 4
       @data.unpack("i")[0] != 0
     end
     def to_s = @data
@@ -672,6 +673,22 @@ class Socket < BasicSocket
     end
     def self.int(family, level, optname, integer) = new(family, level, optname, [integer].pack("i"))
     def self.bool(family, level, optname, bool) = int(family, level, optname, bool ? 1 : 0)
+
+    # IP_MULTICAST_LOOP / _TTL: an int on Linux (rinda's RingFinger)
+    def self.ipv4_multicast_loop(v) = int(Socket::AF_INET, Socket::IPPROTO_IP, Socket::IP_MULTICAST_LOOP, __int_arg(v))
+    def self.ipv4_multicast_ttl(v)  = int(Socket::AF_INET, Socket::IPPROTO_IP, Socket::IP_MULTICAST_TTL, __int_arg(v))
+    def self.__int_arg(v)
+      return v if v.is_a?(Integer)
+      raise TypeError, "no implicit conversion of #{v.nil? || v == true || v == false ? v.inspect : v.class} into Integer" unless v.respond_to?(:to_int)
+      v.to_int
+    end
+    def ipv4_multicast_loop = __ipv4_multicast(Socket::IP_MULTICAST_LOOP, "ipv4_multicast_loop")
+    def ipv4_multicast_ttl  = __ipv4_multicast(Socket::IP_MULTICAST_TTL, "ipv4_multicast_ttl")
+    private def __ipv4_multicast(opt, name)
+      raise TypeError, "#{name} socket option expected" unless @level == Socket::IPPROTO_IP && @optname == opt
+      raise TypeError, "size differ.  expected as sizeof(int)=4 but #{@data.bytesize}" if @data.bytesize != 4
+      @data.unpack1("i")
+    end
 
     # SO_LINGER carries a `struct linger` (two ints), not a single one.
     def self.linger(onoff, secs)

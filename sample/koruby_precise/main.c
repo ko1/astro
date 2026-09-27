@@ -1701,7 +1701,14 @@ main(int argc, char *argv[])
             }
         }
         for (int k = 0; k < req_libs.n; k++) {
-            const RESULT rr = korb_require_feature(c, toplevel_cursor, req_libs.v[k]);
+            RESULT rr;
+            if (!OPTION.no_gems) {                /* -r goes through Kernel#require (rubygems activates bundled gems: -rdrb/drb) */
+                toplevel_cursor[0] = c->slots[-1];   /* main */
+                toplevel_cursor[1] = korb_str_new(c, toplevel_cursor + 1, req_libs.v[k], (uint32_t)strlen(req_libs.v[k])).value;
+                rr = korb_send(c, toplevel_cursor + 2, korb_intern(c->vm, "require", 7), 0, 1);
+            } else {
+                rr = korb_require_feature(c, toplevel_cursor, req_libs.v[k]);
+            }
             if (rr.state == KORB_RAISE) { korb_report_uncaught(c, rr.value); korb_io_flush_std(c->vm); return 1; }
         }
         struct timespec t0, t1;
