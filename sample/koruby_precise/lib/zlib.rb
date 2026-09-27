@@ -394,10 +394,12 @@ module Zlib
     end
     # CRuby emits the header on the first #write, even a zero-length one.
     private def __check_header
+      __check_closed
       raise Zlib::GzipFile::Error, "header is already written" if @header_written
     end
 
     def write(*args)
+      __check_closed
       @header_written = true
       n = 0
       args.each do |a|
@@ -423,6 +425,7 @@ module Zlib
     alias tell pos
     # the compressed data so far reaches the IO (CRuby: Z_SYNC_FLUSH by default)
     def flush(flush = SYNC_FLUSH)
+      __check_closed
       @pending << @deflate.flush(flush) unless flush == NO_FLUSH
       __emit
       @io.flush if @io.respond_to?(:flush)
@@ -430,8 +433,9 @@ module Zlib
     end
 
     # ends the stream (the rest and the trailer in one write) and returns the IO without closing it
+    # a second finish is an error; close after finish / close is a no-op (nil) and leaves the IO alone (CRuby)
     def finish
-      return @io if @closed
+      raise Zlib::GzipFile::Error, "closed gzip stream" if @closed
       @closed = true
       @pending << @deflate.finish << [@crc, @size & 0xffffffff].pack("VV")
       @deflate.close
@@ -440,6 +444,7 @@ module Zlib
     end
 
     def close
+      return nil if @closed
       io = finish
       io.close if io.respond_to?(:close)
       io
@@ -621,14 +626,21 @@ module Zlib
     def external_encoding = @encoding || @external_encoding || Encoding.default_external
 
     def close
+      return nil if @closed
       @closed = true
       @io.close if @io.respond_to?(:close)
       @io
     end
 
+    def finish                                         # ends the gzip stream, leaves the IO open
+      raise Zlib::GzipFile::Error, "closed gzip stream" if @closed
+      @closed = true
+      @io
+    end
+
     private def __enc = @encoding || @external_encoding || Encoding::BINARY
     private def __check
-      raise IOError, "closed gzip stream" if @closed
+      raise Zlib::GzipFile::Error, "closed gzip stream" if @closed
     end
 
     # Parse the gzip wrapper, inflate the body, and verify CRC + ISIZE.
