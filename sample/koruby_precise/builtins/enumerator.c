@@ -691,10 +691,10 @@ static RESULT korb_lazy_drive_sink(CTX *c, VALUE *slots, VALUE_REF self, korb_sw
     if (mode == 2) {                                            /* cycle: repeat the array */
         const VALUE src = SELF_ENUM->source;
         if (!KORB_ARRAY_P(src) || VAL2ARY(src)->len == 0) goto lazy_done;
-        if (limit < 0) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "cycle without a count");
-        while (produced < limit) {
+        if (limit < 0 && sink == NULL && !has_terminator) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "cycle without a count");
+        while (limit < 0 || produced < limit) {                  /* a block (sink) or take bounds it: runs until it breaks */
             uint32_t n = VAL2ARY(SELF_ENUM->source)->len;
-            for (uint32_t i = 0; i < n && produced < limit; i++) LAZY_FEED(korb_items_data(VAL2ARY(SELF_ENUM->source)->items)[i]);
+            for (uint32_t i = 0; i < n && (limit < 0 || produced < limit); i++) LAZY_FEED(korb_items_data(VAL2ARY(SELF_ENUM->source)->items)[i]);
         }
     } else {                                                    /* lazy */
         const VALUE src = SELF_ENUM->source;
@@ -1262,6 +1262,13 @@ static RESULT korb_m_enum_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALU
  * lazy pipeline (finite only). */
 static RESULT korb_enum_gen_at_cursor(CTX *c, VALUE *slots, VALUE_REF self, bool advance) {
     const uint32_t cur = SELF_ENUM->cursor;
+    if (SELF_ENUM->mode == 2 && VAL2ARY(SELF_ENUM->ops)->len == 0 &&   /* a bare `ary.cycle`: no re-drive (it made next O(n)) */
+        KORB_ARRAY_P(SELF_ENUM->source) && VAL2ARY(SELF_ENUM->source)->len > 0) {
+        const KorbArray *const src = VAL2ARY(SELF_ENUM->source);
+        const VALUE v = korb_items_data(src->items)[cur % src->len];
+        if (advance) SELF_ENUM->cursor = cur + 1;
+        return RESULT_OK(v);
+    }
     RESULT vr = (SELF_ENUM->mode == 3 || SELF_ENUM->mode == 4)
                     ? korb_enum_gen_run(c, slots, self, (korb_sword_t)cur + 1)
                     : korb_lazy_drive(c, slots, self, (korb_sword_t)cur + 1);

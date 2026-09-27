@@ -696,6 +696,11 @@ class Enumerator
 
   def with_index(offset = 0, &blk)
     i = __wi_offset(offset)
+    if __enum_mode == 2                             # `ary.cycle.with_index` is infinite: stream it
+      src = self
+      return Enumerator.new(Float::INFINITY) { |y| src.each { |v| y.yield(v, i); i += 1 } } unless blk
+      src.each { |v| blk.call(v, i); i += 1 }       # runs until the block breaks
+    end
     return __with_index_c(i, &blk) unless blk && defined?(@__src_recv)
     @__src_recv.send(@__src_meth, *@__src_args) { |*vs|
       r = blk.call(vs.size <= 1 ? vs[0] : vs, i)
