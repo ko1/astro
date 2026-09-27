@@ -753,7 +753,7 @@ korb_bi_sleep(CTX *c, VALUE *slots, VALUE_SLICE args)
 static RESULT korb_m_thread_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (defined below) */
 static VALUE  korb_out_target(CTX *c, const char *name, uint32_t len, bool *is_default);   /* fwd (korb_runtime.c) */
 static RESULT korb_out_emit(CTX *c, VALUE *slots, VALUE out, uint32_t stdidx, const char *data, size_t len);   /* fwd */
-static void   korb_report_uncaught_fp(CTX *c, FILE *fp, VALUE exc, bool synth_main);   /* fwd (korb_runtime.c) */
+static void   korb_report_uncaught_fp(CTX *c, FILE *fp, VALUE exc, bool synth_main, const char *dm);   /* fwd (korb_runtime.c) */
 /* report_on_exception: CRuby prefixes the thread's own inspect line and sends the
  * whole thing through $stderr (a test harness replaces it), so render to memory
  * first.  The exception is read back from t->exc — building the inspect String
@@ -769,7 +769,7 @@ korb_thread_report(CTX *c, VALUE *base, struct korb_thread *t)
     if (ts.state == KORB_NORMAL && KORB_STRING_P(ts.value))
         fprintf(ms, "%.*s terminated with exception (report_on_exception is true):\n",
                 (int)VAL2STR(ts.value)->len, korb_strbuf_data(VAL2STR(ts.value)->buf));
-    korb_report_uncaught_fp(c, ms, t->exc, false);   /* no '<main>' closer: a thread's bottom is its block */
+    korb_report_uncaught_fp(c, ms, t->exc, false, NULL);   /* no '<main>' closer: a thread's bottom is its block */
     fclose(ms);
     bool def;
     const VALUE out = korb_out_target(c, "$stderr", 7, &def);

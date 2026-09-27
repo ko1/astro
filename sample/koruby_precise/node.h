@@ -522,6 +522,7 @@ void korb_op_bt(CTX *c, RESULT r, VALUE recv, const char *op, uint32_t oplen, ui
 RESULT korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
                   const char *fmt, ...) __attribute__((format(printf, 5, 6)));
 void   korb_report_uncaught(CTX *c, VALUE exc);
+void   korb_report_uncaught_detailed(CTX *c, VALUE *slots, VALUE exc);
 int    korb_system_exit_status(CTX *c, VALUE exc);   /* SystemExit → its status, else -1 */
 int    korb_uncaught_signo(CTX *c, VALUE exc, bool *quiet);   /* signal an uncaught exc dies by, else 0 */
 void   korb_die_by_signal(int sig);   /* returns only if the default action does not kill */

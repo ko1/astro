@@ -1736,7 +1736,7 @@ main(int argc, char *argv[])
         /* CRuby reports the uncaught exception AFTER at_exit, and not at all when
          * a handler called exit.  A handler that merely RAISED does not suppress
          * it — both are printed.  Read the (possibly moved) exception back. */
-        if (uncaught && !handler_exited && !sig_quiet) korb_report_uncaught(c, toplevel_cursor[0]);
+        if (uncaught && !handler_exited && !sig_quiet) korb_report_uncaught_detailed(c, toplevel_cursor + 4, toplevel_cursor[0]);
         fflush(stdout);
         if (die_sig > 0) {   /* even over an at_exit's exit, as CRuby */
             korb_io_flush_std(c->vm);

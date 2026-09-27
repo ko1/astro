@@ -16,14 +16,15 @@ class Exception
     unless Exception.instance_variable_get(:@__deco_loaded)
       Exception.instance_variable_set(:@__deco_loaded, true)
       if (f = Object.autoload?(:DidYouMean))
+        # re-dispatch only when this was the receiver's own #detailed_message, not a
+        # user override that reached here through super (it would decorate twice)
+        redispatch = method(:detailed_message).owner == Exception
         begin
           require f
         rescue Exception
           nil
         end
-        if method(:detailed_message).owner != Exception
-          return detailed_message(highlight: highlight, **opts)
-        end
+        return detailed_message(highlight: highlight, **opts) if redispatch && method(:detailed_message).owner != Exception
       end
     end
     m = message.to_s; cls = self.class; cn = cls.name
@@ -46,6 +47,21 @@ class Exception
     return head if lines.length == 1
     ([head] + lines[1..-1].map { |l| highlight ? "\e[1m#{l}\e[m" : l }).join("\n")
   end
+
+  # the message the top-level error printer shows (main.c): #detailed_message with
+  # highlight when stderr is a terminal; nil on anything unusable
+  def __korb_report_message
+    dm = begin
+      detailed_message(highlight: Exception.to_tty?)
+    rescue Exception
+      nil
+    end
+    dm = dm.to_str if !dm.nil? && !dm.is_a?(String) && dm.respond_to?(:to_str)
+    dm.is_a?(String) ? dm : (self.class.name || self.class.to_s)   # unusable → the class alone (CRuby)
+  rescue Exception
+    nil
+  end
+  private :__korb_report_message
 
   def full_message(highlight: nil, order: nil, **opts)
     unless highlight.nil? || highlight == true || highlight == false

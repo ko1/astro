@@ -11043,7 +11043,7 @@ static void korb_report_message(FILE *const fp, const char *const msg, const cha
 
 /* One "<frame>: <message> (<Class>)" section plus its `from` lines. */
 static void
-korb_report_section(CTX *c, FILE *const fp, const KorbException *e, bool live, bool synth_main)
+korb_report_section(CTX *c, FILE *const fp, const KorbException *e, bool live, bool synth_main, const char *dm)
 {
     struct korb_vm *const vm = c->vm;
     /* A const-only class (LoadError, ThreadError, a user subclass, …) carries a
@@ -11068,22 +11068,27 @@ korb_report_section(CTX *c, FILE *const fp, const KorbException *e, bool live, b
     const KorbArray *const cap = KORB_ARRAY_P(e->backtrace) ? VAL2ARY(e->backtrace) : NULL;
     const uint32_t n = cap ? cap->len : (live ? vm->bt_cnt + (synth_main ? 1u : 0u) : 0);
     if (n != 0) fprintf(fp, "%s: ", korb_report_line(c, cap, e, 0, buf, sizeof buf));
-    korb_report_message(fp, msg, nl, cls, anon);
-    uint32_t head = n, tail = 0;                 /* elide the middle of very deep unwinds (SystemStackError) */
-    if (n > 20) { head = 12; tail = 4; }
-    if (OPTION.backtrace_limit_given && OPTION.backtrace_limit >= 0 &&
-        (uint32_t)OPTION.backtrace_limit + 1 < head) { head = (uint32_t)OPTION.backtrace_limit + 1; tail = 0; }
-    for (uint32_t i = 1; i < head; i++)
+    if (dm != NULL) fprintf(fp, "%s\n", dm);            /* #detailed_message, already decorated */
+    else korb_report_message(fp, msg, nl, cls, anon);
+    /* CRuby's print_backtrace: only a SystemStackError has its middle elided
+     * (9 head, 4 tail), and --backtrace-limit cuts everything after the limit */
+    uint32_t skip_start = UINT32_MAX, skip_len = 0;
+    if (e->etype == KORB_E_SYSSTACK && n > 18) { skip_start = 9; skip_len = n - 13; }
+    if (OPTION.backtrace_limit_given && OPTION.backtrace_limit >= 0 && (uint64_t)n > (uint64_t)OPTION.backtrace_limit + 2) {
+        skip_start = (uint32_t)OPTION.backtrace_limit + 1; skip_len = n - skip_start;
+    }
+    for (uint32_t i = 1; i < n; i++) {
+        if (i == skip_start) {
+            fprintf(fp, "\t ... %u levels...\n", skip_len);
+            i += skip_len;
+            if (i >= n) break;
+        }
         fprintf(fp, "\tfrom %s\n", korb_report_line(c, cap, e, i, buf, sizeof buf));
-    if (head < n) {
-        fprintf(fp, "\t ... %u levels...\n", n - head - tail);
-        for (uint32_t i = n - tail; i < n; i++)
-            fprintf(fp, "\tfrom %s\n", korb_report_line(c, cap, e, i, buf, sizeof buf));
     }
 }
 
 static void
-korb_report_uncaught_fp(CTX *c, FILE *const fp, VALUE exc, bool synth_main)
+korb_report_uncaught_fp(CTX *c, FILE *const fp, VALUE exc, bool synth_main, const char *dm)
 {
     if (!KORB_EXC_P(exc)) {
         fprintf(fp, "%s: uncaught non-exception raise\n", korb_bt_cur_file(c->vm));
@@ -11092,10 +11097,10 @@ korb_report_uncaught_fp(CTX *c, FILE *const fp, VALUE exc, bool synth_main)
     /* self first, then the #cause chain oldest-last (CRuby order).  Only the
      * outermost exception is the one being unwound, so only it may read the live
      * record; a cause was rescued and carries its own captured backtrace. */
-    korb_report_section(c, fp, VAL2EXC(exc), true, synth_main);
+    korb_report_section(c, fp, VAL2EXC(exc), true, synth_main, dm);
     VALUE cause = VAL2EXC(exc)->cause;
     for (int depth = 0; depth < 16 && KORB_EXC_P(cause) && cause != exc; depth++) {
-        korb_report_section(c, fp, VAL2EXC(cause), false, synth_main);
+        korb_report_section(c, fp, VAL2EXC(cause), false, synth_main, NULL);
         const VALUE next = VAL2EXC(cause)->cause;
         if (next == cause) break;
         cause = next;
@@ -11103,7 +11108,38 @@ korb_report_uncaught_fp(CTX *c, FILE *const fp, VALUE exc, bool synth_main)
 }
 /* The usual sink is the process's own stderr: the top-level handler runs while
  * the VM is already unwinding, so it must not dispatch Ruby to reach $stderr. */
-void korb_report_uncaught(CTX *c, VALUE exc) { korb_report_uncaught_fp(c, stderr, exc, true); }
+void korb_report_uncaught(CTX *c, VALUE exc) { korb_report_uncaught_fp(c, stderr, exc, true, NULL); }
+/* The main program's uncaught exception, as CRuby's error printer does it: the
+ * message is #detailed_message (did_you_mean and user overrides decorate it),
+ * asked of Ruby once the program — at_exit handlers included — has finished.
+ * Anything unusable falls back to the built-in rendering. */
+void korb_report_uncaught_detailed(CTX *c, VALUE *slots, VALUE exc)
+{
+    char *dm = NULL;
+    struct korb_vm *const vm = c->vm;
+    /* the frames the report prints are the live unwind record, which a raise
+     * inside #detailed_message would overwrite: keep a copy across the call */
+    const uint32_t bt_n = vm->bt_cnt;
+    struct korb_bt_entry *const bt_save = bt_n ? malloc(sizeof *bt_save * bt_n) : NULL;
+    if (bt_save) memcpy(bt_save, vm->bt, sizeof *bt_save * bt_n);
+    if (KORB_EXC_P(exc) && (bt_n == 0 || bt_save != NULL)) {
+        slots[0] = exc;
+        const RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "__korb_report_message", 21), 0, 0);
+        if (r.state == KORB_NORMAL && KORB_STRING_P(r.value)) {
+            const KorbString *const s = VAL2STR(r.value);
+            dm = malloc((size_t)s->len + 1);
+            if (dm) { memcpy(dm, korb_strbuf_data(s->buf), s->len); dm[s->len] = '\0'; }
+        }
+        exc = slots[0];                                   /* the call may have moved it */
+        if (bt_n <= vm->bt_capa) {
+            if (bt_n) memcpy(vm->bt, bt_save, sizeof *bt_save * bt_n);
+            vm->bt_cnt = bt_n;
+        } else { free(dm); dm = NULL; }                 /* could not restore: fall back to the built-in text */
+    }
+    korb_report_uncaught_fp(c, stderr, exc, true, dm);
+    free(dm);
+    free(bt_save);
+}
 
 /* ---------------------------------------------------------------------------
  * Calls.
