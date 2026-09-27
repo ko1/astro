@@ -140,6 +140,11 @@ end
 # Rational sign predicates: a reduced Rational keeps den > 0, so the sign is the
 # numerator's (Integer#< handles Fixnum and Bignum).  Complex has no </> (not
 # orderable), so these stay Rational-specific rather than living on Numeric.
+# Built only through Rational() / Complex() and arithmetic: CRuby undefines the
+# allocator (NoMethodError, respond_to? false).
+class << Rational; undef_method :allocate; end
+class << Complex; undef_method :allocate; end
+
 class Rational
   # CRuby nurat_fdiv: the exact quotient, then to_f ((5/3r).fdiv(5) is 1/3.to_f, (0/1r).fdiv(-3) is 0.0)
   def fdiv(other)

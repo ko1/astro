@@ -5973,3 +5973,8 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
   Dir#close / Dir.open のブロック終わりで閉じていなかった (直した)。残り 1 件: test_gc で fd 100 (anon inode、
   mode 0600) が初出として報告される。koruby が GC / シグナルの初回に遅延で作るもの (未確認)。
 - JSON::ResumableParser は未移植 (json 3.0.2 の純 Ruby 移植 lib/json/ext/parser.rb に無い)。
+- `{ Regexp.allocate => 1 }` が TypeError にならない（CRuby は #hash の rb_reg_check）。Hash のキーの hash は C
+  （korb_value_hash_d）で dispatch の口が無い。未初期化 Regexp をキーにするためだけに hot path は触らない。
+- Marshal.dump(例外) の ivar の並びが CRuby と違う（CRuby: mesg, bt, 先に積んだ user ivar, cause, bt_locations。
+  raise していない例外も cause: nil を持つ）。load は CRuby の bytes で proc の呼び順まで一致するので相互運用は可。
+- Set#merge がサブクラスの #add を呼ばない（CRuby 4.1 は呼ぶ）。

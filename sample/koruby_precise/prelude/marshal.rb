@@ -126,11 +126,15 @@ module Marshal
     when Set                                           # CRuby: a plain object carrying @hash
       snm = _class_name(o.class)
       raise TypeError, "can't dump anonymous class #{o.class}" if snm.nil?
-      h = {}
+      uiv = o.instance_variables
+      out << "I" unless uiv.empty?                     # user ivars ride outside the 'o' record
+      h = Hash.new(false)                              # CRuby's compat hash: default false, 'C:Hash' if by identity
+      h.compare_by_identity if o.compare_by_identity?
       o.each { |e| h[e] = true }
       out << "o"
       _symdump(snm.to_sym, out, st); _long(1, out)
       _symdump(:@hash, out, st); _dump(h, out, st)
+      _dump_ivars(o, uiv, out, st) unless uiv.empty?
     when Rational                                      # 'U' user-marshal
       out << "U"; _symdump(:Rational, out, st); _dump([o.numerator, o.denominator], out, st)
     when Complex
@@ -676,6 +680,7 @@ module Marshal
   # #cause has no setter — Kernel#raise's cause: keyword is the only builder, so
   # raise the exception here and catch it back.
   EXC_INIT = Exception.instance_method(:initialize)
+  SET_MERGE = Set.instance_method(:merge)
   def self._exc_with_cause(exc, cause)
     raise exc, cause: cause
   rescue Exception => e
@@ -900,8 +905,14 @@ module Marshal
         # them (o.@a = [o]) finds it (CRuby allocates, then reads the ivars)
         _check_o_type(klass)
         obj = st[:objs][idx] = klass.allocate
+        st[:partial][obj] = true                         # unfinished: a self-link neither freezes nor fires the proc
         _rlong(st).times { name = _read0(st); obj.instance_variable_set(name, _read(st)) }
         return obj
+      end
+      if klass                                          # Exception / Set: allocated before the ivars too,
+        _check_o_type(klass)                            # so a link back to it (e.@me = e) finds it
+        obj = st[:objs][idx] = klass.allocate
+        st[:partial][obj] = true
       end
       ni = _rlong(st)
       ivars = {}
@@ -909,20 +920,17 @@ module Marshal
       if cls == :Range
         obj = Range.new(ivars[:begin], ivars[:end], ivars[:excl])
       else
-        klass = _const(cls)
-        _check_o_type(klass)
-        if klass <= Exception                            # :mesg/:bt/:cause are pseudo-ivars
-          obj = klass.allocate                          # no #initialize (CRuby allocates, then sets mesg)
+        if klass <= Exception                            # :mesg/:bt/:cause are pseudo-ivars; no #initialize
           EXC_INIT.bind_call(obj, ivars[:mesg])
-          obj = _exc_with_cause(obj, ivars[:cause]) if ivars[:cause]
+          _exc_with_cause(obj, ivars[:cause]) if ivars[:cause]   # sets the cause on obj itself
           obj.set_backtrace(ivars[:bt]) if ivars[:bt] && obj.respond_to?(:set_backtrace)
           ivars.each { |name, val| obj.instance_variable_set(name, val) if name.to_s.start_with?("@") }
-        elsif klass <= Set                               # builtin Set: rebuild from @hash's keys
-          obj = klass.new(ivars[:@hash].is_a?(Hash) ? ivars[:@hash].keys : [])
+        elsif klass <= Set                               # builtin Set: fill from @hash's keys (no #initialize / #add)
+          if (h = ivars[:@hash]).is_a?(Hash)
+            obj.compare_by_identity if h.compare_by_identity?
+            SET_MERGE.bind_call(obj, h.keys)
+          end
           ivars.each { |name, val| obj.instance_variable_set(name, val) unless name == :@hash }
-        else
-          obj = klass.allocate
-          ivars.each { |name, val| obj.instance_variable_set(name, val) }
         end
       end
       st[:objs][idx] = obj
@@ -941,6 +949,7 @@ module Marshal
       unless k.respond_to?(:members) && k.ancestors.include?(Data)
         # registered before its members, so one referring back to it finds it
         o = st[:objs][idx] = k.allocate
+        st[:partial][o] = true
         _elems(st, n, 2) { nm = _read0(st); v = _read(st); (o[nm] = v) rescue nil }
         return o
       end

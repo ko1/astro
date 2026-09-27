@@ -1191,6 +1191,18 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             return korb_raise(c, slots, KORB_E_TYPE, 0, "allocator undefined for %s", korb_sym_name(c->vm, cn));
         if (KORB_IS_BC(KORB_C_MATCHDATA))   /* MatchData has no allocator (built only by a match) → NoMethodError */
             return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'allocate' for class %s", korb_sym_name(c->vm, cn));
+        {   /* Struct / Data themselves (and bare subclasses) have no members to lay out */
+            const VALUE st = korb_const_get(c->vm, c->vm->name_struct), dt = korb_const_get(c->vm, korb_intern(c->vm, "Data", 4));
+            if ((KORB_CLASS_P(st) && korb_class_le(cv, st)) || (KORB_CLASS_P(dt) && korb_class_le(cv, dt))) {
+                VALUE k = cv;
+                while (KORB_CLASS_P(k) && !KORB_ARRAY_P(VAL2CLASS(k)->members)) k = VAL2CLASS(k)->superclass;
+                if (!KORB_CLASS_P(k)) {
+                    char cnm[192];
+                    if (cn) korb_class_qname_into(c, cv, cnm, sizeof cnm); else korb_desc_inspect(c, cv, cnm, sizeof cnm);
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "allocator undefined for %s", cnm);
+                }
+            }
+        }
         if (KORB_IS_BC(KORB_C_MUTEX))   return korb_mutex_s_new(c, slots);     /* 実 payload */
         if (KORB_IS_BC(KORB_C_CONDVAR)) return korb_condvar_s_new(c, slots);
         #undef KORB_IS_BC
@@ -1234,9 +1246,18 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         const enum korb_class base = korb_builtin_base_class(c->vm, slots[0]);
         RESULT inst = RESULT_OK(KORB_NIL);
         switch (base) {
-          case KORB_C_STRING: inst = korb_str_new(c, slots + 1, "", 0); break;
+          case KORB_C_STRING: inst = korb_str_new(c, slots + 1, "", 0);   /* rb_str_alloc: BINARY until something sets it */
+                              if (inst.state == KORB_NORMAL) KORB_STR_ENC_SET(inst.value, KORB_ENC_BINARY);
+                              break;
           case KORB_C_ARRAY:  inst = korb_ary_new(c, slots + 1, 0); break;
           case KORB_C_HASH:   inst = korb_hash_new(c, slots + 1, 0); break;
+          case KORB_C_SET:    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 0));   /* an empty KorbSet, not a bare object */
+                              inst = korb_set_new(c, slots + 3, slots[2]); break;
+          case KORB_C_REGEXP: slots[2] = UNWRAP(korb_str_new(c, slots + 2, "", 0));   /* every method refuses it until #initialize */
+                              inst = korb_re_alloc(c, slots + 3, slots[2], KORB_RE_UNINIT);
+                              if (inst.state == KORB_NORMAL)
+                                  ((AroObjectHeader *)(uintptr_t)inst.value)->flags &= ~(uint32_t)KORB_FL_FROZEN;
+                              break;
           case KORB_C_EXCEPTION: {                   /* Marshal / psych build exceptions this way */
             KorbException *const e = korb_alloc(c, slots + 1, sizeof(KorbException), KORB_OBJ_EXCEPTION);
             e->etype = (uint32_t)KORB_E_RUNTIME;     /* exc_class below is what #class / rescue read */
@@ -1255,7 +1276,8 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             slots[1] = inst.value;
             /* an exception names its class in its own field, not the side table */
             if (base == KORB_C_EXCEPTION) ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->exc_class, slots[0]);
-            else korb_klass_override_set(c, slots[1], slots[0]);
+            else if (slots[0] != korb_builtin_class_obj(c->vm, base))   /* the builtin itself: a plain instance */
+                korb_klass_override_set(c, slots[1], slots[0]);
             return RESULT_OK(slots[1]);
         }
     }

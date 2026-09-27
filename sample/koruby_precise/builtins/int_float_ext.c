@@ -564,6 +564,7 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
         gen_done = true;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_REGEXP) {   /* Regexp → fresh copy (was aliasing self) */
+        if (UNLIKELY(VAL2RE(v)->flags & KORB_RE_UNINIT)) return korb_raise(c, slots, KORB_E_TYPE, 0, "uninitialized Regexp");
         slots[1] = v;                                      /* root the source across the alloc */
         KorbRegexp *nre = korb_alloc(c, slots + 2, sizeof(KorbRegexp), KORB_OBJ_REGEXP);
         const KorbRegexp *sre = VAL2RE(slots[1]);          /* re-read: alloc may have GC-moved the source */

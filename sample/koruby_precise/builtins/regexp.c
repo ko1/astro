@@ -937,6 +937,7 @@ static RESULT korb_m_re_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(rr.value == KORB_TRUE ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_re_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* === (sets $~) */
+    KORB_RE_CHECK(c, slots, self);
     RESULT r = korb_re_match_set(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0));
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     return RESULT_OK(r.value == KORB_NIL ? KORB_FALSE : KORB_TRUE);
@@ -948,10 +949,11 @@ static RESULT korb_m_re_source(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_re_timeout(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(VAL2RE(VALUE_REF_GET(self))->timeout); }
 /* Regexp#~ — match against $_, like `$_ =~ self`. */
 static RESULT korb_m_re_match_lastline(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; KORB_RE_CHECK(c, slots, self);
+    (void)a;
     slots[0] = VALUE_REF_GET(self);
     const VALUE ll = korb_const_get(c->vm, korb_intern(c->vm, "$_", 2));
-    if (!KORB_STRING_P(ll)) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
+    if (!KORB_STRING_P(ll)) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }   /* before the check (CRuby) */
+    KORB_RE_CHECK(c, slots, self);
     slots[1] = ll;
     return korb_re_match_set(c, slots + 2, slots[0], slots[1]);
 }
@@ -960,7 +962,7 @@ static RESULT korb_m_re_match_lastline(CTX *c, VALUE *slots, VALUE_REF self, VAL
 static RESULT korb_m_re_source_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c; (void)slots; (void)a;
     const VALUE v = VALUE_REF_GET(self);
-    return RESULT_OK(KORB_REGEXP_P(v) ? VAL2RE(v)->source : KORB_NIL);
+    return RESULT_OK(KORB_REGEXP_P(v) && !(VAL2RE(v)->flags & KORB_RE_UNINIT) ? VAL2RE(v)->source : KORB_NIL);
 }
 /* prism flag bits → Ruby's Regexp option bits.  The encoding flags (/u /e /s /n)
  * all mean "the pattern's encoding is fixed": Ruby reports FIXEDENCODING (16)
@@ -982,7 +984,7 @@ static RESULT korb_m_re_enc_hint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const char *const nm = (f & 64u) ? "EUC-JP" : (f & 256u) ? "Windows-31J" : NULL;
     return nm ? korb_str_new(c, slots, nm, (uint32_t)strlen(nm)) : RESULT_OK(KORB_NIL);
 }
-static RESULT korb_m_re_casefold(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK((VAL2RE(VALUE_REF_GET(self))->flags & 4u) ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_re_casefold(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK((VAL2RE(VALUE_REF_GET(self))->flags & 4u) ? KORB_TRUE : KORB_FALSE); }
 /* True when the `(` at s[0] is closed by the `)` at s[len-1], i.e. the source is
  * one group.  Skips escapes and character-class bodies so a `)` inside `[)]`
  * doesn't close anything. */
@@ -1065,7 +1067,7 @@ static void korb_re_u8_to_wide(FILE *const ms, const char *const b, const uint32
     }
 }
 static RESULT korb_m_re_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; slots[0] = VALUE_REF_GET(self);
+    (void)a; KORB_RE_CHECK(c, slots, self); slots[0] = VALUE_REF_GET(self);
     char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
     korb_re_write_to_s(c->vm, ms, slots[0]);
     fclose(ms);
@@ -1082,6 +1084,13 @@ static RESULT korb_m_re_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return r;
 }
 static RESULT korb_m_re_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(!KORB_REGEXP_P(VALUE_REF_GET(self)) || (VAL2RE(VALUE_REF_GET(self))->flags & KORB_RE_UNINIT))) {
+        const VALUE k = korb_dispatch_class(c, VALUE_REF_GET(self));   /* #<Regexp:0x…> (CRuby's rb_any_to_s) */
+        char cn[192], b[240];
+        if (VAL2CLASS(k)->name_sym) korb_class_qname_into(c, k, cn, sizeof cn); else korb_desc_inspect(c, k, cn, sizeof cn);
+        const int n = snprintf(b, sizeof b, "#<%s:0x%016zx>", cn, (size_t)(uintptr_t)VALUE_REF_GET(self));
+        return korb_str_new(c, slots, b, (uint32_t)n);
+    }
     (void)a; slots[0] = VALUE_REF_GET(self);
     const uint32_t f = VAL2RE(slots[0])->flags;
     const VALUE srcv = VAL2RE(slots[0])->source;                /* nil for an allocate'd / never-compiled Regexp */
@@ -1103,12 +1112,12 @@ static RESULT korb_m_re_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     fclose(ms); RESULT r = korb_str_new(c, slots + 1, buf, (uint32_t)z); free(buf); return r;
 }
 static RESULT korb_m_re_names(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; slots[0] = VALUE_REF_GET(self); slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 0));
+    (void)a; KORB_RE_CHECK(c, slots, self); slots[0] = VALUE_REF_GET(self); slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 0));
     return korb_md_names_into(c, slots + 2, slots[0], false, VALUE_REF_AT(&slots[1]));
 }
 /* Regexp#named_captures → { "name" => [group numbers] } (dup names accumulate). */
 static RESULT korb_m_re_named_captures(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
+    (void)a; KORB_RE_CHECK(c, slots, self);
     if (c->vm->re_named_fn == NULL) korb_re_load(c->vm);
     slots[0] = VALUE_REF_GET(self); slots[1] = UNWRAP(korb_hash_new(c, slots + 1, 0));
     korb_re_named_fn_t nf = (korb_re_named_fn_t)c->vm->re_named_fn;
@@ -1129,14 +1138,19 @@ static RESULT korb_m_re_named_captures(CTX *c, VALUE *slots, VALUE_REF self, VAL
 /* == and hash ignore the /n (NOENCODING, 128) flag — CRuby treats it as
  * encoding metadata, not part of the compiled-pattern identity. */
 static RESULT korb_m_re_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots; const VALUE o = VALUE_SLICE_GET(a, 0), s = VALUE_REF_GET(self);
-    if (!KORB_REGEXP_P(o) || KORB_RE_ID_FLAGS(VAL2RE(s)->flags) != KORB_RE_ID_FLAGS(VAL2RE(o)->flags)) return RESULT_OK(KORB_FALSE);
+    const VALUE o = VALUE_SLICE_GET(a, 0), s = VALUE_REF_GET(self);
+    if (o == s) return RESULT_OK(KORB_TRUE);
+    if (!KORB_REGEXP_P(o)) return RESULT_OK(KORB_FALSE);
+    KORB_RE_CHECK(c, slots, self);
+    if (UNLIKELY(VAL2RE(o)->flags & KORB_RE_UNINIT)) return korb_raise(c, slots, KORB_E_TYPE, 0, "uninitialized Regexp");
+    if (KORB_RE_ID_FLAGS(VAL2RE(s)->flags) != KORB_RE_ID_FLAGS(VAL2RE(o)->flags)) return RESULT_OK(KORB_FALSE);
     const KorbString *a1 = VAL2STR(VAL2RE(s)->source), *b1 = VAL2STR(VAL2RE(o)->source);
     if (a1->len != b1->len || memcmp(korb_strbuf_data(a1->buf), korb_strbuf_data(b1->buf), a1->len) != 0) return RESULT_OK(KORB_FALSE);
     return RESULT_OK(KORB_TRUE);
 }
 static RESULT korb_m_re_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a; const KorbString *src = VAL2STR(VAL2RE(VALUE_REF_GET(self))->source);
+    (void)a; KORB_RE_CHECK(c, slots, self);
+    const KorbString *src = VAL2STR(VAL2RE(VALUE_REF_GET(self))->source);
     uint32_t h = korb_str_hash(korb_strbuf_data(src->buf), src->len) ^ (KORB_RE_ID_FLAGS(VAL2RE(VALUE_REF_GET(self))->flags) * 2654435761u);
     return RESULT_OK(LONG2FIX((long)h));
 }
@@ -1850,7 +1864,10 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     }
     VALUE src = VALUE_SLICE_GET(a, 0); uint32_t flags = 0;
     bool from_regexp = false;
-    if (KORB_REGEXP_P(src)) { slots[0] = VAL2RE(src)->source; flags = VAL2RE(src)->flags; from_regexp = true; }
+    if (KORB_REGEXP_P(src)) {
+        if (UNLIKELY(VAL2RE(src)->flags & KORB_RE_UNINIT)) return korb_raise(c, slots, KORB_E_TYPE, 0, "uninitialized Regexp");
+        slots[0] = VAL2RE(src)->source; flags = VAL2RE(src)->flags; from_regexp = true;
+    }
     else if (KORB_STRING_P(src)) slots[0] = src;
     else {                                                /* #to_str coercion, else TypeError */
         slots[0] = src;
@@ -1979,6 +1996,7 @@ static RESULT korb_m_re_init_pattern(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     me->flags = built->flags;                                  /* clears KORB_RE_UNINIT */
     me->ci    = built->ci;
     ARO_STORE(c, me, (VALUE *)(uintptr_t)&me->source, built->source);
+    if (!(me->head.flags & KORB_FL_HAS_KLASS)) me->head.flags |= KORB_FL_FROZEN;   /* a plain Regexp (Regexp.allocate) freezes (CRuby) */
     return RESULT_OK(VALUE_REF_GET(self));
 }
 

@@ -2217,8 +2217,9 @@ class Regexp
   # エスケープ・ASCII 非互換の source encoding) 場合。CRuby はこの場合も
   # エンコーディングを固定する。
   def fixed_encoding?
-    return true if (options & Regexp::FIXEDENCODING) != 0
     src = __source_raw                    # #source asks #encoding, which asks here
+    return false if src.nil?              # Regexp.allocate: no pattern yet (CRuby answers false)
+    return true if (options & Regexp::FIXEDENCODING) != 0
     return true unless src.encoding.ascii_compatible?
     return true if __utf8_escape?(src)    # \u{8768} pins the pattern to UTF-8
     return true unless src.ascii_only?
