@@ -123,7 +123,7 @@ module Enumerable
     }
     best
   end
-  def sort(&blk); to_a.sort(&blk); end
+  def sort(&blk); entries.sort(&blk); end   # not #to_a: a Hash subclass's own #each decides (CRuby enum_sort)
   def sort_by; return __to_enum_sized(:sort_by) unless block_given?; a = []; __each_el { |x| a << x }; a.sort_by { |x| yield(x) }; end
   # all?/any?/none?/one? accept an optional pattern (uses pattern === x), else a block, else truthiness.
   def all?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; warn "given block not used" if blk; pt = a[0]; __each_el { |x| return false unless pt === x }; elsif blk; ok = true; each { |*ar| unless blk.call(*ar); ok = false; break; end }; return ok; else; __each_el { |x| return false unless x }; end; true; end

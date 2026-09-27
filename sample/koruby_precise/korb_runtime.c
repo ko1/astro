@@ -5805,6 +5805,27 @@ korb_method_undefed_p(VALUE klass, uint32_t mid)
     return false;
 }
 
+/* CRuby's Hash has only these Enumerable methods of its own; the rest (map, find,
+ * sort, ...) come from Enumerable and so go through a subclass's own #each.
+ * koruby implements them on Hash, so a subclass that overrides #each gets
+ * Enumerable's versions (REXML::Attributes#each yields [expanded_name, value]). */
+static __attribute__((noinline, cold)) struct korb_method *
+korb_hash_sub_enum_method(struct korb_vm *const vm, const VALUE klass, const uint32_t mid,
+                          struct korb_method *const m, VALUE *const def)
+{
+    static const char *const own[] = { "any?", "compact", "filter", "include?", "member?", "reject", "select", "to_a", "to_h", "each", "each_pair" };
+    const char *const nm = korb_sym_name(vm, mid);
+    for (size_t i = 0; i < sizeof own / sizeof own[0]; i++) if (strcmp(nm, own[i]) == 0) return m;
+    VALUE each_def = KORB_NIL;
+    if (korb_class_find_method(klass, korb_intern(vm, "each", 4), &each_def) == NULL || each_def == *def) return m;
+    const VALUE enm = korb_const_get(vm, korb_intern(vm, "Enumerable", 10));
+    if (!KORB_CLASS_P(enm)) return m;
+    VALUE edef = KORB_NIL;
+    struct korb_method *const em = korb_mro_seg_find(enm, mid, &edef, 0);
+    if (em == NULL || em->kind == KORB_METHOD_UNDEF) return m;
+    *def = KORB_CLASS_P(edef) ? edef : enm;
+    return em;
+}
 #define KORB_MCACHE_N 4096u   /* direct-mapped, power of two */
 /* cached korb_class_find_method for user-object dispatch (the hot path).  A hit
  * requires serial match → no def/GC since fill → cached klass ptr + method ptr
@@ -5819,7 +5840,9 @@ korb_mcache_find(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def)
         return e->m;
     }
     VALUE def = KORB_NIL;
-    struct korb_method *const m = korb_class_find_method(klass, mid, &def);
+    struct korb_method *m = korb_class_find_method(klass, mid, &def);
+    if (UNLIKELY(m != NULL && def == korb_builtin_class_obj(vm, KORB_C_HASH) && klass != def))
+        m = korb_hash_sub_enum_method(vm, klass, mid, m, &def);
     korb_mid_looked(vm, mid);
     e->serial = vm->method_serial; e->klass = klass; e->mid = mid; e->m = m; e->def_class = def;
     *out_def = def;
