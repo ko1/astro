@@ -4408,13 +4408,18 @@ static uint32_t korb_bind_method_mid_walk(const struct korb_vm *const vm, const 
 
 /* The owner of the method at the head of an env chain (through its blocks),
  * or nil when the chain reaches a class body / file top first. */
+/* The cref of the method at the head of an env chain (through its blocks) when
+ * that is its owner — a method written in `class << X`.  A `def obj.m` (sdef)
+ * keeps its lexical cref, so nil then, as for a class body / file top. */
 static VALUE korb_env_chain_method_owner(const struct korb_vm *const vm, VALUE ev)
 {
     for (uint32_t d = 0; d < 64 && ev != 0 && (ev & 7u) == 0; d++) {
         const VALUE id = VAL2ENV(ev)->id;
         const uintptr_t p = (uintptr_t)(id & ~(VALUE)7u);
-        if ((id & 7u) == KORB_FID_METHOD)
-            return korb_bt_known_ptr(vm, p) ? ((const struct korb_method *)p)->owner : KORB_NIL;
+        if ((id & 7u) == KORB_FID_METHOD) {
+            if (!korb_bt_known_ptr(vm, p) || ((const struct korb_method *)p)->sdef) return KORB_NIL;
+            return ((const struct korb_method *)p)->owner;
+        }
         if ((id & 7u) != KORB_FID_BLOCK) return KORB_NIL;
         ev = VAL2ENV(ev)->prev;
     }
@@ -19268,10 +19273,16 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
      * class hierarchy BEFORE the caller's scope, and a flat const table cannot
      * express that ordering — answering from the caller would be worse. */
     bool cref_is_caller = false;
+    /* the caller's cref by name: a `class << Klass` method's is Klass's singleton, named by Klass */
+    VALUE bcref = b0->cref;
+    if (KORB_CLASS_P(bcref) && VAL2CLASS(bcref)->is_singleton) {
+        const VALUE at = korb_singleton_attached(c, bcref);
+        if (KORB_CLASS_P(at)) bcref = at;
+    }
     if (cref_name == 0 && KORB_CLASS_P(cref) && !VAL2CLASS(cref)->is_singleton &&
-        KORB_CLASS_P(b0->cref) && VAL2CLASS(b0->cref)->name_sym != 0) {
-        cref_name = VAL2CLASS(b0->cref)->name_sym;
-        cref_encl = VAL2CLASS(b0->cref)->enclosing;
+        KORB_CLASS_P(bcref) && VAL2CLASS(bcref)->name_sym != 0) {
+        cref_name = VAL2CLASS(bcref)->name_sym;
+        cref_encl = VAL2CLASS(bcref)->enclosing;
         cref_is_caller = true;                          /* constants only: a `binding` must not report it */
     }
     uint32_t encl[16]; uint32_t nencl = 0;                      /* innermost first for now */
@@ -19282,10 +19293,10 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
      * after the receiver's own (`module M; String.class_eval("X")` sees M::X),
      * and so does a binding taken in such an eval (pry's BasicObject session). */
     const bool outer_is_caller = !cref_is_caller && cref_name != 0 && KORB_CLASS_P(cref) &&
-                                 !VAL2CLASS(cref)->is_singleton && KORB_CLASS_P(b0->cref) && b0->cref != cref;
+                                 !VAL2CLASS(cref)->is_singleton && KORB_CLASS_P(bcref) && bcref != cref;
     const bool outer_is_bound = !outer_is_caller && cref == b0->cref && KORB_CLASS_P(b0->outer_cref);
     if (outer_is_caller || outer_is_bound)
-        for (VALUE o = outer_is_caller ? b0->cref : b0->outer_cref;
+        for (VALUE o = outer_is_caller ? bcref : b0->outer_cref;
              KORB_CLASS_P(o) && VAL2CLASS(o)->name_sym != 0 && nencl < 16; o = VAL2CLASS(o)->enclosing)
             encl[nencl++] = VAL2CLASS(o)->name_sym;
     for (uint32_t i = 0, j = nencl; i < j; i++, j--)            /* → outermost first */

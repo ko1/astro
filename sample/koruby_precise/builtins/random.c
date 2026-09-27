@@ -492,7 +492,12 @@ static RESULT korb_m_random_new_seed(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 
 /* Kernel#rand / srand use a per-vm default generator (no GC edges). */
 static KorbMT *korb_default_rng(struct korb_vm *const vm) {
-    if (!vm->default_rng_seeded) { korb_mt_init_genrand(&vm->default_rng, korb_mt_entropy(&vm->default_rng)); vm->default_rng_seeded = true; }
+    if (!vm->default_rng_seeded) {                     /* the seed is remembered: the first srand returns it (CRuby) */
+        const uint32_t e = korb_mt_entropy(&vm->default_rng);
+        korb_mt_init_genrand(&vm->default_rng, e);
+        vm->default_rng_seed = LONG2FIX((korb_sword_t)e);
+        vm->default_rng_seeded = true;
+    }
     return &vm->default_rng;
 }
 static RESULT korb_bi_rand(CTX *c, VALUE *slots, VALUE_SLICE a) {
@@ -506,7 +511,8 @@ static RESULT korb_bi_rand(CTX *c, VALUE *slots, VALUE_SLICE a) {
     return korb_rand_core(c, slots, korb_default_rng(c->vm), KORB_NIL, a);
 }
 static RESULT korb_bi_srand(CTX *c, VALUE *slots, VALUE_SLICE a) {
-    const VALUE old = c->vm->default_rng_seeded ? c->vm->default_rng_seed : LONG2FIX(0);
+    (void)korb_default_rng(c->vm);                     /* seeded (and its seed kept) before we replace it */
+    const VALUE old = c->vm->default_rng_seed;
     VALUE seed;
     if (VALUE_SLICE_LEN(a) == 0) {                     /* a fresh seed, remembered for the next srand */
         const uint32_t e = korb_mt_entropy(&c->vm->default_rng);
