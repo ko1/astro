@@ -548,7 +548,11 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    const bool saved_text = c->inspect_text;
+    c->inspect_text = false;
     korb_fprint_inspect_s(c, slots, ms, VALUE_REF_GET(self));   /* containers dispatch element #inspect */
+    const bool text = c->inspect_text;
+    c->inspect_text = saved_text;
     fclose(ms);
     { const RESULT pe = korb_inspect_take_exc(c);   /* an element's #inspect raised: CRuby does not swallow it */
       if (UNLIKELY(pe.state != KORB_NORMAL)) { free(buf); return pe; } }
@@ -557,8 +561,13 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     for (size_t i = 0; i < sz && ascii; i++) if ((unsigned char)buf[i] >= 0x80) ascii = false;
     RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
-    if (LIKELY(r.state == KORB_NORMAL) && ascii && !KORB_STRING_P(VALUE_REF_GET(self)))
-        KORB_STR_ENC_SET(r.value, KORB_ENC_USASCII);
+    /* CRuby: US-ASCII until an element's inspect brings an encoding of its own (a
+     * String's is the default external — US-ASCII when that is not ASCII-compatible) */
+    if (LIKELY(r.state == KORB_NORMAL) && !KORB_STRING_P(VALUE_REF_GET(self))) {
+        const bool ext_ok = korb_enc_ascii_compat_idx(c->vm, c->vm->enc_external);
+        if (ascii) KORB_STR_ENC_SET(r.value, text && ext_ok ? c->vm->enc_external : KORB_ENC_USASCII);
+        else if (ext_ok) KORB_STR_ENC_SET(r.value, c->vm->enc_external);   /* raw bytes are in the external's encoding */
+    }
     return r;
 }
 static RESULT korb_m_obj_class(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

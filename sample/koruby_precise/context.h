@@ -1592,6 +1592,7 @@ struct CTX_struct {
      * while one is already being built. */
     bool      in_frozen_msg;
     VALUE     inspect_exc;
+    bool      inspect_text;     /* the #inspect being built showed a String (or a non-US-ASCII element result): not US-ASCII */
     VALUE     throw_tag;     /* active `throw` tag while a KORB_THROW unwinds (GC-visited) */
     VALUE    *catch_tags;    /* stack of tags of the active `catch` blocks (GC-visited) */
     uint32_t  catch_n, catch_cap;

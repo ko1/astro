@@ -2910,6 +2910,7 @@ static inline VALUE korb_builtin_class_obj(const struct korb_vm *vm, enum korb_c
 
 static struct korb_method *korb_class_method_slot(struct korb_vm *vm, KorbClass *k, uint32_t mid);   /* fwd (defined below) */
 static void korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid);        /* fwd (defined below) */
+static RESULT korb_r2k_unmarked_copy(CTX *c, VALUE *slots, VALUE *cell);          /* fwd (defined below) */
 /* CRuby forces these names PRIVATE at definition time, wherever they are
  * defined (vm_method.c): a later explicit `public :name` still wins, because
  * that runs after the `def`.  Applying it in the definers (and in the Ruby `def`
@@ -6329,8 +6330,14 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     else if (argc >= 1 && UNLIKELY(korb_kwargs_hash_p(base[argc - 1]))) {
         /* Not consumed as keywords.  A ruby2_keywords method keeps the fact on the
          * Hash (persistently) so re-splatting it is keywords again; the call-scoped
-         * mark ends here either way. */
+         * mark ends here either way.  Any other method gets an unmarked COPY of a
+         * marked Hash (CRuby), so the caller's stays marked and distinct. */
         if (m->ruby2_kw) korb_r2k_set(base[argc - 1]);
+        else if (korb_r2k_hash_p(base[argc - 1])) {
+            slots[0] = self; slots[1] = captured_self;     /* bare C-locals: park them across the copy's allocs */
+            CHECK(korb_r2k_unmarked_copy(c, slots + 2, &base[argc - 1]));
+            self = slots[0]; captured_self = slots[1];
+        }
         korb_kwargs_unmark(base[argc - 1]);
     }
     const uint32_t min_pos = m->req_cnt + m->post_cnt;   /* posts are required too */
@@ -10756,6 +10763,19 @@ korb_bi_autoload_feature_loaded(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(korb_autoload_feature_loaded_p(c, pv) ? KORB_TRUE : KORB_FALSE);
 }
 
+/* *cell (a ruby2_keywords-marked Hash, rooted) → a plain copy of its pairs. */
+static RESULT
+korb_r2k_unmarked_copy(CTX *c, VALUE *slots, VALUE *const cell)
+{
+    slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(*cell)->len));
+    for (uint32_t i = 0; i < VAL2HASH(*cell)->len; i++) {
+        slots[1] = korb_items_data(VAL2HASH(*cell)->items)[2 * i];
+        slots[2] = korb_items_data(VAL2HASH(*cell)->items)[2 * i + 1];
+        CHECK(korb_hash_set(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]), slots[2]));
+    }
+    *cell = slots[0];
+    return RESULT_OK(KORB_NIL);
+}
 /* Can a method of this shape carry the ruby2_keywords flag?  The splat has to be
  * the last positional parameter (a post arg would eat the marked Hash) and there
  * must be no keyword parameter at all (CRuby warns and skips otherwise). */
@@ -16274,6 +16294,83 @@ static bool korb_str_bytes_ascii_p(const char *const s, const uint32_t len)
     return (hi & 0x80u) == 0;
 }
 
+/* CRuby's rb_str_escape: the characters of a String as printable ASCII (no quotes
+ * added, `"` and `\\` left alone) — what rb_inspect makes of an #inspect result
+ * the output encoding cannot show. */
+static void
+korb_fprint_str_escape(const struct korb_vm *const vm, FILE *const fp,
+                       const char *const bytes, const uint32_t len, const uint32_t enc)
+{
+    const unsigned char *const p = (const unsigned char *)bytes;
+    const bool unicode = korb_enc_unicode_p(vm, enc);
+    const bool acompat = korb_enc_ascii_compat_idx(vm, enc);
+    bool be = true;
+    const uint32_t unit = KORB_ENC_SB(vm, enc) ? 0u : korb_enc_fixed_unit(vm, enc, &be);
+    const uint32_t minlen = unit ? unit : 1u;
+    for (uint32_t i = 0; i < len; ) {
+        uint32_t cp = 0;
+        const uint32_t n = korb_enc_inspect_char(vm, enc, unicode, p + i, len - i, &cp);
+        if (n == 0) {
+            uint32_t k = (len - i < minlen) ? len - i : minlen;
+            while (k--) fprintf(fp, "\\x%02X", p[i++]);
+            continue;
+        }
+        const char *esc = NULL;
+        switch (cp) {                                    /* ruby_escaped_char */
+          case 0:    esc = "\\0"; break;
+          case '\n': esc = "\\n"; break;
+          case '\r': esc = "\\r"; break;
+          case '\t': esc = "\\t"; break;
+          case '\f': esc = "\\f"; break;
+          case 013:  esc = "\\v"; break;
+          case 010:  esc = "\\b"; break;
+          case 007:  esc = "\\a"; break;
+          case 033:  esc = "\\e"; break;
+          case 0x7f: esc = "\\c?"; break;
+          default: break;
+        }
+        if (esc) fputs(esc, fp);
+        else if (acompat && cp < 0x80 && korb_ascii_print_p(cp)) fwrite(p + i, 1, n, fp);
+        else if (unicode) {
+            if (cp < 0x7F && korb_ascii_print_p(cp)) fputc((int)cp, fp);
+            else if (cp < 0x10000) fprintf(fp, "\\u%04X", cp);
+            else fprintf(fp, "\\u{%X}", cp);
+        }
+        else if (cp < 0x100) fprintf(fp, "\\x%02X", cp);
+        else fprintf(fp, "\\x{%X}", cp);
+        i += n;
+    }
+}
+
+/* An element's #inspect result as rb_inspect hands it on: verbatim when the output
+ * encoding can show it (ASCII-only, or already that encoding), else escaped. */
+/* CRuby rb_str_symname_p: a Symbol name the output can show verbatim (else it is
+ * printed quoted): no NUL, and UTF-8 under a UTF-8 external or plain ASCII. */
+static bool
+korb_sym_shows_raw(const struct korb_vm *const vm, const char *const nm, const uint32_t len, const uint32_t enc)
+{
+    return len == strlen(nm) &&
+        ((enc == KORB_ENC_UTF8 && (vm->enc_external == KORB_ENC_UTF8 || korb_str_bytes_ascii_p(nm, len))) ||
+         (korb_enc_ascii_compat_idx(vm, enc) && (enc == vm->enc_external || korb_str_bytes_ascii_p(nm, len))));
+}
+
+static void
+korb_fwrite_inspected(CTX *const c, FILE *const fp, const VALUE s)
+{
+    const struct korb_vm *const vm = c->vm;
+    const KorbString *const str = VAL2STR(s);
+    const char *const b = korb_strbuf_data(str->buf);
+    const uint32_t enc = KORB_STR_ENC(s);
+    const uint32_t target = vm->enc_internal != UINT32_MAX ? vm->enc_internal : vm->enc_external;
+    const bool ascii_only = korb_enc_ascii_compat_idx(vm, enc) && korb_str_bytes_ascii_p(b, str->len);
+    if (!ascii_only && (!korb_enc_ascii_compat_idx(vm, target) || enc != target))
+        korb_fprint_str_escape(vm, fp, b, str->len, enc);
+    else {
+        fwrite(b, 1, str->len, fp);
+        if (enc != KORB_ENC_USASCII) c->inspect_text = true;
+    }
+}
+
 /* #inspect of a string whose encoding is NOT the result's (koruby always
  * renders into UTF-8), i.e. CRuby's rb_str_inspect with enc != resenc. */
 static void
@@ -16469,10 +16566,10 @@ korb_fprint_user_inspect(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         RESULT r2 = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
         if (r2.state != KORB_NORMAL) { korb_inspect_park_exc(c, r2); return false; }
         if (!KORB_STRING_P(r2.value)) return false;              /* → default representation */
-        fwrite(korb_strbuf_data(VAL2STR(r2.value)->buf), 1, VAL2STR(r2.value)->len, fp);
+        korb_fwrite_inspected(c, fp, r2.value);
         return true;
     }
-    fwrite(korb_strbuf_data(VAL2STR(r.value)->buf), 1, VAL2STR(r.value)->len, fp);
+    korb_fwrite_inspected(c, fp, r.value);
     return true;
 }
 
@@ -16511,9 +16608,12 @@ korb_fprint_hash_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
         const KorbHash *h = slots ? VAL2HASH(slots[0]) : VAL2HASH(v);   /* re-read each step */
         VALUE k = korb_items_data(h->items)[2 * i];
         if (SYMBOL_P(k)) {
-            const char *nm = korb_sym_name(c->vm, SYM2ID(k));
-            if (korb_sym_label_bare(nm)) fputs(nm, fp);
-            else korb_fprint_quoted(fp, nm, (uint32_t)strlen(nm));
+            const uint32_t id = SYM2ID(k);
+            const char *const nm = korb_sym_name(c->vm, id);
+            const uint32_t len = c->vm->sym_lens[id], enc = c->vm->sym_encs[id];
+            if (korb_sym_shows_raw(c->vm, nm, len, enc) && korb_sym_label_bare(nm)) fputs(nm, fp);
+            else if (enc == KORB_ENC_UTF8 && c->vm->enc_external == KORB_ENC_UTF8) korb_fprint_quoted(fp, nm, len);
+            else korb_fprint_quoted_other(c->vm, fp, nm, len, enc);   /* {"\u3042": 1} under a non-UTF-8 external */
             fputs(": ", fp);
         } else {
             korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp, k, depth + 1);
@@ -16857,10 +16957,7 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         /* CRuby rb_str_symname_p: a name the UTF-8 result cannot show verbatim
          * — a foreign encoding carrying non-ASCII, or one holding a NUL — is
          * printed as `:` + the inspected String instead of bare. */
-        const bool shows_raw = len == strlen(nm) &&
-            ((enc == KORB_ENC_UTF8 && (c->vm->enc_external == KORB_ENC_UTF8 ||
-                                       korb_str_bytes_ascii_p(nm, len))) ||
-             (korb_enc_ascii_compat_idx(c->vm, enc) && korb_str_bytes_ascii_p(nm, len)));
+        const bool shows_raw = korb_sym_shows_raw(c->vm, nm, len, enc);
         fputc(':', fp);
         if (shows_raw && korb_sym_inspect_bare(nm)) fputs(nm, fp);
         else if (enc == KORB_ENC_UTF8 && c->vm->enc_external == KORB_ENC_UTF8) korb_fprint_quoted(fp, nm, len);
@@ -16872,6 +16969,7 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       case KORB_OBJ_STRING: {
         const KorbString *const s = VAL2STR(v);
         const uint32_t enc = KORB_STR_ENC(v);
+        c->inspect_text = true;
         /* CRuby's resenc is Encoding.default_external; a string whose encoding is
          * not that one takes the escaping path (rubocop renders `%W(\u0412…)`
          * from it under a US-ASCII external).  koruby renders into UTF-8, so the
