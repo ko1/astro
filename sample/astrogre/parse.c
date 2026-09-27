@@ -10,6 +10,16 @@
 #include "parse.h"
 #include "aho_corasick.h"
 
+/* The Unicode word property (\b's notion of a word character), looked up once. */
+static void *
+agre_word_set(void)
+{
+    static agre_cpset_t word;
+    static bool done;
+    if (!done) { (void)agre_posix_prop_find("word", 4, &word); done = true; }
+    return &word;
+}
+
 /* Regex compile flag bits.  Numeric values match prism's
  * pm_regular_expression_flags_t for callers that have a prism-derived
  * bitmask in hand, but the engine itself does not depend on prism. */
@@ -2434,8 +2444,8 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
     case IRE_EOS_NL:        return ALLOC_node_re_eos_nl(tail);
     case IRE_BOL:           return ALLOC_node_re_bol(tail);
     case IRE_EOL:           return ALLOC_node_re_eol(tail);
-    case IRE_WB:            return ALLOC_node_re_word_boundary(tail);
-    case IRE_NWB:           return ALLOC_node_re_non_word_boundary(tail);
+    case IRE_WB:            return ALLOC_node_re_word_boundary(agre_word_set(), tail);
+    case IRE_NWB:           return ALLOC_node_re_non_word_boundary(agre_word_set(), tail);
     case IRE_BACKREF:       return ALLOC_node_re_backref(n->u.backref.idx, tail);
     case IRE_CONCAT:        return lower_concat(L, n, tail);
     case IRE_ALT: {

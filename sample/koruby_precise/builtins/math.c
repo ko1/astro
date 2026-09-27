@@ -117,7 +117,7 @@ static RESULT korb_m_math_log10(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (UNLIKELY(isnan(r10) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - log10");
     return korb_float_new(c, slots, r10);
 }
-KORB_MATH2(atan2, atan2) KORB_MATH2(hypot, hypot) KORB_MATH2(copysign, copysign)
+KORB_MATH2(atan2, atan2) KORB_MATH2(hypot, hypot)
 
 /* Math.log(x) = ln; Math.log(x, base) = log_base(x).  Bignum-aware via frexp
  * decomposition so ln stays finite past the double range. */
@@ -265,7 +265,7 @@ void korb_init_math(CTX *c, VALUE *slots) {
     MF("exp", exp, 1); MF("log2", log2, 1); MF("log10", log10, 1);
     MF("gamma", gamma, 1); MF("erf", erf, 1); MF("erfc", erfc, 1);
     MF("expm1", expm1, 1); MF("log1p", log1p, 1);
-    MF("atan2", atan2, 2); MF("hypot", hypot, 2); MF("copysign", copysign, 2);   /* no Math.pow — CRuby has none */
+    MF("atan2", atan2, 2); MF("hypot", hypot, 2);   /* no Math.pow / Math.copysign — CRuby has neither */
     MF("log", log, -1); MF("ldexp", ldexp, 2); MF("frexp", frexp, 1); MF("lgamma", lgamma, 1);
 #undef MF
 }

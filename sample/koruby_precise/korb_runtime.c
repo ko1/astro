@@ -5841,7 +5841,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry
      * is an attr_reader — dispatch returns the ivar directly, skipping a frame.
      * A multi-statement body roots at node_seq, so only the bare single-read
      * case matches (observably identical to attr_reader). */
-    if (params_cnt == 0 && !uses_block && body && body->head.kind == &kind_node_ivar_get) {
+    if (params_cnt == 0 && m->is_simple && body && body->head.kind == &kind_node_ivar_get) {   /* is_simple: no *rest / post / keywords (`def v(*) = @v` takes any args) */
         m->kind = KORB_METHOD_ATTR_R;
         m->attr_ivar = body->u.node_ivar_get.name;
     }

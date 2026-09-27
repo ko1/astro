@@ -1560,21 +1560,42 @@ static inline int agre_is_word_char(uint8_t b)
         || (b == '_');
 }
 
-NODE_DEF
-node_re_word_boundary(CTX * restrict c, NODE * restrict n, NODE *next)
+/* Is the character just before (`before`) / at c->pos a word character?  ASCII
+ * by the table above; a UTF-8 character by the Unicode word property (Onigmo's
+ * \b follows the encoding: `ρ` is a word character though `\w` is ASCII-only). */
+static inline int
+agre_wb_side(const CTX * restrict c, const agre_cpset_t *word, const bool before)
 {
-    int prev_w = (c->pos > 0)            ? agre_is_word_char(c->str[c->pos - 1]) : 0;
-    int next_w = (c->pos < c->str_len)   ? agre_is_word_char(c->str[c->pos])     : 0;
-    if (prev_w == next_w) return MR_FAIL;
+    if (before ? c->pos == 0 : c->pos >= c->str_len) return 0;
+    size_t at = before ? c->pos - 1 : c->pos;
+    if (LIKELY(c->str[at] < 0x80)) return agre_is_word_char(c->str[at]);
+    if (before) {                                    /* back to the lead byte */
+        for (int k = 0; k < 3 && at > 0 && (c->str[at] & 0xC0) == 0x80; k++) at--;
+    }
+    uint32_t cp;
+    if (agre_utf8_decode(c->str + at, c->str_len - at, &cp) == 0) return 0;
+    return agre_cpset_contains(word, cp);
+}
+
+/* `set` is the Unicode word property (an agre_cpset_t *), read back out of the
+ * NODE like node_re_uniclass's: the operand is not baked into an SD. */
+NODE_DEF
+node_re_word_boundary(CTX * restrict c, NODE * restrict n, void *set, NODE *next)
+{
+    (void)set;
+    const agre_cpset_t *const word = (const agre_cpset_t *)n->u.node_re_word_boundary.set;
+    if (UNLIKELY(c->pos < c->str_len && (c->str[c->pos] & 0xC0) == 0x80)) return MR_FAIL;   /* inside a character: no position */
+    if (agre_wb_side(c, word, true) == agre_wb_side(c, word, false)) return MR_FAIL;
     return EVAL_ARG(c, next);
 }
 
 NODE_DEF
-node_re_non_word_boundary(CTX * restrict c, NODE * restrict n, NODE *next)
+node_re_non_word_boundary(CTX * restrict c, NODE * restrict n, void *set, NODE *next)
 {
-    int prev_w = (c->pos > 0)            ? agre_is_word_char(c->str[c->pos - 1]) : 0;
-    int next_w = (c->pos < c->str_len)   ? agre_is_word_char(c->str[c->pos])     : 0;
-    if (prev_w != next_w) return MR_FAIL;
+    (void)set;
+    const agre_cpset_t *const word = (const agre_cpset_t *)n->u.node_re_non_word_boundary.set;
+    if (UNLIKELY(c->pos < c->str_len && (c->str[c->pos] & 0xC0) == 0x80)) return MR_FAIL;   /* inside a character: no position */
+    if (agre_wb_side(c, word, true) != agre_wb_side(c, word, false)) return MR_FAIL;
     return EVAL_ARG(c, next);
 }
 
