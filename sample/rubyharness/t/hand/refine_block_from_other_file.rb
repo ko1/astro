@@ -18,9 +18,10 @@ class RBC
   def d = [[1]].map { |x| rb_yielder(x) { |y| y.rbdc } }
   def run = yield([1])
   def e = 3.times.map { a }
+  def f = [[1]].collect { |x| [[2]].each.with_index(1).map { |y, i| y.rbdc } }   # &blk reified in a prelude method
 end
 o = RBC.new
-p o.a, o.b, o.d, o.e; o.c
+p o.a, o.b, o.d, o.e, o.f; o.c
 p rb_plain_block_to(o)
 p o.a
 require "fileutils"; FileUtils.rm_rf(dir)

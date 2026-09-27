@@ -617,7 +617,8 @@ static RESULT korb_m_range_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each"));
-        const RESULT er = korb_enum_new(c, slots + 2, slots[0], slots[1]);
+        const RESULT er0 = korb_enum_new(c, slots + 2, slots[0], slots[1]);
+        const RESULT er = korb_enum_each_like(c, er0, VALUE_REF_GET(self));
         /* CRuby's Range#each enumerator answers #size only for a NUMERIC range
          * (`("a".."c").each.size` is nil, not 3). */
         if (LIKELY(er.state == KORB_NORMAL) && !numeric_begin) VAL2ENUM(er.value)->size_unknown = 1;
@@ -776,7 +777,7 @@ static RESULT korb_m_range_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (block == NULL) {                              /* → Enumerator over the range's elements */
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "map"));
-        return korb_enum_new(c, slots + 2, slots[0], slots[1]);
+        return korb_enum_map_like(korb_enum_new(c, slots + 2, slots[0], slots[1]));
     }
     korb_sword_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-integer range → map over to_a */
@@ -1371,7 +1372,8 @@ static RESULT korb_m_range_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             CHECK(korb_ary_push_val(c, slots + 2, pairs, slots[1]));
         }
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each_with_index"));
-        return korb_enum_new(c, slots + 2, VALUE_REF_GET(pairs), slots[1]);
+        const RESULT er = korb_enum_new(c, slots + 2, VALUE_REF_GET(pairs), slots[1]);
+        return korb_enum_each_like(c, er, VALUE_REF_GET(self));
     }
     for (korb_sword_t i = lo; i < hi; i++) {
         VALUE argv[2] = { LONG2FIX(i), LONG2FIX(i - lo) };

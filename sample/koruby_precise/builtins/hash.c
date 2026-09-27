@@ -447,7 +447,8 @@ static RESULT korb_m_hash_each_named(CTX *c, VALUE *slots, VALUE_REF self, VALUE
             CHECK(korb_ary_push_val(c, slots + 4, arr, slots[3]));
         }
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), ename));
-        return korb_enum_new(c, slots + 2, VALUE_REF_GET(arr), slots[1]);
+        const RESULT er = korb_enum_new(c, slots + 2, VALUE_REF_GET(arr), slots[1]);
+        return korb_enum_each_like(c, er, VALUE_REF_GET(self));
     }
     /* a forwarded lambda (&lam / &obj.method(:m)) gets ONE [k, v] argument, so
      * its arity check sees 1 (CRuby yields the pair; only a proc block unpacks) */
@@ -511,7 +512,8 @@ static RESULT korb_hash_each_kv(CTX *c, VALUE *slots, VALUE_REF self, NODE *bloc
         for (uint32_t i = 0; i < SELF_HASH->len; i++)     /* SELF_HASH stable: no GC in this loop */
             UNWRAP(korb_ary_push_val(c, slots + 1, arr, korb_items_data(SELF_HASH->items)[2 * i + (want_key ? 0 : 1)]));
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), want_key ? "each_key" : "each_value"));
-        return korb_enum_new(c, slots + 2, slots[0], slots[1]);
+        const RESULT er = korb_enum_new(c, slots + 2, slots[0], slots[1]);
+        return korb_enum_each_like(c, er, VALUE_REF_GET(self));
     }
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = SELF_HASH;

@@ -40,6 +40,20 @@ korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc)
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->desc,   slots[1]);
     return RESULT_OK((VALUE)e);
 }
+/* `recv.each.each {}` / `.with_index {}` return what `recv.each {}` does: recv.
+ * recv must be read after the enumerator's allocation (moving GC). */
+static RESULT korb_enum_each_like(CTX *c, const RESULT er, const VALUE recv) {
+    if (LIKELY(er.state == KORB_NORMAL)) {
+        KorbEnumerator *const e = VAL2ENUM(er.value);
+        e->op = 6;
+        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->source, recv);
+    }
+    return er;
+}
+static RESULT korb_enum_map_like(const RESULT er) {
+    if (LIKELY(er.state == KORB_NORMAL)) VAL2ENUM(er.value)->op = 5;
+    return er;
+}
 /* A materialized element that came from a MULTI-value yield keeps its arity:
  * `each_with_index.map { |x| }` must see the element, not the [elem, i] pair
  * (CRuby re-drives the source, which keeps the arity naturally).  `cur` is free
@@ -805,6 +819,18 @@ static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return RESULT_OK(VALUE_REF_GET(self));
     }
     const uint8_t op = SELF_ENUM->op;
+    if (op == 5 || op == 6) {                         /* map: the block results; each-like: the receiver */
+        VALUE_REF dst = SLOTS_PUSH(slots, op == 5 ? UNWRAP(korb_ary_new(c, slots, 4)) : KORB_NIL);
+        for (uint32_t i = 0; ; i++) {
+            const KorbArray *v = VAL2ARY(SELF_ENUM->values);
+            if (i >= v->len) break;
+            slots[0] = korb_items_data(v->items)[i];
+            const RESULT r = korb_enum_yield_el(c, slots + 1, block, def_env, cself, slots[0]);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (op == 5) CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
+        }
+        return RESULT_OK(op == 5 ? VALUE_REF_GET(dst) : SELF_ENUM->source);
+    }
     if (op != 0) {                                    /* select/reject/flat_map enum: re-drive the op, collect results */
         VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
         for (uint32_t i = 0; ; i++) {
@@ -1160,7 +1186,8 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
             VALUE argv[2] = { slots[2], LONG2FIX(off + (korb_sword_t)i) };
             RESULT r = korb_block_yield(c, slots + 3, block, def_env, argv, 2, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-            if (opc == 0) CHECK(korb_ary_push_val(c, slots + 3, dst, r.value));   /* map/each: collect block result */
+            if (opc == 0 || opc == 5) CHECK(korb_ary_push_val(c, slots + 3, dst, r.value));   /* map/each: collect block result */
+            else if (opc == 6) { }                                               /* each-like: the receiver, below */
             else if (opc == 3) {                                                 /* flat_map: flatten the block result one level */
                 slots[3] = r.value;
                 if (KORB_ARRAY_P(slots[3])) {
@@ -1182,6 +1209,7 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         }
     }
     if (block != NULL && opc == 4) return RESULT_OK(KORB_NIL);   /* find with no match */
+    if (block != NULL && opc == 6) return RESULT_OK(SELF_ENUM->source);
     if (block == NULL) return korb_enum_new(c, slots + 2, VALUE_REF_GET(dst), KORB_NIL);
     return RESULT_OK(VALUE_REF_GET(dst));
 }

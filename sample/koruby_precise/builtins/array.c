@@ -703,7 +703,8 @@ static RESULT korb_m_ary_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     (void)a;
     if (block == NULL) {                              /* → Enumerator over the elements */
         slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "each"));
-        return korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
+        const RESULT er = korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
+        return korb_enum_each_like(c, er, VALUE_REF_GET(self));
     }
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));   /* re-read each iter (GC) */
@@ -723,7 +724,8 @@ static RESULT korb_m_ary_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALU
         for (int32_t k = (int32_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; k >= 0; k--)
             CHECK(korb_ary_push_val(c, slots + 1, rev, korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[k]));
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "reverse_each"));
-        return korb_enum_new(c, slots + 2, VALUE_REF_GET(rev), slots[1]);
+        const RESULT er = korb_enum_new(c, slots + 2, VALUE_REF_GET(rev), slots[1]);
+        return korb_enum_each_like(c, er, VALUE_REF_GET(self));
     }
     uint32_t i = VAL2ARY(VALUE_REF_GET(self))->len;
     while (i > 0) {
@@ -912,7 +914,8 @@ static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             CHECK(korb_ary_push_val(c, slots + 3, pairs, slots[2]));
         }
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each_with_index"));
-        return korb_enum_new(c, slots + 2, VALUE_REF_GET(pairs), slots[1]);
+        const RESULT er = korb_enum_new(c, slots + 2, VALUE_REF_GET(pairs), slots[1]);
+        return korb_enum_each_like(c, er, VALUE_REF_GET(self));
     }
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
@@ -928,7 +931,7 @@ static RESULT korb_m_ary_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     (void)a;
     if (block == NULL) {                              /* → Enumerator over the elements (for .with_index) */
         slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "map"));
-        return korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
+        return korb_enum_map_like(korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]));
     }
     uint32_t n0 = VAL2ARY(VALUE_REF_GET(self))->len;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n0)));  /* slots now past dst */
@@ -951,7 +954,8 @@ static RESULT korb_m_int_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         VALUE_REF dst = VALUE_REF_AT(&slots[0]);
         for (korb_sword_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "times"));
-        return korb_enum_new(c, slots + 2, VALUE_REF_GET(dst), slots[1]);
+        const RESULT er = korb_enum_new(c, slots + 2, VALUE_REF_GET(dst), slots[1]);
+        return korb_enum_each_like(c, er, VALUE_REF_GET(self));
     }
     for (korb_sword_t i = 0; i < n; i++) {
         VALUE iv = LONG2FIX(i);

@@ -336,7 +336,8 @@ typedef struct KorbEnumerator {
     AroObjectHeader head;            /* KORB_OBJ_ENUMERATOR */
     uint32_t cursor;
     uint8_t  mode;                   /* 0 eager (values materialized), 1 lazy, 2 cycle */
-    uint8_t  op;                     /* eager reduce when finally given a block: 0 map/each, 1 select, 2 reject */
+    uint8_t  op;                     /* eager reduce when finally given a block: 0 map/each, 1 select, 2 reject,
+                                      * 3 flat_map, 4 find, 5 map, 6 each-like (returns `source` = the receiver) */
     uint8_t  size_inf;               /* 1 → #size is Float::INFINITY (can't be stored in the immediate `size` slot) */
     uint8_t  size_unknown;           /* 1 → #size is nil even though `values` is materialized (String#gsub's enumerator) */
     VALUE ARO_GC_EDGE values;

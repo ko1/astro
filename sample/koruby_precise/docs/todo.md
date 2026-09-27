@@ -3,6 +3,17 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+
+## 未: refinement と Enumerator の残り (2026-09-27)
+
+- **トップレベルが home のブロックの refinement**: 別ファイルのメソッドが yield するブロックは、書かれたメソッドの
+  refinement 集合で走るようにした（`korb_block_home_refinements`、vm->refine_cross 表）。home がファイルの
+  トップレベル（メソッドの外）だと集合を引けず、呼び出し先の集合のまま走る。
+  `using R; [[1]].each_with_index.map { |x, i| x.refined_m }` が NoMethodError（CRuby は refine が効く）。
+  ファイル単位の集合を持つ必要がある。w12min/A/02・02b・B/24 の最小化はどれもこの形（実 gem はメソッド内なので直った）。
+- `Enumerator#dup` / `clone` は `next` で外部イテレーションを始めた後なら CRuby は TypeError
+  (`can't copy execution context`)。koruby は複製する。
+
 ## 既知バグ (修正済 2026-09-16): 再ステージした #initialize フレームのヘッダ未初期化 — DOOM が SEGV
 
 `make doom` が exit 139 で落ちていた。この session の作業より前から (4a37e940 / 6fb97dfc /

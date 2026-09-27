@@ -1260,7 +1260,8 @@ static RESULT korb_m_ary_each_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         VALUE_REF idx = VALUE_REF_AT(&slots[0]);
         for (uint32_t i = 0; i < len; i++) CHECK(korb_ary_push_val(c, slots + 1, idx, LONG2FIX(i)));
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each_index"));
-        return korb_enum_new(c, slots + 2, VALUE_REF_GET(idx), slots[1]);
+        const RESULT er = korb_enum_new(c, slots + 2, VALUE_REF_GET(idx), slots[1]);
+        return korb_enum_each_like(c, er, VALUE_REF_GET(self));
     }
     for (uint32_t i = 0; ; i++) {
         if (i >= VAL2ARY(VALUE_REF_GET(self))->len) break;

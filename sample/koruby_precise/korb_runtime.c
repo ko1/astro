@@ -3859,9 +3859,17 @@ static VALUE *korb_env_method_trio(const KorbEnv *e);
 /* Refinements are lexical, so a Proc has to carry the set active where its body
  * was WRITTEN: rspec stores an example block and calls it from its own (unrefined)
  * files, where the dynamic scope no longer has the `using`. */
-static void korb_proc_capture_refinements(CTX *const c, KorbProc *const p) {
-    if (UNLIKELY(c->vm->refinements_active) && c->refinements != KORB_NIL)
-        ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->refine_set, c->refinements);
+static bool korb_refine_cross_p(const struct korb_vm *vm, const NODE *block);
+static VALUE korb_block_home_refinements(CTX *c, const VALUE *def_env, VALUE *captured_self);
+static void korb_proc_capture_refinements(CTX *const c, KorbProc *const p, const NODE *const entry, VALUE *const def_env) {
+    if (LIKELY(!c->vm->refinements_active)) return;
+    VALUE set = c->refinements;
+    /* `&blk` reified inside a method of another set: the block's home set, not the callee's */
+    if (UNLIKELY(c->vm->refine_cross_cnt != 0) && korb_refine_cross_p(c->vm, entry)) {
+        const VALUE home = korb_block_home_refinements(c, def_env, NULL);
+        if (home != KORB_UNDEF) set = home;
+    }
+    if (set != KORB_NIL) ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->refine_set, set);
 }
 RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda) {
     /* uncompilable block params (e.g. `|&b|`) → node_unsupported placeholder, not a
@@ -3876,7 +3884,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
         sp->iseq = NULL; sp->sym_mid = entry->u.node_entry.symproc_mid; sp->is_lambda = 1;
         ARO_STORE(c, sp, (VALUE *)(uintptr_t)&sp->env, 0);
         ARO_STORE(c, sp, (VALUE *)(uintptr_t)&sp->self, KORB_NIL);
-        korb_proc_capture_refinements(c, sp);
+        korb_proc_capture_refinements(c, sp, entry, def_env);
         return RESULT_OK((VALUE)sp);
     }
     /* def_env is a live slots base; some callers (node_send_blk → a builtin that
@@ -3928,7 +3936,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
         if (envh) ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->env, slots[1]);   /* re-read: the chain head may have moved */
         else ARO_GC_RAW_STORE(&p->env, (VALUE)((uintptr_t)def_env | 1u));   /* sentinel non-pointer (unused by body); WB-exempt */
         ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, slots[0]);
-        korb_proc_capture_refinements(c, p);
+        korb_proc_capture_refinements(c, p, entry, def_env);
         return RESULT_OK((VALUE)p);
     }
     const uint16_t *ns = (const uint16_t *)entry->u.node_entry.cap_ns;
@@ -4009,7 +4017,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
     p->iseq = entry; p->is_lambda = (uint8_t)is_lambda;
     ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->env, slots[1]);   /* innermost env (even = KorbEnv) */
     ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, slots[0]);
-    korb_proc_capture_refinements(c, p);
+    korb_proc_capture_refinements(c, p, entry, def_env);
     return RESULT_OK((VALUE)p);
 }
 /* The Proc for a block argument.  A FORWARDED block (`m(&blk)` where blk came in
@@ -11669,7 +11677,7 @@ static void korb_refine_cross_mark(struct korb_vm *vm, NODE *block) {
 static __attribute__((noinline, cold)) VALUE
 korb_block_home_refinements(CTX *c, const VALUE *def_env, VALUE *captured_self)
 {
-    if (def_env == KORB_BLK_FWD) return KORB_PROC_P(*captured_self) ? VAL2PROC(*captured_self)->refine_set : KORB_UNDEF;
+    if (def_env == KORB_BLK_FWD) return captured_self != NULL && KORB_PROC_P(*captured_self) ? VAL2PROC(*captured_self)->refine_set : KORB_UNDEF;
     const VALUE *const base = (const VALUE *)(uintptr_t)((uintptr_t)def_env & ~(uintptr_t)1u);
     if (base == NULL) return KORB_UNDEF;
     VALUE id = korb_id_get(base);
