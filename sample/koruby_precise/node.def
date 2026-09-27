@@ -3020,7 +3020,7 @@ node_call_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint64_t flin
 // Proc (or nil if no block given).  Reads the frame's block cells (biseq/def_env/
 // cself); korb_make_proc handles escape if the block captures outer locals.
 NODE_DEF
-node_blkparam(CTX *c, NODE *n, VALUE *slots, int32_t dst_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off)
+node_blkparam(CTX *c, NODE *n, VALUE *slots, int32_t dst_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, int32_t base_off)
 {
     (void)n;
     VALUE bi = slots[biseq_off];
@@ -3041,6 +3041,8 @@ node_blkparam(CTX *c, NODE *n, VALUE *slots, int32_t dst_off, int32_t biseq_off,
     if (KORB_PROC_P(pr.value)) {                         /* its `break` can only end this call on this thread / fiber */
         VAL2PROC(pr.value)->brk_own = 1;
         VAL2PROC(pr.value)->brk_ctx = korb_exec_ctx_key(c->vm);
+        VAL2PROC(pr.value)->brk_base = &slots[base_off];   /* this method's frame base (base[0]) */
+        VAL2PROC(pr.value)->brk_id = korb_id_get(&slots[base_off]);
     }
     slots[dst_off] = pr.value;
     return RESULT_OK(pr.value);

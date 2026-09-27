@@ -3372,15 +3372,17 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     if (blk_param_name) {                  /* `&blk` → materialize the block into the local at body entry */
         tc->frame->uses_block = true;      /* reserve the frame's block cells */
         int32_t dst = (int32_t)lvar_index(tc, (const pm_node_t *)ps->block, blk_param_name) - tc->chain;
-        NODE *bp = ALLOC_node_blkparam(dst, -3 - tc->chain, -2 - tc->chain, -1 - tc->chain);
+        NODE *bp = ALLOC_node_blkparam(dst, -3 - tc->chain, -2 - tc->chain, -1 - tc->chain, 0 - tc->chain);
         bake_add(tc, &bp->u.node_blkparam.dst_off);
+        bake_add(tc, &bp->u.node_blkparam.base_off);
         body = ALLOC_node_seq(bp, body);
     } else if (tc->frame->fwd_blk_slot >= 0 || tc->frame->anon_blk_slot >= 0) {
         /* `def m(...)` / `def m(&)` → same, into the synth forwarding slot */
         tc->frame->uses_block = true;
         int32_t slot = tc->frame->fwd_blk_slot >= 0 ? tc->frame->fwd_blk_slot : tc->frame->anon_blk_slot;
-        NODE *bp = ALLOC_node_blkparam(slot - tc->chain, -3 - tc->chain, -2 - tc->chain, -1 - tc->chain);
+        NODE *bp = ALLOC_node_blkparam(slot - tc->chain, -3 - tc->chain, -2 - tc->chain, -1 - tc->chain, 0 - tc->chain);
         bake_add(tc, &bp->u.node_blkparam.dst_off);
+        bake_add(tc, &bp->u.node_blkparam.base_off);
         body = ALLOC_node_seq(bp, body);
     }
     uint32_t uses_block = (tc->frame->uses_block ? KORB_DEFF_USES_BLOCK : 0u) |

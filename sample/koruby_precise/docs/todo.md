@@ -21,7 +21,7 @@
   `/i` が非 ASCII を case fold しない（`/À/i =~ "à"` が nil）。
 - ~~別スレッド / Fiber で呼んだ `&b` の Proc の `break`~~ → Proc に作成時の (thread, fiber) を記録して LocalJumpError
   （DRb test_05_break が通った）。残り: **同じスレッドで、そのメソッドが return した後**（下）。
-- **`&b` で受けたブロックの `break` が、そのメソッドが return した後だと LocalJumpError にならない**（w12min/B/07）: `def get(&b) = b; pr = get { break :done }` の後 `[1].each(&pr)` は :done を返し、`pr.call` は
+- ~~`&b` で受けたブロックの `break` が、そのメソッドが return した後だと LocalJumpError にならない~~ → Proc に受けたメソッドのフレーム（基底と ID）を記録し、break の時点で呼び出しの鎖を辿って判定（残り: 同じメソッドが同じ番地で呼び直されていると生きている扱いになる。Thread.new のブロックの break）。旧記述: `def get(&b) = b; pr = get { break :done }` の後 `[1].each(&pr)` は :done を返し、`pr.call` は
   toplevel まで伝播して rescue できない LocalJumpError。`proc {}` / Proc.new の Proc には brk_orphan が付くが、メソッドの
   `&b` 引数で Proc 化したものには付かない。block literal で渡された（FWD でない）&b を、そのメソッドの return 時に
   orphan にする形が候補（転送された &pr を印付けしてはいけない: 外側の呼び出しはまだ生きている）。

@@ -11736,10 +11736,20 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
 
 static RESULT korb_raise_break_lje(CTX *c, VALUE *slots, VALUE value);   /* fwd (builtins/symbol.c) */
 /* A `&pr` of a `proc { }` came back breaking: the call it would end is gone. */
-static inline bool korb_break_orphan_p(const CTX *c, VALUE *const def_env, VALUE *const captured_self) {
+static bool korb_frame_on_chain(const CTX *c, const VALUE *const from, const VALUE *const target);   /* fwd */
+/* Is a &b Proc's break target — the method that received the literal block —
+ * gone?  Another thread / fiber, or that frame no longer on the chain from `from`
+ * (the frame calling the Proc).  No `from` to walk from: assume it lives. */
+static bool korb_proc_break_orphan(const CTX *c, const KorbProc *p, const VALUE *from) {
+    if (p->brk_orphan) return true;
+    if (!p->brk_own) return false;
+    if (p->brk_ctx != korb_exec_ctx_key(c->vm)) return true;
+    if (p->brk_base == NULL || from == NULL) return false;
+    return !korb_frame_on_chain(c, from, p->brk_base) || korb_id_get(p->brk_base) != p->brk_id;
+}
+static inline bool korb_break_orphan_p(const CTX *c, VALUE *const def_env, VALUE *const captured_self, const VALUE *from) {
     if (def_env != KORB_BLK_FWD || captured_self == NULL || !KORB_PROC_P(*captured_self)) return false;
-    const KorbProc *const p = VAL2PROC(*captured_self);
-    return p->brk_orphan || (p->brk_own && p->brk_ctx != korb_exec_ctx_key(c->vm));
+    return korb_proc_break_orphan(c, VAL2PROC(*captured_self), from);
 }
 RESULT
 korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
@@ -11751,7 +11761,7 @@ korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
      * from the block *this* call site handed over (a break from a block merely
      * forwarded through here belongs to an outer call). */
     if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;
-    if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(c, def_env, captured_self)) return korb_raise_break_lje(c, slots, r.value);
+    if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(c, def_env, captured_self, korb_link_base(c, slots - (korb_sword_t)argc - 3))) return korb_raise_break_lje(c, slots, r.value);
     return r;
 }
 
@@ -14366,7 +14376,7 @@ korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     if (flink != 0) korb_flink_stage(c, flink, slots - (korb_sword_t)argc - 3);
     RESULT r = korb_send_impl_vis(c, slots, mid, line, argc, block, def_env, captured_self, caller_self);
     if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;   /* `break [v]` in the block = call's value (only if this site gave the block) */
-    if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(c, def_env, captured_self)) return korb_raise_break_lje(c, slots, r.value);
+    if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(c, def_env, captured_self, korb_link_base(c, slots - (korb_sword_t)argc - 3))) return korb_raise_break_lje(c, slots, r.value);
     return r;
 }
 

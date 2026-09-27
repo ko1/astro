@@ -483,6 +483,8 @@ typedef struct KorbProc {
     uint8_t  brk_orphan;             /* made by `proc { }` / Proc.new: its `break` target (that call) is gone */
     uint8_t  brk_own;                /* made by a method's `&b`: brk_ctx names the thread / fiber its `break` target runs on */
     uintptr_t brk_ctx;
+    const VALUE *brk_base;           /* …and brk_base / brk_id that method's frame: the break is orphaned once it is gone */
+    VALUE brk_id;
 } KorbProc;
 
 /* Fiber: a stackful coroutine.  The moving GC object is a thin handle; all

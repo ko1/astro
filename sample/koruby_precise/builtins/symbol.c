@@ -585,10 +585,9 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         r.state = KORB_NORMAL;
     }
     if (UNLIKELY(is_lam && r.state == KORB_BREAK)) r.state = KORB_NORMAL;   /* a lambda's `break` acts like `return` */
-    if (UNLIKELY(r.state == KORB_BREAK && KORB_PROC_P(VALUE_REF_GET(self)) &&
-                 (VAL2PROC(VALUE_REF_GET(self))->brk_orphan ||   /* `proc { break }`: the `proc` call it would end is gone */
-                  (VAL2PROC(VALUE_REF_GET(self))->brk_own &&     /* a method's &b called on another thread / fiber */
-                   VAL2PROC(VALUE_REF_GET(self))->brk_ctx != korb_exec_ctx_key(c->vm)))))
+    if (UNLIKELY(r.state == KORB_BREAK && KORB_PROC_P(VALUE_REF_GET(self)) &&   /* the call / method it would end is gone */
+                 korb_proc_break_orphan(c, VAL2PROC(VALUE_REF_GET(self)),
+                                        c->cfunc_link ? korb_flink_ptr(c->cfunc_link) : NULL)))
         return korb_raise_break_lje(c, slots, r.value);
     if (UNLIKELY(r.state == KORB_RETURN && c->return_target == NULL && !is_lam)) {
         /* A non-local `return` always names its home method frame; a NULL target
