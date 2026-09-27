@@ -628,11 +628,20 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         nb->name_syms = sb->name_syms; nb->name_cnt = sb->name_cnt; nb->src_node = sb->src_node;
         ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->env,   sb->env);
         ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->self,  sb->self);
-        ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->extra, sb->extra);
+        ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->extra, KORB_NIL);
         ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->cref,  sb->cref);
         ARO_STORE(c, nb, (VALUE *)(uintptr_t)&nb->outer_cref, sb->outer_cref);
         nb->method_mid = sb->method_mid;
         slots[1] = (VALUE)nb;
+        if (VAL2BIND(VALUE_REF_GET(self))->extra != KORB_NIL) {   /* own Hash, shared boxes (korb_bind_extra_set) */
+            slots[2] = UNWRAP(korb_hash_new(c, slots + 2, 4));
+            for (uint32_t i = 0; i < VAL2HASH(VAL2BIND(VALUE_REF_GET(self))->extra)->len; i++) {
+                const VALUE *const kv = korb_items_data(VAL2HASH(VAL2BIND(VALUE_REF_GET(self))->extra)->items);
+                slots[3] = kv[2 * i]; slots[4] = kv[2 * i + 1];
+                CHECK(korb_hash_set(c, slots + 5, VALUE_REF_AT(&slots[2]), VALUE_REF_AT(&slots[3]), slots[4]));
+            }
+            ARO_STORE(c, VAL2BIND(slots[1]), (VALUE *)(uintptr_t)&VAL2BIND(slots[1])->extra, slots[2]);
+        }
         CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));
         gen_done = true;
         RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw);

@@ -1,16 +1,19 @@
 # 最小 CGI escape 群 (pure Ruby)。本体 cgi.rb (フォーム処理等) は未対応。
-module CGI
+class CGI
   HTML_ESCAPE = { "&" => "&amp;", '"' => "&quot;", "<" => "&lt;", ">" => "&gt;", "'" => "&#39;" }
   HTML_UNESCAPE = HTML_ESCAPE.invert
   # CRuby's C escapes work on bytes, so a string that is invalid in its own
-  # encoding is still escaped: run the regexp over a BINARY copy then retag.
+  # encoding (or multibyte in a non-UTF-8 one, which the regexp engine cannot
+  # step through) is escaped over a BINARY copy, then retagged.
   def self.__bytewise(str)
-    return yield(str) if str.valid_encoding?
+    return yield(str) if str.valid_encoding? && (str.ascii_only? || str.encoding == Encoding::UTF_8)
     yield(str.b).force_encoding(str.encoding)
   end
   private_class_method :__bytewise
   def self.escapeHTML(s)
-    __bytewise(s.to_s) { |str| str.gsub(/['&"<>]/) { |c| HTML_ESCAPE[c] } }
+    s = __str(s)
+    return escapeHTML(s.encode(Encoding::UTF_8)).encode(s.encoding) unless s.encoding.ascii_compatible?
+    __cgi_html_escape(s)
   end
   def self.unescapeHTML(s)
     __bytewise(__str(s)) { |str| str.gsub(/&(?:amp|quot|lt|gt|apos|\#[0-9]+|\#[xX][0-9A-Fa-f]+);/) do |m|

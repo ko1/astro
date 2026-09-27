@@ -4461,6 +4461,38 @@ static void korb_bind_env_set(CTX *c, const KorbBinding *b, uint32_t i, VALUE v)
     if (e->closed) { if (t[2] < e->n) korb_env_store(c, e, t[2], v); }
     else e->loc[t[2]] = v;
 }
+/* Locals added after capture live in b->extra as sym => box (a 1-element Array):
+ * a dup copies the Hash but shares the boxes, so the locals both already had stay
+ * shared while ones added to either side later stay private (CRuby). */
+static bool korb_bind_extra_get(const KorbBinding *const b, const uint32_t sym, VALUE *const out) {
+    if (b->extra == KORB_NIL) return false;
+    const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym));
+    if (hi < 0) return false;
+    const VALUE box = korb_items_data(VAL2HASH(b->extra)->items)[2 * hi + 1];
+    *out = korb_items_data(VAL2ARY(box)->items)[0];
+    return true;
+}
+/* `bslot`: the rooted binding.  May GC. */
+static RESULT korb_bind_extra_set(CTX *c, VALUE *slots, const VALUE *const bslot, const uint32_t sym, const VALUE val) {
+    slots[0] = val;
+    const KorbBinding *const b = VAL2BIND(*bslot);
+    if (b->extra != KORB_NIL) {
+        const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym));
+        if (hi >= 0) {
+            korb_ary_store_at(c, korb_items_data(VAL2HASH(b->extra)->items)[2 * hi + 1], 0, val);
+            return RESULT_OK(val);
+        }
+    } else {
+        slots[1] = UNWRAP(korb_hash_new(c, slots + 1, 4));
+        ARO_STORE(c, VAL2BIND(*bslot), (VALUE *)(uintptr_t)&VAL2BIND(*bslot)->extra, slots[1]);
+    }
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 1));
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), slots[0]));
+    slots[2] = VAL2BIND(*bslot)->extra;
+    slots[3] = ID2SYM(sym);
+    CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[2]), VALUE_REF_AT(&slots[3]), slots[1]));
+    return RESULT_OK(slots[0]);
+}
 /* name index of `sym` in the binding's scope, or -1.  `implicit` admits the
  * implicit-parameter entries, which only #implicit_parameter_* may see. */
 static int korb_bind_find_x(const KorbBinding *b, uint32_t sym, bool implicit) {
@@ -4509,7 +4541,8 @@ static RESULT korb_bind_lvget_sym(CTX *c, VALUE *slots, VALUE_REF self, uint32_t
     const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
     const int i = korb_bind_find_x(b, sym, implicit);
     if (i >= 0) return RESULT_OK(korb_bind_env_get(b, (uint32_t)i));
-    if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym)); if (hi >= 0) return RESULT_OK(korb_items_data(VAL2HASH(b->extra)->items)[2 * hi + 1]); }
+    VALUE xv;
+    if (korb_bind_extra_get(b, sym, &xv)) return RESULT_OK(xv);
     return korb_raise(c, slots, KORB_E_NAME, 0, "local variable '%s' is not defined for %s", korb_sym_name(c->vm, sym), "an instance of Binding");
 }
 static RESULT korb_m_bind_lvget(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -4550,14 +4583,7 @@ static RESULT korb_m_bind_lvset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     /* new local → the extra side-hash (frame can't grow) */
     slots[0] = VALUE_REF_GET(self);                        /* root self (holds extra) */
-    if (b->extra == KORB_NIL) {
-        slots[1] = UNWRAP(korb_hash_new(c, slots + 1, 4));
-        ARO_STORE(c, VAL2BIND(slots[0]), (VALUE *)(uintptr_t)&VAL2BIND(slots[0])->extra, slots[1]);
-    }
-    slots[1] = VAL2BIND(slots[0])->extra;
-    slots[2] = ID2SYM(sym); slots[3] = val;
-    CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[2]), slots[3]));
-    return RESULT_OK(val);
+    return korb_bind_extra_set(c, slots + 1, &slots[0], sym, val);
 }
 static RESULT korb_m_bind_lvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));
@@ -18498,6 +18524,68 @@ static RESULT korb_bi_set_gvar(CTX *c, VALUE *slots, VALUE_SLICE args) {
                       VALUE_SLICE_GET(args, 1));
     return RESULT_OK(VALUE_SLICE_GET(args, 1));
 }
+/* HTML escape of the String in slots[0] (ASCII-compatible encoding), bytewise
+ * like CRuby's erb/escape and cgi/escape.  `keep`: nothing to escape → the
+ * receiver itself (ERB::Escape), else a new String (CGI.escapeHTML). */
+static RESULT korb_html_escape_str(CTX *c, VALUE *slots, const bool keep) {
+    const KorbString *const src = VAL2STR(slots[0]);
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(src->buf);
+    const uint32_t n = src->len;
+    size_t extra = 0;
+    for (uint32_t i = 0; i < n; i++)
+        switch (p[i]) {
+          case '&': extra += 4; break;
+          case '<': case '>': extra += 3; break;
+          case '"': case '\'': extra += 5; break;
+          default: break;
+        }
+    if (extra == 0 && keep) return RESULT_OK(slots[0]);
+    if (UNLIKELY(n + extra > UINT32_MAX)) return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "string size too big");
+    char *const buf = malloc(n + extra + 1);
+    if (UNLIKELY(buf == NULL)) abort();
+    char *restrict d = buf;
+    for (uint32_t i = 0; i < n; i++)
+        switch (p[i]) {
+          case '&':  memcpy(d, "&amp;", 5);  d += 5; break;
+          case '<':  memcpy(d, "&lt;", 4);   d += 4; break;
+          case '>':  memcpy(d, "&gt;", 4);   d += 4; break;
+          case '"':  memcpy(d, "&quot;", 6); d += 6; break;
+          case '\'': memcpy(d, "&#39;", 5);  d += 5; break;
+          default:   *d++ = (char)p[i]; break;
+        }
+    const uint32_t enc = KORB_STR_ENC(slots[0]);
+    const RESULT r = korb_str_new(c, slots + 1, buf, (uint32_t)(d - buf));   /* p is dead from here on */
+    free(buf);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    KORB_STR_ENC_SET(r.value, enc);
+    return r;
+}
+/* ERB::Escape.html_escape: #to_s a non-String; a non-ASCII-compatible String goes to CGI.escapeHTML */
+static RESULT korb_bi_erb_html_escape(CTX *c, VALUE *slots, VALUE_SLICE args) {
+    slots[0] = VALUE_SLICE_GET(args, 0);
+    if (!KORB_STRING_P(slots[0])) {
+        slots[1] = slots[0];
+        const RESULT sr = korb_send(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        if (UNLIKELY(!KORB_STRING_P(sr.value)))
+            return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s to String (%s#to_s gives %s)",
+                              korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_coerce_name(c, sr.value));
+        slots[0] = sr.value;
+    }
+    if (!korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(slots[0]))) {
+        slots[1] = korb_const_get(c->vm, korb_intern(c->vm, "CGI", 3));
+        slots[2] = slots[0];
+        return korb_send(c, slots + 3, korb_intern(c->vm, "escapeHTML", 10), 0, 1);
+    }
+    return korb_html_escape_str(c, slots, true);
+}
+/* CGI.escapeHTML's core (the prelude converts with #to_str and handles UTF-16/32) */
+static RESULT korb_bi_cgi_html_escape(CTX *c, VALUE *slots, VALUE_SLICE args) {
+    slots[0] = VALUE_SLICE_GET(args, 0);
+    if (UNLIKELY(!KORB_STRING_P(slots[0])))
+        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, slots[0]));
+    return korb_html_escape_str(c, slots, false);
+}
 static RESULT korb_bi_global_variables(CTX *c, VALUE *slots, VALUE_SLICE args) {
     (void)args;
     struct korb_vm *const vm = c->vm;
@@ -19341,7 +19429,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
         const KorbBinding *b = VAL2BIND(*bind_slot);
         const int j = outer_levels ? -1 : korb_bind_find_x(b, nsyms[i], true);
         if (j >= 0) fb[i] = korb_bind_env_get(b, (uint32_t)j);
-        else if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(nsyms[i])); if (hi >= 0) fb[i] = korb_items_data(VAL2HASH(b->extra)->items)[2 * hi + 1]; }
+        else { VALUE xv; if (korb_bind_extra_get(b, nsyms[i], &xv)) fb[i] = xv; }
     }
     fb[-1] = self_slot ? *self_slot : VAL2BIND(*bind_slot)->self;   /* self cell (base[-1]) */
     korb_cref_push(c);
@@ -19392,10 +19480,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     for (uint32_t i = 0; i < ncnt; i++) {           /* write back: existing → env, new → extra hash */
         const int j = outer_levels ? -1 : korb_bind_find_x(EVAL_BIND, nsyms[i], true);
         if (j >= 0) { korb_bind_env_set(c, EVAL_BIND, (uint32_t)j, fb[i]); continue; }
-        fb[L + 1] = EVAL_BIND->extra;
-        if (fb[L + 1] == KORB_NIL) { fb[L + 1] = UNWRAP(korb_hash_new(c, fb + L + 2, 4)); ARO_STORE(c, EVAL_BIND, (VALUE *)(uintptr_t)&EVAL_BIND->extra, fb[L + 1]); }
-        fb[L + 2] = ID2SYM(nsyms[i]); fb[L + 3] = fb[i];
-        CHECK(korb_hash_set(c, fb + L + 4, VALUE_REF_AT(&fb[L + 1]), VALUE_REF_AT(&fb[L + 2]), fb[L + 3]));
+        CHECK(korb_bind_extra_set(c, fb + L + 1, bind_slot, nsyms[i], fb[i]));
     }
     #undef EVAL_BIND
     return RESULT_OK(fb[L]);
@@ -20841,6 +20926,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__method__", korb_bi_method_name, 0);
     korb_builtin_define(c, "block_given?", korb_bi_block_given_p, 0);
     korb_builtin_define(c, "__korb_caller_cref", korb_bi_caller_cref, 0);
+    korb_builtin_define(c, "__erb_html_escape", korb_bi_erb_html_escape, 1);
+    korb_builtin_define(c, "__cgi_html_escape", korb_bi_cgi_html_escape, 1);
     korb_builtin_define(c, "iterator?", korb_bi_block_given_p, 0);
     korb_builtin_define(c, "__callee__", korb_bi_method_name, 0);
     korb_builtin_define(c, "require", korb_bi_require, -1);
