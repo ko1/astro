@@ -20248,6 +20248,44 @@ korb_frame_local_prim(CTX *c, VALUE *slots, VALUE_SLICE args, int write)
 static RESULT korb_bi_frame_local_get(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_frame_local_prim(c, slots, args, 0); }
 static RESULT korb_bi_frame_local_set(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_frame_local_prim(c, slots, args, 1); }
 
+/* The cref of whoever called the prelude method that calls this — CRuby's
+ * rb_vm_cbase for Kernel#autoload: the method's cref (blocks included), else Object. */
+static RESULT
+korb_bi_caller_cref(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)slots;
+    const VALUE *const pf = korb_link_base(c, args.p - 3);                       /* the prelude method */
+    const VALUE *const fb = pf ? korb_link_base(c, pf + KORB_FLINK_OFF) : NULL;   /* its caller */
+    if (fb && (korb_id_get(fb) & 7u) == KORB_FID_BLOCK) {   /* a block run by instance_eval / class_eval: that cref */
+        const VALUE *const cb = korb_link_base(c, fb + KORB_FLINK_OFF);
+        const VALUE cid = cb ? korb_id_get(cb) : 0;
+        if ((cid & 7u) == KORB_FID_CFUNC && korb_bt_known_ptr(c->vm, (uintptr_t)(cid & ~(VALUE)7u))) {
+            const char *const nm = korb_sym_name(c->vm, ((const struct korb_method *)(uintptr_t)(cid & ~(VALUE)7u))->mid);
+            if (strcmp(nm, "instance_exec") == 0 || strcmp(nm, "instance_eval") == 0)
+                return RESULT_OK(korb_class_obj_of(c, fb[-1]));
+            if ((strcmp(nm, "class_exec") == 0 || strcmp(nm, "class_eval") == 0 ||
+                 strcmp(nm, "module_exec") == 0 || strcmp(nm, "module_eval") == 0) && KORB_CLASS_P(fb[-1]))
+                return RESULT_OK(fb[-1]);
+        }
+    }
+    VALUE id = 0;
+    if (fb) {                                        /* a block: out through its scopes to the method */
+        struct korb_scope_level lv;
+        korb_scope_at_base((VALUE *)(uintptr_t)fb, &lv);
+        for (uint32_t d = 0; d < KORB_SCOPE_DEPTH_MAX && (lv.id & 7u) == KORB_FID_BLOCK; d++) {
+            struct korb_scope_level nx;
+            if (!korb_scope_outer(&lv, &nx)) break;
+            lv = nx;
+        }
+        id = lv.id;
+    }
+    if ((id & 7u) == KORB_FID_METHOD && korb_bt_known_ptr(c->vm, (uintptr_t)(id & ~(VALUE)7u))) {
+        const VALUE k = korb_body_cref(c, fb[-1], id, 0);
+        if (KORB_CLASS_P(k)) return RESULT_OK(k);
+    }
+    return RESULT_OK(korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]));
+}
+
 static RESULT
 korb_bi_frame_locals(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -20591,6 +20629,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "__method__", korb_bi_method_name, 0);
     korb_builtin_define(c, "block_given?", korb_bi_block_given_p, 0);
+    korb_builtin_define(c, "__korb_caller_cref", korb_bi_caller_cref, 0);
     korb_builtin_define(c, "iterator?", korb_bi_block_given_p, 0);
     korb_builtin_define(c, "__callee__", korb_bi_method_name, 0);
     korb_builtin_define(c, "require", korb_bi_require, -1);

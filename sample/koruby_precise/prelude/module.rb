@@ -310,12 +310,12 @@ class Module
 end
 
 module Kernel
-  # 単独の `autoload :X, "path"` は Object への登録 (CRuby と同じ)。
-  private def autoload(name, path) = Object.autoload(name, path)
-  private def autoload?(name, inherit = true) = Object.autoload?(name, inherit)
-  # `Kernel.autoload` も同じく Object に登録する (Kernel 自身ではない)。
-  def self.autoload(name, path) = Object.autoload(name, path)
-  def self.autoload?(name, inherit = true) = Object.autoload?(name, inherit)
+  # 単独の `autoload :X, "path"` / `Kernel.autoload` は呼び出し元の cref（メソッドならその
+  # クラス・モジュール、トップレベルは Object）に登録する (CRuby の rb_vm_cbase)。
+  private def autoload(name, path) = __korb_caller_cref.autoload(name, path)
+  private def autoload?(name, inherit = true) = __korb_caller_cref.autoload?(name, inherit)
+  def self.autoload(name, path) = __korb_caller_cref.autoload(name, path)
+  def self.autoload?(name, inherit = true) = __korb_caller_cref.autoload?(name, inherit)
 end
 
 # main#define_method: Object に public メソッドを定義して Symbol を返す。
