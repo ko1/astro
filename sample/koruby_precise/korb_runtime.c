@@ -663,6 +663,7 @@ static bool korb_obj_is_numeric(CTX *c, VALUE v);   /* fwd (builtins/time.c) */
 static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE e = VALUE_SLICE_GET(a, 0);
+    if (KORB_RATIONAL_P(e) && VAL2RAT(e)->den == LONG2FIX(1)) e = VAL2RAT(e)->num;   /* CRuby nurat_expt: n/1 is the Integer n */
     slots[0] = SELF_RAT->num; slots[1] = SELF_RAT->den;     /* root */
     if (KORB_INTEGER_P(e)) {                                /* exact Rational */
         korb_mp_t en; korb_to_mpz(e, en);
@@ -16082,6 +16083,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SET, "==", korb_m_set_eq, 1);
     korb_def_cmethod(c, KORB_C_SET, "<=>", korb_m_set_cmp, 1);
     korb_def_cmethod(c, KORB_C_SET, "compare_by_identity", korb_m_set_cbi, 0);
+    korb_def_cmethod(c, KORB_C_SET, "__set_unidentity", korb_m_set_unidentity, 0);
     korb_def_cmethod(c, KORB_C_SET, "compare_by_identity?", korb_m_set_cbi_p, 0);
     korb_def_cmethod(c, KORB_C_SET, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_SET, "inspect", korb_m_obj_to_s, 0);   /* #inspect is an alias of #to_s (same rfn → ==) */
@@ -19624,7 +19626,14 @@ korb_bi_string(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
     VALUE a0 = VALUE_SLICE_GET(args, 0);
     if (KORB_STRING_P(a0)) return RESULT_OK(a0);
-    {   /* CRuby's rb_String asks #to_str FIRST; only an object without one falls
+    const uint32_t to_s = korb_intern(c->vm, "to_s", 4);
+    /* rb_check_funcall: an undefined #to_str with the default #method_missing is
+     * "not convertible", whatever an overridden #respond_to? claims */
+    const VALUE dcls0 = korb_dispatch_class(c, a0);
+    const struct korb_method *const mm0 = KORB_CLASS_P(dcls0) ? korb_class_find_method(dcls0, c->vm->mid_method_missing, NULL) : NULL;
+    const bool mm_default = mm0 == NULL || (mm0->kind == KORB_METHOD_CFUNC && mm0->rfn == korb_m_obj_method_missing);
+    if (!(mm_default && !korb_responds_to(c, a0, korb_intern(c->vm, "to_str", 6)))) {
+        /* CRuby's rb_String asks #to_str FIRST; only an object without one falls
          * through to #to_s (a #to_str that gives a non-String is an error). */
         VALUE sv = a0;
         const RESULT sr = korb_coerce_to_str(c, slots, &sv);
@@ -19633,9 +19642,24 @@ korb_bi_string(CTX *c, VALUE *slots, VALUE_SLICE args)
         a0 = sv;                                          /* the probe dispatched: re-read */
     }
     slots[0] = a0;                                        /* root across dispatch */
-    if (!korb_responds_to(c, a0, korb_intern(c->vm, "to_s", 4)))   /* CRuby: no #to_s → TypeError, not NoMethodError */
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into String", korb_coerce_name(c, a0));
-    RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+    /* CRuby's rb_check_funcall: an overridden #respond_to? decides first; otherwise
+     * the method, or a user #method_missing.  Not callable → TypeError, not NoMethodError. */
+    const VALUE dcls1 = korb_dispatch_class(c, a0);
+    const struct korb_method *const rt1 = KORB_CLASS_P(dcls1) ? korb_class_find_method(dcls1, korb_intern(c->vm, "respond_to?", 11), NULL) : NULL;
+    RESULT r;
+    if (rt1 != NULL && rt1->kind != KORB_METHOD_CFUNC) {
+        if (!korb_check_funcall_respond_to(c, slots + 1, &slots[0], to_s) ||
+            (mm_default && !korb_responds_to(c, slots[0], to_s)))
+            return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s into String", korb_coerce_name(c, slots[0]));
+        r = korb_send_impl(c, slots + 1, to_s, 0, 0, NULL, NULL, NULL);
+    } else {
+        slots[1] = slots[0];
+        const RESULT cr = korb_check_funcall(c, slots + 2, &slots[1], to_s);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (cr.value != KORB_TRUE)
+            return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "can't convert %s into String", korb_coerce_name(c, slots[0]));
+        r = RESULT_OK(slots[1]);
+    }
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (UNLIKELY(!KORB_STRING_P(r.value)))               /* #to_s must return a String */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into String (%s#to_s gives %s)",

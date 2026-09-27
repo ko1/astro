@@ -284,6 +284,20 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             for (uint32_t rr = 0; rr < emit; rr++) {
                 if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
                 VALUE e = korb_items_data(ary->items)[ai++];
+                if (KORB_BIGNUM_P(e)) {                        /* beyond 64 bits: 7-bit groups off the mpz */
+                    if (korb_mp_sgn(VAL2BIG(e)->z) < 0) { errtype = KORB_E_ARGUMENT; errmsg = "can't compress negative numbers"; break; }
+                    korb_mp_t z; korb_mp_init_set(z, VAL2BIG(e)->z);
+                    const size_t nb = korb_mp_sizeinbase(z, 2) / 7 + 2;
+                    uint8_t *const tmp = malloc(nb);
+                    if (!tmp) abort();
+                    size_t n = 0;
+                    tmp[n++] = (uint8_t)(korb_mp_get_ui(z) & 0x7f); korb_mp_fdiv_q_2exp(z, z, 7);
+                    while (korb_mp_sgn(z) > 0) { tmp[n++] = (uint8_t)((korb_mp_get_ui(z) & 0x7f) | 0x80); korb_mp_fdiv_q_2exp(z, z, 7); }
+                    korb_mp_clear(z);
+                    while (n) PK_PUT(tmp[--n]);
+                    free(tmp);
+                    continue;
+                }
                 int64_t iv;
                 RESULT ir = korb_pack_int_val(c, slots + 2, e, &iv);   /* #to_int; nil/true/false → TypeError */
                 if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
@@ -800,8 +814,24 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 const KorbString *s = VAL2STR(slots[1]);
                 if (si >= s->len) break;
                 uint64_t v = 0;
-                while (si < s->len) { const unsigned char b = (unsigned char)korb_strbuf_data(s->buf)[si++]; v = (v << 7) | (uint64_t)(b & 0x7f); if (!(b & 0x80)) break; }
-                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((korb_sword_t)v)));
+                bool big = false;
+                korb_mp_t z;
+                while (si < s->len) {
+                    const unsigned char b = (unsigned char)korb_strbuf_data(s->buf)[si++];
+                    if (!big && (v >> 57)) { big = true; korb_mp_init(z); korb_mp_set_ui(z, v); }   /* 7 more bits would overflow */
+                    if (big) { korb_mp_mul_2exp(z, z, 7); korb_mp_add_ui(z, z, b & 0x7fu); }
+                    else v = (v << 7) | (uint64_t)(b & 0x7f);
+                    if (!(b & 0x80)) break;
+                }
+                if (!big && v <= (uint64_t)FIXNUM_MAX) CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((korb_sword_t)v)));
+                else {
+                    if (!big) { korb_mp_init(z); korb_mp_set_ui(z, v); }
+                    const RESULT br = korb_big_from_mpz(c, slots + 4, z);
+                    korb_mp_clear(z);
+                    if (UNLIKELY(br.state != KORB_NORMAL)) return br;
+                    slots[4] = br.value;
+                    CHECK(korb_ary_push_val(c, slots + 5, res, slots[4]));
+                }
             }
         } else if (d == 'b' || d == 'B') {                /* bit string (b=LSB-first, B=MSB-first) */
             const uint32_t avail = (VAL2STR(slots[1])->len - si) * 8;

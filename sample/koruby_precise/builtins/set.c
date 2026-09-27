@@ -117,6 +117,16 @@ static RESULT korb_m_set_cbi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (!SELF_SET->by_identity) CHECK(korb_set_make_identity(c, slots, self));
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* __set_unidentity — back to value comparison.  Only for an EMPTY set (Set#replace
+ * takes its argument's mode after #clear), so the fresh table needs no rehash. */
+static RESULT korb_m_set_unidentity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_hash_new(c, slots, 8));
+    KorbSet *const s = SELF_SET;
+    s->by_identity = 0;
+    ARO_STORE(c, s, (VALUE *)(uintptr_t)&s->tbl, slots[0]);
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_set_cbi_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_SET->by_identity ? KORB_TRUE : KORB_FALSE); }
 /* The members of a Set-or-enumerable operand as a plain Array.  A "Set-like"
  * object (Enumerable, answers is_a?(Set)) is materialized with #to_a — CRuby's

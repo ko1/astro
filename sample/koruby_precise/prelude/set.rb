@@ -41,6 +41,11 @@ class Set
   def replace(enum)
     raise ArgumentError, "value must be enumerable" unless enum.respond_to?(:each)
     clear
+    if enum.is_a?(Set)                                 # CRuby: the argument's compare_by_identity comes along
+      if enum.compare_by_identity? then compare_by_identity
+      elsif compare_by_identity? then __set_unidentity
+      end
+    end
     enum.each { |x| self << x }
     self
   end

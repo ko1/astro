@@ -1,0 +1,20 @@
+p "\x84\x80\x80\x80\x80\x80\x80\x80\x80\x00".unpack("w"), [36893488147419103232].pack("w").bytes, [2**64 - 1, 5].pack("w*").unpack("w*")
+p Rational(2, 3) ** Rational(0), Rational(3, 4) ** Rational(1, 1), Rational(2) ** Rational(-2)
+s = Set[1].compare_by_identity; s.replace(Set[2]); p s.compare_by_identity?
+s = Set[1]; s.replace(Set[2].compare_by_identity); p s.compare_by_identity?
+o = Object.new; def o.respond_to?(m, *) = m == :to_s ? false : super; p((String(o) rescue $!.class))
+o2 = BasicObject.new; def o2.respond_to?(m, *) = true; def o2.to_s = "x2"; p((String(o2) rescue $!.class))
+o3 = BasicObject.new; p((String(o3) rescue $!.class))
+p String(12), String(nil), String(:s), String([1])
+k = Object.new; def k.to_str = "ts"; p String(k)
+mm = Object.new; def mm.method_missing(n, *) = n == :to_str ? "via mm" : super; def mm.respond_to_missing?(n, p = false) = n == :to_str; p String(mm)
+p((srand(nil) rescue $!.message))
+p((srand("3") rescue $!.message))
+srand(3.7); p srand(5)
+k = Object.new; def k.to_int = 7; srand(k); p srand(1)
+srand(42); a = rand(1000); srand(42); p a == rand(1000)
+x = srand; p x.is_a?(Integer)
+m = Object.new; def m.==(o) = "woot"
+p((5 == m), (2**70 == m), (1.5 == m), (Rational(1, 2) == m), (Complex(1, 2) == m)); p 5.==(m), (2**70).send(:==, m)
+n = Object.new; def n.==(o) = nil; p((5 == n))
+mo = Object.new; class << mo; undef_method :to_s; def method_missing(m, *a) = m == :to_s ? "test" : super; end; p String(mo)

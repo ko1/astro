@@ -507,10 +507,26 @@ static RESULT korb_bi_rand(CTX *c, VALUE *slots, VALUE_SLICE a) {
 }
 static RESULT korb_bi_srand(CTX *c, VALUE *slots, VALUE_SLICE a) {
     const VALUE old = c->vm->default_rng_seeded ? c->vm->default_rng_seed : LONG2FIX(0);
-    VALUE seed = (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
-    if (seed == KORB_NIL) korb_mt_init_genrand(&c->vm->default_rng, korb_mt_entropy(&c->vm->default_rng));
-    else if (FIXNUM_P(seed) || KORB_BIGNUM_P(seed)) korb_mt_seed_int(&c->vm->default_rng, seed);
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    VALUE seed;
+    if (VALUE_SLICE_LEN(a) == 0) {                     /* a fresh seed, remembered for the next srand */
+        const uint32_t e = korb_mt_entropy(&c->vm->default_rng);
+        korb_mt_init_genrand(&c->vm->default_rng, e);
+        seed = LONG2FIX((korb_sword_t)e);
+    } else {
+        seed = VALUE_SLICE_GET(a, 0);
+        if (seed == KORB_NIL) return korb_raise_no_int(c, slots, seed);   /* an explicit nil is not "no seed" */
+        if (KORB_FLOAT_P(seed)) {                      /* truncates, like Float#to_int */
+            slots[0] = seed;
+            seed = UNWRAP(korb_m_flt_to_i(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 0)));
+        } else if (!KORB_INTEGER_P(seed)) {            /* #to_int */
+            slots[0] = seed;
+            const RESULT cr = korb_coerce_to_int(c, slots + 1, &slots[0]);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cr.value != KORB_TRUE || !KORB_INTEGER_P(slots[0])) return korb_raise_no_int(c, slots + 1, seed);
+            seed = slots[0];
+        }
+        korb_mt_seed_int(&c->vm->default_rng, seed);
+    }
     c->vm->default_rng_seeded = true;
     c->vm->default_rng_seed = seed;
     return RESULT_OK(old);
