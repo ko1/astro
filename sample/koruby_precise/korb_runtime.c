@@ -10580,7 +10580,8 @@ korb_bi_set_ruby2_keywords(CTX *c, VALUE *slots, VALUE_SLICE args)
     else if (KORB_STRING_P(nm))  mid = korb_intern(c->vm, korb_strbuf_data(VAL2STR(nm)->buf), VAL2STR(nm)->len);
     else                         return RESULT_OK(LONG2FIX(3));   /* not a Symbol nor a String */
     VALUE def = KORB_NIL;
-    struct korb_method *const m = korb_class_find_method(tgt, mid, &def);
+    struct korb_method *m = korb_class_find_method(tgt, mid, &def);
+    if (m == NULL && tgt == korb_builtin_class_obj(c->vm, KORB_C_OBJECT)) m = (struct korb_method *)(uintptr_t)korb_toplevel_def(c->vm, mid);   /* a top-level def (main.ruby2_keywords); entries are mutable */
     if (m == NULL || m->kind == KORB_METHOD_UNDEF) return RESULT_OK(LONG2FIX(0));
     if (!korb_r2k_shape_ok(m)) return RESULT_OK(LONG2FIX(2));
     m->ruby2_kw = 1;
@@ -11234,6 +11235,13 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     if (UNLIKELY(argc >= 1 && KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) &&
         strcmp(korb_sym_name(vm, mid), "include") == 0)
         return korb_do_include(c, slots, korb_builtin_class_obj(vm, KORB_C_OBJECT), VALUE_SLICE_MAKE(slots - argc, argc));
+    /* main.ruby2_keywords flags top-level defs: Object's Module#ruby2_keywords */
+    if (UNLIKELY(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) && strcmp(korb_sym_name(vm, mid), "ruby2_keywords") == 0) {
+        for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(korb_sword_t)argc + j];
+        slots[0] = korb_builtin_class_obj(vm, KORB_C_OBJECT);
+        korb_flink_hand_on(c, slots - (korb_sword_t)argc - 3);
+        return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
+    }
     if ((AROH_IS_GC_OBJECT(self) &&
          (!(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) || block != NULL))
         || !AROH_IS_GC_OBJECT(self)) {
@@ -19543,6 +19551,16 @@ korb_bi_undef_new(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(KORB_NIL);
 }
 
+/* __r2k_mark(hash) — set the persistent ruby2_keywords mark in place (Marshal's :K ivar) */
+static RESULT
+korb_bi_r2k_mark(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)c; (void)slots;
+    const VALUE h = VALUE_SLICE_GET(args, 0);
+    if (KORB_HASH_P(h)) ((AroObjectHeader *)(uintptr_t)h)->flags |= KORB_FL_R2K;
+    return RESULT_OK(h);
+}
+
 /* __byte_find(str, pat, from) — byte offset of pat in str at or after `from`, or
  * nil; no encoding or character boundaries (StringIO#gets is bytewise in CRuby). */
 static RESULT
@@ -20308,6 +20326,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__heap_objects__", korb_bi_heap_objects, -1);
     korb_builtin_define(c, "__undef_new", korb_bi_undef_new, 1);
     korb_builtin_define(c, "__byte_find", korb_bi_byte_find, 3);   /* prelude/stringio.rb #gets */
+    korb_builtin_define(c, "__r2k_mark", korb_bi_r2k_mark, 1);     /* prelude/marshal.rb :K */
     korb_builtin_define(c, "__nest_under", korb_bi_nest_under, 2);
     korb_builtin_define(c, "__finalizers_active__", korb_bi_finalizers_active, 0);
     korb_builtin_define(c, "__gc_stress", korb_bi_gc_stress, -1);

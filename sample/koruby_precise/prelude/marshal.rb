@@ -187,7 +187,8 @@ module Marshal
   def self._dump_hash(o, out, st)
     raise TypeError, "can't dump hash with default proc" if o.default_proc
     uiv = o.instance_variables
-    out << "I" unless uiv.empty?
+    r2k = Hash.ruby2_keywords_hash?(o)                  # the :K pseudo-ivar (DRb passes such args)
+    out << "I" unless uiv.empty? && !r2k
     _wrap_prefix(o, Hash, out, st)
     if o.compare_by_identity?                           # CRuby marks this with a 'C:Hash' wrapper
       out << "C"; _symdump(:Hash, out, st)
@@ -199,7 +200,13 @@ module Marshal
     end
     o.each { |k, v| _dump(k, out, st); _dump(v, out, st) }
     _dump(o.default, out, st) unless o.default.nil?
-    _dump_ivars(o, uiv, out, st) unless uiv.empty?
+    if r2k
+      _long(uiv.length + 1, out)
+      _symdump(:K, out, st); _dump(true, out, st)
+      uiv.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
+    elsif !uiv.empty?
+      _dump_ivars(o, uiv, out, st)
+    end
   end
 
   def self._dump_regexp(o, out, st)
@@ -554,9 +561,13 @@ module Marshal
   # inherit=false: rb_path_to_class does not fall back to Object, so a name that
   # only resolves through the ancestor chain is "undefined" for Marshal.
   def self._const(name)
-    name.to_s.split("::").reduce(Object) { |m, n| m.const_get(n, false) }
-  rescue NameError
-    raise ArgumentError, "undefined class/module #{name}"
+    segs = name.to_s.split("::")
+    segs.each_with_index.reduce(Object) do |m, (n, i)|
+      m.const_get(n, false)
+    rescue NameError
+      # CRuby names the path up to the missing segment, "::" included when more follow
+      raise ArgumentError, "undefined class/module #{segs[0..i].join("::")}#{i < segs.size - 1 ? "::" : ""}"
+    end
   end
 
   # CRuby's `readable`: a lower bound of the bytes the objects still pending in
@@ -664,8 +675,9 @@ module Marshal
 
   # #cause has no setter — Kernel#raise's cause: keyword is the only builder, so
   # raise the exception here and catch it back.
-  def self._exc_with_cause(klass, mesg, cause)
-    raise klass, mesg, cause: cause
+  EXC_INIT = Exception.instance_method(:initialize)
+  def self._exc_with_cause(exc, cause)
+    raise exc, cause: cause
   rescue Exception => e
     e
   end
@@ -833,6 +845,10 @@ module Marshal
           end
           next
         end
+        if name == :K && Hash === v                     # ruby2_keywords mark, not a user ivar
+          __r2k_mark(v) if val
+          next
+        end
         if name == :encoding
           if Symbol === v
             v = self.__resym(st, v, val)
@@ -896,8 +912,9 @@ module Marshal
         klass = _const(cls)
         _check_o_type(klass)
         if klass <= Exception                            # :mesg/:bt/:cause are pseudo-ivars
-          obj = ivars[:cause] ? _exc_with_cause(klass, ivars[:mesg], ivars[:cause])
-                              : klass.new(ivars[:mesg])
+          obj = klass.allocate                          # no #initialize (CRuby allocates, then sets mesg)
+          EXC_INIT.bind_call(obj, ivars[:mesg])
+          obj = _exc_with_cause(obj, ivars[:cause]) if ivars[:cause]
           obj.set_backtrace(ivars[:bt]) if ivars[:bt] && obj.respond_to?(:set_backtrace)
           ivars.each { |name, val| obj.instance_variable_set(name, val) if name.to_s.start_with?("@") }
         elsif klass <= Set                               # builtin Set: rebuild from @hash's keys
