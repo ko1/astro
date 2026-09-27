@@ -7,9 +7,24 @@ class Exception
     false
   end
 
-  def detailed_message(highlight: false, **)
+  def detailed_message(highlight: false, **opts)
     unless highlight == true || highlight == false
       raise ArgumentError, "expected true or false as highlight: #{highlight.inspect}"
+    end
+    # CRuby 4.1 (Feature #21951): did_you_mean is autoloaded and only required on the
+    # first detailed_message; re-dispatch once so the decorator it prepends answers.
+    unless Exception.instance_variable_get(:@__deco_loaded)
+      Exception.instance_variable_set(:@__deco_loaded, true)
+      if (f = Object.autoload?(:DidYouMean))
+        begin
+          require f
+        rescue Exception
+          nil
+        end
+        if method(:detailed_message).owner != Exception
+          return detailed_message(highlight: highlight, **opts)
+        end
+      end
     end
     m = message.to_s; cls = self.class; cn = cls.name
     if m.empty?
