@@ -2303,7 +2303,6 @@ end
 # through `Random.rand`).
 class Random
   class << self
-    def rand(*args)  = Kernel.rand(*args)
     def srand(*args) = Kernel.srand(*args)
     def seed         = @__seed || Kernel.srand(Kernel.srand)
     # new_seed is the C Random.new_seed (fresh OS entropy, independent of srand)

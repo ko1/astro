@@ -207,25 +207,48 @@ static RESULT korb_rand_upto(CTX *const c, VALUE *slots, VALUE_SLICE a, uint32_t
 /* draw an integer in [0, n) for n >= 1 (n may exceed 2^32). */
 static korb_sword_t korb_rand_below(KorbMT *st, uintptr_t n) {
     if (n <= 0xFFFFFFFFu) return (korb_sword_t)korb_mt_limited(st, (uint32_t)(n - 1));
-    uint64_t lim = (uint64_t)n - 1, mask = lim;
+    const uint64_t lim = (uint64_t)n - 1;
+    uint64_t mask = lim;
     mask |= mask>>1; mask |= mask>>2; mask |= mask>>4; mask |= mask>>8; mask |= mask>>16; mask |= mask>>32;
-    uint64_t v; do { v = ((uint64_t)korb_mt_next(st) | ((uint64_t)korb_mt_next(st) << 32)) & mask; } while (v > lim);
+    uint64_t v;                                         /* CRuby's limited_rand: high word first, retry early */
+  retry:
+    v = 0;
+    for (int i = 1; i >= 0; i--) {
+        if ((mask >> (i * 32)) & 0xFFFFFFFFu) {
+            v = (v | ((uint64_t)korb_mt_next(st) << (i * 32))) & mask;
+            if (lim < v) goto retry;
+        }
+    }
     return (korb_sword_t)v;
 }
 static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, VALUE_SLICE a);   /* fwd */
 /* draw an Integer in [0, n) for a Bignum n (rejection sampling on whole limbs). */
 static RESULT korb_rand_below_big(CTX *c, VALUE *slots, KorbMT *st, const korb_mp_t n) {
-    const size_t bits = korb_mp_sizeinbase(n, 2);
-    const size_t words = (bits + 31) / 32;
-    korb_mp_t r; korb_mp_init(r);
-    do {
-        korb_mp_set_ui(r, 0);
-        for (size_t i = 0; i < words; i++) {
-            korb_mp_mul_2exp(r, r, 32);
-            korb_mp_add_ui(r, r, korb_mt_next(st));
+    /* CRuby's limited_big_rand on limit = n - 1: 32-bit words from the top, the
+     * first one masked, retrying as soon as the prefix passes the limit's. */
+    korb_mp_t r; korb_mp_init(r); korb_mp_sub_ui(r, n, 1);
+    size_t len = 0;
+    uint32_t *const lim = (uint32_t *)korb_mp_export(NULL, &len, -1 /*LSW first*/, sizeof(uint32_t), 0, 0, r);
+    uint32_t *const out = (uint32_t *)malloc((len ? len : 1) * sizeof(uint32_t));
+    if (UNLIKELY(out == NULL)) { free(lim); korb_mp_clear(r); return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "out of memory"); }
+  retry:;
+    uint32_t mask = 0;
+    bool boundary = true;
+    for (size_t k = len; k-- > 0; ) {
+        uint32_t w = 0;
+        if (mask) mask = 0xFFFFFFFFu;
+        else { mask = lim[k]; mask |= mask>>1; mask |= mask>>2; mask |= mask>>4; mask |= mask>>8; mask |= mask>>16; }
+        if (mask) {
+            w = korb_mt_next(st) & mask;
+            if (boundary) {
+                if (lim[k] < w) goto retry;
+                if (w < lim[k]) boundary = false;
+            }
         }
-        korb_mp_fdiv_q_2exp(r, r, (korb_mp_bitcnt_t)(words * 32 - bits));
-    } while (korb_mp_cmp(r, n) >= 0);
+        out[k] = w;
+    }
+    korb_mp_import(r, len, -1, sizeof(uint32_t), 0, 0, out);
+    free(out); free(lim);
     RESULT br = korb_big_from_mpz(c, slots, r);
     korb_mp_clear(r);
     return br;
@@ -235,13 +258,19 @@ static RESULT korb_rand_below_big(CTX *c, VALUE *slots, KorbMT *st, const korb_m
 static RESULT korb_rand_core_x(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, VALUE_SLICE a, bool strict) {
     if (strict && VALUE_SLICE_LEN(a) >= 1) {
         const VALUE arg0 = VALUE_SLICE_GET(a, 0);
-        bool bad = false;
+        bool bad = arg0 == KORB_NIL;                   /* CRuby's rand_random: nil is no bound, not "no argument" */
         if (FIXNUM_P(arg0)) bad = FIX2LONG(arg0) <= 0;
         else if (KORB_BIGNUM_P(arg0)) bad = korb_mp_sgn(VAL2BIG(arg0)->z) <= 0;
-        else if (KORB_FLOAT_P(arg0)) { const double d = korb_float_val(arg0); bad = !(d > 0); }
+        else if (KORB_FLOAT_P(arg0)) {                 /* float_value(): non-finite is EDOM; 0.0 is a plain [0, 1) draw */
+            const double d = korb_float_val(arg0);
+            if (UNLIKELY(!isfinite(d))) return korb_raise_errno(c, slots, EDOM, NULL, NULL);
+            if (d == 0) return korb_float_new(c, slots, korb_mt_real(st));
+            bad = d < 0;
+        }
         if (bad) {
             char db[64];
-            if (FIXNUM_P(arg0))          snprintf(db, sizeof db, "%ld", (long)FIX2LONG(arg0));
+            if (arg0 == KORB_NIL)        db[0] = '\0';
+            else if (FIXNUM_P(arg0))     snprintf(db, sizeof db, "%ld", (long)FIX2LONG(arg0));
             else if (KORB_FLOAT_P(arg0)) snprintf(db, sizeof db, "%g", korb_float_val(arg0));
             else                         snprintf(db, sizeof db, "%s", korb_mp_sgn(VAL2BIG(arg0)->z) < 0 ? "a negative Integer" : "0");
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid argument - %s", db);
@@ -275,8 +304,7 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, 
     VALUE arg = VALUE_SLICE_GET(a, 0);
     if (KORB_BIGNUM_P(arg)) {                         /* Kernel#rand(big): below its magnitude */
         if (korb_mp_sgn(VAL2BIG(arg)->z) > 0) return korb_rand_below_big(c, slots, st, VAL2BIG(arg)->z);
-        slots[0] = arg;
-        const RESULT ar = korb_send(c, slots + 1, korb_intern(c->vm, "abs", 3), 0, 0);   /* rng_owner is nil here: st stays put */
+        const RESULT ar = korb_big_neg(c, slots, arg);   /* not a send: Integer#abs may be reopened */
         if (UNLIKELY(ar.state != KORB_NORMAL) || !KORB_BIGNUM_P(ar.value)) return ar;
         return korb_rand_below_big(c, slots, st, VAL2BIG(ar.value)->z);
     }
@@ -330,6 +358,13 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, 
             const korb_sword_t top = n - (excl ? 1 : 0);
             if (top < 0) return RESULT_OK(KORB_NIL);
             slots[3] = LONG2FIX(top == 0 ? 0 : korb_rand_below(st, (uintptr_t)top + 1));   /* limit 0 draws nothing (CRuby) */
+        } else if (KORB_BIGNUM_P(slots[2])) {             /* a Bignum span draws an Integer too */
+            if (korb_mp_sgn(VAL2BIG(slots[2])->z) < 0) return RESULT_OK(KORB_NIL);
+            korb_mp_t lim; korb_mp_init(lim); korb_mp_add_ui(lim, VAL2BIG(slots[2])->z, excl ? 0 : 1);
+            const RESULT br = korb_rand_below_big(c, slots + 3, st, lim);
+            korb_mp_clear(lim);
+            if (UNLIKELY(br.state != KORB_NORMAL)) return br;
+            slots[3] = br.value;
         } else {
             double dspan;
             if (!korb_num_to_d(slots[2], &dspan)) return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "bad value for range");
@@ -361,7 +396,7 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, 
         if (f == 0) return korb_float_new(c, slots, korb_mt_real(st));
         return korb_float_new(c, slots, korb_mt_real(st) * f);
     }
-    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid argument");
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, arg));   /* NUM2LONG (CRuby) */
 }
 
 /* Random#initialize(seed = nil). */
@@ -395,6 +430,13 @@ static RESULT korb_m_random_rand(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     KorbMT *const st = korb_rng_of(c, VALUE_REF_GET(self));
     if (UNLIKELY(st == NULL)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "uninitialized Random");
     return korb_rand_core_x(c, slots, st, VALUE_REF_GET(self), a, true);
+}
+/* Random.rand — Random#rand's rules on the default generator (Kernel#rand's differ). */
+static RESULT korb_m_random_s_rand(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
+    return korb_rand_core_x(c, slots, korb_default_rng(c->vm), KORB_NIL, a, true);
 }
 static RESULT korb_m_random_seed(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
@@ -456,7 +498,7 @@ static KorbMT *korb_default_rng(struct korb_vm *const vm) {
 static RESULT korb_bi_rand(CTX *c, VALUE *slots, VALUE_SLICE a) {
     if (VALUE_SLICE_LEN(a) >= 1 && KORB_FLOAT_P(VALUE_SLICE_GET(a, 0))) {   /* Kernel#rand(1.5) is rand(1): truncated (Random#rand keeps the Float) */
         slots[0] = VALUE_SLICE_GET(a, 0);
-        const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "to_i", 4), 0, 0);
+        const RESULT ir = korb_m_flt_to_i(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0));   /* not a send: Float#to_i may be reopened */
         if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
         slots[0] = ir.value == LONG2FIX(0) ? KORB_NIL : ir.value;   /* 0 → a Float in [0, 1) */
         return korb_rand_core(c, slots + 1, korb_default_rng(c->vm), KORB_NIL, VALUE_SLICE_MAKE(slots, 1));
