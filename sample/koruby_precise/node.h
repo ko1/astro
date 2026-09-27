@@ -361,6 +361,13 @@ RESULT korb_str_mod(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs);
 RESULT korb_rat_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op);
 RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op);
 RESULT korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line);
+/* the node call sites of the four slow paths: a reopened String/Array operator sends first */
+bool korb_cvar_defined_p(CTX *c, VALUE self, VALUE entry_cell, uint32_t sym_id);
+RESULT korb_cmp_slow_n(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line);
+RESULT korb_plus_slow_n(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
+RESULT korb_minus_slow_n(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
+RESULT korb_mul_slow_n(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
+RESULT korb_str_mod_n(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 bool   korb_value_eq(VALUE a, VALUE b);
 
 /* ---- receiver method dispatch (x.foo) — enum/fn in context.h ------------- */

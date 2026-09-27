@@ -1142,6 +1142,7 @@ struct korb_vm {
      * on Integer/Float; the arithmetic/compare nodes then deopt to a real send
      * so the redefinition is honored (CRuby basic-op-redefined semantics). */
     bool basic_op_redefined;
+    bool strary_op_redefined;   /* a String/Array basic operator reopened after boot: their node fast paths send */
     /* `==` redefined on a builtin OTHER than Integer/Float (String, Complex, …):
      * node_eq's korb_value_eq shortcut has to give way to a real send.  Separate
      * from basic_op_redefined so it costs one cold branch, not the arithmetic

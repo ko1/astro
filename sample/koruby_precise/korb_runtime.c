@@ -875,6 +875,11 @@ static VALUE korb_cpx_whole(VALUE v) {
  * via korb_num_binop (Int/Float/Rational-aware); division is exact. */
 RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     VALUE lre, lim, rre, rim;
+    if (UNLIKELY(!KORB_COMPLEX_P(l) && KORB_OBJECT_P(l) && !korb_cpx_parts(l, &lre, &lim) && op >= 0 && op <= 4)) {
+        static const char *const opn[] = { "+", "-", "*", "/", "%" };   /* a user receiver's own operator, not Complex's */
+        slots[0] = l; slots[1] = r;
+        return korb_send(c, slots + 2, korb_intern(c->vm, opn[op], 1), 0, 1);
+    }
     if (UNLIKELY(op == 4))                                /* Complex defines no #% (CRuby) */
         return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%%' for %s",
                           korb_a_type_name(KORB_COMPLEX_P(l) ? l : r));
@@ -2700,6 +2705,16 @@ static VALUE korb_cvar_scope_of(CTX *c, VALUE self, VALUE entry_cell)
     return korb_cvar_self_class(c, self);
 }
 
+/* defined?(@@x): resolved exactly like a read (the defining module for an `extend`ed method) */
+bool
+korb_cvar_defined_p(CTX *c, VALUE self, VALUE entry_cell, uint32_t sym_id)
+{
+    const VALUE cref = korb_cvar_scope_of(c, self, entry_cell);
+    if (!KORB_CLASS_P(cref)) return false;
+    int32_t idx;
+    VALUE front;
+    return korb_cvar_owner_top(cref, ID2SYM(sym_id), &idx, &front) != KORB_NIL;
+}
 /* soft: `@@x ||= v` / `&&=` read an undefined cvar as nil instead of raising. */
 RESULT
 korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, uint32_t soft)
@@ -5328,6 +5343,16 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
      * Array, Integer, …): `"#{x}"` must dispatch instead.  A REFINEMENT of #to_s
      * lands here too (a refine block defines into the refinement module). */
     if (!vm->to_s_redefined && mid == korb_intern(vm, "to_s", 4)) vm->to_s_redefined = true;
+    /* String / Array: node_plus / node_mod / node_lt ... have "a" + "b", "%s" % x, [1] + [2] paths.  A
+     * flag of their own, so reopening String#% does not deopt Integer arithmetic; after boot only (the
+     * prelude's String/Array operators are what those paths implement). */
+    if (vm->boot_done && !vm->strary_op_redefined &&
+        (klass == korb_builtin_class_obj(vm, KORB_C_STRING) || klass == korb_builtin_class_obj(vm, KORB_C_ARRAY))) {
+        static const char *const sops[] = { "+", "-", "*", "%", "<", "<=", ">", ">=" };
+        const char *const nm = korb_sym_name(vm, mid);
+        for (size_t i = 0; i < sizeof(sops) / sizeof(sops[0]); i++)
+            if (strcmp(nm, sops[i]) == 0) { vm->strary_op_redefined = true; return; }
+    }
     if (vm->basic_op_redefined) return;   /* already deopted */
     if (klass != korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
         klass != korb_builtin_class_obj(vm, KORB_C_FLOAT)) return;
@@ -6745,6 +6770,15 @@ korb_include_collect(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE 
 static RESULT
 korb_include_apply(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE mod, bool prepend)
 {
+    /* a module bringing a basic operator into Integer/String/... deopts its fast path, like a def there */
+    if (KORB_CLASS_P(mod)) {
+        VALUE mbuf[256];
+        const int mn = korb_linearize_mro(mod, mbuf, (int)(sizeof mbuf / sizeof mbuf[0]));
+        for (int i = 0; i < mn; i++) {
+            const KorbClass *const mk = VAL2CLASS(mbuf[i]);
+            for (uint32_t j = 0; j < mk->method_cnt; j++) korb_check_basic_op_redef(c, VALUE_REF_GET(cref), mk->methods[j]->mid);
+        }
+    }
     /* Flag the target when this include puts a module that is already in the
      * chain at a second depth — a `prepend` is exempt (CRuby inserts a fresh
      * iclass for it).  Neither helper allocates, so no re-read is needed. */
@@ -8904,6 +8938,33 @@ RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE *rhs, const char *op
     slots[2] = korb_items_data(VAL2ARY(slots[0])->items)[1];           /* b (arg) */
     return korb_send_impl(c, slots + 3, korb_intern(c->vm, op, (uint32_t)strlen(op)), line, 1, NULL, NULL, NULL);
 }
+static RESULT korb_strary_op_send(CTX *c, VALUE *slots, VALUE l, VALUE r, const char *op, uint32_t line) {
+    slots[0] = l; slots[1] = r;
+    return korb_send(c, slots + 2, korb_intern(c->vm, op, (uint32_t)strlen(op)), line, 1);
+}
+#define KORB_STRARY_REDEF_P(c, l) (UNLIKELY((c)->vm->strary_op_redefined) && (KORB_STRING_P(l) || KORB_ARRAY_P(l)))
+RESULT korb_cmp_slow_n(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line) {
+    static const char *const nm[] = { "<", "<=", ">", ">=" };
+    if (KORB_STRARY_REDEF_P(c, l)) return korb_strary_op_send(c, slots, l, r, nm[op & 3], line);
+    return korb_cmp_slow(c, slots, l, r, op, line);
+}
+RESULT korb_plus_slow_n(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line) {
+    if (KORB_STRARY_REDEF_P(c, VALUE_REF_GET(lhs))) return korb_strary_op_send(c, slots, VALUE_REF_GET(lhs), rhs, "+", line);
+    return korb_plus_slow(c, slots, lhs, rhs, line);
+}
+RESULT korb_minus_slow_n(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line) {
+    if (KORB_STRARY_REDEF_P(c, VALUE_REF_GET(lhs))) return korb_strary_op_send(c, slots, VALUE_REF_GET(lhs), rhs, "-", line);
+    return korb_minus_slow(c, slots, lhs, rhs, line);
+}
+RESULT korb_str_mod_n(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line) {
+    if (UNLIKELY(c->vm->strary_op_redefined)) return korb_strary_op_send(c, slots, VALUE_REF_GET(lhs), rhs, "%", line);
+    return korb_str_mod(c, slots, lhs, rhs);
+}
+RESULT korb_mul_slow_n(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line) {
+    if (KORB_STRARY_REDEF_P(c, VALUE_REF_GET(lhs))) return korb_strary_op_send(c, slots, VALUE_REF_GET(lhs), rhs, "*", line);
+    return korb_mul_slow(c, slots, lhs, rhs, line);
+}
+
 RESULT
 korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
