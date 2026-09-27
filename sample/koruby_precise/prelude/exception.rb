@@ -448,6 +448,9 @@ class NameError
     @__name = name
     unless receiver.equal?(UNSET__); @__receiver = receiver; @__has_recv = true; end
   end
+  # the local variables in scope where a bare name missed (did_you_mean's
+  # VariableNameChecker suggests from them); [] for any other NameError
+  def local_variables = (@__lvars || []).dup
 end
 class NoMethodError
   def initialize(msg = nil, name = nil, args = nil, priv = false, receiver: NameError::UNSET__)

@@ -11498,6 +11498,17 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                  * the only shape CRuby reports true for (did_you_mean only offers
                  * private methods and reserved words like `yield` when it is). */
                 korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__priv_call", 12)), KORB_TRUE);
+                if (vcall) {                               /* NameError#local_variables: the caller's names (did_you_mean) */
+                    uint32_t lv[256];
+                    const VALUE *const fb = korb_link_base(c, slots - argc - 3);
+                    const uint32_t ln = fb ? korb_frame_local_names(c, (VALUE *)(uintptr_t)fb, lv, 256) : 0;
+                    RESULT lr = korb_ary_new(c, slots + 2, ln);
+                    if (LIKELY(lr.state == KORB_NORMAL)) {
+                        slots[2] = lr.value;
+                        for (uint32_t j = 0; j < ln; j++) korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), ID2SYM(lv[j]));
+                        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(vm, "@__lvars", 8)), slots[2]);
+                    }
+                }
                 RESULT ar = korb_ary_new(c, slots + 2, argc);   /* @__args = the args passed to the missing method */
                 if (LIKELY(ar.state == KORB_NORMAL)) {
                     slots[2] = ar.value;
