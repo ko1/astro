@@ -102,6 +102,7 @@ module JSON
 
       # One parse: the source buffer, cursor and nesting depth.
       class Parse # :nodoc:
+        NO_DUP = Object.new.freeze   # "no duplicate yet": on_load may turn a key into nil / false (CRuby: Qundef)
         NO_KEY = Object.new.freeze
         STRING_STOP = /["\\\x00-\x1f]/n
         STRING_STOP_NOCTRL = /["\\]/n
@@ -166,7 +167,7 @@ module JSON
               else
                 nest_in
                 stack << {}
-                ostack << (st = [nil, 0, nil, start])
+                ostack << (st = [nil, 0, NO_DUP, start])
                 c = read_key(c, st)
                 next
               end
@@ -241,7 +242,7 @@ module JSON
                 st = ostack.last
                 top[st[0]] = value
                 count = st[1] += 1
-                st[2] ||= st[0] if top.size != count
+                st[2] = st[0] if top.size != count && NO_DUP.equal?(st[2])   # the key on_load gave may be nil / false
                 @phase = PHASE_COMMA
                 c = skip_ws
                 if c == 44
@@ -256,7 +257,7 @@ module JSON
                   raise_syntax("expected ',' or '}' after object value, got: %s")
                 end
                 @pos += 1
-                if (dup = st[2]) && !@allow_duplicate_key
+                if !NO_DUP.equal?(dup = st[2]) && !@allow_duplicate_key
                   dup = dup.name if Symbol === dup
                   @pos = st[3]
                   raise_error("duplicate key #{dup.inspect}", dup)

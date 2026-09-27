@@ -581,7 +581,7 @@ static RESULT korb_m_ary_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (VALUE_REF_GET(self) == other) return RESULT_OK(KORB_TRUE);
     if (!KORB_ARRAY_P(other)) {                            /* Array-like (responds to #to_ary) → delegate other == self */
         VALUE o = other;
-        if (KORB_OBJECT_P(o) && korb_ary_respond_to_pub(c, slots, &o, korb_intern(c->vm, "to_ary", 6))) {
+        if (korb_ary_respond_to_pub(c, slots, &o, korb_intern(c->vm, "to_ary", 6))) {   /* any receiver: a class, a String reopened, … (rb_respond_to) */
             slots[0] = o; slots[1] = VALUE_REF_GET(self);
             return korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
         }

@@ -296,7 +296,7 @@ static RESULT korb_m_hash_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (VALUE_REF_GET(self) == other) return RESULT_OK(KORB_TRUE);
     if (!KORB_HASH_P(other)) {                            /* Hash-like (responds to #to_hash) → other == self */
         VALUE o = other;
-        if (KORB_OBJECT_P(o) && korb_ary_respond_to_pub(c, slots, &o, korb_intern(c->vm, "to_hash", 7))) {
+        if (korb_ary_respond_to_pub(c, slots, &o, korb_intern(c->vm, "to_hash", 7))) {   /* any receiver (rb_respond_to) */
             slots[0] = o; slots[1] = VALUE_REF_GET(self);
             const RESULT r = korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
