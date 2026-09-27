@@ -5,8 +5,8 @@
  * する: ここは libyaml のイベント列を Ruby の配列にして渡す/受け取るだけで、
  * lib/psych/ 以下の Ruby 実装がそのまま載る。
  *
- *   __yaml_parse(src)      -> [[kind, ...], ...]  (パースエラーは配列でなく
- *                             [[:error, problem, context, line, column, offset]] を返す)
+ *   __yaml_parse(src)      -> [[kind, ...], ...]  (パースエラーはそこまでのイベントの後に
+ *                             [:error, problem, context, line, column, offset] を足して返す)
  *   __yaml_emit(events, opts) -> String
  *
  * イベントの並びは Psych::Handler のコールバックと 1:1:
@@ -73,12 +73,12 @@ korb_bi_yaml_parse(CTX *c, VALUE *slots, VALUE_SLICE args)
             e[3] = LONG2FIX((korb_sword_t)line);
             e[4] = LONG2FIX((korb_sword_t)col);
             e[5] = LONG2FIX((korb_sword_t)off);
-            slots[0] = UNWRAP(korb_ary_new(c, slots, 1));          /* [[:error, problem, context, line, col, offset]] */
+            /* appended after the events parsed so far: libyaml streams, so a handler that
+             * stops at the first document never reaches a later syntax error */
             slots[1] = has_p ? UNWRAP(korb_str_new(c, slots + 1, pbuf, (uint32_t)strlen(pbuf))) : KORB_NIL;
             slots[2] = has_c ? UNWRAP(korb_str_new(c, slots + 2, cbuf, (uint32_t)strlen(cbuf))) : KORB_NIL;
             e[1] = slots[1]; e[2] = slots[2];
-            { VALUE_REF r = VALUE_REF_AT(&slots[0]);
-              CHECK(korb_yaml_ev(c, slots + 3, r, e, 6)); }
+            CHECK(korb_yaml_ev(c, slots + 3, out, e, 6));   /* [..., [:error, problem, context, line, col, offset]] */
             return RESULT_OK(slots[0]);
         }
         /* alloc を跨いで C ローカルに VALUE を持たない: イベント配列を先に作り、

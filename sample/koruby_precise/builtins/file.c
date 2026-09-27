@@ -883,9 +883,8 @@ static RESULT korb_m_file_access(CTX *c, VALUE *slots, VALUE_SLICE a, int amode)
 static RESULT korb_m_file_readable_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)self; return korb_m_file_access(c, slots, a, R_OK); }
 static RESULT korb_m_file_writable_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)self; return korb_m_file_access(c, slots, a, W_OK); }
 static RESULT korb_m_file_executable_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_m_file_access(c, slots, a, X_OK); }
-/* File.chown(owner, group, *paths) — nil/-1 for "leave unchanged". */
-static RESULT korb_m_file_chown(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self;
+/* File.chown / File.lchown(owner, group, *paths) — nil/-1 for "leave unchanged". */
+static RESULT korb_file_chown_impl(CTX *c, VALUE *slots, VALUE_SLICE a, const bool follow) {
     const VALUE ov = VALUE_SLICE_GET(a, 0), gv = VALUE_SLICE_GET(a, 1);
     const uid_t uid = FIXNUM_P(ov) ? (uid_t)FIX2LONG(ov) : (uid_t)-1;
     const gid_t gid = FIXNUM_P(gv) ? (gid_t)FIX2LONG(gv) : (gid_t)-1;
@@ -893,12 +892,17 @@ static RESULT korb_m_file_chown(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     for (uint32_t i = 2; i < VALUE_SLICE_LEN(a); i++) {
         VALUE pv;
         KORB_PATH_ARG(c, slots, a, i, pv);
-        uint32_t plen; const char *const path = korb_str_cstr_len(pv, &plen);
-        if (chown(path, uid, gid) != 0) return korb_raise_errno(c, slots, errno, "chown", path);
+        char pb[4096]; uint32_t plen; const char *const path = korb_str_cstr_len(pv, &plen);
+        if (plen >= sizeof pb) plen = sizeof pb - 1;
+        memcpy(pb, path, plen); pb[plen] = '\0';                   /* the raise below can move the source */
+        if ((follow ? chown(pb, uid, gid) : lchown(pb, uid, gid)) != 0)
+            return korb_raise_errno(c, slots, errno, "apply2files", pb);
         n++;
     }
     return RESULT_OK(LONG2FIX(n));
 }
+static RESULT korb_m_file_chown(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)self; return korb_file_chown_impl(c, slots, a, true); }
+static RESULT korb_m_file_lchown(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_chown_impl(c, slots, a, false); }
 
 /* __file_utime(atime_f, mtime_f, follow, *paths) — File.utime / File.lutime.
  * Times arrive as epoch Floats (nil → now). */
@@ -975,8 +979,7 @@ static RESULT korb_file_mode_arg(CTX *c, VALUE *slots, VALUE v, mode_t *out) {
     *out = (mode_t)FIX2LONG(v);
     return RESULT_OK(KORB_TRUE);
 }
-static RESULT korb_m_file_chmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self;
+static RESULT korb_file_chmod_impl(CTX *c, VALUE *slots, VALUE_SLICE a, const bool follow) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     mode_t m = 0;
@@ -988,11 +991,15 @@ static RESULT korb_m_file_chmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         char pb[4096]; uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
         if (plen >= sizeof pb) plen = sizeof pb - 1;
         memcpy(pb, path, plen); pb[plen] = '\0';                   /* the raise below can move the source */
-        if (chmod(pb, m) != 0) return korb_raise_errno(c, slots, errno, "chmod", pb);
+        /* lchmod: Linux has none; fchmodat(NOFOLLOW) is ENOTSUP on a symlink, as in CRuby */
+        if ((follow ? chmod(pb, m) : fchmodat(AT_FDCWD, pb, m, AT_SYMLINK_NOFOLLOW)) != 0)
+            return korb_raise_errno(c, slots, errno, "apply2files", pb);
         n++;
     }
     return RESULT_OK(LONG2FIX(n));
 }
+static RESULT korb_m_file_chmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)self; return korb_file_chmod_impl(c, slots, a, true); }
+static RESULT korb_m_file_lchmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_chmod_impl(c, slots, a, false); }
 /* File.umask([mask]) → sets and/or returns the process file-creation mask. */
 static RESULT korb_m_file_umask(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -2730,6 +2737,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "fnmatch?",    korb_m_file_fnmatch,     -1);
     korb_class_def_cfn(c, slots[1], "exist?",      korb_m_file_exist_p,     1);
     korb_class_def_cfn(c, slots[1], "chown",       korb_m_file_chown,      -1);
+    korb_class_def_cfn(c, slots[1], "lchown",      korb_m_file_lchown,     -1);
     korb_class_def_cfn(c, slots[1], "__utime",     korb_m_file_utime,      -1);
     korb_class_def_cfn(c, slots[1], "mkfifo",      korb_m_file_mkfifo,     -1);
     korb_class_def_cfn(c, slots[1], "__mode_bits", korb_m_file_mode_bits,  -1);
@@ -2742,6 +2750,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "writable?",   korb_m_file_writable_p,  1);
     korb_class_def_cfn(c, slots[1], "executable?", korb_m_file_executable_p, 1);
     korb_class_def_cfn(c, slots[1], "chmod",       korb_m_file_chmod,       -1);
+    korb_class_def_cfn(c, slots[1], "lchmod",      korb_m_file_lchmod,      -1);
     korb_class_def_cfn(c, slots[1], "umask",       korb_m_file_umask,       -1);
     korb_class_def_cfn(c, slots[1], "read",        korb_m_file_read,        -1);
     korb_class_def_cfn(c, slots[1], "write",       korb_m_file_write,       -1);

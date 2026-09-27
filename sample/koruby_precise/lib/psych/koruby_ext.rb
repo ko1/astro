@@ -26,9 +26,11 @@ module Psych
       name = path.to_s
       raise ArgumentError, "empty class path" if name.empty?
       raise ArgumentError, "can't retrieve anonymous class #{name}" if name.include?("#<")
-      name.split("::", -1).inject(::Object) do |mod, part|
+      parts = name.split("::", -1)
+      parts.each_with_index.inject(::Object) do |mod, (part, i)|
         raise ArgumentError, "empty class path" if part.empty?
-        raise NameError.new("undefined class/module #{name}", part.to_sym) unless
+        # CRuby: ArgumentError naming the path up to the missing segment ("::" when more follow)
+        raise ArgumentError, "undefined class/module #{parts[0..i].join("::")}#{i < parts.size - 1 ? "::" : ""}" unless
           mod.is_a?(::Module) && mod.const_defined?(part, false)
         mod.const_get(part, false)
       end.tap do |klass|
@@ -59,13 +61,13 @@ module Psych
     def _native_parse handler, yaml, path
       src = __yaml_source(yaml)
       events = __yaml_parse(src)
-      if events[0] && events[0][0] == :error
-        _, problem, context, line, column, offset = events[0]
-        @mark = Mark.new(offset, line - 1, column - 1)
-        raise Psych::SyntaxError.new(path, line, column, offset, problem, context)
-      end
       located = handler.respond_to?(:event_location)
       events.each do |ev|
+        if ev[0] == :error                               # last: the events before it are delivered first
+          _, problem, context, line, column, offset = ev
+          @mark = Mark.new(offset, line - 1, column - 1)
+          raise Psych::SyntaxError.new(path, line, column, offset, problem, context)
+        end
         # 末尾 6 要素は start(index, line, column) / end(index, line, column)
         handler.event_location(ev[-5], ev[-4], ev[-2], ev[-1]) if located
         @mark = Mark.new(ev[-3], ev[-2], ev[-1])
