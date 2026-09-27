@@ -88,10 +88,11 @@ static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VA
     /* A bare-name miss the user's #method_missing handed on with `super` keeps
      * CRuby's NameError shape; the mid must match, so a stale mark is inert. */
     const bool vcall = c->mm_vcall_mid != 0 && SYMBOL_P(name) && SYM2ID(name) == c->mm_vcall_mid;
-    c->mm_vcall_mid = 0;
-    RESULT r = vcall
-        ? korb_raise(c, slots, KORB_E_NAME, 0, "undefined local variable or method '%s' for %s", nm, tn)
-        : korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for %s", nm, tn);
+    const bool vis = c->mm_vis_mid != 0 && SYMBOL_P(name) && SYM2ID(name) == c->mm_vis_mid;
+    c->mm_vcall_mid = 0; c->mm_vis_mid = 0;
+    RESULT r = vcall ? korb_raise(c, slots, KORB_E_NAME, 0, "undefined local variable or method '%s' for %s", nm, tn)
+             : vis   ? korb_raise(c, slots, KORB_E_NOMETHOD, 0, "%s method '%s' called for %s", c->mm_vis == 1 ? "private" : "protected", nm, tn)
+                     : korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for %s", nm, tn);
     if (LIKELY(KORB_EXC_P(r.value))) {                    /* attach #name / #receiver metadata */
         slots[0] = r.value;
         VALUE_REF eref = VALUE_REF_AT(&slots[0]);

@@ -19,6 +19,14 @@
   `\u`≥0x80 と UTF-8 でない生バイトの混在（`Regexp.new("\\u00C0\xFF".b)` 等 4 形）を拒否しない、リテラル `/\xFF/` が
   SyntaxError にならない、`Regexp.new("\\p{Alpha}".b)` が BINARY 固定にならず astrogre が `\p needs UTF-8 mode`。
   `/i` が非 ASCII を case fold しない（`/À/i =~ "à"` が nil）。
+- **`&b` で受けたブロックの `break` が、そのメソッドが return した後だと LocalJumpError にならない**（w12min/B/07、DRb
+  test_05_break）: `def get(&b) = b; pr = get { break :done }` の後 `[1].each(&pr)` は :done を返し、`pr.call` は
+  toplevel まで伝播して rescue できない LocalJumpError。`proc {}` / Proc.new の Proc には brk_orphan が付くが、メソッドの
+  `&b` 引数で Proc 化したものには付かない。block literal で渡された（FWD でない）&b を、そのメソッドの return 時に
+  orphan にする形が候補（転送された &pr を印付けしてはいけない: 外側の呼び出しはまだ生きている）。
+- 大きな入力で選択肢の `*`（`"(?:[^%&"]|%NAME;|&NAME;)*"` など、class でない body）が astrogre の generic rep で
+  1 反復 1 C フレームになり stack overflow（rexml parse/test_entity_declaration・test_attribute_list_declaration の
+  linear_performance）。設計検討中。
 - `Enumerator#dup` / `clone` は `next` で外部イテレーションを始めた後なら CRuby は TypeError
   (`can't copy execution context`)。koruby は複製する。
 

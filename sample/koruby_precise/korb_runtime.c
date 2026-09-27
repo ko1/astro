@@ -7232,6 +7232,7 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             slots[1] = self;                               /* recv, then :name, then the args */
             slots[2] = ID2SYM(mid);
             c->mm_vcall_mid = 0;                           /* `super` is never a bare-name miss */
+            c->mm_vis_mid = 0;
             c->carry_base = frame_base; c->carry_line_bits = korb_flink_line_bits(line);   /* the frame this `super` is in (the restage loses the cell) */
             return korb_send_impl(c, slots + 3 + argc, vm->mid_method_missing, line,
                                   argc + 1, block, def_env, &slots[0]);
@@ -11295,6 +11296,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                     slots[0] = self;                       /* recv, then :name, then the args */
                     slots[1] = ID2SYM(mid);
                     c->mm_vcall_mid = (site != NULL && site->head.flags.is_vcall) ? mid : 0;   /* `super` from a user mm lands on the default raiser */
+                    c->mm_vis_mid = 0;
                     korb_flink_hand_on(c, slots - (korb_sword_t)argc - 3);   /* the call site's frame, past the restage */
                     return korb_send_impl(c, slots + 2 + argc, vm->mid_method_missing, line,
                                           argc + 1, block, def_env, captured_self);
@@ -13947,6 +13949,7 @@ korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t 
             slots[3] = recv;
             slots[4] = ID2SYM(mid);
             c->mm_vcall_mid = 0;                           /* `recv.priv` is not a bare-name miss */
+            c->mm_vis_mid = mid; c->mm_vis = m->visibility;
             for (uint32_t j = 0; j < argc; j++) slots[5 + j] = slots[-(korb_sword_t)argc + (korb_sword_t)j];
             *mm_handled = true;
             return korb_dispatch_method(c, slots + argc + 5, mm, mm_mid, line, argc + 1, mm_def, NULL, NULL, NULL, true);

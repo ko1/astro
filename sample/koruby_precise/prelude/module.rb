@@ -16,7 +16,7 @@ class Module
 
   # Like instance_method, but a non-public method is a NameError.
   def public_instance_method(name)
-    m = instance_method(name)
+    m = ::Module.instance_method(:instance_method).bind_call(self, name)   # not a singleton #instance_method override (CRuby)
     vis = if private_method_defined?(name) then "private"
           elsif protected_method_defined?(name) then "protected"
           end

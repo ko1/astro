@@ -1609,6 +1609,10 @@ struct CTX_struct {
      * (CRuby's ec->method_missing_reason).  Matching the mid keeps a stale value
      * inert; the default raiser clears it. */
     uint32_t     mm_vcall_mid;
+    /* same for a private/protected call routed to a user #method_missing: `super`
+     * there reports "private method 'x' called" (ostruct) */
+    uint32_t     mm_vis_mid;
+    uint8_t      mm_vis;                  /* 1 private, 2 protected */
 };
 
 /* The block handed to a method lives in the callee's frame (slots), not in
