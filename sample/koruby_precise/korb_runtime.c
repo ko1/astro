@@ -6174,6 +6174,50 @@ void korb_frame_audit_ep(const VALUE *const base, const uint32_t mid, const char
 }
 #endif
 
+/* Out of line so their message buffers are not in the frame of every call that
+ * binds arguments (that frame is on the C stack once per Ruby-level call). */
+static __attribute__((noinline, cold)) RESULT
+korb_raise_arity_count(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t mid, uint32_t line,
+                       const struct korb_kw_info *kw, uint32_t pos_argc, uint32_t min_pos, uint32_t max_pos)
+{
+    char rk[256];
+    korb_req_kw_suffix(c->vm, kw, rk, sizeof rk);
+    if (m->rest_slot >= 0)
+        return korb_raise_arity(c, slots, m, mid, line,
+                                "wrong number of arguments (given %u, expected %u+%s)", pos_argc, min_pos, rk);
+    if (min_pos == max_pos)
+        return korb_raise_arity(c, slots, m, mid, line,
+                                "wrong number of arguments (given %u, expected %u%s)", pos_argc, max_pos, rk);
+    return korb_raise_arity(c, slots, m, mid, line,
+                            "wrong number of arguments (given %u, expected %u..%u%s)", pos_argc, min_pos, max_pos, rk);
+}
+static __attribute__((noinline)) RESULT
+korb_check_unknown_kw(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t mid, uint32_t line,
+                      VALUE kwhash, const struct korb_kw_info *kw)
+{
+    char ukb[512];
+    const uint32_t ukn = korb_unknown_kw_list(c, VAL2HASH(kwhash), kw, ukb, sizeof ukb);
+    if (UNLIKELY(ukn != 0))
+        return korb_raise_arity(c, slots, m, mid, line, "unknown keyword%s: %s", ukn > 1 ? "s" : "", ukb);
+    return RESULT_OK(KORB_NIL);
+}
+/* CRuby names every undeclared keyword at once */
+static __attribute__((noinline, cold)) RESULT
+korb_raise_unknown_kw_syms(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t mid, uint32_t line,
+                           const struct korb_kw_info *kw, const uint32_t *kw_syms, uint32_t kw_argc)
+{
+    char ukb[512]; int uko = 0; uint32_t ukn = 0;
+    for (uint32_t p = 0; p < kw_argc; p++) {
+        bool declared = false;
+        for (uint32_t j = 0; j < kw->count; j++) if (kw_syms[p] == kw->entries[j].mid) { declared = true; break; }
+        if (declared) continue;
+        if (uko < (int)sizeof ukb - 1)
+            uko += snprintf(ukb + uko, sizeof ukb - uko, "%s:%s", ukn ? ", " : "", korb_sym_name(c->vm, kw_syms[p]));
+        ukn++;
+    }
+    return korb_raise_arity(c, slots, m, mid, line, "unknown keyword%s: %s", ukn > 1 ? "s" : "", ukb);
+}
+
 static void korb_refine_cross_mark(struct korb_vm *vm, NODE *block);
 static bool korb_refine_cross_p(const struct korb_vm *vm, const NODE *block);
 static __attribute__((no_stack_protector)) RESULT
@@ -6206,18 +6250,8 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     }
     const uint32_t min_pos = m->req_cnt + m->post_cnt;   /* posts are required too */
     const uint32_t max_pos = (uint32_t)m->params_cnt + m->post_cnt;   /* req+opt fixed slots + posts */
-    if (UNLIKELY(pos_argc < min_pos || (m->rest_slot < 0 && pos_argc > max_pos))) {
-        char rk[256];
-        korb_req_kw_suffix(vm, kw, rk, sizeof rk);
-        if (m->rest_slot >= 0)
-            return korb_raise_arity(c, slots, m, mid, line,
-                                    "wrong number of arguments (given %u, expected %u+%s)", pos_argc, min_pos, rk);
-        if (min_pos == max_pos)
-            return korb_raise_arity(c, slots, m, mid, line,
-                                    "wrong number of arguments (given %u, expected %u%s)", pos_argc, max_pos, rk);
-        return korb_raise_arity(c, slots, m, mid, line,
-                                "wrong number of arguments (given %u, expected %u..%u%s)", pos_argc, min_pos, max_pos, rk);
-    }
+    if (UNLIKELY(pos_argc < min_pos || (m->rest_slot < 0 && pos_argc > max_pos)))
+        return korb_raise_arity_count(c, slots, m, mid, line, kw, pos_argc, min_pos, max_pos);
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;
     VALUE *const resv = base + locals_cnt + KORB_FRAME_SLACK;
@@ -6320,12 +6354,8 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         for (uint32_t j = 0; j < kw->count; j++)                    /* missing required */
             if (!(j < 64 && (present & (1ull << j))) && !kw->entries[j].deflt)
                 return korb_raise_missing_kw(c, slots, m, mid, line, kw, present);
-        if (kw->kwrest_slot == -1 && kwhash != KORB_NIL) {          /* no **rest: every key must be declared */
-            char ukb[512];
-            const uint32_t ukn = korb_unknown_kw_list(c, VAL2HASH(kwhash), kw, ukb, sizeof ukb);
-            if (UNLIKELY(ukn != 0))
-                return korb_raise_arity(c, slots, m, mid, line, "unknown keyword%s: %s", ukn > 1 ? "s" : "", ukb);
-        }
+        if (kw->kwrest_slot == -1 && kwhash != KORB_NIL)            /* no **rest: every key must be declared */
+            CHECK(korb_check_unknown_kw(c, slots, m, mid, line, kwhash, kw));
         for (uint32_t j = 0; j < kw->count; j++) {                  /* pass 2: defaults (kwhash is done with) */
             if (j < 64 && (present & (1ull << j))) continue;
             RESULT dr = korb_eval_param_default(c, kw->entries[j].deflt, base + locals_cnt);
@@ -6406,19 +6436,13 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
                       const uint32_t *kw_syms, uint32_t kw_argc, uint32_t line, uint32_t mid,
                       VALUE self, VALUE def_class)
 {
-    struct korb_vm *const vm = c->vm;
     const struct korb_kw_info *const kw = (const struct korb_kw_info *)m->kw_info;
     NODE *const body = m->body;                              /* a default may redefine the method: this call keeps its body */
     const bool bref_scope = UNLIKELY(m->uses_backref != 0);   /* $~ is per method frame */
     VALUE *const base = slots - (pos_argc + kw_argc);
     (void)def_class;
-    if (UNLIKELY(pos_argc < m->req_cnt || pos_argc > (uint32_t)m->params_cnt)) {
-        char rk[256];
-        korb_req_kw_suffix(vm, kw, rk, sizeof rk);
-        return korb_raise_arity(c, slots, m, mid, line,
-                                "wrong number of arguments (given %u, expected %u..%d%s)",
-                                pos_argc, m->req_cnt, m->params_cnt, rk);
-    }
+    if (UNLIKELY(pos_argc < m->req_cnt || pos_argc > (uint32_t)m->params_cnt))
+        return korb_raise_arity_count(c, slots, m, mid, line, kw, pos_argc, m->req_cnt, (uint32_t)m->params_cnt);
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;
     VALUE *const resv = base + locals_cnt + KORB_FRAME_SLACK;
@@ -6459,18 +6483,10 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     for (uint32_t j = 0; j < kw->count; j++)
         if (!(j < 64 && (present & (1ull << j))) && !kw->entries[j].deflt)
             return korb_raise_missing_kw(c, slots, m, mid, line, kw, present);
-    {                                                       /* unknown keywords (no **rest here) — CRuby names them all at once */
-        char ukb[512]; int uko = 0; uint32_t ukn = 0;
-        for (uint32_t p = 0; p < kw_argc; p++) {
-            bool declared = false;
-            for (uint32_t j = 0; j < kw->count; j++) if (kw_syms[p] == kw->entries[j].mid) { declared = true; break; }
-            if (LIKELY(declared)) continue;
-            if (uko < (int)sizeof ukb - 1)
-                uko += snprintf(ukb + uko, sizeof ukb - uko, "%s:%s", ukn ? ", " : "", korb_sym_name(vm, kw_syms[p]));
-            ukn++;
-        }
-        if (UNLIKELY(ukn != 0))
-            return korb_raise_arity(c, slots, m, mid, line, "unknown keyword%s: %s", ukn > 1 ? "s" : "", ukb);
+    for (uint32_t p = 0; p < kw_argc; p++) {                /* unknown keywords (no **rest here) */
+        bool declared = false;
+        for (uint32_t j = 0; j < kw->count; j++) if (kw_syms[p] == kw->entries[j].mid) { declared = true; break; }
+        if (UNLIKELY(!declared)) return korb_raise_unknown_kw_syms(c, slots, m, mid, line, kw, kw_syms, kw_argc);
     }
     /* optional positional defaults (after the provided positionals) */
     for (uint32_t pi = pos_argc; pi < (uint32_t)m->params_cnt; pi++) {
@@ -12734,6 +12750,22 @@ static RESULT korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method
         if (mm_handled_ || vr_.state != KORB_NORMAL) return vr_;                               \
     } } while (0)
 
+/* Out of line: the 2 KB MRO buffer would otherwise sit in every korb_send_impl_vis
+ * frame, and that frame is on the C stack once per Ruby call through this path. */
+static __attribute__((noinline, cold)) bool
+korb_super_new_skip_p(CTX *c, VALUE self, VALUE sdef)
+{
+    const struct korb_vm *const vm = c->vm;
+    VALUE smro[256];                                 /* no allocation below: raw class pointers are fine */
+    const int sn = korb_linearize_mro(korb_dispatch_class(c, self), smro, 256);
+    int si = -1, sdi = -1;
+    for (int i = 0; i < sn; i++) {
+        if (si < 0 && smro[i] == sdef) si = i;
+        if (sdi < 0 && smro[i] == vm->super_new_skip) sdi = i;
+    }
+    return sdef == vm->super_new_skip || (si >= 0 && sdi >= 0 && si <= sdi) ||
+           korb_class_has_ancestor(sdef, vm->super_new_skip);
+}
 static RESULT
 korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                    NODE *block, VALUE *def_env, VALUE *captured_self, const VALUE caller_self)
@@ -13146,15 +13178,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                  * and is a sibling of the defining class, not its descendant —
                  * re-dispatching to it is an infinite recursion
                  * (concurrent-ruby's Synchronization::SafeInitialization). */
-                VALUE smro[256];
-                const int sn = korb_linearize_mro(korb_dispatch_class(c, self), smro, 256);
-                int si = -1, sdi = -1;
-                for (int i = 0; i < sn; i++) {
-                    if (si < 0 && smro[i] == sdef) si = i;
-                    if (sdi < 0 && smro[i] == vm->super_new_skip) sdi = i;
-                }
-                if (sdef == vm->super_new_skip || (si >= 0 && sdi >= 0 && si <= sdi) ||
-                    korb_class_has_ancestor(sdef, vm->super_new_skip)) snew = NULL;
+                if (korb_super_new_skip_p(c, self, sdef)) snew = NULL;
             }
             /* A user `def self.new` (ISEQ), a builtin singleton `new` (CFUNC —
              * Regexp/Time/File/Dir) or a `define_method(:new, ...)` singleton (DM)

@@ -5979,9 +5979,10 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
 - Marshal.dump(例外) の ivar の並びが CRuby と違う（CRuby: mesg, bt, 先に積んだ user ivar, cause, bt_locations。
   raise していない例外も cause: nil を持つ）。load は CRuby の bytes で proc の呼び順まで一致するので相互運用は可。
 - Set#merge がサブクラスの #add を呼ばない（CRuby 4.1 は呼ぶ）。
-- JSON.generate の深い入れ子: koruby 2,000〜4,000 段で SystemStackError（CRuby の C 実装は 50,000 段まで）。
-  lib/json/ext/generator.rb の gen ↔ array/object が Ruby 再帰で、1 段あたりの C stack が素朴な相互再帰の 2〜4 倍
-  （理由は未特定）。明示スタックの反復に書き直すのが本筋。parse は反復なので 100,000 段でも通る。
+- JSON.generate の深い入れ子: koruby 4,000〜8,000 段で SystemStackError（CRuby の C 実装は 50,000 段まで）。
+  lib/json/ext/generator.rb の gen ↔ array/object が Ruby 再帰。gen が省略可能引数を持つので汎用の引数束縛経路
+  （korb_invoke_method）を通り、その C フレームが大きかった（エラーメッセージ用の配列: 936 → 424 byte に縮めて
+  2,000〜4,000 段 → 4,000〜8,000 段）。明示スタックの反復に書き直すのが本筋。parse は反復なので 100,000 段でも通る。
 - 無名クラスの class_eval(String) の中で作ったブロックが外に出ると定数が引けない:
   `pr = Class.new { self::C = 1 }.class_eval('proc { C }'); Other.class_eval(&pr)` が NameError（CRuby は 1）。
   anon_class_block の定数は実行時の self で cref を引くので、instance_exec / class_eval で self が変わると別の
