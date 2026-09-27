@@ -17,10 +17,13 @@ static VALUE korb_time_off_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(v
 
 /* If this Time was built with an explicit numeric utc_offset, its value (seconds);
  * false for a plain local/UTC time. */
+static bool korb_time_off_val(const VALUE v, korb_sword_t *out) {
+    if (FIXNUM_P(v)) { *out = FIX2LONG(v); return true; }
+    if (KORB_RATIONAL_P(v)) { *out = FIX2LONG(VAL2RAT(v)->num) / FIX2LONG(VAL2RAT(v)->den); return true; }   /* a fractional one, truncated */
+    return false;
+}
 static bool korb_time_fixed_off(CTX *c, VALUE t, korb_sword_t *out) {
-    const VALUE v = korb_ivar_get(c, t, korb_time_off_sym(c->vm));
-    if (!FIXNUM_P(v)) return false;
-    *out = FIX2LONG(v); return true;
+    return korb_time_off_val(korb_ivar_get(c, t, korb_time_off_sym(c->vm)), out);
 }
 /* Parse a utc_offset argument → seconds: Integer/Float, "±HH[:MM[:SS]]" (colons
  * optional), "UTC"/"Z". Returns false if not parseable here.  *utcish reports
@@ -231,7 +234,9 @@ static VALUE korb_time_offx_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(
  * slot: korb_ivar_set can grow the ivar table, i.e. it is a GC point. */
 static RESULT korb_time_set_zone(CTX *c, VALUE *slots, VALUE_REF t, korb_sword_t off, VALUE_REF tzobj, VALUE_REF offx)
 {
-    CHECK(korb_ivar_set(c, slots, t, korb_time_off_sym(c->vm), LONG2FIX(off)));
+    const VALUE ox = VALUE_REF_GET(offx);             /* a fractional offset is kept whole: korb_time_tm reads it with the same load */
+    const bool xs = KORB_RATIONAL_P(ox) && FIXNUM_P(VAL2RAT(ox)->num) && FIXNUM_P(VAL2RAT(ox)->den);
+    CHECK(korb_ivar_set(c, slots, t, korb_time_off_sym(c->vm), xs ? ox : LONG2FIX(off)));
     if (VALUE_REF_GET(tzobj) != KORB_NIL)
         CHECK(korb_ivar_set(c, slots, t, korb_time_tz_sym(c->vm), VALUE_REF_GET(tzobj)));
     if (VALUE_REF_GET(offx) != KORB_NIL)
@@ -366,11 +371,27 @@ static RESULT korb_time_make_ns(CTX *c, VALUE *slots, VALUE cls, double sec_int,
     return RESULT_OK(slots[0]);
 }
 
+/* A fractional utc_offset's part below `off` (which is truncated toward zero),
+ * in ns; false when the offset is whole or not an exact ns count. */
+static bool korb_time_offx_frac(const VALUE ox, korb_sword_t off, int64_t *frac_ns) {
+    __int128 tot; int64_t rn, rd;
+    if (!korb_exact_ns(ox, 1000000000, &tot, &rn, &rd) || rn != 0) return false;
+    *frac_ns = (int64_t)(tot - (__int128)off * 1000000000);
+    return true;
+}
+
 /* broken-down time for a Time value (UTC or local per its flag). */
 static void korb_time_tm(CTX *c, VALUE t, struct tm *out) {
     korb_sword_t off;
-    if (korb_time_fixed_off(c, t, &off)) {          /* fixed-offset time: wall clock = UTC(epoch + off) */
-        const time_t s = (time_t)(korb_time_sec_of(c, t) + off);   /* floored: a plain cast rounds a pre-1970 stamp toward zero */
+    const VALUE ov = korb_ivar_get(c, t, korb_time_off_sym(c->vm));
+    if (korb_time_off_val(ov, &off)) {              /* fixed-offset time: wall clock = UTC(epoch + off) */
+        korb_sword_t ws = korb_time_sec_of(c, t) + off;   /* floored: a plain cast rounds a pre-1970 stamp toward zero */
+        int64_t fr;
+        if (UNLIKELY(!FIXNUM_P(ov)) && korb_time_offx_frac(ov, off, &fr)) {   /* Rational(7201, 2): the wall clock moves by the half second too */
+            const int64_t ns = (int64_t)korb_time_nsec_of(c, t) + fr;
+            ws += ns >= 0 ? ns / 1000000000 : -((999999999 - ns) / 1000000000);
+        }
+        const time_t s = (time_t)ws;
         gmtime_r(&s, out);
         out->tm_gmtoff = off; out->tm_isdst = 0;
         return;
@@ -907,7 +928,22 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (slots[1] != KORB_NIL) korb_num_to_d(slots[1], &offd);      /* exact fractional offset */
         long nsec = exact_ns >= 0 ? exact_ns : (long)(subsec * 1e9 + 0.5);
         if (nsec < 0) nsec = 0; else if (nsec > 999999999) nsec = 999999999;
-        slots[2] = UNWRAP(korb_time_make_ns(c, slots + 2, VALUE_REF_GET(self), wall - offd, nsec, utcish));
+        double e = wall - offd;
+        { __int128 ox; int64_t xn, xd;                  /* a fractional offset: subtract it exactly, carrying into the seconds */
+          if (slots[1] != KORB_NIL && korb_exact_ns(slots[1], 1000000000, &ox, &xn, &xd) &&
+              (xn == 0 || (srd <= INT32_MAX && xd <= INT32_MAX))) {
+              __int128 tot = (__int128)(int64_t)wall * 1000000000 + nsec - ox;
+              if (xn != 0) {                             /* both sub-ns rests: srn/srd - xn/xd, borrowing a ns */
+                  __int128 fn = (__int128)srn * xd - (__int128)xn * srd, fd = (__int128)srd * xd;
+                  if (fn < 0) { fn += fd; tot--; }
+                  const __int128 g = fn ? korb_gcd128(fn, fd) : fd;
+                  srn = (int64_t)(fn / g); srd = (int64_t)(fd / g);
+              }
+              __int128 q = tot / 1000000000, r = tot % 1000000000;
+              if (r < 0) { r += 1000000000; q--; }
+              e = (double)q; nsec = (long)r;
+          } }
+        slots[2] = UNWRAP(korb_time_make_ns(c, slots + 2, VALUE_REF_GET(self), e, nsec, utcish));
         CHECK(korb_time_set_subns(c, slots + 3, VALUE_REF_AT(&slots[2]), srn, srd));
         return korb_time_set_zone(c, slots + 3, VALUE_REF_AT(&slots[2]), off,
                                   VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]));
@@ -1460,7 +1496,17 @@ static RESULT korb_m_time_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         while (fl > 1 && frac[fl - 1] == '0') fl--;
         n += (size_t)snprintf(out + n, sizeof out - n, ".%.*s", (int)fl, frac);
     }
-    n += strftime(out + n, sizeof out - n, utc ? " UTC" : " %z", &tm);
+    if (utc) n += (size_t)snprintf(out + n, sizeof out - n, " UTC");
+    else {                                              /* CRuby: the offset rounded, seconds only when there are any */
+        long o = (long)tm.tm_gmtoff;
+        const VALUE ox = korb_ivar_get(c, VALUE_REF_GET(self), korb_time_offx_sym(c->vm));
+        double od;
+        if (ox != KORB_NIL && korb_num_to_d(ox, &od)) o = lround(od);
+        const char sign = o < 0 ? '-' : '+';
+        if (o < 0) o = -o;
+        n += (size_t)snprintf(out + n, sizeof out - n, " %c%02ld%02ld", sign, o / 3600, o / 60 % 60);
+        if (o % 60) n += (size_t)snprintf(out + n, sizeof out - n, "%02ld", o % 60);
+    }
     const RESULT r = korb_str_new(c, slots, out, (uint32_t)n);
     if (r.state == KORB_NORMAL) KORB_STR_ENC_SET(r.value, KORB_ENC_USASCII);
     return r;
