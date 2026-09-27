@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <math.h>
+#include <float.h>     /* DBL_DIG (Float#to_s / #round) */
 #include <crypt.h>
 #include <ctype.h>
 #include <errno.h>
@@ -414,13 +415,8 @@ static RESULT korb_m_rat_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const VALUE num = SELF_RAT->num, den = SELF_RAT->den;
     if (LIKELY(FIXNUM_P(num) && FIXNUM_P(den)))
         return korb_float_new(c, slots, (double)FIX2LONG(num) / (double)FIX2LONG(den));
-    /* Bignum num/den: naive num.to_d / den.to_d overflows each to ±Inf → NaN.
-     * korb_mq_get_d computes the ratio exactly-rounded regardless of magnitude. */
-    korb_mp_t zn, zd; korb_to_mpz(num, zn); korb_to_mpz(den, zd);
-    korb_mq_t q; korb_mq_init(q); korb_mq_set_num(q, zn); korb_mq_set_den(q, zd); korb_mq_canonicalize(q);
-    const double r = korb_mq_get_d(q);
-    korb_mq_clear(q); korb_mp_clear(zn); korb_mp_clear(zd);
-    return korb_float_new(c, slots, r);
+    /* Bignum num/den: naive num.to_d / den.to_d overflows each to ±Inf → NaN */
+    return korb_float_new(c, slots, korb_int_ratio_to_d(num, den));
 }
 static RESULT korb_m_rat_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 /* integer floor-div of rational num/den (mode: 0 floor, 1 ceil, 2 trunc,
@@ -1147,7 +1143,11 @@ korb_num_to_d(VALUE v, double *out)
 {
     if (FIXNUM_P(v))     { *out = (double)FIX2LONG(v); return true; }
     if (KORB_FLOAT_P(v)) { *out = korb_float_val(v);     return true; }
-    if (KORB_RATIONAL_P(v)) { double n, d; korb_num_to_d(VAL2RAT(v)->num, &n); korb_num_to_d(VAL2RAT(v)->den, &d); *out = n / d; return true; }
+    if (KORB_RATIONAL_P(v)) {
+        if (UNLIKELY(!FIXNUM_P(VAL2RAT(v)->num) || !FIXNUM_P(VAL2RAT(v)->den))) { *out = korb_int_ratio_to_d(VAL2RAT(v)->num, VAL2RAT(v)->den); return true; }
+        *out = (double)FIX2LONG(VAL2RAT(v)->num) / (double)FIX2LONG(VAL2RAT(v)->den);   /* CRuby's fix_fdiv_double */
+        return true;
+    }
     if (KORB_BIGNUM_P(v)) { *out = korb_big_to_d(v); return true; }
     return false;
 }
@@ -1178,8 +1178,10 @@ korb_big_over_long(VALUE v)
     return KORB_BIGNUM_P(v) && !korb_mp_fits_slong_p(VAL2BIG(v)->z);
 }
 
-/* CRuby-style Float#to_s: shortest round-tripping decimal, always with a '.'
- * or exponent.  buf must be >= 32 bytes; returns the length. */
+/* CRuby's Float#to_s (flo_to_s): the shortest round-tripping digits, placed by
+ * their decimal point — fixed when the point falls inside the digits or within
+ * DBL_DIG places, "0.000ddd" down to 1e-4, otherwise d.ddde±XX.  buf must be
+ * >= 32 bytes; returns the length. */
 static uint32_t
 korb_float_to_s(double d, char *buf)
 {
@@ -1188,28 +1190,40 @@ korb_float_to_s(double d, char *buf)
         if (d < 0) { memcpy(buf, "-Infinity", 10); return 9; }
         memcpy(buf, "Infinity", 9); return 8;
     }
-    /* shortest #significant-digits that round-trips (via scientific form) */
+    if (d == 0.0) { strcpy(buf, signbit(d) ? "-0.0" : "0.0"); return (uint32_t)strlen(buf); }
     char tmp[48];
     int sig = 1;
     for (; sig < 17; sig++) {
         snprintf(tmp, sizeof tmp, "%.*e", sig - 1, d);
         if (strtod(tmp, NULL) == d) break;
     }
-    int exp10 = atoi(strchr(tmp, 'e') + 1);
-    if (exp10 >= -4 && exp10 < 15) {                 /* fixed notation (CRuby range: -4..14) */
-        int frac = sig - 1 - exp10;
-        if (frac < 1) frac = 1;                      /* Ruby always shows ≥1 fractional digit */
-        snprintf(buf, 32, "%.*f", frac, d);
-    } else {                                         /* scientific: d.dddde±XX */
-        snprintf(buf, 32, "%.*e", sig - 1, d);
-        char *e = strchr(buf, 'e');
-        if (e && !memchr(buf, '.', (size_t)(e - buf))) {   /* "1e+20" → "1.0e+20" */
-            char t2[48]; size_t ml = (size_t)(e - buf);
-            memcpy(t2, buf, ml); memcpy(t2 + ml, ".0", 2); strcpy(t2 + ml + 2, e);
-            strcpy(buf, t2);
-        }
+    if (sig == 17) snprintf(tmp, sizeof tmp, "%.*e", 16, d);
+    const char *p = tmp;
+    char *o = buf;
+    if (*p == '-') { *o++ = '-'; p++; }
+    char dg[24]; int nd = 0;
+    for (; *p && *p != 'e'; p++) if (*p != '.') dg[nd++] = *p;
+    while (nd > 1 && dg[nd - 1] == '0') nd--;
+    const int decpt = atoi(p + 1) + 1;
+    if (decpt > 0 && decpt < nd) {                   /* the point inside the digits */
+        memcpy(o, dg, (size_t)decpt); o += decpt; *o++ = '.';
+        memcpy(o, dg + decpt, (size_t)(nd - decpt)); o += nd - decpt;
+    } else if (decpt > 0 && decpt <= DBL_DIG) {      /* digits, zeros, ".0" */
+        memcpy(o, dg, (size_t)nd); o += nd;
+        for (int k = nd; k < decpt; k++) *o++ = '0';
+        *o++ = '.'; *o++ = '0';
+    } else if (decpt <= 0 && decpt > -4) {           /* 0.000ddd */
+        *o++ = '0'; *o++ = '.';
+        for (int k = 0; k < -decpt; k++) *o++ = '0';
+        memcpy(o, dg, (size_t)nd); o += nd;
+    } else {                                         /* d.ddde±XX */
+        *o++ = dg[0]; *o++ = '.';
+        if (nd > 1) { memcpy(o, dg + 1, (size_t)nd - 1); o += nd - 1; }
+        else *o++ = '0';
+        o += sprintf(o, "e%+03d", decpt - 1);
     }
-    return (uint32_t)strlen(buf);
+    *o = '\0';
+    return (uint32_t)(o - buf);
 }
 
 RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE *rhs, const char *op, uint32_t line, bool *handled);   /* fwd; decl in node.h for node_eval.c */

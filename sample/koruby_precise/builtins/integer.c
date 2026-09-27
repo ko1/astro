@@ -580,12 +580,23 @@ static RESULT korb_flt_to_rat(CTX *c, VALUE *slots, double d) {
     int e; double m = frexp(d, &e);                    /* d = m * 2^e, m in [0.5,1) */
     korb_sword_t mant = (korb_sword_t)ldexp(m, 53);            /* integer mantissa */
     e -= 53;
-    if (e >= 0) {
-        if (e >= 62) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float magnitude too large for Rational (Bignum)");
-        return korb_rat_new(c, slots, mant << e, 1);
-    }
-    if (-e >= 63) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float too small for Rational (Bignum)");
-    return korb_rat_new(c, slots, mant, (korb_sword_t)1 << (-e));   /* 1<<62 still fits int64 */
+    while (e < 0 && !(mant & 1)) { mant >>= 1; e++; }  /* reduced: the denominator is a power of 2 */
+    if (e >= 0 && e < 62 - 53) return korb_rat_new(c, slots, mant << e, 1);
+    if (e < 0 && -e < 63) return korb_rat_new(c, slots, mant, (korb_sword_t)1 << (-e));   /* 1<<62 still fits int64 */
+    korb_mp_t zn, zd;                                   /* beyond 64 bits (1e-20, 1e300): through mpz */
+    korb_mp_init_set_si(zn, mant);
+    korb_mp_init_set_si(zd, 1);
+    if (e >= 0) korb_mp_mul_2exp(zn, zn, (korb_mp_bitcnt_t)e);
+    else        korb_mp_mul_2exp(zd, zd, (korb_mp_bitcnt_t)(-e));
+    RESULT nr = korb_big_from_mpz(c, slots, zn);
+    korb_mp_clear(zn);
+    if (UNLIKELY(nr.state != KORB_NORMAL)) { korb_mp_clear(zd); return nr; }
+    slots[0] = nr.value;
+    RESULT dr = korb_big_from_mpz(c, slots + 1, zd);
+    korb_mp_clear(zd);
+    if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+    slots[1] = dr.value;
+    return korb_rat_new_v(c, slots + 2, slots[0], slots[1]);
 }
 
 /* Simplest rational p/q in [a, b] (a <= b), CF-convergent search matching

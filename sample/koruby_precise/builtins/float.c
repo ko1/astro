@@ -137,11 +137,66 @@ static int korb_round_half(CTX *c, VALUE_SLICE a, uint32_t *npos) { VALUE bad; r
         SYMBOL_P(_bad) ? korb_sym_name((c)->vm, SYM2ID(_bad))                                  \
         : (KORB_STRING_P(_bad) ? korb_strbuf_data(VAL2STR(_bad)->buf) : korb_type_name(_bad))); \
 } while (0)
-/* round v to an integer-valued double under the given half mode. */
-static double korb_round_half_apply(double v, int half) {
-    if (half == 1) return nearbyint(v);                        /* :even (FP default mode = round-half-even) */
-    if (half == 2) { double tr = trunc(v), fr = v - tr; return (fabs(fr) > 0.5) ? tr + (v < 0 ? -1.0 : 1.0) : tr; }
-    return round(v);                                           /* :up — ties away from zero */
+/* CRuby's round_half_up / _down / _even (numeric.c): x * s rounded, then corrected
+ * by the decimal the result stands for, so 1.005.round(2) is 1.01 and a value just
+ * past a tie is not taken for one. */
+static double korb_round_half_up_s(double x, const double s) {
+    double f = round(x * s);
+    if (s == 1.0) return f;
+    if (x > 0) { if ((double)((f + 0.5) / s) <= x) f += 1; }
+    else       { if ((double)((f - 0.5) / s) >= x) f -= 1; }
+    return f;
+}
+static double korb_round_half_down_s(double x, const double s) {
+    double f = round(x * s);
+    if (x > 0) { if ((double)((f - 0.5) / s) >= x) f -= 1; }
+    else       { if ((double)((f + 0.5) / s) <= x) f += 1; }
+    return f;
+}
+static double korb_round_half_even_s(double x, const double s) {
+    double u, d;
+    const double v = modf(x, &u), us = u * s, vs = v * s;
+    if (x > 0.0) {
+        const double f = floor(vs), uf = us + f;
+        d = vs - f;
+        if (d > 0.5) d = 1.0;
+        else if (d == 0.5 || ((double)((uf + 0.5) / s) <= x)) d = fmod(uf, 2.0);
+        else d = 0.0;
+        x = f + d;
+    } else if (x < 0.0) {
+        const double f = ceil(vs), uf = us + f;
+        d = f - vs;
+        if (d > 0.5) d = 1.0;
+        else if (d == 0.5 || ((double)((uf - 0.5) / s) >= x)) d = fmod(-uf, 2.0);
+        else d = 0.0;
+        x = f - d;
+    }
+    return us + x;
+}
+static double korb_round_half_s(const double x, const double s, const int half) {
+    return half == 1 ? korb_round_half_even_s(x, s) : half == 2 ? korb_round_half_down_s(x, s) : korb_round_half_up_s(x, s);
+}
+static RESULT korb_m_int_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (below) */
+/* Float#round with ndigits != 0, as CRuby's flo_round: a negative count rounds the
+ * exact Integer; 15+ digits go through the exact Rational. */
+static RESULT korb_flt_round_nd(CTX *c, VALUE *slots, const double d, const korb_sword_t ndig, const int half, VALUE_SLICE a) {
+    if (d == 0.0) return ndig > 0 ? korb_float_new(c, slots, d) : RESULT_OK(LONG2FIX(0));
+    if (ndig < 0) {
+        slots[0] = UNWRAP(korb_flt_toint(c, slots, d, 3));
+        return korb_m_int_round(c, slots + 1, VALUE_REF_AT(&slots[0]), a);   /* same (ndigits, half:) */
+    }
+    if (!isfinite(d)) return korb_float_new(c, slots, d);
+    int binexp; frexp(d, &binexp);
+    if (ndig >= DBL_DIG + 2 - (binexp > 0 ? binexp / 4 : binexp / 3 - 1)) return korb_float_new(c, slots, d);   /* float_round_overflow */
+    if (ndig < -(binexp > 0 ? binexp / 3 + 1 : binexp / 4)) return korb_float_new(c, slots, 0.0);             /* float_round_underflow */
+    if (ndig >= DBL_DIG) {                                  /* pow(10, n) is inexact: round the exact Rational */
+        slots[0] = UNWRAP(korb_flt_to_rat(c, slots, d));
+        const VALUE r = UNWRAP(korb_m_rat_round(c, slots + 1, VALUE_REF_AT(&slots[0]), a));
+        double rd = 0; korb_num_to_d(r, &rd);
+        return korb_float_new(c, slots, rd);
+    }
+    const double f = pow(10.0, (double)ndig);
+    return korb_float_new(c, slots, korb_round_half_s(d, f, half) / f);
 }
 static RESULT korb_flt_round_to(CTX *c, VALUE *slots, double d, int kind, VALUE_SLICE a) {
     uint32_t npos; const int half = korb_round_half(c, a, &npos); KORB_ROUND_CHECK_HALF(c, slots, a, &npos);
@@ -153,15 +208,16 @@ static RESULT korb_flt_round_to(CTX *c, VALUE *slots, double d, int kind, VALUE_
         return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, isnan(d) ? "NaN" : (d < 0 ? "-Infinity" : "Infinity"));
     if (ndig == 0) {
         if (kind == 2 && half != 0) {                          /* round to integer with explicit half mode */
-            const double t = korb_round_half_apply(d, half);
+            const double t = korb_round_half_s(d, 1.0, half);
             return korb_flt_int_result(c, slots, t);
         }
         return korb_flt_toint(c, slots, d, kind);
     }
+    if (kind == 2) return korb_flt_round_nd(c, slots, d, ndig, half, a);
     double f = pow(10.0, (double)(ndig < 0 ? -ndig : ndig));
     if (ndig > 0 && (isinf(f) || !isfinite(d * f))) return korb_float_new(c, slots, d);   /* beyond float precision → self */
     double scaled = ndig > 0 ? d * f : d / f;
-    double t = kind == 0 ? floor(scaled) : kind == 1 ? ceil(scaled) : kind == 2 ? korb_round_half_apply(scaled, half) : trunc(scaled);
+    double t = kind == 0 ? floor(scaled) : kind == 1 ? ceil(scaled) : trunc(scaled);   /* round (kind 2) returned above */
     if (ndig > 0) return korb_float_new(c, slots, t / f);
     double res = t * f;
     return korb_flt_int_result(c, slots, res);

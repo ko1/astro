@@ -23,6 +23,29 @@ static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const korb_mp_t src) {
     aro_gc_account_external(c, (ssize_t)korb_mp_extbytes(b->z));   /* limbs are external malloc → GC pressure (immutable, so the matching -delta is in AROH_FINALIZE) */
     return RESULT_OK((VALUE)b);
 }
+/* n / d (Integers, d != 0) as the nearest double: a 128-bit quotient with the
+ * remainder folded in as a sticky bit, then one round to 53 bits.  (mpq_get_d
+ * truncates, and n.to_d / d.to_d rounds twice or overflows.) */
+double korb_int_ratio_to_d(VALUE num, VALUE den) {
+    korb_mp_t a, b, q, r;
+    korb_to_mpz(num, a); korb_to_mpz(den, b);
+    const int sg = korb_mp_sgn(a) * korb_mp_sgn(b);
+    korb_mp_abs(a, a); korb_mp_abs(b, b);
+    if (sg == 0) { korb_mp_clear(a); korb_mp_clear(b); return 0.0; }
+    const long s = 128 + (long)korb_mp_sizeinbase(b, 2) - (long)korb_mp_sizeinbase(a, 2);
+    if (s > 0) korb_mp_mul_2exp(a, a, (korb_mp_bitcnt_t)s);
+    else if (s < 0) korb_mp_mul_2exp(b, b, (korb_mp_bitcnt_t)(-s));
+    korb_mp_init(q); korb_mp_init(r);
+    korb_mp_tdiv_qr(q, r, a, b);                        /* n/d = q * 2^-s, q has 128..129 bits */
+    const long nb = (long)korb_mp_sizeinbase(q, 2);
+    korb_mp_fdiv_q_2exp(a, q, (korb_mp_bitcnt_t)(nb - 64));   /* the top 64 bits */
+    uint64_t t = (uint64_t)korb_mp_get_ui(a);
+    korb_mp_mul_2exp(b, a, (korb_mp_bitcnt_t)(nb - 64));
+    if (korb_mp_sgn(r) != 0 || korb_mp_cmp(b, q) != 0) t |= 1;   /* sticky: below the rounding bit */
+    korb_mp_clear(a); korb_mp_clear(b); korb_mp_clear(q); korb_mp_clear(r);
+    const double m = ldexp((double)t, (int)(nb - 64 - s));
+    return sg < 0 ? -m : m;
+}
 /* korb_mp_get_d truncates toward zero; CRuby rounds an Integer to the nearest double
  * (ties to even), so (10**308).to_f == 1.0e308, not 9.999...e307.  Take the
  * truncated value and its neighbour toward ±Inf, then pick whichever is closer

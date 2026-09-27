@@ -216,6 +216,7 @@ RESULT korb_big_neg(CTX *c, VALUE *slots, VALUE v);
 int    korb_int_cmp(VALUE a, VALUE b);
 int    korb_big_flo_cmp(VALUE bi, double d);   /* exact Integer<=>double, 2 = NaN */
 double korb_big_to_d(VALUE v);
+double korb_int_ratio_to_d(VALUE num, VALUE den);   /* nearest double of num/den (Integers) */
 
 /* string interpolation step: acc (String) + to_s(part) → new String */
 RESULT korb_str_interp(CTX *c, VALUE *slots, VALUE_REF acc, VALUE part);
