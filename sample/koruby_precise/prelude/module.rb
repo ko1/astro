@@ -240,6 +240,7 @@ class Module
     end
     path = path.respond_to?(:to_path) ? path.to_path : (path.is_a?(String) ? path : path.to_str)
     raise ArgumentError, "empty feature name" if path.empty?
+    raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?
     __autoload_table[n] = path
     # CRuby answers #const_source_location with the autoload REGISTRATION site
     # until the constant is really defined.

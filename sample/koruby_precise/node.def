@@ -2250,7 +2250,15 @@ node_defined_cpath(CTX *c, NODE *n, VALUE *slots, uint32_t owner_name@sym, uint3
             owner = ti != UINT32_MAX ? vm->const_vals[ti] : KORB_NIL;
         }
     }
-    if (!KORB_CLASS_P(owner)) return RESULT_OK(KORB_NIL);         /* parent undefined / not a module */
+    if (!KORB_CLASS_P(owner)) {                                    /* parent undefined / not a module */
+        const VALUE objc = korb_const_get(vm, vm->class_name[KORB_C_OBJECT]);
+        if (owner != KORB_UNDEF && owner != KORB_NIL) return RESULT_OK(KORB_NIL);
+        if (!korb_autoload_registered_p(c, objc, owner_name)) return RESULT_OK(KORB_NIL);
+        slots[0] = objc; slots[1] = ID2SYM(owner_name);           /* CRuby evaluates A, which runs its autoload */
+        const RESULT ar = korb_send(c, slots + 2, korb_intern(vm, "const_get", 9), 0, 1);
+        if (ar.state != KORB_NORMAL || !KORB_CLASS_P(ar.value)) return RESULT_OK(KORB_NIL);
+        owner = ar.value;
+    }
     uint32_t idx = korb_const_index_owned(vm, name, owner);
     if (idx == UINT32_MAX) idx = korb_const_in_ancestry_scoped(vm, owner, name);   /* inherited constants count; Object's own do not */
     if (idx == UINT32_MAX && !korb_autoload_registered_p(c, owner, name))   /* a pending autoload counts too */
