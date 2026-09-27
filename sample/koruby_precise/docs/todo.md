@@ -5933,6 +5933,7 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
   フレームが呼び出し連鎖上に生きている間は Kernel#binding と同じ経路で見えるが、フレームが返った後は
   見えない (`def m(a) = -> {}; eval("a", m(1).binding)` が NameError、CRuby は 1)。Proc 生成時に実 env を
   作れば直るが、その Proc を作るフレームの return に close のコピーが乗る。rubyspec core/proc/binding_spec 1 例。
-- CRuby の tool/lib のテスト runner (json 3.0.2 の test/run.rb) が koruby でテストごとに "Leaked file descriptor"
-  (mode 040500 = ディレクトリ) を報告する。何かが Dir の fd を開いたままにしている (未調査)。
+- ~~tool/lib のテスト runner がテストごとに "Leaked file descriptor" (ディレクトリ)~~ → Dir#fileno が開いた fd を
+  Dir#close / Dir.open のブロック終わりで閉じていなかった (直した)。残り 1 件: test_gc で fd 100 (anon inode、
+  mode 0600) が初出として報告される。koruby が GC / シグナルの初回に遅延で作るもの (未確認)。
 - JSON::ResumableParser は未移植 (json 3.0.2 の純 Ruby 移植 lib/json/ext/parser.rb に無い)。

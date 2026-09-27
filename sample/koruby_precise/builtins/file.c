@@ -2119,6 +2119,15 @@ static uint32_t korb_dir_path_id(CTX *c) { return korb_intern(c->vm, "__dir_path
  * operation must still fail afterwards the way a live DIR* would. */
 /* spelled with the '@' the siblings omit: prelude's Dir#fileno checks it too */
 static uint32_t korb_dir_closed_id(CTX *c) { return korb_intern(c->vm, "@__dir_closed", 13); }
+/* Dir#fileno opens an fd on the path lazily (@__dir_fd, the prelude): closing the Dir closes it. */
+static RESULT korb_dir_mark_closed(CTX *c, VALUE *slots, VALUE_REF dir) {
+    const VALUE fd = korb_ivar_get(c, VALUE_REF_GET(dir), ID2SYM(korb_intern(c->vm, "@__dir_fd", 9)));
+    if (FIXNUM_P(fd)) {
+        close((int)FIX2LONG(fd));
+        CHECK(korb_ivar_set(c, slots, dir, ID2SYM(korb_intern(c->vm, "@__dir_fd", 9)), KORB_NIL));
+    }
+    return korb_ivar_set(c, slots, dir, ID2SYM(korb_dir_closed_id(c)), KORB_TRUE);
+}
 static bool korb_dir_closed_p(CTX *c, VALUE s) { return korb_ivar_get(c, s, ID2SYM(korb_dir_closed_id(c))) == KORB_TRUE; }
 #define KORB_DIR_CHECK_OPEN(c, slots, self)                                            \
     do { if (UNLIKELY(korb_dir_closed_p((c), VALUE_REF_GET(self))))                    \
@@ -2174,7 +2183,7 @@ static RESULT korb_dir_open_yield(CTX *c, VALUE *slots, VALUE_REF dir,
     slots[0] = VALUE_REF_GET(dir);                               /* Dir.open(block) → block value, dir closed after */
     RESULT br = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
     slots[0] = br.value;                                         /* root across the ivar write (raised value included) */
-    const RESULT cr = korb_ivar_set(c, slots + 1, dir, ID2SYM(korb_dir_closed_id(c)), KORB_TRUE);
+    const RESULT cr = korb_dir_mark_closed(c, slots + 1, dir);
     br.value = slots[0];
     if (br.state != KORB_NORMAL) return br;
     CHECK(cr);
@@ -2289,7 +2298,7 @@ static RESULT korb_m_dir_pos_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 static RESULT korb_m_dir_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;                                     /* closing twice is not an error (CRuby) */
-    CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_dir_closed_id(c)), KORB_TRUE));
+    CHECK(korb_dir_mark_closed(c, slots, self));
     return RESULT_OK(KORB_NIL);
 }
 /* Dir#children / #each_child — entries excluding "." and "..". */
