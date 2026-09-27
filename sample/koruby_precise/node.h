@@ -425,9 +425,9 @@ RESULT korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
  * with changes when it is promoted into a Proc (`&b`), so it cannot be part of
  * the key.  `break` in a lambda is a plain return from the lambda. */
 static inline RESULT korb_break_claim(CTX *c, RESULT r, struct Node *block, bool is_lambda) {
-    if (r.state == KORB_BREAK) {
+    if (r.state == KORB_BREAK && c->break_blk == NULL) {   /* a break an inner block claimed passes through */
         if (is_lambda) r.state = KORB_NORMAL;
-        else if (c->break_blk == NULL) c->break_blk = block;
+        else c->break_blk = block;
     }
     return r;
 }

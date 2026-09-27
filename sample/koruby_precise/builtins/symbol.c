@@ -584,7 +584,7 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         c->return_target = NULL;
         r.state = KORB_NORMAL;
     }
-    if (UNLIKELY(is_lam && r.state == KORB_BREAK)) r.state = KORB_NORMAL;   /* a lambda's `break` acts like `return` */
+    if (UNLIKELY(is_lam && r.state == KORB_BREAK && c->break_blk == NULL)) r.state = KORB_NORMAL;   /* a lambda's own `break` acts like `return`; one from a block it called passes */
     if (UNLIKELY(r.state == KORB_BREAK && KORB_PROC_P(VALUE_REF_GET(self)) &&   /* the call / method it would end is gone */
                  korb_proc_break_orphan(c, VAL2PROC(VALUE_REF_GET(self)),
                                         c->cfunc_link ? korb_flink_ptr(c->cfunc_link) : NULL)))

@@ -12012,6 +12012,13 @@ korb_block_leave_cold(CTX *const c, RESULT r, struct Node *const block,
         if (LIKELY(KORB_EXC_P(r.value))) korb_bt_unwind_block(c, VAL2EXC(r.value), block, base);
         return r;
     }
+    /* a lambda yielded to (`map(&lam)`) ends at its own `return`, as Proc#call's
+     * does: one aimed at this frame or a block inside it (NULL = the nearest) */
+    if (is_lambda && r.state == KORB_RETURN && (c->return_target == NULL || c->return_target >= base)) {
+        c->return_target = NULL;
+        r.state = KORB_NORMAL;
+        return r;
+    }
     return korb_break_claim(c, r, block, is_lambda);
 }
 
