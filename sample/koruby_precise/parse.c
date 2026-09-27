@@ -3735,6 +3735,17 @@ assign_target_from_synth_r(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_l
         const pm_call_target_node_t *ct = (const pm_call_target_node_t *)t;
         const struct kp_hoist *const hc = kp_hoist_find(tc, t);
         if (hc && hc->recv >= 0) recv_local = hc->recv;
+        if (ct->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) {   /* `recv&.x = v`: a nil receiver assigns nothing */
+            NODE *store = NULL;
+            if (recv_local < 0) {
+                recv_local = (int32_t)alloc_synth_local(tc);
+                store = bake_lset(tc, (uint32_t)recv_local, transduce(tc, ct->receiver));
+            }
+            NODE *r, *v;
+            WITH_CHAIN(tc, KP_SEND1_SC, (r = bake_lget(tc, (uint32_t)recv_local), v = bake_lget(tc, src_local)));
+            NODE *const g = ALLOC_node_nil_guard(bake_lget(tc, (uint32_t)recv_local), kp_send1(tc, kp_intern_cid(tc, ct->name), line, r, v));
+            return store ? ALLOC_node_seq(store, g) : g;
+        }
         NODE *r, *v;
         WITH_CHAIN(tc, KP_SEND1_SC, (r = (recv_local >= 0) ? bake_lget(tc, (uint32_t)recv_local)   /* pre-evaluated (multi-assign order) */
                                                            : transduce(tc, ct->receiver),
@@ -5569,22 +5580,25 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         /* `for VAR in COLL; BODY; end` — VAR + BODY share the enclosing frame
          * (for introduces no scope), so BODY is transduced here, not in a block. */
         const pm_for_node_t *fn = (const pm_for_node_t *)node;
-        if (PM_NODE_TYPE_P(fn->index, PM_MULTI_TARGET_NODE)) {
-            /* `for k, v in coll` — iterate into a temp, then destructure it into
-             * the (enclosing-frame) index targets at the top of the body. */
-            const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)fn->index;
+        if (PM_NODE_TYPE_P(fn->index, PM_MULTI_TARGET_NODE) || PM_NODE_TYPE_P(fn->index, PM_SPLAT_NODE)) {
+            /* `for k, v in coll` / `for *a in coll` — iterate into a temp, then
+             * destructure it into the (enclosing-frame) index targets at the top of the body. */
+            const bool splat = PM_NODE_TYPE_P(fn->index, PM_SPLAT_NODE);
+            const pm_multi_target_node_t *mt = splat ? NULL : (const pm_multi_target_node_t *)fn->index;
+            static const pm_node_list_t none = { 0 };
             uint32_t orig_local = alloc_synth_local(tc);
             uint32_t iter_local = alloc_synth_local(tc);
             uint32_t e_local    = alloc_synth_local(tc);   /* each element */
             NODE *coll = transduce(tc, fn->collection);
-            NODE *decon = massign_general(tc, &mt->lefts, mt->rest, &mt->rights, bake_lget(tc, e_local));
+            NODE *decon = splat ? massign_general(tc, &none, fn->index, &none, bake_lget(tc, e_local))
+                                : massign_general(tc, &mt->lefts, mt->rest, &mt->rights, bake_lget(tc, e_local));
             if (decon == NULL) return kp_unsupported(tc, fn->index, "for-loop index target");
             NODE *body0 = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil();
             NODE *body = decon ? (body0 ? ALLOC_node_seq(decon, body0) : decon) : body0;
             NODE *fnode = ALLOC_node_for((int32_t)orig_local - tc->chain,
                                          (int32_t)iter_local - tc->chain,
                                          (int32_t)e_local - tc->chain,
-                                         coll, body);
+                                         coll, body, 0u);
             bake_add(tc, &fnode->u.node_for.orig_off);
             bake_add(tc, &fnode->u.node_for.iter_off);
             bake_add(tc, &fnode->u.node_for.var_off);
@@ -5605,7 +5619,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             NODE *fnode = ALLOC_node_for((int32_t)orig_local - tc->chain,
                                          (int32_t)iter_local - tc->chain,
                                          (int32_t)e_local - tc->chain,
-                                         coll, body);
+                                         coll, body, 1u);
             bake_add(tc, &fnode->u.node_for.orig_off);
             bake_add(tc, &fnode->u.node_for.iter_off);
             bake_add(tc, &fnode->u.node_for.var_off);
@@ -5621,7 +5635,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *fnode = ALLOC_node_for((int32_t)orig_local - tc->chain,
                                      (int32_t)iter_local - tc->chain,
                                      (int32_t)lvar_index(tc, fn->index, iv->name) - tc->chain,
-                                     coll, body);
+                                     coll, body, 1u);
         bake_add(tc, &fnode->u.node_for.orig_off);
         bake_add(tc, &fnode->u.node_for.iter_off);
         bake_add(tc, &fnode->u.node_for.var_off);

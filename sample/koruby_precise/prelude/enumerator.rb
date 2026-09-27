@@ -729,3 +729,8 @@ class Enumerator::ArithmeticSequence
     [self.begin, self.end, step, exclude_end?].hash
   end
 end
+
+class Enumerator
+  # `for x in obj` with one target: x is the FIRST value of each yield (CRuby)
+  def __for_firsts = map { |*a| a[0] }
+end

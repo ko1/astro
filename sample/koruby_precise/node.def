@@ -1224,8 +1224,9 @@ node_post_while(CTX *c, NODE *n, VALUE *slots, NODE *cond, NODE *body, uint32_t 
 // the enclosing frame, so BODY is transduced there (unlike a block).  The
 // collection is materialized to an Array (via to_a) into a synth local, then
 // iterated; `break`/`next` behave as in a while loop.  Result = the iterable.
+// `one`: a single target takes only the first value of a multi-value yield.
 NODE_DEF
-node_for(CTX *c, NODE *n, VALUE *slots, int32_t orig_off, int32_t iter_off, int32_t var_off, NODE *coll, NODE *body)
+node_for(CTX *c, NODE *n, VALUE *slots, int32_t orig_off, int32_t iter_off, int32_t var_off, NODE *coll, NODE *body, uint32_t one)
 {
     (void)n;
     RESULT cr = EVAL_ARG(c, coll);
@@ -1243,7 +1244,8 @@ node_for(CTX *c, NODE *n, VALUE *slots, int32_t orig_off, int32_t iter_off, int3
             RESULT en = korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1);   /* enum_for(:each): respects a singleton #each */
             if (UNLIKELY(en.state != KORB_NORMAL)) return en;
             slots[0] = en.value;
-            RESULT ta = korb_send(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0);      /* materialize (finite) */
+            RESULT ta = one ? korb_send(c, slots + 1, korb_intern(c->vm, "__for_firsts", 12), 0, 0)
+                            : korb_send(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0);      /* materialize (finite) */
             if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
             slots[iter_off] = ta.value;
         }
