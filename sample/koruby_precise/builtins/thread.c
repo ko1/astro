@@ -341,7 +341,7 @@ korb_thread_boot(CTX *c)
     vm->slice_start_ns = korb_mono_coarse_ns();   /* main's slice starts with the first thread */
     m->thval = KORB_NIL; m->args = KORB_NIL; m->blk = KORB_NIL; m->captured_self = KORB_NIL;
     m->result = KORB_NIL; m->exc = KORB_NIL; m->tls = KORB_NIL; m->tvars = KORB_NIL;
-    m->tl_gv[0] = m->tl_gv[1] = KORB_NIL;
+    m->tl_gv[0] = m->tl_gv[1] = m->tl_gv[2] = KORB_NIL;
     m->name = KORB_NIL; m->pending_ints = KORB_NIL; m->tgroup = KORB_NIL;
     /* main の stack base: fiber 内から boot されたら c->slots は fiber base なので
      * 保留し、最初の切替 (fiber 外が保証される) で埋める */
@@ -370,7 +370,7 @@ korb_thread_handle(CTX *c, VALUE *slots, struct korb_thread *t)
 
 /* ---- context switch ------------------------------------------------------ */
 /* c の stack tuple を t のものに載せ替える (t: これから走る thread) */
-/* $_ and $? are per thread but live in the global table: park the running
+/* $_, $? and $~ are per thread but live in the global table: park the running
  * thread's pair at a switch-out and put the next thread's back.  Written in
  * place, not through korb_const_define (a switch must not flush const caches). */
 static void
@@ -380,8 +380,9 @@ korb_tl_gvars_swap(CTX *c, struct korb_thread *const t, const bool save)
     if (UNLIKELY(vm->tl_gv_sym[0] == 0)) {
         vm->tl_gv_sym[0] = korb_intern(vm, "$_", 2);
         vm->tl_gv_sym[1] = korb_intern(vm, "$?", 2);
+        vm->tl_gv_sym[2] = korb_intern(vm, "$~", 2);
     }
-    for (int k = 0; k < 2; k++) {
+    for (int k = 0; k < 3; k++) {
         const uint32_t idx = korb_const_index(vm, vm->tl_gv_sym[k]);
         if (save) t->tl_gv[k] = idx != UINT32_MAX ? vm->const_vals[idx] : KORB_NIL;
         else if (idx != UINT32_MAX) vm->const_vals[idx] = t->tl_gv[k];
@@ -831,7 +832,7 @@ korb_thread_alloc_handle(CTX *c, VALUE *slots)
     if (!t) { fprintf(stderr, "koruby_precise: oom (thread rep)\n"); abort(); }
     t->thval = KORB_NIL; t->captured_self = KORB_NIL; t->args = KORB_NIL; t->blk = KORB_NIL;
     t->result = KORB_NIL; t->exc = KORB_NIL; t->tls = KORB_NIL; t->tvars = KORB_NIL;
-    t->tl_gv[0] = t->tl_gv[1] = KORB_NIL;
+    t->tl_gv[0] = t->tl_gv[1] = t->tl_gv[2] = KORB_NIL;   /* a new thread's block starts with no $~ (CRuby) */
     t->name = KORB_NIL; t->pending_ints = KORB_NIL; t->int_masks = KORB_NIL;
     t->tgroup = c->vm->cur_thread ? c->vm->cur_thread->tgroup : KORB_NIL;   /* 親 group を継承 (CRuby) */
     t->roe = !c->vm->thread_roe_off;         /* a new thread takes the class-level default (CRuby) */

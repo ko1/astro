@@ -5767,8 +5767,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 return ALLOC_node_defined(12, 200, 0, INT32_MIN);
             return ALLOC_node_defined(3, gn, 0, INT32_MIN);
         }
-        if (PM_NODE_TYPE_P(v, PM_NUMBERED_REFERENCE_READ_NODE))          /* $1..$9 → gv iff that group matched */
-            return ALLOC_node_defined(12, 100u + ((const pm_numbered_reference_read_node_t *)v)->number, 0, INT32_MIN);
+        if (PM_NODE_TYPE_P(v, PM_NUMBERED_REFERENCE_READ_NODE)) {        /* $1..$9 → gv iff that group matched */
+            const uint32_t num = ((const pm_numbered_reference_read_node_t *)v)->number;
+            return ALLOC_node_defined(12, num ? 100u + num : 200u, 0, INT32_MIN);   /* too big (num 0): CRuby says "global-variable" */
+        }
         if (PM_NODE_TYPE_P(v, PM_BACK_REFERENCE_READ_NODE)) {            /* $& $` $' $+ → gv iff non-nil */
             const uint32_t nm = kp_intern_cid(tc, ((const pm_back_reference_read_node_t *)v)->name);
             uint32_t rk = 0;
@@ -6075,6 +6077,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_NUMBERED_REFERENCE_READ_NODE: {   /* $1..$9 → group n of the last match ($~) */
         const uint32_t num = ((const pm_numbered_reference_read_node_t *)node)->number;
+        if (num == 0) return ALLOC_node_lit(KORB_NIL);   /* prism: too big for a number variable, always nil */
         kp_note_backref(tc);
         return ALLOC_node_backref(100u + num);
       }

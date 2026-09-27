@@ -546,7 +546,7 @@ struct korb_thread {
     VALUE exc;                       /* thread を殺した例外 (raised=1 のとき) */
     VALUE tls;                       /* fiber-local storage Hash (#[] / #[]=) */
     VALUE tvars;                     /* thread_variable_get/set の Hash (tls とは別空間; CRuby 準拠) */
-    VALUE tl_gv[2];                  /* $_ / $? while the thread is switched out (they are thread-local) */
+    VALUE tl_gv[3];                  /* $_ / $? / $~ while the thread is switched out (they are thread-local) */
     VALUE name;                      /* Thread#name */
     VALUE pending_ints;              /* pending interrupt queue (M3) */
     VALUE tgroup;                    /* ThreadGroup (NIL = Default; 生成時に親から継承) */
@@ -1292,7 +1292,7 @@ struct korb_vm {
     uint32_t block_tick;               /* block returns since the last preemption check (korb_block_preempt) */
     uint8_t sched_busy;                /* runq_head || blop_npending: one load for the preemption guards */
     uint64_t slice_start_ns;           /* when the running thread was switched in: preemption waits out a quantum */
-    uint32_t tl_gv_sym[2];             /* $_ / $? — swapped per thread at a switch */
+    uint32_t tl_gv_sym[3];             /* $_ / $? / $~ — swapped per thread at a switch */
     int sigfd;                         /* signalfd(2): pending-signal readiness for the pump. -1 = not armed */
     uint32_t sig_armed;                /* bit s: untrapped, raises SignalException when it arrives during a sleep */
     uint32_t sig_caught;               /* bit s: reaped (during a sleep / from another thread), for the main thread to deliver */
@@ -1815,6 +1815,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tvars);                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tl_gv[0]);                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tl_gv[1]);                  \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tl_gv[2]);                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->name);                      \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->pending_ints);              \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tgroup);                     \
