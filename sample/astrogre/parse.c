@@ -2779,6 +2779,8 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
      * whole pattern still has to be tried at every position ("abc".gsub(/\Aa|c\z/)
      * must replace both ends).  A top-level alternation is never bos-anchored. */
     if (anchored_bos && ir != NULL && ir->kind == IRE_ALT) anchored_bos = false;
+    /* A leading \G (StringScanner's anchored scan) matches only at the start position. */
+    const bool anchored_g = pat_len >= 2 && pat[0] == '\\' && pat[1] == 'G' && ir != NULL && ir->kind != IRE_ALT;
     /* Numeric references are only checkable now that the group count is
      * final — and a single named group turns them all into errors. */
     if (!q.error && q.used_num_ref) {
@@ -2924,7 +2926,11 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
         free(lens);
     }
 
-    if (consumes && !fp.ci && fp.len >= 4) {
+    if (anchored_g) {                                   /* one attempt at c->pos: no prefilter scan */
+        root = ALLOC_node_grep_search(body, 2);
+        if (ac_handle) { astrogre_ac_free(ac_handle); ac_handle = NULL; }
+    }
+    else if (consumes && !fp.ci && fp.len >= 4) {
         char *needle = (char *)malloc(fp.len + 1);
         memcpy(needle, fp.bytes, fp.len); needle[fp.len] = 0;
         astrogre_own(needle);                          /* node-owned → freed in astrogre_pattern_free */

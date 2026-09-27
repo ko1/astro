@@ -84,6 +84,17 @@ class StringScanner
   end
   private :__check_encoding
 
+  # `\G(?:pat)`: the engine then tries only @pos.  Searching forward from @pos
+  # and checking where the match began made every failing scan O(rest), so a
+  # tokenizer was O(n^2) (w12 A09).  Cached by identity, bounded.
+  G_CACHE = {}.compare_by_identity
+  def self.__anchored(re)
+    G_CACHE[re] ||= begin
+      G_CACHE.clear if G_CACHE.size >= 4096
+      Regexp.new("\\G(?:#{re.source}#{(re.options & Regexp::EXTENDED) != 0 ? "\n" : ""})", re.options)
+    end
+  end
+
   def try(pattern)
     __check_encoding(pattern)
     # A String pattern still produces match data in CRuby (#matched? is true and
@@ -99,9 +110,9 @@ class StringScanner
     else
       # BYTE-offset match: converting @pos to a character index here walked the
       # subject on every scan, which made scanning a large string O(n^2).
-      m = pattern.send(:__match_byte, @string, @pos)
+      m = StringScanner.__anchored(pattern).send(:__match_byte, @string, @pos)
       @md_base = 0
-      (m && m.byteoffset(0)[0] == @pos) ? [m[0], m] : nil
+      m ? [m[0], m] : nil
     end
   end
   private :try
