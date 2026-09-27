@@ -1002,7 +1002,7 @@ class Regexp
   # A \u / \u{…} escape whose codepoint is outside 7-bit ASCII forces UTF-8, even
   # when the escape text itself is ASCII (CRuby).  Escapes that stay 7-bit do not.
   private def __utf8_escape?(src)
-    src.scan(/\\u(?:\{([0-9a-fA-F][0-9a-fA-F ]*)\}|([0-9a-fA-F]{4}))/).any? do |brace, plain|
+    src.gsub("\\\\", "").scan(/\\u(?:\{([0-9a-fA-F][0-9a-fA-F ]*)\}|([0-9a-fA-F]{4}))/).any? do |brace, plain|   # `\\u` is not an escape
       (brace ? brace.split : [plain]).any? { |h| h.to_i(16) > 0x7f }
     end
   end

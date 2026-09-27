@@ -3742,6 +3742,48 @@ static void korb_re_set_lastmatch(CTX *c, VALUE md_or_nil);
  * (re.c: `if (RBASIC_CLASS(obj) == rb_cRegexp) OBJ_FREEZE(obj)`).  Everything
  * built here starts plain-classed, so the freeze belongs here; the two sites in
  * korb_m_re_new that hand the payload to a subclass take it back off. */
+static bool korb_str_bytes_ascii_p(const char *s, uint32_t len);   /* fwd */
+static bool korb_re_bytes_u8fix(const unsigned char *const restrict p, const uint32_t n, const uint32_t enc) {
+    const bool u8src = enc == KORB_ENC_UTF8 || enc == KORB_ENC_USASCII;
+    for (uint32_t i = 0; i < n; i++) {
+        if (p[i] >= 0x80) { if (enc == KORB_ENC_UTF8) return true; continue; }
+        if (p[i] != '\\' || i + 1 >= n) continue;
+        const unsigned char e = p[++i];
+        if ((e == 'p' || e == 'P') && u8src) return true;
+        if (e != 'u') continue;
+        uint32_t j = i + 1, cp = 0, digits = 0;
+        const bool brace = j < n && p[j] == '{';
+        if (brace) j++;
+        for (; j < n && (brace || digits < 4); j++) {
+            const unsigned char h = p[j];
+            const int v = (h >= '0' && h <= '9') ? h - '0' : ((h | 0x20) >= 'a' && (h | 0x20) <= 'f') ? (h | 0x20) - 'a' + 10 : -1;
+            if (v >= 0) { cp = cp * 16 + (uint32_t)v; digits++; continue; }
+            if (!brace || (h != ' ' && h != '}')) break;
+            if (digits && cp >= 0x80) return true;
+            cp = 0; digits = 0;
+            if (h == '}') break;
+        }
+        if (digits && cp >= 0x80) return true;
+        i = j - 1;
+    }
+    return false;
+}
+static bool korb_re_src_u8fix(const struct korb_vm *const vm, const VALUE src) {
+    if (!KORB_STRING_P(src) || !korb_enc_ascii_compat_idx(vm, KORB_STR_ENC(src))) return false;
+    const KorbString *const s = VAL2STR(src);
+    return korb_re_bytes_u8fix((const unsigned char *)korb_strbuf_data(s->buf), s->len, KORB_STR_ENC(src));
+}
+/* A literal's derived bits are baked into its node, so its (per-evaluation) Regexp skips the scan. */
+uint32_t korb_re_literal_derived(const char *const bytes, const uint32_t len, const uint32_t flags) {
+    if (flags & (64u | 128u | 256u)) return KORB_RE_U8CHK;
+    return KORB_RE_U8CHK | (korb_re_bytes_u8fix((const unsigned char *)bytes, len, KORB_ENC_UTF8) ? KORB_RE_U8FIX : 0u);
+}
+static uint32_t korb_re_u8_flags(const struct korb_vm *const vm, const VALUE re) {
+    KorbRegexp *const r = VAL2RE(re);
+    if (UNLIKELY(!(r->flags & KORB_RE_U8CHK)))
+        r->flags |= KORB_RE_U8CHK | ((!(r->flags & (64u | 128u | 256u)) && korb_re_src_u8fix(vm, r->source)) ? KORB_RE_U8FIX : 0u);
+    return r->flags;
+}
 static RESULT korb_re_alloc(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
     VALUE_REF sref = SLOTS_PUSH(slots, source);          /* root source across alloc */
     KorbRegexp *r = korb_alloc(c, slots, sizeof(KorbRegexp), KORB_OBJ_REGEXP);
@@ -8257,7 +8299,9 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
         korb_re_sync_floor(c);
         const KorbString *const p = VAL2STR(VAL2RE(pat)->source);
         unsigned eff = VAL2RE(pat)->flags;   /* see korb_re_run: a single-byte subject matches byte-wise */
-        if (KORB_STRING_P(val) && KORB_ENC_SB(c->vm, KORB_STR_ENC(val))) eff |= 128u;
+        if (KORB_STRING_P(val) && KORB_ENC_SB(c->vm, KORB_STR_ENC(val)) &&
+            (!(korb_re_u8_flags(c->vm, pat) & (512u | KORB_RE_U8FIX)) || !korb_str_bytes_ascii_p(sdata, slen))) eff |= 128u;
+        eff &= ~KORB_RE_DERIVED;
         return fn(korb_strbuf_data(p->buf), p->len, eff, sdata, slen, 0, NULL) == 1;
     }
     return korb_value_eq(pat, val);

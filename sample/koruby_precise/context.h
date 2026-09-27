@@ -390,7 +390,7 @@ typedef struct KorbRegexp {
 } KorbRegexp;
 /* the flag bits that take part in Regexp identity (bit 7 is the "source is
  * already the literal's encoding" marker, not part of ==) */
-#define KORB_RE_ID_FLAGS(f) ((f) & ~128u)
+#define KORB_RE_ID_FLAGS(f) ((f) & ~(128u | KORB_RE_DERIVED))
 
 /* MatchData: the subject, the source Regexp, and per-group byte spans.
  * `offsets` is a KorbArray of Integers [b0,e0,b1,e1,...] (byte offsets into
@@ -893,6 +893,12 @@ static inline bool korb_eq_send_p(VALUE a, VALUE b) {
  * valid empty String so nothing dereferences nil; the bit is what makes Regexp
  * methods refuse it, and it is invisible to #options. */
 #define KORB_RE_UNINIT     0x20000u
+/* Derived from the source on first need (U8CHK = computed): CRuby fixes the pattern
+ * to UTF-8 (\u >= 0x80, \p, a non-ASCII UTF-8 source), so a single-byte subject
+ * must not switch it to byte mode.  Neither is part of the Regexp's identity. */
+#define KORB_RE_U8FIX      0x40000u
+#define KORB_RE_U8CHK      0x80000u
+#define KORB_RE_DERIVED    (KORB_RE_U8FIX | KORB_RE_U8CHK)
 #define VAL2RE(v)          ((KorbRegexp *)(uintptr_t)KORB_SC(v))
 #define KORB_METHOD_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_METHOD)
 #define VAL2METH(v)        ((KorbMethod *)(uintptr_t)KORB_SC(v))

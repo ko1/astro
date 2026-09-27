@@ -4666,7 +4666,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 tc->syntax_error = true;
             }
         }
-        return ALLOC_node_regexp(bytes, len, flags);
+        return ALLOC_node_regexp(bytes, len, flags | korb_re_literal_derived(bytes, len, flags));
       }
       case PM_SYMBOL_NODE: {
         const pm_symbol_node_t *sn = (const pm_symbol_node_t *)node;

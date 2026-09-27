@@ -21,7 +21,7 @@ static const char *korb_enc_idx_name(const struct korb_vm *vm, uint32_t idx);   
  * falls back to comparing against the source's encoding. */
 static uint32_t korb_re_enc_idx(const struct korb_vm *vm, VALUE re, bool *out_fixed, bool *out_known)
 {
-    const uint32_t f = VAL2RE(re)->flags;
+    const uint32_t f = korb_re_u8_flags(vm, re);
     const VALUE srcv = VAL2RE(re)->source;
     const uint32_t senc = KORB_STRING_P(srcv) ? KORB_STR_ENC(srcv) : KORB_ENC_BINARY;
     *out_known = true;
@@ -29,7 +29,7 @@ static uint32_t korb_re_enc_idx(const struct korb_vm *vm, VALUE re, bool *out_fi
         *out_fixed = false;
         return (KORB_STRING_P(srcv) && korb_str_ascii_only_p(vm, srcv)) ? KORB_ENC_USASCII : KORB_ENC_BINARY;
     }
-    if (f & 512u) { *out_fixed = true; return KORB_ENC_UTF8; }          /* /u */
+    if (f & (512u | KORB_RE_U8FIX)) { *out_fixed = true; return KORB_ENC_UTF8; }   /* /u, or \u >= 0x80 etc. */
     if (f & (64u | 256u)) { *out_fixed = true; *out_known = false; return senc; }  /* /e, /s */
     *out_fixed = (f & KORB_RE_FIXENC) != 0 || !korb_enc_ascii_compat_idx(vm, senc) ||
                  (KORB_STRING_P(srcv) && !korb_str_bytes_ascii(srcv));   /* non-ASCII source pins its encoding */
@@ -50,7 +50,7 @@ static RESULT korb_re_raise_enc_mismatch(CTX *c, VALUE *slots, uint32_t renc, ui
 static inline bool korb_re_enc_pinned(VALUE re)
 {
     const VALUE srcv = VAL2RE(re)->source;
-    return (VAL2RE(re)->flags & (64u | 128u | 256u | 512u | KORB_RE_FIXENC)) != 0 ||
+    return (VAL2RE(re)->flags & (64u | 128u | 256u | 512u | KORB_RE_FIXENC | KORB_RE_U8FIX)) != 0 ||
            (KORB_STRING_P(srcv) && KORB_STR_ENC(srcv) >= KORB_ENC_OTHER_MIN);
 }
 
@@ -104,6 +104,8 @@ static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t sta
     korb_re_sync_floor(c);   /* lazy first-load happens above; make sure the floor is set for THIS stack */
     /* Also gate on the SUBJECT: rule 2 (ASCII-incompatible subject) does not
      * depend on the pattern, so a plain ASCII regexp must reach the check too. */
+    const bool sb_subj = KORB_ENC_SB(c->vm, KORB_STR_ENC(subj));
+    if (sb_subj) korb_re_u8_flags(c->vm, re);            /* U8FIX decides the pin and the mode below */
     if (UNLIKELY(korb_re_enc_pinned(re) || KORB_STR_ENC(subj) >= KORB_ENC_OTHER_MIN))
         CHECK(korb_re_check_enc(c, slots, re, subj));
     const KorbString *const pat = VAL2STR(VAL2RE(re)->source), *const s = VAL2STR(subj);
@@ -112,7 +114,8 @@ static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t sta
      * byte-wise (astrogre PR_FLAGS_ASCII_8BIT=128); UTF-8 subjects match by
      * codepoint.  So `.` on a binary string consumes one byte, not a codepoint. */
     unsigned eff_flags = VAL2RE(re)->flags;
-    if (KORB_ENC_SB(c->vm, KORB_STR_ENC(subj))) eff_flags |= 128u;
+    if (sb_subj && !(eff_flags & (512u | KORB_RE_U8FIX))) eff_flags |= 128u;   /* a UTF-8-fixed pattern passed korb_re_check_enc: the subject is ASCII */
+    eff_flags &= ~KORB_RE_DERIVED;
     const int rc = fn(korb_strbuf_data(pat->buf), pat->len, eff_flags, korb_strbuf_data(s->buf), s->len, startb, m);
     if (UNLIKELY(rc == -2)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "regexp match stack overflow");
     if (UNLIKELY(rc < 0)) {
@@ -206,7 +209,9 @@ bool korb_re_caseeq_backref(CTX *c, VALUE *slots, VALUE pat, VALUE val) {
     { const KorbString *const s = VAL2STR(slots[0]);       /* re-derive: str_new above may have GC'd */
       const KorbString *const p = VAL2STR(VAL2RE(slots[1])->source);
       unsigned eff = VAL2RE(slots[1])->flags;             /* see korb_re_run: a single-byte subject matches byte-wise */
-      if (KORB_ENC_SB(c->vm, KORB_STR_ENC(slots[0]))) eff |= 128u;
+      if (KORB_ENC_SB(c->vm, KORB_STR_ENC(slots[0])) &&
+          (!(korb_re_u8_flags(c->vm, slots[1]) & (512u | KORB_RE_U8FIX)) || !korb_str_bytes_ascii(slots[0]))) eff |= 128u;
+      eff &= ~KORB_RE_DERIVED;
       const int r = fn(korb_strbuf_data(p->buf), p->len, eff,
                        korb_strbuf_data(s->buf), s->len, 0, &m);   /* fn does not allocate → borrows stable */
       if (r != 1) { korb_re_set_lastmatch(c, KORB_NIL); return false; } }
@@ -596,7 +601,7 @@ static RESULT korb_m_md_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) 
     const KorbString *s1 = VAL2STR(m1->subject), *s2 = VAL2STR(m2->subject);
     if (s1->len != s2->len || memcmp(korb_strbuf_data(s1->buf), korb_strbuf_data(s2->buf), s1->len) != 0) return RESULT_OK(KORB_FALSE);
     if (KORB_REGEXP_P(m1->regexp) && KORB_REGEXP_P(m2->regexp)) {
-        if (VAL2RE(m1->regexp)->flags != VAL2RE(m2->regexp)->flags) return RESULT_OK(KORB_FALSE);
+        if (((VAL2RE(m1->regexp)->flags ^ VAL2RE(m2->regexp)->flags) & ~KORB_RE_DERIVED) != 0) return RESULT_OK(KORB_FALSE);
         const KorbString *p1 = VAL2STR(VAL2RE(m1->regexp)->source), *p2 = VAL2STR(VAL2RE(m2->regexp)->source);
         if (p1->len != p2->len || memcmp(korb_strbuf_data(p1->buf), korb_strbuf_data(p2->buf), p1->len) != 0) return RESULT_OK(KORB_FALSE);
     } else if (m1->regexp != m2->regexp) return RESULT_OK(KORB_FALSE);
@@ -791,11 +796,11 @@ static int korb_re_ruby_opts(uint32_t flags) {
     if (flags & 4u)  o |= 1;    /* IGNORECASE */
     if (flags & 8u)  o |= 2;    /* EXTENDED */
     if (flags & 16u) o |= 4;    /* MULTILINE */
-    if (flags & (64u | 256u | 512u | KORB_RE_FIXENC)) o |= 16;   /* /u /e /s and Regexp::FIXEDENCODING */
+    if (flags & (64u | 256u | 512u | KORB_RE_FIXENC | KORB_RE_U8FIX)) o |= 16;   /* /u /e /s and Regexp::FIXEDENCODING */
     if (flags & 128u) o |= 32;                  /* ASCII-8BIT (/n) → NOENCODING */
     return o;
 }
-static RESULT korb_m_re_options(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(LONG2FIX(korb_re_ruby_opts(VAL2RE(VALUE_REF_GET(self))->flags))); }
+static RESULT korb_m_re_options(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(LONG2FIX(korb_re_ruby_opts(korb_re_u8_flags(c->vm, VALUE_REF_GET(self))))); }
 /* /e and /s name an encoding no Ruby-visible option bit distinguishes; #encoding
  * asks for it here. */
 static RESULT korb_m_re_enc_hint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

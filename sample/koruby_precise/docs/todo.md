@@ -11,6 +11,14 @@
   トップレベル（メソッドの外）だと集合を引けず、呼び出し先の集合のまま走る。
   `using R; [[1]].each_with_index.map { |x, i| x.refined_m }` が NoMethodError（CRuby は refine が効く）。
   ファイル単位の集合を持つ必要がある。w12min/A/02・02b・B/24 の最小化はどれもこの形（実 gem はメソッド内なので直った）。
+- **Regexp リテラルが評価のたびに新しい Regexp を作る**: `3.times.map { /a/.object_id }.uniq.size` が 3（CRuby は 1、
+  `/o` 付きも 1）。identity の違いに加え、毎回 source String のコピーと Regexp の alloc。node は VALUE を持てない（AOT）ので
+  fstring 表のような vm 側の表が要る（ただし CRuby はサイトごとに別物: 同じ文字列の別リテラルは equal? でない）。
+  UTF-8 固定の判定（KORB_RE_U8FIX）はこのためリテラルだけ parse 時に node の flags へ焼いている。
+- Regexp の encoding 検査の残り（w12min/A/05b・05c）: `Regexp.new("\\u00C0", Regexp::NOENCODING)` / `/\u00C0/n` を拒否しない、
+  `\u`≥0x80 と UTF-8 でない生バイトの混在（`Regexp.new("\\u00C0\xFF".b)` 等 4 形）を拒否しない、リテラル `/\xFF/` が
+  SyntaxError にならない、`Regexp.new("\\p{Alpha}".b)` が BINARY 固定にならず astrogre が `\p needs UTF-8 mode`。
+  `/i` が非 ASCII を case fold しない（`/À/i =~ "à"` が nil）。
 - `Enumerator#dup` / `clone` は `next` で外部イテレーションを始めた後なら CRuby は TypeError
   (`can't copy execution context`)。koruby は複製する。
 
