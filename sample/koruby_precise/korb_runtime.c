@@ -490,6 +490,10 @@ static RESULT korb_m_rat_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_rat_integerp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
 static void korb_class_qname_into(CTX *c, VALUE cls, char *out, size_t outsz);   /* defined below */
 static RESULT korb_raise_attr_arity(CTX *c, VALUE *slots, uint32_t line, uint32_t argc);   /* defined below */
+static RESULT korb_hash_index_build(CTX *c, VALUE *slots, VALUE_REF href);   /* fwd */
+#define KORB_HASH_INDEX_THRESHOLD 16u
+/* compare_by_identity bucket: the address (moves with the GC, which drops the index) */
+static inline uint64_t korb_id_hash(VALUE v) { uint64_t x = (uint64_t)v; x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 29; return x; }
 int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* defined below; non-static so node_eval.c's Hash#[] fast path can call it (LTO still inlines) */
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* defined below; builtins emit rb_warn-style warnings */
 void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const char *fmt, ...);   /* with a source position */
@@ -1774,7 +1778,7 @@ int32_t
 korb_hash_find(const KorbHash *h, VALUE key)
 {
     const VALUE *const d = korb_items_data(h->items);
-    if (LIKELY(h->idx_mask && korb_key_indexable(key))) {   /* O(1) open-addressing probe (CMP_BY_ID never indexes) */
+    if (LIKELY(h->idx_mask && korb_key_indexable(key))) {   /* O(1) open-addressing probe (never set under CMP_BY_ID) */
         const uint32_t *const tab = (const uint32_t *)korb_strbuf_data(h->index);
         const uint32_t mask = h->idx_mask;
         uint32_t slot = (uint32_t)korb_value_hash(key) & mask;
@@ -1786,6 +1790,14 @@ korb_hash_find(const KorbHash *h, VALUE key)
         }
     }
     if (h->head.flags & KORB_FL_CMP_BY_ID) {        /* compare_by_identity */
+        if (h->id_mask) {                                 /* address index (the GC drops it when it visits h) */
+            const uint32_t *const tab = (const uint32_t *)korb_strbuf_data(h->index);
+            for (uint32_t slot = (uint32_t)korb_id_hash(key) & h->id_mask; ; slot = (slot + 1) & h->id_mask) {
+                const uint32_t e = tab[slot];
+                if (e == 0) return -1;
+                if (d[2 * (e - 1)] == key) return (int32_t)(e - 1);
+            }
+        }
         for (uint32_t i = 0; i < h->len; i++)
             if (d[2 * i] == key) return (int32_t)i;
         return -1;
@@ -1822,14 +1834,18 @@ korb_hash_find_ctx_h(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *ou
 {
     *out_err = RESULT_OK(KORB_NIL);
     if (out_hint) *out_hint = 0;
+    if (UNLIKELY(VAL2HASH(VALUE_REF_GET(href))->head.flags & KORB_FL_CMP_BY_ID)) {   /* identity: address index */
+        if (VAL2HASH(VALUE_REF_GET(href))->id_mask == 0 && VAL2HASH(VALUE_REF_GET(href))->len >= KORB_HASH_INDEX_THRESHOLD) {
+            slots[0] = key;                               /* the build allocates */
+            const RESULT br = korb_hash_index_build(c, slots + 1, href);   /* the GC dropped it (keys may have moved) */
+            if (UNLIKELY(br.state != KORB_NORMAL)) { *out_err = br; return -1; }
+            key = slots[0];
+        }
+        return korb_hash_find(VAL2HASH(VALUE_REF_GET(href)), key);
+    }
     const bool cls_key = UNLIKELY(c->vm->sing_hash_redef) && KORB_CLASS_P(key);
     if (LIKELY(!korb_eq_needs_send(key)) && !cls_key)
         return korb_hash_find(VAL2HASH(VALUE_REF_GET(href)), key);
-    if (VAL2HASH(VALUE_REF_GET(href))->head.flags & KORB_FL_CMP_BY_ID) {   /* compare_by_identity: pointer only */
-        const KorbHash *const h = VAL2HASH(VALUE_REF_GET(href));
-        for (uint32_t i = 0; i < h->len; i++) if (korb_items_data(h->items)[2 * i] == key) return (int32_t)i;
-        return -1;
-    }
     slots[0] = key;                                       /* root searched key across dispatch */
     const uint32_t eqm = c->vm->mid_eql;
     const uint32_t hashm = c->vm->mid_hash;
@@ -1952,8 +1968,10 @@ korb_hash_khint_put(CTX *c, VALUE *slots, VALUE_REF href, uint32_t pi, uint64_t 
 /* Insert pair `pi` into an existing index (no alloc; caller ensures capacity). */
 static void korb_hash_index_put(KorbHash *h, uint32_t pi) {
     uint32_t *const tab = (uint32_t *)korb_strbuf_data(h->index);
-    const uint32_t mask = h->idx_mask;
-    uint32_t slot = (uint32_t)korb_value_hash(korb_items_data(h->items)[2 * pi]) & mask;
+    const bool by_id = (h->head.flags & KORB_FL_CMP_BY_ID) != 0;
+    const uint32_t mask = by_id ? h->id_mask : h->idx_mask;
+    const VALUE k = korb_items_data(h->items)[2 * pi];
+    uint32_t slot = (uint32_t)(by_id ? korb_id_hash(k) : korb_value_hash(k)) & mask;
     while (tab[slot]) slot = (slot + 1) & mask;
     tab[slot] = pi + 1;
 }
@@ -1965,11 +1983,10 @@ static RESULT korb_hash_index_build(CTX *c, VALUE *slots, VALUE_REF href) {
     memset(korb_strbuf_data(idx), 0, (size_t)cap * sizeof(uint32_t));
     h = VAL2HASH(VALUE_REF_GET(href));                /* re-read after alloc/GC */
     ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->index, (VALUE)(uintptr_t)idx);
-    h->idx_mask = cap - 1;
+    if (h->head.flags & KORB_FL_CMP_BY_ID) h->id_mask = cap - 1; else h->idx_mask = cap - 1;
     for (uint32_t i = 0; i < h->len; i++) korb_hash_index_put(h, i);   /* no alloc in the loop */
     return RESULT_OK(KORB_NIL);
 }
-#define KORB_HASH_INDEX_THRESHOLD 16u
 
 static RESULT
 korb_hash_ensure(CTX *c, VALUE *slots, VALUE_REF href, uint32_t need)
@@ -2055,7 +2072,16 @@ korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE val)
     /* O(1) index maintenance.  An ambiguous key (Float/heap) permanently drops
      * the index; otherwise build at the threshold and incrementally fill,
      * rebuilding bigger when the load factor exceeds ~0.7. */
-    if (!(h->head.flags & (KORB_FL_HASH_NOINDEX | KORB_FL_CMP_BY_ID))) {
+    if (h->head.flags & KORB_FL_CMP_BY_ID) {             /* any key: indexed by address */
+        if (h->id_mask) {
+            if (UNLIKELY((size_t)h->len * 10 > (size_t)(h->id_mask + 1) * 7))
+                CHECK(korb_hash_index_build(c, slots, href));
+            else
+                korb_hash_index_put(h, i);
+        } else if (h->len >= KORB_HASH_INDEX_THRESHOLD) {
+            CHECK(korb_hash_index_build(c, slots, href));
+        }
+    } else if (!(h->head.flags & KORB_FL_HASH_NOINDEX)) {
         if (UNLIKELY(!korb_key_indexable(VALUE_REF_GET(kref)))) {
             h->head.flags |= KORB_FL_HASH_NOINDEX;
             ARO_GC_RAW_STORE(&h->index, NULL); h->idx_mask = 0;
@@ -2097,8 +2123,8 @@ korb_hash_remove_at(CTX *c, KorbHash *restrict h, const uint32_t idx)
     } else if (h->khints) {
         KORB_HASH_DROP_KHINTS(h);
     }
-    if (h->idx_mask) {                                  /* pair indices shifted: refill, no alloc */
-        memset(korb_strbuf_data(h->index), 0, (size_t)(h->idx_mask + 1) * sizeof(uint32_t));
+    if (h->idx_mask || h->id_mask) {                    /* pair indices shifted: refill, no alloc */
+        memset(korb_strbuf_data(h->index), 0, (size_t)((h->idx_mask | h->id_mask) + 1) * sizeof(uint32_t));
         for (uint32_t i = 0; i < h->len; i++) korb_hash_index_put(h, i);
     }
 }

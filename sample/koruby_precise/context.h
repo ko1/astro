@@ -650,6 +650,7 @@ typedef struct KorbHash {
      * set (a key whose value-equality is ambiguous to hash, e.g. Float/heap). */
     KorbStrBuf *ARO_GC_EDGE index;
     uint32_t idx_mask;               /* index capacity - 1 (0 = no index) */
+    uint32_t id_mask;                /* compare_by_identity: the same `index` bucketed by address (idx_mask stays 0) */
     /* Insertion-time #hash of each pair's key (uint64, 0 = not recorded), a raw
      * KORB_OBJ_STR_BUF.  Only keys whose equality Ruby owns record one; it lets
      * a lookup skip a pair whose key hashed differently when it was stored,
@@ -668,7 +669,7 @@ typedef struct KorbHash {
  * reorders pairs (delete/shift/clear/reject!) so pair indices can't go stale.
  * korb_hash_find falls back to linear; the next insert past the threshold
  * rebuilds.  (NOINDEX, if set, stays set.) */
-#define KORB_HASH_DROP_INDEX(h) do { ARO_GC_RAW_STORE(&(h)->index, NULL); (h)->idx_mask = 0; \
+#define KORB_HASH_DROP_INDEX(h) do { ARO_GC_RAW_STORE(&(h)->index, NULL); (h)->idx_mask = 0; (h)->id_mask = 0; \
                                      KORB_HASH_DROP_KHINTS(h); } while (0)
 #define KORB_HASH_DROP_KHINTS(h) do { ARO_GC_RAW_STORE(&(h)->khints, NULL); \
                                       (h)->khint_len = 0; (h)->khint_capa = 0; \
@@ -1872,6 +1873,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_hh->default_val);            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_hh->default_proc);           \
         if (_hh->index) ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->index); /* raw uint32 table */ \
+        _hh->id_mask = 0;  /* the address index: keys may have moved */ \
         if (_hh->khints) ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->khints); /* raw uint64 table */ \
         if (_hh->kindex) ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->kindex); /* raw uint32 table */ \
         (void)(payload_size);                                               \

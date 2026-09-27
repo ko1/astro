@@ -214,6 +214,8 @@ static RESULT korb_m_hash_cmp_by_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     (void)a;
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VALUE v = VALUE_REF_GET(self);
+    if (!(((AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_CMP_BY_ID))
+        KORB_HASH_DROP_INDEX(VAL2HASH(v));                /* built by value: rebuilt by address on the next insert */
     ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_CMP_BY_ID;
     return RESULT_OK(v);
 }
