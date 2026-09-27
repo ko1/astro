@@ -17669,6 +17669,7 @@ korb_prefer_own_lib(const char *const restrict name, char *const restrict abspat
 }
 
 /* require(name): search CWD / $LOAD_PATH; load once (false if already loaded). */
+static const char *korb_builtin_feature_path(CTX *c, const char *stem, char *buf, size_t bsz);   /* fwd */
 static RESULT
 korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -17744,10 +17745,33 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
         if (strcmp(stem, builtin_features[i]) == 0) {                 /* built-in: load-once contract by feature name */
             if (korb_feature_basename_loaded_p(c, stem)) return RESULT_OK(KORB_FALSE);
             (void)korb_mark_loaded(c->vm, stem);
-            korb_loaded_features_push(c, slots, stem);
+            char fpath[1024];                             /* rbconfig: CRuby lists <rubyarchdir>/rbconfig.rb */
+            korb_loaded_features_push(c, slots, korb_builtin_feature_path(c, stem, fpath, sizeof fpath));
             return RESULT_OK(KORB_TRUE);
         }
     return korb_raise_load_error(c, slots, namebuf);
+}
+/* The $LOADED_FEATURES entry for a built-in feature: rbconfig is a real file in
+ * CRuby (<rubyarchdir>/rbconfig.rb), and libraries match on that name (rspec's
+ * allowed-stdlib check is /rbconfig\.rb/); the others keep their bare name. */
+static const char *
+korb_builtin_feature_path(CTX *c, const char *stem, char *buf, size_t bsz)
+{
+    if (strcmp(stem, "rbconfig") != 0) return stem;
+    const VALUE rbc = korb_const_get(c->vm, korb_intern(c->vm, "RbConfig", 8));
+    if (!KORB_CLASS_P(rbc)) return stem;
+    uint32_t ci = korb_const_index_owned(c->vm, korb_intern(c->vm, "CONFIG", 6), rbc);
+    if (ci == UINT32_MAX) return stem;
+    const VALUE cfg = c->vm->const_vals[ci];
+    if (!KORB_HASH_P(cfg)) return stem;
+    for (uint32_t i = 0; i < VAL2HASH(cfg)->len; i++) {
+        const VALUE k = korb_items_data(VAL2HASH(cfg)->items)[2 * i], v = korb_items_data(VAL2HASH(cfg)->items)[2 * i + 1];
+        if (!KORB_STRING_P(k) || VAL2STR(k)->len != 11 || memcmp(korb_strbuf_data(VAL2STR(k)->buf), "rubyarchdir", 11) != 0) continue;
+        if (!KORB_STRING_P(v)) return stem;
+        snprintf(buf, bsz, "%.*s/rbconfig.rb", (int)VAL2STR(v)->len, korb_strbuf_data(VAL2STR(v)->buf));
+        return buf;
+    }
+    return stem;
 }
 /* -I DIR: prepend to $LOAD_PATH (CRuby order: the last -I ends up first). */
 void korb_load_path_unshift(CTX *c, VALUE *slots, const char *dir)

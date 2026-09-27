@@ -345,14 +345,15 @@ koruby_prelude_append_features(char *const src, size_t *const len_out)
 {
     static const char gem_src[] = "\nmodule Gem; end\n";
     static const char dym_src[] = "\nObject.autoload(:DidYouMean, \"did_you_mean\")\n";   /* CRuby 4.1: loaded on the first detailed_message */
+    const bool dym = !OPTION.no_did_you_mean && !OPTION.no_gems;   /* CRuby: --disable-gems leaves DidYouMean undefined too */
     const size_t add = (OPTION.no_gems ? 0 : sizeof gem_src - 1) +
-                       (OPTION.no_did_you_mean ? 0 : sizeof dym_src - 1);
+                       (dym ? sizeof dym_src - 1 : 0);
     if (add == 0) return src;
     char *const buf = realloc(src, *len_out + add + 1);
     if (!buf) abort();
     size_t n = *len_out;
     if (!OPTION.no_gems)          { memcpy(buf + n, gem_src, sizeof gem_src - 1); n += sizeof gem_src - 1; }
-    if (!OPTION.no_did_you_mean)  { memcpy(buf + n, dym_src, sizeof dym_src - 1); n += sizeof dym_src - 1; }
+    if (dym)                      { memcpy(buf + n, dym_src, sizeof dym_src - 1); n += sizeof dym_src - 1; }
     buf[n] = '\0';
     *len_out = n;
     return buf;
