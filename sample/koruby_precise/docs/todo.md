@@ -5981,3 +5981,8 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
 - JSON.generate の深い入れ子: koruby 2,000〜4,000 段で SystemStackError（CRuby の C 実装は 50,000 段まで）。
   lib/json/ext/generator.rb の gen ↔ array/object が Ruby 再帰で、1 段あたりの C stack が素朴な相互再帰の 2〜4 倍
   （理由は未特定）。明示スタックの反復に書き直すのが本筋。parse は反復なので 100,000 段でも通る。
+- 無名クラスの class_eval(String) の中で作ったブロックが外に出ると定数が引けない:
+  `pr = Class.new { self::C = 1 }.class_eval('proc { C }'); Other.class_eval(&pr)` が NameError（CRuby は 1）。
+  anon_class_block の定数は実行時の self で cref を引くので、instance_exec / class_eval で self が変わると別の
+  cref になる。`proc { def m; C; end }` を他所で評価したときの anon_cref_method も同じ（codex r2 の 5 番）。
+  ブロック生成時の cref をブロックフレームから辿れるようにするのが本筋。

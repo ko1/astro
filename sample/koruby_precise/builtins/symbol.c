@@ -1244,7 +1244,8 @@ static RESULT korb_m_meth_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     slots[1] = VALUE_SLICE_GET(a, 0);                               /* obj */
     const uint32_t mid = m->mid;
     if (UNLIKELY(!korb_meth_bind_ok(c, slots, mid))) {
-        char onm[192]; korb_class_qname_into(c, slots[0], onm, sizeof onm);   /* the owner's NAME, not "Class" */
+        char onm[192];                                              /* the owner's NAME, not "Class"; #<Class:0x…> if anonymous */
+        if (VAL2CLASS(slots[0])->name_sym) korb_class_qname_into(c, slots[0], onm, sizeof onm); else korb_desc_inspect(c, slots[0], onm, sizeof onm);
         return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be an instance of %s", onm);
     }
     struct korb_method *const pinned = VAL2METH(VALUE_REF_GET(self))->entry;   /* carry the unbound's definition over */
@@ -1271,7 +1272,8 @@ static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     slots[0] = m->unbound ? m->recv : m->owner;            /* unbound: recv is the owner class */
     slots[1] = VALUE_SLICE_GET(a, 0);                      /* bind target */
     if (KORB_CLASS_P(slots[0]) && UNLIKELY(!korb_meth_bind_ok(c, slots, mid))) {   /* same test as #bind */
-        char onm[192]; korb_class_qname_into(c, slots[0], onm, sizeof onm);
+        char onm[192];
+        if (VAL2CLASS(slots[0])->name_sym) korb_class_qname_into(c, slots[0], onm, sizeof onm); else korb_desc_inspect(c, slots[0], onm, sizeof onm);
         return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be an instance of %s", onm);
     }
     if (UNLIKELY(VAL2METH(VALUE_REF_GET(self))->default_new)) {   /* Class#new rebound: run the allocator */
