@@ -226,6 +226,21 @@ static void korb_fstr_index_put(struct korb_vm *const vm, const uint32_t i) {
     while (vm->fstr_idx[slot] != 0) slot = (slot + 1) & vm->fstr_idx_mask;
     vm->fstr_idx[slot] = i + 1;
 }
+/* The value a `/.../o` node computed on its first run (0 = not yet). */
+VALUE korb_once_get(const struct korb_vm *const vm, const struct Node *const n) {
+    for (uint32_t i = 0; i < vm->once_cnt; i++) if (vm->once_keys[i] == n) return vm->once_vals[i];
+    return 0;
+}
+void korb_once_set(struct korb_vm *const vm, const struct Node *const n, const VALUE v) {
+    if (vm->once_cnt == vm->once_capa) {
+        vm->once_capa = vm->once_capa ? vm->once_capa * 2 : 8;
+        vm->once_keys = realloc(vm->once_keys, sizeof(*vm->once_keys) * vm->once_capa);
+        vm->once_vals = realloc(vm->once_vals, sizeof(VALUE) * vm->once_capa);
+        if (!vm->once_keys || !vm->once_vals) abort();
+    }
+    vm->once_keys[vm->once_cnt] = n;
+    vm->once_vals[vm->once_cnt++] = v;
+}
 VALUE korb_fstr_get(CTX *c, VALUE *slots, const char *bytes, uint32_t len, uint32_t enc) {
     struct korb_vm *const vm = c->vm;
     { const VALUE hit = korb_fstr_find(vm, bytes, len, enc); if (hit) return hit; }

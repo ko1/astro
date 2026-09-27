@@ -1198,6 +1198,10 @@ struct korb_vm {
     VALUE    *fstr_vals;
     uint32_t  fstr_cnt, fstr_capa;
     uint32_t *fstr_idx;               /* open-addressing index into fstr_vals (entry+1, 0 = empty) */
+    /* `/#{x}/o`: the Regexp each such node built the first time, keyed by the node */
+    const struct Node **once_keys;
+    VALUE    *once_vals;
+    uint32_t  once_cnt, once_capa;
     uint32_t  fstr_idx_mask;
 
     /* Per-object data with no slot in the object, as weak identity tables
@@ -1695,6 +1699,9 @@ struct CTX_struct {
     /* frozen String-literal pool: same rule */                              \
     for (uint32_t _si = 0; _si < (c)->vm->fstr_cnt; _si++) {                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->fstr_vals[_si]);      \
+    }                                                                        \
+    for (uint32_t _oi2 = 0; _oi2 < (c)->vm->once_cnt; _oi2++) {              \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->once_vals[_oi2]);     \
     }                                                                        \
     for (uint32_t _pi = 0; _pi < (c)->vm->privconst_cnt; _pi++) {            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->privconsts[_pi].owner); \

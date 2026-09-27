@@ -129,6 +129,21 @@ node_regexp_dyn(CTX *c, NODE *n, VALUE *slots, uint32_t flags, VALUE src@child)
     return korb_regexp_new(c, slots, src, flags);
 }
 
+// `/...#{ }.../o` — interpolated and compiled on the first run only; later runs
+// return that same Regexp (kept per node in the VM, a GC root).
+NODE_DEF
+node_regexp_once(CTX *c, NODE *n, VALUE *slots, uint32_t flags, NODE *src)
+{
+    const VALUE hit = korb_once_get(c->vm, n);
+    if (hit) return RESULT_OK(hit);
+    slots[0] = UNWRAP(EVAL_ARG(c, src));
+    const VALUE re = UNWRAP(korb_regexp_new(c, slots + 1, slots[0], flags));
+    const VALUE again = korb_once_get(c->vm, n);      /* the interpolation itself may have run this node */
+    if (again) return RESULT_OK(again);
+    korb_once_set(c->vm, n, re);
+    return RESULT_OK(re);
+}
+
 // Special regex global reads: $1..$9 (kind 100+n), $& (0), $` (1), $' (2), $+ (3).
 // Reads the last MatchData ($~) and returns the corresponding piece (or nil).
 NODE_DEF

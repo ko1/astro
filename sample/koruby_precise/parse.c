@@ -5028,6 +5028,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                                            PM_REGULAR_EXPRESSION_FLAGS_UTF_8);
         flags |= kp_re_forced_flags(in->base.flags);
         NODE *src;
+        if (in->base.flags & PM_REGULAR_EXPRESSION_FLAGS_ONCE) {   /* `/.../o`: the interpolation runs once */
+            src = build_dstr_enc(tc, in->parts.nodes, in->parts.size, KORB_ENC_UTF8);   /* EVAL'd at this node's own cursor */
+            return ALLOC_node_regexp_once(flags, src);
+        }
         WITH_CHAIN(tc, kind_node_regexp_dyn.slot_count, (src = build_dstr_enc(tc, in->parts.nodes, in->parts.size, KORB_ENC_UTF8)));   /* the /u /e /s /n modifier decides, not the file */
         return ALLOC_node_regexp_dyn(flags, src);
       }
