@@ -606,21 +606,33 @@ static bool korb_obj_kind_of_p(CTX *c, VALUE sv, VALUE target) {
         cls = korb_dispatch_class(c, sv);
     else
         cls = korb_class_obj_of(c, sv);
+    const VALUE start = cls;
+    const bool track = c->vm->module_in_module;
+    bool nested = false;                              /* a member module carrying modules of its own */
     while (KORB_CLASS_P(cls)) {
         if (cls == target) return true;
         VALUE pre = VAL2CLASS(cls)->prepended;           /* prepended modules count */
         if (pre != KORB_NIL) {
             const KorbArray *pa = VAL2ARY(pre);
-            for (uint32_t j = 0; j < pa->len; j++) if (korb_items_data(pa->items)[j] == target) return true;
+            for (uint32_t j = 0; j < pa->len; j++) {
+                const VALUE m = korb_items_data(pa->items)[j];
+                if (m == target) return true;
+                if (UNLIKELY(track)) nested |= KORB_CLASS_P(m) && (VAL2CLASS(m)->prepended != KORB_NIL || VAL2CLASS(m)->included != KORB_NIL);
+            }
         }
         VALUE inc = VAL2CLASS(cls)->included;            /* included/extended modules count */
         if (inc != KORB_NIL) {
             const KorbArray *ia = VAL2ARY(inc);
-            for (uint32_t j = 0; j < ia->len; j++) if (korb_items_data(ia->items)[j] == target) return true;
+            for (uint32_t j = 0; j < ia->len; j++) {
+                const VALUE m = korb_items_data(ia->items)[j];
+                if (m == target) return true;
+                if (UNLIKELY(track)) nested |= KORB_CLASS_P(m) && (VAL2CLASS(m)->prepended != KORB_NIL || VAL2CLASS(m)->included != KORB_NIL);
+            }
         }
         cls = VAL2CLASS(cls)->superclass;
     }
-    return false;
+    /* rare: a module that only a prepended / included MODULE brings along */
+    return nested && korb_class_has_ancestor(start, target);
 }
 static RESULT korb_m_obj_is_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE target = VALUE_SLICE_GET(a, 0);

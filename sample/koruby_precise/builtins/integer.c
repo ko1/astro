@@ -150,7 +150,7 @@ static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
          * integer as its own byte sequence (CRuby's rb_enc_uint_chr). */
         bool unicode = false;
         uint32_t len = korb_tc_bytes_chr(ename, (uint32_t)n, b, &unicode);
-        if (unicode) len = korb_tc_encode_name(ename, (uint32_t)n, b);
+        if (unicode) len = (n >= 0xD800 && n <= 0xDFFF) ? 0 : korb_tc_encode_name(ename, (uint32_t)n, b);   /* a surrogate is no character */
         if (len == 0)
             return korb_raise(c, slots, KORB_E_RANGE, 0, "invalid codepoint 0x%lX in %s", (unsigned long)n, ename);
         RESULT ur = korb_str_new(c, slots, (const char *)b, len);

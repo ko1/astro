@@ -1355,6 +1355,7 @@ struct korb_vm {
     /* set when any class defines `!`: node_not then dispatches instead of
      * negating in place (BasicObject proxies such as Delegator rely on it). */
     bool bang_redefined;
+    bool module_in_module;   /* some module includes / prepends a module: is_a? must look through nested ones */
     /* set when Hash#[] is redefined: node_aref's Hash fast path then deopts. */
     bool hash_aref_redefined;
     /* set when Method#[] is redefined: node_aref's Method fast path then deopts.

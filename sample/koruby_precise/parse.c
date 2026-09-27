@@ -1907,12 +1907,9 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
         if (ps) {
             if (ps->block && !kp_no_block_param(ps->block)) {   /* `|&blk|`: bind the forwarded block into its local (`&nil` binds nothing) */
                 const pm_node_t *const bpn = (const pm_node_t *)ps->block;
-                if (!((const pm_block_parameter_node_t *)bpn)->name) {
-                    pop_frame(tc);
-                    return kp_unsupported(tc, bpn, "anonymous/forwarding block parameter (&)");
-                }
-                blk_param_slot = (int32_t)lvar_index(tc, bpn,
-                    ((const pm_block_parameter_node_t *)bpn)->name);
+                if (((const pm_block_parameter_node_t *)bpn)->name)   /* `|&|` names nothing (the block cannot forward it): bind nothing */
+                    blk_param_slot = (int32_t)lvar_index(tc, bpn,
+                        ((const pm_block_parameter_node_t *)bpn)->name);
             }
             if (ps->keywords.size || ps->keyword_rest) {   /* keyword params (built after positional) */
                 kw_info = malloc(sizeof(*kw_info));

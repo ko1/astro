@@ -5141,13 +5141,31 @@ static struct korb_method *korb_method_lookup(struct korb_vm *vm, uint32_t mid);
 static struct korb_method *korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def);   /* fwd */
 /* true if `anc` is `klass` or one of its ancestors (superclass chain + included
  * + prepended modules). */
+/* `mod` is `anc`, or has it among its own prepends / includes (nested: a module
+ * prepended into a prepended module is an ancestor too). */
+static bool korb_module_has(const VALUE mod, const VALUE anc, const int depth) {
+    if (mod == anc) return true;
+    if (!KORB_CLASS_P(mod) || depth > 32) return false;
+    const VALUE lists[2] = { VAL2CLASS(mod)->prepended, VAL2CLASS(mod)->included };
+    for (int l = 0; l < 2; l++) {                    /* the direct members first: the common answer */
+        if (lists[l] == KORB_NIL) continue;
+        const KorbArray *const a = VAL2ARY(lists[l]);
+        for (uint32_t j = 0; j < a->len; j++) if (korb_items_data(a->items)[j] == anc) return true;
+    }
+    for (int l = 0; l < 2; l++) {                    /* then only members that carry modules of their own */
+        if (lists[l] == KORB_NIL) continue;
+        const KorbArray *const a = VAL2ARY(lists[l]);
+        for (uint32_t j = 0; j < a->len; j++) {
+            const VALUE m = korb_items_data(a->items)[j];
+            if (KORB_CLASS_P(m) && (VAL2CLASS(m)->prepended != KORB_NIL || VAL2CLASS(m)->included != KORB_NIL) &&
+                korb_module_has(m, anc, depth + 1)) return true;
+        }
+    }
+    return false;
+}
 static bool korb_class_has_ancestor(VALUE klass, VALUE anc) {
     while (KORB_CLASS_P(klass)) {
-        if (klass == anc) return true;
-        const VALUE pre = VAL2CLASS(klass)->prepended;
-        if (pre != KORB_NIL) { const KorbArray *pa = VAL2ARY(pre); for (uint32_t j = 0; j < pa->len; j++) if (korb_items_data(pa->items)[j] == anc) return true; }
-        const VALUE inc = VAL2CLASS(klass)->included;
-        if (inc != KORB_NIL) { const KorbArray *ia = VAL2ARY(inc); for (uint32_t j = 0; j < ia->len; j++) if (korb_items_data(ia->items)[j] == anc) return true; }
+        if (korb_module_has(klass, anc, 0)) return true;
         klass = VAL2CLASS(klass)->superclass;
     }
     return false;
@@ -5439,6 +5457,17 @@ static void
 korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
 {
     struct korb_vm *const vm = c->vm;
+    /* a method added to a module a builtin already includes / prepends counts as
+     * redefining it there (`class Integer; prepend M; end`, then `M#+`) */
+    if (vm->boot_done && KORB_CLASS_P(klass) && VAL2CLASS(klass)->is_module) {
+        static const int builtins[] = { KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_STRING, KORB_C_ARRAY, KORB_C_HASH,
+                                        KORB_C_SYMBOL, KORB_C_RANGE, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE,
+                                        KORB_C_RATIONAL, KORB_C_COMPLEX, KORB_C_METHOD };
+        for (size_t i = 0; i < sizeof builtins / sizeof builtins[0]; i++) {
+            const VALUE b = korb_builtin_class_obj(vm, builtins[i]);
+            if (KORB_CLASS_P(b) && b != klass && korb_class_has_ancestor(b, klass)) korb_check_basic_op_redef(c, b, mid);
+        }
+    }
     /* A user-defined `!` (Delegator, BasicObject proxies) makes node_not dispatch
      * instead of negating in place; one flag for the whole VM keeps the common
      * `!bool` free. */
@@ -6969,6 +6998,7 @@ RESULT
 korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
 {
     c->vm->const_serial++;   /* the ancestry changed: constant lookups can resolve differently */
+    if (KORB_CLASS_P(klass) && VAL2CLASS(klass)->is_module) c->vm->module_in_module = true;
     if (UNLIKELY(VALUE_SLICE_LEN(mods) == 0))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     { RESULT fr = korb_check_def_frozen(c, slots, klass); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* include/extend on a frozen class/object → FrozenError */
@@ -7015,6 +7045,7 @@ RESULT
 korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
 {
     c->vm->const_serial++;   /* the ancestry changed: constant lookups can resolve differently */
+    if (KORB_CLASS_P(klass) && VAL2CLASS(klass)->is_module) c->vm->module_in_module = true;
     if (UNLIKELY(VALUE_SLICE_LEN(mods) == 0))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     { RESULT fr = korb_check_def_frozen(c, slots, klass); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* prepend on a frozen class → FrozenError */
