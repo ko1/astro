@@ -28,6 +28,7 @@ typedef struct KorbIORep {
     uint8_t  sig_epipe;              /* the process's own STDOUT: an uncaught EPIPE ends by SIGPIPE (reopen drops it) */
     uint8_t  univ;                   /* universal newline on read ("rt", newline: :universal): text readers see \r\n / \r as \n */
     uint8_t  nl_skip;                /* univ: the last converted chunk ended in a \r, so a leading \n is dropped */
+    int8_t   wnl;                    /* memo of the write decorator (korb_io_write_newline); -1 = not read yet */
     int      slow_fd1;               /* fd + 1 that `slow` was worked out for; 0 = not yet */
     uint32_t lineno;                 /* IO#lineno: lines handed out by #gets */
     int      enc_idx;                /* memo: the encoding a read result carries (-1 = ask the prelude) */
@@ -62,6 +63,7 @@ static uint32_t korb_io_register(struct korb_vm *vm, int fd, bool sync) {
     rep->fd = fd;
     rep->sync = sync ? 1 : 0;
     rep->enc_idx = rep->benc_idx = -1;                  /* unresolved (see korb_io_read_enc) */
+    rep->wnl = -1;
     rep->wenc_idx = KORB_IO_ENC_UNSET;                  /* -1 already means "do not transcode" */
     return korb_io_register_rep(vm, rep);
 }
@@ -515,6 +517,7 @@ void korb_io_flush_std(struct korb_vm *const vm) {
 static uint32_t korb_io_read_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep);   /* fwd */
 static uint32_t korb_io_byte_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep);   /* fwd */
 static int korb_io_write_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep);       /* fwd */
+static bool korb_io_wconv(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep);          /* fwd */
 static RESULT korb_io_apply_read_enc(CTX *c, VALUE *slots, VALUE_REF io, VALUE *vslot, uint32_t tag);   /* fwd */
 static RESULT korb_io_make(CTX *c, VALUE *slots, VALUE klass, int fd, int rw) {
     const uint32_t idx = korb_io_register(c->vm, fd, false);
@@ -697,7 +700,11 @@ static RESULT korb_m_io_printf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
     KorbIORep *const rep2 = korb_io_rep(c, slots[0]);    /* re-fetch after possible GC */
     if (!korb_io_open_p(rep2)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); KORB_IO_WR(c, slots + 1, rep2, korb_strbuf_data(s->buf), s->len); }
+    if (KORB_STRING_P(fr.value) && UNLIKELY(korb_io_wconv(c, slots + 1, VALUE_REF_AT(&slots[0]), rep2))) {
+        slots[1] = fr.value;
+        CHECK(korb_send(c, slots + 2, korb_intern(c->vm, "write", 5), 0, 1));
+    }
+    else if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); KORB_IO_WR(c, slots + 1, rep2, korb_strbuf_data(s->buf), s->len); }
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_io_capture_default_internal(CTX *c, VALUE *slots, VALUE_REF io);   /* fwd (defined below) */
@@ -795,21 +802,31 @@ static RESULT korb_io_check_ascii_only(CTX *c, VALUE *slots, VALUE v) {
     }
     return RESULT_OK(KORB_NIL);
 }
-/* The `newline:` write decorator: 0 = none, 1 = :crlf, 2 = :cr.  Only the open
- * options set it, so the plain ivar is authoritative without resolving. */
-static int korb_io_write_newline(CTX *c, VALUE io) {
+/* The `newline:` write decorator: 0 = none, 1 = :crlf, 2 = :cr, 3 = :lf.  Only
+ * the open options set it, so the plain ivar is authoritative without resolving. */
+static int korb_io_write_newline(CTX *c, VALUE io, KorbIORep *const rep) {
+    if (LIKELY(rep != NULL && rep->wnl >= 0)) return rep->wnl;
     const VALUE v = korb_ivar_get(c, io, ID2SYM(korb_intern(c->vm, "@__nl", 5)));
-    if (!SYMBOL_P(v)) return 0;
-    const char *const n = korb_sym_name(c->vm, SYM2ID(v));
-    return strcmp(n, "crlf") == 0 ? 1 : strcmp(n, "cr") == 0 ? 2 : 0;
+    const char *const n = SYMBOL_P(v) ? korb_sym_name(c->vm, SYM2ID(v)) : "";
+    const int k = strcmp(n, "crlf") == 0 ? 1 : strcmp(n, "cr") == 0 ? 2 : strcmp(n, "lf") == 0 ? 3 : 0;
+    if (rep != NULL) rep->wnl = (int8_t)k;
+    return k;
 }
-/* "\n" → "\r\n" (crlf) or "\r" (cr).  Returns the argument untouched when the
- * String holds no newline, so the common case allocates nothing. */
+/* IO#__io_wnl_reset — the prelude changed @__nl */
+static RESULT korb_m_io_wnl_reset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (rep != NULL) rep->wnl = -1;
+    return RESULT_OK(KORB_NIL);
+}
+/* "\n" → "\r\n" (crlf) or "\r" (cr); "\r\n" / "\r" → "\n" (lf).  Returns the
+ * argument untouched when there is nothing to convert, so that case allocates nothing. */
 static RESULT korb_io_apply_newline(CTX *c, VALUE *slots, VALUE v, int nl) {
     const KorbString *s = VAL2STR(v);
     const char *const d = korb_strbuf_data(s->buf);
+    const char hit = nl == 3 ? '\r' : '\n';
     uint32_t nlf = 0;
-    for (uint32_t k = 0; k < s->len; k++) if (d[k] == '\n') nlf++;
+    for (uint32_t k = 0; k < s->len; k++) if (d[k] == hit) nlf++;
     if (nlf == 0) return RESULT_OK(v);
     slots[0] = v;                                        /* the alloc below moves the source */
     KorbString *const r = korb_str_alloc(c, slots + 1, s->len + (nl == 1 ? nlf : 0));
@@ -818,12 +835,20 @@ static RESULT korb_io_apply_newline(CTX *c, VALUE *slots, VALUE v, int nl) {
     char *const out = korb_strbuf_data(r->buf);
     uint32_t o = 0;
     for (uint32_t k = 0; k < s->len; k++) {
-        if (src[k] != '\n') { out[o++] = src[k]; continue; }
+        if (src[k] != hit) { out[o++] = src[k]; continue; }
+        if (nl == 3) { out[o++] = '\n'; if (k + 1 < s->len && src[k + 1] == '\n') k++; continue; }
         if (nl == 1) out[o++] = '\r';
         out[o++] = (nl == 1) ? '\n' : '\r';
     }
+    r->len = o;
+    korb_strbuf_data(r->buf)[o] = '\0';
     KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(slots[0]));
     return RESULT_OK((VALUE)r);
+}
+/* Does a write to this stream convert (newline decorator or external encoding)?
+ * print / puts / << / printf then go through #write's converting path. */
+static bool korb_io_wconv(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep) {
+    return korb_io_write_newline(c, VALUE_REF_GET(io), rep) != 0 || korb_io_write_enc(c, slots, io, rep) >= 0;
 }
 static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
@@ -841,10 +866,14 @@ static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const int wenc_idx = korb_io_write_enc(c, slots, self, rep);
     const bool xcode = wenc_idx >= 0;
     const char *const wenc = xcode ? korb_enc_name_of(c->vm, (uint32_t)wenc_idx) : NULL;
-    const int nl = korb_io_write_newline(c, VALUE_REF_GET(self));
+    const int nl = korb_io_write_newline(c, VALUE_REF_GET(self), rep);
     size_t nb = 0;
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         VALUE v = VALUE_SLICE_GET(a, i);
+        if (nl != 0 && KORB_STRING_P(v)) {             /* CRuby decorates first, then transcodes */
+            slots[1] = v;
+            v = UNWRAP(korb_io_apply_newline(c, slots + 2, slots[1], nl));
+        }
         if (xcode && KORB_STRING_P(v)) {
             const uint32_t se = KORB_STR_ENC(v);
             /* CRuby pivots every conversion through UTF-8, and an ASCII-8BIT
@@ -862,7 +891,6 @@ static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             }
         }
         slots[1] = v;
-        if (nl != 0 && KORB_STRING_P(slots[1])) slots[1] = UNWRAP(korb_io_apply_newline(c, slots + 2, slots[1], nl));
         const RESULT r = korb_io_emit(c, slots + 2, slots[1], rep, &nb);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -885,7 +913,8 @@ static VALUE korb_io_sep_global(CTX *c, const char *name, uint32_t len) {
 }
 static RESULT korb_m_io_print(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    const bool via_write = korb_io_write_redefined(c, VALUE_REF_GET(self));
+    const bool via_write = korb_io_write_redefined(c, VALUE_REF_GET(self)) ||
+                           (korb_io_open_p(rep) && korb_io_wconv(c, slots, self, rep));
     if (!via_write) {
         if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
         KORB_IO_NEED_WRITE(c, slots, self);
@@ -926,6 +955,11 @@ static RESULT korb_m_io_lshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_WRITE(c, slots, self);
+    if (UNLIKELY(korb_io_wconv(c, slots, self, rep))) {   /* newline / transcoding: #write's path */
+        slots[0] = VALUE_REF_GET(self); slots[1] = VALUE_SLICE_GET(a, 0);
+        CHECK(korb_send(c, slots + 2, korb_intern(c->vm, "write", 5), 0, 1));
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
     size_t nb = 0;
     const RESULT r = korb_io_emit(c, slots, VALUE_SLICE_GET(a, 0), rep, &nb);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -936,10 +970,10 @@ static RESULT korb_m_io_puts(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     const uint32_t n = VALUE_SLICE_LEN(a);
     /* an empty puts still goes through the stream's newline: decorator */
-    const int nlk = korb_io_write_newline(c, VALUE_REF_GET(self));
-    const char *const eol = nlk == 1 ? "\r\n" : nlk == 2 ? "\r" : "\n";
-    const size_t eoln = (nlk == 1) ? 2 : 1;
-    if (korb_io_write_redefined(c, VALUE_REF_GET(self))) {   /* render into memory, hand the text to #write */
+    const char *const eol = "\n";                      /* a converting stream decorates it in #write */
+    const size_t eoln = 1;
+    if (korb_io_write_redefined(c, VALUE_REF_GET(self)) ||   /* render into memory, hand the text to #write */
+        (korb_io_open_p(rep) && korb_io_wconv(c, slots, self, rep))) {
         KorbIORep mem = KORB_IO_MEM_SINK;
         if (n == 0) (void)korb_io_wr(&mem, eol, eoln);
         else for (uint32_t i = 0; i < n; i++) {
@@ -2995,7 +3029,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("__init_fd", init_fd, -1);
     IOM("ioctl", ioctl, -1);   IOM("fcntl", fcntl, -1);
     IOM("binmode", binmode, 0);      IOM("ungetc", ungetc, 1);
-    IOM("__io_set_univ", set_univ, 1);
+    IOM("__io_set_univ", set_univ, 1); IOM("__io_wnl_reset", wnl_reset, 0);
     IOM("ungetbyte", ungetbyte, 1);
     IOM("syswrite", syswrite, 1);    IOM("sysread", sysread, -1);
     IOM("pread", pread, -1);         IOM("pwrite", pwrite, -1);

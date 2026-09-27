@@ -1078,7 +1078,8 @@ static size_t korb_fd_write_all(int fd, const char *p, size_t n) {
  * other option).  An `open_args:` without a mode leaves the default "r" in
  * place — that is exactly why `IO.write(f, s, open_args: [{…}])` is an IOError. */
 static const char *korb_io_bom_at(const char *p, uint32_t n, uint32_t *blen);   /* fwd (builtins/io.c) */
-struct korb_open_args { char mode[32]; int enc; int enc2; bool bom; int8_t univ; bool text; };   /* enc2: internal (transcode target); bom: a "BOM|enc" mode prefix; univ: -1 unset / newline option says 0|1; text: textmode: true */
+struct korb_open_args { char mode[32]; int enc; int enc2; bool bom; int8_t univ; bool text; int8_t wnl; };   /* wnl: write decorator 0 / 1 crlf / 2 cr / 3 lf */
+static RESULT korb_io_apply_newline(CTX *c, VALUE *slots, VALUE v, int nl);   /* fwd (builtins/io.c) */   /* enc2: internal (transcode target); bom: a "BOM|enc" mode prefix; univ: -1 unset / newline option says 0|1; text: textmode: true */
 
 /* Universal newline in place: \r\n and \r become \n.  *nl_skip carries a trailing
  * \r into the next chunk, whose leading \n it then drops.  Returns the new length. */
@@ -1124,14 +1125,20 @@ static RESULT korb_open_args_hash(CTX *c, VALUE *slots, VALUE h, struct korb_ope
     {   /* newline: wins over the *_newline: flags; nil means not given (CRuby) */
         const int32_t nx = korb_hash_find(hh, ID2SYM(korb_intern(c->vm, "newline", 7)));
         const VALUE nv = nx >= 0 ? korb_items_data(hh->items)[2 * nx + 1] : KORB_NIL;
-        if (nv != KORB_NIL) o->univ = (nv == ID2SYM(korb_intern(c->vm, "universal", 9))) ? 1 : 0;
+        if (nv != KORB_NIL) {
+            o->univ = (nv == ID2SYM(korb_intern(c->vm, "universal", 9))) ? 1 : 0;
+            o->wnl = nv == ID2SYM(korb_intern(c->vm, "crlf", 4)) ? 1 : nv == ID2SYM(korb_intern(c->vm, "cr", 2)) ? 2
+                   : nv == ID2SYM(korb_intern(c->vm, "lf", 2)) ? 3 : 0;
+        }
         else {
             static const char *const nk[] = { "universal_newline", "crlf_newline", "cr_newline", "lf_newline" };
             for (size_t i = 0; i < 4; i++) {
                 const int32_t kx = korb_hash_find(hh, ID2SYM(korb_intern(c->vm, nk[i], (uint32_t)strlen(nk[i]))));
                 if (kx < 0 || korb_items_data(hh->items)[2 * kx + 1] == KORB_NIL) continue;
                 if (o->univ < 0) o->univ = 0;
-                if (i == 0 && KORB_TRUTHY(korb_items_data(hh->items)[2 * kx + 1])) o->univ = 1;
+                if (!KORB_TRUTHY(korb_items_data(hh->items)[2 * kx + 1])) continue;
+                if (i == 0) o->univ = 1;
+                else if (o->wnl == 0) o->wnl = (int8_t)i;   /* crlf 1, cr 2, lf 3 */
             }
         }
         const int32_t tx = korb_hash_find(hh, ID2SYM(korb_intern(c->vm, "textmode", 8)));
@@ -1201,6 +1208,7 @@ korb_io_open_args(CTX *c, VALUE *slots, VALUE opts, const char *defmode, struct 
     o->bom = false;
     o->univ = -1;
     o->text = false;
+    o->wnl = 0;
     if (!KORB_HASH_P(opts)) return RESULT_OK(KORB_NIL);
     const int32_t ox = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(c->vm, "open_args", 9)));
     if (ox >= 0 && KORB_ARRAY_P(korb_items_data(VAL2HASH(opts)->items)[2 * ox + 1])) {
@@ -1389,6 +1397,7 @@ static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 1)));
         slots[1] = sr.value;
     }
+    if (oa.wnl != 0) slots[1] = UNWRAP(korb_io_apply_newline(c, slots + 2, slots[1], oa.wnl));   /* before transcoding (CRuby) */
     /* IO.write opens the file itself, so the external encoding has to be applied
      * here — there is no IO object whose write path would do it. */
     if (oa.enc >= 0 && (uint32_t)oa.enc != KORB_ENC_BINARY) {

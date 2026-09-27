@@ -211,6 +211,7 @@ class IO
       raise ArgumentError, "unexpected value for newline option"
     end
     @__nl = v
+    __io_wnl_reset
   end
 
 
@@ -252,6 +253,10 @@ class IO
     # with, before :binmode below can turn a text stream binary
     __check_newline_opt(opts[:newline]) unless opts[:newline].nil?   # nil = not given (CRuby)
     __check_newline_binmode(opts)
+    if opts[:newline].nil?                     # the boolean spellings of the write decorator
+      nl = (:crlf if opts[:crlf_newline]) || (:cr if opts[:cr_newline]) || (:lf if opts[:lf_newline])
+      __check_newline_value(nl) if nl
+    end
     __apply_univ_opts(opts)
     __binmode_flag if opts[:binmode]   # the option only flips byte semantics; an explicit encoding: still wins
     ext = __enc_opt(opts[:external_encoding])
