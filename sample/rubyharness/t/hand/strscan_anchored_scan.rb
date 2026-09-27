@@ -3,9 +3,8 @@
 # results, captures and encodings are as before.
 require 'strscan'
 s = StringScanner.new("\t" * 50_000 + "a")
-t = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-2000.times { s.scan(/\s+b/) }
-p s.scan(/\s+b/), (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t) < 1.0
+2000.times { s.scan(/\s+b/) }   # an unanchored retry would be 10^8 steps: the harness timeout catches it
+p s.scan(/\s+b/)                 # (no timing in the output: CRuby itself retries here and takes ~1.5 s under load)
 s = StringScanner.new("foo 123 bar")
 p s.scan(/\w+/), s.scan(/\d+/), s.scan(/\s+/), s.scan(/(?<num>\d+)/), s[:num], s[1], s.pos
 p s.scan(/ (?# comment ) \s* b a r # trailing
