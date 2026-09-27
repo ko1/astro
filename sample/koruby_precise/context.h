@@ -481,6 +481,8 @@ typedef struct KorbProc {
     uint8_t  refined_copy;           /* refine_set came from Proc#refined, not from the defining scope */
     uint8_t  ruby2_kw;               /* Proc#ruby2_keywords — same meaning as korb_method.ruby2_kw */
     uint8_t  brk_orphan;             /* made by `proc { }` / Proc.new: its `break` target (that call) is gone */
+    uint8_t  brk_own;                /* made by a method's `&b`: brk_ctx names the thread / fiber its `break` target runs on */
+    uintptr_t brk_ctx;
 } KorbProc;
 
 /* Fiber: a stackful coroutine.  The moving GC object is a thin handle; all
@@ -1459,6 +1461,13 @@ struct korb_vm {
     /* the last UTF-16/32 regexp subject decoded to UTF-8 (regexp.c); last so no offset moves */
     void *re_wide_cache;
 };
+/* The thread / fiber running now, as one word (main thread and root fiber are 0,
+ * so a Proc made before the thread subsystem booted still matches the main thread). */
+static inline uintptr_t korb_exec_ctx_key(const struct korb_vm *const vm) {
+    const uintptr_t t = vm->cur_thread == vm->main_thread ? 0 : (uintptr_t)vm->cur_thread;
+    const uintptr_t f = vm->running_fiber == vm->root_fiber ? 0 : (uintptr_t)vm->running_fiber;
+    return t ^ (f * 31u);
+}
 
 /* -----------------------------------------------------------------------------
  * CTX

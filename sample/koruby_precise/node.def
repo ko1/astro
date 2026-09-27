@@ -3030,6 +3030,10 @@ node_blkparam(CTX *c, NODE *n, VALUE *slots, int32_t dst_off, int32_t biseq_off,
     VALUE cself = slots[cself_off];
     RESULT pr = korb_make_proc(c, slots, iseq, denv, cself, 0);
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+    if (KORB_PROC_P(pr.value)) {                         /* its `break` can only end this call on this thread / fiber */
+        VAL2PROC(pr.value)->brk_own = 1;
+        VAL2PROC(pr.value)->brk_ctx = korb_exec_ctx_key(c->vm);
+    }
     slots[dst_off] = pr.value;
     return RESULT_OK(pr.value);
 }
