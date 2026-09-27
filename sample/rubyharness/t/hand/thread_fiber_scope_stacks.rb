@@ -36,3 +36,19 @@ f = Fiber.new { begin; raise "F"; rescue; Fiber.yield; $!.message; end }
 f.resume
 r = begin; raise "M"; rescue; x = f.resume; [x, $!.message]; end
 p r, $!
+class Kd; end
+q = Queue.new; o = Queue.new
+ta = Thread.new { Kd.class_eval { o << 1; q.pop; def in_kd = 1 } }
+o.pop
+tb = Thread.new { def top_b = 2; :ok }
+tb.join; q << 1; ta.join
+p Kd.instance_methods(false).sort, Object.private_instance_methods(false).include?(:top_b)
+f = Fiber.new { Kd.class_eval { Fiber.yield; def in_kd2 = 1 } }
+f.resume
+def top_m = 3
+f.resume
+p Kd.instance_methods(false).sort, Object.private_instance_methods(false).include?(:top_m)
+class Kf; end
+Kf.class_eval { Fiber.new { def via_fiber = 1 }.resume }
+Kf.class_eval { Thread.new { def via_thread = 2 }.join }
+p Kf.instance_methods(false).sort

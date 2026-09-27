@@ -498,6 +498,9 @@ struct korb_scope_stacks {
     VALUE *cref_saved;   uint32_t cref_n, cref_cap;
     VALUE *bref_saved;   uint32_t bref_n, bref_cap;
     VALUE *errinfo;      uint32_t errinfo_n, errinfo_cap;
+    /* the current cref state (what korb_cref_push saves): a fiber that yields
+     * inside class_eval must not leave its definee to the resumer */
+    VALUE def_definee, cvar_cref, eval_cref, eval_outer_cref, kwargs_park;
 };
 
 typedef struct KorbFiberRep {
@@ -1654,10 +1657,19 @@ static inline void korb_scope_stacks_swap(CTX *const c, struct korb_scope_stacks
     s->cref_saved = c->cref_saved;     s->cref_n = c->cref_n;     s->cref_cap = c->cref_cap;
     s->bref_saved = c->bref_saved;     s->bref_n = c->bref_n;     s->bref_cap = c->bref_cap;
     s->errinfo = c->errinfo;           s->errinfo_n = c->errinfo_n; s->errinfo_cap = c->errinfo_cap;
+    s->def_definee = c->def_definee; s->cvar_cref = c->cvar_cref; s->eval_cref = c->eval_cref;
+    s->eval_outer_cref = c->eval_outer_cref; s->kwargs_park = c->kwargs_park;
     c->refine_saved = t.refine_saved; c->refine_n = t.refine_n; c->refine_cap = t.refine_cap;
     c->cref_saved = t.cref_saved;     c->cref_n = t.cref_n;     c->cref_cap = t.cref_cap;
     c->bref_saved = t.bref_saved;     c->bref_n = t.bref_n;     c->bref_cap = t.bref_cap;
     c->errinfo = t.errinfo;           c->errinfo_n = t.errinfo_n; c->errinfo_cap = t.errinfo_cap;
+    c->def_definee = t.def_definee; c->cvar_cref = t.cvar_cref; c->eval_cref = t.eval_cref;
+    c->eval_outer_cref = t.eval_outer_cref; c->kwargs_park = t.kwargs_park;
+}
+/* A new thread / fiber starts in its creator's cref (its block was written there). */
+static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_stacks *const s) {
+    s->def_definee = c->def_definee; s->cvar_cref = c->cvar_cref; s->eval_cref = c->eval_cref;
+    s->eval_outer_cref = c->eval_outer_cref; s->kwargs_park = KORB_NIL;
 }
 
 /* The block handed to a method lives in the callee's frame (slots), not in
@@ -1697,6 +1709,11 @@ static inline void korb_scope_stacks_swap(CTX *const c, struct korb_scope_stacks
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &(s)->bref_saved[_k]);      \
     for (uint32_t _k = 0; _k < (s)->errinfo_n; _k++)                         \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(s)->errinfo[_k]);             \
+    VALUE *const _cr[5] = { &(s)->def_definee, &(s)->cvar_cref, &(s)->eval_cref, \
+                            &(s)->eval_outer_cref, &(s)->kwargs_park };       \
+    for (int _k = 0; _k < 5; _k++)                                           \
+        if (*_cr[_k] != 0 && *_cr[_k] != KORB_NIL)                           \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, _cr[_k]);                   \
 } while (0)
 
 #define AROH_VISIT_ROOTS(c, ctx, edge_visit) do {                            \

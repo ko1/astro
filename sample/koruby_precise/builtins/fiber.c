@@ -91,6 +91,7 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
     if (!rep->uctx) abort();
     rep->link = c->vm->fiber_list;                    /* register for GC scanning */
     c->vm->fiber_list = rep;
+    korb_scope_stacks_init(c, &rep->ss);
     /* a new fiber starts with a COPY of its creator's storage (CRuby), so writes
      * never leak back; Fiber.new(storage:) overwrites it at the call site */
     {

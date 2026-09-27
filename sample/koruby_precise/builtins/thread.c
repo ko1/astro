@@ -863,6 +863,7 @@ korb_thread_init_body(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
     else slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
     t->args = slots[0];
     t->blk = slots[1];
+    korb_scope_stacks_init(c, &t->ss);
     /* the new thread's root fiber starts with a COPY of the creator fiber's
      * storage (CRuby: Fiber.current.storage is inherited across Thread.new) */
     { const KorbFiberRep *const cf = c->vm->running_fiber ? c->vm->running_fiber : c->vm->root_fiber;
