@@ -1814,16 +1814,19 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
         /* An UNNAMED cref (a `class << obj` body, or a method defined in one)
          * sits between this read and the named enclosing module, and no baked
          * name can reach it — ask the runtime first. */
+        VALUE inner = KORB_NIL;                       /* that unnamed cref: its ancestry, not the named one's, is searched */
         if (self_off != INT32_MIN) {
             const VALUE acref = (dc_off != INT32_MIN) ? korb_const_cref(c->vm, slots[self_off], slots[dc_off])
                                                       : (KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL);
-            if (KORB_CLASS_P(acref) && VAL2CLASS(acref)->name_sym == 0)
+            if (KORB_CLASS_P(acref) && VAL2CLASS(acref)->name_sym == 0) {
                 idx = korb_const_index_owned(vm, name_sym, acref);
+                inner = acref;
+            }
         }
         /* A baked enclosing chain (bare lexical read) resolves owner-scoped to the
          * UNIQUE innermost cref class, so a same-named class in another namespace
          * (M::C vs M::Inner::C) doesn't shadow it via a flat name lookup. */
-        const VALUE cref = korb_cref_resolve(vm, cache->owner_chain, cache->chain_len, owner_name);
+        VALUE cref = korb_cref_resolve(vm, cache->owner_chain, cache->chain_len, owner_name);
         miss_cref = cref;
         /* every read that reaches here is a BARE one now (`A::B` goes through
          * node_const_path), so the lexical walk applies.  Walk the BAKED chain
@@ -1859,8 +1862,22 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
             for (VALUE o = cref; idx == UINT32_MAX && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing)
                 idx = korb_const_index_owned(vm, name_sym, o);
         }
-        if (idx == UINT32_MAX)                                                  /* then the innermost class's ancestry (MRO order) */
-            idx = korb_const_in_ancestry(vm, cref, name_sym);
+        if (idx == UINT32_MAX) {                                                /* then the innermost class's ancestry (MRO order) */
+            /* a pending autoload in an ancestor (an included module) loads first:
+             * it beats a real constant further up, e.g. Object's ::File */
+            const VALUE anc = KORB_CLASS_P(inner) ? inner : cref;
+            VALUE al_mod;
+            idx = korb_const_in_ancestry_al(c, anc, name_sym, &al_mod);
+            if (UNLIKELY(idx == UINT32_MAX && al_mod != KORB_NIL)) {
+                const bool had_inner = KORB_CLASS_P(inner);
+                CHECK(korb_autoload_fire(c, slots, al_mod, name_sym, line, &slots[fb_off]));
+                /* the require may GC: re-derive both crefs rather than trust the C locals */
+                cref = miss_cref = korb_cref_resolve(vm, cache->owner_chain, cache->chain_len, owner_name);
+                inner = !had_inner ? KORB_NIL
+                      : (dc_off != INT32_MIN ? korb_const_cref(c->vm, slots[self_off], slots[dc_off]) : slots[self_off]);
+                idx = korb_const_in_ancestry(vm, KORB_CLASS_P(inner) ? inner : miss_cref, name_sym);
+            }
+        }
         /* A pending `autoload` on a lexically enclosing module answers BEFORE the
          * top-level fallback: firing its const_missing runs the require.  rspec
          * registers RSpec::Core::DidYouMean this way, and a bare `DidYouMean`

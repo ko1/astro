@@ -4611,6 +4611,41 @@ static uint32_t korb_const_mro_seg(const struct korb_vm *vm, VALUE klass, uint32
     }
     return UINT32_MAX;
 }
+/* korb_const_mro_seg, but a module on the way with a pending `autoload` for the
+ * name stops the walk (*al_mod = it): CRuby loads it at lookup time, before an
+ * ancestor further up (Object's ::File) can answer. */
+static uint32_t korb_const_mro_seg_al(CTX *c, VALUE klass, uint32_t name_sym, int depth, VALUE *al_mod)
+{
+    if (!KORB_CLASS_P(klass) || depth > 64) return UINT32_MAX;
+    const KorbClass *const k = VAL2CLASS(klass);
+    if (k->prepended != KORB_NIL) {
+        const KorbArray *const pre = VAL2ARY(k->prepended);
+        for (int32_t j = (int32_t)pre->len - 1; j >= 0; j--) {
+            const uint32_t idx = korb_const_mro_seg_al(c, korb_items_data(pre->items)[j], name_sym, depth + 1, al_mod);
+            if (idx != UINT32_MAX || *al_mod != KORB_NIL) return idx;
+        }
+    }
+    uint32_t idx = korb_const_index_owned(c->vm, name_sym, klass);
+    if (idx != UINT32_MAX) return idx;
+    if (korb_autoload_registered_p(c, klass, name_sym)) { *al_mod = klass; return UINT32_MAX; }
+    if (k->included != KORB_NIL) {
+        const KorbArray *const inc = VAL2ARY(k->included);
+        for (int32_t j = (int32_t)inc->len - 1; j >= 0; j--) {
+            idx = korb_const_mro_seg_al(c, korb_items_data(inc->items)[j], name_sym, depth + 1, al_mod);
+            if (idx != UINT32_MAX || *al_mod != KORB_NIL) return idx;
+        }
+    }
+    return UINT32_MAX;
+}
+uint32_t korb_const_in_ancestry_al(CTX *c, VALUE cref, uint32_t name_sym, VALUE *al_mod)
+{
+    *al_mod = KORB_NIL;
+    for (VALUE k = cref; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
+        const uint32_t idx = korb_const_mro_seg_al(c, k, name_sym, 0, al_mod);
+        if (idx != UINT32_MAX || *al_mod != KORB_NIL) return idx;
+    }
+    return UINT32_MAX;
+}
 /* The lexically-enclosing module of a constant node: walk the parse-baked name
  * chain from the outermost link inward, each step scoped to the previous owner,
  * so `M::Inner::A` is never confused with another `A` that merely happens to
