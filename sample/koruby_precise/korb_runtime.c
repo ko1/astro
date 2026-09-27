@@ -5961,6 +5961,8 @@ void korb_frame_audit_ep(const VALUE *const base, const uint32_t mid, const char
 }
 #endif
 
+static void korb_refine_cross_mark(struct korb_vm *vm, NODE *block);
+static bool korb_refine_cross_p(const struct korb_vm *vm, const NODE *block);
 static __attribute__((no_stack_protector)) RESULT
 korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                    uint32_t line, uint32_t mid, VALUE self, VALUE def_class,
@@ -6145,7 +6147,11 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     const bool refine_on = UNLIKELY(vm->refinements_active);
     const bool refine_scope = refine_on && c->refinements != m->refine_set;   /* same set: nothing to swap */
     if (cref_scope) { korb_cref_push(c); c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL; }
-    if (refine_scope) { korb_refine_push(c); c->refinements = m->refine_set; }
+    if (refine_scope) {
+        korb_refine_push(c); c->refinements = m->refine_set;
+        /* its yields run under the block's own (lexical) set: off the fast path */
+        if (block != NULL && block != KORB_BLK_CPROC && block->head.kind == &kind_node_entry) korb_refine_cross_mark(vm, block);
+    }
     const bool bref_scope = UNLIKELY(m->uses_backref != 0);   /* $~ is per method frame */
     if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell); *bcell = KORB_NIL; }
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
@@ -11640,6 +11646,48 @@ korb_block_leave_cold(CTX *const c, RESULT r, struct Node *const block,
     return korb_break_claim(c, r, block, is_lambda);
 }
 
+static bool korb_refine_cross_p(const struct korb_vm *vm, const NODE *block) {
+    for (uint32_t i = 0; i < vm->refine_cross_cnt; i++) if (vm->refine_cross[i] == block) return true;
+    return false;
+}
+/* A block about to run under a method with another refinement set: its yields
+ * leave the fast path (yield_simple) for good and switch the set back. */
+static void korb_refine_cross_mark(struct korb_vm *vm, NODE *block) {
+    if (korb_refine_cross_p(vm, block)) return;
+    if (vm->refine_cross_cnt == vm->refine_cross_cap) {
+        const uint32_t cap = vm->refine_cross_cap ? vm->refine_cross_cap * 2 : 16;
+        NODE **const nt = realloc(vm->refine_cross, sizeof *nt * cap);
+        if (nt == NULL) return;
+        vm->refine_cross = nt; vm->refine_cross_cap = cap;
+    }
+    vm->refine_cross[vm->refine_cross_cnt++] = block;
+    block->head.flags.yield_simple = false;
+}
+/* Refinements are lexical: a block runs under the set of the method it was
+ * written in (or its Proc's), not of the method that yields to it.  KORB_UNDEF
+ * when that home is not a method (a file's top level) — the current set stays. */
+static __attribute__((noinline, cold)) VALUE
+korb_block_home_refinements(CTX *c, const VALUE *def_env, VALUE *captured_self)
+{
+    if (def_env == KORB_BLK_FWD) return KORB_PROC_P(*captured_self) ? VAL2PROC(*captured_self)->refine_set : KORB_UNDEF;
+    const VALUE *const base = (const VALUE *)(uintptr_t)((uintptr_t)def_env & ~(uintptr_t)1u);
+    if (base == NULL) return KORB_UNDEF;
+    VALUE id = korb_id_get(base);
+    if (((uintptr_t)id & 7u) != KORB_FID_METHOD) id = korb_home_method_id(c, base);
+    if (((uintptr_t)id & 7u) != KORB_FID_METHOD || !korb_bt_known_ptr(c->vm, (uintptr_t)(id & ~(VALUE)7u))) return KORB_UNDEF;
+    return ((const struct korb_method *)(uintptr_t)(id & ~(VALUE)7u))->refine_set;
+}
+static __attribute__((noinline, cold)) RESULT
+korb_block_yield_refined(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
+                         const VALUE *argv, uint32_t argc, VALUE *captured_self, VALUE set)
+{
+    korb_refine_push(c);
+    c->refinements = set;
+    const RESULT r = korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL, 0);
+    korb_refine_pop(c);
+    return r;
+}
+
 /* aligned(32): the start address decides the loop-head padding INSIDE this
  * function, and one of those pads sits on the per-yield path — an extra nop
  * there is an extra executed instruction per yield (block: +15M = 1/yield),
@@ -11654,6 +11702,12 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     if (UNLIKELY(block == NULL || block == KORB_BLK_CPROC)) 
         return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL, 0);   /* NULL → _full raises; keeps the cold epilogue out of the hot path */
     if (UNLIKELY(!block->head.flags.yield_simple)) {
+        if (UNLIKELY(c->vm->refine_cross_cnt != 0) && korb_refine_cross_p(c->vm, block)) {   /* stays off the fast path */
+            const VALUE set = korb_block_home_refinements(c, def_env, captured_self);
+            if (set != KORB_UNDEF && set != c->refinements)
+                return korb_block_yield_refined(c, slots, block, def_env, argv, argc, captured_self, set);
+            return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL, 0);
+        }
         if (block->head.kind == &kind_node_entry && korb_entry_symproc(block))
             return korb_symproc_yield(c, slots, korb_entry_symproc(block), argv, argc);
         if (block->head.kind != &kind_node_entry ||
