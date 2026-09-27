@@ -68,7 +68,7 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
     rep->body = block;
     rep->def_env = def_env;
     rep->captured_self = KORB_CSELF_VAL(captured_self);
-    rep->transfer = KORB_NIL;
+    rep->transfer = KORB_NIL; rep->tilde = KORB_NIL;
     rep->transferred = 0; rep->killing = 0;
     rep->storage = KORB_NIL;                           /* set below: a copy of the creator's */
     rep->fibobj = (VALUE)fb;                           /* Fiber.current (root; no GC between alloc and here) */
@@ -166,8 +166,12 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     const uint32_t mask_gen = c->vm->sigmask_gen;
     rep->resumer_mask_gen = mask_gen;
     if (rep->mask_gen != mask_gen) korb_signal_park_pending(c->vm);   /* its saved mask predates a trap */
+    korb_scope_stacks_swap(c, &rep->ss);               /* the fiber's own save stacks and $~ while it runs */
+    { VALUE *const tc = korb_re_tilde_cell(c); const VALUE t = *tc; *tc = rep->tilde; rep->tilde = t; }
     swapcontext(&here, (ucontext_t *)rep->uctx);       /* === into the fiber === */
     korb_sigmask_resume(c->vm, mask_gen);
+    korb_scope_stacks_swap(c, &rep->ss);
+    { VALUE *const tc = korb_re_tilde_cell(c); const VALUE t = *tc; *tc = rep->tilde; rep->tilde = t; }
 
     /* === back: fiber yielded or finished === */
     rep->errinfo_n = c->errinfo_n;                     /* keep the fiber's depth for its next resume */
@@ -294,7 +298,7 @@ korb_fiber_root_rep_alloc(CTX *c, VALUE *slots)
     if (!rp) { fprintf(stderr, "koruby_precise: oom (root fiber rep)\n"); abort(); }
     fb->rep = rp;
     rp->fibobj = (VALUE)fb;
-    rp->transfer = KORB_NIL;
+    rp->transfer = KORB_NIL; rp->tilde = KORB_NIL;
     rp->storage = KORB_NIL;
     rp->tls = KORB_NIL;
     rp->captured_self = KORB_NIL;

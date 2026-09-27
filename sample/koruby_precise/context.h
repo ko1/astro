@@ -490,6 +490,15 @@ typedef struct KorbProc {
 /* Fiber: a stackful coroutine.  The moving GC object is a thin handle; all
  * mutable state + GC roots live in a libc-malloc'd (stable) KorbFiberRep, so
  * the VM's C-side fiber pointers never dangle when the handle moves. */
+/* A switched-out green thread's / fiber's own scope save stacks (CTX refine_saved /
+ * cref_saved / bref_saved).  Each returns from its scopes in its own order, so they
+ * cannot share one stack: a switch exchanges them with CTX. */
+struct korb_scope_stacks {
+    VALUE *refine_saved; uint32_t refine_n, refine_cap;
+    VALUE *cref_saved;   uint32_t cref_n, cref_cap;
+    VALUE *bref_saved;   uint32_t bref_n, bref_cap;
+};
+
 typedef struct KorbFiberRep {
     uint32_t mask_gen, resumer_mask_gen;   /* vm->sigmask_gen when this fiber / its resumer switched out */
     VALUE transfer;                  /* value passed across resume/yield (root) */
@@ -512,6 +521,8 @@ typedef struct KorbFiberRep {
     void  *resume_uctx;              /* ucontext_t * to switch back to on yield */
     void  *cstack;                   /* malloc'd native stack for the fiber */
     uint32_t errinfo_n;              /* the fiber's own `$!` stack depth (fiber-local) */
+    struct korb_scope_stacks ss;     /* its scope save stacks while it is not running */
+    VALUE tilde;                     /* its `$~` while it is not running (root; nil at start) */
     uint8_t fstate;                  /* 0 created, 1 running, 2 suspended, 3 done */
     uint8_t raised;                  /* block raised → resume re-raises transfer */
     uint8_t pending_raise;           /* Fiber#raise: yield raises transfer instead of returning it */
@@ -565,6 +576,7 @@ struct korb_thread {
     const VALUE *saved_carry_base;   /* c->carry_base while suspended — same reason: a staged link names
                                       * a frame in THIS thread's stack */
     uint32_t saved_carry_line_bits;
+    struct korb_scope_stacks ss;     /* its scope save stacks while it is switched out */
     void  *uctx;                     /* ucontext_t* */
     void  *cstack;                   /* malloc native stack (NULL = main/process stack) */
     /* scheduling */
@@ -1637,6 +1649,17 @@ struct CTX_struct {
     uint8_t      mm_vis;                  /* 1 private, 2 protected */
 };
 
+/* Exchange CTX's scope save stacks with a switched-out thread's / fiber's. */
+static inline void korb_scope_stacks_swap(CTX *const c, struct korb_scope_stacks *const s) {
+    const struct korb_scope_stacks t = *s;
+    s->refine_saved = c->refine_saved; s->refine_n = c->refine_n; s->refine_cap = c->refine_cap;
+    s->cref_saved = c->cref_saved;     s->cref_n = c->cref_n;     s->cref_cap = c->cref_cap;
+    s->bref_saved = c->bref_saved;     s->bref_n = c->bref_n;     s->bref_cap = c->bref_cap;
+    c->refine_saved = t.refine_saved; c->refine_n = t.refine_n; c->refine_cap = t.refine_cap;
+    c->cref_saved = t.cref_saved;     c->cref_n = t.cref_n;     c->cref_cap = t.cref_cap;
+    c->bref_saved = t.bref_saved;     c->bref_n = t.bref_n;     c->bref_cap = t.bref_cap;
+}
+
 /* The block handed to a method lives in the callee's frame (slots), not in
  * CTX — see docs/v2_blocks_design.md (no CTX mutable state, strict
  * no-globals).  Frame top 2 cells: { node_entry|1, def_env|1 } (odd-tagged
@@ -1663,6 +1686,17 @@ struct CTX_struct {
  * literal in the parser gem) published a top above it — the scan then read
  * dangling pointers and the collector copied garbage without bound
  * (rubocop: 240 MB -> 25 GB in seconds). */
+#define KORB_SCOPE_STACKS_VISIT(s, ctx, edge_visit) do {                     \
+    for (uint32_t _k = 0; _k < (s)->refine_n; _k++)                          \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(s)->refine_saved[_k]);        \
+    for (uint32_t _k = 0; _k < (s)->cref_n; _k++)                            \
+        if ((s)->cref_saved[_k] != KORB_NIL)                                 \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &(s)->cref_saved[_k]);      \
+    for (uint32_t _k = 0; _k < (s)->bref_n; _k++)                            \
+        if ((s)->bref_saved[_k] != KORB_NIL && (s)->bref_saved[_k] != 0)     \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &(s)->bref_saved[_k]);      \
+} while (0)
+
 #define AROH_VISIT_ROOTS(c, ctx, edge_visit) do {                            \
     VALUE *_aro_top = (c)->slots_top;                                        \
     if (_aro_top > (c)->slots_high_water) (c)->slots_high_water = _aro_top;  \
@@ -1790,6 +1824,8 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->fibobj);                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->storage);                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->tls);                     \
+        KORB_SCOPE_STACKS_VISIT(&_fr->ss, ctx, edge_visit);                  \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->tilde);                   \
         /* suspended (2) fibers, and running (1) ones that are not on the CPU: \
          * resume-chain ancestors and fibers whose thread is parked keep their   \
          * top in vslots_top (fiber switch_in / thread ctx_save).  The root      \
@@ -1820,6 +1856,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->pending_ints);              \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tgroup);                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->int_masks);                  \
+        KORB_SCOPE_STACKS_VISIT(&_t->ss, ctx, edge_visit);                    \
         if (_t != (c)->vm->cur_thread && _t->started && _t->state != KORB_TH_DEAD) { \
             for (VALUE *_p = _t->saved_base - 4; _p < _t->saved_top; _p++)    \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
