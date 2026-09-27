@@ -19444,6 +19444,21 @@ korb_bi_undef_new(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(KORB_NIL);
 }
 
+/* __byte_find(str, pat, from) — byte offset of pat in str at or after `from`, or
+ * nil; no encoding or character boundaries (StringIO#gets is bytewise in CRuby). */
+static RESULT
+korb_bi_byte_find(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    const VALUE s = VALUE_SLICE_GET(args, 0), pat = VALUE_SLICE_GET(args, 1), from = VALUE_SLICE_GET(args, 2);
+    if (UNLIKELY(!KORB_STRING_P(s) || !KORB_STRING_P(pat) || !FIXNUM_P(from)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "__byte_find: (String, String, Integer) expected");
+    const KorbString *const hs = VAL2STR(s), *const ps = VAL2STR(pat);
+    const korb_sword_t off = FIX2LONG(from);
+    if (off < 0 || (uint64_t)off > hs->len) return RESULT_OK(KORB_NIL);
+    const int32_t at = korb_byte_find(korb_strbuf_data(hs->buf) + off, hs->len - (uint32_t)off, korb_strbuf_data(ps->buf), ps->len);
+    return RESULT_OK(at < 0 ? KORB_NIL : LONG2FIX(off + at));
+}
+
 /* __heap_objects__(mod) — Array of every heap object that `is_a? mod`
  * (mod = nil → all of them).  Backs ObjectSpace.each_object.  Like CRuby's
  * heap walk this can also surface garbage that has not been collected yet. */
@@ -20193,6 +20208,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);
     korb_builtin_define(c, "__heap_objects__", korb_bi_heap_objects, -1);
     korb_builtin_define(c, "__undef_new", korb_bi_undef_new, 1);
+    korb_builtin_define(c, "__byte_find", korb_bi_byte_find, 3);   /* prelude/stringio.rb #gets */
     korb_builtin_define(c, "__nest_under", korb_bi_nest_under, 2);
     korb_builtin_define(c, "__finalizers_active__", korb_bi_finalizers_active, 0);
     korb_builtin_define(c, "__gc_stress", korb_bi_gc_stress, -1);

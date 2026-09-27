@@ -2723,6 +2723,10 @@ static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
           return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(sv)); }
     const KorbString *const s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);   /* re-read s after coercion's GC */
     int32_t b = korb_byte_find(korb_strbuf_data(s->buf) + boff, s->len - boff, korb_strbuf_data(n->buf), n->len);
+    while (b >= 0 && UNLIKELY(!korb_str_char_head_p(c->vm, VALUE_REF_GET(self), boff + (uint32_t)b))) {   /* a hit inside a character is no hit (UTF-16 "\0>" …) */
+        boff += (uint32_t)b + 1;
+        b = korb_byte_find(korb_strbuf_data(s->buf) + boff, s->len - boff, korb_strbuf_data(n->buf), n->len);
+    }
     if (b < 0) return RESULT_OK(KORB_NIL);
     return RESULT_OK(LONG2FIX(korb_str_bchars(c, VALUE_REF_GET(self), boff + (uint32_t)b)));   /* char index */
 }

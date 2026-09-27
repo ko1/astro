@@ -503,11 +503,23 @@ class StringIO
 
   # One line with already-coerced arguments; does NOT touch $_ (#each_line and
   # friends leave it alone, only #gets/#readline set it).
+  # limit counts bytes, moved on to the end of a character cut in half (rb_enc_right_char_head)
+  private def __limit_cut(line, limit)
+    return line if line.bytesize <= limit
+    cut = limit
+    if line.valid_encoding?
+      cut += 1 while cut < line.bytesize && !line.byteslice(0, cut).valid_encoding?
+    end
+    line.byteslice(0, cut)
+  end
+
   private def __getline(sep, limit, chomp)
     __check_readable
     return nil if eof?
     if sep.nil?
-      line = read(limit)
+      line = @buf.byteslice(@pos, @buf.bytesize - @pos)   # not #read(limit): that one is binary and cuts characters
+      line = __limit_cut(line, limit) if limit
+      @pos += line.bytesize
     elsif sep == ""                                 # paragraph mode
       rest = @buf.byteslice(@pos, @buf.bytesize - @pos)
       lead = rest[/\A\n*/].length                    # leading blank lines are skipped
@@ -520,18 +532,20 @@ class StringIO
       else
         line = body
       end
-      line = line[0, limit] if limit && line.length > limit
+      line = __limit_cut(line, limit) if limit
       @pos += lead + line.bytesize
     else
-      rest = @buf.byteslice(@pos, @buf.bytesize - @pos)
-      i = rest.index(sep)
-      line = i ? rest[0, i + sep.length] : rest
-      line = line[0, limit] if limit && line.length > limit
+      i = __byte_find(@buf, sep, @pos)              # bytewise, like CRuby's strio_getline (UTF-16 at an odd offset)
+      stop = i ? i + sep.bytesize : @buf.bytesize
+      line = @buf.byteslice(@pos, stop - @pos)
+      line = __limit_cut(line, limit) if limit
+      has_sep = i && line.bytesize == stop - @pos
       @pos += line.bytesize
     end
     @lineno += 1
     return line unless chomp
-    sep.nil? || sep == "\n" ? line.chomp : line.delete_suffix(sep)
+    return line.chomp if sep.nil? || sep == "\n"
+    has_sep ? line.byteslice(0, line.bytesize - sep.bytesize) : line.delete_suffix(sep)
   end
 
   def gets(sep = $/, limit = nil, chomp: false)

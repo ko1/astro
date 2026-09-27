@@ -1315,8 +1315,7 @@ static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         const korb_sword_t slen = (korb_sword_t)VAL2STR(VALUE_REF_GET(self))->len;
         if (start < 0) start += slen;
         if (start < 0 || start > slen) return RESULT_OK(KORB_NIL);
-        if (KORB_STR_ENC(VALUE_REF_GET(self)) == KORB_ENC_UTF8 && start < slen &&
-            ((unsigned char)korb_strbuf_data(VAL2STR(VALUE_REF_GET(self))->buf)[start] & 0xC0) == 0x80)
+        if (!korb_str_char_head_p(c->vm, VALUE_REF_GET(self), (uint32_t)start))
             return korb_raise(c, slots + 1, KORB_E_INDEX, 0, "offset %lld does not land on character boundary", (long long)start);
     }
     if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0)))         /* byteindex(regexp[, start_byte]) */
@@ -1328,8 +1327,12 @@ static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
       if (UNLIKELY(!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), slots[0], &ce)))
           return korb_raise_enc_compat(c, slots + 1, KORB_STR_ENC(VALUE_REF_GET(self)), KORB_STR_ENC(slots[0])); }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(slots[0]);   /* read after dispatch */
-    const uint32_t off = (uint32_t)start;
+    uint32_t off = (uint32_t)start;
     int32_t b = korb_byte_find(korb_strbuf_data(s->buf) + off, s->len - off, korb_strbuf_data(n->buf), n->len);
+    while (b >= 0 && UNLIKELY(!korb_str_char_head_p(c->vm, VALUE_REF_GET(self), off + (uint32_t)b))) {   /* not a character head: keep looking */
+        off += (uint32_t)b + 1;
+        b = korb_byte_find(korb_strbuf_data(s->buf) + off, s->len - off, korb_strbuf_data(n->buf), n->len);
+    }
     return RESULT_OK(b < 0 ? KORB_NIL : LONG2FIX(off + (uint32_t)b));
 }
 static RESULT korb_m_str_byterindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
