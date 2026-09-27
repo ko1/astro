@@ -449,16 +449,13 @@ static struct { uint32_t nw, old; } *kp_gvar_aliases = NULL;
 static uint32_t kp_gvar_alias_cnt = 0, kp_gvar_alias_cap = 0;
 
 static void kp_gvar_alias_seed(struct kp_ctx *tc);   /* fwd */
+/* One hop: `alias` stores the entry the old name had at that time (CRuby binds
+ * entries, so `alias $0 $b; alias $0 $saved` restores the original $0). */
 static uint32_t
 kp_gvar_resolve(uint32_t id)
 {
-    for (uint32_t hops = 0; hops < 8; hops++) {        /* 転送の連鎖 (循環は打ち切り) */
-        uint32_t next = id;
-        for (uint32_t i = 0; i < kp_gvar_alias_cnt; i++)
-            if (kp_gvar_aliases[i].nw == id) { next = kp_gvar_aliases[i].old; break; }
-        if (next == id) return id;
-        id = next;
-    }
+    for (uint32_t i = 0; i < kp_gvar_alias_cnt; i++)
+        if (kp_gvar_aliases[i].nw == id) return kp_gvar_aliases[i].old;
     return id;
 }
 
@@ -476,6 +473,10 @@ kp_gvar_alias_seed(struct kp_ctx *tc)
     if (seeded) return;
     seeded = true;
     static const char *const pairs[][2] = {
+        /* $> IS $stdout in CRuby (one slot), so `$stdout = io` must retarget it —
+         * pp.rb's `def PP.pp(obj, out=$>)` picks up a replaced $stdout that way.
+         * First, so $DEFAULT_OUTPUT below resolves through it. */
+        { "$>", "$stdout" },
         { "$ERROR_INFO", "$!" }, { "$ERROR_POSITION", "$@" },
         { "$FS", "$;" }, { "$FIELD_SEPARATOR", "$;" },
         { "$OFS", "$," }, { "$OUTPUT_FIELD_SEPARATOR", "$," },
@@ -489,16 +490,13 @@ kp_gvar_alias_seed(struct kp_ctx *tc)
         { "$PREMATCH", "$`" }, { "$POSTMATCH", "$'" },
         { "$LAST_PAREN_MATCH", "$+" }, { "$LOADED_FEATURES", "$\"" },
         { "$PROGRAM_NAME", "$0" },
-        /* $> IS $stdout in CRuby (one slot), so `$stdout = io` must retarget it —
-         * pp.rb's `def PP.pp(obj, out=$>)` picks up a replaced $stdout that way. */
-        { "$>", "$stdout" },
         /* command-line switch aliases (CRuby exposes these as the same slot) */
         { "$-d", "$DEBUG" }, { "$-v", "$VERBOSE" }, { "$-w", "$VERBOSE" },
         { "$-I", "$LOAD_PATH" }, { "$:", "$LOAD_PATH" },
     };
     for (size_t i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++)
         kp_gvar_alias_add(korb_intern(tc->c->vm, pairs[i][0], (uint32_t)strlen(pairs[i][0])),
-                          korb_intern(tc->c->vm, pairs[i][1], (uint32_t)strlen(pairs[i][1])));
+                          kp_gvar_resolve(korb_intern(tc->c->vm, pairs[i][1], (uint32_t)strlen(pairs[i][1]))));
 }
 
 static void
