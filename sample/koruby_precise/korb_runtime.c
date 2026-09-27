@@ -2305,8 +2305,10 @@ static void korb_objivar_register(CTX *c, VALUE obj, VALUE h) {   /* libc reallo
  *
  * Shape of the value: heap ids are 8n + 2, which no other #object_id can take —
  * Fixnum ids are odd (2n+1) and nil/false/true/Symbol are all 0 or 4 mod 8. */
+/* A String keeps its encoding in the flag bits KORB_FL_HAS_OID would take, so
+ * a String is always looked up (object_id on one is rare). */
 static VALUE korb_oid_find(const struct korb_vm *vm, const VALUE obj) {
-    if (!(((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_OID)) return KORB_NIL;
+    if (!KORB_STRING_P(obj) && !(((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_OID)) return KORB_NIL;
     const int32_t i = korb_wtab_find(&vm->oid, obj);
     return i >= 0 ? vm->oid.val[i] : KORB_NIL;
 }
@@ -2314,7 +2316,7 @@ static VALUE korb_oid_find(const struct korb_vm *vm, const VALUE obj) {
 static VALUE korb_oid_assign(struct korb_vm *const vm, const VALUE obj) {
     const VALUE id = LONG2FIX((korb_sword_t)((++vm->oid_next << 3) | 2u));
     korb_wtab_put(&vm->oid, obj, id);
-    ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_OID;
+    if (!KORB_STRING_P(obj)) ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_OID;
     return id;
 }
 static RESULT korb_objivar_set(CTX *c, VALUE *slots, VALUE_REF objref, VALUE name_sym, VALUE val) {
@@ -4586,14 +4588,31 @@ korb_cref_step(struct korb_vm *vm, VALUE owner, uint32_t elem)
         p = sep + 2;
     }
 }
+/* A chain element that is not under the previous one is a scope of its own:
+ * class_eval(String) nests the receiver under the CALLER's scope ([X, Y, R, A]
+ * for R::A.class_eval called in X::Y).  Resolve it from the top, owner-scoped
+ * only — the flat by-name fallback would take any same-named class. */
+static VALUE
+korb_cref_step_abs(struct korb_vm *vm, uint32_t elem)
+{
+    const char *const nm = korb_sym_name(vm, elem);
+    if (strstr(nm, "::") == NULL) {
+        const uint32_t j = korb_const_index_owned(vm, elem, KORB_NIL);
+        return j == UINT32_MAX ? KORB_NIL : vm->const_vals[j];
+    }
+    return korb_cref_step(vm, KORB_NIL, elem);
+}
 VALUE
 korb_cref_resolve(struct korb_vm *vm, const uint32_t *chain, uint32_t chain_len, uint32_t owner_name)
 {
     VALUE cref = KORB_NIL;
     if (chain != NULL && chain_len > 0) {
         cref = korb_cref_step(vm, KORB_NIL, chain[0]);
-        for (uint32_t i = 1; KORB_CLASS_P(cref) && i < chain_len; i++)
-            cref = korb_cref_step(vm, cref, chain[i]);
+        for (uint32_t i = 1; KORB_CLASS_P(cref) && i < chain_len; i++) {
+            VALUE nx = korb_cref_step(vm, cref, chain[i]);
+            if (!KORB_CLASS_P(nx)) nx = korb_cref_step_abs(vm, chain[i]);
+            cref = nx;
+        }
     }
     /* No usable chain: resolve the baked owner NAME itself.  korb_cref_step walks
      * a dotted path ("Diff::LCS") owner-scoped, so a same-named module in another
@@ -5305,6 +5324,12 @@ korb_singleton_copy(CTX *c, VALUE *slots, VALUE dst, VALUE src_sing)
  * Sharing the source's entries would let the copy's undef_method/alias reach
  * back into the original (delegate.rb builds Delegator's superclass by dup'ing
  * Kernel and undef'ing half of it). */
+static enum korb_class korb_builtin_base_class(struct korb_vm *vm, VALUE cls);   /* fwd (defined below) */
+/* A program's own Enumerator subclass (`super() { |y| }` builds on the real
+ * payload); koruby's prelude ones (Product, Chain) are plain objects with ivars. */
+static bool korb_user_enum_subclass_p(const struct korb_vm *vm, VALUE cls) {
+    return !vm->boot_done || VAL2CLASS(cls)->serial > vm->boot_class_serial;
+}
 RESULT
 korb_class_dup(CTX *c, VALUE *slots, VALUE src)
 {
@@ -5317,6 +5342,10 @@ korb_class_dup(CTX *c, VALUE *slots, VALUE src)
     const KorbClass *const s = VAL2CLASS(slots[0]);
     d->is_module = s->is_module;
     d->is_data = s->is_data;
+    {   /* String.dup builds Strings: remember which builtin it copies */
+        const enum korb_class b = korb_builtin_base_class(c->vm, slots[0]);
+        d->dup_base = (b != KORB_NCLASS && b != KORB_C_OBJECT) ? (uint8_t)(b + 1) : 0;
+    }
     d->struct_kwinit = s->struct_kwinit;
     d->exc_etype = s->exc_etype;
     d->cur_visibility = 0;                            /* a fresh body starts public */
@@ -7213,6 +7242,7 @@ static void korb_klass_override_set(CTX *c, VALUE obj, VALUE cls) {
  * chain contains no registered builtin class. */
 static enum korb_class korb_builtin_base_class(struct korb_vm *vm, VALUE cls) {
     while (KORB_CLASS_P(cls)) {
+        if (UNLIKELY(VAL2CLASS(cls)->dup_base != 0)) return (enum korb_class)(VAL2CLASS(cls)->dup_base - 1);
         for (int k = 0; k < KORB_NCLASS; k++)   /* the constant's slot, not a by-name lookup per candidate */
             if (korb_builtin_class_obj(vm, (enum korb_class)k) == cls)
                 return (enum korb_class)k;
@@ -13299,6 +13329,15 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                 if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
                 return RESULT_OK(slots[1]);
             }
+            if (base == KORB_C_ENUMERATOR && korb_user_enum_subclass_p(vm, *recv_slot)) {   /* allocate's KorbEnumerator + #initialize(args) { } */
+                slots[0] = *recv_slot;
+                slots[1] = UNWRAP(korb_m_class_allocate(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(slots, 0)));
+                VALUE *const st = slots + 2;                   /* [inst, args...] staged for the send */
+                st[0] = slots[1];
+                for (uint32_t i = 0; i < argc; i++) st[1 + i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];
+                CHECK(korb_send_impl(c, st + 1 + argc, vm->mid_initialize, line, argc, block, def_env, captured_self));
+                return RESULT_OK(slots[1]);
+            }
             if (base == KORB_C_MUTEX)   { slots[0] = *recv_slot; slots[1] = UNWRAP(korb_mutex_s_new(c, slots + 2));   korb_klass_override_set(c, slots[1], slots[0]); return RESULT_OK(slots[1]); }
             if (base == KORB_C_CONDVAR) { slots[0] = *recv_slot; slots[1] = UNWRAP(korb_condvar_s_new(c, slots + 2)); korb_klass_override_set(c, slots[1], slots[0]); return RESULT_OK(slots[1]); }
             if (base == KORB_C_PROC || base == KORB_C_FIBER) {
@@ -13617,6 +13656,7 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
         const enum korb_class base = korb_builtin_base_class(vm, cls);
         if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET ||
             base == KORB_C_PROC || base == KORB_C_FIBER || base == KORB_C_RANGE ||
+            (base == KORB_C_ENUMERATOR && korb_user_enum_subclass_p(vm, cls)) ||
             base == KORB_C_THREAD || base == KORB_C_MUTEX || base == KORB_C_CONDVAR) kind = 2;   /* subclass → real payload */
         else   /* a Struct-derived class with no members of its own (`class X < Struct`)
                 * acts as a factory (X.new(...) → new struct class), not an instance */

@@ -3460,9 +3460,11 @@ kp_join_path(struct kp_ctx *tc, uint32_t head, uint32_t tail)
 static uint32_t
 kp_nesting_sym(struct kp_ctx *tc, uint32_t path_owner, uint32_t name_sym)
 {
+    /* the path as written (`class P3::Q3` inside Outer3 → "P3::Q3"): each chain
+     * element resolves under the one before it, so a bare "Q3" would not */
     if (path_owner == 0) return name_sym;
     for (const struct kp_frame *f = tc->frame; f; f = f->prev)
-        if (f->class_name_sym != 0 || f->anon_class_body) return name_sym;
+        if (f->anon_class_body) return name_sym;
     return kp_join_path(tc, path_owner, name_sym);
 }
 /* `module Ruby::Patterns` inside `module CodeRay::Scanners` resolves its `Ruby`

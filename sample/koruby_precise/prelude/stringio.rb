@@ -378,7 +378,10 @@ class StringIO
     outbuf = __to_str(outbuf) unless outbuf.nil?
     if length
       raise ArgumentError, "negative length #{length} given" if length < 0
-      return (length == 0 ? (outbuf ? outbuf.replace("") : "") : nil) if eof?
+      if eof?                                        # at EOF the buffer is emptied even for nil (CRuby)
+        outbuf&.replace("")
+        return length == 0 ? (outbuf || +"") : nil
+      end
       r = (@buf.byteslice(@pos, length) || "").dup.force_encoding(Encoding::BINARY)  # a sized read is binary (CRuby)
     else
       r = @buf.byteslice(@pos, @buf.bytesize - @pos) || ""

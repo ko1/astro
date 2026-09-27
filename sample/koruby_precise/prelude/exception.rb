@@ -99,11 +99,17 @@ class Exception
     e
   end
   def self.exception(*args); new(*args); end   # Class-level Exception.exception(msg) == new(msg)
-  # Equal iff same object, or same class + message + backtrace.
+  # Equal iff same object, or same class + message + backtrace; an object of
+  # another class is first converted with its #exception (CRuby exc_equal), so a
+  # delegator of an exception compares equal to it.
   def ==(other)
     return true if equal?(other)
-    return false unless other.is_a?(Exception)
-    self.class == other.class && message == other.message && backtrace == other.backtrace
+    unless self.class == other.class
+      return false unless other.respond_to?(:exception)
+      other = (other.exception rescue nil)
+      return false unless self.class == other.class
+    end
+    message == other.message && backtrace == other.backtrace
   end
 end
 class Thread

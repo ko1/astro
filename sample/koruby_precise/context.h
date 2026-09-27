@@ -224,7 +224,8 @@ enum korb_obj_type {
 /* bit 15 (avoids the STR_ENC field 0x7000 so strings can use it too): a
  * non-KorbObject (String/Array/Hash/Proc/...) carries @ivars in the vm generic-ivar
  * side table.  Cheap "has ivars?" gate before the linear scan. */
-/* #object_id has been assigned and lives in the vm's oid side table. */
+/* #object_id has been assigned and lives in the vm's oid side table.  Not on a
+ * String: 0x2000 is inside KORB_STR_ENC_MASK there. */
 #define KORB_FL_HAS_OID    0x2000u
 #define KORB_FL_HAS_IVARS  0x8000u
 /* bit 9 (Hash only): the lookup index is permanently disabled because a key
@@ -717,6 +718,7 @@ typedef struct KorbClass {
     uint32_t method_cnt, method_capa;
     uint8_t  is_module;              /* 1 = module (mixin, not instantiable) */
     uint8_t  no_new;                 /* 1 = ::new is undefined (Integer, Rational, BigDecimal, ...) */
+    uint8_t  dup_base;               /* a dup of a builtin class (String.dup): that builtin's enum + 1, else 0 */
     uint8_t  is_singleton;           /* 1 = per-object singleton class (transparent to .class) */
     uint8_t  eval_only;              /* singleton materialized ONLY to be instance_eval's definee.  CRuby
                                       * does not materialize one for that, so a NameError raised inside

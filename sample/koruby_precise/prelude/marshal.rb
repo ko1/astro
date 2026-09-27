@@ -529,7 +529,7 @@ module Marshal
     if io.nil? && (data.nil? || data.bytesize == 0)
       raise from_io ? EOFError.new("end of file reached") : ArgumentError.new("marshal data too short")
     end
-    st = { s: data, i: 0, io: io, syms: [], objs: [],
+    st = { s: data, i: 0, io: io, syms: [], objs: [], readable: 0,
            # objects registered but not yet finished (CRuby's partial_objects):
            # a link to one of these is a back-reference inside a cycle, so it
            # fires neither the caller's proc nor the freeze/dedup step.
@@ -559,18 +559,41 @@ module Marshal
     raise ArgumentError, "undefined class/module #{name}"
   end
 
-  # Top up the buffer from the stream (no-op for a String source).  Running dry
-  # before the first byte is EOF; running dry mid-object is a truncated dump —
-  # the same two errors CRuby reports.
-  def self._need(st, n)
+  # CRuby's `readable`: a lower bound of the bytes the objects still pending in
+  # open containers need (each element takes at least one).  It decides how a
+  # stream that runs dry is reported, and never reads past the current dump.
+  def self._elems(st, n, per)
+    st[:readable] += (n - 1) * per
+    n.times { yield; st[:readable] -= per }
+    st[:readable] += per
+  end
+  private_class_method :_elems
+
+  # Top up the buffer from the stream (no-op for a String source), the way
+  # CRuby's marshal.c reads an IO: one byte with nothing pending is #getbyte
+  # (a dry stream is EOFError); otherwise at least `readable` bytes are read
+  # and a short read is "marshal data too short".
+  def self._need(st, n, bytes = false)
     io = st[:io]
     return if io.nil?
+    have = st[:s].bytesize - st[:i]
+    return if have >= n
+    rd = st[:readable]
+    if !bytes && have == 0 && rd <= 0
+      b = io.read(1)
+      raise EOFError, "end of file reached" if b.nil? || b.empty?
+      st[:s] << b
+      return
+    end
+    need = n - have
+    want = !bytes ? [rd, 8192].min : ((rd > 0 || have > 0) ? [need, [rd + 1, 8192].min].max : need)
+    want = need if want < need
+    chunk = io.read(want)
+    raise ArgumentError, "marshal data too short" if chunk.nil? || chunk.bytesize < (!bytes ? want : need)
+    st[:s] << chunk
     while st[:s].bytesize - st[:i] < n
       chunk = io.read(n - (st[:s].bytesize - st[:i]))
-      if chunk.nil? || chunk.empty?
-        raise EOFError, "end of file reached" if st[:i] == 0 && st[:s].empty?
-        raise ArgumentError, "marshal data too short"
-      end
+      raise ArgumentError, "marshal data too short" if chunk.nil? || chunk.empty?
       st[:s] << chunk
     end
   end
@@ -738,11 +761,11 @@ module Marshal
       _reg(st, v)
     when 0x5b                                            # '[' array
       n = _rlong(st); a = []; _reg(st, a)
-      n.times { a << _read(st) }
+      _elems(st, n, 1) { a << _read(st) }
       a
     when 0x7b, 0x7d                                      # '{' hash / '}' hash-with-default
       n = _rlong(st); h = {}; _reg(st, h)
-      n.times { k = _read(st); h[k] = _read(st) }
+      _elems(st, n, 2) { k = _read(st); h[k] = _read(st) }
       h.default = _read(st) if t == 0x7d
       h
     when 0x49                                            # 'I' ivar-wrapped
@@ -901,11 +924,11 @@ module Marshal
       unless k.respond_to?(:members) && k.ancestors.include?(Data)
         # registered before its members, so one referring back to it finds it
         o = st[:objs][idx] = k.allocate
-        n.times { nm = _read0(st); v = _read(st); (o[nm] = v) rescue nil }
+        _elems(st, n, 2) { nm = _read0(st); v = _read(st); (o[nm] = v) rescue nil }
         return o
       end
       names = []; vals = []
-      n.times { names << _read0(st); vals << _read(st) }
+      _elems(st, n, 2) { names << _read0(st); vals << _read(st) }
       # CRuby fills the members directly — a user-defined #initialize must NOT
       # run.  Data has no member writer, so it goes through .new (kwargs).
       o = if k.respond_to?(:members) && k.ancestors.include?(Data)
@@ -948,7 +971,7 @@ module Marshal
   end
 
   def self._bytes(st, n)
-    _need(st, n)
+    _need(st, n, true)
     r = st[:s].byteslice(st[:i], n)
     # a truncated stream is a data error, not a nil payload
     raise ArgumentError, "marshal data too short" if r.nil? || r.bytesize < n
