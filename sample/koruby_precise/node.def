@@ -1687,8 +1687,10 @@ node_super_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, i
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_items_data(VAL2ARY(arr)->items)[i];
     if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
-    return korb_super(c, slots + N, mid, line, N, dc, self, block,
-                      (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), self, KORB_FBASE_AT(slots, dc_off));
+    VALUE *const denv = (VALUE *)((uintptr_t)&slots[def_env_off] | 1u);
+    RESULT r = korb_super(c, slots + N, mid, line, N, dc, self, block, denv, self, KORB_FBASE_AT(slots, dc_off));
+    if (r.state == KORB_BREAK && korb_break_owned(c, block, denv)) r.state = KORB_NORMAL;   /* `super { break v }` = v */
+    return r;
 }
 
 // `super(args, &blk)` — the block comes from an expression (`&blk`, `&:sym`,
