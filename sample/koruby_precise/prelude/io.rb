@@ -194,6 +194,17 @@ class IO
     end
   end
 
+  # the transcoding write path with the open options' invalid:/undef:/replace: (and
+  # String#encode's exceptions when a conversion fails)
+  private def __wencode(str, enc)
+    @__ecopts ? str.encode(enc, **@__ecopts) : str.encode(enc)
+  end
+
+  private def __record_ecopts(opts)
+    ec = opts.slice(:invalid, :undef, :replace, :fallback, :xml).compact
+    @__ecopts = ec unless ec.empty?
+  end
+
   # universal newline on read: an explicit newline: wins, then the *_newline: flags, then textmode:
   private def __apply_univ_opts(opts)
     if !opts[:newline].nil?
@@ -258,6 +269,7 @@ class IO
       __check_newline_value(nl) if nl
     end
     __apply_univ_opts(opts)
+    __record_ecopts(opts)
     __binmode_flag if opts[:binmode]   # the option only flips byte semantics; an explicit encoding: still wins
     ext = __enc_opt(opts[:external_encoding])
     int = __enc_opt(opts[:internal_encoding])

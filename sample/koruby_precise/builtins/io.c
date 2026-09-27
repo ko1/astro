@@ -881,13 +881,17 @@ static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             if (se == KORB_ENC_BINARY) CHECK(korb_io_check_ascii_only(c, slots + 1, v));
             if (strcasecmp(korb_enc_name_of(c->vm, se), wenc) != 0) {
                 slots[1] = v; bool ok = false;
-                const RESULT tr = korb_tc_convert(c, slots + 2, slots[1], korb_enc_name_of(c->vm, se), wenc, &ok);
-                if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
-                if (!ok)                                 /* undecodable input on a transcoding stream */
-                {   char em[128];
-                    snprintf(em, sizeof em, "invalid byte sequence in %s", korb_enc_name_of(c->vm, se));
-                    return korb_raise_nested(c, slots + 2, "Encoding", "InvalidByteSequenceError", em); }
-                v = tr.value;
+                const bool ecopts = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__ecopts", 9))) != KORB_NIL;
+                if (!ecopts) {
+                    const RESULT tr = korb_tc_convert(c, slots + 2, slots[1], korb_enc_name_of(c->vm, se), wenc, &ok);
+                    if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+                    if (ok) v = tr.value;
+                }
+                if (!ok) {   /* invalid:/undef:/replace: or a failed conversion: String#encode's options and errors */
+                    slots[2] = VALUE_REF_GET(self); slots[3] = slots[1];
+                    slots[4] = UNWRAP(korb_str_new(c, slots + 4, wenc, (uint32_t)strlen(wenc)));
+                    v = UNWRAP(korb_send(c, slots + 5, korb_intern(c->vm, "__wencode", 9), 0, 2));
+                }
             }
         }
         slots[1] = v;
