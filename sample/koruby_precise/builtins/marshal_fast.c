@@ -299,3 +299,210 @@ korb_bi_marshal_fast_load(CTX *c, VALUE *slots, VALUE_SLICE args)
     free(copy);
     return r;
 }
+
+/* ---- Marshal.dump in C for the same plain subset ----------------------------
+ * Mirrors prelude/marshal.rb's dumper byte for byte (link ids pre-order, the
+ * symbol table, `:E` for UTF-8 / US-ASCII, the float digits).  Anything else —
+ * a subclass, extended / singleton'd or ivar-carrying object, a Hash by identity
+ * or with a default proc, a heap Bignum, a non-ASCII Symbol, another encoding —
+ * makes it answer nil and the Ruby dumper runs from scratch.  Nothing is
+ * allocated on the GC heap while walking, so object addresses (the link keys)
+ * cannot move under it; the result String is made at the very end. */
+
+struct korb_mdump {
+    unsigned char *b;
+    size_t len, cap;
+    VALUE *okey; uint32_t *oval; uint32_t ocap, ocnt;   /* object → link id (identity) */
+    uint32_t *skey, *sval; uint32_t scap, scnt;         /* symbol id + 1 → symlink id */
+};
+
+#define KORB_MDUMP_MAX_DEPTH 4096u
+
+static bool korb_mdump_put(struct korb_mdump *const st, const void *const p, const size_t n) {
+    if (st->len + n > st->cap) {
+        size_t nc = st->cap ? st->cap * 2 : 256;
+        while (nc < st->len + n) nc *= 2;
+        unsigned char *const nb = realloc(st->b, nc);
+        if (!nb) return false;
+        st->b = nb; st->cap = nc;
+    }
+    memcpy(st->b + st->len, p, n);
+    st->len += n;
+    return true;
+}
+static bool korb_mdump_byte(struct korb_mdump *const st, const unsigned char c) { return korb_mdump_put(st, &c, 1); }
+
+/* Marshal's packed long (w_long). */
+static bool korb_mdump_long(struct korb_mdump *const st, const int64_t n) {
+    if (n == 0) return korb_mdump_byte(st, 0);
+    if (n > 0 && n < 123) return korb_mdump_byte(st, (unsigned char)(n + 5));
+    if (n < 0 && n > -124) return korb_mdump_byte(st, (unsigned char)((n - 5) & 0xff));
+    unsigned char buf[9]; int k = 0;
+    int64_t v = n;
+    if (n > 0) { while (v > 0) { buf[1 + k++] = (unsigned char)(v & 0xff); v >>= 8; } buf[0] = (unsigned char)k; }
+    else       { while (v < -1) { buf[1 + k++] = (unsigned char)(v & 0xff); v >>= 8; } buf[0] = (unsigned char)((-k) & 0xff); }
+    return korb_mdump_put(st, buf, (size_t)k + 1);
+}
+
+/* Object addresses are aligned: take the multiply's HIGH bits, the low ones barely mix. */
+static inline uint32_t korb_mdump_hash(const VALUE v) { return (uint32_t)(((uint64_t)v * 0x9E3779B97F4A7C15ULL) >> 32); }
+
+/* Link id of `v`, or UINT32_MAX after registering it (the next id). */
+static uint32_t korb_mdump_link(struct korb_mdump *const st, const VALUE v, bool *const oom) {
+    if (st->ocnt * 2 >= st->ocap) {
+        const uint32_t nc = st->ocap ? st->ocap * 2 : 64;
+        VALUE *const nk = calloc(nc, sizeof(VALUE));
+        uint32_t *const nv = malloc(sizeof(uint32_t) * nc);
+        if (!nk || !nv) { free(nk); free(nv); *oom = true; return 0; }
+        for (uint32_t i = 0; i < st->ocap; i++) if (st->okey[i]) {
+            uint32_t h = korb_mdump_hash(st->okey[i]) & (nc - 1);
+            while (nk[h]) h = (h + 1) & (nc - 1);
+            nk[h] = st->okey[i]; nv[h] = st->oval[i];
+        }
+        free(st->okey); free(st->oval);
+        st->okey = nk; st->oval = nv; st->ocap = nc;
+    }
+    uint32_t h = korb_mdump_hash(v) & (st->ocap - 1);
+    while (st->okey[h]) {
+        if (st->okey[h] == v) return st->oval[h];
+        h = (h + 1) & (st->ocap - 1);
+    }
+    st->okey[h] = v; st->oval[h] = st->ocnt++;
+    return UINT32_MAX;
+}
+
+/* A Symbol (ASCII names only): `:` + bytes the first time, `;` + id after. */
+static bool korb_mdump_sym(const struct korb_vm *const vm, struct korb_mdump *const st, const uint32_t id) {
+    for (uint32_t i = 0; i < st->scnt; i++)
+        if (st->skey[i] == id) return korb_mdump_byte(st, ';') && korb_mdump_long(st, st->sval[i]);
+    const char *const nm = korb_sym_name(vm, id);
+    const uint32_t n = vm->sym_lens[id];
+    for (uint32_t i = 0; i < n; i++) if ((unsigned char)nm[i] >= 0x80) return false;
+    if (st->scnt == st->scap) {
+        st->scap = st->scap ? st->scap * 2 : 16;
+        uint32_t *const nk = realloc(st->skey, sizeof(uint32_t) * st->scap);
+        if (!nk) return false;
+        st->skey = nk;
+        uint32_t *const nv = realloc(st->sval, sizeof(uint32_t) * st->scap);
+        if (!nv) return false;
+        st->sval = nv;
+    }
+    st->skey[st->scnt] = id; st->sval[st->scnt] = st->scnt; st->scnt++;
+    return korb_mdump_byte(st, ':') && korb_mdump_long(st, n) && korb_mdump_put(st, nm, n);
+}
+
+/* CRuby's w_float digits: the shortest round-tripping digit string placed by its
+ * decimal point (prelude Marshal._float_str). */
+static uint32_t korb_mdump_float_str(const double d, char *const out) {
+    if (isinf(d)) { strcpy(out, d < 0 ? "-inf" : "inf"); return (uint32_t)strlen(out); }
+    if (isnan(d)) { strcpy(out, "nan"); return 3; }
+    if (d == 0.0) { strcpy(out, signbit(d) ? "-0" : "0"); return (uint32_t)strlen(out); }
+    char tmp[48];
+    int sig = 1;
+    for (; sig < 17; sig++) {
+        snprintf(tmp, sizeof tmp, "%.*e", sig - 1, d);
+        if (strtod(tmp, NULL) == d) break;
+    }
+    if (sig == 17) snprintf(tmp, sizeof tmp, "%.*e", 16, d);
+    const char *p = tmp;
+    const bool neg = (*p == '-');
+    if (neg) p++;
+    char digits[24]; int nd = 0;
+    for (; *p && *p != 'e'; p++) if (*p != '.') digits[nd++] = *p;
+    while (nd > 1 && digits[nd - 1] == '0') nd--;
+    const int decpt = atoi(p + 1) + 1;
+    char *o = out;
+    if (neg) *o++ = '-';
+    if (decpt < -3 || decpt > nd) {
+        *o++ = digits[0];
+        if (nd > 1) { *o++ = '.'; memcpy(o, digits + 1, (size_t)nd - 1); o += nd - 1; }
+        o += sprintf(o, "e%d", decpt - 1);
+    } else if (decpt > 0) {
+        memcpy(o, digits, (size_t)decpt); o += decpt;
+        if (nd > decpt) { *o++ = '.'; memcpy(o, digits + decpt, (size_t)(nd - decpt)); o += nd - decpt; }
+    } else {
+        *o++ = '0'; *o++ = '.';
+        for (int i = 0; i < -decpt; i++) *o++ = '0';
+        memcpy(o, digits, (size_t)nd); o += nd;
+    }
+    *o = '\0';
+    return (uint32_t)(o - out);
+}
+
+/* false = not plain data (or out of memory): the Ruby dumper takes over. */
+static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const VALUE v, const uint32_t depth) {
+    if (depth > KORB_MDUMP_MAX_DEPTH) return false;
+    if (v == KORB_NIL) return korb_mdump_byte(st, '0');
+    if (v == KORB_TRUE) return korb_mdump_byte(st, 'T');
+    if (v == KORB_FALSE) return korb_mdump_byte(st, 'F');
+    if (SYMBOL_P(v)) return korb_mdump_sym(c->vm, st, SYM2ID(v));
+    if (FIXNUM_P(v)) {
+        const int64_t n = FIX2LONG(v);
+        if (n >= -0x40000000LL && n < 0x40000000LL) return korb_mdump_byte(st, 'i') && korb_mdump_long(st, n);
+    } else if (!KORB_FLOAT_P(v)) {
+        if (!AROH_IS_GC_OBJECT(v)) return false;
+        const uint32_t fl = ((const AroObjectHeader *)(uintptr_t)v)->flags;
+        if (fl & (KORB_FL_HAS_KLASS | KORB_FL_HAS_IVARS)) return false;   /* subclass / extended / singleton / ivars */
+        if (KORB_HASH_P(v) && ((fl & (KORB_FL_CMP_BY_ID | KORB_FL_R2K)) || VAL2HASH(v)->default_proc != KORB_NIL)) return false;
+        if (KORB_STRING_P(v)) { const uint32_t e = KORB_STR_ENC(v); if (e != KORB_ENC_UTF8 && e != KORB_ENC_USASCII && e != KORB_ENC_BINARY) return false; }
+        else if (!KORB_ARRAY_P(v) && !KORB_HASH_P(v)) return false;
+    }
+    bool oom = false;
+    const uint32_t id = korb_mdump_link(st, v, &oom);
+    if (oom) return false;
+    if (id != UINT32_MAX) return korb_mdump_byte(st, '@') && korb_mdump_long(st, id);
+    if (FIXNUM_P(v)) {                                   /* beyond 31 bits: the Bignum form */
+        const int64_t n = FIX2LONG(v);
+        uint64_t mag = n < 0 ? (uint64_t)0 - (uint64_t)n : (uint64_t)n;
+        unsigned char w[16]; int nw = 0;
+        while (mag) { w[2 * nw] = (unsigned char)(mag & 0xff); w[2 * nw + 1] = (unsigned char)((mag >> 8) & 0xff); mag >>= 16; nw++; }
+        return korb_mdump_byte(st, 'l') && korb_mdump_byte(st, n < 0 ? '-' : '+') &&
+               korb_mdump_long(st, nw) && korb_mdump_put(st, w, (size_t)nw * 2);
+    }
+    if (KORB_FLOAT_P(v)) {
+        char fs[64];
+        const uint32_t n = korb_mdump_float_str(korb_float_val(v), fs);
+        return korb_mdump_byte(st, 'f') && korb_mdump_long(st, n) && korb_mdump_put(st, fs, n);
+    }
+    if (KORB_STRING_P(v)) {
+        const uint32_t e = KORB_STR_ENC(v);
+        const KorbString *const s = VAL2STR(v);
+        if (e != KORB_ENC_BINARY && !korb_mdump_byte(st, 'I')) return false;
+        if (!korb_mdump_byte(st, '"') || !korb_mdump_long(st, s->len) || !korb_mdump_put(st, korb_strbuf_data(s->buf), s->len)) return false;
+        if (e == KORB_ENC_BINARY) return true;
+        return korb_mdump_long(st, 1) && korb_mdump_sym(c->vm, st, korb_intern(c->vm, "E", 1)) &&
+               korb_mdump_byte(st, e == KORB_ENC_UTF8 ? 'T' : 'F');
+    }
+    if (KORB_ARRAY_P(v)) {
+        const KorbArray *const a = VAL2ARY(v);
+        if (!korb_mdump_byte(st, '[') || !korb_mdump_long(st, a->len)) return false;
+        for (uint32_t i = 0; i < VAL2ARY(v)->len; i++)
+            if (!korb_mdump_obj(c, st, korb_items_data(VAL2ARY(v)->items)[i], depth + 1)) return false;
+        return true;
+    }
+    const KorbHash *const h = VAL2HASH(v);                /* the checks above leave only a plain Hash */
+    const bool dflt = h->default_val != KORB_NIL;
+    if (!korb_mdump_byte(st, dflt ? '}' : '{') || !korb_mdump_long(st, h->len)) return false;
+    for (uint32_t i = 0; i < VAL2HASH(v)->len; i++) {
+        if (!korb_mdump_obj(c, st, korb_items_data(VAL2HASH(v)->items)[2 * i], depth + 1)) return false;
+        if (!korb_mdump_obj(c, st, korb_items_data(VAL2HASH(v)->items)[2 * i + 1], depth + 1)) return false;
+    }
+    return !dflt || korb_mdump_obj(c, st, VAL2HASH(v)->default_val, depth + 1);
+}
+
+/* __marshal_fast_dump(obj) → the dump String, or nil (the Ruby dumper's turn). */
+static RESULT
+korb_bi_marshal_fast_dump(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    struct korb_mdump st = { 0 };
+    bool ok = korb_mdump_byte(&st, 4) && korb_mdump_byte(&st, 8) &&
+              korb_mdump_obj(c, &st, VALUE_SLICE_GET(args, 0), 0);
+    free(st.okey); free(st.oval); free(st.skey); free(st.sval);
+    RESULT r = RESULT_OK(KORB_NIL);
+    if (ok) {
+        r = korb_str_new(c, slots, (const char *)st.b, (uint32_t)st.len);
+        if (r.state == KORB_NORMAL) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
+    }
+    free(st.b);
+    return r;
+}

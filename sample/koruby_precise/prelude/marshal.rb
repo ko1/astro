@@ -20,6 +20,11 @@ module Marshal
     if IO === obj || (defined?(::StringIO) && ::StringIO === obj)
       raise TypeError, "no _dump_data is defined for IO"
     end
+    # plain data (nil/true/false/Integer/Float/String/Symbol/Array/Hash) is
+    # encoded in C; anything else comes back nil and is written below from scratch
+    if an_io.nil? && (limit.nil? || limit < 0) && (fast = __marshal_fast_dump(obj))
+      return fast
+    end
     an_io.binmode if an_io.respond_to?(:binmode)
     st = { syms: {}, objs: {}.compare_by_identity, limit: limit, depth: 0 }
     out = (+"\x04\x08").force_encoding("ASCII-8BIT")   # a byte stream, not text
