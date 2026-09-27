@@ -161,6 +161,7 @@ struct kp_ctx {
      * the matcher evaluates this level's value nodes (korb_pat_match: cur =
      * base + 1, each nested element level + 2) */
     int32_t pat_cur;
+    struct Node *pat_outw;   /* the pattern being built: writes of its outer-scope binds (korb_pat.outw) */
 };
 
 /* `alias x eval` seen earlier in this file: x is lowered like eval itself. */
@@ -1209,13 +1210,28 @@ kp_pat_value(struct kp_ctx *tc, const pm_node_t *node)
     tc->chain -= tc->pat_cur;
     return v;
 }
+/* A binding target's frame slot.  An outer-scope local (a block binding its
+ * method's) gets a synth slot instead, written out once the whole match holds. */
+static int32_t
+kp_pat_slot(struct kp_ctx *tc, const pm_node_t *t, pm_constant_id_t name, uint32_t depth)
+{
+    if (depth == 0) return (int32_t)lvar_index(tc, t, name) - tc->chain;
+    const uint32_t tmp = alloc_synth_local(tc);
+    tc->chain += 1;                                     /* EVAL'd at the root match's cur */
+    NODE *const w = lvar_write(tc, t, name, depth, bake_lget(tc, tmp));
+    tc->chain -= 1;
+    tc->pat_outw = tc->pat_outw ? ALLOC_node_seq(tc->pat_outw, w) : w;
+    return (int32_t)tmp - tc->chain;
+}
 static struct korb_pat *
 build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
 {
     const int32_t saved = tc->pat_cur;
-    tc->pat_cur = 1;
+    NODE *const saved_w = tc->pat_outw;
+    tc->pat_cur = 1; tc->pat_outw = NULL;
     struct korb_pat *const d = build_pattern_desc_r(tc, pat);
-    tc->pat_cur = saved;
+    d->outw = tc->pat_outw;
+    tc->pat_cur = saved; tc->pat_outw = saved_w;
     return d;
 }
 /* an element of an array / hash / find pattern: matched two cells further up */
@@ -1236,12 +1252,11 @@ build_pattern_desc_r(struct kp_ctx *tc, const pm_node_t *pat)
         pat = (const pm_node_t *)((const pm_implicit_node_t *)pat)->value;
     if (PM_NODE_TYPE_P(pat, PM_LOCAL_VARIABLE_TARGET_NODE)) {       /* binding */
         const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)pat;
-        if (lt->depth == 0) {
-            p->kind = 0;
-            p->bind_off = (int32_t)lvar_index(tc, pat, lt->name) - tc->chain;
-            bake_add(tc, &p->bind_off);
-            return p;
-        }
+        p->kind = 0;
+        p->bind_off = kp_pat_slot(tc, pat, lt->name, lt->depth);
+        bake_add(tc, &p->bind_off);
+        return p;
+
     } else if (PM_NODE_TYPE_P(pat, PM_ARRAY_PATTERN_NODE)) {
         const pm_array_pattern_node_t *ap = (const pm_array_pattern_node_t *)pat;
         if (!ap->rest && ap->posts.size == 0) {
@@ -1263,7 +1278,7 @@ build_pattern_desc_r(struct kp_ctx *tc, const pm_node_t *pat)
                 const pm_splat_node_t *sp = (const pm_splat_node_t *)ap->rest;
                 if (sp->expression && PM_NODE_TYPE_P(sp->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
                     const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)sp->expression;
-                    if (lt->depth == 0) { p->bind_off = (int32_t)lvar_index(tc, sp->expression, lt->name) - tc->chain; bake_add(tc, &p->bind_off); }
+                    p->bind_off = kp_pat_slot(tc, sp->expression, lt->name, lt->depth); bake_add(tc, &p->bind_off);
                 }
             }
             return p;
@@ -1278,14 +1293,14 @@ build_pattern_desc_r(struct kp_ctx *tc, const pm_node_t *pat)
             p->bind_off = INT32_MIN;                              /* leading `*pre` slot (or anonymous) */
             if (fp->left && fp->left->expression && PM_NODE_TYPE_P(fp->left->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
                 const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)fp->left->expression;
-                if (lt->depth == 0) { p->bind_off = (int32_t)lvar_index(tc, fp->left->expression, lt->name) - tc->chain; bake_add(tc, &p->bind_off); }
+                p->bind_off = kp_pat_slot(tc, fp->left->expression, lt->name, lt->depth); bake_add(tc, &p->bind_off);
             }
             int32_t right_off = INT32_MIN;                        /* trailing `*post` slot (npost holds it) */
             if (fp->right && PM_NODE_TYPE_P(fp->right, PM_SPLAT_NODE)) {
                 const pm_splat_node_t *rsp = (const pm_splat_node_t *)fp->right;
                 if (rsp->expression && PM_NODE_TYPE_P(rsp->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
                     const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)rsp->expression;
-                    if (lt->depth == 0) right_off = (int32_t)lvar_index(tc, rsp->expression, lt->name) - tc->chain;
+                    right_off = kp_pat_slot(tc, rsp->expression, lt->name, lt->depth);
                 }
             }
             p->npost = (uint32_t)right_off;
@@ -1335,7 +1350,7 @@ build_pattern_desc_r(struct kp_ctx *tc, const pm_node_t *pat)
                     const pm_assoc_splat_node_t *sp = (const pm_assoc_splat_node_t *)hp->rest;
                     if (sp->value && PM_NODE_TYPE_P(sp->value, PM_LOCAL_VARIABLE_TARGET_NODE)) {
                         const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)sp->value;
-                        if (lt->depth == 0) { p->bind_off = (int32_t)lvar_index(tc, sp->value, lt->name) - tc->chain; bake_add(tc, &p->bind_off); }
+                        p->bind_off = kp_pat_slot(tc, sp->value, lt->name, lt->depth); bake_add(tc, &p->bind_off);
                     }
                 } else if (PM_NODE_TYPE_P(hp->rest, PM_NO_KEYWORDS_PARAMETER_NODE)) {
                     p->npost = 2;                         /* **nil: forbid extra entries */
@@ -1347,14 +1362,12 @@ build_pattern_desc_r(struct kp_ctx *tc, const pm_node_t *pat)
         }
     } else if (PM_NODE_TYPE_P(pat, PM_CAPTURE_PATTERN_NODE)) {     /* `pat => name` */
         const pm_capture_pattern_node_t *cp = (const pm_capture_pattern_node_t *)pat;
-        if (cp->target->depth == 0) {
-            p->kind = 4; p->n = 1;
-            p->elems = calloc(1, sizeof(struct korb_pat *));
-            p->elems[0] = build_pattern_desc_r(tc, cp->value);
-            p->bind_off = (int32_t)lvar_index(tc, (const pm_node_t *)cp->target, cp->target->name) - tc->chain;
-            bake_add(tc, &p->bind_off);
-            return p;
-        }
+        p->kind = 4; p->n = 1;
+        p->elems = calloc(1, sizeof(struct korb_pat *));
+        p->elems[0] = build_pattern_desc_r(tc, cp->value);
+        p->bind_off = kp_pat_slot(tc, (const pm_node_t *)cp->target, cp->target->name, cp->target->depth);
+        bake_add(tc, &p->bind_off);
+        return p;
     } else if (PM_NODE_TYPE_P(pat, PM_ALTERNATION_PATTERN_NODE)) {  /* `a | b` (no bindings) */
         const pm_alternation_pattern_node_t *ap = (const pm_alternation_pattern_node_t *)pat;
         if (pattern_binds_var(tc, ap->left) || pattern_binds_var(tc, ap->right))
@@ -5374,8 +5387,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
          * no else → node_match_req on an always-fail desc raises NoMatchingPattern. */
         const pm_case_match_node_t *cn = (const pm_case_match_node_t *)node;
         uint32_t tmp = alloc_synth_local(tc);
+        const uint32_t dcache = alloc_synth_local(tc);     /* the subject's #deconstruct, shared by the clauses */
+        if (dcache != tmp + 1) return kp_unsupported(tc, node, "case/in cache slot");
         NODE *subj = transduce(tc, cn->predicate);
-        NODE *assign = bake_lset(tc, tmp, subj);
+        NODE *assign = ALLOC_node_seq(bake_lset(tc, tmp, subj), bake_lset(tc, dcache, lit_nil()));
         NODE *chain;
         if (cn->else_clause) {
             chain = transduce_statements(tc, cn->else_clause->statements);
@@ -5402,6 +5417,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             }
             NODE *body = in->statements ? transduce_statements(tc, in->statements) : lit_nil();
             struct korb_pat *desc = build_pattern_desc(tc, pat);
+            desc->dc_off = (int32_t)tmp - tc->chain;
+            bake_add(tc, &desc->dc_off);
             NODE *test = ALLOC_node_match_pred(bake_lget(tc, tmp), (void *)desc);
             if (guard) {                                       /* match binds first (lazy &&), then the guard reads bindings */
                 NODE *g = transduce(tc, guard);

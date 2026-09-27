@@ -1582,6 +1582,7 @@ struct CTX_struct {
      * upgraded to NoMatchingPatternKeyError.  A plain id, not a VALUE, so it
      * needs no GC root.  Cleared on every top-level korb_pat_match. */
     uint32_t  pat_key_mid;
+    VALUE    *pat_dc;           /* the running case/in's [subject, #deconstruct result] frame cells, or NULL */
     /* Why the last `in` clause failed, for NoMatchingPatternError's message
      * (CRuby appends ": <reason>").  Recorded without allocating — a failing
      * clause is the common case — and rendered only if a raise happens.

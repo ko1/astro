@@ -8633,7 +8633,35 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
     if (p->kind == 255) return RESULT_OK(KORB_FALSE);
     c->pat_key_mid = 0;
     c->pat_fail_kind = 0; c->pat_fail_a = KORB_NIL; c->pat_fail_b = KORB_NIL;
-    return korb_pat_match_1(c, base, cur, subjref, p);
+    VALUE *const saved_dc = c->pat_dc;                   /* a value pattern may run another case/in */
+    c->pat_dc = p->dc_off ? &base[p->dc_off] : NULL;
+    const RESULT r = korb_pat_match_1(c, base, cur, subjref, p);
+    c->pat_dc = saved_dc;
+    if (UNLIKELY(p->outw != NULL) && r.state == KORB_NORMAL && r.value == KORB_TRUE) {   /* outer-scope binds */
+        const RESULT wr = EVAL(c, p->outw, cur);
+        if (UNLIKELY(wr.state != KORB_NORMAL)) return wr;
+    }
+    return r;
+}
+
+/* subject.deconstruct into cur[0] (*ok = false: no #deconstruct).  Within one
+ * `case/in` the case subject's result is reused by every clause, as CRuby does. */
+static RESULT
+korb_pat_deconstruct(CTX *c, VALUE *cur, VALUE_REF subjref, bool *ok)
+{
+    VALUE *const dc = c->pat_dc;                         /* [subject, cached result or nil] */
+    const bool root = dc != NULL && dc[0] == VALUE_REF_GET(subjref);
+    if (root && KORB_ARRAY_P(dc[1])) { cur[0] = dc[1]; *ok = true; return RESULT_OK(KORB_NIL); }
+    const uint32_t mid_dc = korb_intern(c->vm, "deconstruct", 11);   /* Struct/Data/custom hook */
+    CHECK(korb_pat_responds_to(c, cur, subjref, mid_dc, ok));
+    if (!*ok) return RESULT_OK(KORB_NIL);
+    cur[0] = VALUE_REF_GET(subjref);                     /* receiver */
+    RESULT dr = korb_send(c, cur + 1, mid_dc, 0, 0);
+    if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+    if (!KORB_ARRAY_P(dr.value)) return korb_raise(c, cur, KORB_E_TYPE, 0, "deconstruct must return Array (%s given)", korb_type_name(dr.value));
+    cur[0] = dr.value;
+    if (root) dc[1] = dr.value;
+    return RESULT_OK(KORB_NIL);
 }
 
 /* Recursive pattern matcher.  `base` is the match node's frame view (binding
@@ -8680,14 +8708,8 @@ korb_pat_match_1(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struc
         if (korb_pat_plain_array(c, VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
         } else {
-            const uint32_t mid_dc = korb_intern(c->vm, "deconstruct", 11);   /* Struct/Data/custom hook */
-            bool has_dc = false; CHECK(korb_pat_responds_to(c, cur, subjref, mid_dc, &has_dc));
+            bool has_dc = false; CHECK(korb_pat_deconstruct(c, cur, subjref, &has_dc));   /* → cur[0] */
             if (!has_dc) return RESULT_OK(KORB_FALSE);
-            cur[0] = VALUE_REF_GET(subjref);                                  /* receiver */
-            RESULT dr = korb_send(c, cur + 1, mid_dc, 0, 0);
-            if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-            if (!KORB_ARRAY_P(dr.value)) return korb_raise(c, cur, KORB_E_TYPE, 0, "deconstruct must return Array (%s given)", korb_type_name(dr.value));
-            cur[0] = dr.value;
         }
         if (VAL2ARY(cur[0])->len != p->n) {
             korb_pat_note_len(c, cur[0], VAL2ARY(cur[0])->len, p->n);
@@ -8766,14 +8788,8 @@ korb_pat_match_1(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struc
         if (korb_pat_plain_array(c, VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
         } else {
-            const uint32_t mid_dc = korb_intern(c->vm, "deconstruct", 11);
-            bool has_dc = false; CHECK(korb_pat_responds_to(c, cur, subjref, mid_dc, &has_dc));
+            bool has_dc = false; CHECK(korb_pat_deconstruct(c, cur, subjref, &has_dc));   /* → cur[0] */
             if (!has_dc) return RESULT_OK(KORB_FALSE);
-            cur[0] = VALUE_REF_GET(subjref);
-            RESULT dr = korb_send(c, cur + 1, mid_dc, 0, 0);
-            if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-            if (!KORB_ARRAY_P(dr.value)) return korb_raise(c, cur, KORB_E_TYPE, 0, "deconstruct must return Array (%s given)", korb_type_name(dr.value));
-            cur[0] = dr.value;
         }
         const uint32_t len = VAL2ARY(cur[0])->len;
         const int32_t right_off = (int32_t)p->npost;
@@ -8824,14 +8840,8 @@ korb_pat_match_1(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struc
         if (korb_pat_plain_array(c, VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
         } else {
-            const uint32_t mid_dc = korb_intern(c->vm, "deconstruct", 11);
-            bool has_dc = false; CHECK(korb_pat_responds_to(c, cur, subjref, mid_dc, &has_dc));
+            bool has_dc = false; CHECK(korb_pat_deconstruct(c, cur, subjref, &has_dc));   /* → cur[0] */
             if (!has_dc) return RESULT_OK(KORB_FALSE);
-            cur[0] = VALUE_REF_GET(subjref);
-            RESULT dr = korb_send(c, cur + 1, mid_dc, 0, 0);
-            if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-            if (!KORB_ARRAY_P(dr.value)) return korb_raise(c, cur, KORB_E_TYPE, 0, "deconstruct must return Array (%s given)", korb_type_name(dr.value));
-            cur[0] = dr.value;
         }
         VALUE_REF aref = VALUE_REF_AT(&cur[0]);          /* the subject array, parked + rooted at cur[0] */
         VALUE *const cur2 = cur + 1;                     /* working slots above the parked array */
@@ -20911,7 +20921,7 @@ korb_embed_binding_scope(CTX *c, uint32_t L, ...)
 /* Recursive pattern descriptor: fixed head, then ecnt sub-pattern pointers,
  * then kcnt key VALUEs (symbols arrive as ID2SYM(korb_intern(...)) results). */
 void *
-korb_embed_pat(CTX *c, uint32_t kind, int32_t bind_off, NODE *value_node,
+korb_embed_pat(CTX *c, uint32_t kind, int32_t bind_off, NODE *value_node, NODE *outw, int32_t dc_off,
                uint32_t n, uint32_t npost, uint32_t ecnt, ...)
 {
     (void)c;
@@ -20919,6 +20929,8 @@ korb_embed_pat(CTX *c, uint32_t kind, int32_t bind_off, NODE *value_node,
     p->kind = (uint8_t)kind;
     p->bind_off = bind_off;
     p->value_node = value_node;
+    p->outw = outw;
+    p->dc_off = dc_off;
     p->n = n;
     p->npost = npost;
     p->elems = NULL;

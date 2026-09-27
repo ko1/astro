@@ -496,6 +496,8 @@ struct korb_pat {
     uint32_t npost;               /* kind 6: post-rest count (elems[n..n+npost) are the post patterns) */
     struct korb_pat **elems;      /* kind 2/4/5/6: sub-patterns; kind 3: per-key patterns */
     VALUE   *keys;                /* kind 3: symbol keys */
+    struct Node *outw;            /* root only: writes the outer-scope binds out after a match (NULL: none) */
+    int32_t  dc_off;              /* root of a case/in clause: frame cells [subject, #deconstruct cache] (0: none) */
 };
 RESULT korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct korb_pat *p);
 
@@ -752,7 +754,7 @@ void *korb_embed_i32(uint32_t cnt, ...);
 void *korb_embed_het_descs(CTX *c, uint32_t cnt, ...);
 void *korb_embed_attr_descs(CTX *c, uint32_t cnt, ...);
 uint32_t *korb_embed_binding_scope(CTX *c, uint32_t L, ...);
-void *korb_embed_pat(CTX *c, uint32_t kind, int32_t bind_off, struct Node *value_node,
+void *korb_embed_pat(CTX *c, uint32_t kind, int32_t bind_off, struct Node *value_node, struct Node *outw, int32_t dc_off,
                      uint32_t n, uint32_t npost, uint32_t ecnt, ...);
 void koruby_emit_set_vm(const struct korb_vm *vm);
 void koruby_emit_cstr_len(FILE *fp, const char *p, uint32_t len);
