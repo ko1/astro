@@ -8121,11 +8121,12 @@ korb_class_display_name(CTX *c, VALUE *scratch, VALUE cls, char *buf, size_t sz)
 {
     scratch[0] = cls;                                    /* root across the dispatch */
     RESULT nr = korb_send(c, scratch + 1, korb_intern(c->vm, "name", 4), 0, 0);
-    if (nr.state == KORB_NORMAL && KORB_STRING_P(nr.value) && VAL2STR(nr.value)->len > 0) {
+    if (nr.state == KORB_NORMAL && KORB_STRING_P(nr.value)) {   /* an empty name prints empty (CRuby) */
         snprintf(buf, sz, "%.*s", (int)VAL2STR(nr.value)->len, korb_strbuf_data(VAL2STR(nr.value)->buf));
         return buf;
     }
-    return NULL;                                         /* nil (anonymous) / non-String / raised → fall back */
+    return NULL;                                         /* nil (anonymous) / non-String / raised → fall back;
+                                                          * the class may have moved: callers re-read scratch[0] */
 }
 
 /* v.inspect into a fixed buffer (no GC): for error messages that name a value. */
@@ -8162,33 +8163,34 @@ static const char *
 korb_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
 {
     if (KORB_CLASS_P(v)) {
-        const KorbClass *const k = VAL2CLASS(v);
-        const char *const kind = k->is_module ? "module" : "class";
+        const char *const kind = VAL2CLASS(v)->is_module ? "module" : "class";
         char nm[192];
-        if (k->is_singleton) { korb_desc_inspect(c, v, nm, sizeof nm); snprintf(buf, sz, "%s %s", kind, nm); }   /* "class #<Class:#<Object:0x…>>" */
+        if (VAL2CLASS(v)->is_singleton) { korb_desc_inspect(c, v, nm, sizeof nm); snprintf(buf, sz, "%s %s", kind, nm); }   /* "class #<Class:#<Object:0x…>>" */
         else if (korb_class_display_name(c, scratch, v, nm, sizeof nm)) snprintf(buf, sz, "%s %s", kind, nm);
-        else if (k->name_sym) { korb_class_qname_into(c, v, nm, sizeof nm); snprintf(buf, sz, "%s %s", kind, nm); }
-        else snprintf(buf, sz, "%s #<%s:0x%016zx>", kind, k->is_module ? "Module" : "Class", (size_t)(uintptr_t)v);
+        else {
+            v = scratch[0];                              /* #name ran Ruby: re-read the (moved) class */
+            if (VAL2CLASS(v)->name_sym) { korb_class_qname_into(c, v, nm, sizeof nm); snprintf(buf, sz, "%s %s", kind, nm); }
+            else snprintf(buf, sz, "%s #<%s:0x%016zx>", kind, VAL2CLASS(v)->is_module ? "Module" : "Class", (size_t)(uintptr_t)v);
+        }
         return buf;
     }
     if (KORB_OBJECT_P(v)) {
-        const VALUE cls = VAL2OBJ(v)->klass;
+        VALUE cls = VAL2OBJ(v)->klass;
         char nm[192];
-        if (KORB_CLASS_P(cls) && korb_class_display_name(c, scratch, cls, nm, sizeof nm)) snprintf(buf, sz, "an instance of %s", nm);
-        else if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) { korb_class_qname_into(c, cls, nm, sizeof nm); snprintf(buf, sz, "an instance of %s", nm); }
-        else if (KORB_CLASS_P(cls))
-            snprintf(buf, sz, "an instance of #<Class:0x%016zx>", (size_t)(uintptr_t)cls);
-        else
-            snprintf(buf, sz, "an instance of Object");
+        if (!KORB_CLASS_P(cls)) snprintf(buf, sz, "an instance of Object");
+        else if (korb_class_display_name(c, scratch, cls, nm, sizeof nm)) snprintf(buf, sz, "an instance of %s", nm);
+        else if (cls = scratch[0], VAL2CLASS(cls)->name_sym) { korb_class_qname_into(c, cls, nm, sizeof nm); snprintf(buf, sz, "an instance of %s", nm); }
+        else snprintf(buf, sz, "an instance of #<Class:0x%016zx>", (size_t)(uintptr_t)cls);
         return buf;
     }
     if (KORB_EXC_P(v)) {                                 /* a user exception class names itself */
-        const VALUE cls = VAL2EXC(v)->exc_class;
+        VALUE cls = VAL2EXC(v)->exc_class;
+        const unsigned int etype = VAL2EXC(v)->etype;    /* read before #name can move v */
         char nm[192];
-        if (KORB_CLASS_P(cls) && korb_class_display_name(c, scratch, cls, nm, sizeof nm)) snprintf(buf, sz, "an instance of %s", nm);
-        else if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) { korb_class_qname_into(c, cls, nm, sizeof nm); snprintf(buf, sz, "an instance of %s", nm); }
-        else if (KORB_CLASS_P(cls)) snprintf(buf, sz, "an instance of #<Class:0x%016zx>", (size_t)(uintptr_t)cls);
-        else snprintf(buf, sz, "an instance of %s", korb_etype_name(VAL2EXC(v)->etype));
+        if (!KORB_CLASS_P(cls)) snprintf(buf, sz, "an instance of %s", korb_etype_name(etype));
+        else if (korb_class_display_name(c, scratch, cls, nm, sizeof nm)) snprintf(buf, sz, "an instance of %s", nm);
+        else if (cls = scratch[0], VAL2CLASS(cls)->name_sym) { korb_class_qname_into(c, cls, nm, sizeof nm); snprintf(buf, sz, "an instance of %s", nm); }
+        else snprintf(buf, sz, "an instance of #<Class:0x%016zx>", (size_t)(uintptr_t)cls);
         return buf;
     }
     return korb_a_type_name(v);
@@ -15138,12 +15140,13 @@ korb_register_core_methods(CTX *c)
     {   /* Fiber's class methods as real singleton entries, so respond_to? and
          * singleton_methods see them (they used to be a special case in the
          * dispatch cascade, invisible to reflection). */
-        const VALUE fib = korb_builtin_class_obj(c->vm, KORB_C_FIBER);
+        #define fib korb_builtin_class_obj(c->vm, KORB_C_FIBER)   /* re-fetched per call: each def allocates (moving GC) */
         korb_def_classfunc(c, c->slots, fib, "yield",     korb_m_fiber_yield,        -1);
         korb_def_classfunc(c, c->slots, fib, "current",   korb_m_fiber_s_current,     0);
         korb_def_classfunc(c, c->slots, fib, "[]",        korb_m_fiber_s_aref,        1);
         korb_def_classfunc(c, c->slots, fib, "[]=",       korb_m_fiber_s_aset,        2);
         korb_def_classfunc(c, c->slots, fib, "blocking?", korb_m_fiber_s_blocking_p,  0);
+        #undef fib
     }
     korb_def_cmethod(c, KORB_C_FIBER, "blocking?", korb_m_fiber_blocking_p, 0);
     /* Fiber.blocking { |fiber| … } — 走っている fiber を blocking 扱いにして呼ぶ。 */
