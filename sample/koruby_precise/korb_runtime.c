@@ -674,6 +674,12 @@ static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         korb_mp_clear(zn); korb_mp_clear(zd); korb_mp_clear(rn); korb_mp_clear(rd);
         return korb_rat_new_v(c, slots + 4, slots[2], slots[3]);
     }
+    if (KORB_RATIONAL_P(e) && slots[1] == LONG2FIX(1) && (slots[0] == LONG2FIX(0) || slots[0] == LONG2FIX(1))) {
+        /* CRuby nurat_expt: (0/1) / (1/1) ** a Rational stay exact */
+        if (slots[0] == LONG2FIX(0) && korb_int_cmp(VAL2RAT(e)->num, LONG2FIX(0)) < 0)
+            return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
+        return korb_rat_new_v(c, slots + 2, slots[0], LONG2FIX(1));
+    }
     {   /* fractional / float exponent → Float (negative base + frac exp = NaN here; Complex out of scope) */
         korb_mp_t zn, zd; korb_to_mpz(slots[0], zn); korb_to_mpz(slots[1], zd);
         const double base = korb_mp_get_d(zn) / korb_mp_get_d(zd); korb_mp_clear(zn); korb_mp_clear(zd);
@@ -754,12 +760,27 @@ static RESULT korb_m_cpx_conj(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     slots[1] = nr.value;
     return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
 }
-static RESULT korb_m_cpx_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; double re, im;
-    if (!korb_num_to_d(SELF_CPX->re, &re) || !korb_num_to_d(SELF_CPX->im, &im))
+/* CRuby rb_complex_abs: with a zero component the other one's own #abs (so an
+ * Integer / Rational stays exact), a Float only when the zero part is one. */
+static RESULT korb_cpx_abs_v(CTX *c, VALUE *slots, const VALUE cv) {
+    double re, im;
+    if (!korb_num_to_d(VAL2CPX(cv)->re, &re) || !korb_num_to_d(VAL2CPX(cv)->im, &im))
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#abs with non-real components");
-    if (re == 0.0 && im == 0.0) return RESULT_OK(LONG2FIX(0));   /* Complex(0,0).abs → Integer 0 (CRuby) */
-    return korb_float_new(c, slots, sqrt(re * re + im * im));
+    const bool re_f = KORB_FLOAT_P(VAL2CPX(cv)->re), im_f = KORB_FLOAT_P(VAL2CPX(cv)->im);
+    if (re == 0.0 || im == 0.0) {
+        const VALUE x = re == 0.0 ? VAL2CPX(cv)->im : VAL2CPX(cv)->re;
+        const bool want_f = re == 0.0 ? (re_f && !im_f) : (!re_f && im_f);
+        slots[0] = x;
+        const VALUE av = UNWRAP(korb_send(c, slots + 1, korb_intern(c->vm, "abs", 3), 0, 0));
+        if (!want_f || KORB_FLOAT_P(av)) return RESULT_OK(av);
+        double d;
+        return korb_num_to_d(av, &d) ? korb_float_new(c, slots, d) : RESULT_OK(av);
+    }
+    return korb_float_new(c, slots, hypot(re, im));
+}
+static RESULT korb_m_cpx_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    return korb_cpx_abs_v(c, slots, VALUE_REF_GET(self));
 }
 /* Complex#arg / angle / phase → atan2(imaginary, real) — the polar angle. */
 static RESULT korb_m_cpx_arg(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -768,14 +789,14 @@ static RESULT korb_m_cpx_arg(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#arg with non-real components");
     return korb_float_new(c, slots, atan2(im, re));
 }
-/* Complex#polar (instance) → [abs, arg] (magnitude 0 at the origin is Integer 0, matching #abs). */
+/* Complex#polar (instance) → [abs, arg] */
 static RESULT korb_m_cpx_to_polar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; double re, im;
     if (!korb_num_to_d(SELF_CPX->re, &re) || !korb_num_to_d(SELF_CPX->im, &im))
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#polar with non-real components");
     slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
     VALUE_REF arr = VALUE_REF_AT(&slots[0]);
-    slots[1] = (re == 0.0 && im == 0.0) ? LONG2FIX(0) : UNWRAP(korb_float_new(c, slots + 1, sqrt(re * re + im * im)));
+    slots[1] = UNWRAP(korb_cpx_abs_v(c, slots + 1, VALUE_REF_GET(self)));   /* same as #abs */
     CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
     slots[1] = UNWRAP(korb_float_new(c, slots + 1, atan2(im, re)));
     CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
@@ -965,9 +986,26 @@ static RESULT korb_m_cpx_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK((korb_value_eql(x->re, y->re) && korb_value_eql(x->im, y->im)) ? KORB_TRUE : KORB_FALSE);
 }
 /* Complex#** — exact repeated squaring for an Integer exponent (negative →
- * reciprocal); otherwise the polar formula z^w = exp(w·ln z) (Float result). */
+ * reciprocal); otherwise polar form as CRuby's rb_complex_pow (Float result). */
 static RESULT korb_m_cpx_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE ev = VALUE_SLICE_GET(a, 0);
+    /* CRuby rb_complex_pow's canonicalization: n/1 → n, (x+0i) → x */
+    if (KORB_RATIONAL_P(ev) && VAL2RAT(ev)->den == LONG2FIX(1)) ev = VAL2RAT(ev)->num;
+    if (KORB_COMPLEX_P(ev) && VAL2CPX(ev)->im == LONG2FIX(0)) ev = VAL2CPX(ev)->re;
+    if (ev == LONG2FIX(1)) return korb_cpx_new(c, slots, SELF_CPX->re, SELF_CPX->im);
+    if ((FIXNUM_P(ev) && ev != LONG2FIX(0)) || KORB_BIGNUM_P(ev)) {   /* on an axis / a diagonal: CRuby's exact special angle (prelude) */
+        double dr, di;
+        if (korb_num_to_d(SELF_CPX->re, &dr) && korb_num_to_d(SELF_CPX->im, &di) &&
+            UNLIKELY(di == 0.0 || dr == 0.0 || dr == di || dr == -di)) {
+            slots[0] = VALUE_REF_GET(self); slots[1] = ev;
+            const RESULT sr = korb_send(c, slots + 2, korb_intern(c->vm, "__pow_special", 13), 0, 1);
+            if (sr.state != KORB_NORMAL || sr.value != KORB_NIL) return sr;
+        }
+    }
+    if (KORB_FLOAT_P(ev) || KORB_RATIONAL_P(ev) || KORB_BIGNUM_P(ev)) {   /* real exponent: |z|**w exactly, then polar (prelude) */
+        slots[0] = VALUE_REF_GET(self); slots[1] = ev;
+        return korb_send(c, slots + 2, korb_intern(c->vm, "__pow_real", 10), 0, 1);
+    }
     if (FIXNUM_P(ev)) {
         korb_sword_t n = FIX2LONG(ev);
         const bool neg = n < 0; uintptr_t k = neg ? (uintptr_t)(-n) : (uintptr_t)n;
@@ -994,10 +1032,19 @@ static RESULT korb_m_cpx_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Complex", korb_coerce_name(c, ev));
     }
-    const double r = hypot(zre, zim), th = atan2(zim, zre), lnr = log(r);
-    const double p = wre * lnr - wim * th, q = wre * th + wim * lnr, ep = exp(p);
-    slots[0] = UNWRAP(korb_float_new(c, slots, ep * cos(q)));
-    slots[1] = UNWRAP(korb_float_new(c, slots + 1, ep * sin(q)));
+    const double r = hypot(zre, zim), th = atan2(zim, zre);
+    double nr, nth;
+    if (KORB_COMPLEX_P(ev)) { const double lnr = log(r); nr = exp(wre * lnr - wim * th); nth = th * wre + wim * lnr; }
+    else { nr = pow(r, wre); nth = th * wre; }             /* CRuby: |z|**w, arg(z)*w, then polar */
+    /* CRuby f_complex_polar_real: exact axes instead of cos/sin rounding */
+    double xr, xi;
+    if (nr == 0.0 || nth == 0.0) { xr = nr; xi = 0.0; }
+    else if (nth == M_PI) { xr = -nr; xi = 0.0; }
+    else if (nth == M_PI_2) { xr = 0.0; xi = nr; }
+    else if (nth == M_PI_2 + M_PI) { xr = 0.0; xi = -nr; }
+    else { xr = nr * cos(nth); xi = nr * sin(nth); }
+    slots[0] = UNWRAP(korb_float_new(c, slots, xr));
+    slots[1] = UNWRAP(korb_float_new(c, slots + 1, xi));
     return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
 }
 /* Coerce a Complex.polar argument to a double: a real, or a Complex whose

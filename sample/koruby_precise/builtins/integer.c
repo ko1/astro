@@ -215,6 +215,11 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             if (FIXNUM_P(ip.value)) return korb_rat_new(c, slots, FIX2LONG(ip.value), 1);   /* n → (n/1) */
             return ip;                                 /* already Rational (neg exp) or Bignum */
         }
+        if (selfv == LONG2FIX(0) || selfv == LONG2FIX(1)) {   /* CRuby nurat_expt: 0 / 1 stay exact */
+            if (selfv == LONG2FIX(0) && korb_int_cmp(VAL2RAT(ev)->num, LONG2FIX(0)) < 0)
+                return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
+            return korb_rat_new(c, slots, FIX2LONG(selfv), 1);
+        }
         double base; (void)korb_num_to_d(selfv, &base); /* fractional → Float (Complex if neg base) */
         double e; (void)korb_num_to_d(ev, &e);
         if (base < 0) {

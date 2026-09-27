@@ -172,8 +172,11 @@ static RESULT korb_m_math_lgamma(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     { RESULT cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     if (isinf(x) && signbit(x))                   /* CRuby: -Infinity is out of domain */
         return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - lgamma");
-    double v = lgamma(x);
-    int sign = signbit(tgamma(x)) ? -1 : 1;
+    int sign = 1;
+    double v;
+    if (isinf(x)) v = HUGE_VAL;                          /* CRuby math_lgamma: +Inf and ±0 before lgamma_r */
+    else if (x == 0.0) { v = HUGE_VAL; sign = signbit(x) ? -1 : 1; }
+    else v = lgamma_r(x, &sign);                         /* the sign of gamma, also at the poles (-1.0 → -1) */
     slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
     VALUE_REF arr = VALUE_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_float_new(c, slots + 1, v));

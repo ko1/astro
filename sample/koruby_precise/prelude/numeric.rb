@@ -7,6 +7,7 @@ class Numeric
   end
   # Generic fallbacks for Numeric subclasses (Integer/Float/Rational/Complex have
   # their own C implementations, which take precedence).
+  def i = Complex(0, self)                # Numeric#i (Rational and user Numerics; Integer/Float have C ones)
   def abs; self < 0 ? -self : self; end
   alias magnitude abs                     # CRuby: #magnitude is an alias of #abs (same UnboundMethod)
   # CRuby Numeric#-@: 0 - self via #coerce (subtract 2nd from 1st).
@@ -140,6 +141,13 @@ end
 # numerator's (Integer#< handles Fixnum and Bignum).  Complex has no </> (not
 # orderable), so these stay Rational-specific rather than living on Numeric.
 class Rational
+  # CRuby nurat_fdiv: the exact quotient, then to_f ((5/3r).fdiv(5) is 1/3.to_f, (0/1r).fdiv(-3) is 0.0)
+  def fdiv(other)
+    return self / 0.0 if other.is_a?(Numeric) && other.zero? && !other.is_a?(Float)
+    return to_f if other.equal?(1)
+    d = self / other
+    d.is_a?(Float) ? d : d.to_f
+  end
   def negative?; numerator < 0; end
   def positive?; numerator > 0; end
   def real?; true; end
@@ -290,4 +298,48 @@ class Range
     end
   end
   private :__each_endless_enum
+end
+
+class Complex
+  undef_method :i if method_defined?(:i)   # CRuby: Complex has no #i
+
+  # CRuby complex_pow_for_special_angle (the C Complex#** calls this when the base
+  # is on an axis or a diagonal): exact components, ((2+0i)**-1 is ((1/2)+(0/1)*i)).
+  # nil when it is not such a base after all.
+  POW_DIRS__ = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]].freeze
+  private_constant :POW_DIRS__
+  private def __pow_special(n)
+    re, im = real, imaginary
+    if im == 0 then x = re; dir = 0
+    elsif re == 0 then x = im; dir = 2
+    elsif re == im then x = re; dir = 1
+    elsif re == -im then x = im; dir = 3
+    else return nil
+    end
+    if x.negative? then x = -x; dir += 4 end
+    zx = dir.even? ? x ** n : ((2 * x) * x) ** n.div(2)
+    zx *= x if dir.odd? && n.odd?
+    zero = zx.is_a?(Float) ? 0.0 : (zx.is_a?(Rational) ? Rational(0, 1) : 0)
+    d = POW_DIRS__[(dir * n) % 8]
+    pick = ->(k) { k == 0 ? zero : (k == 1 ? zx : -zx) }
+    Complex.rect(pick.(d[0]), pick.(d[1]))
+  end
+
+  # a real (Float / Rational) exponent: |z| ** w exactly, then CRuby's polar
+  private def __pow_real(w)
+    warn("in a**b, b may be too big", uplevel: 1) if w.is_a?(Integer)   # a Bignum (CRuby rb_warn)
+    __polar_real(abs ** w, arg * w)
+  end
+
+  # CRuby f_complex_polar_real: exact axes, else r·cos / r·sin
+  private def __polar_real(x, y)
+    return Complex.rect(x, 0.0) if x == 0 || y == 0
+    if y.is_a?(Float)
+      return Complex.rect(-x, 0.0) if y == Math::PI
+      return Complex.rect(0.0, x) if y == Math::PI / 2
+      return Complex.rect(0.0, -x) if y == Math::PI / 2 + Math::PI
+      return Complex.rect(x * Math.cos(y), x * Math.sin(y))
+    end
+    Complex(x * Math.cos(y), x * Math.sin(y))
+  end
 end
