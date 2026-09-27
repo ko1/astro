@@ -143,8 +143,9 @@ class IO
        (int.is_a?(String) && !int.encoding.ascii_compatible?)
       raise ArgumentError, "invalid encoding name (non ASCII)"
     end
-    __check_newline_opt(opts[:newline]) if opts.key?(:newline)
+    __check_newline_opt(opts[:newline]) unless opts[:newline].nil?
     __check_newline_binmode(opts)
+    __apply_univ_opts(opts)
     ext = __enc_arg(ext)
     # "-" (or a "ext:-" pair) means "explicitly no internal encoding", which is
     # not the same as leaving it out (that one falls back to the default).
@@ -193,6 +194,17 @@ class IO
     end
   end
 
+  # universal newline on read: an explicit newline: wins, then the *_newline: flags, then textmode:
+  private def __apply_univ_opts(opts)
+    if !opts[:newline].nil?
+      __io_set_univ(opts[:newline] == :universal)
+    elsif %i[universal_newline crlf_newline cr_newline lf_newline].any? { |k| !opts[k].nil? }
+      __io_set_univ(opts[:universal_newline] ? true : false)
+    elsif opts[:textmode]
+      __io_set_univ(true)
+    end
+  end
+
   private def __check_newline_value(v)
     unless %i[lf crlf cr universal].include?(v)
       raise ArgumentError, "unexpected value for newline option: #{v}" if v.is_a?(Symbol)
@@ -238,7 +250,9 @@ class IO
     @autoclose = opts[:autoclose] ? true : false if opts.key?(:autoclose)
     # the newline decorator is rejected against the mode the stream was OPENED
     # with, before :binmode below can turn a text stream binary
-    __check_newline_opt(opts[:newline]) if opts.key?(:newline)
+    __check_newline_opt(opts[:newline]) unless opts[:newline].nil?   # nil = not given (CRuby)
+    __check_newline_binmode(opts)
+    __apply_univ_opts(opts)
     __binmode_flag if opts[:binmode]   # the option only flips byte semantics; an explicit encoding: still wins
     ext = __enc_opt(opts[:external_encoding])
     int = __enc_opt(opts[:internal_encoding])

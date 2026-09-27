@@ -1395,6 +1395,7 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     if (strchr(mode, 'b'))
         CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
+    if (korb_mode_univ(mode)) korb_io_rep(c, VALUE_REF_GET(io))->univ = 1;   /* popen "rt" */
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(io));
     slots[1] = VALUE_REF_GET(io);
     RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);

@@ -1078,7 +1078,32 @@ static size_t korb_fd_write_all(int fd, const char *p, size_t n) {
  * other option).  An `open_args:` without a mode leaves the default "r" in
  * place — that is exactly why `IO.write(f, s, open_args: [{…}])` is an IOError. */
 static const char *korb_io_bom_at(const char *p, uint32_t n, uint32_t *blen);   /* fwd (builtins/io.c) */
-struct korb_open_args { char mode[32]; int enc; int enc2; bool bom; };   /* enc2: internal (transcode target); bom: a "BOM|enc" mode prefix */
+struct korb_open_args { char mode[32]; int enc; int enc2; bool bom; int8_t univ; bool text; };   /* enc2: internal (transcode target); bom: a "BOM|enc" mode prefix; univ: -1 unset / newline option says 0|1; text: textmode: true */
+
+/* Universal newline in place: \r\n and \r become \n.  *nl_skip carries a trailing
+ * \r into the next chunk, whose leading \n it then drops.  Returns the new length. */
+static uint32_t korb_univ_nl_inplace(char *restrict p, const uint32_t n, uint8_t *restrict nl_skip) {
+    uint32_t i = 0, o = 0;
+    if (*nl_skip && n > 0 && p[0] == '\n') i = 1;
+    *nl_skip = 0;
+    for (; i < n; i++) {
+        const char ch = p[i];
+        if (ch == '\r') {
+            p[o++] = '\n';
+            if (i + 1 < n) { if (p[i + 1] == '\n') i++; }
+            else *nl_skip = 1;
+        }
+        else p[o++] = ch;
+    }
+    return o;
+}
+/* universal newline on read: an explicit newline option decides, else "t" in the mode / textmode: true */
+static bool korb_open_univ(const struct korb_open_args *const o) {
+    if (o->univ >= 0) return o->univ != 0;
+    bool t = o->text, b = false;
+    for (const char *p = o->mode; *p && *p != ':'; p++) { t |= *p == 't'; b |= *p == 'b'; }
+    return t && !b;
+}
 
 /* the encoding name of an `encoding:` value (an Encoding or a String) */
 static RESULT korb_open_enc_name(CTX *c, VALUE *slots, VALUE v, char *out, size_t cap) {
@@ -1096,6 +1121,22 @@ static RESULT korb_open_enc_name(CTX *c, VALUE *slots, VALUE v, char *out, size_
 static RESULT korb_open_args_hash(CTX *c, VALUE *slots, VALUE h, struct korb_open_args *o) {
     const KorbHash *const hh = VAL2HASH(h);
     bool mode_has_enc = false;
+    {   /* newline: wins over the *_newline: flags; nil means not given (CRuby) */
+        const int32_t nx = korb_hash_find(hh, ID2SYM(korb_intern(c->vm, "newline", 7)));
+        const VALUE nv = nx >= 0 ? korb_items_data(hh->items)[2 * nx + 1] : KORB_NIL;
+        if (nv != KORB_NIL) o->univ = (nv == ID2SYM(korb_intern(c->vm, "universal", 9))) ? 1 : 0;
+        else {
+            static const char *const nk[] = { "universal_newline", "crlf_newline", "cr_newline", "lf_newline" };
+            for (size_t i = 0; i < 4; i++) {
+                const int32_t kx = korb_hash_find(hh, ID2SYM(korb_intern(c->vm, nk[i], (uint32_t)strlen(nk[i]))));
+                if (kx < 0 || korb_items_data(hh->items)[2 * kx + 1] == KORB_NIL) continue;
+                if (o->univ < 0) o->univ = 0;
+                if (i == 0 && KORB_TRUTHY(korb_items_data(hh->items)[2 * kx + 1])) o->univ = 1;
+            }
+        }
+        const int32_t tx = korb_hash_find(hh, ID2SYM(korb_intern(c->vm, "textmode", 8)));
+        if (tx >= 0 && KORB_TRUTHY(korb_items_data(hh->items)[2 * tx + 1])) o->text = true;
+    }
     int32_t ix = korb_hash_find(hh, ID2SYM(korb_intern(c->vm, "mode", 4)));
     if (ix >= 0) {
         const VALUE mv = korb_items_data(hh->items)[2 * ix + 1];
@@ -1158,6 +1199,8 @@ korb_io_open_args(CTX *c, VALUE *slots, VALUE opts, const char *defmode, struct 
     o->enc = -1;
     o->enc2 = -1;
     o->bom = false;
+    o->univ = -1;
+    o->text = false;
     if (!KORB_HASH_P(opts)) return RESULT_OK(KORB_NIL);
     const int32_t ox = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(c->vm, "open_args", 9)));
     if (ox >= 0 && KORB_ARRAY_P(korb_items_data(VAL2HASH(opts)->items)[2 * ox + 1])) {
@@ -1267,14 +1310,17 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     char *const buf = korb_fd_slurp(fd, &len);
     close(fd);
     if (!buf) return korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "out of memory reading %s", path);
-    const char *data = buf;
+    char *data = buf;
     int enc = oa.enc;
     if (enc < 0) enc = korb_file_default_ext_enc(c, slots + 1);   /* Encoding.default_external (CRuby) */
+    const bool univ = korb_open_univ(&oa);
     if (oa.bom) {                                        /* "r:BOM|enc": the mark decides and is dropped */
         uint32_t blen = 0;
         const char *const bname = korb_io_bom_at(buf, (uint32_t)len, &blen);
         if (bname) { data += blen; len -= blen; enc = (int)korb_enc_index_for_name(c->vm, bname); }
     }
+    const bool univ_after = univ && oa.enc2 >= 0 && oa.enc2 != enc;   /* a transcoded read converts the decoded text */
+    if (univ && !univ_after) { uint8_t skip = 0; len = korb_univ_nl_inplace(data, (uint32_t)len, &skip); }
     r = korb_str_new(c, slots + 1, data, (uint32_t)len);
     free(buf);
     if (LIKELY(r.state == KORB_NORMAL) && enc >= 0) KORB_STR_ENC_SET(r.value, (uint32_t)enc);
@@ -1286,6 +1332,12 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
                                           korb_enc_name_of(c->vm, (uint32_t)oa.enc2), &ok);
         if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
         if (ok) r = RESULT_OK(tr.value);
+        if (univ_after && ok && KORB_STRING_P(r.value)) {
+            KorbString *const ts = VAL2STR(r.value);
+            uint8_t skip = 0;
+            ts->len = korb_univ_nl_inplace(korb_strbuf_data(ts->buf), ts->len, &skip);
+            korb_strbuf_data(ts->buf)[ts->len] = '\0';
+        }
     }
     return r;
 }
@@ -1546,15 +1598,15 @@ static RESULT korb_io_lines_mode_check(CTX *c, VALUE *slots, VALUE_SLICE a, cons
 /* File.readlines / File.foreach slurp and split the file themselves, so the
  * `encoding:` option has to be honoured HERE: tag each record with the external
  * encoding and transcode it into the internal one when a pair was given. */
-static RESULT korb_file_line_enc(CTX *c, VALUE *slots, VALUE_SLICE a, int *ext, int *intr) {
-    *ext = -1; *intr = -1;
+static RESULT korb_file_line_enc(CTX *c, VALUE *slots, VALUE_SLICE a, int *ext, int *intr, bool *univ) {
+    *ext = -1; *intr = -1; *univ = false;
     const uint32_t na = VALUE_SLICE_LEN(a);
     if (na < 2) return RESULT_OK(KORB_NIL);
     const VALUE last = VALUE_SLICE_GET(a, na - 1);
     if (!KORB_HASH_P(last) || !korb_kwargs_hash_p(last)) return RESULT_OK(KORB_NIL);
     struct korb_open_args oa;
     CHECK(korb_io_open_args(c, slots, last, "r", &oa));
-    *ext = oa.enc; *intr = oa.enc2;
+    *ext = oa.enc; *intr = oa.enc2; *univ = korb_open_univ(&oa);
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_file_line_apply_enc(CTX *c, VALUE *slots, VALUE *vslot, int ext, int intr) {
@@ -1583,8 +1635,8 @@ static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         CHECK(korb_io_lines_mode_check(c, slots + 2, a, pb0)); }
     if (UNLIKELY(la.limit == 0))
         return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "invalid limit: 0 for readlines");
-    int lext = -1, lint = -1;
-    CHECK(korb_file_line_enc(c, slots + 2, a, &lext, &lint));
+    int lext = -1, lint = -1; bool luniv = false;
+    CHECK(korb_file_line_enc(c, slots + 2, a, &lext, &lint, &luniv));
     const VALUE_REF sepref = VALUE_REF_AT(&slots[1]);
     uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: it may have moved */
     size_t len; int rdfd = -1;
@@ -1594,6 +1646,7 @@ static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         char wb[4160]; snprintf(wb, sizeof wb, "fd:%d %s", rdfd, path);           /* CRuby's io_fillbuf shape */
         return korb_raise_errno(c, slots + 2, errno, "io_fillbuf", wb);
     }
+    if (luniv) { uint8_t skip = 0; len = korb_univ_nl_inplace(buf, (uint32_t)len, &skip); }   /* raw bytes; UTF-16 + univ is not handled here */
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 16));
     const VALUE_REF arr = VALUE_REF_AT(&slots[2]);
     RESULT r = RESULT_OK(KORB_NIL);
@@ -1630,8 +1683,8 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         CHECK(korb_io_lines_mode_check(c, slots + 2, a, pb0)); }
     if (UNLIKELY(la.limit == 0))
         return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "invalid limit: 0 for foreach");
-    int lext = -1, lint = -1;
-    CHECK(korb_file_line_enc(c, slots + 2, a, &lext, &lint));
+    int lext = -1, lint = -1; bool luniv = false;
+    CHECK(korb_file_line_enc(c, slots + 2, a, &lext, &lint, &luniv));
     const VALUE_REF sepref = VALUE_REF_AT(&slots[1]);
     uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: it may have moved */
     size_t len; int rdfd = -1;
@@ -1641,6 +1694,7 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         char wb[4160]; snprintf(wb, sizeof wb, "fd:%d %s", rdfd, path);           /* CRuby's io_fillbuf shape */
         return korb_raise_errno(c, slots + 2, errno, "io_fillbuf", wb);
     }
+    if (luniv) { uint8_t skip = 0; len = korb_univ_nl_inplace(buf, (uint32_t)len, &skip); }   /* raw bytes; UTF-16 + univ is not handled here */
     slots[2] = KORB_NIL;
     VALUE_REF arr = VALUE_REF_AT(&slots[2]);
     if (block == NULL) {                               /* no block → an Enumerator of the records */
