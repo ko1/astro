@@ -1,38 +1,28 @@
 # Time — methods layered on the C core (strftime/subsec/to_i/Time.at/utc?).
 class Time
-  # Truncate/round the sub-second part to ndigits decimal places (ns precision).
+  # Truncate the time to ndigits decimal places, exactly (Time#+ takes the Rational
+  # difference, so the zone and any digits below one ns are kept as CRuby does).
   def floor(ndigits = 0)
-    return self if ndigits >= 9
-    whole = to_i
-    if ndigits <= 0
-      scale = 10 ** (-ndigits)
-      whole = (whole / scale) * scale
-      _time_at_ns(whole, 0)
-    else
-      ns = ((subsec * (10 ** ndigits)).floor * (10 ** (9 - ndigits)))
-      _time_at_ns(whole, ns)
-    end
+    raise ArgumentError, "negative ndigits given" if ndigits < 0
+    return self + 0 if ndigits >= 9 && !@__subns     # a new plain Time, as CRuby
+    r = to_r
+    s = 10r ** ndigits
+    self + ((r * s).floor / s - r)
   end
 
   def ceil(ndigits = 0)
-    return self if ndigits >= 9
-    whole = to_i
-    sub = subsec
-    if ndigits <= 0
-      scale = 10 ** (-ndigits)
-      total = whole + (sub > 0 ? 1 : 0)
-      total = ((total + scale - 1) / scale) * scale
-      _time_at_ns(total, 0)
-    else
-      scaled = (sub * (10 ** ndigits)).ceil
-      _time_at_ns(whole, scaled * (10 ** (9 - ndigits)))
-    end
+    raise ArgumentError, "negative ndigits given" if ndigits < 0
+    return self + 0 if ndigits >= 9 && !@__subns
+    r = to_r
+    s = 10r ** ndigits
+    self + ((r * s).ceil / s - r)
   end
 
   # ISO-8601 / W3C XML Schema timestamp.  "Z" for UTC, else "+HH:MM".
   def iso8601(fraction_digits = 0)
     fraction_digits = fraction_digits.to_int unless fraction_digits.is_a?(Integer) # NUM2LONG: 1.9 -> 1
-    s = format("%04d-%02d-%02dT%02d:%02d:%02d", year, month, day, hour, min, sec)
+    y = year
+    s = format("%s-%02d-%02dT%02d:%02d:%02d", y < 0 ? format("-%04d", -y) : format("%04d", y), month, day, hour, min, sec)
     if fraction_digits > 0
       frac = (subsec * (10 ** fraction_digits)).floor
       s += "." + frac.to_s.rjust(fraction_digits, "0")
@@ -51,11 +41,6 @@ class Time
     h
   end
 
-  private
-  def _time_at_ns(whole, ns)
-    t = Time.at(whole, ns, :nanosecond)
-    utc? ? t.utc : t
-  end
 end
 
 class Time
@@ -97,7 +82,7 @@ class Time
   # The seconds/nanoseconds/zone live in these ivars; CRuby keeps them out of
   # reach in a native struct, so they must not show up as user ivars.  Named
   # exactly, so a user's own @__foo on a Time is still reported.
-  TIME_INTERNAL_IVARS__ = %i[@__t @__ns @__utc @__off @__offx @__tz].freeze
+  TIME_INTERNAL_IVARS__ = %i[@__t @__ns @__subns @__utc @__off @__offx @__tz].freeze
   private_constant :TIME_INTERNAL_IVARS__
   def instance_variables = super - TIME_INTERNAL_IVARS__
 end

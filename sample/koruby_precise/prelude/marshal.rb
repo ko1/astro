@@ -333,6 +333,10 @@ module Marshal
       b1 = (sub % 10) << 4
       extra.unshift([:submicro, (b1 == 0 ? [b0] : [b0, b1]).pack("C*")])
     end
+    if Time === o && (subns = o.instance_variable_get(:@__subns))
+      nano = o.nsec % 1000 + subns                        # below the microsecond, exactly (CRuby's nano_num / nano_den)
+      extra.unshift([:nano_num, nano.numerator], [:nano_den, nano.denominator])
+    end
     if enc || !ivars.empty? || !extra.empty? || !own.empty?
       out << "I"
       out << "u"; _symdump(name.to_sym, out, st); _long(d.bytesize, out); out << d.b
@@ -793,18 +797,23 @@ module Marshal
         _byte(st)
         cls = _read0(st)
         data = _bytes(st, _rlong(st))
-        offset = nil; submicro = nil; zname = nil; uiv = []
+        offset = nil; submicro = nil; zname = nil; uiv = []; nano_num = nil; nano_den = nil
         _rlong(st).times do
           name = _read0(st); val = _read(st)
           next if name == :E || name == :encoding
           offset = val if name == :offset
           submicro = val if name == :submicro
+          nano_num = val if name == :nano_num
+          nano_den = val if name == :nano_den
           zname = val if name == :zone
           uiv << [name, val] if name.to_s.start_with?("@")
           data.instance_variable_set(name, val) rescue nil   # :offset / :zone have no '@'
         end
         obj = _const(cls).__send__(:_load, data)
-        if Time === obj && submicro                        # restore the sub-microsecond digits
+        if Time === obj && Integer === nano_num && Integer === nano_den && nano_den > 0
+          t2 = Time.at(obj.to_i, obj.usec * 1000 + Rational(nano_num, nano_den), :nsec)   # exact, below one ns too
+          obj = obj.utc? ? t2.utc : t2
+        elsif Time === obj && submicro                     # restore the sub-microsecond digits
           b = submicro.bytes
           sub = ((b[0] >> 4) * 100) + ((b[0] & 0xF) * 10) + (b[1] ? (b[1] >> 4) : 0)
           if sub != 0
@@ -815,7 +824,7 @@ module Marshal
         # The payload holds UTC fields; :offset only says which local zone to
         # show it in.  Rebuild through the integer seconds so the nanoseconds
         # stay exact (Time#- goes through a Float).
-        obj = Time.at(obj.to_i, Rational(obj.nsec, 1000)).getlocal(offset) if Time === obj && offset
+        obj = Time.at(obj.to_i, obj.nsec + (obj.instance_variable_get(:@__subns) || 0), :nsec).getlocal(offset) if Time === obj && offset
         # A zone name rides along as the pseudo-ivar :zone.  CRuby rebuilds the
         # timezone OBJECT from it through the class's .find_timezone hook; with no
         # hook the name itself becomes #zone.
