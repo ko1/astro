@@ -10838,6 +10838,14 @@ korb_const_private_p(const struct korb_vm *vm, VALUE owner, uint32_t sym)
     return false;
 }
 
+/* Does `mod` answer const_missing with a hook of its own (not Module's default)? */
+bool korb_user_const_missing_p(CTX *c, VALUE mod)
+{
+    VALUE def = KORB_NIL;
+    const struct korb_method *const m = korb_class_find_method(korb_dispatch_class(c, mod), korb_intern(c->vm, "const_missing", 13), &def);
+    return m != NULL && def != korb_const_get(c->vm, korb_intern(c->vm, "Module", 6));
+}
+
 /* `class A::B` / `module A::B` reopening a constant B that A marked private is a
  * NameError, same as reading it.  `scoped` is false for a plain `class B` in a
  * lexical body, which stays legal. */

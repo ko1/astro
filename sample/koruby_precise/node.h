@@ -624,6 +624,7 @@ VALUE korb_cvar_self_class_pub(CTX *c, VALUE self);   /* @@var fallback scope fo
 VALUE korb_const_cref(const struct korb_vm *vm, VALUE self, VALUE entry_cell);   /* like korb_cvar_cref, but keeps a `class << obj` singleton */
 VALUE korb_body_cref(CTX *c, VALUE self, VALUE entry_cell, uint32_t cref_name);   /* cref of a def/undef in a method body */
 RESULT korb_undef_cref(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t cref_name);   /* the class an `undef` acts on */
+bool korb_user_const_missing_p(CTX *c, VALUE mod);   /* a const_missing other than Module's default */
 void  korb_mark_sdef(VALUE klass, uint32_t mid);   /* the entry was written `def recv.m` */
 VALUE korb_cref_from_path(struct korb_vm *vm, uint32_t sym);   /* "A::B" (one interned path) → the class/module, nil if unresolved */
 VALUE korb_cvar_owner(VALUE cref, VALUE sym, int32_t *idx_out);
