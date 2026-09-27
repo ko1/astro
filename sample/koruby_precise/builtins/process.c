@@ -895,7 +895,6 @@ static pid_t korb_spawn_run_r(const struct korb_spawn_plan *p, int *cerr, bool *
     return pid;
 }
 
-static pid_t korb_spawn_run(const struct korb_spawn_plan *p) { return korb_spawn_run_r(p, NULL, NULL); }
 
 /* Would execvp(cmd) work?  0, or the errno it would fail with.  Process.exec
  * checks this before applying any redirect, so a bad command raises without
@@ -1378,7 +1377,15 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             r->path[0] = '\0'; r->oflags = 0;
         }
         korb_io_flush_std(c->vm);   /* the child inherits our write buffer: drain it first */
-        pid = korb_spawn_run(&plan);
+        int cerr = 0;
+        pid = korb_spawn_run_r(&plan, &cerr, NULL);
+        if (pid > 0 && cerr != 0) {                     /* exec failed: CRuby raises, e.g. EACCES */
+            close(fds[0]); close(fds[1]);
+            int raw = 0; pid_t got;
+            CHECK(korb_waitpid_park(c, slots, pid, 0, &raw, &got));
+            if (got == pid) CHECK(korb_status_make(c, slots, pid, raw));
+            return korb_raise_errno(c, slots, cerr, NULL, korb_spawn_file(&plan));
+        }
     }
     if (pid < 0) { close(fds[0]); close(fds[1]); return korb_raise_errno(c, slots, errno, "fork", ""); }
     close(duplex ? fds[1] : fds[reading ? 1 : 0]);
@@ -1386,6 +1393,7 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                                    duplex ? fds[0] : fds[reading ? 0 : 1],
                                    duplex ? 3 : (reading ? 1 : 2)));
     korb_io_set_nonblock(korb_io_rep(c, slots[0]));   /* our end only; the child got the other */
+    korb_io_rep(c, slots[0])->sync = 1;                /* popen is FMODE_SYNC in CRuby */
     VALUE_REF io = VALUE_REF_AT(&slots[0]);
     CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_pid", 9)), LONG2FIX(pid)));
     if (hi < VALUE_SLICE_LEN(a)) {                    /* encoding: / autoclose: → the prelude */

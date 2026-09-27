@@ -1410,10 +1410,17 @@ static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (ok) slots[1] = tr.value;
         }
     }
+    mode_t perm = 0666;
+    if (na < VALUE_SLICE_LEN(a)) {                     /* re-read opts from the slice: the sends above may GC */
+        const KorbHash *const oh = VAL2HASH(VALUE_SLICE_GET(a, na));
+        const int32_t pi = korb_hash_find(oh, ID2SYM(korb_intern(c->vm, "perm", 4)));
+        if (pi >= 0 && FIXNUM_P(korb_items_data(oh->items)[2 * pi + 1]))
+            perm = (mode_t)FIX2LONG(korb_items_data(oh->items)[2 * pi + 1]);
+    }
     uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: they may have moved */
     const int oflags = O_WRONLY | O_CREAT |
                        (oa.mode[0] == 'a' ? O_APPEND : (oa.mode[0] == 'w' ? O_TRUNC : 0));
-    const int fd = open(path, oflags, 0666);
+    const int fd = open(path, oflags, perm);
     if (fd < 0) return korb_raise_errno(c, slots + 2, errno, "rb_sysopen", path);
     if (has_off) (void)lseek(fd, (off_t)off, SEEK_SET);
     const KorbString *const ds = VAL2STR(slots[1]);

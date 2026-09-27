@@ -210,8 +210,9 @@ static bool korb_io_flush_rep_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESU
             }
             /* A vanished reader keeps the bytes: nothing can ever be emitted
                out of order, and #close must still report the EPIPE (CRuby).
-               Any other failure drops them, or a retry would reorder output. */
-            if (errno != EPIPE) rep->wlen = 0;
+               Any other failure drops them, or a retry would reorder output.
+               A sync stream never buffers in CRuby, so it has nothing left. */
+            if (errno != EPIPE || rep->sync) rep->wlen = 0;
             return false;
         }
         off += (uint32_t)w;
@@ -242,11 +243,16 @@ static bool korb_io_wr_p(CTX *c, VALUE *slots, KorbIORep *const rep, const char 
     if (UNLIKELY(!korb_io_open_p(rep))) return false;
     const bool parks = rep->nonblk && c != NULL;
     if (rep->fd == KORB_IO_FD_MEM || parks) {            /* capture, or copy-then-drain */
+        const uint32_t old = rep->wlen;
         if (rep->wlen + n > rep->wcapa && !korb_io_wbuf_grow(rep, (uint32_t)(rep->wlen + n))) return false;
         memcpy(rep->wbuf + rep->wlen, p, n);
         rep->wlen += (uint32_t)n;                        /* `p` is dead from here on */
         if (rep->fd == KORB_IO_FD_MEM) return true;
-        return (rep->sync || rep->wlen >= KORB_IO_BUFSZ) ? korb_io_flush_rep_p(c, slots, rep, perr) : true;
+        if (!(rep->sync || rep->wlen >= KORB_IO_BUFSZ)) return true;
+        if (korb_io_flush_rep_p(c, slots, rep, perr)) return true;
+        /* CRuby writes a bulk run directly, so an EPIPE leaves it out of the buffer #close re-flushes */
+        if (errno == EPIPE && n >= KORB_IO_BUFSZ && rep->wlen > old) rep->wlen = old;
+        return false;
     }
     /* A bulk write goes straight to the descriptor: copying it through the
        buffer would cost a memcpy per byte and buy nothing. */
