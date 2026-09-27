@@ -445,23 +445,27 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
                               VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]));
 }
 /* shared: build from (year, mon=1, day=1, hour=0, min=0, sec=0) components. */
-/* Parse a Time.new component String to an integer.  For the month a 3-letter
- * English name (jan..dec, any case) is also accepted. */
-static bool korb_parse_time_str(const char *s, uint32_t len, bool is_month, korb_sword_t *out) {
+/* A Time component String: a month may be exactly a 3-letter English name (any
+ * case); anything else is Integer(str, 10) (CRuby's month_arg / obj2int). */
+RESULT korb_raise_bad_integer(CTX *c, VALUE *slots, VALUE str);   /* fwd */
+bool korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base, VALUE *out);   /* fwd */
+static RESULT korb_time_str_comp(CTX *c, VALUE *slots, VALUE str, bool is_month, korb_sword_t *out) {
     static const char *const mon[12] = { "jan","feb","mar","apr","may","jun",
                                          "jul","aug","sep","oct","nov","dec" };
-    if (is_month && len >= 3) {
+    const KorbString *const cs = VAL2STR(str);
+    const char *const s = korb_strbuf_data(cs->buf);
+    if (is_month && cs->len == 3) {
         char lo[3];
         for (int k = 0; k < 3; k++) lo[k] = (char)tolower((unsigned char)s[k]);
         for (int m = 0; m < 12; m++)
-            if (lo[0] == mon[m][0] && lo[1] == mon[m][1] && lo[2] == mon[m][2]) { *out = m + 1; return true; }
+            if (lo[0] == mon[m][0] && lo[1] == mon[m][1] && lo[2] == mon[m][2]) { *out = m + 1; return RESULT_OK(KORB_TRUE); }
     }
-    char buf[64]; if (len >= sizeof buf) return false;
-    memcpy(buf, s, len); buf[len] = '\0';
-    char *end; const long v = strtol(buf, &end, 10);
-    while (*end == ' ' || *end == '\t' || *end == '\n') end++;
-    if (end == buf || *end != '\0') return false;
-    *out = (korb_sword_t)v; return true;
+    slots[0] = str;
+    VALUE v;
+    if (!korb_str_to_int(c, slots + 1, s, cs->len, 10, &v)) return korb_raise_bad_integer(c, slots + 1, slots[0]);
+    if (!FIXNUM_P(v)) return korb_raise(c, slots + 1, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+    *out = FIX2LONG(v);
+    return RESULT_OK(KORB_TRUE);
 }
 
 static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE a, bool utc) {
@@ -504,9 +508,8 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
             } else return korb_raise_no_int(c, slots + 1, cv);
         }
         if (KORB_STRING_P(cv)) {                             /* String component → parse (month accepts names) */
-            const KorbString *cs = VAL2STR(cv);
-            if (!korb_parse_time_str(korb_strbuf_data(cs->buf), cs->len, i == 1, &comp[i]))
-                return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "argument out of range");
+            CHECK(korb_time_str_comp(c, slots + 1, cv, i == 1, &comp[i]));
+            cls = slots[0];
         }
     }
     if (defs >= 7 && !cstyle) {                              /* Time.utc/local 7th arg = microseconds */
@@ -756,9 +759,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             }
             else if (KORB_FLOAT_P(cv)) comp[i] = (korb_sword_t)korb_float_val(cv);
             else if (KORB_STRING_P(cv)) {                    /* "1979" / "may": as the plain path parses them */
-                const KorbString *const cs = VAL2STR(cv);
-                if (!korb_parse_time_str(korb_strbuf_data(cs->buf), cs->len, i == 1, &comp[i]))
-                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "argument out of range");
+                CHECK(korb_time_str_comp(c, slots + 8, cv, i == 1, &comp[i]));
             }
         }
         if (comp[1] < 1 || comp[1] > 12 || comp[2] < 1 || comp[2] > 31 ||

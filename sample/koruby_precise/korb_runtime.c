@@ -8147,6 +8147,18 @@ korb_class_display_name(CTX *c, VALUE *scratch, VALUE cls, char *buf, size_t sz)
                                                           * the class may have moved: callers re-read scratch[0] */
 }
 
+/* Integer()'s ArgumentError: the String is shown inspected ("1\u0000"), as CRuby does. */
+RESULT
+korb_raise_bad_integer(CTX *c, VALUE *slots, VALUE str)
+{
+    char *buf = NULL; size_t z = 0;
+    FILE *const ms = open_memstream(&buf, &z);
+    if (ms) { korb_fprint_inspect(c, ms, str); fclose(ms); }
+    const RESULT r = korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for Integer(): %s", buf ? buf : "\"\"");
+    free(buf);
+    return r;
+}
+
 /* v.inspect into a fixed buffer (no GC): for error messages that name a value. */
 void
 korb_desc_inspect(CTX *c, VALUE v, char *buf, size_t sz)
@@ -19230,7 +19242,7 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
         const KorbString *s = VAL2STR(a0);
         VALUE v;
         if (UNLIKELY(!korb_str_to_int(c, slots, korb_strbuf_data(s->buf), s->len, base, &v)))
-            INT_FAIL(KORB_E_ARGUMENT, 0, "invalid value for Integer(): \"%.*s\"", (int)s->len, korb_strbuf_data(s->buf));
+            return exc ? korb_raise_bad_integer(c, slots, a0) : RESULT_OK(KORB_NIL);
         return RESULT_OK(v);
     }
     /* A base with a non-String value is an error (checked after String above). */
@@ -19256,7 +19268,7 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
                 if (base_given && base != 0 && (base < 2 || base > 36)) INT_FAIL(KORB_E_ARGUMENT, 0, "invalid radix %d", base);
                 slots[0] = r.value; const KorbString *s = VAL2STR(slots[0]); VALUE iv;
                 if (UNLIKELY(!korb_str_to_int(c, slots + 1, korb_strbuf_data(s->buf), s->len, base, &iv)))
-                    INT_FAIL(KORB_E_ARGUMENT, 0, "invalid value for Integer(): \"%.*s\"", (int)s->len, korb_strbuf_data(s->buf));
+                    return exc ? korb_raise_bad_integer(c, slots + 1, slots[0]) : RESULT_OK(KORB_NIL);
                 return RESULT_OK(iv);
             }
             INT_FAIL(KORB_E_TYPE, 0, "can't convert %s into String (%s#to_str gives %s)",   /* CRuby stops here; #to_i is not tried */
