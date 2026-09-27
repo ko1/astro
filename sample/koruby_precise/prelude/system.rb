@@ -2236,6 +2236,24 @@ class Regexp
   private :initialize
 end
 
+# RubyVM: koruby has no YJIT / ZJIT, but CRuby code asks about them without a
+# defined? guard (csv's test_general: `RubyVM.const_defined?("YJIT")`).  Only the
+# predicates exist — no InstructionSequence / AbstractSyntaxTree / keep_script_lines,
+# so a library probing for those still takes its portable path.
+module RubyVM
+  module YJIT
+    def self.enabled? = false
+    def self.stats_enabled? = false
+    def self.log_enabled? = false
+    def self.trace_exit_locations_enabled? = false
+  end
+  module ZJIT
+    def self.enabled? = false
+    def self.stats_enabled? = false
+    def self.trace_exit_locations_enabled? = false
+  end
+end
+
 # Ruby 3.5+: RUBY_* 定数の Module 名前空間ミラー。
 module Ruby
   VERSION        = RUBY_VERSION
