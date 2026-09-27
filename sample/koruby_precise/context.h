@@ -1452,6 +1452,8 @@ struct korb_vm {
      * offsets into the line; end_col is exclusive (CRuby's rb_code_location_t). */
     struct korb_srcrange { struct Node *node; uint32_t start_col, end_line, end_col; } *srcranges;
     uint32_t srcrange_cnt, srcrange_capa;
+    /* the last UTF-16/32 regexp subject decoded to UTF-8 (regexp.c); last so no offset moves */
+    void *re_wide_cache;
 };
 
 /* -----------------------------------------------------------------------------

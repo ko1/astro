@@ -3751,6 +3751,9 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
  * Symbol#start_with? take a Regexp prefix. */
 static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb_re_match_t *m);
 static RESULT korb_re_build_md(CTX *c, VALUE *slots, VALUE subj, VALUE re, const korb_re_match_t *m);
+static uint32_t korb_re_wide_unit(const struct korb_vm *vm, VALUE re, uint32_t senc, bool *be);   /* regexp.c */
+static int korb_re_exec_wide(struct korb_vm *vm, korb_re_exec_fn_t fn, VALUE re, const char *sb, uint32_t slen, uint32_t senc,
+                             uint32_t unit, bool be, size_t startb, korb_re_match_t *m);
 static void korb_re_set_lastmatch(CTX *c, VALUE md_or_nil);
 /* CRuby freezes a Regexp at the end of every initialization path (literal,
  * Regexp.new, .union, init_copy) — but only when its class is exactly Regexp
@@ -8390,6 +8393,11 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
         const korb_re_exec_fn_t fn = korb_re_load(c->vm);
         if (UNLIKELY(fn == NULL)) return false;
         korb_re_sync_floor(c);
+        if (UNLIKELY(KORB_STRING_P(val) && KORB_STR_ENC(val) >= KORB_ENC_OTHER_MIN)) {   /* UTF-16/32 pattern on its own encoding */
+            bool be = false;
+            const uint32_t unit = korb_re_wide_unit(c->vm, pat, KORB_STR_ENC(val), &be);
+            if (unit) return korb_re_exec_wide(c->vm, fn, pat, sdata, slen, KORB_STR_ENC(val), unit, be, 0, NULL) == 1;
+        }
         const KorbString *const p = VAL2STR(VAL2RE(pat)->source);
         unsigned eff = VAL2RE(pat)->flags;   /* see korb_re_run: a single-byte subject matches byte-wise */
         if (KORB_STRING_P(val) && KORB_ENC_SB(c->vm, KORB_STR_ENC(val)) &&

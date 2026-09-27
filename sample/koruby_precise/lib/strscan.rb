@@ -91,7 +91,13 @@ class StringScanner
   def self.__anchored(re)
     G_CACHE[re] ||= begin
       G_CACHE.clear if G_CACHE.size >= 4096
-      Regexp.new("\\G(?:#{re.source}#{(re.options & Regexp::EXTENDED) != 0 ? "\n" : ""})", re.options)
+      src = re.source
+      tail = (re.options & Regexp::EXTENDED) != 0 ? "\n)" : ")"
+      if src.encoding.ascii_compatible?
+        Regexp.new("\\G(?:#{src}#{tail}", re.options)
+      else                                             # UTF-16/32: the wrapper must be in the source's encoding
+        Regexp.new("\\G(?:".encode(src.encoding) + src + tail.encode(src.encoding), re.options)
+      end
     end
   end
 
@@ -122,6 +128,7 @@ class StringScanner
   # \A \Z \z \G ^ $ outside a character class ("[^a]" is a negation, not an
   # anchor: taking it for one sent rexml's ATTLISTDECL_END down the slicing path).
   def self.__anchor_in?(src)
+    src = src.encode(Encoding::UTF_8) unless src.encoding.ascii_compatible?
     i = 0; n = src.length; depth = 0
     while i < n
       ch = src[i]

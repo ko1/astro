@@ -27,6 +27,14 @@
 - 大きな入力で選択肢の `*`（`"(?:[^%&"]|%NAME;|&NAME;)*"` など、class でない body）が astrogre の generic rep で
   1 反復 1 C フレームになり stack overflow（rexml parse/test_entity_declaration・test_attribute_list_declaration の
   linear_performance）。設計検討中。
+- **UTF-16/32 の Regexp は UTF-8 に decode して offset を戻す方式**（builtins/regexp.c korb_re_exec_wide）。subject の decode は
+  VM に 1 entry の cache（中身の memcmp で検証）で、大きな UTF-16 CSV の parse はまだ O(n²)（8000 行 1.36 s、CRuby 0.03 s。
+  memcmp が 61%）。O(1) にするには String の変更 epoch か、astrogre の UTF-16 native 対応か、strscan 側の UTF-8 影コピー。
+  既知の差: wide な Regexp#inspect が UTF-8（CRuby は US-ASCII）、StringScanner の pos が文字の途中だと CRuby は raise・
+  koruby は繰り上げ、gsub の置換文字列の `\k<name>`、Regexp#names が []。
+- Time は subsec を整数 ns（@__ns）で持つ: `Time.at(Rational(2,3)).subsec` が CRuby は (2/3)、koruby は 666666667/1e9。
+  iso8601(10) / %N の桁・Time#to_r が違う（time gem test_time の 4 failures）。
+- Big5 / GBK / EUC-KR の transcoder が無い（w12 A11、csv test_encoding_with_default_internal）。
 - `Enumerator#dup` / `clone` は `next` で外部イテレーションを始めた後なら CRuby は TypeError
   (`can't copy execution context`)。koruby は複製する。
 
