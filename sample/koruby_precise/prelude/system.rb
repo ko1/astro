@@ -830,7 +830,7 @@ module ObjectSpace
 end
 
 # 定義済みグローバル (CRuby 初期値)
-$/ = "\n"        # input record separator
+$/ = "\n".encode(Encoding::US_ASCII).freeze   # input record separator (CRuby: frozen US-ASCII)
 $\ = nil         # output record separator
 $, = nil         # output field separator
 $; = nil         # input field separator

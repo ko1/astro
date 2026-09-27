@@ -242,6 +242,15 @@ class StringIO
     buf.force_encoding(enc)
     buf
   end
+  # Appending at the end is rb_str_buf_append in CRuby: an ASCII-only buffer takes
+  # the encoding of a non-ASCII string (US-ASCII "" << "あ" becomes UTF-8).
+  private def __adopt_encoding(s)
+    be = @buf.encoding; se = s.encoding
+    return if be == se || be == Encoding::BINARY || se == Encoding::BINARY
+    return unless be.ascii_compatible? && se.ascii_compatible?
+    @buf.force_encoding(se) if !s.ascii_only? && @buf.ascii_only?
+  end
+
   private def __bsplice(pos, s)
     enc = @buf.encoding
     @buf.force_encoding(Encoding::BINARY)
@@ -258,7 +267,7 @@ class StringIO
     enc = external_encoding
     senc = s.encoding
     return s if enc.nil? || enc == senc ||
-                enc == Encoding::BINARY || senc == Encoding::BINARY ||
+                enc == Encoding::BINARY || enc == Encoding::US_ASCII || senc == Encoding::BINARY ||   # strio_write: no conversion into BINARY / US-ASCII
                 senc == Encoding::US_ASCII
     begin
       s.encode(enc)
@@ -274,6 +283,7 @@ class StringIO
       s = a.is_a?(String) ? a : a.to_s
       next if s.empty?
       s = __transcode(s)
+      __adopt_encoding(s) if @append || @pos == @buf.bytesize
       if @append
         __bsplice(@buf.bytesize, s)
       else
