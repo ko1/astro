@@ -14493,6 +14493,20 @@ void korb_mark_sdef(VALUE klass, uint32_t mid)
     for (uint32_t i = 0; i < k->method_cnt; i++)
         if (k->methods[i]->mid == mid) { k->methods[i]->sdef = 1; return; }
 }
+/* The class `undef` acts on, as for `def`: an eval's definee, a class body's
+ * self, the enclosing method's owner, or Object at the top level. */
+RESULT korb_undef_cref(CTX *c, VALUE *slots, const VALUE self, const VALUE entry_cell, const uint32_t cref_name)
+{
+    VALUE cls = KORB_CLASS_P(c->def_definee) ? c->def_definee : self;
+    if (!KORB_CLASS_P(cls) && c->def_definee == KORB_NIL) {
+        cls = korb_body_cref(c, self, entry_cell, cref_name);
+        if (!KORB_CLASS_P(cls) && KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL)
+            cls = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
+    }
+    if (UNLIKELY(!KORB_CLASS_P(cls)))   /* an eval's definee with no singleton (Integer/Symbol/…) */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, c->def_definee != KORB_NIL ? "can't define singleton" : "undef outside a class/module body");
+    return RESULT_OK(cls);
+}
 /* The cref a `def` / `undef` in a method body acts on: the method's owner — but
  * a `def obj.m` body (owner = the singleton of a non-class) has its lexical one,
  * the baked enclosing class or Object at the top level. */

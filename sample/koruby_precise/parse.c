@@ -4752,15 +4752,38 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_UNDEF_NODE: {          /* undef foo, bar — retire methods on the enclosing class */
         const pm_undef_node_t *un = (const pm_undef_node_t *)node;
         const uint32_t cnt = (uint32_t)un->names.size;
+        const uint32_t cref_name = (tc->frame->anon_class_body || tc->frame->anon_cref_method) ? 0u : kp_cref_owner_path(tc);
+        bool dyn = false;
+        for (uint32_t i = 0; i < cnt; i++) dyn |= !PM_NODE_TYPE_P(un->names.nodes[i], PM_SYMBOL_NODE);
+        if (dyn) {                                     /* `undef a, :"#{b}"`: one node per name, in order */
+            NODE *seq = NULL;
+            for (uint32_t i = 0; i < cnt; i++) {
+                const pm_node_t *nm = un->names.nodes[i];
+                NODE *u;
+                if (PM_NODE_TYPE_P(nm, PM_SYMBOL_NODE)) {
+                    const pm_symbol_node_t *sn = (const pm_symbol_node_t *)nm;
+                    uint32_t *const one = calloc(1, sizeof(uint32_t));   /* immortal (baked) */
+                    if (!one) abort();
+                    one[0] = korb_intern(tc->c->vm, (const char *)pm_string_source(&sn->unescaped), pm_string_length(&sn->unescaped));
+                    u = ALLOC_node_undef((const char *)(const void *)one, 1, -1 - tc->chain, -4 - tc->chain, cref_name);
+                    bake_add(tc, &u->u.node_undef.self_off);
+                    bake_add(tc, &u->u.node_undef.dc_off);
+                } else {
+                    u = ALLOC_node_undef_dyn(transduce(tc, nm), -1 - tc->chain, -4 - tc->chain, cref_name);
+                    bake_add(tc, &u->u.node_undef_dyn.self_off);
+                    bake_add(tc, &u->u.node_undef_dyn.dc_off);
+                }
+                seq = seq ? ALLOC_node_seq(seq, u) : u;
+            }
+            return seq ? seq : lit_nil();
+        }
         uint32_t *mids = calloc(cnt ? cnt : 1, sizeof(uint32_t));   /* immortal (baked); calloc so the hash_cstr over these bytes is deterministic */
         if (!mids) abort();
         for (uint32_t i = 0; i < cnt; i++) {
             const pm_node_t *nm = un->names.nodes[i];
-            if (!PM_NODE_TYPE_P(nm, PM_SYMBOL_NODE)) { free(mids); return kp_unsupported(tc, node, "undef with a dynamic-symbol name"); }
             const pm_symbol_node_t *s = (const pm_symbol_node_t *)nm;
             mids[i] = korb_intern(tc->c->vm, (const char *)pm_string_source(&s->unescaped), pm_string_length(&s->unescaped));
         }
-        const uint32_t cref_name = (tc->frame->anon_class_body || tc->frame->anon_cref_method) ? 0u : kp_cref_owner_path(tc);
         NODE *nu = ALLOC_node_undef((const char *)(const void *)mids, cnt, -1 - tc->chain, -4 - tc->chain, cref_name);   /* self at base[-1], method entry at base[-4] */
         bake_add(tc, &nu->u.node_undef.self_off);
         bake_add(tc, &nu->u.node_undef.dc_off);
