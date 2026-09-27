@@ -358,7 +358,7 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     bool src_utc = false;
     VALUE v = VALUE_SLICE_GET(a, 0);
     if (KORB_OBJECT_P(v) && korb_ivar_get(c, v, korb_time_t_sym(c->vm)) != KORB_NIL) {
-        sec = (int64_t)floor(korb_time_epoch(c, v));              /* Time.at(time) — keep its zone */
+        sec = (int64_t)korb_time_sec_of(c, v);                    /* Time.at(time) — keep its zone */
         nsec = korb_time_nsec_of(c, v);
         src_utc = korb_time_is_utc(c, v);
     } else if (!korb_epoch_parts(v, &sec, &nsec)) {               /* try #to_r, then #to_int, else TypeError */
@@ -436,6 +436,7 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         nsec += (long)(subv * per_ns);                       /* CRuby truncates the sub-nanosecond part */
     }
     sec += nsec / 1000000000; nsec %= 1000000000;                /* carry overflow into seconds */
+    if (nsec < 0) { nsec += 1000000000; sec -= 1; }             /* a negative subsec borrows: ns stays in [0, 1e9) */
     if (in_zv == KORB_NIL)
         return korb_time_make_ns(c, slots, VALUE_REF_GET(self), (double)sec, nsec, src_utc);
     korb_sword_t off; bool utcish;                                   /* Time.at(x, in: zone) */
@@ -827,7 +828,7 @@ static RESULT korb_m_time_subsec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* Time#to_r → the epoch as a Rational: seconds + nsec/1e9. */
 static RESULT korb_m_time_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; const VALUE t = VALUE_REF_GET(self);
-    const int64_t sec = (int64_t)korb_time_epoch(c, t);
+    const int64_t sec = (int64_t)korb_time_sec_of(c, t);   /* floored: -1.5 is -2 + 1/2 */
     return korb_rat_new(c, slots, (korb_sword_t)(sec * 1000000000 + korb_time_nsec_of(c, t)), 1000000000);
 }
 static RESULT korb_m_time_utc_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
