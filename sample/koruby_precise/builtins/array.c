@@ -593,10 +593,11 @@ static RESULT korb_m_ary_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     const uint32_t n = VAL2ARY(slots[0])->len;
     VAL2ARY(slots[0])->head.flags |= KORB_FL_JOIN_VISITING;
     VALUE result = KORB_TRUE;
+    const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < n; i++) {
         const VALUE v = korb_items_data(VAL2ARY(slots[0])->items)[i], v2 = korb_items_data(VAL2ARY(slots[1])->items)[i];
         if (v == v2) continue;                                            /* rb_equal's identity shortcut ([NaN] == [NaN] is true) */
-        if (korb_eq_needs_send(v) || korb_eq_needs_send(v2)) {   /* dispatch == (recurses for nested) */
+        if (korb_eq_send_p_(eqr, v, v2)) {   /* dispatch == (recurses for nested) */
             slots[2] = v; slots[3] = v2;
             RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
@@ -647,10 +648,11 @@ static RESULT korb_m_ary_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_ary_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (root across element == dispatches) */
     const uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
+    const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < n; i++) {
         const VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i];   /* re-read each iter */
         if (e == slots[0]) return RESULT_OK(KORB_TRUE);     /* identity short-circuit (CRuby rb_equal; catches NaN's own bits) */
-        if (korb_eq_needs_send(e) || korb_eq_needs_send(slots[0])) {  /* user == → dispatch (element == needle) */
+        if (korb_eq_send_p_(eqr, e, slots[0])) {  /* user == → dispatch (element == needle) */
             slots[1] = e; slots[2] = slots[0];
             RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;

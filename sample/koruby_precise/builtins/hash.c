@@ -257,11 +257,12 @@ static RESULT korb_m_hash_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
      * lookup), so e.g. assoc(1) matches a 1.0 key. */
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (rooted across == dispatch) */
     const uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
+    const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < n; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         const VALUE k = korb_items_data(h->items)[2 * i];
         bool match;
-        if (korb_eq_send_p(k, slots[0])) {  /* user == → dispatch (key == needle) */
+        if (korb_eq_send_p_(eqr, k, slots[0])) {  /* user == → dispatch (key == needle) */
             slots[1] = k; slots[2] = slots[0];
             RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -312,6 +313,7 @@ static RESULT korb_m_hash_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     const uint32_t n = VAL2HASH(slots[0])->len;
     VAL2HASH(slots[0])->head.flags |= KORB_FL_JOIN_VISITING;
     VALUE result = KORB_TRUE;
+    const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < n; i++) {
         const KorbHash *x = VAL2HASH(slots[0]);
         const VALUE k = korb_items_data(x->items)[2 * i], v = korb_items_data(x->items)[2 * i + 1];
@@ -319,7 +321,7 @@ static RESULT korb_m_hash_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (UNLIKELY(ferr.state != KORB_NORMAL)) { VAL2HASH(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return ferr; }
         if (j < 0) { result = KORB_FALSE; break; }
         const VALUE v2 = korb_items_data(VAL2HASH(slots[1])->items)[2 * j + 1];
-        if (korb_eq_send_p(v, v2)) {   /* value == via dispatch (recurses for nested) */
+        if (korb_eq_send_p_(eqr, v, v2)) {   /* value == via dispatch (recurses for nested) */
             slots[2] = v; slots[3] = v2;
             RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2HASH(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
@@ -365,9 +367,10 @@ static RESULT korb_m_hash_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_hash_value_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (root across value == dispatch) */
     const uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
+    const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < n; i++) {
         const VALUE v = korb_items_data(VAL2HASH(VALUE_REF_GET(self))->items)[2 * i + 1];
-        if (korb_eq_send_p(v, slots[0])) {  /* user == → dispatch (value == needle) */
+        if (korb_eq_send_p_(eqr, v, slots[0])) {  /* user == → dispatch (value == needle) */
             slots[1] = v; slots[2] = slots[0];
             RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -621,10 +624,11 @@ static RESULT korb_hash_make_pair(CTX *c, VALUE *cursor, VALUE *kslot, VALUE *vs
 static RESULT korb_m_hash_key(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (root across value == dispatch) */
     const uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
+    const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < n; i++) {
         const KorbHash *const h = VAL2HASH(VALUE_REF_GET(self));   /* re-read each iter */
         const VALUE v = korb_items_data(h->items)[2 * i + 1], k = korb_items_data(h->items)[2 * i];
-        if (korb_eq_send_p(v, slots[0])) {  /* user == → dispatch (value == needle) */
+        if (korb_eq_send_p_(eqr, v, slots[0])) {  /* user == → dispatch (value == needle) */
             slots[1] = k; slots[2] = v; slots[3] = slots[0];
             RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;

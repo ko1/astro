@@ -882,10 +882,12 @@ static inline bool korb_eq_needs_send(VALUE v) {
     return AROH_IS_GC_OBJECT(v) && korb_eq_needs_send_d(v, 0);   /* immediates never dispatch */
 }
 /* `a == b` must be sent (rb_equal): not for the same object, which is equal
- * without asking — a user #== answering false for itself still matches. */
-static inline bool korb_eq_send_p(VALUE a, VALUE b) {
-    return a != b && (korb_eq_needs_send(a) || korb_eq_needs_send(b));
+ * without asking — a user #== answering false for itself still matches.
+ * `redef`: a builtin's #== was reopened, so no structural shortcut holds. */
+static inline bool korb_eq_send_p_(bool redef, VALUE a, VALUE b) {
+    return a != b && (UNLIKELY(redef) || korb_eq_needs_send(a) || korb_eq_needs_send(b));
 }
+#define KORB_EQ_REDEF(c) ((c)->vm->value_eq_redefined || (c)->vm->basic_op_redefined)
 #define VAL2SET(v)         ((KorbSet *)(uintptr_t)KORB_SC(v))
 #define KORB_REGEXP_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_REGEXP)
 /* KorbRegexp::flags bit for an allocated-but-not-yet-#initialize'd payload (a

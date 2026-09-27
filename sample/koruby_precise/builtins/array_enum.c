@@ -25,9 +25,10 @@ static RESULT korb_m_ary_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (root across element == dispatch) */
     const uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
     korb_sword_t cnt = 0;
+    const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < len; i++) {
         const VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i];
-        if (korb_eq_send_p(e, slots[0])) {  /* user == → dispatch (element == needle) */
+        if (korb_eq_send_p_(eqr, e, slots[0])) {  /* user == → dispatch (element == needle) */
             slots[1] = e; slots[2] = slots[0];
             RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -1557,9 +1558,10 @@ static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (block != NULL) korb_warn(c, slots, "given block not used");   /* arg wins */
         slots[0] = VALUE_SLICE_GET(a, 0);            /* needle (root across element == dispatch) */
         const uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
+        const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
         for (uint32_t i = 0; i < n; i++) {
             const VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i];   /* re-read each iter (dispatch may GC) */
-            if (korb_eq_send_p(e, slots[0])) {   /* user #== → dispatch element == needle */
+            if (korb_eq_send_p_(eqr, e, slots[0])) {   /* user #== → dispatch element == needle */
                 slots[1] = e; slots[2] = slots[0];
                 RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;

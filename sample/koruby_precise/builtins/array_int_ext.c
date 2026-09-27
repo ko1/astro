@@ -56,6 +56,7 @@ static RESULT korb_ary_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE key, ui
     slots[0] = key;                                          /* root key across element == dispatches */
     const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
     const uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
+    const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < n; i++) {
         slots[1] = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i];   /* element (rooted; returned on match) */
         if (!KORB_ARRAY_P(slots[1])) {                       /* coerce a non-Array element via #to_ary */
@@ -67,7 +68,7 @@ static RESULT korb_ary_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE key, ui
         }
         if (VAL2ARY(slots[1])->len <= idx) continue;
         const VALUE el = korb_items_data(VAL2ARY(slots[1])->items)[idx];
-        if (korb_eq_send_p(el, slots[0])) {  /* user == → dispatch (el == key) */
+        if (korb_eq_send_p_(eqr, el, slots[0])) {  /* user == → dispatch (el == key) */
             slots[2] = el; slots[3] = slots[0];              /* recv, arg */
             RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;

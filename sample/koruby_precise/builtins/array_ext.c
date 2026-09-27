@@ -1038,10 +1038,11 @@ static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     slots[1] = UNWRAP(korb_ary_new(c, slots + 3, VAL2ARY(VALUE_REF_GET(self))->len));   /* survivors (rooted) */
     slots[2] = KORB_NIL;                                 /* last deleted element (rooted) */
     bool found = false;
+    const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(self))->len; i++) {
         VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i];
         bool eq;
-        if (korb_eq_send_p(e, slots[0])) {   /* user #== → dispatch element == needle */
+        if (korb_eq_send_p_(eqr, e, slots[0])) {   /* user #== → dispatch element == needle */
             slots[3] = e; slots[4] = slots[0];
             RESULT r = korb_send_impl(c, slots + 5, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -1099,9 +1100,10 @@ static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         return RESULT_OK(KORB_NIL);
     }
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (root across element == dispatch) */
+    const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (int32_t i = (int32_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; i >= 0; i--) {
         const VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i];
-        if (korb_eq_send_p(e, slots[0])) {  /* user == → dispatch (element == needle) */
+        if (korb_eq_send_p_(eqr, e, slots[0])) {  /* user == → dispatch (element == needle) */
             slots[1] = e; slots[2] = slots[0];
             RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
