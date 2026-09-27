@@ -20,3 +20,6 @@ a = StringScanner.new("ab\ncd")
 p a.scan(/ab$/), a.scan(/\n^cd/), a.scan(/\A/), StringScanner.new("xy", fixed_anchor: true).tap { _1.pos = 1 }.scan(/\Ay/)
 p StringScanner.new("abcabc").then { |x| [x.scan(/abc/), x.scan(/abc/), x.scan(/abc/)] }
 p StringScanner.new("a|b").scan(/a\|/), StringScanner.new("ab").scan(/a(?=b)/), StringScanner.new("ab").scan(/(?<=a)b/)
+s = StringScanner.new("ab\ncd"); p s.scan(/[^\n]*/), s.scan(/\n^c/), s.scan(/[^x]$/)
+s = StringScanner.new(" <!ATTLIST a b CDATA #IMPLIED>"); p s.scan(/\s*[^>]*>/)
+s = StringScanner.new("a" * 2000 + ">b"); p s.scan(/[^>b]*b/), s.scan(/[^>]*>/).size, s.scan(/[^x]/), s.eos?

@@ -119,8 +119,34 @@ class StringScanner
 
   # Anchor detection is per-Regexp and memoized: the offset form of #match
   # avoids an O(n) slice per scan, and only anchored patterns give it up.
-  ANCHOR_RE__ = /(?<!\\)(?:\\[AZzG]|[\^$])/
-  private_constant :ANCHOR_RE__
+  # \A \Z \z \G ^ $ outside a character class ("[^a]" is a negation, not an
+  # anchor: taking it for one sent rexml's ATTLISTDECL_END down the slicing path).
+  def self.__anchor_in?(src)
+    i = 0; n = src.length; depth = 0
+    while i < n
+      ch = src[i]
+      if ch == "\\"
+        return true if depth == 0 && i + 1 < n && "AZzG".include?(src[i + 1])
+        i += 2
+        next
+      end
+      if depth > 0
+        if ch == "[" then depth += 1
+        elsif ch == "]" then depth -= 1
+        end
+      elsif ch == "["
+        depth = 1
+        i += 1
+        i += 1 if src[i] == "^"
+        i += 1 if src[i] == "]"                        # a leading ] is a member
+        next
+      elsif ch == "^" || ch == "$"
+        return true
+      end
+      i += 1
+    end
+    false
+  end
 
   # scan/skip/check/match? take a Regexp or a String (which still produces match
   # data in CRuby, so it goes through an escaped Regexp); anything else is a
@@ -141,7 +167,7 @@ class StringScanner
     @anchor_cache ||= {}
     c = @anchor_cache[re]
     return c unless c.nil?
-    @anchor_cache[re] = ANCHOR_RE__.match?(re.source)
+    @anchor_cache[re] = StringScanner.__anchor_in?(re.source)
   end
   private :__anchored?
 

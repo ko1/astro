@@ -67,6 +67,7 @@ node_grep_search(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t ancho
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
         c->rep_top = NULL;
         if (EVAL_ARG(c, body)) return MR_STOP;
+        if (c->stack_overflow) return MR_FAIL;   /* floor guard tripped: abandon the search */
     }
     return MR_FAIL;
 }
@@ -101,6 +102,7 @@ node_grep_search_memchr(CTX * restrict c, NODE * restrict n, NODE *body, uint32_
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
         c->rep_top = NULL;
         if (EVAL_ARG(c, body)) return MR_STOP;
+        if (c->stack_overflow) return MR_FAIL;   /* floor guard tripped: abandon the search */
         p = q + 1;
     }
     return MR_FAIL;
@@ -152,6 +154,7 @@ node_grep_search_class_scan(CTX * restrict c, NODE * restrict n, NODE *body, uin
                 for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
                 c->rep_top = NULL;
                 if (EVAL_ARG(c, body)) return MR_STOP;
+                if (c->stack_overflow) return MR_FAIL;   /* floor guard tripped: abandon the search */
                 bits &= bits - 1;
             }
             p += 32;
@@ -173,6 +176,7 @@ node_grep_search_class_scan(CTX * restrict c, NODE * restrict n, NODE *body, uin
                 for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
                 c->rep_top = NULL;
                 if (EVAL_ARG(c, body)) return MR_STOP;
+                if (c->stack_overflow) return MR_FAIL;   /* floor guard tripped: abandon the search */
             }
             p++;
         }
@@ -226,6 +230,7 @@ node_grep_search_byteset(CTX * restrict c, NODE * restrict n, NODE *body, uint64
                 for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
                 c->rep_top = NULL;
                 if (EVAL_ARG(c, body)) return MR_STOP;
+                if (c->stack_overflow) return MR_FAIL;   /* floor guard tripped: abandon the search */
                 bits &= bits - 1;
             }
             p += 32;
@@ -245,6 +250,7 @@ node_grep_search_byteset(CTX * restrict c, NODE * restrict n, NODE *body, uint64
             for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
             c->rep_top = NULL;
             if (EVAL_ARG(c, body)) return MR_STOP;
+            if (c->stack_overflow) return MR_FAIL;   /* floor guard tripped: abandon the search */
         }
         p++;
     }
@@ -293,6 +299,7 @@ node_grep_search_range(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t
                 for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
                 c->rep_top = NULL;
                 if (EVAL_ARG(c, body)) return MR_STOP;
+                if (c->stack_overflow) return MR_FAIL;   /* floor guard tripped: abandon the search */
                 bits &= bits - 1;
             }
             p += 32;
@@ -307,6 +314,7 @@ node_grep_search_range(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t
             for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
             c->rep_top = NULL;
             if (EVAL_ARG(c, body)) return MR_STOP;
+            if (c->stack_overflow) return MR_FAIL;   /* floor guard tripped: abandon the search */
         }
         p++;
     }
@@ -343,6 +351,7 @@ node_grep_search_memmem(CTX * restrict c, NODE * restrict n, NODE *body, const c
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
         c->rep_top = NULL;
         if (EVAL_ARG(c, body)) return MR_STOP;
+        if (c->stack_overflow) return MR_FAIL;   /* floor guard tripped: abandon the search */
         p = q + 1;
     }
     return MR_FAIL;
@@ -382,6 +391,7 @@ node_grep_search_ac(CTX * restrict c, NODE * restrict n, NODE *body, void *ac, u
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
         c->rep_top = NULL;
         if (EVAL_ARG(c, body)) return MR_STOP;
+        if (c->stack_overflow) return MR_FAIL;   /* floor guard tripped: abandon the search */
         /* Body failed: pos / state already point one past the matched
          * literal's last byte (astrogre_ac_scan advanced them), so the
          * next call resumes from there with the same state. */
@@ -1405,7 +1415,7 @@ node_re_rep_cont(CTX * restrict c, NODE * restrict n)
        long greedy match over a huge string overflows here, not in g-subroutine
        calls. Fail at the floor so the host raises instead of the process SEGV. */
     char stack_marker;
-    if ((uintptr_t)&stack_marker <= c->stack_base) { c->stack_overflow = true; return MR_FAIL; }
+    if ((uintptr_t)&stack_marker <= c->stack_base) { c->stack_overflow = true; c->stack_base = UINTPTR_MAX; return MR_FAIL; }
 
     const VALUE r = rep_cont_inner(c, f);
 
@@ -1446,7 +1456,7 @@ node_re_cap_end(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *next)
      * Fail the match before the C stack overflows rather than SEGV.  c->stack_base
      * is the absolute low address + margin (host-supplied for fibers). */
     char stack_marker;
-    if ((uintptr_t)&stack_marker <= c->stack_base) { c->stack_overflow = true; return MR_FAIL; }
+    if ((uintptr_t)&stack_marker <= c->stack_base) { c->stack_overflow = true; c->stack_base = UINTPTR_MAX; return MR_FAIL; }
     size_t saved_end   = c->ends[idx];
     bool   saved_valid = c->valid[idx];
     c->ends[idx]  = c->pos;
@@ -1482,7 +1492,7 @@ NODE_DEF
 node_re_cap_end_rec(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *next)
 {
     char stack_marker;
-    if ((uintptr_t)&stack_marker <= c->stack_base) { c->stack_overflow = true; return MR_FAIL; }
+    if ((uintptr_t)&stack_marker <= c->stack_base) { c->stack_overflow = true; c->stack_base = UINTPTR_MAX; return MR_FAIL; }
     size_t saved_end   = c->ends[idx];
     bool   saved_valid = c->valid[idx];
     c->ends[idx]  = c->pos;
@@ -1830,7 +1840,7 @@ node_re_subroutine_call(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE 
      * real floor (c->stack_base = absolute low address + margin; host-supplied
      * for fibers).  Stacks grow down, so SP at/below the floor = out of room. */
     char stack_marker;
-    if ((uintptr_t)&stack_marker <= c->stack_base) { c->stack_overflow = true; return MR_FAIL; }
+    if ((uintptr_t)&stack_marker <= c->stack_base) { c->stack_overflow = true; c->stack_base = UINTPTR_MAX; return MR_FAIL; }
 
     struct sub_call_frame f;
     f.return_to = outer_next;

@@ -89,6 +89,62 @@ NODE *astrogre_rep_cont_singleton(void)
     return g_rep_cont;
 }
 
+/* Deep-match retry stack: one lazily mapped NORESERVE region per thread; only
+ * the pages a deep match touches get backed, and they are dropped afterwards. */
+#define AGRE_ALT_STACK_BYTES  ((size_t)4 << 30)
+#define AGRE_ALT_STACK_MARGIN ((size_t)256 << 10)
+static __thread bool agre_on_alt_stack;
+#ifdef __wasi__
+static char *agre_alt_stack(uintptr_t *floor) { (void)floor; return NULL; }
+static bool agre_eval_on_alt_stack(char *alt, CTX *c, NODE *root) { (void)alt; (void)c; (void)root; return false; }
+#else
+#include <sys/mman.h>
+#include <ucontext.h>
+static __thread char *agre_alt_base;
+static __thread bool  agre_alt_unavailable;
+
+static char *
+agre_alt_stack(uintptr_t *const floor)
+{
+    if (!agre_alt_base && !agre_alt_unavailable) {
+        void *const m = mmap(NULL, AGRE_ALT_STACK_BYTES, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_STACK, -1, 0);
+        if (m == MAP_FAILED) agre_alt_unavailable = true;   /* e.g. overcommit=2: keep raising */
+        else agre_alt_base = (char *)m;
+    }
+    if (agre_alt_base) *floor = (uintptr_t)agre_alt_base + AGRE_ALT_STACK_MARGIN;
+    return agre_alt_base;
+}
+
+struct agre_alt_run { CTX *c; NODE *root; bool r; };
+static __thread struct agre_alt_run *agre_alt_cur;   /* makecontext can only pass ints */
+
+static void
+agre_alt_trampoline(void)
+{
+    struct agre_alt_run *const a = agre_alt_cur;
+    a->r = (bool)EVAL(a->c, a->root);
+}
+
+static bool
+agre_eval_on_alt_stack(char *const alt, CTX *const c, NODE *const root)
+{
+    struct agre_alt_run a = { c, root, false };
+    ucontext_t back, run;
+    if (getcontext(&run) != 0) return false;
+    run.uc_stack.ss_sp = alt;
+    run.uc_stack.ss_size = AGRE_ALT_STACK_BYTES;
+    run.uc_link = &back;
+    makecontext(&run, agre_alt_trampoline, 0);
+    agre_alt_cur = &a;
+    agre_on_alt_stack = true;
+    swapcontext(&back, &run);
+    agre_on_alt_stack = false;
+    madvise(alt, AGRE_ALT_STACK_BYTES, MADV_DONTNEED);   /* give the touched pages back */
+    return a.r;
+}
+#endif
+
 bool
 astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
                      size_t start_from, astrogre_match_t *out)
@@ -137,6 +193,26 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
     c.memo_eligible   = p->memo_eligible;
 
     bool r = (bool)EVAL(&c, p->root);
+
+    /* The floor guard cut some path, so r may be a lower-priority match (or a
+     * false "no match"): redo the whole search on a big dedicated stack. */
+    if (c.stack_overflow && !agre_on_alt_stack) {
+        uintptr_t alt_floor;
+        char *const alt = agre_alt_stack(&alt_floor);
+        if (alt) {
+            if (c.memo) free(c.memo);
+            c.memo = NULL;
+            c.backtrack_count = 0;
+            c.pos = start_from;
+            c.rep_top = NULL;
+            c.sub_top = NULL;
+            c.sub_depth = 0;
+            if (p->sub_chains_n) memset(c.open_cnt, 0, sizeof c.open_cnt);
+            c.stack_base = alt_floor;
+            c.stack_overflow = false;
+            r = agre_eval_on_alt_stack(alt, &c, p->root);
+        }
+    }
 
     /* getenv() is a libc syscall-equivalent (binary-search through
      * environ + strncmp).  In line-by-line grep this gets called

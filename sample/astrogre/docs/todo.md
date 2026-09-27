@@ -5,6 +5,13 @@
 
 ## 性能 — 次の一手
 
+- **atomic group の中の選択肢 `*` が深い入力で極端に遅い**: `/(?>(?:a|bc)*)a/ =~ "a" * 40_000` が 54 s（CRuby は一瞬）。
+  深い再帰の別 stack やり直し（match.c agre_eval_on_alt_stack）を入れた後に見つけた。1 回目の探索が guard で打ち切られた
+  後のやり直しの中で atomic の境界ごとに何かを繰り返している可能性（未計測。perf record で hot 関数を見てから書くこと）。
+- 深い再帰のやり直しは 1 反復 208 B の stack を 4 GiB NORESERVE の専用 stack で賄う形で、5M 反復で 1.1 GB を触る
+  （CRuby 0.74 s / 491 MB に対して 3.3 s）。形の特殊化（各枝の終端が一意で先頭文字が重ならない選択肢の `*` をループに）
+  は速さの改善として残っている（~/ruby/src/trials/2026-09-27-regex-deep-rep/README.md）。
+
 - **backtrack memo を回数つきの repeat の中で切っている (2026-09-26)**: memo の鍵 (id, pos) が囲む repeat の
   残り回数を持たないので、`(?:a+){3}` が誤って失敗していた。min が残るか上限のある repeat の中では memo を
   使わないことで正しくしたが、そこでは多項式時間に戻る (`(?:a+){3,5}\d` を "a"*100+"x" で 40 s、CRuby は
