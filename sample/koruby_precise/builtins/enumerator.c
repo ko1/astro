@@ -816,6 +816,8 @@ static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         struct korb_lazy_sink sink = { block, def_env, cself, RESULT_OK(KORB_NIL), false };
         RESULT vr = korb_lazy_drive_sink(c, slots, self, -1, &sink);
         if (UNLIKELY(vr.state != KORB_NORMAL)) return vr;
+        if (SELF_ENUM->mode == 1)                     /* CRuby: a chain answers nil, a bare `src.lazy` its source */
+            return RESULT_OK(VAL2ARY(SELF_ENUM->ops)->len ? KORB_NIL : SELF_ENUM->source);
         return RESULT_OK(VALUE_REF_GET(self));
     }
     const uint8_t op = SELF_ENUM->op;

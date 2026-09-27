@@ -198,8 +198,8 @@ class Enumerator
   # (to_enum / Enumerator.new, mode 3/4).  Its `each` body is not restartable —
   # it may have side effects — so the C fallback of re-driving from the start to
   # cursor+1 silently loses values.  Drive it with a Fiber instead, suspending at
-  # every yield.  Eager and lazy enumerators keep the C path: lazy #each cannot
-  # stream an infinite source, but its bounded re-drive can.
+  # every yield.  A lazy chain (mode 1) goes the same way: its re-drive made each
+  # #next O(n).  Eager (0) and cycle (2) enumerators index directly in C.
   alias_method :__c_next, :next
   private :__c_next
   alias_method :__c_peek, :peek
@@ -211,25 +211,28 @@ class Enumerator
   alias_method :__c_rewind, :rewind
   private :__c_rewind
 
+  def __c_ext? = ((m = __enum_mode) == 0 || m == 2)
+  private :__c_ext?
+
   def next
-    return __c_next if __enum_mode < 3 && !@__ext_fed
+    return __c_next if __c_ext? && !@__ext_fed
     vals = __ext_next_values
     vals.size <= 1 ? vals[0] : vals
   end
 
   def peek
-    return __c_peek if __enum_mode < 3
+    return __c_peek if __c_ext?
     vals = __ext_peek_values
     vals.size <= 1 ? vals[0] : vals
   end
 
   def next_values
-    return __c_next_values if __enum_mode < 3
+    return __c_next_values if __c_ext?
     __ext_next_values
   end
 
   def peek_values
-    return __c_peek_values if __enum_mode < 3
+    return __c_peek_values if __c_ext?
     __ext_peek_values
   end
 
