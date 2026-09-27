@@ -16,13 +16,13 @@ class Date
   # Both the arrays and the names in them are frozen, as in the C library.
   MONTHNAMES = [nil, "January", "February", "March", "April", "May", "June",
                 "July", "August", "September", "October", "November", "December"]
-               .map { |s| s&.freeze }.freeze
+               .map { |s| s&.dup&.force_encoding(Encoding::US_ASCII)&.freeze }.freeze
   ABBR_MONTHNAMES = [nil, "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-                    .map { |s| s&.freeze }.freeze
+                    .map { |s| s&.dup&.force_encoding(Encoding::US_ASCII)&.freeze }.freeze
   DAYNAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-             .map(&:freeze).freeze
-  ABBR_DAYNAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(&:freeze).freeze
+             .map { |s| s.dup.force_encoding(Encoding::US_ASCII).freeze }.freeze
+  ABBR_DAYNAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map { |s| s.dup.force_encoding(Encoding::US_ASCII).freeze }.freeze
 
   DAYS_IN_MONTH = [nil, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31].freeze
 
@@ -317,7 +317,7 @@ class Date
   def zone = Date.__zone_str(@of)
   # time-of-day and zone are DateTime's; a Date keeps them for its own use
   # (i18n tells a Time-like value by respond_to?(:sec))
-  private :hour, :min, :sec, :offset, :zone
+  private :hour, :min, :sec, :sec_fraction, :offset, :zone
 
   # a frozen Date cannot memoize (faker freezes what it returns)
   private def __civil = frozen? ? Date.jd_to_civil(@jd, @sg) : (@civil ||= Date.jd_to_civil(@jd, @sg))
@@ -325,7 +325,7 @@ class Date
   def self.__zone_str(of)
     sign = of < 0 ? "-" : "+"
     a = of.abs
-    format("%s%02d:%02d", sign, a / 3600, (a % 3600) / 60)
+    format("%s%02d:%02d", sign, a / 3600, (a % 3600) / 60).force_encoding(Encoding::US_ASCII)
   end
 
   # ---- arithmetic --------------------------------------------------------
@@ -470,20 +470,33 @@ class Date
 
   def to_date = self
 
+  # d_lite_to_datetime: the day fraction is dropped
   def to_datetime
-    DateTime.new!(@jd, @df, @sf, @of, @sg)
+    DateTime.new!(@jd, 0, 0, @of, @sg)
   end
 
+  # d_lite_to_time: a Julian date converts through the (proleptic) Gregorian one
   def to_time
-    y, m, d = __civil
-    Time.local(y, m, d)
+    d = julian? ? gregorian : self
+    Time.local(d.year, d.mon, d.mday)
   end
 
-  def to_s = format("%04d-%02d-%02d", year, mon, mday)
+  def to_s = __strftimev("%Y-%m-%d")
 
+  # mk_inspect shows the UTC jd / day seconds
   def inspect
-    format("#<%s: %s ((%sj,%ds,%dn),%+ds,%sj)>",
-           self.class.name, to_s, jd.to_s, @df, @sf, @of, __sg_str)
+    jd = @jd
+    df = @df - @of
+    if df < 0
+      jd -= 1
+      df += 86400
+    elsif df >= 86400
+      jd += 1
+      df -= 86400
+    end
+    sf = @sf.is_a?(Rational) && @sf.denominator == 1 ? @sf.to_i : @sf
+    format("#<%s: %s ((%sj,%ds,%sn),%+ds,%sj)>",
+           self.class.name, to_s, jd.to_s, df, sf.to_s, @of, __sg_str).force_encoding(Encoding::US_ASCII)
   end
 
   private def __sg_str
@@ -493,555 +506,2056 @@ class Date
     @sg.to_s
   end
 
-  def iso8601 = to_s
-  alias_method :xmlschema, :iso8601
-  def rfc3339 = format("%04d-%02d-%02dT%02d:%02d:%02d%s", year, mon, mday, hour, min, sec, zone)
-  def rfc2822 = strftime("%a, %-d %b %Y %T %z")   # Date は 0 埋めしない (Time#rfc2822 とは非対称)
-  alias_method :rfc822, :rfc2822
-  def httpdate = strftime("%a, %d %b %Y %T GMT")
-  def jisx0301 = __jisx0301_date
-  def ctime = strftime("%a %b %e %T %Y")
-  alias_method :asctime, :ctime
+  # ---- formatting (date_core.c d_lite_* / dt_lite_*) ----------------------
 
-  private def __jisx0301_date
-    y, m, d = __civil
-    if @jd < 2405160          # before Meiji 6-01-01 → plain Gregorian
-      to_s
-    else
-      era, base = if @jd >= 2458605 then ["R", 2018]
-                  elsif @jd >= 2447535 then ["H", 1988]
-                  elsif @jd >= 2424875 then ["S", 1925]
-                  else ["M", 1867]
-                  end
-      format("%s%02d.%02d.%02d", era, y - base, m, d)
-    end
+  def iso8601 = __strftimev("%Y-%m-%d")
+  alias_method :xmlschema, :iso8601
+  def rfc3339 = __strftimev("%Y-%m-%dT%H:%M:%S%:z")
+  def rfc2822 = __strftimev("%a, %-d %b %Y %T %z")
+  alias_method :rfc822, :rfc2822
+  def httpdate = (@of == 0 ? self : new_offset(0)).__send__(:__strftimev, "%a, %d %b %Y %T GMT")
+  def jisx0301 = __strftimev(__jisx0301_date_format)
+  def asctime = __strftimev("%a %b %e %H:%M:%S %Y")
+  alias_method :ctime, :asctime
+
+  # jisx0301_date_format
+  private def __jisx0301_date_format
+    d = @jd
+    return "%Y-%m-%d" if d < 2405160
+    c, s = if d < 2419614 then ["M", 1867]
+           elsif d < 2424875 then ["T", 1911]
+           elsif d < 2447535 then ["S", 1925]
+           elsif d < 2458605 then ["H", 1988]
+           else ["R", 2018]
+           end
+    format("%s%02d.%%m.%%d", c, year - s)
   end
 
-  # ---- strftime ----------------------------------------------------------
+  # ---- strftime (a port of ext/date/date_strftime.c) ----------------------
 
-  def strftime(fmt = "%F")
+  def strftime(fmt = NO_FMT__)
+    if fmt.equal?(NO_FMT__)
+      fmt = __default_strftime_format.dup.force_encoding(Encoding::US_ASCII)
+    else
+      fmt = Date.__string_value(fmt)
+      raise ArgumentError, "format should have ASCII compatible encoding" unless fmt.encoding.ascii_compatible?
+    end
+    __strftime_alloc(fmt).force_encoding(fmt.encoding)
+  end
+
+  private def __default_strftime_format = "%F"
+
+  private def __strftimev(fmt) = __strftime_alloc(fmt).force_encoding(Encoding::US_ASCII)
+
+  # date_strftime_internal / date_strftime_alloc: "\0" splits the format, and
+  # the output may grow to 1024 * 2**k >= 1024 * flen bytes before ERANGE.
+  private def __strftime_alloc(fmt)
+    return +"" if fmt.empty?
+    if fmt.include?("\0")
+      out = +""
+      fmt.split(/(\0+)/).each do |part|
+        next if part.empty?
+        out << (part[0] == "\0" ? part : __strftime_alloc(part))
+      end
+      return out
+    end
+    limit = 1024
+    limit *= 2 while limit < 1024 * fmt.bytesize
+    out = __strftime_tmx(fmt, limit)
+    raise Errno::ERANGE, fmt if out.nil? || out.bytesize >= limit
+    out
+  end
+
+  STRFTIME_DAYS__ = %w[Sunday Monday Tuesday Wednesday Thursday Friday Saturday].freeze
+  STRFTIME_MONTHS__ = %w[January February March April May June July August
+                         September October November December].freeze
+  private_constant :STRFTIME_DAYS__, :STRFTIME_MONTHS__
+
+  SF_LEFT__ = 1; SF_CHCASE__ = 2; SF_LOWER__ = 4; SF_UPPER__ = 8
+  SF_LOCALE_O__ = 16; SF_LOCALE_E__ = 32; SF_COLONS__ = 64
+  FIXNUM_MAX__ = 2**62 - 1
+  private_constant :SF_LEFT__, :SF_CHCASE__, :SF_LOWER__, :SF_UPPER__,
+                   :SF_LOCALE_O__, :SF_LOCALE_E__, :SF_COLONS__, :FIXNUM_MAX__
+
+  # whole UTC seconds since the epoch (the old ajd-based .to_i rounded toward 0)
+  private def __epoch_seconds = __tmx_secs
+
+  # tmx accessors (local civil fields; secs are UTC seconds since the epoch)
+  private def __tmx_secs = (@jd - 2440588) * 86400 + @df - @of
+  private def __tmx_msecs
+    ms = __tmx_secs * 1000
+    ms += @sf / 1_000_000 unless @sf == 0
+    ms
+  end
+  private def __tmx_wnum(f) = Date.__jd_to_weeknum(@jd, f, @sg)[1]
+
+  # date_strftime_with_tmx; nil when the result cannot fit in `limit`.
+  private def __strftime_tmx(format, limit)
     out = +""
-    i = 0
-    n = fmt.length
-    while i < n
-      ch = fmt[i]
+    fi = 0
+    flen = format.length
+    while fi < flen
+      ch = format[fi]
       if ch != "%"
         out << ch
-        i += 1
+        fi += 1
         next
       end
-      i += 1
-      break if i >= n
-      # flags and width
-      flags = +""
-      while i < n && "-_0^#:".include?(fmt[i])
-        flags << fmt[i]
-        i += 1
+      sp = fi
+      precision = -1
+      flags = 0
+      padding = nil
+      colons = 0
+      tp = nil
+      emit = false # "break" to the common copy-out code
+      while true # again
+        fi += 1
+        c = format[fi]
+        unknown = false
+        if !c.nil? && "_-^#0".include?(c) &&
+           (precision > 0 || flags & (SF_LOCALE_E__ | SF_LOCALE_O__ | SF_COLONS__) != 0)
+          unknown = true # FLAG_FOUND
+        else
+          case c
+          when nil
+            fi -= 1
+            unknown = true
+          when "A", "a"
+            if flags & SF_CHCASE__ != 0
+              flags &= ~(SF_LOWER__ | SF_CHCASE__)
+              flags |= SF_UPPER__
+            end
+            wd = wday
+            tp = c == "A" ? STRFTIME_DAYS__[wd] : STRFTIME_DAYS__[wd][0, 3]
+            emit = true
+          when "B", "b", "h"
+            if flags & SF_CHCASE__ != 0
+              flags &= ~(SF_LOWER__ | SF_CHCASE__)
+              flags |= SF_UPPER__
+            end
+            mo = mon
+            tp = c == "B" ? STRFTIME_MONTHS__[mo - 1] : STRFTIME_MONTHS__[mo - 1][0, 3]
+            emit = true
+          when "C"
+            __sf_fmt(out, flags, padding, precision, "0", 2, year.div(100))
+          when "c"
+            __sf_sub(out, "%a %b %e %H:%M:%S %Y", flags, padding, precision, limit) or return nil
+          when "D", "x"
+            __sf_sub(out, "%m/%d/%y", flags, padding, precision, limit) or return nil
+          when "d", "e"
+            __sf_fmt(out, flags, padding, precision, c == "d" ? "0" : " ", 2, mday)
+          when "F"
+            __sf_sub(out, "%Y-%m-%d", flags, padding, precision, limit) or return nil
+          when "G", "Y"
+            y = c == "G" ? cwyear : year
+            if y >= -FIXNUM_MAX__ - 1 && y <= FIXNUM_MAX__
+              __sf_fmt(out, flags, padding, precision, "0", y >= 0 ? 4 : 5, y)
+            else
+              __sf_fmt(out, flags, padding, precision, "0", 4, y)
+            end
+          when "g", "y"
+            __sf_fmt(out, flags, padding, precision, "0", 2, (c == "g" ? cwyear : year) % 100)
+          when "H", "k"
+            __sf_fmt(out, flags, padding, precision, c == "H" ? "0" : " ", 2, hour)
+          when "I", "l"
+            v = hour
+            if v == 0
+              v = 12
+            elsif v > 12
+              v -= 12
+            end
+            __sf_fmt(out, flags, padding, precision, c == "I" ? "0" : " ", 2, v)
+          when "j"
+            __sf_fmt(out, flags, padding, precision, "0", 3, yday)
+          when "L", "N"
+            w = c == "L" ? 3 : 9
+            precision = w if precision <= 0
+            return nil if precision >= limit
+            subsec = sec_fraction
+            ww = precision
+            while ww >= 9
+              subsec *= 1_000_000_000
+              ww -= 9
+            end
+            subsec *= 10**ww if ww > 0
+            out << format("%0*d", precision, subsec.div(1))
+          when "M"
+            __sf_fmt(out, flags, padding, precision, "0", 2, min)
+          when "m"
+            __sf_fmt(out, flags, padding, precision, "0", 2, mon)
+          when "n", "t"
+            __sf_fill(out, flags, padding, precision, 1)
+            out << (c == "n" ? "\n" : "\t")
+          when "P", "p"
+            if (c == "p" && flags & SF_CHCASE__ != 0) ||
+               (c == "P" && flags & (SF_CHCASE__ | SF_UPPER__) == 0)
+              flags &= ~(SF_UPPER__ | SF_CHCASE__)
+              flags |= SF_LOWER__
+            end
+            tp = hour < 12 ? "AM" : "PM"
+            emit = true
+          when "Q"
+            __sf_fmt(out, flags, padding, precision, "0", 1, __tmx_msecs.floor)
+          when "R"
+            __sf_sub(out, "%H:%M", flags, padding, precision, limit) or return nil
+          when "r"
+            __sf_sub(out, "%I:%M:%S %p", flags, padding, precision, limit) or return nil
+          when "S"
+            __sf_fmt(out, flags, padding, precision, "0", 2, sec)
+          when "s"
+            __sf_fmt(out, flags, padding, precision, "0", 1, __tmx_secs)
+          when "T", "X"
+            __sf_sub(out, "%H:%M:%S", flags, padding, precision, limit) or return nil
+          when "U", "W"
+            __sf_fmt(out, flags, padding, precision, "0", 2, __tmx_wnum(c == "U" ? 0 : 1))
+          when "u"
+            __sf_fmt(out, flags, padding, precision, "0", 1, cwday)
+          when "V"
+            __sf_fmt(out, flags, padding, precision, "0", 2, cweek)
+          when "v"
+            __sf_sub(out, "%e-%^b-%Y", flags, padding, precision, limit) or return nil
+          when "w"
+            __sf_fmt(out, flags, padding, precision, "0", 1, wday)
+          when "Z"
+            if flags & SF_CHCASE__ != 0
+              flags &= ~(SF_UPPER__ | SF_CHCASE__)
+              flags |= SF_LOWER__
+            end
+            tp = zone
+            emit = true
+          when "z"
+            if colons > 3
+              fi -= 1
+              unknown = true
+            else
+              __sf_z(out, flags, padding, precision, colons)
+            end
+          when "+"
+            __sf_sub(out, "%a %b %e %H:%M:%S %Z %Y", flags, padding, precision, limit) or return nil
+          when "E"
+            flags |= SF_LOCALE_E__
+            nc = format[fi + 1]
+            next if !nc.nil? && "cCxXyY".include?(nc)
+            unknown = true
+          when "O"
+            flags |= SF_LOCALE_O__
+            nc = format[fi + 1]
+            next if !nc.nil? && "deHkIlmMSuUVwWy".include?(nc)
+            unknown = true
+          when ":"
+            flags |= SF_COLONS__
+            l = 0
+            l += 1 while format[fi + l] == ":"
+            if format[fi + l] == "z"
+              colons = l
+              fi += l - 1
+              next
+            end
+            unknown = true
+          when "_"
+            padding = " "
+            next
+          when "-"
+            flags |= SF_LEFT__
+            next
+          when "^"
+            flags |= SF_UPPER__
+            next
+          when "#"
+            flags |= SF_CHCASE__
+            next
+          when "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
+            padding = "0" if c == "0"
+            e = fi
+            e += 1 while (d = format[e]) && d >= "0" && d <= "9"
+            prec = format[fi...e].to_i
+            return nil if prec > 2147483647 || prec > limit
+            precision = prec
+            fi = e - 1
+            next
+          when "%"
+            __sf_fill(out, flags, padding, precision, 1)
+            out << "%"
+          else
+            unknown = true
+          end
+        end
+        if unknown
+          tp = format[sp..fi]
+          precision = -1
+          flags = 0
+          padding = nil
+          colons = 0
+          emit = true
+        end
+        break
       end
-      width = +""
-      while i < n && fmt[i] >= "0" && fmt[i] <= "9"
-        width << fmt[i]
-        i += 1
+      if emit && !tp.empty?
+        __sf_fill(out, flags, padding, precision, tp.length)
+        case flags & (SF_UPPER__ | SF_LOWER__)
+        when SF_UPPER__ then out << tp.upcase
+        when SF_LOWER__ then out << tp.downcase
+        else out << tp
+        end
       end
-      break if i >= n
-      out << __strftime_conv(fmt[i], flags, width.empty? ? nil : width.to_i)
-      i += 1
+      return nil if out.bytesize >= limit
+      fi += 1
     end
     out
   end
 
-  # The pad character is the LAST of the `_` / `0` flags ("%0_10h" pads with
-  # spaces, "%_010h" with zeros); `-` anywhere suppresses padding entirely.
-  private def __padchar(flags, default)
-    ch = default
-    flags.each_char { |f| ch = " " if f == "_"; ch = "0" if f == "0" }
-    ch
-  end
-
-  private def __pad(v, w, flags, zero = true)
-    s = v.abs.to_s
-    neg = v.is_a?(Numeric) && v < 0
-    unless flags.include?("-")
-      pad = __padchar(flags, zero ? "0" : " ")
-      s = pad * (w - s.length) + s if w && s.length < w
-    end
-    (neg ? "-" : "") + s
-  end
-
-  private def __strftime_conv(c, flags, width)
-    y, m, d = __civil
-    case c
-    when "Y" then __pad(y, width || 4, flags)
-    when "C" then __pad(y / 100, width || 2, flags)
-    when "y" then __pad(y % 100, width || 2, flags)
-    when "m" then __pad(m, width || 2, flags)
-    when "d" then __pad(d, width || 2, flags)
-    when "e" then __pad(d, width || 2, flags.include?("-") ? flags : flags + "_")
-    when "j" then __pad(yday, width || 3, flags)
-    when "H" then __pad(hour, width || 2, flags)
-    when "k" then __pad(hour, width || 2, flags + "_")
-    when "I" then __pad((hour % 12).zero? ? 12 : hour % 12, width || 2, flags)
-    when "l" then __pad((hour % 12).zero? ? 12 : hour % 12, width || 2, flags + "_")
-    when "M" then __pad(min, width || 2, flags)
-    when "S" then __pad(sec, width || 2, flags)
-    when "L" then __frac_digits(width || 3)
-    when "N" then __frac_digits(width || 9)
-    when "Q" then (__epoch_seconds * 1000 + __frac_digits(3).to_i).to_s   # ms since epoch
-    when "P" then hour < 12 ? "am" : "pm"
-    when "p" then hour < 12 ? "AM" : "PM"
-    when "A" then __case(DAYNAMES[wday], flags, width)
-    when "a" then __case(ABBR_DAYNAMES[wday], flags, width)
-    when "B" then __case(MONTHNAMES[m], flags, width)
-    when "b", "h" then __case(ABBR_MONTHNAMES[m], flags, width)
-    when "u" then (wday.zero? ? 7 : wday).to_s
-    when "w" then wday.to_s
-    when "G" then __pad(cwyear, width || 4, flags)
-    when "g" then __pad(cwyear % 100, width || 2, flags)
-    when "V" then __pad(cweek, width || 2, flags)
-    when "U" then __pad((yday + 6 - wday) / 7, width || 2, flags)
-    when "W" then __pad((yday + 6 - (wday.zero? ? 6 : wday - 1)) / 7, width || 2, flags)
-    when "Z" then zone
-    when "z" then __zone_offset(flags)
-    when "s" then __epoch_seconds.to_s
-    when "n" then "\n"
-    when "t" then "\t"
-    when "%" then "%"
-    when "F" then format("%04d-%02d-%02d", y, m, d)
-    when "D", "x" then format("%02d/%02d/%02d", m, d, y % 100)
-    when "T", "X" then format("%02d:%02d:%02d", hour, min, sec)
-    when "R" then format("%02d:%02d", hour, min)
-    when "r" then format("%02d:%02d:%02d %s", (hour % 12).zero? ? 12 : hour % 12, min, sec, hour < 12 ? "AM" : "PM")
-    when "v" then strftime("%e-%^b-%4Y")            # VMS date
-    when "c" then strftime("%a %b %e %H:%M:%S %Y")
-    when "+" then strftime("%a %b %e %H:%M:%S %Z %Y")
-    else "%" + flags + (width ? width.to_s : "") + c
+  # FILL_PADDING
+  private def __sf_fill(out, flags, padding, precision, i)
+    if flags & SF_LEFT__ == 0 && precision > i
+      out << (padding || " ") * (precision - i)
     end
   end
 
-  private def __epoch_seconds = ((ajd - Rational(4881175, 2)) * 86400).to_i
-
-  # The fractional second rendered to exactly `n` digits (truncating, as CRuby's
-  # %<width>N does — "%6N" of 0.1s is "100000", not the full nanoseconds).
-  private def __frac_digits(n) = ((sec_fraction * 10**n).to_i).to_s.rjust(n, "0")
-
-  # Text conversions honour ^ (upcase), # (swapcase) and the shared width/pad
-  # flags — "%^_10b" is " APR" padded to 10 (GNU strftime).
-  private def __case(s, flags, width = nil)
-    s = s.upcase if flags.include?("^")
-    s = s.upcase if flags.include?("#")     # CRuby's # upcases a mixed-case name
-    if width && s.length < width && !flags.include?("-")
-      s = __padchar(flags, " ") * (width - s.length) + s
-    end
-    s
+  # FMT / FMTV
+  private def __sf_fmt(out, flags, padding, precision, def_pad, def_prec, val)
+    precision = def_prec if precision <= 0
+    precision = 1 if flags & SF_LEFT__ != 0
+    zero = padding == "0" || (padding.nil? && def_pad == "0")
+    out << format(zero ? "%0*d" : "%*d", precision, val)
   end
 
-  # %z / %:z / %::z / %:::z — the last form drops the all-zero trailing parts.
-  private def __zone_offset(flags)
-    sign = @of < 0 ? "-" : "+"
-    a = @of.abs
-    h, mi, s = a / 3600, (a % 3600) / 60, a % 60
-    case flags.count(":")
-    when 0 then format("%s%02d%02d", sign, h, mi)
-    when 1 then format("%s%02d:%02d", sign, h, mi)
-    when 2 then format("%s%02d:%02d:%02d", sign, h, mi, s)
+  # STRFTIME(fmt): a recursive expansion, padded as one unit.
+  private def __sf_sub(out, fmt, flags, padding, precision, limit)
+    s = __strftime_tmx(fmt, limit - out.bytesize) or return nil
+    return nil if s.empty?
+    s = s.upcase if flags & SF_UPPER__ != 0
+    if flags & SF_LEFT__ == 0 && precision > s.length
+      return nil if out.bytesize + precision > limit
+      out << (padding || " ") * (precision - s.length)
+    end
+    out << s
+  end
+
+  # %z, %:z, %::z, %:::z
+  private def __sf_z(out, flags, padding, precision, colons)
+    off = @of
+    aoff = off.abs
+    hl = aoff / 3600 < 10 ? 1 : 2
+    hw = 2
+    hw = 1 if flags & SF_LEFT__ != 0 && hl == 1
+    case colons
+    when 0 then precision = precision <= 3 + hw ? hw : precision - 3
+    when 1 then precision = precision <= 4 + hw ? hw : precision - 4
+    when 2 then precision = precision <= 7 + hw ? hw : precision - 7
+    when 3
+      precision = if aoff % 3600 == 0 then precision <= 1 + hw ? hw : precision - 1
+                  elsif aoff % 60 == 0 then precision <= 4 + hw ? hw : precision - 4
+                  else precision <= 7 + hw ? hw : precision - 7
+                  end
+    end
+    if padding == " " && precision > hl
+      out << " " * (precision - hl)
+      precision = hl
+    end
+    if off < 0
+      off = -off
+      out << "-"
     else
-      if s.zero?
-        mi.zero? ? format("%s%02d", sign, h) : format("%s%02d:%02d", sign, h, mi)
-      else
-        format("%s%02d:%02d:%02d", sign, h, mi, s)
-      end
+      out << "+"
     end
+    out << (off / 3600).to_s.rjust(precision, "0")
+    off %= 3600
+    return if colons == 3 && off == 0
+    out << ":" if colons >= 1
+    out << format("%02d", off / 60)
+    off %= 60
+    return if colons == 3 && off == 0
+    out << ":" << format("%02d", off) if colons >= 2
   end
 
   # ---- parsing -----------------------------------------------------------
+  #
+  # A 1:1 port of the date gem's ext/date/date_parse.c (Date._parse and the
+  # _iso8601 / _rfc3339 / _xmlschema / _rfc2822 / _httpdate / _jisx0301
+  # family), date_strptime.c (Date._strptime) and the frag completion of
+  # date_core.c (d_new_by_frags / dt_new_by_frags).  The regexps are the C
+  # sources verbatim (TIGHT_PARSER is off in CRuby).
 
-  # Separators accepted between the fields of a textual date ("23/feb/2008",
-  # "november.5th.2005").  A leading "-" stays with the year, so it is not here.
-  SEP__ = %r{[.\s/]}
-  # month-NAME forms also take "-" as a separator ("09-Nov-99", "Jan-2010").
-  SEPM__ = %r{[-.\s/]}
-  # ... and then the year's own leading "-" must not be eaten as that separator:
-  # try whitespace/comma first, so " -4712" keeps its sign while "-99" does not.
-  # A number followed by ":" is a clock, not a year ("Nov  9 23:12:40 1999").
-  YEAR__ = %r{(?:[,\s]+|\s*[-.\/]\s*)(-?\d{1,4})(?![\d:])}
-  # 月名のあとの "." は略記の印 ("Nov. 9") だが、"5th.november.-2005" のように
-  # 直後が年なら区切りの "." なので YEAR__ に残す。
-  ABBR__ = %r{(?:\.(?![-\d]))?}
+  module Parse__
+    ABBR_DAYS   = "sun|mon|tue|wed|thu|fri|sat"
+    ABBR_MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+    DAYS = "sunday|monday|tuesday|wednesday|thursday|friday|saturday"
+    ABBR_DAYS_A   = %w[sun mon tue wed thu fri sat].freeze
+    ABBR_MONTHS_A = %w[jan feb mar apr may jun jul aug sep oct nov dec].freeze
+    DAY_NAMES   = %w[Sunday Monday Tuesday Wednesday Thursday Friday Saturday].freeze
+    MONTH_NAMES = %w[January February March April May June July August
+                     September October November December].freeze
+    NUMBER = '(?<!\d)\d'
+    BEGIN_ERA = '\b'
+    END_ERA = '(?!(?<!\.)[a-z])'
+    I = Regexp::IGNORECASE
 
-  def self._parse(str, comp = true)
-    str = str.to_str if !str.is_a?(String) && str.respond_to?(:to_str)
-    raise TypeError, "no implicit conversion into String" unless str.is_a?(String)
-    h = {}
-    s = str.dup
+    # ext/date/zonetab.list (gperf, case-insensitive exact match)
+    ZONETAB = {
+    "ut" => 0, "gmt" => 0, "est" => -18000, "edt" => -14400,
+    "cst" => -21600, "cdt" => -18000, "mst" => -25200, "mdt" => -21600,
+    "pst" => -28800, "pdt" => -25200, "a" => 3600, "b" => 7200,
+    "c" => 10800, "d" => 14400, "e" => 18000, "f" => 21600,
+    "g" => 25200, "h" => 28800, "i" => 32400, "k" => 36000,
+    "l" => 39600, "m" => 43200, "n" => -3600, "o" => -7200,
+    "p" => -10800, "q" => -14400, "r" => -18000, "s" => -21600,
+    "t" => -25200, "u" => -28800, "v" => -32400, "w" => -36000,
+    "x" => -39600, "y" => -43200, "z" => 0, "utc" => 0,
+    "wet" => 0, "at" => -7200, "brst" => -7200, "ndt" => -5400,
+    "art" => -10800, "adt" => -10800, "brt" => -10800, "clst" => -10800,
+    "nst" => -9000, "ast" => -14400, "clt" => -14400, "akdt" => -28800,
+    "ydt" => -28800, "akst" => -32400, "hadt" => -32400, "hdt" => -32400,
+    "yst" => -32400, "ahst" => -36000, "cat" => 7200, "hast" => -36000,
+    "hst" => -36000, "nt" => -39600, "idlw" => -43200, "bst" => 3600,
+    "cet" => 3600, "fwt" => 3600, "met" => 3600, "mewt" => 3600,
+    "mez" => 3600, "swt" => 3600, "wat" => 3600, "west" => 3600,
+    "cest" => 7200, "eet" => 7200, "fst" => 7200, "mest" => 7200,
+    "mesz" => 7200, "sast" => 7200, "sst" => -39600, "bt" => 10800,
+    "eat" => 10800, "eest" => 10800, "msk" => 10800, "msd" => 14400,
+    "zp4" => 14400, "zp5" => 18000, "ist" => 19800, "zp6" => 21600,
+    "wast" => 7200, "cct" => 23400, "sgt" => 28800, "wadt" => 28800,
+    "jst" => 32400, "kst" => 32400, "east" => -21600, "gst" => 36000,
+    "eadt" => 39600, "idle" => 43200, "nzst" => 43200, "nzt" => 43200,
+    "nzdt" => 46800, "afghanistan" => 16200, "alaskan" => -32400, "arab" => 10800,
+    "arabian" => 14400, "arabic" => 10800, "atlantic" => -14400, "aus central" => 34200,
+    "aus eastern" => 36000, "azores" => -3600, "canada central" => -21600, "cape verde" => -3600,
+    "caucasus" => 14400, "cen. australia" => 34200, "central america" => -21600, "central asia" => 21600,
+    "central europe" => 3600, "central european" => 3600, "central pacific" => 39600, "central" => -21600,
+    "china" => 28800, "dateline" => -43200, "e. africa" => 10800, "e. australia" => 36000,
+    "e. europe" => 7200, "e. south america" => -10800, "eastern" => -18000, "egypt" => 7200,
+    "ekaterinburg" => 18000, "fiji" => 43200, "fle" => 7200, "greenland" => -10800,
+    "greenwich" => 0, "gtb" => 7200, "hawaiian" => -36000, "india" => 19800,
+    "iran" => 12600, "jerusalem" => 7200, "korea" => 32400, "mexico" => -21600,
+    "mid-atlantic" => -7200, "mountain" => -25200, "myanmar" => 23400, "n. central asia" => 21600,
+    "nepal" => 20700, "new zealand" => 43200, "newfoundland" => -12600, "north asia east" => 28800,
+    "north asia" => 25200, "pacific sa" => -14400, "pacific" => -28800, "romance" => 3600,
+    "russian" => 10800, "sa eastern" => -10800, "sa pacific" => -18000, "sa western" => -14400,
+    "samoa" => -39600, "se asia" => 25200, "malay peninsula" => 28800, "south africa" => 7200,
+    "sri lanka" => 21600, "taipei" => 28800, "tasmania" => 36000, "tokyo" => 32400,
+    "tonga" => 46800, "us eastern" => -18000, "us mountain" => -25200, "vladivostok" => 36000,
+    "w. australia" => 28800, "w. central africa" => 3600, "w. europe" => 3600, "west asia" => 18000,
+    "west pacific" => 36000, "yakutsk" => 32400, "acdt" => 37800, "acst" => 34200,
+    "act" => -18000, "acwst" => 31500, "aedt" => 39600, "aest" => 36000,
+    "aft" => 16200, "almt" => 21600, "anast" => 43200, "anat" => 43200,
+    "aoe" => -43200, "aqtt" => 18000, "awdt" => 32400, "awst" => 28800,
+    "azost" => 0, "azot" => -3600, "azst" => 18000, "azt" => 14400,
+    "bnt" => 28800, "bot" => -14400, "btt" => 21600, "cast" => 28800,
+    "chadt" => 49500, "chast" => 45900, "chost" => 32400, "chot" => 28800,
+    "chst" => 36000, "chut" => 36000, "cidst" => -14400, "cist" => -18000,
+    "ckt" => -36000, "cot" => -18000, "cvt" => -3600, "cxt" => 25200,
+    "davt" => 25200, "ddut" => 36000, "easst" => -18000, "ect" => -18000,
+    "egst" => 0, "egt" => -3600, "fet" => 10800, "fjst" => 46800,
+    "fjt" => 43200, "fkst" => -10800, "fkt" => -14400, "fnt" => -7200,
+    "galt" => -21600, "gamt" => -32400, "get" => 14400, "gft" => -10800,
+    "gilt" => 43200, "gyt" => -14400, "hkt" => 28800, "hovst" => 28800,
+    "hovt" => 25200, "ict" => 25200, "idt" => 10800, "iot" => 21600,
+    "irdt" => 16200, "irkst" => 32400, "irkt" => 28800, "irst" => 12600,
+    "kgt" => 21600, "kost" => 39600, "krast" => 28800, "krat" => 25200,
+    "kuyt" => 14400, "lhdt" => 39600, "lhst" => 37800, "lint" => 50400,
+    "magst" => 43200, "magt" => 39600, "mart" => -30600, "mawt" => 18000,
+    "mht" => 43200, "mmt" => 23400, "mut" => 14400, "mvt" => 18000,
+    "myt" => 28800, "nct" => 39600, "nfdt" => 43200, "nft" => 39600,
+    "novst" => 25200, "novt" => 25200, "npt" => 20700, "nrt" => 43200,
+    "nut" => -39600, "omsst" => 25200, "omst" => 21600, "orat" => 18000,
+    "pet" => -18000, "petst" => 43200, "pett" => 43200, "pgt" => 36000,
+    "phot" => 46800, "pht" => 28800, "pkt" => 18000, "pmdt" => -7200,
+    "pmst" => -10800, "pont" => 39600, "pwt" => 32400, "pyst" => -10800,
+    "qyzt" => 21600, "ret" => 14400, "rott" => -10800, "sakt" => 39600,
+    "samt" => 14400, "sbt" => 39600, "sct" => 14400, "sret" => 39600,
+    "srt" => -10800, "syot" => 10800, "taht" => -36000, "tft" => 18000,
+    "tjt" => 18000, "tkt" => 46800, "tlt" => 32400, "tmt" => 18000,
+    "tost" => 50400, "tot" => 46800, "trt" => 10800, "tvt" => 43200,
+    "ulast" => 32400, "ulat" => 28800, "uyst" => -7200, "uyt" => -10800,
+    "uzt" => 18000, "vet" => -14400, "vlast" => 39600, "vlat" => 36000,
+    "vost" => 21600, "vut" => 39600, "wakt" => 43200, "warst" => -10800,
+    "wft" => 43200, "wgst" => -3600, "wgt" => -7200, "wib" => 25200,
+    "wit" => 32400, "wita" => 28800, "wt" => 0, "yakst" => 36000,
+    "yakt" => 32400, "yapt" => 36000, "yekst" => 21600, "yekt" => 18000,
+    }.freeze
+    MAX_WORD_LENGTH = 17
 
-    if (m = /([-+]?\d{4,})-(\d{1,2})-(\d{1,2})/.match(s))
-      h[:year], h[:mon], h[:mday] = m[1].to_i, m[2].to_i, m[3].to_i
-      s = m.pre_match + m.post_match
-    elsif (m = /(\d{4})(\d{2})(\d{2})/.match(s))
-      h[:year], h[:mon], h[:mday] = m[1].to_i, m[2].to_i, m[3].to_i
-      s = m.pre_match + m.post_match
-    elsif (m = /(-?\d{1,4})([-.\/])(\d{1,2})\2(-?\d{1,4})/.match(s))
-      # a numeric triple: a 4-digit head is the year (YYYY-MM-DD), a 4-digit tail
-      # is the year with the day leading (DD-MM-YYYY), all-short is YY-MM-DD.
-      a, b, cc = m[1], m[3], m[4]
-      if a.delete_prefix("-").length >= 3
-        h[:year], h[:mon], h[:mday] = a.to_i, b.to_i, cc.to_i
-      elsif cc.delete_prefix("-").length >= 3
-        h[:mday], h[:mon], h[:year] = a.to_i, b.to_i, cc.to_i
-      else
-        h[:year], h[:mon], h[:mday] = a.to_i, b.to_i, cc.to_i
+    PAT_DAY = Regexp.new('\b(' + ABBR_DAYS + ')[^-/\d\s]*', I)
+    PAT_TIME = Regexp.new(
+      '(' \
+        '' + NUMBER + '+\s*' \
+        '(?:' \
+          '(?:' \
+            ':\s*\d+' \
+            '(?:' \
+              '\s*:\s*\d+(?:[,.]\d*)?' \
+            ')?' \
+          '|' \
+            'h(?:\s*\d+m?(?:\s*\d+s?)?)?' \
+          ')' \
+          '(?:' \
+            '\s*' \
+            '[ap](?:m\b|\.m\.)' \
+          ')?' \
+        '|' \
+          '[ap](?:m\b|\.m\.)' \
+        ')' \
+      ')' \
+      '(?:' \
+        '\s*' \
+        '(' \
+          '(?:gmt|utc?)?[-+]\d+(?:[,.:]\d+(?::\d+)?)?' \
+        '|' \
+          '(?-i:[[:alpha:].\s]+)(?:standard|daylight)\stime\b' \
+        '|' \
+          '(?-i:[[:alpha:]]+)(?:\sdst)?\b' \
+        ')' \
+      ')?', I)
+    PAT_TIME2 = Regexp.new(
+      '\A(\d+)h?' \
+        '(?:\s*:?\s*(\d+)m?' \
+          '(?:' \
+            '\s*:?\s*(\d+)(?:[,.](\d+))?s?' \
+          ')?' \
+        ')?' \
+      '(?:\s*([ap])(?:m\b|\.m\.))?', I)
+    PAT_EU = Regexp.new(
+      '(\'?' + NUMBER + '+)[^-\d\s]*' \
+      '\s*' \
+      '(' + ABBR_MONTHS + ')[^-\d\s\']*' \
+      '(?:' \
+        '\s*' \
+        '(?:' \
+          + BEGIN_ERA +
+          '(c(?:e|\.e\.)|b(?:ce|\.c\.e\.)|a(?:d|\.d\.)|b(?:c|\.c\.))' \
+          + END_ERA +
+        ')?' \
+        '\s*' \
+        '(\'?-?\d+(?:(?:st|nd|rd|th)\b)?)' \
+      ')?', I)
+    PAT_US = Regexp.new(
+      '\b(' + ABBR_MONTHS + ')[^-\d\s\']*' \
+      '\s*' \
+      '(\'?\d+)[^-\d\s\']*' \
+      '(?:' \
+        '\s*+,?' \
+        '\s*+' \
+        '(c(?:e|\.e\.)|b(?:ce|\.c\.e\.)|a(?:d|\.d\.)|b(?:c|\.c\.))?' \
+        '\s*' \
+        '(\'?-?\d+)' \
+      ')?', I)
+    PAT_ISO = Regexp.new('(\'?[-+]?' + NUMBER + '+)-(\d+)-(\'?-?\d+)')
+    PAT_ISO21 = Regexp.new('\b(\d{2}|\d{4})?-?w(\d{2})(?:-?(\d))?\b', I)
+    PAT_ISO22 = Regexp.new('-w-(\d)\b', I)
+    PAT_ISO23 = Regexp.new('--(\d{2})?-(\d{2})\b')
+    PAT_ISO24 = Regexp.new('--(\d{2})(\d{2})?\b')
+    PAT_ISO25_0 = Regexp.new('[,.](\d{2}|\d{4})-\d{3}\b')
+    PAT_ISO25 = Regexp.new('\b(\d{2}|\d{4})-(\d{3})\b')
+    PAT_ISO26_0 = Regexp.new('\d-\d{3}\b')
+    PAT_ISO26 = Regexp.new('\b-(\d{3})\b')
+    PAT_JIS = Regexp.new('\b([mtshr])(\d+)\.(\d+)\.(\d+)', I)
+    PAT_VMS11 = Regexp.new('(\'?-?' + NUMBER + '+)-(' + ABBR_MONTHS + ')[^-/.]*' \
+                           '-(\'?-?\d+)', I)
+    PAT_VMS12 = Regexp.new('\b(' + ABBR_MONTHS + ')[^-/.]*' \
+                           '-(\'?-?\d+)(?:-(\'?-?\d+))?', I)
+    PAT_SLA = Regexp.new('(\'?-?' + NUMBER + '+)/\s*(\'?\d+)(?:\D\s*(\'?-?\d+))?', I)
+    PAT_DOT = Regexp.new('(\'?-?' + NUMBER + '+)\.\s*(\'?\d+)\.\s*(\'?-?\d+)', I)
+    PAT_YEAR = Regexp.new('\'(\d+)\b')
+    PAT_MON = Regexp.new('\b(' + ABBR_MONTHS + ')\S*', I)
+    PAT_MDAY = Regexp.new('(' + NUMBER + '+)(st|nd|rd|th)\b', I)
+    PAT_DDD = Regexp.new(
+      '([-+]?)(' + NUMBER + '{2,14})' \
+        '(?:' \
+          '\s*' \
+          't?' \
+          '\s*' \
+          '(\d{2,6})?(?:[,.](\d*))?' \
+        ')?' \
+        '(?:' \
+          '\s*' \
+          '(' \
+            'z\b' \
+          '|' \
+            '[-+]\d{1,4}\b' \
+          '|' \
+            '\[[-+]?\d[^\]]*\]' \
+          ')' \
+        ')?', I)
+    PAT_ANY_MONTH = Regexp.new(ABBR_MONTHS, I)
+    PAT_BC = Regexp.new('\b(bc\b|bce\b|b\.c\.|b\.c\.e\.)', I)
+    PAT_FRAG = Regexp.new('\A\s*(\d{1,2})\s*\z', I)
+    PAT_CLEAN = Regexp.new('[^-+\',./:@[:alnum:]\[\]]+')
+
+    PAT_ISO8601_EXT_DATETIME = Regexp.new(
+      '\A\s*(?:([-+]?\d{2,}|-)-(\d{2})?(?:-(\d{2}))?|' \
+        '([-+]?\d{2,})?-(\d{3})|' \
+        '(\d{4}|\d{2})?-w(\d{2})-(\d)|' \
+        '-w-(\d))' \
+      '(?:t' \
+      '(\d{2}):(\d{2})(?::(\d{2})(?:[,.](\d+))?)?' \
+      '(z|[-+]\d{2}(?::?\d{2})?)?)?\s*\z', I)
+    PAT_ISO8601_BAS_DATETIME = Regexp.new(
+      '\A\s*(?:([-+]?(?:\d{4}|\d{2})|--)(\d{2}|-)(\d{2})|' \
+        '([-+]?(?:\d{4}|\d{2}))(\d{3})|' \
+        '-(\d{3})|' \
+        '(\d{4}|\d{2})w(\d{2})(\d)|' \
+        '-w(\d{2})(\d)|' \
+        '-w-(\d))' \
+      '(?:t?' \
+      '(\d{2})(\d{2})(?:(\d{2})(?:[,.](\d+))?)?' \
+      '(z|[-+]\d{2}(?:\d{2})?)?)?\s*\z', I)
+    PAT_ISO8601_EXT_TIME = Regexp.new(
+      '\A\s*(\d{2}):(\d{2})(?::(\d{2})(?:[,.](\d+))?' \
+      '(z|[-+]\d{2}(:?\d{2})?)?)?\s*\z', I)
+    PAT_ISO8601_BAS_TIME = Regexp.new(
+      '\A\s*(\d{2})(\d{2})(?:(\d{2})(?:[,.](\d+))?' \
+      '(z|[-+]\d{2}(\d{2})?)?)?\s*\z', I)
+    PAT_RFC3339 = Regexp.new(
+      '\A\s*(-?\d{4})-(\d{2})-(\d{2})' \
+      '(?:t|\s)' \
+      '(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?' \
+      '(z|[-+]\d{2}:\d{2})\s*\z', I)
+    PAT_XMLSCHEMA_DATETIME = Regexp.new(
+      '\A\s*(-?\d{4,})(?:-(\d{2})(?:-(\d{2}))?)?' \
+      '(?:t' \
+        '(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?)?' \
+      '(z|[-+]\d{2}:\d{2})?\s*\z', I)
+    PAT_XMLSCHEMA_TIME = Regexp.new(
+      '\A\s*(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?' \
+      '(z|[-+]\d{2}:\d{2})?\s*\z', I)
+    PAT_XMLSCHEMA_TRUNC = Regexp.new(
+      '\A\s*(?:--(\d{2})(?:-(\d{2}))?|---(\d{2}))' \
+      '(z|[-+]\d{2}:\d{2})?\s*\z', I)
+    PAT_RFC2822 = Regexp.new(
+      '\A\s*(?:(' + ABBR_DAYS + ')\s*,\s+)?' \
+      '(\d{1,2})\s+' \
+      '(' + ABBR_MONTHS + ')\s+' \
+      '(-?\d{2,})\s+' \
+      '(\d{2}):(\d{2})(?::(\d{2}))?\s*' \
+      '([-+]\d{4}|ut|gmt|e[sd]t|c[sd]t|m[sd]t|p[sd]t|[a-ik-z])\s*\z', I)
+    PAT_HTTPDATE1 = Regexp.new(
+      '\A\s*(' + ABBR_DAYS + ')\s*,\s+' \
+      '(\d{2})\s+' \
+      '(' + ABBR_MONTHS + ')\s+' \
+      '(-?\d{4})\s+' \
+      '(\d{2}):(\d{2}):(\d{2})\s+' \
+      '(gmt)\s*\z', I)
+    PAT_HTTPDATE2 = Regexp.new(
+      '\A\s*(' + DAYS + ')\s*,\s+' \
+      '(\d{2})\s*-\s*' \
+      '(' + ABBR_MONTHS + ')\s*-\s*' \
+      '(\d{2})\s+' \
+      '(\d{2}):(\d{2}):(\d{2})\s+' \
+      '(gmt)\s*\z', I)
+    PAT_HTTPDATE3 = Regexp.new(
+      '\A\s*(' + ABBR_DAYS + ')\s+' \
+      '(' + ABBR_MONTHS + ')\s+' \
+      '(\d{1,2})\s+' \
+      '(\d{2}):(\d{2}):(\d{2})\s+' \
+      '(\d{4})\s*\z', I)
+    PAT_JISX0301 = Regexp.new(
+      '\A\s*([mtshr])?(\d{2})\.(\d{2})\.(\d{2})' \
+      '(?:t' \
+      '(?:(\d{2}):(\d{2})(?::(\d{2})(?:[,.](\d*))?)?' \
+      '(z|[-+]\d{2}(?::?\d{2})?)?)?)?\s*\z', I)
+    PAT_STRPTIME_ZONE = Regexp.new(
+      '\A(' \
+      '(?:gmt|utc?)?[-+]\d+(?:[,.:]\d+(?::\d+)?)?' \
+      '|(?-i:[[:alpha:].\s]+)(?:standard|daylight)\s+time\b' \
+      '|(?-i:[[:alpha:]]+)(?:\s+dst)?\b' \
+      ')', I)
+
+    HAVE_ALPHA = 1
+    HAVE_DIGIT = 2
+    HAVE_DASH  = 4
+    HAVE_DOT   = 8
+    HAVE_SLASH = 16
+
+    SPACE = " \t\n\v\f\r"
+
+    module_function
+
+    def isspace(c) = !c.nil? && SPACE.include?(c)
+    def isdigit(c) = !c.nil? && c >= "0" && c <= "9"
+    def issign(c) = c == "-" || c == "+"
+
+    def digit_span(s, i) = (s.index(/[^0-9]/, i) || s.length) - i
+
+    # the first sign-or-digit and the digits after it (s3e's scan of y)
+    S3E_YTOK = /[-+][0-9]*|[0-9]+/
+    S3E_DIGITS = /[0-9]+/
+
+    def s3e(h, y, m, d, bc)
+      c = nil
+      m = m.to_s unless m.is_a?(String)
+
+      if !y.nil? && !m.nil? && d.nil?
+        y, m, d = d, y, m
       end
-      s = m.pre_match + m.post_match
-    elsif (m = /(-?\d{4})#{SEPM__}+([A-Za-z]{3,})#{ABBR__}#{SEPM__}+(\d{1,2})(?:st|nd|rd|th)?/.match(s)) && __month_index(m[2])
-      h[:year], h[:mon], h[:mday] = m[1].to_i, __month_index(m[2]), m[3].to_i   # "YYYY mmm DD"
-      s = m.pre_match + m.post_match
-    # "-" 区切りは序数の接尾辞と両立しない: CRuby の VMS 形式 (parse_vms) は
-    # 裸の数字しか取らないので "5th-november-2005" には日が付かない。
-    # 序数のあとはコンマでも区切れる ("18th, November 1983")。SEP__ 自体には
-    # 入れない: コンマは他の分岐で年の区切りとして使うので、ここだけ許す。
-    elsif (m = /(\d{1,2})(?:(?:st|nd|rd|th),?#{SEP__}*|#{SEPM__}+)([A-Za-z]{3,})#{ABBR__}(?:#{YEAR__})?/.match(s)) && __month_index(m[2])
-      h[:mday], h[:mon] = m[1].to_i, __month_index(m[2])                        # "DD mmm[ YYYY]"
-      h[:year] = m[3].to_i if m[3]
-      s = m.pre_match + m.post_match
-    elsif (m = /([A-Za-z]{3,})#{ABBR__}(?:[,\s]+|\s*[-.\/]\s*|)(-?\d{4})(?![\d:])/.match(s)) && __month_index(m[1])
-      h[:mon], h[:year] = __month_index(m[1]), m[2].to_i                        # "mmm[.]YYYY" (4 digits = year)
-      s = m.pre_match + m.post_match
-    elsif (m = /([A-Za-z]{3,})#{ABBR__}[-.,\s\/]*(\d{1,2})(?!\d)(?:st|nd|rd|th)?(?:#{YEAR__})?/.match(s)) && __month_index(m[1])
-      h[:mon], h[:mday] = __month_index(m[1]), m[2].to_i                        # "mmm[.]DD[, YYYY]"
-      h[:year] = m[3].to_i if m[3]
-      s = m.pre_match + m.post_match
-    elsif (m = /\b([A-Za-z]{3,})\.?\b/.match(s)) && __month_index(m[1]) && !__wday_index(m[1])
-      h[:mon] = __month_index(m[1])                                            # bare month name
-      s = m.pre_match + m.post_match
-    elsif (m = /\A\s*(?<num>\d+)(?<ord>st|nd|rd|th)?\s*\z/.match(s)) && !(m[:num].length == 1 && m[:ord].nil?)
-      # Bare digit strings, disambiguated by length (CRuby's ddd rules):
-      # DD → day / DDD → year-day / MMDD → month+day / YYMMDD / YYYYMMDD is
-      # handled above / YYDDD → 2-digit year + year-day / YYYYDDD.
-      d = m[:num]
-      case d.length
-      when 1, 2 then h[:mday] = d.to_i
-      when 3    then h[:yday] = d.to_i
-      when 4    then h[:mon], h[:mday] = d[0, 2].to_i, d[2, 2].to_i
-      when 5    then h[:year], h[:yday] = __complete_year(d[0, 2].to_i), d[2, 3].to_i
-      when 6    then h[:year], h[:mon], h[:mday] = __complete_year(d[0, 2].to_i), d[2, 2].to_i, d[4, 2].to_i
-      when 7    then h[:year], h[:yday] = d[0, 4].to_i, d[4, 3].to_i
+
+      if y.nil?
+        if !d.nil? && d.length > 2
+          y = d
+          d = nil
+        end
+        if !d.nil? && d.length > 0 && d[0] == "'"
+          y = d
+          d = nil
+        end
       end
-      s = m.pre_match + m.post_match
-    end
 
-    if h[:mday].nil? && h[:yday].nil? && (m = /\b(sun|mon|tue|wed|thu|fri|sat)[a-z]*\b/i.match(s))
-      h[:wday] = %w[sun mon tue wed thu fri sat].index(m[1].downcase)
-      s = m.pre_match + m.post_match
-    end
-
-    if (m = /(\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:[.,](\d+))?)?/.match(s))
-      h[:hour], h[:min] = m[1].to_i, m[2].to_i
-      h[:sec] = m[3].to_i if m[3]
-      h[:sec_fraction] = Rational(m[4].to_i, 10**m[4].length) if m[4]
-      s = m.pre_match + m.post_match
-    end
-
-    # asctime ("Thu Nov  9 23:12:40 1999") puts the year AFTER the clock, where
-    # the month branch could not take it without swallowing the hour.  A bare
-    # 4-digit run left over now is that year — but not one carrying a sign,
-    # which is a zone offset.
-    if h[:year].nil? && h[:mon] && (m = /(?<![-+\d:])(\d{4})(?![\d:])/.match(s))
-      h[:year] = m[1].to_i
-      s = m.pre_match + m.post_match
-    end
-
-    if (m = /(?<![\d.])([-+]\d{2}):?(\d{2})?\b|\b(UTC|GMT|Z)\b/.match(s))
-      if m[3]
-        h[:zone] = m[3]
-        h[:offset] = 0
-      else
-        h[:zone] = m[0]
-        sign = m[0][0] == "-" ? -1 : 1
-        h[:offset] = sign * (m[1].to_i.abs * 3600 + (m[2] ? m[2].to_i : 0) * 60)
+      if !y.nil? && (t = S3E_YTOK.match(y)) && t.end(0) < y.length
+        y = d
+        d = t[0]
       end
-    elsif h[:hour] && (z = s.scan(/\b[A-Za-z]{2,5}\b/).find { |w| ZONE_OFFSETS__.key?(w.downcase) })   # "10:00 PST": a zone follows a time
-      h[:zone] = z
-      h[:offset] = ZONE_OFFSETS__[z.downcase]
+
+      if !m.nil? && (m[0] == "'" || m.length > 2)
+        y, m, d = m, d, y # us -> be
+      end
+
+      if !d.nil? && (d[0] == "'" || d.length > 2)
+        y, d = d, y
+      end
+
+      if !y.nil? && (t = y[S3E_YTOK])
+        sign = t[0] == "-" || t[0] == "+"
+        c = false if sign
+        c = false if t.length - (sign ? 1 : 0) > 2
+        h[:year] = t.to_i
+      end
+
+      h[:_bc] = true if bc
+
+      if !m.nil? && (t = m[S3E_DIGITS])
+        h[:mon] = t.to_i
+      end
+
+      if !d.nil? && (t = d[S3E_DIGITS])
+        h[:mday] = t.to_i
+      end
+
+      h[:_comp] = c unless c.nil?
     end
 
-    if (m = /\b([A-Za-z]{3,})\b/.match(s)) && (w = __wday_index(m[1]))
-      h[:wday] = w
+    # C's str_end_with_word: length of " word" (plus the run of blanks before it)
+    # at the end of s[0, l], or 0.
+    def str_end_with_word(s, l, w)
+      n = w.length
+      return 0 if l <= n || !isspace(s[l - n - 1])
+      return 0 unless s[l - n, n].casecmp(w) == 0
+      n += 1
+      n += 1 while l > n && isspace(s[l - n - 1])
+      n
     end
 
-    if comp && h[:year] && h[:year] >= 0 && h[:year] < 100
-      h[:year] += h[:year] >= 69 ? 1900 : 2000       # 2-digit year → 19xx/20xx
+    # shrink_space: each blank run becomes one " ", a trailing run is dropped
+    def shrink_space(s, l)
+      d = s[0, l].gsub(/[ \t\n\v\f\r]+/, " ")
+      d.chop! if d.end_with?(" ")
+      d
     end
-    h
-  end
 
-  def self.__month_index(name)
-    n = name[0, 3].downcase
-    ABBR_MONTHNAMES.index { |x| x && x.downcase == n }
-  end
+    DIGITS_RE = /\G[0-9]*/
+    STRTOUL_RE = /\G[ \t\n\v\f\r]*\+?([0-9]+)/
 
-  def self.__wday_index(name)
-    n = name[0, 3].downcase
-    ABBR_DAYNAMES.index { |x| x.downcase == n }
-  end
-
-  # CRuby's 69-rule: 2-digit years 69..99 are 19xx, 00..68 are 20xx.
-  def self.__complete_year(yy)
-    yy >= 69 ? 1900 + yy : 2000 + yy
-  end
-
-  # A partial parse completes from today (Date.parse("10") → this month's 10th).
-  # Shared with DateTime.parse, which completes the date part the same way.
-  def self.__complete_ymd(h, sg)
-    return [h[:year], h[:mon], h[:mday]] if h[:year] && h[:mon] && h[:mday]
-    t = Time.now
-    if h[:yday]
-      d = ordinal(h[:year] || t.year, h[:yday], sg)
-      return [d.year, d.mon, d.mday]
+    # ruby_scan_digits: at most n (< 0: any) digits from s[i]; → [value, digits read]
+    def scan_digits(s, i, n)
+      d = DIGITS_RE.match(s, i)[0]
+      d = d[0, n] if n >= 0 && d.length > n
+      [d.to_i, d.length]
     end
-    if h[:wday] && h[:mday].nil?
-      base = civil(t.year, t.mon, t.day, sg)       # the named day of THIS week (Sun-start)
-      d = base - base.wday + h[:wday]
-      return [d.year, d.mon, d.mday]
+
+    # STRTOUL(s + i): → [value, index after the number]
+    def strtoul(s, i)
+      m = STRTOUL_RE.match(s, i) or return [0, i]
+      [m[1].to_i, m.end(0)]
     end
-    year = h[:year] || t.year
-    mon  = h[:mon] || (h[:mday] && h[:year].nil? ? t.mon : 1)
-    [year, mon, h[:mday] || 1]
-  end
 
-  def self.parse(str = "-4712-01-01", comp = true, sg = ITALY)
-    h = _parse(str, comp)
-    raise Date::Error, "invalid date" unless h[:year] || h[:mon] || h[:mday] || h[:yday] || h[:wday]
-    y, m, d = __complete_ymd(h, sg)
-    civil(y, m, d, sg)
-  end
+    FAST_OFFSET_RE = /\A([-+])([0-9][0-9])(:?)([0-9][0-9])\z/
 
-  # nil is "invalid date" for the format-specific parsers, not a TypeError.
-  def self.__fmt_parse(str, sg)
-    raise Date::Error, "invalid date" if str.nil?
-    parse(str, true, sg)
-  end
-  # The _-prefixed forms return a Hash (empty when nothing parsed) instead of
-  # raising; nil gives {} but a non-String object is still a TypeError.
-  def self.__fmt_hash(str)
-    return {} if str.nil?
-    h = _parse(str, true)
-    h.empty? ? {} : h
-  end
-  def self._iso8601(str)   = __fmt_hash(str)
-  def self._rfc3339(str)   = __fmt_hash(str)
-  def self._xmlschema(str) = __fmt_hash(str)
-  def self._rfc2822(str)   = __fmt_hash(str)
-  def self._rfc822(str)    = __fmt_hash(str)
-  def self._httpdate(str)  = __fmt_hash(str)
-  def self.iso8601(str = "-4712-01-01", sg = ITALY) = __fmt_parse(str, sg)
-  def self.rfc3339(str = "-4712-01-01T00:00:00+00:00", sg = ITALY) = __fmt_parse(str, sg)
-  def self.xmlschema(str = "-4712-01-01", sg = ITALY) = __fmt_parse(str, sg)
-  def self.rfc2822(str = "Mon, 1 Jan -4712 00:00:00 +0000", sg = ITALY) = __fmt_parse(str, sg)
-  class << self; alias_method :rfc822, :rfc2822; end
-  def self.httpdate(str = "Mon, 01 Jan -4712 00:00:00 GMT", sg = ITALY) = __fmt_parse(str, sg)
+    def zone_to_diff(str)
+      # fast path for "+hh:mm" / "+hhmm"; same result as the general code below
+      if (m = FAST_OFFSET_RE.match(str))
+        hour = m[2].to_i
+        min = m[4].to_i
+        return nil if !m[3].empty? && (hour > 23 || min > 59)
+        v = hour * 3600 + min * 60
+        return m[1] == "-" ? -v : v
+      end
+      s = str.ascii_only? ? str : str.b
+      l = s.length
+      dst = false
+      blank = s.match?(/[ \t\n\v\f\r]/)
 
-  # Named zones CRuby's Date.zone_to_diff knows (the common civil + military
-  # ones); values are seconds east of UTC.
-  ZONE_OFFSETS__ = {
-    "ut" => 0, "gmt" => 0, "utc" => 0, "z" => 0,
-    "est" => -5*3600, "edt" => -4*3600, "cst" => -6*3600, "cdt" => -5*3600,
-    "mst" => -7*3600, "mdt" => -6*3600, "pst" => -8*3600, "pdt" => -7*3600,
-    "ast" => -4*3600, "adt" => -3*3600, "nst" => -3*3600 - 1800, "ndt" => -2*3600 - 1800,
-    "wet" => 0, "west" => 3600, "bst" => 3600, "cet" => 3600, "cest" => 2*3600,
-    "eet" => 2*3600, "eest" => 3*3600, "msk" => 3*3600, "msd" => 4*3600,
-    "ist" => 5*3600 + 1800, "jst" => 9*3600, "kst" => 9*3600,
-    "aest" => 10*3600, "aedt" => 11*3600, "acst" => 9*3600 + 1800, "acdt" => 10*3600 + 1800,
-    "awst" => 8*3600, "nzst" => 12*3600, "nzdt" => 13*3600, "hst" => -10*3600,
-    "akst" => -9*3600, "akdt" => -8*3600, "brt" => -3*3600, "sast" => 2*3600,
-    "a" => 3600, "b" => 2*3600, "c" => 3*3600, "d" => 4*3600, "e" => 5*3600,
-    "f" => 6*3600, "g" => 7*3600, "h" => 8*3600, "i" => 9*3600, "k" => 10*3600,
-    "l" => 11*3600, "m" => 12*3600, "n" => -3600, "o" => -2*3600, "p" => -3*3600,
-    "q" => -4*3600, "r" => -5*3600, "s" => -6*3600, "t" => -7*3600, "u" => -8*3600,
-    "v" => -9*3600, "w" => -10*3600, "x" => -11*3600, "y" => -12*3600,
-  }.freeze
-  private_constant :ZONE_OFFSETS__
-
-  # "+9" / "+09:00" / "+0900" / "+09:00:30" / "Z" / "JST" → seconds;
-  # an unknown zone name → nil.
-  def self.__zone_to_offset(z)
-    z = z.to_s.strip
-    m = /\A([-+])(\d{1,2})(?::?(\d{2}))?(?::?(\d{2}))?\z/.match(z)
-    if m
-      sign = m[1] == "-" ? -1 : 1
-      return sign * (m[2].to_i * 3600 + m[3].to_i * 60 + m[4].to_i)
-    end
-    ZONE_OFFSETS__[z.downcase]
-  end
-
-  def self._strptime(str, fmt = "%F")
-    h = {}
-    si = 0
-    fi = 0
-    while fi < fmt.length
-      c = fmt[fi]
-      if c != "%"
-        if c == " "
-          si += 1 while si < str.length && str[si] == " "
+      if !blank
+        # no " word" suffix possible
+      elsif (w = str_end_with_word(s, l, "time")) > 0
+        wtime = w
+        l -= w
+        if (w = str_end_with_word(s, l, "standard")) > 0
+          l -= w
+        elsif (w = str_end_with_word(s, l, "daylight")) > 0
+          l -= w
+          dst = true
         else
-          return nil unless str[si] == c
+          l += wtime
+        end
+      elsif (w = str_end_with_word(s, l, "dst")) > 0
+        l -= w
+        dst = true
+      end
+
+      zn = s
+      sl = l
+      if blank # shrunk_size: only a string with blanks can shrink
+        d = shrink_space(s, l)
+        if d.length < l && d.length <= MAX_WORD_LENGTH
+          zn = d
+          sl = d.length
+        elsif d.length < l
+          sl = d.length
+        end
+      end
+      if sl > 0 && sl <= MAX_WORD_LENGTH
+        z = ZONETAB[zn[0, sl].downcase]
+        return dst ? z + 3600 : z if z
+      end
+
+      i = 0
+      if l > 3 && (s[0, 3].casecmp("gmt") == 0 || s[0, 3].casecmp("utc") == 0)
+        i = 3
+        l -= 3
+      end
+      return nil unless issign(s[i])
+      sign = s[i] == "-"
+      i += 1
+      l -= 1
+      e = i + l
+      hour = min = sec = 0
+      hour, p = strtoul(s, i)
+      if s[p] == ":"
+        return nil if hour > 23
+        min, p = strtoul(s, p + 1)
+        return nil if min > 59
+        if s[p] == ":"
+          sec, p = strtoul(s, p + 1)
+          return nil if sec > 59
+        end
+      elsif s[p] == "," || s[p] == "."
+        return nil if hour > 23
+        p += 1
+        n = e - p
+        n = 7 if n > 7
+        sec, n = scan_digits(s, p, n)
+        p += n
+        if p < e && s[p] >= (sec.odd? ? "5" : "6") && s[p] <= "9"
+          sec += 1 # round half to even
+        end
+        sec *= 36
+        if sign
+          hour = -hour
+          sec = -sec
+        end
+        if n <= 2
+          sec *= 10 if n == 1
+          return sec + hour * 3600
+        end
+        r = Rational(sec, 10**(n - 2)) + hour * 3600
+        return r.denominator == 1 ? r.numerator : r
+      elsif l > 2
+        hour, = scan_digits(s, i, 2 - l % 2)
+        min, = scan_digits(s, i + 2 - l % 2, 2) if l >= 3
+        sec, = scan_digits(s, i + 4 - l % 2, 2) if l >= 5
+      end
+      sec += min * 60 + hour * 3600
+      sign ? -sec : sec
+    end
+
+    def day_num(s)
+      d = s[0, 3].downcase
+      ABBR_DAYS_A.index(d) || 7
+    end
+
+    def mon_num(s)
+      d = s[0, 3].downcase
+      (ABBR_MONTHS_A.index(d) || 12) + 1
+    end
+
+    def sec_fraction(f) = Rational(f.to_i, 10**f.length)
+
+    def comp_year69(y) = y >= 69 ? y + 1900 : y + 2000
+    def comp_year50(y) = y >= 50 ? y + 1900 : y + 2000
+
+    # SUBS: on a match run the callback, then blank the matched text out.
+    def subs(str, pat)
+      m = pat.match(str) or return false
+      yield m
+      b = m.begin(0)
+      str[b, m.end(0) - b] = " "
+      true
+    end
+
+    def bc_p(b) = !b.nil? && (b[0] == "B" || b[0] == "b")
+
+    def parse_day(str, h)
+      subs(str, PAT_DAY) { |m| h[:wday] = day_num(m[1]) }
+    end
+
+    def parse_time(str, h)
+      subs(str, PAT_TIME) do |m|
+        h[:zone] = m[2] if m[2]
+        if (m2 = PAT_TIME2.match(m[1]))
+          hour = m2[1].to_i
+          min = m2[2]&.to_i
+          sec = m2[3]&.to_i
+          f = m2[4] && sec_fraction(m2[4])
+          if (p = m2[5])
+            hour %= 12
+            hour += 12 if p[0] == "P" || p[0] == "p"
+          end
+          h[:hour] = hour
+          h[:min] = min unless min.nil?
+          h[:sec] = sec unless sec.nil?
+          h[:sec_fraction] = f unless f.nil?
+        end
+      end
+    end
+
+    def parse_eu(str, h)
+      subs(str, PAT_EU) { |m| s3e(h, m[4], mon_num(m[2]), m[1], bc_p(m[3])) }
+    end
+
+    def parse_us(str, h)
+      subs(str, PAT_US) { |m| s3e(h, m[4], mon_num(m[1]), m[2], bc_p(m[3])) }
+    end
+
+    def parse_iso(str, h)
+      subs(str, PAT_ISO) { |m| s3e(h, m[1], m[2], m[3], false) }
+    end
+
+    def parse_iso2(str, h)
+      return true if subs(str, PAT_ISO21) { |m|
+        h[:cwyear] = m[1].to_i if m[1]
+        h[:cweek] = m[2].to_i
+        h[:cwday] = m[3].to_i if m[3]
+      }
+      return true if subs(str, PAT_ISO22) { |m| h[:cwday] = m[1].to_i }
+      return true if subs(str, PAT_ISO23) { |m|
+        h[:mon] = m[1].to_i if m[1]
+        h[:mday] = m[2].to_i
+      }
+      return true if subs(str, PAT_ISO24) { |m|
+        h[:mon] = m[1].to_i
+        h[:mday] = m[2].to_i if m[2]
+      }
+      unless PAT_ISO25_0.match?(str)
+        return true if subs(str, PAT_ISO25) { |m|
+          h[:year] = m[1].to_i
+          h[:yday] = m[2].to_i
+        }
+      end
+      unless PAT_ISO26_0.match?(str)
+        return true if subs(str, PAT_ISO26) { |m| h[:yday] = m[1].to_i }
+      end
+      false
+    end
+
+    def gengo(c)
+      case c
+      when "M", "m" then 1867
+      when "T", "t" then 1911
+      when "S", "s" then 1925
+      when "H", "h" then 1988
+      when "R", "r" then 2018
+      else 0
+      end
+    end
+
+    def parse_jis(str, h)
+      subs(str, PAT_JIS) do |m|
+        h[:year] = m[2].to_i + gengo(m[1][0])
+        h[:mon] = m[3].to_i
+        h[:mday] = m[4].to_i
+      end
+    end
+
+    def parse_vms(str, h)
+      return true if subs(str, PAT_VMS11) { |m| s3e(h, m[3], mon_num(m[2]), m[1], false) }
+      subs(str, PAT_VMS12) { |m| s3e(h, m[3], mon_num(m[1]), m[2], false) }
+    end
+
+    def parse_sla(str, h)
+      subs(str, PAT_SLA) { |m| s3e(h, m[1], m[2], m[3], false) }
+    end
+
+    def parse_dot(str, h)
+      subs(str, PAT_DOT) { |m| s3e(h, m[1], m[2], m[3], false) }
+    end
+
+    def parse_year(str, h)
+      subs(str, PAT_YEAR) { |m| h[:year] = m[1].to_i }
+    end
+
+    def parse_mon(str, h)
+      subs(str, PAT_MON) { |m| h[:mon] = mon_num(m[1]) }
+    end
+
+    def parse_mday(str, h)
+      subs(str, PAT_MDAY) { |m| h[:mday] = m[1].to_i }
+    end
+
+    def n2i(s, f, w) = s[f, w].to_i
+
+    def parse_ddd_cb(m, h)
+      s1, s2, s3, s4, s5 = m[1], m[2], m[3], m[4], m[5]
+      neg = !s1.nil? && s1[0] == "-"
+      l2 = s2.length
+      tonly = s3.nil? && !s4.nil?
+      case l2
+      when 2
+        if tonly
+          h[:sec] = n2i(s2, l2 - 2, 2)
+        else
+          h[:mday] = n2i(s2, 0, 2)
+        end
+      when 4
+        if tonly
+          h[:sec] = n2i(s2, l2 - 2, 2)
+          h[:min] = n2i(s2, l2 - 4, 2)
+        else
+          h[:mon] = n2i(s2, 0, 2)
+          h[:mday] = n2i(s2, 2, 2)
+        end
+      when 6
+        if tonly
+          h[:sec] = n2i(s2, l2 - 2, 2)
+          h[:min] = n2i(s2, l2 - 4, 2)
+          h[:hour] = n2i(s2, l2 - 6, 2)
+        else
+          y = n2i(s2, 0, 2)
+          y = -y if neg
+          h[:year] = y
+          h[:mon] = n2i(s2, 2, 2)
+          h[:mday] = n2i(s2, 4, 2)
+        end
+      when 8, 10, 12, 14
+        if tonly
+          h[:sec] = n2i(s2, l2 - 2, 2)
+          h[:min] = n2i(s2, l2 - 4, 2)
+          h[:hour] = n2i(s2, l2 - 6, 2)
+          h[:mday] = n2i(s2, l2 - 8, 2)
+          h[:mon] = n2i(s2, l2 - 10, 2) if l2 >= 10
+          if l2 == 12
+            y = n2i(s2, l2 - 12, 2)
+            y = -y if neg
+            h[:year] = y
+          end
+          if l2 == 14
+            y = n2i(s2, l2 - 14, 4)
+            y = -y if neg
+            h[:year] = y
+            h[:_comp] = false
+          end
+        else
+          y = n2i(s2, 0, 4)
+          y = -y if neg
+          h[:year] = y
+          h[:mon] = n2i(s2, 4, 2)
+          h[:mday] = n2i(s2, 6, 2)
+          h[:hour] = n2i(s2, 8, 2) if l2 >= 10
+          h[:min] = n2i(s2, 10, 2) if l2 >= 12
+          h[:sec] = n2i(s2, 12, 2) if l2 >= 14
+          h[:_comp] = false
+        end
+      when 3
+        if tonly
+          h[:sec] = n2i(s2, l2 - 2, 2)
+          h[:min] = n2i(s2, l2 - 3, 1)
+        else
+          h[:yday] = n2i(s2, 0, 3)
+        end
+      when 5
+        if tonly
+          h[:sec] = n2i(s2, l2 - 2, 2)
+          h[:min] = n2i(s2, l2 - 4, 2)
+          h[:hour] = n2i(s2, l2 - 5, 1)
+        else
+          y = n2i(s2, 0, 2)
+          y = -y if neg
+          h[:year] = y
+          h[:yday] = n2i(s2, 2, 3)
+        end
+      when 7
+        if tonly
+          h[:sec] = n2i(s2, l2 - 2, 2)
+          h[:min] = n2i(s2, l2 - 4, 2)
+          h[:hour] = n2i(s2, l2 - 6, 2)
+          h[:mday] = n2i(s2, l2 - 7, 1)
+        else
+          y = n2i(s2, 0, 4)
+          y = -y if neg
+          h[:year] = y
+          h[:yday] = n2i(s2, 4, 3)
+        end
+      end
+      unless s3.nil?
+        l3 = s3.length
+        if !s4.nil?
+          if l3 == 2 || l3 == 4 || l3 == 6
+            h[:sec] = n2i(s3, l3 - 2, 2)
+            h[:min] = n2i(s3, l3 - 4, 2) if l3 >= 4
+            h[:hour] = n2i(s3, l3 - 6, 2) if l3 >= 6
+          end
+        elsif l3 == 2 || l3 == 4 || l3 == 6
+          h[:hour] = n2i(s3, 0, 2)
+          h[:min] = n2i(s3, 2, 2) if l3 >= 4
+          h[:sec] = n2i(s3, 4, 2) if l3 >= 6
+        end
+      end
+      h[:sec_fraction] = sec_fraction(s4) unless s4.nil?
+      unless s5.nil?
+        h[:zone] = s5
+        if s5[0] == "["
+          l5 = s5.length - 2
+          inner = s5[1, l5]
+          if (ci = inner.index(":"))
+            zone = inner[ci + 1..]
+            s5 = inner[0, ci + 1]
+          else
+            zone = inner
+            s5 = isdigit(inner[0]) ? "+" + zone : zone
+          end
+          h[:zone] = zone
+          h[:offset] = zone_to_diff(s5)
+        end
+      end
+    end
+
+    def parse_ddd(str, h)
+      subs(str, PAT_DDD) { |m| parse_ddd_cb(m, h) }
+    end
+
+    def parse_bc(str, h)
+      subs(str, PAT_BC) { h[:_bc] = true }
+    end
+
+    def parse_frag(str, h)
+      subs(str, PAT_FRAG) do |m|
+        s = m[1]
+        if !h[:hour].nil? && h[:mday].nil?
+          n = s.to_i
+          h[:mday] = n if n >= 1 && n <= 31
+        end
+        if !h[:mday].nil? && h[:hour].nil?
+          n = s.to_i
+          h[:hour] = n if n >= 0 && n <= 24
+        end
+      end
+    end
+
+    def check_class(s)
+      f = 0
+      f |= HAVE_ALPHA if s.match?(/[A-Za-z]/)
+      f |= HAVE_DIGIT if s.match?(/[0-9]/)
+      f |= HAVE_DASH if s.include?("-")
+      f |= HAVE_DOT if s.include?(".")
+      f |= HAVE_SLASH if s.include?("/")
+      f
+    end
+
+    def have?(str, x) = (check_class(str) & x) == x
+
+    def _parse(str, comp)
+      str = str.gsub(PAT_CLEAN, " ")
+      h = { _comp: comp }
+
+      # HAVE_ELEM_P re-reads the (mutated) string each time; the classes only
+      # change when a SUBS succeeded, so cc is refreshed exactly then.
+      cc = check_class(str)
+      # PAT_EU/US/VMS*/MON all need a month abbreviation; SUBS only blanks text
+      # out, so once absent it stays absent (a pure short cut, no behavior change).
+      mon = cc & HAVE_ALPHA != 0 && PAT_ANY_MONTH.match?(str)
+      cc = check_class(str) if cc & HAVE_ALPHA != 0 && parse_day(str, h)
+      cc = check_class(str) if cc & HAVE_DIGIT != 0 && parse_time(str, h)
+
+      ok = catch(:ok) do
+        if mon && cc & (HAVE_ALPHA | HAVE_DIGIT) == (HAVE_ALPHA | HAVE_DIGIT)
+          throw :ok, true if parse_eu(str, h)
+          throw :ok, true if parse_us(str, h)
+        end
+        throw :ok, true if cc & (HAVE_DIGIT | HAVE_DASH) == (HAVE_DIGIT | HAVE_DASH) && parse_iso(str, h)
+        throw :ok, true if cc & (HAVE_DIGIT | HAVE_DOT) == (HAVE_DIGIT | HAVE_DOT) && parse_jis(str, h)
+        throw :ok, true if mon && cc & (HAVE_ALPHA | HAVE_DIGIT | HAVE_DASH) == (HAVE_ALPHA | HAVE_DIGIT | HAVE_DASH) && parse_vms(str, h)
+        throw :ok, true if cc & (HAVE_DIGIT | HAVE_SLASH) == (HAVE_DIGIT | HAVE_SLASH) && parse_sla(str, h)
+        throw :ok, true if cc & (HAVE_DIGIT | HAVE_DOT) == (HAVE_DIGIT | HAVE_DOT) && parse_dot(str, h)
+        throw :ok, true if cc & HAVE_DIGIT != 0 && parse_iso2(str, h)
+        throw :ok, true if cc & HAVE_DIGIT != 0 && parse_year(str, h)
+        throw :ok, true if mon && cc & HAVE_ALPHA != 0 && parse_mon(str, h)
+        throw :ok, true if cc & HAVE_DIGIT != 0 && parse_mday(str, h)
+        throw :ok, true if cc & HAVE_DIGIT != 0 && parse_ddd(str, h)
+        false
+      end
+      cc = check_class(str) if ok
+
+      cc = check_class(str) if cc & HAVE_ALPHA != 0 && parse_bc(str, h)
+      parse_frag(str, h) if cc & HAVE_DIGIT != 0
+
+      if h.delete(:_bc)
+        h[:cwyear] = -h[:cwyear] + 1 unless h[:cwyear].nil?
+        h[:year] = -h[:year] + 1 unless h[:year].nil?
+      end
+
+      if h.delete(:_comp)
+        y = h[:cwyear]
+        h[:cwyear] = comp_year69(y) if !y.nil? && y >= 0 && y <= 99
+        y = h[:year]
+        h[:year] = comp_year69(y) if !y.nil? && y >= 0 && y <= 99
+      end
+
+      zone = h[:zone]
+      h[:offset] = zone_to_diff(zone) if !zone.nil? && h[:offset].nil?
+      h
+    end
+
+    def set_zone(h, z)
+      h[:zone] = z
+      h[:offset] = zone_to_diff(z)
+    end
+
+    def _iso8601(str)
+      h = {}
+      if (m = PAT_ISO8601_EXT_DATETIME.match(str))
+        s = m
+        if s[1]
+          h[:mday] = s[3].to_i if s[3]
+          if s[1] != "-"
+            y = s[1].to_i
+            y = comp_year69(y) if s[1].length < 4
+            h[:year] = y
+          end
+          if s[2].nil?
+            return h if s[1] != "-"
+          else
+            h[:mon] = s[2].to_i
+          end
+        elsif s[5]
+          h[:yday] = s[5].to_i
+          if s[4]
+            y = s[4].to_i
+            y = comp_year69(y) if s[4].length < 4
+            h[:year] = y
+          end
+        elsif s[8]
+          h[:cweek] = s[7].to_i
+          h[:cwday] = s[8].to_i
+          if s[6]
+            y = s[6].to_i
+            y = comp_year69(y) if s[6].length < 4
+            h[:cwyear] = y
+          end
+        elsif s[9]
+          h[:cwday] = s[9].to_i
+        end
+        if s[10]
+          h[:hour] = s[10].to_i
+          h[:min] = s[11].to_i
+          h[:sec] = s[12].to_i if s[12]
+        end
+        h[:sec_fraction] = sec_fraction(s[13]) if s[13]
+        set_zone(h, s[14]) if s[14]
+      elsif (s = PAT_ISO8601_BAS_DATETIME.match(str))
+        if s[3]
+          h[:mday] = s[3].to_i
+          if s[1] != "--"
+            y = s[1].to_i
+            y = comp_year69(y) if s[1].length < 4
+            h[:year] = y
+          end
+          if s[2][0] == "-"
+            return h if s[1] != "--"
+          else
+            h[:mon] = s[2].to_i
+          end
+        elsif s[5]
+          h[:yday] = s[5].to_i
+          y = s[4].to_i
+          y = comp_year69(y) if s[4].length < 4
+          h[:year] = y
+        elsif s[6]
+          h[:yday] = s[6].to_i
+        elsif s[9]
+          h[:cweek] = s[8].to_i
+          h[:cwday] = s[9].to_i
+          y = s[7].to_i
+          y = comp_year69(y) if s[7].length < 4
+          h[:cwyear] = y
+        elsif s[11]
+          h[:cweek] = s[10].to_i
+          h[:cwday] = s[11].to_i
+        elsif s[12]
+          h[:cwday] = s[12].to_i
+        end
+        if s[13]
+          h[:hour] = s[13].to_i
+          h[:min] = s[14].to_i
+          h[:sec] = s[15].to_i if s[15]
+        end
+        h[:sec_fraction] = sec_fraction(s[16]) if s[16]
+        set_zone(h, s[17]) if s[17]
+      elsif (s = PAT_ISO8601_EXT_TIME.match(str) || PAT_ISO8601_BAS_TIME.match(str))
+        h[:hour] = s[1].to_i
+        h[:min] = s[2].to_i
+        h[:sec] = s[3].to_i if s[3]
+        h[:sec_fraction] = sec_fraction(s[4]) if s[4]
+        set_zone(h, s[5]) if s[5]
+      end
+      h
+    end
+
+    def _rfc3339(str)
+      h = {}
+      if (s = PAT_RFC3339.match(str))
+        h[:year] = s[1].to_i
+        h[:mon] = s[2].to_i
+        h[:mday] = s[3].to_i
+        h[:hour] = s[4].to_i
+        h[:min] = s[5].to_i
+        h[:sec] = s[6].to_i
+        set_zone(h, s[8])
+        h[:sec_fraction] = sec_fraction(s[7]) if s[7]
+      end
+      h
+    end
+
+    def _xmlschema(str)
+      h = {}
+      if (s = PAT_XMLSCHEMA_DATETIME.match(str))
+        h[:year] = s[1].to_i
+        h[:mon] = s[2].to_i if s[2]
+        h[:mday] = s[3].to_i if s[3]
+        h[:hour] = s[4].to_i if s[4]
+        h[:min] = s[5].to_i if s[5]
+        h[:sec] = s[6].to_i if s[6]
+        h[:sec_fraction] = sec_fraction(s[7]) if s[7]
+        set_zone(h, s[8]) if s[8]
+      elsif (s = PAT_XMLSCHEMA_TIME.match(str))
+        h[:hour] = s[1].to_i
+        h[:min] = s[2].to_i
+        h[:sec] = s[3].to_i if s[3]
+        h[:sec_fraction] = sec_fraction(s[4]) if s[4]
+        set_zone(h, s[5]) if s[5]
+      elsif (s = PAT_XMLSCHEMA_TRUNC.match(str))
+        h[:mon] = s[1].to_i if s[1]
+        h[:mday] = s[2].to_i if s[2]
+        h[:mday] = s[3].to_i if s[3]
+        set_zone(h, s[4]) if s[4]
+      end
+      h
+    end
+
+    def _rfc2822(str)
+      h = {}
+      if (s = PAT_RFC2822.match(str))
+        h[:wday] = day_num(s[1]) if s[1]
+        h[:mday] = s[2].to_i
+        h[:mon] = mon_num(s[3])
+        y = s[4].to_i
+        y = comp_year50(y) if s[4].length < 4
+        h[:year] = y
+        h[:hour] = s[5].to_i
+        h[:min] = s[6].to_i
+        h[:sec] = s[7].to_i if s[7]
+        set_zone(h, s[8])
+      end
+      h
+    end
+
+    def _httpdate(str)
+      h = {}
+      if (s = PAT_HTTPDATE1.match(str))
+        h[:wday] = day_num(s[1])
+        h[:mday] = s[2].to_i
+        h[:mon] = mon_num(s[3])
+        h[:year] = s[4].to_i
+        h[:hour] = s[5].to_i
+        h[:min] = s[6].to_i
+        h[:sec] = s[7].to_i
+        h[:zone] = s[8]
+        h[:offset] = 0
+      elsif (s = PAT_HTTPDATE2.match(str))
+        h[:wday] = day_num(s[1])
+        h[:mday] = s[2].to_i
+        h[:mon] = mon_num(s[3])
+        y = s[4].to_i
+        y = comp_year69(y) if y >= 0 && y <= 99
+        h[:year] = y
+        h[:hour] = s[5].to_i
+        h[:min] = s[6].to_i
+        h[:sec] = s[7].to_i
+        h[:zone] = s[8]
+        h[:offset] = 0
+      elsif (s = PAT_HTTPDATE3.match(str))
+        h[:wday] = day_num(s[1])
+        h[:mon] = mon_num(s[2])
+        h[:mday] = s[3].to_i
+        h[:hour] = s[4].to_i
+        h[:min] = s[5].to_i
+        h[:sec] = s[6].to_i
+        h[:year] = s[7].to_i
+      end
+      h
+    end
+
+    def _jisx0301(str)
+      h = {}
+      s = PAT_JISX0301.match(str) or return _iso8601(str)
+      h[:year] = s[2].to_i + gengo(s[1].nil? ? "H" : s[1][0])
+      h[:mon] = s[3].to_i
+      h[:mday] = s[4].to_i
+      if s[5]
+        h[:hour] = s[5].to_i
+        h[:min] = s[6].to_i if s[6]
+        h[:sec] = s[7].to_i if s[7]
+      end
+      h[:sec_fraction] = sec_fraction(s[8]) if s[8]
+      set_zone(h, s[9]) if s[9]
+      h
+    end
+
+    # ---- strptime (date_strptime.c) ----
+
+    NUM_PAT_CHARS = "CDdeFGgHIjkLlMmNQRrSsTUuVvWwXxYy"
+
+    def num_pattern_p(fmt, i)
+      c = fmt[i]
+      return true if isdigit(c)
+      if c == "%"
+        i += 1
+        i += 1 if fmt[i] == "E" || fmt[i] == "O"
+        c = fmt[i]
+        return true if !c.nil? && (NUM_PAT_CHARS.include?(c) || isdigit(c))
+      end
+      false
+    end
+
+    # → [value, new index] or nil (no digit)
+    def read_digits(str, si, width)
+      d = DIGITS_RE.match(str, si)[0]
+      return nil if d.empty?
+      d = d[0, width] if d.length > width
+      [d.to_i, si + d.length]
+    end
+
+    def head_match(str, si, name, len)
+      str.length - si >= len && str[si, len].casecmp(name[0, len]) == 0
+    end
+
+    INF = Float::INFINITY
+
+    # date__strptime_internal on str[si..]; → the index past what was read, or
+    # nil when it failed.
+    def strptime_i(str, si, fmt, h)
+      slen = str.length
+      flen = fmt.length
+      fi = 0
+      while fi < flen
+        fc = fmt[fi]
+        if isspace(fc)
+          si += 1 while si < slen && isspace(str[si])
+          fi += 1
+          fi += 1 while fi < flen && isspace(fmt[fi])
+          next
+        end
+        return nil if si >= slen
+
+        if fc != "%"
+          return nil if str[si] != fc
           si += 1
+          fi += 1
+          next
+        end
+
+        ordinal = false
+        while true # again
+          fi += 1
+          c = fmt[fi]
+          case c
+          when "E"
+            nc = fmt[fi + 1]
+            next if !nc.nil? && "cCxXyY".include?(nc)
+            fi -= 1
+            ordinal = true
+          when "O"
+            nc = fmt[fi + 1]
+            next if !nc.nil? && "deHImMSuUVwWy".include?(nc)
+            fi -= 1
+            ordinal = true
+          when ":"
+            i = 1
+            i += 1 while i < 3 && fi + i < flen && fmt[fi + i] == ":"
+            return nil unless fmt[fi + i] == "z"
+            fi += i - 1
+            next
+          end
+          break
+        end
+        if ordinal
+          return nil if str[si] != fmt[fi]
+          si += 1
+          fi += 1
+          next
+        end
+
+        case c
+        when "A", "a"
+          i = 0
+          found = false
+          while i < 7
+            name = DAY_NAMES[i]
+            l = name.length
+            if head_match(str, si, name, l) || head_match(str, si, name, l = 3)
+              si += l
+              h[:wday] = i
+              found = true
+              break
+            end
+            i += 1
+          end
+          return nil unless found
+        when "B", "b", "h"
+          i = 0
+          found = false
+          while i < 12
+            name = MONTH_NAMES[i]
+            l = name.length
+            if head_match(str, si, name, l) || head_match(str, si, name, l = 3)
+              si += l
+              h[:mon] = i + 1
+              found = true
+              break
+            end
+            i += 1
+          end
+          return nil unless found
+        when "C"
+          r = read_digits(str, si, num_pattern_p(fmt, fi + 1) ? 2 : INF) or return nil
+          n, si = r
+          h[:_cent] = n
+        when "c"
+          si = strptime_i(str, si, "%a %b %e %H:%M:%S %Y", h) or return nil
+        when "D", "x"
+          si = strptime_i(str, si, "%m/%d/%y", h) or return nil
+        when "d", "e"
+          if str[si] == " "
+            r = read_digits(str, si + 1, 1) or return nil
+            n, si = r
+          else
+            r = read_digits(str, si, 2) or return nil
+            n, si = r
+          end
+          return nil if n < 1 || n > 31
+          h[:mday] = n
+        when "F"
+          si = strptime_i(str, si, "%Y-%m-%d", h) or return nil
+        when "G"
+          r = read_digits(str, si, num_pattern_p(fmt, fi + 1) ? 4 : INF) or return nil
+          n, si = r
+          h[:cwyear] = n
+        when "g"
+          r = read_digits(str, si, 2) or return nil
+          n, si = r
+          return nil if n > 99
+          h[:cwyear] = n
+          h[:_cent] = n >= 69 ? 19 : 20 if h[:_cent].nil?
+        when "H", "k"
+          if str[si] == " "
+            r = read_digits(str, si + 1, 1) or return nil
+            n, si = r
+          else
+            r = read_digits(str, si, 2) or return nil
+            n, si = r
+          end
+          return nil if n > 24
+          h[:hour] = n
+        when "I", "l"
+          if str[si] == " "
+            r = read_digits(str, si + 1, 1) or return nil
+            n, si = r
+          else
+            r = read_digits(str, si, 2) or return nil
+            n, si = r
+          end
+          return nil if n < 1 || n > 12
+          h[:hour] = n
+        when "j"
+          r = read_digits(str, si, 3) or return nil
+          n, si = r
+          return nil if n < 1 || n > 366
+          h[:yday] = n
+        when "L", "N"
+          sign = 1
+          if issign(str[si])
+            sign = -1 if str[si] == "-"
+            si += 1
+          end
+          osi = si
+          w = num_pattern_p(fmt, fi + 1) ? (c == "L" ? 3 : 9) : INF
+          r = read_digits(str, si, w) or return nil
+          n, si = r
+          n = -n if sign == -1
+          h[:sec_fraction] = Rational(n, 10**(si - osi))
+        when "M"
+          r = read_digits(str, si, 2) or return nil
+          n, si = r
+          return nil if n > 59
+          h[:min] = n
+        when "m"
+          r = read_digits(str, si, 2) or return nil
+          n, si = r
+          return nil if n < 1 || n > 12
+          h[:mon] = n
+        when "n", "t"
+          si = strptime_i(str, si, " ", h) or return nil
+        when "P", "p"
+          return nil if slen - si < 2
+          ch = str[si]
+          hour = (ch == "P" || ch == "p") ? 12 : 0
+          return nil if hour == 0 && !(ch == "A" || ch == "a")
+          if (ch = str[si + 1]) == "."
+            return nil if slen - si < 4 || str[si + 3] != "."
+            si += 2
+            ch = str[si]
+          end
+          return nil unless ch == "M" || ch == "m"
+          si += 2
+          h[:_merid] = hour
+        when "Q"
+          sign = 1
+          if str[si] == "-"
+            sign = -1
+            si += 1
+          end
+          r = read_digits(str, si, INF) or return nil
+          n, si = r
+          n = -n if sign == -1
+          h[:seconds] = Rational(n, 1000)
+        when "R"
+          si = strptime_i(str, si, "%H:%M", h) or return nil
+        when "r"
+          si = strptime_i(str, si, "%I:%M:%S %p", h) or return nil
+        when "S"
+          r = read_digits(str, si, 2) or return nil
+          n, si = r
+          return nil if n > 60
+          h[:sec] = n
+        when "s"
+          sign = 1
+          if str[si] == "-"
+            sign = -1
+            si += 1
+          end
+          r = read_digits(str, si, INF) or return nil
+          n, si = r
+          n = -n if sign == -1
+          h[:seconds] = n
+        when "T", "X"
+          si = strptime_i(str, si, "%H:%M:%S", h) or return nil
+        when "U", "W"
+          r = read_digits(str, si, 2) or return nil
+          n, si = r
+          return nil if n > 53
+          h[c == "U" ? :wnum0 : :wnum1] = n
+        when "u"
+          r = read_digits(str, si, 1) or return nil
+          n, si = r
+          return nil if n < 1 || n > 7
+          h[:cwday] = n
+        when "V"
+          r = read_digits(str, si, 2) or return nil
+          n, si = r
+          return nil if n < 1 || n > 53
+          h[:cweek] = n
+        when "v"
+          si = strptime_i(str, si, "%e-%b-%Y", h) or return nil
+        when "w"
+          r = read_digits(str, si, 1) or return nil
+          n, si = r
+          return nil if n > 6
+          h[:wday] = n
+        when "Y"
+          sign = 1
+          if issign(str[si])
+            sign = -1 if str[si] == "-"
+            si += 1
+          end
+          r = read_digits(str, si, num_pattern_p(fmt, fi + 1) ? 4 : INF) or return nil
+          n, si = r
+          n = -n if sign == -1
+          h[:year] = n
+        when "y"
+          r = read_digits(str, si, 2) or return nil
+          n, si = r
+          return nil if n > 99
+          h[:year] = n
+          h[:_cent] = n >= 69 ? 19 : 20 if h[:_cent].nil?
+        when "Z", "z"
+          m = PAT_STRPTIME_ZONE.match(str[si..]) or return nil
+          s = m[1]
+          si += s.length
+          h[:zone] = s
+          h[:offset] = zone_to_diff(s)
+        when "%"
+          return nil if str[si] != "%"
+          si += 1
+        when "+"
+          si = strptime_i(str, si, "%a %b %e %H:%M:%S %Z %Y", h) or return nil
+        else
+          return nil if str[si] != "%"
+          si += 1
+          if fi < flen
+            return nil if si >= slen || str[si] != fmt[fi]
+            si += 1
+          end
         end
         fi += 1
-        next
       end
-      fi += 1
-      spec = fmt[fi]
-      fi += 1
-      case spec
-      when "Y" then si = __sp_int(str, si, h, :year, 10, true) or return nil
-      when "y" then si = __sp_int(str, si, h, :year, 2) or return nil
-      when "m" then si = __sp_int(str, si, h, :mon, 2) or return nil
-      when "d" then si = __sp_int(str, si, h, :mday, 2) or return nil
-      when "e"                                            # day with ONE optional leading blank
-        si += 1 if str[si] == " "
-        si = __sp_int(str, si, h, :mday, 2) or return nil
-      when "H" then si = __sp_int(str, si, h, :hour, 2) or return nil
-      when "M" then si = __sp_int(str, si, h, :min, 2) or return nil
-      when "S" then si = __sp_int(str, si, h, :sec, 2) or return nil
-      when "j" then si = __sp_int(str, si, h, :yday, 3) or return nil
-      when "B", "b", "h"
-        m = /\A([A-Za-z]+)/.match(str[si..-1]) or return nil
-        idx = __month_index(m[1]) or return nil
-        h[:mon] = idx
-        si += m[1].length
-      when "A", "a"
-        m = /\A([A-Za-z]+)/.match(str[si..-1]) or return nil
-        w = __wday_index(m[1]) or return nil
-        h[:wday] = w
-        si += m[1].length
-      when "F"
-        sub = _strptime(str[si..-1], "%Y-%m-%d") or return nil
-        h.update(sub)
-        si += (str.length - si) - sub[:leftover].to_s.length
-      when "T", "X"
-        sub = _strptime(str[si..-1], "%H:%M:%S") or return nil
-        h.update(sub)
-        si += (str.length - si) - sub[:leftover].to_s.length
-      when "c", "D", "x", "v", "R", "r", "n", "t"
-        expansion = { "c" => "%a %b %e %H:%M:%S %Y", "D" => "%m/%d/%y", "x" => "%m/%d/%y",
-                      "v" => "%e-%b-%Y", "R" => "%H:%M", "r" => "%I:%M:%S %p",
-                      "n" => "\n", "t" => "\t" }[spec]
-        sub = _strptime(str[si..-1], expansion) or return nil
-        left = sub.delete(:leftover)
-        h.update(sub)
-        si += (str.length - si) - left.to_s.length
-      when "p", "P"
-        m = /\A([AaPp])\.?[Mm]\.?/.match(str[si..-1]) or return nil
-        h[:__pm] = (m[1] == "P" || m[1] == "p")
-        si += m[0].length
-      when "I" then si = __sp_int(str, si, h, :hour, 2) or return nil
-      when "C" then si = __sp_int(str, si, h, :__century, 2) or return nil        # century (with %y)
-      when "G" then si = __sp_int(str, si, h, :cwyear, 10, true) or return nil     # commercial year
-      when "g" then si = __sp_int(str, si, h, :__cwyear2, 2) or return nil
-      when "V" then si = __sp_int(str, si, h, :cweek, 2) or return nil             # ISO week
-      when "U" then si = __sp_int(str, si, h, :wnum0, 2) or return nil             # week (Sunday start)
-      when "W" then si = __sp_int(str, si, h, :wnum1, 2) or return nil             # week (Monday start)
-      when "u" then si = __sp_int(str, si, h, :cwday, 1) or return nil             # 1..7 (Mon..Sun)
-      when "w" then si = __sp_int(str, si, h, :wday, 1) or return nil              # 0..6 (Sun..Sat)
-      when "L" then si = __sp_int(str, si, h, :__msec, 3) or return nil
-      when "N" then si = __sp_int(str, si, h, :__nsec, 9) or return nil
-      when "z", "Z"                                       # numeric offset or a zone name
-        m = /\A(?:[-+]\d{2}(?::?\d{2}){0,2}|[A-Za-z]{1,10}(?:[-+]\d{1,2}(?::\d{2})?)?)/.match(str[si..-1]) or return nil
-        h[:zone] = m[0]
-        off = __zone_to_offset(m[0])
-        h[:offset] = off if off
-        si += m[0].length
-      when "+"
-        sub = _strptime(str[si..-1], "%a %b %e %H:%M:%S %Z %Y") or return nil
-        left = sub.delete(:leftover)
-        h.update(sub)
-        si += (str.length - si) - left.to_s.length
-      when "%" then (return nil unless str[si] == "%"); si += 1
-      else return nil
+      si
+    end
+
+    def _strptime(str, fmt)
+      h = {}
+      si = strptime_i(str, 0, fmt, h) or return nil
+      h[:leftover] = str[si..] if str.length > si
+      if (cent = h.delete(:_cent))
+        h[:cwyear] = h[:cwyear] + cent * 100 unless h[:cwyear].nil?
+        h[:year] = h[:year] + cent * 100 unless h[:year].nil?
       end
+      if (merid = h.delete(:_merid))
+        h[:hour] = h[:hour] % 12 + merid unless h[:hour].nil?
+      end
+      h
     end
-    h.delete(:leftover)
-    h[:leftover] = str[si..-1] if si < str.length
-    if (cen = h.delete(:__century))
-      h[:year] = cen * 100 + (h[:year] || 0)              # %C[%y]
-    elsif h[:year] && h[:year] < 100 && fmt.include?("%y")
-      h[:year] += h[:year] >= 69 ? 1900 : 2000
+
+    # ---- frags → Date (date_core.c) ----
+
+    COMPLETE_TAB = [
+      [:time, %i[hour min sec]],
+      [nil, %i[jd]],
+      [:ordinal, %i[year yday hour min sec]],
+      [:civil, %i[year mon mday hour min sec]],
+      [:commercial, %i[cwyear cweek cwday hour min sec]],
+      [:wday, %i[wday hour min sec]],
+      [:wnum0, %i[year wnum0 wday hour min sec]],
+      [:wnum1, %i[year wnum1 wday hour min sec]],
+      [nil, %i[cwyear cweek wday hour min sec]],
+      [nil, %i[year wnum0 cwday hour min sec]],
+      [nil, %i[year wnum1 cwday hour min sec]],
+    ].freeze
+
+    UNIX_EPOCH_IN_CJD = 2440588
+
+    def rewrite_frags(h)
+      seconds = h.delete(:seconds)
+      unless seconds.nil?
+        offset = h[:offset]
+        seconds += offset unless offset.nil?
+        d = seconds.div(86400)
+        fr = seconds % 86400
+        hr = fr.div(3600)
+        fr %= 3600
+        min = fr.div(60)
+        fr %= 60
+        s = fr.div(1)
+        fr %= 1
+        h[:jd] = UNIX_EPOCH_IN_CJD + d
+        h[:hour] = hr
+        h[:min] = min
+        h[:sec] = s
+        h[:sec_fraction] = fr
+      end
+      h
     end
-    if (cy2 = h.delete(:__cwyear2))                       # %g: 2-digit commercial year
-      h[:cwyear] = cy2 + (cy2 >= 69 ? 1900 : 2000)
+
+    def complete_frags(klass, h)
+      k = a = nil
+      eno = 0
+      COMPLETE_TAB.each do |x|
+        n = x[1].count { |key| !h[key].nil? }
+        if n > eno
+          eno = n
+          k, a = x
+        end
+      end
+
+      d = nil
+      if !k.nil? && a.length > eno
+        case k
+        when :ordinal
+          if h[:year].nil?
+            d ||= Date.today
+            h[:year] = d.year
+          end
+          h[:yday] = 1 if h[:yday].nil?
+        when :civil, :commercial, :wnum0, :wnum1
+          a.each do |e|
+            break unless h[e].nil?
+            d ||= Date.today
+            h[e] = d.__send__(e)
+          end
+          case k
+          when :civil
+            h[:mon] = 1 if h[:mon].nil?
+            h[:mday] = 1 if h[:mday].nil?
+          when :commercial
+            h[:cweek] = 1 if h[:cweek].nil?
+            h[:cwday] = 1 if h[:cwday].nil?
+          when :wnum0
+            h[:wnum0] = 0 if h[:wnum0].nil?
+            h[:wday] = 0 if h[:wday].nil?
+          when :wnum1
+            h[:wnum1] = 0 if h[:wnum1].nil?
+            h[:wday] = 1 if h[:wday].nil?
+          end
+        when :wday
+          d ||= Date.today
+          h[:jd] = (d - d.wday + h[:wday]).jd
+        end
+      end
+
+      if k == :time && klass <= DateTime
+        d ||= Date.today
+        h[:jd] = d.jd if h[:jd].nil?
+      end
+
+      h[:hour] = 0 if h[:hour].nil?
+      h[:min] = 0 if h[:min].nil?
+      if h[:sec].nil?
+        h[:sec] = 0
+      elsif h[:sec] > 59
+        h[:sec] = 59
+      end
+      h
     end
-    if (pm = h.delete(:__pm))                             # %p pairs with %I
-      h[:hour] = (h[:hour] || 0) % 12 + (pm ? 12 : 0)
+
+    def valid_date_frags(h, sg)
+      jd = h[:jd]
+      return jd unless jd.nil?
+
+      if !(yday = h[:yday]).nil? && !(year = h[:year]).nil?
+        jd = Date.__valid_ordinal_jd_i(year, yday, sg)
+        return jd unless jd.nil?
+      end
+
+      if !(mday = h[:mday]).nil? && !(mon = h[:mon]).nil? && !(year = h[:year]).nil?
+        jd = Date.__valid_civil_jd_i(year, mon, mday, sg)
+        return jd unless jd.nil?
+      end
+
+      wday = h[:cwday]
+      if wday.nil?
+        wday = h[:wday]
+        wday = 7 if !wday.nil? && wday.zero?
+      end
+      if !wday.nil? && !(week = h[:cweek]).nil? && !(year = h[:cwyear]).nil?
+        jd = Date.__valid_commercial_jd_i(year, week, wday, sg)
+        return jd unless jd.nil?
+      end
+
+      wday = h[:wday]
+      if wday.nil?
+        wday = h[:cwday]
+        wday = 0 if !wday.nil? && wday == 7
+      end
+      if !wday.nil? && !(week = h[:wnum0]).nil? && !(year = h[:year]).nil?
+        jd = Date.__valid_weeknum_jd(year, week, wday, 0, sg)
+        return jd unless jd.nil?
+      end
+
+      wday = h[:wday]
+      wday = h[:cwday] if wday.nil?
+      wday = (wday - 1) % 7 unless wday.nil?
+      if !wday.nil? && !(week = h[:wnum1]).nil? && !(year = h[:year]).nil?
+        jd = Date.__valid_weeknum_jd(year, week, wday, 1, sg)
+        return jd unless jd.nil?
+      end
+      nil
     end
-    if (ms = h.delete(:__msec)) then h[:sec_fraction] = Rational(ms, 1000) end
-    if (ns = h.delete(:__nsec)) then h[:sec_fraction] = Rational(ns, 1_000_000_000) end
-    h
+  end
+  private_constant :Parse__
+
+  # NUM2INT: a C int, else RangeError
+  def self.__num2int(v)
+    v = v.to_i
+    if v > 2147483647 || v < -2147483648
+      raise RangeError, "integer #{v} too big to convert to 'int'"
+    end
+    v
   end
 
-  def self.__sp_int(str, si, h, key, maxlen, signed = false)
-    j = si
-    j += 1 if signed && j < str.length && (str[j] == "-" || str[j] == "+")
-    k = j
-    k += 1 while k < str.length && k - j < maxlen && str[k] >= "0" && str[k] <= "9"
-    return nil if k == j
-    h[key] = str[si...k].to_i
-    k
+  # rt__valid_*_p: the year stays a VALUE, the other fields are NUM2INT'd.
+  def self.__valid_civil_jd_i(y, m, d, sg)
+    _valid_civil_jd(y.to_i, __num2int(m), __num2int(d), sg)
+  end
+  def self.__valid_ordinal_jd_i(y, d, sg) = _valid_ordinal_jd(y.to_i, __num2int(d), sg)
+  def self.__valid_commercial_jd_i(y, w, d, sg) = _valid_commercial_jd(y.to_i, __num2int(w), __num2int(d), sg)
+
+  # c_find_fdoy: the first existing day of year y.
+  def self.__find_fdoy(y, sg)
+    1.upto(30) do |d|
+      jd = _valid_civil_jd(y, 1, d, sg)
+      return jd if jd
+    end
+    nil
+  end
+
+  def self.__weeknum_to_jd(y, w, d, f, sg)
+    rjd2 = __find_fdoy(y, sg) + 6
+    (rjd2 - ((rjd2 - f) + 1) % 7 - 7) + 7 * w + d
+  end
+
+  def self.__jd_to_weeknum(jd, f, sg)
+    ry, = jd_to_civil(jd, sg)
+    rjd = __find_fdoy(ry, sg) + 6
+    j = jd - (rjd - ((rjd - f) + 1) % 7) + 7
+    [ry, j.div(7), j % 7]
+  end
+
+  def self.__valid_weeknum_jd(y, w, d, f, sg)
+    y = y.to_i
+    w = __num2int(w)
+    d = __num2int(d)
+    d += 7 if d < 0
+    if w < 0
+      rjd2 = __weeknum_to_jd(y + 1, 1, f, f, sg)
+      ry2, rw2, = __jd_to_weeknum(rjd2 + w * 7, f, sg)
+      return nil if ry2 != y
+      w = rw2
+    end
+    jd = __weeknum_to_jd(y, w, d, f, sg)
+    ry2, rw, rd = __jd_to_weeknum(jd, f, sg)
+    return nil if y != ry2 || w != rw || d != rd
+    jd
+  end
+
+  def self.__string_value(str)
+    return str if str.is_a?(String)
+    if str.respond_to?(:to_str)
+      s = str.to_str
+      return s if s.is_a?(String)
+    end
+    raise TypeError, "no implicit conversion of #{str.nil? ? 'nil' : str.class} into String"
+  end
+
+  def self.__check_limit(str, opt)
+    str = __string_value(str)
+    limit = opt.empty? ? 128 : opt[:limit]
+    if !limit.nil? && str.bytesize > limit
+      raise ArgumentError, "string length (#{str.bytesize}) exceeds the limit #{limit}"
+    end
+    str
+  end
+
+  def self.__check_ascii(str, what = "string")
+    enc = str.encoding
+    unless enc.ascii_compatible?
+      raise ArgumentError, "#{what} should have ASCII compatible encoding"
+    end
+  end
+
+  def self._parse(str, comp = true, **opt)
+    str = __check_limit(str, opt)
+    __check_ascii(str)
+    Parse__._parse(str, comp)
+  end
+
+  def self._iso8601(str, **opt)   = __fmt_hash(:_iso8601, str, opt)
+  def self._rfc3339(str, **opt)   = __fmt_hash(:_rfc3339, str, opt)
+  def self._xmlschema(str, **opt) = __fmt_hash(:_xmlschema, str, opt)
+  def self._rfc2822(str, **opt)   = __fmt_hash(:_rfc2822, str, opt)
+  def self._httpdate(str, **opt)  = __fmt_hash(:_httpdate, str, opt)
+  def self._jisx0301(str, **opt)  = __fmt_hash(:_jisx0301, str, opt)
+  class << self; alias_method :_rfc822, :_rfc2822; end
+
+  # nil passes the limit check and matches nothing ({}), as in C.
+  def self.__fmt_hash(kind, str, opt)
+    return {} if str.nil?
+    str = __check_limit(str, opt)
+    Parse__.__send__(kind, str)
+  end
+
+  NO_FMT__ = Object.new.freeze
+  private_constant :NO_FMT__
+
+  def self._strptime(str, fmt = NO_FMT__)
+    fmt_default = fmt.equal?(NO_FMT__)
+    __strptime_hash(str, fmt_default ? "%F" : fmt, fmt_default)
+  end
+
+  def self.__strptime_hash(str, fmt, fmt_default)
+    str = __string_value(str)
+    fmt = __string_value(fmt) unless fmt_default
+    __check_ascii(str)
+    __check_ascii(fmt, "format") unless fmt_default
+    Parse__._strptime(str, fmt)
+  end
+
+  # c_valid_start_p: NaN or a finite day outside the reform window is ignored.
+  def self.__valid_start(sg)
+    f = __sgnum(sg)
+    return false unless f.is_a?(Numeric)
+    f = f.to_f
+    return false if f.nan?
+    return true if f.infinite?
+    f >= 2298874 && f <= 2426355
+  end
+
+  def self.__fix_sg(sg)
+    return sg if __valid_start(sg)
+    warn "invalid start is ignored" if $VERBOSE
+    ITALY
+  end
+
+  def self.__frags_jd(hash, sg)
+    if hash[:jd].nil? && hash[:yday].nil? &&
+       !hash[:year].nil? && !hash[:mon].nil? && !hash[:mday].nil?
+      [__valid_civil_jd_i(hash[:year], hash[:mon], hash[:mday], sg), true]
+    else
+      Parse__.rewrite_frags(hash)
+      Parse__.complete_frags(self, hash)
+      [Parse__.valid_date_frags(hash, sg), false]
+    end
+  end
+
+  # d_new_by_frags
+  def self.__new_by_frags(hash, sg)
+    sg = __fix_sg(sg)
+    raise Date::Error, "invalid date" if hash.nil?
+    jd, = __frags_jd(hash, sg)
+    raise Date::Error, "invalid date" if jd.nil?
+    new!(jd, 0, 0, 0, sg)
+  end
+
+  def self.parse(str = "-4712-01-01", comp = true, sg = ITALY, **opt)
+    __new_by_frags(_parse(str, comp, **opt), sg)
   end
 
   def self.strptime(str = "-4712-01-01", fmt = "%F", sg = ITALY)
-    h = _strptime(str, fmt) or raise Date::Error, "invalid date"
-    __from_parsed(h, sg)
+    __new_by_frags(_strptime(str, fmt), sg)
   end
 
-  # Build a Date from a parsed-field Hash, completing what the format did not
-  # give from today (CRuby: a lone %m is this year's month, %V/%U/%W pick the
-  # week of the current year, %u/%w the weekday of the current week).
-  def self.__from_parsed(h, sg = ITALY)
-    t = nil
-    today = -> { t ||= Date.today }
-    if h[:yday] && !h[:mon]
-      return ordinal(h[:year] || today.().year, h[:yday], sg)
-    end
-    if h[:cwday] && !h[:cwyear] && !h[:cweek]        # a lone %u → this week's day (Mon-start)
-      base = today.()
-      monday = base - ((base.wday + 6) % 7)
-      return monday + (h[:cwday] - 1)
-    end
-    if h[:cwyear] || h[:cweek] || h[:cwday]
-      cwy = h[:cwyear] || today.().year
-      cwk = h[:cweek] || 1
-      cwd = h[:cwday] || 1
-      return commercial(cwy, cwk, cwd, sg)
-    end
-    if (wn = h[:wnum0] || h[:wnum1])                 # week of year (Sun/Mon start)
-      y = h[:year] || today.().year
-      jan1 = civil(y, 1, 1, sg)
-      start = h[:wnum0] ? 0 : 1                      # weekday the week starts on
-      first = jan1 - ((jan1.wday - start) % 7)       # first such weekday on/before Jan 1
-      base = first + wn * 7
-      base += (h[:wday] - start) % 7 if h[:wday]
-      return base
-    end
-    if h[:wday] && h[:mday].nil? && h[:mon].nil?
-      if h[:year]                                    # %Y + %w → week 0 of that year
-        jan1 = civil(h[:year], 1, 1, sg)
-        return jan1 - jan1.wday + h[:wday]
-      end
-      base = today.()                                # a lone weekday → this week's
-      return base - base.wday + h[:wday]
-    end
-    if h[:year].nil? || h[:mon].nil? || h[:mday].nil?
-      y = h[:year] || today.().year
-      m = h[:mon] || (h[:mday] ? today.().mon : 1)
-      return civil(y, m, h[:mday] || 1, sg)
-    end
-    civil(h[:year], h[:mon], h[:mday], sg)
+  def self.iso8601(str = "-4712-01-01", sg = ITALY, **opt) = __new_by_frags(_iso8601(str, **opt), sg)
+  def self.rfc3339(str = "-4712-01-01T00:00:00+00:00", sg = ITALY, **opt) = __new_by_frags(_rfc3339(str, **opt), sg)
+  def self.xmlschema(str = "-4712-01-01", sg = ITALY, **opt) = __new_by_frags(_xmlschema(str, **opt), sg)
+  def self.rfc2822(str = "Mon, 1 Jan -4712 00:00:00 +0000", sg = ITALY, **opt) = __new_by_frags(_rfc2822(str, **opt), sg)
+  class << self; alias_method :rfc822, :rfc2822; end
+  def self.httpdate(str = "Mon, 01 Jan -4712 00:00:00 GMT", sg = ITALY, **opt) = __new_by_frags(_httpdate(str, **opt), sg)
+  def self.jisx0301(str = "-4712-01-01", sg = ITALY, **opt) = __new_by_frags(_jisx0301(str, **opt), sg)
+
+  # "+9" / "+09:00" / "Z" / "JST" / "EST5EDT"... → seconds (C: date_zone_to_diff);
+  # nil when it is not a zone.
+  def self.__zone_to_offset(z)
+    Parse__.zone_to_diff(z.to_s)
   end
 end
 
+
 # DateTime adds a time of day and a UTC offset on top of Date.
 class DateTime < Date
-  def strftime(fmt = "%FT%T%:z") = super   # Date's default is "%F"
+  private def __default_strftime_format = "%FT%T%:z"
 
   def self.civil(y = -4712, m = 1, d = 1, h = nil, min = nil, s = 0, of = 0, sg = ITALY)
     if h.nil? && d.is_a?(Numeric) && !d.is_a?(Integer)
@@ -1121,8 +2635,9 @@ class DateTime < Date
   def self.__offset_seconds(of)
     case of
     when String
-      sec = __zone_to_offset(of) or raise Date::Error, "invalid offset"
-      sec
+      # C offset_to_sec: a string that is not a zone, or out of range, is 0
+      sec = __zone_to_offset(of)
+      sec.is_a?(Integer) && sec.abs <= 86400 ? sec : 0
     when Numeric
       return 0 if of <= -1 || of >= 1
       (of * 86400).round
@@ -1146,10 +2661,18 @@ class DateTime < Date
   def sec_fraction = Rational(@sf, 1_000_000_000)
   alias_method :second_fraction, :sec_fraction
 
-  def to_s = format("%04d-%02d-%02dT%02d:%02d:%02d%s", year, mon, mday, hour, min, sec, zone)
-  def iso8601(n = 0) = to_s
+  def to_s = __strftimev("%Y-%m-%dT%H:%M:%S%:z")
+  def iso8601(n = 0) = __strftimev("%Y-%m-%d") + __iso8601_timediv(n)
   alias_method :xmlschema, :iso8601
-  def rfc3339(n = 0) = to_s
+  def rfc3339(n = 0) = iso8601(n)
+  def jisx0301(n = 0) = super() + __iso8601_timediv(n)
+
+  # iso8601_timediv: n is NUM2LONG'd (a Float truncates)
+  private def __iso8601_timediv(n)
+    raise TypeError, "no implicit conversion of #{n.class} into Integer" unless n.respond_to?(:to_int)
+    n = n.to_int
+    __strftimev("T%H:%M:%S" + (n > 0 ? ".%#{n}N" : "") + "%:z")
+  end
   def to_date = Date.new!(@jd, 0, 0, 0, @sg)
   def to_datetime = self
 
@@ -1169,23 +2692,70 @@ class DateTime < Date
     h
   end
 
-  def self.parse(str = "-4712-01-01T00:00:00+00:00", comp = true, sg = ITALY)
-    h = _parse(str, comp)
-    raise Date::Error, "invalid date" unless h[:year] || h[:mon] || h[:mday] || h[:yday] || h[:wday]
-    y, m, d = Date.__complete_ymd(h, sg)
-    # _parse reports the zone in SECONDS (#civil's `of` is a DAY FRACTION) and
-    # keeps the sub-second part in its own key.
-    sec = (h[:sec] || 0) + (h[:sec_fraction] || 0)
-    civil(y, m, d, h[:hour] || 0, h[:min] || 0, sec, Rational(h[:offset] || 0, 86400), sg)
+  def self._strptime(str, fmt = NO_FMT__)
+    fmt_default = fmt.equal?(NO_FMT__)
+    __strptime_hash(str, fmt_default ? "%FT%T%z" : fmt, fmt_default)
+  end
+
+  # dt_new_by_frags
+  def self.__new_by_frags(hash, sg)
+    sg = __fix_sg(sg)
+    raise Date::Error, "invalid date" if hash.nil?
+    jd, civil = __frags_jd(hash, sg)
+    if civil
+      hash[:hour] = 0 if hash[:hour].nil?
+      hash[:min] = 0 if hash[:min].nil?
+      if hash[:sec].nil?
+        hash[:sec] = 0
+      elsif hash[:sec] == 60
+        hash[:sec] = 59
+      end
+    end
+    raise Date::Error, "invalid date" if jd.nil?
+
+    h, mi, s = __num2int(hash[:hour]), __num2int(hash[:min]), __num2int(hash[:sec])
+    h += 24 if h < 0
+    mi += 60 if mi < 0
+    s += 60 if s < 0
+    if h < 0 || h > 24 || mi < 0 || mi > 59 || s < 0 || s > 59 || (h == 24 && (mi > 0 || s > 0))
+      raise Date::Error, "invalid date"
+    end
+    df = h * 3600 + mi * 60 + s
+
+    sf = hash[:sec_fraction]
+    sf = sf.nil? ? 0 : sf * 1_000_000_000
+    sf = sf.to_i if sf.is_a?(Rational) && sf.denominator == 1
+
+    of = hash[:offset]
+    of = of.nil? ? 0 : __num2int(of)
+    if of < -86400 || of > 86400
+      warn "invalid offset is ignored" if $VERBOSE
+      of = 0
+    end
+    if df >= 86400 # 24:00:00
+      jd += 1
+      df -= 86400
+    end
+    new!(jd, df, sf, of, sg)
+  end
+
+  def self.parse(str = "-4712-01-01T00:00:00+00:00", comp = true, sg = ITALY, **opt)
+    __new_by_frags(_parse(str, comp, **opt), sg)
   end
 
   def self.strptime(str = "-4712-01-01T00:00:00+00:00", fmt = "%FT%T%z", sg = ITALY)
-    h = _strptime(str, fmt) or raise Date::Error, "invalid date"
-    civil(h[:year] || -4712, h[:mon] || 1, h[:mday] || 1,
-          h[:hour] || 0, h[:min] || 0, (h[:sec] || 0) + (h[:sec_fraction] || 0),
-          Rational(h[:offset] || 0, 86400), sg)
+    __new_by_frags(Date._strptime(str, fmt), sg)
   end
+
+  def self.iso8601(str = "-4712-01-01T00:00:00+00:00", sg = ITALY, **opt) = __new_by_frags(_iso8601(str, **opt), sg)
+  def self.rfc3339(str = "-4712-01-01T00:00:00+00:00", sg = ITALY, **opt) = __new_by_frags(_rfc3339(str, **opt), sg)
+  def self.xmlschema(str = "-4712-01-01T00:00:00+00:00", sg = ITALY, **opt) = __new_by_frags(_xmlschema(str, **opt), sg)
+  def self.rfc2822(str = "Mon, 1 Jan -4712 00:00:00 +0000", sg = ITALY, **opt) = __new_by_frags(_rfc2822(str, **opt), sg)
+  class << self; alias_method :rfc822, :rfc2822; end
+  def self.httpdate(str = "Mon, 01 Jan -4712 00:00:00 GMT", sg = ITALY, **opt) = __new_by_frags(_httpdate(str, **opt), sg)
+  def self.jisx0301(str = "-4712-01-01T00:00:00+00:00", sg = ITALY, **opt) = __new_by_frags(_jisx0301(str, **opt), sg)
 end
+
 
 class Time
   # Time is proleptic Gregorian, so the conversion goes through the Gregorian

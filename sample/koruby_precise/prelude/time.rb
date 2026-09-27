@@ -31,8 +31,9 @@ class Time
 
   # ISO-8601 / W3C XML Schema timestamp.  "Z" for UTC, else "+HH:MM".
   def iso8601(fraction_digits = 0)
+    fraction_digits = fraction_digits.to_int unless fraction_digits.is_a?(Integer) # NUM2LONG: 1.9 -> 1
     s = format("%04d-%02d-%02dT%02d:%02d:%02d", year, month, day, hour, min, sec)
-    if fraction_digits && fraction_digits > 0
+    if fraction_digits > 0
       frac = (subsec * (10 ** fraction_digits)).floor
       s += "." + frac.to_s.rjust(fraction_digits, "0")
     end
