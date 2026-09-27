@@ -54,6 +54,38 @@ static bool korb_enc_name_single_byte(const char *name) {
         if (strncasecmp(name, multi[i], strlen(multi[i])) == 0) return false;
     return true;
 }
+/* CRuby's Encoding.aliases (generated from 4.1.0dev): an alias must share its
+ * encoding's header index, or byte-identical Strings compare unequal. */
+static const struct { const char *alias, *real; } korb_enc_alias_tbl[] = {
+    { "646", "US-ASCII" }, { "ANSI_X3.4-1968", "US-ASCII" }, { "ASCII", "US-ASCII" },
+    { "BINARY", "ASCII-8BIT" }, { "Big5-HKSCS:2008", "Big5-HKSCS" }, { "CP1250", "Windows-1250" },
+    { "CP1251", "Windows-1251" }, { "CP1252", "Windows-1252" }, { "CP1253", "Windows-1253" },
+    { "CP1254", "Windows-1254" }, { "CP1255", "Windows-1255" }, { "CP1256", "Windows-1256" },
+    { "CP1257", "Windows-1257" }, { "CP1258", "Windows-1258" }, { "CP437", "IBM437" },
+    { "CP65000", "UTF-7" }, { "CP65001", "UTF-8" }, { "CP720", "IBM720" },
+    { "CP737", "IBM737" }, { "CP775", "IBM775" }, { "CP857", "IBM857" },
+    { "CP860", "IBM860" }, { "CP861", "IBM861" }, { "CP862", "IBM862" },
+    { "CP863", "IBM863" }, { "CP864", "IBM864" }, { "CP865", "IBM865" },
+    { "CP866", "IBM866" }, { "CP869", "IBM869" }, { "CP874", "Windows-874" },
+    { "CP878", "KOI8-R" }, { "CP932", "Windows-31J" }, { "CP936", "GBK" },
+    { "EUC-CN", "GB2312" }, { "EUC-JISX0213", "EUC-JIS-2004" }, { "IBM850", "CP850" },
+    { "ISO2022-JP", "ISO-2022-JP" }, { "ISO2022-JP2", "ISO-2022-JP-2" }, { "ISO8859-1", "ISO-8859-1" },
+    { "ISO8859-10", "ISO-8859-10" }, { "ISO8859-11", "ISO-8859-11" }, { "ISO8859-13", "ISO-8859-13" },
+    { "ISO8859-14", "ISO-8859-14" }, { "ISO8859-15", "ISO-8859-15" }, { "ISO8859-16", "ISO-8859-16" },
+    { "ISO8859-2", "ISO-8859-2" }, { "ISO8859-3", "ISO-8859-3" }, { "ISO8859-4", "ISO-8859-4" },
+    { "ISO8859-5", "ISO-8859-5" }, { "ISO8859-6", "ISO-8859-6" }, { "ISO8859-7", "ISO-8859-7" },
+    { "ISO8859-8", "ISO-8859-8" }, { "ISO8859-9", "ISO-8859-9" }, { "MacJapan", "MacJapanese" },
+    { "PCK", "Windows-31J" }, { "SJIS", "Windows-31J" }, { "UCS-2BE", "UTF-16BE" },
+    { "UCS-4BE", "UTF-32BE" }, { "UCS-4LE", "UTF-32LE" }, { "UTF-8-HFS", "UTF8-MAC" },
+    { "UTF-8-MAC", "UTF8-MAC" }, { "csWindows31J", "Windows-31J" }, { "ebcdic-cp-us", "IBM037" },
+    { "euc-jp-ms", "eucJP-ms" }, { "eucCN", "GB2312" }, { "eucJP", "EUC-JP" },
+    { "eucKR", "EUC-KR" }, { "eucTW", "EUC-TW" },
+};
+static const char *korb_enc_canon_name(const char *const name) {
+    for (size_t i = 0; i < sizeof korb_enc_alias_tbl / sizeof korb_enc_alias_tbl[0]; i++)
+        if (strcasecmp(name, korb_enc_alias_tbl[i].alias) == 0) return korb_enc_alias_tbl[i].real;
+    return name;
+}
 /* Map an encoding name to a header index: 0 UTF-8 / 1 US-ASCII / 2 ASCII-8BIT
  * directly; any other name is registered in vm->str_enc_names[3..7] and its
  * slot index returned (character ops on it will raise until hooks exist). */
@@ -64,6 +96,8 @@ static uint32_t korb_enc_index_for_name(struct korb_vm *vm, const char *name) {
     if (strcasecmp(name, "ASCII-8BIT") == 0 || strcasecmp(name, "BINARY") == 0) return KORB_ENC_BINARY;
     if (strcasecmp(name, "US-ASCII") == 0 || strcasecmp(name, "ASCII") == 0 || strcasecmp(name, "ANSI_X3.4-1968") == 0) return KORB_ENC_USASCII;
     if (strcasecmp(name, "UTF-8") == 0 || strcasecmp(name, "UTF8") == 0) return KORB_ENC_UTF8;
+    name = korb_enc_canon_name(name);
+    if (strcasecmp(name, "UTF-8") == 0) return KORB_ENC_UTF8;   /* CP65001 */
     const uint32_t sym = korb_intern(vm, name, (uint32_t)strlen(name));
     for (uint32_t i = KORB_ENC_OTHER_MIN; i < KORB_STR_ENC_MAX; i++)
         if (vm->str_enc_names[i] != 0 &&
@@ -88,6 +122,9 @@ static uint32_t korb_enc_index_known(const struct korb_vm *vm, const char *name)
     if (strcasecmp(name, "ASCII-8BIT") == 0 || strcasecmp(name, "BINARY") == 0) return KORB_ENC_BINARY;
     if (strcasecmp(name, "US-ASCII") == 0 || strcasecmp(name, "ASCII") == 0 || strcasecmp(name, "ANSI_X3.4-1968") == 0) return KORB_ENC_USASCII;
     if (strcasecmp(name, "UTF-8") == 0) return KORB_ENC_UTF8;   /* "UTF8" is NOT a CRuby alias: let find() reject it */
+    name = korb_enc_canon_name(name);
+    if (strcasecmp(name, "UTF-8") == 0) return KORB_ENC_UTF8;        /* CP65001 */
+    if (strcasecmp(name, "US-ASCII") == 0) return KORB_ENC_USASCII;  /* 646 */
     for (uint32_t i = KORB_ENC_OTHER_MIN; i < KORB_STR_ENC_MAX; i++)
         if (vm->str_enc_names[i] != 0 && strcasecmp(korb_sym_name(vm, vm->str_enc_names[i]), name) == 0) return i;
     return UINT32_MAX;

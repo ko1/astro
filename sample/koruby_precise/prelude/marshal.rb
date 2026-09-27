@@ -743,7 +743,24 @@ module Marshal
     v
   end
 
+  # Modules of the 'e' wrappers around this object; a 'U' takes them before
+  # its marshal_load, anything else gets them once it is built (CRuby's extmod).
   def self._read_body(st)
+    ext = st.delete(:ext)
+    v = _read_body1(st, ext)
+    ext&.reverse_each { |m| _extend(v, m) }
+    v
+  end
+
+  def self._extend(obj, m)
+    if m.is_a?(Class)
+      raise ArgumentError, "prepended class #{m} differs from class #{obj.class}" unless obj.class.equal?(m)
+    else
+      obj.extend(m)
+    end
+  end
+
+  def self._read_body1(st, ext)
     t = _byte(st)
     case t
     when 0x30 then nil                                  # '0'
@@ -764,7 +781,7 @@ module Marshal
       nwords.times { |k| lo = _byte(st); hi = _byte(st); mag |= (lo | (hi << 8)) << (16 * k) }
       _reg(st, sign == 0x2d ? -mag : mag)
     when 0x3a                                            # ':' symbol
-      n = _rlong(st); sym = _bytes(st, n).to_sym
+      n = _rlong(st); sym = _bytes(st, n).b.to_sym     # raw bytes; an 'I' re-tags them
       st[:syms] << sym; sym
     when 0x3b then st[:link] = true; st[:syms][_rlong(st)]   # ';' symbol link (no proc callback)
     when 0x22                                            # '"' string
@@ -871,7 +888,12 @@ module Marshal
           (tgt.force_encoding(val) rescue nil) if tgt.respond_to?(:force_encoding)
           next
         end
-        v.instance_variable_set(name, val) rescue nil
+        begin
+          v.instance_variable_set(name, val)
+        rescue FrozenError
+          raise                                          # a Regexp is loaded frozen (4.1)
+        rescue StandardError
+        end
       end
       v
     when 0x2f                                            # '/' Regexp
@@ -887,9 +909,11 @@ module Marshal
       st[:objs][idx] = obj
     when 0x65                                            # 'e' extend-module wrapper
       msym = _read0(st)
-      obj = _read0(st)                                   # the wrapper is one object: the
-      (obj.extend(_const(msym)) rescue nil)               # proc fires once, after the extend
-      obj
+      k = _const(msym)
+      raise ArgumentError, "#{msym} does not refer to module" unless k.is_a?(Module)
+      st[:ext] = (ext || []) + [k]                       # the wrapper is one object: the
+      ext&.clear                                         # proc fires once, after the extend
+      _read0(st)
     when 0x63                                            # 'c' Class
       name = _bytes(st, _rlong(st))
       k = _const(name)
@@ -981,6 +1005,7 @@ module Marshal
             when :Complex  then Complex(data[0], data[1])
             else
               o = _const(cls).allocate
+              ext&.reverse_each { |m| _extend(o, m) }; ext&.clear
               # CRuby calls it with rb_funcall, which ignores visibility —
               # OpenStruct#marshal_load is private, so a public-only probe
               # silently built an empty object.
@@ -1036,7 +1061,7 @@ module Marshal
     __resym _bignum _byte _bytes _check_o_type _class_name _const _dump _dump0 _dump_array
     _dump_class _dump_data _dump_exception _dump_generic _dump_hash _dump_ivars _dump_named
     _dump_regexp _dump_string _dump_struct _dump_udump _dump_umarshal _dump_val _enc_marker
-    _exc_with_cause _float_str _klass _long _need _raise_if_undumpable _read _read0 _read_body
+    _exc_with_cause _float_str _klass _long _need _raise_if_undumpable _read _read0 _read_body _read_body1 _extend
     _reclass _reg _rlong _str_enc_marker _symdump _time_zone_name _uclass_check _udump_route?
     _wrap_prefix _write_enc
   ])

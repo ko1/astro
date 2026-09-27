@@ -830,7 +830,12 @@ static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     slots[1] = UNWRAP(korb_obj_singleton(c, slots + 2, sv));                      /* singleton (rooted) */
     const uint32_t extended = korb_intern(c->vm, "extended", 8);
     const uint32_t extend_object = korb_intern(c->vm, "extend_object", 13);
-    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {                           /* include each module */
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {                           /* all checked before any is mixed in */
+        const VALUE mv = VALUE_SLICE_GET(a, i);
+        if (UNLIKELY(!KORB_CLASS_P(mv) || !VAL2CLASS(mv)->is_module))
+            return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_coerce_name(c, mv));
+    }
+    for (uint32_t i = VALUE_SLICE_LEN(a); i-- > 0;) {                            /* last first: extend(A, B) puts A nearest (CRuby) */
         slots[2] = VALUE_SLICE_GET(a, i);
         if (UNLIKELY(c->vm->refinements_active) && KORB_CLASS_P(korb_refinement_target(c->vm, slots[2])))
             return korb_raise(c, slots + 3, KORB_E_TYPE, 0, "Cannot extend object with refinement");
