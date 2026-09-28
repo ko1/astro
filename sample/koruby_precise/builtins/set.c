@@ -2025,6 +2025,20 @@ static RESULT korb_m_class_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 /* A constant name must start UPPERCASE.  For a non-ASCII codepoint that means it
  * has a lowercase mapping (Ж / Ἅ yes; é, ж, あ, થ no) — CRuby's rb_enc_isupper. */
+void korb_name_error_where(CTX *c, VALUE *slots, VALUE *excp, uint32_t name, VALUE recv);   /* fwd (below) */
+/* NameError "wrong constant name X" with #name = :X and #receiver = recv (CRuby's
+ * rb_name_err_raise).  The name is interned before anything allocates. */
+static RESULT korb_raise_wrong_const_name(CTX *c, VALUE *slots, VALUE recv, const char *nm, uint32_t len) {
+    const uint32_t sym = korb_intern(c->vm, nm, len);
+    slots[1] = recv;
+    RESULT r = korb_raise(c, slots + 2, KORB_E_NAME, 0, "wrong constant name %s", korb_sym_name(c->vm, sym));
+    if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) {
+        slots[0] = r.value;
+        korb_name_error_where(c, slots + 2, &slots[0], sym, slots[1]);
+        r.value = slots[0];
+    }
+    return r;
+}
 static bool korb_const_name_head_upper(const char *nm) {
     const unsigned char b = (unsigned char)nm[0];
     if (b < 0x80) return b >= 'A' && b <= 'Z';
@@ -2045,10 +2059,10 @@ static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     const char *const cname = korb_sym_name(c->vm, id);   /* [A-Z][A-Za-z0-9_]* (or an uppercase non-ASCII head) */
     if (UNLIKELY(!korb_const_name_head_upper(cname)))
-        return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", cname);
+        return korb_raise_wrong_const_name(c, slots, VALUE_REF_GET(self), cname, (uint32_t)strlen(cname));
     for (const char *p = cname + 1; *p; p++)              /* reject '=', '?', etc. after the first char */
         if (UNLIKELY(!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_' || (unsigned char)*p >= 0x80)))
-            return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", cname);
+            return korb_raise_wrong_const_name(c, slots, VALUE_REF_GET(self), cname, (uint32_t)strlen(cname));
     { RESULT fr = korb_check_def_frozen(c, slots, VALUE_REF_GET(self)); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* const_set on a frozen module → FrozenError */
     /* The warning below allocates, so keep BOTH the value and the owner in
      * scanned slots and re-read them afterwards (a bare VALUE goes stale). */
@@ -2395,7 +2409,7 @@ static RESULT korb_m_mod_const_source_location(CTX *c, VALUE *slots, VALUE_REF s
             while (sep + 1 < nlen && !(nm[sep] == ':' && nm[sep + 1] == ':')) sep++;
             if (sep + 1 >= nlen) break;                    /* last segment */
             if (UNLIKELY(!korb_valid_const_name(nm, sep)))
-                return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)sep, nm);
+                return korb_raise_wrong_const_name(c, slots, VALUE_REF_GET(self), nm, sep);
             const uint32_t ssym = korb_intern(vm, nm, sep);
             uint32_t six = KORB_CLASS_P(scope) ? korb_const_index_owned(vm, ssym, scope) : UINT32_MAX;
             if (six == UINT32_MAX && KORB_CLASS_P(scope)) six = korb_const_in_ancestry(vm, scope, ssym);
@@ -2406,7 +2420,7 @@ static RESULT korb_m_mod_const_source_location(CTX *c, VALUE *slots, VALUE_REF s
         }
     }
     if (UNLIKELY(!korb_valid_const_name(nm, nlen)))
-        return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)nlen, nm);
+        return korb_raise_wrong_const_name(c, slots, VALUE_REF_GET(self), nm, nlen);
     const uint32_t sym = korb_intern(vm, nm, nlen);
     const VALUE owner = scope;
     uint32_t idx = korb_const_index_owned(vm, sym, owner);
@@ -2482,7 +2496,7 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     VALUE owner = (p != buf) ? KORB_NIL : VALUE_REF_GET(self);           /* nil owner = top-level namespace */
     const bool leading_top = (p != buf);
     if (UNLIKELY(p >= end))
-        return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", buf);
+        return korb_raise_wrong_const_name(c, slots, VALUE_REF_GET(self), buf, (uint32_t)strlen(buf));
     VALUE result = KORB_NIL;
     bool first = true;
     while (p < end) {
@@ -2491,7 +2505,7 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         else while (q < end && !(q[0] == ':' && q + 1 < end && q[1] == ':')) q++;
         const uint32_t clen = (uint32_t)(q - p);
         if (UNLIKELY(!korb_valid_const_name(p, clen)))
-            return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", buf);
+            return korb_raise_wrong_const_name(c, slots, VALUE_REF_GET(self), buf, (uint32_t)strlen(buf));
         const uint32_t cid = korb_intern(vm, p, clen);
         uint32_t idx = UINT32_MAX;
         if (KORB_CLASS_P(owner)) {
@@ -2670,7 +2684,7 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
         const uint32_t id = SYM2ID(name);
         const char *const sn = korb_sym_name(vm, id);      /* a Symbol name is atomic — validate the whole thing */
         if (UNLIKELY(!korb_valid_const_name(sn, (uint32_t)strlen(sn))))
-            return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", sn);
+            return korb_raise_wrong_const_name(c, slots, VALUE_REF_GET(self), sn, (uint32_t)strlen(sn));
         if (korb_autoload_owner(c, VALUE_REF_GET(self), id, inherit) != KORB_NIL) return RESULT_OK(KORB_TRUE);
         return RESULT_OK(korb_const_defined_in(c, VALUE_REF_GET(self), id, inherit, NULL) ? KORB_TRUE : KORB_FALSE);
     }
@@ -2680,16 +2694,22 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
         if (UNLIKELY(s->len >= sizeof nbuf)) return RESULT_OK(KORB_FALSE);
         memcpy(nbuf, korb_strbuf_data(s->buf), s->len);
         const char *p = nbuf; uint32_t len = s->len;
+        const uint32_t whole_len = s->len;                /* "", "A::", "::" name the whole string in the error */
         /* scoped name "A::B::C" / leading "::Top": each segment is resolved in
          * the namespace the previous one named, exactly like `A::B::C` would. */
         if (len >= 2 && p[0] == ':' && p[1] == ':') { p += 2; len -= 2; }
+        if (len == 0 || (len >= 2 && p[len - 2] == ':' && p[len - 1] == ':'))   /* checked before any lookup (CRuby) */
+            return korb_raise_wrong_const_name(c, slots, VALUE_REF_GET(self), nbuf, whole_len);
         slots[0] = VALUE_REF_GET(self);                   /* the current namespace (rooted) */
         uint32_t seg = 0;
         for (uint32_t i = 0; i <= len; i++) {
             if (i != len && !(i + 1 < len && p[i] == ':' && p[i + 1] == ':')) continue;
-            if (i == seg) return RESULT_OK(KORB_FALSE);   /* empty segment */
+            if (i == seg) {                               /* empty segment: at the end it is a bad name (CRuby) */
+                if (i == len) return korb_raise_wrong_const_name(c, slots, VALUE_REF_GET(self), nbuf, whole_len);
+                return RESULT_OK(KORB_FALSE);
+            }
             if (UNLIKELY(!korb_valid_const_name(p + seg, i - seg)))
-                return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)(i - seg), p + seg);
+                return korb_raise_wrong_const_name(c, slots, VALUE_REF_GET(self), p + seg, (uint32_t)(i - seg));
             const uint32_t sid = korb_intern(vm, p + seg, i - seg);
             VALUE val = KORB_NIL;
             const VALUE owner = korb_autoload_owner(c, slots[0], sid, inherit);
