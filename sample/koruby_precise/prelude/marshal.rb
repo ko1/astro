@@ -47,6 +47,9 @@ module Marshal
   IVARS_OF = Object.instance_method(:instance_variables)
   IVAR_GET = Object.instance_method(:instance_variable_get)
   def self._klass(o) = KLASS_OF.bind_call(o)
+  RESPONDS = Kernel.instance_method(:respond_to?)
+  def self._responds?(o, m, priv = false) = RESPONDS.bind_call(o, m, priv)
+  IVAR_SET = Kernel.instance_method(:instance_variable_set)
 
   # Marshal.dump(obj, limit): each nested value costs one level; a negative
   # limit means unlimited (CRuby).
@@ -92,8 +95,8 @@ module Marshal
       false
     else
       return false if defined?(Data) && Data === o
-      return false if o.respond_to?(:marshal_dump)
-      o.respond_to?(:_dump, true)   # CRuby asks with include_private (Time#_dump is private)
+      return false if _responds?(o, :marshal_dump)
+      _responds?(o, :_dump, true)   # CRuby asks with include_private (Time#_dump is private)
     end
   end
 
@@ -144,9 +147,9 @@ module Marshal
       _raise_if_undumpable(o)
       if defined?(Data) && Data === o
         _dump_data(o, out, st)
-      elsif o.respond_to?(:marshal_dump)
+      elsif _responds?(o, :marshal_dump)
         _dump_umarshal(o, out, st)
-      elsif o.respond_to?(:_dump, true)
+      elsif _responds?(o, :_dump, true)
         _dump_udump(o, out, st)
       elsif Exception === o
         _dump_exception(o, out, st)
@@ -236,21 +239,26 @@ module Marshal
                   StringIO StringScanner File::Stat Enumerator Dir Fiber Ractor::Port Monitor].freeze
   # these say "can't dump X" instead
   CANT_DUMP = %w[IO Thread::Queue Thread::ConditionVariable].freeze
+  # the verdict per class (keyed by object_id: stable under a moving GC); a class
+  # created later cannot be a subclass of one loaded later, so entries never go stale
+  @__undump_verdict = {}
   def self._raise_if_undumpable(o)
-    if Proc === o || Method === o
-      raise TypeError, "no _dump_data is defined for class #{o.class}"
-    end
+    k = Kernel.instance_method(:class).bind_call(o)       # o may be a BasicObject
+    v = @__undump_verdict.fetch(k.__id__) { @__undump_verdict[k.__id__] = _undump_verdict(o) }
+    raise TypeError, v if v
+  end
+  def self._undump_verdict(o)
+    return "no _dump_data is defined for class #{o.class}" if Proc === o || Method === o
     CANT_DUMP.each do |n|
       k = (Object.const_get(n) rescue nil)
-      raise TypeError, "can't dump #{o.class}" if k && k === o
+      return "can't dump #{o.class}" if k && k === o
     end
     UNDUMPABLE.each do |n|
       k = (Object.const_get(n) rescue nil)
       # Module#=== , not #is_a? — a BasicObject subclass has no #is_a?.
-      if k && k === o
-        raise TypeError, "no _dump_data is defined for class #{o.class}"
-      end
+      return "no _dump_data is defined for class #{o.class}" if k && k === o
     end
+    nil
   end
 
   def self._dump_struct(o, out, st)
@@ -300,8 +308,8 @@ module Marshal
   end
 
   def self._dump_umarshal(o, out, st)
-    name = _class_name(o.class)
-    raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
+    name = _class_name(_klass(o))
+    raise TypeError, "can't dump anonymous class #{_klass(o)}" if name.nil?
     d = o.marshal_dump
     out << "U"; _symdump(name.to_sym, out, st); _dump(d, out, st)
   end
@@ -315,8 +323,8 @@ module Marshal
   end
 
   def self._dump_udump(o, out, st)
-    name = _class_name(o.class)
-    raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
+    name = _class_name(_klass(o))
+    raise TypeError, "can't dump anonymous class #{_klass(o)}" if name.nil?
     d = o.__send__(:_dump, -1)
     unless String === d
       raise TypeError, "_dump() must return string, not #{d.class}"
@@ -954,7 +962,7 @@ module Marshal
         _check_o_type(klass)
         obj = st[:objs][idx] = klass.allocate
         st[:partial][obj] = true                         # unfinished: a self-link neither freezes nor fires the proc
-        _rlong(st).times { name = _read0(st); obj.instance_variable_set(name, _read(st)) }
+        _rlong(st).times { name = _read0(st); IVAR_SET.bind_call(obj, name, _read(st)) }   # obj may be a BasicObject
         return obj
       end
       if klass                                          # Exception / Set: allocated before the ivars too,
@@ -1024,7 +1032,7 @@ module Marshal
               # CRuby calls it with rb_funcall, which ignores visibility —
               # OpenStruct#marshal_load is private, so a public-only probe
               # silently built an empty object.
-              o.__send__(:marshal_load, data) if o.respond_to?(:marshal_load, true)
+              o.__send__(:marshal_load, data) if _responds?(o, :marshal_load, true)
               o
             end
       st[:nocb][obj] = true                              # ditto for marshal_load-built objects
@@ -1076,7 +1084,7 @@ module Marshal
     __resym _bignum _byte _bytes _check_o_type _class_name _const _dump _dump0 _dump_array
     _dump_class _dump_data _dump_exception _dump_generic _dump_hash _dump_ivars _dump_named
     _dump_regexp _dump_string _dump_struct _dump_udump _dump_umarshal _dump_val _enc_marker
-    _exc_with_cause _float_str _klass _long _need _raise_if_undumpable _read _read0 _read_body _read_body1 _extend
+    _exc_with_cause _float_str _klass _long _need _raise_if_undumpable _undump_verdict _responds? _read _read0 _read_body _read_body1 _extend
     _reclass _reg _rlong _str_enc_marker _symdump _time_zone_name _uclass_check _udump_route?
     _wrap_prefix _write_enc
   ])
