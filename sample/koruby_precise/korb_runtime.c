@@ -14390,8 +14390,16 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                 CHECK(korb_send_impl(c, st + 1 + argc, vm->mid_initialize, line, argc, block, def_env, captured_self));
                 return RESULT_OK(slots[1]);
             }
-            if (base == KORB_C_MUTEX)   { slots[0] = *recv_slot; slots[1] = UNWRAP(korb_mutex_s_new(c, slots + 2));   korb_klass_override_set(c, slots[1], slots[0]); return RESULT_OK(slots[1]); }
-            if (base == KORB_C_CONDVAR) { slots[0] = *recv_slot; slots[1] = UNWRAP(korb_condvar_s_new(c, slots + 2)); korb_klass_override_set(c, slots[1], slots[0]); return RESULT_OK(slots[1]); }
+            if (base == KORB_C_MUTEX || base == KORB_C_CONDVAR) {   /* the real payload, then the subclass's #initialize(args) { } */
+                slots[0] = *recv_slot;
+                slots[1] = UNWRAP(base == KORB_C_MUTEX ? korb_mutex_s_new(c, slots + 2) : korb_condvar_s_new(c, slots + 2));
+                korb_klass_override_set(c, slots[1], slots[0]);
+                VALUE *const st = slots + 2;                   /* [inst, args...] staged for the send */
+                st[0] = slots[1];
+                for (uint32_t i = 0; i < argc; i++) st[1 + i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];
+                CHECK(korb_send_impl(c, st + 1 + argc, vm->mid_initialize, line, argc, block, def_env, captured_self));
+                return RESULT_OK(slots[1]);
+            }
             if (base == KORB_C_PROC || base == KORB_C_FIBER) {
                 if (UNLIKELY(block == NULL))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line,
