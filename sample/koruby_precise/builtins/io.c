@@ -1770,6 +1770,8 @@ static RESULT korb_m_io_pos(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     (void)a;
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    if (rep->fd >= 0 && lseek(rep->fd, 0, SEEK_CUR) < 0)   /* a pipe / socket / tty: ESPIPE (CRuby) */
+        return korb_raise_errno(c, slots, errno, NULL, NULL);
     return RESULT_OK(LONG2FIX((korb_sword_t)korb_io_tell_rep(rep)));
 }
 static RESULT korb_m_io_pos_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

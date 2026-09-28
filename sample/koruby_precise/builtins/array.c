@@ -799,7 +799,8 @@ static RESULT korb_m_ary_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     }
     if (block == NULL) {
         slots[2] = UNWRAP(korb_enum_desc_args(c, slots + 2, VALUE_REF_GET(self), "each_slice", a));   /* CRuby shows the size: "…:each_slice(2)" */
-        return korb_enum_new(c, slots + 3, VALUE_REF_GET(out), slots[2]);
+        const RESULT er = korb_enum_new(c, slots + 3, VALUE_REF_GET(out), slots[2]);
+        return korb_enum_each_like(c, er, VALUE_REF_GET(self));   /* self read after the alloc */
     }
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
         VALUE sl = korb_items_data(VAL2ARY(VALUE_REF_GET(out))->items)[i];
@@ -833,7 +834,8 @@ static RESULT korb_m_ary_each_cons(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     if (block == NULL) {
         slots[2] = UNWRAP(korb_enum_desc_args(c, slots + 2, VALUE_REF_GET(self), "each_cons", a));   /* CRuby shows the size: "…:each_cons(2)" */
-        return korb_enum_new(c, slots + 3, VALUE_REF_GET(out), slots[2]);
+        const RESULT er = korb_enum_new(c, slots + 3, VALUE_REF_GET(out), slots[2]);
+        return korb_enum_each_like(c, er, VALUE_REF_GET(self));   /* self read after the alloc */
     }
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
         VALUE w = korb_items_data(VAL2ARY(VALUE_REF_GET(out))->items)[i];

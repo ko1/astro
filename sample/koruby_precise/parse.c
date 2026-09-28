@@ -3524,7 +3524,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         path_owner = kp_intern_cpath(tc, parent);
         if (path_owner == 0 && !abs_top) dyn_base = parent;
     }
-    const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B */
+    const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : abs_top ? 3u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B / 3 ::C */
     const uint32_t nest_sym = kp_nesting_sym(tc, path_owner, name_sym);   /* before the lexical-owner fallback below */
     if (!abs_top) path_owner = kp_qualify_owner(tc, path_owner);
 
@@ -3998,7 +3998,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         path_owner = kp_intern_cpath(tc, parent);
         if (path_owner == 0 && !abs_top) dyn_base = parent;
     }
-    const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B */
+    const uint32_t path_kind = dyn_base ? 1u : (path_owner ? 2u : abs_top ? 3u : 0u);   /* 0 none / 1 dynamic base / 2 explicit A::B / 3 ::C */
     const uint32_t nest_sym = kp_nesting_sym(tc, path_owner, name_sym);   /* before the lexical-owner fallback below */
     if (!abs_top) path_owner = kp_qualify_owner(tc, path_owner);
     bool lex_top = abs_top;                          /* see node_class: lexical nesting inside a block */

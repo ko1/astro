@@ -3388,9 +3388,9 @@ static RESULT korb_m_str_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
  * unrelated object's #<=> raise (diff-lcs compares a Change against the action
  * Strings through Array#include?). */
 static RESULT korb_m_str_eq_pub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const VALUE o = VALUE_SLICE_GET(a, 0);
+    VALUE o = VALUE_SLICE_GET(a, 0);
     if (KORB_STRING_P(o)) return korb_m_str_eql(c, slots, self, a);
-    if (KORB_OBJECT_P(o) && korb_responds_to(c, o, korb_intern(c->vm, "to_str", 6))) {
+    if (KORB_OBJECT_P(o) && korb_responds_to_coerce_p(c, slots, &o, korb_intern(c->vm, "to_str", 6))) {   /* respond_to_missing? too */
         slots[0] = o;                                  /* a #to_str object answers for itself (CRuby) */
         slots[1] = VALUE_REF_GET(self);
         const RESULT r = korb_send(c, slots + 2, c->vm->mid_eq, 0, 1);
@@ -3527,6 +3527,7 @@ static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);          /* enumerator.c (included later) */
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
 /* build an Enumerator over `arr_fn(self)` labelled `name`. */
+static RESULT korb_enum_each_like(CTX *c, const RESULT er, const VALUE recv);   /* fwd (enumerator.c) */
 static RESULT korb_str_each_enum(CTX *c, VALUE *slots, VALUE_REF self,
                                  RESULT (*arr_fn)(CTX *, VALUE *, VALUE_REF, VALUE_SLICE), const char *name, VALUE_SLICE a) {
     slots[0] = UNWRAP(arr_fn(c, slots, self, a));   /* forward sep/chomp args (each_line) */
@@ -3536,7 +3537,7 @@ static RESULT korb_str_each_enum(CTX *c, VALUE *slots, VALUE_REF self,
      * without scanning, so #each_line's enumerator reports no size. */
     if (LIKELY(er.state == KORB_NORMAL) && KORB_ENUM_P(er.value) && strcmp(name, "each_line") == 0)
         VAL2ENUM(er.value)->size_unknown = 1;
-    return er;
+    return korb_enum_each_like(c, er, VALUE_REF_GET(self));   /* `.each {}` / `.with_index {}` give the String back */
 }
 static RESULT korb_m_str_each_codepoint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;

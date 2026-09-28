@@ -328,7 +328,8 @@ void   korb_class_undef_slot(struct korb_vm *vm, KorbClass *k, VALUE cls, uint32
 struct korb_attr_desc { uint32_t mid; uint32_t ivar; uint8_t is_writer; };
 bool korb_attr_overridden_p(CTX *c, VALUE klass, uint32_t mid);
 /* `class Name ... end`: create/find the class + run its body (self = class). */
-RESULT korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int is_module, VALUE enclosing, const VALUE *caller_base, uint32_t caller_line);
+enum { KORB_CB_MODULE = 1, KORB_CB_TOP = 2 };   /* korb_class_body flags; TOP = `class ::C` */
+RESULT korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int flags, VALUE enclosing, const VALUE *caller_base, uint32_t caller_line);
 RESULT korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv, VALUE enclosing, const VALUE *caller_base, uint32_t caller_line);
 RESULT korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods);
 RESULT korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods);

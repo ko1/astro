@@ -7090,9 +7090,10 @@ korb_call_ret_cold(CTX *c, RESULT r, VALUE flink, uint32_t mid, VALUE fid)
  * inlines its own fast path). */
 
 RESULT
-korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int is_module, VALUE enclosing,
+korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int flags, VALUE enclosing,
                 const VALUE *caller_base, uint32_t caller_line)
 {
+    const int is_module = flags & KORB_CB_MODULE;
     /* A module or a metaclass is not a valid superclass — Class.new's path already
      * refuses both, and letting `class X < SomeModule` through built a class whose
      * chain never reaches Object (pry's ColorPrinter < ::PP found that hole). */
@@ -7113,7 +7114,7 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
      * — and inside `obj.instance_eval("class C")` — it is a plain object, and the
      * namespace the body belongs to is the cref the eval installed.  A class self
      * still wins (Foo.class_eval("class C") nests in Foo, as it already did). */
-    if (!KORB_CLASS_P(enclosing) && KORB_CLASS_P(c->eval_cref)) enclosing = c->eval_cref;
+    if (!KORB_CLASS_P(enclosing) && !(flags & KORB_CB_TOP) && KORB_CLASS_P(c->eval_cref)) enclosing = c->eval_cref;   /* `class ::C` stays top */
     VALUE_REF encl_ref = SLOTS_PUSH(slots, enclosing);   /* root the lexical namespace below; slots advances past it */
     /* find-or-create owner-aware: reopen the class/module of the SAME namespace
      * (M::C reopens M::C, not a top-level C). */
@@ -11736,7 +11737,9 @@ korb_report_section(CTX *c, FILE *const fp, const KorbException *e, bool live, b
         korb_class_qname_into(c, e->exc_class, clsbuf, sizeof clsbuf);
         cls = clsbuf;
     }
-    const char *msg = (e->msg != KORB_NIL) ? korb_strbuf_data(VAL2STR(e->msg)->buf) : cls;
+    /* raise(E, :sym) keeps the Symbol; the Ruby-side #message converts it */
+    const char *msg = KORB_STRING_P(e->msg) ? korb_strbuf_data(VAL2STR(e->msg)->buf)
+                    : SYMBOL_P(e->msg) ? korb_sym_name(vm, SYM2ID(e->msg)) : cls;
     /* CRuby's rb_decorate_message: an empty message prints just the class
      * ("unhandled exception" for RuntimeError); otherwise the class follows the
      * first line of the message. */
@@ -14757,6 +14760,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                 slots[2] = 0;                                  /* base[-2] (EP)       */
                 slots[3] = self;                               /* base[-1] (self)  */
                 slots[4] = ID2SYM(mid);                        /* arg0 = missing method name */
+                c->mm_vcall_mid = 0; c->mm_vis_mid = 0;        /* a receiver'd miss: a `super` here is a NoMethodError */
                 for (uint32_t j = 0; j < argc; j++) slots[5 + j] = slots[-(korb_sword_t)argc + (korb_sword_t)j];
                 return korb_dispatch_method(c, slots + argc + 5, mm, mm_mid, line, argc + 1, mm_def, block, def_env, captured_self, true);
             }
@@ -17462,7 +17466,8 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       }
       case KORB_OBJ_EXCEPTION: {
         const KorbException *e = VAL2EXC(v);
-        if (e->msg != KORB_NIL) fwrite(korb_strbuf_data(VAL2STR(e->msg)->buf), 1, VAL2STR(e->msg)->len, fp);
+        if (KORB_STRING_P(e->msg)) fwrite(korb_strbuf_data(VAL2STR(e->msg)->buf), 1, VAL2STR(e->msg)->len, fp);
+        else if (SYMBOL_P(e->msg)) fputs(korb_sym_name(c->vm, SYM2ID(e->msg)), fp);
         else fputs(korb_etype_name(e->etype), fp);
         return;
       }
