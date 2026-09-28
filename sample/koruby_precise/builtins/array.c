@@ -321,7 +321,32 @@ static RESULT korb_ary_splice(CTX *c, VALUE *slots, VALUE_REF self, korb_sword_t
         }
         return RESULT_OK(VALUE_REF_GET(valref));
     }
-    /* build the new sequence in a temp array (rooted), then copy back into self */
+    if (VALUE_REF_GET(self) != VALUE_REF_GET(valref)) {   /* in place: grow, shift the tail, pad, copy */
+        const korb_sword_t eff_del = start >= len ? 0 : (start + dellen > len ? len - start : dellen);
+        const korb_sword_t nlen = (start > len ? start : len) - eff_del + repl;
+        if (UNLIKELY(nlen > (korb_sword_t)INT32_MAX))
+            return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld too big", (long)start);
+        if (nlen > len) CHECK(korb_ary_ensure(c, slots, self, (uint32_t)(nlen - len)));
+        KorbArray *const a = VAL2ARY(VALUE_REF_GET(self));
+        KorbArrayItems *const it = a->items;
+        VALUE *const d = korb_items_data(it);
+        const korb_sword_t from = start + eff_del, to = start + repl, tail = len - from;
+        if (tail > 0 && from != to) {                     /* move the kept tail (overlap-safe direction) */
+            if (to > from) for (korb_sword_t k = tail - 1; k >= 0; k--) ARO_STORE(c, it, &d[to + k], d[from + k]);
+            else           for (korb_sword_t k = 0; k < tail; k++)      ARO_STORE(c, it, &d[to + k], d[from + k]);
+        }
+        for (korb_sword_t k = len; k < start; k++) ARO_STORE(c, it, &d[k], KORB_NIL);   /* gap past the end */
+        if (splat) {
+            const KorbArray *const v = VAL2ARY(VALUE_REF_GET(valref));
+            for (korb_sword_t k = 0; k < repl; k++) ARO_STORE(c, it, &d[start + k], korb_items_data(v->items)[k]);
+        } else {
+            ARO_STORE(c, it, &d[start], VALUE_REF_GET(valref));
+        }
+        for (korb_sword_t k = nlen; k < len; k++) ARO_STORE(c, it, &d[k], KORB_NIL);   /* vacated tail */
+        a->len = (uint32_t)nlen;
+        return RESULT_OK(VALUE_REF_GET(valref));
+    }
+    /* self spliced into itself: build the new sequence in a temp array (rooted), then copy back */
     slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
     VALUE_REF tmp = VALUE_REF_AT(&slots[0]);
     for (korb_sword_t i = 0; i < start; i++) {
