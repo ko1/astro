@@ -1207,9 +1207,15 @@ static RESULT korb_m_range_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
     return RESULT_OK(VALUE_REF_GET(VALUE_REF_AT(&slots[2])));
 }
+/* no block → the prelude's sized enumerator for `meth` */
+static RESULT korb_range_enum_nb(CTX *c, VALUE *slots, VALUE_REF self, const char *meth) {
+    slots[0] = VALUE_REF_GET(self);
+    slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth)));
+    return korb_send_impl(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1, NULL, NULL, NULL);
+}
 static RESULT korb_m_range_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#flat_map without a block (Enumerator) is not supported");
+    if (UNLIKELY(block == NULL)) return korb_range_enum_nb(c, slots, self, "flat_map");
     korb_sword_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
@@ -1434,6 +1440,7 @@ static RESULT korb_m_range_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_range_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (VALUE_SLICE_LEN(a) == 0 && block == NULL) return korb_range_enum_nb(c, slots, self, "find_index");
     korb_sword_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
@@ -1445,7 +1452,6 @@ static RESULT korb_m_range_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALU
         bool hit;
         if (has_arg) hit = korb_value_eq(iv, VALUE_SLICE_GET(a, 0));
         else {
-            if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#find_index without arg or block is not supported");
             RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             hit = KORB_TRUTHY(r.value);

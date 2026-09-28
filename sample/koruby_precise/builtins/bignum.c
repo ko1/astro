@@ -141,17 +141,25 @@ RESULT korb_int_intdiv(CTX *c, VALUE *slots, VALUE a, VALUE b, int op) {
 RESULT korb_int_pow(CTX *c, VALUE *slots, VALUE base, VALUE expv, uint32_t line) {
     (void)line;
     if (FIXNUM_P(expv) && FIX2LONG(expv) < 0) {           /* a ** -n → Rational(1, a**n) */
-        korb_mp_t zb, zr; korb_to_mpz(base, zb); korb_mp_init(zr);
-        korb_mp_pow_ui(zr, zb, (unsigned long)(-FIX2LONG(expv)));
+        korb_mp_t zb, zr; korb_to_mpz(base, zb);
+        const unsigned long e = (unsigned long)(-FIX2LONG(expv));
+        if (korb_mp_cmpabs_ui(zb, 1) > 0 && (double)e * (double)korb_mp_sizeinbase(zb, 2) > 1073741824.0) {
+            korb_mp_clear(zb);
+            return korb_raise(c, slots, KORB_E_ARGUMENT, line, "exponent is too large");
+        }
+        korb_mp_init(zr);
+        korb_mp_pow_ui(zr, zb, e);
         korb_mp_clear(zb);
         RESULT denr = korb_big_from_mpz(c, slots, zr);     /* a**n (normalised) */
         korb_mp_clear(zr);
+        if (UNLIKELY(denr.state != KORB_NORMAL)) return denr;
         if (FIXNUM_P(denr.value)) {
             korb_sword_t d = FIX2LONG(denr.value);
             if (d == 1 || d == -1) return RESULT_OK(LONG2FIX(d));   /* 1/±1 → Integer (CRuby) */
             return korb_rat_new(c, slots, 1, d);
         }
-        return denr;                                       /* huge denom: best-effort (rare) */
+        slots[0] = denr.value;                             /* a Bignum denominator */
+        return korb_rat_new_v(c, slots + 1, LONG2FIX(1), slots[0]);
     }
     korb_mp_t zb; korb_to_mpz(base, zb);
     const int base_mag = korb_mp_cmpabs_ui(zb, 1);            /* <0: |base|=0, ==0: |base|=1, >0: |base|>=2 */
