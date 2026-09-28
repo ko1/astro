@@ -888,6 +888,9 @@ static inline bool korb_eq_needs_send_d(VALUE v, int depth)
 {
     if (!AROH_IS_GC_OBJECT(v)) return false;             /* immediates (array elements reach here) */
     if (KORB_OBJECT_P(v) || KORB_EXC_P(v) || KORB_OBJ_TYPE(v) == KORB_OBJ_PROC || KORB_OBJ_TYPE(v) == KORB_OBJ_METHOD) return true;
+    /* a builtin subclass's instance (Sexp < Array) may define #hash / #eql? / #==; CRuby
+     * hashes a String subclass directly, so that one stays on the fast path */
+    if ((((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS) && KORB_OBJ_TYPE(v) != KORB_OBJ_STRING) return true;
     if (KORB_ARRAY_P(v)) {
         if (depth >= 4) return true;
         const KorbArray *const arr__ = VAL2ARY(v);

@@ -957,6 +957,10 @@ node_caseeq(CTX *c, NODE *n, VALUE *slots, VALUE_REF wv@child, VALUE subj@child)
     switch (KORB_OBJ_TYPE(w)) {
       case KORB_OBJ_STRING: case KORB_OBJ_ARRAY: case KORB_OBJ_HASH:
       case KORB_OBJ_FLOAT:  case KORB_OBJ_BIGNUM:
+        if (UNLIKELY(((const AroObjectHeader *)(uintptr_t)w)->flags & KORB_FL_HAS_KLASS)) {   /* a subclass may define #=== */
+            slots[0] = w; slots[1] = subj;
+            return korb_send(c, slots + 2, c->vm->mid_eqq, 0, 1);
+        }
         if (UNLIKELY(c->vm->basic_op_redefined) && KORB_OBJ_TYPE(w) != KORB_OBJ_STRING &&
             KORB_OBJ_TYPE(w) != KORB_OBJ_ARRAY && KORB_OBJ_TYPE(w) != KORB_OBJ_HASH) {   /* Float#=== / Integer#=== reopened */
             slots[0] = w; slots[1] = subj;
