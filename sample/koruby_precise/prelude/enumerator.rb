@@ -738,6 +738,15 @@ class Enumerator::ArithmeticSequence
     [self.begin, self.end, step, exclude_end?].hash
   end
 
+  # External iteration (CRuby's ArithmeticSequence is an Enumerator; here it is
+  # not, so delegate to a per-sequence Enumerator over #each)
+  def next = __ext_enum.next
+  def peek = __ext_enum.peek
+  def next_values = __ext_enum.next_values
+  def peek_values = __ext_enum.peek_values
+  def rewind = (@__ext_enum = nil; self)   # not Enumerator#rewind: that rewinds its source = self
+  private def __ext_enum = (@__ext_enum ||= to_enum(:each))
+
   # Rational / BigDecimal / other Numeric components (the C side does Integer and
   # Float): element k is begin + k * step, exact for exact types (CRuby's generic path)
   private def __generic_parts

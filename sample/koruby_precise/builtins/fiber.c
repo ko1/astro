@@ -179,10 +179,14 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     if (rep->mask_gen != mask_gen) korb_signal_park_pending(c->vm);   /* its saved mask predates a trap */
     korb_scope_stacks_swap(c, &rep->ss);               /* the fiber's own $!, save stacks and $~ while it runs */
     { VALUE *const tc = korb_re_tilde_cell(c); const VALUE t = *tc; *tc = rep->tilde; rep->tilde = t; }
+    /* the generator sinks live on each fiber's C stack: an `each` driven inside
+     * the fiber (external enumeration) must not chain onto the resumer's */
+    { struct korb_gen_sink *const g = c->vm->gen_sink; c->vm->gen_sink = rep->gen_sink; rep->gen_sink = g; }
     swapcontext(&here, (ucontext_t *)rep->uctx);       /* === into the fiber === */
     korb_sigmask_resume(c->vm, mask_gen);
     korb_scope_stacks_swap(c, &rep->ss);
     { VALUE *const tc = korb_re_tilde_cell(c); const VALUE t = *tc; *tc = rep->tilde; rep->tilde = t; }
+    { struct korb_gen_sink *const g = c->vm->gen_sink; c->vm->gen_sink = rep->gen_sink; rep->gen_sink = g; }
 
     /* === back: fiber yielded or finished === */
     c->vm->running_fiber = prev;

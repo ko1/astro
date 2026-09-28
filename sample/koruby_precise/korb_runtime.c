@@ -12472,6 +12472,7 @@ static bool korb_proc_break_orphan(const CTX *c, const KorbProc *p, const VALUE 
 }
 static inline bool korb_break_orphan_p(const CTX *c, VALUE *const def_env, VALUE *const captured_self, const VALUE *from) {
     if (def_env != KORB_BLK_FWD || captured_self == NULL || !KORB_PROC_P(*captured_self)) return false;
+    if (c->break_blk != NULL && c->break_blk != VAL2PROC(*captured_self)->iseq) return false;   /* another block's break passing through */
     return korb_proc_break_orphan(c, VAL2PROC(*captured_self), from);
 }
 RESULT

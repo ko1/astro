@@ -532,6 +532,7 @@ typedef struct KorbFiberRep {
     void  *cstack;                   /* malloc'd native stack for the fiber */
     struct korb_scope_stacks ss;     /* its scope save stacks while it is not running */
     VALUE tilde;                     /* its `$~` while it is not running (root; nil at start) */
+    struct korb_gen_sink *gen_sink;  /* its generator-sink chain while it is not running (NULL at start) */
     uint8_t fstate;                  /* 0 created, 1 running, 2 suspended, 3 done */
     uint8_t raised;                  /* block raised → resume re-raises transfer */
     uint8_t pending_raise;           /* Fiber#raise: yield raises transfer instead of returning it */

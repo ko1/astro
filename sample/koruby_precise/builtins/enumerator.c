@@ -100,11 +100,17 @@ static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_yielder_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_m_yielder_push_impl(c, slots, self, a, true);
 }
-/* The yielder hit its bound: a StopIteration the driver catches, marked so an
- * enclosing `loop` in the generator body does not end on it and keep producing. */
+/* The yielder hit its bound: a StopIteration only the drive that owns this
+ * yielder's tuple (slots[1]) catches — not a generator nested inside it, and
+ * not a `loop` in the generator body (CRuby stops with rb_iter_break). */
 static RESULT korb_gen_bound_raise(CTX *c, VALUE *slots) {
-    const RESULT r = korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached limit");
-    if (LIKELY(KORB_EXC_P(r.value))) VAL2EXC(r.value)->gen_bound = 1;
+    RESULT r = korb_raise(c, slots + 2, KORB_E_STOP_ITERATION, 0, "iteration reached limit");
+    if (LIKELY(KORB_EXC_P(r.value))) {
+        VAL2EXC(r.value)->gen_bound = 1;
+        slots[2] = r.value;
+        korb_exc_ivar_set(c, slots + 3, VALUE_REF_AT(&slots[2]), ID2SYM(korb_intern(c->vm, "@__gen_owner", 12)), slots[1]);
+        r.value = slots[2];
+    }
     return r;
 }
 static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool want_value) {
@@ -156,7 +162,7 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
         RESULT yr = korb_block_yield(c, slots + 3 + yn, sink->block, sink->def_env,
                                      multi ? &slots[3] : &slots[2], yn, sink->cself);
         if (yr.state == KORB_BREAK && korb_break_owned(c, sink->block, sink->def_env)) { sink->broke = true; *sink->break_slot = yr.value;
-            return korb_gen_bound_raise(c, slots + 1); }
+            return korb_gen_bound_raise(c, slots); }
         /* Not ours: the prelude's Enumerator#each forwards the caller's literal
          * block (`&block`), so the break belongs to the `enum.each { break }`
          * site.  Mark it so the driver re-raises instead of ending the drive. */
@@ -164,7 +170,7 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
         if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;     /* StopIteration / real error propagates */
         if (sink->kind == 1) {                                /* take_while: collect while truthy */
             if (!KORB_TRUTHY(yr.value))
-                return korb_gen_bound_raise(c, slots + 1);
+                return korb_gen_bound_raise(c, slots);
             slots[3] = slots[2];                              /* the value (block result was the predicate) */
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(sink->collect), slots[3]));
         } else if (sink->kind >= 2) {                         /* map(2) / select(3) / reject(4) / filter_map(5) */
@@ -177,16 +183,16 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
             }
             if (push) CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(sink->collect), slots[3]));
         }
-        if (term) return korb_gen_bound_raise(c, slots + 1);   /* take's last value: streamed, now stop */
+        if (term) return korb_gen_bound_raise(c, slots);   /* take's last value: streamed, now stop */
         return RESULT_OK(want_value ? yr.value : VALUE_REF_GET(self));
     }
     slots[2] = v;                                             /* root across the push alloc, and for the return below */
     if (keep) CHECK(korb_ary_push_val(c, slots + 6, VALUE_REF_AT(&slots[0]), slots[2]));
     /* bounded: stop on a take/take_while bound, or once `limit` values collected
      * (StopIteration — an enclosing `loop` swallows it, else gen_run catches it). */
-    if (term) return korb_gen_bound_raise(c, slots + 1);
+    if (term) return korb_gen_bound_raise(c, slots);
     if (FIXNUM_P(limv) && FIX2LONG(limv) >= 0 && VAL2ARY(slots[0])->len >= (uint32_t)FIX2LONG(limv))
-        return korb_gen_bound_raise(c, slots + 1);
+        return korb_gen_bound_raise(c, slots);
     /* #yield hands back what the consumer produced; a plain collect has none, so
      * nil — same as CRuby's collector, which is what stops a driven take_while. */
     return RESULT_OK(want_value ? KORB_NIL : VALUE_REF_GET(self));
@@ -262,13 +268,22 @@ static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, korb_sword
     slots[5] = SELF_ENUM->source;                            /* the generator proc */
     slots[6] = slots[4];                                     /* arg0 = yielder */
     RESULT br = korb_send_impl(c, slots + 7, korb_intern(vm, "call", 4), 0, 1, NULL, NULL, NULL);
-    if (br.state == KORB_RAISE && KORB_EXC_P(br.value) && VAL2EXC(br.value)->etype == KORB_E_STOP_ITERATION)
+    if (br.state == KORB_RAISE && KORB_EXC_P(br.value) && VAL2EXC(br.value)->etype == KORB_E_STOP_ITERATION) {
+        /* another (outer) generator's bound passes through this drive */
+        if (VAL2EXC(br.value)->gen_bound &&
+            korb_exc_ivar_get(br.value, ID2SYM(korb_intern(vm, "@__gen_owner", 12))) != slots[3]) return br;
         return RESULT_OK(slots[2]);                           /* hit the bound (or natural end) → collector */
+    }
     /* A break the consumer's block raised is not this drive's to swallow — it
      * has to reach the call site that wrote the literal block.  Only a `break`
-     * inside the generator body itself ends the run with the collector. */
-    if (br.state == KORB_BREAK && limit == -2 && c->vm->gen_sink != NULL && c->vm->gen_sink->passthru)
-        return br;
+     * inside the generator body itself (break_blk = the generator's block) ends
+     * the run with the collector.  The sink's passthru flag cannot tell: with
+     * nested drives the break passes through other sinks first. */
+    if (br.state == KORB_BREAK && limit == -2) {
+        const VALUE gp = SELF_ENUM->source;
+        const NODE *const gbody = KORB_PROC_P(gp) ? VAL2PROC(gp)->iseq : NULL;
+        if (c->break_blk != NULL && c->break_blk != gbody) return br;
+    }
     if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
     /* Streaming each (limit -2) wants the generator block's OWN return value —
      * for a to_enum generator that is the underlying method's return (CRuby

@@ -132,8 +132,11 @@ class Integer
   private :__iter_enum_bad
   # a long n.upto(m) / n.downto(m) without a block (builtins/array.c): streamed, not materialized
   def __iter_enum_gen(meth, lim)
-    n = meth == :upto ? lim.floor - self + 1 : self - lim.ceil + 1
-    to_enum(meth, lim) { n < 0 ? 0 : n }
+    to_enum(meth, lim) do
+      next ::Float::INFINITY if lim.is_a?(::Float) && lim.infinite?
+      n = meth == :upto ? lim.floor - self + 1 : self - lim.ceil + 1
+      n < 0 ? 0 : n
+    end
   end
   private :__iter_enum_gen
 end

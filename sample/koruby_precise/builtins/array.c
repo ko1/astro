@@ -1029,16 +1029,26 @@ static RESULT korb_int_iter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
     if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || KORB_BIGNUM_P(lv) ||
                  (KORB_FLOAT_P(lv) && isfinite(korb_float_val(lv)) && fabs(korb_float_val(lv)) >= 4.0e18)))
         return korb_int_iter_wide(c, slots, self, lv, block, def_env, cself, up, meth);
-    /* n.upto(Float::INFINITY) without a block → an endless ArithmeticSequence
-     * (begin=n, step=+1); zip/first/take pull it lazily by index without
-     * materializing.  (CRuby returns an Enumerator; an ArithSeq suffices here.) */
-    if (block == NULL && up && !FIXNUM_P(lv)) {
-        double d;
-        if (korb_num_to_d(lv, &d) && isinf(d) && d > 0)
-            return korb_arithseq_new(c, slots, VALUE_REF_GET(self), lv, LONG2FIX(1), 2, 0);
-    }
+    /* n.upto(Float::INFINITY) without a block → an endless Integer
+     * ArithmeticSequence (begin=n, no end, step=+1); zip/first/take pull it
+     * lazily by index without materializing.  (CRuby returns an Enumerator.) */
+    if (block == NULL && up && KORB_FLOAT_P(lv) && isinf(korb_float_val(lv)) && korb_float_val(lv) > 0)
+        return korb_arithseq_new(c, slots, VALUE_REF_GET(self), KORB_NIL, LONG2FIX(1), 2, 0);
     korb_sword_t to, from = FIX2LONG(VALUE_REF_GET(self));
-    if (LIKELY(FIXNUM_P(lv))) {
+    if (UNLIKELY(KORB_FLOAT_P(lv) && isinf(korb_float_val(lv)))) {   /* ±Infinity limit: endless one way, empty the other */
+        if ((korb_float_val(lv) > 0) != up) to = up ? from - 1 : from + 1;
+        else if (block == NULL) {
+            slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth))); slots[2] = lv;
+            return korb_send(c, slots + 3, korb_intern(c->vm, "__iter_enum_gen", 15), 0, 2);
+        } else {
+            for (korb_sword_t i = from; FIXABLE(i); i += up ? 1 : -1) {   /* the block is expected to break */
+                VALUE iv = LONG2FIX(i);
+                const RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            }
+            return RESULT_OK(VALUE_REF_GET(self));
+        }
+    } else if (LIKELY(FIXNUM_P(lv))) {
         to = FIX2LONG(lv);
     } else if (KORB_FLOAT_P(lv) && isfinite(korb_float_val(lv))) {   /* Float endpoint: floor (upto) / ceil (downto) */
         const double d = korb_float_val(lv);
