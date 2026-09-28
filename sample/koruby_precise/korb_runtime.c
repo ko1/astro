@@ -8838,6 +8838,7 @@ static bool korb_value_eql_d(VALUE a, VALUE b, int depth) {
 }
 static bool korb_value_eql(VALUE a, VALUE b) { return korb_value_eql_d(a, b, 0); }
 
+static bool korb_obj_kind_of_p(CTX *c, VALUE sv, VALUE target);   /* fwd (set.c) */
 /* case equality `pat === val`: Range membership, Class is-a, else ==. No alloc. */
 static bool
 korb_case_eq(CTX *c, VALUE pat, VALUE val)
@@ -8851,22 +8852,8 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
         bool upper = r->exclude_end ? (uc < 0) : (uc <= 0);
         return lower && upper;
     }
-    if (KORB_CLASS_P(pat)) {                              /* Module#=== ⟺ val.is_a?(pat): walk ancestors incl. modules */
-        /* no `pat == Object → true` shortcut: BasicObject and its subclasses
-         * are not Objects (tilt picks its scope path with `case scope when Object`) */
-        VALUE cls = (AROH_IS_GC_OBJECT(val) && (((const AroObjectHeader *)(uintptr_t)val)->flags & KORB_FL_HAS_KLASS))
-                      ? korb_klass_override_get(c->vm, val)   /* singleton/extended modules count */
-                      : korb_class_obj_of(c, val);
-        while (KORB_CLASS_P(cls)) {
-            if (cls == pat) return true;
-            const VALUE pre = VAL2CLASS(cls)->prepended;
-            if (pre != KORB_NIL) { const KorbArray *pa = VAL2ARY(pre); for (uint32_t j = 0; j < pa->len; j++) if (korb_items_data(pa->items)[j] == pat) return true; }
-            const VALUE inc = VAL2CLASS(cls)->included;
-            if (inc != KORB_NIL) { const KorbArray *ia = VAL2ARY(inc); for (uint32_t j = 0; j < ia->len; j++) if (korb_items_data(ia->items)[j] == pat) return true; }
-            cls = VAL2CLASS(cls)->superclass;
-        }
-        return false;
-    }
+    if (KORB_CLASS_P(pat))                                /* Module#=== ⟺ val.is_a?(pat) (a class's inherited extends too) */
+        return korb_obj_kind_of_p(c, val, pat);
     if (KORB_REGEXP_P(pat)) {                             /* Regexp#=== : match against a String or Symbol (Symbol coerced to its name, CRuby) */
         const char *sdata; uint32_t slen;
         if (KORB_STRING_P(val)) { sdata = korb_strbuf_data(VAL2STR(val)->buf); slen = VAL2STR(val)->len; }

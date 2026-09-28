@@ -877,7 +877,10 @@ static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             slots[4] = slots[0];                                                  /* the object = arg */
             RESULT er = korb_send_impl(c, slots + 5, extend_object, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(er.state != KORB_NORMAL)) return er;
-        } else {
+        } else if (c->vm->boot_done) {                                           /* undefined on purpose (Singleton) */
+            char mn[224]; korb_desc_inspect(c, slots[2], mn, sizeof mn);
+            return korb_raise(c, slots + 3, KORB_E_NOMETHOD, 0, "undefined method 'extend_object' for module %s", mn);
+        } else {                                                                  /* before the prelude defines it */
             CHECK(korb_do_include(c, slots + 3, slots[1], VALUE_SLICE_MAKE(&slots[2], 1)));
         }
         if (UNLIKELY(korb_responds_to(c, slots[2], extended))) {                  /* fire Module#extended(obj) hook */

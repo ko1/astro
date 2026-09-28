@@ -6042,6 +6042,14 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   （2026-09-28: eval 中の読みは CRuby 順 = 特異クラス → 受け手のクラスの自表 → 呼び出し元の lexical → 祖先。後で呼ぶブロックは
   特異クラス → 呼び出し元の lexical → 祖先。この「クラスの自表」は instance_eval だけの規則で `class << obj` には無いので、
   ブロックが instance_eval 由来だと知る手段が要る）。Module.nesting にも特異クラスが入らない。
+- **ObjectSpace::WeakMap が強参照**（prelude の Hash）。WeakRef が回収されず RefError にならない（weakref test_recycled）。
+  値も弱い side table（korb_weak_walk で鍵か値が死んだ行を落とす）＋ map ごとの表と map 自身の死での解放が要る。
+- 既存のクラス名で `module T` と書いた TypeError（T is not a module）の backtrace の行が 0 になる（CRuby は module 文の行）。
+- **MatchData が対象文字列の写しを持たない**: `m = re.match(line); line.lstrip!` の後で m[1] が変わる（CRuby は凍結した写しを共有で持つ。
+  iniparse line_parsing / fixture の 3 例）。2026-09-28 に korb_re_build_md で 4 KiB 以下を写す版を試し、正しく直ったが
+  `=~` と match を 200 万回回す micro bench が 1.20〜1.27 s → 1.37〜1.38 s（+10%、ローカルの粗い計測。コストは写しの確保）で取り下げた。
+  案: 照合時は文字列に印（String では bit 11 が実質空き）＋ MatchData を弱い表に登録し、印の付いた文字列の変更（KORB_CHECK_FROZEN の遅い経路）で
+  表から引いて MatchData の subject を変更前の写しに差し替える。
 - 束縛された Method#super_method の inspect が「受け手のクラス(持ち主)」になる（CRuby は見つかったクラス: `#<Method: A#f()>`、
   `#<Method: Class#new(*)>`）。prepend した特異クラスの上の Kernel#to_s では source location まで prepend 側を名前で引いて出す。
 - 正規表現 /i の Unicode 折り畳み（2026-09-28 に単純折り畳みを実装: astrogre の unicode_fold.h）の残り: 複数文字への折り畳み
