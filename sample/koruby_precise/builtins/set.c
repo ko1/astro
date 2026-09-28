@@ -1606,6 +1606,17 @@ static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALU
         for (uint32_t j = 0; j < r->len; j++) if (korb_items_data(r->items)[j] == sym) { seen = true; break; }
         if (!seen) CHECK(korb_ary_push_val(c, slots, result, sym));
     }
+    /* Class#new has no table entry (the send path builds instances itself), but
+     * reflection lists it as Class's public method (irb's `String.ne` completion) */
+    if (VALUE_REF_GET(klass_ref) == korb_builtin_class_obj(c->vm, KORB_C_CLASS) && (vis_mask & 1u)) {
+        const VALUE sym = ID2SYM(korb_intern(c->vm, "new", 3));
+        bool seen = false;
+        const KorbArray *const b = VAL2ARY(VALUE_REF_GET(blocked));
+        for (uint32_t j = 0; j < b->len && !seen; j++) seen = korb_items_data(b->items)[j] == sym;
+        const KorbArray *const r = VAL2ARY(VALUE_REF_GET(result));
+        for (uint32_t j = 0; j < r->len && !seen; j++) seen = korb_items_data(r->items)[j] == sym;
+        if (!seen) CHECK(korb_ary_push_val(c, slots, result, sym));
+    }
     if (VALUE_REF_GET(klass_ref) == korb_builtin_class_obj(c->vm, KORB_C_OBJECT) && (vis_mask & (1u << 1))) {
         for (uint32_t i = 0; i < c->vm->method_cnt; i++) {       /* top-level defs: Object's private methods */
             const struct korb_method *const m = c->vm->methods[i];
@@ -2326,10 +2337,15 @@ static RESULT korb_method_defined_vis(CTX *c, VALUE *slots, VALUE_REF self, VALU
         }
         if (cls == korb_builtin_class_obj(c->vm, KORB_C_OBJECT) && korb_toplevel_def(c->vm, mid))
             return RESULT_OK((want == 1) ? KORB_TRUE : KORB_FALSE);
+        if (cls == korb_builtin_class_obj(c->vm, KORB_C_CLASS) && mid == korb_intern(c->vm, "new", 3))
+            return RESULT_OK((want <= 0) ? KORB_TRUE : KORB_FALSE);   /* Class#new: public, no table entry */
         return RESULT_OK(KORB_FALSE);
     }
     VALUE mdef = KORB_NIL;
     const struct korb_method *me = KORB_CLASS_P(cls) ? korb_class_find_method(cls, mid, &mdef) : NULL;
+    if (me == NULL && KORB_CLASS_P(cls) && mid == korb_intern(c->vm, "new", 3) &&
+        korb_class_le(cls, korb_builtin_class_obj(c->vm, KORB_C_CLASS)) && !korb_method_undefed_p(cls, mid))
+        return RESULT_OK((want <= 0) ? KORB_TRUE : KORB_FALSE);       /* Class#new (and metaclasses inherit it) */
     if (me == NULL && KORB_CLASS_P(cls) && korb_class_has_ancestor(cls, korb_builtin_class_obj(c->vm, KORB_C_OBJECT)))
         me = korb_toplevel_def(c->vm, mid);
     if (me == NULL) {

@@ -12,3 +12,5 @@ p ME.const_get(e), ME.const_get(e.to_sym), ME.const_defined?(e), ME.constants.ma
 # a multibyte class name round-trips through Marshal
 module ME; class Multiぁあ; end; end
 p Marshal.load(Marshal.dump(ME::Multiぁあ))
+# Class#new is listed by reflection though it has no method-table entry
+p String.methods.include?(:new), Class.instance_methods(false).include?(:new), Class.public_method_defined?(:new), String.singleton_class.method_defined?(:new), Module.method_defined?(:new)
