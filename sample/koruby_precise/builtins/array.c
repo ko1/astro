@@ -1053,6 +1053,11 @@ static RESULT korb_int_iter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
         else return korb_raise_cmperr(c, slots, 0, VALUE_REF_GET(self), lv, true);   /* non-numeric limit: CRuby blames the refused coerce */
     }
     if (block == NULL) {                              /* → Enumerator of the sequence */
+        const korb_sword_t cnt = up ? to - from : from - to;
+        if (UNLIKELY(cnt >= 65536)) {                 /* a long span streams through to_enum (biz: Week#downto) */
+            slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth))); slots[2] = lv;
+            return korb_send(c, slots + 3, korb_intern(c->vm, "__iter_enum_gen", 15), 0, 2);
+        }
         slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
         VALUE_REF dst = VALUE_REF_AT(&slots[0]);
         if (up) for (korb_sword_t i = from; i <= to; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));

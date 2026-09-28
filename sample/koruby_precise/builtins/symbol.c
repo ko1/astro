@@ -2,20 +2,8 @@
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
 /* ---- Symbol methods ------------------------------------------------------ */
 
-static RESULT korb_m_sym_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
-    const uint32_t id = SYM2ID(VALUE_REF_GET(self));
-    const char *const nm = korb_sym_name(c->vm, id);
-    const uint32_t len = c->vm->sym_lens[id];         /* the name may hold NUL bytes */
-    const uint32_t enc = c->vm->sym_encs[id];
-    const VALUE s = UNWRAP(korb_str_new(c, slots, nm, len));
-    KORB_STR_ENC_SET(s, enc);                         /* the Symbol's own encoding */
-    ((AroObjectHeader *)(uintptr_t)s)->flags |= (KORB_FL_FROZEN | KORB_FL_CHILLED | KORB_FL_CHILLED_SYM);
-    return RESULT_OK(s);
-}
-/* Symbol#name — unlike #to_s/#id2name this returns the *same* frozen String on
- * every call (CRuby hands back an fstring).  The fstring pool already gives us
- * both properties, so intern the name there. */
+/* Symbol#name / #to_s / #id2name — the *same* frozen String on every call
+ * (CRuby 4.1 rb_sym2str hands back an fstring; to_s was chilled in 3.4/4.0). */
 static RESULT korb_m_sym_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const uint32_t id = SYM2ID(VALUE_REF_GET(self));

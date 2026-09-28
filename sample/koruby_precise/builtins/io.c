@@ -1745,8 +1745,7 @@ static RESULT korb_m_io_readchar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* IO#seek(offset, whence = SEEK_SET) → 0. */
 static RESULT korb_m_io_seek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    KORB_IO_NEED_READ(c, slots, self);
+    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");   /* any mode may seek */
     korb_sword_t off;
     CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &off));   /* #to_int coercion */
     int whence = SEEK_SET;

@@ -6924,9 +6924,9 @@ static inline bool korb_kw_fast_eligible(const struct korb_method *m) {
  * into their (rooted) frame slots BEFORE any default expression runs, so the
  * stack-captured kwbuf is dead before the first GC. */
 static __attribute__((no_stack_protector)) RESULT
-korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_argc,
-                      const uint32_t *kw_syms, uint32_t kw_argc, uint32_t line, uint32_t mid,
-                      VALUE self, VALUE def_class)
+korb_invoke_kw_simple_body(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_argc,
+                           const uint32_t *kw_syms, uint32_t kw_argc, uint32_t line, uint32_t mid,
+                           VALUE self, VALUE def_class)
 {
     const struct korb_kw_info *const kw = (const struct korb_kw_info *)m->kw_info;
     NODE *const body = m->body;                              /* a default may redefine the method: this call keeps its body */
@@ -7000,6 +7000,28 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     if (r.state == KORB_RETURN) { if (c->return_target == NULL || c->return_target == base) { r.state = KORB_NORMAL; c->return_target = NULL; } }
     else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
     if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
+    return r;
+}
+
+/* The cref / refinement scoping korb_invoke does, around the keyword fast path
+ * (a refined call inside a kwargs method called from a file without `using`). */
+static RESULT
+korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_argc,
+                      const uint32_t *kw_syms, uint32_t kw_argc, uint32_t line, uint32_t mid,
+                      VALUE self, VALUE def_class)
+{
+    const bool cref_scope = UNLIKELY(c->def_definee != KORB_NIL || c->cvar_cref != KORB_NIL);
+    const bool refine_on = UNLIKELY(c->vm->refinements_active);
+    const bool refine_scope = refine_on && c->refinements != m->refine_set;
+    if (LIKELY(!cref_scope && !refine_on))
+        return korb_invoke_kw_simple_body(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, self, def_class);
+    if (cref_scope) { korb_cref_push(c); c->def_definee = KORB_NIL; c->cvar_cref = KORB_NIL; }
+    if (refine_scope) { korb_refine_push(c); c->refinements = m->refine_set; }
+    const RESULT r = korb_invoke_kw_simple_body(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, self, def_class);
+    if (cref_scope) korb_cref_pop(c);
+    if (refine_scope) korb_refine_pop(c);
+    else if (UNLIKELY(c->refinements != (refine_on ? m->refine_set : KORB_NIL)))   /* the body ran `using` */
+        c->refinements = refine_on ? m->refine_set : KORB_NIL;
     return r;
 }
 
@@ -9151,7 +9173,7 @@ RESULT
 korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct korb_pat *p)
 {
     if (p->kind == 255) return RESULT_OK(KORB_FALSE);
-    c->pat_key_mid = 0;
+    c->pat_key_mid = 0; c->pat_key_hash = KORB_NIL;
     c->pat_fail_kind = 0; c->pat_fail_a = KORB_NIL; c->pat_fail_b = KORB_NIL;
     VALUE *const saved_dc = c->pat_dc;                   /* a value pattern may run another case/in */
     c->pat_dc = p->dc_off ? &base[p->dc_off] : NULL;
@@ -9276,7 +9298,7 @@ korb_pat_match_1(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struc
         for (uint32_t i = 0; i < p->n; i++) {
             const int32_t idx = korb_hash_find(VAL2HASH(cur[0]), p->keys[i]);
             if (idx < 0) {                                /* note it: the case/in tail raises NoMatchingPatternKeyError */
-                if (SYMBOL_P(p->keys[i])) c->pat_key_mid = SYM2ID(p->keys[i]);
+                if (SYMBOL_P(p->keys[i])) { c->pat_key_mid = SYM2ID(p->keys[i]); c->pat_key_hash = cur[0]; }
                 return RESULT_OK(KORB_FALSE);
             }
             cur[1] = korb_items_data(VAL2HASH(cur[0])->items)[2 * idx + 1];
@@ -11136,10 +11158,12 @@ korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
 
     /* A `case/in` whose last clause failed only on an absent hash key raises
      * NoMatchingPatternKeyError (a NoMatchingPatternError subclass). */
+    uint32_t pk_mid = 0;
     if (UNLIKELY(etype == KORB_E_NO_MATCHING_PATTERN) && c->pat_key_mid != 0) {
         const size_t n = strlen(buf);
         snprintf(buf + n, sizeof(buf) - n, ": key not found: :%s", korb_sym_name(c->vm, c->pat_key_mid));
         etype = KORB_E_NO_MATCHING_PATTERN_KEY;
+        pk_mid = c->pat_key_mid;                           /* c->pat_key_hash stays rooted until attached below */
         c->pat_key_mid = 0;
         c->pat_fail_kind = 0;
     }
@@ -11177,6 +11201,13 @@ korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
     ARO_STORE(c, e, &e->msg, VALUE_REF_GET(msg));
     const VALUE cause_v = korb_errinfo_top(c);                /* $! at raise time → #cause */
     if (cause_v != KORB_NIL && cause_v != (VALUE)e) ARO_STORE(c, e, &e->cause, cause_v);
+    if (UNLIKELY(pk_mid != 0)) {                              /* NoMatchingPatternKeyError#key / #matchee */
+        VALUE_REF eref = SLOTS_PUSH(slots, (VALUE)e);
+        korb_exc_ivar_set(c, slots, eref, ID2SYM(korb_intern(c->vm, "@__key", 6)), ID2SYM(pk_mid));
+        korb_exc_ivar_set(c, slots, eref, ID2SYM(korb_intern(c->vm, "@__matchee", 10)), c->pat_key_hash);
+        c->pat_key_hash = KORB_NIL;
+        return RESULT_RAISE_(VALUE_REF_GET(eref));
+    }
     return RESULT_RAISE_((VALUE)e);
 }
 
@@ -13553,6 +13584,18 @@ korb_super_new_skip_p(CTX *c, VALUE self, VALUE sdef, const VALUE skip)
     }
     return sdef == skip || (si >= 0 && sdi >= 0 && si <= sdi) || korb_class_has_ancestor(sdef, skip);
 }
+
+/* After #initialize: a raise, or a `return` / `throw` aimed further out,
+ * propagates.  A `break v` from the block given to .new makes .new return v;
+ * another's passes on; with no block it is dropped, as before (one can leak out of an initialize:
+ * docs/todo.md "BREAK が initialize から漏れる"). */
+#define KORB_NEW_INIT_CHECK(ir, blk, env) do {                                        \
+        if (UNLIKELY((ir).state != KORB_NORMAL)) {                                    \
+            if ((ir).state != KORB_BREAK) return (ir);                                \
+            if ((blk) != NULL) return korb_break_owned(c, (blk), (env)) ? RESULT_OK((ir).value) : (ir); \
+        }                                                                             \
+    } while (0)
+
 static RESULT
 korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                    NODE *block, VALUE *def_env, VALUE *captured_self, const VALUE caller_self)
@@ -14147,7 +14190,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                         VALUE *const ibase = slots + 6;
                         ibase[0] = slots[0];               /* the single kwargs Hash → override's **kw */
                         RESULT ir = korb_invoke_method(c, ibase + 1, duinit, 1, line, vm->mid_initialize, slots[1], didef, block, def_env, KORB_CSELF_VAL(captured_self));
-                        if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                        KORB_NEW_INIT_CHECK(ir, block, def_env);
                         return RESULT_OK(slots[1]);
                     }
                     slots[0] = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* the instance (rooted) */
@@ -14162,7 +14205,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                     VALUE *const ibase = slots + 5;
                     for (uint32_t i = 0; i < argc; i++) ibase[i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];   /* forward args (post-alloc, GC-safe) */
                     RESULT ir = korb_invoke_method(c, ibase + argc, duinit, argc, line, vm->mid_initialize, slots[0], didef, block, def_env, KORB_CSELF_VAL(captured_self));
-                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    KORB_NEW_INIT_CHECK(ir, block, def_env);
                     return RESULT_OK(slots[0]);            /* re-read the (possibly moved) instance */
                 }
             } else {                                       /* Struct: dispatch a user-overridden #initialize (ISEQ); default is the CFUNC */
@@ -14181,7 +14224,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                     VALUE *const ibase = slots + 5;
                     for (uint32_t i = 0; i < argc; i++) ibase[i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];   /* forward args (post-alloc, GC-safe) */
                     RESULT ir = korb_invoke_method(c, ibase + argc, suinit, argc, line, vm->mid_initialize, slots[0], sudef, block, def_env, KORB_CSELF_VAL(captured_self));
-                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    KORB_NEW_INIT_CHECK(ir, block, def_env);
                     return RESULT_OK(slots[0]);            /* members set by the override's super(...) → korb_m_struct_initialize */
                 }
             }
@@ -14472,7 +14515,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             slots[1] = UNWRAP(korb_str_new(c, slots + 1, "", 0));   /* instance (rooted) */
             RESULT ir = korb_m_str_initialize(c, slots + 2, VALUE_REF_AT(&slots[1]),
                                               VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc));
-            if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+            if (UNLIKELY(ir.state != KORB_NORMAL && ir.state != KORB_BREAK)) return ir;   /* a raise, or return/throw aimed further out */
             return RESULT_OK(slots[1]);
         }
         /* subclass of a constructible builtin (String/Array/Hash/Set): build that
@@ -14495,14 +14538,14 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                     VALUE *const ibase = slots - argc;
                     RESULT ir = korb_invoke_method(c, slots, tinit, argc, line, vm->mid_initialize,
                                                    slots[1], tidef, block, def_env, KORB_CSELF_VAL(captured_self));
-                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    KORB_NEW_INIT_CHECK(ir, block, def_env);
                     if (UNLIKELY(VAL2THREAD(ibase[-1])->rep->blk == KORB_NIL))   /* initialize が super を呼ばなかった */
                         return korb_raise_thread_error(c, slots, "uninitialized thread - check 'initialize'");
                     return RESULT_OK(ibase[-1]);
                 }
                 RESULT ir = korb_thread_init_body(c, slots + 2, VALUE_REF_AT(&slots[1]),
                                                   VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc), block, def_env, captured_self);
-                if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                KORB_NEW_INIT_CHECK(ir, block, def_env);
                 return RESULT_OK(slots[1]);
             }
             if (base == KORB_C_ENUMERATOR && korb_user_enum_subclass_p(vm, *recv_slot)) {   /* allocate's KorbEnumerator + #initialize(args) { } */
@@ -14592,7 +14635,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                     VALUE *const ibase = slots - argc;
                     RESULT ir = korb_invoke_method(c, slots, uinit, argc, line, vm->mid_initialize,
                                                    slots[1], idef, block, def_env, KORB_CSELF_VAL(captured_self));
-                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    KORB_NEW_INIT_CHECK(ir, block, def_env);
                     return RESULT_OK(ibase[-1]);   /* a Range SUBCLASS is not frozen (CRuby) */
                 }
             }
@@ -14630,7 +14673,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                      * (size+default / array-copy / block) populate the subclass instance. */
                     RESULT ir = korb_m_ary_initialize(c, slots + 2, VALUE_REF_AT(&slots[1]),
                                                       VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc), block, def_env, captured_self);
-                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    KORB_NEW_INIT_CHECK(ir, block, def_env);
                     return RESULT_OK(slots[1]);
                 }
                 if (!uinit && base == KORB_C_HASH && (argc >= 1 || block != NULL)) {   /* Hash subclass: default value / default_proc */
@@ -14657,7 +14700,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                 if (uinit) {
                     VALUE *ibase = slots - argc;
                     RESULT ir = korb_invoke_method(c, slots, uinit, argc, line, imid, slots[1], idef, block, def_env, KORB_CSELF_VAL(captured_self));
-                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    KORB_NEW_INIT_CHECK(ir, block, def_env);
                     return RESULT_OK(ibase[-1]);   /* the (possibly moved) instance */
                 }
                 return RESULT_OK(slots[1]);
@@ -14690,7 +14733,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                 VALUE *const ibase = slots + 6;
                 for (uint32_t i = 0; i < argc; i++) ibase[i] = slots[-(korb_sword_t)argc + (korb_sword_t)i];
                 RESULT ir = korb_invoke_method(c, ibase + argc, euinit, argc, line, vm->mid_initialize, slots[1], eidef, block, def_env, KORB_CSELF_VAL(captured_self));
-                if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                KORB_NEW_INIT_CHECK(ir, block, def_env);
                 return RESULT_OK(slots[1]);                          /* exception identity (mutated in place) */
             }
             if (argc >= 1)                                 /* default: arg0 is the message (any object; #to_s'd lazily) */
@@ -14712,9 +14755,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
              * is ISEQ-only and would misread a CFUNC's locals_cnt (SIGBUS) — this
              * is the `Klass.new(...) { block }` path, so a block may be present. */
             RESULT ir = korb_dispatch_method(c, slots, init, init_mid, line, argc, init_def, block, def_env, captured_self, true);
-            if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
-            if (UNLIKELY(ir.state == KORB_BREAK) && korb_break_owned(c, block, def_env)) return RESULT_OK(ir.value);   /* `break v` in the block passed to new (its home is new) → new returns v */
-            if (UNLIKELY(ir.state == KORB_BREAK)) return ir;
+            KORB_NEW_INIT_CHECK(ir, block, def_env);
             return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
         }
         if (UNLIKELY(argc != 0))
@@ -15042,7 +15083,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                 if (LIKELY(init->is_simple)) {     /* fixed-arity initialize → streamlined invoke (skips kw/opt/rest handling) */
                     base[-1] = obj;                /* stage obj as self at the frame's bottom header */
                     const RESULT ir = korb_invoke_simple(c, slots, init, argc, korb_flink_line(flink), vm->mid_initialize, obj, idef);
-                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    if (UNLIKELY(ir.state != KORB_NORMAL && ir.state != KORB_BREAK)) return ir;   /* a raise, or return/throw aimed further out */
                     return RESULT_OK(base[-1]);    /* the (possibly moved) obj */
                 }
                 base[-1] = obj;                    /* stage obj as self at recv_slot (slots[-argc-1]) */
@@ -15051,7 +15092,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                  * locals_cnt (SIGBUS). */
                 const RESULT ir = korb_dispatch_method(c, slots, init, vm->mid_initialize, korb_flink_line(flink), argc,
                                                        idef, NULL, NULL, NULL, framed);
-                if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                if (UNLIKELY(ir.state != KORB_NORMAL && ir.state != KORB_BREAK)) return ir;   /* a raise, or return/throw aimed further out */
                 return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
             }
             if (UNLIKELY(argc != 0))
@@ -15572,8 +15613,8 @@ korb_register_core_methods(CTX *c)
 
     /* Symbol */
     korb_def_classfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_SYMBOL), "all_symbols", korb_m_sym_all_symbols, 0);   /* Symbol.all_symbols class method */
-    korb_def_cmethod(c, KORB_C_SYMBOL, "to_s", korb_m_sym_to_s, 0);
-    korb_def_cmethod(c, KORB_C_SYMBOL, "id2name", korb_m_sym_to_s, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "to_s", korb_m_sym_name, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "id2name", korb_m_sym_name, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "slice", korb_m_sym_slice, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "[]", korb_m_sym_slice, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "succ", korb_m_sym_succ, 0);
@@ -18243,9 +18284,9 @@ static bool korb_feature_loaded_p(CTX *c, const char *path)
 }
 
 /* Does $LOADED_FEATURES carry `stem` — exactly, or as a path whose basename
- * (with or without ".rb") is `stem`?  The provided-features seed stores
- * "<internal:koruby>/<stem>.rb" pseudo paths; a later require of the bare
- * name must see them as already loaded. */
+ * (bare, ".rb" or ".so") is `stem`?  The provided-features seed stores CRuby's
+ * "enumerator.so" / "set.rb" ...; a later require of the bare name must see them
+ * as already loaded. */
 static bool
 korb_feature_basename_loaded_p(CTX *c, const char *stem)
 {
@@ -18264,7 +18305,8 @@ korb_feature_basename_loaded_p(CTX *c, const char *stem)
         const char *base = slash ? slash + 1 : b;
         const size_t rest = (size_t)(bl - (uint32_t)(base - b));
         if (rest == sl && strncmp(base, stem, sl) == 0) return true;
-        if (rest == sl + 3 && strncmp(base, stem, sl) == 0 && strncmp(base + sl, ".rb", 3) == 0) return true;
+        if (rest == sl + 3 && strncmp(base, stem, sl) == 0 &&
+            (strncmp(base + sl, ".rb", 3) == 0 || strncmp(base + sl, ".so", 3) == 0)) return true;
     }
     return false;
 }
@@ -18273,7 +18315,7 @@ korb_feature_basename_loaded_p(CTX *c, const char *stem)
  * from the start): complex/enumerator/fiber/rational/thread/ruby2_keywords
  * (+ set/pathname since 4.0).  fiber and pathname have real lib .rb files —
  * load them so their stdlib surface exists; the rest are built into the
- * runtime and get "<internal:koruby>/<name>.rb" pseudo entries. */
+ * runtime and get CRuby's bare entries. */
 RESULT korb_require_feature(CTX *c, VALUE *slots, const char *name);   /* fwd */
 void
 korb_seed_provided_features(CTX *c, VALUE *slots)
@@ -18291,13 +18333,9 @@ korb_seed_provided_features(CTX *c, VALUE *slots)
     koruby_toplevel_locals_cnt = saved_cnt;
     koruby_toplevel_local_syms = saved_sym;
     koruby_toplevel_local_cnt  = saved_scnt;
-    static const char *const pseudo[] =
-        { "complex", "enumerator", "rational", "thread", "set", "ruby2_keywords", NULL };
-    for (uint32_t i = 0; pseudo[i]; i++) {
-        char path[128];
-        snprintf(path, sizeof path, "<internal:koruby>/%s.rb", pseudo[i]);
-        korb_loaded_features_push(c, slots, path);
-    }
+    static const char *const pseudo[] =   /* CRuby's own entries: bare names */
+        { "enumerator.so", "thread.rb", "rational.so", "complex.so", "ruby2_keywords.rb", "set.rb", NULL };
+    for (uint32_t i = 0; pseudo[i]; i++) korb_loaded_features_push(c, slots, pseudo[i]);
 }
 
 /* Loading-claim table: which green thread is mid-load of a feature. */
@@ -21024,7 +21062,7 @@ korb_exc_build(CTX *c, VALUE *slots, VALUE_SLICE args)
             if (iargc) slots[6] = VALUE_SLICE_GET(args, 1);
             VALUE *const icur = slots + 6 + iargc;
             RESULT ir = korb_invoke_method(c, icur, uinit, iargc, 0, init_mid, slots[1], idef, NULL, NULL, KORB_NIL);
-            if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+            if (UNLIKELY(ir.state != KORB_NORMAL && ir.state != KORB_BREAK)) return ir;   /* a raise, or return/throw aimed further out */
             slots[1] = (icur - iargc)[-1];           /* the (moved) exception */
         }
         if (n >= 3) {                                /* raise Class, msg, backtrace */

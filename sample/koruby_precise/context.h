@@ -645,6 +645,8 @@ typedef struct KorbException {
     VALUE ARO_GC_EDGE backtrace; /* Array<String> captured when first rescued/set, or nil (never raised) */
     uint8_t bt_user;         /* 1 = #backtrace came from set_backtrace, so there are no real
                               * positions behind it and #backtrace_locations stays nil (CRuby) */
+    uint8_t gen_bound;       /* 1 = a generator's first(n)/take bound, not a real StopIteration:
+                              * Kernel#loop lets it through (CRuby stops with rb_iter_break) */
 } KorbException;
 
 /* Array: a header + a separately-allocated growable VALUE[] payload, so push
@@ -1656,6 +1658,7 @@ struct CTX_struct {
     uint32_t  pat_fail_given, pat_fail_expected;
     VALUE     pat_fail_a;     /* kind 1: the deconstructed Array; kind 2: the pattern */
     VALUE     pat_fail_b;     /* kind 2: the subject */
+    VALUE     pat_key_hash;   /* the Hash pat_key_mid was missing from (NoMatchingPatternKeyError#matchee) */
     struct korb_vm *vm;
     /* Backtrace bookkeeping.  At the END of the struct on purpose: every field
      * above keeps the offset it had, so the dispatch path's loads (slots_limit,
@@ -1786,6 +1789,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->kernel_mod);            \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->pat_fail_a);                \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->pat_fail_b);                \
+    ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->pat_key_hash);              \
     if ((c)->vm->top_self != 0)                                              \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->top_self);           \
     /* constants (class values) + their defining-module owners are roots too */ \

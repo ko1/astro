@@ -100,6 +100,13 @@ static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_yielder_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_m_yielder_push_impl(c, slots, self, a, true);
 }
+/* The yielder hit its bound: a StopIteration the driver catches, marked so an
+ * enclosing `loop` in the generator body does not end on it and keep producing. */
+static RESULT korb_gen_bound_raise(CTX *c, VALUE *slots) {
+    const RESULT r = korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached limit");
+    if (LIKELY(KORB_EXC_P(r.value))) VAL2EXC(r.value)->gen_bound = 1;
+    return r;
+}
 static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool want_value) {
     const uint32_t ac = VALUE_SLICE_LEN(a);
     const VALUE csym = ID2SYM(korb_intern(c->vm, "@__c", 4));   /* @__c = [collector, limit, ops, op_state] */
@@ -149,7 +156,7 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
         RESULT yr = korb_block_yield(c, slots + 3 + yn, sink->block, sink->def_env,
                                      multi ? &slots[3] : &slots[2], yn, sink->cself);
         if (yr.state == KORB_BREAK && korb_break_owned(c, sink->block, sink->def_env)) { sink->broke = true; *sink->break_slot = yr.value;
-            return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit"); }
+            return korb_gen_bound_raise(c, slots + 1); }
         /* Not ours: the prelude's Enumerator#each forwards the caller's literal
          * block (`&block`), so the break belongs to the `enum.each { break }`
          * site.  Mark it so the driver re-raises instead of ending the drive. */
@@ -157,7 +164,7 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
         if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;     /* StopIteration / real error propagates */
         if (sink->kind == 1) {                                /* take_while: collect while truthy */
             if (!KORB_TRUTHY(yr.value))
-                return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit");
+                return korb_gen_bound_raise(c, slots + 1);
             slots[3] = slots[2];                              /* the value (block result was the predicate) */
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(sink->collect), slots[3]));
         } else if (sink->kind >= 2) {                         /* map(2) / select(3) / reject(4) / filter_map(5) */
@@ -170,16 +177,16 @@ static RESULT korb_m_yielder_push_impl(CTX *c, VALUE *slots, VALUE_REF self, VAL
             }
             if (push) CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(sink->collect), slots[3]));
         }
-        if (term) return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit");   /* take's last value: streamed, now stop */
+        if (term) return korb_gen_bound_raise(c, slots + 1);   /* take's last value: streamed, now stop */
         return RESULT_OK(want_value ? yr.value : VALUE_REF_GET(self));
     }
     slots[2] = v;                                             /* root across the push alloc, and for the return below */
     if (keep) CHECK(korb_ary_push_val(c, slots + 6, VALUE_REF_AT(&slots[0]), slots[2]));
     /* bounded: stop on a take/take_while bound, or once `limit` values collected
      * (StopIteration — an enclosing `loop` swallows it, else gen_run catches it). */
-    if (term) return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit");
+    if (term) return korb_gen_bound_raise(c, slots + 1);
     if (FIXNUM_P(limv) && FIX2LONG(limv) >= 0 && VAL2ARY(slots[0])->len >= (uint32_t)FIX2LONG(limv))
-        return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit");
+        return korb_gen_bound_raise(c, slots + 1);
     /* #yield hands back what the consumer produced; a plain collect has none, so
      * nil — same as CRuby's collector, which is what stops a driven take_while. */
     return RESULT_OK(want_value ? KORB_NIL : VALUE_REF_GET(self));
@@ -913,6 +920,10 @@ static RESULT korb_m_to_lazy(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
         slots[0] = ta.value;
         return korb_lazy_new(c, slots + 1, slots[0], 1);
+    }
+    if (KORB_RANGE_P(v) && !FIXNUM_P(VAL2RANGE(v)->rbegin)) {   /* String / #succ range: stream Range#each */
+        slots[0] = v;
+        return korb_send_impl(c, slots + 1, korb_intern(c->vm, "__lazy_each", 11), 0, 0, NULL, NULL, NULL);
     }
     slots[0] = (KORB_ENUM_P(v)) ? VAL2ENUM(v)->values : v;       /* eager enum → its values */
     return korb_lazy_new(c, slots + 1, slots[0], 1);

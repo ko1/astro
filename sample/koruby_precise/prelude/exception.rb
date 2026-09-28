@@ -482,6 +482,15 @@ class KeyError
   def receiver; @__has_recv ? @__receiver : raise(ArgumentError, "no receiver is available"); end
   def key; defined?(@__key) ? @__key : raise(ArgumentError, "no key is available"); end
 end
+class NoMatchingPatternKeyError
+  def initialize(msg = nil, matchee: NameError::UNSET__, key: NameError::UNSET__)
+    super(msg)
+    @__matchee = matchee unless matchee.equal?(NameError::UNSET__)
+    @__key = key unless key.equal?(NameError::UNSET__)
+  end
+  def matchee; defined?(@__matchee) ? @__matchee : raise(ArgumentError, "no matchee is available"); end
+  def key; defined?(@__key) ? @__key : raise(ArgumentError, "no key is available"); end
+end
 class FrozenError
   def initialize(msg = nil, receiver: NameError::UNSET__)
     super(msg)

@@ -862,8 +862,6 @@ static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     VALUE sv = VALUE_REF_GET(self);
     if (UNLIKELY(VALUE_SLICE_LEN(a) == 0))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
-    if (UNLIKELY(!AROH_IS_GC_OBJECT(sv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* immediates */
     slots[0] = sv;                                                               /* root self */
     slots[1] = UNWRAP(korb_obj_singleton(c, slots + 2, sv));                      /* singleton (rooted) */
     const uint32_t extended = korb_intern(c->vm, "extended", 8);
@@ -2840,7 +2838,8 @@ static RESULT korb_m_loop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, N
             continue;
         }
         if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) return RESULT_OK(r.value);   /* break [v] → loop value (only ours) */
-        if (r.state == KORB_RAISE && KORB_EXC_P(r.value) && VAL2EXC(r.value)->etype == KORB_E_STOP_ITERATION)
+        if (r.state == KORB_RAISE && KORB_EXC_P(r.value) && VAL2EXC(r.value)->etype == KORB_E_STOP_ITERATION &&
+            !VAL2EXC(r.value)->gen_bound)
             return RESULT_OK(KORB_NIL);                         /* StopIteration ends the loop */
         return r;
     }

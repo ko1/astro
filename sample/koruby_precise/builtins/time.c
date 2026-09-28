@@ -950,8 +950,8 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     /* Plain local Time.new(y,m,...).  Reached only when no trailing kwargs Hash is
      * present (a Hash carrying `in:` took the offset path above), so `a` holds
-     * exactly the positional components. */
-    return korb_time_from_parts(c, slots, VALUE_REF_GET(self), a, false);
+     * exactly the positional components.  A 7th (nil zone) is not Time.local's usec. */
+    return korb_time_from_parts(c, slots, VALUE_REF_GET(self), n == 7 ? VALUE_SLICE_MAKE(a.p, 6) : a, false);
 }
 
 /* ---- Time#<instance methods> ---------------------------------------------- */

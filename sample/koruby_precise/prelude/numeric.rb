@@ -130,6 +130,12 @@ class Integer
     to_enum(meth, lim) { ::Kernel.__cmperr(self, lim, coercion: true) }
   end
   private :__iter_enum_bad
+  # a long n.upto(m) / n.downto(m) without a block (builtins/array.c): streamed, not materialized
+  def __iter_enum_gen(meth, lim)
+    n = meth == :upto ? lim.floor - self + 1 : self - lim.ceil + 1
+    to_enum(meth, lim) { n < 0 ? 0 : n }
+  end
+  private :__iter_enum_gen
 end
 class Float
   def arg
@@ -224,6 +230,8 @@ class Complex
 end
 
 class Range
+  # Range#lazy over a non-Integer begin (builtins/enumerator.c): a generator, so an endless range streams
+  def __lazy_each = Enumerator.new { |y| each { |x| y << x } }.lazy
   # Ruby 4.1: a new Range with both bounds clamped to min/max (or to another
   # Range's bounds).  Direct translation of CRuby range_clamp.
   def clamp(*args)

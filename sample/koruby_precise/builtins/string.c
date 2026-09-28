@@ -1097,6 +1097,24 @@ static RESULT korb_str_append_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_RE
             char b = (char)(uint8_t)cp;
             return korb_str_cat(c, slots, self, &b, 1);
         }
+        if (enc != KORB_ENC_UTF8) {
+            bool be = true;
+            const uint32_t unit = korb_enc_fixed_unit(c->vm, enc, &be);
+            if (unit == 2 || unit == 4) {        /* UTF-16/32: the scalar in code units of that byte order */
+                if (cp < 0) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)cp);
+                if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+                    return korb_raise(c, slots, KORB_E_RANGE, 0, "invalid codepoint 0x%lX in %s", (long)cp, korb_enc_name_of(c->vm, enc));
+                uint32_t units[2], nu = 1;
+                if (unit == 4) units[0] = (uint32_t)cp;
+                else if (cp < 0x10000) units[0] = (uint32_t)cp;
+                else { units[0] = 0xD800u + (((uint32_t)cp - 0x10000u) >> 10); units[1] = 0xDC00u + (((uint32_t)cp - 0x10000u) & 0x3FF); nu = 2; }
+                char mb[8]; uint32_t n = 0;
+                for (uint32_t u = 0; u < nu; u++)
+                    for (uint32_t k = 0; k < unit; k++)
+                        mb[n++] = (char)(uint8_t)(units[u] >> (8 * (be ? unit - 1 - k : k)));
+                return korb_str_cat(c, slots, self, mb, n);
+            }
+        }
         if (enc != KORB_ENC_UTF8) {              /* multibyte "other" (EUC-JP, SJIS, …): the code IS the byte sequence */
             if (cp < 0 || cp > 0xFFFFFFFFL) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)cp);
             if (cp >= 0x80 && cp <= 0xFF)
@@ -3548,12 +3566,16 @@ static RESULT korb_m_str_each_codepoint(CTX *c, VALUE *slots, VALUE_REF self, VA
         if (UNLIKELY(!korb_str_enc_valid(c->vm, VAL2STR(v), enc)))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", korb_enc_name_of(c->vm, enc));
     }
-    const bool sb = KORB_ENC_SB(c->vm, KORB_STR_ENC(VALUE_REF_GET(self)));   /* one byte = one codepoint */
+    const uint32_t cenc = KORB_STR_ENC(VALUE_REF_GET(self));
+    const bool sb = KORB_ENC_SB(c->vm, cenc);   /* one byte = one codepoint */
     for (uint32_t pos = 0; ; ) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
         uint32_t cl = 1, cp = (unsigned char)korb_strbuf_data(s->buf)[pos];
-        if (!sb) cp = korb_utf8_decode(korb_strbuf_data(s->buf) + pos, s->len - pos, &cl);
+        if (!sb) {                              /* UTF-16/32, EUC-JP, ... as #codepoints does */
+            if (LIKELY(cenc == KORB_ENC_UTF8)) cp = korb_utf8_decode(korb_strbuf_data(s->buf) + pos, s->len - pos, &cl);
+            else cp = korb_enc_codepoint_at(c->vm, cenc, (const unsigned char *)korb_strbuf_data(s->buf), pos, s->len, &cl);
+        }
         VALUE cv = LONG2FIX(cp);
         RESULT r = korb_block_yield(c, slots, block, def_env, &cv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;

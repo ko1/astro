@@ -602,6 +602,36 @@ static RESULT korb_m_range_frozen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
+/* A #succ object range: begin, begin.succ, ... until #<=> passes end.  With a
+ * block each value is yielded as it is made (an unbounded-looking range streams,
+ * CRuby range_each_func); without one they are collected (#to_a).  Everything
+ * lives in scanned slots so the #succ / #<=> dispatches are GC-safe. */
+static RESULT korb_range_succ_iter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *captured_self) {
+    const uint32_t mid_succ = korb_intern(c->vm, "succ", 4), mid_cmp = korb_intern(c->vm, "<=>", 3);
+    const bool excl = SELF_RANGE->exclude_end;
+    slots[0] = block ? KORB_NIL : UNWRAP(korb_ary_new(c, slots + 1, 8));   /* out (to_a) */
+    slots[1] = SELF_RANGE->rbegin;                       /* cur */
+    slots[2] = SELF_RANGE->rend;                         /* end */
+    for (;;) {
+        slots[3] = slots[1]; slots[4] = slots[2];        /* cur <=> end (recv slots[3], arg slots[4]) */
+        RESULT cr = korb_send_impl(c, slots + 5, mid_cmp, 0, 1, NULL, NULL, NULL);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (!FIXNUM_P(cr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(slots[1]));
+        const korb_sword_t cmp = FIX2LONG(cr.value);
+        if (cmp > 0 || (excl && cmp == 0)) break;
+        if (block) {
+            slots[3] = slots[1];
+            const RESULT yr = korb_block_yield(c, slots + 4, block, def_env, &slots[3], 1, captured_self);
+            if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
+        } else CHECK(korb_ary_push_val(c, slots + 5, VALUE_REF_AT(&slots[0]), slots[1]));
+        if (cmp == 0) break;
+        slots[3] = slots[1];                             /* cur = cur.succ */
+        RESULT sr = korb_send_impl(c, slots + 4, mid_succ, 0, 0, NULL, NULL, NULL);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        slots[1] = sr.value;
+    }
+    return RESULT_OK(block ? VALUE_REF_GET(self) : slots[0]);
+}
 static RESULT korb_m_range_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
     if (block == NULL) {                              /* → Enumerator over the range's elements */
@@ -650,6 +680,9 @@ static RESULT korb_m_range_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
     }
     korb_sword_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi) && KORB_OBJECT_P(SELF_RANGE->rbegin) &&
+        korb_responds_to(c, SELF_RANGE->rbegin, korb_intern(c->vm, "succ", 4)))
+        return korb_range_succ_iter(c, slots, self, block, def_env, captured_self);
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-integer (e.g. String) range → via to_a */
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));
         RESULT r = korb_m_ary_each(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, captured_self);
@@ -742,31 +775,9 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
         return RESULT_OK(VALUE_REF_GET(out));
     }
-    /* a custom object with #succ (and #<=> for the bound test): iterate begin,
-     * begin.succ, … until it passes end.  Everything lives in scanned slots so
-     * the #succ / #<=> dispatches are GC-safe. */
-    if (KORB_OBJECT_P(SELF_RANGE->rbegin) && korb_responds_to(c, SELF_RANGE->rbegin, korb_intern(c->vm, "succ", 4))) {
-        const uint32_t mid_succ = korb_intern(c->vm, "succ", 4), mid_cmp = korb_intern(c->vm, "<=>", 3);
-        const bool excl = SELF_RANGE->exclude_end;
-        slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));    /* out */
-        slots[1] = SELF_RANGE->rbegin;                       /* cur */
-        slots[2] = SELF_RANGE->rend;                         /* end */
-        for (int guard = 0; guard < 100000000; guard++) {
-            slots[3] = slots[1]; slots[4] = slots[2];        /* cur <=> end (recv slots[3], arg slots[4]) */
-            RESULT cr = korb_send_impl(c, slots + 5, mid_cmp, 0, 1, NULL, NULL, NULL);
-            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!FIXNUM_P(cr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(slots[1]));
-            const korb_sword_t cmp = FIX2LONG(cr.value);
-            if (cmp > 0 || (excl && cmp == 0)) break;
-            CHECK(korb_ary_push_val(c, slots + 5, VALUE_REF_AT(&slots[0]), slots[1]));
-            if (cmp == 0) break;
-            slots[3] = slots[1];                             /* cur = cur.succ */
-            RESULT sr = korb_send_impl(c, slots + 4, mid_succ, 0, 0, NULL, NULL, NULL);
-            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-            slots[1] = sr.value;
-        }
-        return RESULT_OK(slots[0]);
-    }
+    /* a custom object with #succ (and #<=> for the bound test) */
+    if (KORB_OBJECT_P(SELF_RANGE->rbegin) && korb_responds_to(c, SELF_RANGE->rbegin, korb_intern(c->vm, "succ", 4)))
+        return korb_range_succ_iter(c, slots, self, NULL, NULL, NULL);
     { char nm[192];
       return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s",
                         korb_range_iter_name(c, SELF_RANGE->rbegin, nm, sizeof nm)); }

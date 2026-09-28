@@ -304,10 +304,12 @@ class Module
   private def extend_object(obj)
     raise TypeError, "wrong argument type Class (expected Module)" if is_a?(Class)   # rebound to a Class
     k = ::Kernel   # obj may be a BasicObject
-    if k.instance_method(:frozen?).bind_call(obj)
+    sc = k.instance_method(:singleton_class).bind_call(obj)   # TypeError for Integer / Symbol first (CRuby)
+    # nil / true / false extend their own class (NilClass ...), which is not frozen
+    if !(nil.equal?(obj) || true.equal?(obj) || false.equal?(obj)) && k.instance_method(:frozen?).bind_call(obj)
       raise FrozenError.new("can't modify frozen #{k.instance_method(:class).bind_call(obj)}: #{obj.inspect}", receiver: obj)
     end
-    append_features(k.instance_method(:singleton_class).bind_call(obj))
+    append_features(sc)
     obj
   end
 end

@@ -134,6 +134,21 @@ static RESULT korb_m_aseq_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_aseq_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    {   /* an Integer sequence streams: a long (or endless) one must not materialize first */
+        VALUE bv, lv, sv; bool excl;
+        korb_aseq_params(VAL2ASEQ(VALUE_REF_GET(self)), &bv, &lv, &sv, &excl);
+        if (FIXNUM_P(bv) && FIXNUM_P(sv) && FIX2LONG(sv) != 0 && (lv == KORB_NIL || FIXNUM_P(lv))) {
+            const korb_sword_t st = FIX2LONG(sv), lim = lv == KORB_NIL ? 0 : FIX2LONG(lv);
+            const bool endless = (lv == KORB_NIL);
+            for (korb_sword_t i = FIX2LONG(bv); FIXABLE(i); i += st) {   /* past the Fixnum range: stop (bounded ones end first) */
+                if (!endless && (st > 0 ? (excl ? i >= lim : i > lim) : (excl ? i <= lim : i < lim))) break;
+                VALUE iv = LONG2FIX(i);
+                const RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            }
+            return RESULT_OK(VALUE_REF_GET(self));
+        }
+    }
     slots[0] = UNWRAP(korb_aseq_to_array(c, slots, self));     /* materialize (rooted) */
     VALUE_REF arr = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; ; i++) {

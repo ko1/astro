@@ -18,6 +18,27 @@
 - **捕獲グループ 256 個以上は RegexpError**: CRuby (Onigmo) は 32767 まで。以前は 32 個超で
   メモリ破壊 (ipaddress で SEGV)。
 - **UTF-8 → EUC-KR の変換器が無い** (erb test_erb_m17n の 2 例、ConverterNotFoundError)。
+- **ブロックの `$~` が定義元メソッドのものにならない** (w16 radius 3 行): `$~` は 1 つのセルを
+  backref を使うメソッドの入口で退避・出口で復元する動的スコープなので、`r($1) { r($2) }` のように
+  別メソッドの中から呼ばれたブロックは、そのメソッドの `$~` を読む (CRuby は定義元フレームの `$~`)。
+  直すには bref スタックの各エントリに退避したフレームを持たせ、ブロックの読み書きは定義元より深い最初の
+  エントリに向ける必要がある。再現: `def m2; "xy" =~ /(x)(y)/; y2 { $2 }; end; def y2; "q" =~ /q/; yield; end`
+  が CRuby は "y"、koruby は nil。
+- **BREAK が initialize から漏れる** (w16 biz): `spec/periods/before_spec.rb` の 9 例目で
+  `Biz::Periods::Before#initialize` が KORB_BREAK 状態で返る（break_blk は非 NULL = どこかのブロックの break が
+  自分のイテレータで消費されていない）。単独スクリプトでは出ず、前の 8 例（lazy の first / take と
+  Enumerator#next の外部列挙）の後でだけ出る。`.new` の側で RETURN / THROW を伝播するようにしたとき、
+  ブロック無しの `.new` では BREAK を従来どおり捨てることにして回避した（伝播させると subject が nil）。
+- **lazy flat_map を first(n) の後にもう一度回すと空** (w16 biz 4 行の残り): 外部列挙
+  (`pe = lazy.to_enum`、`Enumerator.new { |y| loop { y << pe.next } }`) を源にした `lin.lazy.flat_map {}` で、
+  `o.first(2)` の後の `o.each { break }` が何も yield しない（CRuby は pe の続きから）。`map` なら出ない
+  （flat_map は prelude の __lazy_gen = 生成器）。master でも同じ。first(n) の打ち切りが generator 本体の
+  `loop` に食われて余分に出る方は gen_bound で直した。
+- **main の特異メソッドが無い** (w16 ruby2_keywords 1 行): CRuby の main は `include` / `public` /
+  `private` / `define_method` / `using` / `ruby2_keywords` / `to_s` / `inspect` を特異メソッドで持つ
+  (`main.method(:include).owner` が main の特異クラス、`singleton_methods` が `[:inspect, :to_s]`)。
+  koruby は Kernel の global と `klass == KORB_NIL` 判定の特別扱いなので、`method(:include)` /
+  `method(:ruby2_keywords)` が NameError、`respond_to?(:ruby2_keywords, true)` が false。
 
 ## 未: refinement と Enumerator の残り (2026-09-27)
 

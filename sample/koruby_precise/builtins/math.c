@@ -54,7 +54,28 @@ static double korb_cbrt(double f) {
         return korb_float_new(c, slots, fn(x, y));                                      \
     }
 
-KORB_MATH1(sqrt, sqrt)   KORB_MATH1(cbrt, korb_cbrt)
+KORB_MATH1(cbrt, korb_cbrt)
+/* CRuby rb_math_sqrt: a Complex gets its principal root; ±0.0 → 0.0 */
+static RESULT korb_m_math_sqrt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE v = VALUE_SLICE_GET(a, 0);
+    double x;
+    if (KORB_COMPLEX_P(v)) {
+        double re, im;
+        slots[0] = v;                                /* a Rational part's #to_f may move it */
+        { RESULT _cr = korb_math_coerce_d(c, slots + 1, VAL2CPX(slots[0])->re, &re); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; }
+        { RESULT _cr = korb_math_coerce_d(c, slots + 1, VAL2CPX(slots[0])->im, &im); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; }
+        const double d = hypot(re, im);
+        const double rr = sqrt((d + re) / 2.0), ri = sqrt((d - re) / 2.0);
+        slots[0] = UNWRAP(korb_float_new(c, slots, rr));
+        slots[1] = UNWRAP(korb_float_new(c, slots + 1, (!isnan(im) && signbit(im)) ? -ri : ri));
+        return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+    }
+    { RESULT _cr = korb_math_coerce_d(c, slots, v, &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; }
+    if (UNLIKELY(x < 0.0))
+        return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - sqrt");
+    return korb_float_new(c, slots, x == 0.0 ? 0.0 : sqrt(x));
+}
 KORB_MATH1(sin, sin)     KORB_MATH1(cos, cos)     KORB_MATH1(tan, tan)
 KORB_MATH1(asin, asin)   KORB_MATH1(acos, acos)   KORB_MATH1(atan, atan)
 KORB_MATH1(sinh, sinh)   KORB_MATH1(cosh, cosh)   KORB_MATH1(tanh, tanh)
