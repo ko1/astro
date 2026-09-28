@@ -234,7 +234,7 @@ class Module
 
   def autoload(name, path)
     n = name.is_a?(Symbol) ? name : name.to_str.to_sym
-    raise NameError, "autoload must be constant name: #{n}" unless n.to_s =~ /\A[A-Z][A-Za-z0-9_]*\z/
+    raise NameError, "autoload must be constant name: #{n}" unless n.to_s =~ /\A\p{Upper}\p{Word}*\z/
     unless path.is_a?(String) || path.respond_to?(:to_path) || path.respond_to?(:to_str)
       raise TypeError, "no implicit conversion of #{path.class} into String"
     end

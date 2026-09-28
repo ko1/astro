@@ -2341,7 +2341,13 @@ static RESULT korb_m_class_protected_method_defined(CTX *c, VALUE *slots, VALUE_
  * receiver's namespace is ignored; rightmost name resolves. */
 /* a valid constant name: [A-Z][A-Za-z0-9_]* */
 static bool korb_valid_const_name(const char *p, uint32_t len) {
-    if (len == 0 || !(p[0] >= 'A' && p[0] <= 'Z')) return false;
+    if (len == 0) return false;
+    const unsigned char b = (unsigned char)p[0];
+    if (b < 0x80) { if (!(b >= 'A' && b <= 'Z')) return false; }
+    else {                                                 /* an uppercase non-ASCII letter (:Ω, :Màxim's head is ASCII) */
+        const uint32_t clen = b >= 0xF0 ? 4u : b >= 0xE0 ? 3u : b >= 0xC0 ? 2u : 1u;
+        if (clen > len || !korb_const_name_head_upper(p)) return false;
+    }
     for (uint32_t i = 1; i < len; i++) {
         const unsigned char ch = (unsigned char)p[i];   /* non-ASCII (>=0x80) allowed: CRuby permits unicode identifier chars */
         if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch >= 0x80)) return false;
