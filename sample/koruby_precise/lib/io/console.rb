@@ -1,78 +1,71 @@
-# io/console shim on stty(1) — koruby has no termios binding yet.  Covers the
-# common editor surface: raw / raw! / cooked / cooked!, echo, getch, winsize,
-# IO.console.  Terminal modes are set with `stty` against the controlling
-# terminal, so this works only where /dev/tty and stty(1) exist (i.e. a real
-# terminal on a POSIX host); calls degrade to no-ops when they don't.
+# io/console on termios of the IO's own descriptor (builtins/io.c __tty_*), so it
+# works on a PTY slave that is not the process's controlling terminal.  A non-tty
+# raises Errno::ENOTTY, as CRuby does.
 
 class IO
-  def raw(*)
-    saved = IO.__console_stty("-g")
-    IO.__console_stty("raw -echo")
+  def raw(min: nil, time: nil, intr: nil)
+    saved = __tty_get
+    __tty_mode(0, intr)
     begin
       yield self
     ensure
-      IO.__console_stty(saved) if saved
+      __tty_set(saved)
     end
   end
 
-  def raw!(*)
-    IO.__console_stty("raw -echo")
+  def raw!(min: nil, time: nil, intr: nil)
+    __tty_mode(0, intr)
     self
   end
 
   def cooked
-    saved = IO.__console_stty("-g")
-    IO.__console_stty("sane")
+    saved = __tty_get
+    __tty_mode(1)
     begin
       yield self
     ensure
-      IO.__console_stty(saved) if saved
+      __tty_set(saved)
     end
   end
 
   def cooked!
-    IO.__console_stty("sane")
+    __tty_mode(1)
     self
   end
 
   def echo=(flag)
-    IO.__console_stty(flag ? "echo" : "-echo")
+    __tty_mode(flag ? 3 : 2)
     flag
   end
 
-  def echo?
-    out = IO.__console_stty("-a")
-    out ? !out.include?("-echo ") : true
-  end
-
-  def getch(*)
-    raw { getc }
-  end
+  def echo? = __tty_echo_p
 
   def noecho
-    saved = IO.__console_stty("-g")
-    IO.__console_stty("-echo")
+    saved = __tty_get
+    __tty_mode(2)
     begin
       yield self
     ensure
-      IO.__console_stty(saved) if saved
+      __tty_set(saved)
     end
   end
 
-  def winsize
-    out = IO.__console_stty("size")
-    if out && out =~ /\A(\d+)\s+(\d+)/
-      [$1.to_i, $2.to_i]
-    else
-      rows = ENV["LINES"].to_i
-      cols = ENV["COLUMNS"].to_i
-      [rows > 0 ? rows : 24, cols > 0 ? cols : 80]
-    end
+  def getch(min: nil, time: nil, intr: nil)
+    raw(intr: intr) { getc }
   end
+
+  def getpass(prompt = nil)
+    $stderr.print(prompt) if prompt
+    line = noecho { gets }
+    $stderr.puts
+    line&.chomp
+  end
+
+  def winsize = __tty_winsize
 
   def winsize=(size)
     rows, cols = size
-    IO.__console_stty("rows #{rows.to_i} cols #{cols.to_i}")
+    __tty_winsize(Integer(rows), Integer(cols))
     size
   end
 
@@ -80,15 +73,8 @@ class IO
   def oflush; self; end
   def ioflush; self; end
 
-  # Run stty against the controlling terminal; nil when there is none.
-  def IO.__console_stty(args)
-    out = IO.popen("stty #{args} < /dev/tty 2> /dev/null", err: File::NULL) { |io| io.read }
-    $?.success? ? out.chomp : nil
-  rescue StandardError
-    nil
-  end
-
-  def IO.console
+  def IO.console(*)
+    @__console = nil if @__console&.closed?
     @__console ||= begin
       File.open("/dev/tty", "r+")
     rescue StandardError

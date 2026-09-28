@@ -1,4 +1,5 @@
 #include <sys/ioctl.h>
+#include <termios.h>
 #include <limits.h>
 #include <sys/socket.h>
 #include <errno.h>
@@ -678,6 +679,90 @@ static RESULT korb_m_io_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (ftruncate(korb_io_fd(c, VALUE_REF_GET(self)), (off_t)len) != 0) return korb_raise_errno(c, slots, errno, "ftruncate", "");
     return RESULT_OK(LONG2FIX(0));
 }
+/* ---- io/console on the IO's own descriptor (termios) ------------------------
+ * lib/io/console.rb builds raw / cooked / noecho / echo= / winsize on these.
+ * The modes are CRuby io/console's (set_rawmode / set_cookedmode / set_noecho). */
+static RESULT korb_io_tty_fd(CTX *c, VALUE *slots, VALUE_REF self, int *out) {
+    KORB_IO_NEED_OPEN(c, slots, self);
+    *out = korb_io_fd(c, VALUE_REF_GET(self));
+    return RESULT_OK(KORB_NIL);
+}
+/* IO#__tty_get → the terminal state as an opaque String (for __tty_set) */
+static RESULT korb_m_io_tty_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; int fd;
+    CHECK(korb_io_tty_fd(c, slots, self, &fd));
+    struct termios t;
+    if (tcgetattr(fd, &t) != 0) return korb_raise_errno(c, slots, errno, "tcgetattr", "");
+    return korb_str_new(c, slots, (const char *)&t, (uint32_t)sizeof t);
+}
+/* IO#__tty_set(state) — restore a state __tty_get returned */
+static RESULT korb_m_io_tty_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    int fd;
+    CHECK(korb_io_tty_fd(c, slots, self, &fd));
+    const VALUE sv = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(sv) || VAL2STR(sv)->len != sizeof(struct termios))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid terminal state");
+    struct termios t;
+    memcpy(&t, korb_strbuf_data(VAL2STR(sv)->buf), sizeof t);
+    if (tcsetattr(fd, TCSANOW, &t) != 0) return korb_raise_errno(c, slots, errno, "tcsetattr", "");
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+/* IO#__tty_mode(mode, intr) — 0 raw, 1 cooked, 2 noecho, 3 echo */
+static RESULT korb_m_io_tty_mode(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    int fd;
+    CHECK(korb_io_tty_fd(c, slots, self, &fd));
+    const long mode = FIXNUM_P(VALUE_SLICE_GET(a, 0)) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : -1;
+    const bool intr = VALUE_SLICE_LEN(a) > 1 && KORB_TRUTHY(VALUE_SLICE_GET(a, 1));
+    struct termios t;
+    if (tcgetattr(fd, &t) != 0) return korb_raise_errno(c, slots, errno, "tcgetattr", "");
+    switch (mode) {
+      case 0:
+        t.c_iflag &= (tcflag_t)~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON | IXOFF | IXANY | IMAXBEL);
+        t.c_oflag &= (tcflag_t)~OPOST;
+        t.c_lflag &= (tcflag_t)~(ECHO | ECHOE | ECHOK | ECHONL | ICANON | ISIG | IEXTEN);
+        t.c_cflag &= (tcflag_t)~(CSIZE | PARENB);
+        t.c_cflag |= CS8;
+        t.c_cc[VMIN] = 1; t.c_cc[VTIME] = 0;
+        if (intr) { t.c_iflag |= BRKINT; t.c_lflag |= ISIG; t.c_oflag |= OPOST; }
+        break;
+      case 1:
+        t.c_iflag |= (BRKINT | ISTRIP | ICRNL | IXON);
+        t.c_oflag |= OPOST;
+        t.c_lflag |= (ECHO | ECHOE | ECHOK | ECHONL | ICANON | ISIG | IEXTEN);
+        break;
+      case 2: t.c_lflag &= (tcflag_t)~(ECHO | ECHOE | ECHOK | ECHONL); break;
+      case 3: t.c_lflag |= (ECHO | ECHOE | ECHOK | ECHONL); break;
+      default: return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown terminal mode");
+    }
+    if (tcsetattr(fd, TCSANOW, &t) != 0) return korb_raise_errno(c, slots, errno, "tcsetattr", "");
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+/* IO#__tty_echo_p → the ECHO bit */
+static RESULT korb_m_io_tty_echo_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; int fd;
+    CHECK(korb_io_tty_fd(c, slots, self, &fd));
+    struct termios t;
+    if (tcgetattr(fd, &t) != 0) return korb_raise_errno(c, slots, errno, "tcgetattr", "");
+    return RESULT_OK((t.c_lflag & ECHO) ? KORB_TRUE : KORB_FALSE);
+}
+/* IO#__tty_winsize([rows, cols]) → [rows, cols]; with an argument, sets it first */
+static RESULT korb_m_io_tty_winsize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    int fd;
+    CHECK(korb_io_tty_fd(c, slots, self, &fd));
+    struct winsize w;
+    if (VALUE_SLICE_LEN(a) >= 2) {
+        memset(&w, 0, sizeof w);
+        w.ws_row = (unsigned short)(FIXNUM_P(VALUE_SLICE_GET(a, 0)) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0);
+        w.ws_col = (unsigned short)(FIXNUM_P(VALUE_SLICE_GET(a, 1)) ? FIX2LONG(VALUE_SLICE_GET(a, 1)) : 0);
+        if (ioctl(fd, TIOCSWINSZ, &w) != 0) return korb_raise_errno(c, slots, errno, "ioctl(TIOCSWINSZ)", "");
+    }
+    if (ioctl(fd, TIOCGWINSZ, &w) != 0) return korb_raise_errno(c, slots, errno, "ioctl(TIOCGWINSZ)", "");
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
+    CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), LONG2FIX(w.ws_row)));
+    CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), LONG2FIX(w.ws_col)));
+    return RESULT_OK(slots[0]);
+}
+
 /* IO#fileno → the integer file descriptor. */
 static RESULT korb_m_io_fileno(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -3091,6 +3176,8 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("close_read", close_read, 0);   IOM("close_write", close_write, 0);
     IOM("stat", stat, 0);        IOM("fileno", fileno, 0);   IOM("to_i", fileno, 0);
     IOM("tty?", tty_p, 0);       IOM("isatty", tty_p, 0);
+    IOM("__tty_get", tty_get, 0);  IOM("__tty_set", tty_set, 1);  IOM("__tty_mode", tty_mode, -1);
+    IOM("__tty_echo_p", tty_echo_p, 0);  IOM("__tty_winsize", tty_winsize, -1);
     IOM("truncate", truncate, 1);
     IOM("flush", flush, 0);      IOM("eof?", eof_p, 0);     IOM("eof", eof_p, 0);
     IOM("sync", sync, 0);        IOM("sync=", sync_set, 1);
