@@ -1196,6 +1196,9 @@ struct korb_vm {
     /* prelude has finished: user code may now shadow a global builtin
      * (`module Kernel; def require`) — see korb_class_method_slot. */
     bool boot_done;
+    /* user code defined, on Enumerable/Comparable/..., a method koruby keeps on a
+     * core class (reflect_owner.h): dispatch must look there (korb_mcache_find) */
+    bool reflect_owner_redef;
     VALUE kernel_mod;        /* the Kernel module, cached by korb_relocate_object_methods */
 
     /* constants (class names): parallel name→value arrays.  `const_vals` holds

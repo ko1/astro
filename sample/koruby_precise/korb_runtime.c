@@ -5624,6 +5624,7 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
  * kill the fastpaths VM-wide; cf. koruby's note on fib regressing ~5×).  The
  * other operator-ish methods (** << >> & | ^ [] []=) have no node fastpath, so
  * they already dispatch and honor reopening without a flag. */
+static bool korb_reflect_owner_mid_p(struct korb_vm *vm, VALUE owner, uint32_t mid);   /* fwd (symbol.c) */
 static void
 korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
 {
@@ -5639,6 +5640,8 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
             if (KORB_CLASS_P(b) && b != klass && korb_class_has_ancestor(b, klass)) korb_check_basic_op_redef(c, b, mid);
         }
     }
+    if (vm->boot_done && !vm->reflect_owner_redef && korb_reflect_owner_mid_p(vm, klass, mid))
+        vm->reflect_owner_redef = true;
     /* A user-defined `!` (Delegator, BasicObject proxies) makes node_not dispatch
      * instead of negating in place; one flag for the whole VM keeps the common
      * `!bool` free. */
@@ -6225,6 +6228,22 @@ korb_hash_sub_enum_method(struct korb_vm *const vm, const VALUE klass, const uin
     *def = KORB_CLASS_P(edef) ? edef : enm;
     return em;
 }
+static VALUE korb_reflect_owner_vm(struct korb_vm *vm, VALUE klass, uint32_t mid);   /* fwd (symbol.c) */
+/* A core-class method CRuby keeps on a module (Hash#sum is Enumerable's) loses
+ * to a user definition on that module (descriptive_statistics' Enumerable#sum). */
+static __attribute__((noinline, cold)) struct korb_method *
+korb_reflect_owner_redirect(struct korb_vm *const vm, const uint32_t mid,
+                            struct korb_method *const m, VALUE *const def)
+{
+    if (m->kind != KORB_METHOD_CFUNC && !m->core) return m;   /* the user's own Hash#sum */
+    const VALUE o = korb_reflect_owner_vm(vm, *def, mid);
+    if (!KORB_CLASS_P(o)) return m;
+    VALUE odef = KORB_NIL;
+    struct korb_method *const om = korb_mro_seg_find(o, mid, &odef, 0);
+    if (om == NULL || om == m || om->kind == KORB_METHOD_UNDEF || om->kind == KORB_METHOD_CFUNC || om->core) return m;
+    *def = KORB_CLASS_P(odef) ? odef : o;
+    return om;
+}
 #define KORB_MCACHE_N 4096u   /* direct-mapped, power of two */
 /* cached korb_class_find_method for user-object dispatch (the hot path).  A hit
  * requires serial match → no def/GC since fill → cached klass ptr + method ptr
@@ -6242,6 +6261,8 @@ korb_mcache_find(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def)
     struct korb_method *m = korb_class_find_method(klass, mid, &def);
     if (UNLIKELY(m != NULL && def == korb_builtin_class_obj(vm, KORB_C_HASH) && klass != def))
         m = korb_hash_sub_enum_method(vm, klass, mid, m, &def);
+    if (UNLIKELY(vm->reflect_owner_redef && m != NULL && KORB_CLASS_P(def)))
+        m = korb_reflect_owner_redirect(vm, mid, m, &def);
     korb_mid_looked(vm, mid);
     e->serial = vm->method_serial; e->klass = klass; e->mid = mid; e->m = m; e->def_class = def;
     *out_def = def;

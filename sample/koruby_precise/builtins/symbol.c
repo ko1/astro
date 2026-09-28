@@ -974,18 +974,31 @@ static bool korb_reflect_raw_p(void) {                /* KORB_REFLECT_RAW: korub
     if (raw < 0) raw = getenv("KORB_REFLECT_RAW") != NULL;
     return raw != 0;
 }
-static VALUE korb_reflect_owner(CTX *c, const VALUE klass, const uint32_t mid) {
+static VALUE korb_reflect_owner_vm(struct korb_vm *const vm, const VALUE klass, const uint32_t mid) {
     if (!KORB_CLASS_P(klass) || VAL2CLASS(klass)->name_sym == 0 || korb_reflect_raw_p()) return KORB_NIL;
-    const char *const kn = korb_sym_name(c->vm, VAL2CLASS(klass)->name_sym);
-    const char *const mn = korb_sym_name(c->vm, mid);
+    const char *const kn = korb_sym_name(vm, VAL2CLASS(klass)->name_sym);
+    const char *const mn = korb_sym_name(vm, mid);
     for (size_t i = 0; i < sizeof korb_reflect_owner_tab / sizeof korb_reflect_owner_tab[0]; i++) {
         if (strcmp(korb_reflect_owner_tab[i].klass, kn) != 0 || strcmp(korb_reflect_owner_tab[i].mid, mn) != 0) continue;
-        if (korb_const_get(c->vm, korb_intern(c->vm, kn, strlen(kn))) != klass) return KORB_NIL;
+        if (korb_const_get(vm, korb_intern(vm, kn, strlen(kn))) != klass) return KORB_NIL;
         const char *const on = korb_reflect_owner_tab[i].owner;
-        const VALUE o = korb_const_get_path(c->vm, korb_intern(c->vm, on, strlen(on)));
+        const VALUE o = korb_const_get_path(vm, korb_intern(vm, on, strlen(on)));
         return KORB_CLASS_P(o) ? o : KORB_NIL;
     }
     return KORB_NIL;
+}
+static VALUE korb_reflect_owner(CTX *c, const VALUE klass, const uint32_t mid) {
+    return korb_reflect_owner_vm(c->vm, klass, mid);
+}
+/* Is (owner, mid) in the table, i.e. would a definition there shadow a core class's? */
+static bool korb_reflect_owner_mid_p(struct korb_vm *const vm, const VALUE owner, const uint32_t mid) {
+    if (!KORB_CLASS_P(owner) || VAL2CLASS(owner)->name_sym == 0) return false;
+    const char *const on = korb_sym_name(vm, VAL2CLASS(owner)->name_sym);
+    const char *const mn = korb_sym_name(vm, mid);
+    for (size_t i = 0; i < sizeof korb_reflect_owner_tab / sizeof korb_reflect_owner_tab[0]; i++)
+        if (strcmp(korb_reflect_owner_tab[i].owner, on) == 0 && strcmp(korb_reflect_owner_tab[i].mid, mn) == 0)
+            return korb_const_get_path(vm, korb_intern(vm, on, strlen(on))) == owner;
+    return false;
 }
 /* Does `klass` carry any such methods (a listing asks per method only then)? */
 static bool korb_reflect_owner_class_p(CTX *c, const VALUE klass) {
