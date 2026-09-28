@@ -1619,6 +1619,8 @@ struct CTX_struct {
     bool      inspect_text;     /* the #inspect being built showed a String (or a non-US-ASCII element result): not US-ASCII */
     VALUE     throw_tag;     /* active `throw` tag while a KORB_THROW unwinds (GC-visited) */
     VALUE    *catch_tags;    /* stack of tags of the active `catch` blocks (GC-visited) */
+    const void **catch_owner;   /* the green thread each tag's catch runs in: the CTX is shared, so a
+                                 * thread's throw looks only at its own, and pops only its own */
     uint32_t  catch_n, catch_cap;
     /* Symbol id of the key a hash pattern could not find (0 = none), so the
      * NoMatchingPatternError raised at the end of a `case/in` chain can be

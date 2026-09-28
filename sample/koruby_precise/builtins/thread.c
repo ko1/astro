@@ -1635,8 +1635,8 @@ korb_m_thread_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         if (body != NULL && body != KORB_BLK_CPROC && korb_get_srcloc(c->vm, body, &fsym, &line))
             snprintf(loc, sizeof loc, " %s:%u", korb_sym_name(c->vm, fsym), line);
     }
-    const int len = snprintf(buf, sizeof buf, "#<Thread:%p%s%s%s %s>",
-                             (void *)t, nb[0] ? "@" : "", nb, loc, st);
+    const int len = snprintf(buf, sizeof buf, "#<Thread:0x%016lx%s%s%s %s>",   /* zero-padded like any #<X:0x…> */
+                             (unsigned long)(uintptr_t)t, nb[0] ? "@" : "", nb, loc, st);
     RESULT r = korb_str_new(c, slots, buf, (uint32_t)len);
     if (LIKELY(r.state == KORB_NORMAL))
         KORB_STR_ENC_SET(r.value, name_enc >= 0 ? (uint32_t)name_enc : KORB_ENC_BINARY);   /* CRuby: 既定は ASCII-8BIT */

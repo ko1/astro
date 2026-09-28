@@ -509,12 +509,10 @@ korb_m_fiber_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     static const char *const st[4] = { "created", "resumed", "suspended", "terminated" };
     char loc[256] = "";
     uint32_t fsym = 0, line = 0;
-    if (rep->body != NULL && korb_get_srcloc(c->vm, rep->body, &fsym, &line))
-        snprintf(loc, sizeof loc, "%s:%u", korb_sym_name(c->vm, fsym), line);
-    else
-        snprintf(loc, sizeof loc, "%s", korb_type_name(fv));
+    if (rep->body != NULL && korb_get_srcloc(c->vm, rep->body, &fsym, &line))   /* a root fiber has none: no location */
+        snprintf(loc, sizeof loc, " %s:%u", korb_sym_name(c->vm, fsym), line);
     char buf[320];
-    const int n = snprintf(buf, sizeof buf, "#<Fiber:0x%016zx %s (%s)>",
+    const int n = snprintf(buf, sizeof buf, "#<Fiber:0x%016zx%s (%s)>",
                            (size_t)(uintptr_t)rep, loc, st[rep->fstate & 3]);   /* the rep does not move (the object may) */
     return korb_str_new(c, slots, buf, (uint32_t)(n < 0 ? 0 : (n < (int)sizeof buf ? n : (int)sizeof buf - 1)));
 }

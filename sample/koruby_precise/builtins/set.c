@@ -1109,11 +1109,17 @@ static RESULT korb_m_throw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) 
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     const VALUE tag = VALUE_SLICE_GET(a, 0);
     bool active = false;
-    for (uint32_t i = c->catch_n; i-- > 0; ) if (c->catch_tags[i] == tag) { active = true; break; }
+    const void *const me = c->vm->cur_thread;
+    for (uint32_t i = c->catch_n; i-- > 0; ) if (c->catch_tags[i] == tag && c->catch_owner[i] == me) { active = true; break; }
     const VALUE val = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
     if (!active) {
         slots[0] = tag; slots[1] = val;
-        RESULT r = korb_raise(c, slots + 2, KORB_E_UNCAUGHT_THROW, 0, "uncaught throw %s", korb_type_name(tag));
+        char tb[200]; char *ib = NULL; size_t il = 0;     /* "uncaught throw :tag" — the tag inspected (CRuby) */
+        FILE *const ms = open_memstream(&ib, &il);
+        if (ms) { korb_fprint_inspect(c, ms, tag); fclose(ms); }
+        snprintf(tb, sizeof tb, "%s", ib ? ib : korb_type_name(tag));
+        free(ib);
+        RESULT r = korb_raise(c, slots + 2, KORB_E_UNCAUGHT_THROW, 0, "uncaught throw %s", tb);
         if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) {   /* #tag / #value (prelude readers) */
             slots[2] = r.value;
             CHECK(korb_ivar_set(c, slots + 3, VALUE_REF_AT(&slots[2]), ID2SYM(korb_intern(c->vm, "@tag", 4)), slots[0]));
@@ -1136,12 +1142,21 @@ static RESULT korb_m_catch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, 
     if (UNLIKELY(c->catch_n == c->catch_cap)) {        /* push our tag (active-catch stack) */
         const uint32_t nc = c->catch_cap ? c->catch_cap * 2 : 8;
         c->catch_tags = realloc(c->catch_tags, sizeof(VALUE) * nc);
-        if (!c->catch_tags) { fprintf(stderr, "koruby_precise: oom (catch)\n"); abort(); }
+        c->catch_owner = realloc(c->catch_owner, sizeof(void *) * nc);
+        if (!c->catch_tags || !c->catch_owner) { fprintf(stderr, "koruby_precise: oom (catch)\n"); abort(); }
         c->catch_cap = nc;
     }
+    const void *const me = c->vm->cur_thread;
+    c->catch_owner[c->catch_n] = me;
     c->catch_tags[c->catch_n++] = slots[0];
     RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
-    c->catch_n--;                                      /* pop on every exit path */
+    for (uint32_t i = c->catch_n; i-- > 0; )           /* pop OUR newest entry: another green thread may have pushed above it */
+        if (c->catch_owner[i] == me) {
+            memmove(&c->catch_tags[i], &c->catch_tags[i + 1], sizeof(VALUE) * (c->catch_n - i - 1));
+            memmove(&c->catch_owner[i], &c->catch_owner[i + 1], sizeof(void *) * (c->catch_n - i - 1));
+            c->catch_n--;
+            break;
+        }
     if (r.state == KORB_THROW && c->throw_tag == slots[0]) {   /* our tag → caught (value in r.value) */
         c->throw_tag = KORB_NIL;
         r.state = KORB_NORMAL;

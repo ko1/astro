@@ -3839,9 +3839,10 @@ static void korb_def_data_common(CTX *c, const VALUE *pk) {
     korb_class_def_cfn(c, *pk, "initialize", korb_m_data_initialize, -1);
 }
 static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)self; (void)cself;
+    (void)cself;
     struct korb_vm *const vm = c->vm;
-    { VALUE dt = korb_const_get(vm, korb_intern(vm, "Data", 4));        /* anon class, super Data (is_a?(Data)) */
+    { VALUE dt = VALUE_REF_GET(self);                  /* the receiver: Data, or a subclass whose .define calls super */
+      if (!KORB_CLASS_P(dt)) dt = korb_const_get(vm, korb_intern(vm, "Data", 4));
       if (!KORB_CLASS_P(dt)) dt = korb_builtin_class_obj(vm, KORB_C_OBJECT);
       slots[0] = UNWRAP(korb_class_new(c, slots, 0, dt)); }
     CHECK(korb_register_subclass(c, slots + 1, VAL2CLASS(slots[0])->superclass, slots[0]));   /* Data.subclasses sees it */
@@ -13815,6 +13816,12 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
          * onto subclasses), so the receiver class itself carries them. */
         if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) / .new(member: v) → init */
             const bool is_data = VAL2CLASS(*recv_slot)->is_data;
+            /* keywords with positional values, or more values than members (CRuby rb_data_s_new) */
+            if (is_data && argc > 1 && korb_kwargs_hash_p(slots[-1]))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", argc);
+            if (is_data && !(argc == 1 && korb_kwargs_hash_p(slots[-1])) && argc > VAL2ARY(VAL2CLASS(*recv_slot)->members)->len)
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..%u)",
+                                  argc, VAL2ARY(VAL2CLASS(*recv_slot)->members)->len);
             if (is_data) {                                 /* user-overridden Data#initialize (ISEQ) → allocate + dispatch it */
                 VALUE didef = KORB_NIL;
                 struct korb_method *const duinit = korb_find_method_c(vm, *recv_slot, vm->mid_initialize, &didef);
@@ -13826,10 +13833,10 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                      * positional args to a member-keyed Hash so an override's **kw sees them.
                      * Build the kwargs Hash BEFORE allocating the instance (the instance
                      * lives in a slot right up to the invoke, no alloc after it). */
-                    if (!kw_form && argc == nmem && nmem > 0) {
+                    if (!kw_form && argc <= nmem && argc > 0) {   /* the first argc members (the rest: the override's missing keyword) */
                         slots[0] = UNWRAP(korb_hash_new(c, slots, nmem));   /* kwargs hash (rooted) */
                         VALUE_REF kh = VALUE_REF_AT(&slots[0]);
-                        for (uint32_t i = 0; i < nmem; i++) {
+                        for (uint32_t i = 0; i < argc; i++) {
                             slots[1] = korb_items_data(VAL2ARY(VAL2CLASS(*recv_slot)->members)->items)[i];   /* member sym (re-read; rooted) */
                             slots[2] = slots[-(korb_sword_t)argc + (korb_sword_t)i];                       /* positional value (re-read from args region) */
                             CHECK(korb_hash_set(c, slots + 3, kh, VALUE_REF_AT(&slots[1]), slots[2]));

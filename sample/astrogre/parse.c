@@ -1279,7 +1279,8 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         ire_node_t *body = parse_alt(q);
         if (re_get(q) != ')') re_error(q, "end pattern with unmatched parenthesis");
 
-        if (saved_flags) {
+        (void)saved_flags;                /* every group restores: a bare (?-x) inside it ends at its ')' */
+        {
             q->case_insensitive = saved_ci;
             q->multiline = saved_ml;
             q->extended = saved_x;

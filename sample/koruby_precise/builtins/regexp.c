@@ -897,7 +897,12 @@ static const char *korb_re_arg_type(VALUE v) {
 /* coerce arg → subject String (Symbol → name), or nil for non-strings. */
 static RESULT korb_re_subject(CTX *c, VALUE *slots, VALUE v, VALUE *out) {
     if (KORB_STRING_P(v)) { *out = v; return RESULT_OK(KORB_TRUE); }
-    if (SYMBOL_P(v)) { const char *nm = korb_sym_name(c->vm, SYM2ID(v)); *out = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm))); return RESULT_OK(KORB_TRUE); }
+    if (SYMBOL_P(v)) {                                   /* the whole name (it may hold NUL), in its encoding */
+        const uint32_t id = SYM2ID(v);
+        *out = UNWRAP(korb_str_new(c, slots, korb_sym_name(c->vm, id), c->vm->sym_lens[id]));
+        KORB_STR_ENC_SET(*out, c->vm->sym_encs[id]);
+        return RESULT_OK(KORB_TRUE);
+    }
     *out = KORB_NIL; return RESULT_OK(KORB_FALSE);
 }
 /* `re =~ str` / `str =~ re` core: set $~, return match CHAR index (or nil). */
@@ -906,8 +911,7 @@ static RESULT korb_re_match_set(CTX *c, VALUE *slots, VALUE re, VALUE str) {
     if (!KORB_STRING_P(str)) {                            /* coerce Symbol / #to_str; else no match */
         slots[0] = re;                                    /* root re across the coercion alloc */
         if (SYMBOL_P(str)) {
-            const char *nm = korb_sym_name(c->vm, SYM2ID(str));
-            str = UNWRAP(korb_str_new(c, slots + 1, nm, (uint32_t)strlen(nm)));
+            CHECK(korb_re_subject(c, slots + 1, str, &str));   /* the whole name, in its encoding */
         } else if (KORB_OBJECT_P(str) && korb_responds_to_coerce_p(c, slots + 1, &str, korb_intern(c->vm, "to_str", 6))) {
             slots[1] = str;
             RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
@@ -1876,7 +1880,11 @@ static void korb_re_escape_wide(FILE *const ms, const unsigned char *const p, co
 }
 static RESULT korb_m_re_escape(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; VALUE v = VALUE_SLICE_GET(a, 0);
-    if (SYMBOL_P(v)) { const char *nm = korb_sym_name(c->vm, SYM2ID(v)); slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm))); }
+    if (SYMBOL_P(v)) {
+        const uint32_t id = SYM2ID(v);
+        slots[0] = UNWRAP(korb_str_new(c, slots, korb_sym_name(c->vm, id), c->vm->sym_lens[id]));
+        KORB_STR_ENC_SET(slots[0], c->vm->sym_encs[id]);
+    }
     else if (KORB_STRING_P(v)) slots[0] = v;
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(v));
     const KorbString *s = VAL2STR(slots[0]);
