@@ -1632,11 +1632,15 @@ korb_m_thread_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (KORB_PROC_P(t->blk)) {
         const NODE *const body = VAL2PROC(t->blk)->iseq;
         uint32_t fsym, line;
-        if (body != NULL && body != KORB_BLK_CPROC && korb_get_srcloc(c->vm, body, &fsym, &line))
+        if (body != NULL && body != KORB_BLK_CPROC && korb_get_srcloc(c->vm, body, &fsym, &line) &&
+            strcmp(korb_sym_name(c->vm, fsym), KORB_PRELUDE_FILE) != 0)   /* koruby's own (Process::Waiter): CRuby's is C */
             snprintf(loc, sizeof loc, " %s:%u", korb_sym_name(c->vm, fsym), line);
     }
-    const int len = snprintf(buf, sizeof buf, "#<Thread:0x%016lx%s%s%s %s>",   /* zero-padded like any #<X:0x…> */
-                             (unsigned long)(uintptr_t)t, nb[0] ? "@" : "", nb, loc, st);
+    char cn[160] = "Thread";                          /* the subclass it is (Process::Waiter) */
+    { const VALUE cls = korb_class_obj_of(c, VALUE_REF_GET(self));
+      if (KORB_CLASS_P(cls) && cls != korb_builtin_class_obj(c->vm, KORB_C_THREAD)) korb_desc_inspect(c, cls, cn, sizeof cn); }
+    const int len = snprintf(buf, sizeof buf, "#<%s:0x%016lx%s%s%s %s>",   /* zero-padded like any #<X:0x…> */
+                             cn, (unsigned long)(uintptr_t)t, nb[0] ? "@" : "", nb, loc, st);
     RESULT r = korb_str_new(c, slots, buf, (uint32_t)len);
     if (LIKELY(r.state == KORB_NORMAL))
         KORB_STR_ENC_SET(r.value, name_enc >= 0 ? (uint32_t)name_enc : KORB_ENC_BINARY);   /* CRuby: 既定は ASCII-8BIT */

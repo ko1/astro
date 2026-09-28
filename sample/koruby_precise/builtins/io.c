@@ -527,6 +527,13 @@ void korb_io_flush_std(struct korb_vm *const vm) {
     for (uint32_t i = 0; i < 3 && i < vm->io_cnt; i++)
         if (vm->io_reps[i]) (void)korb_io_flush_rep(vm->io_reps[i]);
 }
+/* At exit every stream still open gets its pending output out (CRuby finalizes
+ * each IO), not only the std ones: `IO.open(3).puts` in a spawned child. */
+void korb_io_flush_all(struct korb_vm *const vm) {
+    korb_io_flush_std(vm);                             /* first, as in CRuby */
+    for (uint32_t i = 3; i < vm->io_cnt; i++)
+        if (vm->io_reps[i] && vm->io_reps[i]->wlen > 0 && vm->io_reps[i]->fd >= 0) (void)korb_io_flush_rep(vm->io_reps[i]);
+}
 /* new IO/File instance of `klass` bound to `fd`.  slots[0..] scratch; result rooted by caller. */
 static uint32_t korb_io_read_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep);   /* fwd */
 static uint32_t korb_io_byte_enc(CTX *c, VALUE *slots, VALUE_REF io, KorbIORep *rep);   /* fwd */

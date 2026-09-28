@@ -1470,7 +1470,7 @@ main(int argc, char *argv[])
     if (OPTION.dump_ast) {
         DUMP(stdout, ast, true);
         printf("\n");
-        korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */
+        korb_io_flush_all(c->vm);   /* stdio is gone: the std streams flush here */
         return 0;
     }
 
@@ -1487,7 +1487,7 @@ main(int argc, char *argv[])
         if (rc == 0 && !OPTION.quiet)
             fprintf(stderr, "koruby_precise: built %s (program + prelude + %u bodies embedded)\n",
                     bcfg.out_exe, code_repo_count());
-        korb_io_flush_std(c->vm);
+        korb_io_flush_all(c->vm);
         return rc;
     }
 
@@ -1508,7 +1508,7 @@ main(int argc, char *argv[])
         if (getenv("ASTRO_AOT_STRICT") && swaps == 0) {
             fprintf(stderr, "koruby_precise: ASTRO_AOT_STRICT: no cached SD matched "
                     "(hash mismatch or empty code store)\n");
-            korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */
+            korb_io_flush_all(c->vm);   /* stdio is gone: the std streams flush here */
             return 3;
         }
     } else {
@@ -1538,12 +1538,12 @@ main(int argc, char *argv[])
         VALUE *pcur = c->slots + prelude_locals;
         memset(c->slots, 0, (size_t)prelude_locals * sizeof(VALUE));   /* locals + EP start clean */
         RESULT pm = korb_obj_new(c, pcur, KORB_NIL);
-        if (pm.state == KORB_RAISE) { korb_report_uncaught(c, pm.value); korb_io_flush_std(c->vm); return 1; }
+        if (pm.state == KORB_RAISE) { korb_report_uncaught(c, pm.value); korb_io_flush_all(c->vm); return 1; }
         c->slots[-1] = pm.value;                  /* prelude self at base[-1] (bottom header) */
         korb_id_set(c->slots, korb_fid_main(korb_intern(c->vm, KORB_PRELUDE_FILE, sizeof KORB_PRELUDE_FILE - 1), true));
         korb_relocate_object_methods(c, pcur);    /* before: the prelude itself asks Kernel for them */
         RESULT pr = EVAL(c, prelude_ast, pcur);
-        if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); korb_io_flush_std(c->vm); return 1; }
+        if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); korb_io_flush_all(c->vm); return 1; }
         korb_relocate_object_methods(c, pcur);  /* Object's own table is empty in CRuby: move to Kernel/BasicObject */
         c->vm->boot_done = true;                /* user `module Kernel; def require` may now shadow the builtin */
         c->vm->boot_class_serial = c->vm->class_serial;
@@ -1610,7 +1610,7 @@ main(int argc, char *argv[])
          * (they must exist before core-method registration). */
         {
             RESULT mr = korb_obj_new(c, toplevel_cursor, KORB_NIL);   /* klass=nil → `main` */
-            if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); korb_io_flush_std(c->vm); return 1; }
+            if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); korb_io_flush_all(c->vm); return 1; }
             c->slots[-1] = mr.value;                  /* main self at base[-1] (bottom header) */
             c->vm->top_self = mr.value;               /* every required file's top level runs as this same `main` */
             /* The frame's identity: it names the script and says there is
@@ -1685,7 +1685,7 @@ main(int argc, char *argv[])
                 char enm[128];
                 korb_class_desc_into(c, korb_class_obj_of(c, gr.value), enm, sizeof enm);
                 if (strcmp(enm, "LoadError") != 0) {
-                    korb_report_uncaught(c, gr.value); korb_io_flush_std(c->vm); return 1;
+                    korb_report_uncaught(c, gr.value); korb_io_flush_all(c->vm); return 1;
                 }
             }
         }
@@ -1698,7 +1698,7 @@ main(int argc, char *argv[])
             } else {
                 rr = korb_require_feature(c, toplevel_cursor, req_libs.v[k]);
             }
-            if (rr.state == KORB_RAISE) { korb_report_uncaught(c, rr.value); korb_io_flush_std(c->vm); return 1; }
+            if (rr.state == KORB_RAISE) { korb_report_uncaught(c, rr.value); korb_io_flush_all(c->vm); return 1; }
         }
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -1747,21 +1747,21 @@ main(int argc, char *argv[])
         if (uncaught && !handler_exited && !sig_quiet) korb_report_uncaught_detailed(c, toplevel_cursor + 4, toplevel_cursor[0]);
         fflush(stdout);
         if (die_sig > 0) {   /* even over an at_exit's exit, as CRuby */
-            korb_io_flush_std(c->vm);
+            korb_io_flush_all(c->vm);
             korb_die_by_signal(die_sig);
             return 1;   /* the signal's default didn't kill (CHLD, WINCH): CRuby's EXIT_FAILURE */
         }
         if (exit_status >= 0) {
-            korb_io_flush_std(c->vm);
+            korb_io_flush_all(c->vm);
             return exit_status;
         }
         if (uncaught) {
-            korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */
+            korb_io_flush_all(c->vm);   /* stdio is gone: the std streams flush here */
             return 1;
         }
         if (r.state == KORB_THROW) {
             fprintf(stderr, "uncaught throw\n");
-            korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */
+            korb_io_flush_all(c->vm);   /* stdio is gone: the std streams flush here */
             return 1;
         }
 
@@ -1787,6 +1787,6 @@ main(int argc, char *argv[])
 #endif
 
     korb_ctx_free(c);
-    korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */
+    korb_io_flush_all(c->vm);   /* stdio is gone: the std streams flush here */
     return 0;
 }

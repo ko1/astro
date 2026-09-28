@@ -535,6 +535,7 @@ void   korb_die_by_signal(int sig);   /* returns only if the default action does
 int    korb_drain_at_exit(CTX *c, VALUE *slots);   /* run at_exit blocks (main.c); >=0 = exit status a handler asked for */
 int    korb_drain_at_exit_x(CTX *c, VALUE *slots, bool *exited);   /* same, plus "a handler called exit" */
 void   korb_io_flush_std(struct korb_vm *vm);     /* flush stdout/stderr (no stdio to do it at exit) */
+void   korb_io_flush_all(struct korb_vm *vm);     /* every open stream: the process is leaving */
 
 /* a Hash the call site wrote as keyword arguments (KORB_FL_KWARGS) */
 static inline bool korb_kwargs_hash_p(VALUE v) {
