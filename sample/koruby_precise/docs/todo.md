@@ -6042,6 +6042,8 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   （2026-09-28: eval 中の読みは CRuby 順 = 特異クラス → 受け手のクラスの自表 → 呼び出し元の lexical → 祖先。後で呼ぶブロックは
   特異クラス → 呼び出し元の lexical → 祖先。この「クラスの自表」は instance_eval だけの規則で `class << obj` には無いので、
   ブロックが instance_eval 由来だと知る手段が要る）。Module.nesting にも特異クラスが入らない。
+- 束縛された Method#super_method の inspect が「受け手のクラス(持ち主)」になる（CRuby は見つかったクラス: `#<Method: A#f()>`、
+  `#<Method: Class#new(*)>`）。prepend した特異クラスの上の Kernel#to_s では source location まで prepend 側を名前で引いて出す。
 - 正規表現 /i の Unicode 折り畳み（2026-09-28 に単純折り畳みを実装: astrogre の unicode_fold.h）の残り: 複数文字への折り畳み
   （`"straße" =~ /STRASSE/i`）、ASCII だけのクラス・リテラルが非 ASCII の相手を持たない（`"\u212A" =~ /k/i`・`"ſ" =~ /[s]/i`。
   バイト bitmap を保つため。クラスに非 ASCII があれば入る）。

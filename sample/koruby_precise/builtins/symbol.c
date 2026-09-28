@@ -1076,7 +1076,18 @@ static RESULT korb_m_meth_super_method(CTX *c, VALUE *slots, VALUE_REF self, VAL
     const uint8_t unbound = m->unbound;
     const VALUE recv = m->recv;
     VALUE mro[256];
-    const int n = korb_linearize_mro(start, mro, 256);
+    int n = korb_linearize_mro(start, mro, 256);
+    /* a class's singleton chain ends at #<Class:BasicObject>; CRuby's goes on into Class (Module for a module) */
+    if (KORB_CLASS_P(start) && VAL2CLASS(start)->is_singleton && n < 256) {
+        const VALUE at = korb_singleton_attached_vm(c->vm, start);
+        if (KORB_CLASS_P(at)) {
+            const VALUE tail = VAL2CLASS(at)->is_module ? korb_const_get(c->vm, korb_intern(c->vm, "Module", 6))
+                                                        : korb_builtin_class_obj(c->vm, KORB_C_CLASS);
+            bool seen = false;
+            for (int i = 0; i < n && !seen; i++) seen = mro[i] == tail;
+            if (!seen && KORB_CLASS_P(tail)) n += korb_linearize_mro(tail, mro + n, 256 - n);
+        }
+    }
     int di = -1;
     for (int i = 0; i < n; i++) if (mro[i] == cur_owner) { di = i; break; }
     if (di < 0) return RESULT_OK(KORB_NIL);
@@ -1103,6 +1114,19 @@ static RESULT korb_m_meth_super_method(CTX *c, VALUE *slots, VALUE_REF self, VAL
         if (LIKELY(sm != NULL)) { VAL2METH(r.value)->entry = sm; sm->pinned = 1; }
         else korb_meth_pin(c, r.value);
         return r;
+    }
+    /* above a class's own `new`s: Class#new, the allocator, which has no table entry */
+    if (mid == c->vm->mid_new && KORB_CLASS_P(start) && VAL2CLASS(start)->is_singleton) {
+        const VALUE at = korb_singleton_attached_vm(c->vm, start);
+        if (KORB_CLASS_P(at) && !VAL2CLASS(at)->is_module) {
+            slots[0] = start;
+            RESULT r = unbound ? korb_unbound_new(c, slots + 1, slots[0], mid) : korb_method_new(c, slots + 1, recv, mid);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            KorbMethod *const nm = VAL2METH(r.value);
+            nm->entry = NULL; nm->default_new = 1;
+            ARO_STORE(c, nm, (VALUE *)(uintptr_t)&nm->owner, korb_builtin_class_obj(c->vm, KORB_C_CLASS));
+            return r;
+        }
     }
     return RESULT_OK(KORB_NIL);
 }

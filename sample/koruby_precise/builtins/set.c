@@ -960,6 +960,22 @@ static RESULT korb_set_visibility1(CTX *c, VALUE *slots, VALUE selfv, KorbClass 
     slots[0] = selfv;                                           /* the hook is Ruby code: root the class */
     return korb_fire_method_added(c, slots + 1, slots[0], mid); /* cloning an ancestor method IS a definition */
 }
+static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis);   /* fwd */
+/* `class << K; private :new; end`: new / allocate have no table entry on K's
+ * singleton, so mark them the way private_class_method does.  *done = handled. */
+static RESULT korb_set_visibility_alloc(CTX *c, VALUE *slots, const VALUE target, const VALUE arg, const uint8_t vis, bool *done)
+{
+    *done = false;
+    if (!SYMBOL_P(arg) || !VAL2CLASS(target)->is_singleton) return RESULT_OK(KORB_NIL);
+    const uint32_t mid = SYM2ID(arg);
+    if (mid != c->vm->mid_new && mid != korb_intern(c->vm, "allocate", 8)) return RESULT_OK(KORB_NIL);
+    if (korb_class_find_method(target, mid, NULL) != NULL) return RESULT_OK(KORB_NIL);
+    const VALUE at = korb_singleton_attached_vm(c->vm, target);
+    if (!KORB_CLASS_P(at) || VAL2CLASS(at)->is_module) return RESULT_OK(KORB_NIL);
+    slots[0] = at; slots[1] = arg;
+    *done = true;
+    return korb_set_class_visibility(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1), vis);
+}
 static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis) {
     const VALUE selfv = VALUE_REF_GET(self);
     const uint32_t argc = VALUE_SLICE_LEN(a);
@@ -977,11 +993,17 @@ static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         KorbClass *const k = VAL2CLASS(target);
         if (array_arg) {
             slots[0] = VALUE_SLICE_GET(a, 0);         /* root the name array across NameError alloc */
-            for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++)
-                CHECK(korb_set_visibility1(c, slots + 1, target, k, korb_items_data(VAL2ARY(slots[0])->items)[i], vis));
+            for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
+                bool done;
+                CHECK(korb_set_visibility_alloc(c, slots + 1, target, korb_items_data(VAL2ARY(slots[0])->items)[i], vis, &done));
+                if (!done) CHECK(korb_set_visibility1(c, slots + 1, target, k, korb_items_data(VAL2ARY(slots[0])->items)[i], vis));
+            }
         } else {
-            for (uint32_t i = 0; i < argc; i++)
-                CHECK(korb_set_visibility1(c, slots, target, k, VALUE_SLICE_GET(a, i), vis));
+            for (uint32_t i = 0; i < argc; i++) {
+                bool done;
+                CHECK(korb_set_visibility_alloc(c, slots, target, VALUE_SLICE_GET(a, i), vis, &done));
+                if (!done) CHECK(korb_set_visibility1(c, slots, target, k, VALUE_SLICE_GET(a, i), vis));
+            }
         }
         c->vm->method_serial++;
     }
