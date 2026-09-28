@@ -554,6 +554,13 @@ class Binding
 end
 
 class Binding
+  # CRuby's prelude: `binding.irb` works without `require "irb"` (irb redefines it)
+  def irb
+    require 'irb'
+    irb
+  end
+  alias irb irb
+
   # CRuby: "#<Binding:0x0000...>" (既定の Object#inspect は ivar を持たない
   # Binding では "#<Object>" になってしまう)。
   def inspect

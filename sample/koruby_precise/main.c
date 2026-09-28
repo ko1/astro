@@ -338,12 +338,13 @@ load_prelude_source(size_t *len_out)
 /* CRuby defines Gem / DidYouMean unless the matching feature is switched off, and
  * `defined?(Gem)` is how programs detect them.  Appending to the prelude source
  * keeps this on the one path that both the native and the wasm build share.
- * Bodies stay empty: nothing here implements rubygems, and a stub with methods
- * would only lure callers further in. */
+ * Nothing here implements rubygems, and a stub with methods would only lure
+ * callers further in — except try_activate, whose honest answer is false
+ * (irb's locale search runs `defined?(Gem) and Gem.try_activate(path)`). */
 static char *
 koruby_prelude_append_features(char *const src, size_t *const len_out)
 {
-    static const char gem_src[] = "\nmodule Gem; end\n";
+    static const char gem_src[] = "\nmodule Gem; def self.try_activate(path) = false; end\n";
     static const char dym_src[] = "\nObject.autoload(:DidYouMean, \"did_you_mean\")\n";   /* CRuby 4.1: loaded on the first detailed_message */
     const bool dym = !OPTION.no_did_you_mean && !OPTION.no_gems;   /* CRuby: --disable-gems leaves DidYouMean undefined too */
     const size_t add = (OPTION.no_gems ? 0 : sizeof gem_src - 1) +

@@ -25,6 +25,7 @@ typedef struct KorbIORep {
     uint8_t  nonblk;                 /* O_NONBLOCK: block by parking, not by stalling */
     uint8_t  fifo_rd;                /* a FIFO opened read-only: the first read waits for a writer */
     uint8_t  slow;                   /* fd (as of slow_fd1) is a pipe/tty/socket: see korb_io_slow_p */
+    uint8_t  tty;                    /* fd (as of slow_fd1) is a terminal: writes go out at once (CRuby FMODE_TTY) */
     uint8_t  sig_epipe;              /* the process's own STDOUT: an uncaught EPIPE ends by SIGPIPE (reopen drops it) */
     uint8_t  univ;                   /* universal newline on read ("rt", newline: :universal): text readers see \r\n / \r as \n */
     uint8_t  nl_skip;                /* univ: the last converted chunk ended in a \r, so a leading \n is dropped */
@@ -239,6 +240,7 @@ static bool korb_io_wbuf_grow(KorbIORep *const rep, uint32_t need) {
  * GC there would move it.  For a stream that can park we therefore take the
  * whole run into the rep's buffer first and only then drain, so every park
  * happens with no borrowed pointer live. */
+static inline bool korb_io_tty_p(KorbIORep *rep);
 static bool korb_io_wr_p(CTX *c, VALUE *slots, KorbIORep *const rep, const char *p, size_t n, RESULT *perr) {
     if (UNLIKELY(!korb_io_open_p(rep))) return false;
     const bool parks = rep->nonblk && c != NULL;
@@ -248,7 +250,7 @@ static bool korb_io_wr_p(CTX *c, VALUE *slots, KorbIORep *const rep, const char 
         memcpy(rep->wbuf + rep->wlen, p, n);
         rep->wlen += (uint32_t)n;                        /* `p` is dead from here on */
         if (rep->fd == KORB_IO_FD_MEM) return true;
-        if (!(rep->sync || rep->wlen >= KORB_IO_BUFSZ)) return true;
+        if (!(rep->sync || rep->wlen >= KORB_IO_BUFSZ || korb_io_tty_p(rep))) return true;
         if (korb_io_flush_rep_p(c, slots, rep, perr)) return true;
         /* CRuby writes a bulk run directly, so an EPIPE leaves it out of the buffer #close re-flushes */
         if (errno == EPIPE && n >= KORB_IO_BUFSZ && rep->wlen > old) rep->wlen = old;
@@ -274,7 +276,7 @@ static bool korb_io_wr_p(CTX *c, VALUE *slots, KorbIORep *const rep, const char 
         memcpy(rep->wbuf + rep->wlen, p, take);
         rep->wlen += take; p += take; n -= take;
     }
-    return rep->sync ? korb_io_flush_rep_p(c, slots, rep, perr) : true;
+    return (rep->sync || korb_io_tty_p(rep)) ? korb_io_flush_rep_p(c, slots, rep, perr) : true;
 }
 /* non-parking shorthand (diagnostics, exit paths, in-memory sinks) */
 static bool korb_io_wr(KorbIORep *const rep, const char *p, size_t n) {
@@ -293,9 +295,14 @@ static bool korb_io_slow_p(KorbIORep *const rep) {
     if (rep->slow_fd1 != rep->fd + 1) {
         struct stat st;
         rep->slow = fstat(rep->fd, &st) == 0 && !S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode) && !S_ISBLK(st.st_mode);
+        rep->tty = rep->slow && S_ISCHR(st.st_mode) && isatty(rep->fd);
         rep->slow_fd1 = rep->fd + 1;
     }
     return rep->slow;
+}
+static inline bool korb_io_tty_p(KorbIORep *const rep) {
+    if (LIKELY(rep->slow_fd1 == rep->fd + 1)) return rep->tty;   /* memo hit: no call on every write */
+    return korb_io_slow_p(rep) && rep->tty;
 }
 /* Before a read(2) on a blocking pipe / tty / socket: a blocking read would
  * stop every green thread, so wait in the pump, and cap *want at what is
@@ -2629,6 +2636,45 @@ static RESULT korb_m_io_pwrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(LONG2FIX((korb_sword_t)w));
 }
 
+/* IO.__openpty(rw = false) → [master reader, master writer, slave fd, slave path]
+ * (lib/pty.rb); with rw one read-write master and nil.  The master ends are
+ * non-blocking IOs so a reader thread parks instead of stalling every green thread. */
+static RESULT korb_m_io_s_openpty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const bool rw = VALUE_SLICE_LEN(a) > 0 && KORB_TRUTHY(VALUE_SLICE_GET(a, 0));
+    const int m = posix_openpt(O_RDWR | O_NOCTTY);
+    if (m < 0) return korb_raise_errno(c, slots, errno, "posix_openpt", "");
+    char path[128];
+    if (grantpt(m) != 0 || unlockpt(m) != 0 || ptsname_r(m, path, sizeof path) != 0) {
+        const int e = errno; close(m);
+        return korb_raise_errno(c, slots, e, "openpty", "");
+    }
+    const int sfd = open(path, O_RDWR | O_NOCTTY);
+    const int m2 = (sfd < 0 || rw) ? -1 : dup(m);
+    if (sfd < 0 || (!rw && m2 < 0)) {
+        const int e = errno; close(m); if (sfd >= 0) close(sfd);
+        return korb_raise_errno(c, slots, e, "openpty", path);
+    }
+    (void)fcntl(m, F_SETFD, FD_CLOEXEC);
+    if (!rw) (void)fcntl(m2, F_SETFD, FD_CLOEXEC);
+    (void)fcntl(sfd, F_SETFD, FD_CLOEXEC);
+    slots[0] = VALUE_REF_GET(self);
+    slots[1] = UNWRAP(korb_io_make(c, slots + 2, slots[0], m, rw ? 3 : 1));
+    slots[2] = rw ? KORB_NIL : UNWRAP(korb_io_make(c, slots + 3, slots[0], m2, 2));
+    { KorbIORep *const rd = korb_io_rep(c, slots[1]);
+      KorbIORep *const wr = rw ? rd : korb_io_rep(c, slots[2]);
+      if (wr) wr->sync = 1;
+      korb_io_set_nonblock(rd);
+      if (!rw) korb_io_set_nonblock(wr); }
+    slots[3] = UNWRAP(korb_str_new(c, slots + 3, path, (uint32_t)strlen(path)));
+    slots[4] = UNWRAP(korb_ary_new(c, slots + 4, 4));
+    { VALUE_REF ar = VALUE_REF_AT(&slots[4]);
+      CHECK(korb_ary_push_val(c, slots + 5, ar, slots[1]));
+      CHECK(korb_ary_push_val(c, slots + 5, ar, slots[2]));
+      CHECK(korb_ary_push_val(c, slots + 5, ar, LONG2FIX(sfd)));
+      CHECK(korb_ary_push_val(c, slots + 5, ar, slots[3])); }
+    return RESULT_OK(slots[4]);
+}
+
 /* IO.sysopen(path, mode = "r", perm = 0666) → the raw fd, unwrapped. */
 static RESULT korb_m_io_s_sysopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -3090,6 +3136,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, io_sing, "select",    korb_m_io_s_select,    -1);   /* POLL blop (thread.c) */
     korb_class_def_cfn_blk(c, io_sing, "pipe",  korb_m_io_s_pipe,      -1);
     korb_class_def_cfn(c, io_sing, "sysopen",   korb_m_io_s_sysopen,   -1);
+    korb_class_def_cfn(c, io_sing, "__openpty", korb_m_io_s_openpty,   -1);
     korb_class_def_cfn_blk(c, io_sing, "new",   korb_m_io_s_new,       -1);
     korb_class_def_cfn_blk(c, io_sing, "for_fd", korb_m_io_s_new_fd, -1);
 #undef IOM
