@@ -29,11 +29,10 @@
   自分のイテレータで消費されていない）。単独スクリプトでは出ず、前の 8 例（lazy の first / take と
   Enumerator#next の外部列挙）の後でだけ出る。`.new` の側で RETURN / THROW を伝播するようにしたとき、
   ブロック無しの `.new` では BREAK を従来どおり捨てることにして回避した（伝播させると subject が nil）。
-- **lazy flat_map を first(n) の後にもう一度回すと空** (w16 biz 4 行の残り): 外部列挙
-  (`pe = lazy.to_enum`、`Enumerator.new { |y| loop { y << pe.next } }`) を源にした `lin.lazy.flat_map {}` で、
-  `o.first(2)` の後の `o.each { break }` が何も yield しない（CRuby は pe の続きから）。`map` なら出ない
-  （flat_map は prelude の __lazy_gen = 生成器）。master でも同じ。first(n) の打ち切りが generator 本体の
-  `loop` に食われて余分に出る方は gen_bound で直した。
+  0f884fb4 で生成器の sink / break 素通りを直したので、漏れの元はそれだった可能性が高い（未確認: 捨てるのをやめて biz を回せば分かる）。
+- ~~**lazy flat_map を first(n) の後にもう一度回すと空**~~ (2026-09-28 済, 0f884fb4): 生成器の sink の連鎖が Fiber を
+  跨いでいた（Enumerator#next の Fiber の中の each が再開側の sink に繋がる）。Fiber ごとに退避・復元し、break の素通り判定を
+  break_blk で行うようにした。biz 4 行が全一致。
 - **main の特異メソッドが無い** (w16 ruby2_keywords 1 行): CRuby の main は `include` / `public` /
   `private` / `define_method` / `using` / `ruby2_keywords` / `to_s` / `inspect` を特異メソッドで持つ
   (`main.method(:include).owner` が main の特異クラス、`singleton_methods` が `[:inspect, :to_s]`)。
