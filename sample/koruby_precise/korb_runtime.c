@@ -4091,11 +4091,11 @@ static VALUE korb_block_home_refinements(CTX *c, const VALUE *def_env, VALUE *ca
 static void korb_proc_capture_refinements(CTX *const c, KorbProc *const p, const NODE *const entry, VALUE *const def_env) {
     if (LIKELY(!c->vm->refinements_active)) return;
     VALUE set = c->refinements;
-    /* `&blk` reified inside a method of another set: the block's home set, not the callee's */
-    if (UNLIKELY(c->vm->refine_cross_cnt != 0) && korb_refine_cross_p(c->vm, entry)) {
-        const VALUE home = korb_block_home_refinements(c, def_env, NULL);
-        if (home != KORB_UNDEF) set = home;
-    }
+    /* `&blk` reified inside a method of another set (minitest's `it`): the block's
+     * home set, not the callee's.  Known before any yield, so no cross mark needed. */
+    (void)entry;
+    const VALUE home = korb_block_home_refinements(c, def_env, NULL);
+    if (home != KORB_UNDEF) set = home;
     if (set != KORB_NIL) ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->refine_set, set);
 }
 RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda) {
@@ -11611,9 +11611,15 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
          * block-taking builtin above) */
         VALUE *const dmbase = &slots[-(korb_sword_t)argc];
         const VALUE dm_link_saved = framed ? korb_cframe_enter(c, dmbase, m) : 0;
+        /* the body runs under the refinements of where the block was written
+         * (minitest's `it` blocks under a `using` file), not the caller's */
+        const bool dm_refine = UNLIKELY(c->vm->refinements_active) && p->refine_set != KORB_NIL &&
+                               p->refine_set != c->refinements;
+        if (dm_refine) { korb_refine_push(c); c->refinements = p->refine_set; }
         RESULT r = korb_block_yield_full(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
                                          &slots[-(korb_sword_t)argc], argc, recv_slot,
                                          block, def_env, captured_self, 2);   /* captured_self = receiver slot; 2 = method-shaped binding */
+        if (dm_refine) korb_refine_pop(c);
         if (framed) korb_cframe_leave(c, dm_link_saved);
         if (dm_cref) korb_cref_pop(c);
         c->dm_entry = dm_saved;
@@ -12400,12 +12406,29 @@ static __attribute__((noinline, cold)) VALUE
 korb_block_home_refinements(CTX *c, const VALUE *def_env, VALUE *captured_self)
 {
     if (def_env == KORB_BLK_FWD) return captured_self != NULL && KORB_PROC_P(*captured_self) ? VAL2PROC(*captured_self)->refine_set : KORB_UNDEF;
-    const VALUE *const base = (const VALUE *)(uintptr_t)((uintptr_t)def_env & ~(uintptr_t)1u);
-    if (base == NULL) return KORB_UNDEF;
-    VALUE id = korb_id_get(base);
-    if (((uintptr_t)id & 7u) != KORB_FID_METHOD) id = korb_home_method_id(c, base);
-    if (((uintptr_t)id & 7u) != KORB_FID_METHOD || !korb_bt_known_ptr(c->vm, (uintptr_t)(id & ~(VALUE)7u))) return KORB_UNDEF;
-    return ((const struct korb_method *)(uintptr_t)(id & ~(VALUE)7u))->refine_set;
+    /* def_env is an EP handle: a live defining frame (odd, or a raw base), or the KorbEnv it left
+     * once it returned (a block run later, e.g. minitest's `it` inside an
+     * `included` hook) — reading an env as a frame base walked garbage */
+    VALUE h = (VALUE)(uintptr_t)def_env;
+    /* a raw (untagged) frame base, as korb_make_proc hands it in */
+    if (!(h & 1u) && (const VALUE *)def_env >= c->slots && (const VALUE *)def_env < c->slots_limit) h |= 1u;
+    for (int guard = 0; guard < 64; guard++) {
+        VALUE id;
+        if (h & 1u) {
+            const VALUE *const base = (const VALUE *)(uintptr_t)(h & ~(VALUE)1u);
+            if (base < c->slots || base >= c->slots_limit) break;
+            id = korb_id_get(base);
+            h = korb_bt_outer_handle(korb_ep_get(base), base);
+        } else if (h != 0 && KORB_ENV_P(h)) {
+            id = VAL2ENV(h)->id;
+            h = VAL2ENV(h)->prev;
+        } else break;
+        if (((uintptr_t)id & 7u) == KORB_FID_METHOD) {
+            if (!korb_bt_known_ptr(c->vm, (uintptr_t)(id & ~(VALUE)7u))) break;
+            return ((const struct korb_method *)(uintptr_t)(id & ~(VALUE)7u))->refine_set;
+        }
+    }
+    return KORB_UNDEF;
 }
 static __attribute__((noinline, cold)) RESULT
 korb_block_yield_refined(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
