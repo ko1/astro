@@ -72,13 +72,53 @@ class Ripper
     @__impl ||= begin
       require "prism"
       require "prism/translation/ripper"
-      Prism::Translation::Ripper
+      k = Prism::Translation::Ripper
+      # the bundled prism's default handlers return nil; CRuby's ripper (and prism
+      # 1.9) give back the first argument, which a partial handler set relies on
+      unless k.new("").__send__(:_dispatch_1, 1) == 1
+        k.class_eval do
+          private
+          def _dispatch_0 = nil
+          def _dispatch_1(a) = a
+          def _dispatch_2(a, _) = a
+          def _dispatch_3(a, _, _) = a
+          def _dispatch_4(a, _, _, _) = a
+          def _dispatch_5(a, _, _, _, _) = a
+          def _dispatch_6(a, _, _, _, _, _) = a
+          def _dispatch_7(a, _, _, _, _, _, _) = a
+          k::PARSER_EVENT_TABLE.each { |id, arity| alias_method "on_#{id}", "_dispatch_#{arity}" }
+          k::SCANNER_EVENTS.each { |id| alias_method "on_#{id}", :_dispatch_1 }
+        end
+      end
+      k
     end
   end
 
+  IMPL_CONSTS__ = %i[SexpBuilder SexpBuilderPP PARSER_EVENT_TABLE SCANNER_EVENT_TABLE PARSER_EVENTS SCANNER_EVENTS EVENTS].freeze
+  private_constant :IMPL_CONSTS__
   def self.const_missing(name)
-    return const_set(name, __impl.const_get(name)) if name == :SexpBuilder || name == :SexpBuilderPP
+    return const_set(name, __impl.const_get(name)) if IMPL_CONSTS__.include?(name)
     super
+  end
+
+  # A subclass's own handlers (on_*, compile_error, warn, warning) run on the
+  # Ripper object the user made; the translator instance forwards them there.
+  FWD_EXTRA__ = %i[compile_error warn warning].freeze
+  private_constant :FWD_EXTRA__
+  def self.__impl_for(klass)
+    (@__impl_for ||= {})[klass] ||= begin
+      names = (klass.instance_methods + klass.private_instance_methods).uniq.select do |n|
+        (n.start_with?("on_") || FWD_EXTRA__.include?(n)) &&
+          !(Ripper <= klass.instance_method(n).owner)   # the user's, not Ripper's or above
+      end
+      if names.empty?
+        __impl
+      else
+        Class.new(__impl) do
+          names.each { |n| define_method(n) { |*a, &b| @__outer.__send__(n, *a, &b) } }
+        end
+      end
+    end
   end
 
   class << self
@@ -186,15 +226,38 @@ class Ripper
   end
 
   def initialize(src, filename = "(ripper)", lineno = 1)
-    @impl = Ripper.__impl.new(Ripper.__source(src), filename, lineno)
+    @impl = Ripper.__impl_for(self.class).new(Ripper.__source(src), filename, lineno)
+    @impl.instance_variable_set(:@__outer, self)
   end
 
-  def parse = @impl.parse
+  # the default handlers (CRuby's _dispatch_N): a scanner / parser event gives
+  # back its first argument, so a subclass's `super` works
+  def method_missing(name, *args, &blk)
+    return args[0] if name.start_with?("on_") && Ripper.__impl.private_method_defined?(name)
+    return nil if FWD_EXTRA__.include?(name)
+    super
+  end
+  def respond_to_missing?(name, priv = false)   # private in CRuby's Ripper too
+    (priv && name.start_with?("on_") && Ripper.__impl.private_method_defined?(name)) || super
+  end
+
+  def parse = (@parsed = true; @impl.parse)
   def error? = @impl.error?
   def filename = @impl.filename
   def lineno = @impl.lineno
   def column = @impl.column
   def state = @impl.state
+  # what the parser has seen so far (the source's own encoding before #parse);
+  # prism 1.9's translator has these, the bundled one only its parse result
+  def encoding
+    return @impl.__send__(:source).encoding unless @parsed
+    @impl.respond_to?(:encoding) ? @impl.encoding : @impl.__send__(:result).source.encoding
+  end
+  def end_seen?
+    return false unless @parsed
+    @impl.respond_to?(:end_seen?) ? @impl.end_seen? : !!@impl.__send__(:result).data_loc
+  end
+  attr_accessor :yydebug, :debug_output                # no parser trace to give
 end
 
 # ripper/filter.rb: walk the token stream Ripper.lex gives, calling #on_<event>

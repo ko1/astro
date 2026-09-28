@@ -6042,6 +6042,10 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   （2026-09-28: eval 中の読みは CRuby 順 = 特異クラス → 受け手のクラスの自表 → 呼び出し元の lexical → 祖先。後で呼ぶブロックは
   特異クラス → 呼び出し元の lexical → 祖先。この「クラスの自表」は instance_eval だけの規則で `class << obj` には無いので、
   ブロックが instance_eval 由来だと知る手段が要る）。Module.nesting にも特異クラスが入らない。
+- **Ripper の翻訳器の忠実度**（prism 1.4 同梱の Prism::Translation::Ripper）: サブクラスのイベント・既定の _dispatch は 2026-09-28 に対応。
+  残り: syntax_tree は本物の ripper の scanner イベント列（on_symbeg 等が parser イベントの前に来る）に依存し、翻訳器は出さない（19 ファイル、
+  prism 1.9 の翻訳器でも同じ）。rufo は squiggly heredoc の dedent と `__END__` の sexp / lex の差（11 例）と、構文エラーの文言
+  （prism の文言、CRuby は parse.y の "syntax error, unexpected end-of-input"）。
 - **ObjectSpace::WeakMap が強参照**（prelude の Hash）。WeakRef が回収されず RefError にならない（weakref test_recycled）。
   値も弱い side table（korb_weak_walk で鍵か値が死んだ行を落とす）＋ map ごとの表と map 自身の死での解放が要る。
 - `class << self` の本体で定義したクラスのメソッドの Module.nesting が `[A]` だけ（CRuby は `[W, #<Class:A>, A]`）。定数は 2026-09-28 に
