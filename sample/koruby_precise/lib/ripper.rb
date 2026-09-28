@@ -185,3 +185,41 @@ class Ripper
   def column = @impl.column
   def state = @impl.state
 end
+
+# ripper/filter.rb: walk the token stream Ripper.lex gives, calling #on_<event>
+# (or #on_default) with each token and the running data
+class Ripper
+  class Filter
+    def initialize(src, filename = "-", lineno = 1)
+      @__src = src
+      @__filename = filename
+      @__lineno = lineno
+      @__line = nil
+      @__col = nil
+      @__state = nil
+    end
+
+    def filename = @__filename
+    def lineno = @__line
+    def column = @__col
+    def state = @__state
+
+    def parse(init = nil)
+      data = init
+      Ripper.lex(@__src, @__filename, @__lineno).each do |pos, event, tok, state|
+        @__line, @__col = *pos
+        @__state = state
+        data = if respond_to?(event, true)
+                 __send__(event, tok, data)
+               else
+                 on_default(event, tok, data)
+               end
+      end
+      data
+    end
+
+    private
+
+    def on_default(event, token, data) = data
+  end
+end
