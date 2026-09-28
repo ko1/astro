@@ -3411,37 +3411,62 @@ static RESULT korb_m_struct_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 /* Pairs currently being compared, on the C stack — CRuby's paired recursion
  * guard: meeting the same (a, b) again means the cycle matched so far. */
 struct korb_struct_seen { VALUE a, b; const struct korb_struct_seen *prev; };
-/* Member-wise Struct/Data equality.  `strict` selects eql? (type-strict) over ==.
- * Nothing here allocates, so the bare VALUEs cannot go stale. */
-static bool korb_struct_cmp_rec(CTX *c, VALUE x, VALUE y, bool strict, const struct korb_struct_seen *seen, int depth) {
-    if (x == y) return true;
+/* A member value korb_value_eq / korb_value_eql answer for exactly as #== / #eql? would. */
+static inline bool korb_struct_eq_leaf_p(CTX *c, const VALUE v) {
+    return !AROH_IS_GC_OBJECT(v) || KORB_FLOAT_P(v) || KORB_BIGNUM_P(v) ||
+           (KORB_STRING_P(v) && korb_exact_class_p(c, v, KORB_C_STRING));   /* a String subclass may define == */
+}
+/* Member-wise Struct/Data equality of slots[0] and slots[1] (rooted: a member's
+ * own #== / #eql? runs Ruby).  `strict` selects eql? over ==.  A seen pair is a
+ * cycle, answered true as CRuby's recursion guard does. */
+static RESULT korb_struct_cmp_rec(CTX *c, VALUE *slots, bool strict, const struct korb_struct_seen *seen, int depth, bool *out) {
+    const VALUE x = slots[0], y = slots[1];
+    *out = true;
+    if (x == y) return RESULT_OK(KORB_NIL);
     if (!KORB_OBJECT_P(x) || !KORB_OBJECT_P(y) || VAL2OBJ(x)->klass != VAL2OBJ(y)->klass ||
-        !KORB_ARRAY_P(VAL2CLASS(VAL2OBJ(x)->klass)->members))
-        return strict ? korb_value_eql(x, y) : korb_value_eq(x, y);
-    for (const struct korb_struct_seen *p = seen; p != NULL; p = p->prev)
-        if ((p->a == x && p->b == y) || (p->a == y && p->b == x)) return true;
-    if (UNLIKELY(depth > 256)) return true;                   /* C-stack floor for pathologically deep nesting */
-    const struct korb_struct_seen node = { x, y, seen };
-    const KorbArray *const mem = VAL2ARY(VAL2CLASS(VAL2OBJ(x)->klass)->members);
-    for (uint32_t i = 0; i < mem->len; i++) {
-        const VALUE iv = korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i]);
-        if (!korb_struct_cmp_rec(c, korb_ivar_get(c, x, iv), korb_ivar_get(c, y, iv), strict, &node, depth + 1))
-            return false;
+        !KORB_ARRAY_P(VAL2CLASS(VAL2OBJ(x)->klass)->members)) {
+        if (korb_struct_eq_leaf_p(c, x)) {                  /* x.==(y): the receiver decides */
+            *out = strict ? korb_value_eql(x, y) : korb_value_eq(x, y);
+            return RESULT_OK(KORB_NIL);
+        }
+        slots[2] = x; slots[3] = y;                   /* an Array of structs, a Hash, an object: its own method */
+        const RESULT r = korb_send(c, slots + 4, strict ? korb_intern(c->vm, "eql?", 4) : korb_intern(c->vm, "==", 2), 0, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        *out = KORB_TRUTHY(r.value);
+        return RESULT_OK(KORB_NIL);
     }
-    return true;
+    for (const struct korb_struct_seen *p = seen; p != NULL; p = p->prev)
+        if ((p->a == x && p->b == y) || (p->a == y && p->b == x)) return RESULT_OK(KORB_NIL);
+    if (UNLIKELY(depth > 256)) return RESULT_OK(KORB_NIL);   /* C-stack floor for pathologically deep nesting */
+    const struct korb_struct_seen node = { x, y, seen };
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *const mem = VAL2ARY(VAL2CLASS(VAL2OBJ(slots[0])->klass)->members);   /* re-read: a member's == may move things */
+        if (i >= mem->len) break;
+        const VALUE iv = korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i]);
+        slots[2] = korb_ivar_get(c, slots[0], iv);
+        slots[3] = korb_ivar_get(c, slots[1], iv);
+        bool eq;
+        CHECK(korb_struct_cmp_rec(c, slots + 2, strict, &node, depth + 1, &eq));
+        if (!eq) { *out = false; return RESULT_OK(KORB_NIL); }
+    }
+    return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_struct_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;
     const VALUE o = VALUE_SLICE_GET(a, 0);
     if (!KORB_OBJECT_P(o) || VAL2OBJ(o)->klass != VAL2OBJ(VALUE_REF_GET(self))->klass) return RESULT_OK(KORB_FALSE);
-    return RESULT_OK(korb_struct_cmp_rec(c, VALUE_REF_GET(self), o, false, NULL, 0) ? KORB_TRUE : KORB_FALSE);
+    slots[0] = VALUE_REF_GET(self); slots[1] = o;
+    bool eq;
+    CHECK(korb_struct_cmp_rec(c, slots, false, NULL, 0, &eq));
+    return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);
 }
 /* Struct#eql? — like ==, but members are compared type-strictly (1 eql? 1.0 => false). */
 static RESULT korb_m_struct_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;
     const VALUE o = VALUE_SLICE_GET(a, 0);
     if (!KORB_OBJECT_P(o) || VAL2OBJ(o)->klass != VAL2OBJ(VALUE_REF_GET(self))->klass) return RESULT_OK(KORB_FALSE);
-    return RESULT_OK(korb_struct_cmp_rec(c, VALUE_REF_GET(self), o, true, NULL, 0) ? KORB_TRUE : KORB_FALSE);
+    slots[0] = VALUE_REF_GET(self); slots[1] = o;
+    bool eq;
+    CHECK(korb_struct_cmp_rec(c, slots, true, NULL, 0, &eq));
+    return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_class_new_bracket(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
 static RESULT korb_m_struct_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */

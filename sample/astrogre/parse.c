@@ -425,10 +425,17 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps
              * Reading only one run of digits rejected the whole pattern
              * ("invalid Unicode list"), which is how rubocop's
              * Style/RedundantRegexpCharacterClass spec failed to even parse. */
-            uint32_t list[16]; int ncp = 0;
+            uint32_t lbuf[16], *list = lbuf; int ncp = 0, lcap = 16;   /* grows: net-imap lists hundreds */
             for (;;) {
                 while (q->p < q->end && (*q->p == ' ' || *q->p == '\t')) q->p++;
                 if (q->p >= q->end || *q->p == '}') break;
+                if (ncp == lcap) {
+                    uint32_t *const nl = (uint32_t *)malloc((size_t)lcap * 2 * sizeof *nl);
+                    if (nl == NULL) { if (list != lbuf) free(list); re_error(q, "invalid Unicode list"); return 0; }
+                    memcpy(nl, list, (size_t)ncp * sizeof *nl);
+                    if (list != lbuf) free(list);
+                    list = nl; lcap *= 2;
+                }
                 uint32_t v = 0; int n = 0;
                 while (q->p < q->end && n < 8) {
                     const int ch = *q->p;
@@ -440,25 +447,29 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps
                     v = (v << 4) | (uint32_t)d;
                     q->p++; n++;
                 }
-                if (n == 0 || ncp == (int)(sizeof list / sizeof list[0])) {
+                if (n == 0) {
+                    if (list != lbuf) free(list);
                     re_error(q, "invalid Unicode list"); return 0;
                 }
                 list[ncp++] = v;
             }
-            if (q->p >= q->end || *q->p != '}' || ncp == 0) { re_error(q, "invalid Unicode list"); return 0; }
+            if (q->p >= q->end || *q->p != '}' || ncp == 0) { if (list != lbuf) free(list); re_error(q, "invalid Unicode list"); return 0; }
             q->p++;
             if (ncp > 1) {                      /* a list is a SET of members, not one */
-                if (cps == NULL) { re_error(q, "char-class value at end of range"); return 0; }
+                if (cps == NULL) { if (list != lbuf) free(list); re_error(q, "char-class value at end of range"); return 0; }
                 for (int i = 0; i < ncp; i++) {
                     const uint32_t v = list[i];
                     if (v < 0x80) bm_set_ci(bm, (uint8_t)v, q->case_insensitive);
                     else if (q->encoding != AGRE_ENC_UTF8) {
+                        if (list != lbuf) free(list);
                         re_error(q, "multi-byte \\u inside [] needs UTF-8 mode"); return 1;
                     } else cls_cp_add(q, cps, v, v);
                 }
+                if (list != lbuf) free(list);
                 return 1;                       /* set applied */
             }
             cp = list[0];
+            if (list != lbuf) free(list);
         } else {
             if (q->p + 4 > q->end) { re_error(q, "invalid Unicode escape"); return 0; }
             for (int n = 0; n < 4; n++) {
@@ -1421,8 +1432,8 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                 /* `\u{H...}` takes a SPACE-SEPARATED LIST of codepoints and matches
                  * their concatenation (`/\u{30c6 30b9 30c8}/` is /テスト/). */
                 q->p++;
-                uint8_t seq[256];
-                uint32_t slen = 0;
+                uint8_t sbuf[256], *seq = sbuf;   /* grows: a long list is one literal */
+                uint32_t slen = 0, scap = sizeof sbuf;
                 for (;;) {
                     while (q->p < q->end && (*q->p == ' ' || *q->p == '\t')) q->p++;
                     if (q->p < q->end && *q->p == '}') break;
@@ -1439,18 +1450,26 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                         q->p++;
                         n++;
                     }
-                    if (n == 0) { re_error(q, "invalid Unicode list"); return NULL; }
-                    if (cp >= 0x110000) { re_error(q, "invalid Unicode range"); return NULL; }
-                    const uint32_t need = cp < 0x80 ? 1u : cp < 0x800 ? 2u : cp < 0x10000 ? 3u : 4u;
-                    if (slen + need > sizeof seq) { re_error(q, "invalid Unicode list"); return NULL; }
+                    if (n == 0) { if (seq != sbuf) free(seq); re_error(q, "invalid Unicode list"); return NULL; }
+                    if (cp >= 0x110000) { if (seq != sbuf) free(seq); re_error(q, "invalid Unicode range"); return NULL; }
+                    if (slen + 4 > scap) {
+                        uint8_t *const ns = (uint8_t *)malloc((size_t)scap * 2);
+                        if (ns == NULL) { if (seq != sbuf) free(seq); re_error(q, "invalid Unicode list"); return NULL; }
+                        memcpy(ns, seq, slen);
+                        if (seq != sbuf) free(seq);
+                        seq = ns; scap *= 2;
+                    }
                     slen += re_utf8_encode(cp, seq + slen);
                 }
-                if (q->p >= q->end || *q->p != '}') { re_error(q, "invalid Unicode list"); return NULL; }
-                if (slen == 0) { re_error(q, "invalid Unicode list"); return NULL; }   /* \u{} with no digits */
+                if (q->p >= q->end || *q->p != '}' || slen == 0) {   /* slen 0: \u{} with no digits */
+                    if (seq != sbuf) free(seq);
+                    re_error(q, "invalid Unicode list"); return NULL;
+                }
                 q->p++;
                 ire_node_t *ln = ire_new(IRE_LIT);
                 ln->u.lit.bytes = (char *)malloc(slen);
                 memcpy(ln->u.lit.bytes, seq, slen);
+                if (seq != sbuf) free(seq);
                 ln->u.lit.len = slen;
                 ln->u.lit.ci = q->case_insensitive;
                 return ln;

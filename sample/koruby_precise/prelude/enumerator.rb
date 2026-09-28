@@ -574,6 +574,7 @@ class Enumerator::Lazy
   end
 
   def zip(*others, &b)
+    return super if b                      # with a block it is Enumerable#zip: eager, returns nil (CRuby)
     # Only something with no way to iterate falls back to the eager
     # Enumerable#zip; an Enumerable argument is pulled lazily, one value per
     # row, so an infinite source still works.

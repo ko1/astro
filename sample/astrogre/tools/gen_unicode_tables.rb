@@ -189,8 +189,15 @@ ALIASES    = %w[RI Bidi_C CI CWCF CWCM CWL CWT CWU DI Dep Dia Ext
                 Join_C LOE NChar OAlpha ODI OGr_Ext OIDC OIDS OLower
                 OMath OUpper PCM Pat_Syn Pat_WS QMark SD STerm Term
                 UIdeo VS WSpace XIDC XIDS]
-# Still absent, because no gem has asked yet: the ~350 block names (`\p{InHebrew}`)
-# and `\p{Age=X.Y}`.  Both are mechanical to add here if one does.
+# `\p{Age=X.Y}` — the codepoints assigned by Unicode X.Y (net-imap's stringprep
+# tables use `\p{^AGE=3.2}`).  Every version the host Ruby accepts.
+AGES       = (1..30).flat_map { |ma| (0..3).map { |mi| "Age=#{ma}.#{mi}" } }
+# Every other name Onigmo accepts — the blocks (`\p{In_Tags}`), the long general
+# category names (`\p{Private_Use}`), all scripts and aliases — from CRuby's
+# enc/unicode/<ver>/name2ctype.h when a source tree is at hand (NAME2CTYPE=path,
+# or ~/ruby/src/master).  Its names are already normalized.
+N2C = ENV["NAME2CTYPE"] || Dir[File.expand_path("~/ruby/src/master/enc/unicode/*/name2ctype.h")].max
+ONIG_NAMES = N2C && File.exist?(N2C) ? File.read(N2C).scan(/sizeof\("([^"]+)"\)/).flatten.uniq.sort : []
 # POSIX bracket classes — `[[:name:]]`.  Not always the same set as the
 # same-named `\p{}` property (e.g. [[:punct:]] also takes the ASCII
 # symbol characters that \p{Punct} rejects), so they get their own list.
@@ -214,7 +221,7 @@ intern = lambda do |ranges|
 end
 
 props = []
-(CATEGORIES + LONG_NAMES + ALIASES + SCRIPTS).each do |name|
+(CATEGORIES + LONG_NAMES + ALIASES + SCRIPTS + AGES + ONIG_NAMES).each do |name|
   ranges = ranges_for("\\p{#{name}}")
   next if ranges.empty?
   off, len = intern.call(ranges)
@@ -223,6 +230,11 @@ rescue RegexpError
   warn "skip \\p{#{name}}: not supported by #{RUBY_DESCRIPTION}"
 end
 props << [normalize("Cs"), *intern.call([[0xD800, 0xDFFF]])]
+# the other surrogate-only names the scan cannot see either
+{ "surrogate" => [0xD800, 0xDFFF], "inhighsurrogates" => [0xD800, 0xDB7F],
+  "inhighprivateusesurrogates" => [0xDB80, 0xDBFF], "inlowsurrogates" => [0xDC00, 0xDFFF] }.each do |nm, r|
+  props << [nm, *intern.call([r])]
+end
 props.uniq! { |p| p[0] }
 props.sort_by! { |p| p[0] }
 
