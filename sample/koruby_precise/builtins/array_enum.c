@@ -874,10 +874,17 @@ static RESULT korb_join_rec(CTX *c, VALUE *slots, FILE *ms, VALUE_REF aref, VALU
                 if (KORB_STRING_P(r.value)) scalar = r.value;           /* non-String → fprint below */
             }
         }
-        if (recurse) {
-            rr = korb_join_rec(c, slots + 1, ms, VALUE_REF_AT(&slots[0]), sepref, first, enc, asc, bad);
+        if (recurse) {                                                 /* a nested array is ONE element: [[], []].join("-") is "-" */
+            if (!*first && KORB_STRING_P(VALUE_REF_GET(sepref))) {
+                korb_join_enc_merge(c, VALUE_REF_GET(sepref), enc, asc, bad);
+                const KorbString *const sep = VAL2STR(VALUE_REF_GET(sepref));
+                fwrite(korb_strbuf_data(sep->buf), 1, sep->len, ms);
+            }
+            bool inner_first = true;
+            rr = korb_join_rec(c, slots + 1, ms, VALUE_REF_AT(&slots[0]), sepref, &inner_first, enc, asc, bad);
             if (UNLIKELY(rr.state != KORB_NORMAL)) goto done;
-            continue;                                                  /* recursion wrote its own seps + *first */
+            *first = false;
+            continue;
         }
         if (!*first && KORB_STRING_P(VALUE_REF_GET(sepref))) {
             korb_join_enc_merge(c, VALUE_REF_GET(sepref), enc, asc, bad);
