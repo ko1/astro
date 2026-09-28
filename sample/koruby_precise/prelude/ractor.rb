@@ -18,7 +18,15 @@ class Ractor
 
   # A channel any Ractor can send to; only its creator receives (not enforced here).
   class Port
-    def initialize = (@q = Thread::Queue.new)
+    def initialize
+      @q = Thread::Queue.new
+      @owner = Ractor.current
+      @id = @owner.__send__(:__next_port_id)
+    end
+    # a ractor's default port: id 0, owned by that ractor (not the creating one)
+    def self.__default_for(r) = allocate.tap { |pt| pt.__send__(:__init_default, r) }
+    def __init_default(r) = (@q = Thread::Queue.new; @owner = r; @id = 0)
+    private :__init_default
     def send(obj, move: false)
       raise ClosedError, "The port was already closed" if @q.closed?
       @q << Ractor.__copy_arg(obj)
@@ -34,7 +42,7 @@ class Ractor
     def close = (@q.close; nil)
     def closed? = @q.closed?
     def __ready? = !@q.empty?
-    def inspect = "#<Ractor::Port>"
+    def inspect = "#<Ractor::Port to:##{@owner.instance_variable_get(:@id)} id:#{@id}>"
   end
 
   @__count = 0
@@ -90,9 +98,11 @@ class Ractor
   # the first of `ports` with a value waiting: [port, value]
   def self.select(*ports)
     raise ArgumentError, "specify at least one port" if ports.empty?
-    loop do
-      ports.each { |pt| return [pt, pt.receive] if pt.__ready? }
-      Thread.pass
+    spins = 0
+    while true                             # not `loop`: it would swallow ClosedError (a StopIteration)
+      ports.each { |pt| return [pt, pt.receive] if pt.__ready? || pt.closed? }   # closed and empty: ClosedError
+      # no multi-queue wait: back off so a select nobody answers does not burn a CPU
+      (spins += 1) < 64 ? Thread.pass : sleep(0.001)
     end
   end
 
@@ -164,7 +174,8 @@ class Ractor
   def __init(name, args, blk)
     @name = name
     @id = Ractor.__next_id
-    @port = Port.new
+    @port = Port.__default_for(self)
+    @port_seq = 0
     @store = {}
     @monitors = []
     me = self
@@ -185,16 +196,18 @@ class Ractor
   def __init_main
     @name = nil
     @id = Ractor.__next_id
-    @port = Port.new
+    @port = Port.__default_for(self)
+    @port_seq = 0
     @store = {}
     @monitors = []
     @thread = Thread.main
   end
   private :__init_main
 
+  def __next_port_id = (@port_seq += 1)
   def __store = @store
   def __notify(what) = @monitors.each { |pt| pt << what rescue nil }
-  private :__store, :__notify
+  private :__store, :__notify, :__next_port_id
 
   def default_port = @port
   def monitor(port) = (@thread.alive? ? @monitors << port : port << (@thread.status.nil? ? :aborted : :exited); true)
@@ -212,6 +225,7 @@ class Ractor
   def value
     raise Error, "The value was already taken" if @taken
     @taken = true
+    Ractor.current.__send__(:__next_port_id)   # CRuby waits on a port of its own
     begin
       @thread.value
     rescue Exception => e

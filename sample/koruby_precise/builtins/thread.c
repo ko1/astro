@@ -198,25 +198,31 @@ korb_blop_pump(struct korb_vm *vm, int block)
             for (nfds_t i = 0; i < b->u.poll.nfds; i++) {
                 pf[k] = b->u.poll.fds[i]; pf[k].revents = 0; k++;
             }
-    /* 眠る長さ: 既に post 済み or 非 block なら 0、それ以外は最短 deadline (無ければ無期限) */
-    int ms = 0;
+    /* 眠る長さ: 既に post 済み or 非 block なら 0、それ以外は最短 deadline (無ければ無期限)。
+     * ns で持つ: ms に切り捨てると残り 1 ms 未満が poll(0) の空回りになる */
+    int64_t wait_ns = 0;
     if (!posted && block) {
-        ms = -1;
+        wait_ns = -1;
         struct timespec now; korb_blop_now(&now);
         for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next) {
             if (!(b->flags & KORB_BLOP_F_TIMEOUT)) continue;
-            long d = (long)(b->deadline.tv_sec - now.tv_sec) * 1000
-                   + (b->deadline.tv_nsec - now.tv_nsec) / 1000000L;
+            int64_t d = (int64_t)(b->deadline.tv_sec - now.tv_sec) * 1000000000
+                      + (b->deadline.tv_nsec - now.tv_nsec);
             if (d < 0) d = 0;
-            if (ms < 0 || d < ms) ms = (int)d;
+            if (wait_ns < 0 || d < wait_ns) wait_ns = d;
         }
     }
-    if (total == 0 && ms == 0) {
+    if (total == 0 && wait_ns == 0) {
         if (sig_armed) korb_signal_sleep_end(vm, &sig_old);
         if (pf != sbuf) free(pf);
         return posted;
     }
-    const int rc = poll(pf, total, ms);
+#ifdef __wasi__
+    const int rc = poll(pf, total, wait_ns < 0 ? -1 : (int)((wait_ns + 999999) / 1000000));   /* no ppoll: round up */
+#else
+    const struct timespec wts = { (time_t)(wait_ns / 1000000000), (long)(wait_ns % 1000000000) };
+    const int rc = ppoll(pf, total, wait_ns < 0 ? NULL : &wts, NULL);
+#endif
     if (sig_armed) korb_signal_sleep_end(vm, &sig_old);
     /* signal の起床は revents 書き戻しの後: blop を list から外すと pf[] の
        index 対応が崩れる */
