@@ -45,10 +45,10 @@ class Thread
   end
   # CRuby reports the call to #backtrace itself as position 0: the same place as
   # the caller's, labelled with the method.  Below it is Kernel#caller's list.
-  # __caller_strings(1) drops both this frame and the #backtrace frame.
+  # __caller_strings(0) drops the #backtrace frame (this `__` helper is not a backtrace frame).
   private def __bt_current(label, args)
     raise ArgumentError, "wrong number of arguments (given #{args.length}, expected 0..2)" if args.length > 2
-    list = __caller_strings(1)
+    list = __caller_strings(0)
     return nil unless list
     list.unshift(list[0].sub(/:in '.*'\z/, ":in '" + label + "'")) unless list.empty?
     return list if args.empty?

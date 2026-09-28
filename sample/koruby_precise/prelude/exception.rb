@@ -34,7 +34,12 @@ class Exception
     end
     # the class name goes at the end of the FIRST line; later lines are
     # decorated on their own (CRuby).
-    lines = m.split("\n", -1)
+    lines = if m.valid_encoding?
+              m.split("\n", -1)
+            else                                     # a broken message still prints (split would raise)
+              enc = m.encoding
+              m.b.split("\n", -1).map { |l| l.force_encoding(enc) }
+            end
     lines.pop if lines.length > 1 && lines[-1].empty?
     first = lines[0]
     head = if cn.nil?
@@ -73,9 +78,13 @@ class Exception
     hl = highlight.nil? ? Exception.to_tty? : highlight
     order = :top if order.nil?
     dopts = opts.merge(highlight: hl)
+    # a never-raised exception has no backtrace: CRuby prints only the position of
+    # this call, labelled as the full_message frame itself
+    site = caller_locations(1, 1)&.first
+    site_bt = site ? ["#{site.path}:#{site.lineno}:in 'full_message'"] : []
     chunk = lambda do |exc|
       bt = exc.backtrace
-      bt = (caller(1) || []) if bt.nil? || bt.empty?
+      bt = site_bt if bt.nil? || bt.empty?
       dm = exc.respond_to?(:detailed_message) ? exc.detailed_message(**dopts) : nil
       dm = dm.to_str if !dm.nil? && !dm.is_a?(String) && dm.respond_to?(:to_str)
       if dm.nil? || !dm.is_a?(String)          # nil / unusable → just the class name

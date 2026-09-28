@@ -10156,6 +10156,14 @@ korb_eval_frame_id(CTX *const c, const VALUE bind)
     return korb_fid_main(0, true);   /* no scope to name: the frame below the eval supplies one */
 }
 
+/* koruby's own plumbing (`def __each_el` in the prelude, a `__x` C builtin, blocks in them): CRuby has
+ * no such frame, so backtraces leave it out. */
+static bool korb_bt_internal_frame_p(const char *const file, const char *const label)
+{
+    return label != NULL && (file == NULL || strcmp(file, KORB_PRELUDE_FILE) == 0) &&   /* no file = a C builtin */
+           (strstr(label, "#__") != NULL || strstr(label, ".__") != NULL);
+}
+
 /* Append one unwound frame (raise path only).  `file` NULL means the frame has
  * no source of its own and stands in the file of the frame BELOW it — CRuby's
  * rule for a C frame, and what korb_frames_snapshot_at's tail pass does for the
@@ -10172,13 +10180,21 @@ korb_bt_push(struct korb_vm *const vm, const char *const file, const uint32_t li
         vm->bt = realloc(vm->bt, sizeof(struct korb_bt_entry) * vm->bt_capa);
         if (!vm->bt) { fprintf(stderr, "koruby_precise: out of memory (backtrace)\n"); abort(); }
     }
+    if (korb_bt_internal_frame_p(file, name)) return;
+    /* a prelude frame shows at its caller's position, like a C frame (CRuby's <internal:>) */
+    const bool prelude = file != NULL && strcmp(file, KORB_PRELUDE_FILE) == 0;
     vm->bt[vm->bt_cnt].line = line;
     vm->bt[vm->bt_cnt].name = name;
-    vm->bt[vm->bt_cnt].file = file;
+    vm->bt[vm->bt_cnt].file = prelude ? NULL : file;
+    vm->bt[vm->bt_cnt].borrow_line = prelude;
     vm->bt_cnt++;
-    if (file != NULL)
-        for (uint32_t i = vm->bt_cnt - 1; i > 0 && vm->bt[i - 1].file == NULL; )
+    if (prelude)                                   /* the C frames it called sit at a prelude line too */
+        for (uint32_t i = vm->bt_cnt - 1; i > 0 && vm->bt[i - 1].file == NULL; ) vm->bt[--i].borrow_line = 1;
+    if (file != NULL && !prelude)
+        for (uint32_t i = vm->bt_cnt - 1; i > 0 && vm->bt[i - 1].file == NULL; ) {
             vm->bt[--i].file = file;
+            if (vm->bt[i].borrow_line) vm->bt[i].line = line;
+        }
 }
 
 /* Record the frame `mid` (defined by `m`, entered from `line`) that the raise
@@ -10340,7 +10356,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *const lo, const VALUE *const hi,
             r->file = (r->kind == KORB_FID_METHOD) ? korb_bt_method_file(c, m) : NULL;
             r->label = korb_bt_label(c, m->mid, m);
             r->mid = m->mid;
-            n++;
+            if (!korb_bt_internal_frame_p(r->file, r->label)) n++;
             fbase = NULL; line0 = 0;
             continue;
         }
@@ -10359,7 +10375,7 @@ korb_frames_snapshot_at(CTX *c, const VALUE *const lo, const VALUE *const hi,
              * know their label at parse time (node.def) — the PREV chain cannot
              * name a definer frame that has already returned */
             r->label = korb_bt_entry_label(c, e, fbase, lo);
-            n++;
+            if (!korb_bt_internal_frame_p(r->file, r->label)) n++;
             fbase = NULL; line0 = 0;
             continue;
         }
@@ -10714,11 +10730,12 @@ korb_flink_req_frame(CTX *c, const VALUE *req_base)
  * still waiting to borrow one (korb_bt_push); NULL falls back to the file being
  * run, which is where the '<main>' frame that closes the report sits. */
 static int
-korb_bt_entry_fmt(const struct korb_vm *vm, uint32_t i, const char *const below, char *buf, size_t bufsz)
+korb_bt_entry_fmt(const struct korb_vm *vm, uint32_t i, const char *const below, uint32_t below_line, char *buf, size_t bufsz)
 {
     const struct korb_bt_entry *const e = &vm->bt[i];
     const char *const file = e->file ? e->file : below;
-    int len = korb_fmt_loc(buf, bufsz, file ? file : korb_bt_cur_file(vm), (int32_t)e->line, e->name);
+    const uint32_t line = (e->file == NULL && e->borrow_line && below_line != 0) ? below_line : e->line;
+    int len = korb_fmt_loc(buf, bufsz, file ? file : korb_bt_cur_file(vm), (int32_t)line, e->name);
     if (len < 0) len = 0;
     return len < (int)bufsz ? len : (int)bufsz - 1;
 }
@@ -10730,7 +10747,7 @@ static int
 korb_frames_at(CTX *c, uint32_t nb, uint32_t d, uint32_t i, char *buf, size_t bufsz)
 {
     const struct korb_vm *const vm = c->vm;
-    if (i < nb) return korb_bt_entry_fmt(vm, i, d ? vm->fscratch[0].file : NULL, buf, bufsz);
+    if (i < nb) return korb_bt_entry_fmt(vm, i, d ? vm->fscratch[0].file : NULL, d ? vm->fscratch[0].line : 0, buf, bufsz);
     if (i - nb >= d) { buf[0] = '\0'; return 0; }
     const struct korb_frame_rec *const r = &vm->fscratch[i - nb];
     int len = korb_fmt_loc(buf, bufsz, r->file ? r->file : korb_bt_cur_file(vm), (int32_t)r->line, r->label);
@@ -10757,11 +10774,32 @@ korb_capture_backtrace(CTX *c, VALUE *slots, const VALUE *fbase)
     const uint32_t n = nb + d;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n + 1));
     char buf[600];
+    /* A prelude frame shows at its caller's position (CRuby's <internal:> frames):
+     * format outermost first so the caller's "file:line" is known. */
+    char **const ent = n ? malloc(sizeof(char *) * n) : NULL;
+    if (n && !ent) abort();
+    const char *outer = NULL; size_t outer_len = 0;
+    static const char pfx[] = KORB_PRELUDE_FILE ":";
+    for (uint32_t i = n; i-- > 0; ) {
+        int len = korb_frames_at(c, nb, d, i, buf, sizeof buf);
+        const char *const at = strstr(buf, ":in ");
+        if (outer != NULL && at != NULL && strncmp(buf, pfx, sizeof pfx - 1) == 0) {
+            char tmp[600];
+            len = snprintf(tmp, sizeof tmp, "%.*s%s", (int)outer_len, outer, at);
+            if (len >= (int)sizeof tmp) len = (int)sizeof tmp - 1;
+            memcpy(buf, tmp, (size_t)len + 1);
+        }
+        ent[i] = strndup(buf, (size_t)len);
+        if (!ent[i]) abort();
+        const char *const at2 = strstr(ent[i], ":in ");
+        if (at2 != NULL) { outer = ent[i]; outer_len = (size_t)(at2 - ent[i]); }
+    }
     for (uint32_t i = 0; i < n; i++) {
-        const int len = korb_frames_at(c, nb, d, i, buf, sizeof buf);
-        slots[2] = UNWRAP(korb_str_new(c, slots + 2, buf, (uint32_t)len));
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, ent[i], (uint32_t)strlen(ent[i])));
         UNWRAP(korb_ary_push_val(c, slots, VALUE_REF_AT(&slots[1]), slots[2]));
     }
+    for (uint32_t i = 0; i < n; i++) free(ent[i]);
+    free(ent);
     if (d == 0) {                        /* no link to walk: close the list the way the report does */
         const int mlen = snprintf(buf, sizeof buf, "%s:%d:in '<main>'",
                                   korb_bt_cur_file(vm), (int32_t)VAL2EXC(slots[0])->line);
@@ -11360,7 +11398,7 @@ korb_report_line(CTX *c, const KorbArray *cap, const KorbException *e, uint32_t 
         const VALUE s = korb_items_data(cap->items)[i];
         return KORB_STRING_P(s) ? korb_strbuf_data(VAL2STR(s)->buf) : "?";
     }
-    if (i < vm->bt_cnt) { korb_bt_entry_fmt(vm, i, NULL, buf, bufsz); return buf; }   /* '<main>' closes it: the file being run */
+    if (i < vm->bt_cnt) { korb_bt_entry_fmt(vm, i, NULL, e->line, buf, bufsz); return buf; }   /* '<main>' closes it: the file being run */
     snprintf(buf, bufsz, "%s:%d:in '<main>'", korb_bt_cur_file(vm), (int32_t)e->line);
     return buf;
 }

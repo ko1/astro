@@ -1081,6 +1081,7 @@ struct korb_bt_entry {       /* one unwind frame for the uncaught-exception repo
     uint32_t line;
     const char *name;        /* CRuby 3.4 frame label: "Object#foo" / "C.bar" / "<main>" */
     const char *file;        /* the frame's source file (NULL = the file being run) */
+    uint8_t borrow_line;     /* a prelude frame: takes the line, not just the file, of the frame below */
 };
 
 /* One live Ruby frame, as the backtrace walk reads it back out of the frames
