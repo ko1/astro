@@ -21895,8 +21895,14 @@ korb_cvar_block_cref(CTX *c, const VALUE *const frame_base)
 void
 korb_method_set_block_cref(CTX *c, VALUE klass, uint32_t mid, const VALUE *frame_base)
 {
-    if (!KORB_CLASS_P(klass)) return;
-    const VALUE lc = korb_cvar_block_cref(c, frame_base);
+    if (!KORB_CLASS_P(klass) || frame_base == NULL) return;
+    const struct korb_method *const hm = korb_block_home_method(c->vm, frame_base);   /* never follows a returned frame */
+    if (hm == NULL) return;
+    VALUE lc = KORB_CLASS_P(hm->def_cref) ? hm->def_cref : hm->owner;
+    if (KORB_CLASS_P(lc) && VAL2CLASS(lc)->is_singleton) {        /* `def self.mk`: the class itself */
+        const VALUE at = korb_singleton_attached(c, lc);
+        if (KORB_CLASS_P(at)) lc = at;
+    }
     if (!KORB_CLASS_P(lc) || lc == klass) return;
     const KorbClass *const k = VAL2CLASS(klass);
     const int32_t sl = korb_mtab_slot(k, mid);
