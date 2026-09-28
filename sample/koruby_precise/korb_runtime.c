@@ -6861,8 +6861,10 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
         if (owner != KORB_NIL)                         /* lexical enclosing module/class → M::C names */
             ARO_STORE(c, VAL2CLASS(slots[1]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[1])->enclosing, owner);
         korb_const_define_owned(c, name_sym, slots[1], owner);   /* owner = lexical module (nil top-level) → Module#constants + reopen */
-        if (UNLIKELY(owner != KORB_NIL && korb_mod_hook_custom(c, owner, korb_intern(c->vm, "const_added", 11)))) {
-            slots[2] = owner; slots[3] = ID2SYM(name_sym);   /* const_added runs before inherited (CRuby) */
+        /* a top-level definition is Object's constant: zeitwerk's explicit namespaces hook it there */
+        const VALUE hook_owner = owner != KORB_NIL ? owner : korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+        if (UNLIKELY(korb_mod_hook_custom(c, hook_owner, korb_intern(c->vm, "const_added", 11)))) {
+            slots[2] = hook_owner; slots[3] = ID2SYM(name_sym);   /* const_added runs before inherited (CRuby) */
             RESULT ar = korb_send_impl(c, slots + 4, korb_intern(c->vm, "const_added", 11), 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
         }
@@ -17459,11 +17461,12 @@ korb_const_assign_at(CTX *c, VALUE *slots, const struct Node *n, uint32_t name_s
     korb_const_define_owned(c, name_sym, val, ownc);
     { uint32_t fsym, fline;                              /* Module#const_source_location */
       if (korb_get_srcloc(c->vm, n, &fsym, &fline)) korb_const_reg_loc(c->vm, name_sym, ownc, fsym, fline); }
-    if (UNLIKELY(ownc != KORB_NIL)) {                     /* fire const_added(name) if the module defines the hook */
+    if (korb_sym_name(c->vm, name_sym)[0] != '$') {      /* fire const_added(name) if the module defines the hook */
         const uint32_t ca = korb_intern(c->vm, "const_added", 11);
-        if (UNLIKELY(korb_mod_hook_custom(c, ownc, ca))) {
+        const VALUE hook_owner = ownc != KORB_NIL ? ownc : korb_builtin_class_obj(c->vm, KORB_C_OBJECT);   /* top level: Object */
+        if (UNLIKELY(korb_mod_hook_custom(c, hook_owner, ca))) {
             slots[0] = val;                              /* root val across the hook's GC */
-            slots[1] = ownc; slots[2] = ID2SYM(name_sym);
+            slots[1] = hook_owner; slots[2] = ID2SYM(name_sym);
             RESULT hr = korb_send(c, slots + 3, ca, 0, 1);
             if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
             return RESULT_OK(slots[0]);                  /* re-read (may have moved) */
