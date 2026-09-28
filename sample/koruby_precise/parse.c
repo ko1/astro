@@ -2735,8 +2735,11 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
      * first.  Resolved at parse time from the frame chain (the names) and at
      * runtime to the live class objects (koruby's flat const table). */
     if (argc == 0 && cn->block == NULL && strcmp(name, "nesting") == 0 &&
-        PM_NODE_TYPE_P(cn->receiver, PM_CONSTANT_READ_NODE) &&
-        strcmp(kp_cid_cstr(tc, ((const pm_constant_read_node_t *)cn->receiver)->name), "Module") == 0) {
+        ((PM_NODE_TYPE_P(cn->receiver, PM_CONSTANT_READ_NODE) &&
+          strcmp(kp_cid_cstr(tc, ((const pm_constant_read_node_t *)cn->receiver)->name), "Module") == 0) ||
+         (PM_NODE_TYPE_P(cn->receiver, PM_CONSTANT_PATH_NODE) &&              /* `::Module.nesting` (irb) */
+          ((const pm_constant_path_node_t *)cn->receiver)->parent == NULL &&
+          strcmp(kp_cid_cstr(tc, ((const pm_constant_path_node_t *)cn->receiver)->name), "Module") == 0))) {
         uint32_t syms[64]; uint32_t n = 0;
         for (struct kp_frame *f = tc->frame; f && n < 64; f = f->prev)
             if (f->class_name_sym != 0) syms[n++] = f->class_name_sym;

@@ -1030,6 +1030,7 @@ struct korb_method {
                               * *rest keeps the persistent R2K mark, so re-splatting it is keywords. */
     uint8_t  mro_occ;        /* which occurrence of `owner` in the receiver's MRO this entry runs as
                               * (0 = first).  Nonzero only on the copies korb_method_occ makes. */
+    uint8_t  core;           /* defined by the prelude: a redefinition gets a fresh entry (a frame may be running it) */
     struct Node *body;       /* ISEQ */
     /* 呼び出しの入口。どちらも同じ本体ノードを指し、AOT が焼くのはこちら側。
      * 充填時に (site の argc, callee の形状) で片方を選んで cc/ic に載せる。 */

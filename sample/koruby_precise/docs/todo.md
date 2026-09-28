@@ -6012,3 +6012,10 @@ S 式・トークン列に変換する層は軽くない。**やるなら独立�
   ライブラリの「Ractor の中でも動く」テスト（ostruct / delegate / matrix / prime / time / csv / rack）はこれで通る。
 - ~~did_you_mean を起動時に require~~ → CRuby 4.1 と同じく autoload、最初の detailed_message で読み込む。
   残り: 未捕捉例外の表示に "Did you mean?" が付かない（C の表示経路は Ruby を呼ばない）。ErrorHighlight は無い。
+
+## 実行中のメソッドを再定義するとそのフレームの file が新しい定義になる（2026-09-28）
+korb_class_method_slot は再定義でエントリを使い回す（in place）ので、走っている古いフレームの
+backtrace は新しい本体のファイルを名乗る（`def m; require "x"（m を再定義）; m; end` の外側の m が x.rb）。
+prelude 由来のメソッドだけは新しいエントリにした（`core` フラグ、irb の Binding#irb）。一般化すると
+再定義のたびに orphan が増える（20 万回の再定義で +126 MB / 2.4×）ので見送り。直すなら「いまスタックに
+いるか」を安く判定するか、古いエントリを参照数で解放する。

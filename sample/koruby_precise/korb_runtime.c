@@ -5194,7 +5194,11 @@ korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mi
      * entry alive across a redefinition (`m = o.method(:x); def o.x; end` still
      * calls the old body), so hand the redefinition a FRESH entry and move the
      * old one out of the table — orphans stay GC-rooted through vm->orphans. */
-    if (m != NULL && m->pinned) {
+    /* A frame may still be running the old body (a method that redefines itself,
+     * irb's Binding#irb replacing the prelude's): it keeps naming its entry, so
+     * overwriting that entry in place gave the frame the new body's file.  Only
+     * prelude methods, so the orphans stay bounded (each is replaced once). */
+    if (m != NULL && (m->pinned || (m->core && vm->boot_done))) {
         korb_vm_orphan_method(vm, m);
         m = NULL;
         struct korb_method *const nm = calloc(1, sizeof(struct korb_method));
@@ -5926,6 +5930,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry
     struct korb_method *m = korb_class_method_slot(c->vm, k, mid);
     m->kind = KORB_METHOD_ISEQ;
     m->hidden = !c->vm->boot_done && korb_internal_helper_name_p(korb_sym_name(c->vm, mid));   /* prelude's `def __x` */
+    m->core = !c->vm->boot_done;
     m->visibility = (k->cur_visibility == 3) ? 1 : k->cur_visibility;   /* mode 3 = module_function: private instance method */
     if (m->visibility == 0 && !k->is_singleton && UNLIKELY(korb_auto_private_name_p(c->vm, mid))) m->visibility = 1;
     m->owner = klass;        /* super's def_class + __method__ source (frame fs-2) */
@@ -10379,8 +10384,11 @@ korb_frames_snapshot_at(CTX *c, const VALUE *const lo, const VALUE *const hi,
     /* A C frame has no source of its own: CRuby reports it at the position of the
      * frame below it — which is its call site, and the same file.  Innermost
      * first, so a run of nested C frames all take the first Ruby frame below. */
+    /* A prelude frame stands in for a CRuby core method written in Ruby, whose
+     * <internal:...> frame CRuby likewise shows at its caller's position. */
     for (uint32_t i = n; i-- > 0; )
-        if (vm->fscratch[i].kind == KORB_FID_CFUNC && i + 1 < n) {
+        if ((vm->fscratch[i].kind == KORB_FID_CFUNC ||
+             (vm->fscratch[i].file != NULL && strcmp(vm->fscratch[i].file, KORB_PRELUDE_FILE) == 0)) && i + 1 < n) {
             vm->fscratch[i].file = vm->fscratch[i + 1].file;
             vm->fscratch[i].line = vm->fscratch[i + 1].line;
         }
@@ -14048,8 +14056,8 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             return korb_set_from_array(c, slots + 1, VALUE_REF_AT(&slots[0]));
         }
         if (self == korb_builtin_class_obj(vm, KORB_C_STRING)) {       /* String.new([str]) */
-            if (argc >= 1 && KORB_STRING_P(slots[-(korb_sword_t)argc])) {
-                slots[0] = slots[-(korb_sword_t)argc];          /* root source across the alloc */
+            if (argc == 1 && KORB_STRING_P(slots[-1])) {        /* kwargs (encoding:, capacity:) go through #initialize */
+                slots[0] = slots[-1];                           /* root source across the alloc */
                 uint32_t len = VAL2STR(slots[0])->len;
                 KorbString *r = korb_str_alloc(c, slots + 1, len);
                 memcpy(korb_strbuf_data(r->buf), korb_strbuf_data(VAL2STR(slots[0])->buf), len);   /* re-read src (moved) */
