@@ -498,7 +498,12 @@ module Process
     def pid = self[:pid]
   end
   def self.detach(pid)
-    pid = pid.to_int unless pid.is_a?(Integer)
+    unless pid.is_a?(Integer)                        # NUM2PIDT: #to_int, and it must give an Integer
+      raise TypeError, "no implicit conversion of #{pid.class} into Integer" unless pid.respond_to?(:to_int)
+      n = pid.to_int
+      raise TypeError, "can't convert #{pid.class} into Integer (#{pid.class}#to_int gives #{n.class})" unless n.is_a?(Integer)
+      pid = n
+    end
     w = Waiter.new(pid) do |p|
       begin
         Process.wait2(p)[1]
