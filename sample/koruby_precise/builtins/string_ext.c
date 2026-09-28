@@ -569,7 +569,9 @@ static RESULT korb_str_format_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
           }
           case 'p': {
             char *tb = NULL; size_t tsz = 0; FILE *tms = open_memstream(&tb, &tsz);
-            if ((KORB_OBJECT_P(arg) || KORB_CLASS_P(arg)) && fmt_stable) {   /* dispatch #inspect (honours overrides) */
+            if ((KORB_OBJECT_P(arg) || KORB_CLASS_P(arg) ||
+                 (AROH_IS_GC_OBJECT(arg) && (((const AroObjectHeader *)(uintptr_t)arg)->flags & KORB_FL_HAS_KLASS))) &&
+                fmt_stable) {   /* dispatch #inspect (honours overrides, a builtin subclass's too) */
                 slots[1] = arg;
                 RESULT ir = korb_send_impl(c, slots + 2, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(ir.state != KORB_NORMAL)) { if (tms) fclose(tms); free(tb); coerce_err = ir; has_coerce_err = true; err = true; break; }

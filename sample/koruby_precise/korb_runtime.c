@@ -3738,7 +3738,6 @@ static bool korb_fprint_class_qname(CTX *c, FILE *fp, VALUE cls);               
 static bool korb_class_permanent_p(VALUE cls);                                            /* fwd */
 static RESULT korb_struct_inspect_impl(CTX *c, VALUE *slots, VALUE_REF self, const char *kind) {
     const VALUE klass = VAL2OBJ(VALUE_REF_GET(self))->klass;
-    const KorbClass *const k = VAL2CLASS(klass);
     /* CRuby only prints the class name when its path is permanent: a struct
      * const-set under an anonymous namespace renders as "#<struct a=1>". */
     const bool named = korb_class_permanent_p(klass);
@@ -3747,20 +3746,24 @@ static RESULT korb_struct_inspect_impl(CTX *c, VALUE *slots, VALUE_REF self, con
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     fputc('#', ms); fputc('<', ms); fputs(kind, ms);
     if (named) { fputc(' ', ms); korb_fprint_class_qname(c, ms, klass); }   /* qualified name (not the #name method) */
-    const KorbArray *const mem = VAL2ARY(k->members);
-    for (uint32_t i = 0; i < mem->len; i++) {                 /* no GC in this loop (fprint writes to FILE) */
+    /* a member's own #inspect may run Ruby (and GC): re-read the struct, its class and members each step */
+    for (uint32_t i = 0; ; i++) {
+        const VALUE sv = VALUE_REF_GET(self);
+        const VALUE kv = VAL2OBJ(sv)->klass;
+        const KorbArray *const mem = VAL2ARY(VAL2CLASS(kv)->members);
+        if (i >= mem->len) break;
         const VALUE msym = korb_items_data(mem->items)[i];
-        const VALUE val = korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, msym));
+        const VALUE val = korb_ivar_get(c, sv, korb_member_ivar_sym(c->vm, msym));
         fputs(i == 0 ? " " : ", ", ms);
         fputs(korb_sym_name(c->vm, SYM2ID(msym)), ms);
         fputc('=', ms);
-        if (val == VALUE_REF_GET(self)) {                        /* direct self-reference → "#<kind QualName:...>" (CRuby cycle form) */
+        if (val == sv) {                                         /* direct self-reference → "#<kind QualName:...>" (CRuby cycle form) */
             fputc('#', ms); fputc('<', ms); fputs(kind, ms);
             fputc(' ', ms);
-            if (k->name_sym) korb_fprint_class_qname(c, ms, klass); else korb_fprint_inspect_d(c, NULL, ms, klass, 1);
+            if (VAL2CLASS(kv)->name_sym) korb_fprint_class_qname(c, ms, kv); else korb_fprint_inspect_d(c, NULL, ms, kv, 1);
             fputs(":...>", ms);
         } else {
-            korb_fprint_inspect_d(c, NULL, ms, val, 1);          /* _d → nested Struct/Data fields render in full (NULL: keep this loop GC-free) */
+            korb_fprint_inspect_d(c, slots, ms, val, 1);         /* _d → nested Struct/Data fields render in full */
         }
     }
     fputc('>', ms);
@@ -16691,9 +16694,10 @@ static bool
 korb_fprint_user_inspect(CTX *c, VALUE *slots, FILE *fp, VALUE v)
 {
     if (slots == NULL) return false;
-    if (KORB_CLASS_P(v)) {                                       /* a class only when its #inspect is Ruby-defined */
+    if (KORB_CLASS_P(v) ||                                       /* a class, or a builtin subclass's instance (Sexp < Array), */
+        (!KORB_OBJECT_P(v) && AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS))) {
         const struct korb_method *const m = korb_class_find_method(korb_dispatch_class(c, v), korb_intern(c->vm, "inspect", 7), NULL);
-        if (m == NULL || (m->kind != KORB_METHOD_ISEQ && m->kind != KORB_METHOD_DM)) return false;
+        if (m == NULL || (m->kind != KORB_METHOD_ISEQ && m->kind != KORB_METHOD_DM)) return false;   /* only when #inspect is Ruby-defined */
     } else if (!KORB_OBJECT_P(v) || VAL2OBJ(v)->klass == KORB_NIL) return false;
     slots[0] = v;                                                /* root across the dispatch; stays the object,
                                                                   * so a false return leaves the caller a live
@@ -16786,6 +16790,14 @@ korb_fprint_set_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
 static void
 korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
 {
+    /* an element that is a builtin subclass's instance with its own #inspect (never the
+     * receiver itself: that #inspect may call super into this printer) */
+    if (depth > 0 && slots != NULL && AROH_IS_GC_OBJECT(v) && !KORB_OBJECT_P(v) &&
+        (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS)) {
+        slots[0] = v;                                  /* it may return false before rooting v itself */
+        if (korb_fprint_user_inspect(c, slots, fp, v)) return;
+        v = slots[0];
+    }
     if (AROH_IS_GC_OBJECT(v)) {
         switch (KORB_OBJ_TYPE(v)) {
           case KORB_OBJ_ARRAY: korb_fprint_ary_d(c, slots, fp, v, depth);  return;
@@ -16818,11 +16830,13 @@ korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
                 }
                 fputc('#', fp); fputc('<', fp); fputs(k->is_data ? "data" : "struct", fp);
                 if (k->name_sym) { fputc(' ', fp); fputs(korb_sym_name(c->vm, k->name_sym), fp); }
-                const KorbArray *const mem = VAL2ARY(k->members);    /* no GC below (formatter only writes to fp) */
                 if (slots) slots[0] = v;                             /* root across member dispatch */
                 VAL2OBJ(slots ? slots[0] : v)->head.flags |= KORB_FL_JOIN_VISITING;
-                for (uint32_t i = 0; i < mem->len; i++) {
+                for (uint32_t i = 0; ; i++) {
                     const VALUE sv = slots ? slots[0] : v;
+                    /* a member's #inspect may GC: re-read the class and its members each step */
+                    const KorbArray *const mem = VAL2ARY(VAL2CLASS(VAL2OBJ(sv)->klass)->members);
+                    if (i >= mem->len) break;
                     const VALUE msym = korb_items_data(mem->items)[i];
                     const VALUE mval = korb_ivar_get(c, sv, korb_member_ivar_sym(c->vm, msym));
                     fputs(i == 0 ? " " : ", ", fp);
