@@ -1924,6 +1924,12 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
             for (VALUE o = cref; idx == UINT32_MAX && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing)
                 idx = korb_const_index_owned(vm, name_sym, o);
         }
+        /* a class written in a `class << x` body: that unnamed singleton is lexical
+         * scope too, and no baked name reaches it (Ascii85's Wrapper) */
+        if (idx == UINT32_MAX && KORB_CLASS_P(cref)) {
+            const VALUE osc = VAL2CLASS(cref)->enclosing;
+            if (UNLIKELY(KORB_CLASS_P(osc) && VAL2CLASS(osc)->is_singleton)) idx = korb_const_index_owned(vm, name_sym, osc);
+        }
         if (idx == UINT32_MAX) {                                                /* then the innermost class's ancestry (MRO order) */
             /* a pending autoload in an ancestor (an included module) loads first:
              * it beats a real constant further up, e.g. Object's ::File */

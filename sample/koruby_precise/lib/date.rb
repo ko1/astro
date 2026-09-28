@@ -223,23 +223,23 @@ class Date
 
   def self.jd(jd = 0, sg = ITALY)
     jd = jd.to_int if jd.respond_to?(:to_int) && !jd.is_a?(Integer)
-    new!(jd, 0, 0, 0, sg)
+    __new!(jd, 0, 0, 0, sg)
   end
 
   def self.civil(y = -4712, m = 1, d = 1, sg = ITALY)
     jd = _valid_civil_jd(y, m, d, sg) or raise Date::Error, "invalid date"
-    new!(jd, 0, 0, 0, sg)
+    __new!(jd, 0, 0, 0, sg)
   end
   class << self; alias_method :new, :civil; end
 
   def self.ordinal(y = -4712, d = 1, sg = ITALY)
     jd = _valid_ordinal_jd(y, d, sg) or raise Date::Error, "invalid date"
-    new!(jd, 0, 0, 0, sg)
+    __new!(jd, 0, 0, 0, sg)
   end
 
   def self.commercial(y = -4712, w = 1, d = 1, sg = ITALY)
     jd = _valid_commercial_jd(y, w, d, sg) or raise Date::Error, "invalid date"
-    new!(jd, 0, 0, 0, sg)
+    __new!(jd, 0, 0, 0, sg)
   end
 
   # CRuby reads the clock in C: a stubbed Time.now (minitest's Time.stub) must
@@ -256,7 +256,7 @@ class Date
 
   # Internal all-fields constructor: jd + seconds/nanoseconds within the local
   # day + the local offset in seconds.
-  def self.new!(jd, df = 0, sf = 0, of = 0, sg = ITALY)
+  def self.__new!(jd, df = 0, sf = 0, of = 0, sg = ITALY)
     d = allocate
     d.__setup(jd, df, sf, of, sg)
     d
@@ -310,7 +310,7 @@ class Date
   def gregorian? = !julian?
   def fix_style = self
 
-  def new_start(sg = Date::ITALY) = self.class.new!(@jd, @df, @sf, @of, sg)
+  def new_start(sg = Date::ITALY) = self.class.__new!(@jd, @df, @sf, @of, sg)
   def italy = new_start(Date::ITALY)
   def england = new_start(Date::ENGLAND)
   def julian = new_start(Date::JULIAN)
@@ -339,7 +339,7 @@ class Date
 
   def +(other)
     case other
-    when Integer  then self.class.new!(@jd + other, @df, @sf, @of, @sg)
+    when Integer  then self.class.__new!(@jd + other, @df, @sf, @of, @sg)
     when Numeric
       __plus_fraction(other)
     else raise TypeError, "expected numeric"
@@ -348,7 +348,7 @@ class Date
 
   def -(other)
     case other
-    when Integer then self.class.new!(@jd - other, @df, @sf, @of, @sg)
+    when Integer then self.class.__new!(@jd - other, @df, @sf, @of, @sg)
     when Date    then ajd - other.ajd
     when Numeric then __plus_fraction(-other)
     else raise TypeError, "expected numeric or date"
@@ -368,7 +368,7 @@ class Date
     rest = total - carry
     ns = (rest * 86400 * 1_000_000_000).round
     df, sf = ns.divmod(1_000_000_000)
-    self.class.new!(@jd + carry, df, sf, @of, @sg)
+    self.class.__new!(@jd + carry, df, sf, @of, @sg)
   end
 
   # Month arithmetic clamps to the end of the target month, as Ruby does.
@@ -386,7 +386,7 @@ class Date
       d -= 1
     end
     raise Date::Error, "invalid date" if jd.nil?
-    self.class.new!(jd, @df, @sf, @of, @sg)
+    self.class.__new!(jd, @df, @sf, @of, @sg)
   end
 
   # `0 - n` rather than `-n`: a non-numeric argument must raise TypeError, as
@@ -479,7 +479,7 @@ class Date
 
   # d_lite_to_datetime: the day fraction is dropped
   def to_datetime
-    DateTime.new!(@jd, 0, 0, @of, @sg)
+    DateTime.__new!(@jd, 0, 0, @of, @sg)
   end
 
   # d_lite_to_time: a Julian date converts through the (proleptic) Gregorian one
@@ -2533,7 +2533,7 @@ class Date
     raise Date::Error, "invalid date" if hash.nil?
     jd, = __frags_jd(hash, sg)
     raise Date::Error, "invalid date" if jd.nil?
-    new!(jd, 0, 0, 0, sg)
+    __new!(jd, 0, 0, 0, sg)
   end
 
   def self.parse(str = "-4712-01-01", comp = true, sg = ITALY, **opt)
@@ -2573,7 +2573,7 @@ class DateTime < Date
     end
     jd = _valid_civil_jd(y, m, d, sg) or raise Date::Error, "invalid date"
     carry, df, sf = __time_parts(h || 0, min, s)
-    new!(jd + carry, df, sf, __offset_seconds(of), sg)
+    __new!(jd + carry, df, sf, __offset_seconds(of), sg)
   end
   class << self; alias_method :new, :civil; end
 
@@ -2584,24 +2584,24 @@ class DateTime < Date
       jd = whole
     end
     carry, df, sf = __time_parts(h, min, s)
-    new!(jd + carry, df, sf, __offset_seconds(of), sg)
+    __new!(jd + carry, df, sf, __offset_seconds(of), sg)
   end
 
   def self.ordinal(y = -4712, d = 1, h = 0, min = nil, s = 0, of = 0, sg = ITALY)
     jd = _valid_ordinal_jd(y, d, sg) or raise Date::Error, "invalid date"
     carry, df, sf = __time_parts(h, min, s)
-    new!(jd + carry, df, sf, __offset_seconds(of), sg)
+    __new!(jd + carry, df, sf, __offset_seconds(of), sg)
   end
 
   def self.commercial(y = -4712, w = 1, d = 1, h = 0, min = nil, s = 0, of = 0, sg = ITALY)
     jd = _valid_commercial_jd(y, w, d, sg) or raise Date::Error, "invalid date"
     carry, df, sf = __time_parts(h, min, s)
-    new!(jd + carry, df, sf, __offset_seconds(of), sg)
+    __new!(jd + carry, df, sf, __offset_seconds(of), sg)
   end
 
   def self.now(sg = ITALY)
     t = Date.send(:__clock_now)
-    new!(civil_to_jd(t.year, t.month, t.day, sg),
+    __new!(civil_to_jd(t.year, t.month, t.day, sg),
          t.hour * 3600 + t.min * 60 + t.sec, 0, t.utc_offset, sg)
   end
 
@@ -2657,7 +2657,7 @@ class DateTime < Date
   def new_offset(of = 0)
     nof = DateTime.__offset_seconds(of)
     carry, df = (@df - @of + nof).divmod(86400)
-    self.class.new!(@jd + carry, df, @sf, nof, @sg)
+    self.class.__new!(@jd + carry, df, @sf, nof, @sg)
   end
 
   def hour = @df / 3600
@@ -2680,7 +2680,7 @@ class DateTime < Date
     n = n.to_int
     __strftimev("T%H:%M:%S" + (n > 0 ? ".%#{n}N" : "") + "%:z")
   end
-  def to_date = Date.new!(@jd, 0, 0, 0, @sg)
+  def to_date = Date.__new!(@jd, 0, 0, 0, @sg)
   def to_datetime = self
 
   # The instant comes from the JD (so a Julian date converts correctly), and the
@@ -2743,7 +2743,7 @@ class DateTime < Date
       jd += 1
       df -= 86400
     end
-    new!(jd, df, sf, of, sg)
+    __new!(jd, df, sf, of, sg)
   end
 
   def self.parse(str = "-4712-01-01T00:00:00+00:00", comp = true, sg = ITALY, **opt)

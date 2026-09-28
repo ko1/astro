@@ -6044,6 +6044,8 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   ブロックが instance_eval 由来だと知る手段が要る）。Module.nesting にも特異クラスが入らない。
 - **ObjectSpace::WeakMap が強参照**（prelude の Hash）。WeakRef が回収されず RefError にならない（weakref test_recycled）。
   値も弱い side table（korb_weak_walk で鍵か値が死んだ行を落とす）＋ map ごとの表と map 自身の死での解放が要る。
+- `class << self` の本体で定義したクラスのメソッドの Module.nesting が `[A]` だけ（CRuby は `[W, #<Class:A>, A]`）。定数は 2026-09-28 に
+  特異クラスまで引くようにした（Ascii85::Wrapper の START_MARKER）が、名前で焼いた nesting 自体は特異クラスを表せない。
 - 既存のクラス名で `module T` と書いた TypeError（T is not a module）の backtrace の行が 0 になる（CRuby は module 文の行）。
 - **MatchData が対象文字列の写しを持たない**: `m = re.match(line); line.lstrip!` の後で m[1] が変わる（CRuby は凍結した写しを共有で持つ。
   iniparse line_parsing / fixture の 3 例）。2026-09-28 に korb_re_build_md で 4 KiB 以下を写す版を試し、正しく直ったが
