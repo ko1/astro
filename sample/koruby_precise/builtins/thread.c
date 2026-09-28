@@ -499,6 +499,7 @@ korb_blop_deadlocked(struct korb_vm *const vm)
  * `slots` = 生きた cursor (suspend 中の GC scan top)。
  * 他に走れる thread がいなければ: READY の cur はそのまま続行、
  * PENDED なら deadlock (M2 で blop pump に置き換わる)。 */
+static void korb_thread_reap_pending(struct korb_vm *vm);   /* fwd */
 static RESULT
 korb_thread_yield_cpu(CTX *c, VALUE *slots)
 {
@@ -530,8 +531,36 @@ korb_thread_yield_cpu(CTX *c, VALUE *slots)
     if (next->mask_gen != mask_gen) korb_signal_park_pending(vm);   /* next's saved mask predates a trap */
     swapcontext((ucontext_t *)cur->uctx, (ucontext_t *)next->uctx);
     korb_sigmask_resume(vm, mask_gen);
+    korb_thread_reap_pending(vm);
     /* === 再開: 切替元が我々の saved_* を c に載せてから swap してきている === */
     return RESULT_OK(KORB_NIL);
+}
+
+/* A dead thread's value stack, native stack and context.  Never the stack we
+ * run on: a thread that ran is reaped by the next one (korb_thread_reap_pending). */
+static void
+korb_thread_free_stacks(struct korb_vm *const vm, struct korb_thread *const t, VALUE *const hw)
+{
+    if (t->cstack == NULL) return;                      /* main: the process stack */
+    const uint32_t n = vm->thread_stack_pool_n;
+    if (n < sizeof vm->thread_stack_pool / sizeof vm->thread_stack_pool[0]) {   /* keep it for the next Thread.new */
+        vm->thread_stack_pool[n].vslots = t->vslots; vm->thread_stack_pool[n].hw = hw;
+        vm->thread_stack_pool[n].cstack = t->cstack; vm->thread_stack_pool[n].uctx = t->uctx;
+        vm->thread_stack_pool_n = n + 1;
+    } else {
+        munmap(t->vslots - 4, KORB_FIBER_VSLOTS_BYTES);
+        free(t->cstack);
+        free(t->uctx);
+    }
+    t->vslots = NULL; t->vslots_limit = NULL; t->cstack = NULL; t->uctx = NULL;
+}
+static void
+korb_thread_reap_pending(struct korb_vm *const vm)
+{
+    struct korb_thread *const t = vm->reap_thread;
+    if (t == NULL) return;
+    vm->reap_thread = NULL;
+    korb_thread_free_stacks(vm, t, t->saved_hw);
 }
 
 /* dead thread からの離脱 (状態保存なし)。戻らない。 */
@@ -785,6 +814,7 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
     struct korb_thread *const t = c->vm->cur_thread;
     t->started = 1;
     korb_sigmask_resume(c->vm, c->vm->sigmask_gen - 1);   /* the context was built with an older mask */
+    korb_thread_reap_pending(c->vm);
     /* body Proc を自分の (scan される) value stack で proc.call(*args) する。
      * recv = base[0], args = base[1..n] → korb_send(base+1+n, :call, n)。 */
     VALUE *const base = c->slots;
@@ -816,7 +846,8 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
     }
     t->state = KORB_TH_DEAD;
     korb_thread_joiners_wake(c->vm, t);
-    /* TODO(M2): vslots/cstack の reap (この stack の上では解放できない) */
+    t->saved_hw = c->slots_high_water;        /* how much of the value stack a reuse must clear */
+    c->vm->reap_thread = t;                   /* this stack is still in use: the next thread frees it */
     korb_thread_exit_switch(c);               /* never returns */
 }
 
@@ -875,16 +906,28 @@ korb_thread_init_body(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
           t->root_fiber = korb_fiber_root_rep_alloc(c, slots + 3);
           t->root_fiber->storage = slots[2];
       } }
-    void *vs = mmap(NULL, KORB_FIBER_VSLOTS_BYTES, PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (vs == MAP_FAILED) { perror("koruby_precise: mmap thread vslots"); abort(); }
+    void *vs;
+    if (c->vm->thread_stack_pool_n > 0) {     /* a dead thread's: clear what it used, as a fresh map would be */
+        const uint32_t n = --c->vm->thread_stack_pool_n;
+        VALUE *const pv = c->vm->thread_stack_pool[n].vslots;
+        VALUE *const hw = c->vm->thread_stack_pool[n].hw;
+        vs = pv - 4;
+        memset(vs, 0, (size_t)((hw > pv ? hw : pv) - (VALUE *)vs) * sizeof(VALUE));
+        t->cstack = c->vm->thread_stack_pool[n].cstack;
+        t->uctx = c->vm->thread_stack_pool[n].uctx;
+        memset(t->uctx, 0, sizeof(ucontext_t));
+    } else {
+        vs = mmap(NULL, KORB_FIBER_VSLOTS_BYTES, PROT_READ | PROT_WRITE,
+                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (vs == MAP_FAILED) { perror("koruby_precise: mmap thread vslots"); abort(); }
+        t->cstack = malloc(KORB_FIBER_CSTACK_BYTES);
+        if (!t->cstack) abort();
+        t->uctx = calloc(1, sizeof(ucontext_t));
+        if (!t->uctx) abort();
+    }
     t->vslots = (VALUE *)vs + 4;              /* bottom-header slack (base[-1]=self, [-2]=EP, [-3]=link, [-4]=identity) */
     t->vslots[-1] = 0; t->vslots[-2] = 0; t->vslots[-3] = 0; t->vslots[-4] = 0;
     t->vslots_limit = (VALUE *)vs + KORB_FIBER_VSLOTS_BYTES / sizeof(VALUE) - KORB_FIBER_VSLOTS_MARGIN;
-    t->cstack = malloc(KORB_FIBER_CSTACK_BYTES);
-    if (!t->cstack) abort();
-    t->uctx = calloc(1, sizeof(ucontext_t));
-    if (!t->uctx) abort();
     getcontext((ucontext_t *)t->uctx);
     ((ucontext_t *)t->uctx)->uc_stack.ss_sp = t->cstack;
     ((ucontext_t *)t->uctx)->uc_stack.ss_size = KORB_FIBER_CSTACK_BYTES;
@@ -1179,6 +1222,7 @@ korb_m_thread_kill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (!t->started && t->state == KORB_TH_READY) {    /* 未起動: 走らせず葬る */
         t->state = KORB_TH_DEAD;                       /* runq からは pop 時に skip */
         korb_thread_joiners_wake(c->vm, t);
+        korb_thread_free_stacks(c->vm, t, t->vslots);  /* never ran on them */
         return RESULT_OK(VALUE_REF_GET(self));
     }
     if (t == c->vm->cur_thread) return korb_thread_kill_raise(c, slots);   /* 自殺: 即 unwind */

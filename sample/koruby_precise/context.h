@@ -1298,6 +1298,9 @@ struct korb_vm {
      * fast path はゼロコスト。rep は libc-stable、解放しない。 */
     struct korb_thread *thread_list;   /* 全 rep (GC scan 用) */
     struct korb_thread *cur_thread;    /* RUNNING (NULL = single-threaded) */
+    struct korb_thread *reap_thread;   /* died and switched away: its stacks are freed by whoever runs next */
+    struct { VALUE *vslots, *hw; void *cstack, *uctx; } thread_stack_pool[4];   /* a dead thread's, for the next Thread.new */
+    uint32_t thread_stack_pool_n;
     struct korb_thread *main_thread;
     struct korb_thread *runq_head, *runq_tail;   /* READY FIFO */
     uint32_t name_thread;              /* interned "Thread" */
