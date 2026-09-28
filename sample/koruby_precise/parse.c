@@ -4424,6 +4424,10 @@ build_const_set(struct kp_ctx *tc, uint32_t name_cid, NODE *val)
         uint32_t lex = 0;
         if (kp_lexical_class_owner(tc, &lex)) owner = lex;
     }
+    /* module_eval(String) on an anonymous module seeds the CALLER's scope; a write
+     * at the string's own level belongs to the receiver, which only the runtime
+     * eval cref names (graphql's per-monitor CURRENT_EV_KEY) */
+    if (tc->in_eval && tc->seed_cref_is_caller && owner != 0 && owner == tc->seed_class_name) owner = 0;
     NODE *cn = ALLOC_node_const_set(name_cid, owner,
                                     anon ? -1 - tc->chain : INT32_MIN, val);
     if (anon) bake_add(tc, &cn->u.node_const_set.self_off);   /* self at base[-1] */

@@ -1855,7 +1855,14 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
         if (self_off != INT32_MIN) {
             const VALUE acref = (dc_off != INT32_MIN) ? korb_const_cref(c->vm, slots[self_off], slots[dc_off])
                                                       : (KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL);
-            if (KORB_CLASS_P(acref) && VAL2CLASS(acref)->name_sym == 0) {
+            /* a method a module_eval(String) defined: that module is its innermost
+             * cref even once it has a name (graphql's MonitorTrace.create_module) */
+            bool eval_cref = false;
+            if (dc_off != INT32_MIN && ((uintptr_t)slots[dc_off] & 7u) == KORB_FID_METHOD) {
+                const struct korb_method *const em = (const struct korb_method *)((uintptr_t)slots[dc_off] & ~(uintptr_t)7u);
+                eval_cref = KORB_CLASS_P(em->def_cref) && em->def_cref == acref;
+            }
+            if (KORB_CLASS_P(acref) && (VAL2CLASS(acref)->name_sym == 0 || eval_cref)) {
                 idx = korb_const_index_owned(vm, name_sym, acref);
                 inner = acref;
             }
