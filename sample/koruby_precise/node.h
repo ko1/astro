@@ -266,6 +266,7 @@ RESULT korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass)
 RESULT korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, uint32_t soft);
 VALUE  korb_cvar_block_cref(CTX *c, const VALUE *frame_base);
 void   korb_method_clear_def_cref(VALUE klass, uint32_t mid);   /* a def in a class body of an eval: no eval cref */   /* a block's lexical class for @@x (nil: no home method) */
+void   korb_method_set_block_cref(CTX *c, VALUE klass, uint32_t mid, const VALUE *frame_base);   /* a def run by a block in a method: that method's class */
 RESULT korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, VALUE val);
 void   korb_const_define(CTX *c, uint32_t name_sym, VALUE val);
 VALUE  korb_const_get_path(struct korb_vm *vm, uint32_t name_sym);
@@ -486,7 +487,7 @@ VALUE *korb_outer_frame_base_at(VALUE *ep_cell, VALUE prev_handle, uint32_t dept
 VALUE  korb_outer_handle_at(const VALUE *frame_base, VALUE prev_handle, uint32_t depth);
 /* The enclosing method's block trio, or NULL once that frame returned — then
  * *proc_out is the Proc its env kept (0 = there is no such block at all). */
-VALUE *korb_outer_trio(const VALUE *ep, uint32_t depth, int32_t trio_base, VALUE *proc_out);
+VALUE *korb_outer_trio(const CTX *c, const VALUE *ep, uint32_t depth, int32_t trio_base, VALUE *proc_out);
 RESULT korb_exc_ivar_set(CTX *c, VALUE *slots, VALUE_REF excref, VALUE name_sym, VALUE val);   /* set an exception ivar (e.g. @__name), usable from node_eval.c */
 
 /* Pattern-matching (`expr in/ => pattern`) compiled descriptor + runtime matcher.

@@ -2925,7 +2925,7 @@ static VALUE korb_cvar_scope_of(CTX *c, VALUE self, VALUE entry_cell)
                                                        * never self's — `extend M` runs M's methods with a
                                                        * class self, yet @@vars stay M's (CRuby). */
         const struct korb_method *const m = (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)7u);
-        const VALUE own = korb_cvar_scope(c, m->owner);
+        const VALUE own = korb_cvar_scope(c, KORB_CLASS_P(m->def_cref) ? m->def_cref : m->owner);   /* a def in a block / an eval: its cref */
         if (KORB_CLASS_P(own)) return own;
     }
     /* instance_eval/exec: the caller's scope, even when self is a Class — the
@@ -13102,7 +13102,7 @@ korb_yield_outer(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
                  const VALUE *ep, uint32_t depth, int32_t trio_base)
 {
     VALUE blk;
-    VALUE *const trio = korb_outer_trio(ep, depth, trio_base, &blk);
+    VALUE *const trio = korb_outer_trio(c, ep, depth, trio_base, &blk);
     if (LIKELY(trio != NULL))
         return korb_yield(c, slots, argc, line, trio[0], trio[1], &trio[2]);
     if (KORB_PROC_P(blk)) {
@@ -13188,14 +13188,18 @@ korb_env_method_trio(const KorbEnv *const e)
  * trio is in the slots; once it has returned only its env has the block, as the
  * Proc korb_make_proc reified there (*proc_out). */
 VALUE *
-korb_outer_trio(const VALUE *const ep, uint32_t depth, int32_t trio_base, VALUE *const proc_out)
+korb_outer_trio(const CTX *const c, const VALUE *const ep, uint32_t depth, int32_t trio_base, VALUE *const proc_out)
 {
     *proc_out = 0;
     const VALUE h = korb_outer_handle_at(ep - KORB_EP_OFF, *ep, depth);
     if (h == 0) return NULL;
     if (h & 1u) return (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u) + trio_base;
     KorbEnv *const e = VAL2ENV(h);
-    if (!e->closed) return e->loc + trio_base;
+    /* live on ANOTHER thread's stack (`Thread.new { yield }`): its trio's raw
+     * links die with frames that thread does not wait for, so take the Proc
+     * reified at capture, whose env outlives them */
+    if (!e->closed && ((e->loc >= c->slots && e->loc < c->slots_limit) || !KORB_PROC_P(e->blk)))
+        return e->loc + trio_base;
     *proc_out = e->blk;
     return NULL;
 }
@@ -21885,6 +21889,19 @@ korb_cvar_block_cref(CTX *c, const VALUE *const frame_base)
     return KORB_CLASS_P(k) ? k : KORB_NIL;
 }
 
+/* A def run by a block inside a method (`Class.new do def m = @@x end`): the
+ * block pushes no cref, so the method's cvars and constants resolve in the
+ * method's class, not in the class it is defined on (CRuby). */
+void
+korb_method_set_block_cref(CTX *c, VALUE klass, uint32_t mid, const VALUE *frame_base)
+{
+    if (!KORB_CLASS_P(klass)) return;
+    const VALUE lc = korb_cvar_block_cref(c, frame_base);
+    if (!KORB_CLASS_P(lc) || lc == klass) return;
+    const KorbClass *const k = VAL2CLASS(klass);
+    const int32_t sl = korb_mtab_slot(k, mid);
+    if (sl >= 0 && !KORB_CLASS_P(k->methods[sl]->def_cref)) k->methods[sl]->def_cref = lc;
+}
 /* A def written inside a class/module body of an eval'd String: its cref is that
  * body's class, not the eval's (korb_class_def_method recorded the eval cref). */
 void

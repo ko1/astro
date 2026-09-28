@@ -447,7 +447,14 @@ static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
-    korb_fprint_to_s_s(c, slots, ms, VALUE_REF_GET(self));   /* containers dispatch element #inspect (may GC) */
+    const VALUE v = VALUE_REF_GET(self);
+    if (KORB_OBJECT_P(v) && VAL2OBJ(v)->klass != KORB_NIL && !KORB_ARRAY_P(VAL2CLASS(VAL2OBJ(v)->klass)->members)) {
+        fputs("#<", ms);                                  /* rb_any_to_s: this IS Kernel#to_s, so no user #to_s */
+        korb_fprint_class_desc(c, ms, VAL2OBJ(v)->klass);
+        fprintf(ms, ":0x%016lx>", (unsigned long)(uintptr_t)v);
+    } else {
+        korb_fprint_to_s_s(c, slots, ms, v);            /* containers dispatch element #inspect (may GC) */
+    }
     fclose(ms);
     RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
