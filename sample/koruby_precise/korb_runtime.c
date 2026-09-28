@@ -11796,6 +11796,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
          * builder's XmlBase (< BasicObject) turns `raise` / `p` into XML tags
          * that way, and relies on `raise` NOT raising. */
         if (UNLIKELY(m != NULL && !korb_kernel_reachable_p(c, korb_dispatch_class(c, self)))) m = NULL;
+        if (UNLIKELY(m != NULL && korb_method_undefed_p(korb_dispatch_class(c, self), mid))) m = NULL;   /* undef_method hides the global */
         if (UNLIKELY(m == NULL)) {
             /* `main` (klass=nil): no global def by this name — fall back to
              * Object/Kernel methods (to_s, inspect, class, freeze, ...) so the
@@ -12058,6 +12059,7 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
             else {
                 m = korb_method_lookup(vm, mid);
                 if (m && !korb_kernel_reachable_p(c, korb_dispatch_class(c, self))) m = NULL;   /* BasicObject gets no Kernel globals */
+                if (m && korb_method_undefed_p(korb_dispatch_class(c, self), mid)) m = NULL;   /* undef_method hides the global */
                 if (m) korb_cc_fill(cc, korb_ic_serial(c, mid), m, UINT32_MAX);
             }
         }
@@ -14352,7 +14354,8 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
          * private Object methods in CRuby, so an implicit-self call reaches them
          * from ANY object (not just the toplevel main).  Try the global table
          * before method_missing. */
-        if (korb_kernel_reachable_p(c, start_cls)) {   /* BasicObject gets no Kernel globals */
+        if (korb_kernel_reachable_p(c, start_cls) &&   /* BasicObject gets no Kernel globals */
+            !korb_method_undefed_p(start_cls, mid)) {   /* an undef_method in the chain hides it (mocha) */
             struct korb_method *const gm = korb_method_lookup(vm, mid);
             if (gm) {
                 KORB_SEND_VIS_GUARD(gm, KORB_NIL);     /* a top-level def is private: `obj.tl` is refused */
