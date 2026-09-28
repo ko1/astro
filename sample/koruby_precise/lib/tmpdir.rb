@@ -73,7 +73,7 @@ class Dir
   # If a block is given,
   # it is yielded with the path of the directory.
   # The directory and its contents are removed
-  # using FileUtils.remove_entry before Dir.mktmpdir returns.
+  # using FileUtils.remove_entry with force before Dir.mktmpdir returns.
   # The value of the block is returned.
   #
   #  Dir.mktmpdir {|dir|
@@ -96,7 +96,7 @@ class Dir
   #
   def self.mktmpdir(prefix_suffix=nil, *rest, **options, &block)
     base = nil
-    path = Tmpname.create(prefix_suffix || "d", *rest, **options) {|path, _unused1, _unused2, d|
+    path = Tmpname.create(prefix_suffix || "d", *rest, **options) {|path, _, _, d|
       base = d
       mkdir(path, 0700)
     }
@@ -111,7 +111,7 @@ class Dir
             raise ArgumentError, "parent directory is world writable but not sticky: #{base}"
           end
         end
-        FileUtils.remove_entry path
+        FileUtils.remove_entry path, true
       end
     else
       path
