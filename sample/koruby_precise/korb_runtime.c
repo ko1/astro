@@ -5390,8 +5390,11 @@ RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t 
         return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* CRuby: NameError, not NoMethodError */
                           korb_sym_name(c->vm, oldm), korb_type_name(klass));
     korb_check_basic_op_redef(c, klass, newm);          /* an alias can redefine a basic op too */
+    /* snapshot BEFORE taking the slot: it may be src itself (`alias_method :m, :m`,
+     * graphql's define_accessor_method), which the slot resets — and the slot
+     * array may grow under src */
+    const struct korb_method tmp = *src;
     struct korb_method *dst = korb_class_method_slot(c->vm, VAL2CLASS(klass), newm);   /* libc alloc, no GC */
-    const struct korb_method tmp = *src;   /* src may dangle if the slot array grows; snapshot first */
     *dst = tmp; dst->mid = newm;
     /* `super` from the alias resumes after the ORIGINAL defining class (CRuby's
      * defined_class); `owner` stays the aliasing class, which is what
