@@ -1055,14 +1055,17 @@ void korb_frame_audit_ep(const VALUE *base, uint32_t mid, const char *where);
 /* The `$~` cell (builtins/regexp.c).  Ruby scopes the backref to the METHOD
  * frame: an ISEQ invoke parks the caller's and starts at nil. */
 VALUE *korb_re_tilde_cell(CTX *c);
-static inline void korb_bref_push(CTX *c, VALUE v) {
+static inline void korb_bref_push(CTX *c, VALUE v, const VALUE *const base) {
     if (UNLIKELY(c->bref_n == c->bref_cap)) {
         c->bref_cap = c->bref_cap ? c->bref_cap * 2 : 64;
         c->bref_saved = realloc(c->bref_saved, sizeof(VALUE) * c->bref_cap);
-        if (!c->bref_saved) { fprintf(stderr, "koruby_precise: out of memory (backref scopes)\n"); abort(); }
+        c->bref_base = realloc(c->bref_base, sizeof(*c->bref_base) * c->bref_cap);
+        if (!c->bref_saved || !c->bref_base) { fprintf(stderr, "koruby_precise: out of memory (backref scopes)\n"); abort(); }
     }
+    c->bref_base[c->bref_n] = base;
     c->bref_saved[c->bref_n++] = v;
 }
+const VALUE *korb_block_home_base(const struct korb_vm *vm, const VALUE *base);   /* korb_runtime.c */
 static inline VALUE korb_bref_pop(CTX *c) {
     return LIKELY(c->bref_n != 0) ? c->bref_saved[--c->bref_n] : KORB_NIL;
 }
@@ -1109,7 +1112,7 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     (void)def_class; (void)self;
     NODE *const body = m->body;
     const bool bref_scope = UNLIKELY(m->uses_backref != 0);   /* $~ is per method frame */
-    if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell); *bcell = KORB_NIL; }
+    if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell, base); *bcell = KORB_NIL; }
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (bref_scope) *korb_re_tilde_cell(c) = korb_bref_pop(c);   /* re-read: the table may have grown */
     if (r.state == KORB_RETURN) {

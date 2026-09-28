@@ -36,6 +36,8 @@ struct kp_frame {
     bool uses_block;          /* yield / block_given? seen → reserve 2 frame-top cells */
     bool uses_backref;        /* the body can set `$~` (regexp literal / =~ / a matching method
                                * name) → the invoke path saves and restores the caller's */
+    bool block_backref;       /* a block (or a frame between it and its method) touches `$~`:
+                               * node_bref_block points the cell at the home method's */
     bool it_param;            /* `{ it * 2 }` — slot 0 is the implicit `it` (prism lists no name for it) */
     bool module_function_mode; /* no-arg `module_function` seen in this class/module body */
     uint32_t method_mid;      /* enclosing def's name (0 = not a method body) — for super */
@@ -562,6 +564,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->synth_cnt = 0;
     f->uses_block = false;
     f->uses_backref = false;
+    f->block_backref = false;
     f->it_param = false;
     f->module_function_mode = false;
     f->method_mid = 0;
@@ -608,7 +611,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
  * (CRuby shares the frame), which is why the walk goes out to it. */
 static void kp_note_backref(struct kp_ctx *tc) {
     struct kp_frame *mf = tc->frame;
-    while (mf && mf->method_mid == 0 && !mf->dm_body && mf->prev) mf = mf->prev;
+    while (mf && mf->method_mid == 0 && !mf->dm_body && mf->prev) { mf->block_backref = true; mf = mf->prev; }
     if (mf) mf->uses_backref = true;
 }
 /* Method names whose builtin sets `$~` (CRuby sets the backref in the CALLER's
@@ -2149,7 +2152,9 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
         }
     }
     void *const linfo = build_locals_info(tc);      /* before pop_frame: it frees the frame */
+    const bool bref_blk = tc->frame->block_backref;
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
+    if (bref_blk) body = ALLOC_node_bref_block(body, frame_size);   /* `$~` here is the home method's */
     uint32_t blk_top = 0;
     const uint32_t blk_label = kp_block_label(tc, &blk_top);
     NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, destr_len, cap_depth, cap_ns, cap_yield, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), linfo, blk_param_slot, post_cnt, -1, 0, 0, blk_label, blk_top, 0);

@@ -2887,6 +2887,28 @@ korb_block_home_method(const struct korb_vm *const vm, const VALUE *const base)
     }
     return NULL;
 }
+/* The base of the live frame a block at `base` was written in (its home method,
+ * or the file's top level); NULL when that frame has returned or cannot be told. */
+const VALUE *
+korb_block_home_base(const struct korb_vm *const vm, const VALUE *const base)
+{
+    if (korb_block_bodied_p(vm, (uintptr_t)(korb_id_get(base) & ~(VALUE)7u))) return NULL;
+    VALUE h = korb_ep_get(base);
+    if (h != 0 && (h & 7u) == 0 && !VAL2ENV(h)->closed && VAL2ENV(h)->loc == base) h = VAL2ENV(h)->prev;   /* its own env */
+    for (int d = 0; d < 64 && h != 0; d++) {
+        const VALUE *fb;
+        if (h & 1u) fb = (const VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
+        else if (!VAL2ENV(h)->closed && VAL2ENV(h)->loc != NULL) fb = VAL2ENV(h)->loc;   /* open: the frame is live */
+        else return NULL;
+        const VALUE id = korb_id_get(fb);
+        if ((id & 7u) != KORB_FID_BLOCK) return fb;     /* a method or the top level */
+        if (korb_block_bodied_p(vm, (uintptr_t)(id & ~(VALUE)7u))) return NULL;
+        VALUE next = korb_ep_get(fb);
+        if (next != 0 && (next & 7u) == 0 && !VAL2ENV(next)->closed && VAL2ENV(next)->loc == fb) next = VAL2ENV(next)->prev;
+        h = next;
+    }
+    return NULL;
+}
 /* The method the frame at `base` runs in or was written in; only for a live chain. */
 static const struct korb_method *
 korb_frame_home_method(const struct korb_vm *const vm, const VALUE *const base)
@@ -6888,7 +6910,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         if (block != NULL && block != KORB_BLK_CPROC && block->head.kind == &kind_node_entry) korb_refine_cross_mark(vm, block);
     }
     const bool bref_scope = UNLIKELY(m->uses_backref != 0);   /* $~ is per method frame */
-    if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell); *bcell = KORB_NIL; }
+    if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell, base); *bcell = KORB_NIL; }
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (bref_scope) *korb_re_tilde_cell(c) = korb_bref_pop(c);
     if (cref_scope) korb_cref_pop(c);
@@ -6994,7 +7016,7 @@ korb_invoke_kw_simple_body(CTX *c, VALUE *slots, struct korb_method *m, uint32_t
         base[kw->entries[j].slot] = dr.value;
     }
   run_body:;
-    if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell); *bcell = KORB_NIL; }
+    if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell, base); *bcell = KORB_NIL; }
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (bref_scope) *korb_re_tilde_cell(c) = korb_bref_pop(c);
     if (r.state == KORB_RETURN) { if (c->return_target == NULL || c->return_target == base) { r.state = KORB_NORMAL; c->return_target = NULL; } }

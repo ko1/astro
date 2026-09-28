@@ -1387,7 +1387,7 @@ node_simple_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt
         for (uint32_t i = params_cnt; i < locals_cnt; i++) base[i] = 0;   /* body locals start nil */
     slots = base + locals_cnt;                  /* the body runs above the frame */
     const bool bref_scope = UNLIKELY(uses_backref != 0);   /* $~ is per method frame */
-    if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell); *bcell = KORB_NIL; }
+    if (bref_scope) { VALUE *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell, base); *bcell = KORB_NIL; }
     RESULT r = EVAL_ARG(c, body);
     if (bref_scope) *korb_re_tilde_cell(c) = korb_bref_pop(c);
     /* 明示 return は珍しくない (`return x if ...`): 自分宛の RETURN はここで消費し、
@@ -2983,6 +2983,30 @@ node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint3
 {
     (void)n; (void)params_cnt; (void)locals_cnt; (void)destructure_n; (void)destructure_spec; (void)cap_depth; (void)cap_ns; (void)cap_yield; (void)rest_slot; (void)opt_defaults; (void)req_cnt; (void)kw_info; (void)param_info; (void)locals_info; (void)blk_param_slot; (void)def_top_off; (void)def_line; (void)body_label; (void)blk_label; (void)blk_top_level; (void)symproc_mid;
     return EVAL_ARG(c, body);
+}
+
+// A block whose body touches `$~`.  Ruby scopes the backref to the block's home
+// method frame: when a later method with its own `$~` has been entered in between
+// (the home's value then sits parked in the bref stack, in the first entry above
+// the home frame), run the body on the home's value and put it back afterwards.
+NODE_DEF
+node_bref_block(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t frame_size)
+{
+    (void)n;
+    const VALUE *const base = slots - frame_size;
+    const VALUE *const hb = korb_block_home_base(c->vm, base);
+    uint32_t k = UINT32_MAX;
+    if (hb != NULL && hb >= c->slots && hb < c->slots_limit)   /* the same stack as the bref entries */
+        for (uint32_t i = 0; i < c->bref_n; i++) if (c->bref_base[i] > hb) { k = i; break; }
+    if (LIKELY(k == UINT32_MAX)) return EVAL_ARG(c, body);
+    VALUE *cell = korb_re_tilde_cell(c);
+    korb_bref_push(c, *cell, base);                     /* the yielding method's $~ (rooted) */
+    *cell = c->bref_saved[k];
+    const RESULT r = EVAL_ARG(c, body);
+    cell = korb_re_tilde_cell(c);                       /* re-read: the table may have grown */
+    c->bref_saved[k] = *cell;
+    *cell = korb_bref_pop(c);
+    return r;
 }
 
 // `alias new old` — copy the method `old` to `new` on the enclosing class

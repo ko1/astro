@@ -501,6 +501,7 @@ struct korb_scope_stacks {
     VALUE *refine_saved; uint32_t refine_n, refine_cap;
     VALUE *cref_saved;   uint32_t cref_n, cref_cap;
     VALUE *bref_saved;   uint32_t bref_n, bref_cap;
+    const VALUE **bref_base;
     VALUE *errinfo;      uint32_t errinfo_n, errinfo_cap;
     /* the current cref state (what korb_cref_push saves): a fiber that yields
      * inside class_eval must not leave its definee to the resumer */
@@ -1627,6 +1628,7 @@ struct CTX_struct {
      * would go stale across a moving collection) and put it back on the way out. */
     VALUE    *bref_saved;
     uint32_t  bref_n, bref_cap;
+    const VALUE **bref_base;   /* per entry: the frame that parked it (a block finds its home's $~ by it) */
     VALUE    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
     /* An exception a container's element #inspect / #to_s raised.  The formatter
@@ -1707,13 +1709,13 @@ static inline void korb_scope_stacks_swap(CTX *const c, struct korb_scope_stacks
     const struct korb_scope_stacks t = *s;
     s->refine_saved = c->refine_saved; s->refine_n = c->refine_n; s->refine_cap = c->refine_cap;
     s->cref_saved = c->cref_saved;     s->cref_n = c->cref_n;     s->cref_cap = c->cref_cap;
-    s->bref_saved = c->bref_saved;     s->bref_n = c->bref_n;     s->bref_cap = c->bref_cap;
+    s->bref_saved = c->bref_saved;     s->bref_n = c->bref_n;     s->bref_cap = c->bref_cap; s->bref_base = c->bref_base;
     s->errinfo = c->errinfo;           s->errinfo_n = c->errinfo_n; s->errinfo_cap = c->errinfo_cap;
     s->def_definee = c->def_definee; s->cvar_cref = c->cvar_cref; s->eval_cref = c->eval_cref;
     s->eval_outer_cref = c->eval_outer_cref; s->kwargs_park = c->kwargs_park;
     c->refine_saved = t.refine_saved; c->refine_n = t.refine_n; c->refine_cap = t.refine_cap;
     c->cref_saved = t.cref_saved;     c->cref_n = t.cref_n;     c->cref_cap = t.cref_cap;
-    c->bref_saved = t.bref_saved;     c->bref_n = t.bref_n;     c->bref_cap = t.bref_cap;
+    c->bref_saved = t.bref_saved;     c->bref_n = t.bref_n;     c->bref_cap = t.bref_cap; c->bref_base = t.bref_base;
     c->errinfo = t.errinfo;           c->errinfo_n = t.errinfo_n; c->errinfo_cap = t.errinfo_cap;
     c->def_definee = t.def_definee; c->cvar_cref = t.cvar_cref; c->eval_cref = t.eval_cref;
     c->eval_outer_cref = t.eval_outer_cref; c->kwargs_park = t.kwargs_park;

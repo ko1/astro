@@ -75,7 +75,7 @@ ul { margin:4px 0; padding-left:1.2em; } li { margin:2px 0; }
 <script>
 // ---- 更新はここだけ -------------------------------------------------------
 const DATA = {
-  updated: "2026-09-29 05:20 JST",
+  updated: "2026-09-29 05:50 JST",
   master: "bcf42227",
   compat: [
     { label: "rubyspec 全体（core/language/library）", value: "97.87%", sub: "30920 / 31593 例", date: "2026-09-13", commit: "f1370b21",
@@ -91,13 +91,13 @@ const DATA = {
     { label: "DOOM（60 frame、AOT）", value: "一致", cls: "ok", sub: "画素 checksum 17930386881013214317", date: "2026-09-28", commit: "0f884fb4" },
   ],
   perf: [
-    { label: "optcarrot koruby AOT", value: "294.1 fps", sub: "ZJIT 316.6 ／ YJIT 300.7 ／ CRuby 64.6。実時間は koruby AOT 0.722 s が最速", date: "2026-09-17", commit: "b3cf0d1c",
-      note: "sp4 専有、ruby 4.1.0dev 69b49ac7ae、checksum 検証" },
+    { label: "optcarrot koruby AOT", value: "264.1 fps", cls: "bad", sub: "9/17 の b3cf0d1c 比 −9.3%（同一セッション A/B で確認、命令数 +7.0%）。原因を二分探索中。YJIT 299.5 ／ ZJIT 315.4 ／ CRuby 57.4", date: "2026-09-28", commit: "25b30579",
+      note: "sp4 専有、ruby 4.1.0dev 69b49ac7ae、checksum 検証。trials/2026-09-29-status-perf" },
     { label: "bench 53 本 koruby AOT warm", value: "0.37×", sub: "CRuby 比の実時間（YJIT 0.49× ／ interp 0.74× ／ AOT cold 1.04×）。YJIT に 32/53 本勝ち", date: "2026-09-04", commit: "0a908f2a",
       note: "要約値。ベンチごとの値は docs/perf.md 2026-09-04 節" },
   ],
-  optcarrot: { date: "2026-09-17", commit: "b3cf0d1c",
-    rows: [["ZJIT", 316.58], ["YJIT", 300.72], ["koruby AOT", 294.14], ["koruby interp", 70.61], ["CRuby", 64.56]] },
+  optcarrot: { date: "2026-09-28", commit: "25b30579",
+    rows: [["ZJIT", 315.39], ["YJIT", 299.49], ["koruby AOT", 264.08], ["koruby interp", 66.84], ["CRuby", 57.40]] },
   sweep_trend: [ // [commit, pass]
     ["5f923e82", 31803], ["86714400", 31803], ["8266da8f", 31804], ["0f884fb4", 31805], ["a8292bbc", 31807],
   ],
@@ -112,7 +112,8 @@ const DATA = {
     "ブロックの $~ が定義元メソッドのものにならない（docs/todo.md）",
   ],
   recent: [
-    ["この commit", "UTF8-KDDI/DoCoMo/SoftBank/MAC を UTF-8 として、GB1988 を 1 バイト符号化として扱う — characteristics 全一致"],
+    ["この commit", "ブロックの $~ を定義元メソッドのものに（radius）。optcarrot 再計測: AOT −9.3% の退行を発見、二分探索中"],
+    ["b51641cd", "UTF8-KDDI/DoCoMo/SoftBank/MAC を UTF-8 として、GB1988 を 1 バイト符号化として扱う — characteristics 全一致"],
     ["bcf42227", "docs/status.html"],
     ["a8292bbc", "main の特異メソッド（to_s/inspect/ruby2_keywords）、.new の initialize から出る break の伝播"],
     ["0f884fb4", "入れ子の生成器と外部列挙（sink を Fiber ごとに、break の素通り判定）— biz 全一致"],
