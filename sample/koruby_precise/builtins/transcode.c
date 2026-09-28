@@ -36,7 +36,7 @@ struct korb_tc {
 static const struct { const char *alias, *real; } korb_tc_alias[] = {
     { "BINARY", "ASCII-8BIT" }, { "ASCII", "US-ASCII" }, { "ANSI_X3.4-1968", "US-ASCII" },
     { "UTF8", "UTF-8" }, { "CP65001", "UTF-8" },
-    { "SJIS", "Shift_JIS" }, { "CP932", "Windows-31J" }, { "csWindows31J", "Windows-31J" },
+    { "SJIS", "Windows-31J" }, { "PCK", "Windows-31J" }, { "CP932", "Windows-31J" }, { "csWindows31J", "Windows-31J" },
     { "eucJP", "EUC-JP" }, { "euc-jp-ms", "eucJP-ms" },
     { "UTF8-MAC", "UTF-8" }, { "UTF8-DoCoMo", "UTF-8" }, { "UTF8-KDDI", "UTF-8" },
     { "UTF8-SoftBank", "UTF-8" }, { "CESU-8", "UTF-8" },

@@ -164,12 +164,52 @@ static bool korb_re_wide_decode(const unsigned char *const restrict p, const uin
     free(u8); free(back);
     return false;
 }
+/* An ASCII-compatible multi-byte subject (Shift_JIS, EUC-JP, ...): each character
+ * becomes its codepoint, or a private-use one when it has none, so `.` and `\X`
+ * step whole characters.  false on a malformed sequence (CRuby raises too). */
+static bool korb_re_mb_decode(const struct korb_vm *const vm, const uint32_t enc, const unsigned char *const restrict p,
+                              const uint32_t n, const bool want_back, korb_re_wide_buf *const restrict out)
+{
+    out->u8 = NULL; out->back = NULL; out->len = 0;
+    const signed char (*const trans)[256] = korb_enc_trans_of(vm, enc);
+    if (trans == NULL) return false;
+    struct korb_tc tc;
+    const bool have_tc = korb_tc_find(korb_enc_name_of(vm, enc), &tc) && tc.kind == KTC_MB;
+    const size_t cap = (size_t)n * 4 + 1;
+    char *const u8 = malloc(cap);
+    uint32_t *const back = want_back ? malloc(cap * sizeof(uint32_t)) : NULL;
+    if (u8 == NULL || (want_back && back == NULL)) { free(u8); free(back); return false; }
+    uint32_t w = 0, i = 0;
+    while (i < n) {
+        const int32_t l = korb_enc_trans_len(trans, p, i, n);
+        if (l <= 0) { free(u8); free(back); return false; }
+        uint32_t cp;
+        if (l == 1 && p[i] < 0x80) cp = p[i];
+        else if (!have_tc || korb_tc_decode(&tc, p + i, (size_t)l, &cp) != (uint32_t)l) {
+            uint32_t v = 0;
+            for (int32_t k = 0; k < l; k++) v = (v << 8) | p[i + k];
+            cp = (l <= 2 ? 0xF0000u : 0x100000u) + (v & 0xFFFFu);
+        }
+        const uint32_t k = korb_re_u8_put(u8 + w, cp);
+        if (back) for (uint32_t j = 0; j < k; j++) back[w + j] = i;
+        w += k; i += (uint32_t)l;
+    }
+    if (back) back[w] = n;
+    out->u8 = u8; out->back = back; out->len = w;
+    return true;
+}
 /* The code unit (2/4) when `re` is a UTF-16/32 pattern and `senc` is its own
- * encoding, else 0. */
+ * encoding; 1 for an ASCII-compatible multi-byte `senc` with a pattern in it or
+ * ASCII-only; else 0. */
 static uint32_t korb_re_wide_unit(const struct korb_vm *const vm, const VALUE re, const uint32_t senc, bool *const be) {
     const VALUE src = VAL2RE(re)->source;
-    if (!KORB_STRING_P(src) || KORB_STR_ENC(src) != senc) return 0;
-    return korb_re_enc_unit(vm, senc, be);
+    if (!KORB_STRING_P(src)) return 0;
+    if (KORB_STR_ENC(src) == senc) {
+        const uint32_t u = korb_re_enc_unit(vm, senc, be);
+        if (u) return u;
+    } else if (!korb_str_bytes_ascii(src)) return 0;
+    return senc >= KORB_ENC_OTHER_MIN && !KORB_ENC_SB(vm, senc) && korb_enc_ascii_compat_idx(vm, senc) &&
+           korb_enc_trans_of(vm, senc) != NULL ? 1 : 0;
 }
 /* A scanner re-matches the same subject from advancing offsets; decoding it on
  * every call made a UTF-16 CSV parse O(n^2) in the decode.  One entry per VM,
@@ -182,7 +222,8 @@ static const korb_re_wide_buf *korb_re_wide_subject(struct korb_vm *const vm, co
     korb_re_wide_cache *wc = vm->re_wide_cache;
     if (wc && wc->enc == enc && wc->n == n && memcmp(wc->wide, sb, n) == 0) return &wc->u;
     korb_re_wide_buf u;
-    if (!korb_re_wide_decode((const unsigned char *)sb, n, unit, be, true, &u)) return NULL;
+    if (!(unit == 1 ? korb_re_mb_decode(vm, enc, (const unsigned char *)sb, n, true, &u)
+                    : korb_re_wide_decode((const unsigned char *)sb, n, unit, be, true, &u))) return NULL;
     char *const wide = malloc(n ? n : 1);
     if (wide == NULL) { free(u.u8); free(u.back); return NULL; }
     memcpy(wide, sb, n);
@@ -202,7 +243,11 @@ static inline uint32_t korb_re_char_len(const struct korb_vm *const vm, const ui
     if (LIKELY(enc < KORB_ENC_OTHER_MIN)) { const uint32_t l = korb_utf8_seq_len(p, i, n); return l ? l : 1; }
     bool be = false;
     const uint32_t unit = korb_re_enc_unit(vm, enc, &be);
-    if (unit == 0) { const uint32_t l = korb_utf8_seq_len(p, i, n); return l ? l : 1; }   /* as before */
+    if (unit == 0) {
+        const signed char (*const trans)[256] = korb_enc_trans_of(vm, enc);
+        if (trans && korb_enc_ascii_compat_idx(vm, enc)) { const int32_t l = korb_enc_trans_len(trans, p, i, n); return l > 0 ? (uint32_t)l : 1; }
+        const uint32_t l = korb_utf8_seq_len(p, i, n); return l ? l : 1;   /* as before */
+    }
     if (i + unit > n) return n - i;
     if (unit == 2) {
         const uint32_t hi = korb_re_wide_unit_at(p + i, 2, be);
@@ -219,7 +264,12 @@ korb_re_exec_wide(struct korb_vm *const vm, const korb_re_exec_fn_t fn, const VA
     if (startb > slen) { if (m) m->matched = 0; return 0; }
     const KorbString *const pat = VAL2STR(VAL2RE(re)->source);
     korb_re_wide_buf pw;
-    if (!korb_re_wide_decode((const unsigned char *)korb_strbuf_data(pat->buf), pat->len, unit, be, false, &pw)) return -4;
+    if (unit == 1 && korb_str_bytes_ascii((VALUE)(uintptr_t)pat)) {
+        pw.u8 = malloc(pat->len ? pat->len : 1); pw.len = pat->len;
+        if (pw.u8 == NULL) return -4;
+        memcpy(pw.u8, korb_strbuf_data(pat->buf), pat->len);
+    } else if (!(unit == 1 ? korb_re_mb_decode(vm, senc, (const unsigned char *)korb_strbuf_data(pat->buf), pat->len, false, &pw)
+                           : korb_re_wide_decode((const unsigned char *)korb_strbuf_data(pat->buf), pat->len, unit, be, false, &pw))) return -4;
     const korb_re_wide_buf *const sw = korb_re_wide_subject(vm, sb, slen, senc, unit, be);
     if (sw == NULL) { free(pw.u8); return -3; }
     uint32_t lo = 0, hi = sw->len;                       /* first UTF-8 offset whose character starts at/after startb */
@@ -266,8 +316,7 @@ static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t sta
     const bool sb_subj = KORB_ENC_SB(c->vm, KORB_STR_ENC(subj));
     if (sb_subj) korb_re_u8_flags(c->vm, re);            /* U8FIX decides the pin and the mode below */
     if (UNLIKELY(korb_re_enc_pinned(re) || KORB_STR_ENC(subj) >= KORB_ENC_OTHER_MIN)) {
-        if (KORB_STR_ENC(subj) >= KORB_ENC_OTHER_MIN && KORB_STRING_P(VAL2RE(re)->source) &&
-            KORB_STR_ENC(VAL2RE(re)->source) == KORB_STR_ENC(subj)) {
+        if (KORB_STR_ENC(subj) >= KORB_ENC_OTHER_MIN && KORB_STRING_P(VAL2RE(re)->source)) {
             const RESULT wr = korb_re_run_wide(c, slots, re, subj, startb, m, fn);
             if (wr.state != KORB_NORMAL || wr.value != KORB_NIL) return wr;
         }
@@ -1377,7 +1426,7 @@ static RESULT korb_m_str_scan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             const KorbString *s2 = VAL2STR(slots[0]);
             off = m.starts[0] + korb_re_char_len(c->vm, KORB_STR_ENC(slots[0]), (const unsigned char *)korb_strbuf_data(s2->buf),
                                                  (uint32_t)m.starts[0], s2->len);
-        } else if (!KORB_ENC_SB(c->vm, KORB_STR_ENC(slots[0]))) {   /* an empty match advances one CHARACTER,
+        } else if (KORB_STR_ENC(slots[0]) < KORB_ENC_OTHER_MIN && !KORB_ENC_SB(c->vm, KORB_STR_ENC(slots[0]))) {   /* an empty match advances one CHARACTER,
                                                               * not one byte — but a single-byte encoding
                                                               * has no continuation bytes to skip */
             const KorbString *s2 = VAL2STR(slots[0]);

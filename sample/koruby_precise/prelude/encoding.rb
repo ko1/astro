@@ -850,7 +850,7 @@ class String
     end
     tenc = Encoding.__find_or_nil(to_name)
     senc = Encoding.__find_or_nil(from_name)
-    same = to_name.casecmp(from_name) == 0
+    same = to_name.casecmp(from_name) == 0 || (!tenc.nil? && tenc == senc)   # "sjis" is Windows-31J
     if (tenc.nil? || senc.nil?) && !same
       raise Encoding::ConverterNotFoundError, "code converter not found (#{from_name} to #{to_name})"
     end
@@ -873,7 +873,8 @@ class String
     flags |= 1 if opts[:invalid] == :replace
     flags |= 2 if opts[:undef] == :replace
     flags |= 4 if xml
-    if same && !xml && opts[:invalid] == :replace && !__transcodable?(to_name)   # nothing to convert: scrub
+    if same && !xml && opts[:invalid] == :replace   # nothing to convert: scrub (a round trip would rewrite CP932's ED/EE rows)
+      src = src.force_encoding(senc) if senc
       return src.scrub(*[opts[:replace]].compact).force_encoding(to_name)
     end
     unless __transcodable?(to_name) && __transcodable?(from_name)

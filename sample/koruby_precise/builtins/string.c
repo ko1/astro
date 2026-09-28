@@ -2394,9 +2394,9 @@ static RESULT korb_str_partition_re(CTX *c, VALUE *slots, VALUE_REF self, VALUE 
         if (rr.value != KORB_TRUE || !m.matched) break;
         last = m; last.matched = 1;
         if (!reverse) break;
-        start = (size_t)m.starts[0] + 1;               /* one char on: later overlapping matches must win */
-        const KorbString *const s = VAL2STR(VALUE_REF_GET(self));
-        while (start < s->len && ((unsigned char)korb_strbuf_data(s->buf)[start] & 0xC0) == 0x80) start++;   /* char boundary */
+        const KorbString *const s = VAL2STR(VALUE_REF_GET(self));   /* one char on: later overlapping matches must win */
+        start = (size_t)m.starts[0] + ((size_t)m.starts[0] < s->len
+              ? korb_str_char_bytes(c->vm, KORB_STR_ENC(VALUE_REF_GET(self)), (const unsigned char *)korb_strbuf_data(s->buf), (uint32_t)m.starts[0], s->len) : 1);
         if (start > s->len) break;
     }
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 3));
