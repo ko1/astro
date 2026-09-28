@@ -1001,8 +1001,10 @@ korb_m_thread_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
             korb_blop_prep(vm, &tb);
         }
         cur->state = KORB_TH_PENDED;
+        cur->park_timed = tmo >= 0;
         cur->join_next = t->joiners; t->joiners = cur;
         RESULT r = korb_thread_yield_cpu(c, slots);
+        cur->park_timed = 0;
         korb_thread_joiners_remove(t, cur);   /* 毎周入れ直す: 残すと多重登録になる */
         if (tmo >= 0) {
             if (!(tb.flags & KORB_BLOP_F_DONE))
@@ -1600,7 +1602,12 @@ korb_m_thread_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     (void)a;
     struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
+    /* CRuby's inspect says sleep_forever for an untimed wait (stop, join, Mutex#lock,
+     * Queue / ConditionVariable through Mutex#sleep) — but plain Kernel#sleep is "sleep" */
+    const bool forever = t->state == KORB_TH_PENDED &&
+                         (t->blop != NULL ? (t->blop->flags & KORB_BLOP_F_DEADLOCKABLE) != 0 : !t->park_timed);
     const char *st = t->state == KORB_TH_DEAD ? "dead"
+                   : forever ? "sleep_forever"
                    : t->state == KORB_TH_PENDED ? "sleep" : t->aborting ? "aborting" : "run";
     char buf[640]; char nb[64]; nb[0] = 0;
     int name_enc = -1;                                /* 非 ASCII の名前ならその encoding が伝播 (CRuby) */

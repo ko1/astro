@@ -488,6 +488,8 @@ static RESULT korb_str_format_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             break;
           }
           case 's': {
+            /* Thread / Fiber: the C printer has no form for them (irb's jobs prints threads with %s) */
+            #define KORB_FMT_ASK_P(v) (AROH_IS_GC_OBJECT(v) && (KORB_OBJ_TYPE(v) == KORB_OBJ_THREAD || KORB_OBJ_TYPE(v) == KORB_OBJ_FIBER))
             /* fprintf stops at a NUL; a Ruby String may carry one.  A bare "%s"
              * (no width/precision) can write the bytes straight through. */
             #define KORB_FMT_S_WRITE(out, sp, buf, len) do { \
@@ -547,7 +549,7 @@ static RESULT korb_str_format_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
                 KORB_FMT_S_WRITE(ms, spec, korb_strbuf_data(VAL2STR(arg)->buf), VAL2STR(arg)->len);
             }
             else if ((KORB_OBJECT_P(arg) || KORB_CLASS_P(arg) || KORB_REGEXP_P(arg) ||
-                      KORB_MATCHDATA_P(arg)) && fmt_stable) {   /* user object / class / the types the C printer has no form for: dispatch #to_s */
+                      KORB_MATCHDATA_P(arg) || KORB_FMT_ASK_P(arg)) && fmt_stable) {   /* user object / class / the types the C printer has no form for: dispatch #to_s */
                 slots[1] = arg;
                 RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) { coerce_err = sr; has_coerce_err = true; err = true; break; }
@@ -571,7 +573,7 @@ static RESULT korb_str_format_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             char *tb = NULL; size_t tsz = 0; FILE *tms = open_memstream(&tb, &tsz);
             if ((KORB_OBJECT_P(arg) || KORB_CLASS_P(arg) ||
                  (AROH_IS_GC_OBJECT(arg) && ((((const AroObjectHeader *)(uintptr_t)arg)->flags & KORB_FL_HAS_KLASS) ||
-                                             KORB_OBJ_TYPE(arg) == KORB_OBJ_ENUMERATOR))) &&
+                                             KORB_OBJ_TYPE(arg) == KORB_OBJ_ENUMERATOR)) || KORB_FMT_ASK_P(arg)) &&
                 fmt_stable) {   /* dispatch #inspect (honours overrides, a builtin subclass's too) */
                 slots[1] = arg;
                 RESULT ir = korb_send_impl(c, slots + 2, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);

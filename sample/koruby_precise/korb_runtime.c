@@ -17146,6 +17146,7 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       }
       case KORB_OBJ_REGEXP:                            /* "(?-mix:re)" — a composed pattern is built from these */
       case KORB_OBJ_MATCHDATA:
+      case KORB_OBJ_THREAD: case KORB_OBJ_FIBER:       /* "#<Thread:0x… file:line run>" (irb's jobs) */
         if (slots != NULL) {                           /* no C form: ask the object (String#% / Array#join land here) */
             slots[0] = v;
             const RESULT tsr = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);

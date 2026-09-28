@@ -514,7 +514,7 @@ korb_m_fiber_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         snprintf(loc, sizeof loc, "%s", korb_type_name(fv));
     char buf[320];
     const int n = snprintf(buf, sizeof buf, "#<Fiber:0x%016zx %s (%s)>",
-                           (size_t)(uintptr_t)fv, loc, st[rep->fstate & 3]);
+                           (size_t)(uintptr_t)rep, loc, st[rep->fstate & 3]);   /* the rep does not move (the object may) */
     return korb_str_new(c, slots, buf, (uint32_t)(n < 0 ? 0 : (n < (int)sizeof buf ? n : (int)sizeof buf - 1)));
 }
 

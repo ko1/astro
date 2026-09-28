@@ -592,6 +592,7 @@ struct korb_thread {
     uint8_t aoe;                     /* Thread#abort_on_exception (死時に main へ例外転送) */
     uint8_t defer_ints;              /* >0 = handle_interrupt(:never) 区間 (配送延期) */
     uint8_t aborting;                /* #kill 配送済みで ensure を走行中 (#status "aborting") */
+    uint8_t park_timed;              /* join(timeout) で park 中: #inspect は sleep_forever でなく sleep */
     uint8_t in_trap;                 /* >0 = Signal.trap のハンドラを実行中 (Mutex#lock は ThreadError) */
     const char *waiting_feature;     /* require 待ち: 対象 feature の abspath (待機側の
                                         stack 上バッファ; PENDED の間だけ有効)。 */
