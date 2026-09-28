@@ -4,6 +4,20 @@
 既知バグ** の作業リスト。
 
 
+## 未: gem drop-in (w13) で見つかった残り (2026-09-28)
+
+- **thread の rep が解放されない**: 終わった thread の stack は解放・再利用するようになった
+  (b888cfe9) が、`struct korb_thread` は `vm->thread_list` に残り、Thread handle も GC root
+  のまま。作った thread の数だけ ~700 B と root scan が増える。解放するには handle を弱参照に
+  して (korb_weak_walk)、rep を指す所 (Mutex#owner、joiners、Queue/CV の待ち行列、blop) を先に
+  外す必要がある。計測: `trials/2026-09-19-gem-dropin/bench/thread_reap`。
+- **正規表現が UTF-8 以外の多バイト符号化を知らない**: astrogre のモードは ASCII / UTF-8 だけ。
+  EUC-JP / Shift_JIS の文字列に `.` や否定文字クラスが多バイト文字 1 つとして当たらない
+  (`"\xA5\xB5".force_encoding("EUC-JP").scan(/./)` が空)。CGI.escape* はバイト単位にして回避済み。
+- **捕獲グループ 256 個以上は RegexpError**: CRuby (Onigmo) は 32767 まで。以前は 32 個超で
+  メモリ破壊 (ipaddress で SEGV)。
+- **UTF-8 → EUC-KR の変換器が無い** (erb test_erb_m17n の 2 例、ConverterNotFoundError)。
+
 ## 未: refinement と Enumerator の残り (2026-09-27)
 
 - **トップレベルが home のブロックの refinement**: 別ファイルのメソッドが yield するブロックは、書かれたメソッドの
