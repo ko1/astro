@@ -969,8 +969,13 @@ static RESULT korb_m_meth_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
  * (Comparable#clamp on Integer, Enumerable's on Array/Hash/Range...), else nil.
  * Only the core class proper: a user class that happens to share the name is
  * not it (the identity check). */
+static bool korb_reflect_raw_p(void) {                /* KORB_REFLECT_RAW: koruby's own tables (tools/gen_reflect_owner.rb) */
+    static int raw = -1;
+    if (raw < 0) raw = getenv("KORB_REFLECT_RAW") != NULL;
+    return raw != 0;
+}
 static VALUE korb_reflect_owner(CTX *c, const VALUE klass, const uint32_t mid) {
-    if (!KORB_CLASS_P(klass) || VAL2CLASS(klass)->name_sym == 0) return KORB_NIL;
+    if (!KORB_CLASS_P(klass) || VAL2CLASS(klass)->name_sym == 0 || korb_reflect_raw_p()) return KORB_NIL;
     const char *const kn = korb_sym_name(c->vm, VAL2CLASS(klass)->name_sym);
     const char *const mn = korb_sym_name(c->vm, mid);
     for (size_t i = 0; i < sizeof korb_reflect_owner_tab / sizeof korb_reflect_owner_tab[0]; i++) {
@@ -984,7 +989,7 @@ static VALUE korb_reflect_owner(CTX *c, const VALUE klass, const uint32_t mid) {
 }
 /* Does `klass` carry any such methods (a listing asks per method only then)? */
 static bool korb_reflect_owner_class_p(CTX *c, const VALUE klass) {
-    if (!KORB_CLASS_P(klass) || VAL2CLASS(klass)->name_sym == 0) return false;
+    if (!KORB_CLASS_P(klass) || VAL2CLASS(klass)->name_sym == 0 || korb_reflect_raw_p()) return false;
     const char *const kn = korb_sym_name(c->vm, VAL2CLASS(klass)->name_sym);
     for (size_t i = 0; i < sizeof korb_reflect_owner_tab / sizeof korb_reflect_owner_tab[0]; i++)
         if (strcmp(korb_reflect_owner_tab[i].klass, kn) == 0)

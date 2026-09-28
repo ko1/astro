@@ -18,7 +18,7 @@ dump = <<~RUBY
   end
   print JSON.generate(out)
 RUBY
-kor = JSON.parse(IO.popen([koruby, "-e", dump], &:read))
+kor = JSON.parse(IO.popen({ "KORB_REFLECT_RAW" => "1" }, [koruby, "-e", dump], &:read))   # koruby's own tables, unmapped
 cru = JSON.parse(IO.popen([cruby, "-e", dump], &:read))
 rows = []
 CLASSES.each do |n|
