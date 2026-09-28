@@ -5228,10 +5228,14 @@ static bool korb_universal_send_p(const struct korb_vm *const vm, const uint32_t
 static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (builtins/set.c) */
 static RESULT korb_sub_new_init(CTX *c, VALUE *slots, VALUE_REF instref, VALUE_SLICE a,
                                 NODE *block, VALUE *def_env, VALUE *captured_self);          /* fwd (defined below) */
+static RESULT korb_thread_s_new(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self);   /* fwd (thread.c) */
 static RESULT
 korb_m_class_new_alias(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                        NODE *block, VALUE *def_env, VALUE *cself)
 {
+    /* Thread has no allocator: its new is the dispatch special case (the logging gem wraps Thread.new) */
+    if (VALUE_REF_GET(self) == korb_builtin_class_obj(c->vm, KORB_C_THREAD))
+        return korb_thread_s_new(c, slots, a, block, def_env, cself);
     const RESULT ar = korb_m_class_allocate(c, slots, self, VALUE_SLICE_MAKE(NULL, 0));
     if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
     slots[0] = ar.value;                                   /* root the instance across #initialize */
