@@ -5738,7 +5738,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         /* node_return_outer reads this block frame's EP cell (the frame top) and
          * needs its base too, to recognize an env this very frame owns. */
         NODE *v = kp_jump_args_value(tc, rn->arguments);
-        NODE *ro = ALLOC_node_return_outer(-2 - tc->chain, depth, v);
+        NODE *ro = ALLOC_node_return_outer(-2 - tc->chain, depth, kp_line(tc, node), v);
         bake_add(tc, &ro->u.node_return_outer.prev_off);
         return ro;
       }

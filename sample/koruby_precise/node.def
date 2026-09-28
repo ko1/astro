@@ -1311,12 +1311,17 @@ node_return(CTX *c, NODE *n, VALUE *slots, VALUE v@child)
 // frame base via the env chain (like node_yield_outer); set it as the return
 // target so intermediate USER methods (e.g. Enumerable#find calling the
 // includer's each) propagate the return instead of consuming it.  An escaped
-// chain (home frame gone) falls back to nearest-method (target NULL).
-NODE_DEF @nogc
-node_return_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, VALUE v@child)
+// chain (home frame gone) falls back to nearest-method (target NULL).  A home
+// frame on another thread's stack (`Thread.new { return }`) cannot be returned
+// to: LocalJumpError at the return, where the block can still rescue it.
+NODE_DEF
+node_return_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint32_t line, VALUE v@child)
 {
     (void)n;
-    c->return_target = korb_outer_frame_base_at(&slots[prev_off - KORB_EP_OFF], slots[prev_off], depth);
+    VALUE *const t = korb_outer_frame_base_at(&slots[prev_off - KORB_EP_OFF], slots[prev_off], depth);
+    if (UNLIKELY(t != NULL && (t < c->slots || t >= c->slots_limit)))
+        return korb_raise(c, slots, KORB_E_LOCALJUMP, line, "unexpected return");
+    c->return_target = t;
     return RESULT_RETURN_(v);
 }
 
