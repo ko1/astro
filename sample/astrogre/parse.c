@@ -9,6 +9,7 @@
 #include <ctype.h>
 #include "parse.h"
 #include "aho_corasick.h"
+#include "unicode_fold.h"
 
 /* The Unicode word property (\b's notion of a word character), looked up once. */
 static void *
@@ -870,6 +871,82 @@ ire_uniclass(const uint64_t bm[4], agre_cpsetb_t *cps)
     return n;
 }
 
+/* ---- /i on non-ASCII codepoints (unicode_fold.h, simple folding) ---- */
+static uint32_t agre_fold_cp(const uint32_t cp)
+{
+    size_t lo = 0, hi = AGRE_FOLD_N;
+    while (lo < hi) {
+        const size_t mid = (lo + hi) / 2;
+        if (agre_fold_tab[mid].cp < cp) lo = mid + 1; else hi = mid;
+    }
+    return (lo < AGRE_FOLD_N && agre_fold_tab[lo].cp == cp) ? agre_fold_tab[lo].fold : cp;
+}
+static bool cls_has_cp(const uint64_t bm[4], const agre_cpsetb_t *const cps, const uint32_t cp)
+{
+    if (cp < 0x80) return (bm[cp >> 6] >> (cp & 63)) & 1u;
+    for (uint32_t i = 0; i < cps->n; i++)
+        if (cps->r[i].lo <= cp && cp <= cps->r[i].hi) return true;
+    return false;
+}
+static int cmp_u32(const void *a, const void *b)
+{
+    const uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+/* Close a /i class under case folding: every codepoint sharing a fold with a
+ * member joins.  An ASCII member pulls in its non-ASCII partners (K → U+212A)
+ * only when the class already has non-ASCII members, so an ASCII class stays a
+ * byte bitmap. */
+static void cls_ci_close(re_parser_t *q, uint64_t bm[4], agre_cpsetb_t *cps)
+{
+    if (cps->n == 0) return;
+    uint32_t *const hit = (uint32_t *)malloc(AGRE_FOLD_N * sizeof *hit);
+    if (hit == NULL) { re_error(q, "out of memory in char-class"); return; }
+    size_t nh = 0;
+    for (size_t i = 0; i < AGRE_FOLD_N; i++)
+        if (cls_has_cp(bm, cps, agre_fold_tab[i].cp) || cls_has_cp(bm, cps, agre_fold_tab[i].fold))
+            hit[nh++] = agre_fold_tab[i].fold;
+    qsort(hit, nh, sizeof *hit, cmp_u32);
+    for (size_t i = 0; i < AGRE_FOLD_N; i++) {
+        const uint32_t f = agre_fold_tab[i].fold;
+        if (nh == 0 || bsearch(&f, hit, nh, sizeof *hit, cmp_u32) == NULL) continue;
+        const uint32_t two[2] = { agre_fold_tab[i].cp, f };
+        for (int k = 0; k < 2; k++) {
+            if (two[k] < 0x80) bm_set_ci(bm, (uint8_t)two[k], true);
+            else cls_cp_add(q, cps, two[k], two[k]);
+        }
+    }
+    free(hit);
+}
+/* A /i literal holding one non-ASCII character becomes the class of its fold
+ * partners (the byte compare only folds ASCII). */
+static ire_node_t *ci_char_node(re_parser_t *q, ire_node_t *const lit)
+{
+    if (!q->case_insensitive || q->encoding != AGRE_ENC_UTF8 || lit->u.lit.len < 2) return lit;
+    const uint8_t *const b = (const uint8_t *)lit->u.lit.bytes;
+    uint32_t cp;
+    if      ((b[0] & 0xE0) == 0xC0 && lit->u.lit.len == 2) cp = ((uint32_t)(b[0] & 0x1F) << 6) | (b[1] & 0x3F);
+    else if ((b[0] & 0xF0) == 0xE0 && lit->u.lit.len == 3) cp = ((uint32_t)(b[0] & 0x0F) << 12) | ((uint32_t)(b[1] & 0x3F) << 6) | (b[2] & 0x3F);
+    else if ((b[0] & 0xF8) == 0xF0 && lit->u.lit.len == 4) cp = ((uint32_t)(b[0] & 0x07) << 18) | ((uint32_t)(b[1] & 0x3F) << 12) | ((uint32_t)(b[2] & 0x3F) << 6) | (b[3] & 0x3F);
+    else return lit;
+    const uint32_t f = agre_fold_cp(cp);
+    uint64_t bm[4] = { 0 };
+    agre_cpsetb_t cps = { 0 };
+    bool partner = f != cp;
+    for (size_t i = 0; i < AGRE_FOLD_N; i++)
+        if (agre_fold_tab[i].fold == f && agre_fold_tab[i].cp != cp) {
+            partner = true;
+            if (agre_fold_tab[i].cp < 0x80) bm_set_ci(bm, (uint8_t)agre_fold_tab[i].cp, true);
+            else cls_cp_add(q, &cps, agre_fold_tab[i].cp, agre_fold_tab[i].cp);
+        }
+    if (!partner) return lit;
+    cls_cp_add(q, &cps, cp, cp);
+    if (f < 0x80) bm_set_ci(bm, (uint8_t)f, true);
+    else if (f != cp) cls_cp_add(q, &cps, f, f);
+    ire_free(lit);
+    return ire_uniclass(bm, &cps);
+}
+
 static ire_node_t *parse_class(re_parser_t *q) {
     /* '[' already consumed */
     ire_node_t *n = ire_new(IRE_CLASS);
@@ -880,6 +957,7 @@ static ire_node_t *parse_class(re_parser_t *q) {
     agre_cpsetb_t cps = { 0 };
     const bool utf8 = q->encoding == AGRE_ENC_UTF8;
     parse_class_body(q, n->u.cls.bm, utf8 ? &cps : NULL);
+    if (utf8 && q->case_insensitive) cls_ci_close(q, n->u.cls.bm, &cps);
     if (negate) cls_negate(q, n->u.cls.bm, utf8 ? &cps : NULL);
     if (cps.n > 0) {
         ire_node_t *const u = ire_uniclass(n->u.cls.bm, &cps);
@@ -1516,7 +1594,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             memcpy(n->u.lit.bytes, bytes, (size_t)len);
             n->u.lit.len = (uint32_t)len;
             n->u.lit.ci = q->case_insensitive;
-            return n;
+            return ci_char_node(q, n);
         }
         case 'n': case 't': case 'r': case 'f': case 'v':
         case 'a': case 'e':
@@ -1593,7 +1671,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             }
             n->u.lit.bytes[n->u.lit.len++] = (char)*q->p++;
         }
-        return n;
+        return adv ? ci_char_node(q, n) : n;
     }
     }
 }
