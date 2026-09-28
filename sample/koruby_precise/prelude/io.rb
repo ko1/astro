@@ -421,7 +421,6 @@ class IO
     each_char { |ch| blk.call(ch.ord) }
     self
   end
-  alias_method :codepoints, :each_codepoint
 
   def readbyte
     b = getbyte

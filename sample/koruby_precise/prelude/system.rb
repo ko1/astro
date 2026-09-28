@@ -887,6 +887,10 @@ class IO
     events = READABLE if events.zero?
     __wait_events(__io_poll(events, timeout), events).zero? ? nil : self
   end
+  # io/wait: priority (POLLPRI) data ready → self, else nil after the timeout
+  def wait_priority(timeout = nil)
+    __wait_events(__io_poll(PRIORITY, timeout), PRIORITY).zero? ? nil : self
+  end
   # poll(2) revents → IO::READABLE/WRITABLE/PRIORITY the way CRuby maps them:
   # HUP counts as readable, and an error readies every requested event.
   private def __wait_events(revents, events)
@@ -1253,7 +1257,6 @@ class ARGFClass
     each_char { |ch| blk.call(ch.ord) }
     self
   end
-  alias_method :codepoints, :each_codepoint
 
   def write(*args); STDOUT.write(*args); end
   def print(*args); STDOUT.print(*args); end

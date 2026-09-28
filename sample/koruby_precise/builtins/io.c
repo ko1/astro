@@ -737,6 +737,56 @@ static RESULT korb_m_io_tty_mode(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (tcsetattr(fd, TCSANOW, &t) != 0) return korb_raise_errno(c, slots, errno, "tcsetattr", "");
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* IO#__tty_ttyname → the terminal's device name, or nil when not a tty */
+static RESULT korb_m_io_tty_ttyname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; int fd;
+    CHECK(korb_io_tty_fd(c, slots, self, &fd));
+    if (!isatty(fd)) return RESULT_OK(KORB_NIL);
+    char buf[256];
+    if (ttyname_r(fd, buf, sizeof buf) != 0) return korb_raise_errno(c, slots, errno, "ttyname", "");
+    return korb_str_new(c, slots, buf, (uint32_t)strlen(buf));
+}
+/* IO#__fionread → bytes the kernel has ready to read (io/console's input_pending?) */
+static RESULT korb_m_io_fionread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; int fd;
+    CHECK(korb_io_tty_fd(c, slots, self, &fd));
+    int n = 0;
+    if (ioctl(fd, FIONREAD, &n) != 0) return korb_raise_errno(c, slots, errno, "ioctl(FIONREAD)", "");
+    return RESULT_OK(LONG2FIX(n));
+}
+/* __termios_op(state, op, arg) — IO::ConsoleMode on the bytes __tty_get returned:
+ * 0 echo? / 1 echo=arg / 2 VMIN / 3 VMIN=arg / 4 VTIME / 5 VTIME=arg / 6 raw (arg: intr).
+ * The setters answer a new state String. */
+static RESULT korb_bi_termios_op(CTX *c, VALUE *slots, VALUE_SLICE args) {
+    const VALUE sv = VALUE_SLICE_GET(args, 0);
+    if (!KORB_STRING_P(sv) || VAL2STR(sv)->len != sizeof(struct termios) || !FIXNUM_P(VALUE_SLICE_GET(args, 1)))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid terminal state");
+    struct termios t;
+    memcpy(&t, korb_strbuf_data(VAL2STR(sv)->buf), sizeof t);
+    const VALUE arg = VALUE_SLICE_GET(args, 2);
+    switch (FIX2LONG(VALUE_SLICE_GET(args, 1))) {
+      case 0: return RESULT_OK((t.c_lflag & ECHO) ? KORB_TRUE : KORB_FALSE);
+      case 1:
+        if (KORB_TRUTHY(arg)) t.c_lflag |= (ECHO | ECHOE | ECHOK | ECHONL);
+        else t.c_lflag &= (tcflag_t)~(ECHO | ECHOE | ECHOK | ECHONL);
+        break;
+      case 2: return RESULT_OK(LONG2FIX(t.c_cc[VMIN]));
+      case 3: t.c_cc[VMIN] = (cc_t)(FIXNUM_P(arg) ? FIX2LONG(arg) : 0); break;
+      case 4: return RESULT_OK(LONG2FIX(t.c_cc[VTIME]));
+      case 5: t.c_cc[VTIME] = (cc_t)(FIXNUM_P(arg) ? FIX2LONG(arg) : 0); break;
+      case 6:
+        t.c_iflag &= (tcflag_t)~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON | IXOFF | IXANY | IMAXBEL);
+        t.c_oflag &= (tcflag_t)~OPOST;
+        t.c_lflag &= (tcflag_t)~(ECHO | ECHOE | ECHOK | ECHONL | ICANON | ISIG | IEXTEN);
+        t.c_cflag &= (tcflag_t)~(CSIZE | PARENB);
+        t.c_cflag |= CS8;
+        t.c_cc[VMIN] = 1; t.c_cc[VTIME] = 0;
+        if (KORB_TRUTHY(arg)) { t.c_iflag |= BRKINT; t.c_lflag |= ISIG; t.c_oflag |= OPOST; }
+        break;
+      default: return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown terminal operation");
+    }
+    return korb_str_new(c, slots, (const char *)&t, (uint32_t)sizeof t);
+}
 /* IO#__tty_echo_p → the ECHO bit */
 static RESULT korb_m_io_tty_echo_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; int fd;
@@ -3178,7 +3228,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("tty?", tty_p, 0);       IOM("isatty", tty_p, 0);
     IOM("__tty_get", tty_get, 0);  IOM("__tty_set", tty_set, 1);  IOM("__tty_mode", tty_mode, -1);
     IOM("__tty_echo_p", tty_echo_p, 0);  IOM("__tty_winsize", tty_winsize, -1);
-    IOM("truncate", truncate, 1);
+    IOM("__tty_ttyname", tty_ttyname, 0);  IOM("__fionread", fionread, 0);
     IOM("flush", flush, 0);      IOM("eof?", eof_p, 0);     IOM("eof", eof_p, 0);
     IOM("sync", sync, 0);        IOM("sync=", sync_set, 1);
     IOM("seek", seek, -1);       IOM("pos", pos, 0);        IOM("tell", pos, 0);
@@ -3255,6 +3305,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
         korb_class_def_cfn_blk(c, fsing, "open", korb_m_file_open, -1);   /* File.open (block) */
         korb_class_def_cfn_blk(c, fsing, "new", korb_m_file_new, -1);     /* File.new = open, a block only warns */
         korb_class_def_cfn(c, file_cls, "initialize", korb_m_file_initialize, -1);
+        korb_class_def_cfn(c, file_cls, "truncate", korb_m_io_truncate, 1);   /* File#truncate: IO has none (CRuby) */
         { struct korb_method *const mi = korb_class_own_method(file_cls, korb_intern(vm, "initialize", 10));
           if (mi) mi->visibility = 1; }                /* #initialize is private */
     }

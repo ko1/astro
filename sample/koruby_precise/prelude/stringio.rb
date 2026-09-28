@@ -79,8 +79,11 @@ class StringIO
     bom_spec = enc_spec.is_a?(String) && enc_spec.downcase.start_with?("bom|")
     enc_spec = enc_spec[4..] if bom_spec
     @enc = nil                                       # the mode's encoding; #set_encoding / #binmode set it too
-    if enc_spec                                     # "w:ISO-8859-1" / encoding: keyword
-      @enc = Encoding.find(enc_spec.split(":").first)
+    if enc_spec                                     # "w:ISO-8859-1" / encoding: keyword (a name or an Encoding)
+      @enc = enc_spec.is_a?(Encoding) ? enc_spec : Encoding.find(enc_spec.to_s.split(":").first)
+      if @readable && !mode.include?("b") && !@enc.ascii_compatible?
+        raise ArgumentError, "ASCII incompatible encoding needs binmode"
+      end
     elsif mode.include?("b")
       @enc = Encoding::BINARY
     elsif no_string
@@ -208,11 +211,12 @@ class StringIO
   end
   private :__to_int, :__to_str
 
+  # the state itself, not #closed_read? / #closed_write?: a subclass may undef those (fakefs)
   def __check_readable
-    raise IOError, "not opened for reading" if closed_read?
+    raise IOError, "not opened for reading" if !@readable || @closed_read
   end
   def __check_writable
-    raise IOError, "not opened for writing" if closed_write?
+    raise IOError, "not opened for writing" if !@writable || @closed_write
   end
   private :__check_readable, :__check_writable
 
@@ -402,7 +406,9 @@ class StringIO
     outbuf ? __fill_buf(outbuf, r) : r
   end
 
-  def sysread(length = nil, outbuf = nil)
+  # sysread / readpartial / read_nonblock share this body and read through __strio_read:
+  # none dispatches to a subclass's override (fakefs aliases sysread to its read)
+  def __sysread(length = nil, outbuf = nil)
     length = __to_int(length) unless length.nil?
     outbuf = __to_str(outbuf) unless outbuf.nil?
     __check_readable
@@ -411,18 +417,18 @@ class StringIO
       outbuf.replace("") if outbuf              # CRuby empties the buffer before raising
       raise EOFError, "end of file reached"
     end
-    r = read(length, outbuf)
+    r = __strio_read(length, outbuf)
     outbuf ? __fill_buf(outbuf, r) : r
   end
-  # io/console's StringIO extension: one character, ignoring the tty options.
-  def getch(*) = getc
-  def getpass(*) = gets
-  def readpartial(length = nil, outbuf = nil); sysread(length, outbuf); end
+  alias __strio_read read
+  private :__strio_read, :__sysread
+  def sysread(length = nil, outbuf = nil) = __sysread(length, outbuf)
+  def readpartial(length = nil, outbuf = nil) = __sysread(length, outbuf)
   def read_nonblock(length = nil, outbuf = nil, exception: true)
     if eof? && !exception
       return nil
     end
-    sysread(length, outbuf)
+    __sysread(length, outbuf)
   end
 
   def getc
@@ -615,9 +621,6 @@ class StringIO
     end
     self
   end
-
-  def chars; each_char.to_a; end
-  def bytes; each_byte.to_a; end
 
   # ---- encoding --------------------------------------------------------------
   def set_encoding(ext, int = nil, **opts)

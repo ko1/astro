@@ -21348,6 +21348,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__marshal_fast_load", korb_bi_marshal_fast_load, 1);   /* prelude/marshal.rb: plain data */
     korb_builtin_define(c, "__marshal_fast_dump", korb_bi_marshal_fast_dump, 1);   /* prelude/marshal.rb: plain data */
     korb_builtin_define(c, "__arith_seq", korb_bi_arith_seq, 4);   /* prelude Numeric#step without a block */
+    korb_builtin_define(c, "__termios_op", korb_bi_termios_op, 3);   /* lib/io/console.rb IO::ConsoleMode */
     korb_builtin_define(c, "__marshal_mark_plain", korb_bi_marshal_mark_plain, 1);
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);

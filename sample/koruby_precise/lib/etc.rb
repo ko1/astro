@@ -4,6 +4,10 @@
 # NSS, so getpwnam(3) would see exactly these files anyway.  uname/sysconf/
 # confstr/getlogin come from C primitives (builtins/process.c).
 module Etc
+  # the real File, taken at load: fakefs swaps ::File for its own, and CRuby's getpwuid
+  # reads the system database whatever Ruby's File is
+  FILE__ = ::File
+  private_constant :FILE__
   Passwd = Struct.new(:name, :passwd, :uid, :gid, :gecos, :dir, :shell,
                       :change, :quota, :age, :class, :comment, :expire)
   Group  = Struct.new(:name, :passwd, :gid, :mem)
@@ -100,8 +104,8 @@ module Etc
     end
 
     def __read_lines(path)
-      return [] unless File.readable?(path)
-      File.readlines(path).filter_map do |line|
+      return [] unless FILE__.readable?(path)
+      FILE__.readlines(path).filter_map do |line|
         line = line.chomp
         next if line.empty? || line.start_with?('#')
         line.split(':', -1)
