@@ -3186,7 +3186,13 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
      * receiver, so the definee must come from the method's cref.  A def in the
      * `class << X` body itself already has that class as self (and must keep the
      * body's private/public scope), so it is not this shape. */
-    const uint32_t sclass_cref = tc->frame->anon_cref_method ? 1u : 0u;
+    /* bit 2: inside a class/module body of an eval'd String — the method's cref is
+     * that body's class, so the eval cref korb_class_def_method records is dropped */
+    bool in_eval_body = false;
+    if (tc->in_eval)
+        for (const struct kp_frame *f = tc->frame; f != NULL && f->prev != NULL; f = f->prev)
+            if (f->body_label != 0) { in_eval_body = true; break; }
+    const uint32_t sclass_cref = (tc->frame->anon_cref_method ? 1u : 0u) | (in_eval_body ? 2u : 0u);
     const pm_constant_id_list_t *const reordered = kp_param_first_locals(tc, &dn->locals, ps);
     /* `def m(*, a)`: the posts sit at rest_slot+1, so the anonymous rest needs the
      * slot kp_param_first_locals reserves — without that list there is nowhere to put it. */
@@ -3433,11 +3439,11 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         NODE *idef = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain, sclass_cref, def_cref_name);
         bake_add(tc, &idef->u.node_def.self_off);          /* definee = self at base[-1] */
         bake_add(tc, &idef->u.node_def.dc_off);            /* enclosing method entry = base[-4] */
-        NODE *sdef = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain - 1, recv_node);   /* -1 extra for the staged recv child */
+        NODE *sdef = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain - 1, in_eval_body ? 1u : 0u, recv_node);   /* -1 extra for the staged recv child */
         bake_add(tc, &sdef->u.node_singleton_def.self_off);   /* the hook's caller frame */
         def = ALLOC_node_seq(idef, sdef);
     } else if (recv_node) {
-        def = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain - 1, recv_node);   /* -1 extra for the staged recv child */
+        def = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain - 1, in_eval_body ? 1u : 0u, recv_node);   /* -1 extra for the staged recv child */
         bake_add(tc, &def->u.node_singleton_def.self_off);   /* the hook's caller frame */
     } else {
         def = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain, sclass_cref, def_cref_name);
@@ -3535,6 +3541,10 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
 
     push_frame(tc, &cn->locals);
     tc->frame->class_name_sym = nest_sym;       /* for Module.nesting (the whole path for `class A::B`) */
+    /* in an eval under an unnamed / singleton cref the body's name cannot be
+     * resolved from the top, so its constants go through self (racc's
+     * `Module.new { instance_eval(parser_src) }`) */
+    if (tc->in_eval && (tc->seed_class_name == 0 || tc->seed_cref_is_caller)) tc->frame->anon_class_body = true;
     const uint32_t blabel = tc->frame->body_label = kp_body_label(tc, 'c', name_sym);   /* backtrace label; blocks inside read it */
     NODE *body;
     if (cn->body == NULL)
@@ -3999,6 +4009,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
     WITH_CHAIN(tc, 1, (base_node = dyn_base ? transduce(tc, dyn_base) : ALLOC_node_lit(KORB_NIL)));
     push_frame(tc, &mn->locals);
     tc->frame->class_name_sym = nest_sym;       /* for Module.nesting (the whole path for `class A::B`) */
+    if (tc->in_eval && (tc->seed_class_name == 0 || tc->seed_cref_is_caller)) tc->frame->anon_class_body = true;   /* see the class body */
     const uint32_t blabel = tc->frame->body_label = kp_body_label(tc, 'm', name_sym);
     NODE *body;
     if (mn->body == NULL)
@@ -4419,7 +4430,7 @@ build_const_set(struct kp_ctx *tc, uint32_t name_cid, NODE *val)
      * block case is redirected — kp_lexical_class_owner returns false for a
      * `class << obj` body (self names that cref) and when no block intervenes. */
     const bool anon = tc->frame->anon_class_body;
-    uint32_t owner = tc->frame->class_name_sym;
+    uint32_t owner = anon ? 0 : tc->frame->class_name_sym;   /* an unnamed-cref body is named by self, never by name */
     if (owner == 0 && !anon) {
         uint32_t lex = 0;
         if (kp_lexical_class_owner(tc, &lex)) owner = lex;

@@ -1413,7 +1413,7 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entr
          * unnamed singleton, which self never names — only the enclosing
          * method's entry cell does.  A `def self.m` body is NOT that shape, so
          * the choice is made at parse time, not from the owner. */
-        if (sclass_cref && dc_off != INT32_MIN)
+        if ((sclass_cref & 1u) && dc_off != INT32_MIN)
             { const VALUE cr = korb_const_cref(c->vm, definee, slots[dc_off]); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
         else if (!KORB_CLASS_P(definee) && dc_off != INT32_MIN)
             { const VALUE cr = korb_body_cref(c, definee, slots[dc_off], cref_name); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
@@ -1447,6 +1447,7 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entr
         if (nested) VAL2CLASS(slots[0])->cur_visibility = 0;
         korb_warn_serious(c, slots + 1, mid, false);   /* redefining __send__ / __id__ / object_id */
         korb_class_def_method(c, slots[0], mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info, locals_info);
+        if (UNLIKELY(sclass_cref & 2u)) korb_method_clear_def_cref(slots[0], mid);   /* inside a class body of an eval */
         if (nested) VAL2CLASS(slots[0])->cur_visibility = saved_vis;   /* re-read: the def may have moved it */
         /* method_added — or singleton_method_added when the definee is a
          * singleton class (`class << obj; def m; end; end`).  The hook is
@@ -1470,7 +1471,7 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entr
 
 // `def recv.name ... end` — singleton method: attach to recv's singleton class.
 NODE_DEF @noinline
-node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entry, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, void *locals_info, int32_t self_off, VALUE_REF recv@child)
+node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entry, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, void *locals_info, int32_t self_off, uint32_t in_eval_body, VALUE_REF recv@child)
 {
     (void)body_dispatcher; (void)entry_dispatcher;
     VALUE obj = VALUE_REF_GET(recv);
@@ -1491,6 +1492,7 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, 
     korb_warn_serious(c, slots + 1, mid, false);
     korb_class_def_method(c, sing, mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info, locals_info);
     korb_mark_sdef(sing, mid);
+    if (UNLIKELY(in_eval_body)) korb_method_clear_def_cref(sing, mid);   /* `def self.y` in a class body of an eval */
     /* fire the BasicObject#singleton_method_added(name) hook — only when the
      * object actually defines it (no default → no per-def cost otherwise; and
      * since the method is added first, defining the hook fires it for itself). */
@@ -1862,7 +1864,10 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
                 const struct korb_method *const em = (const struct korb_method *)((uintptr_t)slots[dc_off] & ~(uintptr_t)7u);
                 eval_cref = KORB_CLASS_P(em->def_cref) && em->def_cref == acref;
             }
-            if (KORB_CLASS_P(acref) && (VAL2CLASS(acref)->name_sym == 0 || eval_cref)) {
+            /* self_off is baked only for an unnamed-cref body / its methods: that
+             * class is the innermost cref even once a constant names it */
+            (void)eval_cref;
+            if (KORB_CLASS_P(acref)) {
                 idx = korb_const_index_owned(vm, name_sym, acref);
                 inner = acref;
             }
@@ -2374,8 +2379,9 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
     const bool is_gvar = korb_sym_name(c->vm, name_sym)[0] == '$';
     VALUE ownc = is_gvar ? KORB_NIL
                      : KORB_CLASS_P(owner) ? owner
+                     : (self_off != INT32_MIN && KORB_CLASS_P(slots[self_off])) ? slots[self_off]   /* an unnamed body: self IS the cref */
                      : KORB_CLASS_P(c->eval_cref) ? c->eval_cref
-                     : (self_off != INT32_MIN && KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL);
+                     : KORB_NIL;
     /* the typed predefined globals are checked on assignment (CRuby) */
     { const char *const gn = korb_sym_name(c->vm, name_sym);
       if (UNLIKELY(gn[0] == '$')) {

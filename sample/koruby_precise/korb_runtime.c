@@ -2701,13 +2701,25 @@ static RESULT korb_register_subclass(CTX *c, VALUE *slots, VALUE super_cls, VALU
  * defined in a `class << obj` body reports that (unnamed) singleton, not the
  * object — its body's constants live there. */
 static VALUE korb_own_singleton_class(const struct korb_vm *vm, VALUE v);   /* fwd */
+/* the object a singleton class is attached to, or nil */
+static VALUE korb_singleton_attached_vm(const struct korb_vm *const vm, const VALUE sing)
+{
+    for (uint32_t i = 0; i < vm->sklass.cnt; i++)
+        if (vm->sklass.val[i] == sing) return vm->sklass.obj[i];
+    return KORB_NIL;
+}
 VALUE
 korb_const_cref(const struct korb_vm *const vm, VALUE self, VALUE entry_cell)
 {
     if (((uintptr_t)entry_cell & 7u) == KORB_FID_METHOD) {
         const struct korb_method *const m = (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)7u);
         if (KORB_CLASS_P(m->def_cref)) return m->def_cref;   /* defined in a class_eval(String): that cref (`def self.x` too) */
-        if (KORB_CLASS_P(m->owner) && VAL2CLASS(m->owner)->is_singleton) return m->owner;
+        if (KORB_CLASS_P(m->owner) && VAL2CLASS(m->owner)->is_singleton) {
+            /* `def self.y` in a `module Inner` body: the cref is Inner, not its
+             * singleton (a method written in a `class << obj` body keeps that) */
+            if (m->sdef) { const VALUE at = korb_singleton_attached_vm(vm, m->owner); if (KORB_CLASS_P(at)) return at; }
+            return m->owner;
+        }
     }
     /* a block written in a `class << x` method (the parser bakes the cell only
      * there): its self is still x, whose singleton IS that cref */
@@ -5938,7 +5950,9 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body, NODE *entry
     if (m->visibility == 0 && !k->is_singleton && UNLIKELY(korb_auto_private_name_p(c->vm, mid))) m->visibility = 1;
     m->owner = klass;        /* super's def_class + __method__ source (frame fs-2) */
     m->refine_set = c->refinements;   /* refinements are lexical: capture the defining scope's */
-    m->def_cref = KORB_CLASS_P(c->eval_cref) ? c->eval_cref : KORB_NIL;   /* an eval'd String's cref (see the field) */
+    /* an eval'd String's cref (see the field) — only for a def at the string's own
+     * level: a `class P; def m` inside it has P as its cref */
+    m->def_cref = KORB_CLASS_P(c->eval_cref) ? c->eval_cref : KORB_NIL;   /* node_def clears it for a def inside a class body of the eval */
     m->uses_block = (uint8_t)(uses_block & KORB_DEFF_USES_BLOCK);
     m->uses_backref = (uint8_t)((uses_block & KORB_DEFF_USES_BACKREF) != 0);
     m->ruby2_kw = (uint8_t)((uses_block & KORB_DEFF_FWD_ALL) != 0);   /* `def m(...)` carries keywords through its synth *rest */
@@ -21591,4 +21605,15 @@ korb_cvar_block_cref(CTX *c, const VALUE *const frame_base)
         if (KORB_CLASS_P(at)) k = at;
     }
     return KORB_CLASS_P(k) ? k : KORB_NIL;
+}
+
+/* A def written inside a class/module body of an eval'd String: its cref is that
+ * body's class, not the eval's (korb_class_def_method recorded the eval cref). */
+void
+korb_method_clear_def_cref(VALUE klass, uint32_t mid)
+{
+    if (!KORB_CLASS_P(klass)) return;
+    const KorbClass *const k = VAL2CLASS(klass);
+    const int32_t sl = korb_mtab_slot(k, mid);
+    if (sl >= 0) k->methods[sl]->def_cref = KORB_NIL;
 }
