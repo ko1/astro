@@ -305,6 +305,15 @@ korb_re_run_wide(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb
     return RESULT_OK(rc == 1 ? KORB_TRUE : KORB_FALSE);
 }
 
+/* A pattern written in a single-byte encoding (BINARY, ISO-8859-x, Windows-125x)
+ * with bytes past ASCII matches byte-wise whatever the subject: its \xAD is a
+ * character of its own, not a broken UTF-8 lead (prawn's Windows-1252 line wrap). */
+static inline bool korb_re_pat_bytewise_p(const struct korb_vm *const vm, const VALUE re) {
+    const VALUE src = VAL2RE(re)->source;
+    if (!KORB_STRING_P(src)) return false;
+    const uint32_t e = KORB_STR_ENC(src);
+    return (e == KORB_ENC_BINARY || (e >= KORB_ENC_OTHER_MIN && KORB_ENC_SB(vm, e))) && !korb_str_bytes_ascii(src);
+}
 /* ---- low-level engine call (no koruby alloc inside → subject bytes stable) */
 static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb_re_match_t *m) {
     if (UNLIKELY(!KORB_REGEXP_P(re) || !KORB_STRING_P(subj))) return RESULT_OK(KORB_FALSE);
@@ -329,6 +338,7 @@ static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t sta
      * codepoint.  So `.` on a binary string consumes one byte, not a codepoint. */
     unsigned eff_flags = VAL2RE(re)->flags;
     if (sb_subj && !(eff_flags & (512u | KORB_RE_U8FIX))) eff_flags |= 128u;   /* a UTF-8-fixed pattern passed korb_re_check_enc: the subject is ASCII */
+    if (UNLIKELY(KORB_STR_ENC(VAL2RE(re)->source) != KORB_ENC_UTF8) && korb_re_pat_bytewise_p(c->vm, re)) eff_flags |= 128u;
     eff_flags &= ~KORB_RE_DERIVED;
     const int rc = fn(korb_strbuf_data(pat->buf), pat->len, eff_flags, korb_strbuf_data(s->buf), s->len, startb, m);
     if (UNLIKELY(rc == -2)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "regexp match stack overflow");
@@ -434,6 +444,7 @@ bool korb_re_caseeq_backref(CTX *c, VALUE *slots, VALUE pat, VALUE val) {
       unsigned eff = VAL2RE(slots[1])->flags;             /* see korb_re_run: a single-byte subject matches byte-wise */
       if (KORB_ENC_SB(c->vm, KORB_STR_ENC(slots[0])) &&
           (!(korb_re_u8_flags(c->vm, slots[1]) & (512u | KORB_RE_U8FIX)) || !korb_str_bytes_ascii(slots[0]))) eff |= 128u;
+      if (UNLIKELY(KORB_STR_ENC(VAL2RE(slots[1])->source) != KORB_ENC_UTF8) && korb_re_pat_bytewise_p(c->vm, slots[1])) eff |= 128u;
       eff &= ~KORB_RE_DERIVED;
       const int r = fn(korb_strbuf_data(p->buf), p->len, eff,
                        korb_strbuf_data(s->buf), s->len, 0, &m);   /* fn does not allocate → borrows stable */
@@ -2017,8 +2028,11 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (vf) {
         const KorbString *ps = VAL2STR(slots[0]);
         const int wv = UNLIKELY(KORB_STR_ENC(slots[0]) >= KORB_ENC_OTHER_MIN) ? korb_re_valid_wide(c->vm, vf, slots[0], flags) : 2;
+        const uint32_t se = KORB_STR_ENC(slots[0]);
+        const unsigned vflags = ((se == KORB_ENC_BINARY || (se >= KORB_ENC_OTHER_MIN && KORB_ENC_SB(c->vm, se))) &&
+                                 !korb_str_bytes_ascii(slots[0])) ? (flags | 128u) : flags;   /* see korb_re_pat_bytewise_p */
         if (UNLIKELY(wv < 0)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "invalid multibyte character");
-        if (wv == 0 || (wv == 2 && !vf(korb_strbuf_data(ps->buf), ps->len, flags))) {
+        if (wv == 0 || (wv == 2 && !vf(korb_strbuf_data(ps->buf), ps->len, vflags))) {
             /* the engine's own reason, quoted like CRuby ("<why>: /<pattern>/") */
             char why[288]; const char *const m = korb_re_error(c->vm);
             const KorbString *const ps2 = VAL2STR(slots[0]);

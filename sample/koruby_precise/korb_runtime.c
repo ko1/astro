@@ -3957,6 +3957,7 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
 static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb_re_match_t *m);
 static RESULT korb_re_build_md(CTX *c, VALUE *slots, VALUE subj, VALUE re, const korb_re_match_t *m);
 static uint32_t korb_re_wide_unit(const struct korb_vm *vm, VALUE re, uint32_t senc, bool *be);   /* regexp.c */
+static inline bool korb_re_pat_bytewise_p(const struct korb_vm *const vm, const VALUE re);   /* regexp.c */
 static int korb_re_exec_wide(struct korb_vm *vm, korb_re_exec_fn_t fn, VALUE re, const char *sb, uint32_t slen, uint32_t senc,
                              uint32_t unit, bool be, size_t startb, korb_re_match_t *m);
 static void korb_re_set_lastmatch(CTX *c, VALUE md_or_nil);
@@ -8853,6 +8854,7 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
         unsigned eff = VAL2RE(pat)->flags;   /* see korb_re_run: a single-byte subject matches byte-wise */
         if (KORB_STRING_P(val) && KORB_ENC_SB(c->vm, KORB_STR_ENC(val)) &&
             (!(korb_re_u8_flags(c->vm, pat) & (512u | KORB_RE_U8FIX)) || !korb_str_bytes_ascii_p(sdata, slen))) eff |= 128u;
+        if (UNLIKELY(KORB_STR_ENC(p) != KORB_ENC_UTF8) && korb_re_pat_bytewise_p(c->vm, pat)) eff |= 128u;
         eff &= ~KORB_RE_DERIVED;
         return fn(korb_strbuf_data(p->buf), p->len, eff, sdata, slen, 0, NULL) == 1;
     }
