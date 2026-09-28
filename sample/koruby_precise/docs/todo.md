@@ -6019,3 +6019,13 @@ backtrace は新しい本体のファイルを名乗る（`def m; require "x"（
 prelude 由来のメソッドだけは新しいエントリにした（`core` フラグ、irb の Binding#irb）。一般化すると
 再定義のたびに orphan が増える（20 万回の再定義で +126 MB / 2.4×）ので見送り。直すなら「いまスタックに
 いるか」を安く判定するか、古いエントリを参照数で解放する。
+
+## w14 で見つけた残り（2026-09-28）
+- **Fiber スケジューラで sleep が重ならない**（graphql nonblocking_dataloader_spec 3 例: Ruby のテストの toy scheduler で
+  0.3 s × 10 が 3.0 s）。Fiber.schedule / kernel_sleep の経路が非ブロッキング fiber で使われていない。
+- **ObjectSpace.trace_object_allocations**（rspec-benchmark perform_allocation_spec 15 例）。今は NotImplementedError。
+  アロケータに hook が無く、moving GC なので obj→位置の表は識別子で持つ必要がある。
+- **module_eval(String) で定義したメソッドの Module.nesting** に無名だったモジュールが入らない（定数探索は直した）。
+  node_nesting にフレームのオペランドが無い。
+- 正規表現の RegexpError の文言でパターン中の不正バイトをエスケープしない（CRuby は `/\c\xFF/`、koruby は生のバイト）。
+- UTF-8 の正規表現で `\M-a` / `\xFF` を受け付ける（CRuby は invalid multibyte escape / too short escaped multibyte character）。
