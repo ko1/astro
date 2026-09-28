@@ -1390,6 +1390,10 @@ Ruby の `yield` 主体のマイクロ (20M yields) は **−8.10%**。
   受け損ねているものがある ("r+b" 系? bom|utf-8?)。
 - **Module#autoload のスレッド意味論** (~20 例) — autoload 中の他 thread からの
   const_defined?/constants の見え方。autoload 自体の再設計が要る。
+  2026-09-28 zeitwerk test_ruby_compatibility: 読み込み中のファイルが `module M` を
+  開いた後に sleep すると、他 thread の `M` は定数表で途中の M を掴む（CRuby は完了まで待つ）。
+  require の feature 待ち (korb_loading_owner) はあるので、要るのは「autoload 中の定数に
+  当たったら loader thread の完了を待つ」検査（定数ヒット側、inflight があるときだけ）。
 - **refinements** (`undefined method 'foo' for an instance of Integer` 系) — 未実装。
 - Marshal の残りは encoding 境界 (UTF-16 Symbol 等) が主で、encoding 排除方針の外。
 - core/string fail=570 は個別意味論の集積 (大物なし)。次に触るなら
