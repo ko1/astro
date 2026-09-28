@@ -49,7 +49,9 @@ static bool korb_enc_name_single_byte(const char *name) {
         "UTF-16", "UTF16", "UTF-32", "UTF32", "UTF-7", "UTF7", "EUC",
         "Shift_JIS", "SJIS", "Windows-31J", "CP932", "CP51932",
         "Big5", "GB", "ISO-2022", "stateless-ISO-2022", "Emacs-Mule",
+        "UTF8", "CESU",                          /* UTF8-MAC / UTF8-KDDI / ... are UTF-8 underneath */
     };
+    if (strcasecmp(name, "GB1988") == 0) return true;   /* ISO 646 Chinese: "GB" but one byte */
     for (size_t i = 0; i < sizeof multi / sizeof multi[0]; i++)
         if (strncasecmp(name, multi[i], strlen(multi[i])) == 0) return false;
     return true;
@@ -869,10 +871,19 @@ static bool korb_enc_is_euc(const struct korb_vm *vm, uint32_t enc) {
     return strncasecmp(nm, "EUC-JP", 6) == 0 || strcasecmp(nm, "eucJP-ms") == 0 ||
            strcasecmp(nm, "CP51932") == 0 || strcasecmp(nm, "EUC-JIS-2004") == 0;
 }
+static uint32_t korb_utf8_decode(const char *p, uint32_t avail, uint32_t *clen);   /* fwd (below) */
+/* UTF8-MAC, UTF8-DoCoMo / KDDI / SoftBank, CESU-8: UTF-8 byte sequences, their
+ * own codepoints (the carrier emoji live in the private use area) */
+static bool korb_enc_is_utf8_family(const struct korb_vm *vm, uint32_t enc) {
+    if (enc < KORB_ENC_OTHER_MIN || enc >= KORB_STR_ENC_MAX || vm->str_enc_names[enc] == 0) return false;
+    const char *const nm = korb_sym_name(vm, vm->str_enc_names[enc]);
+    return strncasecmp(nm, "UTF8-", 5) == 0 || strcasecmp(nm, "CESU-8") == 0;
+}
 /* Can koruby step characters in this encoding without a per-encoding hook? */
 static bool korb_enc_char_steppable(const struct korb_vm *vm, uint32_t enc) {
     bool be;
-    return korb_enc_fixed_unit(vm, enc, &be) != 0 || korb_enc_is_sjis(vm, enc) || korb_enc_is_euc(vm, enc);
+    return korb_enc_fixed_unit(vm, enc, &be) != 0 || korb_enc_is_sjis(vm, enc) || korb_enc_is_euc(vm, enc) ||
+           korb_enc_is_utf8_family(vm, enc);
 }
 /* Byte length of the character at `i` for the non-UTF-8 multi-byte encodings
  * koruby knows.  Returns 0 when the encoding has no stepping rule. */
@@ -899,6 +910,11 @@ static uint32_t korb_enc_char_bytes_other(const struct korb_vm *vm, uint32_t enc
         if (b == 0x8F) return (i + 3 <= n) ? 3 : 1;                  /* JIS X 0212 */
         if (b == 0x8E || (b >= 0xA1 && b <= 0xFE)) return (i + 2 <= n) ? 2 : 1;
         return 1;
+    }
+    if (korb_enc_is_utf8_family(vm, enc)) {
+        uint32_t cl = 1;
+        (void)korb_utf8_decode((const char *)p + i, n - i, &cl);
+        return cl ? cl : 1;
     }
     return 0;
 }
@@ -929,6 +945,7 @@ static uint32_t korb_enc_codepoint_at(const struct korb_vm *vm, uint32_t enc,
         }
         return hi;
     }
+    if (korb_enc_is_utf8_family(vm, enc)) { uint32_t ul = 1; return korb_utf8_decode((const char *)p + o, len - o, &ul); }
     uint32_t v = 0;
     if (unit == 4) { for (uint32_t i = 0; i < 4 && o + i < len; i++) v = (v << 8) | p[o + (be ? i : 3 - i)]; return v; }
     for (uint32_t i = 0; i < cl; i++) v = (v << 8) | p[o + i];

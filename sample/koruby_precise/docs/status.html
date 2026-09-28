@@ -75,7 +75,7 @@ ul { margin:4px 0; padding-left:1.2em; } li { margin:2px 0; }
 <script>
 // ---- 更新はここだけ -------------------------------------------------------
 const DATA = {
-  updated: "2026-09-29 04:40 JST",
+  updated: "2026-09-29 05:20 JST",
   master: "bcf42227",
   compat: [
     { label: "rubyspec 全体（core/language/library）", value: "97.87%", sub: "30920 / 31593 例", date: "2026-09-13", commit: "f1370b21",
@@ -86,7 +86,7 @@ const DATA = {
       note: "FAIL 45 は既知の固定集合" },
     { label: "GC STRESS+PURGE", value: "45 / 0", cls: "ok", sub: "pass ／ fail（毎 alloc で moving GC）", date: "2026-09-28", commit: "bcf42227" },
     { label: "gem rspec スイート（c 系、4908 ファイル）", value: "8", sub: "不一致（長く続く既知の 8 行）", date: "2026-09-28", commit: "0f884fb4" },
-    { label: "gem コーパス w16（69 gem）", value: "23 / 619", sub: "不一致（初回 102）。以後 biz 4・ruby2_keywords 1 を解消、未再計測", date: "2026-09-28", commit: "8266da8f" },
+    { label: "gem コーパス w16（69 gem）", value: "23 / 619", sub: "不一致（初回 102）。以後 biz 4・ruby2_keywords 1・characteristics 1 を解消、未再計測", date: "2026-09-28", commit: "8266da8f" },
     { label: "gem コーパス w15", value: "138 / 1046", sub: "不一致。うち OpenSSL 系 約 106", date: "2026-09-28", commit: "—" },
     { label: "DOOM（60 frame、AOT）", value: "一致", cls: "ok", sub: "画素 checksum 17930386881013214317", date: "2026-09-28", commit: "0f884fb4" },
   ],
@@ -112,6 +112,7 @@ const DATA = {
     "ブロックの $~ が定義元メソッドのものにならない（docs/todo.md）",
   ],
   recent: [
+    ["この commit", "UTF8-KDDI/DoCoMo/SoftBank/MAC を UTF-8 として、GB1988 を 1 バイト符号化として扱う — characteristics 全一致"],
     ["bcf42227", "docs/status.html"],
     ["a8292bbc", "main の特異メソッド（to_s/inspect/ruby2_keywords）、.new の initialize から出る break の伝播"],
     ["0f884fb4", "入れ子の生成器と外部列挙（sink を Fiber ごとに、break の素通り判定）— biz 全一致"],
