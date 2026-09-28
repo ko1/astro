@@ -17948,6 +17948,10 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
     char realbuf[4096];
     const char *const realkey = (realpath(abspath, realbuf) != NULL) ? realbuf : abspath;
     if (dedup && korb_feature_real_loaded_p(c, abspath, realkey)) { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
+    /* the same file mid-load under another spelling: it is not in $LOADED_FEATURES yet */
+    const bool other_key = strcmp(realkey, abspath) != 0;
+    if (dedup && other_key && korb_loading_owner(vm, realkey) == vm->cur_thread && vm->cur_thread != NULL)
+        { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
     size_t got = 0;
     char *buf = korb_file_slurp(abspath, &got);
     if (!buf) return korb_raise_load_error(c, slots, abspath);
@@ -17956,6 +17960,7 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
         korb_mark_loaded(vm, abspath);
         if (strcmp(realkey, abspath) != 0) korb_mark_loaded(vm, realkey);
         korb_loading_add(vm, abspath, vm->cur_thread);  /* claim for cross-thread waiters */
+        if (other_key) korb_loading_add(vm, realkey, vm->cur_thread);
     }
     const char *const saved = vm->cur_load_file;
     const char *const saved_abs = vm->cur_load_abs;
@@ -17977,12 +17982,14 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
     if (UNLIKELY(r.state != KORB_NORMAL)) {
         /* a load that raised did not happen: CRuby leaves no record behind, so the next require retries */
         if (dedup) { korb_loading_remove(vm, abspath);
+                     if (other_key) korb_loading_remove(vm, realkey);
                      korb_unmark_loaded(vm, abspath);
                      if (strcmp(realkey, abspath) != 0) korb_unmark_loaded(vm, realkey); }
         return r;
     }
     /* CRuby provides the feature AFTER the body ran: files it required come first */
-    if (dedup) { korb_loaded_features_push(c, slots, abspath); korb_loading_remove(vm, abspath); }
+    if (dedup) { korb_loaded_features_push(c, slots, abspath); korb_loading_remove(vm, abspath);
+                 if (other_key) korb_loading_remove(vm, realkey); }
     *out = KORB_TRUE;
     return RESULT_OK(KORB_TRUE);
 }
