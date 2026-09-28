@@ -67,8 +67,6 @@ int koruby_re_exec(const char *pat, size_t patlen, unsigned flags,
     if (p == NULL) return -1;
     astrogre_match_t m;
     m.matched = false; m.n_groups = 0;
-    int ng_all = ASTROGRE_MAX_GROUPS;
-    for (int i = 0; i < ng_all; i++) m.valid[i] = false;
     m.overflow = false;
     bool ok = astrogre_search_from(p, str, slen, start, &m);
     /* Honest failure: the engine bailed on a branch at the C-stack floor and

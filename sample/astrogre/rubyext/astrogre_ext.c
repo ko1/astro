@@ -32,7 +32,7 @@
  * astrogre_match_t mirrors parse.h verbatim; if the engine ever grows
  * a field, this needs updating in lockstep. */
 
-#define ASTROGRE_MAX_GROUPS 32
+#define ASTROGRE_MAX_GROUPS 256
 
 typedef struct astrogre_pattern astrogre_pattern;
 
@@ -42,6 +42,7 @@ typedef struct astrogre_match {
     size_t ends[ASTROGRE_MAX_GROUPS];
     bool   valid[ASTROGRE_MAX_GROUPS];
     int    n_groups;
+    bool   overflow;
 } astrogre_match_t;
 
 extern void INIT(void);

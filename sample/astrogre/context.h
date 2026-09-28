@@ -26,7 +26,7 @@
 #include "unicode_grapheme.h"
 
 /* Maximum number of capturing groups (including \0 = whole match). */
-#define ASTROGRE_MAX_GROUPS 32
+#define ASTROGRE_MAX_GROUPS 256
 
 /* Match-result type returned by EVAL.  Width matters: the framework's
  * SPECIALIZE emits `(VALUE)<n>ULL` for uint64_t fields (class bitmaps),
@@ -187,6 +187,13 @@ typedef struct CTX_struct {
      * struct tail to keep field offsets stable for any baked AOT SDs. */
     bool stack_overflow;
 } CTX;
+
+/* Reset the capture flags before a match attempt.  A fixed 32-byte clear
+ * compiles to two stores; only a pattern with more groups pays a memset call. */
+static inline void agre_clear_valid(CTX *const c) {
+    if (c->n_groups < 32) memset(c->valid, 0, 32);
+    else memset(c->valid, 0, (size_t)c->n_groups + 1);
+}
 
 /* The memo key (id, pos) omits rep counters, so it is only sound while every
  * enclosing rep's continuation state is the saturated (min 0, unbounded) one. */

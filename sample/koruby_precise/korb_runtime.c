@@ -3790,8 +3790,15 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* ---- Regexp (matching via astrogre through koruby_regex.so → libastrogre.so) --
  * The bridge (regex_bridge.c) exposes koruby_re_exec (per-group captures),
  * koruby_re_ngroups, koruby_re_named, koruby_re_valid. */
-#define KORB_RE_MAX_GROUPS 32
+#define KORB_RE_MAX_GROUPS 256   /* = ASTROGRE_MAX_GROUPS (koruby_re_match in regex_bridge.c) */
 typedef struct { int matched; int n_groups; long starts[KORB_RE_MAX_GROUPS]; long ends[KORB_RE_MAX_GROUPS]; } korb_re_match_t;
+/* Copy only the groups the pattern has: the arrays are 4 KB, a match loop copies per hit. */
+static inline void korb_re_match_copy(korb_re_match_t *restrict d, const korb_re_match_t *restrict s) {
+    const size_t ng = (size_t)(s->n_groups < KORB_RE_MAX_GROUPS ? s->n_groups : KORB_RE_MAX_GROUPS - 1) + 1;
+    d->matched = s->matched; d->n_groups = s->n_groups;
+    memcpy(d->starts, s->starts, sizeof(long) * ng);
+    memcpy(d->ends, s->ends, sizeof(long) * ng);
+}
 typedef int (*korb_re_exec_fn_t)(const char *, size_t, unsigned, const char *, size_t, size_t, korb_re_match_t *);
 typedef const char *(*korb_re_named_fn_t)(const char *, size_t, unsigned, int, int *);
 typedef int (*korb_re_valid_fn_t)(const char *, size_t, unsigned);

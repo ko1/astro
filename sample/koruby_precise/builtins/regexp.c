@@ -1523,7 +1523,7 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
         korb_re_match_t m; RESULT rr = korb_re_run(c, slots + 3, slots[1], slots[0], (size_t)off, &m);
         if (UNLIKELY(rr.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return rr; }
         if (rr.value != KORB_TRUE) break;
-        last_m = m; have_last = true;
+        korb_re_match_copy(&last_m, &m); have_last = true;
         const long ms0 = m.starts[0], me0 = m.ends[0];
         KORB_GSUB_KEEP(src + off, (size_t)(ms0 - off));
         if (block) {
@@ -1768,7 +1768,7 @@ RESULT korb_re_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long s
         if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
         if (rr.value != KORB_TRUE) break;
         if (m.starts[0] > stopb) break;                  /* start past the limit → later ones are too */
-        last_m = m; have = true;
+        korb_re_match_copy(&last_m, &m); have = true;
         off = m.starts[0] + 1;                            /* allow overlapping starts (progress: starts[0] >= off) */
     }
     if (!have) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }

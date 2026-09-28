@@ -1228,6 +1228,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
 
         int idx = 0;
         if (capture) {
+            if (q->n_groups + 1 >= ASTROGRE_MAX_GROUPS) { re_error(q, "too many capture groups"); return NULL; }
             idx = ++q->n_groups;
             if (pending_name_start) {
                 re_register_name(q, pending_name_start,
@@ -3294,7 +3295,7 @@ astrogre_pattern_count_lines(astrogre_pattern *p, const char *str, size_t len)
     c.case_insensitive = p->case_insensitive;
     c.multiline = p->multiline;
     c.encoding = p->encoding;
-    c.n_groups = 0;
+    c.n_groups = p->n_groups;
     c.rep_top = NULL;
     c.rep_cont_sentinel = NULL;
     c.count_result = 0;
@@ -3342,7 +3343,7 @@ astrogre_pattern_print_lines(astrogre_pattern *p, const char *str, size_t len,
     c.case_insensitive = p->case_insensitive;
     c.multiline = p->multiline;
     c.encoding = p->encoding;
-    c.n_groups = 0;
+    c.n_groups = p->n_groups;
     c.rep_top = NULL;
     c.rep_cont_sentinel = NULL;
     c.count_result = 0;

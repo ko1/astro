@@ -235,17 +235,14 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
         if (r) {
             out->n_groups = p->n_groups;
             /* Only copy slots that node_grep_search actually marked
-             * valid; clear the rest so callers don't see ghosts from
-             * a previous reuse of the `out` struct. */
+             * valid.  Entries past n_groups are left as they were:
+             * readers stop at n_groups. */
             for (int i = 0; i <= p->n_groups; i++) {
                 out->valid[i] = c.valid[i];
                 if (c.valid[i]) {
                     out->starts[i] = c.starts[i];
                     out->ends[i]   = c.ends[i];
                 }
-            }
-            for (int i = p->n_groups + 1; i < ASTROGRE_MAX_GROUPS; i++) {
-                out->valid[i] = false;
             }
         }
     }
