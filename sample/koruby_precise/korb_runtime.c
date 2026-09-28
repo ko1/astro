@@ -10203,7 +10203,7 @@ korb_bt_push(struct korb_vm *const vm, const char *const file, const uint32_t li
     vm->bt[vm->bt_cnt].line = line;
     vm->bt[vm->bt_cnt].name = name;
     vm->bt[vm->bt_cnt].file = prelude ? NULL : file;
-    vm->bt[vm->bt_cnt].borrow_line = prelude;
+    vm->bt[vm->bt_cnt].borrow_line = prelude || (file == NULL && line == 0);   /* a C frame called from C */
     vm->bt_cnt++;
     if (prelude)                                   /* the C frames it called sit at a prelude line too */
         for (uint32_t i = vm->bt_cnt - 1; i > 0 && vm->bt[i - 1].file == NULL; ) vm->bt[--i].borrow_line = 1;

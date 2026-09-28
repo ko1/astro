@@ -11,9 +11,10 @@
   のまま。作った thread の数だけ ~700 B と root scan が増える。解放するには handle を弱参照に
   して (korb_weak_walk)、rep を指す所 (Mutex#owner、joiners、Queue/CV の待ち行列、blop) を先に
   外す必要がある。計測: `trials/2026-09-19-gem-dropin/bench/thread_reap`。
-- **正規表現が UTF-8 以外の多バイト符号化を知らない**: astrogre のモードは ASCII / UTF-8 だけ。
-  EUC-JP / Shift_JIS の文字列に `.` や否定文字クラスが多バイト文字 1 つとして当たらない
-  (`"\xA5\xB5".force_encoding("EUC-JP").scan(/./)` が空)。CGI.escape* はバイト単位にして回避済み。
+- ~~**正規表現が UTF-8 以外の多バイト符号化を知らない**~~ (2026-09-28 済): ASCII 互換の多バイト符号化
+  (Shift_JIS / EUC-JP ...) の subject は UTF-8 に写して照合し、位置を元のバイトに戻す（UTF-16/32 と同じ
+  `korb_re_exec_wide` の経路、Unicode に無い文字は私用領域の符号点）。残り: `\w` などの文字クラスは
+  Unicode 基準なので Onigmo の SJIS 表と細部が違いうる（未確認）。
 - **捕獲グループ 256 個以上は RegexpError**: CRuby (Onigmo) は 32767 まで。以前は 32 個超で
   メモリ破壊 (ipaddress で SEGV)。
 - **UTF-8 → EUC-KR の変換器が無い** (erb test_erb_m17n の 2 例、ConverterNotFoundError)。

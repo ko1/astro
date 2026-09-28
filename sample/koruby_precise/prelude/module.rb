@@ -303,8 +303,11 @@ class Module
   # class.  append_features, not include — CRuby does not fire #included here.
   private def extend_object(obj)
     raise TypeError, "wrong argument type Class (expected Module)" if is_a?(Class)   # rebound to a Class
-    raise FrozenError, "can't modify frozen #{obj.class}: #{obj.inspect}" if obj.frozen?
-    append_features(obj.singleton_class)
+    k = ::Kernel   # obj may be a BasicObject
+    if k.instance_method(:frozen?).bind_call(obj)
+      raise FrozenError.new("can't modify frozen #{k.instance_method(:class).bind_call(obj)}: #{obj.inspect}", receiver: obj)
+    end
+    append_features(k.instance_method(:singleton_class).bind_call(obj))
     obj
   end
 end
