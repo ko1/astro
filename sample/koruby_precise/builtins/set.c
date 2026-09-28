@@ -3126,6 +3126,10 @@ static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
      * name so a namespaced exception reads "Mod::Err", not "Err". */
     if (e->exc_class != KORB_NIL && KORB_CLASS_P(e->exc_class)) {
         char qn[256]; korb_class_qname_into(c, e->exc_class, qn, sizeof qn);
+        if (qn[0] == '\0') {                             /* anonymous class → its #to_s ("#<Class:0x...>") */
+            slots[0] = e->exc_class;
+            return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+        }
         return korb_str_new(c, slots, qn, (uint32_t)strlen(qn));
     }
     const char *nm = korb_etype_name(e->etype);
@@ -3149,7 +3153,14 @@ static RESULT korb_m_exc_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         korb_class_qname_into(c, e->exc_class, cnbuf, sizeof cnbuf);
     else
         snprintf(cnbuf, sizeof cnbuf, "%s", korb_etype_name(e->etype));
-    slots[0] = sv;
+    if (cnbuf[0] == '\0') {                             /* anonymous class → its #to_s ("#<Class:0x...>") */
+        slots[0] = e->exc_class;
+        const RESULT cr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (KORB_STRING_P(cr.value))
+            snprintf(cnbuf, sizeof cnbuf, "%.*s", (int)VAL2STR(cr.value)->len, korb_strbuf_data(VAL2STR(cr.value)->buf));
+    }
+    slots[0] = VALUE_REF_GET(self);                      /* the send above may have moved it */
     RESULT tr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
     slots[0] = KORB_STRING_P(tr.value) ? tr.value : KORB_NIL; /* park the message string */

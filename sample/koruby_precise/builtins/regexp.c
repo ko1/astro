@@ -1052,7 +1052,13 @@ static void korb_re_write_to_s(const struct korb_vm *const vm, FILE *ms, VALUE r
     if (x) on[no++]='x'; else neg[nf++]='x';
     fputs("(?", ms); fwrite(on, 1, (size_t)no, ms);
     if (nf) { fputc('-', ms); fwrite(neg, 1, (size_t)nf, ms); }
-    fputc(':', ms); fwrite(body, 1, len, ms); fputc(')', ms);
+    fputc(':', ms);
+    for (size_t k = 0; k < len; k++) {                 /* a bare `/` is escaped, as in #inspect (CRuby rb_reg_expr_str) */
+        if (body[k] == '\\' && k + 1 < len) { fputc('\\', ms); fputc(body[++k], ms); continue; }
+        if (body[k] == '/') fputc('\\', ms);
+        fputc(body[k], ms);
+    }
+    fputc(')', ms);
     free(wb.u8);
 }
 /* Re-encode UTF-8 bytes as UTF-16/32 (the inverse of korb_re_wide_decode). */

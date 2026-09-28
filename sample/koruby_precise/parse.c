@@ -3430,10 +3430,12 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         NODE *idef = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain, sclass_cref, def_cref_name);
         bake_add(tc, &idef->u.node_def.self_off);          /* definee = self at base[-1] */
         bake_add(tc, &idef->u.node_def.dc_off);            /* enclosing method entry = base[-4] */
-        NODE *sdef = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, recv_node);
+        NODE *sdef = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain - 1, recv_node);   /* -1 extra for the staged recv child */
+        bake_add(tc, &sdef->u.node_singleton_def.self_off);   /* the hook's caller frame */
         def = ALLOC_node_seq(idef, sdef);
     } else if (recv_node) {
-        def = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, recv_node);
+        def = ALLOC_node_singleton_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain - 1, recv_node);   /* -1 extra for the staged recv child */
+        bake_add(tc, &def->u.node_singleton_def.self_off);   /* the hook's caller frame */
     } else {
         def = ALLOC_node_def(mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, pinfo, linfo, -1 - tc->chain, -4 - tc->chain, sclass_cref, def_cref_name);
         bake_add(tc, &def->u.node_def.self_off);           /* definee = self at base[-1] */

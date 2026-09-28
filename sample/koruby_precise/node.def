@@ -1470,7 +1470,7 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entr
 
 // `def recv.name ... end` — singleton method: attach to recv's singleton class.
 NODE_DEF @noinline
-node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entry, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, void *locals_info, VALUE_REF recv@child)
+node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entry, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, void *locals_info, int32_t self_off, VALUE_REF recv@child)
 {
     (void)body_dispatcher; (void)entry_dispatcher;
     VALUE obj = VALUE_REF_GET(recv);
@@ -1498,6 +1498,9 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, 
     const uint32_t smad = korb_intern(c->vm, "singleton_method_added", 22);
     if (UNLIKELY(korb_responds_to(c, obj, smad))) {
         slots[0] = obj; slots[1] = ID2SYM(mid);          /* recv, arg */
+        uint32_t fsym = 0, fline = 0;                    /* the hook's caller is this frame, at the def line */
+        korb_get_srcloc(c->vm, body, &fsym, &fline);
+        korb_flink_stage_at(c, &slots[self_off + 1], fline);
         RESULT hr = korb_send(c, slots + 2, smad, 0, 1);
         if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
     }

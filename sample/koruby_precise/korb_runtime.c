@@ -6889,6 +6889,7 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
         const VALUE hook_owner = owner != KORB_NIL ? owner : korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
         if (UNLIKELY(korb_mod_hook_custom(c, hook_owner, korb_intern(c->vm, "const_added", 11)))) {
             slots[2] = hook_owner; slots[3] = ID2SYM(name_sym);   /* const_added runs before inherited (CRuby) */
+            korb_flink_stage_at(c, caller_base, caller_line);     /* the hook's caller is the `class` line */
             RESULT ar = korb_send_impl(c, slots + 4, korb_intern(c->vm, "const_added", 11), 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
         }
@@ -6897,6 +6898,7 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
             const uint32_t inh = korb_intern(c->vm, "inherited", 9);
             if (korb_responds_to(c, slots[0], inh)) {
                 slots[2] = slots[0]; slots[3] = slots[1];   /* recv = super, arg0 = new class */
+                korb_flink_stage_at(c, caller_base, caller_line);
                 RESULT hr = korb_send_impl(c, slots + 4, inh, 0, 1, NULL, NULL, NULL);
                 if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
             }
@@ -13661,6 +13663,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                 const uint32_t inh = korb_intern(vm, "inherited", 9);
                 if (korb_responds_to(c, slots[0], inh)) {
                     slots[2] = slots[0]; slots[3] = slots[1];
+                    korb_flink_hand_on(c, slots - (korb_sword_t)argc - 3);   /* the hook's caller is the .new call site */
                     RESULT hr = korb_send_impl(c, slots + 4, inh, line, 1, NULL, NULL, NULL);
                     if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
                 }
@@ -20497,7 +20500,7 @@ korb_exc_build(CTX *c, VALUE *slots, VALUE_SLICE args)
         } else {
             char cbuf[256];                          /* anonymous class → its #to_s ("#<Class:0x...>") */
             const char *cname;
-            if (VAL2CLASS(slots[0])->name_sym != 0) cname = korb_sym_name(c->vm, VAL2CLASS(slots[0])->name_sym);
+            if (VAL2CLASS(slots[0])->name_sym != 0) { korb_class_qname_into(c, slots[0], cbuf, sizeof cbuf); cname = cbuf; }   /* S::NotFound, not NotFound */
             else {
                 slots[1] = slots[0];
                 const RESULT tr = korb_send(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0);
