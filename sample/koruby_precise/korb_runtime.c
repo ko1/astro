@@ -11191,6 +11191,14 @@ korb_const_path_autoload(CTX *c, VALUE *const slots, const uint32_t path_sym, bo
         const uint32_t head = korb_intern(vm, start, hlen);
         const uint32_t j = korb_const_index_owned(vm, head, KORB_NIL);
         VALUE cur = (j != UINT32_MAX) ? vm->const_vals[j] : korb_const_get(vm, head);
+        if (j == UINT32_MAX && !KORB_CLASS_P(cur)) {       /* `class Hotel::Pricing` with Hotel an Object autoload */
+            const VALUE objc = korb_builtin_class_obj(vm, KORB_C_OBJECT);
+            if (korb_autoload_registered_p(c, objc, head)) {
+                CHECK(korb_autoload_fire(c, slots, objc, head, 0, NULL));
+                *fired = true;
+                return RESULT_OK(KORB_NIL);
+            }
+        }
         for (const char *p = sep ? sep + 2 : NULL; p != NULL && KORB_CLASS_P(cur); ) {
             const char *const next = strstr(p, "::");
             const uint32_t len = next ? (uint32_t)(next - p) : (uint32_t)strlen(p);
@@ -17738,23 +17746,6 @@ static void korb_loaded_features_push(CTX *c, VALUE *slots, const char *path)
     (void)korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]);
 }
 
-/* Remove `path` from $LOADED_FEATURES again (its load raised). */
-static void korb_loaded_features_pop(CTX *c, VALUE *slots, const char *path)
-{
-    const VALUE lf = korb_const_get(c->vm, korb_intern(c->vm, "$LOADED_FEATURES", 16));
-    if (!KORB_ARRAY_P(lf)) return;
-    const uint32_t plen = (uint32_t)strlen(path);
-    KorbArray *const a = VAL2ARY(lf);
-    for (uint32_t i = a->len; i-- > 0; ) {
-        const VALUE e = korb_items_data(a->items)[i];
-        if (!KORB_STRING_P(e) || VAL2STR(e)->len != plen) continue;
-        if (memcmp(korb_strbuf_data(VAL2STR(e)->buf), path, plen) != 0) continue;
-        slots[0] = lf; slots[1] = LONG2FIX((korb_sword_t)i);
-        (void)korb_send(c, slots + 2, korb_intern(c->vm, "delete_at", 9), 0, 1);
-        return;
-    }
-}
-
 /* Same file through a different route?  Two $LOAD_PATH entries can reach one
  * file through a symlink (a fallback-stdlib tree, an rbenv shim) and CRuby
  * loads it once.  $LOADED_FEATURES stays the authority — only the entries whose
@@ -17944,6 +17935,7 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
         if (self_owner != NULL && self_owner == vm->cur_thread &&
             korb_const_get(vm, korb_intern(vm, "$VERBOSE", 8)) == KORB_TRUE)
             korb_warn(c, slots, "loading in progress, circular require considered harmful - %s", abspath);
+        if (self_owner != NULL && self_owner == vm->cur_thread) { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
     }
     if (dedup && korb_feature_loaded_p(c, abspath)) { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
     /* Two load-path entries can reach the SAME file through a symlink (a
@@ -17960,7 +17952,6 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
     if (dedup) {
         korb_mark_loaded(vm, abspath);
         if (strcmp(realkey, abspath) != 0) korb_mark_loaded(vm, realkey);
-        korb_loaded_features_push(c, slots, abspath);   /* keep $LOADED_FEATURES in step */
         korb_loading_add(vm, abspath, vm->cur_thread);  /* claim for cross-thread waiters */
     }
     const char *const saved = vm->cur_load_file;
@@ -17980,15 +17971,15 @@ korb_load_abspath_wrap(CTX *c, VALUE *slots, const char *abspath, bool dedup, VA
     vm->cur_load_file = saved;
     vm->cur_load_abs = saved_abs;
     free(buf);
-    if (dedup) korb_loading_remove(vm, abspath);
     if (UNLIKELY(r.state != KORB_NORMAL)) {
-        /* a load that raised did not happen: CRuby leaves neither the C-side
-         * record nor $LOADED_FEATURES behind, so the next require retries */
-        if (dedup) { korb_unmark_loaded(vm, abspath);
-                     if (strcmp(realkey, abspath) != 0) korb_unmark_loaded(vm, realkey);
-                     korb_loaded_features_pop(c, slots, abspath); }
+        /* a load that raised did not happen: CRuby leaves no record behind, so the next require retries */
+        if (dedup) { korb_loading_remove(vm, abspath);
+                     korb_unmark_loaded(vm, abspath);
+                     if (strcmp(realkey, abspath) != 0) korb_unmark_loaded(vm, realkey); }
         return r;
     }
+    /* CRuby provides the feature AFTER the body ran: files it required come first */
+    if (dedup) { korb_loaded_features_push(c, slots, abspath); korb_loading_remove(vm, abspath); }
     *out = KORB_TRUE;
     return RESULT_OK(KORB_TRUE);
 }

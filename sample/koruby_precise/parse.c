@@ -6212,7 +6212,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
          * then ancestors) and B set on it.  A flat by-name owner would pick
          * whichever `A` was defined first (dry-types gives every
          * `include Dry::Types()` its own `Coercible`). */
-        if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_READ_NODE)) {
+        /* A static `A::B::C = v` reads A::B the same way, so a missing or
+         * autoloaded segment raises / loads instead of landing on self. */
+        if (parent && (PM_NODE_TYPE_P(parent, PM_CONSTANT_READ_NODE) ||
+                       (PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE) && kp_const_path_static_p(parent)))) {
             NODE *o, *v;
             WITH_CHAIN(tc, kind_node_const_set_on.slot_count, (o = transduce(tc, parent), v = transduce(tc, cpw->value)));
             NODE *cn = ALLOC_node_const_set_on(name, o, v);

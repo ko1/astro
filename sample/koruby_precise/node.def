@@ -2206,6 +2206,15 @@ node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, uint32_t line,
             idx = korb_const_in_ancestry_scoped(vm, slots[0], name);
         }
     }
+    /* A pending autoload runs at LOOKUP time (before const_missing), the same
+     * way CRuby resolves `A::B` — the owner may define its own hook.  The file
+     * may make it private, so the privacy check comes after. */
+    if (idx == UINT32_MAX && korb_autoload_registered_p(c, slots[0], name) &&
+        !(UNLIKELY(vm->privconst_cnt != 0) && korb_const_private_p(vm, slots[0], name))) {
+        CHECK(korb_autoload_fire(c, slots + 1, slots[0], name, line, &slots[fb_off]));
+        idx = korb_const_index_owned(vm, name, slots[0]);
+        if (idx == UINT32_MAX) idx = korb_const_in_ancestry_scoped(vm, slots[0], name);
+    }
     if (UNLIKELY(vm->privconst_cnt != 0) &&               /* private_constant: unreachable as Owner::NAME */
         (idx != UINT32_MAX || korb_autoload_registered_p(c, slots[0], name)) &&
         (korb_const_private_p(vm, slots[0], name) ||
@@ -2237,14 +2246,6 @@ node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, uint32_t line,
             return RESULT_OK(slots[1]);
         }
         return RESULT_OK(vm->const_vals[idx]);
-    }
-    /* A pending autoload runs at LOOKUP time (before const_missing), the same
-     * way CRuby resolves `A::B` — the owner may define its own hook. */
-    if (korb_autoload_registered_p(c, slots[0], name)) {
-        CHECK(korb_autoload_fire(c, slots + 1, slots[0], name, line, &slots[fb_off]));
-        idx = korb_const_index_owned(vm, name, slots[0]);
-        if (idx == UINT32_MAX) idx = korb_const_in_ancestry_scoped(vm, slots[0], name);
-        if (idx != UINT32_MAX) return RESULT_OK(vm->const_vals[idx]);
     }
     slots[1] = ID2SYM(name);                              /* <owner>.const_missing(:name) */
     korb_flink_stage_at(c, &slots[fb_off], line);         /* the hook's `caller` must start at the reference */
