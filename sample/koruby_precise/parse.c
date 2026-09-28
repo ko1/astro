@@ -2363,9 +2363,9 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
      * thing (an explicit nil binding IS the caller's), so it takes the same
      * lowering with the file/line arguments carried through — without it the
      * builtin runs the string against a fresh `main` and a `def` inside is lost.
-     * A real Binding or a splat form goes through the normal path.  A
-     * user-defined `eval` would see the extra Binding — same caveat as CRuby's
-     * own "eval is special" corners, accepted for compatibility. */
+     * A real Binding or a splat form goes through the normal path.  The call
+     * goes to __eval_b1 / __eval_bn, which hand a user-defined `eval` only the
+     * arguments written. */
     if (cn->receiver == NULL && argc >= 1 && argc <= 4 && cn->block == NULL &&
         (argc == 1 || PM_NODE_TYPE_P(cn->arguments->arguments.nodes[1], PM_NIL_NODE)) &&
         (strcmp(kp_cid_cstr(tc, cn->name), "eval") == 0 || kp_is_eval_alias(tc, cn->name))) {
@@ -2387,7 +2387,9 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
             for (uint32_t i = 2; i < (uint32_t)argc; i++)
                 argv[i + 1] = transduce(tc, cn->arguments->arguments.nodes[i]);
             tc->chain = saved;
-            return KP_LINK(tc, node_call, korb_intern(tc->c->vm, "eval", 4), kp_flink(tc, line), argv, cnt);
+            /* through __eval_b1 / __eval_bn (C, no frame of their own): a class's own
+             * #eval gets only what was written (ai4r), Kernel#eval the binding */
+            return KP_LINK(tc, node_call, korb_intern(tc->c->vm, argc == 1 ? "__eval_b1" : "__eval_bn", 9), kp_flink(tc, line), argv, cnt);
         }
     }
 

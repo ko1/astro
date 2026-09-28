@@ -97,7 +97,7 @@ module Marshal
       false
     else
       return false if defined?(Data) && Data === o
-      return false if _responds?(o, :marshal_dump)
+      return false if _responds?(o, :marshal_dump, true)
       _responds?(o, :_dump, true)   # CRuby asks with include_private (Time#_dump is private)
     end
   end
@@ -149,7 +149,7 @@ module Marshal
       _raise_if_undumpable(o)
       if defined?(Data) && Data === o
         _dump_data(o, out, st)
-      elsif _responds?(o, :marshal_dump)
+      elsif _responds?(o, :marshal_dump, true)
         _dump_umarshal(o, out, st)
       elsif _responds?(o, :_dump, true)
         _dump_udump(o, out, st)
@@ -312,7 +312,7 @@ module Marshal
   def self._dump_umarshal(o, out, st)
     name = _class_name(_klass(o))
     raise TypeError, "can't dump anonymous class #{_klass(o)}" if name.nil?
-    d = o.marshal_dump
+    d = o.__send__(:marshal_dump)                      # any visibility (ai4r's is protected)
     out << "U"; _symdump(name.to_sym, out, st); _dump(d, out, st)
   end
 

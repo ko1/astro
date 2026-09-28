@@ -1172,6 +1172,11 @@ static RESULT korb_m_class_attr_n(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     slots[0] = VALUE_REF_GET(self);                          /* cls (rooted) */
     if (UNLIKELY(!KORB_CLASS_P(slots[0]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "attr on a non-class");
     { RESULT fr = korb_check_def_frozen(c, slots, slots[0]); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* attr_* on a frozen class → FrozenError */
+    /* the calling scope's default visibility, as define_method (ai4r's parameters_info) */
+    const uint8_t scope_vis = korb_define_method_scope_vis(c, a.p - 3, VAL2CLASS(slots[0])->cur_visibility);
+    #define KORB_ATTR_DEF(id, w) do { const uint8_t sv_ = VAL2CLASS(slots[0])->cur_visibility; \
+        VAL2CLASS(slots[0])->cur_visibility = scope_vis; korb_class_def_attr(c, slots[0], (id), ivar, (w)); \
+        VAL2CLASS(slots[0])->cur_visibility = sv_; } while (0)
     slots[1] = UNWRAP(korb_ary_new(c, slots + 2, n * 2));    /* defined method names → return value */
     VALUE_REF res = VALUE_REF_AT(&slots[1]);
     for (uint32_t i = 0; i < n; i++) {
@@ -1190,9 +1195,10 @@ static RESULT korb_m_class_attr_n(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern_enc(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len, KORB_STR_ENC(sym)));
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
         char buf[256]; snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
-        if (reader) { const uint32_t rid = korb_intern(vm, nm, strlen(nm)); korb_class_def_attr(c, slots[0], rid, ivar, 0); CHECK(korb_ary_push_val(c, slots + 2, res, ID2SYM(rid))); CHECK(korb_fire_method_added(c, slots + 2, slots[0], rid)); }
-        if (writer) { snprintf(buf, sizeof buf, "%s=", nm); const uint32_t wid = korb_intern(vm, buf, strlen(buf)); korb_class_def_attr(c, slots[0], wid, ivar, 1); CHECK(korb_ary_push_val(c, slots + 2, res, ID2SYM(wid))); CHECK(korb_fire_method_added(c, slots + 2, slots[0], wid)); }
+        if (reader) { const uint32_t rid = korb_intern(vm, nm, strlen(nm)); KORB_ATTR_DEF(rid, 0); CHECK(korb_ary_push_val(c, slots + 2, res, ID2SYM(rid))); CHECK(korb_fire_method_added(c, slots + 2, slots[0], rid)); }
+        if (writer) { snprintf(buf, sizeof buf, "%s=", nm); const uint32_t wid = korb_intern(vm, buf, strlen(buf)); KORB_ATTR_DEF(wid, 1); CHECK(korb_ary_push_val(c, slots + 2, res, ID2SYM(wid))); CHECK(korb_fire_method_added(c, slots + 2, slots[0], wid)); }
     }
+    #undef KORB_ATTR_DEF
     return RESULT_OK(VALUE_REF_GET(res));
 }
 static RESULT korb_m_class_attr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int reader, int writer) {

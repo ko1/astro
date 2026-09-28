@@ -5475,10 +5475,14 @@ static RESULT korb_m_class_alias_method(CTX *c, VALUE *slots, VALUE_REF self, VA
     return korb_do_alias(c, slots + 1, slots[0], newm, oldm);
 }
 static VALUE korb_klass_override_get(const struct korb_vm *vm, VALUE obj);   /* fwd */
+static uint8_t korb_define_method_scope_vis(CTX *c, const VALUE *link, uint8_t body_vis);   /* fwd (below the frame walk) */
 static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE klass = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(klass)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "define_method called on a non-class");
+    /* the default visibility is the CALLING scope's: a bare `private` in the body reaches a
+     * define_method written there, not one run from inside a method (parslet's `rule`) */
+    const uint8_t scope_vis = korb_define_method_scope_vis(c, a.p - 3, VAL2CLASS(klass)->cur_visibility);
     KORB_CHECK_FROZEN(c, slots, klass);                  /* def on a frozen module/class → FrozenError */
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
@@ -5559,10 +5563,10 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         *dst = tmp;                                      /* copy the definition */
         dst->mid = mid; dst->owner = slots[0];           /* rename + re-own */
         /* the copy takes the DEFINING frame's visibility, not the source's */
-        dst->visibility = (VAL2CLASS(slots[0])->cur_visibility == 3) ? 1 : VAL2CLASS(slots[0])->cur_visibility;
+        dst->visibility = (scope_vis == 3) ? 1 : scope_vis;
         if (dst->visibility == 0 && !VAL2CLASS(slots[0])->is_singleton &&
             UNLIKELY(korb_auto_private_name_p(c->vm, mid))) dst->visibility = 1;
-        if (UNLIKELY(VAL2CLASS(slots[0])->cur_visibility == 3)) {   /* module_function mode: public copy on the singleton (as `def` does) */
+        if (UNLIKELY(scope_vis == 3)) {   /* module_function mode: public copy on the singleton (as `def` does) */
             const VALUE sing = korb_klass_override_get(c->vm, slots[0]);
             if (KORB_CLASS_P(sing)) {
                 const struct korb_method mcopy = *dst;       /* the slot alloc below may move the table */
@@ -5589,7 +5593,7 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     m->kind = KORB_METHOD_DM;
     m->dm_proc = slots[1];
     m->owner = slots[0];
-    m->visibility = (VAL2CLASS(slots[0])->cur_visibility == 3) ? 1 : VAL2CLASS(slots[0])->cur_visibility;   /* honor the current private/protected scope */
+    m->visibility = (scope_vis == 3) ? 1 : scope_vis;   /* honor the calling scope's private/protected */
     if (m->visibility == 0 && !VAL2CLASS(slots[0])->is_singleton &&
         UNLIKELY(korb_auto_private_name_p(c->vm, mid))) m->visibility = 1;
     m->params_cnt = -1;                                  /* lenient arity (block semantics) */
@@ -10017,6 +10021,14 @@ korb_bt_label_slow(CTX *c, uint32_t mid, const struct korb_method *m)
 static const char *
 korb_bt_label(CTX *c, uint32_t mid, const struct korb_method *m)
 {
+    if (UNLIKELY(m == NULL || m->kind == KORB_METHOD_BUILTIN)) {   /* parse.c's eval(str) lowering is Kernel#eval to the user */
+        const char *const nm = korb_sym_name(c->vm, mid);
+        if (nm[0] == '_' && nm[1] == '_' && strncmp(nm, "__eval_b", 8) == 0) {
+            mid = korb_intern(c->vm, "eval", 4);
+            const struct korb_method *const em = korb_method_lookup(c->vm, mid);
+            if (em != NULL) m = em;
+        }
+    }
     if (m == NULL) return korb_sym_name(c->vm, mid);
     if (m->bt_label != NULL && m->bt_label_mid == mid && m->bt_label_owner == m->owner &&
         m->bt_label_serial == c->vm->const_serial)
@@ -10466,6 +10478,27 @@ korb_frames_snapshot_at(CTX *c, const VALUE *const lo, const VALUE *const hi,
 static uint32_t korb_frames_snapshot(CTX *c, const VALUE *link_cell)
 {
     return korb_frames_snapshot_at(c, c->slots, c->slots_limit, NULL, 0, link_cell);
+}
+
+/* define_method's default visibility: the class body's current one when the Ruby
+ * code that called it is that body (or a block written in it), public when it runs
+ * inside a method (CRuby takes the calling frame's scope visibility). */
+static uint8_t
+korb_define_method_scope_vis(CTX *c, const VALUE *const link, const uint8_t body_vis)
+{
+    if (LIKELY(body_vis == 0)) return 0;
+    const uint32_t n = korb_frames_snapshot(c, link);
+    for (uint32_t i = 0; i < n; i++) {
+        const struct korb_frame_rec *const r = &c->vm->fscratch[i];
+        if (r->kind == KORB_FID_CFUNC) continue;                 /* send / __send__ / public_send */
+        if (r->kind == KORB_FID_METHOD) return 0;
+        if (r->kind == KORB_FID_BLOCK && r->label != NULL) {      /* "block in A.mk" vs "block in <class:A>" */
+            const char *const in = strstr(r->label, " in ");
+            if (in != NULL && in[4] != '<' && strncmp(in + 4, "singleton class", 15) != 0) return 0;
+        }
+        return body_vis;
+    }
+    return body_vis;
 }
 
 /* Where the Ruby code that called this C function sits — the position CRuby
@@ -19827,6 +19860,26 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     return RESULT_OK(fb[L]);
 }
 
+/* `eval(str)` / `eval(str, nil, ...)` with the caller's binding baked in (parse.c):
+ * [str, binding, rest...].  Kernel#eval takes it as is, in this same window; a
+ * class's own #eval gets only what was written.  self sits in the window header. */
+static RESULT korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args);   /* fwd */
+static RESULT korb_bi_eval_b(CTX *c, VALUE *slots, VALUE_SLICE args, const bool one) {
+    const VALUE self = args.p[-1];
+    const VALUE k = korb_dispatch_class(c, self);
+    const struct korb_method *const m = KORB_CLASS_P(k) ? korb_class_find_method(k, korb_intern(c->vm, "eval", 4), NULL) : NULL;
+    if (LIKELY(m == NULL || (m->kind == KORB_METHOD_BUILTIN && m->bfn == korb_bi_eval))) return korb_bi_eval(c, slots, args);
+    uint32_t n = 0;
+    slots[n++] = self;
+    slots[n++] = VALUE_SLICE_GET(args, 0);
+    if (!one) {
+        slots[n++] = KORB_NIL;                        /* the nil the binding replaced */
+        for (uint32_t i = 2; i < VALUE_SLICE_LEN(args); i++) slots[n++] = VALUE_SLICE_GET(args, i);
+    }
+    return korb_send(c, slots + n, korb_intern(c->vm, "eval", 4), 0, n - 1);
+}
+static RESULT korb_bi_eval_b1(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_bi_eval_b(c, slots, args, true); }
+static RESULT korb_bi_eval_bn(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_bi_eval_b(c, slots, args, false); }
 static RESULT
 korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -21279,6 +21332,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "autoload_relative", korb_bi_autoload_relative, 2);
     korb_builtin_define(c, "load", korb_bi_load, -1);
     korb_builtin_define(c, "eval",  korb_bi_eval,  -1);
+    korb_builtin_define(c, "__eval_b1", korb_bi_eval_b1, -1);   /* parse.c's eval(str) lowering */
+    korb_builtin_define(c, "__eval_bn", korb_bi_eval_bn, -1);
     korb_builtin_define(c, "__transcode",    korb_bi_transcode,  -1);
     korb_builtin_define(c, "__transcodable?", korb_bi_transcodable, 1);
     korb_builtin_define(c, "sleep", korb_bi_sleep, -1);   /* TIMER blop (thread.c) — 他 green thread は走れる */

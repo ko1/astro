@@ -92,7 +92,11 @@ class BigDecimal < Numeric
 
     def double_fig = 16
 
-    def _load(str) = BigDecimal(str)
+    # "<precision>:<value>" as #_dump writes it (Psych's !ruby/object:BigDecimal too)
+    def _load(str)
+      m = /\A\d+:/.match(str) or raise TypeError, "load failed: invalid character in the marshaled string"
+      BigDecimal(m.post_match)
+    end
 
     def interpret_loosely(str) = __parse(str, false)
 
@@ -637,7 +641,13 @@ class BigDecimal < Numeric
     BigDecimal.__new(@sign * o.__sign, 0, 0, :inf)
   end
 
-  def _dump(_limit = nil) = "#{precision}:#{to_s}"
+  # CRuby writes how many base-10**9 words the digits span, times 9 ("9:0.9e0", "18:0.125e2")
+  def _dump(_limit = nil)
+    return "9:#{to_s}" if zero? || nan? || infinite?
+    _, ds, _, e = split
+    n = ds.sub(/0+\z/, "").size
+    "#{((e - 1).div(9) - (e - n).div(9) + 1) * 9}:#{to_s}"
+  end
   def split
     return [0, "NaN", 10, 0] if nan?
     return [@sign, "Infinity", 10, 0] if @special == :inf

@@ -347,16 +347,33 @@ static RESULT korb_m_hash_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         return RESULT_OK(slots[0]);
     }
     uint32_t np = korb_entry_params_cnt(block);
-    korb_sword_t acc = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
+    /* Integers fold in C; from the first other value (Float, Rational, an Array, a
+     * Bignum) the rest are collected and Array#sum finishes, with its float compensation */
+    slots[0] = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : LONG2FIX(0);   /* init (rooted) */
+    slots[1] = KORB_NIL;                                                         /* the collected rest */
+    korb_sword_t acc = 0;
+    if (!FIXNUM_P(slots[0])) slots[1] = UNWRAP(korb_ary_new(c, slots + 2, 8));
+    else acc = FIX2LONG(slots[0]);
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         if (i >= h->len) break;
-        RESULT r = korb_hash_yield(c, slots, block, def_env, cself, np, korb_items_data(h->items)[2*i], korb_items_data(h->items)[2*i+1]);
+        RESULT r = korb_hash_yield(c, slots + 2, block, def_env, cself, np, korb_items_data(h->items)[2*i], korb_items_data(h->items)[2*i+1]);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        if (UNLIKELY(!FIXNUM_P(r.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "Hash#sum block must return Integer here");
-        acc += FIX2LONG(r.value);
+        if (LIKELY(slots[1] == KORB_NIL) && FIXNUM_P(r.value) &&
+            !__builtin_add_overflow(acc, FIX2LONG(r.value), &acc) && acc >= FIXNUM_MIN && acc <= FIXNUM_MAX)
+            continue;
+        slots[2] = r.value;
+        if (slots[1] == KORB_NIL) {                   /* switch: the Integer total so far is the first element */
+            if (FIXNUM_P(r.value)) acc -= FIX2LONG(r.value);   /* undo the add that overflowed */
+            slots[1] = UNWRAP(korb_ary_new(c, slots + 3, 8));
+            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), LONG2FIX(acc)));
+            slots[0] = LONG2FIX(0);
+        }
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
     }
-    return RESULT_OK(LONG2FIX(acc));
+    if (slots[1] == KORB_NIL) return RESULT_OK(LONG2FIX(acc));
+    slots[2] = slots[1]; slots[3] = slots[0];         /* rest.sum(init) */
+    return korb_send(c, slots + 4, korb_intern(c->vm, "sum", 3), 0, 1);
 }
 
 static RESULT korb_m_obj_false(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
