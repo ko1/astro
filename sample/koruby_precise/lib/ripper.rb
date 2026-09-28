@@ -100,7 +100,18 @@ class Ripper
     def lex(src, filename = "-", lineno = 1, raise_errors: false)
       return BOM_PROBE_ANSWER if src.is_a?(String) && src.b == BOM_PROBE.b
       s = __source(src)
-      __fill_sp(s, __impl.lex(s, filename, lineno, raise_errors: raise_errors))
+      __source_enc(s, __fill_sp(s, __impl.lex(s, filename, lineno, raise_errors: raise_errors)))
+    end
+
+    # prism は magic comment が無ければ UTF-8 で切る。CRuby の Ripper はソース文字列の encoding
+    def __source_enc(src, tokens)
+      return tokens unless tokens.is_a?(Array) && src.is_a?(String)
+      enc = src.encoding
+      return tokens if enc == Encoding::UTF_8 || !enc.ascii_compatible?
+      tokens.each do |t|
+        x = t[2]
+        t[2] = x.dup.force_encoding(enc) if x.is_a?(String) && x.encoding == Encoding::UTF_8
+      end
     end
 
     # 同梱の prism (lex_compat.rb) は :on_sp を作らない。CRuby の prism 1.9 に
