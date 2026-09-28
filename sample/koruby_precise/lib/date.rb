@@ -446,7 +446,7 @@ class Date
   end
 
   def ==(other) = other.is_a?(Date) ? (ajd == other.ajd) : false
-  def eql?(other) = other.is_a?(Date) && self.class == other.class && ajd == other.ajd
+  def eql?(other) = other.is_a?(Date) && ajd == other.ajd   # d_lite_eql_p: any Date, the class is not compared
   def hash = ajd.hash
 
   def ===(other)
@@ -496,7 +496,7 @@ class Date
     end
     sf = @sf.is_a?(Rational) && @sf.denominator == 1 ? @sf.to_i : @sf
     format("#<%s: %s ((%sj,%ds,%sn),%+ds,%sj)>",
-           self.class.name, to_s, jd.to_s, df, sf.to_s, @of, __sg_str).force_encoding(Encoding::US_ASCII)
+           self.class.inspect, to_s, jd.to_s, df, sf.to_s, @of, __sg_str).force_encoding(Encoding::US_ASCII)
   end
 
   private def __sg_str
