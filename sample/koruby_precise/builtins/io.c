@@ -2983,7 +2983,12 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             /* "r:utf-8:euc-jp" — the encoding suffix is not part of the fopen
                mode; the prelude reads it back off @__io_modestr. */
             for (uint32_t i = 0; i < ml; i++) if (m[i] == ':') { ml = i; break; }
-            if (ml > 0 && ml < sizeof(mode)) { memcpy(mode, m, ml); mode[ml] = '\0'; }
+            /* CRuby's rb_io_modestr_fmode: r/w/a, then only + b t x (b and t exclusive) */
+            bool okm = ml > 0 && ml < sizeof(mode) && (m[0] == 'r' || m[0] == 'w' || m[0] == 'a');
+            for (uint32_t i = 1; okm && i < ml; i++) okm = strchr("+btx", m[i]) != NULL;
+            if (okm && memchr(m, 'b', ml) && memchr(m, 't', ml)) okm = false;
+            if (!okm) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode %s", modestr);
+            memcpy(mode, m, ml); mode[ml] = '\0';
         }
         const char b = mode[0]; const bool plus = strchr(mode, '+') != NULL;   /* validate + derive rw bits */
         binary = strchr(mode, 'b') != NULL;                                     /* 'rb'/'wb'/… → byte-encoded reads */

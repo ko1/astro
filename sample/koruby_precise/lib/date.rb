@@ -242,8 +242,15 @@ class Date
     new!(jd, 0, 0, 0, sg)
   end
 
+  # CRuby reads the clock in C: a stubbed Time.now (minitest's Time.stub) must
+  # not move Date.today / DateTime.now.
+  def self.__clock_now
+    Time.at(0, Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond), :nsec)
+  end
+  private_class_method :__clock_now
+
   def self.today(sg = ITALY)
-    t = Time.now
+    t = __clock_now
     civil(t.year, t.month, t.day, sg)
   end
 
@@ -2593,7 +2600,7 @@ class DateTime < Date
   end
 
   def self.now(sg = ITALY)
-    t = Time.now
+    t = Date.send(:__clock_now)
     new!(civil_to_jd(t.year, t.month, t.day, sg),
          t.hour * 3600 + t.min * 60 + t.sec, 0, t.utc_offset, sg)
   end
