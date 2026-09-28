@@ -1830,11 +1830,14 @@ static RESULT korb_m_process_fork_finish(CTX *c, VALUE *slots, VALUE_REF self, V
 static RESULT korb_m_process_fork(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                   NODE *block, VALUE *def_env, VALUE *cself) {
     (void)self; (void)a;
-    korb_io_flush_std(c->vm);                       /* the child must not re-emit buffered output */
-    const pid_t pid = fork();
-    if (pid < 0) return korb_raise_errno(c, slots, errno, "fork", "");
+    /* the fork itself is Process._fork, so a prepended hook sees Kernel#fork too
+     * (connection_pool drops its connections in the child that way) */
+    slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Process", 7));
+    const RESULT fr = korb_send(c, slots + 1, korb_intern(c->vm, "_fork", 5), 0, 0);
+    if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+    if (UNLIKELY(!FIXNUM_P(fr.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "Process._fork must return an Integer");
+    const pid_t pid = (pid_t)FIX2LONG(fr.value);
     if (pid == 0) {                                 /* child */
-        korb_fork_child_threads(c->vm);
         if (block == NULL) return RESULT_OK(KORB_NIL);
         RESULT r = korb_block_yield(c, slots, block, def_env, NULL, 0, cself);
         int status = 0, die_sig = 0;
