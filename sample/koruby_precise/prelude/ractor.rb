@@ -83,6 +83,9 @@ class Ractor
   class << self
     alias recv receive
   end
+  # `receive` inside the Ractor.new block (self is the ractor): the current one's
+  private def receive = Ractor.receive
+  private def recv = Ractor.receive
 
   # the first of `ports` with a value waiting: [port, value]
   def self.select(*ports)

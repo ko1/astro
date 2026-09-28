@@ -1511,6 +1511,7 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
     const KorbString *s0 = VAL2STR(slots[0]); const uint32_t sn = s0->len;
     char *const src = malloc(sn ? sn : 1); memcpy(src, korb_strbuf_data(s0->buf), sn);
     char *rep = NULL; uint32_t rn = 0; VALUE hashrep = KORB_NIL;
+    uint32_t rep_enc = KORB_ENC_UTF8; bool rep_asc = true;   /* a String replacement's own encoding joins the result's */
     if (block == NULL) {
         if (VALUE_SLICE_LEN(a) < 2) {   /* sub → ArgumentError; gsub(pat) → Enumerator over the matches */
             if (!global) { free(src); return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 1, expected 2)"); }
@@ -1538,7 +1539,8 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
             return nr;
         }
         VALUE rv = VALUE_SLICE_GET(a, 1);
-        if (KORB_STRING_P(rv)) { const KorbString *rs = VAL2STR(rv); rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, korb_strbuf_data(rs->buf), rn); }
+        if (KORB_STRING_P(rv)) { const KorbString *rs = VAL2STR(rv); rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, korb_strbuf_data(rs->buf), rn);
+                                 rep_enc = KORB_STR_ENC(rv); rep_asc = korb_str_ascii_only_p(c->vm, rv); }
         else if (KORB_HASH_P(rv)) { hashrep = rv; slots[2] = rv; }
         else {                          /* coerce replacement via #to_str */
             const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
@@ -1553,6 +1555,7 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
                                       rn0, rn0, korb_coerce_name(c, sr.value));
                 }
                 const KorbString *rs = VAL2STR(sr.value); rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, korb_strbuf_data(rs->buf), rn);
+                rep_enc = KORB_STR_ENC(sr.value); rep_asc = korb_str_ascii_only_p(c->vm, sr.value);
             } else { free(src); return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, rv)); }
         }
     }
@@ -1610,6 +1613,8 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
             RESULT er = korb_emit_to_s(c, slots + 5, ms, slots[4]);        /* nil → "", else #to_s */
             if (UNLIKELY(er.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return er; }
         } else {
+            if (!rep_asc && !renc_bad && !korb_str_enc_fold_raw(c->vm, &renc, &rasc, rep_enc, false))
+                { renc_bad = true; renc_other = rep_enc; }
             bool rbe = false;
             const uint32_t runit = UNLIKELY(senc >= KORB_ENC_OTHER_MIN) ? korb_re_enc_unit(c->vm, senc, &rbe) : 0;
             if (UNLIKELY(runit)) korb_re_expand_repl_wide(ms, rep, rn, src, sn, &m, runit, rbe);

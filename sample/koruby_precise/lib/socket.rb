@@ -328,6 +328,7 @@ class TCPSocket < IPSocket
   def initialize(host, port, local_host = nil, local_port = nil,
                  connect_timeout: nil, open_timeout: nil, resolv_timeout: nil)
     tmo = connect_timeout || open_timeout
+    host = host.to_str if !host.nil? && !host.is_a?(String) && host.respond_to?(:to_str)
     # nil host: CRuby tries each address getaddrinfo(3) answers for the local
     # host (typically ::1 then 127.0.0.1) and keeps the first that connects
     cands = if host.nil?
@@ -485,7 +486,13 @@ class UNIXSocket < BasicSocket
 
   def self.pair(type = Socket::SOCK_STREAM, protocol = 0)
     a, b = __sock_pair(Socket::AF_UNIX, Socket.__socktype_strict(type))
-    [for_fd(a), for_fd(b)]
+    pair = [for_fd(a), for_fd(b)]
+    return pair unless block_given?
+    begin                             # the block form closes both (Ruby 4.1)
+      yield(*pair)
+    ensure
+      pair.each { |sk| sk.close unless sk.closed? }
+    end
   end
   class << self; alias_method :socketpair, :pair; end
 
@@ -915,7 +922,13 @@ class Socket < BasicSocket
 
   def self.pair(family, type, protocol = 0)
     a, b = __sock_pair(__family_strict(family), __socktype_strict(type))
-    [for_fd(a), for_fd(b)]
+    pair = [for_fd(a), for_fd(b)]
+    return pair unless block_given?
+    begin                             # the block form closes both (Ruby 4.1)
+      yield(*pair)
+    ensure
+      pair.each { |sk| sk.close unless sk.closed? }
+    end
   end
   class << self; alias_method :socketpair, :pair; end
 
