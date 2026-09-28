@@ -3010,6 +3010,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             slots[2] = cref;
             er = korb_eval_binding_core(c, slots + 3, &slots[0], bind_ptr, fname, line, &slots[1], slots[2], false);   /* instance_eval/class_eval names the definee outright */
         } else {
+            if (singleton_definee) c->eval_outer_cref = korb_caller_method_cref(c, a.p - 3);
             er = korb_eval_str_self(c, slots, src, VALUE_REF_GET(self), fname, line, cref);
         }
         korb_cref_pop(c);

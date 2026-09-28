@@ -1529,7 +1529,7 @@ node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint64_t flink,
      * top level, so it nests there even if `self` is some other class. */
     VALUE enclosing = dyn_base == 1 ? VALUE_REF_GET(path_base)
                     : (path_owner ? korb_const_get_path(c->vm, path_owner)
-                                  : (self_off == INT32_MIN ? KORB_NIL : slots[self_off]));
+                                  : (self_off == INT32_MIN ? KORB_NIL : korb_eval_body_ns(c, slots[self_off])));
     /* `class Top::Mid::Leaf` where `Top::Mid` is only an autoload registration:
      * the path walk cannot run Ruby, so fire it here and resolve again. */
     if (UNLIKELY(enclosing == KORB_NIL && path_owner && dyn_base != 1)) {
@@ -1591,7 +1591,7 @@ node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint64_t flink
     }
     VALUE enclosing = dyn_base == 1 ? VALUE_REF_GET(path_base)
                     : (path_owner ? korb_const_get_path(c->vm, path_owner)
-                                  : (self_off == INT32_MIN ? KORB_NIL : slots[self_off]));
+                                  : (self_off == INT32_MIN ? KORB_NIL : korb_eval_body_ns(c, slots[self_off])));
     /* `class Top::Mid::Leaf` where `Top::Mid` is only an autoload registration:
      * the path walk cannot run Ruby, so fire it here and resolve again. */
     if (UNLIKELY(enclosing == KORB_NIL && path_owner && dyn_base != 1)) {
@@ -1825,7 +1825,11 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
      * no baked enclosing module.  A method REACHED from the eval keeps its own
      * chain: CRuby's cref rides the iseq, not the call stack.  (node_const_set
      * already prefers the baked owner the same way.) */
-    const bool eval_scope = UNLIKELY(c->eval_cref != KORB_NIL) && owner_name == 0;
+    /* instance_eval(String) seeds its parse with the caller's cref, so its own reads carry that name */
+    const bool eval_scope = UNLIKELY(c->eval_cref != KORB_NIL) &&
+        (owner_name == 0 ||
+         (KORB_CLASS_P(c->eval_outer_cref) && KORB_CLASS_P(c->eval_cref) && VAL2CLASS(c->eval_cref)->is_singleton &&
+          korb_cref_resolve(vm, cache->owner_chain, cache->chain_len, owner_name) == c->eval_outer_cref));
     if (LIKELY(!eval_scope && self_off == INT32_MIN)) {   /* per-node cache */
         if (LIKELY(cache->idx_plus1 != 0 && cache->serial == vm->const_serial))
             return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
@@ -1834,6 +1838,15 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * singleton / the module) and its ancestry come FIRST, and the answer is
          * context-dependent so it is never cached on the node. */
         uint32_t eidx = korb_const_index_owned(vm, name_sym, c->eval_cref);
+        /* instance_eval(String): the singleton, then the receiver's class (their
+         * own tables only), then the caller's lexical scopes, then the ancestry (CRuby) */
+        if (eidx == UINT32_MAX && KORB_CLASS_P(c->eval_outer_cref) && KORB_CLASS_P(c->eval_cref) &&
+            VAL2CLASS(c->eval_cref)->is_singleton) {
+            const VALUE sup = VAL2CLASS(c->eval_cref)->superclass;
+            if (KORB_CLASS_P(sup)) eidx = korb_const_index_owned(vm, name_sym, sup);
+            for (VALUE o = c->eval_outer_cref; eidx == UINT32_MAX && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing)
+                eidx = korb_const_index_owned(vm, name_sym, o);
+        }
         if (eidx == UINT32_MAX) eidx = korb_const_in_ancestry(vm, c->eval_cref, name_sym);
         /* then the cref's own lexical namespace — `M::C.module_eval("X")` sees
          * M's constants, which is what "resolves constants in the caller scope"
@@ -2379,7 +2392,7 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
     const bool is_gvar = korb_sym_name(c->vm, name_sym)[0] == '$';
     VALUE ownc = is_gvar ? KORB_NIL
                      : KORB_CLASS_P(owner) ? owner
-                     : (self_off != INT32_MIN && KORB_CLASS_P(slots[self_off])) ? slots[self_off]   /* an unnamed body: self IS the cref */
+                     : (self_off != INT32_MIN && KORB_CLASS_P(slots[self_off])) ? korb_eval_body_ns(c, slots[self_off])   /* an unnamed body: self IS the cref */
                      : KORB_CLASS_P(c->eval_cref) ? c->eval_cref
                      : KORB_NIL;
     /* the typed predefined globals are checked on assignment (CRuby) */

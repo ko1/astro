@@ -6038,5 +6038,9 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   アロケータに hook が無く、moving GC なので obj→位置の表は識別子で持つ必要がある。
 - **module_eval(String) で定義したメソッドの Module.nesting** に無名だったモジュールが入らない（定数探索は直した）。
   node_nesting にフレームのオペランドが無い。
+- **instance_eval(String) の中で作ったブロックを後で呼ぶ**と、受け手のクラス（自表）の定数が呼び出し元の lexical より後になる
+  （2026-09-28: eval 中の読みは CRuby 順 = 特異クラス → 受け手のクラスの自表 → 呼び出し元の lexical → 祖先。後で呼ぶブロックは
+  特異クラス → 呼び出し元の lexical → 祖先。この「クラスの自表」は instance_eval だけの規則で `class << obj` には無いので、
+  ブロックが instance_eval 由来だと知る手段が要る）。Module.nesting にも特異クラスが入らない。
 - 正規表現の RegexpError の文言でパターン中の不正バイトをエスケープしない（CRuby は `/\c\xFF/`、koruby は生のバイト）。
 - UTF-8 の正規表現で `\M-a` / `\xFF` を受け付ける（CRuby は invalid multibyte escape / too short escaped multibyte character）。

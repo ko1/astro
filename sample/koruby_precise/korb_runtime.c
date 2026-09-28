@@ -2708,6 +2708,15 @@ static VALUE korb_singleton_attached_vm(const struct korb_vm *const vm, const VA
         if (vm->sklass.val[i] == sing) return vm->sklass.obj[i];
     return KORB_NIL;
 }
+/* A definition whose self is the receiver of a running instance_eval(String)
+ * goes to the receiver's singleton (the eval cref), not to self. */
+VALUE
+korb_eval_body_ns(const CTX *const c, const VALUE self)
+{
+    const VALUE ec = c->eval_cref;
+    if (KORB_CLASS_P(ec) && VAL2CLASS(ec)->is_singleton && korb_singleton_attached_vm(c->vm, ec) == self) return ec;
+    return self;
+}
 VALUE
 korb_const_cref(const struct korb_vm *const vm, VALUE self, VALUE entry_cell)
 {
@@ -10501,6 +10510,42 @@ korb_frames_snapshot_at(CTX *c, const VALUE *const lo, const VALUE *const hi,
 static uint32_t korb_frames_snapshot(CTX *c, const VALUE *link_cell)
 {
     return korb_frames_snapshot_at(c, c->slots, c->slots_limit, NULL, 0, link_cell);
+}
+
+/* The Ruby frame a C method was called from (`link` = the callee's base[-3]),
+ * skipping C frames; NULL when the walk finds none. */
+static const VALUE *
+korb_caller_ruby_frame(CTX *c, const VALUE *link_cell)
+{
+    const VALUE *const lo = c->slots, *const hi = c->slots_limit;
+    for (int hops = 0; hops < 16; hops++) {
+        if (link_cell < lo || link_cell >= hi) return NULL;
+        const VALUE link = *link_cell;
+        if ((link & 1u) == 0) return NULL;
+        const VALUE *fbase;
+        if (link & 2u) {
+            fbase = korb_flink_ptr(link);
+            if ((link & 4u) == 0) { link_cell = fbase; continue; }   /* FORWARD */
+        } else {
+            const uint32_t dist = korb_flink_dist(link);
+            if (dist == 0) return NULL;
+            fbase = link_cell - dist;
+        }
+        if (fbase < lo || fbase >= hi) return NULL;
+        if ((korb_id_get(fbase) & 7u) != KORB_FID_CFUNC) return fbase;
+        link_cell = fbase + KORB_FLINK_OFF;
+    }
+    return NULL;
+}
+/* The lexical cref of that frame when it is a method's; nil for a block or top level. */
+static VALUE
+korb_caller_method_cref(CTX *c, const VALUE *link_cell)
+{
+    const VALUE *const fb = korb_caller_ruby_frame(c, link_cell);
+    if (fb == NULL) return KORB_NIL;
+    const VALUE id = korb_id_get(fb);
+    if ((id & 7u) != KORB_FID_METHOD || !korb_bt_known_ptr(c->vm, (uintptr_t)(id & ~(VALUE)7u))) return KORB_NIL;
+    return korb_const_cref(c->vm, fb[-1], id);
 }
 
 /* define_method's default visibility: the class body's current one when the Ruby
@@ -19616,14 +19661,22 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *
      * so a `def` inside the string resolves constants exactly as a `module Foo`
      * body would (rake's FileUtilsExt generates its methods this way and then
      * names FileUtilsExt from inside them).  Seed the parse with that name. */
-    const uint32_t cref_name = KORB_CLASS_P(cref) ? VAL2CLASS(cref)->name_sym : 0;
+    uint32_t cref_name = KORB_CLASS_P(cref) ? VAL2CLASS(cref)->name_sym : 0;
+    VALUE cref_encl = cref_name ? VAL2CLASS(cref)->enclosing : KORB_NIL;
+    /* instance_eval: the singleton has no name; a block made here keeps the caller's scope */
+    if (cref_name == 0 && KORB_CLASS_P(cref) && VAL2CLASS(cref)->is_singleton &&
+        KORB_CLASS_P(c->eval_outer_cref) && VAL2CLASS(c->eval_outer_cref)->name_sym != 0) {
+        cref_name = VAL2CLASS(c->eval_outer_cref)->name_sym;
+        cref_encl = VAL2CLASS(c->eval_outer_cref)->enclosing;
+    }
     uint32_t encl[16]; uint32_t nencl = 0;                      /* what encloses it, innermost first for now */
-    for (VALUE o = cref_name ? VAL2CLASS(cref)->enclosing : KORB_NIL;
+    for (VALUE o = cref_encl;
          KORB_CLASS_P(o) && VAL2CLASS(o)->name_sym != 0 && nencl < 16; o = VAL2CLASS(o)->enclosing)
         encl[nencl++] = VAL2CLASS(o)->name_sym;
     for (uint32_t i = 0, j = nencl; i < j; i++, j--)            /* → outermost first */
         { const uint32_t t = encl[i]; encl[i] = encl[j - 1]; encl[j - 1] = t; }
-    c->vm->parse_anon_cref = KORB_CLASS_P(cref) && cref_name == 0 && !VAL2CLASS(cref)->is_singleton;   /* class_eval on an unnamed class */
+    const bool seeded_sing = cref_name != 0 && KORB_CLASS_P(cref) && VAL2CLASS(cref)->is_singleton;
+    c->vm->parse_anon_cref = KORB_CLASS_P(cref) && ((cref_name == 0 && !VAL2CLASS(cref)->is_singleton) || seeded_sing);   /* class_eval on an unnamed class */
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, line, false,
                                        korb_enc_name_of(c->vm, KORB_STR_ENC(str)), cref_name,
                                        nencl ? encl : NULL, nencl, true);   /* immortal AST; no GC */
@@ -19635,8 +19688,15 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *
     VALUE *const cur = fb + locals;                     /* the eval program's body cursor */
     memset(fb, 0, (size_t)locals * sizeof(VALUE));      /* zero its locals */
     fb[-1] = self_val;                                  /* self cell (base[-1]) */
-    korb_id_set(fb, korb_fid_main(0, true));            /* no file of its own: c->vm->script_name names an eval */
     fb[KORB_FLINK_OFF] = korb_flink_cur_cframe(c, fb);  /* the eval builtin's own frame: the walk goes on into its caller */
+    /* no file of its own (c->vm->script_name names an eval); labelled as the caller's scope */
+    VALUE fid = korb_fid_main(0, true);
+    if (fb[KORB_FLINK_OFF] != 0) {
+        const VALUE *const cb = korb_caller_ruby_frame(c, korb_flink_ptr(fb[KORB_FLINK_OFF]) + KORB_FLINK_OFF);
+        const char *const lbl = cb ? korb_bt_id_label(c, korb_id_get(cb), cb, c->slots) : NULL;
+        if (lbl) fid = korb_fid_main(korb_intern(c->vm, lbl, strlen(lbl)), true) | KORB_FID_MAIN_LABEL;
+    }
+    korb_id_set(fb, fid);
     return korb_eval_run(c, slots, ast, cur, fname, cref);   /* raises report the caller's filename */
 }
 
@@ -19664,14 +19724,14 @@ korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VA
     RESULT r = EVAL(c, ast, cur);
     VALUE *const fb = slots + 4;                        /* both callers lay the eval frame out there */
     if (UNLIKELY(korb_frame_escaped(fb))) r = korb_close_ret(c, cur, fb, r);   /* the frame dies: close its env */
+    if (UNLIKELY(r.state == KORB_RAISE)) {             /* while the eval's file is still the current one */
+        cur[0] = r.value;                               /* park above the frame (slots[0] is its header): capture allocates */
+        (void)korb_capture_backtrace(c, cur, fb);       /* from the eval frame on, through Kernel#eval into its callers */
+        r.value = cur[0];
+    }
     c->vm->cur_load_file = saved_load;
     c->vm->cur_load_abs = saved_abs;
     korb_cref_pop(c);
-    if (UNLIKELY(r.state == KORB_RAISE)) {
-        slots[0] = r.value;                             /* park: capture allocates */
-        (void)korb_capture_backtrace(c, slots, slots + 4);   /* from the eval frame on, through Kernel#eval into its callers */
-        r.value = slots[0];
-    }
     c->vm->script_name = saved;
     return r;
 }
@@ -19764,10 +19824,9 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
      * seeing the lexical scope the eval was written in — which is the only way
      * dry-monads' generated method body can name a constant of its own module.
      * A named receiver keeps naming itself: koruby's cref is one nesting path,
-     * so the two cannot be chained.  instance_eval is excluded (its cref is the
-     * receiver's singleton): CRuby looks in the singleton and the receiver's
-     * class hierarchy BEFORE the caller's scope, and a flat const table cannot
-     * express that ordering — answering from the caller would be worse. */
+     * so the two cannot be chained.  For instance_eval (the receiver's
+     * singleton) node_const still searches the singleton first while the eval
+     * runs (eval_outer_cref). */
     bool cref_is_caller = false;
     /* the caller's cref by name: a `class << Klass` method's is Klass's singleton, named by Klass */
     VALUE bcref = b0->cref;
@@ -19775,7 +19834,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
         const VALUE at = korb_singleton_attached(c, bcref);
         if (KORB_CLASS_P(at)) bcref = at;
     }
-    if (cref_name == 0 && KORB_CLASS_P(cref) && !VAL2CLASS(cref)->is_singleton &&
+    if (cref_name == 0 && KORB_CLASS_P(cref) &&
         KORB_CLASS_P(bcref) && VAL2CLASS(bcref)->name_sym != 0) {
         cref_name = VAL2CLASS(bcref)->name_sym;
         cref_encl = VAL2CLASS(bcref)->enclosing;
@@ -19803,7 +19862,7 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
     const uint32_t bind_mid0 = korb_bind_method_mid(c->vm, b0);
     const uint32_t bind_mid = bind_mid0 ? bind_mid0 : c->eval_mid;
     c->vm->parse_anon_cref = cref != KORB_UNDEF && KORB_CLASS_P(cref) && VAL2CLASS(cref)->name_sym == 0 &&
-                             !VAL2CLASS(cref)->is_singleton;   /* class_eval on an unnamed class */
+                             (!VAL2CLASS(cref)->is_singleton || cref_is_caller);   /* class_eval on an unnamed class / instance_eval */
     NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, fname, eline,
                                             korb_enc_name_of(c->vm, KORB_STR_ENC(*src_slot)), decl, dn,
                                             outer_names, outer_cnt, outer_levels,
@@ -19842,7 +19901,9 @@ korb_eval_binding_core(CTX *c, VALUE *slots, VALUE *src_slot, VALUE *bind_slot,
             c->def_definee = cref;
     }
     c->eval_outer_cref = outer_is_caller ? VAL2BIND(*bind_slot)->cref
-                       : outer_is_bound ? VAL2BIND(*bind_slot)->outer_cref : KORB_NIL;
+                       : outer_is_bound ? VAL2BIND(*bind_slot)->outer_cref
+                       : KORB_CLASS_P(cref) && VAL2CLASS(cref)->is_singleton && KORB_CLASS_P(bcref) ? bcref   /* instance_eval */
+                       : KORB_NIL;
     c->vm->script_name = fname;                     /* raises inside report the eval's filename */
     const char *const saved_load = c->vm->cur_load_file;   /* require_relative / __dir__ resolve against it too */
     c->vm->cur_load_file = fname;
