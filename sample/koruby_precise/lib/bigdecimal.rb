@@ -192,7 +192,13 @@ class BigDecimal < Numeric
   end
 
   def exponent = finite? ? @exp : 0
-  def precision = finite? ? __ndigits : 0
+  # digits from the first significant one to the last, counting an integer's
+  # trailing zeros and a fraction's leading ones (1e10 → 11, 0.001 → 3; CRuby)
+  def precision
+    return 0 if !finite? || @digits.zero?
+    return __ndigits - @exp if @exp <= 0
+    [__ndigits, @exp].max
+  end
   def scale = finite? ? [__ndigits - @exp, 0].max : 0
   def precs = [precision, precision]
   def n_significant_digits = zero? ? 0 : __ndigits
@@ -370,7 +376,12 @@ class BigDecimal < Numeric
       return BigDecimal.__new(@sign * o.__sign, 0, 0, :inf)
     end
     return BigDecimal.__new(@sign * o.__sign, 0, 0) if zero?
-    n = prec.zero? ? [__ndigits, o.__ndigits, DEFAULT_PREC].max + DEFAULT_PREC : prec + 2
+    if prec.zero?                                     # CRuby: the larger precision + 16, at least 32, capped by limit
+      prec = [precision, o.precision].max + Float::DIG + 1
+      prec = 2 * (Float::DIG + 1) if prec < 2 * (Float::DIG + 1)
+      prec = @@limit if @@limit.nonzero? && @@limit < prec
+    end
+    n = prec + 2
     # Scale the numerator so the quotient carries n significant digits.  With
     # both operands read as 0.digits * 10**exp, the quotient's exponent is
     #   exp_a - exp_b - n + len(q)
@@ -378,12 +389,10 @@ class BigDecimal < Numeric
     shift = n + o.__ndigits - __ndigits
     # a long dividend asks for fewer digits than it has: scale the divisor instead
     # (10**negative is a Rational, and q must stay an Integer)
-    q = shift >= 0 ? (@digits * 10**shift) / o.__digits : @digits / (o.__digits * 10**-shift)
+    q, r = shift >= 0 ? (@digits * 10**shift).divmod(o.__digits) : @digits.divmod(o.__digits * 10**-shift)
+    q += 1 if !r.zero? && (q % 10).zero?              # sticky: a remainder is more than an exact ...0 (half cases)
     e = @exp - o.__exp - n + q.to_s.length
-    v = BigDecimal.__new(@sign * o.__sign, q, e)
-    return v.__round_sig(prec) unless prec.zero?
-    v = v.__round_sig(n - DEFAULT_PREC + 2)
-    @@limit.zero? ? v : v.__round_sig(@@limit)        # BigDecimal.limit caps an unsized quotient
+    BigDecimal.__new(@sign * o.__sign, q, e).__round_sig(prec)
   end
 
   # Round to `n` significant digits, returning a new BigDecimal.  The rounding
