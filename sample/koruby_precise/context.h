@@ -519,8 +519,10 @@ typedef struct KorbFiberRep {
     const VALUE *vcarry_base;        /* saved c->carry_base — same reason (a staged link into this
                                       * fiber's stack); the line bits travel with it */
     uint32_t vcarry_line_bits;
-    VALUE *def_env;                  /* block's def_env (creator stack, non-moving) */
-    struct Node *body;               /* block entry (node_entry, immortal) */
+    VALUE *def_env;                  /* unused (NULL): the body runs through `proc` */
+    struct Node *body;               /* block entry (node_entry, immortal): #inspect's location, blocking? */
+    VALUE proc;                      /* the block as a Proc (root): its env is closed, so the fiber can run
+                                      * after the creating method returned */
     void  *uctx;                     /* ucontext_t * (fiber's saved context) */
     void  *resume_uctx;              /* ucontext_t * to switch back to on yield */
     void  *cstack;                   /* malloc'd native stack for the fiber */
@@ -530,6 +532,7 @@ typedef struct KorbFiberRep {
     uint8_t raised;                  /* block raised → resume re-raises transfer */
     uint8_t pending_raise;           /* Fiber#raise: yield raises transfer instead of returning it */
     uint8_t transferred;             /* entered via #transfer — #resume is then a FiberError */
+    uint8_t start_splat;             /* the first resume passed several values: `transfer` is their Array */
     uint8_t killing;                 /* Fiber#kill: unwind the fiber at its suspension point */
     uint8_t blocking;                /* Fiber.new(blocking: true) — #blocking? and Fiber.blocking? */
     struct KorbFiberRep *link;       /* vm fiber list (stable ptrs) */
@@ -1857,6 +1860,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
     for (struct KorbFiberRep *_fr = (c)->vm->fiber_list; _fr; _fr = _fr->link) { \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->transfer);                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->captured_self);           \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->proc);                    \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->fibobj);                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->storage);                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->tls);                     \

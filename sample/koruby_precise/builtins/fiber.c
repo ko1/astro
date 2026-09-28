@@ -41,8 +41,17 @@ korb_fiber_trampoline(unsigned hi, unsigned lo)
     KorbFiberRep *const rep = c->vm->starting_fiber;
     korb_sigmask_resume(c->vm, c->vm->sigmask_gen - 1);   /* the context was built with an older mask */
     rep->fstate = 1;                                  /* running */
-    VALUE arg = rep->transfer;                        /* value from the first resume */
-    RESULT r = korb_block_yield(c, c->slots, rep->body, rep->def_env, &arg, 1, &rep->captured_self);
+    VALUE *const base = c->slots;                     /* proc.call(first resume's values) */
+    base[0] = rep->proc;
+    uint32_t n = 1;
+    if (rep->start_splat && KORB_ARRAY_P(rep->transfer)) {
+        const KorbArray *const aa = VAL2ARY(rep->transfer);
+        n = aa->len;
+        for (uint32_t i = 0; i < n; i++) base[1 + i] = korb_items_data(aa->items)[i];   /* no alloc in this loop */
+    } else {
+        base[1] = rep->transfer;
+    }
+    RESULT r = korb_send(c, base + 1 + n, korb_intern(c->vm, "call", 4), 0, n);
     rep->fstate = 3;                                  /* done */
     if (r.state == KORB_RETURN || r.state == KORB_BREAK)   /* `return` / `break` の逃げ場がない */
         r = korb_raise(c, c->slots, KORB_E_LOCALJUMP, 0, "%s",
@@ -61,12 +70,17 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
 {
     if (UNLIKELY(block == NULL))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create a Fiber without a block");
-    KorbFiber *fb = korb_alloc(c, slots, sizeof(KorbFiber), KORB_OBJ_FIBER);   /* no GC below */
+    /* the block as a Proc: that closes the creating frame's env, which the fiber
+     * may outlive (graphql's Dataloader resumes fibers after spawn_fiber returned) */
+    if (def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC) slots[1] = KORB_CSELF_VAL(captured_self);   /* &blk: already a Proc */
+    else slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
+    KorbFiber *fb = korb_alloc(c, slots + 2, sizeof(KorbFiber), KORB_OBJ_FIBER);   /* no GC below */
     KorbFiberRep *rep = calloc(1, sizeof(KorbFiberRep));
     if (!rep) { fprintf(stderr, "koruby_precise: oom (fiber rep)\n"); abort(); }
     fb->rep = rep;
     rep->body = block;
-    rep->def_env = def_env;
+    rep->def_env = NULL;
+    rep->proc = slots[1];
     rep->captured_self = KORB_CSELF_VAL(captured_self);
     rep->transfer = KORB_NIL; rep->tilde = KORB_NIL;
     rep->transferred = 0; rep->killing = 0;
@@ -185,6 +199,17 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     return RESULT_OK(rep->transfer);
 }
 
+/* The value several arguments travel as between resume and Fiber.yield:
+ * none → nil, one → itself, more → an Array (CRuby). */
+static RESULT korb_fiber_pack(CTX *c, VALUE *slots, VALUE_SLICE a) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    if (n == 0) return RESULT_OK(KORB_NIL);
+    if (n == 1) return RESULT_OK(VALUE_SLICE_GET(a, 0));
+    slots[0] = UNWRAP(korb_ary_new(c, slots, n));
+    for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_GET(a, i)));
+    return RESULT_OK(slots[0]);
+}
+
 /* Fiber#resume([v]) — switch into the fiber; returns the value it yields (or its
  * block's result when it finishes). */
 static RESULT
@@ -200,8 +225,9 @@ korb_m_fiber_resume(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
             ? "attempt to resume the current fiber" : "attempt to resume a resuming fiber");
     if (UNLIKELY(rep->transferred))   /* CRuby: a transferred fiber is not resumable */
         return korb_raise_fiber_error(c, slots, "attempt to yield on a not resumed fiber");
-    return korb_fiber_switch_in(c, slots, rep,
-                                (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL, 0);
+    if (rep->fstate == 0) rep->start_splat = VALUE_SLICE_LEN(a) > 1;   /* the block takes them as its arguments */
+    const VALUE xfer = UNWRAP(korb_fiber_pack(c, slots + 1, a));
+    return korb_fiber_switch_in(c, slots + 1, VAL2FIBER(VALUE_REF_GET(self))->rep, xfer, 0);
 }
 
 /* The value a killed fiber unwinds with.  A plain (non-Exception) payload so no
@@ -227,8 +253,9 @@ korb_m_fiber_transfer(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (UNLIKELY(rep->fstate == 2 && !rep->transferred))
         return korb_raise_fiber_error(c, slots, "attempt to transfer to a yielding fiber");
     rep->transferred = 1;
-    return korb_fiber_switch_in(c, slots, rep,
-                                (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL, 0);
+    if (rep->fstate == 0) rep->start_splat = VALUE_SLICE_LEN(a) > 1;
+    const VALUE xfer = UNWRAP(korb_fiber_pack(c, slots + 1, a));
+    return korb_fiber_switch_in(c, slots + 1, VAL2FIBER(VALUE_REF_GET(self))->rep, xfer, 0);
 }
 
 /* Fiber#kill — terminate the fiber at its suspension point (ensure blocks run).
@@ -499,7 +526,7 @@ korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     KorbFiberRep *const rep = c->vm->running_fiber;
     if (UNLIKELY(rep == NULL))
         return korb_raise_fiber_error(c, slots, "can't yield from root fiber");
-    rep->transfer = (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    rep->transfer = UNWRAP(korb_fiber_pack(c, slots, a));   /* several values → an Array */
     rep->fstate = 2;                                   /* suspended */
     /* Capture the TRUE live stack top, not c->slots_top: the latter is only
      * republished by korb_alloc, so between the fiber's last allocation and this
