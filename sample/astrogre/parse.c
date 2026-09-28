@@ -321,9 +321,36 @@ static uint8_t parse_octal_escape(re_parser_t *q, int first) {
     return (uint8_t)v;
 }
 
-/* `\cX` / `\C-X` — the control character X stands for (Onigmo: X & 0x1F).
- * Returns false (with the error set) when the escape is truncated or is the
- * control-META form `\c\`, which this engine does not implement. */
+/* `\cX` / `\C-X` — the control character X stands for (Onigmo's
+ * fetch_escaped_value: X & 0x9F).  X may itself be an escape
+ * (`\c\xFF`, `\c\M-a`, `\c\101`); a raw non-ASCII byte is refused.  Returns
+ * false with the error set. */
+static bool parse_ctrl_escape(re_parser_t *q, bool dashed, uint8_t *out);
+/* the value of the escape after a `\` inside \c / \M- (Onigmo fetch_escaped_value) */
+static bool parse_escaped_value(re_parser_t *q, uint8_t *out) {
+    const int e = re_get(q);
+    if (e < 0) { re_error(q, "too short escape sequence"); return false; }
+    switch (e) {
+      case 'x': return parse_hex_escape(q, out);
+      case 'c': return parse_ctrl_escape(q, false, out);
+      case 'C': return parse_ctrl_escape(q, true, out);
+      case 'M':
+        if (re_peek(q) != '-') { re_error(q, "too short meta escape"); return false; }
+        q->p++;
+        { const int m = re_get(q); uint8_t v;
+          if (m < 0) { re_error(q, "too short meta escape"); return false; }
+          if (m == '\\') { if (!parse_escaped_value(q, &v)) return false; }
+          else v = (uint8_t)m;
+          *out = (uint8_t)(v | 0x80); return true; }
+      case 'n': *out = '\n'; return true;   case 't': *out = '\t'; return true;
+      case 'r': *out = '\r'; return true;   case 'f': *out = '\f'; return true;
+      case 'v': *out = '\v'; return true;   case 'a': *out = '\a'; return true;
+      case 'e': *out = 0x1b; return true;
+      default:
+        if (e >= '0' && e <= '7') { *out = parse_octal_escape(q, e); return true; }
+        *out = (uint8_t)e; return true;
+    }
+}
 static bool parse_ctrl_escape(re_parser_t *q, bool dashed, uint8_t *out) {
     if (dashed) {
         if (re_peek(q) != '-') { re_error(q, "too short escape sequence"); return false; }
@@ -331,8 +358,11 @@ static bool parse_ctrl_escape(re_parser_t *q, bool dashed, uint8_t *out) {
     }
     const int x = re_get(q);
     if (x < 0) { re_error(q, "too short escape sequence"); return false; }
-    if (x == '\\') { re_error(q, "too short escape sequence"); return false; }   /* \c\M-x etc. */
-    *out = (uint8_t)(x & 0x1F);
+    uint8_t v;
+    if (x == '\\') { if (!parse_escaped_value(q, &v)) return false; }
+    else if (x >= 0x80) { re_error(q, "too short control escape"); return false; }
+    else v = (uint8_t)x;
+    *out = (uint8_t)(v & 0x9F);
     return true;
 }
 
