@@ -182,7 +182,7 @@ static RESULT korb_m_obj_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 /* resolve a Symbol/String name arg to the ivar-key Symbol (`:@x`, `"@x"`). */
 static bool korb_name_to_sym(CTX *c, VALUE name, VALUE *out) {
     if (SYMBOL_P(name)) { *out = name; return true; }
-    if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); *out = ID2SYM(korb_intern(c->vm, korb_strbuf_data(s->buf), s->len)); return true; }
+    if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); *out = ID2SYM(korb_intern_enc(c->vm, korb_strbuf_data(s->buf), s->len, KORB_STR_ENC(name))); return true; }
     return false;
 }
 /* valid instance-variable name: '@' + (letter|'_'|non-ASCII) + (alnum|'_'|

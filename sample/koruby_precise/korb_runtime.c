@@ -3148,7 +3148,7 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF sel
          * Integer by position. */
         VALUE msym = KORB_NIL, outkey = key;   /* the hash keeps the key as given, except a #to_str conversion */
         if (SYMBOL_P(key)) msym = key;
-        else if (KORB_STRING_P(key)) msym = ID2SYM(korb_intern(c->vm, korb_strbuf_data(VAL2STR(key)->buf), VAL2STR(key)->len));
+        else if (KORB_STRING_P(key)) msym = ID2SYM(korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(key)->buf), VAL2STR(key)->len, KORB_STR_ENC(key)));
         else if (is_data) {                                    /* Data: #to_str or TypeError */
             VALUE kv = key;
             if (KORB_OBJECT_P(kv) && korb_responds_to_coerce_p(c, slots + 5, &kv, korb_intern(c->vm, "to_str", 6))) {
@@ -3157,7 +3157,7 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF sel
                 RESULT sr = korb_send_impl(c, slots + 6, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 if (KORB_STRING_P(sr.value)) {
-                    msym = ID2SYM(korb_intern(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len));
+                    msym = ID2SYM(korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len, KORB_STR_ENC(sr.value)));
                     outkey = sr.value;
                 }
                 else return korb_raise(c, slots + 5, KORB_E_TYPE, 0, "can't convert %s into String (%s#to_str gives %s)",
@@ -3272,7 +3272,7 @@ static RESULT korb_m_struct_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     }
     if (UNLIKELY(!SYMBOL_P(k) && !KORB_STRING_P(k)))      /* not Integer/Float/Symbol/String → no implicit Integer conversion */
         return korb_raise_no_int(c, slots, k);
-    uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : korb_intern(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len);
+    uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len, KORB_STR_ENC(k));
     for (uint32_t i = 0; i < mem->len; i++)
         if (SYM2ID(korb_items_data(mem->items)[i]) == sym) return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i])));
     return korb_raise_struct_member(c, slots, VALUE_REF_GET(self), sym, k);
@@ -3284,7 +3284,7 @@ static RESULT korb_m_struct_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const VALUE key = VALUE_SLICE_GET(a, 0);
     RESULT first;
     if (SYMBOL_P(key) || KORB_STRING_P(key)) {               /* non-member name → nil (not NameError, unlike #[]) */
-        const uint32_t sym = SYMBOL_P(key) ? SYM2ID(key) : korb_intern(c->vm, korb_strbuf_data(VAL2STR(key)->buf), VAL2STR(key)->len);
+        const uint32_t sym = SYMBOL_P(key) ? SYM2ID(key) : korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(key)->buf), VAL2STR(key)->len, KORB_STR_ENC(key));
         const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));   /* read after intern (may GC) */
         first = RESULT_OK(KORB_NIL);
         for (uint32_t i = 0; i < mem->len; i++)
@@ -3315,7 +3315,7 @@ static RESULT korb_m_struct_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (UNLIKELY(i < 0 || (uint32_t)i >= mem->len)) return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %ld too large for struct(size:%u)", (long)orig, mem->len);
         idx = i;
     } else if (SYMBOL_P(k) || KORB_STRING_P(k)) {         /* member name → NameError when unknown */
-        const uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : korb_intern(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len);
+        const uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len, KORB_STR_ENC(k));
         for (uint32_t i = 0; i < mem->len; i++) if (SYM2ID(korb_items_data(mem->items)[i]) == sym) { idx = i; break; }
         if (UNLIKELY(idx < 0)) return korb_raise_struct_member(c, slots, VALUE_REF_GET(self), sym, k);
     } else {                                              /* neither Integer/Float nor a name → no implicit Integer conversion */
@@ -3574,7 +3574,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
             }
             continue;
         }
-        if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len));
+        if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern_enc(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len, KORB_STR_ENC(sym)));
         if (UNLIKELY(!SYMBOL_P(sym)))                         /* member must be a Symbol/String */
             return korb_raise_not_sym(c, slots, VALUE_SLICE_GET(a, i));
         {   /* duplicate member → ArgumentError */
@@ -3705,7 +3705,7 @@ static RESULT korb_m_data_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             slots[4] = UNWRAP(korb_hash_new(c, slots + 4, VAL2HASH(slots[3])->len));
             for (uint32_t j = 0; j < VAL2HASH(slots[3])->len; j++) {
                 const VALUE k = korb_items_data(VAL2HASH(slots[3])->items)[2 * j];
-                slots[5] = KORB_STRING_P(k) ? ID2SYM(korb_intern(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len)) : k;
+                slots[5] = KORB_STRING_P(k) ? ID2SYM(korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len, KORB_STR_ENC(k))) : k;
                 slots[6] = korb_items_data(VAL2HASH(slots[3])->items)[2 * j + 1];
                 CHECK(korb_hash_set(c, slots + 7, VALUE_REF_AT(&slots[4]), VALUE_REF_AT(&slots[5]), slots[6]));
             }
@@ -3813,7 +3813,7 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     VALUE_REF mem = VALUE_REF_AT(&slots[1]);
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         VALUE sym = VALUE_SLICE_GET(a, i);
-        if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len));
+        if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern_enc(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len, KORB_STR_ENC(sym)));
         if (!SYMBOL_P(sym)) continue;
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
         korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, nm, strlen(nm)), korb_member_ivar_id(vm, nm), 0);   /* reader only (immutable) */
@@ -4566,7 +4566,7 @@ static int korb_bind_find(const KorbBinding *b, uint32_t sym) { return korb_bind
 /* resolve a :sym / "str" arg to an interned id; SIZE_MAX on a type error (caller raises). */
 static uint32_t korb_bind_argsym(CTX *c, VALUE v) {
     if (SYMBOL_P(v)) return SYM2ID(v);
-    if (KORB_STRING_P(v)) return korb_intern(c->vm, korb_strbuf_data(VAL2STR(v)->buf), VAL2STR(v)->len);
+    if (KORB_STRING_P(v)) return korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(v)->buf), VAL2STR(v)->len, KORB_STR_ENC(v));
     return UINT32_MAX;
 }
 static RESULT korb_m_bind_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -5444,7 +5444,7 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     VALUE nv = VALUE_SLICE_GET(a, 0);
     uint32_t mid;
     if (SYMBOL_P(nv))            mid = SYM2ID(nv);
-    else if (KORB_STRING_P(nv))  mid = korb_intern(c->vm, korb_strbuf_data(VAL2STR(nv)->buf), VAL2STR(nv)->len);
+    else if (KORB_STRING_P(nv))  mid = korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(nv)->buf), VAL2STR(nv)->len, KORB_STR_ENC(nv));
     else {                                               /* coerce via #to_str (a String-like name) */
         const char *const nnm = korb_coerce_name(c, nv);   /* interned: outlives the dispatch (`nv` would go stale) */
         slots[0] = nv;
@@ -5457,7 +5457,7 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         if (UNLIKELY(!KORB_STRING_P(sr.value)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into String (%s#to_str gives %s)",
                               nnm, nnm, korb_coerce_name(c, sr.value));
-        mid = korb_intern(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len);
+        mid = korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len, KORB_STR_ENC(sr.value));
         klass = VALUE_REF_GET(self);                     /* to_str dispatch may have moved the class (self is rooted) */
     }
     slots[0] = klass;                                    /* root class across allocs */
@@ -7589,7 +7589,7 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             const VALUE name = slots[-(korb_sword_t)argc];
             uint32_t rmid;
             if (SYMBOL_P(name)) rmid = SYM2ID(name);
-            else if (KORB_STRING_P(name)) rmid = korb_intern(vm, korb_strbuf_data(VAL2STR(name)->buf), VAL2STR(name)->len);
+            else if (KORB_STRING_P(name)) rmid = korb_intern_enc(vm, korb_strbuf_data(VAL2STR(name)->buf), VAL2STR(name)->len, KORB_STR_ENC(name));
             else return korb_raise_not_sym(c, slots, name);
             for (uint32_t j = 1; j < argc; j++) slots[1 + j] = slots[-(korb_sword_t)argc + j];
             slots[0] = captured_self;                      /* park in a scanned slot for the cself ptr */
@@ -8579,7 +8579,7 @@ static RESULT korb_arg_to_mid(CTX *c, VALUE *slots, VALUE v, uint32_t *mid_out) 
         slots[0] = v;
         RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-        if (KORB_STRING_P(sr.value)) { *mid_out = korb_intern(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len); return RESULT_OK(KORB_NIL); }
+        if (KORB_STRING_P(sr.value)) { *mid_out = korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len, KORB_STR_ENC(sr.value)); return RESULT_OK(KORB_NIL); }
         v = slots[0];                                  /* the dispatch ran Ruby: re-read the (moved) receiver */
     }
     return korb_raise_not_sym(c, slots, v);
@@ -11025,7 +11025,7 @@ korb_bi_set_ruby2_keywords(CTX *c, VALUE *slots, VALUE_SLICE args)
     const VALUE nm = VALUE_SLICE_LEN(args) >= 2 ? VALUE_SLICE_GET(args, 1) : KORB_NIL;
     uint32_t mid;
     if (SYMBOL_P(nm))            mid = SYM2ID(nm);
-    else if (KORB_STRING_P(nm))  mid = korb_intern(c->vm, korb_strbuf_data(VAL2STR(nm)->buf), VAL2STR(nm)->len);
+    else if (KORB_STRING_P(nm))  mid = korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(nm)->buf), VAL2STR(nm)->len, KORB_STR_ENC(nm));
     else                         return RESULT_OK(LONG2FIX(3));   /* not a Symbol nor a String */
     VALUE def = KORB_NIL;
     struct korb_method *m = korb_class_find_method(tgt, mid, &def);
@@ -13202,7 +13202,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             VALUE name = slots[-(korb_sword_t)argc];           /* arg0 */
             uint32_t rmid;
             if (SYMBOL_P(name)) rmid = SYM2ID(name);
-            else if (KORB_STRING_P(name)) rmid = korb_intern(vm, korb_strbuf_data(VAL2STR(name)->buf), VAL2STR(name)->len);
+            else if (KORB_STRING_P(name)) rmid = korb_intern_enc(vm, korb_strbuf_data(VAL2STR(name)->buf), VAL2STR(name)->len, KORB_STR_ENC(name));
             else {                                          /* coerce a #to_str name (scratch above the args; args/self are GC-rooted below) */
                 const uint32_t to_str = korb_intern(vm, "to_str", 6);
                 if (UNLIKELY(!(KORB_OBJECT_P(name) && korb_responds_to_coerce_p(c, slots, &name, to_str))))
@@ -13213,7 +13213,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                 if (UNLIKELY(!KORB_STRING_P(sr.value)))
                     return korb_raise_not_sym(c, slots, slots[-(korb_sword_t)argc]);
                 slots[0] = sr.value;                        /* root the coerced String while interning */
-                rmid = korb_intern(vm, korb_strbuf_data(VAL2STR(slots[0])->buf), VAL2STR(slots[0])->len);
+                rmid = korb_intern_enc(vm, korb_strbuf_data(VAL2STR(slots[0])->buf), VAL2STR(slots[0])->len, KORB_STR_ENC(slots[0]));
                 self = *recv_slot;                          /* re-read: the #to_str dispatch may have GC-moved self */
             }
             /* public_send cannot reach top-level defs: CRuby exposes them as
@@ -13811,7 +13811,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
                                                   knm, knm, korb_coerce_name(c, kr.value));
                             k = kr.value;
                         }
-                        slots[2] = KORB_STRING_P(k) ? ID2SYM(korb_intern(vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len)) : k;
+                        slots[2] = KORB_STRING_P(k) ? ID2SYM(korb_intern_enc(vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len, KORB_STR_ENC(k))) : k;
                         slots[3] = korb_items_data(VAL2HASH(slots[0])->items)[2 * j + 1];
                         CHECK(korb_hash_set(c, slots + 5, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[2]), slots[3]));
                     }
@@ -18733,7 +18733,7 @@ static RESULT korb_bi_set_gvar(CTX *c, VALUE *slots, VALUE_SLICE args) {
     const VALUE nv = VALUE_SLICE_GET(args, 0);
     if (UNLIKELY(!KORB_STRING_P(nv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "global variable name must be a String");
-    korb_const_define(c, korb_intern(c->vm, korb_strbuf_data(VAL2STR(nv)->buf), VAL2STR(nv)->len),
+    korb_const_define(c, korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(nv)->buf), VAL2STR(nv)->len, KORB_STR_ENC(nv)),
                       VALUE_SLICE_GET(args, 1));
     return RESULT_OK(VALUE_SLICE_GET(args, 1));
 }

@@ -1892,7 +1892,7 @@ static RESULT korb_m_num_ge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 /* extract the operator mid from a sym-form reduce arg (Symbol or String). */
 static bool korb_reduce_op(CTX *c, VALUE v, uint32_t *op_mid) {
     if (SYMBOL_P(v))       { *op_mid = SYM2ID(v); return true; }
-    if (KORB_STRING_P(v))  { *op_mid = korb_intern(c->vm, korb_strbuf_data(VAL2STR(v)->buf), VAL2STR(v)->len); return true; }
+    if (KORB_STRING_P(v))  { *op_mid = korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(v)->buf), VAL2STR(v)->len, KORB_STR_ENC(v)); return true; }
     return false;
 }
 /* Resolve a reduce/inject operator arg → mid: Symbol/String, or #to_str-coercible
@@ -1905,7 +1905,7 @@ static RESULT korb_reduce_resolve_op(CTX *c, VALUE *slots, VALUE v, uint32_t *op
         slots[0] = v;
         RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(sr.state != KORB_NORMAL)) { *ok = false; return sr; }
-        if (KORB_STRING_P(sr.value)) { *op_mid = korb_intern(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len); return RESULT_OK(KORB_NIL); }
+        if (KORB_STRING_P(sr.value)) { *op_mid = korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len, KORB_STR_ENC(sr.value)); return RESULT_OK(KORB_NIL); }
     }
     *ok = false;
     return korb_raise_not_sym(c, slots, v);

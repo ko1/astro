@@ -1110,7 +1110,7 @@ korb_thread_tls_key(CTX *c, VALUE *slots, VALUE k, VALUE *out)
             return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", kb);
         }
     }
-    *out = ID2SYM(korb_intern(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len));
+    *out = ID2SYM(korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len, KORB_STR_ENC(k)));
     return RESULT_OK(KORB_NIL);
 }
 

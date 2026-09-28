@@ -574,7 +574,14 @@ module Marshal
   # inherit=false: rb_path_to_class does not fall back to Object, so a name that
   # only resolves through the ancestor chain is "undefined" for Marshal.
   def self._const(name)
-    segs = name.to_s.split("::")
+    name = name.to_s
+    # a class path arrives as raw bytes; constant names are interned with their
+    # encoding, so read valid UTF-8 as UTF-8 (a multibyte class name)
+    if name.encoding == Encoding::BINARY && !name.ascii_only?
+      u = name.dup.force_encoding(Encoding::UTF_8)
+      name = u if u.valid_encoding?
+    end
+    segs = name.split("::")
     segs.each_with_index.reduce(Object) do |m, (n, i)|
       m.const_get(n, false)
     rescue NameError

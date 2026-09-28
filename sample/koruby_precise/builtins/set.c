@@ -914,7 +914,7 @@ static RESULT korb_m_deprecate_constant(CTX *c, VALUE *slots, VALUE_REF self, VA
 static RESULT korb_set_visibility1(CTX *c, VALUE *slots, VALUE selfv, KorbClass *k, VALUE arg, uint8_t vis) {
     uint32_t mid;
     if (SYMBOL_P(arg)) mid = SYM2ID(arg);
-    else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len); }
+    else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern_enc(c->vm, korb_strbuf_data(s->buf), s->len, KORB_STR_ENC(arg)); }
     else return korb_raise_not_sym(c, slots, arg);
     for (uint32_t j = 0; j < k->method_cnt; j++)
         if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; return RESULT_OK(KORB_NIL); }
@@ -1053,7 +1053,7 @@ static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VA
         const VALUE arg = array_arg ? korb_items_data(VAL2ARY(slots[1])->items)[i] : VALUE_SLICE_GET(a, i);
         uint32_t mid;
         if (SYMBOL_P(arg)) mid = SYM2ID(arg);
-        else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len); }
+        else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern_enc(c->vm, korb_strbuf_data(s->buf), s->len, KORB_STR_ENC(arg)); }
         else return korb_raise_not_sym(c, slots + 2, arg);
         KorbClass *const k = VAL2CLASS(slots[0]);          /* re-read (a slot-array grow below may move nothing, but be safe) */
         bool set = false;
@@ -1172,7 +1172,7 @@ static RESULT korb_m_class_attr_n(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
                 sym = sr.value;
             } else return korb_raise_not_sym(c, slots, VALUE_SLICE_GET(a, i));   /* the probe dispatched: re-read */
         }
-        if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len));
+        if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern_enc(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len, KORB_STR_ENC(sym)));
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
         char buf[256]; snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
         if (reader) { const uint32_t rid = korb_intern(vm, nm, strlen(nm)); korb_class_def_attr(c, slots[0], rid, ivar, 0); CHECK(korb_ary_push_val(c, slots + 2, res, ID2SYM(rid))); CHECK(korb_fire_method_added(c, slots + 2, slots[0], rid)); }
@@ -2491,6 +2491,7 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     /* Only a String name is parsed for `::` scope separators; a Symbol name is
      * treated atomically (so :"A::B" / :"::A" are "wrong constant name"). */
     const bool is_sym = SYMBOL_P(VALUE_SLICE_GET(a, 0));
+    const uint32_t nenc = KORB_STRING_P(name) ? KORB_STR_ENC(name) : KORB_ENC_UTF8;
     const char *p = buf, *const end = buf + len;
     if (!is_sym && p + 2 <= end && p[0] == ':' && p[1] == ':') { p += 2; } /* leading :: → start at top-level */
     VALUE owner = (p != buf) ? KORB_NIL : VALUE_REF_GET(self);           /* nil owner = top-level namespace */
@@ -2506,7 +2507,7 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         const uint32_t clen = (uint32_t)(q - p);
         if (UNLIKELY(!korb_valid_const_name(p, clen)))
             return korb_raise_wrong_const_name(c, slots, VALUE_REF_GET(self), buf, (uint32_t)strlen(buf));
-        const uint32_t cid = korb_intern(vm, p, clen);
+        const uint32_t cid = is_sym ? SYM2ID(name) : korb_intern_enc(vm, p, clen, nenc);   /* a name keeps its encoding */
         uint32_t idx = UINT32_MAX;
         if (KORB_CLASS_P(owner)) {
             if (inherit) for (VALUE o = owner; KORB_CLASS_P(o) && idx == UINT32_MAX; o = VAL2CLASS(o)->superclass) {
@@ -2690,6 +2691,7 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
     }
     if (KORB_STRING_P(name)) {
         const KorbString *const s = VAL2STR(name);
+        const uint32_t nenc = KORB_STR_ENC(name);         /* each segment keeps the name's encoding */
         char nbuf[512];                                   /* a copy: running an autoload below can move the String */
         if (UNLIKELY(s->len >= sizeof nbuf)) return RESULT_OK(KORB_FALSE);
         memcpy(nbuf, korb_strbuf_data(s->buf), s->len);
@@ -2710,7 +2712,7 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
             }
             if (UNLIKELY(!korb_valid_const_name(p + seg, i - seg)))
                 return korb_raise_wrong_const_name(c, slots, VALUE_REF_GET(self), p + seg, (uint32_t)(i - seg));
-            const uint32_t sid = korb_intern(vm, p + seg, i - seg);
+            const uint32_t sid = korb_intern_enc(vm, p + seg, i - seg, nenc);
             VALUE val = KORB_NIL;
             const VALUE owner = korb_autoload_owner(c, slots[0], sid, inherit);
             if (owner != KORB_NIL) {
