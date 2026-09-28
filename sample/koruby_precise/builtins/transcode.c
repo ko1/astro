@@ -8,7 +8,7 @@
 
 struct korb_tc_pair { uint32_t bytes; uint8_t n; uint32_t cp; };
 struct korb_tc_sb_ent { const char *name; const uint16_t *tab; };
-struct korb_tc_mb_ent { const char *name; const struct korb_tc_pair *by_bytes, *by_cp; uint32_t n; };
+struct korb_tc_mb_ent { const char *name; const struct korb_tc_pair *by_bytes, *by_cp; uint32_t nb, n; };   /* nb: by_bytes also holds the many-to-one decodes */
 
 #include "transcode_tables.h"
 
@@ -29,7 +29,7 @@ struct korb_tc {
     uint8_t fam;
     const uint16_t *sb;                       /* KTC_SB: 0x80..0xFF → codepoint */
     const struct korb_tc_pair *by_bytes, *by_cp;   /* KTC_MB */
-    uint32_t n;
+    uint32_t nb, n;
 };
 
 /* Names CRuby accepts that the generated tables don't carry verbatim. */
@@ -70,6 +70,7 @@ static bool korb_tc_find(const char *name, struct korb_tc *out)
                 out->by_bytes = korb_tc_mb_table[i].by_bytes;
                 out->by_cp    = korb_tc_mb_table[i].by_cp;
                 out->n        = korb_tc_mb_table[i].n;
+                out->nb       = korb_tc_mb_table[i].nb;
                 return true;
             }
         return false;
@@ -84,6 +85,7 @@ static bool korb_tc_find(const char *name, struct korb_tc *out)
             out->by_bytes = korb_tc_mb_table[i].by_bytes;
             out->by_cp    = korb_tc_mb_table[i].by_cp;
             out->n        = korb_tc_mb_table[i].n;
+            out->nb       = korb_tc_mb_table[i].nb;
             out->fam = (strncasecmp(korb_tc_mb_table[i].name, "Shift_JIS", 9) == 0 ||
                         strncasecmp(korb_tc_mb_table[i].name, "Windows-31J", 11) == 0) ? KTC_FAM_SJIS
                      : (strncasecmp(korb_tc_mb_table[i].name, "EUC", 3) == 0 ||
@@ -97,12 +99,12 @@ static bool korb_tc_find(const char *name, struct korb_tc *out)
  * a prefix of the input is looked up at each candidate length (2..4). */
 static const struct korb_tc_pair *korb_tc_mb_bytes(const struct korb_tc *tc, uint32_t v, uint8_t n)
 {
-    uint32_t lo = 0, hi = tc->n;
+    uint32_t lo = 0, hi = tc->nb;
     while (lo < hi) {
         const uint32_t mid = lo + (hi - lo) / 2;
         if (tc->by_bytes[mid].bytes < v) lo = mid + 1; else hi = mid;
     }
-    for (uint32_t i = lo; i < tc->n && tc->by_bytes[i].bytes == v; i++)
+    for (uint32_t i = lo; i < tc->nb && tc->by_bytes[i].bytes == v; i++)
         if (tc->by_bytes[i].n == n) return &tc->by_bytes[i];
     return NULL;
 }

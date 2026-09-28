@@ -16508,7 +16508,12 @@ korb_enc_inspect_char(const struct korb_vm *const vm, const uint32_t enc, const 
     struct korb_tc tc;
     if (!korb_tc_find(korb_enc_name_of(vm, enc), &tc)) { *cp = p[0]; return 1; }   /* no table: byte at a time */
     uint32_t u = 0;
-    const uint32_t n = korb_tc_decode(&tc, p, len, &u);
+    uint32_t n = korb_tc_decode(&tc, p, len, &u);
+    if (n == 0 && !unicode) {                         /* well-formed but unmapped: still one character (CRuby \x{81C6}) */
+        const signed char (*const tr)[256] = korb_enc_trans_by_name(korb_enc_name_of(vm, enc));
+        const int32_t sl = tr != NULL ? korb_enc_trans_len(tr, p, 0, len) : 0;
+        if (sl > 0) n = (uint32_t)sl;
+    }
     if (n == 0) return 0;
     if (unicode) { *cp = u; }
     else { uint32_t v = 0; for (uint32_t i = 0; i < n; i++) v = (v << 8) | p[i]; *cp = v; }
