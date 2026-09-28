@@ -10774,32 +10774,11 @@ korb_capture_backtrace(CTX *c, VALUE *slots, const VALUE *fbase)
     const uint32_t n = nb + d;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n + 1));
     char buf[600];
-    /* A prelude frame shows at its caller's position (CRuby's <internal:> frames):
-     * format outermost first so the caller's "file:line" is known. */
-    char **const ent = n ? malloc(sizeof(char *) * n) : NULL;
-    if (n && !ent) abort();
-    const char *outer = NULL; size_t outer_len = 0;
-    static const char pfx[] = KORB_PRELUDE_FILE ":";
-    for (uint32_t i = n; i-- > 0; ) {
-        int len = korb_frames_at(c, nb, d, i, buf, sizeof buf);
-        const char *const at = strstr(buf, ":in ");
-        if (outer != NULL && at != NULL && strncmp(buf, pfx, sizeof pfx - 1) == 0) {
-            char tmp[600];
-            len = snprintf(tmp, sizeof tmp, "%.*s%s", (int)outer_len, outer, at);
-            if (len >= (int)sizeof tmp) len = (int)sizeof tmp - 1;
-            memcpy(buf, tmp, (size_t)len + 1);
-        }
-        ent[i] = strndup(buf, (size_t)len);
-        if (!ent[i]) abort();
-        const char *const at2 = strstr(ent[i], ":in ");
-        if (at2 != NULL) { outer = ent[i]; outer_len = (size_t)(at2 - ent[i]); }
-    }
     for (uint32_t i = 0; i < n; i++) {
-        slots[2] = UNWRAP(korb_str_new(c, slots + 2, ent[i], (uint32_t)strlen(ent[i])));
+        const int len = korb_frames_at(c, nb, d, i, buf, sizeof buf);
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, buf, (uint32_t)len));
         UNWRAP(korb_ary_push_val(c, slots, VALUE_REF_AT(&slots[1]), slots[2]));
     }
-    for (uint32_t i = 0; i < n; i++) free(ent[i]);
-    free(ent);
     if (d == 0) {                        /* no link to walk: close the list the way the report does */
         const int mlen = snprintf(buf, sizeof buf, "%s:%d:in '<main>'",
                                   korb_bt_cur_file(vm), (int32_t)VAL2EXC(slots[0])->line);
