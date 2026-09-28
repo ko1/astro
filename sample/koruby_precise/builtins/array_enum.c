@@ -456,7 +456,13 @@ static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         }
         struct korb_sortctx sc = { c, 0, KORB_NIL, KORB_NIL };
         qsort_r(korb_items_data(d->items), d->len, sizeof(VALUE), korb_sort_cmp, &sc);
-        if (UNLIKELY(sc.err)) return korb_raise_cmperr(c, slots, 0, sc.bad_l, sc.bad_r, false);
+        /* not comparable by value (arrays holding objects with their own <=>, e.g. [Date, name]):
+         * sort again dispatching <=>, which also raises CRuby's error for a truly incomparable pair */
+        if (UNLIKELY(sc.err)) {
+            if (!korb_eq_needs_send(sc.bad_l) && !korb_eq_needs_send(sc.bad_r))
+                return korb_raise_cmperr(c, slots, 0, sc.bad_l, sc.bad_r, false);
+            CHECK(korb_ary_msort(c, slots + 1, dst, korb_msort_cmp_spaceship, NULL));
+        }
         return RESULT_OK(VALUE_REF_GET(dst));
     }
     {   /* comparator block: each compare yields (may GC) */
@@ -774,57 +780,15 @@ static RESULT korb_m_ary_grep_v(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_ary_sort_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                    NODE *block, VALUE *def_env, VALUE *cself) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
-    (void)a;
-    if (block == NULL) {
-        /* A user object needs its #<=> dispatched (korb_cmp_full only knows the
-         * builtin types), and that can GC — sort a copy and adopt the order. */
-        bool has_obj = false;
-        { const KorbArray *const d0 = VAL2ARY(VALUE_REF_GET(self));
-          for (uint32_t i = 0; i < d0->len; i++)
-              if (KORB_OBJECT_P(korb_items_data(d0->items)[i])) { has_obj = true; break; } }
-        if (has_obj) {
-            RESULT sr = korb_m_ary_sort(c, slots, self, a, NULL, NULL, NULL);
-            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-            slots[0] = sr.value;
-            KorbArray *const dst = VAL2ARY(VALUE_REF_GET(self));
-            KorbArrayItems *const dstit = dst->items;
-            const KorbArray *const src = VAL2ARY(slots[0]);
-            for (uint32_t i = 0; i < dst->len && i < src->len; i++)
-                ARO_STORE(c, dstit, &korb_items_data(dstit)[i], korb_items_data(src->items)[i]);
-            return RESULT_OK(VALUE_REF_GET(self));
-        }
-        KorbArray *d = VAL2ARY(VALUE_REF_GET(self));    /* in-place; cmp does not alloc */
-        KorbArrayItems *const dit = d->items;
-        const VALUE *data = korb_items_data(dit);
-        for (uint32_t i = 1; i < d->len; i++) {
-            VALUE key = data[i]; uint32_t j = i;
-            while (j > 0) {
-                int cmp = korb_cmp_full(c, data[j-1], key);
-                if (UNLIKELY(cmp == 2)) return korb_raise_cmperr(c, slots, 0, data[j-1], key, false);
-                if (cmp <= 0) break;
-                ARO_STORE(c, dit, &data[j], data[j-1]); j--;
-            }
-            ARO_STORE(c, dit, &data[j], key);
-        }
-        return RESULT_OK(VALUE_REF_GET(self));
-    }
-    /* comparator-block in-place sort: yields may GC/move self; re-fetch items
-     * after each compare, lifted key rooted in slots[0]. */
-    uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
-    for (uint32_t i = 1; i < len; i++) {
-        slots[0] = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i];   /* key (rooted) */
-        uint32_t j = i;
-        while (j > 0) {
-            VALUE left = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[j-1];
-            int cmp;
-            CHECK(korb_cmp_block(c, slots + 1, left, slots[0], block, def_env, cself, &cmp));
-            if (cmp <= 0) break;
-            KorbArray *dd = VAL2ARY(VALUE_REF_GET(self));
-            ARO_STORE(c, dd->items, &korb_items_data(dd->items)[j], korb_items_data(dd->items)[j-1]); j--;
-        }
-        KorbArrayItems *sit = VAL2ARY(VALUE_REF_GET(self))->items;
-        ARO_STORE(c, sit, &korb_items_data(sit)[j], slots[0]);
-    }
+    /* sort a copy (O(n log n); dispatches <=> or yields as needed, which may GC) and adopt its order */
+    RESULT sr = korb_m_ary_sort(c, slots, self, a, block, def_env, cself);
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    slots[0] = sr.value;
+    KorbArray *const dst = VAL2ARY(VALUE_REF_GET(self));
+    KorbArrayItems *const dstit = dst->items;
+    const KorbArray *const src = VAL2ARY(slots[0]);
+    for (uint32_t i = 0; i < dst->len && i < src->len; i++)
+        ARO_STORE(c, dstit, &korb_items_data(dstit)[i], korb_items_data(src->items)[i]);
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_ary_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
