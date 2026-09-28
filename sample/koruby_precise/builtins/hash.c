@@ -328,7 +328,7 @@ static RESULT korb_m_hash_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2HASH(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
             if (!KORB_TRUTHY(r.value)) { result = KORB_FALSE; break; }
-        } else if (!korb_value_eq(v, v2)) {
+        } else if (v != v2 && !korb_value_eq(v, v2)) {   /* rb_equal: the same object is equal (a shared NaN) */
             result = KORB_FALSE; break;
         }
     }
@@ -354,6 +354,7 @@ static RESULT korb_m_hash_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(ferr.state != KORB_NORMAL)) { VAL2HASH(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return ferr; }
         if (j < 0) { result = KORB_FALSE; break; }
         const VALUE v2 = korb_items_data(VAL2HASH(slots[1])->items)[2 * j + 1];
+        if (v == v2) continue;                           /* rb_eql: the same object is eql? (a shared NaN) */
         if (korb_eq_needs_send(v) || korb_eq_needs_send(v2)) {
             slots[2] = v; slots[3] = v2;
             RESULT r = korb_send_impl(c, slots + 4, mid_eql, 0, 1, NULL, NULL, NULL);

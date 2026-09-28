@@ -624,7 +624,9 @@ class Encoding
     # reads "<char> to <leg dst> in conversion from <src> to UTF-8 to <dst>";
     # a single-leg one (either side already UTF-8) just "<char> from <src> to <dst>".
     def __undef_msg(what, leg_dst)
-      if @src_name.upcase == "UTF-8" || @dst_name.upcase == "UTF-8"
+      if leg_dst == "UTF-8" && @dst_name.upcase == "UTF-8" && @src_name.match?(/\A(?:Windows-|mac)/)
+        "#{what} to UTF-8 in conversion from #{@src_name} to UTF-8"   # transcoder named WINDOWS-* / MAC* (see String#__undef_msg)
+      elsif @src_name.upcase == "UTF-8" || @dst_name.upcase == "UTF-8"
         "#{what} from #{@src_name} to #{@dst_name}"
       else
         "#{what} to #{leg_dst} in conversion from #{@src_name} to UTF-8 to #{@dst_name}"
@@ -783,7 +785,11 @@ class String
   # UTF-8 reads "<char> to <leg dst> in conversion from <src> to UTF-8 to <dst>",
   # a single-leg one (either side already UTF-8) just "<char> from <src> to <dst>".
   def __undef_msg(what, leg_dst, src, dst)
-    if src.upcase == "UTF-8" || dst.upcase == "UTF-8"
+    # CRuby registers the Windows-* / mac* transcoders as WINDOWS-* / MAC*, so the
+    # failing leg never matches the converter's names and gets the long form
+    if leg_dst == "UTF-8" && dst.upcase == "UTF-8" && src.match?(/\A(?:Windows-|mac)/)
+      "#{what} to UTF-8 in conversion from #{src} to UTF-8"
+    elsif src.upcase == "UTF-8" || dst.upcase == "UTF-8"
       "#{what} from #{src} to #{dst}"
     else
       "#{what} to #{leg_dst} in conversion from #{src} to UTF-8 to #{dst}"

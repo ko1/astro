@@ -275,7 +275,7 @@ static bool korb_enc_bytes_valid(const struct korb_vm *const vm, const uint32_t 
 {
     struct korb_tc tc;
     if (!korb_tc_find(korb_enc_name_of(vm, enc), &tc)) return true;
-    if (tc.kind == KTC_ISO2022JP) return true;
+    if (tc.kind == KTC_ISO2022JP || tc.kind == KTC_SB) return true;   /* single-byte: every byte is a character, mapped or not */
     const unsigned char *const p = (const unsigned char *)bytes;
     for (uint32_t i = 0; i < len; ) {
         uint32_t cp = 0;
@@ -448,7 +448,8 @@ static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
             /* well-formed in the source encoding but with no Unicode mapping: an
              * undefined conversion of the whole character, not invalid bytes (CRuby) */
             const signed char (*const tr)[256] = korb_enc_trans_by_name(fromb);
-            const int32_t sl = tr != NULL ? korb_enc_trans_len(tr, src, (uint32_t)i, (uint32_t)slen) : 0;
+            const int32_t sl = from.kind == KTC_SB ? 1        /* every byte of a single-byte encoding is well-formed */
+                             : tr != NULL ? korb_enc_trans_len(tr, src, (uint32_t)i, (uint32_t)slen) : 0;
             if (sl > 0) {
                 if (!(flags & 2u)) { errcode = 4; errpos = i; errcp = 0; errlen = (uint32_t)sl; break; }
                 korb_tc_put(&out, replb, repl_len);
@@ -596,6 +597,7 @@ static uint32_t korb_tc_bytes_chr(const char *enc, uint32_t v, unsigned char *ou
     for (uint32_t i = 0; i < n; i++) out[i] = (unsigned char)((v >> (8 * (n - 1 - i))) & 0xFF);
     uint32_t cp = 0;
     if (tc.kind == KTC_ISO2022JP) return n;                  /* stateful: accept as given */
+    if (tc.kind == KTC_SB && n == 1) return 1;               /* a single-byte encoding: every byte is a character (0x81 in Windows-1252) */
     if (korb_tc_decode(&tc, out, n, &cp) == n) return n;
     /* CRuby validates the byte STRUCTURE, not that the pair maps to Unicode:
      * an unassigned but well-formed two-byte code is still a character. */

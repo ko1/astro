@@ -628,6 +628,7 @@ static RESULT korb_m_ary_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     VALUE result = KORB_TRUE;
     for (uint32_t i = 0; i < n; i++) {
         const VALUE v = korb_items_data(VAL2ARY(slots[0])->items)[i], v2 = korb_items_data(VAL2ARY(slots[1])->items)[i];
+        if (v == v2) continue;                           /* rb_eql: the same object is eql? (a shared NaN) */
         if (korb_eq_needs_send(v) || korb_eq_needs_send(v2)) {
             slots[2] = v; slots[3] = v2;
             RESULT r = korb_send_impl(c, slots + 4, mid_eql, 0, 1, NULL, NULL, NULL);
