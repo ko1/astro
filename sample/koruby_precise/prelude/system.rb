@@ -2194,30 +2194,70 @@ class Regexp
 end
 
 class Fiber
-  # Fiber scheduler は「登録できて、Kernel#sleep だけがフックされる」ところまで。
-  # blocking 操作全般 (io_wait / block / unblock) の肩代わりは未実装 —
-  # koruby の fiber は協調 coroutine で、その配管を持たない。
-  def self.scheduler
-    @__scheduler
-  end
-  # scheduler が無ければ nil (raise しない)。raise するのは Fiber.schedule だけ。
-  # 本来は「現 fiber が non-blocking のときだけ返す」だが、その区別はまだ無い。
-  def self.current_scheduler
-    @__scheduler
-  end
+  # The Fiber scheduler is per thread (CRuby).  Kernel#sleep and the backtick's pipe
+  # read in a non-blocking fiber go through it; Mutex / Queue / IO in general do not yet.
+  def self.scheduler = Thread.current.instance_variable_get(:@__fiber_scheduler)
+  # nil in a blocking fiber (the root, or Fiber.new(blocking: true))
+  def self.current_scheduler = blocking? ? nil : scheduler
   def self.set_scheduler(sched)
-    if sched.nil?
-      @__scheduler = nil
-      return nil
+    unless sched.nil?
+      %i[block unblock kernel_sleep io_wait fiber_interrupt].each do |m|
+        raise ArgumentError, "Scheduler must implement ##{m}" unless sched.respond_to?(m)
+      end
     end
-    [:block, :unblock, :kernel_sleep, :io_wait].each do |m|
-      raise ArgumentError, "Scheduler must implement ##{m}" unless sched.respond_to?(m)
+    th = Thread.current
+    old = th.instance_variable_get(:@__fiber_scheduler)
+    if old                                 # the previous one runs to completion first
+      begin
+        __scheduler_close(old)
+      ensure
+        th.instance_variable_set(:@__fiber_scheduler, nil)
+      end
     end
-    @__scheduler = sched
+    th.instance_variable_set(:@__fiber_scheduler, sched)
   end
-  def self.schedule(*args, &blk)
-    raise RuntimeError, "No scheduler is available!" if @__scheduler.nil?
-    Fiber.new(blocking: false) { blk.call(*args) }.tap(&:resume)
+  # #scheduler_close first: a legacy #close may itself call set_scheduler(nil)
+  def self.__scheduler_close(s)
+    if s.respond_to?(:scheduler_close, true) then s.__send__(:scheduler_close)
+    elsif s.respond_to?(:close, true) then s.__send__(:close)
+    end
+  end
+  def self.__thread_end
+    set_scheduler(nil) if scheduler
+  end
+  def self.schedule(*args, **kw, &blk)
+    s = scheduler                          # the thread's, even from a blocking fiber
+    raise RuntimeError, "No scheduler is available!" if s.nil?
+    s.fiber(*args, **kw, &blk)
+  end
+end
+
+module Kernel
+  # `cmd` in a non-blocking fiber: read the pipe through scheduler.io_wait so other
+  # fibers run meanwhile (C's #` sends here only when a scheduler is set)
+  private def __sched_backtick(sched, cmd)
+    cmd = cmd.to_str
+    r, w = IO.pipe
+    begin
+      pid = Process.spawn(cmd, out: w)
+    ensure
+      w.close
+    end
+    out = +""
+    begin
+      loop do
+        chunk = r.read_nonblock(65536, exception: false)
+        case chunk
+        when :wait_readable then sched.io_wait(r, IO::READABLE, nil)
+        when nil then break
+        else out << chunk
+        end
+      end
+    ensure
+      r.close
+      Process.wait(pid)
+    end
+    out.force_encoding(Encoding.default_external)
   end
 end
 

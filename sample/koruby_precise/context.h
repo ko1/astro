@@ -532,7 +532,7 @@ typedef struct KorbFiberRep {
     uint8_t raised;                  /* block raised → resume re-raises transfer */
     uint8_t pending_raise;           /* Fiber#raise: yield raises transfer instead of returning it */
     uint8_t transferred;             /* entered via #transfer — #resume is then a FiberError */
-    uint8_t start_splat;             /* the first resume passed several values: `transfer` is their Array */
+    uint8_t start_splat;             /* the first resume passed several values (`transfer` is their Array); 2 = none */
     uint8_t killing;                 /* Fiber#kill: unwind the fiber at its suspension point */
     uint8_t blocking;                /* Fiber.new(blocking: true) — #blocking? and Fiber.blocking? */
     struct KorbFiberRep *link;       /* vm fiber list (stable ptrs) */

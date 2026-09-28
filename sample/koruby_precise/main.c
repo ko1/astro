@@ -1704,6 +1704,13 @@ main(int argc, char *argv[])
         clock_gettime(CLOCK_MONOTONIC, &t0);
         RESULT r = EVAL(c, ast, toplevel_cursor);
         clock_gettime(CLOCK_MONOTONIC, &t1);
+        {   /* the main thread's Fiber scheduler runs to completion before at_exit (CRuby) */
+            extern RESULT korb_fiber_thread_end(CTX *, VALUE *);
+            toplevel_cursor[0] = r.value;
+            const RESULT fr = korb_fiber_thread_end(c, toplevel_cursor + 4);
+            r.value = toplevel_cursor[0];
+            if (UNLIKELY(fr.state == KORB_RAISE) && r.state != KORB_RAISE) r = fr;
+        }
         /* Run at_exit blocks (reverse registration order) — this is how mspec and
          * other suites trigger their run.  They execute even after an uncaught
          * exception, matching CRuby (Kernel#exit shares korb_drain_at_exit). */

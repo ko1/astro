@@ -6022,8 +6022,11 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
 いるか」を安く判定するか、古いエントリを参照数で解放する。
 
 ## w14 で見つけた残り（2026-09-28）
-- **Fiber スケジューラで sleep が重ならない**（graphql nonblocking_dataloader_spec 3 例: Ruby のテストの toy scheduler で
-  0.3 s × 10 が 3.0 s）。Fiber.schedule / kernel_sleep の経路が非ブロッキング fiber で使われていない。
+- **Fiber スケジューラ**（2026-09-28 一部済）: scheduler は thread ごと、差し替え・thread の終わり・at_exit の前に close、
+  Fiber.schedule は #fiber、非ブロッキング fiber の Kernel#sleep と `cmd` の pipe 読みは scheduler 経由（graphql
+  nonblocking_dataloader の 2 例）。**残り**: Mutex / Queue / ConditionVariable の block・unblock、IO 一般の読み書きの
+  io_wait / io_read、Thread#join、process_wait、address_resolve、timeout_after は scheduler を通らない（その fiber の
+  thread ごと止まる）。
 - **ObjectSpace.trace_object_allocations**（rspec-benchmark perform_allocation_spec 15 例）。今は NotImplementedError。
   アロケータに hook が無く、moving GC なので obj→位置の表は識別子で持つ必要がある。
 - **module_eval(String) で定義したメソッドの Module.nesting** に無名だったモジュールが入らない（定数探索は直した）。

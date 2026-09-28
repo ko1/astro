@@ -44,7 +44,8 @@ korb_fiber_trampoline(unsigned hi, unsigned lo)
     VALUE *const base = c->slots;                     /* proc.call(first resume's values) */
     base[0] = rep->proc;
     uint32_t n = 1;
-    if (rep->start_splat && KORB_ARRAY_P(rep->transfer)) {
+    if (rep->start_splat == 2) n = 0;                 /* resume() with no values: no block arguments */
+    else if (rep->start_splat && KORB_ARRAY_P(rep->transfer)) {
         const KorbArray *const aa = VAL2ARY(rep->transfer);
         n = aa->len;
         for (uint32_t i = 0; i < n; i++) base[1 + i] = korb_items_data(aa->items)[i];   /* no alloc in this loop */
@@ -225,7 +226,7 @@ korb_m_fiber_resume(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
             ? "attempt to resume the current fiber" : "attempt to resume a resuming fiber");
     if (UNLIKELY(rep->transferred))   /* CRuby: a transferred fiber is not resumable */
         return korb_raise_fiber_error(c, slots, "attempt to yield on a not resumed fiber");
-    if (rep->fstate == 0) rep->start_splat = VALUE_SLICE_LEN(a) > 1;   /* the block takes them as its arguments */
+    if (rep->fstate == 0) rep->start_splat = VALUE_SLICE_LEN(a) == 0 ? 2 : VALUE_SLICE_LEN(a) > 1;   /* the block takes them as its arguments */
     const VALUE xfer = UNWRAP(korb_fiber_pack(c, slots + 1, a));
     return korb_fiber_switch_in(c, slots + 1, VAL2FIBER(VALUE_REF_GET(self))->rep, xfer, 0);
 }
@@ -253,7 +254,7 @@ korb_m_fiber_transfer(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (UNLIKELY(rep->fstate == 2 && !rep->transferred))
         return korb_raise_fiber_error(c, slots, "attempt to transfer to a yielding fiber");
     rep->transferred = 1;
-    if (rep->fstate == 0) rep->start_splat = VALUE_SLICE_LEN(a) > 1;
+    if (rep->fstate == 0) rep->start_splat = VALUE_SLICE_LEN(a) == 0 ? 2 : VALUE_SLICE_LEN(a) > 1;
     const VALUE xfer = UNWRAP(korb_fiber_pack(c, slots + 1, a));
     return korb_fiber_switch_in(c, slots + 1, VAL2FIBER(VALUE_REF_GET(self))->rep, xfer, 0);
 }

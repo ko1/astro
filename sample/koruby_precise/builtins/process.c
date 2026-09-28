@@ -1069,7 +1069,13 @@ static RESULT korb_m_kernel_system(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 
 /* Kernel#` — run the command through the shell and return its stdout. */
 static RESULT korb_m_kernel_backtick(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self;
+    if (UNLIKELY(c->vm->running_fiber != NULL && !c->vm->running_fiber->blocking)) {
+        slots[1] = UNWRAP(korb_fiber_current_scheduler(c, slots + 2));
+        if (slots[1] != KORB_NIL) {           /* the pipe read waits in scheduler.io_wait (prelude) */
+            slots[0] = VALUE_REF_GET(self); slots[2] = VALUE_SLICE_GET(a, 0);
+            return korb_send(c, slots + 3, korb_intern(c->vm, "__sched_backtick", 16), 0, 2);
+        }
+    }
     slots[0] = VALUE_SLICE_GET(a, 0);
     CHECK(korb_spawn_to_str(c, slots));                        /* the command may be a #to_str object */
     char cmd[8192];

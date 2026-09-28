@@ -12429,21 +12429,28 @@ korb_block_home_refinements(CTX *c, const VALUE *def_env, VALUE *captured_self)
     VALUE h = (VALUE)(uintptr_t)def_env;
     /* a raw (untagged) frame base, as korb_make_proc hands it in */
     if (!(h & 1u) && (const VALUE *)def_env >= c->slots && (const VALUE *)def_env < c->slots_limit) h |= 1u;
+    /* validated like korb_bt_block_label: each live step goes strictly outward, and a
+     * frame's EP is read only once its identity says it is a block with an enclosing
+     * frame (anything else there is stale slots: hanami-router SEGV) */
+    const VALUE *limit = c->slots_limit;
     for (int guard = 0; guard < 64; guard++) {
         VALUE id;
+        const VALUE *base = NULL;
         if (h & 1u) {
-            const VALUE *const base = (const VALUE *)(uintptr_t)(h & ~(VALUE)1u);
-            if (base < c->slots || base >= c->slots_limit) break;
+            base = (const VALUE *)(uintptr_t)(h & ~(VALUE)1u);
+            if (((uintptr_t)base & 7u) || base < c->slots || base >= limit) break;
+            limit = base;
             id = korb_id_get(base);
-            h = korb_bt_outer_handle(korb_ep_get(base), base);
         } else if (h != 0 && KORB_ENV_P(h)) {
             id = VAL2ENV(h)->id;
-            h = VAL2ENV(h)->prev;
         } else break;
-        if (((uintptr_t)id & 7u) == KORB_FID_METHOD) {
-            if (!korb_bt_known_ptr(c->vm, (uintptr_t)(id & ~(VALUE)7u))) break;
-            return ((const struct korb_method *)(uintptr_t)(id & ~(VALUE)7u))->refine_set;
-        }
+        const uintptr_t ptr = (uintptr_t)(id & ~(VALUE)7u);
+        if ((id & 7u) == KORB_FID_MAIN || !korb_bt_known_ptr(c->vm, ptr)) break;
+        if ((id & 7u) == KORB_FID_METHOD) return ((const struct korb_method *)ptr)->refine_set;
+        if ((id & 7u) != KORB_FID_BLOCK) break;
+        const struct Node *const e = (const struct Node *)ptr;
+        if (e->head.kind != &kind_node_entry || e->u.node_entry.def_top_off != KORB_ID_OFF) break;
+        h = base ? korb_bt_outer_handle(korb_ep_get(base), base) : VAL2ENV(h)->prev;
     }
     return KORB_UNDEF;
 }
@@ -14937,6 +14944,23 @@ static RESULT korb_waitpid_park(CTX *c, VALUE *slots, const pid_t want, const in
     errno = saved;
     return RESULT_OK(KORB_NIL);
 }
+/* The running thread's Fiber scheduler when the running fiber is non-blocking
+ * (CRuby's rb_fiber_scheduler_current), else nil.  Asks Fiber.scheduler: a rare path. */
+static RESULT korb_fiber_current_scheduler(CTX *c, VALUE *slots) {
+    if (LIKELY(c->vm->running_fiber == NULL || c->vm->running_fiber->blocking)) return RESULT_OK(KORB_NIL);
+    const VALUE fibc = korb_const_get(c->vm, korb_intern(c->vm, "Fiber", 5));
+    if (!KORB_CLASS_P(fibc)) return RESULT_OK(KORB_NIL);
+    slots[0] = fibc;
+    return korb_send(c, slots + 1, korb_intern(c->vm, "scheduler", 9), 0, 0);
+}
+/* A thread (or the program) ends: its Fiber scheduler runs to completion (Fiber.__thread_end). */
+RESULT korb_fiber_thread_end(CTX *c, VALUE *slots);   /* main.c */
+RESULT korb_fiber_thread_end(CTX *c, VALUE *slots) {
+    const VALUE fibc = korb_const_get(c->vm, korb_intern(c->vm, "Fiber", 5));
+    if (!KORB_CLASS_P(fibc)) return RESULT_OK(KORB_NIL);
+    slots[0] = fibc;
+    return korb_send(c, slots + 1, korb_intern(c->vm, "__thread_end", 12), 0, 0);
+}
 #include "builtins/io.c"
 #ifdef KORB_WASI
 #  include "wasi/wasi_stubs.c"      /* WASI: プロセスもソケットも無い */
@@ -16515,9 +16539,10 @@ korb_fprint_quoted(FILE *fp, const char *bytes, uint32_t len)
             if (ch < 0x20 || ch == 0x7f) { fprintf(fp, "\\u%04X", ch); }
             else if (ch < 0x80) { fputc(ch, fp); }
             else {                /* >= 0x80: pass valid UTF-8 through, escape invalid bytes as \xHH */
-                int n = (ch >= 0xF0) ? 3 : (ch >= 0xE0) ? 2 : (ch >= 0xC0) ? 1 : -1;
-                bool valid = n >= 0 && i + (uint32_t)n < len;
-                for (int k = 1; valid && k <= n; k++) if (((unsigned char)bytes[i+k] & 0xC0) != 0x80) valid = false;
+                /* strict: a UTF-8-encoded surrogate or a value past U+10FFFF is bytes (CRuby) */
+                const uint32_t sl = korb_utf8_seq_len((const unsigned char *)bytes, i, len);
+                const bool valid = sl != 0;
+                const int n = (int)sl - 1;
                 /* a codepoint Onigmo does not call printable (C1 controls, line/paragraph
                  * separators, unassigned, noncharacters) is written as \uNNNN (CRuby) */
                 uint32_t cp = valid ? (uint32_t)(ch & (0x7Fu >> (n + 1))) : 0;

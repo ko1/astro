@@ -756,9 +756,7 @@ korb_bi_sleep(CTX *c, VALUE *slots, VALUE_SLICE args)
      * `scheduler.kernel_sleep(*args)`, with the duration passed through as
      * written.  The root fiber and a `blocking: true` one keep the timer. */
     if (UNLIKELY(c->vm->running_fiber != NULL && !c->vm->running_fiber->blocking)) {
-        const VALUE fibc = korb_const_get(c->vm, korb_intern(c->vm, "Fiber", 5));
-        const VALUE sched = KORB_CLASS_P(fibc)
-            ? korb_class_ivar_get(fibc, ID2SYM(korb_intern(c->vm, "@__scheduler", 12))) : KORB_NIL;
+        const VALUE sched = UNWRAP(korb_fiber_current_scheduler(c, slots));
         if (sched != KORB_NIL) {
             const uint32_t n = VALUE_SLICE_LEN(args);
             slots[0] = sched;
@@ -827,6 +825,10 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
         t->args = KORB_NIL;
     }
     RESULT r = korb_send(c, base + 1 + n, korb_intern(c->vm, "call", 4), 0, n);
+    base[0] = r.value;                        /* rooted while the scheduler closes */
+    const RESULT er = korb_fiber_thread_end(c, base + 1);
+    r.value = base[0];
+    if (UNLIKELY(er.state == KORB_RAISE) && r.state != KORB_RAISE) r = er;
     if (r.state == KORB_RAISE) {
         if (r.value == KORB_THREAD_KILL) {
             t->result = KORB_NIL;             /* #kill: 正常終了扱い (join は self を返す) */
