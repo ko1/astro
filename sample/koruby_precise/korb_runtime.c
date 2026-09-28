@@ -4972,6 +4972,30 @@ korb_const_in_ancestry(const struct korb_vm *vm, VALUE cref, uint32_t name_sym)
     }
     return UINT32_MAX;
 }
+/* korb_const_in_ancestry_scoped, but a pending autoload on the way answers first
+ * (*al_mod = its module): B.autoload(:X) beats A::X for `C::X` with C < B < A. */
+uint32_t
+korb_const_in_ancestry_scoped_al(CTX *c, VALUE recv, uint32_t name_sym, VALUE *al_mod)
+{
+    *al_mod = KORB_NIL;
+    const VALUE objc = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    for (VALUE k = recv; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
+        if (k == objc && recv != objc) {
+            const VALUE inc = VAL2CLASS(k)->included;
+            if (inc != KORB_NIL) {
+                const KorbArray *const ia = VAL2ARY(inc);
+                for (int32_t j = (int32_t)ia->len - 1; j >= 0; j--) {
+                    const uint32_t idx = korb_const_mro_seg_al(c, korb_items_data(ia->items)[j], name_sym, 0, al_mod);
+                    if (idx != UINT32_MAX || *al_mod != KORB_NIL) return idx;
+                }
+            }
+            continue;
+        }
+        const uint32_t idx = korb_const_mro_seg_al(c, k, name_sym, 0, al_mod);
+        if (idx != UINT32_MAX || *al_mod != KORB_NIL) return idx;
+    }
+    return UINT32_MAX;
+}
 /* Same walk for a scoped read (`Recv::NAME`), which skips Object unless Object
  * is the receiver — `Foo::Hash` is a NameError in Ruby >= 2.5. */
 uint32_t

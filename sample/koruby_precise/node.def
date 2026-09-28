@@ -1916,8 +1916,16 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * top-level fallback: firing its const_missing runs the require.  rspec
          * registers RSpec::Core::DidYouMean this way, and a bare `DidYouMean`
          * inside RSpec::Core reached the top-level module instead. */
-        if (idx == UINT32_MAX && korb_const_object_fallback_p(vm, cref))
+        if (idx == UINT32_MAX && korb_const_object_fallback_p(vm, cref)) {
             idx = korb_const_index_owned(vm, name_sym, KORB_NIL);   /* then top-level / builtin (owner nil) */
+            /* a module body's bare read reaches Object last, and Object's autoloads with it */
+            const VALUE objc = korb_const_get(vm, vm->class_name[KORB_C_OBJECT]);
+            if (idx == UINT32_MAX && korb_autoload_registered_p(c, objc, name_sym)) {
+                CHECK(korb_autoload_fire(c, slots, objc, name_sym, line, &slots[fb_off]));
+                cref = miss_cref = korb_cref_resolve(vm, cache->owner_chain, cache->chain_len, owner_name);
+                idx = korb_const_index_owned(vm, name_sym, KORB_NIL);
+            }
+        }
         /* An eval / `load(f, true)` cref answers LAST for a read that already has
          * a named namespace: `MAIN = self` written at a wrapper's top level and
          * read from a `module X` in the same file.  It must not come earlier —
@@ -2190,7 +2198,14 @@ node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, uint32_t line,
     uint32_t idx = korb_const_index_owned(vm, name, slots[0]);
     /* Only Object itself names the top-level constants: `Foo::Hash` is a
      * NameError in Ruby >= 2.5, `Object::Hash` still resolves. */
-    if (idx == UINT32_MAX) idx = korb_const_in_ancestry_scoped(vm, slots[0], name);
+    if (idx == UINT32_MAX) {
+        VALUE al_mod;                                     /* an ancestor's pending autoload beats a constant further up */
+        idx = korb_const_in_ancestry_scoped_al(c, slots[0], name, &al_mod);
+        if (UNLIKELY(idx == UINT32_MAX && al_mod != KORB_NIL && al_mod != slots[0])) {
+            CHECK(korb_autoload_fire(c, slots + 1, al_mod, name, line, &slots[fb_off]));
+            idx = korb_const_in_ancestry_scoped(vm, slots[0], name);
+        }
+    }
     if (UNLIKELY(vm->privconst_cnt != 0) &&               /* private_constant: unreachable as Owner::NAME */
         (idx != UINT32_MAX || korb_autoload_registered_p(c, slots[0], name)) &&
         (korb_const_private_p(vm, slots[0], name) ||
