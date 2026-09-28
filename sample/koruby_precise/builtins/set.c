@@ -2188,8 +2188,17 @@ static RESULT korb_m_class_cvar_defined(CTX *c, VALUE *slots, VALUE_REF self, VA
  * self (and ancestors unless inherit is false), each listed once. */
 static RESULT korb_m_class_cvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const bool inherit = (VALUE_SLICE_LEN(a) < 1) || KORB_TRUTHY(VALUE_SLICE_GET(a, 0));
-    slots[0] = UNWRAP(korb_ary_new(c, slots + 2, 8));   /* result (rooted at slots[0]) */
-    slots[1] = VALUE_REF_GET(self);                      /* current class (rooted; push may move it) */
+    /* inherited: every ancestor, included modules too (CRuby), in MRO order */
+    slots[3] = KORB_NIL;
+    if (inherit) {
+        slots[4] = VALUE_REF_GET(self);
+        slots[3] = UNWRAP(korb_send(c, slots + 5, korb_intern(c->vm, "ancestors", 9), 0, 0));
+        if (!KORB_ARRAY_P(slots[3])) slots[3] = KORB_NIL;
+    }
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 4, 8));   /* result (rooted at slots[0]) */
+    slots[1] = KORB_ARRAY_P(slots[3]) ? (VAL2ARY(slots[3])->len ? korb_items_data(VAL2ARY(slots[3])->items)[0] : KORB_NIL)
+                                      : VALUE_REF_GET(self);   /* current class (rooted; push may move it) */
+    uint32_t ai = 0;
     while (KORB_CLASS_P(slots[1])) {
         /* re-derive the cvars hash from the rooted class each iteration: a push
          * below may GC/move both the class and its hash. len never shrinks, so a
@@ -2203,10 +2212,11 @@ static RESULT korb_m_class_cvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             bool dup = false;                            /* de-dup across ancestors */
             for (uint32_t j = 0; j < VAL2ARY(slots[0])->len; j++)
                 if (korb_items_data(VAL2ARY(slots[0])->items)[j] == key) { dup = true; break; }
-            if (!dup) CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), key));
+            if (!dup) CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[0]), key));
         }
-        if (!inherit) break;
-        slots[1] = VAL2CLASS(slots[1])->superclass;
+        if (!KORB_ARRAY_P(slots[3])) break;
+        ai++;
+        slots[1] = ai < VAL2ARY(slots[3])->len ? korb_items_data(VAL2ARY(slots[3])->items)[ai] : KORB_NIL;
     }
     return RESULT_OK(slots[0]);
 }

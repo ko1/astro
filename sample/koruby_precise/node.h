@@ -264,6 +264,7 @@ RESULT korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VA
 /* Classes + constants (korb_runtime.c) */
 RESULT korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass);
 RESULT korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, uint32_t soft);
+VALUE  korb_cvar_block_cref(CTX *c, const VALUE *frame_base);   /* a block's lexical class for @@x (nil: no home method) */
 RESULT korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, VALUE val);
 void   korb_const_define(CTX *c, uint32_t name_sym, VALUE val);
 VALUE  korb_const_get_path(struct korb_vm *vm, uint32_t name_sym);

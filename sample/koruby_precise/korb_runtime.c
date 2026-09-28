@@ -21573,3 +21573,22 @@ korb_embed_pat(CTX *c, uint32_t kind, int32_t bind_off, NODE *value_node, NODE *
     va_end(ap);
     return p;
 }
+
+/* A class variable is lexical: in a block (a `Module.new do … end` run with a
+ * different self) its cref is the class the home method was written in, not the
+ * block's self.  KORB_NIL when the block has no home method (the caller keeps
+ * the frame's own answer). */
+VALUE
+korb_cvar_block_cref(CTX *c, const VALUE *const frame_base)
+{
+    if (frame_base == NULL) return KORB_NIL;
+    const VALUE id = korb_home_method_id(c, frame_base);
+    if (((uintptr_t)id & 7u) != KORB_FID_METHOD || !korb_bt_known_ptr(c->vm, (uintptr_t)(id & ~(VALUE)7u))) return KORB_NIL;
+    const struct korb_method *const m = (const struct korb_method *)(uintptr_t)(id & ~(VALUE)7u);
+    VALUE k = KORB_CLASS_P(m->def_cref) ? m->def_cref : m->owner;
+    if (KORB_CLASS_P(k) && VAL2CLASS(k)->is_singleton) {         /* `def self.for`: the class itself */
+        const VALUE at = korb_singleton_attached(c, k);
+        if (KORB_CLASS_P(at)) k = at;
+    }
+    return KORB_CLASS_P(k) ? k : KORB_NIL;
+}

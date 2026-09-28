@@ -3513,14 +3513,26 @@ NODE_DEF
 node_cvar_get(CTX *c, NODE *n, VALUE *slots, int32_t self_off, int32_t dc_off, uint32_t name@sym, uint32_t soft)
 {
     (void)n;
-    return korb_cvar_get(c, slots, slots[self_off], slots[dc_off], name, soft);
+    VALUE self = slots[self_off];
+    if (UNLIKELY(((uintptr_t)slots[dc_off] & 7u) == KORB_FID_BLOCK)) {   /* lexical, not the block's self */
+        const VALUE lc = korb_cvar_block_cref(c, KORB_FBASE_AT(slots, dc_off));
+        if (KORB_CLASS_P(lc)) self = lc;
+    }
+    return korb_cvar_get(c, slots, self, slots[dc_off], name, soft);
 }
 
 NODE_DEF
 node_cvar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, int32_t dc_off, uint32_t name@sym, VALUE val@child)
 {
     (void)n;
-    return korb_cvar_set(c, slots, slots[self_off], slots[dc_off], name, val);
+    VALUE self = slots[self_off];
+    if (UNLIKELY(((uintptr_t)slots[dc_off] & 7u) == KORB_FID_BLOCK)) {
+        slots[0] = val;                                   /* park: no GC below, but keep the operand rooted */
+        const VALUE lc = korb_cvar_block_cref(c, KORB_FBASE_AT(slots, dc_off));
+        if (KORB_CLASS_P(lc)) self = lc;
+        val = slots[0];
+    }
+    return korb_cvar_set(c, slots, self, slots[dc_off], name, val);
 }
 
 // ---- outer-variable access (depth >= 1, docs/v2_blocks_design.md §3) --------
