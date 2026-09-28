@@ -5563,7 +5563,7 @@ static RESULT korb_m_alias_public_send(CTX *c, VALUE *slots, VALUE_REF self, VAL
 { return korb_send_alias_tramp(c, slots, self, a, block, def_env, cself, c->vm->mid_public_send); }
 
 RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t oldm) {
-    if (!KORB_CLASS_P(klass)) klass = korb_dispatch_class(c, klass);   /* top-level (self=main) → alias on its class (Object) */
+    if (!KORB_CLASS_P(klass)) klass = korb_class_obj_of(c, klass);   /* top-level (self=main) → alias on its class (Object), not main's singleton */
     if (UNLIKELY(!KORB_CLASS_P(klass)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "alias on a non-class");
     { RESULT fr = korb_check_def_frozen(c, slots, klass); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* alias in a frozen class → FrozenError */
@@ -13586,14 +13586,13 @@ korb_super_new_skip_p(CTX *c, VALUE self, VALUE sdef, const VALUE skip)
     return sdef == skip || (si >= 0 && sdi >= 0 && si <= sdi) || korb_class_has_ancestor(sdef, skip);
 }
 
-/* After #initialize: a raise, or a `return` / `throw` aimed further out,
- * propagates.  A `break v` from the block given to .new makes .new return v;
- * another's passes on; with no block it is dropped, as before (one can leak out of an initialize:
- * docs/todo.md "BREAK が initialize から漏れる"). */
+/* After #initialize: a raise, or a `return` / `throw` / `break` aimed further
+ * out, propagates; a `break v` from the block given to .new makes .new return v. */
 #define KORB_NEW_INIT_CHECK(ir, blk, env) do {                                        \
         if (UNLIKELY((ir).state != KORB_NORMAL)) {                                    \
             if ((ir).state != KORB_BREAK) return (ir);                                \
-            if ((blk) != NULL) return korb_break_owned(c, (blk), (env)) ? RESULT_OK((ir).value) : (ir); \
+            if ((blk) == NULL || !korb_break_owned(c, (blk), (env))) return (ir);  \
+            return RESULT_OK((ir).value);                                          \
         }                                                                             \
     } while (0)
 
@@ -14516,7 +14515,7 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
             slots[1] = UNWRAP(korb_str_new(c, slots + 1, "", 0));   /* instance (rooted) */
             RESULT ir = korb_m_str_initialize(c, slots + 2, VALUE_REF_AT(&slots[1]),
                                               VALUE_SLICE_MAKE(&slots[-(korb_sword_t)argc], argc));
-            if (UNLIKELY(ir.state != KORB_NORMAL && ir.state != KORB_BREAK)) return ir;   /* a raise, or return/throw aimed further out */
+            if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;   /* a raise, or return/throw/break aimed further out */
             return RESULT_OK(slots[1]);
         }
         /* subclass of a constructible builtin (String/Array/Hash/Set): build that
@@ -15084,7 +15083,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                 if (LIKELY(init->is_simple)) {     /* fixed-arity initialize → streamlined invoke (skips kw/opt/rest handling) */
                     base[-1] = obj;                /* stage obj as self at the frame's bottom header */
                     const RESULT ir = korb_invoke_simple(c, slots, init, argc, korb_flink_line(flink), vm->mid_initialize, obj, idef);
-                    if (UNLIKELY(ir.state != KORB_NORMAL && ir.state != KORB_BREAK)) return ir;   /* a raise, or return/throw aimed further out */
+                    if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;   /* a raise, or return/throw/break aimed further out */
                     return RESULT_OK(base[-1]);    /* the (possibly moved) obj */
                 }
                 base[-1] = obj;                    /* stage obj as self at recv_slot (slots[-argc-1]) */
@@ -15093,7 +15092,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, VALUE flink, uint32_t argc,
                  * locals_cnt (SIGBUS). */
                 const RESULT ir = korb_dispatch_method(c, slots, init, vm->mid_initialize, korb_flink_line(flink), argc,
                                                        idef, NULL, NULL, NULL, framed);
-                if (UNLIKELY(ir.state != KORB_NORMAL && ir.state != KORB_BREAK)) return ir;   /* a raise, or return/throw aimed further out */
+                if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;   /* a raise, or return/throw/break aimed further out */
                 return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
             }
             if (UNLIKELY(argc != 0))
@@ -21063,7 +21062,7 @@ korb_exc_build(CTX *c, VALUE *slots, VALUE_SLICE args)
             if (iargc) slots[6] = VALUE_SLICE_GET(args, 1);
             VALUE *const icur = slots + 6 + iargc;
             RESULT ir = korb_invoke_method(c, icur, uinit, iargc, 0, init_mid, slots[1], idef, NULL, NULL, KORB_NIL);
-            if (UNLIKELY(ir.state != KORB_NORMAL && ir.state != KORB_BREAK)) return ir;   /* a raise, or return/throw aimed further out */
+            if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;   /* a raise, or return/throw/break aimed further out */
             slots[1] = (icur - iargc)[-1];           /* the (moved) exception */
         }
         if (n >= 3) {                                /* raise Class, msg, backtrace */

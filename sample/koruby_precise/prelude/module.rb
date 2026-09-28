@@ -373,3 +373,17 @@ class Refinement < Module
 
   undef_method :append_features, :prepend_features, :extend_object
 end
+
+# main's own singleton methods, for reflection (CRuby: main.singleton_methods is
+# [:inspect, :to_s]; main.method(:ruby2_keywords).owner is main's singleton class).
+# include / public / private / define_method / using stay on the C paths: a
+# no-argument `private` has to reach the caller's default visibility.
+# main.c calls this once `main` exists (after the prelude).
+def Object.__korb_main_setup(main)
+  main.singleton_class.class_eval do
+    def inspect = "main"
+    def to_s = "main"
+    private def ruby2_keywords(*names) = ::Object.__send__(:ruby2_keywords, *names)
+  end
+  nil
+end

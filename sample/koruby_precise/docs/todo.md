@@ -24,20 +24,15 @@
   直すには bref スタックの各エントリに退避したフレームを持たせ、ブロックの読み書きは定義元より深い最初の
   エントリに向ける必要がある。再現: `def m2; "xy" =~ /(x)(y)/; y2 { $2 }; end; def y2; "q" =~ /q/; yield; end`
   が CRuby は "y"、koruby は nil。
-- **BREAK が initialize から漏れる** (w16 biz): `spec/periods/before_spec.rb` の 9 例目で
-  `Biz::Periods::Before#initialize` が KORB_BREAK 状態で返る（break_blk は非 NULL = どこかのブロックの break が
-  自分のイテレータで消費されていない）。単独スクリプトでは出ず、前の 8 例（lazy の first / take と
-  Enumerator#next の外部列挙）の後でだけ出る。`.new` の側で RETURN / THROW を伝播するようにしたとき、
-  ブロック無しの `.new` では BREAK を従来どおり捨てることにして回避した（伝播させると subject が nil）。
-  0f884fb4 で生成器の sink / break 素通りを直したので、漏れの元はそれだった可能性が高い（未確認: 捨てるのをやめて biz を回せば分かる）。
-- ~~**lazy flat_map を first(n) の後にもう一度回すと空**~~ (2026-09-28 済, 0f884fb4): 生成器の sink の連鎖が Fiber を
-  跨いでいた（Enumerator#next の Fiber の中の each が再開側の sink に繋がる）。Fiber ごとに退避・復元し、break の素通り判定を
-  break_blk で行うようにした。biz 4 行が全一致。
-- **main の特異メソッドが無い** (w16 ruby2_keywords 1 行): CRuby の main は `include` / `public` /
+- ~~**BREAK が initialize から漏れる**~~ (2026-09-28 済): 元は生成器の sink が Fiber を跨いでいたこと（0f884fb4 で修正）。
+  ブロック無しの `.new` も BREAK を捨てずに伝播するようにして biz 全一致を確認。
+- **main の特異メソッドが一部しか無い** (w16 ruby2_keywords 1 行は 2026-09-28 に `to_s` / `inspect` / `ruby2_keywords` を特異メソッドにして済): CRuby の main は `include` / `public` /
   `private` / `define_method` / `using` / `ruby2_keywords` / `to_s` / `inspect` を特異メソッドで持つ
   (`main.method(:include).owner` が main の特異クラス、`singleton_methods` が `[:inspect, :to_s]`)。
   koruby は Kernel の global と `klass == KORB_NIL` 判定の特別扱いなので、`method(:include)` /
-  `method(:ruby2_keywords)` が NameError、`respond_to?(:ruby2_keywords, true)` が false。
+  `method(:ruby2_keywords)` が NameError、`respond_to?(:ruby2_keywords, true)` が false だった。残り: include / public / private /
+  define_method / using は C の特別扱いのままで、`main.method(:include)` は NameError（引数無しの `private` は呼び出し側の既定可視性に
+  効く必要があり、委譲する特異メソッドでは置けない）。
 
 ## 未: refinement と Enumerator の残り (2026-09-27)
 

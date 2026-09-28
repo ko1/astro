@@ -1613,6 +1613,10 @@ main(int argc, char *argv[])
             if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); korb_io_flush_all(c->vm); return 1; }
             c->slots[-1] = mr.value;                  /* main self at base[-1] (bottom header) */
             c->vm->top_self = mr.value;               /* every required file's top level runs as this same `main` */
+            toplevel_cursor[0] = korb_const_get(c->vm, korb_intern(c->vm, "Object", 6));   /* Object.__korb_main_setup(main) */
+            toplevel_cursor[1] = mr.value;
+            const RESULT sr = korb_send(c, toplevel_cursor + 2, korb_intern(c->vm, "__korb_main_setup", 17), 0, 1);
+            if (sr.state == KORB_RAISE) { korb_report_uncaught(c, sr.value); korb_io_flush_all(c->vm); return 1; }
             /* The frame's identity: it names the script and says there is
              * nothing below it (not require'd).  korb_cvar_cref and friends test
              * for the method tag, so this tag reads as "no method frame" — which
