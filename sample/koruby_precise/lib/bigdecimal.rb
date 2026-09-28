@@ -29,7 +29,7 @@ class BigDecimal < Numeric
   EXCEPTION_ZERODIVIDE = 16
   EXCEPTION_ALL       = 255
   BASE                = 10000
-  VERSION             = "3.2.4"
+  VERSION             = "4.1.2"
 
   # 20 significant digits is the default working precision for division and
   # other inexact operations (CRuby grows it from the operands' precision).
@@ -376,7 +376,9 @@ class BigDecimal < Numeric
     #   exp_a - exp_b - n + len(q)
     # (the -shift and the nd_b - nd_a from the mantissa ratio cancel to -n).
     shift = n + o.__ndigits - __ndigits
-    q = (@digits * 10**shift) / o.__digits
+    # a long dividend asks for fewer digits than it has: scale the divisor instead
+    # (10**negative is a Rational, and q must stay an Integer)
+    q = shift >= 0 ? (@digits * 10**shift) / o.__digits : @digits / (o.__digits * 10**-shift)
     e = @exp - o.__exp - n + q.to_s.length
     v = BigDecimal.__new(@sign * o.__sign, q, e)
     return v.__round_sig(prec) unless prec.zero?
@@ -403,37 +405,41 @@ class BigDecimal < Numeric
            end
       q += 1 if up
     end
+    return BigDecimal.__new(@sign, q / 10, @exp + 1) if q == 10**n   # 0.99999 → 1.0000: the carry adds a digit
     BigDecimal.__new(@sign, q, @exp)
   end
 
   def %(other)
     o = __coerce_operand(other) or return __coerce_fallback(other, :%)
     raise ZeroDivisionError, "divided by 0" if o.zero?
-    return BigDecimal.__new(1, 0, 0, :nan) if !finite? || !o.finite?
+    return BigDecimal.__new(1, 0, 0, :nan) if nan? || o.nan? || !finite?
+    unless o.finite?                                     # bigdecimal 4: as divmod's remainder
+      return zero? || @sign == o.__sign ? self : o
+    end
     a, b, e = __aligned(o)                               # exact: no rounding of the quotient
     __from_scaled(a - b * (a / b), e)                    # Integer#/ floors
   end
   alias modulo %
 
+  # bigdecimal 4: the quotient is an Integer, NaN / an infinite dividend raise,
+  # an infinite divisor leaves the dividend (or -1 and the divisor across signs)
   def divmod(other)
     o = __coerce_operand(other) or return __coerce_fallback(other, :divmod)
-    # NaN wins over the divide-by-zero check (CRuby)
-    return [BigDecimal.__new(1, 0, 0, :nan), BigDecimal.__new(1, 0, 0, :nan)] if nan? || o.nan?
+    raise FloatDomainError, "Computation results in 'NaN' (Not a Number)" if nan? || o.nan?
     raise ZeroDivisionError, "divided by 0" if o.finite? && o.zero?
-    # An infinite dividend gives [±Infinity, NaN] (bigdecimal 3.x)
-    if @special == :inf
-      return [BigDecimal.__new(@sign * o.__sign, 0, 0, :inf), BigDecimal.__new(1, 0, 0, :nan)]
-    end
-    return [BigDecimal.__new(1, 0, 0, :nan), BigDecimal.__new(1, 0, 0, :nan)] unless o.finite?
+    raise FloatDomainError, "Computation results in 'Infinity'" if @special == :inf
+    return [0, BigDecimal.__new(1, 0, 0)] if zero?
+    return (@sign == o.__sign ? [0, self] : [-1, o]) unless o.finite?
     # CRuby divides first and floors the (rounded) quotient, so the pair stays
     # consistent with `self / other` even where that division loses digits.
-    q = BigDecimal(__unlimited { self / o }.floor, 0)
-    [q, __unlimited { self - q * o }]
+    q = __unlimited { self / o }.floor
+    [q, __unlimited { self - BigDecimal(q, 0) * o }]
   end
-
   def remainder(other)
     o = __coerce_operand(other) or return __coerce_fallback(other, :remainder)
-    return BigDecimal.__new(1, 0, 0, :nan) if !finite? || !o.finite? || o.zero?
+    raise ZeroDivisionError, "divided by 0" if o.finite? && o.zero?
+    return BigDecimal.__new(1, 0, 0, :nan) if nan? || o.nan? || !finite?
+    return self unless o.finite?                         # |self| < Infinity: all of it remains
     a, b, e = __aligned(o)
     q = a.abs / b.abs
     q = -q if (a < 0) != (b < 0)
@@ -532,8 +538,9 @@ class BigDecimal < Numeric
            end
       kept += 1 if up
     end
+    carry = keep > 0 && kept == 10**keep ? 1 : 0     # 99.99 → 100.0: the carry adds a digit
     value = kept.zero? ? BigDecimal.__new(@sign, 0, 0)
-                       : BigDecimal.__new(@sign, kept, @exp - (keep > 0 ? 0 : keep) + (keep > 0 ? 0 : 0)).__rescale(keep, digits)
+                       : BigDecimal.__new(@sign, kept, @exp + carry - (keep > 0 ? 0 : keep)).__rescale(keep, digits)
     n.nil? ? value.to_i : value
   end
 
@@ -670,25 +677,23 @@ module Kernel
     when Float
       return BigDecimal.__new(1, 0, 0, :nan) if value.nan?
       return BigDecimal.__new(value > 0 ? 1 : -1, 0, 0, :inf) if value.infinite?
-      unless precision.is_a?(Integer) && (precision > 0 || value == value.to_i)
-        raise ArgumentError, "can't omit precision for a Float" if precision.zero? && value != value.to_i
-      end
+      raise ArgumentError, "negative precision" if precision.to_i < 0
       v = BigDecimal.__parse(value.to_s, false)
-      precision.to_i > 0 ? v.__round_sig(precision.to_i) : v
+      # no precision (bigdecimal 3.3+): the shortest digits, cut at 16 significant (CRuby truncates)
+      precision.to_i > 0 ? v.__round_sig(precision.to_i) : v.__round_sig(Float::DIG + 1, :truncate)
     when Rational
       raise ArgumentError, "can't omit precision for a Rational" if precision.to_i <= 0
       BigDecimal(value.numerator, 0).div(BigDecimal(value.denominator, 0), precision.to_i)
     when nil
       raise TypeError, "can't convert nil into BigDecimal" if exception
       nil
-    when String
+    when String                                          # the digits as written: the precision is not applied (CRuby)
       begin
-        v = BigDecimal.__parse(value, true)
+        BigDecimal.__parse(value, true)
       rescue ArgumentError
         raise if exception
         return nil
       end
-      precision.to_i > 0 ? v.__round_sig(precision.to_i) : v
     else
       if value.respond_to?(:to_str)
         BigDecimal(value.to_str, precision, exception: exception)
@@ -706,7 +711,7 @@ class Integer
 end
 
 class Float
-  def to_d(prec = 0) = BigDecimal(self.to_s, prec)
+  def to_d(prec = 0) = BigDecimal(self, prec)
 end
 
 class String
