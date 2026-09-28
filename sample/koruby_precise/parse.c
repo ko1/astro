@@ -1977,8 +1977,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                         (PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE) &&
                          !((const pm_rest_parameter_node_t *)ps->rest)->name);
                     if (anon_rest) {
-                        if (ps->posts.size) { pop_frame(tc); return kp_unsupported(tc, ps->rest, "anonymous block rest with post params"); }
-                        rest_slot = implicit_rest ? -3 : -2;
+                        rest_slot = implicit_rest ? -3 : -2;   /* with posts: they follow the front directly (no rest local) */
                     } else {
                     if (!PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, ps->rest, "block splat parameter"); }
                     const pm_rest_parameter_node_t *rp = (const pm_rest_parameter_node_t *)ps->rest;
@@ -1998,6 +1997,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     loc++;
                 }
                 bparams = loc;                              /* req + opt + rest(1) + post */
+                if (rest_slot == -2 && post_cnt > 0 && needs_spec) { pop_frame(tc); return kp_unsupported(tc, ps->rest, "anonymous block rest with destructuring params"); }
                 if (needs_spec) {
                     /* one entry per logical param (the rest param is a scalar
                      * entry); leaves carry their target local index. */

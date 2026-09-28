@@ -12563,8 +12563,8 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         const uint32_t pc = korb_entry_params_cnt(block);
         const bool has_rest = korb_entry_has_rest(block);
         const uint32_t rs = korb_entry_rest_slot(block) >= 0 ? (uint32_t)korb_entry_rest_slot(block) : pc;
-        const uint32_t npost = has_rest ? ((pc > rs + 1) ? (pc - rs - 1) : 0)
-                                        : korb_entry_post_cnt(block);   /* |a, b=1, c| — posts are required too */
+        const uint32_t npost = (has_rest && korb_entry_rest_slot(block) >= 0) ? ((pc > rs + 1) ? (pc - rs - 1) : 0)
+                                        : korb_entry_post_cnt(block);   /* |a, b=1, c| / |*, c| — posts are required too */
         const uint32_t lo = korb_entry_req_cnt(block) + npost;   /* required front + required post */
         if (UNLIKELY(argc < lo || (!has_rest && argc > pc))) {
             if (has_rest)   return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u+)", argc, lo);
@@ -12638,16 +12638,21 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
             for (uint32_t i = 1; i < dn; i++) bf[1 + i] = KORB_NIL;
         }
         for (uint32_t i = dn; i < blocals; i++) bf[1 + i] = KORB_NIL;
-    } else if (korb_entry_rest_slot(block) >= 0) {     /* |front..., *rest[, post...]| (front may include optionals) */
+    } else if (korb_entry_rest_slot(block) >= 0 ||
+               (korb_entry_rest_slot(block) == -2 && korb_entry_post_cnt(block) > 0)) {   /* |front..., *rest[, post...]| (front may include optionals) */
         const uint32_t np = korb_entry_params_cnt(block);
-        const uint32_t rs = (uint32_t)korb_entry_rest_slot(block);
+        const bool anon_rest = korb_entry_rest_slot(block) < 0;              /* `|a, *, b|`: no local for the rest */
         const uint32_t reqc = korb_entry_req_cnt(block);
         struct Node **const opts = korb_entry_opt_defaults(block);          /* front optionals' defaults (NULL if none) */
-        const uint32_t npost = korb_entry_post_cnt(block) ? korb_entry_post_cnt(block)
-                             : ((np > rs + 1) ? (np - rs - 1) : 0);
+        const uint32_t npost = anon_rest ? korb_entry_post_cnt(block)
+                             : korb_entry_post_cnt(block) ? korb_entry_post_cnt(block)
+                             : ((np > (uint32_t)korb_entry_rest_slot(block) + 1) ? (np - (uint32_t)korb_entry_rest_slot(block) - 1) : 0);
         /* logical params before *rest: the spec carries it in its header byte
          * (locals != logical params once a param destructures) */
-        const uint32_t nfront = spec ? spec[0] : ((np > npost + 1) ? np - npost - 1 : 0);
+        const uint32_t nfront = spec ? spec[0] : anon_rest ? (np > npost ? np - npost : 0)
+                              : ((np > npost + 1) ? np - npost - 1 : 0);
+        /* posts go right after the rest local, or after the front when there is none */
+        const uint32_t rs = anon_rest ? nfront - 1 : (uint32_t)korb_entry_rest_slot(block);
         const bool splat = (!is_lambda && np > 1 && argc == 1 && KORB_ARRAY_P(argv[0]));   /* auto-splat one Array (lambda: never) */
         const uint32_t srcn = splat ? VAL2ARY(argv[0])->len : argc;
         /* Copy the source args into block-frame scratch FIRST (rooted): argv may
@@ -12688,7 +12693,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         if (fsp) {                          /* the rest param's own entry is 0x00 <local> */
             bf[1 + fsp[1]] = VALUE_REF_GET(rarr);
             fsp += 2; sploc++;
-        } else {
+        } else if (!anon_rest) {
             bf[1 + rs] = VALUE_REF_GET(rarr);
         }
         /* Posts take the LAST npost args.  When there are not even enough args
