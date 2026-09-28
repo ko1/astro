@@ -17440,6 +17440,37 @@ korb_warn_const_redef_at(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner,
     if (korb_const_get_loc(c->vm, name_sym, slots[0], &fsym, &line))
         korb_warn_at(c, slots + 1, korb_sym_name(c->vm, fsym), line, "previous definition of %s was here", nm);
 }
+/* The common tail of a constant assignment at node `n`: warn on reassignment
+ * (with the assignment's position), define, record the position for
+ * Module#const_source_location, and fire a custom const_added. */
+RESULT
+korb_const_assign_at(CTX *c, VALUE *slots, const struct Node *n, uint32_t name_sym, VALUE ownc, VALUE val)
+{
+    /* reassigning an existing constant warns (the name table doubles as the
+     * global-variable table — `$x = 1` is a plain assignment, never a warning) */
+    if (UNLIKELY(korb_const_index_owned(c->vm, name_sym, ownc) != UINT32_MAX) &&
+        korb_sym_name(c->vm, name_sym)[0] != '$')
+        { uint32_t wf, wl;                                /* warn with this assignment's position */
+          slots[0] = val; slots[1] = ownc;                /* park: the warning goes out through $stderr,
+                                                           * which a harness can replace with a Ruby object */
+          if (korb_get_srcloc(c->vm, n, &wf, &wl)) korb_warn_const_redef_at(c, slots + 2, name_sym, slots[1], korb_sym_name(c->vm, wf), wl);
+          else korb_warn_const_redef(c, slots + 2, name_sym, slots[1]);
+          val = slots[0]; ownc = slots[1]; }              /* re-read: the warning ran Ruby */
+    korb_const_define_owned(c, name_sym, val, ownc);
+    { uint32_t fsym, fline;                              /* Module#const_source_location */
+      if (korb_get_srcloc(c->vm, n, &fsym, &fline)) korb_const_reg_loc(c->vm, name_sym, ownc, fsym, fline); }
+    if (UNLIKELY(ownc != KORB_NIL)) {                     /* fire const_added(name) if the module defines the hook */
+        const uint32_t ca = korb_intern(c->vm, "const_added", 11);
+        if (UNLIKELY(korb_mod_hook_custom(c, ownc, ca))) {
+            slots[0] = val;                              /* root val across the hook's GC */
+            slots[1] = ownc; slots[2] = ID2SYM(name_sym);
+            RESULT hr = korb_send(c, slots + 3, ca, 0, 1);
+            if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+            return RESULT_OK(slots[0]);                  /* re-read (may have moved) */
+        }
+    }
+    return RESULT_OK(val);
+}
 void
 korb_warn_const_redef(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner)
 {

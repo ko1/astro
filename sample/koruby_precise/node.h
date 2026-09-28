@@ -711,6 +711,7 @@ void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const c
  * makes the warning fire once however often the literal is evaluated. */
 struct korb_dupkey_warn { const char *file; const char *key; uint32_t line, line2; uint8_t done; };
 void korb_warn_const_redef(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner);
+RESULT korb_const_assign_at(CTX *c, VALUE *slots, const struct Node *n, uint32_t name_sym, VALUE ownc, VALUE val);
 void korb_warn_const_redef_at(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner,
                               const char *file, uint32_t line0);   /* with the assignment's position */
 void korb_const_reg_loc(struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t file_sym, uint32_t line);

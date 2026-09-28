@@ -1452,6 +1452,7 @@ static NODE *kp_warn_dup_hash_keys(struct kp_ctx *tc, struct pm_node **assocs, s
 
 extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
 extern const struct NodeKind kind_node_ivar_arith;   /* fused `@x +=` / `@x -=` */
+extern const struct NodeKind kind_node_const_set_on;   /* `A::B = v`, A read like a constant */
 extern const struct NodeKind kind_node_caseeq;       /* case/when `v === subj` */
 extern const struct NodeKind kind_node_entry;        /* block/lambda entry — guards proc/block reify */
 extern const struct NodeKind kind_node_aref;         /* recv[idx] */
@@ -6207,9 +6208,18 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t name = kp_intern_cid(tc, cpw->target->name);
         uint32_t owner_name = tc->frame->class_name_sym;
         const pm_node_t *const parent = cpw->target->parent;
-        if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_READ_NODE))
-            owner_name = kp_intern_cid(tc, ((const pm_constant_read_node_t *)parent)->name);
-        else if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE) && kp_const_path_static_p(parent)) {
+        /* `A::B = v` with a bare `A`: A is read like any constant (lexical scope,
+         * then ancestors) and B set on it.  A flat by-name owner would pick
+         * whichever `A` was defined first (dry-types gives every
+         * `include Dry::Types()` its own `Coercible`). */
+        if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_READ_NODE)) {
+            NODE *o, *v;
+            WITH_CHAIN(tc, kind_node_const_set_on.slot_count, (o = transduce(tc, parent), v = transduce(tc, cpw->value)));
+            NODE *cn = ALLOC_node_const_set_on(name, o, v);
+            korb_reg_srcloc(tc->c->vm, cn, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, node));
+            return cn;
+        }
+        if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE) && kp_const_path_static_p(parent)) {
             /* The WHOLE parent path, not just its rightmost name: the owner is
              * resolved by a flat by-name lookup, and a same-named module in
              * another namespace answers to it first (rspec lazily loads
