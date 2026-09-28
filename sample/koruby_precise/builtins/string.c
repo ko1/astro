@@ -4061,61 +4061,13 @@ static RESULT korb_m_str_bytes_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (block) return korb_m_str_each_byte(c, slots, self, a, block, def_env, cself);
     return korb_m_str_bytes(c, slots, self, a);
 }
-/* ---- extended grapheme clusters (an approximation of UAX #29) ------------ */
-/* Grapheme_Cluster_Break = Extend (or SpacingMark, which behaves the same for
- * our purposes): the combining-mark blocks plus the variation selectors and the
- * emoji skin-tone modifiers. */
-static bool korb_gcb_extend(uint32_t cp) {
-    return (cp >= 0x0300 && cp <= 0x036F) || (cp >= 0x0483 && cp <= 0x0489) ||
-           (cp >= 0x0591 && cp <= 0x05BD) || cp == 0x05BF || cp == 0x05C1 || cp == 0x05C2 ||
-           (cp >= 0x0610 && cp <= 0x061A) || (cp >= 0x064B && cp <= 0x065F) || cp == 0x0670 ||
-           (cp >= 0x06D6 && cp <= 0x06DC) || (cp >= 0x0730 && cp <= 0x074A) ||
-           (cp >= 0x07A6 && cp <= 0x07B0) || (cp >= 0x0816 && cp <= 0x082D) ||
-           (cp >= 0x0900 && cp <= 0x0903) || (cp >= 0x093A && cp <= 0x094F) ||
-           (cp >= 0x0951 && cp <= 0x0957) || (cp >= 0x0E31 && cp <= 0x0E3A) ||
-           (cp >= 0x0EB1 && cp <= 0x0EBC) || (cp >= 0x0F71 && cp <= 0x0F84) ||
-           (cp >= 0x1AB0 && cp <= 0x1AFF) || (cp >= 0x1DC0 && cp <= 0x1DFF) ||
-           (cp >= 0x20D0 && cp <= 0x20F0) || (cp >= 0xFE00 && cp <= 0xFE0F) ||
-           (cp >= 0xFE20 && cp <= 0xFE2F) || (cp >= 0x1F3FB && cp <= 0x1F3FF) ||
-           (cp >= 0xE0020 && cp <= 0xE007F) || (cp >= 0xE0100 && cp <= 0xE01EF);
-}
-static bool korb_gcb_hangul_v(uint32_t cp) { return cp >= 0x1160 && cp <= 0x11A7; }
-static bool korb_gcb_hangul_t(uint32_t cp) { return cp >= 0x11A8 && cp <= 0x11FF; }
-static bool korb_gcb_regional(uint32_t cp) { return cp >= 0x1F1E6 && cp <= 0x1F1FF; }
+/* ---- extended grapheme clusters (UAX #29) --------------------------------- */
+/* The regexp engine's segmentation (`\X`), so String#grapheme_clusters and /\X/
+ * agree (the approximation here missed Extend marks such as U+3099: reline). */
+#include "../../astrogre/unicode_grapheme.h"
 /* Byte length of the extended grapheme cluster starting at p[i] (i < n). */
 static uint32_t korb_utf8_grapheme_len(const char *p, uint32_t i, uint32_t n) {
-    if (korb_utf8_seq_len((const unsigned char *)p, i, n) == 0) return 1;   /* broken byte: its own cluster */
-    uint32_t cl0 = 0;
-    const uint32_t cp0 = korb_utf8_decode(p + i, n - i, &cl0);
-    if (cl0 == 0) return 1;
-    uint32_t j = i + cl0;
-    if (cp0 == '\r') {                                 /* CR LF is one cluster */
-        if (j < n && p[j] == '\n') j++;
-        return j - i;
-    }
-    if (cp0 == '\n' || (cp0 < 0x20) || cp0 == 0x7F) return cl0;   /* Control: alone */
-    bool prev_regional = korb_gcb_regional(cp0);
-    bool prev_hangul_l = (cp0 >= 0x1100 && cp0 <= 0x115F);
-    bool prev_hangul_v = korb_gcb_hangul_v(cp0) || (cp0 >= 0xAC00 && cp0 <= 0xD7A3);
-    while (j < n) {
-        if (korb_utf8_seq_len((const unsigned char *)p, j, n) == 0) break;   /* broken byte ends the cluster */
-        uint32_t cl = 0;
-        const uint32_t cp = korb_utf8_decode(p + j, n - j, &cl);
-        if (cl == 0) break;
-        if (korb_gcb_extend(cp)) { j += cl; continue; }
-        if (cp == 0x200D) {                            /* ZWJ glues whatever follows */
-            j += cl;
-            if (j < n) { uint32_t cl2 = 0; (void)korb_utf8_decode(p + j, n - j, &cl2); if (cl2) j += cl2; }
-            prev_regional = false; prev_hangul_l = prev_hangul_v = false;
-            continue;
-        }
-        if (prev_regional && korb_gcb_regional(cp)) { j += cl; prev_regional = false; continue; }
-        if (prev_hangul_l && (korb_gcb_hangul_v(cp) || (cp >= 0xAC00 && cp <= 0xD7A3)))
-            { j += cl; prev_hangul_l = false; prev_hangul_v = true; continue; }
-        if (prev_hangul_v && korb_gcb_hangul_t(cp)) { j += cl; continue; }
-        break;
-    }
-    return j - i;
+    return (uint32_t)(agre_grapheme_end((const uint8_t *)p, n, i) - i);
 }
 /* String#grapheme_clusters / #each_grapheme_cluster.  A non-UTF-8 encoding has
  * no cluster table here, so it falls back to per-character iteration. */
