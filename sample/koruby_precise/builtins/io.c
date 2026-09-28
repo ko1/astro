@@ -2032,6 +2032,26 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+static RESULT korb_m_io_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
+/* IO#clone(freeze: nil) — the dup below, frozen like the receiver unless freeze: says otherwise */
+static RESULT korb_m_io_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    VALUE fz = KORB_NIL;
+    if (n == 1 && KORB_HASH_P(VALUE_SLICE_GET(a, 0))) {
+        const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(a, 0));
+        const int32_t fi = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "freeze", 6)));
+        if (fi >= 0) fz = korb_items_data(h->items)[2 * fi + 1];
+    } else if (n != 0) {
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", n);
+    }
+    if (fz != KORB_NIL && fz != KORB_TRUE && fz != KORB_FALSE)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unexpected value for freeze: %s", korb_coerce_name(c, fz));
+    const bool freeze = fz == KORB_NIL ? (((const AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self))->flags & KORB_FL_FROZEN) != 0
+                                       : fz == KORB_TRUE;
+    slots[0] = UNWRAP(korb_m_io_dup(c, slots + 1, self, VALUE_SLICE_MAKE(NULL, 0)));
+    if (freeze) ((AroObjectHeader *)(uintptr_t)slots[0])->flags |= KORB_FL_FROZEN;
+    return RESULT_OK(slots[0]);
+}
 /* IO#dup / IO#clone — a genuine descriptor dup (dup(2)), not just a copy of the
  * wrapper object: mspec's output_to_fd saves a stream this way and restores it
  * with #reopen, which only works if the saved IO owns its own fd. */
@@ -3035,7 +3055,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("__io_bom_encoding", set_enc_by_bom, 0);
     IOM("__io_writable?", writable_p, 0);
     IOM("reopen", reopen, -1);       IOM("pid", pid, 0);
-    IOM("dup", dup, 0);              IOM("clone", dup, 0);
+    IOM("dup", dup, 0);              IOM("clone", clone, -1);
     IOM("__init_fd", init_fd, -1);
     IOM("ioctl", ioctl, -1);   IOM("fcntl", fcntl, -1);
     IOM("binmode", binmode, 0);      IOM("ungetc", ungetc, 1);

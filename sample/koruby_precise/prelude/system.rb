@@ -901,7 +901,10 @@ end
 
 class File
   # File-only in CRuby (an IO / pipe has no #size or file times)
-  def size; stat.size; end
+  def size          # CRuby flushes the write buffer first
+    flush
+    stat.size
+  end
   # The open file's times.  koruby re-stats the path it was opened with, which
   # is all the fd-less File::Stat representation can offer.
   def atime = File.atime(__time_path)
