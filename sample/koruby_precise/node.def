@@ -1414,7 +1414,7 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, NODE *entr
          * method's entry cell does.  A `def self.m` body is NOT that shape, so
          * the choice is made at parse time, not from the owner. */
         if ((sclass_cref & 1u) && dc_off != INT32_MIN)
-            { const VALUE cr = korb_const_cref(c->vm, definee, slots[dc_off]); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
+            { const VALUE cr = korb_const_cref_at(c->vm, definee, &slots[dc_off]); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
         else if (!KORB_CLASS_P(definee) && dc_off != INT32_MIN)
             { const VALUE cr = korb_body_cref(c, definee, slots[dc_off], cref_name); if (KORB_CLASS_P(cr)) { definee = cr; nested = true; } }
         /* Written inside a BLOCK: this frame's identity names the block, not a
@@ -1868,7 +1868,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * name can reach it — ask the runtime first. */
         VALUE inner = KORB_NIL;                       /* that unnamed cref: its ancestry, not the named one's, is searched */
         if (self_off != INT32_MIN) {
-            const VALUE acref = (dc_off != INT32_MIN) ? korb_const_cref(c->vm, slots[self_off], slots[dc_off])
+            const VALUE acref = (dc_off != INT32_MIN) ? korb_const_cref_at(c->vm, slots[self_off], &slots[dc_off])
                                                       : (KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL);
             /* a method a module_eval(String) defined: that module is its innermost
              * cref even once it has a name (graphql's MonitorTrace.create_module) */
@@ -1936,7 +1936,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
                 /* the require may GC: re-derive both crefs rather than trust the C locals */
                 cref = miss_cref = korb_cref_resolve(vm, cache->owner_chain, cache->chain_len, owner_name);
                 inner = !had_inner ? KORB_NIL
-                      : (dc_off != INT32_MIN ? korb_const_cref(c->vm, slots[self_off], slots[dc_off]) : slots[self_off]);
+                      : (dc_off != INT32_MIN ? korb_const_cref_at(c->vm, slots[self_off], &slots[dc_off]) : slots[self_off]);
                 idx = korb_const_in_ancestry(vm, KORB_CLASS_P(inner) ? inner : miss_cref, name_sym);
             }
         }
@@ -1978,7 +1978,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * entry's owner).  korb_cvar_cref answers both, the same way class
          * variables resolve their cref. */
         const VALUE cref = (self_off == INT32_MIN) ? KORB_NIL
-                         : (dc_off != INT32_MIN ? korb_const_cref(c->vm, slots[self_off], slots[dc_off])   /* method frame: entry->owner */
+                         : (dc_off != INT32_MIN ? korb_const_cref_at(c->vm, slots[self_off], &slots[dc_off])   /* method frame: entry->owner */
                                                 : (KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL));
         miss_cref = cref;
         idx = KORB_CLASS_P(cref) ? korb_const_index_owned(vm, name_sym, cref) : UINT32_MAX;
@@ -2094,7 +2094,7 @@ node_defined(CTX *c, NODE *n, VALUE *slots, uint32_t kind, uint32_t id@sym, int3
          * method (and the singleton class from inside a `class << self` body). */
         const VALUE self_cref = (self_off != INT32_MIN && KORB_CLASS_P(slots[self_off])) ? slots[self_off] : KORB_NIL;
         const VALUE entry_cref = (self_off != INT32_MIN && dc_off != INT32_MIN)
-                               ? korb_const_cref(c->vm, slots[self_off], slots[dc_off]) : KORB_NIL;
+                               ? korb_const_cref_at(c->vm, slots[self_off], &slots[dc_off]) : KORB_NIL;
         uint32_t i = UINT32_MAX;
         for (int pass = 0; pass < 2 && i == UINT32_MAX && res == NULL; pass++) {
             VALUE start = pass == 0 ? self_cref : entry_cref;

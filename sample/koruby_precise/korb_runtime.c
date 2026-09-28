@@ -2738,6 +2738,63 @@ korb_const_cref(const struct korb_vm *const vm, VALUE self, VALUE entry_cell)
     }
     return korb_cvar_cref(self, entry_cell);
 }
+static bool korb_bt_known_ptr(const struct korb_vm *vm, uintptr_t p);   /* fwd */
+/* The method a block frame at `base` was written in (its EP chain's first
+ * method frame or env), or NULL (a block at top level / in a class body). */
+extern const struct NodeKind kind_node_entry;   /* node_alloc.c; distinguishes a real block entry from a node_unsupported placeholder */
+/* A block written in a class body / at top level: no method encloses it, and a
+ * depth-0 Proc of one keeps a raw link to that (maybe returned) frame. */
+static bool korb_block_bodied_p(const struct korb_vm *const vm, const uintptr_t p)
+{
+    if (!korb_bt_known_ptr(vm, p)) return true;
+    const struct Node *const e = (const struct Node *)p;
+    return e->head.kind != &kind_node_entry || e->u.node_entry.blk_label != 0 || e->u.node_entry.blk_top_level != 0;
+}
+static const struct korb_method *
+korb_block_home_method(const struct korb_vm *const vm, const VALUE *const base)
+{
+    if (korb_block_bodied_p(vm, (uintptr_t)(korb_id_get(base) & ~(VALUE)7u))) return NULL;
+    VALUE h = korb_ep_get(base);
+    if (h != 0 && (h & 7u) == 0 && !VAL2ENV(h)->closed && VAL2ENV(h)->loc == base) h = VAL2ENV(h)->prev;   /* its own env */
+    for (int d = 0; d < 64 && h != 0; d++) {
+        VALUE id, next;
+        if (h & 1u) {
+            const VALUE *const fb = (const VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
+            id = korb_id_get(fb);
+            next = korb_ep_get(fb);
+            if (next != 0 && (next & 7u) == 0 && !VAL2ENV(next)->closed && VAL2ENV(next)->loc == fb) next = VAL2ENV(next)->prev;
+        } else {
+            if (VAL2ENV(h)->home != NULL) return (const struct korb_method *)VAL2ENV(h)->home;
+            id = VAL2ENV(h)->id;
+            next = VAL2ENV(h)->prev;
+        }
+        const uintptr_t p = (uintptr_t)(id & ~(VALUE)7u);
+        if ((id & 7u) == KORB_FID_METHOD) return korb_bt_known_ptr(vm, p) ? (const struct korb_method *)p : NULL;
+        if ((id & 7u) != KORB_FID_BLOCK || korb_block_bodied_p(vm, p)) return NULL;
+        h = next;
+    }
+    return NULL;
+}
+/* The method the frame at `base` runs in or was written in; only for a live chain. */
+static const struct korb_method *
+korb_frame_home_method(const struct korb_vm *const vm, const VALUE *const base)
+{
+    const VALUE id = korb_id_get(base);
+    if ((id & 7u) == KORB_FID_METHOD)
+        return korb_bt_known_ptr(vm, (uintptr_t)(id & ~(VALUE)7u)) ? (const struct korb_method *)(uintptr_t)(id & ~(VALUE)7u) : NULL;
+    return (id & 7u) == KORB_FID_BLOCK ? korb_block_home_method(vm, base) : NULL;
+}
+/* korb_const_cref through the identity cell: a block's cref is its home
+ * method's, whatever self a define_method / instance_exec rebinds it to. */
+VALUE
+korb_const_cref_at(const struct korb_vm *const vm, VALUE self, const VALUE *const id_cell)
+{
+    if ((*id_cell & 7u) == KORB_FID_BLOCK) {
+        const struct korb_method *const hm = korb_block_home_method(vm, id_cell - KORB_ID_OFF);
+        if (hm != NULL) return korb_const_cref(vm, self, (VALUE)(uintptr_t)hm | KORB_FID_METHOD);
+    }
+    return korb_const_cref(vm, self, *id_cell);
+}
 VALUE
 korb_cvar_cref(VALUE self, VALUE entry_cell)
 {
@@ -4128,7 +4185,6 @@ RESULT __attribute__((noinline)) korb_close_ret(CTX *c, VALUE *scratch, VALUE *f
  * frame's return closes them, copying slots->vals) so the closure survives the
  * frame (escape).  cap_depth==0 → no outer refs → env left as a tagged slots
  * sentinel (never dereferenced by the body). */
-extern const struct NodeKind kind_node_entry;   /* node_alloc.c; distinguishes a real block entry from a node_unsupported placeholder */
 static RESULT korb_block_to_proc(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *cself);
 static VALUE *korb_env_method_trio(const KorbEnv *e);
 /* Refinements are lexical, so a Proc has to carry the set active where its body
@@ -4198,7 +4254,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
                  * (korb_scope_at_handle), which is what tells a debugger the scope is
                  * gone.  Only the backtrace reads `id`, and that survives. */
                 e->loc = bs[k]; e->n = 0; e->closed = 0;
-                e->id = oid;
+                e->id = oid; e->home = NULL;
                 ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
                 ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, slots[1]);
                 ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->blk, 0);
@@ -4247,9 +4303,11 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
      * env the walk ended on; slots[1] holds the current outer env (rooted across
      * each alloc).  A raw base left over stays the outermost level's own link. */
     slots[1] = (link & 1u) ? 0 : link;
+    const void *const home = nlive ? korb_frame_home_method(c->vm, bases[nlive - 1]) : NULL;   /* while every level is live */
     for (int k = (int)nlive - 1; k >= 0; k--) {
         KorbEnv *existing = korb_open_env_find(bases[k]);
         if (existing) {   /* share this frame's env — and graft the outer levels we just built under it */
+            if (existing->home == NULL) existing->home = home;
             if (slots[1]) ARO_STORE(c, existing, (VALUE *)(uintptr_t)&existing->prev, slots[1]);
             slots[1] = (VALUE)(uintptr_t)existing;
             continue;
@@ -4260,6 +4318,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
         const VALUE pv = korb_ep_get(bases[k]);
         e->loc = bases[k];                               /* open: live slots */
         e->id = korb_id_get(bases[k]);                   /* survives the frame: a backtrace still names the owner */
+        e->home = home;
         e->n = ns[k];
         e->closed = 0;
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
@@ -4440,9 +4499,11 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
         }
     }
     slots[1] = (link & 1u) ? 0 : link;
+    const void *const home = nlive ? korb_frame_home_method(c->vm, bases[nlive - 1]) : NULL;   /* while every level is live */
     for (int k = (int)nlive - 1; k >= 0; k--) {
         KorbEnv *existing = korb_open_env_find(bases[k]);
         if (existing) {   /* graft the outer levels just built under the env this frame already has */
+            if (existing->home == NULL) existing->home = home;
             if (slots[1]) ARO_STORE(c, existing, (VALUE *)(uintptr_t)&existing->prev, slots[1]);
             slots[1] = (VALUE)(uintptr_t)existing;
             continue;
@@ -4451,6 +4512,7 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
         const VALUE pv = korb_ep_get(bases[k]);                   /* alloc 後に読む (上と同じ理由) */
         e->loc = bases[k];
         e->id = korb_id_get(bases[k]);
+        e->home = home;
         e->n = (uint16_t)scope_tbl[1 + (uint32_t)k];     /* level's full locals count */
         e->closed = 0;
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
@@ -6253,6 +6315,23 @@ korb_reflect_owner_redirect(struct korb_vm *const vm, const uint32_t mid,
     *def = KORB_CLASS_P(odef) ? odef : o;
     return om;
 }
+/* The same for an Array subclass with its own #each (spreadsheet's Excel::Row
+ * yields decoded Dates): what CRuby keeps on Enumerable (reflect_owner.h) goes
+ * through that #each. */
+static __attribute__((noinline, cold)) struct korb_method *
+korb_array_sub_enum_method(struct korb_vm *const vm, const VALUE klass, const uint32_t mid,
+                           struct korb_method *const m, VALUE *const def)
+{
+    VALUE each_def = KORB_NIL;
+    if (korb_class_find_method(klass, korb_intern(vm, "each", 4), &each_def) == NULL || each_def == *def) return m;
+    const VALUE o = korb_reflect_owner_vm(vm, *def, mid);
+    if (!KORB_CLASS_P(o) || o != korb_const_get(vm, korb_intern(vm, "Enumerable", 10))) return m;
+    VALUE edef = KORB_NIL;
+    struct korb_method *const em = korb_mro_seg_find(o, mid, &edef, 0);
+    if (em == NULL || em->kind == KORB_METHOD_UNDEF) return m;
+    *def = KORB_CLASS_P(edef) ? edef : o;
+    return em;
+}
 #define KORB_MCACHE_N 4096u   /* direct-mapped, power of two */
 /* cached korb_class_find_method for user-object dispatch (the hot path).  A hit
  * requires serial match → no def/GC since fill → cached klass ptr + method ptr
@@ -6270,6 +6349,8 @@ korb_mcache_find(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def)
     struct korb_method *m = korb_class_find_method(klass, mid, &def);
     if (UNLIKELY(m != NULL && def == korb_builtin_class_obj(vm, KORB_C_HASH) && klass != def))
         m = korb_hash_sub_enum_method(vm, klass, mid, m, &def);
+    else if (UNLIKELY(m != NULL && def == korb_builtin_class_obj(vm, KORB_C_ARRAY) && klass != def))
+        m = korb_array_sub_enum_method(vm, klass, mid, m, &def);
     if (UNLIKELY(vm->reflect_owner_redef && m != NULL && KORB_CLASS_P(def)))
         m = korb_reflect_owner_redirect(vm, mid, m, &def);
     korb_mid_looked(vm, mid);

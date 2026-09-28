@@ -457,6 +457,9 @@ typedef struct KorbEnv {
     VALUE id;                        /* the captured frame's identity cell (tagged KORB_FID_*, never a bare
                                       * pointer → not a GC edge).  A backtrace names the owner of a block
                                       * whose defining frame has already returned through this. */
+    const void *home;                /* the method (struct korb_method *) this scope's code was written in,
+                                      * recorded while the chain is live: a later walk must not follow a raw
+                                      * link into a returned frame.  NULL = unknown / not in a method. */
     VALUE ARO_GC_EDGE blk;           /* the method activation's own block, reified as a Proc when a closure
                                       * over this scope yields: the trio lives at the frame top, outside the
                                       * captured locals, so `closed` would otherwise lose it.  0 = never

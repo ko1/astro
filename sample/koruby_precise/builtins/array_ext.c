@@ -649,7 +649,7 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             const long reps = star ? (long)((slen - si) / 8) : cnt;
             for (long r = 0; r < reps; r++) {
                 const KorbString *s0 = VAL2STR(slots[1]);
-                if (si + 8 > s0->len) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); si = s0->len; continue; }
+                if (si + 8 > s0->len) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); continue; }   /* nothing consumed: a later directive may still fit (CRuby) */
                 uint64_t v = 0;
                 for (int k = 0; k < 8; k++) { const KorbString *s = VAL2STR(slots[1]); v |= (uint64_t)(unsigned char)korb_strbuf_data(s->buf)[si + k] << (8 * (big ? (7 - k) : k)); }
                 si += 8;
@@ -733,7 +733,7 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             const long reps = star ? (long)((slen - si) / sz) : cnt;
             for (long r = 0; r < reps; r++) {
                 const KorbString *s = VAL2STR(slots[1]);
-                if (si + (uint32_t)sz > s->len) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); si = s->len; continue; }
+                if (si + (uint32_t)sz > s->len) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); continue; }
                 uint32_t v = 0;
                 for (int k = 0; k < sz; k++) v |= (uint32_t)(unsigned char)korb_strbuf_data(s->buf)[si + k] << (8 * (big ? (sz - 1 - k) : k));
                 si += (uint32_t)sz;
@@ -747,7 +747,7 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             const long reps = star ? (long)((slen - si) / sz) : cnt;
             for (long r = 0; r < reps; r++) {
                 const KorbString *s = VAL2STR(slots[1]);
-                if (si + (uint32_t)sz > s->len) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); si = s->len; continue; }
+                if (si + (uint32_t)sz > s->len) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); continue; }
                 uint64_t v = 0;
                 for (int k = 0; k < sz; k++) v |= (uint64_t)(unsigned char)korb_strbuf_data(s->buf)[si + k] << (8 * (big ? (sz - 1 - k) : k));
                 si += (uint32_t)sz;
@@ -771,7 +771,7 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             const long reps = star ? (long)((slen - si) / sz) : cnt;
             for (long r = 0; r < reps; r++) {
                 const KorbString *s = VAL2STR(slots[1]);
-                if (si + (uint32_t)sz > s->len) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); si = s->len; continue; }
+                if (si + (uint32_t)sz > s->len) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); continue; }
                 unsigned char tmp[8];
                 for (int k = 0; k < sz; k++) tmp[k] = (unsigned char)korb_strbuf_data(s->buf)[si + (big ? (sz - 1 - k) : k)];   /* → native (LE) order */
                 si += (uint32_t)sz;
