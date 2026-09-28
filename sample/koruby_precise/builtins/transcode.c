@@ -579,6 +579,16 @@ static RESULT korb_tc_convert(CTX *c, VALUE *slots, VALUE src, const char *fromb
  * Returns bytes written to out (>= 8 bytes), 0 when not representable. */
 static uint32_t korb_tc_encode_name(const char *enc, uint32_t cp, unsigned char *out)
 {
+    if (cp > 0xFFFF && strcasecmp(enc, "CESU-8") == 0) {   /* CESU-8: the UTF-16 surrogate pair, each as 3 bytes */
+        const uint32_t hi = 0xD800u + ((cp - 0x10000u) >> 10), lo = 0xDC00u + ((cp - 0x10000u) & 0x3FFu);
+        const uint32_t u[2] = { hi, lo };
+        for (int k = 0; k < 2; k++) {
+            out[3 * k] = (unsigned char)(0xE0 | (u[k] >> 12));
+            out[3 * k + 1] = (unsigned char)(0x80 | ((u[k] >> 6) & 0x3F));
+            out[3 * k + 2] = (unsigned char)(0x80 | (u[k] & 0x3F));
+        }
+        return 6;
+    }
     struct korb_tc tc;
     if (!korb_tc_find(enc, &tc)) return 0;
     if (tc.kind == KTC_ISO2022JP) { uint8_t m = KTC_JIS_ASCII; return korb_tc_jis_encode(&tc, cp, out, &m); }

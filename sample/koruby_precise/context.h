@@ -914,8 +914,18 @@ static inline bool korb_eq_needs_send_d(VALUE v, int depth)
     }
     return KORB_HASH_P(v) || KORB_SET_P(v);
 }
+static bool korb_eq_needs_send_slow(VALUE v) __attribute__((noinline, unused));
+static bool korb_eq_needs_send_slow(VALUE v) { return korb_eq_needs_send_d(v, 0); }
+/* Called per element / per comparison: the common answers are settled inline,
+ * only containers and the rarer types take the out-of-line walk. */
 static inline bool korb_eq_needs_send(VALUE v) {
-    return AROH_IS_GC_OBJECT(v) && korb_eq_needs_send_d(v, 0);   /* immediates never dispatch */
+    if (!AROH_IS_GC_OBJECT(v)) return false;                        /* immediates never dispatch */
+    const uint16_t fl = ((const AroObjectHeader *)(uintptr_t)v)->flags;
+    const unsigned t = KORB_OBJ_TYPE(v);
+    if (LIKELY(!(fl & KORB_FL_HAS_KLASS)) && (t == KORB_OBJ_STRING || t == KORB_OBJ_FLOAT || t == KORB_OBJ_BIGNUM))
+        return false;
+    if (t == KORB_OBJ_OBJECT) return true;
+    return korb_eq_needs_send_slow(v);
 }
 /* `a == b` must be sent (rb_equal): not for the same object, which is equal
  * without asking — a user #== answering false for itself still matches.

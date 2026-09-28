@@ -33,6 +33,19 @@
   define_method / using は C の特別扱いのままで、`main.method(:include)` は NameError（引数無しの `private` は呼び出し側の既定可視性に
   効く必要があり、委譲する特異メソッドでは置けない）。
 
+## 未: make test（rubyharness）に残る CRuby との違い (2026-09-29)
+
+- **prism が古い**: 同梱は 1.4.0（2025-06）、CRuby master は 1.9.0。`p((1 => x; x))` の "unexpected void value
+  expression" を 1.4 は出さないので `syntax/pattern_000.rb` が丸ごと違う。更新は naruby/prism を共有する他 sample にも効く。
+- **String#succ の英数字判定が ASCII だけ**: CRuby は符号化の ctype（Unicode の英数字）で右端の英数字を決める
+  （`"a\u00e9".succ` は CRuby "aê"、koruby "bé"）。壊れた UTF-8 を含む文字列だけ文字単位の規則にしてある。
+- **rindex / byterindex の `\G`**: CRuby は後ろ向き探索で `\G` = 開始位置（stop）。astrogre の scan_start を
+  探索位置と別に渡す口が要る（`spec/string_003.rb` 4、`string_014.rb` 38）。
+- **小数の utc_offset**: `Time.new(..., 7245.5).utc_offset` は CRuby (14491/2)、koruby は 7245（`time_001.rb` 62）。
+- **Float の端無し Range#bsearch**: 二分の順が CRuby と違い値がずれる（`range_000.rb` 63）。
+- **トップレベル定数**: koruby は ARGFClass / ArithmeticSequence / StringIO が見え、CRuby は ErrorHighlight /
+  MonitorMixin / SyntaxSuggest / UnicodeNormalize / RUBYGEMS_ACTIVATION_MONITOR がある（`module_000.rb` 10）。
+
 ## 未: refinement と Enumerator の残り (2026-09-27)
 
 - **トップレベルが home のブロックの refinement**: 別ファイルのメソッドが yield するブロックは、書かれたメソッドの

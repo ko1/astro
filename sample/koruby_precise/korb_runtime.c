@@ -19291,15 +19291,25 @@ static RESULT korb_bi_cgi_html_escape(CTX *c, VALUE *slots, VALUE_SLICE args) {
         return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, slots[0]));
     return korb_html_escape_str(c, slots, false);
 }
+/* CRuby's built-in globals, in the order its global_variables lists them */
+static const char *const korb_builtin_gvars[] = {
+    "$>", "$stderr", "$PROGRAM_NAME", "$stdin", "$,", "$/", "$-0", "$\\", "$<", "$.", "$FILENAME", "$-i",
+    "$*", "$@", "$;", "$-F", "$-l", "$-p", "$-a", "$?", "$$", "$VERBOSE", "$-v", "$:", "$-I", "$LOAD_PATH",
+    "$&", "$`", "$'", "$+", "$=", "$DEBUG", "$\"", "$LOADED_FEATURES", "$-W", "$-d", "$0", "$-w", "$_",
+    "$~", "$!", "$stdout", NULL };
 static RESULT korb_bi_global_variables(CTX *c, VALUE *slots, VALUE_SLICE args) {
     (void)args;
     struct korb_vm *const vm = c->vm;
-    slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 48));
     VALUE_REF arr = VALUE_REF_AT(&slots[0]);
-    for (uint32_t i = 0; i < vm->const_cnt; i++) {
+    for (uint32_t i = 0; korb_builtin_gvars[i]; i++)
+        CHECK(korb_ary_push_val(c, slots + 1, arr, ID2SYM(korb_intern(vm, korb_builtin_gvars[i], (uint32_t)strlen(korb_builtin_gvars[i])))));
+    for (uint32_t i = 0; i < vm->const_cnt; i++) {   /* then the program's own, in definition order */
         const char *const nm = korb_sym_name(vm, vm->const_names[i]);   /* const_names is append-only; re-read each iter */
-        if (nm[0] != '$') continue;
-        CHECK(korb_ary_push_val(c, slots + 1, arr, ID2SYM(vm->const_names[i])));
+        if (nm[0] != '$' || strncmp(nm, "$__", 3) == 0) continue;       /* $__x: koruby's internal state */
+        bool builtin = false;
+        for (uint32_t k = 0; korb_builtin_gvars[k] && !builtin; k++) builtin = strcmp(nm, korb_builtin_gvars[k]) == 0;
+        if (!builtin) CHECK(korb_ary_push_val(c, slots + 1, arr, ID2SYM(vm->const_names[i])));
     }
     return RESULT_OK(VALUE_REF_GET(arr));
 }

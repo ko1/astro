@@ -2612,7 +2612,9 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         }
         /* top-level fallback: for a leading `::`, or (with inherit) a first
          * component whose owner search missed — but never for inherit=false. */
-        if (idx == UINT32_MAX && (leading_top || (inherit && first)))
+        if (idx == UINT32_MAX && (leading_top || (inherit && first &&   /* a BasicObject subclass does not reach Object's */
+                                  (!KORB_CLASS_P(owner) || VAL2CLASS(owner)->is_module ||
+                                   korb_class_le(owner, korb_builtin_class_obj(vm, KORB_C_OBJECT))))))
             idx = korb_const_index_owned(vm, cid, KORB_NIL);
         if (idx == UINT32_MAX) {
             /* CRuby fires <namespace>.const_missing(:Name) at EVERY component, not
@@ -2730,8 +2732,12 @@ korb_const_defined_in(CTX *c, VALUE owner, uint32_t id, bool inherit, VALUE *val
         idx = korb_const_index_owned(vm, id, owner);
         if (idx == UINT32_MAX && inherit) idx = korb_const_in_ancestry(vm, owner, id);
     }
-    if (idx == UINT32_MAX && (inherit || !KORB_CLASS_P(owner)))
-        idx = korb_const_index_owned(vm, id, KORB_NIL);   /* top level (owner nil) */
+    /* top level (owner nil) = Object's: a module falls back to it, a class only
+     * when Object is among its ancestors (not a BasicObject subclass) */
+    if (idx == UINT32_MAX && (inherit || !KORB_CLASS_P(owner)) &&
+        (!KORB_CLASS_P(owner) || VAL2CLASS(owner)->is_module ||
+         korb_class_le(owner, korb_builtin_class_obj(vm, KORB_C_OBJECT))))
+        idx = korb_const_index_owned(vm, id, KORB_NIL);
     if (idx == UINT32_MAX) return false;
     if (val_out) *val_out = vm->const_vals[idx];
     return true;

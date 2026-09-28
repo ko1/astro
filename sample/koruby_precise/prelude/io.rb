@@ -388,7 +388,7 @@ class IO
   def timeout = @__io_timeout
   def timeout=(v)
     unless v.nil?
-      raise TypeError, "can't convert #{v.class} into time interval" unless v.is_a?(Numeric)
+      raise TypeError, "can't convert #{v == true || v == false ? v.inspect : v.class} into time interval" unless v.is_a?(Numeric)
       raise ArgumentError, "time interval must not be negative" if v < 0
     end
     @__io_timeout = v

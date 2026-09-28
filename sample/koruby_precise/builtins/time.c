@@ -357,6 +357,19 @@ static void korb_exact_ns_neg(__int128 *tot, int64_t *rn, int64_t *rd) {
     if (*rn == 0) { *tot = -*tot; return; }
     *tot = -*tot - 1; *rn = *rd - *rn;
 }
+/* The fraction digits of "HH:MM:SS.fff…" beyond the ninth, as rn/rd nanoseconds
+ * (at most 18 of them; `prec` >= 0 keeps only that many digits in all). */
+static void korb_time_str_subns(const char *const p, const uint32_t n, const long prec, int64_t *const rn, int64_t *const rd) {
+    *rn = 0; *rd = 1;
+    uint32_t colons = 0, i = 0;
+    for (; i < n; i++) { if (p[i] == ':') colons++; else if (p[i] == '.' && colons >= 2) break; }
+    if (i >= n) return;
+    uint32_t d = 0;
+    for (uint32_t j = i + 1; j < n && p[j] >= '0' && p[j] <= '9'; j++, d++) {
+        if (prec >= 0 && d >= (uint32_t)prec) break;
+        if (d >= 9 && d < 27) { *rn = *rn * 10 + (p[j] - '0'); *rd *= 10; }
+    }
+}
 static RESULT korb_time_set_subns(CTX *c, VALUE *slots, VALUE_REF t, int64_t rn, int64_t rd) {
     if (rn == 0) return RESULT_OK(KORB_NIL);
     slots[0] = UNWRAP(korb_rat_new(c, slots, rn, rd));
@@ -810,6 +823,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     uint32_t n = VALUE_SLICE_LEN(a);
     VALUE prec_v = KORB_NIL;
+    bool prec_given = false;                               /* precision: absent = 9 digits, nil = all */
     /* A trailing Hash is keyword arguments (in:, precision:); Time.new never
      * takes a positional Hash.  Extract `in:` (a fixed zone offset) and drop the
      * hash from the positional count. */
@@ -821,7 +835,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "in", 2)));
         if (ix >= 0) in_zv = korb_items_data(h->items)[2 * ix + 1];
         const int32_t px = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "precision", 9)));
-        if (px >= 0) prec_v = korb_items_data(h->items)[2 * px + 1];
+        if (px >= 0) { prec_v = korb_items_data(h->items)[2 * px + 1]; prec_given = true; }
         if (ix >= 0 || px >= 0) n--;
     }
     const bool has_in = (in_zv != KORB_NIL);
@@ -842,7 +856,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         slots[4] = VALUE_SLICE_GET(a, 0);                  /* park: the coercion below dispatches */
         if (!korb_str_ascii_compat(c->vm, slots[4]))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "time string should have ASCII compatible encoding");
-        long prec = -1;                                    /* sub-second digits to keep; -1 = all */
+        long prec = prec_given ? -1 : 9;                   /* sub-second digits to keep; -1 = all */
         if (prec_v != KORB_NIL) {
             slots[5] = prec_v;
             if (!FIXNUM_P(slots[5])) {                     /* Integer only — #to_int, not #to_i */
@@ -854,7 +868,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 slots[5] = UNWRAP(korb_send(c, slots + 7, toi, 0, 0));
             }
             prec = FIXNUM_P(slots[5]) ? (long long)FIX2LONG(slots[5]) : 9;
-            if (prec < 0) prec = 0;
+            if (prec < 0) prec = -1;                       /* negative: every digit, like nil (CRuby) */
         }
         korb_sword_t comp[6]; long nsec; uint32_t zs, zl; char emsg[256];
         {
@@ -884,7 +898,12 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             CHECK(korb_time_zone_arg(c, slots, slots[5], VALUE_REF_GET(self), (double)timegm(&tmw), true, &eff_off, &utcish));
         }
         const double e = eff_has ? (double)timegm(&tm) - (double)eff_off : (double)mktime(&tm);
+        /* digits past the nanosecond: the exact remainder (0.123456789876 → subsec 30864197469/250000000000);
+         * read before korb_time_make_ns, whose scratch covers slots[4] */
+        int64_t rn = 0, rd = 1;
+        korb_time_str_subns(korb_strbuf_data(VAL2STR(slots[4])->buf), VAL2STR(slots[4])->len, prec, &rn, &rd);
         slots[2] = UNWRAP(korb_time_make_ns(c, slots + 2, VALUE_REF_GET(self), e, nsec, utcish));
+        CHECK(korb_time_set_subns(c, slots + 3, VALUE_REF_AT(&slots[2]), rn, rd));
         if (eff_has) return korb_time_set_zone(c, slots + 3, VALUE_REF_AT(&slots[2]), eff_off,
                                                VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]));
         return RESULT_OK(slots[2]);

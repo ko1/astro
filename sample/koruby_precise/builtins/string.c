@@ -912,6 +912,8 @@ static uint32_t korb_enc_char_bytes_other(const struct korb_vm *vm, uint32_t enc
         return 1;
     }
     if (korb_enc_is_utf8_family(vm, enc)) {
+        if (i + 6 <= n && p[i] == 0xED && (p[i+1] & 0xF0) == 0xA0 && p[i+3] == 0xED && (p[i+4] & 0xF0) == 0xB0)
+            return 6;                                /* CESU-8 surrogate pair: one character */
         uint32_t cl = 1;
         (void)korb_utf8_decode((const char *)p + i, n - i, &cl);
         return cl ? cl : 1;
@@ -945,7 +947,14 @@ static uint32_t korb_enc_codepoint_at(const struct korb_vm *vm, uint32_t enc,
         }
         return hi;
     }
-    if (korb_enc_is_utf8_family(vm, enc)) { uint32_t ul = 1; return korb_utf8_decode((const char *)p + o, len - o, &ul); }
+    if (korb_enc_is_utf8_family(vm, enc)) {
+        if (cl == 6) {                               /* CESU-8 surrogate pair */
+            const uint32_t hi = ((p[o] & 0x0Fu) << 12) | ((p[o+1] & 0x3Fu) << 6) | (p[o+2] & 0x3Fu);
+            const uint32_t lo = ((p[o+3] & 0x0Fu) << 12) | ((p[o+4] & 0x3Fu) << 6) | (p[o+5] & 0x3Fu);
+            return 0x10000u + ((hi - 0xD800u) << 10) + (lo - 0xDC00u);
+        }
+        uint32_t ul = 1; return korb_utf8_decode((const char *)p + o, len - o, &ul);
+    }
     uint32_t v = 0;
     if (unit == 4) { for (uint32_t i = 0; i < 4 && o + i < len; i++) v = (v << 8) | p[o + (be ? i : 3 - i)]; return v; }
     for (uint32_t i = 0; i < cl; i++) v = (v << 8) | p[o + i];
@@ -3602,6 +3611,18 @@ static RESULT korb_m_str_each_codepoint(CTX *c, VALUE *slots, VALUE_REF self, VA
 }
 /* String#succ: increment rightmost alphanumeric run with carry; if none, byte++
  * on the last char. Carry out of the leftmost alnum prepends '1'/'a'/'A'. */
+/* Byte length of the well-formed UTF-8 character at p, 0 when it is not one. */
+static uint32_t korb_utf8_valid_len(const unsigned char *const p, const uint32_t avail) {
+    const unsigned char c0 = p[0];
+    if (c0 < 0x80) return 1;
+    const uint32_t need = (c0 & 0xE0) == 0xC0 ? 2 : (c0 & 0xF0) == 0xE0 ? 3 : (c0 & 0xF8) == 0xF0 ? 4 : 0;
+    if (need == 0 || need > avail) return 0;
+    for (uint32_t k = 1; k < need; k++) if ((p[k] & 0xC0) != 0x80) return 0;
+    const unsigned char c1 = p[1];
+    if (need == 2) return c0 >= 0xC2 ? 2 : 0;
+    if (need == 3) return (!(c0 == 0xE0 && c1 < 0xA0) && !(c0 == 0xED && c1 >= 0xA0)) ? 3 : 0;
+    return (c0 <= 0xF4 && !(c0 == 0xF0 && c1 < 0x90) && !(c0 == 0xF4 && c1 > 0x8F)) ? 4 : 0;
+}
 static RESULT korb_m_str_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const KorbString *s0 = VAL2STR(VALUE_REF_GET(self));
@@ -3615,7 +3636,37 @@ static RESULT korb_m_str_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     char carry_ch = 0;
     uint32_t insert_pos = 0;     /* where a carry-out digit is inserted (just before the leftmost carried alnum) */
-    if (!has_alnum) {
+    bool has_invalid = false;                     /* the char-level rule below only for broken UTF-8 (CRuby's full
+                                                   * rb_str_succ also uses Unicode alnum, not ported: todo) */
+    if (!has_alnum && KORB_STR_ENC(VALUE_REF_GET(self)) == KORB_ENC_UTF8)
+        for (uint32_t i = 0; i < n && !has_invalid; ) {
+            const uint32_t cl = korb_utf8_valid_len((const unsigned char *)buf + i, n - i);
+            if (cl) i += cl; else has_invalid = true;
+        }
+    if (!has_alnum && has_invalid) {
+        /* CRuby's enc_succ_char: the rightmost valid character steps within its
+         * own byte length, wrapping to the smallest one and carrying left; invalid
+         * bytes stay as they are; no valid character left → "\x01" in front. */
+        static const uint32_t lo_cp[5] = { 0, 0x00, 0x80, 0x800, 0x10000 }, hi_cp[5] = { 0, 0x7F, 0x7FF, 0xFFFF, 0x10FFFF };
+        uint32_t *const starts = malloc(sizeof(uint32_t) * 2 * n), *const lens = starts + n, nch = 0;
+        if (!starts) abort();
+        for (uint32_t i = 0; i < n; ) {
+            uint32_t cl = korb_utf8_valid_len((const unsigned char *)buf + i, n - i);
+            if (cl) { starts[nch] = i; lens[nch++] = cl; i += cl; } else i++;
+        }
+        bool carry = true;
+        for (uint32_t k = nch; k-- > 0 && carry; ) {
+            uint32_t cl = 1, cp = korb_utf8_decode(buf + starts[k], lens[k], &cl);
+            cp++;
+            if (cp >= 0xD800 && cp <= 0xDFFF) cp = 0xE000;
+            carry = cp > hi_cp[lens[k]];
+            if (carry) cp = lo_cp[lens[k]];
+            char enc8[4]; (void)korb_utf8_encode(cp, enc8);
+            memcpy(buf + starts[k], enc8, lens[k]);
+        }
+        free(starts);
+        if (carry) carry_ch = 0x01;              /* inserted at 0 below */
+    } else if (!has_alnum) {
         for (int i = (int)n - 1; i >= 0; i--) {
             unsigned char ch = (unsigned char)buf[i];
             if (ch == 0xFF) { buf[i] = 0x00; if (i == 0) carry_ch = 0x01; }

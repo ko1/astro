@@ -95,14 +95,14 @@ svg text { fill:var(--mute); font-size:11px; }
 <script>
 // ---- 更新はここ --------------------------------------------------------------
 const DATA = {
-  updated: "2026-09-29 06:40 JST",
+  updated: "2026-09-29 09:30 JST",
   master: "3b3d6b16",
   compat: [
-    { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "98.47%", sub: "31777 / 32270 例が通る（9/13 は 97.87%）", date: "2026-09-28", commit: "3b3d6b16", mode: "interp",
+    { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "98.48%", sub: "31780 / 32270 例が通る（9/13 は 97.87%）", date: "2026-09-29", commit: "この commit", mode: "interp",
       note: "本物の mspec で spec ファイルを 1 つずつ実行。率は同じ run の pass ÷ 例の数" },
   ],
   health: [
-    { label: "make test（rubyharness 回帰コーパス）", value: "45", cls: "warn", sub: "CRuby と違う行 ／ 109906 行（手書き 1044・rubyspec 由来 103・生成 1160 ファイル）。内訳は下の表", date: "2026-09-28", commit: "3b3d6b16", mode: "interp",
+    { label: "make test（rubyharness 回帰コーパス）", value: "27", cls: "warn", sub: "CRuby と違う行 ／ 109951 行（手書き 1047・rubyspec 由来 103・生成 1160 ファイル）。45 → 27、内訳は下の表", date: "2026-09-29", commit: "この commit", mode: "interp",
       note: "各ファイルの出力を CRuby master と 1 行ずつ比較する" },
     { label: "GC 負荷試験（64 alloc ごとに moving GC + 旧領域の保護）", value: "0", cls: "ok", sub: "失敗 ／ 手書きテスト 45 ファイル", date: "2026-09-28", commit: "b51641cd", mode: "interp" },
     { label: "DOOM 60 frame", value: "一致", cls: "ok", sub: "画素の checksum が CRuby と一致", date: "2026-09-28", commit: "b51641cd", mode: "AOT" },
@@ -110,23 +110,15 @@ const DATA = {
   maketest: [ // [file, lines, kind, what]
     ["spec/gc_000.rb", "2–6", "想定内", "GC.config の中身は実装固有"],
     ["spec/process_000.rb", "14–15", "想定内", "pid の値"],
-    ["spec/module_000.rb", "10", "未調査", "数が 118（CRuby 120）"],
-    ["spec/time_000.rb", "75, 77–80", "バグ", "Rational の小数秒、Time.new(\"… 00:00:00.1\") が ArgumentError"],
-    ["spec/time_001.rb", "62", "バグ", "小数秒が Integer（CRuby は Rational 14491/2）"],
-    ["syntax/pattern_000.rb", "1–5", "バグ", "パターンマッチの出力が違う"],
-    ["spec/string_018.rb", "1, 13–14", "バグ", "pack / unpack の端（\\xFF が \\u0000 に）"],
-    ["spec/string_017.rb", "79–80", "バグ", "\\u0000 が入る"],
-    ["spec/string_003.rb", "4", "バグ", "nil（CRuby は 5）"],
-    ["spec/string_014.rb", "38", "バグ", "nil（CRuby は 5）"],
-    ["spec/integer_001.rb", "34–35", "バグ", "サロゲート範囲の符号化"],
-    ["spec/range_000.rb", "63", "バグ", "Float の step: 1.5（CRuby 1.4999999999999998）"],
-    ["spec/regexp_000.rb", "51", "バグ", "true（CRuby false）"],
-    ["spec/basicobject_000.rb", "1", "バグ", "true（CRuby false）"],
-    ["spec/kernel_002.rb", "18–19", "バグ", "Set の順序、数の違い"],
-    ["hand/io_wait_forms.rb", "18, 24", "バグ", "TypeError の文言"],
+    ["syntax/pattern_000.rb", "1–5", "要修正", "prism が古い（1.4.0、CRuby は 1.9.0）: `(1 => x; x)` を構文エラーにしない"],
+    ["spec/string_003.rb", "4", "要修正", "byterindex の \\G（CRuby は後ろ向き探索の開始位置）"],
+    ["spec/string_014.rb", "38", "要修正", "rindex の \\G（同上）"],
+    ["spec/time_001.rb", "62", "要修正", "小数の utc_offset（CRuby は Rational 14491/2、koruby は 7245）"],
+    ["spec/range_000.rb", "63", "要修正", "Float の端無し Range#bsearch の二分の順"],
+    ["spec/module_000.rb", "10", "軽微", "トップレベル定数の違い（既定で読まれる gem の差と、koruby の ARGFClass などの露出）"],
   ],
   perf: [
-    { label: "optcarrot koruby AOT", value: "264.1 fps", cls: "bad", sub: "9/17 の b3cf0d1c 比 −9.3%（同一セッション A/B で確認、命令数 +7.0%）。原因を二分探索中", date: "2026-09-28", commit: "25b30579", mode: "AOT",
+    { label: "optcarrot koruby AOT", value: "264.1 fps", cls: "bad", sub: "9/17 の b3cf0d1c 比 −9.3%（同一セッション A/B で確認、命令数 +7.0%）。原因は複数 commit に分散（最大は 1740d738 の等値ディスパッチ判定）。切り分け中", date: "2026-09-28", commit: "25b30579", mode: "AOT",
       note: "sp4 専有、ruby 4.1.0dev 69b49ac7ae、checksum 検証。trials/2026-09-29-status-perf" },
     { label: "rubyharness bench 53 本", value: "0.37×", sub: "CRuby 比の実時間（YJIT 0.49× ／ interp 0.74× ／ AOT 焼き込み込み 1.04×）。YJIT に 32/53 本で勝ち", date: "2026-09-04", commit: "0a908f2a", mode: "AOT",
       note: "要約値。ベンチごとの値は docs/perf.md 2026-09-04 節" },
@@ -146,7 +138,8 @@ const DATA = {
     "Ripper の構文エラー回復（CRuby の parse.y は誤りの後も木を組み立てる）",
   ],
   recent: [
-    ["この commit", "status.html を互換性 / 健全性 / 性能に分け、gem ごとの一覧・make test の内訳・rubybench 欄。生成は tools/status/"],
+    ["この commit", "make test の不一致 45 → 27（BasicObject の定数、linear_time?、global_variables、CESU-8、壊れた UTF-8 の succ、Time の小数秒 ほか）。h[k] の等値判定を out-of-line に"],
+    ["38c16ad0", "status.html を互換性 / 健全性 / 性能に分け、gem ごとの一覧・make test の内訳・rubybench 欄。生成は tools/status/"],
     ["3b3d6b16", "ブロックの $~ を定義元メソッドのものに（radius）。optcarrot 再計測で AOT −9.3% の退行を発見"],
     ["b51641cd", "UTF8-KDDI / DoCoMo / SoftBank / MAC を UTF-8 として、GB1988 を 1 バイト符号化として（characteristics）"],
     ["a8292bbc", "main の特異メソッド（ruby2_keywords）、.new の initialize から出る break の伝播"],
@@ -195,7 +188,7 @@ renderGems();
 
 $("health").innerHTML = DATA.health.map(card).join("");
 $("mtfail").innerHTML = `<tr><th>ファイル</th><th>行</th><th>分類</th><th>中身</th></tr>` + DATA.maketest.map((r) =>
-  `<tr><td><code>${esc(r[0])}</code></td><td class="num">${esc(r[1])}</td><td class="${r[2] === "バグ" ? "bad" : r[2] === "想定内" ? "ok" : "warn"}">${esc(r[2])}</td><td>${esc(r[3])}</td></tr>`).join("");
+  `<tr><td><code>${esc(r[0])}</code></td><td class="num">${esc(r[1])}</td><td class="${r[2] === "要修正" ? "bad" : r[2] === "想定内" ? "ok" : "warn"}">${esc(r[2])}</td><td>${esc(r[3])}</td></tr>`).join("");
 
 $("perf").innerHTML = DATA.perf.map(card).join("");
 (function bars() {

@@ -865,7 +865,7 @@ class IO
   def wait(*args)
     if args.length == 2 && !args[0].is_a?(Symbol) && !args[1].is_a?(Symbol)
       ev = args[0]
-      raise TypeError, "no implicit conversion from nil to integer" if ev.nil?
+      raise TypeError, "no implicit conversion of nil into Integer" if ev.nil?
       ev = ev.to_int if !ev.is_a?(Integer) && ev.respond_to?(:to_int)
       raise TypeError, "no implicit conversion of #{ev.class} into Integer" unless ev.is_a?(Integer)
       raise ArgumentError, "Events must be positive integer!" if ev <= 0
@@ -885,7 +885,7 @@ class IO
                   end
       else
         raise ArgumentError, "timeout given more than once" if seen
-        raise TypeError, "can't convert #{x.class} into time interval" unless x.is_a?(Numeric)
+        raise TypeError, "can't convert #{x.nil? || x == true || x == false ? x.inspect : x.class} into time interval" unless x.is_a?(Numeric)
         raise ArgumentError, "time interval must not be negative" if x < 0
         timeout = x
         seen = true
@@ -2188,8 +2188,50 @@ class Regexp
     else
       return false
     end
-    !src.match?(/\\[0-9]|\\k<|\\g</)
+    return false if src.match?(/\\[0-9]|\\k<|\\g<|\(\?~/)
+    !__lookahead_captures?(src)
   end
+  # A capturing group inside a lookahead (?= / (?! defeats the memoization;
+  # inside a lookbehind it does not (what CRuby 4.1 answers).
+  def self.__lookahead_captures?(src)
+    stack = []   # one entry per open group: true when it is (or is inside) a lookahead
+    i = 0
+    while i < src.size
+      ch = src[i]
+      if ch == "\\"
+        i += 2; next
+      elsif ch == "["                       # skip a character class (nested [ ] and escapes)
+        depth = 1; i += 1
+        while i < src.size && depth > 0
+          if src[i] == "\\" then i += 1
+          elsif src[i] == "[" then depth += 1
+          elsif src[i] == "]" then depth -= 1
+          end
+          i += 1
+        end
+        next
+      elsif ch == "("
+        inside = stack.last || false
+        rest = src[i + 1, 3] || ""
+        if rest.start_with?("?=", "?!")
+          stack << true
+        elsif rest.start_with?("?<=", "?<!")
+          stack << false                     # a lookbehind resets it
+        elsif rest.start_with?("?")
+          return true if inside && (rest.start_with?("?<") || rest.start_with?("?'"))   # named capture
+          stack << inside
+        else
+          return true if inside                # plain capturing group
+          stack << inside
+        end
+      elsif ch == ")"
+        stack.pop
+      end
+      i += 1
+    end
+    false
+  end
+  private_class_method :__lookahead_captures?
   def self.timeout; @__timeout; end
   def self.timeout=(sec)
     if sec.nil?
