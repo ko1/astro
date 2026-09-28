@@ -1013,11 +1013,19 @@ static RESULT korb_hash_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     VALUE parg = slots[2];
     return korb_block_yield(c, slots + 3, block, def_env, &parg, 1, cself);
 }
-#define HASH_REQ_BLOCK(what) do { if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, what " without a block is not supported"); } while (0)
+/* no block → an Enumerator (with a size), built by the prelude's Hash#__enum_nb */
+static RESULT korb_hash_enum_nb(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, const char *meth) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    slots[0] = VALUE_REF_GET(self);
+    slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth)));
+    for (uint32_t i = 0; i < n; i++) slots[2 + i] = VALUE_SLICE_GET(a, i);
+    return korb_send_impl(c, slots + 2 + n, korb_intern(c->vm, "__enum_nb", 9), 0, 1 + n, NULL, NULL, NULL);
+}
+#define HASH_REQ_BLOCK(meth) do { if (UNLIKELY(block == NULL)) return korb_hash_enum_nb(c, slots, self, a, meth); } while (0)
 
 /* Hash#reverse_each — yield (k,v) pairs in reverse insertion order; return self. */
 static RESULT korb_m_hash_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a; HASH_REQ_BLOCK("Hash#reverse_each");
+    HASH_REQ_BLOCK("reverse_each");
     const uint32_t np = korb_entry_params_cnt(block);
     uint32_t i = VAL2HASH(VALUE_REF_GET(self))->len;
     while (i > 0) {
@@ -1063,7 +1071,7 @@ static RESULT korb_m_hash_each_with_index(CTX *c, VALUE *slots, VALUE_REF self, 
 
 /* Hash#cycle([n]) — yield (k,v) pairs n times (forever if n omitted); return nil. */
 static RESULT korb_m_hash_cycle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    HASH_REQ_BLOCK("Hash#cycle");
+    HASH_REQ_BLOCK("cycle");
     const uint32_t np = korb_entry_params_cnt(block);
     bool bounded = VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL;
     korb_sword_t n = 0;
@@ -1082,7 +1090,7 @@ static RESULT korb_m_hash_cycle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 
 static RESULT korb_m_hash_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a; HASH_REQ_BLOCK("Hash#flat_map");
+    HASH_REQ_BLOCK("flat_map");
     uint32_t np = korb_entry_params_cnt(block);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
@@ -1102,7 +1110,7 @@ static RESULT korb_m_hash_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_hash_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a; HASH_REQ_BLOCK("Hash#map");
+    HASH_REQ_BLOCK("map");
     uint32_t np = korb_entry_params_cnt(block);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {

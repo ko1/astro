@@ -17138,7 +17138,14 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       case KORB_OBJ_ENUMERATOR: {                    /* #inspect names the source; #to_s does not */
         const KorbEnumerator *const e = VAL2ENUM(v);
         if (KORB_STRING_P(e->desc)) { fwrite(korb_strbuf_data(VAL2STR(e->desc)->buf), 1, VAL2STR(e->desc)->len, fp); return; }
-        break;                                       /* no desc: fall through to the slots-aware #inspect below */
+        if (slots != NULL) {                         /* enum_for / to_enum: the prelude's #inspect names the recorded source */
+            slots[0] = v;
+            const RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
+            if (r.state == KORB_NORMAL && KORB_STRING_P(r.value)) { korb_fwrite_inspected(c, fp, r.value); return; }
+            if (r.state != KORB_NORMAL) korb_inspect_park_exc(c, r);
+            v = slots[0];
+        }
+        break;
       }
       case KORB_OBJ_REGEXP: {                            /* inspect: /source/opts */
         const KorbRegexp *const re = VAL2RE(v);
