@@ -2439,10 +2439,122 @@ static void korb_wtab_sweep(CTX *c, korb_wtab *restrict t) {
     if (t->idx) korb_wtab_rebuild(t);
 }
 /* AROH_WEAK_WALK: runs after mark/forward in every backend, before sweep. */
+/* ---- ObjectSpace::WeakMap rows (korb_wmap) ---------------------------------- */
+static uint32_t korb_wmap_hash(const VALUE m, const VALUE k)
+{
+    uint64_t x = ((uint64_t)m * 0x9E3779B97F4A7C15ull) ^ (uint64_t)k;
+    x ^= x >> 29; x *= 0xBF58476D1CE4E5B9ull; x ^= x >> 32;
+    return (uint32_t)x;
+}
+static void korb_wmap_rebuild(korb_wmap *restrict t)
+{
+    uint32_t cap = 16;
+    while (cap < t->cnt * 2 + 2) cap <<= 1;
+    free(t->idx);
+    t->idx = calloc(cap, sizeof *t->idx);
+    if (t->idx == NULL) { fprintf(stderr, "koruby_precise: oom (weakmap index)\n"); abort(); }
+    t->idx_mask = cap - 1;
+    for (uint32_t i = 0; i < t->cnt; i++) {
+        uint32_t h = korb_wmap_hash(t->map[i], t->key[i]) & t->idx_mask;
+        while (t->idx[h]) h = (h + 1) & t->idx_mask;
+        t->idx[h] = i + 1;
+    }
+}
+static int32_t korb_wmap_find(const korb_wmap *restrict t, const VALUE m, const VALUE k)
+{
+    if (t->idx == NULL) return -1;
+    for (uint32_t h = korb_wmap_hash(m, k) & t->idx_mask;; h = (h + 1) & t->idx_mask) {
+        const uint32_t e = t->idx[h];
+        if (e == 0) return -1;
+        if (t->map[e - 1] == m && t->key[e - 1] == k) return (int32_t)(e - 1);
+    }
+}
+static void korb_wmap_put(korb_wmap *restrict t, const VALUE m, const VALUE k, const VALUE v)
+{
+    const int32_t i = korb_wmap_find(t, m, k);
+    if (i >= 0) { t->val[i] = v; return; }
+    if (t->cnt == t->capa) {
+        const uint32_t nc = t->capa ? t->capa * 2 : 16;
+        VALUE *const nm = realloc(t->map, nc * sizeof(VALUE)), *const nk = nm ? realloc(t->key, nc * sizeof(VALUE)) : NULL,
+              *const nv = nk ? realloc(t->val, nc * sizeof(VALUE)) : NULL;
+        if (nv == NULL) { fprintf(stderr, "koruby_precise: oom (weakmap)\n"); abort(); }
+        t->map = nm; t->key = nk; t->val = nv; t->capa = nc;
+    }
+    t->map[t->cnt] = m; t->key[t->cnt] = k; t->val[t->cnt] = v; t->cnt++;
+    if (t->idx == NULL || t->cnt * 2 > t->idx_mask + 1) { korb_wmap_rebuild(t); return; }
+    uint32_t h = korb_wmap_hash(m, k) & t->idx_mask;
+    while (t->idx[h]) h = (h + 1) & t->idx_mask;
+    t->idx[h] = t->cnt;
+}
+static bool korb_wmap_remove(korb_wmap *restrict t, const int32_t i)
+{
+    if (i < 0) return false;
+    t->cnt--;
+    t->map[i] = t->map[t->cnt]; t->key[i] = t->key[t->cnt]; t->val[i] = t->val[t->cnt];
+    korb_wmap_rebuild(t);
+    return true;
+}
+/* a weak slot: an immediate never dies; NULL = collected, else its (moved) address */
+static bool korb_wmap_alive(CTX *c, VALUE *const v)
+{
+    if (!AROH_IS_GC_OBJECT(*v)) return true;
+    void *const np = aro_gc_finalize_check(c, (void *)(uintptr_t)*v);
+    if (np == NULL) return false;
+    *v = (VALUE)(uintptr_t)np;
+    return true;
+}
+static void korb_wmap_sweep(CTX *c, korb_wmap *restrict t)
+{
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < t->cnt; i++) {
+        VALUE m = t->map[i], k = t->key[i], v = t->val[i];
+        if (!korb_wmap_alive(c, &m) || !korb_wmap_alive(c, &k) || !korb_wmap_alive(c, &v)) continue;
+        t->map[w] = m; t->key[w] = k; t->val[w] = v; w++;
+    }
+    t->cnt = w;
+    if (t->idx) korb_wmap_rebuild(t);
+}
+
 void korb_weak_walk(CTX *c) {
     korb_wtab_sweep(c, &c->vm->sklass);
     korb_wtab_sweep(c, &c->vm->objivar);
     korb_wtab_sweep(c, &c->vm->oid);
+    korb_wmap_sweep(c, &c->vm->wmap);
+}
+
+/* __wmap_op(map, op, key, value): 0 get (nil if absent), 1 set, 2 delete, 3 key?,
+ * 4 entries as a flat [k, v, k, v, ...], 5 size */
+static RESULT korb_bi_wmap_op(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    const VALUE m = VALUE_SLICE_GET(args, 0);
+    const long op = FIXNUM_P(VALUE_SLICE_GET(args, 1)) ? FIX2LONG(VALUE_SLICE_GET(args, 1)) : -1;
+    const VALUE k = VALUE_SLICE_LEN(args) > 2 ? VALUE_SLICE_GET(args, 2) : KORB_NIL;
+    korb_wmap *const t = &c->vm->wmap;
+    switch (op) {
+      case 0: { const int32_t i = korb_wmap_find(t, m, k); return RESULT_OK(i >= 0 ? t->val[i] : KORB_NIL); }
+      case 1: korb_wmap_put(t, m, k, VALUE_SLICE_GET(args, 3)); return RESULT_OK(VALUE_SLICE_GET(args, 3));
+      case 2: {                                        /* the caller asked key? first */
+        const int32_t i = korb_wmap_find(t, m, k);
+        const VALUE v = i >= 0 ? t->val[i] : KORB_NIL;
+        korb_wmap_remove(t, i);
+        return RESULT_OK(v);
+      }
+      case 3: return RESULT_OK(korb_wmap_find(t, m, k) >= 0 ? KORB_TRUE : KORB_FALSE);
+      case 4: {
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < t->cnt; i++) n += t->map[i] == m;
+        slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 2 * n));   /* flat [k, v, k, v, ...]; no alloc per pair */
+        const VALUE mm = VALUE_SLICE_GET(args, 0);              /* re-read: the alloc may have moved the map (and the rows) */
+        for (uint32_t i = 0; i < c->vm->wmap.cnt; i++) {
+            if (c->vm->wmap.map[i] != mm) continue;
+            CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), c->vm->wmap.key[i]));
+            CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), c->vm->wmap.val[i]));
+        }
+        return RESULT_OK(slots[0]);
+      }
+      case 5: { long n = 0; for (uint32_t i = 0; i < t->cnt; i++) n += t->map[i] == m; return RESULT_OK(LONG2FIX(n)); }
+      default: return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "bad weakmap op");
+    }
 }
 
 /* Generic-ivar side table for objects without a struct ivar slot (String/Array/
@@ -21512,7 +21624,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__marshal_fast_load", korb_bi_marshal_fast_load, 1);   /* prelude/marshal.rb: plain data */
     korb_builtin_define(c, "__marshal_fast_dump", korb_bi_marshal_fast_dump, 1);   /* prelude/marshal.rb: plain data */
     korb_builtin_define(c, "__arith_seq", korb_bi_arith_seq, 4);   /* prelude Numeric#step without a block */
-    korb_builtin_define(c, "__termios_op", korb_bi_termios_op, 3);   /* lib/io/console.rb IO::ConsoleMode */
+    korb_builtin_define(c, "__termios_op", korb_bi_termios_op, 3);
+    korb_builtin_define(c, "__wmap_op", korb_bi_wmap_op, -1);          /* ObjectSpace::WeakMap */   /* lib/io/console.rb IO::ConsoleMode */
     korb_builtin_define(c, "__marshal_mark_plain", korb_bi_marshal_mark_plain, 1);
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);

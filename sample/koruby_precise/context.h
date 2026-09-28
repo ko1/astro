@@ -1116,6 +1116,16 @@ typedef struct korb_wtab {
     uint32_t  idx_mask;
 } korb_wtab;
 
+/* ObjectSpace::WeakMap entries of every map, as (map, key, value) rows where all
+ * three are weak: korb_weak_walk drops a row once any of them is collected.
+ * idx maps hash(map, key) to row + 1 (open addressing), rebuilt after a GC. */
+typedef struct korb_wmap {
+    VALUE    *map, *key, *val;
+    uint32_t  cnt, capa;
+    uint32_t *idx;
+    uint32_t  idx_mask;
+} korb_wmap;
+
 struct korb_vm {
     /* symbol intern table: id -> name (libc strings, never freed).  `sym_lens`
      * caches each name's length; `sym_hash` is an open-addressing index
@@ -1245,6 +1255,7 @@ struct korb_vm {
     korb_wtab sklass;
     korb_wtab objivar;
     korb_wtab oid;
+    korb_wmap wmap;           /* ObjectSpace::WeakMap (no GC edges at all) */
     uint64_t  oid_next;
     /* cached frozen result of nil/true/false #to_s (CRuby returns the same frozen
      * object each call).  KORB_NIL until first use; GC roots (AROH_VISIT_ROOTS). */

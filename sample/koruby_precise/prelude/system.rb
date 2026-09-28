@@ -1283,55 +1283,59 @@ $> = $stdout       # the default output stream ($DEFAULT_OUTPUT)
 $. = 0             # input line number, bumped by every #gets
 
 module ObjectSpace
-  # WeakMap / WeakKeyMap — koruby's GC has no weak edges, so entries are held
-  # strongly.  Everything else (comparison semantics, which keys are accepted,
-  # the API surface) follows CRuby; only "the entry disappears once the key is
-  # collected" is missing.
+  # WeakMap: rows in the VM's weak table (__wmap_op), dropped by the GC once the
+  # key, the value or the map itself is collected.  Keys compare by identity.
+  # WeakKeyMap below still holds its entries strongly.
   class WeakMap
     include Enumerable
 
-    def initialize; @h = {}.compare_by_identity; end   # WeakMap compares keys by identity
-    def [](k); @h[k]; end
-    def []=(k, v); @h[k] = v; v; end
-    def include?(k); @h.key?(k); end
+    def [](k) = __wmap_op(self, 0, k)
+    def []=(k, v)
+      __wmap_op(self, 1, k, v)
+    end
+    def include?(k) = __wmap_op(self, 3, k)
     alias_method :key?, :include?
     alias_method :member?, :include?
     def delete(k, &blk)
-      return @h.delete(k) if @h.key?(k)
+      return __wmap_op(self, 2, k) if __wmap_op(self, 3, k)
       blk ? blk.call(k) : nil
     end
-    def size; @h.size; end
+    def size = __wmap_op(self, 5)
     alias_method :length, :size
-    def keys; @h.keys; end
-    def values; @h.values; end
+    private def __pairs = __wmap_op(self, 4).each_slice(2).to_a
+    def keys = __pairs.map(&:first)
+    def values = __pairs.map(&:last)
 
     # `each` on an empty map returns self even without a block; with entries and
     # no block it is a LocalJumpError (CRuby yields eagerly, it is not an
     # Enumerator-returning method).
     def each(&blk)
-      return self if @h.empty? && blk.nil?
+      ps = __pairs
+      return self if ps.empty? && blk.nil?
       raise LocalJumpError, "no block given (yield)" if blk.nil?
-      @h.each { |k, v| blk.call(k, v) }
+      ps.each { |k, v| blk.call(k, v) }
       self
     end
     alias_method :each_pair, :each
 
     def each_key(&blk)
-      return self if @h.empty? && blk.nil?
+      ps = __pairs
+      return self if ps.empty? && blk.nil?
       raise LocalJumpError, "no block given (yield)" if blk.nil?
-      @h.each_key { |k| blk.call(k) }
+      ps.each { |k, _| blk.call(k) }
       self
     end
 
     def each_value(&blk)
-      return self if @h.empty? && blk.nil?
+      ps = __pairs
+      return self if ps.empty? && blk.nil?
       raise LocalJumpError, "no block given (yield)" if blk.nil?
-      @h.each_value { |v| blk.call(v) }
+      ps.each { |_, v| blk.call(v) }
       self
     end
 
     def inspect
-      body = @h.map { |k, v| "#{ObjectSpace.__any_to_s(k)} => #{ObjectSpace.__any_to_s(v)}" }.join(", ")
+      body = __pairs.map { |k, v| "#{ObjectSpace.__any_to_s(k)} => #{ObjectSpace.__any_to_s(v)}" }.join(", ")
       format("#<ObjectSpace::WeakMap:0x%016x%s>", object_id, body.empty? ? "" : ": #{body}")
     end
   end
@@ -1339,6 +1343,9 @@ module ObjectSpace
   # `#<Class:0xaddr>` for any object, including a BasicObject (which has no
   # #inspect / #class to call).
   def self.__any_to_s(o)
+    case o                                            # special constants inspect (CRuby's wmap_inspect)
+    when Integer, Symbol, Float, nil, true, false then return o.inspect
+    end
     cls = Object.instance_method(:class).bind_call(o) rescue nil
     id  = Object.instance_method(:object_id).bind_call(o) rescue 0
     format("#<%s:0x%016x>", cls ? cls.name : "BasicObject", id)

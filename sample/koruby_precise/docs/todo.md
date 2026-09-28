@@ -6046,8 +6046,8 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   残り: syntax_tree は本物の ripper の scanner イベント列（on_symbeg 等が parser イベントの前に来る）に依存し、翻訳器は出さない（19 ファイル、
   prism 1.9 の翻訳器でも同じ）。rufo は squiggly heredoc の dedent と `__END__` の sexp / lex の差（11 例）と、構文エラーの文言
   （prism の文言、CRuby は parse.y の "syntax error, unexpected end-of-input"）。
-- **ObjectSpace::WeakMap が強参照**（prelude の Hash）。WeakRef が回収されず RefError にならない（weakref test_recycled）。
-  値も弱い side table（korb_weak_walk で鍵か値が死んだ行を落とす）＋ map ごとの表と map 自身の死での解放が要る。
+- ObjectSpace::WeakMap は 2026-09-28 に弱い表（korb_wmap: map / 鍵 / 値のどれかが死んだ行を korb_weak_walk で落とす）。残り: WeakKeyMap は強参照のまま。
+  weakref の test_recycled は GC がスロットスタックを最深点まで走査するため make_weakref(10) の再帰で積んだ死んだ参照が残り、100 回回しても回収されない。
 - `class << self` の本体で定義したクラスのメソッドの Module.nesting が `[A]` だけ（CRuby は `[W, #<Class:A>, A]`）。定数は 2026-09-28 に
   特異クラスまで引くようにした（Ascii85::Wrapper の START_MARKER）が、名前で焼いた nesting 自体は特異クラスを表せない。
 - 既存のクラス名で `module T` と書いた TypeError（T is not a module）の backtrace の行が 0 になる（CRuby は module 文の行）。
