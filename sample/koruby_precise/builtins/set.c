@@ -672,7 +672,7 @@ static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             return RESULT_OK(KORB_TRUE);
     }
     /* respond_to_missing?(name, include_private) fallback (pairs with method_missing). */
-    const uint32_t rtm = korb_intern(vm, "respond_to_missing?", 19);
+    const uint32_t rtm = vm->mid_respond_to_missing;
     const VALUE dcls = korb_dispatch_class(c, VALUE_REF_GET(self));
     VALUE rtm_def = KORB_NIL;
     if (KORB_CLASS_P(dcls) && korb_find_method_c(c->vm, dcls, rtm, &rtm_def)) {

@@ -7938,7 +7938,7 @@ korb_responds_to_coerce_p(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid)
     const bool custom_rt = rt_def != KORB_NIL && rt_def != korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
     /* Kernel's own #respond_to_missing? always answers false — only an override
      * is worth a dispatch. */
-    const bool has_rtm = korb_find_method_c(c->vm, dcls, korb_intern(c->vm, "respond_to_missing?", 19), &rtm_def) != NULL &&
+    const bool has_rtm = korb_find_method_c(c->vm, dcls, c->vm->mid_respond_to_missing, &rtm_def) != NULL &&
                          rtm_def != korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
     if (!(custom_rt || has_rtm)) return false;
     slots[0] = *selfp; slots[1] = ID2SYM(mid); slots[2] = KORB_TRUE;
@@ -7985,7 +7985,7 @@ korb_check_funcall(CTX *c, VALUE *slots, VALUE *v, uint32_t mid)
         VALUE rtm_def = KORB_NIL, mm_def = KORB_NIL;
         const struct korb_method *const rt = korb_class_find_method(dcls, korb_intern(vm, "respond_to?", 11), NULL);
         if (rt != NULL && rt->kind != KORB_METHOD_CFUNC) return RESULT_OK(KORB_FALSE);   /* its own #respond_to? said no */
-        if (korb_class_find_method(dcls, korb_intern(vm, "respond_to_missing?", 19), &rtm_def) != NULL &&
+        if (korb_class_find_method(dcls, vm->mid_respond_to_missing, &rtm_def) != NULL &&
             rtm_def != korb_const_get(vm, korb_intern(vm, "Kernel", 6))) return RESULT_OK(KORB_FALSE);
         const struct korb_method *const mm = korb_class_find_method(dcls, vm->mid_method_missing, &mm_def);
         if (mm == NULL || (mm->kind == KORB_METHOD_CFUNC && mm->rfn == korb_m_obj_method_missing)) return RESULT_OK(KORB_FALSE);
@@ -8016,7 +8016,7 @@ korb_responds_to_coerce(CTX *c, VALUE *slots, VALUE self, uint32_t mid)
     const bool custom_rt = rt_def != KORB_NIL && rt_def != korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
     /* Kernel's own #respond_to_missing? always answers false — only an override
      * is worth a dispatch. */
-    const bool has_rtm = korb_find_method_c(c->vm, dcls, korb_intern(c->vm, "respond_to_missing?", 19), &rtm_def) != NULL &&
+    const bool has_rtm = korb_find_method_c(c->vm, dcls, c->vm->mid_respond_to_missing, &rtm_def) != NULL &&
                          rtm_def != korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
     if (custom_rt || has_rtm) {
         /* include_private = true: a conversion protocol (#to_int / #to_str / …)
@@ -8060,7 +8060,7 @@ korb_defined_call_p(CTX *c, VALUE *slots, uint32_t mid, int32_t self_off)
             return KORB_CLASS_P(owner) && korb_class_has_ancestor(korb_dispatch_class(c, caller), owner);
         }
     }
-    const uint32_t rtm = korb_intern(c->vm, "respond_to_missing?", 19);
+    const uint32_t rtm = c->vm->mid_respond_to_missing;
     if (!korb_responds_to(c, recv, rtm)) return false;
     slots[1] = recv;                                          /* recv + args just below the cursor */
     slots[2] = ID2SYM(mid);
@@ -21182,6 +21182,7 @@ korb_ctx_new(void)
     c->vm->mid___send__    = korb_intern(c->vm, "__send__", 8);
     c->vm->mid_public_send = korb_intern(c->vm, "public_send", 11);
     c->vm->mid_method_missing = korb_intern(c->vm, "method_missing", 14);
+    c->vm->mid_respond_to_missing = korb_intern(c->vm, "respond_to_missing?", 19);
     c->vm->mid_new         = korb_intern(c->vm, "new", 3);
     c->vm->mid_initialize  = korb_intern(c->vm, "initialize", 10);
     c->vm->mid_autoloads   = korb_intern(c->vm, "@__autoloads", 12);
