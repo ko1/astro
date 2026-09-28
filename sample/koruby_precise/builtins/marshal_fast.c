@@ -258,6 +258,31 @@ korb_mload_obj(CTX *c, VALUE *slots, VALUE *const links, struct korb_mload *cons
         *out = korb_items_data(VAL2ARY(*links)->items)[li];
         return RESULT_OK(KORB_NIL);
       }
+      case 'o': {                                        /* a plain object of a class the dumper / loader vetted */
+        uint32_t cid;
+        if (!korb_mload_symbol(c, st, &cid)) return KORB_MLOAD_NO();
+        const VALUE k = korb_const_get_path(c->vm, cid);
+        if (!KORB_CLASS_P(k) || !VAL2CLASS(k)->marshal_plain || VAL2CLASS(k)->is_singleton) return KORB_MLOAD_NO();
+        int64_t n;
+        if (!korb_mload_long(st, &n) || n < 0 || (uint64_t)n > st->len - st->i) return KORB_MLOAD_NO();
+        const uint32_t li = VAL2ARY(*links)->len;
+        const VALUE o = UNWRAP(korb_obj_new(c, slots, k));
+        UNWRAP(korb_mload_entry(c, slots, links, o));
+        for (int64_t j = 0; j < n; j++) {
+            uint32_t iv;
+            if (!korb_mload_symbol(c, st, &iv)) return KORB_MLOAD_NO();
+            const char *const nm = korb_sym_name(c->vm, iv);
+            VALUE v;
+            const RESULT r = korb_mload_obj(c, slots + 4, links, st, depth + 1, &v);
+            if (r.state != KORB_NORMAL || r.value == KORB_UNDEF) return r;
+            if (nm == NULL || nm[0] != '@') continue;         /* CRuby keeps it as a hidden ivar */
+            slots[1] = v;
+            slots[2] = korb_items_data(VAL2ARY(*links)->items)[li];
+            CHECK(korb_ivar_set(c, slots + 3, VALUE_REF_AT(&slots[2]), ID2SYM(iv), slots[1]));
+        }
+        *out = korb_items_data(VAL2ARY(*links)->items)[li];
+        return RESULT_OK(KORB_NIL);
+      }
       default:
         return KORB_MLOAD_NO();
     }
@@ -546,13 +571,15 @@ static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const VALU
     return !dflt || korb_mdump_obj(c, st, VAL2HASH(v)->default_val, depth + 1);
 }
 
-/* __marshal_mark_plain(klass): the Ruby dumper wrote an instance of klass as a plain
- * 'o' record, so the C dumper may write the next ones itself. */
+/* __marshal_mark_plain(obj): the Ruby dumper / loader handled obj as a plain 'o'
+ * record, so the C paths may take the next instances of its class. */
 static RESULT
 korb_bi_marshal_mark_plain(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     (void)c; (void)slots;
-    const VALUE k = VALUE_SLICE_GET(args, 0);
+    const VALUE o = VALUE_SLICE_GET(args, 0);            /* an instance: its class is marked only if it is a KorbObject */
+    if (!KORB_OBJECT_P(o)) return RESULT_OK(KORB_NIL);
+    const VALUE k = VAL2OBJ(o)->klass;
     if (KORB_CLASS_P(k) && !VAL2CLASS(k)->is_singleton && VAL2CLASS(k)->name_sym != 0) VAL2CLASS(k)->marshal_plain = 1;
     return RESULT_OK(KORB_NIL);
 }

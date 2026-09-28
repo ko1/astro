@@ -6027,7 +6027,8 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   2 万オブジェクト（ivar 2 つ）×5 回で koruby 1.8 s / CRuby 0.09 s（20 倍）。deep copy（Marshal.load(Marshal.dump(x))）や
   parallel のワーカー間通信で効く。**2026-09-28 一部済**: Ruby の dumper が普通の 'o' として書いたクラス（KorbClass.marshal_plain）
   のインスタンスは C が書く（marshal_dump / _dump / 特異クラス / extend があれば Ruby へ）。同じ計測で 1.8 → 0.43 s
-  （初回の 1 回は Ruby 経路でクラスに印を付ける）。残り: load 側（Ruby の _read）と、Struct / Set / 例外の入ったグラフ。
+  （初回の 1 回は Ruby 経路でクラスに印を付ける）。load 側も 'o' を C で（3.0 → 0.022 s）。残り: Struct / Set / 例外 /
+  ivar 付き String などの入ったグラフは全体が Ruby 経路。
 - **Fiber スケジューラ**（2026-09-28 一部済）: scheduler は thread ごと、差し替え・thread の終わり・at_exit の前に close、
   Fiber.schedule は #fiber、非ブロッキング fiber の Kernel#sleep と `cmd` の pipe 読みは scheduler 経由（graphql
   nonblocking_dataloader の 2 例）。**残り**: Mutex / Queue / ConditionVariable の block・unblock、IO 一般の読み書きの

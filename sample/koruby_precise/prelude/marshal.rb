@@ -50,6 +50,8 @@ module Marshal
   RESPONDS = Kernel.instance_method(:respond_to?)
   def self._responds?(o, m, priv = false) = RESPONDS.bind_call(o, m, priv)
   IVAR_SET = Kernel.instance_method(:instance_variable_set)
+  # CRuby's loader allocates with the class's allocator: a user `def self.allocate` is not called
+  ALLOC = Class.instance_method(:allocate)
 
   # Marshal.dump(obj, limit): each nested value costs one level; a negative
   # limit means unlimited (CRuby).
@@ -400,7 +402,7 @@ module Marshal
     raise TypeError, "can't dump anonymous class #{k}" if name.nil?
     _wrap_prefix(o, k, out, st)                        # 'e' extends only ('o' carries the name)
     ivars = IVARS_OF.bind_call(o)
-    __marshal_mark_plain(k)                            # its next instances can take the C dumper
+    __marshal_mark_plain(o)                            # its next instances can take the C dumper
     out << "o"
     _symdump(name.to_sym, out, st); _long(ivars.length, out)
     ivars.each { |iv| _symdump(iv, out, st); _dump(IVAR_GET.bind_call(o, iv), out, st) }
@@ -961,14 +963,18 @@ module Marshal
         # a plain object exists before its ivars, so a back-reference inside
         # them (o.@a = [o]) finds it (CRuby allocates, then reads the ivars)
         _check_o_type(klass)
-        obj = st[:objs][idx] = klass.allocate
+        obj = st[:objs][idx] = ALLOC.bind_call(klass)
         st[:partial][obj] = true                         # unfinished: a self-link neither freezes nor fires the proc
-        _rlong(st).times { name = _read0(st); IVAR_SET.bind_call(obj, name, _read(st)) }   # obj may be a BasicObject
+        __marshal_mark_plain(obj)                        # the C loader may take this class next time
+        _rlong(st).times do
+          name = _read0(st); val = _read(st)
+          IVAR_SET.bind_call(obj, name, val) if name.start_with?("@")   # CRuby keeps any other name as a hidden ivar
+        end
         return obj
       end
       if klass                                          # Exception / Set: allocated before the ivars too,
         _check_o_type(klass)                            # so a link back to it (e.@me = e) finds it
-        obj = st[:objs][idx] = klass.allocate
+        obj = st[:objs][idx] = ALLOC.bind_call(klass)
         st[:partial][obj] = true
       end
       ni = _rlong(st)
@@ -1028,7 +1034,7 @@ module Marshal
             when :Rational then Rational(data[0], data[1])
             when :Complex  then Complex(data[0], data[1])
             else
-              o = _const(cls).allocate
+              o = ALLOC.bind_call(_const(cls))
               ext&.reverse_each { |m| _extend(o, m) }; ext&.clear
               # CRuby calls it with rb_funcall, which ignores visibility —
               # OpenStruct#marshal_load is private, so a public-only probe
@@ -1042,7 +1048,7 @@ module Marshal
       name = _read0(st)
       k = _const(name)
       raise ArgumentError, "dump format error" unless DATA_CLASSES.any? { |b| k <= b }
-      obj = k.allocate
+      obj = ALLOC.bind_call(k)
       unless obj.respond_to?(:_load_data, true)
         raise TypeError, "class #{name} needs to have instance method '_load_data'"
       end
