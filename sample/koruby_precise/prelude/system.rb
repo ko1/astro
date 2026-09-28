@@ -2248,9 +2248,43 @@ end
 
 # RubyVM: koruby has no YJIT / ZJIT, but CRuby code asks about them without a
 # defined? guard (csv's test_general: `RubyVM.const_defined?("YJIT")`).  Only the
-# predicates exist — no InstructionSequence / AbstractSyntaxTree / keep_script_lines,
-# so a library probing for those still takes its portable path.
+# predicates exist — no AbstractSyntaxTree / keep_script_lines, so a library
+# probing for those still takes its portable path.
 module RubyVM
+  # Only compile-as-syntax-check and #eval (state_machines validates eval strings
+  # with it because RUBY_ENGINE is "ruby").  No binary form: to_binary /
+  # load_from_binary stay undefined so bootsnap-style probes keep their fallback.
+  class InstructionSequence
+    def self.compile(source, file = "<compiled>", path = nil, line = 1, _options = nil)
+      src = source.respond_to?(:to_io) ? source.to_io.read : source.to_str
+      __check_syntax(src, file, line)
+      new_iseq__(src, file, path || file, line)
+    end
+    def self.new(...) = compile(...)
+    def self.compile_file(path, _options = nil)
+      compile(File.read(path), path, File.expand_path(path), 1)
+    end
+    def self.of(_body) = nil
+    def self.__check_syntax(src, file, line)   # a BEGIN that throws runs before anything else
+      catch(:__korb_iseq_syntax_ok) { __fresh_binding.eval("BEGIN{throw :__korb_iseq_syntax_ok}\n#{src}", file, line - 1) }
+    end
+    def self.__fresh_binding = binding
+    def self.new_iseq__(src, file, path, line)
+      i = allocate
+      i.instance_variable_set(:@src, src); i.instance_variable_set(:@file, file)
+      i.instance_variable_set(:@path, path); i.instance_variable_set(:@line, line)
+      i
+    end
+    private_class_method :__check_syntax, :__fresh_binding, :new_iseq__
+
+    def eval = TOPLEVEL_BINDING.eval(@src, @path, @line)
+    def path = @file
+    def absolute_path = @path
+    def label = "<compiled>"
+    def base_label = "<compiled>"
+    def first_lineno = @line
+    def inspect = "<RubyVM::InstructionSequence:#{label}@#{@file}:#{@line}>"
+  end
   module YJIT
     def self.enabled? = false
     def self.stats_enabled? = false
