@@ -748,6 +748,8 @@ typedef struct KorbClass {
                                       * does not materialize one for that, so a NameError raised inside
                                       * still names the object's real class ("an instance of Foo"). */
     uint8_t  new_kind;               /* .new dispatch cache: 0=unknown, 1=plain user class, 2=special (Fiber/Struct/builtin/module) */
+    uint8_t  marshal_plain;          /* the Ruby dumper wrote an instance as a plain 'o' record (not Struct/Data/Set/C data):
+                                      * __marshal_fast_dump may then write this class's instances itself */
     uint32_t new_kind_serial;        /* method_serial the new_kind above was classified at: a later `def self.new`
                                       * (or an rspec stub) turns a plain class into a special one */
     uint8_t  struct_kwinit;          /* Struct.new(..., keyword_init: true) → .new takes a kwargs hash */

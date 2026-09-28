@@ -314,6 +314,8 @@ struct korb_mdump {
     size_t len, cap;
     VALUE *okey; uint32_t *oval; uint32_t ocap, ocnt;   /* object → link id (identity) */
     uint32_t *skey, *sval; uint32_t scap, scnt;         /* symbol id + 1 → symlink id */
+    VALUE ckey[16]; uint32_t cval[16]; uint32_t ccnt;   /* class → qualified-name symbol (nothing moves mid-dump) */
+    uint32_t mid_mdump, mid_udump;                      /* :marshal_dump / :_dump */
 };
 
 #define KORB_MDUMP_MAX_DEPTH 4096u
@@ -430,6 +432,48 @@ static uint32_t korb_mdump_float_str(const double d, char *const out) {
 }
 
 /* false = not plain data (or out of memory): the Ruby dumper takes over. */
+/* The qualified name of `k` as a symbol id (0: too many classes in one dump). */
+static uint32_t korb_mdump_class_sym(CTX *const c, struct korb_mdump *const st, const VALUE k) {
+    for (uint32_t i = 0; i < st->ccnt; i++) if (st->ckey[i] == k) return st->cval[i];
+    if (st->ccnt == sizeof st->ckey / sizeof st->ckey[0]) return 0;
+    char buf[256];
+    korb_class_qname_into(c, k, buf, sizeof buf);
+    const uint32_t id = korb_intern(c->vm, buf, strlen(buf));
+    st->ckey[st->ccnt] = k; st->cval[st->ccnt] = id; st->ccnt++;
+    return id;
+}
+
+/* An instance of a class the Ruby dumper already wrote as a plain 'o' record:
+ * `o`, the class name, then the visible ivars as #instance_variables lists them. */
+static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const VALUE v, const uint32_t depth);   /* fwd */
+static bool korb_mdump_plain_object(CTX *const c, struct korb_mdump *const st, const VALUE v, const uint32_t depth) {
+    const uint32_t csym = korb_mdump_class_sym(c, st, VAL2OBJ(v)->klass);
+    if (csym == 0 || !korb_mdump_byte(st, 'o') || !korb_mdump_sym(c->vm, st, csym)) return false;
+    const struct korb_vm *const vm = c->vm;
+    const uint32_t sid0 = VAL2OBJ(v)->shape_id, n = vm->shapes[sid0].ivar_count;
+    uint32_t sbuf[32];
+    uint32_t *const syms = n <= 32 ? sbuf : malloc((size_t)n * sizeof(uint32_t));
+    if (syms == NULL) return false;
+    for (uint32_t sid = sid0; sid; sid = vm->shapes[sid].parent) {      /* leaf→root: each ivar at its index */
+        const struct korb_shape *const s = &vm->shapes[sid];
+        if (s->ivar_count >= 1 && s->ivar_count <= n) syms[s->ivar_count - 1] = s->edge_sym;
+    }
+    uint32_t shown = 0;                                   /* the filter korb_m_obj_ivars applies */
+    for (uint32_t i = 0; i < n; i++) {
+        const char *const nm = korb_sym_name(vm, syms[i]);
+        const bool hide = nm == NULL || nm[0] != '@' || (nm[1] == '_' && nm[2] == '_' && syms[i] < vm->boot_sym_cnt);
+        if (hide) syms[i] = UINT32_MAX; else shown++;
+    }
+    bool ok = korb_mdump_long(st, shown);
+    for (uint32_t i = 0; ok && i < n; i++) {
+        if (syms[i] == UINT32_MAX) continue;
+        ok = korb_mdump_sym(vm, st, syms[i]) &&
+             korb_mdump_obj(c, st, korb_items_data(VAL2OBJ(v)->ivars)[i], depth + 1);
+    }
+    if (syms != sbuf) free(syms);
+    return ok;
+}
+
 static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const VALUE v, const uint32_t depth) {
     if (depth > KORB_MDUMP_MAX_DEPTH) return false;
     if (v == KORB_NIL) return korb_mdump_byte(st, '0');
@@ -441,6 +485,18 @@ static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const VALU
         if (n >= -0x40000000LL && n < 0x40000000LL) return korb_mdump_byte(st, 'i') && korb_mdump_long(st, n);
     } else if (!KORB_FLOAT_P(v)) {
         if (!AROH_IS_GC_OBJECT(v)) return false;
+        if (KORB_OBJECT_P(v)) {                          /* a plain object: only a class the Ruby dumper vetted */
+            const VALUE k = VAL2OBJ(v)->klass;
+            if (!KORB_CLASS_P(k) || !VAL2CLASS(k)->marshal_plain || VAL2CLASS(k)->is_singleton ||
+                VAL2CLASS(k)->name_sym == 0) return false;        /* a dup'd class may carry the mark: anonymous → Ruby's TypeError */
+            if (KORB_CLASS_P(korb_own_singleton_class(c->vm, v))) return false;   /* extended / singleton: 'e' or TypeError */
+            if (korb_class_find_method(k, st->mid_mdump, NULL) || korb_class_find_method(k, st->mid_udump, NULL)) return false;
+            bool oom = false;
+            const uint32_t id = korb_mdump_link(st, v, &oom);
+            if (oom) return false;
+            if (id != UINT32_MAX) return korb_mdump_byte(st, '@') && korb_mdump_long(st, id);
+            return korb_mdump_plain_object(c, st, v, depth);
+        }
         const uint32_t fl = ((const AroObjectHeader *)(uintptr_t)v)->flags;
         if (fl & (KORB_FL_HAS_KLASS | KORB_FL_HAS_IVARS)) return false;   /* subclass / extended / singleton / ivars */
         if (KORB_HASH_P(v) && ((fl & (KORB_FL_CMP_BY_ID | KORB_FL_R2K)) || VAL2HASH(v)->default_proc != KORB_NIL)) return false;
@@ -490,11 +546,24 @@ static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const VALU
     return !dflt || korb_mdump_obj(c, st, VAL2HASH(v)->default_val, depth + 1);
 }
 
+/* __marshal_mark_plain(klass): the Ruby dumper wrote an instance of klass as a plain
+ * 'o' record, so the C dumper may write the next ones itself. */
+static RESULT
+korb_bi_marshal_mark_plain(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)c; (void)slots;
+    const VALUE k = VALUE_SLICE_GET(args, 0);
+    if (KORB_CLASS_P(k) && !VAL2CLASS(k)->is_singleton && VAL2CLASS(k)->name_sym != 0) VAL2CLASS(k)->marshal_plain = 1;
+    return RESULT_OK(KORB_NIL);
+}
+
 /* __marshal_fast_dump(obj) → the dump String, or nil (the Ruby dumper's turn). */
 static RESULT
 korb_bi_marshal_fast_dump(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     struct korb_mdump st = { 0 };
+    st.mid_mdump = korb_intern(c->vm, "marshal_dump", 12);
+    st.mid_udump = korb_intern(c->vm, "_dump", 5);
     bool ok = korb_mdump_byte(&st, 4) && korb_mdump_byte(&st, 8) &&
               korb_mdump_obj(c, &st, VALUE_SLICE_GET(args, 0), 0);
     free(st.okey); free(st.oval); free(st.skey); free(st.sval);

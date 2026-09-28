@@ -400,6 +400,7 @@ module Marshal
     raise TypeError, "can't dump anonymous class #{k}" if name.nil?
     _wrap_prefix(o, k, out, st)                        # 'e' extends only ('o' carries the name)
     ivars = IVARS_OF.bind_call(o)
+    __marshal_mark_plain(k)                            # its next instances can take the C dumper
     out << "o"
     _symdump(name.to_sym, out, st); _long(ivars.length, out)
     ivars.each { |iv| _symdump(iv, out, st); _dump(IVAR_GET.bind_call(o, iv), out, st) }
