@@ -17374,7 +17374,7 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         const bool rng = KORB_RANGE_P(as->recv);
         fputc('(', fp);
         if (rng) fputc('(', fp);
-        korb_fprint_inspect(c, fp, as->recv);
+        korb_fprint_to_s(c, fp, as->recv);               /* CRuby prints the receiver with #to_s: (1/2.step) */
         if (rng) fputc(')', fp);
         fputs(as->is_pct ? ".%" : ".step", fp);
         if (as->nargs >= 1) {
@@ -21260,6 +21260,7 @@ korb_ctx_new(void)
 #endif
     korb_builtin_define(c, "__marshal_fast_load", korb_bi_marshal_fast_load, 1);   /* prelude/marshal.rb: plain data */
     korb_builtin_define(c, "__marshal_fast_dump", korb_bi_marshal_fast_dump, 1);   /* prelude/marshal.rb: plain data */
+    korb_builtin_define(c, "__arith_seq", korb_bi_arith_seq, 4);   /* prelude Numeric#step without a block */
     korb_builtin_define(c, "__marshal_mark_plain", korb_bi_marshal_mark_plain, 1);
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);

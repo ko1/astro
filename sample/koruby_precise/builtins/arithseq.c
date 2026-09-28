@@ -23,10 +23,21 @@ static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv,
     } else {
         *beginv = as->recv; *excl = false;
         *limv  = as->nargs >= 1 ? as->a0 : KORB_NIL;
-        *stepv = as->nargs >= 2 ? as->a1 : LONG2FIX(1);
+        *stepv = as->nargs >= 2 && as->a1 != KORB_NIL ? as->a1 : LONG2FIX(1);   /* step(0, nil): inspect keeps the nil */
     }
 }
 
+/* A component that is neither Integer nor Float: the prelude's generic path
+ * (which raises the TypeError for a non-Numeric). */
+/* Rational / BigDecimal / ...: a heap Numeric the C paths do not compute with. */
+static bool korb_aseq_generic_p(const VALUE v) {
+    return AROH_IS_GC_OBJECT(v) && !KORB_FLOAT_P(v) && !KORB_INTEGER_P(v) && !KORB_STRING_P(v);
+}
+static RESULT korb_aseq_generic(CTX *c, VALUE *slots, VALUE_REF self, const char *const meth, const uint32_t argc, const VALUE arg) {
+    slots[0] = VALUE_REF_GET(self);
+    if (argc) slots[1] = arg;
+    return korb_send(c, slots + 1 + argc, korb_intern(c->vm, meth, (uint32_t)strlen(meth)), 0, argc);
+}
 /* Materialize the sequence into a fresh Array (rooted via return).  Raises
  * RangeError for an endless sequence (limit nil), matching CRuby. */
 static RESULT korb_aseq_to_array(CTX *c, VALUE *slots, VALUE_REF self) {
@@ -65,7 +76,7 @@ static RESULT korb_aseq_to_array(CTX *c, VALUE *slots, VALUE_REF self) {
                      (FIX2LONG(stepv) > 0 ? FIX2LONG(limv) > FIXNUM_MAX - FIX2LONG(stepv)
                                           : FIX2LONG(limv) < FIXNUM_MIN - FIX2LONG(stepv)))) {
             if (!KORB_INTEGER_P(beginv) || !KORB_INTEGER_P(limv) || !KORB_INTEGER_P(stepv))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
+                return korb_aseq_generic(c, slots, self, "__generic_to_a", 0, KORB_NIL);   /* Rational, BigDecimal, ... */
             slots[0] = beginv;                                        /* a value leaves the Fixnum range */
             return korb_int_step_wide_x(c, slots + 1, VALUE_REF_AT(&slots[0]), limv, stepv, NULL, NULL, NULL, true, excl, true);
         }
@@ -99,10 +110,12 @@ static RESULT korb_m_aseq_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     VALUE beginv, limv, stepv; bool excl;
     korb_aseq_params(as, &beginv, &limv, &stepv, &excl);
     double bd, ld, sd;
-    if (!korb_num_to_d(beginv, &bd) || !korb_num_to_d(stepv, &sd))            /* non-numeric (e.g. String range) → nil */
-        return RESULT_OK(KORB_NIL);
+    if (!korb_num_to_d(beginv, &bd) || !korb_num_to_d(stepv, &sd) || (limv != KORB_NIL && !korb_num_to_d(limv, &ld))) {
+        if (korb_aseq_generic_p(beginv) || korb_aseq_generic_p(stepv) || korb_aseq_generic_p(limv))
+            return korb_aseq_generic(c, slots, self, "__generic_size", 0, KORB_NIL);
+        return RESULT_OK(KORB_NIL);                                            /* non-numeric (e.g. String range) */
+    }
     if (limv == KORB_NIL) return korb_float_new(c, slots, INFINITY);          /* endless numeric */
-    if (UNLIKELY(!korb_num_to_d(limv, &ld))) return RESULT_OK(KORB_NIL);
     if (UNLIKELY(sd == 0.0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
     if (isinf(sd))                                                            /* infinite step: at most the first element */
         return RESULT_OK(LONG2FIX((sd > 0 ? bd <= ld : bd >= ld) ? 1 : 0));
@@ -147,8 +160,11 @@ static RESULT korb_m_aseq_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (!korb_num_to_d(beginv, &s) || !korb_num_to_d(stepv, &st) || (!endless && !korb_num_to_d(limv, &lim)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
     } else {
-        if (UNLIKELY(!FIXNUM_P(beginv) || !FIXNUM_P(stepv) || (!endless && !FIXNUM_P(limv))))
+        if (UNLIKELY(!FIXNUM_P(beginv) || !FIXNUM_P(stepv) || (!endless && !FIXNUM_P(limv)))) {
+            if (korb_aseq_generic_p(beginv) || korb_aseq_generic_p(stepv) || korb_aseq_generic_p(limv))
+                return korb_aseq_generic(c, slots, self, "__generic_first", want_n ? 1 : 0, want_n ? LONG2FIX(n) : KORB_NIL);
             return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
+        }
         is = FIX2LONG(beginv); ist = FIX2LONG(stepv); if (!endless) ilim = FIX2LONG(limv);
     }
     slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)(n > 0 ? n : 0)));
@@ -188,4 +204,11 @@ static RESULT korb_m_aseq_exclude_end(CTX *c, VALUE *slots, VALUE_REF self, VALU
 }
 static RESULT korb_m_aseq_step_acc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; VALUE b, l, s; bool e; korb_aseq_params(VAL2ASEQ(VALUE_REF_GET(self)), &b, &l, &s, &e); return RESULT_OK(s);
+}
+
+/* __arith_seq(recv, limit, step, nargs) — Numeric#step without a block (prelude) */
+static RESULT korb_bi_arith_seq(CTX *c, VALUE *slots, VALUE_SLICE args) {
+    const VALUE na = VALUE_SLICE_GET(args, 3);
+    return korb_arithseq_new(c, slots, VALUE_SLICE_GET(args, 0), VALUE_SLICE_GET(args, 1), VALUE_SLICE_GET(args, 2),
+                             (uint8_t)(FIXNUM_P(na) ? FIX2LONG(na) : 2), 0);
 }

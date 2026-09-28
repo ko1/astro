@@ -102,10 +102,14 @@ class Numeric
     e
   end
 
-  def step(limit = nil, step_by = nil, by: nil, to: nil, &block)
+  def step(limit = (no_lim = true; nil), step_by = (no_st = true; nil), by: nil, to: nil, &block)
+    kw = !by.nil? || !to.nil?
     limit = to unless to.nil?
     st = !by.nil? ? by : (step_by.nil? ? 1 : step_by)
-    return to_enum(:step, limit, st) unless block_given?
+    unless block_given?                    # an ArithmeticSequence, as Integer / Float#step give
+      return __step_bad_enum(limit, st) unless st.is_a?(Numeric)
+      return __arith_seq(self, limit, kw ? st : step_by, kw || !no_st ? 2 : (no_lim ? 0 : 1))
+    end
     raise ArgumentError, "step can't be 0" if st == 0
     i = self
     if st > 0

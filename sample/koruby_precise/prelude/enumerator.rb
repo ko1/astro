@@ -736,6 +736,56 @@ class Enumerator::ArithmeticSequence
   def hash
     [self.begin, self.end, step, exclude_end?].hash
   end
+
+  # Rational / BigDecimal / other Numeric components (the C side does Integer and
+  # Float): element k is begin + k * step, exact for exact types (CRuby's generic path)
+  private def __generic_parts
+    b, e, s = self.begin, self.end, step
+    unless b.is_a?(Numeric) && s.is_a?(Numeric) && (e.nil? || e.is_a?(Numeric))
+      raise TypeError, "step requires numeric arguments"
+    end
+    raise ArgumentError, "step can't be 0" if s == 0
+    [b, e, s]
+  end
+  private def __generic_in?(v, e, s)
+    return true if e.nil?
+    if s > 0 then exclude_end? ? v < e : v <= e
+    else exclude_end? ? v > e : v >= e
+    end
+  end
+  def __generic_first(n = nil)
+    b, e, s = __generic_parts
+    out = []
+    k = 0
+    while n.nil? ? k < 1 : out.size < n
+      v = k == 0 ? b : b + k * s
+      break unless __generic_in?(v, e, s)
+      out << v
+      k += 1
+    end
+    n.nil? ? out[0] : out
+  end
+  def __generic_to_a
+    raise RangeError, "cannot convert endless arithmetic sequence to an array" if self.end.nil?
+    b, e, s = __generic_parts
+    out = []
+    k = 0
+    loop do
+      v = k == 0 ? b : b + k * s
+      break unless __generic_in?(v, e, s)
+      out << v
+      k += 1
+    end
+    out
+  end
+  def __generic_size
+    b, e, s = __generic_parts
+    return Float::INFINITY if e.nil?
+    n = ((e - b) / s).floor
+    return 0 if n < 0
+    n -= 1 if exclude_end? && b + n * s == e
+    n + 1
+  end
 end
 
 class Enumerator
