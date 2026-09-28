@@ -1,6 +1,6 @@
 # A pure-Ruby OpenSSL subset: message digests, HMAC, constant-time compare and
 # the random-byte helpers.  koruby has no libcrypto binding, so the hashes come
-# from lib/digest.rb.  Real cryptography (Cipher, PKey, X509, SSL) is NOT here
+# from lib/digest.rb.  Real cryptography (Cipher, PKey, X509, SSL sockets) is NOT here
 # and is not faked: touching those constants raises, so a gem that needs TLS
 # fails where it asks for it instead of somewhere far away.
 #
@@ -192,7 +192,27 @@ module OpenSSL
     def self.status? = true
   end
 
-  # Everything else (Cipher, PKey, X509, SSL, ...) is absent, and stays absent:
+  # OpenSSL::SSL holds only what non-TLS code names: the error classes (HTTP
+  # clients list OpenSSL::SSL::SSLError in rescue clauses that run on every
+  # failure, faraday's net_http adapter among them) and the VERIFY_* values.
+  # SSLContext / SSLSocket stay absent, so TLS still fails where it is asked for.
+  module SSL
+    class SSLError < OpenSSLError; end
+    class SSLErrorWaitReadable < SSLError; include IO::WaitReadable; end
+    class SSLErrorWaitWritable < SSLError; include IO::WaitWritable; end
+    VERIFY_NONE = 0
+    VERIFY_PEER = 1
+    VERIFY_FAIL_IF_NO_PEER_CERT = 2
+    VERIFY_CLIENT_ONCE = 4
+
+    def self.const_missing(name)
+      raise NameError.new("uninitialized constant OpenSSL::SSL::#{name} " \
+                          "(koruby's openssl is a pure-Ruby digest/HMAC subset: no libcrypto)",
+                          name)
+    end
+  end
+
+  # Everything else (Cipher, PKey, X509, SSL contexts, ...) is absent, and stays absent:
   # `defined?` answers nil and the constant raises NameError, the same shapes a
   # feature probe expects.  Only the message says why.
   def self.const_missing(name)
