@@ -1808,6 +1808,13 @@ static RESULT korb_m_obj_singleton_methods(CTX *c, VALUE *slots, VALUE_REF self,
         slots[1] = korb_dispatch_class(c, slots[3]);                /* singleton (if any) or real class */
         if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[1])->is_singleton) {
             CHECK(korb_push_vis_methods(c, slots + 5, result, blocked, VALUE_REF_AT(&slots[1]), mask, &mid_init, 1u));
+            if (all && VAL2CLASS(slots[1])->prepended != KORB_NIL) { /* singleton_class.prepend(M) */
+                const uint32_t plen = VAL2ARY(VAL2CLASS(slots[1])->prepended)->len;
+                for (uint32_t j = 0; j < plen; j++) {
+                    slots[2] = korb_items_data(VAL2ARY(VAL2CLASS(slots[1])->prepended)->items)[j];
+                    CHECK(korb_push_vis_methods(c, slots + 5, result, blocked, VALUE_REF_AT(&slots[2]), mask, &mid_init, 1u));
+                }
+            }
             if (all && VAL2CLASS(slots[1])->included != KORB_NIL) { /* extended modules */
                 const uint32_t mlen = VAL2ARY(VAL2CLASS(slots[1])->included)->len;
                 for (uint32_t j = mlen; j-- > 0; ) {

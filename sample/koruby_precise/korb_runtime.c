@@ -7225,6 +7225,35 @@ korb_linearize_mro(VALUE klass, VALUE *buf, int max)
     return korb_mro_dedup(buf, pre, n);
 }
 
+/* The copy of `m` that runs as occurrence `occ` (>= 1) of its owner in an MRO
+ * where that module appears more than once (`prepend M` into a class that
+ * already has M through an include).  CRuby tells the two apart by iclass; the
+ * copy's mro_occ is what lets its own `super` resume after the right one.
+ * Copies are cached on m (occ_next chain), refreshed from m on every use, and
+ * GC-rooted as orphans. */
+static struct korb_method *
+korb_method_occ(struct korb_vm *vm, struct korb_method *m, const uint32_t occ)
+{
+    if (occ > 255) return m;
+    struct korb_method **pp = &m->occ_next;
+    struct korb_method *cl = m;
+    for (uint32_t k = 1; k <= occ; k++) {
+        if (*pp == NULL) {
+            struct korb_method *const nc = calloc(1, sizeof *nc);
+            if (nc == NULL) abort();
+            *pp = nc;
+            korb_vm_orphan_method(vm, nc);
+        }
+        cl = *pp;
+        pp = &cl->occ_next;
+    }
+    struct korb_method *const next = cl->occ_next;
+    *cl = *m;
+    cl->occ_next = next;
+    cl->mro_occ = (uint8_t)occ;
+    return cl;
+}
+
 /* Resolve what `super` would call from the frame whose entry cell is
  * `entry_cell`, without calling it: the MRO successor of the defining class.
  * NULL when there is none (what `defined?(super)` reports as nil).  Shared by
@@ -7254,12 +7283,19 @@ korb_super_find(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_d
         VALUE mro[256];
         const int n = korb_linearize_mro(korb_dispatch_class(c, self), mro, 256);
         int di = -1;
-        for (int i = 0; i < n; i++) if (mro[i] == def_class) { di = i; break; }
+        for (int i = 0, seen = 0; i < n; i++)            /* the occurrence this frame runs as */
+            if (mro[i] == def_class) { di = i; if (seen++ == (int)cur->mro_occ) break; }
         if (di >= 0) {
+            int fi = -1;
             for (int i = di + 1; i < n && m == NULL; i++) {
                 KorbClass *mk = VAL2CLASS(mro[i]);
                 for (uint32_t q = 0; q < mk->method_cnt; q++)
-                    if (mk->methods[q]->mid == mid) { m = mk->methods[q]; found_def = mro[i]; break; }
+                    if (mk->methods[q]->mid == mid) { m = mk->methods[q]; found_def = mro[i]; fi = i; break; }
+            }
+            if (m != NULL) {                              /* found in a module that also sits earlier */
+                uint32_t occ = 0;
+                for (int i = 0; i < fi; i++) occ += (mro[i] == found_def);
+                if (UNLIKELY(occ != 0)) m = korb_method_occ(c->vm, m, occ);
             }
         } else {
             /* def_class not in self's class MRO (e.g. an extended/singleton or a

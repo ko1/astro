@@ -1022,6 +1022,8 @@ struct korb_method {
                               * Sits in the pad before `body` so no other field's offset moves. */
     uint8_t  ruby2_kw;       /* Module#ruby2_keywords: a kwargs Hash this method collects into its
                               * *rest keeps the persistent R2K mark, so re-splatting it is keywords. */
+    uint8_t  mro_occ;        /* which occurrence of `owner` in the receiver's MRO this entry runs as
+                              * (0 = first).  Nonzero only on the copies korb_method_occ makes. */
     struct Node *body;       /* ISEQ */
     /* 呼び出しの入口。どちらも同じ本体ノードを指し、AOT が焼くのはこちら側。
      * 充填時に (site の argc, callee の形状) で片方を選んで cc/ic に載せる。 */
@@ -1064,6 +1066,7 @@ struct korb_method {
     uint32_t    bt_label_mid;
     VALUE       bt_label_owner;   /* compared only, never dereferenced (a copy re-owned by alias / module_function must not keep the memo) */
     uint64_t    bt_label_serial;
+    struct korb_method *occ_next;   /* the copy running as the next occurrence (korb_method_occ), or NULL */
 };
 
 struct korb_bt_entry {       /* one unwind frame for the uncaught-exception report */
