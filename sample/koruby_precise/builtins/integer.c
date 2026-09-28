@@ -231,7 +231,7 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         return korb_float_new(c, slots, pow(base, e));
     }
     if (UNLIKELY(!KORB_INTEGER_P(ev))) {
-        if (KORB_OBJECT_P(ev)) { bool h; RESULT cr = korb_try_coerce(c, slots, selfv, &ev, "**", 0, &h); if (h) return cr; }   /* obj#coerce → a ** b */
+        if (KORB_OBJECT_P(ev) || KORB_COMPLEX_P(ev)) { bool h; RESULT cr = korb_try_coerce(c, slots, selfv, &ev, "**", 0, &h); if (h) return cr; }   /* obj#coerce → a ** b */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, ev));
     }
     if (VALUE_SLICE_LEN(a) >= 2 && !(FIXNUM_P(selfv) && FIXNUM_P(ev) && FIXNUM_P(VALUE_SLICE_GET(a, 1)))) {

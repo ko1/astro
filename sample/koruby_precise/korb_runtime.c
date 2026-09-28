@@ -702,7 +702,7 @@ static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         double ex;
         if (KORB_FLOAT_P(e)) ex = korb_float_val(e);
         else if (KORB_RATIONAL_P(e)) { korb_mp_t a2, b2; korb_to_mpz(VAL2RAT(e)->num, a2); korb_to_mpz(VAL2RAT(e)->den, b2); ex = korb_mp_get_d(a2) / korb_mp_get_d(b2); korb_mp_clear(a2); korb_mp_clear(b2); }
-        else if (KORB_OBJECT_P(e)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &e, "**", 0, &h); if (h) return cr; return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_coerce_name(c, e)); }
+        else if (KORB_OBJECT_P(e) || KORB_COMPLEX_P(e)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &e, "**", 0, &h); if (h) return cr; return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_coerce_name(c, e)); }
         else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_coerce_name(c, e));
         /* 0 ** negative: an exact (Rational) exponent diverges → ZeroDivisionError;
          * a Float exponent stays in the float domain → pow(0.0, neg) = Infinity. */
@@ -910,6 +910,66 @@ static VALUE korb_cpx_whole(VALUE v) {
 }
 /* Complex arithmetic (op 0+ 1- 2* 3/); returns a Complex. Components combined
  * via korb_num_binop (Int/Float/Rational-aware); division is exact. */
+/* complex.c's f_add / f_sub / f_mul: the exact-0 / 1 shortcuts decide the
+ * zero components' type and sign, so Complex division has to take them too. */
+static RESULT korb_cf_add(CTX *c, VALUE *slots, VALUE x, VALUE y) {
+    if (KORB_INTEGER_P(x)) { if (x == LONG2FIX(0)) return RESULT_OK(y); if (y == LONG2FIX(0)) return RESULT_OK(x); }
+    else if ((KORB_FLOAT_P(x) || KORB_RATIONAL_P(x)) && y == LONG2FIX(0)) return RESULT_OK(x);
+    return korb_num_binop(c, slots, x, y, 0);
+}
+static RESULT korb_cf_sub(CTX *c, VALUE *slots, VALUE x, VALUE y) {
+    if (y == LONG2FIX(0)) return RESULT_OK(x);
+    return korb_num_binop(c, slots, x, y, 1);
+}
+static RESULT korb_cf_mul(CTX *c, VALUE *slots, VALUE x, VALUE y) {
+    if (KORB_INTEGER_P(x)) {
+        if (y == LONG2FIX(0)) return RESULT_OK(LONG2FIX(0));
+        if (x == LONG2FIX(0) && KORB_INTEGER_P(y)) return RESULT_OK(LONG2FIX(0));
+        if (x == LONG2FIX(1)) return RESULT_OK(y);
+    }
+    if (y == LONG2FIX(1)) return RESULT_OK(x);
+    return korb_num_binop(c, slots, x, y, 2);
+}
+/* |a| > |b| for the Integer / Float / Rational components of a Complex */
+static RESULT korb_cf_abs_gt(CTX *c, VALUE *slots, VALUE a, VALUE b) {
+    const uint32_t abs = korb_intern(c->vm, "abs", 3);
+    slots[0] = b; slots[1] = a;
+    slots[1] = UNWRAP(korb_send(c, slots + 2, abs, 0, 0));
+    slots[2] = slots[0];
+    slots[2] = UNWRAP(korb_send(c, slots + 3, abs, 0, 0));
+    slots[3] = slots[2];                               /* recv |a|, arg |b| */
+    slots[2] = slots[1];
+    return korb_send(c, slots + 4, korb_intern(c->vm, ">", 1), 0, 1);
+}
+/* complex.c f_divide (Smith's method; func = quo).  In: slots[0..3] = a.re, a.im,
+ * b.re, b.im (rooted).  Out: slots[4], slots[5] = the quotient's parts. */
+static RESULT korb_cpx_div_parts(CTX *c, VALUE *slots) {
+    const bool flo = KORB_FLOAT_P(slots[0]) || KORB_FLOAT_P(slots[1]) || KORB_FLOAT_P(slots[2]) || KORB_FLOAT_P(slots[3]);
+    const RESULT g = korb_cf_abs_gt(c, slots + 6, slots[2], slots[3]);
+    if (UNLIKELY(g.state != KORB_NORMAL)) return g;
+    const bool re_big = KORB_TRUTHY(g.value);
+    /* the larger part of b is `p`, the other `q` */
+    const int p = re_big ? 2 : 3, q = re_big ? 3 : 2;
+    slots[6] = UNWRAP(korb_rat_arith(c, slots + 7, slots[q], slots[p], 3));            /* r = q.quo(p) */
+    slots[7] = UNWRAP(korb_cf_mul(c, slots + 8, slots[6], slots[6]));
+    slots[7] = UNWRAP(korb_cf_add(c, slots + 8, LONG2FIX(1), slots[7]));
+    slots[7] = UNWRAP(korb_cf_mul(c, slots + 8, slots[p], slots[7]));                  /* n = p * (1 + r*r) */
+    if (re_big) {
+        slots[8] = UNWRAP(korb_cf_mul(c, slots + 9, slots[1], slots[6]));
+        slots[8] = UNWRAP(korb_cf_add(c, slots + 9, slots[0], slots[8]));              /* a.re + a.im*r */
+        slots[9] = UNWRAP(korb_cf_mul(c, slots + 10, slots[0], slots[6]));
+        slots[9] = UNWRAP(korb_cf_sub(c, slots + 10, slots[1], slots[9]));             /* a.im - a.re*r */
+    } else {
+        slots[8] = UNWRAP(korb_cf_mul(c, slots + 9, slots[0], slots[6]));
+        slots[8] = UNWRAP(korb_cf_add(c, slots + 9, slots[8], slots[1]));              /* a.re*r + a.im */
+        slots[9] = UNWRAP(korb_cf_mul(c, slots + 10, slots[1], slots[6]));
+        slots[9] = UNWRAP(korb_cf_sub(c, slots + 10, slots[9], slots[0]));             /* a.im*r - a.re */
+    }
+    slots[4] = UNWRAP(korb_rat_arith(c, slots + 10, slots[8], slots[7], 3));
+    slots[5] = UNWRAP(korb_rat_arith(c, slots + 10, slots[9], slots[7], 3));
+    if (!flo) { slots[4] = korb_cpx_whole(slots[4]); slots[5] = korb_cpx_whole(slots[5]); }
+    return RESULT_OK(KORB_NIL);
+}
 RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     VALUE lre, lim, rre, rim;
     if (UNLIKELY(!KORB_COMPLEX_P(l) && KORB_OBJECT_P(l) && !korb_cpx_parts(l, &lre, &lim) && op >= 0 && op <= 4)) {
@@ -975,19 +1035,9 @@ RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
         RESULT re = korb_rat_arith(c, slots + 4, slots[0], slots[2], 3); if (UNLIKELY(re.state != KORB_NORMAL)) return re; slots[4] = korb_cpx_whole(re.value);
         RESULT im = korb_rat_arith(c, slots + 5, slots[1], slots[2], 3); if (UNLIKELY(im.state != KORB_NORMAL)) return im; slots[5] = korb_cpx_whole(im.value);
         res_re = slots[4]; res_im = slots[5];
-    } else {   /* div by complex: ((lre*rre+lim*rim) + (lim*rre-lre*rim)i) / (rre²+rim²) */
-        RESULT c2 = korb_num_binop(c, slots + 4, slots[2], slots[2], 2); if (UNLIKELY(c2.state != KORB_NORMAL)) return c2; slots[4] = c2.value;
-        RESULT d2 = korb_num_binop(c, slots + 5, slots[3], slots[3], 2); if (UNLIKELY(d2.state != KORB_NORMAL)) return d2; slots[5] = d2.value;
-        RESULT dn = korb_num_binop(c, slots + 6, slots[4], slots[5], 0); if (UNLIKELY(dn.state != KORB_NORMAL)) return dn; slots[6] = dn.value;  /* denom */
-        RESULT ac = korb_num_binop(c, slots + 7, slots[0], slots[2], 2); if (UNLIKELY(ac.state != KORB_NORMAL)) return ac; slots[7] = ac.value;
-        RESULT bd = korb_num_binop(c, slots + 8, slots[1], slots[3], 2); if (UNLIKELY(bd.state != KORB_NORMAL)) return bd; slots[8] = bd.value;
-        RESULT rn = korb_num_binop(c, slots + 9, slots[7], slots[8], 0); if (UNLIKELY(rn.state != KORB_NORMAL)) return rn; slots[9] = rn.value;   /* re numerator */
-        RESULT bc = korb_num_binop(c, slots + 10, slots[1], slots[2], 2); if (UNLIKELY(bc.state != KORB_NORMAL)) return bc; slots[10] = bc.value;
-        RESULT ad = korb_num_binop(c, slots + 11, slots[0], slots[3], 2); if (UNLIKELY(ad.state != KORB_NORMAL)) return ad; slots[11] = ad.value;
-        RESULT in = korb_num_binop(c, slots + 12, slots[10], slots[11], 1); if (UNLIKELY(in.state != KORB_NORMAL)) return in; slots[12] = in.value;  /* im numerator */
-        RESULT re = korb_rat_arith(c, slots + 13, slots[9], slots[6], 3); if (UNLIKELY(re.state != KORB_NORMAL)) return re; slots[13] = korb_cpx_whole(re.value);
-        RESULT im = korb_rat_arith(c, slots + 14, slots[12], slots[6], 3); if (UNLIKELY(im.state != KORB_NORMAL)) return im; slots[14] = korb_cpx_whole(im.value);
-        res_re = slots[13]; res_im = slots[14];
+    } else {   /* div by complex: CRuby's f_divide */
+        CHECK(korb_cpx_div_parts(c, slots));
+        res_re = slots[4]; res_im = slots[5];
     }
     slots[15] = res_re; slots[16] = res_im;
     return korb_cpx_new(c, slots + 17, slots[15], slots[16]);

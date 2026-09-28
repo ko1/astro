@@ -91,7 +91,7 @@ static RESULT korb_m_flt_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     double e;
     if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &e))) {
         VALUE ev = VALUE_SLICE_GET(a, 0);
-        if (KORB_OBJECT_P(ev)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &ev, "**", 0, &h); if (h) return cr; }
+        if (KORB_OBJECT_P(ev) || KORB_COMPLEX_P(ev)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &ev, "**", 0, &h); if (h) return cr; }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, ev));
     }
     double base = korb_float_val(VALUE_REF_GET(self));
