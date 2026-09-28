@@ -14,17 +14,13 @@ module Marshal
       limit = an_io; an_io = nil
     end
     raise TypeError, "instance of IO needed" if an_io && !an_io.respond_to?(:write)
-    # An IO/StringIO is not dumpable: CRuby refuses before it starts writing.
-    # Use Module#=== so a BasicObject subclass (no #is_a?) still works, and so
-    # this never calls Class#name on the object.
-    if IO === obj || (defined?(::StringIO) && ::StringIO === obj)
-      raise TypeError, "no _dump_data is defined for IO"
-    end
     # plain data (nil/true/false/Integer/Float/String/Symbol/Array/Hash) is
     # encoded in C; anything else comes back nil and is written below from scratch
     if an_io.nil? && (limit.nil? || limit < 0) && (fast = __marshal_fast_dump(obj))
       return fast
     end
+    # An IO/StringIO is not dumpable: CRuby refuses before it starts writing.
+    _raise_if_undumpable(obj)
     an_io.binmode if an_io.respond_to?(:binmode)
     st = { syms: {}, objs: {}.compare_by_identity, limit: limit, depth: 0 }
     out = (+"\x04\x08").force_encoding("ASCII-8BIT")   # a byte stream, not text
@@ -235,11 +231,18 @@ module Marshal
   end
 
   # CRuby raises TypeError for objects with no _dump_data (unmarshalable core types).
-  UNDUMPABLE = %w[MatchData IO File Thread Mutex Thread::Mutex Binding
-                  Method UnboundMethod].freeze
+  # (StringIO, StringScanner, Monitor ... are Ruby here but C data objects there.)
+  UNDUMPABLE = %w[MatchData Thread Mutex Thread::Mutex Binding Method UnboundMethod
+                  StringIO StringScanner File::Stat Enumerator Dir Fiber Ractor::Port Monitor].freeze
+  # these say "can't dump X" instead
+  CANT_DUMP = %w[IO Thread::Queue Thread::ConditionVariable].freeze
   def self._raise_if_undumpable(o)
     if Proc === o || Method === o
       raise TypeError, "no _dump_data is defined for class #{o.class}"
+    end
+    CANT_DUMP.each do |n|
+      k = (Object.const_get(n) rescue nil)
+      raise TypeError, "can't dump #{o.class}" if k && k === o
     end
     UNDUMPABLE.each do |n|
       k = (Object.const_get(n) rescue nil)

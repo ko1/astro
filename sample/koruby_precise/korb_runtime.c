@@ -20639,6 +20639,9 @@ korb_exc_build(CTX *c, VALUE *slots, VALUE_SLICE args)
             /* CRuby passes only the message to the constructor — a third arg is
              * the backtrace, applied below, never an #initialize argument. */
             const uint32_t iargc = (n >= 2) ? 1 : 0;
+            /* the message is whatever that #initialize makes it: `super()` or no
+             * super leaves none (the class name), not the raise argument */
+            ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->msg, KORB_NIL);
             /* the callee window is built here, so stage its header too:
              * korb_invoke_method fills only the identity and self, and a stale
              * even VALUE left in the EP cell is read back as an open KorbEnv. */
