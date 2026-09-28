@@ -1962,6 +1962,11 @@ class File
     def empty?(path) = __process_test("z".ord, File.path(path), nil)
     alias_method :zero?, :empty?      # CRuby: File.zero? IS File.empty?
     def identical?(a, b)
+      if a.is_a?(IO) || b.is_a?(IO)         # an open file is fstat'ed: it may have been renamed (Logger's shift)
+        sa = a.is_a?(IO) ? a.stat : File.stat(File.path(a))
+        sb = b.is_a?(IO) ? b.stat : File.stat(File.path(b))
+        return sa.dev == sb.dev && sa.ino == sb.ino
+      end
       __process_test("-".ord, File.path(a), File.path(b))
     rescue Errno::ENOENT, SystemCallError
       false
