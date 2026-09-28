@@ -439,6 +439,7 @@ typedef struct KorbMethod {
                                       * so #call always routes through method_missing (CRuby mnew_missing) */
     uint8_t  default_new;            /* `new` on a class: a dispatch special case with no table entry, so
                                       * #call must run the default allocator even if `def self.new` came later */
+    uint8_t  from_super;             /* made by #super_method: #inspect names the class it was found in */
 } KorbMethod;
 
 /* Closure env (one captured scope activation), materialized when a Proc escapes

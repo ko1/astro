@@ -4234,7 +4234,7 @@ static void korb_meth_pin(CTX *const c, const VALUE mv) {
 RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid) {
     VALUE_REF rref = SLOTS_PUSH(slots, recv);            /* root recv across alloc */
     KorbMethod *m = korb_alloc(c, slots, sizeof(KorbMethod), KORB_OBJ_METHOD);
-    m->mid = mid; m->unbound = 0; m->missing = 0; m->default_new = 0; m->entry = NULL;
+    m->mid = mid; m->unbound = 0; m->missing = 0; m->default_new = 0; m->from_super = 0; m->entry = NULL;
     ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv, VALUE_REF_GET(rref));
     korb_meth_pin(c, (VALUE)m);
     return RESULT_OK((VALUE)m);
@@ -7098,8 +7098,8 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
                                    VAL2CLASS(superclass)->is_module || VAL2CLASS(superclass)->is_singleton))
         { char rdb[224];
           if (KORB_CLASS_P(superclass) && VAL2CLASS(superclass)->is_module)   /* CRuby names the CLASS of the value */
-              return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass must be an instance of Class (given an instance of Module)");
-          return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass must be an instance of Class (given %s)", korb_recv_desc(c, slots + 1, superclass, rdb, sizeof rdb)); }
+              return korb_raise(c, slots, KORB_E_TYPE, caller_line, "superclass must be an instance of Class (given an instance of Module)");
+          return korb_raise(c, slots, KORB_E_TYPE, caller_line, "superclass must be an instance of Class (given %s)", korb_recv_desc(c, slots + 1, superclass, rdb, sizeof rdb)); }
     const bool super_given = (superclass != KORB_NIL);   /* `class C < X` vs plain `class C` */
     /* a class with no explicit superclass derives from Object, so its instances'
      * MRO reaches the universal Object methods (==, freeze, method, ...). */
@@ -7143,14 +7143,14 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
                              korb_sym_name(c->vm, name_sym));
                     break;
                 }
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a %s%s",
+            return korb_raise(c, slots, KORB_E_TYPE, caller_line, "%s is not a %s%s",
                               korb_sym_name(c->vm, name_sym), is_module ? "module" : "class", where);
         }
         /* reopening with a DIFFERENT explicit superclass is an error */
         if (!is_module && super_given && VAL2CLASS(cls)->superclass != superclass &&
             !(VAL2CLASS(cls)->superclass == KORB_NIL &&
               superclass == korb_builtin_class_obj(c->vm, KORB_C_OBJECT)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass mismatch for class %s", korb_sym_name(c->vm, name_sym));
+            return korb_raise(c, slots, KORB_E_TYPE, caller_line, "superclass mismatch for class %s", korb_sym_name(c->vm, name_sym));
     }
     if (!KORB_CLASS_P(cls)) {
         slots[0] = superclass;                   /* root super across korb_class_new's GC */
@@ -17491,12 +17491,13 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         VALUE def_cls = KORB_NIL;
         const struct korb_method *km = KORB_CLASS_P(start) ? korb_class_find_method(start, m->mid, &def_cls) : NULL;
         if (km == NULL) km = korb_method_lookup(c->vm, m->mid);   /* top-level (global function) method */
+        if (m->entry != NULL) km = m->entry;                      /* the pinned definition (a super_method's, not the override) */
         if (m->owner != KORB_NIL) def_cls = m->owner;             /* fixed owner (bound-from-unbound / super_method) */
         if (m->default_new) { km = NULL; def_cls = korb_builtin_class_obj(c->vm, KORB_C_CLASS); }   /* Class#new */
         { const VALUE ro = korb_reflect_owner(c, def_cls, m->mid); if (ro != KORB_NIL) def_cls = ro; }   /* Integer(Comparable)#clamp */
         fprintf(fp, "#<%s: ", m->unbound ? "UnboundMethod" : "Method");
         const char *sharp = "#";
-        if (m->unbound) {                                /* CRuby prints only the defining module */
+        if (m->unbound || m->from_super) {               /* CRuby prints only the defining module */
             const VALUE d = KORB_CLASS_P(def_cls) ? def_cls : start;
             if (KORB_CLASS_P(d)) korb_fprint_class_tostr(c, fp, d); else fputs("Object", fp);
         } else if (KORB_CLASS_P(def_cls) && VAL2CLASS(def_cls)->is_singleton) {

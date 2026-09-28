@@ -591,7 +591,8 @@ static RESULT korb_obj_copy_impl(CTX *c, VALUE *slots, VALUE_REF self, uint32_t 
         slots[1] = v;                                      /* root the source across the alloc */
         KorbMethod *m = korb_alloc(c, slots + 2, sizeof(KorbMethod), KORB_OBJ_METHOD);
         const KorbMethod *src = VAL2METH(slots[1]);        /* re-read: alloc may have GC-moved the source */
-        m->mid = src->mid; m->unbound = src->unbound;
+        m->mid = src->mid; m->unbound = src->unbound; m->missing = src->missing;
+        m->default_new = src->default_new; m->from_super = src->from_super; m->entry = src->entry;
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv,  src->recv);
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->owner, src->owner);
         slots[1] = (VALUE)m;

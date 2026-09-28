@@ -1106,6 +1106,7 @@ static RESULT korb_m_meth_super_method(CTX *c, VALUE *slots, VALUE_REF self, VAL
                            : korb_method_new(c, slots + 2, recv, mid);       /* bound: keep recv, fix the super-owner */
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         ARO_STORE(c, VAL2METH(r.value), (VALUE *)(uintptr_t)&VAL2METH(r.value)->owner, slots[0]);   /* #owner is where the super definition lives */
+        VAL2METH(r.value)->from_super = 1;
         /* Pin to the definition mro[i] OWNS.  Resolving by name from that class
          * instead would walk its own prepends and hand back the very method we
          * are stepping off — `m = m.super_method` then never terminates
@@ -1123,7 +1124,7 @@ static RESULT korb_m_meth_super_method(CTX *c, VALUE *slots, VALUE_REF self, VAL
             RESULT r = unbound ? korb_unbound_new(c, slots + 1, slots[0], mid) : korb_method_new(c, slots + 1, recv, mid);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             KorbMethod *const nm = VAL2METH(r.value);
-            nm->entry = NULL; nm->default_new = 1;
+            nm->entry = NULL; nm->default_new = 1; nm->from_super = 1;
             ARO_STORE(c, nm, (VALUE *)(uintptr_t)&nm->owner, korb_builtin_class_obj(c->vm, KORB_C_CLASS));
             return r;
         }
