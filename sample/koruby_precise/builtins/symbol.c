@@ -964,13 +964,47 @@ static RESULT korb_m_meth_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     return RESULT_OK(same ? KORB_TRUE : KORB_FALSE);
 }
+#include "reflect_owner.h"
+/* CRuby's owner for a method koruby defines on the core class `klass` itself
+ * (Comparable#clamp on Integer, Enumerable's on Array/Hash/Range...), else nil.
+ * Only the core class proper: a user class that happens to share the name is
+ * not it (the identity check). */
+static VALUE korb_reflect_owner(CTX *c, const VALUE klass, const uint32_t mid) {
+    if (!KORB_CLASS_P(klass) || VAL2CLASS(klass)->name_sym == 0) return KORB_NIL;
+    const char *const kn = korb_sym_name(c->vm, VAL2CLASS(klass)->name_sym);
+    const char *const mn = korb_sym_name(c->vm, mid);
+    for (size_t i = 0; i < sizeof korb_reflect_owner_tab / sizeof korb_reflect_owner_tab[0]; i++) {
+        if (strcmp(korb_reflect_owner_tab[i].klass, kn) != 0 || strcmp(korb_reflect_owner_tab[i].mid, mn) != 0) continue;
+        if (korb_const_get(c->vm, korb_intern(c->vm, kn, strlen(kn))) != klass) return KORB_NIL;
+        const char *const on = korb_reflect_owner_tab[i].owner;
+        const VALUE o = korb_const_get_path(c->vm, korb_intern(c->vm, on, strlen(on)));
+        return KORB_CLASS_P(o) ? o : KORB_NIL;
+    }
+    return KORB_NIL;
+}
+/* Does `klass` carry any such methods (a listing asks per method only then)? */
+static bool korb_reflect_owner_class_p(CTX *c, const VALUE klass) {
+    if (!KORB_CLASS_P(klass) || VAL2CLASS(klass)->name_sym == 0) return false;
+    const char *const kn = korb_sym_name(c->vm, VAL2CLASS(klass)->name_sym);
+    for (size_t i = 0; i < sizeof korb_reflect_owner_tab / sizeof korb_reflect_owner_tab[0]; i++)
+        if (strcmp(korb_reflect_owner_tab[i].klass, kn) == 0)
+            return korb_const_get(c->vm, korb_intern(c->vm, kn, strlen(kn))) == klass;
+    return false;
+}
+static VALUE korb_meth_owner_raw(CTX *c, const KorbMethod *const m);
+/* Method#owner — CRuby's owner for a method koruby keeps on the core class (Integer#clamp is Comparable's) */
 static RESULT korb_m_meth_owner(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;(void)a;
+    (void)slots; (void)a;
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
+    const VALUE o = korb_meth_owner_raw(c, m);
+    const VALUE ro = korb_reflect_owner(c, o, m->mid);
+    return RESULT_OK(ro != KORB_NIL ? ro : o);
+}
+static VALUE korb_meth_owner_raw(CTX *c, const KorbMethod *const m) {
     if (m->default_new)                                             /* the default allocator is Class#new, */
-        return RESULT_OK(korb_builtin_class_obj(c->vm, KORB_C_CLASS));   /* never the singleton it was read from */
-    if (m->owner != KORB_NIL) return RESULT_OK(m->owner);           /* fixed owner (e.g. from super_method) */
-    if (m->missing) return RESULT_OK(korb_dispatch_class(c, m->recv));   /* CRuby: the receiver's class */
+        return korb_builtin_class_obj(c->vm, KORB_C_CLASS);   /* never the singleton it was read from */
+    if (m->owner != KORB_NIL) return m->owner;           /* fixed owner (e.g. from super_method) */
+    if (m->missing) return korb_dispatch_class(c, m->recv);   /* CRuby: the receiver's class */
     /* the class whose table actually holds the entry: `public :m` on an
      * inherited private method (and alias_method) put a copy in the reopening
      * class and CRuby reports THAT as the owner — the entry's own ->owner still
@@ -978,11 +1012,11 @@ static RESULT korb_m_meth_owner(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const VALUE klass = m->unbound ? m->recv : korb_dispatch_class(c, m->recv);
     VALUE def = KORB_NIL;
     const struct korb_method *km = KORB_CLASS_P(klass) ? korb_class_find_method(klass, m->mid, &def) : NULL;
-    if (km != NULL && KORB_CLASS_P(def)) return RESULT_OK(def);
+    if (km != NULL && KORB_CLASS_P(def)) return def;
     if (km == NULL) km = korb_method_lookup(c->vm, m->mid);
-    if (km && km->owner != KORB_NIL) return RESULT_OK(km->owner);   /* defining class/module */
-    if (m->unbound) return RESULT_OK(m->recv);                      /* unresolvable: the class it came from */
-    return RESULT_OK(korb_builtin_class_obj(c->vm, KORB_C_OBJECT)); /* global fn → Object */
+    if (km && km->owner != KORB_NIL) return km->owner;   /* defining class/module */
+    if (m->unbound) return m->recv;                      /* unresolvable: the class it came from */
+    return korb_builtin_class_obj(c->vm, KORB_C_OBJECT); /* global fn → Object */
 }
 /* Does `mk` hold a live (non-tombstone) entry for `mid`?  When `same_as` is
  * given, only an entry with that exact definition counts. */

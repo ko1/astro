@@ -1581,9 +1581,12 @@ static RESULT korb_m_class_instance_methods(CTX *c, VALUE *slots, VALUE_REF self
  * MRO hides the ancestor definition from every listing below it. */
 static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALUE_REF blocked, VALUE_REF klass_ref, uint8_t vis_mask, const uint32_t *priv_mids, uint32_t priv_n) {
     const uint32_t n = VAL2CLASS(VALUE_REF_GET(klass_ref))->method_cnt;
+    const bool core = korb_reflect_owner_class_p(c, VALUE_REF_GET(klass_ref));   /* methods CRuby owns in an ancestor */
     for (uint32_t i = 0; i < n; i++) {
         const struct korb_method *const m = VAL2CLASS(VALUE_REF_GET(klass_ref))->methods[i];   /* entries are immortal (libc) */
         if (m->mid == UINT32_MAX || m->hidden) continue;
+        if (UNLIKELY(core) && m->kind != KORB_METHOD_UNDEF &&
+            korb_reflect_owner(c, VALUE_REF_GET(klass_ref), m->mid) != KORB_NIL) continue;   /* listed by that ancestor */
         const VALUE sym = ID2SYM(m->mid);
         if (m->kind == KORB_METHOD_UNDEF) { CHECK(korb_ary_push_val(c, slots, blocked, sym)); continue; }
         { const KorbArray *const b = VAL2ARY(VALUE_REF_GET(blocked));

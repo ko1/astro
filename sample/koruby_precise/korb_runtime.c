@@ -17103,6 +17103,7 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         if (km == NULL) km = korb_method_lookup(c->vm, m->mid);   /* top-level (global function) method */
         if (m->owner != KORB_NIL) def_cls = m->owner;             /* fixed owner (bound-from-unbound / super_method) */
         if (m->default_new) { km = NULL; def_cls = korb_builtin_class_obj(c->vm, KORB_C_CLASS); }   /* Class#new */
+        { const VALUE ro = korb_reflect_owner(c, def_cls, m->mid); if (ro != KORB_NIL) def_cls = ro; }   /* Integer(Comparable)#clamp */
         fprintf(fp, "#<%s: ", m->unbound ? "UnboundMethod" : "Method");
         const char *sharp = "#";
         if (m->unbound) {                                /* CRuby prints only the defining module */
