@@ -5450,6 +5450,7 @@ korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mi
     m->def_cref = KORB_NIL;                       /* … and the eval cref it was defined under */
     m->simple_entry = NULL;                       /* 再定義でスロットを使い回すので必ず落とす */
     m->super_owner = KORB_NIL;             /* a redefinition drops any inherited alias origin */
+    m->label_src = NULL;
     m->sdef = 0;
     if (k->is_singleton && (mid == korb_intern(vm, "hash", 4) || mid == korb_intern(vm, "eql?", 4))) vm->sing_hash_redef = true;
     /* A top-level `def` lands in vm->methods (the global function table), which a
@@ -5660,6 +5661,7 @@ static RESULT korb_m_class_alias_method(CTX *c, VALUE *slots, VALUE_REF self, VA
 }
 static VALUE korb_klass_override_get(const struct korb_vm *vm, VALUE obj);   /* fwd */
 static uint8_t korb_define_method_scope_vis(CTX *c, const VALUE *link, uint8_t body_vis);   /* fwd (below the frame walk) */
+static const char *korb_bt_label(CTX *c, uint32_t mid, const struct korb_method *m);   /* fwd (backtrace) */
 static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE klass = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(klass)))
@@ -5742,10 +5744,12 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be a subclass of %s", onm);
         }
         korb_check_basic_op_redef(c, slots[0], mid);
-        const struct korb_method tmp = *src;             /* src may dangle once the slot array grows; snapshot first */
+        struct korb_method tmp = *src;                   /* src may dangle once the slot array grows; snapshot first */
+        const char *const src_label = tmp.label_src ? tmp.label_src : korb_bt_label(c, tmp.mid, &tmp);
         struct korb_method *dst = korb_class_method_slot(c->vm, VAL2CLASS(slots[0]), mid);
         *dst = tmp;                                      /* copy the definition */
         dst->mid = mid; dst->owner = slots[0];           /* rename + re-own */
+        dst->label_src = src_label;                      /* a backtrace still names the source (CRuby 4.1) */
         /* the copy takes the DEFINING frame's visibility, not the source's */
         dst->visibility = (scope_vis == 3) ? 1 : scope_vis;
         if (dst->visibility == 0 && !VAL2CLASS(slots[0])->is_singleton &&
@@ -10242,6 +10246,7 @@ korb_bt_label(CTX *c, uint32_t mid, const struct korb_method *m)
         }
     }
     if (m == NULL) return korb_sym_name(c->vm, mid);
+    if (UNLIKELY(m->label_src != NULL)) return m->label_src;
     if (m->bt_label != NULL && m->bt_label_mid == mid && m->bt_label_owner == m->owner &&
         m->bt_label_serial == c->vm->const_serial)
         return m->bt_label;

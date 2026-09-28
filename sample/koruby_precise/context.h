@@ -1077,6 +1077,8 @@ struct korb_method {
     const char *bt_file;
     const struct Node *bt_file_node;   /* the body bt_file was resolved from: a redefinition reuses this entry with a new body */
     const char *bt_label;
+    const char *label_src;   /* define_method(name, other_method): that method's label (interned), which a
+                              * backtrace shows instead of this entry's own (CRuby 4.1) */
     uint32_t    bt_label_mid;
     VALUE       bt_label_owner;   /* compared only, never dereferenced (a copy re-owned by alias / module_function must not keep the memo) */
     uint64_t    bt_label_serial;
