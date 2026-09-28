@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>koruby_precise status</title>
+<style>
+:root { --bg:#fff; --fg:#1d1d1f; --mute:#6b6b70; --line:#e2e2e6; --head:#f5f5f7; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --bg:#16171a; --fg:#e6e6e9; --mute:#9a9aa2; --line:#2e3036; --head:#1f2126; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --link:#58a6ff; } }
+body { background:var(--bg); color:var(--fg); font:15px/1.55 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", sans-serif; margin:0; }
+main { max-width:980px; margin:0 auto; padding:24px 16px 64px; }
+h1 { font-size:1.5rem; margin:0 0 4px; }
+h2 { font-size:1.15rem; margin:32px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--line); }
+.meta { color:var(--mute); font-size:.9rem; }
+table { border-collapse:collapse; width:100%; margin:8px 0; font-size:.92rem; }
+th, td { border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+th { background:var(--head); font-weight:600; }
+td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.date { white-space:nowrap; color:var(--mute); }
+code { font:.88em ui-monospace, SFMono-Regular, Menlo, monospace; }
+.ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+.wrap { overflow-x:auto; }
+ul { padding-left:1.3em; } li { margin:2px 0; }
+a { color:var(--link); }
+</style>
+</head>
+<body>
+<main>
+<h1>koruby_precise 現状</h1>
+<p class="meta">最終更新 2026-09-29 04:10 JST ／ 対象 master <code>a8292bbc</code>（未 push）。
+各数値は計測日と計測 commit 付き。数値は最新とは限らない — 日付を見て判断すること。
+計測日は計測マシンの日付（UTC）。</p>
+
+<h2>互換性</h2>
+<div class="wrap"><table>
+<tr><th>指標</th><th>値</th><th>計測日</th><th>commit</th><th>方法・出典</th></tr>
+<tr><td>rubyspec 全体（core / language / library）</td><td class="num"><b>97.87%</b><br>30920 / 31593 例</td><td class="date">2026-09-13</td><td><code>f1370b21</code></td><td>本物の mspec、<code>tools/spec_sweep/sweep.rb</code>。率は同じ run の pass ÷ example。CRuby との差の大物は丸ごと未実装のライブラリ（openssl・syslog・yaml・coverage・objectspace）</td></tr>
+<tr><td>rubyspec sweep（キャンペーン用 3747 ファイル）</td><td class="num">pass 31807<br>fail 241 / err 252</td><td class="date">2026-09-28</td><td><code>a8292bbc</code></td><td>同上の sweep を gate 用ファイル一覧で。<code>WFAIL=0</code>。数え方が上の行と違うので率は出さない（前回比の増減だけ見る）</td></tr>
+<tr><td>make test（rubyharness、CRuby master と出力比較）</td><td class="num">109885 assert<br><span class="warn">FAIL 45</span></td><td class="date">2026-09-28</td><td><code>a8292bbc</code></td><td><code>make test RUBY=~/ruby/install/master/bin/ruby</code>。FAIL 45 は既知の固定集合</td></tr>
+<tr><td>GC STRESS+PURGE（moving GC、毎 alloc で GC）</td><td class="num"><span class="ok">45 / 0 fail</span></td><td class="date">2026-09-28</td><td><code>0f884fb4</code></td><td>gate の stress 段</td></tr>
+<tr><td>gem c 系（rspec スイート 4908 ファイル）</td><td class="num"><b>8</b> 不一致</td><td class="date">2026-09-28</td><td><code>0f884fb4</code></td><td>CRuby と koruby で同じ spec ファイルを流し、要約行を比較（c30）。8 行は長く続く既知のもの</td></tr>
+<tr><td>gem コーパス w16（69 gem、619 ファイル）</td><td class="num"><b>23</b> / 619 不一致</td><td class="date">2026-09-28</td><td><code>8266da8f</code></td><td>w16b。初回 w16a は 102。残りは TracePoint :line・OpenSSL・Ripper の構文エラー回復など構造的なもの（その後 biz 4・ruby2_keywords 1 は解消済み、未再計測）</td></tr>
+<tr><td>gem コーパス w15（1046 ファイル）</td><td class="num"><b>138</b> / 1046 不一致</td><td class="date">2026-09-28</td><td>—</td><td>w15d。うち OpenSSL 系が約 106</td></tr>
+<tr><td>DOOM（60 frame、画素一致）</td><td class="num"><span class="ok">checksum 一致</span></td><td class="date">2026-09-28</td><td><code>0f884fb4</code></td><td>gate の doom 段（AOT）</td></tr>
+</table></div>
+
+<h2>性能</h2>
+<div class="wrap"><table>
+<tr><th>ベンチ</th><th>結果</th><th>計測日</th><th>commit</th><th>環境・出典</th></tr>
+<tr><td>optcarrot（180 frame、fps 中央値）</td><td>ZJIT 316.58 ／ YJIT 300.72 ／ <b>koruby AOT 294.14</b> ／ koruby interp 70.61 ／ CRuby 64.56<br>実時間は koruby AOT 0.722 s が最速（ZJIT 0.856 ／ YJIT 0.892）</td><td class="date">2026-09-17</td><td><code>b3cf0d1c</code></td><td>sp4 専有、ruby 4.1.0dev <code>69b49ac7ae</code>。全 run checksum 検証。<code>trials/2026-09-17-optcarrot-summary/</code></td></tr>
+<tr><td>rubyharness/bench 53 本（実時間、CRuby=1.00）</td><td>koruby AOT warm <b>0.37×</b> ／ YJIT 0.49× ／ koruby interp 0.74× ／ AOT cold（bake 込み）1.04×<br>AOT warm は YJIT に 32/53 本、CRuby に 51/53 本で勝つ</td><td class="date">2026-09-04</td><td><code>0a908f2a</code></td><td>sp4、gcc 15.2、CRuby 4.0.6。要約値。ベンチごとの値は <code>docs/perf.md</code>「2026-09-04」節の表</td></tr>
+</table></div>
+<p class="meta">性能は古い。ここ数週間は互換性作業が中心で、その間の性能変化は未計測（gate の doom は正しさだけを見ている）。</p>
+
+<h2>未対応の大物（構造的）</h2>
+<ul>
+<li><b>OpenSSL</b>（libcrypto / libssl バインディング）— gem 不一致の最大要因。着手は user の判断待ち</li>
+<li><b>C 拡張</b>の読み込み（rbs など）— API 設計は <code>docs/c_ext_api_design.md</code>、未実装</li>
+<li>TracePoint <code>:line</code>（tracer、power_assert）、<code>RubyVM::AbstractSyntaxTree</code> / <code>InstructionSequence</code></li>
+<li>Ripper の構文エラー回復（CRuby の parse.y は誤りの後も木を組み立てる）</li>
+<li>ブロックの <code>$~</code> が定義元メソッドのものにならない（<code>docs/todo.md</code>）</li>
+</ul>
+
+<h2>直近の区切り</h2>
+<ul>
+<li><code>a8292bbc</code> main の特異メソッド（to_s / inspect / ruby2_keywords）、<code>.new</code> の initialize から出る break の伝播</li>
+<li><code>0f884fb4</code> 入れ子の生成器と外部列挙（sink を Fiber ごとに、break の素通り判定）</li>
+<li><code>8266da8f</code> w16 不一致 2 回目（Symbol#to_s 凍結、.new からの return/throw、kw 経路の refinement ほか）</li>
+<li><code>86714400</code> w16 不一致 1 回目（nkf/kconv、instance_eval 内の <code>class ::X</code> ほか）</li>
+</ul>
+<p class="meta">詳細な経過は <code>~/ruby/src/trials/2026-09-19-gem-dropin/PROGRESS.md</code>。</p>
+
+<h2>このページの更新方針</h2>
+<ul>
+<li>commit の区切りで、変わった行（計測したもの）と「直近の区切り」を書き換える。計測していない行は古い日付のまま残す。</li>
+<li>1 日に 1 回程度、古い行を取り直して最新にする（性能は sp4 の lease を取って計測）。</li>
+</ul>
+</main>
+</body>
+</html>
