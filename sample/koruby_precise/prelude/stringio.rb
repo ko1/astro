@@ -78,16 +78,17 @@ class StringIO
     # no BOM the named encoding stands.  CSV.open sets this for every StringIO.
     bom_spec = enc_spec.is_a?(String) && enc_spec.downcase.start_with?("bom|")
     enc_spec = enc_spec[4..] if bom_spec
+    @enc = nil                                       # the mode's encoding; #set_encoding / #binmode set it too
     if enc_spec                                     # "w:ISO-8859-1" / encoding: keyword
-      @buf.force_encoding(enc_spec.split(":").first)
+      @enc = Encoding.find(enc_spec.split(":").first)
     elsif mode.include?("b")
-      @buf.force_encoding(Encoding::BINARY)
+      @enc = Encoding::BINARY
     elsif no_string
       @buf.force_encoding(Encoding.default_external)   # only the implicit "" buffer
     end
+    @buf.force_encoding(@enc) if @enc && !@buf.frozen?   # CRuby leaves a frozen buffer alone
     @pos = 0
     @lineno = 0
-    @enc = nil                                       # only #set_encoding / #binmode set it
     @closed_read = false
     @closed_write = false
     set_encoding_by_bom if bom_spec && !@buf.frozen?
@@ -395,6 +396,7 @@ class StringIO
       r = (@buf.byteslice(@pos, length) || "").dup.force_encoding(Encoding::BINARY)  # a sized read is binary (CRuby)
     else
       r = @buf.byteslice(@pos, @buf.bytesize - @pos) || ""
+      r.force_encoding(@enc) if @enc && r.encoding != @enc   # a frozen buffer keeps its own label
     end
     @pos += r.bytesize
     outbuf ? __fill_buf(outbuf, r) : r
