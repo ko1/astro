@@ -7315,8 +7315,8 @@ korb_method_occ(struct korb_vm *vm, struct korb_method *m, const uint32_t occ)
  * `entry_cell`, without calling it: the MRO successor of the defining class.
  * NULL when there is none (what `defined?(super)` reports as nil).  Shared by
  * korb_super and node_defined_super so the two can never disagree. */
-struct korb_method *
-korb_super_find(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_def_class)
+static struct korb_method *
+korb_super_find_slow(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_def_class)
 {
     const struct korb_method *const cur =
         (((uintptr_t)entry_cell & 7u) == KORB_FID_METHOD) ? (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)7u) : NULL;
@@ -7373,6 +7373,30 @@ korb_super_find(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_d
     }
     if (m != NULL && m->kind == KORB_METHOD_UNDEF) { m = NULL; found_def = KORB_NIL; }   /* undef tombstone */
     if (out_def_class) *out_def_class = found_def;   /* the class the method came from (super's def_class) */
+    return m;
+}
+
+struct korb_method *
+korb_super_find(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_def_class)
+{
+    const struct korb_method *const cur =
+        (((uintptr_t)entry_cell & 7u) == KORB_FID_METHOD) ? (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)7u) : NULL;
+    if (cur == NULL || UNLIKELY(c->vm->refinements_active) ||
+        !KORB_CLASS_P(cur->super_owner != KORB_NIL ? cur->super_owner : cur->owner))
+        return korb_super_find_slow(c, mid, entry_cell, self, out_def_class);
+    struct korb_vm *const vm = c->vm;
+    const VALUE dk = korb_dispatch_class(c, self);
+    const uint32_t h = (uint32_t)(((uintptr_t)dk >> 4) ^ ((uintptr_t)cur >> 4) ^ (mid * 0x9E3779B1u)) & 255u;
+    struct korb_scache_ent *const e = &vm->scache[h];
+    if (e->serial == vm->method_serial && e->klass == dk && e->cur == cur && e->mid == mid) {
+        if (out_def_class) *out_def_class = e->def_class;
+        return e->m;
+    }
+    VALUE found = KORB_NIL;
+    struct korb_method *const m = korb_super_find_slow(c, mid, entry_cell, self, &found);
+    e->serial = vm->method_serial; e->klass = dk; e->cur = cur; e->mid = mid; e->m = m; e->def_class = found;
+    korb_mid_looked(vm, mid);                      /* a later def of `mid` must bump the serial */
+    if (out_def_class) *out_def_class = found;
     return m;
 }
 

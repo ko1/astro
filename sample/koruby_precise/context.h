@@ -1331,6 +1331,12 @@ struct korb_vm {
         uint64_t serial; VALUE klass; uint32_t mid;
         struct korb_method *m; VALUE def_class;
     } *mcache;
+    /* `super` resolution (receiver's dispatch class, calling entry, mid) → method.
+     * Same validity rule as mcache; saves re-linearizing the MRO per super call. */
+    struct korb_scache_ent {
+        uint64_t serial; VALUE klass; const struct korb_method *cur; uint32_t mid;
+        struct korb_method *m; VALUE def_class;
+    } scache[256];
 
     /* object shape table (ivar-layout tree).  shapes[0]=unused, shapes[1]=root. */
     struct korb_shape *shapes;
