@@ -5,76 +5,166 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>koruby_precise status</title>
 <style>
-:root { --bg:#fff; --fg:#1d1d1f; --mute:#6b6b70; --line:#e2e2e6; --head:#f5f5f7; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --link:#0969da; }
-@media (prefers-color-scheme: dark) { :root { --bg:#16171a; --fg:#e6e6e9; --mute:#9a9aa2; --line:#2e3036; --head:#1f2126; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --link:#58a6ff; } }
-body { background:var(--bg); color:var(--fg); font:15px/1.55 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", sans-serif; margin:0; }
-main { max-width:980px; margin:0 auto; padding:24px 16px 64px; }
-h1 { font-size:1.5rem; margin:0 0 4px; }
-h2 { font-size:1.15rem; margin:32px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--line); }
-.meta { color:var(--mute); font-size:.9rem; }
-table { border-collapse:collapse; width:100%; margin:8px 0; font-size:.92rem; }
-th, td { border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
-th { background:var(--head); font-weight:600; }
-td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
-.date { white-space:nowrap; color:var(--mute); }
-code { font:.88em ui-monospace, SFMono-Regular, Menlo, monospace; }
+:root { --bg:#f6f7f9; --card:#fff; --fg:#1d1d1f; --mute:#6b6b70; --line:#e2e2e6; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --acc:#0969da; --bar:#8ab4f8; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111214; --card:#1b1c20; --fg:#e6e6e9; --mute:#9a9aa2; --line:#2e3036; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; --bar:#3b6fb6; } }
+:root[data-theme="dark"] { --bg:#111214; --card:#1b1c20; --fg:#e6e6e9; --mute:#9a9aa2; --line:#2e3036; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; --bar:#3b6fb6; }
+* { box-sizing:border-box; }
+body { background:var(--bg); color:var(--fg); font:14px/1.5 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", sans-serif; margin:0; }
+main { max-width:1180px; margin:0 auto; padding:20px 16px 56px; }
+header { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px 16px; margin-bottom:14px; }
+h1 { font-size:1.35rem; margin:0; }
+h2 { font-size:1rem; margin:26px 0 10px; color:var(--mute); text-transform:uppercase; letter-spacing:.05em; }
+.meta { color:var(--mute); font-size:.85rem; }
+code { font:.86em ui-monospace, SFMono-Regular, Menlo, monospace; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:12px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; min-width:0; }
+.card .label { color:var(--mute); font-size:.8rem; }
+.card .value { font-size:1.6rem; font-weight:650; font-variant-numeric:tabular-nums; margin:2px 0; }
+.card .sub { font-size:.82rem; }
+.card .stamp { margin-top:6px; font-size:.75rem; color:var(--mute); display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+.fresh { background:var(--ok); } .aging { background:var(--warn); } .stale { background:var(--bad); }
 .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+.two { display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:12px; }
+svg text { fill:var(--mute); font-size:11px; }
+table { border-collapse:collapse; width:100%; font-size:.86rem; }
+th, td { border-bottom:1px solid var(--line); padding:5px 6px; text-align:left; vertical-align:top; }
+th { color:var(--mute); font-weight:600; }
+td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .wrap { overflow-x:auto; }
-ul { padding-left:1.3em; } li { margin:2px 0; }
-a { color:var(--link); }
+ul { margin:4px 0; padding-left:1.2em; } li { margin:2px 0; }
+.legend { font-size:.78rem; color:var(--mute); }
 </style>
 </head>
 <body>
 <main>
-<h1>koruby_precise 現状</h1>
-<p class="meta">最終更新 2026-09-29 04:10 JST ／ 対象 master <code>a8292bbc</code>（未 push）。
-各数値は計測日と計測 commit 付き。数値は最新とは限らない — 日付を見て判断すること。
-計測日は計測マシンの日付（UTC）。</p>
+<header>
+  <h1>koruby_precise status</h1>
+  <span class="meta" id="hdr"></span>
+</header>
+<p class="legend"><span class="dot fresh"></span> 3 日以内の計測 <span class="dot aging"></span> 4〜10 日 <span class="dot stale"></span> それより古い。値は計測日・commit 付きで、最新とは限らない。</p>
 
 <h2>互換性</h2>
-<div class="wrap"><table>
-<tr><th>指標</th><th>値</th><th>計測日</th><th>commit</th><th>方法・出典</th></tr>
-<tr><td>rubyspec 全体（core / language / library）</td><td class="num"><b>97.87%</b><br>30920 / 31593 例</td><td class="date">2026-09-13</td><td><code>f1370b21</code></td><td>本物の mspec、<code>tools/spec_sweep/sweep.rb</code>。率は同じ run の pass ÷ example。CRuby との差の大物は丸ごと未実装のライブラリ（openssl・syslog・yaml・coverage・objectspace）</td></tr>
-<tr><td>rubyspec sweep（キャンペーン用 3747 ファイル）</td><td class="num">pass 31807<br>fail 241 / err 252</td><td class="date">2026-09-28</td><td><code>a8292bbc</code></td><td>同上の sweep を gate 用ファイル一覧で。<code>WFAIL=0</code>。数え方が上の行と違うので率は出さない（前回比の増減だけ見る）</td></tr>
-<tr><td>make test（rubyharness、CRuby master と出力比較）</td><td class="num">109885 assert<br><span class="warn">FAIL 45</span></td><td class="date">2026-09-28</td><td><code>a8292bbc</code></td><td><code>make test RUBY=~/ruby/install/master/bin/ruby</code>。FAIL 45 は既知の固定集合</td></tr>
-<tr><td>GC STRESS+PURGE（moving GC、毎 alloc で GC）</td><td class="num"><span class="ok">45 / 0 fail</span></td><td class="date">2026-09-28</td><td><code>0f884fb4</code></td><td>gate の stress 段</td></tr>
-<tr><td>gem c 系（rspec スイート 4908 ファイル）</td><td class="num"><b>8</b> 不一致</td><td class="date">2026-09-28</td><td><code>0f884fb4</code></td><td>CRuby と koruby で同じ spec ファイルを流し、要約行を比較（c30）。8 行は長く続く既知のもの</td></tr>
-<tr><td>gem コーパス w16（69 gem、619 ファイル）</td><td class="num"><b>23</b> / 619 不一致</td><td class="date">2026-09-28</td><td><code>8266da8f</code></td><td>w16b。初回 w16a は 102。残りは TracePoint :line・OpenSSL・Ripper の構文エラー回復など構造的なもの（その後 biz 4・ruby2_keywords 1 は解消済み、未再計測）</td></tr>
-<tr><td>gem コーパス w15（1046 ファイル）</td><td class="num"><b>138</b> / 1046 不一致</td><td class="date">2026-09-28</td><td>—</td><td>w15d。うち OpenSSL 系が約 106</td></tr>
-<tr><td>DOOM（60 frame、画素一致）</td><td class="num"><span class="ok">checksum 一致</span></td><td class="date">2026-09-28</td><td><code>0f884fb4</code></td><td>gate の doom 段（AOT）</td></tr>
-</table></div>
+<div class="grid" id="compat"></div>
 
 <h2>性能</h2>
-<div class="wrap"><table>
-<tr><th>ベンチ</th><th>結果</th><th>計測日</th><th>commit</th><th>環境・出典</th></tr>
-<tr><td>optcarrot（180 frame、fps 中央値）</td><td>ZJIT 316.58 ／ YJIT 300.72 ／ <b>koruby AOT 294.14</b> ／ koruby interp 70.61 ／ CRuby 64.56<br>実時間は koruby AOT 0.722 s が最速（ZJIT 0.856 ／ YJIT 0.892）</td><td class="date">2026-09-17</td><td><code>b3cf0d1c</code></td><td>sp4 専有、ruby 4.1.0dev <code>69b49ac7ae</code>。全 run checksum 検証。<code>trials/2026-09-17-optcarrot-summary/</code></td></tr>
-<tr><td>rubyharness/bench 53 本（実時間、CRuby=1.00）</td><td>koruby AOT warm <b>0.37×</b> ／ YJIT 0.49× ／ koruby interp 0.74× ／ AOT cold（bake 込み）1.04×<br>AOT warm は YJIT に 32/53 本、CRuby に 51/53 本で勝つ</td><td class="date">2026-09-04</td><td><code>0a908f2a</code></td><td>sp4、gcc 15.2、CRuby 4.0.6。要約値。ベンチごとの値は <code>docs/perf.md</code>「2026-09-04」節の表</td></tr>
-</table></div>
-<p class="meta">性能は古い。ここ数週間は互換性作業が中心で、その間の性能変化は未計測（gate の doom は正しさだけを見ている）。</p>
+<div class="grid" id="perf"></div>
 
-<h2>未対応の大物（構造的）</h2>
-<ul>
-<li><b>OpenSSL</b>（libcrypto / libssl バインディング）— gem 不一致の最大要因。着手は user の判断待ち</li>
-<li><b>C 拡張</b>の読み込み（rbs など）— API 設計は <code>docs/c_ext_api_design.md</code>、未実装</li>
-<li>TracePoint <code>:line</code>（tracer、power_assert）、<code>RubyVM::AbstractSyntaxTree</code> / <code>InstructionSequence</code></li>
-<li>Ripper の構文エラー回復（CRuby の parse.y は誤りの後も木を組み立てる）</li>
-<li>ブロックの <code>$~</code> が定義元メソッドのものにならない（<code>docs/todo.md</code>）</li>
-</ul>
+<h2>推移</h2>
+<div class="two">
+  <div class="card"><div class="label">rubyspec sweep の pass（gate 用 3747 ファイル）</div><div id="tr_sweep"></div></div>
+  <div class="card"><div class="label">gem コーパスの不一致行数</div><div id="tr_gem"></div></div>
+</div>
 
-<h2>直近の区切り</h2>
-<ul>
-<li><code>a8292bbc</code> main の特異メソッド（to_s / inspect / ruby2_keywords）、<code>.new</code> の initialize から出る break の伝播</li>
-<li><code>0f884fb4</code> 入れ子の生成器と外部列挙（sink を Fiber ごとに、break の素通り判定）</li>
-<li><code>8266da8f</code> w16 不一致 2 回目（Symbol#to_s 凍結、.new からの return/throw、kw 経路の refinement ほか）</li>
-<li><code>86714400</code> w16 不一致 1 回目（nkf/kconv、instance_eval 内の <code>class ::X</code> ほか）</li>
-</ul>
-<p class="meta">詳細な経過は <code>~/ruby/src/trials/2026-09-19-gem-dropin/PROGRESS.md</code>。</p>
+<h2>optcarrot fps（180 frame、中央値）</h2>
+<div class="card"><div id="optc"></div><div class="stamp" id="optc_stamp"></div></div>
 
-<h2>このページの更新方針</h2>
-<ul>
-<li>commit の区切りで、変わった行（計測したもの）と「直近の区切り」を書き換える。計測していない行は古い日付のまま残す。</li>
-<li>1 日に 1 回程度、古い行を取り直して最新にする（性能は sp4 の lease を取って計測）。</li>
-</ul>
+<div class="two" style="margin-top:12px">
+  <div class="card"><div class="label">未対応の大物（構造的）</div><ul id="gaps"></ul></div>
+  <div class="card"><div class="label">直近の区切り</div><ul id="recent"></ul></div>
+</div>
+
+<h2>このページ</h2>
+<div class="card meta">
+  commit の区切りで、その回に計測した値と「直近の区切り」を更新する。計測していない値は古い日付のまま残る。
+  1 日に 1 回程度、古い値を取り直す（性能は sp4 の lease を取って計測）。更新は下の <code>DATA</code> だけを書き換える。
+  詳細な経過は <code>~/ruby/src/trials/2026-09-19-gem-dropin/PROGRESS.md</code>、性能のベンチごとの値は <code>docs/perf.md</code>。
+</div>
 </main>
+
+<script>
+// ---- 更新はここだけ -------------------------------------------------------
+const DATA = {
+  updated: "2026-09-29 04:40 JST",
+  master: "bcf42227",
+  compat: [
+    { label: "rubyspec 全体（core/language/library）", value: "97.87%", sub: "30920 / 31593 例", date: "2026-09-13", commit: "f1370b21",
+      note: "本物の mspec。率は同じ run の pass ÷ example" },
+    { label: "rubyspec sweep（gate 用 3747 ファイル）", value: "31807", sub: "pass ／ fail 241 ／ err 252 ／ WFAIL 0", date: "2026-09-28", commit: "a8292bbc",
+      note: "率は出さない（数え方が上と違う）。増減を見る" },
+    { label: "make test（CRuby master と出力比較）", value: "45", cls: "warn", sub: "FAIL ／ 109885 assertions", date: "2026-09-28", commit: "a8292bbc",
+      note: "FAIL 45 は既知の固定集合" },
+    { label: "GC STRESS+PURGE", value: "45 / 0", cls: "ok", sub: "pass ／ fail（毎 alloc で moving GC）", date: "2026-09-28", commit: "bcf42227" },
+    { label: "gem rspec スイート（c 系、4908 ファイル）", value: "8", sub: "不一致（長く続く既知の 8 行）", date: "2026-09-28", commit: "0f884fb4" },
+    { label: "gem コーパス w16（69 gem）", value: "23 / 619", sub: "不一致（初回 102）。以後 biz 4・ruby2_keywords 1 を解消、未再計測", date: "2026-09-28", commit: "8266da8f" },
+    { label: "gem コーパス w15", value: "138 / 1046", sub: "不一致。うち OpenSSL 系 約 106", date: "2026-09-28", commit: "—" },
+    { label: "DOOM（60 frame、AOT）", value: "一致", cls: "ok", sub: "画素 checksum 17930386881013214317", date: "2026-09-28", commit: "0f884fb4" },
+  ],
+  perf: [
+    { label: "optcarrot koruby AOT", value: "294.1 fps", sub: "ZJIT 316.6 ／ YJIT 300.7 ／ CRuby 64.6。実時間は koruby AOT 0.722 s が最速", date: "2026-09-17", commit: "b3cf0d1c",
+      note: "sp4 専有、ruby 4.1.0dev 69b49ac7ae、checksum 検証" },
+    { label: "bench 53 本 koruby AOT warm", value: "0.37×", sub: "CRuby 比の実時間（YJIT 0.49× ／ interp 0.74× ／ AOT cold 1.04×）。YJIT に 32/53 本勝ち", date: "2026-09-04", commit: "0a908f2a",
+      note: "要約値。ベンチごとの値は docs/perf.md 2026-09-04 節" },
+  ],
+  optcarrot: { date: "2026-09-17", commit: "b3cf0d1c",
+    rows: [["ZJIT", 316.58], ["YJIT", 300.72], ["koruby AOT", 294.14], ["koruby interp", 70.61], ["CRuby", 64.56]] },
+  sweep_trend: [ // [commit, pass]
+    ["5f923e82", 31803], ["86714400", 31803], ["8266da8f", 31804], ["0f884fb4", 31805], ["a8292bbc", 31807],
+  ],
+  gem_trend: [ // [label, w16 不一致, c 系不一致]
+    ["w16a 5f923e82", 102, 8], ["w16b 8266da8f", 23, 8], ["c30 0f884fb4", null, 8],
+  ],
+  gaps: [
+    "OpenSSL（libcrypto/libssl バインディング）— gem 不一致の最大要因。着手は user の判断待ち",
+    "C 拡張の読み込み（rbs など）— 設計は docs/c_ext_api_design.md、未実装",
+    "TracePoint :line（tracer・power_assert）、RubyVM::AbstractSyntaxTree / InstructionSequence",
+    "Ripper の構文エラー回復（CRuby の parse.y は誤りの後も木を組み立てる）",
+    "ブロックの $~ が定義元メソッドのものにならない（docs/todo.md）",
+  ],
+  recent: [
+    ["bcf42227", "docs/status.html"],
+    ["a8292bbc", "main の特異メソッド（to_s/inspect/ruby2_keywords）、.new の initialize から出る break の伝播"],
+    ["0f884fb4", "入れ子の生成器と外部列挙（sink を Fiber ごとに、break の素通り判定）— biz 全一致"],
+    ["8266da8f", "w16 不一致 2 回目（Symbol#to_s 凍結、.new からの return/throw、kw 経路の refinement ほか）"],
+    ["86714400", "w16 不一致 1 回目（nkf/kconv、instance_eval 内の class ::X ほか）"],
+  ],
+};
+// --------------------------------------------------------------------------
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function age(d) {
+  const days = Math.floor((Date.now() - Date.parse(d + "T00:00:00Z")) / 86400000);
+  return { days, cls: days <= 3 ? "fresh" : days <= 10 ? "aging" : "stale" };
+}
+function card(m) {
+  const a = age(m.date);
+  return `<div class="card" title="${esc(m.note || "")}">
+    <div class="label">${esc(m.label)}</div>
+    <div class="value ${m.cls || ""}">${esc(m.value)}</div>
+    <div class="sub">${esc(m.sub || "")}</div>
+    <div class="stamp"><span class="dot ${a.cls}"></span>${esc(m.date)}（${a.days} 日前）<code>${esc(m.commit)}</code></div>
+  </div>`;
+}
+$("hdr").textContent = `更新 ${DATA.updated} ／ master ${DATA.master}（未 push）`;
+$("compat").innerHTML = DATA.compat.map(card).join("");
+$("perf").innerHTML = DATA.perf.map(card).join("");
+
+function line(points, w = 520, h = 150) {           // points: [label, value]
+  const vs = points.map((p) => p[1]);
+  const lo = Math.min(...vs), hi = Math.max(...vs), pad = Math.max(1, (hi - lo) * 0.25);
+  const y = (v) => h - 24 - ((v - (lo - pad)) / ((hi + pad) - (lo - pad))) * (h - 44);
+  const x = (i) => 30 + i * ((w - 60) / Math.max(1, points.length - 1));
+  const path = points.map((p, i) => `${i ? "L" : "M"}${x(i)},${y(p[1])}`).join(" ");
+  const dots = points.map((p, i) => `<circle cx="${x(i)}" cy="${y(p[1])}" r="3.5" fill="var(--acc)"/><text x="${x(i)}" y="${y(p[1]) - 8}" text-anchor="middle">${p[1]}</text><text x="${x(i)}" y="${h - 6}" text-anchor="middle">${esc(p[0])}</text>`).join("");
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img"><path d="${path}" fill="none" stroke="var(--acc)" stroke-width="2"/>${dots}</svg>`;
+}
+$("tr_sweep").innerHTML = line(DATA.sweep_trend);
+$("tr_gem").innerHTML = `<div class="wrap"><table><tr><th>計測</th><th class="num">w16 不一致 / 619</th><th class="num">c 系 不一致 / 4908</th></tr>` +
+  DATA.gem_trend.map((r) => `<tr><td><code>${esc(r[0])}</code></td><td class="num">${r[1] ?? "—"}</td><td class="num">${r[2] ?? "—"}</td></tr>`).join("") + `</table></div>`;
+
+(function bars() {
+  const rows = DATA.optcarrot.rows, max = Math.max(...rows.map((r) => r[1]));
+  const w = 560, rh = 26, h = rows.length * rh + 6;
+  $("optc").innerHTML = `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img">` + rows.map((r, i) => {
+    const bw = (w - 200) * r[1] / max, me = r[0].startsWith("koruby AOT");
+    return `<text x="0" y="${i * rh + 17}">${esc(r[0])}</text><rect x="110" y="${i * rh + 5}" width="${bw}" height="16" rx="3" fill="${me ? "var(--acc)" : "var(--bar)"}"/><text x="${116 + bw}" y="${i * rh + 17}">${r[1].toFixed(1)}</text>`;
+  }).join("") + `</svg>`;
+  const a = age(DATA.optcarrot.date);
+  $("optc_stamp").innerHTML = `<span class="dot ${a.cls}"></span>${DATA.optcarrot.date}（${a.days} 日前）<code>${DATA.optcarrot.commit}</code> sp4 専有、checksum 検証`;
+})();
+$("gaps").innerHTML = DATA.gaps.map((g) => `<li>${esc(g)}</li>`).join("");
+$("recent").innerHTML = DATA.recent.map((r) => `<li><code>${esc(r[0])}</code> ${esc(r[1])}</li>`).join("");
+</script>
 </body>
 </html>
