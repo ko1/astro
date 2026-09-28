@@ -2842,19 +2842,21 @@ static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 /* Lenient radix parse for String#hex / #oct: skip ws + sign, optional base
  * prefix (0x/0b/0o/0d — overrides `base` when `any_prefix`, else only the
  * prefix matching `base`), then digits up to the first invalid char (`_`
- * separators allowed between digits).  Returns 0 when nothing parses. */
-static korb_sword_t korb_str_radix(const char *const s, uint32_t len, int base, bool any_prefix) {
-    uint32_t i = 0, end = len;
-    while (i < end && isspace((unsigned char)s[i])) i++;
-    korb_sword_t sign = 1;
-    if (i < end && (s[i] == '+' || s[i] == '-')) { if (s[i] == '-') sign = -1; i++; }
-    if (i + 1 < end && s[i] == '0') {
+ * separators allowed between digits).  Returns 0 when nothing parses; a value past a Fixnum continues
+ * in a Bignum ("20010db8...".hex is a 128-bit IPv6 address). */
+static RESULT korb_str_radix_v(CTX *c, VALUE *slots, const char *const s, const uint32_t len, int base, const bool any_prefix) {
+    uint32_t i = 0;
+    while (i < len && isspace((unsigned char)s[i])) i++;
+    bool neg = false;
+    if (i < len && (s[i] == '+' || s[i] == '-')) { neg = s[i] == '-'; i++; }
+    if (i + 1 < len && s[i] == '0') {
         const char p = s[i + 1] | 0x20;
         const int pb = p == 'x' ? 16 : p == 'b' ? 2 : p == 'o' ? 8 : p == 'd' ? 10 : 0;
         if (pb && (any_prefix || pb == base)) { base = pb; i += 2; }
     }
-    korb_sword_t acc = 0; bool any = false, prev_us = false;
-    for (; i < end; i++) {
+    korb_sword_t acc = 0; bool any = false, prev_us = false, big = false;
+    korb_mp_t z;
+    for (; i < len; i++) {
         const char ch = s[i];
         if (ch == '_') { if (!any || prev_us) break; prev_us = true; continue; }
         prev_us = false;
@@ -2863,56 +2865,103 @@ static korb_sword_t korb_str_radix(const char *const s, uint32_t len, int base, 
         else if ((ch | 0x20) >= 'a' && (ch | 0x20) <= 'z') d = (ch | 0x20) - 'a' + 10;
         else break;
         if (d >= base) break;
-        acc = acc * base + d;
+        if (!big) {
+            korb_sword_t t;
+            if (!__builtin_mul_overflow(acc, (korb_sword_t)base, &t) && !__builtin_add_overflow(t, (korb_sword_t)d, &t)) { acc = t; any = true; continue; }
+            korb_mp_init_set_si(z, (long)acc); big = true;
+        }
+        korb_mp_mul_ui(z, z, (unsigned long)base);
+        korb_mp_add_ui(z, z, (unsigned long)d);
         any = true;
     }
-    return sign * acc;
+    if (!big) {
+        const korb_sword_t v = neg ? -acc : acc;
+        if (LIKELY(FIXABLE(v))) return RESULT_OK(LONG2FIX(v));
+        korb_mp_init_set_si(z, (long)acc);
+    }
+    if (neg) korb_mp_neg(z, z);
+    const RESULT r = korb_big_from_mpz(c, slots, z);
+    korb_mp_clear(z);
+    return r;
 }
 static RESULT korb_m_str_hex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a; const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    return RESULT_OK(LONG2FIX(korb_str_radix(korb_strbuf_data(s->buf), s->len, 16, false)));
+    (void)a; const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    return korb_str_radix_v(c, slots, korb_strbuf_data(s->buf), s->len, 16, false);
 }
 static RESULT korb_m_str_oct(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a; const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    return RESULT_OK(LONG2FIX(korb_str_radix(korb_strbuf_data(s->buf), s->len, 8, true)));
+    (void)a; const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    return korb_str_radix_v(c, slots, korb_strbuf_data(s->buf), s->len, 8, true);
 }
 
 /* String#to_r — lenient parse of [ws][sign]int['/'int | '.'frac]; non-numeric → (0/1). */
+/* Digits with single '_' separators into z (z = z*10 + d); true if any. */
+static bool korb_to_r_digits(const char *const d, const uint32_t len, uint32_t *const pi, korb_mp_ptr z, uint32_t *const ndig) {
+    uint32_t i = *pi; bool any = false;
+    while (i < len && isdigit((unsigned char)d[i])) {
+        korb_mp_mul_ui(z, z, 10); korb_mp_add_ui(z, z, (unsigned long)(d[i] - '0'));
+        any = true; if (ndig) (*ndig)++; i++;
+        if (i + 1 < len && d[i] == '_' && isdigit((unsigned char)d[i + 1])) i++;
+    }
+    *pi = i;
+    return any;
+}
+/* An unsigned decimal [digits][.digits][e[sign]digits] as num/den (rational.c read_num). */
+static bool korb_to_r_decimal(const char *const d, const uint32_t len, uint32_t *const pi, korb_mp_ptr num, korb_mp_ptr den) {
+    uint32_t i = *pi;
+    korb_mp_set_ui(num, 0); korb_mp_set_ui(den, 1);
+    bool any = korb_to_r_digits(d, len, &i, num, NULL);
+    if (i + 1 < len && d[i] == '.' && isdigit((unsigned char)d[i + 1])) {   /* "5." stops at the dot */
+        i++;
+        uint32_t nf = 0;
+        any |= korb_to_r_digits(d, len, &i, num, &nf);
+        korb_mp_t p; korb_mp_init(p); korb_mp_ui_pow_ui(p, 10, nf); korb_mp_mul(den, den, p); korb_mp_clear(p);
+    }
+    if (!any) return false;
+    if (i < len && (d[i] == 'e' || d[i] == 'E')) {
+        uint32_t j = i + 1; bool eneg = false;
+        if (j < len && (d[j] == '+' || d[j] == '-')) { eneg = d[j] == '-'; j++; }
+        if (j < len && isdigit((unsigned char)d[j])) {
+            unsigned long e = 0;
+            while (j < len && isdigit((unsigned char)d[j])) {
+                if (e < 100000000ul) e = e * 10 + (unsigned long)(d[j] - '0');
+                j++;
+                if (j + 1 < len && d[j] == '_' && isdigit((unsigned char)d[j + 1])) j++;
+            }
+            korb_mp_t p; korb_mp_init(p); korb_mp_ui_pow_ui(p, 10, e);
+            if (eneg) korb_mp_mul(den, den, p); else korb_mp_mul(num, num, p);
+            korb_mp_clear(p);
+            i = j;
+        }
+    }
+    *pi = i;
+    return true;
+}
+/* String#to_r — lenient: [ws][sign]decimal['/' decimal]; nothing numeric → (0/1). */
 static RESULT korb_m_str_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     CHECK(korb_str_need_ascii_compat(c, slots, VALUE_REF_GET(self)));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     const char *const d = korb_strbuf_data(s->buf); const uint32_t len = s->len; uint32_t i = 0;
     while (i < len && isspace((unsigned char)d[i])) i++;
-    korb_sword_t sign = 1;
-    if (i < len && (d[i] == '+' || d[i] == '-')) { if (d[i] == '-') sign = -1; i++; }
-    /* integer part (underscores allowed between digits) */
-    korb_sword_t num = 0; bool any = false;
-    while (i < len && ((d[i] >= '0' && d[i] <= '9') ||
-                       (d[i] == '_' && any && i + 1 < len && isdigit((unsigned char)d[i + 1])))) {
-        if (d[i] != '_') { num = num * 10 + (d[i] - '0'); any = true; }
-        i++;
+    bool neg = false;
+    if (i < len && (d[i] == '+' || d[i] == '-')) { neg = d[i] == '-'; i++; }
+    korb_mp_t n1, d1; korb_mp_init(n1); korb_mp_init(d1);
+    if (!korb_to_r_decimal(d, len, &i, n1, d1)) { korb_mp_clear(n1); korb_mp_clear(d1); return korb_rat_new(c, slots, 0, 1); }
+    if (i < len && d[i] == '/') {                            /* a denominator: itself a decimal (1/2.5, 1/3e2) */
+        uint32_t j = i + 1;
+        korb_mp_t n2, d2; korb_mp_init(n2); korb_mp_init(d2);
+        if (korb_to_r_decimal(d, len, &j, n2, d2)) { korb_mp_mul(n1, n1, d2); korb_mp_mul(d1, d1, n2); }
+        korb_mp_clear(n2); korb_mp_clear(d2);
     }
-    korb_sword_t den = 1;
-    if (i < len && d[i] == '.') {                            /* fraction scales the denominator (also handles ".9") */
-        i++; bool fany = false;
-        while (i < len && ((d[i] >= '0' && d[i] <= '9') ||
-                           (d[i] == '_' && fany && i + 1 < len && isdigit((unsigned char)d[i + 1])))) {
-            if (d[i] != '_') { num = num * 10 + (d[i] - '0'); den *= 10; any = true; fany = true; }
-            i++;
-        }
-    }
-    if (any && i < len && d[i] == '/') {                     /* explicit denominator (after int or decimal) */
-        i++; korb_sword_t dv = 0; bool dany = false;
-        while (i < len && ((d[i] >= '0' && d[i] <= '9') ||
-                           (d[i] == '_' && dany && i + 1 < len && isdigit((unsigned char)d[i + 1])))) {
-            if (d[i] != '_') { dv = dv * 10 + (d[i] - '0'); dany = true; }
-            i++;
-        }
-        if (dany) den *= dv;                                 /* korb_rat_new raises on den 0 */
-    }
-    if (!any) return korb_rat_new(c, slots, 0, 1);
-    return korb_rat_new(c, slots, sign * num, den);
+    if (neg) korb_mp_neg(n1, n1);
+    /* no GC above: the parse only touched libc memory; korb_rat_new_v reduces and raises on a zero denominator */
+    const RESULT nr = korb_big_from_mpz(c, slots, n1); korb_mp_clear(n1);
+    if (UNLIKELY(nr.state != KORB_NORMAL)) { korb_mp_clear(d1); return nr; }
+    slots[0] = nr.value;
+    const RESULT dr = korb_big_from_mpz(c, slots + 1, d1); korb_mp_clear(d1);
+    if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+    slots[1] = dr.value;
+    return korb_rat_new_v(c, slots + 2, slots[0], slots[1]);
 }
 /* parse one base-10 number (int or decimal float) at d[*pi]; store its VALUE into
  * *outslot (rooted there), advance *pi, return true.  false if no digits. */
@@ -2920,43 +2969,50 @@ static RESULT korb_m_str_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
  * String#to_c: a leading sign, digit-group underscores, a decimal point,
  * scientific notation (e/E), and an integer `p/q` rational.  Sets *outslot +
  * advances *pi on success. */
-static bool korb_str_parse_c_num(CTX *c, VALUE *outslot, const char *d, uint32_t len, uint32_t *pi) {
+/* 1 = parsed, 0 = no number here, -1 = raised (the exception is in *outslot: "3/0") */
+static int korb_str_parse_c_num(CTX *c, VALUE *outslot, const char *d, uint32_t len, uint32_t *pi) {
     uint32_t i = *pi;
-    char buf[80]; int bi = 0; bool digit = false, isf = false;
+    char buf[520]; int bi = 0;   /* to_c copies at most 512 bytes */ bool digit = false, isf = false;
     if (i < len && (d[i] == '+' || d[i] == '-')) buf[bi++] = d[i++];
     /* a single '_' between digits is a separator; "__" or a trailing '_' ends the number */
     #define KORB_C_DIGITS() do { \
-        while (i < len && isdigit((unsigned char)d[i])) { if (bi < 78) buf[bi++] = d[i]; digit = true; i++; \
+        while (i < len && isdigit((unsigned char)d[i])) { if (bi < 518) buf[bi++] = d[i]; digit = true; i++; \
             if (i + 1 < len && d[i] == '_' && isdigit((unsigned char)d[i+1])) i++; } \
     } while (0)
     KORB_C_DIGITS();
     if (i + 1 < len && d[i] == '.' && isdigit((unsigned char)d[i+1])) {   /* decimal fraction */
-        isf = true; if (bi < 78) buf[bi++] = '.'; i++;
+        isf = true; if (bi < 518) buf[bi++] = '.'; i++;
         KORB_C_DIGITS();
     }
-    if (!digit) return false;
+    if (!digit) return 0;
     if (i < len && (d[i] == 'e' || d[i] == 'E')) {                        /* scientific notation */
         uint32_t j = i + 1; if (j < len && (d[j] == '+' || d[j] == '-')) j++;
         if (j < len && isdigit((unsigned char)d[j])) {
-            isf = true; if (bi < 78) buf[bi++] = 'e'; i++;
-            if (i < len && (d[i] == '+' || d[i] == '-')) { if (bi < 78) buf[bi++] = d[i]; i++; }
+            isf = true; if (bi < 518) buf[bi++] = 'e'; i++;
+            if (i < len && (d[i] == '+' || d[i] == '-')) { if (bi < 518) buf[bi++] = d[i]; i++; }
             KORB_C_DIGITS();
         }
     }
     #undef KORB_C_DIGITS
     buf[bi] = '\0';
     if (!isf && i + 1 < len && d[i] == '/' && isdigit((unsigned char)d[i+1])) {   /* integer p/q rational */
-        uint32_t j = i + 1; char db[40]; int dbi = 0;
-        while (j < len && (isdigit((unsigned char)d[j]) || d[j] == '_')) { if (d[j] != '_' && dbi < 38) db[dbi++] = d[j]; j++; }
+        uint32_t j = i + 1; char db[520]; int dbi = 0;
+        while (j < len && (isdigit((unsigned char)d[j]) || d[j] == '_')) { if (d[j] != '_' && dbi < 518) db[dbi++] = d[j]; j++; }
         db[dbi] = '\0'; i = j; *pi = i;
-        const korb_sword_t num = (korb_sword_t)strtoll(buf, NULL, 10), den = (korb_sword_t)strtoll(db, NULL, 10);
-        *outslot = den ? korb_rat_new(c, outslot, num, den).value : LONG2FIX(0);
-        return true;
+        korb_mp_t zn, zd; korb_mp_init_set_str(zn, buf[0] == '+' ? buf + 1 : buf, 10); korb_mp_init_set_str(zd, db, 10);
+        outslot[0] = korb_big_from_mpz(c, outslot, zn).value; korb_mp_clear(zn);
+        outslot[1] = korb_big_from_mpz(c, outslot + 1, zd).value; korb_mp_clear(zd);
+        const RESULT rr = korb_rat_new_v(c, outslot + 2, outslot[0], outslot[1]);   /* a zero denominator raises (CRuby) */
+        *outslot = rr.value;
+        return rr.state == KORB_NORMAL ? 1 : -1;
     }
     *pi = i;
     if (isf) *outslot = korb_float_new(c, outslot, strtod(buf, NULL)).value;
-    else     *outslot = LONG2FIX((korb_sword_t)strtoll(buf, NULL, 10));
-    return true;
+    else {                                                   /* an Integer of any size */
+        korb_mp_t z; korb_mp_init_set_str(z, buf[0] == '+' ? buf + 1 : buf, 10);
+        *outslot = korb_big_from_mpz(c, outslot, z).value; korb_mp_clear(z);
+    }
+    return 1;
 }
 /* String#to_c — real[±imag(i|j)] / pure "Ni" / bare "±i" / polar "m@a"; a
  * non-numeric string → (0+0i). */
@@ -2974,7 +3030,9 @@ static RESULT korb_m_str_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const char *const d = sbuf;
     while (i < len && isspace((unsigned char)d[i])) i++;
     #define IMAG_UNIT(ch) (((ch) | 0x20) == 'i' || ((ch) | 0x20) == 'j')
-    if (!korb_str_parse_c_num(c, &slots[2], d, len, &i)) {   /* no leading number: bare ±i */
+    const int p0 = korb_str_parse_c_num(c, &slots[2], d, len, &i);
+    if (UNLIKELY(p0 < 0)) return RESULT_RAISE_(slots[2]);
+    if (p0 == 0) {                                          /* no leading number: bare ±i */
         uint32_t j = i; korb_sword_t sg = 1;
         if (j < len && (d[j] == '+' || d[j] == '-')) { if (d[j] == '-') sg = -1; j++; }
         if (j < len && IMAG_UNIT(d[j])) slots[1] = LONG2FIX(sg);
@@ -2982,7 +3040,9 @@ static RESULT korb_m_str_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     if (i < len && d[i] == '@') {                            /* polar form: modulus @ argument */
         i++;
-        if (korb_str_parse_c_num(c, &slots[3], d, len, &i)) {
+        const int p1 = korb_str_parse_c_num(c, &slots[3], d, len, &i);
+        if (UNLIKELY(p1 < 0)) return RESULT_RAISE_(slots[3]);
+        if (p1 > 0) {
             double m = 0, arg = 0; korb_num_to_d(slots[2], &m); korb_num_to_d(slots[3], &arg);
             slots[0] = korb_float_new(c, slots + 4, m * cos(arg)).value;
             slots[1] = korb_float_new(c, slots + 4, m * sin(arg)).value;
@@ -2997,8 +3057,12 @@ static RESULT korb_m_str_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             const uint32_t save = i;
             const korb_sword_t sg = (d[i] == '-') ? -1 : 1;
             if (i + 1 < len && IMAG_UNIT(d[i+1])) slots[1] = LONG2FIX(sg);       /* "a±i" → imag ±1 */
-            else if (korb_str_parse_c_num(c, &slots[3], d, len, &i) && i < len && IMAG_UNIT(d[i])) slots[1] = slots[3];
-            else i = save;
+            else {
+                const int p2 = korb_str_parse_c_num(c, &slots[3], d, len, &i);
+                if (UNLIKELY(p2 < 0)) return RESULT_RAISE_(slots[3]);
+                if (p2 > 0 && i < len && IMAG_UNIT(d[i])) slots[1] = slots[3];
+                else i = save;
+            }
         }
     }
     return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
