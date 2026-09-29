@@ -6116,19 +6116,19 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   残り: `String#[]` / `slice` 以外の Regexp 引数（`str[@re]` は `[]` を一覧に入れると全メソッドが遅くなるので未対応）。
 
 ## C 拡張互換層（Track A、2026-09-29〜、docs/c_ext_api_design.md §9）
-- 未対応 API: `rb_iter_break`、`rb_catch`、
-  `rb_define_variable`、エンコーディング API（`rb_enc_*`・`ruby/encoding.h` は空）、IO API（`ruby/io.h` は空）。
+- 未対応 API: `rb_define_variable`、エンコーディング API（`rb_enc_*`・`ruby/encoding.h` は空）、IO API（`ruby/io.h` は空）。
   ext/openssl は動く（CRuby の test/openssl 35 本が CRuby と同じ要約）。IO の rb_io_t は fd と表だけの最小版、
   エンコーディングは UTF-8 / US-ASCII / BINARY の 3 つだけを rb_encoding として渡している。
 - Fiber の切り替えで `c->cext_top` / `c->cext_jmp` を退避していない（green thread はした）。拡張の中から Ruby を呼び、
   そこで Fiber.yield（Enumerator#next など）するとフレームの鎖が混ざる。
 - gem の拡張で足りない API（2026-09-29、gem install で拡張抜きになったもの。ビルドのエラーから）:
-  racc: `STRINGIZE`・`rb_ary_subseq` / redcarpet: `rb_enc_get` / nio4r: `rb_io_set_nonblock` /
-  strscan・date: `ruby/re.h` / erb: `rb_enc_get`・`rb_enc_str_asciicompat_p`・`rb_strlen_lit`・`ruby_malloc_size_overflow` /
+  strscan: Onigmo の構造体（`RREGEXP_PTR`・`onig_search`・`onig_region_*`）/
   msgpack: `ENCODING_GET_INLINED`・`ENC_CODERANGE_*`・`RSTRUCT_GET`・`rb_big2ll`・`rb_hash_dup`・`rb_str_encode`・`rb_struct_*` ほか /
-  date: `RTYPEDDATA`・`rb_cmpint`・`rb_marshal_load`・`rb_str_format` ほか / json: `rb_str_new_shared`・`rb_obj_hide`・
+  date: `RTYPEDDATA`・`rb_cmpint`・`rb_marshal_load`・`rb_str_format`・`rb_copy_generic_ivar`・`STRNCASECMP` ほか / json: `rb_str_new_shared`・`rb_obj_hide`・
   `RB_ENC_CODERANGE`・`rb_proc_arity` ほか / stringio・io-console: エンコーディング API 一式・`FMODE_*`・rb_io_* 一式。
 - extconf.rb を koruby で走らせると gem の ext/ に code_store/ ができる（AOT のストアが CWD 相対）。
+- `rb_block_call` はいつも catch で包む（rb_iter_break のため）。その固定費（proc 1 個 + catch）を測る。
+- `rb_backref_get` / `rb_backref_set` は何もしない。拡張から Regexp#match を呼んだとき呼び出し元の $~ が変わるかは未確認（date を動かすときに見る）。
 - pin は gc_copy だけ（`aro_gc_alloc_byte_pinned_raw`）。他の moving backend では RSTRING_PTR が NotImplementedError。
   large object の登録がソート配列への挿入（O(n)）なので、pin が数万を超えると遅くなる見込み（未計測）。
 - 代替の lib/digest*.rb・lib/openssl.rb は、拡張を組めない root（CRUBY_SRC 無し・wasm）用の予備。

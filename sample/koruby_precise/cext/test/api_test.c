@@ -526,6 +526,37 @@ t_big(VALUE self, VALUE x)
     return rb_ary_new_from_args(4, rb_big_cmp(x, INT2FIX(0)), rb_big2str(x, 16), RBIGNUM_NEGATIVE_P(x) ? Qtrue : Qfalse,
                                 INT2FIX(RBIGNUM_SIGN(x)));
 }
+static VALUE t_catch_body(RB_BLOCK_CALL_FUNC_ARGLIST(tag, data)) { rb_throw("cext_tag", rb_ary_new_from_args(2, data, tag)); return Qnil; }
+static VALUE t_catch_plain(RB_BLOCK_CALL_FUNC_ARGLIST(tag, data)) { return rb_ary_new_from_args(2, data, tag); }
+static VALUE
+t_catch(VALUE self, VALUE throw_p)
+{
+    return RTEST(throw_p) ? rb_catch("cext_tag", t_catch_body, INT2FIX(7)) : rb_catch("cext_tag", t_catch_plain, INT2FIX(8));
+}
+static VALUE
+t_break_body(RB_BLOCK_CALL_FUNC_ARGLIST(x, data))
+{
+    rb_ary_push(data, x);
+    if (NUM2INT(x) >= 3) rb_iter_break_value(rb_str_new_cstr("stopped"));
+    return Qnil;
+}
+static VALUE
+t_iter_break(VALUE self, VALUE enumerable)
+{
+    const VALUE seen = rb_ary_new();
+    const VALUE r = rb_block_call(enumerable, rb_intern("each"), 0, NULL, t_break_body, seen);
+    return rb_ary_new_from_args(2, r, seen);
+}
+static VALUE
+t_alloc_builtin(VALUE self)
+{
+    const VALUE m = rb_class_new_instance(0, NULL, rb_const_get(rb_cObject, rb_intern("Mutex")));
+    const VALUE a = rb_obj_alloc(rb_cArray);
+    rb_gc();
+    rb_funcall(m, rb_intern("lock"), 0);
+    rb_ary_push(a, INT2FIX(1));
+    return rb_ary_new_from_args(4, rb_obj_class(m), rb_funcall(m, rb_intern("locked?"), 0), a, rb_obj_class(rb_obj_alloc(rb_cObject)));
+}
 static VALUE
 t_warn(VALUE self)
 {
@@ -646,6 +677,9 @@ Init_cext_api_test(void)
     rb_define_module_function(mT, "thread_local", t_thread_local, 1);
     rb_define_module_function(mT, "big", t_big, 1);
     rb_define_module_function(mT, "warn", t_warn, 0);
+    rb_define_module_function(mT, "catch", t_catch, 1);
+    rb_define_module_function(mT, "iter_break", t_iter_break, 1);
+    rb_define_module_function(mT, "alloc_builtin", t_alloc_builtin, 0);
 
     VALUE cCounter = rb_define_class_under(mT, "Counter", rb_cObject);
     rb_define_alloc_func(cCounter, counter_alloc);

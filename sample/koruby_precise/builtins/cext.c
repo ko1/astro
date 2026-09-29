@@ -71,6 +71,7 @@ struct korb_cext_frame {
     NODE *block; korb_value *def_env; korb_value *captured_self;
     struct korb_method *entry;            /* rb_call_super (NULL for allocate / new) */
     KVALUE self;
+    KVALUE break_tag;                     /* rb_block_call's catch tag: rb_iter_break throws it */
     bool kw_given;                        /* the last argument came as keywords */
 };
 
@@ -348,7 +349,7 @@ kcx_frame_push(CTX *c, struct korb_cext_frame *f, korb_value *slots)
     f->serial = ++x->serial ? x->serial : ++x->serial;   /* 0 = "never seen" */
     f->hs = f->hs_inline; f->hn = 0; f->hcap = 16;
     f->block = NULL; f->def_env = NULL; f->captured_self = NULL;
-    f->entry = NULL; f->self = KQnil; f->kw_given = false;
+    f->entry = NULL; f->self = KQnil; f->break_tag = 0; f->kw_given = false;
     c->cext_top = f;
 }
 
@@ -1255,8 +1256,16 @@ rb_check_frozen(KVALUE obj)
 {
     if (!kcx_imm_p(obj) && RTEST_K(rb_obj_frozen_p(obj))) rb_error_frozen_object(obj);
 }
-KCX_API __attribute__((noreturn)) void rb_iter_break(void) { rb_raise(rb_eNotImpError, "rb_iter_break is not supported by koruby yet"); }
-KCX_API __attribute__((noreturn)) void rb_iter_break_value(KVALUE v) { (void)v; rb_iter_break(); }
+KCX_API __attribute__((noreturn)) void rb_throw_obj(KVALUE tag, KVALUE val);   /* fwd */
+/* the innermost rb_block_call's catch (its frame keeps the tag) */
+KCX_API __attribute__((noreturn)) void
+rb_iter_break_value(KVALUE v)
+{
+    for (const struct korb_cext_frame *f = kcx_c()->cext_top; f; f = f->prev)
+        if (f->break_tag) rb_throw_obj(f->break_tag, v);
+    rb_raise(rb_eLocalJumpError, "break from proc-closure");
+}
+KCX_API __attribute__((noreturn)) void rb_iter_break(void) { rb_iter_break_value(KQnil); }
 KCX_API __attribute__((noreturn)) void
 rb_throw_obj(KVALUE tag, KVALUE val)
 {
@@ -1606,7 +1615,16 @@ rb_define_module_function(KVALUE mod, const char *name, void *fn, int arity)
     rb_define_singleton_method(mod, name, fn, arity);
 }
 KCX_API void rb_define_global_function(const char *name, void *fn, int arity) { rb_define_module_function(rb_mKernel, name, fn, arity); }
-KCX_API void rb_undef_method(KVALUE k, const char *name) { CTX *const c = kcx_c(); const KVALUE s = rb_id2sym(rb_intern(name)); (void)kcx_send_name(c, K(k), "undef_method", 1, &s); }
+/* CRuby's C-level undef: the tombstone only (no warning, no NameError, no method_undefined hook) */
+KCX_API void
+rb_undef_method(KVALUE k, const char *name)
+{
+    CTX *const c = kcx_c();
+    const korb_value kv = K(k);
+    if (!KORB_CLASS_P(kv)) return;
+    korb_class_undef_slot(c->vm, VAL2CLASS(kv), kv, korb_intern(c->vm, name, strlen(name)));
+    c->vm->method_serial++;
+}
 KCX_API void
 rb_alias(KVALUE k, KVALUE nid, KVALUE oid)
 {
@@ -1670,6 +1688,8 @@ rb_obj_alloc(KVALUE klass)
                 if (!x->allocs[i].fn) rb_raise(rb_eTypeError, "allocator undefined for %s", rb_class2name(klass));
                 return x->allocs[i].fn(klass);
             }
+    if (KORB_CLASS_P(k) && korb_builtin_base_class(c->vm, k) != KORB_C_OBJECT)   /* Mutex, Array ...: its own representation */
+        return W(kcx_send_name(c, k, "allocate", 0, NULL));
     return W(kcx_check(c, korb_obj_new(c, kcx_slots(c), k)));   /* no allocator up the chain: the hook passes it through */
 }
 KCX_API void
@@ -1937,11 +1957,31 @@ kcx_cblock_proc(KVALUE (*func)(KVALUE, KVALUE, int, const KVALUE *, KVALUE), KVA
     return rb_funcall(rb_ary_entry(x->cblock_maker, lambda ? 1 : 0), rb_intern("call"), 1, cd);
 }
 KCX_API KVALUE rb_proc_new(void *func, KVALUE val) { return kcx_cblock_proc(func, val, true); }
+/* rb_block_call runs the call inside `catch`, keeping the tag in the catch block's frame,
+ * so that rb_iter_break from func ends the iteration and rb_block_call returns its value */
+struct kcx_iter { KVALUE obj, mid; int argc; const KVALUE *argv; void *func; KVALUE data2; };
+static KVALUE
+kcx_iter_catch(KVALUE tag, KVALUE p, int argc, const KVALUE *argv, KVALUE blk)
+{
+    (void)argc; (void)argv; (void)blk;
+    const struct kcx_iter *const it = (const struct kcx_iter *)(uintptr_t)p;
+    kcx_c()->cext_top->break_tag = tag;
+    return rb_funcall_with_block(it->obj, it->mid, it->argc, it->argv, kcx_cblock_proc(it->func, it->data2, false));
+}
+static KVALUE
+kcx_catch(const KVALUE *tag, void *func, KVALUE data)   /* tag NULL: catch's own fresh tag */
+{
+    CTX *const c = kcx_c();
+    return rb_funcall_with_block(W(kcx_const_path(c, "Kernel")), rb_intern("catch"), tag ? 1 : 0, tag, kcx_cblock_proc(func, data, false));
+}
+KCX_API KVALUE rb_catch_obj(KVALUE tag, void *func, KVALUE data) { return kcx_catch(&tag, func, data); }
+KCX_API KVALUE rb_catch(const char *tag, void *func, KVALUE data) { return rb_catch_obj(rb_id2sym(rb_intern(tag)), func, data); }
 KCX_API KVALUE
 rb_block_call(KVALUE obj, KVALUE mid, int argc, const KVALUE *argv, void *func, KVALUE data2)
 {
     if (!func) return rb_funcall_passing_block(obj, mid, argc, argv);
-    return rb_funcall_with_block(obj, mid, argc, argv, kcx_cblock_proc(func, data2, false));
+    const struct kcx_iter it = { obj, mid, argc, argv, func, data2 };
+    return kcx_catch(NULL, (void *)kcx_iter_catch, (KVALUE)(uintptr_t)&it);
 }
 KCX_API KVALUE rb_block_call_kw(KVALUE obj, KVALUE mid, int argc, const KVALUE *argv, void *func, KVALUE data2, int kw)
 { (void)kw; return rb_block_call(obj, mid, argc, argv, func, data2); }
@@ -2102,6 +2142,42 @@ KCX_API void *rb_thread_call_with_gvl(void *(*func)(void *), void *d1) { return 
 KCX_API void *rb_nogvl(void *(*func)(void *), void *d1, void *ubf, void *d2, int flags) { (void)ubf; (void)d2; (void)flags; return func(d1); }
 KCX_API void rb_thread_check_ints(void) {}
 KCX_API KVALUE rb_thread_current(void) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(rb_cThread), "current", 0, NULL)); }
+KCX_API KVALUE
+rb_ary_subseq(KVALUE ary, long beg, long len)
+{
+    CTX *const c = kcx_c();
+    const KVALUE a[2] = { (KVALUE)LONG2FIX(beg), (KVALUE)LONG2FIX(len) };
+    return W(kcx_send_name(c, K(ary), "[]", 2, a));
+}
+KCX_API __attribute__((noreturn)) void
+ruby_malloc_size_overflow(size_t count, size_t elsize)
+{
+    CTX *const c = kcx_c();
+    kcx_throw(c, korb_raise(c, kcx_slots(c), KORB_E_ARGUMENT, 0, "malloc: possible integer overflow (%zu*%zu)", count, elsize));
+}
+/* ---- Regexp (ruby/re.h): through Ruby; $~ belongs to the Ruby caller, so backref save/restore is a no-op ---- */
+KCX_API KVALUE
+rb_reg_new_str(KVALUE src, int options)
+{
+    CTX *const c = kcx_c();
+    const KVALUE a[2] = { src, (KVALUE)LONG2FIX(options) };
+    return W(kcx_send_name(c, kcx_const_path(c, "Regexp"), "new", 2, a));
+}
+KCX_API KVALUE rb_reg_new(const char *src, long len, int options) { return rb_reg_new_str(rb_usascii_str_new(src, len), options); }
+KCX_API KVALUE rb_reg_regcomp(KVALUE str) { return rb_reg_new_str(str, 0); }
+KCX_API KVALUE rb_reg_match(KVALUE re, KVALUE str) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(re), "=~", 1, &str)); }
+KCX_API KVALUE
+rb_reg_nth_match(int nth, KVALUE m)
+{
+    if (m == KQnil) return KQnil;
+    CTX *const c = kcx_c();
+    const KVALUE n = (KVALUE)LONG2FIX(nth);
+    return W(kcx_send_name(c, K(m), "[]", 1, &n));
+}
+KCX_API KVALUE rb_reg_last_match(KVALUE m) { return rb_reg_nth_match(0, m); }
+KCX_API KVALUE rb_backref_get(void) { return KQnil; }
+KCX_API void rb_backref_set(KVALUE m) { (void)m; }
+KCX_API void rb_match_busy(KVALUE m) { (void)m; }
 KCX_API KVALUE rb_thread_local_aref(KVALUE th, KVALUE id) { CTX *const c = kcx_c(); const KVALUE k = rb_id2sym(id); return W(kcx_send_name(c, K(th), "[]", 1, &k)); }
 KCX_API KVALUE rb_thread_local_aset(KVALUE th, KVALUE id, KVALUE v) { CTX *const c = kcx_c(); const KVALUE a[2] = { rb_id2sym(id), v }; (void)kcx_send_name(c, K(th), "[]=", 2, a); return v; }
 KCX_API void rb_thread_schedule(void) { CTX *const c = kcx_c(); (void)kcx_send_name(c, K(rb_cThread), "pass", 0, NULL); }
@@ -2326,6 +2402,8 @@ KCX_API int rb_usascii_encindex(void) { return KORB_ENC_USASCII; }
 KCX_API KVALUE rb_enc_associate_index(KVALUE obj, int idx) { if (KORB_STRING_P(K(obj))) KORB_STR_ENC_SET(K(obj), (uint32_t)idx); return obj; }
 KCX_API KVALUE rb_enc_associate(KVALUE obj, struct rb_encoding_kx *enc) { return rb_enc_associate_index(obj, (int)((uintptr_t)enc - 1)); }
 KCX_API int rb_enc_get_index(KVALUE obj) { return KORB_STRING_P(K(obj)) ? (int)KORB_STR_ENC(K(obj)) : -1; }
+KCX_API struct rb_encoding_kx *rb_enc_get(KVALUE obj) { const int i = rb_enc_get_index(obj); return i < 0 ? NULL : KCX_ENC((uint32_t)i); }
+KCX_API int rb_enc_str_asciicompat_p(KVALUE str) { CTX *const c = kcx_c(); return korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(K(str))); }
 KCX_API KVALUE rb_enc_str_new(const char *ptr, long len, struct rb_encoding_kx *enc) { return rb_enc_associate(rb_str_new(ptr, len), enc); }
 KCX_API KVALUE rb_external_str_new(const char *ptr, long len) { return rb_utf8_str_new(ptr, len); }
 KCX_API KVALUE
@@ -2391,6 +2469,12 @@ rb_io_get_fptr(KVALUE io)
 KCX_API void rb_io_check_readable(struct rb_io *f) { (void)f; }
 KCX_API void rb_io_check_writable(struct rb_io *f) { (void)f; }
 KCX_API void rb_io_check_closed(struct rb_io *f) { (void)f; }
+KCX_API void
+rb_io_set_nonblock(struct rb_io *f)
+{
+    const int fl = fcntl(f->fd, F_GETFL);
+    if (fl >= 0 && !(fl & O_NONBLOCK)) (void)fcntl(f->fd, F_SETFL, fl | O_NONBLOCK);
+}
 KCX_API int rb_io_descriptor(KVALUE io) { return rb_io_get_fptr(io)->fd; }
 KCX_API KVALUE rb_io_timeout(KVALUE io) { return rb_funcall(io, rb_intern("timeout"), 0); }
 KCX_API KVALUE

@@ -757,6 +757,7 @@ rb_io_t *rb_io_get_fptr(VALUE io);
 void  rb_io_check_readable(rb_io_t *fptr);
 void  rb_io_check_writable(rb_io_t *fptr);
 void  rb_io_check_closed(rb_io_t *fptr);
+void  rb_io_set_nonblock(rb_io_t *fptr);
 int   rb_io_descriptor(VALUE io);
 enum rb_io_event { RUBY_IO_READABLE = 1, RUBY_IO_PRIORITY = 2, RUBY_IO_WRITABLE = 4 };
 #define RUBY_IO_TIMEOUT_DEFAULT Qnil
@@ -809,6 +810,13 @@ VALUE rb_big_cmp(VALUE x, VALUE y);
 VALUE rb_big2str(VALUE x, int base);
 
 /* ---- strings, threads ---- */
+#define STRINGIZE0(expr) #expr
+#define STRINGIZE(expr) STRINGIZE0(expr)
+#define rb_strlen_lit(str) (sizeof(str "") - 1)
+VALUE rb_ary_subseq(VALUE ary, long beg, long len);
+rb_encoding *rb_enc_get(VALUE obj);
+int   rb_enc_str_asciicompat_p(VALUE str);
+NORETURN(void ruby_malloc_size_overflow(size_t count, size_t elsize));
 VALUE rb_str_subseq(VALUE str, long beg, long len);
 #define rb_str_tmp_new(len) rb_str_new(NULL, (len))
 void  rb_must_asciicompat(VALUE str);

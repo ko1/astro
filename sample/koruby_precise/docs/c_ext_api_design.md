@@ -479,10 +479,17 @@ mixin を include したクラスを別の superclass で `rb_define_class_under
   `rb_Rational` 他、ctype マクロ、ruby.h が stdio.h などを含む（mkmf の have_func の試験が printf を使う）。
   bigdecimal の test で見つかった本体側の食い違い（知らない Numeric を成分に持つ Complex、Integer#quo / Float#fdiv
   の coerce、Float#divmod(±Infinity)、終わりのない Range の Enumerable、Bignum 端の bsearch）も直した。
-  その他の gem（2026-09-29、rubygems.org の最新）: bcrypt はビルドされる。racc・msgpack・date・redcarpet・nio4r・
-  strscan・stringio・io-console・erb・json・psych は API 不足で拡張抜きになる（不足の一覧は docs/todo.md）。
+  その他の gem（2026-09-29、rubygems.org の最新）: bcrypt・racc（cparse）・redcarpet・nio4r・erb（escape）は
+  ビルドされ、使ってみた範囲で CRuby と同じ出力（STRESS+PURGE でも）。msgpack・date・strscan・stringio・io-console・
+  json・psych は API 不足で拡張抜きになる（不足の一覧は docs/todo.md）。この段で直したもの: `rb_obj_alloc` が
+  組み込みクラス（Mutex など）を KorbObject として作っていた（nio4r の Selector が持つ Mutex が GC の後で壊れる）
+  → 組み込みの表現を持つクラスは `allocate` で、`rb_undef_method` は墓標だけ（Ruby の undef_method を通すと
+  initialize の警告と NameError が出る）、`rb_catch` / `rb_catch_obj`、`rb_iter_break`（`rb_block_call` が呼び出しを
+  catch で包み、タグをそのフレームに置く。break はいちばん内側のタグへ throw。`rb_block_call` の外での
+  rb_iter_break は LocalJumpError で、CRuby のように外側の Ruby のブロックを抜けはしない。catch で包む分の
+  固定費は未計測）、`ruby/re.h`（`rb_reg_new`・`rb_reg_nth_match` など。Ruby 経由で、Onigmo の構造体は無い）。
 
-**未対応**（呼ぶと NotImplementedError）: `rb_iter_break`、`rb_catch`。gc_copy 以外の moving backend
+**未対応**: Onigmo の構造体を直接使う Regexp API（strscan）。gc_copy 以外の moving backend
 （pin の区画が無い）。Fiber の切り替え（Enumerator の外部イテレーションを含む）では拡張のフレームを退避していない。
 
 **未解決**: 長寿命の pin が copy GC の空間効率を落とす量（pin は large object 区画 = 1 個ずつ malloc、登録は

@@ -246,4 +246,8 @@ t(:warn) {
   end
   w
 }
+t(:catch_throw) { T.catch(true) }
+t(:catch_plain) { T.catch(false) }
+t(:iter_break) { [T.iter_break([1, 2, 3, 4, 5]), T.iter_break(1..10), T.iter_break([1])] }
+t(:alloc_builtin) { T.alloc_builtin }
 puts "done"
