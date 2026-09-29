@@ -39,10 +39,33 @@ __attribute__((weak, used, visibility("default"))) const int koruby_cext_abi_1 =
 #define RUBY_API_VERSION_CODE (RUBY_API_VERSION_MAJOR * 10000 + RUBY_API_VERSION_MINOR * 100)
 #define HAVE_RB_EXT_RESOLVE_SYMBOL 1
 #define HAVE_RB_EXT_RACTOR_SAFE 1
+/* ruby/config.h (x86_64 LP64) */
+#define SIZEOF_INT 4
+#define SIZEOF_SHORT 2
+#define SIZEOF_LONG 8
+#define SIZEOF_LONG_LONG 8
+#define SIZEOF_VOIDP 8
+#define SIZEOF_SIZE_T 8
+#define SIZEOF_TIME_T 8
+#define SIZEOF_OFF_T 8
+#define SIZEOF_VALUE 8
+#define SIZEOF_INT64_T 8
+#define SIZEOF_UINT64_T 8
+#define HAVE_LONG_LONG 1
+#define HAVE_INT64_T 1
+#define HAVE_UINT64_T 1
+#define HAVE_STDINT_H 1
+#define HAVE_INTTYPES_H 1
+#define HAVE_STDBOOL_H 1
+#define HAVE_SYS_TYPES_H 1
+#define HAVE_UNISTD_H 1
+#define HAVE_RUBY_RACTOR_H 1
 
 typedef uintptr_t VALUE;
 typedef intptr_t  SIGNED_VALUE;
 typedef uintptr_t ID;
+typedef uintptr_t st_data_t;
+typedef uintptr_t st_index_t;
 
 #define RUBY_EXTERN extern
 #define RUBY_FUNC_EXPORTED __attribute__((visibility("default")))
@@ -63,6 +86,9 @@ typedef uintptr_t ID;
 #define RBIMPL_WARNING_POP()   _Pragma("GCC diagnostic pop")
 #define RBIMPL_WARNING_IGNORED(flag)
 #define RBIMPL_HAS_WARNING(flag) 0
+#define RUBY_ASSERT(expr) ((void)0)
+#define RUBY_ASSERT_ALWAYS(expr) ((void)0)
+#define ASSUME(x) ((void)0)
 #define RB_GC_GUARD(v) (*__extension__({ volatile VALUE *rb_gc_guarded_ptr = &(v); rb_gc_guarded_ptr; }))
 #define RBIMPL_ATTR_MAYBE_UNUSED() __attribute__((unused))
 #define MAYBE_UNUSED(x) __attribute__((unused)) x
@@ -70,9 +96,9 @@ typedef uintptr_t ID;
 #define ALWAYS_INLINE(x) __attribute__((always_inline)) x
 #define NOINLINE(x) __attribute__((noinline)) x
 
-/* ---- immediates: koruby's tagging (context.h) --------------------------- */
-#define Qnil    ((VALUE)0)
-#define Qfalse  ((VALUE)0x04)
+/* ---- immediates: CRuby's values (koruby swaps nil / false at the boundary) -- */
+#define Qfalse  ((VALUE)0x00)
+#define Qnil    ((VALUE)0x04)
 #define Qtrue   ((VALUE)0x14)
 #define Qundef  ((VALUE)0x24)
 #define RUBY_Qnil   Qnil
@@ -196,7 +222,7 @@ void *rb_data_get_ptr(VALUE obj);
 void  rb_data_set_ptr(VALUE obj, void *ptr);
 const rb_data_type_t *rb_typeddata_type(VALUE obj);
 int   rb_data_p(VALUE obj);   /* koruby: T_DATA with or without a type */
-#define RTYPEDDATA_DATA(v)       rb_data_get_ptr(v)
+#define RTYPEDDATA_DATA(v)       (*rb_data_ptr_ref(v))   /* an lvalue, as in CRuby */
 #define RTYPEDDATA_GET_DATA(v)   rb_data_get_ptr(v)
 #define RTYPEDDATA_TYPE(v)       rb_typeddata_type(v)
 #define RTYPEDDATA_P(v)          (rb_typeddata_type(v) != NULL)
@@ -238,6 +264,12 @@ void  ruby_xfree(void *p);
 #define ZALLOC_N(type, n)  ((type *)ruby_xcalloc((n), sizeof(type)))
 #define REALLOC_N(var, type, n) ((var) = (type *)ruby_xrealloc2((void *)(var), (n), sizeof(type)))
 #define ALLOCA_N(type, n)  ((type *)__builtin_alloca(sizeof(type) * (n)))
+/* ALLOCV: CRuby hands back GC-managed scratch; here plain malloc freed by ALLOCV_END */
+void *rb_alloc_tmp_buffer(volatile VALUE *store, long len);
+void  rb_free_tmp_buffer(volatile VALUE *store);
+#define ALLOCV(v, n)        rb_alloc_tmp_buffer(&(v), (long)(n))
+#define ALLOCV_N(type, v, n) ((type *)ALLOCV((v), sizeof(type) * (size_t)(n)))
+#define ALLOCV_END(v)       rb_free_tmp_buffer(&(v))
 #define MEMZERO(p, type, n)    memset((p), 0, sizeof(type) * (size_t)(n))
 #define MEMCPY(p1, p2, type, n)  memcpy((p1), (p2), sizeof(type) * (size_t)(n))
 #define MEMMOVE(p1, p2, type, n) memmove((p1), (p2), sizeof(type) * (size_t)(n))
@@ -320,6 +352,31 @@ VALUE  rb_Float(VALUE v);
 #define DBL2NUM(d)   rb_float_new(d)
 #define RFLOAT_VALUE(v) rb_float_value(v)
 #define CHR2FIX(c)   INT2FIX((long)((c) & 0xff))
+#define NUM2UINT64T(v) ((uint64_t)rb_num2ull(v))
+#define NUM2INT64T(v)  ((int64_t)rb_num2ll(v))
+#define UINT64T2NUM(n) rb_ull2inum((unsigned long long)(n))
+#define INT64T2NUM(n)  rb_ll2inum((long long)(n))
+#define NUM2TIMET(v)   ((time_t)rb_num2ll(v))
+#define TIMET2NUM(t)   rb_ll2inum((long long)(t))
+#define NUM2OFFT(v)    ((off_t)rb_num2ll(v))
+#define OFFT2NUM(n)    rb_ll2inum((long long)(n))
+#define ST2FIX(h)      LONG2FIX((long)(h))
+int   rb_long2int(long n);
+VALUE rb_cstr_to_inum(const char *str, int base, int badcheck);
+VALUE rb_str_to_inum(VALUE str, int base, int badcheck);
+size_t rb_absint_size(VALUE val, int *nlz_bits_ret);
+int   rb_integer_pack(VALUE val, void *words, size_t numwords, size_t wordsize, size_t nails, int flags);
+VALUE rb_integer_unpack(const void *words, size_t numwords, size_t wordsize, size_t nails, int flags);
+#define INTEGER_PACK_MSWORD_FIRST       0x01
+#define INTEGER_PACK_LSWORD_FIRST       0x02
+#define INTEGER_PACK_MSBYTE_FIRST       0x10
+#define INTEGER_PACK_LSBYTE_FIRST       0x20
+#define INTEGER_PACK_NATIVE             0x40
+#define INTEGER_PACK_2COMP              0x80
+#define INTEGER_PACK_FORCE_GENERIC_IMPLEMENTATION 0x400
+#define INTEGER_PACK_NEGATIVE           0x200
+#define INTEGER_PACK_BIG_ENDIAN (INTEGER_PACK_MSWORD_FIRST | INTEGER_PACK_MSBYTE_FIRST)
+#define INTEGER_PACK_LITTLE_ENDIAN (INTEGER_PACK_LSWORD_FIRST | INTEGER_PACK_LSBYTE_FIRST)
 
 /* ---- strings ------------------------------------------------------------ */
 VALUE rb_str_new(const char *ptr, long len);
@@ -374,6 +431,35 @@ long  rb_string_len(VALUE str);
 #define StringValueCStr(v) rb_string_value_cstr(&(v))
 #define PRI_VALUE_PREFIX "l"
 #define PRIsVALUE PRI_VALUE_PREFIX "i" "\v"   /* rb_sprintf formats the argument as a VALUE (to_s; "+" = inspect) */
+void  rb_str_modify(VALUE str);
+void  rb_str_modify_expand(VALUE str, long expand);
+size_t rb_str_capacity(VALUE str);
+VALUE rb_str_locktmp(VALUE str);
+VALUE rb_str_unlocktmp(VALUE str);
+VALUE rb_str_resurrect(VALUE str);
+VALUE rb_str_new_frozen(VALUE str);
+VALUE rb_str_drop_bytes(VALUE str, long len);
+VALUE rb_String(VALUE obj);
+VALUE rb_convert_type(VALUE val, int type, const char *tname, const char *method);
+VALUE rb_check_convert_type(VALUE val, int type, const char *tname, const char *method);
+st_index_t rb_memhash(const void *ptr, long len);
+#define rb_str_new4 rb_str_new_frozen
+#define rb_str_new5 rb_str_new
+#define RSTRING(s) (s)
+/* encodings: an rb_encoding is an opaque handle (koruby's encoding index + 1) */
+typedef struct rb_encoding_kx rb_encoding;
+rb_encoding *rb_utf8_encoding(void);
+rb_encoding *rb_ascii8bit_encoding(void);
+rb_encoding *rb_usascii_encoding(void);
+int   rb_utf8_encindex(void);
+int   rb_ascii8bit_encindex(void);
+int   rb_usascii_encindex(void);
+VALUE rb_enc_associate_index(VALUE obj, int idx);
+VALUE rb_enc_associate(VALUE obj, rb_encoding *enc);
+int   rb_enc_get_index(VALUE obj);
+VALUE rb_enc_str_new(const char *ptr, long len, rb_encoding *enc);
+VALUE rb_enc_sprintf(rb_encoding *enc, const char *fmt, ...);
+VALUE rb_external_str_new(const char *ptr, long len);
 
 /* ---- arrays / hashes ---------------------------------------------------- */
 VALUE rb_ary_new(void);
@@ -417,6 +503,10 @@ VALUE rb_check_hash_type(VALUE obj);
 enum rb_hash_iter_status { ST_CONTINUE = 0, ST_STOP = 1, ST_DELETE = 2, ST_CHECK = 3 };
 void  rb_hash_foreach(VALUE hash, int (*func)(VALUE key, VALUE val, VALUE arg), VALUE arg);
 #define RHASH_SIZE(h) rb_hash_size_num(h)
+void  rb_hash_set_ifnone(VALUE hash, VALUE ifnone);
+#define RHASH_SET_IFNONE(h, v) rb_hash_set_ifnone((h), (v))
+VALUE rb_assoc_new(VALUE a, VALUE b);
+VALUE rb_ary_aref(int argc, const VALUE *argv, VALUE ary);
 
 /* ---- objects / classes -------------------------------------------------- */
 RUBY_EXTERN VALUE rb_mKernel, rb_mComparable, rb_mEnumerable, rb_mMath, rb_mProcess, rb_mGC;
@@ -425,6 +515,7 @@ RUBY_EXTERN VALUE rb_cBasicObject, rb_cObject, rb_cModule, rb_cClass, rb_cString
                   rb_cTrueClass, rb_cFalseClass, rb_cProc, rb_cMethod, rb_cRange, rb_cIO, rb_cFile,
                   rb_cTime, rb_cStruct, rb_cRational, rb_cComplex, rb_cRegexp, rb_cMatch,
                   rb_cEncoding, rb_cData, rb_cThread;
+RUBY_EXTERN VALUE rb_eIOTimeoutError, rb_mWaitReadable, rb_mWaitWritable;
 RUBY_EXTERN VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eArgError, rb_eTypeError,
                   rb_eNameError, rb_eNoMethodError, rb_eIndexError, rb_eKeyError, rb_eRangeError,
                   rb_eIOError, rb_eEOFError, rb_eLoadError, rb_eNotImpError, rb_eFrozenError,
@@ -510,6 +601,17 @@ VALUE rb_any_to_s(VALUE obj);
 VALUE rb_equal(VALUE a, VALUE b);
 VALUE rb_eql(VALUE a, VALUE b);
 int   rb_respond_to(VALUE obj, ID mid);
+void  rb_attr(VALUE klass, ID id, int read, int write, int ex);
+VALUE rb_enumeratorize(VALUE obj, VALUE meth, int argc, const VALUE *argv);
+#define RETURN_ENUMERATOR(obj, argc, argv) do { if (!rb_block_given_p()) \
+    return rb_enumeratorize((obj), ID2SYM(rb_frame_this_func()), (argc), (argv)); } while (0)
+#define RETURN_SIZED_ENUMERATOR(obj, argc, argv, size_fn) RETURN_ENUMERATOR((obj), (argc), (argv))
+ID    rb_frame_this_func(void);
+int   rb_during_gc(void);
+VALUE rb_ruby_verbose_get(void);
+#define ruby_verbose rb_ruby_verbose_get()
+VALUE rb_ruby_debug_get(void);
+#define ruby_debug rb_ruby_debug_get()
 VALUE rb_obj_method(VALUE obj, VALUE name);
 VALUE rb_ivar_get(VALUE obj, ID name);
 VALUE rb_ivar_set(VALUE obj, ID name, VALUE val);
@@ -531,6 +633,7 @@ VALUE rb_funcallv_public(VALUE recv, ID mid, int argc, const VALUE *argv);
 VALUE rb_funcall_passing_block(VALUE recv, ID mid, int argc, const VALUE *argv);
 VALUE rb_funcall_with_block(VALUE recv, ID mid, int argc, const VALUE *argv, VALUE procval);
 VALUE rb_call_super(int argc, const VALUE *argv);
+VALUE rb_call_super_kw(int argc, const VALUE *argv, int kw_splat);
 VALUE rb_current_receiver(void);
 #define rb_funcall2 rb_funcallv
 #define rb_funcall3 rb_funcallv_public
@@ -594,6 +697,8 @@ void  rb_warning(const char *fmt, ...);
 VALUE rb_exc_new(VALUE klass, const char *ptr, long len);
 VALUE rb_exc_new_cstr(VALUE klass, const char *ptr);
 VALUE rb_exc_new_str(VALUE klass, VALUE str);
+VALUE rb_syserr_new(int err, const char *msg);
+NORETURN(void rb_eof_error(void));
 #define rb_exc_new2 rb_exc_new_cstr
 #define rb_exc_new3 rb_exc_new_str
 VALUE rb_errinfo(void);
@@ -618,6 +723,33 @@ VALUE rb_thread_current(void);
 void  rb_thread_schedule(void);
 
 #define rb_intern_str(s) rb_to_id(s)
+
+/* ---- IO: enough for extensions that hand a socket's fd to a C library ---- */
+typedef struct rb_io { VALUE self; int fd; int mode; } rb_io_t;
+rb_io_t *rb_io_get_fptr(VALUE io);
+#define GetOpenFile(obj, fp) ((fp) = rb_io_get_fptr(obj))
+#define RB_IO_POINTER(obj, fp) GetOpenFile((obj), (fp))
+void  rb_io_check_readable(rb_io_t *fptr);
+void  rb_io_check_writable(rb_io_t *fptr);
+void  rb_io_check_closed(rb_io_t *fptr);
+int   rb_io_descriptor(VALUE io);
+enum rb_io_event { RUBY_IO_READABLE = 1, RUBY_IO_PRIORITY = 2, RUBY_IO_WRITABLE = 4 };
+#define RUBY_IO_TIMEOUT_DEFAULT Qnil
+VALUE rb_io_wait(VALUE io, VALUE events, VALUE timeout);
+VALUE rb_io_maybe_wait(int error, VALUE io, VALUE events, VALUE timeout);
+VALUE rb_io_timeout(VALUE io);
+int   rb_thread_wait_fd(int fd);
+int   rb_thread_fd_writable(int fd);
+
+/* ---- ractor-local storage (one ractor: plain per-key slots) ---- */
+typedef struct rb_ractor_local_key_struct *rb_ractor_local_key_t;
+struct rb_ractor_local_storage_type { void (*mark)(void *ptr); void (*free)(void *ptr); };
+rb_ractor_local_key_t rb_ractor_local_storage_ptr_newkey(const struct rb_ractor_local_storage_type *type);
+void *rb_ractor_local_storage_ptr(rb_ractor_local_key_t key);
+void  rb_ractor_local_storage_ptr_set(rb_ractor_local_key_t key, void *ptr);
+rb_ractor_local_key_t rb_ractor_local_storage_value_newkey(void);
+VALUE rb_ractor_local_storage_value(rb_ractor_local_key_t key);
+void  rb_ractor_local_storage_value_set(rb_ractor_local_key_t key, VALUE val);
 #define InitVM(ext) {void InitVM_##ext(void); InitVM_##ext();}
 
 #ifdef __cplusplus

@@ -195,4 +195,5 @@ t(:call_super) {
   [child.new.greet, child.new.greet(1, 2)]
 }
 t(:call_super_missing) { k = Class.new; T.def_child(k); k.new.greet }
+t(:c_truthy) { ["s", 1, nil, false, true].map { |v| T.c_truthy(v) } }
 puts "done"

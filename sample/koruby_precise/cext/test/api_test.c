@@ -445,6 +445,18 @@ static VALUE t_with_block(VALUE self, VALUE ary, VALUE blk) { return rb_funcall_
 static VALUE child_greet(int argc, VALUE *argv, VALUE self) { VALUE r = rb_call_super(argc, argv); return rb_ary_new_from_args(2, rb_str_new_cstr("C"), r); }
 static VALUE t_def_child(VALUE self, VALUE child) { rb_define_method(child, "greet", child_greet, -1); return Qnil; }
 
+/* results used as C booleans (CRuby: Qfalse == 0), and a zeroed VALUE is false */
+static VALUE
+t_c_truthy(VALUE self, VALUE v)
+{
+    VALUE zeroed[1];
+    memset(zeroed, 0, sizeof zeroed);
+    return rb_ary_new_from_args(6, rb_obj_is_kind_of(v, rb_cString) ? INT2FIX(1) : INT2FIX(0),
+                                rb_equal(v, rb_str_new_cstr("s")) ? INT2FIX(1) : INT2FIX(0),
+                                v == Qfalse ? Qtrue : Qfalse, v == Qnil ? Qtrue : Qfalse, zeroed[0],
+                                rb_ivar_defined(v, rb_intern("@nope")) ? INT2FIX(1) : INT2FIX(0));
+}
+
 /* ---- misc ---- */
 static VALUE
 t_ids(VALUE self)
@@ -554,6 +566,7 @@ Init_cext_api_test(void)
     rb_define_module_function(mT, "proc_new", t_proc_new, 1);
     rb_define_module_function(mT, "with_block", t_with_block, 2);
     rb_define_module_function(mT, "def_child", t_def_child, 1);
+    rb_define_module_function(mT, "c_truthy", t_c_truthy, 1);
 
     VALUE cCounter = rb_define_class_under(mT, "Counter", rb_cObject);
     rb_define_alloc_func(cCounter, counter_alloc);

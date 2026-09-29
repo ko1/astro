@@ -11,6 +11,7 @@
  * The C API has no context argument, so the current CTX is a thread-local —
  * the one global this layer needs (CRuby's GET_EC() is the same). */
 #include <dlfcn.h>
+#include <poll.h>
 #include <setjmp.h>
 #include <stdarg.h>
 
@@ -48,6 +49,7 @@ struct korb_cext_vm {
     struct { char *path; void *dl; } *libs; uint32_t lib_n, lib_capa;
     korb_value errinfo;                   /* rb_errinfo (a root) */
     KVALUE cblock_maker;                  /* [proc maker, lambda maker] for C-function blocks */
+    struct rb_io *io; size_t io_n;        /* GetOpenFile's per-descriptor rb_io_t */
     uintptr_t pending_state;              /* what rb_protect caught, for rb_jump_tag */
     uint32_t serial;
     /* set around a dmark call so rb_gc_mark can visit */
@@ -76,6 +78,13 @@ static _Thread_local CTX *korb_cext_ctx;
 
 #define KCX_API __attribute__((used, visibility("default")))
 
+/* The extension sees CRuby's immediates: nil and false are koruby's swapped (CRuby
+ * Qfalse = 0 is C-false, and extensions write `if (rb_obj_is_kind_of(...))`).
+ * true / undef / Fixnum / Flonum / Symbol keep koruby's bits. */
+#define KQfalse ((KVALUE)0x00)
+#define KQnil   ((KVALUE)0x04)
+#define KQtrue  ((KVALUE)0x14)
+#define KQundef ((KVALUE)0x24)
 static inline bool kcx_imm_p(const KVALUE v) { return (v & 7u) != 0 || v == 0; }
 #define RTEST_K(h) ((((KVALUE)(h)) & ~(KVALUE)4) != 0)
 
@@ -182,7 +191,7 @@ kcx_frame_hold(struct korb_cext_frame *f, korb_value *cell)
 static KVALUE
 kcx_wrap(CTX *c, korb_value v)
 {
-    if (kcx_imm_p((KVALUE)v)) return (KVALUE)v;
+    if (kcx_imm_p((KVALUE)v)) return ((KVALUE)v & ~(KVALUE)4) == 0 ? (KVALUE)v ^ 4 : (KVALUE)v;
     struct korb_cext_vm *const x = kcx_vm(c->vm);
     korb_value *cell = kcx_map_get(x, v);
     if (!cell) {
@@ -210,7 +219,12 @@ kcx_wrap_perm(CTX *c, korb_value v)
 
 KVALUE rb_funcall_passing_block(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv);
 KVALUE rb_funcallv(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv);
-static inline korb_value kcx_unwrap(KVALUE h) { return kcx_imm_p(h) ? (korb_value)h : *(korb_value *)(uintptr_t)h; }
+static inline korb_value
+kcx_unwrap(KVALUE h)
+{
+    if (!kcx_imm_p(h)) return *(korb_value *)(uintptr_t)h;
+    return (h & ~(KVALUE)4) == 0 ? (korb_value)(h ^ 4) : (korb_value)h;   /* Qfalse 0 <-> false 4, Qnil 4 <-> nil 0 */
+}
 
 static void
 kcx_frame_pop(struct korb_cext_vm *x, struct korb_cext_frame *f)
@@ -334,7 +348,7 @@ kcx_frame_push(CTX *c, struct korb_cext_frame *f, korb_value *slots)
     f->serial = ++x->serial ? x->serial : ++x->serial;   /* 0 = "never seen" */
     f->hs = f->hs_inline; f->hn = 0; f->hcap = 16;
     f->block = NULL; f->def_env = NULL; f->captured_self = NULL;
-    f->entry = NULL; f->self = (KVALUE)KORB_NIL; f->kw_given = false;
+    f->entry = NULL; f->self = KQnil; f->kw_given = false;
     c->cext_top = f;
 }
 
@@ -513,6 +527,7 @@ KCX_API KVALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eArgError,
                rb_eSystemCallError, rb_eNoMemError, rb_eScriptError, rb_eSyntaxError,
                rb_eEncodingError, rb_eEncCompatError, rb_eInterrupt, rb_eSignal, rb_eFatal,
                rb_eSystemExit, rb_eLocalJumpError, rb_eMathDomainError, rb_eThreadError;
+KCX_API KVALUE rb_eIOTimeoutError, rb_mWaitReadable, rb_mWaitWritable;
 
 static korb_value
 kcx_const_path(CTX *c, const char *path)
@@ -547,7 +562,8 @@ kcx_init_globals(CTX *c)
         { &rb_eEncCompatError, "Encoding::CompatibilityError" }, { &rb_eInterrupt, "Interrupt" },
         { &rb_eSignal, "SignalException" }, { &rb_eFatal, "Exception" }, { &rb_eSystemExit, "SystemExit" },
         { &rb_eLocalJumpError, "LocalJumpError" }, { &rb_eMathDomainError, "Math::DomainError" },
-        { &rb_eThreadError, "ThreadError" },
+        { &rb_eThreadError, "ThreadError" }, { &rb_eIOTimeoutError, "IO::TimeoutError" },
+        { &rb_mWaitReadable, "IO::WaitReadable" }, { &rb_mWaitWritable, "IO::WaitWritable" },
     };
     for (size_t i = 0; i < sizeof g / sizeof g[0]; i++) {
         korb_value v = kcx_const_path(c, g[i].name);
@@ -656,7 +672,7 @@ KCX_API void rb_gc_mark_movable(KVALUE h) { rb_gc_mark(h); }
 KCX_API void rb_gc_mark_maybe(KVALUE h) { rb_gc_mark(h); }
 KCX_API KVALUE rb_gc_location(KVALUE h) { return h; }
 KCX_API void rb_gc(void) { CTX *const c = kcx_c(); (void)kcx_send_name(c, kcx_const_path(c, "GC"), "start", 0, NULL); }
-KCX_API KVALUE rb_gc_start(void) { rb_gc(); return (KVALUE)KORB_NIL; }
+KCX_API KVALUE rb_gc_start(void) { rb_gc(); return KQnil; }
 
 /* ---- symbols ---- */
 KCX_API KVALUE rb_intern2(const char *name, long len) { return (KVALUE)korb_intern(kcx_c()->vm, name, (size_t)len); }
@@ -896,7 +912,7 @@ rb_check_string_type(KVALUE h)
     CTX *const c = kcx_c();
     const korb_value v = K(h);
     if (KORB_STRING_P(v)) return h;
-    if (!korb_responds_to(c, v, kcx_id(c, "to_str"))) return (KVALUE)KORB_NIL;
+    if (!korb_responds_to(c, v, kcx_id(c, "to_str"))) return KQnil;
     return W(kcx_send_name(c, v, "to_str", 0, NULL));
 }
 KCX_API KVALUE
@@ -904,7 +920,7 @@ rb_str_to_str(KVALUE h)
 {
     CTX *const c = kcx_c();
     const KVALUE r = rb_check_string_type(h);
-    if (r != (KVALUE)KORB_NIL) return r;
+    if (r != KQnil) return r;
     char nm[192];
     const korb_value v = K(h);
     if (v == KORB_NIL) snprintf(nm, sizeof nm, "nil");
@@ -1082,7 +1098,7 @@ KCX_API __attribute__((noreturn)) void
 rb_syserr_fail(int err, const char *msg)
 {
     CTX *const c = kcx_c();
-    const KVALUE a[2] = { msg ? rb_str_new_cstr(msg) : (KVALUE)KORB_NIL, (KVALUE)LONG2FIX(err) };
+    const KVALUE a[2] = { msg ? rb_str_new_cstr(msg) : KQnil, (KVALUE)LONG2FIX(err) };
     rb_exc_raise(W(kcx_send_name(c, K(rb_eSystemCallError), "new", 2, a)));
 }
 KCX_API __attribute__((noreturn)) void rb_sys_fail(const char *msg) { rb_syserr_fail(errno, msg); }
@@ -1168,7 +1184,7 @@ rb_errinfo(void)
 {
     CTX *const c = kcx_c();
     struct korb_cext_vm *const x = kcx_vm(c->vm);
-    return x->errinfo == KORB_NIL ? (KVALUE)KORB_NIL : W(x->errinfo);
+    return x->errinfo == KORB_NIL ? KQnil : W(x->errinfo);
 }
 KCX_API void rb_set_errinfo(KVALUE err) { kcx_vm(kcx_c()->vm)->errinfo = K(err); }
 
@@ -1196,7 +1212,7 @@ rb_protect(KVALUE (*func)(KVALUE), KVALUE arg, int *state)
     kcx_vm(c->vm)->errinfo = j.r.value;
     kcx_vm(c->vm)->pending_state = j.r.state;
     if (state) *state = (int)j.r.state;
-    return (KVALUE)KORB_NIL;
+    return KQnil;
 }
 KCX_API __attribute__((noreturn)) void
 rb_jump_tag(int state)
@@ -1249,7 +1265,7 @@ kcx_rescue(KVALUE (*b_proc)(KVALUE), KVALUE data1, KVALUE (*r_proc)(KVALUE, KVAL
     struct korb_cext_vm *const x = kcx_vm(c->vm);
     const korb_value saved = x->errinfo;
     x->errinfo = K(exc);
-    const KVALUE r = r_proc ? r_proc(data2, exc) : (KVALUE)KORB_NIL;
+    const KVALUE r = r_proc ? r_proc(data2, exc) : KQnil;
     x->errinfo = saved;
     return r;
 }
@@ -1299,7 +1315,7 @@ rb_ary_entry(KVALUE ary, long idx)
     const korb_value v = K(ary);
     const KorbArray *const a = VAL2ARY(v);
     if (idx < 0) idx += (long)a->len;
-    if (idx < 0 || idx >= (long)a->len) return (KVALUE)KORB_NIL;
+    if (idx < 0 || idx >= (long)a->len) return KQnil;
     return W(korb_items_data(a->items)[idx]);
 }
 KCX_API void rb_ary_store(KVALUE ary, long idx, KVALUE val) { CTX *const c = kcx_c(); const KVALUE a[2] = { (KVALUE)LONG2FIX(idx), val }; (void)kcx_send_name(c, K(ary), "[]=", 2, a); }
@@ -1336,7 +1352,7 @@ KCX_API KVALUE rb_hash_new_capa(long capa) { CTX *const c = kcx_c(); return W(kc
 KCX_API KVALUE rb_hash_new(void) { return rb_hash_new_capa(0); }
 KCX_API KVALUE rb_hash_aset(KVALUE h, KVALUE k, KVALUE v) { CTX *const c = kcx_c(); const KVALUE a[2] = { k, v }; (void)kcx_send_name(c, K(h), "[]=", 2, a); return v; }
 KCX_API KVALUE rb_hash_lookup2(KVALUE h, KVALUE k, KVALUE def) { CTX *const c = kcx_c(); const KVALUE a[2] = { k, def }; return W(kcx_send_name(c, K(h), "fetch", 2, a)); }
-KCX_API KVALUE rb_hash_lookup(KVALUE h, KVALUE k) { return rb_hash_lookup2(h, k, (KVALUE)KORB_NIL); }
+KCX_API KVALUE rb_hash_lookup(KVALUE h, KVALUE k) { return rb_hash_lookup2(h, k, KQnil); }
 KCX_API size_t rb_hash_size_num(KVALUE h) { return (size_t)VAL2HASH(K(h))->len; }
 KCX_API void
 rb_hash_foreach(KVALUE h, int (*func)(KVALUE, KVALUE, KVALUE), KVALUE arg)
@@ -1358,7 +1374,7 @@ kcx_check_conv(KVALUE h, bool (*is)(korb_value), const char *conv)
     CTX *const c = kcx_c();
     const korb_value v = K(h);
     if (is(v)) return h;
-    if (!korb_responds_to(c, v, kcx_id(c, conv))) return (KVALUE)KORB_NIL;
+    if (!korb_responds_to(c, v, kcx_id(c, conv))) return KQnil;
     return W(kcx_send_name(c, v, conv, 0, NULL));
 }
 static bool kcx_is_ary(korb_value v) { return KORB_ARRAY_P(v); }
@@ -1373,7 +1389,7 @@ kcx_define_mod(KVALUE outer, const char *name, KVALUE super, bool is_module)
 {
     CTX *const c = kcx_c();
     const KVALUE sym = rb_id2sym(rb_intern(name));
-    const KVALUE q[2] = { sym, (KVALUE)KORB_FALSE };
+    const KVALUE q[2] = { sym, KQfalse };
     if (RTEST_K(W(kcx_send_name(c, K(outer), "const_defined?", 2, q)))) {
         const KVALUE k = W(kcx_send_name(c, K(outer), "const_get", 2, q));
         const korb_value kv = K(k);
@@ -1556,7 +1572,7 @@ KCX_API KVALUE
 rb_class_path(KVALUE k)
 {
     const KVALUE n = rb_class_name(k);
-    return n == (KVALUE)KORB_NIL ? rb_inspect(k) : n;
+    return n == KQnil ? rb_inspect(k) : n;
 }
 KCX_API const char *
 rb_class2name(KVALUE k)
@@ -1588,7 +1604,7 @@ rb_ivar_set(KVALUE o, KVALUE id, KVALUE v)
     (void)kcx_check(c, korb_ivar_set(c, s + 1, KORB_REF_AT(&s[0]), ID2SYM((uint32_t)id), K(v)));
     return v;
 }
-KCX_API KVALUE rb_ivar_defined(KVALUE o, KVALUE id) { CTX *const c = kcx_c(); return korb_ivar_defined(c, K(o), ID2SYM((uint32_t)id)) ? (KVALUE)KORB_TRUE : (KVALUE)KORB_FALSE; }
+KCX_API KVALUE rb_ivar_defined(KVALUE o, KVALUE id) { CTX *const c = kcx_c(); return korb_ivar_defined(c, K(o), ID2SYM((uint32_t)id)) ? KQtrue : KQfalse; }
 KCX_API KVALUE rb_iv_get(KVALUE o, const char *name) { return rb_ivar_get(o, rb_intern(name)); }
 KCX_API KVALUE rb_iv_set(KVALUE o, const char *name, KVALUE v) { return rb_ivar_set(o, rb_intern(name), v); }
 KCX_API KVALUE rb_attr_get(KVALUE o, KVALUE id) { return rb_ivar_get(o, id); }
@@ -1596,9 +1612,9 @@ KCX_API void rb_define_const(KVALUE m, const char *name, KVALUE v) { CTX *const 
 KCX_API void rb_define_global_const(const char *name, KVALUE v) { rb_define_const(rb_cObject, name, v); }
 KCX_API void rb_const_set(KVALUE m, KVALUE id, KVALUE v) { rb_define_const(m, rb_id2name(id), v); }
 KCX_API KVALUE rb_const_get(KVALUE m, KVALUE id) { CTX *const c = kcx_c(); const KVALUE s = rb_id2sym(id); return W(kcx_send_name(c, K(m), "const_get", 1, &s)); }
-KCX_API KVALUE rb_const_get_at(KVALUE m, KVALUE id) { CTX *const c = kcx_c(); const KVALUE a[2] = { rb_id2sym(id), (KVALUE)KORB_FALSE }; return W(kcx_send_name(c, K(m), "const_get", 2, a)); }
+KCX_API KVALUE rb_const_get_at(KVALUE m, KVALUE id) { CTX *const c = kcx_c(); const KVALUE a[2] = { rb_id2sym(id), KQfalse }; return W(kcx_send_name(c, K(m), "const_get", 2, a)); }
 KCX_API int rb_const_defined(KVALUE m, KVALUE id) { CTX *const c = kcx_c(); const KVALUE s = rb_id2sym(id); return RTEST_K(W(kcx_send_name(c, K(m), "const_defined?", 1, &s))); }
-KCX_API int rb_const_defined_at(KVALUE m, KVALUE id) { CTX *const c = kcx_c(); const KVALUE a[2] = { rb_id2sym(id), (KVALUE)KORB_FALSE }; return RTEST_K(W(kcx_send_name(c, K(m), "const_defined?", 2, a))); }
+KCX_API int rb_const_defined_at(KVALUE m, KVALUE id) { CTX *const c = kcx_c(); const KVALUE a[2] = { rb_id2sym(id), KQfalse }; return RTEST_K(W(kcx_send_name(c, K(m), "const_defined?", 2, a))); }
 KCX_API KVALUE
 rb_path_to_class(KVALUE path)
 {
@@ -1714,7 +1730,7 @@ KCX_API KVALUE
 rb_funcall_with_block(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv, KVALUE procval)
 {
     CTX *const c = kcx_c();
-    if (procval == (KVALUE)KORB_NIL) return rb_funcallv(recv, mid, argc, argv);
+    if (procval == KQnil) return rb_funcallv(recv, mid, argc, argv);
     const korb_value pv = K(procval);
     if (!KORB_PROC_P(pv)) rb_raise(rb_eTypeError, "wrong argument type %s (expected Proc)", rb_obj_classname(procval));
     korb_value *const s = kcx_slots(c);
@@ -1740,7 +1756,7 @@ kcx_cblock_call(KVALUE self, KVALUE cd, KVALUE args, KVALUE blk)
     const long n = rb_array_len(args);
     KVALUE av[n > 0 ? n : 1];
     for (long i = 0; i < n; i++) av[i] = rb_ary_entry(args, i);
-    return b->func(n > 0 ? av[0] : (KVALUE)KORB_NIL, b->data2, (int)n, av, blk);
+    return b->func(n > 0 ? av[0] : KQnil, b->data2, (int)n, av, blk);
 }
 static KVALUE
 kcx_cblock_proc(KVALUE (*func)(KVALUE, KVALUE, int, const KVALUE *, KVALUE), KVALUE data2, bool lambda)
@@ -1796,7 +1812,7 @@ rb_scan_args(int argc, const KVALUE *argv, const char *fmt, ...)
     else if (*p >= '0' && *p <= '9') trail = *p++ - '0';
     if (*p == ':') { kw = true; p++; }
     if (*p == '&') { blk = true; p++; }
-    KVALUE kwh = (KVALUE)KORB_NIL;
+    KVALUE kwh = KQnil;
     if (kw && argc > 0 && rb_keyword_given_p()) { kwh = argv[argc - 1]; argc--; }
     const int req = lead + trail;
     if (argc < req || (!rest && argc > req + opt)) rb_error_arity(argc, req, rest ? -1 : req + opt);
@@ -1804,7 +1820,7 @@ rb_scan_args(int argc, const KVALUE *argv, const char *fmt, ...)
     int i = 0;
     for (int k = 0; k < lead; k++, i++) { KVALUE *const v = va_arg(ap, KVALUE *); if (v) *v = argv[i]; }
     const int nopt = argc - req < opt ? argc - req : opt;
-    for (int k = 0; k < opt; k++) { KVALUE *const v = va_arg(ap, KVALUE *); if (v) *v = k < nopt ? argv[i] : (KVALUE)KORB_NIL; if (k < nopt) i++; }
+    for (int k = 0; k < opt; k++) { KVALUE *const v = va_arg(ap, KVALUE *); if (v) *v = k < nopt ? argv[i] : KQnil; if (k < nopt) i++; }
     if (rest) {
         KVALUE *const v = va_arg(ap, KVALUE *);
         const int nrest = argc - i - trail;
@@ -1813,7 +1829,7 @@ rb_scan_args(int argc, const KVALUE *argv, const char *fmt, ...)
     }
     for (int k = 0; k < trail; k++, i++) { KVALUE *const v = va_arg(ap, KVALUE *); if (v) *v = argv[i]; }
     if (kw) { KVALUE *const v = va_arg(ap, KVALUE *); if (v) *v = kwh; }
-    if (blk) { KVALUE *const v = va_arg(ap, KVALUE *); if (v) *v = rb_block_given_p() ? rb_block_proc() : (KVALUE)KORB_NIL; }
+    if (blk) { KVALUE *const v = va_arg(ap, KVALUE *); if (v) *v = rb_block_given_p() ? rb_block_proc() : KQnil; }
     va_end(ap);
     return argc;
 }
@@ -1825,22 +1841,22 @@ rb_get_kwargs(KVALUE hash, const KVALUE *table, int required, int optional, KVAL
     int found = 0;
     for (int i = 0; i < required + optional; i++) {
         const KVALUE key = rb_id2sym(table[i]);
-        const bool has = hash != (KVALUE)KORB_NIL && RTEST_K(rb_funcall(hash, rb_intern("key?"), 1, key));
+        const bool has = hash != KQnil && RTEST_K(rb_funcall(hash, rb_intern("key?"), 1, key));
         if (!has) {
             if (i < required) rb_raise(rb_eArgError, "missing keyword: %" "+l" "i" "\v", key);
-            if (values) values[i] = (KVALUE)KORB_UNDEF;
+            if (values) values[i] = KQundef;
             continue;
         }
         found++;
         if (values) { values[i] = rb_hash_aref(hash, key); (void)rb_hash_delete(hash, key); }
     }
-    if (!rest && hash != (KVALUE)KORB_NIL && rb_hash_size_num(hash) > 0 && values) {
+    if (!rest && hash != KQnil && rb_hash_size_num(hash) > 0 && values) {
         const KVALUE k = rb_ary_entry(rb_hash_keys(hash), 0);
         rb_raise(rb_eArgError, "unknown keyword: %" "+l" "i" "\v", k);
     }
     return found;
 }
-KCX_API KVALUE rb_extract_keywords(KVALUE *orighash) { const KVALUE h = *orighash; *orighash = (KVALUE)KORB_NIL; return h; }
+KCX_API KVALUE rb_extract_keywords(KVALUE *orighash) { const KVALUE h = *orighash; *orighash = KQnil; return h; }
 
 /* ---- T_DATA ---- */
 static KVALUE
@@ -1931,7 +1947,7 @@ rb_ext_resolve_symbol(const char *feature, const char *symbol)
     return NULL;
 }
 
-static KVALUE kcx_run_init(KVALUE fn) { ((void (*)(void))(uintptr_t)fn)(); return (KVALUE)KORB_NIL; }
+static KVALUE kcx_run_init(KVALUE fn) { ((void (*)(void))(uintptr_t)fn)(); return KQnil; }
 
 /* require of a C extension: dlopen it and run Init_<basename> under a frame. */
 static RESULT
@@ -1960,3 +1976,273 @@ korb_cext_load(CTX *c, korb_value *slots, const char *path)
     korb_cext_ctx = saved_ctx;
     return r;
 }
+
+/* ---- the openssl set: numbers, strings, encodings, IO, ractor-local storage ---- */
+KCX_API int
+rb_long2int(long n)
+{
+    if (n > INT32_MAX || n < INT32_MIN) rb_raise(rb_eRangeError, "integer %ld too %s to convert to 'int'", n, n < 0 ? "small" : "big");
+    return (int)n;
+}
+KCX_API KVALUE
+rb_str_to_inum(KVALUE str, int base, int badcheck)
+{
+    CTX *const c = kcx_c();
+    if (badcheck) { const KVALUE a[2] = { str, (KVALUE)LONG2FIX(base) }; return W(kcx_send_name(c, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), "Integer", 2, a)); }
+    const KVALUE b = (KVALUE)LONG2FIX(base);
+    return W(kcx_send_name(c, K(str), "to_i", 1, &b));
+}
+KCX_API KVALUE rb_cstr_to_inum(const char *str, int base, int badcheck) { return rb_str_to_inum(rb_str_new_cstr(str), base, badcheck); }
+
+/* |val| as little-endian bytes (malloc'd), its length, and the sign */
+static uint8_t *
+kcx_abs_bytes(KVALUE val, size_t *len, int *sign)
+{
+    CTX *const c = kcx_c();
+    const korb_value v = K(rb_Integer(val));
+    const korb_value zero = LONG2FIX(0);
+    *sign = FIXNUM_P(v) ? (FIX2LONG(v) > 0) - (FIX2LONG(v) < 0) : korb_int_cmp(v, zero);
+    const KVALUE sixteen = (KVALUE)LONG2FIX(16);
+    const korb_value hex = kcx_send_name(c, kcx_send_name(c, v, "abs", 0, NULL), "to_s", 1, &sixteen);
+    const char *const h = korb_strbuf_data(VAL2STR(hex)->buf);
+    const size_t hl = VAL2STR(hex)->len;
+    *len = (hl + 1) / 2;
+    uint8_t *const out = ruby_xcalloc(*len ? *len : 1, 1);
+    for (size_t i = 0; i < hl; i++) {                 /* hex digit i from the right */
+        const char ch = h[hl - 1 - i];
+        const unsigned d = (ch >= '0' && ch <= '9') ? (unsigned)(ch - '0') : (unsigned)((ch | 0x20) - 'a' + 10);
+        out[i / 2] |= (uint8_t)(d << (4 * (i % 2)));
+    }
+    while (*len > 0 && out[*len - 1] == 0) (*len)--;
+    return out;
+}
+KCX_API size_t
+rb_absint_size(KVALUE val, int *nlz_bits_ret)
+{
+    size_t n; int sign;
+    uint8_t *const b = kcx_abs_bytes(val, &n, &sign);
+    if (nlz_bits_ret) *nlz_bits_ret = n ? __builtin_clz((unsigned)b[n - 1]) - 24 : 0;
+    free(b);
+    return n;
+}
+KCX_API int
+rb_integer_pack(KVALUE val, void *words, size_t numwords, size_t wordsize, size_t nails, int flags)
+{
+    (void)nails;
+    size_t n; int sign;
+    uint8_t *const le = kcx_abs_bytes(val, &n, &sign);
+    const size_t total = numwords * wordsize;
+    uint8_t *const tmp = ruby_xcalloc(total ? total : 1, 1);   /* |val| mod 256^total, little-endian */
+    memcpy(tmp, le, n < total ? n : total);
+    if (sign < 0 && (flags & 0x80)) {                  /* INTEGER_PACK_2COMP */
+        unsigned carry = 1;
+        for (size_t i = 0; i < total; i++) { const unsigned x = (uint8_t)~tmp[i] + carry; tmp[i] = (uint8_t)x; carry = x >> 8; }
+    }
+    const bool msw = flags & 0x01, msb = flags & 0x10;   /* INTEGER_PACK_NATIVE is little-endian here */
+    uint8_t *const out = words;
+    for (size_t w = 0; w < numwords; w++)
+        for (size_t b = 0; b < wordsize; b++)
+            out[(msw ? numwords - 1 - w : w) * wordsize + (msb ? wordsize - 1 - b : b)] = tmp[w * wordsize + b];
+    const bool overflow = n > total;
+    free(tmp); free(le);
+    return overflow ? 2 * sign : sign;
+}
+KCX_API KVALUE
+rb_integer_unpack(const void *words, size_t numwords, size_t wordsize, size_t nails, int flags)
+{
+    (void)nails;
+    const uint8_t *const in = words;
+    const bool msw = flags & 0x01, msb = flags & 0x10;
+    const size_t total = numwords * wordsize;
+    char *const hex = ruby_xmalloc(total * 2 + 2);
+    size_t k = 0;
+    for (size_t i = total; i-- > 0; ) {                /* most significant byte first */
+        const size_t w = i / wordsize, b = i % wordsize;
+        const uint8_t x = in[(msw ? numwords - 1 - w : w) * wordsize + (msb ? wordsize - 1 - b : b)];
+        static const char digits[] = "0123456789abcdef";
+        hex[k++] = digits[x >> 4]; hex[k++] = digits[x & 15];
+    }
+    if (k == 0) hex[k++] = '0';
+    hex[k] = '\0';
+    KVALUE r = rb_str_to_inum(rb_str_new_cstr(hex), 16, 0);
+    free(hex);
+    if (flags & 0x200) r = rb_funcall(r, rb_intern("-@"), 0);   /* INTEGER_PACK_NEGATIVE */
+    return r;
+}
+
+KCX_API void rb_str_modify(KVALUE str) { rb_check_frozen(str); }
+KCX_API void
+rb_str_modify_expand(KVALUE str, long expand)
+{
+    rb_check_frozen(str);
+    CTX *const c = kcx_c();
+    korb_value *const s = kcx_slots(c);
+    s[0] = K(str);
+    (void)korb_str_ensure(c, s + 1, KORB_REF_AT(&s[0]), VAL2STR(s[0])->len + (uint32_t)expand);
+}
+KCX_API size_t rb_str_capacity(KVALUE str) { return VAL2STR(K(str))->capa; }
+KCX_API KVALUE rb_str_locktmp(KVALUE str) { return str; }
+KCX_API KVALUE rb_str_unlocktmp(KVALUE str) { return str; }
+KCX_API KVALUE rb_str_resurrect(KVALUE str) { return rb_str_dup(str); }
+KCX_API KVALUE rb_str_new_frozen(KVALUE str) { return RTEST_K(rb_obj_frozen_p(str)) ? str : rb_str_freeze(rb_str_dup(str)); }
+KCX_API KVALUE
+rb_str_drop_bytes(KVALUE str, long len)
+{
+    CTX *const c = kcx_c();
+    const KVALUE a[2] = { (KVALUE)LONG2FIX(len), (KVALUE)LONG2FIX(rb_string_len(str)) };
+    const KVALUE rest = W(kcx_send_name(c, K(str), "byteslice", 2, a));
+    (void)kcx_send_name(c, K(str), "replace", 1, &rest);
+    return str;
+}
+KCX_API KVALUE rb_String(KVALUE h) { CTX *const c = kcx_c(); return W(kcx_send_name(c, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), "String", 1, &h)); }
+static KVALUE
+kcx_convert_type(KVALUE val, int type, const char *tname, const char *method, bool raise)
+{
+    if (rb_type(val) == type) return val;
+    CTX *const c = kcx_c();
+    const korb_value v = K(val);
+    char nm[192]; kcx_type_name(c, v, nm, sizeof nm);
+    if (v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE || !korb_responds_to(c, v, kcx_id(c, method))) {
+        if (!raise) return KQnil;
+        static const char *const implicit[] = { "to_int", "to_ary", "to_str", "to_sym", "to_hash", "to_proc", "to_io", NULL };
+        bool imp = false;
+        for (int i = 0; implicit[i]; i++) imp |= strcmp(method, implicit[i]) == 0;
+        if (imp) rb_raise(rb_eTypeError, "no implicit conversion of %s into %s", nm, tname);
+        rb_raise(rb_eTypeError, "can't convert %s into %s", nm, tname);
+    }
+    const KVALUE r = W(kcx_send_name(c, v, method, 0, NULL));
+    if (rb_type(r) != type) {
+        if (!raise && r == KQnil) return r;
+        char rn[192]; kcx_type_name(c, K(r), rn, sizeof rn);
+        rb_raise(rb_eTypeError, "can't convert %s to %s (%s#%s gives %s)", nm, tname, nm, method, rn);
+    }
+    return r;
+}
+KCX_API KVALUE rb_convert_type(KVALUE val, int type, const char *tname, const char *method) { return kcx_convert_type(val, type, tname, method, true); }
+KCX_API KVALUE rb_check_convert_type(KVALUE val, int type, const char *tname, const char *method) { return kcx_convert_type(val, type, tname, method, false); }
+KCX_API uintptr_t
+rb_memhash(const void *ptr, long len)
+{
+    uint64_t h = 0xcbf29ce484222325ull;               /* FNV-1a */
+    for (long i = 0; i < len; i++) { h ^= ((const uint8_t *)ptr)[i]; h *= 0x100000001b3ull; }
+    return (uintptr_t)h;
+}
+
+/* encodings: an rb_encoding * is koruby's encoding index + 1 */
+struct rb_encoding_kx;
+#define KCX_ENC(idx) ((struct rb_encoding_kx *)(uintptr_t)((idx) + 1))
+KCX_API struct rb_encoding_kx *rb_utf8_encoding(void) { return KCX_ENC(KORB_ENC_UTF8); }
+KCX_API struct rb_encoding_kx *rb_ascii8bit_encoding(void) { return KCX_ENC(KORB_ENC_BINARY); }
+KCX_API struct rb_encoding_kx *rb_usascii_encoding(void) { return KCX_ENC(KORB_ENC_USASCII); }
+KCX_API int rb_utf8_encindex(void) { return KORB_ENC_UTF8; }
+KCX_API int rb_ascii8bit_encindex(void) { return KORB_ENC_BINARY; }
+KCX_API int rb_usascii_encindex(void) { return KORB_ENC_USASCII; }
+KCX_API KVALUE rb_enc_associate_index(KVALUE obj, int idx) { if (KORB_STRING_P(K(obj))) KORB_STR_ENC_SET(K(obj), (uint32_t)idx); return obj; }
+KCX_API KVALUE rb_enc_associate(KVALUE obj, struct rb_encoding_kx *enc) { return rb_enc_associate_index(obj, (int)((uintptr_t)enc - 1)); }
+KCX_API int rb_enc_get_index(KVALUE obj) { return KORB_STRING_P(K(obj)) ? (int)KORB_STR_ENC(K(obj)) : -1; }
+KCX_API KVALUE rb_enc_str_new(const char *ptr, long len, struct rb_encoding_kx *enc) { return rb_enc_associate(rb_str_new(ptr, len), enc); }
+KCX_API KVALUE rb_external_str_new(const char *ptr, long len) { return rb_utf8_str_new(ptr, len); }
+KCX_API KVALUE
+rb_enc_sprintf(struct rb_encoding_kx *enc, const char *fmt, ...)
+{
+    va_list ap; va_start(ap, fmt); const KVALUE r = rb_vsprintf(fmt, ap); va_end(ap);
+    return rb_enc_associate(r, enc);
+}
+
+KCX_API void rb_hash_set_ifnone(KVALUE h, KVALUE v) { CTX *const c = kcx_c(); (void)kcx_send_name(c, K(h), "default=", 1, &v); }
+KCX_API KVALUE rb_assoc_new(KVALUE a, KVALUE b) { const KVALUE v[2] = { a, b }; return rb_ary_new_from_values(2, v); }
+KCX_API KVALUE rb_ary_aref(int argc, const KVALUE *argv, KVALUE ary) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(ary), "[]", argc, argv)); }
+KCX_API void *rb_alloc_tmp_buffer(volatile KVALUE *store, long len) { void *const p = ruby_xmalloc((size_t)(len > 0 ? len : 1)); *store = (KVALUE)(uintptr_t)p; return p; }
+KCX_API void rb_free_tmp_buffer(volatile KVALUE *store) { free((void *)(uintptr_t)*store); *store = 0; }
+KCX_API void
+rb_attr(KVALUE klass, KVALUE id, int read, int write, int ex)
+{
+    (void)ex;
+    CTX *const c = kcx_c();
+    const KVALUE s = rb_id2sym(id);
+    if (read) (void)kcx_send_name(c, K(klass), "attr_reader", 1, &s);
+    if (write) (void)kcx_send_name(c, K(klass), "attr_writer", 1, &s);
+}
+KCX_API KVALUE
+rb_enumeratorize(KVALUE obj, KVALUE meth, int argc, const KVALUE *argv)
+{
+    KVALUE a[argc + 1];
+    a[0] = meth;
+    for (int i = 0; i < argc; i++) a[1 + i] = argv[i];
+    return rb_funcallv(obj, rb_intern("enum_for"), argc + 1, a);
+}
+KCX_API KVALUE rb_frame_this_func(void) { const struct korb_cext_frame *const f = kcx_c()->cext_top; return f && f->entry ? (KVALUE)f->entry->mid : 0; }
+KCX_API int rb_during_gc(void) { return korb_cext_gc_vm != NULL; }
+KCX_API KVALUE rb_ruby_verbose_get(void) { return rb_gv_get("$VERBOSE"); }
+KCX_API KVALUE rb_ruby_debug_get(void) { return rb_gv_get("$DEBUG"); }
+KCX_API KVALUE
+rb_syserr_new(int err, const char *msg)
+{
+    CTX *const c = kcx_c();
+    const KVALUE a[2] = { msg ? rb_str_new_cstr(msg) : KQnil, (KVALUE)LONG2FIX(err) };
+    return W(kcx_send_name(c, K(rb_eSystemCallError), "new", 2, a));
+}
+KCX_API __attribute__((noreturn)) void rb_eof_error(void) { rb_raise(rb_eEOFError, "end of file reached"); }
+
+/* IO: one rb_io_t per descriptor (libc, stable), refreshed by every GetOpenFile */
+struct rb_io { KVALUE self; int fd; int mode; };
+KCX_API struct rb_io *
+rb_io_get_fptr(KVALUE io)
+{
+    CTX *const c = kcx_c();
+    struct korb_cext_vm *const x = kcx_vm(c->vm);
+    const int fd = (int)rb_num2long(W(kcx_send_name(c, K(io), "fileno", 0, NULL)));
+    if ((size_t)fd >= x->io_n) {
+        const size_t nn = (size_t)fd + 16;
+        x->io = ruby_xrealloc(x->io, nn * sizeof *x->io);
+        memset(x->io + x->io_n, 0, (nn - x->io_n) * sizeof *x->io);
+        x->io_n = nn;
+    }
+    struct rb_io *const f = &x->io[fd];
+    f->fd = fd; f->self = KQnil; f->mode = 3;
+    return f;
+}
+KCX_API void rb_io_check_readable(struct rb_io *f) { (void)f; }
+KCX_API void rb_io_check_writable(struct rb_io *f) { (void)f; }
+KCX_API void rb_io_check_closed(struct rb_io *f) { (void)f; }
+KCX_API int rb_io_descriptor(KVALUE io) { return rb_io_get_fptr(io)->fd; }
+KCX_API KVALUE rb_io_timeout(KVALUE io) { (void)io; return KQnil; }
+KCX_API KVALUE
+rb_io_wait(KVALUE io, KVALUE events, KVALUE timeout)
+{
+    const long ev = rb_num2long(events);
+    const KVALUE one = rb_ary_new_from_args(1, io);
+    const KVALUE a[4] = { (ev & 1) ? one : KQnil, (ev & 4) ? one : KQnil, KQnil, timeout };
+    const KVALUE r = rb_funcallv(rb_cIO, rb_intern("select"), 4, a);
+    return r == KQnil ? KQfalse : events;
+}
+KCX_API KVALUE
+rb_io_maybe_wait(int error, KVALUE io, KVALUE events, KVALUE timeout)
+{
+    if (error == EAGAIN || error == EWOULDBLOCK || error == EINTR) return rb_io_wait(io, events, timeout);
+    rb_syserr_fail(error, NULL);
+}
+KCX_API int rb_thread_wait_fd(int fd) { struct pollfd p = { fd, POLLIN, 0 }; return poll(&p, 1, -1) > 0; }
+KCX_API int rb_thread_fd_writable(int fd) { struct pollfd p = { fd, POLLOUT, 0 }; return poll(&p, 1, -1) > 0; }
+
+/* ractor-local storage: one ractor, so a key is just a slot */
+struct rb_ractor_local_key_struct { const void *type; void *ptr; KVALUE val; };
+KCX_API struct rb_ractor_local_key_struct *
+rb_ractor_local_storage_ptr_newkey(const void *type)
+{
+    struct rb_ractor_local_key_struct *const k = ruby_xcalloc(1, sizeof *k);
+    k->type = type; k->val = KQnil;
+    return k;
+}
+KCX_API void *rb_ractor_local_storage_ptr(struct rb_ractor_local_key_struct *k) { return k->ptr; }
+KCX_API void rb_ractor_local_storage_ptr_set(struct rb_ractor_local_key_struct *k, void *p) { k->ptr = p; }
+KCX_API struct rb_ractor_local_key_struct *
+rb_ractor_local_storage_value_newkey(void)
+{
+    struct rb_ractor_local_key_struct *const k = rb_ractor_local_storage_ptr_newkey(NULL);
+    rb_gc_register_address(&k->val);
+    return k;
+}
+KCX_API KVALUE rb_ractor_local_storage_value(struct rb_ractor_local_key_struct *k) { return k->val; }
+KCX_API void rb_ractor_local_storage_value_set(struct rb_ractor_local_key_struct *k, KVALUE v) { k->val = v; }
+
