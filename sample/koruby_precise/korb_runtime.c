@@ -780,8 +780,11 @@ static RESULT korb_m_cpx_conj(CTX *c, korb_value *slots, korb_ref self, korb_sli
  * Integer / Rational stays exact), a Float only when the zero part is one. */
 static RESULT korb_cpx_abs_v(CTX *c, korb_value *slots, const korb_value cv) {
     double re, im;
-    if (!korb_num_to_d(VAL2CPX(cv)->re, &re) || !korb_num_to_d(VAL2CPX(cv)->im, &im))
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#abs with non-real components");
+    if (!korb_num_to_d(VAL2CPX(cv)->re, &re) || !korb_num_to_d(VAL2CPX(cv)->im, &im)) {   /* a BigDecimal part: */
+        slots[1] = VAL2CPX(cv)->re; slots[2] = VAL2CPX(cv)->im;                            /* rb_math_hypot */
+        slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Math", 4));
+        return korb_send(c, slots + 3, korb_intern(c->vm, "hypot", 5), 0, 2);
+    }
     const bool re_f = KORB_FLOAT_P(VAL2CPX(cv)->re), im_f = KORB_FLOAT_P(VAL2CPX(cv)->im);
     if (re == 0.0 || im == 0.0) {
         const korb_value x = re == 0.0 ? VAL2CPX(cv)->im : VAL2CPX(cv)->re;
@@ -1016,6 +1019,17 @@ RESULT korb_cpx_arith(CTX *c, korb_value *slots, korb_value l, korb_value r, int
             if (h) return cr;
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Complex", korb_coerce_name(c, KORB_COMPLEX_P(l) ? r : l));
+    }
+    if (UNLIKELY(KORB_OBJECT_P(lre) || KORB_OBJECT_P(lim) || KORB_OBJECT_P(rre) || KORB_OBJECT_P(rim))) {
+        static const char *const opn[] = { "+", "-", "*", "/" };   /* a part is a BigDecimal: prelude Complex#__arith */
+        if (KORB_INTEGER_P(l) && (op == 0 || op == 2)) { slots[0] = r; slots[2] = l; }   /* int + z is z + int (CRuby fix_plus) */
+        else {
+            slots[1] = r;
+            slots[0] = KORB_COMPLEX_P(l) ? l : UNWRAP(korb_cpx_new(c, slots + 2, lre, lim));
+            slots[2] = slots[1];
+        }
+        slots[1] = ID2SYM(korb_intern(c->vm, opn[op], 1));
+        return korb_send(c, slots + 3, korb_intern(c->vm, "__arith", 7), 0, 2);
     }
     slots[0] = lre; slots[1] = lim; slots[2] = rre; slots[3] = rim;   /* root inputs */
     korb_value res_re, res_im;
@@ -17365,6 +17379,21 @@ static RESULT korb_inspect_take_exc(CTX *c) {
     return RESULT_RAISE_(e);
 }
 
+/* A Complex with a part of some other Numeric (BigDecimal): Complex's own #to_s /
+ * #inspect (prelude), which formats that part through its methods.  On false the
+ * caller re-reads v from slots[0] (the send can GC). */
+#define KORB_CPX_FOREIGN_P(v) (KORB_OBJECT_P(VAL2CPX(v)->re) || KORB_OBJECT_P(VAL2CPX(v)->im))
+static bool
+korb_fprint_cpx_dispatch(CTX *c, korb_value *slots, FILE *fp, korb_value v, bool insp)
+{
+    slots[0] = v;
+    const RESULT r = korb_send_impl(c, slots + 1, insp ? korb_intern(c->vm, "inspect", 7) : korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+    if (r.state != KORB_NORMAL) { korb_inspect_park_exc(c, r); return false; }
+    if (!KORB_STRING_P(r.value)) return false;
+    korb_fwrite_inspected(c, fp, r.value);
+    return true;
+}
+
 /* Render a plain user object via its (possibly overridden) #inspect.  Returns
  * true if it dispatched and wrote the result; false if the caller should use the
  * default "#<Class>" form.  `slots` must be a rooted region (>= 4 slots); NULL
@@ -17638,6 +17667,10 @@ korb_fprint_to_s_s(CTX *c, korb_value *slots, FILE *fp, korb_value v)
         korb_fprint_to_s(c, fp, VAL2RAT(v)->num); fputc('/', fp); korb_fprint_to_s(c, fp, VAL2RAT(v)->den);
         return;
       case KORB_OBJ_COMPLEX: {                          /* to_s: re±|im|i */
+        if (slots && KORB_CPX_FOREIGN_P(v)) {
+            if (korb_fprint_cpx_dispatch(c, slots, fp, v, false)) return;
+            v = slots[0];
+        }
         const KorbComplex *x = VAL2CPX(v);
         korb_fprint_to_s(c, fp, x->re);
         char *ib = NULL; size_t isz = 0; FILE *ims = open_memstream(&ib, &isz);
@@ -17871,6 +17904,10 @@ korb_fprint_inspect_s(CTX *c, korb_value *slots, FILE *fp, korb_value v)
         return;
       }
       case KORB_OBJ_COMPLEX: {                          /* inspect: (re±|im|i); compound (Rational) parts get parens + *i */
+        if (slots && KORB_CPX_FOREIGN_P(v)) {
+            if (korb_fprint_cpx_dispatch(c, slots, fp, v, true)) return;
+            v = slots[0];
+        }
         const KorbComplex *x = VAL2CPX(v);
         const bool re_comp = KORB_RATIONAL_P(x->re) || KORB_COMPLEX_P(x->re);
         const bool im_comp = KORB_RATIONAL_P(x->im) || KORB_COMPLEX_P(x->im);
@@ -17992,9 +18029,11 @@ korb_puts_one_to(CTX *c, korb_value *slots, korb_value v, struct KorbIORep *rep)
     char *buf = NULL; size_t sz = 0;
     FILE *const ms = open_memstream(&buf, &sz);
     if (!ms) return RESULT_OK(KORB_NIL);
-    korb_fprint_to_s(c, ms, v);
+    korb_fprint_to_s_s(c, slots, ms, v);                /* slots: a Complex with a BigDecimal part dispatches */
     fputc('\n', ms);
     fclose(ms);
+    { const RESULT pe = korb_inspect_take_exc(c);        /* that #to_s raised: propagate it */
+      if (UNLIKELY(pe.state != KORB_NORMAL)) { free(buf); return pe; } }
     const RESULT wr = korb_io_wr_checked(c, slots, rep, buf, sz);
     free(buf);
     return wr;

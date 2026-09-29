@@ -951,7 +951,23 @@ static RESULT korb_m_range_reverse_each(CTX *c, korb_value *slots, korb_ref self
 /* Range#each_slice(n) — consecutive n-element slices over the integer range.
  * block → yield each slice (returns self); no block → Enumerator over the slices.
  * Slices are pre-built into a rooted array so yielding is GC-safe. */
+/* An endless range cannot become an array: Enumerable's own version (the prelude's,
+ * kept as __enum_<name>) walks it with #each and stops where the block does, as CRuby's. */
+static inline bool korb_range_endless_p(const KorbRange *r) { return r->rend == KORB_NIL && r->rbegin != KORB_NIL; }
+static RESULT
+korb_range_via_enum(CTX *c, korb_value *slots, korb_ref self, const char *name, korb_slice a,
+                    NODE *block, korb_value *def_env, korb_value *cself)
+{
+    char nm[64];
+    const int n = snprintf(nm, sizeof nm, "__enum_%s", name);
+    const uint32_t argc = KORB_SLICE_LEN(a);
+    slots[0] = KORB_REF_GET(self);
+    for (uint32_t i = 0; i < argc; i++) slots[1 + i] = KORB_SLICE_GET(a, i);
+    return korb_send_blk(c, slots + 1 + argc, korb_intern(c->vm, nm, (size_t)n), 0, argc, block, def_env, cself, 0, KORB_UNDEF);
+}
+
 static RESULT korb_m_range_each_slice(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
+    if (UNLIKELY(korb_range_endless_p(SELF_RANGE))) return korb_range_via_enum(c, slots, self, "each_slice", a, block, def_env, cself);
     korb_sword_t n;
     if (UNLIKELY(KORB_SLICE_LEN(a) < 1 || !korb_to_index(KORB_SLICE_GET(a, 0), &n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
@@ -1040,8 +1056,10 @@ static RESULT korb_m_range_bsearch(CTX *c, korb_value *slots, korb_ref self, kor
         return found ? korb_float_new(c, slots, ans) : RESULT_OK(KORB_NIL);
     }
     /* ---- Integer range ---- */
-    if (!(FIXNUM_P(bv) || bv == KORB_NIL) || !(FIXNUM_P(ev) || ev == KORB_NIL))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(bv));
+    if (!(FIXNUM_P(bv) || bv == KORB_NIL) || !(FIXNUM_P(ev) || ev == KORB_NIL)) {   /* a Bignum bound: Integer arithmetic in Ruby */
+        slots[0] = KORB_REF_GET(self);
+        return korb_send_blk(c, slots + 1, korb_intern(c->vm, "__bsearch_int", 13), 0, 0, block, def_env, cself, 0, KORB_UNDEF);
+    }
     korb_sword_t lo, hi; bool have_lo = FIXNUM_P(bv), have_hi = FIXNUM_P(ev);
     lo = have_lo ? FIX2LONG(bv) : 0;
     if (have_hi) { hi = excl ? FIX2LONG(ev) : FIX2LONG(ev) + 1; }
@@ -1179,6 +1197,7 @@ static RESULT korb_m_range_slice_when(CTX *c, korb_value *slots, korb_ref self, 
     return korb_m_ary_slice_when(c, slots + 1, KORB_REF_AT(&slots[0]), a, block, def_env, cself);
 }
 static RESULT korb_m_range_each_cons(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
+    if (UNLIKELY(korb_range_endless_p(SELF_RANGE))) return korb_range_via_enum(c, slots, self, "each_cons", a, block, def_env, cself);
     slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, KORB_SLICE_MAKE(NULL, 0)));
     RESULT r = korb_m_ary_each_cons(c, slots + 1, KORB_REF_AT(&slots[0]), a, block, def_env, cself);
     if (block != NULL && r.state == KORB_NORMAL) return RESULT_OK(KORB_REF_GET(self));   /* block form → self (the range) */
@@ -1285,6 +1304,7 @@ static RESULT korb_m_range_drop_while(CTX *c, korb_value *slots, korb_ref self, 
     return RESULT_OK(KORB_REF_GET(dst));
 }
 static RESULT korb_m_range_take_while(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
+    if (UNLIKELY(korb_range_endless_p(SELF_RANGE))) return korb_range_via_enum(c, slots, self, "take_while", a, block, def_env, cself);
     (void)a;
     if (UNLIKELY(block == NULL)) { slots[0] = KORB_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "take_while", 10)); return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1); }
     korb_sword_t lo, hi;
@@ -1372,6 +1392,7 @@ static RESULT korb_m_range_filter_map(CTX *c, korb_value *slots, korb_ref self, 
 }
 static RESULT korb_m_ary_each_wi(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself);
 static RESULT korb_m_range_each_wi(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
+    if (UNLIKELY(korb_range_endless_p(SELF_RANGE))) return korb_range_via_enum(c, slots, self, "each_with_index", a, block, def_env, cself);
     (void)a;
     korb_sword_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
@@ -1426,6 +1447,7 @@ static RESULT korb_m_range_zip(CTX *c, korb_value *slots, korb_ref self, korb_sl
 }
 static RESULT korb_m_ary_one(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself);
 static RESULT korb_m_range_one(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
+    if (UNLIKELY(korb_range_endless_p(SELF_RANGE))) return korb_range_via_enum(c, slots, self, "one?", a, block, def_env, cself);
     if (UNLIKELY(KORB_SLICE_LEN(a) > 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", KORB_SLICE_LEN(a));
     bool has_pat = KORB_SLICE_LEN(a) >= 1;
@@ -1451,6 +1473,7 @@ static RESULT korb_m_range_one(CTX *c, korb_value *slots, korb_ref self, korb_sl
 }
 static RESULT korb_m_ary_find_index(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself);
 static RESULT korb_m_range_find_index(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
+    if (UNLIKELY(korb_range_endless_p(SELF_RANGE))) return korb_range_via_enum(c, slots, self, "find_index", a, block, def_env, cself);
     if (KORB_SLICE_LEN(a) == 0 && block == NULL) return korb_range_enum_nb(c, slots, self, "find_index");
     korb_sword_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
@@ -1532,6 +1555,7 @@ static RESULT korb_m_range_select(CTX *c, korb_value *slots, korb_ref self, korb
 static RESULT korb_m_range_reject(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *captured_self) { (void)a; return korb_range_filter(c, slots, self, block, def_env, captured_self, false); }
 
 static RESULT korb_m_range_find(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *captured_self) {
+    if (UNLIKELY(korb_range_endless_p(SELF_RANGE))) return korb_range_via_enum(c, slots, self, "find", a, block, def_env, captured_self);
     if (UNLIKELY(block == NULL)) {
         slots[0] = KORB_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "find", 4));
         if (KORB_SLICE_LEN(a) >= 1) { slots[2] = KORB_SLICE_GET(a, 0); return korb_send(c, slots + 3, korb_intern(c->vm, "__to_enum_sized", 15), 0, 2); }
@@ -1556,6 +1580,7 @@ static RESULT korb_m_ary_any(CTX *c, korb_value *slots, korb_ref self, korb_slic
 static RESULT korb_m_ary_all(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself);
 static RESULT korb_m_ary_none(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself);
 static RESULT korb_range_quant(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *captured_self, int mode) {
+    if (UNLIKELY(korb_range_endless_p(SELF_RANGE))) return korb_range_via_enum(c, slots, self, mode == 0 ? "any?" : mode == 1 ? "all?" : "none?", a, block, def_env, captured_self);
     if (UNLIKELY(KORB_SLICE_LEN(a) > 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", KORB_SLICE_LEN(a));
     bool has_pat = KORB_SLICE_LEN(a) >= 1;

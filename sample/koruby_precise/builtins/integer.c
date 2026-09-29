@@ -516,6 +516,11 @@ static RESULT korb_m_int_to_f(CTX *c, korb_value *slots, korb_ref self, korb_sli
     (void)a; double x; (void)korb_num_to_d(KORB_REF_GET(self), &x); return korb_float_new(c, slots, x);
 }
 static RESULT korb_m_int_quo(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    if (UNLIKELY(KORB_OBJECT_P(KORB_SLICE_GET(a, 0)))) {  /* CRuby's rb_numeric_quo: Rational(self) / other */
+        slots[1] = KORB_SLICE_GET(a, 0);
+        slots[0] = UNWRAP(korb_rat_new_v(c, slots + 2, KORB_REF_GET(self), LONG2FIX(1)));
+        return korb_send(c, slots + 2, korb_intern(c->vm, "/", 1), 0, 1);
+    }
     return korb_rat_arith(c, slots, KORB_REF_GET(self), KORB_SLICE_GET(a, 0), 3);   /* exact division → Rational/Float */
 }
 static RESULT korb_m_int_to_r(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {

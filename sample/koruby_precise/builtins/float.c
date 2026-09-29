@@ -246,7 +246,10 @@ static RESULT korb_m_flt_fdiv(CTX *c, korb_value *slots, korb_ref self, korb_sli
         return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
     }
     double o; if (UNLIKELY(!korb_num_to_d(arg, &o))) {
-        if (KORB_OBJECT_P(arg)) { bool h; RESULT cr = korb_try_coerce(c, slots, KORB_REF_GET(self), &arg, "fdiv", 0, &h); if (h) return cr; }
+        if (KORB_OBJECT_P(arg)) {                        /* CRuby's flo_quo is `self / other` (coerce there) */
+            slots[0] = KORB_REF_GET(self); slots[1] = arg;
+            return korb_send(c, slots + 2, korb_intern(c->vm, "/", 1), 0, 1);
+        }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, arg));
     }
     return korb_float_new(c, slots, SELF_FLT / o);
@@ -296,9 +299,11 @@ static RESULT korb_m_flt_divmod(CTX *c, korb_value *slots, korb_ref self, korb_s
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, ov));
     }
     if (UNLIKELY(o == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
-    double s = SELF_FLT, q = floor(s / o);
-    double r = fmod(s, o);                                /* fmod keeps -0.0 sign, matching CRuby */
-    if (r != 0.0 && ((r < 0) != (o < 0))) r += o;        /* floored remainder (sign of divisor) */
+    /* CRuby's flodivmod: -4.2.divmod(Float::INFINITY) is [-1, Infinity] */
+    const double s = SELF_FLT;
+    double r = (s == 0.0 || (isinf(o) && !isinf(s))) ? s : fmod(s, o);   /* fmod keeps -0.0's sign */
+    double q = (isinf(s) && !isinf(o)) ? s : round((s - r) / o);
+    if (o * r < 0) { r += o; q -= 1.0; }
     RESULT qr = korb_flt_toint(c, slots, q, 3);          /* quotient → Integer */
     if (UNLIKELY(qr.state != KORB_NORMAL)) return qr;
     slots[0] = qr.value;

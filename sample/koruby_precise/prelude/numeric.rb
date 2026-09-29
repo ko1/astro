@@ -224,6 +224,33 @@ class Complex
     s += "*" unless d && d >= 48 && d <= 57
     s + "i"
   end
+  # Complex#+ - * / when a part is some other Numeric, a BigDecimal (korb_cpx_arith):
+  # CRuby's arithmetic through each part's own #+ / #* / #quo (f_divide for /)
+  private def __arith(op, other)
+    a, b = real, imaginary
+    cpx = other.is_a?(Complex)
+    case op
+    when :+ then cpx ? Complex.rect(a + other.real, b + other.imaginary) : Complex.rect(a + other, b)
+    when :- then cpx ? Complex.rect(a - other.real, b - other.imaginary) : Complex.rect(a - other, b)
+    when :* then cpx ? Complex.rect(a * other.real - b * other.imaginary, a * other.imaginary + b * other.real) : Complex.rect(a * other, b * other)
+    else __divide(other)
+    end
+  end
+  private def __divide(other)
+    a, b = real, imaginary
+    return Complex.rect(__canon(a.quo(other)), __canon(b.quo(other))) unless other.is_a?(Complex)
+    c, d = other.real, other.imaginary
+    if c.abs > d.abs
+      r = d.quo(c); n = c * (1 + r * r)
+      x = (a + b * r).quo(n); y = (b - a * r).quo(n)
+    else
+      r = c.quo(d); n = d * (1 + r * r)
+      x = (a * r + b).quo(n); y = (b * r - a).quo(n)
+    end
+    return Complex.rect(x, y) if [a, b, c, d].any?(Float)
+    Complex.rect(__canon(x), __canon(y))
+  end
+  private def __canon(x) = x.is_a?(Rational) && x.denominator == 1 ? x.numerator : x
   def to_s; __usascii(__format(false)); end
   def inspect; __usascii("(" + __format(true) + ")"); end
   private def __usascii(s) = s.ascii_only? ? s.force_encoding(Encoding::US_ASCII) : s   # CRuby's encoding
@@ -234,6 +261,39 @@ class Complex
 end
 
 class Range
+  # Range#bsearch with a Bignum bound (builtins/range.c searches fixnum ranges itself)
+  def __bsearch_int
+    lo, hi = self.begin, self.end
+    hi -= 1 if hi && exclude_end?
+    if hi.nil?
+      d = 1
+      d *= 2 until __bsearch_left?(yield(lo + d))
+      hi = lo + d
+    elsif lo.nil?
+      d = 1
+      d *= 2 while __bsearch_left?(yield(hi - d))
+      lo = hi - d
+    end
+    found = nil
+    while lo <= hi
+      mid = lo + (hi - lo) / 2
+      v = yield mid
+      if v == true then found = mid; hi = mid - 1
+      elsif v == false || v.nil? then lo = mid + 1
+      elsif !v.is_a?(Numeric) then raise TypeError, "wrong argument type #{v.class} (must be numeric, true, false or nil)"
+      elsif v == 0 then return mid
+      elsif v < 0 then hi = mid - 1
+      else lo = mid + 1
+      end
+    end
+    found
+  end
+  def __bsearch_left?(v)
+    return v if v == true || v == false || v.nil?
+    raise TypeError, "wrong argument type #{v.class} (must be numeric, true, false or nil)" unless v.is_a?(Numeric)
+    v <= 0
+  end
+  private :__bsearch_int, :__bsearch_left?
   # Range#lazy over a non-Integer begin (builtins/enumerator.c): a generator, so an endless range streams
   def __lazy_each = Enumerator.new { |y| each { |x| y << x } }.lazy
   # Ruby 4.1: a new Range with both bounds clamped to min/max (or to another

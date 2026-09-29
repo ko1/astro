@@ -260,6 +260,11 @@ module Enumerable
   end
   def compact; r = []; __each_el { |x| r << x unless x.nil? }; r; end
   private :__each_el, :__as_int   # koruby internals, not part of the public API
+  # Range's builtins turn to these for an endless range, which they cannot make an array of
+  %i[find find_index each_slice each_cons each_with_index take_while any? all? none? one?].each do |m|
+    alias_method :"__enum_#{m}", m
+    private :"__enum_#{m}"
+  end
 end
 
 # MatchData pattern-matching support.
