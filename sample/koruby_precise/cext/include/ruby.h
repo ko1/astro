@@ -77,6 +77,23 @@ __attribute__((weak, used, visibility("default"))) const int koruby_cext_abi_1 =
 #define HAVE_SYS_TYPES_H 1
 #define HAVE_UNISTD_H 1
 #define HAVE_RUBY_RACTOR_H 1
+/* CRuby's ruby.h says which ruby/ headers exist; yajl picks its encoding code by
+ * HAVE_RUBY_ENCODING_H.  fiber_scheduler / memory_view / thread_native / atomic are left
+ * out: koruby has not their APIs, and an extension guarding on them falls back. */
+#define HAVE_RUBY_DEBUG_H       1
+#define HAVE_RUBY_DEFINES_H     1
+#define HAVE_RUBY_ENCODING_H    1
+#define HAVE_RUBY_INTERN_H      1
+#define HAVE_RUBY_IO_H          1
+#define HAVE_RUBY_MISSING_H     1
+#define HAVE_RUBY_ONIGMO_H      1
+#define HAVE_RUBY_ONIGURUMA_H   1
+#define HAVE_RUBY_RANDOM_H      1
+#define HAVE_RUBY_RE_H          1
+#define HAVE_RUBY_REGEX_H       1
+#define HAVE_RUBY_RUBY_H        1
+#define HAVE_RUBY_ST_H          1
+#define HAVE_RUBY_THREAD_H      1
 
 typedef uintptr_t VALUE;
 typedef intptr_t  SIGNED_VALUE;
@@ -160,6 +177,7 @@ typedef uintptr_t st_index_t;
 #define RB_FIX2LONG(v)  ((long)((intptr_t)(v) >> 1))
 #define FIX2LONG(v)     RB_FIX2LONG(v)
 #define FIX2INT(v)      ((int)rb_fix2int(v))
+#define FIX2UINT(v)     ((unsigned int)FIX2LONG(v))
 #define FIX2ULONG(v)    ((unsigned long)FIX2LONG(v))
 #define POSFIXABLE(f)   ((f) < RUBY_FIXNUM_MAX + 1)
 #define NEGFIXABLE(f)   ((f) >= RUBY_FIXNUM_MIN)
@@ -371,6 +389,7 @@ VALUE  rb_Float(VALUE v);
 #define NUM2INT(v)   ((int)rb_num2int(v))
 #define NUM2UINT(v)  ((unsigned int)rb_num2uint(v))
 #define NUM2LL(v)    rb_num2ll(v)
+#define RB_NUM2LL(v) rb_num2ll(v)
 #define NUM2ULL(v)   rb_num2ull(v)
 #define NUM2SIZET(v) ((size_t)rb_num2ulong(v))
 #define NUM2SSIZET(v) ((ssize_t)rb_num2long(v))
@@ -470,16 +489,19 @@ VALUE rb_str_locktmp(VALUE str);
 VALUE rb_str_unlocktmp(VALUE str);
 VALUE rb_str_resurrect(VALUE str);
 VALUE rb_str_new_frozen(VALUE str);
+#define rb_str_dup_frozen rb_str_new_frozen
 VALUE rb_str_drop_bytes(VALUE str, long len);
 VALUE rb_String(VALUE obj);
 VALUE rb_convert_type(VALUE val, int type, const char *tname, const char *method);
 VALUE rb_check_convert_type(VALUE val, int type, const char *tname, const char *method);
 st_index_t rb_memhash(const void *ptr, long len);
 #define rb_str_new4 rb_str_new_frozen
+#define rb_str_dup_frozen rb_str_new_frozen
 #define rb_str_new5 rb_str_new
 #define RSTRING(s) (s)
 /* encodings: an rb_encoding is an opaque handle (koruby's encoding index + 1) */
 typedef struct rb_encoding_kx rb_encoding;
+VALUE rb_check_symbol_cstr(const char *name, long len, rb_encoding *enc);
 rb_encoding *rb_utf8_encoding(void);
 rb_encoding *rb_ascii8bit_encoding(void);
 rb_encoding *rb_usascii_encoding(void);
@@ -549,6 +571,8 @@ VALUE rb_interned_str(const char *ptr, long len);
 VALUE rb_interned_str_cstr(const char *ptr);
 #define rb_enc_str_new_static(ptr, len, enc) rb_enc_str_new((ptr), (len), (enc))
 #define rb_enc_str_new_literal(s, enc) rb_enc_str_new((s), (long)(sizeof(s) - 1), (enc))
+#define rb_utf8_str_new_literal(s)     rb_utf8_str_new((s), (long)(sizeof(s) - 1))
+#define rb_utf8_str_new_lit(s)         rb_utf8_str_new_literal(s)
 VALUE rb_enc_str_buf_cat(VALUE str, const char *ptr, long len, rb_encoding *enc);
 VALUE rb_external_str_new_with_enc(const char *ptr, long len, rb_encoding *enc);
 int   rb_enc_str_asciionly_p(VALUE str);
@@ -592,6 +616,7 @@ VALUE rb_ary_new_capa(long capa);
 VALUE rb_ary_new_from_args(long n, ...);
 VALUE rb_ary_new_from_values(long n, const VALUE *elts);
 VALUE rb_ary_push(VALUE ary, VALUE item);
+VALUE rb_ary_cat(VALUE ary, const VALUE *items, long n);
 VALUE rb_ary_pop(VALUE ary);
 VALUE rb_ary_shift(VALUE ary);
 VALUE rb_ary_unshift(VALUE ary, VALUE item);
@@ -611,6 +636,11 @@ long  rb_array_len(VALUE ary);
 #define RARRAY_LEN(a)      rb_array_len(a)
 #define RARRAY_LENINT(a)   ((int)rb_array_len(a))
 #define RARRAY_AREF(a, i)  rb_ary_entry((a), (i))
+/* a snapshot of the elements' handles, valid until the current extension call returns;
+ * writes through RARRAY_PTR do not reach the Array (koruby: VALUE is a handle) */
+const VALUE *rb_array_const_ptr(VALUE ary);
+#define RARRAY_CONST_PTR(a) rb_array_const_ptr(a)
+#define RARRAY_PTR(a)       ((VALUE *)rb_array_const_ptr(a))
 #define rb_ary_aref1(a, i) rb_ary_entry((a), NUM2LONG(i))
 VALUE rb_hash_new(void);
 VALUE rb_hash_new_capa(long capa);
@@ -830,6 +860,17 @@ void  rb_define_variable(const char *name, VALUE *var);
 /* ---- calls / blocks ----------------------------------------------------- */
 VALUE rb_funcall(VALUE recv, ID mid, int n, ...);
 VALUE rb_funcallv(VALUE recv, ID mid, int argc, const VALUE *argv);
+VALUE rb_check_funcall(VALUE recv, ID mid, int argc, const VALUE *argv);
+VALUE rb_time_new(time_t sec, long usec);
+VALUE rb_time_nano_new(time_t sec, long nsec);
+VALUE rb_time_timespec_new(const struct timespec *ts, int offset);
+VALUE rb_time_num_new(VALUE timev, VALUE off);
+struct timespec rb_time_timespec(VALUE time);
+struct timeval rb_time_timeval(VALUE time);
+struct timeval rb_time_interval(VALUE num);
+VALUE rb_time_utc_offset(VALUE time);
+VALUE rb_obj_init_copy(VALUE obj, VALUE orig);
+#define OBJ_INIT_COPY(obj, orig) ((obj) != (orig) && (rb_obj_init_copy((obj), (orig)), 1))
 VALUE rb_funcallv_kw(VALUE recv, ID mid, int argc, const VALUE *argv, int kw_splat);
 VALUE rb_funcallv_public(VALUE recv, ID mid, int argc, const VALUE *argv);
 VALUE rb_funcall_passing_block(VALUE recv, ID mid, int argc, const VALUE *argv);
@@ -1032,6 +1073,12 @@ long  rb_big2long(VALUE x);
 unsigned long rb_big2ulong(VALUE x);
 double rb_big2dbl(VALUE x);
 VALUE rb_io_write(VALUE io, VALUE str);
+VALUE rb_io_addstr(VALUE io, VALUE str);
+VALUE rb_io_puts(int argc, const VALUE *argv, VALUE out);
+VALUE rb_io_print(int argc, const VALUE *argv, VALUE out);
+VALUE rb_io_printf(int argc, const VALUE *argv, VALUE out);
+typedef struct ruby_vm_struct ruby_vm_t;
+void ruby_vm_at_exit(void (*func)(ruby_vm_t *));
 VALUE rb_io_flush(VALUE io);
 #define rb_usascii_str_new2(s) rb_usascii_str_new_cstr(s)
 #define STRTOUL(str, endptr, base) strtoul((str), (endptr), (base))

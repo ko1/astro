@@ -281,6 +281,49 @@ t_protect_yield(VALUE self)
 }
 
 static VALUE t_errinfo_nil(VALUE self) { return rb_errinfo() == Qnil ? Qtrue : Qfalse; }
+/* *_kw with kw_splat: the last Hash goes as keywords (an empty one is dropped) */
+static VALUE t_funcall_kw(VALUE self, VALUE recv, VALUE h, VALUE kw)
+{
+    VALUE a[2] = { INT2FIX(1), h };
+    return rb_funcallv_kw(recv, rb_intern("m"), 2, a, RTEST(kw) ? RB_PASS_KEYWORDS : 0);
+}
+static VALUE t_new_kw(VALUE self, VALUE klass, VALUE h) { return rb_class_new_instance_kw(1, &h, klass, RB_PASS_KEYWORDS); }
+/* RARRAY_CONST_PTR / RARRAY_PTR (a snapshot of the elements), rb_ary_cat */
+static VALUE
+t_ary_ptr(VALUE self, VALUE ary)
+{
+    const VALUE *p = RARRAY_CONST_PTR(ary);
+    VALUE out = rb_ary_new();
+    for (long i = RARRAY_LEN(ary) - 1; i >= 0; i--) rb_ary_push(out, p[i]);
+    rb_ary_cat(out, RARRAY_PTR(ary), RARRAY_LEN(ary));
+    return out;
+}
+static VALUE t_check_symbol(VALUE self, VALUE s) { return rb_check_symbol_cstr(RSTRING_PTR(s), RSTRING_LEN(s), rb_utf8_encoding()); }
+static VALUE t_check_funcall(VALUE self, VALUE o, VALUE m) { VALUE r = rb_check_funcall(o, rb_to_id(m), 0, NULL); return r == Qundef ? ID2SYM(rb_intern("undef")) : r; }
+static VALUE
+t_time(VALUE self)
+{
+    struct timespec ts = { 1700000000, 123456789 };
+    VALUE a = rb_time_nano_new(1700000000, 5);
+    VALUE b = rb_time_timespec_new(&ts, 9 * 3600);
+    VALUE u = rb_time_timespec_new(&ts, INT_MAX - 1);
+    struct timespec back = rb_time_timespec(b);
+    struct timeval tv = rb_time_timeval(rb_float_new(1.25));
+    return rb_ary_new_from_args(7, a, b, u, LONG2NUM(back.tv_sec), LONG2NUM(back.tv_nsec), LONG2NUM(tv.tv_usec), rb_time_utc_offset(b));
+}
+static VALUE t_io_puts(VALUE self, VALUE out, VALUE args) { rb_io_puts(RARRAY_LENINT(args), RARRAY_CONST_PTR(args), out); rb_io_print(RARRAY_LENINT(args), RARRAY_CONST_PTR(args), out); rb_io_addstr(out, rb_str_new_cstr("|")); return out; }
+/* never 0 even for "": liquid-c doubles it until the write fits */
+static VALUE
+t_str_capacity(VALUE self)
+{
+    VALUE s = rb_str_new(NULL, 0);
+    long cap = (long)rb_str_capacity(s), need = 30;
+    if (cap <= 0) return Qfalse;
+    while (need > cap) cap *= 2;
+    rb_str_resize(s, cap); rb_str_set_len(s, need);
+    memset(RSTRING_PTR(s), 'x', need);
+    return rb_ary_new_from_args(2, Qtrue, LONG2NUM(RSTRING_LEN(s)));
+}
 
 /* ---- classes, methods, ivars, constants ---- */
 static VALUE m0(VALUE self) { return rb_str_new_cstr("m0"); }
@@ -716,6 +759,14 @@ Init_cext_api_test(void)
     rb_define_module_function(mT, "frozen", t_frozen, 1);
     rb_define_module_function(mT, "protect_yield", t_protect_yield, 0);
     rb_define_module_function(mT, "errinfo_nil", t_errinfo_nil, 0);
+    rb_define_module_function(mT, "funcall_kw", t_funcall_kw, 3);
+    rb_define_module_function(mT, "new_kw", t_new_kw, 2);
+    rb_define_module_function(mT, "ary_ptr", t_ary_ptr, 1);
+    rb_define_module_function(mT, "check_symbol", t_check_symbol, 1);
+    rb_define_module_function(mT, "check_funcall", t_check_funcall, 2);
+    rb_define_module_function(mT, "time", t_time, 0);
+    rb_define_module_function(mT, "io_puts", t_io_puts, 2);
+    rb_define_module_function(mT, "str_capacity", t_str_capacity, 0);
     rb_define_module_function(mT, "define", t_define, 0);
     rb_define_module_function(mT, "redefine_mismatch", t_redefine_mismatch, 0);
     rb_define_module_function(mT, "define_not_class", t_define_not_class, 0);

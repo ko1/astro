@@ -10135,6 +10135,24 @@ korb_intern_enc(struct korb_vm *vm, const char *name, size_t len, uint32_t enc)
     }
     return id;
 }
+/* The id of an already-interned UTF-8 name, or UINT32_MAX (rb_check_symbol_cstr:
+ * look up without creating).  The same normalisation as korb_intern_enc. */
+uint32_t
+korb_sym_find(const struct korb_vm *vm, const char *name, size_t len)
+{
+    if (vm->sym_hash_cap == 0) return UINT32_MAX;
+    bool ascii_only;
+    const uint32_t h = korb_str_hash_ascii(name, len, &ascii_only);
+    const uint8_t want = ascii_only ? KORB_ENC_USASCII : KORB_ENC_UTF8;
+    const uint32_t mask = vm->sym_hash_cap - 1;
+    for (uint32_t slot = h & mask; ; slot = (slot + 1) & mask) {
+        const uint32_t e = vm->sym_hash[slot];
+        if (e == 0) return UINT32_MAX;
+        const uint32_t id = e - 1;
+        if (vm->sym_lens[id] == len && vm->sym_encs[id] == want && memcmp(vm->sym_names[id], name, len) == 0)
+            return id;
+    }
+}
 /* Names interned from C are method/ivar/constant names: ASCII in practice (and
  * so normalised to US-ASCII above), with UTF-8 as the fallback for the rare
  * non-ASCII one — which is what koruby reported before symbols carried an

@@ -442,13 +442,18 @@ class Date
 
   # ---- comparison --------------------------------------------------------
 
+  # CRuby's cmp_gen: a Numeric is an ajd, a Date compares ajd, anything else goes
+  # through other.coerce(self) (ActiveSupport::Duration: `created_at <= 1.hour`)
   def <=>(other)
     case other
     when Date    then ajd <=> other.ajd
     when Numeric then ajd <=> other
     else
-      return nil unless other.respond_to?(:ajd)
-      ajd <=> other.ajd
+      return nil unless other.respond_to?(:coerce)
+      pair = other.coerce(self)
+      return nil if pair.nil?
+      raise TypeError, "coerce must return [x, y]" unless pair.is_a?(Array) && pair.size == 2
+      pair[0] <=> pair[1]
     end
   end
 

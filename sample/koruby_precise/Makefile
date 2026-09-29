@@ -10,7 +10,7 @@ all: koruby_precise koruby_regex.so
 # CRuby would (tools/make_root.sh; needs a CRuby of the same version, CRUBY=).
 CRUBY ?= $(HOME)/ruby/install/master/bin/ruby
 root: root/.complete
-root/.complete: koruby_precise koruby_regex.so tools/make_root.sh lib/rubygems/defaults/operating_system.rb
+root/.complete: koruby_precise koruby_regex.so tools/make_root.sh lib/rubygems/defaults/operating_system.rb $(wildcard cext/include/*.h cext/include/ruby/*.h)
 	bash tools/make_root.sh $(CRUBY)
 .PHONY: root
 

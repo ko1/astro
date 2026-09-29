@@ -116,6 +116,19 @@ t(:protect_yield_break) { T.protect_yield { break 77 } }
 # (sqlite3's Statement#step re-raises a non-nil rb_errinfo: shipit's TypeError)
 t(:protect_yield_return_errinfo) { o = Object.new; def o.go = T.protect_yield { return 5 }; [o.go, T.errinfo_nil] }
 t(:protect_yield_break_errinfo) { [T.protect_yield { break 6 }, T.errinfo_nil] }
+# rb_funcallv_kw / rb_class_new_instance_kw with RB_PASS_KEYWORDS (rbs builds its AST with them)
+t(:funcall_kw) do
+  o = Object.new; def o.m(*a, **k) = [a, k]
+  h = {x: 1}
+  [T.funcall_kw(o, h, true), T.funcall_kw(o, h, false), T.funcall_kw(o, {}, true), h]
+end
+t(:ary_ptr) { T.ary_ptr([1, "two", :three, nil, [4]]) }
+t(:check_symbol) { [T.check_symbol("puts"), T.check_symbol("zz_never_made_#{rand(1 << 40)}")] }
+t(:check_funcall) { o = Object.new; def o.hi = :hi; def o.respond_to_missing?(m, p) = m == :ghost; def o.method_missing(m, *) = m == :ghost ? :boo : super; [T.check_funcall(o, :hi), T.check_funcall(o, :nope), T.check_funcall(o, :ghost), T.check_funcall(o, :class)] }
+t(:time) { a, b, u, *rest = T.time; [a.to_i, a.nsec, b.utc_offset, b.nsec, b.to_i, u.utc?, u.nsec, *rest] }
+t(:io_puts) { require "stringio"; sio = StringIO.new; T.io_puts(sio, ["a", ["b", ["c"]], 1, "d\n", nil]); sio.string }
+t(:str_capacity) { T.str_capacity }
+t(:new_kw) { c = Struct.new(:path, :absolute, keyword_init: true); k = Class.new { def initialize(path:, absolute:) = (@v = [path, absolute]); attr_reader :v }; [T.new_kw(k, {path: [:a], absolute: true}).v, T.new_kw(c, {path: 1, absolute: 2}).to_a] }
 
 # classes / methods
 t(:define) { T.define }
