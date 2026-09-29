@@ -17,3 +17,5 @@ bench-report/
 .buildtmp/
 /code_store_wasi/
 /_embed.c
+/root/
+/root.tmp/

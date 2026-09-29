@@ -11379,25 +11379,47 @@ korb_etype_name(unsigned int etype)
 /* Does a loaded-feature entry `f` name the same feature as the registration
  * `path`?  Verbatim, or `path`(+".rb") as a whole trailing path component. */
 static bool
-korb_autoload_path_match(const char *f, size_t fl, const char *path, size_t plen, bool has_rb, size_t slen)
+korb_autoload_path_match(CTX *c, const char *f, size_t fl, const char *path, size_t plen, bool has_rb, size_t slen)
 {
     if (fl == plen && memcmp(f, path, plen) == 0) return true;      /* verbatim */
     if (fl < slen) return false;
     const char *const tail = f + fl - slen;
     if (fl > slen && tail[-1] != '/') return false;                 /* only a whole component matches */
     if (memcmp(tail, path, plen) != 0) return false;
-    return has_rb || memcmp(tail + plen, ".rb", 3) == 0;
+    if (!has_rb && memcmp(tail + plen, ".rb", 3) != 0) return false;
+    if (fl == slen) return true;                                     /* an absolute registration ("/x/foo") */
+    /* and what precedes it is a $LOAD_PATH entry: "openssl" is not rubygems/openssl.rb (CRuby) */
+    const size_t dl = (size_t)(tail - 1 - f);
+    const VALUE lp = korb_const_get(c->vm, korb_intern(c->vm, "$LOAD_PATH", 10));
+    if (!KORB_ARRAY_P(lp)) return true;
+    const KorbArray *const a = VAL2ARY(lp);
+    for (uint32_t i = 0; i < a->len; i++) {
+        const VALUE e = korb_items_data(a->items)[i];
+        if (!KORB_STRING_P(e)) continue;
+        const char *d = korb_strbuf_data(VAL2STR(e)->buf);
+        size_t el = VAL2STR(e)->len;
+        char abs[PATH_MAX];
+        if (el > 0 && d[0] != '/' && el < sizeof abs) {             /* a relative entry ("-I lib") names its realpath */
+            char rel[PATH_MAX];
+            memcpy(rel, d, el); rel[el] = '\0';
+            if (!realpath(rel, abs)) continue;
+            d = abs; el = strlen(abs);
+        }
+        while (el > 1 && d[el - 1] == '/') el--;
+        if (el == dl && memcmp(d, f, dl) == 0) return true;
+    }
+    return false;
 }
 
 /* Is that feature being loaded RIGHT NOW?  0 = no, 1 = by another thread,
  * 2 = by this one. */
 static int
-korb_autoload_loading_state(const CTX *c, const char *path, size_t plen, bool has_rb, size_t slen)
+korb_autoload_loading_state(CTX *c, const char *path, size_t plen, bool has_rb, size_t slen)
 {
     const struct korb_vm *const vm = c->vm;
     for (uint32_t i = 0; i < vm->loading_cnt; i++) {
         const char *const f = vm->loading[i].path;
-        if (korb_autoload_path_match(f, strlen(f), path, plen, has_rb, slen))
+        if (korb_autoload_path_match(c, f, strlen(f), path, plen, has_rb, slen))
             return vm->loading[i].owner == vm->cur_thread ? 2 : 1;
     }
     return 0;
@@ -11423,7 +11445,7 @@ korb_autoload_feature_loaded_p(CTX *c, VALUE pathv)
         const VALUE e = korb_items_data(a->items)[i];
         if (!KORB_STRING_P(e)) continue;
         const KorbString *const s = VAL2STR(e);
-        if (korb_autoload_path_match(korb_strbuf_data(s->buf), s->len, path, plen, has_rb, slen)) return true;
+        if (korb_autoload_path_match(c, korb_strbuf_data(s->buf), s->len, path, plen, has_rb, slen)) return true;
     }
     return false;
 }

@@ -379,6 +379,9 @@ static RESULT korb_time_set_subns(CTX *c, VALUE *slots, VALUE_REF t, int64_t rn,
 /* korb_time_make + an exact nanosecond sub-second (computed from the small
  * fractional part, not the large epoch, so `Rational(100,1000)` → 100_000_000). */
 static RESULT korb_time_make_ns(CTX *c, VALUE *slots, VALUE cls, double sec_int, long nsec, bool utc) {
+    /* a new local Time takes TZ as it is now (glibc's localtime_r reads it only once);
+     * derived ones (korb_time_derive) keep rendering in the zone they were made in */
+    if (!utc) tzset();
     slots[0] = UNWRAP(korb_time_make(c, slots, cls, sec_int + (double)nsec / 1e9, utc));
     CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_ns_sym(c->vm), LONG2FIX((korb_sword_t)nsec)));
     return RESULT_OK(slots[0]);

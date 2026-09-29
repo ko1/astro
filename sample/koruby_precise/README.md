@@ -178,6 +178,12 @@ corpus（`make test`）は CRuby オラクル差分の golden test **100,354 件
 ```sh
 make                       # koruby_precise を直接ビルド（GC=copy moving default）
                            # prism は CRuby master と同じ版の submodule（初回に生成・build。docs/v2_spec.md §5.1）
+make root                  # root/ を作る: CRuby（CRUBY=、既定 ~/ruby/install/master/bin/ruby）の stdlib・rubygems・
+                           # default gem の spec と、bundled gem を koruby 自身の `gem install` で入れたもの。
+                           # これがあると koruby は起動時に rubygems を読み（CRuby と同じ）、gem を名前で require できる。
+                           # root/bin/gem・bundle・rake …（shebang は koruby）。`gem install --local ./x.gem` 可。
+                           # C 拡張は build せず警告（koruby は .so を読めない）。`--user-install` は ~/.gem/koruby/<ver>。
+                           # make test は root に依存する
 make test                  # rubyharness 差分テスト（CRuby オラクル, 100,354 件）
                            #   CAT=<category> / STRESS=1 で絞り込み・GC stress
 make bench                 # 多モード bench（interp / aot+compile / aot+cached / cruby+yjit）

@@ -1452,7 +1452,11 @@ module RbConfig
   # the whole layout is derived from ONE root.  rubygems (Gem.default_dir and
   # friends) and mkmf read these, and they must be mutually consistent or
   # rubygems dies on a nil in File.join.  KORUBY_PREFIX overrides the root.
-  __pfx = ENV["KORUBY_PREFIX"] || "/usr"
+  # The default root is root/ beside the binary (tools/make_root.sh: stdlib, rubygems,
+  # the bundled gems), so koruby alone requires what CRuby would.
+  __root = (File.join(File.dirname(File.readlink("/proc/self/exe")), "root") rescue nil)
+  __root = nil unless __root && File.directory?(__root)
+  __pfx = ENV["KORUBY_PREFIX"] || __root || "/usr"
   # CRuby's "ruby_version" is the ABI version, which for a dev build carries a
   # "+N" suffix (4.1.0+4).  rubygems joins it into Gem.default_dir, so pointing
   # KORUBY_PREFIX at such an install must use the directory that is really
@@ -1507,6 +1511,8 @@ module RbConfig
   # (Ractor.make_shareable), which must not freeze CONFIG's own values
   $LOAD_PATH.unshift(CONFIG["sitelibdir"].dup, CONFIG["sitearchdir"].dup,
                      CONFIG["vendorlibdir"].dup, CONFIG["vendorarchdir"].dup)
+  # root's CRuby stdlib goes last, behind koruby's own lib/ (which replaces its C-backed parts)
+  $LOAD_PATH.push(CONFIG["rubylibdir"].dup) if __root && __pfx == __root
   CONFIG["rubyhdrdir"] = "#{__pfx}/include/ruby-#{__rv}"
   CONFIG["rubyarchhdrdir"] = "#{__pfx}/include/ruby-#{__rv}/#{__arch}"
   CONFIG["sitehdrdir"] = "#{__pfx}/include/ruby-#{__rv}/site_ruby"

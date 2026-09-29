@@ -2023,9 +2023,20 @@ korb_m_io_s_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
             pf[k].fd = efd; pf[k].events = evs[s]; pf[k].revents = 0; k++;
         }
     }
+    /* bytes already read ahead into a stream's buffer make it readable without a
+     * poll (CRuby rb_io_read_pending): expect's getc-then-select loop depends on it */
+    nfds_t buffered = 0;
+    for (uint32_t i = 0; i < cnt[0]; i++) {
+        const KorbIORep *const rep = korb_io_rep(c, korb_items_data(VAL2ARY(VALUE_SLICE_GET(a, 0))->items)[i]);
+        if (rep && rep->rpos < rep->rlen) buffered++;
+    }
     ssize_t ready = 0;
-    { RESULT r = korb_blop_poll_wait(c, slots, pf, total, tmo, &ready);
+    { RESULT r = korb_blop_poll_wait(c, slots, pf, total, buffered ? 0.0 : tmo, &ready);
       if (UNLIKELY(r.state != KORB_NORMAL)) { if (pf != pbuf) free(pf); return r; } }
+    for (uint32_t i = 0; buffered && i < cnt[0]; i++) {      /* no GC since the count above */
+        const KorbIORep *const rep = korb_io_rep(c, korb_items_data(VAL2ARY(VALUE_SLICE_GET(a, 0))->items)[i]);
+        if (rep && rep->rpos < rep->rlen && !(pf[i].revents & POLLIN)) { pf[i].revents |= POLLIN; ready++; }
+    }
     if (ready == 0) { if (pf != pbuf) free(pf); return RESULT_OK(KORB_NIL); }   /* timeout */
     /* [[r], [w], [e]] — alloc を跨ぐので IO は毎回 arg 配列 (rooted) から再読出 */
     static const short want[3] = { POLLIN | POLLHUP | POLLERR, POLLOUT | POLLERR, POLLPRI };

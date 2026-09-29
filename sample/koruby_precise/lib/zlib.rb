@@ -344,8 +344,8 @@ module Zlib
       @io.path
     end
 
-    def self.wrap(*args)
-      obj = new(*args)
+    def self.wrap(*args, **kw)
+      obj = new(*args, **kw)
       return obj unless block_given?
       begin
         yield obj

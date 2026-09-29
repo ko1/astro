@@ -6,6 +6,14 @@
 
 all: koruby_precise koruby_regex.so
 
+# root/: CRuby's stdlib + rubygems + the bundled gems, so koruby alone requires what
+# CRuby would (tools/make_root.sh; needs a CRuby of the same version, CRUBY=).
+CRUBY ?= $(HOME)/ruby/install/master/bin/ruby
+root: root/.complete
+root/.complete: koruby_precise koruby_regex.so tools/make_root.sh lib/rubygems/defaults/operating_system.rb
+	bash tools/make_root.sh $(CRUBY)
+.PHONY: root
+
 .PHONY: all run clean
 
 # Regexp engine — koruby's thin bridge links libastrogre.so (astrogre's generic
@@ -174,7 +182,7 @@ INTERP ?= ./koruby_precise
 # would set the wrong vars and silently NOT stress (green but no GC audit).
 GC_STRESS_ENV := BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1
 include ../rubyharness/harness.mk
-test bench: koruby_precise
+test bench: koruby_precise root
 
 # Real rubyspec compat gate: run the actual CRuby core specs through the mspec
 # shim and fail on any regression vs tools/rubyspec_baseline.txt (encoding/regex/
