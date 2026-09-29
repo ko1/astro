@@ -95,8 +95,8 @@ svg text { fill:var(--mute); font-size:11px; }
 <script>
 // ---- 更新はここ --------------------------------------------------------------
 const DATA = {
-  updated: "2026-09-29 20:10 JST",
-  master: "42647c81",
+  updated: "2026-09-30 JST",
+  master: "62106590",
   compat: [
     { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "31892 例", sub: "本物の openssl を読むようになって library/openssl が全通過（+40）。9/29 朝は 31831 / 32332 = 98.45%。率は同じ run の例の数で割るので、全体の再計測時に更新", date: "2026-09-29", commit: "f5e3af31", mode: "interp",
       note: "本物の mspec で spec ファイルを 1 つずつ実行。率は同じ run の pass ÷ 例の数" },
@@ -142,7 +142,7 @@ const DATA = {
   ],
   recent: [
     ["この commit", "status 更新（rubygems.org から gem install）"],
-    ["f5e3af31 ほか", "make root が digest / openssl を koruby 用にビルドして root/ に入れ、既定で読む。rubygems.org からの gem install / bundle install が動く（rainbow・i18n・rack-test・mustermann・activesupport 8.1.4・thor）。C 拡張入りの gem を activate しても koruby の代替で機能ごと置き換える。rubyspec 31892（library/openssl・digest 302 例全通過）"],
+    ["f5e3af31〜62106590", "make root が digest / openssl を koruby 用（.ko.so）に を koruby 用にビルドして root/ に入れ、既定で読む。rubygems.org からの gem install / bundle install が動く（rainbow・i18n・rack-test・mustermann・activesupport 8.1.4・thor）。C 拡張入りの gem を activate しても koruby の代替で機能ごと置き換える。rubyspec 31892（library/openssl・digest 302 例全通過）"],
     ["12261bbb〜42647c81", "CRuby C 拡張互換層: 拡張側の VALUE はハンドル、RSTRING_PTR は non-moving 区画へ pin、nil/false は CRuby の値、CRuby 用 .so は読まない。ext/digest と ext/openssl が無改造で動き、CRuby の test/digest・test/openssl が全部 CRuby と同じ結果"],
     ["a1ec9706", "koruby 内部の値の型名を VALUE → korb_value（korb_ref / korb_slice / KORB_REF_GET …）"],
     ["f8ce981c", "JSON の parse / generate をネイティブに（builtins/json_native.c）。Ruby 移植比 14〜84 倍、CRuby の json 拡張と parse 0.73〜1.16×・generate 0.84〜1.32×"],

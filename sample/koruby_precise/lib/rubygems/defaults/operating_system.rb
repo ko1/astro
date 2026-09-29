@@ -28,7 +28,7 @@ module Gem
   module KorubySkipExtensions
     def build_extensions
       return if @spec.extensions.empty?
-      warn "koruby: skipped building the C extensions of #{@spec.full_name} (koruby cannot load them)"
+      warn "koruby: skipped building the C extensions of #{@spec.full_name} (no mkmf for koruby yet; koruby's own lib/ stands in where it has one)"
       marker = @spec.gem_build_complete_path
       FileUtils.mkdir_p File.dirname(marker)
       FileUtils.touch marker
