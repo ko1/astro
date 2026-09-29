@@ -33,7 +33,7 @@ from Function f
 where
   isBorrowAccessor(f) and
   f.hasDefinition() and
-  f.getFile().getAbsolutePath().matches("%/astro/%") and
+  not f.getFile().getAbsolutePath().matches("/usr/%") and
   not touchesInterior(f)
 select f,
   "function '" + f.getName() +

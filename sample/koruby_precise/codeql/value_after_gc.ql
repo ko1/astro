@@ -77,7 +77,7 @@ predicate reach(SsaDefinition def, StackVariable v, ControlFlowNode n, boolean s
 from SsaDefinition def, StackVariable v, HeapValueExpr b, VariableAccess use
 where
   valueDef(def, v, b) and
-  b.getFile().getAbsolutePath().matches("%/astro/%") and
+  not b.getFile().getAbsolutePath().matches("/usr/%") and
   use = def.getAUse(v) and
   reach(def, v, use, true)
 select use,

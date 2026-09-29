@@ -46,7 +46,7 @@ predicate movableValueRead(Expr e) {
 
 from Call fc, Expr gcArg, Expr other
 where
-  fc.getFile().getAbsolutePath().matches("%/astro/%") and
+  not fc.getFile().getAbsolutePath().matches("/usr/%") and
   gcArg = fc.getAnArgument() and
   other = fc.getAnArgument() and
   gcArg != other and

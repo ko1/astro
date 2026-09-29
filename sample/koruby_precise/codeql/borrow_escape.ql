@@ -26,7 +26,7 @@ from BorrowCall b, DataFlow::Node esc, Function f
 where
   f = b.getEnclosingFunction() and
   not isBorrowAccessor(f) and
-  b.getFile().getAbsolutePath().matches("%/astro/%") and
+  not b.getFile().getAbsolutePath().matches("/usr/%") and
   DataFlow::localFlow(DataFlow::exprNode(b), esc) and
   (
     esc.asExpr() = any(ReturnStmt r).getExpr()

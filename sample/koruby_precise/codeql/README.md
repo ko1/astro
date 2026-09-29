@@ -77,6 +77,19 @@ the `interior_encapsulation` query is the CodeQL backstop.
 - `test/encapsulation_cases.c` — direct-access-outside-accessor case for
   `interior_encapsulation`.
 
+Every query drops system headers with `not ….getAbsolutePath().matches("/usr/%")`.
+Until 2026-09-29 they kept only paths containing `/astro/`, so a worktree
+(`~/ruby/src/wt-*`) saw 0 hits and the self-test failed ("borrow_after_gc
+self-test != 5") — don't filter by the checkout's location.
+
+## GC bugs feed this gate
+
+When a GC bug is fixed (a STRESS+PURGE crash, a stale pointer, a missed root),
+ask whether one of these queries — or a new one — could have caught it
+statically.  If so, add the rule and a BUG/OK fixture case (with the expected
+self-test count in `run.sh`) and note here which bug it came from; if not,
+write down why (e.g. the hazard only exists through a function pointer).
+
 ## Known blind spot: a korb_value that arrives as a parameter
 
 `value_after_gc.ql` only tracks a korb_value whose defining value is a may-GC call

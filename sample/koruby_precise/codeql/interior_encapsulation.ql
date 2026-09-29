@@ -37,7 +37,7 @@ predicate isBorrowAccessor(Function f) {
 from PayloadField fa, Function f
 where
   f = fa.getEnclosingFunction() and
-  fa.getFile().getAbsolutePath().matches("%/astro/%") and
+  not fa.getFile().getAbsolutePath().matches("/usr/%") and
   not isBorrowAccessor(f)
 select fa,
   "interior payload access outside an ARO_BORROW accessor (in " + f.getName() +

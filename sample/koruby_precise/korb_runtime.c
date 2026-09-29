@@ -11848,9 +11848,9 @@ korb_class_exc_etype(struct korb_vm *vm, korb_value cls)
 
 /* One line of the report.  `cap` is the list the exception captured at a rescue
  * (it may have been rescued and re-raised); without one the live unwind record
- * is read, with the '<main>' frame below it all at index bt_cnt. */
-static const char *
-korb_report_line(CTX *c, const KorbArray *cap, const KorbException *e, uint32_t i, char *buf, size_t bufsz)
+ * is read, with the '<main>' frame below it all at index bt_cnt.  May return the
+ * captured String's own bytes (a borrow): print it before anything allocates. */
+static ARO_BORROW const char *korb_report_line(CTX *c, const KorbArray *cap, const KorbException *e, uint32_t i, char *buf, size_t bufsz)
 {
     const struct korb_vm *const vm = c->vm;
     if (cap != NULL) {
