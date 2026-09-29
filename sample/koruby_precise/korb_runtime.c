@@ -18801,9 +18801,16 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
     return false;
 }
 
+/* Extension file names: `x.so` is CRuby's, `x.kompat.so` a CRuby extension rebuilt for
+ * koruby's compatibility layer (builtins/cext.c), `x.ko.so` reserved for extensions
+ * written to koruby's native API (Track B, not loaded yet: native code like
+ * builtins/json_native.c is linked into koruby until that API is split out). */
+#define KORB_KOMPAT_EXT ".kompat.so"
+#define KORB_KOMPAT_EXT_LEN (sizeof KORB_KOMPAT_EXT - 1)
+
 /* A gem that ships `name` as a C extension (`<dir>/name.rb` beside CRuby's `name.so`,
  * or an installed gem whose ext/ koruby did not build, like bigdecimal) cannot load
- * here unless a koruby build `name.ko.so` sits beside it; when koruby carries its own
+ * here unless a rebuild `name.kompat.so` sits beside it; when koruby carries its own
  * `name`, that one stands in for the whole feature (the gem's Ruby half calls methods
  * only its C half has). */
 static bool korb_cext_so_p(const char *path);   /* fwd */
@@ -18814,9 +18821,9 @@ korb_prefer_own_lib(const char *const restrict name, char *const restrict abspat
     /* koruby's own lib/ (root/ with its gems is under KORUBY_SRC_DIR too) */
     if (al < 3 || strcmp(abspath + al - 3, ".rb") != 0 || strncmp(abspath, KORUBY_SRC_DIR "/lib/", strlen(KORUBY_SRC_DIR) + 5) == 0) return;
     char so[4096];
-    if (al + 3 >= sizeof so) return;
+    if (al + KORB_KOMPAT_EXT_LEN >= sizeof so) return;
     struct stat st;
-    memcpy(so, abspath, al - 3); memcpy(so + al - 3, ".ko.so", 7);
+    memcpy(so, abspath, al - 3); memcpy(so + al - 3, KORB_KOMPAT_EXT, KORB_KOMPAT_EXT_LEN + 1);
     if (stat(so, &st) == 0 && korb_cext_so_p(so)) return;           /* built for koruby: the gem loads as is */
     memcpy(so + al - 3, ".so", 4);
     bool cext_gem = stat(so, &st) == 0;
@@ -18863,18 +18870,17 @@ korb_cext_so_p(const char *path)
     fclose(f);
     return hit;
 }
-/* A koruby build of an extension is named `<name>.ko.so` (CRuby's is `<name>.so`, so the
- * two can sit side by side and neither loads the other's): `x`, `x.so` and `x.ko.so` all
- * look for `<dir>/x.ko.so`, a regular file carrying koruby's marker. */
+/* `x`, `x.so` and `x.kompat.so` all look for `<dir>/x.kompat.so` (never CRuby's `x.so`,
+ * and CRuby never loads ours), a regular file carrying the compatibility layer's marker. */
 static bool
 korb_resolve_so(const char *dir, const char *name, char *out, size_t outsz)
 {
     size_t nl = strlen(name);
-    if (nl >= 6 && strcmp(name + nl - 6, ".ko.so") == 0) nl -= 6;
+    if (nl >= KORB_KOMPAT_EXT_LEN && strcmp(name + nl - KORB_KOMPAT_EXT_LEN, KORB_KOMPAT_EXT) == 0) nl -= KORB_KOMPAT_EXT_LEN;
     else if (nl >= 3 && strcmp(name + nl - 3, ".so") == 0) nl -= 3;
     char cand[4096];
-    if (name[0] == '/') snprintf(cand, sizeof cand, "%.*s.ko.so", (int)nl, name);
-    else                snprintf(cand, sizeof cand, "%s/%.*s.ko.so", dir, (int)nl, name);
+    if (name[0] == '/') snprintf(cand, sizeof cand, "%.*s" KORB_KOMPAT_EXT, (int)nl, name);
+    else                snprintf(cand, sizeof cand, "%s/%.*s" KORB_KOMPAT_EXT, dir, (int)nl, name);
     korb_path_lexnorm(cand, out, outsz);
     struct stat st; return stat(out, &st) == 0 && S_ISREG(st.st_mode) && korb_cext_so_p(out);
 }

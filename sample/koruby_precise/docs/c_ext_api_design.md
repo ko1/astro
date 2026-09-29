@@ -444,12 +444,14 @@ mixin を include したクラスを別の superclass で `rb_define_class_under
 - C 関数のブロック（`rb_block_call` / `rb_proc_new`）: (func, data2) を T_DATA に包み、それを呼び戻す Ruby の proc を
   `&proc` の経路（block = iseq、def_env = KORB_BLK_FWD）で渡す。`rb_call_super` はトランポリンごとに持つ method entry
   から `korb_super`（トランポリンの共有は (関数, arity, クラス) 単位）。
-- **koruby 用の拡張は `<name>.ko.so`**（CRuby 用は `<name>.so`）。require は `x` / `x.so` / `x.ko.so` をすべて
-  `x.ko.so` として探し、素の `.so` は読まない。CRuby も `.ko.so` は読まないので、両方を同じディレクトリに置ける
-  （将来 mkmf の DLEXT を `ko.so` にすれば gem の extensions ディレクトリで共存する）。予備として koruby の ruby.h は
-  公開シンボル `koruby_cext_abi_1` を埋め込み、名前を付け間違えた CRuby 用 .so も拒否する。
+- **拡張のファイル名は 3 種類**（user の提案、2026-09-30）: `foo.so` = CRuby 用、`foo.kompat.so` = CRuby の拡張を
+  この互換層向けに再ビルドしたもの、`foo.ko.so` = koruby のネイティブ API（Track B）で書いた拡張（未実装。JSON の
+  ようなネイティブ実装は今は koruby 本体に組み込み、Track B の API を切り出したら `.ko.so` として外に出せる）。
+  require は `x` / `x.so` / `x.kompat.so` をすべて `x.kompat.so` として探し、素の `.so` は読まない。CRuby も
+  `.kompat.so` は読まないので同じディレクトリに置ける（mkmf の DLEXT を `kompat.so` にすれば gem の extensions で共存）。
+  予備として ruby.h は公開シンボル `koruby_cext_abi_1` を埋め込み、名前を付け間違えた CRuby 用 .so も拒否する。
   （経緯: 最初は素の `.so` を探し、root/ の CRuby 用 racc/cparse.so を読んで libruby ごと CRuby の ABI で動き、
-  gem c-suite の rubocop-ast が SEGV した — c39。まず印で防ぎ、user の提案で名前で分けた。）
+  gem c-suite の rubocop-ast が SEGV した — c39。まず印で防ぎ、名前で分けた。）
 
 - **ext/openssl**（C 34 ファイル、2026-09-29）: CRuby のビルド済みツリーの extconf.h を使って無改造でビルドし
   （`cext/build_openssl.sh`）、**CRuby の test/openssl 35 本すべてが CRuby と同じ要約**（件数まで一致、

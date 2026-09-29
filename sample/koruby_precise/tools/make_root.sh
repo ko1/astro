@@ -64,8 +64,8 @@ if [ -f "$CRUBY_SRC/ext/openssl/extconf.h" ] && [ -d "$CRUBY_SRC/ext/digest" ]; 
   bash "$HERE/cext/build_openssl.sh" "$CRUBY_SRC/ext/openssl" "$EXT/openssl" > /dev/null
   mkdir -p "$VEND/$ARCH/digest"
   cp -r "$EXT/digest/lib/." "$EXT/openssl/lib/." "$VEND/"
-  cp "$EXT/digest/digest.ko.so" "$EXT/openssl/openssl.ko.so" "$VEND/$ARCH/"
-  cp "$EXT"/digest/digest/*.ko.so "$VEND/$ARCH/digest/"
+  cp "$EXT/digest/digest.kompat.so" "$EXT/openssl/openssl.kompat.so" "$VEND/$ARCH/"
+  cp "$EXT"/digest/digest/*.kompat.so "$VEND/$ARCH/digest/"
   rm -rf "$EXT"
   echo "make_root: C extensions digest, openssl -> $VEND"
 else

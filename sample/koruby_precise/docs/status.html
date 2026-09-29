@@ -136,13 +136,13 @@ const DATA = {
     ["ruby-method-benchmarks", "メソッド単位", "未着手"],
   ],
   gaps: [
-    "C 拡張: CRuby の拡張を koruby のヘッダで再ビルドすれば動く（digest・openssl）。mkmf が無いので gem の extconf.rb からは組めない、gc_copy 以外の moving GC と Fiber の切り替えは未対応",
+    "C 拡張: CRuby の拡張を koruby のヘッダで再ビルドすれば動く（digest・openssl）。mkmf が koruby で動かないので gem の extconf.rb からは組めない、gc_copy 以外の moving GC と Fiber の切り替えは未対応",
     "TracePoint :line（tracer・power_assert）、RubyVM::AbstractSyntaxTree / InstructionSequence",
     "Ripper の構文エラー回復（CRuby の parse.y は誤りの後も木を組み立てる）",
   ],
   recent: [
     ["この commit", "status 更新（rubygems.org から gem install）"],
-    ["f5e3af31〜62106590", "make root が digest / openssl を koruby 用（.ko.so）にビルドして root/ に入れ、既定で読む。rubygems.org からの gem install / bundle install が動く（rainbow・i18n・rack-test・mustermann・activesupport 8.1.4・thor）。C 拡張入りの gem を activate しても koruby の代替で機能ごと置き換える。rubyspec 31892（library/openssl・digest 302 例全通過）"],
+    ["f5e3af31〜62106590", "make root が digest / openssl を koruby 用（.kompat.so）にビルドして root/ に入れ、既定で読む。rubygems.org からの gem install / bundle install が動く（rainbow・i18n・rack-test・mustermann・activesupport 8.1.4・thor）。C 拡張入りの gem を activate しても koruby の代替で機能ごと置き換える。rubyspec 31892（library/openssl・digest 302 例全通過）"],
     ["12261bbb〜42647c81", "CRuby C 拡張互換層: 拡張側の VALUE はハンドル、RSTRING_PTR は non-moving 区画へ pin、nil/false は CRuby の値、CRuby 用 .so は読まない。ext/digest と ext/openssl が無改造で動き、CRuby の test/digest・test/openssl が全部 CRuby と同じ結果"],
     ["a1ec9706", "koruby 内部の値の型名を VALUE → korb_value（korb_ref / korb_slice / KORB_REF_GET …）"],
     ["f8ce981c", "JSON の parse / generate をネイティブに（builtins/json_native.c）。Ruby 移植比 14〜84 倍、CRuby の json 拡張と parse 0.73〜1.16×・generate 0.84〜1.32×"],

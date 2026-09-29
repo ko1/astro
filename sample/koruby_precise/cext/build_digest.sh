@@ -2,7 +2,7 @@
 # Build CRuby's ext/digest unchanged against koruby's cext/include (no mkmf yet:
 # the defines are what mkmf's extconf.h / Makefile give on x86_64 Linux).
 #   bash cext/build_digest.sh <cruby ext/digest dir> <out dir>
-# Out: <out>/digest.ko.so, <out>/digest/{md5,sha1,sha2,rmd160,bubblebabble,crc32,blake3}.ko.so,
+# Out: <out>/digest.kompat.so, <out>/digest/{md5,sha1,sha2,rmd160,bubblebabble,crc32,blake3}.kompat.so,
 # and <out>/lib (ext/digest/lib + the per-algorithm lib/: digest.rb, digest/{loader,version,sha2}.rb ...).
 set -eu
 SRC=${1:-$HOME/ruby/src/master/ext/digest}
@@ -21,13 +21,13 @@ so() {   # so <out.so> <extra cflags> <src...>
     done
     $CC -shared -o "$o" "${objs[@]}"
 }
-so "$OUT/digest.ko.so" "" "$SRC/digest.c"
-so "$OUT/digest/md5.ko.so" "" "$SRC/md5/md5.c" "$SRC/md5/md5init.c"
-so "$OUT/digest/sha1.ko.so" "" "$SRC/sha1/sha1.c" "$SRC/sha1/sha1init.c"
-so "$OUT/digest/sha2.ko.so" "-DHAVE_TYPE_U_INT8_T=1" "$SRC/sha2/sha2.c" "$SRC/sha2/sha2init.c"
-so "$OUT/digest/rmd160.ko.so" "" "$SRC/rmd160/rmd160.c" "$SRC/rmd160/rmd160init.c"
-so "$OUT/digest/bubblebabble.ko.so" "" "$SRC/bubblebabble/bubblebabble.c"
-[ -d "$SRC/crc32" ] && so "$OUT/digest/crc32.ko.so" "" "$SRC"/crc32/*.c
+so "$OUT/digest.kompat.so" "" "$SRC/digest.c"
+so "$OUT/digest/md5.kompat.so" "" "$SRC/md5/md5.c" "$SRC/md5/md5init.c"
+so "$OUT/digest/sha1.kompat.so" "" "$SRC/sha1/sha1.c" "$SRC/sha1/sha1init.c"
+so "$OUT/digest/sha2.kompat.so" "-DHAVE_TYPE_U_INT8_T=1" "$SRC/sha2/sha2.c" "$SRC/sha2/sha2init.c"
+so "$OUT/digest/rmd160.kompat.so" "" "$SRC/rmd160/rmd160.c" "$SRC/rmd160/rmd160init.c"
+so "$OUT/digest/bubblebabble.kompat.so" "" "$SRC/bubblebabble/bubblebabble.c"
+[ -d "$SRC/crc32" ] && so "$OUT/digest/crc32.kompat.so" "" "$SRC"/crc32/*.c
 if [ -d "$SRC/blake3" ]; then
     B=$SRC/blake3
     bo=()
@@ -36,13 +36,13 @@ if [ -d "$SRC/blake3" ]; then
     $CC $CF -msse4.1 -c "$B/blake3_sse41.c" -o "$OUT/obj/blake3_sse41.o"; bo+=("$OUT/obj/blake3_sse41.o")
     $CC $CF -mavx2 -c "$B/blake3_avx2.c" -o "$OUT/obj/blake3_avx2.o"; bo+=("$OUT/obj/blake3_avx2.o")
     $CC $CF -mavx512f -mavx512vl -c "$B/blake3_avx512.c" -o "$OUT/obj/blake3_avx512.o"; bo+=("$OUT/obj/blake3_avx512.o")
-    $CC -shared -o "$OUT/digest/blake3.ko.so" "${bo[@]}"
+    $CC -shared -o "$OUT/digest/blake3.kompat.so" "${bo[@]}"
 fi
 rm -rf "$OUT/lib"; cp -r "$SRC/lib" "$OUT/lib"
 for d in "$SRC"/*/lib; do cp -r "$d"/. "$OUT/lib/digest/"; done   # sha2/lib: Digest::SHA2 (Ruby) + its loader
 # every symbol the extensions need must come from koruby (or libc / each other)
 nm -D --defined-only "$KDIR/koruby_precise" | awk '{print $3}' | sort -u > "$OUT/obj/provided.txt"
-for f in "$OUT"/digest.ko.so "$OUT"/digest/*.ko.so; do nm -D --defined-only "$f" | awk '{print $3}'; done | sort -u >> "$OUT/obj/provided.txt"
-missing=$(for f in "$OUT"/digest.ko.so "$OUT"/digest/*.ko.so; do nm -Du "$f" | awk '{print $2}'; done | sort -u | grep -E '^(rb_|ruby_)' | grep -vxF -f "$OUT/obj/provided.txt" || true)
+for f in "$OUT"/digest.kompat.so "$OUT"/digest/*.kompat.so; do nm -D --defined-only "$f" | awk '{print $3}'; done | sort -u >> "$OUT/obj/provided.txt"
+missing=$(for f in "$OUT"/digest.kompat.so "$OUT"/digest/*.kompat.so; do nm -Du "$f" | awk '{print $2}'; done | sort -u | grep -E '^(rb_|ruby_)' | grep -vxF -f "$OUT/obj/provided.txt" || true)
 if [ -n "$missing" ]; then echo "missing C API: $missing"; exit 1; fi
-echo "built $(ls "$OUT"/digest.ko.so "$OUT"/digest/*.ko.so | wc -l) extensions in $OUT"
+echo "built $(ls "$OUT"/digest.kompat.so "$OUT"/digest/*.kompat.so | wc -l) extensions in $OUT"
