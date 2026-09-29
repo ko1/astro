@@ -6134,6 +6134,10 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   ハンドルなので、要素のハンドル配列を作って pin する読み取り専用の写しが要る（書き込みを反映するかは設計が要る）。
 - extconf.rb を koruby で走らせると gem の ext/ に code_store/ ができる（AOT のストアが CWD 相対）。
 - `rb_block_call` はいつも catch で包む（rb_iter_break のため）。その固定費（proc 1 個 + catch）を測る。
+- **Module.constants が CRuby と 5 つ違う**（2026-09-29）: koruby に余分 ARGFClass・ArithmeticSequence（内部名が top-level に
+  出ている）・StringIO（prelude で起動時に定義。CRuby は require してから）、足りない SyntaxSuggest（CRuby は autoload）・
+  UnicodeNormalize（CRuby は起動時にモジュールだけある）。ErrorHighlight の autoload を足すまでは数が偶然 120 で一致していて、
+  t/spec/module_000.rb の `Module.constants.size` が 121 になった（make test 13 → 14、fail_base に入れた）。
 - **error_highlight の node id は行からの推定**（2026-09-29）: koruby の backtrace は行しか持たない（frame link は 31 ビットの
   即値に行 17 ビット + 距離 12 ビット）ので、`RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location` はファイルを Prism で
   読み直し、例外の name・ブロック・def で 1 つに絞れたときだけ id を返す（絞れなければ下線なし、誤った下線は出さない）。

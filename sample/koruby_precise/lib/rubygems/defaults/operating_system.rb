@@ -43,6 +43,11 @@ module Gem
 
     private def korb_leave_out(reason)
       warn "koruby: left out the C extensions of #{@spec.full_name} (#{reason}); koruby's own lib/ stands in where it has one"
+      # all or nothing: an extension that did build next to one that did not (json: generator yes,
+      # parser no) would load against koruby's own half
+      [@spec.full_gem_path, @spec.extension_dir].each do |dir|
+        Dir.glob(File.join(dir, "**", "*.kompat.so")).each { |f| File.delete(f) }
+      end
       marker = @spec.gem_build_complete_path
       FileUtils.mkdir_p File.dirname(marker)
       FileUtils.touch marker

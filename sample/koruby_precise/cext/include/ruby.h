@@ -113,6 +113,7 @@ typedef uintptr_t st_index_t;
 #define ALWAYS_INLINE(x) __attribute__((always_inline)) inline x   /* CRuby: RBIMPL_ATTR_FORCEINLINE() x */
 #define NOINLINE(x) __attribute__((noinline)) x
 #define LONG_LONG long long
+#define RUBY_INTEGER_UNIFICATION 1   /* Integer only (no Fixnum / Bignum classes); json 2.x picks its GeneratorMethods by it */
 #define PUREFUNC(x)  __attribute__((pure)) x
 #define CONSTFUNC(x) __attribute__((const)) x
 #define PRI_SIZE_PREFIX "z"
@@ -300,6 +301,9 @@ void  rb_free_tmp_buffer(volatile VALUE *store);
 #define ALLOCV(v, n)        rb_alloc_tmp_buffer(&(v), (long)(n))
 #define ALLOCV_N(type, v, n) ((type *)ALLOCV((v), sizeof(type) * (size_t)(n)))
 #define ALLOCV_END(v)       rb_free_tmp_buffer(&(v))
+#define RB_ALLOCV(v, n)     ALLOCV((v), (n))
+#define RB_ALLOCV_N(type, v, n) ALLOCV_N(type, (v), (n))
+#define RB_ALLOCV_END(v)    ALLOCV_END(v)
 #define MEMZERO(p, type, n)    memset((p), 0, sizeof(type) * (size_t)(n))
 #define MEMCPY(p1, p2, type, n)  memcpy((p1), (p2), sizeof(type) * (size_t)(n))
 #define MEMMOVE(p1, p2, type, n) memmove((p1), (p2), sizeof(type) * (size_t)(n))

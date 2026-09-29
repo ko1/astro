@@ -3157,10 +3157,28 @@ static RESULT korb_m_exc_cause(CTX *c, korb_value *slots, korb_ref self, korb_sl
     const korb_value v = KORB_REF_GET(self);
     return RESULT_OK(KORB_EXC_P(v) ? VAL2EXC(v)->cause : KORB_NIL);
 }
+/* #backtrace: the Strings.  Set from Locations (set_backtrace(caller_locations)), the
+ * list is their #to_s, made once and kept on the exception as CRuby returns one Array. */
 static RESULT korb_m_exc_backtrace(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
-    (void)c;(void)slots;(void)a;
+    (void)a;
     const korb_value v = KORB_REF_GET(self);
-    return RESULT_OK(KORB_EXC_P(v) ? VAL2EXC(v)->backtrace : KORB_NIL);
+    if (!KORB_EXC_P(v)) return RESULT_OK(KORB_NIL);
+    const korb_value bt = VAL2EXC(v)->backtrace;
+    if (!KORB_ARRAY_P(bt) || VAL2ARY(bt)->len == 0 || KORB_STRING_P(korb_items_data(VAL2ARY(bt)->items)[0])) return RESULT_OK(bt);
+    const korb_value key = ID2SYM(korb_intern(c->vm, "@__bt_strs", 10));
+    const korb_value cached = korb_exc_ivar_get(v, key);
+    if (KORB_ARRAY_P(cached)) return RESULT_OK(cached);
+    const uint32_t n = VAL2ARY(bt)->len;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, n));
+    for (uint32_t i = 0; i < n; i++) {
+        slots[1] = korb_items_data(VAL2ARY(VAL2EXC(KORB_REF_GET(self))->backtrace)->items)[i];   /* re-read: to_s may GC */
+        const RESULT sr = korb_send(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        slots[1] = sr.value;
+        CHECK(korb_ary_push_val(c, slots + 2, KORB_REF_AT(&slots[0]), slots[1]));
+    }
+    korb_exc_ivar_set(c, slots + 1, self, key, slots[0]);
+    return RESULT_OK(slots[0]);
 }
 /* NameError#name → the missing constant/method/variable name (a Symbol), or nil. */
 static RESULT korb_m_exc_name(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
