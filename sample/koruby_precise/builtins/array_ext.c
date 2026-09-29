@@ -61,9 +61,23 @@ static long korb_pack_align_of(char d) {
  * String/etc. → TypeError.  May GC (dispatches #to_int); the caller re-reads its
  * array afterwards.  Uses scratch at `sc` (must not overlap the caller's rooted
  * template slot). */
+/* A Rational pack element truncates toward zero, as CRuby does (the quotient of
+ * num / den; a Bignum num or den keeps the exact value). */
+static void korb_pack_rat_trunc(VALUE r, korb_mp_t out) {
+    korb_mp_t n, d, rem;
+    korb_to_mpz(VAL2RAT(r)->num, n); korb_to_mpz(VAL2RAT(r)->den, d);
+    korb_mp_init(rem);
+    korb_mp_tdiv_qr(out, rem, n, d);
+    korb_mp_clear(n); korb_mp_clear(d); korb_mp_clear(rem);
+}
 static RESULT korb_pack_int_val(CTX *c, VALUE *sc, VALUE e, int64_t *out) {
     if (FIXNUM_P(e)) { *out = FIX2LONG(e); return RESULT_OK(KORB_NIL); }
     if (KORB_FLOAT_P(e)) { *out = (int64_t)korb_float_val(e); return RESULT_OK(KORB_NIL); }
+    if (KORB_RATIONAL_P(e)) {
+        korb_mp_t z; korb_mp_init(z); korb_pack_rat_trunc(e, z);
+        const uint64_t lo = (uint64_t)korb_mp_get_ui(z); *out = (korb_mp_sgn(z) < 0) ? -(int64_t)lo : (int64_t)lo;
+        korb_mp_clear(z); return RESULT_OK(KORB_NIL);
+    }
     if (KORB_BIGNUM_P(e)) { korb_mp_t z; korb_to_mpz(e, z); uint64_t lo = (uint64_t)korb_mp_get_ui(z); *out = (korb_mp_sgn(z) < 0) ? -(int64_t)lo : (int64_t)lo; korb_mp_clear(z); return RESULT_OK(KORB_NIL); }
     if (KORB_OBJECT_P(e) && korb_responds_to_coerce(c, sc, e, korb_intern(c->vm, "to_int", 6))) {
         const char *const on = korb_coerce_name(c, e);   /* interned: survives the dispatch below, unlike `e` */
@@ -82,6 +96,7 @@ static RESULT korb_pack_int_val(CTX *c, VALUE *sc, VALUE e, int64_t *out) {
 static RESULT korb_pack_mpz_val(CTX *c, VALUE *sc, VALUE e, korb_mp_t out) {
     if (FIXNUM_P(e)) { korb_mp_init_set_si(out, (long)FIX2LONG(e)); return RESULT_OK(KORB_NIL); }
     if (KORB_BIGNUM_P(e)) { korb_to_mpz(e, out); return RESULT_OK(KORB_NIL); }
+    if (KORB_RATIONAL_P(e)) { korb_mp_init(out); korb_pack_rat_trunc(e, out); return RESULT_OK(KORB_NIL); }
     if (KORB_FLOAT_P(e)) {
         const double dv = korb_float_val(e);
         if (UNLIKELY(!isfinite(dv)))                       /* Integer() of Inf/NaN, as CRuby's rb_to_int */

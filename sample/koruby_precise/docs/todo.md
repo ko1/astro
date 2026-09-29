@@ -5827,6 +5827,12 @@ astrogen のノードハッシュは `hash_cstr(name_syms)` を通る。parse.c 
 
 ## 未実装: Array#inspect / Hash#inspect の結果 encoding — 4 examples
 
+2026-09-29 部分対応: 全部 7bit の結果は「最初の要素（Hash は最初のキー、Range は begin）の inspect の encoding」を
+korb_inspect_first_text で辿って付ける（`[1, "x"]` → US-ASCII、`["x"]` → UTF-8。minitest の diff の `# encoding:` 見出しが揃う）。
+先頭が一般のオブジェクトのときは従来どおり「文字列を 1 つでも書いたか」。true/false/nil の #to_s、ASCII のクラス名、Complex、
+Encoding#inspect は US-ASCII にした。**残り**: 下の再エスケープ、Struct / Data / Object#inspect / Set / 無名クラスが CRuby では
+ASCII-8BIT（koruby は UTF-8 か US-ASCII）、Rational#to_s と Encoding#name / #to_s が UTF-8（CRuby は US-ASCII）。
+
 `core/array/inspect_spec.rb` / `core/hash/inspect_spec.rb` に各 2 例。
 
 CRuby の規則:
@@ -6087,3 +6093,10 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   バイト bitmap を保つため。クラスに非 ASCII があれば入る）。
 - 正規表現の RegexpError の文言でパターン中の不正バイトをエスケープしない（CRuby は `/\c\xFF/`、koruby は生のバイト）。
 - UTF-8 の正規表現で `\M-a` / `\xFF` を受け付ける（CRuby は invalid multibyte escape / too short escaped multibyte character）。
+
+## w17 で見つけた残り（2026-09-29）
+
+- **Hash#each / each_key / each_value / each_pair の block なし Enumerator の #size が作った時点の値**（CRuby は受け手に聞き直す）。
+  hash.c の korb_hash_each_kv が要素を配列に写して Enumerator を作るため。Array / Set は `to_enum(meth) { size }` で追従する。
+- **ruby2ruby**: テストが `Prism::Translation::RubyParser#process` を呼ぶ。同梱 prism 1.4.0 には無い（1.9.0 にはある）。同梱 prism の更新待ち。
+- **typeprof**: C 拡張（rbs）が要る。

@@ -902,6 +902,7 @@ static inline bool korb_eq_needs_send_d(VALUE v, int depth)
 {
     if (!AROH_IS_GC_OBJECT(v)) return false;             /* immediates (array elements reach here) */
     if (KORB_OBJECT_P(v) || KORB_EXC_P(v) || KORB_OBJ_TYPE(v) == KORB_OBJ_PROC || KORB_OBJ_TYPE(v) == KORB_OBJ_METHOD) return true;
+    if (KORB_OBJ_TYPE(v) == KORB_OBJ_REGEXP) return true;   /* its identity (#options, encoding) is derived lazily, per VM */
     /* a builtin subclass's instance (Sexp < Array) may define #hash / #eql? / #==; CRuby
      * hashes a String subclass directly, so that one stays on the fast path */
     if ((((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS) && KORB_OBJ_TYPE(v) != KORB_OBJ_STRING) return true;
@@ -912,6 +913,8 @@ static inline bool korb_eq_needs_send_d(VALUE v, int depth)
             if (korb_eq_needs_send_d(korb_items_data(arr__->items)[i], depth + 1)) return true;
         return false;
     }
+    if (KORB_RANGE_P(v))                                  /* Range#== compares its ends with == */
+        return depth >= 4 || korb_eq_needs_send_d(VAL2RANGE(v)->rbegin, depth + 1) || korb_eq_needs_send_d(VAL2RANGE(v)->rend, depth + 1);
     return KORB_HASH_P(v) || KORB_SET_P(v);
 }
 static bool korb_eq_needs_send_slow(VALUE v) __attribute__((noinline, unused));
@@ -930,8 +933,15 @@ static inline bool korb_eq_needs_send(VALUE v) {
 /* `a == b` must be sent (rb_equal): not for the same object, which is equal
  * without asking — a user #== answering false for itself still matches.
  * `redef`: a builtin's #== was reopened, so no structural shortcut holds. */
+/* A String subclass's instance: hashing keeps it on the String fast path (CRuby
+ * does), but `==` (rb_equal) asks its own #== */
+static inline bool korb_str_sub_p(VALUE v) {
+    return AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_STRING &&
+           (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS);
+}
 static inline bool korb_eq_send_p_(bool redef, VALUE a, VALUE b) {
-    return a != b && (UNLIKELY(redef) || korb_eq_needs_send(a) || korb_eq_needs_send(b));
+    return a != b && (UNLIKELY(redef) || korb_eq_needs_send(a) || korb_eq_needs_send(b) ||
+                      korb_str_sub_p(a) || korb_str_sub_p(b));
 }
 #define KORB_EQ_REDEF(c) ((c)->vm->value_eq_redefined || (c)->vm->basic_op_redefined)
 #define VAL2SET(v)         ((KorbSet *)(uintptr_t)KORB_SC(v))

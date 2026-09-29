@@ -224,8 +224,9 @@ class Complex
     s += "*" unless d && d >= 48 && d <= 57
     s + "i"
   end
-  def to_s; __format(false); end
-  def inspect; "(" + __format(true) + ")"; end
+  def to_s; __usascii(__format(false)); end
+  def inspect; __usascii("(" + __format(true) + ")"); end
+  private def __usascii(s) = s.ascii_only? ? s.force_encoding(Encoding::US_ASCII) : s   # CRuby's encoding
   # CRuby undefines the ordering/rounding half of Numeric on Complex.
   undef_method :%, :<, :<=, :>, :>=, :between?, :clamp, :div, :divmod,
                :floor, :ceil, :modulo, :round, :step, :truncate,

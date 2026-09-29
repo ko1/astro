@@ -12,10 +12,30 @@ struct korb_tc_mb_ent { const char *name; const struct korb_tc_pair *by_bytes, *
 
 #include "transcode_tables.h"
 
+/* IBM037 (EBCDIC): all 256 bytes → codepoint, from CRuby 4.1.0 (EBCDIC is not ASCII-transparent). */
+static const uint16_t korb_sb256_IBM037[256] = {
+    0x0000, 0x0001, 0x0002, 0x0003, 0x009C, 0x0009, 0x0086, 0x007F, 0x0097, 0x008D, 0x008E, 0x000B, 0x000C, 0x000D, 0x000E, 0x000F,
+    0x0010, 0x0011, 0x0012, 0x0013, 0x009D, 0x0085, 0x0008, 0x0087, 0x0018, 0x0019, 0x0092, 0x008F, 0x001C, 0x001D, 0x001E, 0x001F,
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x000A, 0x0017, 0x001B, 0x0088, 0x0089, 0x008A, 0x008B, 0x008C, 0x0005, 0x0006, 0x0007,
+    0x0090, 0x0091, 0x0016, 0x0093, 0x0094, 0x0095, 0x0096, 0x0004, 0x0098, 0x0099, 0x009A, 0x009B, 0x0014, 0x0015, 0x009E, 0x001A,
+    0x0020, 0x00A0, 0x00E2, 0x00E4, 0x00E0, 0x00E1, 0x00E3, 0x00E5, 0x00E7, 0x00F1, 0x00A2, 0x002E, 0x003C, 0x0028, 0x002B, 0x007C,
+    0x0026, 0x00E9, 0x00EA, 0x00EB, 0x00E8, 0x00ED, 0x00EE, 0x00EF, 0x00EC, 0x00DF, 0x0021, 0x0024, 0x002A, 0x0029, 0x003B, 0x00AC,
+    0x002D, 0x002F, 0x00C2, 0x00C4, 0x00C0, 0x00C1, 0x00C3, 0x00C5, 0x00C7, 0x00D1, 0x00A6, 0x002C, 0x0025, 0x005F, 0x003E, 0x003F,
+    0x00F8, 0x00C9, 0x00CA, 0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x0060, 0x003A, 0x0023, 0x0040, 0x0027, 0x003D, 0x0022,
+    0x00D8, 0x0061, 0x0062, 0x0063, 0x0064, 0x0065, 0x0066, 0x0067, 0x0068, 0x0069, 0x00AB, 0x00BB, 0x00F0, 0x00FD, 0x00FE, 0x00B1,
+    0x00B0, 0x006A, 0x006B, 0x006C, 0x006D, 0x006E, 0x006F, 0x0070, 0x0071, 0x0072, 0x00AA, 0x00BA, 0x00E6, 0x00B8, 0x00C6, 0x00A4,
+    0x00B5, 0x007E, 0x0073, 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x0079, 0x007A, 0x00A1, 0x00BF, 0x00D0, 0x00DD, 0x00DE, 0x00AE,
+    0x005E, 0x00A3, 0x00A5, 0x00B7, 0x00A9, 0x00A7, 0x00B6, 0x00BC, 0x00BD, 0x00BE, 0x005B, 0x005D, 0x00AF, 0x00A8, 0x00B4, 0x00D7,
+    0x007B, 0x0041, 0x0042, 0x0043, 0x0044, 0x0045, 0x0046, 0x0047, 0x0048, 0x0049, 0x00AD, 0x00F4, 0x00F6, 0x00F2, 0x00F3, 0x00F5,
+    0x007D, 0x004A, 0x004B, 0x004C, 0x004D, 0x004E, 0x004F, 0x0050, 0x0051, 0x0052, 0x00B9, 0x00FB, 0x00FC, 0x00F9, 0x00FA, 0x00FF,
+    0x005C, 0x00F7, 0x0053, 0x0054, 0x0055, 0x0056, 0x0057, 0x0058, 0x0059, 0x005A, 0x00B2, 0x00D4, 0x00D6, 0x00D2, 0x00D3, 0x00D5,
+    0x0030, 0x0031, 0x0032, 0x0033, 0x0034, 0x0035, 0x0036, 0x0037, 0x0038, 0x0039, 0x00B3, 0x00DB, 0x00DC, 0x00D9, 0x00DA, 0x009F,
+};
+
 enum korb_tc_kind {
     KTC_NONE = 0, KTC_UTF8, KTC_ASCII, KTC_BINARY,
     KTC_UTF16LE, KTC_UTF16BE, KTC_UTF32LE, KTC_UTF32BE,
-    KTC_SB, KTC_MB, KTC_ISO2022JP,
+    KTC_SB, KTC_MB, KTC_ISO2022JP, KTC_STATELESS2022JP, KTC_SB256,
 };
 
 /* legacy multi-byte families whose byte STRUCTURE is wider than the set of
@@ -27,7 +47,7 @@ enum korb_tc_kind {
 struct korb_tc {
     uint8_t kind;
     uint8_t fam;
-    const uint16_t *sb;                       /* KTC_SB: 0x80..0xFF → codepoint */
+    const uint16_t *sb;                       /* KTC_SB: 0x80..0xFF → codepoint; KTC_SB256: every byte */
     const struct korb_tc_pair *by_bytes, *by_cp;   /* KTC_MB */
     uint32_t nb, n;
 };
@@ -40,6 +60,7 @@ static const struct { const char *alias, *real; } korb_tc_alias[] = {
     { "eucJP", "EUC-JP" }, { "euc-jp-ms", "eucJP-ms" },
     { "UTF8-MAC", "UTF-8" }, { "UTF8-DoCoMo", "UTF-8" }, { "UTF8-KDDI", "UTF-8" },
     { "UTF8-SoftBank", "UTF-8" }, { "CESU-8", "UTF-8" },
+    { "ISO-2022-JP-KDDI", "ISO-2022-JP" }, { "stateless-ISO-2022-JP-KDDI", "stateless-ISO-2022-JP" },   /* without the carrier emoji */
     { "CP50220", "ISO-2022-JP" }, { "CP50221", "ISO-2022-JP" }, { "ISO2022-JP", "ISO-2022-JP" },
     { "CP1250", "Windows-1250" }, { "CP1251", "Windows-1251" }, { "CP1252", "Windows-1252" },
     { "CP1253", "Windows-1253" }, { "CP1254", "Windows-1254" }, { "CP1255", "Windows-1255" },
@@ -63,6 +84,18 @@ static bool korb_tc_find(const char *name, struct korb_tc *out)
     if (strcasecmp(name, "UTF-16BE") == 0)   { out->kind = KTC_UTF16BE; return true; }
     if (strcasecmp(name, "UTF-32LE") == 0)   { out->kind = KTC_UTF32LE; return true; }
     if (strcasecmp(name, "UTF-32BE") == 0)   { out->kind = KTC_UTF32BE; return true; }
+    if (strcasecmp(name, "stateless-ISO-2022-JP") == 0) {   /* JIS X 0208 as 0x92 + the EUC-JP pair; ASCII as is */
+        for (size_t i = 0; korb_tc_mb_table[i].name; i++)
+            if (strcasecmp("EUC-JP", korb_tc_mb_table[i].name) == 0) {
+                out->kind = KTC_STATELESS2022JP;
+                out->by_bytes = korb_tc_mb_table[i].by_bytes;
+                out->by_cp    = korb_tc_mb_table[i].by_cp;
+                out->n        = korb_tc_mb_table[i].n;
+                out->nb       = korb_tc_mb_table[i].nb;
+                return true;
+            }
+        return false;
+    }
     if (strcasecmp(name, "ISO-2022-JP") == 0) {          /* stateful: JIS X 0208 via the EUC-JP table */
         for (size_t i = 0; korb_tc_mb_table[i].name; i++)
             if (strcasecmp("EUC-JP", korb_tc_mb_table[i].name) == 0) {
@@ -75,6 +108,7 @@ static bool korb_tc_find(const char *name, struct korb_tc *out)
             }
         return false;
     }
+    if (strcasecmp(name, "IBM037") == 0 || strcasecmp(name, "ebcdic-cp-us") == 0) { out->kind = KTC_SB256; out->sb = korb_sb256_IBM037; return true; }
     for (size_t i = 0; korb_tc_sb_table[i].name; i++)
         if (strcasecmp(name, korb_tc_sb_table[i].name) == 0) {
             out->kind = KTC_SB; out->sb = korb_tc_sb_table[i].tab; return true;
@@ -161,6 +195,14 @@ static uint32_t korb_tc_decode(const struct korb_tc *tc, const unsigned char *p,
         const uint16_t v = tc->sb[p[0] - 0x80];
         if (v == 0xFFFF) return 0;
         *cp = v; return 1;
+      }
+      case KTC_SB256: *cp = tc->sb[p[0]]; return 1;
+      case KTC_STATELESS2022JP: {
+        if (p[0] < 0x80) { *cp = p[0]; return 1; }
+        if (p[0] != 0x92 || len < 3) return 0;
+        const struct korb_tc_pair *const e = korb_tc_mb_bytes(tc, ((uint32_t)p[1] << 8) | p[2], 2);
+        if (!e) return 0;
+        *cp = e->cp; return 3;
       }
       case KTC_MB: {
         if (p[0] < 0x80) { *cp = p[0]; return 1; }
@@ -277,7 +319,7 @@ static bool korb_enc_bytes_valid(const struct korb_vm *const vm, const uint32_t 
 {
     struct korb_tc tc;
     if (!korb_tc_find(korb_enc_name_of(vm, enc), &tc)) return true;
-    if (tc.kind == KTC_ISO2022JP || tc.kind == KTC_SB) return true;   /* single-byte: every byte is a character, mapped or not */
+    if (tc.kind == KTC_ISO2022JP || tc.kind == KTC_SB || tc.kind == KTC_SB256) return true;   /* single-byte: every byte is a character, mapped or not */
     const unsigned char *const p = (const unsigned char *)bytes;
     for (uint32_t i = 0; i < len; ) {
         uint32_t cp = 0;
@@ -320,6 +362,17 @@ static uint32_t korb_tc_encode(const struct korb_tc *tc, uint32_t cp, unsigned c
         for (uint32_t i = 0; i < 128; i++)
             if (tc->sb[i] == cp) { out[0] = (unsigned char)(0x80 + i); return 1; }
         return 0;
+      case KTC_SB256:
+        for (uint32_t i = 0; i < 256; i++)
+            if (tc->sb[i] == cp) { out[0] = (unsigned char)i; return 1; }
+        return 0;
+      case KTC_STATELESS2022JP: {
+        if (cp < 0x80) { out[0] = (unsigned char)cp; return 1; }
+        const struct korb_tc_pair *const e = korb_tc_mb_cp(tc, cp);
+        if (!e || e->n != 2 || ((e->bytes >> 8) & 0xFF) < 0xA1) return 0;   /* JIS X 0208 only */
+        out[0] = 0x92; out[1] = (unsigned char)(e->bytes >> 8); out[2] = (unsigned char)e->bytes;
+        return 3;
+      }
       case KTC_MB: {
         if (cp < 0x80) { out[0] = (unsigned char)cp; return 1; }
         const struct korb_tc_pair *const e = korb_tc_mb_cp(tc, cp);
@@ -450,7 +503,7 @@ static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
             /* well-formed in the source encoding but with no Unicode mapping: an
              * undefined conversion of the whole character, not invalid bytes (CRuby) */
             const signed char (*const tr)[256] = korb_enc_trans_by_name(fromb);
-            const int32_t sl = from.kind == KTC_SB ? 1        /* every byte of a single-byte encoding is well-formed */
+            const int32_t sl = (from.kind == KTC_SB || from.kind == KTC_SB256) ? 1   /* every byte of a single-byte encoding is well-formed */
                              : tr != NULL ? korb_enc_trans_len(tr, src, (uint32_t)i, (uint32_t)slen) : 0;
             if (sl > 0) {
                 if (!(flags & 2u)) { errcode = 4; errpos = i; errcp = 0; errlen = (uint32_t)sl; break; }
@@ -609,7 +662,7 @@ static uint32_t korb_tc_bytes_chr(const char *enc, uint32_t v, unsigned char *ou
     for (uint32_t i = 0; i < n; i++) out[i] = (unsigned char)((v >> (8 * (n - 1 - i))) & 0xFF);
     uint32_t cp = 0;
     if (tc.kind == KTC_ISO2022JP) return n;                  /* stateful: accept as given */
-    if (tc.kind == KTC_SB && n == 1) return 1;               /* a single-byte encoding: every byte is a character (0x81 in Windows-1252) */
+    if ((tc.kind == KTC_SB || tc.kind == KTC_SB256) && n == 1) return 1;   /* a single-byte encoding: every byte is a character (0x81 in Windows-1252) */
     if (korb_tc_decode(&tc, out, n, &cp) == n) return n;
     /* CRuby validates the byte STRUCTURE, not that the pair maps to Unicode:
      * an unassigned but well-formed two-byte code is still a character. */

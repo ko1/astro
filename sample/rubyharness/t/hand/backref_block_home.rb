@@ -66,3 +66,16 @@ def in_thread
   Thread.new { $2 }.value
 end
 p in_thread
+
+# a block inside such a block (gsub under a yield) sees gsub's match (nickel)
+def ns(s, re)
+  m = s.match(re)
+  yield(*m.captures)
+end
+def st
+  "zz" =~ /(z)/
+  ns("jan 2nd 3rd", /(jan) (.*)/) do |m1, m2|
+    m2.gsub(/(\d)(nd|rd)/) { m1 + "/" + Regexp.last_match(1) + $2 }
+  end
+end
+p st

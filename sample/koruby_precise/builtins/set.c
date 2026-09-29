@@ -90,7 +90,6 @@ static RESULT korb_m_set_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_set_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(VAL2ARY(SELF_SET->elems)->len)); }
 static RESULT korb_m_set_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VAL2ARY(SELF_SET->elems)->len == 0 ? KORB_TRUE : KORB_FALSE); }
-static RESULT korb_m_set_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_set_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     int32_t idx;
     CHECK(korb_set_find(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), &idx));
@@ -290,6 +289,10 @@ static RESULT korb_set_binop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     VALUE_REF oref = VALUE_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_set_alloc(c, slots + 1, by_id));
     VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    if (((const AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self))->flags & KORB_FL_HAS_KLASS) {   /* result is the receiver's subclass (CRuby) */
+        const VALUE ov = korb_copy_klass(c, korb_klass_override_get(c->vm, VALUE_REF_GET(self)), VALUE_REF_GET(self));
+        if (ov != KORB_NIL) korb_klass_override_set(c, VALUE_REF_GET(dst), ov);
+    }
     if (op == 0) {
         slots[2] = SELF_SET->elems;
         CHECK(korb_set_add_all(c, slots + 3, dst, VALUE_REF_AT(&slots[2])));
@@ -324,6 +327,9 @@ static RESULT korb_m_set_diff(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_set_xor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_set_binop(c, slots, self, a, 3); }
 static RESULT korb_m_set_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    const uint32_t na = VALUE_SLICE_LEN(a);
+    if (UNLIKELY(na >= 1 && korb_kwargs_hash_p(VALUE_SLICE_GET(a, na - 1))))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no keywords accepted");
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {       /* merge(*enums) — each Set or Array */
         VALUE ov;                                         /* any enumerable, not just a Set/Array */
         CHECK(korb_set_other_elems(c, slots, VALUE_SLICE_GET(a, k), &ov));
@@ -460,6 +466,33 @@ static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     free(buf);
     return r;
 }
+static bool korb_sym_shows_raw(const struct korb_vm *vm, const char *nm, uint32_t len, uint32_t enc);   /* fwd */
+static bool korb_sym_label_bare(const char *nm);                                                         /* fwd */
+/* CRuby gives a container's #inspect its FIRST element's result encoding (rb_enc_copy):
+ * 1 = a String's (text), 0 = US-ASCII, -1 = not known here. */
+static int korb_inspect_first_text(const struct korb_vm *const vm, VALUE v, const int depth) {
+    for (int d = depth; d < 32; d++) {
+        if (KORB_STRING_P(v)) return 1;
+        if (FIXNUM_P(v) || SYMBOL_P(v) || KORB_FLOAT_P(v) || KORB_BIGNUM_P(v) || KORB_RATIONAL_P(v) || KORB_COMPLEX_P(v) ||
+            v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE) return 0;
+        if (!AROH_IS_GC_OBJECT(v) || (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS)) return -1;
+        if (KORB_ARRAY_P(v)) {
+            if (VAL2ARY(v)->len == 0) return 0;
+            v = korb_items_data(VAL2ARY(v)->items)[0];
+        } else if (KORB_HASH_P(v)) {
+            if (VAL2HASH(v)->len == 0) return 0;
+            v = korb_items_data(VAL2HASH(v)->items)[0];
+            if (SYMBOL_P(v)) {                                   /* `name: ` label form, or quoted */
+                const char *const nm = korb_sym_name(vm, SYM2ID(v));
+                return korb_sym_shows_raw(vm, nm, vm->sym_lens[SYM2ID(v)], vm->sym_encs[SYM2ID(v)]) && korb_sym_label_bare(nm) ? 0 : -1;
+            }
+        } else if (KORB_RANGE_P(v)) {
+            if (VAL2RANGE(v)->rbegin == KORB_NIL) return -1;
+            v = VAL2RANGE(v)->rbegin;
+        } else return -1;
+    }
+    return -1;
+}
 static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     /* Start clean: a formatter call that does NOT re-raise (korb_raise_frozen_at
@@ -572,7 +605,8 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
      * String's is the default external — US-ASCII when that is not ASCII-compatible) */
     if (LIKELY(r.state == KORB_NORMAL) && !KORB_STRING_P(VALUE_REF_GET(self))) {
         const bool ext_ok = korb_enc_ascii_compat_idx(c->vm, c->vm->enc_external);
-        if (ascii) KORB_STR_ENC_SET(r.value, text && ext_ok ? c->vm->enc_external : KORB_ENC_USASCII);
+        const int first = ascii ? korb_inspect_first_text(c->vm, VALUE_REF_GET(self), 0) : -1;
+        if (ascii) KORB_STR_ENC_SET(r.value, (first >= 0 ? first == 1 : text) && ext_ok ? c->vm->enc_external : KORB_ENC_USASCII);
         else if (ext_ok) KORB_STR_ENC_SET(r.value, c->vm->enc_external);   /* raw bytes are in the external's encoding */
     }
     return r;
@@ -1451,7 +1485,7 @@ static bool korb_fprint_refinement_tostr(CTX *c, FILE *ms, VALUE cls);
 static void korb_fprint_class_tostr(CTX *c, FILE *ms, VALUE cls) {
     const KorbClass *const k = VAL2CLASS(cls);
     if (korb_fprint_refinement_tostr(c, ms, cls)) return;
-    if (k->name_sym != 0) { korb_fprint_class_qname(c, ms, cls); return; }
+    if (k->name_sym != 0 || k->temp_name_sym != 0) { korb_fprint_class_qname(c, ms, cls); return; }
     if (k->is_singleton) {
         const VALUE att = korb_singleton_attached(c, cls);
         if (att != KORB_NIL) {
@@ -1460,6 +1494,12 @@ static void korb_fprint_class_tostr(CTX *c, FILE *ms, VALUE cls) {
             fputc('>', ms);
             return;
         }
+    }
+    VALUE meta = (k->is_module && (k->head.flags & KORB_FL_HAS_KLASS)) ? korb_klass_override_get(c->vm, cls) : KORB_NIL;
+    while (KORB_CLASS_P(meta) && VAL2CLASS(meta)->is_singleton) meta = VAL2CLASS(meta)->superclass;
+    if (KORB_CLASS_P(meta) && meta != korb_const_get(c->vm, korb_intern(c->vm, "Module", 6))) {   /* an instance of a Module subclass names it */
+        fputs("#<", ms); korb_fprint_class_tostr(c, ms, meta); fprintf(ms, ":0x%016zx>", (size_t)(uintptr_t)cls);
+        return;
     }
     fprintf(ms, "#<%s:0x%016zx>", k->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls);
 }
@@ -1497,7 +1537,7 @@ static RESULT korb_m_class_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             return r;
         }
     }
-    if (k->name_sym == 0 || KORB_CLASS_P(korb_refinement_target(c->vm, cls))) {   /* anonymous / singleton / refinement → formatted form */
+    if ((k->name_sym == 0 && k->temp_name_sym == 0) || KORB_CLASS_P(korb_refinement_target(c->vm, cls))) {   /* anonymous / singleton / refinement → formatted form */
         char *buf = NULL; size_t sz = 0;
         FILE *ms = open_memstream(&buf, &sz);
         if (!ms) { char b[48]; int n = snprintf(b, sizeof b, "#<%s:0x%016zx>", k->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls); return korb_str_new(c, slots, b, (uint32_t)n); }
@@ -2413,6 +2453,10 @@ static RESULT korb_method_defined_vis(CTX *c, VALUE *slots, VALUE_REF self, VALU
     if (me == NULL && KORB_CLASS_P(cls) && korb_class_has_ancestor(cls, korb_builtin_class_obj(c->vm, KORB_C_OBJECT)))
         me = korb_toplevel_def(c->vm, mid);
     if (me == NULL) {
+        const bool bsend = mid == c->vm->mid___send__;
+        const VALUE own = korb_const_get(c->vm, bsend ? korb_intern(c->vm, "BasicObject", 11) : korb_intern(c->vm, "Kernel", 6));
+        if (KORB_CLASS_P(cls) && KORB_CLASS_P(own) && cls != own && !korb_class_has_ancestor(cls, own))
+            return RESULT_OK(KORB_FALSE);                        /* a plain module: no Kernel methods */
         /* Kernel-private builtins (global table) are private methods every class
          * inherits via Kernel: private_method_defined? true, public/method false. */
         const struct korb_method *const gm = korb_method_lookup(c->vm, mid);
@@ -2612,7 +2656,7 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         }
         /* top-level fallback: for a leading `::`, or (with inherit) a first
          * component whose owner search missed — but never for inherit=false. */
-        if (idx == UINT32_MAX && (leading_top || (inherit && first &&   /* a BasicObject subclass does not reach Object's */
+        if (idx == UINT32_MAX && first && (leading_top || (inherit &&   /* a BasicObject subclass does not reach Object's */
                                   (!KORB_CLASS_P(owner) || VAL2CLASS(owner)->is_module ||
                                    korb_class_le(owner, korb_builtin_class_obj(vm, KORB_C_OBJECT))))))
             idx = korb_const_index_owned(vm, cid, KORB_NIL);

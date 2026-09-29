@@ -126,6 +126,7 @@ NODE_DEF
 node_regexp_dyn(CTX *c, NODE *n, VALUE *slots, uint32_t flags, VALUE src@child)
 {
     (void)n;
+    korb_dregx_src_enc(c->vm, src);
     return korb_regexp_new(c, slots, src, flags);
 }
 
@@ -137,6 +138,7 @@ node_regexp_once(CTX *c, NODE *n, VALUE *slots, uint32_t flags, NODE *src)
     const VALUE hit = korb_once_get(c->vm, n);
     if (hit) return RESULT_OK(hit);
     slots[0] = UNWRAP(EVAL_ARG(c, src));
+    korb_dregx_src_enc(c->vm, slots[0]);
     const VALUE re = UNWRAP(korb_regexp_new(c, slots + 1, slots[0], flags));
     const VALUE again = korb_once_get(c->vm, n);      /* the interpolation itself may have run this node */
     if (again) return RESULT_OK(again);
@@ -837,7 +839,8 @@ node_eq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, c->vm->mid_eq, 0, 1));
     }
     if (KORB_OBJECT_P(l) || KORB_METHOD_P(l) || KORB_EXC_P(l) || KORB_HASH_P(l) || KORB_ARRAY_P(l)
-        || KORB_REGEXP_P(l) || KORB_MATCHDATA_P(l) || KORB_PROC_P(l)) {   /* value == (user instance / Method / Hash / Array / Regexp / MatchData / Proc) → dispatch */
+        || KORB_REGEXP_P(l) || KORB_MATCHDATA_P(l) || KORB_PROC_P(l)
+        || (AROH_IS_GC_OBJECT(l) && (((const AroObjectHeader *)(uintptr_t)l)->flags & KORB_FL_HAS_KLASS))) {   /* value == (user instance / Method / Hash / Array / Regexp / MatchData / Proc / a builtin subclass's instance, which may define its own #==) → dispatch */
         slots[0] = l; slots[1] = rhs;
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, c->vm->mid_eq, 0, 1));
     }
@@ -903,7 +906,8 @@ node_neq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "!=", 2), 0, 1));
     }
     if (KORB_OBJECT_P(l) || KORB_EXC_P(l) || KORB_HASH_P(l) || KORB_ARRAY_P(l)
-        || KORB_REGEXP_P(l) || KORB_MATCHDATA_P(l)) {      /* dispatch #!= — honours a user-defined `!=`, else Object#!= (= !(==)) */
+        || KORB_REGEXP_P(l) || KORB_MATCHDATA_P(l)
+        || (AROH_IS_GC_OBJECT(l) && (((const AroObjectHeader *)(uintptr_t)l)->flags & KORB_FL_HAS_KLASS))) {   /* dispatch #!= — honours a user-defined `!=` / `==` (also a builtin subclass's), else Object#!= (= !(==)) */
         slots[0] = l; slots[1] = rhs;
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "!=", 2), 0, 1));
     }
@@ -2995,12 +2999,20 @@ node_bref_block(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t frame_size)
     (void)n;
     const VALUE *const base = slots - frame_size;
     const VALUE *const hb = korb_block_home_base(c->vm, base);
+    /* From the top: the lowest method entry above the home frame holds the home's
+     * value; a marker this node left for the same home (tag bit 1) means the
+     * cell already holds it (a block inside such a block, e.g. under gsub). */
     uint32_t k = UINT32_MAX;
     if (hb != NULL && hb >= c->slots && hb < c->slots_limit)   /* the same stack as the bref entries */
-        for (uint32_t i = 0; i < c->bref_n; i++) if (c->bref_base[i] > hb) { k = i; break; }
+        for (uint32_t i = c->bref_n; i-- > 0; ) {
+            const uintptr_t eb = (uintptr_t)c->bref_base[i];
+            if (eb & 1u) { if ((const VALUE *)(eb & ~(uintptr_t)1u) == hb) break; continue; }
+            if ((const VALUE *)eb <= hb) break;
+            k = i;
+        }
     if (LIKELY(k == UINT32_MAX)) return EVAL_ARG(c, body);
     VALUE *cell = korb_re_tilde_cell(c);
-    korb_bref_push(c, *cell, base);                     /* the yielding method's $~ (rooted) */
+    korb_bref_push(c, *cell, (const VALUE *)((uintptr_t)hb | 1u));   /* the yielding method's $~ (rooted), marked with the home */
     *cell = c->bref_saved[k];
     const RESULT r = EVAL_ARG(c, body);
     cell = korb_re_tilde_cell(c);                       /* re-read: the table may have grown */

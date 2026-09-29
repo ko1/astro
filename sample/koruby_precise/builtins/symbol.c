@@ -40,6 +40,7 @@ static RESULT korb_cached_frozen_str(CTX *c, VALUE *slots, VALUE *cache, const c
     RESULT r = korb_str_new(c, slots, s, len);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;
+    KORB_STR_ENC_SET(r.value, KORB_ENC_USASCII);          /* nil/true/false #to_s (CRuby) */
     *cache = r.value;                                    /* store in the vm (a GC root) */
     return RESULT_OK(*cache);
 }
@@ -1214,7 +1215,8 @@ static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self,
             const VALUE own = korb_const_get(c->vm, korb_intern(c->vm,
                                   mid == c->vm->mid___send__ ? "BasicObject" : "Kernel",
                                   mid == c->vm->mid___send__ ? 11 : 6));
-            return korb_unbound_new(c, slots, KORB_CLASS_P(own) ? own : cls, mid);
+            if (!KORB_CLASS_P(own)) return korb_unbound_new(c, slots, cls, mid);
+            if (cls == own || korb_class_has_ancestor(cls, own)) return korb_unbound_new(c, slots, own, mid);   /* not on a plain module */
         }
         if (KORB_CLASS_P(cls) && korb_toplevel_def(c->vm, mid) &&
             korb_class_has_ancestor(cls, korb_builtin_class_obj(c->vm, KORB_C_OBJECT)))

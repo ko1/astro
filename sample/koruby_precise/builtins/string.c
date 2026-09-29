@@ -840,13 +840,7 @@ static uint32_t korb_enc_fixed_unit(const struct korb_vm *vm, uint32_t enc, bool
 /* ASCII-compatible = one byte per ASCII character, mapping to itself.  The
  * UTF-16/32 families, UTF-7 and the stateful ISO-2022 / CP502xx encodings
  * are not (mirrors Encoding#ascii_compatible? in prelude/encoding.rb). */
-static bool korb_enc_ascii_compat(const struct korb_vm *vm, uint32_t enc) {
-    if (enc < KORB_ENC_OTHER_MIN || enc >= KORB_STR_ENC_MAX || vm->str_enc_names[enc] == 0) return true;
-    const char *const nm = korb_sym_name(vm, vm->str_enc_names[enc]);
-    return !(strncasecmp(nm, "UTF-16", 6) == 0 || strncasecmp(nm, "UTF-32", 6) == 0 ||
-             strcasecmp(nm, "UTF-7") == 0 || strncasecmp(nm, "ISO-2022", 8) == 0 ||
-             strncasecmp(nm, "CP502", 5) == 0);
-}
+static bool korb_enc_ascii_compat(const struct korb_vm *vm, uint32_t enc) { return korb_enc_ascii_compat_idx(vm, enc); }
 /* CRuby raises this before parsing a number out of a non-ASCII-compatible
  * String (#to_i / #to_f / #to_r / #to_c / #undump). */
 static RESULT korb_str_need_ascii_compat(CTX *c, VALUE *slots, VALUE v) {

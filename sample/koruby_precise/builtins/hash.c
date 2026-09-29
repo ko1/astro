@@ -164,6 +164,14 @@ static RESULT korb_deep_hash_r(CTX *c, VALUE *slots, VALUE v, uint32_t depth, bo
         *out = h;
         return RESULT_OK(KORB_NIL);
     }
+    if (KORB_RANGE_P(v)) {                                /* same mix as korb_deep_hash_d, ends dispatched */
+        slots[0] = v;
+        uint64_t bh, eh;
+        CHECK(korb_deep_hash_r(c, slots + 1, VAL2RANGE(slots[0])->rbegin, depth + 1, cycle, &bh));
+        CHECK(korb_deep_hash_r(c, slots + 1, VAL2RANGE(slots[0])->rend, depth + 1, cycle, &eh));
+        *out = ((0x9e3779b1ULL + (VAL2RANGE(slots[0])->exclude_end ? 1u : 0u)) * 31u + bh) * 31u + eh;
+        return RESULT_OK(KORB_NIL);
+    }
     *out = korb_deep_hash_d(c, v, depth, cycle);
     return RESULT_OK(KORB_NIL);
 }

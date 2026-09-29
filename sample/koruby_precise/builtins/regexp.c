@@ -1207,21 +1207,30 @@ static RESULT korb_m_re_named_captures(CTX *c, VALUE *slots, VALUE_REF self, VAL
 }
 /* == and hash ignore the /n (NOENCODING, 128) flag — CRuby treats it as
  * encoding metadata, not part of the compiled-pattern identity. */
+/* Regexp#== besides the source (CRuby rb_reg_equal): i/m/x and FIXEDENCODING here, the
+ * encoding by #encoding (internal bits such as a literal's /u marker differ for equal patterns). */
+static uint32_t korb_re_ident(const struct korb_vm *const vm, const VALUE re) {
+    return (uint32_t)korb_re_ruby_opts(korb_re_u8_flags(vm, re)) & (7u | 16u);
+}
 static RESULT korb_m_re_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE o = VALUE_SLICE_GET(a, 0), s = VALUE_REF_GET(self);
     if (o == s) return RESULT_OK(KORB_TRUE);
     if (!KORB_REGEXP_P(o)) return RESULT_OK(KORB_FALSE);
     KORB_RE_CHECK(c, slots, self);
     if (UNLIKELY(VAL2RE(o)->flags & KORB_RE_UNINIT)) return korb_raise(c, slots, KORB_E_TYPE, 0, "uninitialized Regexp");
-    if (KORB_RE_ID_FLAGS(VAL2RE(s)->flags) != KORB_RE_ID_FLAGS(VAL2RE(o)->flags)) return RESULT_OK(KORB_FALSE);
+    if (korb_re_ident(c->vm, s) != korb_re_ident(c->vm, o)) return RESULT_OK(KORB_FALSE);
     const KorbString *a1 = VAL2STR(VAL2RE(s)->source), *b1 = VAL2STR(VAL2RE(o)->source);
     if (a1->len != b1->len || memcmp(korb_strbuf_data(a1->buf), korb_strbuf_data(b1->buf), a1->len) != 0) return RESULT_OK(KORB_FALSE);
-    return RESULT_OK(KORB_TRUE);
+    slots[0] = o;
+    slots[1] = UNWRAP(korb_send_impl(c, slots + 1, korb_intern(c->vm, "encoding", 8), 0, 0, NULL, NULL, NULL));
+    slots[2] = VALUE_REF_GET(self);
+    const VALUE se = UNWRAP(korb_send_impl(c, slots + 3, korb_intern(c->vm, "encoding", 8), 0, 0, NULL, NULL, NULL));
+    return RESULT_OK(se == slots[1] ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_re_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; KORB_RE_CHECK(c, slots, self);
     const KorbString *src = VAL2STR(VAL2RE(VALUE_REF_GET(self))->source);
-    uint32_t h = korb_str_hash(korb_strbuf_data(src->buf), src->len) ^ (KORB_RE_ID_FLAGS(VAL2RE(VALUE_REF_GET(self))->flags) * 2654435761u);
+    uint32_t h = korb_str_hash(korb_strbuf_data(src->buf), src->len) ^ (korb_re_ident(c->vm, VALUE_REF_GET(self)) * 2654435761u);
     return RESULT_OK(LONG2FIX((long)h));
 }
 /* Regexp#match(str[,pos]) → MatchData|nil (sets $~); block form yields it. */
@@ -1897,6 +1906,13 @@ static RESULT korb_m_re_escape(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         KORB_STR_ENC_SET(slots[0], c->vm->sym_encs[id]);
     }
     else if (KORB_STRING_P(v)) slots[0] = v;
+    else if (KORB_OBJECT_P(v) && korb_responds_to_coerce_p(c, slots, &v, korb_intern(c->vm, "to_str", 6))) {   /* parslet's Slice */
+        slots[0] = v;
+        slots[0] = UNWRAP(korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL));
+        if (!KORB_STRING_P(slots[0]))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into String (%s#to_str gives %s)",
+                              korb_re_arg_type(VALUE_SLICE_GET(a, 0)), korb_re_arg_type(VALUE_SLICE_GET(a, 0)), korb_re_arg_type(slots[0]));
+    }
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(v));
     const KorbString *s = VAL2STR(slots[0]);
     char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);

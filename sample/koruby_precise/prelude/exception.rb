@@ -337,7 +337,7 @@ class Object
     return e unless respond_to?(:size) && (args.empty? || meth == :each_with_object)   # each_with_object's arg is the memo, not a size-changing one
     case meth
     when :find, :detect, :find_index, :take_while, :drop_while then e
-    else e.send(:__set_size, size)
+    else to_enum(meth, *args) { size }   # live: CRuby re-asks the receiver on each #size
     end
   end
   __set_ruby2_keywords(self, :__to_enum_sized)

@@ -36,11 +36,11 @@ module NKF
         next
       end
       next unless o.start_with?("-") && !o.start_with?("--")
-      o[1..].scan(/[a-zA-Z]\d*/) do |f|
+      o[1..].scan(/[a-zA-Z](?:(?:16|32)[LB]?\d*|\d*)/) do |f|   # -w16L0: 16-bit, little endian, no BOM
         case f
-        when /\Aw(16|32)?/ then out = $1 == "16" ? UTF16 : $1 == "32" ? UTF32 : UTF8
+        when /\Aw(16|32)?([LB])?/ then out = unicode__($1, $2)
         when /\A[sej]\z/   then out = OUT__[f]
-        when /\AW(16|32)?/ then inp = $1 == "16" ? UTF16 : $1 == "32" ? UTF32 : UTF8
+        when /\AW(16|32)?([LB])?/ then inp = unicode__($1, $2)
         when /\A[SEJ]\z/   then inp = IN__[f]
         end
       end
@@ -50,6 +50,12 @@ module NKF
     s = str.dup.force_encoding(inp)
     s.encode(out, invalid: :replace, undef: :replace)
   end
+
+  def unicode__(bits, endian)
+    return UTF8 unless bits
+    Encoding.find("UTF-#{bits}#{endian == "L" ? "LE" : "BE"}")
+  end
+  private_class_method :unicode__
 
   # the encoding the bytes look like: ASCII, then UTF-8, EUC-JP, Shift_JIS, ISO-2022-JP
   def guess(str)

@@ -6,8 +6,8 @@ class Encoding
   def name; @name; end
   def to_s; @name; end
   def inspect
-    return "#<Encoding:BINARY (ASCII-8BIT)>" if @name == "ASCII-8BIT"
-    "#<Encoding:" + @name + (dummy? ? " (dummy)>" : ">")
+    s = @name == "ASCII-8BIT" ? +"#<Encoding:BINARY (ASCII-8BIT)>" : "#<Encoding:" + @name + (dummy? ? " (dummy)>" : ">")
+    s.force_encoding(Encoding::US_ASCII)
   end
   def ==(o); o.is_a?(Encoding) && o.name == @name; end
   # ASCII-compatible = one byte per ASCII char, mapping to itself.  The UTF-16 /
@@ -16,11 +16,11 @@ class Encoding
   def ascii_compatible?
     n = @name.upcase
     !(n.start_with?("UTF-16") || n.start_with?("UTF-32") || n == "UTF-7" ||
-      n.start_with?("ISO-2022") || n.start_with?("CP502"))
+      n.start_with?("ISO-2022") || n.start_with?("CP502") || n == "IBM037")   # IBM037: EBCDIC
   end
   def dummy?
     n = @name.upcase
-    n == "UTF-16" || n == "UTF-32" || n == "UTF-7" || n.start_with?("ISO-2022") || n.start_with?("CP502")
+    n == "UTF-16" || n == "UTF-32" || n == "UTF-7" || n.start_with?("ISO-2022") || n.start_with?("CP502") || n == "IBM037"
   end
   UTF_8 = Encoding.new("UTF-8")
   US_ASCII = Encoding.new("US-ASCII")

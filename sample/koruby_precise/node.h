@@ -1066,6 +1066,7 @@ static inline void korb_bref_push(CTX *c, VALUE v, const VALUE *const base) {
     c->bref_saved[c->bref_n++] = v;
 }
 const VALUE *korb_block_home_base(const struct korb_vm *vm, const VALUE *base);   /* korb_runtime.c */
+void korb_dregx_src_enc(struct korb_vm *vm, VALUE src);   /* korb_runtime.c */
 static inline VALUE korb_bref_pop(CTX *c) {
     return LIKELY(c->bref_n != 0) ? c->bref_saved[--c->bref_n] : KORB_NIL;
 }

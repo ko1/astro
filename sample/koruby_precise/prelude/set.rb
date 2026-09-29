@@ -59,7 +59,7 @@ class Set
     end
   end
   def divide(&func)
-    return to_enum(:divide) unless block_given?
+    return to_enum(:divide) { size } unless block_given?
     if func.arity == 2
       # Connected components of the directed graph u->v where func(u,v) is truthy.
       # CRuby 4.0 calls the block once for every ordered pair of *distinct*
@@ -101,6 +101,11 @@ class Set
       end
       self.class.new(groups.values.map { |g| self.class.new(g) })
     end
+  end
+  # to_set with a block builds a new Set of the block's results; a Set subclass converts.
+  def to_set(&blk)
+    return self if !blk && instance_of?(Set)
+    Set.new(self, &blk)
   end
   alias eql? ==                             # CRuby: #eql? is the same UnboundMethod as #==
   # pp hook for a self-referencing Set: the elements are elided, not re-entered.

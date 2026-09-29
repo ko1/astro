@@ -11,7 +11,7 @@ class Module
 
   # The modules in the ancestor chain that are not classes (self excluded).
   def included_modules
-    ancestors.select { |m| m.instance_of?(Module) && !m.equal?(self) }
+    ancestors.select { |m| !m.is_a?(Class) && !m.equal?(self) }   # a Module subclass's instance counts
   end
 
   # Like instance_method, but a non-public method is a NameError.
