@@ -37,9 +37,23 @@ static uint64_t kre_hash(const char *b, size_t n, unsigned flags) {
     return h;
 }
 
+/* The source buffer's address → cache slot: a loop matching one Regexp passes the same
+ * buffer each time, and hashing a long pattern per match (addressable's URI patterns)
+ * cost more than the match.  The address only picks the candidate; the full memcmp
+ * decides, so a buffer reused for another string just misses. */
+#define KRE_MEMO_SLOTS 64
+static struct { const char *pat; size_t len; unsigned flags, slot; } g_memo[KRE_MEMO_SLOTS];
+
 /* Compile `pat`/`flags` (or return the cached pattern).  NULL on compile error. */
 static astrogre_pattern *kre_get(const char *pat, size_t patlen, unsigned flags) {
+    const unsigned mi = (unsigned)(((uintptr_t)pat >> 4) % KRE_MEMO_SLOTS);
+    if (g_memo[mi].pat == pat && g_memo[mi].len == patlen && g_memo[mi].flags == flags) {
+        const kre_cache_ent *const m = &g_cache[g_memo[mi].slot];
+        if (m->p && m->len == patlen && m->flags == flags && (patlen == 0 || memcmp(m->pat, pat, patlen) == 0))
+            return m->p;
+    }
     unsigned idx = (unsigned)(kre_hash(pat, patlen, flags) % KRE_CACHE_SLOTS);
+    g_memo[mi].pat = pat; g_memo[mi].len = patlen; g_memo[mi].flags = flags; g_memo[mi].slot = idx;
     kre_cache_ent *e = &g_cache[idx];
     if (e->p && e->len == patlen && e->flags == flags &&
         (patlen == 0 || memcmp(e->pat, pat, patlen) == 0))

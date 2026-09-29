@@ -6167,6 +6167,11 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   **2026-09-30 に大半を解消**（runtime 199176e4）: hole 記述子の 1 命令が path[192] を抱え、子の記述子を丸ごと
   コピーするので深さの 2 乗で増えていた。path をリテラルへのポインタにして 30k_variables 全体が 4.8 GB / 132 s。
   コピーが 2 乗で増える構造そのもの（記述子の平坦化）は残っている。
+- **ruby-bench を回すと root/bin/bundle の shebang が `#!/usr/bin/env koruby_precise` に書き換わる**（2026-09-30、発生条件は
+  未確認）: make root の直後の最初の gem 付きベンチで起きる。ロックファイルの BUNDLED WITH（4.0.3）に合わせて bundler が
+  自分を root に入れ直すときに、rubygems の既定の shebang（env + ruby_install_name）で書くと見ている。PATH に
+  koruby_precise が無いと次の `bundle check` が `env: 'koruby_precise': No such file` で落ちる（/tmp/kz/kbin に symlink を
+  置いて回避）。
 - **Module.constants が CRuby と 5 つ違う**（2026-09-29）: koruby に余分 ARGFClass・ArithmeticSequence（内部名が top-level に
   出ている）・StringIO（prelude で起動時に定義。CRuby は require してから）、足りない SyntaxSuggest（CRuby は autoload）・
   UnicodeNormalize（CRuby は起動時にモジュールだけある）。ErrorHighlight の autoload を足すまでは数が偶然 120 で一致していて、

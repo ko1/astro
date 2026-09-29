@@ -742,14 +742,16 @@ class Encoding
 end
 class String
   # Unicode normalization lives in lib/unicode_normalize (CRuby's own pure-Ruby
-  # implementation, vendored); it is loaded on first use like CRuby does.
+  # implementation, vendored); it is loaded on first use like CRuby does — once:
+  # a require per call walked $LOAD_PATH x $LOADED_FEATURES every time (addressable's
+  # URI.parse normalizes each component: 11% of ruby-bench's addressable-equality)
   def unicode_normalize(form = :nfc)
-    require "unicode_normalize/normalize"
+    require "unicode_normalize/normalize" unless defined?(UnicodeNormalize.normalize)
     UnicodeNormalize.normalize(self, form)
   end
   def unicode_normalize!(form = :nfc) = replace(unicode_normalize(form))
   def unicode_normalized?(form = :nfc)
-    require "unicode_normalize/normalize"
+    require "unicode_normalize/normalize" unless defined?(UnicodeNormalize.normalized?)
     UnicodeNormalize.normalized?(self, form)
   end
 
