@@ -280,6 +280,8 @@ t_protect_yield(VALUE self)
     return rb_ary_new_from_args(2, rb_str_new_cstr("returned"), r);
 }
 
+static VALUE t_errinfo_nil(VALUE self) { return rb_errinfo() == Qnil ? Qtrue : Qfalse; }
+
 /* ---- classes, methods, ivars, constants ---- */
 static VALUE m0(VALUE self) { return rb_str_new_cstr("m0"); }
 static VALUE m1(VALUE self, VALUE a) { return rb_ary_new_from_args(2, rb_str_new_cstr("m1"), a); }
@@ -713,6 +715,7 @@ Init_cext_api_test(void)
     rb_define_module_function(mT, "check_arity", t_check_arity, 1);
     rb_define_module_function(mT, "frozen", t_frozen, 1);
     rb_define_module_function(mT, "protect_yield", t_protect_yield, 0);
+    rb_define_module_function(mT, "errinfo_nil", t_errinfo_nil, 0);
     rb_define_module_function(mT, "define", t_define, 0);
     rb_define_module_function(mT, "redefine_mismatch", t_redefine_mismatch, 0);
     rb_define_module_function(mT, "define_not_class", t_define_not_class, 0);

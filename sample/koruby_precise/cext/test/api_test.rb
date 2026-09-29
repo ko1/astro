@@ -112,6 +112,10 @@ t(:frozen) { [T.frozen(+"x"), (T.frozen("y".freeze) rescue [$!.class, $!.message
 t(:protect_yield_ok) { T.protect_yield { |x| x + 1 } }
 t(:protect_yield_raise) { T.protect_yield { raise Errno::EPIPE } }
 t(:protect_yield_break) { T.protect_yield { break 77 } }
+# a `return` / break through rb_protect + rb_jump_tag leaves no pending exception behind
+# (sqlite3's Statement#step re-raises a non-nil rb_errinfo: shipit's TypeError)
+t(:protect_yield_return_errinfo) { o = Object.new; def o.go = T.protect_yield { return 5 }; [o.go, T.errinfo_nil] }
+t(:protect_yield_break_errinfo) { [T.protect_yield { break 6 }, T.errinfo_nil] }
 
 # classes / methods
 t(:define) { T.define }

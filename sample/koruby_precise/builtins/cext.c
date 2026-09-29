@@ -1412,7 +1412,7 @@ rb_jump_tag(int state)
     CTX *const c = kcx_c();
     struct korb_cext_vm *const x = kcx_vm(c->vm);
     const RESULT r = { x->errinfo, (uintptr_t)(state ? (uintptr_t)state : x->pending_state) };
-    if (r.state == KORB_RAISE) x->errinfo = KORB_NIL;
+    x->errinfo = KORB_NIL;   /* the jump carries it; a `return` / break value left here read as a pending raise (sqlite3's step) */
     kcx_throw(c, r);
 }
 KCX_API KVALUE
