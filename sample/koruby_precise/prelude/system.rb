@@ -2652,6 +2652,54 @@ module Ruby
   end
 end
 
+# Random::Formatter is a core module in CRuby (random.c): rand / random_number on
+# top of the receiver's #bytes, included and extended by Random.  The vendored
+# lib/random/formatter.rb reopens it and adds hex / alphanumeric / uuid.
+class Random
+  module Formatter
+    def random_number(n = 0) = __fmt_rand(n, false)
+    def rand(n = 0) = __fmt_rand(n, true)
+
+    private def __fmt_float = (bytes(8).unpack1("Q<") >> 11) * (1.0 / (1 << 53))
+
+    private def __fmt_int(n)
+      nb = (n.bit_length + 7) / 8
+      mask = (1 << n.bit_length) - 1
+      loop do
+        v = 0
+        bytes(nb).each_byte { |b| v = (v << 8) | b }
+        v &= mask
+        return v if v < n
+      end
+    end
+
+    private def __fmt_rand(n, strict)
+      case n
+      when nil then return __fmt_float
+      when Range
+        lo, hi = n.begin, n.end
+        if lo.is_a?(Integer) && hi.is_a?(Integer)
+          span = hi - lo + (n.exclude_end? ? 0 : 1)
+          return span > 0 ? lo + __fmt_int(span) : nil
+        end
+        span = hi.to_f - lo.to_f
+        return nil if span < 0
+        return lo + __fmt_float * span
+      when Float
+        return n * __fmt_float if n > 0
+      when Numeric
+        i = n.to_int
+        return __fmt_int(i) if i > 0
+        return __fmt_float if i == 0
+      end
+      raise ArgumentError, "invalid argument - #{n.inspect}" if strict && !(n.is_a?(Numeric) && n == 0)
+      __fmt_float
+    end
+  end
+  include Formatter
+  extend Formatter
+end
+
 # Random's class-level RNG functions are public singleton methods in CRuby
 # (Kernel#rand / #srand are private instance methods, so they are not reachable
 # through `Random.rand`).

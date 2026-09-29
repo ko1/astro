@@ -11,9 +11,20 @@ class Hash
       enum_for(meth) { size }
     end
   end
-  # Hash.ruby2_keywords_hash / ?  are C (korb_send_impl): a Ruby definition would
-  # bind the argument to a named parameter, which is where the keyword mark is
-  # dropped, so the predicate could never see it.
+  # The persistent ruby2_keywords mark survives binding to a named parameter (only
+  # a splat call site turns it back into keywords), so plain methods will do; being
+  # real methods, respond_to? / method see them (grape asks before calling).
+  class << Hash
+    def ruby2_keywords_hash?(hash)
+      raise TypeError, "wrong argument type #{hash.class} (expected Hash)" unless hash.is_a?(Hash)
+      hash.__send__(:__kwargs_marked?)
+    end
+
+    def ruby2_keywords_hash(hash)
+      raise TypeError, "wrong argument type #{hash.class} (expected Hash)" unless hash.is_a?(Hash)
+      hash.dup.__send__(:__kwargs_mark!)
+    end
+  end
 
   def to_proc; h = self; ->(k) { h[k] }; end
 end

@@ -4252,6 +4252,15 @@ RESULT korb_regexp_new(CTX *c, korb_value *slots, korb_value source, uint32_t fl
 static korb_value korb_dispatch_class(CTX *c, korb_value self);                                         /* fwd */
 static struct korb_method *korb_method_lookup(struct korb_vm *vm, uint32_t mid);              /* fwd */
 static struct korb_method *korb_class_find_method(korb_value klass, uint32_t mid, korb_value *out_def);  /* fwd */
+static const struct korb_method *korb_toplevel_def(const struct korb_vm *vm, uint32_t mid);   /* fwd */
+static __attribute__((noinline, cold)) struct korb_method *
+korb_toplevel_over_kernel(struct korb_vm *const vm, const uint32_t mid, struct korb_method *const m, korb_value *const def)
+{
+    struct korb_method *const tm = (struct korb_method *)(uintptr_t)korb_toplevel_def(vm, mid);
+    if (tm == NULL) return m;
+    *def = korb_builtin_class_obj(vm, KORB_C_OBJECT);
+    return tm;
+}
 /* Early-bind a Method to the definition it resolved to, as CRuby does: a
  * singleton (or any def) added AFTER the capture must not change what #call
  * runs.  Entries are immortal, so the raw pointer survives a redefinition or a
@@ -4274,6 +4283,14 @@ static void korb_meth_pin(CTX *const c, const korb_value mv) {
          * remember that this Method IS the default allocator. */
         if (m->entry == NULL && m->mid == c->vm->mid_new && KORB_CLASS_P(m->recv)) m->default_new = 1;
         return;
+    }
+    if (UNLIKELY(def == c->vm->kernel_mod && c->vm->boot_done)) {   /* a top-level def beats Kernel's (korb_mcache_fill) */
+        struct korb_method *const tm = korb_toplevel_over_kernel(c->vm, m->mid, km, &def);
+        if (tm != km) {
+            m->entry = tm; tm->pinned = 1;
+            if (m->owner == KORB_NIL) ARO_STORE(c, m, (korb_value *)(uintptr_t)&m->owner, def);
+            return;
+        }
     }
     m->entry = km;
     km->pinned = 1;                                     /* a redefinition orphans this entry instead */
@@ -6525,6 +6542,10 @@ korb_mcache_fill(struct korb_vm *vm, struct korb_mcache_ent *e, korb_value klass
         m = korb_array_sub_enum_method(vm, klass, mid, m, &def);
     if (UNLIKELY(vm->reflect_owner_redef && m != NULL && KORB_CLASS_P(def)))
         m = korb_reflect_owner_redirect(vm, mid, m, &def);
+    /* a top-level def is Object's method (kept in the global table): it beats
+     * Kernel's of the same name (`def test` vs Kernel#test) */
+    if (UNLIKELY(m != NULL && vm->boot_done && def == vm->kernel_mod))
+        m = korb_toplevel_over_kernel(vm, mid, m, &def);
     korb_mid_looked(vm, mid);
     e->serial = vm->method_serial; e->klass = klass; e->mid = mid; e->m = m; e->def_class = def;
     *out_def = def;
@@ -14089,24 +14110,6 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
             return korb_raise(c, slots, KORB_E_TYPE, line, "can't convert %s into Hash (%s#to_hash gives %s)", korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_coerce_name(c, r.value));
         }
         return RESULT_OK(KORB_NIL);
-    }
-    else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_HASH) &&
-             (mid == korb_intern(vm, "ruby2_keywords_hash?", 20) ||
-              mid == korb_intern(vm, "ruby2_keywords_hash", 19))) {
-        /* These read/write the PERSISTENT ruby2_keywords mark (KORB_FL_R2K), not
-         * the call-scoped KORB_FL_KWARGS one — the latter is already gone by the
-         * time the argument has been bound to this cfunc's parameter. */
-        const korb_value h = argc >= 1 ? slots[-(korb_sword_t)argc] : KORB_NIL;
-        if (UNLIKELY(!KORB_HASH_P(h)))
-            return korb_raise(c, slots, KORB_E_TYPE, line, "wrong argument type %s (expected Hash)", korb_coerce_name(c, h));
-        if (mid == korb_intern(vm, "ruby2_keywords_hash?", 20))
-            return RESULT_OK(korb_r2k_hash_p(h) ? KORB_TRUE : KORB_FALSE);
-        slots[0] = h;                                                       /* dup, then mark the copy */
-        const RESULT dr = korb_send(c, slots + 1, korb_intern(vm, "dup", 3), line, 0);
-        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-        if (LIKELY(AROH_IS_GC_OBJECT(dr.value)))
-            ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_R2K;
-        return dr;
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new &&
              korb_builtin_base_class(vm, self) == KORB_C_RANGE &&

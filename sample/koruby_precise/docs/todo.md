@@ -6134,6 +6134,20 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   ハンドルなので、要素のハンドル配列を作って pin する読み取り専用の写しが要る（書き込みを反映するかは設計が要る）。
 - extconf.rb を koruby で走らせると gem の ext/ に code_store/ ができる（AOT のストアが CWD 相対）。
 - `rb_block_call` はいつも catch で包む（rb_iter_break のため）。その固定費（proc 1 個 + catch）を測る。
+- **Rails 起動後のメモリが CRuby の 2.6 倍**（2026-09-29、railsbench の config/environment 直後: koruby 262 MiB vs CRuby 99 MiB。
+  user 判断で後回し）。smaps: malloc の [heap] 198 MiB（CRuby 59）、GC 領域 47 MiB（22）。massif（ASTRO_GC_STRESS=1e9 で
+  領域を小さくして取得）: 生きている malloc 185 MB のうち node_allocate（AST）が 6 割以上、うち node_lit 34 MB・
+  node_ary_push 34 MB（巨大な定数配列を要素ごとに lit + push で持つ。mail の Ragel 表と推定、未確認）、korb_class_method_slot
+  9 MB、prism の arena 4 MB。案: (1) 全要素が定数の配列リテラルは parse 時に作った凍結配列 1 つのノードに（〜70 MB）、
+  (2) NodeHead 64 バイトを削る（line・hash_opt は未使用、dispatcher_name / pool / nholes は特殊化ノードだけ要るか要確認。
+  ASTroGen / runtime 共通なので全サンプルに影響）、(3) 呼ばれないメソッドの AST を作らない。
+- **--pg-compile は M0 では AOT と同じ「全部焼く」**（実行したかに関係なく parse した全メソッド）。railsbench で C が 8000 個超、
+  焼くのに 18 分以上（計測中）。Rails のような大きなアプリには実行したものだけを焼く PG（PGSD / HOPT、M1）が要る。
+- **prelude のフレームの場所がユーザのファイル名で出る**（2026-09-30）: `def test` の前は Kernel#test（prelude/system.rb）が
+  `t.rb:8910:in 'Kernel#test'` と出ていた（行番号は prelude のもの、パスは実行中のスクリプト）。error_highlight の
+  `callee:` も同じ。CRuby は `<internal:...>`。
+- **ruby-bench の各ベンチ dir に code_store/version ができる**（2026-09-30）: `--plain` の本体は作らない（確認済み）。
+  ハーネスの子（PATH の `ruby` = --plain なしの koruby、bundle など）が作ると推定、未確認。
 - **Module.constants が CRuby と 5 つ違う**（2026-09-29）: koruby に余分 ARGFClass・ArithmeticSequence（内部名が top-level に
   出ている）・StringIO（prelude で起動時に定義。CRuby は require してから）、足りない SyntaxSuggest（CRuby は autoload）・
   UnicodeNormalize（CRuby は起動時にモジュールだけある）。ErrorHighlight の autoload を足すまでは数が偶然 120 で一致していて、
