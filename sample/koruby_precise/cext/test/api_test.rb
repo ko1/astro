@@ -174,6 +174,8 @@ t(:scan_blk) { [T.scan_blk(2) { |x| x * 3 }, T.scan_blk(2)] }
 t(:get_kwargs) { [T.get_kwargs(req: 1), T.get_kwargs(req: 1, opt2: 3)] }
 t(:get_kwargs_missing) { T.get_kwargs(opt1: 1) }
 t(:get_kwargs_unknown) { T.get_kwargs(req: 1, bad: 2) }
+t(:get_kwargs_unknown2) { T.get_kwargs(req: 1, bad: 2, worse: 3) }
+t(:get_kwargs_none) { T.get_kwargs }
 
 # misc
 t(:ids) { T.ids }

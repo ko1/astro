@@ -1846,27 +1846,35 @@ rb_scan_args(int argc, const KVALUE *argv, const char *fmt, ...)
     va_end(ap);
     return argc;
 }
+/* CRuby's messages: every missing (then every unknown) keyword, singular or plural */
+static __attribute__((noreturn)) void
+kcx_raise_keywords(const char *what, KVALUE keys)
+{
+    const long n = rb_array_len(keys);
+    const KVALUE parts = rb_ary_new();
+    for (long i = 0; i < n; i++) rb_ary_push(parts, rb_inspect(rb_ary_entry(keys, i)));
+    rb_raise(rb_eArgError, "%s keyword%s: %" "l" "i" "\v", what, n > 1 ? "s" : "", rb_ary_join(parts, rb_str_new_cstr(", ")));
+}
 KCX_API int
 rb_get_kwargs(KVALUE hash, const KVALUE *table, int required, int optional, KVALUE *values)
 {
     const bool rest = optional < 0;
     if (rest) optional = -1 - optional;
     int found = 0;
+    KVALUE missing = KQnil;
     for (int i = 0; i < required + optional; i++) {
         const KVALUE key = rb_id2sym(table[i]);
         const bool has = hash != KQnil && RTEST_K(rb_funcall(hash, rb_intern("key?"), 1, key));
         if (!has) {
-            if (i < required) rb_raise(rb_eArgError, "missing keyword: %" "+l" "i" "\v", key);
+            if (i < required) { if (missing == KQnil) missing = rb_ary_new(); rb_ary_push(missing, key); }
             if (values) values[i] = KQundef;
             continue;
         }
         found++;
         if (values) { values[i] = rb_hash_aref(hash, key); (void)rb_hash_delete(hash, key); }
     }
-    if (!rest && hash != KQnil && rb_hash_size_num(hash) > 0 && values) {
-        const KVALUE k = rb_ary_entry(rb_hash_keys(hash), 0);
-        rb_raise(rb_eArgError, "unknown keyword: %" "+l" "i" "\v", k);
-    }
+    if (missing != KQnil) kcx_raise_keywords("missing", missing);
+    if (!rest && hash != KQnil && rb_hash_size_num(hash) > 0 && values) kcx_raise_keywords("unknown", rb_hash_keys(hash));
     return found;
 }
 KCX_API KVALUE rb_extract_keywords(KVALUE *orighash) { const KVALUE h = *orighash; *orighash = KQnil; return h; }
