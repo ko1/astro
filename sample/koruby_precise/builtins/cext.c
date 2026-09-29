@@ -76,6 +76,7 @@ struct korb_cext_frame {
 };
 
 static _Thread_local CTX *korb_cext_ctx;
+static _Thread_local struct korb_cext_vm *korb_cext_gc_vm;   /* during a collection */
 
 #define KCX_API __attribute__((used, visibility("default")))
 
@@ -93,7 +94,10 @@ static CTX *
 kcx_c(void)
 {
     CTX *const c = korb_cext_ctx;
-    if (UNLIKELY(c == NULL)) { fprintf(stderr, "koruby: C API called outside an extension call\n"); abort(); }
+    if (UNLIKELY(c == NULL)) {
+        fprintf(stderr, "koruby: C API called outside an extension call%s\n", korb_cext_gc_vm ? " (from a mark function)" : "");
+        abort();
+    }
     return c;
 }
 
@@ -241,7 +245,6 @@ kcx_frame_pop(struct korb_cext_vm *x, struct korb_cext_frame *f)
 }
 
 /* ---- GC hooks (called from context.h's AROH_* macros, in the backends' TUs) ---- */
-static _Thread_local struct korb_cext_vm *korb_cext_gc_vm;   /* during a collection */
 
 static bool
 kcx_handle_p(const struct korb_cext_vm *x, KVALUE h)
@@ -1500,6 +1503,9 @@ KCX_API long rb_array_len(KVALUE ary) { return (long)VAL2ARY(K(ary))->len; }
 KCX_API KVALUE
 rb_ary_entry(KVALUE ary, long idx)
 {
+    /* from a dmark (sqlite3 marks an array's elements one by one): the collector traces the
+     * array's elements itself once the array is marked, so there is nothing to hand back */
+    if (UNLIKELY(korb_cext_gc_vm != NULL)) return KQnil;
     CTX *const c = kcx_c();
     const korb_value v = K(ary);
     const KorbArray *const a = VAL2ARY(v);
@@ -1534,6 +1540,15 @@ KCX_SEND1(rb_equal, "==")
 KCX_SEND1(rb_eql, "eql?")
 KCX_SEND1(rb_class_inherited_p, "<=")
 KCX_SEND1(rb_obj_method, "method")
+KCX_SEND1(rb_ary_delete, "delete")
+KCX_API KVALUE
+rb_apply(KVALUE recv, KVALUE mid, KVALUE args)
+{
+    const long n = rb_array_len(args);
+    KVALUE a[n > 0 ? n : 1];
+    for (long i = 0; i < n; i++) a[i] = rb_ary_entry(args, i);
+    return rb_funcallv(recv, mid, (int)n, a);
+}
 KCX_SEND0(rb_hash_dup, "dup")
 KCX_SEND0(rb_hash_freeze, "freeze")
 KCX_SEND0(rb_ary_freeze, "freeze")

@@ -23,6 +23,7 @@
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/types.h>
 #include <sys/time.h>
 #if defined(__has_include)
 #  if __has_include(<ruby/koruby_platform.h>)
@@ -398,6 +399,7 @@ VALUE rb_integer_unpack(const void *words, size_t numwords, size_t wordsize, siz
 #define INTEGER_PACK_MSBYTE_FIRST       0x10
 #define INTEGER_PACK_LSBYTE_FIRST       0x20
 #define INTEGER_PACK_NATIVE             0x40
+#define INTEGER_PACK_NATIVE_BYTE_ORDER  0x40
 #define INTEGER_PACK_2COMP              0x80
 #define INTEGER_PACK_FORCE_GENERIC_IMPLEMENTATION 0x400
 #define INTEGER_PACK_NEGATIVE           0x200
@@ -1035,6 +1037,26 @@ VALUE rb_io_flush(VALUE io);
 #define RB_SCAN_ARGS_PASS_CALLED_KEYWORDS 0
 #define RB_SCAN_ARGS_KEYWORDS 1
 #define RB_SCAN_ARGS_LAST_HASH_KEYWORDS 3
+/* CRuby's config.h: the system types under rb_ names, and their conversions */
+typedef pid_t rb_pid_t;
+typedef uid_t rb_uid_t;
+typedef gid_t rb_gid_t;
+typedef time_t rb_time_t;
+typedef mode_t rb_mode_t;
+typedef off_t rb_off_t;
+typedef dev_t rb_dev_t;
+#define PIDT2NUM(v) LONG2NUM(v)
+#define NUM2PIDT(v) ((pid_t)NUM2LONG(v))
+#define UIDT2NUM(v) ULONG2NUM(v)
+#define NUM2UIDT(v) ((uid_t)NUM2ULONG(v))
+#define GIDT2NUM(v) ULONG2NUM(v)
+#define NUM2GIDT(v) ((gid_t)NUM2ULONG(v))
+#define MODET2NUM(v) UINT2NUM(v)
+#define NUM2MODET(v) ((mode_t)NUM2UINT(v))
+#define DEVT2NUM(v) ULONG2NUM(v)
+#define NUM2DEVT(v) ((dev_t)NUM2ULONG(v))
+VALUE rb_ary_delete(VALUE ary, VALUE item);
+VALUE rb_apply(VALUE recv, ID mid, VALUE args);
 /* ---- strings, threads ---- */
 #define STRINGIZE0(expr) #expr
 #define STRINGIZE(expr) STRINGIZE0(expr)
