@@ -574,7 +574,7 @@ korb_load_time_specialize(NODE *ast, uint32_t repo_from, const char *file)
  * legitimately run on the interpreter and are NOT poisoned.  Without this
  * exemption any real program with a class or proc would false-positive. */
 static RESULT
-korb_poison_dispatch(CTX *c, NODE *n, VALUE *slots)
+korb_poison_dispatch(CTX *c, NODE *n, korb_value *slots)
 {
     (void)c; (void)slots;
     const char *name = "(program root)";
@@ -682,7 +682,7 @@ korb_hot_tab_build(void)
 static void korb_hot_finish(CTX *c);
 
 static RESULT
-korb_hot_dispatch(CTX *c, NODE *n, VALUE *slots)
+korb_hot_dispatch(CTX *c, NODE *n, korb_value *slots)
 {
     const node_dispatcher_func_t orig = korb_hot_find(n)->orig;   /* before finish(): it drops the tables */
     n->head.hash_opt++;
@@ -692,7 +692,7 @@ korb_hot_dispatch(CTX *c, NODE *n, VALUE *slots)
 
 /* One-shot: weave this body now that it has actually been reached. */
 static RESULT
-korb_first_dispatch(CTX *c, NODE *n, VALUE *slots)
+korb_first_dispatch(CTX *c, NODE *n, korb_value *slots)
 {
     n->head.dispatcher = korb_hot_find(n)->orig;   /* drop the trampoline first */
     if (!astro_cs_instantiate(n)                   /* installs the instance on success */
@@ -712,7 +712,7 @@ korb_first_dispatch(CTX *c, NODE *n, VALUE *slots)
 // Weave on the second visit: the first one only sets the bit.  Cheap because
 // the trampoline is already there; a body just keeps it for one more dispatch.
 static RESULT
-korb_second_dispatch(CTX *c, NODE *n, VALUE *slots)
+korb_second_dispatch(CTX *c, NODE *n, korb_value *slots)
 {
     struct korb_hot_ent *const e = korb_hot_find(n);
     if (n->head.hash_opt == 0) {                   // seen once, stay a trampoline
@@ -1421,7 +1421,7 @@ main(int argc, char *argv[])
             memcpy(gname + 1, sw, nlen);
             for (size_t k = 1; k <= nlen; k++) if (gname[k] == '-') gname[k] = '_';
             gname[nlen + 1] = '\0';
-            const VALUE val = eq ? korb_str_new(c, c->slots, eq + 1, (uint32_t)strlen(eq + 1)).value : KORB_TRUE;
+            const korb_value val = eq ? korb_str_new(c, c->slots, eq + 1, (uint32_t)strlen(eq + 1)).value : KORB_TRUE;
             korb_const_define(c, korb_intern(c->vm, gname, (uint32_t)(nlen + 1)), val);
             argv_start++;
         }
@@ -1535,8 +1535,8 @@ main(int argc, char *argv[])
      * user program runs.  Bodies were registered in the code repo at parse time,
      * so the AOT swap above already patched their dispatchers. */
     if (prelude_ast && !skip_run) {
-        VALUE *pcur = c->slots + prelude_locals;
-        memset(c->slots, 0, (size_t)prelude_locals * sizeof(VALUE));   /* locals + EP start clean */
+        korb_value *pcur = c->slots + prelude_locals;
+        memset(c->slots, 0, (size_t)prelude_locals * sizeof(korb_value));   /* locals + EP start clean */
         RESULT pm = korb_obj_new(c, pcur, KORB_NIL);
         if (pm.state == KORB_RAISE) { korb_report_uncaught(c, pm.value); korb_io_flush_all(c->vm); return 1; }
         c->slots[-1] = pm.value;                  /* prelude self at base[-1] (bottom header) */
@@ -1567,7 +1567,7 @@ main(int argc, char *argv[])
             korb_const_define(c, korb_intern(c->vm, "$VERBOSE", 8),
                               OPTION.verbose_warn > 0 ? (OPTION.verbose_warn == 2 ? KORB_FALSE : KORB_TRUE) : KORB_NIL);
             if (OPTION.verbose_warn == 1) {
-                const VALUE wm = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
+                const korb_value wm = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
                 if (KORB_CLASS_P(wm)) {
                     static const char *const cats[] = { "deprecated", "experimental", NULL };   /* -w does NOT enable :performance (CRuby) */
                     for (uint32_t ci = 0; cats[ci]; ci++) {
@@ -1580,7 +1580,7 @@ main(int argc, char *argv[])
             }
         }
         if (OPTION.wcat_cnt != 0) {             /* -W:performance / -W:no-deprecated ... (an unknown name warns, as in CRuby) */
-            const VALUE wm = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
+            const korb_value wm = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
             for (uint32_t wi = 0; KORB_CLASS_P(wm) && wi < OPTION.wcat_cnt; wi++) {
                 const char *nm = OPTION.wcat[wi];
                 const bool on = strncmp(nm, "no-", 3) != 0;
@@ -1602,10 +1602,10 @@ main(int argc, char *argv[])
      * Toplevel frame: locals at c->slots[0..L), self at c->slots[-1] and the
      * frame identity at c->slots[-4]; cursor starts above the locals. */
     if (!skip_run) {
-        VALUE *toplevel_cursor = c->slots + koruby_toplevel_locals_cnt;
+        korb_value *toplevel_cursor = c->slots + koruby_toplevel_locals_cnt;
         /* The prelude ran in this same region with its own frame, so start the
          * program's locals from zero. */
-        memset(c->slots, 0, (size_t)koruby_toplevel_locals_cnt * sizeof(VALUE));
+        memset(c->slots, 0, (size_t)koruby_toplevel_locals_cnt * sizeof(korb_value));
         /* builtin/exception class objects are now set up inside korb_ctx_new
          * (they must exist before core-method registration). */
         {
@@ -1654,7 +1654,7 @@ main(int argc, char *argv[])
             }
         }
         if (OPTION.rec_sep_given) {             /* -0[octal]: $/ (and its alias $-0), frozen */
-            VALUE sep = KORB_NIL;
+            korb_value sep = KORB_NIL;
             if (OPTION.rec_sep) {
                 const RESULT sr = korb_str_new(c, toplevel_cursor, OPTION.rec_sep, OPTION.rec_sep_len);
                 if (sr.state == KORB_NORMAL) {
@@ -1709,7 +1709,7 @@ main(int argc, char *argv[])
         RESULT r = EVAL(c, ast, toplevel_cursor);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         {   /* the main thread's Fiber scheduler runs to completion before at_exit (CRuby) */
-            extern RESULT korb_fiber_thread_end(CTX *, VALUE *);
+            extern RESULT korb_fiber_thread_end(CTX *, korb_value *);
             toplevel_cursor[0] = r.value;
             const RESULT fr = korb_fiber_thread_end(c, toplevel_cursor + 4);
             r.value = toplevel_cursor[0];

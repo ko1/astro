@@ -1,6 +1,10 @@
 require 'optparse'
 
 module ASTroGen
+  # The sample's value type name, as written in node.def and emitted into C.
+  class << self; attr_accessor :value_type; end
+  self.value_type = 'VALUE'
+
   class NodeDef
     # Task registration: each task generates a node_<task>.c file
     # Options:
@@ -160,7 +164,7 @@ module ASTroGen
             "    fprintf(fp, \"        HOLE_U32(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"#{path}\", -1));"
           when 'int32_t'
             "    fprintf(fp, \"        HOLE_I32(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"#{path}\", -1));"
-          when 'uint64_t', 'VALUE'
+          when 'uint64_t', ASTroGen.value_type
             "    fprintf(fp, \"        (#{storage_type})HOLE_U64(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"#{path}\", -1));"
           when 'const char *', 'void *'
             "    fprintf(fp, \"        (#{storage_type})HOLE_PTR(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"#{path}\", -1));"
@@ -227,7 +231,7 @@ module ASTroGen
             # — the operand value is determined by other operands /
             # build phase, not by the pointer itself.
             "0ULL"
-          when 'VALUE'
+          when ASTroGen.value_type
             # Plain VALUE-typed operand (e.g. baked-immediate literal).
             # VALUE is intptr_t; hash as a 64-bit scalar.
             "hash_uint64((uint64_t)(uintptr_t)(#{val}))"
@@ -272,8 +276,8 @@ module ASTroGen
             "    astro_fprint_double(fp, #{field});"   # not %.17g: keeps -0.0's sign
           when 'const char *'
             "    astro_fprintf_cstr(fp, #{field});"
-          when 'VALUE'
-            "    fprintf(fp, \"(VALUE)0x%lxL\", (long)#{field});"
+          when ASTroGen.value_type
+            "    fprintf(fp, \"(#{ASTroGen.value_type})0x%lxL\", (long)#{field});"
           when 'void *'
             # Opaque per-process pointer; cannot be embedded.  Emit a
             # NULL placeholder — node-specific code must rebuild the
@@ -309,7 +313,7 @@ module ASTroGen
             # (`<ac>` for an `ac` operand, etc.) so the dump reads
             # naturally and the operand list stays well-formed.
             "        fputs(\"<#{self.name}>\", fp);"
-          when 'VALUE'
+          when ASTroGen.value_type
             # Print as hex; VALUE could be a tagged int, singleton, or
             # heap pointer (latter not reproducible across runs).
             "        fprintf(fp, \"0x%lx\", (long)n->u.#{name}.#{self.name});"
@@ -351,7 +355,7 @@ module ASTroGen
           when 'int32_t'
             "    fprintf(fp, \"        %d\", n->u.#{name}.#{self.name});"
           when 'uint64_t'
-            "    fprintf(fp, \"        (VALUE)%lluULL\", (unsigned long long)n->u.#{name}.#{self.name});"
+            "    fprintf(fp, \"        (#{ASTroGen.value_type})%lluULL\", (unsigned long long)n->u.#{name}.#{self.name});"
           when 'const char *'
             "    astro_fprint_cstr(fp, n->u.#{name}.#{self.name});"
           when 'double'
@@ -364,11 +368,11 @@ module ASTroGen
             # a void* operand should arrange for the pointer to be
             # resolved at runtime (or AOT for those nodes is a no-op).
             "    fprintf(fp, \"        (void *)NULL\");"
-          when 'VALUE'
+          when ASTroGen.value_type
             # Bake VALUE as a hex literal cast.  Fine for tagged ints &
             # singletons; heap pointers are non-reproducible across runs
             # and shouldn't be baked anyway.
-            "    fprintf(fp, \"        (VALUE)0x%lxL\", (long)n->u.#{name}.#{self.name});"
+            "    fprintf(fp, \"        (#{ASTroGen.value_type})0x%lxL\", (long)n->u.#{name}.#{self.name});"
           else
             raise "unknown operand type: #{self.join}"
           end
@@ -483,7 +487,7 @@ module ASTroGen
       # assignment AND as the arg expression passed to EVAL.
       # --------------------------------------------------------------------
       def child_storage_decl(slot)
-        "VALUE _c#{slot};"
+        "#{ASTroGen.value_type} _c#{slot};"
       end
 
       def child_storage_expr(slot)
@@ -661,7 +665,7 @@ module ASTroGen
         /xm) { |m| yield m }
       end
 
-      def result_type = "VALUE"
+      def result_type = ASTroGen.value_type
 
       def alloc_dispatcher_expr
         "DISPATCH_#{@name}"

@@ -20,7 +20,10 @@
  *
  * The names are derived from the value type so a language that names its
  * value type `LV` gets `LV_REF` / `LV_SLICE` — the framework never bakes
- * a fixed value-type name into a public identifier.
+ * a fixed value-type name into a public identifier.  A sample may instead
+ * name them itself: ASTRO_REF_TYPE / ASTRO_SLICE_TYPE for the two types and
+ * ASTRO_REF_PREFIX for the accessors (e.g. `korb_ref` / `korb_slice` /
+ * `KORB` → KORB_REF_GET, KORB_SLICE_LEN, ...).
  *
  * Raw `VALUE *` disappears from the sample ABI: a reference may only be
  * constructed via <T>_REF_AT from a stable-root cell (slots buffer, CTX
@@ -42,9 +45,21 @@
 
 #define ASTRO_REF_CAT_(a, b) a##b
 #define ASTRO_REF_CAT(a, b)  ASTRO_REF_CAT_(a, b)
-#define ASTRO_REF_T          ASTRO_REF_CAT(ASTRO_REF_VALUE, _REF)
-#define ASTRO_SLICE_T        ASTRO_REF_CAT(ASTRO_REF_VALUE, _SLICE)
-#define ASTRO_REF_FN(suffix) ASTRO_REF_CAT(ASTRO_REF_VALUE, suffix)
+#ifdef ASTRO_REF_TYPE
+#  define ASTRO_REF_T        ASTRO_REF_TYPE
+#else
+#  define ASTRO_REF_T        ASTRO_REF_CAT(ASTRO_REF_VALUE, _REF)
+#endif
+#ifdef ASTRO_SLICE_TYPE
+#  define ASTRO_SLICE_T      ASTRO_SLICE_TYPE
+#else
+#  define ASTRO_SLICE_T      ASTRO_REF_CAT(ASTRO_REF_VALUE, _SLICE)
+#endif
+#ifdef ASTRO_REF_PREFIX
+#  define ASTRO_REF_FN(suffix) ASTRO_REF_CAT(ASTRO_REF_PREFIX, suffix)
+#else
+#  define ASTRO_REF_FN(suffix) ASTRO_REF_CAT(ASTRO_REF_VALUE, suffix)
+#endif
 
 /* 1-member struct → passed in a register; constructing one is free. */
 typedef struct { ASTRO_REF_VALUE *p; } ASTRO_REF_T;

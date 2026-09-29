@@ -1,8 +1,12 @@
 # koruby_precise — C Extension API 設計 (Track B: native)
 
 > Status: **draft / 設計のみ**。実装は未着手。
-> 関連: [`v2_design.md`](v2_design.md) §4 (RESULT), §5 (VALUE_REF/slots ABI),
+> 関連: [`v2_design.md`](v2_design.md) §4 (RESULT), §5 (korb_ref/slots ABI),
 > [`rooting_guide.md`](rooting_guide.md), `context.h`, `node.h`, `builtins/*.c`。
+
+> **用語（2026-09-29 改名）**: koruby 内部の値（tagged word、moving GC で動く）は `korb_value`、rooted cell への参照は
+> `korb_ref`、その列は `korb_slice`（アクセサは `KORB_REF_GET` / `KORB_SLICE_LEN` など大文字）。旧名は `VALUE` /
+> `VALUE_REF` / `VALUE_SLICE`。**この文書で素の `VALUE` と書くのは CRuby / `ruby.h` の VALUE**（C 拡張側）だけ。
 
 ## 0. 目的と A/B の切り分け
 
@@ -28,8 +32,8 @@ koruby_precise は **オブジェクトが動く** GC (copy + PURGE plane 巡回
 `RSTRING_PTR` は安定ポインタを返し、`VALUE` を C ローカルに握ったまま
 `rb_funcall` してよい。koruby ではこれが**全部罠**になる:
 
-- **生 VALUE を GC point を跨いで握ると stale** (`v2_design.md` §5 の中心規約)。
-- **heap payload への生 `char*` / `VALUE*` は alloc を跨ぐと stale**。
+- **生 korb_value を GC point を跨いで握ると stale** (`v2_design.md` §5 の中心規約)。
+- **heap payload への生 `char*` / `korb_value*` は alloc を跨ぐと stale**。
   `KorbString` は本体と別に `KorbStrBuf *buf` を alloc しており (`context.h`)、
   `<<` / `[]=` の in-place 成長で buf 自体が動く。`string.c:1718` が
   「a raw pointer into the String's buffer would go stale under moving GC」と明記。
@@ -46,17 +50,17 @@ koruby_precise は **オブジェクトが動く** GC (copy + PURGE plane 巡回
 
 ```c
 /* context.h:607 — 受信者ディスパッチ builtin の型 */
-typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
-typedef RESULT (*korb_method_blk_fn)(CTX *c, VALUE *slots, VALUE_REF self, /* +block */ ...);
+typedef RESULT (*korb_method_fn)(CTX *c, korb_value *slots, korb_ref self, korb_slice args);
+typedef RESULT (*korb_method_blk_fn)(CTX *c, korb_value *slots, korb_ref self, /* +block */ ...);
 ```
 
 | 要素 | 実体 | CRuby/mruby 対応 |
 |---|---|---|
 | コンテキスト | `CTX *c` (グローバル禁止ルールの帰結) | `mrb_state *` |
-| rooted スクラッチ | `VALUE *slots` = GC がスキャンする第一空きスロット。GC は `[c->slots, c->slots_top)` を走査 | mruby arena |
-| 値を rooting | `SLOTS_PUSH(slots, v)` → cell に置き cursor を進め `VALUE_REF` を返す | `mrb_gc_protect` |
-| ハンドル | `VALUE_REF` (rooted 1 cell) / `VALUE_SLICE` (rooted run)。生 `VALUE*` は ABI から排除、ref は stable root からのみ構築 | handle |
-| deref | `VALUE_REF_GET(r)` は**毎回 `*cell` を読み直す** → GC が動かしても追従 | — |
+| rooted スクラッチ | `korb_value *slots` = GC がスキャンする第一空きスロット。GC は `[c->slots, c->slots_top)` を走査 | mruby arena |
+| 値を rooting | `SLOTS_PUSH(slots, v)` → cell に置き cursor を進め `korb_ref` を返す | `mrb_gc_protect` |
+| ハンドル | `korb_ref` (rooted 1 cell) / `korb_slice` (rooted run)。生 `korb_value*` は ABI から排除、ref は stable root からのみ構築 | handle |
+| deref | `KORB_REF_GET(r)` は**毎回 `*cell` を読み直す** → GC が動かしても追従 | — |
 | 制御/例外 | `RESULT{value,state}` + `UNWRAP`/`CHECK` 伝播 + `korb_raise`。`c->state` なし | `mrb_value` + longjmp |
 | 登録 | `korb_def_cmethod(c, KORB_C_*, name, fn, arity)` / `_blk` | `mrb_define_method` |
 | 生成 | `korb_str_new` / `korb_ary_new`+`push_val` / `korb_hash_new`+`set` — **全部 `(c, slots, ...) → RESULT`** (alloc は明示的、返りで再 rooting) | `mrb_str_new` 等 |
@@ -75,20 +79,20 @@ typedef RESULT (*korb_method_blk_fn)(CTX *c, VALUE *slots, VALUE_REF self, /* +b
 ### 3.1 state とハンドル
 
 - `korb_state` = `CTX` の opaque alias。全 API の第 1 引数。
-- ハンドル型: `KVALUE_REF` (rooted cell) / `KVALUE_SLICE` (引数列)。
-- **immediate は生 VALUE で握ってよい**: Fixnum / Symbol / nil / true / false /
-  Flonum は動かない (tag 表現; `context.h` §Tagged VALUE)。heap VALUE だけ ref
+- ハンドル型: `korb_ref` (rooted cell) / `korb_slice` (引数列)。
+- **immediate は生 korb_value で握ってよい**: Fixnum / Symbol / nil / true / false /
+  Flonum は動かない (tag 表現; `context.h` §Tagged korb_value)。heap korb_value だけ ref
   が要る。この境界を API doc に明記し、`korb_immediate_p(v)` を提供。
 
 ### 3.2 引数パース — `korb_get_args`
 
-mruby 風フォーマット文字列。heap 型は呼び出し側 slots に park して `VALUE_REF`
+mruby 風フォーマット文字列。heap 型は呼び出し側 slots に park して `korb_ref`
 を返し、immediate はスカラで返す。型チェック + 係数 (`to_str`/`to_int`) + arity
 エラーは RESULT-raise:
 
 ```c
 /* "S o | i" = 必須 String, 必須 任意オブジェクト, 省略可 Integer */
-VALUE_REF str; VALUE_REF obj; long n = 0;
+korb_ref str; korb_ref obj; long n = 0;
 CHECK(korb_get_args(c, slots, args, "So|i", &str, &obj, &n));
 ```
 
@@ -102,12 +106,12 @@ CHECK(korb_get_args(c, slots, args, "So|i", &str, &obj, &n));
 offset+re-derive**。優先順は:
 
 1. **offset + re-derive (zero-copy, ホットループの標準)**: ext は
-   **rooted な `VALUE_REF` + 整数オフセット**を持ち、alloc のたびに `buf` を
+   **rooted な `korb_ref` + 整数オフセット**を持ち、alloc のたびに `buf` を
    引き直す:
    ```c
    long pos = 0;
    while (pos < len) {
-       const char *p = korb_str_data(VALUE_REF_GET(sref));  /* = VAL2STR(..)->buf->data; alloc 後は引き直す */
+       const char *p = korb_str_data(KORB_REF_GET(sref));  /* = VAL2STR(..)->buf->data; alloc 後は引き直す */
        char ch = p[pos];
        ... /* 結果オブジェクトを alloc しても、次のループで p を再取得 */
        pos++;
@@ -152,16 +156,16 @@ KORB_E_*, line, fmt, …)`。ext コードは自然に合成できる。
 ## 4. GC 安全性を「形状」で強制する (本質的な設計作業)
 
 - **規約**: alloc しうる関数は全て `RESULT` を返し `slots` を取る。ext は自分の
-  `VALUE_REF` を常に「読み直せる (GC が動かしたかも)」ものとして扱う。
-  `VALUE_REF_GET` が毎回 `*cell` を読むので、**ref を握る限り自動で安全**。
-  raw VALUE を握った瞬間だけ壊れる。
-- **公開 header から raw `VALUE*` を禁止**。ハンドル (`KVALUE_REF`/`KVALUE_SLICE`)
-  のみ。heap 値を「握るために」bare VALUE で返す API を提供しない。heap 結果は
+  `korb_ref` を常に「読み直せる (GC が動かしたかも)」ものとして扱う。
+  `KORB_REF_GET` が毎回 `*cell` を読むので、**ref を握る限り自動で安全**。
+  raw korb_value を握った瞬間だけ壊れる。
+- **公開 header から raw `korb_value*` を禁止**。ハンドル (`korb_ref`/`korb_slice`)
+  のみ。heap 値を「握るために」bare korb_value で返す API を提供しない。heap 結果は
   必ず呼び出し側 slots に park された ref で返す。
 - **borrow したバイトポインタの寿命** = 「次に alloc しうる API 呼び出しまで」。
   debug poison: GC epoch を bump、borrow は epoch を記録、deref で不一致なら abort。
 - 既存ツールに乗る: `ARO_GC_EDGE` (struct edge) / `KORB_RESULT_AUDIT`
-  (held-across-GC) / `ASTRO_REF_CHECK` (stale deref) + ext TU で `char*`/`VALUE*`
+  (held-across-GC) / `ASTRO_REF_CHECK` (stale deref) + ext TU で `char*`/`korb_value*`
   escape を禁じる grep/CodeQL ゲート。
 
 ### 4.1 関数 GC-effect 属性 + 静的 borrow 検査(`@nogc` の C 関数への一般化)
@@ -235,15 +239,15 @@ extern は `c` を持たない → koruby オブジェクトを alloc できな�
 
 移動ヒープから**生の内部ポインタ**が出る payload は 2 種だけ:
 - **文字列バイト** `KorbStrBuf` の `char` 配列。**フィールドは `data_priv`**、
-  `korb_strbuf_data()` / `korb_str_data(VALUE)`(`ARO_BORROW` inline)経由でのみ取得。
-- **VALUE 配列要素** `KorbArrayItems` の `VALUE` 配列(KorbArray/KorbHash の裏)。
+  `korb_strbuf_data()` / `korb_str_data(korb_value)`(`ARO_BORROW` inline)経由でのみ取得。
+- **korb_value 配列要素** `KorbArrayItems` の `korb_value` 配列(KorbArray/KorbHash の裏)。
   **フィールドは `data_priv`**、`korb_items_data()`(`ARO_BORROW` inline)経由でのみ取得。
 
 生 payload フィールドは `data_priv`。`ARO_BORROW` アクセサ以外から触ると**コンパイル
 エラー**(spatial encapsulation を C の型で hard 強制)。
 
-他フィールドは全て `VALUE ARO_GC_EDGE`(個別 VALUE = VALUE_REF/edge 機構が管理、生
-ポインタでない)。新型を足しても増えるのは `ARO_GC_EDGE` VALUE で新規 raw buffer では
+他フィールドは全て `korb_value ARO_GC_EDGE`(個別 korb_value = korb_ref/edge 機構が管理、生
+ポインタでない)。新型を足しても増えるのは `ARO_GC_EDGE` korb_value で新規 raw buffer では
 ない(flexible-array payload 追加は意図的でレビュー対象)。→ borrow-source は**この 2 つの
 `ARO_BORROW` アクセサ呼び出し**に集約され、CodeQL はその戻り値 1 点を source にする。
 公開 ext API でも同じ数個のアクセサ(`korb_str_data` 等)。
@@ -268,8 +272,8 @@ borrow-source から外す(`korb_sym_name`=stable, `korb_str_data`=movable)。�
   側でも見る belt-and-suspenders(baseline 0)。
 - **temporal(値を may-gc 跨ぎで保持)= CodeQL 専任**（コンパイラには「GC が def と use の
   間で起きるか」を判定できない）。2 本ある: `borrow_after_gc.ql` が**生ポインタ**
-  (`ARO_BORROW` accessor の戻り / `data_priv`)を、`value_after_gc.ql` が**裸の VALUE**
-  (may-gc 呼び出しが返した可動 heap オブジェクトを rooted な slots/VALUE_REF でなく C
+  (`ARO_BORROW` accessor の戻り / `data_priv`)を、`value_after_gc.ql` が**裸の korb_value**
+  (may-gc 呼び出しが返した可動 heap オブジェクトを rooted な slots/korb_ref でなく C
   ローカルに保持)を検出。どちらも SSA-precise（rooted から読み直す=新 def=安全）で、
   安全イディオム(slots[] は配列要素で StackVariable でない)は false-positive しない。
   GC-safety の本体はこの temporal 2 検査。
@@ -344,7 +348,7 @@ string builder / array・hash 構築 / Float・Integer パース — 全て §3 
   する VALUE を pin する戦略が要る: (i) 呼び出し中だけ ext のスタック領域を
   conservative pin、または (ii) JNI 的な per-call local-ref テーブル。
 - A の性能天井は B より低い (pin/handle オーバヘッド) が、エコシステムの広さを
-  買う。B のハンドルモデルが自然な土台: `ruby.h` の `VALUE` ↔ koruby `VALUE_REF`
+  買う。B のハンドルモデルが自然な土台: `ruby.h` の `VALUE` ↔ koruby `korb_ref`
   を per-call handle テーブルで対応づける。
 - **決定**: B を先に作り、B のハンドル寿命規則が固まってから A の pin 層を設計。
 
@@ -357,7 +361,7 @@ string builder / array・hash 構築 / Float・Integer パース — 全て §3 
 
 ## 8. 実装フェーズ案
 
-1. `korb_ext.h` を切り出し (§2 の既存型を公開名で re-export、raw `VALUE*` を隠す)。
+1. `korb_ext.h` を切り出し (§2 の既存型を公開名で re-export、raw `korb_value*` を隠す)。
 2. `korb_get_args` (§3.2) + string borrow/copy/builder (§3.3)。
 3. epoch-poison による borrow-lifetime audit (§4)。
 4. native `json` ext を第一クライアントとして実装・計測 (§5)。
@@ -382,7 +386,7 @@ Ruby 側（lib/openssl/*.rb）はそのまま使える。
    引数と self を「pinned」印の付いた handle 表に置く。拡張の中で `rb_str_new` 等が返す新しいオブジェクトも同じ表へ。
    copy GC はこの表の対象を動かさない（non-moving 区画へ昇格、または表を conservative root として扱い移動を免除）。
    関数から戻るとき表を畳む。`rb_gc_register_address` / `rb_gc_mark` の対象（ivar 的に保持されるもの）は永続 pin。
-2. **VALUE の表現**: 拡張側の `VALUE` = koruby の VALUE そのもの（pin されているので安定）。`RSTRING_PTR` は
+2. **VALUE の表現**: 拡張側の `VALUE` = koruby の korb_value そのもの（pin されているので安定）。`RSTRING_PTR` は
    KorbStrBuf の data（pin 中は buf も動かさない — 文字列本体と buf の両方を pin する必要がある）。
 3. **`TypedData`**: koruby の KORB_OBJ_OBJECT に C 構造体ポインタ + `rb_data_type_t`（free / mark / size）を持たせる。
    mark 関数は koruby の edge visit に橋渡し（mark で呼ばれた VALUE は pin 扱い）。
@@ -460,9 +464,9 @@ mark-sweep。当初「Wren = 移動 = koruby と同型」と書いたのは誤�
   CPython/PHP/Perl/Tcl は **refcount 手動**(`Py_INCREF`/`SvREFCNT_inc`)。
 - 移動勢 (V8/JNI): JNI は **local ref テーブル**(復帰で自動解放、`NewGlobalRef`
   で永続)。オブジェクトが動くので **jobject は間接ハンドル**(生ポインタでない)。
-  → koruby の **`VALUE_REF` の正しい対応物は JNI local ref**。どちらも「安定した
+  → koruby の **`korb_ref` の正しい対応物は JNI local ref**。どちらも「安定した
   間接セルの中身を GC が書き換える」構造。**Wren slot / mruby arena は非移動なので
-  生ポインタが安定という別物**(koruby の re-read 追従は不要)。既存の VALUE_REF
+  生ポインタが安定という別物**(koruby の re-read 追従は不要)。既存の korb_ref
   設計は移動 GC 前提として正解筋で、非移動勢の slot モデルとは似て非なるもの。
 
 ### A.4 出典

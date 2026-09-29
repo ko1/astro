@@ -19,27 +19,27 @@
 #ifdef KORB_HAVE_YAML
 #include <yaml.h>
 
-/* 配列 1 本を作って `n` 個の値を積む。値は呼び出し側が VALUE で持っているが、
+/* 配列 1 本を作って `n` 個の値を積む。値は呼び出し側が korb_value で持っているが、
  * korb_ary_push_val が中で root してくれるので直列に積んでよい。 */
-static RESULT korb_yaml_ev(CTX *c, VALUE *slots, VALUE_REF dst, const VALUE *vals, uint32_t n)
+static RESULT korb_yaml_ev(CTX *c, korb_value *slots, korb_ref dst, const korb_value *vals, uint32_t n)
 {
     slots[0] = UNWRAP(korb_ary_new(c, slots, n));
-    { VALUE_REF r = VALUE_REF_AT(&slots[0]);
+    { korb_ref r = KORB_REF_AT(&slots[0]);
       for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, r, vals[i])); }
     return korb_ary_push_val(c, slots + 1, dst, slots[0]);
 }
 
 /* libyaml の文字列は yaml_char_t* (UTF-8)。NULL は nil に。 */
-static RESULT korb_yaml_str(CTX *c, VALUE *slots, const yaml_char_t *p, size_t len)
+static RESULT korb_yaml_str(CTX *c, korb_value *slots, const yaml_char_t *p, size_t len)
 {
     if (p == NULL) return RESULT_OK(KORB_NIL);
     return korb_str_new(c, slots, (const char *)p, (uint32_t)len);
 }
 
 static RESULT
-korb_bi_yaml_parse(CTX *c, VALUE *slots, VALUE_SLICE args)
+korb_bi_yaml_parse(CTX *c, korb_value *slots, korb_slice args)
 {
-    const VALUE sv = VALUE_SLICE_GET(args, 0);
+    const korb_value sv = KORB_SLICE_GET(args, 0);
     if (UNLIKELY(!KORB_STRING_P(sv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, sv));
     const KorbString *const ss = VAL2STR(sv);
@@ -54,7 +54,7 @@ korb_bi_yaml_parse(CTX *c, VALUE *slots, VALUE_SLICE args)
     yaml_parser_set_input_string(&parser, src, slen);
 
     slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
-    VALUE_REF out = VALUE_REF_AT(&slots[0]);
+    korb_ref out = KORB_REF_AT(&slots[0]);
     for (;;) {
         yaml_event_t ev;
         if (!yaml_parser_parse(&parser, &ev)) {
@@ -67,7 +67,7 @@ korb_bi_yaml_parse(CTX *c, VALUE *slots, VALUE_SLICE args)
             const size_t line = parser.context_mark.line + 1, col = parser.context_mark.column + 1;
             const size_t off = parser.problem_offset;
             yaml_parser_delete(&parser); free(src);
-            VALUE e[6];
+            korb_value e[6];
             e[0] = ID2SYM(korb_intern(c->vm, "error", 5));
             e[1] = KORB_NIL; e[2] = KORB_NIL;
             e[3] = LONG2FIX((korb_sword_t)line);
@@ -81,10 +81,10 @@ korb_bi_yaml_parse(CTX *c, VALUE *slots, VALUE_SLICE args)
             CHECK(korb_yaml_ev(c, slots + 3, out, e, 6));   /* [..., [:error, problem, context, line, col, offset]] */
             return RESULT_OK(slots[0]);
         }
-        /* alloc を跨いで C ローカルに VALUE を持たない: イベント配列を先に作り、
+        /* alloc を跨いで C ローカルに korb_value を持たない: イベント配列を先に作り、
          * 値は作った直後に push する (String の生成が前の String を動かす)。 */
         slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 8));
-        VALUE_REF eva = VALUE_REF_AT(&slots[1]);
+        korb_ref eva = KORB_REF_AT(&slots[1]);
 #define YPUSH(v)        CHECK(korb_ary_push_val(c, slots + 2, eva, (v)))
 #define YPUSH_STR(p, n) do { const RESULT r_ = korb_yaml_str(c, slots + 2, (p), (n)); CHECK(r_); YPUSH(r_.value); } while (0)
 #define YPUSH_CSTR(p)   YPUSH_STR((p), (p) ? strlen((const char *)(p)) : 0)
@@ -96,26 +96,26 @@ korb_bi_yaml_parse(CTX *c, VALUE *slots, VALUE_SLICE args)
             YPUSH(LONG2FIX(1));
             if (ev.data.document_start.version_directive) {
                 slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
-                VALUE_REF vr = VALUE_REF_AT(&slots[2]);
+                korb_ref vr = KORB_REF_AT(&slots[2]);
                 CHECK(korb_ary_push_val(c, slots + 3, vr, LONG2FIX(ev.data.document_start.version_directive->major)));
                 CHECK(korb_ary_push_val(c, slots + 3, vr, LONG2FIX(ev.data.document_start.version_directive->minor)));
-                YPUSH(VALUE_REF_GET(vr));
+                YPUSH(KORB_REF_GET(vr));
             } else {
                 YPUSH(KORB_NIL);
             }
             slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 0));      /* tag directives */
-            { VALUE_REF tr = VALUE_REF_AT(&slots[2]);
+            { korb_ref tr = KORB_REF_AT(&slots[2]);
               for (yaml_tag_directive_t *td = ev.data.document_start.tag_directives.start;
                    td && td < ev.data.document_start.tag_directives.end; td++) {
                   slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
-                  VALUE_REF pr = VALUE_REF_AT(&slots[3]);
+                  korb_ref pr = KORB_REF_AT(&slots[3]);
                   { const RESULT h_ = korb_yaml_str(c, slots + 4, td->handle, strlen((const char *)td->handle));
                     CHECK(h_); CHECK(korb_ary_push_val(c, slots + 4, pr, h_.value)); }
                   { const RESULT p_ = korb_yaml_str(c, slots + 4, td->prefix, strlen((const char *)td->prefix));
                     CHECK(p_); CHECK(korb_ary_push_val(c, slots + 4, pr, p_.value)); }
-                  CHECK(korb_ary_push_val(c, slots + 4, tr, VALUE_REF_GET(pr)));
+                  CHECK(korb_ary_push_val(c, slots + 4, tr, KORB_REF_GET(pr)));
               }
-              YPUSH(VALUE_REF_GET(tr)); }
+              YPUSH(KORB_REF_GET(tr)); }
             YPUSH(ev.data.document_start.implicit ? KORB_TRUE : KORB_FALSE);
             break;
           case YAML_DOCUMENT_END_EVENT:
@@ -164,12 +164,12 @@ korb_bi_yaml_parse(CTX *c, VALUE *slots, VALUE_SLICE args)
 #undef YPUSH
         const bool done = ev.type == YAML_STREAM_END_EVENT;
         yaml_event_delete(&ev);
-        CHECK(korb_ary_push_val(c, slots + 2, out, VALUE_REF_GET(eva)));
+        CHECK(korb_ary_push_val(c, slots + 2, out, KORB_REF_GET(eva)));
         if (done) break;
     }
     yaml_parser_delete(&parser);
     free(src);
-    return RESULT_OK(VALUE_REF_GET(out));
+    return RESULT_OK(KORB_REF_GET(out));
 }
 
 /* --- emitter --------------------------------------------------------------- */
@@ -193,7 +193,7 @@ static int korb_yaml_write(void *data, unsigned char *buffer, size_t size)
 
 /* 1 イベント分の文字列引数を libc 側へ写す (この先で alloc は起きないが、
  * libyaml が保持するので寿命を合わせる)。 */
-static char *korb_yaml_dup(VALUE v)
+static char *korb_yaml_dup(korb_value v)
 {
     if (!KORB_STRING_P(v)) return NULL;
     const KorbString *const s = VAL2STR(v);
@@ -204,16 +204,16 @@ static char *korb_yaml_dup(VALUE v)
 }
 
 static RESULT
-korb_bi_yaml_emit(CTX *c, VALUE *slots, VALUE_SLICE args)
+korb_bi_yaml_emit(CTX *c, korb_value *slots, korb_slice args)
 {
-    const VALUE evs = VALUE_SLICE_GET(args, 0);
+    const korb_value evs = KORB_SLICE_GET(args, 0);
     if (UNLIKELY(!KORB_ARRAY_P(evs)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Array");
-    const VALUE opts = VALUE_SLICE_LEN(args) > 1 ? VALUE_SLICE_GET(args, 1) : KORB_NIL;
+    const korb_value opts = KORB_SLICE_LEN(args) > 1 ? KORB_SLICE_GET(args, 1) : KORB_NIL;
     korb_sword_t indent = 2, width = 80;
     bool canonical = false;
     if (KORB_ARRAY_P(opts) && VAL2ARY(opts)->len >= 3) {
-        const VALUE *const o = korb_items_data(VAL2ARY(opts)->items);
+        const korb_value *const o = korb_items_data(VAL2ARY(opts)->items);
         if (FIXNUM_P(o[0])) indent = FIX2LONG(o[0]);
         if (FIXNUM_P(o[1])) width = FIX2LONG(o[1]);
         canonical = o[2] == KORB_TRUE;
@@ -232,9 +232,9 @@ korb_bi_yaml_emit(CTX *c, VALUE *slots, VALUE_SLICE args)
     char errbuf[96]; bool err_arg = false;   /* invalid bytes are an ArgumentError, like CRuby */
     const KorbArray *const ea = VAL2ARY(evs);
     for (uint32_t i = 0; i < ea->len && err == NULL; i++) {
-        const VALUE evv = korb_items_data(ea->items)[i];
+        const korb_value evv = korb_items_data(ea->items)[i];
         if (!KORB_ARRAY_P(evv) || VAL2ARY(evv)->len == 0) continue;
-        const VALUE *const f = korb_items_data(VAL2ARY(evv)->items);
+        const korb_value *const f = korb_items_data(VAL2ARY(evv)->items);
         const korb_sword_t kind = FIXNUM_P(f[0]) ? FIX2LONG(f[0]) : -1;
         yaml_event_t ev;
         int ok = 0;
@@ -246,7 +246,7 @@ korb_bi_yaml_emit(CTX *c, VALUE *slots, VALUE_SLICE args)
           case 1: {
             yaml_version_directive_t vd, *vdp = NULL;
             if (KORB_ARRAY_P(f[1]) && VAL2ARY(f[1])->len >= 2) {
-                const VALUE *const vv = korb_items_data(VAL2ARY(f[1])->items);
+                const korb_value *const vv = korb_items_data(VAL2ARY(f[1])->items);
                 vd.major = (int)(FIXNUM_P(vv[0]) ? FIX2LONG(vv[0]) : 1);
                 vd.minor = (int)(FIXNUM_P(vv[1]) ? FIX2LONG(vv[1]) : 1);
                 vdp = &vd;
@@ -256,9 +256,9 @@ korb_bi_yaml_emit(CTX *c, VALUE *slots, VALUE_SLICE args)
             if (KORB_ARRAY_P(f[2])) {
                 const KorbArray *const ta = VAL2ARY(f[2]);
                 for (uint32_t k = 0; k < ta->len && ntd < 64; k++) {
-                    const VALUE pv = korb_items_data(ta->items)[k];
+                    const korb_value pv = korb_items_data(ta->items)[k];
                     if (!KORB_ARRAY_P(pv) || VAL2ARY(pv)->len < 2) continue;
-                    const VALUE *const pf = korb_items_data(VAL2ARY(pv)->items);
+                    const korb_value *const pf = korb_items_data(VAL2ARY(pv)->items);
                     tds[ntd].handle = (yaml_char_t *)korb_yaml_dup(pf[0]);
                     tds[ntd].prefix = (yaml_char_t *)korb_yaml_dup(pf[1]);
                     if (tds[ntd].handle && tds[ntd].prefix) ntd++;

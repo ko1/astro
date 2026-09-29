@@ -101,7 +101,7 @@
 
 /* ARO_GC_EDGE — qualifier for fields that hold a heap pointer scanned by
  * SCAN_EDGES (= outgoing graph edges).  Sample marks such fields and
- * sample-owned VALUE flex arrays with this qualifier:
+ * sample-owned ARO_VALUE flex arrays with this qualifier:
  *
  *     typedef struct BaArray {
  *         AroObjectHeader  head;
@@ -110,7 +110,7 @@
  *     } BaArray;
  *     typedef struct BaArrayItems {
  *         AroObjectHeader head;
- *         VALUE ARO_GC_EDGE data[];             // each slot is a GC edge
+ *         ARO_VALUE ARO_GC_EDGE data[];             // each slot is a GC edge
  *     } BaArrayItems;
  *
  * Placement is POST-type (= `T *ARO_GC_EDGE field`, not `ARO_GC_EDGE T *field`)

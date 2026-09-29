@@ -6,7 +6,7 @@
 >
 > 現行と違う代表例:
 > - ファイル: v1 の `object.c` は無い。現行は `korb_runtime.c` + `builtins/*.c`。
-> - VALUE 表現: §1 の CRuby 互換タグ (Qnil=0x08 / Qtrue=0x14 / SYMBOL low 8bit=0x0c、
+> - korb_value 表現: §1 の CRuby 互換タグ (Qnil=0x08 / Qtrue=0x14 / SYMBOL low 8bit=0x0c、
 >   flonum 未使用) は **v2 で変わった** — 現行は `context.h` のとおり
 >   nil=0 / false=4 / true=20 / undef=36、Symbol は `(id<<4)|0xC`、**flonum は実装済み**
 >   (`FLONUM_P(v) = (v & 3) == 2`)。
@@ -18,7 +18,7 @@
 
 koruby の **どこで何が起きているか** を、ホットパス (メソッド呼出 / クロージャ / 例外) を中心に説明する。
 
-## 1. VALUE 表現 — CRuby 互換
+## 1. korb_value 表現 — CRuby 互換
 
 ```
 Qfalse  = 0x00       ...0000 0000
@@ -36,8 +36,8 @@ pointer = ...000     low 3 bits = 0
 
 ```c
 struct RBasic {
-    VALUE flags;   // low 5 bits = T_xxx (T_OBJECT=1, T_CLASS=2, ...)
-    VALUE klass;   // 所属クラスへのポインタ
+    korb_value flags;   // low 5 bits = T_xxx (T_OBJECT=1, T_CLASS=2, ...)
+    korb_value klass;   // 所属クラスへのポインタ
 };
 ```
 
@@ -52,21 +52,21 @@ struct RBasic {
 
 ```c
 typedef struct CTX_struct {
-    VALUE *stack_base, *stack_end;   // 1M slot の VALUE スタック
-    VALUE *fp;                       // 現フレームの起点 (locals[0] が fp[0])
-    VALUE *sp;                       // GC scan の高水位
-    VALUE self;
+    korb_value *stack_base, *stack_end;   // 1M slot の korb_value スタック
+    korb_value *fp;                       // 現フレームの起点 (locals[0] が fp[0])
+    korb_value *sp;                       // GC scan の高水位
+    korb_value self;
     struct korb_class *current_class;
     struct korb_cref *cref;          // 字句的定数スコープ
     const char *current_file;        // require_relative 解決用
     state_serial_t method_serial;
     int   state;                     // KORB_NORMAL / RAISE / RETURN / BREAK / NEXT
-    VALUE state_value;
+    korb_value state_value;
     struct korb_frame *current_frame;
 } CTX;
 ```
 
-スタックは **VALUE 配列1本** で、フレームは fp の前進 / 後退で表現される (Smalltalk VM 風)。
+スタックは **korb_value 配列1本** で、フレームは fp の前進 / 後退で表現される (Smalltalk VM 風)。
 
 ## 3. メソッド呼び出し
 
@@ -98,7 +98,7 @@ seq( seq( lvar_set(arg_index, plus(int(1), int(2))),
 ### 3.2 ランタイムレベル — `korb_dispatch_call`
 
 ```c
-VALUE korb_dispatch_call(CTX *c, NODE *callsite, VALUE recv, ID name,
+korb_value korb_dispatch_call(CTX *c, NODE *callsite, korb_value recv, ID name,
                          uint32_t argc, uint32_t arg_index,
                          struct korb_proc *block, struct method_cache *mc)
 ```
@@ -131,7 +131,7 @@ struct method_cache {
     uint32_t locals_cnt;
     uint32_t required_params_cnt;
     uint8_t  type;                 // 0=AST, 1=CFUNC
-    VALUE (*cfunc)(...);
+    korb_value (*cfunc)(...);
 };
 ```
 
@@ -154,7 +154,7 @@ NODE_DEF @noinline
 node_block_literal(CTX *c, NODE *n, NODE *body, uint32_t params_cnt,
                    uint32_t param_base, uint32_t env_size, uint32_t creates_proc)
 {
-    VALUE p = korb_proc_new(body, c->fp, env_size, params_cnt, param_base, c->self, false);
+    korb_value p = korb_proc_new(body, c->fp, env_size, params_cnt, param_base, c->self, false);
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
     return p;
 }
@@ -181,10 +181,10 @@ if (is_block) {
 ### 4.2 yield fast path (共有 fp、`creates_proc == false`)
 
 ```c
-VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
+korb_value korb_yield(CTX *c, uint32_t argc, korb_value *argv) {
     struct korb_proc *blk = current_block;
     if (UNLIKELY(blk->creates_proc)) return korb_yield_slow(c, blk, argc, argv);
-    VALUE *fp = blk->env;   // 親と同じ fp
+    korb_value *fp = blk->env;   // 親と同じ fp
     fp[blk->param_base] = argv[0];   // 単一引数 fast path
     c->fp = fp;
     return EVAL(c, blk->body);  // body は共通 fp で動く
@@ -200,12 +200,12 @@ VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
 ### 4.3 yield slow path (fresh env、`creates_proc == true`)
 
 ```c
-VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, ...) {
-    VALUE *fp;
-    VALUE *outer_env_ptr = blk->env;
+korb_value korb_yield_slow(CTX *c, struct korb_proc *blk, ...) {
+    korb_value *fp;
+    korb_value *outer_env_ptr = blk->env;
     if (blk->creates_proc) {
-        fp = malloc(blk->env_size * sizeof(VALUE));
-        memcpy(fp, blk->env, blk->env_size * sizeof(VALUE));   // outer も含めて全コピー
+        fp = malloc(blk->env_size * sizeof(korb_value));
+        memcpy(fp, blk->env, blk->env_size * sizeof(korb_value));   // outer も含めて全コピー
     } else {
         fp = blk->env;
     }
@@ -238,12 +238,12 @@ snapshot で env はすでに heap にあるので直接利用で正しい。
 ## 5. 例外伝搬 (state propagation) — Phase 8d で RESULT 化
 
 setjmp/longjmp は使わない。 全 dispatcher / NODE_DEF body が `RESULT` を
-返し、 state は in-band (= VALUE+state の 2 register) で伝搬する。
+返し、 state は in-band (= korb_value+state の 2 register) で伝搬する。
 abruby / castro と同じ設計。
 
 ```c
 typedef struct {
-    VALUE value;
+    korb_value value;
     uint8_t state;     /* KORB_NORMAL / KORB_RAISE / ... */
 } RESULT;
 ```
@@ -271,9 +271,9 @@ typedef struct {
 
 ```c
 NODE_DEF
-node_raise(CTX *c, NODE *n, VALUE *sp, NODE *exc_expr)
+node_raise(CTX *c, NODE *n, korb_value *sp, NODE *exc_expr)
 {
-    VALUE e = ...;
+    korb_value e = ...;
     return (RESULT){ e, KORB_RAISE };
 }
 
@@ -288,13 +288,13 @@ break / next / retry / redo / return も同じパターン。
 
 ```c
 NODE_DEF
-node_rescue(CTX *c, NODE *n, VALUE *sp, NODE *body, NODE *rescue_body, uint32_t exc_idx)
+node_rescue(CTX *c, NODE *n, korb_value *sp, NODE *body, NODE *rescue_body, uint32_t exc_idx)
 {
 retry:;
-    VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+    korb_value prev_bang = korb_gvar_get(korb_intern("$!"));
     RESULT _br = EVAL_ARG(c, body);
     if (_br.state == KORB_RAISE && rescue_body) {
-        VALUE exc = _br.value;
+        korb_value exc = _br.value;
         c->current_frame->fp[exc_idx] = exc;
         korb_gvar_set(korb_intern("$!"), exc);
         RESULT _rr = EVAL_ARG(c, rescue_body);
@@ -306,9 +306,9 @@ retry:;
 }
 
 NODE_DEF
-node_ensure(CTX *c, NODE *n, VALUE *sp, NODE *body, NODE *ensure_body)
+node_ensure(CTX *c, NODE *n, korb_value *sp, NODE *body, NODE *ensure_body)
 {
-    VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+    korb_value prev_bang = korb_gvar_get(korb_intern("$!"));
     RESULT _br = EVAL_ARG(c, body);
     if (_br.state == KORB_RAISE) korb_gvar_set(korb_intern("$!"), _br.value);
     RESULT _er = EVAL_ARG(c, ensure_body);
@@ -342,7 +342,7 @@ node_ensure(CTX *c, NODE *n, VALUE *sp, NODE *body, NODE *ensure_body)
 | portable | はい | はい |
 | ASTro 特化と相性 | ◎ (部分木で state チェック消える) | △ |
 
-baruby_precise / castro / abruby も同じ `RESULT { VALUE, state }` を採用。
+baruby_precise / castro / abruby も同じ `RESULT { korb_value, state }` を採用。
 
 ### 5.6 c->state 廃止 (Phase 8d-final) — 完了
 
@@ -411,11 +411,11 @@ CTX に残す (これは state ではない)。
 
 **R1**: `korb_dispatch_call` / `korb_funcall` / `korb_funcall_with_block` /
 `korb_dispatch_binop` / `korb_dispatch_to_method` 群を **すべて RESULT
-返り値に in-place 変更**。 関数 signature を `VALUE foo(...)` → `RESULT
+返り値に in-place 変更**。 関数 signature を `korb_value foo(...)` → `RESULT
 foo(...)` に直す。 既存呼出を全 sweep で書き換え (UNWRAP / CHECK 適用)。
 
 **R2**: `korb_yield` / `korb_yield_slow` を RESULT 返り値に変更。 今は
-"VALUE 返し + c->state に BREAK/RETURN/NEXT/REDO を載せる" 設計を、
+"korb_value 返し + c->state に BREAK/RETURN/NEXT/REDO を載せる" 設計を、
 "RESULT.state を直接返す" に。 builtin の各 iterator (ary_each,
 range_each, hash_each 等) で yield 結果を RESULT で受ける。
 
@@ -494,12 +494,12 @@ epilogue で `c->bindings_head` を辿って snapshot を確定し、 live_fp �
 ```c
 struct korb_binding {
     struct RBasic basic;
-    VALUE *fp;            /* heap snapshot — primary 保管庫 */
+    korb_value *fp;            /* heap snapshot — primary 保管庫 */
     ID *names;            /* 表示順: [extras...,] primary, outer */
     uint32_t names_cnt, outer_names_cnt;
-    VALUE *live_fp;       /* 元の caller fp; 生きてる間だけ valid */
+    korb_value *live_fp;       /* 元の caller fp; 生きてる間だけ valid */
     uint64_t live_frame_id;
-    VALUE self, extra_vars, outer_vars;
+    korb_value self, extra_vars, outer_vars;
     struct korb_cref *cref;
     const char *source_file; int source_line;
 };
@@ -528,7 +528,7 @@ struct korb_class {
 struct korb_object {
     struct RBasic basic;
     uint32_t ivar_cnt, ivar_capa;
-    VALUE *ivars;     // 配列 — クラスの slot に対応
+    korb_value *ivars;     // 配列 — クラスの slot に対応
 };
 ```
 
@@ -563,11 +563,11 @@ ivar を読み書きするとき、 STRESS 下で @ivar 値が消える (= nil �
 
 ```c
 struct korb_string { struct RBasic basic; char *ptr; long len, capa; };
-struct korb_array  { struct RBasic basic; VALUE *ptr; long len, capa; };
+struct korb_array  { struct RBasic basic; korb_value *ptr; long len, capa; };
 struct korb_hash   { struct RBasic basic; struct korb_hash_entry **buckets;
                      uint32_t bucket_cnt, size;
                      struct korb_hash_entry *first, *last;  // 挿入順
-                     VALUE default_value; };
+                     korb_value default_value; };
 ```
 
 - 文字列: 単純な `realloc` ベース。ASCII バイト前提
@@ -649,16 +649,16 @@ C-local stale 問題 (precise GC 越し) と `c->state` 経路の散漫さを根
 
 | function 種類 | signature | sp の意味 |
 |---|---|---|
-| cfunc | `RESULT cf(CTX *c, int argc, VALUE *sp)` | sp[-argc-1]=self, sp[-argc..-1]=args, sp[0..]=scratch |
-| EVAL_node body | `RESULT EVAL_node_X(CTX *c, NODE *n, VALUE *sp, ...)` | parent の staging top |
-| C API helper (固定 arity) | `RESULT h(CTX *c, VALUE *sp)` | sp[-N..-1]=args |
-| C API helper (variadic) | `RESULT h(CTX *c, int argc, VALUE *sp)` | sp[-argc..-1]=args |
+| cfunc | `RESULT cf(CTX *c, int argc, korb_value *sp)` | sp[-argc-1]=self, sp[-argc..-1]=args, sp[0..]=scratch |
+| EVAL_node body | `RESULT EVAL_node_X(CTX *c, NODE *n, korb_value *sp, ...)` | parent の staging top |
+| C API helper (固定 arity) | `RESULT h(CTX *c, korb_value *sp)` | sp[-N..-1]=args |
+| C API helper (variadic) | `RESULT h(CTX *c, int argc, korb_value *sp)` | sp[-argc..-1]=args |
 | 即値 helper (alloc しない) | 値で受けてよし | -- |
 
 #### 例 (新 cfunc の ary_eq)
 
 ```c
-static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
+static RESULT ary_eq(CTX *c, int argc, korb_value *sp) {
     /* sp[-2] = self (LHS Array), sp[-1] = other (RHS) */
     if (BUILTIN_TYPE(sp[-1]) != T_ARRAY) return RESULT_OK(Qfalse);
     long la = korb_ary_len(sp[-2]);
@@ -677,7 +677,7 @@ static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
 
 ```c
 typedef struct {
-    VALUE   value;
+    korb_value   value;
     uint8_t state;
 } RESULT;
 
@@ -696,7 +696,7 @@ typedef struct {
 
 呼び出し側は:
 ```c
-VALUE v = UNWRAP(some_helper(c, sp));   /* state は自動 propagate */
+korb_value v = UNWRAP(some_helper(c, sp));   /* state は自動 propagate */
 ```
 
 `c->state` 経路は撤廃され、 状態は in-band で関数の戻り値に乗る。
@@ -722,19 +722,19 @@ c->sp に触らなくてよい**。
 **新-ABI cfunc** (Phase 4 — 移行中):
 
 ```c
-static RESULT sym_to_s(CTX *c, int argc, VALUE *sp) {
+static RESULT sym_to_s(CTX *c, int argc, korb_value *sp) {
     c->sp = sp;                              /* ← alloc 前 sync */
-    VALUE s = korb_str_new_cstr(korb_id_name(korb_sym2id(sp[-1])));
+    korb_value s = korb_str_new_cstr(korb_id_name(korb_sym2id(sp[-1])));
     return RESULT_OK(s);
 }
 ```
 
 **alloc helper** (Phase 7 — 計画):
 
-helper 自身が `(CTX *c, VALUE *sp, ...)` を受け取り、 入り口で sync:
+helper 自身が `(CTX *c, korb_value *sp, ...)` を受け取り、 入り口で sync:
 
 ```c
-VALUE korb_str_new_cstr(CTX *c, VALUE *sp, const char *str) {
+korb_value korb_str_new_cstr(CTX *c, korb_value *sp, const char *str) {
     c->sp = sp;                              /* helper 側で sync — caller 不要 */
     return korb_str_alloc(strlen(str), str);
 }
@@ -743,7 +743,7 @@ VALUE korb_str_new_cstr(CTX *c, VALUE *sp, const char *str) {
 これが普及すると cfunc 側の `c->sp = sp;` も冗長になる:
 
 ```c
-static RESULT sym_to_s(CTX *c, int argc, VALUE *sp) {
+static RESULT sym_to_s(CTX *c, int argc, korb_value *sp) {
     return RESULT_OK(korb_str_new_cstr(c, sp, korb_id_name(korb_sym2id(sp[-1]))));
 }
 ```
@@ -754,7 +754,7 @@ static RESULT sym_to_s(CTX *c, int argc, VALUE *sp) {
 **c->sp を bump しない**。 cfunc が自分で sync する前提:
 
 ```c
-VALUE *sp = c->sp;
+korb_value *sp = c->sp;
 sp[0] = recv;
 for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[ai + i];
 /* c->sp は触らない — cfunc が alloc 前に sync する */
@@ -822,7 +822,7 @@ cfunc 側で:
 | 8d | node.def AST nodes を RESULT 化 (EVAL macro 変更) | R1-R5 完了 (cfunc 全 RESULT 化 + c->state 削除) |
 | 8e | super_forward / super で cfunc_r 経路に対応 | 完了 (commit 832011d6) |
 | 8f | AST dispatcher で argv snapshot して zero-fill clobber 回避 | 完了 (commit 832011d6) |
-| 9 | 動作確認 + 回帰 fix | 進行中: 全 24 test suite が default + STRESS + STRESS+PURGE 全 mode PASS。 test_class.rb の post-body snapshot SEGV は fr.self 経由に変えて修正済。 c->sp を c->sp_top に rename し alloc 関数のみが書き換える design rule を明確化。 cfunc prologue cleanup は dispatcher API (korb_funcall/yield 等) の sp 持ち回りが前提なので一旦保留。 **ARO_ROOT_SCOPE_START を全廃 (初期 ~50 件 → 0、実コード参照ゼロ)。** alloc helper 呼出の sp 引数は「sp + N」明示形式 (user 指示)。 caller 側で redundant な `c->sp_top = sp + N` (= 直後の alloc helper が自前で行う) は削除 (user 指示)。 移行先 pattern: AST node body は `sp[0]=...; c->sp_top=sp+N; ...` で staging、 cfunc/runtime helper (korb_raise/korb_inspect_inner 等) は `VALUE *sp = c->sp_top; sp[0]=...; c->sp_top = sp + N` 形。 rubyspec は今 session で Struct 130→184、 Range 458→526、 Array/Hash 系で多数の PASS 改善。 |
+| 9 | 動作確認 + 回帰 fix | 進行中: 全 24 test suite が default + STRESS + STRESS+PURGE 全 mode PASS。 test_class.rb の post-body snapshot SEGV は fr.self 経由に変えて修正済。 c->sp を c->sp_top に rename し alloc 関数のみが書き換える design rule を明確化。 cfunc prologue cleanup は dispatcher API (korb_funcall/yield 等) の sp 持ち回りが前提なので一旦保留。 **ARO_ROOT_SCOPE_START を全廃 (初期 ~50 件 → 0、実コード参照ゼロ)。** alloc helper 呼出の sp 引数は「sp + N」明示形式 (user 指示)。 caller 側で redundant な `c->sp_top = sp + N` (= 直後の alloc helper が自前で行う) は削除 (user 指示)。 移行先 pattern: AST node body は `sp[0]=...; c->sp_top=sp+N; ...` で staging、 cfunc/runtime helper (korb_raise/korb_inspect_inner 等) は `korb_value *sp = c->sp_top; sp[0]=...; c->sp_top = sp + N` 形。 rubyspec は今 session で Struct 130→184、 Range 458→526、 Array/Hash 系で多数の PASS 改善。 |
 
 Phase 7 完了後は cfunc 側の `c->sp = sp;` も不要になる (helper が
 責任を引き受ける)。 移行期は cfunc 側で sync しておけば安全。
@@ -834,7 +834,7 @@ Phase 2-4 の移行期間中、 新 `cfunc_r` と旧 `cfunc` は両立する:
 - `korb_method.u.cfunc.func` (旧 field) のみ → 旧 ABI
 - `korb_dispatch_call_cached` と `korb_dispatch_to_method` 両方に bridge:
   新 ABI cfunc は dispatch 時に sp に self/args を stage して呼び、
-  返り RESULT を c->state + VALUE に変換して upstream に返す。
+  返り RESULT を c->state + korb_value に変換して upstream に返す。
 
 すべて新 ABI に sweep 完了したら、 legacy field と bridge を撤廃する。
 
@@ -867,8 +867,8 @@ T_OBJECT 以外の heap 型 (T_STRING / T_ARRAY / T_HASH / T_RANGE / ...) は
 visit_roots の対応が大変なので、 `korb_vm->generic_ivars` という Hash の
 side table を導入:
 
-- outer hash: `obj pointer (as VALUE) → inner Hash`
-- inner hash: `Symbol → VALUE`
+- outer hash: `obj pointer (as korb_value) → inner Hash`
+- inner hash: `Symbol → korb_value`
 - outer は `compare_by_identity = true` で pointer 一致判定
 - libc-allocated 型は move しないため pointer key で安定
 - `korb_ivar_set/get/_ic_slow` で T_OBJECT 以外は side table に fallback
@@ -883,6 +883,6 @@ side table を導入:
 `[c->sp, new_sp) を zero-fill する。 caller が argv を sp 上に staging
 した場合 (cfunc_r ABI の標準) は argv が clobber される。
 
-修正: AST 経路の入口で argv を `VALUE saved_argv[argc]` (VLA) に snapshot
+修正: AST 経路の入口で argv を `korb_value saved_argv[argc]` (VLA) に snapshot
 してから zero-fill。 caller がどこに argv を置いていても安全。 同様の
 snapshot を cfunc_r 経路にも適用 (consistency)。

@@ -100,15 +100,15 @@ static bool korb_mload_symbol(CTX *c, struct korb_mload *const st, uint32_t *con
 }
 
 /* Register v in the links table (Marshal's object numbering). */
-static RESULT korb_mload_entry(CTX *c, VALUE *slots, VALUE *const links, const VALUE v) {
+static RESULT korb_mload_entry(CTX *c, korb_value *slots, korb_value *const links, const korb_value v) {
     slots[0] = v;
-    CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(links), slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 1, KORB_REF_AT(links), slots[0]));
     return RESULT_OK(slots[0]);
 }
 
 /* One object into *out.  slots[0..3] are this level's; a child uses slots+4. */
 static RESULT
-korb_mload_obj(CTX *c, VALUE *slots, VALUE *const links, struct korb_mload *const st, const uint32_t depth, VALUE *const out)
+korb_mload_obj(CTX *c, korb_value *slots, korb_value *const links, struct korb_mload *const st, const uint32_t depth, korb_value *const out)
 {
     if (depth > KORB_MLOAD_MAX_DEPTH) return KORB_MLOAD_NO();
     unsigned char t;
@@ -139,7 +139,7 @@ korb_mload_obj(CTX *c, VALUE *slots, VALUE *const links, struct korb_mload *cons
       case '"': {
         const unsigned char *p; uint32_t n;
         if (!korb_mload_bytes(st, &p, &n)) return KORB_MLOAD_NO();
-        const VALUE s = UNWRAP(korb_str_new(c, slots, (const char *)p, n));   /* st->p is libc memory: no GC hazard */
+        const korb_value s = UNWRAP(korb_str_new(c, slots, (const char *)p, n));   /* st->p is libc memory: no GC hazard */
         KORB_STR_ENC_SET(s, KORB_ENC_BINARY);
         *out = UNWRAP(korb_mload_entry(c, slots, links, s));
         return RESULT_OK(KORB_NIL);
@@ -158,7 +158,7 @@ korb_mload_obj(CTX *c, VALUE *slots, VALUE *const links, struct korb_mload *cons
             d = strtod(buf, &end);
             if (end == buf) return KORB_MLOAD_NO();
         }
-        const VALUE f = UNWRAP(korb_float_new(c, slots, d));
+        const korb_value f = UNWRAP(korb_float_new(c, slots, d));
         *out = UNWRAP(korb_mload_entry(c, slots, links, f));
         return RESULT_OK(KORB_NIL);
       }
@@ -167,7 +167,7 @@ korb_mload_obj(CTX *c, VALUE *slots, VALUE *const links, struct korb_mload *cons
         if (!korb_mload_byte(st, &inner)) return KORB_MLOAD_NO();
         const unsigned char *p; uint32_t n;
         if ((inner != '"' && inner != ':') || !korb_mload_bytes(st, &p, &n)) return KORB_MLOAD_NO();
-        VALUE s = KORB_NIL;
+        korb_value s = KORB_NIL;
         uint32_t li = 0, si = 0;
         if (inner == ':') {                          /* its symbol slot comes before the ivar's `:E` (r_symreal) */
             si = st->nsym;
@@ -195,7 +195,7 @@ korb_mload_obj(CTX *c, VALUE *slots, VALUE *const links, struct korb_mload *cons
             memcpy(ename, ep, en); ename[en] = '\0';
             enc = korb_enc_index_pub(c->vm, ename);
             /* the name String is numbered in the `@` table too (a repeat is a link) */
-            const VALUE nm = UNWRAP(korb_str_new(c, slots, ename, en));
+            const korb_value nm = UNWRAP(korb_str_new(c, slots, ename, en));
             UNWRAP(korb_mload_entry(c, slots, links, nm));
         } else {
             return KORB_MLOAD_NO();
@@ -216,15 +216,15 @@ korb_mload_obj(CTX *c, VALUE *slots, VALUE *const links, struct korb_mload *cons
         int64_t n;
         if (!korb_mload_long(st, &n) || n < 0 || (uint64_t)n > st->len - st->i) return KORB_MLOAD_NO();
         const uint32_t li = VAL2ARY(*links)->len;
-        const VALUE a = UNWRAP(korb_ary_new(c, slots, (uint32_t)n));
+        const korb_value a = UNWRAP(korb_ary_new(c, slots, (uint32_t)n));
         UNWRAP(korb_mload_entry(c, slots, links, a));
         for (int64_t k = 0; k < n; k++) {
-            VALUE e;
+            korb_value e;
             const RESULT r = korb_mload_obj(c, slots + 4, links, st, depth + 1, &e);
             if (r.state != KORB_NORMAL || r.value == KORB_UNDEF) return r;
             slots[1] = e;
             slots[2] = korb_items_data(VAL2ARY(*links)->items)[li];
-            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+            CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[2]), slots[1]));
         }
         *out = korb_items_data(VAL2ARY(*links)->items)[li];
         return RESULT_OK(KORB_NIL);
@@ -233,10 +233,10 @@ korb_mload_obj(CTX *c, VALUE *slots, VALUE *const links, struct korb_mload *cons
         int64_t n;
         if (!korb_mload_long(st, &n) || n < 0 || (uint64_t)n > st->len - st->i) return KORB_MLOAD_NO();
         const uint32_t li = VAL2ARY(*links)->len;
-        const VALUE h = UNWRAP(korb_hash_new(c, slots, (uint32_t)n));
+        const korb_value h = UNWRAP(korb_hash_new(c, slots, (uint32_t)n));
         UNWRAP(korb_mload_entry(c, slots, links, h));
         for (int64_t k = 0; k < n; k++) {
-            VALUE kv, vv;
+            korb_value kv, vv;
             RESULT r = korb_mload_obj(c, slots + 4, links, st, depth + 1, &kv);
             if (r.state != KORB_NORMAL || r.value == KORB_UNDEF) return r;
             slots[1] = kv;
@@ -246,14 +246,14 @@ korb_mload_obj(CTX *c, VALUE *slots, VALUE *const links, struct korb_mload *cons
                 return KORB_MLOAD_NO();                  /* a key whose #hash Ruby would run: leave it to the Ruby loader */
             slots[2] = vv;
             slots[3] = korb_items_data(VAL2ARY(*links)->items)[li];
-            CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[3]), VALUE_REF_AT(&slots[1]), slots[2]));
+            CHECK(korb_hash_set(c, slots + 4, KORB_REF_AT(&slots[3]), KORB_REF_AT(&slots[1]), slots[2]));
         }
         if (t == '}') {
-            VALUE dv;
+            korb_value dv;
             const RESULT r = korb_mload_obj(c, slots + 4, links, st, depth + 1, &dv);
             if (r.state != KORB_NORMAL || r.value == KORB_UNDEF) return r;
             KorbHash *const hh = VAL2HASH(korb_items_data(VAL2ARY(*links)->items)[li]);
-            ARO_STORE(c, hh, (VALUE *)(uintptr_t)&hh->default_val, dv);
+            ARO_STORE(c, hh, (korb_value *)(uintptr_t)&hh->default_val, dv);
         }
         *out = korb_items_data(VAL2ARY(*links)->items)[li];
         return RESULT_OK(KORB_NIL);
@@ -261,24 +261,24 @@ korb_mload_obj(CTX *c, VALUE *slots, VALUE *const links, struct korb_mload *cons
       case 'o': {                                        /* a plain object of a class the dumper / loader vetted */
         uint32_t cid;
         if (!korb_mload_symbol(c, st, &cid)) return KORB_MLOAD_NO();
-        const VALUE k = korb_const_get_path(c->vm, cid);
+        const korb_value k = korb_const_get_path(c->vm, cid);
         if (!KORB_CLASS_P(k) || !VAL2CLASS(k)->marshal_plain || VAL2CLASS(k)->is_singleton) return KORB_MLOAD_NO();
         int64_t n;
         if (!korb_mload_long(st, &n) || n < 0 || (uint64_t)n > st->len - st->i) return KORB_MLOAD_NO();
         const uint32_t li = VAL2ARY(*links)->len;
-        const VALUE o = UNWRAP(korb_obj_new(c, slots, k));
+        const korb_value o = UNWRAP(korb_obj_new(c, slots, k));
         UNWRAP(korb_mload_entry(c, slots, links, o));
         for (int64_t j = 0; j < n; j++) {
             uint32_t iv;
             if (!korb_mload_symbol(c, st, &iv)) return KORB_MLOAD_NO();
             const char *const nm = korb_sym_name(c->vm, iv);
-            VALUE v;
+            korb_value v;
             const RESULT r = korb_mload_obj(c, slots + 4, links, st, depth + 1, &v);
             if (r.state != KORB_NORMAL || r.value == KORB_UNDEF) return r;
             if (nm == NULL || nm[0] != '@') continue;         /* CRuby keeps it as a hidden ivar */
             slots[1] = v;
             slots[2] = korb_items_data(VAL2ARY(*links)->items)[li];
-            CHECK(korb_ivar_set(c, slots + 3, VALUE_REF_AT(&slots[2]), ID2SYM(iv), slots[1]));
+            CHECK(korb_ivar_set(c, slots + 3, KORB_REF_AT(&slots[2]), ID2SYM(iv), slots[1]));
         }
         *out = korb_items_data(VAL2ARY(*links)->items)[li];
         return RESULT_OK(KORB_NIL);
@@ -291,9 +291,9 @@ korb_mload_obj(CTX *c, VALUE *slots, VALUE *const links, struct korb_mload *cons
 /* __marshal_fast_load(str) → [obj], or nil when the stream needs the Ruby
  * loader (anything beyond plain data, or malformed). */
 static RESULT
-korb_bi_marshal_fast_load(CTX *c, VALUE *slots, VALUE_SLICE args)
+korb_bi_marshal_fast_load(CTX *c, korb_value *slots, korb_slice args)
 {
-    const VALUE src = VALUE_SLICE_GET(args, 0);
+    const korb_value src = KORB_SLICE_GET(args, 0);
     if (!KORB_STRING_P(src)) return RESULT_OK(KORB_NIL);
     const KorbString *const s = VAL2STR(src);
     if (s->len < 3) return RESULT_OK(KORB_NIL);
@@ -306,14 +306,14 @@ korb_bi_marshal_fast_load(CTX *c, VALUE *slots, VALUE_SLICE args)
     RESULT r = korb_ary_new(c, slots, 64);
     if (r.state == KORB_NORMAL) {
         slots[0] = r.value;
-        VALUE top = KORB_NIL;
+        korb_value top = KORB_NIL;
         r = korb_mload_obj(c, slots + 1, &slots[0], &st, 0, &top);
         if (r.state == KORB_NORMAL && r.value != KORB_UNDEF) {
             slots[1] = top;
             r = korb_ary_new(c, slots + 2, 1);
             if (r.state == KORB_NORMAL) {
                 slots[2] = r.value;
-                r = korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]);
+                r = korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[2]), slots[1]);
                 if (r.state == KORB_NORMAL) r = RESULT_OK(slots[2]);
             }
         } else if (r.state == KORB_NORMAL) {
@@ -337,9 +337,9 @@ korb_bi_marshal_fast_load(CTX *c, VALUE *slots, VALUE_SLICE args)
 struct korb_mdump {
     unsigned char *b;
     size_t len, cap;
-    VALUE *okey; uint32_t *oval; uint32_t ocap, ocnt;   /* object → link id (identity) */
+    korb_value *okey; uint32_t *oval; uint32_t ocap, ocnt;   /* object → link id (identity) */
     uint32_t *skey, *sval; uint32_t scap, scnt;         /* symbol id + 1 → symlink id */
-    VALUE ckey[16]; uint32_t cval[16]; uint32_t ccnt;   /* class → qualified-name symbol (nothing moves mid-dump) */
+    korb_value ckey[16]; uint32_t cval[16]; uint32_t ccnt;   /* class → qualified-name symbol (nothing moves mid-dump) */
     uint32_t mid_mdump, mid_udump;                      /* :marshal_dump / :_dump */
 };
 
@@ -372,13 +372,13 @@ static bool korb_mdump_long(struct korb_mdump *const st, const int64_t n) {
 }
 
 /* Object addresses are aligned: take the multiply's HIGH bits, the low ones barely mix. */
-static inline uint32_t korb_mdump_hash(const VALUE v) { return (uint32_t)(((uint64_t)v * 0x9E3779B97F4A7C15ULL) >> 32); }
+static inline uint32_t korb_mdump_hash(const korb_value v) { return (uint32_t)(((uint64_t)v * 0x9E3779B97F4A7C15ULL) >> 32); }
 
 /* Link id of `v`, or UINT32_MAX after registering it (the next id). */
-static uint32_t korb_mdump_link(struct korb_mdump *const st, const VALUE v, bool *const oom) {
+static uint32_t korb_mdump_link(struct korb_mdump *const st, const korb_value v, bool *const oom) {
     if (st->ocnt * 2 >= st->ocap) {
         const uint32_t nc = st->ocap ? st->ocap * 2 : 64;
-        VALUE *const nk = calloc(nc, sizeof(VALUE));
+        korb_value *const nk = calloc(nc, sizeof(korb_value));
         uint32_t *const nv = malloc(sizeof(uint32_t) * nc);
         if (!nk || !nv) { free(nk); free(nv); *oom = true; return 0; }
         for (uint32_t i = 0; i < st->ocap; i++) if (st->okey[i]) {
@@ -458,7 +458,7 @@ static uint32_t korb_mdump_float_str(const double d, char *const out) {
 
 /* false = not plain data (or out of memory): the Ruby dumper takes over. */
 /* The qualified name of `k` as a symbol id (0: too many classes in one dump). */
-static uint32_t korb_mdump_class_sym(CTX *const c, struct korb_mdump *const st, const VALUE k) {
+static uint32_t korb_mdump_class_sym(CTX *const c, struct korb_mdump *const st, const korb_value k) {
     for (uint32_t i = 0; i < st->ccnt; i++) if (st->ckey[i] == k) return st->cval[i];
     if (st->ccnt == sizeof st->ckey / sizeof st->ckey[0]) return 0;
     char buf[256];
@@ -470,8 +470,8 @@ static uint32_t korb_mdump_class_sym(CTX *const c, struct korb_mdump *const st, 
 
 /* An instance of a class the Ruby dumper already wrote as a plain 'o' record:
  * `o`, the class name, then the visible ivars as #instance_variables lists them. */
-static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const VALUE v, const uint32_t depth);   /* fwd */
-static bool korb_mdump_plain_object(CTX *const c, struct korb_mdump *const st, const VALUE v, const uint32_t depth) {
+static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const korb_value v, const uint32_t depth);   /* fwd */
+static bool korb_mdump_plain_object(CTX *const c, struct korb_mdump *const st, const korb_value v, const uint32_t depth) {
     const uint32_t csym = korb_mdump_class_sym(c, st, VAL2OBJ(v)->klass);
     if (csym == 0 || !korb_mdump_byte(st, 'o') || !korb_mdump_sym(c->vm, st, csym)) return false;
     const struct korb_vm *const vm = c->vm;
@@ -499,7 +499,7 @@ static bool korb_mdump_plain_object(CTX *const c, struct korb_mdump *const st, c
     return ok;
 }
 
-static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const VALUE v, const uint32_t depth) {
+static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const korb_value v, const uint32_t depth) {
     if (depth > KORB_MDUMP_MAX_DEPTH) return false;
     if (v == KORB_NIL) return korb_mdump_byte(st, '0');
     if (v == KORB_TRUE) return korb_mdump_byte(st, 'T');
@@ -511,7 +511,7 @@ static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const VALU
     } else if (!KORB_FLOAT_P(v)) {
         if (!AROH_IS_GC_OBJECT(v)) return false;
         if (KORB_OBJECT_P(v)) {                          /* a plain object: only a class the Ruby dumper vetted */
-            const VALUE k = VAL2OBJ(v)->klass;
+            const korb_value k = VAL2OBJ(v)->klass;
             if (!KORB_CLASS_P(k) || !VAL2CLASS(k)->marshal_plain || VAL2CLASS(k)->is_singleton ||
                 VAL2CLASS(k)->name_sym == 0) return false;        /* a dup'd class may carry the mark: anonymous → Ruby's TypeError */
             if (KORB_CLASS_P(korb_own_singleton_class(c->vm, v))) return false;   /* extended / singleton: 'e' or TypeError */
@@ -574,25 +574,25 @@ static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const VALU
 /* __marshal_mark_plain(obj): the Ruby dumper / loader handled obj as a plain 'o'
  * record, so the C paths may take the next instances of its class. */
 static RESULT
-korb_bi_marshal_mark_plain(CTX *c, VALUE *slots, VALUE_SLICE args)
+korb_bi_marshal_mark_plain(CTX *c, korb_value *slots, korb_slice args)
 {
     (void)c; (void)slots;
-    const VALUE o = VALUE_SLICE_GET(args, 0);            /* an instance: its class is marked only if it is a KorbObject */
+    const korb_value o = KORB_SLICE_GET(args, 0);            /* an instance: its class is marked only if it is a KorbObject */
     if (!KORB_OBJECT_P(o)) return RESULT_OK(KORB_NIL);
-    const VALUE k = VAL2OBJ(o)->klass;
+    const korb_value k = VAL2OBJ(o)->klass;
     if (KORB_CLASS_P(k) && !VAL2CLASS(k)->is_singleton && VAL2CLASS(k)->name_sym != 0) VAL2CLASS(k)->marshal_plain = 1;
     return RESULT_OK(KORB_NIL);
 }
 
 /* __marshal_fast_dump(obj) → the dump String, or nil (the Ruby dumper's turn). */
 static RESULT
-korb_bi_marshal_fast_dump(CTX *c, VALUE *slots, VALUE_SLICE args)
+korb_bi_marshal_fast_dump(CTX *c, korb_value *slots, korb_slice args)
 {
     struct korb_mdump st = { 0 };
     st.mid_mdump = korb_intern(c->vm, "marshal_dump", 12);
     st.mid_udump = korb_intern(c->vm, "_dump", 5);
     bool ok = korb_mdump_byte(&st, 4) && korb_mdump_byte(&st, 8) &&
-              korb_mdump_obj(c, &st, VALUE_SLICE_GET(args, 0), 0);
+              korb_mdump_obj(c, &st, KORB_SLICE_GET(args, 0), 0);
     free(st.okey); free(st.oval); free(st.skey); free(st.sval);
     RESULT r = RESULT_OK(KORB_NIL);
     if (ok) {

@@ -13,7 +13,7 @@
 // reachable for the cycle.
 //
 // NB: INC_WORK_PER_ALLOC=SIZE_MAX makes the mark phase effectively STW
-// (drains in one alloc tick).  True incremental needs VALUE stack WB
+// (drains in one alloc tick).  True incremental needs ARO_VALUE stack WB
 // too; without that the infrastructure stays but pauses are still long.
 // The split into start/finish still gives 2-segment pause measurement
 // (mark phase vs sweep phase), reducing max_pause_ms vs mark_gen even
@@ -187,9 +187,9 @@ static void inc_start_major(CTX *c);
 static void inc_step(ASTroGC *gc, size_t budget);
 static void inc_finish_sweep(CTX *c);
 static void gray_push(ASTroGC *gc, AroObjectHeader *h);
-static void mark_value(ASTroGC *gc, VALUE v);
+static void mark_value(ASTroGC *gc, ARO_VALUE v);
 static void scan_outgoing(ASTroGC *gc, AroObjectHeader *h);
-static void mark_value_satb(ASTroGC *gc, VALUE v);
+static void mark_value_satb(ASTroGC *gc, ARO_VALUE v);
 
 void
 aro_gc_init(CTX *c)
@@ -452,11 +452,11 @@ remset_heap_walk(ASTroGC *gc, void (*visit)(ASTroGC *, AroObjectHeader *))
 }
 
 void
-aro_gc_store(CTX *c, void *holder, VALUE *slot, VALUE v)
+aro_gc_store(CTX *c, void *holder, ARO_VALUE *slot, ARO_VALUE v)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     if (inc_marking) {
-        VALUE old = *slot;
+        ARO_VALUE old = *slot;
         if (AROH_IS_GC_OBJECT(old)) mark_value_satb(gc, old);
     }
     *slot = v;
@@ -469,16 +469,16 @@ aro_gc_store(CTX *c, void *holder, VALUE *slot, VALUE v)
 }
 
 void
-aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_store_bulk(CTX *c, void *holder, ARO_VALUE *dst, const ARO_VALUE *src, size_t n)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     if (inc_marking) {
         for (size_t i = 0; i < n; i++) {
-            VALUE old = dst[i];
+            ARO_VALUE old = dst[i];
             if (AROH_IS_GC_OBJECT(old)) mark_value_satb(gc, old);
         }
     }
-    if (n) memcpy(dst, src, n * sizeof(VALUE));
+    if (n) memcpy(dst, src, n * sizeof(ARO_VALUE));
     if (holder == NULL) return;
     AroObjectHeader *hh = (AroObjectHeader *)holder;
     if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
@@ -503,7 +503,7 @@ gray_push(ASTroGC *gc, AroObjectHeader *h)
 }
 
 static void
-mark_value(ASTroGC *gc, VALUE v)
+mark_value(ASTroGC *gc, ARO_VALUE v)
 {
     if (!AROH_IS_GC_OBJECT(v)) return;
     AroObjectHeader *h = (AroObjectHeader *)v;
@@ -520,7 +520,7 @@ mark_value(ASTroGC *gc, VALUE v)
 // SATB barrier: mark v regardless of minor/major filter.  inc_marking
 // only fires during major-style passes, so no in_minor guard needed.
 static void
-mark_value_satb(ASTroGC *gc, VALUE v)
+mark_value_satb(ASTroGC *gc, ARO_VALUE v)
 {
     if (!AROH_IS_GC_OBJECT(v)) return;
     AroObjectHeader *h = (AroObjectHeader *)v;
@@ -534,7 +534,7 @@ static void
 mark_edge(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    mark_value(gc, (VALUE)*slot);
+    mark_value(gc, (ARO_VALUE)*slot);
 }
 
 /* Post-sweep check for promoted obj's outgoing refs — flag if any target
@@ -543,7 +543,7 @@ static void
 check_edge_for_young(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
+    ARO_VALUE v = (ARO_VALUE)*slot;
     if (AROH_IS_GC_OBJECT(v)) {
         const AroObjectHeader *h = (const AroObjectHeader *)v;
         if (!HDR_OLD(h) && !HDR_IS_FREE(h)) gc->scan_saw_young = true;

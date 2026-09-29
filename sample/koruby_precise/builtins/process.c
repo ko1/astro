@@ -165,13 +165,13 @@ static int korb_signal_reap(void) {
     return s > 0 ? s : 0;
 }
 
-static int korb_signo_of(CTX *c, VALUE v);        /* fwd (defined with the trap builtins below) */
+static int korb_signo_of(CTX *c, korb_value v);        /* fwd (defined with the trap builtins below) */
 static int korb_blop_signal_wake(struct korb_vm *vm);   /* fwd (thread.c) */
 static int korb_signo_of_name(const char *nm);    /* fwd (同上) */
-RESULT korb_signal_deliver(CTX *c, VALUE *slots);   /* fwd (defined just below korb_kill_self) */
+RESULT korb_signal_deliver(CTX *c, korb_value *slots);   /* fwd (defined just below korb_kill_self) */
 
 /* A Symbol/String signal argument into `buf`; false for any other type. */
-static bool korb_signal_name_arg(CTX *c, VALUE v, char *const buf, size_t cap) {
+static bool korb_signal_name_arg(CTX *c, korb_value v, char *const buf, size_t cap) {
     if (SYMBOL_P(v)) {
         const char *const p = korb_sym_name(c->vm, SYM2ID(v));
         snprintf(buf, cap, "%s", p ? p : "");
@@ -188,11 +188,11 @@ static bool korb_signal_name_arg(CTX *c, VALUE v, char *const buf, size_t cap) {
 
 /* __signal_block(signo, flag) — add/remove one signal from the blocked (i.e.
  * koruby-delivered) set.  Signal.trap uses it to take over INT/QUIT. */
-static RESULT korb_m_signal_block(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_signal_block(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int sig = korb_signo_of(c, VALUE_SLICE_GET(a, 0));
+    const int sig = korb_signo_of(c, KORB_SLICE_GET(a, 0));
     if (sig <= 0 || sig == SIGKILL || sig == SIGSTOP) return RESULT_OK(KORB_FALSE);
-    const bool on = VALUE_SLICE_LEN(a) < 2 || KORB_TRUTHY(VALUE_SLICE_GET(a, 1));
+    const bool on = KORB_SLICE_LEN(a) < 2 || KORB_TRUTHY(KORB_SLICE_GET(a, 1));
     sigset_t one;
     sigemptyset(&one);
     sigaddset(&one, sig);
@@ -209,7 +209,7 @@ static RESULT korb_m_signal_block(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
  * the way CRuby's handler-based delivery does.  The previous mask is restored,
  * so a signal the program trapped stays blocked and one it did not goes back to
  * its default disposition for anything arriving from outside. */
-static RESULT korb_kill_self(CTX *c, VALUE *slots, int sig) {
+static RESULT korb_kill_self(CTX *c, korb_value *slots, int sig) {
     if (sig == 0 || sig == SIGKILL || sig == SIGSTOP) {          /* cannot be blocked/deferred */
         if (kill(getpid(), sig) != 0) return korb_raise_errno(c, slots, errno, "kill", "");
         return RESULT_OK(KORB_NIL);
@@ -240,7 +240,7 @@ static RESULT korb_kill_self(CTX *c, VALUE *slots, int sig) {
 
 /* Interpreter check point: hand one pending signal to Signal.__deliver, which
  * runs the trap handler or raises.  RESULT_OK(nil) when nothing was pending. */
-RESULT korb_signal_deliver(CTX *c, VALUE *slots) {
+RESULT korb_signal_deliver(CTX *c, korb_value *slots) {
     /* CRuby runs traps and raises on the main thread only; others leave it pending */
     if (c->vm->cur_thread != NULL && c->vm->cur_thread != c->vm->main_thread) return RESULT_OK(KORB_NIL);
     int sig = 0;
@@ -251,7 +251,7 @@ RESULT korb_signal_deliver(CTX *c, VALUE *slots) {
     if (LIKELY(sig == 0)) return RESULT_OK(KORB_NIL);
     struct sigaction sa;   /* Linux queues an ignored signal while it is blocked (nohup's HUP to $$) */
     if (sigaction(sig, NULL, &sa) == 0 && sa.sa_handler == SIG_IGN) return RESULT_OK(KORB_NIL);
-    const VALUE sigmod = korb_const_get(c->vm, korb_intern(c->vm, "Signal", 6));
+    const korb_value sigmod = korb_const_get(c->vm, korb_intern(c->vm, "Signal", 6));
     if (UNLIKELY(!KORB_CLASS_P(sigmod))) return RESULT_OK(KORB_NIL);   /* prelude not up yet */
     slots[0] = sigmod;
     slots[1] = LONG2FIX(sig);
@@ -365,7 +365,7 @@ static bool korb_spawn_split(struct korb_spawn_plan *p, const char *s, uint32_t 
 }
 
 /* :in / :out / :err (or an Integer fd) → the child fd it names. */
-static int korb_redir_key_fd(CTX *c, VALUE k) {
+static int korb_redir_key_fd(CTX *c, korb_value k) {
     if (FIXNUM_P(k)) return (int)FIX2LONG(k);
     if (SYMBOL_P(k)) {
         const uint32_t id = (uint32_t)SYM2ID(k);
@@ -378,7 +378,7 @@ static int korb_redir_key_fd(CTX *c, VALUE k) {
 
 /* Record one redirection target.  Returns false for a form koruby does not
  * model (the caller then leaves the fd alone). */
-static bool korb_redir_value(CTX *c, struct korb_spawn_plan *p, int from, VALUE v) {
+static bool korb_redir_value(CTX *c, struct korb_spawn_plan *p, int from, korb_value v) {
     if (p->nredir >= sizeof p->redir / sizeof p->redir[0]) return false;
     struct korb_redir *r = &p->redir[p->nredir];
     r->from = from; r->to = -1; r->path[0] = '\0'; r->oflags = 0;
@@ -402,10 +402,10 @@ static bool korb_redir_value(CTX *c, struct korb_spawn_plan *p, int from, VALUE 
     if (KORB_ARRAY_P(v)) {                       /* [:child, fd] or [path, mode] */
         const KorbArray *ar = VAL2ARY(v);
         if (ar->len == 0) return false;
-        const VALUE first = korb_items_data(ar->items)[0];
+        const korb_value first = korb_items_data(ar->items)[0];
         if (SYMBOL_P(first) && (uint32_t)SYM2ID(first) == korb_intern(c->vm, "child", 5)) {
             if (ar->len < 2) return false;
-            const VALUE tv = korb_items_data(ar->items)[1];
+            const korb_value tv = korb_items_data(ar->items)[1];
             if (FIXNUM_P(tv)) r->to = (int)FIX2LONG(tv);
             else if (SYMBOL_P(tv)) {                 /* [:child, :out] — the standard streams by name */
                 const uint32_t tid = (uint32_t)SYM2ID(tv);
@@ -442,7 +442,7 @@ static bool korb_redir_value(CTX *c, struct korb_spawn_plan *p, int from, VALUE 
 
 /* Convert one command argument to a String with #to_str, in place at s[0].
  * s[1] and s+2 are the helper's scratch. */
-static RESULT korb_spawn_to_str(CTX *c, VALUE *s) {
+static RESULT korb_spawn_to_str(CTX *c, korb_value *s) {
     if (KORB_STRING_P(s[0])) return RESULT_OK(s[0]);
     const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
     if (UNLIKELY(!KORB_OBJECT_P(s[0]) || !korb_responds_to(c, s[0], to_str)))
@@ -458,21 +458,21 @@ static RESULT korb_spawn_to_str(CTX *c, VALUE *s) {
 
 /* Build a spawn plan from the Ruby argument list.  Returns a raised RESULT on a
  * type error; `*ok` is false when the arguments are not a command at all. */
-static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct korb_spawn_plan *p) {
+static RESULT korb_spawn_plan_build(CTX *c, korb_value *slots, korb_slice a, struct korb_spawn_plan *p) {
     memset(p, 0, sizeof *p);
     p->pgroup = -1;
     p->umask_val = -1;
-    uint32_t lo = 0, hi = VALUE_SLICE_LEN(a);
+    uint32_t lo = 0, hi = KORB_SLICE_LEN(a);
     /* a leading Hash (or anything with #to_hash) is the environment */
-    if (hi > 0 && !KORB_HASH_P(VALUE_SLICE_GET(a, 0)) && KORB_OBJECT_P(VALUE_SLICE_GET(a, 0)) &&
-        korb_responds_to(c, VALUE_SLICE_GET(a, 0), korb_intern(c->vm, "to_hash", 7))) {
-        slots[0] = VALUE_SLICE_GET(a, 0);
+    if (hi > 0 && !KORB_HASH_P(KORB_SLICE_GET(a, 0)) && KORB_OBJECT_P(KORB_SLICE_GET(a, 0)) &&
+        korb_responds_to(c, KORB_SLICE_GET(a, 0), korb_intern(c->vm, "to_hash", 7))) {
+        slots[0] = KORB_SLICE_GET(a, 0);
         const RESULT hr = korb_send(c, slots + 1, korb_intern(c->vm, "to_hash", 7), 0, 0);
         if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
-        if (KORB_HASH_P(hr.value)) VALUE_REF_SET(VALUE_SLICE_REF(a, 0), hr.value);
+        if (KORB_HASH_P(hr.value)) KORB_REF_SET(KORB_SLICE_REF(a, 0), hr.value);
     }
-    if (hi > 0 && KORB_HASH_P(VALUE_SLICE_GET(a, 0))) {          /* leading env Hash */
-        slots[0] = VALUE_SLICE_GET(a, 0);                        /* park: #to_str below dispatches */
+    if (hi > 0 && KORB_HASH_P(KORB_SLICE_GET(a, 0))) {          /* leading env Hash */
+        slots[0] = KORB_SLICE_GET(a, 0);                        /* park: #to_str below dispatches */
         const uint32_t n = VAL2HASH(slots[0])->len;
         for (uint32_t i = 0; i < n; i++) {
             slots[1] = korb_items_data(VAL2HASH(slots[0])->items)[2 * i];
@@ -504,7 +504,7 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
         p->have_env = true;
         lo = 1;
     }
-    if (hi > lo && KORB_HASH_P(VALUE_SLICE_GET(a, hi - 1))) {    /* trailing options Hash */
+    if (hi > lo && KORB_HASH_P(KORB_SLICE_GET(a, hi - 1))) {    /* trailing options Hash */
         const uint32_t chdir_id = korb_intern(c->vm, "chdir", 5);
         const uint32_t close_others_id = korb_intern(c->vm, "close_others", 12);
         const uint32_t unsetenv_id = korb_intern(c->vm, "unsetenv_others", 15);
@@ -514,12 +514,12 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
         for (uint32_t i = 0; ; i++) {
             /* #to_path / #to_io below can move the Hash, so re-read the pair
                through the scanned argument slice on every round */
-            const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(a, hi - 1));
+            const KorbHash *const h = VAL2HASH(KORB_SLICE_GET(a, hi - 1));
             if (i >= h->len) break;
             slots[0] = korb_items_data(h->items)[2 * i];         /* key   (parked) */
             slots[1] = korb_items_data(h->items)[2 * i + 1];     /* value (parked) */
-            const VALUE k = slots[0];
-            VALUE v = slots[1];
+            const korb_value k = slots[0];
+            korb_value v = slots[1];
             /* these two are strictly boolean; CRuby rejects anything else before
                it forks (and Process.exec would otherwise replace this process) */
             if (SYMBOL_P(k) && ((uint32_t)SYM2ID(k) == close_others_id || (uint32_t)SYM2ID(k) == unsetenv_id ||
@@ -570,7 +570,7 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
             }
             if (SYMBOL_P(k) && (uint32_t)SYM2ID(k) == chdir_id) {
                 if (!KORB_STRING_P(v) && KORB_OBJECT_P(v)) {     /* accepts a #to_path / #to_str object */
-                    VALUE pv = v;
+                    korb_value pv = v;
                     if (korb_file_path_arg(c, slots + 2, &pv).state == KORB_NORMAL && KORB_STRING_P(pv)) slots[1] = pv;
                     v = slots[1];
                 }
@@ -618,8 +618,8 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
     }
     if (UNLIKELY(hi <= lo)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
 
-    if (hi - lo == 1 && KORB_STRING_P(VALUE_SLICE_GET(a, lo))) {
-        uint32_t n; const char *s = korb_str_cstr_len(VALUE_SLICE_GET(a, lo), &n);
+    if (hi - lo == 1 && KORB_STRING_P(KORB_SLICE_GET(a, lo))) {
+        uint32_t n; const char *s = korb_str_cstr_len(KORB_SLICE_GET(a, lo), &n);
         if (UNLIKELY(korb_spawn_arg_has_nul(s, n)))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
         if (korb_cmd_needs_shell(s, n)) {
@@ -636,7 +636,7 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
         return RESULT_OK(KORB_NIL);
     }
     for (uint32_t i = lo; i < hi; i++) {
-        slots[0] = VALUE_SLICE_GET(a, i);
+        slots[0] = KORB_SLICE_GET(a, i);
         const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
         if (i == lo && !KORB_ARRAY_P(slots[0]) && !KORB_STRING_P(slots[0]) && KORB_OBJECT_P(slots[0]) &&
             korb_responds_to(c, slots[0], to_ary)) {            /* the command may be a #to_ary object */
@@ -934,7 +934,7 @@ static int korb_exec_probe(const char *cmd) {
 /* ---- Process::Status ------------------------------------------------------ */
 
 /* Build a Process::Status (the prelude owns the class) and publish it as $?. */
-static RESULT korb_status_make(CTX *c, VALUE *slots, pid_t pid, int raw) {
+static RESULT korb_status_make(CTX *c, korb_value *slots, pid_t pid, int raw) {
     slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Process", 7));
     if (slots[0] == KORB_NIL) return RESULT_OK(KORB_NIL);
     slots[1] = LONG2FIX(pid);
@@ -948,17 +948,17 @@ static RESULT korb_status_make(CTX *c, VALUE *slots, pid_t pid, int raw) {
 
 /* Process.__set_last_status(st) — write $? directly (Process::Status.wait must
  * leave the caller's $? untouched, so the prelude restores it). */
-static RESULT korb_m_process_set_last_status(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_set_last_status(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)slots;
-    korb_const_define(c, korb_intern(c->vm, "$?", 2), VALUE_SLICE_GET(a, 0));
-    return RESULT_OK(VALUE_SLICE_GET(a, 0));
+    korb_const_define(c, korb_intern(c->vm, "$?", 2), KORB_SLICE_GET(a, 0));
+    return RESULT_OK(KORB_SLICE_GET(a, 0));
 }
 
 /* ---- Ruby entry points ---------------------------------------------------- */
 
 /* Process.exec / Kernel#exec — spawn's arguments, but this process is replaced.
  * Only the failure path returns. */
-static RESULT korb_m_process_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_exec(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     struct korb_spawn_plan plan;
     CHECK(korb_spawn_plan_build(c, slots, a, &plan));
@@ -980,7 +980,7 @@ static RESULT korb_m_process_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return korb_raise_errno(c, slots, e, NULL, korb_spawn_file(&plan));
 }
 
-static RESULT korb_m_process_spawn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_spawn(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     struct korb_spawn_plan plan;
     CHECK(korb_spawn_plan_build(c, slots, a, &plan));
@@ -1000,7 +1000,7 @@ static RESULT korb_m_process_spawn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 
 /* A pid / flags argument: CRuby coerces it with #to_int, and rejects anything
  * else — silently falling back to "any child" would wait on the wrong process. */
-static RESULT korb_process_int_arg(CTX *c, VALUE *slots, VALUE v, korb_sword_t *out) {
+static RESULT korb_process_int_arg(CTX *c, korb_value *slots, korb_value v, korb_sword_t *out) {
     if (LIKELY(FIXNUM_P(v))) { *out = FIX2LONG(v); return RESULT_OK(KORB_NIL); }
     if (!KORB_OBJECT_P(v) || !korb_responds_to(c, v, korb_intern(c->vm, "to_int", 6)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
@@ -1014,12 +1014,12 @@ static RESULT korb_process_int_arg(CTX *c, VALUE *slots, VALUE v, korb_sword_t *
 }
 
 /* Process.wait(pid = -1) → pid ($? gets the status).  wait2 returns [pid, status]. */
-static RESULT korb_process_wait_common(CTX *c, VALUE *slots, VALUE_SLICE a, bool pair) {
+static RESULT korb_process_wait_common(CTX *c, korb_value *slots, korb_slice a, bool pair) {
     korb_sword_t want = -1, flags = 0;
-    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL)
-        CHECK(korb_process_int_arg(c, slots, VALUE_SLICE_GET(a, 0), &want));
-    if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL)
-        CHECK(korb_process_int_arg(c, slots, VALUE_SLICE_GET(a, 1), &flags));
+    if (KORB_SLICE_LEN(a) >= 1 && KORB_SLICE_GET(a, 0) != KORB_NIL)
+        CHECK(korb_process_int_arg(c, slots, KORB_SLICE_GET(a, 0), &want));
+    if (KORB_SLICE_LEN(a) >= 2 && KORB_SLICE_GET(a, 1) != KORB_NIL)
+        CHECK(korb_process_int_arg(c, slots, KORB_SLICE_GET(a, 1), &flags));
     int raw = 0; pid_t got;
     CHECK(korb_waitpid_park(c, slots, (pid_t)want, (int)flags, &raw, &got));
     if (got < 0) return korb_raise_errno(c, slots, errno, "waitpid", "");
@@ -1027,20 +1027,20 @@ static RESULT korb_process_wait_common(CTX *c, VALUE *slots, VALUE_SLICE a, bool
     slots[0] = UNWRAP(korb_status_make(c, slots, got, raw));
     if (!pair) return RESULT_OK(LONG2FIX(got));
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
-    VALUE_REF ar = VALUE_REF_AT(&slots[1]);
+    korb_ref ar = KORB_REF_AT(&slots[1]);
     CHECK(korb_ary_push_val(c, slots + 2, ar, LONG2FIX(got)));
     CHECK(korb_ary_push_val(c, slots + 2, ar, slots[0]));
-    return RESULT_OK(VALUE_REF_GET(ar));
+    return RESULT_OK(KORB_REF_GET(ar));
 }
-static RESULT korb_m_process_wait(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_wait(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; return korb_process_wait_common(c, slots, a, false);
 }
-static RESULT korb_m_process_wait2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_wait2(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; return korb_process_wait_common(c, slots, a, true);
 }
 
 /* Kernel#system → true (exit 0), false (non-zero), nil (could not run). */
-static RESULT korb_m_kernel_system(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_kernel_system(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     struct korb_spawn_plan plan;
     CHECK(korb_spawn_plan_build(c, slots, a, &plan));
@@ -1072,15 +1072,15 @@ static RESULT korb_m_kernel_system(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 
 /* Kernel#` — run the command through the shell and return its stdout. */
-static RESULT korb_m_kernel_backtick(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_kernel_backtick(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     if (UNLIKELY(c->vm->running_fiber != NULL && !c->vm->running_fiber->blocking)) {
         slots[1] = UNWRAP(korb_fiber_current_scheduler(c, slots + 2));
         if (slots[1] != KORB_NIL) {           /* the pipe read waits in scheduler.io_wait (prelude) */
-            slots[0] = VALUE_REF_GET(self); slots[2] = VALUE_SLICE_GET(a, 0);
+            slots[0] = KORB_REF_GET(self); slots[2] = KORB_SLICE_GET(a, 0);
             return korb_send(c, slots + 3, korb_intern(c->vm, "__sched_backtick", 16), 0, 2);
         }
     }
-    slots[0] = VALUE_SLICE_GET(a, 0);
+    slots[0] = KORB_SLICE_GET(a, 0);
     CHECK(korb_spawn_to_str(c, slots));                        /* the command may be a #to_str object */
     char cmd[8192];
     uint32_t n; const char *s = korb_str_cstr_len(slots[0], &n);
@@ -1210,12 +1210,12 @@ static RESULT korb_m_kernel_backtick(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 /* Process.kill(sig, *pids) → the number of signalled processes.  A negative
  * signal number, or a name with a leading '-', targets each pid's process group
  * instead; kill(2) spells that as a negative pid. */
-static RESULT korb_m_process_kill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_kill(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    if (UNLIKELY(KORB_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     int sig = 0;
     bool group = false;
-    const VALUE sv = VALUE_SLICE_GET(a, 0);
+    const korb_value sv = KORB_SLICE_GET(a, 0);
     if (FIXNUM_P(sv)) {
         sig = (int)FIX2LONG(sv);
         if (sig < 0) { sig = -sig; group = true; }
@@ -1229,9 +1229,9 @@ static RESULT korb_m_process_kill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         if (sig < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unsupported signal '%s'", nm);
     }
     uint32_t n = 0;
-    for (uint32_t i = 1; i < VALUE_SLICE_LEN(a); i++) {
+    for (uint32_t i = 1; i < KORB_SLICE_LEN(a); i++) {
         korb_sword_t pid_arg = 0;
-        CHECK(korb_process_int_arg(c, slots, VALUE_SLICE_GET(a, i), &pid_arg));
+        CHECK(korb_process_int_arg(c, slots, KORB_SLICE_GET(a, i), &pid_arg));
         const pid_t target = group ? (pid_t)-pid_arg : (pid_t)pid_arg;
         /* a group send reaches us too, but only kill(2) reaches the others; our
            own copy stays pending (blocked) until the next check point */
@@ -1244,7 +1244,7 @@ static RESULT korb_m_process_kill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 
 /* A forked child's uncaught `exc`: its exit status, reported unless CRuby is
  * quiet about it; *die_sig = the signal it should end by instead (or 0). */
-static int korb_child_uncaught(CTX *c, VALUE exc, int *die_sig) {
+static int korb_child_uncaught(CTX *c, korb_value exc, int *die_sig) {
     const int se = korb_system_exit_status(c, exc);      /* exit(n) in the block: n is the status */
     if (se >= 0) return se;
     bool quiet = false;
@@ -1253,7 +1253,7 @@ static int korb_child_uncaught(CTX *c, VALUE exc, int *die_sig) {
     return 1;
 }
 
-static _Noreturn void korb_child_end(CTX *c, VALUE *slots, const int status, const int die_sig) {
+static _Noreturn void korb_child_end(CTX *c, korb_value *slots, const int status, const int die_sig) {
     korb_drain_at_exit(c, slots);
     korb_io_flush_std(c->vm);
     if (die_sig > 0) korb_die_by_signal(die_sig);
@@ -1263,22 +1263,22 @@ static _Noreturn void korb_child_end(CTX *c, VALUE *slots, const int status, con
 /* IO.popen(cmd, mode = "r") [ { |io| ... } ] — pipe + fork + exec, so the IO
  * carries the child's #pid and #close reaps it into $?.  `cmd` is one positional
  * (String or argv Array); an env Hash may precede it and an options Hash follow. */
-static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
-                                struct Node *block, VALUE *def_env, VALUE *captured_self) {
-    uint32_t lo = 0, hi = VALUE_SLICE_LEN(a);
-    if (hi > 0 && KORB_HASH_P(VALUE_SLICE_GET(a, 0))) lo = 1;
-    if (hi > lo && KORB_HASH_P(VALUE_SLICE_GET(a, hi - 1))) hi--;
+static RESULT korb_m_io_s_popen(CTX *c, korb_value *slots, korb_ref self, korb_slice a,
+                                struct Node *block, korb_value *def_env, korb_value *captured_self) {
+    uint32_t lo = 0, hi = KORB_SLICE_LEN(a);
+    if (hi > 0 && KORB_HASH_P(KORB_SLICE_GET(a, 0))) lo = 1;
+    if (hi > lo && KORB_HASH_P(KORB_SLICE_GET(a, hi - 1))) hi--;
     if (UNLIKELY(hi <= lo)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     char mode[16] = "r";
     if (hi - lo >= 2) {
-        VALUE mv = VALUE_SLICE_GET(a, lo + 1);
+        korb_value mv = KORB_SLICE_GET(a, lo + 1);
         if (mv != KORB_NIL) CHECK(korb_io_mode_coerce(c, slots, &mv, mode, sizeof mode));   /* #to_str / #to_int */
     }
     /* `IO.popen("-")` forks without exec: the child continues here and gets nil
      * back, with the pipe wired to its std stream. */
     bool dash = false;
     {
-        const VALUE cv = VALUE_SLICE_GET(a, lo);
+        const korb_value cv = KORB_SLICE_GET(a, lo);
         if (KORB_STRING_P(cv)) {
             uint32_t cl; const char *const cs = korb_str_cstr_len(cv, &cl);
             dash = (cl == 1 && cs[0] == '-');
@@ -1287,21 +1287,21 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     /* `[cmd…, exec-opts], mode, io-opts` puts a Hash at both ends; the plan
      * builder only reads one, so fold them together first (it skips IO-only
      * keys itself).  Done before av is filled: this is the one allocation. */
-    VALUE merged = KORB_NIL;
+    korb_value merged = KORB_NIL;
     if (!dash) {
-        const VALUE cmdv0 = VALUE_SLICE_GET(a, lo);
+        const korb_value cmdv0 = KORB_SLICE_GET(a, lo);
         const uint32_t cn0 = KORB_ARRAY_P(cmdv0) ? VAL2ARY(cmdv0)->len : 0;
-        const VALUE inner = cn0 ? korb_items_data(VAL2ARY(cmdv0)->items)[cn0 - 1] : KORB_NIL;
-        if (hi < VALUE_SLICE_LEN(a) && KORB_HASH_P(inner)) {
+        const korb_value inner = cn0 ? korb_items_data(VAL2ARY(cmdv0)->items)[cn0 - 1] : KORB_NIL;
+        if (hi < KORB_SLICE_LEN(a) && KORB_HASH_P(inner)) {
             slots[0] = inner;
-            slots[1] = VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1);
+            slots[1] = KORB_SLICE_GET(a, KORB_SLICE_LEN(a) - 1);
             slots[2] = UNWRAP(korb_hash_new(c, slots + 2, VAL2HASH(slots[0])->len + VAL2HASH(slots[1])->len));
             for (uint32_t w = 0; w <= 1; w++) {
                 for (uint32_t i = 0; ; i++) {
                     const KorbHash *const h = VAL2HASH(slots[w]);
                     if (i >= h->len) break;
                     slots[3] = korb_items_data(h->items)[2 * i];
-                    CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[2]), VALUE_REF_AT(&slots[3]),
+                    CHECK(korb_hash_set(c, slots + 4, KORB_REF_AT(&slots[2]), KORB_REF_AT(&slots[3]),
                                         korb_items_data(VAL2HASH(slots[w])->items)[2 * i + 1]));
                 }
             }
@@ -1313,9 +1313,9 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         /* Re-slice to (env?, cmd…, opts?) so the plan builder sees no mode word.  For
          * IO.popen an Array command IS the argv list (unlike spawn's [cmd, argv0]),
          * so expand it. */
-        VALUE av[64]; uint32_t an = 0;
-        if (lo == 1) av[an++] = VALUE_SLICE_GET(a, 0);
-        const VALUE cmdv = VALUE_SLICE_GET(a, lo);
+        korb_value av[64]; uint32_t an = 0;
+        if (lo == 1) av[an++] = KORB_SLICE_GET(a, 0);
+        const korb_value cmdv = KORB_SLICE_GET(a, lo);
         if (KORB_ARRAY_P(cmdv)) {
             const uint32_t cn = VAL2ARY(cmdv)->len;
             for (uint32_t i = 0; i < cn && an < 62; i++) av[an++] = korb_items_data(VAL2ARY(cmdv)->items)[i];
@@ -1323,11 +1323,11 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         } else {
             av[an++] = cmdv;
         }
-        if (hi < VALUE_SLICE_LEN(a) && merged == KORB_NIL) av[an++] = VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1);
+        if (hi < KORB_SLICE_LEN(a) && merged == KORB_NIL) av[an++] = KORB_SLICE_GET(a, KORB_SLICE_LEN(a) - 1);
         /* the plan builder dispatches #to_path / #to_io, so the argument slice
          * must live in scanned slots — a C array would go stale under a move */
         for (uint32_t i = 0; i < an; i++) slots[i] = av[i];
-        CHECK(korb_spawn_plan_build(c, slots + an, VALUE_SLICE_MAKE(slots, an), &plan));
+        CHECK(korb_spawn_plan_build(c, slots + an, KORB_SLICE_MAKE(slots, an), &plan));
     }
 
     const bool reading = (mode[0] == 'r');
@@ -1399,26 +1399,26 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     if (pid < 0) { close(fds[0]); close(fds[1]); return korb_raise_errno(c, slots, errno, "fork", ""); }
     close(duplex ? fds[1] : fds[reading ? 1 : 0]);
-    slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self),
+    slots[0] = UNWRAP(korb_io_make(c, slots, KORB_REF_GET(self),
                                    duplex ? fds[0] : fds[reading ? 0 : 1],
                                    duplex ? 3 : (reading ? 1 : 2)));
     korb_io_set_nonblock(korb_io_rep(c, slots[0]));   /* our end only; the child got the other */
     korb_io_rep(c, slots[0])->sync = 1;                /* popen is FMODE_SYNC in CRuby */
-    VALUE_REF io = VALUE_REF_AT(&slots[0]);
+    korb_ref io = KORB_REF_AT(&slots[0]);
     CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_pid", 9)), LONG2FIX(pid)));
-    if (hi < VALUE_SLICE_LEN(a)) {                    /* encoding: / autoclose: → the prelude */
-        slots[1] = VALUE_REF_GET(io);
-        slots[2] = VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1);
+    if (hi < KORB_SLICE_LEN(a)) {                    /* encoding: / autoclose: → the prelude */
+        slots[1] = KORB_REF_GET(io);
+        slots[2] = KORB_SLICE_GET(a, KORB_SLICE_LEN(a) - 1);
         if (KORB_HASH_P(slots[2])) CHECK(korb_send(c, slots + 3, korb_intern(c->vm, "__apply_open_opts", 17), 0, 1));
     }
     if (strchr(mode, 'b'))
         CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
-    if (korb_mode_univ(mode)) korb_io_rep(c, VALUE_REF_GET(io))->univ = 1;   /* popen "rt" */
-    if (block == NULL) return RESULT_OK(VALUE_REF_GET(io));
-    slots[1] = VALUE_REF_GET(io);
+    if (korb_mode_univ(mode)) korb_io_rep(c, KORB_REF_GET(io))->univ = 1;   /* popen "rt" */
+    if (block == NULL) return RESULT_OK(KORB_REF_GET(io));
+    slots[1] = KORB_REF_GET(io);
     RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
     slots[1] = br.value;                        /* root across close's GC */
-    slots[2] = VALUE_REF_GET(io);
+    slots[2] = KORB_REF_GET(io);
     RESULT cr = korb_send(c, slots + 3, korb_intern(c->vm, "close", 5), 0, 0);
     if (br.state != KORB_NORMAL) { br.value = slots[1]; return br; }
     if (cr.state != KORB_NORMAL) return cr;
@@ -1463,22 +1463,22 @@ static const struct { const char *name; int res; } korb_rlimit_tab[] = {
 };
 
 /* __rlimit_table → { "RLIMIT_CORE" => 4, ... } plus RLIM_INFINITY under "INFINITY". */
-static RESULT korb_m_rlimit_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_rlimit_table(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     slots[0] = UNWRAP(korb_hash_new(c, slots, 24));
-    VALUE_REF h = VALUE_REF_AT(&slots[0]);
+    korb_ref h = KORB_REF_AT(&slots[0]);
     for (size_t i = 0; i < sizeof korb_rlimit_tab / sizeof korb_rlimit_tab[0]; i++) {
         slots[1] = UNWRAP(korb_str_new(c, slots + 1, korb_rlimit_tab[i].name,
                                        (uint32_t)strlen(korb_rlimit_tab[i].name)));
-        CHECK(korb_hash_set(c, slots + 2, h, VALUE_REF_AT(&slots[1]), LONG2FIX(korb_rlimit_tab[i].res)));
+        CHECK(korb_hash_set(c, slots + 2, h, KORB_REF_AT(&slots[1]), LONG2FIX(korb_rlimit_tab[i].res)));
     }
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, "INFINITY", 8));
-    CHECK(korb_hash_set(c, slots + 2, h, VALUE_REF_AT(&slots[1]), LONG2FIX((korb_sword_t)RLIM_INFINITY)));
-    return RESULT_OK(VALUE_REF_GET(h));
+    CHECK(korb_hash_set(c, slots + 2, h, KORB_REF_AT(&slots[1]), LONG2FIX((korb_sword_t)RLIM_INFINITY)));
+    return RESULT_OK(KORB_REF_GET(h));
 }
 
 /* __process_times() → [utime, stime, cutime, cstime] in seconds (getrusage(2)). */
-static RESULT korb_m_process_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_times(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     struct rusage ru, rc;
     const bool ok_self = getrusage(RUSAGE_SELF, &ru) == 0;
@@ -1490,68 +1490,68 @@ static RESULT korb_m_process_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         ok_kids ? (double)rc.ru_stime.tv_sec + (double)rc.ru_stime.tv_usec / 1e6 : 0.0,
     };
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
-    VALUE_REF ar = VALUE_REF_AT(&slots[0]);
+    korb_ref ar = KORB_REF_AT(&slots[0]);
     for (int i = 0; i < 4; i++) {
         slots[1] = UNWRAP(korb_float_new(c, slots + 1, t[i]));
         CHECK(korb_ary_push_val(c, slots + 2, ar, slots[1]));
     }
-    return RESULT_OK(VALUE_REF_GET(ar));
+    return RESULT_OK(KORB_REF_GET(ar));
 }
 
 /* __getpriority(which, who) → the nice value (getpriority(2); errno 0-reset so a
  * legitimate -1 is not mistaken for failure). */
-static RESULT korb_m_getpriority(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_getpriority(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    if (!FIXNUM_P(VALUE_SLICE_GET(a, 0)) || !FIXNUM_P(VALUE_SLICE_GET(a, 1)))
+    if (!FIXNUM_P(KORB_SLICE_GET(a, 0)) || !FIXNUM_P(KORB_SLICE_GET(a, 1)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     errno = 0;
-    const int pr = getpriority((int)FIX2LONG(VALUE_SLICE_GET(a, 0)), (id_t)FIX2LONG(VALUE_SLICE_GET(a, 1)));
+    const int pr = getpriority((int)FIX2LONG(KORB_SLICE_GET(a, 0)), (id_t)FIX2LONG(KORB_SLICE_GET(a, 1)));
     if (pr == -1 && errno != 0) return korb_raise_errno(c, slots, errno, "getpriority", "");
     return RESULT_OK(LONG2FIX((korb_sword_t)pr));
 }
 /* __setpriority(which, who, prio) → 0 */
-static RESULT korb_m_setpriority(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_setpriority(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    if (!FIXNUM_P(VALUE_SLICE_GET(a, 0)) || !FIXNUM_P(VALUE_SLICE_GET(a, 1)) || !FIXNUM_P(VALUE_SLICE_GET(a, 2)))
+    if (!FIXNUM_P(KORB_SLICE_GET(a, 0)) || !FIXNUM_P(KORB_SLICE_GET(a, 1)) || !FIXNUM_P(KORB_SLICE_GET(a, 2)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-    if (setpriority((int)FIX2LONG(VALUE_SLICE_GET(a, 0)), (id_t)FIX2LONG(VALUE_SLICE_GET(a, 1)),
-                    (int)FIX2LONG(VALUE_SLICE_GET(a, 2))) != 0)
+    if (setpriority((int)FIX2LONG(KORB_SLICE_GET(a, 0)), (id_t)FIX2LONG(KORB_SLICE_GET(a, 1)),
+                    (int)FIX2LONG(KORB_SLICE_GET(a, 2))) != 0)
         return korb_raise_errno(c, slots, errno, "setpriority", "");
     return RESULT_OK(LONG2FIX(0));
 }
 
 /* __getrlimit(resource) → [soft, hard] */
-static RESULT korb_m_getrlimit(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_getrlimit(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    if (!FIXNUM_P(VALUE_SLICE_GET(a, 0)))
+    if (!FIXNUM_P(KORB_SLICE_GET(a, 0)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     struct rlimit rl;
-    if (getrlimit((int)FIX2LONG(VALUE_SLICE_GET(a, 0)), &rl) != 0)
+    if (getrlimit((int)FIX2LONG(KORB_SLICE_GET(a, 0)), &rl) != 0)
         return korb_raise_errno(c, slots, errno, "getrlimit", "");
     slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
-    VALUE_REF ar = VALUE_REF_AT(&slots[0]);
+    korb_ref ar = KORB_REF_AT(&slots[0]);
     CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((korb_sword_t)rl.rlim_cur)));
     CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((korb_sword_t)rl.rlim_max)));
-    return RESULT_OK(VALUE_REF_GET(ar));
+    return RESULT_OK(KORB_REF_GET(ar));
 }
 
 /* __setrlimit(resource, soft[, hard]) → nil */
-static RESULT korb_m_setrlimit(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_setrlimit(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    if (!FIXNUM_P(VALUE_SLICE_GET(a, 0)) || !FIXNUM_P(VALUE_SLICE_GET(a, 1)))
+    if (!FIXNUM_P(KORB_SLICE_GET(a, 0)) || !FIXNUM_P(KORB_SLICE_GET(a, 1)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     struct rlimit rl;
-    const int res = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    const int res = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
     if (getrlimit(res, &rl) != 0) return korb_raise_errno(c, slots, errno, "getrlimit", "");
-    rl.rlim_cur = (rlim_t)FIX2LONG(VALUE_SLICE_GET(a, 1));
-    if (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2)))
-        rl.rlim_max = (rlim_t)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    rl.rlim_cur = (rlim_t)FIX2LONG(KORB_SLICE_GET(a, 1));
+    if (KORB_SLICE_LEN(a) >= 3 && FIXNUM_P(KORB_SLICE_GET(a, 2)))
+        rl.rlim_max = (rlim_t)FIX2LONG(KORB_SLICE_GET(a, 2));
     if (setrlimit(res, &rl) != 0) return korb_raise_errno(c, slots, errno, "setrlimit", "");
     return RESULT_OK(KORB_NIL);
 }
 
 /* Copy a String argument into a NUL-terminated stack buffer (nil → ""). */
-static bool korb_cstr_arg(VALUE v, char *buf, size_t cap) {
+static bool korb_cstr_arg(korb_value v, char *buf, size_t cap) {
     if (v == KORB_NIL) { buf[0] = '\0'; return true; }
     if (!KORB_STRING_P(v)) return false;
     uint32_t n; const char *const s = korb_str_cstr_len(v, &n);
@@ -1562,15 +1562,15 @@ static bool korb_cstr_arg(VALUE v, char *buf, size_t cap) {
 }
 
 /* __process_test(cmd_char, path[, path2]) — Kernel#test's file predicates. */
-static RESULT korb_m_process_test(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_test(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const VALUE cv = VALUE_SLICE_GET(a, 0);
+    const korb_value cv = KORB_SLICE_GET(a, 0);
     int cmd = 0;
     if (FIXNUM_P(cv)) cmd = (int)FIX2LONG(cv);
     else if (KORB_STRING_P(cv) && VAL2STR(cv)->len >= 1) cmd = (unsigned char)korb_strbuf_data(VAL2STR(cv)->buf)[0];
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     char path[4096];
-    if (!korb_cstr_arg(VALUE_SLICE_GET(a, 1), path, sizeof path))
+    if (!korb_cstr_arg(KORB_SLICE_GET(a, 1), path, sizeof path))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     struct stat st;
     const bool ok = stat(path, &st) == 0;
@@ -1609,7 +1609,7 @@ static RESULT korb_m_process_test(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     /* two-path comparisons */
     if (cmd == '=' || cmd == '<' || cmd == '>' || cmd == '-') {
         char p2[4096];
-        if (VALUE_SLICE_LEN(a) < 3 || !korb_cstr_arg(VALUE_SLICE_GET(a, 2), p2, sizeof p2))
+        if (KORB_SLICE_LEN(a) < 3 || !korb_cstr_arg(KORB_SLICE_GET(a, 2), p2, sizeof p2))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
         struct stat s2;
         if (!ok || stat(p2, &s2) != 0) return korb_raise_errno(c, slots, ENOENT, "stat", path);
@@ -1621,24 +1621,24 @@ static RESULT korb_m_process_test(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown command '%c'", (char)cmd);
 }
 
-static RESULT korb_m_process_getpgid(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_getpgid(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const pid_t pid = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? (pid_t)FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
+    const pid_t pid = (KORB_SLICE_LEN(a) >= 1 && FIXNUM_P(KORB_SLICE_GET(a, 0))) ? (pid_t)FIX2LONG(KORB_SLICE_GET(a, 0)) : 0;
     const pid_t g = getpgid(pid);
     if (g < 0) return korb_raise_errno(c, slots, errno, "getpgid", "");
     return RESULT_OK(LONG2FIX(g));
 }
-static RESULT korb_m_process_setpgid(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_setpgid(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    if (setpgid((pid_t)FIX2LONG(VALUE_SLICE_GET(a, 0)), (pid_t)FIX2LONG(VALUE_SLICE_GET(a, 1))) < 0)
+    if (setpgid((pid_t)FIX2LONG(KORB_SLICE_GET(a, 0)), (pid_t)FIX2LONG(KORB_SLICE_GET(a, 1))) < 0)
         return korb_raise_errno(c, slots, errno, "setpgid", "");
     return RESULT_OK(LONG2FIX(0));
 }
 /* __set_id(which, id) — which: 0 uid, 1 euid, 2 gid, 3 egid. */
-static RESULT korb_m_process_set_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_set_id(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const long which = FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const long id = FIX2LONG(VALUE_SLICE_GET(a, 1));
+    const long which = FIX2LONG(KORB_SLICE_GET(a, 0));
+    const long id = FIX2LONG(KORB_SLICE_GET(a, 1));
     int r = -1;
     const char *nm = "setuid";
     switch (which) {
@@ -1651,28 +1651,28 @@ static RESULT korb_m_process_set_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(LONG2FIX(id));
 }
 /* __set_reid(which, rid, eid) — which: 0 setreuid, 1 setregid. */
-static RESULT korb_m_process_set_reid(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_set_reid(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const long which = FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const long r0 = FIX2LONG(VALUE_SLICE_GET(a, 1)), e0 = FIX2LONG(VALUE_SLICE_GET(a, 2));
+    const long which = FIX2LONG(KORB_SLICE_GET(a, 0));
+    const long r0 = FIX2LONG(KORB_SLICE_GET(a, 1)), e0 = FIX2LONG(KORB_SLICE_GET(a, 2));
     const int r = which == 0 ? setreuid((uid_t)r0, (uid_t)e0) : setregid((gid_t)r0, (gid_t)e0);
     if (r != 0) return korb_raise_errno(c, slots, errno, which == 0 ? "setreuid" : "setregid", "");
     return RESULT_OK(KORB_NIL);
 }
-static RESULT korb_m_process_setsid(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_setsid(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     const pid_t s = setsid();
     if (s < 0) return korb_raise_errno(c, slots, errno, "setsid", "");
     return RESULT_OK(LONG2FIX(s));
 }
 /* Process.pid must re-read: $$ is captured at boot and is stale after fork. */
-static RESULT korb_m_process_getpid(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_getpid(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)c; (void)slots; (void)self; (void)a;
     return RESULT_OK(LONG2FIX((korb_sword_t)getpid()));
 }
 
 /* true / false / nil only — CRuby's rb_bool_expected. */
-static RESULT korb_bool_arg(CTX *c, VALUE *slots, VALUE v, const char *name, int *out) {
+static RESULT korb_bool_arg(CTX *c, korb_value *slots, korb_value v, const char *name, int *out) {
     if (v == KORB_TRUE)  { *out = 1; return RESULT_OK(KORB_NIL); }
     if (v == KORB_FALSE || v == KORB_NIL) { *out = 0; return RESULT_OK(KORB_NIL); }
     char *b = NULL; size_t bl = 0;
@@ -1684,11 +1684,11 @@ static RESULT korb_bool_arg(CTX *c, VALUE *slots, VALUE v, const char *name, int
 
 /* Process.daemon(nochdir = false, noclose = false) — fork, let the parent leave
  * without running at_exit, then detach the child from its controlling tty. */
-static RESULT korb_m_process_daemon(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_daemon(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     int nochdir = 0, noclose = 0;
-    if (VALUE_SLICE_LEN(a) >= 1) CHECK(korb_bool_arg(c, slots, VALUE_SLICE_GET(a, 0), "nochdir", &nochdir));
-    if (VALUE_SLICE_LEN(a) >= 2) CHECK(korb_bool_arg(c, slots, VALUE_SLICE_GET(a, 1), "noclose", &noclose));
+    if (KORB_SLICE_LEN(a) >= 1) CHECK(korb_bool_arg(c, slots, KORB_SLICE_GET(a, 0), "nochdir", &nochdir));
+    if (KORB_SLICE_LEN(a) >= 2) CHECK(korb_bool_arg(c, slots, KORB_SLICE_GET(a, 1), "noclose", &noclose));
     korb_io_flush_std(c->vm);
     const pid_t pid = fork();
     if (pid < 0) return korb_raise_errno(c, slots, errno, "fork", "");
@@ -1724,7 +1724,7 @@ static int korb_signo_of_name(const char *const nm) {
 }
 
 /* A signal argument ("INT" / "SIGINT" / :INT / 2) → signal number, or -1. */
-static int korb_signo_of(CTX *c, VALUE v) {
+static int korb_signo_of(CTX *c, korb_value v) {
     if (FIXNUM_P(v)) return (int)FIX2LONG(v);
     char nm[32] = "";
     if (!korb_signal_name_arg(c, v, nm, sizeof nm)) return -1;
@@ -1736,13 +1736,13 @@ static int korb_signo_of(CTX *c, VALUE v) {
  * "" is accepted and the signal ignored, because koruby has no safe point to run
  * Ruby from a signal handler yet (see docs/todo.md).  Without this a spec that
  * signals its own process just kills the interpreter. */
-static RESULT korb_m_signal_trap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_signal_trap(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int sig = korb_signo_of(c, VALUE_SLICE_GET(a, 0));
+    const int sig = korb_signo_of(c, KORB_SLICE_GET(a, 0));
     if (sig < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unsupported signal");
     if (sig == 0 || sig == SIGKILL || sig == SIGSTOP)   /* not trappable */
         return korb_str_new(c, slots, "DEFAULT", 7);
-    const VALUE cmd = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+    const korb_value cmd = KORB_SLICE_LEN(a) >= 2 ? KORB_SLICE_GET(a, 1) : KORB_NIL;
     bool dflt = false;
     if (KORB_STRING_P(cmd)) {
         uint32_t n; const char *p = korb_str_cstr_len(cmd, &n);
@@ -1754,13 +1754,13 @@ static RESULT korb_m_signal_trap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return korb_str_new(c, slots, pname, (uint32_t)strlen(pname));
 }
 
-static RESULT korb_m_signal_signame(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_signal_signame(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    slots[0] = VALUE_SLICE_GET(a, 0);
+    slots[0] = KORB_SLICE_GET(a, 0);
     CHECK(korb_coerce_to_int_pub(c, slots + 1, &slots[0]));   /* #to_int is honoured */
     if (!FIXNUM_P(slots[0]) && !KORB_BIGNUM_P(slots[0]))
         return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
-                          korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+                          korb_coerce_name(c, KORB_SLICE_GET(a, 0)));
     if (!FIXNUM_P(slots[0])) return RESULT_OK(KORB_NIL);       /* a Bignum is never a signal number */
     const int want = (int)FIX2LONG(slots[0]);
     static const struct { const char *n; int s; } tab[] = {
@@ -1778,9 +1778,9 @@ static RESULT korb_m_signal_signame(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(KORB_NIL);
 }
 
-static RESULT korb_m_signal_signo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_signal_signo(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)slots; (void)self;
-    const int s = korb_signo_of(c, VALUE_SLICE_GET(a, 0));
+    const int s = korb_signo_of(c, KORB_SLICE_GET(a, 0));
     return RESULT_OK(s < 0 ? KORB_NIL : LONG2FIX(s));
 }
 
@@ -1816,7 +1816,7 @@ static void korb_fork_child_threads(struct korb_vm *vm) {
 }
 
 /* Process._fork → __fork_raw: fork(2) and nothing else (0 in the child). */
-static RESULT korb_m_process_fork_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_fork_raw(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     korb_io_flush_std(c->vm);                       /* the child must not re-emit buffered output */
     fflush(NULL);
@@ -1828,17 +1828,17 @@ static RESULT korb_m_process_fork_raw(CTX *c, VALUE *slots, VALUE_REF self, VALU
 
 /* __fork_finish(v): end the child after its block — v is an exit status or the
  * exception that escaped the block (reported, status 1).  at_exit runs. */
-static RESULT korb_m_process_fork_finish(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_fork_finish(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const VALUE v = VALUE_SLICE_GET(a, 0);
+    const korb_value v = KORB_SLICE_GET(a, 0);
     int status = 0, die_sig = 0;
     if (FIXNUM_P(v)) status = (int)FIX2LONG(v);
     else if (KORB_EXC_P(v)) status = korb_child_uncaught(c, v, &die_sig);
     korb_child_end(c, slots, status, die_sig);
 }
 
-static RESULT korb_m_process_fork(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
-                                  NODE *block, VALUE *def_env, VALUE *cself) {
+static RESULT korb_m_process_fork(CTX *c, korb_value *slots, korb_ref self, korb_slice a,
+                                  NODE *block, korb_value *def_env, korb_value *cself) {
     (void)self; (void)a;
     /* the fork itself is Process._fork, so a prepended hook sees Kernel#fork too
      * (connection_pool drops its connections in the child that way) */
@@ -1859,26 +1859,26 @@ static RESULT korb_m_process_fork(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 
 /* Process.groups — the supplemental group access list (getgroups(2)). */
-static RESULT korb_m_process_getgroups(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_getgroups(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     gid_t buf[NGROUPS_MAX];
     const int n = getgroups((int)(sizeof buf / sizeof buf[0]), buf);
     if (n < 0) return korb_raise_errno(c, slots, errno, "getgroups", "");
     slots[0] = UNWRAP(korb_ary_new(c, slots, n > 0 ? (uint32_t)n : 1));
-    const VALUE_REF ary = VALUE_REF_AT(&slots[0]);
+    const korb_ref ary = KORB_REF_AT(&slots[0]);
     for (int i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, ary, LONG2FIX((korb_sword_t)buf[i])));
     return RESULT_OK(slots[0]);
 }
 /* Process.groups= — setgroups(2) (EPERM for an unprivileged process). */
-static RESULT korb_m_process_setgroups(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_setgroups(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const VALUE av = VALUE_SLICE_GET(a, 0);
+    const korb_value av = KORB_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_ARRAY_P(av))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Array");
     const KorbArray *const ar = VAL2ARY(av);
     if (UNLIKELY(ar->len > NGROUPS_MAX)) return korb_raise_errno(c, slots, EINVAL, "setgroups", "");
     gid_t buf[NGROUPS_MAX];
     for (uint32_t i = 0; i < ar->len; i++) {
-        const VALUE g = korb_items_data(ar->items)[i];
+        const korb_value g = korb_items_data(ar->items)[i];
         if (UNLIKELY(!FIXNUM_P(g))) return korb_raise_no_int(c, slots, g);
         buf[i] = (gid_t)FIX2LONG(g);
     }
@@ -1887,11 +1887,11 @@ static RESULT korb_m_process_setgroups(CTX *c, VALUE *slots, VALUE_REF self, VAL
 }
 
 /* Process.initgroups(user, gid) — initgroups(3), then report the new list. */
-static RESULT korb_m_process_initgroups(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_initgroups(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     char user[256];
-    if (!korb_cstr_arg(VALUE_SLICE_GET(a, 0), user, sizeof user))
+    if (!korb_cstr_arg(KORB_SLICE_GET(a, 0), user, sizeof user))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
-    const VALUE g = VALUE_SLICE_GET(a, 1);
+    const korb_value g = KORB_SLICE_GET(a, 1);
     if (UNLIKELY(!FIXNUM_P(g))) return korb_raise_no_int(c, slots, g);
     if (initgroups(user, (gid_t)FIX2LONG(g)) != 0)
         return korb_raise_errno(c, slots, errno, "initgroups", "");
@@ -1899,10 +1899,10 @@ static RESULT korb_m_process_initgroups(CTX *c, VALUE *slots, VALUE_REF self, VA
 }
 
 /* Real/effective ids + parent pid — prelude/system.rb used to hard-code 0. */
-static RESULT korb_m_process_ids(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_process_ids(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     slots[0] = UNWRAP(korb_ary_new(c, slots, 5));
-    const VALUE_REF ary = VALUE_REF_AT(&slots[0]);
+    const korb_ref ary = KORB_REF_AT(&slots[0]);
     const korb_sword_t ids[5] = { (korb_sword_t)getuid(), (korb_sword_t)geteuid(),
                                   (korb_sword_t)getgid(), (korb_sword_t)getegid(),
                                   (korb_sword_t)getppid() };
@@ -1914,19 +1914,19 @@ static RESULT korb_m_process_ids(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 #include <sys/utsname.h>
 
 /* Etc.uname → { sysname:, nodename:, release:, version:, machine: } */
-static RESULT korb_m_etc_uname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_etc_uname(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     (void)a;
     struct utsname u;
     if (uname(&u) != 0) return korb_raise_errno(c, slots, errno, "uname", "");
     slots[0] = UNWRAP(korb_hash_new(c, slots, 5));
-    const VALUE_REF h = VALUE_REF_AT(&slots[0]);
+    const korb_ref h = KORB_REF_AT(&slots[0]);
     static const char *const keys[5] = { "sysname", "nodename", "release", "version", "machine" };
     const char *const vals[5] = { u.sysname, u.nodename, u.release, u.version, u.machine };
     for (int i = 0; i < 5; i++) {
         slots[1] = ID2SYM(korb_intern(c->vm, keys[i], (uint32_t)strlen(keys[i])));
         slots[2] = UNWRAP(korb_str_new(c, slots + 2, vals[i], (uint32_t)strlen(vals[i])));
-        CHECK(korb_hash_set(c, slots + 3, h, VALUE_REF_AT(&slots[1]), slots[2]));
+        CHECK(korb_hash_set(c, slots + 3, h, KORB_REF_AT(&slots[1]), slots[2]));
     }
     return RESULT_OK(slots[0]);
 }
@@ -1947,13 +1947,13 @@ static const struct { const char *nm; int val; } korb_etc_cs[] = {
     { "CS_PATH", _CS_PATH },
 };
 
-static RESULT korb_m_etc_conf_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_etc_conf_table(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     (void)a;
     const uint32_t n = (uint32_t)(sizeof korb_etc_sc / sizeof korb_etc_sc[0]) +
                        (uint32_t)(sizeof korb_etc_cs / sizeof korb_etc_cs[0]);
     slots[0] = UNWRAP(korb_hash_new(c, slots, n));
-    const VALUE_REF h = VALUE_REF_AT(&slots[0]);
+    const korb_ref h = KORB_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < n; i++) {
         const bool is_sc = i < sizeof korb_etc_sc / sizeof korb_etc_sc[0];
         const char *const nm = is_sc ? korb_etc_sc[i].nm
@@ -1961,15 +1961,15 @@ static RESULT korb_m_etc_conf_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         const int v = is_sc ? korb_etc_sc[i].val
                             : korb_etc_cs[i - sizeof korb_etc_sc / sizeof korb_etc_sc[0]].val;
         slots[1] = UNWRAP(korb_str_new(c, slots + 1, nm, (uint32_t)strlen(nm)));
-        CHECK(korb_hash_set(c, slots + 2, h, VALUE_REF_AT(&slots[1]), LONG2FIX(v)));
+        CHECK(korb_hash_set(c, slots + 2, h, KORB_REF_AT(&slots[1]), LONG2FIX(v)));
     }
     return RESULT_OK(slots[0]);
 }
 
-static RESULT korb_m_etc_sysconf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_etc_sysconf(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     korb_sword_t nv;
-    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &nv));
+    CHECK(korb_io_arg_int(c, slots, KORB_SLICE_GET(a, 0), &nv));
     errno = 0;
     const long r = sysconf((int)nv);
     if (r == -1) {
@@ -1979,10 +1979,10 @@ static RESULT korb_m_etc_sysconf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(LONG2FIX((korb_sword_t)r));
 }
 
-static RESULT korb_m_etc_confstr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_etc_confstr(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     korb_sword_t nv;
-    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &nv));
+    CHECK(korb_io_arg_int(c, slots, KORB_SLICE_GET(a, 0), &nv));
     errno = 0;
     char buf[4096];
     const size_t r = confstr((int)nv, buf, sizeof buf);
@@ -1990,7 +1990,7 @@ static RESULT korb_m_etc_confstr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return korb_str_new(c, slots, buf, (uint32_t)(r > 0 ? r - 1 : 0));
 }
 
-static RESULT korb_m_etc_getlogin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_etc_getlogin(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     (void)a;
     const char *const l = getlogin();
@@ -1998,12 +1998,12 @@ static RESULT korb_m_etc_getlogin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return korb_str_new(c, slots, l, (uint32_t)strlen(l));
 }
 
-void korb_init_process(CTX *c, VALUE *slots) {
+void korb_init_process(CTX *c, korb_value *slots) {
     (void)slots;
     /* The Process module itself comes from the prelude, which loads after this,
      * so the primitives go on Object and prelude/system.rb wires Process.spawn /
      * .wait / .kill to them. */
-    const VALUE obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    const korb_value obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
     korb_class_def_cfn(c, obj, "system",     korb_m_kernel_system,   -1);
     korb_class_def_cfn(c, obj, "spawn",      korb_m_process_spawn,   -1);
     korb_class_def_cfn(c, obj, "exec",       korb_m_process_exec,    -1);
@@ -2045,10 +2045,10 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__etc_sysconf",    korb_m_etc_sysconf,     1);
     korb_class_def_cfn(c, obj, "__etc_confstr",    korb_m_etc_confstr,     1);
     korb_class_def_cfn(c, obj, "__etc_getlogin",   korb_m_etc_getlogin,    0);
-    const VALUE io_cls = korb_const_get(c->vm, korb_intern(c->vm, "IO", 2));
+    const korb_value io_cls = korb_const_get(c->vm, korb_intern(c->vm, "IO", 2));
     if (KORB_CLASS_P(io_cls)) {
-        VALUE sl[4]; sl[0] = io_cls;
-        const VALUE io_sing = korb_obj_singleton(c, sl + 1, io_cls).value;
+        korb_value sl[4]; sl[0] = io_cls;
+        const korb_value io_sing = korb_obj_singleton(c, sl + 1, io_cls).value;
         korb_class_def_cfn_blk(c, io_sing, "popen", korb_m_io_s_popen, -1);
     }
 }

@@ -1,10 +1,10 @@
 /* koruby_precise — integer.c: builtin methods, #included into korb_runtime.c's TU
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
 /* ---- Integer methods ----------------------------------------------------- */
-static RESULT korb_flt_toint(CTX *c, VALUE *slots, double d, int kind);   /* fwd (float.c) — Fixnum-or-Bignum from an integer-valued double */
+static RESULT korb_flt_toint(CTX *c, korb_value *slots, double d, int kind);   /* fwd (float.c) — Fixnum-or-Bignum from an integer-valued double */
 
-static RESULT korb_m_int_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; VALUE selfv = VALUE_REF_GET(self);
+static RESULT korb_m_int_abs(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)a; korb_value selfv = KORB_REF_GET(self);
     if (KORB_BIGNUM_P(selfv)) return korb_mp_sgn(VAL2BIG(selfv)->z) < 0 ? korb_big_neg(c, slots, selfv) : RESULT_OK(selfv);
     korb_sword_t n = FIX2LONG(selfv);
     if (n >= 0) return RESULT_OK(selfv);
@@ -13,66 +13,66 @@ static RESULT korb_m_int_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 /* unary minus `-@` — also the dispatch target node_neg deopts to when a basic
  * op has been redefined (so a redefined Integer#-@ is honored). */
-static RESULT korb_m_int_uminus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; VALUE selfv = VALUE_REF_GET(self);
+static RESULT korb_m_int_uminus(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)a; korb_value selfv = KORB_REF_GET(self);
     if (KORB_BIGNUM_P(selfv)) return korb_big_neg(c, slots, selfv);
     korb_sword_t n = -FIX2LONG(selfv);
     if (UNLIKELY(!FIXABLE(n))) return korb_big_neg(c, slots, selfv);
     return RESULT_OK(LONG2FIX(n));
 }
-static RESULT korb_m_int_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; VALUE selfv = VALUE_REF_GET(self);
+static RESULT korb_m_int_succ(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)a; korb_value selfv = KORB_REF_GET(self);
     if (KORB_BIGNUM_P(selfv)) return korb_int_arith(c, slots, selfv, LONG2FIX(1), 0, 0);
     korb_sword_t n; if (__builtin_add_overflow(FIX2LONG(selfv), (korb_sword_t)1, &n) || !FIXABLE(n)) return korb_int_arith(c, slots, selfv, LONG2FIX(1), 0, 0);
     return RESULT_OK(LONG2FIX(n));
 }
-static RESULT korb_m_int_pred(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; VALUE selfv = VALUE_REF_GET(self);
+static RESULT korb_m_int_pred(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)a; korb_value selfv = KORB_REF_GET(self);
     if (KORB_BIGNUM_P(selfv)) return korb_int_arith(c, slots, selfv, LONG2FIX(1), 1, 0);
     korb_sword_t n; if (__builtin_sub_overflow(FIX2LONG(selfv), (korb_sword_t)1, &n) || !FIXABLE(n)) return korb_int_arith(c, slots, selfv, LONG2FIX(1), 1, 0);
     return RESULT_OK(LONG2FIX(n));
 }
-static RESULT korb_m_int_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(FIXNUM_P(VALUE_REF_GET(self)) && FIX2LONG(VALUE_REF_GET(self)) == 0 ? KORB_TRUE : KORB_FALSE); }
-static RESULT korb_m_int_nonzero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK((FIXNUM_P(VALUE_REF_GET(self)) && FIX2LONG(VALUE_REF_GET(self)) == 0) ? KORB_NIL : VALUE_REF_GET(self)); }
-static RESULT korb_m_int_even(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a; VALUE v = VALUE_REF_GET(self);
+static RESULT korb_m_int_zero(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)a; return RESULT_OK(FIXNUM_P(KORB_REF_GET(self)) && FIX2LONG(KORB_REF_GET(self)) == 0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_int_nonzero(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)a; return RESULT_OK((FIXNUM_P(KORB_REF_GET(self)) && FIX2LONG(KORB_REF_GET(self)) == 0) ? KORB_NIL : KORB_REF_GET(self)); }
+static RESULT korb_m_int_even(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)c;(void)slots;(void)a; korb_value v = KORB_REF_GET(self);
     if (KORB_BIGNUM_P(v)) return RESULT_OK(korb_mp_even_p(VAL2BIG(v)->z) ? KORB_TRUE : KORB_FALSE);
     return RESULT_OK((FIX2LONG(v) & 1) == 0 ? KORB_TRUE : KORB_FALSE);
 }
-static RESULT korb_m_int_odd (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a; VALUE v = VALUE_REF_GET(self);
+static RESULT korb_m_int_odd (CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)c;(void)slots;(void)a; korb_value v = KORB_REF_GET(self);
     if (KORB_BIGNUM_P(v)) return RESULT_OK(korb_mp_odd_p(VAL2BIG(v)->z) ? KORB_TRUE : KORB_FALSE);
     return RESULT_OK((FIX2LONG(v) & 1) != 0 ? KORB_TRUE : KORB_FALSE);
 }
-static RESULT korb_m_int_pos (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a; VALUE v = VALUE_REF_GET(self);
+static RESULT korb_m_int_pos (CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)c;(void)slots;(void)a; korb_value v = KORB_REF_GET(self);
     if (KORB_BIGNUM_P(v)) return RESULT_OK(korb_mp_sgn(VAL2BIG(v)->z) > 0 ? KORB_TRUE : KORB_FALSE);
     return RESULT_OK(FIX2LONG(v) > 0 ? KORB_TRUE : KORB_FALSE);
 }
-static RESULT korb_m_int_neg (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a; VALUE v = VALUE_REF_GET(self);
+static RESULT korb_m_int_neg (CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)c;(void)slots;(void)a; korb_value v = KORB_REF_GET(self);
     if (KORB_BIGNUM_P(v)) return RESULT_OK(korb_mp_sgn(VAL2BIG(v)->z) < 0 ? KORB_TRUE : KORB_FALSE);
     return RESULT_OK(FIX2LONG(v) < 0 ? KORB_TRUE : KORB_FALSE);
 }
-static RESULT korb_m_int_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
-static RESULT korb_m_true_lit (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
+static RESULT korb_m_int_self(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)a; return RESULT_OK(KORB_REF_GET(self)); }
+static RESULT korb_m_true_lit (CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
 /* boolean logical ops (true & | ^ / false&nil share & | ^). */
-static RESULT korb_m_bool_true_and(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self; VALUE o = VALUE_SLICE_GET(a, 0); return RESULT_OK((o != KORB_NIL && o != KORB_FALSE) ? KORB_TRUE : KORB_FALSE); }
-static RESULT korb_m_bool_true_or(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
-static RESULT korb_m_bool_true_xor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self; VALUE o = VALUE_SLICE_GET(a, 0); return RESULT_OK((o != KORB_NIL && o != KORB_FALSE) ? KORB_FALSE : KORB_TRUE); }
-static RESULT korb_m_bool_false_and(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a){ (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
-static RESULT korb_m_bool_false_or(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self; VALUE o = VALUE_SLICE_GET(a, 0); return RESULT_OK((o != KORB_NIL && o != KORB_FALSE) ? KORB_TRUE : KORB_FALSE); }
-static RESULT korb_m_int_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_bool_true_and(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)self; korb_value o = KORB_SLICE_GET(a, 0); return RESULT_OK((o != KORB_NIL && o != KORB_FALSE) ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_bool_true_or(CTX *c, korb_value *slots, korb_ref self, korb_slice a)  { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
+static RESULT korb_m_bool_true_xor(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)self; korb_value o = KORB_SLICE_GET(a, 0); return RESULT_OK((o != KORB_NIL && o != KORB_FALSE) ? KORB_FALSE : KORB_TRUE); }
+static RESULT korb_m_bool_false_and(CTX *c, korb_value *slots, korb_ref self, korb_slice a){ (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
+static RESULT korb_m_bool_false_or(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)self; korb_value o = KORB_SLICE_GET(a, 0); return RESULT_OK((o != KORB_NIL && o != KORB_FALSE) ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_int_to_s(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     int base = 10;
-    if (VALUE_SLICE_LEN(a) >= 1) {
-        VALUE b = VALUE_SLICE_GET(a, 0);
+    if (KORB_SLICE_LEN(a) >= 1) {
+        korb_value b = KORB_SLICE_GET(a, 0);
         if (!FIXNUM_P(b)) return korb_raise_no_int(c, slots, b);
         base = (int)FIX2LONG(b);
         if (base < 2 || base > 36) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %d", base);
     }
     /* CRuby: the digits are always US-ASCII, whatever default_internal is */
-    if (KORB_BIGNUM_P(VALUE_REF_GET(self))) {
-        char *s = korb_mp_get_str(NULL, base, VAL2BIG(VALUE_REF_GET(self))->z);
+    if (KORB_BIGNUM_P(KORB_REF_GET(self))) {
+        char *s = korb_mp_get_str(NULL, base, VAL2BIG(KORB_REF_GET(self))->z);
         RESULT r = korb_str_new(c, slots, s, (uint32_t)strlen(s));
         free(s);
         if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_USASCII);
@@ -80,22 +80,22 @@ static RESULT korb_m_int_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     char buf[80];
     uint32_t len = korb_fmt_int(SELF_INT, base, buf);
-    VALUE s = UNWRAP(korb_str_new(c, slots, buf, len));
+    korb_value s = UNWRAP(korb_str_new(c, slots, buf, len));
     KORB_STR_ENC_SET(s, KORB_ENC_USASCII);
     return RESULT_OK(s);
 }
-static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (UNLIKELY(KORB_BIGNUM_P(VALUE_REF_GET(self))))          /* CRuby: "bignum out of char range" */
+static RESULT korb_m_int_chr(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    if (UNLIKELY(KORB_BIGNUM_P(KORB_REF_GET(self))))          /* CRuby: "bignum out of char range" */
         return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum out of char range");
     const korb_sword_t n = SELF_INT;
     /* optional Encoding arg: US-ASCII (0..127 byte), ASCII-8BIT/BINARY (0..255
      * byte), UTF-8 (codepoint → 1..4 UTF-8 bytes).  No arg → ASCII-8BIT byte. */
     int kind = 0;   /* 0 = ascii-8bit byte, 1 = us-ascii byte, 2 = utf-8 */
     uint32_t want_enc = UINT32_MAX;                            /* explicit encoding to tag the result with */
-    if (VALUE_SLICE_LEN(a) == 0) {
+    if (KORB_SLICE_LEN(a) == 0) {
         /* no arg: Encoding.default_internal (when set) decides, else the plain
          * 0..255 byte rule below */
-        const VALUE encm = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
+        const korb_value encm = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
         if (KORB_CLASS_P(encm)) {
             slots[0] = encm;
             RESULT di = korb_send_impl(c, slots + 1, korb_intern(c->vm, "default_internal", 16), 0, 0, NULL, NULL, NULL);
@@ -118,8 +118,8 @@ static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             }
         }
     }
-    if (VALUE_SLICE_LEN(a) >= 1) {
-        slots[0] = VALUE_SLICE_GET(a, 0);
+    if (KORB_SLICE_LEN(a) >= 1) {
+        slots[0] = KORB_SLICE_GET(a, 0);
         RESULT nr;
         if (KORB_STRING_P(slots[0])) {                /* encoding name given as a String ("utf-8") */
             nr = RESULT_OK(slots[0]);
@@ -165,7 +165,7 @@ static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         /* With an explicit Encoding the result carries it (US-ASCII / ASCII-8BIT);
          * with no argument CRuby picks US-ASCII for 0..127, else ASCII-8BIT. */
         const uint32_t enc = (want_enc != UINT32_MAX) ? want_enc
-            : (VALUE_SLICE_LEN(a) >= 1
+            : (KORB_SLICE_LEN(a) >= 1
                  ? ((kind == 1) ? KORB_ENC_USASCII : KORB_ENC_BINARY)
                  : ((n < 0x80) ? KORB_ENC_USASCII : KORB_ENC_BINARY));
         KORB_STR_ENC_SET(r.value, enc);
@@ -194,9 +194,9 @@ static korb_sword_t korb_int_gcd(korb_sword_t a, korb_sword_t b) {
 
 static double korb_cospi(double x);
 static double korb_sinpi(double x);
-static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE selfv = VALUE_REF_GET(self);
-    VALUE ev = VALUE_SLICE_GET(a, 0);
+static RESULT korb_m_int_pow(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    korb_value selfv = KORB_REF_GET(self);
+    korb_value ev = KORB_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(ev)) {                            /* Integer ** Float → Float (Complex if neg base) */
         double base; (void)korb_num_to_d(selfv, &base);
         double e = korb_float_val(ev);
@@ -234,8 +234,8 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (KORB_OBJECT_P(ev) || KORB_COMPLEX_P(ev)) { bool h; RESULT cr = korb_try_coerce(c, slots, selfv, &ev, "**", 0, &h); if (h) return cr; }   /* obj#coerce → a ** b */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, ev));
     }
-    if (VALUE_SLICE_LEN(a) >= 2 && !(FIXNUM_P(selfv) && FIXNUM_P(ev) && FIXNUM_P(VALUE_SLICE_GET(a, 1)))) {
-        VALUE mv = VALUE_SLICE_GET(a, 1);              /* pow(exp, mod) with a Bignum operand → GMP modular exponentiation */
+    if (KORB_SLICE_LEN(a) >= 2 && !(FIXNUM_P(selfv) && FIXNUM_P(ev) && FIXNUM_P(KORB_SLICE_GET(a, 1)))) {
+        korb_value mv = KORB_SLICE_GET(a, 1);              /* pow(exp, mod) with a Bignum operand → GMP modular exponentiation */
         if (UNLIKELY(!KORB_INTEGER_P(mv)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "Integer#pow() 2nd argument not allowed unless all arguments are integers");
         korb_mp_t zm; korb_to_mpz(mv, zm);
@@ -249,12 +249,12 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         korb_mp_clear(zb); korb_mp_clear(ze); korb_mp_clear(zm); korb_mp_clear(zr);
         return out;
     }
-    if (VALUE_SLICE_LEN(a) < 2 || !FIXNUM_P(selfv) || !FIXNUM_P(ev))   /* plain pow (incl. overflow/bignum) */
+    if (KORB_SLICE_LEN(a) < 2 || !FIXNUM_P(selfv) || !FIXNUM_P(ev))   /* plain pow (incl. overflow/bignum) */
         return korb_int_pow(c, slots, selfv, ev, 0);
     korb_sword_t base = FIX2LONG(selfv);
     korb_sword_t exp = FIX2LONG(ev);
-    if (VALUE_SLICE_LEN(a) >= 2) {                    /* pow(exp, mod): modular exponentiation */
-        VALUE mv = VALUE_SLICE_GET(a, 1);
+    if (KORB_SLICE_LEN(a) >= 2) {                    /* pow(exp, mod): modular exponentiation */
+        korb_value mv = KORB_SLICE_GET(a, 1);
         if (UNLIKELY(!FIXNUM_P(mv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, mv));
         korb_sword_t mod = FIX2LONG(mv);
         if (UNLIKELY(mod == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
@@ -291,10 +291,10 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 
 /* floored float modulo (sign follows divisor) — for Integer op Float. */
-static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE bv = VALUE_SLICE_GET(a, 0);
+static RESULT korb_m_int_divmod(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    korb_value bv = KORB_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(bv)) {                            /* Integer#divmod(Float) → [Integer floor div, Float mod] */
-        double f = korb_float_val(bv), s; korb_num_to_d(VALUE_REF_GET(self), &s);
+        double f = korb_float_val(bv), s; korb_num_to_d(KORB_REF_GET(self), &s);
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
         if (UNLIKELY(isnan(f))) return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, "NaN");
         const double q = floor(s / f);
@@ -303,48 +303,48 @@ static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         else { korb_mp_t zq; korb_mp_init(zq); korb_mp_set_d(zq, q); slots[0] = UNWRAP(korb_big_from_mpz(c, slots, zq)); korb_mp_clear(zq); }   /* quotient exceeds Fixnum range */
         slots[1] = UNWRAP(korb_float_new(c, slots + 1, korb_float_fmod(s, f)));
         slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
-        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
-        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+        CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[2]), slots[0]));
+        CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[2]), slots[1]));
         return RESULT_OK(slots[2]);
     }
-    if (KORB_RATIONAL_P(bv)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), bv, 2);
+    if (KORB_RATIONAL_P(bv)) return korb_int_rat_divmod(c, slots, KORB_REF_GET(self), bv, 2);
     if (UNLIKELY(!KORB_INTEGER_P(bv))) {                  /* a, b = bv.coerce(self); a.divmod(b) */
-        if (KORB_OBJECT_P(bv)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &bv, "divmod", 0, &h); if (h) return cr; }
+        if (KORB_OBJECT_P(bv)) { bool h; RESULT cr = korb_try_coerce(c, slots, KORB_REF_GET(self), &bv, "divmod", 0, &h); if (h) return cr; }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, bv));
     }
-    if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || !FIXNUM_P(bv)))   /* Bignum operand/self → GMP */
-        return korb_int_intdiv(c, slots, VALUE_REF_GET(self), bv, 2);
+    if (UNLIKELY(!FIXNUM_P(KORB_REF_GET(self)) || !FIXNUM_P(bv)))   /* Bignum operand/self → GMP */
+        return korb_int_intdiv(c, slots, KORB_REF_GET(self), bv, 2);
     korb_sword_t b = FIX2LONG(bv);
     if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
     korb_sword_t av = SELF_INT;
-    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 2)));
+    korb_ref dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 2)));
     CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(korb_int_fdiv(av, b))));
     CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(korb_int_fmod(av, b))));
-    return RESULT_OK(VALUE_REF_GET(dst));
+    return RESULT_OK(KORB_REF_GET(dst));
 }
 
-static RESULT korb_m_int_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE bv = VALUE_SLICE_GET(a, 0);
+static RESULT korb_m_int_div(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    korb_value bv = KORB_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(bv)) {                            /* Integer#div(Float) → floor(self/f) Integer */
-        double f = korb_float_val(bv), s; korb_num_to_d(VALUE_REF_GET(self), &s);
+        double f = korb_float_val(bv), s; korb_num_to_d(KORB_REF_GET(self), &s);
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
         return korb_flt_toint(c, slots, s / f, 0);    /* floor → Fixnum or Bignum (a huge quotient overflows the word) */
     }
-    if (KORB_RATIONAL_P(bv)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), bv, 0);
+    if (KORB_RATIONAL_P(bv)) return korb_int_rat_divmod(c, slots, KORB_REF_GET(self), bv, 0);
     if (UNLIKELY(!KORB_INTEGER_P(bv))) {                  /* a, b = bv.coerce(self); a.div(b) */
-        if (KORB_OBJECT_P(bv)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &bv, "div", 0, &h); if (h) return cr; }
+        if (KORB_OBJECT_P(bv)) { bool h; RESULT cr = korb_try_coerce(c, slots, KORB_REF_GET(self), &bv, "div", 0, &h); if (h) return cr; }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, bv));
     }
-    if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || !FIXNUM_P(bv)))   /* Bignum operand/self → GMP */
-        return korb_int_intdiv(c, slots, VALUE_REF_GET(self), bv, 0);
+    if (UNLIKELY(!FIXNUM_P(KORB_REF_GET(self)) || !FIXNUM_P(bv)))   /* Bignum operand/self → GMP */
+        return korb_int_intdiv(c, slots, KORB_REF_GET(self), bv, 0);
     korb_sword_t b = FIX2LONG(bv);
     if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
     return RESULT_OK(LONG2FIX(korb_int_fdiv(SELF_INT, b)));
 }
 
 
-static RESULT korb_m_int_gcd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const VALUE bv = VALUE_SLICE_GET(a, 0), sv = VALUE_REF_GET(self);
+static RESULT korb_m_int_gcd(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    const korb_value bv = KORB_SLICE_GET(a, 0), sv = KORB_REF_GET(self);
     if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, bv));
     if (FIXNUM_P(sv) && FIXNUM_P(bv)) {
         korb_sword_t g = korb_int_gcd(FIX2LONG(sv), FIX2LONG(bv));
@@ -359,8 +359,8 @@ static RESULT korb_m_int_gcd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
 }
 
-static RESULT korb_m_int_lcm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE bv = VALUE_SLICE_GET(a, 0), sv = VALUE_REF_GET(self);
+static RESULT korb_m_int_lcm(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    korb_value bv = KORB_SLICE_GET(a, 0), sv = KORB_REF_GET(self);
     if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, bv));
     if (FIXNUM_P(sv) && FIXNUM_P(bv)) {
         korb_sword_t av = FIX2LONG(sv), b = FIX2LONG(bv);
@@ -380,9 +380,9 @@ static RESULT korb_m_int_lcm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
 }
 
-static RESULT korb_m_int_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const VALUE sv = VALUE_REF_GET(self);
-    VALUE bv = VALUE_SLICE_GET(a, 0);   /* korb_try_coerce writes back a moved bv */
+static RESULT korb_m_int_fdiv(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    const korb_value sv = KORB_REF_GET(self);
+    korb_value bv = KORB_SLICE_GET(a, 0);   /* korb_try_coerce writes back a moved bv */
     /* Integer#fdiv(Integer) when a plain double/double would lose precision (a
      * Bignum operand, or a Fixnum past 2^53): divide as an exact rational so the
      * result is correctly rounded — handles subnormals (1.fdiv(10**323)) and
@@ -426,24 +426,24 @@ static RESULT korb_m_int_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     double o;
     if (UNLIKELY(!korb_num_to_d(bv, &o))) {               /* non-numeric arg → the coerce protocol (a,b = arg.coerce(self); a.fdiv(b)) */
         if (KORB_OBJECT_P(bv)) {
-            bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), &bv, "fdiv", 0, &h);
+            bool h; RESULT cr = korb_try_coerce(c, slots, KORB_REF_GET(self), &bv, "fdiv", 0, &h);
             if (h) return cr;
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, bv));
     }
     return korb_float_new(c, slots, s / o);
 }
-static RESULT korb_m_int_ceildiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE bv = VALUE_SLICE_GET(a, 0);
+static RESULT korb_m_int_ceildiv(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    korb_value bv = KORB_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(bv)) {                            /* Integer#ceildiv(Float) → ceil(self/f) Integer */
         double f = korb_float_val(bv), s;
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
-        (void)korb_num_to_d(VALUE_REF_GET(self), &s);  /* works for Bignum self too */
+        (void)korb_num_to_d(KORB_REF_GET(self), &s);  /* works for Bignum self too */
         return RESULT_OK(LONG2FIX((korb_sword_t)ceil(s / f)));
     }
     if (KORB_RATIONAL_P(bv)) {                         /* Integer#ceildiv(Rational p/q) → ceil(self*q / p), exact */
         korb_mp_t za, zp, zq, prod, res;
-        korb_to_mpz(VALUE_REF_GET(self), za); korb_to_mpz(VAL2RAT(bv)->num, zp); korb_to_mpz(VAL2RAT(bv)->den, zq);
+        korb_to_mpz(KORB_REF_GET(self), za); korb_to_mpz(VAL2RAT(bv)->num, zp); korb_to_mpz(VAL2RAT(bv)->den, zq);
         if (UNLIKELY(korb_mp_sgn(zp) == 0)) { korb_mp_clear(za); korb_mp_clear(zp); korb_mp_clear(zq); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
         korb_mp_init(prod); korb_mp_init(res); korb_mp_mul(prod, za, zq);   /* den q > 0 (normalized), so cdiv toward +inf is ceil */
         korb_mp_cdiv_q(res, prod, zp);
@@ -452,9 +452,9 @@ static RESULT korb_m_int_ceildiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         return out;
     }
     if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_coerce_name(c, bv));
-    if (KORB_BIGNUM_P(VALUE_REF_GET(self)) || KORB_BIGNUM_P(bv)) {   /* ceiling division in GMP (no korb_sword_t overflow) */
+    if (KORB_BIGNUM_P(KORB_REF_GET(self)) || KORB_BIGNUM_P(bv)) {   /* ceiling division in GMP (no korb_sword_t overflow) */
         korb_mp_t za, zb, zq;
-        korb_to_mpz(VALUE_REF_GET(self), za); korb_to_mpz(bv, zb);
+        korb_to_mpz(KORB_REF_GET(self), za); korb_to_mpz(bv, zb);
         if (UNLIKELY(korb_mp_sgn(zb) == 0)) { korb_mp_clear(za); korb_mp_clear(zb); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
         korb_mp_init(zq); korb_mp_cdiv_q(zq, za, zb);
         RESULT out = korb_big_from_mpz(c, slots, zq);
@@ -466,10 +466,10 @@ static RESULT korb_m_int_ceildiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(LONG2FIX(-korb_int_fdiv(-SELF_INT, b)));   /* ceil = -floor(-a/b) */
 }
 /* coerce(other) → [other, self] both as Integer, or both Float if other is Float */
-static RESULT korb_m_int_coerce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const VALUE o = VALUE_SLICE_GET(a, 0);
+static RESULT korb_m_int_coerce(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    const korb_value o = KORB_SLICE_GET(a, 0);
     if (FIXNUM_P(o) || KORB_BIGNUM_P(o)) {                /* Integer → [other, self] */
-        slots[0] = o; slots[1] = VALUE_REF_GET(self);
+        slots[0] = o; slots[1] = KORB_REF_GET(self);
     } else {                                              /* else (incl. Rational) → [Float(other), Float(self)] */
         double od;
         if (korb_num_to_d(o, &od)) {                     /* Float/Rational → its double */
@@ -488,17 +488,17 @@ static RESULT korb_m_int_coerce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         } else {
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't coerce %s into Integer", korb_type_name(o));
         }
-        double sd = 0; (void)korb_num_to_d(VALUE_REF_GET(self), &sd);
+        double sd = 0; (void)korb_num_to_d(KORB_REF_GET(self), &sd);
         slots[1] = UNWRAP(korb_float_new(c, slots + 1, sd));
     }
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
-    VALUE_REF dst = VALUE_REF_AT(&slots[2]);
+    korb_ref dst = KORB_REF_AT(&slots[2]);
     CHECK(korb_ary_push_val(c, slots + 3, dst, slots[0]));
     CHECK(korb_ary_push_val(c, slots + 3, dst, slots[1]));
-    return RESULT_OK(VALUE_REF_GET(dst));
+    return RESULT_OK(KORB_REF_GET(dst));
 }
-static RESULT korb_m_int_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE selfv = VALUE_REF_GET(self), o = VALUE_SLICE_GET(a, 0);
+static RESULT korb_m_int_cmp(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    korb_value selfv = KORB_REF_GET(self), o = KORB_SLICE_GET(a, 0);
     if (KORB_INTEGER_P(o)) return RESULT_OK(LONG2FIX(korb_int_cmp(selfv, o)));   /* exact */
     double y, x;
     if (!korb_num_to_d(o, &y)) {                            /* coercible object → a, b = o.coerce(self); a <=> b */
@@ -512,45 +512,45 @@ static RESULT korb_m_int_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     (void)korb_num_to_d(selfv, &x);
     return RESULT_OK(LONG2FIX((x > y) - (x < y)));
 }
-static RESULT korb_m_int_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; double x; (void)korb_num_to_d(VALUE_REF_GET(self), &x); return korb_float_new(c, slots, x);
+static RESULT korb_m_int_to_f(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)a; double x; (void)korb_num_to_d(KORB_REF_GET(self), &x); return korb_float_new(c, slots, x);
 }
-static RESULT korb_m_int_quo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 3);   /* exact division → Rational/Float */
+static RESULT korb_m_int_quo(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    return korb_rat_arith(c, slots, KORB_REF_GET(self), KORB_SLICE_GET(a, 0), 3);   /* exact division → Rational/Float */
 }
-static RESULT korb_m_int_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; return korb_rat_new_v(c, slots, VALUE_REF_GET(self), LONG2FIX(1));   /* VALUE-based: Bignum-safe */
+static RESULT korb_m_int_to_r(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)a; return korb_rat_new_v(c, slots, KORB_REF_GET(self), LONG2FIX(1));   /* korb_value-based: Bignum-safe */
 }
 /* Integer#rationalize([eps]) — exact for an integer; eps is ignored, but a 2nd arg is an error. */
-static RESULT korb_m_int_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)VALUE_SLICE_LEN(a));
-    return korb_rat_new_v(c, slots, VALUE_REF_GET(self), LONG2FIX(1));
+static RESULT korb_m_int_rationalize(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    if (UNLIKELY(KORB_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)KORB_SLICE_LEN(a));
+    return korb_rat_new_v(c, slots, KORB_REF_GET(self), LONG2FIX(1));
 }
-static RESULT korb_m_int_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
-static RESULT korb_m_int_denominator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(1)); }
+static RESULT korb_m_int_numerator(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)a; return RESULT_OK(KORB_REF_GET(self)); }
+static RESULT korb_m_int_denominator(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(1)); }
 /* real-number helpers shared by Integer/Float/Rational: real=self, imaginary=0. */
-static RESULT korb_m_num_real(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
-static RESULT korb_m_num_imag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(0)); }
+static RESULT korb_m_num_real(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)a; return RESULT_OK(KORB_REF_GET(self)); }
+static RESULT korb_m_num_imag(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(0)); }
 /* angle/arg/phase of a real: 0 (Integer) if >= 0, Math::PI (Float) if < 0. */
-static RESULT korb_m_num_angle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_num_angle(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a; double d;
-    if (!korb_num_to_d(VALUE_REF_GET(self), &d)) return RESULT_OK(LONG2FIX(0));
+    if (!korb_num_to_d(KORB_REF_GET(self), &d)) return RESULT_OK(LONG2FIX(0));
     if (d < 0) return korb_float_new(c, slots, 3.141592653589793);
     return RESULT_OK(LONG2FIX(0));
 }
-static RESULT korb_m_num_real_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
-static RESULT korb_m_lit_false(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
-static RESULT korb_m_lit_nil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_NIL); }
+static RESULT korb_m_num_real_p(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
+static RESULT korb_m_lit_false(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
+static RESULT korb_m_lit_nil(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_NIL); }
 /* `caller` / `caller_locations`: koruby keeps no walkable file:line call stack, so
  * return an empty Array (as at top level) — unblocks call sites; the backtrace
  * CONTENT specs still fail.  Real backtraces need per-frame line tracking. */
-static RESULT korb_m_empty_ary(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_ary_new(c, slots, 0); }
+static RESULT korb_m_empty_ary(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)self;(void)a; return korb_ary_new(c, slots, 0); }
 /* to_c on a real: Complex(self, 0). */
-static RESULT korb_m_num_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_cpx_new(c, slots, VALUE_REF_GET(self), LONG2FIX(0)); }
+static RESULT korb_m_num_to_c(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)a; return korb_cpx_new(c, slots, KORB_REF_GET(self), LONG2FIX(0)); }
 /* polar of a real: [magnitude, angle]. magnitude=abs(self) (same class), angle per korb_m_num_angle. */
-static RESULT korb_m_num_polar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_num_polar(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a; double d;
-    VALUE sv = VALUE_REF_GET(self);
+    korb_value sv = KORB_REF_GET(self);
     if (!korb_num_to_d(sv, &d)) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
     /* slots[0]=magnitude (abs, class-preserving), slots[1]=angle, slots[2]=result array */
     if (FIXNUM_P(sv)) { korb_sword_t n = FIX2LONG(sv); slots[0] = LONG2FIX(n < 0 ? -n : n); }
@@ -558,23 +558,23 @@ static RESULT korb_m_num_polar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     else { slots[0] = UNWRAP(korb_float_new(c, slots, fabs(d))); }
     slots[1] = d < 0 ? UNWRAP(korb_float_new(c, slots + 1, 3.141592653589793)) : LONG2FIX(0);
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
-    VALUE_REF arr = VALUE_REF_AT(slots + 2);
+    korb_ref arr = KORB_REF_AT(slots + 2);
     CHECK(korb_ary_push_val(c, slots + 3, arr, slots[0]));
     CHECK(korb_ary_push_val(c, slots + 3, arr, slots[1]));
-    return RESULT_OK(VALUE_REF_GET(arr));
+    return RESULT_OK(KORB_REF_GET(arr));
 }
 /* rect/rectangular of a real: [self, 0]. */
-static RESULT korb_m_num_rect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_num_rect(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
-    slots[0] = VALUE_REF_GET(self);
+    slots[0] = KORB_REF_GET(self);
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
-    VALUE_REF arr = VALUE_REF_AT(slots + 1);
+    korb_ref arr = KORB_REF_AT(slots + 1);
     CHECK(korb_ary_push_val(c, slots + 2, arr, slots[0]));
     CHECK(korb_ary_push_val(c, slots + 2, arr, LONG2FIX(0)));
-    return RESULT_OK(VALUE_REF_GET(arr));
+    return RESULT_OK(KORB_REF_GET(arr));
 }
 /* decompose a finite double into exact num/den (reduced); den>0. */
-static RESULT korb_flt_to_rat(CTX *c, VALUE *slots, double d) {
+static RESULT korb_flt_to_rat(CTX *c, korb_value *slots, double d) {
     if (UNLIKELY(!isfinite(d))) return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, "%s", isnan(d) ? "NaN" : (d < 0 ? "-Infinity" : "Infinity"));
     if (d == 0.0) return korb_rat_new(c, slots, 0, 1);
     int e; double m = frexp(d, &e);                    /* d = m * 2^e, m in [0.5,1) */

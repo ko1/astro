@@ -15,7 +15,7 @@
 //   + Lisp-2 slide compact tenured.  Same algorithm as gc_mark_compact.c.
 //
 // Write barrier:
-//   - User write of young VALUE into tenured: aro_gc_store pushes holder to remset.
+//   - User write of young ARO_VALUE into tenured: aro_gc_store pushes holder to remset.
 //   - GC promote: Cheney scan in minor detects tenured→young edges, pushes.
 
 #include <stdio.h>
@@ -389,7 +389,7 @@ static void
 forward_edge_minor(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
+    ARO_VALUE v = (ARO_VALUE)*slot;
     if (AROH_IS_GC_OBJECT(v)) {
         void *new = forward_payload_value(gc, (void *)v);
         *slot = new;
@@ -403,7 +403,7 @@ static void
 forward_edge_promote(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
+    ARO_VALUE v = (ARO_VALUE)*slot;
     if (AROH_IS_GC_OBJECT(v)) *slot = forward_payload_value(gc, (void *)v);
 }
 
@@ -548,7 +548,7 @@ gray_push(ASTroGC *gc, AroObjectHeader *h)
 }
 
 static void
-mark_value_major(ASTroGC *gc, VALUE v)
+mark_value_major(ASTroGC *gc, ARO_VALUE v)
 {
     if (!AROH_IS_GC_OBJECT(v)) return;
     AroObjectHeader *h = (AroObjectHeader *)v;
@@ -560,7 +560,7 @@ mark_value_major(ASTroGC *gc, VALUE v)
 static void
 mark_edge_major(void *ctx, void **slot)
 {
-    mark_value_major((ASTroGC *)ctx, (VALUE)*slot);
+    mark_value_major((ASTroGC *)ctx, (ARO_VALUE)*slot);
 }
 
 static void
@@ -586,7 +586,7 @@ static void
 fwd_edge_compact(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
+    ARO_VALUE v = (ARO_VALUE)*slot;
     if (AROH_IS_GC_OBJECT(v)) *slot = fwd_payload_compact(gc, (void *)v);
 }
 

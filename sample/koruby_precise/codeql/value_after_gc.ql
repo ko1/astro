@@ -1,9 +1,9 @@
 /**
- * @name Heap VALUE held in a local across a may-GC call
- * @description A VALUE produced by a may-GC call (potentially a movable heap
+ * @name Heap korb_value held in a local across a may-GC call
+ * @description A korb_value produced by a may-GC call (potentially a movable heap
  *              object) is held in a plain C local, another may-GC call runs, then
  *              the SAME local is used.  Moving GC updates rooted slots (slots[],
- *              VALUE_REF cells) but NOT a bare local, so the local is stale.  The
+ *              korb_ref cells) but NOT a bare local, so the local is stale.  The
  *              safe idiom stages into slots[] (an array element, not a
  *              StackVariable) and re-reads it, which this query does not flag.
  *              SSA-precise: a re-read (v = slots[i] again) is a new definition.
@@ -28,15 +28,15 @@ predicate mayGcNode(ControlFlowNode n) {
   exists(Call c | c = n | mayGcFn(c.getTarget()) or not exists(c.getTarget()))
 }
 
-/** A call returning a fresh, potentially-movable heap VALUE (a may-GC fn → VALUE). */
+/** A call returning a fresh, potentially-movable heap korb_value (a may-GC fn → korb_value). */
 class HeapValueExpr extends FunctionCall {
   HeapValueExpr() {
     mayGcFn(this.getTarget()) and
-    this.getType().getName() = "VALUE"
+    this.getType().getName() = "korb_value"
   }
 }
 
-/** The VALUE of `b` flows to `e` via value-preserving steps (conversions, local alias). */
+/** The korb_value of `b` flows to `e` via value-preserving steps (conversions, local alias). */
 predicate valueFlowsTo(Expr e, HeapValueExpr b) {
   e = b
   or
@@ -44,14 +44,14 @@ predicate valueFlowsTo(Expr e, HeapValueExpr b) {
   or
   exists(SsaDefinition d2, StackVariable v2 |
     e = d2.getAUse(v2) and
-    v2.getType().getName() = "VALUE" and
+    v2.getType().getName() = "korb_value" and
     valueFlowsTo(d2.getDefiningValue(v2), b)
   )
 }
 
-/** SSA def `v = <heap VALUE>` — a movable VALUE held in local `v`. */
+/** SSA def `v = <heap korb_value>` — a movable korb_value held in local `v`. */
 predicate valueDef(SsaDefinition def, StackVariable v, HeapValueExpr b) {
-  v.getType().getName() = "VALUE" and
+  v.getType().getName() = "korb_value" and
   valueFlowsTo(def.getDefiningValue(v), b)
 }
 
@@ -81,6 +81,6 @@ where
   use = def.getAUse(v) and
   reach(def, v, use, true)
 select use,
-  "heap VALUE (held in '" + v.getName() +
+  "heap korb_value (held in '" + v.getName() +
     "', from $@) used after a may-GC call — stale under moving GC",
   b, "may-gc call"

@@ -21,8 +21,8 @@ enum {
 
 struct kj_state {
     const unsigned char *p, *end;
-    VALUE *stack;              /* rooted slot holding the rvalue stack Array */
-    VALUE *kcache;             /* rooted slot: KJ_KCACHE interned keys (json's key cache), nil = empty */
+    korb_value *stack;              /* rooted slot holding the rvalue stack Array */
+    korb_value *kcache;             /* rooted slot: KJ_KCACHE interned keys (json's key cache), nil = empty */
     uint32_t flags;
     long max_nesting;
     int depth;
@@ -151,7 +151,7 @@ static bool kj_utf8_valid(const unsigned char *p, const size_t n)
 }
 
 /* st->p at the opening quote.  A key becomes an interned String or a Symbol. */
-static RESULT kj_string(CTX *c, VALUE *slots, struct kj_state *const st, const bool is_key)
+static RESULT kj_string(CTX *c, korb_value *slots, struct kj_state *const st, const bool is_key)
 {
     const unsigned char *const s = st->p + 1;
     const unsigned char *q = s;
@@ -185,15 +185,15 @@ static RESULT kj_string(CTX *c, VALUE *slots, struct kj_state *const st, const b
     }
     if (is_key && len <= 64) {                              /* repeated keys skip the fstring table */
         if (*st->kcache == KORB_NIL) {                      /* made at the first key: scalar documents pay nothing */
-            const VALUE kc = UNWRAP(korb_ary_new(c, slots, KJ_KCACHE));
+            const korb_value kc = UNWRAP(korb_ary_new(c, slots, KJ_KCACHE));
             VAL2ARY(kc)->len = KJ_KCACHE;                  /* all nil; the GC visits elements below len only */
             *st->kcache = kc;
         }
         const uint32_t h = ((uint32_t)len * 31u + (unsigned char)bytes[0] * 7u + (unsigned char)bytes[len ? len - 1 : 0]) & (KJ_KCACHE - 1);
-        const VALUE hit = korb_items_data(VAL2ARY(*st->kcache)->items)[h];
+        const korb_value hit = korb_items_data(VAL2ARY(*st->kcache)->items)[h];
         if (KORB_STRING_P(hit) && VAL2STR(hit)->len == len && memcmp(korb_strbuf_data(VAL2STR(hit)->buf), bytes, len) == 0)
             return RESULT_OK(hit);
-        const VALUE k = korb_fstr_get(c, slots, bytes, (uint32_t)len, KORB_ENC_UTF8);
+        const korb_value k = korb_fstr_get(c, slots, bytes, (uint32_t)len, KORB_ENC_UTF8);
         const KorbArray *const kc = VAL2ARY(*st->kcache);   /* re-read: the fstring may have been allocated */
         ARO_STORE(c, kc->items, &korb_items_data(kc->items)[h], k);
         return RESULT_OK(k);
@@ -228,7 +228,7 @@ static size_t kj_digits(struct kj_state *const st, const unsigned char **const p
 
 /* json's json_parse_number + json_decode_float: the same conversions CRuby's json
  * extension makes (Eisel-Lemire up to 18 significant digits), so the doubles agree. */
-static RESULT kj_number(CTX *c, VALUE *slots, struct kj_state *const st)
+static RESULT kj_number(CTX *c, korb_value *slots, struct kj_state *const st)
 {
     const unsigned char *const start = st->p;
     const unsigned char *p = start;
@@ -269,7 +269,7 @@ static RESULT kj_number(CTX *c, VALUE *slots, struct kj_state *const st)
     st->p = p;
     if (integer) {
         if (idigits <= 18) return RESULT_OK(LONG2FIX(neg ? -(long)mantissa : (long)mantissa));
-        VALUE out;
+        korb_value out;
         if (!korb_str_to_int(c, slots, (const char *)start, (uint32_t)(p - start), 10, &out)) return KJ_FAIL(st);
         return RESULT_OK(out);
     }
@@ -297,18 +297,18 @@ static bool kj_keyword(struct kj_state *const st, const char *const w, const siz
     return true;
 }
 
-static void kj_freeze(const VALUE v) { ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_FROZEN; }
+static void kj_freeze(const korb_value v) { ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_FROZEN; }
 
-static RESULT kj_value(CTX *c, VALUE *slots, struct kj_state *st);
+static RESULT kj_value(CTX *c, korb_value *slots, struct kj_state *st);
 
 /* Values of the open containers wait on one rooted Array (json's rvalue stack);
  * a container is made at its exact size once it closes. */
-static RESULT kj_push(CTX *c, VALUE *slots, struct kj_state *const st, const VALUE v)
+static RESULT kj_push(CTX *c, korb_value *slots, struct kj_state *const st, const korb_value v)
 {
-    return korb_ary_push_val(c, slots, VALUE_REF_AT(st->stack), v);
+    return korb_ary_push_val(c, slots, KORB_REF_AT(st->stack), v);
 }
 
-static RESULT kj_array(CTX *c, VALUE *slots, struct kj_state *const st)
+static RESULT kj_array(CTX *c, korb_value *slots, struct kj_state *const st)
 {
     st->p++;                                                /* '[' */
     if (!kj_skip_ws(st)) return KJ_FAIL(st);
@@ -318,7 +318,7 @@ static RESULT kj_array(CTX *c, VALUE *slots, struct kj_state *const st)
     } else {
         if (++st->depth > KJ_MAX_DEPTH || (st->max_nesting != 0 && st->depth > st->max_nesting)) return KJ_FAIL(st);
         for (;;) {
-            const VALUE v = UNWRAP(kj_value(c, slots, st));
+            const korb_value v = UNWRAP(kj_value(c, slots, st));
             if (st->fail) return RESULT_OK(KORB_UNDEF);
             CHECK(kj_push(c, slots, st, v));
             if (!kj_skip_ws(st) || st->p >= st->end) return KJ_FAIL(st);
@@ -346,7 +346,7 @@ static RESULT kj_array(CTX *c, VALUE *slots, struct kj_state *const st)
 }
 
 /* Keys are interned Strings or Symbols, so a duplicate is the same object. */
-static bool kj_keys_unique(const VALUE *const kv, const uint32_t n)
+static bool kj_keys_unique(const korb_value *const kv, const uint32_t n)
 {
     if (n <= 32) {
         for (uint32_t i = 1; i < n; i++)
@@ -356,11 +356,11 @@ static bool kj_keys_unique(const VALUE *const kv, const uint32_t n)
     }
     uint32_t cap = 64;
     while (cap < n * 2) cap *= 2;
-    VALUE *const set = calloc(cap, sizeof(VALUE));
+    korb_value *const set = calloc(cap, sizeof(korb_value));
     if (!set) abort();
     bool uniq = true;
     for (uint32_t i = 0; i < n && uniq; i++) {
-        const VALUE k = kv[2 * i];
+        const korb_value k = kv[2 * i];
         uint32_t h = (uint32_t)((k >> 3) * 0x9E3779B1u) & (cap - 1);
         while (set[h] && set[h] != k) h = (h + 1) & (cap - 1);
         if (set[h] == k) uniq = false;
@@ -370,7 +370,7 @@ static bool kj_keys_unique(const VALUE *const kv, const uint32_t n)
     return uniq;
 }
 
-static RESULT kj_object(CTX *c, VALUE *slots, struct kj_state *const st)
+static RESULT kj_object(CTX *c, korb_value *slots, struct kj_state *const st)
 {
     st->p++;                                                /* '{' */
     if (!kj_skip_ws(st)) return KJ_FAIL(st);
@@ -381,13 +381,13 @@ static RESULT kj_object(CTX *c, VALUE *slots, struct kj_state *const st)
         if (++st->depth > KJ_MAX_DEPTH || (st->max_nesting != 0 && st->depth > st->max_nesting)) return KJ_FAIL(st);
         for (;;) {
             if (st->p >= st->end || *st->p != '"') return KJ_FAIL(st);
-            const VALUE k = UNWRAP(kj_string(c, slots, st, true));
+            const korb_value k = UNWRAP(kj_string(c, slots, st, true));
             if (st->fail) return RESULT_OK(KORB_UNDEF);
             CHECK(kj_push(c, slots, st, k));
             if (!kj_skip_ws(st) || st->p >= st->end || *st->p != ':') return KJ_FAIL(st);
             st->p++;
             if (!kj_skip_ws(st)) return KJ_FAIL(st);
-            const VALUE v = UNWRAP(kj_value(c, slots, st));
+            const korb_value v = UNWRAP(kj_value(c, slots, st));
             if (st->fail) return RESULT_OK(KORB_UNDEF);
             CHECK(kj_push(c, slots, st, v));
             if (!kj_skip_ws(st) || st->p >= st->end) return KJ_FAIL(st);
@@ -407,7 +407,7 @@ static RESULT kj_object(CTX *c, VALUE *slots, struct kj_state *const st)
     const bool uniq = kj_keys_unique(korb_items_data(VAL2ARY(*st->stack)->items) + base, n);
     if (!uniq && !(st->flags & KJ_DUP_KEY)) return KJ_FAIL(st);   /* ParserError: the Ruby port reports it */
     slots[0] = UNWRAP(korb_hash_new(c, slots, n));
-    const VALUE_REF hash = VALUE_REF_AT(&slots[0]);
+    const korb_ref hash = KORB_REF_AT(&slots[0]);
     if (uniq) {                                             /* fill in one go, then index once */
         KorbHash *const h = VAL2HASH(slots[0]);
         const KorbArray *const sa = VAL2ARY(*st->stack);
@@ -417,17 +417,17 @@ static RESULT kj_object(CTX *c, VALUE *slots, struct kj_state *const st)
     } else {                                                /* allow_duplicate_key: the last value wins */
         for (uint32_t i = 0; i < n; i++) {
             slots[1] = korb_items_data(VAL2ARY(*st->stack)->items)[base + 2 * i];
-            const VALUE v = korb_items_data(VAL2ARY(*st->stack)->items)[base + 2 * i + 1];
-            CHECK(korb_hash_set(c, slots + 2, hash, VALUE_REF_AT(&slots[1]), v));
+            const korb_value v = korb_items_data(VAL2ARY(*st->stack)->items)[base + 2 * i + 1];
+            CHECK(korb_hash_set(c, slots + 2, hash, KORB_REF_AT(&slots[1]), v));
         }
     }
     VAL2ARY(*st->stack)->len = base;
-    if (st->flags & KJ_FREEZE) kj_freeze(VALUE_REF_GET(hash));
-    return RESULT_OK(VALUE_REF_GET(hash));
+    if (st->flags & KJ_FREEZE) kj_freeze(KORB_REF_GET(hash));
+    return RESULT_OK(KORB_REF_GET(hash));
 }
 
 /* st->p at the first byte of a value (whitespace already skipped). */
-static RESULT kj_value(CTX *c, VALUE *slots, struct kj_state *const st)
+static RESULT kj_value(CTX *c, korb_value *slots, struct kj_state *const st)
 {
     if (st->p >= st->end) return KJ_FAIL(st);
     switch (*st->p) {
@@ -455,23 +455,23 @@ static RESULT kj_value(CTX *c, VALUE *slots, struct kj_state *const st)
  * parse returns) to say "use the Ruby parser"; that includes a source that is not a
  * UTF-8 / binary String. */
 static RESULT
-korb_bi_json_parse(CTX *c, VALUE *slots, VALUE_SLICE args)
+korb_bi_json_parse(CTX *c, korb_value *slots, korb_slice args)
 {
-    const VALUE fallback = VALUE_SLICE_LEN(args) >= 1 ? VALUE_SLICE_GET(args, 0) : KORB_NIL;
-    if (VALUE_SLICE_LEN(args) != 3 || !KORB_STRING_P(fallback) ||
+    const korb_value fallback = KORB_SLICE_LEN(args) >= 1 ? KORB_SLICE_GET(args, 0) : KORB_NIL;
+    if (KORB_SLICE_LEN(args) != 3 || !KORB_STRING_P(fallback) ||
         (KORB_STR_ENC(fallback) != KORB_ENC_UTF8 && KORB_STR_ENC(fallback) != KORB_ENC_BINARY) ||
         (((const AroObjectHeader *)(uintptr_t)fallback)->flags & KORB_FL_HAS_KLASS) ||
-        !FIXNUM_P(VALUE_SLICE_GET(args, 1)) || !FIXNUM_P(VALUE_SLICE_GET(args, 2)))
+        !FIXNUM_P(KORB_SLICE_GET(args, 1)) || !FIXNUM_P(KORB_SLICE_GET(args, 2)))
         return RESULT_OK(fallback);
-    const KorbString *const src = VAL2STR(VALUE_SLICE_GET(args, 0));
+    const KorbString *const src = VAL2STR(KORB_SLICE_GET(args, 0));
     const size_t n = src->len;
     unsigned char *const copy = malloc(n ? n : 1);
     if (!copy) abort();
     memcpy(copy, korb_strbuf_data(src->buf), n);
     struct kj_state st = {
         .p = copy, .end = copy + n,
-        .flags = (uint32_t)FIX2LONG(VALUE_SLICE_GET(args, 1)),
-        .max_nesting = FIX2LONG(VALUE_SLICE_GET(args, 2)),
+        .flags = (uint32_t)FIX2LONG(KORB_SLICE_GET(args, 1)),
+        .max_nesting = FIX2LONG(KORB_SLICE_GET(args, 2)),
     };
     RESULT r = korb_ary_new(c, slots, 32);
     if (r.state != KORB_NORMAL) { free(copy); return r; }
@@ -488,7 +488,7 @@ korb_bi_json_parse(CTX *c, VALUE *slots, VALUE_SLICE args)
     free(copy);
     free(st.buf);
     if (r.state != KORB_NORMAL) return r;
-    return RESULT_OK(st.fail ? VALUE_SLICE_GET(args, 0) : r.value);   /* re-read: parsing may have moved it */
+    return RESULT_OK(st.fail ? KORB_SLICE_GET(args, 0) : r.value);   /* re-read: parsing may have moved it */
 }
 
 /* ---- generator ------------------------------------------------------------
@@ -607,7 +607,7 @@ static void kjg_long(struct kjg *const g, const long v)
     kjg_put(g, q, (size_t)(e - q));
 }
 
-static void kjg_value(struct kjg *g, VALUE v);
+static void kjg_value(struct kjg *g, korb_value v);
 
 static bool kjg_nest(struct kjg *const g)
 {
@@ -616,7 +616,7 @@ static bool kjg_nest(struct kjg *const g)
     return true;
 }
 
-static void kjg_array(struct kjg *const g, const VALUE v)
+static void kjg_array(struct kjg *const g, const korb_value v)
 {
     if (!kjg_nest(g)) return;
     const KorbArray *const a = VAL2ARY(v);
@@ -633,7 +633,7 @@ static void kjg_array(struct kjg *const g, const VALUE v)
     kjg_ch(g, ']');
 }
 
-static void kjg_object(struct kjg *const g, const VALUE v)
+static void kjg_object(struct kjg *const g, const korb_value v)
 {
     if (!kjg_nest(g)) return;
     const KorbHash *const h = VAL2HASH(v);
@@ -641,7 +641,7 @@ static void kjg_object(struct kjg *const g, const VALUE v)
     kjg_ch(g, '{');
     int first_type = 0;                                     /* 1 = String keys, 2 = Symbol keys */
     for (uint32_t i = 0; i < h->len && !g->fail; i++) {
-        const VALUE k = korb_items_data(h->items)[2 * i];
+        const korb_value k = korb_items_data(h->items)[2 * i];
         const int type = SYMBOL_P(k) ? 2 : (KORB_STRING_P(k) && !(((const AroObjectHeader *)(uintptr_t)k)->flags & KORB_FL_HAS_KLASS)) ? 1 : 0;
         if (type == 0 || (first_type != 0 && type != first_type)) { g->fail = true; return; }   /* other / mixed keys: Ruby */
         first_type = type;
@@ -662,7 +662,7 @@ static void kjg_object(struct kjg *const g, const VALUE v)
     kjg_ch(g, '}');
 }
 
-static void kjg_value(struct kjg *const g, const VALUE v)
+static void kjg_value(struct kjg *const g, const korb_value v)
 {
     if (g->fail) return;
     if (v == KORB_NIL) { kjg_put(g, "null", 4); return; }
@@ -701,7 +701,7 @@ static void kjg_value(struct kjg *const g, const VALUE v)
     g->fail = true;   /* Bignum (CRuby calls its #to_s), Symbol, Fragment, any other object: Ruby */
 }
 
-static bool kjg_str_arg(const VALUE v, const char **const p, uint32_t *const n)
+static bool kjg_str_arg(const korb_value v, const char **const p, uint32_t *const n)
 {
     if (v == KORB_NIL) { *p = ""; *n = 0; return true; }
     if (!KORB_STRING_P(v)) return false;
@@ -710,20 +710,20 @@ static bool kjg_str_arg(const VALUE v, const char **const p, uint32_t *const n)
 }
 
 static RESULT
-korb_bi_json_generate(CTX *c, VALUE *slots, VALUE_SLICE args)
+korb_bi_json_generate(CTX *c, korb_value *slots, korb_slice args)
 {
-    const VALUE fallback = KORB_NIL;
-    if (VALUE_SLICE_LEN(args) != 9 || !FIXNUM_P(VALUE_SLICE_GET(args, 6)) || !FIXNUM_P(VALUE_SLICE_GET(args, 7)))
+    const korb_value fallback = KORB_NIL;
+    if (KORB_SLICE_LEN(args) != 9 || !FIXNUM_P(KORB_SLICE_GET(args, 6)) || !FIXNUM_P(KORB_SLICE_GET(args, 7)))
         return RESULT_OK(fallback);
-    struct kjg g = { .vm = c->vm, .max_nesting = FIX2LONG(VALUE_SLICE_GET(args, 6)),
-                     .depth = FIX2LONG(VALUE_SLICE_GET(args, 7)), .allow_nan = KORB_TRUTHY(VALUE_SLICE_GET(args, 8)) };
-    if (!kjg_str_arg(VALUE_SLICE_GET(args, 1), &g.indent, &g.indent_n) ||
-        !kjg_str_arg(VALUE_SLICE_GET(args, 2), &g.space, &g.space_n) ||
-        !kjg_str_arg(VALUE_SLICE_GET(args, 3), &g.space_before, &g.space_before_n) ||
-        !kjg_str_arg(VALUE_SLICE_GET(args, 4), &g.object_nl, &g.object_nl_n) ||
-        !kjg_str_arg(VALUE_SLICE_GET(args, 5), &g.array_nl, &g.array_nl_n))
+    struct kjg g = { .vm = c->vm, .max_nesting = FIX2LONG(KORB_SLICE_GET(args, 6)),
+                     .depth = FIX2LONG(KORB_SLICE_GET(args, 7)), .allow_nan = KORB_TRUTHY(KORB_SLICE_GET(args, 8)) };
+    if (!kjg_str_arg(KORB_SLICE_GET(args, 1), &g.indent, &g.indent_n) ||
+        !kjg_str_arg(KORB_SLICE_GET(args, 2), &g.space, &g.space_n) ||
+        !kjg_str_arg(KORB_SLICE_GET(args, 3), &g.space_before, &g.space_before_n) ||
+        !kjg_str_arg(KORB_SLICE_GET(args, 4), &g.object_nl, &g.object_nl_n) ||
+        !kjg_str_arg(KORB_SLICE_GET(args, 5), &g.array_nl, &g.array_nl_n))
         return RESULT_OK(fallback);
-    kjg_value(&g, VALUE_SLICE_GET(args, 0));
+    kjg_value(&g, KORB_SLICE_GET(args, 0));
     if (g.fail) { free(g.buf); return RESULT_OK(fallback); }
     const RESULT r = korb_str_new(c, slots, g.buf ? g.buf : "", (uint32_t)g.len);
     free(g.buf);

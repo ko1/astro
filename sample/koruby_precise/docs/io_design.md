@@ -98,7 +98,7 @@ struct korb_blop {
  *  - 戻り時に b->result 確定。エラーの raise は caller (IO 層) の仕事
  *  - 戻り際に必ず check_ints (pending interrupt を RESULT_RAISE / KILL で配送)
  *  - may-GC (park 中に他 green thread が alloc する) */
-RESULT korb_blop_wait(CTX *c, VALUE *slots, struct korb_blop *b);
+RESULT korb_blop_wait(CTX *c, korb_value *slots, struct korb_blop *b);
 
 /* ---- engine 側 ------------------------------------------------------- */
 void korb_blop_post     (struct korb_vm *vm, struct korb_blop *b, ssize_t result);
@@ -172,7 +172,7 @@ poll は regular file に対し常に ready を返し、read(2) は O_NONBLOCK �
   readiness fallback では自明に安全だが、engine 切替で安全性が変わる規約は事故の元
   なので一律に課す。
 - 規約を守る場所は helper 2 つに閉じる: `korb_io_read_bytes` / `korb_io_write_bytes`。
-  call site は VALUE_REF (String) を渡すだけで、stable バッファとの 1 copy は
+  call site は korb_ref (String) を渡すだけで、stable バッファとの 1 copy は
   helper 内部。CRuby が write で `rb_str_tmp_frozen_acquire` の安定スナップショットを
   取るのと同じ構図。
 - Ruby レベルの outbuf (`IO#read(len, outbuf)`) は最後に replace で書き戻すだけ。
@@ -277,18 +277,18 @@ struct korb_thread {
     struct korb_blop *blop;         /* PENDED 中に待っている blop (それ以外 NULL)。
                                        CRuby 3.4 の rb_io_blocking_operation_enter/exit
                                        に相当する追跡 */
-    VALUE    pending_ints;          /* 割り込み queue: 例外 VALUE / KILL マーカ (GC root) */
+    korb_value    pending_ints;          /* 割り込み queue: 例外 korb_value / KILL マーカ (GC root) */
     ...
 };
 
-void   korb_thread_interrupt (struct korb_vm *vm, struct korb_thread *t, VALUE exc_or_kill);
-RESULT korb_thread_check_ints(CTX *c, VALUE *slots);   /* RUBY_VM_CHECK_INTS 相当 */
+void   korb_thread_interrupt (struct korb_vm *vm, struct korb_thread *t, korb_value exc_or_kill);
+RESULT korb_thread_check_ints(CTX *c, korb_value *slots);   /* RUBY_VM_CHECK_INTS 相当 */
 ```
 
 - `interrupt`: pending_ints に積む。対象が PENDED なら
   `korb_blop_cancel(vm, t->blop, -ECANCELED)` で蹴り起こす。
 - 配送点は `korb_blop_wait` の戻り (Phase 1 ではそこ以外で割り込みが見える瞬間がない)。
-- **kill は rescue 不能・ensure は走る**: 通常の例外 VALUE ではなく専用 unwind
+- **kill は rescue 不能・ensure は走る**: 通常の例外 korb_value ではなく専用 unwind
   (RESULT の KILL 状態) で流す。
 - **完了 vs cancel の race は「完了が勝つ」で統一**: uring の ASYNC_CANCEL が
   ENOENT を返したら実結果が立ち、割り込みは直後の check_ints で配送
@@ -324,9 +324,9 @@ native 1 本のまま)。
   QUEUED で cancel = queue から抜いて post(-ECANCELED)、fn は走らない。
   RUNNING で cancel = ubf を呼ぶ (**ubf は複数回呼ばれ得る前提で冪等・thread-safe**)。
   fn はやがて返り実結果が post、割り込みは直後に配送 (完了が勝つ規則)。
-- **fn / ubf の絶対契約: CTX・VALUE に触るの禁止**。VM と並行に走る間に moving GC が
+- **fn / ubf の絶対契約: CTX・korb_value に触るの禁止**。VM と並行に走る間に moving GC が
   動くため、違反は即 SEGV。引数・結果は plain C データ (malloc) 限定。
-  worker 実装時に CodeQL ルール (fn の call graph に korb_* / VALUE 触りがあれば
+  worker 実装時に CodeQL ルール (fn の call graph に korb_* / korb_value 触りがあれば
   error) をセットで追加する。
 
 ## GC / CodeQL との接続
@@ -334,7 +334,7 @@ native 1 本のまま)。
 - `korb_blop_wait` は **may-GC** (park 中に他 green thread が alloc)。ただし
   swapcontext 越しのため korb_alloc への呼び出し閉包では推論できない —
   **maygc.ql / borrow_after_gc.ql / value_after_gc.ql の seed に明示追加**すること
-  (さもないと wait 跨ぎの stale borrow / stale VALUE が節穴になる)。
+  (さもないと wait 跨ぎの stale borrow / stale korb_value が節穴になる)。
 - stable-buffer 規約の機械化: 「`ARO_BORROW` accessor 由来 (= data_priv 由来) の
   ポインタが `u.rw.buf` / `u.poll.fds` に流れたら error」— 既存 borrow-flow 述語の
   流用でルール 1 本。blop 実装と同時に gate へ足す。

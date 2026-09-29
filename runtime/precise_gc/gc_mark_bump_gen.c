@@ -15,7 +15,7 @@
 // Major GC: force-promote all live young to tenured, then mark + linear sweep.
 //
 // Write barrier:
-//   - User write of young VALUE into tenured: aro_gc_store pushes holder to remset.
+//   - User write of young ARO_VALUE into tenured: aro_gc_store pushes holder to remset.
 //   - GC promote: Cheney scan in minor detects tenured→young, pushes.
 
 #include <stdio.h>
@@ -378,7 +378,7 @@ static void
 forward_edge_minor(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
+    ARO_VALUE v = (ARO_VALUE)*slot;
     if (AROH_IS_GC_OBJECT(v)) {
         void *new = forward_payload_value(gc, (void *)v);
         *slot = new;
@@ -524,13 +524,13 @@ scan_push(ASTroGC *gc, AroObjectHeader *h)
     scan_buf[scan_tail++] = h;
 }
 
-/* Major edge: forward (force-promote) young VALUE to tenured + MARK, or
+/* Major edge: forward (force-promote) young ARO_VALUE to tenured + MARK, or
  * mark in-place if already tenured. */
 static void
 major_edge(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
+    ARO_VALUE v = (ARO_VALUE)*slot;
     if (!AROH_IS_GC_OBJECT(v)) return;
     AroObjectHeader *vh = (AroObjectHeader *)v;
     if (in_young_active(gc, (void *)v)) {

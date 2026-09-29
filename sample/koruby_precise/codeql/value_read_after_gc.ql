@@ -1,11 +1,11 @@
 /**
- * @name Any VALUE held in a local across a may-GC call
- * @description value_after_gc.ql only follows a VALUE that a may-GC call
- *              PRODUCED.  The far more common shape is a VALUE merely TAKEN OUT
+ * @name Any korb_value held in a local across a may-GC call
+ * @description value_after_gc.ql only follows a korb_value that a may-GC call
+ *              PRODUCED.  The far more common shape is a korb_value merely TAKEN OUT
  *              of somewhere — a slot, a parameter, a struct field — and then
  *              used after a collection.  Moving GC updates the slot, not the
  *              copy in the local, so the local is stale.  This widens the source
- *              to any non-constant VALUE expression.
+ *              to any non-constant korb_value expression.
  * @kind problem
  * @problem.severity error
  * @id koruby/value-read-after-gc
@@ -27,7 +27,7 @@ predicate mayGcNode(ControlFlowNode n) {
   exists(Call c | c = n | mayGcFn(c.getTarget()) or not exists(c.getTarget()))
 }
 
-/** A VALUE-typed local whose definition is not a compile-time immediate. */
+/** A korb_value-typed local whose definition is not a compile-time immediate. */
 /* `v = KORB_NOT_REF(v)` states the value is an immediate from here on.  An
  * immediate never moves, so this definition is not movable and the chain the
  * query is looking for stops at it.  korb_not_ref is a real function in the
@@ -38,7 +38,7 @@ predicate notRefCall(Expr e) {
 }
 
 predicate movableDef(SsaDefinition def, StackVariable v) {
-  v.getType().getName() = "VALUE" and
+  v.getType().getName() = "korb_value" and
   exists(Expr src |
     src = def.getDefiningValue(v) and not src.isConstant() and not notRefCall(src)
   )
@@ -71,4 +71,4 @@ where
   reach(def, v, use, true)
 select use,
   use.getFile().getBaseName() + ":" + use.getLocation().getStartLine() +
-  "  VALUE '" + v.getName() + "' read into a local, a may-GC call ran, used here — stale under moving GC"
+  "  korb_value '" + v.getName() + "' read into a local, a may-GC call ran, used here — stale under moving GC"

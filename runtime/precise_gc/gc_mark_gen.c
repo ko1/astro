@@ -515,7 +515,7 @@ gray_push(ASTroGC *gc, AroObjectHeader *h)
 }
 
 static void
-mark_value(ASTroGC *gc, VALUE v)
+mark_value(ASTroGC *gc, ARO_VALUE v)
 {
     if (!AROH_IS_GC_OBJECT(v)) return;
     AroObjectHeader *h = (AroObjectHeader *)v;
@@ -538,7 +538,7 @@ mark_value(ASTroGC *gc, VALUE v)
 static void
 mark_edge(void *ctx, void **slot)
 {
-    mark_value((ASTroGC *)ctx, (VALUE)*slot);
+    mark_value((ASTroGC *)ctx, (ARO_VALUE)*slot);
 }
 
 /* Edge visitor for promoted post-scan: detects if any outgoing ref is to
@@ -549,7 +549,7 @@ static void
 check_edge_for_young(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
+    ARO_VALUE v = (ARO_VALUE)*slot;
     if (AROH_IS_GC_OBJECT(v)) {
         const AroObjectHeader *h = (const AroObjectHeader *)v;
         if (!HDR_OLD(h) && !HDR_IS_FREE(h)) gc->scan_saw_young = true;

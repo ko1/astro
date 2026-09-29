@@ -6,15 +6,15 @@
 /* Coerce v to a double for a Math function: fast numeric path, else Float(v) via
  * #to_f (CRuby rb_to_float semantics — accepts any object that defines #to_f).
  * Returns a RAISE result (TypeError, or whatever #to_f raised) on failure. */
-static RESULT korb_math_coerce_d(CTX *c, VALUE *slots, VALUE v, double *out) {
+static RESULT korb_math_coerce_d(CTX *c, korb_value *slots, korb_value v, double *out) {
     if (LIKELY(korb_num_to_d(v, out))) return RESULT_OK(KORB_NIL);
     slots[0] = v;                                   /* root for the dispatch + error message */
     /* CRuby rb_to_float: only a Numeric (subclass) is coerced via #to_f — a plain
      * object that merely defines #to_f is still rejected with TypeError. */
     if (KORB_OBJECT_P(v)) {
         const uint32_t to_f = korb_intern(c->vm, "to_f", 4);
-        const VALUE numeric = korb_const_get(c->vm, korb_intern(c->vm, "Numeric", 7));
-        const VALUE vcls = korb_class_obj_of(c, v);
+        const korb_value numeric = korb_const_get(c->vm, korb_intern(c->vm, "Numeric", 7));
+        const korb_value vcls = korb_class_obj_of(c, v);
         if (KORB_CLASS_P(numeric) && KORB_CLASS_P(vcls) && korb_class_le(vcls, numeric)
             && korb_responds_to(c, v, to_f)) {
             RESULT fr = korb_send_impl(c, slots + 1, to_f, 0, 0, NULL, NULL, NULL);
@@ -38,27 +38,27 @@ static double korb_cbrt(double f) {
 }
 
 #define KORB_MATH1(nm, fn)                                                              \
-    static RESULT korb_m_math_##nm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
+    static RESULT korb_m_math_##nm(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { \
         (void)self; double x;                                                           \
-        { RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; } \
+        { RESULT _cr = korb_math_coerce_d(c, slots, KORB_SLICE_GET(a, 0), &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; } \
         const double r_ = fn(x);                                                        \
         if (UNLIKELY(isnan(r_) && !isnan(x) && !isinf(x)))   /* finite input → NaN = out of domain */ \
             return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - %s", #nm); \
         return korb_float_new(c, slots, r_);                                            \
     }
 #define KORB_MATH2(nm, fn)                                                              \
-    static RESULT korb_m_math_##nm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
+    static RESULT korb_m_math_##nm(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { \
         (void)self; double x, y;                                                        \
-        { RESULT _c1 = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(_c1.state != KORB_NORMAL)) return _c1; } \
-        { RESULT _c2 = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 1), &y); if (UNLIKELY(_c2.state != KORB_NORMAL)) return _c2; } \
+        { RESULT _c1 = korb_math_coerce_d(c, slots, KORB_SLICE_GET(a, 0), &x); if (UNLIKELY(_c1.state != KORB_NORMAL)) return _c1; } \
+        { RESULT _c2 = korb_math_coerce_d(c, slots, KORB_SLICE_GET(a, 1), &y); if (UNLIKELY(_c2.state != KORB_NORMAL)) return _c2; } \
         return korb_float_new(c, slots, fn(x, y));                                      \
     }
 
 KORB_MATH1(cbrt, korb_cbrt)
 /* CRuby rb_math_sqrt: a Complex gets its principal root; ±0.0 → 0.0 */
-static RESULT korb_m_math_sqrt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_math_sqrt(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const VALUE v = VALUE_SLICE_GET(a, 0);
+    const korb_value v = KORB_SLICE_GET(a, 0);
     double x;
     if (KORB_COMPLEX_P(v)) {
         double re, im;
@@ -93,9 +93,9 @@ static const double korb_fact_table[] = {
     121645100408832000.0, 2432902008176640000.0, 51090942171709440000.0,
     1124000727777607680000.0,
 };
-static RESULT korb_m_math_gamma(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_math_gamma(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; double x;
-    { RESULT cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
+    { RESULT cr = korb_math_coerce_d(c, slots, KORB_SLICE_GET(a, 0), &x); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     if (isinf(x)) {
         if (signbit(x)) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - gamma");
         return korb_float_new(c, slots, HUGE_VAL);
@@ -113,26 +113,26 @@ static RESULT korb_m_math_gamma(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * |d| in [0.5, 1) for a Bignum (via GMP, no double overflow) or the plain double
  * (e = 0) otherwise.  This lets Math.log{,2,10} stay finite for Bignums that
  * exceed the double range (e.g. Math.log2(2**10000) == 10000.0, not Infinity). */
-static bool korb_math_frexp_val(VALUE v, double *d, long *e) {
+static bool korb_math_frexp_val(korb_value v, double *d, long *e) {
     if (KORB_BIGNUM_P(v)) { *d = korb_mp_get_d_2exp(e, VAL2BIG(v)->z); return true; }   /* v = d·2^e */
     double x;
     if (!korb_num_to_d(v, &x)) return false;
     *d = x; *e = 0;
     return true;
 }
-static RESULT korb_m_math_log2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_math_log2(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; double d; long e;
-    if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e))) {
-        RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &d); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; e = 0;
+    if (UNLIKELY(!korb_math_frexp_val(KORB_SLICE_GET(a, 0), &d, &e))) {
+        RESULT _cr = korb_math_coerce_d(c, slots, KORB_SLICE_GET(a, 0), &d); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; e = 0;
     }
     const double r2 = log2(d) + (double)e;
     if (UNLIKELY(isnan(r2) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - log2");
     return korb_float_new(c, slots, r2);
 }
-static RESULT korb_m_math_log10(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_math_log10(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; double d; long e;
-    if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e))) {
-        RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &d); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; e = 0;
+    if (UNLIKELY(!korb_math_frexp_val(KORB_SLICE_GET(a, 0), &d, &e))) {
+        RESULT _cr = korb_math_coerce_d(c, slots, KORB_SLICE_GET(a, 0), &d); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; e = 0;
     }
     const double r10 = log10(d) + (double)e * 0.301029995663981195213738894724; /* + e·log10(2) */
     if (UNLIKELY(isnan(r10) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - log10");
@@ -142,27 +142,27 @@ KORB_MATH2(atan2, atan2) KORB_MATH2(hypot, hypot)
 
 /* Math.log(x) = ln; Math.log(x, base) = log_base(x).  Bignum-aware via frexp
  * decomposition so ln stays finite past the double range. */
-static RESULT korb_m_math_log(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_math_log(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; double d; long e;
-    if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e))) {
-        RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &d); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; e = 0;
+    if (UNLIKELY(!korb_math_frexp_val(KORB_SLICE_GET(a, 0), &d, &e))) {
+        RESULT _cr = korb_math_coerce_d(c, slots, KORB_SLICE_GET(a, 0), &d); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; e = 0;
     }
     const double lnx = log(d) + (double)e * M_LN2;   /* ln(d·2^e) */
     if (UNLIKELY(isnan(lnx) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - log");
-    if (VALUE_SLICE_LEN(a) >= 2) {
+    if (KORB_SLICE_LEN(a) >= 2) {
         double db; long eb;
-        if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 1), &db, &eb))) {
-            RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 1), &db); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; eb = 0;
+        if (UNLIKELY(!korb_math_frexp_val(KORB_SLICE_GET(a, 1), &db, &eb))) {
+            RESULT _cr = korb_math_coerce_d(c, slots, KORB_SLICE_GET(a, 1), &db); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; eb = 0;
         }
         return korb_float_new(c, slots, lnx / (log(db) + (double)eb * M_LN2));
     }
     return korb_float_new(c, slots, lnx);
 }
 /* Math.ldexp(frac, exp) = frac * 2**exp. */
-static RESULT korb_m_math_ldexp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_math_ldexp(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; double x; korb_sword_t n;
-    { RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; }
-    VALUE nv = VALUE_SLICE_GET(a, 1);
+    { RESULT _cr = korb_math_coerce_d(c, slots, KORB_SLICE_GET(a, 0), &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; }
+    korb_value nv = KORB_SLICE_GET(a, 1);
     if (KORB_FLOAT_P(nv)) {                       /* CRuby NUM2INT: NaN/Infinity are out of range */
         const double d = korb_float_val(nv);
         if (isnan(d)) return korb_raise(c, slots, KORB_E_RANGE, 0, "float NaN out of range of integer");
@@ -171,26 +171,26 @@ static RESULT korb_m_math_ldexp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (UNLIKELY(!korb_to_index(nv, &n))) {       /* #to_int coercion, else TypeError */
         RESULT cr = korb_coerce_to_int(c, slots, &nv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-        if (!korb_to_index(nv, &n)) return korb_raise_no_int(c, slots, VALUE_SLICE_GET(a, 1));
+        if (!korb_to_index(nv, &n)) return korb_raise_no_int(c, slots, KORB_SLICE_GET(a, 1));
     }
     return korb_float_new(c, slots, ldexp(x, (int)n));
 }
 /* Math.frexp(x) → [fraction, exponent]. */
-static RESULT korb_m_math_frexp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_math_frexp(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; double x; int e = 0;
-    { RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; }
+    { RESULT _cr = korb_math_coerce_d(c, slots, KORB_SLICE_GET(a, 0), &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; }
     double frac = frexp(x, &e);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
-    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    korb_ref arr = KORB_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_float_new(c, slots + 1, frac));
     CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
     CHECK(korb_ary_push_val(c, slots + 2, arr, LONG2FIX(e)));
-    return RESULT_OK(VALUE_REF_GET(arr));
+    return RESULT_OK(KORB_REF_GET(arr));
 }
 /* Math.lgamma(x) → [log|gamma(x)|, sign]. */
-static RESULT korb_m_math_lgamma(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_math_lgamma(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; double x;
-    { RESULT cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
+    { RESULT cr = korb_math_coerce_d(c, slots, KORB_SLICE_GET(a, 0), &x); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     if (isinf(x) && signbit(x))                   /* CRuby: -Infinity is out of domain */
         return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - lgamma");
     int sign = 1;
@@ -199,20 +199,20 @@ static RESULT korb_m_math_lgamma(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     else if (x == 0.0) { v = HUGE_VAL; sign = signbit(x) ? -1 : 1; }
     else v = lgamma_r(x, &sign);                         /* the sign of gamma, also at the poles (-1.0 → -1) */
     slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
-    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    korb_ref arr = KORB_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_float_new(c, slots + 1, v));
     CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
     CHECK(korb_ary_push_val(c, slots + 2, arr, LONG2FIX(sign)));
-    return RESULT_OK(VALUE_REF_GET(arr));
+    return RESULT_OK(KORB_REF_GET(arr));
 }
 
 /* Register a Math module function (module_function semantics): a CFUNC both on
  * Math's singleton class (Math.sqrt) AND as an instance method on the module
  * itself, so `include Math` makes it callable (sqrt(x) / obj.send(:sqrt, x)). */
-static void korb_def_modfunc_vis(CTX *c, VALUE *slots, VALUE modobj, const char *name, korb_method_fn fn, int32_t arity, uint8_t vis) {
+static void korb_def_modfunc_vis(CTX *c, korb_value *slots, korb_value modobj, const char *name, korb_method_fn fn, int32_t arity, uint8_t vis) {
     const uint32_t mid = korb_intern(c->vm, name, strlen(name));
     slots[0] = modobj;                                         /* root across the singleton/table allocs */
-    VALUE sing = korb_obj_singleton(c, slots + 1, slots[0]).value;   /* created once, reused after */
+    korb_value sing = korb_obj_singleton(c, slots + 1, slots[0]).value;   /* created once, reused after */
     struct korb_method *m = korb_class_method_slot(c->vm, VAL2CLASS(sing), mid);
     m->kind = KORB_METHOD_CFUNC; m->owner = sing; m->params_cnt = arity; m->rfn = fn; m->rbfn = NULL; m->uses_block = 0;
     struct korb_method *im = korb_class_method_slot(c->vm, VAL2CLASS(slots[0]), mid);   /* slots[0] = (re-read) Math module */
@@ -224,14 +224,14 @@ static void korb_def_modfunc_vis(CTX *c, VALUE *slots, VALUE modobj, const char 
  * only.  A Class is not a Module you can `include`, so a module_function-style
  * instance half would make `some_thread.current` answer — CRuby raises
  * NoMethodError, and the name shows up in Thread#methods either way. */
-static void korb_def_classfunc(CTX *c, VALUE *slots, VALUE clsobj, const char *name, korb_method_fn fn, int32_t arity) {
+static void korb_def_classfunc(CTX *c, korb_value *slots, korb_value clsobj, const char *name, korb_method_fn fn, int32_t arity) {
     slots[0] = clsobj;                                         /* root across the singleton alloc */
-    const VALUE sing = korb_obj_singleton(c, slots + 1, slots[0]).value;
+    const korb_value sing = korb_obj_singleton(c, slots + 1, slots[0]).value;
     struct korb_method *const m = korb_class_method_slot(c->vm, VAL2CLASS(sing), korb_intern(c->vm, name, strlen(name)));
     m->kind = KORB_METHOD_CFUNC; m->owner = sing; m->params_cnt = arity; m->rfn = fn; m->rbfn = NULL; m->uses_block = 0;
 }
 
-void korb_init_math(CTX *c, VALUE *slots) {
+void korb_init_math(CTX *c, korb_value *slots) {
     struct korb_vm *const vm = c->vm;
     slots[0] = (korb_class_new(c, slots, korb_intern(vm, "Math", 4), KORB_NIL)).value;
     VAL2CLASS(slots[0])->is_module = 1;
@@ -239,7 +239,7 @@ void korb_init_math(CTX *c, VALUE *slots) {
     /* Owned so `Float.constants` / `Math.constants` report them; a bare read
      * still finds them, since the by-name lookup ignores the owner. */
     /* The owner must be re-read AFTER the value's alloc: a moving GC there would
-     * strand a class VALUE captured in a C local (the constant would then be
+     * strand a class korb_value captured in a C local (the constant would then be
      * registered under a stale owner and never found). */
 #define KORB_MATH_MOD  slots[0]
 #define KORB_FLOAT_CLS korb_builtin_class_obj(vm, KORB_C_FLOAT)
@@ -271,8 +271,8 @@ void korb_init_math(CTX *c, VALUE *slots) {
         for (uint32_t i = 0; i < vm->const_cnt; i++)
             if (vm->const_names[i] == de && vm->const_owners[i] == KORB_NIL) {
                 vm->const_owners[i] = slots[0];
-                const VALUE dec = vm->const_vals[i];                     /* also gives it the Math:: qualified name */
-                if (KORB_CLASS_P(dec)) ARO_STORE(c, VAL2CLASS(dec), (VALUE *)(uintptr_t)&VAL2CLASS(dec)->enclosing, slots[0]);
+                const korb_value dec = vm->const_vals[i];                     /* also gives it the Math:: qualified name */
+                if (KORB_CLASS_P(dec)) ARO_STORE(c, VAL2CLASS(dec), (korb_value *)(uintptr_t)&VAL2CLASS(dec)->enclosing, slots[0]);
                 break;
             }
     }

@@ -253,7 +253,7 @@ gray_push(ASTroGC *gc, AroObjectHeader *const h)
 }
 
 static void
-mark_value(ASTroGC *gc, VALUE v)
+mark_value(ASTroGC *gc, ARO_VALUE v)
 {
     if (!AROH_IS_GC_OBJECT(v)) return;
     AroObjectHeader *h = (AroObjectHeader *)v;
@@ -268,7 +268,7 @@ static void
 mark_edge(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    mark_value(gc, (VALUE)*slot);
+    mark_value(gc, (ARO_VALUE)*slot);
 }
 
 static void

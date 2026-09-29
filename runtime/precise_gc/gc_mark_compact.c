@@ -263,7 +263,7 @@ gray_push(ASTroGC *gc, AroObjectHeader *h)
 }
 
 static void
-mark_value(ASTroGC *gc, VALUE v)
+mark_value(ASTroGC *gc, ARO_VALUE v)
 {
     if (!AROH_IS_GC_OBJECT(v)) return;
     AroObjectHeader *h = (AroObjectHeader *)v;
@@ -272,13 +272,13 @@ mark_value(ASTroGC *gc, VALUE v)
     gray_push(gc, h);
 }
 
-/* edge_visit callback: ctx は ASTroGC *。 mark_value は VALUE 全般を
+/* edge_visit callback: ctx は ASTroGC *。 mark_value は ARO_VALUE 全般を
  * 受けて AROH_IS_GC_OBJECT check 後に payload を gray push する。 */
 static void
 mark_edge(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    mark_value(gc, (VALUE)*slot);
+    mark_value(gc, (ARO_VALUE)*slot);
 }
 
 static void
@@ -309,15 +309,15 @@ fwd_payload(void *p)
 
 /* edge_visit callback for writeback (compaction post-move pointer update).
  * SCAN_EDGES が KIND_OBJ_ARRAY / OBJ_STRING / PAYLOAD_VAL を統一して呼ぶので、
- * slot は raw pointer (= BaArray.items / BaString.bytes) と tagged VALUE
+ * slot は raw pointer (= BaArray.items / BaString.bytes) と tagged ARO_VALUE
  * (= PAYLOAD_VAL の items[i]) のどちらでもあり得る。 AROH_IS_GC_OBJECT check で
  * 両方を fold。 */
 static void
 fwd_edge(void *ctx, void **slot)
 {
     (void)ctx;
-    VALUE v = (VALUE)*slot;
-    if (AROH_IS_GC_OBJECT(v)) *slot = (void *)(VALUE)fwd_payload((void *)v);
+    ARO_VALUE v = (ARO_VALUE)*slot;
+    if (AROH_IS_GC_OBJECT(v)) *slot = (void *)(ARO_VALUE)fwd_payload((void *)v);
 }
 
 static void

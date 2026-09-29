@@ -741,14 +741,14 @@ forward_payload(ASTroGC *gc, void *old_payload)
 
 /* edge_visit callback for SCAN_EDGES and for root scan.  Unified: slot
  * may hold either a raw heap pointer (= BaArray.items / BaString.bytes,
- * always 8-aligned) or a tagged VALUE (= sp[] / KIND_PAYLOAD_VAL items).
+ * always 8-aligned) or a tagged ARO_VALUE (= sp[] / KIND_PAYLOAD_VAL items).
  * AROH_IS_GC_OBJECT filters out singletons / fixnums; heap pointers pass through
  * (= 8-aligned, non-singleton).  `ctx` is `ASTroGC *gc` from SCAN_EDGES. */
 static void
 forward_edge(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
+    ARO_VALUE v = (ARO_VALUE)*slot;
     if (!AROH_IS_GC_OBJECT(v)) return;
     /* Idempotent skip: if the value is already a to-space address (= some
      * earlier visit in THIS cycle already rewrote the slot), don't re-
@@ -757,7 +757,7 @@ forward_edge(void *ctx, void **slot)
      * class tables in koruby) gets memcpy'd a second time at to_top,
      * producing a phantom obj and runaway scan. */
     if ((char *)v >= gc->to_base && (char *)v < gc->to_top) return;
-    *slot = (void *)(VALUE)forward_payload(gc, (void *)v);
+    *slot = (void *)(ARO_VALUE)forward_payload(gc, (void *)v);
 }
 
 static void
@@ -802,7 +802,7 @@ gc_collect_internal(CTX *c)
 
     ARO_GC_COMMON(c)->stats.heap_bytes = 0;
 
-    /* (1) Root scan: forward VALUE pointers in sample-owned root slots.
+    /* (1) Root scan: forward ARO_VALUE pointers in sample-owned root slots.
      * sample's AROH_VISIT_ROOTS macro handles any high-water /
      * dead-slot zeroing it cares about. */
     struct timespec tcheney = aro_gc_phase_begin();

@@ -12,7 +12,7 @@
  *
  * #included into korb_runtime.c's TU. */
 
-static RESULT korb_wasi_unsupported(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_wasi_unsupported(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     return korb_raise(c, slots, KORB_E_NOTIMPL, 0,
                       "process/signal/socket operations are not available on WASI");
@@ -20,22 +20,22 @@ static RESULT korb_wasi_unsupported(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 
 /* Process.getrlimit の資源名表。prelude のロード時に読まれるので空の Hash を返す
  * (資源が 1 つも無い = setrlimit/getrlimit は名前を解決できない)。 */
-static RESULT korb_wasi_rlimit_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_wasi_rlimit_table(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     return korb_hash_new(c, slots, 0);
 }
 
 /* シグナル名 ↔ 番号。WASI にシグナルは無いので「そんな名前は無い」を返す。 */
-static RESULT korb_wasi_nil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_wasi_nil(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)c; (void)slots; (void)self; (void)a;
     return RESULT_OK(KORB_NIL);
 }
 
-void korb_init_socket(CTX *c, VALUE *slots) { (void)c; (void)slots; }
+void korb_init_socket(CTX *c, korb_value *slots) { (void)c; (void)slots; }
 
-void korb_init_process(CTX *c, VALUE *slots) {
+void korb_init_process(CTX *c, korb_value *slots) {
     (void)slots;
-    const VALUE obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    const korb_value obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
     static const char *const unsupported[] = {
         "system", "spawn", "exec", "`", "__system", "__spawn", "__exec",
         "__waitpid", "__waitpid2", "__set_last_status", "__kill", "__getpgid",
@@ -51,7 +51,7 @@ void korb_init_process(CTX *c, VALUE *slots) {
 
 /* thread.c が呼ぶが、実体は除外した process.c にある。WASI ではシグナルが
  * 配送されないので、届いていない = 何もしないでよい。 */
-static RESULT korb_signal_deliver(CTX *c, VALUE *slots) { (void)c; (void)slots; return RESULT_OK(KORB_NIL); }
+static RESULT korb_signal_deliver(CTX *c, korb_value *slots) { (void)c; (void)slots; return RESULT_OK(KORB_NIL); }
 static int korb_signal_wait_fd(struct korb_vm *vm) { (void)vm; return -1; }
 static bool korb_signal_sleep_begin(struct korb_vm *vm, void *old) { (void)vm; (void)old; return false; }
 static void korb_signal_sleep_end(struct korb_vm *vm, const void *old) { (void)vm; (void)old; }

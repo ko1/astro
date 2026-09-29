@@ -3,20 +3,21 @@
 # The v2 @child contract has TWO forms, selected by the declared type
 # (v2_design §7.2):
 #
-#   VALUE x@child      — no staging: the glue passes the child's result in a
+#   korb_value x@child      — no staging: the glue passes the child's result in a
 #                        register.  Allowed ONLY for the LAST @child operand
 #                        (no later sibling evaluation can GC it away) and only
 #                        when the body consumes it before its first GC point.
-#   VALUE_REF x@child  — the glue stores the result below the cursor
-#                        (staging = rooting) and passes a VALUE_REF to the
+#   korb_ref x@child  — the glue stores the result below the cursor
+#                        (staging = rooting) and passes a korb_ref to the
 #                        slot.  Survives sibling-eval GCs; fixup-safe reads
-#                        via VALUE_REF_GET.
+#                        via KORB_REF_GET.
 #
-# slot_count counts only VALUE_REF children + $tmp slots; register children
+# slot_count counts only korb_ref children + $tmp slots; register children
 # occupy no slot.  Cursor identifier is `slots` (not the framework default
 # `sp`) — set via the base `cursor_name` hook.
 
 require 'astrogen'
+ASTroGen.value_type = 'korb_value'
 
 class KorubyNodeDef < ASTroGen::NodeDef
   class Node < ASTroGen::NodeDef::Node
@@ -27,7 +28,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
     # runtime NODE references (A/B only).
     def self.pool_mode? = ENV['KORUBY_POOL'] != '0'
 
-    # Dispatcher signature: (CTX *c, NODE *n, VALUE *slots)
+    # Dispatcher signature: (CTX *c, NODE *n, korb_value *slots)
     def common_param_count = 3
 
     def cursor_name = "slots"
@@ -43,10 +44,10 @@ class KorubyNodeDef < ASTroGen::NodeDef
       slot_count > 0 ? "slots += #{slot_count};" : ""
     end
 
-    def ref_children = @operands.select { |op| op.child? && op.type == 'VALUE_REF' }
-    def reg_children = @operands.select { |op| op.child? && op.type == 'VALUE' }
+    def ref_children = @operands.select { |op| op.child? && op.type == 'korb_ref' }
+    def reg_children = @operands.select { |op| op.child? && op.type == 'korb_value' }
 
-    # slot_count = staged (VALUE_REF) children + $tmp slots.  Register
+    # slot_count = staged (korb_ref) children + $tmp slots.  Register
     # children are excluded — they never touch the slot area.
     def children_op = @operands.find(&:children?)
 
@@ -97,19 +98,19 @@ class KorubyNodeDef < ASTroGen::NodeDef
       ref_children.size + tmp_names.size
     end
 
-    # A register (VALUE) child must be the last @child: any later sibling
+    # A register (korb_value) child must be the last @child: any later sibling
     # evaluation could GC while the value sits unrooted in a register.
     def validate_children!
       children = @operands.select(&:child?)
       children.each_with_index do |op, i|
-        next unless op.type == 'VALUE'
+        next unless op.type == 'korb_value'
         unless i == children.size - 1
-          raise "#{@name}: `VALUE #{op.name}@child` must be the last @child " \
-                "(later siblings may GC) — use VALUE_REF"
+          raise "#{@name}: `korb_value #{op.name}@child` must be the last @child " \
+                "(later siblings may GC) — use korb_ref"
         end
       end
-      bad = children.find { |op| !%w[VALUE VALUE_REF].include?(op.type) }
-      raise "#{@name}: @child type must be VALUE or VALUE_REF (got #{bad.type})" if bad
+      bad = children.find { |op| !%w[korb_value korb_ref].include?(op.type) }
+      raise "#{@name}: @child type must be korb_value or korb_ref (got #{bad.type})" if bad
     end
 
     # Staged-child cell expression (negative offset below the advanced
@@ -163,9 +164,9 @@ class KorubyNodeDef < ASTroGen::NodeDef
     # ---- DISPATCH glue (v2_design §7.3): staging = rooting -------------
     #
     # For each @child in declaration order:
-    #   VALUE_REF — `slots[off] = UNWRAP(dispatch(child));`  (staged)
-    #   VALUE     — `VALUE _c<i> = UNWRAP(dispatch(child));` (register)
-    # Body args: VALUE_REF_AT(&slots[off]) / _c<i>.
+    #   korb_ref — `slots[off] = UNWRAP(dispatch(child));`  (staged)
+    #   korb_value     — `korb_value _c<i> = UNWRAP(dispatch(child));` (register)
+    # Body args: KORB_REF_AT(&slots[off]) / _c<i>.
     # DISPATCH for a @children node: dynamic cursor advance + a staging loop
     # (one EVAL/SD per node-type; the SD unrolls with a baked count).
     def build_children_dispatch(kids)
@@ -220,17 +221,17 @@ class KorubyNodeDef < ASTroGen::NodeDef
       stage_stmts = child_ops.map do |op|
         field = "n->u.#{@name}.#{op.name}"
         call = "UNWRAP((*#{field}->head.dispatcher)(#{child_dispatch_args(nil, field)}))"
-        if op.type == 'VALUE_REF'
+        if op.type == 'korb_ref'
           "    #{child_storage_expr(ref_slot[op.name])} = #{call};"
         else
-          "    VALUE _c_#{op.name} = #{call};"
+          "    korb_value _c_#{op.name} = #{call};"
         end
       end.join("\n")
 
       body_args = comma_operands(@operands.map do |op|
         if op.child?
-          if op.type == 'VALUE_REF'
-            "VALUE_REF_AT(&#{child_storage_expr(ref_slot[op.name])})"
+          if op.type == 'korb_ref'
+            "KORB_REF_AT(&#{child_storage_expr(ref_slot[op.name])})"
           else
             "_c_#{op.name}"
           end
@@ -446,7 +447,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       child_nodes = []
       args = []
       @operands.each do |op|
-        if op.child? && op.type == 'VALUE'
+        if op.child? && op.type == 'korb_value'
           child_nodes << "    SPECIALIZE(fp, n->u.#{@name}.#{op.name});"
           args << "    fprintf(fp, \"        _c_#{op.name}\");"
         else
@@ -458,10 +459,10 @@ class KorubyNodeDef < ASTroGen::NodeDef
 
       setup_emitters = child_ops.map do |op|
         field = "n->u.#{@name}.#{op.name}"
-        if op.type == 'VALUE_REF'
+        if op.type == 'korb_ref'
           lhs = child_storage_expr(ref_slot[op.name])
         else
-          lhs = "VALUE _c_#{op.name}"
+          lhs = "korb_value _c_#{op.name}"
         end
         child_call_emitter(lhs, nil, field, "u.#{@name}.#{op.name}")
       end
@@ -595,7 +596,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
           # references it at runtime (below), so excluding it from the hash
           # lets structurally identical nodes on different lines share SDs.
           self.name == 'line' ? '0' : super
-        when 'VALUE'
+        when 'korb_value'
           # Symbol literals are runtime-ref'd by the SD (build_specializer), so
           # exclude the per-process ID from the hash: structurally identical
           # sym lits share one SD and the store binds across intern orders.
@@ -629,7 +630,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       def hole?
         return false if child? || children?
         sym? || self.name == 'line' || CACHE_TYPES.include?(@type) ||
-          %w[void\ * const\ char\ * VALUE].include?(@type) || node?
+          %w[void\ * const\ char\ * korb_value].include?(@type) || node?
       end
 
       def build_specializer(name)
@@ -637,17 +638,17 @@ class KorubyNodeDef < ASTroGen::NodeDef
         # advance that stores it (see build_children_specializer): reuse that
         # index so the SD materializes the value once, not twice.
         if self.name == 'flink' && @owner.framehdr? && ENV['KORUBY_FLINK'] != '0'
-          return nil, (pool_mode? ? '    fprintf(fp, "        (VALUE)HOLE_U64(%u)", _flink_hole);'
-                                  : "    fprintf(fp, \"        (VALUE)%lluULL\", (unsigned long long)n->u.#{name}.flink);")
+          return nil, (pool_mode? ? '    fprintf(fp, "        (korb_value)HOLE_U64(%u)", _flink_hole);'
+                                  : "    fprintf(fp, \"        (korb_value)%lluULL\", (unsigned long long)n->u.#{name}.flink);")
         end
-        # Bare VALUE operand (node_lit): Symbol literals are per-process
+        # Bare korb_value operand (node_lit): Symbol literals are per-process
         # interned IDs, so baking the raw bits breaks any consumer with a
         # different intern order (--build exes rebuild the AST without
         # parsing).  Runtime-ref symbols (a hole in pool mode); other
         # immediates bake as constants.
-        if !child? && @type == 'VALUE'
+        if !child? && @type == 'korb_value'
           sym_ref = if pool_mode?
-            "        fprintf(fp, \"        (VALUE)HOLE_U64(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"u.#{name}.#{self.name}\", -1));\n"
+            "        fprintf(fp, \"        (korb_value)HOLE_U64(%u)\", astro_hole_alloc(_hf, &_h, ASTRO_HOLE_EMIT, \"u.#{name}.#{self.name}\", -1));\n"
           else
             "        fprintf(fp, \"        n->u.#{name}.#{self.name}\");\n"
           end
@@ -655,17 +656,17 @@ class KorubyNodeDef < ASTroGen::NodeDef
             "    if (SYMBOL_P(n->u.#{name}.#{self.name}))\n" +
             sym_ref +
             "    else\n" \
-            "        fprintf(fp, \"        (VALUE)0x%lxL\", (long)n->u.#{name}.#{self.name});"
+            "        fprintf(fp, \"        (korb_value)0x%lxL\", (long)n->u.#{name}.#{self.name});"
         end
         # Pool mode: the base class routes every hole? operand (caches,
         # symbol IDs, line, void *, byte arrays, lazy children) to HOLE_*.
-        return super if pool_mode? && !(child? && @type == 'VALUE_REF')
-        # Staged (VALUE_REF) @child: the EVAL arg is a VALUE_REF to the
+        return super if pool_mode? && !(child? && @type == 'korb_ref')
+        # Staged (korb_ref) @child: the EVAL arg is a korb_ref to the
         # staging cell, mirroring the DISPATCH glue (the base default
         # would pass the bare cell expression).
-        if child? && @type == 'VALUE_REF'
+        if child? && @type == 'korb_ref'
           cn = "    SPECIALIZE(fp, n->u.#{name}.#{self.name});"
-          arg = "    fprintf(fp, \"        VALUE_REF_AT(&#{owner.child_storage_expr(sp_slot)})\");"
+          arg = "    fprintf(fp, \"        KORB_REF_AT(&#{owner.child_storage_expr(sp_slot)})\");"
           return cn, arg
         end
         case @type
@@ -769,7 +770,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
         end
         return "    koruby_emit_intern(fp, #{field});" if sym?
         case storage_type
-        when 'VALUE'
+        when 'korb_value'
           "    koruby_emit_value(fp, #{field});"
         when 'const char *'
           if PACKED_SCOPE[[node_name, self.name]]

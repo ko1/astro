@@ -57,7 +57,7 @@ v2 はこれらを「最初から正しい ABI で書く」ことで設計から
 
 ```
 CTX *c
- ├─ c->slots ──────→ 値スタック (VALUE の線形配列, mmap, 動かない)
+ ├─ c->slots ──────→ 値スタック (korb_value の線形配列, mmap, 動かない)
  ├─ c->slots_top      GC scan の上端。korb_alloc 系だけが書く (publish)
  └─ (frame chain / per-CTX VM root table など)
 
@@ -76,14 +76,20 @@ CTX *c
 2. **`c->slots_top` を書くのは `korb_alloc` 系だけ**。
    alloc が `c->slots_top = slots` を publish してから collect する。
    GC は `[c->slots, c->slots_top)` を scan して fixup する。
-3. **GC を跨いで生の `VALUE` を持たない**。跨ぐ必要がある値は slot に置き、
-   `VALUE_REF` (型で強制された rooted 参照) 経由で触る。
+3. **GC を跨いで生の `korb_value` を持たない**。跨ぐ必要がある値は slot に置き、
+   `korb_ref` (型で強制された rooted 参照) 経由で触る。
 
 この 3 つから「いつでも GC してよい」「move されても壊れない」が出る。
 
 ---
 
 ## 2. 用語と前提知識
+
+> **型名（2026-09-29 改名）**: 値は `korb_value`（旧 `VALUE`）、rooted cell への参照は `korb_ref`（旧 `VALUE_REF`）、
+> その列は `korb_slice`（旧 `VALUE_SLICE`）。アクセサは大文字で `KORB_REF_AT` / `KORB_REF_GET` / `KORB_REF_SET` /
+> `KORB_SLICE_MAKE` / `KORB_SLICE_GET` / `KORB_SLICE_LEN` / `KORB_SLICE_REF`。koruby の中に `VALUE` という名前は無く、
+> `VALUE` は C 拡張互換層の `include/ruby.h` だけが定義する（CRuby の VALUE = ハンドル）。
+> 共有 runtime（precise_gc）は中立名 `ARO_VALUE`、astrogen は `ASTroGen.value_type` でこの名前を受け取る。
 
 ### 2.1 may_gc — 「GC に到達しうるか」 ✅
 
@@ -97,7 +103,7 @@ CTX *c
 
 ### 2.2 moving GC で何が壊れるか ✅
 
-- GC はオブジェクトを **move** する。move 前のアドレスを持つ生の `VALUE` は
+- GC はオブジェクトを **move** する。move 前のアドレスを持つ生の `korb_value` は
   GC 後に **stale** (PURGE 下では決定的に SEGV)。
 - GC は **root から辿れる slot の中身は書き換えてくれる** (fixup)。
   だから「slot 経由で読み直せば常に正しい」。
@@ -107,7 +113,7 @@ CTX *c
 
 ### 2.3 stable root — 参照を向けてよい場所 ✅
 
-`VALUE_REF` が指してよいのは、(a) GC が scan する、かつ (b) その場所自体の
+`korb_ref` が指してよいのは、(a) GC が scan する、かつ (b) その場所自体の
 アドレスが GC を跨いで安定、の両方を満たす場所だけ。
 
 | 指し先 | scan される | アドレス安定 | ref として |
@@ -120,7 +126,7 @@ CTX *c
 | C local の `&v` | ✗ (precise = C stack を scan しない) | ✓ | NG |
 
 系: **move する heap payload への interior pointer を返す / 受け取る API は
-全面禁止**。要素を触る API は `(VALUE_REF container, long idx)` の形で渡す
+全面禁止**。要素を触る API は `(korb_ref container, long idx)` の形で渡す
 (CRuby が `RARRAY_PTR` を C 拡張に渡して Array を move できなくなった轍を
 踏まない)。slots への slice (§5.2) は non-moving なので例外的に OK。
 
@@ -131,7 +137,7 @@ CTX *c
 ### 3.1 「渡ってくる slots は常に top」
 
 すべての関数 (EVAL body、runtime helper、builtins) は
-`(CTX *c, VALUE *slots, ...)` を受け取る。`slots` はその時点の
+`(CTX *c, korb_value *slots, ...)` を受け取る。`slots` はその時点の
 **最初の空き slot**。
 
 - 自分宛の staged データ (@child の結果など) は `slots` の**下** (負 offset)
@@ -155,12 +161,12 @@ CTX *c
 ### 3.3 korb_alloc — 唯一の publish 点
 
 ```c
-VALUE korb_alloc(CTX *c, VALUE *slots, size_t size /* , type ... */);
+korb_value korb_alloc(CTX *c, korb_value *slots, size_t size /* , type ... */);
 /* 内部:
  *   c->slots_top = slots;        ← publish (これ以外の場所で slots_top を書かない)
  *   必要なら collect;             GC scan = [c->slots, c->slots_top)
  *   割り付けて返す
- * 呼ぶ瞬間の不変条件: 生きている VALUE はすべて slots より下 (または他の stable root) */
+ * 呼ぶ瞬間の不変条件: 生きている korb_value はすべて slots より下 (または他の stable root) */
 ```
 
 ### 3.4 cursor は値渡し — callee は caller の root 領域を伸ばせない ✅
@@ -171,14 +177,14 @@ return 後 root されない**。pop 忘れバグが存在しない代わりに�
 返す」経路は 3 つに限られる:
 
 1. **RESULT 戻り値 (1 個)** — register で返る。caller は「次の GC point
-   までに root するか使い切る」(= §7.5 の VALUE local 規則そのもの)
+   までに root するか使い切る」(= §7.5 の korb_value local 規則そのもの)
 2. **out-param (複数個)** — caller が先に `SLOTS_PUSH(slots, Qnil)` で
-   placeholder を確保し、`VALUE_REF` で渡す。callee は caller の領域を
+   placeholder を確保し、`korb_ref` で渡す。callee は caller の領域を
    伸ばせないが、**確保済み cell への SET はできる**:
 
    ```c
-   VALUE_REF q = SLOTS_PUSH(slots, Qnil);
-   VALUE_REF m = SLOTS_PUSH(slots, Qnil);
+   korb_ref q = SLOTS_PUSH(slots, Qnil);
+   korb_ref m = SLOTS_PUSH(slots, Qnil);
    CHECK(korb_int_divmod(c, slots, a, b, q, m));   /* callee が SET で書く */
    ```
 3. **heap に置く** (Array で返す等)
@@ -197,7 +203,7 @@ return 後 root されない**。pop 忘れバグが存在しない代わりに�
 
 ### 3.5 c->slots は動かせない — バッファのサイズ戦略 ✅(戦略の細部は 🤔)
 
-`slots` cursor と `VALUE_REF.p` は C のレジスタ・native stack 上に
+`slots` cursor と `korb_ref.p` は C のレジスタ・native stack 上に
 **runtime から見えない形で**散在する。Go の movable stack (成長時に
 copy + 全ポインタ書き換え) はコンパイラが全 frame の stack map を持つから
 できることで、plain C の v2 では不可能。**`c->slots` のアドレスは CTX の
@@ -235,18 +241,18 @@ GC が `c->slots` 経由で slot を fixup する (= 別ポインタからの書
 
 | 型 | 意味 | いつ使う |
 |---|---|---|
-| `VALUE` | 値そのもの。root されない | GC point の**後**にその引数が要らないとき |
-| `VALUE_REF` | rooted cell 1 個への参照 (§5) | GC point の後にその引数の (fixup 済みの) 値が要るとき |
-| `VALUE_SLICE` | rooted cell の連続列 + 個数 (§5.2) | argv / 可変長要素列 |
+| `korb_value` | 値そのもの。root されない | GC point の**後**にその引数が要らないとき |
+| `korb_ref` | rooted cell 1 個への参照 (§5) | GC point の後にその引数の (fixup 済みの) 値が要るとき |
+| `korb_slice` | rooted cell の連続列 + 個数 (§5.2) | argv / 可変長要素列 |
 
 **判定基準は「GC するか」ではなく「GC point の後に引数がまだ要るか」。**
 
-### 4.2 値渡し (`VALUE`) で済む may_gc 関数の 3 パターン ✅
+### 4.2 値渡し (`korb_value`) で済む may_gc 関数の 3 パターン ✅
 
 GC する関数でも、以下なら引数は値渡しでよい:
 
 1. **引数が immediate** (Fixnum / Flonum / nil / true / false / Symbol)
-   — move されない。例: `korb_fix_plus(c, slots, VALUE l, VALUE r)` は
+   — move されない。例: `korb_fix_plus(c, slots, korb_value l, korb_value r)` は
    overflow で bignum を **alloc するが**、l/r は fixnum なので安全
 2. **引数が immortal** (NODE 等。§9.3) — move されない。
    **Class は moving なので該当しない**点に注意 (v1 との違い: klass を
@@ -255,17 +261,17 @@ GC する関数でも、以下なら引数は値渡しでよい:
    `korb_float_plus` は double を取り出して**から** alloc する
    (GC 後に l/r を見ない)
 
-### 4.3 `_ref` (VALUE_REF 渡し) が要る 3 つの形 ✅
+### 4.3 `_ref` (korb_ref 渡し) が要る 3 つの形 ✅
 
 1. **grow-then-write** — 一番分かりやすい型。容量拡張 (= alloc = GC) して
    **から**書く:
 
    ```c
-   RESULT korb_ary_push_ref(CTX *c, VALUE *slots, VALUE_REF ary, VALUE_REF item)
+   RESULT korb_ary_push_ref(CTX *c, korb_value *slots, korb_ref ary, korb_ref item)
    {
        CHECK(korb_ary_ensure_capa_ref(c, slots, ary, 1));  /* alloc し得る */
-       VALUE a = VALUE_REF_GET(ary);                        /* GC 後でも fixup 済み */
-       KORB_ARRAY_PTR(a)[KORB_ARRAY_LEN(a)++] = VALUE_REF_GET(item);
+       korb_value a = KORB_REF_GET(ary);                        /* GC 後でも fixup 済み */
+       KORB_ARRAY_PTR(a)[KORB_ARRAY_LEN(a)++] = KORB_REF_GET(item);
        return RESULT_OK(a);
    }
    ```
@@ -286,17 +292,17 @@ ref で受けるのが正解。
 
 変換コストが非対称なことを利用する:
 
-- **VALUE_REF → VALUE は deref するだけ (タダ)**
-- **VALUE → VALUE_REF は SLOTS_PUSH (store + slot 消費) が要る**
+- **korb_ref → korb_value は deref するだけ (タダ)**
+- **korb_value → korb_ref は SLOTS_PUSH (store + slot 消費) が要る**
 
 なので「型未確定・dispatch しうる外側は ref で受け、型を確定させた内側の
 leaf へは deref して値で渡す」と、**どの境界でも詰め替えが発生しない**:
 
 ```c
-RESULT korb_node_plus_slow_ref(CTX *c, VALUE *slots, NODE *n,
-                               VALUE_REF l, VALUE_REF r, uint32_t arg_index)
+RESULT korb_node_plus_slow_ref(CTX *c, korb_value *slots, NODE *n,
+                               korb_ref l, korb_ref r, uint32_t arg_index)
 {
-    VALUE lv = VALUE_REF_GET(l), rv = VALUE_REF_GET(r);
+    korb_value lv = KORB_REF_GET(l), rv = KORB_REF_GET(r);
     if (FIXNUM_P(lv) && FIXNUM_P(rv))
         return korb_fix_plus(c, slots, lv, rv);       /* deref して値で内側へ */
     if (KORB_STRING_P(lv) && KORB_STRING_P(rv))
@@ -312,10 +318,10 @@ wrapper を用意してよい:
 
 ```c
 static inline RESULT
-korb_str_concat(CTX *c, VALUE *slots, VALUE str, VALUE append)
+korb_str_concat(CTX *c, korb_value *slots, korb_value str, korb_value append)
 {
-    VALUE_REF str_r = SLOTS_PUSH(slots, str);     /* cursor が 2 進む */
-    VALUE_REF app_r = SLOTS_PUSH(slots, append);
+    korb_ref str_r = SLOTS_PUSH(slots, str);     /* cursor が 2 進む */
+    korb_ref app_r = SLOTS_PUSH(slots, append);
     return korb_str_concat_ref(c, slots, str_r, app_r);  /* 進んだ cursor を渡す */
 }
 ```
@@ -325,7 +331,7 @@ korb_str_concat(CTX *c, VALUE *slots, VALUE str, VALUE append)
 
 ### 4.6 例外は RESULT ✅
 
-例外を起こしうる関数は**すべて** `RESULT` (VALUE + state、16 bytes =
+例外を起こしうる関数は**すべて** `RESULT` (korb_value + state、16 bytes =
 2 register 返し) を返す。v1 Phase 8 の規約を全面適用:
 
 - `RESULT_OK(v)` で包む、`UNWRAP(result)` / `CHECK(result)` で伝播
@@ -337,7 +343,7 @@ korb_str_concat(CTX *c, VALUE *slots, VALUE str, VALUE append)
     **GC point を含まない** → register 運搬のままで安全
   - 例外を持ったまま仕事をする場所 (rescue 本体 / ensure / backtrace 付加 /
     retry) だけが root の義務を負う: 入口で `SLOTS_PUSH(slots, r.value)`。
-    これは §7.5 の「VALUE local を may_gc 跨ぎで持たない」**通常規則
+    これは §7.5 の「korb_value local を may_gc 跨ぎで持たない」**通常規則
     そのもの**で、例外用の特例は無い (CodeQL も同じクエリで検査)
 - `$!` は CTX field ではなく **rescue 節ごとに parser が確保する hidden
   frame slot** に置く。読みは普通の lvar 機構、nested rescue の
@@ -346,60 +352,60 @@ korb_str_concat(CTX *c, VALUE *slots, VALUE str, VALUE append)
 
 ---
 
-## 5. VALUE_REF / VALUE_SLICE — 型による強制
+## 5. korb_ref / korb_slice — 型による強制
 
-### 5.1 VALUE_REF ✅
+### 5.1 korb_ref ✅
 
 ```c
-typedef struct { VALUE *p; } VALUE_REF;   /* 1-member struct → register 渡し */
+typedef struct { korb_value *p; } korb_ref;   /* 1-member struct → register 渡し */
 
-#define VALUE_REF_AT(ptr)     ((VALUE_REF){ (ptr) })
-#define VALUE_REF_GET(r)      (*(r).p)
-#define VALUE_REF_SET(r, v)   (*(r).p = (v))
+#define KORB_REF_AT(ptr)     ((korb_ref){ (ptr) })
+#define KORB_REF_GET(r)      (*(r).p)
+#define KORB_REF_SET(r, v)   (*(r).p = (v))
 /* audit build では GET/SET が korb_ref_check (stable-root 判定) +
  * stale 値検査 (gc_clock) を通る版に切り替わる */
 ```
 
 ポイント:
 
-- **生の `VALUE *` が ABI から消える**。`*ptr` と書きようがなくなるので、
+- **生の `korb_value *` が ABI から消える**。`*ptr` と書きようがなくなるので、
   「deref は必ず検査 hook を通る」が型レベルで保証される
   (ARO_GC_EDGE qualifier + Werror で direct write を全捕捉したのと同じ発想の
   deref 版)
 - GET / SET を分けてあるのは audit の中身が違うから
   (GET = stale 読み検査、SET = 不正値書込み検査 + 将来の write barrier hook 置き場)
-- `VALUE_REF_AT` に渡してよいのは **slots 由来 (`&slots[k]` / SLOTS_PUSH の
+- `KORB_REF_AT` に渡してよいのは **slots 由来 (`&slots[k]` / SLOTS_PUSH の
   戻り) か、受け取った ref の素通しだけ**。`&local` や `&obj->ivar` は禁止
   (§2.3)。CodeQL が出所を追う (§10)
 
 ivar の値を ref で渡したいときは copy + writeback:
 
 ```c
-VALUE_REF tmp = SLOTS_PUSH(slots, korb_ivar_get(VALUE_REF_GET(obj), id));
+korb_ref tmp = SLOTS_PUSH(slots, korb_ivar_get(KORB_REF_GET(obj), id));
 CHECK(korb_str_upcase_bang_ref(c, slots, tmp));
-korb_ivar_set(c, obj, id, VALUE_REF_GET(tmp));   /* obj も VALUE_REF なので GC 後も safe */
+korb_ivar_set(c, obj, id, KORB_REF_GET(tmp));   /* obj も korb_ref なので GC 後も safe */
 ```
 
-### 5.2 VALUE_SLICE 🤔
+### 5.2 korb_slice 🤔
 
 ```c
-typedef struct { VALUE *p; uint32_t cnt; } VALUE_SLICE;
+typedef struct { korb_value *p; uint32_t cnt; } korb_slice;
 
-VALUE_SLICE_GET(s, i)    /* audit: i < cnt の bounds 検査も付く */
-VALUE_SLICE_SET(s, i, v)
-VALUE_SLICE_LEN(s)
-VALUE_SLICE_REF(s, i)    /* i 番目への VALUE_REF を切り出す */
+KORB_SLICE_GET(s, i)    /* audit: i < cnt の bounds 検査も付く */
+KORB_SLICE_SET(s, i, v)
+KORB_SLICE_LEN(s)
+KORB_SLICE_REF(s, i)    /* i 番目への korb_ref を切り出す */
 ```
 
 - slots 領域内の**連続 rooted 列**の view。v1 の cfunc ABI
-  `(c, int argc, VALUE *sp)` (argv idiom) の型強制版
+  `(c, int argc, korb_value *sp)` (argv idiom) の型強制版
 - method call の引数 staging と array literal の要素 staging が同じ機構になり、
   staged した slot 列を**コピーなしで** callee の argv として渡せる
 - 「interior pointer 禁止」の例外: slots バッファは non-moving なので slice は安全
 
-### 5.3 命名: 値型名から導出する (`VALUE_REF`) ✅
+### 5.3 命名: 値型名から導出する (`korb_ref`) ✅
 
-`VALUE_REF` は「`VALUE` への ref」— **名前は言語の値型名から導出する**。
+`korb_ref` は「`korb_value` への ref」— **名前は言語の値型名から導出する**。
 framework (ARO_) 層は将来「言語ごとに値型の名前を変えられる」方針なので、
 値型を焼き込むこの機構を ARO_ 固定名にはできない。型名側に寄せておけば、
 値型を `LV` と名付けた言語では `LV_REF` / `LV_SLICE` になる、という
@@ -409,8 +415,8 @@ framework (ARO_) 層は将来「言語ごとに値型の名前を変えられる
 前例と同じ):
 
 ```c
-#define ASTRO_REF_VALUE  VALUE    /* 言語の値型名 */
-#include "astro_ref_template.h"   /* VALUE_REF / VALUE_REF_GET / VALUE_SLICE / ... が生成される */
+#define ASTRO_REF_VALUE  korb_value    /* 言語の値型名 */
+#include "astro_ref_template.h"   /* korb_ref / KORB_REF_GET / korb_slice / ... が生成される */
 ```
 
 ---
@@ -419,10 +425,10 @@ framework (ARO_) 層は将来「言語ごとに値型の名前を変えられる
 
 | 名前 | 役割 |
 |---|---|
-| `VALUE_REF` / `VALUE_SLICE` | rooted 参照の型 (§5) |
-| `VALUE_REF_AT(p)` | `&slots[k]` などから VALUE_REF を構築 |
-| `VALUE_REF_GET(r)` / `VALUE_REF_SET(r, v)` | 検査 hook 付き読み書き |
-| `SLOTS_PUSH(slots, v)` | v を cursor 位置に store、**cursor (local 変数) を 1 進め**、その cell への VALUE_REF を返す |
+| `korb_ref` / `korb_slice` | rooted 参照の型 (§5) |
+| `KORB_REF_AT(p)` | `&slots[k]` などから korb_ref を構築 |
+| `KORB_REF_GET(r)` / `KORB_REF_SET(r, v)` | 検査 hook 付き読み書き |
+| `SLOTS_PUSH(slots, v)` | v を cursor 位置に store、**cursor (local 変数) を 1 進め**、その cell への korb_ref を返す |
 | `RESULT_OK(v)` | 正常値を RESULT に包む |
 | `UNWRAP(result)` / `CHECK(result)` | RESULT 伝播 (非 NORMAL なら early return。値を取る / 捨てる) |
 | `korb_alloc(c, slots, ...)` | 割付け。`c->slots_top = slots` を publish する唯一の場所 |
@@ -433,10 +439,10 @@ framework (ARO_) 層は将来「言語ごとに値型の名前を変えられる
 
 | 禁止 | 強制手段 |
 |---|---|
-| 生の `VALUE *` 引数・`*ptr` deref | VALUE_REF 型で構文的に不可能 |
-| `&local` / `&obj->ivar` を VALUE_REF_AT へ | audit build + CodeQL |
+| 生の `korb_value *` 引数・`*ptr` deref | korb_ref 型で構文的に不可能 |
+| `&local` / `&obj->ivar` を KORB_REF_AT へ | audit build + CodeQL |
 | `c->slots_top` への直書き (korb_alloc 系以外) | CodeQL |
-| may_gc call を跨ぐ VALUE local の使用 | CodeQL + STRESS/PURGE |
+| may_gc call を跨ぐ korb_value local の使用 | CodeQL + STRESS/PURGE |
 | `slots` への restrict | レビュー規約 (§3.6) |
 | movable payload への interior pointer API | API 設計規約 (§2.3) |
 
@@ -462,16 +468,16 @@ v2 の @child 機構はこの構造の上に乗る。staging は DISPATCH / SD �
 
 | 宣言 | glue の動作 | body での見え方 |
 |---|---|---|
-| `VALUE x@child` | staging **なし**、register でそのまま渡す | 普通の VALUE 引数。`&x` 禁止 |
-| `VALUE_REF x@child` | `slots` の下に store してから ref を渡す | `VALUE_REF_GET(x)` で読む。`_ref` helper へ素通し可 |
+| `korb_value x@child` | staging **なし**、register でそのまま渡す | 普通の korb_value 引数。`&x` 禁止 |
+| `korb_ref x@child` | `slots` の下に store してから ref を渡す | `KORB_REF_GET(x)` で読む。`_ref` helper へ素通し可 |
 
 選び方の規則:
 
-> **`VALUE` にできるのは「自分より後に GC しうる評価が無い」operand**
+> **`korb_value` にできるのは「自分より後に GC しうる評価が無い」operand**
 > = 原則として**最後の @child** (かつ body が最初の GC point までに使い切るもの)。
-> それ以外は `VALUE_REF`。
+> それ以外は `korb_ref`。
 
-途中の @child が `VALUE` でいられないのは、後続 sibling の評価が GC した
+途中の @child が `korb_value` でいられないのは、後続 sibling の評価が GC した
 ときに register 上の値が stale になるから。staging (= slot への store) が
 そのまま rooting になる、というのがこの機構の核心。
 
@@ -481,11 +487,11 @@ v2 の @child 機構はこの構造の上に乗る。staging は DISPATCH / SD �
 
 ### 7.3 生成される glue (staging = rooting) ✅
 
-`node_plus(… VALUE_REF lhs@child, VALUE rhs@child …)` (slot_count = 1) なら:
+`node_plus(… korb_ref lhs@child, korb_value rhs@child …)` (slot_count = 1) なら:
 
 ```c
 RESULT
-DISPATCH_node_plus(CTX *c, NODE *n, VALUE *slots)
+DISPATCH_node_plus(CTX *c, NODE *n, korb_value *slots)
 {
     slots += 1;                              /* 自分の slot area (lhs 用) を確保 */
     RESULT r0 = EVAL_ARG(c, n->u.node_plus.lhs, slots);
@@ -496,15 +502,15 @@ DISPATCH_node_plus(CTX *c, NODE *n, VALUE *slots)
        v1 の偽 frame parking はこの構造で消滅する */
     if (UNLIKELY(r1.state != KORB_NORMAL)) return r1;
     return EVAL_node_plus(c, n, slots,
-                          VALUE_REF_AT(&slots[-1]),  /* VALUE_REF @child */
-                          r1.value,                 /* VALUE @child (register) */
+                          KORB_REF_AT(&slots[-1]),  /* korb_ref @child */
+                          r1.value,                 /* korb_value @child (register) */
                           n->u.node_plus.arg_index);
 }
 ```
 
 - 親から受けた slots に対し「自分の slot area 分 advance してから使う」
   (= v1 iter 60 の child-self-advance 規約と同じ)。advance 量 slot_count は
-  @child (VALUE_REF のもの) + `$tmp` の数で、NodeKind に静的に bake される
+  @child (korb_ref のもの) + `$tmp` の数で、NodeKind に静的に bake される
 - RESULT の例外伝播も glue で完結 (例外なら body に入らない)
 - SD を焼くときは specializer が同じ形を子 SD 直呼びで吐く
 
@@ -514,26 +520,26 @@ DISPATCH_node_plus(CTX *c, NODE *n, VALUE *slots)
 
 ```c
 NODE_DEF
-node_lset(CTX *c, NODE *n, VALUE *slots, VALUE rval@child, uint32_t lvar_off)
+node_lset(CTX *c, NODE *n, korb_value *slots, korb_value rval@child, uint32_t lvar_off)
 {
     slots[lvar_off] = rval;     /* 唯一の child + body は GC しない (@nogc) */
     return RESULT_OK(rval);
 }
 ```
 
-唯一の @child なので VALUE でよく、staging slot 自体が無い。v1 で
+唯一の @child なので korb_value でよく、staging slot 自体が無い。v1 で
 「node_lset は @child 化できない」とされた lset destination と staging
 slot の aliasing 問題も、slot が消えるので一緒に消える。
 SD では rval の評価が定数に畳まれ `slots[off] = INT2FIX(1);` 1 命令になる。
 
-**plus — 混合 (途中 = VALUE_REF、最後 = VALUE):**
+**plus — 混合 (途中 = korb_ref、最後 = korb_value):**
 
 ```c
 NODE_DEF
-node_plus(CTX *c, NODE *n, VALUE *slots,
-          VALUE_REF lhs@child, VALUE rhs@child, uint32_t arg_index)
+node_plus(CTX *c, NODE *n, korb_value *slots,
+          korb_ref lhs@child, korb_value rhs@child, uint32_t arg_index)
 {
-    VALUE l = VALUE_REF_GET(lhs);
+    korb_value l = KORB_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs) && !BASIC_OP_REDEFINED(c))) {
         long s;
         if (LIKELY(!__builtin_add_overflow(FIX2LONG(l), FIX2LONG(rhs), &s) && FIXABLE(s)))
@@ -545,11 +551,11 @@ node_plus(CTX *c, NODE *n, VALUE *slots,
 }
 ```
 
-**array literal — 可変長 @children は VALUE_SLICE:** 🤔
+**array literal — 可変長 @children は korb_slice:** 🤔
 
 ```c
 NODE_DEF
-node_ary_new(CTX *c, NODE *n, VALUE *slots, VALUE_SLICE elems@children)
+node_ary_new(CTX *c, NODE *n, korb_value *slots, korb_slice elems@children)
 {
     return korb_ary_new_from_slice(c, slots, elems);
     /* glue が要素を slots の下に順次評価・staging 済み (後続評価中も全部 rooted)。
@@ -561,7 +567,7 @@ node_ary_new(CTX *c, NODE *n, VALUE *slots, VALUE_SLICE elems@children)
 
 ```c
 NODE_DEF
-node_and(CTX *c, NODE *n, VALUE *slots, VALUE lhs@child, NODE *rhs)
+node_and(CTX *c, NODE *n, korb_value *slots, korb_value lhs@child, NODE *rhs)
 {
     if (!KORB_TRUTHY(lhs)) return RESULT_OK(lhs);
     return EVAL_ARG(c, rhs, slots);          /* 右辺は条件成立時のみ評価 */
@@ -573,8 +579,8 @@ node_and(CTX *c, NODE *n, VALUE *slots, VALUE lhs@child, NODE *rhs)
 
 ### 7.5 body 内の規律 ✅
 
-- `VALUE` local (VALUE_REF_GET の結果含む) を **may_gc call を跨いで使わない**。
-  跨ぐなら `VALUE_REF_GET` で取り直す (slot は fixup 済み) — CodeQL の検査対象
+- `korb_value` local (KORB_REF_GET の結果含む) を **may_gc call を跨いで使わない**。
+  跨ぐなら `KORB_REF_GET` で取り直す (slot は fixup 済み) — CodeQL の検査対象
 - callee へ渡す slots は、push していなければ受け取った `slots` そのまま
 - `$name` で一時 slot を宣言できる (slots 負 offset に置換され slot_count に
   算入される。v1 iter 60 の機構を継承)
@@ -597,8 +603,8 @@ SD を焼く時点では operand の実部分木が見えるので、静的に�
 どちらかなら staging を省略して register 渡しにできる。実現機構は
 **multi-variant 転写**: body は不透明テキストなので、ASTroGen が binding を
 変えた同じ body を複数 variant (`lhs = slot 経由` / `lhs = register`) として
-転写し、specializer が判定して選ぶ。`VALUE_REF_GET` を `_Generic` で
-「VALUE_REF なら deref、VALUE なら identity」にしておけば同一 body が両 variant
+転写し、specializer が判定して選ぶ。`KORB_REF_GET` を `_Generic` で
+「korb_ref なら deref、korb_value なら identity」にしておけば同一 body が両 variant
 でコンパイルできる。「C パーサを持たない」原則は崩れない。
 
 ただし body が ref を `_ref` helper に素通ししていると register variant は
@@ -638,10 +644,10 @@ SD は v1 で完動実績あり (f4d37d54)。
 
 - **R1: staged slot の往復が定数畳み込みを弱める**。v1 は child の結果が
   C local で EVAL に流れたので literal が SD 内で完全に畳まれた。v2 の
-  `VALUE_REF @child` は store → (call を挟んで) load になり、call があると
+  `korb_ref @child` は store → (call を挟んで) load になり、call があると
   compiler は load を fold できない。heap 値はどうせ fold 禁止 (move される)
   なので損は無いが、immediate は畳めなくなる。
-  → 対策: `VALUE @child` (最 hot ケースを覆う) + §7.7 の variant 選択
+  → 対策: `korb_value @child` (最 hot ケースを覆う) + §7.7 の variant 選択
 - **R2: depth 焼き込みで SD の共有が減る** (一本モデルの隠れコスト)。
   lvar offset に depth が入ると、同一部分木でも出現深さが違えば別 hash →
   SD dedup が効かず code store とコンパイル時間が膨らみ得る。v1 は
@@ -702,9 +708,9 @@ Class が動くことで引き受けるもの (いずれも対処が既知):
    move に追従するので比較が常に正しい。代償: IC が class を延命 +
    IC 列挙の scan コスト)
 2. **AOT への klass 定数焼き込みは不可** — `c->consts[idx]` (root 配列)
-   経由の間接参照で扱う。元々 v1 の VALUE 埋め込みも同じ間接形なので
+   経由の間接参照で扱う。元々 v1 の korb_value 埋め込みも同じ間接形なので
    (§13 #5)、新たな後退ではない
-3. **class の表 (method table / const table / ivar) への VALUE_REF は不可**
+3. **class の表 (method table / const table / ivar) への korb_ref は不可**
    — movable object の field なので §2.3 のとおり。copy + writeback
    (§5.1) で書く。結果として「ref を向けてよいのは実質 slots だけ」に
    規則が狭まり、検査も単純になる
@@ -726,10 +732,10 @@ GC が見るオブジェクト・バッファは全部 korb_alloc (arena) 経由
 
 | 層 | 何が捕まるか | コスト |
 |---|---|---|
-| **型 (VALUE_REF/SLICE)** | 生 deref・ポインタ演算の事故。コンパイル時 | ゼロ (release は素の deref に展開) |
-| **audit build** (`-DKORB_AUDIT`) | VALUE_REF_GET/SET 時の stable-root 判定 + stale 値検査 (gc_clock。v1 KORB_RESULT_AUDIT の後継)、VALUE_SLICE の bounds | debug build のみ |
+| **型 (korb_ref/SLICE)** | 生 deref・ポインタ演算の事故。コンパイル時 | ゼロ (release は素の deref に展開) |
+| **audit build** (`-DKORB_AUDIT`) | KORB_REF_GET/SET 時の stable-root 判定 + stale 値検査 (gc_clock。v1 KORB_RESULT_AUDIT の後継)、korb_slice の bounds | debug build のみ |
 | **STRESS / PURGE** | すり抜けた時間差 stale を実行時に決定的 SEGV | テスト時のみ |
-| **CodeQL** (audit build の compile DB 上で) | ①may_gc call を跨ぐ VALUE local の使用 ②`c->slots_top` への korb_alloc 系以外の代入 ③`VALUE_REF_AT` への不正な出所 (`&local`, `&obj->field`) | CI |
+| **CodeQL** (audit build の compile DB 上で) | ①may_gc call を跨ぐ korb_value local の使用 ②`c->slots_top` への korb_alloc 系以外の代入 ③`KORB_REF_AT` への不正な出所 (`&local`, `&obj->field`) | CI |
 
 🤔 CodeQL クエリは make ターゲット (`make codeql`) として整備し、PR/iter の
 gate にする。may_gc(C 関数) の根拠は命名規約 + annotation で与え、
@@ -797,9 +803,9 @@ v1 はロジックの参考資料とし、v2 ABI で書き下ろす。
 | 1 | lvar 一本 (stack-machine bake) vs 二本 (frame base) | M0 で実測 (R2 の SD dedup 影響込み) |
 | 2 | slots overflow の細部 (§3.5 の方針は確定。limit check の置き場所 = prologue のみで足りるか、可変長 staging 前の SLOTS_RESERVE が要るか) | M0 |
 | 3 | specialize 時 variant 選択の宣言構文 (§7.7) | 機構導入時 (初期は無し) |
-| 4 | VALUE_SLICE の詳細 (splat / kwargs との接続) | M1 で builtins を書きながら |
-| 5 | AOT の VALUE literal 埋め込み (v1 からの framework gap: c->consts 経由) | AOT gate 整備時 |
+| 4 | korb_slice の詳細 (splat / kwargs との接続) | M1 で builtins を書きながら |
+| 5 | AOT の korb_value literal 埋め込み (v1 からの framework gap: c->consts 経由) | AOT gate 整備時 |
 | 6 | callback 系 iterator (each 等) と ref 規約の詳細 | M1 |
 | 7 | ~~ディレクトリ名~~ → `sample/koruby_precise/` in-place で確定 (§12.3) | 解決済み |
-| 8 | 可変長の「上に返す」(splat 展開等、§3.4)。候補: (a) cursor を `VALUE **` で渡す例外 ABI (b) Array で返す (c) 生成コード側 (cursor 所有者) に寄せる | M1 (splat 実装時) |
+| 8 | 可変長の「上に返す」(splat 展開等、§3.4)。候補: (a) cursor を `korb_value **` で渡す例外 ABI (b) Array で返す (c) 生成コード側 (cursor 所有者) に寄せる | M1 (splat 実装時) |
 | 9 | moving Class への inline cache 防衛 (§9.3): gen tag (v1 実証) vs IC slot を GC edge 化 | M1 (IC 実装時) |

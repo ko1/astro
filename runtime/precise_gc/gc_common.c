@@ -27,28 +27,28 @@
 
 /* Public alloc API — thin wrapper around the backend's raw alloc.
  *
- * Sample stores the returned VALUE directly into a GC-visible slot
+ * Sample stores the returned ARO_VALUE directly into a GC-visible slot
  * (= sp[], object field).  The return is the raw heap payload pointer
- * cast to VALUE; sample uses ARO_LOAD / direct cast to access.
+ * cast to ARO_VALUE; sample uses ARO_LOAD / direct cast to access.
  *
  * `aro_gc_alloc` corresponds to the SCAN category (= scan-safe init,
  * GC's heap walk dispatches via sample's SCAN_EDGES on the payload);
  * `aro_gc_alloc_byte` corresponds to the BYTE category (= no init, no
  * scan).  Both are inline-shallow so LTO folds them into the caller. */
-VALUE
+ARO_VALUE
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
     (void)c;
     AROH_GC_SAFEPOINT();   /* RESULT-audit: every alloc is a potential-GC point (no-op in release) */
-    return (VALUE)(uintptr_t)aro_gc_alloc_raw(c, payload_size);
+    return (ARO_VALUE)(uintptr_t)aro_gc_alloc_raw(c, payload_size);
 }
 
-VALUE
+ARO_VALUE
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
     (void)c;
     AROH_GC_SAFEPOINT();
-    return (VALUE)(uintptr_t)aro_gc_alloc_byte_raw(c, payload_size);
+    return (ARO_VALUE)(uintptr_t)aro_gc_alloc_byte_raw(c, payload_size);
 }
 
 /* Default in-place realloc hook — returns NULL so the caller falls

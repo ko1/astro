@@ -1318,7 +1318,7 @@ build_pattern_desc_r(struct kp_ctx *tc, const pm_node_t *pat)
             p->kind = 3; p->n = (uint32_t)hp->elements.size;
             p->npost = 0; p->bind_off = INT32_MIN;        /* rest mode: 0=none, 1=**rest, 2=**nil */
             if (hp->constant) p->value_node = kp_pat_value(tc, hp->constant);   /* `Const(k: …)` → Const === subject */
-            p->keys  = calloc(p->n ? p->n : 1, sizeof(VALUE));
+            p->keys  = calloc(p->n ? p->n : 1, sizeof(korb_value));
             p->elems = calloc(p->n ? p->n : 1, sizeof(struct korb_pat *));
             for (uint32_t i = 0; i < p->n; i++) {
                 if (!PM_NODE_TYPE_P(hp->elements.nodes[i], PM_ASSOC_NODE)) { ok = false; break; }

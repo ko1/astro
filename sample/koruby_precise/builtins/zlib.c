@@ -5,17 +5,17 @@
 #include <zlib.h>
 
 /* Zlib.crc32(str = "", crc = 0) / Zlib.adler32 — the running checksum. */
-static RESULT korb_m_zlib_sum(CTX *c, VALUE *slots, VALUE_SLICE a, bool adler) {
-    const uint32_t n = VALUE_SLICE_LEN(a);
+static RESULT korb_m_zlib_sum(CTX *c, korb_value *slots, korb_slice a, bool adler) {
+    const uint32_t n = KORB_SLICE_LEN(a);
     uLong sum = adler ? adler32(0L, Z_NULL, 0) : crc32(0L, Z_NULL, 0);
     if (n >= 2) {
-        const VALUE sv = VALUE_SLICE_GET(a, 1);
+        const korb_value sv = KORB_SLICE_GET(a, 1);
         if (UNLIKELY(!FIXNUM_P(sv) && !KORB_BIGNUM_P(sv)))
             return korb_raise_no_int(c, slots, sv);
         sum = (uLong)(uint32_t)(FIXNUM_P(sv) ? (uint64_t)FIX2LONG(sv) : 0);
     }
-    if (n >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
-        const VALUE s = VALUE_SLICE_GET(a, 0);
+    if (n >= 1 && KORB_SLICE_GET(a, 0) != KORB_NIL) {
+        const korb_value s = KORB_SLICE_GET(a, 0);
         if (UNLIKELY(!KORB_STRING_P(s)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, s));
         const KorbString *const ks = VAL2STR(s);
@@ -24,17 +24,17 @@ static RESULT korb_m_zlib_sum(CTX *c, VALUE *slots, VALUE_SLICE a, bool adler) {
     }
     return RESULT_OK(LONG2FIX((korb_sword_t)(uint32_t)sum));
 }
-static RESULT korb_m_zlib_crc32(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)self; return korb_m_zlib_sum(c, slots, a, false); }
-static RESULT korb_m_zlib_adler32(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_m_zlib_sum(c, slots, a, true); }
+static RESULT korb_m_zlib_crc32(CTX *c, korb_value *slots, korb_ref self, korb_slice a)   { (void)self; return korb_m_zlib_sum(c, slots, a, false); }
+static RESULT korb_m_zlib_adler32(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)self; return korb_m_zlib_sum(c, slots, a, true); }
 
-static RESULT korb_m_zlib_crc_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_zlib_crc_table(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     const z_crc_t *const t = get_crc_table();
     slots[0] = UNWRAP(korb_ary_new(c, slots, 256));
-    const VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    const korb_ref arr = KORB_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < 256; i++)
         CHECK(korb_ary_push_val(c, slots + 1, arr, LONG2FIX((korb_sword_t)(uint32_t)t[i])));
-    return RESULT_OK(VALUE_REF_GET(arr));
+    return RESULT_OK(KORB_REF_GET(arr));
 }
 
 /* ARO_BORROW: point a stack z_stream's input at a String's movable bytes.  The
@@ -46,13 +46,13 @@ ARO_BORROW static void korb_z_bind_in(z_stream *const zs, const KorbString *cons
 
 /* __zlib_deflate(str, level, window_bits) → the compressed String.
  * window_bits picks the wrapper: 15 = zlib, -15 = raw, 31 = gzip. */
-static RESULT korb_m_zlib_deflate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_zlib_deflate(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const VALUE sv = VALUE_SLICE_GET(a, 0);
+    const korb_value sv = KORB_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(sv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, sv));
-    const int level = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
-    const int wbits = (int)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    const int level = (int)FIX2LONG(KORB_SLICE_GET(a, 1));
+    const int wbits = (int)FIX2LONG(KORB_SLICE_GET(a, 2));
     const KorbString *const ks = VAL2STR(sv);
     z_stream zs; memset(&zs, 0, sizeof zs);
     if (deflateInit2(&zs, level, Z_DEFLATED, wbits, 8, Z_DEFAULT_STRATEGY) != Z_OK)
@@ -75,12 +75,12 @@ static RESULT korb_m_zlib_deflate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 
 /* __zlib_inflate(str, window_bits) → the decompressed String.  A truncated or
  * corrupt stream raises; the Ruby layer maps that to Zlib::DataError etc. */
-static RESULT korb_m_zlib_inflate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_zlib_inflate(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const VALUE sv = VALUE_SLICE_GET(a, 0);
+    const korb_value sv = KORB_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(sv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, sv));
-    const int wbits = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
+    const int wbits = (int)FIX2LONG(KORB_SLICE_GET(a, 1));
     const KorbString *const ks = VAL2STR(sv);
     z_stream zs; memset(&zs, 0, sizeof zs);
     if (inflateInit2(&zs, wbits) != Z_OK)
@@ -111,7 +111,7 @@ static RESULT korb_m_zlib_inflate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return r;
 }
 
-static RESULT korb_m_zlib_version(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_zlib_version(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     const char *const v = zlibVersion();
     return korb_str_new(c, slots, v, (uint32_t)strlen(v));
@@ -143,11 +143,11 @@ static struct korb_zstream *korb_zstream_at(korb_sword_t h) {
 }
 
 /* __zstream_open(deflating, level, window_bits) -> handle */
-static RESULT korb_m_zstream_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_zstream_open(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int deflating = KORB_TRUTHY(VALUE_SLICE_GET(a, 0));
-    const int level = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
-    const int wbits = (int)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    const int deflating = KORB_TRUTHY(KORB_SLICE_GET(a, 0));
+    const int level = (int)FIX2LONG(KORB_SLICE_GET(a, 1));
+    const int wbits = (int)FIX2LONG(KORB_SLICE_GET(a, 2));
     uint32_t idx = UINT32_MAX;
     for (uint32_t i = 0; i < korb_zstream_cnt; i++) if (!korb_zstreams[i].used) { idx = i; break; }
     if (idx == UINT32_MAX) {
@@ -169,12 +169,12 @@ static RESULT korb_m_zstream_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 
 /* __zstream_run(handle, input, flush) -> the output produced so far. */
-static RESULT korb_m_zstream_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_zstream_run(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    struct korb_zstream *const z = korb_zstream_at(FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    struct korb_zstream *const z = korb_zstream_at(FIX2LONG(KORB_SLICE_GET(a, 0)));
     if (!z) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "closed zstream");
-    const VALUE sv = VALUE_SLICE_GET(a, 1);
-    const int flush = (int)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    const korb_value sv = KORB_SLICE_GET(a, 1);
+    const int flush = (int)FIX2LONG(KORB_SLICE_GET(a, 2));
     const KorbString *const ks = (sv == KORB_NIL) ? NULL : VAL2STR(sv);
     /* z lives in the process-wide table, so a next_in into the String would
      * outlive this call under the moving GC: stage the input in libc memory,
@@ -222,26 +222,26 @@ static RESULT korb_m_zstream_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 
 /* __zstream_stat(handle) -> [total_in, total_out, stream_end?, avail_in, adler] */
-static RESULT korb_m_zstream_stat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_zstream_stat(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const struct korb_zstream *const z = korb_zstream_at(FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    const struct korb_zstream *const z = korb_zstream_at(FIX2LONG(KORB_SLICE_GET(a, 0)));
     if (!z) return RESULT_OK(KORB_NIL);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 5));
-    const VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    const korb_ref arr = KORB_REF_AT(&slots[0]);
     CHECK(korb_ary_push_val(c, slots + 1, arr, LONG2FIX((korb_sword_t)z->zs.total_in)));
     CHECK(korb_ary_push_val(c, slots + 1, arr, LONG2FIX((korb_sword_t)z->zs.total_out)));
     CHECK(korb_ary_push_val(c, slots + 1, arr, z->ended ? KORB_TRUE : KORB_FALSE));
     CHECK(korb_ary_push_val(c, slots + 1, arr, LONG2FIX((korb_sword_t)z->zs.avail_in)));
     CHECK(korb_ary_push_val(c, slots + 1, arr, LONG2FIX((korb_sword_t)(uint32_t)z->zs.adler)));
-    return RESULT_OK(VALUE_REF_GET(arr));
+    return RESULT_OK(KORB_REF_GET(arr));
 }
 
 /* __zstream_set_dict(handle, dict) -> dict (Zlib::{Deflate,Inflate}#set_dictionary) */
-static RESULT korb_m_zstream_set_dict(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_zstream_set_dict(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    struct korb_zstream *const z = korb_zstream_at(FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    struct korb_zstream *const z = korb_zstream_at(FIX2LONG(KORB_SLICE_GET(a, 0)));
     if (!z) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "closed zstream");
-    const VALUE dv = VALUE_SLICE_GET(a, 1);
+    const korb_value dv = KORB_SLICE_GET(a, 1);
     if (UNLIKELY(!KORB_STRING_P(dv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, dv));
     const KorbString *const ds = VAL2STR(dv);         /* no alloc between here and the zlib call */
@@ -252,9 +252,9 @@ static RESULT korb_m_zstream_set_dict(CTX *c, VALUE *slots, VALUE_REF self, VALU
     return RESULT_OK(dv);
 }
 
-static RESULT korb_m_zstream_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_zstream_close(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)slots; (void)c;
-    struct korb_zstream *const z = korb_zstream_at(FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    struct korb_zstream *const z = korb_zstream_at(FIX2LONG(KORB_SLICE_GET(a, 0)));
     if (!z) return RESULT_OK(KORB_NIL);
     if (z->deflating) deflateEnd(&z->zs); else inflateEnd(&z->zs);
     free(z->pending); z->pending = NULL; z->pending_len = 0;
@@ -263,7 +263,7 @@ static RESULT korb_m_zstream_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 
 static void korb_init_zlib(CTX *c) {
-    const VALUE obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    const korb_value obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
     korb_class_def_cfn(c, obj, "__zlib_crc32",     korb_m_zlib_crc32,     -1);
     korb_class_def_cfn(c, obj, "__zlib_adler32",   korb_m_zlib_adler32,   -1);
     korb_class_def_cfn(c, obj, "__zlib_crc_table", korb_m_zlib_crc_table,  0);

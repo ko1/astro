@@ -46,13 +46,11 @@
 // Forward decls (defined in context.h)
 struct CTX_struct;
 typedef struct CTX_struct CTX;
-/* VALUE forward decl — sample's context.h is the canonical source.
- * Default to `intptr_t` for samples that don't override, but skip when
- * sample's context.h has already typedef'd VALUE (= guards against
- * `conflicting types` when sample uses `uintptr_t` / `int64_t` / etc.,
- * which differ from `intptr_t` at the type-system level). */
-#ifndef ARO_GC_VALUE_TYPEDEFED
+/* The tagged word the collector scans.  A sample names its own type by
+ * defining ARO_VALUE before this header (koruby: korb_value); default VALUE. */
+#ifndef ARO_VALUE
 typedef intptr_t VALUE;
+#  define ARO_VALUE VALUE
 #endif
 
 // ---------------------------------------------------------------------------
@@ -115,7 +113,7 @@ extern const char *aro_gc_backend_name;
 /* ---------------------------------------------------------------------------
  * ARO_LOAD — slot-based read barrier hook.
  *
- * Reads a VALUE / typed-ptr slot and returns the raw heap pointer.
+ * Reads a ARO_VALUE / typed-ptr slot and returns the raw heap pointer.
  * Currently a plain dereference (= identity), but kept as a dedicated
  * macro so future GC algorithms (= concurrent Brooks-style forwarding,
  * colored pointer remap, handle-table lookup) can inject their barrier
@@ -128,7 +126,7 @@ extern const char *aro_gc_backend_name;
  * --------------------------------------------------------------------------- */
 
 #define ARO_LOAD(c, slot_ptr) \
-    ((void)(c), (void *)(uintptr_t)(*(VALUE *)(uintptr_t)(slot_ptr)))
+    ((void)(c), (void *)(uintptr_t)(*(ARO_VALUE *)(uintptr_t)(slot_ptr)))
 
 /* ---------------------------------------------------------------------------
  * SCAN_EDGES helper — sample's SCAN_EDGES invokes this per slot.
@@ -147,18 +145,18 @@ extern const char *aro_gc_backend_name;
  * triggering -Wcast-qual (which is enabled in audit builds to plug the
  * memcpy / void* implicit-conversion holes). */
 #define ARO_GC_VISIT_EDGE(ctx, fn, slot_ptr) do {                              \
-    VALUE *_aro_vs   = (VALUE *)(uintptr_t)(slot_ptr);                         \
-    VALUE  _aro_v    = *_aro_vs;                                               \
+    ARO_VALUE *_aro_vs   = (ARO_VALUE *)(uintptr_t)(slot_ptr);                         \
+    ARO_VALUE  _aro_v    = *_aro_vs;                                               \
     if (((uintptr_t)_aro_v & 7u) == 0 && _aro_v != 0) {                        \
         void *_aro_raw = (void *)(uintptr_t)_aro_v;                            \
         (fn)((ctx), &_aro_raw);                                                \
-        *_aro_vs = (VALUE)(uintptr_t)_aro_raw;                                 \
+        *_aro_vs = (ARO_VALUE)(uintptr_t)_aro_raw;                                 \
     }                                                                          \
 } while (0)
 
 /* Raw typed-ptr edge: slot holds an unscrambled C pointer (= sample
- * struct field typed as `T *`, not VALUE).  Used by samples that have
- * not migrated all typed-ptr fields to encoded VALUE storage.  Skip
+ * struct field typed as `T *`, not ARO_VALUE).  Used by samples that have
+ * not migrated all typed-ptr fields to encoded ARO_VALUE storage.  Skip
  * the scramble decode entirely (= raw slot). */
 #define ARO_GC_VISIT_EDGE_PTR(ctx, fn, slot_ptr)                               \
     ((fn)((ctx), (void **)(uintptr_t)(slot_ptr)))
@@ -166,7 +164,7 @@ extern const char *aro_gc_backend_name;
 /* ---------------------------------------------------------------------------
  * ARO_ROOT_SCOPE — lexical precise-root scope.
  *
- * Reserves N VALUE slots on the sample-owned root stack.  Slots are
+ * Reserves N ARO_VALUE slots on the sample-owned root stack.  Slots are
  * zero-filled before the root-stack top is advanced, so an alloc-triggered
  * GC inside the scope sees only valid heap pointers (or 0) in the new range.
  * Callers store live VALUEs into the slots via ARO_ROOT(r, i) before any
@@ -174,9 +172,9 @@ extern const char *aro_gc_backend_name;
  * allocation-capable call (= moving GC can rewrite the slot).
  *
  * Sample contract — sample's context.h MUST provide:
- *   AROH_ROOT_STACK_TOP(c)        — VALUE *  current root-stack top
+ *   AROH_ROOT_STACK_TOP(c)        — ARO_VALUE *  current root-stack top
  *   AROH_ROOT_STACK_SET_TOP(c, p) — set the top (= alloc / release)
- *   AROH_ROOT_STACK_LIMIT(c)      — VALUE *  one-past-end (debug bound)
+ *   AROH_ROOT_STACK_LIMIT(c)      — ARO_VALUE *  one-past-end (debug bound)
  *
  *   AROH_VISIT_ROOTS MUST scan the same root stack so GC sees the slots
  *   reserved here.  (Typically `for (p = base; p < AROH_ROOT_STACK_TOP(c); p++)`.)
@@ -184,7 +182,7 @@ extern const char *aro_gc_backend_name;
  * Usage:
  *   ARO_ROOT_SCOPE_START(c, r, 2) {
  *       ARO_ROOT(r, 0) = aro_gc_alloc(c, sizeof(BaArray));
- *       ARO_ROOT(r, 1) = (VALUE)aro_gc_alloc(c, items_sz);
+ *       ARO_ROOT(r, 1) = (ARO_VALUE)aro_gc_alloc(c, items_sz);
  *
  *       BaArray *a = VAL2ARY(c, ARO_ROOT(r, 0));   // reload after each alloc
  *       a->items = (BaArrayItems *)ARO_ROOT(r, 1);
@@ -222,7 +220,7 @@ extern const char *aro_gc_backend_name;
  * later). */
 #define ARO_ROOT_SCOPE_START(c, name, n)                                       \
     do {                                                                        \
-        VALUE *name = AROH_ROOT_STACK_TOP(c);                                   \
+        ARO_VALUE *name = AROH_ROOT_STACK_TOP(c);                                   \
         const size_t ARO_CAT(_aro_root_cap_, name) = (size_t)(n);               \
         (void)ARO_CAT(_aro_root_cap_, name);                                    \
         ASTRO_ASSERT((name) + ARO_CAT(_aro_root_cap_, name)                     \
@@ -246,7 +244,7 @@ extern const char *aro_gc_backend_name;
  *   ARO_ROOT_SCOPE_START(c, r, 2) {
  *       ARO_ROOT(r, 0) = aro_gc_alloc(c, sz);
  *       if (early_condition) {
- *           VALUE ret = ARO_ROOT(r, 0);
+ *           ARO_VALUE ret = ARO_ROOT(r, 0);
  *           ARO_ROOT_SCOPE_CANCEL(c, r);
  *           return ret;                   // safe: sp restored
  *       }
@@ -290,15 +288,15 @@ void  aro_gc_account_external(CTX *c, ssize_t delta);
  * Sample MUST define this macro in its context.h (or a header that
  * context.h includes) BEFORE any framework backend translation unit
  * pulls in gc.h.  Framework backends invoke it from each GC entry point
- * to iterate over all root slots (= VALUE / pointer storage that is NOT
+ * to iterate over all root slots (= ARO_VALUE / pointer storage that is NOT
  * reachable from already-scanned heap objects).
  *
  * For each root slot the macro body invokes:
- *   - ARO_GC_VISIT_EDGE((ctx), edge_visit, slot)  — for VALUE slots
+ *   - ARO_GC_VISIT_EDGE((ctx), edge_visit, slot)  — for ARO_VALUE slots
  *   - ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, slot)  — for raw typed-ptr slots
  *
  * Layout examples:
- *   - baruby_precise: linear range c->env .. c->sp (= VALUE *).
+ *   - baruby_precise: linear range c->env .. c->sp (= ARO_VALUE *).
  *     Defined inline in context.h = zero function-call overhead.
  *   - ascheme_precise: c->env (= struct sframe *), c->globals[*].value,
  *                      c->next_env (= tail-call pending), etc.
@@ -371,7 +369,7 @@ aro_gc_free_large_chain_malloc(void *head)
  * scan-safe object.  Category = SCAN (= sample's SCAN_EDGES dispatches
  * at scan time, typically via sample's own ObjectHeader.type).
  *
- * **Return type**: VALUE = raw payload pointer cast to integer.  Sample
+ * **Return type**: ARO_VALUE = raw payload pointer cast to integer.  Sample
  * stores the result directly into a GC-visible slot (= sp[], object
  * field) and accesses via ARO_LOAD or plain cast.
  *
@@ -383,9 +381,9 @@ aro_gc_free_large_chain_malloc(void *head)
  * scan range during any inner GC trigger. */
 /* Backend-provided raw alloc — returns the payload pointer
  * (= AroObjectHeader * at offset 0).  Public API `aro_gc_alloc` casts
- * to VALUE in gc_common.c. */
+ * to ARO_VALUE in gc_common.c. */
 void *aro_gc_alloc_raw(CTX *c, size_t payload_size);
-VALUE aro_gc_alloc(CTX *c, size_t payload_size);
+ARO_VALUE aro_gc_alloc(CTX *c, size_t payload_size);
 
 /* True iff p is in a retired (mprotect'd) PURGE plane — dereferencing would
  * SEGV.  Sample code can skip such an escaped/stale pointer defensively.
@@ -393,14 +391,14 @@ VALUE aro_gc_alloc(CTX *c, size_t payload_size);
 #include <stdbool.h>
 bool aro_gc_addr_retired(CTX *c, const void *p);
 
-/* aro_gc_alloc_byte — allocate `payload_size` raw bytes (no VALUE
+/* aro_gc_alloc_byte — allocate `payload_size` raw bytes (no ARO_VALUE
  * scanning, no zero-init).  Used for BaString.bytes / other char[]
  * payloads.  Caller fills the bytes after return (decoded via
  * ARO_LOAD to obtain the writeable `char *`).  GC's heap walk skips
  * this category, so leftover freelist-link bytes are harmless.
  * Same c->sp contract as aro_gc_alloc. */
 void *aro_gc_alloc_byte_raw(CTX *c, size_t payload_size);
-VALUE aro_gc_alloc_byte(CTX *c, size_t payload_size);
+ARO_VALUE aro_gc_alloc_byte(CTX *c, size_t payload_size);
 
 /* aro_gc_realloc_payload / _byte_payload — grow a payload, copying contents.
  *
@@ -611,7 +609,7 @@ aro_gc_phase_end(struct timespec t0, double *phase_field)
 void aro_gc_remember(CTX *c, AroObjectHeader *h);
 
 static inline void
-aro_gc_store(CTX *c, void *holder, VALUE *slot, VALUE v)
+aro_gc_store(CTX *c, void *holder, ARO_VALUE *slot, ARO_VALUE v)
 {
     *slot = v;
     if (__builtin_expect(holder == NULL, 1)) return;
@@ -623,9 +621,9 @@ aro_gc_store(CTX *c, void *holder, VALUE *slot, VALUE v)
 }
 
 static inline void
-aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_store_bulk(CTX *c, void *holder, ARO_VALUE *dst, const ARO_VALUE *src, size_t n)
 {
-    if (n) memcpy(dst, src, n * sizeof(VALUE));
+    if (n) memcpy(dst, src, n * sizeof(ARO_VALUE));
     if (__builtin_expect(holder == NULL, 1)) return;
     AroObjectHeader *h = (AroObjectHeader *)holder;
     if (__builtin_expect(
@@ -636,25 +634,25 @@ aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 
 #else  /* bitmap_gen / card_gen / mark_gen_inc: WB fully out-of-line */
 
-void aro_gc_store     (CTX *c, void *holder, VALUE *slot, VALUE v);
-void aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n);
+void aro_gc_store     (CTX *c, void *holder, ARO_VALUE *slot, ARO_VALUE v);
+void aro_gc_store_bulk(CTX *c, void *holder, ARO_VALUE *dst, const ARO_VALUE *src, size_t n);
 
 #endif
 
 #else  /* non-WB backends: WB collapses to a plain store. */
 
 static inline void
-aro_gc_store(CTX *c, void *holder, VALUE *slot, VALUE v)
+aro_gc_store(CTX *c, void *holder, ARO_VALUE *slot, ARO_VALUE v)
 {
     (void)c; (void)holder;
     *slot = v;
 }
 
 static inline void
-aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_store_bulk(CTX *c, void *holder, ARO_VALUE *dst, const ARO_VALUE *src, size_t n)
 {
     (void)c; (void)holder;
-    if (n) memcpy(dst, src, n * sizeof(VALUE));
+    if (n) memcpy(dst, src, n * sizeof(ARO_VALUE));
 }
 #endif
 
@@ -666,7 +664,7 @@ aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
  * Forms the read/write pair sample code should use uniformly for heap-pointer
  * accesses:
  *   value  = (T *)ARO_LOAD(c, &slot);                         // read
- *   ARO_STORE(c, holder, &slot, (VALUE)value);                // write
+ *   ARO_STORE(c, holder, &slot, (ARO_VALUE)value);                // write
  *
  * Underlying inline / extern implementation is `aro_gc_store` (= ex
  * `aro_gc_wb`).  For non-WB backends both fold to a plain store.
@@ -677,9 +675,9 @@ aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
  * routing through this macro.  Release builds have no const, the cast is
  * a no-op. */
 #define ARO_STORE(c, holder, slot, v) \
-    aro_gc_store((c), (holder), (VALUE *)(uintptr_t)(slot), (v))
+    aro_gc_store((c), (holder), (ARO_VALUE *)(uintptr_t)(slot), (v))
 #define ARO_STORE_BULK(c, holder, dst, src, n) \
-    aro_gc_store_bulk((c), (holder), (VALUE *)(uintptr_t)(dst), (src), (n))
+    aro_gc_store_bulk((c), (holder), (ARO_VALUE *)(uintptr_t)(dst), (src), (n))
 
 /* ARO_GC_RAW_STORE — direct write to an ARO_GC_EDGE-qualified slot that
  * bypasses BOTH the write barrier AND the audit const qualifier.  Use
@@ -695,7 +693,7 @@ aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
  * object MUST use ARO_STORE instead.
  *
  * The value's bytes are copied through the slot's element type (memcpy strips
- * the audit const cleanly; __typeof__ keeps the slot's size, so VALUE /
+ * the audit const cleanly; __typeof__ keeps the slot's size, so ARO_VALUE /
  * typed-ptr / char * slots all work).  Release builds (ARO_GC_EDGE empty) fold
  * the fixed-size memcpy to a plain store — identical to a direct assignment. */
 #define ARO_GC_RAW_STORE(slot, val) \

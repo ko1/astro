@@ -500,7 +500,7 @@ mark_dirty(ASTroGC *gc, AroObjectHeader *hh)
 }
 
 void
-aro_gc_store(CTX *c, void *holder, VALUE *slot, VALUE v)
+aro_gc_store(CTX *c, void *holder, ARO_VALUE *slot, ARO_VALUE v)
 {
     *slot = v;
     if (holder == NULL) return;
@@ -510,9 +510,9 @@ aro_gc_store(CTX *c, void *holder, VALUE *slot, VALUE v)
 }
 
 void
-aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_store_bulk(CTX *c, void *holder, ARO_VALUE *dst, const ARO_VALUE *src, size_t n)
 {
-    if (n) memcpy(dst, src, n * sizeof(VALUE));
+    if (n) memcpy(dst, src, n * sizeof(ARO_VALUE));
     if (holder == NULL) return;
     AroObjectHeader *hh = (AroObjectHeader *)holder;
     ASTroGC *gc = ARO_GC_INSTANCE(c);
@@ -535,7 +535,7 @@ gray_push(ASTroGC *gc, AroObjectHeader *h)
 }
 
 static void
-mark_value(ASTroGC *gc, VALUE v)
+mark_value(ASTroGC *gc, ARO_VALUE v)
 {
     if (!AROH_IS_GC_OBJECT(v)) return;
     AroObjectHeader *h = (AroObjectHeader *)v;
@@ -550,14 +550,14 @@ mark_value(ASTroGC *gc, VALUE v)
 static void
 mark_edge(void *ctx, void **slot)
 {
-    mark_value((ASTroGC *)ctx, (VALUE)*slot);
+    mark_value((ASTroGC *)ctx, (ARO_VALUE)*slot);
 }
 
 static void
 check_edge_for_young(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
+    ARO_VALUE v = (ARO_VALUE)*slot;
     if (AROH_IS_GC_OBJECT(v)) {
         const AroObjectHeader *h = (const AroObjectHeader *)v;
         if (HDR_IS_FREE(h)) return;

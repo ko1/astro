@@ -407,7 +407,7 @@ static uint32_t korb_tc_encode(const struct korb_tc *tc, uint32_t cp, unsigned c
 }
 
 /* copy a String's bytes into a NUL-terminated C buffer (names are short) */
-ARO_BORROW static void korb_tc_cstr(VALUE v, char *out, size_t cap)
+ARO_BORROW static void korb_tc_cstr(korb_value v, char *out, size_t cap)
 {
     const KorbString *const s = VAL2STR(v);
     size_t n = s->len; if (n > cap - 1) n = cap - 1;
@@ -443,28 +443,28 @@ static void korb_tc_put(struct korb_tc_out *o, const void *p, size_t n)
  *        2 = destination buffer full 3 = incomplete input (truncated char)
  * so the caller can raise with CRuby's exact message, run a `fallback:`, or
  * drive a streaming converter. */
-static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
+static RESULT korb_bi_transcode(CTX *c, korb_value *slots, korb_slice args)
 {
-    if (UNLIKELY(VALUE_SLICE_LEN(args) < 5))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 5..6)", VALUE_SLICE_LEN(args));
-    const VALUE srcv = VALUE_SLICE_GET(args, 0);
-    if (UNLIKELY(!KORB_STRING_P(srcv) || !KORB_STRING_P(VALUE_SLICE_GET(args, 1)) || !KORB_STRING_P(VALUE_SLICE_GET(args, 2))))
+    if (UNLIKELY(KORB_SLICE_LEN(args) < 5))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 5..6)", KORB_SLICE_LEN(args));
+    const korb_value srcv = KORB_SLICE_GET(args, 0);
+    if (UNLIKELY(!KORB_STRING_P(srcv) || !KORB_STRING_P(KORB_SLICE_GET(args, 1)) || !KORB_STRING_P(KORB_SLICE_GET(args, 2))))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "__transcode expects (String, String, String, Integer, String)");
     char fromb[64], tob[64], replb[64];
-    korb_tc_cstr(VALUE_SLICE_GET(args, 1), fromb, sizeof fromb);
-    korb_tc_cstr(VALUE_SLICE_GET(args, 2), tob, sizeof tob);
-    const uint32_t flags = FIXNUM_P(VALUE_SLICE_GET(args, 3)) ? (uint32_t)FIX2LONG(VALUE_SLICE_GET(args, 3)) : 0;
+    korb_tc_cstr(KORB_SLICE_GET(args, 1), fromb, sizeof fromb);
+    korb_tc_cstr(KORB_SLICE_GET(args, 2), tob, sizeof tob);
+    const uint32_t flags = FIXNUM_P(KORB_SLICE_GET(args, 3)) ? (uint32_t)FIX2LONG(KORB_SLICE_GET(args, 3)) : 0;
     /* the replacement arrives ALREADY in the target encoding and may contain
      * NUL bytes (UTF-16/32 targets), so it is copied by length, not strlen */
     uint32_t repl_len = 0;
-    if (KORB_STRING_P(VALUE_SLICE_GET(args, 4))) {
-        const KorbString *const rs = VAL2STR(VALUE_SLICE_GET(args, 4));
+    if (KORB_STRING_P(KORB_SLICE_GET(args, 4))) {
+        const KorbString *const rs = VAL2STR(KORB_SLICE_GET(args, 4));
         repl_len = rs->len < sizeof replb ? rs->len : (uint32_t)sizeof replb;
         memcpy(replb, korb_strbuf_data(rs->buf), repl_len);
     }
 
     korb_sword_t maxb = -1;
-    if (VALUE_SLICE_LEN(args) >= 6 && FIXNUM_P(VALUE_SLICE_GET(args, 5))) maxb = FIX2LONG(VALUE_SLICE_GET(args, 5));
+    if (KORB_SLICE_LEN(args) >= 6 && FIXNUM_P(KORB_SLICE_GET(args, 5))) maxb = FIX2LONG(KORB_SLICE_GET(args, 5));
 
     struct korb_tc from, to;
     if (!korb_tc_find(fromb, &from) || !korb_tc_find(tob, &to))
@@ -558,7 +558,7 @@ static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
     /* failure: hand the caller everything it needs to build the exception or run
      * the fallback and resume */
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 5));
-    VALUE_REF a = VALUE_REF_AT(&slots[0]);
+    korb_ref a = KORB_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, out.b ? out.b : "", (uint32_t)out.len));
     KORB_STR_ENC_SET(slots[1], korb_enc_index_pub(c->vm, tob));
     CHECK(korb_ary_push_val(c, slots + 2, a, slots[1]));
@@ -570,15 +570,15 @@ static RESULT korb_bi_transcode(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (errcode == 2) KORB_STR_ENC_SET(slots[1], korb_enc_index_pub(c->vm, fromb));
     CHECK(korb_ary_push_val(c, slots + 2, a, slots[1]));
     free(out.b); free(src);
-    return RESULT_OK(VALUE_REF_GET(a));
+    return RESULT_OK(KORB_REF_GET(a));
 }
 
 /* __transcodable?(name) — true when koruby has a converter for this encoding. */
-static RESULT korb_bi_transcodable(CTX *c, VALUE *slots, VALUE_SLICE args)
+static RESULT korb_bi_transcodable(CTX *c, korb_value *slots, korb_slice args)
 {
     (void)slots;
-    if (VALUE_SLICE_LEN(args) < 1 || !KORB_STRING_P(VALUE_SLICE_GET(args, 0))) return RESULT_OK(KORB_FALSE);
-    char nb[64]; korb_tc_cstr(VALUE_SLICE_GET(args, 0), nb, sizeof nb);
+    if (KORB_SLICE_LEN(args) < 1 || !KORB_STRING_P(KORB_SLICE_GET(args, 0))) return RESULT_OK(KORB_FALSE);
+    char nb[64]; korb_tc_cstr(KORB_SLICE_GET(args, 0), nb, sizeof nb);
     struct korb_tc tc;
     (void)c;
     return RESULT_OK(korb_tc_find(nb, &tc) ? KORB_TRUE : KORB_FALSE);
@@ -587,7 +587,7 @@ static RESULT korb_bi_transcodable(CTX *c, VALUE *slots, VALUE_SLICE args)
 /* C-callable convenience: convert `src` from → to with no error handling.
  * Returns the converted String, or KORB_UNDEF in *out when the conversion is
  * impossible (the caller decides whether that is an error). */
-static RESULT korb_tc_convert(CTX *c, VALUE *slots, VALUE src, const char *fromb, const char *tob, bool *ok)
+static RESULT korb_tc_convert(CTX *c, korb_value *slots, korb_value src, const char *fromb, const char *tob, bool *ok)
 {
     *ok = false;
     struct korb_tc from, to;
@@ -684,7 +684,7 @@ static uint32_t korb_tc_bytes_chr(const char *enc, uint32_t v, unsigned char *ou
 
 /* sp[0] holds the string (rooted by the caller) and is replaced in place;
  * sp[1..] is scratch.  `from` names what the bytes are. */
-static RESULT korb_ext_str_conv(CTX *c, VALUE *sp, uint32_t from)
+static RESULT korb_ext_str_conv(CTX *c, korb_value *sp, uint32_t from)
 {
     if (from == KORB_ENC_USASCII && !korb_str_ascii_only_p(c->vm, sp[0]))
         from = KORB_ENC_BINARY;                    /* CRuby: 8-bit bytes are not US-ASCII */
@@ -704,7 +704,7 @@ static RESULT korb_ext_str_conv(CTX *c, VALUE *sp, uint32_t from)
 }
 
 /* korb_str_new + korb_ext_str_conv; sp[0..] is scratch and holds the result. */
-static RESULT korb_ext_str_new(CTX *c, VALUE *sp, const char *p, uint32_t len, uint32_t from)
+static RESULT korb_ext_str_new(CTX *c, korb_value *sp, const char *p, uint32_t len, uint32_t from)
 {
     sp[0] = UNWRAP(korb_str_new(c, sp, p, len));
     return korb_ext_str_conv(c, sp, from);
@@ -712,11 +712,11 @@ static RESULT korb_ext_str_new(CTX *c, VALUE *sp, const char *p, uint32_t len, u
 
 /* Encoding.__enc_sync__(locale, internal[, external]) — the prelude hands them
  * down whenever any can have changed.  nil internal means "no conversion". */
-static RESULT korb_bi_enc_sync(CTX *c, VALUE *slots, VALUE_SLICE a)
+static RESULT korb_bi_enc_sync(CTX *c, korb_value *slots, korb_slice a)
 {
-    for (uint32_t i = 0; i < 3 && i < VALUE_SLICE_LEN(a); i++) {
+    for (uint32_t i = 0; i < 3 && i < KORB_SLICE_LEN(a); i++) {
         uint32_t idx = UINT32_MAX;
-        const VALUE e = VALUE_SLICE_GET(a, i);
+        const korb_value e = KORB_SLICE_GET(a, i);
         if (e != KORB_NIL) {
             slots[0] = e;
             const RESULT nm = korb_send(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0);

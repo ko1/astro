@@ -39,7 +39,7 @@ node_allocate(size_t size)
 #include "node_alloc.c"
 
 RESULT
-EVAL(CTX *c, NODE *n, VALUE *slots)
+EVAL(CTX *c, NODE *n, korb_value *slots)
 {
     return (*n->head.dispatcher)(c, n, slots);
 }

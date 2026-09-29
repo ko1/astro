@@ -16,8 +16,8 @@ koruby は長らく refinement を「無害な no-op」(`refine` は nil を返�
 | R が何を refine しているか / 誰のものか | R の class-ivar `@__refine_target` / `@__refine_owner` |
 | module M が持つ refinement 一覧 | M の class-ivar `@__refinements` = flat Array `[C0, R0, C1, R1, ...]` |
 | 現在有効な activation set | `CTX.refinements` = flat Array `[C0, R0, M0, C1, R1, M1, ...]`、後ろほど優先 (後の `using` が勝つ)。空は `KORB_NIL`。`C == nil` の 3 つ組は「owner M を lookup 時に引く」遅延エントリ (refine block 用) |
-| scope の退避 | `CTX.refine_saved` / `refine_n` / `refine_cap` (GC visit 済みスタック)。C ローカルに VALUE を持つと moving GC で stale になるので使えない |
-| method が定義された時点の activation set | `struct korb_method.refine_set` (VALUE、GC visit 済み) |
+| scope の退避 | `CTX.refine_saved` / `refine_n` / `refine_cap` (GC visit 済みスタック)。C ローカルに korb_value を持つと moving GC で stale になるので使えない |
+| method が定義された時点の activation set | `struct korb_method.refine_set` (korb_value、GC visit 済み) |
 | 「プログラム中で refinement が 1 度でも有効になったか」 | `vm->refinements_active` (bool)。`korb_check_basic_op_redef` / `vm->basic_op_redefined` と同じ deopt flag パターン |
 
 ## 2. スコープ (activation) の扱い

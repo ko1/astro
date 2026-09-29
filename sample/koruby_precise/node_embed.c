@@ -63,11 +63,11 @@ koruby_emit_intern(FILE *fp, uint32_t id)
     fprintf(fp, ")");
 }
 
-/* VALUE operand (node_lit): immediates are process-independent bit patterns;
- * symbols re-intern.  Heap VALUEs never occur in parse-built literals
+/* korb_value operand (node_lit): immediates are process-independent bit patterns;
+ * symbols re-intern.  Heap korb_values never occur in parse-built literals
  * (bignum/float/rational have their own nodes) — fail loudly if one does. */
 void
-koruby_emit_value(FILE *fp, VALUE v)
+koruby_emit_value(FILE *fp, korb_value v)
 {
     if (SYMBOL_P(v)) {
         fprintf(fp, "ID2SYM(korb_intern(_ectx->vm, ");
@@ -75,10 +75,10 @@ koruby_emit_value(FILE *fp, VALUE v)
         fprintf(fp, "))");
     }
     else if (v == KORB_NIL || FIXNUM_P(v) || FLONUM_P(v) || KORB_SPECIAL_P(v)) {
-        fprintf(fp, "(VALUE)0x%llxLL", (unsigned long long)KORB_WORD(v));
+        fprintf(fp, "(korb_value)0x%llxLL", (unsigned long long)KORB_WORD(v));
     }
     else {
-        fprintf(stderr, "koruby_emit: heap VALUE operand cannot be embedded\n");
+        fprintf(stderr, "koruby_emit: heap korb_value operand cannot be embedded\n");
         fprintf(fp, "KORUBY_EMBED_HEAP_VALUE");
     }
 }
@@ -235,7 +235,7 @@ koruby_emit_attr_descs(FILE *fp, const void *p, uint32_t cnt)
 }
 
 /* Pattern-matching descriptor: recursive struct korb_pat.  Sub-patterns and
- * the value NODE nest as expressions; hash keys are symbol VALUEs. */
+ * the value NODE nest as expressions; hash keys are symbol korb_values. */
 void
 koruby_emit_pat(FILE *fp, const void *p)
 {

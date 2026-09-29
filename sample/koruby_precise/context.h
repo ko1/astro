@@ -9,8 +9,8 @@
  *      Live values sit below it; above is the callee's scratch.
  *   2. `c->slots_top` is written ONLY by korb_alloc (the publish point).
  *      GC scans [c->slots, c->slots_top).
- *   3. No raw VALUE is held across a GC point — values that must survive
- *      live in a slot and are accessed through VALUE_REF.
+ *   3. No raw korb_value is held across a GC point — values that must survive
+ *      live in a slot and are accessed through korb_ref.
  */
 
 #ifndef KORUBY_CONTEXT_H
@@ -36,7 +36,7 @@
 #define UNLIKELY(expr) __builtin_expect(!!(expr), 0)
 
 /* -----------------------------------------------------------------------------
- * Tagged VALUE.
+ * Tagged korb_value.
  *
  *   LSB == 1                          fixnum (signed int63)
  *   raw == 0                          nil  singleton
@@ -53,28 +53,28 @@
  * The GC edge filter (ARO_GC_VISIT_EDGE in precise_gc/gc.h) skips values
  * with (v & 7) != 0 or v == 0 — exactly the non-heap encodings above.
  * --------------------------------------------------------------------------- */
-typedef int64_t  VALUE;
-#define ARO_GC_VALUE_TYPEDEFED 1
-/* VALUE is a 64-bit word, NOT a pointer: on a 32-bit target (wasm32) a tagged
+typedef int64_t  korb_value;
+#define ARO_VALUE korb_value
+/* korb_value is a 64-bit word, NOT a pointer: on a 32-bit target (wasm32) a tagged
  * Float still needs all 64 bits.  Tag arithmetic therefore goes through
  * korb_word_t; only the VAL2* casts below may narrow to a real pointer. */
 typedef uint64_t korb_word_t;
 typedef int64_t  korb_sword_t;
 #define KORB_WORD(v)  ((korb_word_t)(v))
 
-#define KORB_NIL       ((VALUE)0)
+#define KORB_NIL       ((korb_value)0)
 /* Special singletons live in the low-nibble 0b0100 quadrant, with a variant
  * selector in the upper bits — leaving room for Qundef-style sentinels beyond
  * the false/true booleans.  (v & 0xF) == 4 tags the quadrant; (v >> 4) selects.
  * All have (v & 7) == 4 ≠ 0, so the GC never mistakes one for a heap pointer. */
-#define KORB_SPECIAL(n)    ((VALUE)((KORB_WORD(n) << 4) | 0x4u))
+#define KORB_SPECIAL(n)    ((korb_value)((KORB_WORD(n) << 4) | 0x4u))
 #define KORB_SPECIAL_P(v)  ((KORB_WORD(v) & 0xFu) == 0x4u)
 #define KORB_FALSE     KORB_SPECIAL(0)   /* 0b000100 =  4 */
 #define KORB_TRUE      KORB_SPECIAL(1)   /* 0b010100 = 20 */
 #define KORB_UNDEF     KORB_SPECIAL(2)   /* 0b100100 = 36 — never a valid Ruby value (uninitialized / removed marker) */
 
 #define FIXNUM_P(v)    ((KORB_WORD(v) & 1u) != 0)
-#define LONG2FIX(i)    ((VALUE)((KORB_WORD((korb_sword_t)(i)) << 1) | 1u))
+#define LONG2FIX(i)    ((korb_value)((KORB_WORD((korb_sword_t)(i)) << 1) | 1u))
 #define FIX2LONG(v)    (((korb_sword_t)(v)) >> 1)
 #define FIXNUM_MAX     (INT64_MAX >> 1)
 #define FIXNUM_MIN     (INT64_MIN >> 1)
@@ -82,7 +82,7 @@ typedef int64_t  korb_sword_t;
 
 /* Symbol — low nibble 0b1100 (static-symbol id in the upper bits). */
 #define SYMBOL_P(v)    ((KORB_WORD(v) & 0xFu) == 0xCu)
-#define ID2SYM(id)     ((VALUE)((KORB_WORD(id) << 4) | 0xCu))
+#define ID2SYM(id)     ((korb_value)((KORB_WORD(id) << 4) | 0xCu))
 #define SYM2ID(v)      ((uint32_t)(KORB_WORD(v) >> 4))
 
 /* -----------------------------------------------------------------------------
@@ -95,18 +95,18 @@ typedef int64_t  korb_sword_t;
  * GC-safe: (flonum & 7) ∈ {2,6} ≠ 0, so the edge filter / AROH_IS_GC_OBJECT
  * never treat a flonum as a heap pointer. --------------------------------- */
 #define FLONUM_P(v)    ((KORB_WORD(v) & 3u) == 2u)
-#define KORB_FLO_ZERO  ((VALUE)(korb_sword_t)0x8000000000000002ULL)
+#define KORB_FLO_ZERO  ((korb_value)(korb_sword_t)0x8000000000000002ULL)
 
-static inline VALUE korb_d2flo(double d) {   /* 0 → not representable (caller heap-boxes) */
+static inline korb_value korb_d2flo(double d) {   /* 0 → not representable (caller heap-boxes) */
     union { double d; korb_word_t v; } t; t.d = d;
     if (t.v == 0u) return KORB_FLO_ZERO;          /* +0.0 (−0.0 falls through → heap-box, keeps sign) */
     unsigned top3 = (unsigned)((t.v >> 60) & 7u);
     if (top3 != 3u && top3 != 4u) return 0;
     korb_word_t e = ((t.v << 3 | t.v >> 61) & ~(korb_word_t)1u) | 2u;       /* rotl3, low2=10, bit2=sign */
     if (e == KORB_WORD(KORB_FLO_ZERO)) return 0;                            /* the lone non-zero double colliding with the +0.0 magic → heap-box */
-    return (VALUE)e;
+    return (korb_value)e;
 }
-static inline double korb_flo2d(VALUE fv) {
+static inline double korb_flo2d(korb_value fv) {
     korb_word_t v = KORB_WORD(fv);
     if (v == KORB_WORD(KORB_FLO_ZERO)) return 0.0;
     korb_word_t b63 = v >> 63;
@@ -125,7 +125,7 @@ static inline double korb_flo2d(VALUE fv) {
 #define AROH_IS_GC_OBJECT(v)  ((v) != 0 && (KORB_WORD(v) & 7u) == 0)
 
 /* -----------------------------------------------------------------------------
- * RESULT — 2-register return carrying VALUE + control state (v2_design §4.6).
+ * RESULT — 2-register return carrying korb_value + control state (v2_design §4.6).
  * No c->state / c->errinfo exist; a raised exception object travels in
  * RESULT.value.  The UNWRAP / CHECK propagation path contains no GC point,
  * so register transport is safe.
@@ -142,7 +142,7 @@ enum korb_state {
 };
 
 typedef struct {
-    VALUE     value;
+    korb_value     value;
     uintptr_t state;    /* enum korb_state */
 } RESULT;
 
@@ -154,7 +154,7 @@ typedef struct {
 #define RESULT_RETRY_     ((RESULT){ KORB_NIL, KORB_RETRY })
 #define RESULT_REDO_      ((RESULT){ KORB_NIL, KORB_REDO })
 
-/* UNWRAP(expr): take the VALUE out of a RESULT expression, early-returning
+/* UNWRAP(expr): take the korb_value out of a RESULT expression, early-returning
  * the RESULT from the *caller* when non-NORMAL.  CHECK(expr): same but the
  * value is discarded.  Hand-spelling `RESULT chk = ...; if (...) return chk;`
  * is forbidden (v2_design §4.6). */
@@ -162,16 +162,19 @@ typedef struct {
 #define CHECK(r) do { RESULT _r = (r); if (UNLIKELY(_r.state != KORB_NORMAL)) return _r; } while (0)
 
 /* -----------------------------------------------------------------------------
- * VALUE_REF / VALUE_SLICE — rooted references (v2_design §5).
+ * korb_ref / korb_slice — rooted references (v2_design §5).
  * Generated from the value type name by the framework template.
  * --------------------------------------------------------------------------- */
-#define ASTRO_REF_VALUE VALUE
+#define ASTRO_REF_VALUE  korb_value
+#define ASTRO_REF_TYPE   korb_ref
+#define ASTRO_SLICE_TYPE korb_slice
+#define ASTRO_REF_PREFIX KORB
 #include "astro_ref_template.h"
 
 /* SLOTS_PUSH(slots, v): store v at the cursor, advance the (local) cursor
- * by one, return a VALUE_REF to the now-rooted cell.  The cursor is a
+ * by one, return a korb_ref to the now-rooted cell.  The cursor is a
  * value-passed local, so returning from the function auto-pops. */
-#define SLOTS_PUSH(slots, v) (*(slots) = (v), VALUE_REF_AT((slots)++))
+#define SLOTS_PUSH(slots, v) (*(slots) = (v), KORB_REF_AT((slots)++))
 
 /* -----------------------------------------------------------------------------
  * Heap objects.  All GC-managed objects embed AroObjectHeader first;
@@ -181,7 +184,7 @@ enum korb_obj_type {
     KORB_OBJ_STRING      = 1,
     KORB_OBJ_EXCEPTION   = 2,
     KORB_OBJ_ARRAY       = 3,
-    KORB_OBJ_VALUE_ARRAY = 4,   /* raw VALUE[] payload backing a KorbArray / KorbHash */
+    KORB_OBJ_VALUE_ARRAY = 4,   /* raw korb_value[] payload backing a KorbArray / KorbHash */
     KORB_OBJ_HASH        = 5,
     KORB_OBJ_RANGE       = 6,
     KORB_OBJ_OBJECT      = 7,   /* user object (incl. top-level `main`) */
@@ -321,13 +324,13 @@ typedef struct KorbFloat {
 /* exact rational (always reduced, den > 0; no GC edges). */
 typedef struct KorbRational {
     AroObjectHeader head;            /* KORB_OBJ_RATIONAL */
-    VALUE ARO_GC_EDGE num, den;      /* Integer (Fixnum or Bignum); den > 0, reduced */
+    korb_value ARO_GC_EDGE num, den;      /* Integer (Fixnum or Bignum); den > 0, reduced */
 } KorbRational;
 
 /* complex number re + im*i; components are arbitrary numerics (GC edges). */
 typedef struct KorbComplex {
     AroObjectHeader head;            /* KORB_OBJ_COMPLEX */
-    VALUE ARO_GC_EDGE re, im;
+    korb_value ARO_GC_EDGE re, im;
 } KorbComplex;
 
 /* eager Enumerator: `values` is the fully materialized array of yielded items;
@@ -340,12 +343,12 @@ typedef struct KorbEnumerator {
                                       * 3 flat_map, 4 find, 5 map, 6 each-like (returns `source` = the receiver) */
     uint8_t  size_inf;               /* 1 → #size is Float::INFINITY (can't be stored in the immediate `size` slot) */
     uint8_t  size_unknown;           /* 1 → #size is nil even though `values` is materialized (String#gsub's enumerator) */
-    VALUE ARO_GC_EDGE values;
-    VALUE ARO_GC_EDGE desc;
-    VALUE ARO_GC_EDGE source;        /* lazy/cycle: the underlying Array/Range */
-    VALUE ARO_GC_EDGE ops;           /* lazy: Array of [op_sym, block_proc] pairs */
-    VALUE size;                      /* known #size (Fixnum) or nil/0 (unknown); immediate → not a GC edge */
-    VALUE ARO_GC_EDGE size_proc;     /* generator: a callable #size (Enumerator.new(->{…}){…}); nil otherwise */
+    korb_value ARO_GC_EDGE values;
+    korb_value ARO_GC_EDGE desc;
+    korb_value ARO_GC_EDGE source;        /* lazy/cycle: the underlying Array/Range */
+    korb_value ARO_GC_EDGE ops;           /* lazy: Array of [op_sym, block_proc] pairs */
+    korb_value size;                      /* known #size (Fixnum) or nil/0 (unknown); immediate → not a GC edge */
+    korb_value ARO_GC_EDGE size_proc;     /* generator: a callable #size (Enumerator.new(->{…}){…}); nil otherwise */
 } KorbEnumerator;
 
 /* Enumerator::ArithmeticSequence — a lazy step/% sequence.  `recv` is the begin
@@ -355,9 +358,9 @@ typedef struct KorbArithSeq {
     AroObjectHeader head;            /* KORB_OBJ_ARITHSEQ */
     uint8_t nargs;
     uint8_t is_pct;
-    VALUE ARO_GC_EDGE recv;
-    VALUE ARO_GC_EDGE a0;
-    VALUE ARO_GC_EDGE a1;
+    korb_value ARO_GC_EDGE recv;
+    korb_value ARO_GC_EDGE a0;
+    korb_value ARO_GC_EDGE a1;
 } KorbArithSeq;
 
 /* Arbitrary-precision Integer.  .class reports Integer (CRuby-unified).  The
@@ -373,20 +376,20 @@ typedef struct KorbBignum {
 /* Set: a thin wrapper over an array of unique elements (dedup by korb_value_eq). */
 typedef struct KorbSet {
     AroObjectHeader head;            /* KORB_OBJ_SET */
-    VALUE ARO_GC_EDGE elems;         /* KorbArray of unique members */
-    VALUE ARO_GC_EDGE tbl;           /* KorbHash member → true, same order as elems (CRuby's buckets) */
+    korb_value ARO_GC_EDGE elems;         /* KorbArray of unique members */
+    korb_value ARO_GC_EDGE tbl;           /* KorbHash member → true, same order as elems (CRuby's buckets) */
     uint8_t by_identity;             /* compare_by_identity: members compared by object identity */
 } KorbSet;
 
 typedef struct KorbRegexp {
     AroObjectHeader head;            /* KORB_OBJ_REGEXP */
-    VALUE ARO_GC_EDGE source;        /* the pattern as a String */
+    korb_value ARO_GC_EDGE source;        /* the pattern as a String */
     uint8_t ci;                      /* case-insensitive flag (== flags & 4) */
     uint32_t flags;                  /* prism regex flags (IGNORE_CASE=4/EXTENDED=8/MULTI_LINE=16) */
     /* Regexp.new(src, timeout:) — reported by #timeout, nil when unset.  koruby
      * does not abort a long match on it (neither does the Regexp.timeout global
      * here); astrogre's backtrack floor is what bounds a runaway pattern. */
-    VALUE ARO_GC_EDGE timeout;
+    korb_value ARO_GC_EDGE timeout;
 } KorbRegexp;
 /* the flag bits that take part in Regexp identity (bit 7 is the "source is
  * already the literal's encoding" marker, not part of ==) */
@@ -397,9 +400,9 @@ typedef struct KorbRegexp {
  * `subject`, -1 for a group that did not participate). */
 typedef struct KorbMatchData {
     AroObjectHeader head;            /* KORB_OBJ_MATCHDATA */
-    VALUE ARO_GC_EDGE subject;       /* the string that was matched against */
-    VALUE ARO_GC_EDGE regexp;        /* the source Regexp (or nil) */
-    VALUE ARO_GC_EDGE offsets;       /* KorbArray of Integer byte offsets, 2*(n_groups+1) */
+    korb_value ARO_GC_EDGE subject;       /* the string that was matched against */
+    korb_value ARO_GC_EDGE regexp;        /* the source Regexp (or nil) */
+    korb_value ARO_GC_EDGE offsets;       /* KorbArray of Integer byte offsets, 2*(n_groups+1) */
 } KorbMatchData;
 
 /* Binding: a captured local scope.  `env` is the frame's closure env (open →
@@ -408,14 +411,14 @@ typedef struct KorbMatchData {
  * table for that scope.  KORB_OBJ_BINDING. */
 typedef struct KorbBinding {
     AroObjectHeader head;            /* KORB_OBJ_BINDING */
-    VALUE ARO_GC_EDGE env;           /* KorbEnv (open → live slots, closed → heap vals) */
-    VALUE ARO_GC_EDGE self;          /* captured self */
-    VALUE ARO_GC_EDGE extra;         /* Hash {sym=>val} of locals added after capture (nil until used) */
-    VALUE ARO_GC_EDGE cref;          /* the lexical class/module the binding was taken in (nil at top level).
+    korb_value ARO_GC_EDGE env;           /* KorbEnv (open → live slots, closed → heap vals) */
+    korb_value ARO_GC_EDGE self;          /* captured self */
+    korb_value ARO_GC_EDGE extra;         /* Hash {sym=>val} of locals added after capture (nil until used) */
+    korb_value ARO_GC_EDGE cref;          /* the lexical class/module the binding was taken in (nil at top level).
                                       * `eval(str)` lowers to eval(str, <hidden binding>), so this is what
                                       * makes `def` / `class` / a constant inside the eval'd string land in
                                       * the enclosing class instead of at top level. */
-    VALUE ARO_GC_EDGE outer_cref;    /* taken in a class_eval(String): the caller's cref, which CRuby's cref
+    korb_value ARO_GC_EDGE outer_cref;    /* taken in a class_eval(String): the caller's cref, which CRuby's cref
                                       * chain still holds under the receiver — a later eval searches it too */
     const uint32_t *name_syms;       /* immortal: name_syms[i] = sym of local at env index i */
     uint32_t name_cnt;
@@ -429,8 +432,8 @@ typedef struct KorbBinding {
 /* bound Method object (obj.method(:sym)): receiver + interned method id. */
 typedef struct KorbMethod {
     AroObjectHeader head;            /* KORB_OBJ_METHOD */
-    VALUE ARO_GC_EDGE recv;          /* bound: the receiver; unbound: the owner class */
-    VALUE ARO_GC_EDGE owner;         /* the class to invoke from (fixed, not virtual); nil = virtual re-dispatch by mid */
+    korb_value ARO_GC_EDGE recv;          /* bound: the receiver; unbound: the owner class */
+    korb_value ARO_GC_EDGE owner;         /* the class to invoke from (fixed, not virtual); nil = virtual re-dispatch by mid */
     struct korb_method *entry;       /* the definition this Method was pinned to at capture (immortal, never
                                       * moved/freed); NULL = none was found.  Not a GC edge. */
     uint32_t mid;                    /* interned method name */
@@ -452,16 +455,16 @@ typedef struct KorbMethod {
  * closed); `vals` is the only forwarded edge (closed only). */
 typedef struct KorbEnv {
     AroObjectHeader head;            /* KORB_OBJ_ENV */
-    VALUE ARO_GC_EDGE prev;          /* parent env handle (tagged KorbEnv* or tagged slots*, 0=top) */
-    VALUE ARO_GC_EDGE vals;          /* closed: KORB_OBJ_VALUE_ARRAY of the captured locals; 0 when open */
-    VALUE *loc;                      /* open: frame slots locals base; unused when closed */
-    VALUE id;                        /* the captured frame's identity cell (tagged KORB_FID_*, never a bare
+    korb_value ARO_GC_EDGE prev;          /* parent env handle (tagged KorbEnv* or tagged slots*, 0=top) */
+    korb_value ARO_GC_EDGE vals;          /* closed: KORB_OBJ_VALUE_ARRAY of the captured locals; 0 when open */
+    korb_value *loc;                      /* open: frame slots locals base; unused when closed */
+    korb_value id;                        /* the captured frame's identity cell (tagged KORB_FID_*, never a bare
                                       * pointer → not a GC edge).  A backtrace names the owner of a block
                                       * whose defining frame has already returned through this. */
     const void *home;                /* the method (struct korb_method *) this scope's code was written in,
                                       * recorded while the chain is live: a later walk must not follow a raw
                                       * link into a returned frame.  NULL = unknown / not in a method. */
-    VALUE ARO_GC_EDGE blk;           /* the method activation's own block, reified as a Proc when a closure
+    korb_value ARO_GC_EDGE blk;           /* the method activation's own block, reified as a Proc when a closure
                                       * over this scope yields: the trio lives at the frame top, outside the
                                       * captured locals, so `closed` would otherwise lose it.  0 = never
                                       * needed, nil = the activation was handed no block. */
@@ -474,12 +477,12 @@ typedef struct KorbEnv {
 typedef struct KorbProc {
     AroObjectHeader head;            /* KORB_OBJ_PROC */
     struct Node *iseq;               /* block node_entry (immortal; not scanned); NULL for a symbol proc */
-    VALUE ARO_GC_EDGE env;           /* captured env handle (KorbEnv* tagged) or 0 */
-    VALUE ARO_GC_EDGE self;          /* captured lexical self */
-    VALUE ARO_GC_EDGE refine_set;    /* the refinement activation set this proc's body runs under (same shape
+    korb_value ARO_GC_EDGE env;           /* captured env handle (KorbEnv* tagged) or 0 */
+    korb_value ARO_GC_EDGE self;          /* captured lexical self */
+    korb_value ARO_GC_EDGE refine_set;    /* the refinement activation set this proc's body runs under (same shape
                                       * as CTX.refinements): captured lexically at creation, or handed over by
                                       * Proc#refined.  KORB_NIL = none. */
-    VALUE ARO_GC_EDGE meth;          /* Method#to_proc: the Method (its captured definition), else 0 */
+    korb_value ARO_GC_EDGE meth;          /* Method#to_proc: the Method (its captured definition), else 0 */
     uint32_t sym_mid;                /* Symbol#to_proc: send this mid to arg0 (iseq==NULL) */
     uint8_t  is_lambda;              /* lambda semantics (strict arity, return-from-proc) */
     uint8_t  refined_copy;           /* refine_set came from Proc#refined, not from the defining scope */
@@ -487,8 +490,8 @@ typedef struct KorbProc {
     uint8_t  brk_orphan;             /* made by `proc { }` / Proc.new: its `break` target (that call) is gone */
     uint8_t  brk_own;                /* made by a method's `&b`: brk_ctx names the thread / fiber its `break` target runs on */
     uintptr_t brk_ctx;
-    const VALUE *brk_base;           /* …and brk_base / brk_id that method's frame: the break is orphaned once it is gone */
-    VALUE brk_id;
+    const korb_value *brk_base;           /* …and brk_base / brk_id that method's frame: the break is orphaned once it is gone */
+    korb_value brk_id;
 } KorbProc;
 
 /* Fiber: a stackful coroutine.  The moving GC object is a thin handle; all
@@ -498,41 +501,41 @@ typedef struct KorbProc {
  * cref_saved / bref_saved, and the `$!` stack).  Each returns from its scopes in its own order, so they
  * cannot share one stack: a switch exchanges them with CTX. */
 struct korb_scope_stacks {
-    VALUE *refine_saved; uint32_t refine_n, refine_cap;
-    VALUE *cref_saved;   uint32_t cref_n, cref_cap;
-    VALUE *bref_saved;   uint32_t bref_n, bref_cap;
-    const VALUE **bref_base;
-    VALUE *errinfo;      uint32_t errinfo_n, errinfo_cap;
+    korb_value *refine_saved; uint32_t refine_n, refine_cap;
+    korb_value *cref_saved;   uint32_t cref_n, cref_cap;
+    korb_value *bref_saved;   uint32_t bref_n, bref_cap;
+    const korb_value **bref_base;
+    korb_value *errinfo;      uint32_t errinfo_n, errinfo_cap;
     /* the current cref state (what korb_cref_push saves): a fiber that yields
      * inside class_eval must not leave its definee to the resumer */
-    VALUE def_definee, cvar_cref, eval_cref, eval_outer_cref, kwargs_park;
+    korb_value def_definee, cvar_cref, eval_cref, eval_outer_cref, kwargs_park;
 };
 
 typedef struct KorbFiberRep {
     uint32_t mask_gen, resumer_mask_gen;   /* vm->sigmask_gen when this fiber / its resumer switched out */
-    VALUE transfer;                  /* value passed across resume/yield (root) */
-    VALUE captured_self;             /* the block's lexical self (root) */
-    VALUE fibobj;                    /* the Fiber object owning this rep (root) — Fiber.current */
-    VALUE storage;                   /* Fiber#storage: fiber-local Hash (root; nil until used) */
-    VALUE tls;                       /* Thread#[] storage — CRuby's "thread locals" are FIBER-local (root; nil until used) */
-    VALUE *vslots;                   /* fiber value-stack base (fixed mmap) */
-    VALUE *vslots_top;               /* saved scan top while suspended */
-    VALUE *vslots_limit;
-    VALUE *vslots_hw;                /* saved high-water while suspended */
-    VALUE vcfunc_link;               /* saved c->cfunc_link — it names a frame INSIDE this fiber's own
+    korb_value transfer;                  /* value passed across resume/yield (root) */
+    korb_value captured_self;             /* the block's lexical self (root) */
+    korb_value fibobj;                    /* the Fiber object owning this rep (root) — Fiber.current */
+    korb_value storage;                   /* Fiber#storage: fiber-local Hash (root; nil until used) */
+    korb_value tls;                       /* Thread#[] storage — CRuby's "thread locals" are FIBER-local (root; nil until used) */
+    korb_value *vslots;                   /* fiber value-stack base (fixed mmap) */
+    korb_value *vslots_top;               /* saved scan top while suspended */
+    korb_value *vslots_limit;
+    korb_value *vslots_hw;                /* saved high-water while suspended */
+    korb_value vcfunc_link;               /* saved c->cfunc_link — it names a frame INSIDE this fiber's own
                                       * slot stack, so it must travel with it */
-    const VALUE *vcarry_base;        /* saved c->carry_base — same reason (a staged link into this
+    const korb_value *vcarry_base;        /* saved c->carry_base — same reason (a staged link into this
                                       * fiber's stack); the line bits travel with it */
     uint32_t vcarry_line_bits;
-    VALUE *def_env;                  /* unused (NULL): the body runs through `proc` */
+    korb_value *def_env;                  /* unused (NULL): the body runs through `proc` */
     struct Node *body;               /* block entry (node_entry, immortal): #inspect's location, blocking? */
-    VALUE proc;                      /* the block as a Proc (root): its env is closed, so the fiber can run
+    korb_value proc;                      /* the block as a Proc (root): its env is closed, so the fiber can run
                                       * after the creating method returned */
     void  *uctx;                     /* ucontext_t * (fiber's saved context) */
     void  *resume_uctx;              /* ucontext_t * to switch back to on yield */
     void  *cstack;                   /* malloc'd native stack for the fiber */
     struct korb_scope_stacks ss;     /* its scope save stacks while it is not running */
-    VALUE tilde;                     /* its `$~` while it is not running (root; nil at start) */
+    korb_value tilde;                     /* its `$~` while it is not running (root; nil at start) */
     struct korb_gen_sink *gen_sink;  /* its generator-sink chain while it is not running (NULL at start) */
     uint8_t fstate;                  /* 0 created, 1 running, 2 suspended, 3 done */
     uint8_t raised;                  /* block raised → resume re-raises transfer */
@@ -559,32 +562,32 @@ enum korb_thread_state { KORB_TH_READY = 0, KORB_TH_RUNNING, KORB_TH_PENDED, KOR
 struct korb_thread {
     uint32_t mask_gen;               /* vm->sigmask_gen when it switched out (its saved uc_sigmask's age) */
     /* GC roots (AROH_VISIT_ROOTS が thread_list 経由で visit) */
-    VALUE thval;                     /* KorbThread handle (movable) */
-    VALUE args;                      /* Thread.new の引数 Array (起動後 nil) */
-    VALUE blk;                       /* body の Proc (escape-safe に env を close 済) —
+    korb_value thval;                     /* KorbThread handle (movable) */
+    korb_value args;                      /* Thread.new の引数 Array (起動後 nil) */
+    korb_value blk;                       /* body の Proc (escape-safe に env を close 済) —
                                         生 def_env 保持は作成フレームが thread 実行前に
                                         死ぬパターン (n.times { Thread.new{…} }) で壊れる */
-    VALUE captured_self;             /* (未使用予約; blk が self を持つ) */
-    VALUE result;                    /* body の戻り値 (#join / #value) */
-    VALUE exc;                       /* thread を殺した例外 (raised=1 のとき) */
-    VALUE tls;                       /* fiber-local storage Hash (#[] / #[]=) */
-    VALUE tvars;                     /* thread_variable_get/set の Hash (tls とは別空間; CRuby 準拠) */
-    VALUE tl_gv[3];                  /* $_ / $? / $~ while the thread is switched out (they are thread-local) */
-    VALUE name;                      /* Thread#name */
-    VALUE pending_ints;              /* pending interrupt queue (M3) */
-    VALUE tgroup;                    /* ThreadGroup (NIL = Default; 生成時に親から継承) */
+    korb_value captured_self;             /* (未使用予約; blk が self を持つ) */
+    korb_value result;                    /* body の戻り値 (#join / #value) */
+    korb_value exc;                       /* thread を殺した例外 (raised=1 のとき) */
+    korb_value tls;                       /* fiber-local storage Hash (#[] / #[]=) */
+    korb_value tvars;                     /* thread_variable_get/set の Hash (tls とは別空間; CRuby 準拠) */
+    korb_value tl_gv[3];                  /* $_ / $? / $~ while the thread is switched out (they are thread-local) */
+    korb_value name;                      /* Thread#name */
+    korb_value pending_ints;              /* pending interrupt queue (M3) */
+    korb_value tgroup;                    /* ThreadGroup (NIL = Default; 生成時に親から継承) */
     /* stacks / context */
-    VALUE *vslots;                   /* 自分の value stack base (main: main slots) */
-    VALUE *vslots_limit;
-    VALUE *saved_base, *saved_top, *saved_hw;   /* suspend 中の c->slots tuple (fiber 内なら root stack の範囲) */
+    korb_value *vslots;                   /* 自分の value stack base (main: main slots) */
+    korb_value *vslots_limit;
+    korb_value *saved_base, *saved_top, *saved_hw;   /* suspend 中の c->slots tuple (fiber 内なら root stack の範囲) */
     const char *saved_cstack_limit;
     struct KorbFiberRep *saved_fiber;   /* fiber の中で suspend した: 再開時に running_fiber へ戻す (stack tuple は fiber 側) */
     struct KorbFiberRep *root_fiber;    /* この thread の root fiber 代役 (Fiber.current / storage; 遅延生成) */
-    VALUE int_masks;                 /* handle_interrupt のマスク列 [klass, sym, ..., n] (root; nil まで未使用) */
-    VALUE saved_cfunc_link;          /* c->cfunc_link while suspended: it names a frame in THIS thread's
+    korb_value int_masks;                 /* handle_interrupt のマスク列 [klass, sym, ..., n] (root; nil まで未使用) */
+    korb_value saved_cfunc_link;          /* c->cfunc_link while suspended: it names a frame in THIS thread's
                                       * slot stack, so leaving it loaded across a switch would let a
                                       * backtrace walk into another thread's frames */
-    const VALUE *saved_carry_base;   /* c->carry_base while suspended — same reason: a staged link names
+    const korb_value *saved_carry_base;   /* c->carry_base while suspended — same reason: a staged link names
                                       * a frame in THIS thread's stack */
     uint32_t saved_carry_line_bits;
     struct korb_scope_stacks ss;     /* its scope save stacks while it is switched out */
@@ -640,22 +643,22 @@ typedef struct KorbException {
     uint32_t etype;          /* enum korb_etype (korb_runtime.c) */
     uint32_t line;           /* current unwind line (raise site, then each
                               * call site as the unwind passes it) */
-    VALUE ARO_GC_EDGE msg;   /* KorbString | nil */
-    VALUE ARO_GC_EDGE exc_class;  /* user exception Class (raise MyError) | nil → builtin etype class */
-    VALUE ARO_GC_EDGE cause; /* the in-flight exception ($!) at raise time, or nil */
-    VALUE ARO_GC_EDGE ivars; /* instance variables side-hash {sym→val} | nil (custom Exception subclass data) */
-    VALUE ARO_GC_EDGE backtrace; /* Array<String> captured when first rescued/set, or nil (never raised) */
+    korb_value ARO_GC_EDGE msg;   /* KorbString | nil */
+    korb_value ARO_GC_EDGE exc_class;  /* user exception Class (raise MyError) | nil → builtin etype class */
+    korb_value ARO_GC_EDGE cause; /* the in-flight exception ($!) at raise time, or nil */
+    korb_value ARO_GC_EDGE ivars; /* instance variables side-hash {sym→val} | nil (custom Exception subclass data) */
+    korb_value ARO_GC_EDGE backtrace; /* Array<String> captured when first rescued/set, or nil (never raised) */
     uint8_t bt_user;         /* 1 = #backtrace came from set_backtrace, so there are no real
                               * positions behind it and #backtrace_locations stays nil (CRuby) */
     uint8_t gen_bound;       /* 1 = a generator's first(n)/take bound, not a real StopIteration:
                               * Kernel#loop lets it through (CRuby stops with rb_iter_break) */
 } KorbException;
 
-/* Array: a header + a separately-allocated growable VALUE[] payload, so push
+/* Array: a header + a separately-allocated growable korb_value[] payload, so push
  * can grow the buffer without moving the KorbArray (moving-GC safe). */
 typedef struct KorbArrayItems {
     AroObjectHeader head;            /* KORB_OBJ_VALUE_ARRAY */
-    VALUE ARO_GC_EDGE data_priv[];   /* private: reach only via korb_items_data() */
+    korb_value ARO_GC_EDGE data_priv[];   /* private: reach only via korb_items_data() */
 } KorbArrayItems;
 
 typedef struct KorbArray {
@@ -664,16 +667,16 @@ typedef struct KorbArray {
     KorbArrayItems *ARO_GC_EDGE items;
 } KorbArray;
 
-/* Hash: header + a growable VALUE[] payload of [k0,v0,k1,v1,...] pairs, kept in
+/* Hash: header + a growable korb_value[] payload of [k0,v0,k1,v1,...] pairs, kept in
  * insertion order (Ruby semantics).  Lookup is a linear scan — fine for the
  * small hashes the corpus exercises; a real table can replace the storage
  * later without changing the object shape. */
 typedef struct KorbHash {
     AroObjectHeader head;            /* KORB_OBJ_HASH */
     uint32_t len, capa;              /* pair count / pair capacity */
-    KorbArrayItems *ARO_GC_EDGE items;       /* 2*capa VALUEs */
-    VALUE ARO_GC_EDGE default_val;   /* [] miss result (nil unless set) */
-    VALUE ARO_GC_EDGE default_proc;  /* Hash.new { |h,k| } block (nil unless set); called on [] miss */
+    KorbArrayItems *ARO_GC_EDGE items;       /* 2*capa korb_values */
+    korb_value ARO_GC_EDGE default_val;   /* [] miss result (nil unless set) */
+    korb_value ARO_GC_EDGE default_proc;  /* Hash.new { |h,k| } block (nil unless set); called on [] miss */
     /* O(1) lookup index for large hashes: open-addressing table of pair indices
      * (slot = pair_idx + 1; 0 = empty), a raw KORB_OBJ_STR_BUF of uint32.  NULL
      * for small hashes (linear scan is faster) or when KORB_FL_HASH_NOINDEX is
@@ -710,18 +713,18 @@ typedef struct KorbHash {
 typedef struct KorbRange {
     AroObjectHeader head;            /* KORB_OBJ_RANGE */
     uint32_t exclude_end;
-    VALUE ARO_GC_EDGE rbegin;
-    VALUE ARO_GC_EDGE rend;
+    korb_value ARO_GC_EDGE rbegin;
+    korb_value ARO_GC_EDGE rend;
 } KorbRange;
 
 /* User object: class pointer (nil for top-level `main`) + lazily-allocated
- * instance-variable store ([name_sym, val, ...] pairs in a VALUE[] payload). */
+ * instance-variable store ([name_sym, val, ...] pairs in a korb_value[] payload). */
 typedef struct KorbObject {
     AroObjectHeader head;            /* KORB_OBJ_OBJECT */
     uint32_t shape_id;               /* ivar layout (vm->shapes index; 1 = root) */
-    uint32_t ivar_capa;              /* values-array capacity (VALUE count) */
-    VALUE ARO_GC_EDGE klass;         /* KorbClass | nil */
-    KorbArrayItems *ARO_GC_EDGE ivars;   /* ivar_capa VALUEs (values only), or NULL */
+    uint32_t ivar_capa;              /* values-array capacity (korb_value count) */
+    korb_value ARO_GC_EDGE klass;         /* KorbClass | nil */
+    KorbArrayItems *ARO_GC_EDGE ivars;   /* ivar_capa korb_values (values only), or NULL */
 } KorbObject;
 
 /* Object shape: a node in the ivar-layout transition tree (VM-side, libc-stable;
@@ -772,14 +775,14 @@ typedef struct KorbClass {
     struct korb_method **methods;    /* libc array of immortal entry ptrs (owner edge GC-forwarded) */
     uint32_t *mid_idx;               /* libc index mid → slot+1 of a big table, else NULL (korb_mtab_slot) */
     uint32_t mid_idx_mask;
-    VALUE ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
-    VALUE ARO_GC_EDGE included;      /* KorbArray of included modules | nil */
-    VALUE ARO_GC_EDGE prepended;     /* KorbArray of prepended modules | nil (searched before own methods) */
-    VALUE ARO_GC_EDGE members;       /* Struct member-name Array (symbols), or nil */
-    VALUE ARO_GC_EDGE cvars;         /* class variables: KorbHash sym→value, or nil */
-    VALUE ARO_GC_EDGE class_ivars;   /* the class object's own instance variables: KorbHash sym→value, or nil */
-    VALUE ARO_GC_EDGE enclosing;     /* lexically-enclosing module/class (for M::C names), or nil (top-level / anonymous) */
-    VALUE ARO_GC_EDGE subclasses;    /* KorbArray of direct subclass class-objects (for Class#subclasses), or nil */
+    korb_value ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
+    korb_value ARO_GC_EDGE included;      /* KorbArray of included modules | nil */
+    korb_value ARO_GC_EDGE prepended;     /* KorbArray of prepended modules | nil (searched before own methods) */
+    korb_value ARO_GC_EDGE members;       /* Struct member-name Array (symbols), or nil */
+    korb_value ARO_GC_EDGE cvars;         /* class variables: KorbHash sym→value, or nil */
+    korb_value ARO_GC_EDGE class_ivars;   /* the class object's own instance variables: KorbHash sym→value, or nil */
+    korb_value ARO_GC_EDGE enclosing;     /* lexically-enclosing module/class (for M::C names), or nil (top-level / anonymous) */
+    korb_value ARO_GC_EDGE subclasses;    /* KorbArray of direct subclass class-objects (for Class#subclasses), or nil */
 } KorbClass;
 
 #define KORB_OBJ_TYPE(v)   (((AroObjectHeader *)(uintptr_t)KORB_SC(v))->flags & KORB_OBJ_TYPE_MASK)
@@ -802,7 +805,7 @@ typedef struct KorbClass {
 #define KORB_FLOAT_P(v)    (FLONUM_P(v) || (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FLOAT))
 #define KORB_HEAP_FLOAT_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FLOAT)
 /* KORB_STALE_CHECK (debug build): ask the collector, at every dereference,
- * whether this VALUE is a heap pointer it has already moved out from under us.
+ * whether this korb_value is a heap pointer it has already moved out from under us.
  * value_read_after_gc.ql can only say "this COULD be stale" — it cannot tell an
  * immediate from a heap object, nor whether the allocating path is the one
  * taken.  This answers the same question at runtime, and the answer is exact:
@@ -812,7 +815,7 @@ typedef struct KorbClass {
  * executes, so pair it with ASTRO_GC_STRESS=1 (collect at every allocation),
  * which removes the "only if a GC happened to land there" luck and leaves
  * coverage as the sole gap.  Off by default; costs a call per dereference. */
-/* KORB_NOT_REF — "this VALUE is not a reference, so a collection cannot
+/* KORB_NOT_REF — "this korb_value is not a reference, so a collection cannot
  * invalidate it".  Used as a REASSIGNMENT, before the may-GC call that
  * value_read_after_gc.ql named:
  *
@@ -828,19 +831,19 @@ typedef struct KorbClass {
  * site leaves the report for good instead of living in a baseline number.
  *
  * Reassignment rather than a fresh name because C has no shadowing: a second
- * `VALUE v = ...` beside an existing `v` is a redefinition error, and inventing
+ * `korb_value v = ...` beside an existing `v` is a redefinition error, and inventing
  * a name per site is worse than reusing the one already there.
  *
  * Under -DKORB_STALE_CHECK the same call CHECKS the claim, and a heap value
  * simply ARRIVING refutes it — no collection and no particular timing needed.
  * Run real applications under it: the app supplies the paths and the values,
  * which a hand-written probe cannot. */
-VALUE korb_not_ref(VALUE v, const char *file, int line);
-#define KORB_NOT_REF(v) korb_not_ref((VALUE)(uintptr_t)(v), __FILE__, __LINE__)
+korb_value korb_not_ref(korb_value v, const char *file, int line);
+#define KORB_NOT_REF(v) korb_not_ref((korb_value)(uintptr_t)(v), __FILE__, __LINE__)
 
 #ifdef KORB_STALE_CHECK
-VALUE korb_stale_check(VALUE v, const char *file, int line);
-#define KORB_SC(v) korb_stale_check((VALUE)(uintptr_t)(v), __FILE__, __LINE__)
+korb_value korb_stale_check(korb_value v, const char *file, int line);
+#define KORB_SC(v) korb_stale_check((korb_value)(uintptr_t)(v), __FILE__, __LINE__)
 /* KORB_GC_HERE — collect right here, in a debug build only.
  *
  * ASTRO_GC_STRESS=1 collects at EVERY allocation, which removes the "did a GC
@@ -874,8 +877,8 @@ void korb_gc_here(void *c);          /* CTX is not declared yet at this point */
  * The `data_priv` fields are named to force all other access through these
  * accessors (docs/c_ext_api_design.md §4.1).  Result valid until next alloc. */
 static inline ARO_BORROW char  *korb_strbuf_data(KorbStrBuf *b)      { return b->data_priv; }
-static inline ARO_BORROW VALUE *korb_items_data (KorbArrayItems *it) { return it->data_priv; }
-static inline ARO_BORROW char  *korb_str_data   (VALUE v)           { return korb_strbuf_data(VAL2STR(v)->buf); }
+static inline ARO_BORROW korb_value *korb_items_data (KorbArrayItems *it) { return it->data_priv; }
+static inline ARO_BORROW char  *korb_str_data   (korb_value v)           { return korb_strbuf_data(VAL2STR(v)->buf); }
 #define VAL2RANGE(v)       ((KorbRange *)(uintptr_t)KORB_SC(v))
 #define VAL2OBJ(v)         ((KorbObject *)(uintptr_t)KORB_SC(v))
 #define VAL2CLASS(v)       ((KorbClass *)(uintptr_t)KORB_SC(v))
@@ -900,7 +903,7 @@ static inline ARO_BORROW char  *korb_str_data   (VALUE v)           { return kor
  * take the slow path outright.  `depth` bounds the walk — a self-referential
  * array answers "yes" and is then decided by the dispatching comparison, which
  * carries its own cycle guard. */
-static inline bool korb_eq_needs_send_d(VALUE v, int depth)
+static inline bool korb_eq_needs_send_d(korb_value v, int depth)
 {
     if (!AROH_IS_GC_OBJECT(v)) return false;             /* immediates (array elements reach here) */
     if (KORB_OBJECT_P(v) || KORB_EXC_P(v) || KORB_OBJ_TYPE(v) == KORB_OBJ_PROC || KORB_OBJ_TYPE(v) == KORB_OBJ_METHOD) return true;
@@ -919,11 +922,11 @@ static inline bool korb_eq_needs_send_d(VALUE v, int depth)
         return depth >= 4 || korb_eq_needs_send_d(VAL2RANGE(v)->rbegin, depth + 1) || korb_eq_needs_send_d(VAL2RANGE(v)->rend, depth + 1);
     return KORB_HASH_P(v) || KORB_SET_P(v);
 }
-static bool korb_eq_needs_send_slow(VALUE v) __attribute__((noinline, unused));
-static bool korb_eq_needs_send_slow(VALUE v) { return korb_eq_needs_send_d(v, 0); }
+static bool korb_eq_needs_send_slow(korb_value v) __attribute__((noinline, unused));
+static bool korb_eq_needs_send_slow(korb_value v) { return korb_eq_needs_send_d(v, 0); }
 /* Called per element / per comparison: the common answers are settled inline,
  * only containers and the rarer types take the out-of-line walk. */
-static inline bool korb_eq_needs_send(VALUE v) {
+static inline bool korb_eq_needs_send(korb_value v) {
     if (!AROH_IS_GC_OBJECT(v)) return false;                        /* immediates never dispatch */
     const uint16_t fl = ((const AroObjectHeader *)(uintptr_t)v)->flags;
     const unsigned t = KORB_OBJ_TYPE(v);
@@ -937,11 +940,11 @@ static inline bool korb_eq_needs_send(VALUE v) {
  * `redef`: a builtin's #== was reopened, so no structural shortcut holds. */
 /* A String subclass's instance: hashing keeps it on the String fast path (CRuby
  * does), but `==` (rb_equal) asks its own #== */
-static inline bool korb_str_sub_p(VALUE v) {
+static inline bool korb_str_sub_p(korb_value v) {
     return AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_STRING &&
            (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS);
 }
-static inline bool korb_eq_send_p_(bool redef, VALUE a, VALUE b) {
+static inline bool korb_eq_send_p_(bool redef, korb_value a, korb_value b) {
     return a != b && (UNLIKELY(redef) || korb_eq_needs_send(a) || korb_eq_needs_send(b) ||
                       korb_str_sub_p(a) || korb_str_sub_p(b));
 }
@@ -989,7 +992,7 @@ static inline bool korb_eq_send_p_(bool redef, VALUE a, VALUE b) {
  * VM — interned symbols, the method table, and the unwind backtrace buffer.
  * Lives behind CTX (one VM per CTX in M0); no globals (strict rule).
  * All VM-internal storage is libc-malloc'd runtime infrastructure with no
- * GC-visible VALUE edges (method bodies are immortal NODEs, names are
+ * GC-visible korb_value edges (method bodies are immortal NODEs, names are
  * interned C strings).
  * --------------------------------------------------------------------------- */
 struct Node;
@@ -1009,9 +1012,9 @@ typedef struct CTX_struct CTX;
 
 /* Builtin C method: receives the staged argument cells as a rooted slice
  * (the cells live in the caller's frame area, below `slots`). */
-typedef RESULT (*korb_builtin_fn)(CTX *c, VALUE *slots, VALUE_SLICE args);
+typedef RESULT (*korb_builtin_fn)(CTX *c, korb_value *slots, korb_slice args);
 
-/* Receiver-dispatch core classes + built-in method fn.  `self` is a VALUE_REF
+/* Receiver-dispatch core classes + built-in method fn.  `self` is a korb_ref
  * (the staged recv slot) so allocating methods re-read it through the ref
  * after GC.  KORB_NCLASS must match the korb_vm.cmethods[] array size. */
 enum korb_class {
@@ -1023,15 +1026,15 @@ enum korb_class {
     KORB_C_RANDOM, KORB_C_UNBOUND_METHOD, KORB_C_THREAD, KORB_C_MUTEX, KORB_C_CONDVAR,
     KORB_NCLASS
 };
-typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
+typedef RESULT (*korb_method_fn)(CTX *c, korb_value *slots, korb_ref self, korb_slice args);
 
 /* Block-taking built-in (Array#each, Integer#times, ...).  `block` is a
  * node_entry NODE (NULL = no block given); `def_env` is the caller frame base
  * holding the block's captured outer vars.  The method drives the block via
  * korb_block_yield. */
-typedef RESULT (*korb_method_blk_fn)(CTX *c, VALUE *slots, VALUE_REF self,
-                                     VALUE_SLICE args, struct Node *block, VALUE *def_env,
-                                     VALUE *captured_self);
+typedef RESULT (*korb_method_blk_fn)(CTX *c, korb_value *slots, korb_ref self,
+                                     korb_slice args, struct Node *block, korb_value *def_env,
+                                     korb_value *captured_self);
 
 struct korb_method {
     uint32_t mid;            /* interned name (current; changes on alias) */
@@ -1069,20 +1072,20 @@ struct korb_method {
      * 充填時に (site の argc, callee の形状) で片方を選んで cc/ic に載せる。 */
     struct Node *simple_entry;   /* node_simple_entry: 固定位置引数のみ。無ければ NULL */
     /* struct Node *complex_entry;  — opt/rest/post/kw 用 (未実装、次段) */
-    VALUE owner;             /* defining class/module (super's def_class), nil for a global fn.
+    korb_value owner;             /* defining class/module (super's def_class), nil for a global fn.
                               * Manually GC-forwarded (entry is immortal libc, so the class
                               * visitor + roots forward this field — like const_vals).  owner/mid
                               * never change, so a frame-held entry yields a live owner + stable mid. */
-    VALUE super_owner;       /* where `super` resumes from, when that is NOT `owner`: an alias
+    korb_value super_owner;       /* where `super` resumes from, when that is NOT `owner`: an alias
                               * keeps the ORIGINAL defining class here (CRuby's defined_class),
                               * so `super` from Alias3#name3 continues after Alias2, not after
                               * Alias3.  nil = use owner.  Manually GC-forwarded next to owner. */
-    VALUE dm_proc;           /* KORB_METHOD_DM: the define_method Proc (env pre-closed). nil otherwise.
+    korb_value dm_proc;           /* KORB_METHOD_DM: the define_method Proc (env pre-closed). nil otherwise.
                               * Manually GC-forwarded next to owner (entry is immortal libc). */
-    VALUE refine_set;        /* refinements active where this method was defined (CTX.refinements
+    korb_value refine_set;        /* refinements active where this method was defined (CTX.refinements
                               * snapshot), nil for the usual case.  Installed on the callee by
                               * korb_invoke_method.  Manually GC-forwarded next to owner. */
-    VALUE def_cref;          /* the cref an eval'd String installed while this `def` ran (nil otherwise).
+    korb_value def_cref;          /* the cref an eval'd String installed while this `def` ran (nil otherwise).
                               * It is what `eval("def ...", binding)` inside the method must land on, and
                               * the ONLY thing separating `obj.instance_eval("def m; binding; end")` (cref =
                               * obj's singleton) from `TOPLEVEL_BINDING.eval("def self.m; binding; end")`
@@ -1106,7 +1109,7 @@ struct korb_method {
     const char *label_src;   /* define_method(name, other_method): that method's label (interned), which a
                               * backtrace shows instead of this entry's own (CRuby 4.1) */
     uint32_t    bt_label_mid;
-    VALUE       bt_label_owner;   /* compared only, never dereferenced (a copy re-owned by alias / module_function must not keep the memo) */
+    korb_value       bt_label_owner;   /* compared only, never dereferenced (a copy re-owned by alias / module_function must not keep the memo) */
     uint64_t    bt_label_serial;
     struct korb_method *occ_next;   /* the copy running as the next occurrence (korb_method_occ), or NULL */
 };
@@ -1138,8 +1141,8 @@ typedef struct KorbMT { uint32_t mt[624]; uint32_t mti; } KorbMT;
  * finds it dead, moved otherwise — korb_weak_walk), val[i] is a strong edge.
  * idx maps an address to i + 1 and is rebuilt once addresses are final. */
 typedef struct korb_wtab {
-    VALUE    *obj;
-    VALUE    *val;
+    korb_value    *obj;
+    korb_value    *val;
     uint32_t  cnt, capa;
     uint32_t *idx;
     uint32_t  idx_mask;
@@ -1149,7 +1152,7 @@ typedef struct korb_wtab {
  * three are weak: korb_weak_walk drops a row once any of them is collected.
  * idx maps hash(map, key) to row + 1 (open addressing), rebuilt after a GC. */
 typedef struct korb_wmap {
-    VALUE    *map, *key, *val;
+    korb_value    *map, *key, *val;
     uint32_t  cnt, capa;
     uint32_t *idx;
     uint32_t  idx_mask;
@@ -1171,7 +1174,7 @@ struct korb_vm {
     uint32_t sym_cnt, sym_capa, sym_hash_cap;
 
     /* IO fd table: an IO/File object holds its index in the @__io_fp ivar; the
-     * FILE* lives here (raw C pointers, not VALUEs → no GC scan/forward). */
+     * FILE* lives here (raw C pointers, not korb_values → no GC scan/forward). */
     struct KorbIORep **io_reps;   /* open streams (libc-stable reps; the IO object holds the index) */
     uint32_t io_cnt, io_capa;
 
@@ -1179,7 +1182,7 @@ struct korb_vm {
     struct korb_method **methods;
     uint32_t method_cnt, method_capa;
     /* entries a redefinition pushed out of a class table while a Method still
-     * pins them: immortal, and their VALUE fields stay roots (AROH_VISIT_ROOTS) */
+     * pins them: immortal, and their korb_value fields stay roots (AROH_VISIT_ROOTS) */
     struct korb_method **orphans;
     uint32_t orphan_cnt, orphan_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
@@ -1197,12 +1200,12 @@ struct korb_vm {
      * ancestry.  Reassigning an existing constant does not move its index, so it
      * does not need one. */
     uint64_t const_serial;
-    VALUE super_new_skip;    /* transient: the singleton whose `def self.new` is
+    korb_value super_new_skip;    /* transient: the singleton whose `def self.new` is
                               * super-ing right now — korb_send_impl skips that
                               * override once so the default allocator runs.
                               * Set/cleared around one send; never live across GC
                               * user code (GC-visited as a root regardless). */
-    VALUE top_self;          /* the one `main` every file's top level runs as (CRuby's ruby_top_self),
+    korb_value top_self;          /* the one `main` every file's top level runs as (CRuby's ruby_top_self),
                               * so `def self.x` in a required file lands on TOPLEVEL_BINDING.receiver.
                               * 0 until the program's frame is built. */
     uint32_t class_serial;   /* monotonic id handed to each new class (see KorbClass.serial) */
@@ -1241,16 +1244,16 @@ struct korb_vm {
     /* user code defined, on Enumerable/Comparable/..., a method koruby keeps on a
      * core class (reflect_owner.h): dispatch must look there (korb_mcache_find) */
     bool reflect_owner_redef;
-    VALUE kernel_mod;        /* the Kernel module, cached by korb_relocate_object_methods */
+    korb_value kernel_mod;        /* the Kernel module, cached by korb_relocate_object_methods */
 
     /* constants (class names): parallel name→value arrays.  `const_vals` holds
      * GC objects (classes) and is root-scanned by AROH_VISIT_ROOTS.
      * `const_owners` is the lexically-defining module/class (nil = top-level),
      * for Module#constants; also root-scanned (owners are classes). */
     uint32_t *const_names;
-    VALUE    *const_vals;
+    korb_value    *const_vals;
     uint32_t  tilde_idx1;            /* const-table index of "$~", +1 (0 = not resolved yet) */
-    VALUE    *const_owners;
+    korb_value    *const_owners;
     uint32_t  const_cnt, const_capa;
     /* Open-addressed index over the table above: (name_sym, owner class serial)
      * → entry+1.  The table is append-only apart from remove_const, so the index
@@ -1263,17 +1266,17 @@ struct korb_vm {
     /* boxed Float-literal pool: non-flonum literals (2.0/-2.0/out-of-range) are
      * boxed once and reused (deduped by bit value) instead of heap-boxed on every
      * eval.  Root-scanned by AROH_VISIT_ROOTS so the boxes are GC-forwarded. */
-    VALUE    *flit_vals;
+    korb_value    *flit_vals;
     uint32_t  flit_cnt, flit_capa;
     /* frozen String-literal pool (--enable-frozen-string-literal / the magic
      * comment): equal literals share one frozen object, as CRuby's fstring
      * table does.  Root-scanned alongside flit_vals. */
-    VALUE    *fstr_vals;
+    korb_value    *fstr_vals;
     uint32_t  fstr_cnt, fstr_capa;
     uint32_t *fstr_idx;               /* open-addressing index into fstr_vals (entry+1, 0 = empty) */
     /* `/#{x}/o`: the Regexp each such node built the first time, keyed by the node */
     const struct Node **once_keys;
-    VALUE    *once_vals;
+    korb_value    *once_vals;
     uint32_t  once_cnt, once_capa;
     uint32_t  fstr_idx_mask;
 
@@ -1288,7 +1291,7 @@ struct korb_vm {
     uint64_t  oid_next;
     /* cached frozen result of nil/true/false #to_s (CRuby returns the same frozen
      * object each call).  KORB_NIL until first use; GC roots (AROH_VISIT_ROOTS). */
-    VALUE     str_nil_to_s, str_true_to_s, str_false_to_s;
+    korb_value     str_nil_to_s, str_true_to_s, str_false_to_s;
 
     /* B3 escape: a frame's open KorbEnv (if any) lives in its EP cell base[-2]
      * (clean even pointer, GC-rooted via the slot scan); closed (slots->vals
@@ -1315,7 +1318,7 @@ struct korb_vm {
 
     /* Enumerator::Yielder class (block arg of Enumerator.new); KORB_NIL until
      * the enum init runs.  A GC root (forwarded in AROH_VISIT_ROOTS). */
-    VALUE     yielder_class;
+    korb_value     yielder_class;
     /* Active streaming-each sink for a (possibly infinite) generator enumerator.
      * When non-NULL, Enumerator::Yielder#<< feeds each value straight to a user
      * block and honours break/StopIteration instead of materializing into an
@@ -1325,7 +1328,7 @@ struct korb_vm {
     struct korb_gen_sink *gen_sink;
     /* Enumerator::Lazy class (reported as the class of lazy-mode enumerators);
      * set once at init.  A GC root (forwarded in AROH_VISIT_ROOTS). */
-    VALUE     lazy_class;
+    korb_value     lazy_class;
 
     /* per-core-class built-in method tables (receiver dispatch x.foo).
      * Each a flat {mid, fn, arity} list. */
@@ -1348,7 +1351,7 @@ struct korb_vm {
     struct KorbFiberRep *root_fiber;   /* stand-in rep for the main stack (Fiber.current) */
     struct KorbFiberRep *running_fiber;
     struct KorbFiberRep *starting_fiber;
-    VALUE *main_slots, *main_slots_top;
+    korb_value *main_slots, *main_slots_top;
 
     /* green threads (Thread) — docs/io_design.md。cur_thread == NULL は
      * thread サブシステム未起動 (最初の Thread API 使用で boot): それまで
@@ -1356,7 +1359,7 @@ struct korb_vm {
     struct korb_thread *thread_list;   /* 全 rep (GC scan 用) */
     struct korb_thread *cur_thread;    /* RUNNING (NULL = single-threaded) */
     struct korb_thread *reap_thread;   /* died and switched away: its stacks are freed by whoever runs next */
-    struct { VALUE *vslots, *hw; void *cstack, *uctx; } thread_stack_pool[4];   /* a dead thread's, for the next Thread.new */
+    struct { korb_value *vslots, *hw; void *cstack, *uctx; } thread_stack_pool[4];   /* a dead thread's, for the next Thread.new */
     uint32_t thread_stack_pool_n;
     struct korb_thread *main_thread;
     struct korb_thread *runq_head, *runq_tail;   /* READY FIFO */
@@ -1382,14 +1385,14 @@ struct korb_vm {
      * serial == method_serial (bumped on def AND on GC, so a moved/reused class
      * pointer can never produce a false hit). */
     struct korb_mcache_ent {
-        uint64_t serial; VALUE klass; uint32_t mid;
-        struct korb_method *m; VALUE def_class;
+        uint64_t serial; korb_value klass; uint32_t mid;
+        struct korb_method *m; korb_value def_class;
     } *mcache;
     /* `super` resolution (receiver's dispatch class, calling entry, mid) → method.
      * Same validity rule as mcache; saves re-linearizing the MRO per super call. */
     struct korb_scache_ent {
-        uint64_t serial; VALUE klass; const struct korb_method *cur; uint32_t mid;
-        struct korb_method *m; VALUE def_class;
+        uint64_t serial; korb_value klass; const struct korb_method *cur; uint32_t mid;
+        struct korb_method *m; korb_value def_class;
     } scache[256];
 
     /* object shape table (ivar-layout tree).  shapes[0]=unused, shapes[1]=root. */
@@ -1443,11 +1446,11 @@ struct korb_vm {
      * binary String ivar — see builtins/random.c. */
     KorbMT default_rng;
     bool   default_rng_seeded;
-    VALUE  default_rng_seed;   /* last srand seed (for srand's return), FIX 0 initially */
+    korb_value  default_rng_seed;   /* last srand seed (for srand's return), FIX 0 initially */
 
     /* String#pack("P"/"p") side table.  CRuby packs a raw pointer to the
      * string's bytes; under our moving collector a real pointer would dangle,
-     * so pack copies the bytes here (malloc'd, never VALUEs → needs no GC root
+     * so pack copies the bytes here (malloc'd, never korb_values → needs no GC root
      * scanning) and embeds a 1-based index in the packed 8 bytes (0 = nil).
      * unpack("P"/"p") recovers the bytes by that index.  Bounded leak, mirrors
      * CRuby pinning the pointed memory; freed only at process exit. */
@@ -1461,7 +1464,7 @@ struct korb_vm {
      * format-heavy loop).  Cache one stream and rewind it instead.  `fmt_busy`
      * guards against re-entry (a nested format via a user #to_s/#inspect) — the
      * nested call falls back to its own open_memstream.  Not a GC edge (libc
-     * buffer, no VALUEs); freed only at process exit. */
+     * buffer, no korb_values); freed only at process exit. */
     FILE   *fmt_stream;
     char   *fmt_buf;
     size_t  fmt_sz;
@@ -1491,13 +1494,13 @@ struct korb_vm {
     const char *last_syntax_msg;     /* parse-time SyntaxError detail (static string), NULL if none */
     /* Module#const_source_location: where each (name, owner) constant was assigned. */
     /* owner is keyed by the class's GC-stable `serial` (0 = top-level), not by a
-     * VALUE: this table is libc memory the collector does not scan, so a moving
+     * korb_value: this table is libc memory the collector does not scan, so a moving
      * GC would otherwise turn a class-owned location into "no location". */
     struct korb_constloc { uint32_t name; uint32_t owner_serial; uint32_t file_sym; uint32_t line; } *constlocs;
     uint32_t constloc_cnt, constloc_capa;
     /* private_constant: (owner, name) pairs unreachable through an explicit
      * `Owner::NAME`.  Small and rarely populated — a linear scan is enough. */
-    struct korb_privconst { uint32_t name; VALUE ARO_GC_EDGE owner; } *privconsts;
+    struct korb_privconst { uint32_t name; korb_value ARO_GC_EDGE owner; } *privconsts;
     uint32_t privconst_cnt, privconst_capa;
     /* deprecate_constant: same shape — reading such a constant warns. */
     struct korb_privconst *deprconsts;
@@ -1539,7 +1542,7 @@ struct korb_vm {
      * Kernel.binding).  A Binding keeps its table forever, so they are interned
      * per calling ISEQ here rather than malloc'd per call.  `id` is a frame
      * identity cell = a tagged pointer into immortal libc, never a GC object. */
-    struct korb_bind_tbl { const uint32_t *tbl; uint32_t words; VALUE id; } *bind_tbls;
+    struct korb_bind_tbl { const uint32_t *tbl; uint32_t words; korb_value id; } *bind_tbls;
     uint32_t bind_tbl_cnt, bind_tbl_capa;
     /* Ruby 4.1 #source_range: the full extent of a def/block/lambda node.  Kept
      * apart from `srclocs` because only three of its nine registrants have an
@@ -1566,10 +1569,10 @@ static inline uintptr_t korb_exec_ctx_key(const struct korb_vm *const vm) {
 struct ASTroGC;
 
 struct CTX_struct {
-    VALUE *slots;            /* base of the slot stack (fixed mmap — never moves) */
-    VALUE *slots_top;        /* GC scan upper bound; written ONLY by korb_alloc */
-    VALUE *slots_limit;      /* overflow check bound (frame push compares) */
-    VALUE *slots_high_water; /* highest published top — see AROH_VISIT_ROOTS */
+    korb_value *slots;            /* base of the slot stack (fixed mmap — never moves) */
+    korb_value *slots_top;        /* GC scan upper bound; written ONLY by korb_alloc */
+    korb_value *slots_limit;      /* overflow check bound (frame push compares) */
+    korb_value *slots_high_water; /* highest published top — see AROH_VISIT_ROOTS */
     const char *cstack_limit;/* native C stack floor + margin — the AST walker
                               * recurses on the C stack, so frame push checks
                               * this too (CRuby-style machine stack check) */
@@ -1581,7 +1584,7 @@ struct CTX_struct {
      * `return` skips intermediate USER methods (e.g. Enumerable#find via each).
      * It is a transient stack pointer: set the instant a return is raised and
      * cleared when consumed; never read across a GC. */
-    VALUE *return_target;
+    korb_value *return_target;
     /* The method entry whose define_method body is running, so a `super` inside
      * that body can find the name and owner it was defined under (a block frame
      * carries no method entry).  Saved/restored around the body call. */
@@ -1612,46 +1615,46 @@ struct CTX_struct {
      * in flight.  Those run Ruby, and a method with keyword params but no
      * **kwrest has no frame slot to keep the Hash in (the kwrest slot is what
      * roots it otherwise).  Saved/restored around each use, so recursion nests. */
-    VALUE     kwargs_park;
-    VALUE     def_definee;
+    korb_value     kwargs_park;
+    korb_value     def_definee;
     /* The cref an eval'd STRING runs under (instance_eval → the receiver's
      * singleton class, class_eval/module_eval → the module itself).  KORB_NIL
      * outside such an eval; a constant assignment with no parse-time cref uses
      * it as the owner, which is how `mod.module_eval("X = 1")` lands in mod. */
-    VALUE     eval_cref;
+    korb_value     eval_cref;
     /* …and the caller's cref it sits on (class_eval(String) on a named
      * receiver): a `binding` taken there keeps it (KorbBinding.outer_cref). */
-    VALUE     eval_outer_cref;
+    korb_value     eval_outer_cref;
     /* instance_eval/instance_exec rebind self to a non-class receiver, which
      * loses the class scope @@vars resolve against.  CRuby keeps the caller's
      * (block definition's) cref for them; this is that cref, KORB_NIL outside. */
-    VALUE     cvar_cref;
+    korb_value     cvar_cref;
     /* refinements active in the running lexical scope: a flat Array
      * [target, refinement, owner_module, ...] (later entries win), KORB_NIL when
      * none.  Saved/restored by every scope-ish construct — see docs/refinements.md. */
-    VALUE     refinements;
-    /* Scope save stack for `refinements`.  A C local must not hold a VALUE across
+    korb_value     refinements;
+    /* Scope save stack for `refinements`.  A C local must not hold a korb_value across
      * a GC (the moving collector would leave it stale), so a scope parks the
      * enclosing set here, where the root visitor forwards it. */
-    VALUE    *refine_saved;
+    korb_value    *refine_saved;
     uint32_t  refine_n, refine_cap;
     /* The set a Proc#refined body installed, while that body is running.  `using`
      * is not permitted there (CRuby: the proc's cref is not a toplevel one), and
      * identity is the test — any nested scope that installs its own set clears it. */
-    VALUE     refine_sealed;
+    korb_value     refine_sealed;
     /* Saved (def_definee, cvar_cref, eval_cref, kwargs_park) frames for scopes
      * that rebind them around Ruby execution.  They cannot be kept in C locals:
      * a moving collection during the body would leave the restore writing a
      * stale pointer back into the context.  Same shape as refine_saved above. */
-    VALUE    *cref_saved;
+    korb_value    *cref_saved;
     uint32_t  cref_n, cref_cap;
     /* `$~` is per METHOD frame in Ruby: a callee's match must not overwrite the
      * caller's.  The invoke paths park the caller's MatchData here (a C local
      * would go stale across a moving collection) and put it back on the way out. */
-    VALUE    *bref_saved;
+    korb_value    *bref_saved;
     uint32_t  bref_n, bref_cap;
-    const VALUE **bref_base;   /* per entry: the frame that parked it (a block finds its home's $~ by it) */
-    VALUE    *errinfo;
+    const korb_value **bref_base;   /* per entry: the frame that parked it (a block finds its home's $~ by it) */
+    korb_value    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
     /* An exception a container's element #inspect / #to_s raised.  The formatter
      * chain writes to a FILE* and cannot return a RESULT, so it parks the
@@ -1662,28 +1665,28 @@ struct CTX_struct {
      * FrozenError would then inspect it again, forever.  Name the class only
      * while one is already being built. */
     bool      in_frozen_msg;
-    VALUE     inspect_exc;
+    korb_value     inspect_exc;
     bool      inspect_text;     /* the #inspect being built showed a String (or a non-US-ASCII element result): not US-ASCII */
-    VALUE     throw_tag;     /* active `throw` tag while a KORB_THROW unwinds (GC-visited) */
-    VALUE    *catch_tags;    /* stack of tags of the active `catch` blocks (GC-visited) */
+    korb_value     throw_tag;     /* active `throw` tag while a KORB_THROW unwinds (GC-visited) */
+    korb_value    *catch_tags;    /* stack of tags of the active `catch` blocks (GC-visited) */
     const void **catch_owner;   /* the green thread each tag's catch runs in: the CTX is shared, so a
                                  * thread's throw looks only at its own, and pops only its own */
     uint32_t  catch_n, catch_cap;
     /* Symbol id of the key a hash pattern could not find (0 = none), so the
      * NoMatchingPatternError raised at the end of a `case/in` chain can be
-     * upgraded to NoMatchingPatternKeyError.  A plain id, not a VALUE, so it
+     * upgraded to NoMatchingPatternKeyError.  A plain id, not a korb_value, so it
      * needs no GC root.  Cleared on every top-level korb_pat_match. */
     uint32_t  pat_key_mid;
-    VALUE    *pat_dc;           /* the running case/in's [subject, #deconstruct result] frame cells, or NULL */
+    korb_value    *pat_dc;           /* the running case/in's [subject, #deconstruct result] frame cells, or NULL */
     /* Why the last `in` clause failed, for NoMatchingPatternError's message
      * (CRuby appends ": <reason>").  Recorded without allocating — a failing
      * clause is the common case — and rendered only if a raise happens.
      * 0 = none, 1 = length mismatch, 2 = `===` returned false. */
     uint8_t   pat_fail_kind;
     uint32_t  pat_fail_given, pat_fail_expected;
-    VALUE     pat_fail_a;     /* kind 1: the deconstructed Array; kind 2: the pattern */
-    VALUE     pat_fail_b;     /* kind 2: the subject */
-    VALUE     pat_key_hash;   /* the Hash pat_key_mid was missing from (NoMatchingPatternKeyError#matchee) */
+    korb_value     pat_fail_a;     /* kind 1: the deconstructed Array; kind 2: the pattern */
+    korb_value     pat_fail_b;     /* kind 2: the subject */
+    korb_value     pat_key_hash;   /* the Hash pat_key_mid was missing from (NoMatchingPatternKeyError#matchee) */
     struct korb_vm *vm;
     /* Backtrace bookkeeping.  At the END of the struct on purpose: every field
      * above keeps the offset it had, so the dispatch path's loads (slots_limit,
@@ -1701,8 +1704,8 @@ struct CTX_struct {
      *   the window.  Set immediately before that dispatch, cleared as read.  The
      *   line is kept PACKED (a link's 17-bit field, not a signed line) so that
      *   rebuilding a link from the pair is shifts and ORs - no clamp. */
-    VALUE cfunc_link;
-    const VALUE *carry_base;
+    korb_value cfunc_link;
+    const korb_value *carry_base;
     uint32_t     carry_line_bits;
     /* bi_caller_base: the Ruby frame a GLOBAL C function (korb_bi_*) was reached
      *   from, for the four that ask who called them (Kernel#binding,
@@ -1712,7 +1715,7 @@ struct CTX_struct {
      *   (rubocop's HTMLFormatter::ERBContext) could not build a Binding.  NULL
      *   when the caller is not known; saved/restored around every builtin
      *   dispatch so a stale frame never leaks into an unrelated call. */
-    const VALUE *bi_caller_base;
+    const korb_value *bi_caller_base;
     uint32_t     bi_caller_line;   /* the `super` line, for Binding#source_location */
     /* `zork` with no receiver misses as NameError, not NoMethodError — the mark
      * is on the call node.  A USER #method_missing that hands it on with `super`
@@ -1760,7 +1763,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
  * --------------------------------------------------------------------------- */
 
 /* Root scan = the published slot range, plus stale-residue hygiene:
- * any slot in (top, high_water) may hold a VALUE that was live before an
+ * any slot in (top, high_water) may hold a korb_value that was live before an
  * earlier pop and has NOT been fixed up by intervening GCs (it was above
  * top then).  If the mutator later claims such a slot and publishes past
  * it without storing first, the stale bits would be scanned.  Zeroing
@@ -1785,7 +1788,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &(s)->bref_saved[_k]);      \
     for (uint32_t _k = 0; _k < (s)->errinfo_n; _k++)                         \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(s)->errinfo[_k]);             \
-    VALUE *const _cr[5] = { &(s)->def_definee, &(s)->cvar_cref, &(s)->eval_cref, \
+    korb_value *const _cr[5] = { &(s)->def_definee, &(s)->cvar_cref, &(s)->eval_cref, \
                             &(s)->eval_outer_cref, &(s)->kwargs_park };       \
     for (int _k = 0; _k < 5; _k++)                                           \
         if (*_cr[_k] != 0 && *_cr[_k] != KORB_NIL)                           \
@@ -1793,14 +1796,14 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
 } while (0)
 
 #define AROH_VISIT_ROOTS(c, ctx, edge_visit) do {                            \
-    VALUE *_aro_top = (c)->slots_top;                                        \
+    korb_value *_aro_top = (c)->slots_top;                                        \
     if (_aro_top > (c)->slots_high_water) (c)->slots_high_water = _aro_top;  \
-    for (VALUE *_p = _aro_top; _p < (c)->slots_high_water; _p++) *_p = 0;    \
+    for (korb_value *_p = _aro_top; _p < (c)->slots_high_water; _p++) *_p = 0;    \
     /* start four cells early: bottom-header frames keep self at base[-1], the   \
      * EP at base[-2], the link at base[-3] and the identity at base[-4]; the     \
      * toplevel frame sits at c->slots, so those four lie below it (every other   \
      * frame's are inside the range already). */                                  \
-    for (VALUE *_p = (c)->slots - 4; _p < _aro_top; _p++) {                  \
+    for (korb_value *_p = (c)->slots - 4; _p < _aro_top; _p++) {                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                            \
     }                                                                        \
     for (uint32_t _oi = 0; _oi < (c)->vm->orphan_cnt; _oi++) {               \
@@ -1907,7 +1910,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
     /* main value-stack, suspended while a fiber runs (active stack scanned   \
      * above as c->slots..slots_top). */                                      \
     if ((c)->vm->running_fiber != NULL && (c)->vm->main_slots != NULL) {      \
-        for (VALUE *_p = (c)->vm->main_slots - 4; _p < (c)->vm->main_slots_top; _p++) \
+        for (korb_value *_p = (c)->vm->main_slots - 4; _p < (c)->vm->main_slots_top; _p++) \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                         \
     }                                                                        \
     /* every live fiber's transfer/captured_self roots + (suspended) value    \
@@ -1928,7 +1931,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
          * stand-in has no stack (vslots NULL). */                               \
         if (_fr->vslots != NULL && _fr != (c)->vm->running_fiber &&              \
             (_fr->fstate == 2 || _fr->fstate == 1)) {                            \
-            for (VALUE *_p = _fr->vslots - 4; _p < _fr->vslots_top; _p++)         \
+            for (korb_value *_p = _fr->vslots - 4; _p < _fr->vslots_top; _p++)         \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
         }                                                                    \
     }                                                                        \
@@ -1954,7 +1957,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->int_masks);                  \
         KORB_SCOPE_STACKS_VISIT(&_t->ss, ctx, edge_visit);                    \
         if (_t != (c)->vm->cur_thread && _t->started && _t->state != KORB_TH_DEAD) { \
-            for (VALUE *_p = _t->saved_base - 4; _p < _t->saved_top; _p++)    \
+            for (korb_value *_p = _t->saved_base - 4; _p < _t->saved_top; _p++)    \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
         }                                                                    \
     }                                                                        \
@@ -1994,7 +1997,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         KorbArray *_a = (KorbArray *)(payload);                             \
         ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_a->items);               \
         if (_a->items) {   /* re-read: the line above may have moved it */   \
-            VALUE *const _ad = korb_items_data(_a->items);                  \
+            korb_value *const _ad = korb_items_data(_a->items);                  \
             for (uint32_t _ai2 = 0; _ai2 < _a->len; _ai2++)                 \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ad[_ai2]);           \
         }                                                                    \
@@ -2005,7 +2008,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         /* Deliberately NOT self-scanned.  payload_size gives the CAPACITY;   \
          * the logical length lives in the owner, and the slots past it are   \
          * dead.  Walking them keeps garbage alive and — worse — hands the    \
-         * collector words that are not VALUEs at all (the edge filter admits \
+         * collector words that are not korb_values at all (the edge filter admits \
          * any 8-aligned non-zero word), which is how a plain integer reached \
          * forward_payload.  Each owner walks its own live prefix: Array by   \
          * len, Hash by 2*len, Object by ivar_capa (whose tail is kept nil),  \
@@ -2018,7 +2021,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         KorbHash *_hh = (KorbHash *)(payload);                              \
         ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->items);              \
         if (_hh->items) {  /* pairs: [k0,v0,k1,v1,...], 2 per live pair */   \
-            VALUE *const _hd = korb_items_data(_hh->items);                 \
+            korb_value *const _hd = korb_items_data(_hh->items);                 \
             const uint32_t _hn = _hh->len * 2u;                             \
             for (uint32_t _hi = 0; _hi < _hn; _hi++)                        \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, &_hd[_hi]);            \
@@ -2111,7 +2114,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         break;                                                               \
       }                                                                      \
       case KORB_OBJ_BIGNUM:                                                  \
-        /* no VALUE edges; mpz limbs are external malloc (copied as a raw    \
+        /* no korb_value edges; mpz limbs are external malloc (copied as a raw    \
          * pointer when this object moves). */                               \
         (void)(payload_size);                                                \
         break;                                                               \
@@ -2124,7 +2127,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
          * exact, not conservative: the store is zero-filled at alloc, only   \
          * ever grows, and korb_ivar_remove nils the slot it vacates. */      \
         if (_ob->ivars) {                                                    \
-            VALUE *const _od = korb_items_data(_ob->ivars);                  \
+            korb_value *const _od = korb_items_data(_ob->ivars);                  \
             for (uint32_t _oi2 = 0; _oi2 < _ob->ivar_capa; _oi2++)          \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, &_od[_oi2]);           \
         }                                                                    \
@@ -2159,7 +2162,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         if (_ev->closed) {                                                   \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ev->vals);  /* open: loc->slots root */ \
             if (_ev->vals) {   /* allocated with exactly n slots */           \
-                VALUE *const _vd = korb_items_data((KorbArrayItems *)(uintptr_t)_ev->vals); \
+                korb_value *const _vd = korb_items_data((KorbArrayItems *)(uintptr_t)_ev->vals); \
                 for (uint32_t _vi = 0; _vi < _ev->n; _vi++)                 \
                     ARO_GC_VISIT_EDGE((ctx), edge_visit, &_vd[_vi]);        \
             }                                                                \

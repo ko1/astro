@@ -73,9 +73,9 @@ heap env オブジェクト `KorbEnv` も **同じ shape**:
 typedef struct KorbEnv {
     AroObjectHeader head;          // KORB_OBJ_ENV (moving heap)
     struct KorbEnv *ARO_GC_EDGE prev;   // 親 env (heap or NULL)
-    VALUE *loc;                    // open: slots を指す / closed: &vals[0]。GC edge ではない(§7)
+    korb_value *loc;                    // open: slots を指す / closed: &vals[0]。GC edge ではない(§7)
     uint32_t n;
-    VALUE ARO_GC_EDGE vals[];      // closed 時に値が入る
+    korb_value ARO_GC_EDGE vals[];      // closed 時に値が入る
 } KorbEnv;
 ```
 
@@ -132,7 +132,7 @@ typedef struct KorbProc {
     AroObjectHeader head;          // KORB_OBJ_PROC
     const korb_iseq_t *iseq;       // immortal(SCAN しない)
     struct KorbEnv *ARO_GC_EDGE env;  // 捕捉した env(= 定義スコープの KorbEnv)
-    VALUE self;
+    korb_value self;
     uint32_t flags;                // is_lambda 等
 } KorbProc;
 ```
@@ -252,7 +252,7 @@ write: ARO_STORE(c, H, node->loc + i, v)
 | `KorbEnv` | moving heap (KORB_OBJ_ENV) | open=prev / closed=prev+vals、loc は edge 外 |
 | `KorbProc` | moving heap (KORB_OBJ_PROC) | env のみ(iseq は immortal) |
 | `blk_iseq` 隠しセル | 奇数タグ immortal ポインタ `(ptr\|1)` | 奇数 = fixnum 扱いで skip |
-| `blk_env` / PREV / LOC / MY_ENV | slots 内の VALUE / ポインタ | root scan(LOC は §6.1 の扱い) |
+| `blk_env` / PREV / LOC / MY_ENV | slots 内の korb_value / ポインタ | root scan(LOC は §6.1 の扱い) |
 | `blk_home` | fixnum トークン | skip |
 
 ---

@@ -55,7 +55,7 @@ the `interior_encapsulation` query is the CodeQL backstop.
 | query | kind | what it enforces |
 |---|---|---|
 | `borrow_after_gc.ql` | **temporal (pointer)** | A raw borrow (an `ARO_BORROW` accessor's return, or a `->data`/`->data_priv` field on `KorbStrBuf`/`KorbArrayItems`) held in a local and **used after a may-GC call** is stale under the moving GC → error.  SSA-precise: re-deriving the pointer (a new SSA def) is treated as safe, so the re-derive-each-iteration idiom does not false-positive.  Follows the borrow through conversions, pointer arithmetic, `&elem`, and local aliasing. |
-| `value_after_gc.ql` | **temporal (VALUE)** | The VALUE companion to `borrow_after_gc`: a `VALUE` produced by a may-GC call (a potentially movable heap object) held in a plain C local and **used after another may-GC call** is stale — the moving GC updates rooted slots (`slots[]`, `VALUE_REF` cells) but not a bare local → error.  The safe idiom stages into `slots[]` (an array element, not a `StackVariable`) and re-reads it, which is not flagged; a re-read into a local (`v = slots[i]` again) is a fresh SSA def, also safe.  Follows the VALUE through conversions and local aliasing. |
+| `value_after_gc.ql` | **temporal (korb_value)** | The korb_value companion to `borrow_after_gc`: a `korb_value` produced by a may-GC call (a potentially movable heap object) held in a plain C local and **used after another may-GC call** is stale — the moving GC updates rooted slots (`slots[]`, `korb_ref` cells) but not a bare local → error.  The safe idiom stages into `slots[]` (an array element, not a `StackVariable`) and re-reads it, which is not flagged; a re-read into a local (`v = slots[i]` again) is a fresh SSA def, also safe.  Follows the korb_value through conversions and local aliasing. |
 | `interior_encapsulation.ql` | **spatial** | Direct access to a raw payload field (`KorbStrBuf`/`KorbArrayItems` `::data`/`::data_priv`) **outside an `ARO_BORROW` function** → warning.  Backstops the compiler (field rename): all interior access must go through the accessor chokepoint, so the representation can change by editing accessors alone. |
 | `borrow_escape.ql` | **escape** | A raw borrow that **escapes a non-`ARO_BORROW` function** — returned from it, or stored into a struct field / global — hands the caller a borrow without its lifetime → warning.  Fix: mark the function `ARO_BORROW` (if it is deliberately an accessor) or copy the bytes out. |
 | `aro_borrow_unused.ql` | **hygiene** | A function marked `ARO_BORROW` whose body **touches no raw payload and calls no accessor** — the annotation is a lie that needlessly exempts it from `interior_encapsulation` and makes `borrow_after_gc` treat its return as a borrow (false positives on callers) → warning.  Fix: remove `ARO_BORROW`. |
@@ -77,10 +77,10 @@ the `interior_encapsulation` query is the CodeQL backstop.
 - `test/encapsulation_cases.c` — direct-access-outside-accessor case for
   `interior_encapsulation`.
 
-## Known blind spot: a VALUE that arrives as a parameter
+## Known blind spot: a korb_value that arrives as a parameter
 
-`value_after_gc.ql` only tracks a VALUE whose defining value is a may-GC call
-*inside the same function* (`VALUE v = korb_str_new(...)`).  A VALUE the caller
+`value_after_gc.ql` only tracks a korb_value whose defining value is a may-GC call
+*inside the same function* (`korb_value v = korb_str_new(...)`).  A korb_value the caller
 passed in is never seeded, so a parameter held across a may-GC call is not
 flagged.  That is exactly the shape of the 2026-08-19 `korb_re_str_span` SEGV
 (`group_or_nil` was live across the match run, which allocates).
@@ -89,7 +89,7 @@ Measured on `test/param_cases.c` (2026-08-19): `value_after_gc.ql` reports only
 the local case, `value_param.ql` (an unwired experiment kept beside it) reports
 the parameter case and stays quiet on the slot-parked one.  `value_param.ql` is
 NOT in the gate: run against the real koruby DB it did not finish within 9
-minutes — seeding on every VALUE parameter makes the `reach` recursion blow up.
+minutes — seeding on every korb_value parameter makes the `reach` recursion blow up.
 Closing the gap needs a narrower seed (e.g. only parameters of functions that
 themselves write `slots[]`), not just the query as it stands.
 
@@ -100,8 +100,8 @@ qlpack.yml                  CodeQL pack (deps: codeql/cpp-all)
 run.sh                      the gate (invoked by `make codeql-check`)
 cqbuild.sh                  clean, ccache-disabled build for DB extraction
 borrow_after_gc.ql          temporal check (raw pointer)
-value_after_gc.ql           temporal check (bare VALUE)
-value_param.ql              EXPERIMENT: same for VALUE parameters (not in the gate)
+value_after_gc.ql           temporal check (bare korb_value)
+value_param.ql              EXPERIMENT: same for korb_value parameters (not in the gate)
 interior_encapsulation.ql   spatial check
 borrow_escape.ql            escape check
 aro_borrow_unused.ql        annotation-hygiene check
@@ -112,8 +112,8 @@ test/                       fixtures
 
 ## 6. unsequenced-gc-arg (`unsequenced_gc_arg.ql`)
 
-**一つの引数リストに、GC を起こしうる呼び出しと、GC が動かす VALUE の読みが
-同居していないか。** C は引数の評価順を規定しないので、VALUE の読みが先に
+**一つの引数リストに、GC を起こしうる呼び出しと、GC が動かす korb_value の読みが
+同居していないか。** C は引数の評価順を規定しないので、korb_value の読みが先に
 起きうる。そうなると移動前のアドレスが渡り、**誰も直さない** — ルート走査が
 更新するのはスロットであって、すでに取られたコピーではないから。
 
@@ -133,10 +133,10 @@ owner が `vm->const_owners` に焼かれ、後に `Set` の ancestor 配列の�
 
 ## 7. value-read-after-gc (`value_read_after_gc.ql`) — ラチェット
 
-`value_after_gc.ql` が追うのは **may-GC 呼び出しが「作った」** VALUE だけ。
+`value_after_gc.ql` が追うのは **may-GC 呼び出しが「作った」** korb_value だけ。
 実際に多いのは、スロット・引数・構造体フィールドから **「取り出しただけ」** の
-VALUE を GC 後に使う形で、そちらは検出されていなかった (`test/gap_cases.c` を
-`value_after_gc.ql` に流すと 0 件)。このクエリは源を「定数でない任意の VALUE 式」
+korb_value を GC 後に使う形で、そちらは検出されていなかった (`test/gap_cases.c` を
+`value_after_gc.ql` に流すと 0 件)。このクエリは源を「定数でない任意の korb_value 式」
 まで広げる。
 
 **これだけはゼロにできない。** 静的には即値 (絶対に動かない) と heap オブジェクトを

@@ -27,7 +27,7 @@
 #endif
 
 /* Build ["AF_INET"|"AF_INET6"|"AF_UNIX", port, host, addr] for a sockaddr. */
-static RESULT korb_sock_addr_ary(CTX *c, VALUE *slots, const struct sockaddr *sa, socklen_t len) {
+static RESULT korb_sock_addr_ary(CTX *c, korb_value *slots, const struct sockaddr *sa, socklen_t len) {
     char host[NI_MAXHOST] = "", serv[NI_MAXSERV] = "";
     const char *fam = "AF_UNSPEC";
     int port = 0;
@@ -58,7 +58,7 @@ static RESULT korb_sock_addr_ary(CTX *c, VALUE *slots, const struct sockaddr *sa
         }
     }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
-    VALUE_REF ar = VALUE_REF_AT(&slots[0]);
+    korb_ref ar = KORB_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, fam, (uint32_t)strlen(fam)));
     CHECK(korb_ary_push_val(c, slots + 2, ar, slots[1]));
     CHECK(korb_ary_push_val(c, slots + 2, ar, LONG2FIX(port)));
@@ -66,10 +66,10 @@ static RESULT korb_sock_addr_ary(CTX *c, VALUE *slots, const struct sockaddr *sa
     CHECK(korb_ary_push_val(c, slots + 2, ar, slots[1]));
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, host, (uint32_t)strlen(host)));
     CHECK(korb_ary_push_val(c, slots + 2, ar, slots[1]));
-    return RESULT_OK(VALUE_REF_GET(ar));
+    return RESULT_OK(KORB_REF_GET(ar));
 }
 
-static RESULT korb_raise_resolution_error_code(CTX *c, VALUE *slots, const char *msg, int code);
+static RESULT korb_raise_resolution_error_code(CTX *c, korb_value *slots, const char *msg, int code);
 
 /* Fill a sockaddr from (family, host, service).  `serv` is what getaddrinfo(3)
  * calls a service: a port number in decimal *or* a name from /etc/services
@@ -116,7 +116,7 @@ static int korb_sock_fill_addr(int family, const char *host, int port, int flags
 }
 
 /* Socket::ResolutionError for a failed getaddrinfo(3). */
-static RESULT korb_sock_raise_gai(CTX *c, VALUE *slots, int gr) {
+static RESULT korb_sock_raise_gai(CTX *c, korb_value *slots, int gr) {
     char m[192];
     snprintf(m, sizeof m, "getaddrinfo: %s", gai_strerror(gr));
     return korb_raise_resolution_error_code(c, slots, m, gr);
@@ -124,7 +124,7 @@ static RESULT korb_sock_raise_gai(CTX *c, VALUE *slots, int gr) {
 
 /* Render a port argument as a getaddrinfo service string: an Integer becomes
  * decimal, a String/Symbol passes through as a service name. */
-static void korb_sock_serv_arg(CTX *c, VALUE v, char *buf, size_t cap) {
+static void korb_sock_serv_arg(CTX *c, korb_value v, char *buf, size_t cap) {
     if (FIXNUM_P(v))            snprintf(buf, cap, "%lld", (long long)FIX2LONG(v));
     else if (KORB_STRING_P(v)) {
         uint32_t n; const char *const p = korb_str_cstr_len(v, &n);
@@ -136,7 +136,7 @@ static void korb_sock_serv_arg(CTX *c, VALUE v, char *buf, size_t cap) {
     else                        buf[0] = '\0';
 }
 
-static int korb_sock_family_of(CTX *c, VALUE v) {
+static int korb_sock_family_of(CTX *c, korb_value v) {
     if (FIXNUM_P(v)) return (int)FIX2LONG(v);
     if (KORB_STRING_P(v)) {
         uint32_t n; const char *s = korb_str_cstr_len(v, &n);
@@ -149,7 +149,7 @@ static int korb_sock_family_of(CTX *c, VALUE v) {
 }
 
 /* Copy a String argument into a NUL-terminated stack buffer (nil → ""). */
-static bool korb_sock_cstr(VALUE v, char *buf, size_t cap) {
+static bool korb_sock_cstr(korb_value v, char *buf, size_t cap) {
     if (v == KORB_NIL) { buf[0] = '\0'; return true; }
     if (!KORB_STRING_P(v)) return false;
     uint32_t n; const char *s = korb_str_cstr_len(v, &n);
@@ -159,11 +159,11 @@ static bool korb_sock_cstr(VALUE v, char *buf, size_t cap) {
 }
 
 /* __sock_open(family, type, protocol) → fd */
-static RESULT korb_m_sock_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_open(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fam = korb_sock_family_of(c, VALUE_SLICE_GET(a, 0));
-    const int typ = FIXNUM_P(VALUE_SLICE_GET(a, 1)) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : SOCK_STREAM;
-    const int pro = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
+    const int fam = korb_sock_family_of(c, KORB_SLICE_GET(a, 0));
+    const int typ = FIXNUM_P(KORB_SLICE_GET(a, 1)) ? (int)FIX2LONG(KORB_SLICE_GET(a, 1)) : SOCK_STREAM;
+    const int pro = (KORB_SLICE_LEN(a) >= 3 && FIXNUM_P(KORB_SLICE_GET(a, 2))) ? (int)FIX2LONG(KORB_SLICE_GET(a, 2)) : 0;
     const int fd = socket(fam, typ, pro);
     if (fd < 0) return korb_raise_errno(c, slots, errno, "socket", "");
     (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
@@ -176,10 +176,10 @@ static RESULT korb_m_sock_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * buffer, so it survives the park's GC. */
 /* IO::TimeoutError — a Ruby-side class, so raise a plain exception carrying it. */
 static RESULT
-korb_raise_io_timeout(CTX *c, VALUE *slots, const char *msg)
+korb_raise_io_timeout(CTX *c, korb_value *slots, const char *msg)
 {
-    const VALUE io = korb_const_get(c->vm, korb_intern(c->vm, "IO", 2));
-    VALUE cls = KORB_NIL;
+    const korb_value io = korb_const_get(c->vm, korb_intern(c->vm, "IO", 2));
+    korb_value cls = KORB_NIL;
     if (KORB_CLASS_P(io)) {
         const uint32_t ix = korb_const_index_owned(c->vm, korb_intern(c->vm, "TimeoutError", 12), io);
         if (ix != UINT32_MAX) cls = c->vm->const_vals[ix];
@@ -187,11 +187,11 @@ korb_raise_io_timeout(CTX *c, VALUE *slots, const char *msg)
     slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
     RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", msg);
     if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
-        ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+        ARO_STORE(c, VAL2EXC(r.value), (korb_value *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
     return r;
 }
 
-static RESULT korb_sock_finish_connect(CTX *c, VALUE *slots, int fd, const char *host, double timeout) {
+static RESULT korb_sock_finish_connect(CTX *c, korb_value *slots, int fd, const char *host, double timeout) {
     struct pollfd pf; pf.fd = fd; pf.events = POLLOUT; pf.revents = 0;
     ssize_t ready = 0;
     const RESULT pr = korb_blop_poll_wait(c, slots, &pf, 1, timeout, &ready);
@@ -207,21 +207,21 @@ static RESULT korb_sock_finish_connect(CTX *c, VALUE *slots, int fd, const char 
 
 /* __sock_connect(fd, family, host, port_or_service[, timeout[, nonblock]]).
  * nonblock: leave the fd O_NONBLOCK and answer nil (not park) on EINPROGRESS. */
-static RESULT korb_m_sock_connect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_connect(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const int fam = korb_sock_family_of(c, VALUE_SLICE_GET(a, 1));
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    const int fam = korb_sock_family_of(c, KORB_SLICE_GET(a, 1));
     char host[512], serv[64];
-    if (!korb_sock_cstr(VALUE_SLICE_GET(a, 2), host, sizeof host))
+    if (!korb_sock_cstr(KORB_SLICE_GET(a, 2), host, sizeof host))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
-    korb_sock_serv_arg(c, VALUE_SLICE_GET(a, 3), serv, sizeof serv);
+    korb_sock_serv_arg(c, KORB_SLICE_GET(a, 3), serv, sizeof serv);
     struct sockaddr_storage ss; socklen_t len = 0;
     { const int gr = korb_sock_fill_addr_s(fam, host, serv, 0, &ss, &len);
       if (gr != 0) return korb_sock_raise_gai(c, slots, gr); }
     double tmo = -1.0;                                 /* optional 5th arg: seconds, or nil for no limit */
-    const VALUE tv = (VALUE_SLICE_LEN(a) >= 5) ? VALUE_SLICE_GET(a, 4) : KORB_NIL;
+    const korb_value tv = (KORB_SLICE_LEN(a) >= 5) ? KORB_SLICE_GET(a, 4) : KORB_NIL;
     if (tv != KORB_NIL && !korb_num_to_d(tv, &tmo)) tmo = -1.0;
-    const bool nonblock = VALUE_SLICE_LEN(a) >= 6 && KORB_TRUTHY(VALUE_SLICE_GET(a, 5));
+    const bool nonblock = KORB_SLICE_LEN(a) >= 6 && KORB_TRUTHY(KORB_SLICE_GET(a, 5));
     if (nonblock) {
         const int fl = fcntl(fd, F_GETFL);
         if (fl >= 0 && !(fl & O_NONBLOCK)) (void)fcntl(fd, F_SETFL, fl | O_NONBLOCK);
@@ -254,15 +254,15 @@ static RESULT korb_m_sock_connect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 
 /* __sock_bind(fd, family, host, port) */
-static RESULT korb_m_sock_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_bind(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const int fam = korb_sock_family_of(c, VALUE_SLICE_GET(a, 1));
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    const int fam = korb_sock_family_of(c, KORB_SLICE_GET(a, 1));
     char host[512];
-    if (!korb_sock_cstr(VALUE_SLICE_GET(a, 2), host, sizeof host))
+    if (!korb_sock_cstr(KORB_SLICE_GET(a, 2), host, sizeof host))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     char serv[64];
-    korb_sock_serv_arg(c, VALUE_SLICE_GET(a, 3), serv, sizeof serv);
+    korb_sock_serv_arg(c, KORB_SLICE_GET(a, 3), serv, sizeof serv);
     struct sockaddr_storage ss; socklen_t len = 0;
     { const int gr = korb_sock_fill_addr_s(fam, host, serv, AI_PASSIVE, &ss, &len);
       if (gr != 0) return korb_sock_raise_gai(c, slots, gr); }
@@ -270,10 +270,10 @@ static RESULT korb_m_sock_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(LONG2FIX(0));
 }
 
-static RESULT korb_m_sock_listen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_listen(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const int bl = FIXNUM_P(VALUE_SLICE_GET(a, 1)) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : 5;
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    const int bl = FIXNUM_P(KORB_SLICE_GET(a, 1)) ? (int)FIX2LONG(KORB_SLICE_GET(a, 1)) : 5;
     if (listen(fd, bl) != 0) return korb_raise_errno(c, slots, errno, "listen", "");
     /* "poll says readable" does not guarantee accept(2) won't block — a spurious
        wakeup or a connection aborted between poll and accept both do.  Make the
@@ -285,9 +285,9 @@ static RESULT korb_m_sock_listen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 
 /* __sock_accept(fd) → [fd, [family, port, host, addr]] */
-static RESULT korb_m_sock_accept(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_accept(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
     struct sockaddr_storage ss; socklen_t len = sizeof ss;
     memset(&ss, 0, sizeof ss);
     const int nfd = accept(fd, (struct sockaddr *)&ss, &len);
@@ -298,17 +298,17 @@ static RESULT korb_m_sock_accept(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)fcntl(nfd, F_SETFD, FD_CLOEXEC);
     slots[0] = UNWRAP(korb_sock_addr_ary(c, slots, (struct sockaddr *)&ss, len));
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
-    VALUE_REF pair = VALUE_REF_AT(&slots[1]);
+    korb_ref pair = KORB_REF_AT(&slots[1]);
     CHECK(korb_ary_push_val(c, slots + 2, pair, LONG2FIX(nfd)));
     CHECK(korb_ary_push_val(c, slots + 2, pair, slots[0]));
-    return RESULT_OK(VALUE_REF_GET(pair));
+    return RESULT_OK(KORB_REF_GET(pair));
 }
 
 /* __sock_name(fd, peer?) → [family, port, host, addr] */
-static RESULT korb_m_sock_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_name(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const bool peer = KORB_TRUTHY(VALUE_SLICE_GET(a, 1));
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    const bool peer = KORB_TRUTHY(KORB_SLICE_GET(a, 1));
     struct sockaddr_storage ss; socklen_t len = sizeof ss;
     memset(&ss, 0, sizeof ss);
     const int r = peer ? getpeername(fd, (struct sockaddr *)&ss, &len)
@@ -320,10 +320,10 @@ static RESULT korb_m_sock_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* Socket::ResolutionError (Ruby 3.3+, a SocketError) — the class lives in
  * lib/socket.rb, so raise a plain exception carrying it as #class. */
 static RESULT
-korb_raise_resolution_error_code(CTX *c, VALUE *slots, const char *msg, int code)
+korb_raise_resolution_error_code(CTX *c, korb_value *slots, const char *msg, int code)
 {
-    const VALUE sock = korb_const_get(c->vm, korb_intern(c->vm, "Socket", 6));
-    VALUE cls = KORB_NIL;
+    const korb_value sock = korb_const_get(c->vm, korb_intern(c->vm, "Socket", 6));
+    korb_value cls = KORB_NIL;
     if (KORB_CLASS_P(sock)) {
         const uint32_t nm = korb_intern(c->vm, "ResolutionError", 15);
         const uint32_t ix = korb_const_index_owned(c->vm, nm, sock);
@@ -333,50 +333,50 @@ korb_raise_resolution_error_code(CTX *c, VALUE *slots, const char *msg, int code
     RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", msg);
     if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value)) {
         slots[1] = r.value;
-        ARO_STORE(c, VAL2EXC(slots[1]), (VALUE *)(uintptr_t)&VAL2EXC(slots[1])->exc_class, slots[0]);
+        ARO_STORE(c, VAL2EXC(slots[1]), (korb_value *)(uintptr_t)&VAL2EXC(slots[1])->exc_class, slots[0]);
         /* #error_code is the EAI_* value getaddrinfo(3) returned */
-        korb_exc_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]),
+        korb_exc_ivar_set(c, slots + 2, KORB_REF_AT(&slots[1]),
                           ID2SYM(korb_intern(c->vm, "@error_code", 11)), LONG2FIX(code));
         r.value = slots[1];
     }
     return r;
 }
-static RESULT korb_raise_resolution_error(CTX *c, VALUE *slots, const char *msg) {
+static RESULT korb_raise_resolution_error(CTX *c, korb_value *slots, const char *msg) {
     return korb_raise_resolution_error_code(c, slots, msg, 0);
 }
 
 /* __sock_getaddrinfo(host, port, family, socktype[, flags[, protocol]]) → [[family, port, host, addr, socktype, protocol], …] */
-static RESULT korb_m_sock_getaddrinfo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_getaddrinfo(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     char host[512], portbuf[64];
-    if (!korb_sock_cstr(VALUE_SLICE_GET(a, 0), host, sizeof host))
+    if (!korb_sock_cstr(KORB_SLICE_GET(a, 0), host, sizeof host))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
-    const VALUE pv = VALUE_SLICE_GET(a, 1);
+    const korb_value pv = KORB_SLICE_GET(a, 1);
     if (FIXNUM_P(pv)) snprintf(portbuf, sizeof portbuf, "%lld", (long long)FIX2LONG(pv));
     else if (!korb_sock_cstr(pv, portbuf, sizeof portbuf)) portbuf[0] = '\0';
     struct addrinfo hints, *res = NULL, *ai;
     memset(&hints, 0, sizeof hints);
-    hints.ai_family = (VALUE_SLICE_LEN(a) >= 3 && VALUE_SLICE_GET(a, 2) != KORB_NIL)
-                        ? korb_sock_family_of(c, VALUE_SLICE_GET(a, 2)) : AF_UNSPEC;
-    hints.ai_socktype = (VALUE_SLICE_LEN(a) >= 4 && FIXNUM_P(VALUE_SLICE_GET(a, 3)))
-                        ? (int)FIX2LONG(VALUE_SLICE_GET(a, 3)) : 0;
-    hints.ai_protocol = (VALUE_SLICE_LEN(a) >= 6 && FIXNUM_P(VALUE_SLICE_GET(a, 5)))
-                        ? (int)FIX2LONG(VALUE_SLICE_GET(a, 5)) : 0;
+    hints.ai_family = (KORB_SLICE_LEN(a) >= 3 && KORB_SLICE_GET(a, 2) != KORB_NIL)
+                        ? korb_sock_family_of(c, KORB_SLICE_GET(a, 2)) : AF_UNSPEC;
+    hints.ai_socktype = (KORB_SLICE_LEN(a) >= 4 && FIXNUM_P(KORB_SLICE_GET(a, 3)))
+                        ? (int)FIX2LONG(KORB_SLICE_GET(a, 3)) : 0;
+    hints.ai_protocol = (KORB_SLICE_LEN(a) >= 6 && FIXNUM_P(KORB_SLICE_GET(a, 5)))
+                        ? (int)FIX2LONG(KORB_SLICE_GET(a, 5)) : 0;
     /* the caller's ai_flags decide; with no host and no AI_PASSIVE, getaddrinfo(3)
      * answers the loopback (a client address), which is what CRuby reports */
-    if (VALUE_SLICE_LEN(a) >= 5 && FIXNUM_P(VALUE_SLICE_GET(a, 4))) hints.ai_flags = (int)FIX2LONG(VALUE_SLICE_GET(a, 4));
+    if (KORB_SLICE_LEN(a) >= 5 && FIXNUM_P(KORB_SLICE_GET(a, 4))) hints.ai_flags = (int)FIX2LONG(KORB_SLICE_GET(a, 4));
     /* CRuby's host_str: nil is NULL, but "" is INADDR_ANY spelled out */
     const char *hp = host;
-    if (VALUE_SLICE_GET(a, 0) == KORB_NIL) hp = NULL;
+    if (KORB_SLICE_GET(a, 0) == KORB_NIL) hp = NULL;
     else if (host[0] == '\0' || !strcmp(host, "<any>")) { hp = "0.0.0.0"; hints.ai_flags |= AI_NUMERICHOST; }
     else if (!strcmp(host, "<broadcast>")) { hp = "255.255.255.255"; hints.ai_flags |= AI_NUMERICHOST; }
     const int gr = getaddrinfo(hp, portbuf[0] ? portbuf : NULL, &hints, &res);
     if (gr != 0) { char m[192]; snprintf(m, sizeof m, "getaddrinfo: %s", gai_strerror(gr)); return korb_raise_resolution_error_code(c, slots, m, gr); }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
-    VALUE_REF list = VALUE_REF_AT(&slots[0]);
+    korb_ref list = KORB_REF_AT(&slots[0]);
     for (ai = res; ai != NULL; ai = ai->ai_next) {
         slots[1] = UNWRAP(korb_sock_addr_ary(c, slots + 1, ai->ai_addr, ai->ai_addrlen));
-        VALUE_REF one = VALUE_REF_AT(&slots[1]);
+        korb_ref one = KORB_REF_AT(&slots[1]);
         CHECK(korb_ary_push_val(c, slots + 2, one, LONG2FIX(ai->ai_family)));   /* CRuby's 5th element */
         CHECK(korb_ary_push_val(c, slots + 2, one, LONG2FIX(ai->ai_socktype)));
         CHECK(korb_ary_push_val(c, slots + 2, one, LONG2FIX(ai->ai_protocol)));
@@ -384,46 +384,46 @@ static RESULT korb_m_sock_getaddrinfo(CTX *c, VALUE *slots, VALUE_REF self, VALU
             slots[2] = UNWRAP(korb_str_new(c, slots + 2, ai->ai_canonname, (uint32_t)strlen(ai->ai_canonname)));
             CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
         }
-        CHECK(korb_ary_push_val(c, slots + 2, list, VALUE_REF_GET(one)));
+        CHECK(korb_ary_push_val(c, slots + 2, list, KORB_REF_GET(one)));
     }
     freeaddrinfo(res);
-    return RESULT_OK(VALUE_REF_GET(list));
+    return RESULT_OK(KORB_REF_GET(list));
 }
 
 /* __sock_servbyname(name, proto) → port (host byte order), or nil. */
-static RESULT korb_m_sock_servbyname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_servbyname(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     char nm[128], pr[32];
-    if (!korb_sock_cstr(VALUE_SLICE_GET(a, 0), nm, sizeof nm))
+    if (!korb_sock_cstr(KORB_SLICE_GET(a, 0), nm, sizeof nm))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
-    if (VALUE_SLICE_LEN(a) < 2 || !korb_sock_cstr(VALUE_SLICE_GET(a, 1), pr, sizeof pr)) snprintf(pr, sizeof pr, "tcp");
+    if (KORB_SLICE_LEN(a) < 2 || !korb_sock_cstr(KORB_SLICE_GET(a, 1), pr, sizeof pr)) snprintf(pr, sizeof pr, "tcp");
     const struct servent *const se = getservbyname(nm, pr);
     if (se == NULL) return RESULT_OK(KORB_NIL);
     return RESULT_OK(LONG2FIX((korb_sword_t)ntohs((uint16_t)se->s_port)));
 }
 
 /* __sock_servbyport(port, proto) → the service name, or nil. */
-static RESULT korb_m_sock_servbyport(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_servbyport(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    const korb_value pv = KORB_SLICE_GET(a, 0);
     if (UNLIKELY(!FIXNUM_P(pv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     char pr[32];
-    if (VALUE_SLICE_LEN(a) < 2 || !korb_sock_cstr(VALUE_SLICE_GET(a, 1), pr, sizeof pr)) snprintf(pr, sizeof pr, "tcp");
+    if (KORB_SLICE_LEN(a) < 2 || !korb_sock_cstr(KORB_SLICE_GET(a, 1), pr, sizeof pr)) snprintf(pr, sizeof pr, "tcp");
     const struct servent *const se = getservbyport(htons((uint16_t)FIX2LONG(pv)), pr);
     if (se == NULL) return RESULT_OK(KORB_NIL);
     return korb_str_new(c, slots, se->s_name, (uint32_t)strlen(se->s_name));
 }
 
 /* __sock_hostbyaddr(packed_addr, family) → [name, [aliases], addrtype, packed]. */
-static RESULT korb_m_sock_hostbyaddr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_hostbyaddr(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const VALUE av = VALUE_SLICE_GET(a, 0);
+    const korb_value av = KORB_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(av)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     const uint32_t alen = VAL2STR(av)->len;
-    int fam = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1)))
-                ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : (alen == 16 ? AF_INET6 : AF_INET);
+    int fam = (KORB_SLICE_LEN(a) >= 2 && FIXNUM_P(KORB_SLICE_GET(a, 1)))
+                ? (int)FIX2LONG(KORB_SLICE_GET(a, 1)) : (alen == 16 ? AF_INET6 : AF_INET);
     struct sockaddr_storage ss;
     memset(&ss, 0, sizeof ss);
     socklen_t sl;
@@ -445,22 +445,22 @@ static RESULT korb_m_sock_hostbyaddr(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     if (getnameinfo((const struct sockaddr *)&ss, sl, hbuf, sizeof hbuf, NULL, 0, NI_NAMEREQD) != 0)
         return korb_raise_resolution_error(c, slots, "gethostbyaddr: address not found");
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
-    VALUE_REF out = VALUE_REF_AT(&slots[0]);
+    korb_ref out = KORB_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, hbuf, (uint32_t)strlen(hbuf)));
     CHECK(korb_ary_push_val(c, slots + 2, out, slots[1]));
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 0));                    /* aliases: getnameinfo has none */
     CHECK(korb_ary_push_val(c, slots + 2, out, slots[1]));
     CHECK(korb_ary_push_val(c, slots + 2, out, LONG2FIX(fam)));
-    CHECK(korb_ary_push_val(c, slots + 2, out, VALUE_SLICE_GET(a, 0)));
-    return RESULT_OK(VALUE_REF_GET(out));
+    CHECK(korb_ary_push_val(c, slots + 2, out, KORB_SLICE_GET(a, 0)));
+    return RESULT_OK(KORB_REF_GET(out));
 }
 
 /* __sock_getopt_raw(fd, level, name) → the option's bytes as a String. */
-static RESULT korb_m_sock_getopt_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_getopt_raw(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const int lv = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
-    const int nm = (int)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    const int lv = (int)FIX2LONG(KORB_SLICE_GET(a, 1));
+    const int nm = (int)FIX2LONG(KORB_SLICE_GET(a, 2));
     char buf[256];
     socklen_t len = sizeof buf;
     if (getsockopt(fd, lv, nm, buf, &len) != 0) return korb_raise_errno(c, slots, errno, "getsockopt", "");
@@ -470,10 +470,10 @@ static RESULT korb_m_sock_getopt_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 /* __sock_send_fd(fd, payload_fd) — hand a descriptor to the peer over a UNIX
  * socket (SCM_RIGHTS).  One byte of ordinary data goes with it, as CRuby does,
  * because a control message needs a carrier. */
-static RESULT korb_m_sock_send_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_send_fd(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const int payload = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    const int payload = (int)FIX2LONG(KORB_SLICE_GET(a, 1));
     char dummy = 0;
     struct iovec iov; iov.iov_base = &dummy; iov.iov_len = 1;
     union { struct cmsghdr align; char buf[CMSG_SPACE(sizeof(int))]; } cm;
@@ -493,9 +493,9 @@ static RESULT korb_m_sock_send_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 
 /* __sock_recv_fd(fd) → the descriptor the peer passed, or nil if none came. */
-static RESULT korb_m_sock_recv_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_recv_fd(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
     char dummy = 0;
     struct iovec iov; iov.iov_base = &dummy; iov.iov_len = 1;
     union { struct cmsghdr align; char buf[CMSG_SPACE(sizeof(int))]; } cm;
@@ -527,7 +527,7 @@ static RESULT korb_m_sock_recv_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 
 /* One ifaddrs address as the [family, port, host, addr] tuple, or nil when it
  * is missing or not IP (AF_PACKET has no Addrinfo shape here). */
-static RESULT korb_sock_ifaddr_tuple(CTX *c, VALUE *slots, const struct sockaddr *sa) {
+static RESULT korb_sock_ifaddr_tuple(CTX *c, korb_value *slots, const struct sockaddr *sa) {
     if (sa == NULL || (sa->sa_family != AF_INET && sa->sa_family != AF_INET6)) return RESULT_OK(KORB_NIL);
     struct sockaddr_storage ss;
     const socklen_t sl = (sa->sa_family == AF_INET) ? (socklen_t)sizeof(struct sockaddr_in) : (socklen_t)sizeof(struct sockaddr_in6);
@@ -538,12 +538,12 @@ static RESULT korb_sock_ifaddr_tuple(CTX *c, VALUE *slots, const struct sockaddr
 
 /* __sock_ifaddrs() → [[name, ifindex, flags, addr, netmask, broadaddr, dstaddr], …]
  * for every interface entry; the three addresses are tuples or nil. */
-static RESULT korb_m_sock_ifaddrs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_ifaddrs(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     struct ifaddrs *head = NULL;
     if (getifaddrs(&head) != 0) return korb_raise_errno(c, slots, errno, "getifaddrs", "");
     slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
-    VALUE_REF list = VALUE_REF_AT(&slots[0]);
+    korb_ref list = KORB_REF_AT(&slots[0]);
     RESULT r = RESULT_OK(KORB_NIL);
     for (const struct ifaddrs *p = head; p != NULL && r.state == KORB_NORMAL; p = p->ifa_next) {
         const char *const name = p->ifa_name ? p->ifa_name : "";
@@ -551,7 +551,7 @@ static RESULT korb_m_sock_ifaddrs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         const struct sockaddr *const brd = (p->ifa_flags & IFF_BROADCAST) ? p->ifa_broadaddr : NULL;
         const struct sockaddr *const dst = (p->ifa_flags & IFF_POINTOPOINT) ? p->ifa_dstaddr : NULL;
         slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 7));
-        VALUE_REF one = VALUE_REF_AT(&slots[1]);
+        korb_ref one = KORB_REF_AT(&slots[1]);
         slots[2] = UNWRAP(korb_str_new(c, slots + 2, name, (uint32_t)strlen(name)));
         CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
         CHECK(korb_ary_push_val(c, slots + 3, one, LONG2FIX((korb_sword_t)ifindex)));
@@ -564,20 +564,20 @@ static RESULT korb_m_sock_ifaddrs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
         slots[2] = UNWRAP(korb_sock_ifaddr_tuple(c, slots + 2, dst));
         CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
-        r = korb_ary_push_val(c, slots + 2, list, VALUE_REF_GET(one));
+        r = korb_ary_push_val(c, slots + 2, list, KORB_REF_GET(one));
     }
     freeifaddrs(head);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    return RESULT_OK(VALUE_REF_GET(list));
+    return RESULT_OK(KORB_REF_GET(list));
 }
 
 /* __sock_setopt(fd, level, name, int_value) / __sock_getopt(fd, level, name) */
-static RESULT korb_m_sock_setopt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_setopt(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const int lv = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
-    const int nm = (int)FIX2LONG(VALUE_SLICE_GET(a, 2));
-    const VALUE v = VALUE_SLICE_GET(a, 3);
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    const int lv = (int)FIX2LONG(KORB_SLICE_GET(a, 1));
+    const int nm = (int)FIX2LONG(KORB_SLICE_GET(a, 2));
+    const korb_value v = KORB_SLICE_GET(a, 3);
     if (KORB_STRING_P(v)) {   /* a packed struct (SO_LINGER, ip_mreq, …) goes through verbatim */
         const KorbString *const sv = VAL2STR(v);
         if (setsockopt(fd, lv, nm, korb_strbuf_data(sv->buf), (socklen_t)sv->len) != 0)
@@ -589,31 +589,31 @@ static RESULT korb_m_sock_setopt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (setsockopt(fd, lv, nm, &iv, sizeof iv) != 0) return korb_raise_errno(c, slots, errno, "setsockopt", "");
     return RESULT_OK(LONG2FIX(0));
 }
-static RESULT korb_m_sock_getopt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_getopt(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const int lv = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
-    const int nm = (int)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    const int lv = (int)FIX2LONG(KORB_SLICE_GET(a, 1));
+    const int nm = (int)FIX2LONG(KORB_SLICE_GET(a, 2));
     int iv = 0; socklen_t l = sizeof iv;
     if (getsockopt(fd, lv, nm, &iv, &l) != 0) return korb_raise_errno(c, slots, errno, "getsockopt", "");
     return RESULT_OK(LONG2FIX(iv));
 }
 
-static RESULT korb_m_sock_shutdown(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_shutdown(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const int how = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : SHUT_RDWR;
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    const int how = (KORB_SLICE_LEN(a) >= 2 && FIXNUM_P(KORB_SLICE_GET(a, 1))) ? (int)FIX2LONG(KORB_SLICE_GET(a, 1)) : SHUT_RDWR;
     if (shutdown(fd, how) != 0) return korb_raise_errno(c, slots, errno, "shutdown", "");
     return RESULT_OK(LONG2FIX(0));
 }
 
 /* __sock_recv(fd, maxlen, flags) → String ("" at EOF) */
-static RESULT korb_m_sock_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_recv(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    korb_sword_t want = FIXNUM_P(VALUE_SLICE_GET(a, 1)) ? FIX2LONG(VALUE_SLICE_GET(a, 1)) : 4096;
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    korb_sword_t want = FIXNUM_P(KORB_SLICE_GET(a, 1)) ? FIX2LONG(KORB_SLICE_GET(a, 1)) : 4096;
     if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length");
-    const int fl = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
+    const int fl = (KORB_SLICE_LEN(a) >= 3 && FIXNUM_P(KORB_SLICE_GET(a, 2))) ? (int)FIX2LONG(KORB_SLICE_GET(a, 2)) : 0;
     char stackbuf[8192];
     char *buf = (size_t)want <= sizeof stackbuf ? stackbuf : malloc((size_t)want);
     if (!buf) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
@@ -636,12 +636,12 @@ static RESULT korb_m_sock_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * is always added: koruby drives blocking through the scheduler, never by
  * stalling the native thread.  A connected stream reports no sender address
  * (recvfrom(2) leaves the length 0), which CRuby surfaces as nil. */
-static RESULT korb_m_sock_recvfrom(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_recvfrom(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    korb_sword_t want = FIXNUM_P(VALUE_SLICE_GET(a, 1)) ? FIX2LONG(VALUE_SLICE_GET(a, 1)) : 4096;
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    korb_sword_t want = FIXNUM_P(KORB_SLICE_GET(a, 1)) ? FIX2LONG(KORB_SLICE_GET(a, 1)) : 4096;
     if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length");
-    const int fl = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
+    const int fl = (KORB_SLICE_LEN(a) >= 3 && FIXNUM_P(KORB_SLICE_GET(a, 2))) ? (int)FIX2LONG(KORB_SLICE_GET(a, 2)) : 0;
     char stackbuf[8192];
     char *const buf = (size_t)want <= sizeof stackbuf ? stackbuf : malloc((size_t)want ? (size_t)want : 1);
     if (!buf) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
@@ -662,28 +662,28 @@ static RESULT korb_m_sock_recvfrom(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     slots[0] = sr.value;                                  /* root the payload across the array builds */
     slots[1] = slen ? UNWRAP(korb_sock_addr_ary(c, slots + 1, (struct sockaddr *)&ss, slen)) : KORB_NIL;
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
-    VALUE_REF pair = VALUE_REF_AT(&slots[2]);
+    korb_ref pair = KORB_REF_AT(&slots[2]);
     CHECK(korb_ary_push_val(c, slots + 3, pair, slots[0]));
     CHECK(korb_ary_push_val(c, slots + 3, pair, slots[1]));
-    return RESULT_OK(VALUE_REF_GET(pair));
+    return RESULT_OK(KORB_REF_GET(pair));
 }
 
 /* __sock_sendto(fd, string, flags, family, host, port) → byte count.
  * host nil → plain send(2) on a connected socket. */
-static RESULT korb_m_sock_sendto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_sendto(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const VALUE sv = VALUE_SLICE_GET(a, 1);
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    const korb_value sv = KORB_SLICE_GET(a, 1);
     if (!KORB_STRING_P(sv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
-    const int fl = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
+    const int fl = (KORB_SLICE_LEN(a) >= 3 && FIXNUM_P(KORB_SLICE_GET(a, 2))) ? (int)FIX2LONG(KORB_SLICE_GET(a, 2)) : 0;
     struct sockaddr_storage ss;
     socklen_t alen = 0;
-    if (VALUE_SLICE_LEN(a) >= 5 && VALUE_SLICE_GET(a, 4) != KORB_NIL) {
-        const int fam = korb_sock_family_of(c, VALUE_SLICE_GET(a, 3));
+    if (KORB_SLICE_LEN(a) >= 5 && KORB_SLICE_GET(a, 4) != KORB_NIL) {
+        const int fam = korb_sock_family_of(c, KORB_SLICE_GET(a, 3));
         char host[512], serv[64];
-        if (!korb_sock_cstr(VALUE_SLICE_GET(a, 4), host, sizeof host))
+        if (!korb_sock_cstr(KORB_SLICE_GET(a, 4), host, sizeof host))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
-        korb_sock_serv_arg(c, VALUE_SLICE_LEN(a) >= 6 ? VALUE_SLICE_GET(a, 5) : KORB_NIL, serv, sizeof serv);
+        korb_sock_serv_arg(c, KORB_SLICE_LEN(a) >= 6 ? KORB_SLICE_GET(a, 5) : KORB_NIL, serv, sizeof serv);
         { const int gr = korb_sock_fill_addr_s(fam, host, serv, 0, &ss, &alen);
           if (gr != 0) return korb_sock_raise_gai(c, slots, gr); }
     }
@@ -698,10 +698,10 @@ static RESULT korb_m_sock_sendto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
  *                          [packed address bytes...], [numeric strings...]].
  * Socket.gethostbyname wants the packed bytes, TCPSocket.gethostbyname the
  * dotted strings, so hand back both and let Ruby pick. */
-static RESULT korb_m_sock_hostent(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_hostent(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     char host[512];
-    if (!korb_sock_cstr(VALUE_SLICE_GET(a, 0), host, sizeof host))
+    if (!korb_sock_cstr(KORB_SLICE_GET(a, 0), host, sizeof host))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     struct addrinfo hints, *res = NULL, *ai;
     memset(&hints, 0, sizeof hints);
@@ -716,8 +716,8 @@ static RESULT korb_m_sock_hostent(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 1));                 /* aliases: getaddrinfo exposes none */
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 4));                 /* packed address bytes */
     slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 4));                 /* numeric strings */
-    VALUE_REF packed = VALUE_REF_AT(&slots[2]);
-    VALUE_REF numeric = VALUE_REF_AT(&slots[3]);
+    korb_ref packed = KORB_REF_AT(&slots[2]);
+    korb_ref numeric = KORB_REF_AT(&slots[3]);
     for (ai = res; ai != NULL; ai = ai->ai_next) {
         char nb[NI_MAXHOST] = "";
         if (getnameinfo(ai->ai_addr, ai->ai_addrlen, nb, sizeof nb, NULL, 0, NI_NUMERICHOST) != 0) continue;
@@ -734,22 +734,22 @@ static RESULT korb_m_sock_hostent(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     }
     freeaddrinfo(res);
     slots[4] = UNWRAP(korb_ary_new(c, slots + 4, 5));
-    VALUE_REF out = VALUE_REF_AT(&slots[4]);
+    korb_ref out = KORB_REF_AT(&slots[4]);
     CHECK(korb_ary_push_val(c, slots + 5, out, slots[0]));
     CHECK(korb_ary_push_val(c, slots + 5, out, slots[1]));
     CHECK(korb_ary_push_val(c, slots + 5, out, LONG2FIX(fam)));
-    CHECK(korb_ary_push_val(c, slots + 5, out, VALUE_REF_GET(packed)));
-    CHECK(korb_ary_push_val(c, slots + 5, out, VALUE_REF_GET(numeric)));
-    return RESULT_OK(VALUE_REF_GET(out));
+    CHECK(korb_ary_push_val(c, slots + 5, out, KORB_REF_GET(packed)));
+    CHECK(korb_ary_push_val(c, slots + 5, out, KORB_REF_GET(numeric)));
+    return RESULT_OK(KORB_REF_GET(out));
 }
 
 /* __sock_send(fd, string, flags) → byte count */
-static RESULT korb_m_sock_send(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_send(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const VALUE sv = VALUE_SLICE_GET(a, 1);
+    const int fd = (int)FIX2LONG(KORB_SLICE_GET(a, 0));
+    const korb_value sv = KORB_SLICE_GET(a, 1);
     if (!KORB_STRING_P(sv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
-    const int fl = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
+    const int fl = (KORB_SLICE_LEN(a) >= 3 && FIXNUM_P(KORB_SLICE_GET(a, 2))) ? (int)FIX2LONG(KORB_SLICE_GET(a, 2)) : 0;
     uint32_t n; const char *p = korb_str_cstr_len(sv, &n);
     const ssize_t w = send(fd, p, n, fl);
     if (w < 0) return korb_raise_errno(c, slots, errno, "send", "");
@@ -757,22 +757,22 @@ static RESULT korb_m_sock_send(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 /* __sock_pair(family, type) → [fd, fd] */
-static RESULT korb_m_sock_pair(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_pair(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const int fam = (VALUE_SLICE_LEN(a) >= 1) ? korb_sock_family_of(c, VALUE_SLICE_GET(a, 0)) : AF_UNIX;
-    const int typ = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : SOCK_STREAM;
+    const int fam = (KORB_SLICE_LEN(a) >= 1) ? korb_sock_family_of(c, KORB_SLICE_GET(a, 0)) : AF_UNIX;
+    const int typ = (KORB_SLICE_LEN(a) >= 2 && FIXNUM_P(KORB_SLICE_GET(a, 1))) ? (int)FIX2LONG(KORB_SLICE_GET(a, 1)) : SOCK_STREAM;
     int fds[2];
     if (socketpair(fam, typ, 0, fds) != 0) return korb_raise_errno(c, slots, errno, "socketpair", "");
     (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
     (void)fcntl(fds[1], F_SETFD, FD_CLOEXEC);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
-    VALUE_REF ar = VALUE_REF_AT(&slots[0]);
+    korb_ref ar = KORB_REF_AT(&slots[0]);
     CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX(fds[0])));
     CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX(fds[1])));
-    return RESULT_OK(VALUE_REF_GET(ar));
+    return RESULT_OK(KORB_REF_GET(ar));
 }
 
-static RESULT korb_m_sock_hostname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_hostname(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     char h[256] = "";
     if (gethostname(h, sizeof h) != 0) return korb_raise_errno(c, slots, errno, "gethostname", "");
@@ -781,9 +781,9 @@ static RESULT korb_m_sock_hostname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 
 /* __sock_getnameinfo(packed_sockaddr, flags) → [hostname, service] */
-static RESULT korb_m_sock_getnameinfo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_getnameinfo(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const VALUE sv = VALUE_SLICE_GET(a, 0);
+    const korb_value sv = KORB_SLICE_GET(a, 0);
     if (!KORB_STRING_P(sv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     uint32_t n; const char *const p = korb_str_cstr_len(sv, &n);
     struct sockaddr_storage ss;
@@ -791,17 +791,17 @@ static RESULT korb_m_sock_getnameinfo(CTX *c, VALUE *slots, VALUE_REF self, VALU
         return korb_raise_resolution_error_code(c, slots, "getnameinfo: ai_family not supported", EAI_FAMILY);
     memset(&ss, 0, sizeof ss);
     memcpy(&ss, p, n);                              /* copy out before anything allocates */
-    const int flags = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : 0;
+    const int flags = (KORB_SLICE_LEN(a) >= 2 && FIXNUM_P(KORB_SLICE_GET(a, 1))) ? (int)FIX2LONG(KORB_SLICE_GET(a, 1)) : 0;
     char hbuf[NI_MAXHOST] = "", sbuf[NI_MAXSERV] = "";
     const int r = getnameinfo((struct sockaddr *)&ss, (socklen_t)n, hbuf, sizeof hbuf, sbuf, sizeof sbuf, flags);
     if (r != 0) { char m[192]; snprintf(m, sizeof m, "getnameinfo: %s", gai_strerror(r)); return korb_raise_resolution_error_code(c, slots, m, r); }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
-    VALUE_REF ar = VALUE_REF_AT(&slots[0]);
+    korb_ref ar = KORB_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, hbuf, (uint32_t)strlen(hbuf)));
     CHECK(korb_ary_push_val(c, slots + 2, ar, slots[1]));
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, sbuf, (uint32_t)strlen(sbuf)));
     CHECK(korb_ary_push_val(c, slots + 2, ar, slots[1]));
-    return RESULT_OK(VALUE_REF_GET(ar));
+    return RESULT_OK(KORB_REF_GET(ar));
 }
 
 /* __sock_pack(family_or_nil, port, host) → the packed sockaddr as a binary String.
@@ -810,11 +810,11 @@ static RESULT korb_m_sock_getnameinfo(CTX *c, VALUE *slots, VALUE_REF self, VALU
  * struct bytes (16 for sockaddr_in, 28 for sockaddr_in6, 110 for sockaddr_un),
  * and specs both check the size and feed the bytes back in.  nil family means
  * "infer from the host", which is what Socket.sockaddr_in(port, host) wants. */
-static RESULT korb_m_sock_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_pack(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const VALUE fv = VALUE_SLICE_GET(a, 0);
+    const korb_value fv = KORB_SLICE_GET(a, 0);
     const int fam = (fv == KORB_NIL) ? AF_UNSPEC : korb_sock_family_of(c, fv);
-    const VALUE pv = VALUE_SLICE_GET(a, 1);
+    const korb_value pv = KORB_SLICE_GET(a, 1);
     int port = FIXNUM_P(pv) ? (int)FIX2LONG(pv) : 0;
     if (!FIXNUM_P(pv) && KORB_STRING_P(pv)) {          /* a service name ("smtp") or a numeric String */
         char sv[64];
@@ -829,7 +829,7 @@ static RESULT korb_m_sock_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         }
     }
     char host[512];
-    const VALUE hv = VALUE_SLICE_GET(a, 2);
+    const korb_value hv = KORB_SLICE_GET(a, 2);
     if (!korb_sock_cstr(hv, host, sizeof host))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     struct sockaddr_storage ss; socklen_t len = 0;
@@ -843,9 +843,9 @@ static RESULT korb_m_sock_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 
 /* __sock_unpack(str) → [family, port, host, addr], the same shape as
  * __sock_name / __sock_accept report. */
-static RESULT korb_m_sock_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_unpack(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const VALUE sv = VALUE_SLICE_GET(a, 0);
+    const korb_value sv = KORB_SLICE_GET(a, 0);
     if (!KORB_STRING_P(sv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     uint32_t n; const char *const p = korb_str_cstr_len(sv, &n);
     /* Copy out before anything can allocate: `p` points into a movable String. */
@@ -1676,10 +1676,10 @@ static const struct korb_sock_const { const char *n; korb_sword_t v; } korb_sock
 #define KORB_SOCK_NCONST (sizeof korb_sock_consts / sizeof korb_sock_consts[0])
 
 /* __sock_const(name) → the value, or nil when this platform lacks it. */
-static RESULT korb_m_sock_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_const(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     char nm[64];
-    if (!korb_sock_cstr(VALUE_SLICE_GET(a, 0), nm, sizeof nm))
+    if (!korb_sock_cstr(KORB_SLICE_GET(a, 0), nm, sizeof nm))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     for (size_t i = 0; i < KORB_SOCK_NCONST; i++)
         if (!strcmp(nm, korb_sock_consts[i].n)) return RESULT_OK(LONG2FIX(korb_sock_consts[i].v));
@@ -1688,24 +1688,24 @@ static RESULT korb_m_sock_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 /* __sock_const_list() → [[name, value], …] for every constant this build has,
  * so lib/socket.rb can define them all without listing each name twice. */
-static RESULT korb_m_sock_const_list(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_sock_const_list(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)KORB_SOCK_NCONST));
-    VALUE_REF list = VALUE_REF_AT(&slots[0]);
+    korb_ref list = KORB_REF_AT(&slots[0]);
     for (size_t i = 0; i < KORB_SOCK_NCONST; i++) {
         slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
-        VALUE_REF one = VALUE_REF_AT(&slots[1]);
+        korb_ref one = KORB_REF_AT(&slots[1]);
         slots[2] = UNWRAP(korb_str_new(c, slots + 2, korb_sock_consts[i].n, (uint32_t)strlen(korb_sock_consts[i].n)));
         CHECK(korb_ary_push_val(c, slots + 3, one, slots[2]));
         CHECK(korb_ary_push_val(c, slots + 3, one, LONG2FIX(korb_sock_consts[i].v)));
-        CHECK(korb_ary_push_val(c, slots + 2, list, VALUE_REF_GET(one)));
+        CHECK(korb_ary_push_val(c, slots + 2, list, KORB_REF_GET(one)));
     }
-    return RESULT_OK(VALUE_REF_GET(list));
+    return RESULT_OK(KORB_REF_GET(list));
 }
 
-void korb_init_socket(CTX *c, VALUE *slots) {
+void korb_init_socket(CTX *c, korb_value *slots) {
     (void)slots;
-    const VALUE obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    const korb_value obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
     korb_class_def_cfn(c, obj, "__sock_open",        korb_m_sock_open,        -1);
     korb_class_def_cfn(c, obj, "__sock_connect",     korb_m_sock_connect,     -1);
     korb_class_def_cfn(c, obj, "__sock_bind",        korb_m_sock_bind,         4);

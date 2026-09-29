@@ -5,14 +5,14 @@
  *
  * #included into korb_runtime.c's TU. */
 
-/* Initialise a local temp mpz from a Fixnum / Bignum VALUE.  Caller korb_mp_clear's
+/* Initialise a local temp mpz from a Fixnum / Bignum korb_value.  Caller korb_mp_clear's
  * it.  The copy is independent of the GC heap, so it survives later allocs. */
-static void korb_to_mpz(VALUE v, korb_mp_t out) {
+static void korb_to_mpz(korb_value v, korb_mp_t out) {
     if (FIXNUM_P(v)) korb_mp_init_set_si(out, (long long)FIX2LONG(v));
     else             korb_mp_init_set(out, VAL2BIG(v)->z);
 }
 /* Normalise an mpz result → Fixnum when it fits, else a fresh Bignum object. */
-static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const korb_mp_t src) {
+static RESULT korb_big_from_mpz(CTX *c, korb_value *slots, const korb_mp_t src) {
     if (korb_mp_fits_slong_p(src)) {
         long v = korb_mp_get_si(src);
         if (FIXABLE((korb_sword_t)v)) return RESULT_OK(LONG2FIX((korb_sword_t)v));
@@ -21,12 +21,12 @@ static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const korb_mp_t src) {
     korb_mp_init_set(b->z, src);
     aro_gc_finalize_register(c, b);   /* free the mpz limbs (AROH_FINALIZE → korb_mp_clear) when b is collected */
     aro_gc_account_external(c, (ssize_t)korb_mp_extbytes(b->z));   /* limbs are external malloc → GC pressure (immutable, so the matching -delta is in AROH_FINALIZE) */
-    return RESULT_OK((VALUE)b);
+    return RESULT_OK((korb_value)b);
 }
 /* n / d (Integers, d != 0) as the nearest double: a 128-bit quotient with the
  * remainder folded in as a sticky bit, then one round to 53 bits.  (mpq_get_d
  * truncates, and n.to_d / d.to_d rounds twice or overflows.) */
-double korb_int_ratio_to_d(VALUE num, VALUE den) {
+double korb_int_ratio_to_d(korb_value num, korb_value den) {
     korb_mp_t a, b, q, r;
     korb_to_mpz(num, a); korb_to_mpz(den, b);
     const int sg = korb_mp_sgn(a) * korb_mp_sgn(b);
@@ -50,7 +50,7 @@ double korb_int_ratio_to_d(VALUE num, VALUE den) {
  * (ties to even), so (10**308).to_f == 1.0e308, not 9.999...e307.  Take the
  * truncated value and its neighbour toward ±Inf, then pick whichever is closer
  * by exact mpz distance (tie → the candidate with an even significand bit). */
-double korb_big_to_d(VALUE v) {
+double korb_big_to_d(korb_value v) {
     korb_mp_srcptr z = VAL2BIG(v)->z;
     const double lo = korb_mp_get_d(z);                       /* |lo| <= |z| (toward zero) */
     if (isinf(lo)) return lo;                             /* magnitude overflows double */
@@ -73,7 +73,7 @@ double korb_big_to_d(VALUE v) {
 }
 
 /* Integer +,-,*,/,% (op 0..4) over Fixnum/Bignum; result normalised. */
-RESULT korb_int_arith(CTX *c, VALUE *slots, VALUE a, VALUE b, int op, uint32_t line) {
+RESULT korb_int_arith(CTX *c, korb_value *slots, korb_value a, korb_value b, int op, uint32_t line) {
     korb_mp_t za, zb, zr;
     korb_to_mpz(a, za); korb_to_mpz(b, zb); korb_mp_init(zr);
     bool ok = true;
@@ -96,7 +96,7 @@ RESULT korb_int_arith(CTX *c, VALUE *slots, VALUE a, VALUE b, int op, uint32_t l
 }
 /* Integer &,|,^ (op 0..2) over Fixnum/Bignum; two's-complement semantics for
  * negatives (GMP matches Ruby).  Result normalised back to Fixnum when it fits. */
-RESULT korb_int_bitwise(CTX *c, VALUE *slots, VALUE a, VALUE b, int op) {
+RESULT korb_int_bitwise(CTX *c, korb_value *slots, korb_value a, korb_value b, int op) {
     korb_mp_t za, zb, zr;
     korb_to_mpz(a, za); korb_to_mpz(b, zb); korb_mp_init(zr);
     switch (op) {
@@ -112,7 +112,7 @@ RESULT korb_int_bitwise(CTX *c, VALUE *slots, VALUE a, VALUE b, int op) {
 /* Integer divmod family over Fixnum/Bignum operands (op 0 div=floor quotient,
  * 1 modulo=floored remainder, 2 divmod=[q,r], 3 remainder=truncated remainder).
  * Results normalised back to Fixnum when they fit. */
-RESULT korb_int_intdiv(CTX *c, VALUE *slots, VALUE a, VALUE b, int op) {
+RESULT korb_int_intdiv(CTX *c, korb_value *slots, korb_value a, korb_value b, int op) {
     korb_mp_t za, zb, zq, zr;
     korb_to_mpz(a, za); korb_to_mpz(b, zb);
     if (UNLIKELY(korb_mp_sgn(zb) == 0)) { korb_mp_clear(za); korb_mp_clear(zb); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
@@ -127,7 +127,7 @@ RESULT korb_int_intdiv(CTX *c, VALUE *slots, VALUE a, VALUE b, int op) {
         slots[0] = korb_big_from_mpz(c, slots, zq).value;        /* park (rooted across next alloc) */
         slots[1] = korb_big_from_mpz(c, slots + 1, zr).value;
         slots[2] = korb_ary_new(c, slots + 2, 2).value;
-        VALUE_REF dst = VALUE_REF_AT(&slots[2]);
+        korb_ref dst = KORB_REF_AT(&slots[2]);
         CHECK(korb_ary_push_val(c, slots + 3, dst, slots[0]));
         CHECK(korb_ary_push_val(c, slots + 3, dst, slots[1]));
         r = RESULT_OK(slots[2]);
@@ -138,7 +138,7 @@ RESULT korb_int_intdiv(CTX *c, VALUE *slots, VALUE a, VALUE b, int op) {
 /* base ** exp (both Integer).  Negative exp → Rational (delegated by caller for
  * the Fixnum case; here exp>=0 expected — negative falls back to a float-free
  * Rational via korb_rat_new). */
-RESULT korb_int_pow(CTX *c, VALUE *slots, VALUE base, VALUE expv, uint32_t line) {
+RESULT korb_int_pow(CTX *c, korb_value *slots, korb_value base, korb_value expv, uint32_t line) {
     (void)line;
     if (FIXNUM_P(expv) && FIX2LONG(expv) < 0) {           /* a ** -n → Rational(1, a**n) */
         korb_mp_t zb, zr; korb_to_mpz(base, zb);
@@ -196,7 +196,7 @@ RESULT korb_int_pow(CTX *c, VALUE *slots, VALUE base, VALUE expv, uint32_t line)
     return r;
 }
 /* a << n (n>0) / a >> -n.  `amount` may be negative to shift right. */
-RESULT korb_int_shift(CTX *c, VALUE *slots, VALUE a, korb_sword_t amount) {
+RESULT korb_int_shift(CTX *c, korb_value *slots, korb_value a, korb_sword_t amount) {
     korb_mp_t za, zr; korb_to_mpz(a, za); korb_mp_init(zr);
     if (amount >= 0) korb_mp_mul_2exp(zr, za, (korb_mp_bitcnt_t)amount);
     else             korb_mp_fdiv_q_2exp(zr, za, (korb_mp_bitcnt_t)(-amount));
@@ -206,7 +206,7 @@ RESULT korb_int_shift(CTX *c, VALUE *slots, VALUE a, korb_sword_t amount) {
     return r;
 }
 /* compare two Integers (Fixnum/Bignum) → -1 / 0 / 1. */
-int korb_int_cmp(VALUE a, VALUE b) {
+int korb_int_cmp(korb_value a, korb_value b) {
     if (FIXNUM_P(a) && FIXNUM_P(b)) { korb_sword_t x = FIX2LONG(a), y = FIX2LONG(b); return x < y ? -1 : x > y ? 1 : 0; }
     korb_mp_t za, zb; korb_to_mpz(a, za); korb_to_mpz(b, zb);
     int r = korb_mp_cmp(za, zb);
@@ -215,7 +215,7 @@ int korb_int_cmp(VALUE a, VALUE b) {
 }
 /* Exact <=> of an Integer `bi` against a double `d` (no precision loss from
  * casting a Bignum to double).  Returns -1/0/1, or 2 when d is NaN. */
-int korb_big_flo_cmp(VALUE bi, double d) {
+int korb_big_flo_cmp(korb_value bi, double d) {
     if (d != d) return 2;                            /* NaN: incomparable */
     if (isinf(d)) return d > 0 ? -1 : 1;
     korb_mp_t z; korb_to_mpz(bi, z);
@@ -227,7 +227,7 @@ int korb_big_flo_cmp(VALUE bi, double d) {
     return (d > fl) ? -1 : 0;                        /* bi == floor(d); a fractional d is larger */
 }
 /* unary minus of a Bignum (normalised). */
-RESULT korb_big_neg(CTX *c, VALUE *slots, VALUE v) {
+RESULT korb_big_neg(CTX *c, korb_value *slots, korb_value v) {
     korb_mp_t z; korb_to_mpz(v, z); korb_mp_neg(z, z);
     RESULT r = korb_big_from_mpz(c, slots, z);
     korb_mp_clear(z);
@@ -236,15 +236,15 @@ RESULT korb_big_neg(CTX *c, VALUE *slots, VALUE v) {
 
 /* Integer.sqrt(n) — exact integer square root (floor of √n) for any non-negative
  * Integer; via korb_mp_sqrt so Bignums are exact (no Float rounding).  Class method. */
-static RESULT korb_m_integer_sqrt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_integer_sqrt(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
+    if (UNLIKELY(KORB_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
-    VALUE n = VALUE_SLICE_GET(a, 0);
+    korb_value n = KORB_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(n)) n = LONG2FIX((korb_sword_t)korb_float_val(n));   /* Integer.sqrt(8.5) → isqrt(8) (CRuby truncates) */
     else if (!KORB_INTEGER_P(n)) CHECK(korb_coerce_to_int(c, slots, &n));   /* #to_int */
     if (UNLIKELY(!KORB_INTEGER_P(n)))   /* Integer.sqrt words this one "of X into Integer" */
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 0)));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, KORB_SLICE_GET(a, 0)));
     korb_mp_t z, r;
     korb_to_mpz(n, z);
     if (UNLIKELY(korb_mp_sgn(z) < 0)) { korb_mp_clear(z); return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"isqrt\""); }

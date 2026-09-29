@@ -73,7 +73,7 @@ static double korb_mt_real_closed(KorbMT *const st) {
 }
 
 /* seed an MT from a non-negative Integer (Fixnum or Bignum), CRuby rand_init. */
-static void korb_mt_seed_int(KorbMT *const st, VALUE seed) {
+static void korb_mt_seed_int(KorbMT *const st, korb_value seed) {
     if (FIXNUM_P(seed)) {
         korb_sword_t s = FIX2LONG(seed);
         uint64_t a = (s < 0) ? (~(uint64_t)s + 1u) : (uint64_t)s;   /* abs (two's complement) */
@@ -101,21 +101,21 @@ static uint32_t korb_mt_entropy(const void *salt) {
 }
 
 /* @__mt ivar holds a binary String of one KorbMT. */
-/* ivar name as a Symbol VALUE (korb_ivar_get/set take ID2SYM(id), not a raw id). */
-static VALUE korb_mt_sym(struct korb_vm *const vm)   { return ID2SYM(korb_intern(vm, "@__mt", 5)); }
-static VALUE korb_seed_sym(struct korb_vm *const vm) { return ID2SYM(korb_intern(vm, "@__seed", 7)); }
+/* ivar name as a Symbol korb_value (korb_ivar_get/set take ID2SYM(id), not a raw id). */
+static korb_value korb_mt_sym(struct korb_vm *const vm)   { return ID2SYM(korb_intern(vm, "@__mt", 5)); }
+static korb_value korb_seed_sym(struct korb_vm *const vm) { return ID2SYM(korb_intern(vm, "@__seed", 7)); }
 
 static KorbMT *korb_default_rng(struct korb_vm *vm);   /* fwd */
-ARO_BORROW static KorbMT *korb_rng_of(CTX *const c, VALUE rndobj) {
-    const VALUE s = korb_ivar_get(c, rndobj, korb_mt_sym(c->vm));
+ARO_BORROW static KorbMT *korb_rng_of(CTX *const c, korb_value rndobj) {
+    const korb_value s = korb_ivar_get(c, rndobj, korb_mt_sym(c->vm));
     return KORB_STRING_P(s) ? (KorbMT *)korb_strbuf_data(VAL2STR(s)->buf) : NULL;
 }
 /* True if v is a Random instance (its class is, or derives from, Random). */
 /* Random.urandom(n) → n bytes of OS entropy as an ASCII-8BIT String. */
-static RESULT korb_m_random_urandom(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_random_urandom(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     korb_sword_t n = 0;
-    if (VALUE_SLICE_LEN(a) < 1 || UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
+    if (KORB_SLICE_LEN(a) < 1 || UNLIKELY(!korb_to_index(KORB_SLICE_GET(a, 0), &n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative string size (or size too big)");
     char *buf = (char *)malloc((size_t)(n ? n : 1));
@@ -129,25 +129,25 @@ static RESULT korb_m_random_urandom(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
     return r;
 }
-static bool korb_is_random(CTX *const c, VALUE v) {
+static bool korb_is_random(CTX *const c, korb_value v) {
     if (!KORB_OBJECT_P(v)) return false;
-    VALUE cls = korb_class_obj_of(c, v);
-    const VALUE rc = korb_builtin_class_obj(c->vm, KORB_C_RANDOM);
+    korb_value cls = korb_class_obj_of(c, v);
+    const korb_value rc = korb_builtin_class_obj(c->vm, KORB_C_RANDOM);
     while (KORB_CLASS_P(cls)) { if (cls == rc) return true; cls = VAL2CLASS(cls)->superclass; }
     return false;
 }
 
 /* A random source for shuffle/sample: an MT generator, or a user object passed
  * via `random:` whose #rand(n) is dispatched. */
-typedef struct { KorbMT *mt; VALUE obj; } KorbRandSrc;   /* obj == KORB_UNDEF → use mt (nil is a legal custom value) */
-static KorbRandSrc korb_rand_src_from_kwargs(CTX *const c, VALUE_SLICE a) {
-    const uint32_t n = VALUE_SLICE_LEN(a);
+typedef struct { KorbMT *mt; korb_value obj; } KorbRandSrc;   /* obj == KORB_UNDEF → use mt (nil is a legal custom value) */
+static KorbRandSrc korb_rand_src_from_kwargs(CTX *const c, korb_slice a) {
+    const uint32_t n = KORB_SLICE_LEN(a);
     if (n >= 1) {
-        const VALUE last = VALUE_SLICE_GET(a, n - 1);
+        const korb_value last = KORB_SLICE_GET(a, n - 1);
         if (KORB_HASH_P(last)) {
             const int32_t hi = korb_hash_find(VAL2HASH(last), ID2SYM(korb_intern(c->vm, "random", 6)));
             if (hi >= 0) {
-                const VALUE rng = korb_items_data(VAL2HASH(last)->items)[2 * hi + 1];
+                const korb_value rng = korb_items_data(VAL2HASH(last)->items)[2 * hi + 1];
                 if (korb_is_random(c, rng)) { KorbMT *st = korb_rng_of(c, rng); if (st) { KorbRandSrc s = { st, KORB_UNDEF }; return s; } }
                 else { KorbRandSrc s = { NULL, rng }; return s; }   /* any other value: CRuby dispatches #rand on it
                                                                      * (a Module counts — ffaker passes FFaker::Random) */
@@ -160,14 +160,14 @@ static KorbRandSrc korb_rand_src_from_kwargs(CTX *const c, VALUE_SLICE a) {
 /* Draw an integer in [0, bound] inclusive.  Re-resolves the source from `a` each
  * call (whose kwargs Hash lives in the caller's rooted slots, so it stays valid
  * across the #rand dispatch's GC); the MT path allocates nothing. */
-static RESULT korb_rand_upto(CTX *const c, VALUE *slots, VALUE_SLICE a, uint32_t bound, uint32_t *out) {
+static RESULT korb_rand_upto(CTX *const c, korb_value *slots, korb_slice a, uint32_t bound, uint32_t *out) {
     KorbRandSrc src = korb_rand_src_from_kwargs(c, a);
     if (src.obj == KORB_UNDEF) { *out = korb_mt_limited(src.mt, bound); return RESULT_OK(KORB_NIL); }
     {   /* CRuby calls #rand publicly: Kernel#rand is private, so a plain object
          * (nil, 5, Object, …) is a NoMethodError, not a silent fallback. */
         const uint32_t rand_mid = korb_intern(c->vm, "rand", 4);
-        const VALUE dcls = korb_dispatch_class(c, src.obj);
-        VALUE mdef = KORB_NIL;
+        const korb_value dcls = korb_dispatch_class(c, src.obj);
+        korb_value mdef = KORB_NIL;
         const struct korb_method *const me = KORB_CLASS_P(dcls) ? korb_class_find_method(dcls, rand_mid, &mdef) : NULL;
         if (UNLIKELY(me == NULL)) {
             slots[0] = src.obj;
@@ -188,7 +188,7 @@ static RESULT korb_rand_upto(CTX *const c, VALUE *slots, VALUE_SLICE a, uint32_t
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     korb_sword_t v;
     if (UNLIKELY(!korb_to_index(r.value, &v))) {          /* #to_int on the returned object (CRuby) */
-        VALUE rv = r.value;
+        korb_value rv = r.value;
         const char *const on = korb_coerce_name(c, rv);
         RESULT ci = korb_coerce_to_int(c, slots, &rv);
         if (UNLIKELY(ci.state != KORB_NORMAL)) return ci;
@@ -221,9 +221,9 @@ static korb_sword_t korb_rand_below(KorbMT *st, uintptr_t n) {
     }
     return (korb_sword_t)v;
 }
-static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, VALUE_SLICE a);   /* fwd */
+static RESULT korb_rand_core(CTX *c, korb_value *slots, KorbMT *st, korb_value rng_owner, korb_slice a);   /* fwd */
 /* draw an Integer in [0, n) for a Bignum n (rejection sampling on whole limbs). */
-static RESULT korb_rand_below_big(CTX *c, VALUE *slots, KorbMT *st, const korb_mp_t n) {
+static RESULT korb_rand_below_big(CTX *c, korb_value *slots, KorbMT *st, const korb_mp_t n) {
     /* CRuby's limited_big_rand on limit = n - 1: 32-bit words from the top, the
      * first one masked, retrying as soon as the prefix passes the limit's. */
     korb_mp_t r; korb_mp_init(r); korb_mp_sub_ui(r, n, 1);
@@ -255,9 +255,9 @@ static RESULT korb_rand_below_big(CTX *c, VALUE *slots, KorbMT *st, const korb_m
 }
 /* `strict` = Random#rand: 0 / negative / a reversed Range is an ArgumentError,
  * where Kernel#rand takes the magnitude and treats 0 as "give me a Float". */
-static RESULT korb_rand_core_x(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, VALUE_SLICE a, bool strict) {
-    if (strict && VALUE_SLICE_LEN(a) >= 1) {
-        const VALUE arg0 = VALUE_SLICE_GET(a, 0);
+static RESULT korb_rand_core_x(CTX *c, korb_value *slots, KorbMT *st, korb_value rng_owner, korb_slice a, bool strict) {
+    if (strict && KORB_SLICE_LEN(a) >= 1) {
+        const korb_value arg0 = KORB_SLICE_GET(a, 0);
         bool bad = arg0 == KORB_NIL;                   /* CRuby's rand_random: nil is no bound, not "no argument" */
         if (FIXNUM_P(arg0)) bad = FIX2LONG(arg0) <= 0;
         else if (KORB_BIGNUM_P(arg0)) bad = korb_mp_sgn(VAL2BIG(arg0)->z) <= 0;
@@ -298,10 +298,10 @@ static RESULT korb_rand_core_x(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner
  * default generator, which is vm-owned and never moves).  Every path that can
  * dispatch Ruby has to re-resolve `st` through it afterwards: the state lives in
  * a String's payload and a moving GC relocates it. */
-static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, VALUE_SLICE a) {
-    if (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL)
+static RESULT korb_rand_core(CTX *c, korb_value *slots, KorbMT *st, korb_value rng_owner, korb_slice a) {
+    if (KORB_SLICE_LEN(a) == 0 || KORB_SLICE_GET(a, 0) == KORB_NIL)
         return korb_float_new(c, slots, korb_mt_real(st));
-    VALUE arg = VALUE_SLICE_GET(a, 0);
+    korb_value arg = KORB_SLICE_GET(a, 0);
     if (KORB_BIGNUM_P(arg)) {                         /* Kernel#rand(big): below its magnitude */
         if (korb_mp_sgn(VAL2BIG(arg)->z) > 0) return korb_rand_below_big(c, slots, st, VAL2BIG(arg)->z);
         const RESULT ar = korb_big_neg(c, slots, arg);   /* not a send: Integer#abs may be reopened */
@@ -310,7 +310,7 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, 
     }
     if (KORB_RANGE_P(arg)) {                          /* rand(a..b) / rand(a...b) */
         const KorbRange *const r = VAL2RANGE(arg);
-        const VALUE lo = r->rbegin, hi = r->rend;
+        const korb_value lo = r->rbegin, hi = r->rend;
         const bool excl = r->exclude_end;
         if (FIXNUM_P(lo) && FIXNUM_P(hi)) {           /* integer range → Integer */
             const korb_sword_t lv = FIX2LONG(lo), hv = FIX2LONG(hi);
@@ -400,8 +400,8 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE rng_owner, 
 }
 
 /* Random#initialize(seed = nil). */
-static RESULT korb_m_random_init(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE seed = (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+static RESULT korb_m_random_init(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    korb_value seed = (KORB_SLICE_LEN(a) >= 1) ? KORB_SLICE_GET(a, 0) : KORB_NIL;
     if (seed != KORB_NIL && !FIXNUM_P(seed) && !KORB_BIGNUM_P(seed)) {
         /* any Numeric seed is truncated to an Integer (Float/Rational/Complex);
          * anything else goes through #to_int */
@@ -419,39 +419,39 @@ static RESULT korb_m_random_init(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (seed == KORB_NIL) seed = LONG2FIX((korb_sword_t)(korb_mt_entropy(slots) & 0x3FFFFFFF));   /* #seed reports the drawn value */
     CHECK(korb_ivar_set(c, slots, self, korb_seed_sym(c->vm), seed));   /* @__seed (may GC; seed re-read below) */
     KorbString *const s = korb_str_alloc(c, slots, (uint32_t)sizeof(KorbMT));   /* binary state buffer (may GC) */
-    slots[0] = (VALUE)s;                                                /* root */
+    slots[0] = (korb_value)s;                                                /* root */
     KorbMT *const st = (KorbMT *)korb_strbuf_data(s->buf);
-    const VALUE seed2 = korb_ivar_get(c, VALUE_REF_GET(self), korb_seed_sym(c->vm));   /* re-read post-GC */
+    const korb_value seed2 = korb_ivar_get(c, KORB_REF_GET(self), korb_seed_sym(c->vm));   /* re-read post-GC */
     korb_mt_seed_int(st, seed2);
     CHECK(korb_ivar_set(c, slots + 1, self, korb_mt_sym(c->vm), slots[0]));
-    return RESULT_OK(VALUE_REF_GET(self));
+    return RESULT_OK(KORB_REF_GET(self));
 }
-static RESULT korb_m_random_rand(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    KorbMT *const st = korb_rng_of(c, VALUE_REF_GET(self));
+static RESULT korb_m_random_rand(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    KorbMT *const st = korb_rng_of(c, KORB_REF_GET(self));
     if (UNLIKELY(st == NULL)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "uninitialized Random");
-    return korb_rand_core_x(c, slots, st, VALUE_REF_GET(self), a, true);
+    return korb_rand_core_x(c, slots, st, KORB_REF_GET(self), a, true);
 }
 /* Random.rand — Random#rand's rules on the default generator (Kernel#rand's differ). */
-static RESULT korb_m_random_s_rand(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_random_s_rand(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
+    if (UNLIKELY(KORB_SLICE_LEN(a) > 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", KORB_SLICE_LEN(a));
     return korb_rand_core_x(c, slots, korb_default_rng(c->vm), KORB_NIL, a, true);
 }
-static RESULT korb_m_random_seed(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_random_seed(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)slots; (void)a;
-    return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_seed_sym(c->vm)));
+    return RESULT_OK(korb_ivar_get(c, KORB_REF_GET(self), korb_seed_sym(c->vm)));
 }
 
 /* Random#bytes(n) — n bytes drawn from successive genrand_int32 results, four
  * little-endian bytes per draw (CRuby's rand_mt_bytes; a partial tail word uses
  * its low bytes). */
-static RESULT korb_m_random_bytes(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_random_bytes(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     korb_sword_t n = 0;
-    if (VALUE_SLICE_LEN(a) < 1 || UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
+    if (KORB_SLICE_LEN(a) < 1 || UNLIKELY(!korb_to_index(KORB_SLICE_GET(a, 0), &n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative string size (or size too big)");
-    KorbMT *const st = korb_rng_of(c, VALUE_REF_GET(self));
+    KorbMT *const st = korb_rng_of(c, KORB_REF_GET(self));
     if (UNLIKELY(st == NULL)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "uninitialized Random");
     char *buf = (char *)malloc((size_t)(n ? n : 1));
     if (!buf) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "out of memory");
@@ -468,9 +468,9 @@ static RESULT korb_m_random_bytes(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 /* Random#state — CRuby exposes the generator's full state as an Integer; two
  * generators compare equal iff their seed AND state match, which is all the
  * specs use it for.  A 624-word mixdown is enough to distinguish them. */
-static RESULT korb_m_random_state(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_random_state(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
-    const KorbMT *const st = korb_rng_of(c, VALUE_REF_GET(self));
+    const KorbMT *const st = korb_rng_of(c, KORB_REF_GET(self));
     if (UNLIKELY(st == NULL)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "uninitialized Random");
     uint64_t h = 1469598103934665603ULL ^ st->mti;
     for (uint32_t i = 0; i < 624; i++) { h ^= st->mt[i]; h *= 1099511628211ULL; }
@@ -478,7 +478,7 @@ static RESULT korb_m_random_state(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 
 /* Random.new_seed — a fresh arbitrary seed, independent of Kernel#srand. */
-static RESULT korb_m_random_new_seed(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_random_new_seed(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     uint64_t v = 0;
     const int fd = open("/dev/urandom", O_RDONLY);
@@ -500,30 +500,30 @@ static KorbMT *korb_default_rng(struct korb_vm *const vm) {
     }
     return &vm->default_rng;
 }
-static RESULT korb_bi_rand(CTX *c, VALUE *slots, VALUE_SLICE a) {
-    if (VALUE_SLICE_LEN(a) >= 1 && KORB_FLOAT_P(VALUE_SLICE_GET(a, 0))) {   /* Kernel#rand(1.5) is rand(1): truncated (Random#rand keeps the Float) */
-        slots[0] = VALUE_SLICE_GET(a, 0);
-        const RESULT ir = korb_m_flt_to_i(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0));   /* not a send: Float#to_i may be reopened */
+static RESULT korb_bi_rand(CTX *c, korb_value *slots, korb_slice a) {
+    if (KORB_SLICE_LEN(a) >= 1 && KORB_FLOAT_P(KORB_SLICE_GET(a, 0))) {   /* Kernel#rand(1.5) is rand(1): truncated (Random#rand keeps the Float) */
+        slots[0] = KORB_SLICE_GET(a, 0);
+        const RESULT ir = korb_m_flt_to_i(c, slots + 1, KORB_REF_AT(&slots[0]), KORB_SLICE_MAKE(NULL, 0));   /* not a send: Float#to_i may be reopened */
         if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
         slots[0] = ir.value == LONG2FIX(0) ? KORB_NIL : ir.value;   /* 0 → a Float in [0, 1) */
-        return korb_rand_core(c, slots + 1, korb_default_rng(c->vm), KORB_NIL, VALUE_SLICE_MAKE(slots, 1));
+        return korb_rand_core(c, slots + 1, korb_default_rng(c->vm), KORB_NIL, KORB_SLICE_MAKE(slots, 1));
     }
     return korb_rand_core(c, slots, korb_default_rng(c->vm), KORB_NIL, a);
 }
-static RESULT korb_bi_srand(CTX *c, VALUE *slots, VALUE_SLICE a) {
+static RESULT korb_bi_srand(CTX *c, korb_value *slots, korb_slice a) {
     (void)korb_default_rng(c->vm);                     /* seeded (and its seed kept) before we replace it */
-    const VALUE old = c->vm->default_rng_seed;
-    VALUE seed;
-    if (VALUE_SLICE_LEN(a) == 0) {                     /* a fresh seed, remembered for the next srand */
+    const korb_value old = c->vm->default_rng_seed;
+    korb_value seed;
+    if (KORB_SLICE_LEN(a) == 0) {                     /* a fresh seed, remembered for the next srand */
         const uint32_t e = korb_mt_entropy(&c->vm->default_rng);
         korb_mt_init_genrand(&c->vm->default_rng, e);
         seed = LONG2FIX((korb_sword_t)e);
     } else {
-        seed = VALUE_SLICE_GET(a, 0);
+        seed = KORB_SLICE_GET(a, 0);
         if (seed == KORB_NIL) return korb_raise_no_int(c, slots, seed);   /* an explicit nil is not "no seed" */
         if (KORB_FLOAT_P(seed)) {                      /* truncates, like Float#to_int */
             slots[0] = seed;
-            seed = UNWRAP(korb_m_flt_to_i(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 0)));
+            seed = UNWRAP(korb_m_flt_to_i(c, slots + 1, KORB_REF_AT(&slots[0]), KORB_SLICE_MAKE(&slots[1], 0)));
         } else if (!KORB_INTEGER_P(seed)) {            /* #to_int */
             slots[0] = seed;
             const RESULT cr = korb_coerce_to_int(c, slots + 1, &slots[0]);

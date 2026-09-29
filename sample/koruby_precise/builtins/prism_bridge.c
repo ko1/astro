@@ -11,11 +11,11 @@
  *         6 errors_format (raise_error:) → nil (エラー無し) か "<level byte><enc>\0<message>"
  * options は prism の options 形式のバイト列 (Ruby 側が組み立てる) か nil。 */
 static RESULT
-korb_bi_prism_dump(CTX *c, VALUE *slots, VALUE_SLICE args)
+korb_bi_prism_dump(CTX *c, korb_value *slots, korb_slice args)
 {
-    const VALUE kv = VALUE_SLICE_GET(args, 0);
-    const VALUE sv = VALUE_SLICE_GET(args, 1);
-    const VALUE ov = VALUE_SLICE_LEN(args) > 2 ? VALUE_SLICE_GET(args, 2) : KORB_NIL;
+    const korb_value kv = KORB_SLICE_GET(args, 0);
+    const korb_value sv = KORB_SLICE_GET(args, 1);
+    const korb_value ov = KORB_SLICE_LEN(args) > 2 ? KORB_SLICE_GET(args, 2) : KORB_NIL;
     if (UNLIKELY(!FIXNUM_P(kv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     if (UNLIKELY(!KORB_STRING_P(sv)))
@@ -55,7 +55,7 @@ korb_bi_prism_dump(CTX *c, VALUE *slots, VALUE_SLICE args)
 
     pm_buffer_t *const buffer = pm_buffer_new();
     if (kind == 6) {
-        const VALUE fv = VALUE_SLICE_LEN(args) > 3 ? VALUE_SLICE_GET(args, 3) : KORB_NIL;
+        const korb_value fv = KORB_SLICE_LEN(args) > 3 ? KORB_SLICE_GET(args, 3) : KORB_NIL;
         const pm_errors_format_type_t fmt = FIXNUM_P(fv) ? (pm_errors_format_type_t)FIX2LONG(fv) : PM_ERRORS_FORMAT_PLAIN;
         const int8_t level = pm_serialize_parse_errors_format(buffer, src, slen, opts, fmt);
         free(src); free(opts);

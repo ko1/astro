@@ -33,7 +33,7 @@ root boundary from the threaded `sp`, never from a stored field.**
 - The **one** function that writes `c->sp_top` is the wrapper
   `korb_alloc(c, top, size)` (object.c): it sets `c->sp_top = top` and calls
   `aro_gc_alloc`. Every real allocation goes through it; nothing else writes the
-  field (Fiber switch aside). An alloc helper takes `(CTX *c, VALUE *sp, …)` and
+  field (Fiber switch aside). An alloc helper takes `(CTX *c, korb_value *sp, …)` and
   calls `korb_alloc(c, sp + N, size)` — it never writes `c->sp_top` itself.
 - To hold scratch across an allocation, pass `sp + N` to the helper — never
   reserve by writing `c->sp_top`.
@@ -103,7 +103,7 @@ which `visit_roots` scans and forwards. So after a GC point, **don't trust the
 C-local — re-read the slot**:
 
 ```c
-VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));   // GC point
+korb_value iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));   // GC point
 self = sp[-argc - 1];                                  // ← re-read; old `self` is stale
 struct korb_array *a = (struct korb_array *)self;
 ```
@@ -133,7 +133,7 @@ while (((struct korb_array *)sp[-argc-1])->len < need)   // re-derive in the con
 > - **>2 handles** → re-fetch from a stable container each use (IDIOM E), or push
 >   one frame per pair.
 >
-> The historical form was `VALUE *root = c->sp_top; …; c->sp_top = root + N; …;
+> The historical form was `korb_value *root = c->sp_top; …; c->sp_top = root + N; …;
 > c->sp_top = root;`. Every such site must go.
 
 ### IDIOM C — synthetic frame park (for handles that must survive a yield)
@@ -153,11 +153,11 @@ struct korb_frame fr = {
 };
 c->current_frame = &fr;
 for (long i = 0; i < n; i++) {
-    VALUE el = korb_ary_items((struct korb_array *)fr.last_line)[i];  // re-derive each iter
+    korb_value el = korb_ary_items((struct korb_array *)fr.last_line)[i];  // re-derive each iter
     RESULT y = korb_yield_r(c, 1, &el);
     if (y.state != KORB_NORMAL) { c->current_frame = fr.prev; return y; }  // restore on raise!
 }
-VALUE selfr = fr.last_match;
+korb_value selfr = fr.last_match;
 c->current_frame = fr.prev;            // restore on EVERY exit
 return RESULT_OK(selfr);
 ```
@@ -176,7 +176,7 @@ return RESULT_OK(selfr);
 When you need to root **a single handle across a whole sub-evaluation** (not a
 loop) — e.g. a node evaluator that must preserve a saved value across `body` +
 `ensure` + `rescue` clauses — pushing a full synthetic `korb_frame` is overkill.
-`c->yield_self_chain` is a lighter LIFO of `struct korb_yield_self_save {VALUE
+`c->yield_self_chain` is a lighter LIFO of `struct korb_yield_self_save {korb_value
 self; struct korb_yield_self_save *prev;}` that `visit_roots` also walks
 regardless of `sp_top`, so a slot parked there survives a raise-unwind too:
 
@@ -217,9 +217,9 @@ while (fr.last_match != 0 && !SPECIAL_CONST_P(fr.last_match)) {
     struct korb_class *k = (struct korb_class *)fr.last_match;
     for (int i = k->includes_cnt-1; i >= 0; i--)
         push_module(c, fr.last_line, ((struct korb_class *)fr.last_match)->includes[i]);
-    fr.last_match = (VALUE)((struct korb_class *)fr.last_match)->super;   // advance via re-read
+    fr.last_match = (korb_value)((struct korb_class *)fr.last_match)->super;   // advance via re-read
 }
-VALUE result = fr.last_line;
+korb_value result = fr.last_line;
 c->current_frame = fr.prev;              // restore on EVERY exit
 return RESULT_OK(result);
 ```
@@ -235,7 +235,7 @@ Canonical: `_struct_inspect`, `struct_to_h`.
 ## 4. Special hazards (do NOT do these)
 
 - **Writing `c->sp_top` anywhere.** The cardinal sin — see §0.
-- **libc shadow buffers for moving handles.** Copying moving VALUEs into a
+- **libc shadow buffers for moving handles.** Copying moving korb_values into a
   `korb_xmalloc` array and holding it across a GC point: the heap pointers inside
   the libc buffer are *outside* the scan range → stale. Park the sources in a
   **frame** (IDIOM C) instead. (Old `ary_concat` / `str_prepend` bug.)
@@ -282,7 +282,7 @@ exact site. It has three detectors, all keyed off the copy GC's to-space bounds
 (`korb_g_gc_clock`, ticked at every alloc via the `AROH_GC_SAFEPOINT()` contract
 hook — deterministic, independent of whether STRESS actually collected):
 
-1. **construction-time** (`RESULT_MK`): fires when a *stale* raw VALUE is wrapped
+1. **construction-time** (`RESULT_MK`): fires when a *stale* raw korb_value is wrapped
    into a RESULT → catches "I returned an already-moved handle".
 2. **held-across-GC** (`gc_clock` stamped in RESULT, checked by `RESULT_VAL` /
    `UNWRAP`): fires when a RESULT's `.value` is read after the clock advanced →
@@ -362,7 +362,7 @@ Two kinds of cfunc:
   write) as their own funcall/alloc staging base. **Deleting the entry write here
   crashes** (the helper allocs against a wrong `c->sp_top`) — and it shows up as a
   *NORMAL-mode* regression/SEGV, not just STRESS. **First thread `sp` into the
-  helper** (add a `VALUE *sp` param, pass it from every caller, change the
+  helper** (add a `korb_value *sp` param, pass it from every caller, change the
   helper's `c->sp_top` → `sp`), THEN delete the callers' entry writes.
 
 So the per-file order is: (a) find sp-less helpers in the file that read

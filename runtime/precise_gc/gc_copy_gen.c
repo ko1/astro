@@ -446,7 +446,7 @@ static void
 forward_edge_minor(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
+    ARO_VALUE v = (ARO_VALUE)*slot;
     if (AROH_IS_GC_OBJECT(v)) {
         void *new = forward_payload_value(gc, (void *)v);
         *slot = new;
@@ -459,7 +459,7 @@ static void
 forward_edge_major(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
+    ARO_VALUE v = (ARO_VALUE)*slot;
     if (AROH_IS_GC_OBJECT(v)) *slot = forward_payload_value(gc, (void *)v);
 }
 

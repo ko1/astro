@@ -233,9 +233,9 @@ static uint32_t korb_dg_run(const int kind, const uint8_t *const msg, const size
     }
 }
 
-static RESULT korb_m_digest_of(CTX *c, VALUE *slots, VALUE_SLICE a, const int kind)
+static RESULT korb_m_digest_of(CTX *c, korb_value *slots, korb_slice a, const int kind)
 {
-    const VALUE s = VALUE_SLICE_GET(a, 0);
+    const korb_value s = KORB_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(s)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, s));
     uint8_t out[64];
@@ -249,14 +249,14 @@ static RESULT korb_m_digest_of(CTX *c, VALUE *slots, VALUE_SLICE a, const int ki
     return r;
 }
 
-static RESULT korb_m_digest_md5(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { (void)self; return korb_m_digest_of(c, slots, a, 0); }
-static RESULT korb_m_digest_sha1(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)self; return korb_m_digest_of(c, slots, a, 1); }
-static RESULT korb_m_digest_sha256(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_m_digest_of(c, slots, a, 2); }
-static RESULT korb_m_digest_sha512(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_m_digest_of(c, slots, a, 3); }
-static RESULT korb_m_digest_sha384(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_m_digest_of(c, slots, a, 4); }
+static RESULT korb_m_digest_md5(CTX *c, korb_value *slots, korb_ref self, korb_slice a)    { (void)self; return korb_m_digest_of(c, slots, a, 0); }
+static RESULT korb_m_digest_sha1(CTX *c, korb_value *slots, korb_ref self, korb_slice a)   { (void)self; return korb_m_digest_of(c, slots, a, 1); }
+static RESULT korb_m_digest_sha256(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)self; return korb_m_digest_of(c, slots, a, 2); }
+static RESULT korb_m_digest_sha512(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)self; return korb_m_digest_of(c, slots, a, 3); }
+static RESULT korb_m_digest_sha384(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)self; return korb_m_digest_of(c, slots, a, 4); }
 
 static void korb_init_digest(CTX *c) {
-    const VALUE obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    const korb_value obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
     korb_class_def_cfn(c, obj, "__digest_md5",    korb_m_digest_md5,    1);
     korb_class_def_cfn(c, obj, "__digest_sha1",   korb_m_digest_sha1,   1);
     korb_class_def_cfn(c, obj, "__digest_sha256", korb_m_digest_sha256, 1);

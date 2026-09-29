@@ -30,7 +30,7 @@ runq()     { "$CQ" query run --database="$1" "$HERE/$2" 2>/dev/null; }
 ENCAP_BASELINE=0
 
 # value-read-after-gc ratchet.  Unlike the others this one is NOT at zero: a
-# VALUE taken out of a slot / field / argument and used after a may-GC call is
+# korb_value taken out of a slot / field / argument and used after a may-GC call is
 # everywhere, and the query cannot tell an immediate (which never moves) from a
 # heap object.  71 on 2026-09-07 (was 189 before korb_send_impl re-read `self`
 # after the refined dispatch); the number may only go down.
@@ -88,19 +88,19 @@ NU=$(runq "$KDB" aro_borrow_unused.ql | n_unused)
 [ "$NU" -eq 0 ] || { runq "$KDB" aro_borrow_unused.ql; fail "$NU unused ARO_BORROW annotation(s)"; }
 echo "aro-borrow-unused:      self-test 1,  koruby 0 stale annotations        ok"
 
-# 5. value-after-gc  (temporal: a heap VALUE held in a local across a may-GC call)
+# 5. value-after-gc  (temporal: a heap korb_value held in a local across a may-GC call)
 [ "$(runq "$VDB" value_after_gc.ql | n_hits)" -eq 3 ] || fail "value_after_gc self-test != 3"
 NVG=$(runq "$KDB" value_after_gc.ql | n_hits)
 [ "$NVG" -eq 0 ] || { runq "$KDB" value_after_gc.ql; fail "$NVG value-after-gc hazard(s)"; }
 echo "value-after-gc:         self-test 3 TP / 4 TN,  koruby 0 hazards        ok"
 
-# 6. unsequenced-gc-arg  (one argument list holding a may-GC call AND a movable VALUE)
+# 6. unsequenced-gc-arg  (one argument list holding a may-GC call AND a movable korb_value)
 [ "$(runq "$UDB" unsequenced_gc_arg.ql | n_unseq)" -eq 3 ] || fail "unsequenced_gc_arg self-test != 3"
 NUQ=$(runq "$KDB" unsequenced_gc_arg.ql | n_unseq)
 [ "$NUQ" -eq 0 ] || { runq "$KDB" unsequenced_gc_arg.ql; fail "$NUQ unsequenced may-GC argument list(s)"; }
 echo "unsequenced-gc-arg:     self-test 3 TP / 4 TN,  koruby 0 hazards        ok"
 
-# 7. value-read-after-gc  (ratchet: a VALUE merely READ OUT and used after a GC)
+# 7. value-read-after-gc  (ratchet: a korb_value merely READ OUT and used after a GC)
 [ "$(runq "$GDB" value_after_gc.ql | n_hits)" -eq 0 ] || fail "gap fixture should be invisible to value_after_gc.ql"
 [ "$(runq "$GDB" value_read_after_gc.ql | n_hits)" -eq 2 ] || fail "value_read_after_gc self-test != 2"
 NVR=$(runq "$KDB" value_read_after_gc.ql | n_hits)

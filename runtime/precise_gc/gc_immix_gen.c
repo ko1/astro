@@ -541,7 +541,7 @@ static void
 fwd_edge_minor(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
+    ARO_VALUE v = (ARO_VALUE)*slot;
     if (AROH_IS_GC_OBJECT(v)) {
         void *new = forward_payload_nursery(gc, (void *)v);
         *slot = new;
@@ -634,7 +634,7 @@ minor_gc(CTX *c)
  * --------------------------------------------------------------------------- */
 
 static void
-mark_value_major(ASTroGC *gc, VALUE v)
+mark_value_major(ASTroGC *gc, ARO_VALUE v)
 {
     if (!AROH_IS_GC_OBJECT(v)) return;
     AroObjectHeader *h = (AroObjectHeader *)v;
@@ -647,7 +647,7 @@ mark_value_major(ASTroGC *gc, VALUE v)
 static void
 mark_edge_major(void *ctx, void **slot)
 {
-    mark_value_major((ASTroGC *)ctx, (VALUE)*slot);
+    mark_value_major((ASTroGC *)ctx, (ARO_VALUE)*slot);
 }
 
 static void
