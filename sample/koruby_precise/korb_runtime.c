@@ -13790,9 +13790,14 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
                 korb_value mdef = KORB_NIL;
                 const struct korb_method *me = KORB_CLASS_P(dcls) ? korb_class_find_method(dcls, rmid, &mdef) : NULL;
                 if (me == NULL && korb_kernel_reachable_p(c, dcls)) me = korb_toplevel_def(vm, rmid);
-                if (me != NULL && me->visibility != 0)
-                    return korb_raise(c, slots, KORB_E_NOMETHOD, line, "%s method '%s' called for %s",
-                                      me->visibility == 1 ? "private" : "protected", korb_sym_name(vm, rmid), korb_a_type_name(self));
+                if (me != NULL && me->visibility != 0) {   /* the receiver as a plain call describes it */
+                    const uint8_t vis = me->visibility;
+                    slots[0] = self;
+                    char rdbuf[224];
+                    const char *const rd = korb_nomethod_recv_desc(c, slots + 2, slots[0], rdbuf, sizeof rdbuf);
+                    return korb_raise(c, slots + 1, KORB_E_NOMETHOD, line, "%s method '%s' called for %s",
+                                      vis == 1 ? "private" : "protected", korb_sym_name(vm, rmid), rd);
+                }
             }
             slots[-(korb_sword_t)argc] = self;                 /* recv → arg0 slot; args shift down by one */
             korb_flink_hand_on(c, slots - (korb_sword_t)argc - 3);   /* the re-stage below shifts the cell out of reach */
