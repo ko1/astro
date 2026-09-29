@@ -95,11 +95,13 @@ svg text { fill:var(--mute); font-size:11px; }
 <script>
 // ---- 更新はここ --------------------------------------------------------------
 const DATA = {
-  updated: "2026-09-29 15:49 JST",
-  master: "f8ce981c",
+  updated: "2026-09-29 20:10 JST",
+  master: "42647c81",
   compat: [
     { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "98.45%", sub: "31831 / 32332 例が通る（rubygems を起動時に読むようになり、読めるファイルが増えて例も +62。9/13 は 97.87%）", date: "2026-09-29", commit: "この commit", mode: "interp",
       note: "本物の mspec で spec ファイルを 1 つずつ実行。率は同じ run の pass ÷ 例の数" },
+    { label: "CRuby の C 拡張（互換層 builtins/cext.c、無改造で再ビルド）", value: "digest / openssl", sub: "CRuby の test/digest 3 本・test/openssl 35 本すべてが CRuby と同じ要約（test_ssl 91 tests / 654 assertions を含む）。STRESS+PURGE でも一致。C API の試験 149 ケースは CRuby と出力一致", date: "2026-09-29", commit: "42647c81", mode: "interp",
+      note: "make cext-test、cext/test/openssl.sh。KORUBY_CEXT=1 で koruby 同梱の代替 .rb より本物の .so を優先" },
   ],
   health: [
     { label: "make test（rubyharness 回帰コーパス）", value: "13", cls: "warn", sub: "CRuby と違う行 ／ 110056 行。45 → 27 → 14（prism を CRuby と同じ版に）→ 13（rubygems を起動時に読む）、内訳は下の表", date: "2026-09-29", commit: "この commit", mode: "interp",
@@ -120,6 +122,8 @@ const DATA = {
       note: "sp4 専有、ruby 4.1.0dev 69b49ac7ae、checksum 検証。trials/2026-09-29-status-perf" },
     { label: "JSON（json gem の benchmark data、parse 5 本 + generate 4 本 + ruby-bench 2 本）", value: "parse 0.73〜1.16× ／ generate 0.84〜1.32×", sub: "CRuby の json C 拡張比の時間（koruby AOT、小さいほど速い）。Ruby 移植だった前の版から 14〜84 倍速く。ケースごとの値は trials/2026-09-29-koruby-json-native", date: "2026-09-29", commit: "f8ce981c", mode: "AOT",
       note: "sp4 専有、ruby 4.1.0dev 69b49ac7ae（json 3.0.0.rc1）、全 run の checksum 一致" },
+    { label: "C 拡張の呼び出し（何もしない拡張メソッド）", value: "0.95〜1.17×", sub: "CRuby の CFUNC 比（koruby interp）。拡張の中から koruby を呼ぶもの 1.17〜1.42×、Digest::MD5.hexdigest(\"abc\") 2.83×、SHA256 1 MiB 1.00×", date: "2026-09-29", commit: "42647c81", mode: "interp",
+      note: "sp4 専有、trials/2026-09-29-koruby-cext-digest" },
     { label: "rubyharness bench 53 本", value: "0.37×", sub: "CRuby 比の実時間（YJIT 0.49× ／ interp 0.74× ／ AOT 焼き込み込み 1.04×）。YJIT に 32/53 本で勝ち", date: "2026-09-04", commit: "0a908f2a", mode: "AOT",
       note: "要約値。ベンチごとの値は docs/perf.md 2026-09-04 節" },
   ],
@@ -132,14 +136,15 @@ const DATA = {
     ["ruby-method-benchmarks", "メソッド単位", "未着手"],
   ],
   gaps: [
-    "OpenSSL（libcrypto / libssl バインディング）— gem 不一致の最大要因。着手は user の判断待ち",
-    "C 拡張の読み込み（rbs など）— 設計は docs/c_ext_api_design.md、未実装",
+    "C 拡張: CRuby の拡張を koruby のヘッダで再ビルドすれば動く（digest・openssl）。mkmf が無いので gem の extconf.rb からは組めない、gc_copy 以外の moving GC と Fiber の切り替えは未対応",
     "TracePoint :line（tracer・power_assert）、RubyVM::AbstractSyntaxTree / InstructionSequence",
     "Ripper の構文エラー回復（CRuby の parse.y は誤りの後も木を組み立てる）",
-    "gem のリモート install（rubygems.org は HTTPS = OpenSSL が要る）。ローカルの .gem は `gem install --local` で入る",
+    "gem のリモート install（rubygems.org は HTTPS）。openssl 拡張は動くようになったが、gem の組み込みと既定の読み込み経路はまだ。ローカルの .gem は `gem install --local` で入る",
   ],
   recent: [
-    ["この commit", "status 更新（JSON）"],
+    ["この commit", "status 更新（C 拡張）"],
+    ["12261bbb〜42647c81", "CRuby C 拡張互換層: 拡張側の VALUE はハンドル、RSTRING_PTR は non-moving 区画へ pin、nil/false は CRuby の値、CRuby 用 .so は読まない。ext/digest と ext/openssl が無改造で動き、CRuby の test/digest・test/openssl が全部 CRuby と同じ結果"],
+    ["a1ec9706", "koruby 内部の値の型名を VALUE → korb_value（korb_ref / korb_slice / KORB_REF_GET …）"],
     ["f8ce981c", "JSON の parse / generate をネイティブに（builtins/json_native.c）。Ruby 移植比 14〜84 倍、CRuby の json 拡張と parse 0.73〜1.16×・generate 0.84〜1.32×"],
     ["69aaa035", "rubygems を CRuby と同じく起動時に読む（make root: stdlib・rubygems・bundled gem 38 本を koruby 自身の gem install で。gem build / install --local / bundle exec が動く）。autoload・IO.select・module_function・TZ の非互換を修正"],
     ["f6ae248e 以前", "prism を CRuby master と同じ版（main 13325f5c3 = 1.9.0、koruby_precise 専用 submodule）に。make test 27 → 14。例外メッセージを 512 バイトで切らない。optcarrot AOT を 264 → 282 fps（mcache の inline・send 判定）"],
