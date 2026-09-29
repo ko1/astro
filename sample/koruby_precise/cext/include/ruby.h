@@ -258,6 +258,12 @@ VALUE rb_gc_start(void);
 ID    rb_intern(const char *name);
 ID    rb_intern2(const char *name, long len);
 ID    rb_intern3(const char *name, long len, void *enc);
+/* a literal name is interned once per call site (CRuby's ruby.h does the same) */
+#define rb_intern(str) (__builtin_constant_p(str) \
+    ? __extension__({ static ID rb_intern_id_cache_; \
+                      if (!rb_intern_id_cache_) rb_intern_id_cache_ = rb_intern2((str), (long)strlen(str)); \
+                      rb_intern_id_cache_; }) \
+    : (rb_intern)(str))
 #define rb_intern_const(s) rb_intern(s)
 #define CONST_ID(var, str) do { static ID the_id_; if (!the_id_) the_id_ = rb_intern(str); (var) = the_id_; } while (0)
 const char *rb_id2name(ID id);

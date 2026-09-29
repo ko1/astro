@@ -188,9 +188,12 @@ typedef struct ASTroGC {
      * candidate: the edge filter admits any 8-aligned non-zero word, so a
      * plain integer sitting in a scanned slot (0x10000 was the one that bit
      * us) arrives here, and reading its header SEGVs.  Binary search over
-     * this array is exact and touches only memory we own. */
+     * this array is exact and touches only memory we own.  Allocation only
+     * appends (large_addrs[large_sorted..large_n) is unsorted); a collection
+     * sorts once before it looks anything up — pinning many small strings
+     * (C extensions) made the sorted insert's memmove 74% of the time. */
     void **large_addrs;
-    size_t large_n, large_capa;
+    size_t large_n, large_capa, large_sorted;
     /* ASTRO_GC_EDGE_CHECK: report edges that do not point at an object START
      * (see forward_payload).  0 = off, 1 = warn (first EDGE_CHECK_MAX), 2 =
      * abort on the first one.  Opt-in rather than automatic under stress:
@@ -365,7 +368,7 @@ gc_bump(CTX *c, size_t payload_size, size_t aligned)
 static size_t
 large_lower_bound(const ASTroGC *gc, const void *p)
 {
-    size_t lo = 0, hi = gc->large_n;
+    size_t lo = 0, hi = gc->large_sorted;
     while (lo < hi) {
         size_t mid = (lo + hi) >> 1;
         if ((uintptr_t)gc->large_addrs[mid] < (uintptr_t)p) lo = mid + 1;
@@ -377,6 +380,7 @@ large_lower_bound(const ASTroGC *gc, const void *p)
 static bool
 large_contains(const ASTroGC *gc, const void *p)
 {
+    ASTRO_ASSERT(gc->large_sorted == gc->large_n);   /* only during a collection */
     if (gc->large_n == 0) return false;
     size_t i = large_lower_bound(gc, p);
     return i < gc->large_n && gc->large_addrs[i] == p;
@@ -392,21 +396,34 @@ large_addr_insert(ASTroGC *gc, void *p)
         gc->large_addrs = na;
         gc->large_capa = nc;
     }
-    size_t i = large_lower_bound(gc, p);
-    memmove(&gc->large_addrs[i + 1], &gc->large_addrs[i],
-            (gc->large_n - i) * sizeof(void *));
-    gc->large_addrs[i] = p;
-    gc->large_n++;
+    gc->large_addrs[gc->large_n++] = p;
+}
+
+static int
+large_addr_cmp(const void *a, const void *b)
+{
+    const uintptr_t x = (uintptr_t)*(void *const *)a, y = (uintptr_t)*(void *const *)b;
+    return x < y ? -1 : x > y;
+}
+
+static void
+large_addr_sort(ASTroGC *gc)
+{
+    if (gc->large_sorted == gc->large_n) return;
+    qsort(gc->large_addrs, gc->large_n, sizeof(void *), large_addr_cmp);
+    gc->large_sorted = gc->large_n;
 }
 
 static void
 large_addr_remove(ASTroGC *gc, void *p)
 {
+    for (size_t i = gc->large_sorted; i < gc->large_n; i++)   /* the unsorted tail: swap with the last */
+        if (gc->large_addrs[i] == p) { gc->large_addrs[i] = gc->large_addrs[--gc->large_n]; return; }
     size_t i = large_lower_bound(gc, p);
-    if (i < gc->large_n && gc->large_addrs[i] == p) {
+    if (i < gc->large_sorted && gc->large_addrs[i] == p) {
         memmove(&gc->large_addrs[i], &gc->large_addrs[i + 1],
                 (gc->large_n - i - 1) * sizeof(void *));
-        gc->large_n--;
+        gc->large_n--; gc->large_sorted--;
     }
 }
 
@@ -784,6 +801,7 @@ gc_collect_internal(CTX *c)
     struct timespec t0 = aro_gc_time_begin(c);
     char *from_base = gc->active_base;
     char *from_top_pre = gc->active_top;
+    large_addr_sort(gc);                        /* large_contains needs the whole index sorted */
 
     /* Determine the to-space.  PURGE mode advances to the next plane in
      * the 64 GiB round-robin arena and mprotect-enables it (= stale
@@ -883,7 +901,7 @@ gc_collect_internal(CTX *c)
             if (HDR_IS_MARKED((AroObjectHeader *)gc->large_addrs[i]))
                 gc->large_addrs[w++] = gc->large_addrs[i];
         }
-        gc->large_n = w;
+        gc->large_n = gc->large_sorted = w;
     }
     /* Sweep large_head: free unmarked, clear marker on survivors. */
     LargeObj **link = &gc->large_head;
@@ -1020,7 +1038,7 @@ aro_gc_fini(CTX *c)
     aro_gc_free_large_chain_malloc(gc->large_head);
     free(gc->large_addrs);
     gc->large_addrs = NULL;
-    gc->large_n = gc->large_capa = 0;
+    gc->large_n = gc->large_capa = gc->large_sorted = 0;
     free(gc);
     c->astro_gc = NULL;
 }

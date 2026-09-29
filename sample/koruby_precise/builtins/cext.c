@@ -326,12 +326,12 @@ static void
 kcx_frame_push(CTX *c, struct korb_cext_frame *f, korb_value *slots)
 {
     struct korb_cext_vm *const x = kcx_vm(c->vm);
-    memset(f, 0, sizeof *f);
     f->prev = c->cext_top;
     f->slots = slots;
     f->serial = ++x->serial ? x->serial : ++x->serial;   /* 0 = "never seen" */
-    f->hs = f->hs_inline; f->hcap = 16;
-    f->owner = KORB_NIL;
+    f->hs = f->hs_inline; f->hn = 0; f->hcap = 16;
+    f->block = NULL; f->def_env = NULL; f->captured_self = NULL;
+    f->mid = 0; f->owner = KORB_NIL; f->self = (KVALUE)KORB_NIL; f->kw_given = false;
     c->cext_top = f;
 }
 
@@ -394,6 +394,7 @@ KVALUE rb_obj_frozen_p(KVALUE obj);
 KVALUE rb_obj_is_kind_of(KVALUE obj, KVALUE klass);
 const char *rb_class2name(KVALUE klass);
 KVALUE rb_class_path(KVALUE klass);
+KVALUE rb_class_superclass(KVALUE klass);
 
 /* Run fn (an extension method) under a frame and a jump target. */
 static RESULT
@@ -1319,9 +1320,7 @@ KCX_SEND0(rb_inspect, "inspect")
 KCX_SEND0(rb_obj_dup, "dup")
 KCX_SEND0(rb_obj_clone, "clone")
 KCX_SEND0(rb_obj_id, "object_id")
-KCX_SEND0(rb_obj_class, "class")
 KCX_SEND0(rb_singleton_class, "singleton_class")
-KCX_SEND0(rb_class_superclass, "superclass")
 KCX_SEND0(rb_class_name, "name")
 KCX_SEND0(rb_obj_frozen_p, "frozen?")
 KCX_SEND1(rb_equal, "==")
@@ -1534,6 +1533,15 @@ rb_class_new_instance_kw(int argc, const KVALUE *argv, KVALUE klass, int kw_spla
 }
 KCX_API KVALUE rb_class_new_instance(int argc, const KVALUE *argv, KVALUE klass) { return rb_class_new_instance_kw(argc, argv, klass, 0); }
 KCX_API KVALUE rb_class_of(KVALUE obj) { CTX *const c = kcx_c(); return W(korb_class_obj_of(c, K(obj))); }
+KCX_API KVALUE rb_obj_class(KVALUE obj) { return rb_class_of(obj); }   /* korb_class_obj_of skips singletons */
+KCX_API KVALUE
+rb_class_superclass(KVALUE k)
+{
+    CTX *const c = kcx_c();
+    const korb_value v = K(k);
+    if (!KORB_CLASS_P(v) || VAL2CLASS(v)->is_module) return W(kcx_send_name(c, v, "superclass", 0, NULL));
+    return W(VAL2CLASS(v)->superclass);
+}
 KCX_API KVALUE
 rb_class_path(KVALUE k)
 {
