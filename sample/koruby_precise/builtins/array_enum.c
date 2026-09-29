@@ -112,7 +112,7 @@ static RESULT korb_ary_minmax(CTX *c, korb_value *slots, korb_ref self, int want
     for (uint32_t i = 1; i < len; i++) {
         korb_value e = korb_items_data(VAL2ARY(KORB_REF_GET(self))->items)[i];
         int cmp;
-        if (UNLIKELY(korb_eq_needs_send(e) || korb_eq_needs_send(slots[0]))) {   /* user/Comparable → dispatch <=> */
+        if (UNLIKELY(korb_eq_needs_send(e) || korb_eq_needs_send(slots[0]) || KORB_CLASS_P(e) || KORB_CLASS_P(slots[0]))) {   /* user/Comparable/class → dispatch <=> */
             slots[1] = e;                                             /* root e across the dispatch */
             CHECK(korb_cmp_spaceship(c, slots + 2, slots[1], slots[0], &cmp));
             e = slots[1];                                            /* re-read (may have moved) */
@@ -416,7 +416,8 @@ static RESULT korb_msort_cmp_block(CTX *c, korb_value *slots, korb_value a, korb
 }
 static RESULT korb_msort_cmp_spaceship(CTX *c, korb_value *slots, korb_value a, korb_value b, const void *ud, int *out) {
     (void)ud;
-    if (UNLIKELY(korb_eq_needs_send(a) || korb_eq_needs_send(b))) return korb_cmp_spaceship(c, slots, a, b, out);
+    if (UNLIKELY(korb_eq_needs_send(a) || korb_eq_needs_send(b) || KORB_CLASS_P(a) || KORB_CLASS_P(b)))
+        return korb_cmp_spaceship(c, slots, a, b, out);
     const int r = korb_cmp_full(c, a, b);
     if (UNLIKELY(r == 2)) return korb_raise_cmperr(c, slots, 0, a, b, false);
     *out = r;
@@ -444,7 +445,7 @@ static RESULT korb_m_ary_sort(CTX *c, korb_value *slots, korb_ref self, korb_sli
         for (uint32_t i = 0; i < dn; i++) {
             const korb_value e = dd0[i];
             if (!FIXNUM_P(e)) all_fix = false;
-            if (KORB_OBJECT_P(e)) { has_obj = true; break; }   /* user object → needs <=> dispatch */
+            if (KORB_OBJECT_P(e) || KORB_CLASS_P(e)) { has_obj = true; break; }   /* user object / class (Module#<=>, Rails::Railtie.<=>) → dispatch */
         }
         if (all_fix) {                      /* homogeneous Fixnum → callback-free typed sort */
             if (dn > 1) korb_fix_qsort(dd0, 0, (korb_sword_t)dn - 1);

@@ -261,4 +261,7 @@ t(:enc_misc) { [T.enc_misc("abcd"), T.enc_misc("あいう"), T.enc_misc("\xff\xf
 t(:enc_check) { T.enc_check("a", "b".b) }
 t(:enc_check_bad) { T.enc_check("あ", "\xff".b) }
 t(:enc_conv) { T.enc_conv("あい") }
+t(:st) { T.st }
+t(:range) { [T.range(1..3, 10), T.range(1...3, 10), T.range(-3..-1, 10), T.range(8..20, 10), T.range(11..12, 10), T.range(2.., 10), T.range(..-2, 10), T.range(-20..1, 10), T.range(3, 10)] }
+t(:range_new) { T.range_new }
 puts "done"

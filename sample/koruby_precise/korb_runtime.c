@@ -9704,14 +9704,19 @@ korb_subclass_op_p(CTX *const c, const korb_value l, const uint32_t mid)
 }
 
 /* True when `attr_reader` / `attr_writer` / `attr_accessor` is defined in RUBY on
- * the class's singleton (or a module it extends) — then node_attr must dispatch
+ * the singleton of the class or a superclass (or a module one extends) — then node_attr must dispatch
  * instead of defining the accessors itself. */
 bool korb_attr_overridden_p(CTX *c, korb_value klass, uint32_t mid)
 {
-    const korb_value sing = korb_klass_override_get(c->vm, klass);
-    if (!KORB_CLASS_P(sing)) return false;
-    const struct korb_method *const m = korb_class_find_method(sing, mid, NULL);
-    return m != NULL && (m->kind == KORB_METHOD_ISEQ || m->kind == KORB_METHOD_DM);
+    /* the superclasses' singletons too: thor's `class Base; extend ClassMethods` wraps attr_accessor
+     * in no_commands for every subclass (a Rails generator's accessors became commands) */
+    for (korb_value k = klass; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
+        const korb_value sing = korb_klass_override_get(c->vm, k);
+        if (!KORB_CLASS_P(sing)) continue;
+        const struct korb_method *const m = korb_class_find_method(sing, mid, NULL);
+        if (m != NULL && (m->kind == KORB_METHOD_ISEQ || m->kind == KORB_METHOD_DM)) return true;
+    }
+    return false;
 }
 
 RESULT korb_user_binop(CTX *c, korb_value *slots, korb_value l, korb_value rhs, const char *op, bool *handled) {
@@ -18896,7 +18901,7 @@ korb_prefer_own_lib(const char *const restrict name, char *const restrict abspat
         snprintf(ext, sizeof ext, "%.*s/ext", (int)(al - nl - 5), abspath);
         cext_gem = stat(ext, &st) == 0 && S_ISDIR(st.st_mode);
         snprintf(ext, sizeof ext, "%.*s/lib", (int)(al - nl - 5), abspath);
-        if (cext_gem && korb_gem_lib_has_kompat(ext, 1)) return;
+        if (cext_gem && korb_gem_lib_has_kompat(ext, 3)) return;   /* json: lib/json/ext/parser.kompat.so */
 
     }
     if (!cext_gem) return;

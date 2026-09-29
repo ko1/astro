@@ -611,6 +611,41 @@ t_enc_conv(VALUE self, VALUE str)
     return rb_ary_new_from_args(4, e, rb_obj_encoding(copy), rb_str_encode(str, rb_str_new_cstr("UTF-16LE"), 0, Qnil),
                                 INT2FIX(rb_enc_get_index(ID2SYM(rb_intern("sym"))) == rb_usascii_encindex()));
 }
+static int t_st_collect(st_data_t k, st_data_t v, st_data_t arg) { rb_ary_push((VALUE)arg, rb_ary_new_from_args(2, LONG2NUM((long)k), LONG2NUM((long)v))); return (k % 3 == 0) ? ST_DELETE : ST_CONTINUE; }
+static int t_st_upd(st_data_t *k, st_data_t *v, st_data_t arg, int existing) { *v = existing ? *v * 10 : (st_data_t)arg; return ST_CONTINUE; }
+static VALUE
+t_st(VALUE self)
+{
+    st_table *const t = st_init_numtable();
+    for (long i = 1; i <= 2000; i++) st_insert(t, (st_data_t)i, (st_data_t)(i * i));
+    const int again = st_insert(t, 5, 55);
+    st_data_t v = 0, k = 7;
+    const int found = st_lookup(t, 5, &v);
+    const int del = st_delete(t, &k, NULL);
+    st_update(t, 8, t_st_upd, 0); st_update(t, 5000, t_st_upd, 42);
+    const VALUE seen = rb_ary_new();
+    st_foreach(t, t_st_collect, (st_data_t)seen);
+    const long n_after = (long)t->num_entries;
+    st_data_t v8 = 0, v5000 = 0; st_lookup(t, 8, &v8); st_lookup(t, 5000, &v5000);
+    st_free_table(t);
+    st_table *const s = st_init_strcasetable();
+    st_insert(s, (st_data_t)"Content-Type", 1);
+    st_data_t sv = 0;
+    const int shit = st_lookup(s, (st_data_t)"content-TYPE", &sv);
+    st_free_table(s);
+    return rb_ary_new_from_args(10, INT2FIX(again), LONG2NUM((long)v), INT2FIX(found), INT2FIX(del), LONG2NUM(RARRAY_LEN(seen)),
+                                rb_ary_entry(seen, 0), LONG2NUM(n_after), LONG2NUM((long)v8), LONG2NUM((long)v5000), INT2FIX(shit * 10 + (int)sv));
+}
+static VALUE
+t_range(VALUE self, VALUE r, VALUE len)
+{
+    long b = -1, l = -1;
+    const VALUE ok = rb_range_beg_len(r, &b, &l, NUM2LONG(len), 0);
+    VALUE rb = Qnil, re = Qnil; int ex = -1;
+    const int isr = rb_range_values(r, &rb, &re, &ex);
+    return rb_ary_new_from_args(7, ok, LONG2NUM(b), LONG2NUM(l), INT2FIX(isr), rb, re, INT2FIX(ex));
+}
+static VALUE t_range_new(VALUE self) { return rb_ary_new_from_args(2, rb_range_new(INT2FIX(1), INT2FIX(5), 1), rb_str_split(rb_str_new_cstr("a,b,,c"), ",")); }
 static VALUE
 t_warn(VALUE self)
 {
@@ -731,6 +766,9 @@ Init_cext_api_test(void)
     rb_define_module_function(mT, "thread_local", t_thread_local, 1);
     rb_define_module_function(mT, "big", t_big, 1);
     rb_define_module_function(mT, "warn", t_warn, 0);
+    rb_define_module_function(mT, "st", t_st, 0);
+    rb_define_module_function(mT, "range", t_range, 2);
+    rb_define_module_function(mT, "range_new", t_range_new, 0);
     rb_define_module_function(mT, "enc_find", t_enc_find, 1);
     rb_define_module_function(mT, "enc_chars", t_enc_chars, 1);
     rb_define_module_function(mT, "enc_misc", t_enc_misc, 1);

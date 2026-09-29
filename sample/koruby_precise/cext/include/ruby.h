@@ -537,6 +537,10 @@ void  rb_enc_set_index(VALUE obj, int idx);
 rb_encoding *rb_enc_check(VALUE str1, VALUE str2);
 rb_encoding *rb_enc_compatible(VALUE str1, VALUE str2);
 VALUE rb_enc_str_new_cstr(const char *ptr, rb_encoding *enc);
+VALUE rb_enc_interned_str(const char *ptr, long len, rb_encoding *enc);
+VALUE rb_enc_interned_str_cstr(const char *ptr, rb_encoding *enc);
+VALUE rb_interned_str(const char *ptr, long len);
+VALUE rb_interned_str_cstr(const char *ptr);
 #define rb_enc_str_new_static(ptr, len, enc) rb_enc_str_new((ptr), (len), (enc))
 #define rb_enc_str_new_literal(s, enc) rb_enc_str_new((s), (long)(sizeof(s) - 1), (enc))
 VALUE rb_enc_str_buf_cat(VALUE str, const char *ptr, long len, rb_encoding *enc);
@@ -618,6 +622,81 @@ VALUE rb_check_hash_type(VALUE obj);
 enum rb_hash_iter_status { ST_CONTINUE = 0, ST_STOP = 1, ST_DELETE = 2, ST_CHECK = 3 };
 void  rb_hash_foreach(VALUE hash, int (*func)(VALUE key, VALUE val, VALUE arg), VALUE arg);
 #define RHASH_SIZE(h) rb_hash_size_num(h)
+
+/* ---- st_table (CRuby's C-level hash table; insertion-ordered like CRuby's) ---- */
+struct st_hash_type { int (*compare)(st_data_t, st_data_t); st_index_t (*hash)(st_data_t); };
+struct st_table_entry;
+typedef struct st_table {
+    const struct st_hash_type *type;
+    st_index_t num_entries;                 /* read by extensions */
+    st_index_t entries_bound, entries_capa, bins_mask;
+    struct st_table_entry *entries;
+    st_index_t *bins;                       /* entry index + 1; 0 = empty */
+} st_table;
+typedef int st_foreach_callback_func(st_data_t key, st_data_t val, st_data_t arg);
+typedef int st_update_callback_func(st_data_t *key, st_data_t *value, st_data_t arg, int existing);
+#define st_init_table rb_st_init_table
+#define st_init_table_with_size rb_st_init_table_with_size
+#define st_init_numtable rb_st_init_numtable
+#define st_init_numtable_with_size rb_st_init_numtable_with_size
+#define st_init_strtable rb_st_init_strtable
+#define st_init_strtable_with_size rb_st_init_strtable_with_size
+#define st_init_strcasetable rb_st_init_strcasetable
+#define st_init_strcasetable_with_size rb_st_init_strcasetable_with_size
+#define st_free_table rb_st_free_table
+#define st_clear rb_st_clear
+#define st_lookup rb_st_lookup
+#define st_get_key rb_st_get_key
+#define st_insert rb_st_insert
+#define st_insert2 rb_st_insert2
+#define st_add_direct rb_st_add_direct
+#define st_delete rb_st_delete
+#define st_update rb_st_update
+#define st_foreach rb_st_foreach
+#define st_foreach_safe rb_st_foreach_safe
+#define st_foreach_check rb_st_foreach_check
+#define st_copy rb_st_copy
+#define st_memsize rb_st_memsize
+#define st_numcmp rb_st_numcmp
+#define st_numhash rb_st_numhash
+#define st_hash rb_st_hash
+#define st_strcasecmp rb_st_locale_insensitive_strcasecmp
+#define st_strncasecmp rb_st_locale_insensitive_strncasecmp
+st_table *rb_st_init_table(const struct st_hash_type *type);
+st_table *rb_st_init_table_with_size(const struct st_hash_type *type, st_index_t size);
+st_table *rb_st_init_numtable(void);
+st_table *rb_st_init_numtable_with_size(st_index_t size);
+st_table *rb_st_init_strtable(void);
+st_table *rb_st_init_strtable_with_size(st_index_t size);
+st_table *rb_st_init_strcasetable(void);
+st_table *rb_st_init_strcasetable_with_size(st_index_t size);
+void  rb_st_free_table(st_table *tab);
+void  rb_st_clear(st_table *tab);
+int   rb_st_lookup(st_table *tab, st_data_t key, st_data_t *value);
+int   rb_st_get_key(st_table *tab, st_data_t key, st_data_t *result);
+int   rb_st_insert(st_table *tab, st_data_t key, st_data_t value);
+int   rb_st_insert2(st_table *tab, st_data_t key, st_data_t value, st_data_t (*func)(st_data_t));
+void  rb_st_add_direct(st_table *tab, st_data_t key, st_data_t value);
+int   rb_st_delete(st_table *tab, st_data_t *key, st_data_t *value);
+int   rb_st_update(st_table *tab, st_data_t key, st_update_callback_func *func, st_data_t arg);
+int   rb_st_foreach(st_table *tab, st_foreach_callback_func *func, st_data_t arg);
+void  rb_st_foreach_safe(st_table *tab, st_foreach_callback_func *func, st_data_t arg);
+int   rb_st_foreach_check(st_table *tab, st_foreach_callback_func *func, st_data_t arg, st_data_t never);
+st_table *rb_st_copy(st_table *tab);
+size_t rb_st_memsize(const st_table *tab);
+int   rb_st_numcmp(st_data_t a, st_data_t b);
+st_index_t rb_st_numhash(st_data_t n);
+st_index_t rb_st_hash(const void *ptr, size_t len, st_index_t h);
+void  rb_mark_tbl(st_table *tab);
+void  rb_mark_set(st_table *tab);
+void  rb_mark_hash(st_table *tab);
+#define rb_mark_tbl_no_pin(tab) rb_mark_tbl(tab)
+char *ruby_strdup(const char *str);
+VALUE rb_utf8_str_new_static(const char *ptr, long len);
+VALUE rb_str_split(VALUE str, const char *sep);
+VALUE rb_range_new(VALUE beg, VALUE end, int exclude_end);
+int   rb_range_values(VALUE range, VALUE *begp, VALUE *endp, int *exclp);
+VALUE rb_range_beg_len(VALUE range, long *begp, long *lenp, long len, int err);
 void  rb_hash_set_ifnone(VALUE hash, VALUE ifnone);
 #define RHASH_SET_IFNONE(h, v) rb_hash_set_ifnone((h), (v))
 VALUE rb_assoc_new(VALUE a, VALUE b);
@@ -629,7 +708,7 @@ RUBY_EXTERN VALUE rb_cBasicObject, rb_cObject, rb_cModule, rb_cClass, rb_cString
                   rb_cArray, rb_cHash, rb_cInteger, rb_cFloat, rb_cNumeric, rb_cNilClass,
                   rb_cTrueClass, rb_cFalseClass, rb_cProc, rb_cMethod, rb_cRange, rb_cIO, rb_cFile,
                   rb_cTime, rb_cStruct, rb_cRational, rb_cComplex, rb_cRegexp, rb_cMatch,
-                  rb_cEncoding, rb_cData, rb_cThread;
+                  rb_cEncoding, rb_cData, rb_cThread, rb_cRandom;
 RUBY_EXTERN VALUE rb_eIOTimeoutError, rb_mWaitReadable, rb_mWaitWritable;
 RUBY_EXTERN VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eArgError, rb_eTypeError,
                   rb_eNameError, rb_eNoMethodError, rb_eIndexError, rb_eKeyError, rb_eRangeError,

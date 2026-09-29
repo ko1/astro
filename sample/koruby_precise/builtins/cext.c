@@ -519,7 +519,7 @@ KCX_API KVALUE rb_cBasicObject, rb_cObject, rb_cModule, rb_cClass, rb_cString, r
                rb_cArray, rb_cHash, rb_cInteger, rb_cFloat, rb_cNumeric, rb_cNilClass,
                rb_cTrueClass, rb_cFalseClass, rb_cProc, rb_cMethod, rb_cRange, rb_cIO, rb_cFile,
                rb_cTime, rb_cStruct, rb_cRational, rb_cComplex, rb_cRegexp, rb_cMatch,
-               rb_cEncoding, rb_cData, rb_cThread;
+               rb_cEncoding, rb_cData, rb_cThread, rb_cRandom;
 KCX_API KVALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eArgError, rb_eTypeError,
                rb_eNameError, rb_eNoMethodError, rb_eIndexError, rb_eKeyError, rb_eRangeError,
                rb_eIOError, rb_eEOFError, rb_eLoadError, rb_eNotImpError, rb_eFrozenError,
@@ -549,7 +549,7 @@ kcx_init_globals(CTX *c)
         { &rb_cProc, "Proc" }, { &rb_cMethod, "Method" }, { &rb_cRange, "Range" }, { &rb_cIO, "IO" },
         { &rb_cFile, "File" }, { &rb_cTime, "Time" }, { &rb_cStruct, "Struct" }, { &rb_cRational, "Rational" },
         { &rb_cComplex, "Complex" }, { &rb_cRegexp, "Regexp" }, { &rb_cMatch, "MatchData" },
-        { &rb_cEncoding, "Encoding" }, { &rb_cData, "Data" }, { &rb_cThread, "Thread" },
+        { &rb_cEncoding, "Encoding" }, { &rb_cData, "Data" }, { &rb_cThread, "Thread" }, { &rb_cRandom, "Random" },
         { &rb_eException, "Exception" }, { &rb_eStandardError, "StandardError" }, { &rb_eRuntimeError, "RuntimeError" },
         { &rb_eArgError, "ArgumentError" }, { &rb_eTypeError, "TypeError" }, { &rb_eNameError, "NameError" },
         { &rb_eNoMethodError, "NoMethodError" }, { &rb_eIndexError, "IndexError" }, { &rb_eKeyError, "KeyError" },
@@ -594,10 +594,19 @@ rb_type(KVALUE h)
       case KORB_OBJ_RATIONAL: return 0x0f;
       case KORB_OBJ_COMPLEX: return 0x0e;
       case KORB_OBJ_CLASS: return VAL2CLASS(v)->is_module ? 0x03 : 0x02;
+      case KORB_OBJ_RANGE: return 0x09;                  /* T_STRUCT, as CRuby's */
+      case KORB_OBJ_PROC: case KORB_OBJ_METHOD: case KORB_OBJ_BINDING: case KORB_OBJ_ENUMERATOR:
+      case KORB_OBJ_ARITHSEQ: case KORB_OBJ_SET: case KORB_OBJ_FIBER: case KORB_OBJ_THREAD:
+      case KORB_OBJ_MUTEX: case KORB_OBJ_CONDVAR: return 0x0c;   /* T_DATA in CRuby (json: rb_convert_type(x, T_DATA, "Proc", ..)) */
       case KORB_OBJ_OBJECT: {
         if (((AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_CDATA) return 0x0c;
-        CTX *const c = kcx_c();                          /* an IO is a plain object here: T_FILE by class */
-        return rb_cIO && korb_class_le(korb_class_obj_of(c, v), K(rb_cIO)) ? 0x0b : 0x01;
+        const korb_value k = VAL2OBJ(v)->klass;
+        if (KORB_CLASS_P(k) && KORB_ARRAY_P(VAL2CLASS(k)->members)) return 0x09;   /* a Struct / Data instance */
+        CTX *const c = kcx_c();                          /* plain objects here, by class: IO T_FILE, Time / Encoding T_DATA */
+        const korb_value cls = korb_class_obj_of(c, v);
+        if (rb_cIO && korb_class_le(cls, K(rb_cIO))) return 0x0b;
+        if ((rb_cTime && korb_class_le(cls, K(rb_cTime))) || (rb_cEncoding && korb_class_le(cls, K(rb_cEncoding)))) return 0x0c;
+        return 0x01;
       }
       default: return 0x01;
     }
@@ -2260,6 +2269,244 @@ rb_opts_exception_p(KVALUE opts, int default_value)
 }
 KCX_API KVALUE rb_extract_keywords(KVALUE *orighash) { const KVALUE h = *orighash; *orighash = KQnil; return h; }
 
+/* ---- st_table (ruby/st.h): insertion-ordered entries + a linear-probe index of entry
+ * number + 1.  Deleted entries stay in place (no compaction), so an st_foreach whose
+ * callback inserts sees stable positions; the index is rebuilt only on growth. ---- */
+typedef uintptr_t st_data_t;
+typedef uintptr_t st_index_t;
+struct st_hash_type { int (*compare)(st_data_t, st_data_t); st_index_t (*hash)(st_data_t); };
+struct st_table_entry { st_index_t hash; st_data_t key, record; bool deleted; };
+typedef struct st_table {
+    const struct st_hash_type *type;
+    st_index_t num_entries;
+    st_index_t entries_bound, entries_capa, bins_mask;
+    struct st_table_entry *entries;
+    st_index_t *bins;
+} st_table;
+enum { KCX_ST_CONTINUE, KCX_ST_STOP, KCX_ST_DELETE, KCX_ST_CHECK };
+
+KCX_API int rb_st_numcmp(st_data_t a, st_data_t b) { return a != b; }
+KCX_API st_index_t rb_st_numhash(st_data_t n) { n ^= n >> 33; n *= 0xff51afd7ed558ccdULL; n ^= n >> 33; return n; }
+KCX_API st_index_t
+rb_st_hash(const void *ptr, size_t len, st_index_t h)
+{
+    const unsigned char *const p = ptr;
+    h ^= 0xcbf29ce484222325ULL;
+    for (size_t i = 0; i < len; i++) { h ^= p[i]; h *= 0x100000001b3ULL; }
+    return h;
+}
+static int kcx_st_strcmp(st_data_t a, st_data_t b) { return strcmp((const char *)a, (const char *)b); }
+static st_index_t kcx_st_strhash(st_data_t s) { return rb_st_hash((const char *)s, strlen((const char *)s), 0); }
+static int kcx_st_strcasecmp(st_data_t a, st_data_t b) { return strcasecmp((const char *)a, (const char *)b); }
+static st_index_t
+kcx_st_strcasehash(st_data_t s)
+{
+    st_index_t h = 0xcbf29ce484222325ULL;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) { h ^= (st_index_t)((*p >= 'A' && *p <= 'Z') ? *p | 0x20 : *p); h *= 0x100000001b3ULL; }
+    return h;
+}
+static const struct st_hash_type kcx_st_numtype = { rb_st_numcmp, rb_st_numhash };
+static const struct st_hash_type kcx_st_strtype = { kcx_st_strcmp, kcx_st_strhash };
+static const struct st_hash_type kcx_st_strcasetype = { kcx_st_strcasecmp, kcx_st_strcasehash };
+
+static void
+kcx_st_reindex(st_table *const t, const st_index_t capa)
+{
+    t->entries = realloc(t->entries, capa * sizeof *t->entries);
+    t->entries_capa = capa;
+    st_index_t nb = 8;
+    while (nb < capa * 2) nb <<= 1;
+    free(t->bins);
+    t->bins = calloc(nb, sizeof *t->bins);
+    if (!t->entries || !t->bins) abort();
+    t->bins_mask = nb - 1;
+    for (st_index_t e = 0; e < t->entries_bound; e++) {
+        st_index_t i = t->entries[e].hash & t->bins_mask;
+        while (t->bins[i]) i = (i + 1) & t->bins_mask;
+        t->bins[i] = e + 1;
+    }
+}
+KCX_API st_table *
+rb_st_init_table_with_size(const struct st_hash_type *type, st_index_t size)
+{
+    st_table *const t = calloc(1, sizeof *t);
+    if (!t) abort();
+    t->type = type;
+    kcx_st_reindex(t, size < 4 ? 4 : size);
+    return t;
+}
+KCX_API st_table *rb_st_init_table(const struct st_hash_type *type) { return rb_st_init_table_with_size(type, 0); }
+KCX_API st_table *rb_st_init_numtable_with_size(st_index_t size) { return rb_st_init_table_with_size(&kcx_st_numtype, size); }
+KCX_API st_table *rb_st_init_numtable(void) { return rb_st_init_numtable_with_size(0); }
+KCX_API st_table *rb_st_init_strtable_with_size(st_index_t size) { return rb_st_init_table_with_size(&kcx_st_strtype, size); }
+KCX_API st_table *rb_st_init_strtable(void) { return rb_st_init_strtable_with_size(0); }
+KCX_API st_table *rb_st_init_strcasetable_with_size(st_index_t size) { return rb_st_init_table_with_size(&kcx_st_strcasetype, size); }
+KCX_API st_table *rb_st_init_strcasetable(void) { return rb_st_init_strcasetable_with_size(0); }
+KCX_API void rb_st_free_table(st_table *t) { if (!t) return; free(t->entries); free(t->bins); free(t); }
+KCX_API void
+rb_st_clear(st_table *t)
+{
+    t->num_entries = 0; t->entries_bound = 0;
+    memset(t->bins, 0, (t->bins_mask + 1) * sizeof *t->bins);
+}
+static struct st_table_entry *
+kcx_st_find(const st_table *t, st_data_t key, st_index_t h)
+{
+    for (st_index_t i = h & t->bins_mask; t->bins[i]; i = (i + 1) & t->bins_mask) {
+        struct st_table_entry *const e = &t->entries[t->bins[i] - 1];
+        if (!e->deleted && e->hash == h && (e->key == key || t->type->compare(e->key, key) == 0)) return e;
+    }
+    return NULL;
+}
+KCX_API void
+rb_st_add_direct(st_table *t, st_data_t key, st_data_t value)
+{
+    if (t->entries_bound == t->entries_capa) kcx_st_reindex(t, t->entries_capa * 2);
+    const st_index_t h = t->type->hash(key);
+    struct st_table_entry *const e = &t->entries[t->entries_bound];
+    e->hash = h; e->key = key; e->record = value; e->deleted = false;
+    st_index_t i = h & t->bins_mask;
+    while (t->bins[i]) i = (i + 1) & t->bins_mask;
+    t->bins[i] = ++t->entries_bound;
+    t->num_entries++;
+}
+KCX_API int
+rb_st_lookup(st_table *t, st_data_t key, st_data_t *value)
+{
+    const struct st_table_entry *const e = kcx_st_find(t, key, t->type->hash(key));
+    if (e && value) *value = e->record;
+    return e != NULL;
+}
+KCX_API int
+rb_st_get_key(st_table *t, st_data_t key, st_data_t *result)
+{
+    const struct st_table_entry *const e = kcx_st_find(t, key, t->type->hash(key));
+    if (e && result) *result = e->key;
+    return e != NULL;
+}
+KCX_API int
+rb_st_insert(st_table *t, st_data_t key, st_data_t value)
+{
+    struct st_table_entry *const e = kcx_st_find(t, key, t->type->hash(key));
+    if (e) { e->record = value; return 1; }
+    rb_st_add_direct(t, key, value);
+    return 0;
+}
+KCX_API int
+rb_st_insert2(st_table *t, st_data_t key, st_data_t value, st_data_t (*func)(st_data_t))
+{
+    struct st_table_entry *const e = kcx_st_find(t, key, t->type->hash(key));
+    if (e) { e->record = value; return 1; }
+    rb_st_add_direct(t, func(key), value);
+    return 0;
+}
+KCX_API int
+rb_st_delete(st_table *t, st_data_t *key, st_data_t *value)
+{
+    struct st_table_entry *const e = kcx_st_find(t, *key, t->type->hash(*key));
+    if (!e) { if (value) *value = 0; return 0; }
+    *key = e->key;
+    if (value) *value = e->record;
+    e->deleted = true;
+    t->num_entries--;
+    return 1;
+}
+KCX_API int
+rb_st_update(st_table *t, st_data_t key, int (*func)(st_data_t *, st_data_t *, st_data_t, int), st_data_t arg)
+{
+    struct st_table_entry *e = kcx_st_find(t, key, t->type->hash(key));
+    const int existing = e != NULL;
+    st_data_t k = e ? e->key : key, v = e ? e->record : 0;
+    switch (func(&k, &v, arg, existing)) {
+      case KCX_ST_CONTINUE:
+        if (existing) { e->key = k; e->record = v; }
+        else rb_st_add_direct(t, k, v);
+        break;
+      case KCX_ST_DELETE:
+        if (existing) { e->deleted = true; t->num_entries--; }
+        break;
+      default: break;
+    }
+    return existing;
+}
+KCX_API int
+rb_st_foreach(st_table *t, int (*func)(st_data_t, st_data_t, st_data_t), st_data_t arg)
+{
+    for (st_index_t i = 0; i < t->entries_bound; i++) {
+        if (t->entries[i].deleted) continue;
+        const int r = func(t->entries[i].key, t->entries[i].record, arg);
+        if (r == KCX_ST_STOP) return 0;
+        if (r == KCX_ST_DELETE && !t->entries[i].deleted) { t->entries[i].deleted = true; t->num_entries--; }
+    }
+    return 0;
+}
+KCX_API void rb_st_foreach_safe(st_table *t, int (*func)(st_data_t, st_data_t, st_data_t), st_data_t arg) { (void)rb_st_foreach(t, func, arg); }
+KCX_API int rb_st_foreach_check(st_table *t, int (*func)(st_data_t, st_data_t, st_data_t), st_data_t arg, st_data_t never) { (void)never; return rb_st_foreach(t, func, arg); }
+KCX_API st_table *
+rb_st_copy(st_table *old)
+{
+    st_table *const t = rb_st_init_table_with_size(old->type, old->entries_capa);
+    for (st_index_t i = 0; i < old->entries_bound; i++)
+        if (!old->entries[i].deleted) rb_st_add_direct(t, old->entries[i].key, old->entries[i].record);
+    return t;
+}
+KCX_API size_t rb_st_memsize(const st_table *t) { return sizeof *t + t->entries_capa * sizeof *t->entries + (t->bins_mask + 1) * sizeof *t->bins; }
+static int kcx_mark_val_i(st_data_t k, st_data_t v, st_data_t a) { (void)k; (void)a; rb_gc_mark((KVALUE)v); return KCX_ST_CONTINUE; }
+static int kcx_mark_key_i(st_data_t k, st_data_t v, st_data_t a) { (void)v; (void)a; rb_gc_mark((KVALUE)k); return KCX_ST_CONTINUE; }
+static int kcx_mark_both_i(st_data_t k, st_data_t v, st_data_t a) { (void)a; rb_gc_mark((KVALUE)k); rb_gc_mark((KVALUE)v); return KCX_ST_CONTINUE; }
+KCX_API void rb_mark_tbl(st_table *t) { if (t) (void)rb_st_foreach(t, kcx_mark_val_i, 0); }
+KCX_API void rb_mark_set(st_table *t) { if (t) (void)rb_st_foreach(t, kcx_mark_key_i, 0); }
+KCX_API void rb_mark_hash(st_table *t) { if (t) (void)rb_st_foreach(t, kcx_mark_both_i, 0); }
+
+KCX_API char *ruby_strdup(const char *str) { const size_t n = strlen(str) + 1; char *const p = ruby_xmalloc(n); memcpy(p, str, n); return p; }
+KCX_API KVALUE rb_utf8_str_new_static(const char *ptr, long len) { return rb_utf8_str_new(ptr, len); }
+KCX_API KVALUE rb_str_split(KVALUE str, const char *sep) { CTX *const c = kcx_c(); const KVALUE s = rb_str_new_cstr(sep); return W(kcx_send_name(c, K(str), "split", 1, &s)); }
+KCX_API KVALUE
+rb_range_new(KVALUE beg, KVALUE end, int exclude_end)
+{
+    CTX *const c = kcx_c();
+    const KVALUE a[3] = { beg, end, exclude_end ? KQtrue : KQfalse };
+    return W(kcx_send_name(c, kcx_const_path(c, "Range"), "new", 3, a));
+}
+/* a Range (or anything with begin / end / exclude_end?, as CRuby's): false when not one */
+KCX_API int
+rb_range_values(KVALUE range, KVALUE *begp, KVALUE *endp, int *exclp)
+{
+    CTX *const c = kcx_c();
+    const korb_value v = K(range);
+    if (!KORB_RANGE_P(v)) {
+        const uint32_t b = kcx_id(c, "begin"), e = kcx_id(c, "end"), x = kcx_id(c, "exclude_end?");
+        if (!korb_responds_to(c, v, b) || !korb_responds_to(c, v, e) || !korb_responds_to(c, v, x)) return 0;
+    }
+    *begp = W(kcx_send_name(c, v, "begin", 0, NULL));
+    *endp = W(kcx_send_name(c, v, "end", 0, NULL));
+    *exclp = RTEST_K(W(kcx_send_name(c, v, "exclude_end?", 0, NULL)));
+    return (int)KQtrue;                                  /* CRuby returns (int)Qtrue */
+}
+/* CRuby's rb_range_beg_len: Qfalse not a range, Qnil out of range (err 0), Qtrue with *begp / *lenp */
+KCX_API KVALUE
+rb_range_beg_len(KVALUE range, long *begp, long *lenp, long len, int err)
+{
+    KVALUE b, e; int excl;
+    if (!rb_range_values(range, &b, &e, &excl)) return KQfalse;
+    long beg = b == KQnil ? 0 : rb_num2long(b), end = e == KQnil ? -1 : rb_num2long(e);
+    if (e == KQnil) excl = 0;
+    const long origbeg = beg, origend = end;
+    if (beg < 0) { beg += len; if (beg < 0) goto out_of_range; }
+    if (end < 0) end += len;
+    if (!excl) end++;
+    if (err == 0 || err == 2) {
+        if (beg > len) goto out_of_range;
+        if (end > len) end = len;
+    }
+    *begp = beg;
+    *lenp = end - beg < 0 ? 0 : end - beg;
+    return KQtrue;
+  out_of_range:
+    if (err) rb_raise(rb_eRangeError, "%ld..%s%ld out of range", origbeg, excl ? "." : "", origend);
+    return KQnil;
+}
+
 /* ---- T_DATA ---- */
 static KVALUE
 kcx_cdata_new(KVALUE klass, const struct rb_data_type_struct *type, void *data, void (*dmark)(void *), void (*dfree)(void *))
@@ -2794,6 +3041,11 @@ rb_enc_check(KVALUE a, KVALUE b)
     return e;
 }
 KCX_API KVALUE rb_enc_str_new_cstr(const char *ptr, struct rb_encoding_kx *enc) { return rb_enc_str_new(ptr, (long)strlen(ptr), enc); }
+/* frozen and deduplicated, as String#-@ */
+KCX_API KVALUE rb_enc_interned_str(const char *ptr, long len, struct rb_encoding_kx *enc) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(rb_enc_str_new(ptr, len, enc ? enc : rb_usascii_encoding())), "-@", 0, NULL)); }
+KCX_API KVALUE rb_enc_interned_str_cstr(const char *ptr, struct rb_encoding_kx *enc) { return rb_enc_interned_str(ptr, (long)strlen(ptr), enc); }
+KCX_API KVALUE rb_interned_str(const char *ptr, long len) { return rb_enc_interned_str(ptr, len, rb_usascii_encoding()); }
+KCX_API KVALUE rb_interned_str_cstr(const char *ptr) { return rb_interned_str(ptr, (long)strlen(ptr)); }
 KCX_API KVALUE rb_enc_str_buf_cat(KVALUE str, const char *ptr, long len, struct rb_encoding_kx *enc) { return rb_str_buf_append(str, rb_enc_str_new(ptr, len, enc)); }
 KCX_API KVALUE rb_external_str_new_with_enc(const char *ptr, long len, struct rb_encoding_kx *enc) { return rb_enc_str_new(ptr, len, enc); }
 KCX_API int
