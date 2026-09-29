@@ -4043,10 +4043,18 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
 /* Array literal `[e0, e1, ...]` → inside-out push chain (variadic @child is
  * unsupported).  Element i nests i pushes deep, so it transduces at the chain
  * depth matching its runtime cursor offset. */
+#define KP_ARY_CHUNK 256
 static NODE *
 build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
 {
     if (n == 0) return ALLOC_node_array_new(capa);
+    if (n > KP_ARY_CHUNK) {   /* a long literal (mail's Ragel tables: 229k) nests per chunk, not per element */
+        const size_t m = n % KP_ARY_CHUNK ? n % KP_ARY_CHUNK : KP_ARY_CHUNK;
+        NODE *acc, *tail;
+        WITH_CHAIN(tc, kind_node_ary_push.slot_count, (acc  = build_array(tc, elems, n - m, capa),
+                                                       tail = build_array(tc, elems + n - m, m, (uint32_t)m)));
+        return ALLOC_node_ary_concat(acc, tail);
+    }
     const pm_node_t *last = elems[n - 1];
     bool splat = PM_NODE_TYPE_P(last, PM_SPLAT_NODE);
     const pm_node_t *expr = splat ? (const pm_node_t *)((const pm_splat_node_t *)last)->expression : last;
