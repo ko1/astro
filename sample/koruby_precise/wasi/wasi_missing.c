@@ -10,6 +10,7 @@
  * ことになり得る (geteuid が常に 0 を返す Linux バイナリができる)。
  * weak なのは将来 wasi-libc がこれらを実装したときの保険。 */
 #include <errno.h>
+#include "termios.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -33,6 +34,16 @@ KORB_WASI_MISSING int getgroups(int size, gid_t list[]) {
 KORB_WASI_MISSING int chown(const char *path, uid_t owner, gid_t group) {
     (void)path; (void)owner; (void)group; errno = ENOTSUP; return -1;
 }
+KORB_WASI_MISSING int lchown(const char *path, uid_t owner, gid_t group) {
+    (void)path; (void)owner; (void)group; errno = ENOTSUP; return -1;
+}
+KORB_WASI_MISSING int tcgetattr(int fd, struct termios *t) { (void)fd; (void)t; errno = ENOTTY; return -1; }
+KORB_WASI_MISSING int tcsetattr(int fd, int act, const struct termios *t) { (void)fd; (void)act; (void)t; errno = ENOTTY; return -1; }
+KORB_WASI_MISSING int ttyname_r(int fd, char *buf, size_t len) { (void)fd; (void)buf; (void)len; return ENOTTY; }
+KORB_WASI_MISSING int posix_openpt(int flags) { (void)flags; errno = ENOTSUP; return -1; }
+KORB_WASI_MISSING int grantpt(int fd) { (void)fd; errno = ENOTSUP; return -1; }
+KORB_WASI_MISSING int unlockpt(int fd) { (void)fd; errno = ENOTSUP; return -1; }
+KORB_WASI_MISSING int ptsname_r(int fd, char *buf, size_t len) { (void)fd; (void)buf; (void)len; return ENOTSUP; }
 KORB_WASI_MISSING int chmod(const char *path, mode_t mode) {
     (void)path; (void)mode; errno = ENOTSUP; return -1;
 }

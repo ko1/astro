@@ -311,7 +311,7 @@ static bool korb_exact_ns(korb_value v, int64_t mul, __int128 *tot, int64_t *rn,
                 *tot = korb_mp_get_si(q);
                 if (korb_mp_sgn(r) != 0) {
                     korb_mp_gcd(q, r, d); korb_mp_divexact(r, r, q); korb_mp_divexact(d, d, q);
-                    if (korb_mp_fits_slong_p(d) && korb_mp_get_si(d) <= ((int64_t)1 << 61)) { *rn = korb_mp_get_si(r); *rd = korb_mp_get_si(d); }
+                    if (korb_mp_fits_slong_p(d) && (int64_t)korb_mp_get_si(d) <= ((int64_t)1 << 61)) { *rn = korb_mp_get_si(r); *rd = korb_mp_get_si(d); }
                 }
             }
             korb_mp_clear(n); korb_mp_clear(d); korb_mp_clear(q); korb_mp_clear(r);

@@ -756,6 +756,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
           ['koruby_emit_i32s', 'n->u.node_massign_splat.npre + 1U + n->u.node_massign_splat.npost'],
         %w[node_massign_het descs] => ['koruby_emit_het_descs', 'n->u.node_massign_het.nt'],
         %w[node_attr descs]        => ['koruby_emit_attr_descs', 'n->u.node_attr.count'],
+        %w[node_attr names]        => ['koruby_emit_syms', 'n->u.node_attr.nnames'],
         %w[node_match_pred desc]   => ['koruby_emit_pat', nil],
         %w[node_match_req desc]    => ['koruby_emit_pat', nil],
       }.freeze
