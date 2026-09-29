@@ -18801,19 +18801,29 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
     return false;
 }
 
-/* A gem that ships `name` as a C extension (`<dir>/name.rb` beside `name.so`,
- * like bigdecimal) cannot load here; when koruby carries its own `name`, that
- * one stands in for the whole feature. */
+/* A gem that ships `name` as a C extension (`<dir>/name.rb` beside `name.so`, or an
+ * installed gem whose ext/ koruby did not build, like bigdecimal) cannot load here
+ * unless koruby built that .so; when koruby carries its own `name`, that one stands in
+ * for the whole feature (the gem's Ruby half calls methods only its C half has). */
+static bool korb_cext_so_p(const char *path);   /* fwd */
 static void
 korb_prefer_own_lib(const char *const restrict name, char *const restrict abspath, const size_t sz)
 {
     const size_t al = strlen(abspath);
-    if (al < 3 || strcmp(abspath + al - 3, ".rb") != 0 || strncmp(abspath, KORUBY_SRC_DIR "/", strlen(KORUBY_SRC_DIR) + 1) == 0) return;
+    /* koruby's own lib/ (root/ with its gems is under KORUBY_SRC_DIR too) */
+    if (al < 3 || strcmp(abspath + al - 3, ".rb") != 0 || strncmp(abspath, KORUBY_SRC_DIR "/lib/", strlen(KORUBY_SRC_DIR) + 5) == 0) return;
     char so[4096];
     if (al >= sizeof so) return;
     memcpy(so, abspath, al - 3); memcpy(so + al - 3, ".so", 4);
     struct stat st;
-    if (stat(so, &st) != 0) return;
+    bool cext_gem = stat(so, &st) == 0 && !korb_cext_so_p(so);
+    const size_t nl = strlen(name) + (strcmp(name + strlen(name) - (strlen(name) >= 3 ? 3 : 0), ".rb") == 0 ? 0 : 3);
+    if (!cext_gem && al > nl + 5 && memcmp(abspath + al - nl - 5, "/lib/", 5) == 0) {   /* <gem>/lib/<name>.rb: the gem has ext/? */
+        char ext[4096];
+        snprintf(ext, sizeof ext, "%.*s/ext", (int)(al - nl - 5), abspath);
+        cext_gem = stat(ext, &st) == 0 && S_ISDIR(st.st_mode);
+    }
+    if (!cext_gem) return;
     char own[4096];
     if (korb_resolve_load(KORUBY_SRC_DIR "/lib", name, own, sizeof own)) snprintf(abspath, sz, "%s", own);
 }
