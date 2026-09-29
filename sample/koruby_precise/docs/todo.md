@@ -6172,6 +6172,13 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   自分を root に入れ直すときに、rubygems の既定の shebang（env + ruby_install_name）で書くと見ている。PATH に
   koruby_precise が無いと次の `bundle check` が `env: 'koruby_precise': No such file` で落ちる（/tmp/kz/kbin に symlink を
   置いて回避）。
+- **ruby-bench graphql が CRuby の 12 倍（484 ms 対 39 ms、sp4）**（2026-09-30、perf で確認）: 字句解析が大きなクエリ文字列に
+  対して (1) `Regexp#match(str, pos)` を位置を変えて何千回も呼び、そのたびに対象全体の UTF-8 検査（korb_re_check_subject、
+  15%）、(2) 残りを切り出す部分文字列を毎回コピーし（korb_str_slice_new）、しかも GC の確保が先に全体を 0 埋め（memset
+  13%、memmove 8%、GC 15%）。CRuby は coderange を文字列に覚え、部分文字列はバッファを共有する。凍結文字列だけは検査結果を
+  vm のメモで覚えるようにした（graphql の DATA は凍結されていないので効かない）。本筋は **部分文字列のバッファ共有（COW）** と
+  **文字列の coderange のキャッシュ**（書き換えの共通の入口が無いのが障害）。0 埋めを省く確保（edge の無い型用）は
+  precise_gc の全バックエンドに要る。
 - **Module.constants が CRuby と 5 つ違う**（2026-09-29）: koruby に余分 ARGFClass・ArithmeticSequence（内部名が top-level に
   出ている）・StringIO（prelude で起動時に定義。CRuby は require してから）、足りない SyntaxSuggest（CRuby は autoload）・
   UnicodeNormalize（CRuby は起動時にモジュールだけある）。ErrorHighlight の autoload を足すまでは数が偶然 120 で一致していて、

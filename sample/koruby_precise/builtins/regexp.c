@@ -92,7 +92,13 @@ static bool korb_str_utf8_valid(const KorbString *s);   /* fwd (builtins/string.
 static RESULT korb_re_check_subject(CTX *c, korb_value *slots, korb_value subj)
 {
     if (LIKELY(!KORB_STRING_P(subj) || KORB_STR_ENC(subj) != KORB_ENC_UTF8)) return RESULT_OK(KORB_NIL);
-    if (LIKELY(korb_str_utf8_valid(VAL2STR(subj)))) return RESULT_OK(KORB_NIL);
+    /* a frozen subject cannot change: remember it was valid (graphql's lexer matches one
+     * frozen 100 KB query at thousands of positions — the walk was 15% of its time) */
+    const uint16_t fl = ((const AroObjectHeader *)(uintptr_t)subj)->flags;
+    const bool frozen = (fl & KORB_FL_FROZEN) && !(fl & KORB_FL_CHILLED);
+    korb_value *const memo = &c->vm->utf8_ok[((uintptr_t)subj >> 4) & 7u];
+    if (frozen && *memo == subj) return RESULT_OK(KORB_NIL);
+    if (LIKELY(korb_str_utf8_valid(VAL2STR(subj)))) { if (frozen) *memo = subj; return RESULT_OK(KORB_NIL); }
     return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
 }
 

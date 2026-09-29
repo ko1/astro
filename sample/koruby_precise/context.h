@@ -1418,6 +1418,8 @@ struct korb_vm {
     uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize, mid_eqq;
     uint32_t mid_include, mid_prepend, mid_ruby2_keywords;   /* korb_call_impl's class-body / main forms */
     uint64_t mro_serial;     /* bumped when any MRO may change (and at GC): validates KorbClass.mro_c */
+    korb_value utf8_ok[8];   /* frozen (not chilled) Strings already found valid UTF-8, by address;
+                              * cleared at every GC (addresses move / get reused) */
     uint32_t mid_autoloads;          /* @__autoloads: every A::B lookup asks it once private_constant is in play */
     uint32_t mid___id__, mid_object_id;   /* the identity primitives CRuby warns about redefining */
     uint32_t mid_method_missing;
@@ -1936,6 +1938,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
      * (mcache + node callcaches all validate against method_serial). */     \
     (c)->vm->method_serial++;                                                \
     (c)->vm->mro_serial++;   /* the cached MROs hold class pointers too */    \
+    memset((c)->vm->utf8_ok, 0, sizeof (c)->vm->utf8_ok);                    \
     /* main value-stack, suspended while a fiber runs (active stack scanned   \
      * above as c->slots..slots_top). */                                      \
     if ((c)->vm->running_fiber != NULL && (c)->vm->main_slots != NULL) {      \
