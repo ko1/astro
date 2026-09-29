@@ -142,12 +142,14 @@ static struct korb_zstream *korb_zstream_at(korb_sword_t h) {
     return z->used ? z : NULL;
 }
 
-/* __zstream_open(deflating, level, window_bits) -> handle */
+/* __zstream_open(deflating, level, window_bits, mem_level, strategy) -> handle */
 static RESULT korb_m_zstream_open(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     const int deflating = KORB_TRUTHY(KORB_SLICE_GET(a, 0));
     const int level = (int)FIX2LONG(KORB_SLICE_GET(a, 1));
     const int wbits = (int)FIX2LONG(KORB_SLICE_GET(a, 2));
+    const int memlevel = (int)FIX2LONG(KORB_SLICE_GET(a, 3));
+    const int strategy = (int)FIX2LONG(KORB_SLICE_GET(a, 4));
     uint32_t idx = UINT32_MAX;
     for (uint32_t i = 0; i < korb_zstream_cnt; i++) if (!korb_zstreams[i].used) { idx = i; break; }
     if (idx == UINT32_MAX) {
@@ -161,7 +163,7 @@ static RESULT korb_m_zstream_open(CTX *c, korb_value *slots, korb_ref self, korb
     struct korb_zstream *const z = &korb_zstreams[idx];
     memset(z, 0, sizeof *z);
     z->deflating = deflating;
-    const int rc = deflating ? deflateInit2(&z->zs, level, Z_DEFLATED, wbits, 8, Z_DEFAULT_STRATEGY)
+    const int rc = deflating ? deflateInit2(&z->zs, level, Z_DEFLATED, wbits, memlevel, strategy)
                              : inflateInit2(&z->zs, wbits);
     if (rc != Z_OK) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "zstream init failed");
     z->used = 1;
@@ -221,6 +223,46 @@ static RESULT korb_m_zstream_run(CTX *c, korb_value *slots, korb_ref self, korb_
     return r;
 }
 
+/* __zstream_params(handle, level, strategy, detached) -> the output deflateParams flushed, or nil
+ * (it compresses what is buffered under the old parameters first).  `detached`: CRuby
+ * has handed its output buffer to the caller (#deflate returned it), so zlib gets no
+ * room and a params change that must flush is Z_STREAM_ERROR there — kept as is. */
+static RESULT korb_m_zstream_params(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)self;
+    struct korb_zstream *const z = korb_zstream_at(FIX2LONG(KORB_SLICE_GET(a, 0)));
+    if (!z || !z->deflating) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "closed zstream");
+    const int level = (int)FIX2LONG(KORB_SLICE_GET(a, 1));
+    const int strategy = (int)FIX2LONG(KORB_SLICE_GET(a, 2));
+    if (KORB_TRUTHY(KORB_SLICE_GET(a, 3))) {
+        z->zs.next_in = NULL; z->zs.avail_in = 0;
+        z->zs.next_out = NULL; z->zs.avail_out = 0;
+        const int drc = deflateParams(&z->zs, level, strategy);
+        if (drc == Z_STREAM_ERROR) return RESULT_OK(KORB_NIL);   /* the caller raises Zlib::StreamError */
+        if (drc == Z_OK) return korb_str_new(c, slots, "", 0);
+    }
+    size_t cap = 4096, len = 0;
+    char *out = malloc(cap);
+    if (!out) abort();
+    int rc;
+    for (;;) {
+        z->zs.next_in = NULL; z->zs.avail_in = 0;
+        z->zs.next_out = (Bytef *)(out + len);
+        z->zs.avail_out = (uInt)(cap - len);
+        rc = deflateParams(&z->zs, level, strategy);
+        len = cap - z->zs.avail_out;
+        if (rc != Z_BUF_ERROR || z->zs.avail_out != 0) break;   /* Z_BUF_ERROR with room left: nothing to flush */
+        cap *= 2;
+        char *const g = realloc(out, cap);
+        if (!g) { free(out); abort(); }
+        out = g;
+    }
+    if (rc != Z_OK && rc != Z_BUF_ERROR) { free(out); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "zlib params error"); }
+    const RESULT r = korb_str_new(c, slots, out, (uint32_t)len);
+    free(out);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
+    return r;
+}
+
 /* __zstream_stat(handle) -> [total_in, total_out, stream_end?, avail_in, adler] */
 static RESULT korb_m_zstream_stat(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
@@ -270,7 +312,8 @@ static void korb_init_zlib(CTX *c) {
     korb_class_def_cfn(c, obj, "__zlib_deflate",   korb_m_zlib_deflate,    3);
     korb_class_def_cfn(c, obj, "__zlib_inflate",   korb_m_zlib_inflate,    2);
     korb_class_def_cfn(c, obj, "__zlib_version",   korb_m_zlib_version,    0);
-    korb_class_def_cfn(c, obj, "__zstream_open",   korb_m_zstream_open,    3);
+    korb_class_def_cfn(c, obj, "__zstream_open",   korb_m_zstream_open,    5);
+    korb_class_def_cfn(c, obj, "__zstream_params", korb_m_zstream_params,  4);
     korb_class_def_cfn(c, obj, "__zstream_run",    korb_m_zstream_run,     3);
     korb_class_def_cfn(c, obj, "__zstream_stat",   korb_m_zstream_stat,    1);
     korb_class_def_cfn(c, obj, "__zstream_close",  korb_m_zstream_close,   1);

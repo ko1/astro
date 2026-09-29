@@ -79,22 +79,49 @@ static RESULT korb_m_ary_sum(CTX *c, korb_value *slots, korb_ref self, korb_slic
     }
     return RESULT_OK(slots[0]);
 }
-/* Array#sum with a block: init + block(e0) + block(e1) + ... (+ via dispatch). */
+/* Array#sum with a block: init + block(e0) + block(e1) + ... (+ via dispatch).  Once the
+ * running sum and a block value are both Float/Integer, switch to the compensated Float
+ * sum as the block-less form (CRuby does; hexapdf's line widths came out 49.99 not 50). */
 static RESULT korb_m_ary_sum_b(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
     if (block == NULL) return korb_m_ary_sum(c, slots, self, a);
     const uint32_t plus = korb_intern(c->vm, "+", 1);
     slots[0] = KORB_SLICE_LEN(a) >= 1 ? KORB_SLICE_GET(a, 0) : LONG2FIX(0);   /* acc (recv) */
+    bool fmode = false;
+    double sum = 0.0, comp = 0.0;
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ar = SELF_ARY;
         if (i >= ar->len) break;
         slots[1] = korb_items_data(ar->items)[i];
         RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        slots[1] = r.value;                          /* arg = block(e); recv = slots[0] */
+        const korb_value e = r.value;
+        if (!fmode && KORB_FLOAT_P(e) && (FIXNUM_P(slots[0]) || KORB_FLOAT_P(slots[0]))) {
+            korb_num_to_d(slots[0], &sum);
+            comp = 0.0;
+            fmode = true;
+        }
+        if (fmode) {
+            if (KORB_FLOAT_P(e) || FIXNUM_P(e)) {
+                double x; korb_num_to_d(e, &x);
+                const double t = sum + x;
+                if (t - t == 0.0) {                  /* as korb_m_ary_sum: compensate only while finite */
+                    const double as = sum < 0 ? -sum : sum, ax = x < 0 ? -x : x;
+                    comp += (as >= ax) ? ((sum - t) + x) : ((x - t) + sum);
+                }
+                sum = t;
+                continue;
+            }
+            slots[1] = e;                            /* root across the Float alloc */
+            slots[0] = UNWRAP(korb_float_new(c, slots + 2, sum + comp));
+            fmode = false;
+        } else {
+            slots[1] = e;
+        }
         r = korb_send(c, slots + 2, plus, 0, 1);     /* acc = acc + block(e) */
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[0] = r.value;
     }
+    if (fmode) return korb_float_new(c, slots, sum + comp);
     return RESULT_OK(slots[0]);
 }
 

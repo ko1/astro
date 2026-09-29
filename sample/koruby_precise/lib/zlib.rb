@@ -98,8 +98,10 @@ module Zlib
   # #close frees it.  A stream that is never closed leaks its z_stream, which is
   # what a runtime without finalizers can offer.
   class ZStream
-    def initialize(deflating, level, window_bits)
-      @h = __zstream_open(deflating, level, window_bits)
+    def initialize(deflating, level, window_bits, mem_level = DEF_MEM_LEVEL, strategy = DEFAULT_STRATEGY)
+      @mem_level = mem_level
+      @strategy = strategy
+      @h = __zstream_open(deflating, level, window_bits, mem_level, strategy)
       @out = +"".b
       @closed = false
     end
@@ -130,6 +132,7 @@ module Zlib
     alias end close
 
     def flush_next_out
+      @__detached = true
       s = @out
       @out = +"".b
       s
@@ -138,7 +141,7 @@ module Zlib
     def reset
       __check_open
       __zstream_close(@h)
-      @h = __zstream_open(@deflating, @level || 6, @window_bits)
+      @h = __zstream_open(@deflating, @level || 6, @window_bits, @mem_level, @strategy)
       @out = +"".b
       nil
     end
@@ -188,11 +191,12 @@ module Zlib
       @deflating = true
       @level = level == DEFAULT_COMPRESSION ? 6 : level
       @window_bits = window_bits
-      super(true, @level, window_bits)
+      super(true, @level, window_bits, mem_level, strategy)
     end
 
     def <<(str)
       __check_open
+      @__detached = false
       @out << __run(str.nil? ? nil : str.to_s.b, NO_FLUSH)
       self
     end
@@ -204,7 +208,12 @@ module Zlib
     end
 
     def params(level, strategy)
+      __check_open
       @level = level == DEFAULT_COMPRESSION ? 6 : level
+      @strategy = strategy
+      o = __zstream_params(@h, @level, strategy, @__detached)
+      raise Zlib::StreamError, "stream error" if o.nil?
+      @out << o
       nil
     end
 

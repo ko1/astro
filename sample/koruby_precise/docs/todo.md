@@ -6148,6 +6148,9 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   `callee:` も同じ。CRuby は `<internal:...>`。
 - **ruby-bench の各ベンチ dir に code_store/version ができる**（2026-09-30）: `--plain` の本体は作らない（確認済み）。
   ハーネスの子（PATH の `ruby` = --plain なしの koruby、bundle など）が作ると推定、未確認。
+- **CRuby の zlib が SEGV する（報告候補、未報告）**（2026-09-30）: `z = Zlib::Deflate.new(9); z.deflate("x"); z.params(9, 0)` で
+  CRuby 4.1.0dev（910741083c）が ext/zlib/zlib.c:1948 rb_deflate_params の RSTRING_LEN(nil) で落ちる（#deflate が出力
+  バッファを手放した後）。level を変えると同じ経路で Zlib::StreamError（koruby はこちらだけ真似た）。
 - **Module.constants が CRuby と 5 つ違う**（2026-09-29）: koruby に余分 ARGFClass・ArithmeticSequence（内部名が top-level に
   出ている）・StringIO（prelude で起動時に定義。CRuby は require してから）、足りない SyntaxSuggest（CRuby は autoload）・
   UnicodeNormalize（CRuby は起動時にモジュールだけある）。ErrorHighlight の autoload を足すまでは数が偶然 120 で一致していて、
