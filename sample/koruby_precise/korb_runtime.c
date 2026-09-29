@@ -11228,11 +11228,21 @@ RESULT
 korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
            const char *fmt, ...)
 {
-    char buf[512];
-    va_list ap;
+    char sbuf[512];
+    char *buf = sbuf;                      /* a longer message (a prism snippet) goes to the heap: never truncate */
+    size_t cap = sizeof sbuf;
+    va_list ap, ap2;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_copy(ap2, ap);
+    const int need = vsnprintf(sbuf, cap, fmt, ap);
     va_end(ap);
+    if (UNLIKELY(need >= 0 && (size_t)need + 256 > cap)) {   /* +256: room for the pattern-match suffixes below */
+        cap = (size_t)need + 256;
+        buf = malloc(cap);
+        if (!buf) abort();
+        vsnprintf(buf, cap, fmt, ap2);
+    }
+    va_end(ap2);
     /* A staged frame link (node.h: c->carry_base) is armed only between a call
      * site and the dispatch that consumes it; a raise in that window means the
      * consumer never runs, so drop it here rather than at every early exit. */
@@ -11243,7 +11253,7 @@ korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
     uint32_t pk_mid = 0;
     if (UNLIKELY(etype == KORB_E_NO_MATCHING_PATTERN) && c->pat_key_mid != 0) {
         const size_t n = strlen(buf);
-        snprintf(buf + n, sizeof(buf) - n, ": key not found: :%s", korb_sym_name(c->vm, c->pat_key_mid));
+        snprintf(buf + n, cap - n, ": key not found: :%s", korb_sym_name(c->vm, c->pat_key_mid));
         etype = KORB_E_NO_MATCHING_PATTERN_KEY;
         pk_mid = c->pat_key_mid;                           /* c->pat_key_hash stays rooted until attached below */
         c->pat_key_mid = 0;
@@ -11267,7 +11277,7 @@ korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
             }
             fclose(ms);
             const size_t n = strlen(buf);
-            snprintf(buf + n, sizeof(buf) - n, ": %s", ib ? ib : "");
+            snprintf(buf + n, cap - n, ": %s", ib ? ib : "");
             free(ib);
         }
         c->pat_fail_kind = 0; c->pat_fail_a = KORB_NIL; c->pat_fail_b = KORB_NIL;
@@ -11276,7 +11286,12 @@ korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
     c->vm->bt_cnt = 0;     /* fresh unwind */
 
     VALUE_REF msg = SLOTS_PUSH(slots, KORB_NIL);
-    VALUE_REF_SET(msg, UNWRAP(korb_str_new(c, slots, buf, (uint32_t)strlen(buf))));
+    {
+        const RESULT sr = korb_str_new(c, slots, buf, (uint32_t)strlen(buf));
+        if (buf != sbuf) free(buf);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        VALUE_REF_SET(msg, sr.value);
+    }
     KorbException *e = korb_alloc(c, slots, sizeof(KorbException), KORB_OBJ_EXCEPTION);
     e->etype = etype;
     e->line = line;
