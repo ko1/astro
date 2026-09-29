@@ -95,14 +95,14 @@ svg text { fill:var(--mute); font-size:11px; }
 <script>
 // ---- 更新はここ --------------------------------------------------------------
 const DATA = {
-  updated: "2026-09-29 11:40 JST",
-  master: "9d7261f6",
+  updated: "2026-09-29 13:49 JST",
+  master: "30694ad9",
   compat: [
-    { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "98.48%", sub: "31781 / 32270 例が通る（9/13 は 97.87%）", date: "2026-09-29", commit: "この commit", mode: "interp",
+    { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "98.45%", sub: "31831 / 32332 例が通る（rubygems を起動時に読むようになり、読めるファイルが増えて例も +62。9/13 は 97.87%）", date: "2026-09-29", commit: "この commit", mode: "interp",
       note: "本物の mspec で spec ファイルを 1 つずつ実行。率は同じ run の pass ÷ 例の数" },
   ],
   health: [
-    { label: "make test（rubyharness 回帰コーパス）", value: "14", cls: "warn", sub: "CRuby と違う行 ／ 110030 行。45 → 27 → 14（prism を CRuby と同じ版に）、内訳は下の表", date: "2026-09-29", commit: "この commit", mode: "interp",
+    { label: "make test（rubyharness 回帰コーパス）", value: "13", cls: "warn", sub: "CRuby と違う行 ／ 110056 行。45 → 27 → 14（prism を CRuby と同じ版に）→ 13（rubygems を起動時に読む）、内訳は下の表", date: "2026-09-29", commit: "この commit", mode: "interp",
       note: "各ファイルの出力を CRuby master と 1 行ずつ比較する" },
     { label: "GC 負荷試験（64 alloc ごとに moving GC + 旧領域の保護）", value: "0", cls: "ok", sub: "失敗 ／ 手書きテスト 45 ファイル", date: "2026-09-28", commit: "b51641cd", mode: "interp" },
     { label: "DOOM 60 frame", value: "一致", cls: "ok", sub: "画素の checksum が CRuby と一致", date: "2026-09-28", commit: "b51641cd", mode: "AOT" },
@@ -114,7 +114,6 @@ const DATA = {
     ["spec/string_014.rb", "38", "要修正", "rindex の \\G（同上）"],
     ["spec/time_001.rb", "62", "要修正", "小数の utc_offset（CRuby は Rational 14491/2、koruby は 7245）"],
     ["spec/range_000.rb", "63", "要修正", "Float の端無し Range#bsearch の二分の順"],
-    ["spec/module_000.rb", "10", "軽微", "トップレベル定数の違い（既定で読まれる gem の差と、koruby の ARGFClass などの露出）"],
   ],
   perf: [
     { label: "optcarrot koruby AOT", value: "281.9 fps", cls: "warn", sub: "9/17 の b3cf0d1c 比 −4.5%（同一セッション A/B 294.99 vs 281.86、CRuby 対照 57.49）。9/28 の −9.3% から半分戻した（mcache の inline 復旧・send 判定のクラスビット化）。残りは 1740d738 ほか", date: "2026-09-29", commit: "1083738d", mode: "AOT",
@@ -135,10 +134,12 @@ const DATA = {
     "C 拡張の読み込み（rbs など）— 設計は docs/c_ext_api_design.md、未実装",
     "TracePoint :line（tracer・power_assert）、RubyVM::AbstractSyntaxTree / InstructionSequence",
     "Ripper の構文エラー回復（CRuby の parse.y は誤りの後も木を組み立てる）",
-    "rubygems を起動時に読まない（`gem` / GEM_PATH の gem が見えない）。CRuby の rubygems 自体は -I で渡せば動く。既定 prefix と読み込み方は相談中",
+    "gem のリモート install（rubygems.org は HTTPS = OpenSSL が要る）。ローカルの .gem は `gem install --local` で入る",
   ],
   recent: [
-    ["この commit", "prism を CRuby master と同じ版（main 13325f5c3 = 1.9.0、koruby_precise 専用 submodule）に。make test 27 → 14。例外メッセージを 512 バイトで切らない。optcarrot AOT を 264 → 282 fps（mcache の inline・send 判定）"],
+    ["この commit", "status 更新"],
+    ["69aaa035", "rubygems を CRuby と同じく起動時に読む（make root: stdlib・rubygems・bundled gem 38 本を koruby 自身の gem install で。gem build / install --local / bundle exec が動く）。autoload・IO.select・module_function・TZ の非互換を修正"],
+    ["f6ae248e 以前", "prism を CRuby master と同じ版（main 13325f5c3 = 1.9.0、koruby_precise 専用 submodule）に。make test 27 → 14。例外メッセージを 512 バイトで切らない。optcarrot AOT を 264 → 282 fps（mcache の inline・send 判定）"],
     ["9a0195af", "w17 コーパスの不一致を修正（set・command_kit・trailblazer・time_math2・ruby_parser・sass・writeexcel ほか）。8 段以上ネストした include の super、Rational(String)、inspect 結果の encoding、IBM037 変換器、Regexp#==、GC.start がフレームを 0 にする不具合"],
     ["33cdf30c", "make test の不一致 45 → 27（BasicObject の定数、linear_time?、global_variables、CESU-8、壊れた UTF-8 の succ、Time の小数秒 ほか）。h[k] の等値判定を out-of-line に"],
     ["38c16ad0", "status.html を互換性 / 健全性 / 性能に分け、gem ごとの一覧・make test の内訳・rubybench 欄。生成は tools/status/"],
