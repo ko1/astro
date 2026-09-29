@@ -366,6 +366,36 @@ string builder / array・hash 構築 / Float・Integer パース — 全て §3 
 
 ---
 
+## 9. Track A の最初の標的としての openssl（2026-09-29 スケッチ、未着手・user 判断待ち）
+
+OpenSSL の選択肢は (a) koruby 専用の新 binding、(b) CRuby C 拡張互換層（Track A）。(b) を openssl 1 本に絞って始め、
+ハンドル / pin の規則を固めてから他の拡張（nokogiri・bigdecimal …）へ広げる案。
+
+**規模（ext/openssl、CRuby master）**: C 34 ファイル、使う `rb_*` は 157 種。頻出は `RSTRING_PTR` 172・`StringValue` 89・
+`RSTRING_LEN` 72・`rb_str_new` 66・`TypedData_Get_Struct` 41・`rb_protect` 35・`rb_funcall` 30・`RARRAY_*` 40。
+Ruby 側（lib/openssl/*.rb）はそのまま使える。
+
+**核心 = 動く GC と `ruby.h` の前提の衝突**（§1）。openssl の C は VALUE を C ローカルに持ったまま `rb_funcall` し、
+`RSTRING_PTR` の生ポインタを OpenSSL の API に渡す。対応案:
+
+1. **拡張の呼び出し中は GC を止めない代わりに、拡張に渡る / 拡張が作る VALUE を pin する。** 拡張の関数に入るとき、
+   引数と self を「pinned」印の付いた handle 表に置く。拡張の中で `rb_str_new` 等が返す新しいオブジェクトも同じ表へ。
+   copy GC はこの表の対象を動かさない（non-moving 区画へ昇格、または表を conservative root として扱い移動を免除）。
+   関数から戻るとき表を畳む。`rb_gc_register_address` / `rb_gc_mark` の対象（ivar 的に保持されるもの）は永続 pin。
+2. **VALUE の表現**: 拡張側の `VALUE` = koruby の VALUE そのもの（pin されているので安定）。`RSTRING_PTR` は
+   KorbStrBuf の data（pin 中は buf も動かさない — 文字列本体と buf の両方を pin する必要がある）。
+3. **`TypedData`**: koruby の KORB_OBJ_OBJECT に C 構造体ポインタ + `rb_data_type_t`（free / mark / size）を持たせる。
+   mark 関数は koruby の edge visit に橋渡し（mark で呼ばれた VALUE は pin 扱い）。
+4. **ABI**: `ruby.h` は CRuby のマクロ（`RSTRING_PTR` が struct を直接読む等）を含むので、koruby 用の `ruby.h`
+   を自前で用意し、拡張は koruby の mkmf で再 compile する（CRuby 用 .so の流用はしない）。
+5. **例外**: `rb_raise` / `rb_protect` / `rb_ensure` は longjmp 系。koruby は RESULT 伝播なので、拡張呼び出しの入口で
+   setjmp し、`rb_raise` は longjmp で入口へ戻って RAISE に変換する（入口で handle 表も畳む）。
+
+**段階**: (i) 自前 `ruby.h` + handle/pin + String/Array/Hash/TypedData/例外の最小集合で `Digest`（ext/digest）を動かす
+→ (ii) openssl の 157 関数 → (iii) bigdecimal / strscan など CRuby 同梱の拡張で広さを測る。
+**未解決**: pin の GC 負荷（長寿命の pin が copy GC の空間効率を落とす）、スレッド（koruby の green thread と
+`rb_thread_call_without_gvl`）、`rb_block_call` / `rb_yield` の再入。
+
 ## Appendix A. 主要処理系の C-ext 引数処理サーベイ (2026-08-05)
 
 `korb_get_args` の形 (#3) と borrow/pin (#1) を決めるための他処理系比較。
