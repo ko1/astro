@@ -6549,6 +6549,27 @@ korb_send_user_defined(struct korb_vm *vm, VALUE klass, uint32_t mid)
     return korb_mcache_find(vm, klass, mid, &def);
 }
 
+/* korb_send_user_defined for the three universal forms, answered from bits on the
+ * class (valid while method_serial holds): optcarrot sends every opcode through `send`. */
+static __attribute__((noinline)) uint8_t
+korb_send_user_fill(struct korb_vm *const vm, const VALUE klass)
+{
+    const uint32_t mids[3] = { vm->mid_send, vm->mid___send__, vm->mid_public_send };
+    uint8_t bits = 0x80;
+    for (int i = 0; i < 3; i++) if (korb_send_user_defined(vm, klass, mids[i]) != NULL) bits |= (uint8_t)(1u << i);
+    KorbClass *const k = VAL2CLASS(klass);
+    k->send_user = bits; k->send_serial = vm->method_serial;
+    return bits;
+}
+static inline bool
+korb_send_user_p(struct korb_vm *const vm, const VALUE klass, const uint32_t mid)
+{
+    if (UNLIKELY(!KORB_CLASS_P(klass))) return false;
+    const KorbClass *const k = VAL2CLASS(klass);
+    const uint8_t bits = LIKELY((k->send_user & 0x80) && k->send_serial == vm->method_serial) ? k->send_user : korb_send_user_fill(vm, klass);
+    return bits & (mid == vm->mid_send ? 1u : mid == vm->mid___send__ ? 2u : 4u);
+}
+
 /* Code-store swap: body dispatchers changed under the fat inline caches, so
  * every site must refill (main.c calls this after each astro_cs_load pass). */
 void korb_dispatchers_swapped(struct korb_vm *vm) { vm->method_serial++; }
@@ -12102,7 +12123,7 @@ korb_call_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL &&
                !vm->refinements_active)) {
         const VALUE klass = korb_obj_dispatch_klass(vm, self);
-        if (LIKELY(korb_send_user_defined(vm, klass, mid) == NULL)) {
+        if (LIKELY(!korb_send_user_p(vm, klass, mid))) {
             const uint32_t rmid = SYM2ID(slots[-(korb_sword_t)argc]);
             VALUE def_class = KORB_NIL;
             struct korb_method *const m = korb_mcache_find(vm, klass, rmid, &def_class);
@@ -12133,7 +12154,8 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
      * universal forms are in no method table, so any hit is a real definition
      * (concurrent-ruby's Agent#send! calls its own `send { }`). */
     if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
-        korb_send_user_defined(vm, korb_dispatch_class(c, self), mid) == NULL &&
+        !korb_send_user_p(vm, KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL ? korb_obj_dispatch_klass(vm, self)
+                                                                                    : korb_dispatch_class(c, self), mid) &&
         !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid))) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         return korb_call_send(c, slots, mid, line, argc, self, block, def_env, captured_self);
@@ -13696,7 +13718,8 @@ korb_send_impl_vis(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t a
      * the reflective one), and that must win — the universal forms are not
      * registered in any method table, so any hit here is a real definition. */
     if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
-        korb_send_user_defined(vm, korb_dispatch_class(c, self), mid) == NULL &&
+        !korb_send_user_p(vm, KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL ? korb_obj_dispatch_klass(vm, self)
+                                                                                    : korb_dispatch_class(c, self), mid) &&
         !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid))) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         {

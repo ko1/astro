@@ -760,6 +760,8 @@ typedef struct KorbClass {
                                       * __marshal_fast_dump may then write this class's instances itself */
     uint32_t new_kind_serial;        /* method_serial the new_kind above was classified at: a later `def self.new`
                                       * (or an rspec stub) turns a plain class into a special one */
+    uint8_t  send_user;              /* 0x80 valid | bit 0/1/2: the chain defines its own send / __send__ / public_send */
+    uint32_t send_serial;            /* method_serial send_user was computed at */
     uint8_t  struct_kwinit;          /* Struct.new(..., keyword_init: true) → .new takes a kwargs hash */
     uint8_t  is_data;                /* 1 = Data.define class (immutable; .new accepts positional OR keyword) */
     uint8_t  cur_visibility;         /* default visibility for `def` in this class body: 0 pub / 1 priv / 2 prot */
