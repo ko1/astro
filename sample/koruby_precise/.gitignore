@@ -1,6 +1,3 @@
-# vendored prism (cp -r ../baruby_precise/prism . — comes through as the
-# same symlink baruby uses, so no trailing slash here)
-/prism
 /koruby_precise
 /code_store/
 /preload_store/

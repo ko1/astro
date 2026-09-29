@@ -152,16 +152,17 @@ glob 依存罠を踏まない)。
 ### 5.1 prism
 
 koruby_precise は CRuby master と同じ prism を使う: **prism main の 13325f5c3
-(`Prism::VERSION` = "1.9.0")**。他の sample (naruby / baruby ほか) が共有する
-`sample/naruby/prism` (1.4.0) とは別のチェックアウトで、`sample/koruby_precise/prism`
-がそれを指す。版を上げるときは CRuby master の `prism/` と同じ commit に揃える
-(Ripper / Prism の Ruby 側は `prism/lib` をそのまま読み、`builtins/prism_bridge.c` の
-serialize と版が一致していないと Loader が "Invalid serialization" で落ちる)。
+(`Prism::VERSION` = "1.9.0")**。submodule `sample/koruby_precise/prism` に固定し、他の sample
+(naruby / baruby ほか) が共有する `sample/naruby/prism` (1.4.0) とは別。版を上げるときは CRuby master の
+`prism/` と同じ commit に揃える (Ripper / Prism の Ruby 側は `prism/lib` をそのまま読み、
+`builtins/prism_bridge.c` の serialize と版が一致していないと Loader が "Invalid serialization" で落ちる)。
+prism の生成物 (ast.h, serialize.rb ほか) は repo に無いので、Makefile が `prism/build/libprism.a` が無いときに
+`ruby templates/template.rb && make static` を流す。
 
 ```sh
-git clone https://github.com/ruby/prism.git <dir> && git -C <dir> checkout 13325f5c3
-cd <dir> && ruby templates/template.rb && make static   # 生成物 (ast.h, serialize.rb ほか) と build/libprism.a
-ln -s <dir> sample/koruby_precise/prism                  # koruby_precise/.gitignore が /prism を無視する
+git submodule update --init sample/koruby_precise/prism
+git -C sample/koruby_precise/prism checkout <CRuby master の prism と同じ commit>   # 上げるとき
+rm -rf sample/koruby_precise/prism/build && make                                   # 生成し直し
 ```
 
 C 側は prism の公開 API だけを使う (`pm_parser_t` は不透明: `pm_parser_new` /

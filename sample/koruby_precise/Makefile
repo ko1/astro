@@ -102,7 +102,12 @@ SRCS = main.c node.c korb_runtime.c parse.c
 # list them + korb_runtime.h so edits trigger a rebuild.
 BUILTINS_INCLUDED = $(wildcard builtins/*.c) $(wildcard builtins/*.h)
 
-KORUBY_DEPS = .built_gc Makefile $(SRCS) context.h node.h korb_runtime.h $(BUILTINS_INCLUDED) $(NODE_GENFILES) \
+# prism is a submodule pinned to the commit CRuby master vendors; its generated sources are not in its repo
+PRISM_LIB := ./prism/build/libprism.a
+$(PRISM_LIB):
+	cd prism && ruby templates/template.rb && $(MAKE) static
+
+KORUBY_DEPS = $(PRISM_LIB) .built_gc Makefile $(SRCS) context.h node.h korb_runtime.h $(BUILTINS_INCLUDED) $(NODE_GENFILES) \
               $(GC_COMMON_SRC) $(GC_SRC) $(PRECISE_GC_DIR)/gc.h $(PRECISE_GC_DIR)/gc_types.h \
               $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h \
               $(RUNTIME)/astro_loader.c $(RUNTIME)/astro_hole.h \
@@ -129,7 +134,7 @@ YAML_FLAGS := $(if $(YAML_OK),-DKORB_HAVE_YAML -lyaml,)
 define KORUBY_LINK
 	$(CC) $(KORUBY_CPPFLAGS) $(optflags) -flto=auto -ggdb3 -Wall -Wextra \
 	    -Wno-unused-parameter -rdynamic -fno-plt \
-	    -o $@ $(SRCS) $(1) $(GC_COMMON_SRC) $(GC_SRC) ./prism/build/libprism.a -ldl -lm $(BIGNUM_LIBS) -lcrypt $(ZLIB_FLAGS) $(YAML_FLAGS)
+	    -o $@ $(SRCS) $(1) $(GC_COMMON_SRC) $(GC_SRC) $(PRISM_LIB) -ldl -lm $(BIGNUM_LIBS) -lcrypt $(ZLIB_FLAGS) $(YAML_FLAGS)
 endef
 
 koruby_precise: $(KORUBY_DEPS)

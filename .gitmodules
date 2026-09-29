@@ -22,3 +22,6 @@
 [submodule "sample/arawk/goawk"]
 	path = sample/arawk/goawk
 	url = https://github.com/benhoyt/goawk
+[submodule "sample/koruby_precise/prism"]
+	path = sample/koruby_precise/prism
+	url = https://github.com/ruby/prism.git
