@@ -6164,6 +6164,9 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   ローカルで `--aot-compile 30k_variables.rb`（300 メソッド × ローカル 100 個）の koruby 本体が anon-rss 26 GB で
   OOM kill（gcc ではなく koruby の SD 生成側）。sp4（59 GB）では `--pg-compile` の 30k_ifelse / 30k_methods が
   signal 9、30k_variables は 53 GB（GNU time の %M）で通った。結果の値は CRuby と一致（2624）。
+  **2026-09-30 に大半を解消**（runtime 199176e4）: hole 記述子の 1 命令が path[192] を抱え、子の記述子を丸ごと
+  コピーするので深さの 2 乗で増えていた。path をリテラルへのポインタにして 30k_variables 全体が 4.8 GB / 132 s。
+  コピーが 2 乗で増える構造そのもの（記述子の平坦化）は残っている。
 - **Module.constants が CRuby と 5 つ違う**（2026-09-29）: koruby に余分 ARGFClass・ArithmeticSequence（内部名が top-level に
   出ている）・StringIO（prelude で起動時に定義。CRuby は require してから）、足りない SyntaxSuggest（CRuby は autoload）・
   UnicodeNormalize（CRuby は起動時にモジュールだけある）。ErrorHighlight の autoload を足すまでは数が偶然 120 で一致していて、
