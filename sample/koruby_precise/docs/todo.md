@@ -6100,3 +6100,6 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   hash.c の korb_hash_each_kv が要素を配列に写して Enumerator を作るため。Array / Set は `to_enum(meth) { size }` で追従する。
 - **ruby2ruby**: テストが `Prism::Translation::RubyParser#process` を呼ぶ。同梱 prism 1.4.0 には無い（1.9.0 にはある）。同梱 prism の更新待ち。
 - **typeprof**: C 拡張（rbs）が要る。
+- **cgi/escape.so**（CGI::EscapeExt: escapeHTML / unescapeHTML / escapeURIComponent / unescapeURIComponent / escape / unescape）が無い。
+  cgi gem は純 Ruby に落ちて動くが、test_cgi_escape の 2 テストが omit / 未定義。ERB / Rack の escape は hot path なので C で持つ価値がある
+  （CRuby ext/cgi/escape/escape.c 相当、EscapeExt を Escape に prepend・CGI を extend）。

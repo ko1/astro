@@ -6482,6 +6482,7 @@ korb_array_sub_enum_method(struct korb_vm *const vm, const VALUE klass, const ui
 /* cached korb_class_find_method for user-object dispatch (the hot path).  A hit
  * requires serial match → no def/GC since fill → cached klass ptr + method ptr
  * (libc methods array) are both still valid. */
+static struct korb_method *korb_mcache_fill(struct korb_vm *vm, struct korb_mcache_ent *e, VALUE klass, uint32_t mid, VALUE *out_def);
 static inline struct korb_method *
 korb_mcache_find(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def)
 {
@@ -6491,6 +6492,12 @@ korb_mcache_find(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def)
         *out_def = e->def_class;
         return e->m;
     }
+    return korb_mcache_fill(vm, e, klass, mid, out_def);
+}
+/* the miss path, out of line so the hit path stays small enough to inline at every call site */
+static __attribute__((noinline)) struct korb_method *
+korb_mcache_fill(struct korb_vm *vm, struct korb_mcache_ent *e, VALUE klass, uint32_t mid, VALUE *out_def)
+{
     VALUE def = KORB_NIL;
     struct korb_method *m = korb_class_find_method(klass, mid, &def);
     if (UNLIKELY(m != NULL && def == korb_builtin_class_obj(vm, KORB_C_HASH) && klass != def))
