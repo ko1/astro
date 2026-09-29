@@ -6122,10 +6122,9 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   エンコーディングは UTF-8 / US-ASCII / BINARY の 3 つだけを rb_encoding として渡している。
 - Fiber の切り替えで `c->cext_top` / `c->cext_jmp` を退避していない（green thread はした）。拡張の中から Ruby を呼び、
   そこで Fiber.yield（Enumerator#next など）するとフレームの鎖が混ざる。
-- mkmf が無い: ext は `cext/test/build_digest.sh` のように手で組む。gem の extconf.rb を動かすには mkmf の koruby 版が要る。
+- mkmf が無い: ext は `cext/build_digest.sh` のように手で組む。gem の extconf.rb を動かすには mkmf の koruby 版が要る。
 - pin は gc_copy だけ（`aro_gc_alloc_byte_pinned_raw`）。他の moving backend では RSTRING_PTR が NotImplementedError。
   large object の登録がソート配列への挿入（O(n)）なので、pin が数万を超えると遅くなる見込み（未計測）。
-- `KORUBY_CEXT=1` は opt-in: 既定では koruby 同梱の代替 .rb（lib/digest/*.rb など）が .so より先に見つかる。
-  既定を切り替えるかは、拡張の速さと互換を比べてから決める。
+- 代替の lib/digest*.rb・lib/openssl.rb は、拡張を組めない root（CRUBY_SRC 無し・wasm）用の予備。
 - 呼び出しの固定費（トランポリン + ハンドル表 + setjmp）は未計測。sp4 で測る。
 

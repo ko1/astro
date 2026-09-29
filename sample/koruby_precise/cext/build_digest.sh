@@ -1,13 +1,13 @@
 #!/bin/bash
 # Build CRuby's ext/digest unchanged against koruby's cext/include (no mkmf yet:
 # the defines are what mkmf's extconf.h / Makefile give on x86_64 Linux).
-#   bash cext/test/build_digest.sh <cruby ext/digest dir> <out dir>
+#   bash cext/build_digest.sh <cruby ext/digest dir> <out dir>
 # Out: <out>/digest.so, <out>/digest/{md5,sha1,sha2,rmd160,bubblebabble,crc32,blake3}.so,
 # and <out>/lib (ext/digest/lib + the per-algorithm lib/: digest.rb, digest/{loader,version,sha2}.rb ...).
 set -eu
 SRC=${1:-$HOME/ruby/src/master/ext/digest}
-OUT=${2:-$(dirname "$0")/build/digest}
-KDIR=$(cd "$(dirname "$0")/../.." && pwd)
+OUT=${2:-$(dirname "$0")/test/build/digest}
+KDIR=$(cd "$(dirname "$0")/.." && pwd)
 mkdir -p "$OUT/digest" "$OUT/obj"
 CC=${CC:-cc}
 CF="-O2 -g -fPIC -Wall -Wno-unused-parameter -Wno-sign-compare -I$KDIR/cext/include -I$SRC -DHAVE_SYS_CDEFS_H=1"

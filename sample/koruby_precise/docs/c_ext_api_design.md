@@ -428,7 +428,8 @@ ext/digest を CRuby の test/digest と rubyspec library/digest に通す（STR
 - 例外: 入口ごとに jmp_buf を積み（`c->cext_jmp`）、Ruby 側の RESULT が NORMAL 以外なら longjmp で
   いちばん内側の入口 / rb_protect へ。break / throw / return も同じ経路で C のフレームを越える。
 - require: `.so` を明示した名前と、全 $LOAD_PATH で `.rb` が見つからなかった名前は `.so` を探す（CRuby と同じ順）。
-  `KORUBY_CEXT=1` のときは koruby 同梱の代替 `.rb`（lib/digest/md5.rb など）より本物の `.so` を優先する（opt-in）。
+  koruby 同梱の代替 `.rb`（lib/digest/md5.rb など）より、koruby 用にビルドした本物の `.so` を優先する（代替は拡張が無い root 用の予備）。
+  `make root` が CRuby のビルド済みツリー（CRUBY_SRC）から digest / openssl を組んで root/ の vendor_ruby に入れる。
 - 現在の CTX はスレッドローカル `korb_cext_ctx`（と GC 中の `korb_cext_gc_vm`）: C API に文脈引数が無いための例外。
 
 **結果**: 試験用拡張 `cext/test/api_test.c`（C API 約 150 関数、139 ケース）を CRuby と koruby の両方でビルドして
@@ -448,7 +449,7 @@ mixin を include したクラスを別の superclass で `rb_define_class_under
   gem c-suite の rubocop-ast が SEGV した — c39）。
 
 - **ext/openssl**（C 34 ファイル、2026-09-29）: CRuby のビルド済みツリーの extconf.h を使って無改造でビルドし
-  （`cext/test/build_openssl.sh`）、**CRuby の test/openssl 35 本すべてが CRuby と同じ要約**（件数まで一致、
+  （`cext/build_openssl.sh`）、**CRuby の test/openssl 35 本すべてが CRuby と同じ要約**（件数まで一致、
   test_ssl 91 tests / 654 assertions、test_pair・ssl_session・ssl_server の TLS 通信を含む。`cext/test/openssl.sh`）。
   途中で直したもの: 拡張側の nil / false を CRuby の値に（`if (rb_obj_is_kind_of(..))`）、`rb_str_buf_new` の容量
   （Cipher#update が heap を壊していた）、allocator を `korb_obj_new` で引く（Config.load・Marshal）、`rb_obj_freeze`

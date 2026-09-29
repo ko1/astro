@@ -18913,9 +18913,9 @@ korb_bi_require(CTX *c, korb_value *slots, korb_slice args)
     if (want_so && (namebuf[0] == '/' || namebuf[0] == '.') && korb_resolve_so(".", namebuf, abspath, sizeof abspath))
         return korb_require_so(c, slots, abspath);
     /* CRuby tries every $LOAD_PATH dir for .rb before any .so (the extension loop is outside).
-     * KORUBY_CEXT=1: a real C extension on the path beats koruby's own pure-Ruby stand-in
-     * (lib/digest/md5.rb ...), which is only the fallback. */
-    const bool cext_pref = getenv("KORUBY_CEXT") != NULL;
+     * A C extension built for koruby (root/'s vendor_ruby: digest, openssl) beats koruby's
+     * own pure-Ruby stand-in in lib/, which stays the fallback (a root built without them).
+     * Otherwise `require "digest"` got the real digest.rb and then lib/digest/md5.rb. */
     char own_rb[4096]; own_rb[0] = '\0';
     for (int pass = want_so ? 1 : 0; pass < 2 && namebuf[0] != '/' && namebuf[0] != '.'; pass++) {   /* search each $LOAD_PATH dir (re-read per iter: #to_path may run Ruby) */
         const uint32_t lp_sym = korb_intern(c->vm, "$LOAD_PATH", 10);
@@ -18935,7 +18935,7 @@ korb_bi_require(CTX *c, korb_value *slots, korb_slice args)
                 continue;
             }
             if (korb_resolve_load(dir, namebuf, abspath, sizeof abspath)) {
-                if (cext_pref && strncmp(abspath, KORUBY_SRC_DIR "/lib/", strlen(KORUBY_SRC_DIR) + 5) == 0) {
+                if (strncmp(abspath, KORUBY_SRC_DIR "/lib/", strlen(KORUBY_SRC_DIR) + 5) == 0) {
                     if (!own_rb[0]) snprintf(own_rb, sizeof own_rb, "%s", abspath);
                     continue;
                 }

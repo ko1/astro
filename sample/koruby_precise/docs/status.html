@@ -101,7 +101,7 @@ const DATA = {
     { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "98.45%", sub: "31831 / 32332 例が通る（rubygems を起動時に読むようになり、読めるファイルが増えて例も +62。9/13 は 97.87%）", date: "2026-09-29", commit: "この commit", mode: "interp",
       note: "本物の mspec で spec ファイルを 1 つずつ実行。率は同じ run の pass ÷ 例の数" },
     { label: "CRuby の C 拡張（互換層 builtins/cext.c、無改造で再ビルド）", value: "digest / openssl", sub: "CRuby の test/digest 3 本・test/openssl 35 本すべてが CRuby と同じ要約（test_ssl 91 tests / 654 assertions を含む）。STRESS+PURGE でも一致。C API の試験 149 ケースは CRuby と出力一致", date: "2026-09-29", commit: "42647c81", mode: "interp",
-      note: "make cext-test、cext/test/openssl.sh。KORUBY_CEXT=1 で koruby 同梱の代替 .rb より本物の .so を優先" },
+      note: "make cext-test、cext/test/openssl.sh。make root が digest / openssl を koruby 用にビルドして root/ に入れ、既定でそちらを読む" },
   ],
   health: [
     { label: "make test（rubyharness 回帰コーパス）", value: "13", cls: "warn", sub: "CRuby と違う行 ／ 110056 行。45 → 27 → 14（prism を CRuby と同じ版に）→ 13（rubygems を起動時に読む）、内訳は下の表", date: "2026-09-29", commit: "この commit", mode: "interp",

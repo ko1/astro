@@ -7,7 +7,8 @@
 #                                   bundled gems installed by koruby's own `gem install`
 #   root/bin/                       gem / bundle / rake … with a koruby shebang
 # RbConfig's prefix defaults to this root when it exists (prelude/system.rb).
-#   bash tools/make_root.sh [CRUBY]      (CRUBY: a ruby binary, default ~/ruby/install/master/bin/ruby)
+#   bash tools/make_root.sh [CRUBY]      (CRUBY: a ruby binary, default ~/ruby/install/master/bin/ruby;
+#                                         CRUBY_SRC: its built source tree, default ~/ruby/src/master)
 set -eu
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 K=$HERE/koruby_precise
@@ -49,6 +50,27 @@ cp -a "$SRC_BIN/gem" "$SRC_BIN/bundle" "$SRC_BIN/bundler" "$ROOT.tmp/bin/" 2>/de
 for f in "$ROOT.tmp"/bin/*; do sed -i "1s|^#!.*|#!$K|" "$f"; done
 rm -rf "$ROOT"; mv "$ROOT.tmp" "$ROOT"
 echo "make_root: stdlib entries=$n default specs=$(ls "$GEMS/specifications/default" | wc -l)"
+
+# C extensions built for koruby (cext/): CRuby's ext/digest and ext/openssl, unmodified,
+# into vendor_ruby — in front of koruby's lib/, whose digest.rb / openssl.rb are the
+# pure-Ruby stand-ins for a koruby without them.  CRUBY_SRC is a BUILT CRuby source tree
+# (openssl's extconf.h is mkmf's output there); without it this step is skipped.
+CRUBY_SRC=${CRUBY_SRC:-$HOME/ruby/src/master}
+ARCH=$("$K" -e 'print RbConfig::CONFIG["arch"]')
+VEND=$ROOT/lib/ruby/vendor_ruby/$VER
+if [ -f "$CRUBY_SRC/ext/openssl/extconf.h" ] && [ -d "$CRUBY_SRC/ext/digest" ]; then
+  EXT=$ROOT.ext; rm -rf "$EXT"
+  bash "$HERE/cext/build_digest.sh" "$CRUBY_SRC/ext/digest" "$EXT/digest" > /dev/null
+  bash "$HERE/cext/build_openssl.sh" "$CRUBY_SRC/ext/openssl" "$EXT/openssl" > /dev/null
+  mkdir -p "$VEND/$ARCH/digest"
+  cp -r "$EXT/digest/lib/." "$EXT/openssl/lib/." "$VEND/"
+  cp "$EXT/digest/digest.so" "$EXT/openssl/openssl.so" "$VEND/$ARCH/"
+  cp "$EXT"/digest/digest/*.so "$VEND/$ARCH/digest/"
+  rm -rf "$EXT"
+  echo "make_root: C extensions digest, openssl -> $VEND"
+else
+  echo "make_root: no built CRuby tree at $CRUBY_SRC (ext/openssl/extconf.h): C extensions skipped, lib/ stand-ins apply"
+fi
 
 # bundled gems: installed with koruby's own rubygems from CRuby's cached .gem files
 BUNDLED=$("$CRUBY" -e 'Gem::Specification.each { |s| puts s.cache_file if !s.default_gem? && s.base_dir == Gem.default_dir && File.exist?(s.cache_file) }')
