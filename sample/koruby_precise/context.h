@@ -2273,6 +2273,7 @@ struct koruby_option {
     bool no_rubyopt;     /* --disable-rubyopt / --disable-all: ignore $RUBYOPT */
     bool no_gems;        /* --disable-gems: do not define Gem */
     bool no_did_you_mean;/* --disable-did_you_mean: do not define DidYouMean */
+    bool no_error_highlight;/* --disable-error_highlight: do not define ErrorHighlight */
     bool switch_args;    /* -s: leading -name[=value] args become globals */
     bool loop_gets;      /* -n / -p: wrap the program in a `while gets` loop */
     bool loop_print;     /* -p: also print $_ each iteration */

@@ -2491,9 +2491,53 @@ end
 
 # RubyVM: koruby has no YJIT / ZJIT, but CRuby code asks about them without a
 # defined? guard (csv's test_general: `RubyVM.const_defined?("YJIT")`).  Only the
-# predicates exist — no AbstractSyntaxTree / keep_script_lines, so a library
-# probing for those still takes its portable path.
+# predicates exist.  AbstractSyntaxTree is CRuby's prism-mode face: .of refuses
+# (as CRuby does for prism-compiled code), .parse has no parse.y to give.
 module RubyVM
+  module AbstractSyntaxTree
+    class Node; end   # never made: pp reopens it when AbstractSyntaxTree is defined
+    def self.of(_body, keep_script_lines: false, error_tolerant: false, keep_tokens: false)
+      raise RuntimeError, "cannot get AST for ISEQ compiled by prism"
+    end
+    def self.parse(*, **) = raise(NotImplementedError, "RubyVM::AbstractSyntaxTree.parse: koruby has no parse.y AST (use Prism)")
+    def self.parse_file(*, **) = raise(NotImplementedError, "RubyVM::AbstractSyntaxTree.parse_file: koruby has no parse.y AST (use Prism)")
+    # CRuby keeps the node id of every backtrace position; koruby's backtrace has the
+    # line only, so error_highlight's id is found again in the file with Prism: the
+    # call / constant on that line named like the exception (NameError), else the only
+    # call there.  nil when that does not single one out (no highlight, never a wrong one).
+    def self.node_id_for_backtrace_location(loc)
+      path = loc.absolute_path
+      return nil unless path && File.file?(path)
+      line = loc.lineno
+      exc = loc.instance_variable_get(:@__exc)
+      name = exc.name if exc.is_a?(NameError)
+      require "prism"
+      on_line = []
+      stack = [Prism.parse_file(path).value]
+      until stack.empty?
+        n = stack.pop
+        next unless n.location.start_line <= line && line <= n.location.end_line
+        on_line << n if n.location.start_line == line
+        stack.concat(n.compact_child_nodes)
+      end
+      picks = on_line.select { |n| n.is_a?(Prism::CallNode) || (name && n.class.name.include?("Constant")) }
+      picks = picks.select { |n| n.respond_to?(:name) && n.name == name } if name
+      # a call whose BLOCK holds another candidate is not the one that failed (`t { 1 + nil }`);
+      # one nested in the ARGUMENTS stays ambiguous
+      if picks.size > 1
+        picks = picks.reject do |c|
+          blk = c.is_a?(Prism::CallNode) && c.block
+          blk && picks.any? { |o| !o.equal?(c) && blk.location.start_offset <= o.location.start_offset && o.location.end_offset <= blk.location.end_offset }
+        end
+      end
+      if picks.empty?                     # the callee's own line (ArgumentError): its def
+        m = loc.base_label.to_s.sub(/\A.*[#.]/, "")
+        picks = on_line.select { |n| n.is_a?(Prism::DefNode) && n.name.to_s == m }
+      end
+      picks.size == 1 ? picks[0].node_id : nil
+    end
+  end
+
   # Only compile-as-syntax-check and #eval (state_machines validates eval strings
   # with it because RUBY_ENGINE is "ruby").  No binary form: to_binary /
   # load_from_binary stay undefined so bootsnap-style probes keep their fallback.
@@ -2527,6 +2571,11 @@ module RubyVM
     def base_label = "<compiled>"
     def first_lineno = @line
     def inspect = "<RubyVM::InstructionSequence:#{label}@#{@file}:#{@line}>"
+    # CRuby's SimpleDataFormat header only (no bytecode): ActionView reads misc[:parser]
+    def to_a
+      ["YARVInstructionSequence/SimpleDataFormat", 4, 1, 1, { arg_size: 0, local_size: 0, stack_max: 1, parser: :prism },
+       label, @file, @path, @line, :top, [], {}, [], []]
+    end
   end
   module YJIT
     def self.enabled? = false

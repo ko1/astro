@@ -116,7 +116,7 @@ class Module
     # CRuby's default const_missing pops its own frame (rb_mod_const_missing), so
     # the NameError is reported at the REFERENCE, not inside const_missing.
     e = NameError.new(msg, name, receiver: self)   # NameError#name / #receiver reflect the missing constant
-    e.set_backtrace(caller)
+    e.set_backtrace(caller_locations)   # Locations, so #backtrace_locations answers too (error_highlight)
     raise e
   end
 

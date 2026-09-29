@@ -11878,7 +11878,8 @@ static ARO_BORROW const char *korb_report_line(CTX *c, const KorbArray *cap, con
 {
     const struct korb_vm *const vm = c->vm;
     if (cap != NULL) {
-        const korb_value s = korb_items_data(cap->items)[i];
+        korb_value s = korb_items_data(cap->items)[i];
+        if (KORB_OBJECT_P(s)) s = korb_ivar_get(c, s, ID2SYM(korb_intern(c->vm, "@str", 4)));   /* a Location (set_backtrace(caller_locations)) */
         return KORB_STRING_P(s) ? korb_strbuf_data(VAL2STR(s)->buf) : "?";
     }
     if (i < vm->bt_cnt) { korb_bt_entry_fmt(vm, i, NULL, e->line, buf, bufsz); return buf; }   /* '<main>' closes it: the file being run */
@@ -18906,7 +18907,10 @@ korb_prefer_own_lib(const char *const restrict name, char *const restrict abspat
     }
     if (!cext_gem) return;
     char own[4096];
-    if (korb_resolve_load(KORUBY_SRC_DIR "/lib", name, own, sizeof own)) snprintf(abspath, sz, "%s", own);
+    /* koruby's own lib/, and prism/lib (its prism: a gem's serialize.rb next to koruby's
+     * parse_result.rb is a version mix — ActionView's error page crashed on it) */
+    if (korb_resolve_load(KORUBY_SRC_DIR "/lib", name, own, sizeof own) ||
+        korb_resolve_load(KORUBY_SRC_DIR "/prism/lib", name, own, sizeof own)) snprintf(abspath, sz, "%s", own);
 }
 
 /* A C extension (.so): load once, dlopen + Init_<name> (builtins/cext.c). */

@@ -78,6 +78,7 @@ koruby_apply_feature(const char *const name, const bool on)
         OPTION.no_rubyopt = !on;
         OPTION.no_gems = !on;
         OPTION.no_did_you_mean = !on;
+        OPTION.no_error_highlight = !on;
         return;
     }
     for (size_t k = 0; k < sizeof(features) / sizeof(features[0]); k++) {
@@ -86,6 +87,7 @@ koruby_apply_feature(const char *const name, const bool on)
         else if (strcmp(features[k], "rubyopt") == 0)          OPTION.no_rubyopt = !on;
         else if (strcmp(features[k], "gems") == 0)             OPTION.no_gems = !on;
         else if (strcmp(features[k], "did_you_mean") == 0)     OPTION.no_did_you_mean = !on;
+        else if (strcmp(features[k], "error_highlight") == 0)  OPTION.no_error_highlight = !on;
         return;                                          /* the rest are accepted no-ops */
     }
     fprintf(stderr, "koruby_precise: warning: unknown argument for --%s: '%s'\n",
@@ -346,15 +348,18 @@ koruby_prelude_append_features(char *const src, size_t *const len_out)
 {
     static const char gem_src[] = "\nmodule Gem; def self.try_activate(path) = false; end\n";
     static const char dym_src[] = "\nObject.autoload(:DidYouMean, \"did_you_mean\")\n";   /* CRuby 4.1: loaded on the first detailed_message */
+    static const char eh_src[] = "\nObject.autoload(:ErrorHighlight, \"error_highlight\")\n";   /* CRuby 4.1 autoloads it too (Rails calls ErrorHighlight.spot) */
     const bool dym = !OPTION.no_did_you_mean && !OPTION.no_gems;   /* CRuby: --disable-gems leaves DidYouMean undefined too */
+    const bool eh = !OPTION.no_error_highlight && !OPTION.no_gems;
     const size_t add = (OPTION.no_gems ? 0 : sizeof gem_src - 1) +
-                       (dym ? sizeof dym_src - 1 : 0);
+                       (dym ? sizeof dym_src - 1 : 0) + (eh ? sizeof eh_src - 1 : 0);
     if (add == 0) return src;
     char *const buf = realloc(src, *len_out + add + 1);
     if (!buf) abort();
     size_t n = *len_out;
     if (!OPTION.no_gems)          { memcpy(buf + n, gem_src, sizeof gem_src - 1); n += sizeof gem_src - 1; }
     if (dym)                      { memcpy(buf + n, dym_src, sizeof dym_src - 1); n += sizeof dym_src - 1; }
+    if (eh)                       { memcpy(buf + n, eh_src, sizeof eh_src - 1); n += sizeof eh_src - 1; }
     buf[n] = '\0';
     *len_out = n;
     return buf;
@@ -1737,6 +1742,9 @@ main(int argc, char *argv[])
             if (exit_status < 0) {                        /* a real error: the handlers see it as $! */
                 korb_errinfo_push(c, r.value);
                 toplevel_cursor[0] = r.value;
+                /* nothing rescued it, so nothing snapshotted its positions: at_exit's $! and the
+                 * report's #detailed_message (error_highlight) read #backtrace_locations */
+                (void)korb_capture_backtrace(c, toplevel_cursor, NULL);
                 uncaught = true;
             }
         }

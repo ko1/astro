@@ -11,15 +11,17 @@ class Exception
     unless highlight == true || highlight == false
       raise ArgumentError, "expected true or false as highlight: #{highlight.inspect}"
     end
-    # CRuby 4.1 (Feature #21951): did_you_mean is autoloaded and only required on the
-    # first detailed_message; re-dispatch once so the decorator it prepends answers.
+    # CRuby 4.1 (Feature #21951): did_you_mean and error_highlight are autoloaded and
+    # only required on the first detailed_message; re-dispatch once so the decorators
+    # they prepend answer.
     unless Exception.instance_variable_get(:@__deco_loaded)
       Exception.instance_variable_set(:@__deco_loaded, true)
-      if (f = Object.autoload?(:DidYouMean))
+      fs = [Object.autoload?(:ErrorHighlight), Object.autoload?(:DidYouMean)].compact   # CRuby order: the suggestion goes after the snippet
+      unless fs.empty?
         # re-dispatch only when this was the receiver's own #detailed_message, not a
         # user override that reached here through super (it would decorate twice)
         redispatch = method(:detailed_message).owner == Exception
-        begin
+        fs.each do |f|
           require f
         rescue Exception
           nil
@@ -124,10 +126,15 @@ class Exception
     return @__bt_locs if @__bt_locs
     raw = __backtrace_locations_raw
     return nil if raw == false   # set_backtrace was given Strings: CRuby keeps no positions
-    return @__bt_locs = raw if raw
-    b = backtrace
-    return nil if b.nil?
-    @__bt_locs = b.map { |s| s.is_a?(String) ? Thread::Backtrace::Location.new(s) : s }
+    unless raw
+      b = backtrace
+      return nil if b.nil?
+      raw = b.map { |s| s.is_a?(String) ? Thread::Backtrace::Location.new(s) : s }
+    end
+    # the raising position knows its exception: RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location
+    # picks the node by the exception's name (koruby's positions carry no node id)
+    raw[0].instance_variable_set(:@__exc, self) if raw[0].is_a?(Thread::Backtrace::Location) && !raw[0].frozen?
+    @__bt_locs = raw
   end
 
   # no arg → self; with a message → a clone with the message replaced (CRuby

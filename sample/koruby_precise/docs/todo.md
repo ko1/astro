@@ -6134,6 +6134,12 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   ハンドルなので、要素のハンドル配列を作って pin する読み取り専用の写しが要る（書き込みを反映するかは設計が要る）。
 - extconf.rb を koruby で走らせると gem の ext/ に code_store/ ができる（AOT のストアが CWD 相対）。
 - `rb_block_call` はいつも catch で包む（rb_iter_break のため）。その固定費（proc 1 個 + catch）を測る。
+- **error_highlight の node id は行からの推定**（2026-09-29）: koruby の backtrace は行しか持たない（frame link は 31 ビットの
+  即値に行 17 ビット + 距離 12 ビット）ので、`RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location` はファイルを Prism で
+  読み直し、例外の name・ブロック・def で 1 つに絞れたときだけ id を返す（絞れなければ下線なし、誤った下線は出さない）。
+  残り: 同じ行に同名の呼び出しが 2 つ以上 / 引数の中の呼び出し、eval（module_eval(src, "x.erb", n) の ERB テンプレート）は
+  名前のファイルを読むので当たらない（Rails のエラー画面でテンプレートの行に下線が付かない。CRuby は付く）。正確にするには
+  呼び出し地点ごとの node id を frame link か側表で持つ設計が要る。
 - **MatchData が照合元の String を共有している**（CRuby は照合時の内容の凍結コピー = COW）。`m = re.match(s); s[0, 6] = " " * 6;
   m[1]` が変わった後の文字列から読む。date の C 拡張（date_parse の subx: 照合 → 照合範囲を空白で上書き → m から捕獲を読む）
   が Date.parse で誤った値を返す（Sep → mon 13）。korb_re_build_md で凍結していない subject を複製すると Date._parse が
