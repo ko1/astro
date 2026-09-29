@@ -469,6 +469,12 @@ ensure_preload(void)
          * binary mtime as the store version makes astro_cs_init clear a stale
          * preload store, so changed prelude/ABI is actually rebuilt (the
          * file-exists skip in astro_cs_compile would otherwise keep stale SDs). */
+        /* ASTRO_CS_STORE_DIR redirects astro_cs_init's store: kept, the prelude would be
+         * baked into the program's store and preload_store would stay stale, so every
+         * bake re-baked all ~2400 prelude SDs (4.5 min) */
+        const char *const se = getenv("ASTRO_CS_STORE_DIR");
+        char *const saved_store = se ? strdup(se) : NULL;
+        if (saved_store) unsetenv("ASTRO_CS_STORE_DIR");
         astro_cs_init(KORUBY_PRELOAD_DIR, KORUBY_SRC_DIR, preload_version());
         for (uint32_t i = 0; i < g_prelude_repo_count; i++) {
             if (code_repo_skip_specialize_at(i)) continue;
@@ -478,6 +484,7 @@ ensure_preload(void)
         koruby_extra_cflags(cflags, sizeof(cflags));
         setenv("ASTRO_EXTRA_LDFLAGS", "-Wl,-Bsymbolic", 0);
         astro_cs_build(cflags);
+        if (saved_store) { setenv("ASTRO_CS_STORE_DIR", saved_store, 1); free(saved_store); }
         stale = false;   /* freshly built */
     }
     /* Only load a preload.so we trust: a stale one (older than this binary) may

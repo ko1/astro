@@ -5873,7 +5873,16 @@ Symbol 側は encoding を持てている (`"x".b.to_sym != :x` は一致する)
 切り替える — ただし ASCII のみの名前を US-ASCII にする規則も要る (全 Symbol の
 encoding が動くので影響範囲が広い)。
 
-## 未修正バグ: doom-aot が焼いた preload_store が mspec を SEGV させる
+## 既知バグ (修正済 2026-09-30): doom-aot が焼いた preload_store が mspec を SEGV させる
+
+**真因**: SD の置き場（runtime/astro_loader.c の arena）が memfd の MAP_SHARED 二重マップで、fork 後も親子が
+同じページを共有していた。割り当て位置（arena.used）は各プロセスの私的メモリなので、fork 後に子が SD を
+読み込むと親と同じ位置に別のコードを書き、親のノードの dispatcher が別物（や未初期化）を指す。store が大きい
+ほど fork 後に新しく読み込む SD が増えるので「store のサイズ依存」に見えた。
+**修正**: pthread_atfork の子ハンドラで arena を新しい memfd に写し、同じアドレスへ MAP_FIXED でマップし直す。
+preload（prelude 2385 SD）を焼いた状態で t/hand/fork_pid_gvar.rb が直す前は 3/3 SEGV、直した後は 3/3 CRuby と一致。
+rubyspec core/process/setpgid・fork、core/kernel/fork も通る。以下は当時の記録。
+
 
 `core/kernel/fork_spec.rb` / `core/process/fork_spec.rb` /
 `core/process/setpgid_spec.rb` が SEGV (exit 139) する。当初「間欠」に見えたが、

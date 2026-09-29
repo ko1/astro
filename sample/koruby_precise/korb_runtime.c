@@ -11276,7 +11276,11 @@ korb_capture_backtrace(CTX *c, korb_value *slots, const korb_value *fbase)
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n + 1));
     char buf[600];
     for (uint32_t i = 0; i < n; i++) {
-        const int len = korb_frames_at(c, nb, d, i, buf, sizeof buf);
+        /* nothing live (an uncaught raise, captured after the unwind): the outermost
+         * position is the script's own, which a core (prelude) frame reports as CRuby
+         * reports a C method's — not the prelude's line */
+        const int len = d == 0 ? korb_bt_entry_fmt(vm, i, korb_bt_cur_file(vm), VAL2EXC(slots[0])->line, buf, sizeof buf)
+                               : korb_frames_at(c, nb, d, i, buf, sizeof buf);
         slots[2] = UNWRAP(korb_str_new(c, slots + 2, buf, (uint32_t)len));
         UNWRAP(korb_ary_push_val(c, slots, KORB_REF_AT(&slots[1]), slots[2]));
     }
