@@ -8203,7 +8203,9 @@ static inline korb_value korb_obj_dispatch_klass(const struct korb_vm *vm, korb_
     return VAL2OBJ(self)->klass;
 }
 static void korb_klass_override_set(CTX *c, korb_value obj, korb_value cls) {
-    c->vm->mro_serial++;
+    /* only a class's own singleton can change another class's chain; a String subclass
+     * instance (ActiveSupport::SafeBuffer) is registered here on every allocation */
+    if (KORB_CLASS_P(obj)) c->vm->mro_serial++;
     korb_wtab_put(&c->vm->sklass, obj, cls);             /* libc realloc, not a GC point */
     if (obj == c->vm->top_self) c->vm->top_sclass = 0;   /* re-read on the next get */
     ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_KLASS;
