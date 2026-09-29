@@ -95,8 +95,8 @@ svg text { fill:var(--mute); font-size:11px; }
 <script>
 // ---- 更新はここ --------------------------------------------------------------
 const DATA = {
-  updated: "2026-09-29 13:49 JST",
-  master: "30694ad9",
+  updated: "2026-09-29 15:49 JST",
+  master: "f8ce981c",
   compat: [
     { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "98.45%", sub: "31831 / 32332 例が通る（rubygems を起動時に読むようになり、読めるファイルが増えて例も +62。9/13 は 97.87%）", date: "2026-09-29", commit: "この commit", mode: "interp",
       note: "本物の mspec で spec ファイルを 1 つずつ実行。率は同じ run の pass ÷ 例の数" },
@@ -118,6 +118,8 @@ const DATA = {
   perf: [
     { label: "optcarrot koruby AOT", value: "281.9 fps", cls: "warn", sub: "9/17 の b3cf0d1c 比 −4.5%（同一セッション A/B 294.99 vs 281.86、CRuby 対照 57.49）。9/28 の −9.3% から半分戻した（mcache の inline 復旧・send 判定のクラスビット化）。残りは 1740d738 ほか", date: "2026-09-29", commit: "1083738d", mode: "AOT",
       note: "sp4 専有、ruby 4.1.0dev 69b49ac7ae、checksum 検証。trials/2026-09-29-status-perf" },
+    { label: "JSON（json gem の benchmark data、parse 5 本 + generate 4 本 + ruby-bench 2 本）", value: "parse 0.73〜1.16× ／ generate 0.84〜1.32×", sub: "CRuby の json C 拡張比の時間（koruby AOT、小さいほど速い）。Ruby 移植だった前の版から 14〜84 倍速く。ケースごとの値は trials/2026-09-29-koruby-json-native", date: "2026-09-29", commit: "f8ce981c", mode: "AOT",
+      note: "sp4 専有、ruby 4.1.0dev 69b49ac7ae（json 3.0.0.rc1）、全 run の checksum 一致" },
     { label: "rubyharness bench 53 本", value: "0.37×", sub: "CRuby 比の実時間（YJIT 0.49× ／ interp 0.74× ／ AOT 焼き込み込み 1.04×）。YJIT に 32/53 本で勝ち", date: "2026-09-04", commit: "0a908f2a", mode: "AOT",
       note: "要約値。ベンチごとの値は docs/perf.md 2026-09-04 節" },
   ],
@@ -137,7 +139,8 @@ const DATA = {
     "gem のリモート install（rubygems.org は HTTPS = OpenSSL が要る）。ローカルの .gem は `gem install --local` で入る",
   ],
   recent: [
-    ["この commit", "status 更新"],
+    ["この commit", "status 更新（JSON）"],
+    ["f8ce981c", "JSON の parse / generate をネイティブに（builtins/json_native.c）。Ruby 移植比 14〜84 倍、CRuby の json 拡張と parse 0.73〜1.16×・generate 0.84〜1.32×"],
     ["69aaa035", "rubygems を CRuby と同じく起動時に読む（make root: stdlib・rubygems・bundled gem 38 本を koruby 自身の gem install で。gem build / install --local / bundle exec が動く）。autoload・IO.select・module_function・TZ の非互換を修正"],
     ["f6ae248e 以前", "prism を CRuby master と同じ版（main 13325f5c3 = 1.9.0、koruby_precise 専用 submodule）に。make test 27 → 14。例外メッセージを 512 バイトで切らない。optcarrot AOT を 264 → 282 fps（mcache の inline・send 判定）"],
     ["9a0195af", "w17 コーパスの不一致を修正（set・command_kit・trailblazer・time_math2・ruby_parser・sass・writeexcel ほか）。8 段以上ネストした include の super、Rational(String)、inspect 結果の encoding、IBM037 変換器、Regexp#==、GC.start がフレームを 0 にする不具合"],
