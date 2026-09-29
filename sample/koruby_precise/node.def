@@ -72,11 +72,15 @@ node_str_chilled(CTX *c, NODE *n, korb_value *slots, const char *bytes, uint32_t
 // evaluation still builds one (CRuby also deduplicates; identity is the only
 // difference), so mutation attempts raise exactly as they should.
 NODE_DEF
-node_str_frozen(CTX *c, NODE *n, korb_value *slots, const char *bytes, uint32_t len)
+node_str_frozen(CTX *c, NODE *n, korb_value *slots, const char *bytes, uint32_t len, struct korb_fscache *fc@ref)
 {
     (void)n;
-    /* equal frozen literals are ONE object (CRuby's fstring table) */
-    return RESULT_OK(korb_fstr_get(c, slots, bytes, len, KORB_ENC_UTF8));
+    /* equal frozen literals are ONE object (CRuby's fstring table); the node keeps the
+     * pool slot, so a hot literal is not re-hashed per evaluation (erubi-rails: 3.7%) */
+    if (LIKELY(fc->idx_plus1 != 0)) return RESULT_OK(c->vm->fstr_vals[fc->idx_plus1 - 1]);
+    const korb_value v = korb_fstr_get(c, slots, bytes, len, KORB_ENC_UTF8);
+    fc->idx_plus1 = korb_fstr_slot(c->vm, v) + 1;
+    return RESULT_OK(v);
 }
 
 // Same, for a literal whose encoding is not UTF-8: the file's `# encoding:`

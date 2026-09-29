@@ -153,6 +153,9 @@ struct korb_constcache {
 enum korb_ic_kind { KORB_IC_INSTANCE = 0, KORB_IC_SMETHOD = 1, KORB_IC_NEW = 2, KORB_IC_INSTANCE_VIS = 3 };
 /* one-shot flag for a node that must act only the first time it runs (END { }). */
 struct korb_oncecell { uint8_t done; };
+/* node_str_frozen: the literal's slot in the fstring pool (+1; 0 = not looked up).  The
+ * pool is append-only and a GC root, so the index stays valid while the value moves. */
+struct korb_fscache { uint32_t idx_plus1; };
 
 /* Fat inline cache: besides the resolved entry it copies what the simple-ISEQ
  * fast path needs (body, its dispatcher, frame sizes), so a cached call touches
@@ -279,6 +282,7 @@ void   korb_const_define(CTX *c, uint32_t name_sym, korb_value val);
 korb_value  korb_const_get_path(struct korb_vm *vm, uint32_t name_sym);
 bool   korb_const_path_missing(struct korb_vm *vm, uint32_t name_sym, char *out, size_t outsz);   /* first unresolvable segment of a dotted path */
 korb_value  korb_fstr_get(CTX *c, korb_value *slots, const char *bytes, uint32_t len, uint32_t enc);
+uint32_t    korb_fstr_slot(const struct korb_vm *vm, korb_value v);
 korb_value  korb_fstr_find(const struct korb_vm *vm, const char *bytes, uint32_t len, uint32_t enc);   /* the pool entry, or 0 */
 void   korb_const_define_owned(CTX *c, uint32_t name_sym, korb_value val, korb_value owner);
 bool   korb_mod_hook_custom(CTX *c, korb_value mod, uint32_t mid);

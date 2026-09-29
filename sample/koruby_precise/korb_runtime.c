@@ -267,6 +267,15 @@ korb_value korb_fstr_get(CTX *c, korb_value *slots, const char *bytes, uint32_t 
     return v;
 }
 
+/* The pool slot of an fstring korb_fstr_get returned (its index in fstr_vals). */
+uint32_t korb_fstr_slot(const struct korb_vm *const vm, const korb_value v) {
+    const KorbString *const s = VAL2STR(v);
+    for (uint32_t slot = korb_fstr_hash(korb_strbuf_data(s->buf), s->len, KORB_STR_ENC(v)) & vm->fstr_idx_mask; ; slot = (slot + 1) & vm->fstr_idx_mask) {
+        const uint32_t e = vm->fstr_idx[slot];
+        if (e == 0) abort();                                   /* korb_fstr_get just put it there */
+        if (vm->fstr_vals[e - 1] == v) return e - 1;
+    }
+}
 /* An interned (fstring) String — a pool entry: CRuby gives it no singleton class. */
 bool korb_fstring_p(const struct korb_vm *const vm, const korb_value v) {
     if (!KORB_STRING_P(v) || !(((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_FROZEN)) return false;
