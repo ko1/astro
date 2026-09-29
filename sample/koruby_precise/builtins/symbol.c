@@ -298,6 +298,7 @@ static RESULT korb_m_obj_ivars(CTX *c, korb_value *slots, korb_ref self, korb_sl
         for (uint32_t i = 0; i < VAL2HASH(KORB_IVH())->len; i++) {
             const korb_value k = korb_items_data(VAL2HASH(KORB_IVH())->items)[2 * i];
             if (UNLIKELY(k == hidden)) continue;
+            if (SYMBOL_P(k) && korb_sym_name(c->vm, SYM2ID(k))[0] != '@') continue;   /* a C extension's hidden ivar (rb_ivar_set(obj, rb_intern("x"), ...)) */
             CHECK(korb_ary_push_val(c, slots + 1, dst, k));
         }
         #undef KORB_IVH

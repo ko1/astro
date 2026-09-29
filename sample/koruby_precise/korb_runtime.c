@@ -18813,6 +18813,30 @@ korb_prefer_own_lib(const char *const restrict name, char *const restrict abspat
     if (korb_resolve_load(KORUBY_SRC_DIR "/lib", name, own, sizeof own)) snprintf(abspath, sz, "%s", own);
 }
 
+/* A C extension (.so): load once, dlopen + Init_<name> (builtins/cext.c). */
+static RESULT korb_cext_load(CTX *c, korb_value *slots, const char *path);   /* fwd */
+static RESULT
+korb_require_so(CTX *c, korb_value *slots, const char *abspath)
+{
+    if (korb_feature_loaded_p(c, abspath) || !korb_mark_loaded(c->vm, abspath)) return RESULT_OK(KORB_FALSE);
+    const RESULT r = korb_cext_load(c, slots, abspath);
+    if (UNLIKELY(r.state != KORB_NORMAL)) { korb_unmark_loaded(c->vm, abspath); return r; }
+    korb_loaded_features_push(c, slots, abspath);
+    return RESULT_OK(KORB_TRUE);
+}
+/* `<dir>/<name>` (name ends in ".so") or `<dir>/<name>.so`, as a regular file */
+static bool
+korb_resolve_so(const char *dir, const char *name, char *out, size_t outsz)
+{
+    const size_t nl = strlen(name);
+    const bool has_so = nl >= 3 && strcmp(name + nl - 3, ".so") == 0;
+    char cand[4096];
+    if (name[0] == '/') snprintf(cand, sizeof cand, "%s%s", name, has_so ? "" : ".so");
+    else                snprintf(cand, sizeof cand, "%s/%s%s", dir, name, has_so ? "" : ".so");
+    korb_path_lexnorm(cand, out, outsz);
+    struct stat st; return stat(out, &st) == 0 && S_ISREG(st.st_mode);
+}
+
 /* require(name): search CWD / $LOAD_PATH; load once (false if already loaded). */
 static const char *korb_builtin_feature_path(CTX *c, const char *stem, char *buf, size_t bsz);   /* fwd */
 static RESULT
@@ -18859,7 +18883,15 @@ korb_bi_require(CTX *c, korb_value *slots, korb_slice args)
         korb_resolve_load(".", namebuf, abspath, sizeof abspath)) {
         korb_value out; return korb_load_abspath(c, slots, abspath, true, &out, args.p);
     }
-    if (namebuf[0] != '/' && namebuf[0] != '.') {          /* search each $LOAD_PATH dir (re-read per iter: #to_path may run Ruby) */
+    const bool want_so = namelen >= 3 && strcmp(namebuf + namelen - 3, ".so") == 0;
+    if (want_so && (namebuf[0] == '/' || namebuf[0] == '.') && korb_resolve_so(".", namebuf, abspath, sizeof abspath))
+        return korb_require_so(c, slots, abspath);
+    /* CRuby tries every $LOAD_PATH dir for .rb before any .so (the extension loop is outside).
+     * KORUBY_CEXT=1: a real C extension on the path beats koruby's own pure-Ruby stand-in
+     * (lib/digest/md5.rb ...), which is only the fallback. */
+    const bool cext_pref = getenv("KORUBY_CEXT") != NULL;
+    char own_rb[4096]; own_rb[0] = '\0';
+    for (int pass = want_so ? 1 : 0; pass < 2 && namebuf[0] != '/' && namebuf[0] != '.'; pass++) {   /* search each $LOAD_PATH dir (re-read per iter: #to_path may run Ruby) */
         const uint32_t lp_sym = korb_intern(c->vm, "$LOAD_PATH", 10);
         for (uint32_t i = 0; ; i++) {
             const korb_value lp = korb_const_get(c->vm, lp_sym);
@@ -18872,12 +18904,21 @@ korb_bi_require(CTX *c, korb_value *slots, korb_slice args)
             }
             char dir[4096]; uint32_t dl = VAL2STR(e)->len; if (dl >= sizeof dir) dl = sizeof dir - 1;
             memcpy(dir, korb_strbuf_data(VAL2STR(e)->buf), dl); dir[dl] = '\0';
+            if (pass == 1) {
+                if (korb_resolve_so(dir, namebuf, abspath, sizeof abspath)) return korb_require_so(c, slots, abspath);
+                continue;
+            }
             if (korb_resolve_load(dir, namebuf, abspath, sizeof abspath)) {
+                if (cext_pref && strncmp(abspath, KORUBY_SRC_DIR "/lib/", strlen(KORUBY_SRC_DIR) + 5) == 0) {
+                    if (!own_rb[0]) snprintf(own_rb, sizeof own_rb, "%s", abspath);
+                    continue;
+                }
                 korb_prefer_own_lib(namebuf, abspath, sizeof abspath);
                 korb_value out; return korb_load_abspath(c, slots, abspath, true, &out, args.p);
             }
         }
     }
+    if (own_rb[0]) { korb_value out; return korb_load_abspath(c, slots, own_rb, true, &out, args.p); }
     /* the exact name already in $LOADED_FEATURES → false, even when no such
      * file exists any more (CRuby) */
     if (korb_feature_loaded_p(c, namebuf)) return RESULT_OK(KORB_FALSE);
@@ -22303,3 +22344,16 @@ korb_method_clear_def_cref(korb_value klass, uint32_t mid)
     const int32_t sl = korb_mtab_slot(k, mid);
     if (sl >= 0) k->methods[sl]->def_cref = KORB_NIL;
 }
+
+#ifndef KORB_WASI
+#include "builtins/cext.c"   /* the CRuby C-extension layer: last, so it sees every static helper */
+#else
+/* wasm32 has no dlopen or setjmp: no C extensions (vm->cext stays NULL, so the GC hooks never run) */
+static RESULT korb_cext_load(CTX *c, korb_value *slots, const char *path)
+{ return korb_raise(c, slots, KORB_E_LOADERR, 0, "C extensions are not supported on wasm -- %s", path); }
+static RESULT korb_cext_obj_alloc(CTX *c, korb_value *slots, korb_value klass) { return korb_obj_new(c, slots, klass); }
+void korb_cext_visit_roots(CTX *c, void *ctx, void (*visit)(void *, void **)) { (void)c; (void)ctx; (void)visit; }
+void korb_cext_weak_walk(CTX *c) { (void)c; }
+void korb_cext_scan(void *payload, void *ctx, void (*visit)(void *, void **)) { (void)payload; (void)ctx; (void)visit; }
+void korb_cext_finalize(void *payload) { (void)payload; }
+#endif

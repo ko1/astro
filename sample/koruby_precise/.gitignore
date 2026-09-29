@@ -19,3 +19,4 @@ bench-report/
 /_embed.c
 /root/
 /root.tmp/
+/cext/test/build/

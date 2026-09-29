@@ -39,15 +39,16 @@
  * Tagged korb_value.
  *
  *   LSB == 1                          fixnum (signed int63)
+ *   (raw & 3) == 2                    flonum
  *   raw == 0                          nil  singleton
- *   raw == 2                          false singleton
- *   raw == 4                          true  singleton
- *   (raw & 7) == 6                    Symbol immediate: (sym_id << 3) | 6
+ *   (raw & 0xF) == 0x4                specials: false 0x04, true 0x14, undef 0x24
+ *   (raw & 0xF) == 0xC                Symbol immediate: (sym_id << 4) | 0xC
  *   (raw & 7) == 0, raw != 0          heap object pointer (8-byte aligned)
+ * (cext/include/ruby.h mirrors these for C extensions.)
  *
  * nil == 0 deliberately: freshly zero-filled slots / payloads read as nil,
  * so the mmap'd zero pages of the slots buffer and AROH zero-init are
- * already in a valid state.  The two falsy values are 0 (nil) and 2
+ * already in a valid state.  The two falsy values are 0 (nil) and 4
  * (false), giving the one-instruction truthiness test below.
  *
  * The GC edge filter (ARO_GC_VISIT_EDGE in precise_gc/gc.h) skips values
@@ -221,6 +222,8 @@ enum korb_obj_type {
 /* bit 7 (Hash only): compare_by_identity — key lookup uses object identity (==)
  * instead of value equality. */
 #define KORB_FL_CMP_BY_ID  0x80u
+/* bit 7 (KORB_OBJ_OBJECT only): a C extension's T_DATA — a KorbCData (builtins/cext.c). */
+#define KORB_FL_CDATA      0x80u
 /* bit 8 (IO only): this is the init-time default $stdout/$stderr — output methods
  * take the fast direct-fwrite path while $stdout/$stderr still holds it. */
 #define KORB_FL_DEFAULT_IO 0x100u
@@ -1554,7 +1557,14 @@ struct korb_vm {
     uint32_t srcrange_cnt, srcrange_capa;
     /* the last UTF-16/32 regexp subject decoded to UTF-8 (regexp.c); last so no offset moves */
     void *re_wide_cache;
+    struct korb_cext_vm *cext;   /* C-extension handle table (builtins/cext.c), NULL until one loads */
 };
+
+/* builtins/cext.c — reached from the AROH_* hooks, i.e. from the GC backends' TUs */
+void korb_cext_visit_roots(CTX *c, void *ctx, void (*visit)(void *, void **));
+void korb_cext_weak_walk(CTX *c);
+void korb_cext_scan(void *payload, void *ctx, void (*visit)(void *, void **));
+void korb_cext_finalize(void *payload);
 /* The thread / fiber running now, as one word (main thread and root fiber are 0,
  * so a Proc made before the thread subsystem booted still matches the main thread). */
 static inline uintptr_t korb_exec_ctx_key(const struct korb_vm *const vm) {
@@ -1727,6 +1737,9 @@ struct CTX_struct {
      * there reports "private method 'x' called" (ostruct) */
     uint32_t     mm_vis_mid;
     uint8_t      mm_vis;                  /* 1 private, 2 protected */
+    /* C extensions (builtins/cext.c): the running extension frames and their unwind targets */
+    struct korb_cext_frame *cext_top;
+    struct korb_cext_jmp   *cext_jmp;
 };
 
 /* Exchange CTX's scope save stacks with a switched-out thread's / fiber's. */
@@ -1796,6 +1809,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
 } while (0)
 
 #define AROH_VISIT_ROOTS(c, ctx, edge_visit) do {                            \
+    if ((c)->vm->cext) korb_cext_visit_roots((c), (ctx), (void (*)(void *, void **))(edge_visit)); \
     korb_value *_aro_top = (c)->slots_top;                                        \
     if (_aro_top > (c)->slots_high_water) (c)->slots_high_water = _aro_top;  \
     for (korb_value *_p = _aro_top; _p < (c)->slots_high_water; _p++) *_p = 0;    \
@@ -2131,6 +2145,8 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
             for (uint32_t _oi2 = 0; _oi2 < _ob->ivar_capa; _oi2++)          \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, &_od[_oi2]);           \
         }                                                                    \
+        if (UNLIKELY(_ob->head.flags & KORB_FL_CDATA))   /* the extension's dmark */ \
+            korb_cext_scan(_ob, (ctx), (void (*)(void *, void **))(edge_visit)); \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \
@@ -2213,7 +2229,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         break;                                                                 \
       }
 void korb_weak_walk(CTX *c);
-#define AROH_WEAK_WALK(c) korb_weak_walk(c)
+#define AROH_WEAK_WALK(c) (korb_weak_walk(c), korb_cext_weak_walk(c))
 #define AROH_FINALIZE(payload) do {                                            \
     AroObjectHeader *_aro_h = (AroObjectHeader *)(payload);                    \
     switch (_aro_h->flags & KORB_OBJ_TYPE_MASK) {                              \
@@ -2226,6 +2242,9 @@ void korb_weak_walk(CTX *c);
         break;                                                                 \
       }                                                                        \
       KORB_FINALIZE_BIGNUM_CASE                                                \
+      case KORB_OBJ_OBJECT:                                                    \
+        if (_aro_h->flags & KORB_FL_CDATA) korb_cext_finalize(_aro_h);         \
+        break;                                                                 \
       default: break;                                                          \
     }                                                                          \
   } while (0)

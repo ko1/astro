@@ -65,6 +65,23 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
     return NULL;
 }
 
+/* Default: no non-moving byte space (see gc.h). */
+__attribute__((weak))
+void *
+aro_gc_alloc_byte_pinned_raw(CTX *c, size_t payload_size)
+{
+    (void)c; (void)payload_size;
+    return NULL;
+}
+
+__attribute__((weak))
+bool
+aro_gc_pinned_p(const void *payload)
+{
+    (void)payload;
+    return false;
+}
+
 /* Default heap walk — "this backend cannot walk".  Backends whose heap is a
  * gapless bump region (gc_copy) override it. */
 __attribute__((weak))

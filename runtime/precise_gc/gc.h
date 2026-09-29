@@ -400,6 +400,12 @@ bool aro_gc_addr_retired(CTX *c, const void *p);
 void *aro_gc_alloc_byte_raw(CTX *c, size_t payload_size);
 ARO_VALUE aro_gc_alloc_byte(CTX *c, size_t payload_size);
 
+/* Non-moving byte payload (a raw pointer into it survives collections — a C
+ * extension's RSTRING_PTR).  NULL when the backend has no such space (only
+ * gc_copy implements it); aro_gc_pinned_p tells whether a payload is in it. */
+void *aro_gc_alloc_byte_pinned_raw(CTX *c, size_t payload_size);
+bool  aro_gc_pinned_p(const void *payload);
+
 /* aro_gc_realloc_payload / _byte_payload — grow a payload, copying contents.
  *
  * iter 76: framework は CTX-opaque 化したため、 これらは sample 側で実装

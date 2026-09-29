@@ -175,6 +175,16 @@ codeql-check:
 	sh codeql/run.sh
 .PHONY: codeql-check
 
+# CRuby C-extension layer (builtins/cext.c, docs/c_ext_api_design.md §9):
+# cext/test/run.sh builds one C-API test extension for CRuby and for koruby and
+# diffs the outputs (then again under STRESS+PURGE); cext/test/digest.sh builds
+# CRuby's ext/digest for koruby and runs CRuby's test/digest with it.
+CEXT_RUBY ?= $(HOME)/ruby/install/master/bin/ruby   # the reference CRuby (master, not PATH's)
+cext-test: koruby_precise
+	bash cext/test/run.sh $(CEXT_RUBY)
+	bash cext/test/digest.sh
+.PHONY: cext-test
+
 # rubyharness (shared differential tests + bench)
 INTERP ?= ./koruby_precise
 # koruby reads BARUBY_GC_* (not the harness default ASTRO_GC_*), so override the

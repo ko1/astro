@@ -509,6 +509,23 @@ aro_gc_alloc_byte_raw(CTX *c, size_t payload_size)
     return payload;
 }
 
+/* Non-moving byte payload: the LargeObj space whatever the size, so a raw
+ * pointer into it survives collections (a C extension's RSTRING_PTR). */
+void *
+aro_gc_alloc_byte_pinned_raw(CTX *c, size_t payload_size)
+{
+    void *const payload = large_alloc(c, payload_size, ALIGN8(payload_size));
+    ARO_GC_COMMON(c)->stats.total_bytes += payload_size;
+    ARO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
+    return payload;
+}
+
+bool
+aro_gc_pinned_p(const void *payload)
+{
+    return HDR_IS_LARGE((const AroObjectHeader *)payload);
+}
+
 /* In-place realloc for large objs.  Returns NULL to fall through to the
  * default alloc + memcpy path for: stress mode, small `old`, shrink to
  * small.  Otherwise realloc(3) the underlying LargeObj — glibc's

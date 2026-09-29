@@ -533,6 +533,7 @@ static korb_value korb_copy_klass(CTX *c, korb_value ov, korb_value src)
     if (!KORB_CLASS_P(ov)) return KORB_NIL;
     return (ov == korb_builtin_class_obj(c->vm, korb_class_of(src))) ? KORB_NIL : ov;
 }
+static RESULT korb_cext_obj_alloc(CTX *c, korb_value *slots, korb_value klass);   /* fwd (builtins/cext.c) */
 static RESULT korb_obj_copy_impl(CTX *c, korb_value *slots, korb_ref self, uint32_t hook_mid, const korb_value *hook_kw) {
     bool fin_done = false;   /* finalizers copied (korb_copy_hook does it before the hook) */
     const korb_value v = KORB_REF_GET(self);
@@ -723,7 +724,10 @@ static RESULT korb_obj_copy_impl(CTX *c, korb_value *slots, korb_ref self, uint3
         RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw, &fin_done);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (KORB_OBJECT_P(v)) {                         /* user object → fresh instance, shallow-copy ivars */
-        slots[1] = UNWRAP(korb_obj_new(c, slots + 1, VAL2OBJ(v)->klass));
+        /* a C extension's T_DATA: a fresh one from the class's allocator (CRuby's rb_obj_alloc) */
+        slots[1] = UNWRAP((((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_CDATA)
+                          ? korb_cext_obj_alloc(c, slots + 1, VAL2OBJ(v)->klass)
+                          : korb_obj_new(c, slots + 1, VAL2OBJ(v)->klass));
         korb_ref dst = KORB_REF_AT(&slots[1]);
         const uint32_t sid0 = VAL2OBJ(KORB_REF_GET(self))->shape_id;   /* re-read self (obj_new GC'd; `v` is stale) */
         const uint32_t nv = c->vm->shapes[sid0].ivar_count;

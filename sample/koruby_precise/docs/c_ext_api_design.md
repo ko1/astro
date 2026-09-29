@@ -1,6 +1,6 @@
 # koruby_precise — C Extension API 設計 (Track B: native)
 
-> Status: **draft / 設計のみ**。実装は未着手。
+> Status: Track B は設計のみ。Track A（CRuby C 拡張互換層）は §9 のとおり ext/digest まで実装済み（2026-09-29）。
 > 関連: [`v2_design.md`](v2_design.md) §4 (RESULT), §5 (korb_ref/slots ABI),
 > [`rooting_guide.md`](rooting_guide.md), `context.h`, `node.h`, `builtins/*.c`。
 
@@ -370,35 +370,81 @@ string builder / array・hash 構築 / Float・Integer パース — 全て §3 
 
 ---
 
-## 9. Track A の最初の標的としての openssl（2026-09-29 スケッチ、未着手・user 判断待ち）
+## 9. Track A: CRuby C 拡張互換層（2026-09-29 着手、最初の標的は ext/digest）
 
-OpenSSL の選択肢は (a) koruby 専用の新 binding、(b) CRuby C 拡張互換層（Track A）。(b) を openssl 1 本に絞って始め、
-ハンドル / pin の規則を固めてから他の拡張（nokogiri・bigdecimal …）へ広げる案。
+OpenSSL の選択肢は (a) koruby 専用の新 binding、(b) CRuby C 拡張互換層（Track A）。user 判断で (b) の実現性を
+ext/digest（C 約 8000 行、`rb_*` 約 60 種）で先に確かめる。openssl（C 34 ファイル・`rb_*` 157 種、頻出は
+`RSTRING_PTR` 172・`StringValue` 89・`rb_str_new` 66・`TypedData_Get_Struct` 41・`rb_protect` 35）はその後。
 
-**規模（ext/openssl、CRuby master）**: C 34 ファイル、使う `rb_*` は 157 種。頻出は `RSTRING_PTR` 172・`StringValue` 89・
-`RSTRING_LEN` 72・`rb_str_new` 66・`TypedData_Get_Struct` 41・`rb_protect` 35・`rb_funcall` 30・`RARRAY_*` 40。
-Ruby 側（lib/openssl/*.rb）はそのまま使える。
+**核心 = 動く GC と `ruby.h` の前提の衝突**（§1）。拡張の C は VALUE を C ローカル・static・構造体に持ったまま
+`rb_funcall` し、`RSTRING_PTR` の生ポインタを C の API に渡す。GC は止めない（止めると拡張の中の長い処理で
+メモリが伸びる）。代わりに次の規則にする。
 
-**核心 = 動く GC と `ruby.h` の前提の衝突**（§1）。openssl の C は VALUE を C ローカルに持ったまま `rb_funcall` し、
-`RSTRING_PTR` の生ポインタを OpenSSL の API に渡す。対応案:
+1. **拡張側の `VALUE` はハンドル**（JNI の local ref と同じ）。即値（Fixnum / Flonum / Symbol / nil / true / false）は
+   koruby のビットそのまま、ヒープのオブジェクトは「GC が中身を更新するセル」のアドレス。セルは動かないブロックに
+   置き、GC の root として走査する。`include/ruby.h` の `NIL_P` / `RTEST` / `FIXNUM_P` / `INT2FIX` などは koruby の
+   タグで書くので、即値の判定はハンドルでも同じ式で済む（セルは 8 バイト境界 = koruby のヒープと同じ見え方）。
+2. **同じオブジェクトには同じハンドル。** 拡張は `rb_obj_class(x) == cFoo` のように VALUE を `==` で比べるので、
+   オブジェクト → セルの表を持つ（GC でオブジェクトが動いたら表を作り直す）。
+3. **ハンドルの寿命**: 拡張のメソッドを呼ぶたびにフレームを積み、そこで作ったハンドルはフレームが外れたら「退役」。
+   退役したセルは次の GC で、`rb_gc_mark`（TypedData の dmark から）で印が付かなければ解放。印が付けば更新して残す。
+   CRuby でも印の無い VALUE を構造体に置けば回収されるので、意味は同じ。`rb_define_class` などが返すクラス・
+   モジュール、`rb_gc_register_address` / `rb_global_variable` した変数が指すもの、`rb_gc_register_mark_object`
+   は永続。
+4. **`RSTRING_PTR`**: 初めて取られた文字列の本体（KorbStrBuf）を non-moving 区画（gc_copy の large object と同じ
+   malloc 区画）に写し替え、以後そのポインタは GC で動かない。コストは初回の O(len)。拡張の `rb_str_new` が作る
+   文字列は最初から non-moving に置く。本体の確保し直し（伸長）でポインタが変わるのは CRuby と同じ。
+   moving な backend は当面 gc_copy（既定）だけ対応。
+5. **TypedData / Data**: 新しいオブジェクト種別に C 構造体ポインタと `rb_data_type_t` を持たせる。dmark は GC の edge
+   visit に橋渡しし（dmark の中の `rb_gc_mark(h)` はセル h を edge として visit）、dfree は死んだオブジェクトを
+   weak list で見つけて呼ぶ。
+6. **例外**: 拡張メソッドの入口（トランポリン）で setjmp。`rb_raise` は longjmp で入口に戻って RESULT の RAISE に
+   変換し、そこでフレームも畳む。`rb_protect` / `rb_ensure` / `rb_rescue` は jmp_buf を入れ子で積む。
+   koruby → 拡張 → Ruby（`rb_funcall` / `rb_yield`）→ 拡張 … の再入でも、各入口が自分の jmp_buf を持つ。
+7. **ABI と読み込み**: `ruby.h` は koruby 用を自前で持ち（`RSTRING_PTR` などは関数呼び出し）、拡張は koruby の
+   ヘッダで再コンパイルする（CRuby 用の .so は流用しない）。`rb_*` の実体は koruby 本体（`builtins/cext.c`、
+   `-rdynamic` で公開）。`require` が .so を見つけたら dlopen して `Init_<name>` を呼ぶ。ビルドはまず素の Makefile、
+   mkmf は後。
 
-1. **拡張の呼び出し中は GC を止めない代わりに、拡張に渡る / 拡張が作る VALUE を pin する。** 拡張の関数に入るとき、
-   引数と self を「pinned」印の付いた handle 表に置く。拡張の中で `rb_str_new` 等が返す新しいオブジェクトも同じ表へ。
-   copy GC はこの表の対象を動かさない（non-moving 区画へ昇格、または表を conservative root として扱い移動を免除）。
-   関数から戻るとき表を畳む。`rb_gc_register_address` / `rb_gc_mark` の対象（ivar 的に保持されるもの）は永続 pin。
-2. **VALUE の表現**: 拡張側の `VALUE` = koruby の korb_value そのもの（pin されているので安定）。`RSTRING_PTR` は
-   KorbStrBuf の data（pin 中は buf も動かさない — 文字列本体と buf の両方を pin する必要がある）。
-3. **`TypedData`**: koruby の KORB_OBJ_OBJECT に C 構造体ポインタ + `rb_data_type_t`（free / mark / size）を持たせる。
-   mark 関数は koruby の edge visit に橋渡し（mark で呼ばれた VALUE は pin 扱い）。
-4. **ABI**: `ruby.h` は CRuby のマクロ（`RSTRING_PTR` が struct を直接読む等）を含むので、koruby 用の `ruby.h`
-   を自前で用意し、拡張は koruby の mkmf で再 compile する（CRuby 用 .so の流用はしない）。
-5. **例外**: `rb_raise` / `rb_protect` / `rb_ensure` は longjmp 系。koruby は RESULT 伝播なので、拡張呼び出しの入口で
-   setjmp し、`rb_raise` は longjmp で入口へ戻って RAISE に変換する（入口で handle 表も畳む）。
+**テスト（徹底する）**: (1) API ごとの単体テスト — 試験用の C 拡張（`test/cext/`）が rb_* を 1 つ以上ずつ叩き、
+**同じ .c を CRuby と koruby の両方でビルド**して同じ Ruby スクリプトの出力を突き合わせる（正常系・例外と longjmp・
+引数の数と型の誤りの文言）。(2) GC — 全テストを STRESS+PURGE でも。ハンドルの寿命（戻った後の解放・登録したものの
+生存・構造体に置いて dmark したものの更新）、同一性（同じオブジェクト → 同じ VALUE、GC を挟んでも）、pin した
+`RSTRING_PTR` が GC を跨いで同じアドレスで同じ中身、ext → Ruby → ext の入れ子の中の GC と例外。(3) 実物 —
+ext/digest を CRuby の test/digest と rubyspec library/digest に通す（STRESS+PURGE でも）。新しい rb_* を足すときは
+単体テストも同時に足す。
 
-**段階**: (i) 自前 `ruby.h` + handle/pin + String/Array/Hash/TypedData/例外の最小集合で `Digest`（ext/digest）を動かす
-→ (ii) openssl の 157 関数 → (iii) bigdecimal / strscan など CRuby 同梱の拡張で広さを測る。
-**未解決**: pin の GC 負荷（長寿命の pin が copy GC の空間効率を落とす）、スレッド（koruby の green thread と
-`rb_thread_call_without_gvl`）、`rb_block_call` / `rb_yield` の再入。
+**実装（2026-09-29、`builtins/cext.c` + `cext/include/ruby.h`）**:
+- ハンドル: 動かないブロック（128KB 境界、セル 6000 個）にセルを置き、状態 FREE / LOCAL / RETIRED / PERM を持つ。
+  LOCAL・PERM・登録アドレスが指すセルは root（`korb_cext_visit_roots`）。RETIRED は weak で、GC 後
+  （`AROH_WEAK_WALK` → `korb_cext_weak_walk`）に `aro_gc_finalize_check` で生死と移動先を引き、死んでいれば解放。
+  dmark 中の `rb_gc_mark(h)` は RETIRED セルを edge として visit する。オブジェクト → セルの表は GC ごとに作り直す。
+- トランポリン: CFUNC の ABI は method entry を渡さないので、4096 個の小さな関数（`kcx_t000000` …）が
+  自分の番号で `x->methods[i]`（関数ポインタと arity）を引く。同じ (関数, arity) には同じ番号を使う
+  （`length` と `size` のような別名の UnboundMethod が == になる、CRuby と同じ）。
+- `rb_define_class_under` などは Ruby の `Class.new` + `const_set` 経由（koruby の命名・再オープン・inherited を
+  そのまま使う）。`rb_define_alloc_func` は特異メソッド `allocate` / `new` を置き、`dup` / `clone` も T_DATA なら
+  クラスの allocator で作る。
+- 例外: 入口ごとに jmp_buf を積み（`c->cext_jmp`）、Ruby 側の RESULT が NORMAL 以外なら longjmp で
+  いちばん内側の入口 / rb_protect へ。break / throw / return も同じ経路で C のフレームを越える。
+- require: `.so` を明示した名前と、全 $LOAD_PATH で `.rb` が見つからなかった名前は `.so` を探す（CRuby と同じ順）。
+  `KORUBY_CEXT=1` のときは koruby 同梱の代替 `.rb`（lib/digest/md5.rb など）より本物の `.so` を優先する（opt-in）。
+- 現在の CTX はスレッドローカル `korb_cext_ctx`（と GC 中の `korb_cext_gc_vm`）: C API に文脈引数が無いための例外。
+
+**結果**: 試験用拡張 `cext/test/api_test.c`（C API 約 150 関数、139 ケース）を CRuby と koruby の両方でビルドして
+出力が一致（STRESS+PURGE でも一致）。CRuby の ext/digest（md5 / sha1 / sha2 / rmd160 / bubblebabble / crc32 /
+blake3、8 本）を無改造でビルドし、CRuby の test/digest が CRuby と同じ件数で全通過（126 tests / 269 assertions、
+24 / 66、6 / 18）、STRESS+PURGE でも子プロセスの banner 以外は通過。rubyspec library/digest 129 / 129。
+`make cext-test` で両方を回す。途中で koruby 本体の不具合 2 件（public_send の private エラーの受け手の記述、
+クラスの instance_variables に `@` の無い隠し ivar が出る）を直した。CRuby 側の不具合らしきもの 1 件:
+mixin を include したクラスを別の superclass で `rb_define_class_under` し直すと、TypeError ではなく
+`undefined method 'to_s' for an instance of <Mixin>`（未報告）。
+
+**未対応**（呼ぶと NotImplementedError）: `rb_block_call`、`rb_proc_new`、`rb_call_super`、`rb_iter_break`、
+`rb_catch`。mkmf。gc_copy 以外の moving backend（pin の区画が無い）。
+
+**未解決**: 長寿命の pin が copy GC の空間効率を落とす量（pin は large object 区画 = 1 個ずつ malloc、登録は
+ソート配列への挿入で O(n)）、スレッド（green thread と `rb_thread_call_without_gvl`）、呼び出しの固定費（未計測）。
 
 ## Appendix A. 主要処理系の C-ext 引数処理サーベイ (2026-08-05)
 
