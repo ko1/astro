@@ -443,7 +443,13 @@ preload_stale(void)
     uint64_t v = preload_version();
     return v != 0 && v > (uint64_t)sso.st_mtime;
 }
+/* The program store's version too: a store another build baked holds SDs of another
+ * ABI, and loading one SEGV'd (a railsbench/code_store left by an older binary). */
+uint64_t koruby_store_version(void) { return preload_version(); }
 #endif /* !__wasi__ */
+#ifdef __wasi__
+uint64_t koruby_store_version(void) { return 0; }
+#endif
 
 /* Bake the fixed prelude's SDs once into preload_store/all.so, then register it
  * as the code store's preload handle.  The prelude is identical across all

@@ -71,7 +71,8 @@ INIT(void)
     /* src_dir must be absolute (KORUBY_SRC_DIR): generated SDs `#include` node.h
      * via this path, and the binary may run from any CWD (e.g. optcarrot from the
      * ROM dir).  A "." here only worked when run from the source dir. */
-    astro_cs_init("code_store", KORUBY_SRC_DIR, 0);
+    extern uint64_t koruby_store_version(void);   /* main.c */
+    astro_cs_init("code_store", KORUBY_SRC_DIR, koruby_store_version());
 }
 
 /* --- code repository ------------------------------------------------------
