@@ -60,6 +60,17 @@ cp -r "$HERE/cext/include/." "$ROOT/include/ruby-$VER/"
 # paths mkmf's Makefiles name ($(arch_hdrdir)/ruby/config.h, -I$(hdrdir)/ruby/backward)
 mkdir -p "$ROOT/include/ruby-$VER/$ARCHNAME/ruby" "$ROOT/include/ruby-$VER/ruby/backward"
 printf '/* koruby: folded into <ruby.h> */\n#include <ruby.h>\n' > "$ROOT/include/ruby-$VER/$ARCHNAME/ruby/config.h"
+# every other header of CRuby's tree as a stub: an extension's `depend` names them as make prerequisites
+CRUBY_HDR=$("$CRUBY" -e 'print RbConfig::CONFIG["rubyhdrdir"]')
+(cd "$CRUBY_HDR" && find . -name '*.h' ! -path "./$ARCHNAME/*") | while read -r h; do
+    [ -e "$ROOT/include/ruby-$VER/$h" ] && continue
+    mkdir -p "$(dirname "$ROOT/include/ruby-$VER/$h")"
+    printf '/* koruby: folded into <ruby.h> */\n#include <ruby.h>\n' > "$ROOT/include/ruby-$VER/$h"
+done
+# the platform's HAVE_* (libc features: localtime_r ...), SIZEOF_* and int128_t from CRuby's config.h; ruby.h includes it
+CRUBY_ARCHHDR=$("$CRUBY" -e 'print RbConfig::CONFIG["rubyarchhdrdir"]')
+awk '/^#define ((HAVE_|SIZEOF_)[A-Z0-9_]+|u?int128_t) / { print "#ifndef " $2; print; print "#endif" }' "$CRUBY_ARCHHDR/ruby/config.h" \
+    > "$ROOT/include/ruby-$VER/$ARCHNAME/ruby/koruby_platform.h"
 # libkoruby.so: empty stand-ins named like every rb_* / ruby_* the koruby binary exports.
 # mkmf links its have_func("rb_...") probes and extensions against -lkoruby; at run time
 # the binary's own definitions come first in symbol lookup, so these are never called.

@@ -250,4 +250,15 @@ t(:catch_throw) { T.catch(true) }
 t(:catch_plain) { T.catch(false) }
 t(:iter_break) { [T.iter_break([1, 2, 3, 4, 5]), T.iter_break(1..10), T.iter_break([1])] }
 t(:alloc_builtin) { T.alloc_builtin }
+
+# encodings
+t(:enc_find) { %w[UTF-8 utf-8 US-ASCII BINARY EUC-JP Shift_JIS UTF-16LE Windows-31J nonexistent].map { T.enc_find(_1) } }
+t(:enc_chars_utf8) { T.enc_chars("aあ\u{1F600}") }
+t(:enc_chars_bad) { T.enc_chars("a\xff\xe3\x81".b.force_encoding("UTF-8")) }
+t(:enc_chars_euc) { T.enc_chars("aあ".encode("EUC-JP")) }
+t(:enc_chars_sjis) { T.enc_chars("aあ".encode("Shift_JIS")) }
+t(:enc_misc) { [T.enc_misc("abcd"), T.enc_misc("あいう"), T.enc_misc("\xff\xfe".b.force_encoding("UTF-8"))] }
+t(:enc_check) { T.enc_check("a", "b".b) }
+t(:enc_check_bad) { T.enc_check("あ", "\xff".b) }
+t(:enc_conv) { T.enc_conv("あい") }
 puts "done"

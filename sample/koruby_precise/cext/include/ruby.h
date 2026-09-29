@@ -23,6 +23,12 @@
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/time.h>
+#if defined(__has_include)
+#  if __has_include(<ruby/koruby_platform.h>)
+#    include <ruby/koruby_platform.h>   /* HAVE_* from CRuby's config.h (make root) */
+#  endif
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -103,7 +109,7 @@ typedef uintptr_t st_index_t;
 #define RBIMPL_ATTR_MAYBE_UNUSED() __attribute__((unused))
 #define MAYBE_UNUSED(x) __attribute__((unused)) x
 #define RUBY_ALIGNOF _Alignof
-#define ALWAYS_INLINE(x) __attribute__((always_inline)) x
+#define ALWAYS_INLINE(x) __attribute__((always_inline)) inline x   /* CRuby: RBIMPL_ATTR_FORCEINLINE() x */
 #define NOINLINE(x) __attribute__((noinline)) x
 #define LONG_LONG long long
 #define PUREFUNC(x)  __attribute__((pure)) x
@@ -248,12 +254,15 @@ int   rb_data_p(VALUE obj);   /* koruby: T_DATA with or without a type */
 #define RTYPEDDATA_P(v)          (rb_typeddata_type(v) != NULL)
 #define RB_TYPEDDATA_P(v)        (RB_TYPE_P(v, T_DATA) && RTYPEDDATA_P(v))
 #define DATA_PTR(v)              (*rb_data_ptr_ref(v))
+struct RTypedData { void *data; };                /* only ->data: RTYPEDDATA(obj)->data = p */
+#define RTYPEDDATA(v)            ((struct RTypedData *)(void *)rb_data_ptr_ref(v))
 void **rb_data_ptr_ref(VALUE obj);
 
 #define TypedData_Wrap_Struct(klass, data_type, sval) rb_data_typed_object_wrap((klass), (sval), (data_type))
 #define TypedData_Make_Struct0(result, klass, type, size, data_type, sval) \
     VALUE result = rb_data_typed_object_zalloc((klass), (size), (data_type)); \
-    (sval) = (type *)rb_data_get_ptr(result)
+    (sval) = (type *)rb_data_get_ptr(result);                                  \
+    (void)(sval)
 #define TypedData_Make_Struct(klass, type, data_type, sval) \
     (__extension__({ TypedData_Make_Struct0(rb_data_tmp_, (klass), type, sizeof(type), (data_type), (sval)); rb_data_tmp_; }))
 #define TypedData_Get_Struct(obj, type, data_type, sval) \
@@ -300,6 +309,7 @@ void rb_gc_register_address(VALUE *addr);
 void rb_gc_unregister_address(VALUE *addr);
 void rb_global_variable(VALUE *addr);
 void rb_gc_register_mark_object(VALUE obj);
+void rb_gc_mark_locations(const VALUE *start, const VALUE *end);
 void rb_gc_mark(VALUE obj);
 void rb_gc_mark_movable(VALUE obj);
 void rb_gc_mark_maybe(VALUE obj);
@@ -372,10 +382,6 @@ VALUE  rb_Float(VALUE v);
 #define DBL2NUM(d)   rb_float_new(d)
 #define RFLOAT_VALUE(v) rb_float_value(v)
 #define CHR2FIX(c)   INT2FIX((long)((c) & 0xff))
-#define NUM2UINT64T(v) ((uint64_t)rb_num2ull(v))
-#define NUM2INT64T(v)  ((int64_t)rb_num2ll(v))
-#define UINT64T2NUM(n) rb_ull2inum((unsigned long long)(n))
-#define INT64T2NUM(n)  rb_ll2inum((long long)(n))
 #define NUM2TIMET(v)   ((time_t)rb_num2ll(v))
 #define TIMET2NUM(t)   rb_ll2inum((long long)(t))
 #define NUM2OFFT(v)    ((off_t)rb_num2ll(v))
@@ -480,6 +486,95 @@ int   rb_enc_get_index(VALUE obj);
 VALUE rb_enc_str_new(const char *ptr, long len, rb_encoding *enc);
 VALUE rb_enc_sprintf(rb_encoding *enc, const char *fmt, ...);
 VALUE rb_external_str_new(const char *ptr, long len);
+rb_encoding *rb_enc_from_index(int idx);
+int   rb_enc_to_index(rb_encoding *enc);
+int   rb_enc_find_index(const char *name);
+rb_encoding *rb_enc_find(const char *name);
+VALUE rb_enc_from_encoding(rb_encoding *enc);
+rb_encoding *rb_to_encoding(VALUE obj);
+rb_encoding *rb_find_encoding(VALUE obj);
+int   rb_to_encoding_index(VALUE obj);
+const char *rb_enc_name(rb_encoding *enc);
+int   rb_enc_mbminlen(rb_encoding *enc);
+int   rb_enc_mbmaxlen(rb_encoding *enc);
+int   rb_enc_asciicompat(rb_encoding *enc);
+int   rb_enc_mbclen(const char *p, const char *e, rb_encoding *enc);
+int   rb_enc_precise_mbclen(const char *p, const char *e, rb_encoding *enc);
+int   rb_enc_fast_mbclen(const char *p, const char *e, rb_encoding *enc);
+#define MBCLEN_CHARFOUND_P(ret)   (0 < (ret))
+#define MBCLEN_CHARFOUND_LEN(ret) (ret)
+#define MBCLEN_INVALID_P(ret)     ((ret) == -1)
+#define MBCLEN_NEEDMORE_P(ret)    ((ret) < -1)
+#define MBCLEN_NEEDMORE_LEN(ret)  (-1 - (ret))
+unsigned int rb_enc_codepoint_len(const char *p, const char *e, int *len, rb_encoding *enc);
+#define rb_enc_codepoint(p, e, enc) rb_enc_codepoint_len((p), (e), NULL, (enc))
+int   rb_enc_codelen(int code, rb_encoding *enc);
+int   rb_enc_mbcput(unsigned int c, void *buf, rb_encoding *enc);
+#define rb_enc_mbcput(c, buf, enc) rb_enc_mbcput((unsigned int)(c), (buf), (enc))
+VALUE rb_enc_uint_chr(unsigned int code, rb_encoding *enc);
+char *rb_enc_right_char_head(const char *s, const char *p, const char *e, rb_encoding *enc);
+char *rb_enc_left_char_head(const char *s, const char *p, const char *e, rb_encoding *enc);
+char *rb_enc_prev_char(const char *s, const char *p, const char *e, rb_encoding *enc);
+#define rb_enc_is_newline(p, e, enc) ((p) < (e) && *(p) == '\n')
+#define rb_enc_isascii(c, enc) rb_isascii(c)
+#define rb_enc_isspace(c, enc) rb_isspace(c)
+#define rb_enc_isprint(c, enc) rb_isprint(c)
+#define rb_enc_isalpha(c, enc) rb_isalpha(c)
+#define rb_enc_isdigit(c, enc) rb_isdigit(c)
+#define rb_enc_isalnum(c, enc) rb_isalnum(c)
+#define rb_enc_isupper(c, enc) rb_isupper(c)
+#define rb_enc_islower(c, enc) rb_islower(c)
+#define rb_enc_toupper(c, enc) rb_toupper(c)
+#define rb_enc_tolower(c, enc) rb_tolower(c)
+rb_encoding *rb_default_external_encoding(void);
+rb_encoding *rb_default_internal_encoding(void);
+rb_encoding *rb_locale_encoding(void);
+rb_encoding *rb_filesystem_encoding(void);
+VALUE rb_enc_default_external(void);
+VALUE rb_enc_default_internal(void);
+void  rb_enc_copy(VALUE dst, VALUE src);
+void  rb_enc_set_index(VALUE obj, int idx);
+rb_encoding *rb_enc_check(VALUE str1, VALUE str2);
+rb_encoding *rb_enc_compatible(VALUE str1, VALUE str2);
+VALUE rb_enc_str_new_cstr(const char *ptr, rb_encoding *enc);
+#define rb_enc_str_new_static(ptr, len, enc) rb_enc_str_new((ptr), (len), (enc))
+#define rb_enc_str_new_literal(s, enc) rb_enc_str_new((s), (long)(sizeof(s) - 1), (enc))
+VALUE rb_enc_str_buf_cat(VALUE str, const char *ptr, long len, rb_encoding *enc);
+VALUE rb_external_str_new_with_enc(const char *ptr, long len, rb_encoding *enc);
+int   rb_enc_str_asciionly_p(VALUE str);
+VALUE rb_obj_encoding(VALUE obj);
+VALUE rb_str_encode(VALUE str, VALUE to, int ecflags, VALUE ecopts);
+VALUE rb_str_conv_enc(VALUE str, rb_encoding *from, rb_encoding *to);
+VALUE rb_str_export_to_enc(VALUE str, rb_encoding *enc);
+#define rb_enc_raise(enc, klass, ...) rb_raise((klass), __VA_ARGS__)
+/* coderange: computed on each call (koruby keeps no cache), so SET / CLEAR do nothing */
+#define RUBY_ENC_CODERANGE_UNKNOWN 0
+#define RUBY_ENC_CODERANGE_7BIT    0x100000
+#define RUBY_ENC_CODERANGE_VALID   0x200000
+#define RUBY_ENC_CODERANGE_BROKEN  0x300000
+#define ENC_CODERANGE_UNKNOWN RUBY_ENC_CODERANGE_UNKNOWN
+#define ENC_CODERANGE_7BIT    RUBY_ENC_CODERANGE_7BIT
+#define ENC_CODERANGE_VALID   RUBY_ENC_CODERANGE_VALID
+#define ENC_CODERANGE_BROKEN  RUBY_ENC_CODERANGE_BROKEN
+int   rb_enc_str_coderange(VALUE str);
+#define RB_ENC_CODERANGE(obj) rb_enc_str_coderange(obj)
+#define ENC_CODERANGE(obj) rb_enc_str_coderange(obj)
+#define ENC_CODERANGE_ASCIIONLY(obj) (rb_enc_str_coderange(obj) == ENC_CODERANGE_7BIT)
+#define RB_ENC_CODERANGE_CLEAN_P(cr) ((cr) == ENC_CODERANGE_7BIT || (cr) == ENC_CODERANGE_VALID)
+#define ENC_CODERANGE_CLEAN_P(cr) RB_ENC_CODERANGE_CLEAN_P(cr)
+#define ENC_CODERANGE_SET(obj, cr) ((void)(obj), (void)(cr))
+#define RB_ENC_CODERANGE_SET(obj, cr) ENC_CODERANGE_SET(obj, cr)
+#define ENC_CODERANGE_CLEAR(obj) ((void)(obj))
+#define ENCODING_GET(obj) rb_enc_get_index(obj)
+#define ENCODING_GET_INLINED(obj) rb_enc_get_index(obj)
+#define RB_ENCODING_GET(obj) rb_enc_get_index(obj)
+#define RB_ENCODING_GET_INLINED(obj) rb_enc_get_index(obj)
+#define ENCODING_SET(obj, i) rb_enc_set_index((obj), (i))
+#define RB_ENCODING_SET(obj, i) rb_enc_set_index((obj), (i))
+#define ENCODING_SET_INLINED(obj, i) rb_enc_set_index((obj), (i))
+#define ENCODING_IS_ASCII8BIT(obj) (rb_enc_get_index(obj) == rb_ascii8bit_encindex())
+#define ENCODING_MAXNAMELEN 42
+#define ENC_CODERANGE_AND(a, b) ((a) == ENC_CODERANGE_7BIT ? (b) : (a) != ENC_CODERANGE_VALID ? ENC_CODERANGE_UNKNOWN : (b) == ENC_CODERANGE_7BIT ? ENC_CODERANGE_VALID : (b))
 
 /* ---- arrays / hashes ---------------------------------------------------- */
 VALUE rb_ary_new(void);
@@ -612,6 +707,8 @@ void  rb_check_frozen(VALUE obj);
 #define OBJ_FREEZE(v) rb_obj_freeze(v)
 #define OBJ_FROZEN(v) RTEST(rb_obj_frozen_p(v))
 #define RB_OBJ_FROZEN(v) OBJ_FROZEN(v)
+#define RB_OBJ_FROZEN_RAW(v) OBJ_FROZEN(v)
+#define OBJ_FROZEN_RAW(v) OBJ_FROZEN(v)
 VALUE rb_obj_dup(VALUE obj);
 VALUE rb_obj_clone(VALUE obj);
 VALUE rb_obj_id(VALUE obj);
@@ -675,6 +772,7 @@ typedef rb_block_call_func *rb_block_call_func_t;
 VALUE rb_block_call(VALUE obj, ID mid, int argc, const VALUE *argv, rb_block_call_func_t bl_proc, VALUE data2);
 VALUE rb_proc_new(rb_block_call_func_t func, VALUE val);
 VALUE rb_proc_call(VALUE proc, VALUE args);
+VALUE rb_proc_call_with_block(VALUE proc, int argc, const VALUE *argv, VALUE passed_proc);
 VALUE rb_proc_call_with_block(VALUE proc, int argc, const VALUE *argv, VALUE passed_proc);
 VALUE rb_obj_is_proc(VALUE obj);
 VALUE rb_each(VALUE obj);
@@ -809,6 +907,55 @@ int   rb_big_sign(VALUE b);                  /* 1: >= 0, 0: negative (CRuby's BI
 VALUE rb_big_cmp(VALUE x, VALUE y);
 VALUE rb_big2str(VALUE x, int base);
 
+/* ---- structs, hashes, misc objects ---- */
+VALUE rb_struct_define(const char *name, ...);
+VALUE rb_struct_define_under(VALUE outer, const char *name, ...);
+VALUE rb_struct_new(VALUE klass, ...);
+VALUE rb_struct_aref(VALUE st, VALUE idx);
+VALUE rb_struct_aset(VALUE st, VALUE idx, VALUE val);
+VALUE rb_struct_size(VALUE st);
+VALUE rb_struct_members(VALUE st);
+VALUE rb_struct_s_members(VALUE klass);
+VALUE rb_struct_getmember(VALUE st, ID id);
+#define RSTRUCT_GET(st, idx) rb_struct_aref((st), INT2NUM(idx))
+#define RSTRUCT_SET(st, idx, v) rb_struct_aset((st), INT2NUM(idx), (v))
+#define RSTRUCT_LEN(st) NUM2LONG(rb_struct_size(st))
+VALUE rb_hash_dup(VALUE hash);
+VALUE rb_hash_freeze(VALUE hash);
+VALUE rb_ary_freeze(VALUE ary);
+VALUE rb_str_replace(VALUE str, VALUE other);
+VALUE rb_str_new_shared(VALUE str);
+VALUE rb_str_format(int argc, const VALUE *argv, VALUE fmt);
+VALUE rb_obj_hide(VALUE obj);
+VALUE rb_obj_reveal(VALUE obj, VALUE klass);
+void  rb_copy_generic_ivar(VALUE clone, VALUE obj);
+VALUE rb_hash(VALUE obj);
+int   rb_cmpint(VALUE val, VALUE a, VALUE b);
+int   rb_proc_arity(VALUE proc);
+VALUE rb_marshal_load(VALUE port);
+VALUE rb_marshal_dump(VALUE obj, VALUE port);
+VALUE rb_cstr2inum(const char *str, int base);
+VALUE rb_str2inum(VALUE str, int base);
+double rb_cstr_to_dbl(const char *p, int badcheck);
+double rb_str_to_dbl(VALUE str, int badcheck);
+VALUE rb_int_positive_pow(long x, unsigned long y);
+extern const signed char ruby_digit36_to_number_table[];
+unsigned long ruby_scan_digits(const char *str, ssize_t len, int base, size_t *retlen, int *overflow);
+long long rb_big2ll(VALUE x);
+unsigned long long rb_big2ull(VALUE x);
+long  rb_big2long(VALUE x);
+unsigned long rb_big2ulong(VALUE x);
+double rb_big2dbl(VALUE x);
+VALUE rb_io_write(VALUE io, VALUE str);
+VALUE rb_io_flush(VALUE io);
+#define rb_usascii_str_new2(s) rb_usascii_str_new_cstr(s)
+#define STRTOUL(str, endptr, base) strtoul((str), (endptr), (base))
+#define ruby_strtoul(str, endptr, base) strtoul((str), (endptr), (base))
+#define DECIMAL_SIZE_OF_BITS(n) (((n) * 3010 + 9998) / 9999)
+#define RB_EXT_RACTOR_SAFE(f) rb_ext_ractor_safe(f)
+#define RB_SCAN_ARGS_PASS_CALLED_KEYWORDS 0
+#define RB_SCAN_ARGS_KEYWORDS 1
+#define RB_SCAN_ARGS_LAST_HASH_KEYWORDS 3
 /* ---- strings, threads ---- */
 #define STRINGIZE0(expr) #expr
 #define STRINGIZE(expr) STRINGIZE0(expr)
@@ -854,6 +1001,22 @@ static inline int rb_toupper(int c) { return rb_islower(c) ? (c & 0x5f) : c; }
 #define ISPUNCT(c)  rb_ispunct(c)
 #define TOUPPER(c)  rb_toupper(c)
 #define TOLOWER(c)  rb_tolower(c)
+/* ASCII-only, as CRuby's st_locale_insensitive_str(n)casecmp (date does #define strncasecmp STRNCASECMP) */
+static inline int
+rb_st_locale_insensitive_strncasecmp(const char *s1, const char *s2, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        const int a = rb_tolower((unsigned char)s1[i]), b = rb_tolower((unsigned char)s2[i]);
+        if (a != b) return a < b ? -1 : 1;
+        if (!a) return 0;
+    }
+    return 0;
+}
+static inline int rb_st_locale_insensitive_strcasecmp(const char *s1, const char *s2) { return rb_st_locale_insensitive_strncasecmp(s1, s2, (size_t)-1); }
+#define st_locale_insensitive_strncasecmp rb_st_locale_insensitive_strncasecmp
+#define st_locale_insensitive_strcasecmp rb_st_locale_insensitive_strcasecmp
+#define STRNCASECMP(s1, s2, n) rb_st_locale_insensitive_strncasecmp((s1), (s2), (n))
+#define STRCASECMP(s1, s2) rb_st_locale_insensitive_strcasecmp((s1), (s2))
 
 #ifdef __cplusplus
 }

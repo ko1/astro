@@ -479,9 +479,19 @@ mixin を include したクラスを別の superclass で `rb_define_class_under
   `rb_Rational` 他、ctype マクロ、ruby.h が stdio.h などを含む（mkmf の have_func の試験が printf を使う）。
   bigdecimal の test で見つかった本体側の食い違い（知らない Numeric を成分に持つ Complex、Integer#quo / Float#fdiv
   の coerce、Float#divmod(±Infinity)、終わりのない Range の Enumerable、Bignum 端の bsearch）も直した。
-  その他の gem（2026-09-29、rubygems.org の最新）: bcrypt・racc（cparse）・redcarpet・nio4r・erb（escape）は
-  ビルドされ、使ってみた範囲で CRuby と同じ出力（STRESS+PURGE でも）。msgpack・date・strscan・stringio・io-console・
-  json・psych は API 不足で拡張抜きになる（不足の一覧は docs/todo.md）。この段で直したもの: `rb_obj_alloc` が
+  その他の gem（2026-09-29、rubygems.org の最新）: bcrypt・racc（cparse）・redcarpet・nio4r・erb（escape）・
+  msgpack・json（parser / generator）・psych（libyaml）はビルドされ、使ってみた範囲で CRuby と同じ出力（STRESS+PURGE
+  でも）。date はビルドできるが koruby の MatchData の不具合で Date.parse が誤るので入れない（docs/todo.md）。
+  strscan（Onigmo の構造体）・stringio・io-console（rb_io_t の中身・FMODE_*）は拡張抜きになる。
+  **エンコーディング API**（rb_encoding * = koruby のエンコーディング番号 + 1）: rb_enc_find(_index)・from/to_index・
+  rb_enc_from_encoding・rb_to_encoding・mbminlen / mbmaxlen・rb_enc_(precise_)mbclen（MBCLEN_* の約束どおり）・
+  codepoint_len / codelen / mbcput / uint_chr・left / right_char_head・coderange（毎回計算、SET は何もしない）・
+  rb_enc_check / compatible・rb_str_encode / conv_enc・ENCODING_GET / SET。
+  **リンク**: 拡張は `-Wl,--no-undefined` でリンクする。libkoruby.so に無い rb_* を使う拡張はビルドで落ち、gem install は
+  拡張抜きにする（以前は読めない .kompat.so が入り、rubygems が date を読んだ時点で gem コマンドごと LoadError に
+  なった）。**プラットフォーム**: make root が CRuby の config.h から HAVE_*・SIZEOF_*・int128_t を
+  ruby/koruby_platform.h に写し（date の localtime_r、bigdecimal の 128 ビット経路）、CRuby の他のヘッダ名には
+  ruby.h を読むだけの代わりを置く（拡張の `depend` が make の前提にヘッダ名を並べる — psych）。この段で直したもの: `rb_obj_alloc` が
   組み込みクラス（Mutex など）を KorbObject として作っていた（nio4r の Selector が持つ Mutex が GC の後で壊れる）
   → 組み込みの表現を持つクラスは `allocate` で、`rb_undef_method` は墓標だけ（Ruby の undef_method を通すと
   initialize の警告と NameError が出る）、`rb_catch` / `rb_catch_obj`、`rb_iter_break`（`rb_block_call` が呼び出しを

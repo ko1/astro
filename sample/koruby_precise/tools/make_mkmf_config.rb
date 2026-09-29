@@ -20,6 +20,9 @@ puts <<~'BODY'
     # binary exports (make_root.sh); at run time the binary's own definitions win
     MAKEFILE_CONFIG["LIBRUBYARG"] = MAKEFILE_CONFIG["LIBRUBYARG_SHARED"]
     MAKEFILE_CONFIG["LIBRUBYARG_STATIC"] = MAKEFILE_CONFIG["LIBRUBYARG_SHARED"]
+    # an rb_* koruby lacks fails the link (libkoruby.so has every one it has), so gem install
+    # leaves the extension out instead of installing a .kompat.so that cannot load
+    MAKEFILE_CONFIG["DLDFLAGS"] = "#{MAKEFILE_CONFIG["DLDFLAGS"]} -Wl,--no-undefined".strip
 
     # CRuby's rbconfig.rb helpers (mkmf uses both)
     def self.expand(val, config = CONFIG)

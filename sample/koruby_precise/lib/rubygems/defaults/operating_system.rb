@@ -28,12 +28,21 @@ module Gem
   # The build-complete marker is still written: rubygems and bundler would otherwise
   # ignore the gem as one whose extensions are missing.
   module KorubyExtensionFallback
+    # extensions that build but misbehave on koruby (docs/todo.md): left out on purpose
+    KNOWN_BAD = {
+      "date" => "Date.parse reads captures after mutating the matched string; koruby's MatchData follows the mutation",
+    }.freeze
+
     def build_extensions
       return if @spec.extensions.empty?
+      return korb_leave_out(KNOWN_BAD[@spec.name]) if KNOWN_BAD.key?(@spec.name)
       super
     rescue Gem::Ext::BuildError, Gem::InstallError => e
-      warn "koruby: left out the C extensions of #{@spec.full_name}, which did not build for koruby " \
-           "(#{e.message.lines.first&.chomp}); koruby's own lib/ stands in where it has one"
+      korb_leave_out("did not build for koruby: #{e.message.lines.first&.chomp}")
+    end
+
+    private def korb_leave_out(reason)
+      warn "koruby: left out the C extensions of #{@spec.full_name} (#{reason}); koruby's own lib/ stands in where it has one"
       marker = @spec.gem_build_complete_path
       FileUtils.mkdir_p File.dirname(marker)
       FileUtils.touch marker

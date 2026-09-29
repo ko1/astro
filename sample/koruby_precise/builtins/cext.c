@@ -673,6 +673,7 @@ rb_gc_mark(KVALUE h)
     ARO_GC_VISIT_EDGE(x->gc_ctx, x->gc_visit, cell);
 }
 KCX_API void rb_gc_mark_movable(KVALUE h) { rb_gc_mark(h); }
+KCX_API void rb_gc_mark_locations(const KVALUE *start, const KVALUE *end) { for (const KVALUE *p = start; p < end; p++) rb_gc_mark(*p); }
 KCX_API void rb_gc_mark_maybe(KVALUE h) { rb_gc_mark(h); }
 KCX_API KVALUE rb_gc_location(KVALUE h) { return h; }
 KCX_API void rb_gc(void) { CTX *const c = kcx_c(); (void)kcx_send_name(c, kcx_const_path(c, "GC"), "start", 0, NULL); }
@@ -781,8 +782,33 @@ rb_num2ulong(KVALUE h)
     }
     return (unsigned long)rb_num2long(h);
 }
-KCX_API long long rb_num2ll(KVALUE h) { return rb_num2long(h); }
-KCX_API unsigned long long rb_num2ull(KVALUE h) { return rb_num2ulong(h); }
+/* long long is long here; only the bignum messages differ (CRuby's rb_big2ll / rb_big2ull) */
+static int kcx_bignum_range(KVALUE h, bool is_unsigned)
+{
+    const korb_value v = K(h);
+    if (!KORB_BIGNUM_P(v)) return 0;
+    if (is_unsigned) {
+        CTX *const c = kcx_c();
+        const korb_value s = kcx_send_name(c, v, "to_s", 0, NULL);
+        const char *const p = korb_strbuf_data(VAL2STR(s)->buf);
+        errno = 0;
+        const unsigned long long u = strtoull(p[0] == '-' ? p + 1 : p, NULL, 10);
+        return errno || (p[0] == '-' && u > (1ULL << 63)) ? 1 : 0;
+    }
+    return korb_mp_fits_slong_p(VAL2BIG(v)->z) ? 0 : 1;
+}
+KCX_API long long
+rb_num2ll(KVALUE h)
+{
+    if (kcx_bignum_range(h, false)) { CTX *const c = kcx_c(); kcx_throw(c, kcx_raise_c(c, KORB_E_RANGE, "bignum too big to convert into 'long long'")); }
+    return rb_num2long(h);
+}
+KCX_API unsigned long long
+rb_num2ull(KVALUE h)
+{
+    if (kcx_bignum_range(h, true)) { CTX *const c = kcx_c(); kcx_throw(c, kcx_raise_c(c, KORB_E_RANGE, "bignum too big to convert into 'unsigned long long'")); }
+    return rb_num2ulong(h);
+}
 KCX_API long
 rb_num2int(KVALUE h)
 {
@@ -1499,6 +1525,157 @@ KCX_SEND1(rb_equal, "==")
 KCX_SEND1(rb_eql, "eql?")
 KCX_SEND1(rb_class_inherited_p, "<=")
 KCX_SEND1(rb_obj_method, "method")
+KCX_SEND0(rb_hash_dup, "dup")
+KCX_SEND0(rb_hash_freeze, "freeze")
+KCX_SEND0(rb_ary_freeze, "freeze")
+KCX_SEND1(rb_str_replace, "replace")
+KCX_SEND0(rb_str_new_shared, "dup")
+KCX_SEND1(rb_struct_aref, "[]")
+KCX_SEND0(rb_struct_size, "size")
+KCX_SEND0(rb_struct_members, "members")
+KCX_SEND0(rb_struct_s_members, "members")
+KCX_SEND1(rb_io_write, "write")
+KCX_SEND0(rb_io_flush, "flush")
+KCX_SEND0(rb_hash, "hash")
+KCX_API KVALUE rb_struct_aset(KVALUE st, KVALUE i, KVALUE v) { CTX *const c = kcx_c(); const KVALUE a[2] = { i, v }; (void)kcx_send_name(c, K(st), "[]=", 2, a); return v; }
+KCX_API KVALUE rb_struct_getmember(KVALUE st, KVALUE id) { return rb_struct_aref(st, rb_id2sym(id)); }
+KCX_API KVALUE rb_obj_hide(KVALUE obj) { return obj; }            /* no ObjectSpace to hide from */
+KCX_API KVALUE rb_obj_reveal(KVALUE obj, KVALUE klass) { (void)klass; return obj; }
+KCX_API int rb_proc_arity(KVALUE proc) { CTX *const c = kcx_c(); return (int)FIX2LONG(kcx_send_name(c, K(proc), "arity", 0, NULL)); }
+KCX_API KVALUE rb_marshal_load(KVALUE port) { CTX *const c = kcx_c(); return W(kcx_send_name(c, kcx_const_path(c, "Marshal"), "load", 1, &port)); }
+KCX_API KVALUE
+rb_marshal_dump(KVALUE obj, KVALUE port)
+{
+    CTX *const c = kcx_c();
+    const KVALUE a[2] = { obj, port };
+    return W(kcx_send_name(c, kcx_const_path(c, "Marshal"), "dump", port == KQnil ? 1 : 2, a));
+}
+KCX_API KVALUE
+rb_str_format(int argc, const KVALUE *argv, KVALUE fmt)
+{
+    CTX *const c = kcx_c();
+    KVALUE a[argc + 1];
+    a[0] = fmt;
+    for (int i = 0; i < argc; i++) a[1 + i] = argv[i];
+    return W(kcx_send_name(c, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), "format", argc + 1, a));
+}
+KCX_API void
+rb_copy_generic_ivar(KVALUE clone, KVALUE obj)
+{
+    CTX *const c = kcx_c();
+    const KVALUE names = W(kcx_send_name(c, K(obj), "instance_variables", 0, NULL));
+    for (long i = 0, n = rb_array_len(names); i < n; i++) {
+        const KVALUE a[2] = { rb_ary_entry(names, i), W(kcx_send_name(c, K(obj), "instance_variable_get", 1, &a[0])) };
+        (void)kcx_send_name(c, K(clone), "instance_variable_set", 2, a);
+    }
+}
+/* <=> result → -1 / 0 / 1 (nil: the comparison failed) */
+KCX_API int
+rb_cmpint(KVALUE val, KVALUE a, KVALUE b)
+{
+    if (val == KQnil) rb_cmperr(a, b);
+    const korb_value v = K(val);
+    if (FIXNUM_P(v)) { const long l = (long)FIX2LONG(v); return l > 0 ? 1 : l < 0 ? -1 : 0; }
+    CTX *const c = kcx_c();
+    const KVALUE zero = (KVALUE)LONG2FIX(0);
+    if (RTEST_K(W(kcx_send_name(c, v, ">", 1, &zero)))) return 1;
+    return RTEST_K(W(kcx_send_name(c, v, "<", 1, &zero))) ? -1 : 0;
+}
+/* CRuby: base 0 checks the whole string (Integer()), any other base reads a prefix (#to_i) */
+KCX_API KVALUE
+rb_str2inum(KVALUE str, int base)
+{
+    CTX *const c = kcx_c();
+    if (base == 0) return rb_Integer(str);
+    const KVALUE b = (KVALUE)LONG2FIX(base);
+    return W(kcx_send_name(c, K(str), "to_i", 1, &b));
+}
+KCX_API KVALUE rb_cstr2inum(const char *str, int base) { return rb_str2inum(rb_str_new_cstr(str), base); }
+KCX_API double
+rb_str_to_dbl(KVALUE str, int badcheck)
+{
+    CTX *const c = kcx_c();
+    const korb_value f = badcheck ? K(rb_Float(str)) : kcx_send_name(c, K(str), "to_f", 0, NULL);
+    double d; (void)korb_num_to_d(f, &d);
+    return d;
+}
+KCX_API double rb_cstr_to_dbl(const char *p, int badcheck) { return rb_str_to_dbl(rb_str_new_cstr(p), badcheck); }
+KCX_API KVALUE
+rb_int_positive_pow(long x, unsigned long y)
+{
+    CTX *const c = kcx_c();
+    const KVALUE e = rb_uint2inum(y);
+    return W(kcx_send_name(c, K(rb_int2inum(x)), "**", 1, &e));
+}
+/* util.c's: digits of base (no sign, no '_'), *retlen consumed; len < 0 = up to the NUL */
+KCX_API const signed char ruby_digit36_to_number_table[256] = {
+    ['0'] = 0, ['1'] = 1, ['2'] = 2, ['3'] = 3, ['4'] = 4, ['5'] = 5, ['6'] = 6, ['7'] = 7, ['8'] = 8, ['9'] = 9,
+#define KCX_D36(ch, v) [ch] = v, [ch - 'a' + 'A'] = v
+    KCX_D36('a', 10), KCX_D36('b', 11), KCX_D36('c', 12), KCX_D36('d', 13), KCX_D36('e', 14), KCX_D36('f', 15),
+    KCX_D36('g', 16), KCX_D36('h', 17), KCX_D36('i', 18), KCX_D36('j', 19), KCX_D36('k', 20), KCX_D36('l', 21),
+    KCX_D36('m', 22), KCX_D36('n', 23), KCX_D36('o', 24), KCX_D36('p', 25), KCX_D36('q', 26), KCX_D36('r', 27),
+    KCX_D36('s', 28), KCX_D36('t', 29), KCX_D36('u', 30), KCX_D36('v', 31), KCX_D36('w', 32), KCX_D36('x', 33),
+    KCX_D36('y', 34), KCX_D36('z', 35),
+#undef KCX_D36
+};
+static int kcx_digit36(unsigned char ch) { return (ch >= '0' && ch <= '9') || ((ch | 0x20) >= 'a' && (ch | 0x20) <= 'z') ? ruby_digit36_to_number_table[ch] : -1; }
+KCX_API unsigned long
+ruby_scan_digits(const char *str, ssize_t len, int base, size_t *retlen, int *overflow)
+{
+    const char *const start = str;
+    const unsigned long mul_overflow = (~0UL) / (unsigned long)base;
+    unsigned long ret = 0;
+    *overflow = 0;
+    if (!len) { *retlen = 0; return 0; }
+    do {
+        const int d = kcx_digit36((unsigned char)*str++);
+        if (d < 0 || base <= d) { --str; break; }
+        if (mul_overflow < ret) *overflow = 1;
+        ret *= (unsigned long)base;
+        const unsigned long x = ret;
+        ret += (unsigned long)d;
+        if (ret < x) *overflow = 1;
+    } while (len < 0 || --len);
+    *retlen = (size_t)(str - start);
+    return ret;
+}
+KCX_API long long rb_big2ll(KVALUE x) { return rb_num2ll(x); }
+KCX_API unsigned long long rb_big2ull(KVALUE x) { return rb_num2ull(x); }
+KCX_API long rb_big2long(KVALUE x) { return rb_num2long(x); }
+KCX_API unsigned long rb_big2ulong(KVALUE x) { return rb_num2ulong(x); }
+KCX_API double rb_big2dbl(KVALUE x) { return rb_num2dbl(x); }
+KCX_API void rb_define_const(KVALUE m, const char *name, KVALUE v);   /* fwd */
+static KVALUE
+kcx_struct_define(KVALUE name, va_list ap)
+{
+    CTX *const c = kcx_c();
+    KVALUE a[64];
+    int n = 0;
+    if (name != KQnil) a[n++] = name;
+    for (const char *m; n < 64 && (m = va_arg(ap, const char *)) != NULL; ) a[n++] = rb_id2sym(rb_intern(m));
+    return W(kcx_send_name(c, kcx_const_path(c, "Struct"), "new", n, a));
+}
+KCX_API KVALUE rb_struct_define(const char *name, ...) { va_list ap; va_start(ap, name); const KVALUE k = kcx_struct_define(name ? rb_str_new_cstr(name) : KQnil, ap); va_end(ap); return k; }
+KCX_API KVALUE
+rb_struct_define_under(KVALUE outer, const char *name, ...)
+{
+    va_list ap; va_start(ap, name);
+    const KVALUE k = kcx_struct_define(KQnil, ap);
+    va_end(ap);
+    rb_define_const(outer, name, k);
+    return k;
+}
+KCX_API KVALUE
+rb_struct_new(KVALUE klass, ...)
+{
+    CTX *const c = kcx_c();
+    const long n = rb_array_len(rb_struct_s_members(klass));
+    KVALUE a[n > 0 ? n : 1];
+    va_list ap; va_start(ap, klass);
+    for (long i = 0; i < n; i++) a[i] = va_arg(ap, KVALUE);
+    va_end(ap);
+    return W(kcx_send_name(c, K(klass), "new", (int)n, a));
+}
 KCX_API KVALUE rb_hash_new_capa(long capa) { CTX *const c = kcx_c(); return W(kcx_check(c, korb_hash_new(c, kcx_slots(c), (uint32_t)(capa < 0 ? 0 : capa)))); }
 KCX_API KVALUE rb_hash_new(void) { return rb_hash_new_capa(0); }
 KCX_API KVALUE rb_hash_aset(KVALUE h, KVALUE k, KVALUE v) { CTX *const c = kcx_c(); const KVALUE a[2] = { k, v }; (void)kcx_send_name(c, K(h), "[]=", 2, a); return v; }
@@ -1894,6 +2071,8 @@ rb_block_proc(void)
     if (f->block == KORB_BLK_CPROC) rb_raise(rb_eNotImpError, "rb_block_proc of a C-level block is not supported by koruby yet");
     return W(kcx_check(c, korb_make_proc(c, kcx_slots(c), f->block, f->def_env, *f->captured_self, 0)));
 }
+KCX_API KVALUE rb_funcall_with_block(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv, KVALUE procval);   /* fwd */
+KCX_API KVALUE rb_proc_call_with_block(KVALUE proc, int argc, const KVALUE *argv, KVALUE blk) { return rb_funcall_with_block(proc, rb_intern("call"), argc, argv, blk); }
 KCX_API KVALUE
 rb_proc_call(KVALUE proc, KVALUE args)
 {
@@ -2002,9 +2181,10 @@ rb_call_super(int argc, const KVALUE *argv)
 }
 KCX_API KVALUE rb_call_super_kw(int argc, const KVALUE *argv, int kw) { (void)kw; return rb_call_super(argc, argv); }
 
-/* rb_scan_args: "<lead><opt><*><trail><:><&>" (CRuby's format). */
-KCX_API int
-rb_scan_args(int argc, const KVALUE *argv, const char *fmt, ...)
+/* rb_scan_args: "<lead><opt><*><trail><:><&>" (CRuby's format).  kw_mode: RB_SCAN_ARGS_PASS_CALLED_KEYWORDS (0,
+ * the call's own keywords), RB_SCAN_ARGS_KEYWORDS (1, the last argument is), RB_SCAN_ARGS_LAST_HASH_KEYWORDS (3, a Hash last) */
+static int
+kcx_scan_args(int kw_mode, int argc, const KVALUE *argv, const char *fmt, va_list ap)
 {
     const char *p = fmt;
     int lead = 0, opt = 0, trail = 0; bool rest = false, kw = false, blk = false;
@@ -2014,10 +2194,11 @@ rb_scan_args(int argc, const KVALUE *argv, const char *fmt, ...)
     if (*p == ':') { kw = true; p++; }
     if (*p == '&') { blk = true; p++; }
     KVALUE kwh = KQnil;
-    if (kw && argc > 0 && rb_keyword_given_p()) { kwh = argv[argc - 1]; argc--; }
+    if (kw && argc > 0 && (kw_mode == 1 || (kw_mode == 3 ? KORB_HASH_P(K(argv[argc - 1])) : rb_keyword_given_p()))) {
+        kwh = argv[argc - 1]; argc--;
+    }
     const int req = lead + trail;
     if (argc < req || (!rest && argc > req + opt)) rb_error_arity(argc, req, rest ? -1 : req + opt);
-    va_list ap; va_start(ap, fmt);
     int i = 0;
     for (int k = 0; k < lead; k++, i++) { KVALUE *const v = va_arg(ap, KVALUE *); if (v) *v = argv[i]; }
     const int nopt = argc - req < opt ? argc - req : opt;
@@ -2031,9 +2212,10 @@ rb_scan_args(int argc, const KVALUE *argv, const char *fmt, ...)
     for (int k = 0; k < trail; k++, i++) { KVALUE *const v = va_arg(ap, KVALUE *); if (v) *v = argv[i]; }
     if (kw) { KVALUE *const v = va_arg(ap, KVALUE *); if (v) *v = kwh; }
     if (blk) { KVALUE *const v = va_arg(ap, KVALUE *); if (v) *v = rb_block_given_p() ? rb_block_proc() : KQnil; }
-    va_end(ap);
     return argc;
 }
+KCX_API int rb_scan_args(int argc, const KVALUE *argv, const char *fmt, ...) { va_list ap; va_start(ap, fmt); const int r = kcx_scan_args(0, argc, argv, fmt, ap); va_end(ap); return r; }
+KCX_API int rb_scan_args_kw(int kw_mode, int argc, const KVALUE *argv, const char *fmt, ...) { va_list ap; va_start(ap, fmt); const int r = kcx_scan_args(kw_mode, argc, argv, fmt, ap); va_end(ap); return r; }
 /* CRuby's messages: every missing (then every unknown) keyword, singular or plural */
 static __attribute__((noreturn)) void
 kcx_raise_keywords(const char *what, KVALUE keys)
@@ -2401,10 +2583,256 @@ KCX_API int rb_ascii8bit_encindex(void) { return KORB_ENC_BINARY; }
 KCX_API int rb_usascii_encindex(void) { return KORB_ENC_USASCII; }
 KCX_API KVALUE rb_enc_associate_index(KVALUE obj, int idx) { if (KORB_STRING_P(K(obj))) KORB_STR_ENC_SET(K(obj), (uint32_t)idx); return obj; }
 KCX_API KVALUE rb_enc_associate(KVALUE obj, struct rb_encoding_kx *enc) { return rb_enc_associate_index(obj, (int)((uintptr_t)enc - 1)); }
-KCX_API int rb_enc_get_index(KVALUE obj) { return KORB_STRING_P(K(obj)) ? (int)KORB_STR_ENC(K(obj)) : -1; }
+KCX_API int rb_to_encoding_index(KVALUE obj);   /* fwd */
+/* a String's own index; anything else with #encoding (Symbol, Regexp, IO) or an Encoding through it */
+KCX_API int
+rb_enc_get_index(KVALUE obj)
+{
+    const korb_value v = K(obj);
+    if (KORB_STRING_P(v)) return (int)KORB_STR_ENC(v);
+    if (kcx_imm_p(obj) && !SYMBOL_P(v)) return -1;
+    CTX *const c = kcx_c();
+    const uint32_t mid = kcx_id(c, "encoding");
+    if (!korb_responds_to(c, v, mid)) return -1;
+    return rb_to_encoding_index(W(kcx_send(c, v, mid, 0, NULL)));
+}
 KCX_API struct rb_encoding_kx *rb_enc_get(KVALUE obj) { const int i = rb_enc_get_index(obj); return i < 0 ? NULL : KCX_ENC((uint32_t)i); }
 KCX_API int rb_enc_str_asciicompat_p(KVALUE str) { CTX *const c = kcx_c(); return korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(K(str))); }
 KCX_API KVALUE rb_enc_str_new(const char *ptr, long len, struct rb_encoding_kx *enc) { return rb_enc_associate(rb_str_new(ptr, len), enc); }
+#define KCX_ENC_IDX(enc) ((uint32_t)((uintptr_t)(enc) - 1))
+KCX_API struct rb_encoding_kx *rb_enc_from_index(int idx) { return idx >= 0 && idx < (int)KORB_STR_ENC_MAX ? KCX_ENC((uint32_t)idx) : NULL; }
+KCX_API int rb_enc_to_index(struct rb_encoding_kx *enc) { return enc ? (int)KCX_ENC_IDX(enc) : 0; }
+KCX_API const char *rb_enc_name(struct rb_encoding_kx *enc) { return korb_enc_idx_name(kcx_c()->vm, KCX_ENC_IDX(enc)); }
+KCX_API int rb_enc_asciicompat(struct rb_encoding_kx *enc) { return korb_enc_ascii_compat_idx(kcx_c()->vm, KCX_ENC_IDX(enc)); }
+static KVALUE kcx_find_enc_thunk(KVALUE name) { CTX *const c = kcx_c(); return W(kcx_send_name(c, kcx_const_path(c, "Encoding"), "find", 1, &name)); }
+/* a name Encoding.find knows, registered under its canonical name (-1 if none) */
+KCX_API int
+rb_enc_find_index(const char *name)
+{
+    CTX *const c = kcx_c();
+    const uint32_t known = korb_enc_index_known(c->vm, name);
+    if (known != UINT32_MAX) return (int)known;
+    int st = 0;
+    const KVALUE s = rb_str_new_cstr(name);
+    const KVALUE e = rb_protect(kcx_find_enc_thunk, s, &st);
+    if (st) { rb_set_errinfo(KQnil); return -1; }
+    return e == KQnil ? -1 : rb_to_encoding_index(e);
+}
+KCX_API struct rb_encoding_kx *rb_enc_find(const char *name) { return rb_enc_from_index(rb_enc_find_index(name)); }
+KCX_API KVALUE
+rb_enc_from_encoding(struct rb_encoding_kx *enc)
+{
+    if (!enc) return KQnil;
+    CTX *const c = kcx_c();
+    const KVALUE n = rb_str_new_cstr(rb_enc_name(enc));
+    return W(kcx_send_name(c, kcx_const_path(c, "Encoding"), "find", 1, &n));
+}
+/* an Encoding (or its name) → index; -1 when it names none */
+KCX_API int
+rb_to_encoding_index(KVALUE obj)
+{
+    CTX *const c = kcx_c();
+    korb_value v = K(obj);
+    if (v == KORB_NIL) return -1;
+    if (!KORB_STRING_P(v)) v = kcx_send_name(c, v, "to_s", 0, NULL);   /* Encoding#to_s is its name */
+    char nm[128];
+    snprintf(nm, sizeof nm, "%.*s", (int)VAL2STR(v)->len, korb_strbuf_data(VAL2STR(v)->buf));
+    const uint32_t known = korb_enc_index_known(c->vm, nm);
+    return known != UINT32_MAX ? (int)known : (int)korb_enc_index_for_name(c->vm, nm);
+}
+KCX_API struct rb_encoding_kx *
+rb_to_encoding(KVALUE obj)
+{
+    CTX *const c = kcx_c();
+    const KVALUE e = K(obj) == KORB_NIL || KORB_STRING_P(K(obj)) ? W(kcx_send_name(c, kcx_const_path(c, "Encoding"), "find", 1, &obj)) : obj;
+    return rb_enc_from_index(rb_to_encoding_index(e));
+}
+KCX_API struct rb_encoding_kx *
+rb_find_encoding(KVALUE obj)
+{
+    if (!KORB_STRING_P(K(obj))) return rb_to_encoding(obj);
+    const char *const p = korb_strbuf_data(VAL2STR(K(obj))->buf);
+    char nm[128];
+    snprintf(nm, sizeof nm, "%.*s", (int)VAL2STR(K(obj))->len, p);
+    return rb_enc_find(nm);
+}
+KCX_API int
+rb_enc_mbminlen(struct rb_encoding_kx *enc)
+{
+    bool be;
+    const uint32_t u = korb_enc_fixed_unit(kcx_c()->vm, KCX_ENC_IDX(enc), &be);
+    return u ? (int)u : 1;
+}
+KCX_API int
+rb_enc_mbmaxlen(struct rb_encoding_kx *enc)
+{
+    const struct korb_vm *const vm = kcx_c()->vm;
+    const uint32_t i = KCX_ENC_IDX(enc);
+    bool be;
+    if (i == KORB_ENC_BINARY || i == KORB_ENC_USASCII || KORB_ENC_SB(vm, i)) return 1;
+    if (korb_enc_fixed_unit(vm, i, &be)) return 4;
+    if (korb_enc_is_sjis(vm, i)) return 2;
+    if (korb_enc_is_euc(vm, i)) return 3;
+    return 4;
+}
+/* the character at p: its length when valid, -1 invalid, -1-n when n more bytes are needed (ONIGENC_CONSTRUCT_MBCLEN_*) */
+KCX_API int
+rb_enc_precise_mbclen(const char *p, const char *e, struct rb_encoding_kx *enc)
+{
+    const struct korb_vm *const vm = kcx_c()->vm;
+    const uint32_t i = KCX_ENC_IDX(enc);
+    if (p >= e) return -2;
+    const uint32_t n = (uint32_t)(e - p);
+    const unsigned char b = (unsigned char)*p;
+    if (i == KORB_ENC_UTF8 || korb_enc_is_utf8_family(vm, i)) {
+        const uint32_t want = b < 0x80 ? 1 : b >= 0xC2 && b <= 0xDF ? 2 : b >= 0xE0 && b <= 0xEF ? 3 : b >= 0xF0 && b <= 0xF4 ? 4 : 0;
+        if (!want) return -1;
+        if (n < want) return korb_enc_bytes_valid(vm, i, p, n) || want > n ? -1 - (int)(want - n) : -1;
+        return korb_enc_bytes_valid(vm, i, p, want) ? (int)want : -1;
+    }
+    const uint32_t cl = korb_str_char_bytes(vm, i, (const unsigned char *)p, 0, n);
+    return korb_enc_bytes_valid(vm, i, p, cl) ? (int)cl : -1;
+}
+KCX_API int
+rb_enc_mbclen(const char *p, const char *e, struct rb_encoding_kx *enc)
+{
+    const int r = rb_enc_precise_mbclen(p, e, enc);
+    if (r > 0) return r;
+    const int min = rb_enc_mbminlen(enc);
+    return min <= e - p ? min : (int)(e - p ? e - p : 1);
+}
+KCX_API int rb_enc_fast_mbclen(const char *p, const char *e, struct rb_encoding_kx *enc) { return rb_enc_mbclen(p, e, enc); }
+KCX_API unsigned int
+rb_enc_codepoint_len(const char *p, const char *e, int *len, struct rb_encoding_kx *enc)
+{
+    CTX *const c = kcx_c();
+    if (p >= e) kcx_throw(c, kcx_raise_c(c, KORB_E_ARGUMENT, "empty string"));
+    const int r = rb_enc_precise_mbclen(p, e, enc);
+    if (r <= 0) kcx_throw(c, korb_raise(c, kcx_slots(c), KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", rb_enc_name(enc)));
+    uint32_t cl;
+    const unsigned int cp = KCX_ENC_IDX(enc) == KORB_ENC_UTF8 ? korb_utf8_decode(p, (uint32_t)(e - p), &cl)
+                          : korb_enc_codepoint_at(c->vm, KCX_ENC_IDX(enc), (const unsigned char *)p, 0, (uint32_t)(e - p), &cl);
+    if (len) *len = r;
+    return cp;
+}
+KCX_API KVALUE
+rb_enc_uint_chr(unsigned int code, struct rb_encoding_kx *enc)
+{
+    CTX *const c = kcx_c();
+    const KVALUE e = rb_enc_from_encoding(enc);
+    return W(kcx_send_name(c, K(rb_uint2inum(code)), "chr", 1, &e));
+}
+KCX_API int
+(rb_enc_mbcput)(unsigned int code, void *buf, struct rb_encoding_kx *enc)
+{
+    const KVALUE s = rb_enc_uint_chr(code, enc);
+    const KorbString *const str = VAL2STR(K(s));
+    memcpy(buf, korb_strbuf_data(str->buf), str->len);
+    return (int)str->len;
+}
+KCX_API int
+rb_enc_codelen(int code, struct rb_encoding_kx *enc)
+{
+    const uint32_t i = KCX_ENC_IDX(enc);
+    if (i == KORB_ENC_UTF8) {
+        if (code < 0 || code > 0x10FFFF) { CTX *const c = kcx_c(); kcx_throw(c, korb_raise(c, kcx_slots(c), KORB_E_ARGUMENT, 0, "invalid codepoint 0x%X in UTF-8", (unsigned)code)); }
+        return code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+    }
+    return (int)VAL2STR(K(rb_enc_uint_chr((unsigned int)code, enc)))->len;
+}
+/* char heads: walk from s */
+KCX_API char *
+rb_enc_left_char_head(const char *s, const char *p, const char *e, struct rb_encoding_kx *enc)
+{
+    const char *h = s;
+    while (h < p) {
+        const int l = rb_enc_mbclen(h, e, enc);
+        if (h + l > p) break;
+        h += l;
+    }
+    return (char *)(uintptr_t)h;
+}
+KCX_API char *
+rb_enc_right_char_head(const char *s, const char *p, const char *e, struct rb_encoding_kx *enc)
+{
+    const char *const h = rb_enc_left_char_head(s, p, e, enc);
+    return (char *)(uintptr_t)(h < p ? h + rb_enc_mbclen(h, e, enc) : h);
+}
+KCX_API char *
+rb_enc_prev_char(const char *s, const char *p, const char *e, struct rb_encoding_kx *enc)
+{
+    if (p <= s) return NULL;
+    return rb_enc_left_char_head(s, p - 1, e, enc);
+}
+KCX_API KVALUE rb_enc_default_external(void) { CTX *const c = kcx_c(); return W(kcx_send_name(c, kcx_const_path(c, "Encoding"), "default_external", 0, NULL)); }
+KCX_API KVALUE rb_enc_default_internal(void) { CTX *const c = kcx_c(); return W(kcx_send_name(c, kcx_const_path(c, "Encoding"), "default_internal", 0, NULL)); }
+KCX_API struct rb_encoding_kx *rb_default_external_encoding(void) { return rb_enc_from_index(rb_to_encoding_index(rb_enc_default_external())); }
+KCX_API struct rb_encoding_kx *rb_default_internal_encoding(void) { return rb_enc_from_index(rb_to_encoding_index(rb_enc_default_internal())); }
+KCX_API struct rb_encoding_kx *rb_locale_encoding(void) { return rb_default_external_encoding(); }
+KCX_API struct rb_encoding_kx *rb_filesystem_encoding(void) { return rb_default_external_encoding(); }
+KCX_API void rb_enc_set_index(KVALUE obj, int idx) { (void)rb_enc_associate_index(obj, idx); }
+KCX_API void rb_enc_copy(KVALUE dst, KVALUE src) { const int i = rb_enc_get_index(src); if (i >= 0) rb_enc_set_index(dst, i); }
+KCX_API struct rb_encoding_kx *
+rb_enc_compatible(KVALUE a, KVALUE b)
+{
+    CTX *const c = kcx_c();
+    const KVALUE args[2] = { a, b };
+    const KVALUE e = W(kcx_send_name(c, kcx_const_path(c, "Encoding"), "compatible?", 2, args));
+    return e == KQnil ? NULL : rb_enc_from_index(rb_to_encoding_index(e));
+}
+KCX_API struct rb_encoding_kx *
+rb_enc_check(KVALUE a, KVALUE b)
+{
+    struct rb_encoding_kx *const e = rb_enc_compatible(a, b);
+    if (!e) {
+        const int ia = rb_enc_get_index(a), ib = rb_enc_get_index(b);
+        const uint32_t ea = ia < 0 ? KORB_ENC_UTF8 : (uint32_t)ia, eb = ib < 0 ? KORB_ENC_UTF8 : (uint32_t)ib;
+        rb_raise(rb_eEncCompatError, "incompatible character encodings: %s and %s",   /* CRuby's rb_enc_inspect_name */
+                 ea == KORB_ENC_BINARY ? "BINARY (ASCII-8BIT)" : rb_enc_name(KCX_ENC(ea)),
+                 eb == KORB_ENC_BINARY ? "BINARY (ASCII-8BIT)" : rb_enc_name(KCX_ENC(eb)));
+    }
+    return e;
+}
+KCX_API KVALUE rb_enc_str_new_cstr(const char *ptr, struct rb_encoding_kx *enc) { return rb_enc_str_new(ptr, (long)strlen(ptr), enc); }
+KCX_API KVALUE rb_enc_str_buf_cat(KVALUE str, const char *ptr, long len, struct rb_encoding_kx *enc) { return rb_str_buf_append(str, rb_enc_str_new(ptr, len, enc)); }
+KCX_API KVALUE rb_external_str_new_with_enc(const char *ptr, long len, struct rb_encoding_kx *enc) { return rb_enc_str_new(ptr, len, enc); }
+KCX_API int
+rb_enc_str_coderange(KVALUE str)
+{
+    CTX *const c = kcx_c();
+    const korb_value v = K(str);
+    const KorbString *const s = VAL2STR(v);
+    const uint32_t i = KORB_STR_ENC(v);
+    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    if (korb_enc_ascii_compat_idx(c->vm, i)) {
+        uint32_t k = 0;
+        while (k < s->len && p[k] < 0x80) k++;
+        if (k == s->len) return 0x100000;              /* 7BIT */
+    }
+    return korb_enc_bytes_valid(c->vm, i, (const char *)p, s->len) ? 0x200000 : 0x300000;
+}
+KCX_API int rb_enc_str_asciionly_p(KVALUE str) { return rb_enc_str_coderange(str) == 0x100000; }
+KCX_API KVALUE rb_obj_encoding(KVALUE obj) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(obj), "encoding", 0, NULL)); }
+KCX_API KVALUE
+rb_str_encode(KVALUE str, KVALUE to, int ecflags, KVALUE ecopts)
+{
+    (void)ecflags;
+    CTX *const c = kcx_c();
+    const KVALUE a[2] = { to, ecopts };
+    return W(kcx_send_name(c, K(str), "encode", ecopts == KQnil ? 1 : 2, a));
+}
+static KVALUE kcx_conv_thunk(KVALUE p) { const KVALUE *const a = (const KVALUE *)(uintptr_t)p; CTX *const c = kcx_c(); return W(kcx_send_name(c, K(a[0]), "encode", 2, a + 1)); }
+KCX_API KVALUE
+rb_str_conv_enc(KVALUE str, struct rb_encoding_kx *from, struct rb_encoding_kx *to)
+{
+    if (!to || from == to) return str;
+    const KVALUE a[3] = { str, rb_enc_from_encoding(to), rb_enc_from_encoding(from ? from : rb_enc_get(str)) };
+    int st = 0;
+    const KVALUE r = rb_protect(kcx_conv_thunk, (KVALUE)(uintptr_t)a, &st);
+    if (st) { rb_set_errinfo(KQnil); return str; }   /* CRuby: the string as it was when it cannot convert */
+    return r;
+}
+KCX_API KVALUE rb_str_export_to_enc(KVALUE str, struct rb_encoding_kx *enc) { return rb_str_conv_enc(str, rb_enc_get(str), enc); }
 KCX_API KVALUE rb_external_str_new(const char *ptr, long len) { return rb_utf8_str_new(ptr, len); }
 KCX_API KVALUE
 rb_enc_sprintf(struct rb_encoding_kx *enc, const char *fmt, ...)

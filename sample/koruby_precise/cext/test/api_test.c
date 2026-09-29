@@ -3,6 +3,7 @@
  * returns, and run.sh diffs the two outputs (plus a STRESS+PURGE koruby run).
  * Each T.<name> exercises one API area; errors are observed from Ruby. */
 #include <ruby.h>
+#include <ruby/encoding.h>
 #include <errno.h>
 #include <string.h>
 
@@ -558,6 +559,59 @@ t_alloc_builtin(VALUE self)
     return rb_ary_new_from_args(4, rb_obj_class(m), rb_funcall(m, rb_intern("locked?"), 0), a, rb_obj_class(rb_obj_alloc(rb_cObject)));
 }
 static VALUE
+t_enc_find(VALUE self, VALUE name)
+{
+    const int i = rb_enc_find_index(StringValueCStr(name));
+    if (i < 0) return INT2FIX(i);
+    rb_encoding *const e = rb_enc_from_index(i);
+    return rb_ary_new_from_args(5, rb_str_new_cstr(rb_enc_name(e)), rb_enc_from_encoding(e), INT2FIX(rb_enc_mbminlen(e)),
+                                INT2FIX(rb_enc_mbmaxlen(e)), rb_enc_asciicompat(e) ? Qtrue : Qfalse);
+}
+static VALUE
+t_enc_chars(VALUE self, VALUE str)
+{
+    rb_encoding *const e = rb_enc_get(str);
+    const char *p = RSTRING_PTR(str), *const end = p + RSTRING_LEN(str);
+    const VALUE out = rb_ary_new();
+    while (p < end) {
+        const int r = rb_enc_precise_mbclen(p, end, e);
+        if (MBCLEN_CHARFOUND_P(r)) {
+            int len;
+            const unsigned int cp = rb_enc_codepoint_len(p, end, &len, e);
+            rb_ary_push(out, rb_ary_new_from_args(3, INT2FIX(len), UINT2NUM(cp), INT2FIX(rb_enc_codelen((int)cp, e))));
+            p += len;
+        } else {
+            rb_ary_push(out, rb_str_new_cstr(MBCLEN_NEEDMORE_P(r) ? "needmore" : "invalid"));
+            p += rb_enc_mbclen(p, end, e);
+        }
+    }
+    return out;
+}
+static VALUE
+t_enc_misc(VALUE self, VALUE str)
+{
+    rb_encoding *const e = rb_enc_get(str);
+    char buf[8];
+    const int n = rb_enc_mbcput(0x3042, buf, rb_utf8_encoding());
+    const char *const s = RSTRING_PTR(str);
+    const long len = RSTRING_LEN(str);
+    return rb_ary_new_from_args(7, INT2FIX(ENC_CODERANGE(str) == ENC_CODERANGE_7BIT ? 7 : ENC_CODERANGE(str) == ENC_CODERANGE_VALID ? 1 : 0),
+                                rb_str_new(buf, n), rb_enc_uint_chr(0x3044, rb_utf8_encoding()),
+                                LONG2NUM(rb_enc_left_char_head(s, s + len / 2, s + len, e) - s),
+                                LONG2NUM(rb_enc_right_char_head(s, s + len / 2, s + len, e) - s),
+                                INT2FIX(ENCODING_GET(str) == rb_enc_to_index(e)), rb_enc_str_asciionly_p(str) ? Qtrue : Qfalse);
+}
+static VALUE t_enc_check(VALUE self, VALUE a, VALUE b) { return rb_enc_from_encoding(rb_enc_check(a, b)); }
+static VALUE
+t_enc_conv(VALUE self, VALUE str)
+{
+    const VALUE e = rb_str_conv_enc(str, rb_utf8_encoding(), rb_enc_find("EUC-JP"));
+    const VALUE copy = rb_str_new_cstr("x");
+    rb_enc_copy(copy, e);
+    return rb_ary_new_from_args(4, e, rb_obj_encoding(copy), rb_str_encode(str, rb_str_new_cstr("UTF-16LE"), 0, Qnil),
+                                INT2FIX(rb_enc_get_index(ID2SYM(rb_intern("sym"))) == rb_usascii_encindex()));
+}
+static VALUE
 t_warn(VALUE self)
 {
     rb_category_warn(RB_WARN_CATEGORY_DEPRECATED, "dep %d", 1);
@@ -677,6 +731,11 @@ Init_cext_api_test(void)
     rb_define_module_function(mT, "thread_local", t_thread_local, 1);
     rb_define_module_function(mT, "big", t_big, 1);
     rb_define_module_function(mT, "warn", t_warn, 0);
+    rb_define_module_function(mT, "enc_find", t_enc_find, 1);
+    rb_define_module_function(mT, "enc_chars", t_enc_chars, 1);
+    rb_define_module_function(mT, "enc_misc", t_enc_misc, 1);
+    rb_define_module_function(mT, "enc_check", t_enc_check, 2);
+    rb_define_module_function(mT, "enc_conv", t_enc_conv, 1);
     rb_define_module_function(mT, "catch", t_catch, 1);
     rb_define_module_function(mT, "iter_break", t_iter_break, 1);
     rb_define_module_function(mT, "alloc_builtin", t_alloc_builtin, 0);

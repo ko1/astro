@@ -6121,13 +6121,18 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   エンコーディングは UTF-8 / US-ASCII / BINARY の 3 つだけを rb_encoding として渡している。
 - Fiber の切り替えで `c->cext_top` / `c->cext_jmp` を退避していない（green thread はした）。拡張の中から Ruby を呼び、
   そこで Fiber.yield（Enumerator#next など）するとフレームの鎖が混ざる。
-- gem の拡張で足りない API（2026-09-29、gem install で拡張抜きになったもの。ビルドのエラーから）:
+- gem の拡張で足りない API（2026-09-29、gem install で拡張抜きになったもの）:
   strscan: Onigmo の構造体（`RREGEXP_PTR`・`onig_search`・`onig_region_*`）/
-  msgpack: `ENCODING_GET_INLINED`・`ENC_CODERANGE_*`・`RSTRUCT_GET`・`rb_big2ll`・`rb_hash_dup`・`rb_str_encode`・`rb_struct_*` ほか /
-  date: `RTYPEDDATA`・`rb_cmpint`・`rb_marshal_load`・`rb_str_format`・`rb_copy_generic_ivar`・`STRNCASECMP` ほか / json: `rb_str_new_shared`・`rb_obj_hide`・
-  `RB_ENC_CODERANGE`・`rb_proc_arity` ほか / stringio・io-console: エンコーディング API 一式・`FMODE_*`・rb_io_* 一式。
+  stringio: `rb_io_enc_t`・`rb_io_extract_modeenc`・`FMODE_*`・`RBASIC`・`FL_USER*`・`rb_io_puts/print/printf`・`rb_rs` ほか /
+  io-console: `rb_io_t` の `pathv`・`rb_io_gets/getbyte/write/close`・`rb_stdin/stderr`・`rb_default_rs`・`RB_WAITFD_IN` ほか。
 - extconf.rb を koruby で走らせると gem の ext/ に code_store/ ができる（AOT のストアが CWD 相対）。
 - `rb_block_call` はいつも catch で包む（rb_iter_break のため）。その固定費（proc 1 個 + catch）を測る。
+- **MatchData が照合元の String を共有している**（CRuby は照合時の内容の凍結コピー = COW）。`m = re.match(s); s[0, 6] = " " * 6;
+  m[1]` が変わった後の文字列から読む。date の C 拡張（date_parse の subx: 照合 → 照合範囲を空白で上書き → m から捕獲を読む）
+  が Date.parse で誤った値を返す（Sep → mon 13）。korb_re_build_md で凍結していない subject を複製すると Date._parse が
+  CRuby と一致するのは確認済み（2026-09-29、実験は戻した）。単純な複製は照合ごとに O(n) で、ブロック付き gsub が大きな
+  文字列で二乗になりうるので、KorbStrBuf の共有 + 書き込み時複製（CHILLED と同じく凍結ビットで関所を通す）を設計する。
+  それまで gem install は date の拡張を入れない（operating_system.rb の KNOWN_BAD）。
 - `rb_backref_get` / `rb_backref_set` は何もしない。拡張から Regexp#match を呼んだとき呼び出し元の $~ が変わるかは未確認（date を動かすときに見る）。
 - pin は gc_copy だけ（`aro_gc_alloc_byte_pinned_raw`）。他の moving backend では RSTRING_PTR が NotImplementedError。
   large object の登録がソート配列への挿入（O(n)）なので、pin が数万を超えると遅くなる見込み（未計測）。
