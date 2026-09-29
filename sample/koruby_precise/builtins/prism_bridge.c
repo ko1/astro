@@ -6,8 +6,9 @@
  * これで prism の Ruby ライブラリ一式 —— Prism::Translation::Ripper を含む ——
  * が無改造で載る (= Ripper が使えるようになる)。
  *
- * __prism_dump(kind, source, options) -> String (serialize されたバイト列)
- *   kind: 0 parse / 1 lex / 2 parse_lex / 3 parse_comments / 4 success?
+ * __prism_dump(kind, source, options[, format]) -> String (serialize されたバイト列)
+ *   kind: 0 parse / 1 lex / 2 parse_lex / 3 parse_comments / 4 success? / 5 version
+ *         6 errors_format (raise_error:) → nil (エラー無し) か "<level byte><enc>\0<message>"
  * options は prism の options 形式のバイト列 (Ruby 側が組み立てる) か nil。 */
 static RESULT
 korb_bi_prism_dump(CTX *c, VALUE *slots, VALUE_SLICE args)
@@ -47,21 +48,37 @@ korb_bi_prism_dump(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_str_new(c, slots, v, (uint32_t)strlen(v));
     }
     if (kind == 4) {
-        const bool ok = pm_parse_success_p(src, slen, opts);
+        const bool ok = pm_serialize_parse_success_p(src, slen, opts);
         free(src); free(opts);
         return RESULT_OK(ok ? KORB_TRUE : KORB_FALSE);
     }
 
-    pm_buffer_t buffer;
-    if (!pm_buffer_init(&buffer)) { fprintf(stderr, "koruby_precise: oom (prism buffer)\n"); abort(); }
-    switch (kind) {
-      case 1:  pm_serialize_lex(&buffer, src, slen, opts); break;
-      case 2:  pm_serialize_parse_lex(&buffer, src, slen, opts); break;
-      case 3:  pm_serialize_parse_comments(&buffer, src, slen, opts); break;
-      default: pm_serialize_parse(&buffer, src, slen, opts); break;
+    pm_buffer_t *const buffer = pm_buffer_new();
+    if (kind == 6) {
+        const VALUE fv = VALUE_SLICE_LEN(args) > 3 ? VALUE_SLICE_GET(args, 3) : KORB_NIL;
+        const pm_errors_format_type_t fmt = FIXNUM_P(fv) ? (pm_errors_format_type_t)FIX2LONG(fv) : PM_ERRORS_FORMAT_PLAIN;
+        const int8_t level = pm_serialize_parse_errors_format(buffer, src, slen, opts, fmt);
+        free(src); free(opts);
+        if (level < 0) { pm_buffer_free(buffer); return RESULT_OK(KORB_NIL); }
+        const size_t blen = pm_buffer_length(buffer);
+        char *const out = malloc(blen + 1);
+        if (!out) { fprintf(stderr, "koruby_precise: oom (prism errors)\n"); abort(); }
+        out[0] = (char)level;
+        memcpy(out + 1, pm_buffer_value(buffer), blen);
+        pm_buffer_free(buffer);
+        const RESULT r = korb_str_new(c, slots, out, (uint32_t)(blen + 1));
+        free(out);
+        if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
+        return r;
     }
-    const RESULT r = korb_str_new(c, slots, pm_buffer_value(&buffer), (uint32_t)pm_buffer_length(&buffer));
-    pm_buffer_free(&buffer);
+    switch (kind) {
+      case 1:  pm_serialize_lex(buffer, src, slen, opts); break;
+      case 2:  pm_serialize_parse_lex(buffer, src, slen, opts); break;
+      case 3:  pm_serialize_parse_comments(buffer, src, slen, opts); break;
+      default: pm_serialize_parse(buffer, src, slen, opts); break;
+    }
+    const RESULT r = korb_str_new(c, slots, pm_buffer_value(buffer), (uint32_t)pm_buffer_length(buffer));
+    pm_buffer_free(buffer);
     free(src); free(opts);
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
     return r;

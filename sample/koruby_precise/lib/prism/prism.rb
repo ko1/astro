@@ -18,13 +18,15 @@ module Prism
   KIND_PARSE_LEX = 2
   KIND_PARSE_COMMENTS = 3
   KIND_SUCCESS = 4
-  private_constant :KIND_PARSE, :KIND_LEX, :KIND_PARSE_LEX, :KIND_PARSE_COMMENTS, :KIND_SUCCESS
+  KIND_ERRORS_FORMAT = 6
+  private_constant :KIND_PARSE, :KIND_LEX, :KIND_PARSE_LEX, :KIND_PARSE_COMMENTS, :KIND_SUCCESS, :KIND_ERRORS_FORMAT
 
   class << self
     def dump(source, **options)
-      dumped = __prism_dump(KIND_PARSE, source_bytes(source), dump_options(options))
-      dumped.freeze if options.fetch(:freeze, false)
-      dumped
+      code = source_bytes(source)
+      format_type = raise_error_format_type(options)
+      raise_error(code, options, format_type) if format_type
+      dump_common(code, options)
     end
 
     def dump_file(filepath, **options)
@@ -34,7 +36,10 @@ module Prism
 
     def lex(code, **options)
       code = source_bytes(code)
-      Serialize.load_lex(code, __prism_dump(KIND_LEX, code, dump_options(options)), options.fetch(:freeze, false))
+      format_type = raise_error_format_type(options)
+      result = Serialize.load_lex(code, __prism_dump(KIND_LEX, code, dump_options(options)), options.fetch(:freeze, false))
+      raise_error(code, options, format_type) if format_type && result.failure?
+      result
     end
 
     def lex_file(filepath, **options)
@@ -44,7 +49,10 @@ module Prism
 
     def parse(code, **options)
       code = source_bytes(code)
-      Serialize.load_parse(code, dump(code, **options), options.fetch(:freeze, false))
+      format_type = raise_error_format_type(options)
+      result = Serialize.load_parse(code, dump_common(code, options), options.fetch(:freeze, false))
+      raise_error(code, options, format_type) if format_type && result.failure?
+      result
     end
 
     def parse_file(filepath, **options)
@@ -58,6 +66,8 @@ module Prism
 
     def parse_comments(code, **options)
       code = source_bytes(code)
+      format_type = raise_error_format_type(options)
+      raise_error(code, options, format_type) if format_type
       Serialize.load_parse_comments(code, __prism_dump(KIND_PARSE_COMMENTS, code, dump_options(options)),
                                     options.fetch(:freeze, false))
     end
@@ -69,8 +79,11 @@ module Prism
 
     def parse_lex(code, **options)
       code = source_bytes(code)
-      Serialize.load_parse_lex(code, __prism_dump(KIND_PARSE_LEX, code, dump_options(options)),
-                               options.fetch(:freeze, false))
+      format_type = raise_error_format_type(options)
+      result = Serialize.load_parse_lex(code, __prism_dump(KIND_PARSE_LEX, code, dump_options(options)),
+                                        options.fetch(:freeze, false))
+      raise_error(code, options, format_type) if format_type && result.failure?
+      result
     end
 
     def parse_lex_file(filepath, **options)
@@ -79,7 +92,11 @@ module Prism
     end
 
     def parse_success?(code, **options)
-      __prism_dump(KIND_SUCCESS, source_bytes(code), dump_options(options))
+      code = source_bytes(code)
+      format_type = raise_error_format_type(options)
+      success = __prism_dump(KIND_SUCCESS, code, dump_options(options))
+      raise_error(code, options, format_type) if format_type && !success
+      success
     end
 
     def parse_failure?(code, **options)
@@ -96,7 +113,7 @@ module Prism
     end
 
     def profile(source, **options)
-      __prism_dump(KIND_PARSE, source_bytes(source), dump_options(options))
+      dump(source, **options)
       nil
     end
 
@@ -109,9 +126,60 @@ module Prism
 
     # C 拡張は StringValue() でソースを取る: String そのものでなくてもよい
     # (rspec は EncodedString というラッパを渡してくる)。
+    # Serialize の Source は元の encoding のまま渡す (prism/ffi.rb と同じ)。
     def source_bytes(source)
-      str = String.try_convert(source) || source.to_s
-      str.b
+      String.try_convert(source) || source.to_s
+    end
+
+    def dump_common(code, options)
+      dumped = __prism_dump(KIND_PARSE, code, dump_options(options))
+      dumped.freeze if options.fetch(:freeze, false)
+      dumped
+    end
+
+    # raise_error: の値を prism の pm_errors_format_type_t に (prism/ffi.rb と同じ判定)
+    def raise_error_format_type(options)
+      case (value = options.delete(:raise_error))
+      when nil, false
+        nil
+      when true
+        if $stderr.respond_to?(:tty?) && $stderr.tty?
+          no_color = ENV["NO_COLOR"]
+          (no_color.nil? || no_color.empty?) ? 3 : 2
+        else
+          1
+        end
+      when :plain then 1
+      when :style then 2
+      when :color then 3
+      when Symbol
+        raise ArgumentError, "invalid raise_error value: #{value}"
+      else
+        raise TypeError, "wrong argument type #{value.class} (expected Symbol)"
+      end
+    end
+
+    # エラーがあれば prism の整形した文言で例外にする。無ければ nil
+    def raise_error(code, options, format_type)
+      out = __prism_dump(KIND_ERRORS_FORMAT, code, dump_options(options), format_type)
+      return if out.nil?
+
+      level = out.getbyte(0)
+      encoding_name, _, message = out.byteslice(1, out.bytesize - 1).partition("\0")
+      case level
+      when 0 # syntax
+        error = SyntaxError.new(message.force_encoding(encoding_name))
+        error.instance_variable_set(:@path, options.fetch(:filepath, ""))
+        raise error
+      when 1 # argument
+        raise ArgumentError, message.force_encoding(encoding_name)
+      when 2 # load
+        error = LoadError.new(message.force_encoding(Encoding.find("locale")))
+        error.instance_variable_set(:@path, nil)
+        raise error
+      else
+        raise "Unknown error level: #{level}"
+      end
     end
 
     # -X の 1 文字ずつがビット (prism/ffi.rb と同じ表)
@@ -132,21 +200,39 @@ module Prism
       end
     end
 
+    # "current" は走っている ruby の文法、"nearest" は知らなければ近い端 (prism/ffi.rb と同じ)
     def dump_options_version(version)
-      # "current" は「走っている ruby の文法で」の意 (prism の Ripper 翻訳器が
-      # 使う)。koruby が抱える prism は最新版なので 3.5 以降は 0 と同じ。
-      version = RUBY_VERSION if version == "current"
       case version
-      when nil, "latest" then 0
-      when /\A3\.3(\.\d+)?\z/ then 1
-      when /\A3\.4(\.\d+)?\z/ then 2
-      when /\A3\.5(\.\d+)?\z/, /\A4\.\d+(\.\d+)?\z/ then 0
-      else raise ArgumentError, "invalid version: #{version}"
+      when "current"
+        version_string_to_number(RUBY_VERSION) || raise(CurrentVersionError, RUBY_VERSION)
+      when "latest", nil
+        0
+      when "nearest"
+        dump = version_string_to_number(RUBY_VERSION)
+        return dump if dump
+        RUBY_VERSION < "3.3" ? version_string_to_number("3.3") : 0
+      else
+        version_string_to_number(version) || raise(ArgumentError, "invalid version: #{version}")
       end
     end
 
+    def version_string_to_number(version)
+      case version
+      when /\A3\.3(\.\d+)?\z/ then 1
+      when /\A3\.4(\.\d+)?\z/ then 2
+      when /\A3\.5(\.\d+)?\z/, /\A4\.0(\.\d+)?\z/ then 3
+      when /\A4\.1(\.\d+)?\z/ then 4
+      end
+    end
+
+    DUMP_OPTIONS_KEYS = [:command_line, :encoding, :filepath, :freeze, :frozen_string_literal, :line, :main_script, :partial_script, :scopes, :version].freeze
+    private_constant :DUMP_OPTIONS_KEYS
+
     # options を prism の受け取るバイト列に詰める (prism/ffi.rb と同じ順序)。
     def dump_options(options)
+      unknown_keys = options.keys - DUMP_OPTIONS_KEYS
+      raise ArgumentError, "unknown keyword: #{unknown_keys.first}" unless unknown_keys.empty?
+
       template = +""
       values = []
 

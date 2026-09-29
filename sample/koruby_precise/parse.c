@@ -107,7 +107,7 @@ struct kp_hoist {
 };
 
 struct kp_ctx {
-    pm_parser_t *parser;
+    const pm_parser_t *parser;
     CTX *c;
     const char *fname;
     struct kp_frame *frame;
@@ -208,7 +208,7 @@ kp_src_enc(CTX *c, const pm_parser_t *parser, const char *const src, const size_
      * comment block; CRuby only on the first line (second after a shebang), so
      * the position is checked here.  `seed` is the encoding the source already
      * had (eval's String); NULL = the parser default. */
-    const char *const name = (parser->encoding && kp_enc_comment_first_line(src, len)) ? parser->encoding->name : NULL;
+    const char *const name = kp_enc_comment_first_line(src, len) ? pm_parser_encoding_name(parser) : NULL;
     /* -K<letter> sets the script encoding too, unless a magic comment already
      * picked one. */
     if (OPTION.kcode && (name == NULL || strcmp(name, "UTF-8") == 0))
@@ -358,12 +358,16 @@ static bool kp_no_splat_p(struct pm_node *const *nodes, size_t n) {
 
 /* ---------------------------------------------------------------------- */
 
+static pm_line_column_t
+kp_line_column(const pm_parser_t *const parser, const uint32_t offset)
+{
+    return pm_line_offset_list_line_column(pm_parser_line_offsets(parser), offset, pm_parser_start_line(parser));
+}
+
 static uint32_t
 kp_line(struct kp_ctx *tc, const pm_node_t *node)
 {
-    const int32_t line = pm_newline_list_line(&tc->parser->newline_list,
-                                             node->location.start,
-                                             tc->parser->start_line);
+    const int32_t line = kp_line_column(tc->parser, node->location.start).line;
     return (uint32_t)line;                  /* eval can set a negative first line: kept as-is, printed signed */
 }
 
@@ -374,10 +378,8 @@ kp_line(struct kp_ctx *tc, const pm_node_t *node)
 static void
 kp_reg_srcrange(struct kp_ctx *tc, NODE *n, const pm_node_t *node)
 {
-    const pm_newline_list_t *const nl = &tc->parser->newline_list;
-    const int32_t sl = tc->parser->start_line;
-    const pm_line_column_t beg = pm_newline_list_line_column(nl, node->location.start, sl);
-    const pm_line_column_t end = pm_newline_list_line_column(nl, node->location.end, sl);
+    const pm_line_column_t beg = kp_line_column(tc->parser, node->location.start);
+    const pm_line_column_t end = kp_line_column(tc->parser, node->location.start + node->location.length);
     korb_reg_srcrange(tc->c->vm, n, beg.column, (uint32_t)end.line, end.column);
 }
 
@@ -408,8 +410,8 @@ kp_unsupported(struct kp_ctx *tc, const pm_node_t *node, const char *what)
 static uint32_t
 kp_intern_cid(struct kp_ctx *tc, pm_constant_id_t cid)
 {
-    pm_constant_t *ct = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, cid);
-    return korb_intern(tc->c->vm, (const char *)ct->start, ct->length);
+    const pm_constant_t *const ct = pm_parser_constant(tc->parser, cid);
+    return korb_intern(tc->c->vm, (const char *)pm_constant_start(ct), pm_constant_length(ct));
 }
 
 /* Full dotted name of a constant-path parent ("Net::HTTP" for `class Net::HTTP::Get`),
@@ -434,11 +436,12 @@ kp_intern_cpath(struct kp_ctx *tc, const pm_node_t *node)
         const pm_constant_id_t cid = PM_NODE_TYPE_P(chain[i], PM_CONSTANT_READ_NODE)
             ? ((const pm_constant_read_node_t *)chain[i])->name
             : ((const pm_constant_path_node_t *)chain[i])->name;
-        pm_constant_t *const ct = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, cid);
-        if (len + ct->length + 2 >= sizeof buf) return 0;
+        const pm_constant_t *const ct = pm_parser_constant(tc->parser, cid);
+        const size_t clen = pm_constant_length(ct);
+        if (len + clen + 2 >= sizeof buf) return 0;
         if (len) { buf[len++] = ':'; buf[len++] = ':'; }
-        memcpy(buf + len, ct->start, ct->length);
-        len += (uint32_t)ct->length;
+        memcpy(buf + len, pm_constant_start(ct), clen);
+        len += (uint32_t)clen;
     }
     return korb_intern(tc->c->vm, buf, len);
 }
@@ -1136,8 +1139,8 @@ build_rescue_chain(struct kp_ctx *tc, const pm_rescue_node_t *rc)
 static bool
 kp_name_is_bindable(struct kp_ctx *tc, pm_constant_id_t cid)
 {
-    const pm_constant_t *ct = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, cid);
-    return !(ct->length > 0 && ct->start[0] == '_');
+    const pm_constant_t *const ct = pm_parser_constant(tc->parser, cid);
+    return !(pm_constant_length(ct) > 0 && pm_constant_start(ct)[0] == '_');
 }
 
 /* CRuby forbids variable binding inside an alternative pattern (`a | b`), save
@@ -1297,8 +1300,8 @@ build_pattern_desc_r(struct kp_ctx *tc, const pm_node_t *pat)
                 p->bind_off = kp_pat_slot(tc, fp->left->expression, lt->name, lt->depth); bake_add(tc, &p->bind_off);
             }
             int32_t right_off = INT32_MIN;                        /* trailing `*post` slot (npost holds it) */
-            if (fp->right && PM_NODE_TYPE_P(fp->right, PM_SPLAT_NODE)) {
-                const pm_splat_node_t *rsp = (const pm_splat_node_t *)fp->right;
+            if (fp->right) {
+                const pm_splat_node_t *rsp = fp->right;
                 if (rsp->expression && PM_NODE_TYPE_P(rsp->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
                     const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)rsp->expression;
                     right_off = kp_pat_slot(tc, rsp->expression, lt->name, lt->depth);
@@ -1332,8 +1335,8 @@ build_pattern_desc_r(struct kp_ctx *tc, const pm_node_t *pat)
                     for (size_t j = 0; j < tc->frame->locals->size; j++) {
                         const pm_constant_id_t lid = tc->frame->locals->ids[j];
                         if (lid == 0) continue;            /* anonymous `*` placeholder slot */
-                        pm_constant_t *ct = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, lid);
-                        if (ct->length == klen && memcmp(ct->start, kname, klen) == 0) { li = (int32_t)j; break; }
+                        const pm_constant_t *const ct = pm_parser_constant(tc->parser, lid);
+                        if (pm_constant_length(ct) == klen && memcmp(pm_constant_start(ct), kname, klen) == 0) { li = (int32_t)j; break; }
                     }
                     if (li >= 0) li += (int32_t)kp_it_shift(tc->frame);
                     if (li < 0) { ok = false; break; }
@@ -1656,12 +1659,11 @@ build_locals_info(struct kp_ctx *tc)
 /* Build Proc#parameters metadata once at parse time (cold; never touched on the
  * call/yield hot path).  Stored on node_entry.param_info.  Raw kinds (req kept
  * as req); #parameters converts positional req→opt for non-lambda procs. */
-/* `&nil` (Ruby 4.1): a nameless BlockParameterNode flagged by the vendored
- * prism (PM_PARAMETER_FLAGS_NO_BLOCK) — declares that no block is taken. */
+/* `&nil` (Ruby 4.1): declares that no block is taken. */
 static inline bool
-kp_no_block_param(const pm_block_parameter_node_t *const b)
+kp_no_block_param(const pm_node_t *const b)
 {
-    return b != NULL && PM_NODE_FLAG_P(b, PM_PARAMETER_FLAGS_NO_BLOCK);
+    return b != NULL && PM_NODE_TYPE_P(b, PM_NO_BLOCK_PARAMETER_NODE);
 }
 
 static void *
@@ -1830,8 +1832,8 @@ kp_numbered_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *const l
         want[i] = 0;
         for (size_t k = 0; k < locals->size && want[i] == 0; k++) {
             if (locals->ids[k] == 0) continue;
-            const pm_constant_t *const ct = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, locals->ids[k]);
-            if (ct->length == 2 && memcmp(ct->start, nm, 2) == 0) { want[i] = locals->ids[k]; already &= (k == i); }
+            const pm_constant_t *const ct = pm_parser_constant(tc->parser, locals->ids[k]);
+            if (pm_constant_length(ct) == 2 && memcmp(pm_constant_start(ct), nm, 2) == 0) { want[i] = locals->ids[k]; already &= (k == i); }
         }
         if (want[i] == 0) return NULL;                   /* `_i` not declared: leave the layout alone */
     }
@@ -3176,8 +3178,9 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     if (ps) {
         if (kp_no_block_param(ps->block)) { /* `&nil`: no local, no forwarding — korb_method.no_block carries it */ }
         else if (ps->block) {
-            if (!ps->block->name) anon_blk_param = true;
-            else                  blk_param_name = ps->block->name;
+            const pm_constant_id_t bn = ((const pm_block_parameter_node_t *)ps->block)->name;
+            if (!bn) anon_blk_param = true;
+            else     blk_param_name = bn;
         }
         /* posts without a rest = required params after optionals, e.g. `def m(a=1, b)`:
          * supported — they bind from the tail, optionals fill the middle. */
@@ -4229,8 +4232,8 @@ kp_hkey_of(struct kp_ctx *tc, const pm_node_t *key, struct kp_hkey *out)
         return true;
     }
     if (PM_NODE_TYPE_P(key, PM_INTEGER_NODE) || PM_NODE_TYPE_P(key, PM_FLOAT_NODE)) {
-        out->txt = (const char *)key->location.start;
-        out->len = (size_t)(key->location.end - key->location.start);
+        out->txt = (const char *)pm_parser_start(tc->parser) + key->location.start;
+        out->len = key->location.length;
         out->kind = 2;
         return true;
     }
@@ -4643,10 +4646,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_integer_node_t *in = (const pm_integer_node_t *)node;
         korb_sword_t v;
         if (!kp_integer_value(&in->value, &v)) {       /* beyond Fixnum → bake source digits, rebuild Bignum at eval */
-            size_t slen = (size_t)(node->location.end - node->location.start);
+            const size_t slen = node->location.length;
             char *buf = malloc(slen + 1);
             if (!buf) abort();
-            memcpy(buf, node->location.start, slen);
+            memcpy(buf, pm_parser_start(tc->parser) + node->location.start, slen);
             buf[slen] = '\0';
             return ALLOC_node_bignum(buf, (uint32_t)slen);
         }
@@ -4763,9 +4766,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             PM_NODE_TYPE_P(al->new_name, PM_SYMBOL_NODE)) {
             const pm_symbol_node_t *sn = (const pm_symbol_node_t *)al->new_name;
             const pm_constant_id_t cid =
-                pm_constant_pool_find(&tc->parser->constant_pool,
-                                      pm_string_source(&sn->unescaped),
-                                      pm_string_length(&sn->unescaped));
+                pm_parser_constant_find(tc->parser,
+                                        pm_string_source(&sn->unescaped),
+                                        pm_string_length(&sn->unescaped));
             if (cid != 0) tc->eval_aliases[tc->eval_alias_cnt++] = (uint32_t)cid;
         }
         NODE *na = ALLOC_node_alias(nm, om, -1 - tc->chain, kp_line(tc, node));   /* self (the class) at base[-1] */
@@ -6514,66 +6517,39 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
 /* ---------------------------------------------------------------------- */
 
-/* Keep the parser's first diagnostic (with the line it points at) for the
- * SyntaxError the eval path raises — "syntax error in eval string" alone tells
- * the program nothing. */
 static void
-kp_stash_syntax_msg(CTX *c, const pm_parser_t *parser, const char *fname)
+kp_diag_first(const pm_diagnostic_t *const d, void *const data)
 {
-    const pm_diagnostic_t *const d0 = (const pm_diagnostic_t *)parser->error_list.head;
-    if (d0 == NULL) return;
-    /* CRuby's shape (prism's own formatter):
-     *   file:LINE: syntax error(s) found
-     *   > LINE | <the source line>
-     *          |    ^ <what went wrong>
-     * Several diagnostics on one line share the source line. */
-    static char buf[4096];
-    size_t n = 0;
-    /* snprintf returns what it WOULD have written, so `n +=` can run past the
-     * buffer and make the next `sizeof buf - n` underflow to a huge size_t —
-     * _FORTIFY_SOURCE then aborts the process.  A 16 KB source line in an eval
-     * did exactly that.  Clamp on every append. */
-    #define KP_MSG_APPEND(...) do {                                            \
-        if (n + 1 < sizeof buf) {                                              \
-            const int w_ = snprintf(buf + n, sizeof buf - n, __VA_ARGS__);     \
-            if (w_ > 0) n = (n + (size_t)w_ < sizeof buf) ? n + (size_t)w_     \
-                                                          : sizeof buf - 1;    \
-        }                                                                      \
-    } while (0)
-    const int32_t line0 = pm_newline_list_line(&parser->newline_list, d0->location.start, parser->start_line);
-    KP_MSG_APPEND("%s:%d: syntax error%s found\n",
-                  fname ? fname : "(eval)", line0,
-                  parser->error_list.size > 1 ? "s" : "");
-    int32_t shown = -1;
-    for (const pm_diagnostic_t *d = d0; d != NULL && n + 64 < sizeof buf;
-         d = (const pm_diagnostic_t *)d->node.next) {
-        const int32_t line = pm_newline_list_line(&parser->newline_list, d->location.start, parser->start_line);
-        /* the line's text, without its newline */
-        const size_t lidx = (size_t)(line - parser->start_line);
-        const uint8_t *const lstart = (lidx < parser->newline_list.size)
-                                    ? parser->start + parser->newline_list.offsets[lidx] : parser->start;
-        const uint8_t *lend = lstart;
-        while (lend < parser->end && *lend != '\n') lend++;
-        const int gutter = snprintf(NULL, 0, "%d", line);
-        if (line != shown) {
-            size_t ltext = (size_t)(lend - lstart);       /* a long line would fill the whole buffer */
-            if (ltext > 200) ltext = 200;
-            KP_MSG_APPEND("> %d | %.*s\n", line, (int)ltext, (const char *)lstart);
-            shown = line;
-        }
-        size_t col = (size_t)(d->location.start - lstart);
-        if (col > 200) col = 200;
-        KP_MSG_APPEND("%*s | ", gutter + 2, "");
-        for (size_t k = 0; k < col && n + 2 < sizeof buf; k++) buf[n++] = ' ';
-        size_t span = (size_t)(d->location.end - d->location.start);   /* ^~~~ covers the offending text */
-        if (span > 80) span = 80;
-        if (n + 2 < sizeof buf) buf[n++] = '^';
-        for (size_t k = 1; k < span && n + 2 < sizeof buf; k++) buf[n++] = '~';
-        KP_MSG_APPEND(" %s\n", d->message);
-    }
-    #undef KP_MSG_APPEND
-    buf[n < sizeof buf ? n : sizeof buf - 1] = '\0';
-    c->vm->last_syntax_msg = buf;
+    const pm_diagnostic_t **const first = data;
+    if (*first == NULL) *first = d;
+}
+
+static int32_t
+kp_first_error_line(const pm_parser_t *const parser)
+{
+    const pm_diagnostic_t *d0 = NULL;
+    pm_parser_errors_each(parser, kp_diag_first, &d0);
+    return d0 ? kp_line_column(parser, pm_diagnostic_location(d0).start).line : 0;
+}
+
+/* Keep the parser's diagnostics for the SyntaxError the eval path raises, in
+ * prism's own wording and layout (what CRuby's message is made of). */
+static void
+kp_stash_syntax_msg(CTX *c, const pm_parser_t *parser)
+{
+    if (pm_parser_errors_size(parser) == 0) return;
+    static char *msg = NULL;   /* last_syntax_msg borrows it until the next parse error */
+    pm_buffer_t *const buffer = pm_buffer_new();
+    pm_errors_format(parser, buffer, PM_ERRORS_FORMAT_PLAIN);
+    const size_t len = pm_buffer_length(buffer);
+    char *const m = malloc(len + 1);
+    if (!m) abort();
+    memcpy(m, pm_buffer_value(buffer), len);
+    m[len] = '\0';
+    pm_buffer_free(buffer);
+    free(msg);
+    msg = m;
+    c->vm->last_syntax_msg = msg;
 }
 
 /* An explicit `# frozen_string_literal: false` opts the file out of chilled
@@ -6608,52 +6584,57 @@ kp_fsl_is(const char *src, size_t len, bool want_true)
 static bool kp_fsl_false(const char *src, size_t len) { return kp_fsl_is(src, len, false); }
 static bool kp_fsl_true(const char *src, size_t len)  { return kp_fsl_is(src, len, true); }
 
+static void
+kp_parser_free(pm_parser_t *const parser, pm_arena_t *const arena, pm_options_t *const options)
+{
+    pm_parser_free(parser);
+    pm_arena_free(arena);   /* the AST lives in the arena */
+    pm_options_free(options);
+}
+
 NODE *
 koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, bool exit_on_error,
                        const char *src_enc, uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len,
                        bool in_eval)
 {
-    pm_parser_t parser;
-    pm_options_t options = { 0 };
-    if (OPTION.frozen_literals) pm_options_frozen_string_literal_set(&options, true);   /* --enable-frozen-string-literal */
-    pm_options_filepath_set(&options, fname);
+    pm_options_t *const options = pm_options_new();
+    if (OPTION.frozen_literals) pm_options_frozen_string_literal_set(options, true);   /* --enable-frozen-string-literal */
+    pm_options_filepath_set(options, fname);
     /* eval(str): the program starts in the STRING's encoding, which a magic
      * comment on the first line may then override (prism applies the same
      * first-line rule CRuby does).  NULL = the parser's own default (UTF-8). */
-    if (src_enc) pm_options_encoding_set(&options, src_enc);
-    pm_options_line_set(&options, first_line);
+    if (src_enc) pm_options_encoding_set(options, src_enc);
+    pm_options_line_set(options, first_line);
 
-    pm_parser_init(&parser, (const uint8_t *)src, len, &options);
-    pm_node_t *root = pm_parse(&parser);
+    pm_arena_t *const arena = pm_arena_new();
+    pm_parser_t *const parser = pm_parser_new(arena, (const uint8_t *)src, len, options);
+    pm_node_t *root = pm_parse(parser);
 
-    if (parser.error_list.size > 0) {
+    if (pm_parser_errors_size(parser) > 0) {
         if (!exit_on_error) {                        /* eval(str): return NULL so the caller raises SyntaxError */
-            kp_stash_syntax_msg(c, &parser, fname);         /* hand the parser's own wording to the SyntaxError */
-            pm_node_destroy(&parser, root);
-            pm_parser_free(&parser);
-            pm_options_free(&options);
+            kp_stash_syntax_msg(c, parser);         /* hand the parser's own wording to the SyntaxError */
+            kp_parser_free(parser, arena, options);
             return NULL;
         }
         /* main program: CRuby-compatible exit path — SyntaxError → stderr + exit 1.
          * Same block eval's SyntaxError#message carries, then the summary line
          * CRuby ends with. */
-        kp_stash_syntax_msg(c, &parser, fname);
-        const pm_diagnostic_t *const d0 = (const pm_diagnostic_t *)parser.error_list.head;
-        const int32_t line0 = d0 ? pm_newline_list_line(&parser.newline_list, d0->location.start, parser.start_line) : 0;
+        kp_stash_syntax_msg(c, parser);
+        const int32_t line0 = kp_first_error_line(parser);
         if (c->vm->last_syntax_msg) {   /* the snippet only: the summary line below says the rest */
             const char *const nl = strchr(c->vm->last_syntax_msg, '\n');
             fputs(nl ? nl + 1 : c->vm->last_syntax_msg, stderr);
         }
         fprintf(stderr, "%s:%d: syntax error%s found (SyntaxError)\n",
-                fname, line0, parser.error_list.size > 1 ? "s" : "");
+                fname, line0, pm_parser_errors_size(parser) > 1 ? "s" : "");
         exit(1);
     }
 
     struct kp_ctx tc = {
-        .parser = &parser,
+        .parser = parser,
         .c = c,
         .fname = fname,
-        .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
+        .src_enc = kp_src_enc(c, parser, src, len, src_enc),
         .fsl_false = kp_fsl_false(src, len) || kp_internal_source(fname),
         .fsl_true = kp_fsl_true(src, len) || OPTION.frozen_literals,
         .seed_class_name = cref_name,
@@ -6668,9 +6649,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
     free(tc.bake_list);
     free(tc.flink_list);
     if (tc.syntax_error) {                           /* transduce-time SyntaxError (e.g. binding in alternative pattern) */
-        pm_node_destroy(&parser, root);
-        pm_parser_free(&parser);
-        pm_options_free(&options);
+        kp_parser_free(parser, arena, options);
         if (!exit_on_error) {                        /* eval(str): caller raises SyntaxError */
             if (tc.syntax_err) c->vm->last_syntax_msg = tc.syntax_err;
             return NULL;
@@ -6680,9 +6659,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
         exit(1);
     }
 
-    pm_node_destroy(&parser, root);
-    pm_parser_free(&parser);
-    pm_options_free(&options);
+    kp_parser_free(parser, arena, options);
     return ast;
 }
 
@@ -6706,21 +6683,20 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
                           uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len,
                           bool cref_is_caller)
 {
-    pm_parser_t parser;
-    pm_options_t options = { 0 };
-    if (OPTION.frozen_literals) pm_options_frozen_string_literal_set(&options, true);   /* --enable-frozen-string-literal */
-    pm_options_filepath_set(&options, fname);
+    pm_options_t *const options = pm_options_new();
+    if (OPTION.frozen_literals) pm_options_frozen_string_literal_set(options, true);   /* --enable-frozen-string-literal */
+    pm_options_filepath_set(options, fname);
     /* eval(str): the program starts in the STRING's encoding, which a magic
      * comment on the first line may then override (prism applies the same
      * first-line rule CRuby does).  NULL = the parser's own default (UTF-8). */
-    if (src_enc) pm_options_encoding_set(&options, src_enc);
-    pm_options_line_set(&options, first_line);
+    if (src_enc) pm_options_encoding_set(options, src_enc);
+    pm_options_line_set(options, first_line);
     /* The binding's levels become prism's OUTER scopes (outermost first), each
      * naming its env slots in index order, so a caller local resolves to depth >= 1
      * and reaches the real env.  A slot with no name (shadowed / implicit / synth)
      * gets a placeholder no source can spell.  The last scope is the program's
      * own: the names a previous eval on this binding added (`extra`). */
-    pm_options_scopes_init(&options, outer_levels + 1);
+    pm_options_scopes_init(options, outer_levels + 1);
     char (*dummy)[24] = NULL;
     uint32_t outer_total = 0;
     for (uint32_t v = 0; v < outer_levels; v++) outer_total += outer_cnt[v];
@@ -6729,7 +6705,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
         const uint32_t lv = outer_levels - 1 - v;                 /* scopes[0] = outermost level */
         uint32_t loff = 0;
         for (uint32_t k = 0; k < lv; k++) loff += outer_cnt[k];
-        pm_options_scope_t *const sc = &options.scopes[v];
+        pm_options_scope_t *const sc = pm_options_scope_mut(options, v);
         pm_options_scope_init(sc, outer_cnt[lv]);
         uint8_t fwd = PM_OPTIONS_SCOPE_FORWARDING_NONE;
         for (uint32_t i = 0; i < outer_cnt[lv]; i++) {
@@ -6741,30 +6717,31 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
                                                  PM_OPTIONS_SCOPE_FORWARDING_ALL };
                 fwd |= flag[ak];
                 snprintf(dummy[off], sizeof dummy[off], "#%u.%u", lv, i);
-                pm_string_constant_init(&sc->locals[i], dummy[off], strlen(dummy[off]));
+                pm_string_constant_init(pm_options_scope_local_mut(sc, i), dummy[off], strlen(dummy[off]));
                 off++;
             } else if (sym != 0) {
                 const char *const nm = korb_sym_name(c->vm, sym);
-                pm_string_constant_init(&sc->locals[i], nm, strlen(nm));
+                pm_string_constant_init(pm_options_scope_local_mut(sc, i), nm, strlen(nm));
             } else {
                 snprintf(dummy[off], sizeof dummy[off], "#%u.%u", lv, i);
-                pm_string_constant_init(&sc->locals[i], dummy[off], strlen(dummy[off]));
+                pm_string_constant_init(pm_options_scope_local_mut(sc, i), dummy[off], strlen(dummy[off]));
                 off++;
             }
         }
         if (fwd != PM_OPTIONS_SCOPE_FORWARDING_NONE) pm_options_scope_forwarding_set(sc, fwd);
     }
-    pm_options_scope_t *scope = &options.scopes[outer_levels];
+    pm_options_scope_t *const scope = pm_options_scope_mut(options, outer_levels);
     pm_options_scope_init(scope, name_cnt);
     for (uint32_t i = 0; i < name_cnt; i++) {
         const char *nm = korb_sym_name(c->vm, name_syms[i]);
-        pm_string_constant_init(&scope->locals[i], nm, strlen(nm));
+        pm_string_constant_init(pm_options_scope_local_mut(scope, i), nm, strlen(nm));
     }
-    pm_parser_init(&parser, (const uint8_t *)src, len, &options);
-    pm_node_t *root = pm_parse(&parser);
-    if (parser.error_list.size > 0) {
-        kp_stash_syntax_msg(c, &parser, fname);
-        pm_node_destroy(&parser, root); pm_parser_free(&parser); pm_options_free(&options);
+    pm_arena_t *const arena = pm_arena_new();
+    pm_parser_t *const parser = pm_parser_new(arena, (const uint8_t *)src, len, options);
+    pm_node_t *root = pm_parse(parser);
+    if (pm_parser_errors_size(parser) > 0) {
+        kp_stash_syntax_msg(c, parser);
+        kp_parser_free(parser, arena, options);
         free(dummy);
         return NULL;
     }
@@ -6790,11 +6767,11 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
               case 4: outer[lv].fwd_blk_slot = (int32_t)i; continue;
               default: break;
             }
-            ls->ids[i] = pm_constant_pool_find(&parser.constant_pool, (const uint8_t *)nm, strlen(nm));
+            ls->ids[i] = pm_parser_constant_find(parser, (const uint8_t *)nm, strlen(nm));
         }
         outer[lv].locals = ls;
     }
-    struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser, src, len, src_enc),
+    struct kp_ctx tc = { .parser = parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, parser, src, len, src_enc),
                          .fsl_false = kp_fsl_false(src, len), .fsl_true = kp_fsl_true(src, len) || OPTION.frozen_literals,
                          .eval_method_mid = method_mid,
                          .seed_class_name = cref_name, .seed_chain = cref_chain, .seed_chain_len = cref_chain_len,
@@ -6810,8 +6787,6 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
     free(tc.flink_list);
     bool serr = tc.syntax_error;
     if (serr && tc.syntax_err) c->vm->last_syntax_msg = tc.syntax_err;   /* the real reason, not the generic */
-    pm_node_destroy(&parser, root);
-    pm_parser_free(&parser);
-    pm_options_free(&options);
+    kp_parser_free(parser, arena, options);
     return serr ? NULL : ast;   /* binding in alternative pattern → SyntaxError */
 }

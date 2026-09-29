@@ -35,8 +35,12 @@
 
 ## 未: make test（rubyharness）に残る CRuby との違い (2026-09-29)
 
-- **prism が古い**: 同梱は 1.4.0（2025-06）、CRuby master は 1.9.0。`p((1 => x; x))` の "unexpected void value
-  expression" を 1.4 は出さないので `syntax/pattern_000.rb` が丸ごと違う。更新は naruby/prism を共有する他 sample にも効く。
+- ~~**prism が古い**~~: koruby_precise だけ CRuby master と同じ prism (13325f5c3 = 1.9.0) に移した
+  （docs/v2_spec.md §5.1）。`syntax/pattern_000.rb` は両者とも SyntaxError で一致。naruby/prism を共有する他 sample は 1.4.0 のまま。
+- **`p` が Array サブクラスの #inspect を呼ばない**: `class A < Array; def inspect = "x"; end; p A[1]` が
+  CRuby "x"、koruby "[1]"（Sexp が `[:lasgn, …]` と出る。ruby2ruby 系の出力比較に効く）。
+- **SyntaxError になるべきでないもの**: `# encoding: bogus` の eval は CRuby では ArgumentError（prism の
+  `pm_errors_format` が返す level が ARGUMENT）、koruby は SyntaxError。
 - **String#succ の英数字判定が ASCII だけ**: CRuby は符号化の ctype（Unicode の英数字）で右端の英数字を決める
   （`"a\u00e9".succ` は CRuby "aê"、koruby "bé"）。壊れた UTF-8 を含む文字列だけ文字単位の規則にしてある。
 - **rindex / byterindex の `\G`**: CRuby は後ろ向き探索で `\G` = 開始位置（stop）。astrogre の scan_start を

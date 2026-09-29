@@ -177,7 +177,7 @@ corpus（`make test`）は CRuby オラクル差分の golden test **100,354 件
 
 ```sh
 make                       # koruby_precise を直接ビルド（GC=copy moving default）
-                           # prism は ../naruby/prism を symlink（vendored, untracked）
+                           # prism は CRuby master と同じ版を symlink（docs/v2_spec.md §5.1）
 make test                  # rubyharness 差分テスト（CRuby オラクル, 100,354 件）
                            #   CAT=<category> / STRESS=1 で絞り込み・GC stress
 make bench                 # 多モード bench（interp / aot+compile / aot+cached / cruby+yjit）
