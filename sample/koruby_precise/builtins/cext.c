@@ -1959,10 +1959,13 @@ KCX_API void *
 rb_ext_resolve_symbol(const char *feature, const char *symbol)
 {
     const struct korb_cext_vm *const x = kcx_vm(kcx_c()->vm);
-    const size_t fl = strlen(feature);
+    size_t fl = strlen(feature);                      /* "digest.so" names our digest.ko.so */
+    if (fl >= 3 && strcmp(feature + fl - 3, ".so") == 0) fl -= 3;
+    if (fl >= 3 && strncmp(feature + fl - 3, ".ko", 3) == 0) fl -= 3;
     for (uint32_t i = 0; i < x->lib_n; i++) {
-        const size_t pl = strlen(x->libs[i].path);
-        if (pl >= fl + 1 && strcmp(x->libs[i].path + pl - fl, feature) == 0 && x->libs[i].path[pl - fl - 1] == '/')
+        const char *const p = x->libs[i].path;
+        const size_t pl = strlen(p);
+        if (pl >= fl + 7 && strcmp(p + pl - 6, ".ko.so") == 0 && strncmp(p + pl - 6 - fl, feature, fl) == 0 && p[pl - 7 - fl] == '/')
             return dlsym(x->libs[i].dl, symbol);
     }
     return NULL;

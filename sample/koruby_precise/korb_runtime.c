@@ -18801,10 +18801,11 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
     return false;
 }
 
-/* A gem that ships `name` as a C extension (`<dir>/name.rb` beside `name.so`, or an
- * installed gem whose ext/ koruby did not build, like bigdecimal) cannot load here
- * unless koruby built that .so; when koruby carries its own `name`, that one stands in
- * for the whole feature (the gem's Ruby half calls methods only its C half has). */
+/* A gem that ships `name` as a C extension (`<dir>/name.rb` beside CRuby's `name.so`,
+ * or an installed gem whose ext/ koruby did not build, like bigdecimal) cannot load
+ * here unless a koruby build `name.ko.so` sits beside it; when koruby carries its own
+ * `name`, that one stands in for the whole feature (the gem's Ruby half calls methods
+ * only its C half has). */
 static bool korb_cext_so_p(const char *path);   /* fwd */
 static void
 korb_prefer_own_lib(const char *const restrict name, char *const restrict abspath, const size_t sz)
@@ -18813,10 +18814,12 @@ korb_prefer_own_lib(const char *const restrict name, char *const restrict abspat
     /* koruby's own lib/ (root/ with its gems is under KORUBY_SRC_DIR too) */
     if (al < 3 || strcmp(abspath + al - 3, ".rb") != 0 || strncmp(abspath, KORUBY_SRC_DIR "/lib/", strlen(KORUBY_SRC_DIR) + 5) == 0) return;
     char so[4096];
-    if (al >= sizeof so) return;
-    memcpy(so, abspath, al - 3); memcpy(so + al - 3, ".so", 4);
+    if (al + 3 >= sizeof so) return;
     struct stat st;
-    bool cext_gem = stat(so, &st) == 0 && !korb_cext_so_p(so);
+    memcpy(so, abspath, al - 3); memcpy(so + al - 3, ".ko.so", 7);
+    if (stat(so, &st) == 0 && korb_cext_so_p(so)) return;           /* built for koruby: the gem loads as is */
+    memcpy(so + al - 3, ".so", 4);
+    bool cext_gem = stat(so, &st) == 0;
     const size_t nl = strlen(name) + (strcmp(name + strlen(name) - (strlen(name) >= 3 ? 3 : 0), ".rb") == 0 ? 0 : 3);
     if (!cext_gem && al > nl + 5 && memcmp(abspath + al - nl - 5, "/lib/", 5) == 0) {   /* <gem>/lib/<name>.rb: the gem has ext/? */
         char ext[4096];
@@ -18860,15 +18863,18 @@ korb_cext_so_p(const char *path)
     fclose(f);
     return hit;
 }
-/* `<dir>/<name>` (name ends in ".so") or `<dir>/<name>.so`, a regular file built for koruby */
+/* A koruby build of an extension is named `<name>.ko.so` (CRuby's is `<name>.so`, so the
+ * two can sit side by side and neither loads the other's): `x`, `x.so` and `x.ko.so` all
+ * look for `<dir>/x.ko.so`, a regular file carrying koruby's marker. */
 static bool
 korb_resolve_so(const char *dir, const char *name, char *out, size_t outsz)
 {
-    const size_t nl = strlen(name);
-    const bool has_so = nl >= 3 && strcmp(name + nl - 3, ".so") == 0;
+    size_t nl = strlen(name);
+    if (nl >= 6 && strcmp(name + nl - 6, ".ko.so") == 0) nl -= 6;
+    else if (nl >= 3 && strcmp(name + nl - 3, ".so") == 0) nl -= 3;
     char cand[4096];
-    if (name[0] == '/') snprintf(cand, sizeof cand, "%s%s", name, has_so ? "" : ".so");
-    else                snprintf(cand, sizeof cand, "%s/%s%s", dir, name, has_so ? "" : ".so");
+    if (name[0] == '/') snprintf(cand, sizeof cand, "%.*s.ko.so", (int)nl, name);
+    else                snprintf(cand, sizeof cand, "%s/%.*s.ko.so", dir, (int)nl, name);
     korb_path_lexnorm(cand, out, outsz);
     struct stat st; return stat(out, &st) == 0 && S_ISREG(st.st_mode) && korb_cext_so_p(out);
 }
