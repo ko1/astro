@@ -618,6 +618,8 @@ struct korb_thread {
     struct korb_thread *joiners;     /* 自分の死を #join で待つ thread 群 */
     struct korb_thread *join_next;
     struct korb_blop *blop;          /* PENDED 中に待っている blop (M2)、他は NULL */
+    struct korb_cext_frame *saved_cext_top;   /* C 拡張のフレームと unwind 先 (CTX のものを suspend 中に退避) */
+    struct korb_cext_jmp   *saved_cext_jmp;
 };
 
 typedef struct KorbThread {

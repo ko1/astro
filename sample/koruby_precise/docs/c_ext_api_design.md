@@ -447,8 +447,16 @@ mixin を include したクラスを別の superclass で `rb_define_class_under
   それの無い .so を「見つからない」扱いにする（root/ の racc/cparse.so を読んで libruby ごと CRuby の ABI で動き、
   gem c-suite の rubocop-ast が SEGV した — c39）。
 
+- **ext/openssl**（C 34 ファイル、2026-09-29）: CRuby のビルド済みツリーの extconf.h を使って無改造でビルドし
+  （`cext/test/build_openssl.sh`）、**CRuby の test/openssl 35 本すべてが CRuby と同じ要約**（件数まで一致、
+  test_ssl 91 tests / 654 assertions、test_pair・ssl_session・ssl_server の TLS 通信を含む。`cext/test/openssl.sh`）。
+  途中で直したもの: 拡張側の nil / false を CRuby の値に（`if (rb_obj_is_kind_of(..))`）、`rb_str_buf_new` の容量
+  （Cipher#update が heap を壊していた）、allocator を `korb_obj_new` で引く（Config.load・Marshal）、`rb_obj_freeze`
+  などは組み込みを直接呼ぶ（SSLContext#freeze = #setup → rb_obj_freeze の無限再帰）、green thread の切り替えで
+  `c->cext_top` / `c->cext_jmp` を退避（CTX は thread 間で共有）、`rb_io_wait` の既定 timeout は IO#timeout。
+
 **未対応**（呼ぶと NotImplementedError）: `rb_iter_break`、`rb_catch`。mkmf。gc_copy 以外の moving backend
-（pin の区画が無い）。
+（pin の区画が無い）。Fiber の切り替え（Enumerator の外部イテレーションを含む）では拡張のフレームを退避していない。
 
 **未解決**: 長寿命の pin が copy GC の空間効率を落とす量（pin は large object 区画 = 1 個ずつ malloc、登録は
 ソート配列への挿入で O(n)）、スレッド（green thread と `rb_thread_call_without_gvl`）、呼び出しの固定費（未計測）。

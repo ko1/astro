@@ -424,6 +424,8 @@ korb_thread_ctx_load(CTX *c, struct korb_thread *t)
     vm->root_fiber = t->root_fiber;           /* Fiber.current / storage は thread 毎 */
     /* backtrace: この thread の stack を指すので一緒に載せ替える (未開始なら空) */
     c->cfunc_link = t->started ? t->saved_cfunc_link : 0;
+    c->cext_top = t->started ? t->saved_cext_top : NULL;     /* C extension frames live on this thread's C stack */
+    c->cext_jmp = t->started ? t->saved_cext_jmp : NULL;
     c->carry_base = t->started ? t->saved_carry_base : NULL;
     c->carry_line_bits = t->started ? t->saved_carry_line_bits : 0;
     korb_scope_stacks_swap(c, &t->ss);        /* its own $! and $~ / cref / refinement save stacks */
@@ -453,6 +455,8 @@ korb_thread_ctx_save(CTX *c, struct korb_thread *cur, korb_value *slots)
     }
     korb_scope_stacks_swap(c, &cur->ss);
     cur->saved_cfunc_link = c->cfunc_link;
+    cur->saved_cext_top = c->cext_top;
+    cur->saved_cext_jmp = c->cext_jmp;
     cur->saved_carry_base = c->carry_base;
     cur->saved_carry_line_bits = c->carry_line_bits;
 }

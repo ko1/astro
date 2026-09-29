@@ -1348,11 +1348,8 @@ KCX_SEND0(rb_obj_clone, "clone")
 KCX_SEND0(rb_obj_id, "object_id")
 KCX_SEND0(rb_singleton_class, "singleton_class")
 KCX_SEND0(rb_class_name, "name")
-KCX_SEND0(rb_obj_frozen_p, "frozen?")
 KCX_SEND1(rb_equal, "==")
 KCX_SEND1(rb_eql, "eql?")
-KCX_SEND1(rb_obj_is_kind_of, "kind_of?")
-KCX_SEND1(rb_obj_is_instance_of, "instance_of?")
 KCX_SEND1(rb_class_inherited_p, "<=")
 KCX_SEND1(rb_obj_method, "method")
 KCX_API KVALUE rb_hash_new_capa(long capa) { CTX *const c = kcx_c(); return W(kcx_check(c, korb_hash_new(c, kcx_slots(c), (uint32_t)(capa < 0 ? 0 : capa)))); }
@@ -1583,7 +1580,22 @@ rb_class2name(KVALUE k)
     return korb_sym_name(c->vm, korb_intern(c->vm, korb_strbuf_data(VAL2STR(n)->buf), VAL2STR(n)->len));   /* interned = immortal */
 }
 KCX_API const char *rb_obj_classname(KVALUE o) { return rb_class2name(rb_obj_class(o)); }
-KCX_API KVALUE rb_obj_freeze(KVALUE o) { CTX *const c = kcx_c(); if (!kcx_imm_p(o)) (void)kcx_send_name(c, K(o), "freeze", 0, NULL); return o; }
+/* These are C in CRuby and do not dispatch: an extension may define #freeze / #kind_of?
+ * itself and call them from inside it (openssl's SSLContext#freeze is #setup, which
+ * calls rb_obj_freeze).  Run koruby's builtins directly. */
+static KVALUE
+kcx_builtin(korb_method_fn fn, KVALUE self, int argc, const KVALUE *argv)
+{
+    CTX *const c = kcx_c();
+    korb_value *const s = kcx_slots(c);
+    for (int i = 0; i < argc; i++) s[i] = K(argv[i]);
+    s[argc] = K(self);
+    return W(kcx_check(c, fn(c, s + argc + 1, KORB_REF_AT(&s[argc]), KORB_SLICE_MAKE(s, (uint32_t)argc))));
+}
+KCX_API KVALUE rb_obj_freeze(KVALUE o) { if (!kcx_imm_p(o)) (void)kcx_builtin(korb_m_obj_freeze, o, 0, NULL); return o; }
+KCX_API KVALUE rb_obj_frozen_p(KVALUE o) { return kcx_imm_p(o) ? KQtrue : kcx_builtin(korb_m_obj_frozen_q, o, 0, NULL); }
+KCX_API KVALUE rb_obj_is_kind_of(KVALUE o, KVALUE k) { return kcx_builtin(korb_m_obj_is_a, o, 1, &k); }
+KCX_API KVALUE rb_obj_is_instance_of(KVALUE o, KVALUE k) { CTX *const c = kcx_c(); return korb_class_obj_of(c, K(o)) == K(k) ? KQtrue : KQfalse; }
 KCX_API KVALUE
 rb_any_to_s(KVALUE o)
 {
@@ -2207,11 +2219,12 @@ KCX_API void rb_io_check_readable(struct rb_io *f) { (void)f; }
 KCX_API void rb_io_check_writable(struct rb_io *f) { (void)f; }
 KCX_API void rb_io_check_closed(struct rb_io *f) { (void)f; }
 KCX_API int rb_io_descriptor(KVALUE io) { return rb_io_get_fptr(io)->fd; }
-KCX_API KVALUE rb_io_timeout(KVALUE io) { (void)io; return KQnil; }
+KCX_API KVALUE rb_io_timeout(KVALUE io) { return rb_funcall(io, rb_intern("timeout"), 0); }
 KCX_API KVALUE
 rb_io_wait(KVALUE io, KVALUE events, KVALUE timeout)
 {
     const long ev = rb_num2long(events);
+    if (timeout == KQnil) timeout = rb_io_timeout(io);   /* RUBY_IO_TIMEOUT_DEFAULT: the IO's own #timeout */
     const KVALUE one = rb_ary_new_from_args(1, io);
     const KVALUE a[4] = { (ev & 1) ? one : KQnil, (ev & 4) ? one : KQnil, KQnil, timeout };
     const KVALUE r = rb_funcallv(rb_cIO, rb_intern("select"), 4, a);
