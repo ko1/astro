@@ -117,6 +117,13 @@ struct korb_ivcache {
  * table is append-only, so a name's index is permanent once assigned; we cache
  * idx+1 (0 = empty) and never need to revalidate (const_vals[idx] is re-derived
  * each read, so reassignment and GC-forwarding are both seen). */
+/* node_const_path's cache (`A::B`): the owner by its GC-stable class serial */
+struct korb_cpcache {
+    uint32_t idx_plus1;
+    uint32_t parent_serial;
+    uint64_t serial;          /* vm->const_serial; private_constant / deprecate_constant bump it too */
+};
+
 struct korb_constcache {
     uint32_t idx_plus1;
     /* vm->const_serial the entry was resolved under: an include/prepend or a

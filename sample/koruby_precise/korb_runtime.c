@@ -2785,6 +2785,8 @@ korb_class_new(CTX *c, korb_value *slots, uint32_t name_sym, korb_value supercla
 {
     korb_ref sref = SLOTS_PUSH(slots, superclass);   /* root super across alloc */
     KorbClass *k = korb_alloc(c, slots, sizeof(KorbClass), KORB_OBJ_CLASS);
+    k->mro_ser_src = &c->vm->mro_serial;
+    k->mro_c = NULL; k->mro_n = 0; k->mro_ser = 0;
     k->name_sym = name_sym;                            /* methods=NULL, cnts=0 (zero-init) */
     k->serial = ++c->vm->class_serial;                 /* GC-stable identity (name_sym is 0 for anonymous classes) */
     k->exc_etype = -1;                                 /* not an exception class by default */
@@ -5998,6 +6000,7 @@ korb_singleton_copy(CTX *c, korb_value *slots, korb_value dst, korb_value src_si
             CHECK(korb_ary_push_val(c, slots + 5, KORB_REF_AT(&slots[4]), korb_items_data(VAL2ARY(slots[3])->items)[i]));
         KorbClass *const ds = VAL2CLASS(slots[2]);          /* re-read: the allocs above may have moved it */
         ARO_STORE(c, ds, (korb_value *)(uintptr_t)(li == 0 ? &ds->included : &ds->prepended), slots[4]);
+        c->vm->mro_serial++;
     }
     const uint32_t sn = VAL2CLASS(slots[1])->method_cnt;
     for (uint32_t i = 0; i < sn; i++) {
@@ -6067,6 +6070,7 @@ korb_class_dup(CTX *c, korb_value *slots, korb_value src)
               CHECK(korb_ary_push_val(c, slots + 4, dst, korb_items_data(VAL2ARY(slots[2])->items)[i]));
           KorbClass *const dd = VAL2CLASS(slots[1]);           /* re-read: the allocs above may have moved it */
           ARO_STORE(c, dd, (korb_value *)(uintptr_t)(li == 0 ? &dd->included : &dd->prepended), slots[3]);
+          c->vm->mro_serial++;
       } }
     { const KorbClass *const s2 = VAL2CLASS(slots[0]);   /* re-read after the array copies above */
       const korb_value srcs[2] = { s2->cvars, s2->class_ivars };
@@ -7485,6 +7489,7 @@ korb_include_collect(CTX *c, korb_value *slots, korb_ref cref, korb_ref dst, kor
 static RESULT
 korb_include_apply(CTX *c, korb_value *slots, korb_ref cref, korb_ref dst, korb_value mod, bool prepend)
 {
+    c->vm->mro_serial++;   /* every cached MRO that reaches the target changes */
     /* a module bringing a basic operator into Integer/String/... deopts its fast path, like a def there */
     if (KORB_CLASS_P(mod)) {
         korb_value mbuf[256];
@@ -7723,14 +7728,28 @@ korb_mro_dedup_pre(korb_value *buf, uint8_t *pre, int n)
 static int
 korb_linearize_mro(korb_value klass, korb_value *buf, int max)
 {
+    /* cached per class: the dedup is quadratic per segment, and every GC flushes the
+     * method caches whose misses land here (ActiveRecord: 22% of its time) */
+    KorbClass *const kc = KORB_CLASS_P(klass) ? VAL2CLASS(klass) : NULL;
+    if (kc && kc->mro_ser_src && kc->mro_c && kc->mro_ser == *kc->mro_ser_src && (int)kc->mro_n <= max) {
+        memcpy(buf, kc->mro_c, sizeof(korb_value) * kc->mro_n);
+        return (int)kc->mro_n;
+    }
     uint8_t pre[256];
+    const int max0 = max;
     if (max > (int)sizeof pre) max = (int)sizeof pre;
     int n = 0;
-    while (KORB_CLASS_P(klass) && n < max) {
-        n = korb_linearize_seg(klass, buf, pre, n, max, 0, 0);
-        klass = VAL2CLASS(klass)->superclass;
+    for (korb_value k = klass; KORB_CLASS_P(k) && n < max; k = VAL2CLASS(k)->superclass)
+        n = korb_linearize_seg(k, buf, pre, n, max, 0, 0);
+    n = korb_mro_dedup(buf, pre, n);
+    if (kc && kc->mro_ser_src && max0 >= 256 && n < max) {   /* a complete answer only */
+        korb_value *const nc = realloc(kc->mro_c, sizeof(korb_value) * (size_t)(n ? n : 1));
+        if (nc) {
+            memcpy(nc, buf, sizeof(korb_value) * (size_t)n);
+            kc->mro_c = nc; kc->mro_n = (uint32_t)n; kc->mro_ser = *kc->mro_ser_src;
+        }
     }
-    return korb_mro_dedup(buf, pre, n);
+    return n;
 }
 
 /* The copy of `m` that runs as occurrence `occ` (>= 1) of its owner in an MRO
@@ -8184,6 +8203,7 @@ static inline korb_value korb_obj_dispatch_klass(const struct korb_vm *vm, korb_
     return VAL2OBJ(self)->klass;
 }
 static void korb_klass_override_set(CTX *c, korb_value obj, korb_value cls) {
+    c->vm->mro_serial++;
     korb_wtab_put(&c->vm->sklass, obj, cls);             /* libc realloc, not a GC point */
     if (obj == c->vm->top_self) c->vm->top_sclass = 0;   /* re-read on the next get */
     ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_KLASS;
@@ -11625,6 +11645,7 @@ void
 korb_const_set_private(CTX *c, korb_value owner, uint32_t sym, bool private_p)
 {
     struct korb_vm *const vm = c->vm;
+    vm->const_serial++;   /* node_const_path's cache skips the privacy check */
     for (uint32_t i = 0; i < vm->privconst_cnt; i++)
         if (vm->privconsts[i].name == sym && vm->privconsts[i].owner == owner) {
             if (!private_p) vm->privconsts[i] = vm->privconsts[--vm->privconst_cnt];
@@ -11644,6 +11665,7 @@ korb_const_set_private(CTX *c, korb_value owner, uint32_t sym, bool private_p)
 void
 korb_const_set_deprecated(CTX *c, korb_value owner, uint32_t sym)
 {
+    c->vm->const_serial++;   /* node_const_path's cache skips the warning */
     struct korb_vm *const vm = c->vm;
     for (uint32_t i = 0; i < vm->deprconst_cnt; i++)
         if (vm->deprconsts[i].name == sym && vm->deprconsts[i].owner == owner) return;
@@ -12578,6 +12600,19 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
                 if (LIKELY(!vm->refinements_active))
                     return korb_invoke_simple(c, slots, m, argc, korb_flink_line(flink), mid, self, def_class);
                 m->is_simple = 0; m->simple_entry = NULL;                     /* see korb_dispatch_method */
+            }
+            if (m->kind == KORB_METHOD_CFUNC && !m->uses_block && site != NULL &&
+                LIKELY(m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
+                /* an inherited builtin called bare (`itself`, `freeze`, `respond_to?`): node_call
+                 * stages self as the receiver at base[-1], as node_send does, so call it the way
+                 * korb_send_ic_dispatch does instead of re-dispatching as a full send */
+                korb_value *const cbase = &slots[-(korb_sword_t)argc];
+                const bool framed = KORB_FLINK_FRAMED(flink);
+                const korb_value saved = framed ? korb_cframe_enter(c, cbase, m) : 0;
+                RESULT r = m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
+                if (framed) korb_cframe_leave(c, saved);
+                if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), korb_flink_line(flink), mid, m);
+                return r;
             }
             RESULT r;
             if (korb_invoke_self(c, slots, m, argc, korb_flink_line(flink), mid, self, def_class, &r))

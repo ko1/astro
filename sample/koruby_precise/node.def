@@ -2225,13 +2225,16 @@ node_defined_super_outer(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, i
 // its ancestors (never in the parent's lexical surroundings, and never by bare
 // name).  A miss goes through const_missing, which is what fires an autoload.
 NODE_DEF @noinline
-node_const_path(CTX *c, NODE *n, korb_value *slots, uint32_t name@sym, uint32_t line, int32_t fb_off, NODE *parent)
+node_const_path(CTX *c, NODE *n, korb_value *slots, uint32_t name@sym, uint32_t line, int32_t fb_off, NODE *parent, struct korb_cpcache *cache@ref)
 {
     (void)n;
     const RESULT pr = EVAL_ARG(c, parent);
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
     slots[0] = pr.value;                                  /* the namespace (rooted for const_missing) */
     struct korb_vm *const vm = c->vm;
+    if (LIKELY(cache->idx_plus1 != 0 && cache->serial == vm->const_serial && KORB_CLASS_P(slots[0]) &&
+               VAL2CLASS(slots[0])->serial == cache->parent_serial))
+        return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
     if (UNLIKELY(!KORB_CLASS_P(slots[0]))) {           /* `13::X` — CRuby names the korb_value, not its class */
         char *ib = NULL; size_t iz = 0;
         FILE *const ims = open_memstream(&ib, &iz);
@@ -2290,6 +2293,8 @@ node_const_path(CTX *c, NODE *n, korb_value *slots, uint32_t name@sym, uint32_t 
             korb_const_deprecated_warn(c, slots + 2, slots[0], name);
             return RESULT_OK(slots[1]);
         }
+        /* the plain answer (no autoload pending, not private, not deprecated) is cached */
+        cache->idx_plus1 = idx + 1; cache->parent_serial = VAL2CLASS(slots[0])->serial; cache->serial = vm->const_serial;
         return RESULT_OK(vm->const_vals[idx]);
     }
     slots[1] = ID2SYM(name);                              /* <owner>.const_missing(:name) */

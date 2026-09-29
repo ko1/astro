@@ -780,6 +780,12 @@ typedef struct KorbClass {
     struct korb_method **methods;    /* libc array of immortal entry ptrs (owner edge GC-forwarded) */
     uint32_t *mid_idx;               /* libc index mid → slot+1 of a big table, else NULL (korb_mtab_slot) */
     uint32_t mid_idx_mask;
+    /* the linearized MRO (korb_linearize_mro), libc; valid while mro_ser == *mro_ser_src (the vm's
+     * mro_serial: include / prepend / singleton / GC bump it).  NULL src = not cached. */
+    korb_value *mro_c;
+    uint32_t mro_n;
+    uint64_t mro_ser;
+    const uint64_t *mro_ser_src;
     korb_value ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
     korb_value ARO_GC_EDGE included;      /* KorbArray of included modules | nil */
     korb_value ARO_GC_EDGE prepended;     /* KorbArray of prepended modules | nil (searched before own methods) */
@@ -1411,6 +1417,7 @@ struct korb_vm {
      * on every call (send/__send__/public_send check ran for every arg call). */
     uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize, mid_eqq;
     uint32_t mid_include, mid_prepend, mid_ruby2_keywords;   /* korb_call_impl's class-body / main forms */
+    uint64_t mro_serial;     /* bumped when any MRO may change (and at GC): validates KorbClass.mro_c */
     uint32_t mid_autoloads;          /* @__autoloads: every A::B lookup asks it once private_constant is in play */
     uint32_t mid___id__, mid_object_id;   /* the identity primitives CRuby warns about redefining */
     uint32_t mid_method_missing;
@@ -1928,6 +1935,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
     /* class pointers may move/reuse this GC → invalidate method caches      \
      * (mcache + node callcaches all validate against method_serial). */     \
     (c)->vm->method_serial++;                                                \
+    (c)->vm->mro_serial++;   /* the cached MROs hold class pointers too */    \
     /* main value-stack, suspended while a fiber runs (active stack scanned   \
      * above as c->slots..slots_top). */                                      \
     if ((c)->vm->running_fiber != NULL && (c)->vm->main_slots != NULL) {      \
@@ -2246,6 +2254,7 @@ void korb_weak_walk(CTX *c);
             free(_aro_cl->methods[_mi]);   /* per-class calloc'd entries */    \
         free(_aro_cl->methods);            /* the libc method-ptr array */     \
         free(_aro_cl->mid_idx);                                                \
+        free(_aro_cl->mro_c);                                                  \
         break;                                                                 \
       }                                                                        \
       KORB_FINALIZE_BIGNUM_CASE                                                \
