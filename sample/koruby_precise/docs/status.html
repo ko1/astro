@@ -98,10 +98,10 @@ const DATA = {
   updated: "2026-09-30 JST",
   master: "62106590",
   compat: [
-    { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "31892 例", sub: "本物の openssl を読むようになって library/openssl が全通過（+40）。9/29 朝は 31831 / 32332 = 98.45%。率は同じ run の例の数で割るので、全体の再計測時に更新", date: "2026-09-29", commit: "f5e3af31", mode: "interp",
+    { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "31893 例", sub: "本物の openssl を読むようになって library/openssl が全通過（+40）。9/29 朝は 31831 / 32332 = 98.45%。率は同じ run の例の数で割るので、全体の再計測時に更新", date: "2026-09-29", commit: "1b28965c", mode: "interp",
       note: "本物の mspec で spec ファイルを 1 つずつ実行。率は同じ run の pass ÷ 例の数" },
-    { label: "CRuby の C 拡張（互換層 builtins/cext.c、無改造で再ビルド）", value: "digest / openssl", sub: "CRuby の test/digest 3 本・test/openssl 35 本すべてが CRuby と同じ要約（test_ssl 91 tests / 654 assertions を含む）。STRESS+PURGE でも一致。C API の試験 149 ケースは CRuby と出力一致", date: "2026-09-29", commit: "42647c81", mode: "interp",
-      note: "make cext-test、cext/test/openssl.sh。make root が digest / openssl を koruby 用にビルドして root/ に入れ、既定でそちらを読む" },
+    { label: "CRuby の C 拡張（互換層 builtins/cext.c、無改造で再ビルド）", value: "digest / openssl + gem 9 本", sub: "CRuby の test/digest 3 本・test/openssl 35 本すべてが CRuby と同じ要約。gem install（mkmf）でビルドされ CRuby と同じ出力: bigdecimal（gem の test 6 本の要約一致）・bcrypt・racc・redcarpet・nio4r・erb・msgpack・json・psych。STRESS+PURGE でも一致。C API の試験 194 ケースは CRuby と出力一致", date: "2026-09-29", commit: "26114862", mode: "interp",
+      note: "make cext-test、cext/test/openssl.sh、gem は /tmp に gem install して小さな試しを CRuby と diff。ビルドできない拡張は gem install が拡張抜きで入れ、koruby の lib/ が代わりに立つ" },
   ],
   health: [
     { label: "make test（rubyharness 回帰コーパス）", value: "13", cls: "warn", sub: "CRuby と違う行 ／ 110056 行。45 → 27 → 14（prism を CRuby と同じ版に）→ 13（rubygems を起動時に読む）、内訳は下の表", date: "2026-09-29", commit: "この commit", mode: "interp",
@@ -136,12 +136,13 @@ const DATA = {
     ["ruby-method-benchmarks", "メソッド単位", "未着手"],
   ],
   gaps: [
-    "C 拡張: CRuby の拡張を koruby のヘッダで再ビルドすれば動く（digest・openssl）。mkmf が koruby で動かないので gem の extconf.rb からは組めない、gc_copy 以外の moving GC と Fiber の切り替えは未対応",
+    "C 拡張: gem install が mkmf で .kompat.so をビルドする。strscan（Onigmo の構造体）・stringio / io-console（rb_io_t の中身）は拡張抜き、date は MatchData が照合元の文字列を共有する本体の不具合のため入れない。gc_copy 以外の moving GC と Fiber の切り替えは未対応",
     "TracePoint :line（tracer・power_assert）、RubyVM::AbstractSyntaxTree / InstructionSequence",
     "Ripper の構文エラー回復（CRuby の parse.y は誤りの後も木を組み立てる）",
   ],
   recent: [
-    ["この commit", "status 更新（rubygems.org から gem install）"],
+    ["この commit", "status 更新（gem install が C 拡張をビルド）"],
+    ["90796a87〜26114862", "mkmf が koruby で動き、gem install が C 拡張を .kompat.so にビルド（失敗したら拡張抜き、-Wl,--no-undefined）。bigdecimal・bcrypt・racc・redcarpet・nio4r・erb・msgpack・json・psych が CRuby と同じ出力。拡張側の ID を +256（'*' のような 1 文字の演算子）、CLASS_OF、エンコーディング API、rb_catch / rb_iter_break。本体側: 知らない Numeric を成分に持つ Complex、Float#divmod(±Inf)、終わりの無い Range の Enumerable"],
     ["f5e3af31〜62106590", "make root が digest / openssl を koruby 用（.kompat.so）にビルドして root/ に入れ、既定で読む。rubygems.org からの gem install / bundle install が動く（rainbow・i18n・rack-test・mustermann・activesupport 8.1.4・thor）。C 拡張入りの gem を activate しても koruby の代替で機能ごと置き換える。rubyspec 31892（library/openssl・digest 302 例全通過）"],
     ["12261bbb〜42647c81", "CRuby C 拡張互換層: 拡張側の VALUE はハンドル、RSTRING_PTR は non-moving 区画へ pin、nil/false は CRuby の値、CRuby 用 .so は読まない。ext/digest と ext/openssl が無改造で動き、CRuby の test/digest・test/openssl が全部 CRuby と同じ結果"],
     ["a1ec9706", "koruby 内部の値の型名を VALUE → korb_value（korb_ref / korb_slice / KORB_REF_GET …）"],

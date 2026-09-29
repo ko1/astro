@@ -6125,6 +6125,13 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   strscan: Onigmo の構造体（`RREGEXP_PTR`・`onig_search`・`onig_region_*`）/
   stringio: `rb_io_enc_t`・`rb_io_extract_modeenc`・`FMODE_*`・`RBASIC`・`FL_USER*`・`rb_io_puts/print/printf`・`rb_rs` ほか /
   io-console: `rb_io_t` の `pathv`・`rb_io_gets/getbyte/write/close`・`rb_stdin/stderr`・`rb_default_rs`・`RB_WAITFD_IN` ほか。
+  2026-09-29 の追加の試し（fast_blank・websocket-driver・ed25519・digest-crc・levenshtein-ffi はビルドされる）:
+  puma: `rb_cRandom`・`rb_enc_interned_str(_cstr)` / oj: `RARRAY_CONST_PTR`・`RB_ALLOC(_N)`・`rb_apply`・`rb_ivar_foreach/count`・
+  `rb_hash_bulk_insert`・`rb_time_timespec(_new)`・`rb_gc_enable/disable`・`rb_method_boundp`・`rb_obj_method_arity` ほか /
+  ox: `RARRAY_PTR`・`rb_range_new/values`・`rb_struct_alloc_noinit` ほか / jaro_winkler: `st_hash` / bootsnap: `DLEXT`・
+  `FilePathValue`・`rb_syserr_new_str` / ffi: `rb_thread_create` / zlib: `rb_econv_*`・`rb_mutex_*`・rb_io_* / strptime:
+  `OBJ_INIT_COPY`・`rb_time_nano_new` / unf_ext: C++（未調査）。**RARRAY_PTR は要素へのポインタを返す**: 拡張側の VALUE は
+  ハンドルなので、要素のハンドル配列を作って pin する読み取り専用の写しが要る（書き込みを反映するかは設計が要る）。
 - extconf.rb を koruby で走らせると gem の ext/ に code_store/ ができる（AOT のストアが CWD 相対）。
 - `rb_block_call` はいつも catch で包む（rb_iter_break のため）。その固定費（proc 1 個 + catch）を測る。
 - **MatchData が照合元の String を共有している**（CRuby は照合時の内容の凍結コピー = COW）。`m = re.match(s); s[0, 6] = " " * 6;
