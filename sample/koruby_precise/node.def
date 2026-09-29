@@ -2508,6 +2508,12 @@ node_call(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, 
         } else if (LIKELY(cc->serial == c->vm->method_serial && cc->dispatch)) {
             return korb_invoke_entry_cc(c, slots, cc, argc, mid);   /* top-level global (fib) */
         }
+    } else if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL &&
+               LIKELY(ic->serial == c->vm->method_serial && ic->m == NULL && ic->klass == c->vm->top_sclass &&
+                      cc->serial == c->vm->method_serial && cc->dispatch)) {
+        /* main has a singleton class (to_s / inspect): korb_call_cached cached that it
+         * lacks `mid`, so the top-level def (global table) is the callee */
+        return korb_invoke_entry_cc(c, slots, cc, argc, mid);
     }
     (void)flink;   /* codegen stores it into base[-3]; the body never reads it */
     /* the link is in the frame; korb_call_cached takes it raw and decodes once */

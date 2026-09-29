@@ -3,6 +3,37 @@
 本書は **どんな最適化を試したか** と **その結果** を一覧する。
 成功例だけでなく **見送ったもの** も同じ重みで記録する (再評価のために)。
 
+## 2026-09-30: main に特異クラスができてトップレベル呼び出しが 2〜4 倍遅くなっていた（退行の修正）
+
+ruby-bench の fib が sp4 で koruby AOT 118 ms 対 YJIT 15 ms だったのが発端。bench/fib.rb の命令数を commit ごとに
+測って二分探索し（trials/2026-09-30-koruby-call-regress）、**a8292bbc（09-28、main の特異メソッド to_s / inspect /
+ruby2_keywords）** で `--plain` 7.57G → 15.14G になったのを特定。main に `KORB_FL_HAS_KLASS` が立ったため、
+(1) SD の node_call のインライン高速路（`!HAS_KLASS` が条件）から外れ、(2) korb_call_cached が main の特異クラスを
+弱参照表で引いて fib が無いので毎回 korb_call_impl へ落ち、(3) そこで名前の strcmp を 3 回していた。
+
+直したこと: 特異クラスでの miss も inline cache に記録し main ならトップレベル def の cc 高速路へ（korb_call_cached と
+node_call の両方）、main の特異クラスを `vm->top_sclass` にキャッシュ、名前比較を mid 比較に。
+
+rubyharness/bench（`perf stat -e instructions`、76f342e9 → 修正後、`--plain` / AOT）。main を通るものだけが動き、
+他は ±1.5% 以内:
+
+| bench | --plain | AOT |
+|---|--:|--:|
+| fib | 14.59G → 7.98G (−45%) | 10.51G → 2.98G (−72%) |
+| tak | 29.05G → 15.61G (−46%) | 20.76G → 5.56G (−73%) |
+| method_call | 31.81G → 17.15G (−46%) | 22.45G → 6.13G (−73%) |
+| ackermann | 22.83G → 13.28G (−42%) | 15.10G → 4.24G (−72%) |
+| gcd | 24.26G → 13.95G (−43%) | 16.34G → 4.80G (−71%) |
+| send | 22.20G → 13.40G (−40%) | 14.00G → 4.00G (−71%) |
+| casewhen | 9.62G → 7.43G (−23%) | 4.39G → 1.65G (−62%) |
+| binary_trees | 4.55G → 3.93G (−14%) | 3.55G → 2.84G (−20%) |
+| closures | 6.54G → 5.73G (−12%) | 5.35G → 4.55G (−15%) |
+| kwargs | 16.37G → 15.69G (−4%) | 12.69G → 12.02G (−5%) |
+| ivar（最大の悪化） | 12.80G → 12.79G | 3.89G → 3.95G (+1.5%) |
+
+全 53 本は trials/2026-09-30-koruby-call-regress/compare_76f342e9_vs_fix.tsv。fib は 09-17 の値（7.08G / 2.46G）に
+まだ届かない。残りの差は SD の中身で、09-17 以降に入れたフレームのリンクや backtrace のためのものと見ている（未確認）。
+
 ## 2026-09-06: send の class 確認をキャッシュ + send(:sym) 直接 invoke + 単独 splat 無コピー (成功・optcarrot AOT +69%)
 
 ### 何が遅かったか

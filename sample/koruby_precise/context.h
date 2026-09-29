@@ -1213,6 +1213,8 @@ struct korb_vm {
     korb_value top_self;          /* the one `main` every file's top level runs as (CRuby's ruby_top_self),
                               * so `def self.x` in a required file lands on TOPLEVEL_BINDING.receiver.
                               * 0 until the program's frame is built. */
+    korb_value top_sclass;        /* top_self's singleton class (0 = not looked up yet): every top-level
+                              * call asks for it (to_s / inspect live there, as CRuby) */
     uint32_t class_serial;   /* monotonic id handed to each new class (see KorbClass.serial) */
     uint32_t boot_class_serial;   /* class_serial when the prelude finished: classes up to it are koruby's own */
     bool c_subclasses_filed;      /* Class#subclasses has filed the classes made in C (set.c) */
@@ -1408,6 +1410,7 @@ struct korb_vm {
      * send path tests them with integer compares instead of korb_sym_name+strcmp
      * on every call (send/__send__/public_send check ran for every arg call). */
     uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize, mid_eqq;
+    uint32_t mid_include, mid_prepend, mid_ruby2_keywords;   /* korb_call_impl's class-body / main forms */
     uint32_t mid_autoloads;          /* @__autoloads: every A::B lookup asks it once private_constant is in play */
     uint32_t mid___id__, mid_object_id;   /* the identity primitives CRuby warns about redefining */
     uint32_t mid_method_missing;
@@ -1836,6 +1839,8 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->pat_key_hash);              \
     if ((c)->vm->top_self != 0)                                              \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->top_self);           \
+    if ((c)->vm->top_sclass != 0)                                            \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->top_sclass);         \
     /* constants (class values) + their defining-module owners are roots too */ \
     for (uint32_t _ci = 0; _ci < (c)->vm->const_cnt; _ci++) {                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->const_vals[_ci]);     \

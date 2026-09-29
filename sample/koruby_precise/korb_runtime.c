@@ -8158,8 +8158,11 @@ korb_exc_matches(CTX *c, korb_value exc, korb_value rescue_class)
 /* Per-instance class override (subclass instances / extended objects /
  * singleton classes): only reached for objects with KORB_FL_HAS_KLASS set. */
 static korb_value korb_klass_override_get(const struct korb_vm *vm, korb_value obj) {
+    if (obj == vm->top_self && vm->top_sclass != 0) return vm->top_sclass;
     const int32_t i = korb_wtab_find(&vm->sklass, obj);
-    return i >= 0 ? vm->sklass.val[i] : KORB_NIL;
+    const korb_value r = i >= 0 ? vm->sklass.val[i] : KORB_NIL;
+    if (obj == vm->top_self && obj != 0 && r != KORB_NIL) ((struct korb_vm *)(uintptr_t)vm)->top_sclass = r;   /* a cache: the vm is not otherwise changed */
+    return r;
 }
 /* The value's OWN singleton class, if one has been materialized (nil otherwise).
  * The override table also holds plain subclasses for extended builtins, so the
@@ -8182,6 +8185,7 @@ static inline korb_value korb_obj_dispatch_klass(const struct korb_vm *vm, korb_
 }
 static void korb_klass_override_set(CTX *c, korb_value obj, korb_value cls) {
     korb_wtab_put(&c->vm->sklass, obj, cls);             /* libc realloc, not a GC point */
+    if (obj == c->vm->top_self) c->vm->top_sclass = 0;   /* re-read on the next get */
     ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_KLASS;
 }
 
@@ -12302,11 +12306,10 @@ korb_call_impl(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
      * top-level keeps using globals. */
     /* main's `include` is a singleton method there (CRuby), so it wins over any
      * #include an included module gave Object (RSpec::Matchers has one) */
-    if (UNLIKELY(argc >= 1 && KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) &&
-        strcmp(korb_sym_name(vm, mid), "include") == 0)
+    if (UNLIKELY(mid == vm->mid_include && argc >= 1 && KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL))
         return korb_do_include(c, slots, korb_builtin_class_obj(vm, KORB_C_OBJECT), KORB_SLICE_MAKE(slots - argc, argc));
     /* main.ruby2_keywords flags top-level defs: Object's Module#ruby2_keywords */
-    if (UNLIKELY(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) && strcmp(korb_sym_name(vm, mid), "ruby2_keywords") == 0) {
+    if (UNLIKELY(mid == vm->mid_ruby2_keywords && KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL)) {
         for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(korb_sword_t)argc + j];
         slots[0] = korb_builtin_class_obj(vm, KORB_C_OBJECT);
         korb_flink_hand_on(c, slots - (korb_sword_t)argc - 3);
@@ -12331,13 +12334,13 @@ korb_call_impl(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
 
     /* `include Mod...` inside a class/module body (self is the class), or at the
      * top level (self is main) where it includes into Object. */
-    if (argc >= 1 && strcmp(korb_sym_name(vm, mid), "include") == 0 &&
+    if (UNLIKELY(mid == vm->mid_include) && argc >= 1 &&
         (KORB_CLASS_P(self) || (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL))) {
         const korb_value target = KORB_CLASS_P(self) ? self : korb_builtin_class_obj(vm, KORB_C_OBJECT);
         return korb_do_include(c, slots, target, KORB_SLICE_MAKE(slots - argc, argc));
     }
     /* `prepend Mod...` inside a class/module body (self is the class) */
-    if (KORB_CLASS_P(self) && argc >= 1 && strcmp(korb_sym_name(vm, mid), "prepend") == 0) {
+    if (UNLIKELY(mid == vm->mid_prepend) && KORB_CLASS_P(self) && argc >= 1) {
         return korb_do_prepend(c, slots, self, KORB_SLICE_MAKE(slots - argc, argc));
     }
 
@@ -12558,8 +12561,14 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
             } else {
                 def_class = KORB_NIL;
                 m = korb_mcache_find(vm, klass, mid, &def_class);
-                if (UNLIKELY(m == NULL)) return korb_call_impl(c, slots, mid, korb_flink_line(flink), cc, argc, self, NULL, NULL, NULL, site);
-                korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, argc);
+                korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, argc);   /* a miss is cached too */
+            }
+            if (UNLIKELY(m == NULL)) {
+                /* main has a singleton class (to_s / inspect, as CRuby): a top-level def
+                 * misses there and lives in the global table — its cached fast path */
+                if (VAL2OBJ(self)->klass == KORB_NIL && LIKELY(cc->serial == vm->method_serial && cc->dispatch))
+                    return korb_invoke_entry_cc(c, slots, cc, argc, mid);
+                return korb_call_impl(c, slots, mid, korb_flink_line(flink), cc, argc, self, NULL, NULL, NULL, site);
             }
             if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple)) {  /* hot path: inlines */
                 if (LIKELY(!vm->refinements_active))
@@ -22177,6 +22186,9 @@ korb_ctx_new(void)
     c->vm->mid_send        = korb_intern(c->vm, "send", 4);
     c->vm->mid___send__    = korb_intern(c->vm, "__send__", 8);
     c->vm->mid_public_send = korb_intern(c->vm, "public_send", 11);
+    c->vm->mid_include = korb_intern(c->vm, "include", 7);
+    c->vm->mid_prepend = korb_intern(c->vm, "prepend", 7);
+    c->vm->mid_ruby2_keywords = korb_intern(c->vm, "ruby2_keywords", 14);
     c->vm->mid_method_missing = korb_intern(c->vm, "method_missing", 14);
     c->vm->mid_respond_to_missing = korb_intern(c->vm, "respond_to_missing?", 19);
     c->vm->mid_new         = korb_intern(c->vm, "new", 3);
