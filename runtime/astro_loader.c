@@ -17,6 +17,7 @@
 #define ASTRO_LOADER_IMPL 1
 #include <elf.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -100,6 +101,27 @@ astro_ld_in_rel32(uintptr_t x, size_t size, struct astro_ld_text t)
     return d1 < INT32_MAX && d1 > INT32_MIN && d2 < INT32_MAX && d2 > INT32_MIN;
 }
 
+// A forked child must not share the arena's pages: both processes keep loading SDs at
+// the same `used` offsets, so the child's writes land in the parent's code (fork specs /
+// rspec's in_sub_process SEGV'd the parent).  The child copies the arena into a memfd
+// of its own and maps it over both views at the same addresses.
+static void
+astro_ld_arena_after_fork(void)
+{
+    if (!astro_ld_arena.w) return;
+    const int fd = astro_ld_memfd("astro_sd", MFD_CLOEXEC);
+    if (fd < 0 || ftruncate(fd, (off_t)astro_ld_arena.size) != 0) abort();
+    for (size_t off = 0; off < astro_ld_arena.used; ) {
+        const ssize_t n = pwrite(fd, astro_ld_arena.w + off, astro_ld_arena.used - off, (off_t)off);
+        if (n <= 0) abort();
+        off += (size_t)n;
+    }
+    if (mmap(astro_ld_arena.x, astro_ld_arena.size, PROT_READ | PROT_EXEC, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED ||
+        mmap(astro_ld_arena.w, astro_ld_arena.size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED)
+        abort();
+    close(fd);
+}
+
 static bool
 astro_ld_arena_init(void)
 {
@@ -155,6 +177,8 @@ astro_ld_arena_init(void)
     astro_ld_arena.size = reserve;
     astro_ld_arena.used = 0;
     astro_ld_arena.failed = false;
+    static bool atfork_set;
+    if (!atfork_set) { atfork_set = true; pthread_atfork(NULL, NULL, astro_ld_arena_after_fork); }
     return true;
 }
 
