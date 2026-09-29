@@ -303,8 +303,10 @@ enum {
 // the store, which breaks cross builds (wasm32 has 4-byte pointers).
 struct astro_hole_op {
     uint8_t op;
-    char path[192];        // "" for ops with no field
     int32_t idx;           // @children index, or -1
+    const char *path;      // a string literal of the generated code ("" for ops with no field):
+                           // a descriptor splices its whole subtree, so ops are copied O(depth²)
+                           // times — an inline 192-byte path made 30k_variables' bake take 52 GB
 };
 struct astro_hole_buf { struct astro_hole_op *v; uint32_t n, capa, depth; };
 
@@ -324,15 +326,39 @@ astro_hole_put(struct astro_hole_buf *const d)
 // Emitted descriptors, kept for the session so a parent can splice a child's.
 static struct { char name[64]; struct astro_hole_op *v; uint32_t n, depth; } *astro_hole_saved;
 static uint32_t astro_hole_saved_n, astro_hole_saved_capa;
+// name -> index+1 (open addressing), rebuilt as it grows: a linear scan per splice was O(SDs²)
+static uint32_t *astro_hole_saved_idx;
+static uint32_t astro_hole_saved_idx_capa;
+
+static uint32_t
+astro_hole_name_hash(const char *s)
+{
+    uint32_t h = 2166136261u;
+    for (; *s; s++) h = (h ^ (uint8_t)*s) * 16777619u;
+    return h;
+}
+
+static void
+astro_hole_saved_index(uint32_t i)
+{
+    const uint32_t mask = astro_hole_saved_idx_capa - 1;
+    uint32_t k = astro_hole_name_hash(astro_hole_saved[i].name) & mask;
+    while (astro_hole_saved_idx[k]) k = (k + 1) & mask;
+    astro_hole_saved_idx[k] = i + 1;
+}
 
 static const struct astro_hole_op *
 astro_hole_saved_get(const char *const name, uint32_t *const len, uint32_t *const depth)
 {
-    for (uint32_t i = 0; i < astro_hole_saved_n; i++) {
-        if (strcmp(astro_hole_saved[i].name, name) == 0) {
-            *len = astro_hole_saved[i].n;
-            *depth = astro_hole_saved[i].depth;
-            return astro_hole_saved[i].v;
+    if (astro_hole_saved_idx_capa) {
+        const uint32_t mask = astro_hole_saved_idx_capa - 1;
+        for (uint32_t k = astro_hole_name_hash(name) & mask; astro_hole_saved_idx[k]; k = (k + 1) & mask) {
+            const uint32_t i = astro_hole_saved_idx[k] - 1;
+            if (strcmp(astro_hole_saved[i].name, name) == 0) {
+                *len = astro_hole_saved[i].n;
+                *depth = astro_hole_saved[i].depth;
+                return astro_hole_saved[i].v;
+            }
         }
     }
     *len = *depth = 0;
@@ -347,7 +373,7 @@ astro_hole_alloc(struct astro_hole_buf *const d, uint32_t *const h,
 {
     struct astro_hole_op *const o = astro_hole_put(d);
     o->op = (uint8_t)op;
-    snprintf(o->path, sizeof(o->path), "%s", path ? path : "");
+    o->path = path ? path : "";
     o->idx = idx;
     return (*h)++;
 }
@@ -363,7 +389,7 @@ astro_hole_sub(struct astro_hole_buf *const d, uint32_t *const h,
     *h += child->head.nholes;
     struct astro_hole_op *o = astro_hole_put(d);
     o->op = (uint8_t)(idx < 0 ? ASTRO_HOLE_DOWN : ASTRO_HOLE_DOWN_AT);
-    snprintf(o->path, sizeof(o->path), "%s", path);
+    o->path = path;
     o->idx = idx;
     uint32_t len = 0, sub_depth = 0;
     const struct astro_hole_op *const sub =
@@ -398,6 +424,15 @@ astro_hole_emit_desc(FILE *fp, const char *const name, struct astro_hole_buf *co
     astro_hole_saved[astro_hole_saved_n].n = d->n;
     astro_hole_saved[astro_hole_saved_n].depth = d->depth;
     astro_hole_saved_n++;
+    if (astro_hole_saved_n * 2 > astro_hole_saved_idx_capa) {   /* keep it at most half full */
+        astro_hole_saved_idx_capa = astro_hole_saved_idx_capa ? astro_hole_saved_idx_capa * 2 : 256;
+        free(astro_hole_saved_idx);
+        astro_hole_saved_idx = calloc(astro_hole_saved_idx_capa, sizeof *astro_hole_saved_idx);
+        if (!astro_hole_saved_idx) { fprintf(stderr, "astro_hole: out of memory\n"); exit(1); }
+        for (uint32_t i = 0; i < astro_hole_saved_n; i++) astro_hole_saved_index(i);
+    } else {
+        astro_hole_saved_index(astro_hole_saved_n - 1);
+    }
 
     (void)fp;
     if (!is_public) return;

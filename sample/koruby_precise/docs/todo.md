@@ -6160,6 +6160,10 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
 - **CRuby の zlib が SEGV する（報告候補、未報告）**（2026-09-30）: `z = Zlib::Deflate.new(9); z.deflate("x"); z.params(9, 0)` で
   CRuby 4.1.0dev（910741083c）が ext/zlib/zlib.c:1948 rb_deflate_params の RSTRING_LEN(nil) で落ちる（#deflate が出力
   バッファを手放した後）。level を変えると同じ経路で Zlib::StreamError（koruby はこちらだけ真似た）。
+- **30k 系（ruby-bench の 30k_variables / 30k_ifelse / 30k_methods）の AOT の焼きでメモリが爆発する**（2026-09-30）:
+  ローカルで `--aot-compile 30k_variables.rb`（300 メソッド × ローカル 100 個）の koruby 本体が anon-rss 26 GB で
+  OOM kill（gcc ではなく koruby の SD 生成側）。sp4（59 GB）では `--pg-compile` の 30k_ifelse / 30k_methods が
+  signal 9、30k_variables は 53 GB（GNU time の %M）で通った。結果の値は CRuby と一致（2624）。
 - **Module.constants が CRuby と 5 つ違う**（2026-09-29）: koruby に余分 ARGFClass・ArithmeticSequence（内部名が top-level に
   出ている）・StringIO（prelude で起動時に定義。CRuby は require してから）、足りない SyntaxSuggest（CRuby は autoload）・
   UnicodeNormalize（CRuby は起動時にモジュールだけある）。ErrorHighlight の autoload を足すまでは数が偶然 120 で一致していて、
