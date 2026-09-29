@@ -412,6 +412,39 @@ t_get_kwargs(int argc, VALUE *argv, VALUE self)
     return rb_ary_new_from_args(3, vals[0], vals[1] == Qundef ? rb_str_new_cstr("undef") : vals[1], vals[2] == Qundef ? rb_str_new_cstr("undef") : vals[2]);
 }
 
+/* ---- C-function blocks / super ---- */
+static VALUE
+collect_cb(RB_BLOCK_CALL_FUNC_ARGLIST(y, data))
+{
+    rb_ary_push(data, rb_ary_new_from_args(2, y, INT2FIX(argc)));
+    return rb_funcall(y, rb_intern("*"), 1, INT2FIX(10));
+}
+static VALUE
+t_block_call(VALUE self, VALUE obj)
+{
+    VALUE log = rb_ary_new();
+    VALUE r = rb_block_call(obj, rb_intern("map"), 0, NULL, collect_cb, log);
+    return rb_ary_new_from_args(2, r, log);
+}
+static VALUE
+pairs_cb(RB_BLOCK_CALL_FUNC_ARGLIST(y, data))
+{
+    rb_ary_push(data, rb_ary_new_from_values(argc, argv));
+    return Qnil;
+}
+static VALUE
+t_block_call_multi(VALUE self, VALUE h)
+{
+    VALUE log = rb_ary_new();
+    rb_block_call(h, rb_intern("each_pair"), 0, NULL, pairs_cb, log);
+    return log;
+}
+static VALUE adder_cb(RB_BLOCK_CALL_FUNC_ARGLIST(y, data)) { return rb_funcall(y, rb_intern("+"), 1, data); }
+static VALUE t_proc_new(VALUE self, VALUE n) { return rb_proc_new(adder_cb, n); }
+static VALUE t_with_block(VALUE self, VALUE ary, VALUE blk) { return rb_funcall_with_block(ary, rb_intern("map"), 0, NULL, blk); }
+static VALUE child_greet(int argc, VALUE *argv, VALUE self) { VALUE r = rb_call_super(argc, argv); return rb_ary_new_from_args(2, rb_str_new_cstr("C"), r); }
+static VALUE t_def_child(VALUE self, VALUE child) { rb_define_method(child, "greet", child_greet, -1); return Qnil; }
+
 /* ---- misc ---- */
 static VALUE
 t_ids(VALUE self)
@@ -516,6 +549,11 @@ Init_cext_api_test(void)
     rb_define_module_function(mT, "freeze", t_freeze, 1);
     rb_define_module_function(mT, "new_instance", t_new_instance, 2);
     rb_define_module_function(mT, "require", t_require, 1);
+    rb_define_module_function(mT, "block_call", t_block_call, 1);
+    rb_define_module_function(mT, "block_call_multi", t_block_call_multi, 1);
+    rb_define_module_function(mT, "proc_new", t_proc_new, 1);
+    rb_define_module_function(mT, "with_block", t_with_block, 2);
+    rb_define_module_function(mT, "def_child", t_def_child, 1);
 
     VALUE cCounter = rb_define_class_under(mT, "Counter", rb_cObject);
     rb_define_alloc_func(cCounter, counter_alloc);

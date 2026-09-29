@@ -23,6 +23,9 @@ st=0
 norm() { sed -E "s/0x[0-9a-f]{8,16}/0xXXXX/g" "$1"; }
 diff <(norm "$OUT/cruby.out") <(norm "$OUT/koruby.out") > "$OUT/diff.txt" || st=1
 diff <(norm "$OUT/cruby.out") <(grep -v '^\[GC\]\|^\[aro_gc' "$OUT/koruby_stress.out" | norm /dev/stdin) > "$OUT/diff_stress.txt" || st=1
+# a CRuby-built extension must stay "not found" (it would run CRuby's ABI and drag in libruby)
+refuse=$("$KDIR/koruby_precise" -e 'begin; require ARGV[0]; puts "LOADED"; rescue LoadError => e; puts "refused"; end' "$OUT/cruby/cext_api_test.so" 2>&1)
+[ "$refuse" = refused ] || { echo "CRuby-built .so was not refused: $refuse"; st=1; }
 n=$(grep -c ': ' "$OUT/cruby.out")
 echo "cases: $n  diff: $(grep -c '^>' "$OUT/diff.txt")  diff(STRESS+PURGE): $(grep -c '^>' "$OUT/diff_stress.txt")"
 [ $st = 0 ] && echo OK || { echo "see $OUT/diff.txt $OUT/diff_stress.txt"; }

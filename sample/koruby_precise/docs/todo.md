@@ -6116,9 +6116,9 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   残り: `String#[]` / `slice` 以外の Regexp 引数（`str[@re]` は `[]` を一覧に入れると全メソッドが遅くなるので未対応）。
 
 ## C 拡張互換層（Track A、2026-09-29〜、docs/c_ext_api_design.md §9）
-- 未対応 API: `rb_block_call` / `rb_proc_new`（C 関数のブロック）、`rb_call_super`、`rb_iter_break`、`rb_catch`、
+- 未対応 API: `rb_iter_break`、`rb_catch`、
   `rb_define_variable`、エンコーディング API（`rb_enc_*`・`ruby/encoding.h` は空）、IO API（`ruby/io.h` は空）。
-  openssl に進むには `rb_block_call`・`rb_enc_*`・`rb_io_*` が要る。
+  openssl に進むには `rb_enc_*`・`rb_io_*`・`rb_integer_pack`・`rb_str_modify*`・ractor-local storage が要る（ext/openssl が使う 136 種のうち未実装 約 40）。
 - mkmf が無い: ext は `cext/test/build_digest.sh` のように手で組む。gem の extconf.rb を動かすには mkmf の koruby 版が要る。
 - pin は gc_copy だけ（`aro_gc_alloc_byte_pinned_raw`）。他の moving backend では RSTRING_PTR が NotImplementedError。
   large object の登録がソート配列への挿入（O(n)）なので、pin が数万を超えると遅くなる見込み（未計測）。

@@ -181,4 +181,18 @@ t(:gvar) { [T.gvar, $cext_api_gv] }
 t(:inspect_of) { [T.inspect_of("a\nb"), T.inspect_of(:sym), T.inspect_of([1, nil])] }
 t(:freeze) { s = +"thaw"; [T.freeze(s), s.frozen?] }
 t(:require) { [T.require("set"), T.require("set")] }
+# C-function blocks / super
+t(:block_call) { T.block_call([1, 2, 3]) }
+t(:block_call_multi) { T.block_call_multi({ a: 1, b: 2 }) }
+t(:block_call_break) { o = Object.new; def o.map = (yield 1; yield 2; :done); T.block_call(o) }
+t(:proc_new) { pr = T.proc_new(5); [pr.call(1), pr.class, pr.arity, [1, 2].map(&pr)] }
+t(:with_block) { T.with_block([1, 2], proc { |x| x * 3 }) }
+t(:with_block_lambda) { T.with_block([1, 2], ->(x) { -x }) }
+t(:call_super) {
+  parent = Class.new { def greet(*a) = ["P", a] }
+  child = Class.new(parent)
+  T.def_child(child)
+  [child.new.greet, child.new.greet(1, 2)]
+}
+t(:call_super_missing) { k = Class.new; T.def_child(k); k.new.greet }
 puts "done"

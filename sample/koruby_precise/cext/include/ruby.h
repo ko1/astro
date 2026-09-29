@@ -19,6 +19,9 @@ extern "C" {
 #endif
 
 #define KORUBY 1
+/* Marks a shared object as built with this header: koruby's require refuses a
+ * .so without it (a CRuby-built extension would run CRuby's ABI, even libruby). */
+__attribute__((weak, used, visibility("default"))) const int koruby_cext_abi_1 = 1;
 #define RUBY                  /* ruby/defines.h: extensions test it to rename clashing symbols */
 #define HAVE_PROTOTYPES 1
 #define HAVE_STDARG_PROTOTYPES 1

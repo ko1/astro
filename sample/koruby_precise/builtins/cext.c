@@ -33,7 +33,7 @@ struct korb_cext_block {
 };
 _Static_assert(sizeof(struct korb_cext_block) <= KCX_BLOCK_BYTES, "cext block");
 
-struct korb_cext_method { void *fn; int arity; };
+struct korb_cext_method { void *fn; int arity; struct korb_method *entry; };   /* entry: the method rb_call_super continues from */
 typedef KVALUE (*rb_alloc_func_kcx)(KVALUE);
 struct korb_cext_alloc { uint32_t class_serial; rb_alloc_func_kcx fn; };
 
@@ -47,6 +47,7 @@ struct korb_cext_vm {
     struct korb_cext_alloc *allocs; uint32_t alloc_n, alloc_capa;
     struct { char *path; void *dl; } *libs; uint32_t lib_n, lib_capa;
     korb_value errinfo;                   /* rb_errinfo (a root) */
+    KVALUE cblock_maker;                  /* [proc maker, lambda maker] for C-function blocks */
     uintptr_t pending_state;              /* what rb_protect caught, for rb_jump_tag */
     uint32_t serial;
     /* set around a dmark call so rb_gc_mark can visit */
@@ -66,7 +67,7 @@ struct korb_cext_frame {
     korb_value **hs; uint32_t hn, hcap;
     korb_value *hs_inline[16];
     NODE *block; korb_value *def_env; korb_value *captured_self;
-    uint32_t mid; korb_value owner;       /* rb_call_super */
+    struct korb_method *entry;            /* rb_call_super (NULL for allocate / new) */
     KVALUE self;
     bool kw_given;                        /* the last argument came as keywords */
 };
@@ -207,6 +208,8 @@ kcx_wrap_perm(CTX *c, korb_value v)
     return h;
 }
 
+KVALUE rb_funcall_passing_block(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv);
+KVALUE rb_funcallv(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv);
 static inline korb_value kcx_unwrap(KVALUE h) { return kcx_imm_p(h) ? (korb_value)h : *(korb_value *)(uintptr_t)h; }
 
 static void
@@ -331,7 +334,7 @@ kcx_frame_push(CTX *c, struct korb_cext_frame *f, korb_value *slots)
     f->serial = ++x->serial ? x->serial : ++x->serial;   /* 0 = "never seen" */
     f->hs = f->hs_inline; f->hn = 0; f->hcap = 16;
     f->block = NULL; f->def_env = NULL; f->captured_self = NULL;
-    f->mid = 0; f->owner = KORB_NIL; f->self = (KVALUE)KORB_NIL; f->kw_given = false;
+    f->entry = NULL; f->self = (KVALUE)KORB_NIL; f->kw_given = false;
     c->cext_top = f;
 }
 
@@ -399,13 +402,13 @@ KVALUE rb_class_superclass(KVALUE klass);
 /* Run fn (an extension method) under a frame and a jump target. */
 static RESULT
 korb_cext_invoke(CTX *c, korb_value *slots, korb_ref self, korb_slice args, NODE *block, korb_value *def_env,
-                 korb_value *captured_self, const struct korb_cext_method *m, uint32_t mid, korb_value owner)
+                 korb_value *captured_self, const struct korb_cext_method *m)
 {
     CTX *const saved_ctx = korb_cext_ctx;
     korb_cext_ctx = c;
     struct korb_cext_frame f;
     kcx_frame_push(c, &f, slots);
-    f.block = block; f.def_env = def_env; f.captured_self = captured_self; f.mid = mid; f.owner = owner;
+    f.block = block; f.def_env = def_env; f.captured_self = captured_self; f.entry = m->entry;
     struct korb_cext_jmp j; j.prev = c->cext_jmp; c->cext_jmp = &j;
     RESULT volatile r;
     if (setjmp(j.jb) == 0) {
@@ -463,7 +466,7 @@ korb_cext_tramp_run(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE
                     korb_value *cs, uint32_t idx)
 {
     const struct korb_cext_method *const m = &c->vm->cext->methods[idx];
-    return korb_cext_invoke(c, slots, self, a, blk, env, cs, m, 0, KORB_NIL);
+    return korb_cext_invoke(c, slots, self, a, blk, env, cs, m);
 }
 
 /* ---- conversions used everywhere ------------------------------------------- */
@@ -1407,15 +1410,22 @@ kcx_def(KVALUE klass, const char *name, void *fn, int arity, uint8_t vis)
     struct korb_cext_vm *const x = kcx_vm(c->vm);
     if (arity < -2 || arity > 8) rb_raise(rb_eArgError, "arity out of range: %d for -2..8", arity);
     if (!x->methods) x->methods = calloc(KCX_MAX_METHODS, sizeof *x->methods);
-    /* one trampoline per (function, arity): two names for one C function are == (CRuby) */
+    /* one trampoline per (function, arity, class): two names for one C function in one
+     * class are == (CRuby), and rb_call_super knows which method it is continuing */
     uint32_t idx = 0;
-    while (idx < x->method_n && (x->methods[idx].fn != fn || x->methods[idx].arity != arity)) idx++;
-    if (idx == x->method_n) {
+    while (idx < x->method_n && (x->methods[idx].fn != fn || x->methods[idx].arity != arity ||
+                                 x->methods[idx].entry->owner != K(klass))) idx++;
+    const bool fresh = idx == x->method_n;
+    if (fresh) {
         if (x->method_n == KCX_MAX_METHODS) rb_raise(rb_eNotImpError, "too many C extension methods (koruby limit %d)", KCX_MAX_METHODS);
         x->method_n++;
         x->methods[idx].fn = fn; x->methods[idx].arity = arity;
     }
     korb_class_def_cfn_blk(c, K(klass), name, korb_cext_tramps[idx], arity >= 0 ? arity : -1);
+    if (fresh) {   /* entries are libc-immortal: the first definition's is the one super continues from */
+        const KorbClass *const k = VAL2CLASS(K(klass));
+        x->methods[idx].entry = k->methods[korb_mtab_slot(k, korb_intern(c->vm, name, strlen(name)))];
+    }
     if (vis) {   /* korb_class_method_slot would start a fresh entry: look the new one up */
         const KorbClass *const k = VAL2CLASS(K(klass));
         const int32_t sl = korb_mtab_slot(k, korb_intern(c->vm, name, strlen(name)));
@@ -1461,14 +1471,14 @@ static RESULT
 korb_cext_m_allocate(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *blk, korb_value *env, korb_value *cs)
 {
     (void)a; (void)blk; (void)env; (void)cs;
-    static const struct korb_cext_method m = { NULL, -3 };
-    return korb_cext_invoke(c, slots, self, KORB_SLICE_MAKE(slots, 0), NULL, NULL, NULL, &m, 0, KORB_NIL);
+    static const struct korb_cext_method m = { NULL, -3, NULL };
+    return korb_cext_invoke(c, slots, self, KORB_SLICE_MAKE(slots, 0), NULL, NULL, NULL, &m);
 }
 static RESULT
 korb_cext_m_new(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *blk, korb_value *env, korb_value *cs)
 {
-    static const struct korb_cext_method m = { NULL, -4 };
-    return korb_cext_invoke(c, slots, self, a, blk, env, cs, &m, 0, KORB_NIL);
+    static const struct korb_cext_method m = { NULL, -4, NULL };
+    return korb_cext_invoke(c, slots, self, a, blk, env, cs, &m);
 }
 KCX_API void
 rb_define_alloc_func(KVALUE klass, KVALUE (*func)(KVALUE))
@@ -1492,9 +1502,9 @@ KCX_API void rb_undef_alloc_func(KVALUE klass) { rb_define_alloc_func(klass, NUL
 static RESULT
 korb_cext_obj_alloc(CTX *c, korb_value *slots, korb_value klass)
 {
-    static const struct korb_cext_method m = { NULL, -3 };
+    static const struct korb_cext_method m = { NULL, -3, NULL };
     slots[0] = klass;
-    return korb_cext_invoke(c, slots + 1, KORB_REF_AT(&slots[0]), KORB_SLICE_MAKE(slots, 0), NULL, NULL, NULL, &m, 0, KORB_NIL);
+    return korb_cext_invoke(c, slots + 1, KORB_REF_AT(&slots[0]), KORB_SLICE_MAKE(slots, 0), NULL, NULL, NULL, &m);
 }
 KCX_API KVALUE
 rb_obj_alloc(KVALUE klass)
@@ -1696,9 +1706,84 @@ rb_proc_call(KVALUE proc, KVALUE args)
     return rb_funcallv(proc, rb_intern("call"), (int)n, a);
 }
 KCX_API KVALUE rb_obj_is_proc(KVALUE o) { return rb_obj_is_kind_of(o, rb_cProc); }
-KCX_API KVALUE rb_block_call(KVALUE o, KVALUE mid, int argc, const KVALUE *argv, void *bl, KVALUE d2) { (void)o; (void)mid; (void)argc; (void)argv; (void)bl; (void)d2; rb_raise(rb_eNotImpError, "rb_block_call is not supported by koruby yet"); }
-KCX_API KVALUE rb_proc_new(void *fn, KVALUE v) { (void)fn; (void)v; rb_raise(rb_eNotImpError, "rb_proc_new is not supported by koruby yet"); }
-KCX_API KVALUE rb_call_super(int argc, const KVALUE *argv) { (void)argc; (void)argv; rb_raise(rb_eNotImpError, "rb_call_super is not supported by koruby yet"); }
+struct rb_data_type_struct;
+void  *rb_check_typeddata(KVALUE obj, const struct rb_data_type_struct *type);
+KVALUE rb_data_typed_object_wrap(KVALUE klass, void *datap, const struct rb_data_type_struct *type);
+/* A Proc passed as the block: the &proc path (block = its iseq, def_env = KORB_BLK_FWD). */
+KCX_API KVALUE
+rb_funcall_with_block(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv, KVALUE procval)
+{
+    CTX *const c = kcx_c();
+    if (procval == (KVALUE)KORB_NIL) return rb_funcallv(recv, mid, argc, argv);
+    const korb_value pv = K(procval);
+    if (!KORB_PROC_P(pv)) rb_raise(rb_eTypeError, "wrong argument type %s (expected Proc)", rb_obj_classname(procval));
+    korb_value *const s = kcx_slots(c);
+    s[0] = pv; s[1] = K(recv);
+    for (int i = 0; i < argc; i++) s[2 + i] = K(argv[i]);
+    NODE *const iseq = VAL2PROC(s[0])->iseq;
+    return W(kcx_check(c, korb_send_blk(c, s + 2 + argc, (uint32_t)mid, 0, (uint32_t)argc, iseq ? iseq : KORB_BLK_CPROC,
+                                        KORB_BLK_FWD, &s[0], 0, KORB_UNDEF)));
+}
+KCX_API KVALUE rb_funcall_with_block_kw(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv, KVALUE procval, int kw)
+{ (void)kw; return rb_funcall_with_block(recv, mid, argc, argv, procval); }
+
+/* A C function as a block: a T_DATA holding (func, data2) and a Ruby proc that calls back
+ * through the hidden KorubyCextBlock.call. */
+struct kcx_cblock { KVALUE (*func)(KVALUE, KVALUE, int, const KVALUE *, KVALUE); KVALUE data2; };
+static void kcx_cblock_mark(void *p) { rb_gc_mark(((struct kcx_cblock *)p)->data2); }
+static const struct rb_data_type_struct kcx_cblock_type = { "koruby/cblock", { kcx_cblock_mark, KCX_DEFAULT_FREE, NULL, NULL, { NULL } }, NULL, NULL, 0 };
+static KVALUE
+kcx_cblock_call(KVALUE self, KVALUE cd, KVALUE args, KVALUE blk)
+{
+    (void)self;
+    const struct kcx_cblock *const b = rb_check_typeddata(cd, &kcx_cblock_type);
+    const long n = rb_array_len(args);
+    KVALUE av[n > 0 ? n : 1];
+    for (long i = 0; i < n; i++) av[i] = rb_ary_entry(args, i);
+    return b->func(n > 0 ? av[0] : (KVALUE)KORB_NIL, b->data2, (int)n, av, blk);
+}
+static KVALUE
+kcx_cblock_proc(KVALUE (*func)(KVALUE, KVALUE, int, const KVALUE *, KVALUE), KVALUE data2, bool lambda)
+{
+    CTX *const c = kcx_c();
+    struct korb_cext_vm *const x = kcx_vm(c->vm);
+    if (!x->cblock_maker) {
+        const KVALUE mod = rb_define_module("KorubyCextBlock");
+        rb_define_singleton_method(mod, "call", kcx_cblock_call, 3);
+        x->cblock_maker = rb_eval_string("[->(cd) { proc { |*a, &b| KorubyCextBlock.call(cd, a, b) } },"
+                                         " ->(cd) { lambda { |*a, &b| KorubyCextBlock.call(cd, a, b) } }]");
+        rb_gc_register_mark_object(x->cblock_maker);
+    }
+    struct kcx_cblock *const b = ruby_xcalloc(1, sizeof *b);
+    b->func = func; b->data2 = data2;
+    const KVALUE cd = rb_data_typed_object_wrap(0, b, &kcx_cblock_type);
+    return rb_funcall(rb_ary_entry(x->cblock_maker, lambda ? 1 : 0), rb_intern("call"), 1, cd);
+}
+KCX_API KVALUE rb_proc_new(void *func, KVALUE val) { return kcx_cblock_proc(func, val, true); }
+KCX_API KVALUE
+rb_block_call(KVALUE obj, KVALUE mid, int argc, const KVALUE *argv, void *func, KVALUE data2)
+{
+    if (!func) return rb_funcall_passing_block(obj, mid, argc, argv);
+    return rb_funcall_with_block(obj, mid, argc, argv, kcx_cblock_proc(func, data2, false));
+}
+KCX_API KVALUE rb_block_call_kw(KVALUE obj, KVALUE mid, int argc, const KVALUE *argv, void *func, KVALUE data2, int kw)
+{ (void)kw; return rb_block_call(obj, mid, argc, argv, func, data2); }
+
+/* super from the running extension method: args below the cursor, as a `super` node stages them */
+KCX_API KVALUE
+rb_call_super(int argc, const KVALUE *argv)
+{
+    CTX *const c = kcx_c();
+    struct korb_cext_frame *const f = c->cext_top;
+    if (!f || !f->entry) rb_raise(rb_eRuntimeError, "super called outside of method");
+    const struct korb_method *const e = f->entry;
+    korb_value *const s = kcx_slots(c);
+    for (int i = 0; i < argc; i++) s[i] = K(argv[i]);
+    return W(kcx_check(c, korb_super(c, s + argc, e->orig_mid ? e->orig_mid : e->mid, 0, (uint32_t)argc,
+                                     (korb_value)((uintptr_t)e | KORB_FID_METHOD), K(f->self), f->block, f->def_env,
+                                     f->captured_self ? *f->captured_self : KORB_NIL, NULL)));
+}
+KCX_API KVALUE rb_call_super_kw(int argc, const KVALUE *argv, int kw) { (void)kw; return rb_call_super(argc, argv); }
 
 /* rb_scan_args: "<lead><opt><*><trail><:><&>" (CRuby's format). */
 KCX_API int

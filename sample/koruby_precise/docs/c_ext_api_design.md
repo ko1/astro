@@ -440,8 +440,15 @@ blake3、8 本）を無改造でビルドし、CRuby の test/digest が CRuby �
 mixin を include したクラスを別の superclass で `rb_define_class_under` し直すと、TypeError ではなく
 `undefined method 'to_s' for an instance of <Mixin>`（未報告）。
 
-**未対応**（呼ぶと NotImplementedError）: `rb_block_call`、`rb_proc_new`、`rb_call_super`、`rb_iter_break`、
-`rb_catch`。mkmf。gc_copy 以外の moving backend（pin の区画が無い）。
+- C 関数のブロック（`rb_block_call` / `rb_proc_new`）: (func, data2) を T_DATA に包み、それを呼び戻す Ruby の proc を
+  `&proc` の経路（block = iseq、def_env = KORB_BLK_FWD）で渡す。`rb_call_super` はトランポリンごとに持つ method entry
+  から `korb_super`（トランポリンの共有は (関数, arity, クラス) 単位）。
+- CRuby 用にビルドされた .so は読まない: koruby の ruby.h は公開シンボル `koruby_cext_abi_1` を埋め込み、require は
+  それの無い .so を「見つからない」扱いにする（root/ の racc/cparse.so を読んで libruby ごと CRuby の ABI で動き、
+  gem c-suite の rubocop-ast が SEGV した — c39）。
+
+**未対応**（呼ぶと NotImplementedError）: `rb_iter_break`、`rb_catch`。mkmf。gc_copy 以外の moving backend
+（pin の区画が無い）。
 
 **未解決**: 長寿命の pin が copy GC の空間効率を落とす量（pin は large object 区画 = 1 個ずつ malloc、登録は
 ソート配列への挿入で O(n)）、スレッド（green thread と `rb_thread_call_without_gvl`）、呼び出しの固定費（未計測）。

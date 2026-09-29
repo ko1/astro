@@ -18824,7 +18824,28 @@ korb_require_so(CTX *c, korb_value *slots, const char *abspath)
     korb_loaded_features_push(c, slots, abspath);
     return RESULT_OK(KORB_TRUE);
 }
-/* `<dir>/<name>` (name ends in ".so") or `<dir>/<name>.so`, as a regular file */
+/* Built with koruby's cext/include/ruby.h?  A CRuby-built extension (root/'s bundled
+ * racc/cparse.so ...) must stay "not found", as before: loading it would drag in
+ * libruby and run CRuby's ABI.  Reads the file for the marker's symbol name only. */
+static bool
+korb_cext_so_p(const char *path)
+{
+    FILE *const f = fopen(path, "rb");
+    if (!f) return false;
+    static const char mark[] = "koruby_cext_abi_1";
+    char buf[65536 + sizeof mark];
+    size_t keep = 0, n;
+    bool hit = false;
+    while (!hit && (n = fread(buf + keep, 1, sizeof buf - keep, f)) > 0) {
+        n += keep;
+        hit = memmem(buf, n, mark, sizeof mark - 1) != NULL;
+        keep = n < sizeof mark ? n : sizeof mark - 1;
+        memmove(buf, buf + n - keep, keep);
+    }
+    fclose(f);
+    return hit;
+}
+/* `<dir>/<name>` (name ends in ".so") or `<dir>/<name>.so`, a regular file built for koruby */
 static bool
 korb_resolve_so(const char *dir, const char *name, char *out, size_t outsz)
 {
@@ -18834,7 +18855,7 @@ korb_resolve_so(const char *dir, const char *name, char *out, size_t outsz)
     if (name[0] == '/') snprintf(cand, sizeof cand, "%s%s", name, has_so ? "" : ".so");
     else                snprintf(cand, sizeof cand, "%s/%s%s", dir, name, has_so ? "" : ".so");
     korb_path_lexnorm(cand, out, outsz);
-    struct stat st; return stat(out, &st) == 0 && S_ISREG(st.st_mode);
+    struct stat st; return stat(out, &st) == 0 && S_ISREG(st.st_mode) && korb_cext_so_p(out);
 }
 
 /* require(name): search CWD / $LOAD_PATH; load once (false if already loaded). */
