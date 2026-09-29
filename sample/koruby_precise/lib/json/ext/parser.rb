@@ -27,6 +27,7 @@ module JSON
         @allow_duplicate_key = false
         @decimal_class = nil
         @decimal_method = nil
+        @native_flags = 0
         return if opts.nil?
         unless Hash === opts
           raise TypeError, "wrong argument type #{JSON::Ext::ParserConfig.__type_name(opts)} (expected Hash)"
@@ -70,6 +71,7 @@ module JSON
           end
         end
 
+        __native_setup
         if unknown
           if unknown.size == 1
             raise ArgumentError, "unknown keyword: #{unknown[0]}"
@@ -77,6 +79,18 @@ module JSON
             raise ArgumentError, "unknown keywords: #{unknown.join(', ')}"
           end
         end
+      end
+
+      # Flags for __json_parse (bits as in builtins/json_native.c); nil = on_load /
+      # decimal_class, which only the Ruby parser implements.
+      private def __native_setup # :nodoc:
+        @native_flags =
+          if @on_load.nil? && @decimal_class.nil?
+            (@symbolize_names ? 1 : 0) | (@freeze ? 2 : 0) | (@allow_nan ? 4 : 0) |
+              (@allow_trailing_comma ? 8 : 0) | (@allow_comments ? 16 : 0) |
+              (@allow_control_characters ? 32 : 0) | (@allow_invalid_escape ? 64 : 0) |
+              (@allow_duplicate_key ? 128 : 0)
+          end
       end
 
       def self.__type_name(obj) # :nodoc:
@@ -89,8 +103,14 @@ module JSON
       end
 
       # Parses +source+ and returns the resulting Ruby object; raises
-      # JSON::ParserError on invalid input.
+      # JSON::ParserError on invalid input.  The native parser (builtins/json_native.c)
+      # takes the common case; it answers the source itself for anything it leaves to
+      # Parse below (errors included, so messages and positions come from here).
       def parse(source)
+        if @native_flags
+          value = __json_parse(source, @native_flags, @max_nesting)
+          return value unless value.equal?(source)
+        end
         Parse.new(self, source).run
       end
 

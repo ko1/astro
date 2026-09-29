@@ -6111,3 +6111,6 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   新しい local Time を作るとき（korb_time_make_ns）だけ tzset し、派生（ceil / + など）は作られたときの状態のまま描く、という
   近似で rubyspec の time 系は揃えた。CRuby は作成時に vtm に offset と zone を焼き込むので、ENV["TZ"] を変えた後に古い Time と
   新しい Time を混ぜて表示すると koruby だけずれる（新しい方の tzset が古い方の表示も変える）。
+- **`$~` を C の組み込みが呼び出し元のフレームに書く判定は名前の一覧**（parse.c kp_note_backref_call）。2026-09-29 に byteindex /
+  byterindex を足した（json の Ruby port が `b.byteindex(@re, pos)` で JSON.parse の呼び出し元の `$1` を消していた）。
+  残り: `String#[]` / `slice` 以外の Regexp 引数（`str[@re]` は `[]` を一覧に入れると全メソッドが遅くなるので未対応）。

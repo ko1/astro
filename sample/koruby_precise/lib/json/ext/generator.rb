@@ -475,8 +475,16 @@ module JSON
           end
 
           def run(obj, io, fallback)
-            buf = String.new(encoding: UTF_8, capacity: 1024)
-            gen(buf, obj, fallback)
+            # builtins/json_native.c writes the plain-data case; it answers
+            # nil for anything gen below has to decide
+            if !@ascii_only && !@script_safe && !@strict && !@sort_keys && !@as_json
+              buf = __json_generate(obj, @indent, @space, @space_before, @object_nl, @array_nl,
+                                    @max_nesting, @depth, @allow_nan)
+            end
+            unless buf
+              buf = String.new(encoding: UTF_8, capacity: 1024)
+              gen(buf, obj, fallback)
+            end
             if io
               io.write(buf)
               io.flush

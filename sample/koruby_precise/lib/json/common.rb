@@ -294,6 +294,11 @@ module JSON
   #   JSON.parse('invalid')
   #
   def parse(source, on_load: nil, object_class: nil, array_class: nil, **options)
+    # koruby: the plain call goes straight to the native parser (builtins/json_native.c)
+    if options.empty? && !on_load && !object_class && !array_class && Parser.equal?(Ext::Parser)
+      value = __json_parse(source, 0, 100)
+      return value unless value.equal?(source)
+    end
     if object_class || array_class
       on_load = ParserOptions.on_load(on_load, object_class, array_class)
     end

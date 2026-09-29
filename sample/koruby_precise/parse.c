@@ -624,7 +624,7 @@ static void kp_note_backref(struct kp_ctx *tc) {
 static void kp_note_backref_call(struct kp_ctx *tc, const char *name) {
     static const char *const setters[] = {
         "=~", "!~", "match", "scan", "gsub", "gsub!", "sub", "sub!", "split",
-        "grep", "grep_v", "index", "rindex", "partition", "rpartition",
+        "grep", "grep_v", "index", "rindex", "byteindex", "byterindex", "partition", "rpartition",
         "last_match", "start_with?", "end_with?", "slice", "slice!", NULL,
     };
     for (uint32_t i = 0; setters[i]; i++)

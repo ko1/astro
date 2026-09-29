@@ -15486,6 +15486,7 @@ RESULT korb_fiber_thread_end(CTX *c, VALUE *slots) {
 #include "builtins/prism_bridge.c"
 #include "builtins/yaml_bridge.c"
 #include "builtins/marshal_fast.c"
+#include "builtins/json_native.c"
 #include "builtins/string_ext.c"
 korb_register_core_methods(CTX *c)
 {
@@ -21894,6 +21895,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);
     korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);
+    korb_builtin_define(c, "__json_parse", korb_bi_json_parse, 3);   /* lib/json/ext/parser.rb fast path */
+    korb_builtin_define(c, "__json_generate", korb_bi_json_generate, 9);   /* lib/json/ext/generator.rb fast path */
     korb_builtin_define(c, "__heap_objects__", korb_bi_heap_objects, -1);
     korb_builtin_define(c, "__undef_new", korb_bi_undef_new, 1);
     korb_builtin_define(c, "__byte_find", korb_bi_byte_find, 3);   /* prelude/stringio.rb #gets */
