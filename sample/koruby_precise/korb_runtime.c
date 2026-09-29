@@ -2215,9 +2215,14 @@ korb_hash_remove_at(CTX *c, KorbHash *restrict h, const uint32_t idx)
  * identity.
  * ------------------------------------------------------------------------- */
 
+static bool korb_cext_has_alloc(CTX *c, korb_value klass);                     /* fwd (builtins/cext.c) */
+static RESULT korb_cext_obj_alloc(CTX *c, korb_value *slots, korb_value klass);   /* fwd (builtins/cext.c) */
 RESULT
 korb_obj_new(CTX *c, korb_value *slots, korb_value klass)
 {
+    /* a class with a C extension's allocator (rb_define_alloc_func): Class#new,
+     * #allocate, Marshal and aliases of them all come through here, as in CRuby */
+    if (UNLIKELY(c->vm->cext != NULL) && korb_cext_has_alloc(c, klass)) return korb_cext_obj_alloc(c, slots, klass);
     korb_ref kref = SLOTS_PUSH(slots, klass);        /* root klass across alloc */
     KorbObject *o = korb_alloc(c, slots, sizeof(KorbObject), KORB_OBJ_OBJECT);
     o->shape_id = 1;                                  /* root shape (no ivars) */
@@ -22372,6 +22377,7 @@ korb_method_clear_def_cref(korb_value klass, uint32_t mid)
 /* wasm32 has no dlopen or setjmp: no C extensions (vm->cext stays NULL, so the GC hooks never run) */
 static RESULT korb_cext_load(CTX *c, korb_value *slots, const char *path)
 { return korb_raise(c, slots, KORB_E_LOADERR, 0, "C extensions are not supported on wasm -- %s", path); }
+static bool korb_cext_has_alloc(CTX *c, korb_value klass) { (void)c; (void)klass; return false; }
 static RESULT korb_cext_obj_alloc(CTX *c, korb_value *slots, korb_value klass) { return korb_obj_new(c, slots, klass); }
 void korb_cext_visit_roots(CTX *c, void *ctx, void (*visit)(void *, void **)) { (void)c; (void)ctx; (void)visit; }
 void korb_cext_weak_walk(CTX *c) { (void)c; }

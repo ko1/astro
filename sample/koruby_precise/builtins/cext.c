@@ -434,7 +434,6 @@ korb_cext_invoke(CTX *c, korb_value *slots, korb_ref self, korb_slice args, NODE
                      (((AroObjectHeader *)(uintptr_t)KORB_SLICE_GET(args, argc - 1))->flags & KORB_FL_KWARGS);
         KVALUE ret;
         if (m->arity == -3) ret = rb_obj_alloc(f.self);                      /* Class#allocate */
-        else if (m->arity == -4) ret = rb_class_new_instance((int)argc, av, f.self);   /* Class#new */
         else if (m->arity == -2) ret = ((KVALUE (*)(KVALUE, KVALUE))m->fn)(f.self, kcx_ary_from(c, (int)argc, av));
         else {
             if (m->arity >= 0 && (uint32_t)m->arity != argc)
@@ -594,7 +593,11 @@ rb_type(KVALUE h)
       case KORB_OBJ_RATIONAL: return 0x0f;
       case KORB_OBJ_COMPLEX: return 0x0e;
       case KORB_OBJ_CLASS: return VAL2CLASS(v)->is_module ? 0x03 : 0x02;
-      case KORB_OBJ_OBJECT: return (((AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_CDATA) ? 0x0c : 0x01;
+      case KORB_OBJ_OBJECT: {
+        if (((AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_CDATA) return 0x0c;
+        CTX *const c = kcx_c();                          /* an IO is a plain object here: T_FILE by class */
+        return rb_cIO && korb_class_le(korb_class_obj_of(c, v), K(rb_cIO)) ? 0x0b : 0x01;
+      }
       default: return 0x01;
     }
 }
@@ -841,12 +844,16 @@ KCX_API KVALUE rb_usascii_str_new(const char *ptr, long len) { const KVALUE r = 
 KCX_API KVALUE rb_usascii_str_new_cstr(const char *ptr) { return rb_usascii_str_new(ptr, (long)strlen(ptr)); }
 KCX_API KVALUE rb_utf8_str_new(const char *ptr, long len) { const KVALUE r = rb_str_new(ptr, len); kcx_set_enc(r, KORB_ENC_UTF8); return r; }
 KCX_API KVALUE rb_utf8_str_new_cstr(const char *ptr) { return rb_utf8_str_new(ptr, (long)strlen(ptr)); }
+/* empty, with room for capa bytes: extensions write into RSTRING_PTR up to the capacity */
 KCX_API KVALUE
 rb_str_buf_new(long capa)
 {
-    const KVALUE r = rb_str_new(NULL, 0);
-    (void)capa;
-    return r;
+    CTX *const c = kcx_c();
+    KorbString *const str = korb_str_alloc(c, kcx_slots(c), (uint32_t)(capa > 0 ? capa : 0));
+    str->len = 0;
+    korb_strbuf_data(str->buf)[0] = '\0';
+    KORB_STR_ENC_SET((korb_value)str, KORB_ENC_BINARY);
+    return W((korb_value)str);
 }
 KCX_API KVALUE
 rb_str_cat(KVALUE str, const char *ptr, long len)
@@ -1482,20 +1489,6 @@ rb_define_attr(KVALUE k, const char *name, int read, int write)
     if (write) (void)kcx_send_name(c, K(k), "attr_writer", 1, &s);
 }
 
-/* rb_define_alloc_func: `allocate` / `new` on the class's singleton run the C allocator. */
-static RESULT
-korb_cext_m_allocate(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *blk, korb_value *env, korb_value *cs)
-{
-    (void)a; (void)blk; (void)env; (void)cs;
-    static const struct korb_cext_method m = { NULL, -3, NULL };
-    return korb_cext_invoke(c, slots, self, KORB_SLICE_MAKE(slots, 0), NULL, NULL, NULL, &m);
-}
-static RESULT
-korb_cext_m_new(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *blk, korb_value *env, korb_value *cs)
-{
-    static const struct korb_cext_method m = { NULL, -4, NULL };
-    return korb_cext_invoke(c, slots, self, a, blk, env, cs, &m);
-}
 KCX_API void
 rb_define_alloc_func(KVALUE klass, KVALUE (*func)(KVALUE))
 {
@@ -1508,13 +1501,21 @@ rb_define_alloc_func(KVALUE klass, KVALUE (*func)(KVALUE))
         if (x->alloc_n == x->alloc_capa) { x->alloc_capa = x->alloc_capa ? x->alloc_capa * 2 : 16; x->allocs = ruby_xrealloc(x->allocs, x->alloc_capa * sizeof *x->allocs); }
         x->alloc_n++;
     }
-    x->allocs[i].class_serial = serial; x->allocs[i].fn = func;
-    const korb_value sing = K(rb_singleton_class(klass));
-    korb_class_def_cfn_blk(c, sing, "allocate", korb_cext_m_allocate, 0);
-    korb_class_def_cfn_blk(c, sing, "new", korb_cext_m_new, -1);
+    x->allocs[i].class_serial = serial; x->allocs[i].fn = func;   /* korb_obj_new looks it up */
 }
 KCX_API void rb_undef_alloc_func(KVALUE klass) { rb_define_alloc_func(klass, NULL); }
-/* dup / clone of a T_DATA: run the class's allocator (builtins/int_float_ext.c) */
+/* korb_obj_new's hook: does klass (or an ancestor) have a C allocator (or an undef'd one)? */
+static bool
+korb_cext_has_alloc(CTX *c, korb_value k)
+{
+    const struct korb_cext_vm *const x = c->vm->cext;
+    if (x->alloc_n == 0) return false;
+    for (; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass)
+        for (uint32_t i = 0; i < x->alloc_n; i++)
+            if (x->allocs[i].class_serial == VAL2CLASS(k)->serial) return true;
+    return false;
+}
+/* korb_obj_new for such a class: run the allocator under an extension frame */
 static RESULT
 korb_cext_obj_alloc(CTX *c, korb_value *slots, korb_value klass)
 {
@@ -1534,7 +1535,7 @@ rb_obj_alloc(KVALUE klass)
                 if (!x->allocs[i].fn) rb_raise(rb_eTypeError, "allocator undefined for %s", rb_class2name(klass));
                 return x->allocs[i].fn(klass);
             }
-    return W(kcx_check(c, korb_obj_new(c, kcx_slots(c), k)));
+    return W(kcx_check(c, korb_obj_new(c, kcx_slots(c), k)));   /* no allocator up the chain: the hook passes it through */
 }
 KCX_API void
 rb_obj_call_init_kw(KVALUE obj, int argc, const KVALUE *argv, int kw_splat)

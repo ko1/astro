@@ -28,7 +28,7 @@ t(:bignums) { T.bignums }
 t(:fix2long) { [T.fix2long(41), T.fix2long(2**70)] }
 
 # types
-t(:types) { [nil, true, false, 1, 2**70, 1.5, 1e300, :s, "s", [], {}, String, Kernel, Object.new, T::Counter.new, /r/].map { |v| T.type_of(v) } }
+t(:types) { [nil, true, false, 1, 2**70, 1.5, 1e300, :s, "s", [], {}, String, Kernel, Object.new, T::Counter.new, /r/, $stdout, File.open(__FILE__)].map { |v| T.type_of(v) } }
 t(:check_string) { T.check_string("ok") }
 t(:check_string_bad) { T.check_string(1) }
 t(:check_string_nil) { T.check_string(nil) }
@@ -46,6 +46,7 @@ t(:string_value_nil) { T.string_value(nil) }
 t(:string_value_cstr_nul) { T.string_value_cstr("a\0b") }
 t(:str_ops) { T.str_ops("abc", "abd") }
 t(:str_set_len) { T.str_set_len }
+t(:str_buf_capa) { T.str_buf_capa }
 t(:sprintf) { T.sprintf(:sym) }
 t(:sprintf_str) { T.sprintf("q\"uote") }
 t(:pin) { T.pin_across_gc("pinned bytes " * 3) }

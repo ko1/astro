@@ -49,6 +49,7 @@ t_type_of(VALUE self, VALUE v)
       case T_OBJECT: return rb_str_new_cstr("object");
       case T_DATA: return rb_str_new_cstr("data");
       case T_REGEXP: return rb_str_new_cstr("regexp");
+      case T_FILE: return rb_str_new_cstr("file");
       default: return rb_str_new_cstr("other");
     }
 }
@@ -104,6 +105,16 @@ t_str_ops(VALUE self, VALUE a, VALUE b)
     VALUE big = rb_str_resize(rb_str_new_cstr("ab"), 5);
     return rb_ary_new_from_args(7, INT2FIX(rb_str_cmp(a, b)), d, rb_str_substr(a, 1, 2), r, LONG2NUM(RSTRING_LEN(big)),
                                 rb_str_plus(a, b), rb_str_equal(a, rb_str_dup(a)));
+}
+/* rb_str_buf_new's capacity is writable through RSTRING_PTR (openssl's Cipher#update) */
+static VALUE
+t_str_buf_capa(VALUE self)
+{
+    VALUE s = rb_str_buf_new(4096);
+    long capa = (long)rb_str_capacity(s);
+    memset(RSTRING_PTR(s), 'z', 4096);
+    rb_str_set_len(s, 4096);
+    return rb_ary_new_from_args(3, capa >= 4096 ? Qtrue : Qfalse, LONG2NUM(RSTRING_LEN(s)), rb_str_substr(s, 4090, 6));
 }
 static VALUE
 t_str_set_len(VALUE self)
@@ -497,6 +508,7 @@ Init_cext_api_test(void)
     rb_define_module_function(mT, "string_value_cstr", t_string_value_cstr, 1);
     rb_define_module_function(mT, "str_ops", t_str_ops, 2);
     rb_define_module_function(mT, "str_set_len", t_str_set_len, 0);
+    rb_define_module_function(mT, "str_buf_capa", t_str_buf_capa, 0);
     rb_define_module_function(mT, "sprintf", t_sprintf, 1);
     rb_define_module_function(mT, "pin_across_gc", t_pin_across_gc, 1);
     rb_define_module_function(mT, "ary", t_ary, 0);
