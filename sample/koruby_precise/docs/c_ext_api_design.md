@@ -146,7 +146,9 @@ KORB_E_*, line, fmt, …)`。ext コードは自然に合成できる。
 
 ### 3.5 登録 / module init
 
-- `void Init_<name>(korb_state *c)` 規約 (CRuby の `Init_` を踏襲)。
+- `void KorbInit_<name>(korb_state *c)` 規約（user の決定）。互換層の `Init_<name>` とは入口のシンボル名で分ける:
+  `foo.ko.so` は `KorbInit_foo` が無ければ、`foo.kompat.so` は `Init_foo` と `koruby_cext_abi_1` が無ければ読まない。
+  `Init_` だけでは互換層向けかネイティブかが判らず、しかも引数が違う（void / korb_state *）ので取り違えると落ちる。
 - クラス定義 API: `korb_define_class` / `korb_def_module_function` を追加
   (現状 `korb_def_cmethod` は既存コアクラス向け)。
 - 現状は静的リンク builtin なので `Init_` は runtime init から呼ぶ。
@@ -461,7 +463,26 @@ mixin を include したクラスを別の superclass で `rb_define_class_under
   などは組み込みを直接呼ぶ（SSLContext#freeze = #setup → rb_obj_freeze の無限再帰）、green thread の切り替えで
   `c->cext_top` / `c->cext_jmp` を退避（CTX は thread 間で共有）、`rb_io_wait` の既定 timeout は IO#timeout。
 
-**未対応**（呼ぶと NotImplementedError）: `rb_iter_break`、`rb_catch`。mkmf。gc_copy 以外の moving backend
+- **mkmf / gem install**（2026-09-29）: koruby で `ruby extconf.rb && make` が動き `foo.kompat.so` ができる。
+  `make root` が (1) `RbConfig::MAKEFILE_CONFIG` を CRuby のものから生成（`tools/make_mkmf_config.rb`: パスは koruby の
+  CONFIG、DLEXT = `kompat.so`、`RbConfig.expand` / `fire_update!`。prelude が autoload）、(2) 互換層のヘッダを
+  rubyhdrdir に置き、(3) `root/lib/libkoruby.so` を作る — koruby 本体が公開する rb_* / ruby_* と同名の空の定義で、
+  have_func の試験リンクと拡張の `-lkoruby` を満たすだけ（実行時は本体の定義が先に見つかる）。ext/openssl の
+  extconf.h が CRuby のものと一致し、test/openssl 35 本が手組みと同じ結果。`gem install` は拡張をビルドし、
+  失敗したら拡張抜きで入れる（`KorubyExtensionFallback`、警告を出す）。gem の lib/ に .kompat.so が無いときだけ
+  koruby 自身の lib/ が代わりに立つ。bigdecimal 4.1.3 は gem install でビルドされ、gem の test/ 6 本が CRuby と
+  同じ要約（test_bigdecimal 203 / 6284、test_bigmath 32 / 2083）。
+  途中で直したもの: **ID**（CRuby の拡張は 1 文字の演算子を文字コードで渡す `rb_funcall(x, '*', 1, y)`。拡張側の
+  ID = koruby の symbol id + 256 にして 0〜255 を演算子名に写す。以前は `'*'` = 42 が koruby の `sleep` だった）、
+  **CLASS_OF**（特異クラスがあればそれ。クラスには必ず。`rb_undef_method(CLASS_OF(k), "new")` が Class#new を
+  消していた）、`rb_num2long` が 2**62〜2**63 の Bignum を受ける、`rb_num_coerce_bin/cmp/relop`・`rb_cmperr`・
+  `rb_Rational` 他、ctype マクロ、ruby.h が stdio.h などを含む（mkmf の have_func の試験が printf を使う）。
+  bigdecimal の test で見つかった本体側の食い違い（知らない Numeric を成分に持つ Complex、Integer#quo / Float#fdiv
+  の coerce、Float#divmod(±Infinity)、終わりのない Range の Enumerable、Bignum 端の bsearch）も直した。
+  その他の gem（2026-09-29、rubygems.org の最新）: bcrypt はビルドされる。racc・msgpack・date・redcarpet・nio4r・
+  strscan・stringio・io-console・erb・json・psych は API 不足で拡張抜きになる（不足の一覧は docs/todo.md）。
+
+**未対応**（呼ぶと NotImplementedError）: `rb_iter_break`、`rb_catch`。gc_copy 以外の moving backend
 （pin の区画が無い）。Fiber の切り替え（Enumerator の外部イテレーションを含む）では拡張のフレームを退避していない。
 
 **未解決**: 長寿命の pin が copy GC の空間効率を落とす量（pin は large object 区画 = 1 個ずつ malloc、登録は

@@ -1433,7 +1433,7 @@ module RbConfig
   CONFIG["PATCHLEVEL"] = RUBY_PATCHLEVEL.to_s
   CONFIG["UNICODE_VERSION"] = "17.0.0"      # the tables in builtins/unicode_case.h
   CONFIG["UNICODE_EMOJI_VERSION"] = "17.0"
-  CONFIG["DLEXT"] = "so"
+  CONFIG["DLEXT"] = "kompat.so"          # CRuby extensions rebuilt for koruby's compatibility layer (builtins/cext.c)
   CONFIG["target_os"] = CONFIG["host_os"]
   CONFIG["target_cpu"] = CONFIG["host_cpu"]
   CONFIG["CROSS_COMPILING"] = "no"
@@ -1543,6 +1543,10 @@ module RbConfig
   CONFIG["build_vendor"] = "pc"
   # CRuby leaves the values unfrozen even under --enable-frozen-string-literal.
   CONFIG.transform_values! { |v| v.frozen? ? +v : v }
+  # mkmf's MAKEFILE_CONFIG (and the build keys of CONFIG: CC, CFLAGS, LDSHARED ...),
+  # written by tools/make_root.sh; loaded only when something names it
+  __mk = "#{CONFIG["rubylibdir"]}/#{__arch}/koruby_makefile_config.rb"
+  autoload :MAKEFILE_CONFIG, __mk if File.exist?(__mk)
 
   # nil unless koruby is installed under a prefix (the spec guards on it).
   TOPDIR = nil

@@ -17,6 +17,8 @@ t(:num2long) { [T.num2long(3), T.num2long(-7), T.num2long(2.9), T.num2long(-2**6
 t(:num2long_str) { T.num2long("x") }
 t(:num2long_nil) { T.num2long(nil) }
 t(:num2long_big) { T.num2long(2**70) }
+t(:num2long_63bit) { [T.num2long(2**62), T.num2long(-2**63), T.num2long(2**63 - 1)] }
+t(:num2long_64bit) { T.num2long(2**63) }
 t(:num2long_to_int) { o = Object.new; def o.to_int = 11; T.num2long(o) }
 t(:num2int) { T.num2int(2**31 - 1) }
 t(:num2int_big) { T.num2int(2**40) }
@@ -199,4 +201,49 @@ t(:call_super) {
 }
 t(:call_super_missing) { k = Class.new; T.def_child(k); k.new.greet }
 t(:c_truthy) { ["s", 1, nil, false, true].map { |v| T.c_truthy(v) } }
+
+# operator IDs, coercion, CLASS_OF, conversions
+t(:op_ids) { T.op_ids(7, 3) }
+t(:op_ids_float) { T.op_ids(7.5, 2) }
+num = Class.new(Numeric) { def coerce(o) = [o.to_f, 2.5]; def to_s = "num" }
+t(:coerce_bin) { T.coerce_bin(1, num.new) }
+t(:coerce_bin_fail) { T.coerce_bin(1, Object.new.tap { def _1.inspect = "obj" }) }
+t(:coerce_bin_nil) { T.coerce_bin(1, nil) }
+t(:coerce_cmp) { [T.coerce_cmp(1, num.new), T.coerce_cmp(1, Object.new)] }
+t(:coerce_relop) { T.coerce_relop(3, num.new) }
+t(:coerce_relop_fail) { T.coerce_relop(3, "x") }
+t(:coerce_bad) { T.coerce_bin(1, Class.new { def coerce(o) = 1 }.new) }
+t(:class_of) { k = Class.new; o = Object.new; def o.x; end; [T.class_of(1), T.class_of(k)[0] == k.singleton_class, T.class_of(o)[0] == o.singleton_class, T.class_of(o)[1]] }
+t(:undef_new) { k = Class.new; T.undef_new(k); [k.respond_to?(:new), Class.new.respond_to?(:new), Object.new.class] }
+t(:num2short) { [T.num2short(-32768), T.num2short(32767), T.num2ushort(65535), T.num2ushort(-1)] }
+t(:num2short_big) { T.num2short(32768) }
+t(:num2ushort_big) { T.num2ushort(65536) }
+t(:to_int) { [T.to_int(3), T.to_int(2**70), T.to_int(Object.new.tap { def _1.to_int = 4 })] }
+t(:to_int_float) { T.to_int(Object.new.tap { def _1.to_int = 5.5 }) }
+t(:to_int_nil) { T.to_int(nil) }
+t(:rational) { T.rational(6, 4) }
+t(:rational_zero) { T.rational(1, 0) }
+t(:substr) { T.substr("aéb漢字") }
+t(:asciicompat) { [T.asciicompat("x"), T.asciicompat("x".encode("UTF-16LE"))] }
+t(:opts_exception) { [T.opts_exception(nil, 1), T.opts_exception({}, 0), T.opts_exception({ exception: false }, 1), T.opts_exception({ exception: true }, 0)] }
+t(:opts_exception_bad) { T.opts_exception({ exception: 1 }, 1) }
+t(:opts_exception_unknown) { T.opts_exception({ foo: 1 }, 1) }
+t(:ctype) { T.ctype }
+t(:thread_local) { [T.thread_local(Thread.current), Thread.current[:cext_k]] }
+t(:big) { [T.big(2**70), T.big(-2**70)] }
+t(:warn) {
+  w = []
+  Warning.singleton_class.alias_method(:__cext_warn, :warn)
+  Warning.define_singleton_method(:warn) { |m, **| w << m.sub(/\A.*?warning: /, "") }
+  dep = Warning[:deprecated]
+  begin
+    Warning[:deprecated] = true;  T.warn
+    Warning[:deprecated] = false; T.warn
+    v = $VERBOSE; $VERBOSE = nil; T.warn; $VERBOSE = v
+  ensure
+    Warning[:deprecated] = dep
+    Warning.singleton_class.alias_method(:warn, :__cext_warn)
+  end
+  w
+}
 puts "done"

@@ -678,16 +678,27 @@ KCX_API void rb_gc(void) { CTX *const c = kcx_c(); (void)kcx_send_name(c, kcx_co
 KCX_API KVALUE rb_gc_start(void) { rb_gc(); return KQnil; }
 
 /* ---- symbols ---- */
-KCX_API KVALUE rb_intern2(const char *name, long len) { return (KVALUE)korb_intern(kcx_c()->vm, name, (size_t)len); }
+/* Ext-side ID = koruby's symbol id + KCX_ID_BIAS: CRuby extensions pass one-character
+ * operators as the character itself (rb_funcall(x, '*', 1, y)), so 0..255 are those. */
+#define KCX_ID_BIAS 256
+static inline KVALUE kcx_id_out(const uint32_t k) { return (KVALUE)k + KCX_ID_BIAS; }
+static uint32_t
+kcx_id_in(const KVALUE id)
+{
+    if (id >= KCX_ID_BIAS) return (uint32_t)(id - KCX_ID_BIAS);
+    const char ch = (char)id;
+    return korb_intern(kcx_c()->vm, &ch, 1);
+}
+KCX_API KVALUE rb_intern2(const char *name, long len) { return kcx_id_out(korb_intern(kcx_c()->vm, name, (size_t)len)); }
 KCX_API KVALUE rb_intern(const char *name) { return rb_intern2(name, (long)strlen(name)); }
 KCX_API KVALUE rb_intern3(const char *name, long len, void *enc) { (void)enc; return rb_intern2(name, len); }
-KCX_API const char *rb_id2name(KVALUE id) { return korb_sym_name(kcx_c()->vm, (uint32_t)id); }
-KCX_API KVALUE rb_id2sym(KVALUE id) { return (KVALUE)ID2SYM((uint32_t)id); }
+KCX_API const char *rb_id2name(KVALUE id) { return korb_sym_name(kcx_c()->vm, kcx_id_in(id)); }
+KCX_API KVALUE rb_id2sym(KVALUE id) { return (KVALUE)ID2SYM(kcx_id_in(id)); }
 KCX_API KVALUE
 rb_sym2id(KVALUE h)
 {
     const korb_value v = K(h);
-    if (SYMBOL_P(v)) return (KVALUE)SYM2ID(v);
+    if (SYMBOL_P(v)) return kcx_id_out(SYM2ID(v));
     CTX *const c = kcx_c();
     kcx_throw(c, korb_raise(c, kcx_slots(c), KORB_E_TYPE, 0, "not a symbol"));
 }
@@ -695,7 +706,7 @@ KCX_API KVALUE
 rb_id2str(KVALUE id)
 {
     CTX *const c = kcx_c();
-    const char *const n = korb_sym_name(c->vm, (uint32_t)id);
+    const char *const n = korb_sym_name(c->vm, kcx_id_in(id));
     return W(kcx_check(c, korb_str_new(c, kcx_slots(c), n, (uint32_t)strlen(n))));
 }
 KCX_API KVALUE rb_sym2str(KVALUE h) { return rb_id2str(rb_sym2id(h)); }
@@ -704,10 +715,10 @@ rb_to_id(KVALUE h)
 {
     CTX *const c = kcx_c();
     const korb_value v = K(h);
-    if (SYMBOL_P(v)) return (KVALUE)SYM2ID(v);
-    if (KORB_STRING_P(v)) return (KVALUE)korb_intern(c->vm, korb_strbuf_data(VAL2STR(v)->buf), VAL2STR(v)->len);
+    if (SYMBOL_P(v)) return kcx_id_out(SYM2ID(v));
+    if (KORB_STRING_P(v)) return kcx_id_out(korb_intern(c->vm, korb_strbuf_data(VAL2STR(v)->buf), VAL2STR(v)->len));
     const korb_value s = kcx_send_name(c, v, "to_str", 0, NULL);
-    return (KVALUE)korb_intern(c->vm, korb_strbuf_data(VAL2STR(s)->buf), VAL2STR(s)->len);
+    return kcx_id_out(korb_intern(c->vm, korb_strbuf_data(VAL2STR(s)->buf), VAL2STR(s)->len));
 }
 KCX_API KVALUE rb_to_symbol(KVALUE h) { return rb_id2sym(rb_to_id(h)); }
 KCX_API KVALUE rb_check_id(volatile KVALUE *namep) { return rb_to_id(*namep); }
@@ -728,9 +739,13 @@ kcx_type_name(CTX *c, korb_value v, char *out, size_t sz)
 static korb_value
 kcx_convert(CTX *c, korb_value v, const char *target, const char *conv)
 {
-    if (v != KORB_NIL && v != KORB_TRUE && v != KORB_FALSE && korb_responds_to(c, v, kcx_id(c, conv)))
-        return kcx_send_name(c, v, conv, 0, NULL);
     char nm[192]; kcx_type_name(c, v, nm, sizeof nm);
+    if (v != KORB_NIL && v != KORB_TRUE && v != KORB_FALSE && korb_responds_to(c, v, kcx_id(c, conv))) {
+        const korb_value r = kcx_send_name(c, v, conv, 0, NULL);
+        if (strcmp(target, "Integer") != 0 || FIXNUM_P(r) || KORB_BIGNUM_P(r)) return r;
+        char rn[192]; kcx_type_name(c, r, rn, sizeof rn);
+        kcx_throw(c, korb_raise(c, kcx_slots(c), KORB_E_TYPE, 0, "can't convert %s into %s (%s#%s gives %s)", nm, target, nm, conv, rn));
+    }
     kcx_throw(c, korb_raise(c, kcx_slots(c), KORB_E_TYPE, 0, "no implicit conversion of %s into %s", nm, target));
 }
 
@@ -747,6 +762,7 @@ rb_num2long(KVALUE h)
     }
     if (!KORB_BIGNUM_P(v)) v = kcx_convert(c, v, "Integer", "to_int");
     if (FIXNUM_P(v)) return (long)FIX2LONG(v);
+    if (korb_mp_fits_slong_p(VAL2BIG(v)->z)) return (long)korb_mp_get_si(VAL2BIG(v)->z);   /* Fixnum is 62-bit here */
     kcx_throw(c, kcx_raise_c(c, KORB_E_RANGE, "bignum too big to convert into 'long'"));
 }
 KCX_API unsigned long
@@ -776,6 +792,27 @@ rb_num2int(KVALUE h)
     }
     return l;
 }
+KCX_API short
+rb_num2short(KVALUE h)
+{
+    const long l = rb_num2long(h);
+    if (l > SHRT_MAX || l < SHRT_MIN) {
+        CTX *const c = kcx_c();
+        kcx_throw(c, korb_raise(c, kcx_slots(c), KORB_E_RANGE, 0, "integer %ld too %s to convert to 'short'", l, l < 0 ? "small" : "big"));
+    }
+    return (short)l;
+}
+KCX_API unsigned short
+rb_num2ushort(KVALUE h)
+{
+    const long l = rb_num2long(h);
+    if (l > USHRT_MAX || l < SHRT_MIN) {
+        CTX *const c = kcx_c();
+        kcx_throw(c, korb_raise(c, kcx_slots(c), KORB_E_RANGE, 0, "integer %ld too %s to convert to 'unsigned short'", l, l < 0 ? "small" : "big"));
+    }
+    return (unsigned short)l;
+}
+KCX_API KVALUE rb_to_int(KVALUE h) { CTX *const c = kcx_c(); const korb_value v = K(h); return FIXNUM_P(v) || KORB_BIGNUM_P(v) ? h : W(kcx_convert(c, v, "Integer", "to_int")); }
 KCX_API long rb_fix2int(KVALUE h) { return rb_num2int(h); }
 KCX_API unsigned long rb_num2uint(KVALUE h) { return (unsigned long)(unsigned int)rb_num2long(h); }
 KCX_API double
@@ -823,6 +860,72 @@ rb_float_new(double d)
 }
 KCX_API double rb_float_value(KVALUE h) { double d = 0; (void)korb_num_to_d(K(h), &d); return d; }
 KCX_API KVALUE rb_Integer(KVALUE h) { CTX *const c = kcx_c(); return W(kcx_send_name(c, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), "Integer", 1, &h)); }
+KCX_API KVALUE rb_Rational(KVALUE n, KVALUE d) { CTX *const c = kcx_c(); const KVALUE a[2] = { n, d }; return W(kcx_send_name(c, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), "Rational", 2, a)); }
+KCX_API KVALUE rb_rational_new(KVALUE n, KVALUE d) { return rb_Rational(n, d); }
+KCX_API KVALUE rb_rational_num(KVALUE r) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(r), "numerator", 0, NULL)); }
+KCX_API KVALUE rb_rational_den(KVALUE r) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(r), "denominator", 0, NULL)); }
+KCX_API KVALUE rb_Complex(KVALUE re, KVALUE im) { CTX *const c = kcx_c(); const KVALUE a[2] = { re, im }; return W(kcx_send_name(c, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), "Complex", 2, a)); }
+KCX_API KVALUE rb_complex_real(KVALUE z) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(z), "real", 0, NULL)); }
+KCX_API KVALUE rb_complex_imag(KVALUE z) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(z), "imaginary", 0, NULL)); }
+KCX_API int rb_big_sign(KVALUE b) { double d; (void)korb_num_to_d(K(b), &d); return d >= 0; }
+KCX_API KVALUE rb_big_cmp(KVALUE x, KVALUE y) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(x), "<=>", 1, &y)); }
+KCX_API KVALUE rb_big2str(KVALUE x, int base) { CTX *const c = kcx_c(); const KVALUE b = (KVALUE)LONG2FIX(base); return W(kcx_send_name(c, K(x), "to_s", 1, &b)); }
+
+/* CRuby's coerce / comparison errors: the inspect of an immediate or a Float, the class of the rest */
+static void
+kcx_coerce_name(CTX *c, korb_value v, char *out, size_t sz)
+{
+    if (AROH_IS_GC_OBJECT(v) && !KORB_FLOAT_P(v)) { korb_class_qname_into(c, korb_class_obj_of(c, v), out, sz); return; }
+    const korb_value s = kcx_send_name(c, v, "inspect", 0, NULL);
+    snprintf(out, sz, "%.*s", (int)VAL2STR(s)->len, korb_strbuf_data(VAL2STR(s)->buf));
+}
+/* CRuby's do_coerce: y.coerce(x) => [x', y'].  false when y cannot coerce (and !err) */
+static bool
+kcx_do_coerce(CTX *c, KVALUE *x, KVALUE *y, bool err)
+{
+    if (!korb_responds_to(c, K(*y), kcx_id(c, "coerce"))) {
+        if (err) {
+            char yn[192], xn[192];
+            kcx_coerce_name(c, K(*y), yn, sizeof yn);
+            korb_class_qname_into(c, korb_class_obj_of(c, K(*x)), xn, sizeof xn);
+            kcx_throw(c, korb_raise(c, kcx_slots(c), KORB_E_TYPE, 0, "%s can't be coerced into %s", yn, xn));
+        }
+        return false;
+    }
+    const korb_value ary = kcx_send_name(c, K(*y), "coerce", 1, x);
+    if (!err && ary == KORB_NIL) return false;
+    if (!KORB_ARRAY_P(ary) || VAL2ARY(ary)->len != 2) kcx_throw(c, kcx_raise_c(c, KORB_E_TYPE, "coerce must return [x, y]"));
+    *x = W(korb_items_data(VAL2ARY(ary)->items)[0]);
+    *y = W(korb_items_data(VAL2ARY(ary)->items)[1]);
+    return true;
+}
+static __attribute__((noreturn)) void
+kcx_cmperr(KVALUE x, KVALUE y, const char *reason)
+{
+    CTX *const c = kcx_c();
+    char xn[192], yn[192];
+    korb_class_qname_into(c, korb_class_obj_of(c, K(x)), xn, sizeof xn);
+    kcx_coerce_name(c, K(y), yn, sizeof yn);
+    kcx_throw(c, korb_raise(c, kcx_slots(c), KORB_E_ARGUMENT, 0, "comparison of %s with %s failed%s%s", xn, yn, reason ? ": " : "", reason ? reason : ""));
+}
+KCX_API __attribute__((noreturn)) void rb_cmperr(KVALUE x, KVALUE y) { kcx_cmperr(x, y, NULL); }
+KCX_API KVALUE rb_num_coerce_bin(KVALUE x, KVALUE y, KVALUE op) { CTX *const c = kcx_c(); (void)kcx_do_coerce(c, &x, &y, true); return W(kcx_send(c, K(x), kcx_id_in(op), 1, &y)); }
+KCX_API KVALUE
+rb_num_coerce_cmp(KVALUE x, KVALUE y, KVALUE op)
+{
+    CTX *const c = kcx_c();
+    return kcx_do_coerce(c, &x, &y, false) ? W(kcx_send(c, K(x), kcx_id_in(op), 1, &y)) : KQnil;
+}
+KCX_API KVALUE
+rb_num_coerce_relop(KVALUE x, KVALUE y, KVALUE op)
+{
+    CTX *const c = kcx_c();
+    const KVALUE x0 = x, y0 = y;
+    if (!kcx_do_coerce(c, &x, &y, false)) kcx_cmperr(x0, y0, "coercion was not possible");
+    const korb_value r = kcx_send(c, K(x), kcx_id_in(op), 1, &y);
+    if (r == KORB_NIL) kcx_cmperr(x0, y0, "comparator returned nil");
+    return W(r);
+}
 KCX_API KVALUE rb_Float(KVALUE h) { CTX *const c = kcx_c(); return W(kcx_send_name(c, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), "Float", 1, &h)); }
 
 /* ---- strings ---- */
@@ -890,7 +993,23 @@ rb_str_substr(KVALUE str, long beg, long len)
 {
     CTX *const c = kcx_c();
     const KVALUE a[2] = { (KVALUE)LONG2FIX(beg), (KVALUE)LONG2FIX(len) };
+    return W(kcx_send_name(c, K(str), "[]", 2, a));             /* characters, as CRuby's */
+}
+KCX_API KVALUE
+rb_str_subseq(KVALUE str, long beg, long len)
+{
+    CTX *const c = kcx_c();
+    const KVALUE a[2] = { (KVALUE)LONG2FIX(beg), (KVALUE)LONG2FIX(len) };
     return W(kcx_send_name(c, K(str), "byteslice", 2, a));
+}
+KCX_API __attribute__((noreturn)) void rb_raise(KVALUE klass, const char *fmt, ...);   /* fwd */
+KCX_API void
+rb_must_asciicompat(KVALUE str)
+{
+    CTX *const c = kcx_c();
+    if (korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(K(str)))) return;
+    const korb_value e = kcx_send_name(c, kcx_send_name(c, K(str), "encoding", 0, NULL), "to_s", 0, NULL);
+    rb_raise(rb_eEncCompatError, "ASCII incompatible encoding: %.*s", (int)VAL2STR(e)->len, korb_strbuf_data(VAL2STR(e)->buf));
 }
 KCX_API KVALUE rb_str_intern(KVALUE str) { return rb_to_symbol(str); }
 KCX_API KVALUE rb_str_inspect(KVALUE str) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(str), "inspect", 0, NULL)); }
@@ -1175,9 +1294,28 @@ kcx_vwarn(const char *fmt, va_list ap)
     (void)rb_str_cat(s, b, (long)n);
     (void)rb_str_cat(s, "\n", 1);
     free(b);
-    (void)kcx_send_name(c, korb_const_get(c->vm, korb_intern(c->vm, "$stderr", 7)), "write", 1, &s);
+    (void)kcx_send_name(c, korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7)), "warn", 1, &s);   /* overridable, as CRuby's */
 }
-KCX_API void rb_warn(const char *fmt, ...) { va_list ap; va_start(ap, fmt); kcx_vwarn(fmt, ap); va_end(ap); }
+KCX_API void
+rb_warn(const char *fmt, ...)
+{
+    CTX *const c = kcx_c();
+    if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
+    va_list ap; va_start(ap, fmt); kcx_vwarn(fmt, ap); va_end(ap);
+}
+/* rb_warning_category_t: CRuby's order */
+static const char *const kcx_warn_categories[] = { NULL, "deprecated", "experimental", "performance", "strict_unused_block" };
+KCX_API void
+rb_category_warn(int cat, const char *fmt, ...)
+{
+    CTX *const c = kcx_c();
+    if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
+    if (cat > 0 && cat < (int)(sizeof kcx_warn_categories / sizeof *kcx_warn_categories)) {
+        const KVALUE sym = rb_id2sym(rb_intern(kcx_warn_categories[cat]));
+        if (!RTEST_K(W(kcx_send_name(c, korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7)), "[]", 1, &sym)))) return;
+    }
+    va_list ap; va_start(ap, fmt); kcx_vwarn(fmt, ap); va_end(ap);
+}
 KCX_API void
 rb_warning(const char *fmt, ...)
 {
@@ -1556,8 +1694,18 @@ rb_class_new_instance_kw(int argc, const KVALUE *argv, KVALUE klass, int kw_spla
     return o;
 }
 KCX_API KVALUE rb_class_new_instance(int argc, const KVALUE *argv, KVALUE klass) { return rb_class_new_instance_kw(argc, argv, klass, 0); }
-KCX_API KVALUE rb_class_of(KVALUE obj) { CTX *const c = kcx_c(); return W(korb_class_obj_of(c, K(obj))); }
-KCX_API KVALUE rb_obj_class(KVALUE obj) { return rb_class_of(obj); }   /* korb_class_obj_of skips singletons */
+/* CLASS_OF: the singleton class when there is one (a class always has its metaclass
+ * in CRuby: `rb_undef_method(CLASS_OF(klass), "new")` must not reach Class) */
+KCX_API KVALUE
+rb_class_of(KVALUE obj)
+{
+    CTX *const c = kcx_c();
+    const korb_value v = K(obj);
+    if (KORB_CLASS_P(v)) return W(kcx_send_name(c, v, "singleton_class", 0, NULL));
+    const korb_value sing = korb_own_singleton_class(c->vm, v);
+    return W(sing != KORB_NIL ? sing : korb_class_obj_of(c, v));
+}
+KCX_API KVALUE rb_obj_class(KVALUE obj) { CTX *const c = kcx_c(); return W(korb_class_obj_of(c, K(obj))); }   /* skips singletons */
 KCX_API KVALUE
 rb_class_superclass(KVALUE k)
 {
@@ -1604,20 +1752,20 @@ rb_any_to_s(KVALUE o)
     const KVALUE um = W(kcx_send_name(c, K(rb_mKernel), "instance_method", 1, &s));
     return W(kcx_send_name(c, K(um), "bind_call", 1, &o));
 }
-KCX_API int rb_respond_to(KVALUE o, KVALUE mid) { CTX *const c = kcx_c(); return korb_responds_to(c, K(o), (uint32_t)mid); }
+KCX_API int rb_respond_to(KVALUE o, KVALUE mid) { CTX *const c = kcx_c(); return korb_responds_to(c, K(o), kcx_id_in(mid)); }
 
 /* ---- ivars / constants / globals ---- */
-KCX_API KVALUE rb_ivar_get(KVALUE o, KVALUE id) { CTX *const c = kcx_c(); return W(korb_ivar_get(c, K(o), ID2SYM((uint32_t)id))); }
+KCX_API KVALUE rb_ivar_get(KVALUE o, KVALUE id) { CTX *const c = kcx_c(); return W(korb_ivar_get(c, K(o), ID2SYM(kcx_id_in(id)))); }
 KCX_API KVALUE
 rb_ivar_set(KVALUE o, KVALUE id, KVALUE v)
 {
     CTX *const c = kcx_c();
     korb_value *const s = kcx_slots(c);
     s[0] = K(o);
-    (void)kcx_check(c, korb_ivar_set(c, s + 1, KORB_REF_AT(&s[0]), ID2SYM((uint32_t)id), K(v)));
+    (void)kcx_check(c, korb_ivar_set(c, s + 1, KORB_REF_AT(&s[0]), ID2SYM(kcx_id_in(id)), K(v)));
     return v;
 }
-KCX_API KVALUE rb_ivar_defined(KVALUE o, KVALUE id) { CTX *const c = kcx_c(); return korb_ivar_defined(c, K(o), ID2SYM((uint32_t)id)) ? KQtrue : KQfalse; }
+KCX_API KVALUE rb_ivar_defined(KVALUE o, KVALUE id) { CTX *const c = kcx_c(); return korb_ivar_defined(c, K(o), ID2SYM(kcx_id_in(id))) ? KQtrue : KQfalse; }
 KCX_API KVALUE rb_iv_get(KVALUE o, const char *name) { return rb_ivar_get(o, rb_intern(name)); }
 KCX_API KVALUE rb_iv_set(KVALUE o, const char *name, KVALUE v) { return rb_ivar_set(o, rb_intern(name), v); }
 KCX_API KVALUE rb_attr_get(KVALUE o, KVALUE id) { return rb_ivar_get(o, id); }
@@ -1654,7 +1802,7 @@ rb_gv_set(const char *name, KVALUE v)
 }
 
 /* ---- calls / blocks ---- */
-KCX_API KVALUE rb_funcallv(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv) { CTX *const c = kcx_c(); return W(kcx_send(c, K(recv), (uint32_t)mid, argc, argv)); }
+KCX_API KVALUE rb_funcallv(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv) { CTX *const c = kcx_c(); return W(kcx_send(c, K(recv), kcx_id_in(mid), argc, argv)); }
 KCX_API KVALUE rb_funcallv_kw(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv, int kw) { (void)kw; return rb_funcallv(recv, mid, argc, argv); }
 KCX_API KVALUE
 rb_funcall(KVALUE recv, KVALUE mid, int n, ...)
@@ -1682,7 +1830,7 @@ rb_funcall_passing_block(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv)
     korb_value *const s = kcx_slots(c);
     s[0] = K(recv);
     for (int i = 0; i < argc; i++) s[1 + i] = K(argv[i]);
-    return W(kcx_check(c, korb_send_blk(c, s + 1 + argc, (uint32_t)mid, 0, (uint32_t)argc, f->block, f->def_env, f->captured_self, 0, KORB_UNDEF)));
+    return W(kcx_check(c, korb_send_blk(c, s + 1 + argc, kcx_id_in(mid), 0, (uint32_t)argc, f->block, f->def_env, f->captured_self, 0, KORB_UNDEF)));
 }
 KCX_API KVALUE rb_current_receiver(void) { return kcx_c()->cext_top->self; }
 KCX_API int rb_block_given_p(void) { const struct korb_cext_frame *const f = kcx_c()->cext_top; return f && f->block != NULL; }
@@ -1750,7 +1898,7 @@ rb_funcall_with_block(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv, KVA
     s[0] = pv; s[1] = K(recv);
     for (int i = 0; i < argc; i++) s[2 + i] = K(argv[i]);
     NODE *const iseq = VAL2PROC(s[0])->iseq;
-    return W(kcx_check(c, korb_send_blk(c, s + 2 + argc, (uint32_t)mid, 0, (uint32_t)argc, iseq ? iseq : KORB_BLK_CPROC,
+    return W(kcx_check(c, korb_send_blk(c, s + 2 + argc, kcx_id_in(mid), 0, (uint32_t)argc, iseq ? iseq : KORB_BLK_CPROC,
                                         KORB_BLK_FWD, &s[0], 0, KORB_UNDEF)));
 }
 KCX_API KVALUE rb_funcall_with_block_kw(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv, KVALUE procval, int kw)
@@ -1877,6 +2025,17 @@ rb_get_kwargs(KVALUE hash, const KVALUE *table, int required, int optional, KVAL
     if (!rest && hash != KQnil && rb_hash_size_num(hash) > 0 && values) kcx_raise_keywords("unknown", rb_hash_keys(hash));
     return found;
 }
+KCX_API int
+rb_opts_exception_p(KVALUE opts, int default_value)
+{
+    if (opts == KQnil) return default_value;
+    const KVALUE id = rb_intern("exception");
+    KVALUE v;
+    (void)rb_get_kwargs(opts, &id, 0, 1, &v);
+    if (v == KQundef) return default_value;
+    if (v == KQtrue || v == KQfalse) return v == KQtrue;
+    rb_raise(rb_eArgError, "expected true or false as exception: %+" "l" "i" "\v", v);   /* %+PRIsVALUE */
+}
 KCX_API KVALUE rb_extract_keywords(KVALUE *orighash) { const KVALUE h = *orighash; *orighash = KQnil; return h; }
 
 /* ---- T_DATA ---- */
@@ -1943,6 +2102,8 @@ KCX_API void *rb_thread_call_with_gvl(void *(*func)(void *), void *d1) { return 
 KCX_API void *rb_nogvl(void *(*func)(void *), void *d1, void *ubf, void *d2, int flags) { (void)ubf; (void)d2; (void)flags; return func(d1); }
 KCX_API void rb_thread_check_ints(void) {}
 KCX_API KVALUE rb_thread_current(void) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(rb_cThread), "current", 0, NULL)); }
+KCX_API KVALUE rb_thread_local_aref(KVALUE th, KVALUE id) { CTX *const c = kcx_c(); const KVALUE k = rb_id2sym(id); return W(kcx_send_name(c, K(th), "[]", 1, &k)); }
+KCX_API KVALUE rb_thread_local_aset(KVALUE th, KVALUE id, KVALUE v) { CTX *const c = kcx_c(); const KVALUE a[2] = { rb_id2sym(id), v }; (void)kcx_send_name(c, K(th), "[]=", 2, a); return v; }
 KCX_API void rb_thread_schedule(void) { CTX *const c = kcx_c(); (void)kcx_send_name(c, K(rb_cThread), "pass", 0, NULL); }
 
 /* ---- loading ---- */
@@ -2139,7 +2300,7 @@ kcx_convert_type(KVALUE val, int type, const char *tname, const char *method, bo
     if (rb_type(r) != type) {
         if (!raise && r == KQnil) return r;
         char rn[192]; kcx_type_name(c, K(r), rn, sizeof rn);
-        rb_raise(rb_eTypeError, "can't convert %s to %s (%s#%s gives %s)", nm, tname, nm, method, rn);
+        rb_raise(rb_eTypeError, "can't convert %s into %s (%s#%s gives %s)", nm, tname, nm, method, rn);
     }
     return r;
 }
@@ -2196,7 +2357,7 @@ rb_enumeratorize(KVALUE obj, KVALUE meth, int argc, const KVALUE *argv)
     for (int i = 0; i < argc; i++) a[1 + i] = argv[i];
     return rb_funcallv(obj, rb_intern("enum_for"), argc + 1, a);
 }
-KCX_API KVALUE rb_frame_this_func(void) { const struct korb_cext_frame *const f = kcx_c()->cext_top; return f && f->entry ? (KVALUE)f->entry->mid : 0; }
+KCX_API KVALUE rb_frame_this_func(void) { const struct korb_cext_frame *const f = kcx_c()->cext_top; return f && f->entry ? kcx_id_out(f->entry->mid) : 0; }
 KCX_API int rb_during_gc(void) { return korb_cext_gc_vm != NULL; }
 KCX_API KVALUE rb_ruby_verbose_get(void) { return rb_gv_get("$VERBOSE"); }
 KCX_API KVALUE rb_ruby_debug_get(void) { return rb_gv_get("$DEBUG"); }

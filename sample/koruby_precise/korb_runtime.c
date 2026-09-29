@@ -17388,7 +17388,10 @@ korb_fprint_cpx_dispatch(CTX *c, korb_value *slots, FILE *fp, korb_value v, bool
 {
     slots[0] = v;
     const RESULT r = korb_send_impl(c, slots + 1, insp ? korb_intern(c->vm, "inspect", 7) : korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
-    if (r.state != KORB_NORMAL) { korb_inspect_park_exc(c, r); return false; }
+    if (r.state != KORB_NORMAL) {                       /* to_s callers (join, "#{}") do not take a parked one */
+        if (insp) korb_inspect_park_exc(c, r);
+        return false;
+    }
     if (!KORB_STRING_P(r.value)) return false;
     korb_fwrite_inspected(c, fp, r.value);
     return true;
@@ -18032,7 +18035,7 @@ korb_puts_one_to(CTX *c, korb_value *slots, korb_value v, struct KorbIORep *rep)
     korb_fprint_to_s_s(c, slots, ms, v);                /* slots: a Complex with a BigDecimal part dispatches */
     fputc('\n', ms);
     fclose(ms);
-    { const RESULT pe = korb_inspect_take_exc(c);        /* that #to_s raised: propagate it */
+    { const RESULT pe = korb_inspect_take_exc(c);        /* an element's #inspect raised: propagate it */
       if (UNLIKELY(pe.state != KORB_NORMAL)) { free(buf); return pe; } }
     const RESULT wr = korb_io_wr_checked(c, slots, rep, buf, sz);
     free(buf);
@@ -18848,11 +18851,32 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
 #define KORB_KOMPAT_EXT_LEN (sizeof KORB_KOMPAT_EXT - 1)
 
 /* A gem that ships `name` as a C extension (`<dir>/name.rb` beside CRuby's `name.so`,
- * or an installed gem whose ext/ koruby did not build, like bigdecimal) cannot load
- * here unless a rebuild `name.kompat.so` sits beside it; when koruby carries its own
+ * or an installed gem whose ext/ did not build for koruby: no .kompat.so in its lib/)
+ * cannot load here unless a rebuild `name.kompat.so` sits beside it; when koruby carries its own
  * `name`, that one stands in for the whole feature (the gem's Ruby half calls methods
  * only its C half has). */
 static bool korb_cext_so_p(const char *path);   /* fwd */
+/* Did the gem's extensions build for koruby (gem install puts them in lib/ as well)? */
+static bool
+korb_gem_lib_has_kompat(const char *lib, int depth)
+{
+    DIR *const d = opendir(lib);
+    if (!d) return false;
+    bool hit = false;
+    const struct dirent *e;
+    while (!hit && (e = readdir(d)) != NULL) {
+        const size_t n = strlen(e->d_name);
+        if (e->d_name[0] == '.') continue;
+        if (n > KORB_KOMPAT_EXT_LEN && strcmp(e->d_name + n - KORB_KOMPAT_EXT_LEN, KORB_KOMPAT_EXT) == 0) hit = true;
+        else if (depth > 0 && e->d_type == DT_DIR) {
+            char sub[4096];
+            snprintf(sub, sizeof sub, "%s/%s", lib, e->d_name);
+            hit = korb_gem_lib_has_kompat(sub, depth - 1);
+        }
+    }
+    closedir(d);
+    return hit;
+}
 static void
 korb_prefer_own_lib(const char *const restrict name, char *const restrict abspath, const size_t sz)
 {
@@ -18871,6 +18895,9 @@ korb_prefer_own_lib(const char *const restrict name, char *const restrict abspat
         char ext[4096];
         snprintf(ext, sizeof ext, "%.*s/ext", (int)(al - nl - 5), abspath);
         cext_gem = stat(ext, &st) == 0 && S_ISDIR(st.st_mode);
+        snprintf(ext, sizeof ext, "%.*s/lib", (int)(al - nl - 5), abspath);
+        if (cext_gem && korb_gem_lib_has_kompat(ext, 1)) return;
+
     }
     if (!cext_gem) return;
     char own[4096];
@@ -21286,6 +21313,8 @@ korb_bi_print(CTX *c, korb_value *slots, korb_slice args)
     if (!ms) return RESULT_OK(KORB_NIL);
     for (uint32_t i = 0; i < n; i++) korb_fprint_to_s_s(c, slots, ms, KORB_SLICE_GET(args, i));   /* slots: a user #to_s is dispatched */
     fclose(ms);
+    { const RESULT pe = korb_inspect_take_exc(c);        /* an element's #inspect raised: propagate it, print nothing */
+      if (UNLIKELY(pe.state != KORB_NORMAL)) { free(buf); return pe; } }
     if (def) {                                           /* default $stdout → straight to the descriptor */
         const RESULT wr = korb_io_wr_checked(c, slots, korb_io_std_rep(c->vm, 1), buf, sz);
         free(buf);

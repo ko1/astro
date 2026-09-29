@@ -6122,9 +6122,13 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   エンコーディングは UTF-8 / US-ASCII / BINARY の 3 つだけを rb_encoding として渡している。
 - Fiber の切り替えで `c->cext_top` / `c->cext_jmp` を退避していない（green thread はした）。拡張の中から Ruby を呼び、
   そこで Fiber.yield（Enumerator#next など）するとフレームの鎖が混ざる。
-- mkmf が koruby で動かない: ext は `cext/build_digest.sh` のように手で組む。gem の extconf.rb を動かすには mkmf の koruby 版が要る。
-  CRuby の mkmf.rb は root/ にあるが koruby では動かない（RbConfig::MAKEFILE_CONFIG・CC などが無い、rubyhdrdir に
-  ヘッダが無い）。直すときは RbConfig の DLEXT を `kompat.so` に（今は `so`。rubygems の拡張検出にも効くので同時に）。
+- gem の拡張で足りない API（2026-09-29、gem install で拡張抜きになったもの。ビルドのエラーから）:
+  racc: `STRINGIZE`・`rb_ary_subseq` / redcarpet: `rb_enc_get` / nio4r: `rb_io_set_nonblock` /
+  strscan・date: `ruby/re.h` / erb: `rb_enc_get`・`rb_enc_str_asciicompat_p`・`rb_strlen_lit`・`ruby_malloc_size_overflow` /
+  msgpack: `ENCODING_GET_INLINED`・`ENC_CODERANGE_*`・`RSTRUCT_GET`・`rb_big2ll`・`rb_hash_dup`・`rb_str_encode`・`rb_struct_*` ほか /
+  date: `RTYPEDDATA`・`rb_cmpint`・`rb_marshal_load`・`rb_str_format` ほか / json: `rb_str_new_shared`・`rb_obj_hide`・
+  `RB_ENC_CODERANGE`・`rb_proc_arity` ほか / stringio・io-console: エンコーディング API 一式・`FMODE_*`・rb_io_* 一式。
+- extconf.rb を koruby で走らせると gem の ext/ に code_store/ ができる（AOT のストアが CWD 相対）。
 - pin は gc_copy だけ（`aro_gc_alloc_byte_pinned_raw`）。他の moving backend では RSTRING_PTR が NotImplementedError。
   large object の登録がソート配列への挿入（O(n)）なので、pin が数万を超えると遅くなる見込み（未計測）。
 - 代替の lib/digest*.rb・lib/openssl.rb は、拡張を組めない root（CRUBY_SRC 無し・wasm）用の予備。

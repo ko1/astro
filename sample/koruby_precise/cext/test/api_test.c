@@ -483,6 +483,56 @@ static VALUE t_inspect(VALUE self, VALUE v) { return rb_ary_new_from_args(3, rb_
 static VALUE t_freeze(VALUE self, VALUE v) { rb_obj_freeze(v); return rb_obj_frozen_p(v); }
 static VALUE t_new_instance(VALUE self, VALUE k, VALUE a) { VALUE argv[1] = { a }; return rb_class_new_instance(1, argv, k); }
 static VALUE t_require(VALUE self, VALUE f) { return rb_require(StringValueCStr(f)); }
+/* one-character operators are their own ID ('+'), as CRuby extensions write them */
+static VALUE
+t_op_ids(VALUE self, VALUE x, VALUE y)
+{
+    return rb_ary_new_from_args(6, rb_funcall(x, '+', 1, y), rb_funcall(x, '*', 1, y), rb_funcall(x, '<', 1, y),
+                                rb_funcall(x, '%', 1, y), rb_id2sym('-'), rb_str_new_cstr(rb_id2name('/')));
+}
+static VALUE t_coerce_bin(VALUE self, VALUE x, VALUE y) { return rb_num_coerce_bin(x, y, '+'); }
+static VALUE t_coerce_cmp(VALUE self, VALUE x, VALUE y) { return rb_num_coerce_cmp(x, y, rb_intern("<=>")); }
+static VALUE t_coerce_relop(VALUE self, VALUE x, VALUE y) { return rb_num_coerce_relop(x, y, '<'); }
+static VALUE t_class_of(VALUE self, VALUE o) { return rb_ary_new_from_args(2, CLASS_OF(o), rb_obj_class(o)); }
+static VALUE t_undef_new(VALUE self, VALUE k) { rb_undef_method(CLASS_OF(k), "new"); return Qnil; }
+static VALUE t_num2short(VALUE self, VALUE v) { return INT2FIX(NUM2SHORT(v)); }
+static VALUE t_num2ushort(VALUE self, VALUE v) { return INT2FIX(NUM2USHORT(v)); }
+static VALUE t_to_int(VALUE self, VALUE v) { return rb_to_int(v); }
+static VALUE
+t_rational(VALUE self, VALUE a, VALUE b)
+{
+    const VALUE r = rb_Rational(a, b);
+    return rb_ary_new_from_args(4, r, rb_rational_num(r), rb_rational_den(r), rb_Rational1(a));
+}
+static VALUE t_substr(VALUE self, VALUE s) { return rb_ary_new_from_args(2, rb_str_substr(s, 1, 2), rb_str_subseq(s, 1, 2)); }
+static VALUE t_asciicompat(VALUE self, VALUE s) { rb_must_asciicompat(s); return Qtrue; }
+int rb_opts_exception_p(VALUE opts, int default_value);   /* exported, not in CRuby's public headers */
+static VALUE t_opts_exception(VALUE self, VALUE h, VALUE d) { return INT2FIX(rb_opts_exception_p(h, NUM2INT(d))); }
+static VALUE
+t_ctype(VALUE self)
+{
+    return rb_ary_new_from_args(8, INT2FIX(ISDIGIT('5')), INT2FIX(ISDIGIT('a')), INT2FIX(ISSPACE('\v')), INT2FIX(ISALPHA(0xe9)),
+                                INT2FIX(TOUPPER('q')), INT2FIX(TOLOWER('Q')), INT2FIX(ISXDIGIT('f')), INT2FIX(ISXDIGIT('g')));
+}
+static VALUE
+t_thread_local(VALUE self, VALUE th)
+{
+    rb_thread_local_aset(th, rb_intern("cext_k"), INT2FIX(5));
+    return rb_thread_local_aref(th, rb_intern("cext_k"));
+}
+static VALUE
+t_big(VALUE self, VALUE x)
+{
+    return rb_ary_new_from_args(4, rb_big_cmp(x, INT2FIX(0)), rb_big2str(x, 16), RBIGNUM_NEGATIVE_P(x) ? Qtrue : Qfalse,
+                                INT2FIX(RBIGNUM_SIGN(x)));
+}
+static VALUE
+t_warn(VALUE self)
+{
+    rb_category_warn(RB_WARN_CATEGORY_DEPRECATED, "dep %d", 1);
+    rb_warn("plain %d", 2);
+    return Qnil;
+}
 
 void
 Init_cext_api_test(void)
@@ -579,6 +629,23 @@ Init_cext_api_test(void)
     rb_define_module_function(mT, "with_block", t_with_block, 2);
     rb_define_module_function(mT, "def_child", t_def_child, 1);
     rb_define_module_function(mT, "c_truthy", t_c_truthy, 1);
+    rb_define_module_function(mT, "op_ids", t_op_ids, 2);
+    rb_define_module_function(mT, "coerce_bin", t_coerce_bin, 2);
+    rb_define_module_function(mT, "coerce_cmp", t_coerce_cmp, 2);
+    rb_define_module_function(mT, "coerce_relop", t_coerce_relop, 2);
+    rb_define_module_function(mT, "class_of", t_class_of, 1);
+    rb_define_module_function(mT, "undef_new", t_undef_new, 1);
+    rb_define_module_function(mT, "num2short", t_num2short, 1);
+    rb_define_module_function(mT, "num2ushort", t_num2ushort, 1);
+    rb_define_module_function(mT, "to_int", t_to_int, 1);
+    rb_define_module_function(mT, "rational", t_rational, 2);
+    rb_define_module_function(mT, "substr", t_substr, 1);
+    rb_define_module_function(mT, "asciicompat", t_asciicompat, 1);
+    rb_define_module_function(mT, "opts_exception", t_opts_exception, 2);
+    rb_define_module_function(mT, "ctype", t_ctype, 0);
+    rb_define_module_function(mT, "thread_local", t_thread_local, 1);
+    rb_define_module_function(mT, "big", t_big, 1);
+    rb_define_module_function(mT, "warn", t_warn, 0);
 
     VALUE cCounter = rb_define_class_under(mT, "Counter", rb_cObject);
     rb_define_alloc_func(cCounter, counter_alloc);

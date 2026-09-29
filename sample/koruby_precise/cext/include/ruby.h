@@ -13,6 +13,16 @@
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
+/* what CRuby's headers pull in; extensions (and mkmf's probes: printf) rely on it */
+#include <stdio.h>
+#include <errno.h>
+#include <ctype.h>
+#include <math.h>
+#include <assert.h>
+#include <alloca.h>
+#include <strings.h>
+#include <time.h>
+#include <unistd.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -95,6 +105,16 @@ typedef uintptr_t st_index_t;
 #define RUBY_ALIGNOF _Alignof
 #define ALWAYS_INLINE(x) __attribute__((always_inline)) x
 #define NOINLINE(x) __attribute__((noinline)) x
+#define LONG_LONG long long
+#define PUREFUNC(x)  __attribute__((pure)) x
+#define CONSTFUNC(x) __attribute__((const)) x
+#define PRI_SIZE_PREFIX "z"
+#define PRIdSIZE PRI_SIZE_PREFIX "d"
+#define PRIiSIZE PRI_SIZE_PREFIX "i"
+#define PRIoSIZE PRI_SIZE_PREFIX "o"
+#define PRIuSIZE PRI_SIZE_PREFIX "u"
+#define PRIxSIZE PRI_SIZE_PREFIX "x"
+#define PRIXSIZE PRI_SIZE_PREFIX "X"
 
 /* ---- immediates: CRuby's values (koruby swaps nil / false at the boundary) -- */
 #define Qfalse  ((VALUE)0x00)
@@ -694,6 +714,11 @@ NORETURN(void rb_jump_tag(int state));
 NORETURN(void rb_exit(int status));
 void  rb_warn(const char *fmt, ...);
 void  rb_warning(const char *fmt, ...);
+typedef enum { RB_WARN_CATEGORY_NONE, RB_WARN_CATEGORY_DEPRECATED, RB_WARN_CATEGORY_EXPERIMENTAL,
+               RB_WARN_CATEGORY_PERFORMANCE, RB_WARN_CATEGORY_STRICT_UNUSED_BLOCK } rb_warning_category_t;
+#define RB_WARN_CATEGORY_DEPRECATED RB_WARN_CATEGORY_DEPRECATED   /* extconf's have_macro probe */
+void  rb_category_warn(rb_warning_category_t category, const char *fmt, ...);
+int   rb_opts_exception_p(VALUE opts, int default_value);
 VALUE rb_exc_new(VALUE klass, const char *ptr, long len);
 VALUE rb_exc_new_cstr(VALUE klass, const char *ptr);
 VALUE rb_exc_new_str(VALUE klass, VALUE str);
@@ -727,7 +752,7 @@ void  rb_thread_schedule(void);
 /* ---- IO: enough for extensions that hand a socket's fd to a C library ---- */
 typedef struct rb_io { VALUE self; int fd; int mode; } rb_io_t;
 rb_io_t *rb_io_get_fptr(VALUE io);
-#define GetOpenFile(obj, fp) ((fp) = rb_io_get_fptr(obj))
+#define GetOpenFile(obj, fp) rb_io_check_closed((fp) = rb_io_get_fptr(obj))   /* fileno raises on a closed IO */
 #define RB_IO_POINTER(obj, fp) GetOpenFile((obj), (fp))
 void  rb_io_check_readable(rb_io_t *fptr);
 void  rb_io_check_writable(rb_io_t *fptr);
@@ -751,6 +776,76 @@ rb_ractor_local_key_t rb_ractor_local_storage_value_newkey(void);
 VALUE rb_ractor_local_storage_value(rb_ractor_local_key_t key);
 void  rb_ractor_local_storage_value_set(rb_ractor_local_key_t key, VALUE val);
 #define InitVM(ext) {void InitVM_##ext(void); InitVM_##ext();}
+
+/* ---- numerics ---- */
+static inline VALUE rb_special_const_p(VALUE v) { return RB_SPECIAL_CONST_P(v) ? Qtrue : Qfalse; }
+#define RB_OBJ_FREEZE(v) rb_obj_freeze(v)
+short rb_num2short(VALUE v);
+unsigned short rb_num2ushort(VALUE v);
+#define NUM2SHORT(v)  rb_num2short(v)
+#define NUM2USHORT(v) rb_num2ushort(v)
+#define FIX2SHORT(v)  rb_num2short(v)
+VALUE rb_to_int(VALUE v);
+VALUE rb_num_coerce_bin(VALUE x, VALUE y, ID op);
+VALUE rb_num_coerce_cmp(VALUE x, VALUE y, ID op);
+VALUE rb_num_coerce_relop(VALUE x, VALUE y, ID op);
+NORETURN(void rb_cmperr(VALUE x, VALUE y));
+VALUE rb_Rational(VALUE num, VALUE den);
+#define rb_Rational1(x) rb_Rational((x), INT2FIX(1))
+#define rb_Rational2(x, y) rb_Rational((x), (y))
+VALUE rb_rational_new(VALUE num, VALUE den);
+#define rb_rational_new1(x) rb_rational_new((x), INT2FIX(1))
+#define rb_rational_new2(x, y) rb_rational_new((x), (y))
+VALUE rb_rational_num(VALUE rat);
+VALUE rb_rational_den(VALUE rat);
+VALUE rb_Complex(VALUE real, VALUE imag);
+VALUE rb_complex_real(VALUE z);
+VALUE rb_complex_imag(VALUE z);
+int   rb_big_sign(VALUE b);                  /* 1: >= 0, 0: negative (CRuby's BIGNUM_SIGN) */
+#define RBIGNUM_SIGN(b)       rb_big_sign(b)
+#define RBIGNUM_POSITIVE_P(b) (rb_big_sign(b) != 0)
+#define RBIGNUM_NEGATIVE_P(b) (rb_big_sign(b) == 0)
+VALUE rb_big_cmp(VALUE x, VALUE y);
+VALUE rb_big2str(VALUE x, int base);
+
+/* ---- strings, threads ---- */
+VALUE rb_str_subseq(VALUE str, long beg, long len);
+#define rb_str_tmp_new(len) rb_str_new(NULL, (len))
+void  rb_must_asciicompat(VALUE str);
+VALUE rb_thread_local_aref(VALUE thread, ID id);
+VALUE rb_thread_local_aset(VALUE thread, ID id, VALUE val);
+
+/* ---- locale-independent ctype (CRuby's ruby/internal/ctype.h) ---- */
+static inline int rb_isascii(int c) { return '\0' <= c && c <= '\x7f'; }
+static inline int rb_isupper(int c) { return 'A' <= c && c <= 'Z'; }
+static inline int rb_islower(int c) { return 'a' <= c && c <= 'z'; }
+static inline int rb_isalpha(int c) { return rb_isupper(c) || rb_islower(c); }
+static inline int rb_isdigit(int c) { return '0' <= c && c <= '9'; }
+static inline int rb_isalnum(int c) { return rb_isalpha(c) || rb_isdigit(c); }
+static inline int rb_isxdigit(int c) { return rb_isdigit(c) || ('A' <= c && c <= 'F') || ('a' <= c && c <= 'f'); }
+static inline int rb_isblank(int c) { return c == ' ' || c == '\t'; }
+static inline int rb_isspace(int c) { return c == ' ' || ('\t' <= c && c <= '\r'); }
+static inline int rb_iscntrl(int c) { return ('\0' <= c && c < ' ') || c == '\x7f'; }
+static inline int rb_isprint(int c) { return ' ' <= c && c <= '\x7e'; }
+static inline int rb_isgraph(int c) { return '!' <= c && c <= '\x7e'; }
+static inline int rb_ispunct(int c) { return rb_isgraph(c) && !rb_isalnum(c); }
+static inline int rb_tolower(int c) { return rb_isupper(c) ? (c | 0x20) : c; }
+static inline int rb_toupper(int c) { return rb_islower(c) ? (c & 0x5f) : c; }
+#define ISASCII(c)  rb_isascii(c)
+#define ISPRINT(c)  rb_isprint(c)
+#define ISGRAPH(c)  rb_isgraph(c)
+#define ISSPACE(c)  rb_isspace(c)
+#define ISUPPER(c)  rb_isupper(c)
+#define ISLOWER(c)  rb_islower(c)
+#define ISALNUM(c)  rb_isalnum(c)
+#define ISALPHA(c)  rb_isalpha(c)
+#define ISDIGIT(c)  rb_isdigit(c)
+#define ISXDIGIT(c) rb_isxdigit(c)
+#define ISBLANK(c)  rb_isblank(c)
+#define ISCNTRL(c)  rb_iscntrl(c)
+#define ISPUNCT(c)  rb_ispunct(c)
+#define TOUPPER(c)  rb_toupper(c)
+#define TOLOWER(c)  rb_tolower(c)
 
 #ifdef __cplusplus
 }

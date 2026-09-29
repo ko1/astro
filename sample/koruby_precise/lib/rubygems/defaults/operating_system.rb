@@ -11,7 +11,7 @@ module Gem
   end
 
   # Gems a user installs with koruby stay apart from CRuby's (~/.gem/ruby/...):
-  # koruby skips C extensions, so the two installs of one gem differ.
+  # koruby builds C extensions as .kompat.so (or leaves them out), so the two installs differ.
   def self.user_dir
     File.join(Gem.user_home, ".gem", "koruby", RbConfig::CONFIG["ruby_version"])
   end
@@ -21,14 +21,19 @@ module Gem
     { "gem" => "--no-document" }
   end
 
-  # koruby cannot load C extensions (.so), so a gem is installed without building
-  # them; its pure-Ruby parts work, and a `require` of the extension is a LoadError.
+  # C extensions are built with mkmf as foo.kompat.so, for koruby's compatibility
+  # layer (the .so CRuby builds is never loaded).  One that does not build is left
+  # out instead of failing the install: the gem's pure-Ruby parts work, koruby's own
+  # lib/ stands in where it has one, and a `require` of the rest is a LoadError.
   # The build-complete marker is still written: rubygems and bundler would otherwise
   # ignore the gem as one whose extensions are missing.
-  module KorubySkipExtensions
+  module KorubyExtensionFallback
     def build_extensions
       return if @spec.extensions.empty?
-      warn "koruby: skipped building the C extensions of #{@spec.full_name} (mkmf does not run on koruby yet; koruby's own lib/ stands in where it has one)"
+      super
+    rescue Gem::Ext::BuildError, Gem::InstallError => e
+      warn "koruby: left out the C extensions of #{@spec.full_name}, which did not build for koruby " \
+           "(#{e.message.lines.first&.chomp}); koruby's own lib/ stands in where it has one"
       marker = @spec.gem_build_complete_path
       FileUtils.mkdir_p File.dirname(marker)
       FileUtils.touch marker
@@ -36,7 +41,7 @@ module Gem
   end
 
   pre_install do |_installer|
-    Gem::Ext::Builder.prepend(KorubySkipExtensions) unless Gem::Ext::Builder < KorubySkipExtensions
+    Gem::Ext::Builder.prepend(KorubyExtensionFallback) unless Gem::Ext::Builder < KorubyExtensionFallback
     true
   end
 end

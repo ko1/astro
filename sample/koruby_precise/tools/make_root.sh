@@ -49,6 +49,29 @@ done
 cp -a "$SRC_BIN/gem" "$SRC_BIN/bundle" "$SRC_BIN/bundler" "$ROOT.tmp/bin/" 2>/dev/null || true
 for f in "$ROOT.tmp"/bin/*; do sed -i "1s|^#!.*|#!$K|" "$f"; done
 rm -rf "$ROOT"; mv "$ROOT.tmp" "$ROOT"
+
+# mkmf: RbConfig::MAKEFILE_CONFIG (CRuby's, with koruby's layout and DLEXT kompat.so;
+# prelude autoloads it) and the compatibility layer's headers at rubyhdrdir, so an
+# extconf.rb + make builds foo.kompat.so for koruby
+ARCHNAME=$("$K" -e 'print RbConfig::CONFIG["arch"]')
+mkdir -p "$LIB/$ARCHNAME" "$ROOT/include/ruby-$VER/$ARCHNAME"
+"$CRUBY" "$HERE/tools/make_mkmf_config.rb" > "$LIB/$ARCHNAME/koruby_makefile_config.rb"
+cp -r "$HERE/cext/include/." "$ROOT/include/ruby-$VER/"
+# paths mkmf's Makefiles name ($(arch_hdrdir)/ruby/config.h, -I$(hdrdir)/ruby/backward)
+mkdir -p "$ROOT/include/ruby-$VER/$ARCHNAME/ruby" "$ROOT/include/ruby-$VER/ruby/backward"
+printf '/* koruby: folded into <ruby.h> */\n#include <ruby.h>\n' > "$ROOT/include/ruby-$VER/$ARCHNAME/ruby/config.h"
+# libkoruby.so: empty stand-ins named like every rb_* / ruby_* the koruby binary exports.
+# mkmf links its have_func("rb_...") probes and extensions against -lkoruby; at run time
+# the binary's own definitions come first in symbol lookup, so these are never called.
+mkdir -p "$ROOT/lib"
+nm -D --defined-only -S "$K" | "$CRUBY" -e '
+  puts "/* link-time stand-ins for the C API of the koruby binary (tools/make_root.sh) */"
+  STDIN.each_line do |l|
+    f = l.split
+    next unless f.size == 4 && f[3] =~ /\A(rb_|ruby_)/
+    puts f[2] =~ /[BbDd]/ ? "char #{f[3]}[#{f[1].to_i(16)}];" : "void #{f[3]}(void) {}"
+  end' > "$ROOT/lib/libkoruby.stub.c"
+cc -shared -fPIC -w -o "$ROOT/lib/libkoruby.so" "$ROOT/lib/libkoruby.stub.c"
 echo "make_root: stdlib entries=$n default specs=$(ls "$GEMS/specifications/default" | wc -l)"
 
 # C extensions built for koruby (cext/): CRuby's ext/digest and ext/openssl, unmodified,
