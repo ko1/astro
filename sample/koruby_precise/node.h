@@ -153,7 +153,7 @@ struct korb_constcache {
 enum korb_ic_kind { KORB_IC_INSTANCE = 0, KORB_IC_SMETHOD = 1, KORB_IC_NEW = 2, KORB_IC_INSTANCE_VIS = 3 };
 /* one-shot flag for a node that must act only the first time it runs (END { }). */
 struct korb_oncecell { uint8_t done; };
-/* node_str_frozen: the literal's slot in the fstring pool (+1; 0 = not looked up).  The
+/* node_str_frozen: the literal's slot in the fstring pool; node_regexp: in vm->once_vals (+1; 0 = not yet).  The
  * pool is append-only and a GC root, so the index stays valid while the value moves. */
 struct korb_fscache { uint32_t idx_plus1; };
 

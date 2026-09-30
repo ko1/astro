@@ -181,7 +181,36 @@ class StringScanner
   end
   private :__anchored?
 
+  # Pattern → its \G form, by identity, for a Regexp without anchors and a frozen
+  # String (literals are one object); false = #try.  One lookup per scan instead of
+  # the helper chain in #try, which was ~10x the match itself (ruby-bench ruby-json).
+  FAST = {}.compare_by_identity
+  def self.__fast(pat)
+    FAST.clear if FAST.size >= 4096
+    FAST[pat] =
+      if pat.is_a?(Regexp)
+        __anchor_in?(pat.source) ? false : __anchored(pat)
+      elsif pat.is_a?(String) && pat.frozen?
+        __anchored(Regexp.new(Regexp.escape(pat)))
+      else
+        false
+      end
+  end
+
   def scan(pattern)
+    g = FAST[pattern]
+    g = StringScanner.__fast(pattern) if g.nil?
+    if g
+      __check_encoding(pattern) unless @venc_ok && @venc_size == @string.bytesize && @venc_enc == @string.encoding
+      m = g.send(:__match_byte, @string, @pos) or return (@md = nil)
+      @md = m
+      @md_base = 0
+      s = m[0]
+      @prev = @pos
+      @pos += s.bytesize
+      @cpos += s.length if @cpos
+      return s
+    end
     r = try(pattern) or return (@md = nil)
     @md = r[1]
     @prev = @pos

@@ -113,15 +113,19 @@ node_bignum(CTX *c, NODE *n, korb_value *slots, const char *digits, uint32_t len
     return RESULT_OK(out);
 }
 
-// Regexp literal `/pat/` — fresh Regexp(source, flags) per evaluation.
+// Regexp literal `/pat/` — one Regexp per literal, like CRuby (`def f = /x/; f.equal?(f)`);
+// a fresh object per run missed strscan's identity cache and recompiled its \G wrapper.
 // `flags` carries the prism regex bits (IGNORE_CASE=4/EXTENDED=8/MULTI_LINE=16).
 NODE_DEF
-node_regexp(CTX *c, NODE *n, korb_value *slots, const char *bytes, uint32_t len, uint32_t flags)
+node_regexp(CTX *c, NODE *n, korb_value *slots, const char *bytes, uint32_t len, uint32_t flags, struct korb_fscache *rc@ref)
 {
-    (void)n;
+    if (LIKELY(rc->idx_plus1 != 0)) return RESULT_OK(c->vm->once_vals[rc->idx_plus1 - 1]);
     korb_value src = UNWRAP(korb_str_new(c, slots, bytes, len));
     slots[0] = src;
-    return korb_regexp_new(c, slots + 1, slots[0], flags);
+    const korb_value re = UNWRAP(korb_regexp_new(c, slots + 1, slots[0], flags));
+    korb_once_set(c->vm, n, re);                             /* once_vals is a GC root */
+    rc->idx_plus1 = c->vm->once_cnt;
+    return RESULT_OK(re);
 }
 
 // Interpolated Regexp `/...#{ }.../` — the source String is built at runtime by

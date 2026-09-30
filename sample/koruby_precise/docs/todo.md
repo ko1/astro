@@ -6179,6 +6179,12 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   vm のメモで覚えるようにした（graphql の DATA は凍結されていないので効かない）。本筋は **部分文字列のバッファ共有（COW）** と
   **文字列の coderange のキャッシュ**（書き換えの共通の入口が無いのが障害）。0 埋めを省く確保（edge の無い型用）は
   precise_gc の全バックエンドに要る。
+- **ruby-bench ruby-json が CRuby の 12 倍（ローカル 1584 ms、修正前 sp4 10791 ms 対 CRuby 133 ms）**（2026-09-30）: 81 倍の
+  主因は 2 つで、どちらも直した: (1) 正規表現リテラルが評価のたびに新しい Regexp を作っていた（CRuby は 1 リテラル 1 オブジェクト）
+  ので strscan の identity キャッシュが毎回外れ、`\G` 付きの正規表現をコンパイルし直していた（skip 1 回 14 µs → 1.3 µs）、
+  (2) String パターンの正規表現をスキャナごとに作っていた（ruby-json は parse ごとに新しいスキャナ）。残りは純 Ruby の
+  StringScanner を解釈するコスト（skip 1 回 ~0.9 µs 対 CRuby 0.1 µs、perf は send/dispatch が上位）。詰めるなら
+  **StringScanner の scan / skip / match? / check / getch / [] を C で書く**（状態を ivar でなく C 構造体に持つ）。
 - **main からの呼び出しの残り**（2026-09-30）: 同じ呼び出しを main と普通のオブジェクトから比べた命令数（1 反復、起動込み）で、
   `send(:f0)` が main 1825 / obj 853（korb_call_send の速い道が klass != nil だけ）、ブロック付き `fb { 1 }` が 1096 / 985
   （main + ブロックは korb_responds_to を毎回）。ruby-bench では熱くないので後回し。undef 後の NoMethodError の文言が
