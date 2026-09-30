@@ -128,15 +128,17 @@ class StringScanner
 
   # Anchor detection is per-Regexp and memoized: the offset form of #match
   # avoids an O(n) slice per scan, and only anchored patterns give it up.
-  # \A \Z \z \G ^ $ outside a character class ("[^a]" is a negation, not an
-  # anchor: taking it for one sent rexml's ATTLISTDECL_END down the slicing path).
+  # \A \G ^ outside a character class ("[^a]" is a negation, not an anchor: taking
+  # it for one sent rexml's ATTLISTDECL_END down the slicing path).  The end anchors
+  # $ \Z \z mean the same on the rest as on the whole string; counting them sliced
+  # the rest on every scan (tinygql's `\#.*$`: O(n^2), 10.8x CRuby).
   def self.__anchor_in?(src)
     src = src.encode(Encoding::UTF_8) unless src.encoding.ascii_compatible?
     i = 0; n = src.length; depth = 0
     while i < n
       ch = src[i]
       if ch == "\\"
-        return true if depth == 0 && i + 1 < n && "AZzG".include?(src[i + 1])
+        return true if depth == 0 && i + 1 < n && "AG".include?(src[i + 1])
         i += 2
         next
       end
@@ -150,7 +152,7 @@ class StringScanner
         i += 1 if src[i] == "^"
         i += 1 if src[i] == "]"                        # a leading ] is a member
         next
-      elsif ch == "^" || ch == "$"
+      elsif ch == "^"
         return true
       end
       i += 1
