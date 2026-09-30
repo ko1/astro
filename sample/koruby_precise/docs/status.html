@@ -6,8 +6,8 @@
 <title>koruby_precise status</title>
 <style>
 :root { --bg:#f6f7f9; --card:#fff; --fg:#1d1d1f; --mute:#6b6b70; --line:#e2e2e6; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --acc:#0969da; --bar:#8ab4f8; --badbg:#ffebe9; }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111214; --card:#1b1c20; --fg:#e6e6e9; --mute:#9a9aa2; --line:#2e3036; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; --bar:#3b6fb6; --badbg:#2d1517; } }
-:root[data-theme="dark"] { --bg:#111214; --card:#1b1c20; --fg:#e6e6e9; --mute:#9a9aa2; --line:#2e3036; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; --bar:#3b6fb6; --badbg:#2d1517; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme:dark; --bg:#111214; --card:#1b1c20; --fg:#e6e6e9; --mute:#9a9aa2; --line:#2e3036; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; --bar:#3b6fb6; --badbg:#2d1517; } }
+:root[data-theme="dark"] { color-scheme:dark; --bg:#111214; --card:#1b1c20; --fg:#e6e6e9; --mute:#9a9aa2; --line:#2e3036; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; --bar:#3b6fb6; --badbg:#2d1517; }
 * { box-sizing:border-box; }
 body { background:var(--bg); color:var(--fg); font:14px/1.5 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", sans-serif; margin:0; }
 main { max-width:1180px; margin:0 auto; padding:20px 16px 56px; }
@@ -96,17 +96,17 @@ svg text { fill:var(--mute); font-size:11px; }
 // ---- 更新はここ --------------------------------------------------------------
 const DATA = {
   updated: "2026-09-30 JST",
-  master: "62106590",
+  master: "2745e3d1",
   compat: [
     { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "31893 例", sub: "本物の openssl を読むようになって library/openssl が全通過（+40）。9/29 朝は 31831 / 32332 = 98.45%。率は同じ run の例の数で割るので、全体の再計測時に更新", date: "2026-09-29", commit: "1b28965c", mode: "interp",
       note: "本物の mspec で spec ファイルを 1 つずつ実行。率は同じ run の pass ÷ 例の数" },
     { label: "Rails 8.1", value: "動く", cls: "ok", sub: "rails new / bundle install / scaffold / db:migrate / ActiveRecord（sqlite3）/ 画面・JSON・開発環境のエラー画面が CRuby と同じ結果。nokogiri・sqlite3・puma・json・bigdecimal の C 拡張は gem install でビルド", date: "2026-09-29", commit: "bea119ac", mode: "interp",
       note: "/tmp の試しのアプリを CRuby と diff（trials/2026-09-19-gem-dropin/PROGRESS.md）" },
-    { label: "CRuby の C 拡張（互換層 builtins/cext.c、無改造で再ビルド）", value: "digest / openssl + gem 9 本", sub: "CRuby の test/digest 3 本・test/openssl 35 本すべてが CRuby と同じ要約。gem install（mkmf）でビルドされ CRuby と同じ出力: bigdecimal（gem の test 6 本の要約一致）・bcrypt・racc・redcarpet・nio4r・erb・msgpack・json・psych。STRESS+PURGE でも一致。C API の試験 194 ケースは CRuby と出力一致", date: "2026-09-29", commit: "26114862", mode: "interp",
+    { label: "CRuby の C 拡張（互換層 builtins/cext.c、無改造で再ビルド）", value: "digest / openssl + gem 16 本", sub: "CRuby の test/digest 3 本・test/openssl 35 本すべてが CRuby と同じ要約。gem install（mkmf）でビルドされ CRuby と同じ出力: bigdecimal（gem の test 6 本の要約一致）・bcrypt・racc・redcarpet・nio4r・erb・msgpack・json・psych、9/30 に yajl-ruby・strptime・zstd-ruby・liquid-c・markly・rbs・json 2.13.2（ruby-bench の fluentd / liquid-c / lobsters / ruby-lsp が使う）。STRESS+PURGE でも一致。C API の試験 207 ケースは CRuby と出力一致", date: "2026-09-30", commit: "76f342e9", mode: "interp",
       note: "make cext-test、cext/test/openssl.sh、gem は /tmp に gem install して小さな試しを CRuby と diff。ビルドできない拡張は gem install が拡張抜きで入れ、koruby の lib/ が代わりに立つ" },
   ],
   health: [
-    { label: "make test（rubyharness 回帰コーパス）", value: "13", cls: "warn", sub: "CRuby と違う行 ／ 110056 行。45 → 27 → 14（prism を CRuby と同じ版に）→ 13（rubygems を起動時に読む）、内訳は下の表", date: "2026-09-29", commit: "この commit", mode: "interp",
+    { label: "make test（rubyharness 回帰コーパス）", value: "14", cls: "warn", sub: "CRuby と違う行 ／ 110355 行。45 → 27 → 14（prism を CRuby と同じ版に）→ 13（rubygems を起動時に読む）→ 14（ErrorHighlight の autoload で Module.constants の数の偶然の一致が崩れた、t/spec/module_000）、内訳は下の表", date: "2026-09-30", commit: "97e12c2a", mode: "interp",
       note: "各ファイルの出力を CRuby master と 1 行ずつ比較する" },
     { label: "GC 負荷試験（64 alloc ごとに moving GC + 旧領域の保護）", value: "0", cls: "ok", sub: "失敗 ／ 手書きテスト 45 ファイル", date: "2026-09-28", commit: "b51641cd", mode: "interp" },
     { label: "DOOM 60 frame", value: "一致", cls: "ok", sub: "画素の checksum が CRuby と一致", date: "2026-09-28", commit: "b51641cd", mode: "AOT" },
@@ -134,8 +134,7 @@ const DATA = {
   optcarrot: { date: "2026-09-28（koruby AOT は 9/29 の 1083738d）", commit: "25b30579",
     rows: [["ZJIT", 315.39], ["YJIT", 299.49], ["koruby AOT", 281.86], ["koruby interp", 66.84], ["CRuby", 57.40]] },
   rubybench: [ // [suite, what, status]
-    ["ruby-bench headline（railsbench / lobsters / liquid / hexapdf / activerecord / erubi …）", "実アプリ系", "未着手"],
-    ["ruby-bench other / micro", "言語機能の小さいベンチ", "未着手"],
+    ["ruby-bench（Shopify/ruby-bench が既定で回す 79 本: railsbench / lobsters / liquid / hexapdf / activerecord / erubi … と小さいベンチ）", "実アプリ系 + 言語機能", "79 本すべて動く（9/30）。sp4 で CRuby / YJIT / koruby / koruby AOT を計測: trials/2026-09-29-rubybench"],
     ["ruby/ruby の benchmark/*.rb, *.yml", "CRuby 本体のベンチ（benchmark-driver）", "未着手"],
     ["ruby-method-benchmarks", "メソッド単位", "未着手"],
   ],
@@ -145,7 +144,10 @@ const DATA = {
     "Ripper の構文エラー回復（CRuby の parse.y は誤りの後も木を組み立てる）",
   ],
   recent: [
-    ["この commit", "status 更新（Rails・railsbench）"],
+    ["08086ecf・2745e3d1", "性能: StringScanner が $ を含むパターンで毎回残りをコピーしていた（tinygql 5500 → 1385 ms、graphql 155 ms、ローカル）。#clone の特異クラスのコピーが全メソッドキャッシュを捨てていた・private 定数と require の判定が線形走査（shipit 3303 → 2608 ms）"],
+    ["f017cfea", "正規表現リテラルを 1 リテラル 1 オブジェクトに（CRuby と同じ）。StringScanner のキャッシュが毎回外れていた。ruby-bench ruby-json 14556 → 1584 ms（ローカル、sp4 の前回は CRuby の 81 倍）"],
+    ["662f590b〜76f342e9", "ruby-bench の 79 本すべてが koruby で走る: Random::Formatter、Hash.ruby2_keywords_hash、トップレベル def と Kernel#test、ブロック付き sum の補正和、Zlib の mem_level、rb_jump_tag の errinfo（sqlite3）、拡張 7 つ（RARRAY_PTR の写し、*_kw の kw_splat、rb_time_* ほか）、Date#<=> の coerce"],
+    ["2a8644ac〜97e12c2a", "性能: main の特異クラスで外れていたトップレベル呼び出しの高速路（fib AOT −72%、a8292bbc からの退行）、fork 後に SD が壊れる（SD arena の MAP_SHARED）、AOT 焼きのメモリ 1/10、code_store の version、MRO / A::B / 定数検索 / 正規表現のキャッシュ、unicode_normalize の require、main からの kwargs・opt・ブロック付き呼び出し"],
     ["a1ac7c43〜bea119ac", "Rails 8.1 が動く（rails new・scaffold・ActiveRecord + sqlite3・エラー画面）。ruby-bench の railsbench が走る。nokogiri・sqlite3・puma の C 拡張、st_table、error_highlight（RubyVM::AbstractSyntaxTree の prism 経路）、長い配列リテラル、thor の attr_accessor、クラスの sort、Location から作った backtrace"],
     ["90796a87〜26114862", "mkmf が koruby で動き、gem install が C 拡張を .kompat.so にビルド（失敗したら拡張抜き、-Wl,--no-undefined）。bigdecimal・bcrypt・racc・redcarpet・nio4r・erb・msgpack・json・psych が CRuby と同じ出力。拡張側の ID を +256（'*' のような 1 文字の演算子）、CLASS_OF、エンコーディング API、rb_catch / rb_iter_break。本体側: 知らない Numeric を成分に持つ Complex、Float#divmod(±Inf)、終わりの無い Range の Enumerable"],
     ["f5e3af31〜62106590", "make root が digest / openssl を koruby 用（.kompat.so）にビルドして root/ に入れ、既定で読む。rubygems.org からの gem install / bundle install が動く（rainbow・i18n・rack-test・mustermann・activesupport 8.1.4・thor）。C 拡張入りの gem を activate しても koruby の代替で機能ごと置き換える。rubyspec 31892（library/openssl・digest 302 例全通過）"],
