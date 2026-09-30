@@ -12369,6 +12369,17 @@ korb_call_impl(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
         korb_flink_hand_on(c, slots - (korb_sword_t)argc - 3);
         return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
     }
+    /* main + block, with a top-level def already cached for this site: the responds_to
+     * probe below (for Kernel's loop / tap) was answered when the cc was filled, and a new
+     * Kernel method would have bumped the serial since */
+    if (block != NULL && KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL &&
+        cc->serial == vm->method_serial && cc->m != NULL && cc->m->kind == KORB_METHOD_ISEQ &&
+        !vm->refinements_active) {
+        struct korb_method *const gm = cc->m;
+        if (LIKELY(gm->is_simple)) return korb_invoke_simple(c, slots, gm, argc, line, mid, self, KORB_NIL);
+        return korb_invoke_method(c, slots, gm, argc, line, mid, self, KORB_NIL,
+                                  block, def_env, KORB_CSELF_VAL(captured_self));
+    }
     if ((AROH_IS_GC_OBJECT(self) &&
          (!(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) || block != NULL))
         || !AROH_IS_GC_OBJECT(self)) {
