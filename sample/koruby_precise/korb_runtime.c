@@ -6335,6 +6335,7 @@ void
 korb_class_undef_slot(struct korb_vm *vm, KorbClass *k, korb_value cls, uint32_t mid)
 {
     struct korb_method *const um = korb_class_method_slot(vm, k, mid);   /* libc alloc, no GC */
+    vm->undef_cnt++;
     if (UNLIKELY(korb_universal_send_p(vm, mid))) vm->send_undef_cnt++;
     else if (UNLIKELY(mid == vm->mid_new)) vm->new_undef_cnt++;   /* .new is a dispatch special case too */
     um->mid = mid; um->orig_mid = mid;
@@ -10291,10 +10292,16 @@ korb_builtin_define(CTX *c, const char *name, korb_builtin_fn fn, int32_t params
 static struct korb_method *
 korb_method_lookup(struct korb_vm *vm, uint32_t mid)
 {
+    /* the global table is a linear list; a send to main looked it up on every call */
+    const uint32_t h = (mid * 2654435761u) >> 24;
+    if (vm->glookup[h].serial == vm->method_serial && vm->glookup[h].mid == mid) return vm->glookup[h].m;
+    struct korb_method *m = NULL;
     for (uint32_t i = 0; i < vm->method_cnt; i++) {
-        if (vm->methods[i]->mid == mid && !vm->methods[i]->retired) return vm->methods[i];
+        if (vm->methods[i]->mid == mid && !vm->methods[i]->retired) { m = vm->methods[i]; break; }
     }
-    return NULL;
+    korb_mid_looked(vm, mid);   /* a later def of `mid` must bump the serial */
+    vm->glookup[h].serial = vm->method_serial; vm->glookup[h].mid = mid; vm->glookup[h].m = m;
+    return m;
 }
 
 /* ---------------------------------------------------------------------------
@@ -12603,8 +12610,15 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
             if (UNLIKELY(m == NULL)) {
                 /* main has a singleton class (to_s / inspect, as CRuby): a top-level def
                  * misses there and lives in the global table — its cached fast path */
-                if (VAL2OBJ(self)->klass == KORB_NIL && LIKELY(cc->serial == vm->method_serial && cc->dispatch))
-                    return korb_invoke_entry_cc(c, slots, cc, argc, mid);
+                if (VAL2OBJ(self)->klass == KORB_NIL && LIKELY(cc->serial == vm->method_serial)) {
+                    if (cc->dispatch) return korb_invoke_entry_cc(c, slots, cc, argc, mid);
+                    /* a cached non-simple ISEQ (optional / rest params): korb_call_impl's own
+                     * last step, without the send / include / prepend checks before it —
+                     * a filled cc->m means this site already got past them */
+                    if (cc->m != NULL && cc->m->kind == KORB_METHOD_ISEQ && !cc->m->is_simple && !vm->refinements_active)
+                        return korb_invoke_method(c, slots, cc->m, argc, korb_flink_line(flink), mid, self, KORB_NIL,
+                                                  NULL, NULL, KORB_NIL);
+                }
                 return korb_call_impl(c, slots, mid, korb_flink_line(flink), cc, argc, self, NULL, NULL, NULL, site);
             }
             if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple)) {  /* hot path: inlines */
@@ -12663,10 +12677,13 @@ korb_call_kw(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, struct korb
             } else {
                 m = korb_mcache_find(vm, klass, mid, &def_class);
                 /* kwargs 経路は simple entry を使わない (argc の意味が違う)。
-                 * 決して一致しない値を渡して高速路の設置だけ抑える。 */
-                if (m) korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);
+                 * 決して一致しない値を渡して高速路の設置だけ抑える。  miss も覚える (main の特異クラス) */
+                korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);
             }
-        } else {                                         /* main / top-level global function */
+        }
+        /* main has a singleton class (to_s / inspect): a top-level def misses there and
+         * lives in the global table, as for main without one */
+        if (m == NULL && VAL2OBJ(self)->klass == KORB_NIL) {   /* main / top-level global function */
             if (LIKELY(cc->serial == vm->method_serial && cc->m != NULL)) m = cc->m;
             else {
                 m = korb_method_lookup(vm, mid);
@@ -15019,7 +15036,7 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
          * from ANY object (not just the toplevel main).  Try the global table
          * before method_missing. */
         if (korb_kernel_reachable_p(c, start_cls) &&   /* BasicObject gets no Kernel globals */
-            !korb_method_undefed_p(start_cls, mid)) {   /* an undef_method in the chain hides it (mocha) */
+            (vm->undef_cnt == 0 || !korb_method_undefed_p(start_cls, mid))) {   /* an undef_method in the chain hides it (mocha) */
             struct korb_method *const gm = korb_method_lookup(vm, mid);
             if (gm) {
                 KORB_SEND_VIS_GUARD(gm, KORB_NIL);     /* a top-level def is private: `obj.tl` is refused */

@@ -6179,6 +6179,10 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   vm のメモで覚えるようにした（graphql の DATA は凍結されていないので効かない）。本筋は **部分文字列のバッファ共有（COW）** と
   **文字列の coderange のキャッシュ**（書き換えの共通の入口が無いのが障害）。0 埋めを省く確保（edge の無い型用）は
   precise_gc の全バックエンドに要る。
+- **main からの呼び出しの残り**（2026-09-30）: 同じ呼び出しを main と普通のオブジェクトから比べた命令数（1 反復、起動込み）で、
+  `send(:f0)` が main 1825 / obj 853（korb_call_send の速い道が klass != nil だけ）、ブロック付き `fb { 1 }` が 1096 / 985
+  （main + ブロックは korb_responds_to を毎回）。ruby-bench では熱くないので後回し。undef 後の NoMethodError の文言が
+  「for an instance of Object」（CRuby は「for main」、前から）。
 - **Module.constants が CRuby と 5 つ違う**（2026-09-29）: koruby に余分 ARGFClass・ArithmeticSequence（内部名が top-level に
   出ている）・StringIO（prelude で起動時に定義。CRuby は require してから）、足りない SyntaxSuggest（CRuby は autoload）・
   UnicodeNormalize（CRuby は起動時にモジュールだけある）。ErrorHighlight の autoload を足すまでは数が偶然 120 で一致していて、

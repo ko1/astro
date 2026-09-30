@@ -1204,6 +1204,8 @@ struct korb_vm {
      * special-dispatched (no table entry), so the dispatch has to look for a
      * tombstone — but only once a program has actually made one. */
     uint32_t send_undef_cnt;
+    uint32_t undef_cnt;      /* every undef tombstone ever made: 0 = korb_method_undefed_p is false everywhere */
+    struct { uint64_t serial; uint32_t mid; struct korb_method *m; } glookup[256];   /* korb_method_lookup, by method_serial */
     uint32_t new_undef_cnt;
     bool     to_s_redefined;         /* some class reopened (or refined) #to_s → interpolation dispatches */
     /* bumped whenever constant *resolution* could change: a new (name, owner)
