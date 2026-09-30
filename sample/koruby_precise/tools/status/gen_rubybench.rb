@@ -1,14 +1,18 @@
 # Per-benchmark ruby-bench table for sample/koruby_precise/docs/status.html.
-#   ruby tools/status/gen_rubybench.rb docs/status.html <benchmarks.list> <label>=<log-dir>@<commit>@<date> ...
+#   ruby tools/status/gen_rubybench.rb docs/status.html <benchmarks.list> <ruby-bench/benchmarks.yml> <label>=<log-dir>@<commit>@<date> ...
+# The category (headline / other / micro / gc) and description come from ruby-bench's
+# benchmarks.yml; an entry without one is "other" there too.
 # Log dirs are run_all_sp4.sh outputs (<bench>.<mode>.log with ruby-bench's
 # "Average of last N, non-warmup iters: X ms", bake.<bench>.time).  Later runs win for
 # a mode they measured, so list them oldest first.  A value that the harness did not
 # print stays null (shown as "-"), never 0.
 # The JSON replaces the text between `/*RBENCH:BEGIN*/` and `/*RBENCH:END*/`.
 require "json"
+require "yaml"
 
-html, list, *specs = ARGV
-abort "usage: gen_rubybench.rb <status.html> <benchmarks.list> <label>=<dir>@<commit>@<date> ..." if specs.empty?
+html, list, yml, *specs = ARGV
+abort "usage: gen_rubybench.rb <status.html> <benchmarks.list> <benchmarks.yml> <label>=<dir>@<commit>@<date> ..." if specs.empty?
+meta = YAML.load_file(yml)
 MODES = { "cruby" => "c", "yjit" => "y", "koruby" => "k", "koruby_aot" => "a" }
 runs = specs.map do |spec|
   label, rest = spec.split("=", 2)
@@ -16,7 +20,8 @@ runs = specs.map do |spec|
   { label: label, dir: dir, commit: commit, date: date }
 end
 rows = File.readlines(list).map { |l| l.split("\t").first }.map do |b|
-  row = { b: b }
+  m = meta[b] || {}
+  row = { b: b, cat: m["category"] || "other", desc: m["desc"] }
   runs.each do |r|
     MODES.each do |mode, key|
       f = File.join(r[:dir], "#{b}.#{mode}.log")
