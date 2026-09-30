@@ -1455,12 +1455,13 @@ korb_str_enc_combine(const struct korb_vm *vm, korb_value av, korb_value bv, uin
     const uint32_t ea = KORB_STR_ENC(av), eb = KORB_STR_ENC(bv);
     if (ea == eb) { *out = ea; return true; }
     const bool ca = korb_enc_ascii_compat_idx(vm, ea), cb = korb_enc_ascii_compat_idx(vm, eb);
-    const bool aa = korb_str_ascii_only_p(vm, av), ab = korb_str_ascii_only_p(vm, bv);
+    /* the 7-bit scans only where the answer needs them, the (short) right side first: `buf << n.to_s`
+     * (UTF-8 << US-ASCII) scanned the whole growing buffer on every append (erubi: 7%) */
     if (VAL2STR(bv)->len == 0) { *out = ea; return true; }                 /* an empty side yields (CRuby) */
-    if (VAL2STR(av)->len == 0) { *out = (ca && ab) ? ea : eb; return true; }   /* CRuby: enc1 only if str2 is 7-bit */
+    if (VAL2STR(av)->len == 0) { *out = (ca && korb_str_ascii_only_p(vm, bv)) ? ea : eb; return true; }   /* CRuby: enc1 only if str2 is 7-bit */
     if (!ca || !cb) return false;
-    if (ab) { *out = ea; return true; }   /* a 7-bit right side yields, US-ASCII included */
-    if (aa) { *out = eb; return true; }
+    if (korb_str_ascii_only_p(vm, bv)) { *out = ea; return true; }   /* a 7-bit right side yields, US-ASCII included */
+    if (korb_str_ascii_only_p(vm, av)) { *out = eb; return true; }
     return false;
 }
 /* Fold one more String into a running result encoding (gsub/join-style
