@@ -27,7 +27,7 @@ typedef struct koruby_re_match {
 } koruby_re_match;
 
 /* ---- compiled-pattern cache (direct-mapped, source+flags keyed) ---------- */
-#define KRE_CACHE_SLOTS 128
+#define KRE_CACHE_SLOTS 1024
 typedef struct { char *pat; size_t len; unsigned flags; astrogre_pattern *p; } kre_cache_ent;
 static kre_cache_ent g_cache[KRE_CACHE_SLOTS];
 
