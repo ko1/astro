@@ -773,6 +773,7 @@ typedef struct KorbClass {
     uint8_t  struct_kwinit;          /* Struct.new(..., keyword_init: true) → .new takes a kwargs hash */
     uint8_t  is_data;                /* 1 = Data.define class (immutable; .new accepts positional OR keyword) */
     uint8_t  cur_visibility;         /* default visibility for `def` in this class body: 0 pub / 1 priv / 2 prot */
+    uint8_t  owns_consts;            /* a row of the constant table was ever owned by this class (sticky) */
     uint8_t  mro_dup;                /* a module landed at two depths in this chain (rake, dry-types): the
                                       * segment DFS would answer from the shallow copy, so lookups here must
                                       * walk the deduped linearization.  Sticky, propagated on include. */
@@ -1522,9 +1523,10 @@ struct korb_vm {
     struct korb_constloc { uint32_t name; uint32_t owner_serial; uint32_t file_sym; uint32_t line; } *constlocs;
     uint32_t constloc_cnt, constloc_capa;
     /* private_constant: (owner, name) pairs unreachable through an explicit
-     * `Owner::NAME`.  Small and rarely populated — a linear scan is enough. */
+     * `Owner::NAME`.  A linear scan behind a bloom by name (Rails has many). */
     struct korb_privconst { uint32_t name; korb_value ARO_GC_EDGE owner; } *privconsts;
     uint32_t privconst_cnt, privconst_capa;
+    uint64_t privconst_bloom[64];      /* names ever made private (never cleared): most A::B lookups skip the scan */
     /* deprecate_constant: same shape — reading such a constant warns. */
     struct korb_privconst *deprconsts;
     uint32_t deprconst_cnt, deprconst_capa;

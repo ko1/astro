@@ -5393,6 +5393,7 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, korb_value val, korb_value ow
     vm->const_vals[vm->const_cnt] = val;      /* root cell (scanned); no WB needed */
     vm->const_owners[vm->const_cnt] = owner;
     vm->const_cnt++;
+    if (KORB_CLASS_P(owner)) VAL2CLASS(owner)->owns_consts = 1;
     if (LIKELY(vm->cidx != NULL && vm->cidx_n + 1u == vm->const_cnt &&
                vm->const_cnt * 2u <= vm->cidx_mask + 1u)) {      /* index still in step: insert the new row */
         uint32_t h = korb_cidx_hash(name_sym, korb_cidx_owner_serial(vm, owner)) & vm->cidx_mask;
@@ -6007,6 +6008,11 @@ korb_singleton_copy(CTX *c, korb_value *slots, korb_value dst, korb_value src_si
 {
     slots[0] = dst;
     slots[1] = src_sing;
+    /* a singleton made right here is in no cache yet: filling it needs no serial bump
+     * (a bump per #clone emptied every method cache; shipit clones ~700/s) */
+    const bool fresh = !KORB_CLASS_P(dst) && !(AROH_IS_GC_OBJECT(dst) &&
+        (((const AroObjectHeader *)(uintptr_t)dst)->flags & KORB_FL_HAS_KLASS) &&
+        KORB_CLASS_P(korb_klass_override_get(c->vm, dst)) && VAL2CLASS(korb_klass_override_get(c->vm, dst))->is_singleton);
     const RESULT sr = korb_obj_singleton(c, slots + 3, slots[0]);
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
     slots[2] = sr.value;
@@ -6019,7 +6025,7 @@ korb_singleton_copy(CTX *c, korb_value *slots, korb_value dst, korb_value src_si
             CHECK(korb_ary_push_val(c, slots + 5, KORB_REF_AT(&slots[4]), korb_items_data(VAL2ARY(slots[3])->items)[i]));
         KorbClass *const ds = VAL2CLASS(slots[2]);          /* re-read: the allocs above may have moved it */
         ARO_STORE(c, ds, (korb_value *)(uintptr_t)(li == 0 ? &ds->included : &ds->prepended), slots[4]);
-        c->vm->mro_serial++;
+        if (!fresh) c->vm->mro_serial++;
     }
     const uint32_t sn = VAL2CLASS(slots[1])->method_cnt;
     for (uint32_t i = 0; i < sn; i++) {
@@ -6034,11 +6040,11 @@ korb_singleton_copy(CTX *c, korb_value *slots, korb_value dst, korb_value src_si
     /* constants defined in `class << obj` come along too (rubyspec:
      * "copies constants defined in the singleton class") */
     struct korb_vm *const vm = c->vm;
-    const uint32_t cn = vm->const_cnt;                /* the loop appends; only copy the originals */
+    const uint32_t cn = VAL2CLASS(slots[1])->owns_consts ? vm->const_cnt : 0;   /* the loop appends; only copy the originals */
     for (uint32_t i = 0; i < cn; i++)
         if (vm->const_owners[i] == slots[1])
             korb_const_define_owned(c, vm->const_names[i], vm->const_vals[i], slots[2]);
-    vm->method_serial++;
+    if (!fresh) vm->method_serial++;
     return RESULT_OK(slots[2]);
 }
 
@@ -11688,6 +11694,8 @@ korb_const_set_private(CTX *c, korb_value owner, uint32_t sym, bool private_p)
     vm->privconsts[vm->privconst_cnt].name = sym;
     vm->privconsts[vm->privconst_cnt].owner = owner;
     vm->privconst_cnt++;
+    const uint32_t b = (sym * 2654435761u) >> 20;
+    vm->privconst_bloom[b >> 6] |= 1ull << (b & 63);
 }
 /* deprecate_constant: mark (owner, name); reading it warns once per read. */
 void
@@ -11733,6 +11741,8 @@ korb_const_deprecated_warn(CTX *c, korb_value *slots, korb_value owner, uint32_t
 bool
 korb_const_private_p(const struct korb_vm *vm, korb_value owner, uint32_t sym)
 {
+    const uint32_t b = (sym * 2654435761u) >> 20;          /* the scan was 6.6% of shipit */
+    if (!(vm->privconst_bloom[b >> 6] & (1ull << (b & 63)))) return false;
     for (uint32_t i = 0; i < vm->privconst_cnt; i++)
         if (vm->privconsts[i].name == sym && vm->privconsts[i].owner == owner) return true;
     return false;
@@ -18945,8 +18955,31 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
     if (!KORB_ARRAY_P(lp)) return false;
     const size_t nlen = strlen(name);
     const bool has_rb = nlen >= 3 && strcmp(name + nlen - 3, ".rb") == 0;
-    char cwd[4096];
-    if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
+    /* Every candidate ends in "/<name>[.rb]", so first pick the $LOADED_FEATURES entries
+     * with that tail in one pass; a candidate is then compared with those only.  Asking
+     * all of $LOADED_FEATURES per $LOAD_PATH dir made a repeated require of a loaded
+     * feature O(|LOAD_PATH| x |LOADED_FEATURES|) (shipit).  A name with "." segments or
+     * "//" is changed by the normalization, so it keeps the full check. */
+    enum { KORB_FEAT_PICK = 8 };
+    uint32_t pick[KORB_FEAT_PICK], npick = 0;
+    bool full = strstr(name, "./") != NULL || strstr(name, "//") != NULL;
+    const korb_value lf = korb_const_get(c->vm, korb_intern(c->vm, "$LOADED_FEATURES", 16));
+    if (!KORB_ARRAY_P(lf)) full = true;
+    if (!full) {
+        char tail[4096];
+        const int tl = snprintf(tail, sizeof tail, "/%s%s", name, has_rb ? "" : ".rb");
+        if (tl < 0 || (size_t)tl >= sizeof tail) full = true;
+        const KorbArray *const fa = VAL2ARY(lf);
+        for (uint32_t i = 0; !full && i < fa->len; i++) {
+            const korb_value e = korb_items_data(fa->items)[i];
+            if (!KORB_STRING_P(e) || VAL2STR(e)->len < (uint32_t)tl) continue;
+            if (memcmp(korb_strbuf_data(VAL2STR(e)->buf) + VAL2STR(e)->len - tl, tail, (size_t)tl) != 0) continue;
+            if (npick == KORB_FEAT_PICK) full = true;
+            else pick[npick++] = i;
+        }
+        if (!full && npick == 0) return false;
+    }
+    char cwd[4096]; cwd[0] = '\0';
     const KorbArray *const a = VAL2ARY(lp);
     for (uint32_t i = 0; i < a->len; i++) {
         const korb_value e = korb_items_data(a->items)[i];
@@ -18954,6 +18987,7 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
         char dir[4096]; uint32_t dl = VAL2STR(e)->len; if (dl >= sizeof dir) dl = sizeof dir - 1;
         memcpy(dir, korb_strbuf_data(VAL2STR(e)->buf), dl); dir[dl] = '\0';
         char cand[4096], norm[4096];
+        if (dir[0] != '/' && !cwd[0] && !getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
         const int cl = (dir[0] == '/') ? snprintf(cand, sizeof cand, "%s/%s%s", dir, name, has_rb ? "" : ".rb")
                                        : snprintf(cand, sizeof cand, "%s/%s/%s%s", cwd, dir, name, has_rb ? "" : ".rb");
         if (cl < 0 || (size_t)cl >= sizeof cand) continue;
@@ -18962,7 +18996,15 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
          * but the body has not run, so let the caller reach the waiting path */
         const struct korb_thread *const owner = korb_loading_owner(c->vm, norm);
         if (owner != NULL && owner != c->vm->cur_thread) continue;
-        if (korb_feature_loaded_p(c, norm)) return true;   /* re-reads $LOADED_FEATURES; `a` is only read above */
+        if (full) {
+            if (korb_feature_loaded_p(c, norm)) return true;   /* re-reads $LOADED_FEATURES; `a` is only read above */
+            continue;
+        }
+        const size_t nl = strlen(norm);
+        for (uint32_t k = 0; k < npick; k++) {             /* nothing above runs Ruby or allocates */
+            const korb_value e = korb_items_data(VAL2ARY(lf)->items)[pick[k]];
+            if (VAL2STR(e)->len == nl && memcmp(korb_strbuf_data(VAL2STR(e)->buf), norm, nl) == 0) return true;
+        }
     }
     return false;
 }

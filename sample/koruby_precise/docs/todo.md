@@ -6172,19 +6172,24 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   自分を root に入れ直すときに、rubygems の既定の shebang（env + ruby_install_name）で書くと見ている。PATH に
   koruby_precise が無いと次の `bundle check` が `env: 'koruby_precise': No such file` で落ちる（/tmp/kz/kbin に symlink を
   置いて回避）。
-- **ruby-bench graphql が CRuby の 12 倍（484 ms 対 39 ms、sp4）**（2026-09-30、perf で確認）: 字句解析が大きなクエリ文字列に
-  対して (1) `Regexp#match(str, pos)` を位置を変えて何千回も呼び、そのたびに対象全体の UTF-8 検査（korb_re_check_subject、
-  15%）、(2) 残りを切り出す部分文字列を毎回コピーし（korb_str_slice_new）、しかも GC の確保が先に全体を 0 埋め（memset
-  13%、memmove 8%、GC 15%）。CRuby は coderange を文字列に覚え、部分文字列はバッファを共有する。凍結文字列だけは検査結果を
-  vm のメモで覚えるようにした（graphql の DATA は凍結されていないので効かない）。本筋は **部分文字列のバッファ共有（COW）** と
-  **文字列の coderange のキャッシュ**（書き換えの共通の入口が無いのが障害）。0 埋めを省く確保（edge の無い型用）は
-  precise_gc の全バックエンドに要る。
+- ~~**ruby-bench graphql が CRuby の 12 倍（484 ms 対 39 ms、sp4）**~~（2026-09-30 大半済、ローカル 155 ms）: **訂正**: 最初の記録では
+  「字句解析が `Regexp#match(str, pos)` を位置を変えて何千回も呼ぶ」と書いたが、呼んでいたのは strscan の遅い経路だった。パターンに
+  `$` があると「アンカー付き」とみなして毎回 `rest`（残り全体のコピー、0 埋め付き）に対して照合し、そのたびに UTF-8 検査もしていた。
+  `$` `\Z` `\z` は残りに対しても全体に対しても同じ位置に当たるので、遅い経路は `^` `\A` `\G` だけにした（tinygql 5500 → 1385 ms も同じ原因）。
+  残る一般論: 部分文字列のバッファ共有（COW）と文字列の coderange キャッシュが無いので、`rest` や大きな `byteslice` を繰り返すコードは
+  CRuby より遅い。0 埋めを省く確保（edge の無い型用）は precise_gc の全バックエンドに要る。
 - **ruby-bench ruby-json が CRuby の 12 倍（ローカル 1584 ms、修正前 sp4 10791 ms 対 CRuby 133 ms）**（2026-09-30）: 81 倍の
   主因は 2 つで、どちらも直した: (1) 正規表現リテラルが評価のたびに新しい Regexp を作っていた（CRuby は 1 リテラル 1 オブジェクト）
   ので strscan の identity キャッシュが毎回外れ、`\G` 付きの正規表現をコンパイルし直していた（skip 1 回 14 µs → 1.3 µs）、
   (2) String パターンの正規表現をスキャナごとに作っていた（ruby-json は parse ごとに新しいスキャナ）。残りは純 Ruby の
   StringScanner を解釈するコスト（skip 1 回 ~0.9 µs 対 CRuby 0.1 µs、perf は send/dispatch が上位）。詰めるなら
   **StringScanner の scan / skip / match? / check / getch / [] を C で書く**（状態を ivar でなく C 構造体に持つ）。
+- **ruby-bench shipit が CRuby の 6.4 倍（sp4 6579 ms 対 1036 ms）**（2026-09-30、ローカル 3303 → 2608 ms まで）: 直したもの:
+  (1) `#clone` が特異クラスをコピーするたびに `method_serial++`（全メソッドキャッシュが外れる、~700 回/s）→ その場で作った特異クラスなら
+  上げない。定数表全体の走査も、定数を持ったことのあるクラスだけに。(2) `A::B` の private 判定が private 定数の表を線形走査（6.6%）→
+  名前のブルームを前段に。(3) 読み込み済みの feature の `require` が `|$LOAD_PATH| x |$LOADED_FEATURES|` の比較 → 末尾一致で候補を先に絞る。
+  残り: 新しい特異クラスごとのメソッド探索 miss（korb_mro_seg_find 3.5%、CRuby も同じ miss はするが探索が軽い）、カーネル時間 3.8%（未調査）。
+  GC 後に mcache を付け替えて残す案は activerecord / railsbench で差が無く却下（ideas/rejected/mcache-survive-gc.md）。
 - **main からの呼び出しの残り**（2026-09-30）: 同じ呼び出しを main と普通のオブジェクトから比べた命令数（1 反復、起動込み）で、
   `send(:f0)` が main 1825 / obj 853（korb_call_send の速い道が klass != nil だけ）、ブロック付き `fb { 1 }` が 1096 / 985
   （main + ブロックは korb_responds_to を毎回）。ruby-bench では熱くないので後回し。undef 後の NoMethodError の文言が
