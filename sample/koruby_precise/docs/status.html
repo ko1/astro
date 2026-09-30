@@ -95,8 +95,8 @@ svg text { fill:var(--mute); font-size:11px; }
 <script>
 // ---- 更新はここ --------------------------------------------------------------
 const DATA = {
-  updated: "2026-09-30 JST",
-  master: "2745e3d1",
+  updated: "2026-09-30 20:50 JST",
+  master: "754eaa48",
   compat: [
     { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "31893 例", sub: "本物の openssl を読むようになって library/openssl が全通過（+40）。9/29 朝は 31831 / 32332 = 98.45%。率は同じ run の例の数で割るので、全体の再計測時に更新", date: "2026-09-29", commit: "1b28965c", mode: "interp",
       note: "本物の mspec で spec ファイルを 1 つずつ実行。率は同じ run の pass ÷ 例の数" },
@@ -122,8 +122,10 @@ const DATA = {
   perf: [
     { label: "optcarrot koruby AOT", value: "281.9 fps", cls: "warn", sub: "9/17 の b3cf0d1c 比 −4.5%（同一セッション A/B 294.99 vs 281.86、CRuby 対照 57.49）。9/28 の −9.3% から半分戻した（mcache の inline 復旧・send 判定のクラスビット化）。残りは 1740d738 ほか", date: "2026-09-29", commit: "1083738d", mode: "AOT",
       note: "sp4 専有、ruby 4.1.0dev 69b49ac7ae、checksum 検証。trials/2026-09-29-status-perf" },
-    { label: "railsbench（ruby-bench、Rails 8.1 + sqlite3、2000 リクエスト / 反復）", value: "3.66 s（CRuby 1.25 s、YJIT 0.69〜0.75 s）", cls: "warn", sub: "koruby --plain（インタプリタ）は CRuby（JIT なし）の約 2.9 倍の時間。3 ラウンドのばらつき 0.3% 以内。AOT（--pg-compile）は未計測。RSS 272 MiB（CRuby 110 MiB）", date: "2026-09-29", commit: "bea119ac", mode: "interp",
-      note: "trials/2026-09-29-rubybench（sp4、run_railsbench_sp4.sh）" },
+    { label: "railsbench（ruby-bench、Rails 8.1 + sqlite3、2000 リクエスト / 反復）", value: "AOT 2.09 s ／ interp 2.14 s（CRuby 1.24 s、YJIT 0.68 s）", cls: "warn", sub: "1 反復の平均（10 反復）。AOT（--pg-compile で焼いてから実行）は焼きのメモリが O(N²) だったのを直して初めて取れた（焼き 2099 s、SD 29505 個）。AOT はインタプリタとほぼ同じ。9/29 の interp は 3.66 s。RSS 276 MiB（CRuby 110 MiB）", date: "2026-09-30", commit: "754eaa48", mode: "AOT",
+      note: "sp4 専有、trials/2026-09-29-rubybench/logs/53-sp4-latest（CRuby・YJIT は logs/51-sp4-all-fix）" },
+    { label: "ruby-bench 79 本（CRuby 比、koruby interp）", value: "78 本中 CRuby より速い 23 本 ／ 2 倍以内 65 本", cls: "warn", sub: "ベンチごとの ms は trials/2026-09-29-rubybench の README の表（51 = 全 4 モード、52・53 = 新しい binary の koruby / AOT）。遅いもの: ruby-json 8.7×、30k_variables 7.5×、erubi-rails 3.8×、structaset 3.7×、graphql 2.8×、tinygql 2.7×。各ベンチはいちばん新しい run の koruby（53 → 52 → 51 の順）を 51 の CRuby で割った", date: "2026-09-30", commit: "754eaa48", mode: "interp",
+      note: "sp4 専有。string_malloc_pressure は koruby が String.new(capacity:) を確保しないので比較から外す" },
     { label: "JSON（json gem の benchmark data、parse 5 本 + generate 4 本 + ruby-bench 2 本）", value: "parse 0.73〜1.16× ／ generate 0.84〜1.32×", sub: "CRuby の json C 拡張比の時間（koruby AOT、小さいほど速い）。Ruby 移植だった前の版から 14〜84 倍速く。ケースごとの値は trials/2026-09-29-koruby-json-native", date: "2026-09-29", commit: "f8ce981c", mode: "AOT",
       note: "sp4 専有、ruby 4.1.0dev 69b49ac7ae（json 3.0.0.rc1）、全 run の checksum 一致" },
     { label: "C 拡張の呼び出し（何もしない拡張メソッド）", value: "0.95〜1.17×", sub: "CRuby の CFUNC 比（koruby interp）。拡張の中から koruby を呼ぶもの 1.17〜1.42×、Digest::MD5.hexdigest(\"abc\") 2.83×、SHA256 1 MiB 1.00×", date: "2026-09-29", commit: "42647c81", mode: "interp",
@@ -134,7 +136,7 @@ const DATA = {
   optcarrot: { date: "2026-09-28（koruby AOT は 9/29 の 1083738d）", commit: "25b30579",
     rows: [["ZJIT", 315.39], ["YJIT", 299.49], ["koruby AOT", 281.86], ["koruby interp", 66.84], ["CRuby", 57.40]] },
   rubybench: [ // [suite, what, status]
-    ["ruby-bench（Shopify/ruby-bench が既定で回す 79 本: railsbench / lobsters / liquid / hexapdf / activerecord / erubi … と小さいベンチ）", "実アプリ系 + 言語機能", "79 本すべて動く（9/30）。sp4 で CRuby / YJIT / koruby / koruby AOT を計測: trials/2026-09-29-rubybench"],
+    ["ruby-bench（Shopify/ruby-bench が既定で回す 79 本: railsbench / lobsters / liquid / hexapdf / activerecord / erubi … と小さいベンチ）", "実アプリ系 + 言語機能", "79 本すべて動く（9/30）。sp4 で CRuby / YJIT / koruby / koruby AOT を計測（AOT は Gemfile 無しの 43 本 + railsbench・activerecord・shipit ほか）: trials/2026-09-29-rubybench"],
     ["ruby/ruby の benchmark/*.rb, *.yml", "CRuby 本体のベンチ（benchmark-driver）", "未着手"],
     ["ruby-method-benchmarks", "メソッド単位", "未着手"],
   ],
@@ -144,6 +146,8 @@ const DATA = {
     "Ripper の構文エラー回復（CRuby の parse.y は誤りの後も木を組み立てる）",
   ],
   recent: [
+    ["この commit", "status 更新（ruby-bench の sp4 取り直し 52・53、railsbench の AOT）"],
+    ["754eaa48", "AOT 焼きのメモリが O(N²)（穴の記述子が子を丸ごと写し込んでいた）。30k_methods 形 16000 メソッドで 8.4 GB → 81 MB、出力の C は同一。railsbench・30k 系の焼きが初めて通った"],
     ["08086ecf・2745e3d1", "性能: StringScanner が $ を含むパターンで毎回残りをコピーしていた（tinygql 5500 → 1385 ms、graphql 155 ms、ローカル）。#clone の特異クラスのコピーが全メソッドキャッシュを捨てていた・private 定数と require の判定が線形走査（shipit 3303 → 2608 ms）"],
     ["f017cfea", "正規表現リテラルを 1 リテラル 1 オブジェクトに（CRuby と同じ）。StringScanner のキャッシュが毎回外れていた。ruby-bench ruby-json 14556 → 1584 ms（ローカル、sp4 の前回は CRuby の 81 倍）"],
     ["662f590b〜76f342e9", "ruby-bench の 79 本すべてが koruby で走る: Random::Formatter、Hash.ruby2_keywords_hash、トップレベル def と Kernel#test、ブロック付き sum の補正和、Zlib の mem_level、rb_jump_tag の errinfo（sqlite3）、拡張 7 つ（RARRAY_PTR の写し、*_kw の kw_splat、rb_time_* ほか）、Date#<=> の coerce"],

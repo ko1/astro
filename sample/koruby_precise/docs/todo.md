@@ -6200,6 +6200,11 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   本体の最大 RSS: N=4000 758 MB → 35 MB、N=16000 8.4 GB → 81 MB。残り: クラス本体の SD は 1 ファイルに N 段の関数が入り、cc1 が
   N=16000 で 6.8 GB（ccache が無いとき）。trials/2026-09-30-koruby-bake-memory。
   最初「全部焼く --pg-compile の限界」と説明したが、確かめていない推測で誤り（--aot-compile でも同じに増える）。
+- **ruby-bench 30k_ifelse の AOT が遅い: 6941 ms（インタプリタ 226 ms の 30 倍）**（2026-09-30、sp4、master 754eaa48、
+  trials/2026-09-29-rubybench/logs/53-sp4-latest）: 反復ごとに 35.8 → 20.2 → 13.6 → 11.4 → … → 8.9 s と縮む。原因は未調査。
+  30k_methods の AOT は 141 ms（インタプリタ 118 ms）で、同じ現象は出ていない。
+- **String.new(capacity:) が容量を確保しない**（2026-09-30）: ruby-bench string_malloc_pressure（64 KB × 10 万本）で CRuby RSS 6.3 GB に対し
+  koruby 64 MB、時間も 0.04 倍で比較にならない。意味は変わらないが、malloc の負荷試験としては別物を測っている。
 - **main からの呼び出しの残り**（2026-09-30）: 同じ呼び出しを main と普通のオブジェクトから比べた命令数（1 反復、起動込み）で、
   `send(:f0)` が main 1825 / obj 853（korb_call_send の速い道が klass != nil だけ）、ブロック付き `fb { 1 }` が 1096 / 985
   （main + ブロックは korb_responds_to を毎回）。ruby-bench では熱くないので後回し。undef 後の NoMethodError の文言が
