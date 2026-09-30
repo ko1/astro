@@ -6151,7 +6151,9 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   (2) NodeHead 64 バイトを削る（line・hash_opt は未使用、dispatcher_name / pool / nholes は特殊化ノードだけ要るか要確認。
   ASTroGen / runtime 共通なので全サンプルに影響）、(3) 呼ばれないメソッドの AST を作らない。
 - **--pg-compile は M0 では AOT と同じ「全部焼く」**（実行したかに関係なく parse した全メソッド）。railsbench で C が 8000 個超、
-  焼くのに 18 分以上（計測中）。Rails のような大きなアプリには実行したものだけを焼く PG（PGSD / HOPT、M1）が要る。
+  焼くのに 18 分以上。2026-09-30（f017cfea 相当）にローカル（30 GB）で再試行し、SD 20093 個を書いたところでメモリが尽きて止まった。
+  30k 系と同じ記述子の O(N²) が効いていた可能性が高いが、railsbench では未確認（記述子の修正後に取り直す）。実行したものだけを焼く
+  PG（PGSD / HOPT、M1）が焼きの量を減らすのは別の話。
 - **prelude のフレームの場所がユーザのファイル名で出る**（2026-09-30）: `def test` の前は Kernel#test（prelude/system.rb）が
   `t.rb:8910:in 'Kernel#test'` と出ていた（行番号は prelude のもの、パスは実行中のスクリプト）。error_highlight の
   `callee:` も同じ。CRuby は `<internal:...>`。
@@ -6190,6 +6192,14 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   名前のブルームを前段に。(3) 読み込み済みの feature の `require` が `|$LOAD_PATH| x |$LOADED_FEATURES|` の比較 → 末尾一致で候補を先に絞る。
   残り: 新しい特異クラスごとのメソッド探索 miss（korb_mro_seg_find 3.5%、CRuby も同じ miss はするが探索が軽い）、カーネル時間 3.8%（未調査）。
   GC 後に mcache を付け替えて残す案は activerecord / railsbench で差が無く却下（ideas/rejected/mcache-survive-gc.md）。
+- ~~**ruby-bench 30k_ifelse / 30k_methods の AOT 焼きが 28 GB を食って終わらない**~~（2026-09-30 済）: sp4 で koruby 本体の RSS 28.7 GB
+  （30k_ifelse 1446 s・SD 18237 個、30k_methods 905 s・SD 34121 個で打ち切り）。**原因**（計測で確認）: 穴の記述子（runtime/astro_node.c）が
+  子の記述子を丸ごと写し込む平坦なコピーで、しかも全 SD 分を焼きの間ずっと保持していた。クラス本体の `node_seq` は定義の数だけ左に入れ子に
+  なるので O(N²)。N=4000 メソッドの焼きを gdb で止めて数えると保存された op が 4517 万個 = 723 MB（本体 RSS 758 MB）。**修正**: 子は参照
+  （SPLICE）で持ち、ファイルに書くときだけ展開する。出力の C は 1 バイトも変わらない（preload 2402 SD + 4 本で diff 一致）。
+  本体の最大 RSS: N=4000 758 MB → 35 MB、N=16000 8.4 GB → 81 MB。残り: クラス本体の SD は 1 ファイルに N 段の関数が入り、cc1 が
+  N=16000 で 6.8 GB（ccache が無いとき）。trials/2026-09-30-koruby-bake-memory。
+  最初「全部焼く --pg-compile の限界」と説明したが、確かめていない推測で誤り（--aot-compile でも同じに増える）。
 - **main からの呼び出しの残り**（2026-09-30）: 同じ呼び出しを main と普通のオブジェクトから比べた命令数（1 反復、起動込み）で、
   `send(:f0)` が main 1825 / obj 853（korb_call_send の速い道が klass != nil だけ）、ブロック付き `fb { 1 }` が 1096 / 985
   （main + ブロックは korb_responds_to を毎回）。ruby-bench では熱くないので後回し。undef 後の NoMethodError の文言が

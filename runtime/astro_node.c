@@ -291,7 +291,8 @@ alloc_dispatcher_name_hash(NODE *n)
 
 enum {
     ASTRO_HOLE_END = 0, ASTRO_HOLE_EMIT, ASTRO_HOLE_ADDR,
-    ASTRO_HOLE_DOWN, ASTRO_HOLE_DOWN_AT, ASTRO_HOLE_UP, ASTRO_HOLE_EMIT_AT
+    ASTRO_HOLE_DOWN, ASTRO_HOLE_DOWN_AT, ASTRO_HOLE_UP, ASTRO_HOLE_EMIT_AT,
+    ASTRO_HOLE_SPLICE = 0xff   // in-memory only: "saved descriptor #idx goes here", expanded when written
 };
 
 // ASTRO_OFF / ASTRO_SZ / ASTRO_OFF_B live in astro_hole.h: the SD TU needs them.
@@ -304,9 +305,7 @@ enum {
 struct astro_hole_op {
     uint8_t op;
     int32_t idx;           // @children index, or -1
-    const char *path;      // a string literal of the generated code ("" for ops with no field):
-                           // a descriptor splices its whole subtree, so ops are copied O(depth²)
-                           // times — an inline 192-byte path made 30k_variables' bake take 52 GB
+    const char *path;      // a string literal of the generated code ("" for ops with no field)
 };
 struct astro_hole_buf { struct astro_hole_op *v; uint32_t n, capa, depth; };
 
@@ -347,22 +346,18 @@ astro_hole_saved_index(uint32_t i)
     astro_hole_saved_idx[k] = i + 1;
 }
 
-static const struct astro_hole_op *
-astro_hole_saved_get(const char *const name, uint32_t *const len, uint32_t *const depth)
+// index of the saved descriptor `name`, or -1
+static int32_t
+astro_hole_saved_find(const char *const name)
 {
     if (astro_hole_saved_idx_capa) {
         const uint32_t mask = astro_hole_saved_idx_capa - 1;
         for (uint32_t k = astro_hole_name_hash(name) & mask; astro_hole_saved_idx[k]; k = (k + 1) & mask) {
             const uint32_t i = astro_hole_saved_idx[k] - 1;
-            if (strcmp(astro_hole_saved[i].name, name) == 0) {
-                *len = astro_hole_saved[i].n;
-                *depth = astro_hole_saved[i].depth;
-                return astro_hole_saved[i].v;
-            }
+            if (strcmp(astro_hole_saved[i].name, name) == 0) return (int32_t)i;
         }
     }
-    *len = *depth = 0;
-    return NULL;
+    return -1;
 }
 
 // One hole: record how to read it, return its number.
@@ -391,10 +386,15 @@ astro_hole_sub(struct astro_hole_buf *const d, uint32_t *const h,
     o->op = (uint8_t)(idx < 0 ? ASTRO_HOLE_DOWN : ASTRO_HOLE_DOWN_AT);
     o->path = path;
     o->idx = idx;
-    uint32_t len = 0, sub_depth = 0;
-    const struct astro_hole_op *const sub =
-        astro_hole_saved_get(child->head.dispatcher_name, &len, &sub_depth);
-    for (uint32_t i = 0; i < len; i++) *astro_hole_put(d) = sub[i];
+    // Refer to the child's descriptor instead of copying it: copies nest, so a chain
+    // of depth D held O(D²) ops (30k_methods' bake grew to 28 GB).
+    const int32_t si = astro_hole_saved_find(child->head.dispatcher_name);
+    const uint32_t sub_depth = si < 0 ? 0 : astro_hole_saved[si].depth;
+    if (si >= 0 && astro_hole_saved[si].n > 0) {
+        struct astro_hole_op *const r = astro_hole_put(d);
+        r->op = ASTRO_HOLE_SPLICE;
+        r->idx = si;
+    }
     // The walker needs a stack this deep to replay the splice.
     if (sub_depth + 1 > d->depth) d->depth = sub_depth + 1;
     astro_hole_put(d)->op = ASTRO_HOLE_UP;
@@ -445,6 +445,40 @@ astro_hole_emit_desc(FILE *fp, const char *const name, struct astro_hole_buf *co
         astro_hole_saved[astro_hole_saved_n - 1].name, d->v, d->n, nholes, d->depth };
 }
 
+// Write ops as descriptor bytes, expanding each SPLICE into the saved descriptor it
+// names (iteratively: a chain is as deep as the source is long).
+static void
+astro_hole_write_ops(FILE *const fp, const struct astro_hole_op *const v, const uint32_t n)
+{
+    struct frame { const struct astro_hole_op *v; uint32_t n, i; } fixed[64], *st = fixed;
+    uint32_t sp = 0, capa = 64;
+    st[sp++] = (struct frame){ v, n, 0 };
+    while (sp > 0) {
+        struct frame *const f = &st[sp - 1];
+        if (f->i == f->n) { sp--; continue; }
+        const struct astro_hole_op *const o = &f->v[f->i++];
+        if (o->op == ASTRO_HOLE_SPLICE) {
+            if (sp == capa) {
+                capa *= 2;
+                struct frame *const ns = st == fixed ? malloc(sizeof(*ns) * capa) : realloc(st, sizeof(*ns) * capa);
+                if (!ns) { fprintf(stderr, "astro_hole: out of memory\n"); exit(1); }
+                if (st == fixed) memcpy(ns, fixed, sizeof(fixed));
+                st = ns;
+            }
+            st[sp++] = (struct frame){ astro_hole_saved[o->idx].v, astro_hole_saved[o->idx].n, 0 };
+            continue;
+        }
+        fprintf(fp, ",\n  %uU", o->op);
+        if (o->op != ASTRO_HOLE_UP)
+            fprintf(fp, ",ASTRO_OFF_B(%s,0),ASTRO_OFF_B(%s,1)", o->path, o->path);
+        if (o->op == ASTRO_HOLE_EMIT)
+            fprintf(fp, ",(uint8_t)ASTRO_SZ(%s)", o->path);
+        else if (o->op == ASTRO_HOLE_EMIT_AT || o->op == ASTRO_HOLE_DOWN_AT)
+            fprintf(fp, ",%uU,%uU", (unsigned)o->idx & 0xff, ((unsigned)o->idx >> 8) & 0xff);
+    }
+    if (st != fixed) free(st);
+}
+
 // Write the queued descriptors as data and reset for the next file.  The
 // descriptor is data, so it stays out of the patch objects' text and costs
 // nothing per instance.
@@ -459,16 +493,7 @@ astro_hole_flush_descs(FILE *const fp)
         fprintf(fp, "const uint8_t %s_desc[] = {%uU,%uU,%uU,%uU,%uU,%uU",
                 astro_hole_pending[j].name, nh & 0xff, (nh >> 8) & 0xff, (nh >> 16) & 0xff,
                 (nh >> 24) & 0xff, dp & 0xff, (dp >> 8) & 0xff);
-        for (uint32_t i = 0; i < astro_hole_pending[j].n; i++) {
-            const struct astro_hole_op *const o = &astro_hole_pending[j].v[i];
-            fprintf(fp, ",\n  %uU", o->op);
-            if (o->op != ASTRO_HOLE_UP)
-                fprintf(fp, ",ASTRO_OFF_B(%s,0),ASTRO_OFF_B(%s,1)", o->path, o->path);
-            if (o->op == ASTRO_HOLE_EMIT)
-                fprintf(fp, ",(uint8_t)ASTRO_SZ(%s)", o->path);
-            else if (o->op == ASTRO_HOLE_EMIT_AT || o->op == ASTRO_HOLE_DOWN_AT)
-                fprintf(fp, ",%uU,%uU", (unsigned)o->idx & 0xff, ((unsigned)o->idx >> 8) & 0xff);
-        }
+        astro_hole_write_ops(fp, astro_hole_pending[j].v, astro_hole_pending[j].n);
         fprintf(fp, ",\n  %uU};\n", ASTRO_HOLE_END);
     }
     fprintf(fp, "#endif\n");
