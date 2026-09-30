@@ -1205,6 +1205,10 @@ struct korb_vm {
      * tombstone — but only once a program has actually made one. */
     uint32_t send_undef_cnt;
     uint32_t undef_cnt;      /* every undef tombstone ever made: 0 = korb_method_undefed_p is false everywhere */
+    /* korb_const_index (first row named `name`, any owner): the table only appends and
+     * tombstones, so a hit stays valid while that row keeps the name; a miss while
+     * const_cnt is unchanged */
+    struct { uint32_t name, idx, cnt; } cgc[512];
     struct { uint64_t serial; uint32_t mid; struct korb_method *m; } glookup[256];   /* korb_method_lookup, by method_serial */
     uint32_t new_undef_cnt;
     bool     to_s_redefined;         /* some class reopened (or refined) #to_s → interpolation dispatches */

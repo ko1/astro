@@ -4966,9 +4966,8 @@ static RESULT korb_m_bind_lvars(CTX *c, korb_value *slots, korb_ref self, korb_s
 korb_value
 korb_const_get(struct korb_vm *vm, uint32_t name_sym)
 {
-    for (uint32_t i = 0; i < vm->const_cnt; i++)
-        if (vm->const_names[i] == name_sym) return vm->const_vals[i];
-    return KORB_NIL;
+    const uint32_t i = korb_const_index(vm, name_sym);   /* cached: `$/`, Warning ... are read per call */
+    return i == UINT32_MAX ? KORB_NIL : vm->const_vals[i];
 }
 
 /* Where a dotted constant path first fails to resolve, as "A" / "A::B".  Only
@@ -5055,9 +5054,19 @@ korb_value korb_errinfo_top(const CTX *c) { return c->errinfo_n ? c->errinfo[c->
 uint32_t
 korb_const_index(const struct korb_vm *vm, uint32_t name_sym)
 {
+    if (name_sym == 0) return UINT32_MAX;                 /* 0 is the tombstone name */
+    struct korb_vm *const mv = (struct korb_vm *)(uintptr_t)vm;   /* the cache is the only thing written */
+    const uint32_t h = (name_sym * 2654435761u) >> 23;
+    if (mv->cgc[h].name == name_sym) {
+        const uint32_t ci = mv->cgc[h].idx;
+        if (ci != UINT32_MAX ? (ci < vm->const_cnt && vm->const_names[ci] == name_sym) : mv->cgc[h].cnt == vm->const_cnt)
+            return ci;
+    }
+    uint32_t r = UINT32_MAX;
     for (uint32_t i = 0; i < vm->const_cnt; i++)
-        if (vm->const_names[i] == name_sym) return i;
-    return UINT32_MAX;
+        if (vm->const_names[i] == name_sym) { r = i; break; }
+    mv->cgc[h].name = name_sym; mv->cgc[h].idx = r; mv->cgc[h].cnt = vm->const_cnt;
+    return r;
 }
 /* Object IS the top-level namespace in Ruby: `Object::X` and a bare `X` name the
  * same constant, so both must key the table the same way (nil). */
