@@ -15560,6 +15560,8 @@ korb_sdi_eval_name(const struct Node *n, const char *base)
     const uint8_t k = n->head.flags.sd_inl;
     return k != KORB_SDI_NONE && k < KORB_SDI_N ? korb_sdi_tab[k].eval : base;
 }
+/* stands in a korb_sdi_tab row whose builtins were not found: no method has this rfn */
+static RESULT korb_sdi_never(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)self; (void)a; return korb_raise(c, slots, KORB_E_RUNTIME, 0, "korb_sdi_never"); }
 void
 korb_sdi_init(CTX *c)
 {
@@ -15571,6 +15573,11 @@ korb_sdi_init(CTX *c)
             const struct korb_method *const m = korb_class_find_method(korb_builtin_class_obj(vm, (enum korb_class)korb_sdi_tab[k].cls[j]), mid, &def);
             vm->sdi_fn[k][j] = (m != NULL && m->kind == KORB_METHOD_CFUNC && !m->uses_block) ? m->rfn : NULL;
         }
+        /* an unused cell repeats a real one: a NULL there would match a Ruby method's
+         * (NULL) rfn in KORB_SDI_HIT and call it.  All NULL = never matched (korb_sdi_never). */
+        korb_method_fn first = NULL;
+        for (int j = 0; j < KORB_SDI_FN_MAX && first == NULL; j++) first = vm->sdi_fn[k][j];
+        for (int j = 0; j < KORB_SDI_FN_MAX; j++) if (vm->sdi_fn[k][j] == NULL) vm->sdi_fn[k][j] = first ? first : korb_sdi_never;
     }
 }
 

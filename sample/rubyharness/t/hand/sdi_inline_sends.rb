@@ -44,3 +44,19 @@ class Object
   def nil? = :redef_nil
 end
 p loop_site([[1], [2]]), [1].first, -3.abs, Object.new.nil?, nil.nil?
+# the same names on a class that defines them in Ruby (the site's cache then holds a Ruby
+# method, which must not be taken for one of the builtins)
+class Own
+  def to_s = "own"
+  def hash = 42
+  def frozen? = :own
+  def is_a?(k) = :own_is_a
+  def respond_to?(m, priv = false) = :own_rt
+  def key?(k) = :own_key
+  def include?(x) = :own_inc
+  def size = :own_size
+  def empty? = :own_empty
+  def first = :own_first
+end
+2.times { |i| p [Own.new.to_s, Own.new.hash, Own.new.frozen?, Own.new.is_a?(Own), Own.new.respond_to?(:x),
+                 Own.new.key?(1), Own.new.include?(1), Own.new.size, Own.new.empty?, Own.new.first] }
