@@ -645,15 +645,20 @@ static RESULT korb_m_hash_compact_bang(CTX *c, korb_value *slots, korb_ref self,
     KORB_CHECK_FROZEN(c, slots, KORB_REF_GET(self));
     KorbHash *h = VAL2HASH(KORB_REF_GET(self));
     KorbArrayItems *it = h->items;
+    uint64_t *const hints = h->khints && h->khint_len == h->len ? (uint64_t *)korb_strbuf_data(h->khints) : NULL;
     uint32_t w = 0;
     for (uint32_t i = 0; i < h->len; i++) {
         if (korb_items_data(it)[2*i+1] == KORB_NIL) continue;
-        if (w != i) { ARO_STORE(c, it, &korb_items_data(it)[2*w], korb_items_data(it)[2*i]); ARO_STORE(c, it, &korb_items_data(it)[2*w+1], korb_items_data(it)[2*i+1]); }
+        if (w != i) {
+            ARO_STORE(c, it, &korb_items_data(it)[2*w], korb_items_data(it)[2*i]); ARO_STORE(c, it, &korb_items_data(it)[2*w+1], korb_items_data(it)[2*i+1]);
+            if (hints) hints[w] = hints[i];
+        }
         w++;
     }
     if (w == h->len) return RESULT_OK(KORB_NIL);          /* unchanged → nil */
+    for (uint32_t r = 2*w; r < 2*h->len; r++) ARO_STORE(c, it, &korb_items_data(it)[r], KORB_NIL);
     h->len = w;
-    KORB_HASH_DROP_INDEX(h);                              /* pairs compacted → index stale */
+    korb_hash_compacted(h, hints != NULL);
     return RESULT_OK(KORB_REF_GET(self));
 }
 static RESULT korb_m_hash_transform_values(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
@@ -1200,6 +1205,8 @@ static RESULT korb_hash_filter_bang(CTX *c, korb_value *slots, korb_ref self, NO
     }
     KORB_CHECK_FROZEN(c, slots, KORB_REF_GET(self));    /* a block-bearing modify on a frozen Hash → FrozenError */
     uint32_t w = 0; bool changed = false;
+    const uint32_t len0 = VAL2HASH(KORB_REF_GET(self))->len;
+    bool hints_moved = VAL2HASH(KORB_REF_GET(self))->khints && VAL2HASH(KORB_REF_GET(self))->khint_len == len0;
     for (uint32_t r = 0; ; r++) {
         const KorbHash *h = VAL2HASH(KORB_REF_GET(self));
         if (r >= h->len) break;
@@ -1210,17 +1217,20 @@ static RESULT korb_hash_filter_bang(CTX *c, korb_value *slots, korb_ref self, NO
         if (UNLIKELY(res.state != KORB_NORMAL)) return res;
         if (KORB_TRUTHY(res.value) == keep_truthy) {
             KorbHash *h2 = VAL2HASH(KORB_REF_GET(self));
+            hints_moved = hints_moved && h2->len == len0 && h2->khints && h2->khint_len == len0;   /* the block may reshape the Hash */
             if (w != r) {
                 ARO_STORE(c, h2->items, &korb_items_data(h2->items)[2*w],   slots[0]);
                 ARO_STORE(c, h2->items, &korb_items_data(h2->items)[2*w+1], slots[1]);
+                if (hints_moved) { uint64_t *const hints = (uint64_t *)korb_strbuf_data(h2->khints); hints[w] = hints[r]; }
             }
             w++;
         } else changed = true;
     }
     KorbHash *h = VAL2HASH(KORB_REF_GET(self));
+    hints_moved = hints_moved && h->len == len0 && h->khints && h->khint_len == len0;
     for (uint32_t r = 2*w; r < 2*h->len; r++) ARO_STORE(c, h->items, &korb_items_data(h->items)[r], KORB_NIL);
     h->len = w;
-    KORB_HASH_DROP_INDEX(h);                              /* pairs compacted → index stale */
+    korb_hash_compacted(h, hints_moved);
     if (ret_nil_if_unchanged && !changed) return RESULT_OK(KORB_NIL);
     return RESULT_OK(KORB_REF_GET(self));
 }

@@ -506,16 +506,7 @@ static RESULT korb_m_hash_shift(CTX *c, korb_value *slots, korb_ref self, korb_s
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));           /* [k,v] (may GC) */
     CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[2]), slots[0]));
     CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[2]), slots[1]));
-    KorbHash *h = VAL2HASH(KORB_REF_GET(self));               /* re-read after alloc */
-    KorbArrayItems *it = h->items;
-    for (uint32_t i = 1; i < h->len; i++) {                    /* shift pairs down by one */
-        ARO_STORE(c, it, &korb_items_data(it)[2 * (i - 1)],     korb_items_data(it)[2 * i]);
-        ARO_STORE(c, it, &korb_items_data(it)[2 * (i - 1) + 1], korb_items_data(it)[2 * i + 1]);
-    }
-    h->len--;
-    ARO_STORE(c, it, &korb_items_data(it)[2 * h->len],     KORB_NIL);
-    ARO_STORE(c, it, &korb_items_data(it)[2 * h->len + 1], KORB_NIL);
-    KORB_HASH_DROP_INDEX(h);                             /* pairs shifted → index stale */
+    korb_hash_remove_at(c, VAL2HASH(KORB_REF_GET(self)), 0);   /* re-read after alloc; keeps the key hints */
     return RESULT_OK(slots[2]);
 }
 /* Hash#each_value / each_key — yield each value (resp. key); return self. */

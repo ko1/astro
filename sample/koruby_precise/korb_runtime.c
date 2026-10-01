@@ -2201,6 +2201,28 @@ korb_hash_set(CTX *c, korb_value *slots, korb_ref href, korb_ref kref, korb_valu
     return RESULT_OK(KORB_REF_GET(href));
 }
 
+/* The pairs were compacted in place (h->len is the new length).  `hints_moved`:
+ * the key hints were moved along with them, so keep them and refill both
+ * indexes without allocating; otherwise the hints no longer line up — drop
+ * them.  Dropping for good made an LRU cache (Hash#shift) scan linearly. */
+static void
+korb_hash_compacted(KorbHash *restrict h, const bool hints_moved)
+{
+    if (hints_moved) {
+        h->khint_len = h->len;
+        if (h->kidx_mask) {
+            memset(korb_strbuf_data(h->kindex), 0, (size_t)(h->kidx_mask + 1) * sizeof(uint32_t));
+            for (uint32_t i = 0; i < h->len; i++) korb_hash_kindex_put(h, i);
+        }
+    } else if (h->khints) {
+        KORB_HASH_DROP_KHINTS(h);
+    }
+    if (h->idx_mask || h->id_mask) {                    /* pair indices shifted: refill, no alloc */
+        memset(korb_strbuf_data(h->index), 0, (size_t)((h->idx_mask | h->id_mask) + 1) * sizeof(uint32_t));
+        for (uint32_t i = 0; i < h->len; i++) korb_hash_index_put(h, i);
+    }
+}
+
 /* Remove pair `idx` keeping insertion order.  The index is rebuilt in place and
  * the key hints shift with the pairs, so later lookups stay O(1) and a mutated
  * key stays unreachable (dropping them made every lookup after a delete linear). */
@@ -2219,18 +2241,8 @@ korb_hash_remove_at(CTX *c, KorbHash *restrict h, const uint32_t idx)
     if (hints_ok) {
         uint64_t *const hints = (uint64_t *)korb_strbuf_data(h->khints);
         memmove(hints + idx, hints + idx + 1, (size_t)(h->len - idx) * sizeof(uint64_t));
-        h->khint_len = h->len;
-        if (h->kidx_mask) {
-            memset(korb_strbuf_data(h->kindex), 0, (size_t)(h->kidx_mask + 1) * sizeof(uint32_t));
-            for (uint32_t i = 0; i < h->len; i++) korb_hash_kindex_put(h, i);
-        }
-    } else if (h->khints) {
-        KORB_HASH_DROP_KHINTS(h);
     }
-    if (h->idx_mask || h->id_mask) {                    /* pair indices shifted: refill, no alloc */
-        memset(korb_strbuf_data(h->index), 0, (size_t)((h->idx_mask | h->id_mask) + 1) * sizeof(uint32_t));
-        for (uint32_t i = 0; i < h->len; i++) korb_hash_index_put(h, i);
-    }
+    korb_hash_compacted(h, hints_ok);
 }
 
 /* ---------------------------------------------------------------------------
