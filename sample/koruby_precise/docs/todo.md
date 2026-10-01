@@ -6205,6 +6205,14 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   30k_methods の AOT は 141 ms（インタプリタ 118 ms）で、同じ現象は出ていない。
 - **String.new(capacity:) が容量を確保しない**（2026-09-30）: ruby-bench string_malloc_pressure（64 KB × 10 万本）で CRuby RSS 6.3 GB に対し
   koruby 64 MB、時間も 0.04 倍で比較にならない。意味は変わらないが、malloc の負荷試験としては別物を測っている。
+- **ruby-bench activerecord: AOT が効かない（sp4: interp 244 ms、AOT 225 ms、CRuby 168、YJIT 61）**（2026-09-30、perf、ローカル interp）:
+  send・呼び出しの経路 37%（korb_invoke_method・korb_send_impl_vis・korb_dispatch_method ほか）、ノードの解釈 13%、GC・確保 8%、
+  Hash 4%、SQLite + C 拡張層 4〜5%。AOT が消せるのは主に解釈の部分なので効かない。GC は 12 回/s（GC 自体 3.6%）で、そのたびに
+  method_serial++ で全インラインキャッシュが外れる（gdb の watch で上げているのは GC だけ）。次: 汎用経路に落ちる呼び出しの種類
+  （kwargs / ブロック / super / respond_to? / method_missing）を数えてから直す。
+- **AOT の焼きが 3600 s で終わらない 4 本**（2026-10-01、sp4、754eaa48、trials/2026-09-29-rubybench/logs/54-sp4-aot-gemfile）:
+  addressable-equality・addressable-normalize（どちらも SD 6005 個で止まる。焼きの前の 1 反復の実行が終わらないのか、焼きが遅いのか未確認）、
+  mail（最大 RSS 9.1 GB）、rubocop（最大 RSS 61 GB、子プロセスを含む値。koruby 本体は 40 GB の見張りに掛からなかった）。原因は未調査。
 - **main からの呼び出しの残り**（2026-09-30）: 同じ呼び出しを main と普通のオブジェクトから比べた命令数（1 反復、起動込み）で、
   `send(:f0)` が main 1825 / obj 853（korb_call_send の速い道が klass != nil だけ）、ブロック付き `fb { 1 }` が 1096 / 985
   （main + ブロックは korb_responds_to を毎回）。ruby-bench では熱くないので後回し。undef 後の NoMethodError の文言が
