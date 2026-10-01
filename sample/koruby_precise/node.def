@@ -3617,11 +3617,23 @@ node_ivar_set(CTX *c, NODE *n, korb_value *slots, int32_t self_off, uint32_t nam
             ARO_STORE(c, o->ivars, &korb_items_data(o->ivars)[ic->slot], val);   /* inline WB fast path (no PLT call) */
             return RESULT_OK(val);
         }
+        /* the cached transition (an `initialize` adding this ivar): new shape + store, when the
+         * values array has room; growing / anything else takes korb_ivar_set */
+        if (o->shape_id == ic->from_shape && ic->from_shape != 0 && o->ivars != NULL &&
+            (uint32_t)ic->slot < o->ivar_capa && !(o->head.flags & KORB_FL_FROZEN)) {
+            o->shape_id = ic->shape_id;
+            ARO_STORE(c, o->ivars, &korb_items_data(o->ivars)[ic->slot], val);
+            return RESULT_OK(val);
+        }
+        const uint32_t before = o->shape_id;
         RESULT r = korb_ivar_set(c, slots, KORB_REF_AT(&slots[self_off]), ID2SYM(name), val);  /* may transition/grow */
         if (LIKELY(r.state == KORB_NORMAL)) {             /* refill from the (re-read) object's new shape */
             const KorbObject *const o2 = VAL2OBJ(slots[self_off]);
             const int32_t idx = korb_shape_index(c->vm, o2->shape_id, name);
-            if (idx >= 0) { ic->shape_id = o2->shape_id; ic->slot = idx; }
+            if (idx >= 0) {
+                ic->shape_id = o2->shape_id; ic->slot = idx;
+                ic->from_shape = (o2->shape_id != before && c->vm->shapes[o2->shape_id].ivar_count == (uint32_t)idx + 1) ? before : 0;
+            }
         }
         return r;
     }

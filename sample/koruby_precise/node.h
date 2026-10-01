@@ -111,6 +111,7 @@ struct korb_locals_info { uint32_t n; uint32_t names[]; };
 struct korb_ivcache {
     uint32_t shape_id;   /* object shape this entry is valid for (0 = empty/invalid), or KORB_IVC_CLASS */
     int32_t  slot;       /* ivar index in the values array; for a class, the pair index in its class_ivars hash */
+    uint32_t from_shape; /* node_ivar_set: the shape that transitions to shape_id by adding this ivar (0 = none) */
 };
 #define KORB_IVC_CLASS UINT32_MAX   /* never a real shape id: the receiver was a class (validated by the key at `slot`) */
 
