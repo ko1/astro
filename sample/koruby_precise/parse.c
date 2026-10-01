@@ -108,6 +108,7 @@ struct kp_hoist {
 
 struct kp_ctx {
     const pm_parser_t *parser;
+    const pm_node_t *void_stmt;   /* the statement being transduced whose value is discarded (not the last one) */
     CTX *c;
     const char *fname;
     struct kp_frame *frame;
@@ -1049,7 +1050,10 @@ transduce_statements(struct kp_ctx *tc, const pm_statements_node_t *stmts)
         if (i + 1 < stmts->body.size && PM_NODE_TYPE_P(st, PM_DEFINED_NODE)) {
             one = kp_defined_void(tc, st);
         } else {
+            const pm_node_t *const saved_void = tc->void_stmt;
+            tc->void_stmt = i + 1 < stmts->body.size ? st : NULL;
             one = transduce(tc, st);
+            tc->void_stmt = saved_void;
         }
         acc = acc ? ALLOC_node_seq(acc, one) : one;
     }
@@ -2716,7 +2720,10 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     /* `recv.attr = v` is an assignment: it yields v, not whatever the setter
      * returns.  Stage v in a temp, call the setter, hand the temp back.  With
      * safe navigation a nil receiver skips the argument too. */
+    /* As a statement whose value is discarded it is an ordinary send: the temps cost
+     * 3 nodes per assignment (ruby-bench structaset). */
     if ((cn->base.flags & PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE) && argc == 1 && cn->block == NULL &&
+        tc->void_stmt != (const pm_node_t *)cn &&
         !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE)) {
         const bool safe = (cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) != 0;
         const uint32_t tr = alloc_synth_local(tc), tv = alloc_synth_local(tc);

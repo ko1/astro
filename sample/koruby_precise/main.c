@@ -1473,6 +1473,7 @@ main(int argc, char *argv[])
      * bakes that SD once and korb_synth_node_ready binds each real entry to it
      * (--aot-compile does not run the program, so it cannot see the real ones). */
     code_repo_add("attr_reader", ALLOC_node_ivar_get(-1, 0), true);
+    code_repo_add("attr_writer", ALLOC_node_ivar_set(-2, 0, ALLOC_node_lget(-1)), true);
     /* Prelude method bodies registered so far form [0, g_prelude_repo_count);
      * they are baked into preload.so, not the program's code store. */
     g_prelude_repo_count = code_repo_count();

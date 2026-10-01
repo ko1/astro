@@ -6322,15 +6322,16 @@ korb_class_def_attr(CTX *c, korb_value klass, uint32_t mid, uint32_t ivar_sym, i
     m->bfn = NULL;
     m->visibility = k->cur_visibility;   /* attr_reader/writer inside `private`/`protected` inherits it */
     if (m->visibility == 0 && !k->is_singleton && UNLIKELY(korb_auto_private_name_p(c->vm, mid))) m->visibility = 1;
-    if (!is_writer) {
-        /* The reader's entry is the ivar read itself (recv = slots[-1]): a leaf
-         * needs no frame or stack check, so no node_simple_entry.  Registered
-         * like a parsed body so the AOT store bakes / binds its SD. */
-        NODE *const entry = ALLOC_node_ivar_get(-1, ivar_sym);
-        code_repo_add("attr_reader", entry, true);
-        korb_synth_node_ready(entry);
-        m->simple_entry = entry;
-    }
+    /* The entry is the ivar access itself (reader: recv = slots[-1]; writer: recv =
+     * slots[-2], value = slots[-1]): a leaf needs no frame or stack check, so no
+     * node_simple_entry.  Registered like a parsed body so the AOT store bakes /
+     * binds its SD.  Without one a writer went through korb_dispatch_method
+     * (Struct setters 3.7x CRuby, ruby-bench structaset). */
+    NODE *const entry = is_writer ? ALLOC_node_ivar_set(-2, ivar_sym, ALLOC_node_lget(-1))
+                                  : ALLOC_node_ivar_get(-1, ivar_sym);
+    code_repo_add(is_writer ? "attr_writer" : "attr_reader", entry, true);
+    korb_synth_node_ready(entry);
+    m->simple_entry = entry;
     korb_method_changed(c->vm, mid);
 }
 
