@@ -109,8 +109,8 @@ svg text { fill:var(--mute); font-size:11px; }
 <script>
 // ---- 更新はここ --------------------------------------------------------------
 const DATA = {
-  updated: "2026-10-01 10:20 JST",
-  master: "754eaa48",
+  updated: "2026-10-01 15:40 JST",
+  master: "f5edd47a",
   compat: [
     { label: "rubyspec（core / language / library 全 3747 ファイル）", value: "31893 例", sub: "本物の openssl を読むようになって library/openssl が全通過（+40）。9/29 朝は 31831 / 32332 = 98.45%。率は同じ run の例の数で割るので、全体の再計測時に更新", date: "2026-09-29", commit: "1b28965c", mode: "interp",
       note: "本物の mspec で spec ファイルを 1 つずつ実行。率は同じ run の pass ÷ 例の数" },
@@ -169,7 +169,8 @@ const DATA = {
     "Ripper の構文エラー回復（CRuby の parse.y は誤りの後も木を組み立てる）",
   ],
   recent: [
-    ["この commit", "status 更新（ruby-bench の sp4 取り直し 52・53、railsbench の AOT）"],
+    ["この commit", "status 更新（性能の修正 7 件）"],
+    ["36cb06f2〜30f24dd5", "性能: attr_writer / Struct の setter を直接（structaset 403 → 150 ms）、クラスの @ivar のキャッシュ（getivar-module −26%）、オブジェクトからのトップレベル def 呼び出し（30k_ifelse 形 interp 22 → 11 ms）、AOT の本体実体化で全キャッシュを捨てない（ウォームアップ 270 → 70 ms）、AOT 焼き: 実行中の再ビルドをやめ 1 SD 4000 ノードまで（addressable の焼き 3600 s 打ち切り → 396 s、rubocop の cc1 40 GB 超の原因）。いずれもローカル"],
     ["754eaa48", "AOT 焼きのメモリが O(N²)（穴の記述子が子を丸ごと写し込んでいた）。30k_methods 形 16000 メソッドで 8.4 GB → 81 MB、出力の C は同一。railsbench・30k 系の焼きが初めて通った"],
     ["08086ecf・2745e3d1", "性能: StringScanner が $ を含むパターンで毎回残りをコピーしていた（tinygql 5500 → 1385 ms、graphql 155 ms、ローカル）。#clone の特異クラスのコピーが全メソッドキャッシュを捨てていた・private 定数と require の判定が線形走査（shipit 3303 → 2608 ms）"],
     ["f017cfea", "正規表現リテラルを 1 リテラル 1 オブジェクトに（CRuby と同じ）。StringScanner のキャッシュが毎回外れていた。ruby-bench ruby-json 14556 → 1584 ms（ローカル、sp4 の前回は CRuby の 81 倍）"],
