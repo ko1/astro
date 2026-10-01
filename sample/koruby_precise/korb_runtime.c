@@ -12291,6 +12291,13 @@ static RESULT korb_m_fiber_s_aref(CTX *c, korb_value *slots, korb_ref self, korb
 static RESULT korb_m_fiber_s_aset(CTX *c, korb_value *slots, korb_ref self, korb_slice a);
 static RESULT korb_m_fiber_s_blocking_p(CTX *c, korb_value *slots, korb_ref self, korb_slice a);
 static RESULT korb_m_obj_method_missing(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd (builtins/symbol.c): the default raiser */
+/* A send at this site sees refinements.  Sites are lexical and c->refinements is the
+ * running scope's set, so a per-call check is enough: one `using` anywhere (net-imap's)
+ * no longer turns the site caches off everywhere (lobsters). */
+static inline bool korb_site_refined(const CTX *c) {
+    return UNLIKELY(c->vm->refinements_active) && c->refinements != KORB_NIL;
+}
+
 /* Implicit-self send / __send__ / public_send, out of line so the send-only
  * code does not grow korb_call_impl.
  * Fast path: `send(:sym, args...)` on a user instance whose class resolves :sym
@@ -12306,7 +12313,7 @@ korb_call_send(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t 
     struct korb_vm *const vm = c->vm;
     if (LIKELY(mid != vm->mid_public_send && SYMBOL_P(slots[-(korb_sword_t)argc]) &&
                KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL &&
-               !vm->refinements_active)) {
+               !korb_site_refined(c))) {
         const korb_value klass = korb_obj_dispatch_klass(vm, self);
         if (LIKELY(!korb_send_user_p(vm, klass, mid))) {
             const uint32_t rmid = SYM2ID(slots[-(korb_sword_t)argc]);
@@ -12703,7 +12710,7 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
              * filled, so a non-NULL simple-ISEQ cc->m is never a send variant. */
             return korb_invoke_entry_cc(c, slots, cc, argc, mid);
         }
-    } else if (!vm->refinements_active) {
+    } else if (!korb_site_refined(c)) {
         /* builtin self: a prelude String / Array / Hash method calling its helpers
          * (`case __encoding_tag` in String#encoding) re-resolved every call in
          * korb_call_impl (erubi-rails: ~800k per iteration). */
@@ -15538,7 +15545,7 @@ korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, 
 {
     struct korb_vm *const vm = c->vm;
     const korb_value recv = slots[-(korb_sword_t)argc - 1];
-    if (!AROH_IS_GC_OBJECT(recv) || !KORB_PLAIN_BUILTIN(recv) || UNLIKELY(vm->refinements_active)) return false;
+    if (!AROH_IS_GC_OBJECT(recv) || !KORB_PLAIN_BUILTIN(recv) || korb_site_refined(c)) return false;
     const enum korb_obj_type t = KORB_OBJ_TYPE(recv);
     if (t != KORB_OBJ_STRING && t != KORB_OBJ_ARRAY && t != KORB_OBJ_HASH) return false;
     const korb_value klass = korb_builtin_class_obj(vm, t == KORB_OBJ_STRING ? KORB_C_STRING
@@ -15553,7 +15560,7 @@ bool
 korb_deopt_cfunc_cached_any(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
                             struct korb_inlcache *ic, RESULT *out)
 {
-    if (UNLIKELY(c->vm->refinements_active)) return false;
+    if (korb_site_refined(c)) return false;
     const korb_value klass = korb_dispatch_class(c, slots[-(korb_sword_t)argc - 1]);
     if (!KORB_CLASS_P(klass)) return false;
     return korb_cfunc_ic_call(c, slots, mid, line, argc, ic, klass, out);
