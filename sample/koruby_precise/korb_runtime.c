@@ -7890,8 +7890,11 @@ korb_super_find(CTX *c, uint32_t mid, korb_value entry_cell, korb_value self, ko
 {
     const struct korb_method *const cur =
         (((uintptr_t)entry_cell & 7u) == KORB_FID_METHOD) ? (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)7u) : NULL;
-    if (cur == NULL || UNLIKELY(c->vm->refinements_active) ||
-        !KORB_CLASS_P(cur->super_owner != KORB_NIL ? cur->super_owner : cur->owner))
+    /* No refinement check: the answer depends on (self's class, cur, mid) only —
+     * super from a refinement method skips every refinement — and `using` bumps the
+     * serial.  Bypassing the cache under any `using` (net-imap's) walked the MRO on
+     * every super in lobsters. */
+    if (cur == NULL || !KORB_CLASS_P(cur->super_owner != KORB_NIL ? cur->super_owner : cur->owner))
         return korb_super_find_slow(c, mid, entry_cell, self, out_def_class);
     struct korb_vm *const vm = c->vm;
     const korb_value dk = korb_dispatch_class(c, self);

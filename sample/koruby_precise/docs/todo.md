@@ -52,6 +52,10 @@
 
 ## 未: refinement と Enumerator の残り (2026-09-27)
 
+- **refined なスコープで定義した特異メソッドの super に refinement が効かない（2026-10-02 発見、以前から）**:
+  `using R`（R は B#m を refine）の後に `o = B.new; def o.m(x) = "o(" + super + ")"` → CRuby は `o(R(B#m…))`、koruby は R を飛ばして
+  `o(B#m…)`。CRuby は super の行き先にも呼び出し地点の refinement を当てる。super キャッシュを refinement 下でも効かせた変更の前の
+  binary でも同じ（t/hand/super_cache_under_refinements.rb から外した形）。直すときは super キャッシュの鍵に地点の refinement 集合が要る。
 - **トップレベルが home のブロックの refinement**: 別ファイルのメソッドが yield するブロックは、書かれたメソッドの
   refinement 集合で走るようにした（`korb_block_home_refinements`、vm->refine_cross 表）。home がファイルの
   トップレベル（メソッドの外）だと集合を引けず、呼び出し先の集合のまま走る。
