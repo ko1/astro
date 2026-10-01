@@ -6215,9 +6215,12 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   Hash 4%、SQLite + C 拡張層 4〜5%。AOT が消せるのは主に解釈の部分なので効かない。GC は 12 回/s（GC 自体 3.6%）で、そのたびに
   method_serial++ で全インラインキャッシュが外れる（gdb の watch で上げているのは GC だけ）。次: 汎用経路に落ちる呼び出しの種類
   （kwargs / ブロック / super / respond_to? / method_missing）を数えてから直す。
-- **AOT の焼きが 3600 s で終わらない 4 本**（2026-10-01、sp4、754eaa48、trials/2026-09-29-rubybench/logs/54-sp4-aot-gemfile）:
-  addressable-equality・addressable-normalize（どちらも SD 6005 個で止まる。焼きの前の 1 反復の実行が終わらないのか、焼きが遅いのか未確認）、
-  mail（最大 RSS 9.1 GB）、rubocop（最大 RSS 61 GB、子プロセスを含む値。koruby 本体は 40 GB の見張りに掛からなかった）。原因は未調査。
+- ~~**AOT の焼きが 3600 s で終わらない 4 本**~~（2026-10-01 原因 2 つを直した、sp4 での取り直しは未）（sp4、754eaa48、
+  trials/2026-09-29-rubybench/logs/54-sp4-aot-gemfile）: addressable-equality・addressable-normalize（SD 6005 個で止まる）、mail（9.1 GB）、
+  rubocop（61 GB、子込み）。**原因**: (1) 焼きの実行中、require / 文字列 eval のたびに全 SD を all.so にリンクし直していた（25ed62c2 で終了時 1 回に）。
+  (2) 巨大なリテラル表（unicode_normalize/tables.rb の Hash、約 2 万ノード）が 20 MB の SD 1 つになり cc1 が 8 分・8.5 GB、rubocop では cc1 が
+  40 GB を超えて make が失敗（sp4 で見張りが cc1 を 40 GB で 2 回止めたのを確認）→ efc58bf6 で 1 SD 4000 ノードまで。addressable-equality の
+  焼きはローカルで 396 s に（最大の SD 3.8 MB、最大 RSS 7.1 GB はほぼ cc1）。mail・rubocop は未確認。
 - **main からの呼び出しの残り**（2026-09-30）: 同じ呼び出しを main と普通のオブジェクトから比べた命令数（1 反復、起動込み）で、
   `send(:f0)` が main 1825 / obj 853（korb_call_send の速い道が klass != nil だけ）、ブロック付き `fb { 1 }` が 1096 / 985
   （main + ブロックは korb_responds_to を毎回）。ruby-bench では熱くないので後回し。undef 後の NoMethodError の文言が
