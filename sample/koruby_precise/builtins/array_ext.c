@@ -114,6 +114,9 @@ static RESULT korb_pack_mpz_val(CTX *c, korb_value *sc, korb_value e, korb_mp_t 
     }
     return korb_raise_no_int(c, sc, e);
 }
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#error "korb_m_ary_pack's Fixnum fast path writes little-endian words"
+#endif
 static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     /* Template lives in slots[0] for the whole call (rooted) so it survives an
      * element #to_str dispatch; self is a rooted korb_ref (GC re-reads it), so
@@ -207,9 +210,11 @@ static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_sli
         }
         if (d == 'C' || d == 'c') {
             uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
+            if (emit <= ary->len - ai) PK_RESERVE(emit);   /* the common all-Fixnum run writes without per-byte checks */
             for (uint32_t k = 0; k < emit; k++) {
                 if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
                 korb_value e = korb_items_data(ary->items)[ai++];
+                if (LIKELY(FIXNUM_P(e) && olen < ocap)) { ob[olen++] = (uint8_t)FIX2LONG(e); continue; }
                 int64_t b;
                 RESULT ir = korb_pack_int_val(c, slots + 2, e, &b);
                 if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
@@ -230,9 +235,18 @@ static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_sli
             if (force_little) big = false;                /* `<` / `>` override endianness */
             if (force_big) big = true;
             uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
+            if (emit <= ary->len - ai) PK_RESERVE((size_t)emit * (size_t)sz);   /* see 'C': chunky_png packs N* / V* runs */
             for (uint32_t k = 0; k < emit; k++) {
                 if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
                 korb_value e = korb_items_data(ary->items)[ai++];
+                if (LIKELY(FIXNUM_P(e) && olen + (size_t)sz <= ocap)) {
+                    uint64_t v = (uint64_t)FIX2LONG(e);
+                    if (sz == 4) { uint32_t w = big ? __builtin_bswap32((uint32_t)v) : (uint32_t)v; memcpy(ob + olen, &w, 4); }
+                    else if (sz == 2) { uint16_t w = big ? __builtin_bswap16((uint16_t)v) : (uint16_t)v; memcpy(ob + olen, &w, 2); }
+                    else { if (big) v = __builtin_bswap64(v); memcpy(ob + olen, &v, 8); }
+                    olen += (size_t)sz;
+                    continue;
+                }
                 int64_t iv;
                 RESULT ir = korb_pack_int_val(c, slots + 2, e, &iv);
                 if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
