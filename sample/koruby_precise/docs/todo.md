@@ -6221,6 +6221,13 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   (2) 巨大なリテラル表（unicode_normalize/tables.rb の Hash、約 2 万ノード）が 20 MB の SD 1 つになり cc1 が 8 分・8.5 GB、rubocop では cc1 が
   40 GB を超えて make が失敗（sp4 で見張りが cc1 を 40 GB で 2 回止めたのを確認）→ efc58bf6 で 1 SD 4000 ノードまで。addressable-equality の
   焼きはローカルで 396 s に（最大の SD 3.8 MB、最大 RSS 7.1 GB はほぼ cc1）。mail・rubocop は未確認。
+- **ruby-bench protoboeuf-encode の AOT が実行時に SEGV**（2026-10-02 JST、ローカル）: `--pg-compile` で焼いた後の実行で、
+  benchmark_pb.rb の SD を読み込む astro_cs_bind_pool → malloc（unlink_chunk）が落ちる = それより前にヒープが壊れている。
+  sp4 の run 52（f017cfea）では AOT 77 ms で動いていた。ef7cd0a6 で再現（pack の変更より前）。二分探索中。
+- **optcarrot の AOT が sp4 で 737 → 776 ms**（run 54 の 754eaa48 → run 56 の ef7cd0a6、各 1 回）: ローカル A/B では AOT インライン send で
+  −5%（ef7cd0a6 の前後）。間の変更か単発の揺れか未確認。sp4 で 754eaa48 と現 HEAD を同じ回に交互に測って切り分ける。
+- **chunky-png の interp が 318 → 397 ms に戻った**（sp4 run 55 → 56）: getbyte / setbyte の専用ノードを AOT だけのインライン send に
+  置き換えたため（ノードの種類を増やさない方針、2026-10-01 user）。interp も速くしたいなら node_send の汎用の早道で拾う必要がある。
 - **main からの呼び出しの残り**（2026-09-30）: 同じ呼び出しを main と普通のオブジェクトから比べた命令数（1 反復、起動込み）で、
   `send(:f0)` が main 1825 / obj 853（korb_call_send の速い道が klass != nil だけ）、ブロック付き `fb { 1 }` が 1096 / 985
   （main + ブロックは korb_responds_to を毎回）。ruby-bench では熱くないので後回し。undef 後の NoMethodError の文言が
