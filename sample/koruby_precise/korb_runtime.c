@@ -15355,6 +15355,24 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
     }
     if (klass != KORB_NIL && KORB_IC_INSTANCE_HIT(ic, vm, klass))   /* INSTANCE_VIS (private/protected, guarded) */
         return korb_send_ic_dispatch(c, slots, mid, flink, argc, ic, recv, caller_self);
+    /* `obj.send(:m, ...)` / `obj.public_send(:m, ...)` on a plain receiver: drop the name
+     * and dispatch here (the receiver stays at base[-1], so the window's header cells
+     * still fit).  korb_send_impl re-staged the window and re-resolved per call; psych's
+     * visitor does ~2M public_send per load.  public_send takes public methods only. */
+    if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
+        klass != KORB_NIL && argc >= 1 && SYMBOL_P(slots[-(korb_sword_t)argc]) && !vm->refinements_active &&
+        !korb_send_user_p(vm, klass, mid) && !(vm->send_undef_cnt != 0 && korb_method_undefed_p(klass, mid))) {
+        const uint32_t rmid = SYM2ID(slots[-(korb_sword_t)argc]);
+        korb_value def_class = KORB_NIL;
+        struct korb_method *const m = korb_mcache_find(vm, klass, rmid, &def_class);
+        if (m != NULL && (m->kind == KORB_METHOD_ISEQ || (m->kind == KORB_METHOD_CFUNC && !m->uses_block)) &&
+            (mid != vm->mid_public_send || m->visibility == 0) &&
+            rmid != vm->mid_send && rmid != vm->mid___send__ && rmid != vm->mid_public_send) {
+            for (uint32_t j = 0; j + 1 < argc; j++)   /* drop the name: args slide down one cell */
+                slots[-(korb_sword_t)argc + j] = slots[-(korb_sword_t)argc + j + 1];
+            return korb_dispatch_method(c, slots - 1, m, rmid, korb_flink_line(flink), argc - 1, def_class, NULL, NULL, NULL, framed);
+        }
+    }
     /* class receivers (Klass.new / Fiber.yield / Struct / class methods) and the
      * send/__send__/public_send family need korb_send_impl's special handling. */
     if (UNLIKELY(KORB_CLASS_P(recv) ||
