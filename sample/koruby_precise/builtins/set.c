@@ -793,6 +793,7 @@ RESULT korb_obj_singleton(CTX *c, korb_value *slots, korb_value obj) {
     slots[1] = cur;
     korb_value sing = UNWRAP(korb_class_new(c, slots + 2, 0, slots[1]));               /* anonymous, super=cur */
     VAL2CLASS(sing)->is_singleton = 1;
+    VAL2CLASS(sing)->sing_plain = !KORB_CLASS_P(slots[0]) && slots[0] != vm->top_self;
     slots[2] = sing;
     if (((const AroObjectHeader *)(uintptr_t)slots[0])->flags & KORB_FL_FROZEN)   /* a frozen object's singleton is frozen */
         ((AroObjectHeader *)(uintptr_t)slots[2])->flags |= KORB_FL_FROZEN;

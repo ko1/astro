@@ -5461,6 +5461,19 @@ static inline void korb_mid_looked(struct korb_vm *vm, const uint32_t mid) {
 static void korb_method_changed(struct korb_vm *vm, const uint32_t mid) {
     if (mid >= vm->mid_looked_cap || vm->mid_looked[mid]) vm->method_serial++;
 }
+/* A cache entry keyed on `klass` may now hold mid's resolution (miss paths only). */
+static inline void korb_class_mark_looked(const korb_value klass, const uint32_t mid) {
+    if (KORB_CLASS_P(klass)) VAL2CLASS(klass)->looked_mids |= (uint64_t)1 << (mid & 63);
+}
+/* `mid` changed in `klass`.  A plain object's singleton is reached only by that object's
+ * own lookups, so a name no cache resolved from it flushes nothing: htmlentities defines
+ * two singleton methods per Encoder.new (lobsters: ~580 global flushes per iteration). */
+static void korb_method_changed_in(struct korb_vm *vm, const korb_value klass, const uint32_t mid) {
+    const KorbClass *const k = VAL2CLASS(klass);
+    if (k->sing_plain && !(k->looked_mids & ((uint64_t)1 << (mid & 63))) &&
+        mid != vm->mid_send && mid != vm->mid___send__ && mid != vm->mid_public_send) return;   /* send_user is memoized per class */
+    korb_method_changed(vm, mid);
+}
 
 /* Method tables are arrays scanned linearly; a big one (Object, Kernel, a
  * class carrying many modules' worth) also gets a hash index, so a lookup
@@ -5898,7 +5911,7 @@ static RESULT korb_m_define_method(CTX *c, korb_value *slots, korb_ref self, kor
             *sm = src; sm->mid = mid; sm->owner = sing; sm->visibility = 0;
         }
     }
-    korb_method_changed(c->vm, mid);
+    korb_method_changed_in(c->vm, slots[0], mid);
     CHECK(korb_fire_method_added(c, slots + 2, slots[0], mid));
     return RESULT_OK(ID2SYM(mid));
 }
@@ -6318,7 +6331,7 @@ korb_class_def_method(CTX *c, korb_value klass, uint32_t mid, NODE *body, NODE *
             *sm = src; sm->mid = mid; sm->owner = sing; sm->visibility = 0;
         }
     }
-    korb_method_changed(c->vm, mid);
+    korb_method_changed_in(c->vm, klass, mid);
 }
 
 void
@@ -6344,7 +6357,7 @@ korb_class_def_attr(CTX *c, korb_value klass, uint32_t mid, uint32_t ivar_sym, i
     code_repo_add(is_writer ? "attr_writer" : "attr_reader", entry, true);
     korb_synth_node_ready(entry);
     m->simple_entry = entry;
-    korb_method_changed(c->vm, mid);
+    korb_method_changed_in(c->vm, klass, mid);
 }
 
 /* CRuby warns when a program redefines or undefines the identity primitives.
@@ -6590,6 +6603,7 @@ korb_mcache_fill(struct korb_vm *vm, struct korb_mcache_ent *e, korb_value klass
     if (UNLIKELY(m != NULL && vm->boot_done && def == vm->kernel_mod))
         m = korb_toplevel_over_kernel(vm, mid, m, &def);
     korb_mid_looked(vm, mid);
+    korb_class_mark_looked(klass, mid);
     e->serial = vm->method_serial; e->klass = klass; e->mid = mid; e->m = m; e->def_class = def;
     *out_def = def;
     return m;
@@ -7907,7 +7921,8 @@ korb_super_find(CTX *c, uint32_t mid, korb_value entry_cell, korb_value self, ko
     korb_value found = KORB_NIL;
     struct korb_method *const m = korb_super_find_slow(c, mid, entry_cell, self, &found);
     e->serial = vm->method_serial; e->klass = dk; e->cur = cur; e->mid = mid; e->m = m; e->def_class = found;
-    korb_mid_looked(vm, mid);                      /* a later def of `mid` must bump the serial */
+    korb_mid_looked(vm, mid);
+    korb_class_mark_looked(dk, mid);                      /* a later def of `mid` must bump the serial */
     if (out_def_class) *out_def_class = found;
     return m;
 }

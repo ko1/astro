@@ -760,6 +760,8 @@ typedef struct KorbClass {
     uint8_t  no_new;                 /* 1 = ::new is undefined (Integer, Rational, BigDecimal, ...) */
     uint8_t  dup_base;               /* a dup of a builtin class (String.dup): that builtin's enum + 1, else 0 */
     uint8_t  is_singleton;           /* 1 = per-object singleton class (transparent to .class) */
+    uint8_t  sing_plain;             /* singleton of an object that is not a class / module / main: no other
+                                      * class's lookup passes through it */
     uint8_t  eval_only;              /* singleton materialized ONLY to be instance_eval's definee.  CRuby
                                       * does not materialize one for that, so a NameError raised inside
                                       * still names the object's real class ("an instance of Foo"). */
@@ -777,6 +779,7 @@ typedef struct KorbClass {
     uint8_t  mro_dup;                /* a module landed at two depths in this chain (rake, dry-types): the
                                       * segment DFS would answer from the shallow copy, so lookups here must
                                       * walk the deduped linearization.  Sticky, propagated on include. */
+    uint64_t looked_mids;            /* bit (mid & 63): a method cache may hold mid resolved from this class */
     uint32_t serial;                 /* monotonic per-class id (GC-stable identity for #hash of anonymous Struct/Data classes) */
     struct korb_method **methods;    /* libc array of immortal entry ptrs (owner edge GC-forwarded) */
     uint32_t *mid_idx;               /* libc index mid → slot+1 of a big table, else NULL (korb_mtab_slot) */
