@@ -933,7 +933,8 @@ static RESULT korb_re_match_set(CTX *c, korb_value *slots, korb_value re, korb_v
             slots[1] = str;
             RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-            if (!KORB_STRING_P(sr.value)) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
+            if (!KORB_STRING_P(sr.value))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into String (%s#to_str gives %s)", korb_coerce_name(c, slots[1]), korb_coerce_name(c, slots[1]), korb_coerce_name(c, sr.value));
             str = sr.value;
         } else { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
         re = slots[0];
@@ -970,7 +971,15 @@ static RESULT korb_m_str_match_op(CTX *c, korb_value *slots, korb_ref self, korb
                  (VAL2RE(KORB_REF_GET(self))->flags & KORB_RE_UNINIT))) \
         return korb_raise((c), (slots), KORB_E_TYPE, 0, "uninitialized Regexp"); \
 } while (0)
-static RESULT korb_m_re_match_op(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { KORB_RE_CHECK(c, slots, self); return korb_re_match_set(c, slots, KORB_REF_GET(self), KORB_SLICE_GET(a, 0)); }
+static RESULT korb_m_re_match_op(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    KORB_RE_CHECK(c, slots, self);
+    korb_value v = KORB_SLICE_GET(a, 0);
+    /* only nil is "no match" (=== answers false instead, so this check is not in korb_re_match_set) */
+    if (UNLIKELY(v != KORB_NIL && !KORB_STRING_P(v) && !SYMBOL_P(v) &&
+                 !(KORB_OBJECT_P(v) && korb_responds_to_coerce_p(c, slots, &v, korb_intern(c->vm, "to_str", 6)))))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, v));
+    return korb_re_match_set(c, slots, KORB_REF_GET(self), v);
+}
 /* A character index in the SUBJECT's own encoding → a byte offset.  Only UTF-8
  * needs the stepping walk: a single-byte encoding (BINARY / US-ASCII /
  * ISO-8859-x) indexes by byte.  Walking a BINARY string as UTF-8 made
