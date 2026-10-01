@@ -315,27 +315,31 @@ static void kp_flink_add(struct kp_ctx *tc, uint64_t *cell);
 
 /* synthetic sends target public methods ([]/===/+/...), so self_off = INT32_MIN
  * disables the private/protected visibility guard (no caller-self needed). */
+static NODE *kp_sdi_tag(struct kp_ctx *tc, NODE *call, uint32_t mid, uint32_t argc) {   /* AOT-only inline body, if any */
+    call->head.flags.sd_inl = korb_sdi_kind(tc->c->vm, mid, argc);
+    return call;
+}
 static NODE *kp_send0(struct kp_ctx *tc, uint32_t mid, uint32_t line, NODE *recv) {
     NODE **argv = malloc(sizeof(NODE *)); if (!argv) abort();
     argv[0] = recv;
-    return KP_LINK(tc, node_send, mid, kp_flink(tc, line), INT32_MIN, argv, 1);
+    return kp_sdi_tag(tc, KP_LINK(tc, node_send, mid, kp_flink(tc, line), INT32_MIN, argv, 1), mid, 0);
 }
 static NODE *kp_send1(struct kp_ctx *tc, uint32_t mid, uint32_t line, NODE *recv, NODE *a0) {
     NODE **argv = malloc(sizeof(NODE *) * 2); if (!argv) abort();
     argv[0] = recv; argv[1] = a0;
-    return KP_LINK(tc, node_send, mid, kp_flink(tc, line), INT32_MIN, argv, 2);
+    return kp_sdi_tag(tc, KP_LINK(tc, node_send, mid, kp_flink(tc, line), INT32_MIN, argv, 2), mid, 1);
 }
 static NODE *kp_send2(struct kp_ctx *tc, uint32_t mid, uint32_t line, NODE *recv, NODE *a0, NODE *a1) {
     NODE **argv = malloc(sizeof(NODE *) * 3); if (!argv) abort();
     argv[0] = recv; argv[1] = a0; argv[2] = a1;
-    return KP_LINK(tc, node_send, mid, kp_flink(tc, line), INT32_MIN, argv, 3);
+    return kp_sdi_tag(tc, KP_LINK(tc, node_send, mid, kp_flink(tc, line), INT32_MIN, argv, 3), mid, 2);
 }
 /* recv.mid(args[0..n)) — n args of any count (recv + n → n+1 children). */
 static NODE *kp_send_n(struct kp_ctx *tc, uint32_t mid, uint32_t line, NODE *recv, NODE *const *args, uint32_t n) {
     NODE **argv = malloc(sizeof(NODE *) * (1u + n)); if (!argv) abort();
     argv[0] = recv;
     for (uint32_t i = 0; i < n; i++) argv[1u + i] = args[i];
-    return KP_LINK(tc, node_send, mid, kp_flink(tc, line), INT32_MIN, argv, 1u + n);
+    return kp_sdi_tag(tc, KP_LINK(tc, node_send, mid, kp_flink(tc, line), INT32_MIN, argv, 1u + n), mid, n);
 }
 /* Staging depth a caller must reserve to build a kp_sendN node.  node_send is
  * @framehdr, so its dispatcher advances the cursor by (children + KORB_FRAME_HDR)

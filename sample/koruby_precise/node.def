@@ -2828,6 +2828,52 @@ KORB_SDI_DEF(CMP, 1, {
     KORB_SDI_DIRECT(1)
 })
 KORB_SDI_DEF(TO_SYM, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(AREF1, 1, {
+    if (KORB_ARRAY_P(r) && FIXNUM_P(a0)) {
+        const KorbArray *const a = VAL2ARY(r);
+        korb_sword_t i = FIX2LONG(a0);
+        if (i < 0) i += (korb_sword_t)a->len;
+        return RESULT_OK((uintptr_t)i < a->len ? korb_items_data(a->items)[i] : KORB_NIL);
+    }
+    KORB_SDI_DIRECT(1)
+})
+KORB_SDI_DEF(AREF2, 2, KORB_SDI_DIRECT(2))
+KORB_SDI_DEF(ASET2, 2, {
+    if (KORB_ARRAY_P(r) && FIXNUM_P(a0) && !(((const AroObjectHeader *)(uintptr_t)r)->flags & KORB_FL_FROZEN)) {
+        const KorbArray *const a = VAL2ARY(r);
+        korb_sword_t i = FIX2LONG(a0);
+        if (i < 0) i += (korb_sword_t)a->len;
+        if (i >= 0 && (uintptr_t)i < a->len) { korb_ary_store_at(c, r, (uint32_t)i, a1); return RESULT_OK(a1); }
+    }
+    KORB_SDI_DIRECT(2)
+})
+KORB_SDI_DEF(ASET3, 3, KORB_SDI_DIRECT(3))
+KORB_SDI_DEF(POW, 1, KORB_SDI_DIRECT(1))
+KORB_SDI_DEF(TO_F, 0, {
+    if (FLONUM_P(r)) return RESULT_OK(r);
+    if (FIXNUM_P(r)) return korb_float_new(c, slots, (double)FIX2LONG(r));
+    KORB_SDI_DIRECT(0)
+})
+KORB_SDI_DEF(TO_INT, 0, {
+    if (FIXNUM_P(r)) return RESULT_OK(r);
+    KORB_SDI_DIRECT(0)
+})
+KORB_SDI_DEF(ROTATE_BANG, 1, KORB_SDI_DIRECT(1))
+KORB_SDI_DEF(CHOMP_BANG, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(BYTESLICE2, 2, KORB_SDI_DIRECT(2))
+KORB_SDI_DEF(UPLUS, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(RINDEX, 1, KORB_SDI_DIRECT(1))
+KORB_SDI_DEF(ASCII_ONLY_P, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(INSERT, 2, KORB_SDI_DIRECT(2))
+KORB_SDI_DEF(B, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(MATCH_OP, 1, KORB_SDI_DIRECT(1))
+KORB_SDI_DEF(CASECMP, 1, KORB_SDI_DIRECT(1))
+KORB_SDI_DEF(ORD, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(RJUST2, 2, KORB_SDI_DIRECT(2))
+KORB_SDI_DEF(KEYS, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(IVAR_GET, 1, KORB_SDI_DIRECT(1))
+KORB_SDI_DEF(DELETE_AT, 1, KORB_SDI_DIRECT(1))
+KORB_SDI_DEF(REVERSE_BANG, 0, KORB_SDI_DIRECT(0))
 
 // Receiver send whose trailing arg is a keyword bundle carrying a **splat
 // (`recv.m(pos..., **h)`).  Like node_send but an empty kwargs Hash is elided
