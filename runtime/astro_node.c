@@ -337,12 +337,17 @@ astro_hole_name_hash(const char *s)
     return h;
 }
 
+// A name saved again replaces the older entry: a static SD is per file, and the same
+// shape can get another body in another file (the budget and recursion cuts depend on the entry),
+// so a parent must splice the version emitted with it, not the first one ever saved.
 static void
 astro_hole_saved_index(uint32_t i)
 {
     const uint32_t mask = astro_hole_saved_idx_capa - 1;
     uint32_t k = astro_hole_name_hash(astro_hole_saved[i].name) & mask;
-    while (astro_hole_saved_idx[k]) k = (k + 1) & mask;
+    while (astro_hole_saved_idx[k] &&
+           strcmp(astro_hole_saved[astro_hole_saved_idx[k] - 1].name, astro_hole_saved[i].name) != 0)
+        k = (k + 1) & mask;
     astro_hole_saved_idx[k] = i + 1;
 }
 
@@ -446,12 +451,12 @@ astro_hole_emit_desc(FILE *fp, const char *const name, struct astro_hole_buf *co
 }
 
 // Write ops as descriptor bytes, expanding each SPLICE into the saved descriptor it
-// names (iteratively: a chain is as deep as the source is long).
-static void
+// names (iteratively: a chain is as deep as the source is long).  Returns the holes written.
+static uint32_t
 astro_hole_write_ops(FILE *const fp, const struct astro_hole_op *const v, const uint32_t n)
 {
     struct frame { const struct astro_hole_op *v; uint32_t n, i; } fixed[64], *st = fixed;
-    uint32_t sp = 0, capa = 64;
+    uint32_t sp = 0, capa = 64, holes = 0;
     st[sp++] = (struct frame){ v, n, 0 };
     while (sp > 0) {
         struct frame *const f = &st[sp - 1];
@@ -469,6 +474,7 @@ astro_hole_write_ops(FILE *const fp, const struct astro_hole_op *const v, const 
             continue;
         }
         fprintf(fp, ",\n  %uU", o->op);
+        holes += o->op == ASTRO_HOLE_EMIT || o->op == ASTRO_HOLE_ADDR || o->op == ASTRO_HOLE_EMIT_AT;
         if (o->op != ASTRO_HOLE_UP)
             fprintf(fp, ",ASTRO_OFF_B(%s,0),ASTRO_OFF_B(%s,1)", o->path, o->path);
         if (o->op == ASTRO_HOLE_EMIT)
@@ -477,6 +483,7 @@ astro_hole_write_ops(FILE *const fp, const struct astro_hole_op *const v, const 
             fprintf(fp, ",%uU,%uU", (unsigned)o->idx & 0xff, ((unsigned)o->idx >> 8) & 0xff);
     }
     if (st != fixed) free(st);
+    return holes;
 }
 
 // Write the queued descriptors as data and reset for the next file.  The
@@ -493,7 +500,11 @@ astro_hole_flush_descs(FILE *const fp)
         fprintf(fp, "const uint8_t %s_desc[] = {%uU,%uU,%uU,%uU,%uU,%uU",
                 astro_hole_pending[j].name, nh & 0xff, (nh >> 8) & 0xff, (nh >> 16) & 0xff,
                 (nh >> 24) & 0xff, dp & 0xff, (dp >> 8) & 0xff);
-        astro_hole_write_ops(fp, astro_hole_pending[j].v, astro_hole_pending[j].n);
+const uint32_t w = astro_hole_write_ops(fp, astro_hole_pending[j].v, astro_hole_pending[j].n);
+if (w != nh) {   // the loader would overrun the pool: fail the bake instead
+    fprintf(stderr, "astro_hole: %s_desc has %u holes, header says %u\n", astro_hole_pending[j].name, w, nh);
+    abort();
+}
         fprintf(fp, ",\n  %uU};\n", ASTRO_HOLE_END);
     }
     fprintf(fp, "#endif\n");

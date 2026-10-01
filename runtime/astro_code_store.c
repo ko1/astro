@@ -381,6 +381,8 @@ astro_hole_walk(const NODE *n, const uint8_t *d, astro_hole_t *pool)
     if (!stack) { fprintf(stderr, "astro_hole_walk: out of memory\n"); exit(1); }
     uint32_t sp = 0, k = 0;
     d += 6;
+    // a descriptor that disagrees with its own header is a broken store: stop before overrunning
+#define ASTRO_HOLE_CHECK(c) do { if (!(c)) { fprintf(stderr, "astro_hole_walk: descriptor overruns its header (%s)\n", #c); abort(); } } while (0)
     for (;;) {
         const uint8_t op = *d++;
         if (op == H_END) break;
@@ -397,21 +399,25 @@ astro_hole_walk(const NODE *n, const uint8_t *d, astro_hole_t *pool)
             case 4: v = *(const uint32_t *)f; break;
             default: memcpy(&v, f, 8); break;
             }
+            ASTRO_HOLE_CHECK(k < nholes);
             pool[k++] = v;
             break;
         }
         case H_ADDR:
             d += 2;
+            ASTRO_HOLE_CHECK(k < nholes);
             pool[k++] = (astro_hole_t)(uintptr_t)((const char *)n + off);
             break;
         case H_DOWN:
             d += 2;
+            ASTRO_HOLE_CHECK(sp < depth);
             stack[sp++] = n;
             n = *(NODE *const *)((const char *)n + off);
             break;
         case H_DOWN_AT: {
             const uint32_t idx = (uint32_t)d[2] | ((uint32_t)d[3] << 8);
             d += 4;
+            ASTRO_HOLE_CHECK(sp < depth);
             stack[sp++] = n;
             n = (*(NODE *const *const *)((const char *)n + off))[idx];
             break;
@@ -419,6 +425,7 @@ astro_hole_walk(const NODE *n, const uint8_t *d, astro_hole_t *pool)
         case H_EMIT_AT: {
             const uint32_t idx = (uint32_t)d[2] | ((uint32_t)d[3] << 8);
             d += 4;
+            ASTRO_HOLE_CHECK(k < nholes);
             pool[k++] = (astro_hole_t)(uintptr_t)
                 (*(void *const *const *)((const char *)n + off))[idx];
             break;
@@ -434,6 +441,7 @@ astro_hole_walk(const NODE *n, const uint8_t *d, astro_hole_t *pool)
     if (stack != fixed) free((void *)stack);
     return k;
 }
+#undef ASTRO_HOLE_CHECK
 
 void
 astro_cs_pool_attach(NODE *n, const uint8_t *desc)
