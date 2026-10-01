@@ -1672,7 +1672,20 @@ rb_ary_entry(KVALUE ary, long idx)
     if (idx < 0 || idx >= (long)a->len) return KQnil;
     return W(korb_items_data(a->items)[idx]);
 }
-KCX_API void rb_ary_store(KVALUE ary, long idx, KVALUE val) { CTX *const c = kcx_c(); const KVALUE a[2] = { (KVALUE)LONG2FIX(idx), val }; (void)kcx_send_name(c, K(ary), "[]=", 2, a); }
+/* CRuby's rb_ary_store never asks #[]=; an in-range or appending store is a plain write
+ * (sqlite3 builds every row this way).  Growing past the end and negative indexes go the long way. */
+KCX_API void
+rb_ary_store(KVALUE ary, long idx, KVALUE val)
+{
+    CTX *const c = kcx_c();
+    const korb_value av = K(ary);
+    if (LIKELY(KORB_ARRAY_P(av)) && !(((const AroObjectHeader *)(uintptr_t)av)->flags & KORB_FL_FROZEN) && idx >= 0) {
+        if (idx < (long)VAL2ARY(av)->len) { korb_ary_store_at(c, av, (uint32_t)idx, K(val)); return; }
+        if (idx == (long)VAL2ARY(av)->len) { (void)rb_ary_push(ary, val); return; }
+    }
+    const KVALUE a[2] = { (KVALUE)LONG2FIX(idx), val };
+    (void)kcx_send_name(c, av, "[]=", 2, a);
+}
 #define KCX_SEND0(fn, name) KCX_API KVALUE fn(KVALUE o) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(o), name, 0, NULL)); }
 #define KCX_SEND1(fn, name) KCX_API KVALUE fn(KVALUE o, KVALUE a) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(o), name, 1, &a)); }
 KCX_SEND0(rb_ary_pop, "pop")
