@@ -12637,12 +12637,17 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
             } else {
                 def_class = KORB_NIL;
                 m = korb_mcache_find(vm, klass, mid, &def_class);
+                /* a miss on a class that reaches Object (and did not undef mid) is answered by the
+                 * global table, as for main: mark it so the cc fast path below applies */
+                if (m == NULL && korb_kernel_reachable_p(c, klass) && !korb_method_undefed_p(klass, mid))
+                    def_class = KORB_TRUE;
                 korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, argc);   /* a miss is cached too */
             }
             if (UNLIKELY(m == NULL)) {
                 /* main has a singleton class (to_s / inspect, as CRuby): a top-level def
-                 * misses there and lives in the global table — its cached fast path */
-                if (VAL2OBJ(self)->klass == KORB_NIL && LIKELY(cc->serial == vm->method_serial)) {
+                 * misses there and lives in the global table — its cached fast path.  So does
+                 * an object's top-level def call (30k_ifelse: every call went through korb_call_impl). */
+                if ((VAL2OBJ(self)->klass == KORB_NIL || def_class == KORB_TRUE) && LIKELY(cc->serial == vm->method_serial)) {
                     if (cc->dispatch) return korb_invoke_entry_cc(c, slots, cc, argc, mid);
                     /* a cached non-simple ISEQ (optional / rest params): korb_call_impl's own
                      * last step, without the send / include / prepend checks before it —
