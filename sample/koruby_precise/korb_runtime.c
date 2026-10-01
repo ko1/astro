@@ -15469,6 +15469,37 @@ korb_send_blk(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
     return r;
 }
 
+/* A type-fast-path node's deopt (node_aref / node_aset) on a plain String / Array / Hash:
+ * call `mid` through the node's own inline cache when it resolves to a public C method.
+ * Those nodes' slot windows have no room for a Ruby callee's frame header, so anything
+ * else returns false and the node takes the full send.  The uncached send looked the
+ * method up on every call (activerecord: Hash#[]= 2.9M, liquid: String#[] 1.1M). */
+bool
+korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                        struct korb_inlcache *ic, RESULT *out)
+{
+    struct korb_vm *const vm = c->vm;
+    const korb_value recv = slots[-(korb_sword_t)argc - 1];
+    if (!AROH_IS_GC_OBJECT(recv) || !KORB_PLAIN_BUILTIN(recv) || UNLIKELY(vm->refinements_active)) return false;
+    const enum korb_obj_type t = KORB_OBJ_TYPE(recv);
+    if (t != KORB_OBJ_STRING && t != KORB_OBJ_ARRAY && t != KORB_OBJ_HASH) return false;
+    const korb_value klass = korb_builtin_class_obj(vm, t == KORB_OBJ_STRING ? KORB_C_STRING
+                                                   : t == KORB_OBJ_ARRAY ? KORB_C_ARRAY : KORB_C_HASH);
+    if (!(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
+        korb_value def = KORB_NIL;
+        struct korb_method *const m = korb_mcache_find(vm, klass, mid, &def);
+        if (m == NULL || m->kind != KORB_METHOD_CFUNC || m->uses_block || m->visibility != 0) return false;
+        korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def, KORB_IC_INSTANCE, argc);
+    }
+    const struct korb_method *const m = ic->m;
+    if (m == NULL || m->kind != KORB_METHOD_CFUNC || m->uses_block || !(m->params_cnt < 0 || (uint32_t)m->params_cnt == argc))
+        return false;
+    korb_value *const cbase = &slots[-(korb_sword_t)argc];
+    const RESULT r = m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
+    *out = LIKELY(r.state == KORB_NORMAL) ? r : korb_call_ret_cold(c, r, line, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
+    return true;
+}
+
 /* ---- integer formatting (to_s / chr helpers) ----------------------------- */
 
 static uint32_t

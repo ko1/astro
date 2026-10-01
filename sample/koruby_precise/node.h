@@ -414,6 +414,8 @@ RESULT korb_call_kw(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, stru
                     uint32_t kw_argc, korb_value self);
 /* Same, with a literal block (recv.mid(args) { ... }) handed to the method.
  * `captured_self` is the caller's self (the block's lexical self). */
+bool korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                             struct korb_inlcache *ic, RESULT *out);   /* node_aref / node_aset deopt on String/Array/Hash */
 RESULT korb_send_blk(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,   /* flink: the site's baked link (0 = staged by the node) */
                      uint32_t argc, NODE *block, korb_value *def_env, korb_value *captured_self, korb_value flink,
                      korb_value caller_self);   /* caller_self: the private/protected guard (KORB_UNDEF = none) */

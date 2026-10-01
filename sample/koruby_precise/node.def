@@ -2801,7 +2801,7 @@ node_send_splat_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, ui
 // other receiver / index kind (Hash, String, Range, 2-arg, user) or a redefined
 // Array#[] deopts to a real `[]` send.
 NODE_DEF
-node_aref(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@child, korb_value idx@child)
+node_aref(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@child, korb_value idx@child, struct korb_inlcache *ic@ref)
 {
     (void)n;
     const korb_value r = KORB_REF_GET(recv);
@@ -2840,7 +2840,10 @@ node_aref(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@chil
         }
     }
     slots[0] = idx;   /* recv already rooted at slots[-1]; stage only the index — deopt → [] send */
-    return korb_flink_stage(c, flink, slots), korb_send(c, slots + 1, c->vm->mid_aref, korb_flink_line(flink), 1);
+    korb_flink_stage(c, flink, slots);
+    RESULT dr;
+    if (korb_deopt_cfunc_cached(c, slots + 1, c->vm->mid_aref, korb_flink_line(flink), 1, ic, &dr)) { c->carry_base = NULL; return dr; }
+    return korb_send(c, slots + 1, c->vm->mid_aref, korb_flink_line(flink), 1);
 }
 
 // `str.getbyte(i)` — plain String + fixnum index read in place; anything else or a
@@ -2888,7 +2891,7 @@ node_setbyte(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@c
 // `recv[idx] = val` — type-fast-path for Array + in-range fixnum index; growth /
 // other receivers / redefined Array#[]= deopt to a real `[]=` send.
 NODE_DEF
-node_aset(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@child, korb_ref idx@child, korb_value val@child)
+node_aset(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@child, korb_ref idx@child, korb_value val@child, struct korb_inlcache *ic@ref)
 {
     (void)n;
     const korb_value r = KORB_REF_GET(recv);
@@ -2906,6 +2909,12 @@ node_aset(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@chil
     }
     slots[0] = r; slots[1] = iv; slots[2] = val;           /* deopt → []= send */
     korb_flink_stage(c, flink, slots);   /* no header cells here: hand the link to the dispatch */
+    RESULT dr;
+    if (korb_deopt_cfunc_cached(c, slots + 3, c->vm->mid_aset, korb_flink_line(flink), 2, ic, &dr)) {
+        c->carry_base = NULL;
+        CHECK(dr);
+        return RESULT_OK(slots[2]);
+    }
     CHECK(korb_send(c, slots + 3, c->vm->mid_aset, korb_flink_line(flink), 2));
     return RESULT_OK(slots[2]);                            /* the assignment's value, not []='s result */
 }
