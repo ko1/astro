@@ -494,9 +494,36 @@ korb_cext_tramp_run(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE
 #define K(h)   kcx_unwrap(h)
 #define W(v)   kcx_wrap(c, (v))
 
+/* An extension calling back into a plain fixed-arity Ruby method (psych's handler:
+ * scalar / event_location / start_mapping ... ~20M per run): resolve through the
+ * method cache and run the body directly on a window with the frame header cells
+ * korb_send_impl_vis would build.  `public_only` is rb_funcallv_public.  False =
+ * the call needs the full send (raises, method_missing, refinements, ...). */
+static bool
+kcx_send_fast(CTX *c, korb_value recv, uint32_t mid, int argc, const KVALUE *argv, bool public_only, korb_value *out)
+{
+    struct korb_vm *const vm = c->vm;
+    if (!KORB_OBJECT_P(recv) || (((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) ||
+        VAL2OBJ(recv)->klass == KORB_NIL || vm->refinements_active) return false;
+    korb_value def = KORB_NIL;
+    struct korb_method *const m = korb_mcache_find(vm, VAL2OBJ(recv)->klass, mid, &def);
+    if (m == NULL || m->kind != KORB_METHOD_ISEQ || !m->is_simple || (uint32_t)m->params_cnt != (uint32_t)argc ||
+        (public_only && m->visibility != 0)) return false;
+    korb_value *const s = kcx_slots(c);
+    s[0] = 0;                                        /* callee base[-4] (identity) */
+    s[1] = korb_flink_cur_cframe(c, &s[1]);          /* base[-3]: the link back into this C frame */
+    s[2] = 0;                                        /* base[-2] (EP) */
+    s[3] = recv;                                     /* base[-1] (self) */
+    for (int i = 0; i < argc; i++) s[4 + i] = K(argv[i]);
+    *out = kcx_check(c, korb_invoke_simple(c, s + 4 + argc, m, (uint32_t)argc, 0, mid, recv, def));
+    return true;
+}
+
 static korb_value
 kcx_send(CTX *c, korb_value recv, uint32_t mid, int argc, const KVALUE *argv)
 {
+    korb_value fr;
+    if (kcx_send_fast(c, recv, mid, argc, argv, false, &fr)) return fr;
     korb_value *const s = kcx_slots(c);
     s[0] = recv;
     for (int i = 0; i < argc; i++) s[1 + i] = K(argv[i]);
@@ -2235,6 +2262,11 @@ rb_funcall(KVALUE recv, KVALUE mid, int n, ...)
 KCX_API KVALUE
 rb_funcallv_public(KVALUE recv, KVALUE mid, int argc, const KVALUE *argv)
 {
+    {
+        CTX *const c = kcx_c();
+        korb_value fr;
+        if (kcx_send_fast(c, K(recv), kcx_id_in(mid), argc, argv, true, &fr)) return W(fr);
+    }
     KVALUE a[argc + 1];
     a[0] = rb_id2sym(mid);
     for (int i = 0; i < argc; i++) a[1 + i] = argv[i];
