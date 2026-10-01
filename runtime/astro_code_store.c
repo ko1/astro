@@ -111,6 +111,13 @@ astro_spec_dedup_clear(void)
 // SPECIALIZE: generate specialized code, dedup within a compile session
 // ---------------------------------------------------------------------------
 
+// Nodes one entry may still inline.  Past it a child stays an indirect call (as a
+// recursion cycle does): a 20k-node literal table (unicode_normalize/tables.rb) made
+// one 20 MB SD that cc1 took 8 min / 8.5 GB to build, for code that runs once.
+// Ordinary entries stay far below (a few hundred nodes).
+#define ASTRO_SPEC_NODE_BUDGET 4000u
+static uint32_t astro_spec_budget;
+
 void
 SPECIALIZE(FILE *fp, NODE *n)
 {
@@ -139,7 +146,11 @@ SPECIALIZE(FILE *fp, NODE *n)
             // outer specialization eventually loads its SD_.
             n->head.flags.no_inline = true;
         }
+        else if (astro_spec_budget == 0) {
+            n->head.flags.no_inline = true;
+        }
         else {
+            astro_spec_budget--;
             n->head.flags.is_specializing = true;
             (*n->head.kind->specializer)(fp, n, false);
             n->head.flags.is_specializing = false;
@@ -883,6 +894,7 @@ astro_cs_compile(NODE *entry, const char *file)
     // SPECIALIZE() below and emit a runtime dispatcher read instead
     // of a duplicate compile-time SD_ definition.
     astro_spec_dedup_clear();
+    astro_spec_budget = ASTRO_SPEC_NODE_BUDGET;
     entry->head.flags.is_specializing = true;
     long body_start = ftell(fp);
     (*entry->head.kind->specializer)(fp, entry, true);
