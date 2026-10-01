@@ -554,6 +554,21 @@ bake_code_store(NODE *ast)
  * No-op under --plain (ignore all compiled code) and when no store is loadable. */
 static void koruby_instantiate_sds(NODE *ast, uint32_t from);
 
+/* A producing run builds its store once, on whichever way main() ends (normal end,
+ * exit, uncaught exception, signal): the files it loaded were only emitted. */
+static void
+bake_at_exit(NODE *ast)
+{
+#ifndef KORUBY_EMBED
+    if (!(OPTION.aot_compile || OPTION.pg_compile)) return;
+    bake_code_store(ast);
+    if (OPTION.verbose)
+        fprintf(stderr, "koruby_precise: aot: baked program + %u method bodies\n", code_repo_count());
+#else
+    (void)ast;
+#endif
+}
+
 void
 korb_load_time_specialize(NODE *ast, uint32_t repo_from, const char *file)
 {
@@ -561,16 +576,16 @@ korb_load_time_specialize(NODE *ast, uint32_t repo_from, const char *file)
     if (OPTION.plain || ast == NULL) return;
 
     if (OPTION.aot_compile || OPTION.pg_compile) {
+        /* Emit only; the run's exit builds once (bake_at_exit).  Building + reloading
+         * here relinked every SD so far per loaded file (O(files x SDs)) and kept each
+         * .so generation mapped: rubocop's bake reached 61 GB and addressable's never
+         * finished.  The producing run itself does not need compiled code. */
         astro_cs_compile(ast, NULL);
         for (uint32_t i = repo_from; i < code_repo_count(); i++) {
             if (code_repo_skip_specialize_at(i)) continue;
             astro_cs_compile(code_repo_body_at(i), NULL);
         }
-        char extra_cflags[2048];
-        koruby_extra_cflags(extra_cflags, sizeof(extra_cflags));
-        setenv("ASTRO_EXTRA_LDFLAGS", "-Wl,-Bsymbolic", 0);
-        astro_cs_build(extra_cflags);
-        astro_cs_reload();
+        return;
     }
 
     astro_cs_load(ast, NULL);
@@ -1775,6 +1790,7 @@ main(int argc, char *argv[])
          * it — both are printed.  Read the (possibly moved) exception back. */
         if (uncaught && !handler_exited && !sig_quiet) korb_report_uncaught_detailed(c, toplevel_cursor + 4, toplevel_cursor[0]);
         fflush(stdout);
+        if (exit_status >= 0 || uncaught || r.state == KORB_THROW || die_sig > 0) bake_at_exit(ast);
         if (die_sig > 0) {   /* even over an at_exit's exit, as CRuby */
             korb_io_flush_all(c->vm);
             korb_die_by_signal(die_sig);
@@ -1803,17 +1819,9 @@ main(int argc, char *argv[])
         }
     }
 
-#ifndef KORUBY_EMBED
-    if (OPTION.aot_compile || OPTION.pg_compile) {
-        /* Bodies were registered in the code repo at parse time, so the whole
-         * program bakes whether or not it ran. */
-        bake_code_store(ast);
-        if (OPTION.verbose) {
-            fprintf(stderr, "koruby_precise: aot: baked program + %u method bodies\n",
-                    code_repo_count());
-        }
-    }
-#endif
+    /* Bodies were registered in the code repo at parse time, so the whole
+     * program bakes whether or not it ran. */
+    bake_at_exit(ast);
 
     korb_ctx_free(c);
     korb_io_flush_all(c->vm);   /* stdio is gone: the std streams flush here */
