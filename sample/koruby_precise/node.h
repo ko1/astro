@@ -109,9 +109,10 @@ struct korb_locals_info { uint32_t n; uint32_t names[]; };
  * caches the last hit slot; validated by `ivars[2*slot] == name_sym` so it is
  * GC-safe (no class pointer) and self-correcting across object layouts. */
 struct korb_ivcache {
-    uint32_t shape_id;   /* object shape this entry is valid for (0 = empty/invalid) */
-    int32_t  slot;       /* ivar index in the values array */
+    uint32_t shape_id;   /* object shape this entry is valid for (0 = empty/invalid), or KORB_IVC_CLASS */
+    int32_t  slot;       /* ivar index in the values array; for a class, the pair index in its class_ivars hash */
 };
+#define KORB_IVC_CLASS UINT32_MAX   /* never a real shape id: the receiver was a class (validated by the key at `slot`) */
 
 /* Inline constant cache — embedded in const-read nodes via @ref.  The VM const
  * table is append-only, so a name's index is permanent once assigned; we cache
