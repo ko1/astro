@@ -1467,8 +1467,6 @@ extern const struct NodeKind kind_node_caseeq;       /* case/when `v === subj` *
 extern const struct NodeKind kind_node_entry;        /* block/lambda entry — guards proc/block reify */
 extern const struct NodeKind kind_node_aref;         /* recv[idx] */
 extern const struct NodeKind kind_node_aset;         /* recv[idx] = val */
-extern const struct NodeKind kind_node_getbyte;      /* str.getbyte(i) */
-extern const struct NodeKind kind_node_setbyte;      /* str.setbyte(i, b) */
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
 extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) chain */
 
@@ -2807,22 +2805,6 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                         idx  = transduce(tc, cn->arguments->arguments.nodes[0])));
             return KP_LINK(tc, node_aref, kp_flink_at(tc, line, kind_node_aref.slot_count), recv, idx);
         }
-        if (cn->receiver != NULL && !(cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) &&
-            ((argc == 1 && strcmp(name, "getbyte") == 0) || (argc == 2 && strcmp(name, "setbyte") == 0)) &&
-            kp_no_splat_p(cn->arguments->arguments.nodes, argc)) {
-            NODE *recv, *idx, *val = NULL;
-            if (argc == 1) {
-                WITH_CHAIN(tc, kind_node_getbyte.slot_count,
-                           (recv = transduce(tc, cn->receiver),
-                            idx  = transduce(tc, cn->arguments->arguments.nodes[0])));
-                return KP_LINK(tc, node_getbyte, kp_flink_at(tc, line, kind_node_getbyte.slot_count), recv, idx);
-            }
-            WITH_CHAIN(tc, kind_node_setbyte.slot_count,
-                       (recv = transduce(tc, cn->receiver),
-                        idx  = transduce(tc, cn->arguments->arguments.nodes[0]),
-                        val  = transduce(tc, cn->arguments->arguments.nodes[1])));
-            return KP_LINK(tc, node_setbyte, kp_flink_at(tc, line, kind_node_setbyte.slot_count), recv, idx, val);
-        }
         if (mid == tc->c->vm->mid_aset && argc == 2 &&
             kp_no_splat_p(cn->arguments->arguments.nodes, 2)) {
             NODE *recv, *idx, *val;
@@ -3100,6 +3082,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         }
         NODE *call = KP_LINK(tc, node_send, mid, kp_flink(tc, line), self_off, argv, cnt);
         bake_add(tc, &call->u.node_send.self_off);    /* fixed up by the caller frame_size (base[-1] = self) */
+        call->head.flags.sd_inl = korb_sdi_kind(tc->c->vm, mid, (uint32_t)argc);   /* AOT-only inline body, if any */
         return KP_SAFE_GUARD(call);
         #undef KP_SAFE_GUARD
     }

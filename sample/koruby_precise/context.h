@@ -1039,6 +1039,21 @@ enum korb_class {
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, korb_value *slots, korb_ref self, korb_slice args);
+/* AOT-only inline bodies for hot builtin sends (korb_sdi_tab, node.def EVAL_node_send_inl_*):
+ * a node_send naming one gets its own SD, which runs the body when the site's cache holds
+ * exactly that builtin (vm->sdi_fn) and calls the plain send otherwise.  The interpreter
+ * never looks at it. */
+enum korb_sdi {
+    KORB_SDI_NONE = 0,
+    KORB_SDI_GETBYTE, KORB_SDI_SETBYTE, KORB_SDI_EQUAL_P, KORB_SDI_NIL_P, KORB_SDI_CLASS, KORB_SDI_INSTANCE_OF_P,
+    KORB_SDI_EMPTY_P, KORB_SDI_BYTESIZE, KORB_SDI_SIZE, KORB_SDI_LENGTH, KORB_SDI_FIRST, KORB_SDI_LAST,
+    KORB_SDI_ABS, KORB_SDI_EVEN_P, KORB_SDI_ODD_P, KORB_SDI_ZERO_P,
+    /* called directly (no body of its own): korb_send_cached skipped, the builtin runs as is */
+    KORB_SDI_IS_A_P, KORB_SDI_KIND_OF_P, KORB_SDI_START_WITH_P, KORB_SDI_END_WITH_P, KORB_SDI_KEY_P,
+    KORB_SDI_INCLUDE_P, KORB_SDI_RESPOND_TO_P, KORB_SDI_TO_S, KORB_SDI_HASH, KORB_SDI_FROZEN_P,
+    KORB_SDI_N
+};
+#define KORB_SDI_FN_MAX 4   /* builtins one name may stand for (empty?: String / Array / Hash ...) */
 
 /* Block-taking built-in (Array#each, Integer#times, ...).  `block` is a
  * node_entry NODE (NULL = no block given); `def_env` is the caller frame base
@@ -1445,6 +1460,7 @@ struct korb_vm {
     uint32_t name_module;  /* class name_sym of Module (Module.new anonymous module) */
     uint32_t mid_aref, mid_aset;   /* "[]" / "[]=" — node_aref/node_aset deopt target */
     uint32_t mid_uminus;           /* "-@" — node_neg deopt target */
+    korb_method_fn sdi_fn[KORB_SDI_N][KORB_SDI_FN_MAX];   /* the builtins each AOT inline send stands for (korb_sdi_init) */
     /* set when Array#[] / Array#[]= is redefined: node_aref/node_aset then deopt
      * to a real send so the redefinition is honored (CRuby compat). */
     bool aref_redefined;
@@ -1465,9 +1481,6 @@ struct korb_vm {
      * then deopts.  optcarrot does ~5M Fixnum n[bit] tests/run; the fast path
      * computes (n>>i)&1 inline, skipping the send + dispatch + builtin. */
     bool int_aref_redefined;
-    /* set when String#getbyte / #setbyte is redefined: node_getbyte / node_setbyte deopt.
-     * chunky_png's PNG filters call them ~40M times per run. */
-    bool str_byte_redefined;
 
     /* Kernel#rand / srand default PRNG (CRuby-compatible MT19937; no GC edges so
      * it lives inline in the vm).  Random instances keep their own state in a

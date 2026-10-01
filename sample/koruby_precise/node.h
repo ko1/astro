@@ -32,14 +32,15 @@ void code_repo_add(const char *name, NODE *body, bool force);
 
 struct NodeHead {
     struct NodeFlags {
-        bool has_hash_value;
-        bool has_hash_opt;      /* referenced by astro_code_store.c (PGC path) */
-        bool is_specialized;
-        bool is_specializing;
-        bool is_dumping;
-        bool no_inline;
-        bool is_vcall;          /* bare identifier (`foo`): a miss is NameError */
-        bool yield_simple;      /* node_entry block: korb_block_yield's fast path applies (set on first yield) */
+        bool has_hash_value : 1;
+        bool has_hash_opt : 1;      /* referenced by astro_code_store.c (PGC path) */
+        bool is_specialized : 1;
+        bool is_specializing : 1;
+        bool is_dumping : 1;
+        bool no_inline : 1;
+        bool is_vcall : 1;          /* bare identifier (`foo`): a miss is NameError */
+        bool yield_simple : 1;      /* node_entry block: korb_block_yield's fast path applies (set on first yield) */
+        uint8_t sd_inl;             /* node_send: which AOT-only inline body its SD calls (enum korb_sdi, 0 = none) */
     } flags;
     const struct NodeKind *kind;
     node_hash_t hash_value;
@@ -50,6 +51,7 @@ struct NodeHead {
     node_dispatcher_func_t dispatcher;
     const astro_hole_t *pool;   /* hole table of this SD instance (idea_code_store.md §7) */
 };
+_Static_assert(sizeof(struct NodeFlags) <= 8, "NodeFlags must not grow the node head");
 /* NodeHead carries pool/nholes: enables the framework's pool-mode paths. */
 #define ASTRO_NODEHEAD_POOL 1
 
@@ -415,6 +417,9 @@ RESULT korb_call_kw(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, stru
                     uint32_t kw_argc, korb_value self);
 /* Same, with a literal block (recv.mid(args) { ... }) handed to the method.
  * `captured_self` is the caller's self (the block's lexical self). */
+uint8_t korb_sdi_kind(const struct korb_vm *vm, uint32_t mid, uint32_t argc);   /* parse: node_send → enum korb_sdi */
+const char *korb_sdi_eval_name(const struct Node *n, const char *base);          /* SPECIALIZE: the EVAL its SD calls */
+void korb_sdi_init(CTX *c);                                                      /* after boot: fill vm->sdi_fn */
 bool korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              struct korb_inlcache *ic, RESULT *out);   /* node_aref / node_aset deopt on String/Array/Hash */
 RESULT korb_send_blk(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,   /* flink: the site's baked link (0 = staged by the node) */

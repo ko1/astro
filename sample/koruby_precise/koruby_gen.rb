@@ -314,6 +314,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       {
           node_hash_t h = hash_cstr(#{canonical_name.dump});
       #{lines.join("\n")}
+          if (n->head.flags.sd_inl) h = hash_merge(h, hash_uint32(0x5d10u + n->head.flags.sd_inl));   /* its own SD (korb_sdi) */
           return h;
       }
       C
@@ -425,7 +426,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
           for (uint32_t _i = 0; _i < _cnt; _i++) {
       #{stage}
           }
-          fprintf(fp, "    return EVAL_#{@name}(#{prefix_call_args.join(', ')}, \\n");
+          fprintf(fp, "    return %s(#{prefix_call_args.join(', ')}, \\n", korb_sdi_eval_name(n, "EVAL_#{@name}"));
       #{ args.map { |a| "    " + a }.join("\n    fprintf(fp, \",\\n\");\n") }
           fprintf(fp, "\\n    );\\n");
           fprintf(fp, "}\\n\\n");

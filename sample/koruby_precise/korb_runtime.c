@@ -5937,10 +5937,6 @@ korb_check_basic_op_redef(CTX *c, korb_value klass, uint32_t mid)
     if (!vm->method_aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_METHOD) &&
         mid == vm->mid_aref)
         vm->method_aref_redefined = true;
-    /* String#getbyte / #setbyte redefinition deopts node_getbyte / node_setbyte. */
-    if (!vm->str_byte_redefined && klass == korb_builtin_class_obj(vm, KORB_C_STRING) &&
-        (mid == korb_intern(vm, "getbyte", 7) || mid == korb_intern(vm, "setbyte", 7)))
-        vm->str_byte_redefined = true;
     /* Integer#[] redefinition deopts the node_aref Integer bit-test fast path. */
     if (!vm->int_aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
         mid == vm->mid_aref)
@@ -15516,6 +15512,66 @@ korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, 
     const RESULT r = m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
     *out = LIKELY(r.state == KORB_NORMAL) ? r : korb_call_ret_cold(c, r, line, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
     return true;
+}
+
+/* AOT-only inline sends: name, arg count, the classes whose builtin it stands for, and
+ * the EVAL the SD calls.  Frequent builtin sends in ruby-bench (2026-10-01 count). */
+#define KORB_SDI_E(K, NM, AC, ...) [KORB_SDI_##K] = { NM, AC, { __VA_ARGS__, -1 }, "EVAL_node_send_inl_" #K }
+static const struct { const char *name; uint32_t argc; int cls[KORB_SDI_FN_MAX + 1]; const char *eval; } korb_sdi_tab[KORB_SDI_N] = {
+    KORB_SDI_E(GETBYTE, "getbyte", 1, KORB_C_STRING),
+    KORB_SDI_E(SETBYTE, "setbyte", 2, KORB_C_STRING),
+    KORB_SDI_E(EQUAL_P, "equal?", 1, KORB_C_OBJECT),
+    KORB_SDI_E(NIL_P, "nil?", 0, KORB_C_OBJECT, KORB_C_NIL),
+    KORB_SDI_E(CLASS, "class", 0, KORB_C_OBJECT),
+    KORB_SDI_E(INSTANCE_OF_P, "instance_of?", 1, KORB_C_OBJECT),
+    KORB_SDI_E(EMPTY_P, "empty?", 0, KORB_C_STRING, KORB_C_ARRAY, KORB_C_HASH),
+    KORB_SDI_E(BYTESIZE, "bytesize", 0, KORB_C_STRING),
+    KORB_SDI_E(SIZE, "size", 0, KORB_C_ARRAY, KORB_C_HASH),
+    KORB_SDI_E(LENGTH, "length", 0, KORB_C_ARRAY, KORB_C_HASH),
+    KORB_SDI_E(FIRST, "first", 0, KORB_C_ARRAY),
+    KORB_SDI_E(LAST, "last", 0, KORB_C_ARRAY),
+    KORB_SDI_E(ABS, "abs", 0, KORB_C_INTEGER),
+    KORB_SDI_E(EVEN_P, "even?", 0, KORB_C_INTEGER),
+    KORB_SDI_E(ODD_P, "odd?", 0, KORB_C_INTEGER),
+    KORB_SDI_E(ZERO_P, "zero?", 0, KORB_C_INTEGER),
+    KORB_SDI_E(IS_A_P, "is_a?", 1, KORB_C_OBJECT),
+    KORB_SDI_E(KIND_OF_P, "kind_of?", 1, KORB_C_OBJECT),
+    KORB_SDI_E(START_WITH_P, "start_with?", 1, KORB_C_STRING),
+    KORB_SDI_E(END_WITH_P, "end_with?", 1, KORB_C_STRING),
+    KORB_SDI_E(KEY_P, "key?", 1, KORB_C_HASH),
+    KORB_SDI_E(INCLUDE_P, "include?", 1, KORB_C_ARRAY, KORB_C_HASH, KORB_C_STRING),
+    KORB_SDI_E(RESPOND_TO_P, "respond_to?", 1, KORB_C_OBJECT),
+    KORB_SDI_E(TO_S, "to_s", 0, KORB_C_STRING, KORB_C_INTEGER, KORB_C_SYMBOL),
+    KORB_SDI_E(HASH, "hash", 0, KORB_C_STRING, KORB_C_INTEGER, KORB_C_SYMBOL, KORB_C_OBJECT),
+    KORB_SDI_E(FROZEN_P, "frozen?", 0, KORB_C_OBJECT, KORB_C_STRING, KORB_C_INTEGER, KORB_C_SYMBOL),
+};
+#undef KORB_SDI_E
+uint8_t
+korb_sdi_kind(const struct korb_vm *vm, uint32_t mid, uint32_t argc)
+{
+    const char *const nm = korb_sym_name((struct korb_vm *)(uintptr_t)vm, mid);
+    for (uint8_t k = 1; k < KORB_SDI_N; k++)
+        if (argc == korb_sdi_tab[k].argc && strcmp(nm, korb_sdi_tab[k].name) == 0) return k;
+    return KORB_SDI_NONE;
+}
+const char *
+korb_sdi_eval_name(const struct Node *n, const char *base)
+{
+    const uint8_t k = n->head.flags.sd_inl;
+    return k != KORB_SDI_NONE && k < KORB_SDI_N ? korb_sdi_tab[k].eval : base;
+}
+void
+korb_sdi_init(CTX *c)
+{
+    struct korb_vm *const vm = c->vm;
+    for (uint8_t k = 1; k < KORB_SDI_N; k++) {
+        const uint32_t mid = korb_intern(vm, korb_sdi_tab[k].name, strlen(korb_sdi_tab[k].name));
+        for (int j = 0; j < KORB_SDI_FN_MAX && korb_sdi_tab[k].cls[j] >= 0; j++) {
+            korb_value def = KORB_NIL;
+            const struct korb_method *const m = korb_class_find_method(korb_builtin_class_obj(vm, (enum korb_class)korb_sdi_tab[k].cls[j]), mid, &def);
+            vm->sdi_fn[k][j] = (m != NULL && m->kind == KORB_METHOD_CFUNC && !m->uses_block) ? m->rfn : NULL;
+        }
+    }
 }
 
 /* ---- integer formatting (to_s / chr helpers) ----------------------------- */

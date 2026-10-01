@@ -1,6 +1,6 @@
-# str.getbyte(i) / str.setbyte(i, b) through their own nodes: negative and out-of-range
-# indexes, frozen receivers, coercion, bytes past 255, subclasses, singleton and later
-# redefinition, non-String receivers, safe navigation, multibyte text.  Run under both and diff.
+# str.getbyte(i) / str.setbyte(i, b) (an AOT build runs them in place, korb_sdi_tab): negative and
+# out-of-range indexes, frozen receivers, coercion, bytes past 255, subclasses, singleton and
+# later redefinition, non-String receivers, safe navigation, multibyte text.  Run under both and diff.
 s = +"héllo"
 p s.getbyte(0), s.getbyte(1), s.getbyte(-1), s.getbyte(99), s.getbyte(-99)
 p s.setbyte(0, 72), s.setbyte(-1, 0x4f), s.setbyte(2, 300), s.bytes
