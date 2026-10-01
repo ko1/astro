@@ -712,6 +712,8 @@ korb_hot_dispatch(CTX *c, NODE *n, korb_value *slots)
 static RESULT
 korb_first_dispatch(CTX *c, NODE *n, korb_value *slots)
 {
+    /* reached again through a cache that still holds the trampoline: already woven */
+    if (UNLIKELY(n->head.dispatcher != korb_first_dispatch)) return (*n->head.dispatcher)(c, n, slots);
     n->head.dispatcher = korb_hot_find(n)->orig;   /* drop the trampoline first */
     if (!astro_cs_instantiate(n)                   /* installs the instance on success */
         && OPTION.compiled_only && !n->head.flags.no_inline
@@ -721,9 +723,10 @@ korb_first_dispatch(CTX *c, NODE *n, korb_value *slots)
          * so the test is the restored dispatcher, not the store's kind. */
         n->head.dispatcher = korb_poison_dispatch;
     }
-    /* Unconditional: the trampoline is gone either way, and a fat cache that
-     * still holds it would re-enter this one-shot on every call. */
-    korb_dispatchers_swapped(c->vm);
+    /* No method_serial bump: a fat cache that still holds the trampoline comes back
+     * above and is forwarded.  Bumping emptied every cache once per body, and each
+     * refill searched the global table: 30k_ifelse's AOT warm-up took 30x the
+     * interpreter (35.8 → 8.9 s per iteration as the bodies got woven). */
     return (*n->head.dispatcher)(c, n, slots);
 }
 
@@ -732,6 +735,7 @@ korb_first_dispatch(CTX *c, NODE *n, korb_value *slots)
 static RESULT
 korb_second_dispatch(CTX *c, NODE *n, korb_value *slots)
 {
+    if (UNLIKELY(n->head.dispatcher != korb_second_dispatch)) return (*n->head.dispatcher)(c, n, slots);   /* see korb_first_dispatch */
     struct korb_hot_ent *const e = korb_hot_find(n);
     if (n->head.hash_opt == 0) {                   // seen once, stay a trampoline
         n->head.hash_opt = 1;
@@ -744,8 +748,7 @@ korb_second_dispatch(CTX *c, NODE *n, korb_value *slots)
         && n->head.dispatcher == n->head.kind->default_dispatcher) {
         n->head.dispatcher = korb_poison_dispatch;
     }
-    korb_dispatchers_swapped(c->vm);               /* as in first: the trampoline is gone */
-    return (*n->head.dispatcher)(c, n, slots);
+    return (*n->head.dispatcher)(c, n, slots);     /* no serial bump, as in first */
 }
 
 static void

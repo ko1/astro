@@ -6200,7 +6200,12 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
   本体の最大 RSS: N=4000 758 MB → 35 MB、N=16000 8.4 GB → 81 MB。残り: クラス本体の SD は 1 ファイルに N 段の関数が入り、cc1 が
   N=16000 で 6.8 GB（ccache が無いとき）。trials/2026-09-30-koruby-bake-memory。
   最初「全部焼く --pg-compile の限界」と説明したが、確かめていない推測で誤り（--aot-compile でも同じに増える）。
-- **ruby-bench 30k_ifelse の AOT が遅い: 6941 ms（インタプリタ 226 ms の 30 倍）**（2026-09-30、sp4、master 754eaa48、
+- ~~**ruby-bench 30k_ifelse の AOT が遅い: 6941 ms（インタプリタ 226 ms の 30 倍）**~~（2026-10-01 主因は済、sp4 の取り直しは未）: 本体を
+  初めて呼んだときの実体化（korb_first_dispatch）が毎回 method_serial を上げて全キャッシュを捨て、そのたびにグローバル表を線形に引き直していた
+  （本体の数 × 呼び出し地点の数）。上げずに、古い入口から入り直したら転送する形に。3 段 × 1000 形の最初の反復 270〜330 → 70 ms。
+  **残り**: 定常でも AOT（22 ms）が interp（11 ms）の 2 倍。命令数は AOT が少ない（11.3 億 vs 12.2 億）が、iTLB ミス 31 倍・L1 命令ミス 9 倍
+  （3000 本体の SD が memfd に散らばる）。huge page / 呼び出し順の配置などランタイム側の話。trials/2026-10-01-koruby-30k-ifelse-aot。
+  元の記録:（2026-09-30、sp4、master 754eaa48、
   trials/2026-09-29-rubybench/logs/53-sp4-latest）: 反復ごとに 35.8 → 20.2 → 13.6 → 11.4 → … → 8.9 s と縮む。原因は未調査。
   30k_methods の AOT は 141 ms（インタプリタ 118 ms）で、同じ現象は出ていない。
 - **String.new(capacity:) が容量を確保しない**（2026-09-30）: ruby-bench string_malloc_pressure（64 KB × 10 万本）で CRuby RSS 6.3 GB に対し
