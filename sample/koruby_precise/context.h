@@ -1444,6 +1444,7 @@ struct korb_vm {
     uint32_t name_struct;  /* class name_sym of Struct (class-receiver fast check) */
     uint32_t name_module;  /* class name_sym of Module (Module.new anonymous module) */
     uint32_t mid_aref, mid_aset;   /* "[]" / "[]=" — node_aref/node_aset deopt target */
+    uint32_t mid_uminus;           /* "-@" — node_neg deopt target */
     /* set when Array#[] / Array#[]= is redefined: node_aref/node_aset then deopt
      * to a real send so the redefinition is honored (CRuby compat). */
     bool aref_redefined;

@@ -737,10 +737,10 @@ node_shr(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
 
 // Unary minus.  Single child → register form.
 NODE_DEF
-node_neg(CTX *c, NODE *n, korb_value *slots, korb_value v@child, uint32_t line)
+node_neg(CTX *c, NODE *n, korb_value *slots, korb_value v@child, uint32_t line, struct korb_inlcache *ic@ref)
 {
     (void)line;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = v; return korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), n->u.node_neg.line, 0); }
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = v; return korb_send(c, slots + 1, c->vm->mid_uminus, n->u.node_neg.line, 0); }
     if (LIKELY(FIXNUM_P(v))) {
         korb_sword_t i = -FIX2LONG(v);
         if (LIKELY(FIXABLE(i)))
@@ -750,7 +750,9 @@ node_neg(CTX *c, NODE *n, korb_value *slots, korb_value v@child, uint32_t line)
     if (KORB_BIGNUM_P(v)) return korb_big_neg(c, slots, v);
     if (KORB_FLOAT_P(v)) return korb_flo(c, slots, -korb_float_val(v));
     slots[0] = v;                                /* String (→ frozen dup) / Rational / Complex / user-defined -@ via dispatch */
-    return korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), n->u.node_neg.line, 0);
+    RESULT dr;                                   /* `-str` (psych dedups every scalar: ~5M per run) through the node's cache */
+    if (korb_deopt_cfunc_cached(c, slots + 1, c->vm->mid_uminus, n->u.node_neg.line, 0, ic, &dr)) return dr;
+    return korb_send(c, slots + 1, c->vm->mid_uminus, n->u.node_neg.line, 0);
 }
 
 // ---- comparison ------------------------------------------------------------
