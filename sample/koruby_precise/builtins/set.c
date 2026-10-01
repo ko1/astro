@@ -656,6 +656,10 @@ static bool korb_obj_kind_of_p(CTX *c, korb_value sv, korb_value target) {
         cls = korb_dispatch_class(c, sv);
     else
         cls = korb_class_obj_of(c, sv);
+    if (!VAL2CLASS(target)->is_module) {             /* a class is never in an include / prepend list */
+        for (; KORB_CLASS_P(cls); cls = VAL2CLASS(cls)->superclass) if (cls == target) return true;
+        return false;
+    }
     const korb_value start = cls;
     const bool track = c->vm->module_in_module;
     bool nested = false;                              /* a member module carrying modules of its own */
