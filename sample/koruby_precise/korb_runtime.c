@@ -1264,20 +1264,44 @@ korb_float_to_s(double d, char *buf)
         memcpy(buf, "Infinity", 9); return 8;
     }
     if (d == 0.0) { strcpy(buf, signbit(d) ? "-0.0" : "0.0"); return (uint32_t)strlen(buf); }
-    char tmp[48];
-    int sig = 1;
-    for (; sig < 17; sig++) {
-        snprintf(tmp, sizeof tmp, "%.*e", sig - 1, d);
-        if (strtod(tmp, NULL) == d) break;
-    }
-    if (sig == 17) snprintf(tmp, sizeof tmp, "%.*e", 16, d);
-    const char *p = tmp;
     char *o = buf;
-    if (*p == '-') { *o++ = '-'; p++; }
-    char dg[24]; int nd = 0;
-    for (; *p && *p != 'e'; p++) if (*p != '.') dg[nd++] = *p;
+    char dg[24]; int nd = 0, decpt;
+    const double ad = fabs(d);
+    int k = -1;
+    double m = 0.0;
+    if (ad >= 1e-4 && ad < 1e15) {
+        /* m / 10^k is correctly rounded (both exact), so it equals d exactly when the
+         * decimal m·10^-k reads back as d: the fewest decimals without printf+strtod
+         * per candidate length (liquid-il formats prices into its output) */
+        static const double p10[] = { 1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10,
+                                      1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19 };
+        for (int t = 0; t < 20; t++) {
+            const double s = ad * p10[t];
+            if (s >= 9007199254740992.0) break;          /* 2^53: m no longer exact */
+            const double r = nearbyint(s);
+            if (r / p10[t] == ad) { k = t; m = r; break; }
+        }
+    }
+    if (k >= 0) {
+        char rev[24]; int nr = 0;
+        for (uint64_t u = (uint64_t)m; u; u /= 10) rev[nr++] = (char)('0' + u % 10);
+        for (int i = 0; i < nr; i++) dg[i] = rev[nr - 1 - i];
+        nd = nr; decpt = nr - k;
+        if (d < 0) *o++ = '-';
+    } else {
+        char tmp[48];
+        int sig = 1;
+        for (; sig < 17; sig++) {
+            snprintf(tmp, sizeof tmp, "%.*e", sig - 1, d);
+            if (strtod(tmp, NULL) == d) break;
+        }
+        if (sig == 17) snprintf(tmp, sizeof tmp, "%.*e", 16, d);
+        const char *p = tmp;
+        if (*p == '-') { *o++ = '-'; p++; }
+        for (; *p && *p != 'e'; p++) if (*p != '.') dg[nd++] = *p;
+        decpt = atoi(p + 1) + 1;
+    }
     while (nd > 1 && dg[nd - 1] == '0') nd--;
-    const int decpt = atoi(p + 1) + 1;
     if (decpt > 0 && decpt < nd) {                   /* the point inside the digits */
         memcpy(o, dg, (size_t)decpt); o += decpt; *o++ = '.';
         memcpy(o, dg + decpt, (size_t)(nd - decpt)); o += nd - decpt;
