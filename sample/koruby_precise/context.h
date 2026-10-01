@@ -1452,6 +1452,7 @@ struct korb_vm {
     uint32_t mid___id__, mid_object_id;   /* the identity primitives CRuby warns about redefining */
     uint32_t mid_method_missing;
     uint32_t mid_respond_to_missing;
+    const struct korb_method *rtm_default;   /* the prelude Kernel#respond_to_missing? (always false): respond_to? skips dispatching it */
     uint32_t mid_dm_super;   /* sentinel name a `super` with no lexical `def` is baked with:
                               * a define_method body IS a method, but only at run time. */
     uint32_t mid_band, mid_bor, mid_bxor, mid_shl, mid_shr;   /* bit-op dispatch fallbacks (avoid per-call korb_intern) */

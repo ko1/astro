@@ -157,6 +157,7 @@ const DATA = {
     ["ruby-method-benchmarks", "メソッド単位", "未着手"],
   ],
   rbnotes: {   // ベンチ名 → 表に添える注記
+    "fluentd": "20 MB の文字列 1 本を 1 レコードとして解析するだけ（CRuby も同じ 1 件、出力一致を確認）。速さは文字列の C 組み込みの差で、インタプリタの速さではない。RSS は koruby 512 MiB ／ CRuby 144 MiB",
     "string_malloc_pressure": "比較にならない: koruby は String.new(capacity:) の容量を確保しない（CRuby RSS 6.3 GB、koruby 64 MB）",
     "30k_ifelse": "AOT が遅い理由は未調査（反復ごとに 35.8 → 8.9 s と縮む）",
     "30k_variables": "koruby インタプリタが遅い理由は未調査（AOT は速い）",

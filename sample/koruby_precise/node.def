@@ -951,7 +951,7 @@ node_neq(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
 // Range/Class/Regexp/Proc/user-object when-values (where === means membership /
 // is_a? / match / call / custom) fall back to a real === send.
 NODE_DEF
-node_caseeq(CTX *c, NODE *n, korb_value *slots, korb_ref wv@child, korb_value subj@child)
+node_caseeq(CTX *c, NODE *n, korb_value *slots, korb_ref wv@child, korb_value subj@child, struct korb_inlcache *ic@ref)
 {
     (void)n;
     const korb_value w = KORB_REF_GET(wv);
@@ -981,9 +981,12 @@ node_caseeq(CTX *c, NODE *n, korb_value *slots, korb_ref wv@child, korb_value su
             return korb_send(c, slots + 2, c->vm->mid_eqq, 0, 1);
         }
         return RESULT_OK(korb_value_eq(w, subj) ? KORB_TRUE : KORB_FALSE);
-      default:                                             /* Range / Class / Regexp / Proc / user obj → real === */
+      default: {                                           /* Range / Class / Regexp / Proc / user obj → real === */
         slots[0] = w; slots[1] = subj;
+        RESULT dr;   /* a builtin === (Module / Range / Regexp) through this site's cache */
+        if (korb_deopt_cfunc_cached_any(c, slots + 2, c->vm->mid_eqq, 0, 1, ic, &dr)) return dr;
         return korb_send(c, slots + 2, c->vm->mid_eqq, 0, 1);
+      }
     }
 }
 

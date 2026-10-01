@@ -1582,7 +1582,7 @@ main(int argc, char *argv[])
         RESULT pr = EVAL(c, prelude_ast, pcur);
         if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); korb_io_flush_all(c->vm); return 1; }
         korb_relocate_object_methods(c, pcur);  /* Object's own table is empty in CRuby: move to Kernel/BasicObject */
-        korb_sdi_init(c);                       /* the builtins the AOT inline sends stand for */
+        korb_sdi_init(c);                       /* the builtins the AOT inline sends (and C fast paths) stand for */
         c->vm->boot_done = true;                /* user `module Kernel; def require` may now shadow the builtin */
         c->vm->boot_class_serial = c->vm->class_serial;
         c->vm->main_public = false;             /* a bare `public` in the prelude does not reach the script */

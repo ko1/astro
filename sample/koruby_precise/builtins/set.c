@@ -716,7 +716,8 @@ static RESULT korb_m_obj_respond_to(CTX *c, korb_value *slots, korb_ref self, ko
     const uint32_t rtm = vm->mid_respond_to_missing;
     const korb_value dcls = korb_dispatch_class(c, KORB_REF_GET(self));
     korb_value rtm_def = KORB_NIL;
-    if (KORB_CLASS_P(dcls) && korb_find_method_c(c->vm, dcls, rtm, &rtm_def)) {
+    const struct korb_method *const rtm_m = KORB_CLASS_P(dcls) ? korb_find_method_c(c->vm, dcls, rtm, &rtm_def) : NULL;
+    if (rtm_m != NULL && rtm_m != vm->rtm_default) {   /* the default answers false: no dispatch (liquid: 750k per run) */
         slots[0] = KORB_REF_GET(self);
         slots[1] = ID2SYM(mid);
         slots[2] = (KORB_SLICE_LEN(a) >= 2) ? KORB_SLICE_GET(a, 1) : KORB_FALSE;

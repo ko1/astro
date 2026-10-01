@@ -422,6 +422,8 @@ const char *korb_sdi_eval_name(const struct Node *n, const char *base);         
 void korb_sdi_init(CTX *c);                                                      /* after boot: fill vm->sdi_fn */
 bool korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              struct korb_inlcache *ic, RESULT *out);   /* node_aref / node_aset deopt on String/Array/Hash */
+bool korb_deopt_cfunc_cached_any(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                                 struct korb_inlcache *ic, RESULT *out);   /* the same for any receiver (node_caseeq) */
 RESULT korb_send_blk(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,   /* flink: the site's baked link (0 = staged by the node) */
                      uint32_t argc, NODE *block, korb_value *def_env, korb_value *captured_self, korb_value flink,
                      korb_value caller_self);   /* caller_self: the private/protected guard (KORB_UNDEF = none) */

@@ -12688,6 +12688,33 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
              * filled, so a non-NULL simple-ISEQ cc->m is never a send variant. */
             return korb_invoke_entry_cc(c, slots, cc, argc, mid);
         }
+    } else if (!vm->refinements_active) {
+        /* builtin self: a prelude String / Array / Hash method calling its helpers
+         * (`case __encoding_tag` in String#encoding) re-resolved every call in
+         * korb_call_impl (erubi-rails: ~800k per iteration). */
+        const korb_value klass = korb_dispatch_class(c, self);
+        if (LIKELY(KORB_CLASS_P(klass))) {
+            struct korb_method *m;
+            korb_value def_class = KORB_NIL;
+            if (LIKELY(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
+                m = ic->m; def_class = ic->def_class;
+            } else {
+                m = korb_mcache_find(vm, klass, mid, &def_class);
+                korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, argc);
+            }
+            if (m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple)
+                return korb_invoke_simple(c, slots, m, argc, korb_flink_line(flink), mid, self, def_class);
+            if (m != NULL && m->kind == KORB_METHOD_CFUNC && !m->uses_block && site != NULL &&
+                (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {   /* as the user-instance case above */
+                korb_value *const cbase = &slots[-(korb_sword_t)argc];
+                const bool framed = KORB_FLINK_FRAMED(flink);
+                const korb_value saved = framed ? korb_cframe_enter(c, cbase, m) : 0;
+                RESULT r = m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
+                if (framed) korb_cframe_leave(c, saved);
+                if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), korb_flink_line(flink), mid, m);
+                return r;
+            }
+        }
     }
     return korb_call_impl(c, slots, mid, korb_flink_line(flink), cc, argc, self, NULL, NULL, NULL, site);
 }
@@ -15488,6 +15515,8 @@ korb_send_blk(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
  * Those nodes' slot windows have no room for a Ruby callee's frame header, so anything
  * else returns false and the node takes the full send.  The uncached send looked the
  * method up on every call (activerecord: Hash#[]= 2.9M, liquid: String#[] 1.1M). */
+static bool korb_cfunc_ic_call(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                               struct korb_inlcache *ic, korb_value klass, RESULT *out);
 bool
 korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
                         struct korb_inlcache *ic, RESULT *out)
@@ -15499,6 +15528,27 @@ korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, 
     if (t != KORB_OBJ_STRING && t != KORB_OBJ_ARRAY && t != KORB_OBJ_HASH) return false;
     const korb_value klass = korb_builtin_class_obj(vm, t == KORB_OBJ_STRING ? KORB_C_STRING
                                                    : t == KORB_OBJ_ARRAY ? KORB_C_ARRAY : KORB_C_HASH);
+    return korb_cfunc_ic_call(c, slots, mid, line, argc, ic, klass, out);
+}
+
+/* The same for any receiver, keyed on its dispatch class (a singleton, or a class's
+ * metaclass).  node_caseeq's `when String` / `when 1..9` / `when /re/` sent === uncached
+ * every time (liquid-il ~870k per iteration). */
+bool
+korb_deopt_cfunc_cached_any(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                            struct korb_inlcache *ic, RESULT *out)
+{
+    if (UNLIKELY(c->vm->refinements_active)) return false;
+    const korb_value klass = korb_dispatch_class(c, slots[-(korb_sword_t)argc - 1]);
+    if (!KORB_CLASS_P(klass)) return false;
+    return korb_cfunc_ic_call(c, slots, mid, line, argc, ic, klass, out);
+}
+
+static bool
+korb_cfunc_ic_call(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                   struct korb_inlcache *ic, const korb_value klass, RESULT *out)
+{
+    struct korb_vm *const vm = c->vm;
     if (!(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
         korb_value def = KORB_NIL;
         struct korb_method *const m = korb_mcache_find(vm, klass, mid, &def);
@@ -15616,6 +15666,8 @@ korb_sdi_init(CTX *c)
         for (int j = 0; j < KORB_SDI_FN_MAX && first == NULL; j++) first = vm->sdi_fn[k][j];
         for (int j = 0; j < KORB_SDI_FN_MAX; j++) if (vm->sdi_fn[k][j] == NULL) vm->sdi_fn[k][j] = first ? first : korb_sdi_never;
     }
+    korb_value d = KORB_NIL;
+    vm->rtm_default = korb_find_method_c(vm, korb_const_get(vm, korb_intern(vm, "Kernel", 6)), vm->mid_respond_to_missing, &d);
 }
 
 /* ---- integer formatting (to_s / chr helpers) ----------------------------- */
