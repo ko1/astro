@@ -5937,6 +5937,10 @@ korb_check_basic_op_redef(CTX *c, korb_value klass, uint32_t mid)
     if (!vm->method_aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_METHOD) &&
         mid == vm->mid_aref)
         vm->method_aref_redefined = true;
+    /* String#getbyte / #setbyte redefinition deopts node_getbyte / node_setbyte. */
+    if (!vm->str_byte_redefined && klass == korb_builtin_class_obj(vm, KORB_C_STRING) &&
+        (mid == korb_intern(vm, "getbyte", 7) || mid == korb_intern(vm, "setbyte", 7)))
+        vm->str_byte_redefined = true;
     /* Integer#[] redefinition deopts the node_aref Integer bit-test fast path. */
     if (!vm->int_aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
         mid == vm->mid_aref)

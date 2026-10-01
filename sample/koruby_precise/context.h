@@ -1464,6 +1464,9 @@ struct korb_vm {
      * then deopts.  optcarrot does ~5M Fixnum n[bit] tests/run; the fast path
      * computes (n>>i)&1 inline, skipping the send + dispatch + builtin. */
     bool int_aref_redefined;
+    /* set when String#getbyte / #setbyte is redefined: node_getbyte / node_setbyte deopt.
+     * chunky_png's PNG filters call them ~40M times per run. */
+    bool str_byte_redefined;
 
     /* Kernel#rand / srand default PRNG (CRuby-compatible MT19937; no GC edges so
      * it lives inline in the vm).  Random instances keep their own state in a
