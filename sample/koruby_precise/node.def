@@ -2702,6 +2702,7 @@ korb_sdi_klass(const struct korb_vm *vm, const korb_value r)   /* the class korb
       case KORB_OBJ_STRING: return korb_bi_class(vm, KORB_C_STRING);
       case KORB_OBJ_ARRAY:  return korb_bi_class(vm, KORB_C_ARRAY);
       case KORB_OBJ_HASH:   return korb_bi_class(vm, KORB_C_HASH);
+      case KORB_OBJ_REGEXP: return korb_bi_class(vm, KORB_C_REGEXP);
       default:              return KORB_NIL;
     }
 }
@@ -2808,6 +2809,25 @@ KORB_SDI_DEF(RESPOND_TO_P, 1, KORB_SDI_DIRECT(1))
 KORB_SDI_DEF(TO_S, 0, KORB_SDI_DIRECT(0))
 KORB_SDI_DEF(HASH, 0, KORB_SDI_DIRECT(0))
 KORB_SDI_DEF(FROZEN_P, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(MATCH_P, 1, KORB_SDI_DIRECT(1))
+KORB_SDI_DEF(UPCASE, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(DOWNCASE, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(DUP, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(FORCE_ENCODING, 1, KORB_SDI_DIRECT(1))
+KORB_SDI_DEF(FREEZE, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(TO_I, 0, {
+    if (FIXNUM_P(r)) return RESULT_OK(r);
+    KORB_SDI_DIRECT(0)
+})
+KORB_SDI_DEF(PUSH, 1, KORB_SDI_DIRECT(1))
+KORB_SDI_DEF(POP, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(JOIN0, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(JOIN1, 1, KORB_SDI_DIRECT(1))
+KORB_SDI_DEF(CMP, 1, {
+    if (FIXNUM_P(r) && FIXNUM_P(a0)) { const korb_sword_t x = FIX2LONG(r); const korb_sword_t y = FIX2LONG(a0); return RESULT_OK(LONG2FIX((x > y) - (x < y))); }
+    KORB_SDI_DIRECT(1)
+})
+KORB_SDI_DEF(TO_SYM, 0, KORB_SDI_DIRECT(0))
 
 // Receiver send whose trailing arg is a keyword bundle carrying a **splat
 // (`recv.m(pos..., **h)`).  Like node_send but an empty kwargs Hash is elided

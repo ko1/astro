@@ -60,3 +60,16 @@ class Own
 end
 2.times { |i| p [Own.new.to_s, Own.new.hash, Own.new.frozen?, Own.new.is_a?(Own), Own.new.respond_to?(:x),
                  Own.new.key?(1), Own.new.include?(1), Own.new.size, Own.new.empty?, Own.new.first] }
+# second batch: called directly (match? / upcase / downcase / dup / force_encoding / freeze /
+# to_i / push / pop / join / <=> / to_sym), plus a Ruby redefinition at the end
+p run(["Ab", :Sy, /a/]) { [_1.match?("A"), (_1.upcase rescue $!.class), (_1.downcase rescue $!.class)] }
+p run([1, 2.5, "s", [1], Object.new]) { d = _1.dup; [d.class, d.equal?(_1) || d == _1] }
+p run([+"ab"]) { [_1.force_encoding("BINARY").encoding, _1.freeze.frozen?] }
+p run([7, "12x", nil, 3.9, "z"]) { _1.to_i }
+p run([[1, 2]]) { |a| [a.push(3), a.pop, a.join, a.join("-")] }
+p run([1, "b", :c, [1, 2], Object.new]) { _1 <=> _1 }, (1 <=> "x"), ("a" <=> "b"), ([1] <=> [2])
+p run(["s", :t]) { _1.to_sym }
+class String
+  def upcase = :redef_up
+end
+p "x".upcase, :y.upcase

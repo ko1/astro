@@ -1051,6 +1051,8 @@ enum korb_sdi {
     /* called directly (no body of its own): korb_send_cached skipped, the builtin runs as is */
     KORB_SDI_IS_A_P, KORB_SDI_KIND_OF_P, KORB_SDI_START_WITH_P, KORB_SDI_END_WITH_P, KORB_SDI_KEY_P,
     KORB_SDI_INCLUDE_P, KORB_SDI_RESPOND_TO_P, KORB_SDI_TO_S, KORB_SDI_HASH, KORB_SDI_FROZEN_P,
+    KORB_SDI_MATCH_P, KORB_SDI_UPCASE, KORB_SDI_DOWNCASE, KORB_SDI_DUP, KORB_SDI_FORCE_ENCODING, KORB_SDI_FREEZE,
+    KORB_SDI_TO_I, KORB_SDI_PUSH, KORB_SDI_POP, KORB_SDI_JOIN0, KORB_SDI_JOIN1, KORB_SDI_CMP, KORB_SDI_TO_SYM,
     KORB_SDI_N
 };
 #define KORB_SDI_FN_MAX 4   /* builtins one name may stand for (empty?: String / Array / Hash ...) */
