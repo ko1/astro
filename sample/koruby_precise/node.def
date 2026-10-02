@@ -2849,6 +2849,7 @@ KORB_SDI_DEF(KEY_P, 1, KORB_SDI_DIRECT(1))
 KORB_SDI_DEF(INCLUDE_P, 1, KORB_SDI_DIRECT(1))
 /* `respond_to?(:sym)`: #respond_to?'s own answer cache, keyed on kl (the receiver's own class, as
  * korb_m_obj_respond_to keys it); a refined site never caches (8x YJIT before) */
+KORB_SDI_DEFX(ENCODING, 0, KORB_SDI_KL_STR, 1, KORB_SDI_DIRECT(0))   /* liquid-compile: 70k per iteration */
 KORB_SDI_DEF(RESPOND_TO_P, 1, {
     const struct korb_vm *const vm = c->vm;
     if (SYMBOL_P(a0) && !(UNLIKELY(vm->refinements_active) && c->refinements != KORB_NIL)) {

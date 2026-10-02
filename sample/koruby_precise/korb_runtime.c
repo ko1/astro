@@ -15625,6 +15625,16 @@ korb_new_with_init(CTX *c, korb_value *slots, korb_value flink, uint32_t argc, s
     return RESULT_OK(obj);
 }
 
+/* `obj.x = v` of attr_writer :x, as korb_dispatch_method's ATTR_W arm (three calls nearer) */
+static __attribute__((noinline)) RESULT
+korb_attr_write(CTX *c, korb_value *slots, const struct korb_method *m, uint32_t line)
+{
+    korb_value *const recv_slot = &slots[-2];
+    KORB_CHECK_FROZEN_AT(c, slots, *recv_slot, line);
+    CHECK(korb_ivar_set(c, slots, KORB_REF_AT(recv_slot), ID2SYM(m->attr_ivar), slots[-1]));
+    return RESULT_OK(slots[-1]);
+}
+
 /* the class korb_send_cached_full keys a plain builtin receiver's cache on, or nil */
 static inline korb_value
 korb_send_builtin_klass(struct korb_vm *vm, const korb_value recv)
@@ -15661,6 +15671,8 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
         struct korb_method *const m = ic->m;
         if (korb_opt_call_p(m, argc))                    /* `o.m(a)` of `def m(a, b = 1)` */
             return korb_invoke_opt(c, slots, m, argc, korb_flink_line(flink), mid);
+        if (m->kind == KORB_METHOD_ATTR_W && argc == 1)   /* psych's node.start_line = ...: 4 x 180k per load */
+            return korb_attr_write(c, slots, m, korb_flink_line(flink));
         /* `o.m(a)` of `def m(a, k: 1)`: no keywords to bind but the defaults (liquid's find_variable: 34k per iteration) */
         if (m->kind == KORB_METHOD_ISEQ && m->kw_info != NULL && korb_kw_fast_eligible(m) && !(argc != 0 && korb_kwargs_hash_p(slots[-1])))
             return korb_invoke_kw_simple(c, slots, m, argc, NULL, 0, korb_flink_line(flink), mid, recv, ic->def_class);
@@ -16070,6 +16082,7 @@ static const struct { const char *name; uint32_t argc; int cls[KORB_SDI_FN_MAX +
     KORB_SDI_E(IVAR_GET, "instance_variable_get", 1, KORB_C_OBJECT),
     KORB_SDI_E(DELETE_AT, "delete_at", 1, KORB_C_ARRAY),
     KORB_SDI_E(REVERSE_BANG, "reverse!", 0, KORB_C_ARRAY, KORB_C_STRING),
+    KORB_SDI_E(ENCODING, "encoding", 0, KORB_C_STRING),
 };
 #undef KORB_SDI_E
 uint8_t
@@ -16107,6 +16120,15 @@ korb_sdi_class_resolve(CTX *c, korb_value kl, unsigned k)
     return ok;
 }
 static RESULT korb_sdi_never(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)self; (void)a; return korb_raise(c, slots, KORB_E_RUNTIME, 0, "korb_sdi_never"); }
+/* Until korb_sdi_init (after the prelude), no inline send stands for anything.  A zeroed
+ * table matched every Ruby method (NULL rfn): the AOT-compiled prelude then took
+ * KORB_SDI_DIRECT into a NULL call for a name the prelude defines in Ruby (String#encoding). */
+void
+korb_sdi_preinit(struct korb_vm *vm)
+{
+    for (unsigned k = 0; k < KORB_SDI_N; k++)
+        for (int j = 0; j < KORB_SDI_FN_MAX; j++) vm->sdi_fn[k][j] = korb_sdi_never;
+}
 void
 korb_sdi_init(CTX *c)
 {
@@ -16127,6 +16149,7 @@ korb_sdi_init(CTX *c)
     }
     korb_value d = KORB_NIL;
     vm->rtm_default = korb_find_method_c(vm, korb_const_get(vm, korb_intern(vm, "Kernel", 6)), vm->mid_respond_to_missing, &d);
+    vm->method_serial++;   /* a class mask answered during the prelude saw the empty table */
 }
 
 /* ---- integer formatting (to_s / chr helpers) ----------------------------- */
@@ -22811,6 +22834,7 @@ korb_ctx_new(void)
     c->vm = calloc(1, sizeof(struct korb_vm));
     if (!c->vm) { fprintf(stderr, "koruby_precise: out of memory (VM)\n"); abort(); }
     c->vm->sigfd = -1;                                  /* calloc's 0 is a real fd */
+    korb_sdi_preinit(c->vm);                            /* calloc's NULL would match a Ruby method's rfn */
 #ifndef KORB_WASI
     korb_signal_arm_init(c->vm);
 #endif

@@ -576,6 +576,8 @@ static inline bool korb_kwargs_hash_p(korb_value v) {
 }
 
 bool korb_sdi_class_resolve(CTX *c, korb_value kl, unsigned k);   /* korb_runtime.c */
+struct korb_vm;
+void korb_sdi_preinit(struct korb_vm *vm);   /* korb_runtime.c */
 
 /* #respond_to?'s answer cache slot for (dispatch class, name, include_all): builtins/set.c fills it,
  * the AOT inline send reads it */
