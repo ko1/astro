@@ -6890,6 +6890,10 @@ korb_raise_unknown_kw_syms(CTX *c, korb_value *slots, const struct korb_method *
 
 static void korb_refine_cross_mark(struct korb_vm *vm, NODE *block);
 static bool korb_refine_cross_p(const struct korb_vm *vm, const NODE *block);
+static inline bool korb_kw_fast_eligible(const struct korb_method *m);
+static RESULT korb_invoke_kw_simple(CTX *c, korb_value *slots, struct korb_method *m, uint32_t pos_argc,
+                                    const uint32_t *kw_syms, uint32_t kw_argc, uint32_t line, uint32_t mid,
+                                    korb_value self, korb_value def_class);
 static __attribute__((no_stack_protector)) RESULT
 korb_invoke_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc,
                    uint32_t line, uint32_t mid, korb_value self, korb_value def_class,
@@ -6898,6 +6902,13 @@ korb_invoke_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t ar
     struct korb_vm *const vm = c->vm;
     const struct korb_kw_info *const kw = (const struct korb_kw_info *)m->kw_info;
     korb_value *const base = slots - argc;
+    /* keyword params but no keywords passed (liquid's find_variable(name) of
+     * def find_variable(key, raise_on_not_found: true), 60k per iteration): the hash-free
+     * keyword path binds the defaults; the general one below scanned for a kwargs Hash first */
+    if (kw != NULL && block == NULL && korb_kw_fast_eligible(m) && !(argc != 0 && korb_kwargs_hash_p(base[argc - 1]))) {
+        base[-1] = self;
+        return korb_invoke_kw_simple(c, slots, m, argc, NULL, 0, line, mid, self, def_class);
+    }
     KORB_AUDIT_EP(base, mid);
     /* a method with keyword params consumes a trailing Hash arg as kwargs. */
     uint32_t pos_argc = argc;
