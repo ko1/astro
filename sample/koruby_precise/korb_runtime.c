@@ -16063,6 +16063,25 @@ korb_sdi_eval_name(const struct Node *n, const char *base)
     return k != KORB_SDI_NONE && k < KORB_SDI_N ? korb_sdi_tab[k].eval : base;
 }
 /* stands in a korb_sdi_tab row whose builtins were not found: no method has this rfn */
+_Static_assert(KORB_SDI_N <= 64, "KorbClass.sdi_ok is one 64-bit mask");
+/* Does `kl` resolve inline send `k` to one of its builtins (public)?  Answered once per class and
+ * method_serial into kl's masks; the AOT inline send asks when its site's cache holds another class
+ * (liquid's `object.respond_to?(:[])` sees Hash / String / Drop at one site). */
+bool
+korb_sdi_class_resolve(CTX *c, korb_value kl, unsigned k)
+{
+    struct korb_vm *const vm = c->vm;
+    KorbClass *const kc = VAL2CLASS(kl);
+    if (kc->sdi_serial != vm->method_serial) { kc->sdi_ok = kc->sdi_known = 0; kc->sdi_serial = vm->method_serial; }
+    korb_value def = KORB_NIL;
+    const struct korb_method *const m = korb_mcache_find(vm, kl, vm->sdi_mid[k], &def);
+    bool ok = false;
+    if (m != NULL && m->kind == KORB_METHOD_CFUNC && !m->uses_block && m->visibility == 0)
+        for (int j = 0; j < KORB_SDI_FN_MAX; j++) if (m->rfn == vm->sdi_fn[k][j]) { ok = true; break; }
+    kc->sdi_known |= 1ull << k;
+    if (ok) kc->sdi_ok |= 1ull << k;
+    return ok;
+}
 static RESULT korb_sdi_never(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)self; (void)a; return korb_raise(c, slots, KORB_E_RUNTIME, 0, "korb_sdi_never"); }
 void
 korb_sdi_init(CTX *c)
@@ -16070,6 +16089,7 @@ korb_sdi_init(CTX *c)
     struct korb_vm *const vm = c->vm;
     for (uint8_t k = 1; k < KORB_SDI_N; k++) {
         const uint32_t mid = korb_intern(vm, korb_sdi_tab[k].name, strlen(korb_sdi_tab[k].name));
+        vm->sdi_mid[k] = mid;
         for (int j = 0; j < KORB_SDI_FN_MAX && korb_sdi_tab[k].cls[j] >= 0; j++) {
             korb_value def = KORB_NIL;
             const struct korb_method *const m = korb_class_find_method(korb_builtin_class_obj(vm, (enum korb_class)korb_sdi_tab[k].cls[j]), mid, &def);

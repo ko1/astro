@@ -791,6 +791,9 @@ typedef struct KorbClass {
     uint32_t mro_n;
     uint64_t mro_ser;
     const uint64_t *mro_ser_src;
+    /* which AOT inline sends (enum korb_sdi bits) resolve to their builtin on this class, valid while
+     * sdi_serial == vm->method_serial: a site whose own cache holds another class still answers inline */
+    uint64_t sdi_ok, sdi_known, sdi_serial;
     korb_value ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
     korb_value ARO_GC_EDGE included;      /* KorbArray of included modules | nil */
     korb_value ARO_GC_EDGE prepended;     /* KorbArray of prepended modules | nil (searched before own methods) */
@@ -1476,6 +1479,7 @@ struct korb_vm {
     uint32_t mid_aref, mid_aset;   /* "[]" / "[]=" — node_aref/node_aset deopt target */
     uint32_t mid_uminus;           /* "-@" — node_neg deopt target */
     korb_method_fn sdi_fn[KORB_SDI_N][KORB_SDI_FN_MAX];   /* the builtins each AOT inline send stands for (korb_sdi_init) */
+    uint32_t sdi_mid[KORB_SDI_N];                          /* the name each AOT inline send stands for */
     /* set when Array#[] / Array#[]= is redefined: node_aref/node_aset then deopt
      * to a real send so the redefinition is honored (CRuby compat). */
     bool aref_redefined;

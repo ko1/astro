@@ -575,6 +575,8 @@ static inline bool korb_kwargs_hash_p(korb_value v) {
     return KORB_HASH_P(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_KWARGS) != 0;
 }
 
+bool korb_sdi_class_resolve(CTX *c, korb_value kl, unsigned k);   /* korb_runtime.c */
+
 /* #respond_to?'s answer cache slot for (dispatch class, name, include_all): builtins/set.c fills it,
  * the AOT inline send reads it */
 static inline uint32_t korb_rt_index(korb_value rk, uint32_t mid, bool priv) {

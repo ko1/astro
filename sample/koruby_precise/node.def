@@ -2733,6 +2733,15 @@ korb_sdi_fn_p(const struct korb_vm *vm, unsigned k, unsigned nfn, korb_method_fn
 /* EVAL_node_send_inl_<K>: `r` the receiver, a0 / a1 the arguments; BODY returns when it
  * handles the call and falls through to the plain send otherwise.  KL computes the class
  * the cache is keyed on (KORB_SDI_KL_ANY, or a narrower one); NFN as above. */
+/* the site's cache holds another class (a polymorphic site): kl's own per-kind answer */
+static inline __attribute__((always_inline)) bool
+korb_sdi_class_ok(CTX *c, const korb_value kl, const unsigned k)
+{
+    const KorbClass *const kc = VAL2CLASS(kl);
+    if (LIKELY(kc->sdi_serial == c->vm->method_serial && ((kc->sdi_known >> k) & 1u)))
+        return (kc->sdi_ok >> k) & 1u;
+    return korb_sdi_class_resolve(c, kl, k);
+}
 #define KORB_SDI_DEFX(K, ARGC, KL, NFN, BODY) \
 static inline __attribute__((always_inline)) RESULT \
 EVAL_node_send_inl_##K(CTX *c, NODE *n, korb_value *slots, uint32_t mid, uint64_t flink, int32_t self_off, \
@@ -2740,7 +2749,9 @@ EVAL_node_send_inl_##K(CTX *c, NODE *n, korb_value *slots, uint32_t mid, uint64_
 { \
     const korb_value r = slots[-(korb_sword_t)(ARGC) - 1]; \
     const korb_value kl = KL(c, r); \
-    if (LIKELY(kl != KORB_NIL && KORB_SDI_HIT(c, ic, kl, KORB_SDI_##K, NFN))) { \
+    const bool ich = kl != KORB_NIL && KORB_SDI_HIT(c, ic, kl, KORB_SDI_##K, NFN); \
+    if (LIKELY(ich) || (kl != KORB_NIL && !(UNLIKELY(c->vm->refinements_active) && c->refinements != KORB_NIL) && \
+                        korb_sdi_class_ok(c, kl, KORB_SDI_##K))) { \
         const korb_value a0 = (ARGC) >= 1 ? slots[-(korb_sword_t)(ARGC)] : 0; \
         const korb_value a1 = (ARGC) >= 2 ? slots[-(korb_sword_t)(ARGC) + 1] : 0; \
         (void)a0; (void)a1; \
@@ -2750,6 +2761,7 @@ EVAL_node_send_inl_##K(CTX *c, NODE *n, korb_value *slots, uint32_t mid, uint64_
 }
 /* the builtin itself, without korb_send_cached's lookup (what its CFUNC branch does) */
 #define KORB_SDI_DIRECT(ARGC) { \
+        if (UNLIKELY(!ich)) return EVAL_node_send(c, n, slots, mid, flink, self_off, argv_cnt, ic);   /* m is the cache's */ \
         const struct korb_method *const m = ic->m; \
         const korb_value link = slots[-(korb_sword_t)argv_cnt - 2]; \
         const bool framed = KORB_FLINK_FRAMED(link); \
