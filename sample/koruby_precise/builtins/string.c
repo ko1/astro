@@ -1162,6 +1162,12 @@ static RESULT korb_str_append_one(CTX *c, korb_value *slots, korb_ref self, korb
     }
     return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, o));
 }
+/* node_shl's `str << str` (both plain Strings, String#<< not reopened): String#<< without the send */
+RESULT korb_str_shl_str(CTX *c, korb_value *slots, korb_ref self, korb_ref arg) {
+    KORB_CHECK_FROZEN(c, slots, KORB_REF_GET(self));
+    CHECK(korb_str_append_one(c, slots, self, arg));
+    return RESULT_OK(KORB_REF_GET(self));
+}
 static RESULT korb_m_str_ltlt(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     KORB_CHECK_FROZEN(c, slots, KORB_REF_GET(self));
     CHECK(korb_str_append_one(c, slots, self, KORB_SLICE_REF(a, 0)));

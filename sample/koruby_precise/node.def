@@ -711,6 +711,12 @@ node_shl(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
         return korb_ary_push_val(c, slots, lhs, rhs);           /* grow path (no Ruby dispatch) */
     }
     slots[0] = rhs;   /* recv rooted at slots[-1] (lhs); stage only the arg */
+    if (LIKELY(KORB_STRING_P(l) && KORB_PLAIN_BUILTIN(l) && KORB_STRING_P(rhs) && !c->vm->str_shl_redefined &&
+               !(UNLIKELY(c->vm->refinements_active) && c->refinements != KORB_NIL)))   /* liquid-il: 1.8M `out << str` per iteration */
+    {
+        KORB_CHECK_FROZEN_HEAP_AT(c, slots, l, "String", korb_flink_line(flink));   /* inline write: no dispatch to place the raise */
+        return KP_OPD(c, flink, slots, lhs, "<<", korb_str_shl_str(c, slots + 1, lhs, KORB_REF_AT(&slots[0])));   /* an encoding error names String#<< as the send did */
+    }
     if (LIKELY(KORB_STRING_P(l) && KORB_PLAIN_BUILTIN(l)))   /* hot String#<< (a CFUNC) keeps its inline cache; a subclass's own #<< needs the frame below */
         return KP_DEOPT(c, flink, slots, korb_send_cached(c, slots + 1, c->vm->mid_shl, korb_flink_make(korb_flink_line(flink), 0), 1, ic, KORB_UNDEF));
     /* A user (ISEQ) `<<` needs a full call frame; node_shl's slot window is too

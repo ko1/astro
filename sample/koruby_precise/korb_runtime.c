@@ -5978,6 +5978,9 @@ korb_check_basic_op_redef(CTX *c, korb_value klass, uint32_t mid)
     if (!vm->arr_shl_redefined && klass == korb_builtin_class_obj(vm, KORB_C_ARRAY) &&
         mid == vm->mid_shl)
         vm->arr_shl_redefined = true;
+    if (!vm->str_shl_redefined && klass == korb_builtin_class_obj(vm, KORB_C_STRING) &&
+        mid == vm->mid_shl)
+        vm->str_shl_redefined = true;
     /* Hash#[] redefinition deopts the node_aref Hash fast path. */
     if (!vm->hash_aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_HASH) &&
         mid == vm->mid_aref)
