@@ -416,6 +416,8 @@ RESULT korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flin
 /* Implicit-self keyword call: positionals at base[0..pos_argc), keyword korb_values at
  * base[pos_argc..+kw_argc) named by kw_syms[]; binds keywords without a Hash when
  * the callee allows (else materializes one). */
+RESULT korb_send_kw(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, struct korb_inlcache *ic,
+                    uint32_t pos_argc, const uint32_t *kw_syms, uint32_t kw_argc, korb_value caller_self);   /* node_send_kw */
 RESULT korb_call_kw(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc,
                     struct korb_inlcache *ic, uint32_t pos_argc, const uint32_t *kw_syms,
                     uint32_t kw_argc, korb_value self);

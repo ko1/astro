@@ -3063,6 +3063,45 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             safe_set = bake_lset(tc, (uint32_t)safe_tmp, transduce(tc, cn->receiver));
             safe = false;                                  /* the guard replaces node_send_safe */
         }
+        /* `recv.m(pos..., k: v...)` with literal symbol keys (no **splat, no `k:` shorthand)
+         * → hash-free keyword send (node_send_kw), as node_call_kw for implicit self */
+        if (!safe && safe_tmp < 0 && cn->block == NULL && argc >= 1 && PM_NODE_TYPE_P(cn->arguments->arguments.nodes[argc - 1], PM_KEYWORD_HASH_NODE)) {
+            const pm_keyword_hash_node_t *kh = (const pm_keyword_hash_node_t *)cn->arguments->arguments.nodes[argc - 1];
+            bool ok = kh->elements.size > 0;
+            for (size_t i = 0; ok && i < argc - 1; i++) {
+                const pm_node_t *an = cn->arguments->arguments.nodes[i];
+                if (PM_NODE_TYPE_P(an, PM_SPLAT_NODE) || PM_NODE_TYPE_P(an, PM_FORWARDING_ARGUMENTS_NODE) ||
+                    PM_NODE_TYPE_P(an, PM_BLOCK_ARGUMENT_NODE)) ok = false;
+            }
+            for (size_t i = 0; ok && i < kh->elements.size; i++) {
+                const pm_node_t *e = kh->elements.nodes[i];
+                if (!PM_NODE_TYPE_P(e, PM_ASSOC_NODE)) { ok = false; break; }
+                const pm_assoc_node_t *as = (const pm_assoc_node_t *)e;
+                if (!PM_NODE_TYPE_P(as->key, PM_SYMBOL_NODE) || !as->value || PM_NODE_TYPE_P(as->value, PM_IMPLICIT_NODE)) ok = false;
+            }
+            if (ok) {
+                const uint32_t pos_argc = (uint32_t)argc - 1, kw_cnt = (uint32_t)kh->elements.size, total = pos_argc + kw_cnt;
+                uint32_t *kw_syms = calloc(kw_cnt + 1, sizeof(uint32_t));
+                if (!kw_syms) abort();
+                for (uint32_t j = 0; j < kw_cnt; j++) {
+                    const pm_symbol_node_t *sn = (const pm_symbol_node_t *)((const pm_assoc_node_t *)kh->elements.nodes[j])->key;
+                    kw_syms[j] = korb_intern(tc->c->vm, (const char *)pm_string_source(&sn->unescaped), pm_string_length(&sn->unescaped));
+                }
+                const uint32_t kcnt = 1u + total;            /* recv + pos + kw */
+                const int32_t kself_off = -1 - tc->chain - (int32_t)kcnt - KORB_FRAME_HDR;
+                NODE **kargv = malloc(sizeof(NODE *) * kcnt);
+                if (!kargv) abort();
+                const int32_t ksaved = tc->chain;
+                tc->chain = ksaved + (int32_t)kcnt + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
+                kargv[0] = transduce(tc, cn->receiver);
+                for (uint32_t i = 0; i < pos_argc; i++) kargv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
+                for (uint32_t j = 0; j < kw_cnt; j++) kargv[1 + pos_argc + j] = transduce(tc, ((const pm_assoc_node_t *)kh->elements.nodes[j])->value);
+                tc->chain = ksaved;
+                NODE *kc = KP_LINK(tc, node_send_kw, mid, kp_flink(tc, line), kself_off, pos_argc, (const char *)(const void *)kw_syms, kargv, kcnt);
+                bake_add(tc, &kc->u.node_send_kw.self_off);
+                return kp_warn_dup_hash_keys(tc, kh->elements.nodes, kh->elements.size, kc);   /* `m(a: 1, a: 2)` warns like a Hash literal */
+            }
+        }
         uint32_t cnt = 1u + (uint32_t)argc;
         int32_t self_off = -1 - tc->chain - (int32_t)cnt - KORB_FRAME_HDR;   /* caller self at base[-1], from the +HDR-shifted cursor */
         NODE **argv = malloc(sizeof(NODE *) * cnt);

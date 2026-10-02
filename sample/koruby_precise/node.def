@@ -2884,6 +2884,17 @@ KORB_SDI_DEF(IVAR_GET, 1, KORB_SDI_DIRECT(1))
 KORB_SDI_DEF(DELETE_AT, 1, KORB_SDI_DIRECT(1))
 KORB_SDI_DEF(REVERSE_BANG, 0, KORB_SDI_DIRECT(0))
 
+// `recv.m(pos..., k: v...)` with literal symbol keys: [recv, pos..., kw values...]
+// staged; korb_send_kw binds the keywords without a Hash when the callee allows.
+// kw_syms as in node_call_kw (a runtime reference, not baked).
+NODE_DEF @framehdr
+node_send_kw(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, uint32_t pos_argc, const char *kw_syms, NODE **argv@children, struct korb_inlcache *ic@ref)
+{
+    (void)n;
+    const korb_value caller_self = (self_off == INT32_MIN) ? KORB_UNDEF : slots[self_off];
+    return korb_send_kw(c, slots, mid, flink, ic, pos_argc, (const uint32_t *)(const void *)kw_syms, argv_cnt - 1 - pos_argc, caller_self);
+}
+
 // Receiver send whose trailing arg is a keyword bundle carrying a **splat
 // (`recv.m(pos..., **h)`).  Like node_send but an empty kwargs Hash is elided
 // (CRuby 3.0 empty-kwsplat rule): dispatching from cur=slots-1 with argc-1 keeps

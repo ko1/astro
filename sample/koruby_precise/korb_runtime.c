@@ -12851,6 +12851,57 @@ korb_call_kw(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, struct korb
     return korb_call(c, base + pos_argc + 1, mid, line, cc, pos_argc + 1, base[-1]);
 }
 
+/* `recv.m(pos..., k: v...)` (literal symbol keys): the receiver form of korb_call_kw.
+ * A public Ruby method found through the site's cache binds the keywords straight
+ * to slots; everything else (private / protected, C methods, misses, refined
+ * sites, the send family) builds the kwargs Hash and takes the cached send.  The
+ * Hash was built on every call before (a kwargs call was 15x YJIT). */
+RESULT
+korb_send_kw(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, struct korb_inlcache *ic,
+             uint32_t pos_argc, const uint32_t *kw_syms, uint32_t kw_argc, korb_value caller_self)
+{
+    struct korb_vm *const vm = c->vm;
+    const uint32_t line = korb_flink_line(flink);
+    korb_value *const base = slots - (pos_argc + kw_argc);
+    const korb_value recv = base[-1];
+    if (LIKELY(!korb_site_refined(c) && !KORB_CLASS_P(recv) &&
+               mid != vm->mid_send && mid != vm->mid___send__ && mid != vm->mid_public_send)) {
+        const korb_value klass = KORB_OBJECT_P(recv) ? korb_obj_dispatch_klass(vm, recv) : korb_dispatch_class(c, recv);
+        if (LIKELY(KORB_CLASS_P(klass))) {
+            struct korb_method *m;
+            korb_value def_class;
+            if (LIKELY(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
+                m = ic->m; def_class = ic->def_class;
+            } else {
+                def_class = KORB_NIL;
+                m = korb_mcache_find(vm, klass, mid, &def_class);
+                /* only what this path takes: the fallback's korb_send_cached shares the ic, and reads
+                 * an INSTANCE hit as a public, present method */
+                if (m != NULL && m->kind == KORB_METHOD_ISEQ && m->visibility == 0)
+                    korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);   /* argc differs: no entry fast path */
+            }
+            if (m != NULL && m->kind == KORB_METHOD_ISEQ && m->visibility == 0) {
+                const struct korb_kw_info *const mkw = (const struct korb_kw_info *)m->kw_info;
+                if (UNLIKELY(mkw != NULL && mkw->kwrest_slot == -3))   /* `**nil`: keyword syntax is refused outright */
+                    return korb_raise(c, base, KORB_E_ARGUMENT, line, "no keywords accepted");
+                if (LIKELY(korb_kw_fast_eligible(m) && kw_argc <= 64))
+                    return korb_invoke_kw_simple(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, recv, def_class);
+                return korb_invoke_kw_viahash(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, recv, def_class);
+            }
+        }
+    }
+    korb_value *const cur = slots;                   /* materialize the kwargs Hash (as korb_call_kw) */
+    cur[0] = UNWRAP(korb_hash_new(c, cur, kw_argc));
+    korb_ref h = KORB_REF_AT(&cur[0]);
+    for (uint32_t p = 0; p < kw_argc; p++) {
+        cur[1] = ID2SYM(kw_syms[p]); cur[2] = base[pos_argc + p];
+        CHECK(korb_hash_set(c, cur + 3, h, KORB_REF_AT(&cur[1]), cur[2]));
+    }
+    base[pos_argc] = KORB_REF_GET(h);
+    ((AroObjectHeader *)(uintptr_t)base[pos_argc])->flags |= KORB_FL_KWARGS;   /* written as keywords */
+    return korb_send_cached(c, base + pos_argc + 1, mid, flink, pos_argc + 1, ic, caller_self);
+}
+
 static RESULT korb_raise_break_lje(CTX *c, korb_value *slots, korb_value value);   /* fwd (builtins/symbol.c) */
 /* A `&pr` of a `proc { }` came back breaking: the call it would end is gone. */
 static bool korb_frame_on_chain(const CTX *c, const korb_value *const from, const korb_value *const target);   /* fwd */
