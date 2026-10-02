@@ -1456,6 +1456,9 @@ struct korb_vm {
     uint32_t mid_method_missing;
     uint32_t mid_respond_to_missing;
     const struct korb_method *rtm_default;   /* the prelude Kernel#respond_to_missing? (always false): respond_to? skips dispatching it */
+    /* #respond_to? answers by (dispatch class, name, include_all), valid while method_serial holds (a GC bumps
+     * it too, so a moved class never matches).  Only answers no user #respond_to_missing? was asked for. */
+    struct { uint64_t serial; korb_value klass; uint32_t mid; uint8_t priv, ans; } rt_cache[256];
     uint32_t mid_dm_super;   /* sentinel name a `super` with no lexical `def` is baked with:
                               * a define_method body IS a method, but only at run time. */
     uint32_t mid_band, mid_bor, mid_bxor, mid_shl, mid_shr;   /* bit-op dispatch fallbacks (avoid per-call korb_intern) */

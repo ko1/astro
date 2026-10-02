@@ -699,6 +699,17 @@ static RESULT korb_m_obj_respond_to(CTX *c, korb_value *slots, korb_ref self, ko
     { RESULT nr = korb_arg_to_mid(c, slots, KORB_SLICE_GET(a, 0), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     const korb_value incv = (KORB_SLICE_LEN(a) >= 2) ? KORB_SLICE_GET(a, 1) : KORB_FALSE;
     const bool include_priv = (incv != KORB_NIL && incv != KORB_FALSE);
+    /* a class receiver is left out: classes without a materialized metaclass share Class as their
+     * dispatch class, yet answer differently (NilClass has no ::new, Object does) */
+    /* a refined scope answers by its own refinements too (korb_responds_to): no cache there */
+    const korb_value rk = (KORB_CLASS_P(KORB_REF_GET(self)) || korb_site_refined(c)) ? KORB_NIL : korb_dispatch_class(c, KORB_REF_GET(self));
+    const uint32_t rki = (uint32_t)(((uintptr_t)rk >> 4) ^ (mid * 2654435761u) ^ include_priv) & 255u;
+    if (LIKELY(KORB_CLASS_P(rk) && vm->rt_cache[rki].serial == vm->method_serial && vm->rt_cache[rki].klass == rk &&
+               vm->rt_cache[rki].mid == mid && vm->rt_cache[rki].priv == include_priv))
+        return RESULT_OK(vm->rt_cache[rki].ans ? KORB_TRUE : KORB_FALSE);
+#define KORB_RT_ANSWER(b) do { if (KORB_CLASS_P(rk)) { vm->rt_cache[rki].serial = vm->method_serial; vm->rt_cache[rki].klass = rk; \
+        vm->rt_cache[rki].mid = mid; vm->rt_cache[rki].priv = include_priv; vm->rt_cache[rki].ans = (b); } \
+        return RESULT_OK((b) ? KORB_TRUE : KORB_FALSE); } while (0)
     if (korb_responds_to(c, KORB_REF_GET(self), mid)) {
         /* Private/protected methods are not "responded to" unless include_all —
          * but CRuby still asks #respond_to_missing? about them, so fall through
@@ -706,15 +717,15 @@ static RESULT korb_m_obj_respond_to(CTX *c, korb_value *slots, korb_ref self, ko
         const korb_value dcls = korb_dispatch_class(c, KORB_REF_GET(self));
         korb_value mdef = KORB_NIL;
         const struct korb_method *const me = KORB_CLASS_P(dcls) ? korb_find_method_c(c->vm, dcls, mid, &mdef) : NULL;
-        if (me == NULL || me->visibility == 0 || include_priv) return RESULT_OK(KORB_TRUE);
+        if (me == NULL || me->visibility == 0 || include_priv) KORB_RT_ANSWER(true);
     }
     /* Kernel-private builtins (puts/print/require/... live in the global table,
      * not a class method table) are private methods of every object. */
     if (include_priv) {
         const struct korb_method *const gm = korb_method_lookup(vm, mid);
-        if (gm != NULL && gm->kind == KORB_METHOD_BUILTIN) return RESULT_OK(KORB_TRUE);
+        if (gm != NULL && gm->kind == KORB_METHOD_BUILTIN) KORB_RT_ANSWER(true);
         if (korb_toplevel_def(vm, mid) && korb_kernel_reachable_p(c, korb_dispatch_class(c, KORB_REF_GET(self))))
-            return RESULT_OK(KORB_TRUE);
+            KORB_RT_ANSWER(true);
     }
     /* respond_to_missing?(name, include_private) fallback (pairs with method_missing). */
     const uint32_t rtm = vm->mid_respond_to_missing;
@@ -727,9 +738,10 @@ static RESULT korb_m_obj_respond_to(CTX *c, korb_value *slots, korb_ref self, ko
         slots[2] = (KORB_SLICE_LEN(a) >= 2) ? KORB_SLICE_GET(a, 1) : KORB_FALSE;
         const RESULT r = korb_send_impl(c, slots + 3, rtm, 0, 2, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_TRUE : KORB_FALSE);   /* #respond_to? answers a boolean */
+        return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_TRUE : KORB_FALSE);   /* #respond_to? answers a boolean (never cached) */
     }
-    return RESULT_OK(KORB_FALSE);
+    KORB_RT_ANSWER(false);
+#undef KORB_RT_ANSWER
 }
 static RESULT korb_m_obj_instance_of(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     korb_value target = KORB_SLICE_GET(a, 0);
