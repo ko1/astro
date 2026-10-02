@@ -27,11 +27,13 @@ rows = File.readlines(list).map { |l| l.split("\t").first }.map do |b|
       f = File.join(r[:dir], "#{b}.#{mode}.log")
       next unless File.exist?(f)
       ms = File.read(f, encoding: "BINARY")[/Average of last \d+, non-warmup iters: ([\d.]+)ms/, 1]
+      next if ms.nil? && row[key]                      # a later run that got no number keeps the earlier one
       row[key] = ms && ms.to_f.round(1)
       row["#{key}r"] = r[:label]
     end
     t = File.join(r[:dir], "bake.#{b}.time")
     next unless File.exist?(t)
+    next if row["ar"] && row["ar"] != r[:label] && row[:bakr]   # its AOT number is from an earlier run: so is the bake
     tx = File.read(t)
     row[:bake] = tx[/bake ([\d.]+) s/, 1]&.to_f&.round
     row[:bake_ok] = tx[/^exit (\d+)/, 1] == "0"
