@@ -15453,6 +15453,48 @@ korb_send_ic_dispatch(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
 static __attribute__((noinline, no_stack_protector)) RESULT
 korb_send_cached_full(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
                       struct korb_inlcache *ic, korb_value caller_self);
+/* korb_invoke_simple for a method with optional parameters (no keywords / rest / post / block)
+ * called without all of them: the missing defaults are evaluated in the method's scope, the
+ * rest as korb_invoke_simple.  korb_invoke_method's generality (and the 4 calls in front of it)
+ * cost 6x YJIT's argc-specific entry (yjit_survey.md §3).  The caller checked the shape and
+ * req_cnt <= argc < params_cnt; an instance_eval'd definee goes the general way. */
+static __attribute__((noinline, no_stack_protector)) RESULT
+korb_invoke_opt(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc, uint32_t line, uint32_t mid)
+{
+    if (UNLIKELY(c->def_definee != KORB_NIL || c->cvar_cref != KORB_NIL || m->uses_backref))
+        return korb_invoke_method(c, slots, m, argc, line, mid, slots[-(korb_sword_t)argc - 1], KORB_NIL, NULL, NULL, KORB_NIL);
+    korb_value *const base = slots - argc;
+    if (argc != 0) korb_kwargs_unmark(base[argc - 1]);   /* fixed positional: the call-site kwargs mark stops here */
+    KORB_AUDIT_EP(base, mid);
+    const uint32_t locals_cnt = m->locals_cnt;
+    char cstack_probe;
+    korb_value *const resv = base + locals_cnt + KORB_FRAME_SLACK;
+    if (UNLIKELY(resv > c->slots_limit || &cstack_probe < c->cstack_limit))
+        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
+    if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
+    for (uint32_t i = argc; i < locals_cnt; i++) base[i] = 0;
+    korb_id_set(base, (korb_value)((uintptr_t)m | KORB_FID_METHOD));
+    NODE *const body = m->body;
+    struct Node **const dflts = m->opt_defaults;
+    const uint32_t req = m->req_cnt, np = (uint32_t)m->params_cnt;
+    for (uint32_t pi = argc; pi < np; pi++) {      /* defaults may read earlier params and self */
+        const RESULT dr = korb_eval_param_default(c, dflts[pi - req], base + locals_cnt);
+        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+        base[pi] = dr.value;
+    }
+    RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
+    if (r.state == KORB_RETURN) {
+        if (c->return_target == NULL || c->return_target == base) { r.state = KORB_NORMAL; c->return_target = NULL; }
+    }
+    else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
+    if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
+    return r;
+}
+static inline bool korb_opt_call_p(const struct korb_method *m, uint32_t argc) {
+    return m->kind == KORB_METHOD_ISEQ && m->opt_defaults != NULL && argc >= m->req_cnt && argc < (uint32_t)m->params_cnt &&
+           m->kw_info == NULL && m->rest_slot < 0 && m->post_cnt == 0 && !m->uses_block && !m->no_block;
+}
+
 /* A class / module receiver's cached public simple method (liquid-il's `_H.oa(...)`, 1.2M per
  * iteration) goes straight to its body: in korb_send_cached_full the hit was tested only after
  * the instance / send-family cascade, inside a frame big enough to cost more than the call. */
@@ -15465,6 +15507,10 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
         struct korb_method *const m = ic->m;
         if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple && m->visibility == 0 && !c->vm->refinements_active))
             return korb_invoke_simple(c, slots, m, argc, korb_flink_line(flink), mid, recv, ic->def_class);
+    } else if (KORB_OBJECT_P(recv) && !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
+               ic->kind == KORB_IC_INSTANCE && ic->serial == c->vm->method_serial && ic->klass == VAL2OBJ(recv)->klass &&
+               ic->m != NULL && korb_opt_call_p(ic->m, argc) && !c->vm->refinements_active) {   /* `o.m(a)` of `def m(a, b = 1)` */
+        return korb_invoke_opt(c, slots, ic->m, argc, korb_flink_line(flink), mid);
     }
     return korb_send_cached_full(c, slots, mid, flink, argc, ic, caller_self);
 }

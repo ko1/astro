@@ -52,6 +52,9 @@
 
 ## 未: refinement と Enumerator の残り (2026-09-27)
 
+- **省略可能引数の既定値の中で raise したときの backtrace の先頭（2026-10-02 発見、以前から）**: `def raising(a, b = raise(...))` を
+  `o.raising(7)` で呼ぶと、CRuby は `backtrace_locations.first.label` が `"C#raising"`（既定値はメソッドの枠の中で評価）、koruby は `"<main>"`。
+  korb_invoke_method でも korb_invoke_opt でも同じ（既定値の評価が識別子の設定後でも、フレームのリンクがまだ呼び出し元を指す）。
 - **refined なスコープで定義した特異メソッドの super に refinement が効かない（2026-10-02 発見、以前から）**:
   `using R`（R は B#m を refine）の後に `o = B.new; def o.m(x) = "o(" + super + ")"` → CRuby は `o(R(B#m…))`、koruby は R を飛ばして
   `o(B#m…)`。CRuby は super の行き先にも呼び出し地点の refinement を当てる。super キャッシュを refinement 下でも効かせた変更の前の
