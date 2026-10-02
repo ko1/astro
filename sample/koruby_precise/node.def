@@ -2809,13 +2809,24 @@ KORB_SDI_DEF(ABS, 0, {
 KORB_SDI_DEF(EVEN_P, 0, { if (FIXNUM_P(r)) return KORB_SDI_BOOL((FIX2LONG(r) & 1) == 0); })
 KORB_SDI_DEF(ODD_P, 0, { if (FIXNUM_P(r)) return KORB_SDI_BOOL((FIX2LONG(r) & 1) != 0); })
 KORB_SDI_DEF(ZERO_P, 0, { if (FIXNUM_P(r)) return KORB_SDI_BOOL(FIX2LONG(r) == 0); })
+/* `kl` is the receiver's own class (korb_sdi_klass: no singleton, never a class receiver), so a class
+ * target is on its superclass chain alone — no class lookup and no call (korb_class_obj_of /
+ * korb_obj_kind_of_p were 40% of is_a?).  A module target needs the include lists. */
+static inline bool
+korb_sdi_kind_of(CTX *c, const korb_value r, const korb_value kl, const korb_value a0)
+{
+    if (VAL2CLASS(a0)->is_module) return korb_kind_of_p(c, r, a0);
+    for (korb_value k = kl; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass)
+        if (k == a0) return true;
+    return false;
+}
 /* a class / module argument: the answer here, without the C method's frame (10x YJIT, which folds it) */
 KORB_SDI_DEF(IS_A_P, 1, {
-    if (KORB_CLASS_P(a0)) return KORB_SDI_BOOL(korb_kind_of_p(c, r, a0));
+    if (KORB_CLASS_P(a0)) return KORB_SDI_BOOL(korb_sdi_kind_of(c, r, kl, a0));
     KORB_SDI_DIRECT(1)
 })
 KORB_SDI_DEF(KIND_OF_P, 1, {
-    if (KORB_CLASS_P(a0)) return KORB_SDI_BOOL(korb_kind_of_p(c, r, a0));
+    if (KORB_CLASS_P(a0)) return KORB_SDI_BOOL(korb_sdi_kind_of(c, r, kl, a0));
     KORB_SDI_DIRECT(1)
 })
 KORB_SDI_DEF(START_WITH_P, 1, KORB_SDI_DIRECT(1))
