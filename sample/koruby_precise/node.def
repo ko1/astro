@@ -714,7 +714,7 @@ node_shl(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
     if (LIKELY(KORB_STRING_P(l) && KORB_PLAIN_BUILTIN(l) && KORB_STRING_P(rhs) && !c->vm->str_shl_redefined &&
                !(UNLIKELY(c->vm->refinements_active) && c->refinements != KORB_NIL)))   /* liquid-il: 1.8M `out << str` per iteration */
     {
-        KORB_CHECK_FROZEN_HEAP_AT(c, slots, l, "String", korb_flink_line(flink));   /* inline write: no dispatch to place the raise */
+        KORB_CHECK_FROZEN_HEAP_AT(c, slots + 1, l, "String", korb_flink_line(flink));   /* scratch above the staged rhs: a chilled literal's warning dispatches */
         return KP_OPD(c, flink, slots, lhs, "<<", korb_str_shl_str(c, slots + 1, lhs, KORB_REF_AT(&slots[0])));   /* an encoding error names String#<< as the send did */
     }
     if (LIKELY(KORB_STRING_P(l) && KORB_PLAIN_BUILTIN(l)))   /* hot String#<< (a CFUNC) keeps its inline cache; a subclass's own #<< needs the frame below */

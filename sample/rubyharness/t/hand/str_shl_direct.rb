@@ -61,3 +61,11 @@ using LoudShl
 r = +"r"
 r << "w"
 p r, plain_append(+"p")
+
+# a chilled literal (no magic comment) is appended to with its rhs intact
+def chilled_append
+  c = "chill"
+  c << "ed" << "!"
+  c
+end
+p chilled_append, chilled_append.frozen?
