@@ -8334,7 +8334,9 @@ korb_class_obj_of(CTX *c, korb_value self)
         const uint8_t m = VAL2ENUM(self)->mode;
         if ((m == 1 || m == 4) && KORB_CLASS_P(c->vm->lazy_class)) return c->vm->lazy_class;
     }
-    return korb_const_get(c->vm, c->vm->class_name[korb_class_of(self)]);
+    const enum korb_class e = korb_class_of(self);
+    const korb_value k = korb_builtin_class_obj(c->vm, e);      /* the cached constant row, not a lookup by name (is_a? on a builtin value) */
+    return LIKELY(k != KORB_NIL) ? k : korb_const_get(c->vm, c->vm->class_name[e]);
 }
 
 /* The builtin's constant was removed (its row is a nil tombstone) and maybe
@@ -15761,6 +15763,7 @@ korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, 
     return korb_cfunc_ic_call(c, slots, mid, line, argc, ic, klass, out);
 }
 
+bool korb_kind_of_p(CTX *c, korb_value obj, korb_value klass) { return korb_obj_kind_of_p(c, obj, klass); }
 static RESULT korb_m_class_case_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd (builtins/set.c): Module#=== */
 /* `when SomeClass` whose === is still the builtin Module#===: the is_a? answer without the
  * send.  The cache is keyed on the class itself (as a class-method call's), not on its

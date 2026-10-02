@@ -2809,8 +2809,15 @@ KORB_SDI_DEF(ABS, 0, {
 KORB_SDI_DEF(EVEN_P, 0, { if (FIXNUM_P(r)) return KORB_SDI_BOOL((FIX2LONG(r) & 1) == 0); })
 KORB_SDI_DEF(ODD_P, 0, { if (FIXNUM_P(r)) return KORB_SDI_BOOL((FIX2LONG(r) & 1) != 0); })
 KORB_SDI_DEF(ZERO_P, 0, { if (FIXNUM_P(r)) return KORB_SDI_BOOL(FIX2LONG(r) == 0); })
-KORB_SDI_DEF(IS_A_P, 1, KORB_SDI_DIRECT(1))
-KORB_SDI_DEF(KIND_OF_P, 1, KORB_SDI_DIRECT(1))
+/* a class / module argument: the answer here, without the C method's frame (10x YJIT, which folds it) */
+KORB_SDI_DEF(IS_A_P, 1, {
+    if (KORB_CLASS_P(a0)) return KORB_SDI_BOOL(korb_kind_of_p(c, r, a0));
+    KORB_SDI_DIRECT(1)
+})
+KORB_SDI_DEF(KIND_OF_P, 1, {
+    if (KORB_CLASS_P(a0)) return KORB_SDI_BOOL(korb_kind_of_p(c, r, a0));
+    KORB_SDI_DIRECT(1)
+})
 KORB_SDI_DEF(START_WITH_P, 1, KORB_SDI_DIRECT(1))
 KORB_SDI_DEF(END_WITH_P, 1, KORB_SDI_DIRECT(1))
 KORB_SDI_DEF(KEY_P, 1, KORB_SDI_DIRECT(1))
