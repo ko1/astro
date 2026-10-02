@@ -12766,7 +12766,8 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
                 m = korb_mcache_find(vm, klass, mid, &def_class);
                 korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, argc);
             }
-            if (m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple)
+            /* korb_invoke_simple keeps the caller's refinement set: only for a callee with none */
+            if (m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple && (LIKELY(!vm->refinements_active) || m->refine_set == KORB_NIL))
                 return korb_invoke_simple(c, slots, m, argc, korb_flink_line(flink), mid, self, def_class);
             if (m != NULL && m->kind == KORB_METHOD_CFUNC && !m->uses_block && site != NULL &&
                 (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {   /* as the user-instance case above */
@@ -12778,6 +12779,11 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
                 if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), korb_flink_line(flink), mid, m);
                 return r;
             }
+            /* attr / non-simple ISEQ (optional / keyword / rest params): a module's own
+             * helpers (liquid-il's RuntimeHelpers.lookup / ip / to_num) re-resolved per call */
+            RESULT r;
+            if (m != NULL && korb_invoke_self(c, slots, m, argc, korb_flink_line(flink), mid, self, def_class, &r))
+                return r;
         }
     }
     return korb_call_impl(c, slots, mid, korb_flink_line(flink), cc, argc, self, NULL, NULL, NULL, site);
