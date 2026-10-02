@@ -703,7 +703,7 @@ static RESULT korb_m_obj_respond_to(CTX *c, korb_value *slots, korb_ref self, ko
      * dispatch class, yet answer differently (NilClass has no ::new, Object does) */
     /* a refined scope answers by its own refinements too (korb_responds_to): no cache there */
     const korb_value rk = (KORB_CLASS_P(KORB_REF_GET(self)) || korb_site_refined(c)) ? KORB_NIL : korb_dispatch_class(c, KORB_REF_GET(self));
-    const uint32_t rki = (uint32_t)(((uintptr_t)rk >> 4) ^ (mid * 2654435761u) ^ include_priv) & 255u;
+    const uint32_t rki = korb_rt_index(rk, mid, include_priv);
     if (LIKELY(KORB_CLASS_P(rk) && vm->rt_cache[rki].serial == vm->method_serial && vm->rt_cache[rki].klass == rk &&
                vm->rt_cache[rki].mid == mid && vm->rt_cache[rki].priv == include_priv))
         return RESULT_OK(vm->rt_cache[rki].ans ? KORB_TRUE : KORB_FALSE);

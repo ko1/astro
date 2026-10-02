@@ -574,6 +574,12 @@ static inline bool korb_kwargs_hash_p(korb_value v) {
     return KORB_HASH_P(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_KWARGS) != 0;
 }
 
+/* #respond_to?'s answer cache slot for (dispatch class, name, include_all): builtins/set.c fills it,
+ * the AOT inline send reads it */
+static inline uint32_t korb_rt_index(korb_value rk, uint32_t mid, bool priv) {
+    return (uint32_t)(((uintptr_t)rk >> 4) ^ (mid * 2654435761u) ^ priv) & 255u;
+}
+
 /* an empty `**h` at a call site: no argument at all (CRuby 3.0) */
 static inline bool korb_empty_kwsplat_p(korb_value v) {
     return korb_kwargs_hash_p(v) && VAL2HASH(v)->len == 0;

@@ -2833,7 +2833,19 @@ KORB_SDI_DEF(START_WITH_P, 1, KORB_SDI_DIRECT(1))
 KORB_SDI_DEF(END_WITH_P, 1, KORB_SDI_DIRECT(1))
 KORB_SDI_DEF(KEY_P, 1, KORB_SDI_DIRECT(1))
 KORB_SDI_DEF(INCLUDE_P, 1, KORB_SDI_DIRECT(1))
-KORB_SDI_DEF(RESPOND_TO_P, 1, KORB_SDI_DIRECT(1))
+/* `respond_to?(:sym)`: #respond_to?'s own answer cache, keyed on kl (the receiver's own class, as
+ * korb_m_obj_respond_to keys it); a refined site never caches (8x YJIT before) */
+KORB_SDI_DEF(RESPOND_TO_P, 1, {
+    const struct korb_vm *const vm = c->vm;
+    if (SYMBOL_P(a0) && !(UNLIKELY(vm->refinements_active) && c->refinements != KORB_NIL)) {
+        const uint32_t mid = SYM2ID(a0);
+        const uint32_t i = korb_rt_index(kl, mid, false);
+        if (vm->rt_cache[i].serial == vm->method_serial && vm->rt_cache[i].klass == kl &&
+            vm->rt_cache[i].mid == mid && !vm->rt_cache[i].priv)
+            return KORB_SDI_BOOL(vm->rt_cache[i].ans);
+    }
+    KORB_SDI_DIRECT(1)
+})
 KORB_SDI_DEF(TO_S, 0, KORB_SDI_DIRECT(0))
 KORB_SDI_DEF(HASH, 0, KORB_SDI_DIRECT(0))
 KORB_SDI_DEF(FROZEN_P, 0, KORB_SDI_DIRECT(0))
