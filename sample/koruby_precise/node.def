@@ -2792,10 +2792,12 @@ KORB_SDI_DEFX(BYTESIZE, 0, KORB_SDI_KL_STR, 1, { return RESULT_OK(LONG2FIX((korb
 KORB_SDI_DEF(SIZE, 0, {
     if (KORB_ARRAY_P(r)) return RESULT_OK(LONG2FIX((korb_sword_t)VAL2ARY(r)->len));
     if (KORB_HASH_P(r)) return RESULT_OK(LONG2FIX((korb_sword_t)VAL2HASH(r)->len));
+    KORB_SDI_DIRECT(0)   /* String (character count): the builtin, without korb_send_cached (psych: 1.1M per load) */
 })
 KORB_SDI_DEF(LENGTH, 0, {
     if (KORB_ARRAY_P(r)) return RESULT_OK(LONG2FIX((korb_sword_t)VAL2ARY(r)->len));
     if (KORB_HASH_P(r)) return RESULT_OK(LONG2FIX((korb_sword_t)VAL2HASH(r)->len));
+    KORB_SDI_DIRECT(0)   /* String (character count): the builtin, without korb_send_cached (psych: 1.1M per load) */
 })
 KORB_SDI_DEF(FIRST, 0, {
     if (KORB_ARRAY_P(r)) { const KorbArray *const a = VAL2ARY(r); return RESULT_OK(a->len ? korb_items_data(a->items)[0] : KORB_NIL); }

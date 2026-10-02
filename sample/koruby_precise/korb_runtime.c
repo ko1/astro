@@ -15585,8 +15585,44 @@ korb_invoke_opt(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc,
     return r;
 }
 static inline bool korb_opt_call_p(const struct korb_method *m, uint32_t argc) {
-    return m->kind == KORB_METHOD_ISEQ && m->opt_defaults != NULL && argc >= m->req_cnt && argc < (uint32_t)m->params_cnt &&
+    return m->kind == KORB_METHOD_ISEQ && m->opt_defaults != NULL && argc >= m->req_cnt && argc <= (uint32_t)m->params_cnt &&
            m->kw_info == NULL && m->rest_slot < 0 && m->post_cnt == 0 && !m->uses_block && !m->no_block;
+}
+
+/* Klass.new of a plain user class once `initialize` is resolved: allocate, then the short
+ * invoke the initialize's shape allows.  korb_send_cached's small entry calls it on a NEW hit. */
+static __attribute__((noinline, no_stack_protector)) RESULT
+korb_new_with_init(CTX *c, korb_value *slots, korb_value flink, uint32_t argc, struct korb_method *init,
+                   korb_value idef, korb_value recv, bool framed)
+{
+    struct korb_vm *const vm = c->vm;
+    const korb_value obj = UNWRAP(korb_obj_new(c, slots, recv));   /* may GC (bumps serial → next call re-resolves) */
+    if (init) {
+        korb_value *const base = slots - argc;
+        if (LIKELY(init->is_simple)) {     /* fixed-arity initialize → streamlined invoke (skips kw/opt/rest handling) */
+            base[-1] = obj;                /* stage obj as self at the frame's bottom header */
+            const RESULT ir = korb_invoke_simple(c, slots, init, argc, korb_flink_line(flink), vm->mid_initialize, obj, idef);
+            if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;   /* a raise, or return/throw/break aimed further out */
+            return RESULT_OK(base[-1]);    /* the (possibly moved) obj */
+        }
+        base[-1] = obj;                    /* stage obj as self at recv_slot (slots[-argc-1]) */
+        if (korb_opt_call_p(init, argc) && LIKELY(!vm->refinements_active)) {   /* psych's Node#initialize: 1.9M per load */
+            const RESULT ir = korb_invoke_opt(c, slots, init, argc, korb_flink_line(flink), vm->mid_initialize);
+            if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+            return RESULT_OK(base[-1]);
+        }
+        /* korb_dispatch_method handles CFUNC (e.g. Random#initialize) as well as
+         * ISEQ; korb_invoke_method is ISEQ-only and would misread a CFUNC's
+         * locals_cnt (SIGBUS). */
+        const RESULT ir = korb_dispatch_method(c, slots, init, vm->mid_initialize, korb_flink_line(flink), argc,
+                                               idef, NULL, NULL, NULL, framed);
+        if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;   /* a raise, or return/throw/break aimed further out */
+        return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
+    }
+    if (UNLIKELY(argc != 0))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, korb_flink_line(flink),
+                          "wrong number of arguments (given %u, expected 0)", argc);
+    return RESULT_OK(obj);
 }
 
 /* A class / module receiver's cached public simple method (liquid-il's `_H.oa(...)`, 1.2M per
@@ -15601,6 +15637,9 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
         struct korb_method *const m = ic->m;
         if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple && m->visibility == 0 && !c->vm->refinements_active))
             return korb_invoke_simple(c, slots, m, argc, korb_flink_line(flink), mid, recv, ic->def_class);
+    } else if (KORB_CLASS_P(recv) && ic->kind == KORB_IC_NEW && ic->serial == c->vm->method_serial && ic->klass == recv &&
+               mid == c->vm->mid_new && !c->vm->refinements_active && korb_class_new_kind(c, recv) == 1) {   /* psych: 2M per load */
+        return korb_new_with_init(c, slots, flink, argc, ic->m, ic->def_class, recv, KORB_FLINK_FRAMED(flink));
     } else if (KORB_OBJECT_P(recv) && !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
                ic->kind == KORB_IC_INSTANCE && ic->serial == c->vm->method_serial && ic->klass == VAL2OBJ(recv)->klass &&
                ic->m != NULL && korb_opt_call_p(ic->m, argc) && !c->vm->refinements_active) {   /* `o.m(a)` of `def m(a, b = 1)` */
@@ -15706,33 +15745,7 @@ korb_send_cached_full(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
                 korb_ic_fill(ic, korb_ic_serial(c, vm->mid_initialize), recv, init, idef, KORB_IC_NEW, argc);
                 korb_mid_looked(vm, mid);
             }
-            const korb_value obj = UNWRAP(korb_obj_new(c, slots, recv));   /* may GC (bumps serial → next call re-resolves) */
-            if (init) {
-                korb_value *const base = slots - argc;
-                if (LIKELY(init->is_simple)) {     /* fixed-arity initialize → streamlined invoke (skips kw/opt/rest handling) */
-                    base[-1] = obj;                /* stage obj as self at the frame's bottom header */
-                    const RESULT ir = korb_invoke_simple(c, slots, init, argc, korb_flink_line(flink), vm->mid_initialize, obj, idef);
-                    if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;   /* a raise, or return/throw/break aimed further out */
-                    return RESULT_OK(base[-1]);    /* the (possibly moved) obj */
-                }
-                base[-1] = obj;                    /* stage obj as self at recv_slot (slots[-argc-1]) */
-                if (korb_opt_call_p(init, argc) && LIKELY(!vm->refinements_active)) {   /* psych's Node#initialize: 1.9M per load */
-                    const RESULT ir = korb_invoke_opt(c, slots, init, argc, korb_flink_line(flink), vm->mid_initialize);
-                    if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
-                    return RESULT_OK(base[-1]);
-                }
-                /* korb_dispatch_method handles CFUNC (e.g. Random#initialize) as well as
-                 * ISEQ; korb_invoke_method is ISEQ-only and would misread a CFUNC's
-                 * locals_cnt (SIGBUS). */
-                const RESULT ir = korb_dispatch_method(c, slots, init, vm->mid_initialize, korb_flink_line(flink), argc,
-                                                       idef, NULL, NULL, NULL, framed);
-                if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;   /* a raise, or return/throw/break aimed further out */
-                return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
-            }
-            if (UNLIKELY(argc != 0))
-                return korb_raise(c, slots, KORB_E_ARGUMENT, korb_flink_line(flink),
-                                  "wrong number of arguments (given %u, expected 0)", argc);
-            return RESULT_OK(obj);
+            return korb_new_with_init(c, slots, flink, argc, init, idef, recv, framed);
         }
         /* class/module singleton-method call (e.g. Math.sqrt, a user class
          * method) — cache the resolved method keyed on the receiver class,
@@ -15978,8 +15991,8 @@ static const struct { const char *name; uint32_t argc; int cls[KORB_SDI_FN_MAX +
     KORB_SDI_E(INSTANCE_OF_P, "instance_of?", 1, KORB_C_OBJECT),
     KORB_SDI_E(EMPTY_P, "empty?", 0, KORB_C_STRING, KORB_C_ARRAY, KORB_C_HASH),
     KORB_SDI_E(BYTESIZE, "bytesize", 0, KORB_C_STRING),
-    KORB_SDI_E(SIZE, "size", 0, KORB_C_ARRAY, KORB_C_HASH),
-    KORB_SDI_E(LENGTH, "length", 0, KORB_C_ARRAY, KORB_C_HASH),
+    KORB_SDI_E(SIZE, "size", 0, KORB_C_ARRAY, KORB_C_HASH, KORB_C_STRING),
+    KORB_SDI_E(LENGTH, "length", 0, KORB_C_ARRAY, KORB_C_HASH, KORB_C_STRING),
     KORB_SDI_E(FIRST, "first", 0, KORB_C_ARRAY),
     KORB_SDI_E(LAST, "last", 0, KORB_C_ARRAY),
     KORB_SDI_E(ABS, "abs", 0, KORB_C_INTEGER),
