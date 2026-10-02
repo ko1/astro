@@ -3546,7 +3546,7 @@ node_binding(CTX *c, NODE *n, korb_value *slots, int32_t def_env_off, int32_t se
 // argv@children stages [recv, args...]; korb_send_blk resolves the built-in and
 // hands it the block (node_entry) + def_env so it can yield.  Replaces send_blk0..2.
 // `self_off` = the caller's self = the block's captured (lexical) self.
-NODE_DEF @noinline @framehdr
+NODE_DEF @framehdr
 node_send_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, NODE *block, int32_t def_env_off, NODE **argv@children, struct korb_inlcache *ic@ref)
 {
     const uint32_t line = korb_flink_line(flink);   /* cold paths only: the hot path never needs it */
