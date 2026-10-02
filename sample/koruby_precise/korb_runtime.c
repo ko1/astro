@@ -15715,6 +15715,29 @@ korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, 
     return korb_cfunc_ic_call(c, slots, mid, line, argc, ic, klass, out);
 }
 
+static RESULT korb_m_class_case_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd (builtins/set.c): Module#=== */
+/* `when SomeClass` whose === is still the builtin Module#===: the is_a? answer without the
+ * send.  The cache is keyed on the class itself (as a class-method call's), not on its
+ * metaclass, which costs a side-table lookup to find.  False = take the general path. */
+bool
+korb_caseeq_class_cached(CTX *c, korb_value w, korb_value subj, struct korb_inlcache *ic, RESULT *out)
+{
+    struct korb_vm *const vm = c->vm;
+    if (LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == vm->method_serial && ic->klass == w)) {
+        *out = RESULT_OK(korb_case_eq(c, w, subj) ? KORB_TRUE : KORB_FALSE);
+        return true;
+    }
+    if (korb_site_refined(c)) return false;
+    const korb_value dk = korb_dispatch_class(c, w);
+    if (!KORB_CLASS_P(dk)) return false;
+    korb_value def = KORB_NIL;
+    struct korb_method *const m = korb_mcache_find(vm, dk, vm->mid_eqq, &def);
+    if (m == NULL || m->kind != KORB_METHOD_CFUNC || m->rfn != korb_m_class_case_eq || m->visibility != 0) return false;
+    korb_ic_fill(ic, korb_ic_serial_mc(c), w, m, def, KORB_IC_SMETHOD, UINT32_MAX);
+    *out = RESULT_OK(korb_case_eq(c, w, subj) ? KORB_TRUE : KORB_FALSE);
+    return true;
+}
+
 /* The same for any receiver, keyed on its dispatch class (a singleton, or a class's
  * metaclass).  node_caseeq's `when String` / `when 1..9` / `when /re/` sent === uncached
  * every time (liquid-il ~870k per iteration). */

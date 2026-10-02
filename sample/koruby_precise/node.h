@@ -403,6 +403,7 @@ void   korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
 RESULT korb_send(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc);
 RESULT korb_send_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc, korb_value caller_self);
 RESULT korb_str_shl_str(CTX *c, korb_value *slots, korb_ref self, korb_ref arg);   /* node_shl: String#<< String */
+bool korb_caseeq_class_cached(CTX *c, korb_value w, korb_value subj, struct korb_inlcache *ic, RESULT *out);   /* node_caseeq */
 RESULT korb_send_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc, NODE *block,
                         korb_value *def_env, korb_value *captured_self, korb_value flink, korb_value caller_self,
                         struct korb_inlcache *ic);   /* node_send_blk */
