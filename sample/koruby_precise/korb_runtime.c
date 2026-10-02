@@ -15450,9 +15450,27 @@ korb_send_ic_dispatch(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
     (LIKELY(((ic)->kind == KORB_IC_INSTANCE || (ic)->kind == KORB_IC_INSTANCE_VIS) && \
             (ic)->serial == (vm)->method_serial && (ic)->klass == (klass)))
 
+static __attribute__((noinline, no_stack_protector)) RESULT
+korb_send_cached_full(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
+                      struct korb_inlcache *ic, korb_value caller_self);
+/* A class / module receiver's cached public simple method (liquid-il's `_H.oa(...)`, 1.2M per
+ * iteration) goes straight to its body: in korb_send_cached_full the hit was tested only after
+ * the instance / send-family cascade, inside a frame big enough to cost more than the call. */
 __attribute__((no_stack_protector)) RESULT
 korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
                  struct korb_inlcache *ic, korb_value caller_self)
+{
+    const korb_value recv = slots[-(korb_sword_t)argc - 1];
+    if (KORB_CLASS_P(recv) && LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == c->vm->method_serial && ic->klass == recv)) {
+        struct korb_method *const m = ic->m;
+        if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple && m->visibility == 0 && !c->vm->refinements_active))
+            return korb_invoke_simple(c, slots, m, argc, korb_flink_line(flink), mid, recv, ic->def_class);
+    }
+    return korb_send_cached_full(c, slots, mid, flink, argc, ic, caller_self);
+}
+static __attribute__((noinline, no_stack_protector)) RESULT
+korb_send_cached_full(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
+                      struct korb_inlcache *ic, korb_value caller_self)
 {
     struct korb_vm *const vm = c->vm;
     const bool framed = KORB_FLINK_FRAMED(flink);   /* node_shl stages flush: no header to mark */
