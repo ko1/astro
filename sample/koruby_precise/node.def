@@ -3528,12 +3528,12 @@ node_binding(CTX *c, NODE *n, korb_value *slots, int32_t def_env_off, int32_t se
 // hands it the block (node_entry) + def_env so it can yield.  Replaces send_blk0..2.
 // `self_off` = the caller's self = the block's captured (lexical) self.
 NODE_DEF @noinline @framehdr
-node_send_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, NODE *block, int32_t def_env_off, NODE **argv@children)
+node_send_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, NODE *block, int32_t def_env_off, NODE **argv@children, struct korb_inlcache *ic@ref)
 {
     const uint32_t line = korb_flink_line(flink);   /* cold paths only: the hot path never needs it */
     (void)n; (void)block_dispatcher;
-    return korb_send_blk(c, slots, mid, line, argv_cnt - 1, block,
-                         (korb_value *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off], flink, slots[self_off]);
+    return korb_send_blk_ic(c, slots, mid, line, argv_cnt - 1, block,
+                            (korb_value *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off], flink, slots[self_off], ic);
 }
 
 // `recv.mid(args, &proc)` — forward a runtime Proc as the block.  `proc_off` is a

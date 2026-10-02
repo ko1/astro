@@ -403,6 +403,9 @@ void   korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
 RESULT korb_send(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc);
 RESULT korb_send_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc, korb_value caller_self);
 RESULT korb_str_shl_str(CTX *c, korb_value *slots, korb_ref self, korb_ref arg);   /* node_shl: String#<< String */
+RESULT korb_send_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc, NODE *block,
+                        korb_value *def_env, korb_value *captured_self, korb_value flink, korb_value caller_self,
+                        struct korb_inlcache *ic);   /* node_send_blk */
 RESULT korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
                         struct korb_inlcache *ic, korb_value caller_self);   /* caller_self = KORB_UNDEF → no visibility check */
 /* `site` is the call node, or NULL when there is none; read ONLY on the

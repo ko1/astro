@@ -15580,6 +15580,46 @@ korb_send_blk(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
     return r;
 }
 
+/* `recv.m(args) { }` through the site's inline cache: a public Ruby method, or a C method
+ * taking the block, on an instance receiver.  korb_send_impl_vis looked the method up on
+ * every call (each / fetch / find / map in the Rails benchmarks; a block call was 6x YJIT).
+ * Class receivers (their `new` / `[]` special cases), the send family, refined sites,
+ * private / protected and misses take the full send. */
+RESULT
+korb_send_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
+                 uint32_t argc, NODE *block, korb_value *def_env, korb_value *captured_self, korb_value flink,
+                 korb_value caller_self, struct korb_inlcache *ic)
+{
+    struct korb_vm *const vm = c->vm;
+    const korb_value recv = slots[-(korb_sword_t)argc - 1];
+    if (LIKELY(flink != 0 && !korb_site_refined(c) && !KORB_CLASS_P(recv) &&
+               mid != vm->mid_send && mid != vm->mid___send__ && mid != vm->mid_public_send)) {
+        const korb_value klass = KORB_OBJECT_P(recv) ? korb_obj_dispatch_klass(vm, recv) : korb_dispatch_class(c, recv);
+        if (LIKELY(KORB_CLASS_P(klass))) {
+            struct korb_method *m;
+            korb_value def_class;
+            if (LIKELY(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
+                m = ic->m; def_class = ic->def_class;
+            } else {
+                def_class = KORB_NIL;
+                m = korb_mcache_find(vm, klass, mid, &def_class);
+                korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);   /* no entry fast path: a block call never takes it */
+            }
+            if (m != NULL && m->visibility == 0 &&
+                (m->kind == KORB_METHOD_ISEQ || (m->kind == KORB_METHOD_CFUNC && m->uses_block))) {
+                /* the @framehdr window already holds the link at base[-3] (koruby_gen): no carry to stage,
+                 * which only the full send's re-staged window consumes */
+                RESULT r = korb_dispatch_method(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self, true);
+                if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;
+                if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(c, def_env, captured_self, korb_link_base(c, slots - (korb_sword_t)argc - 3)))
+                    return korb_raise_break_lje(c, slots, r.value);
+                return r;
+            }
+        }
+    }
+    return korb_send_blk(c, slots, mid, line, argc, block, def_env, captured_self, flink, caller_self);
+}
+
 /* A type-fast-path node's deopt (node_aref / node_aset) on a plain String / Array / Hash:
  * call `mid` through the node's own inline cache when it resolves to a public C method.
  * Those nodes' slot windows have no room for a Ruby callee's frame header, so anything
