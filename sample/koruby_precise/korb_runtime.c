@@ -6894,6 +6894,10 @@ static inline bool korb_kw_fast_eligible(const struct korb_method *m);
 static RESULT korb_invoke_kw_simple(CTX *c, korb_value *slots, struct korb_method *m, uint32_t pos_argc,
                                     const uint32_t *kw_syms, uint32_t kw_argc, uint32_t line, uint32_t mid,
                                     korb_value self, korb_value def_class);
+static RESULT korb_invoke_opt(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc, uint32_t line, uint32_t mid);
+static inline bool korb_opt_call_p(const struct korb_method *m, uint32_t argc);
+static inline RESULT korb_invoke_blk(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc, uint32_t line, uint32_t mid,
+                                     NODE *block, korb_value *def_env, korb_value captured_self);
 static __attribute__((no_stack_protector)) RESULT
 korb_invoke_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc,
                    uint32_t line, uint32_t mid, korb_value self, korb_value def_class,
@@ -8233,7 +8237,15 @@ korb_super(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc
     slots[1] = korb_flink_from_base(c, frame_base, korb_flink_line_bits(line), &slots[1]);
     slots[2] = 0;                                 /* base[-2] (EP)    */
     slots[3] = self;                              /* base[-1]         */
-    return korb_invoke_method(c, slots + 4 + argc, m, argc, line, mid, self, found_def, block, def_env, captured_self);
+    /* the short invokes, as a cached send takes them (psych's ToRuby#accept → super: 2M per load) */
+    korb_value *const cur = slots + 4 + argc;
+    if (LIKELY(!c->vm->refinements_active)) {
+        if (m->is_simple) return korb_invoke_simple(c, cur, m, argc, line, mid, self, found_def);
+        if (block != NULL && m->simple_blk && argc == (uint32_t)m->params_cnt)
+            return korb_invoke_blk(c, cur, m, argc, line, mid, block, def_env, captured_self);
+        if (block == NULL && korb_opt_call_p(m, argc)) return korb_invoke_opt(c, cur, m, argc, line, mid);
+    }
+    return korb_invoke_method(c, cur, m, argc, line, mid, self, found_def, block, def_env, captured_self);
 }
 
 /* a descends from (or equals) b */
@@ -15633,6 +15645,11 @@ korb_send_cached_full(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
                     return RESULT_OK(base[-1]);    /* the (possibly moved) obj */
                 }
                 base[-1] = obj;                    /* stage obj as self at recv_slot (slots[-argc-1]) */
+                if (korb_opt_call_p(init, argc) && LIKELY(!vm->refinements_active)) {   /* psych's Node#initialize: 1.9M per load */
+                    const RESULT ir = korb_invoke_opt(c, slots, init, argc, korb_flink_line(flink), vm->mid_initialize);
+                    if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+                    return RESULT_OK(base[-1]);
+                }
                 /* korb_dispatch_method handles CFUNC (e.g. Random#initialize) as well as
                  * ISEQ; korb_invoke_method is ISEQ-only and would misread a CFUNC's
                  * locals_cnt (SIGBUS). */
