@@ -15659,8 +15659,13 @@ korb_send_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
             if (m != NULL && m->visibility == 0 &&
                 (m->kind == KORB_METHOD_ISEQ || (m->kind == KORB_METHOD_CFUNC && m->uses_block))) {
                 /* the @framehdr window already holds the link at base[-3] (koruby_gen): no carry to stage,
-                 * which only the full send's re-staged window consumes */
-                RESULT r = korb_dispatch_method(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self, true);
+                 * which only the full send's re-staged window consumes.  An ISEQ skips korb_dispatch_method's
+                 * switch (its ISEQ arm, one call level less on every block call). */
+                RESULT r = m->kind != KORB_METHOD_ISEQ
+                    ? korb_dispatch_method(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self, true)
+                    : (m->is_simple && LIKELY(!vm->refinements_active))
+                    ? korb_invoke_simple(c, slots, m, argc, line, mid, recv, def_class)
+                    : korb_invoke_method(c, slots, m, argc, line, mid, recv, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
                 if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;
                 if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(c, def_env, captured_self, korb_link_base(c, slots - (korb_sword_t)argc - 3)))
                     return korb_raise_break_lje(c, slots, r.value);
