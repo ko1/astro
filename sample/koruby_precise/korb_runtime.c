@@ -6339,6 +6339,8 @@ korb_class_def_method(CTX *c, korb_value klass, uint32_t mid, NODE *body, NODE *
     /* fixed positional arity, nothing exotic → streamlined invoke eligible. */
     m->is_simple = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 &&
                     req_cnt == params_cnt && !uses_block && !m->no_block);
+    m->simple_blk = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 && req_cnt == params_cnt &&
+                     uses_block == KORB_DEFF_USES_BLOCK && !m->no_block);
     /* parser-built node_simple_entry (also for uses_block: fixed arity, block-less sites only).
      * `&nil` opts out: the streamlined path never sees the block it must refuse. */
     m->simple_entry = m->no_block ? NULL : entry;
@@ -10332,6 +10334,8 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
     m->bfn = NULL;
     m->is_simple = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 &&
                     req_cnt == params_cnt && !uses_block && !m->no_block);
+    m->simple_blk = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 && req_cnt == params_cnt &&
+                     uses_block == KORB_DEFF_USES_BLOCK && !m->no_block);
     m->simple_entry = m->no_block ? NULL : entry;   /* parser-built node_simple_entry (uses_block も可; `&nil` は除外) */
     /* a user top-level def is a private Object method (korb_toplevel_def); the prelude's stay hidden */
     m->visibility = priv ? 1 : 0;
@@ -15704,6 +15708,40 @@ korb_send_blk(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
     return r;
 }
 
+/* korb_invoke_simple for a fixed-arity method that takes the block (`def m(x) = yield(x)`): the
+ * block trio goes into the frame's top three cells as korb_invoke_method lays them.  The general
+ * invoke was 28% of a block call (call_block: 5.4x YJIT).  Anything korb_invoke_method does beyond
+ * that (an instance_eval'd definee, $~, a keywords-marked last argument) goes its way. */
+static inline __attribute__((always_inline, no_stack_protector)) RESULT
+korb_invoke_blk(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc, uint32_t line, uint32_t mid,
+                NODE *block, korb_value *def_env, korb_value captured_self)
+{
+    korb_value *const base = slots - argc;
+    if (UNLIKELY(c->def_definee != KORB_NIL || c->cvar_cref != KORB_NIL || m->uses_backref ||
+                 (argc != 0 && korb_kwargs_hash_p(base[argc - 1]))))
+        return korb_invoke_method(c, slots, m, argc, line, mid, base[-1], KORB_NIL, block, def_env, captured_self);
+    KORB_AUDIT_EP(base, mid);
+    const uint32_t locals_cnt = m->locals_cnt;
+    char cstack_probe;
+    korb_value *const resv = base + locals_cnt + KORB_FRAME_SLACK;
+    if (UNLIKELY(resv > c->slots_limit || &cstack_probe < c->cstack_limit))
+        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
+    if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
+    for (uint32_t i = argc; i < locals_cnt - 3; i++) base[i] = 0;
+    base[locals_cnt - 3] = (korb_value)((uintptr_t)block | 1u);
+    base[locals_cnt - 2] = (korb_value)(uintptr_t)def_env;
+    base[locals_cnt - 1] = captured_self;
+    korb_id_set(base, (korb_value)((uintptr_t)m | KORB_FID_METHOD));
+    NODE *const body = m->body;
+    RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
+    if (r.state == KORB_RETURN) {
+        if (c->return_target == NULL || c->return_target == base) { r.state = KORB_NORMAL; c->return_target = NULL; }
+    }
+    else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
+    if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
+    return r;
+}
+
 /* `recv.m(args) { }` through the site's inline cache: a public Ruby method, or a C method
  * taking the block, on an instance receiver.  korb_send_impl_vis looked the method up on
  * every call (each / fetch / find / map in the Rails benchmarks; a block call was 6x YJIT).
@@ -15738,6 +15776,8 @@ korb_send_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
                     ? korb_dispatch_method(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self, true)
                     : (m->is_simple && LIKELY(!vm->refinements_active))
                     ? korb_invoke_simple(c, slots, m, argc, line, mid, recv, def_class)
+                    : (m->simple_blk && argc == (uint32_t)m->params_cnt && LIKELY(!vm->refinements_active))
+                    ? korb_invoke_blk(c, slots, m, argc, line, mid, block, def_env, KORB_CSELF_VAL(captured_self))
                     : korb_invoke_method(c, slots, m, argc, line, mid, recv, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
                 if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;
                 if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(c, def_env, captured_self, korb_link_base(c, slots - (korb_sword_t)argc - 3)))

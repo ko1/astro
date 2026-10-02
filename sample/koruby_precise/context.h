@@ -1083,6 +1083,7 @@ struct korb_method {
                               * eligible for the streamlined korb_invoke_simple path. */
     uint8_t  sdef;           /* written `def recv.m`: a def/undef in its body acts on the lexical
                               * cref, not on this singleton (korb_body_cref).  In is_simple's pad. */
+    uint8_t  simple_blk;     /* ISEQ: is_simple's shape but uses the block (korb_invoke_blk).  In the pad too. */
     int32_t  params_cnt;     /* total positional (req+opt); -1 = variadic (builtins only) */
     uint32_t req_cnt;        /* ISEQ: required positional count (== params_cnt if no opts) */
     uint32_t post_cnt;       /* ISEQ: post (after-rest) required params; slots at rest_slot+1.. */
