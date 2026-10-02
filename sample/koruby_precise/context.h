@@ -771,6 +771,7 @@ typedef struct KorbClass {
     uint32_t new_kind_serial;        /* method_serial the new_kind above was classified at: a later `def self.new`
                                       * (or an rspec stub) turns a plain class into a special one */
     uint8_t  send_user;              /* 0x80 valid | bit 0/1/2: the chain defines its own send / __send__ / public_send */
+    uint8_t  ivar_hint;              /* an instance got ivars: korb_obj_new gives the next ones their first values array */
     uint32_t send_serial;            /* method_serial send_user was computed at */
     uint8_t  struct_kwinit;          /* Struct.new(..., keyword_init: true) → .new takes a kwargs hash */
     uint8_t  is_data;                /* 1 = Data.define class (immutable; .new accepts positional OR keyword) */

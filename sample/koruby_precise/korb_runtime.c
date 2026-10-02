@@ -2288,6 +2288,15 @@ korb_obj_new(CTX *c, korb_value *slots, korb_value klass)
     o->shape_id = 1;                                  /* root shape (no ivars) */
     /* zero-init: ivar_capa=0, klass=nil, ivars=NULL */
     if (klass != KORB_NIL) ARO_STORE(c, o, (korb_value *)(uintptr_t)&o->klass, KORB_REF_GET(kref));
+    /* instances of this class get ivars: allocate the first values array now, so `@a = a` in
+     * initialize takes node_ivar_set's cached transition instead of korb_ivar_set (new_obj: 14%) */
+    if (KORB_CLASS_P(KORB_REF_GET(kref)) && VAL2CLASS(KORB_REF_GET(kref))->ivar_hint) {
+        korb_ref oref = SLOTS_PUSH(slots, (korb_value)o);
+        KorbArrayItems *const it = korb_alloc(c, slots, sizeof(KorbArrayItems) + 4 * sizeof(korb_value), KORB_OBJ_VALUE_ARRAY);
+        o = VAL2OBJ(KORB_REF_GET(oref));
+        ARO_STORE(c, o, (korb_value *)(uintptr_t)&o->ivars, (korb_value)(uintptr_t)it);
+        o->ivar_capa = 4;
+    }
     return RESULT_OK((korb_value)o);
 }
 
@@ -2719,6 +2728,7 @@ korb_ivar_set(CTX *c, korb_value *slots, korb_ref selfref, korb_value name_sym, 
     const uint32_t ncount = c->vm->shapes[nshape].ivar_count;   /* = old count + 1 */
     o = VAL2OBJ(KORB_REF_GET(selfref));
     if (!o->ivars || ncount > o->ivar_capa) {         /* grow / first alloc */
+        if (!o->ivars && KORB_CLASS_P(o->klass)) VAL2CLASS(o->klass)->ivar_hint = 1;   /* korb_obj_new pre-sizes the next */
         uint32_t ncapa = o->ivar_capa ? o->ivar_capa * 2 : 4;
         while (ncapa < ncount) ncapa *= 2;
         KorbArrayItems *nit = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)ncapa * sizeof(korb_value),
