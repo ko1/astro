@@ -15625,6 +15625,21 @@ korb_new_with_init(CTX *c, korb_value *slots, korb_value flink, uint32_t argc, s
     return RESULT_OK(obj);
 }
 
+/* the class korb_send_cached_full keys a plain builtin receiver's cache on, or nil */
+static inline korb_value
+korb_send_builtin_klass(struct korb_vm *vm, const korb_value recv)
+{
+    if (FIXNUM_P(recv)) return korb_builtin_class_obj(vm, KORB_C_INTEGER);
+    if (FLONUM_P(recv)) return korb_builtin_class_obj(vm, KORB_C_FLOAT);
+    if (!AROH_IS_GC_OBJECT(recv) || (((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS)) return KORB_NIL;
+    switch (KORB_OBJ_TYPE(recv)) {
+      case KORB_OBJ_ARRAY:  return korb_builtin_class_obj(vm, KORB_C_ARRAY);
+      case KORB_OBJ_STRING: return korb_builtin_class_obj(vm, KORB_C_STRING);
+      case KORB_OBJ_HASH:   return korb_builtin_class_obj(vm, KORB_C_HASH);
+      default:              return KORB_NIL;
+    }
+}
+
 /* A class / module receiver's cached public simple method (liquid-il's `_H.oa(...)`, 1.2M per
  * iteration) goes straight to its body: in korb_send_cached_full the hit was tested only after
  * the instance / send-family cascade, inside a frame big enough to cost more than the call. */
@@ -15642,8 +15657,17 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
         return korb_new_with_init(c, slots, flink, argc, ic->m, ic->def_class, recv, KORB_FLINK_FRAMED(flink));
     } else if (KORB_OBJECT_P(recv) && !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
                ic->kind == KORB_IC_INSTANCE && ic->serial == c->vm->method_serial && ic->klass == VAL2OBJ(recv)->klass &&
-               ic->m != NULL && korb_opt_call_p(ic->m, argc) && !c->vm->refinements_active) {   /* `o.m(a)` of `def m(a, b = 1)` */
-        return korb_invoke_opt(c, slots, ic->m, argc, korb_flink_line(flink), mid);
+               ic->m != NULL && !c->vm->refinements_active) {
+        struct korb_method *const m = ic->m;
+        if (korb_opt_call_p(m, argc))                    /* `o.m(a)` of `def m(a, b = 1)` */
+            return korb_invoke_opt(c, slots, m, argc, korb_flink_line(flink), mid);
+        /* `o.m(a)` of `def m(a, k: 1)`: no keywords to bind but the defaults (liquid's find_variable: 34k per iteration) */
+        if (m->kind == KORB_METHOD_ISEQ && m->kw_info != NULL && korb_kw_fast_eligible(m) && !(argc != 0 && korb_kwargs_hash_p(slots[-1])))
+            return korb_invoke_kw_simple(c, slots, m, argc, NULL, 0, korb_flink_line(flink), mid, recv, ic->def_class);
+    } else if (ic->kind == KORB_IC_INSTANCE && ic->dispatch != NULL && ic->serial == c->vm->method_serial &&
+               ic->klass != KORB_NIL && !korb_site_refined(c) && ic->klass == korb_send_builtin_klass(c->vm, recv)) {
+        /* a Ruby method added to a builtin (liquid's String#to_liquid / Hash#to_liquid: 75k per iteration) */
+        return korb_invoke_entry_ic(c, slots, ic, argc, mid);
     }
     return korb_send_cached_full(c, slots, mid, flink, argc, ic, caller_self);
 }
