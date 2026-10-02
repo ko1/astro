@@ -12697,7 +12697,8 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
         if (LIKELY(klass != KORB_NIL)) {              /* user-instance self-call (inline cache) */
             struct korb_method *m;
             korb_value def_class;
-            if (LIKELY(ic->serial == vm->method_serial && ic->klass == klass)) {
+            /* kind: a class self fills this site keyed on itself (SMETHOD), equal to its instances' klass */
+            if (LIKELY(ic->serial == vm->method_serial && ic->klass == klass && ic->kind == KORB_IC_INSTANCE)) {
                 if (LIKELY(ic->dispatch)) return korb_invoke_entry_ic(c, slots, ic, argc, mid);
                 m = ic->m; def_class = ic->def_class;
             } else {
@@ -12758,15 +12759,21 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
         /* builtin self: a prelude String / Array / Hash method calling its helpers
          * (`case __encoding_tag` in String#encoding) re-resolved every call in
          * korb_call_impl (erubi-rails: ~800k per iteration). */
-        const korb_value klass = korb_dispatch_class(c, self);
+        /* a class / module self (a module method calling its siblings) keys the cache on itself, as a
+         * class-method call does: finding its metaclass is a side-table lookup per call */
+        const bool cls_self = KORB_CLASS_P(self);
+        const bool hit = cls_self ? (ic->kind == KORB_IC_SMETHOD && ic->serial == vm->method_serial && ic->klass == self) : false;
+        const korb_value klass = hit ? self : korb_dispatch_class(c, self);
         if (LIKELY(KORB_CLASS_P(klass))) {
             struct korb_method *m;
             korb_value def_class = KORB_NIL;
-            if (LIKELY(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
+            if (hit) {
+                m = ic->m; def_class = ic->def_class;
+            } else if (!cls_self && LIKELY(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
                 m = ic->m; def_class = ic->def_class;
             } else {
                 m = korb_mcache_find(vm, klass, mid, &def_class);
-                korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, argc);
+                korb_ic_fill(ic, korb_ic_serial_mc(c), cls_self ? self : klass, m, def_class, cls_self ? KORB_IC_SMETHOD : KORB_IC_INSTANCE, argc);
             }
             /* korb_invoke_simple keeps the caller's refinement set: only for a callee with none */
             if (m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple && (LIKELY(!vm->refinements_active) || m->refine_set == KORB_NIL))
