@@ -12830,6 +12830,9 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
  * kw_syms[].  Resolves the method (cc/ic cached) and, when it's a kw-param ISEQ
  * with no **rest/rest/post, binds keywords straight to slots (no Hash).  Anything
  * else builds a kwargs Hash and routes through the normal call path. */
+static inline bool korb_kw_dense_call_p(const CTX *c, const struct korb_method *m, const struct korb_kw_info *kw,
+                                        uint32_t pos_argc, const uint32_t *kw_syms, uint32_t kw_argc);
+static inline RESULT korb_invoke_kw_dense(CTX *c, korb_value *slots, struct korb_method *m, uint32_t n, uint32_t line, uint32_t mid);
 __attribute__((no_stack_protector)) RESULT
 korb_call_kw(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc,
              struct korb_inlcache *ic, uint32_t pos_argc, const uint32_t *kw_syms,
@@ -12867,8 +12870,11 @@ korb_call_kw(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, struct korb
         const struct korb_kw_info *const mkw = (const struct korb_kw_info *)m->kw_info;
         if (UNLIKELY(kw_argc > 0 && mkw != NULL && mkw->kwrest_slot == -3))   /* `**nil`: keyword syntax is refused outright */
             return korb_raise(c, slots - (pos_argc + kw_argc), KORB_E_ARGUMENT, line, "no keywords accepted");
-        if (LIKELY(korb_kw_fast_eligible(m) && kw_argc <= 64))
+        if (LIKELY(korb_kw_fast_eligible(m) && kw_argc <= 64)) {
+            if (korb_kw_dense_call_p(c, m, mkw, pos_argc, kw_syms, kw_argc))
+                return korb_invoke_kw_dense(c, slots, m, pos_argc + kw_argc, line, mid);
             return korb_invoke_kw_simple(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, self, def_class);
+        }
         return korb_invoke_kw_viahash(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, self, def_class);
     }
     /* unresolved / CFUNC / ATTR → materialize a kwargs Hash and use the normal path. */
