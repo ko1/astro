@@ -12887,6 +12887,45 @@ korb_call_kw(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, struct korb
     return korb_call(c, base + pos_argc + 1, mid, line, cc, pos_argc + 1, base[-1]);
 }
 
+/* Every keyword given, in declared order, to a method whose keyword slots follow its positionals
+ * (`o.m(i, k: 2)` of `def m(x, k: 1)`): the call site already staged each value in its slot, so
+ * there is nothing to bind (korb_invoke_kw_simple_body copied through a 64-cell buffer and zeroed
+ * with memset: call_kw 4.6x YJIT).  What korb_invoke_kw_simple scopes (definee, refinements) and
+ * $~ go its way. */
+static inline bool
+korb_kw_dense_call_p(const CTX *c, const struct korb_method *m, const struct korb_kw_info *kw,
+                     uint32_t pos_argc, const uint32_t *kw_syms, uint32_t kw_argc)
+{
+    if (pos_argc != (uint32_t)m->params_cnt || pos_argc != m->req_cnt || kw_argc != kw->count || m->uses_backref ||
+        c->def_definee != KORB_NIL || c->cvar_cref != KORB_NIL || c->vm->refinements_active)
+        return false;
+    for (uint32_t j = 0; j < kw_argc; j++)
+        if (kw_syms[j] != kw->entries[j].mid || kw->entries[j].slot != pos_argc + j) return false;
+    return true;
+}
+static inline __attribute__((always_inline, no_stack_protector)) RESULT
+korb_invoke_kw_dense(CTX *c, korb_value *slots, struct korb_method *m, uint32_t n, uint32_t line, uint32_t mid)
+{
+    korb_value *const base = slots - n;
+    KORB_AUDIT_EP(base, mid);
+    const uint32_t locals_cnt = m->locals_cnt;
+    char cstack_probe;
+    korb_value *const resv = base + locals_cnt + KORB_FRAME_SLACK;
+    if (UNLIKELY(resv > c->slots_limit || &cstack_probe < c->cstack_limit))
+        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
+    if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
+    for (uint32_t i = n; i < locals_cnt; i++) base[i] = 0;
+    korb_id_set(base, (korb_value)((uintptr_t)m | KORB_FID_METHOD));
+    NODE *const body = m->body;
+    RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
+    if (r.state == KORB_RETURN) {
+        if (c->return_target == NULL || c->return_target == base) { r.state = KORB_NORMAL; c->return_target = NULL; }
+    }
+    else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
+    if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
+    return r;
+}
+
 /* `recv.m(pos..., k: v...)` (literal symbol keys): the receiver form of korb_call_kw.
  * A public Ruby method found through the site's cache binds the keywords straight
  * to slots; everything else (private / protected, C methods, misses, refined
@@ -12920,8 +12959,11 @@ korb_send_kw(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, struct k
                 const struct korb_kw_info *const mkw = (const struct korb_kw_info *)m->kw_info;
                 if (UNLIKELY(mkw != NULL && mkw->kwrest_slot == -3))   /* `**nil`: keyword syntax is refused outright */
                     return korb_raise(c, base, KORB_E_ARGUMENT, line, "no keywords accepted");
-                if (LIKELY(korb_kw_fast_eligible(m) && kw_argc <= 64))
+                if (LIKELY(korb_kw_fast_eligible(m) && kw_argc <= 64)) {
+                    if (korb_kw_dense_call_p(c, m, mkw, pos_argc, kw_syms, kw_argc))
+                        return korb_invoke_kw_dense(c, slots, m, pos_argc + kw_argc, line, mid);
                     return korb_invoke_kw_simple(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, recv, def_class);
+                }
                 return korb_invoke_kw_viahash(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, recv, def_class);
             }
         }
