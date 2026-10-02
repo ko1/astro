@@ -15608,12 +15608,25 @@ korb_send_cached_full(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
         !korb_send_user_p(vm, klass, mid) && !(vm->send_undef_cnt != 0 && korb_method_undefed_p(klass, mid))) {
         const uint32_t rmid = SYM2ID(slots[-(korb_sword_t)argc]);
         korb_value def_class = KORB_NIL;
-        struct korb_method *const m = korb_mcache_find(vm, klass, rmid, &def_class);
-        if (m != NULL && (m->kind == KORB_METHOD_ISEQ || (m->kind == KORB_METHOD_CFUNC && !m->uses_block)) &&
-            (mid != vm->mid_public_send || m->visibility == 0) &&
-            rmid != vm->mid_send && rmid != vm->mid___send__ && rmid != vm->mid_public_send) {
+        struct korb_method *m;
+        if (ic->kind == KORB_IC_SEND && ic->serial == vm->method_serial && ic->klass == klass && ic->smid == rmid) {
+            m = ic->m; def_class = ic->def_class;   /* the site's last (class, name): no table lookup */
+        } else {
+            m = korb_mcache_find(vm, klass, rmid, &def_class);
+            if (m != NULL && (m->kind == KORB_METHOD_ISEQ || (m->kind == KORB_METHOD_CFUNC && !m->uses_block)) &&
+                (mid != vm->mid_public_send || m->visibility == 0) &&
+                rmid != vm->mid_send && rmid != vm->mid___send__ && rmid != vm->mid_public_send) {
+                korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_SEND, UINT32_MAX);
+                ic->smid = rmid;
+            } else {
+                m = NULL;
+            }
+        }
+        if (m != NULL) {
             for (uint32_t j = 0; j + 1 < argc; j++)   /* drop the name: args slide down one cell */
                 slots[-(korb_sword_t)argc + j] = slots[-(korb_sword_t)argc + j + 1];
+            if (m->kind == KORB_METHOD_ISEQ && m->is_simple)   /* refinements are off here (the guard above) */
+                return korb_invoke_simple(c, slots - 1, m, argc - 1, korb_flink_line(flink), rmid, recv, def_class);
             return korb_dispatch_method(c, slots - 1, m, rmid, korb_flink_line(flink), argc - 1, def_class, NULL, NULL, NULL, framed);
         }
     }

@@ -154,7 +154,7 @@ struct korb_constcache {
  * KORB_IC_INSTANCE (resolved, no re-lookup) but node_send's inline fast path
  * deliberately does NOT match it, so the call always routes through
  * korb_send_cached which runs the visibility guard on the cached entry. */
-enum korb_ic_kind { KORB_IC_INSTANCE = 0, KORB_IC_SMETHOD = 1, KORB_IC_NEW = 2, KORB_IC_INSTANCE_VIS = 3 };
+enum korb_ic_kind { KORB_IC_INSTANCE = 0, KORB_IC_SMETHOD = 1, KORB_IC_NEW = 2, KORB_IC_INSTANCE_VIS = 3, KORB_IC_SEND = 4 };
 /* one-shot flag for a node that must act only the first time it runs (END { }). */
 struct korb_oncecell { uint8_t done; };
 /* node_str_frozen: the literal's slot in the fstring pool; node_regexp: in vm->once_vals (+1; 0 = not yet).  The
@@ -178,6 +178,7 @@ struct korb_inlcache {
      * 判定そのもの。別フラグは要らない — どのみち呼ぶために load する。 */
     node_dispatcher_func_t dispatch; /* m->simple_entry->head.dispatcher at fill time */
     uint8_t  kind;
+    uint32_t smid;                   /* KORB_IC_SEND: the name `send(:name, ...)` resolved (in kind's pad) */
 };
 
 /* node_head.h provides NodeKind, per-node structs, the Node union, and
