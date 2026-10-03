@@ -479,6 +479,10 @@ static RESULT korb_clone_singleton(CTX *c, korb_value *slots, korb_ref self) {
  * The copy is at slots[1]. */
 static RESULT korb_copy_finalizers(CTX *c, korb_value *slots, korb_ref self) {
     if (LIKELY(!c->vm->finalizers_active) || !AROH_IS_GC_OBJECT(slots[1])) return RESULT_OK(KORB_NIL);
+    /* define_finalizer gives its object an id, so one without has nothing to copy (railsbench dups
+     * 110k objects per iteration once Rails registered a single finalizer) */
+    const korb_value orig = KORB_REF_GET(self);
+    if (!AROH_IS_GC_OBJECT(orig) || korb_oid_find(c->vm, orig) == KORB_NIL) return RESULT_OK(KORB_NIL);
     slots[2] = korb_const_get(c->vm, korb_intern(c->vm, "ObjectSpace", 11));
     slots[3] = KORB_REF_GET(self);
     slots[4] = slots[1];

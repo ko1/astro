@@ -767,6 +767,7 @@ module ObjectSpace
     # A finalizer whose receiver is the object keeps it alive forever, so CRuby
     # warns about it.  The receiver is the Proc's self / the Method's receiver.
     __warn_self_referential_finalizer__(obj, callable)
+    obj.__id__                     # an object with a finalizer always has an id: #dup / #clone ask only those
     entry = FINALIZERS__.find { |e| e[0].equal?(obj) }
     if entry.nil?
       entry = [obj, []]
@@ -801,6 +802,7 @@ module ObjectSpace
   def self.__copy_finalizers__(orig, copy)
     entry = FINALIZERS__.find { |e| e[0].equal?(orig) }
     return copy if entry.nil? || entry[1].empty?
+    copy.__id__
     FINALIZERS__ << [copy, entry[1].dup]
     copy
   end
