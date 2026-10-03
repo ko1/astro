@@ -27,7 +27,7 @@ typedef struct koruby_re_match {
 } koruby_re_match;
 
 /* ---- compiled-pattern cache (direct-mapped, source+flags keyed) ---------- */
-#define KRE_CACHE_SLOTS 1024
+#define KRE_CACHE_SLOTS 16384   /* 2-way (slot, slot ^ 1): Rails' patterns thrashed a 1024-entry direct map (recompile per request) */
 typedef struct { char *pat; size_t len; unsigned flags; astrogre_pattern *p; } kre_cache_ent;
 static kre_cache_ent g_cache[KRE_CACHE_SLOTS];
 
@@ -52,15 +52,23 @@ static astrogre_pattern *kre_get(const char *pat, size_t patlen, unsigned flags)
         if (m->p && m->len == patlen && m->flags == flags && (patlen == 0 || memcmp(m->pat, pat, patlen) == 0))
             return m->p;
     }
-    unsigned idx = (unsigned)(kre_hash(pat, patlen, flags) % KRE_CACHE_SLOTS);
+    const unsigned idx = (unsigned)(kre_hash(pat, patlen, flags) % KRE_CACHE_SLOTS);
     g_memo[mi].pat = pat; g_memo[mi].len = patlen; g_memo[mi].flags = flags; g_memo[mi].slot = idx;
     kre_cache_ent *e = &g_cache[idx];
     if (e->p && e->len == patlen && e->flags == flags &&
         (patlen == 0 || memcmp(e->pat, pat, patlen) == 0))
         return e->p;
+    kre_cache_ent *const e2 = &g_cache[idx ^ 1u];
+    if (e2->p && e2->len == patlen && e2->flags == flags &&
+        (patlen == 0 || memcmp(e2->pat, pat, patlen) == 0)) {
+        const kre_cache_ent t = *e; *e = *e2; *e2 = t;   /* most recent in front */
+        return e->p;
+    }
     astrogre_pattern *np = astrogre_parse(pat, patlen, flags);
     if (np == NULL) return NULL;
-    if (e->p) { astrogre_pattern_free(e->p); free(e->pat); }   /* evict → fully released (astrogre owns the AST) */
+    if (e2->p) { astrogre_pattern_free(e2->p); free(e2->pat); }   /* evict the older → fully released (astrogre owns the AST) */
+    *e2 = *e;
+    e->p = NULL; e->pat = NULL;
     e->pat = (char *)malloc(patlen ? patlen : 1);
     if (patlen) memcpy(e->pat, pat, patlen);
     e->len = patlen; e->flags = flags; e->p = np;
