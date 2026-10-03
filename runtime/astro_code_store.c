@@ -116,6 +116,7 @@ astro_spec_dedup_clear(void)
 // one 20 MB SD that cc1 took 8 min / 8.5 GB to build, for code that runs once.
 // Ordinary entries stay far below (a few hundred nodes).
 #define ASTRO_SPEC_NODE_BUDGET 4000u
+#define ASTRO_SD_MAX_HOLES 20000u   // an entry past this is not baked (see astro_cs_compile)
 static uint32_t astro_spec_budget;
 
 void
@@ -920,6 +921,13 @@ astro_cs_compile(NODE *entry, const char *file)
     // specializer that writes nothing past the header.  Drop the file
     // entirely so that (a) the cache-hit path can trust on-disk files
     // are real, and (b) the compile log stays clean.
+#ifdef ASTRO_NODEHEAD_POOL
+    // An entry whose hole table is huge stays on the interpreter.  The node budget bounds the code, not
+    // the descriptor, which walks the whole subtree: prism's serialize.rb load_node (639k holes, an 81 MB
+    // SD) and mail's Ragel parsers (130-150k) made cc1 run out of memory, the store's make failed and the
+    // SDs it had not reached yet were missing too (railsbench: 19k of 52k).  Such bodies run once.
+    if (ASTRO_NODE_NHOLES(entry) > ASTRO_SD_MAX_HOLES) body_end = body_start;
+#endif
     if (body_end > body_start) {
         char sd_name[64];
         snprintf(sd_name, sizeof(sd_name), "%s_%lx", prefix, (unsigned long)h);
