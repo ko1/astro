@@ -575,7 +575,7 @@ static inline bool korb_kwargs_hash_p(korb_value v) {
     return KORB_HASH_P(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_KWARGS) != 0;
 }
 
-bool korb_sdi_class_resolve(CTX *c, korb_value kl, unsigned k);   /* korb_runtime.c */
+bool korb_sdi_class_ok(CTX *c, korb_value kl, unsigned k);   /* korb_runtime.c: the AOT inline send's miss side */
 struct korb_vm;
 void korb_sdi_preinit(struct korb_vm *vm);   /* korb_runtime.c */
 

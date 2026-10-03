@@ -16104,7 +16104,20 @@ _Static_assert(KORB_SDI_N <= 64, "KorbClass.sdi_ok is one 64-bit mask");
 /* Does `kl` resolve inline send `k` to one of its builtins (public)?  Answered once per class and
  * method_serial into kl's masks; the AOT inline send asks when its site's cache holds another class
  * (liquid's `object.respond_to?(:[])` sees Hash / String / Drop at one site). */
-bool
+static bool korb_sdi_class_resolve(CTX *c, korb_value kl, unsigned k);
+/* The AOT inline send's miss side (its site cache holds another class): kl's own per-kind answer.
+ * Out of line and cold, so the hit path keeps the shape it had before the masks (nil_p +4.6%
+ * instructions with this inlined). */
+__attribute__((noinline, cold)) bool
+korb_sdi_class_ok(CTX *c, korb_value kl, unsigned k)
+{
+    if (UNLIKELY(c->vm->refinements_active) && c->refinements != KORB_NIL) return false;
+    const KorbClass *const kc = VAL2CLASS(kl);
+    if (LIKELY(kc->sdi_serial == c->vm->method_serial && ((kc->sdi_known >> k) & 1u)))
+        return (kc->sdi_ok >> k) & 1u;
+    return korb_sdi_class_resolve(c, kl, k);
+}
+static bool
 korb_sdi_class_resolve(CTX *c, korb_value kl, unsigned k)
 {
     struct korb_vm *const vm = c->vm;
