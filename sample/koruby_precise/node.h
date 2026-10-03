@@ -675,7 +675,8 @@ korb_value korb_const_cref(const struct korb_vm *vm, korb_value self, korb_value
 korb_value korb_const_cref_at(const struct korb_vm *vm, korb_value self, const korb_value *id_cell);   /* a block: its home method's cref */   /* like korb_cvar_cref, but keeps a `class << obj` singleton */
 korb_value korb_body_cref(CTX *c, korb_value self, korb_value entry_cell, uint32_t cref_name);   /* cref of a def/undef in a method body */
 RESULT korb_undef_cref(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell, uint32_t cref_name);   /* the class an `undef` acts on */
-bool korb_user_const_missing_p(CTX *c, korb_value mod);   /* a const_missing other than Module's default */
+bool korb_user_const_missing_p(CTX *c, korb_value mod);
+RESULT korb_const_path_miss(CTX *c, korb_value *slots, uint32_t name, uint32_t line, int32_t fb_off, struct korb_cpcache *cache);   /* node_const_path's slow path */   /* a const_missing other than Module's default */
 korb_value korb_once_get(const struct korb_vm *vm, const struct Node *n);   /* `/.../o`: 0 until the first run */
 void korb_once_set(struct korb_vm *vm, const struct Node *n, korb_value v);
 void  korb_mark_sdef(korb_value klass, uint32_t mid);   /* the entry was written `def recv.m` */

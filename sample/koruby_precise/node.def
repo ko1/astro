@@ -2285,84 +2285,18 @@ node_defined_super_outer(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, i
 // `A::B` — evaluate the parent namespace expression, then look B up in it and
 // its ancestors (never in the parent's lexical surroundings, and never by bare
 // name).  A miss goes through const_missing, which is what fires an autoload.
-NODE_DEF @noinline
+NODE_DEF
 node_const_path(CTX *c, NODE *n, korb_value *slots, uint32_t name@sym, uint32_t line, int32_t fb_off, NODE *parent, struct korb_cpcache *cache@ref)
 {
     (void)n;
     const RESULT pr = EVAL_ARG(c, parent);
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
     slots[0] = pr.value;                                  /* the namespace (rooted for const_missing) */
-    struct korb_vm *const vm = c->vm;
+    const struct korb_vm *const vm = c->vm;
     if (LIKELY(cache->idx_plus1 != 0 && cache->serial == vm->const_serial && KORB_CLASS_P(slots[0]) &&
                VAL2CLASS(slots[0])->serial == cache->parent_serial))
         return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
-    if (UNLIKELY(!KORB_CLASS_P(slots[0]))) {           /* `13::X` — CRuby names the korb_value, not its class */
-        char *ib = NULL; size_t iz = 0;
-        FILE *const ims = open_memstream(&ib, &iz);
-        if (ims) { korb_fprint_inspect_s(c, slots + 1, ims, slots[0]); fclose(ims); }
-        RESULT tr = korb_raise(c, slots + 1, KORB_E_TYPE, 0, "%s is not a class/module", ib ? ib : "value");
-        free(ib);
-        return tr;
-    }
-    uint32_t idx = korb_const_index_owned(vm, name, slots[0]);
-    /* Only Object itself names the top-level constants: `Foo::Hash` is a
-     * NameError in Ruby >= 2.5, `Object::Hash` still resolves. */
-    if (idx == UINT32_MAX) {
-        korb_value al_mod;                                     /* an ancestor's pending autoload beats a constant further up */
-        idx = korb_const_in_ancestry_scoped_al(c, slots[0], name, &al_mod);
-        if (UNLIKELY(idx == UINT32_MAX && al_mod != KORB_NIL && al_mod != slots[0])) {
-            CHECK(korb_autoload_fire(c, slots + 1, al_mod, name, line, &slots[fb_off]));
-            idx = korb_const_in_ancestry_scoped(vm, slots[0], name);
-        }
-    }
-    /* A pending autoload runs at LOOKUP time (before const_missing), the same
-     * way CRuby resolves `A::B` — the owner may define its own hook.  The file
-     * may make it private, so the privacy check comes after. */
-    if (idx == UINT32_MAX && korb_autoload_registered_p(c, slots[0], name) &&
-        !(UNLIKELY(vm->privconst_cnt != 0) && korb_const_private_p(vm, slots[0], name))) {
-        CHECK(korb_autoload_fire(c, slots + 1, slots[0], name, line, &slots[fb_off]));
-        idx = korb_const_index_owned(vm, name, slots[0]);
-        if (idx == UINT32_MAX) idx = korb_const_in_ancestry_scoped(vm, slots[0], name);
-    }
-    if (UNLIKELY(vm->privconst_cnt != 0) &&               /* private_constant: unreachable as Owner::NAME */
-        (idx != UINT32_MAX || korb_autoload_registered_p(c, slots[0], name)) &&
-        (korb_const_private_p(vm, slots[0], name) ||
-         (idx != UINT32_MAX && korb_const_private_p(vm, vm->const_owners[idx], name)))) {
-        if (UNLIKELY(korb_user_const_missing_p(c, slots[0]))) {   /* CRuby asks the receiver's own hook first */
-            slots[1] = ID2SYM(name);
-            korb_flink_stage_at(c, &slots[fb_off], line);
-            return korb_send(c, slots + 2, korb_intern_lit(vm, "const_missing", 13), line, 1);
-        }
-        /* the marker lives on the module that DEFINED it, which may be an
-         * ancestor of the receiver (`C::A` where C includes M); CRuby names
-         * that module in both the message and NameError#receiver */
-        if (!korb_const_private_p(vm, slots[0], name) && idx != UINT32_MAX)
-            slots[0] = vm->const_owners[idx];
-        char qn[256]; korb_class_desc_into(c, slots[0], qn, sizeof qn);
-        RESULT pr = korb_raise(c, slots + 1, KORB_E_NAME, 0, "private constant %s::%s referenced",
-                               qn, korb_sym_name(vm, name));
-        if (LIKELY(KORB_EXC_P(pr.value))) {           /* NameError#name / #receiver (CRuby) */
-            slots[1] = pr.value;
-            korb_name_error_where(c, slots + 2, &slots[1], name, slots[0]);
-            pr.value = slots[1];
-        }
-        return pr;
-    }
-    if (LIKELY(idx != UINT32_MAX)) {
-        /* only this constant's own deprecation skips the cache: any deprecate_constant anywhere (Rails has
-         * some) left every A::B uncached (railsbench) */
-        if (UNLIKELY(vm->deprconst_cnt != 0) && korb_const_deprecated_p(vm, slots[0], name)) {
-            slots[1] = vm->const_vals[idx];               /* park: the warning path allocates */
-            korb_const_deprecated_warn(c, slots + 2, slots[0], name);
-            return RESULT_OK(slots[1]);
-        }
-        /* the plain answer (no autoload pending, not private, not deprecated) is cached */
-        cache->idx_plus1 = idx + 1; cache->parent_serial = VAL2CLASS(slots[0])->serial; cache->serial = vm->const_serial;
-        return RESULT_OK(vm->const_vals[idx]);
-    }
-    slots[1] = ID2SYM(name);                              /* <owner>.const_missing(:name) */
-    korb_flink_stage_at(c, &slots[fb_off], line);         /* the hook's `caller` must start at the reference */
-    return korb_send(c, slots + 2, korb_intern_lit(vm, "const_missing", 13), line, 1);
+    return korb_const_path_miss(c, slots, name, line, fb_off, cache);   /* autoload / private / deprecated / const_missing */
 }
 
 // defined?(A::B::C) — a nested (or otherwise non-bare) parent: evaluate the parent
