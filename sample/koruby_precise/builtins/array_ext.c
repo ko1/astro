@@ -79,10 +79,10 @@ static RESULT korb_pack_int_val(CTX *c, korb_value *sc, korb_value e, int64_t *o
         korb_mp_clear(z); return RESULT_OK(KORB_NIL);
     }
     if (KORB_BIGNUM_P(e)) { korb_mp_t z; korb_to_mpz(e, z); uint64_t lo = (uint64_t)korb_mp_get_ui(z); *out = (korb_mp_sgn(z) < 0) ? -(int64_t)lo : (int64_t)lo; korb_mp_clear(z); return RESULT_OK(KORB_NIL); }
-    if (KORB_OBJECT_P(e) && korb_responds_to_coerce(c, sc, e, korb_intern(c->vm, "to_int", 6))) {
+    if (KORB_OBJECT_P(e) && korb_responds_to_coerce(c, sc, e, korb_intern_lit(c->vm, "to_int", 6))) {
         const char *const on = korb_coerce_name(c, e);   /* interned: survives the dispatch below, unlike `e` */
         sc[0] = e;
-        RESULT r = korb_send_impl(c, sc + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
+        RESULT r = korb_send_impl(c, sc + 1, korb_intern_lit(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (FIXNUM_P(r.value)) { *out = FIX2LONG(r.value); return RESULT_OK(KORB_NIL); }
         if (KORB_BIGNUM_P(r.value)) { korb_mp_t z; korb_to_mpz(r.value, z); uint64_t lo = (uint64_t)korb_mp_get_ui(z); *out = (korb_mp_sgn(z) < 0) ? -(int64_t)lo : (int64_t)lo; korb_mp_clear(z); return RESULT_OK(KORB_NIL); }
@@ -104,10 +104,10 @@ static RESULT korb_pack_mpz_val(CTX *c, korb_value *sc, korb_value e, korb_mp_t 
         korb_mp_init_set_d(out, dv);                       /* truncates toward zero */
         return RESULT_OK(KORB_NIL);
     }
-    if (KORB_OBJECT_P(e) && korb_responds_to_coerce(c, sc, e, korb_intern(c->vm, "to_int", 6))) {
+    if (KORB_OBJECT_P(e) && korb_responds_to_coerce(c, sc, e, korb_intern_lit(c->vm, "to_int", 6))) {
         const char *const on = korb_coerce_name(c, e);     /* interned: survives the dispatch below */
         sc[0] = e;
-        const RESULT r = korb_send_impl(c, sc + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
+        const RESULT r = korb_send_impl(c, sc + 1, korb_intern_lit(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (FIXNUM_P(r.value) || KORB_BIGNUM_P(r.value)) { korb_to_mpz(r.value, out); return RESULT_OK(KORB_NIL); }
         return korb_raise(c, sc, KORB_E_TYPE, 0, "can't convert %s into Integer (%s#to_int gives %s)", on, on, korb_coerce_name(c, r.value));
@@ -139,7 +139,7 @@ static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_sli
      * up front rather than after the directives have had a chance to raise. */
     if (na >= 2 && KORB_HASH_P(KORB_SLICE_GET(a, na - 1))) {
         const KorbHash *const kh = VAL2HASH(KORB_SLICE_GET(a, na - 1));
-        const int32_t bi = korb_hash_find(kh, ID2SYM(korb_intern(c->vm, "buffer", 6)));
+        const int32_t bi = korb_hash_find(kh, ID2SYM(korb_intern_lit(c->vm, "buffer", 6)));
         if (bi >= 0) {
             const korb_value bv = korb_items_data(kh->items)[2 * bi + 1];
             if (UNLIKELY(!KORB_STRING_P(bv)))
@@ -393,11 +393,11 @@ static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_sli
             else if (coerce && e == KORB_FALSE) { ed = "false"; elen = 5; }
             else if (!coerce && KORB_OBJECT_P(e)) {       /* a/A/Z/B/b/H/h: coerce the element via #to_str */
                 slots[1] = e;
-                if (!korb_responds_to_coerce(c, slots + 2, slots[1], korb_intern(c->vm, "to_str", 6))) {
+                if (!korb_responds_to_coerce(c, slots + 2, slots[1], korb_intern_lit(c->vm, "to_str", 6))) {
                     snprintf(errbuf, sizeof errbuf, "no implicit conversion of %s into String", korb_coerce_name(c, slots[1]));
                     errtype = KORB_E_TYPE; errmsg = errbuf; break;
                 }
-                RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
+                RESULT sr = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) { free(ob); return sr; }
                 if (!KORB_STRING_P(sr.value)) { errtype = KORB_E_TYPE; errmsg = "no implicit conversion into String"; break; }
                 slots[1] = sr.value;                      /* root the coerced String; ed used immediately (no GC before emit) */
@@ -406,7 +406,7 @@ static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_sli
             }
             else if (coerce) {                            /* M/m/u: coerce any other value via #to_s (Bignum/Array/object) */
                 slots[1] = e;
-                RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+                RESULT sr = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) { free(ob); return sr; }
                 if (KORB_STRING_P(sr.value)) { slots[1] = sr.value; ed = korb_strbuf_data(VAL2STR(slots[1])->buf); elen = VAL2STR(slots[1])->len; }
                 else {                                    /* #to_s gave a non-String → the default object representation */
@@ -506,7 +506,7 @@ static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_sli
      * given String and return it, instead of allocating a fresh result. */
     if (na >= 2 && KORB_HASH_P(KORB_SLICE_GET(a, na - 1))) {
         const KorbHash *kh = VAL2HASH(KORB_SLICE_GET(a, na - 1));
-        const int32_t bi = korb_hash_find(kh, ID2SYM(korb_intern(c->vm, "buffer", 6)));
+        const int32_t bi = korb_hash_find(kh, ID2SYM(korb_intern_lit(c->vm, "buffer", 6)));
         if (bi >= 0) {
             slots[1] = korb_items_data(kh->items)[2 * bi + 1];                 /* root the buffer String across the cat's GC */
             if (UNLIKELY(!KORB_STRING_P(slots[1]))) { free(ob); return korb_raise(c, slots, KORB_E_TYPE, 0, "buffer must be String, not %s", korb_type_name(slots[1])); }
@@ -564,8 +564,8 @@ static RESULT korb_m_str_unpack(CTX *c, korb_value *slots, korb_ref self, korb_s
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
     slots[0] = KORB_SLICE_GET(a, 0);                    /* template (rooted across the coercion) */
     if (UNLIKELY(!KORB_STRING_P(slots[0]))) {            /* coerce the template via #to_str (as pack does) */
-        if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], korb_intern(c->vm, "to_str", 6))) {
-            const RESULT sr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
+        if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], korb_intern_lit(c->vm, "to_str", 6))) {
+            const RESULT sr = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             slots[0] = sr.value;
         }
@@ -576,7 +576,7 @@ static RESULT korb_m_str_unpack(CTX *c, korb_value *slots, korb_ref self, korb_s
     long off = 0;                                        /* optional offset: keyword */
     if (na >= 2 && KORB_HASH_P(KORB_SLICE_GET(a, na - 1))) {
         const KorbHash *h = VAL2HASH(KORB_SLICE_GET(a, na - 1));
-        const int32_t oi = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "offset", 6)));
+        const int32_t oi = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "offset", 6)));
         if (oi >= 0) {
             const korb_value ov = korb_items_data(h->items)[2 * oi + 1];
             if (UNLIKELY(!FIXNUM_P(ov)))
@@ -1206,8 +1206,8 @@ static RESULT korb_m_ary_zip(CTX *c, korb_value *slots, korb_ref self, korb_slic
      * (or #to_a) is converted up-front. */
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, k));
     korb_ref cargs = KORB_REF_AT(&slots[0]);
-    const uint32_t to_ary_id = korb_intern(c->vm, "to_ary", 6), to_a_id = korb_intern(c->vm, "to_a", 4);
-    const uint32_t each_id = korb_intern(c->vm, "each", 4), to_enum_id = korb_intern(c->vm, "to_enum", 7);
+    const uint32_t to_ary_id = korb_intern_lit(c->vm, "to_ary", 6), to_a_id = korb_intern_lit(c->vm, "to_a", 4);
+    const uint32_t each_id = korb_intern_lit(c->vm, "each", 4), to_enum_id = korb_intern_lit(c->vm, "to_enum", 7);
     for (uint32_t j = 0; j < k; j++) {
         slots[1] = KORB_SLICE_GET(a, j);                     /* candidate (rooted) */
         /* Array/Range/ArithSeq index lazily via korb_zip_elem; anything else is

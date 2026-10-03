@@ -68,7 +68,7 @@ korb_bi_yaml_parse(CTX *c, korb_value *slots, korb_slice args)
             const size_t off = parser.problem_offset;
             yaml_parser_delete(&parser); free(src);
             korb_value e[6];
-            e[0] = ID2SYM(korb_intern(c->vm, "error", 5));
+            e[0] = ID2SYM(korb_intern_lit(c->vm, "error", 5));
             e[1] = KORB_NIL; e[2] = KORB_NIL;
             e[3] = LONG2FIX((korb_sword_t)line);
             e[4] = LONG2FIX((korb_sword_t)col);

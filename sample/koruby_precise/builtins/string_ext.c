@@ -162,9 +162,9 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
     if (KORB_SLICE_LEN(a) == 1 && !KORB_ARRAY_P(single) && KORB_OBJECT_P(single)) {   /* a single non-Array arg is coerced via #to_ary (before caching fmt → GC-safe) */
         slots[0] = KORB_REF_GET(self);                  /* root self across the dispatch */
         slots[1] = single;
-        if (korb_responds_to_coerce(c, slots + 2, slots[1], korb_intern(c->vm, "to_ary", 6))) {
+        if (korb_responds_to_coerce(c, slots + 2, slots[1], korb_intern_lit(c->vm, "to_ary", 6))) {
             const char *onm = korb_type_name(slots[1]);
-            RESULT ar = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_ary", 6), 0, 0, NULL, NULL, NULL);
+            RESULT ar = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "to_ary", 6), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
             if (KORB_ARRAY_P(ar.value)) slots[1] = ar.value;   /* use the array (rooted in slots[1]) */
             else if (ar.value != KORB_NIL)                     /* to_ary gave a non-Array → TypeError (CRuby) */
@@ -215,7 +215,7 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
     bool saw_numbered = false, saw_unnumbered = false, saw_named = false;
     char mixmsg[128];
     RESULT coerce_err = RESULT_OK(KORB_NIL); bool has_coerce_err = false;   /* a #to_int/#to_f arg coercion that raised */
-    const uint32_t fmt_to_int = korb_intern(c->vm, "to_int", 6);   /* %c fallback coercion */
+    const uint32_t fmt_to_int = korb_intern_lit(c->vm, "to_int", 6);   /* %c fallback coercion */
     for (uint32_t i = 0; i < flen; i++) {
         if (fmt[i] != '%') { fputc(fmt[i], ms); continue; }
         char spec[80]; int si = 0; spec[si++] = '%';
@@ -252,7 +252,7 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
                 korb_value dv = KORB_NIL;                        /* absent key: honor a non-nil default */
                 if (VAL2HASH(nh)->default_proc != KORB_NIL || VAL2HASH(nh)->default_val != KORB_NIL) {
                     slots[1] = nh; slots[2] = key_sym;     /* nh[key] (proc / value) */
-                    RESULT dr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "[]", 2), 0, 1, NULL, NULL, NULL);
+                    RESULT dr = korb_send_impl(c, slots + 3, korb_intern_lit(c->vm, "[]", 2), 0, 1, NULL, NULL, NULL);
                     if (UNLIKELY(dr.state != KORB_NORMAL)) { coerce_err = dr; has_coerce_err = true; err = true; break; }
                     FMT_REREAD_ARGS();
                     dv = dr.value;
@@ -267,7 +267,7 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
             if (KORB_STRING_P(named_arg)) fwrite(korb_strbuf_data(VAL2STR(named_arg)->buf), 1, VAL2STR(named_arg)->len, ms);
             else if (KORB_OBJECT_P(named_arg) && fmt_stable) {   /* user object: dispatch #to_s (honours overrides) */
                 slots[1] = named_arg;
-                RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+                RESULT sr = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) { coerce_err = sr; has_coerce_err = true; err = true; break; }
                 FMT_REREAD_ARGS();
                 if (KORB_STRING_P(sr.value)) fwrite(korb_strbuf_data(VAL2STR(sr.value)->buf), 1, VAL2STR(sr.value)->len, ms);
@@ -551,7 +551,7 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
             else if ((KORB_OBJECT_P(arg) || KORB_CLASS_P(arg) || KORB_REGEXP_P(arg) ||
                       KORB_MATCHDATA_P(arg) || KORB_FMT_ASK_P(arg)) && fmt_stable) {   /* user object / class / the types the C printer has no form for: dispatch #to_s */
                 slots[1] = arg;
-                RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+                RESULT sr = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) { coerce_err = sr; has_coerce_err = true; err = true; break; }
                 FMT_REREAD_ARGS();
                 char *tb = NULL; size_t tsz = 0; FILE *tms = open_memstream(&tb, &tsz);
@@ -576,7 +576,7 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
                                              KORB_OBJ_TYPE(arg) == KORB_OBJ_ENUMERATOR)) || KORB_FMT_ASK_P(arg)) &&
                 fmt_stable) {   /* dispatch #inspect (honours overrides, a builtin subclass's too) */
                 slots[1] = arg;
-                RESULT ir = korb_send_impl(c, slots + 2, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
+                RESULT ir = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(ir.state != KORB_NORMAL)) { if (tms) fclose(tms); free(tb); coerce_err = ir; has_coerce_err = true; err = true; break; }
                 FMT_REREAD_ARGS();
                 if (tms) {
@@ -610,7 +610,7 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
                  * allocation triggers a moving GC (real bug, hit by mock chains). */
                 slots[1] = arg;
                 const char *const cnm = korb_coerce_name(c, slots[1]);   /* interned: outlives the dispatches below */
-                const uint32_t c_to_str = korb_intern(c->vm, "to_str", 6), c_to_ary = korb_intern(c->vm, "to_ary", 6);
+                const uint32_t c_to_str = korb_intern_lit(c->vm, "to_str", 6), c_to_ary = korb_intern_lit(c->vm, "to_ary", 6);
                 uint32_t cm = korb_responds_to_coerce(c, slots + 2, slots[1], c_to_str) ? c_to_str
                             : korb_responds_to_coerce(c, slots + 2, slots[1], c_to_ary) ? c_to_ary
                             : korb_responds_to_coerce(c, slots + 2, slots[1], fmt_to_int) ? fmt_to_int : 0;
@@ -690,7 +690,7 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s", errmsg ? errmsg : "format error");
     }
     if (UNLIKELY(!saw_numbered && !saw_named && !lone_kwargs && ai < argn &&
-                 korb_const_get(vm, korb_intern(vm, "$VERBOSE", 8)) == KORB_TRUE))   /* only in verbose mode (CRuby) */
+                 korb_const_get(vm, korb_intern_lit(vm, "$VERBOSE", 8)) == KORB_TRUE))   /* only in verbose mode (CRuby) */
     {
         uint32_t wf, wl;
         if (korb_cur_pos(c, slots + 1, link, carry, carry_lb, &wf, &wl))
@@ -726,7 +726,7 @@ static int korb_ci_cmp(const char *a, uint32_t al, const char *b, uint32_t bl) {
  * nil) when not a String and not #to_str-coercible.  GC-safe: parks `o` in slots[0]. */
 static bool korb_casecmp_coerce(CTX *c, korb_value *slots, korb_value *o, RESULT *err) {
     if (LIKELY(KORB_STRING_P(*o))) return true;
-    const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+    const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
     slots[0] = *o;                                    /* root before respond_to?/to_str dispatch */
     if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) { *o = slots[0]; return false; }
     RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
@@ -861,7 +861,7 @@ static RESULT korb_m_str_insert(CTX *c, korb_value *slots, korb_ref self, korb_s
         if (!korb_to_index(iv0, &idx)) return korb_raise_no_int(c, slots, iv0);
     }
     if (UNLIKELY(!KORB_STRING_P(slots[1]))) {            /* coerce other via #to_str */
-        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(slots[1]) && korb_responds_to_coerce(c, slots + 2, slots[1], to_str)) {
             RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
@@ -1056,7 +1056,7 @@ static korb_sword_t korb_popcount_bytes(const unsigned char *const restrict p, c
 /* The optional `lsb_first:` keyword (trailing Hash).  CRuby demands literally
  * true or false — anything else is an ArgumentError, not truthiness. */
 static RESULT korb_str_bit_kw(CTX *c, korb_value *slots, const korb_value kw, bool *const lsb_first) {
-    const korb_value want = ID2SYM(korb_intern(c->vm, "lsb_first", 9));   /* may intern: before items_data */
+    const korb_value want = ID2SYM(korb_intern_lit(c->vm, "lsb_first", 9));   /* may intern: before items_data */
     const KorbHash *const h = VAL2HASH(kw);
     const korb_value *const d = korb_items_data(h->items);
     for (uint32_t i = 0; i < h->len; i++) {
@@ -1299,7 +1299,7 @@ static RESULT korb_m_sym_end_with(CTX *c, korb_value *slots, korb_ref self, korb
 /* coerce the search arg (slots[0]) via #to_str, returns true if it is now a String. */
 static bool korb_str_search_coerce(CTX *c, korb_value *slots) {
     if (KORB_STRING_P(slots[0])) return true;
-    const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+    const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
     if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) {
         RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
         if (cr.state == KORB_NORMAL) slots[0] = cr.value;
@@ -1444,7 +1444,7 @@ static RESULT korb_m_str_rindex(CTX *c, korb_value *slots, korb_ref self, korb_s
         sv = KORB_SLICE_GET(a, 0);                     /* re-read: the #to_int above ran Ruby */
     }
     if (UNLIKELY(!KORB_STRING_P(sv))) {               /* coerce via #to_str, else TypeError (never #to_int) */
-        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
         if (!korb_responds_to_coerce_p(c, slots, &sv, to_str))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "type mismatch: %s given", korb_type_name(sv));
         slots[0] = sv;
@@ -1482,10 +1482,10 @@ static RESULT korb_m_str_dump(CTX *c, korb_value *slots, korb_ref self, korb_sli
         if (!korb_enc_ascii_compat_idx(c->vm, enc)) {
             fe_suffix = korb_enc_name_of(c->vm, enc);
             slots[0] = KORB_REF_GET(self);
-            RESULT er = korb_send(c, slots + 1, korb_intern(c->vm, "encoding", 8), 0, 0);
+            RESULT er = korb_send(c, slots + 1, korb_intern_lit(c->vm, "encoding", 8), 0, 0);
             if (UNLIKELY(er.state != KORB_NORMAL)) return er;
             slots[0] = er.value;
-            RESULT nr = korb_send(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0);
+            RESULT nr = korb_send(c, slots + 1, korb_intern_lit(c->vm, "name", 4), 0, 0);
             if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
             if (KORB_STRING_P(nr.value)) {
                 uint32_t l = VAL2STR(nr.value)->len;
@@ -1663,7 +1663,7 @@ static RESULT korb_str_pad(CTX *c, korb_value *slots, korb_ref self, korb_slice 
     if (UNLIKELY(!korb_to_index(wv, &width))) return korb_raise_no_int(c, slots, KORB_SLICE_GET(a, 0));
     korb_value padv = (KORB_SLICE_LEN(a) >= 2) ? KORB_SLICE_GET(a, 1) : KORB_NIL;
     if (padv != KORB_NIL && !KORB_STRING_P(padv)) {       /* padstr #to_str */
-        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(padv) && korb_responds_to_coerce_p(c, slots, &padv, to_str)) {
             slots[0] = padv;
             RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);

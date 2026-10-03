@@ -1216,6 +1216,8 @@ struct korb_vm {
     uint8_t *sym_encs;
     uint32_t *sym_hash;
     uint32_t sym_cnt, sym_capa, sym_hash_cap;
+    /* korb_intern_lit: a C string literal's (address, length) → its id; symbols are never freed */
+    struct korb_ilit_ent { const char *p; uint32_t len, id; } ilit[512];
 
     /* IO fd table: an IO/File object holds its index in the @__io_fp ivar; the
      * FILE* lives here (raw C pointers, not korb_values → no GC scan/forward). */

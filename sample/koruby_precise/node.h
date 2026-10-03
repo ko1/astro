@@ -729,6 +729,17 @@ bool korb_str_to_int(CTX *c, korb_value *slots, const char *s, uint32_t len, int
 
 /* symbols */
 uint32_t korb_intern(struct korb_vm *vm, const char *name, size_t len);
+/* korb_intern for a C string literal: the same literal is the same name, so its address keys a per-vm cache
+ * (Array#join interned "to_str" / "to_ary" per element; railsbench: 1.5% of its instructions in the symbol table) */
+static inline uint32_t
+korb_intern_lit(struct korb_vm *const vm, const char *const lit, const size_t len)
+{
+    struct korb_ilit_ent *const e = &vm->ilit[((uintptr_t)lit >> 3 ^ len) & (sizeof vm->ilit / sizeof vm->ilit[0] - 1)];
+    if (LIKELY(e->p == lit && e->len == len)) return e->id;
+    const uint32_t id = korb_intern(vm, lit, len);
+    e->p = lit; e->len = (uint32_t)len; e->id = id;
+    return id;
+}
 /* intern under an explicit encoding (symbol literals carry their file's). */
 uint32_t korb_intern_enc(struct korb_vm *vm, const char *name, size_t len, uint32_t enc);
 bool korb_responds_to_public(CTX *c, korb_value self, uint32_t mid);

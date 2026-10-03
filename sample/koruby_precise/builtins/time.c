@@ -12,8 +12,8 @@ static uint32_t korb_time_iv(struct korb_vm *vm, int k) {
     return vm->time_iv[k];
 }
 static korb_value korb_time_t_sym(struct korb_vm *vm) { return ID2SYM(korb_time_iv(vm, 0)); }
-static korb_value korb_time_utc_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(vm, "@__utc", 6)); }
-static korb_value korb_time_off_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(vm, "@__off", 6)); }
+static korb_value korb_time_utc_sym(struct korb_vm *vm) { return ID2SYM(korb_intern_lit(vm, "@__utc", 6)); }
+static korb_value korb_time_off_sym(struct korb_vm *vm) { return ID2SYM(korb_intern_lit(vm, "@__off", 6)); }
 
 /* If this Time was built with an explicit numeric utc_offset, its value (seconds);
  * false for a plain local/UTC time. */
@@ -90,7 +90,7 @@ static RESULT korb_raise_bad_utc_offset(CTX *c, korb_value *slots, korb_value v)
 /* @__tz: the timezone object a Time was built with (CRuby's timezone protocol),
  * kept so #zone can hand it back.  @__off still holds the offset it resolved to,
  * so every renderer keeps working off the numeric offset alone. */
-static korb_value korb_time_tz_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(vm, "@__tz", 5)); }
+static korb_value korb_time_tz_sym(struct korb_vm *vm) { return ID2SYM(korb_intern_lit(vm, "@__tz", 5)); }
 
 static RESULT korb_time_make(CTX *c, korb_value *slots, korb_value cls, double epoch, bool utc);
 static bool korb_obj_is_numeric(CTX *c, korb_value v);
@@ -112,12 +112,12 @@ korb_tz_convert(CTX *c, korb_value *slots, korb_value zone, double base, bool to
     const uint32_t mid = korb_intern(c->vm, to_utc ? "local_to_utc" : "utc_to_local", 12);
     if (!korb_responds_to(c, zone, mid)) return RESULT_OK(KORB_NIL);
     slots[0] = zone;
-    slots[1] = UNWRAP(korb_time_make(c, slots + 1, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)),
+    slots[1] = UNWRAP(korb_time_make(c, slots + 1, korb_const_get(c->vm, korb_intern_lit(c->vm, "Time", 4)),
                                      (double)(time_t)base, true));
     const RESULT r = korb_send(c, slots + 2, mid, 0, 1);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     slots[0] = r.value;
-    const uint32_t to_i = korb_intern(c->vm, "to_i", 4);
+    const uint32_t to_i = korb_intern_lit(c->vm, "to_i", 4);
     RESULT ir = RESULT_OK(KORB_NIL);
     if (korb_responds_to(c, slots[0], to_i)) {
         ir = korb_send(c, slots + 1, to_i, 0, 0);
@@ -144,7 +144,7 @@ static RESULT
 korb_tz_offset_of_rational(CTX *c, korb_value *slots, korb_ref r, korb_sword_t *off, korb_value *offx, bool *got)
 {
     slots[0] = KORB_REF_GET(r);
-    const RESULT tr = korb_send(c, slots + 1, korb_intern(c->vm, "to_i", 4), 0, 0);
+    const RESULT tr = korb_send(c, slots + 1, korb_intern_lit(c->vm, "to_i", 4), 0, 0);
     if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
     *got = korb_parse_tz_offset(tr.value, off, NULL);
     double d = 0;
@@ -178,7 +178,7 @@ korb_time_zone_arg(CTX *c, korb_value *slots, korb_value zv, korb_value recv, do
      * it (CRuby's timezone-name hook), else it is an error. */
     if (KORB_STRING_P(zv)) {
         const korb_value timec = KORB_CLASS_P(recv) ? recv : korb_class_obj_of(c, recv);
-        const uint32_t ftz = korb_intern(c->vm, "find_timezone", 13);
+        const uint32_t ftz = korb_intern_lit(c->vm, "find_timezone", 13);
         if (KORB_CLASS_P(timec) && korb_responds_to(c, timec, ftz)) {
             slots[2] = timec; slots[3] = zv;
             const RESULT tr = korb_send(c, slots + 4, ftz, 0, 1);
@@ -201,7 +201,7 @@ korb_time_zone_arg(CTX *c, korb_value *slots, korb_value zv, korb_value recv, do
         for (size_t ci = 0; ci < sizeof conv / sizeof conv[0] && !got; ci++) {
             const uint32_t mid = korb_intern(c->vm, conv[ci].nm, conv[ci].len);
             /* CRuby's num_exact: #to_r wins, except on a String-ish object */
-            if (conv[ci].len == 4 && korb_responds_to(c, KORB_REF_GET(zr), korb_intern(c->vm, "to_str", 6))) continue;
+            if (conv[ci].len == 4 && korb_responds_to(c, KORB_REF_GET(zr), korb_intern_lit(c->vm, "to_str", 6))) continue;
             if (!korb_responds_to(c, KORB_REF_GET(zr), mid)) continue;
             slots[3] = KORB_REF_GET(zr);
             const RESULT ir = korb_send(c, slots + 4, mid, 0, 0);
@@ -228,7 +228,7 @@ range:
 }
 
 /* @__offx: the exact (non-whole-second) utc_offset, when there is one. */
-static korb_value korb_time_offx_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(vm, "@__offx", 7)); }
+static korb_value korb_time_offx_sym(struct korb_vm *vm) { return ID2SYM(korb_intern_lit(vm, "@__offx", 7)); }
 
 /* Stamp the resolved zone onto a freshly built Time.  Every argument is a rooted
  * slot: korb_ivar_set can grow the ivar table, i.e. it is a GC point. */
@@ -435,7 +435,7 @@ static RESULT korb_m_time_now(CTX *c, korb_value *slots, korb_ref self, korb_sli
     korb_value in_zv = KORB_NIL;
     if (n >= 1 && KORB_HASH_P(KORB_SLICE_GET(a, n - 1))) {
         const KorbHash *const h = VAL2HASH(KORB_SLICE_GET(a, n - 1));
-        const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "in", 2)));
+        const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "in", 2)));
         if (ix >= 0) in_zv = korb_items_data(h->items)[2 * ix + 1];
     } else if (UNLIKELY(n >= 1)) {
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", n);
@@ -451,7 +451,7 @@ static RESULT korb_m_time_now(CTX *c, korb_value *slots, korb_ref self, korb_sli
 /* Is `v` a Numeric (by class ancestry — used to gate the #to_r coercion)? */
 static bool korb_obj_is_numeric(CTX *c, korb_value v) {
     if (!KORB_OBJECT_P(v)) return false;
-    const korb_value num = korb_const_get(c->vm, korb_intern(c->vm, "Numeric", 7));
+    const korb_value num = korb_const_get(c->vm, korb_intern_lit(c->vm, "Numeric", 7));
     return KORB_CLASS_P(num) && korb_class_has_ancestor(korb_dispatch_class(c, v), num);
 }
 
@@ -505,15 +505,15 @@ static RESULT korb_m_time_at(CTX *c, korb_value *slots, korb_ref self, korb_slic
         bool got = false;
         /* CRuby only takes #to_r from a Numeric (a bare object with #to_r is a
          * TypeError), so check the class before asking. */
-        if (korb_obj_is_numeric(c, v) && korb_responds_to_coerce_p(c, slots, &v, korb_intern(c->vm, "to_r", 4))) {
+        if (korb_obj_is_numeric(c, v) && korb_responds_to_coerce_p(c, slots, &v, korb_intern_lit(c->vm, "to_r", 4))) {
             slots[0] = v;
-            RESULT rr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, NULL);
+            RESULT rr = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_r", 4), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
             got = korb_epoch_parts_x(rr.value, &sec, &nsec, &rn, &rd);
         }
-        if (!got && korb_responds_to_coerce_p(c, slots, &v, korb_intern(c->vm, "to_int", 6))) {
+        if (!got && korb_responds_to_coerce_p(c, slots, &v, korb_intern_lit(c->vm, "to_int", 6))) {
             slots[0] = v;
-            RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
+            RESULT ir = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
             got = korb_epoch_parts_x(ir.value, &sec, &nsec, &rn, &rd);
         }
@@ -533,7 +533,7 @@ static RESULT korb_m_time_at(CTX *c, korb_value *slots, korb_ref self, korb_slic
     korb_value in_zv = KORB_NIL;
     if (alen >= 2 && KORB_HASH_P(KORB_SLICE_GET(a, alen - 1))) {
         const KorbHash *const h = VAL2HASH(KORB_SLICE_GET(a, alen - 1));
-        const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "in", 2)));
+        const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "in", 2)));
         if (ix >= 0) in_zv = korb_items_data(h->items)[2 * ix + 1];
         alen--;
     }
@@ -648,16 +648,16 @@ static RESULT korb_time_from_parts(CTX *c, korb_value *slots, korb_value cls, ko
         if (FIXNUM_P(cv)) { comp[i] = FIX2LONG(cv); continue; }
         if (KORB_FLOAT_P(cv)) { comp[i] = (korb_sword_t)korb_float_val(cv); continue; }
         if (!KORB_STRING_P(cv)) {                            /* coerce: #to_int, else #to_str → parse */
-            if (korb_responds_to(c, cv, korb_intern(c->vm, "to_int", 6))) {
+            if (korb_responds_to(c, cv, korb_intern_lit(c->vm, "to_int", 6))) {
                 slots[1] = cv;
-                RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
+                RESULT r = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 if (FIXNUM_P(r.value)) { comp[i] = FIX2LONG(r.value); cls = slots[0]; continue; }
                 if (KORB_FLOAT_P(r.value)) { comp[i] = (korb_sword_t)korb_float_val(r.value); cls = slots[0]; continue; }
             }
-            if (korb_responds_to(c, cv, korb_intern(c->vm, "to_str", 6))) {
+            if (korb_responds_to(c, cv, korb_intern_lit(c->vm, "to_str", 6))) {
                 slots[1] = cv;
-                RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
+                RESULT r = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 cls = slots[0];
                 if (KORB_STRING_P(r.value)) cv = r.value;
@@ -820,7 +820,7 @@ static RESULT korb_m_time_initialize(CTX *c, korb_value *slots, korb_ref self, k
 
 static RESULT korb_m_time_new(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     if (UNLIKELY(korb_sub_overrides_init_p(c, KORB_REF_GET(self),
-                                           korb_const_get(c->vm, korb_intern(c->vm, "Time", 4))))) {
+                                           korb_const_get(c->vm, korb_intern_lit(c->vm, "Time", 4))))) {
         slots[0] = UNWRAP(korb_obj_new(c, slots, KORB_REF_GET(self)));   /* a Time is all ivars */
         return korb_sub_new_init(c, slots + 1, KORB_REF_AT(&slots[0]), a, NULL, NULL, NULL);
     }
@@ -835,9 +835,9 @@ static RESULT korb_m_time_new(CTX *c, korb_value *slots, korb_ref self, korb_sli
         /* the ABI cannot tell kwargs from a trailing positional Hash, so only a
          * hash that carries a keyword we know is treated as one */
         const KorbHash *const h = VAL2HASH(KORB_SLICE_GET(a, n - 1));
-        const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "in", 2)));
+        const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "in", 2)));
         if (ix >= 0) in_zv = korb_items_data(h->items)[2 * ix + 1];
-        const int32_t px = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "precision", 9)));
+        const int32_t px = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "precision", 9)));
         if (px >= 0) { prec_v = korb_items_data(h->items)[2 * px + 1]; prec_given = true; }
         if (ix >= 0 || px >= 0) n--;
     }
@@ -863,7 +863,7 @@ static RESULT korb_m_time_new(CTX *c, korb_value *slots, korb_ref self, korb_sli
         if (prec_v != KORB_NIL) {
             slots[5] = prec_v;
             if (!FIXNUM_P(slots[5])) {                     /* Integer only — #to_int, not #to_i */
-                const uint32_t toi = korb_intern(c->vm, "to_int", 6);
+                const uint32_t toi = korb_intern_lit(c->vm, "to_int", 6);
                 if (!korb_responds_to(c, slots[5], toi))
                     return korb_raise(c, slots + 6, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
                                       korb_coerce_name(c, slots[5]));
@@ -1014,8 +1014,8 @@ static RESULT korb_time_add_subns(CTX *c, korb_value *slots, korb_ref self, korb
     slots[1] = korb_ivar_get(c, KORB_REF_GET(self), korb_time_subns_sym(c->vm));
     if (!KORB_RATIONAL_P(slots[1])) return RESULT_OK(slots[0]);
     slots[2] = LONG2FIX(1000000000);
-    slots[1] = UNWRAP(korb_send(c, slots + 3, korb_intern(c->vm, "/", 1), 0, 1));
-    return korb_send(c, slots + 2, korb_intern(c->vm, "+", 1), 0, 1);
+    slots[1] = UNWRAP(korb_send(c, slots + 3, korb_intern_lit(c->vm, "/", 1), 0, 1));
+    return korb_send(c, slots + 2, korb_intern_lit(c->vm, "+", 1), 0, 1);
 }
 static RESULT korb_m_time_subsec(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a; const long ns = korb_time_nsec_of(c, KORB_REF_GET(self));
@@ -1204,7 +1204,7 @@ static RESULT korb_time_shift(CTX *c, korb_value *slots, korb_ref self, korb_val
     }
     /* CRuby's Time#+ / #- answer a plain Time even for a subclass receiver. */
     slots[0] = UNWRAP(korb_time_derive(c, slots, self, epoch,
-                                       korb_const_get(c->vm, korb_intern(c->vm, "Time", 4))));
+                                       korb_const_get(c->vm, korb_intern_lit(c->vm, "Time", 4))));
     CHECK(korb_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), korb_time_ns_sym(c->vm), LONG2FIX(nsec)));
     CHECK(korb_time_set_subns(c, slots + 1, KORB_REF_AT(&slots[0]), rn, rd));
     return RESULT_OK(slots[0]);
@@ -1217,9 +1217,9 @@ static RESULT korb_m_time_plus(CTX *c, korb_value *slots, korb_ref self, korb_sl
     if (UNLIKELY(!korb_time_split_delta(c, o, &ds, &dn, 1))) {
         korb_value cand = o;                                      /* a foreign Numeric converts through #to_r (as Time#- does) */
         if (korb_obj_is_numeric(c, cand) &&
-            korb_responds_to_coerce_p(c, slots, &cand, korb_intern(c->vm, "to_r", 4))) {
+            korb_responds_to_coerce_p(c, slots, &cand, korb_intern_lit(c->vm, "to_r", 4))) {
             slots[0] = cand;
-            const RESULT rr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, NULL);
+            const RESULT rr = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_r", 4), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
             if (korb_time_split_delta(c, rr.value, &ds, &dn, 1)) {
                 slots[0] = rr.value;
@@ -1246,9 +1246,9 @@ static RESULT korb_m_time_minus(CTX *c, korb_value *slots, korb_ref self, korb_s
          * a plain object has no exact value (CRuby: TypeError) */
         korb_value cand = o;
         if (korb_obj_is_numeric(c, cand) &&
-            korb_responds_to_coerce_p(c, slots, &cand, korb_intern(c->vm, "to_r", 4))) {
+            korb_responds_to_coerce_p(c, slots, &cand, korb_intern_lit(c->vm, "to_r", 4))) {
             slots[0] = cand;
-            const RESULT rr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, NULL);
+            const RESULT rr = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_r", 4), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
             if (korb_time_split_delta(c, rr.value, &ds, &dn, 1)) {
                 slots[0] = rr.value;
@@ -1262,7 +1262,7 @@ static RESULT korb_m_time_minus(CTX *c, korb_value *slots, korb_ref self, korb_s
 /* Time#<=> with a non-Time: CRuby asks the OTHER object (`other <=> self`) and
  * inverts its sign — that is how a Time-like duck type compares. */
 static RESULT korb_time_cmp_other(CTX *c, korb_value *slots, korb_ref self, korb_value o) {
-    const uint32_t cmp = korb_intern(c->vm, "<=>", 3);
+    const uint32_t cmp = korb_intern_lit(c->vm, "<=>", 3);
     if (!korb_responds_to(c, o, cmp)) return RESULT_OK(KORB_NIL);   /* an Integer's <=> runs the coerce probe on self, as CRuby's rb_invcmp does */
     slots[0] = o; slots[1] = KORB_REF_GET(self);
     RESULT r = korb_send(c, slots + 2, cmp, 0, 1);
@@ -1270,11 +1270,11 @@ static RESULT korb_time_cmp_other(CTX *c, korb_value *slots, korb_ref self, korb
     if (r.value == KORB_NIL) return RESULT_OK(KORB_NIL);
     slots[0] = r.value;                               /* park below the cursor: the > dispatch runs Ruby */
     slots[1] = slots[0]; slots[2] = LONG2FIX(0);      /* (other <=> self) > 0 → self is smaller */
-    RESULT gt = korb_send(c, slots + 3, korb_intern(c->vm, ">", 1), 0, 1);
+    RESULT gt = korb_send(c, slots + 3, korb_intern_lit(c->vm, ">", 1), 0, 1);
     if (UNLIKELY(gt.state != KORB_NORMAL)) return gt;
     if (KORB_TRUTHY(gt.value)) return RESULT_OK(LONG2FIX(-1));
     slots[1] = slots[0]; slots[2] = LONG2FIX(0);      /* re-read the parked comparison result */
-    RESULT lt = korb_send(c, slots + 3, korb_intern(c->vm, "<", 1), 0, 1);
+    RESULT lt = korb_send(c, slots + 3, korb_intern_lit(c->vm, "<", 1), 0, 1);
     if (UNLIKELY(lt.state != KORB_NORMAL)) return lt;
     if (KORB_TRUTHY(lt.value)) return RESULT_OK(LONG2FIX(1));
     return RESULT_OK(LONG2FIX(0));
@@ -1345,7 +1345,7 @@ static RESULT korb_m_time_strftime(CTX *c, korb_value *slots, korb_ref self, kor
     slots[0] = korb_ivar_get(c, KORB_REF_GET(self), korb_time_tz_sym(c->vm));
     if (slots[0] != KORB_NIL) {
         if (!KORB_STRING_P(slots[0])) {
-            const uint32_t ab = korb_intern(c->vm, "abbr", 4);
+            const uint32_t ab = korb_intern_lit(c->vm, "abbr", 4);
             if (korb_responds_to(c, slots[0], ab)) {
                 slots[1] = slots[0]; slots[2] = KORB_REF_GET(self);
                 const RESULT zr = korb_send(c, slots + 3, ab, 0, 1);
@@ -1633,7 +1633,7 @@ static RESULT korb_m_time_round(CTX *c, korb_value *slots, korb_ref self, korb_s
     }
     const double r = (double)(korb_time_sec_of(c, KORB_REF_GET(self)) + carry) + (double)ns / 1e9;
     /* CRuby#round hands back a plain Time even for a subclass receiver */
-    slots[0] = UNWRAP(korb_time_derive(c, slots, self, r, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4))));
+    slots[0] = UNWRAP(korb_time_derive(c, slots, self, r, korb_const_get(c->vm, korb_intern_lit(c->vm, "Time", 4))));
     CHECK(korb_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), korb_time_ns_sym(c->vm), LONG2FIX(ns)));
     CHECK(korb_time_set_subns(c, slots + 1, KORB_REF_AT(&slots[0]), orn, ord));
     return RESULT_OK(slots[0]);
@@ -1641,8 +1641,8 @@ static RESULT korb_m_time_round(CTX *c, korb_value *slots, korb_ref self, korb_s
 
 void korb_init_time(CTX *c, korb_value *slots) {
     struct korb_vm *const vm = c->vm;
-    slots[0] = (korb_class_new(c, slots, korb_intern(vm, "Time", 4), korb_builtin_class_obj(vm, KORB_C_OBJECT))).value;
-    korb_const_define(c, korb_intern(vm, "Time", 4), slots[0]);
+    slots[0] = (korb_class_new(c, slots, korb_intern_lit(vm, "Time", 4), korb_builtin_class_obj(vm, KORB_C_OBJECT))).value;
+    korb_const_define(c, korb_intern_lit(vm, "Time", 4), slots[0]);
     slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;   /* class methods on Time's singleton */
     korb_class_def_cfn(c, slots[1], "now",     korb_m_time_now,   -1);
     korb_class_def_cfn(c, slots[1], "at",      korb_m_time_at,    -1);
@@ -1653,7 +1653,7 @@ void korb_init_time(CTX *c, korb_value *slots) {
     korb_class_def_cfn(c, slots[1], "new",     korb_m_time_new,   -1);
     const korb_value t = slots[0];
     korb_class_def_cfn(c, t, "initialize", korb_m_time_initialize, -1);
-    { struct korb_method *const mi = korb_class_own_method(t, korb_intern(vm, "initialize", 10));
+    { struct korb_method *const mi = korb_class_own_method(t, korb_intern_lit(vm, "initialize", 10));
       if (mi) mi->visibility = 1; }                    /* #initialize is private */
     korb_class_def_cfn(c, t, "to_i",  korb_m_time_to_i,  0);
     korb_class_def_cfn(c, t, "to_f",  korb_m_time_to_f,  0);
@@ -1711,12 +1711,12 @@ void korb_init_time(CTX *c, korb_value *slots) {
     korb_class_def_cfn(c, t, "to_s",     korb_m_time_to_s, 0);
     korb_class_def_cfn(c, t, "inspect",  korb_m_time_inspect, 0);
     /* Comparable derives < <= > >= between/clamp from Time#<=>. */
-    const korb_value comp = korb_const_get(vm, korb_intern(vm, "Comparable", 10));
+    const korb_value comp = korb_const_get(vm, korb_intern_lit(vm, "Comparable", 10));
     if (KORB_CLASS_P(comp)) { slots[1] = comp; (void)korb_do_include(c, slots + 2, slots[0], KORB_SLICE_MAKE(&slots[1], 1)); }
 }
 
 static RESULT korb_m_time_initialize(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
-    slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Time", 4));   /* Time, not the subclass: that re-enters here */
+    slots[0] = korb_const_get(c->vm, korb_intern_lit(c->vm, "Time", 4));   /* Time, not the subclass: that re-enters here */
     const RESULT tr = korb_m_time_new(c, slots + 1, KORB_REF_AT(&slots[0]), a);
     if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
     slots[1] = tr.value;

@@ -25,7 +25,7 @@ static inline void korb_sigmask_resume(const struct korb_vm *const vm, const uin
 static RESULT
 korb_raise_fiber_error(CTX *c, korb_value *slots, const char *msg)
 {
-    const korb_value cls = korb_const_get(c->vm, korb_intern(c->vm, "FiberError", 10));
+    const korb_value cls = korb_const_get(c->vm, korb_intern_lit(c->vm, "FiberError", 10));
     slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
     RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", msg);
     if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
@@ -52,7 +52,7 @@ korb_fiber_trampoline(unsigned hi, unsigned lo)
     } else {
         base[1] = rep->transfer;
     }
-    RESULT r = korb_send(c, base + 1 + n, korb_intern(c->vm, "call", 4), 0, n);
+    RESULT r = korb_send(c, base + 1 + n, korb_intern_lit(c->vm, "call", 4), 0, n);
     rep->fstate = 3;                                  /* done */
     if (r.state == KORB_RETURN || r.state == KORB_BREAK)   /* `return` / `break` の逃げ場がない */
         r = korb_raise(c, c->slots, KORB_E_LOCALJUMP, 0, "%s",
@@ -114,7 +114,7 @@ korb_fiber_new(CTX *c, korb_value *slots, NODE *block, korb_value *def_env, korb
         if (cur != NULL && cur->storage != KORB_NIL && VAL2HASH(cur->storage)->len > 0) {
             slots[0] = (korb_value)fb;                      /* park the fiber across the copy's allocs */
             slots[2] = cur->storage;                   /* receiver for #dup (cursor slots+3) */
-            const RESULT dr = korb_send(c, slots + 3, korb_intern(c->vm, "dup", 3), 0, 0);   /* slots[2] = recv */
+            const RESULT dr = korb_send(c, slots + 3, korb_intern_lit(c->vm, "dup", 3), 0, 0);   /* slots[2] = recv */
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
             VAL2FIBER(slots[0])->rep->storage = dr.value;
             return RESULT_OK(slots[0]);
@@ -424,9 +424,9 @@ static RESULT korb_m_fiber_storage_set(CTX *c, korb_value *slots, korb_ref self,
 /* Fiber[key] / Fiber[key] = value — the RUNNING fiber's storage. */
 static RESULT korb_fiber_storage_key(CTX *c, korb_value *slots, korb_value k, korb_value *out) {
     if (SYMBOL_P(k)) { *out = k; return RESULT_OK(KORB_TRUE); }
-    if (!KORB_STRING_P(k) && korb_responds_to(c, k, korb_intern(c->vm, "to_str", 6))) {
+    if (!KORB_STRING_P(k) && korb_responds_to(c, k, korb_intern_lit(c->vm, "to_str", 6))) {
         slots[0] = k;                                   /* #to_str-able key (CRuby coerces) */
-        const RESULT sr = korb_send(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0);
+        const RESULT sr = korb_send(c, slots + 1, korb_intern_lit(c->vm, "to_str", 6), 0, 0);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
         if (KORB_STRING_P(sr.value)) k = sr.value;
     }

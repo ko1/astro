@@ -11,7 +11,7 @@ static RESULT korb_m_immed_clone(CTX *c, korb_value *slots, korb_ref self, korb_
         const korb_value last = KORB_SLICE_GET(a, n - 1);
         if (UNLIKELY(!KORB_HASH_P(last)))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", n);
-        const int32_t fi = korb_hash_find(VAL2HASH(last), ID2SYM(korb_intern(c->vm, "freeze", 6)));
+        const int32_t fi = korb_hash_find(VAL2HASH(last), ID2SYM(korb_intern_lit(c->vm, "freeze", 6)));
         if (fi >= 0) {
             const korb_value fv = korb_items_data(VAL2HASH(last)->items)[2 * fi + 1];
             if (UNLIKELY(fv != KORB_NIL && fv != KORB_TRUE && fv != KORB_FALSE))
@@ -34,7 +34,7 @@ static RESULT korb_m_int_abs2(CTX *c, korb_value *slots, korb_ref self, korb_sli
 static RESULT korb_m_int_bits(CTX *c, korb_value *slots, korb_ref self, korb_slice a, int mode) {
     korb_value o = KORB_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_INTEGER_P(o))) {                   /* coerce a Float / #to_int object to an Integer (CRuby rb_to_int) */
-        const uint32_t to_int_id = korb_intern(c->vm, "to_int", 6);
+        const uint32_t to_int_id = korb_intern_lit(c->vm, "to_int", 6);
         /* honors #respond_to?: without #to_int CRuby raises TypeError, not NoMethodError */
         if ((KORB_OBJECT_P(o) || KORB_FLOAT_P(o)) && korb_responds_to_coerce_p(c, slots, &o, to_int_id)) {
             slots[0] = o;
@@ -318,7 +318,7 @@ static RESULT korb_m_ary_select_bang(CTX *c, korb_value *slots, korb_ref self, k
 static RESULT korb_hash_pair_at(CTX *c, korb_value *slots, korb_ref self, uint32_t i, korb_value *out);
 static RESULT korb_m_hash_take_while(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
     (void)a;
-    if (UNLIKELY(block == NULL)) { slots[0] = KORB_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "take_while", 10)); return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1); }
+    if (UNLIKELY(block == NULL)) { slots[0] = KORB_REF_GET(self); slots[1] = ID2SYM(korb_intern_lit(c->vm, "take_while", 10)); return korb_send(c, slots + 2, korb_intern_lit(c->vm, "__to_enum_sized", 15), 0, 1); }
     uint32_t np = korb_entry_params_cnt(block);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
     korb_ref dst = KORB_REF_AT(&slots[0]);
@@ -335,7 +335,7 @@ static RESULT korb_m_hash_take_while(CTX *c, korb_value *slots, korb_ref self, k
 }
 static RESULT korb_m_hash_sum(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
     if (block == NULL) {                              /* sum(init): fold init + [k,v] over pairs via + */
-        uint32_t plus_mid = korb_intern(c->vm, "+", 1);
+        uint32_t plus_mid = korb_intern_lit(c->vm, "+", 1);
         slots[0] = KORB_SLICE_LEN(a) >= 1 ? KORB_SLICE_GET(a, 0) : LONG2FIX(0);   /* acc = init (default 0), rooted */
         for (uint32_t i = 0; i < VAL2HASH(KORB_REF_GET(self))->len; i++) {
             korb_value pair; CHECK(korb_hash_pair_at(c, slots + 1, self, i, &pair));   /* pair at slots[3] */
@@ -373,7 +373,7 @@ static RESULT korb_m_hash_sum(CTX *c, korb_value *slots, korb_ref self, korb_sli
     }
     if (slots[1] == KORB_NIL) return RESULT_OK(LONG2FIX(acc));
     slots[2] = slots[1]; slots[3] = slots[0];         /* rest.sum(init) */
-    return korb_send(c, slots + 4, korb_intern(c->vm, "sum", 3), 0, 1);
+    return korb_send(c, slots + 4, korb_intern_lit(c->vm, "sum", 3), 0, 1);
 }
 
 static RESULT korb_m_obj_false(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
@@ -483,10 +483,10 @@ static RESULT korb_copy_finalizers(CTX *c, korb_value *slots, korb_ref self) {
      * 110k objects per iteration once Rails registered a single finalizer) */
     const korb_value orig = KORB_REF_GET(self);
     if (!AROH_IS_GC_OBJECT(orig) || korb_oid_find(c->vm, orig) == KORB_NIL) return RESULT_OK(KORB_NIL);
-    slots[2] = korb_const_get(c->vm, korb_intern(c->vm, "ObjectSpace", 11));
+    slots[2] = korb_const_get(c->vm, korb_intern_lit(c->vm, "ObjectSpace", 11));
     slots[3] = KORB_REF_GET(self);
     slots[4] = slots[1];
-    const RESULT fr = korb_send_impl(c, slots + 5, korb_intern(c->vm, "__copy_finalizers__", 19),
+    const RESULT fr = korb_send_impl(c, slots + 5, korb_intern_lit(c->vm, "__copy_finalizers__", 19),
                                      0, 2, NULL, NULL, NULL);
     if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
     slots[1] = slots[4];   /* re-read: the callback allocates and may have moved the copy */
@@ -779,7 +779,7 @@ static RESULT korb_re_copy_freeze(const RESULT r) {
 }
 static RESULT korb_m_obj_dup(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
-    return korb_re_copy_freeze(korb_obj_copy_impl(c, slots, self, korb_intern(c->vm, "initialize_dup", 14), NULL));
+    return korb_re_copy_freeze(korb_obj_copy_impl(c, slots, self, korb_intern_lit(c->vm, "initialize_dup", 14), NULL));
 }
 /* Object#clone(freeze: nil) — like dup, but copies the frozen state (unless
  * freeze: false), and freeze: true forces it.  (Singleton-class copy not done.) */
@@ -788,7 +788,7 @@ static RESULT korb_m_obj_clone(CTX *c, korb_value *slots, korb_ref self, korb_sl
     const uint32_t n = KORB_SLICE_LEN(a);
     if (n >= 1 && KORB_HASH_P(KORB_SLICE_GET(a, n - 1))) {
         const korb_value h = KORB_SLICE_GET(a, n - 1);
-        const int32_t fi = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, "freeze", 6)));
+        const int32_t fi = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern_lit(c->vm, "freeze", 6)));
         if (fi >= 0) {
             const korb_value fv = korb_items_data(VAL2HASH(h)->items)[2 * fi + 1];
             if (UNLIKELY(fv != KORB_NIL && fv != KORB_TRUE && fv != KORB_FALSE))   /* clone(freeze:) accepts only true/false/nil */
@@ -801,7 +801,7 @@ static RESULT korb_m_obj_clone(CTX *c, korb_value *slots, korb_ref self, korb_sl
     slots[0] = (n >= 1 && KORB_HASH_P(KORB_SLICE_GET(a, n - 1))) ? KORB_SLICE_GET(a, n - 1) : KORB_NIL;
     const korb_value sv = KORB_REF_GET(self);
     const bool self_frozen = AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_FROZEN);
-    RESULT r = korb_obj_copy_impl(c, slots + 1, self, korb_intern(c->vm, "initialize_clone", 16), &slots[0]);
+    RESULT r = korb_obj_copy_impl(c, slots + 1, self, korb_intern_lit(c->vm, "initialize_clone", 16), &slots[0]);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     const korb_value sv2 = KORB_REF_GET(self);   /* re-fetch: korb_m_obj_dup GC-moved the receiver; `sv` is stale */
     /* clone (unlike dup) carries the singleton class, so singleton methods
@@ -886,7 +886,7 @@ static RESULT korb_m_ary_product(CTX *c, korb_value *slots, korb_ref self, korb_
         if (!KORB_ARRAY_P(slots[0])) {                   /* coerce a #to_ary object to an Array (method_missing-aware) */
             if (KORB_OBJECT_P(slots[0])) {
                 korb_value cv = slots[0];
-                const RESULT cr = korb_check_funcall(c, slots + 1, &cv, korb_intern(c->vm, "to_ary", 6));
+                const RESULT cr = korb_check_funcall(c, slots + 1, &cv, korb_intern_lit(c->vm, "to_ary", 6));
                 if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
                 slots[0] = cv;
             }

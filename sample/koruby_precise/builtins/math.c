@@ -12,8 +12,8 @@ static RESULT korb_math_coerce_d(CTX *c, korb_value *slots, korb_value v, double
     /* CRuby rb_to_float: only a Numeric (subclass) is coerced via #to_f — a plain
      * object that merely defines #to_f is still rejected with TypeError. */
     if (KORB_OBJECT_P(v)) {
-        const uint32_t to_f = korb_intern(c->vm, "to_f", 4);
-        const korb_value numeric = korb_const_get(c->vm, korb_intern(c->vm, "Numeric", 7));
+        const uint32_t to_f = korb_intern_lit(c->vm, "to_f", 4);
+        const korb_value numeric = korb_const_get(c->vm, korb_intern_lit(c->vm, "Numeric", 7));
         const korb_value vcls = korb_class_obj_of(c, v);
         if (KORB_CLASS_P(numeric) && KORB_CLASS_P(vcls) && korb_class_le(vcls, numeric)
             && korb_responds_to(c, v, to_f)) {
@@ -233,9 +233,9 @@ static void korb_def_classfunc(CTX *c, korb_value *slots, korb_value clsobj, con
 
 void korb_init_math(CTX *c, korb_value *slots) {
     struct korb_vm *const vm = c->vm;
-    slots[0] = (korb_class_new(c, slots, korb_intern(vm, "Math", 4), KORB_NIL)).value;
+    slots[0] = (korb_class_new(c, slots, korb_intern_lit(vm, "Math", 4), KORB_NIL)).value;
     VAL2CLASS(slots[0])->is_module = 1;
-    korb_const_define(c, korb_intern(vm, "Math", 4), slots[0]);
+    korb_const_define(c, korb_intern_lit(vm, "Math", 4), slots[0]);
     /* Owned so `Float.constants` / `Math.constants` report them; a bare read
      * still finds them, since the by-name lookup ignores the owner. */
     /* The owner must be re-read AFTER the value's alloc: a moving GC there would
@@ -267,7 +267,7 @@ void korb_init_math(CTX *c, korb_value *slots) {
 #undef KORB_CPX_CLS
     {   /* Math::DomainError is created with the exception classes, before Math
          * exists; re-own the existing entry rather than adding a second one. */
-        const uint32_t de = korb_intern(vm, "DomainError", 11);
+        const uint32_t de = korb_intern_lit(vm, "DomainError", 11);
         for (uint32_t i = 0; i < vm->const_cnt; i++)
             if (vm->const_names[i] == de && vm->const_owners[i] == KORB_NIL) {
                 vm->const_owners[i] = slots[0];

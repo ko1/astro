@@ -65,7 +65,7 @@ static RESULT korb_m_ary_empty(CTX *c, korb_value *slots, korb_ref self, korb_sl
 static RESULT korb_m_ary_cmp(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     korb_value o = KORB_SLICE_GET(a, 0);
     if (!KORB_ARRAY_P(o)) {                            /* coerce via #to_ary, else nil */
-        const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+        const uint32_t to_ary = korb_intern_lit(c->vm, "to_ary", 6);
         if (!KORB_OBJECT_P(o) || !korb_responds_to_coerce_p(c, slots, &o, to_ary)) return RESULT_OK(KORB_NIL);
         slots[0] = o;
         RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
@@ -395,7 +395,7 @@ static RESULT korb_ary_aset_rhs(CTX *c, korb_value *slots, korb_value rhs) {
     slots[0] = rhs;
     if (KORB_ARRAY_P(rhs) || !KORB_OBJECT_P(rhs)) return RESULT_OK(rhs);
     korb_value cv = rhs;
-    const RESULT cr = korb_check_funcall(c, slots + 1, &cv, korb_intern(c->vm, "to_ary", 6));
+    const RESULT cr = korb_check_funcall(c, slots + 1, &cv, korb_intern_lit(c->vm, "to_ary", 6));
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     if (cr.value == KORB_FALSE || cv == KORB_NIL) return RESULT_OK(slots[0]);   /* not convertible → one element */
     if (UNLIKELY(!KORB_ARRAY_P(cv)))
@@ -590,11 +590,11 @@ static bool korb_ary_respond_to_pub(CTX *c, korb_value *slots, korb_value *selfp
     const korb_value dcls = korb_dispatch_class(c, *selfp);
     if (!KORB_CLASS_P(dcls)) return false;
     korb_value rt_def = KORB_NIL;
-    (void)korb_class_find_method(dcls, korb_intern(c->vm, "respond_to?", 11), &rt_def);
+    (void)korb_class_find_method(dcls, korb_intern_lit(c->vm, "respond_to?", 11), &rt_def);
     if (rt_def == KORB_NIL || rt_def == korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]))
         return false;                                     /* the default #respond_to? already said no */
     slots[0] = *selfp; slots[1] = ID2SYM(mid);
-    const RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "respond_to?", 11), 0, 1, NULL, NULL, NULL);
+    const RESULT r = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "respond_to?", 11), 0, 1, NULL, NULL, NULL);
     *selfp = slots[0];                                    /* writeback: the dispatch may have moved it */
     return r.state == KORB_NORMAL && KORB_TRUTHY(r.value);
 }
@@ -606,7 +606,7 @@ static RESULT korb_m_ary_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice
     if (KORB_REF_GET(self) == other) return RESULT_OK(KORB_TRUE);
     if (!KORB_ARRAY_P(other)) {                            /* Array-like (responds to #to_ary) → delegate other == self */
         korb_value o = other;
-        if (korb_ary_respond_to_pub(c, slots, &o, korb_intern(c->vm, "to_ary", 6))) {   /* any receiver: a class, a String reopened, … (rb_respond_to) */
+        if (korb_ary_respond_to_pub(c, slots, &o, korb_intern_lit(c->vm, "to_ary", 6))) {   /* any receiver: a class, a String reopened, … (rb_respond_to) */
             slots[0] = o; slots[1] = KORB_REF_GET(self);
             return korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
         }
@@ -647,7 +647,7 @@ static RESULT korb_m_ary_eql(CTX *c, korb_value *slots, korb_ref self, korb_slic
     if (VAL2ARY(KORB_REF_GET(self))->len != VAL2ARY(other)->len) return RESULT_OK(KORB_FALSE);
     if (VAL2ARY(KORB_REF_GET(self))->head.flags & KORB_FL_JOIN_VISITING) return RESULT_OK(KORB_TRUE);   /* recursive */
     slots[0] = KORB_REF_GET(self); slots[1] = other;
-    const uint32_t mid_eql = korb_intern(c->vm, "eql?", 4);
+    const uint32_t mid_eql = korb_intern_lit(c->vm, "eql?", 4);
     const uint32_t n = VAL2ARY(slots[0])->len;
     VAL2ARY(slots[0])->head.flags |= KORB_FL_JOIN_VISITING;
     korb_value result = KORB_TRUE;
@@ -1039,7 +1039,7 @@ static RESULT korb_int_iter(CTX *c, korb_value *slots, korb_ref self, korb_slice
         if ((korb_float_val(lv) > 0) != up) to = up ? from - 1 : from + 1;
         else if (block == NULL) {
             slots[0] = KORB_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth))); slots[2] = lv;
-            return korb_send(c, slots + 3, korb_intern(c->vm, "__iter_enum_gen", 15), 0, 2);
+            return korb_send(c, slots + 3, korb_intern_lit(c->vm, "__iter_enum_gen", 15), 0, 2);
         } else {
             for (korb_sword_t i = from; FIXABLE(i); i += up ? 1 : -1) {   /* the block is expected to break */
                 korb_value iv = LONG2FIX(i);
@@ -1058,7 +1058,7 @@ static RESULT korb_int_iter(CTX *c, korb_value *slots, korb_ref self, korb_slice
         if (korb_num_to_d(lv, &d)) to = (korb_sword_t)(up ? floor(d) : ceil(d));   /* Bignum/Rational endpoint */
         else if (block == NULL) {                       /* CRuby: the Enumerator is fine; #size / #each raise */
             slots[0] = KORB_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth))); slots[2] = lv;
-            return korb_send(c, slots + 3, korb_intern(c->vm, "__iter_enum_bad", 15), 0, 2);
+            return korb_send(c, slots + 3, korb_intern_lit(c->vm, "__iter_enum_bad", 15), 0, 2);
         }
         else return korb_raise_cmperr(c, slots, 0, KORB_REF_GET(self), lv, true);   /* non-numeric limit: CRuby blames the refused coerce */
     }
@@ -1066,7 +1066,7 @@ static RESULT korb_int_iter(CTX *c, korb_value *slots, korb_ref self, korb_slice
         const korb_sword_t cnt = up ? to - from : from - to;
         if (UNLIKELY(cnt >= 65536)) {                 /* a long span streams through to_enum (biz: Week#downto) */
             slots[0] = KORB_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth))); slots[2] = lv;
-            return korb_send(c, slots + 3, korb_intern(c->vm, "__iter_enum_gen", 15), 0, 2);
+            return korb_send(c, slots + 3, korb_intern_lit(c->vm, "__iter_enum_gen", 15), 0, 2);
         }
         slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
         korb_ref dst = KORB_REF_AT(&slots[0]);

@@ -289,7 +289,7 @@ korb_blop_poll_wait(CTX *c, korb_value *slots, struct pollfd *fds, nfds_t nfds,
 static RESULT
 korb_raise_thread_error(CTX *c, korb_value *slots, const char *msg)
 {
-    const korb_value cls = korb_const_get(c->vm, korb_intern(c->vm, "ThreadError", 11));
+    const korb_value cls = korb_const_get(c->vm, korb_intern_lit(c->vm, "ThreadError", 11));
     slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
     RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", msg);
     if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
@@ -384,9 +384,9 @@ korb_tl_gvars_swap(CTX *c, struct korb_thread *const t, const bool save)
 {
     struct korb_vm *const vm = c->vm;
     if (UNLIKELY(vm->tl_gv_sym[0] == 0)) {
-        vm->tl_gv_sym[0] = korb_intern(vm, "$_", 2);
-        vm->tl_gv_sym[1] = korb_intern(vm, "$?", 2);
-        vm->tl_gv_sym[2] = korb_intern(vm, "$~", 2);
+        vm->tl_gv_sym[0] = korb_intern_lit(vm, "$_", 2);
+        vm->tl_gv_sym[1] = korb_intern_lit(vm, "$?", 2);
+        vm->tl_gv_sym[2] = korb_intern_lit(vm, "$~", 2);
     }
     for (int k = 0; k < 3; k++) {
         const uint32_t idx = korb_const_index(vm, vm->tl_gv_sym[k]);
@@ -476,7 +476,7 @@ korb_thread_deadlock(CTX *c, korb_value *slots)
     struct korb_thread *const main = c->vm->main_thread;
     if (main == NULL || main->state == KORB_TH_DEAD
         || (main->pending_ints != KORB_NIL && VAL2ARY(main->pending_ints)->len > 0)) korb_thread_deadlock_fatal();
-    const korb_value cls = korb_const_get(c->vm, korb_intern(c->vm, "fatal", 5));
+    const korb_value cls = korb_const_get(c->vm, korb_intern_lit(c->vm, "fatal", 5));
     slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
     char dump[400];   /* CRuby's message carries a thread dump; this is its outline */
     uint32_t n = 0;
@@ -638,8 +638,8 @@ korb_thread_int_mask_of(CTX *c, const struct korb_thread *t, korb_value exc)
     if (t->int_masks == KORB_NIL) return 0;
     const KorbArray *const ma = VAL2ARY(t->int_masks);
     const korb_value *const d = korb_items_data(ma->items);
-    const korb_value intcls = korb_const_get(c->vm, korb_intern(c->vm, "Integer", 7));
-    const uint32_t s_imm = korb_intern(c->vm, "immediate", 9), s_blk = korb_intern(c->vm, "on_blocking", 11);
+    const korb_value intcls = korb_const_get(c->vm, korb_intern_lit(c->vm, "Integer", 7));
+    const uint32_t s_imm = korb_intern_lit(c->vm, "immediate", 9), s_blk = korb_intern_lit(c->vm, "on_blocking", 11);
     uint32_t i = ma->len;
     while (i > 0) {
         const uint32_t n = (uint32_t)FIX2LONG(d[i - 1]);
@@ -680,7 +680,7 @@ korb_thread_check_ints_at(CTX *c, korb_value *slots, bool blocking)
         /* Thread#raise の配送: 対象 thread 側でも #exception を呼ぶ (CRuby は
          * rb_make_exception 経由なので、caller / target の両方で呼ばれる)。 */
         slots[0] = exc;
-        const RESULT er = korb_send(c, slots + 1, korb_intern(c->vm, "exception", 9), 0, 0);
+        const RESULT er = korb_send(c, slots + 1, korb_intern_lit(c->vm, "exception", 9), 0, 0);
         if (UNLIKELY(er.state != KORB_NORMAL)) return er;
         return RESULT_RAISE_(KORB_EXC_P(er.value) ? er.value : slots[0]);
     }
@@ -771,7 +771,7 @@ korb_bi_sleep(CTX *c, korb_value *slots, korb_slice args)
             const uint32_t n = KORB_SLICE_LEN(args);
             slots[0] = sched;
             for (uint32_t i = 0; i < n; i++) slots[1 + i] = KORB_SLICE_GET(args, i);
-            return korb_send(c, slots + 1 + n, korb_intern(c->vm, "kernel_sleep", 12), 0, n);
+            return korb_send(c, slots + 1 + n, korb_intern_lit(c->vm, "kernel_sleep", 12), 0, n);
         }
     }
     struct korb_blop b; memset(&b, 0, sizeof b);
@@ -834,7 +834,7 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
         for (uint32_t i = 0; i < n; i++) base[1 + i] = korb_items_data(aa->items)[i];   /* no alloc in this loop */
         t->args = KORB_NIL;
     }
-    RESULT r = korb_send(c, base + 1 + n, korb_intern(c->vm, "call", 4), 0, n);
+    RESULT r = korb_send(c, base + 1 + n, korb_intern_lit(c->vm, "call", 4), 0, n);
     base[0] = r.value;                        /* rooted while the scheduler closes */
     const RESULT er = korb_fiber_thread_end(c, base + 1);
     r.value = base[0];
@@ -912,7 +912,7 @@ korb_thread_init_body(CTX *c, korb_value *slots, korb_ref self, korb_slice a,
     { const KorbFiberRep *const cf = c->vm->running_fiber ? c->vm->running_fiber : c->vm->root_fiber;
       if (cf != NULL && cf->storage != KORB_NIL && VAL2HASH(cf->storage)->len > 0) {
           slots[2] = cf->storage;
-          const RESULT dr = korb_send(c, slots + 3, korb_intern(c->vm, "dup", 3), 0, 0);
+          const RESULT dr = korb_send(c, slots + 3, korb_intern_lit(c->vm, "dup", 3), 0, 0);
           if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
           slots[2] = dr.value;
           t->root_fiber = korb_fiber_root_rep_alloc(c, slots + 3);
@@ -1079,7 +1079,7 @@ korb_m_thread_name_set(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
     korb_value v = KORB_SLICE_GET(a, 0);
     if (v != KORB_NIL) {
         if (!KORB_STRING_P(v)) {
-            const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+            const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
             if (KORB_OBJECT_P(v) && korb_responds_to_coerce_p(c, slots, &v, to_str)) {
                 slots[0] = v;
                 RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
@@ -1104,7 +1104,7 @@ korb_thread_tls_key(CTX *c, korb_value *slots, korb_value k, korb_value *out)
 {
     if (SYMBOL_P(k)) { *out = k; return RESULT_OK(KORB_NIL); }
     if (!KORB_STRING_P(k)) {
-        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(k) && korb_responds_to_coerce_p(c, slots, &k, to_str)) {
             slots[0] = k;
             RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
@@ -1114,7 +1114,7 @@ korb_thread_tls_key(CTX *c, korb_value *slots, korb_value k, korb_value *out)
         if (UNLIKELY(!KORB_STRING_P(k))) {            /* CRuby は inspect 形式で報告 */
             char kb[64]; kb[0] = '?'; kb[1] = 0;
             slots[0] = k;
-            RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0);
+            RESULT ir = korb_send(c, slots + 1, korb_intern_lit(c->vm, "inspect", 7), 0, 0);
             if (ir.state == KORB_NORMAL && KORB_STRING_P(ir.value)) {
                 const uint32_t il = VAL2STR(ir.value)->len < 60 ? VAL2STR(ir.value)->len : 60;
                 memcpy(kb, korb_strbuf_data(VAL2STR(ir.value)->buf), il); kb[il] = 0;   /* raise (may-GC) 前に copy */
@@ -1856,7 +1856,7 @@ korb_m_condvar_wait(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
       korb_waitq_push(&cv->wq_head, &cv->wq_tail, cur); }
     slots[0] = KORB_SLICE_GET(a, 0);                     /* receiver of #sleep */
     slots[1] = KORB_SLICE_LEN(a) >= 2 ? KORB_SLICE_GET(a, 1) : KORB_NIL;   /* CRuby は常に 1 引数 */
-    const RESULT r = korb_send(c, slots + 2, korb_intern(vm, "sleep", 5), 0, 1);
+    const RESULT r = korb_send(c, slots + 2, korb_intern_lit(vm, "sleep", 5), 0, 1);
     { KorbCondVar *cv = VAL2CONDVAR(KORB_REF_GET(self));  /* 再導出 + 自己除去 (冪等) */
       korb_waitq_remove(&cv->wq_head, &cv->wq_tail, vm->cur_thread); }
     return r;                                             /* CRuby は #sleep の戻り値をそのまま返す */
@@ -1921,9 +1921,9 @@ korb_thread_tmo_arg(CTX *c, korb_value *slots, korb_value v, double *out)
         /* CRuby accepts anything with #divmod: seconds = q + r (rb_time_interval) */
         const char *const cls = korb_coerce_name(c, v);
         bool got = false;
-        if (KORB_OBJECT_P(v) && korb_responds_to(c, v, korb_intern(c->vm, "divmod", 6))) {
+        if (KORB_OBJECT_P(v) && korb_responds_to(c, v, korb_intern_lit(c->vm, "divmod", 6))) {
             slots[0] = v; slots[1] = LONG2FIX(1);
-            const RESULT dr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "divmod", 6), 0, 1, NULL, NULL, NULL);
+            const RESULT dr = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "divmod", 6), 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
             if (KORB_ARRAY_P(dr.value) && VAL2ARY(dr.value)->len == 2) {
                 double q = 0, r = 0;

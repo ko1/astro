@@ -102,8 +102,8 @@ static uint32_t korb_mt_entropy(const void *salt) {
 
 /* @__mt ivar holds a binary String of one KorbMT. */
 /* ivar name as a Symbol korb_value (korb_ivar_get/set take ID2SYM(id), not a raw id). */
-static korb_value korb_mt_sym(struct korb_vm *const vm)   { return ID2SYM(korb_intern(vm, "@__mt", 5)); }
-static korb_value korb_seed_sym(struct korb_vm *const vm) { return ID2SYM(korb_intern(vm, "@__seed", 7)); }
+static korb_value korb_mt_sym(struct korb_vm *const vm)   { return ID2SYM(korb_intern_lit(vm, "@__mt", 5)); }
+static korb_value korb_seed_sym(struct korb_vm *const vm) { return ID2SYM(korb_intern_lit(vm, "@__seed", 7)); }
 
 static KorbMT *korb_default_rng(struct korb_vm *vm);   /* fwd */
 ARO_BORROW static KorbMT *korb_rng_of(CTX *const c, korb_value rndobj) {
@@ -145,7 +145,7 @@ static KorbRandSrc korb_rand_src_from_kwargs(CTX *const c, korb_slice a) {
     if (n >= 1) {
         const korb_value last = KORB_SLICE_GET(a, n - 1);
         if (KORB_HASH_P(last)) {
-            const int32_t hi = korb_hash_find(VAL2HASH(last), ID2SYM(korb_intern(c->vm, "random", 6)));
+            const int32_t hi = korb_hash_find(VAL2HASH(last), ID2SYM(korb_intern_lit(c->vm, "random", 6)));
             if (hi >= 0) {
                 const korb_value rng = korb_items_data(VAL2HASH(last)->items)[2 * hi + 1];
                 if (korb_is_random(c, rng)) { KorbMT *st = korb_rng_of(c, rng); if (st) { KorbRandSrc s = { st, KORB_UNDEF }; return s; } }
@@ -165,7 +165,7 @@ static RESULT korb_rand_upto(CTX *const c, korb_value *slots, korb_slice a, uint
     if (src.obj == KORB_UNDEF) { *out = korb_mt_limited(src.mt, bound); return RESULT_OK(KORB_NIL); }
     {   /* CRuby calls #rand publicly: Kernel#rand is private, so a plain object
          * (nil, 5, Object, …) is a NoMethodError, not a silent fallback. */
-        const uint32_t rand_mid = korb_intern(c->vm, "rand", 4);
+        const uint32_t rand_mid = korb_intern_lit(c->vm, "rand", 4);
         const korb_value dcls = korb_dispatch_class(c, src.obj);
         korb_value mdef = KORB_NIL;
         const struct korb_method *const me = KORB_CLASS_P(dcls) ? korb_class_find_method(dcls, rand_mid, &mdef) : NULL;
@@ -184,7 +184,7 @@ static RESULT korb_rand_upto(CTX *const c, korb_value *slots, korb_slice a, uint
         }
     }
     slots[0] = src.obj; slots[1] = LONG2FIX((korb_sword_t)bound + 1);   /* rng.rand(bound+1) → [0, bound] */
-    RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "rand", 4), 0, 1);
+    RESULT r = korb_send(c, slots + 2, korb_intern_lit(c->vm, "rand", 4), 0, 1);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     korb_sword_t v;
     if (UNLIKELY(!korb_to_index(r.value, &v))) {          /* #to_int on the returned object (CRuby) */
@@ -280,7 +280,7 @@ static RESULT korb_rand_core_x(CTX *c, korb_value *slots, KorbMT *st, korb_value
             slots[0] = arg0;                       /* root: the message below allocates nothing, but the call may */
             const RESULT rr = korb_rand_core(c, slots + 1, st, rng_owner, a);
             if (UNLIKELY(rr.state != KORB_NORMAL) || rr.value != KORB_NIL) return rr;
-            const RESULT tr = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);   /* the bounds' own #to_s (Date) */
+            const RESULT tr = korb_send(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0);   /* the bounds' own #to_s (Date) */
             if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
             slots[0] = tr.value;
             char rb[256] = "";
@@ -336,13 +336,13 @@ static RESULT korb_rand_core(CTX *c, korb_value *slots, KorbMT *st, korb_value r
         slots[1] = arg;                                   /* root the Range too */
         slots[2] = hi; slots[3] = lo;
         {
-            const RESULT sr = korb_send(c, slots + 4, korb_intern(c->vm, "-", 1), 0, 1);
+            const RESULT sr = korb_send(c, slots + 4, korb_intern_lit(c->vm, "-", 1), 0, 1);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             slots[2] = sr.value;                          /* the span */
         }
         korb_sword_t n;
         if (!KORB_FLOAT_P(slots[2]) && !korb_to_index(slots[2], &n)) {   /* Date#- gives a Rational; ask for #to_int */
-            const uint32_t to_int = korb_intern(c->vm, "to_int", 6);
+            const uint32_t to_int = korb_intern_lit(c->vm, "to_int", 6);
             if (korb_responds_to(c, slots[2], to_int)) {
                 slots[3] = slots[2];
                 const RESULT ir = korb_send(c, slots + 4, to_int, 0, 0);
@@ -375,12 +375,12 @@ static RESULT korb_rand_core(CTX *c, korb_value *slots, KorbMT *st, korb_value r
             slots[3] = fr.value;
         }
         slots[2] = VAL2RANGE(slots[1])->rbegin;           /* re-read: the dispatches above may have moved it */
-        return korb_send(c, slots + 4, korb_intern(c->vm, "+", 1), 0, 1);
+        return korb_send(c, slots + 4, korb_intern_lit(c->vm, "+", 1), 0, 1);
     }
     if (!FIXNUM_P(arg) && !KORB_FLOAT_P(arg) && KORB_OBJECT_P(arg) &&    /* coerce via #to_int */
-        korb_responds_to_coerce_p(c, slots, &arg, korb_intern(c->vm, "to_int", 6))) {
+        korb_responds_to_coerce_p(c, slots, &arg, korb_intern_lit(c->vm, "to_int", 6))) {
         slots[0] = arg;
-        RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
+        RESULT ir = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
         arg = ir.value;
     }
@@ -407,7 +407,7 @@ static RESULT korb_m_random_init(CTX *c, korb_value *slots, korb_ref self, korb_
          * anything else goes through #to_int */
         slots[0] = seed;
         const char *const on = korb_coerce_name(c, slots[0]);
-        const uint32_t mid = (KORB_FLOAT_P(slots[0]) || KORB_RATIONAL_P(slots[0]) || KORB_COMPLEX_P(slots[0])) ? korb_intern(c->vm, "to_i", 4) : korb_intern(c->vm, "to_int", 6);
+        const uint32_t mid = (KORB_FLOAT_P(slots[0]) || KORB_RATIONAL_P(slots[0]) || KORB_COMPLEX_P(slots[0])) ? korb_intern_lit(c->vm, "to_i", 4) : korb_intern_lit(c->vm, "to_int", 6);
         if (UNLIKELY(!korb_responds_to(c, slots[0], mid)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", on);
         const RESULT ir = korb_send(c, slots + 1, mid, 0, 0);

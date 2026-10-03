@@ -137,8 +137,8 @@ static RESULT korb_set_other_elems(CTX *c, korb_value *slots, korb_value o, korb
     /* Any enumerable, not just a user object: a Range / Hash / Enumerator is a
      * builtin type and answers #each too (`set.merge(1..3)` is rubocop's
      * CodeLengthCalculator). */
-    if (korb_responds_to_coerce(c, slots + 1, slots[0], korb_intern(c->vm, "each", 4))) {
-        RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0, NULL, NULL, NULL);
+    if (korb_responds_to_coerce(c, slots + 1, slots[0], korb_intern_lit(c->vm, "each", 4))) {
+        RESULT r = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_a", 4), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_ARRAY_P(r.value)) { slots[0] = r.value; *out = slots[0]; return RESULT_OK(KORB_NIL); }
     }
@@ -344,7 +344,7 @@ static RESULT korb_m_set_join(CTX *c, korb_value *slots, korb_ref self, korb_sli
     const uint32_t n = KORB_SLICE_LEN(a);
     slots[0] = SELF_SET->elems;                            /* receiver = member Array (slots[0]) */
     for (uint32_t i = 0; i < n; i++) slots[1 + i] = KORB_SLICE_GET(a, i);   /* args at slots[1..n] */
-    return korb_send_impl(c, slots + 1 + n, korb_intern(c->vm, "join", 4), 0, n, NULL, NULL, NULL);   /* scratch base is above recv+args */
+    return korb_send_impl(c, slots + 1 + n, korb_intern_lit(c->vm, "join", 4), 0, n, NULL, NULL, NULL);   /* scratch base is above recv+args */
 }
 /* sub: self ⊆ other, sup: self ⊇ other (other is a rooted Set). */
 static RESULT korb_set_sub_sup(CTX *c, korb_value *slots, korb_ref self, korb_ref oref, bool *sub, bool *sup) {
@@ -519,11 +519,11 @@ static RESULT korb_m_obj_inspect(CTX *c, korb_value *slots, korb_ref self, korb_
         bool listed = false;
         {
             korb_value hook_owner = KORB_NIL;
-            const uint32_t mid_ivti = korb_intern(c->vm, "instance_variables_to_inspect", 29);
+            const uint32_t mid_ivti = korb_intern_lit(c->vm, "instance_variables_to_inspect", 29);
             const korb_value dcls = korb_dispatch_class(c, v0);
             if (UNLIKELY(KORB_CLASS_P(dcls) &&
                          korb_class_find_method(dcls, mid_ivti, &hook_owner) != NULL &&
-                         hook_owner != korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6)))) {
+                         hook_owner != korb_const_get(c->vm, korb_intern_lit(c->vm, "Kernel", 6)))) {
                 slots[0] = v0;                              /* root across the dispatch */
                 const RESULT hr = korb_send_impl(c, slots + 1, mid_ivti, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(hr.state != KORB_NORMAL)) { fclose(ms); free(buf); return hr; }
@@ -817,7 +817,7 @@ RESULT korb_obj_singleton(CTX *c, korb_value *slots, korb_value obj) {
     if (UNLIKELY(KORB_OBJECT_P(slots[0]) && VAL2OBJ(slots[0])->klass == KORB_NIL)) {   /* main */
         korb_class_def_cfn(c, slots[2], "include", korb_m_main_include, -1);
         const KorbClass *const sk = VAL2CLASS(slots[2]);
-        const uint32_t inc = korb_intern(vm, "include", 7);
+        const uint32_t inc = korb_intern_lit(vm, "include", 7);
         for (uint32_t i = 0; i < sk->method_cnt; i++) if (sk->methods[i]->mid == inc) sk->methods[i]->visibility = 1;
     }
     return RESULT_OK(slots[2]);
@@ -916,8 +916,8 @@ static RESULT korb_m_obj_extend(CTX *c, korb_value *slots, korb_ref self, korb_s
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     slots[0] = sv;                                                               /* root self */
     slots[1] = UNWRAP(korb_obj_singleton(c, slots + 2, sv));                      /* singleton (rooted) */
-    const uint32_t extended = korb_intern(c->vm, "extended", 8);
-    const uint32_t extend_object = korb_intern(c->vm, "extend_object", 13);
+    const uint32_t extended = korb_intern_lit(c->vm, "extended", 8);
+    const uint32_t extend_object = korb_intern_lit(c->vm, "extend_object", 13);
     for (uint32_t i = 0; i < KORB_SLICE_LEN(a); i++) {                           /* all checked before any is mixed in */
         const korb_value mv = KORB_SLICE_GET(a, i);
         if (UNLIKELY(!KORB_CLASS_P(mv) || !VAL2CLASS(mv)->is_module))
@@ -1008,7 +1008,7 @@ static RESULT korb_set_visibility1(CTX *c, korb_value *slots, korb_value selfv, 
                                nm, k->is_module ? "module" : "class", cnm);
         if (LIKELY(KORB_EXC_P(ne.value))) {                    /* NameError#name */
             slots[0] = ne.value;
-            korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern(c->vm, "@__name", 7)), ID2SYM(mid));
+            korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern_lit(c->vm, "@__name", 7)), ID2SYM(mid));
             ne.value = slots[0];
         }
         return ne;
@@ -1028,7 +1028,7 @@ static RESULT korb_set_visibility_alloc(CTX *c, korb_value *slots, const korb_va
     *done = false;
     if (!SYMBOL_P(arg) || !VAL2CLASS(target)->is_singleton) return RESULT_OK(KORB_NIL);
     const uint32_t mid = SYM2ID(arg);
-    if (mid != c->vm->mid_new && mid != korb_intern(c->vm, "allocate", 8)) return RESULT_OK(KORB_NIL);
+    if (mid != c->vm->mid_new && mid != korb_intern_lit(c->vm, "allocate", 8)) return RESULT_OK(KORB_NIL);
     if (korb_class_find_method(target, mid, NULL) != NULL) return RESULT_OK(KORB_NIL);
     const korb_value at = korb_singleton_attached_vm(c->vm, target);
     if (!KORB_CLASS_P(at) || VAL2CLASS(at)->is_module) return RESULT_OK(KORB_NIL);
@@ -1206,8 +1206,8 @@ static RESULT korb_m_throw(CTX *c, korb_value *slots, korb_ref self, korb_slice 
         RESULT r = korb_raise(c, slots + 2, KORB_E_UNCAUGHT_THROW, 0, "uncaught throw %s", tb);
         if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) {   /* #tag / #value (prelude readers) */
             slots[2] = r.value;
-            CHECK(korb_ivar_set(c, slots + 3, KORB_REF_AT(&slots[2]), ID2SYM(korb_intern(c->vm, "@tag", 4)), slots[0]));
-            CHECK(korb_ivar_set(c, slots + 3, KORB_REF_AT(&slots[2]), ID2SYM(korb_intern(c->vm, "@value", 6)), slots[1]));
+            CHECK(korb_ivar_set(c, slots + 3, KORB_REF_AT(&slots[2]), ID2SYM(korb_intern_lit(c->vm, "@tag", 4)), slots[0]));
+            CHECK(korb_ivar_set(c, slots + 3, KORB_REF_AT(&slots[2]), ID2SYM(korb_intern_lit(c->vm, "@value", 6)), slots[1]));
             r.value = slots[2];
         }
         return r;
@@ -1266,7 +1266,7 @@ static RESULT korb_m_class_attr_n(CTX *c, korb_value *slots, korb_ref self, korb
     for (uint32_t i = 0; i < n; i++) {
         korb_value sym = KORB_SLICE_GET(a, i);
         if (!SYMBOL_P(sym) && !KORB_STRING_P(sym)) {          /* coerce name via #to_str */
-            const uint32_t to_str = korb_intern(vm, "to_str", 6);
+            const uint32_t to_str = korb_intern_lit(vm, "to_str", 6);
             korb_value nv = sym;
             if (KORB_OBJECT_P(nv) && korb_responds_to_coerce_p(c, slots + 2, &nv, to_str)) {
                 slots[2] = nv;
@@ -1333,7 +1333,7 @@ static RESULT korb_m_class_allocate(CTX *c, korb_value *slots, korb_ref self, ko
         if (KORB_IS_BC(KORB_C_MATCHDATA))   /* MatchData has no allocator (built only by a match) → NoMethodError */
             return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'allocate' for class %s", korb_sym_name(c->vm, cn));
         {   /* Struct / Data themselves (and bare subclasses) have no members to lay out */
-            const korb_value st = korb_const_get(c->vm, c->vm->name_struct), dt = korb_const_get(c->vm, korb_intern(c->vm, "Data", 4));
+            const korb_value st = korb_const_get(c->vm, c->vm->name_struct), dt = korb_const_get(c->vm, korb_intern_lit(c->vm, "Data", 4));
             if ((KORB_CLASS_P(st) && korb_class_le(cv, st)) || (KORB_CLASS_P(dt) && korb_class_le(cv, dt))) {
                 korb_value k = cv;
                 while (KORB_CLASS_P(k) && !KORB_ARRAY_P(VAL2CLASS(k)->members)) k = VAL2CLASS(k)->superclass;
@@ -1366,8 +1366,8 @@ static RESULT korb_m_class_allocate(CTX *c, korb_value *slots, korb_ref self, ko
     /* A subclass of Module (`Class.new(Module).new`) must be a real module
      * object: prepend/include and the ancestry walk all need KorbClass. */
     if (KORB_CLASS_P(KORB_REF_GET(self)) &&
-        korb_class_le(KORB_REF_GET(self), korb_const_get(c->vm, korb_intern(c->vm, "Module", 6))) &&
-        !korb_class_le(KORB_REF_GET(self), korb_const_get(c->vm, korb_intern(c->vm, "Class", 5)))) {
+        korb_class_le(KORB_REF_GET(self), korb_const_get(c->vm, korb_intern_lit(c->vm, "Module", 6))) &&
+        !korb_class_le(KORB_REF_GET(self), korb_const_get(c->vm, korb_intern_lit(c->vm, "Class", 5)))) {
         slots[0] = KORB_REF_GET(self);                          /* root the class across the alloc */
         RESULT mr = korb_class_new(c, slots + 1, 0, KORB_NIL);
         if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
@@ -1375,7 +1375,7 @@ static RESULT korb_m_class_allocate(CTX *c, korb_value *slots, korb_ref self, ko
         VAL2CLASS(slots[1])->is_module = 1;
         /* the override table keys on the object, so set it AFTER the module is
          * parked in a scanned slot (STRESS moves it otherwise) */
-        if (slots[0] != korb_const_get(c->vm, korb_intern(c->vm, "Module", 6)))
+        if (slots[0] != korb_const_get(c->vm, korb_intern_lit(c->vm, "Module", 6)))
             korb_klass_override_set(c, slots[1], slots[0]);       /* report the subclass as #class */
         return RESULT_OK(slots[1]);
     }
@@ -1517,7 +1517,7 @@ static void korb_fprint_class_tostr(CTX *c, FILE *ms, korb_value cls) {
     }
     korb_value meta = (k->is_module && (k->head.flags & KORB_FL_HAS_KLASS)) ? korb_klass_override_get(c->vm, cls) : KORB_NIL;
     while (KORB_CLASS_P(meta) && VAL2CLASS(meta)->is_singleton) meta = VAL2CLASS(meta)->superclass;
-    if (KORB_CLASS_P(meta) && meta != korb_const_get(c->vm, korb_intern(c->vm, "Module", 6))) {   /* an instance of a Module subclass names it */
+    if (KORB_CLASS_P(meta) && meta != korb_const_get(c->vm, korb_intern_lit(c->vm, "Module", 6))) {   /* an instance of a Module subclass names it */
         fputs("#<", ms); korb_fprint_class_tostr(c, ms, meta); fprintf(ms, ":0x%016zx>", (size_t)(uintptr_t)cls);
         return;
     }
@@ -1528,7 +1528,7 @@ static bool korb_fprint_refinement_tostr(CTX *c, FILE *ms, korb_value cls) {
     if (!KORB_CLASS_P(tgt)) return false;
     fputs("#<refinement:", ms);
     korb_fprint_class_tostr(c, ms, tgt);
-    const korb_value own = korb_class_ivar_get(cls, ID2SYM(korb_intern(c->vm, "@__refine_owner", 15)));
+    const korb_value own = korb_class_ivar_get(cls, ID2SYM(korb_intern_lit(c->vm, "@__refine_owner", 15)));
     if (KORB_CLASS_P(own)) { fputc('@', ms); korb_fprint_class_tostr(c, ms, own); }
     fputc('>', ms);
     return true;
@@ -1543,9 +1543,9 @@ static RESULT korb_m_class_to_s(CTX *c, korb_value *slots, korb_ref self, korb_s
             if (c->vm->sklass.val[i] == cls) { att = c->vm->sklass.obj[i]; break; }
         if (KORB_CLASS_P(att)) {
             slots[0] = att;
-            const korb_value iv = UNWRAP(korb_send(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0));
+            const korb_value iv = UNWRAP(korb_send(c, slots + 1, korb_intern_lit(c->vm, "inspect", 7), 0, 0));
             slots[0] = iv;
-            if (!KORB_STRING_P(slots[0])) { slots[0] = UNWRAP(korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0)); }
+            if (!KORB_STRING_P(slots[0])) { slots[0] = UNWRAP(korb_send(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0)); }
             if (!KORB_STRING_P(slots[0])) return RESULT_OK(slots[0]);
             const uint32_t il = VAL2STR(slots[0])->len;
             const char *const ib = korb_strbuf_data(VAL2STR(slots[0])->buf);
@@ -1723,7 +1723,7 @@ static RESULT korb_push_vis_methods(CTX *c, korb_value *slots, korb_ref result, 
     /* Class#new has no table entry (the send path builds instances itself), but
      * reflection lists it as Class's public method (irb's `String.ne` completion) */
     if (KORB_REF_GET(klass_ref) == korb_builtin_class_obj(c->vm, KORB_C_CLASS) && (vis_mask & 1u)) {
-        const korb_value sym = ID2SYM(korb_intern(c->vm, "new", 3));
+        const korb_value sym = ID2SYM(korb_intern_lit(c->vm, "new", 3));
         bool seen = false;
         const KorbArray *const b = VAL2ARY(KORB_REF_GET(blocked));
         for (uint32_t j = 0; j < b->len && !seen; j++) seen = korb_items_data(b->items)[j] == sym;
@@ -1778,39 +1778,39 @@ static RESULT korb_collect_methods_ex(CTX *c, korb_value *slots, korb_value star
      * explicit `public def initialize_dup` stays public, which a name filter
      * could not express. */
     const uint32_t priv_mids[] = {                                  /* method names that are always reported private */
-        korb_intern(c->vm, "public", 6),                            /* Module's visibility helpers are private instance methods */
-        korb_intern(c->vm, "private", 7),
-        korb_intern(c->vm, "protected", 9),
-        korb_intern(c->vm, "module_function", 15),
-        korb_intern(c->vm, "marshal_dump", 12),                     /* Marshal hooks are private wherever defined */
-        korb_intern(c->vm, "marshal_load", 12),
-        korb_intern(c->vm, "method_added", 12),                     /* Module/Class definition-callback hooks are private */
-        korb_intern(c->vm, "method_removed", 14),
-        korb_intern(c->vm, "method_undefined", 16),
-        korb_intern(c->vm, "included", 8),
-        korb_intern(c->vm, "prepended", 9),
-        korb_intern(c->vm, "extended", 8),
-        korb_intern(c->vm, "inherited", 9),
-        korb_intern(c->vm, "const_added", 11),
-        korb_intern(c->vm, "append_features", 15),
-        korb_intern(c->vm, "prepend_features", 16),
-        korb_intern(c->vm, "extend_object", 13),
+        korb_intern_lit(c->vm, "public", 6),                            /* Module's visibility helpers are private instance methods */
+        korb_intern_lit(c->vm, "private", 7),
+        korb_intern_lit(c->vm, "protected", 9),
+        korb_intern_lit(c->vm, "module_function", 15),
+        korb_intern_lit(c->vm, "marshal_dump", 12),                     /* Marshal hooks are private wherever defined */
+        korb_intern_lit(c->vm, "marshal_load", 12),
+        korb_intern_lit(c->vm, "method_added", 12),                     /* Module/Class definition-callback hooks are private */
+        korb_intern_lit(c->vm, "method_removed", 14),
+        korb_intern_lit(c->vm, "method_undefined", 16),
+        korb_intern_lit(c->vm, "included", 8),
+        korb_intern_lit(c->vm, "prepended", 9),
+        korb_intern_lit(c->vm, "extended", 8),
+        korb_intern_lit(c->vm, "inherited", 9),
+        korb_intern_lit(c->vm, "const_added", 11),
+        korb_intern_lit(c->vm, "append_features", 15),
+        korb_intern_lit(c->vm, "prepend_features", 16),
+        korb_intern_lit(c->vm, "extend_object", 13),
     };
     const uint32_t priv_n = (uint32_t)(sizeof priv_mids / sizeof priv_mids[0]);
     /* Compute the "bare module" test up front, while start_class is still fresh —
      * the collection loop below allocs (GC), after which start_class is stale. */
-    const korb_value kernel_mod = korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
+    const korb_value kernel_mod = korb_const_get(c->vm, korb_intern_lit(c->vm, "Kernel", 6));
     const bool is_kernel = KORB_CLASS_P(start_class) && start_class == kernel_mod;
     const bool is_bare_module = KORB_CLASS_P(start_class) && VAL2CLASS(start_class)->is_module && !is_kernel;
     const bool is_basicobj = KORB_CLASS_P(start_class) &&
-                             start_class == korb_const_get(c->vm, korb_intern(c->vm, "BasicObject", 11));
+                             start_class == korb_const_get(c->vm, korb_intern_lit(c->vm, "BasicObject", 11));
     /* Does this MRO carry Kernel's API?  Either it reaches Object, or it mixes in
      * a COPY of Kernel — which is what delegate.rb does on top of BasicObject,
      * and Delegator.public_api must list send/public_send or DelegateClass
      * generates a #send that forwards to the not-yet-set delegate. */
     const bool has_kernel = !is_bare_module && KORB_CLASS_P(start_class) &&
         (korb_kernel_reachable_p(c, start_class) ||
-         korb_class_find_method(start_class, korb_intern(c->vm, "respond_to?", 11), NULL) != NULL);
+         korb_class_find_method(start_class, korb_intern_lit(c->vm, "respond_to?", 11), NULL) != NULL);
     slots[1] = start_class;                                         /* MRO cursor (rooted) — set before any alloc */
     slots[0] = UNWRAP(korb_ary_new(c, slots + 2, 8));              /* result (rooted at slots[0]) */
     const korb_ref result = KORB_REF_AT(&slots[0]);
@@ -1884,7 +1884,7 @@ static RESULT korb_m_obj_public_methods(CTX *c, korb_value *slots, korb_ref self
     const korb_value sv = KORB_REF_GET(self);
     RESULT r = korb_collect_methods_from(c, slots, korb_dispatch_class(c, sv), a, (1u << 0));
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (sv == korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6))) {   /* Kernel.Array/.puts/... are public singleton methods */
+    if (sv == korb_const_get(c->vm, korb_intern_lit(c->vm, "Kernel", 6))) {   /* Kernel.Array/.puts/... are public singleton methods */
         slots[0] = r.value;
         const korb_ref res = KORB_REF_AT(&slots[0]);
         for (uint32_t i = 0; i < c->vm->method_cnt; i++) {
@@ -2008,7 +2008,7 @@ static RESULT korb_m_class_ge(CTX *c, korb_value *slots, korb_ref self, korb_sli
  * `*out` = -1/0/1, or 2 when <=> returns nil (incomparable). */
 static RESULT korb_comparable_cmp(CTX *c, korb_value *slots, korb_value self, korb_value other, int *out) {
     slots[0] = self; slots[1] = other;
-    RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "<=>", 3), 0, 1, NULL, NULL, NULL);
+    RESULT r = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "<=>", 3), 0, 1, NULL, NULL, NULL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (r.value == KORB_NIL) { *out = 2; return RESULT_OK(KORB_NIL); }
     /* rb_cmpint: Fixnum/Bignum/Float compare by sign; any other value by
@@ -2027,12 +2027,12 @@ static RESULT korb_comparable_cmp(CTX *c, korb_value *slots, korb_value self, ko
      * before each dispatch (slots[0]) with the literal 0 arg at slots[1]. */
     slots[2] = r.value;                                   /* park across dispatch */
     slots[0] = slots[2]; slots[1] = LONG2FIX(0);
-    RESULT g = korb_send_impl(c, slots + 2, korb_intern(c->vm, ">", 1), 0, 1,
+    RESULT g = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, ">", 1), 0, 1,
                               NULL, NULL, NULL);
     if (UNLIKELY(g.state != KORB_NORMAL)) return g;
     if (g.value != KORB_NIL && g.value != KORB_FALSE) { *out = 1; return RESULT_OK(KORB_TRUE); }
     slots[0] = slots[2]; slots[1] = LONG2FIX(0);
-    RESULT l = korb_send_impl(c, slots + 2, korb_intern(c->vm, "<", 1), 0, 1,
+    RESULT l = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "<", 1), 0, 1,
                               NULL, NULL, NULL);
     if (UNLIKELY(l.state != KORB_NORMAL)) return l;
     *out = (l.value != KORB_NIL && l.value != KORB_FALSE) ? -1 : 0;
@@ -2199,9 +2199,9 @@ static RESULT korb_m_class_const_set(CTX *c, korb_value *slots, korb_ref self, k
         if (korb_caller_pos(c, a.p - 3, &fsym, &cline)) korb_const_reg_loc(c->vm, id, slots[1], fsym, cline);
     }
     const korb_value owner = KORB_REF_GET(self);              /* re-read: the warning may have moved it */
-    if (UNLIKELY(KORB_CLASS_P(owner) && korb_mod_hook_custom(c, owner, korb_intern(c->vm, "const_added", 11)))) {
+    if (UNLIKELY(KORB_CLASS_P(owner) && korb_mod_hook_custom(c, owner, korb_intern_lit(c->vm, "const_added", 11)))) {
         slots[1] = KORB_REF_GET(self); slots[2] = ID2SYM(id);   /* slots[0] still roots the value */
-        const RESULT hr = korb_send(c, slots + 3, korb_intern(c->vm, "const_added", 11), 0, 1);
+        const RESULT hr = korb_send(c, slots + 3, korb_intern_lit(c->vm, "const_added", 11), 0, 1);
         if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
         return RESULT_OK(slots[0]);
     }
@@ -2217,9 +2217,9 @@ static RESULT korb_cvar_name_check(CTX *c, korb_value *slots, uint32_t id, korb_
     if (LIKELY(KORB_EXC_P(ne.value))) {
         slots[2] = ne.value;
         korb_ref eref = KORB_REF_AT(&slots[2]);
-        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__name", 7)), slots[1]);
-        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
-        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern_lit(c->vm, "@__name", 7)), slots[1]);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern_lit(c->vm, "@__has_recv", 11)), KORB_TRUE);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern_lit(c->vm, "@__receiver", 11)), slots[0]);
         ne.value = slots[2];
     }
     return ne;
@@ -2245,9 +2245,9 @@ static RESULT korb_m_class_cvar_get(CTX *c, korb_value *slots, korb_ref self, ko
         if (LIKELY(KORB_EXC_P(ne.value))) {               /* NameError#name → :@@x, #receiver → the class */
             slots[1] = ne.value;
             korb_ref eref = KORB_REF_AT(&slots[1]);
-            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__name", 7)), ID2SYM(id));
-            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
-            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern_lit(c->vm, "@__name", 7)), ID2SYM(id));
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern_lit(c->vm, "@__has_recv", 11)), KORB_TRUE);
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern_lit(c->vm, "@__receiver", 11)), slots[0]);
             ne.value = slots[1];
         }
         return ne;
@@ -2301,7 +2301,7 @@ static RESULT korb_m_class_cvars(CTX *c, korb_value *slots, korb_ref self, korb_
     slots[3] = KORB_NIL;
     if (inherit) {
         slots[4] = KORB_REF_GET(self);
-        slots[3] = UNWRAP(korb_send(c, slots + 5, korb_intern(c->vm, "ancestors", 9), 0, 0));
+        slots[3] = UNWRAP(korb_send(c, slots + 5, korb_intern_lit(c->vm, "ancestors", 9), 0, 0));
         if (!KORB_ARRAY_P(slots[3])) slots[3] = KORB_NIL;
     }
     slots[0] = UNWRAP(korb_ary_new(c, slots + 4, 8));   /* result (rooted at slots[0]) */
@@ -2459,20 +2459,20 @@ static RESULT korb_method_defined_vis(CTX *c, korb_value *slots, korb_ref self, 
         }
         if (cls == korb_builtin_class_obj(c->vm, KORB_C_OBJECT) && korb_toplevel_def(c->vm, mid))
             return RESULT_OK((want == 1) ? KORB_TRUE : KORB_FALSE);
-        if (cls == korb_builtin_class_obj(c->vm, KORB_C_CLASS) && mid == korb_intern(c->vm, "new", 3))
+        if (cls == korb_builtin_class_obj(c->vm, KORB_C_CLASS) && mid == korb_intern_lit(c->vm, "new", 3))
             return RESULT_OK((want <= 0) ? KORB_TRUE : KORB_FALSE);   /* Class#new: public, no table entry */
         return RESULT_OK(KORB_FALSE);
     }
     korb_value mdef = KORB_NIL;
     const struct korb_method *me = KORB_CLASS_P(cls) ? korb_class_find_method(cls, mid, &mdef) : NULL;
-    if (me == NULL && KORB_CLASS_P(cls) && mid == korb_intern(c->vm, "new", 3) &&
+    if (me == NULL && KORB_CLASS_P(cls) && mid == korb_intern_lit(c->vm, "new", 3) &&
         korb_class_le(cls, korb_builtin_class_obj(c->vm, KORB_C_CLASS)) && !korb_method_undefed_p(c->vm, cls, mid))
         return RESULT_OK((want <= 0) ? KORB_TRUE : KORB_FALSE);       /* Class#new (and metaclasses inherit it) */
     if (me == NULL && KORB_CLASS_P(cls) && korb_class_has_ancestor(cls, korb_builtin_class_obj(c->vm, KORB_C_OBJECT)))
         me = korb_toplevel_def(c->vm, mid);
     if (me == NULL) {
         const bool bsend = mid == c->vm->mid___send__;
-        const korb_value own = korb_const_get(c->vm, bsend ? korb_intern(c->vm, "BasicObject", 11) : korb_intern(c->vm, "Kernel", 6));
+        const korb_value own = korb_const_get(c->vm, bsend ? korb_intern_lit(c->vm, "BasicObject", 11) : korb_intern_lit(c->vm, "Kernel", 6));
         if (KORB_CLASS_P(cls) && KORB_CLASS_P(own) && cls != own && !korb_class_has_ancestor(cls, own))
             return RESULT_OK(KORB_FALSE);                        /* a plain module: no Kernel methods */
         /* Kernel-private builtins (global table) are private methods every class
@@ -2528,7 +2528,7 @@ static RESULT korb_m_mod_const_source_location(CTX *c, korb_value *slots, korb_r
     korb_value name = KORB_SLICE_GET(a, 0);
     const bool inherit = !(KORB_SLICE_LEN(a) >= 2 && !KORB_TRUTHY(KORB_SLICE_GET(a, 1)));
     if (!SYMBOL_P(name) && !KORB_STRING_P(name)) {          /* #to_str, else TypeError */
-        const uint32_t to_str = korb_intern(vm, "to_str", 6);
+        const uint32_t to_str = korb_intern_lit(vm, "to_str", 6);
         if (!KORB_OBJECT_P(name) || !korb_responds_to(c, name, to_str))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, name));
         slots[0] = name;
@@ -2611,10 +2611,10 @@ static RESULT korb_m_class_const_get(CTX *c, korb_value *slots, korb_ref self, k
      * constants (no ancestors / no top-level fallback). */
     const bool inherit = !(KORB_SLICE_LEN(a) >= 2 && !KORB_TRUTHY(KORB_SLICE_GET(a, 1)));
     if (!SYMBOL_P(name) && !KORB_STRING_P(name)) {          /* coerce a name via #to_str */
-        if (UNLIKELY(!korb_responds_to_coerce_p(c, slots, &name, korb_intern(vm, "to_str", 6))))
+        if (UNLIKELY(!korb_responds_to_coerce_p(c, slots, &name, korb_intern_lit(vm, "to_str", 6))))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, name));
         slots[0] = name;
-        RESULT sr = korb_send(c, slots + 1, korb_intern(vm, "to_str", 6), 0, 0);
+        RESULT sr = korb_send(c, slots + 1, korb_intern_lit(vm, "to_str", 6), 0, 0);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
         if (UNLIKELY(!KORB_STRING_P(sr.value)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into String", korb_coerce_name(c, KORB_SLICE_GET(a, 0)));
@@ -2687,7 +2687,7 @@ static RESULT korb_m_class_const_get(CTX *c, korb_value *slots, korb_ref self, k
             const korb_value hookrecv = !first ? owner
                                  : leading_top ? korb_builtin_class_obj(vm, KORB_C_OBJECT)
                                                : KORB_REF_GET(self);
-            const uint32_t cm = korb_intern(vm, "const_missing", 13);
+            const uint32_t cm = korb_intern_lit(vm, "const_missing", 13);
             korb_value cmdef = KORB_NIL;
             if (KORB_CLASS_P(hookrecv) &&
                 korb_mcache_find(vm, korb_dispatch_class(c, hookrecv), cm, &cmdef)) {
@@ -2702,7 +2702,7 @@ static RESULT korb_m_class_const_get(CTX *c, korb_value *slots, korb_ref self, k
             RESULT nr = korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %.*s", (int)clen, buf + (p - buf));
             if (LIKELY(KORB_EXC_P(nr.value))) {           /* NameError#name = the missing constant symbol */
                 slots[0] = nr.value;
-                korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern(vm, "@__name", 7)), ID2SYM(cid));
+                korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern_lit(vm, "@__name", 7)), ID2SYM(cid));
                 nr.value = slots[0];
             }
             return nr;
@@ -2726,7 +2726,7 @@ static RESULT korb_autoload_unregister(CTX *c, korb_value *slots, korb_value mod
     const korb_value t = korb_ivar_get(c, mod, ID2SYM(vm->mid_autoloads));
     if (!KORB_HASH_P(t)) return RESULT_OK(KORB_NIL);
     slots[0] = t; slots[1] = ID2SYM(id);
-    return korb_send(c, slots + 2, korb_intern(vm, "delete", 6), 0, 1);
+    return korb_send(c, slots + 2, korb_intern_lit(vm, "delete", 6), 0, 1);
 }
 
 /* Module#remove_const(sym|str) → the removed value (flat table tombstone). */
@@ -2819,7 +2819,7 @@ static RESULT korb_m_class_const_defined(CTX *c, korb_value *slots, korb_ref sel
     struct korb_vm *const vm = c->vm;
     korb_value name = KORB_SLICE_GET(a, 0);
     if (!SYMBOL_P(name) && !KORB_STRING_P(name)) {         /* coerce a non-Symbol/String name via #to_str */
-        const uint32_t to_str = korb_intern(vm, "to_str", 6);
+        const uint32_t to_str = korb_intern_lit(vm, "to_str", 6);
         if (KORB_OBJECT_P(name) && korb_responds_to_coerce_p(c, slots, &name, to_str)) {
             slots[0] = name;
             RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
@@ -2866,7 +2866,7 @@ static RESULT korb_m_class_const_defined(CTX *c, korb_value *slots, korb_ref sel
             if (owner != KORB_NIL) {
                 if (i == len) return RESULT_OK(KORB_TRUE);   /* the last segment: pending counts, nothing runs */
                 slots[1] = owner; slots[2] = ID2SYM(sid);   /* an inner segment: CRuby resolves it, which loads it */
-                const RESULT gr = korb_send(c, slots + 3, korb_intern(vm, "const_get", 9), 0, 1);
+                const RESULT gr = korb_send(c, slots + 3, korb_intern_lit(vm, "const_get", 9), 0, 1);
                 if (UNLIKELY(gr.state != KORB_NORMAL)) return gr;
                 val = gr.value;
             } else if (!korb_const_defined_in(c, slots[0], sid, inherit, &val)) return RESULT_OK(KORB_FALSE);
@@ -2890,8 +2890,8 @@ static RESULT korb_m_loop(CTX *c, korb_value *slots, korb_ref self, korb_slice a
     (void)a;
     if (UNLIKELY(block == NULL)) {                        /* no block → an Enumerator */
         slots[0] = KORB_REF_GET(self);
-        slots[1] = ID2SYM(korb_intern(c->vm, "loop", 4));
-        RESULT er = korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1);
+        slots[1] = ID2SYM(korb_intern_lit(c->vm, "loop", 4));
+        RESULT er = korb_send(c, slots + 2, korb_intern_lit(c->vm, "__to_enum_sized", 15), 0, 1);
         if (LIKELY(er.state == KORB_NORMAL) && KORB_ENUM_P(er.value)) VAL2ENUM(er.value)->size_inf = 1;   /* loop.size → Infinity */
         return er;
     }
@@ -3031,7 +3031,7 @@ static RESULT korb_obj_eval_impl(CTX *c, korb_value *slots, korb_ref self, korb_
          * (filename, lineno) are accepted and ignored. */
         korb_value src = KORB_SLICE_GET(a, 0);
         if (UNLIKELY(!KORB_STRING_P(src))) {
-            const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+            const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
             const char *const snm = korb_coerce_name(c, src);   /* interned: outlives the dispatch */
             if (KORB_OBJECT_P(src) && korb_responds_to_coerce_p(c, slots, &src, to_str)) {
                 slots[0] = KORB_REF_GET(self);              /* root receiver across the dispatch */
@@ -3051,7 +3051,7 @@ static RESULT korb_obj_eval_impl(CTX *c, korb_value *slots, korb_ref self, korb_
         if (KORB_SLICE_LEN(a) >= 2) {
             slots[0] = KORB_SLICE_GET(a, 1);
             if (!KORB_STRING_P(slots[0])) {
-                const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+                const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
                 const char *const fnm = korb_coerce_name(c, slots[0]);   /* interned: outlives the dispatch */
                 if (!KORB_OBJECT_P(slots[0]) || !korb_responds_to(c, slots[0], to_str))
                     return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", fnm);
@@ -3070,7 +3070,7 @@ static RESULT korb_obj_eval_impl(CTX *c, korb_value *slots, korb_ref self, korb_
         if (KORB_SLICE_LEN(a) >= 3) {
             slots[0] = KORB_SLICE_GET(a, 2);
             const bool had_to_int = KORB_OBJECT_P(slots[0]) &&
-                                    korb_responds_to(c, slots[0], korb_intern(c->vm, "to_int", 6));
+                                    korb_responds_to(c, slots[0], korb_intern_lit(c->vm, "to_int", 6));
             const char *const lnm = korb_coerce_name(c, slots[0]);   /* interned: outlives the dispatch */
             CHECK(korb_coerce_to_int_pub(c, slots + 1, &slots[0]));   /* #to_int is honoured */
             korb_sword_t l = 1;
@@ -3181,14 +3181,14 @@ static RESULT korb_m_exc_backtrace(CTX *c, korb_value *slots, korb_ref self, kor
     if (!KORB_EXC_P(v)) return RESULT_OK(KORB_NIL);
     const korb_value bt = VAL2EXC(v)->backtrace;
     if (!KORB_ARRAY_P(bt) || VAL2ARY(bt)->len == 0 || KORB_STRING_P(korb_items_data(VAL2ARY(bt)->items)[0])) return RESULT_OK(bt);
-    const korb_value key = ID2SYM(korb_intern(c->vm, "@__bt_strs", 10));
+    const korb_value key = ID2SYM(korb_intern_lit(c->vm, "@__bt_strs", 10));
     const korb_value cached = korb_exc_ivar_get(v, key);
     if (KORB_ARRAY_P(cached)) return RESULT_OK(cached);
     const uint32_t n = VAL2ARY(bt)->len;
     slots[0] = UNWRAP(korb_ary_new(c, slots, n));
     for (uint32_t i = 0; i < n; i++) {
         slots[1] = korb_items_data(VAL2ARY(VAL2EXC(KORB_REF_GET(self))->backtrace)->items)[i];   /* re-read: to_s may GC */
-        const RESULT sr = korb_send(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0);
+        const RESULT sr = korb_send(c, slots + 2, korb_intern_lit(c->vm, "to_s", 4), 0, 0);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
         slots[1] = sr.value;
         CHECK(korb_ary_push_val(c, slots + 2, KORB_REF_AT(&slots[0]), slots[1]));
@@ -3199,28 +3199,28 @@ static RESULT korb_m_exc_backtrace(CTX *c, korb_value *slots, korb_ref self, kor
 /* NameError#name → the missing constant/method/variable name (a Symbol), or nil. */
 static RESULT korb_m_exc_name(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)slots; (void)a;
-    return RESULT_OK(korb_exc_ivar_get(KORB_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__name", 7))));
+    return RESULT_OK(korb_exc_ivar_get(KORB_REF_GET(self), ID2SYM(korb_intern_lit(c->vm, "@__name", 7))));
 }
 /* NameError#receiver / NoMethodError#receiver → the object the failed call/lookup
  * targeted.  Raises ArgumentError (like CRuby) when no receiver was recorded. */
 /* Tag a NameError with the missing name and the module it was looked up in. */
 void korb_name_error_where(CTX *c, korb_value *slots, korb_value *excp, uint32_t name, korb_value recv) {
     slots[0] = recv;                                  /* root: the ivar sets allocate */
-    korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(excp), ID2SYM(korb_intern(c->vm, "@__name", 7)), ID2SYM(name));
-    korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(excp), ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
-    korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(excp), ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
+    korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(excp), ID2SYM(korb_intern_lit(c->vm, "@__name", 7)), ID2SYM(name));
+    korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(excp), ID2SYM(korb_intern_lit(c->vm, "@__receiver", 11)), slots[0]);
+    korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(excp), ID2SYM(korb_intern_lit(c->vm, "@__has_recv", 11)), KORB_TRUE);
 }
 static RESULT korb_m_exc_receiver(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
-    const korb_value r = korb_exc_ivar_get(KORB_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__receiver", 11)));
-    if (r == KORB_NIL && korb_exc_ivar_get(KORB_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__has_recv", 11))) != KORB_TRUE)
+    const korb_value r = korb_exc_ivar_get(KORB_REF_GET(self), ID2SYM(korb_intern_lit(c->vm, "@__receiver", 11)));
+    if (r == KORB_NIL && korb_exc_ivar_get(KORB_REF_GET(self), ID2SYM(korb_intern_lit(c->vm, "@__has_recv", 11))) != KORB_TRUE)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no receiver is available");
     return RESULT_OK(r);
 }
 /* NoMethodError#args → the arguments passed to the missing method (or []). */
 static RESULT korb_m_nme_args(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
-    const korb_value v = korb_exc_ivar_get(KORB_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__args", 7)));
+    const korb_value v = korb_exc_ivar_get(KORB_REF_GET(self), ID2SYM(korb_intern_lit(c->vm, "@__args", 7)));
     return KORB_ARRAY_P(v) ? RESULT_OK(v) : korb_ary_new(c, slots, 0);
 }
 /* Exception#backtrace_locations, three answers for the prelude: the Location
@@ -3254,7 +3254,7 @@ static RESULT korb_m_exc_set_backtrace(CTX *c, korb_value *slots, korb_ref self,
         for (uint32_t i = 0; i < ary->len; i++) {
             const korb_value el = korb_items_data(ary->items)[i];
             if (KORB_STRING_P(el)) continue;
-            if (KORB_OBJECT_P(el) && korb_responds_to(c, el, korb_intern(c->vm, "lineno", 6))) continue;
+            if (KORB_OBJECT_P(el) && korb_responds_to(c, el, korb_intern_lit(c->vm, "lineno", 6))) continue;
             return korb_raise(c, slots, KORB_E_TYPE, 0, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location");
         }
     } else if (bt != KORB_NIL) {
@@ -3289,7 +3289,7 @@ static RESULT korb_m_exc_message(CTX *c, korb_value *slots, korb_ref self, korb_
     if (e->msg != KORB_NIL) {
         if (KORB_STRING_P(e->msg)) return RESULT_OK(e->msg);
         slots[0] = e->msg;                                /* non-String message → #to_s it */
-        return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+        return korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
     }
     /* no explicit message → the class name (exc_class for an abstract/user class,
      * else the builtin etype name), matching CRuby's default.  Use the *qualified*
@@ -3298,7 +3298,7 @@ static RESULT korb_m_exc_message(CTX *c, korb_value *slots, korb_ref self, korb_
         char qn[256]; korb_class_qname_into(c, e->exc_class, qn, sizeof qn);
         if (qn[0] == '\0') {                             /* anonymous class → its #to_s ("#<Class:0x...>") */
             slots[0] = e->exc_class;
-            return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+            return korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
         }
         return korb_str_new(c, slots, qn, (uint32_t)strlen(qn));
     }
@@ -3310,7 +3310,7 @@ static RESULT korb_m_exc_message(CTX *c, korb_value *slots, korb_ref self, korb_
 static RESULT korb_m_exc_message_via_to_s(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
     slots[0] = KORB_REF_GET(self);
-    return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+    return korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
 }
 /* Exception#inspect → "#<ClassName: message>" (or "#<ClassName>" if #to_s is
  * empty).  Uses the dispatched (overridable) #to_s for the message. */
@@ -3325,13 +3325,13 @@ static RESULT korb_m_exc_inspect(CTX *c, korb_value *slots, korb_ref self, korb_
         snprintf(cnbuf, sizeof cnbuf, "%s", korb_etype_name(e->etype));
     if (cnbuf[0] == '\0') {                             /* anonymous class → its #to_s ("#<Class:0x...>") */
         slots[0] = e->exc_class;
-        const RESULT cr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+        const RESULT cr = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         if (KORB_STRING_P(cr.value))
             snprintf(cnbuf, sizeof cnbuf, "%.*s", (int)VAL2STR(cr.value)->len, korb_strbuf_data(VAL2STR(cr.value)->buf));
     }
     slots[0] = KORB_REF_GET(self);                      /* the send above may have moved it */
-    RESULT tr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+    RESULT tr = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
     slots[0] = KORB_STRING_P(tr.value) ? tr.value : KORB_NIL; /* park the message string */
     const KorbString *const ms = KORB_STRING_P(slots[0]) ? VAL2STR(slots[0]) : NULL;
@@ -3435,7 +3435,7 @@ static RESULT korb_m_mod_refine(CTX *c, korb_value *slots, korb_ref self, korb_s
         refi = UNWRAP(korb_class_new(c, slots, 0, KORB_NIL));     /* anonymous module */
         VAL2CLASS(refi)->is_module = 1;
         korb_ref rref = SLOTS_PUSH(slots, refi);
-        { const korb_value rc = korb_const_get(vm, korb_intern(vm, "Refinement", 10));
+        { const korb_value rc = korb_const_get(vm, korb_intern_lit(vm, "Refinement", 10));
           if (KORB_CLASS_P(rc)) korb_klass_override_set(c, KORB_REF_GET(rref), rc); }
         CHECK(korb_class_ivar_set(c, slots, rref,
                                   ID2SYM(korb_intern(vm, KORB_IV_REFINE_TARGET, sizeof KORB_IV_REFINE_TARGET - 1)),

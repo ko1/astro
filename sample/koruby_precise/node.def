@@ -233,7 +233,7 @@ node_errinfo_bt(CTX *c, NODE *n, korb_value *slots, int32_t unused)
     const korb_value e = korb_errinfo_top(c);
     if (!KORB_EXC_P(e)) return RESULT_OK(KORB_NIL);
     slots[0] = e;
-    return korb_send(c, slots + 1, korb_intern(c->vm, "backtrace", 9), 0, 0);
+    return korb_send(c, slots + 1, korb_intern_lit(c->vm, "backtrace", 9), 0, 0);
 }
 
 // `$@ = v` — set the current exception's backtrace (RuntimeError when `$!` is
@@ -246,7 +246,7 @@ node_errinfo_bt_set(CTX *c, NODE *n, korb_value *slots, korb_value val@child)
     if (!KORB_EXC_P(e)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "$! not set");
     slots[0] = e;
     slots[1] = val;
-    CHECK(korb_send(c, slots + 2, korb_intern(c->vm, "set_backtrace", 13), 0, 1));
+    CHECK(korb_send(c, slots + 2, korb_intern_lit(c->vm, "set_backtrace", 13), 0, 1));
     return RESULT_OK(slots[1]);
 }
 
@@ -270,7 +270,7 @@ node_gvar_coerce(CTX *c, NODE *n, korb_value *slots, uint32_t kind, korb_value v
     if (kind == 2) {                                   /* $0 / $PROGRAM_NAME: String or #to_str */
         if (KORB_STRING_P(val)) return RESULT_OK(val);
         slots[0] = val;
-        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_str)) {
             RESULT sr = korb_send(c, slots + 1, to_str, 0, 0);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
@@ -333,11 +333,11 @@ node_deprecated_gvar_warn(CTX *c, NODE *n, korb_value *slots, const char *name, 
         slots[0] = val;                               /* park: the Warning[] dispatch and the warning itself
                                                        * run Ruby ($stderr can be a mock), so `val` cannot
                                                        * stay a C local across them */
-        slots[1] = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
+        slots[1] = korb_const_get(c->vm, korb_intern_lit(c->vm, "Warning", 7));
         bool dep_on = false;
         if (KORB_CLASS_P(slots[1])) {
-            slots[2] = ID2SYM(korb_intern(c->vm, "deprecated", 10));
-            RESULT wr = korb_send(c, slots + 3, korb_intern(c->vm, "[]", 2), 0, 1);
+            slots[2] = ID2SYM(korb_intern_lit(c->vm, "deprecated", 10));
+            RESULT wr = korb_send(c, slots + 3, korb_intern_lit(c->vm, "[]", 2), 0, 1);
             if (UNLIKELY(wr.state != KORB_NORMAL)) return wr;
             dep_on = KORB_TRUTHY(wr.value);
         }
@@ -354,11 +354,11 @@ node_dollar_eq(CTX *c, NODE *n, korb_value *slots, uint32_t assigned, korb_value
 {
     (void)n;
     slots[0] = val;                                   /* park: the Warning[] dispatch allocates */
-    slots[1] = korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7));
+    slots[1] = korb_const_get(c->vm, korb_intern_lit(c->vm, "Warning", 7));
     bool dep_on = false;
     if (KORB_CLASS_P(slots[1])) {
-        slots[2] = ID2SYM(korb_intern(c->vm, "deprecated", 10));
-        RESULT wr = korb_send(c, slots + 3, korb_intern(c->vm, "[]", 2), 0, 1);
+        slots[2] = ID2SYM(korb_intern_lit(c->vm, "deprecated", 10));
+        RESULT wr = korb_send(c, slots + 3, korb_intern_lit(c->vm, "[]", 2), 0, 1);
         if (UNLIKELY(wr.state != KORB_NORMAL)) return wr;
         dep_on = KORB_TRUTHY(wr.value);
     }
@@ -493,7 +493,7 @@ NODE_DEF
 node_plus(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
 {
     (void)flink;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "+", 1), korb_flink_line(flink), 1)); }
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "+", 1), korb_flink_line(flink), 1)); }
     korb_value l = KORB_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         /* tagged add: l=2x+1, rhs-1=2y → l+(rhs-1)=2(x+y)+1 is already the tagged
@@ -513,9 +513,9 @@ node_plus(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs
         return korb_flo(c, slots, korb_float_val(l) + (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer+Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) + korb_float_val(rhs));
-    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, "+", 1)))) {   /* a builtin subclass defines its own + */
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern_lit(c->vm, "+", 1)))) {   /* a builtin subclass defines its own + */
         slots[0] = l; slots[1] = rhs;
-        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "+", 1), korb_flink_line(flink), 1));
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "+", 1), korb_flink_line(flink), 1));
     }
     return KP_OPD(c, flink, slots, lhs, "+", korb_plus_slow_n(c, slots, lhs, rhs, korb_flink_line(flink)));
 }
@@ -524,7 +524,7 @@ NODE_DEF
 node_minus(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
 {
     (void)flink;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "-", 1), korb_flink_line(flink), 1)); }
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "-", 1), korb_flink_line(flink), 1)); }
     korb_value l = KORB_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         /* tagged sub: l - (rhs-1) = (2x+1) - 2y = 2(x-y)+1, already tagged.
@@ -542,9 +542,9 @@ node_minus(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rh
         return korb_flo(c, slots, korb_float_val(l) - (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer-Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) - korb_float_val(rhs));
-    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, "-", 1)))) {   /* a builtin subclass defines its own - */
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern_lit(c->vm, "-", 1)))) {   /* a builtin subclass defines its own - */
         slots[0] = l; slots[1] = rhs;
-        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "-", 1), korb_flink_line(flink), 1));
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "-", 1), korb_flink_line(flink), 1));
     }
     return KP_OPD(c, flink, slots, lhs, "-", korb_minus_slow_n(c, slots, lhs, rhs, korb_flink_line(flink)));   /* complex/rat/array/user/raise out-of-line → small SD */
 }
@@ -553,7 +553,7 @@ NODE_DEF
 node_mul(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
 {
     (void)flink;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "*", 1), korb_flink_line(flink), 1)); }
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "*", 1), korb_flink_line(flink), 1)); }
     korb_value l = KORB_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         /* tagged mul: x*(rhs-1) = x*2y = 2xy, then |1 → 2xy+1 (tagged xy).  Only
@@ -571,9 +571,9 @@ node_mul(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
         return korb_flo(c, slots, korb_float_val(l) * (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer*Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) * korb_float_val(rhs));
-    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, "*", 1)))) {   /* a builtin subclass defines its own * */
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern_lit(c->vm, "*", 1)))) {   /* a builtin subclass defines its own * */
         slots[0] = l; slots[1] = rhs;
-        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "*", 1), korb_flink_line(flink), 1));
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "*", 1), korb_flink_line(flink), 1));
     }
     return KP_OPD(c, flink, slots, lhs, "*", korb_mul_slow_n(c, slots, lhs, rhs, korb_flink_line(flink)));
 }
@@ -583,7 +583,7 @@ NODE_DEF
 node_div(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
 {
     (void)flink;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "/", 1), korb_flink_line(flink), 1)); }
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "/", 1), korb_flink_line(flink), 1)); }
     korb_value l = KORB_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         korb_sword_t a = FIX2LONG(l), b = FIX2LONG(rhs);
@@ -623,7 +623,7 @@ NODE_DEF
 node_mod(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
 {
     (void)flink;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), korb_flink_line(flink), 1)); }
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "%", 1), korb_flink_line(flink), 1)); }
     korb_value l = KORB_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         korb_sword_t a = FIX2LONG(l), b = FIX2LONG(rhs);
@@ -645,7 +645,7 @@ node_mod(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
     if (KORB_INTEGER_P(l) && !KORB_OBJECT_P(rhs))       /* Integer % non-object (nil/true/...) → TypeError, not NoMethodError */
         return KP_OPD(c, flink, slots, lhs, "%", korb_raise(c, slots, KORB_E_TYPE, korb_flink_line(flink), "%s can't be coerced into Integer", korb_type_name(rhs)));
     slots[0] = l; slots[1] = rhs;                       /* Integer#% (coerces obj#coerce) / Range#% / user-defined % via dispatch */
-    return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), korb_flink_line(flink), 1));
+    return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "%", 1), korb_flink_line(flink), 1));
 }
 
 // ---- bitwise / shift -------------------------------------------------------
@@ -768,15 +768,15 @@ node_lt(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@c
 {
     (void)flink;   /* line read lazily from n only on the cold paths — keeps the
                    * fixnum fast path free of the per-op `line` memory load. */
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "<", 1), korb_flink_line(flink), 1)); }
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "<", 1), korb_flink_line(flink), 1)); }
     korb_value l = KORB_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((korb_sword_t)l < (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float<Float inline */
         return RESULT_OK(korb_float_val(l) < korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
-    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, "<", 1)))) {   /* a builtin subclass defines its own < */
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern_lit(c->vm, "<", 1)))) {   /* a builtin subclass defines its own < */
         slots[0] = l; slots[1] = rhs;
-        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "<", 1), korb_flink_line(flink), 1));
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "<", 1), korb_flink_line(flink), 1));
     }
     return KP_OPD(c, flink, slots, lhs, "<", korb_cmp_slow_n(c, slots, l, rhs, 0, korb_flink_line(flink)));
 }
@@ -785,15 +785,15 @@ NODE_DEF
 node_le(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
 {
     (void)flink;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "<=", 2), korb_flink_line(flink), 1)); }
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "<=", 2), korb_flink_line(flink), 1)); }
     korb_value l = KORB_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((korb_sword_t)l <= (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float<=Float inline */
         return RESULT_OK(korb_float_val(l) <= korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
-    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, "<=", 2)))) {   /* a builtin subclass defines its own <= */
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern_lit(c->vm, "<=", 2)))) {   /* a builtin subclass defines its own <= */
         slots[0] = l; slots[1] = rhs;
-        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "<=", 2), korb_flink_line(flink), 1));
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "<=", 2), korb_flink_line(flink), 1));
     }
     return KP_OPD(c, flink, slots, lhs, "<=", korb_cmp_slow_n(c, slots, l, rhs, 1, korb_flink_line(flink)));
 }
@@ -802,15 +802,15 @@ NODE_DEF
 node_gt(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
 {
     (void)flink;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, ">", 1), korb_flink_line(flink), 1)); }
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, ">", 1), korb_flink_line(flink), 1)); }
     korb_value l = KORB_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((korb_sword_t)l > (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float>Float inline */
         return RESULT_OK(korb_float_val(l) > korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
-    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, ">", 1)))) {   /* a builtin subclass defines its own > */
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern_lit(c->vm, ">", 1)))) {   /* a builtin subclass defines its own > */
         slots[0] = l; slots[1] = rhs;
-        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, ">", 1), korb_flink_line(flink), 1));
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, ">", 1), korb_flink_line(flink), 1));
     }
     return KP_OPD(c, flink, slots, lhs, ">", korb_cmp_slow_n(c, slots, l, rhs, 2, korb_flink_line(flink)));
 }
@@ -819,15 +819,15 @@ NODE_DEF
 node_ge(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
 {
     (void)flink;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, ">=", 2), korb_flink_line(flink), 1)); }
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, ">=", 2), korb_flink_line(flink), 1)); }
     korb_value l = KORB_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((korb_sword_t)l >= (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float>=Float inline */
         return RESULT_OK(korb_float_val(l) >= korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
-    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern(c->vm, ">=", 2)))) {   /* a builtin subclass defines its own >= */
+    if (UNLIKELY(korb_subclass_op_p(c, l, korb_intern_lit(c->vm, ">=", 2)))) {   /* a builtin subclass defines its own >= */
         slots[0] = l; slots[1] = rhs;
-        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, ">=", 2), korb_flink_line(flink), 1));
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, ">=", 2), korb_flink_line(flink), 1));
     }
     return KP_OPD(c, flink, slots, lhs, ">=", korb_cmp_slow_n(c, slots, l, rhs, 3, korb_flink_line(flink)));
 }
@@ -875,7 +875,7 @@ node_eq(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@c
      * and the ANSWER is that call's truthiness, not its return value (rb_equal). */
     if (KORB_STRING_P(l) && KORB_OBJECT_P(rhs) &&
         (slots[0] = rhs, slots[1] = l,               /* rooted: respond_to_missing? may be asked */
-         korb_responds_to_coerce_p(c, slots + 2, &slots[0], korb_intern(c->vm, "to_str", 6)))) {
+         korb_responds_to_coerce_p(c, slots + 2, &slots[0], korb_intern_lit(c->vm, "to_str", 6)))) {
         const RESULT r = KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, c->vm->mid_eq, 0, 1));
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_TRUE : KORB_FALSE);
@@ -909,28 +909,28 @@ NODE_DEF
 node_neq(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
 {
     (void)n;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "!=", 2), 0, 1)); }
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "!=", 2), 0, 1)); }
     const korb_value l = KORB_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))    /* two fixnums: != is identity */
         return RESULT_OK(l != rhs ? KORB_TRUE : KORB_FALSE);
     if (l == rhs) {
-        if (LIKELY(!KORB_USER_EQ_CANDIDATE(l)) || korb_default_eq_p(c, l, korb_intern(c->vm, "!=", 2))) {   /* identity → not-equal is false — except NaN (a user #!= wins) */
+        if (LIKELY(!KORB_USER_EQ_CANDIDATE(l)) || korb_default_eq_p(c, l, korb_intern_lit(c->vm, "!=", 2))) {   /* identity → not-equal is false — except NaN (a user #!= wins) */
             if (UNLIKELY(KORB_FLOAT_P(l))) { const double d_ = korb_float_val(l); if (d_ != d_) return RESULT_OK(KORB_TRUE); }   /* d_ != d_ ⇔ NaN */
             return RESULT_OK(KORB_FALSE);
         }
         slots[0] = l; slots[1] = rhs;                      /* same object, but a user #!= / #== decides */
-        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "!=", 2), 0, 1));
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "!=", 2), 0, 1));
     }
     if (KORB_OBJECT_P(l) || KORB_EXC_P(l) || KORB_HASH_P(l) || KORB_ARRAY_P(l)
         || KORB_REGEXP_P(l) || KORB_MATCHDATA_P(l)
         || (AROH_IS_GC_OBJECT(l) && (((const AroObjectHeader *)(uintptr_t)l)->flags & KORB_FL_HAS_KLASS))) {   /* dispatch #!= — honours a user-defined `!=` / `==` (also a builtin subclass's), else Object#!= (= !(==)) */
         slots[0] = l; slots[1] = rhs;
-        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "!=", 2), 0, 1));
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "!=", 2), 0, 1));
     }
     if (korb_value_eq(l, rhs)) return RESULT_OK(KORB_FALSE);
     if (KORB_STRING_P(l) && KORB_OBJECT_P(rhs) &&      /* see node_eq: a #to_str object answers */
         (slots[0] = rhs, slots[1] = l,
-         korb_responds_to_coerce_p(c, slots + 2, &slots[0], korb_intern(c->vm, "to_str", 6)))) {
+         korb_responds_to_coerce_p(c, slots + 2, &slots[0], korb_intern_lit(c->vm, "to_str", 6)))) {
         RESULT r = KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, c->vm->mid_eq, 0, 1));
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_FALSE : KORB_TRUE);
@@ -944,9 +944,9 @@ node_neq(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
         return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_FALSE : KORB_TRUE);
     }
     /* see node_eq's tail: a Class/Module with its own #== answers for itself */
-    if (UNLIKELY(KORB_CLASS_P(l)) && !korb_default_eq_p(c, l, korb_intern(c->vm, "!=", 2))) {
+    if (UNLIKELY(KORB_CLASS_P(l)) && !korb_default_eq_p(c, l, korb_intern_lit(c->vm, "!=", 2))) {
         slots[0] = l; slots[1] = rhs;
-        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern(c->vm, "!=", 2), 0, 1));
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "!=", 2), 0, 1));
     }
     return RESULT_OK(KORB_TRUE);
 }
@@ -1021,7 +1021,7 @@ node_not(CTX *c, NODE *n, korb_value *slots, korb_value v@child)
     if (UNLIKELY(c->vm->bang_redefined && AROH_IS_GC_OBJECT(v) &&
                  korb_find_bang_override(c, v))) {
         slots[0] = v;
-        return korb_send(c, slots + 1, korb_intern(c->vm, "!", 1), 0, 0);
+        return korb_send(c, slots + 1, korb_intern_lit(c->vm, "!", 1), 0, 0);
     }
     return RESULT_OK(KORB_TRUTHY(v) ? KORB_FALSE : KORB_TRUE);
 }
@@ -1133,7 +1133,7 @@ node_rescue(CTX *c, NODE *n, korb_value *slots, NODE *match, NODE *body, NODE *n
     bool matched;
     if (UNLIKELY(korb_rescue_custom_eqq(c, slots[1]))) {   /* user #=== decides */
         slots[2] = slots[0];                               /* the exception is the argument */
-        RESULT er = korb_send(c, slots + 3, korb_intern(c->vm, "===", 3), 0, 1);
+        RESULT er = korb_send(c, slots + 3, korb_intern_lit(c->vm, "===", 3), 0, 1);
         if (UNLIKELY(er.state != KORB_NORMAL)) return er;
         matched = KORB_TRUTHY(er.value);
     } else {
@@ -1282,16 +1282,16 @@ node_for(CTX *c, NODE *n, korb_value *slots, int32_t orig_off, int32_t iter_off,
     if (!KORB_ARRAY_P(slots[iter_off])) {
         slots[0] = slots[iter_off];
         if (KORB_RANGE_P(slots[iter_off])) {               /* Range: #to_a is a direct C loop and == #each */
-            RESULT ta = korb_send(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0);
+            RESULT ta = korb_send(c, slots + 1, korb_intern_lit(c->vm, "to_a", 4), 0, 0);
             if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
             slots[iter_off] = ta.value;
         } else {                                           /* CRuby: `for x in obj` is obj.each{|x|…} — drive #each */
-            slots[1] = ID2SYM(korb_intern(c->vm, "each", 4));                              /* [recv, :each] end at base[-1] */
-            RESULT en = korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1);   /* enum_for(:each): respects a singleton #each */
+            slots[1] = ID2SYM(korb_intern_lit(c->vm, "each", 4));                              /* [recv, :each] end at base[-1] */
+            RESULT en = korb_send(c, slots + 2, korb_intern_lit(c->vm, "to_enum", 7), 0, 1);   /* enum_for(:each): respects a singleton #each */
             if (UNLIKELY(en.state != KORB_NORMAL)) return en;
             slots[0] = en.value;
-            RESULT ta = one ? korb_send(c, slots + 1, korb_intern(c->vm, "__for_firsts", 12), 0, 0)
-                            : korb_send(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0);      /* materialize (finite) */
+            RESULT ta = one ? korb_send(c, slots + 1, korb_intern_lit(c->vm, "__for_firsts", 12), 0, 0)
+                            : korb_send(c, slots + 1, korb_intern_lit(c->vm, "to_a", 4), 0, 0);      /* materialize (finite) */
             if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
             slots[iter_off] = ta.value;
         }
@@ -1528,7 +1528,7 @@ node_singleton_def(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, NODE *b
      * object actually defines it (no default → no per-def cost otherwise; and
      * since the method is added first, defining the hook fires it for itself). */
     obj = KORB_REF_GET(recv);
-    const uint32_t smad = korb_intern(c->vm, "singleton_method_added", 22);
+    const uint32_t smad = korb_intern_lit(c->vm, "singleton_method_added", 22);
     if (UNLIKELY(korb_responds_to(c, obj, smad))) {
         slots[0] = obj; slots[1] = ID2SYM(mid);          /* recv, arg */
         uint32_t fsym = 0, fline = 0;                    /* the hook's caller is this frame, at the def line */
@@ -2048,7 +2048,7 @@ node_const(CTX *c, NODE *n, korb_value *slots, uint32_t name_sym@sym, uint32_t o
          * global variables ($x) share this table but are nil (not NameError) when
          * unset; constants raise.  The interned name keeps the leading '$'. */
         if (owner_name == 0 && korb_sym_name(vm, name_sym)[0] == '$') {
-            if (UNLIKELY(korb_const_get(vm, korb_intern(vm, "$VERBOSE", 8)) == KORB_TRUE) && dc_off != KORB_GVAR_QUIET)   /* -w only (CRuby) */
+            if (UNLIKELY(korb_const_get(vm, korb_intern_lit(vm, "$VERBOSE", 8)) == KORB_TRUE) && dc_off != KORB_GVAR_QUIET)   /* -w only (CRuby) */
                 korb_warn(c, slots, "global variable '%s' not initialized", korb_sym_name(vm, name_sym));
             return RESULT_OK(KORB_NIL);
         }
@@ -2065,12 +2065,12 @@ node_const(CTX *c, NODE *n, korb_value *slots, uint32_t name_sym@sym, uint32_t o
                 slots[0] = owner_cls;
                 slots[1] = ID2SYM(name_sym);
                 korb_flink_stage_at(c, &slots[fb_off], line);
-                return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), line, 1);
+                return korb_send(c, slots + 2, korb_intern_lit(vm, "const_missing", 13), line, 1);
             }
             RESULT nr = korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s::%s", korb_sym_name(vm, owner_name), korb_sym_name(vm, name_sym));
             if (LIKELY(KORB_EXC_P(nr.value))) {          /* NameError#name = the missing constant symbol */
                 slots[0] = nr.value;
-                korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern(vm, "@__name", 7)), ID2SYM(name_sym));
+                korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern_lit(vm, "@__name", 7)), ID2SYM(name_sym));
                 nr.value = slots[0];
             }
             return nr;
@@ -2078,20 +2078,20 @@ node_const(CTX *c, NODE *n, korb_value *slots, uint32_t name_sym@sym, uint32_t o
         {   /* Top-level miss: CRuby fires Object.const_missing(:Name) here too —
              * that is how a top-level `autoload` gets its chance to require the
              * file.  The prelude default re-raises the same NameError. */
-            const korb_value objc = korb_const_get(vm, korb_intern(vm, "Object", 6));
+            const korb_value objc = korb_const_get(vm, korb_intern_lit(vm, "Object", 6));
             if (KORB_CLASS_P(objc)) {
                 slots[0] = objc;
                 slots[1] = ID2SYM(name_sym);
                 korb_flink_stage_at(c, &slots[fb_off], line);
-                return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), line, 1);
+                return korb_send(c, slots + 2, korb_intern_lit(vm, "const_missing", 13), line, 1);
             }
         }
         RESULT nr = korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, name_sym));
         if (LIKELY(KORB_EXC_P(nr.value))) {              /* NameError#name = the missing constant symbol */
             slots[0] = nr.value;
-            korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern(vm, "@__name", 7)), ID2SYM(name_sym));
-            korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern(vm, "@__receiver", 11)), korb_const_get(vm, korb_intern(vm, "Object", 6)));   /* top-level lookup target is Object */
-            korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern(vm, "@__has_recv", 11)), KORB_TRUE);
+            korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern_lit(vm, "@__name", 7)), ID2SYM(name_sym));
+            korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern_lit(vm, "@__receiver", 11)), korb_const_get(vm, korb_intern_lit(vm, "Object", 6)));   /* top-level lookup target is Object */
+            korb_exc_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern_lit(vm, "@__has_recv", 11)), KORB_TRUE);
             nr.value = slots[0];
         }
         return nr;
@@ -2290,7 +2290,7 @@ node_const_path(CTX *c, NODE *n, korb_value *slots, uint32_t name@sym, uint32_t 
         if (UNLIKELY(korb_user_const_missing_p(c, slots[0]))) {   /* CRuby asks the receiver's own hook first */
             slots[1] = ID2SYM(name);
             korb_flink_stage_at(c, &slots[fb_off], line);
-            return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), line, 1);
+            return korb_send(c, slots + 2, korb_intern_lit(vm, "const_missing", 13), line, 1);
         }
         /* the marker lives on the module that DEFINED it, which may be an
          * ancestor of the receiver (`C::A` where C includes M); CRuby names
@@ -2321,7 +2321,7 @@ node_const_path(CTX *c, NODE *n, korb_value *slots, uint32_t name@sym, uint32_t 
     }
     slots[1] = ID2SYM(name);                              /* <owner>.const_missing(:name) */
     korb_flink_stage_at(c, &slots[fb_off], line);         /* the hook's `caller` must start at the reference */
-    return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), line, 1);
+    return korb_send(c, slots + 2, korb_intern_lit(vm, "const_missing", 13), line, 1);
 }
 
 // defined?(A::B::C) — a nested (or otherwise non-bare) parent: evaluate the parent
@@ -2374,7 +2374,7 @@ node_defined_cpath(CTX *c, NODE *n, korb_value *slots, uint32_t owner_name@sym, 
         if (owner != KORB_UNDEF && owner != KORB_NIL) return RESULT_OK(KORB_NIL);
         if (!korb_autoload_registered_p(c, objc, owner_name)) return RESULT_OK(KORB_NIL);
         slots[0] = objc; slots[1] = ID2SYM(owner_name);           /* CRuby evaluates A, which runs its autoload */
-        const RESULT ar = korb_send(c, slots + 2, korb_intern(vm, "const_get", 9), 0, 1);
+        const RESULT ar = korb_send(c, slots + 2, korb_intern_lit(vm, "const_get", 9), 0, 1);
         if (ar.state != KORB_NORMAL || !KORB_CLASS_P(ar.value)) return RESULT_OK(KORB_NIL);
         owner = ar.value;
     }
@@ -2446,7 +2446,7 @@ node_const_set(CTX *c, NODE *n, korb_value *slots, uint32_t name_sym@sym, uint32
               slots[0] = val;                       /* park: #respond_to_missing? can run Ruby */
               /* a mock answers through its own #respond_to? / #respond_to_missing?
                * (rspec doubles are handed to $stdout in tty-screen's specs) */
-              const bool writable = korb_responds_to_coerce_p(c, slots + 1, &slots[0], korb_intern(c->vm, "write", 5));
+              const bool writable = korb_responds_to_coerce_p(c, slots + 1, &slots[0], korb_intern_lit(c->vm, "write", 5));
               val = slots[0];                       /* re-read (the probe may have moved it) */
               if (!writable) {   /* CRuby names the CLASS: "NilClass given", not "nil given" */
                   const char *const vn = (val == KORB_NIL) ? "NilClass"
@@ -3481,7 +3481,7 @@ node_make_proc(CTX *c, NODE *n, korb_value *slots, NODE *block, int32_t def_env_
      * (rspec's `let(:proc)`).  `->{}` is syntax and never checks (user_dispatch 0). */
     if (UNLIKELY(user_dispatch != 0)) {
         bool handled = false;
-        const uint32_t mid = is_lambda ? korb_intern(c->vm, "lambda", 6) : korb_intern(c->vm, "proc", 4);
+        const uint32_t mid = is_lambda ? korb_intern_lit(c->vm, "lambda", 6) : korb_intern_lit(c->vm, "proc", 4);
         /* hand the literal block over exactly as a call site does: the def_env is
          * the LIVE frame base, tagged odd (an even pointer means an escaped env),
          * and the frame link has to name THIS frame — without it the callee's
@@ -3532,7 +3532,7 @@ node_end_block(CTX *c, NODE *n, korb_value *slots, NODE *block, int32_t def_env_
     (void)n; (void)block_dispatcher;
     if (once->done) return RESULT_OK(KORB_NIL);
     once->done = 1;
-    slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "$__at_exit", 10));
+    slots[0] = korb_const_get(c->vm, korb_intern_lit(c->vm, "$__at_exit", 10));
     if (UNLIKELY(!KORB_ARRAY_P(slots[0]))) return RESULT_OK(KORB_NIL);
     const RESULT pr = korb_make_proc(c, slots + 1, block, &slots[def_env_off], slots[self_off], 0);
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;

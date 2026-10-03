@@ -10,7 +10,7 @@ extern char **environ;
  * across the rest of the caller. */
 ARO_BORROW static const char *korb_env_name_at(CTX *c, korb_value *slots, uint32_t park, korb_value v, RESULT *err) {
     if (UNLIKELY(!KORB_STRING_P(v))) {
-        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
         if (AROH_IS_GC_OBJECT(v) && korb_responds_to(c, v, to_str)) {
             slots[park] = v;
             const RESULT r = korb_send(c, slots + park + 1, to_str, 0, 0);
@@ -90,7 +90,7 @@ static RESULT korb_m_env_fetch(CTX *c, korb_value *slots, korb_ref self, korb_sl
     }
     if (KORB_SLICE_LEN(a) >= 2) return RESULT_OK(KORB_SLICE_GET(a, 1));
     char msg[512]; snprintf(msg, sizeof msg, "key not found: \"%s\"", name);   /* KeyError w/ #receiver = ENV, #key */
-    return korb_raise_key(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "ENV", 3)), KORB_SLICE_GET(a, 0), msg);
+    return korb_raise_key(c, slots, korb_const_get(c->vm, korb_intern_lit(c->vm, "ENV", 3)), KORB_SLICE_GET(a, 0), msg);
 }
 
 /* split environ entry "K=V" — returns key len via *klen, value pointer via *val. */
@@ -142,9 +142,9 @@ static RESULT korb_m_env_to_h_blk(CTX *c, korb_value *slots, korb_ref self, korb
         slots[1] = r.value;                              /* the returned pair (rooted) */
         if (!KORB_ARRAY_P(slots[1])) {                   /* coerce via #to_ary only (not #to_a) */
             korb_value pv = slots[1];
-            if (KORB_OBJECT_P(pv) && korb_responds_to_coerce_p(c, slots + 3, &pv, korb_intern(c->vm, "to_ary", 6))) {
+            if (KORB_OBJECT_P(pv) && korb_responds_to_coerce_p(c, slots + 3, &pv, korb_intern_lit(c->vm, "to_ary", 6))) {
                 slots[3] = pv;
-                RESULT ar = korb_send_impl(c, slots + 4, korb_intern(c->vm, "to_ary", 6), 0, 0, NULL, NULL, NULL);
+                RESULT ar = korb_send_impl(c, slots + 4, korb_intern_lit(c->vm, "to_ary", 6), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
                 slots[1] = ar.value;
             }
@@ -233,13 +233,13 @@ void korb_define_argv(CTX *c, int n, char *const *args, const char *prog) {
         slots[1] = korb_str_new(c, slots + 1, args[k], (uint32_t)strlen(args[k])).value;
         (void)korb_ary_push_val(c, slots + 2, arr, slots[1]);
     }
-    korb_const_define(c, korb_intern(c->vm, "ARGV", 4), KORB_REF_GET(arr));
+    korb_const_define(c, korb_intern_lit(c->vm, "ARGV", 4), KORB_REF_GET(arr));
     if (prog) {   /* $0 / $PROGRAM_NAME (globals share the const table with a '$' name) */
         slots[1] = korb_str_new(c, slots + 1, prog, (uint32_t)strlen(prog)).value;
-        korb_const_define(c, korb_intern(c->vm, "$0", 2), slots[1]);
-        korb_const_define(c, korb_intern(c->vm, "$PROGRAM_NAME", 13), slots[1]);
+        korb_const_define(c, korb_intern_lit(c->vm, "$0", 2), slots[1]);
+        korb_const_define(c, korb_intern_lit(c->vm, "$PROGRAM_NAME", 13), slots[1]);
     }
-    korb_const_define(c, korb_intern(c->vm, "$$", 2), LONG2FIX((korb_sword_t)getpid()));   /* process id */
+    korb_const_define(c, korb_intern_lit(c->vm, "$$", 2), LONG2FIX((korb_sword_t)getpid()));   /* process id */
     /* $LOAD_PATH / $: — the require search path (one Array shared by both names). */
     slots[1] = korb_ary_new(c, slots + 1, 0).value;
     /* bundled pure-Ruby stdlib: `require 'delegate'` etc. resolve to koruby's
@@ -253,11 +253,11 @@ void korb_define_argv(CTX *c, int n, char *const *args, const char *prog) {
             korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[1]), slots[2]);
         }
     }
-    korb_const_define(c, korb_intern(c->vm, "$LOAD_PATH", 10), slots[1]);
-    korb_const_define(c, korb_intern(c->vm, "$:", 2), slots[1]);
+    korb_const_define(c, korb_intern_lit(c->vm, "$LOAD_PATH", 10), slots[1]);
+    korb_const_define(c, korb_intern_lit(c->vm, "$:", 2), slots[1]);
     slots[1] = korb_ary_new(c, slots + 1, 0).value;                                    /* $" / $LOADED_FEATURES */
-    korb_const_define(c, korb_intern(c->vm, "$\"", 2), slots[1]);
-    korb_const_define(c, korb_intern(c->vm, "$LOADED_FEATURES", 16), slots[1]);
+    korb_const_define(c, korb_intern_lit(c->vm, "$\"", 2), slots[1]);
+    korb_const_define(c, korb_intern_lit(c->vm, "$LOADED_FEATURES", 16), slots[1]);
 }
 
 /* ENV.select/filter (sel=true) / reject (sel=false) { |k,v| } → a Hash of the
@@ -387,7 +387,7 @@ static RESULT korb_m_env_assoc(CTX *c, korb_value *slots, korb_ref self, korb_sl
 static RESULT korb_m_env_rassoc(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
     const korb_value want = KORB_SLICE_GET(a, 0);
-    if (!KORB_STRING_P(want) && !(AROH_IS_GC_OBJECT(want) && korb_responds_to(c, want, korb_intern(c->vm, "to_str", 6))))
+    if (!KORB_STRING_P(want) && !(AROH_IS_GC_OBJECT(want) && korb_responds_to(c, want, korb_intern_lit(c->vm, "to_str", 6))))
         return RESULT_OK(KORB_NIL);                       /* not String-like → nil, never TypeError (CRuby) */
     RESULT err; const char *ws = korb_env_name(c, slots, want, &err);   /* #to_str coercion; parks in slots[0] */
     if (!ws) return err;
@@ -491,9 +491,9 @@ static RESULT korb_m_env_replace(CTX *c, korb_value *slots, korb_ref self, korb_
 }
 void korb_init_env(CTX *c, korb_value *slots) {
     struct korb_vm *const vm = c->vm;
-    slots[0] = (korb_class_new(c, slots, korb_intern(vm, "ENV", 3), KORB_NIL)).value;
+    slots[0] = (korb_class_new(c, slots, korb_intern_lit(vm, "ENV", 3), KORB_NIL)).value;
     VAL2CLASS(slots[0])->is_module = 1;
-    korb_const_define(c, korb_intern(vm, "ENV", 3), slots[0]);
+    korb_const_define(c, korb_intern_lit(vm, "ENV", 3), slots[0]);
     const korb_value env_sing = korb_obj_singleton(c, slots + 1, slots[0]).value;
 #define ENVR(nm, fn, ar)  korb_class_def_cfn(c, env_sing, nm, korb_m_env_##fn, ar)
 #define ENVB(nm, fn, ar)  korb_class_def_cfn_blk(c, env_sing, nm, korb_m_env_##fn, ar)

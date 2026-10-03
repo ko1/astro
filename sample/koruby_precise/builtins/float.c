@@ -65,7 +65,7 @@ static RESULT korb_m_flt_cmp(CTX *c, korb_value *slots, korb_ref self, korb_slic
     if (!korb_num_to_d(ov, &o)) {                            /* coercible object → a, b = o.coerce(self); a <=> b */
         const double si = SELF_FLT;
         if (isinf(si) && KORB_OBJECT_P(ov)) {                /* ±Inf <=> obj#infinite? (1=+Inf, -1=-Inf, nil=finite) */
-            const uint32_t inf_mid = korb_intern(c->vm, "infinite?", 9);
+            const uint32_t inf_mid = korb_intern_lit(c->vm, "infinite?", 9);
             if (korb_responds_to(c, ov, inf_mid)) {
                 slots[0] = ov;
                 RESULT ir = korb_send_impl(c, slots + 1, inf_mid, 0, 0, NULL, NULL, NULL);
@@ -115,7 +115,7 @@ static int korb_round_half_v(CTX *c, korb_slice a, uint32_t *npos, korb_value *b
     if (n >= 1 && KORB_HASH_P(KORB_SLICE_GET(a, n - 1))) {     /* trailing kwargs Hash */
         *npos = n - 1;
         const KorbHash *h = VAL2HASH(KORB_SLICE_GET(a, n - 1));
-        const int32_t idx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "half", 4)));
+        const int32_t idx = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "half", 4)));
         if (idx >= 0) {
             const korb_value hv = korb_items_data(h->items)[2 * idx + 1];
             const char *nm = SYMBOL_P(hv) ? korb_sym_name(c->vm, SYM2ID(hv))
@@ -248,7 +248,7 @@ static RESULT korb_m_flt_fdiv(CTX *c, korb_value *slots, korb_ref self, korb_sli
     double o; if (UNLIKELY(!korb_num_to_d(arg, &o))) {
         if (KORB_OBJECT_P(arg)) {                        /* CRuby's flo_quo is `self / other` (coerce there) */
             slots[0] = KORB_REF_GET(self); slots[1] = arg;
-            return korb_send(c, slots + 2, korb_intern(c->vm, "/", 1), 0, 1);
+            return korb_send(c, slots + 2, korb_intern_lit(c->vm, "/", 1), 0, 1);
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_coerce_name(c, arg));
     }
@@ -385,7 +385,7 @@ static RESULT korb_int_round_to(CTX *c, korb_value *slots, korb_sword_t v, int k
             const int sign = (kind == 0 && v < 0) ? -1 : (kind == 1 && v > 0) ? 1 : 0;
             if (sign == 0) return RESULT_OK(LONG2FIX(0));
             slots[0] = UNWRAP(korb_int_pow(c, slots, LONG2FIX(10), LONG2FIX(-ndig), 0));
-            return sign > 0 ? RESULT_OK(slots[0]) : korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), 0, 0);
+            return sign > 0 ? RESULT_OK(slots[0]) : korb_send(c, slots + 1, korb_intern_lit(c->vm, "-@", 2), 0, 0);
         }
         f *= 10;
     }

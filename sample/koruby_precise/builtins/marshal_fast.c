@@ -551,7 +551,7 @@ static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const korb
         if (e != KORB_ENC_BINARY && !korb_mdump_byte(st, 'I')) return false;
         if (!korb_mdump_byte(st, '"') || !korb_mdump_long(st, s->len) || !korb_mdump_put(st, korb_strbuf_data(s->buf), s->len)) return false;
         if (e == KORB_ENC_BINARY) return true;
-        return korb_mdump_long(st, 1) && korb_mdump_sym(c->vm, st, korb_intern(c->vm, "E", 1)) &&
+        return korb_mdump_long(st, 1) && korb_mdump_sym(c->vm, st, korb_intern_lit(c->vm, "E", 1)) &&
                korb_mdump_byte(st, e == KORB_ENC_UTF8 ? 'T' : 'F');
     }
     if (KORB_ARRAY_P(v)) {
@@ -589,8 +589,8 @@ static RESULT
 korb_bi_marshal_fast_dump(CTX *c, korb_value *slots, korb_slice args)
 {
     struct korb_mdump st = { 0 };
-    st.mid_mdump = korb_intern(c->vm, "marshal_dump", 12);
-    st.mid_udump = korb_intern(c->vm, "_dump", 5);
+    st.mid_mdump = korb_intern_lit(c->vm, "marshal_dump", 12);
+    st.mid_udump = korb_intern_lit(c->vm, "_dump", 5);
     bool ok = korb_mdump_byte(&st, 4) && korb_mdump_byte(&st, 8) &&
               korb_mdump_obj(c, &st, KORB_SLICE_GET(args, 0), 0);
     free(st.okey); free(st.oval); free(st.skey); free(st.sval);

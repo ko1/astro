@@ -178,10 +178,10 @@ static RESULT korb_m_sock_open(CTX *c, korb_value *slots, korb_ref self, korb_sl
 static RESULT
 korb_raise_io_timeout(CTX *c, korb_value *slots, const char *msg)
 {
-    const korb_value io = korb_const_get(c->vm, korb_intern(c->vm, "IO", 2));
+    const korb_value io = korb_const_get(c->vm, korb_intern_lit(c->vm, "IO", 2));
     korb_value cls = KORB_NIL;
     if (KORB_CLASS_P(io)) {
-        const uint32_t ix = korb_const_index_owned(c->vm, korb_intern(c->vm, "TimeoutError", 12), io);
+        const uint32_t ix = korb_const_index_owned(c->vm, korb_intern_lit(c->vm, "TimeoutError", 12), io);
         if (ix != UINT32_MAX) cls = c->vm->const_vals[ix];
     }
     slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
@@ -322,10 +322,10 @@ static RESULT korb_m_sock_name(CTX *c, korb_value *slots, korb_ref self, korb_sl
 static RESULT
 korb_raise_resolution_error_code(CTX *c, korb_value *slots, const char *msg, int code)
 {
-    const korb_value sock = korb_const_get(c->vm, korb_intern(c->vm, "Socket", 6));
+    const korb_value sock = korb_const_get(c->vm, korb_intern_lit(c->vm, "Socket", 6));
     korb_value cls = KORB_NIL;
     if (KORB_CLASS_P(sock)) {
-        const uint32_t nm = korb_intern(c->vm, "ResolutionError", 15);
+        const uint32_t nm = korb_intern_lit(c->vm, "ResolutionError", 15);
         const uint32_t ix = korb_const_index_owned(c->vm, nm, sock);
         if (ix != UINT32_MAX) cls = c->vm->const_vals[ix];
     }
@@ -336,7 +336,7 @@ korb_raise_resolution_error_code(CTX *c, korb_value *slots, const char *msg, int
         ARO_STORE(c, VAL2EXC(slots[1]), (korb_value *)(uintptr_t)&VAL2EXC(slots[1])->exc_class, slots[0]);
         /* #error_code is the EAI_* value getaddrinfo(3) returned */
         korb_exc_ivar_set(c, slots + 2, KORB_REF_AT(&slots[1]),
-                          ID2SYM(korb_intern(c->vm, "@error_code", 11)), LONG2FIX(code));
+                          ID2SYM(korb_intern_lit(c->vm, "@error_code", 11)), LONG2FIX(code));
         r.value = slots[1];
     }
     return r;

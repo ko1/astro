@@ -120,7 +120,7 @@ static RESULT korb_deep_hash_r(CTX *c, korb_value *slots, korb_value v, uint32_t
     if (depth >= KORB_DEEP_HASH_MAX) { *out = 0xC0FFEEULL; return RESULT_OK(KORB_NIL); }
     if (depth > 0 && korb_has_user_hash(c, v)) {
         slots[0] = v;
-        const RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "hash", 4), 0, 0);
+        const RESULT r = korb_send(c, slots + 1, korb_intern_lit(c->vm, "hash", 4), 0, 0);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         *out = FIXNUM_P(r.value) ? (uint64_t)FIX2LONG(r.value) : korb_deep_hash_d(c, r.value, depth, cycle);
         return RESULT_OK(KORB_NIL);
@@ -213,7 +213,7 @@ static RESULT korb_m_hash_default(CTX *c, korb_value *slots, korb_ref self, korb
         slots[0] = SELF_HASH->default_proc;
         slots[1] = KORB_REF_GET(self);
         slots[2] = KORB_SLICE_GET(a, 0);
-        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2, NULL, NULL, NULL);
+        return korb_send_impl(c, slots + 3, korb_intern_lit(c->vm, "call", 4), 0, 2, NULL, NULL, NULL);
     }
     return RESULT_OK(SELF_HASH->default_val);
 }
@@ -240,10 +240,10 @@ static RESULT korb_m_hash_aref(CTX *c, korb_value *slots, korb_ref self, korb_sl
         slots[0] = h->default_proc;
         slots[1] = KORB_REF_GET(self);
         slots[2] = KORB_SLICE_GET(a, 0);
-        return korb_send(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2);
+        return korb_send(c, slots + 3, korb_intern_lit(c->vm, "call", 4), 0, 2);
     }
     {   /* a miss goes through #default(key), which a subclass may override */
-        const uint32_t dmid = korb_intern(c->vm, "default", 7);
+        const uint32_t dmid = korb_intern_lit(c->vm, "default", 7);
         const korb_value cls = korb_dispatch_class(c, KORB_REF_GET(self));
         const struct korb_method *const dm = KORB_CLASS_P(cls) ? korb_find_method_c(c->vm, cls, dmid, NULL) : NULL;
         if (UNLIKELY(dm != NULL && dm->kind == KORB_METHOD_ISEQ)) {   /* only a Ruby override is observable */
@@ -306,7 +306,7 @@ static RESULT korb_m_hash_eq(CTX *c, korb_value *slots, korb_ref self, korb_slic
     if (KORB_REF_GET(self) == other) return RESULT_OK(KORB_TRUE);
     if (!KORB_HASH_P(other)) {                            /* Hash-like (responds to #to_hash) → other == self */
         korb_value o = other;
-        if (korb_ary_respond_to_pub(c, slots, &o, korb_intern(c->vm, "to_hash", 7))) {   /* any receiver (rb_respond_to) */
+        if (korb_ary_respond_to_pub(c, slots, &o, korb_intern_lit(c->vm, "to_hash", 7))) {   /* any receiver (rb_respond_to) */
             slots[0] = o; slots[1] = KORB_REF_GET(self);
             const RESULT r = korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -351,7 +351,7 @@ static RESULT korb_m_hash_eql(CTX *c, korb_value *slots, korb_ref self, korb_sli
     if (VAL2HASH(KORB_REF_GET(self))->len != VAL2HASH(other)->len) return RESULT_OK(KORB_FALSE);
     if (VAL2HASH(KORB_REF_GET(self))->head.flags & KORB_FL_JOIN_VISITING) return RESULT_OK(KORB_TRUE);   /* recursive → assume equal */
     slots[0] = KORB_REF_GET(self); slots[1] = other;
-    const uint32_t mid_eql = korb_intern(c->vm, "eql?", 4);
+    const uint32_t mid_eql = korb_intern_lit(c->vm, "eql?", 4);
     const uint32_t n = VAL2HASH(slots[0])->len;
     VAL2HASH(slots[0])->head.flags |= KORB_FL_JOIN_VISITING;
     korb_value result = KORB_TRUE;
@@ -666,7 +666,7 @@ static bool korb_hash_is_subset(const KorbHash *sub, const KorbHash *sup) {
 static RESULT korb_hash_cmp_op(CTX *c, korb_value *slots, korb_ref self, korb_slice a, int op) {
     korb_value ov = KORB_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_HASH_P(ov))) {                            /* coerce the operand via #to_hash (Hash subclasses are already KORB_HASH_P) */
-        const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
+        const uint32_t to_hash = korb_intern_lit(c->vm, "to_hash", 7);
         if (KORB_OBJECT_P(ov) && korb_responds_to_coerce_p(c, slots, &ov, to_hash)) {
             slots[1] = ov;
             RESULT hr = korb_send_impl(c, slots + 2, to_hash, 0, 0, NULL, NULL, NULL);

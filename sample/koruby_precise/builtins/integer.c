@@ -111,7 +111,7 @@ static RESULT korb_m_int_chr(CTX *c, korb_value *slots, korb_ref self, korb_slic
         if (KORB_STRING_P(slots[0])) {                /* encoding name given as a String ("utf-8") */
             nr = RESULT_OK(slots[0]);
         } else {                                       /* Encoding object → query its #name */
-            nr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0, NULL, NULL, NULL);
+            nr = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "name", 4), 0, 0, NULL, NULL, NULL);
         }
         if (nr.state == KORB_NORMAL && KORB_STRING_P(nr.value)) {
             const KorbString *nm = VAL2STR(nr.value);
@@ -465,9 +465,9 @@ static RESULT korb_m_int_coerce(CTX *c, korb_value *slots, korb_ref self, korb_s
             RESULT fr = korb_bi_float(c, slots, a);
             if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
             slots[0] = fr.value;
-        } else if (KORB_OBJECT_P(o) && korb_responds_to(c, o, korb_intern(c->vm, "to_f", 4))) {
+        } else if (KORB_OBJECT_P(o) && korb_responds_to(c, o, korb_intern_lit(c->vm, "to_f", 4))) {
             slots[0] = o;
-            RESULT fr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_f", 4), 0, 0, NULL, NULL, NULL);
+            RESULT fr = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_f", 4), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
             if (UNLIKELY(!KORB_FLOAT_P(fr.value)))           /* #to_f must return a Float (slots[0]=o, re-read after the dispatch's GC) */
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_coerce_name(c, slots[0]));
@@ -506,7 +506,7 @@ static RESULT korb_m_int_quo(CTX *c, korb_value *slots, korb_ref self, korb_slic
     if (UNLIKELY(KORB_OBJECT_P(KORB_SLICE_GET(a, 0)))) {  /* CRuby's rb_numeric_quo: Rational(self) / other */
         slots[1] = KORB_SLICE_GET(a, 0);
         slots[0] = UNWRAP(korb_rat_new_v(c, slots + 2, KORB_REF_GET(self), LONG2FIX(1)));
-        return korb_send(c, slots + 2, korb_intern(c->vm, "/", 1), 0, 1);
+        return korb_send(c, slots + 2, korb_intern_lit(c->vm, "/", 1), 0, 1);
     }
     return korb_rat_arith(c, slots, KORB_REF_GET(self), KORB_SLICE_GET(a, 0), 3);   /* exact division → Rational/Float */
 }

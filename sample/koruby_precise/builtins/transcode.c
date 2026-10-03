@@ -719,7 +719,7 @@ static RESULT korb_bi_enc_sync(CTX *c, korb_value *slots, korb_slice a)
         const korb_value e = KORB_SLICE_GET(a, i);
         if (e != KORB_NIL) {
             slots[0] = e;
-            const RESULT nm = korb_send(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0);
+            const RESULT nm = korb_send(c, slots + 1, korb_intern_lit(c->vm, "name", 4), 0, 0);
             if (UNLIKELY(nm.state != KORB_NORMAL)) return nm;
             if (LIKELY(KORB_STRING_P(nm.value))) {
                 char eb[64];

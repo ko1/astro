@@ -1471,13 +1471,13 @@ kcx_vwarn(const char *fmt, va_list ap)
     (void)rb_str_cat(s, b, (long)n);
     (void)rb_str_cat(s, "\n", 1);
     free(b);
-    (void)kcx_send_name(c, korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7)), "warn", 1, &s);   /* overridable, as CRuby's */
+    (void)kcx_send_name(c, korb_const_get(c->vm, korb_intern_lit(c->vm, "Warning", 7)), "warn", 1, &s);   /* overridable, as CRuby's */
 }
 KCX_API void
 rb_warn(const char *fmt, ...)
 {
     CTX *const c = kcx_c();
-    if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
+    if (korb_const_get(c->vm, korb_intern_lit(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
     va_list ap; va_start(ap, fmt); kcx_vwarn(fmt, ap); va_end(ap);
 }
 /* rb_warning_category_t: CRuby's order */
@@ -1486,10 +1486,10 @@ KCX_API void
 rb_category_warn(int cat, const char *fmt, ...)
 {
     CTX *const c = kcx_c();
-    if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
+    if (korb_const_get(c->vm, korb_intern_lit(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
     if (cat > 0 && cat < (int)(sizeof kcx_warn_categories / sizeof *kcx_warn_categories)) {
         const KVALUE sym = rb_id2sym(rb_intern(kcx_warn_categories[cat]));
-        if (!RTEST_K(W(kcx_send_name(c, korb_const_get(c->vm, korb_intern(c->vm, "Warning", 7)), "[]", 1, &sym)))) return;
+        if (!RTEST_K(W(kcx_send_name(c, korb_const_get(c->vm, korb_intern_lit(c->vm, "Warning", 7)), "[]", 1, &sym)))) return;
     }
     va_list ap; va_start(ap, fmt); kcx_vwarn(fmt, ap); va_end(ap);
 }
@@ -1497,7 +1497,7 @@ KCX_API void
 rb_warning(const char *fmt, ...)
 {
     CTX *const c = kcx_c();
-    if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) != KORB_TRUE) return;
+    if (korb_const_get(c->vm, korb_intern_lit(c->vm, "$VERBOSE", 8)) != KORB_TRUE) return;
     va_list ap; va_start(ap, fmt); kcx_vwarn(fmt, ap); va_end(ap);
 }
 

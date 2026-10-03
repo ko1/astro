@@ -108,14 +108,14 @@ static RESULT korb_gen_bound_raise(CTX *c, korb_value *slots) {
     if (LIKELY(KORB_EXC_P(r.value))) {
         VAL2EXC(r.value)->gen_bound = 1;
         slots[2] = r.value;
-        korb_exc_ivar_set(c, slots + 3, KORB_REF_AT(&slots[2]), ID2SYM(korb_intern(c->vm, "@__gen_owner", 12)), slots[1]);
+        korb_exc_ivar_set(c, slots + 3, KORB_REF_AT(&slots[2]), ID2SYM(korb_intern_lit(c->vm, "@__gen_owner", 12)), slots[1]);
         r.value = slots[2];
     }
     return r;
 }
 static RESULT korb_m_yielder_push_impl(CTX *c, korb_value *slots, korb_ref self, korb_slice a, bool want_value) {
     const uint32_t ac = KORB_SLICE_LEN(a);
-    const korb_value csym = ID2SYM(korb_intern(c->vm, "@__c", 4));   /* @__c = [collector, limit, ops, op_state] */
+    const korb_value csym = ID2SYM(korb_intern_lit(c->vm, "@__c", 4));   /* @__c = [collector, limit, ops, op_state] */
     slots[1] = korb_ivar_get(c, KORB_REF_GET(self), csym);     /* the tuple (rooted) */
     slots[0] = korb_items_data(VAL2ARY(slots[1])->items)[0];              /* collector (rooted in slots[0]) */
     const korb_value limv = korb_items_data(VAL2ARY(slots[1])->items)[1];     /* limit (fixnum, immediate) */
@@ -209,7 +209,7 @@ static RESULT korb_enum_gen_new(CTX *c, korb_value *slots, korb_value proc, korb
     e->size = FIXNUM_P(size) ? size : KORB_NIL;          /* known Fixnum size → Enumerator#size directly */
     if (KORB_FLOAT_P(size) && isinf(korb_float_val(size)) && korb_float_val(size) > 0) e->size_inf = 1;   /* +Infinity size */
     else if (!FIXNUM_P(size) && size != KORB_NIL &&
-             korb_responds_to_coerce(c, slots + 3, size, korb_intern(c->vm, "call", 4))) {   /* honors #respond_to?/mocks */
+             korb_responds_to_coerce(c, slots + 3, size, korb_intern_lit(c->vm, "call", 4))) {   /* honors #respond_to?/mocks */
         e = VAL2ENUM(slots[2]); size = slots[1];         /* re-read enum + size after the (GC-capable) respond_to? dispatch */
         ARO_STORE(c, e, (korb_value *)(uintptr_t)&e->size_proc, size);   /* a callable size → invoked lazily by #size */
     }
@@ -222,8 +222,8 @@ static RESULT korb_enum_gen_new(CTX *c, korb_value *slots, korb_value proc, korb
 static RESULT korb_enum_gen_run(CTX *c, korb_value *slots, korb_ref self, korb_sword_t limit) {
     struct korb_vm *const vm = c->vm;
     if (vm->yielder_class == KORB_NIL) {                        /* bind Enumerator::Yielder (a GC root) */
-        const korb_value ec = korb_const_get(vm, korb_intern(vm, "Enumerator", 10));
-        const uint32_t yi = KORB_CLASS_P(ec) ? korb_const_index_owned(vm, korb_intern(vm, "Yielder", 7), ec) : UINT32_MAX;
+        const korb_value ec = korb_const_get(vm, korb_intern_lit(vm, "Enumerator", 10));
+        const uint32_t yi = KORB_CLASS_P(ec) ? korb_const_index_owned(vm, korb_intern_lit(vm, "Yielder", 7), ec) : UINT32_MAX;
         slots[0] = yi != UINT32_MAX ? vm->const_vals[yi] : KORB_NIL;
         if (!KORB_CLASS_P(slots[0]))                            /* prelude absent (bootstrap) */
             slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));
@@ -263,15 +263,15 @@ static RESULT korb_enum_gen_run(CTX *c, korb_value *slots, korb_ref self, korb_s
     slots[4] = UNWRAP(korb_obj_new(c, slots + 4, vm->yielder_class));
     /* korb_ivar_set/get take a SYMBOL, not a raw ID: passing the ID stored the
      * tuple under SYM2ID(id), so reflection named it after an unrelated symbol. */
-    CHECK(korb_ivar_set(c, slots + 5, KORB_REF_AT(&slots[4]), ID2SYM(korb_intern(vm, "@__c", 4)), slots[3]));
+    CHECK(korb_ivar_set(c, slots + 5, KORB_REF_AT(&slots[4]), ID2SYM(korb_intern_lit(vm, "@__c", 4)), slots[3]));
     if (limit == 0) return RESULT_OK(slots[2]);               /* take(0): no run */
     slots[5] = SELF_ENUM->source;                            /* the generator proc */
     slots[6] = slots[4];                                     /* arg0 = yielder */
-    RESULT br = korb_send_impl(c, slots + 7, korb_intern(vm, "call", 4), 0, 1, NULL, NULL, NULL);
+    RESULT br = korb_send_impl(c, slots + 7, korb_intern_lit(vm, "call", 4), 0, 1, NULL, NULL, NULL);
     if (br.state == KORB_RAISE && KORB_EXC_P(br.value) && VAL2EXC(br.value)->etype == KORB_E_STOP_ITERATION) {
         /* another (outer) generator's bound passes through this drive */
         if (VAL2EXC(br.value)->gen_bound &&
-            korb_exc_ivar_get(br.value, ID2SYM(korb_intern(vm, "@__gen_owner", 12))) != slots[3]) return br;
+            korb_exc_ivar_get(br.value, ID2SYM(korb_intern_lit(vm, "@__gen_owner", 12))) != slots[3]) return br;
         return RESULT_OK(slots[2]);                           /* hit the bound (or natural end) → collector */
     }
     /* A break the consumer's block raised is not this drive's to swallow — it
@@ -422,12 +422,12 @@ static RESULT korb_grep_eqq(CTX *c, korb_value *slots, korb_value pat, korb_valu
 /* call proc.call(v) — proc/v staged + rooted. */
 static RESULT korb_call1(CTX *c, korb_value *slots, korb_value proc, korb_value v) {
     slots[0] = proc; slots[1] = v;
-    return korb_send(c, slots + 2, korb_intern(c->vm, "call", 4), 0, 1);
+    return korb_send(c, slots + 2, korb_intern_lit(c->vm, "call", 4), 0, 1);
 }
 /* call proc.call(v1, v2) — proc + 2 args staged + rooted. */
 static RESULT korb_call2(CTX *c, korb_value *slots, korb_value proc, korb_value v1, korb_value v2) {
     slots[0] = proc; slots[1] = v1; slots[2] = v2;
-    return korb_send(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2);
+    return korb_send(c, slots + 3, korb_intern_lit(c->vm, "call", 4), 0, 2);
 }
 /* call proc.call(*ary[0, n]) — the caller keeps `ary` rooted, and nothing here
  * allocates before the values are staged, so the raw KorbArray stays valid. */
@@ -435,7 +435,7 @@ static RESULT korb_call_spread(CTX *c, korb_value *slots, korb_value proc, korb_
     slots[0] = proc;
     const KorbArray *const a = VAL2ARY(ary);
     for (uint32_t i = 0; i < n; i++) slots[1 + i] = korb_items_data(a->items)[i];
-    return korb_send(c, slots + 1 + n, korb_intern(c->vm, "call", 4), 0, n);
+    return korb_send(c, slots + 1 + n, korb_intern_lit(c->vm, "call", 4), 0, n);
 }
 /* Ops whose block CRuby calls with a multi-yield's raw values (so a
  * 1-parameter block sees the first one); the rest get the gathered Array. */
@@ -616,10 +616,10 @@ static RESULT korb_lazy_run(CTX *c, korb_value *slots, korb_ref self, korb_value
              * materializes, so an *infinite* inner lazy is not supported. */
             if (!KORB_ARRAY_P(slots[1]) && AROH_IS_GC_OBJECT(slots[1]) &&
                 (KORB_ENUM_P(slots[1]) ? (VAL2ENUM(slots[1])->mode == 1 || VAL2ENUM(slots[1])->mode == 4)
-                                       : (korb_responds_to(c, slots[1], korb_intern(c->vm, "force", 5)) &&
-                                          korb_responds_to(c, slots[1], korb_intern(c->vm, "each", 4))))) {
+                                       : (korb_responds_to(c, slots[1], korb_intern_lit(c->vm, "force", 5)) &&
+                                          korb_responds_to(c, slots[1], korb_intern_lit(c->vm, "each", 4))))) {
                 slots[2] = slots[1];
-                RESULT ir = korb_send(c, slots + 3, korb_intern(c->vm, "force", 5), 0, 0);
+                RESULT ir = korb_send(c, slots + 3, korb_intern_lit(c->vm, "force", 5), 0, 0);
                 if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
                 if (KORB_ARRAY_P(ir.value)) slots[1] = ir.value;
             }
@@ -788,13 +788,13 @@ static RESULT korb_m_enum_size(CTX *c, korb_value *slots, korb_ref self, korb_sl
     if (e->size_inf) {   /* infinite source (endless / Float::INFINITY range) */
         /* Hand back the Float::INFINITY object itself: heap Floats are not
          * interned, so a fresh one would fail the #equal? the specs make. */
-        const korb_value inf = korb_const_get(c->vm, korb_intern(c->vm, "INFINITY", 8));
+        const korb_value inf = korb_const_get(c->vm, korb_intern_lit(c->vm, "INFINITY", 8));
         if (KORB_FLOAT_P(inf) && isinf(korb_float_val(inf))) return RESULT_OK(inf);
         return korb_float_new(c, slots, (double)INFINITY);
     }
     if (e->size_proc != KORB_NIL) {                                             /* a callable size — call it fresh each time */
         slots[0] = e->size_proc;
-        return korb_send(c, slots + 1, korb_intern(c->vm, "call", 4), 0, 0);
+        return korb_send(c, slots + 1, korb_intern_lit(c->vm, "call", 4), 0, 0);
     }
     if (FIXNUM_P(e->size) || KORB_FLOAT_P(e->size)) return RESULT_OK(e->size);   /* explicit size (Enumerator.new(size)/to_enum) or Infinity */
     /* generator (mode 3) / lazy / cycle have no materialized `values`; CRuby
@@ -914,7 +914,7 @@ static RESULT korb_m_enum_initialize(CTX *c, korb_value *slots, korb_ref self, k
     const korb_value sz = slots[1];
     if (FIXNUM_P(sz)) e->size = sz;
     else if (KORB_FLOAT_P(sz) && isinf(korb_float_val(sz)) && korb_float_val(sz) > 0) e->size_inf = 1;
-    else if (sz != KORB_NIL && korb_responds_to_coerce(c, slots + 2, sz, korb_intern(c->vm, "call", 4)))
+    else if (sz != KORB_NIL && korb_responds_to_coerce(c, slots + 2, sz, korb_intern_lit(c->vm, "call", 4)))
         ARO_STORE(c, VAL2ENUM(slots[0]), (korb_value *)(uintptr_t)&VAL2ENUM(slots[0])->size_proc, slots[1]);
     return RESULT_OK(slots[0]);
 }
@@ -931,14 +931,14 @@ static RESULT korb_m_to_lazy(CTX *c, korb_value *slots, korb_ref self, korb_slic
     }
     if (KORB_HASH_P(v)) {                                        /* lazy over the [k,v] pairs (the driver iterates Arrays) */
         slots[0] = v;
-        RESULT ta = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0, NULL, NULL, NULL);
+        RESULT ta = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_a", 4), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
         slots[0] = ta.value;
         return korb_lazy_new(c, slots + 1, slots[0], 1);
     }
     if (KORB_RANGE_P(v) && !FIXNUM_P(VAL2RANGE(v)->rbegin)) {   /* String / #succ range: stream Range#each */
         slots[0] = v;
-        return korb_send_impl(c, slots + 1, korb_intern(c->vm, "__lazy_each", 11), 0, 0, NULL, NULL, NULL);
+        return korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "__lazy_each", 11), 0, 0, NULL, NULL, NULL);
     }
     slots[0] = (KORB_ENUM_P(v)) ? VAL2ENUM(v)->values : v;       /* eager enum → its values */
     return korb_lazy_new(c, slots + 1, slots[0], 1);
@@ -980,7 +980,7 @@ static RESULT korb_lazy_op(CTX *c, korb_value *slots, korb_ref self, const char 
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to call lazy %s without a block", op);
         slots[0] = KORB_REF_GET(self);                          /* eager Enumerator → to_enum(:op) */
         slots[1] = ID2SYM(korb_intern(c->vm, op, (uint32_t)strlen(op)));
-        return korb_send(c, slots + 2, korb_intern(c->vm, "__to_enum_sized", 15), 0, 1);
+        return korb_send(c, slots + 2, korb_intern_lit(c->vm, "__to_enum_sized", 15), 0, 1);
     }
     if (SELF_ENUM->mode == 3) {
         /* Stream the generator and apply the op per value: CRuby runs the block
