@@ -2129,15 +2129,13 @@ static RESULT korb_m_class_include_q(CTX *c, korb_value *slots, korb_ref self, k
     korb_value target = KORB_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_CLASS_P(target) || !VAL2CLASS(target)->is_module))   /* a Class (not Module) or non-class → TypeError, like CRuby */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_coerce_name(c, target));
-    korb_value cls = KORB_REF_GET(self);
-    while (KORB_CLASS_P(cls)) {                              /* pure reads → no GC, no rooting */
-        korb_value inc = VAL2CLASS(cls)->included;
-        if (inc != KORB_NIL) {
-            const KorbArray *ia = VAL2ARY(inc);
-            for (uint32_t j = 0; j < ia->len; j++) if (korb_items_data(ia->items)[j] == target) return RESULT_OK(KORB_TRUE);
-        }
-        cls = VAL2CLASS(cls)->superclass;
-    }
+    /* the ancestry, as #ancestors sees it: a module a module included later (two levels down) and the
+     * prepended ones count too (CRuby) — the own `included` lists miss both */
+    const korb_value cls = KORB_REF_GET(self);
+    if (!KORB_CLASS_P(cls) || cls == target) return RESULT_OK(KORB_FALSE);
+    korb_value mro[256];
+    const int n = korb_linearize_mro(cls, mro, 256);   /* pure reads → no GC, no rooting */
+    for (int i = 0; i < n; i++) if (mro[i] == target) return RESULT_OK(KORB_TRUE);
     return RESULT_OK(KORB_FALSE);
 }
 /* Module#include(mod...) / Module#prepend(mod...) — explicit-receiver form (the

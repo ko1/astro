@@ -6539,9 +6539,45 @@ korb_class_find_dedup(korb_value klass, uint32_t mid, korb_value *out_def)
     }
     return NULL;
 }
+/* klass's deduped ancestry as one flat array (CRuby keeps it as the iclass chain): the cached MRO,
+ * built on a miss.  NULL when it is not cacheable (longer than 256) — walk the segments then. */
+static __attribute__((noinline)) const korb_value *
+korb_mro_flat_build(korb_value klass, uint32_t *n)
+{
+    korb_value buf[256];
+    korb_linearize_mro(klass, buf, 256);
+    const KorbClass *const kc = VAL2CLASS(klass);
+    if (kc->mro_ser_src && kc->mro_c && kc->mro_ser == *kc->mro_ser_src) { *n = kc->mro_n; return kc->mro_c; }
+    return NULL;
+}
+static inline const korb_value *
+korb_mro_flat(korb_value klass, uint32_t *n)
+{
+    const KorbClass *const kc = VAL2CLASS(klass);
+    if (LIKELY(kc->mro_ser_src && kc->mro_c && kc->mro_ser == *kc->mro_ser_src)) { *n = kc->mro_n; return kc->mro_c; }
+    return korb_mro_flat_build(klass, n);
+}
+/* The first entry for mid along the flat ancestry (a tombstone included); false = no flat ancestry */
+static inline bool
+korb_mro_flat_find(korb_value klass, uint32_t mid, struct korb_method **out_m, korb_value *out_def)
+{
+    uint32_t n;
+    const korb_value *const mro = korb_mro_flat(klass, &n);
+    if (UNLIKELY(mro == NULL)) return false;
+    *out_m = NULL;
+    for (uint32_t i = 0; i < n; i++) {
+        const KorbClass *const k = VAL2CLASS(mro[i]);
+        const int32_t s = korb_mtab_slot(k, mid);
+        if (s >= 0) { *out_m = k->methods[s]; if (out_def) *out_def = mro[i]; break; }
+    }
+    return true;
+}
 static struct korb_method *
 korb_class_find_method(korb_value klass, uint32_t mid, korb_value *out_def)
 {
+    struct korb_method *fm;
+    if (LIKELY(KORB_CLASS_P(klass)) && korb_mro_flat_find(klass, mid, &fm, out_def))
+        return (fm != NULL && fm->kind == KORB_METHOD_UNDEF) ? NULL : fm;   /* undef tombstone: stop, report missing */
     for (korb_value k = klass; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
         if (UNLIKELY(VAL2CLASS(k)->mro_dup)) return korb_class_find_dedup(klass, mid, out_def);
         struct korb_method *m = korb_mro_seg_find(k, mid, out_def, 0);
@@ -6564,9 +6600,14 @@ korb_method_undefed_p(struct korb_vm *vm, korb_value klass, uint32_t mid)
         &vm->ucache[(((uint32_t)((uintptr_t)klass >> 4)) ^ (mid * 2654435761u)) & (sizeof vm->ucache / sizeof vm->ucache[0] - 1)];
     if (LIKELY(e->serial == vm->method_serial && e->klass == klass && e->mid == mid)) return e->ans;
     bool ans = false;
-    for (korb_value k = klass; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
-        const struct korb_method *const m = korb_mro_seg_find(k, mid, NULL, 0);
-        if (m) { ans = m->kind == KORB_METHOD_UNDEF; break; }
+    struct korb_method *fm;
+    if (KORB_CLASS_P(klass) && korb_mro_flat_find(klass, mid, &fm, NULL)) {
+        ans = fm != NULL && fm->kind == KORB_METHOD_UNDEF;
+    } else {
+        for (korb_value k = klass; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
+            const struct korb_method *const m = korb_mro_seg_find(k, mid, NULL, 0);
+            if (m) { ans = m->kind == KORB_METHOD_UNDEF; break; }
+        }
     }
     e->serial = vm->method_serial; e->klass = klass; e->mid = mid; e->ans = ans;
     return ans;
