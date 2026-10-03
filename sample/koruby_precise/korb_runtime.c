@@ -8061,9 +8061,9 @@ korb_super_find_slow(CTX *c, uint32_t mid, korb_value entry_cell, korb_value sel
         if (di >= 0) {
             int fi = -1;
             for (int i = di + 1; i < n && m == NULL; i++) {
-                KorbClass *mk = VAL2CLASS(mro[i]);
-                for (uint32_t q = 0; q < mk->method_cnt; q++)
-                    if (mk->methods[q]->mid == mid) { m = mk->methods[q]; found_def = mro[i]; fi = i; break; }
+                const KorbClass *const mk = VAL2CLASS(mro[i]);
+                const int32_t q = korb_mtab_slot(mk, mid);   /* the class's index, not a scan of its table (Rails classes hold hundreds) */
+                if (q >= 0) { m = mk->methods[q]; found_def = mro[i]; fi = i; }
             }
             if (m != NULL) {                              /* found in a module that also sits earlier */
                 uint32_t occ = 0;
@@ -8079,9 +8079,9 @@ korb_super_find_slow(CTX *c, uint32_t mid, korb_value entry_cell, korb_value sel
                 for (int32_t j = (int32_t)arr->len - 1; j >= 0 && m == NULL; j--) {
                     korb_value mod = korb_items_data(arr->items)[j];
                     if (!KORB_CLASS_P(mod)) continue;
-                    KorbClass *mk = VAL2CLASS(mod);
-                    for (uint32_t i = 0; i < mk->method_cnt; i++)
-                        if (mk->methods[i]->mid == mid) { m = mk->methods[i]; found_def = mod; break; }
+                    const KorbClass *const mk = VAL2CLASS(mod);
+                    const int32_t q = korb_mtab_slot(mk, mid);
+                    if (q >= 0) { m = mk->methods[q]; found_def = mod; }
                 }
             }
             if (m == NULL) m = korb_class_find_method(VAL2CLASS(def_class)->superclass, mid, &found_def);
@@ -21306,11 +21306,15 @@ korb_eval_str_self(CTX *c, korb_value *slots, korb_value str, korb_value self_va
         { const uint32_t t = encl[i]; encl[i] = encl[j - 1]; encl[j - 1] = t; }
     const bool seeded_sing = cref_name != 0 && KORB_CLASS_P(cref) && VAL2CLASS(cref)->is_singleton;
     c->vm->parse_anon_cref = KORB_CLASS_P(cref) && ((cref_name == 0 && !VAL2CLASS(cref)->is_singleton) || seeded_sing);   /* class_eval on an unnamed class */
+    const uint32_t repo_before = code_repo_count();
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, line, false,
                                        korb_enc_name_of(c->vm, KORB_STR_ENC(str)), cref_name,
                                        nencl ? encl : NULL, nencl, true);   /* immortal AST; no GC */
     c->vm->parse_anon_cref = false;
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
+    /* AOT: bind (+ compile when producing) as a loaded file is — class_eval'd methods (Rails' attribute
+     * methods, compiled ERB views) ran on the interpreter: 16% of railsbench's AOT instructions */
+    korb_load_time_specialize(ast, repo_before, fname);
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */
     korb_value *const fb = slots + 4;
@@ -21651,9 +21655,11 @@ korb_bi_eval(CTX *c, korb_value *slots, korb_slice args)
         return korb_eval_binding_core(c, slots + 2, &slots[0], &slots[1], fname, eline, NULL,
                                       KORB_CLASS_P(bcref) ? bcref : KORB_UNDEF, true);   /* lexical only */
     }
+    const uint32_t repo_before = code_repo_count();
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, eline, false,
                                        korb_enc_name_of(c->vm, KORB_STR_ENC(sv)), 0, NULL, 0, true);   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
+    korb_load_time_specialize(ast, repo_before, fname);   /* AOT: bind (+ compile when producing), as a loaded file */
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */
     korb_value *const fb = slots + 4;
