@@ -127,6 +127,23 @@ const char *koruby_re_named(const char *pat, size_t patlen, unsigned flags, int 
     return astrogre_pattern_named_at(p, i, out_idx);
 }
 
+/* The group numbers named `name` (definition order) into out[0..max), their count; -1 on compile error.  One
+ * pattern lookup for all of them: MatchData#[:name] asked koruby_re_named per group, and each call compared the
+ * whole pattern source again (Rails' router patterns: 0.5% of railsbench in memcmp). */
+__attribute__((visibility("default")))
+int koruby_re_name_groups(const char *pat, size_t patlen, unsigned flags, const char *name, size_t nlen, int *out, int max) {
+    astrogre_pattern *p = kre_get(pat, patlen, flags);
+    if (p == NULL) return -1;
+    int n = 0;
+    const int nn = astrogre_pattern_n_named(p);
+    for (int i = 0; i < nn && n < max; i++) {
+        int gi = -1;
+        const char *const gn = astrogre_pattern_named_at(p, i, &gi);
+        if (gn != NULL && strncmp(gn, name, nlen) == 0 && gn[nlen] == '\0') out[n++] = gi;
+    }
+    return n;
+}
+
 /* True (1) if `pat` compiles, 0 if it does not — used by Regexp.new validation. */
 __attribute__((visibility("default")))
 int koruby_re_valid(const char *pat, size_t patlen, unsigned flags) {

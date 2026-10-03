@@ -1368,6 +1368,7 @@ struct korb_vm {
      * valid helpers share the same handle. */
     void     *re_fn;         /* koruby_re_exec */
     void     *re_named_fn;   /* koruby_re_named */
+    void     *re_name_groups_fn;   /* koruby_re_name_groups */
     void     *re_valid_fn;   /* koruby_re_valid */
     void     *re_err_fn;     /* koruby_re_error — why the last compile failed */
     void     *re_floor_fn;   /* koruby_re_set_stack_floor */

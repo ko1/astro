@@ -4177,6 +4177,7 @@ static inline void korb_re_match_copy(korb_re_match_t *restrict d, const korb_re
 }
 typedef int (*korb_re_exec_fn_t)(const char *, size_t, unsigned, const char *, size_t, size_t, korb_re_match_t *);
 typedef const char *(*korb_re_named_fn_t)(const char *, size_t, unsigned, int, int *);
+typedef int (*korb_re_name_groups_fn_t)(const char *, size_t, unsigned, const char *, size_t, int *, int);
 typedef int (*korb_re_valid_fn_t)(const char *, size_t, unsigned);
 /* Tell astrogre the C-stack floor of the fiber/thread we currently run on, so
  * its \g<> recursion guard fails gracefully instead of overflowing.  Cheap; no
@@ -4210,6 +4211,7 @@ static const char *korb_re_error(struct korb_vm *vm) {
  * clashes).  Same koruby_re_* API the dlsym path resolves. */
 extern int koruby_re_exec(const char *, size_t, unsigned, const char *, size_t, size_t, void *);
 extern const char *koruby_re_named(const char *, size_t, unsigned, int, int *);
+extern int koruby_re_name_groups(const char *, size_t, unsigned, const char *, size_t, int *, int);
 extern int koruby_re_valid(const char *, size_t, unsigned);
 extern void koruby_re_set_stack_floor(const void *);
 extern const char *koruby_re_error(void);
@@ -4217,6 +4219,7 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
     if (vm->re_fn == NULL) {
         vm->re_fn       = (void *)koruby_re_exec;
         vm->re_named_fn = (void *)koruby_re_named;
+        vm->re_name_groups_fn = (void *)koruby_re_name_groups;
         vm->re_valid_fn = (void *)koruby_re_valid;
         vm->re_floor_fn = (void *)koruby_re_set_stack_floor;
         vm->re_err_fn   = (void *)koruby_re_error;
@@ -4229,6 +4232,7 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
         void *h = dlopen(KORUBY_SRC_DIR "/koruby_regex.so", RTLD_NOW | RTLD_LOCAL);
         vm->re_fn       = h ? dlsym(h, "koruby_re_exec")  : NULL;
         vm->re_named_fn = h ? dlsym(h, "koruby_re_named") : NULL;
+        vm->re_name_groups_fn = h ? dlsym(h, "koruby_re_name_groups") : NULL;
         vm->re_valid_fn = h ? dlsym(h, "koruby_re_valid") : NULL;
         vm->re_floor_fn = h ? dlsym(h, "koruby_re_set_stack_floor") : NULL;
         vm->re_err_fn   = h ? dlsym(h, "koruby_re_error") : NULL;

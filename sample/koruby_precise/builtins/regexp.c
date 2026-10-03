@@ -490,6 +490,13 @@ static int korb_md_name_idx(CTX *c, korb_value mdv, const char *name, uint32_t n
     const KorbString *pat = VAL2STR(VAL2RE(md->regexp)->source);
     const uint32_t flags = VAL2RE(md->regexp)->flags;
     int best = -1, last_defined = -1;   /* duplicate names → the last group that participated (else last defined → nil) */
+    const korb_re_name_groups_fn_t gf = (korb_re_name_groups_fn_t)c->vm->re_name_groups_fn;
+    int gis[32];
+    const int gn = gf != NULL ? gf(korb_strbuf_data(pat->buf), pat->len, flags, name, nlen, gis, 32) : -2;
+    if (gn >= 0 && gn < 32) {
+        for (int j = 0; j < gn; j++) { last_defined = gis[j]; if (korb_md_off(md, gis[j], 0) >= 0) best = gis[j]; }
+        return best >= 0 ? best : last_defined;
+    }
     for (int k = 0; ; k++) {
         int gi = -1;
         const char *gn = nf(korb_strbuf_data(pat->buf), pat->len, flags, k, &gi);
