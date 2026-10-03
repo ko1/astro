@@ -6261,3 +6261,6 @@ prelude 由来のメソッドだけは新しいエントリにした（`core` �
 - 代替の lib/digest*.rb・lib/openssl.rb は、拡張を組めない root（CRUBY_SRC 無し・wasm）用の予備。
 - 呼び出しの固定費（トランポリン + ハンドル表 + setjmp）は未計測。sp4 で測る。
 
+- **deprecate_constant の警告が CRuby と違う**（2026-10-03 に発覚、未修正）: koruby は `M::Y` を読むたびに位置なしで警告する。
+  CRuby は `file:line:` 付きで、同じ地点は 1 回だけ（ループで 3 回読んでも 1 行）。`remove_const` した定数を `const_set` し直すと
+  CRuby は remove_const の行で 1 回出して以後は deprecated でなくなるが、koruby は deprecated のまま 2 回出す。
