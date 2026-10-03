@@ -141,6 +141,7 @@ struct korb_constcache {
      * the result. */
     const uint32_t *owner_chain;
     uint32_t chain_len;
+    uint32_t cref_serial;   /* a read whose cref is unnamed (`class << self`): that cref's KorbClass.serial (GC-stable) */
 };
 
 /* Per-call-site monomorphic method cache — embedded in send nodes via @ref.

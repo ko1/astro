@@ -1864,7 +1864,16 @@ node_const(CTX *c, NODE *n, korb_value *slots, uint32_t name_sym@sym, uint32_t o
     if (LIKELY(!eval_scope && self_off == INT32_MIN)) {   /* per-node cache */
         if (LIKELY(cache->idx_plus1 != 0 && cache->serial == vm->const_serial))
             return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
-    } else if (eval_scope) {
+    } else if (!eval_scope) {
+        /* an unnamed cref (`class << self` body / its methods): the answer is per cref, so the cache is
+         * keyed on it too (Rails reads constants there: railsbench 98k uncached reads an iteration) */
+        if (cache->idx_plus1 != 0 && cache->serial == vm->const_serial) {
+            const korb_value acref = (dc_off != INT32_MIN) ? korb_const_cref_at(c->vm, slots[self_off], &slots[dc_off])
+                                                      : (KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL);
+            if (KORB_CLASS_P(acref) && VAL2CLASS(acref)->serial == cache->cref_serial)
+                return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
+        }
+    } else {
         /* instance_eval/class_eval(String): the eval cref (the receiver's
          * singleton / the module) and its ancestry come FIRST, and the answer is
          * context-dependent so it is never cached on the node. */
@@ -2096,9 +2105,17 @@ node_const(CTX *c, NODE *n, korb_value *slots, uint32_t name_sym@sym, uint32_t o
         }
         return nr;
     }
-    if (LIKELY(c->eval_cref == KORB_NIL && self_off == INT32_MIN)) {   /* eval- and singleton-scoped answers are context-dependent */
+    if (LIKELY(c->eval_cref == KORB_NIL && self_off == INT32_MIN)) {   /* eval-scoped answers are context-dependent */
         cache->idx_plus1 = idx + 1;
         cache->serial = vm->const_serial;
+    } else if (c->eval_cref == KORB_NIL) {           /* a singleton-cref answer: valid for that cref only */
+        const korb_value acref = (dc_off != INT32_MIN) ? korb_const_cref_at(c->vm, slots[self_off], &slots[dc_off])
+                                                  : (KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL);
+        if (KORB_CLASS_P(acref)) {
+            cache->idx_plus1 = idx + 1;
+            cache->serial = vm->const_serial;
+            cache->cref_serial = VAL2CLASS(acref)->serial;
+        }
     }
     return RESULT_OK(vm->const_vals[idx]);
 }
