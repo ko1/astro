@@ -6683,12 +6683,69 @@ korb_mcache_find(struct korb_vm *vm, korb_value klass, uint32_t mid, korb_value 
     }
     return korb_mcache_fill(vm, e, klass, mid, out_def);
 }
+static struct korb_method *korb_class_find_method_cmc_d(struct korb_vm *vm, korb_value klass, uint32_t mid, korb_value *out_def, int depth);
+/* korb_class_find_method through the class's own answer table (struct korb_cmc): a GC empties the vm mcache and
+ * every site cache, and the refills re-walked the whole ancestry (railsbench: korb_class_find_method 2.3%) */
+static struct korb_method *
+korb_class_find_method_cmc(struct korb_vm *vm, korb_value klass, uint32_t mid, korb_value *out_def)
+{
+    if (KORB_GC_GENERATIONAL || !KORB_CLASS_P(klass)) return korb_class_find_method(klass, mid, out_def);
+    return korb_class_find_method_cmc_d(vm, klass, mid, out_def, 0);
+}
+static struct korb_method *
+korb_class_find_method_cmc_d(struct korb_vm *vm, korb_value klass, uint32_t mid, korb_value *out_def, int depth)
+{
+    KorbClass *const kc = VAL2CLASS(klass);
+    const uint64_t epoch = vm->method_serial - vm->gc_serial_bumps;
+    struct korb_cmc *t = kc->cmc;
+    if (t != NULL && t->epoch == epoch) {
+        for (uint32_t i = (mid * 2654435761u) & t->mask; t->e[i].mid_plus1; i = (i + 1) & t->mask)
+            if (t->e[i].mid_plus1 == mid + 1) { *out_def = t->e[i].def_class; return t->e[i].m; }
+    }
+    /* a miss: this class's own segment, then the superclass's (cached) answer — a class made per request
+     * (a singleton) reuses its parent's table instead of re-walking the ancestry (railsbench 192k misses /
+     * iteration).  Only for a class without includes / prepends of its own: segment walks over included
+     * modules cost more than the flat ancestry (lobsters +2.1%). */
+    korb_value def = KORB_NIL;
+    struct korb_method *m;
+    const korb_value sup = kc->superclass;
+    if (kc->included == KORB_NIL && kc->prepended == KORB_NIL && depth < 64 && KORB_CLASS_P(sup)) {
+        /* its own table only (a module it does not include cannot sit at two depths through it) */
+        const int32_t sl = korb_mtab_slot(kc, mid);
+        if (sl >= 0) { m = kc->methods[sl]; def = klass; if (m->kind == KORB_METHOD_UNDEF) { m = NULL; def = KORB_NIL; } }
+        else m = korb_class_find_method_cmc_d(vm, sup, mid, &def, depth + 1);
+    } else {   /* own includes / prepends: the flat ancestry (korb_class_find_method) */
+        m = korb_class_find_method(klass, mid, &def);
+    }
+    *out_def = def;
+    t = kc->cmc;   /* the recursion filled other classes' tables only */
+    if (t == NULL || t->epoch != epoch || (t->cnt + 1) * 2 > t->mask + 1) {   /* new, stale or full: (re)build bigger */
+        const uint32_t cap = (t != NULL && t->epoch == epoch) ? (t->mask + 1) * 2 : 16;
+        struct korb_cmc *const nt = calloc(1, sizeof *nt + sizeof nt->e[0] * cap);
+        if (nt == NULL) { fprintf(stderr, "koruby_precise: oom (cmc)\n"); abort(); }
+        nt->vm = vm; nt->epoch = epoch; nt->mask = cap - 1;
+        if (t != NULL && t->epoch == epoch)
+            for (uint32_t i = 0; i <= t->mask; i++) {
+                if (!t->e[i].mid_plus1) continue;
+                uint32_t j = ((t->e[i].mid_plus1 - 1) * 2654435761u) & nt->mask;
+                while (nt->e[j].mid_plus1) j = (j + 1) & nt->mask;
+                nt->e[j] = t->e[i]; nt->cnt++;
+            }
+        free(t);
+        kc->cmc = t = nt;
+    }
+    uint32_t i = (mid * 2654435761u) & t->mask;
+    while (t->e[i].mid_plus1) i = (i + 1) & t->mask;
+    t->e[i] = (struct korb_cmc_ent){ mid + 1, m, def };
+    t->cnt++;
+    return m;
+}
 /* the miss path, out of line so the hit path stays small enough to inline at every call site */
 static __attribute__((noinline)) struct korb_method *
 korb_mcache_fill(struct korb_vm *vm, struct korb_mcache_ent *e, korb_value klass, uint32_t mid, korb_value *out_def)
 {
     korb_value def = KORB_NIL;
-    struct korb_method *m = korb_class_find_method(klass, mid, &def);
+    struct korb_method *m = korb_class_find_method_cmc(vm, klass, mid, &def);
     if (UNLIKELY(m != NULL && def == korb_builtin_class_obj(vm, KORB_C_HASH) && klass != def))
         m = korb_hash_sub_enum_method(vm, klass, mid, m, &def);
     else if (UNLIKELY(m != NULL && def == korb_builtin_class_obj(vm, KORB_C_ARRAY) && klass != def))

@@ -751,6 +751,15 @@ struct korb_method;
 /* the generational backends: a minor GC need not visit an old class, so its unbarriered mro_c is dropped instead */
 #define KORB_GC_GENERATIONAL (BARUBY_GC == 3 || BARUBY_GC == 4 || BARUBY_GC == 6 || BARUBY_GC == 9 || BARUBY_GC == 11 || \
                               BARUBY_GC == 13 || BARUBY_GC == 14 || BARUBY_GC == 15)
+/* KorbClass.cmc: the class's own resolved (mid → entry, defining class) answers, as CRuby keeps per class.
+ * Valid while epoch == the vm's non-GC method_serial bumps (korb_cmc_epoch), so a GC no longer empties it; a
+ * current table's def_class column is forwarded by the GC.  libc, freed with the class. */
+struct korb_cmc {
+    const struct korb_vm *vm;
+    uint64_t epoch;
+    uint32_t mask, cnt;
+    struct korb_cmc_ent { uint32_t mid_plus1; struct korb_method *m; korb_value def_class; } e[];
+};
 typedef struct KorbClass {
     AroObjectHeader head;            /* KORB_OBJ_CLASS */
     uint32_t name_sym;               /* class name (interned), 0 = anonymous */
@@ -790,6 +799,7 @@ typedef struct KorbClass {
     uint32_t mid_idx_mask;
     /* the linearized MRO (korb_linearize_mro), libc; valid while mro_ser == *mro_ser_src (the vm's
      * mro_serial: include / prepend / singleton bump it; the GC forwards a current one).  NULL src = not cached. */
+    struct korb_cmc *cmc;           /* resolved-method answers kept across GCs (korb_class_find_method_cmc) */
     korb_value *mro_c;
     uint32_t mro_n;
     uint64_t mro_ser;
@@ -1464,6 +1474,7 @@ struct korb_vm {
     uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize, mid_eqq;
     uint32_t mid_include, mid_prepend, mid_ruby2_keywords;   /* korb_call_impl's class-body / main forms */
     uint64_t mro_serial;     /* bumped when any MRO may change: validates KorbClass.mro_c (the GC forwards a current one) */
+    uint64_t gc_serial_bumps;   /* how many method_serial bumps were GCs: method_serial - this changes only on a def / undef / include ... */
     korb_value utf8_ok[8];   /* frozen (not chilled) Strings already found valid UTF-8, by address;
                               * cleared at every GC (addresses move / get reused) */
     uint32_t mid_autoloads;          /* @__autoloads: every A::B lookup asks it once private_constant is in play */
@@ -1992,6 +2003,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
     /* class pointers may move/reuse this GC → invalidate method caches      \
      * (mcache + node callcaches all validate against method_serial). */     \
     (c)->vm->method_serial++;                                                \
+    (c)->vm->gc_serial_bumps++;                                              \
     if (KORB_GC_GENERATIONAL) (c)->vm->mro_serial++;   /* a minor GC may skip an old class's mro_c */ \
     memset((c)->vm->utf8_ok, 0, sizeof (c)->vm->utf8_ok);                    \
     /* main value-stack, suspended while a fiber runs (active stack scanned   \
@@ -2235,6 +2247,10 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->subclasses);         \
         /* a current cached MRO is forwarded rather than dropped at every GC (railsbench re-linearized \
          * on each super after a GC: 3% of its instructions); a stale one is never read again. */ \
+        if (_cl->cmc && _cl->cmc->epoch == _cl->cmc->vm->method_serial - _cl->cmc->vm->gc_serial_bumps) \
+            for (uint32_t _ci = 0; _ci <= _cl->cmc->mask; _ci++)                 \
+                if (_cl->cmc->e[_ci].mid_plus1)                                  \
+                    ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->cmc->e[_ci].def_class); \
         if (_cl->mro_c && _cl->mro_ser_src && _cl->mro_ser == *_cl->mro_ser_src) \
             for (uint32_t _ri = 0; _ri < _cl->mro_n; _ri++)                 \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->mro_c[_ri]);     \
@@ -2318,6 +2334,7 @@ void korb_weak_walk(CTX *c);
         free(_aro_cl->methods);            /* the libc method-ptr array */     \
         free(_aro_cl->mid_idx);                                                \
         free(_aro_cl->mro_c);                                                  \
+        free(_aro_cl->cmc);                                                    \
         break;                                                                 \
       }                                                                        \
       KORB_FINALIZE_BIGNUM_CASE                                                \
