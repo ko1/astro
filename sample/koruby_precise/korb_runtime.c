@@ -7849,8 +7849,14 @@ korb_mro_dedup_pre(korb_value *buf, uint8_t *pre, int n)
     if (w > 0) { memmove(buf, buf + w, sizeof(korb_value) * (size_t)(n - w)); memmove(pre, pre + w, (size_t)(n - w)); }
     return n - w;
 }
+static int korb_linearize_mro_d(korb_value klass, korb_value *buf, int max, int depth);
 static int
 korb_linearize_mro(korb_value klass, korb_value *buf, int max)
+{
+    return korb_linearize_mro_d(klass, buf, max, 0);
+}
+static int
+korb_linearize_mro_d(korb_value klass, korb_value *buf, int max, int depth)
 {
     /* cached per class: the dedup is quadratic per segment, and every GC flushes the
      * method caches whose misses land here (ActiveRecord: 22% of its time) */
@@ -7863,7 +7869,21 @@ korb_linearize_mro(korb_value klass, korb_value *buf, int max)
     const int max0 = max;
     if (max > (int)sizeof pre) max = (int)sizeof pre;
     int n = 0;
-    for (korb_value k = klass; KORB_CLASS_P(k) && n < max; k = VAL2CLASS(k)->superclass)
+    korb_value k = klass;
+    if (KORB_CLASS_P(k)) { n = korb_linearize_seg(k, buf, pre, n, max, 0, 0); k = VAL2CLASS(k)->superclass; }
+    /* the rest is the superclass's own (cached) MRO, already deduped: its entries stay where they are.
+     * A fresh singleton per request re-expanded Rails' whole ancestry (railsbench: 2.3k times an iteration) */
+    if (KORB_CLASS_P(k) && n < max && depth < 32 && max0 >= 256) {
+        korb_value sbuf[256];
+        const int sn = korb_linearize_mro_d(k, sbuf, 256, depth + 1);
+        if (n + sn < max) {
+            memcpy(buf + n, sbuf, sizeof(korb_value) * (size_t)sn);
+            memset(pre + n, 1, (size_t)sn);
+            n += sn;
+            k = KORB_NIL;
+        }
+    }
+    for (; KORB_CLASS_P(k) && n < max; k = VAL2CLASS(k)->superclass)
         n = korb_linearize_seg(k, buf, pre, n, max, 0, 0);
     n = korb_mro_dedup(buf, pre, n);
     if (kc && kc->mro_ser_src && max0 >= 256 && n < max) {   /* a complete answer only */
