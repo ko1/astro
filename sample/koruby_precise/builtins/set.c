@@ -2468,7 +2468,7 @@ static RESULT korb_method_defined_vis(CTX *c, korb_value *slots, korb_ref self, 
     korb_value mdef = KORB_NIL;
     const struct korb_method *me = KORB_CLASS_P(cls) ? korb_class_find_method(cls, mid, &mdef) : NULL;
     if (me == NULL && KORB_CLASS_P(cls) && mid == korb_intern(c->vm, "new", 3) &&
-        korb_class_le(cls, korb_builtin_class_obj(c->vm, KORB_C_CLASS)) && !korb_method_undefed_p(cls, mid))
+        korb_class_le(cls, korb_builtin_class_obj(c->vm, KORB_C_CLASS)) && !korb_method_undefed_p(c->vm, cls, mid))
         return RESULT_OK((want <= 0) ? KORB_TRUE : KORB_FALSE);       /* Class#new (and metaclasses inherit it) */
     if (me == NULL && KORB_CLASS_P(cls) && korb_class_has_ancestor(cls, korb_builtin_class_obj(c->vm, KORB_C_OBJECT)))
         me = korb_toplevel_def(c->vm, mid);

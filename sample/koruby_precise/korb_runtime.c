@@ -6417,6 +6417,15 @@ korb_class_undef_slot(struct korb_vm *vm, KorbClass *k, korb_value cls, uint32_t
 {
     struct korb_method *const um = korb_class_method_slot(vm, k, mid);   /* libc alloc, no GC */
     vm->undef_cnt++;
+    if (mid >= vm->mid_undefed_cap) {
+        uint32_t cap = vm->mid_undefed_cap ? vm->mid_undefed_cap : 4096;
+        while (cap <= mid) cap *= 2;
+        uint8_t *const p = realloc(vm->mid_undefed, cap);
+        if (!p) { fprintf(stderr, "koruby_precise: oom (mid_undefed)\n"); abort(); }
+        memset(p + vm->mid_undefed_cap, 0, cap - vm->mid_undefed_cap);
+        vm->mid_undefed = p; vm->mid_undefed_cap = cap;
+    }
+    vm->mid_undefed[mid] = 1;
     if (UNLIKELY(korb_universal_send_p(vm, mid))) vm->send_undef_cnt++;
     else if (UNLIKELY(mid == vm->mid_new)) vm->new_undef_cnt++;   /* .new is a dispatch special case too */
     um->mid = mid; um->orig_mid = mid;
@@ -6546,8 +6555,11 @@ korb_class_find_method(korb_value klass, uint32_t mid, korb_value *out_def)
  * but send / __send__ / public_send / new are dispatched without a table entry,
  * so only this can hide them. */
 static bool
-korb_method_undefed_p(korb_value klass, uint32_t mid)
+korb_method_undefed_p(const struct korb_vm *vm, korb_value klass, uint32_t mid)
 {
+    /* only a name some undef ever named can be hidden: the walk below visits every ancestor when
+     * nothing is undefined (railsbench: ~280k walks per iteration from the send / new dispatch) */
+    if (LIKELY(mid >= vm->mid_undefed_cap || !vm->mid_undefed[mid])) return false;
     for (korb_value k = klass; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
         const struct korb_method *const m = korb_mro_seg_find(k, mid, NULL, 0);
         if (m) return m->kind == KORB_METHOD_UNDEF;
@@ -8469,11 +8481,11 @@ korb_responds_to(CTX *c, korb_value self, uint32_t mid)
      * MRO walk misses it — every non-module class still responds to it. */
     if (mid == c->vm->mid_new && KORB_CLASS_P(self) && !VAL2CLASS(self)->is_module)
         return !korb_new_undefined_p(c, self) &&
-               !(UNLIKELY(c->vm->new_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid));
+               !(UNLIKELY(c->vm->new_undef_cnt != 0) && korb_method_undefed_p(c->vm, korb_dispatch_class(c, self), mid));
     /* send / __send__ / public_send are also special-dispatched (not registered);
      * every object responds to them unless one was explicitly undef'd. */
     if (mid == c->vm->mid_send || mid == c->vm->mid___send__ || mid == c->vm->mid_public_send)
-        return !(UNLIKELY(c->vm->send_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid));
+        return !(UNLIKELY(c->vm->send_undef_cnt != 0) && korb_method_undefed_p(c->vm, korb_dispatch_class(c, self), mid));
     const korb_value start = korb_dispatch_class(c, self);
     if (!KORB_CLASS_P(start)) return false;
     if (korb_find_method_c(c->vm, start, mid, NULL) != NULL) return true;
@@ -12429,7 +12441,7 @@ korb_call_impl(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
     if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
         !korb_send_user_p(vm, KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL ? korb_obj_dispatch_klass(vm, self)
                                                                                     : korb_dispatch_class(c, self), mid) &&
-        !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid))) {
+        !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(c->vm, korb_dispatch_class(c, self), mid))) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         return korb_call_send(c, slots, mid, line, argc, self, block, def_env, captured_self);
     }
@@ -12531,7 +12543,7 @@ korb_call_impl(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
          * builder's XmlBase (< BasicObject) turns `raise` / `p` into XML tags
          * that way, and relies on `raise` NOT raising. */
         if (UNLIKELY(m != NULL && !korb_kernel_reachable_p(c, korb_dispatch_class(c, self)))) m = NULL;
-        if (UNLIKELY(m != NULL && korb_method_undefed_p(korb_dispatch_class(c, self), mid))) m = NULL;   /* undef_method hides the global */
+        if (UNLIKELY(m != NULL && korb_method_undefed_p(c->vm, korb_dispatch_class(c, self), mid))) m = NULL;   /* undef_method hides the global */
         if (UNLIKELY(m == NULL)) {
             /* `main` (klass=nil): no global def by this name — fall back to
              * Object/Kernel methods (to_s, inspect, class, freeze, ...) so the
@@ -12743,7 +12755,7 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
                 m = korb_mcache_find(vm, klass, mid, &def_class);
                 /* a miss on a class that reaches Object (and did not undef mid) is answered by the
                  * global table, as for main: mark it so the cc fast path below applies */
-                if (m == NULL && korb_kernel_reachable_p(c, klass) && !korb_method_undefed_p(klass, mid))
+                if (m == NULL && korb_kernel_reachable_p(c, klass) && !korb_method_undefed_p(c->vm, klass, mid))
                     def_class = KORB_TRUE;
                 korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, argc);   /* a miss is cached too */
             }
@@ -12871,7 +12883,7 @@ korb_call_kw(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, struct korb
             else {
                 m = korb_method_lookup(vm, mid);
                 if (m && !korb_kernel_reachable_p(c, korb_dispatch_class(c, self))) m = NULL;   /* BasicObject gets no Kernel globals */
-                if (m && korb_method_undefed_p(korb_dispatch_class(c, self), mid)) m = NULL;   /* undef_method hides the global */
+                if (m && korb_method_undefed_p(c->vm, korb_dispatch_class(c, self), mid)) m = NULL;   /* undef_method hides the global */
                 if (m) korb_cc_fill(cc, korb_ic_serial(c, mid), m, UINT32_MAX);
             }
         }
@@ -14176,7 +14188,7 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
     if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
         !korb_send_user_p(vm, KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL ? korb_obj_dispatch_klass(vm, self)
                                                                                     : korb_dispatch_class(c, self), mid) &&
-        !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(korb_dispatch_class(c, self), mid))) {
+        !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(c->vm, korb_dispatch_class(c, self), mid))) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         {
             korb_value name = slots[-(korb_sword_t)argc];           /* arg0 */
@@ -14558,7 +14570,7 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
                 return korb_dispatch_method(c, slots, snew, mid, line, argc, sdef, block, def_env, captured_self, true);
         }
         if (UNLIKELY(vm->new_undef_cnt != 0) &&       /* `undef_method :new` hides the default allocator too */
-            korb_method_undefed_p(korb_dispatch_class(c, self), vm->mid_new)) {
+            korb_method_undefed_p(c->vm, korb_dispatch_class(c, self), vm->mid_new)) {
             char unm[192]; korb_class_qname_into(c, self, unm, sizeof unm);
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for %s %s",
                               VAL2CLASS(self)->is_module ? "module" : "class", unm);
@@ -15315,7 +15327,7 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
          * from ANY object (not just the toplevel main).  Try the global table
          * before method_missing. */
         if (korb_kernel_reachable_p(c, start_cls) &&   /* BasicObject gets no Kernel globals */
-            (vm->undef_cnt == 0 || !korb_method_undefed_p(start_cls, mid))) {   /* an undef_method in the chain hides it (mocha) */
+            (vm->undef_cnt == 0 || !korb_method_undefed_p(c->vm, start_cls, mid))) {   /* an undef_method in the chain hides it (mocha) */
             struct korb_method *const gm = korb_method_lookup(vm, mid);
             if (gm) {
                 KORB_SEND_VIS_GUARD(gm, KORB_NIL);     /* a top-level def is private: `obj.tl` is refused */
@@ -15425,7 +15437,7 @@ static uint8_t korb_class_new_kind(CTX *const c, const korb_value cls) {
                 if (sc == korb_const_get(vm, vm->name_struct)) { kind = 2; break; }
     }
     if (kind == 1 && (UNLIKELY(korb_new_undefined_p(c, cls)) || (UNLIKELY(vm->new_undef_cnt != 0) &&
-                                                         korb_method_undefed_p(korb_dispatch_class(c, cls), vm->mid_new))))
+                                                         korb_method_undefed_p(c->vm, korb_dispatch_class(c, cls), vm->mid_new))))
         kind = 2;                                      /* `undef_method :new` / no_new: the slow path raises */
     if (kind == 1) {   /* a user/builtin `new` singleton method (def self.new / Time.new) overrides the default allocator → route to the smethod path */
         const korb_value sing = korb_dispatch_class(c, cls);
@@ -15738,7 +15750,7 @@ korb_send_cached_full(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
      * visitor does ~2M public_send per load.  public_send takes public methods only. */
     if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
         klass != KORB_NIL && argc >= 1 && SYMBOL_P(slots[-(korb_sword_t)argc]) && !vm->refinements_active &&
-        !korb_send_user_p(vm, klass, mid) && !(vm->send_undef_cnt != 0 && korb_method_undefed_p(klass, mid))) {
+        !korb_send_user_p(vm, klass, mid) && !(vm->send_undef_cnt != 0 && korb_method_undefed_p(c->vm, klass, mid))) {
         const uint32_t rmid = SYM2ID(slots[-(korb_sword_t)argc]);
         korb_value def_class = KORB_NIL;
         struct korb_method *m;

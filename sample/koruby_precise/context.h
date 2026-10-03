@@ -1228,6 +1228,8 @@ struct korb_vm {
     uint32_t orphan_cnt, orphan_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
     uint8_t *mid_looked;     /* [mid]: some method lookup asked for it, so a cache may hold it (korb_mid_looked) */
+    uint8_t *mid_undefed;    /* [mid]: an undef tombstone named mid exists somewhere (korb_method_undefed_p's fast no) */
+    uint32_t mid_undefed_cap;
     uint32_t mid_looked_cap;
     /* how many `undef :send` / :__send__ / :public_send (send_undef_cnt) and
      * `undef :new` (new_undef_cnt) tombstones exist.  Those names are
