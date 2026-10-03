@@ -93,29 +93,16 @@ static RESULT korb_m_int_chr(CTX *c, korb_value *slots, korb_ref self, korb_slic
     int kind = 0;   /* 0 = ascii-8bit byte, 1 = us-ascii byte, 2 = utf-8 */
     uint32_t want_enc = UINT32_MAX;                            /* explicit encoding to tag the result with */
     if (KORB_SLICE_LEN(a) == 0) {
-        /* no arg: Encoding.default_internal (when set) decides, else the plain
-         * 0..255 byte rule below */
-        const korb_value encm = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
-        if (KORB_CLASS_P(encm)) {
-            slots[0] = encm;
-            RESULT di = korb_send_impl(c, slots + 1, korb_intern(c->vm, "default_internal", 16), 0, 0, NULL, NULL, NULL);
-            if (UNLIKELY(di.state != KORB_NORMAL)) return di;
-            if (di.value != KORB_NIL) {
-                slots[0] = di.value;
-                RESULT nm = korb_send_impl(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0, NULL, NULL, NULL);
-                if (UNLIKELY(nm.state != KORB_NORMAL)) return nm;
-                if (KORB_STRING_P(nm.value)) {
-                    char eb[64]; uint32_t el = VAL2STR(nm.value)->len;
-                    if (el >= sizeof eb) el = sizeof eb - 1;
-                    memcpy(eb, korb_strbuf_data(VAL2STR(nm.value)->buf), el); eb[el] = '\0';
-                    want_enc = korb_enc_index_pub(c->vm, eb);
-                    /* CRuby: default_internal only decides for codepoints > 255;
-                     * 0..127 is US-ASCII and 128..255 stays a raw binary byte */
-                    if (n < 0x80)       { kind = 1; want_enc = KORB_ENC_USASCII; }
-                    else if (n < 0x100) { kind = 0; want_enc = KORB_ENC_BINARY; }
-                    else                  kind = 2;
-                }
-            }
+        /* no arg: Encoding.default_internal (when set) decides, else the plain 0..255 byte rule
+         * below.  vm->enc_internal mirrors it (__enc_sync__); asking Encoding.default_internal
+         * interned two names and ran a class-variable read per call */
+        if (UNLIKELY(c->vm->enc_internal != UINT32_MAX)) {
+            want_enc = c->vm->enc_internal;
+            /* CRuby: default_internal only decides for codepoints > 255;
+             * 0..127 is US-ASCII and 128..255 stays a raw binary byte */
+            if (n < 0x80)       { kind = 1; want_enc = KORB_ENC_USASCII; }
+            else if (n < 0x100) { kind = 0; want_enc = KORB_ENC_BINARY; }
+            else                  kind = 2;
         }
     }
     if (KORB_SLICE_LEN(a) >= 1) {
