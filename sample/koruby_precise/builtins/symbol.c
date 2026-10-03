@@ -6,10 +6,23 @@
  * (CRuby 4.1 rb_sym2str hands back an fstring; to_s was chilled in 3.4/4.0). */
 static RESULT korb_m_sym_name(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
+    struct korb_vm *const vm = c->vm;
     const uint32_t id = SYM2ID(KORB_REF_GET(self));
-    const char *const nm = korb_sym_name(c->vm, id);
-    const uint32_t len = c->vm->sym_lens[id];         /* the name may hold NUL bytes */
-    return RESULT_OK(korb_fstr_get(c, slots, nm, len, c->vm->sym_encs[id]));
+    if (LIKELY(id < vm->sym_fstr_cap && vm->sym_fstr[id] != 0)) return RESULT_OK(vm->fstr_vals[vm->sym_fstr[id] - 1]);
+    const char *const nm = korb_sym_name(vm, id);
+    const uint32_t len = vm->sym_lens[id];             /* the name may hold NUL bytes */
+    const korb_value v = korb_fstr_get(c, slots, nm, len, vm->sym_encs[id]);
+    /* remember the pool slot per symbol: the pool lookup hashed the name each call (railsbench 0.3%) */
+    if (id >= vm->sym_fstr_cap) {
+        uint32_t cap = vm->sym_fstr_cap ? vm->sym_fstr_cap : 1024;
+        while (cap <= id) cap *= 2;
+        uint32_t *const t = realloc(vm->sym_fstr, sizeof(uint32_t) * cap);
+        if (t == NULL) { fprintf(stderr, "koruby_precise: oom (sym_fstr)\n"); abort(); }
+        memset(t + vm->sym_fstr_cap, 0, sizeof(uint32_t) * (cap - vm->sym_fstr_cap));
+        vm->sym_fstr = t; vm->sym_fstr_cap = cap;
+    }
+    vm->sym_fstr[id] = korb_fstr_slot(vm, v) + 1;
+    return RESULT_OK(v);
 }
 static RESULT korb_m_sym_to_sym(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)a; return RESULT_OK(KORB_REF_GET(self)); }
 /* Symbol.all_symbols → an Array of every interned Symbol. */

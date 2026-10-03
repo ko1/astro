@@ -1340,6 +1340,8 @@ struct korb_vm {
     korb_value    *fstr_vals;
     uint32_t  fstr_cnt, fstr_capa;
     uint32_t *fstr_idx;               /* open-addressing index into fstr_vals (entry+1, 0 = empty) */
+    uint32_t *sym_fstr;               /* [symbol id]: its name's fstr_vals slot + 1 (Symbol#name / #to_s), 0 = not yet */
+    uint32_t sym_fstr_cap;
     /* `/#{x}/o`: the Regexp each such node built the first time, keyed by the node */
     const struct Node **once_keys;
     korb_value    *once_vals;
