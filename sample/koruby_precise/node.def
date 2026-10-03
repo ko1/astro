@@ -1801,6 +1801,30 @@ node_super_fwd(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t li
     return korb_super(c, slots + N, mid, line, N, dc, self, block, def_env, cself, KORB_FBASE_AT(slots, dc_off));
 }
 
+// bare `super` in a method with positional parameters only: they are the frame's first `np` locals, so
+// they are copied straight into the argument window — node_super_fwd built an Array (+ its items) per call
+// (railsbench: 180k of each an iteration).
+NODE_DEF
+node_super_fwd_lv(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, int32_t loc0_off, uint32_t np)
+{
+    (void)n;
+    const korb_value dc   = slots[dc_off];
+    const korb_value self = slots[self_off];
+    const korb_value bi   = slots[biseq_off];
+    NODE *block = NULL; korb_value *def_env = NULL; korb_value cself = KORB_NIL;
+    if ((uintptr_t)bi & 1u) {                             /* a block was passed to this frame */
+        block   = (NODE *)((uintptr_t)bi & ~(uintptr_t)1u);
+        def_env = (korb_value *)(uintptr_t)slots[def_env_off]; /* forward the block's original env verbatim */
+        cself   = slots[cself_off];
+    }
+    /* the same window node_super_fwd hands korb_super: one cell up (its args child's), so the cells a
+     * callee reads below the window (a C global's caller link at [-3]) are where they were */
+    korb_value *const w = slots + 1;
+    for (uint32_t i = 0; i < np; i++) w[i] = slots[loc0_off + (int32_t)i];
+    if (np != 0) korb_splat_kwmark(&w[np - 1]);   /* as node_super_fwd: a ruby2_keywords Hash is keywords again */
+    return korb_super(c, w + np, mid, line, np, dc, self, block, def_env, cself, KORB_FBASE_AT(slots, dc_off));
+}
+
 // `super` written INSIDE a block: the block to forward belongs to the enclosing
 // METHOD frame, `depth` scopes out.  prev_off reads this block frame's EP and
 // trio_base the method frame's block trio (add-baked at its pop) — the same walk

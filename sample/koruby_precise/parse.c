@@ -6545,6 +6545,17 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
          * post + keyword) and its incoming block: build [pos..., *rest, post...,
          * {kwargs}] via super_fwd. */
         const uint32_t total = np + (rest_slot >= 0 ? 1u : 0u) + pc + has_kw;
+        if (!fn->block && depth == 0 && rest_slot < 0 && pc == 0 && !has_kw &&
+            (mf->method_mid != 0 || mf->dm_body) && mf == tc->frame) {
+            /* positional parameters only: copy them from the frame, no Array (node_super_fwd_lv) */
+            tc->frame->uses_block = true;                 /* reserve the block trio, as emit_super_fwd */
+            NODE *_l = ALLOC_node_super_fwd_lv(m_mid, line, -1 - tc->chain, -4 - tc->chain, -3 - tc->chain,
+                                               -2 - tc->chain, -1 - tc->chain, 0 - tc->chain, np);
+            bake_add(tc, &_l->u.node_super_fwd_lv.self_off);
+            bake_add(tc, &_l->u.node_super_fwd_lv.dc_off);
+            bake_add(tc, &_l->u.node_super_fwd_lv.loc0_off);
+            return _l;
+        }
         NODE *arr;
         WITH_CHAIN(tc, 1, (arr = build_fwd_args(tc, np, rest_slot, pb, pc, kw, total, depth)));
         if (fn->block) {                                  /* `super { ... }` — forwarded args + a literal block */
