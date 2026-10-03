@@ -6555,16 +6555,21 @@ korb_class_find_method(korb_value klass, uint32_t mid, korb_value *out_def)
  * but send / __send__ / public_send / new are dispatched without a table entry,
  * so only this can hide them. */
 static bool
-korb_method_undefed_p(const struct korb_vm *vm, korb_value klass, uint32_t mid)
+korb_method_undefed_p(struct korb_vm *vm, korb_value klass, uint32_t mid)
 {
     /* only a name some undef ever named can be hidden: the walk below visits every ancestor when
      * nothing is undefined (railsbench: ~280k walks per iteration from the send / new dispatch) */
     if (LIKELY(mid >= vm->mid_undefed_cap || !vm->mid_undefed[mid])) return false;
+    struct korb_ucache_ent *const e =
+        &vm->ucache[(((uint32_t)((uintptr_t)klass >> 4)) ^ (mid * 2654435761u)) & (sizeof vm->ucache / sizeof vm->ucache[0] - 1)];
+    if (LIKELY(e->serial == vm->method_serial && e->klass == klass && e->mid == mid)) return e->ans;
+    bool ans = false;
     for (korb_value k = klass; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
         const struct korb_method *const m = korb_mro_seg_find(k, mid, NULL, 0);
-        if (m) return m->kind == KORB_METHOD_UNDEF;
+        if (m) { ans = m->kind == KORB_METHOD_UNDEF; break; }
     }
-    return false;
+    e->serial = vm->method_serial; e->klass = klass; e->mid = mid; e->ans = ans;
+    return ans;
 }
 
 /* CRuby's Hash has only these Enumerable methods of its own; the rest (map, find,

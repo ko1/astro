@@ -1448,6 +1448,9 @@ struct korb_vm {
         uint64_t serial; korb_value klass; const struct korb_method *cur; uint32_t mid;
         struct korb_method *m; korb_value def_class;
     } scache[256];
+    /* korb_method_undefed_p's answer for (dispatch class, mid), same validity rule: a name some undef named
+     * (Rails undefs common ones) made every send / new dispatch walk the whole ancestry (railsbench 3.7%) */
+    struct korb_ucache_ent { uint64_t serial; korb_value klass; uint32_t mid; bool ans; } ucache[512];
 
     /* object shape table (ivar-layout tree).  shapes[0]=unused, shapes[1]=root. */
     struct korb_shape *shapes;
