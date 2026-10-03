@@ -748,6 +748,9 @@ struct korb_shape {
  * are immortal NODEs, names interned ints → no GC edges), so `methods` is a
  * raw non-edge pointer; only `superclass` and `name` are GC-visible. */
 struct korb_method;
+/* the generational backends: a minor GC need not visit an old class, so its unbarriered mro_c is dropped instead */
+#define KORB_GC_GENERATIONAL (BARUBY_GC == 3 || BARUBY_GC == 4 || BARUBY_GC == 6 || BARUBY_GC == 9 || BARUBY_GC == 11 || \
+                              BARUBY_GC == 13 || BARUBY_GC == 14 || BARUBY_GC == 15)
 typedef struct KorbClass {
     AroObjectHeader head;            /* KORB_OBJ_CLASS */
     uint32_t name_sym;               /* class name (interned), 0 = anonymous */
@@ -786,7 +789,7 @@ typedef struct KorbClass {
     uint32_t *mid_idx;               /* libc index mid → slot+1 of a big table, else NULL (korb_mtab_slot) */
     uint32_t mid_idx_mask;
     /* the linearized MRO (korb_linearize_mro), libc; valid while mro_ser == *mro_ser_src (the vm's
-     * mro_serial: include / prepend / singleton / GC bump it).  NULL src = not cached. */
+     * mro_serial: include / prepend / singleton bump it; the GC forwards a current one).  NULL src = not cached. */
     korb_value *mro_c;
     uint32_t mro_n;
     uint64_t mro_ser;
@@ -1455,7 +1458,7 @@ struct korb_vm {
      * on every call (send/__send__/public_send check ran for every arg call). */
     uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize, mid_eqq;
     uint32_t mid_include, mid_prepend, mid_ruby2_keywords;   /* korb_call_impl's class-body / main forms */
-    uint64_t mro_serial;     /* bumped when any MRO may change (and at GC): validates KorbClass.mro_c */
+    uint64_t mro_serial;     /* bumped when any MRO may change: validates KorbClass.mro_c (the GC forwards a current one) */
     korb_value utf8_ok[8];   /* frozen (not chilled) Strings already found valid UTF-8, by address;
                               * cleared at every GC (addresses move / get reused) */
     uint32_t mid_autoloads;          /* @__autoloads: every A::B lookup asks it once private_constant is in play */
@@ -1984,7 +1987,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
     /* class pointers may move/reuse this GC → invalidate method caches      \
      * (mcache + node callcaches all validate against method_serial). */     \
     (c)->vm->method_serial++;                                                \
-    (c)->vm->mro_serial++;   /* the cached MROs hold class pointers too */    \
+    if (KORB_GC_GENERATIONAL) (c)->vm->mro_serial++;   /* a minor GC may skip an old class's mro_c */ \
     memset((c)->vm->utf8_ok, 0, sizeof (c)->vm->utf8_ok);                    \
     /* main value-stack, suspended while a fiber runs (active stack scanned   \
      * above as c->slots..slots_top). */                                      \
@@ -2225,6 +2228,11 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->class_ivars);        \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->enclosing);          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->subclasses);         \
+        /* a current cached MRO is forwarded rather than dropped at every GC (railsbench re-linearized \
+         * on each super after a GC: 3% of its instructions); a stale one is never read again. */ \
+        if (_cl->mro_c && _cl->mro_ser_src && _cl->mro_ser == *_cl->mro_ser_src) \
+            for (uint32_t _ri = 0; _ri < _cl->mro_n; _ri++)                 \
+                ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->mro_c[_ri]);     \
         /* method entries are immortal libc; forward each entry's owner edge. */ \
         for (uint32_t _mi = 0; _mi < _cl->method_cnt; _mi++) {              \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->owner); \
