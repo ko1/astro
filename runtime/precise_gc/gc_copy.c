@@ -322,6 +322,7 @@ static void __attribute__((noinline, cold))
 gc_bump_cold(CTX *c, size_t total)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
+    if (ARO_GC_COMMON(c)->disabled && gc->active_top + total <= gc->active_end) return;   /* GC.disable: grow instead */
     gc_collect_internal(c);
     if (gc->active_top + total > gc->active_end) {
         fprintf(stderr, "aro_gc: OOM (need %zu, have %zu)\n",
@@ -433,7 +434,8 @@ large_alloc(CTX *c, size_t payload_size, size_t aligned)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     if (__builtin_expect(stress_fire_now(c)
-                         || gc->bytes_since_gc + gc->common.external_bytes + payload_size > gc->gc_threshold, 0)) {
+                         || gc->bytes_since_gc + gc->common.external_bytes + payload_size > gc->gc_threshold, 0)
+        && !ARO_GC_COMMON(c)->disabled) {
         gc_collect_internal(c);
     }
     LargeObj *lo = (LargeObj *)malloc(sizeof(LargeObj) + aligned);

@@ -626,8 +626,8 @@ end
 
 module GC
   def self.start(*); __gc_start; nil; end
-  def self.enable; prev = @__disabled; @__disabled = false; !!prev; end
-  def self.disable; prev = @__disabled; @__disabled = true; !!prev; end
+  def self.enable; prev = @__disabled; @__disabled = false; __gc_disable(false); !!prev; end
+  def self.disable; prev = @__disabled; @__disabled = true; __gc_disable(true); !!prev; end
   # GC#garbage_collect (module instance method; include GC で使う)
   def garbage_collect(*); GC.start; nil; end
   # stat: 実 GC の統計を CRuby 形のキーで返す (koruby GC にある分だけ実数、

@@ -22287,6 +22287,14 @@ korb_bi_gc_start(CTX *c, korb_value *slots, korb_slice args)
     aro_gc_collect(c);
     return RESULT_OK(KORB_NIL);
 }
+/* __gc_disable(flag) — set whether the allocation-driven GC may collect (backs GC.disable / GC.enable) */
+static RESULT
+korb_bi_gc_disable(CTX *c, korb_value *slots, korb_slice args)
+{
+    (void)slots;
+    ARO_GC_COMMON(c)->disabled = KORB_SLICE_LEN(args) >= 1 && KORB_TRUTHY(KORB_SLICE_GET(args, 0));
+    return RESULT_OK(KORB_NIL);
+}
 /* __gc_stress(flag) — read (no args) or set the collector's stress flag, which
  * makes every allocation collect.  Backs GC.stress / GC.stress=; the knob is
  * the same one BARUBY_GC_STRESS sets at startup. */
@@ -23205,6 +23213,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "__gc_stat_raw", korb_bi_gc_stat_raw, 0);
     korb_builtin_define(c, "__gc_start", korb_bi_gc_start, 0);
+    korb_builtin_define(c, "__gc_disable", korb_bi_gc_disable, 1);
     korb_builtin_define(c, "__json_parse", korb_bi_json_parse, 3);   /* lib/json/ext/parser.rb fast path */
     korb_builtin_define(c, "__json_generate", korb_bi_json_generate, 9);   /* lib/json/ext/generator.rb fast path */
     korb_builtin_define(c, "__heap_objects__", korb_bi_heap_objects, -1);

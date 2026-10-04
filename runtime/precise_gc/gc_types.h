@@ -179,6 +179,9 @@ typedef struct AroGcCommonState {
      *   stress + purge = 高頻度 GC + munmap (= 最強 audit、 旧 STRESS 相当) */
     bool            stress;
     bool            purge;
+    /* GC.disable: the allocation-driven trigger does not collect (an explicit collection still does,
+     * and a backend that runs out of room collects anyway).  Honored by the copy backend. */
+    bool            disabled;
     /* stress_interval / stress_count: when set via BARUBY_GC_STRESS=N
      * (N > 1), force GC every N allocs instead of every alloc.  Lets
      * larger workloads finish under STRESS+PURGE without timing out
