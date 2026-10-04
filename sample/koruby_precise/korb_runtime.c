@@ -5450,7 +5450,7 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, korb_value val, korb_value ow
     if (KORB_CLASS_P(val) && korb_class_path_anonymous(val) &&
         (VAL2CLASS(val)->name_sym == 0 ||
          !(KORB_CLASS_P(owner) && korb_class_path_anonymous(owner)))) {
-        VAL2CLASS(val)->name_sym = name_sym;
+        VAL2CLASS(val)->name_sym = name_sym; KORB_NAMING_CHANGED(c->vm);
         /* Object is the top-level namespace: a constant assigned directly under it
          * is named by the bare constant ("X"), not "Object::X".  Only a genuine
          * nested namespace becomes the enclosing scope. */
@@ -5464,6 +5464,8 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, korb_value val, korb_value ow
         if (KORB_CLASS_P(owner) && owner != objc && !cyclic)
             ARO_STORE(c, VAL2CLASS(val), (korb_value *)(uintptr_t)&VAL2CLASS(val)->enclosing, owner);
         else if (owner == objc) VAL2CLASS(val)->enclosing = KORB_NIL;   /* rooted at top level */
+       
+        KORB_NAMING_CHANGED(c->vm);   /* the qualified name may have changed */
     }
     /* keyed by (name, owner): reassigning the same constant in the same namespace
      * updates in place, but M::C and a top-level C get distinct entries so both
@@ -7563,6 +7565,7 @@ korb_class_body(CTX *c, korb_value *slots, uint32_t name_sym, NODE *body_entry, 
         const korb_value owner = KORB_CLASS_P(encl) ? encl : KORB_NIL;   /* normalize (top-level self=main → nil) so it matches find_owner */
         if (owner != KORB_NIL)                         /* lexical enclosing module/class → M::C names */
             ARO_STORE(c, VAL2CLASS(slots[1]), (korb_value *)(uintptr_t)&VAL2CLASS(slots[1])->enclosing, owner);
+        KORB_NAMING_CHANGED(c->vm);   /* the qualified name may have changed */
         korb_const_define_owned(c, name_sym, slots[1], owner);   /* owner = lexical module (nil top-level) → Module#constants + reopen */
         /* a top-level definition is Object's constant: zeitwerk's explicit namespaces hook it there */
         const korb_value hook_owner = owner != KORB_NIL ? owner : korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
@@ -7620,6 +7623,7 @@ korb_sclass_body(CTX *c, korb_value *slots, NODE *body_entry, korb_value recv, k
      * through `enclosing`, as Module.nesting does in CRuby. */
     if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[0])->enclosing == KORB_NIL)
         ARO_STORE(c, VAL2CLASS(slots[0]), (korb_value *)(uintptr_t)&VAL2CLASS(slots[0])->enclosing, slots[1]);
+    KORB_NAMING_CHANGED(c->vm);   /* the qualified name may have changed */
     /* As a class body: public on entry, the enclosing scope's visibility back on
      * exit — otherwise a `private` here leaks into the `def self.x` that follows. */
     const uint8_t saved_vis = VAL2CLASS(slots[0])->cur_visibility;

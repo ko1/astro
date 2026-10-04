@@ -1451,12 +1451,26 @@ static RESULT korb_m_module_set_temp_name(CTX *c, korb_value *slots, korb_ref se
         }
         if (cpath) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "the temporary name must not be a constant path to avoid confusion");
     }
-    VAL2CLASS(sv)->temp_name_sym = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len);
+    VAL2CLASS(sv)->temp_name_sym = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len); KORB_NAMING_CHANGED(c->vm);
     return RESULT_OK(sv);
 }
 /* Module#name → the class/module name (a frozen String), nil if anonymous. */
+static RESULT korb_m_class_name_build(CTX *c, korb_value *slots, korb_ref self);
 static RESULT korb_m_class_name(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
+    {   /* the same frozen String until some module's naming changes (each call built the path through a stdio stream) */
+        const KorbClass *const k = VAL2CLASS(KORB_REF_GET(self));
+        if (k->name_fstr && k->name_epoch == c->vm->naming_epoch + 1) return RESULT_OK(k->name_fstr);
+    }
+    const RESULT nr = korb_m_class_name_build(c, slots, self);
+    if (LIKELY(nr.state == KORB_NORMAL) && KORB_STRING_P(nr.value) && (((const AroObjectHeader *)(uintptr_t)nr.value)->flags & KORB_FL_FROZEN)) {
+        KorbClass *const k = VAL2CLASS(KORB_REF_GET(self));   /* re-read: building allocates */
+        ARO_STORE(c, k, (korb_value *)(uintptr_t)&k->name_fstr, nr.value);
+        k->name_epoch = c->vm->naming_epoch + 1;
+    }
+    return nr;
+}
+static RESULT korb_m_class_name_build(CTX *c, korb_value *slots, korb_ref self) {
     const RESULT r = korb_class_qname_str(c, slots, KORB_REF_GET(self));   /* fully-qualified (M::C); nil if anonymous */
     if (LIKELY(r.state == KORB_NORMAL) && KORB_STRING_P(r.value)) {
         /* CRuby hands back the SAME frozen String every time (an fstring).  Copy

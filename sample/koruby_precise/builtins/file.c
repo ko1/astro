@@ -2847,7 +2847,7 @@ void korb_init_file(CTX *c, korb_value *slots) {
     slots[2] = (korb_class_new(c, slots + 2, korb_intern_lit(vm, "Stat", 4),   /* enclosing=File gives the "File::Stat" qname */
                                korb_const_get(vm, korb_intern_lit(vm, "Object", 6)))).value;
     korb_const_define_owned(c, korb_intern_lit(vm, "Stat", 4), slots[2], slots[0]);   /* File::Stat */
-    ARO_STORE(c, VAL2CLASS(slots[2]), (korb_value *)(uintptr_t)&VAL2CLASS(slots[2])->enclosing, slots[0]);
+    ARO_STORE(c, VAL2CLASS(slots[2]), (korb_value *)(uintptr_t)&VAL2CLASS(slots[2])->enclosing, slots[0]); KORB_NAMING_CHANGED(c->vm);
     korb_class_def_cfn(c, slots[2], "size",      korb_m_stat_size,     0);
     korb_class_def_cfn(c, slots[2], "mode",      korb_m_stat_mode,     0);
     korb_class_def_cfn(c, slots[2], "ino",       korb_m_stat_ino,      0);
@@ -2933,7 +2933,7 @@ void korb_init_file(CTX *c, korb_value *slots) {
      * IO::SEEK_SET and File::Constants.constants all behave like CRuby. */
     slots[1] = (korb_class_new(c, slots + 1, korb_intern_lit(vm, "Constants", 9), KORB_NIL)).value;
     VAL2CLASS(slots[1])->is_module = 1;                /* File::Constants is a module */
-    ARO_STORE(c, VAL2CLASS(slots[1]), (korb_value *)(uintptr_t)&VAL2CLASS(slots[1])->enclosing, slots[0]);
+    ARO_STORE(c, VAL2CLASS(slots[1]), (korb_value *)(uintptr_t)&VAL2CLASS(slots[1])->enclosing, slots[0]); KORB_NAMING_CHANGED(c->vm);
     korb_const_define_owned(c, korb_intern_lit(vm, "Constants", 9), slots[1], slots[0]);
     static const struct { const char *n; long v; } fc[] = {
         {"RDONLY",0},{"WRONLY",1},{"RDWR",2},{"APPEND",1024},{"CREAT",64},{"EXCL",128},

@@ -273,6 +273,7 @@ void korb_init_math(CTX *c, korb_value *slots) {
                 vm->const_owners[i] = slots[0];
                 const korb_value dec = vm->const_vals[i];                     /* also gives it the Math:: qualified name */
                 if (KORB_CLASS_P(dec)) ARO_STORE(c, VAL2CLASS(dec), (korb_value *)(uintptr_t)&VAL2CLASS(dec)->enclosing, slots[0]);
+                KORB_NAMING_CHANGED(c->vm);   /* the qualified name may have changed */
                 break;
             }
     }

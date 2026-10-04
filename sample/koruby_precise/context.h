@@ -786,6 +786,8 @@ typedef struct KorbClass {
     uint8_t  send_user;              /* 0x80 valid | bit 0/1/2: the chain defines its own send / __send__ / public_send */
     uint8_t  ivar_hint;              /* an instance got ivars: korb_obj_new gives the next ones their first values array */
     uint8_t  bi_base;                /* korb_builtin_base_class's answer + 1 (0 = not asked since boot): the superclass chain is fixed */
+    uint64_t name_epoch;             /* Module#name's frozen String below is valid while this == the vm's naming_epoch + 1 */
+    korb_value ARO_GC_EDGE name_fstr;
     uint32_t send_serial;            /* method_serial send_user was computed at */
     uint8_t  struct_kwinit;          /* Struct.new(..., keyword_init: true) → .new takes a kwargs hash */
     uint8_t  is_data;                /* 1 = Data.define class (immutable; .new accepts positional OR keyword) */
@@ -1468,6 +1470,8 @@ struct korb_vm {
  * for one GC epoch (gc_serial_bumps), since a GC moves objects; korb_klass_override_set writes through */
 #define KORB_OVC_N 256u
     struct korb_ovc_ent { korb_value obj, klass; uint64_t epoch; } ovc[KORB_OVC_N];
+    uint64_t naming_epoch;   /* bumped whenever a module's name / temporary name / lexical parent changes (Module#name caches) */
+#define KORB_NAMING_CHANGED(vm) ((vm)->naming_epoch++)
 #define KORB_SCACHE_N 1024u
     struct korb_scache_ent {
         uint64_t serial; korb_value klass; const struct korb_method *cur; uint32_t mid;
@@ -2265,6 +2269,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->class_ivars);        \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->enclosing);          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->subclasses);         \
+        if (_cl->name_fstr) ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->name_fstr); \
         /* a current cached MRO is forwarded rather than dropped at every GC (railsbench re-linearized \
          * on each super after a GC: 3% of its instructions); a stale one is never read again. */ \
         if (_cl->cmc && _cl->cmc->epoch == _cl->cmc->vm->method_serial - _cl->cmc->vm->gc_serial_bumps) \
