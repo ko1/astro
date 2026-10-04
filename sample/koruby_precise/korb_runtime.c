@@ -119,14 +119,21 @@ korb_alloc(CTX *c, korb_value *slots, size_t size, unsigned int type)
 /* Allocate a KorbString with an uninitialized buffer of capacity `len` (len set,
  * NUL-terminated). Buffer is separate (header never moves on later grow). Caller
  * fills s->buf->data with no intervening GC. */
+static KorbString *korb_str_alloc_capa(CTX *c, korb_value *slots, uint32_t len, uint32_t capa);
 static KorbString *
 korb_str_alloc(CTX *c, korb_value *slots, uint32_t len)
 {
-    KorbStrBuf *b = korb_alloc(c, slots, sizeof(KorbStrBuf) + len + 1, KORB_OBJ_STR_BUF);
+    return korb_str_alloc_capa(c, slots, len, len);
+}
+/* korb_str_alloc with room for capa >= len bytes */
+static KorbString *
+korb_str_alloc_capa(CTX *c, korb_value *slots, const uint32_t len, const uint32_t capa)
+{
+    KorbStrBuf *b = korb_alloc(c, slots, sizeof(KorbStrBuf) + capa + 1, KORB_OBJ_STR_BUF);
     korb_ref bref = SLOTS_PUSH(slots, (korb_value)b);        /* root buf while header allocs */
     KorbString *s = korb_alloc(c, slots, sizeof(KorbString), KORB_OBJ_STRING);
     b = (KorbStrBuf *)(uintptr_t)KORB_REF_GET(bref);    /* re-read after GC */
-    s->len = len; s->capa = len;
+    s->len = len; s->capa = capa;
     ARO_STORE(c, s, (korb_value *)(uintptr_t)&s->buf, (korb_value)(uintptr_t)b);
     korb_strbuf_data(b)[len] = '\0';
     return s;
@@ -1550,12 +1557,19 @@ korb_raise_enc_compat(CTX *c, korb_value *slots, uint32_t ea, uint32_t eb)
 }
 
 /* a + b — alloc first, then copy through refs (fixup-safe; v2_design §4.3). */
+static RESULT korb_str_plus_room(CTX *c, korb_value *slots, korb_ref a, korb_ref b, uint32_t room);
 static RESULT
 korb_str_plus_ref(CTX *c, korb_value *slots, korb_ref a, korb_ref b)
 {
+    return korb_str_plus_room(c, slots, a, b, 0);
+}
+/* a + b with `room` spare bytes for appends that follow (string interpolation's first step) */
+static RESULT
+korb_str_plus_room(CTX *c, korb_value *slots, korb_ref a, korb_ref b, const uint32_t room)
+{
     uint32_t alen = VAL2STR(KORB_REF_GET(a))->len;
     uint32_t blen = VAL2STR(KORB_REF_GET(b))->len;
-    KorbString *s = korb_str_alloc(c, slots, alen + blen);
+    KorbString *s = korb_str_alloc_capa(c, slots, alen + blen, alen + blen + room);
     const KorbString *as = VAL2STR(KORB_REF_GET(a));   /* re-read: fixed up */
     const KorbString *bs = VAL2STR(KORB_REF_GET(b));
     memcpy(korb_strbuf_data(s->buf), korb_strbuf_data(as->buf), alen);
@@ -1607,13 +1621,20 @@ static void korb_fprint_to_s_s(CTX *c, korb_value *slots, FILE *fp, korb_value v
 /* String interpolation step: acc (a String) + to_s(part).  String parts take
  * the direct concat path; other values render through korb_fprint_to_s_s (whose
  * container elements dispatch #inspect, which may GC — `part` is rooted). */
+static RESULT korb_str_append_negotiated(CTX *c, korb_value *slots, korb_ref self, korb_ref other);   /* builtins/string.c */
+/* acc + the String in pref.  owned (node_dstr_concat): 0 a copy; 1 acc is the chain's own fresh String,
+ * append in place; 2 the first step of a longer chain, a copy with room for the steps that append. */
+static inline RESULT korb_str_interp_add(CTX *c, korb_value *slots, korb_ref aref, korb_ref pref, uint32_t owned) {
+    if (owned == 1) return korb_str_append_negotiated(c, slots, aref, pref);
+    return korb_str_plus_room(c, slots, aref, pref, owned == 2 ? 48 : 0);
+}
 RESULT
-korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part)
+korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part, uint32_t owned)
 {
     korb_ref pref = SLOTS_PUSH(slots, part);            /* root part across GC */
     korb_value p = KORB_REF_GET(pref);
     if (KORB_STRING_P(p))
-        return korb_str_plus_ref(c, slots, aref, pref);
+        return korb_str_interp_add(c, slots, aref, pref, owned);
     /* Dispatch #to_s rather than using the C printer below for:
      *  - Regexp / MatchData, which the printer does not know at all (it would
      *    render them as "#<Object>") — and `/#{re}/` goes through here, so
@@ -1626,7 +1647,7 @@ korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part)
         if (UNLIKELY(tsr.state != KORB_NORMAL)) return tsr;
         KORB_REF_SET(pref, tsr.value);                  /* reuse the rooted slot to hold the result */
         if (KORB_STRING_P(tsr.value))
-            return korb_str_plus_ref(c, slots, aref, pref);
+            return korb_str_interp_add(c, slots, aref, pref, owned);
         p = tsr.value;                                   /* non-String to_s → render the returned value */
     }
 
@@ -1644,9 +1665,12 @@ korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part)
         else if (SYMBOL_P(p))     { src = korb_sym_name(c->vm, SYM2ID(p)); slen = (uint32_t)strlen(src); }  /* interned, GC-stable */
         else if (KORB_FLOAT_P(p)) { korb_float_to_s(korb_float_val(p), sb); slen = (uint32_t)strlen(sb); src = sb; }
         if (src) {
+            /* ASCII text onto an owned ASCII-compatible acc keeps acc's encoding (as the copy would): no temporary String */
+            if (owned == 1 && !SYMBOL_P(p) && korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(KORB_REF_GET(aref))))
+                return korb_str_cat(c, slots, aref, src, slen);   /* src: the stack buffer or a static literal */
             const korb_value tmp = UNWRAP(korb_str_new(c, slots, src, slen));
             korb_ref tref = SLOTS_PUSH(slots, tmp);
-            return korb_str_plus_ref(c, slots, aref, tref);
+            return korb_str_interp_add(c, slots, aref, tref, owned);
         }
     }
 
@@ -1660,7 +1684,7 @@ korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part)
     free(buf);
     korb_value tmp = UNWRAP(sr);
     korb_ref tref = SLOTS_PUSH(slots, tmp);
-    return korb_str_plus_ref(c, slots, aref, tref);
+    return korb_str_interp_add(c, slots, aref, tref, owned);
 }
 
 /* ---------------------------------------------------------------------------

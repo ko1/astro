@@ -3236,11 +3236,13 @@ node_range_new(CTX *c, NODE *n, korb_value *slots, uint32_t exclude_end, korb_re
 // array literals): dstr_concat(dstr_concat(str(""), "a"-or-x), ...).  `acc` is
 // always a String; `part` is any value, appended via its to_s.
 
+// `owned`: acc is the previous step's fresh String (no Ruby code has seen it), so the part is
+// appended in place instead of copying acc into a new String every step.
 NODE_DEF
-node_dstr_concat(CTX *c, NODE *n, korb_value *slots, korb_ref acc@child, korb_value part@child)
+node_dstr_concat(CTX *c, NODE *n, korb_value *slots, uint32_t owned, korb_ref acc@child, korb_value part@child)
 {
     (void)n;
-    return korb_str_interp(c, slots, acc, part);
+    return korb_str_interp(c, slots, acc, part, owned);
 }
 
 // ---- blocks / yield / closures (M1, docs/v2_blocks_design.md) ---------------

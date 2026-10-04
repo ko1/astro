@@ -4425,7 +4425,7 @@ kp_kernel_const_p(struct kp_ctx *tc, const pm_node_t *recv)
  * build_array).  The accumulator is always a String; each part is appended
  * via its to_s inside node_dstr_concat. */
 static NODE *
-build_dstr_enc(struct kp_ctx *tc, struct pm_node **parts, size_t n, uint8_t seed_enc)
+build_dstr_enc_n(struct kp_ctx *tc, struct pm_node **parts, size_t n, uint8_t seed_enc, size_t total)
 {
     /* The empty seed carries the FILE's encoding, not the default: an
      * interpolated literal in a us-ascii source is us-ascii (its parts negotiate
@@ -4436,9 +4436,15 @@ build_dstr_enc(struct kp_ctx *tc, struct pm_node **parts, size_t n, uint8_t seed
                                                  : ALLOC_node_str("", 0);
     NODE *acc, *part;
     uint32_t sc = kind_node_dstr_concat.slot_count;
-    WITH_CHAIN(tc, sc, (acc  = build_dstr_enc(tc, parts, n - 1, seed_enc),
+    WITH_CHAIN(tc, sc, (acc  = build_dstr_enc_n(tc, parts, n - 1, seed_enc, total),
                         part = transduce(tc, parts[n - 1])));
-    return ALLOC_node_dstr_concat(acc, part);
+    /* 1: acc is an inner concat's fresh String (append in place); 2: the first step of a longer chain (leave room) */
+    return ALLOC_node_dstr_concat(n > 1 ? 1 : (total > 1 ? 2 : 0), acc, part);
+}
+static NODE *
+build_dstr_enc(struct kp_ctx *tc, struct pm_node **parts, size_t n, uint8_t seed_enc)
+{
+    return build_dstr_enc_n(tc, parts, n, seed_enc, n);
 }
 
 static NODE *

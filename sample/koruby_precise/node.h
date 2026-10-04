@@ -235,7 +235,7 @@ double korb_big_to_d(korb_value v);
 double korb_int_ratio_to_d(korb_value num, korb_value den);   /* nearest double of num/den (Integers) */
 
 /* string interpolation step: acc (String) + to_s(part) → new String */
-RESULT korb_str_interp(CTX *c, korb_value *slots, korb_ref acc, korb_value part);
+RESULT korb_str_interp(CTX *c, korb_value *slots, korb_ref acc, korb_value part, uint32_t owned);
 
 /* Array (korb_runtime.c) */
 RESULT korb_ary_new(CTX *c, korb_value *slots, uint32_t capa);
