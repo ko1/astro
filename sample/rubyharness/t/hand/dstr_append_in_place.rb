@@ -32,3 +32,6 @@ p h
 acc = 0
 1000.times { |i| GC.start if i % 250 == 0; acc += "#{i}-#{a}-#{i * 2}".size }
 p acc
+class Bad; def to_s = 42; end
+p "#{Bad.new}".start_with?("#<Bad:0x"), "x#{Bad.new}y".match?(/\Ax#<Bad:0x\h+>y\z/)
+p "#{ascii}#{b}".encoding

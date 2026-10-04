@@ -1626,8 +1626,16 @@ static RESULT korb_str_append_negotiated(CTX *c, korb_value *slots, korb_ref sel
  * append in place; 2 the first step of a longer chain, a copy with room for the steps that append. */
 static inline RESULT korb_str_interp_add(CTX *c, korb_value *slots, korb_ref aref, korb_ref pref, uint32_t owned) {
     if (owned == 1) return korb_str_append_negotiated(c, slots, aref, pref);
-    return korb_str_plus_room(c, slots, aref, pref, owned == 2 ? 48 : 0);
+    if (owned == 2) {   /* the first part of several starts the result in ITS encoding (CRuby's rb_str_concat_literals: no seed) */
+        const uint32_t n = VAL2STR(KORB_REF_GET(pref))->len;
+        KorbString *const s = korb_str_alloc_capa(c, slots, n, n + 48);
+        memcpy(korb_strbuf_data(s->buf), korb_strbuf_data(VAL2STR(KORB_REF_GET(pref))->buf), n);   /* re-read after the alloc */
+        KORB_STR_ENC_SET((korb_value)s, KORB_STR_ENC(KORB_REF_GET(pref)));
+        return RESULT_OK((korb_value)s);
+    }
+    return korb_str_plus_ref(c, slots, aref, pref);
 }
+static RESULT korb_m_obj_to_s(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* builtins/set.c: Kernel#to_s */
 RESULT
 korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part, uint32_t owned)
 {
@@ -1645,10 +1653,11 @@ korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part, uint3
         UNLIKELY(c->vm->to_s_redefined || c->vm->refinements_active)) {   /* a user/refined #to_s wins over the printer */
         RESULT tsr = korb_send(c, slots, korb_intern_lit(c->vm, "to_s", 4), 0, 0);   /* recv = pref slot */
         if (UNLIKELY(tsr.state != KORB_NORMAL)) return tsr;
+        if (UNLIKELY(!KORB_STRING_P(tsr.value)))        /* a non-String #to_s: Kernel#to_s's "#<C:0x…>" (CRuby's rb_obj_as_string) */
+            tsr = korb_m_obj_to_s(c, slots, pref, KORB_SLICE_MAKE(slots, 0));
+        if (UNLIKELY(tsr.state != KORB_NORMAL)) return tsr;
         KORB_REF_SET(pref, tsr.value);                  /* reuse the rooted slot to hold the result */
-        if (KORB_STRING_P(tsr.value))
-            return korb_str_interp_add(c, slots, aref, pref, owned);
-        p = tsr.value;                                   /* non-String to_s → render the returned value */
+        return korb_str_interp_add(c, slots, aref, pref, owned);
     }
 
     /* scalar fast path: format into a stack buffer, skipping the open_memstream
@@ -1669,6 +1678,8 @@ korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part, uint3
             if (owned == 1 && !SYMBOL_P(p) && korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(KORB_REF_GET(aref))))
                 return korb_str_cat(c, slots, aref, src, slen);   /* src: the stack buffer or a static literal */
             const korb_value tmp = UNWRAP(korb_str_new(c, slots, src, slen));
+            /* nil / true / false / Integer / Float#to_s are US-ASCII, a Symbol's is its own (US-ASCII when 7-bit) */
+            if (owned == 2 && (!SYMBOL_P(p) || korb_str_ascii_only_p(c->vm, tmp))) KORB_STR_ENC_SET(tmp, KORB_ENC_USASCII);
             korb_ref tref = SLOTS_PUSH(slots, tmp);
             return korb_str_interp_add(c, slots, aref, tref, owned);
         }

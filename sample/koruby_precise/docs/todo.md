@@ -4,12 +4,6 @@
 既知バグ** の作業リスト。
 
 
-## 未: 文字列の式展開の互換の穴 (2026-10-04、railsbench の式展開を調べていて発見)
-- `#{obj}` で obj#to_s が String 以外を返すと、CRuby は rb_any_to_s（`#<Bad:0x…>`）にするが koruby は戻り値を描画する（`"42"`）。
-- `"#{ascii}#{b}"`（最初の部品が US-ASCII の String）の結果: CRuby は最初の部品のエンコーディングを引き継ぎ US-ASCII、koruby は
-  空の種（ファイルのエンコーディング）と合成して UTF-8。CRuby の rb_str_concat_literals は最初の部品のエンコーディングから始める。
-  正規表現の式展開（種を UTF-8 にして修飾子で決める）を壊さないよう直すこと。
-
 ## 未: gem drop-in (w13) で見つかった残り (2026-09-28)
 
 - **thread の rep が解放されない**: 終わった thread の stack は解放・再利用するようになった
