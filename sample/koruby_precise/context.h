@@ -1264,7 +1264,11 @@ struct korb_vm {
     struct { uint32_t name, idx, cnt; } cgc[512];
     struct { uint64_t serial; uint32_t mid; struct korb_method *m; } glookup[256];   /* korb_method_lookup, by method_serial */
     uint32_t new_undef_cnt;
-    bool     to_s_redefined;         /* some class reopened (or refined) #to_s → interpolation dispatches */
+    /* Integer/Float/Symbol/nil/true/false #to_s as booted: "#{x}" formats those in C while every one is still
+     * that function (rechecked when method_serial moves; s2s_ok caches the answer for s2s_serial). */
+    korb_method_fn s2s_fn[6];
+    uint64_t s2s_serial;
+    bool     s2s_ok;
     /* bumped whenever constant *resolution* could change: a new (name, owner)
      * entry, a remove_const, or an include/prepend/extend that alters an
      * ancestry.  Reassigning an existing constant does not move its index, so it

@@ -1636,6 +1636,7 @@ static inline RESULT korb_str_interp_add(CTX *c, korb_value *slots, korb_ref are
     return korb_str_plus_ref(c, slots, aref, pref);
 }
 static RESULT korb_m_obj_to_s(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* builtins/set.c: Kernel#to_s */
+static bool korb_scalar_to_s_check(struct korb_vm *vm);   /* fwd (after korb_sdi_init) */
 RESULT
 korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part, uint32_t owned)
 {
@@ -1643,14 +1644,13 @@ korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part, uint3
     korb_value p = KORB_REF_GET(pref);
     if (KORB_STRING_P(p))
         return korb_str_interp_add(c, slots, aref, pref, owned);
-    /* Dispatch #to_s rather than using the C printer below for:
-     *  - Regexp / MatchData, which the printer does not know at all (it would
-     *    render them as "#<Object>") — and `/#{re}/` goes through here, so
-     *    getting it wrong silently corrupts composed patterns;
-     *  - Class / Module, whose #to_s a program may override (the printer would
-     *    always print the real name). */
-    if (KORB_OBJECT_P(p) || KORB_REGEXP_P(p) || KORB_MATCHDATA_P(p) || KORB_CLASS_P(p) ||
-        UNLIKELY(c->vm->to_s_redefined || c->vm->refinements_active)) {   /* a user/refined #to_s wins over the printer */
+    /* Only the scalars are formatted in C, and only while their #to_s is still the
+     * booted one (a flag set by ANY class defining to_s was always on: the prelude
+     * defines some, so every "#{int}" dispatched #to_s and built a temporary). */
+    struct korb_vm *const vm = c->vm;
+    const bool scalar = FIXNUM_P(p) || p == KORB_NIL || p == KORB_TRUE || p == KORB_FALSE || SYMBOL_P(p) || KORB_FLOAT_P(p);
+    if (!scalar || UNLIKELY(vm->refinements_active) ||
+        UNLIKELY(vm->s2s_serial != vm->method_serial ? !korb_scalar_to_s_check(vm) : !vm->s2s_ok)) {
         RESULT tsr = korb_send(c, slots, korb_intern_lit(c->vm, "to_s", 4), 0, 0);   /* recv = pref slot */
         if (UNLIKELY(tsr.state != KORB_NORMAL)) return tsr;
         if (UNLIKELY(!KORB_STRING_P(tsr.value)))        /* a non-String #to_s: Kernel#to_s's "#<C:0x…>" (CRuby's rb_obj_as_string) */
@@ -1660,40 +1660,22 @@ korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part, uint3
         return korb_str_interp_add(c, slots, aref, pref, owned);
     }
 
-    /* scalar fast path: format into a stack buffer, skipping the open_memstream
-     * FILE+malloc that dominates interpolation of small values (#{int}, #{float}…).
-     * The value is fully captured into `sb`/`src` before korb_str_new can GC. */
-    {
-        char sb[48];
-        const char *src = NULL;
-        uint32_t slen = 0;
-        if (FIXNUM_P(p))          { slen = korb_fmt_int((korb_sword_t)FIX2LONG(p), 10, sb); src = sb; }
-        else if (p == KORB_NIL)   { src = "";      slen = 0; }
-        else if (p == KORB_TRUE)  { src = "true";  slen = 4; }
-        else if (p == KORB_FALSE) { src = "false"; slen = 5; }
-        else if (SYMBOL_P(p))     { src = korb_sym_name(c->vm, SYM2ID(p)); slen = (uint32_t)strlen(src); }  /* interned, GC-stable */
-        else if (KORB_FLOAT_P(p)) { korb_float_to_s(korb_float_val(p), sb); slen = (uint32_t)strlen(sb); src = sb; }
-        if (src) {
-            /* ASCII text onto an owned ASCII-compatible acc keeps acc's encoding (as the copy would): no temporary String */
-            if (owned == 1 && !SYMBOL_P(p) && korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(KORB_REF_GET(aref))))
-                return korb_str_cat(c, slots, aref, src, slen);   /* src: the stack buffer or a static literal */
-            const korb_value tmp = UNWRAP(korb_str_new(c, slots, src, slen));
-            /* nil / true / false / Integer / Float#to_s are US-ASCII, a Symbol's is its own (US-ASCII when 7-bit) */
-            if (owned == 2 && (!SYMBOL_P(p) || korb_str_ascii_only_p(c->vm, tmp))) KORB_STR_ENC_SET(tmp, KORB_ENC_USASCII);
-            korb_ref tref = SLOTS_PUSH(slots, tmp);
-            return korb_str_interp_add(c, slots, aref, tref, owned);
-        }
-    }
-
-    char *buf = NULL;
-    size_t sz = 0;
-    FILE *ms = open_memstream(&buf, &sz);
-    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
-    korb_fprint_to_s_s(c, slots, ms, p);                 /* slots is past pref/aref (SLOTS_PUSH advanced it); containers dispatch element #inspect */
-    fclose(ms);
-    RESULT sr = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
-    free(buf);
-    korb_value tmp = UNWRAP(sr);
+    /* format into a stack buffer; the value is fully captured into `sb`/`src` before korb_str_new can GC */
+    char sb[48];
+    const char *src;
+    uint32_t slen;
+    if (FIXNUM_P(p))          { slen = korb_fmt_int((korb_sword_t)FIX2LONG(p), 10, sb); src = sb; }
+    else if (p == KORB_NIL)   { src = "";      slen = 0; }
+    else if (p == KORB_TRUE)  { src = "true";  slen = 4; }
+    else if (p == KORB_FALSE) { src = "false"; slen = 5; }
+    else if (SYMBOL_P(p))     { src = korb_sym_name(vm, SYM2ID(p)); slen = (uint32_t)strlen(src); }  /* interned, GC-stable */
+    else                      { korb_float_to_s(korb_float_val(p), sb); slen = (uint32_t)strlen(sb); src = sb; }
+    /* ASCII text onto an owned ASCII-compatible acc keeps acc's encoding (as the copy would): no temporary String */
+    if (owned == 1 && !SYMBOL_P(p) && korb_enc_ascii_compat_idx(vm, KORB_STR_ENC(KORB_REF_GET(aref))))
+        return korb_str_cat(c, slots, aref, src, slen);   /* src: the stack buffer or a static literal */
+    const korb_value tmp = UNWRAP(korb_str_new(c, slots, src, slen));
+    /* nil / true / false / Integer / Float#to_s are US-ASCII, a Symbol's is its own (US-ASCII when 7-bit) */
+    if (owned == 2 && (!SYMBOL_P(p) || korb_str_ascii_only_p(vm, tmp))) KORB_STR_ENC_SET(tmp, KORB_ENC_USASCII);
     korb_ref tref = SLOTS_PUSH(slots, tmp);
     return korb_str_interp_add(c, slots, aref, tref, owned);
 }
@@ -6070,10 +6052,6 @@ korb_check_basic_op_redef(CTX *c, korb_value klass, uint32_t mid)
         for (size_t i = 0; i < sizeof(eq_classes) / sizeof(eq_classes[0]); i++)
             if (klass == korb_builtin_class_obj(vm, eq_classes[i])) { vm->value_eq_redefined = true; break; }
     }
-    /* `to_s` reopened on a builtin the interpolation printer renders in C (Hash,
-     * Array, Integer, …): `"#{x}"` must dispatch instead.  A REFINEMENT of #to_s
-     * lands here too (a refine block defines into the refinement module). */
-    if (!vm->to_s_redefined && mid == korb_intern_lit(vm, "to_s", 4)) vm->to_s_redefined = true;
     /* String / Array: node_plus / node_mod / node_lt ... have "a" + "b", "%s" % x, [1] + [2] paths.  A
      * flag of their own, so reopening String#% does not deopt Integer arithmetic; after boot only (the
      * prelude's String/Array operators are what those paths implement). */
@@ -16416,6 +16394,24 @@ korb_sdi_preinit(struct korb_vm *vm)
     for (unsigned k = 0; k < KORB_SDI_N; k++)
         for (int j = 0; j < KORB_SDI_FN_MAX; j++) vm->sdi_fn[k][j] = korb_sdi_never;
 }
+static const enum korb_class korb_s2s_cls[6] = { KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_SYMBOL, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE };
+/* Are the scalars' #to_s all still the booted C functions?  Looking the name up marks
+ * it, so a later redefinition moves method_serial and brings us back here. */
+static bool
+korb_scalar_to_s_check(struct korb_vm *vm)
+{
+    const uint32_t mid = korb_intern_lit(vm, "to_s", 4);
+    bool ok = vm->boot_done;
+    for (int i = 0; i < 6 && ok; i++) {
+        korb_value d = KORB_NIL;
+        const struct korb_method *const m = korb_class_find_method(korb_builtin_class_obj(vm, korb_s2s_cls[i]), mid, &d);
+        ok = vm->s2s_fn[i] != NULL && m != NULL && m->kind == KORB_METHOD_CFUNC && m->rfn == vm->s2s_fn[i];
+    }
+    korb_mid_looked(vm, mid);
+    vm->s2s_serial = vm->method_serial;
+    vm->s2s_ok = ok;
+    return ok;
+}
 void
 korb_sdi_init(CTX *c)
 {
@@ -16436,6 +16432,10 @@ korb_sdi_init(CTX *c)
     }
     korb_value d = KORB_NIL;
     vm->rtm_default = korb_find_method_c(vm, korb_const_get(vm, korb_intern_lit(vm, "Kernel", 6)), vm->mid_respond_to_missing, &d);
+    for (int i = 0; i < 6; i++) {
+        const struct korb_method *const m = korb_class_find_method(korb_builtin_class_obj(vm, korb_s2s_cls[i]), korb_intern_lit(vm, "to_s", 4), &d);
+        vm->s2s_fn[i] = (m != NULL && m->kind == KORB_METHOD_CFUNC) ? m->rfn : NULL;
+    }
     vm->method_serial++;   /* a class mask answered during the prelude saw the empty table */
 }
 
