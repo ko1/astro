@@ -1434,7 +1434,7 @@ static RESULT korb_m_module_set_temp_name(CTX *c, korb_value *slots, korb_ref se
     const korb_value nm = KORB_SLICE_LEN(a) >= 1 ? KORB_SLICE_GET(a, 0) : KORB_NIL;
     /* clear → fully anonymous: CRuby drops the constant-derived name too, so a
      * module that was only reachable through an anonymous namespace has no name */
-    if (nm == KORB_NIL) { VAL2CLASS(sv)->temp_name_sym = 0; VAL2CLASS(sv)->name_sym = 0; return RESULT_OK(sv); }
+    if (nm == KORB_NIL) { VAL2CLASS(sv)->temp_name_sym = 0; VAL2CLASS(sv)->name_sym = 0; KORB_NAMING_CHANGED(c->vm); return RESULT_OK(sv); }
     if (UNLIKELY(!KORB_STRING_P(nm))) return korb_raise_not_sym(c, slots, nm);
     const KorbString *const s = VAL2STR(nm);
     if (UNLIKELY(s->len == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "empty class/module name");
