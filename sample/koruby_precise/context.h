@@ -393,6 +393,7 @@ typedef struct KorbRegexp {
      * does not abort a long match on it (neither does the Regexp.timeout global
      * here); astrogre's backtrack floor is what bounds a runaway pattern. */
     korb_value ARO_GC_EDGE timeout;
+    korb_value ARO_GC_EDGE to_s;          /* #to_s's String, kept (a pattern never changes; each call returns a copy), 0 / nil = not yet */
 } KorbRegexp;
 /* the flag bits that take part in Regexp identity (bit 7 is the "source is
  * already the literal's encoding" marker, not part of ==) */
@@ -2187,6 +2188,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         KorbRegexp *_re = (KorbRegexp *)(payload);                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_re->source);                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_re->timeout);                \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_re->to_s);                   \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

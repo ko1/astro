@@ -607,7 +607,7 @@ static RESULT korb_obj_copy_impl(CTX *c, korb_value *slots, korb_ref self, uint3
         slots[1] = v;                                      /* root the source across the alloc */
         KorbRegexp *nre = korb_alloc(c, slots + 2, sizeof(KorbRegexp), KORB_OBJ_REGEXP);
         const KorbRegexp *sre = VAL2RE(slots[1]);          /* re-read: alloc may have GC-moved the source */
-        nre->ci = sre->ci; nre->flags = sre->flags;
+        nre->ci = sre->ci; nre->flags = sre->flags; nre->to_s = KORB_NIL;
         ARO_STORE(c, nre, (korb_value *)(uintptr_t)&nre->source, sre->source);
         slots[1] = (korb_value)nre;
         CHECK(korb_copy_gen_ivars(c, slots + 2, self, &slots[1]));

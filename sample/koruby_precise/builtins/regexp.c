@@ -1160,6 +1160,14 @@ static void korb_re_u8_to_wide(FILE *const ms, const char *const b, const uint32
 }
 static RESULT korb_m_re_to_s(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a; KORB_RE_CHECK(c, slots, self); slots[0] = KORB_REF_GET(self);
+    if (KORB_STRING_P(VAL2RE(slots[0])->to_s)) {   /* kept from an earlier call (Rails composes patterns with /#{re}/ per request) */
+        slots[1] = VAL2RE(slots[0])->to_s;
+        const uint32_t n = VAL2STR(slots[1])->len;
+        KorbString *const s = korb_str_alloc(c, slots + 2, n);
+        memcpy(korb_strbuf_data(s->buf), korb_strbuf_data(VAL2STR(slots[1])->buf), n);   /* re-read after the alloc */
+        KORB_STR_ENC_SET((korb_value)s, KORB_STR_ENC(slots[1]));
+        return RESULT_OK((korb_value)s);
+    }
     char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
     korb_re_write_to_s(c->vm, ms, slots[0]);
     fclose(ms);
@@ -1171,8 +1179,18 @@ static RESULT korb_m_re_to_s(CTX *c, korb_value *slots, korb_ref self, korb_slic
         char *wbuf = NULL; size_t wz = 0; FILE *const ws = open_memstream(&wbuf, &wz);
         korb_re_u8_to_wide(ws, buf, (uint32_t)z, wunit, wbe); fclose(ws); free(buf); buf = wbuf; z = wz;
     }
-    RESULT r = korb_str_new(c, slots + 1, buf, (uint32_t)z); free(buf);
+    RESULT r = korb_str_new(c, slots + 1, buf, (uint32_t)z);
     if (LIKELY(r.state == KORB_NORMAL) && wunit) KORB_STR_ENC_SET(r.value, senc);
+    if (LIKELY(r.state == KORB_NORMAL)) {                 /* keep a private copy for the next call */
+        slots[1] = r.value;
+        const RESULT k = korb_str_new(c, slots + 2, buf, (uint32_t)z);
+        if (LIKELY(k.state == KORB_NORMAL)) {
+            KORB_STR_ENC_SET(k.value, KORB_STR_ENC(slots[1]));
+            ARO_STORE(c, VAL2RE(slots[0]), (korb_value *)(uintptr_t)&VAL2RE(slots[0])->to_s, k.value);
+        }
+        r = RESULT_OK(slots[1]);
+    }
+    free(buf);
     return r;
 }
 static RESULT korb_m_re_inspect(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
@@ -2115,6 +2133,7 @@ static RESULT korb_m_re_init_pattern(CTX *c, korb_value *slots, korb_ref self, k
     const KorbRegexp *const built = VAL2RE(slots[1]);
     me->flags = built->flags;                                  /* clears KORB_RE_UNINIT */
     me->ci    = built->ci;
+    me->to_s  = KORB_NIL;
     ARO_STORE(c, me, (korb_value *)(uintptr_t)&me->source, built->source);
     if (!(me->head.flags & KORB_FL_HAS_KLASS)) me->head.flags |= KORB_FL_FROZEN;   /* a plain Regexp (Regexp.allocate) freezes (CRuby) */
     return RESULT_OK(KORB_REF_GET(self));

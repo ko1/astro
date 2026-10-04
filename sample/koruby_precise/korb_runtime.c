@@ -4344,6 +4344,7 @@ static RESULT korb_re_alloc(CTX *c, korb_value *slots, korb_value source, uint32
     KorbRegexp *r = korb_alloc(c, slots, sizeof(KorbRegexp), KORB_OBJ_REGEXP);
     r->flags = flags;
     r->ci = (flags & 4u) ? 1u : 0u;
+    r->to_s = KORB_NIL;
     ARO_STORE(c, r, (korb_value *)(uintptr_t)&r->source, KORB_REF_GET(sref));
     r->head.flags |= KORB_FL_FROZEN;
     return RESULT_OK((korb_value)r);
