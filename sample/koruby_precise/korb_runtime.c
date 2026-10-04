@@ -8527,7 +8527,7 @@ static void korb_klass_override_set(CTX *c, korb_value obj, korb_value cls) {
 /* Walk cls's superclass chain; return the enum of the builtin base class it
  * derives from (KORB_C_STRING/ARRAY/... or KORB_C_OBJECT), or KORB_NCLASS if the
  * chain contains no registered builtin class. */
-static enum korb_class korb_builtin_base_class(struct korb_vm *vm, korb_value cls) {
+static enum korb_class korb_builtin_base_class_walk(struct korb_vm *vm, korb_value cls) {
     while (KORB_CLASS_P(cls)) {
         if (UNLIKELY(VAL2CLASS(cls)->dup_base != 0)) return (enum korb_class)(VAL2CLASS(cls)->dup_base - 1);
         for (int k = 0; k < KORB_NCLASS; k++)   /* the constant's slot, not a by-name lookup per candidate */
@@ -8536,6 +8536,14 @@ static enum korb_class korb_builtin_base_class(struct korb_vm *vm, korb_value cl
         cls = VAL2CLASS(cls)->superclass;
     }
     return KORB_NCLASS;
+}
+static enum korb_class korb_builtin_base_class(struct korb_vm *vm, korb_value cls) {
+    if (!KORB_CLASS_P(cls)) return KORB_NCLASS;
+    KorbClass *const k = VAL2CLASS(cls);
+    if (LIKELY(k->bi_base != 0)) return (enum korb_class)(k->bi_base - 1);
+    const enum korb_class r = korb_builtin_base_class_walk(vm, cls);   /* every uncached Klass.new asked (Range check): 29 compares a level */
+    if (vm->boot_done) k->bi_base = (uint8_t)(r + 1);   /* builtin classes are still being registered during boot */
+    return r;
 }
 
 /* class object of `self` (for `.class` / is_a?).  User objects → their klass;
