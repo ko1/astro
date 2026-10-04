@@ -8482,10 +8482,16 @@ korb_exc_matches(CTX *c, korb_value exc, korb_value rescue_class)
 
 /* Per-instance class override (subclass instances / extended objects /
  * singleton classes): only reached for objects with KORB_FL_HAS_KLASS set. */
+static inline struct korb_ovc_ent *korb_ovc_slot(const struct korb_vm *vm, const korb_value obj) {
+    return (struct korb_ovc_ent *)(uintptr_t)&vm->ovc[(((uintptr_t)obj >> 4) ^ ((uintptr_t)obj >> 12)) & (KORB_OVC_N - 1u)];
+}
 static korb_value korb_klass_override_get(const struct korb_vm *vm, korb_value obj) {
     if (obj == vm->top_self && vm->top_sclass != 0) return vm->top_sclass;
+    struct korb_ovc_ent *const e = korb_ovc_slot(vm, obj);
+    if (LIKELY(e->obj == obj && e->epoch == vm->gc_serial_bumps + 1)) return e->klass;   /* +1: a zeroed entry never matches */
     const int32_t i = korb_wtab_find(&vm->sklass, obj);
     const korb_value r = i >= 0 ? vm->sklass.val[i] : KORB_NIL;
+    e->obj = obj; e->klass = r; e->epoch = vm->gc_serial_bumps + 1;   /* a cache: the vm is not otherwise changed */
     if (obj == vm->top_self && obj != 0 && r != KORB_NIL) ((struct korb_vm *)(uintptr_t)vm)->top_sclass = r;   /* a cache: the vm is not otherwise changed */
     return r;
 }
@@ -8513,6 +8519,7 @@ static void korb_klass_override_set(CTX *c, korb_value obj, korb_value cls) {
      * instance (ActiveSupport::SafeBuffer) is registered here on every allocation */
     if (KORB_CLASS_P(obj)) c->vm->mro_serial++;
     korb_wtab_put(&c->vm->sklass, obj, cls);             /* libc realloc, not a GC point */
+    { struct korb_ovc_ent *const e = korb_ovc_slot(c->vm, obj); e->obj = obj; e->klass = cls; e->epoch = c->vm->gc_serial_bumps + 1; }
     if (obj == c->vm->top_self) c->vm->top_sclass = 0;   /* re-read on the next get */
     ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_KLASS;
 }

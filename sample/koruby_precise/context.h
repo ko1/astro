@@ -1462,6 +1462,10 @@ struct korb_vm {
     /* `super` resolution (receiver's dispatch class, calling entry, mid) → method; saves re-linearizing
      * the MRO per super call.  Valid while serial == method_serial - gc_serial_bumps: a GC forwards the
      * current entries' classes instead of dropping them (it did at every GC: railsbench 95k misses per iteration) */
+/* korb_klass_override_get's answers for recently asked objects (a SafeBuffer output buffer takes many sends): valid
+ * for one GC epoch (gc_serial_bumps), since a GC moves objects; korb_klass_override_set writes through */
+#define KORB_OVC_N 256u
+    struct korb_ovc_ent { korb_value obj, klass; uint64_t epoch; } ovc[KORB_OVC_N];
 #define KORB_SCACHE_N 1024u
     struct korb_scache_ent {
         uint64_t serial; korb_value klass; const struct korb_method *cur; uint32_t mid;
