@@ -447,7 +447,7 @@ static RESULT korb_m_obj_to_s(CTX *c, korb_value *slots, korb_ref self, korb_sli
     if (UNLIKELY(KORB_CLASS_P(KORB_REF_GET(self)))) {   /* Kernel#to_s bound to a class: rb_any_to_s, not Module#to_s */
         char b[48];
         const int n = snprintf(b, sizeof b, "#<%s:0x%016zx>", VAL2CLASS(KORB_REF_GET(self))->is_module ? "Module" : "Class",
-                               (size_t)(uintptr_t)KORB_REF_GET(self));
+                               korb_inspect_addr(c, KORB_REF_GET(self)));
         return korb_str_new(c, slots, b, (uint32_t)n);
     }
     char *buf = NULL; size_t sz = 0;
@@ -457,7 +457,7 @@ static RESULT korb_m_obj_to_s(CTX *c, korb_value *slots, korb_ref self, korb_sli
     if (KORB_OBJECT_P(v) && VAL2OBJ(v)->klass != KORB_NIL && !KORB_ARRAY_P(VAL2CLASS(VAL2OBJ(v)->klass)->members)) {
         fputs("#<", ms);                                  /* rb_any_to_s: this IS Kernel#to_s, so no user #to_s */
         korb_fprint_class_desc(c, ms, VAL2OBJ(v)->klass);
-        fprintf(ms, ":0x%016lx>", (unsigned long)(uintptr_t)v);
+        fprintf(ms, ":0x%016lx>", korb_inspect_addr(c, v));
     } else {
         korb_fprint_to_s_s(c, slots, ms, v);            /* containers dispatch element #inspect (may GC) */
     }
@@ -561,7 +561,7 @@ static RESULT korb_m_obj_inspect(CTX *c, korb_value *slots, korb_ref self, korb_
         }
         fputs("#<", ms);
         korb_fprint_class_desc(c, ms, VAL2OBJ(v0)->klass);
-        fprintf(ms, ":0x%016lx", (unsigned long)(uintptr_t)v0);
+        fprintf(ms, ":0x%016lx", korb_inspect_addr(c, v0));
         slots[0] = v0;                                       /* root the object across nested #inspect dispatch */
         const bool cyc = (((const AroObjectHeader *)(uintptr_t)v0)->flags & KORB_FL_JOIN_VISITING) != 0;
         if (cyc) {
@@ -1497,7 +1497,7 @@ static void korb_fprint_obj_default_inspect(CTX *c, FILE *ms, korb_value v) {
     fputs("#<", ms);
     if (KORB_CLASS_P(oc)) korb_fprint_class_tostr(c, ms, oc);   /* named → qname, anonymous → #<Class:0x…> */
     else fputs("Object", ms);
-    fprintf(ms, ":0x%016zx>", (size_t)(uintptr_t)v);
+    fprintf(ms, ":0x%016zx>", korb_inspect_addr(c, v));
 }
 /* A refinement module always prints as "#<refinement:Target@Owner>", even when
  * it is bound to a constant and so has a #name (CRuby). */
@@ -1518,10 +1518,10 @@ static void korb_fprint_class_tostr(CTX *c, FILE *ms, korb_value cls) {
     korb_value meta = (k->is_module && (k->head.flags & KORB_FL_HAS_KLASS)) ? korb_klass_override_get(c->vm, cls) : KORB_NIL;
     while (KORB_CLASS_P(meta) && VAL2CLASS(meta)->is_singleton) meta = VAL2CLASS(meta)->superclass;
     if (KORB_CLASS_P(meta) && meta != korb_const_get(c->vm, korb_intern_lit(c->vm, "Module", 6))) {   /* an instance of a Module subclass names it */
-        fputs("#<", ms); korb_fprint_class_tostr(c, ms, meta); fprintf(ms, ":0x%016zx>", (size_t)(uintptr_t)cls);
+        fputs("#<", ms); korb_fprint_class_tostr(c, ms, meta); fprintf(ms, ":0x%016zx>", korb_inspect_addr(c, cls));
         return;
     }
-    fprintf(ms, "#<%s:0x%016zx>", k->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls);
+    fprintf(ms, "#<%s:0x%016zx>", k->is_module ? "Module" : "Class", korb_inspect_addr(c, cls));
 }
 static bool korb_fprint_refinement_tostr(CTX *c, FILE *ms, korb_value cls) {
     const korb_value tgt = korb_refinement_target(c->vm, cls);
@@ -1560,7 +1560,7 @@ static RESULT korb_m_class_to_s(CTX *c, korb_value *slots, korb_ref self, korb_s
     if ((k->name_sym == 0 && k->temp_name_sym == 0) || KORB_CLASS_P(korb_refinement_target(c->vm, cls))) {   /* anonymous / singleton / refinement → formatted form */
         char *buf = NULL; size_t sz = 0;
         FILE *ms = open_memstream(&buf, &sz);
-        if (!ms) { char b[48]; int n = snprintf(b, sizeof b, "#<%s:0x%016zx>", k->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls); return korb_str_new(c, slots, b, (uint32_t)n); }
+        if (!ms) { char b[48]; int n = snprintf(b, sizeof b, "#<%s:0x%016zx>", k->is_module ? "Module" : "Class", korb_inspect_addr(c, cls)); return korb_str_new(c, slots, b, (uint32_t)n); }
         korb_fprint_class_tostr(c, ms, cls);
         fclose(ms);
         RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);

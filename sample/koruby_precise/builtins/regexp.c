@@ -1180,7 +1180,7 @@ static RESULT korb_m_re_inspect(CTX *c, korb_value *slots, korb_ref self, korb_s
         const korb_value k = korb_dispatch_class(c, KORB_REF_GET(self));   /* #<Regexp:0x…> (CRuby's rb_any_to_s) */
         char cn[192], b[240];
         if (VAL2CLASS(k)->name_sym) korb_class_qname_into(c, k, cn, sizeof cn); else korb_desc_inspect(c, k, cn, sizeof cn);
-        const int n = snprintf(b, sizeof b, "#<%s:0x%016zx>", cn, (size_t)(uintptr_t)KORB_REF_GET(self));
+        const int n = snprintf(b, sizeof b, "#<%s:0x%016zx>", cn, korb_inspect_addr(c, KORB_REF_GET(self)));
         return korb_str_new(c, slots, b, (uint32_t)n);
     }
     (void)a; slots[0] = KORB_REF_GET(self);

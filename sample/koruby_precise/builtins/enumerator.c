@@ -815,7 +815,7 @@ static RESULT korb_m_enum_inspect(CTX *c, korb_value *slots, korb_ref self, korb
         else if (SELF_ENUM->mode == 3 && KORB_PROC_P(SELF_ENUM->source))
             /* Enumerator.new { |y| … }: CRuby wraps the block in an
              * Enumerator::Generator and names the enumerator after it. */
-            fprintf(ms, "#<%s: #<Enumerator::Generator:0x%016zx>:each>", nm, (size_t)(uintptr_t)SELF_ENUM->source);
+            fprintf(ms, "#<%s: #<Enumerator::Generator:0x%016zx>:each>", nm, korb_inspect_addr(c, SELF_ENUM->source));
         else if (SELF_ENUM->source != KORB_NIL) { fprintf(ms, "#<%s: ", nm); korb_fprint_inspect(c, ms, SELF_ENUM->source); fputc('>', ms); }
         else fprintf(ms, "#<%s>", nm);
         fclose(ms);

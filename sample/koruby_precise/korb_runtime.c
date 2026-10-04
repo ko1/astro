@@ -2663,6 +2663,13 @@ static korb_value korb_oid_assign(struct korb_vm *const vm, const korb_value obj
     if (!KORB_STRING_P(obj)) ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_OID;
     return id;
 }
+/* #<X:0x…> must not change when the GC moves the object (CRuby's does not): a pseudo address from the object_id. */
+static unsigned long korb_inspect_addr(CTX *c, const korb_value v) {
+    if (!AROH_IS_GC_OBJECT(v)) return (unsigned long)(uintptr_t)v;
+    korb_value id = korb_oid_find(c->vm, v);
+    if (id == KORB_NIL) id = korb_oid_assign(c->vm, v);   /* libc only, no GC */
+    return (unsigned long)(0x00007a0000000000ULL + (unsigned long long)(FIX2LONG(id) - 2));
+}
 static RESULT korb_objivar_set(CTX *c, korb_value *slots, korb_ref objref, korb_value name_sym, korb_value val) {
     korb_ref vref = SLOTS_PUSH(slots, val);          /* root val/name across hash alloc/grow */
     korb_ref nref = SLOTS_PUSH(slots, name_sym);
@@ -3092,7 +3099,7 @@ korb_cvar_class_name(CTX *c, korb_value cls, char *out, size_t outsz)
 {
     korb_class_qname_into(c, cls, out, outsz);
     if (out[0] == '\0')
-        snprintf(out, outsz, "#<%s:0x%016zx>", VAL2CLASS(cls)->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls);
+        snprintf(out, outsz, "#<%s:0x%016zx>", VAL2CLASS(cls)->is_module ? "Module" : "Class", korb_inspect_addr(c, cls));
 }
 
 /* CRuby's cvar_overtaken: reading or writing through a class whose variable is
@@ -7622,7 +7629,7 @@ korb_fprint_class_qname_d(CTX *c, FILE *fp, korb_value cls, int depth)
             fputs("::", fp);
         else {   /* named class under an ANONYMOUS namespace → CRuby shows #<Module:0x…>::Name */
             const KorbClass *const e = VAL2CLASS(k->enclosing);
-            fprintf(fp, "#<%s:0x%016zx>::", e->is_module ? "Module" : "Class", (size_t)(uintptr_t)k->enclosing);
+            fprintf(fp, "#<%s:0x%016zx>::", e->is_module ? "Module" : "Class", korb_inspect_addr(c, k->enclosing));
         }
     }
     fputs(korb_sym_name(c->vm, k->name_sym), fp);
@@ -7665,7 +7672,7 @@ korb_fprint_class_desc(CTX *c, FILE *fp, korb_value cls)
     if (korb_fprint_class_qname(c, fp, cls)) return;
     if (KORB_CLASS_P(cls))
         fprintf(fp, "#<%s:0x%016lx>", VAL2CLASS(cls)->is_module ? "Module" : "Class",
-                (unsigned long)(uintptr_t)cls);
+                korb_inspect_addr(c, cls));
     else fputs("Object", fp);
 }
 
@@ -7676,7 +7683,7 @@ korb_class_desc_into(CTX *c, korb_value cls, char *out, size_t outsz)
 {
     if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym == 0)
         snprintf(out, outsz, "#<%s:0x%016lx>",
-                 VAL2CLASS(cls)->is_module ? "Module" : "Class", (unsigned long)(uintptr_t)cls);
+                 VAL2CLASS(cls)->is_module ? "Module" : "Class", korb_inspect_addr(c, cls));
     else
         korb_class_qname_into(c, cls, out, outsz);
 }
@@ -9231,7 +9238,7 @@ korb_recv_desc(CTX *c, korb_value *scratch, korb_value v, char *buf, size_t sz)
         else {
             v = scratch[0];                              /* #name ran Ruby: re-read the (moved) class */
             if (VAL2CLASS(v)->name_sym) { korb_class_qname_into(c, v, nm, sizeof nm); snprintf(buf, sz, "%s %s", kind, nm); }
-            else snprintf(buf, sz, "%s #<%s:0x%016zx>", kind, VAL2CLASS(v)->is_module ? "Module" : "Class", (size_t)(uintptr_t)v);
+            else snprintf(buf, sz, "%s #<%s:0x%016zx>", kind, VAL2CLASS(v)->is_module ? "Module" : "Class", korb_inspect_addr(c, v));
         }
         return buf;
     }
@@ -9241,7 +9248,7 @@ korb_recv_desc(CTX *c, korb_value *scratch, korb_value v, char *buf, size_t sz)
         if (!KORB_CLASS_P(cls)) snprintf(buf, sz, "an instance of Object");
         else if (korb_class_display_name(c, scratch, cls, nm, sizeof nm)) snprintf(buf, sz, "an instance of %s", nm);
         else if (cls = scratch[0], VAL2CLASS(cls)->name_sym) { korb_class_qname_into(c, cls, nm, sizeof nm); snprintf(buf, sz, "an instance of %s", nm); }
-        else snprintf(buf, sz, "an instance of #<Class:0x%016zx>", (size_t)(uintptr_t)cls);
+        else snprintf(buf, sz, "an instance of #<Class:0x%016zx>", korb_inspect_addr(c, cls));
         return buf;
     }
     if (KORB_EXC_P(v)) {                                 /* a user exception class names itself */
@@ -9251,7 +9258,7 @@ korb_recv_desc(CTX *c, korb_value *scratch, korb_value v, char *buf, size_t sz)
         if (!KORB_CLASS_P(cls)) snprintf(buf, sz, "an instance of %s", korb_etype_name(etype));
         else if (korb_class_display_name(c, scratch, cls, nm, sizeof nm)) snprintf(buf, sz, "an instance of %s", nm);
         else if (cls = scratch[0], VAL2CLASS(cls)->name_sym) { korb_class_qname_into(c, cls, nm, sizeof nm); snprintf(buf, sz, "an instance of %s", nm); }
-        else snprintf(buf, sz, "an instance of #<Class:0x%016zx>", (size_t)(uintptr_t)cls);
+        else snprintf(buf, sz, "an instance of #<Class:0x%016zx>", korb_inspect_addr(c, cls));
         return buf;
     }
     return korb_a_type_name(v);
@@ -9267,7 +9274,7 @@ korb_nomethod_recv_desc(CTX *c, korb_value *scratch, korb_value v, char *buf, si
         const korb_value cls = VAL2OBJ(v)->klass;
         if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) {
             char nm[192]; korb_class_qname_into(c, cls, nm, sizeof nm);
-            snprintf(buf, sz, "#<%s:0x%016zx>", nm, (size_t)(uintptr_t)v);
+            snprintf(buf, sz, "#<%s:0x%016zx>", nm, korb_inspect_addr(c, v));
             return buf;
         }
     }
@@ -18551,7 +18558,7 @@ korb_fprint_inspect_d(CTX *c, korb_value *slots, FILE *fp, korb_value v, int dep
                                                           * the entry point re-raises what was parked. */
                 fputs("#<", fp);
                 korb_fprint_class_desc(c, fp, VAL2OBJ(v)->klass);
-                fprintf(fp, ":0x%016lx>", (unsigned long)(uintptr_t)v);
+                fprintf(fp, ":0x%016lx>", korb_inspect_addr(c, v));
                 return;
             }
             break;
@@ -18613,7 +18620,7 @@ korb_fprint_to_s_s(CTX *c, korb_value *slots, FILE *fp, korb_value v)
         }
         fputs("#<", fp);
         korb_fprint_class_desc(c, fp, VAL2OBJ(v)->klass);    /* qualified (M::C), or the anonymous class's own #to_s */
-        fprintf(fp, ":0x%016lx>", (unsigned long)(uintptr_t)v);   /* to_s: "#<Foo:0x…>" (no ivars) */
+        fprintf(fp, ":0x%016lx>", korb_inspect_addr(c, v));   /* to_s: "#<Foo:0x…>" (no ivars) */
         return;
       }
       case KORB_OBJ_CLASS:
@@ -18675,7 +18682,7 @@ korb_fprint_to_s_s(CTX *c, korb_value *slots, FILE *fp, korb_value v)
          * #inspect names the source. */
         char nm[192];
         korb_class_qname_into(c, korb_dispatch_class(c, v), nm, sizeof nm);
-        fprintf(fp, "#<%s:0x%016lx>", nm, (unsigned long)(uintptr_t)v);
+        fprintf(fp, "#<%s:0x%016lx>", nm, korb_inspect_addr(c, v));
         return;
       }
       case KORB_OBJ_SET:                               /* Set[a, b, c] (elements via inspect) */
@@ -18686,11 +18693,11 @@ korb_fprint_to_s_s(CTX *c, korb_value *slots, FILE *fp, korb_value v)
         const char *const lam = p->is_lambda ? " (lambda)" : "";
         uint32_t fsym, line;
         if (p->iseq && korb_get_srcloc(c->vm, p->iseq, &fsym, &line))
-            fprintf(fp, "#<Proc:0x%016lx %s:%u%s>", (unsigned long)(uintptr_t)v, korb_sym_name(c->vm, fsym), line, lam);
+            fprintf(fp, "#<Proc:0x%016lx %s:%u%s>", korb_inspect_addr(c, v), korb_sym_name(c->vm, fsym), line, lam);
         else if (p->iseq == NULL && p->self == KORB_NIL)   /* Symbol#to_proc → #<Proc:0x..(&:name) (lambda)> */
-            fprintf(fp, "#<Proc:0x%016lx(&:%s)%s>", (unsigned long)(uintptr_t)v, korb_sym_name(c->vm, p->sym_mid), lam);
+            fprintf(fp, "#<Proc:0x%016lx(&:%s)%s>", korb_inspect_addr(c, v), korb_sym_name(c->vm, p->sym_mid), lam);
         else
-            fprintf(fp, "#<Proc:0x%016lx%s>", (unsigned long)(uintptr_t)v, lam);
+            fprintf(fp, "#<Proc:0x%016lx%s>", korb_inspect_addr(c, v), lam);
         return;
       }
       case KORB_OBJ_METHOD: {                          /* #<Method: Recv(DefiningModule)#name> */
@@ -18792,7 +18799,7 @@ korb_fprint_to_s_s(CTX *c, korb_value *slots, FILE *fp, korb_value v)
         korb_value k = korb_dispatch_class(c, v);
         while (KORB_CLASS_P(k) && VAL2CLASS(k)->is_singleton) k = VAL2CLASS(k)->superclass;
         if (!KORB_CLASS_P(k)) break;
-        fputs("#<", fp); korb_fprint_class_qname(c, fp, k); fprintf(fp, ":0x%016zx>", (size_t)(uintptr_t)v);
+        fputs("#<", fp); korb_fprint_class_qname(c, fp, k); fprintf(fp, ":0x%016zx>", korb_inspect_addr(c, v));
         return;
       }
     }
@@ -18993,7 +19000,7 @@ korb_puts_one_to(CTX *c, korb_value *slots, korb_value v, struct KorbIORep *rep)
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (!KORB_STRING_P(r.value)) {                  /* a #to_s that is not a String → the default "#<Class:0x…>" */
             char b[160];
-            const int bn = snprintf(b, sizeof b, "#<%s:0x%016lx>\n", korb_coerce_name(c, slots[0]), (unsigned long)(uintptr_t)slots[0]);
+            const int bn = snprintf(b, sizeof b, "#<%s:0x%016lx>\n", korb_coerce_name(c, slots[0]), korb_inspect_addr(c, slots[0]));
             return korb_io_wr_checked(c, slots + 1, rep, b, (size_t)bn);
         }
         v = r.value;                                    /* fall through to print the string */
