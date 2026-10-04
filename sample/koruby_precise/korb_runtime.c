@@ -7170,8 +7170,6 @@ korb_invoke_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t ar
     /* The OUTER park cannot ride in a C local across the defaults below: they
      * run Ruby, and a moving collection would leave the restore writing a stale
      * Hash back (same rule as the cref pair -- hence the shared stack). */
-    const bool kw_parked = kw != NULL && kw->kwrest_slot < 0 && kwhash != KORB_NIL;
-    if (UNLIKELY(kw_parked)) { korb_cref_push(c); c->kwargs_park = kwhash; }
     /* Snapshot what the rest of this invocation reads out of the entry.  A
      * default expression may redefine this very method, and korb_class_def_method
      * reuses the entry in place — the call in flight must still finish as the OLD
@@ -7182,6 +7180,9 @@ korb_invoke_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t ar
     NODE *const body = m->body;
     struct Node **const opt_defaults = m->opt_defaults;
     const uint32_t opt_req_cnt = m->req_cnt, opt_params_cnt = (uint32_t)m->params_cnt;
+    /* only an optional's default runs Ruby (and can GC) before the keywords are read */
+    const bool kw_parked = kw != NULL && kw->kwrest_slot < 0 && kwhash != KORB_NIL && avail < opt_params_cnt;
+    if (UNLIKELY(kw_parked)) { korb_cref_push(c); c->kwargs_park = kwhash; }
     /* fill missing optional params by evaluating their defaults in method scope
      * (cursor = body cursor; defaults may reference earlier params + self). */
     RESULT opt_err = RESULT_OK(KORB_NIL);
@@ -7209,7 +7210,8 @@ korb_invoke_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t ar
         for (uint32_t j = 0; j < kw->count; j++)                    /* missing required */
             if (!(j < 64 && (present & (1ull << j))) && !kw->entries[j].deflt)
                 return korb_raise_missing_kw(c, slots, m, mid, line, kw, present);
-        if (kw->kwrest_slot == -1 && kwhash != KORB_NIL)            /* no **rest: every key must be declared */
+        if (kw->kwrest_slot == -1 && kwhash != KORB_NIL &&          /* no **rest: every key must be declared */
+            (kw->count > 64 || (uint32_t)__builtin_popcountll(present) != VAL2HASH(kwhash)->len))   /* all found: none unknown */
             CHECK(korb_check_unknown_kw(c, slots, m, mid, line, kwhash, kw));
         for (uint32_t j = 0; j < kw->count; j++) {                  /* pass 2: defaults (kwhash is done with) */
             if (j < 64 && (present & (1ull << j))) continue;
