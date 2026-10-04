@@ -1887,10 +1887,18 @@ static inline bool korb_key_indexable(korb_value v) {
 static uint64_t korb_value_hash_d(korb_value v, int depth) {
     if (FIXNUM_P(v)) { uint64_t x = (uint64_t)v; x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 29; return x; }
     if (SYMBOL_P(v)) { uint64_t x = (uint64_t)SYM2ID(v) + 1; x *= 0x9e3779b97f4a7c15ULL; return x ^ (x >> 32); }
-    if (KORB_STRING_P(v)) {
+    if (KORB_STRING_P(v)) {   /* 8 bytes per step (byte-wise FNV-1a was ~4 instructions a byte: railsbench 1.3%) */
         const KorbString *s = VAL2STR(v);
-        uint64_t h = 1469598103934665603ULL;            /* FNV-1a */
-        for (uint32_t i = 0; i < s->len; i++) { h ^= (unsigned char)korb_strbuf_data(s->buf)[i]; h *= 1099511628211ULL; }
+        const unsigned char *p = (const unsigned char *)korb_strbuf_data(s->buf);
+        uint32_t n = s->len;
+        uint64_t h = 0x9e3779b97f4a7c15ULL ^ n;
+        for (; n >= 8; p += 8, n -= 8) {
+            uint64_t w; memcpy(&w, p, 8);
+            h = (h ^ w) * 0xff51afd7ed558ccdULL; h ^= h >> 32;
+        }
+        uint64_t t = 0;
+        memcpy(&t, p, n);
+        h = (h ^ t) * 0xc4ceb9fe1a85ec53ULL; h ^= h >> 29;
         return h;
     }
     if (v == KORB_NIL)  return 0x9e3779b97f4a7c15ULL;
