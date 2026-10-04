@@ -4,6 +4,11 @@
 既知バグ** の作業リスト。
 
 
+## 未: 利用者の `def self.[]` から組み込みの Array.[] / Hash.[] / Set.[] へ super できない (2026-10-04)
+- `class Hd < Hash; def self.[](h) = super(...); end` が `super: no superclass method '[]'`（CRuby は Hash.[] に届く）。
+  組み込みの `Klass[]` は korb_send_impl の特例で表エントリが無いため korb_super_find が見つけられない。
+  super_new_skip と同じく、特例を呼ぶ時に利用者の self.[] を飛ばす印が要る。
+
 ## 未: t/hand/hash_mutated_key.rb がまれに CRuby と食い違う (2026-10-04 記録、3 回目)
 - 挿入後に変更したキーで引くと、CRuby は（挿入時の #hash のバケットなので）見つからないが、まれに koruby は見つける
   （出力の 1・3・4 行目）。make test の全体（並列・負荷下）で g6c43・gf8ce・2026-10-04 の 3 回。単独では 200 回・40 回とも再現しない。

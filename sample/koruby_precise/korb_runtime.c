@@ -15908,6 +15908,8 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
         struct korb_method *const m = ic->m;
         if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple && m->visibility == 0 && !c->vm->refinements_active))
             return korb_invoke_simple(c, slots, m, argc, korb_flink_line(flink), mid, recv, ic->def_class);
+        if (m->kind == KORB_METHOD_ATTR_R && argc == 0 && m->visibility == 0 && !c->vm->refinements_active)   /* class << self; attr_reader */
+            return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));
         /* a class's public C method (Thread.current, Time.now, ...: railsbench 525k per iteration went through
          * korb_send_cached_full and korb_dispatch_method): call it here, as the full send's instance hit does */
         if (m->kind == KORB_METHOD_CFUNC && !m->uses_block && m->visibility == 0 && !c->vm->refinements_active &&
@@ -16057,9 +16059,10 @@ korb_send_cached_full(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
         /* class/module singleton-method call (e.g. Math.sqrt, a user class
          * method) — cache the resolved method keyed on the receiver class,
          * skipping korb_send_impl's special-case cascade + mcache hash.  yield
-         * and [] keep their builtin special cases (Fiber.yield / Array[] etc.);
-         * the send family and .new were handled above. */
-        if (LIKELY(KORB_CLASS_P(recv) && mid != vm->mid_yield && mid != vm->mid_aref)) {
+         * keeps its builtin special case (Fiber.yield); a `[]` found in a table is
+         * always a user `def self.[]` (Array[] / Hash[] / Set[] have no entry and
+         * miss below); the send family and .new were handled above. */
+        if (LIKELY(KORB_CLASS_P(recv) && mid != vm->mid_yield)) {
             if (LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == vm->method_serial && ic->klass == recv)) {
                 if (UNLIKELY(ic->m->visibility != 0 && caller_self != KORB_UNDEF)) {   /* private_class_method guard */
                     bool mm_handled = false;
