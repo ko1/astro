@@ -7034,6 +7034,9 @@ static RESULT korb_invoke_kw_simple(CTX *c, korb_value *slots, struct korb_metho
                                     korb_value self, korb_value def_class);
 static RESULT korb_invoke_opt(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc, uint32_t line, uint32_t mid);
 static inline bool korb_opt_call_p(const struct korb_method *m, uint32_t argc);
+static RESULT korb_invoke_opt_blk(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc, uint32_t line, uint32_t mid,
+                                  NODE *block, korb_value *def_env, korb_value captured_self);
+static inline bool korb_opt_blk_call_p(const struct korb_method *m, uint32_t argc);
 static inline RESULT korb_invoke_blk(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc, uint32_t line, uint32_t mid,
                                      NODE *block, korb_value *def_env, korb_value captured_self);
 static __attribute__((no_stack_protector)) RESULT
@@ -8401,7 +8404,7 @@ korb_super(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc
         if (m->is_simple) return korb_invoke_simple(c, cur, m, argc, line, mid, self, found_def);
         if (m->simple_blk && argc == (uint32_t)m->params_cnt)   /* with or without a block */
             return korb_invoke_blk(c, cur, m, argc, line, mid, block, def_env, captured_self);
-        if (block == NULL && korb_opt_call_p(m, argc)) return korb_invoke_opt(c, cur, m, argc, line, mid);
+        if (korb_opt_blk_call_p(m, argc)) return korb_invoke_opt_blk(c, cur, m, argc, line, mid, block, def_env, captured_self);
     }
     return korb_invoke_method(c, cur, m, argc, line, mid, self, found_def, block, def_env, captured_self);
 }
@@ -12514,6 +12517,10 @@ korb_dispatch_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t 
             slots[-(korb_sword_t)argc - 1] = self;
             return korb_invoke_blk(c, slots, m, argc, line, mid, block, def_env, KORB_CSELF_VAL(captured_self));
         }
+        if (korb_opt_blk_call_p(m, argc) && LIKELY(!c->vm->refinements_active)) {   /* `def m(a, b = 1)`, any block */
+            slots[-(korb_sword_t)argc - 1] = self;
+            return korb_invoke_opt_blk(c, slots, m, argc, line, mid, block, def_env, KORB_CSELF_VAL(captured_self));
+        }
         return korb_invoke_method(c, slots, m, argc, line, mid, self, def_class,
                                   block, def_env, KORB_CSELF_VAL(captured_self));
     }
@@ -12611,6 +12618,10 @@ korb_call_impl(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
                 if (um->simple_blk && argc == (uint32_t)um->params_cnt && LIKELY(!vm->refinements_active)) {
                     slots[-(korb_sword_t)argc - 1] = self;
                     return korb_invoke_blk(c, slots, um, argc, line, mid, block, def_env, KORB_CSELF_VAL(captured_self));
+                }
+                if (korb_opt_blk_call_p(um, argc) && LIKELY(!vm->refinements_active)) {
+                    slots[-(korb_sword_t)argc - 1] = self;
+                    return korb_invoke_opt_blk(c, slots, um, argc, line, mid, block, def_env, KORB_CSELF_VAL(captured_self));
                 }
                 return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
             }
@@ -12833,6 +12844,11 @@ korb_invoke_self(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc
         if (m->simple_blk && argc == (uint32_t)m->params_cnt && LIKELY(!c->vm->refinements_active)) {   /* uses the block, called without one */
             slots[-(korb_sword_t)argc - 1] = self;
             *out = korb_invoke_blk(c, slots, m, argc, line, mid, NULL, NULL, KORB_NIL);
+            return true;
+        }
+        if (korb_opt_blk_call_p(m, argc) && LIKELY(!c->vm->refinements_active)) {
+            slots[-(korb_sword_t)argc - 1] = self;
+            *out = korb_invoke_opt_blk(c, slots, m, argc, line, mid, NULL, NULL, KORB_NIL);
             return true;
         }
         *out = korb_invoke_method(c, slots, m, argc, line, mid, self, def_class, NULL, NULL, KORB_NIL);
@@ -15716,8 +15732,15 @@ korb_send_cached_full(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
 static __attribute__((noinline, no_stack_protector)) RESULT
 korb_invoke_opt(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc, uint32_t line, uint32_t mid)
 {
+    return korb_invoke_opt_blk(c, slots, m, argc, line, mid, NULL, NULL, KORB_NIL);
+}
+/* korb_invoke_opt for a method that also takes the block (`def m(a, b = 1) = yield(...)`), with or without one */
+static RESULT
+korb_invoke_opt_blk(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc, uint32_t line, uint32_t mid,
+                    NODE *block, korb_value *def_env, korb_value captured_self)
+{
     if (UNLIKELY(c->def_definee != KORB_NIL || c->cvar_cref != KORB_NIL || m->uses_backref))
-        return korb_invoke_method(c, slots, m, argc, line, mid, slots[-(korb_sword_t)argc - 1], KORB_NIL, NULL, NULL, KORB_NIL);
+        return korb_invoke_method(c, slots, m, argc, line, mid, slots[-(korb_sword_t)argc - 1], KORB_NIL, block, def_env, captured_self);
     korb_value *const base = slots - argc;
     if (argc != 0) korb_kwargs_unmark(base[argc - 1]);   /* fixed positional: the call-site kwargs mark stops here */
     KORB_AUDIT_EP(base, mid);
@@ -15728,6 +15751,11 @@ korb_invoke_opt(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc,
         return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
     if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
     for (uint32_t i = argc; i < locals_cnt; i++) base[i] = 0;
+    if (block != NULL && m->uses_block) {   /* before the defaults: one may yield or ask block_given? */
+        base[locals_cnt - 3] = (korb_value)((uintptr_t)block | 1u);
+        base[locals_cnt - 2] = (korb_value)(uintptr_t)def_env;
+        base[locals_cnt - 1] = captured_self;
+    }
     korb_id_set(base, (korb_value)((uintptr_t)m | KORB_FID_METHOD));
     NODE *const body = m->body;
     struct Node **const dflts = m->opt_defaults;
@@ -15748,6 +15776,11 @@ korb_invoke_opt(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc,
 static inline bool korb_opt_call_p(const struct korb_method *m, uint32_t argc) {
     return m->kind == KORB_METHOD_ISEQ && m->opt_defaults != NULL && argc >= m->req_cnt && argc <= (uint32_t)m->params_cnt &&
            m->kw_info == NULL && m->rest_slot < 0 && m->post_cnt == 0 && !m->uses_block && !m->no_block;
+}
+/* korb_opt_call_p, the block allowed (korb_invoke_opt_blk lays it) */
+static inline bool korb_opt_blk_call_p(const struct korb_method *m, uint32_t argc) {
+    return m->kind == KORB_METHOD_ISEQ && m->opt_defaults != NULL && argc >= m->req_cnt && argc <= (uint32_t)m->params_cnt &&
+           m->kw_info == NULL && m->rest_slot < 0 && m->post_cnt == 0 && !m->no_block;
 }
 
 /* Klass.new of a plain user class once `initialize` is resolved: allocate, then the short
