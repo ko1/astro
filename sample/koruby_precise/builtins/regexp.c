@@ -1436,17 +1436,24 @@ static RESULT korb_re_coerce_pat_literal(CTX *c, korb_value *slots, korb_value p
     if (KORB_STRING_P(pv)) {                             /* a Symbol is a TypeError, like any non-String */
         const char *b = korb_strbuf_data(VAL2STR(pv)->buf); const uint32_t n = VAL2STR(pv)->len;
         const uint32_t penc = KORB_STR_ENC(pv);          /* read before any alloc moves pv */
-        char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
+        /* escaping at most doubles it: a plain buffer, not a stdio stream (str.sub("x", y) paid fputc / fwrite per char) */
+        char sbuf[256];
+        const size_t cap = (size_t)n * 2u + 1u;
+        char *const buf = cap <= sizeof sbuf ? sbuf : malloc(cap);
+        if (!buf) { fprintf(stderr, "koruby_precise: oom (pattern escape)\n"); abort(); }
+        size_t z = 0;
         /* Step CHARACTERS: a Shift_JIS trail byte can be '^' or '-', and escaping
          * it would cut the character in half. */
         for (uint32_t i = 0; i < n; ) {
             const uint32_t cl = korb_str_char_bytes(c->vm, penc, (const unsigned char *)b, i, n);
-            if (cl == 1 && strchr("\\.*+?()[]{}|-^$", (unsigned char)b[i])) fputc('\\', ms);
-            fwrite(b + i, 1, cl, ms);
-            i += cl ? cl : 1;
+            const uint32_t step = cl ? cl : 1;
+            if (cl == 1 && strchr("\\.*+?()[]{}|-^$", (unsigned char)b[i])) buf[z++] = '\\';
+            memcpy(buf + z, b + i, cl); z += cl;
+            i += step;
         }
-        fclose(ms);
-        slots[0] = UNWRAP(korb_str_new(c, slots, buf ? buf : "", (uint32_t)z)); free(buf);
+        const RESULT er = korb_str_new(c, slots, buf, (uint32_t)z);
+        if (buf != sbuf) free(buf);
+        slots[0] = UNWRAP(er);
         KORB_STR_ENC_SET(slots[0], penc);                /* the literal pattern keeps the string's encoding */
         *out = UNWRAP(korb_re_alloc(c, slots + 1, slots[0], 0));
         return RESULT_OK(KORB_TRUE);
