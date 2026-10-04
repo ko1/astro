@@ -854,6 +854,8 @@ node_eq(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@c
         slots[0] = l; slots[1] = rhs;                      /* same object, but a user #== decides */
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, c->vm->mid_eq, 0, 1));
     }
+    if (KORB_OBJECT_P(l) && VAL2OBJ(l)->klass != KORB_NIL && korb_obj_eq_default_p(c, l, false))
+        return RESULT_OK(KORB_FALSE);                  /* BasicObject#== of two distinct objects */
     if (KORB_OBJECT_P(l) || KORB_METHOD_P(l) || KORB_EXC_P(l) || KORB_HASH_P(l) || KORB_ARRAY_P(l)
         || KORB_REGEXP_P(l) || KORB_MATCHDATA_P(l) || KORB_PROC_P(l)
         || (AROH_IS_GC_OBJECT(l) && (((const AroObjectHeader *)(uintptr_t)l)->flags & KORB_FL_HAS_KLASS))) {   /* value == (user instance / Method / Hash / Array / Regexp / MatchData / Proc / a builtin subclass's instance, which may define its own #==) → dispatch */
@@ -921,6 +923,8 @@ node_neq(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
         slots[0] = l; slots[1] = rhs;                      /* same object, but a user #!= / #== decides */
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "!=", 2), 0, 1));
     }
+    if (KORB_OBJECT_P(l) && VAL2OBJ(l)->klass != KORB_NIL && korb_obj_eq_default_p(c, l, true))
+        return RESULT_OK(KORB_TRUE);                   /* BasicObject#!= over BasicObject#== of two distinct objects */
     if (KORB_OBJECT_P(l) || KORB_EXC_P(l) || KORB_HASH_P(l) || KORB_ARRAY_P(l)
         || KORB_REGEXP_P(l) || KORB_MATCHDATA_P(l)
         || (AROH_IS_GC_OBJECT(l) && (((const AroObjectHeader *)(uintptr_t)l)->flags & KORB_FL_HAS_KLASS))) {   /* dispatch #!= — honours a user-defined `!=` / `==` (also a builtin subclass's), else Object#!= (= !(==)) */

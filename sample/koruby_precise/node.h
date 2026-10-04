@@ -294,6 +294,7 @@ void   korb_const_define_owned(CTX *c, uint32_t name_sym, korb_value val, korb_v
 bool   korb_mod_hook_custom(CTX *c, korb_value mod, uint32_t mid);
 bool   korb_rescue_custom_eqq(CTX *c, korb_value cls);   /* rescue clause must dispatch a user #=== */
 bool   korb_default_eq_p(CTX *c, korb_value v, uint32_t mid);   /* #== / #!= is still the identity default */
+bool   korb_obj_eq_default_p(CTX *c, korb_value v, bool neq);   /* a user instance's #== (and #!=) is still BasicObject's */
 bool   korb_big_over_long(korb_value v);   /* a Bignum no C long can hold (index args refuse only these) */
 const char *korb_enc_name_of(const struct korb_vm *vm, uint32_t idx);
 const char *korb_enc_inspect_name_of(const struct korb_vm *vm, uint32_t idx);   /* "BINARY (ASCII-8BIT)" in error messages */

@@ -8699,6 +8699,26 @@ korb_default_eq_p(CTX *c, korb_value v, uint32_t mid)
     const struct korb_method *const m = korb_class_find_method(dcls, mid, NULL);
     return m == NULL || m->kind == KORB_METHOD_CFUNC;   /* only the C defaults on Object/BasicObject are CFUNCs here */
 }
+static RESULT korb_m_obj_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice a);    /* fwd (builtins/symbol.c): BasicObject#== */
+static RESULT korb_m_obj_neq(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd: BasicObject#!= */
+static RESULT korb_m_obj_equal(CTX *c, korb_value *slots, korb_ref self, korb_slice a); /* fwd: BasicObject#== / #equal? (identity) */
+/* A user instance whose #== (and, for !=, also #!=) is still BasicObject's: `a == b` of two
+ * distinct objects is then false without the send (railsbench: 44k == and 44k != per iteration
+ * went through the uncached send).  Resolved through the class's method table, which a
+ * redefinition updates; korb_default_eq_p walks the MRO and accepts any C #==. */
+bool
+korb_obj_eq_default_p(CTX *c, const korb_value v, const bool neq)
+{
+    struct korb_vm *const vm = c->vm;
+    const korb_value dcls = korb_obj_dispatch_klass(vm, v);
+    if (!KORB_CLASS_P(dcls) || UNLIKELY(vm->refinements_active)) return false;   /* a refined == decides per site */
+    korb_value d = KORB_NIL;
+    const struct korb_method *const m = korb_mcache_find(vm, dcls, vm->mid_eq, &d);
+    if (m == NULL || m->kind != KORB_METHOD_CFUNC || (m->rfn != korb_m_obj_equal && m->rfn != korb_m_obj_eq)) return false;
+    if (!neq) return true;
+    const struct korb_method *const mn = korb_mcache_find(vm, dcls, korb_intern_lit(vm, "!=", 2), &d);
+    return mn != NULL && mn->kind == KORB_METHOD_CFUNC && mn->rfn == korb_m_obj_neq;
+}
 bool
 korb_rescue_custom_eqq(CTX *c, korb_value cls)
 {

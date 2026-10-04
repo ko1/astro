@@ -4,6 +4,10 @@
 既知バグ** の作業リスト。
 
 
+## 未: refine した #== が BasicObject#!= の中まで効く (2026-10-04)
+- `refine Plain do; def ==(o) = :refined; end` の後の `a != b` が false（CRuby は true: #!= の中の == 呼び出しは refinement の外）。
+  korb_m_obj_neq が korb_send で == を送るとき、呼び出し元の refinement が見えている。
+
 ## 未: `[]` まわりの小さな互換差 (2026-10-04)
 - `"abc"[1, 2, 3]` が ArgumentError にならない（CRuby: wrong number of arguments (given 3, expected 1..2)）。
 - Hash の既定値ブロックが `h[:x]` の中で raise したとき、backtrace_locations に CRuby に無い `Hash#[]` の C フレームが 1 段多い（[1, 3, 3] vs [1, 3]）。
