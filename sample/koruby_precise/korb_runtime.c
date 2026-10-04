@@ -6473,6 +6473,8 @@ korb_fire_def_hook(CTX *c, korb_value *slots, korb_value mod, uint32_t mid, cons
 /* Fire the definition hook after a non-`def` definition (attr_*, define_method,
  * alias_method).  A singleton class routes to its attached object's
  * singleton_method_added instead, like CRuby. */
+korb_value korb_object_class(const struct korb_vm *const vm) { return korb_builtin_class_obj(vm, KORB_C_OBJECT); }
+
 RESULT
 korb_fire_method_added(CTX *c, korb_value *slots, korb_value definee, uint32_t mid)
 {

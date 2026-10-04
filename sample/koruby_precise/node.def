@@ -1496,6 +1496,12 @@ node_def(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, NODE *body, NODE 
         const korb_value dself = slots[self_off];
         const bool priv = c->vm->boot_done && KORB_OBJECT_P(dself) && VAL2OBJ(dself)->klass == KORB_NIL;
         korb_method_define(c, mid, body, entry, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info, locals_info, priv);
+        if (priv) {   /* a top-level def is an Object method: Object.method_added fires (CRuby) */
+            uint32_t fsym = 0, fline = 0;
+            korb_get_srcloc(c->vm, body, &fsym, &fline);
+            korb_flink_stage_at(c, &slots[self_off + 1], fline);
+            CHECK(korb_fire_method_added(c, slots + 1, korb_object_class(c->vm), mid));
+        }
     }
     return RESULT_OK(ID2SYM(mid));
 }

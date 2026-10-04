@@ -339,6 +339,7 @@ void   korb_class_def_method(CTX *c, korb_value klass, uint32_t mid, NODE *body,
 /* attr_reader/writer/accessor: define a getter/setter on the class. */
 void   korb_class_def_attr(CTX *c, korb_value klass, uint32_t mid, uint32_t ivar_sym, int is_writer);
 RESULT korb_fire_method_added(CTX *c, korb_value *slots, korb_value definee, uint32_t mid);
+korb_value korb_object_class(const struct korb_vm *vm);
 RESULT korb_fire_def_hook(CTX *c, korb_value *slots, korb_value mod, uint32_t mid, const char *hook, uint32_t hook_len);
 void   korb_class_undef_slot(struct korb_vm *vm, KorbClass *k, korb_value cls, uint32_t mid);
 /* parse-time descriptor list for node_attr (one entry per generated method). */
