@@ -15748,11 +15748,12 @@ korb_send_ic_dispatch(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
         if (UNLIKELY(argc != 0)) return korb_raise_attr_arity(c, slots, line, argc);
         return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));
     }
-    if (m->kind == KORB_METHOD_CFUNC && !m->uses_block &&       /* builtin (Array#<</[], String#..) — inline the CFUNC call, skip dispatch_method */
+    if (m->kind == KORB_METHOD_CFUNC &&                         /* builtin (Array#<</[], String#.., Proc#call) — inline the CFUNC call, skip dispatch_method */
         LIKELY(m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
         korb_value *const cbase = &slots[-(korb_sword_t)argc];
         const korb_value saved = framed ? korb_cframe_enter(c, cbase, m) : 0;
-        RESULT r = m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
+        RESULT r = m->uses_block ? m->rbfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc), NULL, NULL, NULL)   /* no block at this site */
+                                 : m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
         if (framed) korb_cframe_leave(c, saved);
         if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
         return r;
@@ -15878,12 +15879,20 @@ korb_send_builtin_klass(struct korb_vm *vm, const korb_value recv)
 {
     if (FIXNUM_P(recv)) return korb_builtin_class_obj(vm, KORB_C_INTEGER);
     if (FLONUM_P(recv)) return korb_builtin_class_obj(vm, KORB_C_FLOAT);
+    if (SYMBOL_P(recv)) return korb_builtin_class_obj(vm, KORB_C_SYMBOL);
+    if (recv == KORB_NIL) return korb_builtin_class_obj(vm, KORB_C_NIL);
+    if (recv == KORB_TRUE) return korb_builtin_class_obj(vm, KORB_C_TRUE);
+    if (recv == KORB_FALSE) return korb_builtin_class_obj(vm, KORB_C_FALSE);
     if (!AROH_IS_GC_OBJECT(recv) || (((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS)) return KORB_NIL;
-    switch (KORB_OBJ_TYPE(recv)) {
-      case KORB_OBJ_ARRAY:  return korb_builtin_class_obj(vm, KORB_C_ARRAY);
-      case KORB_OBJ_STRING: return korb_builtin_class_obj(vm, KORB_C_STRING);
-      case KORB_OBJ_HASH:   return korb_builtin_class_obj(vm, KORB_C_HASH);
-      default:              return KORB_NIL;
+    switch (KORB_OBJ_TYPE(recv)) {   /* tags whose korb_dispatch_class is korb_builtin_class_obj(korb_class_of(recv)) */
+      case KORB_OBJ_ARRAY:     return korb_builtin_class_obj(vm, KORB_C_ARRAY);
+      case KORB_OBJ_STRING:    return korb_builtin_class_obj(vm, KORB_C_STRING);
+      case KORB_OBJ_HASH:      return korb_builtin_class_obj(vm, KORB_C_HASH);
+      case KORB_OBJ_PROC:      return korb_builtin_class_obj(vm, KORB_C_PROC);
+      case KORB_OBJ_RANGE:     return korb_builtin_class_obj(vm, KORB_C_RANGE);
+      case KORB_OBJ_REGEXP:    return korb_builtin_class_obj(vm, KORB_C_REGEXP);
+      case KORB_OBJ_MATCHDATA: return korb_builtin_class_obj(vm, KORB_C_MATCHDATA);
+      default:                 return KORB_NIL;
     }
 }
 
@@ -15925,10 +15934,23 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
         /* `o.m(a)` of `def m(a, k: 1)`: no keywords to bind but the defaults (liquid's find_variable: 34k per iteration) */
         if (m->kind == KORB_METHOD_ISEQ && m->kw_info != NULL && korb_kw_fast_eligible(m) && !(argc != 0 && korb_kwargs_hash_p(slots[-1])))
             return korb_invoke_kw_simple(c, slots, m, argc, NULL, 0, korb_flink_line(flink), mid, recv, ic->def_class);
-    } else if (ic->kind == KORB_IC_INSTANCE && ic->dispatch != NULL && ic->serial == c->vm->method_serial &&
+    } else if (ic->kind == KORB_IC_INSTANCE && ic->serial == c->vm->method_serial && ic->m != NULL &&
                ic->klass != KORB_NIL && !korb_site_refined(c) && ic->klass == korb_send_builtin_klass(c->vm, recv)) {
         /* a Ruby method added to a builtin (liquid's String#to_liquid / Hash#to_liquid: 75k per iteration) */
-        return korb_invoke_entry_ic(c, slots, ic, argc, mid);
+        if (ic->dispatch != NULL) return korb_invoke_entry_ic(c, slots, ic, argc, mid);
+        /* a builtin's public C method (Proc#call, Range#each's siblings, ...): korb_send_cached_full found
+         * the class again and went through korb_send_ic_dispatch to get here */
+        struct korb_method *const m = ic->m;
+        if (m->kind == KORB_METHOD_CFUNC && (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
+            korb_value *const cbase = &slots[-(korb_sword_t)argc];
+            const bool framed = KORB_FLINK_FRAMED(flink);
+            const korb_value saved = LIKELY(framed) ? korb_cframe_enter(c, cbase, m) : 0;
+            const RESULT r = m->uses_block ? m->rbfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc), NULL, NULL, NULL)
+                                           : m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
+            if (LIKELY(framed)) korb_cframe_leave(c, saved);
+            if (LIKELY(r.state == KORB_NORMAL)) return r;
+            return korb_call_ret_cold(c, r, flink, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
+        }
     }
     return korb_send_cached_full(c, slots, mid, flink, argc, ic, caller_self);
 }
