@@ -15907,6 +15907,18 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
         struct korb_method *const m = ic->m;
         if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple && m->visibility == 0 && !c->vm->refinements_active))
             return korb_invoke_simple(c, slots, m, argc, korb_flink_line(flink), mid, recv, ic->def_class);
+        /* a class's public C method (Thread.current, Time.now, ...: railsbench 525k per iteration went through
+         * korb_send_cached_full and korb_dispatch_method): call it here, as the full send's instance hit does */
+        if (m->kind == KORB_METHOD_CFUNC && !m->uses_block && m->visibility == 0 && !c->vm->refinements_active &&
+            (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
+            korb_value *const cbase = &slots[-(korb_sword_t)argc];
+            const bool framed = KORB_FLINK_FRAMED(flink);
+            const korb_value saved = LIKELY(framed) ? korb_cframe_enter(c, cbase, m) : 0;
+            const RESULT r = m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
+            if (LIKELY(framed)) korb_cframe_leave(c, saved);
+            if (LIKELY(r.state == KORB_NORMAL)) return r;
+            return korb_call_ret_cold(c, r, flink, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
+        }
     } else if (KORB_CLASS_P(recv) && ic->kind == KORB_IC_NEW && ic->serial == c->vm->method_serial && ic->klass == recv &&
                mid == c->vm->mid_new && !c->vm->refinements_active && korb_class_new_kind(c, recv) == 1) {   /* psych: 2M per load */
         return korb_new_with_init(c, slots, flink, argc, ic->m, ic->def_class, recv, KORB_FLINK_FRAMED(flink));
