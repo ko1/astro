@@ -2188,24 +2188,27 @@ static RESULT korb_m_str_tr(CTX *c, korb_value *slots, korb_ref self, korb_slice
     uint32_t fromx[1024], tox[1024];
     uint32_t fn = korb_tr_expand_cp(korb_strbuf_data(fs->buf) + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 1024, bytes);
     uint32_t tn = korb_tr_expand_cp(korb_strbuf_data(ts->buf), ts->len, tox, 1024, bytes);
-    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
-    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     const KorbString *s = VAL2STR(KORB_REF_GET(self));      /* no GC during the scan */
+    /* each input char (>= 1 byte) becomes at most one 4-byte char: no stdio stream needed (it was fwrite per char) */
+    char sbuf[1024];
+    const size_t cap = (size_t)s->len * 4u + 1u;
+    char *const buf = cap <= sizeof sbuf ? sbuf : malloc(cap);
+    if (!buf) { fprintf(stderr, "koruby_precise: oom (tr)\n"); abort(); }
+    size_t sz = 0;
     for (uint32_t i = 0; i < s->len; ) {
         uint32_t cl; const uint32_t cp = korb_str_dec1(korb_strbuf_data(s->buf) + i, s->len - i, &cl, bytes);
         int idx = -1;
         for (uint32_t k = 0; k < fn; k++) if (fromx[k] == cp) { idx = (int)k; break; }
         bool match = neg ? (idx < 0) : (idx >= 0);
-        if (!match) { fwrite(korb_strbuf_data(s->buf) + i, 1, cl, ms); i += cl; continue; }   /* pass through verbatim */
+        if (!match) { memcpy(buf + sz, korb_strbuf_data(s->buf) + i, cl); sz += cl; i += cl; continue; }   /* pass through verbatim */
         i += cl;
         if (tn == 0) continue;                              /* delete */
-        char enc[4]; const uint32_t out_cp = neg ? tox[tn - 1] : tox[(uint32_t)idx < tn ? (uint32_t)idx : tn - 1];
-        if (bytes) fputc((int)(out_cp & 0xFFu), ms);
-        else fwrite(enc, 1, korb_utf8_encode(out_cp, enc), ms);
+        const uint32_t out_cp = neg ? tox[tn - 1] : tox[(uint32_t)idx < tn ? (uint32_t)idx : tn - 1];
+        if (bytes) buf[sz++] = (char)(out_cp & 0xFFu);
+        else sz += korb_utf8_encode(out_cp, buf + sz);
     }
-    fclose(ms);
     RESULT r = korb_str_new(c, slots, buf, (uint32_t)sz);
-    free(buf);
+    if (buf != sbuf) free(buf);
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_STR_ENC(KORB_REF_GET(self)));
     return r;
 }
