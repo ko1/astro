@@ -95,6 +95,7 @@ static uint32_t korb_enc_index_for_name(struct korb_vm *vm, const char *name) {
     /* Ruby matches encoding names case-insensitively ("binary" == "BINARY"), and
      * getting this wrong is silent: the name lands in the "other" registry and
      * the string reports some unrelated encoding. */
+    if (strcmp(name, "UTF-8") == 0) return KORB_ENC_UTF8;         /* the common spelling first (transcode / force_encoding ask per call) */
     if (strcasecmp(name, "ASCII-8BIT") == 0 || strcasecmp(name, "BINARY") == 0) return KORB_ENC_BINARY;
     if (strcasecmp(name, "US-ASCII") == 0 || strcasecmp(name, "ASCII") == 0 || strcasecmp(name, "ANSI_X3.4-1968") == 0) return KORB_ENC_USASCII;
     if (strcasecmp(name, "UTF-8") == 0 || strcasecmp(name, "UTF8") == 0) return KORB_ENC_UTF8;
@@ -121,6 +122,7 @@ static uint32_t korb_enc_index_for_name(struct korb_vm *vm, const char *name) {
 /* Look up only: the index a name already has, or UINT32_MAX.  force_encoding
  * uses it to skip re-validating a name the registry has already seen. */
 static uint32_t korb_enc_index_known(const struct korb_vm *vm, const char *name) {
+    if (strcmp(name, "UTF-8") == 0) return KORB_ENC_UTF8;         /* the spelling nearly every caller uses, before the case-folding scan */
     if (strcasecmp(name, "ASCII-8BIT") == 0 || strcasecmp(name, "BINARY") == 0) return KORB_ENC_BINARY;
     if (strcasecmp(name, "US-ASCII") == 0 || strcasecmp(name, "ASCII") == 0 || strcasecmp(name, "ANSI_X3.4-1968") == 0) return KORB_ENC_USASCII;
     if (strcasecmp(name, "UTF-8") == 0) return KORB_ENC_UTF8;   /* "UTF8" is NOT a CRuby alias: let find() reject it */
