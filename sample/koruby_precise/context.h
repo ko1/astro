@@ -1459,12 +1459,14 @@ struct korb_vm {
         uint64_t serial; korb_value klass; uint32_t mid;
         struct korb_method *m; korb_value def_class;
     } *mcache;
-    /* `super` resolution (receiver's dispatch class, calling entry, mid) → method.
-     * Same validity rule as mcache; saves re-linearizing the MRO per super call. */
+    /* `super` resolution (receiver's dispatch class, calling entry, mid) → method; saves re-linearizing
+     * the MRO per super call.  Valid while serial == method_serial - gc_serial_bumps: a GC forwards the
+     * current entries' classes instead of dropping them (it did at every GC: railsbench 95k misses per iteration) */
+#define KORB_SCACHE_N 1024u
     struct korb_scache_ent {
         uint64_t serial; korb_value klass; const struct korb_method *cur; uint32_t mid;
         struct korb_method *m; korb_value def_class;
-    } scache[256];
+    } scache[KORB_SCACHE_N];
     /* korb_method_undefed_p's answer for (dispatch class, mid), same validity rule: a name some undef named
      * (Rails undefs common ones) made every send / new dispatch walk the whole ancestry (railsbench 3.7%) */
     struct korb_ucache_ent { uint64_t serial; korb_value klass; uint32_t mid; bool ans; } ucache[512];
@@ -2005,6 +2007,12 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->str_nil_to_s);             \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->str_true_to_s);            \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->str_false_to_s);           \
+    /* the super cache's current entries survive the GC (their classes forwarded) */ \
+    for (uint32_t _si = 0; _si < KORB_SCACHE_N; _si++)                       \
+        if ((c)->vm->scache[_si].serial == (c)->vm->method_serial - (c)->vm->gc_serial_bumps) { \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->scache[_si].klass); \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->scache[_si].def_class); \
+        }                                                                    \
     /* class pointers may move/reuse this GC → invalidate method caches      \
      * (mcache + node callcaches all validate against method_serial). */     \
     (c)->vm->method_serial++;                                                \

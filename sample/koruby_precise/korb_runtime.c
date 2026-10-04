@@ -8152,15 +8152,16 @@ korb_super_find(CTX *c, uint32_t mid, korb_value entry_cell, korb_value self, ko
         return korb_super_find_slow(c, mid, entry_cell, self, out_def_class);
     struct korb_vm *const vm = c->vm;
     const korb_value dk = korb_dispatch_class(c, self);
-    const uint32_t h = (uint32_t)(((uintptr_t)dk >> 4) ^ ((uintptr_t)cur >> 4) ^ (mid * 0x9E3779B1u)) & 255u;
+    const uint32_t h = (uint32_t)(((uintptr_t)dk >> 4) ^ ((uintptr_t)cur >> 4) ^ (mid * 0x9E3779B1u)) & (KORB_SCACHE_N - 1u);
     struct korb_scache_ent *const e = &vm->scache[h];
-    if (e->serial == vm->method_serial && e->klass == dk && e->cur == cur && e->mid == mid) {
+    const uint64_t epoch = vm->method_serial - vm->gc_serial_bumps;   /* GCs forward the entries, so they do not count */
+    if (e->serial == epoch && e->klass == dk && e->cur == cur && e->mid == mid) {
         if (out_def_class) *out_def_class = e->def_class;
         return e->m;
     }
     korb_value found = KORB_NIL;
     struct korb_method *const m = korb_super_find_slow(c, mid, entry_cell, self, &found);
-    e->serial = vm->method_serial; e->klass = dk; e->cur = cur; e->mid = mid; e->m = m; e->def_class = found;
+    e->serial = vm->method_serial - vm->gc_serial_bumps; e->klass = dk; e->cur = cur; e->mid = mid; e->m = m; e->def_class = found;
     korb_mid_looked(vm, mid);
     korb_class_mark_looked(dk, mid);                      /* a later def of `mid` must bump the serial */
     if (out_def_class) *out_def_class = found;
