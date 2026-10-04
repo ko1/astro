@@ -6546,7 +6546,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
          * {kwargs}] via super_fwd. */
         const uint32_t total = np + (rest_slot >= 0 ? 1u : 0u) + pc + has_kw;
         if (!fn->block && depth == 0 && rest_slot < 0 && pc == 0 && !has_kw &&
-            (mf->method_mid != 0 || mf->dm_body) && mf == tc->frame) {
+            mf->method_mid != 0 && !mf->dm_body && mf == tc->frame) {   /* a plain `def` (a define_method body's params are not its first locals) */
             /* positional parameters only: copy them from the frame, no Array (node_super_fwd_lv) */
             tc->frame->uses_block = true;                 /* reserve the block trio, as emit_super_fwd */
             NODE *_l = ALLOC_node_super_fwd_lv(m_mid, line, -1 - tc->chain, -4 - tc->chain, -3 - tc->chain,
