@@ -1693,34 +1693,35 @@ node_attr(CTX *c, NODE *n, korb_value *slots, int32_t self_off, void *descs, uin
     return RESULT_OK(slots[0]);
 }
 
-// `super` — `self_off`/`dc_off` read the frame's self + def_class cells; mid is
-// the enclosing method's name (baked).  args staged like a call.
+// `super(a0..a2)` with plain positional args: they are staged like a call's (no Array), and the
+// method's incoming block is forwarded from its trio as node_super_fwd does.  `self_off`/`dc_off`
+// read the frame's self + def_class cells; mid is the enclosing method's name (baked).
 NODE_DEF
-node_super0(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off)
+node_super0(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off)
 {
     (void)n;
-    return korb_super(c, slots, mid, line, 0, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL, KORB_FBASE_AT(slots, dc_off));
+    return korb_super_staged(c, slots, mid, line, 0, slots[dc_off], slots[self_off], slots[biseq_off], slots[def_env_off], slots[cself_off], KORB_FBASE_AT(slots, dc_off));
 }
 
 NODE_DEF
-node_super1(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, korb_ref a0@child)
+node_super1(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, korb_ref a0@child)
 {
     (void)n; (void)a0;
-    return korb_super(c, slots, mid, line, 1, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL, KORB_FBASE_AT(slots, dc_off));
+    return korb_super_staged(c, slots, mid, line, 1, slots[dc_off], slots[self_off], slots[biseq_off], slots[def_env_off], slots[cself_off], KORB_FBASE_AT(slots, dc_off));
 }
 
 NODE_DEF
-node_super2(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, korb_ref a0@child, korb_ref a1@child)
+node_super2(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, korb_ref a0@child, korb_ref a1@child)
 {
     (void)n; (void)a0; (void)a1;
-    return korb_super(c, slots, mid, line, 2, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL, KORB_FBASE_AT(slots, dc_off));
+    return korb_super_staged(c, slots, mid, line, 2, slots[dc_off], slots[self_off], slots[biseq_off], slots[def_env_off], slots[cself_off], KORB_FBASE_AT(slots, dc_off));
 }
 
 NODE_DEF
-node_super3(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, korb_ref a0@child, korb_ref a1@child, korb_ref a2@child)
+node_super3(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, korb_ref a0@child, korb_ref a1@child, korb_ref a2@child)
 {
     (void)n; (void)a0; (void)a1; (void)a2;
-    return korb_super(c, slots, mid, line, 3, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL, KORB_FBASE_AT(slots, dc_off));
+    return korb_super_staged(c, slots, mid, line, 3, slots[dc_off], slots[self_off], slots[biseq_off], slots[def_env_off], slots[cself_off], KORB_FBASE_AT(slots, dc_off));
 }
 
 // `super(*arr)` — explicit super with splat args.  `args` is the built args

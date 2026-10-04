@@ -356,6 +356,21 @@ RESULT korb_do_prepend(CTX *c, korb_value *slots, korb_value klass, korb_slice m
 RESULT korb_super(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
                   korb_value def_class, korb_value self, NODE *block, korb_value *def_env, korb_value captured_self,
                   const korb_value *frame_top);
+/* node_super0..3: argc args staged at slots[-argc..-1]; bi/de/cs are the method's block trio cells */
+static inline RESULT korb_super_staged(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                                       korb_value dc, korb_value self, korb_value bi, korb_value de, korb_value cs,
+                                       const korb_value *frame_base) {
+    NODE *block = NULL; korb_value *def_env = NULL; korb_value cself = KORB_NIL;
+    if ((uintptr_t)bi & 1u) {                             /* a block was passed to this frame */
+        block = (NODE *)((uintptr_t)bi & ~(uintptr_t)1u);
+        def_env = (korb_value *)(uintptr_t)de;
+        cself = cs;
+    }
+    /* the window node_super_fwd hands korb_super: one cell above the unstaged cursor */
+    korb_value *const w = slots - argc + 1;
+    for (uint32_t i = argc; i-- > 0; ) w[i] = slots[(korb_sword_t)i - (korb_sword_t)argc];
+    return korb_super(c, w + argc, mid, line, argc, dc, self, block, def_env, cself, frame_base);
+}
 
 /* Exception hierarchy (korb_runtime.c) */
 void korb_init_exception_classes(CTX *c, korb_value *slots);
