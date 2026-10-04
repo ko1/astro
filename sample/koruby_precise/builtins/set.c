@@ -2976,6 +2976,17 @@ static RESULT korb_obj_singleton_for_eval(CTX *c, korb_value *slots, korb_value 
     if (stays && r.state == KORB_NORMAL && KORB_CLASS_P(r.value)) VAL2CLASS(r.value)->eval_only = 1;
     return r;
 }
+/* A block's instance_eval/instance_exec leaves a non-class receiver itself as the
+ * definee; `def` / `alias` / `undef` make its singleton here, when they need it.
+ * Materializing it on entry gave Rails' per-request controller a fresh class at
+ * every callback, and every method / super cache keyed on it missed (CRuby is lazy too). */
+RESULT korb_definee_class(CTX *c, korb_value *slots) {
+    const korb_value d = c->def_definee;
+    if (d == KORB_NIL || KORB_CLASS_P(d) || !korb_singleton_able(c->vm, d)) return RESULT_OK(d);
+    const RESULT r = korb_obj_singleton_for_eval(c, slots, d);
+    if (LIKELY(r.state == KORB_NORMAL)) c->def_definee = r.value;
+    return r;
+}
 static RESULT korb_obj_exec_impl(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself, bool singleton_definee) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
     const uint32_t argc = KORB_SLICE_LEN(a);
@@ -2986,10 +2997,10 @@ static RESULT korb_obj_exec_impl(CTX *c, korb_value *slots, korb_ref self, korb_
     slots[0] = KORB_REF_GET(self);                      /* new self = receiver (rooted self cell) */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = KORB_SLICE_GET(a, i);
     /* same default definee as instance_eval: `def` lands on the singleton */
+    /* a non-class receiver stays the definee itself: korb_definee_class makes its
+     * singleton at the first `def` (or raises then for a value that has none) */
     korb_value definee = slots[0];
-    if (singleton_definee && korb_singleton_able(c->vm, slots[0])) {
-        /* a value with no singleton is left as the definee itself: `def` inside
-         * raises then, not on entry (CRuby only fails at the definition) */
+    if (singleton_definee && KORB_CLASS_P(slots[0])) {
         const RESULT sr = korb_obj_singleton_for_eval(c, slots + 1 + argc, slots[0]);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;   /* nothing pushed yet */
         definee = sr.value;
@@ -3138,7 +3149,7 @@ static RESULT korb_obj_eval_impl(CTX *c, korb_value *slots, korb_ref self, korb_
      * there is a singleton method); class_eval/module_eval → the class itself
      * (a plain instance method).  Restored on the way out. */
     korb_value definee = slots[0];
-    if (singleton_definee && korb_singleton_able(c->vm, slots[0])) {   /* see korb_obj_exec_impl: `def` fails lazily */
+    if (singleton_definee && KORB_CLASS_P(slots[0])) {   /* see korb_obj_exec_impl: other receivers get theirs lazily */
         const RESULT sr = korb_obj_singleton_for_eval(c, slots + 1, slots[0]);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;       /* nothing pushed yet */
         definee = sr.value;

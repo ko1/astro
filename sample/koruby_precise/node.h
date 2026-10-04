@@ -327,6 +327,7 @@ uint32_t korb_const_in_ancestry_al(CTX *c, korb_value cref, uint32_t name_sym, k
 uint32_t korb_const_in_ancestry_scoped_al(CTX *c, korb_value recv, uint32_t name_sym, korb_value *al_mod);   /* scoped, same */    /* same; stops at a pending autoload */
 uint32_t korb_const_in_ancestry_scoped(const struct korb_vm *vm, korb_value recv, uint32_t name_sym);   /* Recv::NAME — skips Object */
 RESULT korb_obj_singleton(CTX *c, korb_value *slots, korb_value obj);
+RESULT korb_definee_class(CTX *c, korb_value *slots);   /* c->def_definee, an instance_eval receiver's singleton made on first use */
 /* `uses_block` operand of node_def/node_singleton_def: a small flags word. */
 #define KORB_DEFF_USES_BLOCK   1u
 #define KORB_DEFF_USES_BACKREF 2u

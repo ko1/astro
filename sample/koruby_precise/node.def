@@ -1435,6 +1435,7 @@ node_def(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, NODE *body, NODE 
      * IS a class (class body), else the enclosing method's owner — a nested
      * `def` lands in the class the outer method belongs to (CRuby). */
     korb_value definee = c->def_definee;
+    if (UNLIKELY(definee != KORB_NIL && !KORB_CLASS_P(definee))) definee = UNWRAP(korb_definee_class(c, slots));
     bool nested = false;
     if (definee == KORB_NIL) {
         definee = slots[self_off];
@@ -3316,7 +3317,9 @@ node_alias(CTX *c, NODE *n, korb_value *slots, uint32_t new_sym@sym, uint32_t ol
      * SINGLETON class, not self's class — `def foo; end; alias bar foo` in one
      * instance_exec block must find the `foo` it just defined.  (`alias_method`
      * is a Module method and keeps using its receiver.) */
-    const korb_value definee = KORB_CLASS_P(c->def_definee) ? c->def_definee : slots[self_off];
+    korb_value definee = c->def_definee;
+    if (UNLIKELY(definee != KORB_NIL && !KORB_CLASS_P(definee))) definee = UNWRAP(korb_definee_class(c, slots));
+    if (!KORB_CLASS_P(definee)) definee = slots[self_off];
     (void)n;
     korb_flink_stage_at(c, &slots[self_off + 1], line);   /* hand method_added this frame (see node_def) */
     return korb_do_alias(c, slots, definee, new_sym, old_sym);

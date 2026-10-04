@@ -16512,6 +16512,7 @@ void korb_mark_sdef(korb_value klass, uint32_t mid)
  * self, the enclosing method's owner, or Object at the top level. */
 RESULT korb_undef_cref(CTX *c, korb_value *slots, const korb_value self, const korb_value entry_cell, const uint32_t cref_name)
 {
+    if (UNLIKELY(c->def_definee != KORB_NIL && !KORB_CLASS_P(c->def_definee))) CHECK(korb_definee_class(c, slots));
     korb_value cls = KORB_CLASS_P(c->def_definee) ? c->def_definee : self;
     if (!KORB_CLASS_P(cls) && c->def_definee == KORB_NIL) {
         cls = korb_body_cref(c, self, entry_cell, cref_name);
