@@ -792,6 +792,8 @@ typedef struct KorbClass {
     uint8_t  mro_dup;                /* a module landed at two depths in this chain (rake, dry-types): the
                                       * segment DFS would answer from the shallow copy, so lookups here must
                                       * walk the deduped linearization.  Sticky, propagated on include. */
+    uint8_t  cext_alloc_yes;         /* korb_cext_has_alloc's answer, valid while cext_alloc_n == the vm's alloc_n */
+    uint32_t cext_alloc_n;           /* alloc_n + 1 at the time (0 = not asked); allocators are only added, superclasses fixed */
     uint64_t looked_mids;            /* bit (mid & 63): a method cache may hold mid resolved from this class */
     uint32_t serial;                 /* monotonic per-class id (GC-stable identity for #hash of anonymous Struct/Data classes) */
     struct korb_method **methods;    /* libc array of immortal entry ptrs (owner edge GC-forwarded) */

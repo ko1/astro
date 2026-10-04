@@ -2083,11 +2083,16 @@ static bool
 korb_cext_has_alloc(CTX *c, korb_value k)
 {
     const struct korb_cext_vm *const x = c->vm->cext;
-    if (x->alloc_n == 0) return false;
-    for (; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass)
+    if (x->alloc_n == 0 || !KORB_CLASS_P(k)) return false;
+    KorbClass *const kc = VAL2CLASS(k);
+    if (LIKELY(kc->cext_alloc_n == x->alloc_n + 1)) return kc->cext_alloc_yes;   /* every Class#new asks: Rails' deep chains made the walk 600 instructions */
+    bool yes = false;
+    for (korb_value a = k; !yes && KORB_CLASS_P(a); a = VAL2CLASS(a)->superclass)
         for (uint32_t i = 0; i < x->alloc_n; i++)
-            if (x->allocs[i].class_serial == VAL2CLASS(k)->serial) return true;
-    return false;
+            if (x->allocs[i].class_serial == VAL2CLASS(a)->serial) { yes = true; break; }
+    kc->cext_alloc_yes = yes;
+    kc->cext_alloc_n = x->alloc_n + 1;
+    return yes;
 }
 /* korb_obj_new for such a class: run the allocator under an extension frame */
 static RESULT
