@@ -961,6 +961,35 @@ static RESULT korb_m_ary_join(CTX *c, korb_value *slots, korb_ref self, korb_sli
         const korb_value ofs = korb_const_get(c->vm, korb_intern_lit(c->vm, "$,", 2));
         if (KORB_STRING_P(ofs)) slots[0] = ofs;                    /* warned above */
     }
+    {   /* all elements Strings (the usual case): size it, allocate once and copy — no stdio stream, no dispatch */
+        const KorbArray *const ar = SELF_ARY;
+        const korb_value *const it = korb_items_data(ar->items);
+        const uint32_t seplen = KORB_STRING_P(slots[0]) ? VAL2STR(slots[0])->len : 0;
+        uint64_t total = (uint64_t)seplen * (ar->len - 1);
+        uint32_t i = 0;
+        for (; i < ar->len && KORB_STRING_P(it[i]); i++) total += VAL2STR(it[i])->len;
+        if (i == ar->len && total < (1u << 31)) {
+            uint32_t jenc = KORB_JOIN_ENC_NONE, jbad[2] = {0, 0};
+            bool jasc = true;
+            for (uint32_t k = 0; k < ar->len; k++) {             /* the order korb_join_rec merges them in */
+                if (k != 0 && seplen != 0) korb_join_enc_merge(c, slots[0], &jenc, &jasc, jbad);
+                korb_join_enc_merge(c, it[k], &jenc, &jasc, jbad);
+            }
+            if (UNLIKELY(jenc == UINT32_MAX)) return korb_raise_enc_compat(c, slots + 1, jbad[0], jbad[1]);
+            slots[1] = KORB_REF_GET(self);
+            KorbString *const out = korb_str_alloc(c, slots + 2, (uint32_t)total);
+            const KorbArray *const a2 = VAL2ARY(slots[1]);       /* re-read after the alloc */
+            const korb_value *const it2 = korb_items_data(a2->items);
+            char *dst = korb_strbuf_data(out->buf);
+            for (uint32_t k = 0; k < a2->len; k++) {
+                if (k != 0 && seplen != 0) { memcpy(dst, korb_strbuf_data(VAL2STR(slots[0])->buf), seplen); dst += seplen; }
+                const KorbString *const e = VAL2STR(it2[k]);
+                memcpy(dst, korb_strbuf_data(e->buf), e->len); dst += e->len;
+            }
+            if (jenc != KORB_JOIN_ENC_NONE) KORB_STR_ENC_SET((korb_value)out, jenc);
+            return RESULT_OK((korb_value)out);
+        }
+    }
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
