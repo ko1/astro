@@ -1576,6 +1576,7 @@ static NODE *kp_make_binding_node_x(struct kp_ctx *tc, uint32_t line, uint32_t u
 extern const struct NodeKind kind_node_hash_merge;   /* hash literal ** splat chain */
 extern const struct NodeKind kind_node_dstr_concat;  /* string-interp concat chain */
 extern const struct NodeKind kind_node_hash_set;     /* hash-literal set chain */
+extern const struct NodeKind kind_node_hash_set_sym; /* hash-literal set chain, distinct Symbol keys */
 extern const struct NodeKind kind_node_range_new;    /* range literal */
 
 enum kp_binop {
@@ -4383,6 +4384,21 @@ kp_warn_dup_hash_keys(struct kp_ctx *tc, struct pm_node **assocs, size_t n, NODE
     return ALLOC_node_dupkey_warn(warns, wcnt, h);
 }
 
+/* Every one of assocs[0..n) is `sym: v` with a Symbol literal key, no two alike: no key can
+ * equal another, so node_hash_set_sym may append without searching. */
+static bool
+kp_hash_sym_keys_distinct(struct kp_ctx *tc, struct pm_node **assocs, const size_t n)
+{
+    korb_value seen[KORB_HASH_INDEX_THRESHOLD];
+    for (size_t i = 0; i < n; i++) {
+        if (!PM_NODE_TYPE_P(assocs[i], PM_ASSOC_NODE) ||
+            !PM_NODE_TYPE_P(((const pm_assoc_node_t *)assocs[i])->key, PM_SYMBOL_NODE)) return false;
+        seen[i] = transduce(tc, ((const pm_assoc_node_t *)assocs[i])->key)->u.node_lit.v;   /* interned the way the literal is */
+        for (size_t j = 0; j < i; j++) if (seen[j] == seen[i]) return false;
+    }
+    return true;
+}
+
 /* Hash literal `{k => v, ...}` → inside-out set chain (same shape as
  * build_array): hash_set(hash_set(hash_new(n), k0, v0), k1, v1)... */
 static NODE *
@@ -4408,6 +4424,13 @@ build_hash(struct kp_ctx *tc, struct pm_node **assocs, size_t n, uint32_t capa)
         return ALLOC_node_hash_merge(acc, src);
     }
     const pm_assoc_node_t *as = (const pm_assoc_node_t *)last;
+    if (n < KORB_HASH_INDEX_THRESHOLD && kp_hash_sym_keys_distinct(tc, assocs, n)) {   /* no duplicate search */
+        const uint32_t ksym = SYM2ID(transduce(tc, as->key)->u.node_lit.v);
+        NODE *acc, *val;
+        WITH_CHAIN(tc, kind_node_hash_set_sym.slot_count, (acc = build_hash(tc, assocs, n - 1, capa),
+                                                           val = transduce(tc, as->value)));
+        return ALLOC_node_hash_set_sym(ksym, acc, val);
+    }
     NODE *acc, *key, *val;
     uint32_t sc = kind_node_hash_set.slot_count;
     WITH_CHAIN(tc, sc, (acc = build_hash(tc, assocs, n - 1, capa),

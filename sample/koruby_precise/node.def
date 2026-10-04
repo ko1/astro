@@ -3214,6 +3214,25 @@ node_hash_set(CTX *c, NODE *n, korb_value *slots, korb_ref hash@child, korb_ref 
     return korb_hash_set(c, slots, hash, key, val);
 }
 
+// `{a: v, ...}` whose keys are all distinct Symbol literals (the parser checked): append the pair
+// without the duplicate search korb_hash_set does.  A grown / indexed / hinted hash goes the usual way.
+NODE_DEF
+node_hash_set_sym(CTX *c, NODE *n, korb_value *slots, uint32_t key@sym, korb_ref hash@child, korb_value val@child)
+{
+    (void)n;
+    KorbHash *const h = VAL2HASH(KORB_REF_GET(hash));
+    if (LIKELY(h->len < h->capa && h->len + 1 < KORB_HASH_INDEX_THRESHOLD && h->idx_mask == 0 && h->id_mask == 0 &&
+               h->khints == NULL && !(h->head.flags & KORB_FL_CMP_BY_ID))) {
+        KorbArrayItems *const it = h->items;
+        ARO_STORE(c, it, &korb_items_data(it)[2 * h->len], ID2SYM(key));
+        ARO_STORE(c, it, &korb_items_data(it)[2 * h->len + 1], val);
+        h->len++;
+        return RESULT_OK(KORB_REF_GET(hash));
+    }
+    slots[0] = ID2SYM(key);
+    return korb_hash_set(c, slots + 1, hash, KORB_REF_AT(&slots[0]), val);
+}
+
 NODE_DEF
 node_hash_merge(CTX *c, NODE *n, korb_value *slots, korb_ref hash@child, korb_value src@child)
 {

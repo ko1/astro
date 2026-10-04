@@ -518,7 +518,6 @@ static RESULT korb_m_rat_integerp(CTX *c, korb_value *slots, korb_ref self, korb
 static void korb_class_qname_into(CTX *c, korb_value cls, char *out, size_t outsz);   /* defined below */
 static RESULT korb_raise_attr_arity(CTX *c, korb_value *slots, uint32_t line, uint32_t argc);   /* defined below */
 static RESULT korb_hash_index_build(CTX *c, korb_value *slots, korb_ref href);   /* fwd */
-#define KORB_HASH_INDEX_THRESHOLD 16u
 /* compare_by_identity bucket: the address (moves with the GC, which drops the index) */
 static inline uint64_t korb_id_hash(korb_value v) { uint64_t x = (uint64_t)v; x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 29; return x; }
 int32_t korb_hash_find(const KorbHash *h, korb_value key);   /* defined below; non-static so node_eval.c's Hash#[] fast path can call it (LTO still inlines) */

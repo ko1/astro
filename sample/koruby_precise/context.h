@@ -710,6 +710,7 @@ typedef struct KorbHash {
  * rebuilds.  (NOINDEX, if set, stays set.) */
 #define KORB_HASH_DROP_INDEX(h) do { ARO_GC_RAW_STORE(&(h)->index, NULL); (h)->idx_mask = 0; (h)->id_mask = 0; \
                                      KORB_HASH_DROP_KHINTS(h); } while (0)
+#define KORB_HASH_INDEX_THRESHOLD 16u   /* pairs below this are found by a linear scan (no index) */
 #define KORB_HASH_DROP_KHINTS(h) do { ARO_GC_RAW_STORE(&(h)->khints, NULL); \
                                       (h)->khint_len = 0; (h)->khint_capa = 0; \
                                       KORB_HASH_DROP_KINDEX(h); } while (0)
