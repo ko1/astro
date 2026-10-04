@@ -16236,6 +16236,50 @@ korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, 
     return korb_cfunc_ic_call(c, slots, mid, line, argc, ic, klass, out);
 }
 
+/* The same deopt for any other non-class receiver and any public method — a Ruby `def []`
+ * (Rack::Headers, OrderedOptions) or a C one on Thread / MatchData / a builtin subclass —
+ * through the node's inline cache.  korb_send looked the method up on every call (railsbench:
+ * 260k uncached `[]` per iteration).  The window is relocated as korb_send_impl_vis does
+ * (recv/args moved up three cells under a fresh header), then the method is dispatched. */
+bool
+korb_deopt_send_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                   struct korb_inlcache *ic, RESULT *out)
+{
+    struct korb_vm *const vm = c->vm;
+    const korb_value recv = slots[-(korb_sword_t)argc - 1];
+    if (KORB_CLASS_P(recv) || korb_site_refined(c)) return false;
+    const korb_value klass = (KORB_OBJECT_P(recv) && VAL2OBJ(recv)->klass != KORB_NIL) ? korb_obj_dispatch_klass(vm, recv)
+                                                                                     : korb_dispatch_class(c, recv);
+    if (!KORB_CLASS_P(klass)) return false;
+    struct korb_method *m;
+    korb_value def;
+    if (ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass) {
+        m = ic->m; def = ic->def_class;
+    } else {
+        def = KORB_NIL;
+        m = korb_mcache_find(vm, klass, mid, &def);
+        if (m == NULL || m->visibility != 0) return false;
+        korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def, KORB_IC_INSTANCE, UINT32_MAX);
+    }
+    if (m == NULL || m->visibility != 0) return false;
+    if (m->kind == KORB_METHOD_CFUNC && !m->uses_block && (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
+        korb_value *const cbase = &slots[-(korb_sword_t)argc];   /* a C method needs no frame header: as korb_cfunc_ic_call */
+        c->carry_base = NULL;
+        const RESULT r = m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
+        if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
+        *out = r;
+        return true;
+    }
+    memmove(slots + 3, slots - (korb_sword_t)argc - 1, ((size_t)argc + 1) * sizeof(korb_value));
+    slots[0] = 0;                                         /* callee base[-4] (identity) */
+    slots[1] = c->carry_base ? korb_flink_from_base(c, c->carry_base, c->carry_line_bits, &slots[1])
+                             : korb_flink_cur_cframe(c, &slots[1]);
+    c->carry_base = NULL;
+    slots[2] = 0;                                         /* callee base[-2] (EP) */
+    *out = korb_dispatch_method(c, slots + argc + 4, m, mid, line, argc, def, NULL, NULL, NULL, true);
+    return true;
+}
+
 bool korb_kind_of_p(CTX *c, korb_value obj, korb_value klass) { return korb_obj_kind_of_p(c, obj, klass); }
 static RESULT korb_m_class_case_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd (builtins/set.c): Module#=== */
 /* `when SomeClass` whose === is still the builtin Module#===: the is_a? answer without the
@@ -16289,7 +16333,8 @@ korb_cfunc_ic_call(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
         return false;
     korb_value *const cbase = &slots[-(korb_sword_t)argc];
     const RESULT r = m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
-    *out = LIKELY(r.state == KORB_NORMAL) ? r : korb_call_ret_cold(c, r, line, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
+    if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);   /* `line` is a line, not a flink */
+    *out = r;
     return true;
 }
 

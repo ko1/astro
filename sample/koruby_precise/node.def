@@ -3097,6 +3097,7 @@ node_aref(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@chil
     korb_flink_stage(c, flink, slots);
     RESULT dr;
     if (korb_deopt_cfunc_cached(c, slots + 1, c->vm->mid_aref, korb_flink_line(flink), 1, ic, &dr)) { c->carry_base = NULL; return dr; }
+    if (korb_deopt_send_ic(c, slots + 1, c->vm->mid_aref, korb_flink_line(flink), 1, ic, &dr)) return dr;
     return korb_send(c, slots + 1, c->vm->mid_aref, korb_flink_line(flink), 1);
 }
 
@@ -3124,6 +3125,10 @@ node_aset(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@chil
     RESULT dr;
     if (korb_deopt_cfunc_cached(c, slots + 3, c->vm->mid_aset, korb_flink_line(flink), 2, ic, &dr)) {
         c->carry_base = NULL;
+        CHECK(dr);
+        return RESULT_OK(slots[2]);
+    }
+    if (korb_deopt_send_ic(c, slots + 3, c->vm->mid_aset, korb_flink_line(flink), 2, ic, &dr)) {
         CHECK(dr);
         return RESULT_OK(slots[2]);
     }

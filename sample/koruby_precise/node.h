@@ -447,6 +447,8 @@ RESULT korb_call_kw(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, stru
 uint8_t korb_sdi_kind(const struct korb_vm *vm, uint32_t mid, uint32_t argc);   /* parse: node_send → enum korb_sdi */
 const char *korb_sdi_eval_name(const struct Node *n, const char *base);          /* SPECIALIZE: the EVAL its SD calls */
 void korb_sdi_init(CTX *c);                                                      /* after boot: fill vm->sdi_fn */
+bool korb_deopt_send_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                       struct korb_inlcache *ic, RESULT *out);   /* the same for any other non-class receiver / public method */
 bool korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              struct korb_inlcache *ic, RESULT *out);   /* node_aref / node_aset deopt on String/Array/Hash */
 bool korb_deopt_cfunc_cached_any(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,

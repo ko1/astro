@@ -4,6 +4,15 @@
 既知バグ** の作業リスト。
 
 
+## 未: `[]` まわりの小さな互換差 (2026-10-04)
+- `"abc"[1, 2, 3]` が ArgumentError にならない（CRuby: wrong number of arguments (given 3, expected 1..2)）。
+- Hash の既定値ブロックが `h[:x]` の中で raise したとき、backtrace_locations に CRuby に無い `Hash#[]` の C フレームが 1 段多い（[1, 3, 3] vs [1, 3]）。
+  （行番号 0 になっていた不具合は ea2307d7 の次の commit で修正: korb_cfunc_ic_call が flink 用の関数に生の行番号を渡していた）
+
+## 未: private な `[]` / `[]=` が `obj[k]` / `obj[k] = v` から呼べてしまう (2026-10-04)
+- CRuby は NoMethodError（private method '[]' called）。node_aref / node_aset の deopt が korb_send（可視性を見ない内部送り）に落ちるため。
+  `self[k]` は private でも許されるので、直すにはパーサから「受け手が self リテラルか」を渡す必要がある。
+
 ## 未: 利用者の `def self.[]` から組み込みの Array.[] / Hash.[] / Set.[] へ super できない (2026-10-04)
 - `class Hd < Hash; def self.[](h) = super(...); end` が `super: no superclass method '[]'`（CRuby は Hash.[] に届く）。
   組み込みの `Klass[]` は korb_send_impl の特例で表エントリが無いため korb_super_find が見つけられない。
