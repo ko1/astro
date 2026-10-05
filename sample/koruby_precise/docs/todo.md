@@ -32,9 +32,10 @@
   組み込みの `Klass[]` は korb_send_impl の特例で表エントリが無いため korb_super_find が見つけられない。
   super_new_skip と同じく、特例を呼ぶ時に利用者の self.[] を飛ばす印が要る。
 
-## 未: t/hand/hash_mutated_key.rb がまれに CRuby と食い違う (2026-10-04 記録、3 回目)
+## 未: t/hand/hash_mutated_key.rb がまれに CRuby と食い違う (2026-10-04 記録、2026-10-05 に 4 回目)
 - 挿入後に変更したキーで引くと、CRuby は（挿入時の #hash のバケットなので）見つからないが、まれに koruby は見つける
   （出力の 1・3・4 行目）。make test の全体（並列・負荷下）で g6c43・gf8ce・2026-10-04 の 3 回。単独では 200 回・40 回とも再現しない。
+- 4 回目: gemb4（koruby-embhash a382ce46、負荷 20 超）で 6 行目。同じ binary と 9783214a を単独で 40 回ずつ流して 0 回。
 - 挿入時の hash を覚える khints が、何かの拍子に捨てられて（構造変更で落ちる）線形の eql? 探索になると見つかってしまう、と推測（未確認）。
   GC の時機か並列実行の何かで khints の状態が変わる経路を探す。
 - 同系統の疑い: t/hand/builtin_subclass_hash_eql_caseeq.rb（独自 #hash / #eql? の Array サブクラスをキーにする）が
