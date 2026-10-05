@@ -448,6 +448,9 @@ bool korb_kind_of_p(CTX *c, korb_value obj, korb_value klass);   /* obj.is_a?(kl
 RESULT korb_send_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc, NODE *block,
                         korb_value *def_env, korb_value *captured_self, korb_value flink, korb_value caller_self,
                         struct korb_inlcache *ic);   /* node_send_blk */
+RESULT korb_send_blk_fwd(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc, NODE *block,
+                         korb_value *def_env, korb_value *captured_self, korb_value flink, korb_value caller_self,
+                         struct korb_inlcache *ic);   /* node_send_blkfwd: the method's own block passed on */
 RESULT korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
                         struct korb_inlcache *ic, korb_value caller_self);   /* caller_self = KORB_UNDEF → no visibility check */
 /* `site` is the call node, or NULL when there is none; read ONLY on the
@@ -552,6 +555,9 @@ RESULT korb_call(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
 RESULT korb_call_blk(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
                      struct korb_callcache *cc, uint32_t argc,
                      korb_value self, NODE *block, korb_value *def_env, korb_value *captured_self);
+RESULT korb_call_blk_fwd(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
+                         struct korb_callcache *cc, uint32_t argc,
+                         korb_value self, NODE *block, korb_value *def_env, korb_value *captured_self);   /* node_call_blkfwd */
 
 /* Coerce a `&obj` block argument to a Proc (obj.to_proc), writing it back to *pslot. */
 RESULT korb_blockarg_to_proc(CTX *c, korb_value *slots, korb_value *pslot, uint32_t line);

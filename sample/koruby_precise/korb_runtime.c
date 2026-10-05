@@ -13289,6 +13289,18 @@ static inline bool korb_break_orphan_p(const CTX *c, korb_value *const def_env, 
     if (c->break_blk != NULL && c->break_blk != VAL2PROC(*captured_self)->iseq) return false;   /* another block's break passing through */
     return korb_proc_break_orphan(c, VAL2PROC(*captured_self), from);
 }
+/* korb_call_blk for a block the method received and passes on as is (node_call_blkfwd): its break is
+ * not this call's. */
+RESULT
+korb_call_blk_fwd(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
+                  struct korb_callcache *cc, uint32_t argc,
+                  korb_value self, NODE *block, korb_value *def_env, korb_value *captured_self)
+{
+    RESULT r = korb_call_impl(c, slots, mid, line, cc, argc, self, block, def_env, captured_self, NULL);
+    if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(c, def_env, captured_self, korb_link_base(c, slots - (korb_sword_t)argc - 3)))
+        return korb_raise_break_lje(c, slots, r.value);
+    return r;
+}
 RESULT
 korb_call_blk(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
               struct korb_callcache *cc, uint32_t argc,
@@ -16186,17 +16198,28 @@ korb_send_cached_full(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
     return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL, framed);
 }
 
+static RESULT korb_send_blk_x(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc, NODE *block,
+                              korb_value *def_env, korb_value *captured_self, korb_value flink, korb_value caller_self, bool own);
 RESULT
 korb_send_blk(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
               uint32_t argc, NODE *block, korb_value *def_env, korb_value *captured_self, korb_value flink,
               korb_value caller_self)
+{
+    return korb_send_blk_x(c, slots, mid, line, argc, block, def_env, captured_self, flink, caller_self, true);
+}
+/* `own`: this site wrote the block, so a `break` from it ends this call.  A block the method received
+ * and passes on as is (node_send_blkfwd) belongs to whoever wrote it: its break passes through. */
+static RESULT
+korb_send_blk_x(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
+                uint32_t argc, NODE *block, korb_value *def_env, korb_value *captured_self, korb_value flink,
+                korb_value caller_self, const bool own)
 {
     /* `flink` is the site's baked link when its window has a header cell (the
      * distance is measured from that cell); a splat site passes 0 and staged its
      * link itself.  Staging from the baked value is a subtract, not a walk. */
     if (flink != 0) korb_flink_stage(c, flink, slots - (korb_sword_t)argc - 3);
     RESULT r = korb_send_impl_vis(c, slots, mid, line, argc, block, def_env, captured_self, caller_self);
-    if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;   /* `break [v]` in the block = call's value (only if this site gave the block) */
+    if (own && r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;   /* `break [v]` in the block = call's value (only if this site gave the block) */
     if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(c, def_env, captured_self, korb_link_base(c, slots - (korb_sword_t)argc - 3))) return korb_raise_break_lje(c, slots, r.value);
     return r;
 }
@@ -16244,10 +16267,31 @@ korb_invoke_blk(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc,
  * every call (each / fetch / find / map in the Rails benchmarks; a block call was 6x YJIT).
  * Class receivers (their `new` / `[]` special cases), the send family, refined sites,
  * private / protected and misses take the full send. */
+static inline __attribute__((always_inline)) RESULT
+korb_send_blk_ic_x(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
+                   uint32_t argc, NODE *block, korb_value *def_env, korb_value *captured_self, korb_value flink,
+                   korb_value caller_self, struct korb_inlcache *ic, const bool own);
 RESULT
 korb_send_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
                  uint32_t argc, NODE *block, korb_value *def_env, korb_value *captured_self, korb_value flink,
                  korb_value caller_self, struct korb_inlcache *ic)
+{
+    return korb_send_blk_ic_x(c, slots, mid, line, argc, block, def_env, captured_self, flink, caller_self, ic, true);
+}
+/* `recv.m(args, &blk)` where blk is the method's own block parameter, never read otherwise: the trio the
+ * method received goes on as is (CRuby's block param proxy) — no Proc, no escaped env.  Its break is not
+ * this call's (node_send_blkfwd). */
+RESULT
+korb_send_blk_fwd(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
+                  uint32_t argc, NODE *block, korb_value *def_env, korb_value *captured_self, korb_value flink,
+                  korb_value caller_self, struct korb_inlcache *ic)
+{
+    return korb_send_blk_ic_x(c, slots, mid, line, argc, block, def_env, captured_self, flink, caller_self, ic, false);
+}
+static inline __attribute__((always_inline)) RESULT
+korb_send_blk_ic_x(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
+                   uint32_t argc, NODE *block, korb_value *def_env, korb_value *captured_self, korb_value flink,
+                   korb_value caller_self, struct korb_inlcache *ic, const bool own)
 {
     struct korb_vm *const vm = c->vm;
     const korb_value recv = slots[-(korb_sword_t)argc - 1];
@@ -16276,14 +16320,14 @@ korb_send_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
                     : (m->simple_blk && argc == (uint32_t)m->params_cnt && LIKELY(!vm->refinements_active))
                     ? korb_invoke_blk(c, slots, m, argc, line, mid, block, def_env, KORB_CSELF_VAL(captured_self))
                     : korb_invoke_method(c, slots, m, argc, line, mid, recv, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
-                if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;
+                if (own && r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;
                 if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(c, def_env, captured_self, korb_link_base(c, slots - (korb_sword_t)argc - 3)))
                     return korb_raise_break_lje(c, slots, r.value);
                 return r;
             }
         }
     }
-    return korb_send_blk(c, slots, mid, line, argc, block, def_env, captured_self, flink, caller_self);
+    return korb_send_blk_x(c, slots, mid, line, argc, block, def_env, captured_self, flink, caller_self, own);
 }
 
 /* A type-fast-path node's deopt (node_aref / node_aset) on a plain String / Array / Hash:

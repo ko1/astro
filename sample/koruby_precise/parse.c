@@ -63,6 +63,7 @@ struct kp_frame {
     int32_t  fwd_blk_slot;    /* `def m(...)` → synth local holding the caller's block as a Proc (-1 = none) */
     int32_t  anon_rest_slot;  /* `def m(*)` → synth local holding the anonymous rest; bare `*` forwards it (-1 = none) */
     int32_t  anon_blk_slot;   /* `def m(&)` → synth local holding the block as a Proc; bare `&` forwards it (-1 = none) */
+    pm_constant_id_t blk_fwd_name; /* `def m(&blk)` whose blk is only passed on as `&blk` (kp_blk_passthru): no Proc is made, the calls forward the trio (0 = none) */
     int32_t  anon_kwrest_slot;/* `def m(**)` → synth local holding the collected keywords; bare `**` forwards it (-1 = none) */
     int32_t  method_rest_slot;/* `def m(*rest)` → the rest param's local slot, for forwarding super (-1 = none) */
     int32_t  method_post_base;/* `def m(*rest, a, b)` → first post-param slot, for forwarding super (-1 = none) */
@@ -572,6 +573,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->synth_cnt = 0;
     f->uses_block = false;
     f->uses_backref = false;
+    f->blk_fwd_name = 0;
     f->block_backref = false;
     f->it_param = false;
     f->module_function_mode = false;
@@ -1140,6 +1142,103 @@ build_rescue_chain(struct kp_ctx *tc, const pm_rescue_node_t *rc)
         next = nd;
     }
     return next;
+}
+
+/* A call shape node_send_blkfwd / node_call_blkfwd take: plain positional arguments (no splat, keywords,
+ * `...` forwarding), no `&.`.  kp_blk_passthru and the call compilation must agree on it. */
+static bool
+kp_blkfwd_call_shape_p(const pm_call_node_t *cn)
+{
+    if (PM_NODE_FLAG_P((const pm_node_t *)cn, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) return false;
+    if (cn->arguments)
+        for (size_t i = 0; i < cn->arguments->arguments.size; i++) {
+            const pm_node_t *const a = cn->arguments->arguments.nodes[i];
+            if (PM_NODE_TYPE_P(a, PM_SPLAT_NODE) || PM_NODE_TYPE_P(a, PM_KEYWORD_HASH_NODE) ||
+                PM_NODE_TYPE_P(a, PM_FORWARDING_ARGUMENTS_NODE) || PM_NODE_TYPE_P(a, PM_BLOCK_ARGUMENT_NODE))
+                return false;
+        }
+    return true;
+}
+static bool
+kp_cid_is(struct kp_ctx *tc, pm_constant_id_t cid, const char *name)
+{
+    const pm_constant_t *const ct = pm_parser_constant(tc->parser, cid);
+    const size_t n = strlen(name);
+    return pm_constant_length(ct) == n && memcmp(pm_constant_start(ct), name, n) == 0;
+}
+struct kp_bpt { struct kp_ctx *tc; pm_constant_id_t name; uint32_t depth; bool ok; };
+static bool
+kp_bpt_visit(const pm_node_t *node, void *data)
+{
+    struct kp_bpt *const st = data;
+    if (!st->ok) return false;
+    switch (PM_NODE_TYPE(node)) {
+      case PM_DEF_NODE: case PM_CLASS_NODE: case PM_MODULE_NODE: case PM_SINGLETON_CLASS_NODE:
+        return false;                                    /* a new scope: the method's locals are not visible */
+      case PM_BLOCK_NODE: case PM_LAMBDA_NODE:
+        st->depth++;
+        pm_visit_child_nodes(node, kp_bpt_visit, data);
+        st->depth--;
+        return false;
+      case PM_CALL_NODE: {
+        const pm_call_node_t *const cn = (const pm_call_node_t *)node;
+        if (kp_cid_is(st->tc, cn->name, "binding") || kp_cid_is(st->tc, cn->name, "eval") ||
+            kp_cid_is(st->tc, cn->name, "local_variables")) { st->ok = false; return false; }
+        if (cn->block && PM_NODE_TYPE_P(cn->block, PM_BLOCK_ARGUMENT_NODE)) {
+            const pm_node_t *const ex = ((const pm_block_argument_node_t *)cn->block)->expression;
+            if (ex && PM_NODE_TYPE_P(ex, PM_LOCAL_VARIABLE_READ_NODE) &&
+                ((const pm_local_variable_read_node_t *)ex)->name == st->name &&
+                ((const pm_local_variable_read_node_t *)ex)->depth == st->depth) {
+                if (st->depth != 0 || !kp_blkfwd_call_shape_p(cn)) { st->ok = false; return false; }
+                if (cn->receiver) pm_visit_node(cn->receiver, kp_bpt_visit, data);   /* everything but the `&blk` */
+                if (cn->arguments) pm_visit_node((const pm_node_t *)cn->arguments, kp_bpt_visit, data);
+                return false;
+            }
+        }
+        return true;
+      }
+      case PM_LOCAL_VARIABLE_READ_NODE:
+        if (((const pm_local_variable_read_node_t *)node)->name == st->name &&
+            ((const pm_local_variable_read_node_t *)node)->depth == st->depth) st->ok = false;
+        return false;
+      case PM_LOCAL_VARIABLE_WRITE_NODE: case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE:
+      case PM_LOCAL_VARIABLE_AND_WRITE_NODE: case PM_LOCAL_VARIABLE_OR_WRITE_NODE:
+      case PM_LOCAL_VARIABLE_TARGET_NODE: {
+        pm_constant_id_t nm; uint32_t dp;
+        switch (PM_NODE_TYPE(node)) {
+          case PM_LOCAL_VARIABLE_WRITE_NODE: nm = ((const pm_local_variable_write_node_t *)node)->name; dp = ((const pm_local_variable_write_node_t *)node)->depth; break;
+          case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE: nm = ((const pm_local_variable_operator_write_node_t *)node)->name; dp = ((const pm_local_variable_operator_write_node_t *)node)->depth; break;
+          case PM_LOCAL_VARIABLE_AND_WRITE_NODE: nm = ((const pm_local_variable_and_write_node_t *)node)->name; dp = ((const pm_local_variable_and_write_node_t *)node)->depth; break;
+          case PM_LOCAL_VARIABLE_OR_WRITE_NODE: nm = ((const pm_local_variable_or_write_node_t *)node)->name; dp = ((const pm_local_variable_or_write_node_t *)node)->depth; break;
+          default: nm = ((const pm_local_variable_target_node_t *)node)->name; dp = ((const pm_local_variable_target_node_t *)node)->depth; break;
+        }
+        if (nm == st->name && dp == st->depth) { st->ok = false; return false; }
+        return true;
+      }
+      default:
+        return true;
+    }
+}
+/* `def m(&blk)` whose blk only ever appears as the `&blk` of a call in the method's own body (not in a
+ * block, no binding / eval): the method never needs the Proc — node_send_blkfwd / node_call_blkfwd pass
+ * the received block on as is, which is CRuby's block param proxy.  railsbench made ~91 Procs (and as
+ * many escaped envs) a request in node_blkparam for Rack's fetch_header, ActiveModel's _read_attribute,
+ * MonitorMixin#synchronize … */
+static bool
+kp_blk_passthru(struct kp_ctx *tc, const pm_node_t *body, pm_constant_id_t name)
+{
+    if (body == NULL) return true;
+    struct kp_bpt st = { tc, name, 0, true };
+    pm_visit_node(body, kp_bpt_visit, &st);
+    return st.ok;
+}
+/* `&blk` at a call: the passed-on block of a kp_blk_passthru method */
+static bool
+kp_blkfwd_arg_p(const struct kp_ctx *tc, const pm_block_argument_node_t *ba)
+{
+    return tc->frame->blk_fwd_name != 0 && ba->expression && PM_NODE_TYPE_P(ba->expression, PM_LOCAL_VARIABLE_READ_NODE) &&
+           ((const pm_local_variable_read_node_t *)ba->expression)->name == tc->frame->blk_fwd_name &&
+           ((const pm_local_variable_read_node_t *)ba->expression)->depth == 0;
 }
 
 /* true if the constant-pool name is a bindable variable — i.e. NOT underscore
@@ -2517,6 +2616,18 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
          * forwards the enclosing `def m(&)`'s block straight from its synth slot. */
         if (PM_NODE_TYPE_P(cn->block, PM_BLOCK_ARGUMENT_NODE)) {
             const pm_block_argument_node_t *ba = (const pm_block_argument_node_t *)cn->block;
+            if (kp_blkfwd_arg_p(tc, ba)) {      /* the method's own block passed on: its trio, no Proc */
+                const uint32_t cnt = 1u + (uint32_t)argc;
+                NODE **argv = malloc(sizeof(NODE *) * cnt);
+                if (!argv) abort();
+                const int32_t saved = tc->chain;
+                tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
+                argv[0] = bake_self(tc);
+                for (size_t i = 0; i < argc; i++) argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
+                tc->chain = saved;
+                const int32_t off = tc->chain + (int32_t)cnt + KORB_FRAME_HDR;
+                return KP_LINK(tc, node_call_blkfwd, mid, kp_flink(tc, line), -3 - off, -2 - off, -1 - off, argv, cnt);
+            }
             if (!ba->expression || !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
                 const bool anon_blk = (ba->expression == NULL);
                 uint32_t anon_d = 0; int32_t anon_s = -1; NODE *anon_pre = NULL;
@@ -2859,6 +2970,20 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
          * a rooted synth local, then node_send_blkproc reads it. */
         if (PM_NODE_TYPE_P(cn->block, PM_BLOCK_ARGUMENT_NODE)) {
             const pm_block_argument_node_t *ba = (const pm_block_argument_node_t *)cn->block;
+            if (kp_blkfwd_arg_p(tc, ba) && safe_tmp < 0) {   /* the method's own block passed on: its trio, no Proc */
+                const uint32_t sc = 1u + (uint32_t)argc;
+                NODE **argv = malloc(sizeof(NODE *) * sc);
+                if (!argv) abort();
+                const int32_t saved = tc->chain;
+                tc->chain = saved + (int32_t)sc + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
+                argv[0] = RECV_NODE();
+                for (size_t i = 0; i < argc; i++) argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
+                tc->chain = saved;
+                const int32_t off = tc->chain + (int32_t)sc + KORB_FRAME_HDR;
+                NODE *call = KP_LINK(tc, node_send_blkfwd, mid, kp_flink(tc, line), -1 - off, -3 - off, -2 - off, -1 - off, argv, sc);
+                bake_add(tc, &call->u.node_send_blkfwd.self_off);
+                return call;
+            }
             if (!ba->expression || !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
                 const bool anon_blk = (ba->expression == NULL);
                 uint32_t anon_d = 0; int32_t anon_s = -1; NODE *anon_pre = NULL;
@@ -3392,6 +3517,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     tc->frame->method_kw_info = kw_info;   /* for forwarding super (`super` re-passes the keyword args) */
 
     NODE *body;
+    if (blk_param_name && kp_blk_passthru(tc, dn->body, blk_param_name)) tc->frame->blk_fwd_name = blk_param_name;
     if (dn->body == NULL) {
         body = lit_nil();
     }
@@ -3451,7 +3577,9 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         }
     }
 
-    if (blk_param_name) {                  /* `&blk` → materialize the block into the local at body entry */
+    if (blk_param_name && tc->frame->blk_fwd_name) {   /* only passed on: the calls forward the trio, no Proc */
+        tc->frame->uses_block = true;
+    } else if (blk_param_name) {           /* `&blk` → materialize the block into the local at body entry */
         tc->frame->uses_block = true;      /* reserve the frame's block cells */
         int32_t dst = (int32_t)lvar_index(tc, (const pm_node_t *)ps->block, blk_param_name) - tc->chain;
         NODE *bp = ALLOC_node_blkparam(dst, -3 - tc->chain, -2 - tc->chain, -1 - tc->chain, 0 - tc->chain);

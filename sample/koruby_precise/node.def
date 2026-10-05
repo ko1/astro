@@ -3642,6 +3642,47 @@ node_send_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t
     return korb_send_blk_ic(c, cur, mid, line, argv_cnt - 1 - kw0, iseq, KORB_BLK_FWD, &slots[proc_off], flink, slots[self_off], ic);
 }
 
+// `recv.m(args, &blk)` where blk is the method's block parameter and is never read any other way
+// (parse.c kp_blk_passthru): the block the method received goes on as its trio — no Proc, no escaped
+// env (CRuby's block param proxy).  `biseq_off` / `def_env_off` / `cself_off` read the frame's cells as
+// node_yield0 does.  A forwarded Proc / C-proc goes as node_send_blkproc would pass it.
+NODE_DEF @framehdr
+node_send_blkfwd(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, NODE **argv@children, struct korb_inlcache *ic@ref)
+{
+    const uint32_t line = korb_flink_line(flink);
+    (void)n;
+    const korb_value bi = slots[biseq_off];
+    const bool kw0 = korb_empty_kwsplat_p(slots[-1]) && argv_cnt > 1;   /* an empty `**h` is no argument */
+    korb_value *const cur = kw0 ? slots - 1 : slots;
+    if (!(bi & 1u)) {                                    /* no block given: none passed on */
+        korb_flink_stage(c, flink, slots - (korb_sword_t)argv_cnt - 2);
+        return korb_send_vis(c, cur, mid, line, argv_cnt - 1 - kw0, slots[self_off]);
+    }
+    NODE *const iseq = (NODE *)(uintptr_t)(bi & ~(uintptr_t)1u);
+    /* the cell holds the def_env as a literal block's site passes it (odd-tagged frame base); a received
+     * Proc / C-proc is KORB_BLK_FWD with the proc in the self cell */
+    korb_value *denv = (korb_value *)(uintptr_t)slots[def_env_off];
+    if (iseq == KORB_BLK_CPROC || (korb_value *)((uintptr_t)denv & ~(uintptr_t)1u) == KORB_BLK_FWD) denv = KORB_BLK_FWD;
+    return korb_send_blk_fwd(c, cur, mid, line, argv_cnt - 1 - kw0, iseq, denv, &slots[cself_off], flink, slots[self_off], ic);
+}
+
+// node_send_blkfwd for an implicit-self call (no staged receiver).
+NODE_DEF @framehdr
+node_call_blkfwd(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, struct korb_callcache *cc@ref, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, NODE **argv@children)
+{
+    const uint32_t line = korb_flink_line(flink);
+    (void)n;
+    const korb_value bi = slots[biseq_off];
+    const bool kw0 = korb_empty_kwsplat_p(slots[-1]) && argv_cnt > 1;
+    korb_value *const cur = kw0 ? slots - 1 : slots;
+    const korb_value self = slots[-(korb_sword_t)argv_cnt];
+    if (!(bi & 1u)) return korb_call_blk(c, cur, mid, line, cc, argv_cnt - 1 - kw0, self, NULL, NULL, &slots[cself_off]);
+    NODE *const iseq = (NODE *)(uintptr_t)(bi & ~(uintptr_t)1u);
+    korb_value *denv = (korb_value *)(uintptr_t)slots[def_env_off];   /* as node_send_blkfwd */
+    if (iseq == KORB_BLK_CPROC || (korb_value *)((uintptr_t)denv & ~(uintptr_t)1u) == KORB_BLK_FWD) denv = KORB_BLK_FWD;
+    return korb_call_blk_fwd(c, cur, mid, line, cc, argv_cnt - 1 - kw0, self, iseq, denv, &slots[cself_off]);
+}
+
 // yield to the current method's block.  `biseq_off` / `def_env_off` /
 // `cself_off` read the frame's reserved block cells (odd-tagged); korb_yield
 // masks and sets up the block frame (incl. its captured self).
