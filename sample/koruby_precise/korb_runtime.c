@@ -1686,7 +1686,14 @@ korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part, uint3
 RESULT
 korb_ary_new(CTX *c, korb_value *slots, uint32_t capa)
 {
-    if (capa < 4) capa = 4;
+    if (capa <= KORB_ARY_EMBED_MAX) {   /* small: the elements live in the object (one allocation) */
+        if (capa < KORB_ARY_EMBED_MIN) capa = KORB_ARY_EMBED_MIN;
+        KorbArray *const a = korb_alloc(c, slots, offsetof(KorbArray, items_priv) + (size_t)capa * sizeof(korb_value), KORB_OBJ_ARRAY);
+        a->head.flags |= KORB_FL_ARY_EMBED;
+        a->len = 0;
+        a->capa = capa;                     /* zero-init = nil */
+        return RESULT_OK((korb_value)a);
+    }
     /* items first, rooted while the header is allocated (both may GC). */
     KorbArrayItems *it = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)capa * sizeof(korb_value),
                                     KORB_OBJ_VALUE_ARRAY);
@@ -1695,8 +1702,23 @@ korb_ary_new(CTX *c, korb_value *slots, uint32_t capa)
     it = (KorbArrayItems *)(uintptr_t)KORB_REF_GET(itref);   /* re-read after GC */
     a->len = 0;
     a->capa = capa;
-    ARO_STORE(c, a, (korb_value *)(uintptr_t)&a->items, (korb_value)(uintptr_t)it);
+    ARO_STORE(c, a, (korb_value *)(uintptr_t)&a->items_priv, (korb_value)(uintptr_t)it);
     return RESULT_OK((korb_value)a);
+}
+
+/* Give `a` a separately-allocated payload of `ncapa` (>= len) elements holding its current ones: growth,
+ * and the end of an inline array's life as inline (its object keeps the now-dead inline room). */
+static RESULT
+korb_ary_set_capa(CTX *c, korb_value *slots, korb_ref aref, uint32_t ncapa)
+{
+    KorbArrayItems *nit = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)ncapa * sizeof(korb_value),
+                                     KORB_OBJ_VALUE_ARRAY);
+    KorbArray *const a = VAL2ARY(KORB_REF_GET(aref));   /* re-read after GC: a fixed up → its elements too */
+    ARO_STORE_BULK(c, nit, korb_items_data(nit), korb_ary_ptr(a), (size_t)a->len);   /* new tail is zero-init = nil */
+    a->head.flags &= (uint16_t)~KORB_FL_ARY_EMBED;
+    ARO_STORE(c, a, (korb_value *)(uintptr_t)&a->items_priv, (korb_value)(uintptr_t)nit);
+    a->capa = ncapa;
+    return RESULT_OK(KORB_REF_GET(aref));
 }
 
 static RESULT
@@ -1706,14 +1728,7 @@ korb_ary_ensure(CTX *c, korb_value *slots, korb_ref aref, uint32_t need)
     if ((size_t)a->len + need <= a->capa) return RESULT_OK(KORB_REF_GET(aref));
     uint32_t ncapa = a->capa ? a->capa * 2 : 4;
     while ((size_t)ncapa < (size_t)a->len + need) ncapa *= 2;
-    KorbArrayItems *nit = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)ncapa * sizeof(korb_value),
-                                     KORB_OBJ_VALUE_ARRAY);
-    a = VAL2ARY(KORB_REF_GET(aref));               /* re-read after GC */
-    KorbArrayItems *oit = a->items;                 /* a fixed up → its items too */
-    ARO_STORE_BULK(c, nit, korb_items_data(nit), korb_items_data(oit), (size_t)a->len);   /* new tail is zero-init = nil */
-    ARO_STORE(c, a, (korb_value *)(uintptr_t)&a->items, (korb_value)(uintptr_t)nit);
-    a->capa = ncapa;
-    return RESULT_OK(KORB_REF_GET(aref));
+    return korb_ary_set_capa(c, slots, aref, ncapa);
 }
 
 RESULT
@@ -1721,16 +1736,14 @@ korb_ary_push_val(CTX *c, korb_value *slots, korb_ref aref, korb_value elem)
 {
     KorbArray *a = VAL2ARY(KORB_REF_GET(aref));
     if (LIKELY(a->len < a->capa)) {                 /* room available: no grow, no GC → store directly (skip the ensure call + elem rooting) */
-        KorbArrayItems *const it = a->items;
-        ARO_STORE(c, it, &korb_items_data(it)[a->len], elem);
+        ARO_STORE(c, korb_ary_owner(a), &korb_ary_ptr(a)[a->len], elem);
         a->len++;
         return RESULT_OK((korb_value)(uintptr_t)a);
     }
     korb_ref eref = SLOTS_PUSH(slots, elem);       /* grow path: root elem across the alloc/GC */
     CHECK(korb_ary_ensure(c, slots, aref, 1));
     a = VAL2ARY(KORB_REF_GET(aref));
-    KorbArrayItems *const it = a->items;
-    ARO_STORE(c, it, &korb_items_data(it)[a->len], KORB_REF_GET(eref));
+    ARO_STORE(c, korb_ary_owner(a), &korb_ary_ptr(a)[a->len], KORB_REF_GET(eref));
     a->len++;
     return RESULT_OK(KORB_REF_GET(aref));
 }
@@ -1741,7 +1754,7 @@ void
 korb_ary_store_at(CTX *c, korb_value ary, uint32_t i, korb_value val)
 {
     KorbArray *const a = VAL2ARY(ary);
-    ARO_STORE(c, a->items, &korb_items_data(a->items)[i], val);
+    ARO_STORE(c, korb_ary_owner(a), &korb_ary_ptr(a)[i], val);
 }
 
 static bool korb_range_int_bounds(const KorbRange *r, korb_sword_t *lo, korb_sword_t *hi);
@@ -1755,7 +1768,7 @@ korb_ary_concat_val(CTX *c, korb_value *slots, korb_ref aref, korb_value val)
         korb_ref sref = SLOTS_PUSH(slots, val);    /* root src across grow GCs */
         uint32_t n = VAL2ARY(KORB_REF_GET(sref))->len;
         for (uint32_t i = 0; i < n; i++)
-            CHECK(korb_ary_push_val(c, slots + 1, aref, korb_items_data(VAL2ARY(KORB_REF_GET(sref))->items)[i]));
+            CHECK(korb_ary_push_val(c, slots + 1, aref, korb_ary_ptr(VAL2ARY(KORB_REF_GET(sref)))[i]));
         return RESULT_OK(KORB_REF_GET(aref));
     }
     if (KORB_RANGE_P(val)) {
@@ -1770,7 +1783,7 @@ korb_ary_concat_val(CTX *c, korb_value *slots, korb_ref aref, korb_value val)
         if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
         slots[0] = ta.value;
         for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++)
-            CHECK(korb_ary_push_val(c, slots + 1, aref, korb_items_data(VAL2ARY(slots[0])->items)[i]));
+            CHECK(korb_ary_push_val(c, slots + 1, aref, korb_ary_ptr(VAL2ARY(slots[0]))[i]));
         return RESULT_OK(KORB_REF_GET(aref));
     }
     if (val == KORB_NIL) return RESULT_OK(KORB_REF_GET(aref));
@@ -1788,7 +1801,7 @@ korb_ary_concat_val(CTX *c, korb_value *slots, korb_ref aref, korb_value val)
                 KORB_REF_SET(vr, ta.value);             /* reuse the rooted slot for the array */
                 uint32_t n = VAL2ARY(KORB_REF_GET(vr))->len;
                 for (uint32_t i = 0; i < n; i++)
-                    CHECK(korb_ary_push_val(c, slots, aref, korb_items_data(VAL2ARY(KORB_REF_GET(vr))->items)[i]));
+                    CHECK(korb_ary_push_val(c, slots, aref, korb_ary_ptr(VAL2ARY(KORB_REF_GET(vr)))[i]));
                 return RESULT_OK(KORB_REF_GET(aref));
             }
             if (ta.value == KORB_NIL)                    /* to_a → nil: `*x` is just `[x]` */
@@ -1828,12 +1841,12 @@ korb_ary_plus_ref(CTX *c, korb_value *slots, korb_ref lref, korb_ref rref)
     uint32_t rn = VAL2ARY(KORB_REF_GET(rref))->len;
     korb_ref dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, ln + rn)));
     for (uint32_t i = 0; i < ln; i++) {
-        korb_value elem = korb_items_data(VAL2ARY(KORB_REF_GET(lref))->items)[i];   /* push roots elem first */
+        korb_value elem = korb_ary_ptr(VAL2ARY(KORB_REF_GET(lref)))[i];   /* push roots elem first */
         CHECK(korb_ary_push_val(c, slots, dst, elem));
     }
     rn = VAL2ARY(KORB_REF_GET(rref))->len;                          /* re-read (rooted) */
     for (uint32_t i = 0; i < rn; i++) {
-        korb_value elem = korb_items_data(VAL2ARY(KORB_REF_GET(rref))->items)[i];
+        korb_value elem = korb_ary_ptr(VAL2ARY(KORB_REF_GET(rref)))[i];
         CHECK(korb_ary_push_val(c, slots, dst, elem));
     }
     return RESULT_OK(KORB_REF_GET(dst));
@@ -1889,7 +1902,7 @@ static uint64_t korb_value_hash_d(korb_value v, int depth) {
         if (depth > 3) return 0x345678ULL;             /* shallow cap: bounds cost on wide self-referential arrays (width^depth); deeper distinctions fall through to #eql? */
         const KorbArray *const a = VAL2ARY(v);
         uint64_t h = 0x345678ULL ^ ((uint64_t)a->len * 0x9e3779b97f4a7c15ULL);
-        for (uint32_t i = 0; i < a->len; i++) { h ^= korb_value_hash_d(korb_items_data(a->items)[i], depth + 1); h *= 1099511628211ULL; }
+        for (uint32_t i = 0; i < a->len; i++) { h ^= korb_value_hash_d(korb_ary_ptr(a)[i], depth + 1); h *= 1099511628211ULL; }
         return h;
     }
     return 0x200000002ULL;                              /* other heap objects: single bucket (rare; value_eq confirms) */
@@ -1911,7 +1924,7 @@ static inline bool korb_value_eq_fast(korb_value a, korb_value b)
         const KorbArray *const x = VAL2ARY(a), *const y = VAL2ARY(b);
         if (x->len != y->len) return false;
         for (uint32_t i = 0; i < x->len; i++) {
-            const korb_value xi = korb_items_data(x->items)[i], yi = korb_items_data(y->items)[i];
+            const korb_value xi = korb_ary_ptr(x)[i], yi = korb_ary_ptr(y)[i];
             if (xi == yi) continue;                  /* identical element */
             if (FIXNUM_P(xi) && FIXNUM_P(yi)) return false;
             if (!korb_value_eql(xi, yi)) return false;  /* eql? (type-strict: 1.0 ≠ 1); recurses for nested arrays */
@@ -3080,13 +3093,13 @@ korb_cvar_owner(korb_value cref, korb_value sym, int32_t *idx_out)
         if (pre != KORB_NIL) {
             const KorbArray *const pa = VAL2ARY(pre);
             for (uint32_t i = 0; i < pa->len; i++)
-                if (korb_cvar_in(korb_items_data(pa->items)[i], sym, idx_out)) return korb_items_data(pa->items)[i];
+                if (korb_cvar_in(korb_ary_ptr(pa)[i], sym, idx_out)) return korb_ary_ptr(pa)[i];
         }
         const korb_value inc = VAL2CLASS(k)->included;
         if (inc != KORB_NIL) {
             const KorbArray *const ia = VAL2ARY(inc);
             for (uint32_t i = 0; i < ia->len; i++)
-                if (korb_cvar_in(korb_items_data(ia->items)[i], sym, idx_out)) return korb_items_data(ia->items)[i];
+                if (korb_cvar_in(korb_ary_ptr(ia)[i], sym, idx_out)) return korb_ary_ptr(ia)[i];
         }
     }
     return KORB_NIL;
@@ -3108,7 +3121,7 @@ korb_cvar_owner_top(korb_value cref, korb_value sym, int32_t *idx_out, korb_valu
             if (mods[m] == KORB_NIL) continue;
             const KorbArray *const ma = VAL2ARY(mods[m]);
             for (uint32_t i = 0; i < ma->len; i++) {
-                const korb_value mv = korb_items_data(ma->items)[i];
+                const korb_value mv = korb_ary_ptr(ma)[i];
                 if (korb_cvar_in(mv, sym, &idx)) { top = mv; *idx_out = idx; if (front == KORB_NIL) front = mv; }
             }
         }
@@ -3372,7 +3385,7 @@ static RESULT korb_m_struct_to_a(CTX *c, korb_value *slots, korb_ref self, korb_
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));          /* result */
     korb_ref dst = KORB_REF_AT(&slots[1]);
     for (uint32_t i = 0; i < n; i++) {
-        korb_value iv = korb_member_ivar_sym(c->vm, korb_items_data(VAL2ARY(slots[0])->items)[i]);
+        korb_value iv = korb_member_ivar_sym(c->vm, korb_ary_ptr(VAL2ARY(slots[0]))[i]);
         CHECK(korb_ary_push_val(c, slots + 2, dst, korb_ivar_get(c, KORB_REF_GET(self), iv)));
     }
     return RESULT_OK(KORB_REF_GET(dst));
@@ -3384,7 +3397,7 @@ static RESULT korb_m_struct_values_at(CTX *c, korb_value *slots, korb_ref self, 
     slots[1] = UNWRAP(korb_ary_new(c, slots + 3, n));           /* the struct's values, in member order */
     korb_ref vals = KORB_REF_AT(&slots[1]);
     for (uint32_t k = 0; k < n; k++) {
-        const korb_value iv = korb_member_ivar_sym(c->vm, korb_items_data(VAL2ARY(slots[0])->items)[k]);
+        const korb_value iv = korb_member_ivar_sym(c->vm, korb_ary_ptr(VAL2ARY(slots[0]))[k]);
         CHECK(korb_ary_push_val(c, slots + 3, vals, korb_ivar_get(c, KORB_REF_GET(self), iv)));
     }
     slots[2] = UNWRAP(korb_ary_new(c, slots + 3, KORB_SLICE_LEN(a)));
@@ -3405,7 +3418,7 @@ static RESULT korb_m_struct_values_at(CTX *c, korb_value *slots, korb_ref self, 
                 return korb_raise(c, slots + 5, KORB_E_RANGE, 0, "%s out of range", KORB_STRING_P(slots[4]) ? (const char *)korb_strbuf_data(VAL2STR(slots[4])->buf) : "range");
             }
             for (korb_sword_t i = b; i <= last; i++)
-                CHECK(korb_ary_push_val(c, slots + 3, dst, (i >= 0 && (uint32_t)i < n) ? korb_items_data(VAL2ARY(KORB_REF_GET(vals))->items)[i] : KORB_NIL));
+                CHECK(korb_ary_push_val(c, slots + 3, dst, (i >= 0 && (uint32_t)i < n) ? korb_ary_ptr(VAL2ARY(KORB_REF_GET(vals)))[i] : KORB_NIL));
             continue;
         }
         korb_sword_t idx;
@@ -3415,7 +3428,7 @@ static RESULT korb_m_struct_values_at(CTX *c, korb_value *slots, korb_ref self, 
         if (idx < 0) idx += n;
         if (UNLIKELY(idx < 0 || (uint32_t)idx >= n))
             return korb_raise(c, slots + 3, KORB_E_INDEX, 0, orig < 0 ? "offset %ld too small for struct(size:%u)" : "offset %ld too large for struct(size:%u)", (long)orig, n);
-        CHECK(korb_ary_push_val(c, slots + 3, dst, korb_items_data(VAL2ARY(KORB_REF_GET(vals))->items)[idx]));
+        CHECK(korb_ary_push_val(c, slots + 3, dst, korb_ary_ptr(VAL2ARY(KORB_REF_GET(vals)))[idx]));
     }
     return RESULT_OK(KORB_REF_GET(dst));
 }
@@ -3427,7 +3440,7 @@ static RESULT korb_m_struct_to_h(CTX *c, korb_value *slots, korb_ref self, korb_
     slots[1] = UNWRAP(korb_hash_new(c, slots + 1, n));
     korb_ref dst = KORB_REF_AT(&slots[1]);
     for (uint32_t i = 0; i < n; i++) {
-        slots[2] = korb_items_data(VAL2ARY(slots[0])->items)[i];              /* member sym (key, rooted) */
+        slots[2] = korb_ary_ptr(VAL2ARY(slots[0]))[i];              /* member sym (key, rooted) */
         korb_value iv = korb_member_ivar_sym(c->vm, slots[2]);
         slots[3] = korb_ivar_get(c, KORB_REF_GET(self), iv);      /* value (rooted) */
         CHECK(korb_hash_set(c, slots + 4, dst, KORB_REF_AT(&slots[2]), slots[3]));
@@ -3443,7 +3456,7 @@ static RESULT korb_m_struct_to_h_blk(CTX *c, korb_value *slots, korb_ref self, k
     slots[1] = UNWRAP(korb_hash_new(c, slots + 2, n));
     korb_ref dst = KORB_REF_AT(&slots[1]);
     for (uint32_t i = 0; i < n; i++) {
-        const korb_value k = korb_items_data(VAL2ARY(slots[0])->items)[i];
+        const korb_value k = korb_ary_ptr(VAL2ARY(slots[0]))[i];
         slots[2] = k;                                         /* block arg 0: key */
         slots[3] = korb_ivar_get(c, KORB_REF_GET(self), korb_member_ivar_sym(c->vm, k));   /* arg 1: value */
         RESULT yr = korb_block_yield(c, slots + 4, block, def_env, &slots[2], 2, cself);
@@ -3461,8 +3474,8 @@ static RESULT korb_m_struct_to_h_blk(CTX *c, korb_value *slots, korb_ref self, k
         }
         if (UNLIKELY(VAL2ARY(yr.value)->len != 2))           /* wrong length → ArgumentError (not TypeError) */
             return korb_raise(c, slots + 4, KORB_E_ARGUMENT, 0, "element has wrong array length (expected 2, was %u)", VAL2ARY(yr.value)->len);
-        slots[4] = korb_items_data(VAL2ARY(yr.value)->items)[0];         /* new key */
-        slots[5] = korb_items_data(VAL2ARY(yr.value)->items)[1];         /* new value */
+        slots[4] = korb_ary_ptr(VAL2ARY(yr.value))[0];         /* new key */
+        slots[5] = korb_ary_ptr(VAL2ARY(yr.value))[1];         /* new value */
         CHECK(korb_hash_set(c, slots + 6, dst, KORB_REF_AT(&slots[4]), slots[5]));
     }
     return RESULT_OK(KORB_REF_GET(dst));
@@ -3486,7 +3499,7 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, korb_value *slots, korb_ref
     korb_ref dst = KORB_REF_AT(&slots[2]);
     if (nk > VAL2ARY(slots[0])->len) return RESULT_OK(KORB_REF_GET(dst));   /* more keys than members → {} */
     for (uint32_t k = 0; k < nk; k++) {
-        const korb_value key = korb_items_data(VAL2ARY(slots[1])->items)[k];
+        const korb_value key = korb_ary_ptr(VAL2ARY(slots[1]))[k];
         const KorbArray *const mem = VAL2ARY(slots[0]);        /* re-read post-GC */
         /* resolve key → member symbol: Symbol matches directly, String by name,
          * Integer by position. */
@@ -3517,7 +3530,7 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, korb_value *slots, korb_ref
             korb_sword_t idx = FIX2LONG(key);
             if (idx < 0) idx += mem->len;                      /* negative index from the end */
             if (idx < 0 || (uint32_t)idx >= mem->len) break;
-            msym = korb_items_data(mem->items)[idx];
+            msym = korb_ary_ptr(mem)[idx];
         }
         else {                                                 /* other key → #to_int index, else TypeError */
             korb_value kv = key;
@@ -3535,11 +3548,11 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, korb_value *slots, korb_ref
             const KorbArray *const mem2 = VAL2ARY(slots[0]);   /* re-read after coerce GC */
             if (idx < 0) idx += mem2->len;
             if (idx < 0 || (uint32_t)idx >= mem2->len) break;
-            msym = korb_items_data(mem2->items)[idx];
+            msym = korb_ary_ptr(mem2)[idx];
         }
         bool found = false;
         { const KorbArray *const memf = VAL2ARY(slots[0]);     /* re-read (coerce path may have GC'd) */
-          for (uint32_t m = 0; m < memf->len; m++) if (korb_items_data(memf->items)[m] == msym) { found = true; break; } }
+          for (uint32_t m = 0; m < memf->len; m++) if (korb_ary_ptr(memf)[m] == msym) { found = true; break; } }
         if (!found) break;
         slots[3] = outkey;                                     /* hash uses the key as given (or its #to_str result) */
         slots[4] = korb_ivar_get(c, KORB_REF_GET(self), korb_member_ivar_sym(c->vm, msym));
@@ -3556,7 +3569,7 @@ static RESULT korb_m_struct_hash(CTX *c, korb_value *slots, korb_ref self, korb_
     h ^= (uint64_t)VAL2CLASS(klass)->serial; h *= 1099511628211ULL;   /* per-class identity (distinguishes anonymous Struct/Data classes) */
     const KorbArray *const mem = VAL2ARY(VAL2CLASS(klass)->members);
     for (uint32_t i = 0; i < mem->len; i++) {
-        const korb_value iv = korb_ivar_get(c, KORB_REF_GET(self), korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i]));
+        const korb_value iv = korb_ivar_get(c, KORB_REF_GET(self), korb_member_ivar_sym(c->vm, korb_ary_ptr(mem)[i]));
         h ^= korb_value_hash(iv); h *= 1099511628211ULL;
     }
     return RESULT_OK(LONG2FIX((korb_sword_t)(h & 0x3FFFFFFFFFFFFFFFULL)));
@@ -3567,7 +3580,7 @@ static RESULT korb_m_struct_members(CTX *c, korb_value *slots, korb_ref self, ko
     const uint32_t n = VAL2ARY(slots[0])->len;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));
     korb_ref dst = KORB_REF_AT(&slots[1]);
-    for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 2, dst, korb_items_data(VAL2ARY(slots[0])->items)[i]));
+    for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 2, dst, korb_ary_ptr(VAL2ARY(slots[0]))[i]));
     return RESULT_OK(KORB_REF_GET(dst));
 }
 /* class-level `Rec.members` — self IS the Struct class; copy its member array. */
@@ -3578,7 +3591,7 @@ static RESULT korb_m_struct_class_members(CTX *c, korb_value *slots, korb_ref se
     const uint32_t n = VAL2ARY(slots[0])->len;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));
     korb_ref dst = KORB_REF_AT(&slots[1]);
-    for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 2, dst, korb_items_data(VAL2ARY(slots[0])->items)[i]));
+    for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 2, dst, korb_ary_ptr(VAL2ARY(slots[0]))[i]));
     return RESULT_OK(KORB_REF_GET(dst));
 }
 /* StructClass#keyword_init? — true / false (explicit) / nil (unspecified). */
@@ -3612,13 +3625,13 @@ static RESULT korb_m_struct_aref(CTX *c, korb_value *slots, korb_ref self, korb_
         const korb_sword_t orig = FIXNUM_P(k) ? FIX2LONG(k) : (korb_sword_t)korb_float_val(k);
         korb_sword_t i = orig; if (i < 0) i += mem->len;
         if (UNLIKELY(i < 0 || (uint32_t)i >= mem->len)) return korb_raise(c, slots, KORB_E_INDEX, 0, orig < 0 ? "offset %ld too small for struct(size:%u)" : "offset %ld too large for struct(size:%u)", (long)orig, mem->len);
-        return RESULT_OK(korb_ivar_get(c, KORB_REF_GET(self), korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i])));
+        return RESULT_OK(korb_ivar_get(c, KORB_REF_GET(self), korb_member_ivar_sym(c->vm, korb_ary_ptr(mem)[i])));
     }
     if (UNLIKELY(!SYMBOL_P(k) && !KORB_STRING_P(k)))      /* not Integer/Float/Symbol/String → no implicit Integer conversion */
         return korb_raise_no_int(c, slots, k);
     uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len, KORB_STR_ENC(k));
     for (uint32_t i = 0; i < mem->len; i++)
-        if (SYM2ID(korb_items_data(mem->items)[i]) == sym) return RESULT_OK(korb_ivar_get(c, KORB_REF_GET(self), korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i])));
+        if (SYM2ID(korb_ary_ptr(mem)[i]) == sym) return RESULT_OK(korb_ivar_get(c, KORB_REF_GET(self), korb_member_ivar_sym(c->vm, korb_ary_ptr(mem)[i])));
     return korb_raise_struct_member(c, slots, KORB_REF_GET(self), sym, k);
 }
 /* Struct/Data#dig(key, *rest) — self[key], then recurse #dig on the result.
@@ -3632,7 +3645,7 @@ static RESULT korb_m_struct_dig(CTX *c, korb_value *slots, korb_ref self, korb_s
         const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));   /* read after intern (may GC) */
         first = RESULT_OK(KORB_NIL);
         for (uint32_t i = 0; i < mem->len; i++)
-            if (SYM2ID(korb_items_data(mem->items)[i]) == sym) { first = RESULT_OK(korb_ivar_get(c, KORB_REF_GET(self), korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i]))); break; }
+            if (SYM2ID(korb_ary_ptr(mem)[i]) == sym) { first = RESULT_OK(korb_ivar_get(c, KORB_REF_GET(self), korb_member_ivar_sym(c->vm, korb_ary_ptr(mem)[i]))); break; }
     }
     else {                                                    /* numeric index → struct_aref (IndexError on out-of-range) */
         slots[0] = key;
@@ -3660,13 +3673,13 @@ static RESULT korb_m_struct_aset(CTX *c, korb_value *slots, korb_ref self, korb_
         idx = i;
     } else if (SYMBOL_P(k) || KORB_STRING_P(k)) {         /* member name → NameError when unknown */
         const uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len, KORB_STR_ENC(k));
-        for (uint32_t i = 0; i < mem->len; i++) if (SYM2ID(korb_items_data(mem->items)[i]) == sym) { idx = i; break; }
+        for (uint32_t i = 0; i < mem->len; i++) if (SYM2ID(korb_ary_ptr(mem)[i]) == sym) { idx = i; break; }
         if (UNLIKELY(idx < 0)) return korb_raise_struct_member(c, slots, KORB_REF_GET(self), sym, k);
     } else {                                              /* neither Integer/Float nor a name → no implicit Integer conversion */
         return korb_raise_no_int(c, slots, k);
     }
     slots[0] = v;
-    CHECK(korb_ivar_set(c, slots + 1, self, korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[idx]), slots[0]));
+    CHECK(korb_ivar_set(c, slots + 1, self, korb_member_ivar_sym(c->vm, korb_ary_ptr(mem)[idx]), slots[0]));
     return RESULT_OK(slots[0]);
 }
 static RESULT korb_enum_new(CTX *c, korb_value *slots, korb_value vals, korb_value desc);                /* fwd (enumerator.c) */
@@ -3684,7 +3697,7 @@ static RESULT korb_m_struct_each(CTX *c, korb_value *slots, korb_ref self, korb_
     slots[1] = STRUCT_MEMBERS(self);
     const uint32_t n = VAL2ARY(slots[1])->len;
     for (uint32_t i = 0; i < n; i++) {
-        korb_value iv = korb_member_ivar_sym(c->vm, korb_items_data(VAL2ARY(slots[1])->items)[i]);
+        korb_value iv = korb_member_ivar_sym(c->vm, korb_ary_ptr(VAL2ARY(slots[1]))[i]);
         korb_value val = korb_ivar_get(c, KORB_REF_GET(self), iv);
         RESULT r = korb_block_yield(c, slots + 2, block, def_env, &val, 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -3699,7 +3712,7 @@ static RESULT korb_m_struct_each_pair(CTX *c, korb_value *slots, korb_ref self, 
         slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));        /* pairs (rooted) */
         korb_ref dst = KORB_REF_AT(&slots[1]);
         for (uint32_t i = 0; i < n; i++) {
-            const korb_value msym = korb_items_data(VAL2ARY(slots[0])->items)[i];                       /* Symbol (immediate) */
+            const korb_value msym = korb_ary_ptr(VAL2ARY(slots[0]))[i];                       /* Symbol (immediate) */
             slots[2] = korb_ivar_get(c, KORB_REF_GET(self), korb_member_ivar_sym(c->vm, msym));   /* value (rooted) */
             slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));    /* [member, value] */
             korb_ref pair = KORB_REF_AT(&slots[3]);
@@ -3713,7 +3726,7 @@ static RESULT korb_m_struct_each_pair(CTX *c, korb_value *slots, korb_ref self, 
     slots[1] = STRUCT_MEMBERS(self);
     const uint32_t n = VAL2ARY(slots[1])->len;
     for (uint32_t i = 0; i < n; i++) {
-        const korb_value msym = korb_items_data(VAL2ARY(slots[1])->items)[i];
+        const korb_value msym = korb_ary_ptr(VAL2ARY(slots[1]))[i];
         korb_value argv[2] = { msym, korb_ivar_get(c, KORB_REF_GET(self), korb_member_ivar_sym(c->vm, msym)) };
         RESULT r = korb_block_yield(c, slots + 2, block, def_env, argv, 2, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -3731,7 +3744,7 @@ static RESULT korb_m_struct_map(CTX *c, korb_value *slots, korb_ref self, korb_s
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));        /* result (rooted) */
     korb_ref dst = KORB_REF_AT(&slots[1]);
     for (uint32_t i = 0; i < n; i++) {
-        korb_value iv = korb_member_ivar_sym(c->vm, korb_items_data(VAL2ARY(slots[0])->items)[i]);
+        korb_value iv = korb_member_ivar_sym(c->vm, korb_ary_ptr(VAL2ARY(slots[0]))[i]);
         korb_value val = korb_ivar_get(c, KORB_REF_GET(self), iv);
         RESULT r = korb_block_yield(c, slots + 2, block, def_env, &val, 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -3774,7 +3787,7 @@ static RESULT korb_struct_cmp_rec(CTX *c, korb_value *slots, bool strict, const 
     for (uint32_t i = 0; ; i++) {
         const KorbArray *const mem = VAL2ARY(VAL2CLASS(VAL2OBJ(slots[0])->klass)->members);   /* re-read: a member's == may move things */
         if (i >= mem->len) break;
-        const korb_value iv = korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[i]);
+        const korb_value iv = korb_member_ivar_sym(c->vm, korb_ary_ptr(mem)[i]);
         slots[2] = korb_ivar_get(c, slots[0], iv);
         slots[3] = korb_ivar_get(c, slots[1], iv);
         bool eq;
@@ -3832,7 +3845,7 @@ static RESULT korb_m_struct_initialize(CTX *c, korb_value *slots, korb_ref self,
             const korb_value key = korb_items_data(kh->items)[2 * hi];
             bool found = false;
             const KorbArray *const mm = VAL2ARY(slots[2]);
-            for (uint32_t mi = 0; mi < mm->len; mi++) if (korb_items_data(mm->items)[mi] == key) { found = true; break; }
+            for (uint32_t mi = 0; mi < mm->len; mi++) if (korb_ary_ptr(mm)[mi] == key) { found = true; break; }
             if (UNLIKELY(!found))
                 return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keywords: %s",
                                   SYMBOL_P(key) ? korb_sym_name(vm, SYM2ID(key)) : korb_type_name(key));
@@ -3843,8 +3856,8 @@ static RESULT korb_m_struct_initialize(CTX *c, korb_value *slots, korb_ref self,
     for (uint32_t i = 0; ; i++) {
         const KorbArray *const mem = VAL2ARY(VAL2CLASS(VAL2OBJ(KORB_REF_GET(self))->klass)->members);   /* re-read (ivar_set GCs) */
         if (i >= mem->len) break;
-        const korb_value iv = korb_member_ivar_sym(vm, korb_items_data(mem->items)[i]);
-        if (kwinit) { int32_t hi = korb_hash_find(VAL2HASH(slots[0]), korb_items_data(mem->items)[i]); slots[1] = hi >= 0 ? korb_items_data(VAL2HASH(slots[0])->items)[2 * hi + 1] : KORB_NIL; }
+        const korb_value iv = korb_member_ivar_sym(vm, korb_ary_ptr(mem)[i]);
+        if (kwinit) { int32_t hi = korb_hash_find(VAL2HASH(slots[0]), korb_ary_ptr(mem)[i]); slots[1] = hi >= 0 ? korb_items_data(VAL2HASH(slots[0])->items)[2 * hi + 1] : KORB_NIL; }
         else slots[1] = (i < argc) ? KORB_SLICE_GET(a, i) : KORB_NIL;
         CHECK(korb_ivar_set(c, slots + 3, self, iv, slots[1]));
     }
@@ -3949,7 +3962,7 @@ static RESULT korb_struct_define(CTX *c, korb_value *slots, korb_slice a, NODE *
         {   /* duplicate member → ArgumentError */
             const KorbArray *const mm = VAL2ARY(KORB_REF_GET(mem));
             for (uint32_t k = 0; k < mm->len; k++)
-                if (korb_items_data(mm->items)[k] == sym)
+                if (korb_ary_ptr(mm)[k] == sym)
                     return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "duplicate member: %s", korb_sym_name(vm, SYM2ID(sym)));
         }
         CHECK(korb_ary_push_val(c, slots + 2, mem, sym));   /* accessors are defined below, after the common methods */
@@ -3972,7 +3985,7 @@ static RESULT korb_struct_define(CTX *c, korb_value *slots, korb_slice a, NODE *
      * (:hash/:each/:size/:members/…) keeps its accessor — CRuby defines the
      * accessors on the anonymous subclass, shadowing the inherited methods. */
     for (uint32_t i = 0; i < VAL2ARY(KORB_REF_GET(mem))->len; i++) {
-        const korb_value sym = korb_items_data(VAL2ARY(KORB_REF_GET(mem))->items)[i];
+        const korb_value sym = korb_ary_ptr(VAL2ARY(KORB_REF_GET(mem)))[i];
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
         char buf[256];
         const uint32_t ivar = korb_member_ivar_id(vm, nm);
@@ -4015,7 +4028,7 @@ static bool korb_data_all_keys_members(const struct korb_vm *vm, const KorbClass
     for (uint32_t i = 0; i < h->len; i++) {
         korb_value key = korb_items_data(h->items)[2 * i];
         bool found = false;
-        for (uint32_t j = 0; j < mem->len; j++) if (korb_items_data(mem->items)[j] == key) { found = true; break; }
+        for (uint32_t j = 0; j < mem->len; j++) if (korb_ary_ptr(mem)[j] == key) { found = true; break; }
         if (!found) return false;
     }
     return true;
@@ -4035,14 +4048,14 @@ static RESULT korb_m_data_initialize(CTX *c, korb_value *slots, korb_ref self, k
     slots[0] = kw ? KORB_SLICE_GET(a, 0) : KORB_NIL;                     /* kwargs hash (rooted) */
     if (kw) {
         for (uint32_t k = 0; k < VAL2ARY(slots[2])->len; k++)            /* missing keyword */
-            if (UNLIKELY(korb_hash_find(VAL2HASH(slots[0]), korb_items_data(VAL2ARY(slots[2])->items)[k]) < 0))
-                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "missing keyword: :%s", korb_sym_name(vm, SYM2ID(korb_items_data(VAL2ARY(slots[2])->items)[k])));
+            if (UNLIKELY(korb_hash_find(VAL2HASH(slots[0]), korb_ary_ptr(VAL2ARY(slots[2]))[k]) < 0))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "missing keyword: :%s", korb_sym_name(vm, SYM2ID(korb_ary_ptr(VAL2ARY(slots[2]))[k])));
     } else if (UNLIKELY(argc != mlen)) {
         const KorbArray *const mm = VAL2ARY(slots[2]);
         if (argc < mlen) {                                               /* shortfall → the unfilled members are missing keywords */
             char buf[512]; int off = snprintf(buf, sizeof buf, "missing keyword%s:", (mlen - argc) > 1 ? "s" : "");
             for (uint32_t i = argc; i < mm->len && off < (int)sizeof buf; i++)
-                off += snprintf(buf + off, sizeof buf - off, "%s :%s", i > argc ? "," : "", korb_sym_name(vm, SYM2ID(korb_items_data(mm->items)[i])));
+                off += snprintf(buf + off, sizeof buf - off, "%s :%s", i > argc ? "," : "", korb_sym_name(vm, SYM2ID(korb_ary_ptr(mm)[i])));
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s", buf);
         }
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..%u)", argc, mlen);
@@ -4050,8 +4063,8 @@ static RESULT korb_m_data_initialize(CTX *c, korb_value *slots, korb_ref self, k
     for (uint32_t i = 0; ; i++) {
         const KorbArray *const mem = VAL2ARY(slots[2]);                  /* re-read (ivar_set may GC) */
         if (i >= mem->len) break;
-        const korb_value iv = korb_member_ivar_sym(vm, korb_items_data(mem->items)[i]);
-        if (kw) { int32_t hi = korb_hash_find(VAL2HASH(slots[0]), korb_items_data(mem->items)[i]); slots[1] = hi >= 0 ? korb_items_data(VAL2HASH(slots[0])->items)[2*hi+1] : KORB_NIL; }
+        const korb_value iv = korb_member_ivar_sym(vm, korb_ary_ptr(mem)[i]);
+        if (kw) { int32_t hi = korb_hash_find(VAL2HASH(slots[0]), korb_ary_ptr(mem)[i]); slots[1] = hi >= 0 ? korb_items_data(VAL2HASH(slots[0])->items)[2*hi+1] : KORB_NIL; }
         else slots[1] = KORB_SLICE_GET(a, i);
         CHECK(korb_ivar_set(c, slots + 3, self, iv, slots[1]));
     }
@@ -4085,7 +4098,7 @@ static RESULT korb_m_data_with(CTX *c, korb_value *slots, korb_ref self, korb_sl
     for (uint32_t i = 0; ; i++) {
         const KorbArray *mem = VAL2ARY(VAL2CLASS(slots[0])->members);   /* re-read (ivar_set may GC) */
         if (i >= mem->len) break;
-        korb_value msym = korb_items_data(mem->items)[i];
+        korb_value msym = korb_ary_ptr(mem)[i];
         korb_value iv = korb_member_ivar_sym(c->vm, msym);
         korb_value val;
         if (slots[1] != KORB_NIL) {
@@ -4121,7 +4134,7 @@ static RESULT korb_struct_inspect_impl(CTX *c, korb_value *slots, korb_ref self,
         const korb_value kv = VAL2OBJ(sv)->klass;
         const KorbArray *const mem = VAL2ARY(VAL2CLASS(kv)->members);
         if (i >= mem->len) break;
-        const korb_value msym = korb_items_data(mem->items)[i];
+        const korb_value msym = korb_ary_ptr(mem)[i];
         const korb_value val = korb_ivar_get(c, sv, korb_member_ivar_sym(c->vm, msym));
         fputs(i == 0 ? " " : ", ", ms);
         fputs(korb_sym_name(c->vm, SYM2ID(msym)), ms);
@@ -4927,7 +4940,7 @@ static bool korb_bind_extra_get(const KorbBinding *const b, const uint32_t sym, 
     const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym));
     if (hi < 0) return false;
     const korb_value box = korb_items_data(VAL2HASH(b->extra)->items)[2 * hi + 1];
-    *out = korb_items_data(VAL2ARY(box)->items)[0];
+    *out = korb_ary_ptr(VAL2ARY(box))[0];
     return true;
 }
 /* `bslot`: the rooted binding.  May GC. */
@@ -5245,7 +5258,7 @@ static uint32_t korb_const_mro_seg(const struct korb_vm *vm, korb_value klass, u
     if (k->prepended != KORB_NIL) {                          /* prepended: most-recently-prepended first */
         const KorbArray *const pre = VAL2ARY(k->prepended);
         for (int32_t j = (int32_t)pre->len - 1; j >= 0; j--) {
-            const uint32_t idx = korb_const_mro_seg(vm, korb_items_data(pre->items)[j], name_sym, depth + 1);
+            const uint32_t idx = korb_const_mro_seg(vm, korb_ary_ptr(pre)[j], name_sym, depth + 1);
             if (idx != UINT32_MAX) return idx;
         }
     }
@@ -5254,7 +5267,7 @@ static uint32_t korb_const_mro_seg(const struct korb_vm *vm, korb_value klass, u
     if (k->included != KORB_NIL) {                           /* included: most-recently-included first */
         const KorbArray *const inc = VAL2ARY(k->included);
         for (int32_t j = (int32_t)inc->len - 1; j >= 0; j--) {
-            idx = korb_const_mro_seg(vm, korb_items_data(inc->items)[j], name_sym, depth + 1);
+            idx = korb_const_mro_seg(vm, korb_ary_ptr(inc)[j], name_sym, depth + 1);
             if (idx != UINT32_MAX) return idx;
         }
     }
@@ -5270,7 +5283,7 @@ static uint32_t korb_const_mro_seg_al(CTX *c, korb_value klass, uint32_t name_sy
     if (k->prepended != KORB_NIL) {
         const KorbArray *const pre = VAL2ARY(k->prepended);
         for (int32_t j = (int32_t)pre->len - 1; j >= 0; j--) {
-            const uint32_t idx = korb_const_mro_seg_al(c, korb_items_data(pre->items)[j], name_sym, depth + 1, al_mod);
+            const uint32_t idx = korb_const_mro_seg_al(c, korb_ary_ptr(pre)[j], name_sym, depth + 1, al_mod);
             if (idx != UINT32_MAX || *al_mod != KORB_NIL) return idx;
         }
     }
@@ -5280,7 +5293,7 @@ static uint32_t korb_const_mro_seg_al(CTX *c, korb_value klass, uint32_t name_sy
     if (k->included != KORB_NIL) {
         const KorbArray *const inc = VAL2ARY(k->included);
         for (int32_t j = (int32_t)inc->len - 1; j >= 0; j--) {
-            idx = korb_const_mro_seg_al(c, korb_items_data(inc->items)[j], name_sym, depth + 1, al_mod);
+            idx = korb_const_mro_seg_al(c, korb_ary_ptr(inc)[j], name_sym, depth + 1, al_mod);
             if (idx != UINT32_MAX || *al_mod != KORB_NIL) return idx;
         }
     }
@@ -5392,7 +5405,7 @@ korb_const_in_ancestry_scoped_al(CTX *c, korb_value recv, uint32_t name_sym, kor
             if (inc != KORB_NIL) {
                 const KorbArray *const ia = VAL2ARY(inc);
                 for (int32_t j = (int32_t)ia->len - 1; j >= 0; j--) {
-                    const uint32_t idx = korb_const_mro_seg_al(c, korb_items_data(ia->items)[j], name_sym, 0, al_mod);
+                    const uint32_t idx = korb_const_mro_seg_al(c, korb_ary_ptr(ia)[j], name_sym, 0, al_mod);
                     if (idx != UINT32_MAX || *al_mod != KORB_NIL) return idx;
                 }
             }
@@ -5417,7 +5430,7 @@ korb_const_in_ancestry_scoped(const struct korb_vm *vm, korb_value recv, uint32_
             if (inc != KORB_NIL) {
                 const KorbArray *const ia = VAL2ARY(inc);
                 for (int32_t j = (int32_t)ia->len - 1; j >= 0; j--) {
-                    const uint32_t idx = korb_const_mro_seg(vm, korb_items_data(ia->items)[j], name_sym, 0);
+                    const uint32_t idx = korb_const_mro_seg(vm, korb_ary_ptr(ia)[j], name_sym, 0);
                     if (idx != UINT32_MAX) return idx;
                 }
             }
@@ -5695,13 +5708,13 @@ static bool korb_module_has(const korb_value mod, const korb_value anc, const in
     for (int l = 0; l < 2; l++) {                    /* the direct members first: the common answer */
         if (lists[l] == KORB_NIL) continue;
         const KorbArray *const a = VAL2ARY(lists[l]);
-        for (uint32_t j = 0; j < a->len; j++) if (korb_items_data(a->items)[j] == anc) return true;
+        for (uint32_t j = 0; j < a->len; j++) if (korb_ary_ptr(a)[j] == anc) return true;
     }
     for (int l = 0; l < 2; l++) {                    /* then only members that carry modules of their own */
         if (lists[l] == KORB_NIL) continue;
         const KorbArray *const a = VAL2ARY(lists[l]);
         for (uint32_t j = 0; j < a->len; j++) {
-            const korb_value m = korb_items_data(a->items)[j];
+            const korb_value m = korb_ary_ptr(a)[j];
             if (KORB_CLASS_P(m) && (VAL2CLASS(m)->prepended != KORB_NIL || VAL2CLASS(m)->included != KORB_NIL) &&
                 korb_module_has(m, anc, depth + 1)) return true;
         }
@@ -6134,7 +6147,7 @@ korb_singleton_copy(CTX *c, korb_value *slots, korb_value dst, korb_value src_si
         slots[3] = lst;
         slots[4] = UNWRAP(korb_ary_new(c, slots + 5, VAL2ARY(slots[3])->len));
         for (uint32_t i = 0; i < VAL2ARY(slots[3])->len; i++)
-            CHECK(korb_ary_push_val(c, slots + 5, KORB_REF_AT(&slots[4]), korb_items_data(VAL2ARY(slots[3])->items)[i]));
+            CHECK(korb_ary_push_val(c, slots + 5, KORB_REF_AT(&slots[4]), korb_ary_ptr(VAL2ARY(slots[3]))[i]));
         KorbClass *const ds = VAL2CLASS(slots[2]);          /* re-read: the allocs above may have moved it */
         ARO_STORE(c, ds, (korb_value *)(uintptr_t)(li == 0 ? &ds->included : &ds->prepended), slots[4]);
         if (!fresh) c->vm->mro_serial++;
@@ -6204,7 +6217,7 @@ korb_class_dup(CTX *c, korb_value *slots, korb_value src)
           slots[3] = UNWRAP(korb_ary_new(c, slots + 4, VAL2ARY(slots[2])->len));
           korb_ref dst = KORB_REF_AT(&slots[3]);
           for (uint32_t i = 0; i < VAL2ARY(slots[2])->len; i++)
-              CHECK(korb_ary_push_val(c, slots + 4, dst, korb_items_data(VAL2ARY(slots[2])->items)[i]));
+              CHECK(korb_ary_push_val(c, slots + 4, dst, korb_ary_ptr(VAL2ARY(slots[2]))[i]));
           KorbClass *const dd = VAL2CLASS(slots[1]);           /* re-read: the allocs above may have moved it */
           ARO_STORE(c, dd, (korb_value *)(uintptr_t)(li == 0 ? &dd->included : &dd->prepended), slots[3]);
           c->vm->mro_serial++;
@@ -6558,7 +6571,7 @@ static struct korb_method *korb_mro_seg_find(korb_value klass, uint32_t mid, kor
     if (k->prepended != KORB_NIL) {
         const KorbArray *pre = VAL2ARY(k->prepended);
         for (int32_t j = (int32_t)pre->len - 1; j >= 0; j--) {
-            struct korb_method *m = korb_mro_seg_find(korb_items_data(pre->items)[j], mid, out_def, depth + 1);
+            struct korb_method *m = korb_mro_seg_find(korb_ary_ptr(pre)[j], mid, out_def, depth + 1);
             if (m) return m;
         }
     }
@@ -6567,7 +6580,7 @@ static struct korb_method *korb_mro_seg_find(korb_value klass, uint32_t mid, kor
     if (k->included != KORB_NIL) {
         const KorbArray *inc = VAL2ARY(k->included);
         for (int32_t j = (int32_t)inc->len - 1; j >= 0; j--) {
-            struct korb_method *m = korb_mro_seg_find(korb_items_data(inc->items)[j], mid, out_def, depth + 1);
+            struct korb_method *m = korb_mro_seg_find(korb_ary_ptr(inc)[j], mid, out_def, depth + 1);
             if (m) return m;
         }
     }
@@ -6967,7 +6980,7 @@ korb_refined_find(CTX *c, korb_value klass, uint32_t mid, korb_value *out_def)
     const korb_value act = c->refinements;
     if (act == KORB_NIL || !KORB_ARRAY_P(act) || !KORB_CLASS_P(klass)) return NULL;
     const KorbArray *const a = VAL2ARY(act);
-    const korb_value *const av = korb_items_data(a->items);
+    const korb_value *const av = korb_ary_ptr(a);
     for (int32_t i = (int32_t)a->len - 3; i >= 0; i -= 3) {   /* the latest `using` wins */
         if (av[i] == KORB_NIL) {
             /* Late-bound entry (a refine block): the owner's whole table is
@@ -6976,8 +6989,8 @@ korb_refined_find(CTX *c, korb_value klass, uint32_t mid, korb_value *out_def)
             if (!KORB_ARRAY_P(ra)) continue;
             const KorbArray *const r = VAL2ARY(ra);
             for (int32_t j = (int32_t)r->len - 2; j >= 0; j -= 2) {
-                struct korb_method *const m = korb_refined_try(klass, korb_items_data(r->items)[j],
-                                                               korb_items_data(r->items)[j + 1], mid, out_def);
+                struct korb_method *const m = korb_refined_try(klass, korb_ary_ptr(r)[j],
+                                                               korb_ary_ptr(r)[j + 1], mid, out_def);
                 if (m) return m;
             }
             continue;
@@ -7751,7 +7764,7 @@ korb_include_collect(CTX *c, korb_value *slots, korb_ref cref, korb_ref dst, kor
         slots[1] = VAL2CLASS(KORB_REF_GET(mref))->included; /* root mod's include list */
         korb_ref list = KORB_REF_AT(&slots[1]);
         for (uint32_t j = 0; j < VAL2ARY(KORB_REF_GET(list))->len; j++)
-            CHECK(korb_include_collect(c, slots + 2, cref, dst, korb_items_data(VAL2ARY(KORB_REF_GET(list))->items)[j], prepend));
+            CHECK(korb_include_collect(c, slots + 2, cref, dst, korb_ary_ptr(VAL2ARY(KORB_REF_GET(list)))[j], prepend));
     }
     /* include skips a module already anywhere in the ancestry; prepend only
      * skips one already in THIS class's own prepend list — `B < A` where A
@@ -7759,7 +7772,7 @@ korb_include_collect(CTX *c, korb_value *slots, korb_ref cref, korb_ref dst, kor
     bool have = false;
     if (prepend) {
         const KorbArray *const dl = VAL2ARY(KORB_REF_GET(dst));
-        for (uint32_t i = 0; i < dl->len && !have; i++) if (korb_items_data(dl->items)[i] == KORB_REF_GET(mref)) have = true;
+        for (uint32_t i = 0; i < dl->len && !have; i++) if (korb_ary_ptr(dl)[i] == KORB_REF_GET(mref)) have = true;
     } else have = korb_class_has_ancestor(KORB_REF_GET(cref), KORB_REF_GET(mref));
     if (!have) CHECK(korb_ary_push_val(c, slots + 1, dst, KORB_REF_GET(mref)));
     return RESULT_OK(KORB_NIL);
@@ -7797,18 +7810,18 @@ korb_include_apply(CTX *c, korb_value *slots, korb_ref cref, korb_ref dst, korb_
     const uint32_t before = VAL2ARY(KORB_REF_GET(dst))->len;
     int32_t at = -1;
     for (uint32_t i = 0; i < before; i++)
-        if (korb_items_data(VAL2ARY(KORB_REF_GET(dst))->items)[i] == mod) { at = (int32_t)i; break; }
+        if (korb_ary_ptr(VAL2ARY(KORB_REF_GET(dst)))[i] == mod) { at = (int32_t)i; break; }
     CHECK(korb_include_collect(c, slots, cref, dst, mod, prepend));
     if (at < 0) return RESULT_OK(KORB_NIL);                  /* fresh include: collect order is already right */
     KorbArray *const arr = VAL2ARY(KORB_REF_GET(dst));      /* no GC below */
     const uint32_t n = arr->len - before;
     if (n == 0) return RESULT_OK(KORB_NIL);
-    korb_value *const items = korb_items_data(arr->items);
+    korb_value *const items = korb_ary_ptr(arr);
     for (uint32_t k = 0; k < n; k++) {                       /* rotate one element at a time (write-barriered) */
         const korb_value v = items[arr->len - 1];
         for (uint32_t i = arr->len - 1; i > (uint32_t)at; i--)
-            ARO_STORE(c, arr->items, &items[i], items[i - 1]);
-        ARO_STORE(c, arr->items, &items[at], v);
+            ARO_STORE(c, korb_ary_owner(arr), &items[i], items[i - 1]);
+        ARO_STORE(c, korb_ary_owner(arr), &items[at], v);
     }
     return RESULT_OK(KORB_NIL);
 }
@@ -7956,7 +7969,7 @@ korb_linearize_seg(korb_value klass, korb_value *buf, uint8_t *pre, int n, int m
     if (k->prepended != KORB_NIL) {
         const KorbArray *const pa = VAL2ARY(k->prepended);
         for (int32_t j = (int32_t)pa->len - 1; j >= 0; j--)
-            n = korb_linearize_seg(korb_items_data(pa->items)[j], buf, pre, n, max, depth + 1, 1);
+            n = korb_linearize_seg(korb_ary_ptr(pa)[j], buf, pre, n, max, depth + 1, 1);
     }
     if (n < max) {
         if (n == 0 || buf[n - 1] != klass) { pre[n] = in_prep; buf[n++] = klass; }
@@ -7965,7 +7978,7 @@ korb_linearize_seg(korb_value klass, korb_value *buf, uint8_t *pre, int n, int m
         const int start = n;
         const KorbArray *const ia = VAL2ARY(k->included);
         for (int32_t j = (int32_t)ia->len - 1; j >= 0; j--) {
-            n = korb_linearize_seg(korb_items_data(ia->items)[j], buf, pre, n, max, depth + 1, in_prep);
+            n = korb_linearize_seg(korb_ary_ptr(ia)[j], buf, pre, n, max, depth + 1, in_prep);
             /* include lists are flattened, so each child re-expands the ones after it: dedup as we
              * go (keep-last composes) or a chain of 8 nested includes fills the 256-entry buffer */
             n = start + korb_mro_dedup_pre(buf + start, pre + start, n - start);
@@ -8133,7 +8146,7 @@ korb_super_find_slow(CTX *c, uint32_t mid, korb_value entry_cell, korb_value sel
             if (inc != KORB_NIL) {
                 const KorbArray *arr = VAL2ARY(inc);
                 for (int32_t j = (int32_t)arr->len - 1; j >= 0 && m == NULL; j--) {
-                    korb_value mod = korb_items_data(arr->items)[j];
+                    korb_value mod = korb_ary_ptr(arr)[j];
                     if (!KORB_CLASS_P(mod)) continue;
                     const KorbClass *const mk = VAL2CLASS(mod);
                     const int32_t q = korb_mtab_slot(mk, mid);
@@ -8469,7 +8482,7 @@ korb_class_le(korb_value a, korb_value b)
             if (mods == KORB_NIL) continue;
             const KorbArray *const ma = VAL2ARY(mods);
             for (uint32_t j = 0; j < ma->len; j++)
-                if (korb_items_data(ma->items)[j] == b) return true;
+                if (korb_ary_ptr(ma)[j] == b) return true;
         }
         a = k->superclass;
     }
@@ -9441,7 +9454,7 @@ korb_cmp_full(CTX *c, korb_value a, korb_value b)
         const KorbArray *x = VAL2ARY(a), *y = VAL2ARY(b);
         uint32_t m = x->len < y->len ? x->len : y->len;
         for (uint32_t i = 0; i < m; i++) {
-            const korb_value xi = korb_items_data(x->items)[i], yi = korb_items_data(y->items)[i];
+            const korb_value xi = korb_ary_ptr(x)[i], yi = korb_ary_ptr(y)[i];
             if (xi == yi && !KORB_FLOAT_P(xi)) continue;   /* identical element → equal here (also breaks self-referential Array#<=>); NaN re-checks below */
             int r = korb_cmp_full(c, xi, yi);
             if (r != 0) return r;
@@ -9478,7 +9491,7 @@ korb_value_eq(korb_value a, korb_value b)
         x->head.flags |= KORB_FL_JOIN_VISITING;
         bool eq = true;
         for (uint32_t i = 0; i < x->len; i++) {
-            const korb_value xi = korb_items_data(x->items)[i], yi = korb_items_data(y->items)[i];   /* inline the common element cases (skip the recursive call) */
+            const korb_value xi = korb_ary_ptr(x)[i], yi = korb_ary_ptr(y)[i];   /* inline the common element cases (skip the recursive call) */
             if (xi == yi) continue;                                       /* identical: Fixnum / Symbol / same object */
             if (FIXNUM_P(xi) && FIXNUM_P(yi)) { eq = false; break; }      /* two distinct Fixnums */
             if (!korb_value_eq(xi, yi)) { eq = false; break; }            /* heap / mixed: recurse */
@@ -9493,7 +9506,7 @@ korb_value_eq(korb_value a, korb_value b)
             bool found = false;
             /* membership is the SET's own comparison (eql?, like the Hash it is
              * built on), not `==`: Set[1] and Set[1.0] are different sets */
-            for (uint32_t j = 0; j < y->len; j++) if (korb_value_eql(korb_items_data(x->items)[i], korb_items_data(y->items)[j])) { found = true; break; }
+            for (uint32_t j = 0; j < y->len; j++) if (korb_value_eql(korb_ary_ptr(x)[i], korb_ary_ptr(y)[j])) { found = true; break; }
             if (!found) return false;
         }
         return true;
@@ -9558,7 +9571,7 @@ static bool korb_value_eql_d(korb_value a, korb_value b, int depth) {
         const KorbArray *const x = VAL2ARY(a), *const y = VAL2ARY(b);
         if (x->len != y->len) return false;
         for (uint32_t i = 0; i < x->len; i++) {
-            const korb_value xi = korb_items_data(x->items)[i], yi = korb_items_data(y->items)[i];
+            const korb_value xi = korb_ary_ptr(x)[i], yi = korb_ary_ptr(y)[i];
             if (xi != yi && !korb_value_eql_d(xi, yi, depth + 1)) return false;   /* identity skip breaks self-referential eql?/uniq */
         }
         return true;
@@ -9767,7 +9780,7 @@ korb_pat_match_1(CTX *c, korb_value *base, korb_value *cur, korb_ref subjref, co
             return RESULT_OK(KORB_FALSE);
         }
         for (uint32_t i = 0; i < p->n; i++) {
-            cur[1] = korb_items_data(VAL2ARY(cur[0])->items)[i];    /* element at cur[1]; cur[0] keeps the array rooted */
+            cur[1] = korb_ary_ptr(VAL2ARY(cur[0]))[i];    /* element at cur[1]; cur[0] keeps the array rooted */
             RESULT r = korb_pat_match_1(c, base, cur + 2, KORB_REF_AT(&cur[1]), p->elems[i]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
@@ -9847,7 +9860,7 @@ korb_pat_match_1(CTX *c, korb_value *base, korb_value *cur, korb_ref subjref, co
         for (uint32_t s = 0; p->n <= len && s <= len - p->n; s++) {   /* try the mid run at each position */
             bool all = true;
             for (uint32_t i = 0; i < p->n; i++) {
-                cur[1] = korb_items_data(VAL2ARY(cur[0])->items)[s + i];
+                cur[1] = korb_ary_ptr(VAL2ARY(cur[0]))[s + i];
                 RESULT r = korb_pat_match_1(c, base, cur + 2, KORB_REF_AT(&cur[1]), p->elems[i]);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 if (r.value != KORB_TRUE) { all = false; break; }
@@ -9856,14 +9869,14 @@ korb_pat_match_1(CTX *c, korb_value *base, korb_value *cur, korb_ref subjref, co
             if (p->bind_off != INT32_MIN) {                /* bind *left = [0..s) */
                 cur[1] = UNWRAP(korb_ary_new(c, cur + 1, s));
                 korb_ref lh = KORB_REF_AT(&cur[1]);
-                for (uint32_t i = 0; i < s; i++) { cur[2] = korb_items_data(VAL2ARY(cur[0])->items)[i]; CHECK(korb_ary_push_val(c, cur + 3, lh, cur[2])); }
+                for (uint32_t i = 0; i < s; i++) { cur[2] = korb_ary_ptr(VAL2ARY(cur[0]))[i]; CHECK(korb_ary_push_val(c, cur + 3, lh, cur[2])); }
                 base[p->bind_off] = KORB_REF_GET(lh);
             }
             if (right_off != INT32_MIN) {                  /* bind *right = [s+n..len) */
                 const uint32_t rstart = s + p->n;
                 cur[1] = UNWRAP(korb_ary_new(c, cur + 1, len - rstart));
                 korb_ref rh = KORB_REF_AT(&cur[1]);
-                for (uint32_t i = rstart; i < len; i++) { cur[2] = korb_items_data(VAL2ARY(cur[0])->items)[i]; CHECK(korb_ary_push_val(c, cur + 3, rh, cur[2])); }
+                for (uint32_t i = rstart; i < len; i++) { cur[2] = korb_ary_ptr(VAL2ARY(cur[0]))[i]; CHECK(korb_ary_push_val(c, cur + 3, rh, cur[2])); }
                 base[right_off] = KORB_REF_GET(rh);
             }
             return RESULT_OK(KORB_TRUE);
@@ -9899,7 +9912,7 @@ korb_pat_match_1(CTX *c, korb_value *base, korb_value *cur, korb_ref subjref, co
         const uint32_t len = VAL2ARY(KORB_REF_GET(aref))->len;
         if (len < p->n + p->npost) return RESULT_OK(KORB_FALSE);
         for (uint32_t i = 0; i < p->n; i++) {            /* pre */
-            cur2[0] = korb_items_data(VAL2ARY(KORB_REF_GET(aref))->items)[i];
+            cur2[0] = korb_ary_ptr(VAL2ARY(KORB_REF_GET(aref)))[i];
             RESULT r = korb_pat_match_1(c, base, cur2 + 1, KORB_REF_AT(&cur2[0]), p->elems[i]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
@@ -9909,13 +9922,13 @@ korb_pat_match_1(CTX *c, korb_value *base, korb_value *cur, korb_ref subjref, co
             cur2[0] = UNWRAP(korb_ary_new(c, cur2, rest_len));
             korb_ref rest = KORB_REF_AT(&cur2[0]);
             for (uint32_t i = 0; i < rest_len; i++) {
-                cur2[1] = korb_items_data(VAL2ARY(KORB_REF_GET(aref))->items)[p->n + i];   /* re-read (push may GC) */
+                cur2[1] = korb_ary_ptr(VAL2ARY(KORB_REF_GET(aref)))[p->n + i];   /* re-read (push may GC) */
                 CHECK(korb_ary_push_val(c, cur2 + 2, rest, cur2[1]));
             }
             base[p->bind_off] = KORB_REF_GET(rest);
         }
         for (uint32_t i = 0; i < p->npost; i++) {        /* post (from the tail) */
-            cur2[0] = korb_items_data(VAL2ARY(KORB_REF_GET(aref))->items)[len - p->npost + i];
+            cur2[0] = korb_ary_ptr(VAL2ARY(KORB_REF_GET(aref)))[len - p->npost + i];
             RESULT r = korb_pat_match_1(c, base, cur2 + 1, KORB_REF_AT(&cur2[0]), p->elems[p->n + i]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
@@ -10167,8 +10180,8 @@ RESULT korb_try_coerce(CTX *c, korb_value *slots, korb_value l, korb_value *rhs,
     if (UNLIKELY(!KORB_ARRAY_P(cr.value) || VAL2ARY(cr.value)->len != 2))
         return korb_raise(c, slots, KORB_E_TYPE, line, "coerce must return [x, y]");
     slots[0] = cr.value;
-    slots[1] = korb_items_data(VAL2ARY(slots[0])->items)[0];           /* a (recv) */
-    slots[2] = korb_items_data(VAL2ARY(slots[0])->items)[1];           /* b (arg) */
+    slots[1] = korb_ary_ptr(VAL2ARY(slots[0]))[0];           /* a (recv) */
+    slots[2] = korb_ary_ptr(VAL2ARY(slots[0]))[1];           /* b (arg) */
     return korb_send_impl(c, slots + 3, korb_intern(c->vm, op, (uint32_t)strlen(op)), line, 1, NULL, NULL, NULL);
 }
 static RESULT korb_strary_op_send(CTX *c, korb_value *slots, korb_value l, korb_value r, const char *op, uint32_t line) {
@@ -10402,7 +10415,7 @@ korb_mul_slow(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint32_t 
         korb_ref dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)cnt * len)));
         for (korb_sword_t r = 0; r < cnt; r++)
             for (uint32_t i = 0; i < len; i++)
-                CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2ARY(KORB_REF_GET(lhs))->items)[i]));
+                CHECK(korb_ary_push_val(c, slots + 1, dst, korb_ary_ptr(VAL2ARY(KORB_REF_GET(lhs)))[i]));
         return RESULT_OK(KORB_REF_GET(dst));
     }
     if (KORB_ARRAY_P(l)) {                           /* Array * String-or-#to_str → join (join coerces the sep) */
@@ -11856,7 +11869,7 @@ korb_autoload_path_match(CTX *c, const char *f, size_t fl, const char *path, siz
     if (!KORB_ARRAY_P(lp)) return true;
     const KorbArray *const a = VAL2ARY(lp);
     for (uint32_t i = 0; i < a->len; i++) {
-        const korb_value e = korb_items_data(a->items)[i];
+        const korb_value e = korb_ary_ptr(a)[i];
         if (!KORB_STRING_P(e)) continue;
         const char *d = korb_strbuf_data(VAL2STR(e)->buf);
         size_t el = VAL2STR(e)->len;
@@ -11904,7 +11917,7 @@ korb_autoload_feature_loaded_p(CTX *c, korb_value pathv)
     if (!KORB_ARRAY_P(lf)) return false;
     const KorbArray *const a = VAL2ARY(lf);
     for (uint32_t i = 0; i < a->len; i++) {
-        const korb_value e = korb_items_data(a->items)[i];
+        const korb_value e = korb_ary_ptr(a)[i];
         if (!KORB_STRING_P(e)) continue;
         const KorbString *const s = VAL2STR(e);
         if (korb_autoload_path_match(c, korb_strbuf_data(s->buf), s->len, path, plen, has_rb, slen)) return true;
@@ -12322,7 +12335,7 @@ static ARO_BORROW const char *korb_report_line(CTX *c, const KorbArray *cap, con
 {
     const struct korb_vm *const vm = c->vm;
     if (cap != NULL) {
-        korb_value s = korb_items_data(cap->items)[i];
+        korb_value s = korb_ary_ptr(cap)[i];
         if (KORB_OBJECT_P(s)) s = korb_ivar_get(c, s, ID2SYM(korb_intern_lit(c->vm, "@str", 4)));   /* a Location (set_backtrace(caller_locations)) */
         return KORB_STRING_P(s) ? korb_strbuf_data(VAL2STR(s)->buf) : "?";
     }
@@ -13412,7 +13425,7 @@ static const uint8_t *korb_bind_destr_entry(CTX *c, korb_value *bf, uint32_t nlo
         /* a non-Array (nil included) decomposes as the 1-element list [pv]:
          * `->((*f)){f}.call(nil)` is [nil], not [] (CRuby). */
         const uint32_t n = ar ? ar->len : 1;
-        const korb_value *const items = ar ? korb_items_data(ar->items) : &pv;
+        const korb_value *const items = ar ? korb_ary_ptr(ar) : &pv;
         const uint32_t surplus = (n > nl + nr) ? n - nl - nr : 0;
         /* Stage the source values in the (scanned) block frame before the rest
          * array is allocated: `items` points into the source Array, which the
@@ -13445,7 +13458,7 @@ static const uint8_t *korb_bind_destr_entry(CTX *c, korb_value *bf, uint32_t nlo
     const uint8_t *cur = sp + 2;
     const KorbArray *const ar = KORB_ARRAY_P(pv) ? VAL2ARY(pv) : NULL;
     for (uint32_t j = 0; j < k; j++) {
-        const korb_value sub = ar ? (j < ar->len ? korb_items_data(ar->items)[j] : KORB_NIL)
+        const korb_value sub = ar ? (j < ar->len ? korb_ary_ptr(ar)[j] : KORB_NIL)
                              : (j == 0 ? pv : KORB_NIL);   /* non-Array → first leaf, rest nil */
         cur = korb_bind_destr_entry(c, bf, nlocals, loc, cur, sub);
     }
@@ -13706,7 +13719,7 @@ korb_block_yield(CTX *c, korb_value *slots, NODE *block, korb_value *def_env,
         if (blocals > np) korb_block_nil_locals(&bf[1 + np], blocals - np);
     } else {                                                          /* auto-splat one Array */
         const KorbArray *ar = VAL2ARY(argv[0]);
-        for (uint32_t i = 0; i < np; i++) bf[1 + i] = i < ar->len ? korb_items_data(ar->items)[i] : KORB_NIL;
+        for (uint32_t i = 0; i < np; i++) bf[1 + i] = i < ar->len ? korb_ary_ptr(ar)[i] : KORB_NIL;
         if (blocals > np) korb_block_nil_locals(&bf[1 + np], blocals - np);
     }
     bf[0] = fwd ? VAL2PROC(*captured_self)->self : *captured_self;   /* lexical self → B[-1] */
@@ -13848,7 +13861,7 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
         const uint32_t np = korb_entry_params_cnt(block);   /* logical param count */
         const korb_value *src = argv; uint32_t srcn = argc;
         if (!is_lambda && np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {  /* auto-splat one yielded Array across params */
-            const KorbArray *ar = VAL2ARY(argv[0]); src = korb_items_data(ar->items); srcn = ar->len;
+            const KorbArray *ar = VAL2ARY(argv[0]); src = korb_ary_ptr(ar); srcn = ar->len;
         }
         for (uint32_t i = 0; i < blocals; i++) bf[1 + i] = KORB_NIL;   /* leaves write by local index */
         uint32_t loc = 0;
@@ -13859,7 +13872,7 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
         korb_value arr = (argc >= 1) ? argv[0] : KORB_NIL;
         if (KORB_ARRAY_P(arr)) {
             const KorbArray *ar = VAL2ARY(arr);
-            for (uint32_t i = 0; i < dn; i++) bf[1 + i] = i < ar->len ? korb_items_data(ar->items)[i] : KORB_NIL;
+            for (uint32_t i = 0; i < dn; i++) bf[1 + i] = i < ar->len ? korb_ary_ptr(ar)[i] : KORB_NIL;
         } else {
             bf[1] = arr;                               /* non-array → first target, rest nil */
             for (uint32_t i = 1; i < dn; i++) bf[1 + i] = KORB_NIL;
@@ -13887,7 +13900,7 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
          * rest-array alloc's GC would leave stale.  No alloc during this copy. */
         korb_value *const stage = bf + 1 + blocals;
         for (uint32_t i = 0; i < srcn; i++)
-            stage[i] = splat ? korb_items_data(VAL2ARY(argv[0])->items)[i] : argv[i];
+            stage[i] = splat ? korb_ary_ptr(VAL2ARY(argv[0]))[i] : argv[i];
         /* Clear the whole block frame before anything allocates or a default
          * expression runs: an omitted optional reads as nil from inside its own
          * default (CRuby), and the GC must not scan the previous frame's junk. */
@@ -13943,7 +13956,7 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
         struct Node **const opts = korb_entry_opt_defaults(block);
         const bool splat = (!is_lambda && np > 1 && argc == 1 && KORB_ARRAY_P(argv[0]));
         const uint32_t srcn = splat ? VAL2ARY(argv[0])->len : argc;
-        const korb_value *const src = splat ? korb_items_data(VAL2ARY(argv[0])->items) : argv;
+        const korb_value *const src = splat ? korb_ary_ptr(VAL2ARY(argv[0])) : argv;
         /* CRuby order: required front, then as many optionals as the surplus
          * allows, then the posts — args are consumed strictly left to right and
          * any extra beyond that is dropped. */
@@ -13970,7 +13983,7 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
         const uint32_t np = korb_entry_params_cnt(block);
         if (!is_lambda && np + 1 > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {
             const KorbArray *ar = VAL2ARY(argv[0]);
-            for (uint32_t i = 0; i < np; i++) bf[1 + i] = i < ar->len ? korb_items_data(ar->items)[i] : KORB_NIL;
+            for (uint32_t i = 0; i < np; i++) bf[1 + i] = i < ar->len ? korb_ary_ptr(ar)[i] : KORB_NIL;
         } else {
             for (uint32_t i = 0; i < np; i++)  bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
         }
@@ -13979,7 +13992,7 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
         const uint32_t np = korb_entry_params_cnt(block);   /* np <= blocals - 1 */
         if (!is_lambda && np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {  /* auto-splat: |a,b| yielded one Array */
             const KorbArray *ar = VAL2ARY(argv[0]);
-            for (uint32_t i = 0; i < np; i++) bf[1 + i] = i < ar->len ? korb_items_data(ar->items)[i] : KORB_NIL;
+            for (uint32_t i = 0; i < np; i++) bf[1 + i] = i < ar->len ? korb_ary_ptr(ar)[i] : KORB_NIL;
         } else {
             for (uint32_t i = 0; i < np; i++)  bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
         }
@@ -14629,13 +14642,13 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
         if (argc == 1 && KORB_ARRAY_P(base[0])) {                         /* array of [k,v] pairs */
             const uint32_t n = VAL2ARY(base[0])->len;
             for (uint32_t i = 0; i < n; i++) {
-                const korb_value pr = korb_items_data(VAL2ARY(base[0])->items)[i];        /* re-read */
+                const korb_value pr = korb_ary_ptr(VAL2ARY(base[0]))[i];        /* re-read */
                 if (UNLIKELY(!KORB_ARRAY_P(pr)))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_coerce_name(c, pr), i);
                 if (UNLIKELY(VAL2ARY(pr)->len < 1 || VAL2ARY(pr)->len > 2))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line, "invalid number of elements (%u for 1..2)", VAL2ARY(pr)->len);
-                slots[1] = korb_items_data(VAL2ARY(pr)->items)[0];                   /* key (rooted) */
-                slots[2] = VAL2ARY(pr)->len >= 2 ? korb_items_data(VAL2ARY(pr)->items)[1] : KORB_NIL;
+                slots[1] = korb_ary_ptr(VAL2ARY(pr))[0];                   /* key (rooted) */
+                slots[2] = VAL2ARY(pr)->len >= 2 ? korb_ary_ptr(VAL2ARY(pr))[1] : KORB_NIL;
                 CHECK(korb_hash_set(c, slots + 3, dst, KORB_REF_AT(&slots[1]), slots[2]));
             }
             return RESULT_OK(KORB_REF_GET(dst));
@@ -14696,12 +14709,12 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
         } else if (argc == 1 && KORB_ARRAY_P(abase[0])) {  /* array of [k,v] pairs */
             const uint32_t n = VAL2ARY(abase[0])->len;
             for (uint32_t i = 0; i < n; i++) {
-                const korb_value pr = korb_items_data(VAL2ARY(abase[0])->items)[i];
+                const korb_value pr = korb_ary_ptr(VAL2ARY(abase[0]))[i];
                 if (UNLIKELY(!KORB_ARRAY_P(pr))) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_coerce_name(c, pr), i);
                 if (UNLIKELY(VAL2ARY(pr)->len < 1 || VAL2ARY(pr)->len > 2))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line, "invalid number of elements (%u for 1..2)", VAL2ARY(pr)->len);
-                slots[2] = korb_items_data(VAL2ARY(pr)->items)[0];
-                slots[3] = VAL2ARY(pr)->len >= 2 ? korb_items_data(VAL2ARY(pr)->items)[1] : KORB_NIL;
+                slots[2] = korb_ary_ptr(VAL2ARY(pr))[0];
+                slots[3] = VAL2ARY(pr)->len >= 2 ? korb_ary_ptr(VAL2ARY(pr))[1] : KORB_NIL;
                 CHECK(korb_hash_set(c, slots + 4, dst, KORB_REF_AT(&slots[2]), slots[3]));
             }
         } else {
@@ -14994,7 +15007,7 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
                         slots[0] = UNWRAP(korb_hash_new(c, slots, nmem));   /* kwargs hash (rooted) */
                         korb_ref kh = KORB_REF_AT(&slots[0]);
                         for (uint32_t i = 0; i < argc; i++) {
-                            slots[1] = korb_items_data(VAL2ARY(VAL2CLASS(*recv_slot)->members)->items)[i];   /* member sym (re-read; rooted) */
+                            slots[1] = korb_ary_ptr(VAL2ARY(VAL2CLASS(*recv_slot)->members))[i];   /* member sym (re-read; rooted) */
                             slots[2] = slots[-(korb_sword_t)argc + (korb_sword_t)i];                       /* positional value (re-read from args region) */
                             CHECK(korb_hash_set(c, slots + 3, kh, KORB_REF_AT(&slots[1]), slots[2]));
                         }
@@ -15089,12 +15102,12 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
                     const KorbArray *const mm = VAL2ARY(VAL2CLASS(*recv_slot)->members);
                     for (uint32_t j = 0; j < h->len; j++) {       /* unknown keyword: key names no member */
                         bool found = false;
-                        for (uint32_t k2 = 0; k2 < mm->len; k2++) if (korb_items_data(mm->items)[k2] == korb_items_data(h->items)[2 * j]) { found = true; break; }
+                        for (uint32_t k2 = 0; k2 < mm->len; k2++) if (korb_ary_ptr(mm)[k2] == korb_items_data(h->items)[2 * j]) { found = true; break; }
                         if (UNLIKELY(!found)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: :%s", korb_sym_name(vm, SYM2ID(korb_items_data(h->items)[2 * j])));
                     }
                     for (uint32_t k2 = 0; k2 < mm->len; k2++)     /* missing keyword: member absent */
-                        if (UNLIKELY(korb_hash_find(h, korb_items_data(mm->items)[k2]) < 0))
-                            return korb_raise(c, slots, KORB_E_ARGUMENT, line, "missing keyword: :%s", korb_sym_name(vm, SYM2ID(korb_items_data(mm->items)[k2])));
+                        if (UNLIKELY(korb_hash_find(h, korb_ary_ptr(mm)[k2]) < 0))
+                            return korb_raise(c, slots, KORB_E_ARGUMENT, line, "missing keyword: :%s", korb_sym_name(vm, SYM2ID(korb_ary_ptr(mm)[k2])));
                 }
             }
             /* Data.new accepts positional OR keyword; the keyword form is a single
@@ -15105,7 +15118,7 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
                 if (argc < mm->len) {                          /* positional shortfall → the unfilled members are missing keywords */
                     char buf[512]; int off = snprintf(buf, sizeof buf, "missing keyword%s:", (mm->len - argc) > 1 ? "s" : "");
                     for (uint32_t i = argc; i < mm->len && off < (int)sizeof buf; i++)
-                        off += snprintf(buf + off, sizeof buf - off, "%s :%s", i > argc ? "," : "", korb_sym_name(vm, SYM2ID(korb_items_data(mm->items)[i])));
+                        off += snprintf(buf + off, sizeof buf - off, "%s :%s", i > argc ? "," : "", korb_sym_name(vm, SYM2ID(korb_ary_ptr(mm)[i])));
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line, "%s", buf);
                 }
                 return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 0..%u)", argc, mm->len);
@@ -15135,7 +15148,7 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
                 for (uint32_t hi = 0; hi < kh->len; hi++) {
                     const korb_value key = korb_items_data(kh->items)[2 * hi];
                     bool found = false;
-                    for (uint32_t mi = 0; mi < mem0->len; mi++) if (korb_items_data(mem0->items)[mi] == key) { found = true; break; }
+                    for (uint32_t mi = 0; mi < mem0->len; mi++) if (korb_ary_ptr(mem0)[mi] == key) { found = true; break; }
                     if (found || uklen >= (int)sizeof(ukbuf) - 64) { if (!found) ukn++; continue; }
                     if (SYMBOL_P(key))                      /* Struct names them bare, Data with the colon */
                         uklen += snprintf(ukbuf + uklen, sizeof(ukbuf) - (size_t)uklen, "%s%s%s", ukn++ ? ", " : "",
@@ -15152,9 +15165,9 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
             for (uint32_t i = 0; ; i++) {
                 const KorbArray *mem = VAL2ARY(VAL2CLASS(*recv_slot)->members);
                 if (i >= mem->len) break;
-                korb_value iv = korb_member_ivar_sym(vm, korb_items_data(mem->items)[i]);
+                korb_value iv = korb_member_ivar_sym(vm, korb_ary_ptr(mem)[i]);
                 if (kwinit) {                              /* keyword_init: pull member by name from the kwargs hash */
-                    int32_t hi = korb_hash_find(VAL2HASH(slots[-(korb_sword_t)argc]), korb_items_data(mem->items)[i]);
+                    int32_t hi = korb_hash_find(VAL2HASH(slots[-(korb_sword_t)argc]), korb_ary_ptr(mem)[i]);
                     slots[1] = hi >= 0 ? korb_items_data(VAL2HASH(slots[-(korb_sword_t)argc])->items)[2*hi+1] : KORB_NIL;
                 } else {
                     slots[1] = (i < argc) ? slots[-(korb_sword_t)argc + (korb_sword_t)i] : KORB_NIL;
@@ -15178,7 +15191,7 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
                     const uint32_t m = VAL2ARY(slots[0])->len;
                     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, m));
                     korb_ref cdst = KORB_REF_AT(&slots[1]);
-                    for (uint32_t i = 0; i < m; i++) CHECK(korb_ary_push_val(c, slots + 2, cdst, korb_items_data(VAL2ARY(slots[0])->items)[i]));
+                    for (uint32_t i = 0; i < m; i++) CHECK(korb_ary_push_val(c, slots + 2, cdst, korb_ary_ptr(VAL2ARY(slots[0]))[i]));
                     return RESULT_OK(KORB_REF_GET(cdst));
                 }
             }
@@ -15304,7 +15317,7 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
                 slots[1] = UNWRAP(korb_ary_new(c, slots + 2, VAL2ARY(src)->len));
                 korb_ref dst = KORB_REF_AT(&slots[1]);
                 for (uint32_t i = 0; i < VAL2ARY(KORB_REF_GET(sref))->len; i++) {
-                    slots[2] = korb_items_data(VAL2ARY(KORB_REF_GET(sref))->items)[i];
+                    slots[2] = korb_ary_ptr(VAL2ARY(KORB_REF_GET(sref)))[i];
                     RESULT yr = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, captured_self);
                     if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
                     slots[2] = yr.value;
@@ -18759,7 +18772,7 @@ korb_fprint_ary_d(CTX *c, korb_value *slots, FILE *fp, korb_value v, int depth)
     fputc('[', fp);
     for (uint32_t i = 0; i < (slots ? VAL2ARY(slots[0]) : VAL2ARY(v))->len; i++) {
         if (i) fputs(", ", fp);
-        korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp,korb_items_data((slots ? VAL2ARY(slots[0]) : VAL2ARY(v))->items)[i], depth + 1);
+        korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp,korb_ary_ptr((slots ? VAL2ARY(slots[0]) : VAL2ARY(v)))[i], depth + 1);
     }
     fputc(']', fp);
     (slots ? VAL2ARY(slots[0]) : VAL2ARY(v))->head.flags &= ~KORB_FL_JOIN_VISITING;   /* re-deref: element dispatch may have moved it */
@@ -18814,7 +18827,7 @@ korb_fprint_set_d(CTX *c, korb_value *slots, FILE *fp, korb_value v, int depth)
     for (uint32_t i = 0; i < (slots ? VAL2ARY(VAL2SET(slots[0])->elems) : VAL2ARY(VAL2SET(v)->elems))->len; i++) {
         if (i) fputs(", ", fp);
         const KorbArray *el = slots ? VAL2ARY(VAL2SET(slots[0])->elems) : VAL2ARY(VAL2SET(v)->elems);
-        korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp, korb_items_data(el->items)[i], depth + 1);
+        korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp, korb_ary_ptr(el)[i], depth + 1);
     }
     fputs(sub != KORB_NIL ? "}>" : "]", fp);
     (slots ? VAL2SET(slots[0]) : VAL2SET(v))->head.flags &= ~KORB_FL_JOIN_VISITING;
@@ -18872,7 +18885,7 @@ korb_fprint_inspect_d(CTX *c, korb_value *slots, FILE *fp, korb_value v, int dep
                     /* a member's #inspect may GC: re-read the class and its members each step */
                     const KorbArray *const mem = VAL2ARY(VAL2CLASS(VAL2OBJ(sv)->klass)->members);
                     if (i >= mem->len) break;
-                    const korb_value msym = korb_items_data(mem->items)[i];
+                    const korb_value msym = korb_ary_ptr(mem)[i];
                     const korb_value mval = korb_ivar_get(c, sv, korb_member_ivar_sym(c->vm, msym));
                     fputs(i == 0 ? " " : ", ", fp);
                     fputs(korb_sym_name(c->vm, SYM2ID(msym)), fp);
@@ -19216,7 +19229,7 @@ korb_fprint_inspect_s(CTX *c, korb_value *slots, FILE *fp, korb_value v)
         const KorbArray *off = VAL2ARY(md->offsets);
         fputs("#<MatchData ", fp);
         for (uint32_t i = 0; 2 * i + 1 < off->len; i++) {
-            const long b = FIX2LONG(korb_items_data(off->items)[2 * i]), e = FIX2LONG(korb_items_data(off->items)[2 * i + 1]);
+            const long b = FIX2LONG(korb_ary_ptr(off)[2 * i]), e = FIX2LONG(korb_ary_ptr(off)[2 * i + 1]);
             if (i) fprintf(fp, " %u:", i);
             if (b >= 0) korb_fprint_quoted(fp, korb_strbuf_data(subj->buf) + b, (uint32_t)(e - b));
             else fputs("nil", fp);
@@ -19313,7 +19326,7 @@ korb_puts_one_to(CTX *c, korb_value *slots, korb_value v, struct KorbIORep *rep)
         VAL2ARY(slots[0])->head.flags |= KORB_FL_JOIN_VISITING;
         RESULT r = RESULT_OK(KORB_NIL);
         for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
-            r = korb_puts_one_to(c, slots + 1, korb_items_data(VAL2ARY(slots[0])->items)[i], rep);
+            r = korb_puts_one_to(c, slots + 1, korb_ary_ptr(VAL2ARY(slots[0]))[i], rep);
             if (UNLIKELY(r.state != KORB_NORMAL)) break;
         }
         VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING;   /* re-deref: source may have moved */
@@ -19748,7 +19761,7 @@ static bool korb_feature_real_loaded_p(CTX *c, const char *const path, const cha
     const size_t blen = strlen(base);
     const KorbArray *const a = VAL2ARY(lf);
     for (uint32_t i = 0; i < a->len; i++) {
-        const korb_value e = korb_items_data(a->items)[i];
+        const korb_value e = korb_ary_ptr(a)[i];
         if (!KORB_STRING_P(e) || VAL2STR(e)->len < blen || VAL2STR(e)->len >= 4096) continue;
         char buf[4096], real[4096];
         const uint32_t n = VAL2STR(e)->len;
@@ -19771,7 +19784,7 @@ static bool korb_feature_loaded_p(CTX *c, const char *path)
         const uint32_t plen = (uint32_t)strlen(path);
         const KorbArray *const a = VAL2ARY(lf);
         for (uint32_t i = 0; i < a->len; i++) {
-            const korb_value e = korb_items_data(a->items)[i];
+            const korb_value e = korb_ary_ptr(a)[i];
             if (KORB_STRING_P(e) && VAL2STR(e)->len == plen &&
                 memcmp(korb_strbuf_data(VAL2STR(e)->buf), path, plen) == 0) return true;
         }
@@ -19799,7 +19812,7 @@ korb_feature_basename_loaded_p(CTX *c, const char *stem)
     const size_t sl = strlen(stem);
     const KorbArray *const a = VAL2ARY(lf);
     for (uint32_t i = 0; i < a->len; i++) {
-        const korb_value e = korb_items_data(a->items)[i];
+        const korb_value e = korb_ary_ptr(a)[i];
         if (!KORB_STRING_P(e)) continue;
         const char *b = korb_strbuf_data(VAL2STR(e)->buf);
         const uint32_t bl = VAL2STR(e)->len;
@@ -20155,7 +20168,7 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
         if (tl < 0 || (size_t)tl >= sizeof tail) full = true;
         const KorbArray *const fa = VAL2ARY(lf);
         for (uint32_t i = 0; !full && i < fa->len; i++) {
-            const korb_value e = korb_items_data(fa->items)[i];
+            const korb_value e = korb_ary_ptr(fa)[i];
             if (!KORB_STRING_P(e) || VAL2STR(e)->len < (uint32_t)tl) continue;
             if (memcmp(korb_strbuf_data(VAL2STR(e)->buf) + VAL2STR(e)->len - tl, tail, (size_t)tl) != 0) continue;
             if (npick == KORB_FEAT_PICK) full = true;
@@ -20166,7 +20179,7 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
     char cwd[4096]; cwd[0] = '\0';
     const KorbArray *const a = VAL2ARY(lp);
     for (uint32_t i = 0; i < a->len; i++) {
-        const korb_value e = korb_items_data(a->items)[i];
+        const korb_value e = korb_ary_ptr(a)[i];
         if (!KORB_STRING_P(e)) continue;
         char dir[4096]; uint32_t dl = VAL2STR(e)->len; if (dl >= sizeof dir) dl = sizeof dir - 1;
         memcpy(dir, korb_strbuf_data(VAL2STR(e)->buf), dl); dir[dl] = '\0';
@@ -20186,7 +20199,7 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
         }
         const size_t nl = strlen(norm);
         for (uint32_t k = 0; k < npick; k++) {             /* nothing above runs Ruby or allocates */
-            const korb_value e = korb_items_data(VAL2ARY(lf)->items)[pick[k]];
+            const korb_value e = korb_ary_ptr(VAL2ARY(lf))[pick[k]];
             if (VAL2STR(e)->len == nl && memcmp(korb_strbuf_data(VAL2STR(e)->buf), norm, nl) == 0) return true;
         }
     }
@@ -20363,7 +20376,7 @@ korb_bi_require(CTX *c, korb_value *slots, korb_slice args)
         for (uint32_t i = 0; ; i++) {
             const korb_value lp = korb_const_get(c->vm, lp_sym);
             if (!KORB_ARRAY_P(lp) || i >= VAL2ARY(lp)->len) break;
-            korb_value e = korb_items_data(VAL2ARY(lp)->items)[i];
+            korb_value e = korb_ary_ptr(VAL2ARY(lp))[i];
             if (!KORB_STRING_P(e)) {                       /* a #to_path / #to_str entry (CRuby FilePathValue) */
                 RESULT pr = korb_load_path_arg(c, slots, &e);
                 if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
@@ -20597,7 +20610,7 @@ korb_bi_load(CTX *c, korb_value *slots, korb_slice args)
         if (namebuf[0] != '.' && KORB_ARRAY_P(lp)) {
             slots[1] = lp;                                 /* park: #to_path dispatches */
             for (uint32_t i = 0; i < VAL2ARY(slots[1])->len && !found; i++) {
-                slots[2] = korb_items_data(VAL2ARY(slots[1])->items)[i];
+                slots[2] = korb_ary_ptr(VAL2ARY(slots[1]))[i];
                 if (!KORB_STRING_P(slots[2])) {
                     if (!korb_responds_to(c, slots[2], korb_intern_lit(c->vm, "to_path", 7))) continue;
                     const RESULT pr = korb_send(c, slots + 3, korb_intern_lit(c->vm, "to_path", 7), 0, 0);
@@ -20803,7 +20816,7 @@ korb_drain_at_exit_x(CTX *c, korb_value *slots, bool *exited)
      * another runs it right after itself (CRuby's nesting order) */
     while (VAL2ARY(slots[0])->len > 0) {
         const uint32_t last = VAL2ARY(slots[0])->len - 1;
-        slots[1] = korb_items_data(VAL2ARY(slots[0])->items)[last];
+        slots[1] = korb_ary_ptr(VAL2ARY(slots[0]))[last];
         VAL2ARY(slots[0])->len = last;
         RESULT er = korb_send(c, slots + 2, korb_intern_lit(c->vm, "call", 4), 0, 0);
         if (er.state == KORB_RAISE) {
@@ -22558,8 +22571,8 @@ korb_objspace_visit(void *arg, void *payload)
     if (s->filter != KORB_NIL && !korb_obj_kind_of_p(s->c, v, s->filter)) return;
     if (s->dst != NULL) {
         if (UNLIKELY(s->dst->len >= s->dst->capa)) return;
-        KorbArrayItems *const it = s->dst->items;
-        ARO_STORE(s->c, it, &korb_items_data(it)[s->dst->len], v);
+        void *const it = korb_ary_owner(s->dst); korb_value *const it_d = korb_ary_ptr(s->dst);
+        ARO_STORE(s->c, it, &it_d[s->dst->len], v);
         s->dst->len++;
     }
     s->count++;

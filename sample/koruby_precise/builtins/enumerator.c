@@ -70,7 +70,7 @@ korb_enum_yield_el(CTX *c, korb_value *const cur, NODE *block, korb_value *def_e
     if (UNLIKELY(korb_enum_el_multi(el))) {
         const KorbArray *const a = VAL2ARY(el);
         const uint32_t n = a->len <= 8 ? a->len : 8;
-        for (uint32_t i = 0; i < n; i++) cur[i] = korb_items_data(a->items)[i];
+        for (uint32_t i = 0; i < n; i++) cur[i] = korb_ary_ptr(a)[i];
         return korb_block_yield(c, cur + n, block, def_env, cur, n, cself);
     }
     cur[0] = el;
@@ -117,8 +117,8 @@ static RESULT korb_m_yielder_push_impl(CTX *c, korb_value *slots, korb_ref self,
     const uint32_t ac = KORB_SLICE_LEN(a);
     const korb_value csym = ID2SYM(korb_intern_lit(c->vm, "@__c", 4));   /* @__c = [collector, limit, ops, op_state] */
     slots[1] = korb_ivar_get(c, KORB_REF_GET(self), csym);     /* the tuple (rooted) */
-    slots[0] = korb_items_data(VAL2ARY(slots[1])->items)[0];              /* collector (rooted in slots[0]) */
-    const korb_value limv = korb_items_data(VAL2ARY(slots[1])->items)[1];     /* limit (fixnum, immediate) */
+    slots[0] = korb_ary_ptr(VAL2ARY(slots[1]))[0];              /* collector (rooted in slots[0]) */
+    const korb_value limv = korb_ary_ptr(VAL2ARY(slots[1]))[1];     /* limit (fixnum, immediate) */
     korb_value v;
     if (ac == 1) v = KORB_SLICE_GET(a, 0);
     else if (ac == 0) v = KORB_NIL;
@@ -136,27 +136,27 @@ static RESULT korb_m_yielder_push_impl(CTX *c, korb_value *slots, korb_ref self,
     bool multi = (ac != 1 && ac <= 8);
     /* apply any deferred lazy ops (select/map/reject/filter_map/take_while/...) */
     bool keep = true, term = false;
-    const korb_value ops = korb_items_data(VAL2ARY(slots[1])->items)[2];      /* nil for a raw generator */
+    const korb_value ops = korb_ary_ptr(VAL2ARY(slots[1]))[2];      /* nil for a raw generator */
     if (ops != KORB_NIL && VAL2ARY(ops)->len) {
         slots[3] = v;                                          /* value (transformed by map) */
         slots[4] = ops;                                        /* ops (rooted) */
-        slots[5] = korb_items_data(VAL2ARY(slots[1])->items)[3];         /* op_state (rooted) */
+        slots[5] = korb_ary_ptr(VAL2ARY(slots[1]))[3];         /* op_state (rooted) */
         RESULT ar = korb_lazy_apply(c, slots, 3, (ac > 1 && ac <= 8) ? ac : 0, &keep, &term);
         if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
         multi = false;                                        /* the chain defines the value now */
         v = slots[3];                                         /* possibly mapped */
         slots[1] = korb_ivar_get(c, KORB_REF_GET(self), csym);   /* re-read after op dispatch GC */
-        slots[0] = korb_items_data(VAL2ARY(slots[1])->items)[0];
+        slots[0] = korb_ary_ptr(VAL2ARY(slots[1]))[0];
     }
     struct korb_gen_sink *const sink =
-        (VAL2ARY(slots[1])->len >= 5) ? korb_gen_sink_at(c, korb_items_data(VAL2ARY(slots[1])->items)[4]) : NULL;
+        (VAL2ARY(slots[1])->len >= 5) ? korb_gen_sink_at(c, korb_ary_ptr(VAL2ARY(slots[1]))[4]) : NULL;
     if (keep && FIXNUM_P(limv) && FIX2LONG(limv) == -2 && sink != NULL) {
         /* streaming-each sink: hand the value to the user block instead of
          * collecting.  A block break / StopIteration stops the whole drive. */
         slots[2] = v;                                         /* root across the yield */
         uint32_t yn = 1;
         if (multi) {                                          /* re-spread so block arity rules apply */
-            for (uint32_t i = 0; i < ac; i++) slots[3 + i] = korb_items_data(VAL2ARY(slots[2])->items)[i];
+            for (uint32_t i = 0; i < ac; i++) slots[3 + i] = korb_ary_ptr(VAL2ARY(slots[2]))[i];
             yn = ac;
         }
         RESULT yr = korb_block_yield(c, slots + 3 + yn, sink->block, sink->def_env,
@@ -240,12 +240,12 @@ static RESULT korb_enum_gen_run(CTX *c, korb_value *slots, korb_ref self, korb_s
         slots[1] = UNWRAP(korb_ary_new(c, slots + 2, no));
         korb_ref st = KORB_REF_AT(&slots[1]);
         for (uint32_t i = 0; i < no; i++) {
-            const KorbArray *pair = VAL2ARY(korb_items_data(VAL2ARY(slots[0])->items)[i]);
-            const char *const opn = korb_sym_name(vm, SYM2ID(korb_items_data(pair->items)[0]));
+            const KorbArray *pair = VAL2ARY(korb_ary_ptr(VAL2ARY(slots[0]))[i]);
+            const char *const opn = korb_sym_name(vm, SYM2ID(korb_ary_ptr(pair)[0]));
             if (!strcmp(opn, "uniq")) { slots[4] = UNWRAP(korb_hash_new(c, slots + 5, 8)); CHECK(korb_ary_push_val(c, slots + 5, st, slots[4])); continue; }   /* uniq: seen-Hash state */
             korb_sword_t init = 0;
-            if (!strcmp(opn, "take") || !strcmp(opn, "drop")) init = FIX2LONG(korb_items_data(pair->items)[1]);
-            else if (!strcmp(opn, "with_index")) init = FIX2LONG(korb_items_data(pair->items)[1]);   /* running index (starts at the offset) */
+            if (!strcmp(opn, "take") || !strcmp(opn, "drop")) init = FIX2LONG(korb_ary_ptr(pair)[1]);
+            else if (!strcmp(opn, "with_index")) init = FIX2LONG(korb_ary_ptr(pair)[1]);   /* running index (starts at the offset) */
             else if (!strcmp(opn, "drop_while")) init = 1;
             CHECK(korb_ary_push_val(c, slots + 2, st, LONG2FIX(init)));
         }
@@ -365,7 +365,7 @@ static RESULT korb_lazy_chain(CTX *c, korb_value *slots, korb_ref self, const ch
     const uint32_t oldn = (SELF_ENUM->ops == KORB_NIL) ? 0 : VAL2ARY(SELF_ENUM->ops)->len;   /* raw generator → nil ops */
     slots[2] = UNWRAP(korb_ary_new(c, slots + 3, oldn + 1));   /* clone ops */
     korb_ref nops = KORB_REF_AT(&slots[2]);
-    for (uint32_t i = 0; i < oldn; i++) CHECK(korb_ary_push_val(c, slots + 3, nops, korb_items_data(VAL2ARY(SELF_ENUM->ops)->items)[i]));
+    for (uint32_t i = 0; i < oldn; i++) CHECK(korb_ary_push_val(c, slots + 3, nops, korb_ary_ptr(VAL2ARY(SELF_ENUM->ops))[i]));
     /* new pair [op_sym, proc] */
     slots[3] = ID2SYM(korb_intern(c->vm, op, (uint32_t)strlen(op)));
     slots[4] = slots[1];                                          /* blk_proc */
@@ -393,7 +393,7 @@ static RESULT korb_lazy_chain2(CTX *c, korb_value *slots, korb_ref self, const c
     const uint32_t oldn = (SELF_ENUM->ops == KORB_NIL) ? 0 : VAL2ARY(SELF_ENUM->ops)->len;
     slots[3] = UNWRAP(korb_ary_new(c, slots + 4, oldn + 1));   /* clone ops */
     korb_ref nops = KORB_REF_AT(&slots[3]);
-    for (uint32_t i = 0; i < oldn; i++) CHECK(korb_ary_push_val(c, slots + 4, nops, korb_items_data(VAL2ARY(SELF_ENUM->ops)->items)[i]));
+    for (uint32_t i = 0; i < oldn; i++) CHECK(korb_ary_push_val(c, slots + 4, nops, korb_ary_ptr(VAL2ARY(SELF_ENUM->ops))[i]));
     slots[4] = ID2SYM(korb_intern(c->vm, op, (uint32_t)strlen(op)));   /* op_sym */
     korb_value pair = UNWRAP(korb_ary_new(c, slots + 5, 3));
     slots[5] = pair;
@@ -434,7 +434,7 @@ static RESULT korb_call2(CTX *c, korb_value *slots, korb_value proc, korb_value 
 static RESULT korb_call_spread(CTX *c, korb_value *slots, korb_value proc, korb_value ary, uint32_t n) {
     slots[0] = proc;
     const KorbArray *const a = VAL2ARY(ary);
-    for (uint32_t i = 0; i < n; i++) slots[1 + i] = korb_items_data(a->items)[i];
+    for (uint32_t i = 0; i < n; i++) slots[1 + i] = korb_ary_ptr(a)[i];
     return korb_send(c, slots + 1 + n, korb_intern_lit(c->vm, "call", 4), 0, n);
 }
 /* Ops whose block CRuby calls with a multi-yield's raw values (so a
@@ -453,15 +453,15 @@ static RESULT korb_lazy_apply(CTX *c, korb_value *slots, uint32_t voff, uint32_t
     *keep = true; *term = false;
     const uint32_t n = VAL2ARY(slots[voff + 1])->len;
     for (uint32_t oi = 0; oi < n; oi++) {
-        const KorbArray *pair = VAL2ARY(korb_items_data(VAL2ARY(slots[voff + 1])->items)[oi]);
-        const char *const opn = korb_sym_name(c->vm, SYM2ID(korb_items_data(pair->items)[0]));
+        const KorbArray *pair = VAL2ARY(korb_ary_ptr(VAL2ARY(slots[voff + 1]))[oi]);
+        const char *const opn = korb_sym_name(c->vm, SYM2ID(korb_ary_ptr(pair)[0]));
         if (!strcmp(opn, "drop")) {                             /* skip the first N */
-            const korb_sword_t s = FIX2LONG(korb_items_data(VAL2ARY(slots[voff + 2])->items)[oi]);
+            const korb_sword_t s = FIX2LONG(korb_ary_ptr(VAL2ARY(slots[voff + 2]))[oi]);
             if (s > 0) { korb_ary_store_at(c, slots[voff + 2], oi, LONG2FIX(s - 1)); *keep = false; return RESULT_OK(KORB_NIL); }
             continue;
         }
         if (!strcmp(opn, "take")) {                             /* keep the first N, then terminate */
-            const korb_sword_t s = FIX2LONG(korb_items_data(VAL2ARY(slots[voff + 2])->items)[oi]);
+            const korb_sword_t s = FIX2LONG(korb_ary_ptr(VAL2ARY(slots[voff + 2]))[oi]);
             if (s <= 0) { *keep = false; *term = true; return RESULT_OK(KORB_NIL); }
             korb_ary_store_at(c, slots[voff + 2], oi, LONG2FIX(s - 1));
             if (s == 1) *term = true;                           /* the N-th value: emit it, then stop the source */
@@ -470,12 +470,12 @@ static RESULT korb_lazy_apply(CTX *c, korb_value *slots, uint32_t voff, uint32_t
         if (!strcmp(opn, "compact")) { if (slots[voff] == KORB_NIL) { *keep = false; return RESULT_OK(KORB_NIL); } continue; }
         if (!strcmp(opn, "grep") || !strcmp(opn, "grep_v")) {   /* pattern === value (grep_v: NOT), optional block maps the match */
             const bool want = (opn[4] == '\0');                 /* "grep" wants a match; "grep_v" wants none */
-            bool m; RESULT mr = korb_grep_eqq(c, slots + voff + 3, korb_items_data(pair->items)[1], slots[voff], &m);
+            bool m; RESULT mr = korb_grep_eqq(c, slots + voff + 3, korb_ary_ptr(pair)[1], slots[voff], &m);
             if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
             if (m != want) { *keep = false; return RESULT_OK(KORB_NIL); }
-            const KorbArray *pair2 = VAL2ARY(korb_items_data(VAL2ARY(slots[voff + 1])->items)[oi]);   /* re-read: === may have GC'd */
-            if (pair2->len >= 3 && korb_items_data(pair2->items)[2] != KORB_NIL) {   /* block: transform the kept value */
-                slots[voff + 3] = korb_items_data(pair2->items)[2];        /* proc (rooted before the dispatch) */
+            const KorbArray *pair2 = VAL2ARY(korb_ary_ptr(VAL2ARY(slots[voff + 1]))[oi]);   /* re-read: === may have GC'd */
+            if (pair2->len >= 3 && korb_ary_ptr(pair2)[2] != KORB_NIL) {   /* block: transform the kept value */
+                slots[voff + 3] = korb_ary_ptr(pair2)[2];        /* proc (rooted before the dispatch) */
                 RESULT cr = korb_call1(c, slots + voff + 4, slots[voff + 3], slots[voff]);
                 if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
                 slots[voff] = cr.value;
@@ -483,9 +483,9 @@ static RESULT korb_lazy_apply(CTX *c, korb_value *slots, uint32_t voff, uint32_t
             continue;
         }
         if (!strcmp(opn, "with_index")) {                       /* value → [value, idx], or block(value, idx) */
-            const korb_sword_t idx = FIX2LONG(korb_items_data(VAL2ARY(slots[voff + 2])->items)[oi]);
+            const korb_sword_t idx = FIX2LONG(korb_ary_ptr(VAL2ARY(slots[voff + 2]))[oi]);
             korb_ary_store_at(c, slots[voff + 2], oi, LONG2FIX(idx + 1));
-            slots[voff + 3] = (pair->len >= 3) ? korb_items_data(pair->items)[2] : KORB_NIL;   /* proc (rooted: the call GCs) */
+            slots[voff + 3] = (pair->len >= 3) ? korb_ary_ptr(pair)[2] : KORB_NIL;   /* proc (rooted: the call GCs) */
             if (slots[voff + 3] != KORB_NIL) {
                 /* Lazy#with_index runs the block for its side effect only — the
                  * element that flows on is the ORIGINAL one (CRuby). */
@@ -501,13 +501,13 @@ static RESULT korb_lazy_apply(CTX *c, korb_value *slots, uint32_t voff, uint32_t
         }
         if (!strcmp(opn, "uniq")) {                             /* dedup by value (or block result); op_state[oi] holds a seen-Hash */
             slots[voff + 3] = slots[voff];                      /* key = value */
-            if (korb_items_data(pair->items)[1] != KORB_NIL) {             /* uniq(&block): key = block.call(value) */
-                slots[voff + 4] = korb_items_data(pair->items)[1];
+            if (korb_ary_ptr(pair)[1] != KORB_NIL) {             /* uniq(&block): key = block.call(value) */
+                slots[voff + 4] = korb_ary_ptr(pair)[1];
                 RESULT ur = korb_call1(c, slots + voff + 5, slots[voff + 4], slots[voff]);
                 if (UNLIKELY(ur.state != KORB_NORMAL)) return ur;
                 slots[voff + 3] = ur.value;
             }
-            slots[voff + 4] = korb_items_data(VAL2ARY(slots[voff + 2])->items)[oi];   /* this op's seen-Hash */
+            slots[voff + 4] = korb_ary_ptr(VAL2ARY(slots[voff + 2]))[oi];   /* this op's seen-Hash */
             if (korb_hash_find(VAL2HASH(slots[voff + 4]), slots[voff + 3]) >= 0) { *keep = false; return RESULT_OK(KORB_NIL); }
             CHECK(korb_hash_set(c, slots + voff + 5, KORB_REF_AT(&slots[voff + 4]), KORB_REF_AT(&slots[voff + 3]), KORB_TRUE));
             continue;
@@ -515,7 +515,7 @@ static RESULT korb_lazy_apply(CTX *c, korb_value *slots, uint32_t voff, uint32_t
         /* block ops: proc.call(value) — slots[voff] held across the dispatch (rooted).
          * Only the head op still sees the source's raw values; from there on the
          * chain carries one value (same as CRuby's stage-to-stage yielding). */
-        slots[voff + 3] = korb_items_data(pair->items)[1];                /* proc */
+        slots[voff + 3] = korb_ary_ptr(pair)[1];                /* proc */
         RESULT cr = (oi == 0 && src_ac > 1 && korb_lazy_op_raw_values(opn))
                   ? korb_call_spread(c, slots + voff + 4, slots[voff + 3], slots[voff], src_ac)
                   : korb_call1(c, slots + voff + 4, slots[voff + 3], slots[voff]);
@@ -527,7 +527,7 @@ static RESULT korb_lazy_apply(CTX *c, korb_value *slots, uint32_t voff, uint32_t
         else if (!strcmp(opn, "filter_map")) { if (!KORB_TRUTHY(rv)) { *keep = false; return RESULT_OK(KORB_NIL); } slots[voff] = rv; }
         else if (!strcmp(opn, "take_while")) { if (!KORB_TRUTHY(rv)) { *keep = false; *term = true; return RESULT_OK(KORB_NIL); } }
         else if (!strcmp(opn, "drop_while")) {
-            if (FIX2LONG(korb_items_data(VAL2ARY(slots[voff + 2])->items)[oi])) {   /* still dropping */
+            if (FIX2LONG(korb_ary_ptr(VAL2ARY(slots[voff + 2]))[oi])) {   /* still dropping */
                 if (KORB_TRUTHY(rv)) { *keep = false; return RESULT_OK(KORB_NIL); }
                 korb_ary_store_at(c, slots[voff + 2], oi, LONG2FIX(0));
             }
@@ -555,19 +555,19 @@ static RESULT korb_lazy_run(CTX *c, korb_value *slots, korb_ref self, korb_value
     for (uint32_t oi = start_oi; ; oi++) {
         const KorbArray *ops = VAL2ARY(SELF_ENUM->ops);        /* re-read: op dispatch GCs */
         if (oi >= ops->len) break;
-        const KorbArray *pair = VAL2ARY(korb_items_data(ops->items)[oi]);
-        const char *const opn = korb_sym_name(c->vm, SYM2ID(korb_items_data(pair->items)[0]));
+        const KorbArray *pair = VAL2ARY(korb_ary_ptr(ops)[oi]);
+        const char *const opn = korb_sym_name(c->vm, SYM2ID(korb_ary_ptr(pair)[0]));
         if (!strcmp(opn, "drop")) { if (oi < 64 && op_state[oi] > 0) { op_state[oi]--; return RESULT_OK(KORB_NIL); } continue; }
         if (!strcmp(opn, "take")) { if (oi >= 64 || op_state[oi] <= 0) { *term = true; return RESULT_OK(KORB_NIL); } op_state[oi]--; continue; }
         if (!strcmp(opn, "compact")) { if (slots[0] == KORB_NIL) return RESULT_OK(KORB_NIL); continue; }
         if (!strcmp(opn, "grep") || !strcmp(opn, "grep_v")) {
             const bool gwant = (opn[4] == '\0');
-            bool gm; RESULT gmr = korb_grep_eqq(c, slots + 1, korb_items_data(pair->items)[1], slots[0], &gm);
+            bool gm; RESULT gmr = korb_grep_eqq(c, slots + 1, korb_ary_ptr(pair)[1], slots[0], &gm);
             if (UNLIKELY(gmr.state != KORB_NORMAL)) return gmr;
             if (gm != gwant) return RESULT_OK(KORB_NIL);
-            const KorbArray *gpair = VAL2ARY(korb_items_data(VAL2ARY(SELF_ENUM->ops)->items)[oi]);   /* re-read after GC */
-            if (gpair->len >= 3 && korb_items_data(gpair->items)[2] != KORB_NIL) {
-                slots[1] = korb_items_data(gpair->items)[2];
+            const KorbArray *gpair = VAL2ARY(korb_ary_ptr(VAL2ARY(SELF_ENUM->ops))[oi]);   /* re-read after GC */
+            if (gpair->len >= 3 && korb_ary_ptr(gpair)[2] != KORB_NIL) {
+                slots[1] = korb_ary_ptr(gpair)[2];
                 RESULT gr = korb_call1(c, slots + 2, slots[1], slots[0]);
                 if (UNLIKELY(gr.state != KORB_NORMAL)) return gr;
                 slots[0] = gr.value;
@@ -576,20 +576,20 @@ static RESULT korb_lazy_run(CTX *c, korb_value *slots, korb_ref self, korb_value
         }
         if (!strcmp(opn, "uniq")) {
             slots[1] = slots[0];                               /* dedup key */
-            if (korb_items_data(pair->items)[1] != KORB_NIL) {
-                slots[2] = korb_items_data(pair->items)[1];
+            if (korb_ary_ptr(pair)[1] != KORB_NIL) {
+                slots[2] = korb_ary_ptr(pair)[1];
                 RESULT ur = korb_call1(c, slots + 3, slots[2], slots[0]);
                 if (UNLIKELY(ur.state != KORB_NORMAL)) return ur;
                 slots[1] = ur.value;
             }
-            slots[2] = korb_items_data(VAL2ARY(KORB_REF_GET(seen))->items)[oi];
+            slots[2] = korb_ary_ptr(VAL2ARY(KORB_REF_GET(seen)))[oi];
             if (korb_hash_find(VAL2HASH(slots[2]), slots[1]) >= 0) return RESULT_OK(KORB_NIL);
             CHECK(korb_hash_set(c, slots + 3, KORB_REF_AT(&slots[2]), KORB_REF_AT(&slots[1]), KORB_TRUE));
             continue;
         }
         if (!strcmp(opn, "with_index")) {                     /* value → [value, idx] (no block) or block(value, idx) */
             const korb_sword_t idx = (oi < 64) ? op_state[oi]++ : 0;
-            const korb_value blk = (pair->len >= 3) ? korb_items_data(pair->items)[2] : KORB_NIL;
+            const korb_value blk = (pair->len >= 3) ? korb_ary_ptr(pair)[2] : KORB_NIL;
             if (blk != KORB_NIL) {
                 slots[1] = blk;                               /* block is a side effect; the value passes through */
                 RESULT wr = korb_call2(c, slots + 2, slots[1], slots[0], LONG2FIX(idx));
@@ -605,7 +605,7 @@ static RESULT korb_lazy_run(CTX *c, korb_value *slots, korb_ref self, korb_value
             continue;
         }
         if (!strcmp(opn, "flat_map") || !strcmp(opn, "collect_concat")) {
-            slots[1] = korb_items_data(pair->items)[1];                  /* proc */
+            slots[1] = korb_ary_ptr(pair)[1];                  /* proc */
             RESULT fr = korb_call1(c, slots + 2, slots[1], slots[0]);
             if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
             slots[1] = fr.value;                              /* block result (rooted) */
@@ -625,7 +625,7 @@ static RESULT korb_lazy_run(CTX *c, korb_value *slots, korb_ref self, korb_value
             }
             if (KORB_ARRAY_P(slots[1])) {                     /* Array → flatten one level: each elem re-enters ops[oi+1..] */
                 for (uint32_t k = 0; !*term && k < VAL2ARY(slots[1])->len; k++) {   /* re-read len/elem each iter (recursion GCs) */
-                    RESULT r = korb_lazy_run(c, slots + 2, self, korb_items_data(VAL2ARY(slots[1])->items)[k], oi + 1, op_state, seen, res, limit, produced, term, sink);
+                    RESULT r = korb_lazy_run(c, slots + 2, self, korb_ary_ptr(VAL2ARY(slots[1]))[k], oi + 1, op_state, seen, res, limit, produced, term, sink);
                     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 }
                 return RESULT_OK(KORB_NIL);                   /* fanout handled here; don't push slots[0] */
@@ -634,7 +634,7 @@ static RESULT korb_lazy_run(CTX *c, korb_value *slots, korb_ref self, korb_value
             continue;
         }
         /* block ops (select/reject/map/filter_map/take_while/drop_while) */
-        slots[1] = korb_items_data(pair->items)[1];
+        slots[1] = korb_ary_ptr(pair)[1];
         RESULT cr = korb_call1(c, slots + 2, slots[1], slots[0]);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         const korb_value rv = cr.value;
@@ -667,9 +667,9 @@ static RESULT korb_lazy_drive_sink(CTX *c, korb_value *slots, korb_ref self, kor
         if (KORB_ARRAY_P(ops0)) {
             const KorbArray *const oa = VAL2ARY(ops0);
             for (uint32_t oi = 0; oi < oa->len; oi++) {
-                const KorbArray *const pr = VAL2ARY(korb_items_data(oa->items)[oi]);
-                if (!strcmp(korb_sym_name(c->vm, SYM2ID(korb_items_data(pr->items)[0])), "take") &&
-                    korb_items_data(pr->items)[1] == LONG2FIX(0))
+                const KorbArray *const pr = VAL2ARY(korb_ary_ptr(oa)[oi]);
+                if (!strcmp(korb_sym_name(c->vm, SYM2ID(korb_ary_ptr(pr)[0])), "take") &&
+                    korb_ary_ptr(pr)[1] == LONG2FIX(0))
                     return korb_ary_new(c, slots, 0);
             }
         }
@@ -690,10 +690,10 @@ static RESULT korb_lazy_drive_sink(CTX *c, korb_value *slots, korb_ref self, kor
     { const KorbArray *ops0 = VAL2ARY(SELF_ENUM->ops);
       uint32_t nop = ops0->len < 64 ? ops0->len : 64;
       for (uint32_t oi = 0; oi < nop; oi++) {
-          const KorbArray *pair = VAL2ARY(korb_items_data(VAL2ARY(SELF_ENUM->ops)->items)[oi]);   /* re-read: hash_new GCs */
-          const char *opn = korb_sym_name(c->vm, SYM2ID(korb_items_data(pair->items)[0]));
-          if (!strcmp(opn, "drop") || !strcmp(opn, "take")) op_state[oi] = FIX2LONG(korb_items_data(pair->items)[1]);
-          else if (!strcmp(opn, "with_index")) op_state[oi] = FIX2LONG(korb_items_data(pair->items)[1]);   /* running index (starts at the offset) */
+          const KorbArray *pair = VAL2ARY(korb_ary_ptr(VAL2ARY(SELF_ENUM->ops))[oi]);   /* re-read: hash_new GCs */
+          const char *opn = korb_sym_name(c->vm, SYM2ID(korb_ary_ptr(pair)[0]));
+          if (!strcmp(opn, "drop") || !strcmp(opn, "take")) op_state[oi] = FIX2LONG(korb_ary_ptr(pair)[1]);
+          else if (!strcmp(opn, "with_index")) op_state[oi] = FIX2LONG(korb_ary_ptr(pair)[1]);   /* running index (starts at the offset) */
           else if (!strcmp(opn, "drop_while")) op_state[oi] = 1;            /* 1 = still dropping */
           else op_state[oi] = 0;
           if (!strcmp(opn, "take") || !strcmp(opn, "take_while")) has_terminator = true;
@@ -716,7 +716,7 @@ static RESULT korb_lazy_drive_sink(CTX *c, korb_value *slots, korb_ref self, kor
         if (limit < 0 && sink == NULL && !has_terminator) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "cycle without a count");
         while (limit < 0 || produced < limit) {                  /* a block (sink) or take bounds it: runs until it breaks */
             uint32_t n = VAL2ARY(SELF_ENUM->source)->len;
-            for (uint32_t i = 0; i < n && (limit < 0 || produced < limit); i++) LAZY_FEED(korb_items_data(VAL2ARY(SELF_ENUM->source)->items)[i]);
+            for (uint32_t i = 0; i < n && (limit < 0 || produced < limit); i++) LAZY_FEED(korb_ary_ptr(VAL2ARY(SELF_ENUM->source))[i]);
         }
     } else {                                                    /* lazy */
         const korb_value src = SELF_ENUM->source;
@@ -734,7 +734,7 @@ static RESULT korb_lazy_drive_sink(CTX *c, korb_value *slots, korb_ref self, kor
             }
         } else if (KORB_ARRAY_P(src)) {
             uint32_t n = VAL2ARY(src)->len;
-            for (uint32_t i = 0; i < n; i++) LAZY_FEED(korb_items_data(VAL2ARY(SELF_ENUM->source)->items)[i]);
+            for (uint32_t i = 0; i < n; i++) LAZY_FEED(korb_ary_ptr(VAL2ARY(SELF_ENUM->source))[i]);
         }
     }
   lazy_done:
@@ -848,7 +848,7 @@ static RESULT korb_m_enum_each(CTX *c, korb_value *slots, korb_ref self, korb_sl
         for (uint32_t i = 0; ; i++) {
             const KorbArray *v = VAL2ARY(SELF_ENUM->values);
             if (i >= v->len) break;
-            slots[0] = korb_items_data(v->items)[i];
+            slots[0] = korb_ary_ptr(v)[i];
             const RESULT r = korb_enum_yield_el(c, slots + 1, block, def_env, cself, slots[0]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (op == 5) CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
@@ -860,7 +860,7 @@ static RESULT korb_m_enum_each(CTX *c, korb_value *slots, korb_ref self, korb_sl
         for (uint32_t i = 0; ; i++) {
             const KorbArray *v = VAL2ARY(SELF_ENUM->values);
             if (i >= v->len) break;
-            slots[0] = korb_items_data(v->items)[i];            /* slots advanced by SLOTS_PUSH; dst is below */
+            slots[0] = korb_ary_ptr(v)[i];            /* slots advanced by SLOTS_PUSH; dst is below */
             RESULT r = (op == 3) ? korb_enum_yield_el(c, slots + 1, block, def_env, cself, slots[0])
                                  : korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);   /* flat_map spreads; select/reject/find gather */
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -869,7 +869,7 @@ static RESULT korb_m_enum_each(CTX *c, korb_value *slots, korb_ref self, korb_sl
                 if (KORB_ARRAY_P(slots[1])) {
                     korb_ref fr = KORB_REF_AT(&slots[1]);
                     for (uint32_t k = 0; k < VAL2ARY(KORB_REF_GET(fr))->len; k++)
-                        CHECK(korb_ary_push_val(c, slots + 2, dst, korb_items_data(VAL2ARY(KORB_REF_GET(fr))->items)[k]));
+                        CHECK(korb_ary_push_val(c, slots + 2, dst, korb_ary_ptr(VAL2ARY(KORB_REF_GET(fr)))[k]));
                 } else {
                     CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
                 }
@@ -883,7 +883,7 @@ static RESULT korb_m_enum_each(CTX *c, korb_value *slots, korb_ref self, korb_sl
     for (uint32_t i = 0; ; i++) {
         const KorbArray *v = VAL2ARY(SELF_ENUM->values);
         if (i >= v->len) break;
-        slots[0] = korb_items_data(v->items)[i];
+        slots[0] = korb_ary_ptr(v)[i];
         RESULT r = korb_enum_yield_el(c, slots + 1, block, def_env, cself, slots[0]);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -1007,7 +1007,7 @@ static RESULT korb_lazy_op(CTX *c, korb_value *slots, korb_ref self, const char 
     for (uint32_t i = 0; ; i++) {
         const KorbArray *v = VAL2ARY(SELF_ENUM->values);
         if (i >= v->len) break;
-        slots[1] = korb_items_data(v->items)[i];
+        slots[1] = korb_ary_ptr(v)[i];
         if (is_drop_while && !dropping) {                 /* past the prefix: no more block calls */
             CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
             continue;
@@ -1108,7 +1108,7 @@ static RESULT korb_m_enum_compact(CTX *c, korb_value *slots, korb_ref self, korb
     korb_ref dst = KORB_REF_AT(&slots[1]);
     if (KORB_ARRAY_P(slots[0]))
         for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
-            const korb_value v = korb_items_data(VAL2ARY(slots[0])->items)[i];
+            const korb_value v = korb_ary_ptr(VAL2ARY(slots[0]))[i];
             if (v != KORB_NIL) CHECK(korb_ary_push_val(c, slots + 2, dst, v));
         }
     return RESULT_OK(KORB_REF_GET(dst));
@@ -1133,7 +1133,7 @@ static RESULT korb_lazy_count_op(CTX *c, korb_value *slots, korb_ref self, korb_
     const uint32_t hi = is_take ? (uint32_t)(n < (korb_sword_t)len ? n : len) : len;
     slots[0] = UNWRAP(korb_ary_new(c, slots, hi - lo));
     korb_ref dst = KORB_REF_AT(&slots[0]);
-    for (uint32_t i = lo; i < hi; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2ARY(SELF_ENUM->values)->items)[i]));
+    for (uint32_t i = lo; i < hi; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, korb_ary_ptr(VAL2ARY(SELF_ENUM->values))[i]));
     return RESULT_OK(KORB_REF_GET(dst));
 }
 static RESULT korb_m_enum_drop(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { return korb_lazy_count_op(c, slots, self, a, "drop"); }
@@ -1147,15 +1147,15 @@ static RESULT korb_m_enum_first(CTX *c, korb_value *slots, korb_ref self, korb_s
     if (SELF_ENUM->mode != 0) {
         RESULT d = korb_lazy_drive(c, slots, self, n < 0 ? 0 : n);
         if (UNLIKELY(d.state != KORB_NORMAL)) return d;
-        if (!has_n) { const KorbArray *r = VAL2ARY(d.value); return RESULT_OK(r->len ? korb_items_data(r->items)[0] : KORB_NIL); }
+        if (!has_n) { const KorbArray *r = VAL2ARY(d.value); return RESULT_OK(r->len ? korb_ary_ptr(r)[0] : KORB_NIL); }
         return d;
     }
     const KorbArray *vals = VAL2ARY(SELF_ENUM->values);
-    if (!has_n) return RESULT_OK(vals->len ? korb_items_data(vals->items)[0] : KORB_NIL);
+    if (!has_n) return RESULT_OK(vals->len ? korb_ary_ptr(vals)[0] : KORB_NIL);
     uint32_t take = (n < 0) ? 0 : ((uint32_t)n < vals->len ? (uint32_t)n : vals->len);
     slots[0] = UNWRAP(korb_ary_new(c, slots, take));
     korb_ref res = KORB_REF_AT(&slots[0]);
-    for (uint32_t i = 0; i < take; i++) CHECK(korb_ary_push_val(c, slots + 1, res, korb_items_data(VAL2ARY(SELF_ENUM->values)->items)[i]));
+    for (uint32_t i = 0; i < take; i++) CHECK(korb_ary_push_val(c, slots + 1, res, korb_ary_ptr(VAL2ARY(SELF_ENUM->values))[i]));
     return RESULT_OK(KORB_REF_GET(res));
 }
 
@@ -1168,7 +1168,7 @@ static RESULT korb_m_enum_map(CTX *c, korb_value *slots, korb_ref self, korb_sli
     for (uint32_t i = 0; ; i++) {
         const KorbArray *v = VAL2ARY(SELF_ENUM->values);
         if (i >= v->len) break;
-        slots[1] = korb_items_data(v->items)[i];
+        slots[1] = korb_ary_ptr(v)[i];
         RESULT r = korb_enum_yield_el(c, slots + 2, block, def_env, cself, slots[1]);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         CHECK(korb_ary_push_val(c, slots + 2, dst, r.value));
@@ -1209,7 +1209,7 @@ static RESULT korb_m_enum_with_index(CTX *c, korb_value *slots, korb_ref self, k
     for (uint32_t i = 0; ; i++) {
         const KorbArray *v = VAL2ARY(KORB_REF_GET(vals));
         if (i >= v->len) break;
-        slots[2] = korb_items_data(v->items)[i];
+        slots[2] = korb_ary_ptr(v)[i];
         if (block != NULL) {
             korb_value argv[2] = { slots[2], LONG2FIX(off + (korb_sword_t)i) };
             RESULT r = korb_block_yield(c, slots + 3, block, def_env, argv, 2, cself);
@@ -1221,7 +1221,7 @@ static RESULT korb_m_enum_with_index(CTX *c, korb_value *slots, korb_ref self, k
                 if (KORB_ARRAY_P(slots[3])) {
                     korb_ref fr = KORB_REF_AT(&slots[3]);
                     for (uint32_t k = 0; k < VAL2ARY(KORB_REF_GET(fr))->len; k++)
-                        CHECK(korb_ary_push_val(c, slots + 4, dst, korb_items_data(VAL2ARY(KORB_REF_GET(fr))->items)[k]));
+                        CHECK(korb_ary_push_val(c, slots + 4, dst, korb_ary_ptr(VAL2ARY(KORB_REF_GET(fr)))[k]));
                 } else {
                     CHECK(korb_ary_push_val(c, slots + 4, dst, slots[3]));
                 }
@@ -1264,7 +1264,7 @@ static RESULT korb_m_enum_with_object(CTX *c, korb_value *slots, korb_ref self, 
         slots[2] = UNWRAP(korb_ary_new(c, slots + 2, n));   /* pairs (rooted) */
         korb_ref dst = KORB_REF_AT(&slots[2]);
         for (uint32_t i = 0; i < n; i++) {
-            slots[3] = korb_items_data(VAL2ARY(KORB_REF_GET(vals))->items)[i];   /* elem (rooted) */
+            slots[3] = korb_ary_ptr(VAL2ARY(KORB_REF_GET(vals)))[i];   /* elem (rooted) */
             slots[4] = UNWRAP(korb_ary_new(c, slots + 4, 2));        /* [elem, obj] */
             korb_ref pr = KORB_REF_AT(&slots[4]);
             CHECK(korb_ary_push_val(c, slots + 5, pr, slots[3]));
@@ -1279,7 +1279,7 @@ static RESULT korb_m_enum_with_object(CTX *c, korb_value *slots, korb_ref self, 
     for (uint32_t i = 0; ; i++) {
         const KorbArray *v = VAL2ARY(KORB_REF_GET(vals));
         if (i >= v->len) break;
-        korb_value argv[2] = { korb_items_data(v->items)[i], slots[1] };
+        korb_value argv[2] = { korb_ary_ptr(v)[i], slots[1] };
         RESULT r = korb_block_yield(c, slots + 2, block, def_env, argv, 2, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -1293,7 +1293,7 @@ static RESULT korb_enum_gen_at_cursor(CTX *c, korb_value *slots, korb_ref self, 
     if (SELF_ENUM->mode == 2 && VAL2ARY(SELF_ENUM->ops)->len == 0 &&   /* a bare `ary.cycle`: no re-drive (it made next O(n)) */
         KORB_ARRAY_P(SELF_ENUM->source) && VAL2ARY(SELF_ENUM->source)->len > 0) {
         const KorbArray *const src = VAL2ARY(SELF_ENUM->source);
-        const korb_value v = korb_items_data(src->items)[cur % src->len];
+        const korb_value v = korb_ary_ptr(src)[cur % src->len];
         if (advance) SELF_ENUM->cursor = cur + 1;
         return RESULT_OK(v);
     }
@@ -1303,7 +1303,7 @@ static RESULT korb_enum_gen_at_cursor(CTX *c, korb_value *slots, korb_ref self, 
     if (UNLIKELY(vr.state != KORB_NORMAL)) return vr;
     slots[0] = vr.value;
     if (cur >= VAL2ARY(slots[0])->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
-    const korb_value v = korb_items_data(VAL2ARY(slots[0])->items)[cur];
+    const korb_value v = korb_ary_ptr(VAL2ARY(slots[0]))[cur];
     if (advance) SELF_ENUM->cursor = cur + 1;
     return RESULT_OK(v);
 }
@@ -1321,7 +1321,7 @@ static RESULT korb_m_enum_next(CTX *c, korb_value *slots, korb_ref self, korb_sl
     KorbEnumerator *e = SELF_ENUM;
     const KorbArray *v = VAL2ARY(e->values);
     if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
-    return RESULT_OK(korb_items_data(v->items)[e->cursor++]);
+    return RESULT_OK(korb_ary_ptr(v)[e->cursor++]);
 }
 static RESULT korb_m_enum_peek(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
@@ -1329,7 +1329,7 @@ static RESULT korb_m_enum_peek(CTX *c, korb_value *slots, korb_ref self, korb_sl
     const KorbEnumerator *e = SELF_ENUM;
     const KorbArray *v = VAL2ARY(e->values);
     if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
-    return RESULT_OK(korb_items_data(v->items)[e->cursor]);
+    return RESULT_OK(korb_ary_ptr(v)[e->cursor]);
 }
 static RESULT korb_m_enum_rewind(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)c;(void)slots;(void)a;
@@ -1348,7 +1348,7 @@ static RESULT korb_enum_values_at_cursor(CTX *c, korb_value *slots, korb_ref sel
     KorbEnumerator *const e = SELF_ENUM;
     const KorbArray *const v = VAL2ARY(e->values);
     if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
-    slots[0] = korb_items_data(v->items)[e->cursor];             /* the single stored value (park before alloc) */
+    slots[0] = korb_ary_ptr(v)[e->cursor];             /* the single stored value (park before alloc) */
     if (advance) e->cursor++;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 1));
     CHECK(korb_ary_push_val(c, slots + 2, KORB_REF_AT(&slots[1]), slots[0]));

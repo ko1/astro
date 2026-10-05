@@ -190,12 +190,12 @@ static RESULT kj_string(CTX *c, korb_value *slots, struct kj_state *const st, co
             *st->kcache = kc;
         }
         const uint32_t h = ((uint32_t)len * 31u + (unsigned char)bytes[0] * 7u + (unsigned char)bytes[len ? len - 1 : 0]) & (KJ_KCACHE - 1);
-        const korb_value hit = korb_items_data(VAL2ARY(*st->kcache)->items)[h];
+        const korb_value hit = korb_ary_ptr(VAL2ARY(*st->kcache))[h];
         if (KORB_STRING_P(hit) && VAL2STR(hit)->len == len && memcmp(korb_strbuf_data(VAL2STR(hit)->buf), bytes, len) == 0)
             return RESULT_OK(hit);
         const korb_value k = korb_fstr_get(c, slots, bytes, (uint32_t)len, KORB_ENC_UTF8);
         const KorbArray *const kc = VAL2ARY(*st->kcache);   /* re-read: the fstring may have been allocated */
-        ARO_STORE(c, kc->items, &korb_items_data(kc->items)[h], k);
+        ARO_STORE(c, korb_ary_owner(kc), &korb_ary_ptr(kc)[h], k);
         return RESULT_OK(k);
     }
     if (is_key || (st->flags & KJ_FREEZE))                  /* -str, as the Ruby port does */
@@ -338,7 +338,7 @@ static RESULT kj_array(CTX *c, korb_value *slots, struct kj_state *const st)
     slots[0] = UNWRAP(korb_ary_new(c, slots, n));
     KorbArray *const a = VAL2ARY(slots[0]);
     KorbArray *const sa = VAL2ARY(*st->stack);              /* re-read after the alloc */
-    ARO_STORE_BULK(c, a->items, korb_items_data(a->items), korb_items_data(sa->items) + base, n);
+    ARO_STORE_BULK(c, korb_ary_owner(a), korb_ary_ptr(a), korb_ary_ptr(sa) + base, n);
     a->len = n;
     sa->len = base;
     if (st->flags & KJ_FREEZE) kj_freeze(slots[0]);
@@ -404,20 +404,20 @@ static RESULT kj_object(CTX *c, korb_value *slots, struct kj_state *const st)
         st->depth--;
     }
     const uint32_t n = (VAL2ARY(*st->stack)->len - base) / 2;
-    const bool uniq = kj_keys_unique(korb_items_data(VAL2ARY(*st->stack)->items) + base, n);
+    const bool uniq = kj_keys_unique(korb_ary_ptr(VAL2ARY(*st->stack)) + base, n);
     if (!uniq && !(st->flags & KJ_DUP_KEY)) return KJ_FAIL(st);   /* ParserError: the Ruby port reports it */
     slots[0] = UNWRAP(korb_hash_new(c, slots, n));
     const korb_ref hash = KORB_REF_AT(&slots[0]);
     if (uniq) {                                             /* fill in one go, then index once */
         KorbHash *const h = VAL2HASH(slots[0]);
         const KorbArray *const sa = VAL2ARY(*st->stack);
-        ARO_STORE_BULK(c, h->items, korb_items_data(h->items), korb_items_data(sa->items) + base, 2 * (size_t)n);
+        ARO_STORE_BULK(c, h->items, korb_items_data(h->items), korb_ary_ptr(sa) + base, 2 * (size_t)n);
         h->len = n;
         if (n >= KORB_HASH_INDEX_THRESHOLD) CHECK(korb_hash_index_build(c, slots + 1, hash));
     } else {                                                /* allow_duplicate_key: the last value wins */
         for (uint32_t i = 0; i < n; i++) {
-            slots[1] = korb_items_data(VAL2ARY(*st->stack)->items)[base + 2 * i];
-            const korb_value v = korb_items_data(VAL2ARY(*st->stack)->items)[base + 2 * i + 1];
+            slots[1] = korb_ary_ptr(VAL2ARY(*st->stack))[base + 2 * i];
+            const korb_value v = korb_ary_ptr(VAL2ARY(*st->stack))[base + 2 * i + 1];
             CHECK(korb_hash_set(c, slots + 2, hash, KORB_REF_AT(&slots[1]), v));
         }
     }
@@ -626,7 +626,7 @@ static void kjg_array(struct kjg *const g, const korb_value v)
     for (uint32_t i = 0; i < a->len && !g->fail; i++) {
         if (i > 0) { kjg_ch(g, ','); kjg_put(g, g->array_nl, g->array_nl_n); }
         kjg_indent(g, g->depth);
-        kjg_value(g, korb_items_data(a->items)[i]);
+        kjg_value(g, korb_ary_ptr(a)[i]);
     }
     g->depth--;
     if (g->array_nl_n) { kjg_put(g, g->array_nl, g->array_nl_n); kjg_indent(g, g->depth); }

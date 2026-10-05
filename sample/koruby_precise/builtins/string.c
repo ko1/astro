@@ -1269,7 +1269,7 @@ static RESULT korb_m_str_prepend(CTX *c, korb_value *slots, korb_ref self, korb_
         CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
     }
     uint32_t pn = 0;
-    { const KorbArray *ca = VAL2ARY(slots[0]); for (uint32_t j = 0; j < ca->len; j++) pn += VAL2STR(korb_items_data(ca->items)[j])->len; }
+    { const KorbArray *ca = VAL2ARY(slots[0]); for (uint32_t j = 0; j < ca->len; j++) pn += VAL2STR(korb_ary_ptr(ca)[j])->len; }
     uint32_t slen = VAL2STR(KORB_REF_GET(self))->len;
     korb_str_ensure(c, slots + 1, self, slen + pn);              /* single grow; args pinned in arr */
     KorbString *s = VAL2STR(KORB_REF_GET(self));
@@ -1277,7 +1277,7 @@ static RESULT korb_m_str_prepend(CTX *c, korb_value *slots, korb_ref self, korb_
     uint32_t off = 0;
     const KorbArray *ca = VAL2ARY(slots[0]);
     for (uint32_t j = 0; j < ca->len; j++) {
-        const KorbString *o = VAL2STR(korb_items_data(ca->items)[j]);
+        const KorbString *o = VAL2STR(korb_ary_ptr(ca)[j]);
         memcpy(korb_strbuf_data(s->buf) + off, korb_strbuf_data(o->buf), o->len); off += o->len;
     }
     s->len = slen + pn; korb_strbuf_data(s->buf)[s->len] = '\0';
@@ -2039,7 +2039,7 @@ static RESULT korb_tc_convert(CTX *c, korb_value *slots, korb_value src, const c
 static RESULT korb_tr_hash_keys_ok(CTX *c, korb_value *slots, const KorbArray *pairs)
 {
     for (uint32_t k = 0; k < pairs->len / 2; k++) {
-        const KorbString *const ks = VAL2STR(korb_items_data(pairs->items)[2 * k]);
+        const KorbString *const ks = VAL2STR(korb_ary_ptr(pairs)[2 * k]);
         uint32_t cl = 0;
         if (ks->len) (void)korb_utf8_dec1(korb_strbuf_data(ks->buf), ks->len, &cl);
         if (UNLIKELY(ks->len == 0 || cl != ks->len))
@@ -2059,11 +2059,11 @@ static void korb_tr_hash_scan(FILE *ms, const KorbString *s, const KorbArray *pa
         const char *const cp_bytes = korb_strbuf_data(s->buf) + i;
         uint32_t hit = n;
         for (uint32_t k = 0; k < n; k++) {
-            const KorbString *const ks = VAL2STR(korb_items_data(pairs->items)[2 * k]);
+            const KorbString *const ks = VAL2STR(korb_ary_ptr(pairs)[2 * k]);
             if (ks->len == cl && memcmp(korb_strbuf_data(ks->buf), cp_bytes, cl) == 0) { hit = k; break; }
         }
         if (hit == n) { fwrite(cp_bytes, 1, cl, ms); i += cl; continue; }
-        const KorbString *const vs = VAL2STR(korb_items_data(pairs->items)[2 * hit + 1]);
+        const KorbString *const vs = VAL2STR(korb_ary_ptr(pairs)[2 * hit + 1]);
         if (vs->len) fwrite(korb_strbuf_data(vs->buf), 1, vs->len, ms);
         *changed = true;
         i += cl;
@@ -2120,7 +2120,7 @@ static RESULT korb_str_tr_hash(CTX *c, korb_value *slots, korb_ref self, korb_va
         korb_ref u8pairs = KORB_REF_AT(&slots[3]);
         for (uint32_t k = 0; ; k++) {
             if (k >= VAL2ARY(KORB_REF_GET(pairs))->len) break;
-            slots[5] = korb_items_data(VAL2ARY(KORB_REF_GET(pairs))->items)[k];
+            slots[5] = korb_ary_ptr(VAL2ARY(KORB_REF_GET(pairs)))[k];
             slots[5] = UNWRAP(korb_tc_convert(c, slots + 5, slots[5], korb_enc_name_of(vm, KORB_STR_ENC(slots[5])), "UTF-8", &ok));
             if (!ok) return korb_raise(c, slots + 6, KORB_E_ARGUMENT, 0, "invalid byte sequence");
             CHECK(korb_ary_push_val(c, slots + 6, u8pairs, slots[5]));
@@ -3195,7 +3195,7 @@ static RESULT korb_split_finish(CTX *c, korb_value *slots, korb_ref self, korb_r
     for (uint32_t i = 0; ; i++) {
         const KorbArray *d = VAL2ARY(KORB_REF_GET(dst));
         if (i >= d->len) break;
-        korb_value e = korb_items_data(d->items)[i];
+        korb_value e = korb_ary_ptr(d)[i];
         RESULT r = korb_block_yield(c, slots, block, def_env, &e, 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -3336,8 +3336,8 @@ static RESULT korb_m_str_split(CTX *c, korb_value *slots, korb_ref self, korb_sl
     }
     if (!ws && limit == 0) {   /* CRuby drops trailing empty fields only when limit is 0/omitted */
         KorbArray *d = VAL2ARY(KORB_REF_GET(dst));
-        while (d->len > 0 && KORB_STRING_P(korb_items_data(d->items)[d->len-1]) && VAL2STR(korb_items_data(d->items)[d->len-1])->len == 0) {
-            ARO_STORE(c, d->items, &korb_items_data(d->items)[--d->len], KORB_NIL);
+        while (d->len > 0 && KORB_STRING_P(korb_ary_ptr(d)[d->len-1]) && VAL2STR(korb_ary_ptr(d)[d->len-1])->len == 0) {
+            ARO_STORE(c, korb_ary_owner(d), &korb_ary_ptr(d)[--d->len], KORB_NIL);
         }
     }
     return korb_split_finish(c, slots + 1, self, dst, block, def_env, cself);

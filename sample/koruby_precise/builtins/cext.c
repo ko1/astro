@@ -991,8 +991,8 @@ kcx_do_coerce(CTX *c, KVALUE *x, KVALUE *y, bool err)
     const korb_value ary = kcx_send_name(c, K(*y), "coerce", 1, x);
     if (!err && ary == KORB_NIL) return false;
     if (!KORB_ARRAY_P(ary) || VAL2ARY(ary)->len != 2) kcx_throw(c, kcx_raise_c(c, KORB_E_TYPE, "coerce must return [x, y]"));
-    *x = W(korb_items_data(VAL2ARY(ary)->items)[0]);
-    *y = W(korb_items_data(VAL2ARY(ary)->items)[1]);
+    *x = W(korb_ary_ptr(VAL2ARY(ary))[0]);
+    *y = W(korb_ary_ptr(VAL2ARY(ary))[1]);
     return true;
 }
 static __attribute__((noreturn)) void
@@ -1647,7 +1647,7 @@ rb_array_const_ptr(KVALUE ary)
     const uint32_t n = VAL2ARY(K(ary))->len;
     KVALUE *const buf = malloc((n ? n : 1) * sizeof *buf);
     if (!buf) { fprintf(stderr, "koruby: oom (RARRAY_PTR)\n"); abort(); }
-    for (uint32_t i = 0; i < n; i++) buf[i] = W(korb_items_data(VAL2ARY(K(ary))->items)[i]);   /* handles are libc: no GC here */
+    for (uint32_t i = 0; i < n; i++) buf[i] = W(korb_ary_ptr(VAL2ARY(K(ary)))[i]);   /* handles are libc: no GC here */
     struct korb_cext_frame *const f = c->cext_top;
     if (f) {
         if (f->tn == f->tcap) {
@@ -1670,7 +1670,7 @@ rb_ary_entry(KVALUE ary, long idx)
     const KorbArray *const a = VAL2ARY(v);
     if (idx < 0) idx += (long)a->len;
     if (idx < 0 || idx >= (long)a->len) return KQnil;
-    return W(korb_items_data(a->items)[idx]);
+    return W(korb_ary_ptr(a)[idx]);
 }
 /* CRuby's rb_ary_store never asks #[]=; an in-range or appending store is a plain write
  * (sqlite3 builds every row this way).  Growing past the end and negative indexes go the long way. */

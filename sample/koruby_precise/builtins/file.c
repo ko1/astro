@@ -493,7 +493,7 @@ static RESULT korb_file_join_val(CTX *c, korb_value *slots, korb_value pv, char 
         return RESULT_OK(KORB_NIL);
     }
     for (uint32_t i = 0; i < n; i++)
-        CHECK(korb_file_join_val(c, slots, korb_items_data(VAL2ARY(pv)->items)[i], buf, cap, d, first, depth + 1, enc));
+        CHECK(korb_file_join_val(c, slots, korb_ary_ptr(VAL2ARY(pv))[i], buf, cap, d, first, depth + 1, enc));
     return RESULT_OK(KORB_NIL);
 }
 
@@ -1216,7 +1216,7 @@ korb_io_open_args(CTX *c, korb_value *slots, korb_value opts, const char *defmod
         snprintf(o->mode, sizeof o->mode, "r");                          /* `open`'s own default */
         const uint32_t n = VAL2ARY(slots[0])->len;
         for (uint32_t i = 0; i < n; i++) {
-            const korb_value el = korb_items_data(VAL2ARY(slots[0])->items)[i];
+            const korb_value el = korb_ary_ptr(VAL2ARY(slots[0]))[i];
             if (KORB_STRING_P(el)) snprintf(o->mode, sizeof o->mode, "%.*s", (int)VAL2STR(el)->len, korb_strbuf_data(VAL2STR(el)->buf));
             else if (KORB_HASH_P(el)) CHECK(korb_open_args_hash(c, slots + 1, el, o));
         }
@@ -2308,7 +2308,7 @@ static RESULT korb_m_dir_read(CTX *c, korb_value *slots, korb_ref self, korb_sli
     const korb_value posv = korb_ivar_get(c, s, ID2SYM(korb_dir_pos_id(c)));
     const korb_sword_t pos = FIXNUM_P(posv) ? FIX2LONG(posv) : 0;
     if (pos < 0 || (uint32_t)pos >= ents->len) return RESULT_OK(KORB_NIL);
-    slots[0] = korb_items_data(ents->items)[pos];                          /* the entry (rooted) */
+    slots[0] = korb_ary_ptr(ents)[pos];                          /* the entry (rooted) */
     CHECK(korb_ivar_set(c, slots + 1, self, ID2SYM(korb_dir_pos_id(c)), LONG2FIX(pos + 1)));
     return RESULT_OK(slots[0]);
 }
@@ -2322,7 +2322,7 @@ static RESULT korb_m_dir_each(CTX *c, korb_value *slots, korb_ref self, korb_sli
     if (!KORB_ARRAY_P(slots[0])) return RESULT_OK(KORB_REF_GET(self));
     const uint32_t n = VAL2ARY(slots[0])->len;
     for (uint32_t i = 0; i < n; i++) {
-        slots[1] = korb_items_data(VAL2ARY(slots[0])->items)[i];           /* re-read: yield may GC */
+        slots[1] = korb_ary_ptr(VAL2ARY(slots[0]))[i];           /* re-read: yield may GC */
         RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -2388,7 +2388,7 @@ static RESULT korb_m_dir_i_children(CTX *c, korb_value *slots, korb_ref self, ko
     korb_ref out = KORB_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < n; i++) {
         const KorbArray *e = korb_dir_ents(c, KORB_REF_GET(self));   /* re-read: push GCs */
-        const korb_value nm = korb_items_data(e->items)[i];
+        const korb_value nm = korb_ary_ptr(e)[i];
         if (KORB_STRING_P(nm)) { const KorbString *s = VAL2STR(nm);
             if ((s->len == 1 && korb_strbuf_data(s->buf)[0] == '.') || (s->len == 2 && korb_strbuf_data(s->buf)[0] == '.' && korb_strbuf_data(s->buf)[1] == '.')) continue; }
         slots[1] = nm; CHECK(korb_ary_push_val(c, slots + 2, out, slots[1]));
@@ -2569,13 +2569,13 @@ static RESULT korb_glob_one(struct korb_glob *g, korb_value *slots, const char *
     if (absolute) {                                    /* re-prefix the '/' the walk dropped */
         const uint32_t n = VAL2ARY(KORB_REF_GET(g->arr))->len;
         for (uint32_t i = 0; i < n; i++) {
-            const korb_value v = korb_items_data(VAL2ARY(KORB_REF_GET(g->arr))->items)[i];
+            const korb_value v = korb_ary_ptr(VAL2ARY(KORB_REF_GET(g->arr)))[i];
             if (!KORB_STRING_P(v) || korb_strbuf_data(VAL2STR(v)->buf)[0] == '/') continue;
             char buf[PATH_MAX];
             snprintf(buf, sizeof buf, "/%.*s", (int)VAL2STR(v)->len, korb_strbuf_data(VAL2STR(v)->buf));
             slots[0] = UNWRAP(korb_str_new(g->c, slots, buf, (uint32_t)strlen(buf)));
-            ARO_STORE(g->c, VAL2ARY(KORB_REF_GET(g->arr))->items,
-                      &korb_items_data(VAL2ARY(KORB_REF_GET(g->arr))->items)[i], slots[0]);
+            ARO_STORE(g->c, korb_ary_owner(VAL2ARY(KORB_REF_GET(g->arr))),
+                      &korb_ary_ptr(VAL2ARY(KORB_REF_GET(g->arr)))[i], slots[0]);
         }
     }
     return RESULT_OK(KORB_NIL);
@@ -2707,7 +2707,7 @@ static RESULT korb_m_dir_glob(CTX *c, korb_value *slots, korb_ref self, korb_sli
     slots[1] = KORB_SLICE_GET(a, ai);
     const uint32_t np = KORB_ARRAY_P(slots[1]) ? VAL2ARY(slots[1])->len : 1u;
     for (uint32_t i = 0; i < np; i++) {
-        korb_value pv = KORB_ARRAY_P(slots[1]) ? korb_items_data(VAL2ARY(slots[1])->items)[i] : slots[1];
+        korb_value pv = KORB_ARRAY_P(slots[1]) ? korb_ary_ptr(VAL2ARY(slots[1]))[i] : slots[1];
         if (!KORB_STRING_P(pv)) {
             slots[2] = pv;
             const uint32_t to_path = korb_intern_lit(c->vm, "to_path", 7);
@@ -2738,7 +2738,7 @@ static RESULT korb_m_dir_glob(CTX *c, korb_value *slots, korb_ref self, korb_sli
         if (penc != KORB_ENC_UTF8 && penc != KORB_ENC_USASCII) {   /* US-ASCII yields filesystem-encoded paths */
             const KorbArray *const ra = VAL2ARY(slots[0]);
             for (uint32_t k = nbefore; k < ra->len; k++) {
-                const korb_value rv = korb_items_data(ra->items)[k];
+                const korb_value rv = korb_ary_ptr(ra)[k];
                 if (KORB_STRING_P(rv)) KORB_STR_ENC_SET(rv, penc);
             }
         }
@@ -2747,7 +2747,7 @@ static RESULT korb_m_dir_glob(CTX *c, korb_value *slots, korb_ref self, korb_sli
     if (block != NULL) {                                            /* yield each, return nil */
         const uint32_t n = VAL2ARY(slots[0])->len;
         for (uint32_t i = 0; i < n; i++) {
-            slots[1] = korb_items_data(VAL2ARY(slots[0])->items)[i];
+            slots[1] = korb_ary_ptr(VAL2ARY(slots[0]))[i];
             CHECK(korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self));
         }
         return RESULT_OK(KORB_NIL);

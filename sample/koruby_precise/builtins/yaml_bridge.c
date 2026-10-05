@@ -213,7 +213,7 @@ korb_bi_yaml_emit(CTX *c, korb_value *slots, korb_slice args)
     korb_sword_t indent = 2, width = 80;
     bool canonical = false;
     if (KORB_ARRAY_P(opts) && VAL2ARY(opts)->len >= 3) {
-        const korb_value *const o = korb_items_data(VAL2ARY(opts)->items);
+        const korb_value *const o = korb_ary_ptr(VAL2ARY(opts));
         if (FIXNUM_P(o[0])) indent = FIX2LONG(o[0]);
         if (FIXNUM_P(o[1])) width = FIX2LONG(o[1]);
         canonical = o[2] == KORB_TRUE;
@@ -232,9 +232,9 @@ korb_bi_yaml_emit(CTX *c, korb_value *slots, korb_slice args)
     char errbuf[96]; bool err_arg = false;   /* invalid bytes are an ArgumentError, like CRuby */
     const KorbArray *const ea = VAL2ARY(evs);
     for (uint32_t i = 0; i < ea->len && err == NULL; i++) {
-        const korb_value evv = korb_items_data(ea->items)[i];
+        const korb_value evv = korb_ary_ptr(ea)[i];
         if (!KORB_ARRAY_P(evv) || VAL2ARY(evv)->len == 0) continue;
-        const korb_value *const f = korb_items_data(VAL2ARY(evv)->items);
+        const korb_value *const f = korb_ary_ptr(VAL2ARY(evv));
         const korb_sword_t kind = FIXNUM_P(f[0]) ? FIX2LONG(f[0]) : -1;
         yaml_event_t ev;
         int ok = 0;
@@ -246,7 +246,7 @@ korb_bi_yaml_emit(CTX *c, korb_value *slots, korb_slice args)
           case 1: {
             yaml_version_directive_t vd, *vdp = NULL;
             if (KORB_ARRAY_P(f[1]) && VAL2ARY(f[1])->len >= 2) {
-                const korb_value *const vv = korb_items_data(VAL2ARY(f[1])->items);
+                const korb_value *const vv = korb_ary_ptr(VAL2ARY(f[1]));
                 vd.major = (int)(FIXNUM_P(vv[0]) ? FIX2LONG(vv[0]) : 1);
                 vd.minor = (int)(FIXNUM_P(vv[1]) ? FIX2LONG(vv[1]) : 1);
                 vdp = &vd;
@@ -256,9 +256,9 @@ korb_bi_yaml_emit(CTX *c, korb_value *slots, korb_slice args)
             if (KORB_ARRAY_P(f[2])) {
                 const KorbArray *const ta = VAL2ARY(f[2]);
                 for (uint32_t k = 0; k < ta->len && ntd < 64; k++) {
-                    const korb_value pv = korb_items_data(ta->items)[k];
+                    const korb_value pv = korb_ary_ptr(ta)[k];
                     if (!KORB_ARRAY_P(pv) || VAL2ARY(pv)->len < 2) continue;
-                    const korb_value *const pf = korb_items_data(VAL2ARY(pv)->items);
+                    const korb_value *const pf = korb_ary_ptr(VAL2ARY(pv));
                     tds[ntd].handle = (yaml_char_t *)korb_yaml_dup(pf[0]);
                     tds[ntd].prefix = (yaml_char_t *)korb_yaml_dup(pf[1]);
                     if (tds[ntd].handle && tds[ntd].prefix) ntd++;

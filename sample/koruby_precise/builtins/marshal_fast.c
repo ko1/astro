@@ -133,7 +133,7 @@ korb_mload_obj(CTX *c, korb_value *slots, korb_value *const links, struct korb_m
       case '@': {
         int64_t k;
         if (!korb_mload_long(st, &k) || k < 0 || (uint64_t)k >= VAL2ARY(*links)->len) return KORB_MLOAD_NO();
-        *out = korb_items_data(VAL2ARY(*links)->items)[k];
+        *out = korb_ary_ptr(VAL2ARY(*links))[k];
         return RESULT_OK(KORB_NIL);
       }
       case '"': {
@@ -207,7 +207,7 @@ korb_mload_obj(CTX *c, korb_value *slots, korb_value *const links, struct korb_m
             *out = ID2SYM(id);
             return RESULT_OK(KORB_NIL);
         }
-        s = korb_items_data(VAL2ARY(*links)->items)[li];   /* re-read: the allocations above may have moved it */
+        s = korb_ary_ptr(VAL2ARY(*links))[li];   /* re-read: the allocations above may have moved it */
         KORB_STR_ENC_SET(s, enc);
         *out = s;
         return RESULT_OK(KORB_NIL);
@@ -223,10 +223,10 @@ korb_mload_obj(CTX *c, korb_value *slots, korb_value *const links, struct korb_m
             const RESULT r = korb_mload_obj(c, slots + 4, links, st, depth + 1, &e);
             if (r.state != KORB_NORMAL || r.value == KORB_UNDEF) return r;
             slots[1] = e;
-            slots[2] = korb_items_data(VAL2ARY(*links)->items)[li];
+            slots[2] = korb_ary_ptr(VAL2ARY(*links))[li];
             CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[2]), slots[1]));
         }
-        *out = korb_items_data(VAL2ARY(*links)->items)[li];
+        *out = korb_ary_ptr(VAL2ARY(*links))[li];
         return RESULT_OK(KORB_NIL);
       }
       case '{': case '}': {
@@ -245,17 +245,17 @@ korb_mload_obj(CTX *c, korb_value *slots, korb_value *const links, struct korb_m
             if (!korb_key_indexable(slots[1]) && !FLONUM_P(slots[1]) && !KORB_FLOAT_P(slots[1]))
                 return KORB_MLOAD_NO();                  /* a key whose #hash Ruby would run: leave it to the Ruby loader */
             slots[2] = vv;
-            slots[3] = korb_items_data(VAL2ARY(*links)->items)[li];
+            slots[3] = korb_ary_ptr(VAL2ARY(*links))[li];
             CHECK(korb_hash_set(c, slots + 4, KORB_REF_AT(&slots[3]), KORB_REF_AT(&slots[1]), slots[2]));
         }
         if (t == '}') {
             korb_value dv;
             const RESULT r = korb_mload_obj(c, slots + 4, links, st, depth + 1, &dv);
             if (r.state != KORB_NORMAL || r.value == KORB_UNDEF) return r;
-            KorbHash *const hh = VAL2HASH(korb_items_data(VAL2ARY(*links)->items)[li]);
+            KorbHash *const hh = VAL2HASH(korb_ary_ptr(VAL2ARY(*links))[li]);
             ARO_STORE(c, hh, (korb_value *)(uintptr_t)&hh->default_val, dv);
         }
-        *out = korb_items_data(VAL2ARY(*links)->items)[li];
+        *out = korb_ary_ptr(VAL2ARY(*links))[li];
         return RESULT_OK(KORB_NIL);
       }
       case 'o': {                                        /* a plain object of a class the dumper / loader vetted */
@@ -277,10 +277,10 @@ korb_mload_obj(CTX *c, korb_value *slots, korb_value *const links, struct korb_m
             if (r.state != KORB_NORMAL || r.value == KORB_UNDEF) return r;
             if (nm == NULL || nm[0] != '@') continue;         /* CRuby keeps it as a hidden ivar */
             slots[1] = v;
-            slots[2] = korb_items_data(VAL2ARY(*links)->items)[li];
+            slots[2] = korb_ary_ptr(VAL2ARY(*links))[li];
             CHECK(korb_ivar_set(c, slots + 3, KORB_REF_AT(&slots[2]), ID2SYM(iv), slots[1]));
         }
-        *out = korb_items_data(VAL2ARY(*links)->items)[li];
+        *out = korb_ary_ptr(VAL2ARY(*links))[li];
         return RESULT_OK(KORB_NIL);
       }
       default:
@@ -558,7 +558,7 @@ static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const korb
         const KorbArray *const a = VAL2ARY(v);
         if (!korb_mdump_byte(st, '[') || !korb_mdump_long(st, a->len)) return false;
         for (uint32_t i = 0; i < VAL2ARY(v)->len; i++)
-            if (!korb_mdump_obj(c, st, korb_items_data(VAL2ARY(v)->items)[i], depth + 1)) return false;
+            if (!korb_mdump_obj(c, st, korb_ary_ptr(VAL2ARY(v))[i], depth + 1)) return false;
         return true;
     }
     const KorbHash *const h = VAL2HASH(v);                /* the checks above leave only a plain Hash */

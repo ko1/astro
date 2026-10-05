@@ -409,10 +409,10 @@ static bool korb_redir_value(CTX *c, struct korb_spawn_plan *p, int from, korb_v
     if (KORB_ARRAY_P(v)) {                       /* [:child, fd] or [path, mode] */
         const KorbArray *ar = VAL2ARY(v);
         if (ar->len == 0) return false;
-        const korb_value first = korb_items_data(ar->items)[0];
+        const korb_value first = korb_ary_ptr(ar)[0];
         if (SYMBOL_P(first) && (uint32_t)SYM2ID(first) == korb_intern_lit(c->vm, "child", 5)) {
             if (ar->len < 2) return false;
-            const korb_value tv = korb_items_data(ar->items)[1];
+            const korb_value tv = korb_ary_ptr(ar)[1];
             if (FIXNUM_P(tv)) r->to = (int)FIX2LONG(tv);
             else if (SYMBOL_P(tv)) {                 /* [:child, :out] — the standard streams by name */
                 const uint32_t tid = (uint32_t)SYM2ID(tv);
@@ -429,8 +429,8 @@ static bool korb_redir_value(CTX *c, struct korb_spawn_plan *p, int from, korb_v
             if (n >= sizeof r->path) return false;
             memcpy(r->path, s, n); r->path[n] = '\0';
             r->oflags = (from == 0) ? O_RDONLY : (O_WRONLY | O_CREAT | O_TRUNC);
-            if (ar->len >= 2 && KORB_STRING_P(korb_items_data(ar->items)[1])) {
-                uint32_t ml; const char *m = korb_str_cstr_len(korb_items_data(ar->items)[1], &ml);
+            if (ar->len >= 2 && KORB_STRING_P(korb_ary_ptr(ar)[1])) {
+                uint32_t ml; const char *m = korb_str_cstr_len(korb_ary_ptr(ar)[1], &ml);
                 if (ml > 0 && m[0] == 'a') r->oflags = O_WRONLY | O_CREAT | O_APPEND;
                 else if (ml > 0 && m[0] == 'r') r->oflags = O_RDONLY;
             }
@@ -600,7 +600,7 @@ static RESULT korb_spawn_plan_build(CTX *c, korb_value *slots, korb_slice a, str
                 const KorbArray *const ka = VAL2ARY(k);
                 int first = -1;
                 for (uint32_t j = 0; j < ka->len; j++) {
-                    const int fd = korb_redir_key_fd(c, korb_items_data(ka->items)[j]);
+                    const int fd = korb_redir_key_fd(c, korb_ary_ptr(ka)[j]);
                     if (fd < 0) continue;
                     /* the rest share the first descriptor: opening the file twice
                        would give the two streams independent offsets */
@@ -656,7 +656,7 @@ static RESULT korb_spawn_plan_build(CTX *c, korb_value *slots, korb_slice a, str
             if (UNLIKELY(VAL2ARY(slots[0])->len != 2))
                 return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong first argument");
             for (uint32_t j = 0; j < 2; j++) {
-                slots[1] = korb_items_data(VAL2ARY(slots[0])->items)[j];
+                slots[1] = korb_ary_ptr(VAL2ARY(slots[0]))[j];
                 UNWRAP(korb_spawn_to_str(c, slots + 1));        /* can move the Array: parked in slots[0] */
                 uint32_t n; const char *const cs = korb_str_cstr_len(slots[1], &n);
                 if (UNLIKELY(korb_spawn_arg_has_nul(cs, n)))
@@ -1298,7 +1298,7 @@ static RESULT korb_m_io_s_popen(CTX *c, korb_value *slots, korb_ref self, korb_s
     if (!dash) {
         const korb_value cmdv0 = KORB_SLICE_GET(a, lo);
         const uint32_t cn0 = KORB_ARRAY_P(cmdv0) ? VAL2ARY(cmdv0)->len : 0;
-        const korb_value inner = cn0 ? korb_items_data(VAL2ARY(cmdv0)->items)[cn0 - 1] : KORB_NIL;
+        const korb_value inner = cn0 ? korb_ary_ptr(VAL2ARY(cmdv0))[cn0 - 1] : KORB_NIL;
         if (hi < KORB_SLICE_LEN(a) && KORB_HASH_P(inner)) {
             slots[0] = inner;
             slots[1] = KORB_SLICE_GET(a, KORB_SLICE_LEN(a) - 1);
@@ -1325,7 +1325,7 @@ static RESULT korb_m_io_s_popen(CTX *c, korb_value *slots, korb_ref self, korb_s
         const korb_value cmdv = KORB_SLICE_GET(a, lo);
         if (KORB_ARRAY_P(cmdv)) {
             const uint32_t cn = VAL2ARY(cmdv)->len;
-            for (uint32_t i = 0; i < cn && an < 62; i++) av[an++] = korb_items_data(VAL2ARY(cmdv)->items)[i];
+            for (uint32_t i = 0; i < cn && an < 62; i++) av[an++] = korb_ary_ptr(VAL2ARY(cmdv))[i];
             if (merged != KORB_NIL) av[an - 1] = merged;              /* replaces the array's own opts Hash */
         } else {
             av[an++] = cmdv;
@@ -1888,7 +1888,7 @@ static RESULT korb_m_process_setgroups(CTX *c, korb_value *slots, korb_ref self,
     if (UNLIKELY(ar->len > NGROUPS_MAX)) return korb_raise_errno(c, slots, EINVAL, "setgroups", "");
     gid_t buf[NGROUPS_MAX];
     for (uint32_t i = 0; i < ar->len; i++) {
-        const korb_value g = korb_items_data(ar->items)[i];
+        const korb_value g = korb_ary_ptr(ar)[i];
         if (UNLIKELY(!FIXNUM_P(g))) return korb_raise_no_int(c, slots, g);
         buf[i] = (gid_t)FIX2LONG(g);
     }

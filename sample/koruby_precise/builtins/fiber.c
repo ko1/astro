@@ -48,7 +48,7 @@ korb_fiber_trampoline(unsigned hi, unsigned lo)
     else if (rep->start_splat && KORB_ARRAY_P(rep->transfer)) {
         const KorbArray *const aa = VAL2ARY(rep->transfer);
         n = aa->len;
-        for (uint32_t i = 0; i < n; i++) base[1 + i] = korb_items_data(aa->items)[i];   /* no alloc in this loop */
+        for (uint32_t i = 0; i < n; i++) base[1 + i] = korb_ary_ptr(aa)[i];   /* no alloc in this loop */
     } else {
         base[1] = rep->transfer;
     }

@@ -185,7 +185,7 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
     else fmt = korb_strbuf_data(fs->buf);
     slots[0] = single;                                   /* root the args source for the whole loop */
     const korb_value *args; uint32_t argn;
-    #define FMT_REREAD_ARGS() do { if (KORB_ARRAY_P(slots[0])) { args = korb_items_data(VAL2ARY(slots[0])->items); argn = VAL2ARY(slots[0])->len; } else { args = &slots[0]; argn = KORB_SLICE_LEN(a); } } while (0)
+    #define FMT_REREAD_ARGS() do { if (KORB_ARRAY_P(slots[0])) { args = korb_ary_ptr(VAL2ARY(slots[0])); argn = VAL2ARY(slots[0])->len; } else { args = &slots[0]; argn = KORB_SLICE_LEN(a); } } while (0)
     FMT_REREAD_ARGS();
     /* Reuse the vm's cached memstream (rewind) instead of mallocing+zeroing a
      * fresh stdio buffer per call.  A re-entrant format (via a user #to_s /
@@ -619,7 +619,7 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
                 if (UNLIKELY(cr.state != KORB_NORMAL)) { coerce_err = cr; has_coerce_err = true; err = true; break; }
                 FMT_REREAD_ARGS();
                 korb_value cv = cr.value;
-                if (KORB_ARRAY_P(cv)) cv = VAL2ARY(cv)->len > 0 ? korb_items_data(VAL2ARY(cv)->items)[0] : KORB_NIL;
+                if (KORB_ARRAY_P(cv)) cv = VAL2ARY(cv)->len > 0 ? korb_ary_ptr(VAL2ARY(cv))[0] : KORB_NIL;
                 if (FIXNUM_P(cv)) {
                     cp = FIX2LONG(cv);
                     if (cp < 0) { coerce_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "invalid character"); has_coerce_err = true; err = true; break; }

@@ -991,7 +991,7 @@ static RESULT korb_m_range_each_slice(CTX *c, korb_value *slots, korb_ref self, 
         return korb_enum_new(c, slots + 2, KORB_REF_GET(out), slots[1]);
     }
     for (uint32_t i = 0; i < VAL2ARY(KORB_REF_GET(out))->len; i++) {
-        korb_value sl = korb_items_data(VAL2ARY(KORB_REF_GET(out))->items)[i];
+        korb_value sl = korb_ary_ptr(VAL2ARY(KORB_REF_GET(out)))[i];
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &sl, 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -1260,7 +1260,7 @@ static RESULT korb_m_range_flat_map(CTX *c, korb_value *slots, korb_ref self, ko
             slots[1] = r.value;
             uint32_t sublen = VAL2ARY(slots[1])->len;
             for (uint32_t j = 0; j < sublen; j++)    /* re-read sub each push (GC may move it) */
-                CHECK(korb_ary_push_val(c, slots + 2, dst, korb_items_data(VAL2ARY(slots[1])->items)[j]));
+                CHECK(korb_ary_push_val(c, slots + 2, dst, korb_ary_ptr(VAL2ARY(slots[1]))[j]));
         } else {
             CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
         }
@@ -1632,7 +1632,7 @@ static RESULT korb_range_step_impl(CTX *c, korb_value *slots, korb_ref self, kor
             RESULT cr = korb_send_impl(c, slots + 2, co, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (KORB_ARRAY_P(cr.value) && VAL2ARY(cr.value)->len == 2)
-                sv = korb_items_data(VAL2ARY(cr.value)->items)[1];
+                sv = korb_ary_ptr(VAL2ARY(cr.value))[1];
         }
     }
     /* An ArithmeticSequence describes a *numeric* progression; a String (or any
@@ -1798,7 +1798,7 @@ static RESULT korb_range_step_impl(CTX *c, korb_value *slots, korb_ref self, kor
         if (st > 0) {                                    /* (backward string stepping not supported here) */
             slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, KORB_SLICE_MAKE(NULL, 0)));
             for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i += (uint32_t)st) {
-                korb_value ev = korb_items_data(VAL2ARY(slots[0])->items)[i];
+                korb_value ev = korb_ary_ptr(VAL2ARY(slots[0]))[i];
                 RESULT r = korb_block_yield(c, slots + 1, block, def_env, &ev, 1, captured_self);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             }

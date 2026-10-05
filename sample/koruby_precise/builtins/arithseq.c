@@ -58,7 +58,7 @@ static RESULT korb_aseq_to_array(CTX *c, korb_value *slots, korb_ref self) {
         slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 0));
         korb_ref dst = KORB_REF_AT(&slots[1]);
         for (uintptr_t i = 0; i < VAL2ARY(KORB_REF_GET(full))->len; i += st) {
-            korb_value ev = korb_items_data(VAL2ARY(KORB_REF_GET(full))->items)[i];   /* push_val roots ev on its grow path */
+            korb_value ev = korb_ary_ptr(VAL2ARY(KORB_REF_GET(full)))[i];   /* push_val roots ev on its grow path */
             CHECK(korb_ary_push_val(c, slots + 2, dst, ev));
         }
         return RESULT_OK(KORB_REF_GET(dst));
@@ -154,7 +154,7 @@ static RESULT korb_m_aseq_each(CTX *c, korb_value *slots, korb_ref self, korb_sl
     for (uint32_t i = 0; ; i++) {
         const KorbArray *v = VAL2ARY(KORB_REF_GET(arr));
         if (i >= v->len) break;
-        slots[1] = korb_items_data(v->items)[i];
+        slots[1] = korb_ary_ptr(v)[i];
         RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -198,7 +198,7 @@ static RESULT korb_m_aseq_first(CTX *c, korb_value *slots, korb_ref self, korb_s
     }
     if (!want_n) {   /* first → element or nil */
         const KorbArray *d = VAL2ARY(KORB_REF_GET(dst));
-        return RESULT_OK(d->len ? korb_items_data(d->items)[0] : KORB_NIL);
+        return RESULT_OK(d->len ? korb_ary_ptr(d)[0] : KORB_NIL);
     }
     return RESULT_OK(KORB_REF_GET(dst));
 }
@@ -206,7 +206,7 @@ static RESULT korb_m_aseq_last(CTX *c, korb_value *slots, korb_ref self, korb_sl
     (void)a;
     slots[0] = UNWRAP(korb_aseq_to_array(c, slots, self));
     const KorbArray *d = VAL2ARY(slots[0]);
-    return RESULT_OK(d->len ? korb_items_data(d->items)[d->len - 1] : KORB_NIL);
+    return RESULT_OK(d->len ? korb_ary_ptr(d)[d->len - 1] : KORB_NIL);
 }
 static RESULT korb_m_aseq_begin(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)c;(void)slots;(void)a; korb_value b, l, s; bool e; korb_aseq_params(VAL2ASEQ(KORB_REF_GET(self)), &b, &l, &s, &e); return RESULT_OK(b);

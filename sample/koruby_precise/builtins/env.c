@@ -151,7 +151,7 @@ static RESULT korb_m_env_to_h_blk(CTX *c, korb_value *slots, korb_ref self, korb
             if (UNLIKELY(!KORB_ARRAY_P(slots[1]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong element type %s (expected array)", korb_coerce_name(c, slots[1]));
         }
         if (UNLIKELY(VAL2ARY(slots[1])->len != 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "element has wrong array length (expected 2, was %u)", VAL2ARY(slots[1])->len);
-        slots[2] = korb_items_data(VAL2ARY(slots[1])->items)[0]; slots[3] = korb_items_data(VAL2ARY(slots[1])->items)[1];
+        slots[2] = korb_ary_ptr(VAL2ARY(slots[1]))[0]; slots[3] = korb_ary_ptr(VAL2ARY(slots[1]))[1];
         CHECK(korb_hash_set(c, slots + 4, h, KORB_REF_AT(&slots[2]), slots[3]));
     }
     return RESULT_OK(KORB_REF_GET(h));

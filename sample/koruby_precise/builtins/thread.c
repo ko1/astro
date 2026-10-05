@@ -638,7 +638,7 @@ korb_thread_int_mask_of(CTX *c, const struct korb_thread *t, korb_value exc)
 {
     if (t->int_masks == KORB_NIL) return 0;
     const KorbArray *const ma = VAL2ARY(t->int_masks);
-    const korb_value *const d = korb_items_data(ma->items);
+    const korb_value *const d = korb_ary_ptr(ma);
     const korb_value intcls = korb_const_get(c->vm, korb_intern_lit(c->vm, "Integer", 7));
     const uint32_t s_imm = korb_intern_lit(c->vm, "immediate", 9), s_blk = korb_intern_lit(c->vm, "on_blocking", 11);
     uint32_t i = ma->len;
@@ -671,10 +671,10 @@ korb_thread_check_ints_at(CTX *c, korb_value *slots, bool blocking)
     if (cur->defer_ints) return RESULT_OK(KORB_NIL);   /* __defer_ints 区間 (旧経路) */
     KorbArray *const pa = VAL2ARY(cur->pending_ints);
     for (uint32_t i = 0; i < pa->len; i++) {
-        const korb_value exc = korb_items_data(pa->items)[i];
+        const korb_value exc = korb_ary_ptr(pa)[i];
         const int m = korb_thread_int_mask_of(c, cur, exc);
         if (m == 2 || (m == 1 && !blocking)) continue;
-        memmove(&korb_items_data(pa->items)[i], &korb_items_data(pa->items)[i + 1],   /* 要素移動のみ; 新 edge なし */
+        memmove(&korb_ary_ptr(pa)[i], &korb_ary_ptr(pa)[i + 1],   /* 要素移動のみ; 新 edge なし */
                 (size_t)(pa->len - i - 1) * sizeof(korb_value));
         pa->len--;
         if (exc == KORB_FALSE) return korb_thread_kill_raise(c, slots);
@@ -715,7 +715,7 @@ korb_m_thread_int_mask_pop(CTX *c, korb_value *slots, korb_ref self, korb_slice 
     if (t->int_masks == KORB_NIL) return RESULT_OK(KORB_NIL);
     KorbArray *const ma = VAL2ARY(t->int_masks);
     if (ma->len == 0) return RESULT_OK(KORB_NIL);
-    const uint32_t n = (uint32_t)FIX2LONG(korb_items_data(ma->items)[ma->len - 1]);
+    const uint32_t n = (uint32_t)FIX2LONG(korb_ary_ptr(ma)[ma->len - 1]);
     ma->len -= 2 * n + 1;
     return RESULT_OK(KORB_NIL);
 }
@@ -832,7 +832,7 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
     if (t->args != KORB_NIL) {
         const KorbArray *aa = VAL2ARY(t->args);
         n = aa->len;
-        for (uint32_t i = 0; i < n; i++) base[1 + i] = korb_items_data(aa->items)[i];   /* no alloc in this loop */
+        for (uint32_t i = 0; i < n; i++) base[1 + i] = korb_ary_ptr(aa)[i];   /* no alloc in this loop */
         t->args = KORB_NIL;
     }
     RESULT r = korb_send(c, base + 1 + n, korb_intern_lit(c->vm, "call", 4), 0, n);
@@ -1557,7 +1557,7 @@ korb_m_thread_pending_interrupt_p(CTX *c, korb_value *slots, korb_ref self, korb
         if (UNLIKELY(!KORB_CLASS_P(klass)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required for rescue clause");
         for (uint32_t i = 0; i < pa->len; i++)
-            if (korb_exc_matches(c, korb_items_data(pa->items)[i], klass)) return RESULT_OK(KORB_TRUE);
+            if (korb_exc_matches(c, korb_ary_ptr(pa)[i], klass)) return RESULT_OK(KORB_TRUE);
         return RESULT_OK(KORB_FALSE);
     }
     return RESULT_OK(pa->len > 0 ? KORB_TRUE : KORB_FALSE);
@@ -1928,8 +1928,8 @@ korb_thread_tmo_arg(CTX *c, korb_value *slots, korb_value v, double *out)
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
             if (KORB_ARRAY_P(dr.value) && VAL2ARY(dr.value)->len == 2) {
                 double q = 0, r = 0;
-                if (korb_num_to_d(korb_items_data(VAL2ARY(dr.value)->items)[0], &q) &&
-                    korb_num_to_d(korb_items_data(VAL2ARY(dr.value)->items)[1], &r)) { *out = q + r; got = true; }
+                if (korb_num_to_d(korb_ary_ptr(VAL2ARY(dr.value))[0], &q) &&
+                    korb_num_to_d(korb_ary_ptr(VAL2ARY(dr.value))[1], &r)) { *out = q + r; got = true; }
             }
         }
         if (!got) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into time interval", cls);
@@ -2020,7 +2020,7 @@ korb_m_io_s_select(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
         if (cnt[s] == 0) continue;
         const KorbArray *arr = VAL2ARY(KORB_SLICE_GET(a, s));
         for (uint32_t i = 0; i < cnt[s]; i++) {
-            const int efd = korb_io_fd(c, korb_items_data(arr->items)[i]);
+            const int efd = korb_io_fd(c, korb_ary_ptr(arr)[i]);
             if (UNLIKELY(efd < 0)) {
                 if (pf != pbuf) free(pf);
                 return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
@@ -2032,14 +2032,14 @@ korb_m_io_s_select(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
      * poll (CRuby rb_io_read_pending): expect's getc-then-select loop depends on it */
     nfds_t buffered = 0;
     for (uint32_t i = 0; i < cnt[0]; i++) {
-        const KorbIORep *const rep = korb_io_rep(c, korb_items_data(VAL2ARY(KORB_SLICE_GET(a, 0))->items)[i]);
+        const KorbIORep *const rep = korb_io_rep(c, korb_ary_ptr(VAL2ARY(KORB_SLICE_GET(a, 0)))[i]);
         if (rep && rep->rpos < rep->rlen) buffered++;
     }
     ssize_t ready = 0;
     { RESULT r = korb_blop_poll_wait(c, slots, pf, total, buffered ? 0.0 : tmo, &ready);
       if (UNLIKELY(r.state != KORB_NORMAL)) { if (pf != pbuf) free(pf); return r; } }
     for (uint32_t i = 0; buffered && i < cnt[0]; i++) {      /* no GC since the count above */
-        const KorbIORep *const rep = korb_io_rep(c, korb_items_data(VAL2ARY(KORB_SLICE_GET(a, 0))->items)[i]);
+        const KorbIORep *const rep = korb_io_rep(c, korb_ary_ptr(VAL2ARY(KORB_SLICE_GET(a, 0)))[i]);
         if (rep && rep->rpos < rep->rlen && !(pf[i].revents & POLLIN)) { pf[i].revents |= POLLIN; ready++; }
     }
     if (ready == 0) { if (pf != pbuf) free(pf); return RESULT_OK(KORB_NIL); }   /* timeout */
@@ -2053,7 +2053,7 @@ korb_m_io_s_select(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
         korb_ref sub = KORB_REF_AT(&slots[1]);
         for (uint32_t i = 0; i < cnt[s]; i++) {
             if (!(pf[base + i].revents & want[s])) continue;
-            slots[2] = korb_items_data(VAL2ARY(KORB_SLICE_GET(a, s))->items)[i];   /* 再読出 */
+            slots[2] = korb_ary_ptr(VAL2ARY(KORB_SLICE_GET(a, s)))[i];   /* 再読出 */
             CHECK(korb_ary_push_val(c, slots + 3, sub, slots[2]));
         }
         base += cnt[s];

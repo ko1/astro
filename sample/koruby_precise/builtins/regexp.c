@@ -466,7 +466,7 @@ static long korb_md_off(const KorbMatchData *md, int i, int which) {
     const KorbArray *a = VAL2ARY(md->offsets);
     const uint32_t idx = (uint32_t)(2 * i + which);
     if (idx >= a->len) return -1;
-    return FIX2LONG(korb_items_data(a->items)[idx]);
+    return FIX2LONG(korb_ary_ptr(a)[idx]);
 }
 static int korb_md_ngroups(const KorbMatchData *md) { return (int)(VAL2ARY(md->offsets)->len / 2); }
 static RESULT korb_md_group(CTX *c, korb_value *slots, korb_value mdv, int i) {
@@ -798,7 +798,7 @@ static RESULT korb_md_names_into(CTX *c, korb_value *slots, korb_value mdv_or_re
         const uint32_t gnl = (uint32_t)strlen(gn);
         bool dup = false;                                /* each name only once */
         const KorbArray *da = VAL2ARY(KORB_REF_GET(dst_ary));
-        for (uint32_t j = 0; j < da->len; j++) { const KorbString *e = VAL2STR(korb_items_data(da->items)[j]); if (e->len == gnl && memcmp(korb_strbuf_data(e->buf), gn, gnl) == 0) { dup = true; break; } }
+        for (uint32_t j = 0; j < da->len; j++) { const KorbString *e = VAL2STR(korb_ary_ptr(da)[j]); if (e->len == gnl && memcmp(korb_strbuf_data(e->buf), gn, gnl) == 0) { dup = true; break; } }
         if (dup) continue;
         slots[1] = UNWRAP(korb_str_new(c, slots + 1, gn, gnl));
         CHECK(korb_ary_push_val(c, slots + 2, dst_ary, slots[1]));
@@ -854,7 +854,7 @@ static RESULT korb_m_md_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice 
     } else if (m1->regexp != m2->regexp) return RESULT_OK(KORB_FALSE);
     const KorbArray *o1 = VAL2ARY(m1->offsets), *o2 = VAL2ARY(m2->offsets);
     if (o1->len != o2->len) return RESULT_OK(KORB_FALSE);
-    for (uint32_t i = 0; i < o1->len; i++) if (korb_items_data(o1->items)[i] != korb_items_data(o2->items)[i]) return RESULT_OK(KORB_FALSE);
+    for (uint32_t i = 0; i < o1->len; i++) if (korb_ary_ptr(o1)[i] != korb_ary_ptr(o2)[i]) return RESULT_OK(KORB_FALSE);
     return RESULT_OK(KORB_TRUE);
 }
 static RESULT korb_m_md_hash(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
@@ -864,7 +864,7 @@ static RESULT korb_m_md_hash(CTX *c, korb_value *slots, korb_ref self, korb_slic
     uint64_t h = 1469598103934665603ULL;                 /* FNV-1a over subject + offsets */
     for (uint32_t i = 0; i < s->len; i++) { h ^= (unsigned char)korb_strbuf_data(s->buf)[i]; h *= 1099511628211ULL; }
     const KorbArray *o = VAL2ARY(md->offsets);
-    for (uint32_t i = 0; i < o->len; i++) { h ^= (uint64_t)FIX2LONG(korb_items_data(o->items)[i]); h *= 1099511628211ULL; }
+    for (uint32_t i = 0; i < o->len; i++) { h ^= (uint64_t)FIX2LONG(korb_ary_ptr(o)[i]); h *= 1099511628211ULL; }
     return RESULT_OK(LONG2FIX((korb_sword_t)(h & (((korb_word_t)1 << 62) - 1))));
 }
 /* deconstruct_keys(keys) → named captures as a Symbol-keyed Hash (keys: nil = all,
@@ -887,7 +887,7 @@ static RESULT korb_m_md_deconstruct_keys(CTX *c, korb_value *slots, korb_ref sel
         }
         if (klen > ng) return RESULT_OK(slots[1]);
         for (uint32_t i = 0; i < klen; i++) {
-            const korb_value kv = korb_items_data(VAL2ARY(KORB_SLICE_GET(a, 0))->items)[i];   /* re-fetch (moving GC) */
+            const korb_value kv = korb_ary_ptr(VAL2ARY(KORB_SLICE_GET(a, 0)))[i];   /* re-fetch (moving GC) */
             if (!SYMBOL_P(kv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Symbol)", korb_re_arg_type(kv));
             const char *nm = korb_sym_name(c->vm, SYM2ID(kv)); const uint32_t nl = (uint32_t)strlen(nm);
             const int gi = korb_md_name_idx(c, slots[0], nm, nl);
@@ -2194,7 +2194,7 @@ static RESULT korb_m_re_union(CTX *c, korb_value *slots, korb_ref self, korb_sli
     char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
     uint32_t n = KORB_SLICE_LEN(a);
     if (n == 1 && KORB_ARRAY_P(KORB_SLICE_GET(a, 0))) { slots[3] = KORB_SLICE_GET(a, 0); n = VAL2ARY(slots[3])->len; }
-    #define KORB_UNION_ITEM(i) (slots[3] != KORB_NIL ? korb_items_data(VAL2ARY(slots[3])->items)[(i)] : KORB_SLICE_GET(a, (i)))
+    #define KORB_UNION_ITEM(i) (slots[3] != KORB_NIL ? korb_ary_ptr(VAL2ARY(slots[3]))[(i)] : KORB_SLICE_GET(a, (i)))
     if (n == 0) fputs("(?!)", ms);
     if (n == 1) {                                       /* a single Regexp argument IS the union (CRuby) */
         slots[4] = KORB_UNION_ITEM(0);

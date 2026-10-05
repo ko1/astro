@@ -660,8 +660,11 @@ typedef struct KorbException {
                               * Kernel#loop lets it through (CRuby stops with rb_iter_break) */
 } KorbException;
 
-/* Array: a header + a separately-allocated growable korb_value[] payload, so push
- * can grow the buffer without moving the KorbArray (moving-GC safe). */
+/* Array: a header + its korb_value[] elements.  A small array (KORB_FL_ARY_EMBED) keeps them in the
+ * object itself, from `items_priv` on (CRuby's embedded RArray): one allocation, no pointer to follow.
+ * One that outgrows that capacity — or was made bigger — has a separately-allocated growable payload,
+ * so push can grow it without moving the KorbArray.  Reach the elements only through korb_ary_ptr and
+ * the write-barrier holder through korb_ary_owner. */
 typedef struct KorbArrayItems {
     AroObjectHeader head;            /* KORB_OBJ_VALUE_ARRAY */
     korb_value ARO_GC_EDGE data_priv[];   /* private: reach only via korb_items_data() */
@@ -670,8 +673,11 @@ typedef struct KorbArrayItems {
 typedef struct KorbArray {
     AroObjectHeader head;            /* KORB_OBJ_ARRAY */
     uint32_t len, capa;
-    KorbArrayItems *ARO_GC_EDGE items;
+    KorbArrayItems *ARO_GC_EDGE items_priv;   /* !KORB_FL_ARY_EMBED: the payload; else the first element */
 } KorbArray;
+#define KORB_FL_ARY_EMBED   0x100u   /* Array: elements inline (korb_ary_ptr); bit 8 is IO-only otherwise (0x200 = CHILLED is cleared on any object by #freeze) */
+#define KORB_ARY_EMBED_MAX  6u       /* largest capacity made inline (a 64-byte object) */
+#define KORB_ARY_EMBED_MIN  3u       /* inline room given to a smaller one (a 40-byte object, as CRuby's) */
 
 /* Hash: header + a growable korb_value[] payload of [k0,v0,k1,v1,...] pairs, kept in
  * insertion order (Ruby semantics).  Lookup is a linear scan — fine for the
@@ -918,6 +924,13 @@ void korb_gc_here(void *c);          /* CTX is not declared yet at this point */
  * accessors (docs/c_ext_api_design.md §4.1).  Result valid until next alloc. */
 static inline ARO_BORROW char  *korb_strbuf_data(KorbStrBuf *b)      { return b->data_priv; }
 static inline ARO_BORROW korb_value *korb_items_data (KorbArrayItems *it) { return it->data_priv; }
+/* An Array's elements (inline or the payload's) and the object a write into them is barriered against. */
+static inline ARO_BORROW korb_value *korb_ary_ptr(const KorbArray *a) {
+    return (a->head.flags & KORB_FL_ARY_EMBED) ? (korb_value *)(uintptr_t)&a->items_priv : korb_items_data(a->items_priv);
+}
+static inline void *korb_ary_owner(const KorbArray *a) {
+    return (a->head.flags & KORB_FL_ARY_EMBED) ? (void *)(uintptr_t)a : (void *)a->items_priv;
+}
 static inline ARO_BORROW char  *korb_str_data   (korb_value v)           { return korb_strbuf_data(VAL2STR(v)->buf); }
 #define VAL2RANGE(v)       ((KorbRange *)(uintptr_t)KORB_SC(v))
 #define VAL2OBJ(v)         ((KorbObject *)(uintptr_t)KORB_SC(v))
@@ -955,7 +968,7 @@ static inline bool korb_eq_needs_send_d(korb_value v, int depth)
         if (depth >= 4) return true;
         const KorbArray *const arr__ = VAL2ARY(v);
         for (uint32_t i = 0; i < arr__->len; i++)
-            if (korb_eq_needs_send_d(korb_items_data(arr__->items)[i], depth + 1)) return true;
+            if (korb_eq_needs_send_d(korb_ary_ptr(arr__)[i], depth + 1)) return true;
         return false;
     }
     if (KORB_RANGE_P(v))                                  /* Range#== compares its ends with == */
@@ -2130,11 +2143,17 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
       }                                                                      \
       case KORB_OBJ_ARRAY: {                                                 \
         KorbArray *_a = (KorbArray *)(payload);                             \
-        ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_a->items);               \
-        if (_a->items) {   /* re-read: the line above may have moved it */   \
-            korb_value *const _ad = korb_items_data(_a->items);                  \
+        if (_a->head.flags & KORB_FL_ARY_EMBED) {   /* inline elements */   \
+            korb_value *const _ad = (korb_value *)(uintptr_t)&_a->items_priv;  \
             for (uint32_t _ai2 = 0; _ai2 < _a->len; _ai2++)                 \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ad[_ai2]);           \
+        } else {                                                             \
+            ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_a->items_priv);      \
+            if (_a->items_priv) {   /* re-read: the line above may have moved it */ \
+                korb_value *const _ad = korb_items_data(_a->items_priv);     \
+                for (uint32_t _ai2 = 0; _ai2 < _a->len; _ai2++)             \
+                    ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ad[_ai2]);       \
+            }                                                                \
         }                                                                    \
         (void)(payload_size);                                                \
         break;                                                               \

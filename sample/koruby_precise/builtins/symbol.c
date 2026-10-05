@@ -352,11 +352,11 @@ static RESULT korb_m_struct_ivars(CTX *c, korb_value *slots, korb_ref self, korb
     korb_ref dst = KORB_REF_AT(&slots[1]);
     const uint32_t n = VAL2ARY(slots[0])->len;
     for (uint32_t i = 0; i < n; i++) {
-        const korb_value ivsym = korb_items_data(VAL2ARY(slots[0])->items)[i];
+        const korb_value ivsym = korb_ary_ptr(VAL2ARY(slots[0]))[i];
         const KorbArray *const mem = VAL2ARY(VAL2CLASS(VAL2OBJ(KORB_REF_GET(self))->klass)->members);   /* re-read */
         bool is_member = false;
         for (uint32_t j = 0; j < mem->len; j++)
-            if (korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[j]) == ivsym) { is_member = true; break; }
+            if (korb_member_ivar_sym(c->vm, korb_ary_ptr(mem)[j]) == ivsym) { is_member = true; break; }
         if (!is_member) CHECK(korb_ary_push_val(c, slots + 2, dst, ivsym));
     }
     return RESULT_OK(KORB_REF_GET(dst));
