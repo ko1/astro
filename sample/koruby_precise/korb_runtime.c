@@ -15965,22 +15965,29 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
         /* `o.m(a)` of `def m(a, k: 1)`: no keywords to bind but the defaults (liquid's find_variable: 34k per iteration) */
         if (m->kind == KORB_METHOD_ISEQ && m->kw_info != NULL && korb_kw_fast_eligible(m) && !(argc != 0 && korb_kwargs_hash_p(slots[-1])))
             return korb_invoke_kw_simple(c, slots, m, argc, NULL, 0, korb_flink_line(flink), mid, recv, ic->def_class);
-    } else if (ic->kind == KORB_IC_INSTANCE && ic->serial == c->vm->method_serial && ic->m != NULL &&
-               ic->klass != KORB_NIL && !korb_site_refined(c) && ic->klass == korb_send_builtin_klass(c->vm, recv)) {
-        /* a Ruby method added to a builtin (liquid's String#to_liquid / Hash#to_liquid: 75k per iteration) */
-        if (ic->dispatch != NULL) return korb_invoke_entry_ic(c, slots, ic, argc, mid);
-        /* a builtin's public C method (Proc#call, Range#each's siblings, ...): korb_send_cached_full found
-         * the class again and went through korb_send_ic_dispatch to get here */
-        struct korb_method *const m = ic->m;
-        if (m->kind == KORB_METHOD_CFUNC && (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
-            korb_value *const cbase = &slots[-(korb_sword_t)argc];
-            const bool framed = KORB_FLINK_FRAMED(flink);
-            const korb_value saved = LIKELY(framed) ? korb_cframe_enter(c, cbase, m) : 0;
-            const RESULT r = m->uses_block ? m->rbfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc), NULL, NULL, NULL)
-                                           : m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
-            if (LIKELY(framed)) korb_cframe_leave(c, saved);
-            if (LIKELY(r.state == KORB_NORMAL)) return r;
-            return korb_call_ret_cold(c, r, flink, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
+    }
+    if (!KORB_CLASS_P(recv) && ic->kind == KORB_IC_INSTANCE && ic->serial == c->vm->method_serial && ic->m != NULL &&
+        ic->klass != KORB_NIL && !korb_site_refined(c)) {
+        /* any other receiver with a public instance hit: a plain builtin (Proc#call, String#to_liquid: 75k per
+         * iteration in liquid), a builtin subclass's or singleton-classed object, Thread (`Thread.current[:k]`) —
+         * korb_send_cached_full would find the same class after its class-receiver / send-family cascade */
+        korb_value kl = korb_send_builtin_klass(c->vm, recv);
+        if (kl == KORB_NIL && AROH_IS_GC_OBJECT(recv))
+            kl = (KORB_OBJECT_P(recv) && !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS))
+                     ? VAL2OBJ(recv)->klass : korb_dispatch_class(c, recv);
+        if (ic->klass == kl) {
+            if (ic->dispatch != NULL) return korb_invoke_entry_ic(c, slots, ic, argc, mid);
+            struct korb_method *const m = ic->m;
+            if (m->kind == KORB_METHOD_CFUNC && (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
+                korb_value *const cbase = &slots[-(korb_sword_t)argc];
+                const bool framed = KORB_FLINK_FRAMED(flink);
+                const korb_value saved = LIKELY(framed) ? korb_cframe_enter(c, cbase, m) : 0;
+                const RESULT r = m->uses_block ? m->rbfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc), NULL, NULL, NULL)
+                                               : m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
+                if (LIKELY(framed)) korb_cframe_leave(c, saved);
+                if (LIKELY(r.state == KORB_NORMAL)) return r;
+                return korb_call_ret_cold(c, r, flink, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
+            }
         }
     }
     return korb_send_cached_full(c, slots, mid, flink, argc, ic, caller_self);
@@ -16305,13 +16312,23 @@ korb_deopt_send_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
         *out = r;
         return true;
     }
-    memmove(slots + 3, slots - (korb_sword_t)argc - 1, ((size_t)argc + 1) * sizeof(korb_value));
+    for (uint32_t j = argc + 1; j-- > 0;)                /* [recv, args] up past a fresh header: no overlap */
+        slots[3 + j] = slots[-(korb_sword_t)argc - 1 + j];
     slots[0] = 0;                                         /* callee base[-4] (identity) */
     slots[1] = c->carry_base ? korb_flink_from_base(c, c->carry_base, c->carry_line_bits, &slots[1])
                              : korb_flink_cur_cframe(c, &slots[1]);
     c->carry_base = NULL;
     slots[2] = 0;                                         /* callee base[-2] (EP) */
-    *out = korb_dispatch_method(c, slots + argc + 4, m, mid, line, argc, def, NULL, NULL, NULL, true);
+    korb_value *const top = slots + argc + 4;
+    /* a simple method's own entry, as a send-site hit does (not through the ic: an SMETHOD key equals the
+     * class's instances' klass, which the SD fast paths compare without the kind) */
+    if (m->simple_entry != NULL && m->kind == KORB_METHOD_ISEQ && argc == (uint32_t)m->params_cnt && LIKELY(!vm->refinements_active)) {
+        korb_id_set(top - argc, (korb_value)((uintptr_t)m | KORB_FID_METHOD));
+        const RESULT r = (*m->simple_entry->head.dispatcher)(c, m->simple_entry, top);
+        *out = LIKELY(r.state == KORB_NORMAL) ? r : korb_call_ret_cold(c, r, top[-(korb_sword_t)argc - 3], mid, korb_id_get(top - argc));
+        return true;
+    }
+    *out = korb_dispatch_method(c, top, m, mid, line, argc, def, NULL, NULL, NULL, true);
     return true;
 }
 

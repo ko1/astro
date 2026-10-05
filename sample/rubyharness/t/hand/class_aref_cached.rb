@@ -33,3 +33,21 @@ end
 x = [Reg, Mod, Array]
 p x.map { |k| k == Mod ? k[5] : k == Array ? k[5] : :skip }
 4.times { p [Reg, String, Symbol, Reg].map { |k| case :x when k then 1 else 0 end } }
+class Both
+  def self.[](i) = [:cls, i]
+  def [](i) = [:inst, i]
+  def self.[]=(i, v)
+    @last = [i, v]
+  end
+  def self.last = @last
+end
+b = Both.new
+3.times { |i| p [Both, b, Both, b].map { |x| x[i] }; Both[i] = i * 2; p Both.last }
+class Early; def self.[](k) = (return :early if k == 1; :late); end
+p Early[1], Early[2]
+class Deep; def self.[](k) = k.fetch(:nope); end
+begin
+  Deep[{}]
+rescue KeyError => e
+  p e.backtrace_locations[0, 2].map(&:label)
+end

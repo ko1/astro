@@ -3097,12 +3097,14 @@ node_aref(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@chil
             return korb_send(c, slots + 2, m->mid, korb_flink_line(flink), 1);
         }
     }
-    slots[0] = idx;   /* recv already rooted at slots[-1]; stage only the index — deopt → [] send */
-    korb_flink_stage(c, flink, slots);
-    RESULT dr;
-    if (korb_deopt_cfunc_cached(c, slots + 1, c->vm->mid_aref, korb_flink_line(flink), 1, ic, &dr)) { c->carry_base = NULL; return dr; }
-    if (korb_deopt_send_ic(c, slots + 1, c->vm->mid_aref, korb_flink_line(flink), 1, ic, &dr)) return dr;
-    return korb_send(c, slots + 1, c->vm->mid_aref, korb_flink_line(flink), 1);
+    /* any other receiver: the `recv.[](idx)` node_send would make — its frame header, its fast path, then
+     * korb_send_cached (class receivers, builtins, user #[], method_missing all as for a named send) */
+    slots[0] = 0; slots[1] = flink; slots[2] = 0;          /* base[-4] identity / [-3] link / [-2] EP */
+    slots[3] = r; slots[4] = idx;
+    if (KORB_OBJECT_P(r) && !(((const AroObjectHeader *)(uintptr_t)r)->flags & KORB_FL_HAS_KLASS) &&
+        ic->klass == VAL2OBJ(r)->klass && ic->serial == c->vm->method_serial && ic->dispatch)
+        return korb_invoke_entry_ic(c, slots + 5, ic, 1, c->vm->mid_aref);
+    return korb_send_cached(c, slots + 5, c->vm->mid_aref, flink, 1, ic, KORB_UNDEF);
 }
 
 // `recv[idx] = val` — type-fast-path for Array + in-range fixnum index; growth /
@@ -3124,20 +3126,17 @@ node_aset(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@chil
         }
         /* out of range (Ruby grows + nil-pads) → deopt to []= */
     }
-    slots[0] = r; slots[1] = iv; slots[2] = val;           /* deopt → []= send */
-    korb_flink_stage(c, flink, slots);   /* no header cells here: hand the link to the dispatch */
-    RESULT dr;
-    if (korb_deopt_cfunc_cached(c, slots + 3, c->vm->mid_aset, korb_flink_line(flink), 2, ic, &dr)) {
-        c->carry_base = NULL;
-        CHECK(dr);
-        return RESULT_OK(slots[2]);
-    }
-    if (korb_deopt_send_ic(c, slots + 3, c->vm->mid_aset, korb_flink_line(flink), 2, ic, &dr)) {
-        CHECK(dr);
-        return RESULT_OK(slots[2]);
-    }
-    CHECK(korb_send(c, slots + 3, c->vm->mid_aset, korb_flink_line(flink), 2));
-    return RESULT_OK(slots[2]);                            /* the assignment's value, not []='s result */
+    /* as node_aref: the `recv.[]=(idx, val)` send.  val is kept below the frame — the callee may
+     * reassign its parameter cell — since the expression's value is val, not []='s result */
+    slots[0] = val;
+    slots[1] = 0; slots[2] = flink; slots[3] = 0;          /* base[-4] identity / [-3] link / [-2] EP */
+    slots[4] = r; slots[5] = iv; slots[6] = val;
+    if (KORB_OBJECT_P(r) && !(((const AroObjectHeader *)(uintptr_t)r)->flags & KORB_FL_HAS_KLASS) &&
+        ic->klass == VAL2OBJ(r)->klass && ic->serial == c->vm->method_serial && ic->dispatch)
+        CHECK(korb_invoke_entry_ic(c, slots + 7, ic, 2, c->vm->mid_aset));
+    else
+        CHECK(korb_send_cached(c, slots + 7, c->vm->mid_aset, flink, 2, ic, KORB_UNDEF));
+    return RESULT_OK(slots[0]);
 }
 
 // ---- array literals --------------------------------------------------------
