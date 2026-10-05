@@ -430,12 +430,14 @@ static RESULT korb_m_str_uminus(CTX *c, korb_value *slots, korb_ref self, korb_s
     free(bytes);
     return RESULT_OK(r);
 }
-/* String#+@ → a mutable string (self if already mutable, else an unfrozen copy). */
+static RESULT korb_m_obj_dup(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd (int_float_ext.c) */
+/* String#+@ → a mutable string (self if already mutable, else an unfrozen copy).  The copy is the
+ * built-in dup's, not a #dup send: CRuby's str_uplus calls rb_str_dup (railsbench: 16k sends an iteration). */
 static RESULT korb_m_str_plus_at(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
     if (!korb_str_is_frozen(KORB_REF_GET(self))) return RESULT_OK(KORB_REF_GET(self));
     slots[0] = KORB_REF_GET(self);
-    RESULT r = korb_send(c, slots + 1, korb_intern_lit(c->vm, "dup", 3), 0, 0);   /* mutable copy via #dup */
+    RESULT r = korb_m_obj_dup(c, slots + 1, KORB_REF_AT(&slots[0]), KORB_SLICE_MAKE(slots + 1, 0));
     if (LIKELY(r.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(r.value))         /* the copy is plainly mutable */
         ((AroObjectHeader *)(uintptr_t)r.value)->flags &= (uint16_t)~(KORB_FL_CHILLED | KORB_FL_CHILLED_SYM | KORB_FL_FROZEN);
     return r;

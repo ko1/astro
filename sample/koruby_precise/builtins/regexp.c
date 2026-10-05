@@ -1577,6 +1577,7 @@ static RESULT korb_emit_to_s(CTX *c, korb_value *slots, FILE *ms, korb_value v) 
     else korb_fprint_to_s(c, ms, sr.value);
     return RESULT_OK(KORB_NIL);
 }
+static RESULT korb_m_hash_aref(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd (hash.c) */
 RESULT korb_re_str_gsub(CTX *c, korb_value *slots, korb_ref self, korb_slice a, korb_value re, bool global, bool in_place, NODE *block, korb_value *def_env, korb_value *cself) {
     slots[0] = KORB_REF_GET(self); slots[1] = re;
     const KorbString *s0 = VAL2STR(slots[0]); const uint32_t sn = s0->len;
@@ -1674,9 +1675,11 @@ RESULT korb_re_str_gsub(CTX *c, korb_value *slots, korb_ref self, korb_slice a, 
             slots[3] = UNWRAP(korb_str_new(c, slots + 3, src + ms0, ml));   /* whole match = hash key */
             KORB_STR_ENC_SET(slots[3], senc);   /* the match carries the SUBJECT's encoding, or a binary
                                                  * high-byte key misses a binary table (URI's escape table) */
-            slots[4] = slots[2];                                            /* hash recv     (base[-1]) */
-            slots[5] = slots[3];                                           /* key arg       */
-            RESULT hr = korb_send_impl(c, slots + 6, korb_intern_lit(c->vm, "[]", 2), 0, 1, NULL, NULL, NULL);  /* respects default / default_proc */
+            /* CRuby's rb_hash_aref: the C lookup with the default / default_proc / a Ruby #default, never a
+             * subclass's or a redefined #[] (railsbench: 24k #[] sends an iteration) */
+            slots[4] = slots[2];
+            slots[5] = slots[3];
+            RESULT hr = korb_m_hash_aref(c, slots + 6, KORB_REF_AT(&slots[4]), KORB_SLICE_MAKE(&slots[5], 1));
             if (UNLIKELY(hr.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return hr; }
             slots[4] = hr.value;
             if (KORB_STRING_P(slots[4]) && !renc_bad && !korb_str_enc_fold(c->vm, &renc, &rasc, slots[4]))

@@ -208,13 +208,19 @@ static RESULT korb_m_hash_kwmark(CTX *c, korb_value *slots, korb_ref self, korb_
 static RESULT korb_m_hash_size(CTX *c, korb_value *slots, korb_ref self, korb_slice a)  { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_HASH->len)); }
 static RESULT korb_m_hash_empty(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_HASH->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_hash_self(CTX *c, korb_value *slots, korb_ref self, korb_slice a)  { (void)c;(void)slots;(void)a; return RESULT_OK(KORB_REF_GET(self)); }
+/* default_proc.(hash, key) without a #call send: CRuby calls the proc itself (a redefined Proc#call is
+ * not seen), and the generic send was 53k an iteration in railsbench.  slots needs >= 3 free cells. */
+static RESULT
+korb_hash_call_default_proc(CTX *c, korb_value *slots, const korb_value proc, const korb_value hash, const korb_value key)
+{
+    slots[0] = proc; slots[1] = hash; slots[2] = key;
+    if (LIKELY(KORB_PROC_P(proc)))
+        return korb_m_proc_call(c, slots + 3, KORB_REF_AT(&slots[0]), KORB_SLICE_MAKE(&slots[1], 2), NULL, NULL, NULL);
+    return korb_send_impl(c, slots + 3, korb_intern_lit(c->vm, "call", 4), 0, 2, NULL, NULL, NULL);
+}
 static RESULT korb_m_hash_default(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
-    if (KORB_SLICE_LEN(a) >= 1 && SELF_HASH->default_proc != KORB_NIL) {   /* default(key) + proc → proc.call(self, key) */
-        slots[0] = SELF_HASH->default_proc;
-        slots[1] = KORB_REF_GET(self);
-        slots[2] = KORB_SLICE_GET(a, 0);
-        return korb_send_impl(c, slots + 3, korb_intern_lit(c->vm, "call", 4), 0, 2, NULL, NULL, NULL);
-    }
+    if (KORB_SLICE_LEN(a) >= 1 && SELF_HASH->default_proc != KORB_NIL)   /* default(key) + proc → proc.(self, key) */
+        return korb_hash_call_default_proc(c, slots, SELF_HASH->default_proc, KORB_REF_GET(self), KORB_SLICE_GET(a, 0));
     return RESULT_OK(SELF_HASH->default_val);
 }
 
@@ -236,12 +242,8 @@ static RESULT korb_m_hash_aref(CTX *c, korb_value *slots, korb_ref self, korb_sl
     if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
     const KorbHash *h = SELF_HASH;                        /* re-read after possible eql? dispatch */
     if (idx >= 0) return RESULT_OK(korb_items_data(h->items)[2 * idx + 1]);
-    if (h->default_proc != KORB_NIL) {                    /* Hash.new { |h,k| } → default_proc.call(self, key) */
-        slots[0] = h->default_proc;
-        slots[1] = KORB_REF_GET(self);
-        slots[2] = KORB_SLICE_GET(a, 0);
-        return korb_send(c, slots + 3, korb_intern_lit(c->vm, "call", 4), 0, 2);
-    }
+    if (h->default_proc != KORB_NIL)                      /* Hash.new { |h,k| } → default_proc.(self, key) */
+        return korb_hash_call_default_proc(c, slots, h->default_proc, KORB_REF_GET(self), KORB_SLICE_GET(a, 0));
     {   /* a miss goes through #default(key), which a subclass may override */
         const uint32_t dmid = korb_intern_lit(c->vm, "default", 7);
         const korb_value cls = korb_dispatch_class(c, KORB_REF_GET(self));
