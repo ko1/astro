@@ -3823,17 +3823,24 @@ node_self(CTX *c, NODE *n, korb_value *slots, int32_t self_off)
 }
 
 NODE_DEF @nogc
-node_ivar_get(CTX *c, NODE *n, korb_value *slots, int32_t self_off, uint32_t name@sym, struct korb_ivcache *ic@ref)
+node_ivar_get(CTX *c, NODE *n, korb_value *slots, int32_t self_off, uint32_t name@sym, struct korb_ivgcache *ic@ref)
 {
     (void)n;
     korb_value self = slots[self_off];
     if (LIKELY(KORB_OBJECT_P(self))) {
         const KorbObject *const o = VAL2OBJ(self);
+        const uint32_t sh = o->shape_id;
         /* shape inline cache: a hit guarantees the slot is valid for this layout. */
-        if (LIKELY(o->shape_id == ic->shape_id)) return RESULT_OK(korb_items_data(o->ivars)[ic->slot]);
-        const int32_t idx = korb_shape_index(c->vm, o->shape_id, name);   /* miss → walk + refill */
-        if (idx < 0) return RESULT_OK(KORB_NIL);
-        ic->shape_id = o->shape_id; ic->slot = idx;
+        if (LIKELY(sh == ic->shape_id)) return RESULT_OK(korb_items_data(o->ivars)[ic->slot]);
+        if (sh == ic->shape_id2) return RESULT_OK(ic->slot2 >= 0 ? korb_items_data(o->ivars)[ic->slot2] : KORB_NIL);
+        /* miss → walk (railsbench's readers shared by several classes walked ~30M instructions an
+         * iteration with one entry); the new shape goes first, the one it held moves second */
+        const int32_t idx = korb_shape_index(c->vm, sh, name);
+        if (idx < 0) { ic->shape_id2 = sh; ic->slot2 = -1; return RESULT_OK(KORB_NIL); }
+        /* re-read (volatile): reusing the hit test's load would split its compare into a load + compare */
+        const uint32_t old = *(const volatile uint32_t *)&ic->shape_id;
+        if (old != KORB_IVC_CLASS) { ic->shape_id2 = old; ic->slot2 = ic->slot; }
+        ic->shape_id = sh; ic->slot = idx;
         return RESULT_OK(korb_items_data(o->ivars)[idx]);
     }
     if (KORB_CLASS_P(self)) {   /* the class's own @ivars: a pair of its side hash, remembered by position */

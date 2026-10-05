@@ -116,6 +116,14 @@ struct korb_ivcache {
     uint32_t from_shape; /* node_ivar_set: the shape that transitions to shape_id by adding this ivar (0 = none) */
 };
 #define KORB_IVC_CLASS UINT32_MAX   /* never a real shape id: the receiver was a class (validated by the key at `slot`) */
+/* node_ivar_get's: two shapes (a reader shared by several classes, attr_reader's entry above all).  The second
+ * entry also remembers a shape that has no such ivar (slot2 = -1: the read is nil) without a walk each time. */
+struct korb_ivgcache {
+    uint32_t shape_id;   /* as korb_ivcache (or KORB_IVC_CLASS) */
+    int32_t  slot;
+    uint32_t shape_id2;  /* the entry the last fill pushed out, or a shape without the ivar */
+    int32_t  slot2;      /* -1: absent */
+};
 
 /* Inline constant cache — embedded in const-read nodes via @ref.  The VM const
  * table is append-only, so a name's index is permanent once assigned; we cache
