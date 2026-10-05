@@ -129,20 +129,21 @@ korb_str_alloc(CTX *c, korb_value *slots, uint32_t len)
 static KorbString *
 korb_str_alloc_capa(CTX *c, korb_value *slots, const uint32_t len, const uint32_t capa)
 {
-    if (capa <= KORB_STR_EMBED_MAX) {   /* small: the bytes follow the header (buf = NULL) */
-        const size_t size = (sizeof(KorbString) + capa + 1 + 7) & ~(size_t)7;   /* the rounding is free room */
+    if (capa <= KORB_STR_EMBED_MAX) {   /* small: the bytes follow the header (buf = the String itself) */
+        const size_t size = (KORB_STR_DATA_OFF + capa + 1 + 7) & ~(size_t)7;   /* the rounding is free room */
         KorbString *const s = korb_alloc(c, slots, size, KORB_OBJ_STRING);
-        s->len = len; s->capa = (uint32_t)(size - sizeof(KorbString) - 1);
+        s->len = len; s->capa = (uint32_t)(size - KORB_STR_DATA_OFF - 1);
+        ARO_STORE(c, s, (korb_value *)(uintptr_t)&s->buf, (korb_value)(uintptr_t)s);
         korb_str_ptr(s)[len] = '\0';
         return s;
     }
-    KorbStrBuf *b = korb_alloc(c, slots, sizeof(KorbStrBuf) + capa + 1, KORB_OBJ_STR_BUF);
+    KorbStrBuf *b = korb_alloc(c, slots, KORB_STR_DATA_OFF + capa + 1, KORB_OBJ_STR_BUF);   /* padded: bytes where an inline String's are */
     korb_ref bref = SLOTS_PUSH(slots, (korb_value)b);        /* root buf while header allocs */
     KorbString *s = korb_alloc(c, slots, sizeof(KorbString), KORB_OBJ_STRING);
     b = (KorbStrBuf *)(uintptr_t)KORB_REF_GET(bref);    /* re-read after GC */
     s->len = len; s->capa = capa;
     ARO_STORE(c, s, (korb_value *)(uintptr_t)&s->buf, (korb_value)(uintptr_t)b);
-    korb_strbuf_data(b)[len] = '\0';
+    korb_str_ptr(s)[len] = '\0';
     return s;
 }
 
@@ -163,10 +164,11 @@ korb_str_ensure(CTX *c, korb_value *slots, korb_ref sref, uint32_t need)
     if (need <= s->capa) return s;
     uint32_t ncapa = s->capa ? s->capa * 2 : 16;
     while (ncapa < need) ncapa *= 2;
-    KorbStrBuf *nb = korb_alloc(c, slots, sizeof(KorbStrBuf) + ncapa + 1, KORB_OBJ_STR_BUF);
+    KorbStrBuf *nb = korb_alloc(c, slots, KORB_STR_DATA_OFF + ncapa + 1, KORB_OBJ_STR_BUF);
     s = VAL2STR(KORB_REF_GET(sref));                    /* re-read after GC */
-    memcpy(korb_strbuf_data(nb), korb_str_ptr(s), s->len);
-    korb_strbuf_data(nb)[s->len] = '\0';
+    char *const nd = (char *)nb + KORB_STR_DATA_OFF;
+    memcpy(nd, korb_str_ptr(s), s->len);
+    nd[s->len] = '\0';
     ARO_STORE(c, s, (korb_value *)(uintptr_t)&s->buf, (korb_value)(uintptr_t)nb);
     s->capa = ncapa;
     return s;
@@ -1695,15 +1697,15 @@ korb_ary_new(CTX *c, korb_value *slots, uint32_t capa)
 {
     if (capa <= KORB_ARY_EMBED_MAX) {   /* small: the elements live in the object (one allocation) */
         if (capa < KORB_ARY_EMBED_MIN) capa = KORB_ARY_EMBED_MIN;
-        KorbArray *const a = korb_alloc(c, slots, offsetof(KorbArray, items_priv) + (size_t)capa * sizeof(korb_value), KORB_OBJ_ARRAY);
-        a->head.flags |= KORB_FL_ARY_EMBED;
+        KorbArray *const a = korb_alloc(c, slots, KORB_ARY_DATA_OFF + (size_t)capa * sizeof(korb_value), KORB_OBJ_ARRAY);
         a->len = 0;
         a->capa = capa;                     /* zero-init = nil */
+        ARO_STORE(c, a, (korb_value *)(uintptr_t)&a->items_priv, (korb_value)(uintptr_t)a);
         return RESULT_OK((korb_value)a);
     }
     /* items first, rooted while the header is allocated (both may GC). */
-    KorbArrayItems *it = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)capa * sizeof(korb_value),
-                                    KORB_OBJ_VALUE_ARRAY);
+    KorbArrayItems *it = korb_alloc(c, slots, KORB_ARY_DATA_OFF + (size_t)capa * sizeof(korb_value),
+                                    KORB_OBJ_VALUE_ARRAY);   /* padded so the elements sit where an inline array's do */
     korb_ref itref = SLOTS_PUSH(slots, (korb_value)it);
     KorbArray *a = korb_alloc(c, slots, sizeof(KorbArray), KORB_OBJ_ARRAY);
     it = (KorbArrayItems *)(uintptr_t)KORB_REF_GET(itref);   /* re-read after GC */
@@ -1718,11 +1720,10 @@ korb_ary_new(CTX *c, korb_value *slots, uint32_t capa)
 static RESULT
 korb_ary_set_capa(CTX *c, korb_value *slots, korb_ref aref, uint32_t ncapa)
 {
-    KorbArrayItems *nit = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)ncapa * sizeof(korb_value),
+    KorbArrayItems *nit = korb_alloc(c, slots, KORB_ARY_DATA_OFF + (size_t)ncapa * sizeof(korb_value),
                                      KORB_OBJ_VALUE_ARRAY);
     KorbArray *const a = VAL2ARY(KORB_REF_GET(aref));   /* re-read after GC: a fixed up → its elements too */
-    ARO_STORE_BULK(c, nit, korb_items_data(nit), korb_ary_ptr(a), (size_t)a->len);   /* new tail is zero-init = nil */
-    a->head.flags &= (uint16_t)~KORB_FL_ARY_EMBED;
+    ARO_STORE_BULK(c, nit, (korb_value *)(uintptr_t)((char *)nit + KORB_ARY_DATA_OFF), korb_ary_ptr(a), (size_t)a->len);   /* new tail is zero-init = nil */
     ARO_STORE(c, a, (korb_value *)(uintptr_t)&a->items_priv, (korb_value)(uintptr_t)nit);
     a->capa = ncapa;
     return RESULT_OK(KORB_REF_GET(aref));
@@ -1868,14 +1869,15 @@ RESULT
 korb_hash_new(CTX *c, korb_value *slots, uint32_t capa)
 {
     if (capa < 4) capa = 4;
-    if (capa <= KORB_HASH_EMBED_MAX) {   /* small: the pairs follow the object (items_priv = NULL) */
-        KorbHash *const h = korb_alloc(c, slots, sizeof(KorbHash) + (size_t)capa * 2 * sizeof(korb_value), KORB_OBJ_HASH);
+    if (capa <= KORB_HASH_EMBED_MAX) {   /* small: the pairs follow the object (items_priv = the Hash itself) */
+        KorbHash *const h = korb_alloc(c, slots, KORB_HASH_DATA_OFF + (size_t)capa * 2 * sizeof(korb_value), KORB_OBJ_HASH);
         h->len = 0;
         h->capa = capa;
+        ARO_STORE(c, h, (korb_value *)(uintptr_t)&h->items_priv, (korb_value)(uintptr_t)h);
         return RESULT_OK((korb_value)h);
     }
-    KorbArrayItems *it = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)capa * 2 * sizeof(korb_value),
-                                    KORB_OBJ_VALUE_ARRAY);
+    KorbArrayItems *it = korb_alloc(c, slots, KORB_HASH_DATA_OFF + (size_t)capa * 2 * sizeof(korb_value),
+                                    KORB_OBJ_VALUE_ARRAY);   /* padded: pairs where an inline Hash's are */
     korb_ref itref = SLOTS_PUSH(slots, (korb_value)it);
     KorbHash *h = korb_alloc(c, slots, sizeof(KorbHash), KORB_OBJ_HASH);
     it = (KorbArrayItems *)(uintptr_t)KORB_REF_GET(itref);    /* re-read after GC */
@@ -2173,11 +2175,11 @@ korb_hash_ensure(CTX *c, korb_value *slots, korb_ref href, uint32_t need)
     if ((size_t)h->len + need <= h->capa) return RESULT_OK(KORB_REF_GET(href));
     uint32_t ncapa = h->capa ? h->capa * 2 : 4;
     while ((size_t)ncapa < (size_t)h->len + need) ncapa *= 2;
-    KorbArrayItems *nit = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)ncapa * 2 * sizeof(korb_value),
+    KorbArrayItems *nit = korb_alloc(c, slots, KORB_HASH_DATA_OFF + (size_t)ncapa * 2 * sizeof(korb_value),
                                      KORB_OBJ_VALUE_ARRAY);
     h = VAL2HASH(KORB_REF_GET(href));                /* re-read after GC */
     korb_value *const oit_d = korb_hash_pairs(h);
-    ARO_STORE_BULK(c, nit, korb_items_data(nit), oit_d, (size_t)h->len * 2);
+    ARO_STORE_BULK(c, nit, (korb_value *)(uintptr_t)((char *)nit + KORB_HASH_DATA_OFF), oit_d, (size_t)h->len * 2);
     ARO_STORE(c, h, (korb_value *)(uintptr_t)&h->items_priv, (korb_value)(uintptr_t)nit);
     h->capa = ncapa;
     return RESULT_OK(KORB_REF_GET(href));

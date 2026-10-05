@@ -315,10 +315,12 @@ typedef struct KorbStrBuf {
 typedef struct KorbString {
     AroObjectHeader head;
     uint32_t len, capa;          /* byte length / buffer capacity (excl. NUL) */
-    KorbStrBuf *ARO_GC_EDGE buf; /* separately-alloc'd so <<,[]= can grow in place; NULL: the bytes follow the object */
+    KorbStrBuf *ARO_GC_EDGE buf; /* separately-alloc'd so <<,[]= can grow in place, or the String itself (bytes inline) */
 } KorbString;
 /* A String of up to this many bytes keeps them in the object (CRuby's embedded RString): one allocation. */
 #define KORB_STR_EMBED_MAX 39u
+/* the bytes' offset in the object `buf` points at (a String's payload is padded to match): no test to read them */
+#define KORB_STR_DATA_OFF sizeof(KorbString)
 
 /* heap-boxed double (no GC edges). */
 typedef struct KorbFloat {
@@ -662,11 +664,12 @@ typedef struct KorbException {
                               * Kernel#loop lets it through (CRuby stops with rb_iter_break) */
 } KorbException;
 
-/* Array: a header + its korb_value[] elements.  A small array (KORB_FL_ARY_EMBED) keeps them in the
- * object itself, from `items_priv` on (CRuby's embedded RArray): one allocation, no pointer to follow.
- * One that outgrows that capacity — or was made bigger — has a separately-allocated growable payload,
- * so push can grow it without moving the KorbArray.  Reach the elements only through korb_ary_ptr and
- * the write-barrier holder through korb_ary_owner. */
+/* Array: a header + its korb_value[] elements.  A small array keeps them in the object itself, after
+ * `items_priv` (CRuby's embedded RArray: one allocation); one that outgrows that capacity — or was made
+ * bigger — has a separately-allocated growable payload, so push can grow it without moving the KorbArray.
+ * Either way the elements start KORB_ARY_DATA_OFF bytes into the object `items_priv` points at (the array
+ * itself, or the payload, which is padded to match), so reading them takes no test.  Reach the elements
+ * only through korb_ary_ptr and the write-barrier holder through korb_ary_owner. */
 typedef struct KorbArrayItems {
     AroObjectHeader head;            /* KORB_OBJ_VALUE_ARRAY */
     korb_value ARO_GC_EDGE data_priv[];   /* private: reach only via korb_items_data() */
@@ -675,9 +678,9 @@ typedef struct KorbArrayItems {
 typedef struct KorbArray {
     AroObjectHeader head;            /* KORB_OBJ_ARRAY */
     uint32_t len, capa;
-    KorbArrayItems *ARO_GC_EDGE items_priv;   /* !KORB_FL_ARY_EMBED: the payload; else the first element */
+    KorbArrayItems *ARO_GC_EDGE items_priv;   /* the payload, or the array itself (an ordinary edge to a live object) */
 } KorbArray;
-#define KORB_FL_ARY_EMBED   0x100u   /* Array: elements inline (korb_ary_ptr); bit 8 is IO-only otherwise (0x200 = CHILLED is cleared on any object by #freeze) */
+#define KORB_ARY_DATA_OFF   sizeof(KorbArray)   /* the elements' offset in the object items_priv points at */
 #define KORB_ARY_EMBED_MAX  6u       /* largest capacity made inline (a 64-byte object) */
 #define KORB_ARY_EMBED_MIN  3u       /* inline room given to a smaller one (a 40-byte object, as CRuby's) */
 
@@ -688,7 +691,7 @@ typedef struct KorbArray {
 typedef struct KorbHash {
     AroObjectHeader head;            /* KORB_OBJ_HASH */
     uint32_t len, capa;              /* pair count / pair capacity */
-    KorbArrayItems *ARO_GC_EDGE items_priv;  /* 2*capa korb_values; NULL: the pairs follow the object (korb_hash_pairs) */
+    KorbArrayItems *ARO_GC_EDGE items_priv;  /* 2*capa korb_values: the payload, or the Hash itself (pairs inline) */
     korb_value ARO_GC_EDGE default_val;   /* [] miss result (nil unless set) */
     korb_value ARO_GC_EDGE default_proc;  /* Hash.new { |h,k| } block (nil unless set); called on [] miss */
     /* O(1) lookup index for large hashes: open-addressing table of pair indices
@@ -928,21 +931,18 @@ static inline ARO_BORROW char  *korb_strbuf_data(KorbStrBuf *b)      { return b-
 static inline ARO_BORROW korb_value *korb_items_data (KorbArrayItems *it) { return it->data_priv; }
 /* An Array's elements (inline or the payload's) and the object a write into them is barriered against. */
 static inline ARO_BORROW korb_value *korb_ary_ptr(const KorbArray *a) {
-    return (a->head.flags & KORB_FL_ARY_EMBED) ? (korb_value *)(uintptr_t)&a->items_priv : korb_items_data(a->items_priv);
+    return (korb_value *)(uintptr_t)((char *)a->items_priv + KORB_ARY_DATA_OFF);
 }
-static inline void *korb_ary_owner(const KorbArray *a) {
-    return (a->head.flags & KORB_FL_ARY_EMBED) ? (void *)(uintptr_t)a : (void *)a->items_priv;
-}
+static inline void *korb_ary_owner(const KorbArray *a) { return (void *)a->items_priv; }
 /* A Hash's [k0,v0,k1,v1,...] (inline after the object, or the payload's) and the object a write into them is barriered against. */
 #define KORB_HASH_EMBED_MAX 4u   /* pairs */
+#define KORB_HASH_DATA_OFF sizeof(KorbHash)   /* the pairs' offset in the object items_priv points at (payload padded to match) */
 static inline ARO_BORROW korb_value *korb_hash_pairs(const KorbHash *h) {
-    return h->items_priv ? korb_items_data(h->items_priv) : (korb_value *)(uintptr_t)(h + 1);
+    return (korb_value *)(uintptr_t)((char *)h->items_priv + KORB_HASH_DATA_OFF);
 }
-static inline void *korb_hash_owner(const KorbHash *h) {
-    return h->items_priv ? (void *)h->items_priv : (void *)(uintptr_t)h;
-}
+static inline void *korb_hash_owner(const KorbHash *h) { return (void *)h->items_priv; }
 static inline ARO_BORROW char *korb_str_ptr(const KorbString *s) {
-    return s->buf ? korb_strbuf_data(s->buf) : (char *)(uintptr_t)(s + 1);
+    return (char *)(uintptr_t)s->buf + KORB_STR_DATA_OFF;
 }
 static inline ARO_BORROW char  *korb_str_data   (korb_value v)           { return korb_str_ptr(VAL2STR(v)); }
 #define VAL2RANGE(v)       ((KorbRange *)(uintptr_t)KORB_SC(v))
@@ -2141,7 +2141,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
       }                                                                      \
       case KORB_OBJ_STRING: {                                                \
         KorbString *_s = (KorbString *)(payload);                            \
-        if (_s->buf) ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_s->buf);     \
+        ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_s->buf);  /* may be _s itself */ \
         (void)(payload_size);                                                \
         break;                                                               \
       }                                                                      \
@@ -2156,17 +2156,11 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
       }                                                                      \
       case KORB_OBJ_ARRAY: {                                                 \
         KorbArray *_a = (KorbArray *)(payload);                             \
-        if (_a->head.flags & KORB_FL_ARY_EMBED) {   /* inline elements */   \
-            korb_value *const _ad = (korb_value *)(uintptr_t)&_a->items_priv;  \
+        ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_a->items_priv);  /* may be _a itself */ \
+        {   /* re-read: the line above may have moved it */                  \
+            korb_value *const _ad = korb_ary_ptr(_a);                        \
             for (uint32_t _ai2 = 0; _ai2 < _a->len; _ai2++)                 \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ad[_ai2]);           \
-        } else {                                                             \
-            ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_a->items_priv);      \
-            if (_a->items_priv) {   /* re-read: the line above may have moved it */ \
-                korb_value *const _ad = korb_items_data(_a->items_priv);     \
-                for (uint32_t _ai2 = 0; _ai2 < _a->len; _ai2++)             \
-                    ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ad[_ai2]);       \
-            }                                                                \
         }                                                                    \
         (void)(payload_size);                                                \
         break;                                                               \
@@ -2186,8 +2180,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         break;                                                               \
       case KORB_OBJ_HASH: {                                                  \
         KorbHash *_hh = (KorbHash *)(payload);                              \
-        if (_hh->items_priv)                                                 \
-            ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->items_priv);      \
+        ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->items_priv);  /* may be _hh itself */ \
         {  /* pairs: [k0,v0,k1,v1,...], 2 per live pair (re-read: may have moved) */ \
             korb_value *const _hd = korb_hash_pairs(_hh);                    \
             const uint32_t _hn = _hh->len * 2u;                             \

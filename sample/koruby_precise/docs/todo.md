@@ -5,6 +5,11 @@
 
 
 
+## 未: copy 以外の GC backend が master でも動かない (2026-10-05)
+9783214a を `make GC=mark_compact` でビルドすると t/hand/array_embed.rb 等が STRESS なしでも CRuby と食い違い、
+`GC=immix_gen` は素では通るが BARUBY_GC_STRESS=64 で食い違い、STRESS=1+PURGE では両方とも起動直後に SEGV。
+既定の copy だけが検査されている。README の GC 比較の数字（mark_gen / immix 等）は古い版のもの。
+
 ## 未: Kernel#Array が #respond_to? / #respond_to_missing? で答える #to_ary を使わない (2026-10-05)
 - `respond_to?(:to_ary)` が true で `method_missing` が配列を返すオブジェクトに `Array(obj)` が `[obj]` を返す（CRuby は `obj.to_ary` の結果）。`[obj].flatten` は CRuby と同じ。09-29 のバイナリでも同じなので既存の差。
 ## 未: refine した #== が BasicObject#!= の中まで効く (2026-10-04)

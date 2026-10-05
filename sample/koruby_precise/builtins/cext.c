@@ -1171,18 +1171,18 @@ KCX_API ARO_BORROW char *rb_string_ptr(KVALUE h)
     CTX *const c = kcx_c();
     korb_value *const cell = (korb_value *)(uintptr_t)h;
     KorbString *s = VAL2STR(*cell);
-    if (s->buf && aro_gc_pinned_p(s->buf)) return korb_str_ptr(s);
+    if ((void *)s->buf != (void *)s && aro_gc_pinned_p(s->buf)) return korb_str_ptr(s);
     if (c->cext_top) kcx_frame_hold(c->cext_top, cell);       /* a root across the copy */
     korb_value *const slots = kcx_slots(c);
     c->slots_top = slots;
     if (slots > c->slots_high_water) c->slots_high_water = slots;
-    KorbStrBuf *const nb = aro_gc_alloc_byte_pinned_raw(c, sizeof(KorbStrBuf) + s->capa + 1);
+    KorbStrBuf *const nb = aro_gc_alloc_byte_pinned_raw(c, KORB_STR_DATA_OFF + s->capa + 1);
     if (!nb) kcx_throw(c, kcx_raise_c(c, KORB_E_NOTIMPL, "C extensions need the copy GC (BARUBY_GC=5)"));
     nb->head.flags = KORB_OBJ_STR_BUF;
     s = VAL2STR(*cell);                                       /* the alloc may have collected */
-    memcpy(korb_strbuf_data(nb), korb_str_ptr(s), (size_t)s->len + 1);
+    memcpy((char *)nb + KORB_STR_DATA_OFF, korb_str_ptr(s), (size_t)s->len + 1);
     ARO_STORE(c, s, (korb_value *)(uintptr_t)&s->buf, (korb_value)(uintptr_t)nb);
-    return korb_strbuf_data(nb);
+    return korb_str_ptr(s);
 }
 KCX_API long rb_string_len(KVALUE h) { return (long)VAL2STR(K(h))->len; }
 
