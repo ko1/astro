@@ -56,3 +56,31 @@ rescue KeyError => e
 end
 x = [Bag.new, { k: 9 }, [7, 8], "kq", S.new(:k, 1), HSub.new]
 4.times { p x.map { |o| o[o.is_a?(Array) || o.is_a?(String) || o.is_a?(Struct) ? 0 : :k] } }
+class Where
+  def [](k) = [k, caller(1, 1).first[/\d+:in/], caller_locations(1, 1).first.lineno]
+  def []=(k, v)
+    $where = [k, v, caller(1, 1).first[/\d+:in/], caller_locations(1, 1).first.lineno]
+  end
+end
+def deep_read(w, a, b, c) = [a, b, c, w[:k]]
+wh = Where.new
+p wh[:a]
+p deep_read(wh, 1, 2, 3)
+x = 1; y = [wh[:b], (wh[:c] = 9), $where]
+p y
+[1].each { |i| p wh[i]; wh[i] = i; p $where }
+class Chain
+  def [](k) = caller_locations(1, 4).map { |l| [l.lineno, l.label] }
+  def []=(k, v)
+    $chain = caller_locations(1, 4).map { |l| [l.lineno, l.label] }
+  end
+end
+def via_method(ch, a, b)
+  c = a + b
+  [ch[c], (ch[c] = c)]
+end
+ch = Chain.new
+p via_method(ch, 1, 2), $chain
+p [1].map { |i| q = i; ch[q] }
+[[1, 2]].each { |a, b| z = a; ch[z] = b; p $chain }
+p ch.then { |o| o[:t] }

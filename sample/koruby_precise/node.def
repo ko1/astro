@@ -3093,13 +3093,13 @@ node_aref(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@chil
         if (LIKELY(!m->unbound)) {
             slots[0] = m->recv;   /* new receiver (rooted in scratch across the send) */
             slots[1] = idx;       /* arg0 */
-            korb_flink_stage(c, flink, slots);
+            korb_flink_stage(c, flink, slots + 1);   /* the baked distance is from the deopt's link cell below */
             return korb_send(c, slots + 2, m->mid, korb_flink_line(flink), 1);
         }
     }
     /* any other receiver: the `recv.[](idx)` node_send would make — its frame header, its fast path, then
      * korb_send_cached (class receivers, builtins, user #[], method_missing all as for a named send) */
-    slots[0] = 0; slots[1] = flink; slots[2] = 0;          /* base[-4] identity / [-3] link / [-2] EP */
+    slots[0] = 0; slots[1] = flink; slots[2] = 0;          /* base[-4] identity / [-3] link (parse aims it from here) / [-2] EP */
     slots[3] = r; slots[4] = idx;
     if (KORB_OBJECT_P(r) && !(((const AroObjectHeader *)(uintptr_t)r)->flags & KORB_FL_HAS_KLASS) &&
         ic->klass == VAL2OBJ(r)->klass && ic->serial == c->vm->method_serial && ic->dispatch)

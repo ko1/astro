@@ -2808,7 +2808,8 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             WITH_CHAIN(tc, kind_node_aref.slot_count,
                        (recv = transduce(tc, cn->receiver),
                         idx  = transduce(tc, cn->arguments->arguments.nodes[0])));
-            return KP_LINK(tc, node_aref, kp_flink_at(tc, line, kind_node_aref.slot_count), recv, idx);
+            /* the deopt stages `recv.[](idx)` with a header, its link cell one above the node's cursor */
+            return KP_LINK(tc, node_aref, kp_flink_at(tc, line, kind_node_aref.slot_count + 1), recv, idx);
         }
         if (mid == tc->c->vm->mid_aset && argc == 2 &&
             kp_no_splat_p(cn->arguments->arguments.nodes, 2)) {
@@ -2817,7 +2818,8 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                        (recv = transduce(tc, cn->receiver),
                         idx  = transduce(tc, cn->arguments->arguments.nodes[0]),
                         val  = transduce(tc, cn->arguments->arguments.nodes[1])));
-            return KP_LINK(tc, node_aset, kp_flink_at(tc, line, kind_node_aset.slot_count), recv, idx, val);
+            /* as node_aref; the value kept below the window puts the link cell two above */
+            return KP_LINK(tc, node_aset, kp_flink_at(tc, line, kind_node_aset.slot_count + 2), recv, idx, val);
         }
         /* `recv[i, j, ...] = v` (more than one index): an element assignment
          * yields the assigned value, not []='s return.  Stage v in a temp while
