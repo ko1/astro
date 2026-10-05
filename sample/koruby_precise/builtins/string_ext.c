@@ -134,7 +134,7 @@ static int korb_fmt_named_arg(CTX *c, korb_value *slots, const char *fmt, uint32
         *out_err = korb_raise_key(c, slots + 1, nh, key_sym, km);  /* KeyError w/ #receiver + #key */
         return -1;
     }
-    *out_arg = korb_items_data(VAL2HASH(nh)->items)[2 * hidx + 1];
+    *out_arg = korb_hash_pairs(VAL2HASH(nh))[2 * hidx + 1];
     *pi = i + 1;                                          /* step past '>' */
     return 1;
 }
@@ -247,7 +247,7 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
             const korb_value key_sym = ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart));
             const int32_t hidx = korb_hash_find(VAL2HASH(nh), key_sym);
             if (hidx >= 0) {
-                named_arg = korb_items_data(VAL2HASH(nh)->items)[2 * hidx + 1];
+                named_arg = korb_hash_pairs(VAL2HASH(nh))[2 * hidx + 1];
             } else {
                 korb_value dv = KORB_NIL;                        /* absent key: honor a non-nil default */
                 if (VAL2HASH(nh)->default_proc != KORB_NIL || VAL2HASH(nh)->default_val != KORB_NIL) {
@@ -377,7 +377,7 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
                 coerce_err = korb_raise_key(c, slots + 1, nh, ksym, km);  /* KeyError w/ #receiver + #key */
                 has_coerce_err = true; err = true; break;
             }
-            named_arg = korb_items_data(VAL2HASH(nh)->items)[2 * hidx + 1]; has_named = true; conv = 's';   /* i at '}'; loop i++ steps past it */
+            named_arg = korb_hash_pairs(VAL2HASH(nh))[2 * hidx + 1]; has_named = true; conv = 's';   /* i at '}'; loop i++ steps past it */
         } else conv = fmt[i];
         /* strchr matches the terminator, so a NUL conversion char must be rejected first */
         if (!has_named && conv != '%' && (conv == '\0' || !strchr("diufeEgGaAxXoBbcsp", conv))) {   /* bad conversion beats arity errors */
@@ -1058,7 +1058,7 @@ static korb_sword_t korb_popcount_bytes(const unsigned char *const restrict p, c
 static RESULT korb_str_bit_kw(CTX *c, korb_value *slots, const korb_value kw, bool *const lsb_first) {
     const korb_value want = ID2SYM(korb_intern_lit(c->vm, "lsb_first", 9));   /* may intern: before items_data */
     const KorbHash *const h = VAL2HASH(kw);
-    const korb_value *const d = korb_items_data(h->items);
+    const korb_value *const d = korb_hash_pairs(h);
     for (uint32_t i = 0; i < h->len; i++) {
         const korb_value k = d[2 * i], v = d[2 * i + 1];
         if (k != want) {

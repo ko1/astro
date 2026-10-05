@@ -117,7 +117,7 @@ static int korb_round_half_v(CTX *c, korb_slice a, uint32_t *npos, korb_value *b
         const KorbHash *h = VAL2HASH(KORB_SLICE_GET(a, n - 1));
         const int32_t idx = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "half", 4)));
         if (idx >= 0) {
-            const korb_value hv = korb_items_data(h->items)[2 * idx + 1];
+            const korb_value hv = korb_hash_pairs(h)[2 * idx + 1];
             const char *nm = SYMBOL_P(hv) ? korb_sym_name(c->vm, SYM2ID(hv))
                            : (KORB_STRING_P(hv) ? korb_str_ptr(VAL2STR(hv)) : NULL);
             if (nm) {

@@ -31,7 +31,7 @@ static RESULT korb_set_add(CTX *c, korb_value *slots, korb_ref sref, const korb_
     const KorbHash *const h = VAL2HASH(slots[1]);
     *added = h->len != n0;
     if (!*added) return RESULT_OK(KORB_NIL);
-    slots[0] = korb_items_data(h->items)[2 * (h->len - 1)];   /* the stored key: a String is a frozen copy */
+    slots[0] = korb_hash_pairs(h)[2 * (h->len - 1)];   /* the stored key: a String is a frozen copy */
     slots[1] = VAL2SET(KORB_REF_GET(sref))->elems;
     CHECK(korb_ary_push_val(c, slots + 2, KORB_REF_AT(&slots[1]), slots[0]));
     return RESULT_OK(KORB_NIL);
@@ -481,7 +481,7 @@ static int korb_inspect_first_text(const struct korb_vm *const vm, korb_value v,
             v = korb_ary_ptr(VAL2ARY(v))[0];
         } else if (KORB_HASH_P(v)) {
             if (VAL2HASH(v)->len == 0) return 0;
-            v = korb_items_data(VAL2HASH(v)->items)[0];
+            v = korb_hash_pairs(VAL2HASH(v))[0];
             if (SYMBOL_P(v)) {                                   /* `name: ` label form, or quoted */
                 const char *const nm = korb_sym_name(vm, SYM2ID(v));
                 return korb_sym_shows_raw(vm, nm, vm->sym_lens[SYM2ID(v)], vm->sym_encs[SYM2ID(v)]) && korb_sym_label_bare(nm) ? 0 : -1;
@@ -1663,7 +1663,7 @@ static RESULT korb_m_mod_constants(CTX *c, korb_value *slots, korb_ref self, kor
     slots[0] = korb_ivar_get(c, KORB_REF_GET(self), ID2SYM(vm->mid_autoloads));
     if (KORB_HASH_P(slots[0])) {
         for (uint32_t i = 0; i < VAL2HASH(slots[0])->len; i++) {
-            const korb_value key = korb_items_data(VAL2HASH(slots[0])->items)[2 * i];   /* Symbol: immediate, GC-stable */
+            const korb_value key = korb_hash_pairs(VAL2HASH(slots[0]))[2 * i];   /* Symbol: immediate, GC-stable */
             if (!SYMBOL_P(key)) continue;
             bool dup = false;
             const KorbArray *const d = VAL2ARY(KORB_REF_GET(arr));
@@ -2282,7 +2282,7 @@ static RESULT korb_m_class_cvar_get(CTX *c, korb_value *slots, korb_ref self, ko
         }
         return ne;
     }
-    return RESULT_OK(korb_items_data(VAL2HASH(VAL2CLASS(owner)->cvars)->items)[2 * idx + 1]);
+    return RESULT_OK(korb_hash_pairs(VAL2HASH(VAL2CLASS(owner)->cvars))[2 * idx + 1]);
 }
 /* Module#class_variable_set(name, val) — set on the defining ancestor if one
  * exists, else on the receiver (matches CRuby's rb_cvar_set). */
@@ -2344,7 +2344,7 @@ static RESULT korb_m_class_cvars(CTX *c, korb_value *slots, korb_ref self, korb_
          * below may GC/move both the class and its hash. len never shrinks, so a
          * plain index walk is stable; keys are immediate Symbols (no rooting). */
         for (uint32_t i = 0; VAL2CLASS(slots[1])->cvars != KORB_NIL && i < VAL2HASH(VAL2CLASS(slots[1])->cvars)->len; i++) {
-            const korb_value key = korb_items_data(VAL2HASH(VAL2CLASS(slots[1])->cvars)->items)[2 * i];
+            const korb_value key = korb_hash_pairs(VAL2HASH(VAL2CLASS(slots[1])->cvars))[2 * i];
             if (VAL2CLASS(slots[1])->serial <= c->vm->boot_class_serial && SYMBOL_P(key)) {
                 const char *const nm = korb_sym_name(c->vm, SYM2ID(key));   /* the prelude's own @@__ state */
                 if (nm != NULL && strncmp(nm, "@@__", 4) == 0) continue;

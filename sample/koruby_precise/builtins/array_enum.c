@@ -755,7 +755,7 @@ static RESULT korb_m_ary_group_by(CTX *c, korb_value *slots, korb_ref self, korb
             CHECK(korb_ary_push_val(c, slots + 4, KORB_REF_AT(&slots[3]), slots[1]));
             CHECK(korb_hash_set(c, slots + 4, h, KORB_REF_AT(&slots[2]), slots[3]));
         } else {
-            korb_value bucket = korb_items_data(VAL2HASH(KORB_REF_GET(h))->items)[2 * idx + 1];
+            korb_value bucket = korb_hash_pairs(VAL2HASH(KORB_REF_GET(h)))[2 * idx + 1];
             slots[3] = bucket;
             CHECK(korb_ary_push_val(c, slots + 4, KORB_REF_AT(&slots[3]), slots[1]));
         }
@@ -831,7 +831,7 @@ static RESULT korb_m_ary_tally(CTX *c, korb_value *slots, korb_ref self, korb_sl
         slots[1] = korb_ary_ptr(ary)[i];                 /* elem (root) */
         RESULT ferr; int32_t idx = korb_hash_find_ctx(c, slots + 2, h, slots[1], &ferr);   /* CTX-aware key */
         if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
-        korb_sword_t cnt = idx < 0 ? 0 : FIX2LONG(korb_items_data(VAL2HASH(KORB_REF_GET(h))->items)[2*idx+1]);
+        korb_sword_t cnt = idx < 0 ? 0 : FIX2LONG(korb_hash_pairs(VAL2HASH(KORB_REF_GET(h)))[2*idx+1]);
         CHECK(korb_hash_set(c, slots + 2, h, KORB_REF_AT(&slots[1]), LONG2FIX(cnt + 1)));
     }
     return RESULT_OK(KORB_REF_GET(h));
@@ -1795,8 +1795,8 @@ static RESULT korb_m_num_step(CTX *c, korb_value *slots, korb_ref self, korb_sli
         const int32_t bi = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern_lit(c->vm, "by", 2)));
         if (ti >= 0 || bi >= 0) {
             kw = true;
-            if (ti >= 0) kwlim  = korb_items_data(VAL2HASH(h)->items)[2 * ti + 1];
-            if (bi >= 0) kwstep = korb_items_data(VAL2HASH(h)->items)[2 * bi + 1];
+            if (ti >= 0) kwlim  = korb_hash_pairs(VAL2HASH(h))[2 * ti + 1];
+            if (bi >= 0) kwstep = korb_hash_pairs(VAL2HASH(h))[2 * bi + 1];
             na--;
             if (na >= 1 && ti >= 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "to is given twice");   /* positional limit + to: */
             if (na >= 2 && bi >= 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step is given twice"); /* positional step + by: */

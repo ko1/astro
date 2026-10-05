@@ -565,8 +565,8 @@ static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const korb
     const bool dflt = h->default_val != KORB_NIL;
     if (!korb_mdump_byte(st, dflt ? '}' : '{') || !korb_mdump_long(st, h->len)) return false;
     for (uint32_t i = 0; i < VAL2HASH(v)->len; i++) {
-        if (!korb_mdump_obj(c, st, korb_items_data(VAL2HASH(v)->items)[2 * i], depth + 1)) return false;
-        if (!korb_mdump_obj(c, st, korb_items_data(VAL2HASH(v)->items)[2 * i + 1], depth + 1)) return false;
+        if (!korb_mdump_obj(c, st, korb_hash_pairs(VAL2HASH(v))[2 * i], depth + 1)) return false;
+        if (!korb_mdump_obj(c, st, korb_hash_pairs(VAL2HASH(v))[2 * i + 1], depth + 1)) return false;
     }
     return !dflt || korb_mdump_obj(c, st, VAL2HASH(v)->default_val, depth + 1);
 }

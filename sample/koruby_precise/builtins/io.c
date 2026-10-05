@@ -2190,7 +2190,7 @@ static RESULT korb_m_io_clone(CTX *c, korb_value *slots, korb_ref self, korb_sli
     if (n == 1 && KORB_HASH_P(KORB_SLICE_GET(a, 0))) {
         const KorbHash *const h = VAL2HASH(KORB_SLICE_GET(a, 0));
         const int32_t fi = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "freeze", 6)));
-        if (fi >= 0) fz = korb_items_data(h->items)[2 * fi + 1];
+        if (fi >= 0) fz = korb_hash_pairs(h)[2 * fi + 1];
     } else if (n != 0) {
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", n);
     }
@@ -2539,7 +2539,7 @@ static RESULT korb_io_raise_wait(CTX *c, korb_value *slots, bool readable) {
 static RESULT korb_io_exception_opt(CTX *c, korb_value *slots, korb_value h, bool *exc) {
     const int32_t hx = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern_lit(c->vm, "exception", 9)));
     if (hx < 0) return RESULT_OK(KORB_NIL);
-    const korb_value v = korb_items_data(VAL2HASH(h)->items)[2 * hx + 1];
+    const korb_value v = korb_hash_pairs(VAL2HASH(h))[2 * hx + 1];
     if (UNLIKELY(v != KORB_TRUE && v != KORB_FALSE)) {
         char *ib = NULL; size_t il = 0;
         FILE *const ms = open_memstream(&ib, &il);
@@ -2880,7 +2880,7 @@ static RESULT korb_m_io_s_new_fd(CTX *c, korb_value *slots, korb_ref self, korb_
         const KorbHash *const oh = VAL2HASH(opts);
         const int32_t mi = korb_hash_find(oh, ID2SYM(korb_intern_lit(c->vm, "mode", 4)));
         if (mi >= 0) {
-            const korb_value mo = korb_items_data(oh->items)[2 * mi + 1];
+            const korb_value mo = korb_hash_pairs(oh)[2 * mi + 1];
             if (UNLIKELY(modev != KORB_NIL && mo != KORB_NIL))      /* CRuby: only one spelling */
                 return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "mode specified twice");
             if (modev == KORB_NIL) modev = mo;
@@ -2914,7 +2914,7 @@ static RESULT korb_m_io_s_new_fd(CTX *c, korb_value *slots, korb_ref self, korb_
     }
     if (KORB_HASH_P(slots[0])) {                                   /* binmode: true → 'b' */
         const int32_t bi = korb_hash_find(VAL2HASH(slots[0]), ID2SYM(korb_intern_lit(c->vm, "binmode", 7)));
-        if (bi >= 0 && KORB_TRUTHY(korb_items_data(VAL2HASH(slots[0])->items)[2 * bi + 1]) &&
+        if (bi >= 0 && KORB_TRUTHY(korb_hash_pairs(VAL2HASH(slots[0]))[2 * bi + 1]) &&
             strchr(mode, 'b') == NULL && strlen(mode) + 1 < sizeof mode)
             strcat(mode, "b");
     }
@@ -2940,7 +2940,7 @@ static RESULT korb_m_io_s_new_fd(CTX *c, korb_value *slots, korb_ref self, korb_
     if (KORB_HASH_P(slots[0])) {                                   /* path: names the stream for #inspect */
         const int32_t pi = korb_hash_find(VAL2HASH(slots[0]), ID2SYM(korb_intern_lit(c->vm, "path", 4)));
         if (pi >= 0) {
-            slots[3] = korb_items_data(VAL2HASH(slots[0])->items)[2 * pi + 1];
+            slots[3] = korb_hash_pairs(VAL2HASH(slots[0]))[2 * pi + 1];
             CHECK(korb_ivar_set(c, slots + 4, nio, ID2SYM(korb_intern_lit(c->vm, "@__io_path", 10)), slots[3]));
         }
     }
@@ -3005,7 +3005,7 @@ static korb_value korb_file_mode_val(CTX *const c, const korb_slice a, const uin
     const korb_value h = KORB_SLICE_GET(a, (uint32_t)fopts_idx);
     if (!KORB_HASH_P(h)) return KORB_NIL;
     const int32_t mi = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern_lit(c->vm, "mode", 4)));
-    return mi >= 0 ? korb_items_data(VAL2HASH(h)->items)[2 * mi + 1] : KORB_NIL;
+    return mi >= 0 ? korb_hash_pairs(VAL2HASH(h))[2 * mi + 1] : KORB_NIL;
 }
 /* 同様に perm: 3 番目の positional が無ければ options Hash の perm: を見る。 */
 static mode_t korb_file_perm_val(CTX *const c, const korb_slice a, const uint32_t npos, const int32_t fopts_idx) {
@@ -3015,7 +3015,7 @@ static mode_t korb_file_perm_val(CTX *const c, const korb_slice a, const uint32_
     if (!KORB_HASH_P(h)) return 0666;
     const int32_t pi = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern_lit(c->vm, "perm", 4)));
     if (pi < 0) return 0666;
-    const korb_value pv = korb_items_data(VAL2HASH(h)->items)[2 * pi + 1];
+    const korb_value pv = korb_hash_pairs(VAL2HASH(h))[2 * pi + 1];
     return FIXNUM_P(pv) ? (mode_t)FIX2LONG(pv) : 0666;
 }
 /* The block form of File.open: yield the stream, then ensure-close it via the
@@ -3072,7 +3072,7 @@ static RESULT korb_m_file_open(CTX *c, korb_value *slots, korb_ref self, korb_sl
     if (KORB_HASH_P(fopts)) {                              /* flags: OR'd into the open(2) flags */
         const int32_t fi = korb_hash_find(VAL2HASH(fopts), ID2SYM(korb_intern_lit(c->vm, "flags", 5)));
         if (fi >= 0) {
-            const korb_value fv = korb_items_data(VAL2HASH(fopts)->items)[2 * fi + 1];
+            const korb_value fv = korb_hash_pairs(VAL2HASH(fopts))[2 * fi + 1];
             if (FIXNUM_P(fv)) extra_flags = (int)FIX2LONG(fv);
         }
     }

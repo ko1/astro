@@ -411,7 +411,7 @@ static RESULT kj_object(CTX *c, korb_value *slots, struct kj_state *const st)
     if (uniq) {                                             /* fill in one go, then index once */
         KorbHash *const h = VAL2HASH(slots[0]);
         const KorbArray *const sa = VAL2ARY(*st->stack);
-        ARO_STORE_BULK(c, h->items, korb_items_data(h->items), korb_ary_ptr(sa) + base, 2 * (size_t)n);
+        ARO_STORE_BULK(c, korb_hash_owner(h), korb_hash_pairs(h), korb_ary_ptr(sa) + base, 2 * (size_t)n);
         h->len = n;
         if (n >= KORB_HASH_INDEX_THRESHOLD) CHECK(korb_hash_index_build(c, slots + 1, hash));
     } else {                                                /* allow_duplicate_key: the last value wins */
@@ -641,7 +641,7 @@ static void kjg_object(struct kjg *const g, const korb_value v)
     kjg_ch(g, '{');
     int first_type = 0;                                     /* 1 = String keys, 2 = Symbol keys */
     for (uint32_t i = 0; i < h->len && !g->fail; i++) {
-        const korb_value k = korb_items_data(h->items)[2 * i];
+        const korb_value k = korb_hash_pairs(h)[2 * i];
         const int type = SYMBOL_P(k) ? 2 : (KORB_STRING_P(k) && !(((const AroObjectHeader *)(uintptr_t)k)->flags & KORB_FL_HAS_KLASS)) ? 1 : 0;
         if (type == 0 || (first_type != 0 && type != first_type)) { g->fail = true; return; }   /* other / mixed keys: Ruby */
         first_type = type;
@@ -655,7 +655,7 @@ static void kjg_object(struct kjg *const g, const korb_value v)
         kjg_put(g, g->space_before, g->space_before_n);
         kjg_ch(g, ':');
         kjg_put(g, g->space, g->space_n);
-        kjg_value(g, korb_items_data(h->items)[2 * i + 1]);
+        kjg_value(g, korb_hash_pairs(h)[2 * i + 1]);
     }
     g->depth--;
     if (g->object_nl_n) { kjg_put(g, g->object_nl, g->object_nl_n); kjg_indent(g, g->depth); }

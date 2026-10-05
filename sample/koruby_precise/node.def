@@ -3081,7 +3081,7 @@ node_aref(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@chil
                !(AROH_IS_GC_OBJECT(idx) && (korb_eq_needs_send(idx) || (KORB_CLASS_P(idx) && c->vm->sing_hash_redef))))) {   /* hash[key] → inline lookup, skip the send + dispatch (a key whose equality Ruby owns falls to the CTX-aware method) */
         const KorbHash *const h = VAL2HASH(r);
         const int32_t hi = korb_hash_find(h, idx);
-        if (hi >= 0) return RESULT_OK(korb_items_data(h->items)[2 * hi + 1]);
+        if (hi >= 0) return RESULT_OK(korb_hash_pairs(h)[2 * hi + 1]);
         /* miss → default; a default_proc or a subclass (which may override
          * #default) falls through to the send */
         if (LIKELY(h->default_proc == KORB_NIL) &&
@@ -3231,9 +3231,9 @@ node_hash_set_sym(CTX *c, NODE *n, korb_value *slots, uint32_t key@sym, korb_ref
     KorbHash *const h = VAL2HASH(KORB_REF_GET(hash));
     if (LIKELY(h->len < h->capa && h->len + 1 < KORB_HASH_INDEX_THRESHOLD && h->idx_mask == 0 && h->id_mask == 0 &&
                h->khints == NULL && !(h->head.flags & KORB_FL_CMP_BY_ID))) {
-        KorbArrayItems *const it = h->items;
-        ARO_STORE(c, it, &korb_items_data(it)[2 * h->len], ID2SYM(key));
-        ARO_STORE(c, it, &korb_items_data(it)[2 * h->len + 1], val);
+        void *const it = korb_hash_owner(h); korb_value *const it_d = korb_hash_pairs(h);
+        ARO_STORE(c, it, &it_d[2 * h->len], ID2SYM(key));
+        ARO_STORE(c, it, &it_d[2 * h->len + 1], val);
         h->len++;
         return RESULT_OK(KORB_REF_GET(hash));
     }
@@ -3888,7 +3888,7 @@ node_ivar_get(CTX *c, NODE *n, korb_value *slots, int32_t self_off, uint32_t nam
         const korb_value h = VAL2CLASS(self)->class_ivars;
         if (h == KORB_NIL) return RESULT_OK(KORB_NIL);
         const KorbHash *const hh = VAL2HASH(h);
-        const korb_value *const kv = korb_items_data(hh->items);
+        const korb_value *const kv = korb_hash_pairs(hh);
         const uint32_t i = (uint32_t)ic->slot;
         if (LIKELY(ic->shape_id == KORB_IVC_CLASS && i < hh->len && kv[2 * i] == ID2SYM(name))) return RESULT_OK(kv[2 * i + 1]);
         const int32_t idx = korb_hash_find(hh, ID2SYM(name));
@@ -3934,8 +3934,8 @@ node_ivar_set(CTX *c, NODE *n, korb_value *slots, int32_t self_off, uint32_t nam
         const korb_value h = VAL2CLASS(slots[self_off])->class_ivars;   /* an existing pair, remembered by position (see node_ivar_get) */
         const uint32_t i = (uint32_t)ic->slot;
         if (h != KORB_NIL && ic->shape_id == KORB_IVC_CLASS && i < VAL2HASH(h)->len &&
-            korb_items_data(VAL2HASH(h)->items)[2 * i] == ID2SYM(name)) {
-            ARO_STORE(c, VAL2HASH(h)->items, &korb_items_data(VAL2HASH(h)->items)[2 * i + 1], val);
+            korb_hash_pairs(VAL2HASH(h))[2 * i] == ID2SYM(name)) {
+            ARO_STORE(c, korb_hash_owner(VAL2HASH(h)), &korb_hash_pairs(VAL2HASH(h))[2 * i + 1], val);
             return RESULT_OK(val);
         }
     }
@@ -3984,7 +3984,7 @@ node_cvar_get(CTX *c, NODE *n, korb_value *slots, int32_t self_off, int32_t dc_o
     /* the same method as last time: the cref, the ancestor walk and the overtaken check all came out the same */
     if (LIKELY(cc->key == slots[dc_off] && cc->serial == vm->method_serial && cc->cvserial == vm->cvar_serial &&
                cc->mro == vm->mro_serial))
-        return RESULT_OK(korb_items_data(VAL2HASH(VAL2CLASS(cc->owner)->cvars)->items)[2 * cc->idx + 1]);
+        return RESULT_OK(korb_hash_pairs(VAL2HASH(VAL2CLASS(cc->owner)->cvars))[2 * cc->idx + 1]);
     korb_value self = slots[self_off];
     if (UNLIKELY(((uintptr_t)slots[dc_off] & 7u) == KORB_FID_BLOCK)) {   /* lexical, not the block's self */
         const korb_value lc = korb_cvar_block_cref(c, KORB_FBASE_AT(slots, dc_off));

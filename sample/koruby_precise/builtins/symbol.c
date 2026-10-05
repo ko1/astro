@@ -288,7 +288,7 @@ static RESULT korb_m_obj_ivars(CTX *c, korb_value *slots, korb_ref self, korb_sl
         slots[0] = UNWRAP(korb_ary_new(c, slots + 1, VAL2HASH(VAL2EXC(sv)->ivars)->len));   /* alloc may GC → re-read self below */
         korb_ref dst = KORB_REF_AT(&slots[0]);
         for (uint32_t i = 0; i < VAL2HASH(VAL2EXC(KORB_REF_GET(self))->ivars)->len; i++) {
-            const korb_value k = korb_items_data(VAL2HASH(VAL2EXC(KORB_REF_GET(self))->ivars)->items)[2 * i];
+            const korb_value k = korb_hash_pairs(VAL2HASH(VAL2EXC(KORB_REF_GET(self))->ivars))[2 * i];
             const char *const nm = SYMBOL_P(k) ? korb_sym_name(c->vm, SYM2ID(k)) : NULL;
             if (nm != NULL && nm[0] != '@') continue;           /* internal slot, as for objects below */
             CHECK(korb_ary_push_val(c, slots + 1, dst, k));
@@ -309,7 +309,7 @@ static RESULT korb_m_obj_ivars(CTX *c, korb_value *slots, korb_ref self, korb_sl
         #define KORB_IVH() (KORB_CLASS_P(KORB_REF_GET(self)) ? VAL2CLASS(KORB_REF_GET(self))->class_ivars \
                                                              : korb_objivar_hash_of(c->vm, KORB_REF_GET(self)))
         for (uint32_t i = 0; i < VAL2HASH(KORB_IVH())->len; i++) {
-            const korb_value k = korb_items_data(VAL2HASH(KORB_IVH())->items)[2 * i];
+            const korb_value k = korb_hash_pairs(VAL2HASH(KORB_IVH()))[2 * i];
             if (UNLIKELY(k == hidden)) continue;
             if (SYMBOL_P(k) && korb_sym_name(c->vm, SYM2ID(k))[0] != '@') continue;   /* a C extension's hidden ivar (rb_ivar_set(obj, rb_intern("x"), ...)) */
             CHECK(korb_ary_push_val(c, slots + 1, dst, k));
@@ -798,7 +798,7 @@ static RESULT korb_m_proc_parameters(CTX *c, korb_value *slots, korb_ref self, k
     if (KORB_SLICE_LEN(a) >= 1 && KORB_HASH_P(KORB_SLICE_GET(a, KORB_SLICE_LEN(a) - 1))) {
         const KorbHash *const h = VAL2HASH(KORB_SLICE_GET(a, KORB_SLICE_LEN(a) - 1));
         const int32_t li = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "lambda", 6)));
-        if (li >= 0 && korb_items_data(h->items)[2 * li + 1] != KORB_NIL) lam = KORB_TRUTHY(korb_items_data(h->items)[2 * li + 1]);
+        if (li >= 0 && korb_hash_pairs(h)[2 * li + 1] != KORB_NIL) lam = KORB_TRUTHY(korb_hash_pairs(h)[2 * li + 1]);
     }
     const bool symproc = (p->iseq == NULL);
     const uint32_t mproc_mid = symproc ? p->sym_mid : 0;

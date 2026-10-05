@@ -141,7 +141,7 @@ static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_sli
         const KorbHash *const kh = VAL2HASH(KORB_SLICE_GET(a, na - 1));
         const int32_t bi = korb_hash_find(kh, ID2SYM(korb_intern_lit(c->vm, "buffer", 6)));
         if (bi >= 0) {
-            const korb_value bv = korb_items_data(kh->items)[2 * bi + 1];
+            const korb_value bv = korb_hash_pairs(kh)[2 * bi + 1];
             if (UNLIKELY(!KORB_STRING_P(bv)))
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "buffer must be String, not %s", korb_type_name(bv));
             bufbase = VAL2STR(bv)->len;     /* '@!' aligns the position in the WHOLE output */
@@ -508,7 +508,7 @@ static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_sli
         const KorbHash *kh = VAL2HASH(KORB_SLICE_GET(a, na - 1));
         const int32_t bi = korb_hash_find(kh, ID2SYM(korb_intern_lit(c->vm, "buffer", 6)));
         if (bi >= 0) {
-            slots[1] = korb_items_data(kh->items)[2 * bi + 1];                 /* root the buffer String across the cat's GC */
+            slots[1] = korb_hash_pairs(kh)[2 * bi + 1];                 /* root the buffer String across the cat's GC */
             if (UNLIKELY(!KORB_STRING_P(slots[1]))) { free(ob); return korb_raise(c, slots, KORB_E_TYPE, 0, "buffer must be String, not %s", korb_type_name(slots[1])); }
             if (UNLIKELY(((const AroObjectHeader *)(uintptr_t)slots[1])->flags & KORB_FL_FROZEN)) {
                 free(ob);
@@ -578,7 +578,7 @@ static RESULT korb_m_str_unpack(CTX *c, korb_value *slots, korb_ref self, korb_s
         const KorbHash *h = VAL2HASH(KORB_SLICE_GET(a, na - 1));
         const int32_t oi = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "offset", 6)));
         if (oi >= 0) {
-            const korb_value ov = korb_items_data(h->items)[2 * oi + 1];
+            const korb_value ov = korb_hash_pairs(h)[2 * oi + 1];
             if (UNLIKELY(!FIXNUM_P(ov)))
                 return korb_raise_no_int(c, slots, ov);
             off = FIX2LONG(ov);

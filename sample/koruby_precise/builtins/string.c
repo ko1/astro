@@ -1201,7 +1201,7 @@ static uint32_t korb_enc_index_for_name(struct korb_vm *vm, const char *name);  
 static RESULT korb_str_init_encoding(CTX *c, korb_value *slots, korb_ref self, korb_value kw) {
     const int32_t hi = korb_hash_find(VAL2HASH(kw), ID2SYM(korb_intern_lit(c->vm, "encoding", 8)));
     if (hi < 0) return RESULT_OK(KORB_NIL);
-    korb_value ev = korb_items_data(VAL2HASH(kw)->items)[2 * hi + 1];
+    korb_value ev = korb_hash_pairs(VAL2HASH(kw))[2 * hi + 1];
     if (ev == KORB_NIL) return RESULT_OK(KORB_NIL);
     if (!KORB_STRING_P(ev)) {                           /* Encoding object → its #name */
         slots[0] = ev;
@@ -2084,7 +2084,7 @@ static RESULT korb_str_tr_hash(CTX *c, korb_value *slots, korb_ref self, korb_va
     for (uint32_t i = 0; ; i++) {
         if (i >= VAL2HASH(slots[0])->len) break;          /* re-read: a #to_str below runs Ruby */
         for (uint32_t half = 0; half < 2; half++) {
-            slots[2] = korb_items_data(VAL2HASH(slots[0])->items)[2 * i + half];
+            slots[2] = korb_hash_pairs(VAL2HASH(slots[0]))[2 * i + half];
             if (!KORB_STRING_P(slots[2])) {               /* #to_str, else TypeError (CRuby wording) */
                 korb_value cv = slots[2];
                 const RESULT cr = korb_coerce_to_str(c, slots + 3, &cv);
@@ -2377,7 +2377,7 @@ static RESULT korb_str_gsub_into(CTX *c, korb_value *slots, korb_ref self, korb_
         int32_t idx = korb_hash_find(VAL2HASH(rv), pv);   /* literal pattern → key is the whole match */
         if (idx < 0) { rn = 0; rep = malloc(1); }
         else {
-            korb_value val = korb_items_data(VAL2HASH(rv)->items)[2 * idx + 1];
+            korb_value val = korb_hash_pairs(VAL2HASH(rv))[2 * idx + 1];
             char *b = NULL; size_t z = 0; FILE *m = open_memstream(&b, &z);
             if (m) { korb_fprint_to_s(c, m, val); fclose(m); }
             rn = (uint32_t)z; rep = malloc(rn ? rn : 1); if (rn) memcpy(rep, b, rn); free(b);
@@ -3208,7 +3208,7 @@ static bool korb_warn_deprecated_p(struct korb_vm *vm) {
     const uint32_t ci = korb_const_index_owned(vm, korb_intern_lit(vm, "CATEGORIES__", 12), wm);
     if (ci == UINT32_MAX || !KORB_HASH_P(vm->const_vals[ci])) return false;
     const int32_t hi = korb_hash_find(VAL2HASH(vm->const_vals[ci]), ID2SYM(korb_intern_lit(vm, "deprecated", 10)));
-    return hi >= 0 && KORB_TRUTHY(korb_items_data(VAL2HASH(vm->const_vals[ci])->items)[2 * hi + 1]);
+    return hi >= 0 && KORB_TRUTHY(korb_hash_pairs(VAL2HASH(vm->const_vals[ci]))[2 * hi + 1]);
 }
 static RESULT korb_m_str_split(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
     korb_value sepv = KORB_SLICE_LEN(a) >= 1 ? KORB_SLICE_GET(a, 0) : KORB_NIL;
@@ -3905,7 +3905,7 @@ static bool korb_line_chomp(CTX *c, korb_slice a) {
     const uint32_t n = KORB_SLICE_LEN(a);
     if (n >= 1 && KORB_HASH_P(KORB_SLICE_GET(a, n - 1))) {
         const int32_t idx = korb_hash_find(VAL2HASH(KORB_SLICE_GET(a, n - 1)), ID2SYM(korb_intern_lit(c->vm, "chomp", 5)));
-        if (idx >= 0) return KORB_TRUTHY(korb_items_data(VAL2HASH(KORB_SLICE_GET(a, n - 1))->items)[2 * idx + 1]);
+        if (idx >= 0) return KORB_TRUTHY(korb_hash_pairs(VAL2HASH(KORB_SLICE_GET(a, n - 1)))[2 * idx + 1]);
     }
     return false;
 }

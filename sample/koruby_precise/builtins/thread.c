@@ -702,7 +702,7 @@ korb_m_thread_int_mask_push(CTX *c, korb_value *slots, korb_ref self, korb_slice
     if (t->int_masks == KORB_NIL) t->int_masks = UNWRAP(korb_ary_new(c, slots + 1, 8));
     const uint32_t n = VAL2HASH(slots[0])->len;
     for (uint32_t i = 0; i < 2 * n; i++)                 /* Hash は slots[0] で rooted: 毎回読み直す */
-        CHECK(korb_ary_push_val(c, slots + 1, KORB_REF_AT(&t->int_masks), korb_items_data(VAL2HASH(slots[0])->items)[i]));
+        CHECK(korb_ary_push_val(c, slots + 1, KORB_REF_AT(&t->int_masks), korb_hash_pairs(VAL2HASH(slots[0]))[i]));
     CHECK(korb_ary_push_val(c, slots + 1, KORB_REF_AT(&t->int_masks), LONG2FIX(n)));
     return RESULT_OK(KORB_NIL);
 }
@@ -1134,7 +1134,7 @@ korb_thread_hget(CTX *c, korb_value *slots, korb_value *hp, korb_value key)
     korb_value k; CHECK(korb_thread_tls_key(c, slots, key, &k));
     if (*hp == KORB_NIL) return RESULT_OK(KORB_NIL);
     const int32_t i = korb_hash_find(VAL2HASH(*hp), k);
-    return RESULT_OK(i >= 0 ? korb_items_data(VAL2HASH(*hp)->items)[2 * i + 1] : KORB_NIL);
+    return RESULT_OK(i >= 0 ? korb_hash_pairs(VAL2HASH(*hp))[2 * i + 1] : KORB_NIL);
 }
 
 /* Drop `k` in place (keys are Symbols here, so no #eql? dispatch / no GC). */
@@ -1145,14 +1145,14 @@ korb_thread_hdel(CTX *c, korb_value *hp, korb_value k)
     KorbHash *const h = VAL2HASH(*hp);
     const int32_t idx = korb_hash_find(h, k);
     if (idx < 0) return;
-    KorbArrayItems *const it = h->items;
+    void *const it = korb_hash_owner(h); korb_value *const it_d = korb_hash_pairs(h);
     for (uint32_t i = (uint32_t)idx; i + 1 < h->len; i++) {          /* shift to keep order */
-        ARO_STORE(c, it, &korb_items_data(it)[2 * i],     korb_items_data(it)[2 * (i + 1)]);
-        ARO_STORE(c, it, &korb_items_data(it)[2 * i + 1], korb_items_data(it)[2 * (i + 1) + 1]);
+        ARO_STORE(c, it, &it_d[2 * i],     it_d[2 * (i + 1)]);
+        ARO_STORE(c, it, &it_d[2 * i + 1], it_d[2 * (i + 1) + 1]);
     }
     h->len--;
-    ARO_STORE(c, it, &korb_items_data(it)[2 * h->len], KORB_NIL);
-    ARO_STORE(c, it, &korb_items_data(it)[2 * h->len + 1], KORB_NIL);
+    ARO_STORE(c, it, &it_d[2 * h->len], KORB_NIL);
+    ARO_STORE(c, it, &it_d[2 * h->len + 1], KORB_NIL);
     KORB_HASH_DROP_INDEX(h);
 }
 
@@ -1402,7 +1402,7 @@ korb_m_thread_fetch(CTX *c, korb_value *slots, korb_ref self, korb_slice a,
     const korb_value *const hp = korb_thread_tls_slot(c, KORB_REF_GET(self));
     if (*hp != KORB_NIL) {
         const int32_t i = korb_hash_find(VAL2HASH(*hp), k);
-        if (i >= 0) return RESULT_OK(korb_items_data(VAL2HASH(*hp)->items)[2 * i + 1]);
+        if (i >= 0) return RESULT_OK(korb_hash_pairs(VAL2HASH(*hp))[2 * i + 1]);
     }
     if (block != NULL) {
         slots[0] = k;
@@ -1419,7 +1419,7 @@ korb_thread_hkeys(CTX *c, korb_value *slots, const korb_value *hp)
     slots[0] = UNWRAP(korb_ary_new(c, slots, n ? n : 1));
     korb_ref dst = KORB_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < n; i++) {
-        slots[1] = korb_items_data(VAL2HASH(*hp)->items)[2 * i];   /* hp は libc rep 内: 再読可 */
+        slots[1] = korb_hash_pairs(VAL2HASH(*hp))[2 * i];   /* hp は libc rep 内: 再読可 */
         CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
     }
     return RESULT_OK(KORB_REF_GET(dst));

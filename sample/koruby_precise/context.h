@@ -688,7 +688,7 @@ typedef struct KorbArray {
 typedef struct KorbHash {
     AroObjectHeader head;            /* KORB_OBJ_HASH */
     uint32_t len, capa;              /* pair count / pair capacity */
-    KorbArrayItems *ARO_GC_EDGE items;       /* 2*capa korb_values */
+    KorbArrayItems *ARO_GC_EDGE items_priv;  /* 2*capa korb_values; NULL: the pairs follow the object (korb_hash_pairs) */
     korb_value ARO_GC_EDGE default_val;   /* [] miss result (nil unless set) */
     korb_value ARO_GC_EDGE default_proc;  /* Hash.new { |h,k| } block (nil unless set); called on [] miss */
     /* O(1) lookup index for large hashes: open-addressing table of pair indices
@@ -932,6 +932,14 @@ static inline ARO_BORROW korb_value *korb_ary_ptr(const KorbArray *a) {
 }
 static inline void *korb_ary_owner(const KorbArray *a) {
     return (a->head.flags & KORB_FL_ARY_EMBED) ? (void *)(uintptr_t)a : (void *)a->items_priv;
+}
+/* A Hash's [k0,v0,k1,v1,...] (inline after the object, or the payload's) and the object a write into them is barriered against. */
+#define KORB_HASH_EMBED_MAX 4u   /* pairs */
+static inline ARO_BORROW korb_value *korb_hash_pairs(const KorbHash *h) {
+    return h->items_priv ? korb_items_data(h->items_priv) : (korb_value *)(uintptr_t)(h + 1);
+}
+static inline void *korb_hash_owner(const KorbHash *h) {
+    return h->items_priv ? (void *)h->items_priv : (void *)(uintptr_t)h;
 }
 static inline ARO_BORROW char *korb_str_ptr(const KorbString *s) {
     return s->buf ? korb_strbuf_data(s->buf) : (char *)(uintptr_t)(s + 1);
@@ -2178,9 +2186,10 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         break;                                                               \
       case KORB_OBJ_HASH: {                                                  \
         KorbHash *_hh = (KorbHash *)(payload);                              \
-        ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->items);              \
-        if (_hh->items) {  /* pairs: [k0,v0,k1,v1,...], 2 per live pair */   \
-            korb_value *const _hd = korb_items_data(_hh->items);                 \
+        if (_hh->items_priv)                                                 \
+            ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->items_priv);      \
+        {  /* pairs: [k0,v0,k1,v1,...], 2 per live pair (re-read: may have moved) */ \
+            korb_value *const _hd = korb_hash_pairs(_hh);                    \
             const uint32_t _hn = _hh->len * 2u;                             \
             for (uint32_t _hi = 0; _hi < _hn; _hi++)                        \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, &_hd[_hi]);            \

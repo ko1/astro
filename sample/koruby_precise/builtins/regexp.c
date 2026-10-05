@@ -816,7 +816,7 @@ static bool korb_kw_bool(CTX *c, korb_slice a, const char *name, bool dflt) {
     const korb_value key = ID2SYM(korb_intern(c->vm, name, (uint32_t)strlen(name)));
     int32_t idx = korb_hash_find(VAL2HASH(KORB_SLICE_GET(a, n - 1)), key);
     if (idx < 0) return dflt;
-    return KORB_TRUTHY(korb_items_data(VAL2HASH(KORB_SLICE_GET(a, n - 1))->items)[2 * idx + 1]);
+    return KORB_TRUTHY(korb_hash_pairs(VAL2HASH(KORB_SLICE_GET(a, n - 1)))[2 * idx + 1]);
 }
 static RESULT korb_m_md_named_captures(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     const bool symkeys = korb_kw_bool(c, a, "symbolize_names", false);
@@ -1239,7 +1239,7 @@ static RESULT korb_m_re_named_captures(CTX *c, korb_value *slots, korb_ref self,
         if (!gn) break;
         slots[2] = UNWRAP(korb_str_new(c, slots + 2, gn, (uint32_t)strlen(gn)));   /* name key */
         int32_t idx = korb_hash_find(VAL2HASH(slots[1]), slots[2]);
-        if (idx >= 0) slots[3] = korb_items_data(VAL2HASH(slots[1])->items)[2 * idx + 1];     /* existing array */
+        if (idx >= 0) slots[3] = korb_hash_pairs(VAL2HASH(slots[1]))[2 * idx + 1];     /* existing array */
         else { slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 1)); CHECK(korb_hash_set(c, slots + 4, KORB_REF_AT(&slots[1]), KORB_REF_AT(&slots[2]), slots[3])); }
         CHECK(korb_ary_push_val(c, slots + 4, KORB_REF_AT(&slots[3]), LONG2FIX(gi)));
     }
@@ -2059,14 +2059,14 @@ static RESULT korb_m_re_new(CTX *c, korb_value *slots, korb_ref self, korb_slice
              * a kwargs Hash, not as the positional `options`. */
             const KorbHash *const oh = VAL2HASH(opt);
             for (uint32_t k = 0; k < oh->len; k++) {
-                const korb_value key = korb_items_data(oh->items)[2 * k];
+                const korb_value key = korb_hash_pairs(oh)[2 * k];
                 if (SYMBOL_P(key) && SYM2ID(key) == korb_intern_lit(c->vm, "timeout", 7)) continue;
                 slots[1] = key;
                 return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "unknown keyword: :%s",
                                   SYMBOL_P(key) ? korb_sym_name(c->vm, SYM2ID(key)) : "?");
             }
             const int32_t ti = korb_hash_find(VAL2HASH(opt), ID2SYM(korb_intern_lit(c->vm, "timeout", 7)));
-            if (ti >= 0) timeout_v = korb_items_data(VAL2HASH(opt)->items)[2 * ti + 1];
+            if (ti >= 0) timeout_v = korb_hash_pairs(VAL2HASH(opt))[2 * ti + 1];
         }
         else {
             flags |= 4u;                                  /* any other truthy value → IGNORECASE, with CRuby's warning */

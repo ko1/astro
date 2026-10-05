@@ -35,7 +35,7 @@ static uint64_t korb_deep_hash_d(CTX *c, korb_value v, uint32_t depth, bool *cyc
         hh->head.flags |= KORB_FL_JOIN_VISITING;
         uint64_t h = 0x9e3779b9ULL + hh->len;
         for (uint32_t i = 0; i < hh->len; i++)
-            h ^= korb_deep_hash_d(c, korb_items_data(hh->items)[2*i], depth + 1, cycle) * 31u + korb_deep_hash_d(c, korb_items_data(hh->items)[2*i+1], depth + 1, cycle);
+            h ^= korb_deep_hash_d(c, korb_hash_pairs(hh)[2*i], depth + 1, cycle) * 31u + korb_deep_hash_d(c, korb_hash_pairs(hh)[2*i+1], depth + 1, cycle);
         hh->head.flags &= ~KORB_FL_JOIN_VISITING;
         return h;
     }
@@ -153,9 +153,9 @@ static RESULT korb_deep_hash_r(CTX *c, korb_value *slots, korb_value v, uint32_t
         RESULT err = RESULT_OK(KORB_NIL);
         for (uint32_t i = 0; i < VAL2HASH(slots[0])->len; i++) {
             uint64_t kh, vh;
-            err = korb_deep_hash_r(c, slots + 1, korb_items_data(VAL2HASH(slots[0])->items)[2*i], depth + 1, cycle, &kh);
+            err = korb_deep_hash_r(c, slots + 1, korb_hash_pairs(VAL2HASH(slots[0]))[2*i], depth + 1, cycle, &kh);
             if (UNLIKELY(err.state != KORB_NORMAL)) break;
-            err = korb_deep_hash_r(c, slots + 1, korb_items_data(VAL2HASH(slots[0])->items)[2*i+1], depth + 1, cycle, &vh);
+            err = korb_deep_hash_r(c, slots + 1, korb_hash_pairs(VAL2HASH(slots[0]))[2*i+1], depth + 1, cycle, &vh);
             if (UNLIKELY(err.state != KORB_NORMAL)) break;
             h ^= kh * 31u + vh;
         }
@@ -241,7 +241,7 @@ static RESULT korb_m_hash_aref(CTX *c, korb_value *slots, korb_ref self, korb_sl
     RESULT ferr; const int32_t idx = korb_hash_find_ctx(c, slots, self, KORB_SLICE_GET(a, 0), &ferr);
     if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
     const KorbHash *h = SELF_HASH;                        /* re-read after possible eql? dispatch */
-    if (idx >= 0) return RESULT_OK(korb_items_data(h->items)[2 * idx + 1]);
+    if (idx >= 0) return RESULT_OK(korb_hash_pairs(h)[2 * idx + 1]);
     if (h->default_proc != KORB_NIL)                      /* Hash.new { |h,k| } → default_proc.(self, key) */
         return korb_hash_call_default_proc(c, slots, h->default_proc, KORB_REF_GET(self), KORB_SLICE_GET(a, 0));
     {   /* a miss goes through #default(key), which a subclass may override */
@@ -272,7 +272,7 @@ static RESULT korb_m_hash_assoc(CTX *c, korb_value *slots, korb_ref self, korb_s
     const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < n; i++) {
         const KorbHash *h = VAL2HASH(KORB_REF_GET(self));
-        const korb_value k = korb_items_data(h->items)[2 * i];
+        const korb_value k = korb_hash_pairs(h)[2 * i];
         bool match;
         if (korb_eq_send_p_(eqr, k, slots[0])) {  /* user == → dispatch (key == needle) */
             slots[1] = k; slots[2] = slots[0];
@@ -284,7 +284,7 @@ static RESULT korb_m_hash_assoc(CTX *c, korb_value *slots, korb_ref self, korb_s
         }
         if (match) {
             const KorbHash *h2 = VAL2HASH(KORB_REF_GET(self));
-            slots[1] = korb_items_data(h2->items)[2 * i]; slots[2] = korb_items_data(h2->items)[2 * i + 1];
+            slots[1] = korb_hash_pairs(h2)[2 * i]; slots[2] = korb_hash_pairs(h2)[2 * i + 1];
             slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
             korb_ref arr = KORB_REF_AT(slots + 3);
             CHECK(korb_ary_push_val(c, slots + 4, arr, slots[1]));
@@ -328,11 +328,11 @@ static RESULT korb_m_hash_eq(CTX *c, korb_value *slots, korb_ref self, korb_slic
     const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < n; i++) {
         const KorbHash *x = VAL2HASH(slots[0]);
-        const korb_value k = korb_items_data(x->items)[2 * i], v = korb_items_data(x->items)[2 * i + 1];
+        const korb_value k = korb_hash_pairs(x)[2 * i], v = korb_hash_pairs(x)[2 * i + 1];
         RESULT ferr; const int32_t j = korb_hash_find_ctx(c, slots + 2, KORB_REF_AT(&slots[1]), k, &ferr);   /* key match = #hash + #eql? (user keys dispatch) */
         if (UNLIKELY(ferr.state != KORB_NORMAL)) { VAL2HASH(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return ferr; }
         if (j < 0) { result = KORB_FALSE; break; }
-        const korb_value v2 = korb_items_data(VAL2HASH(slots[1])->items)[2 * j + 1];
+        const korb_value v2 = korb_hash_pairs(VAL2HASH(slots[1]))[2 * j + 1];
         if (korb_eq_send_p_(eqr, v, v2)) {   /* value == via dispatch (recurses for nested) */
             slots[2] = v; slots[3] = v2;
             RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
@@ -359,11 +359,11 @@ static RESULT korb_m_hash_eql(CTX *c, korb_value *slots, korb_ref self, korb_sli
     korb_value result = KORB_TRUE;
     for (uint32_t i = 0; i < n; i++) {
         const KorbHash *x = VAL2HASH(slots[0]);
-        const korb_value k = korb_items_data(x->items)[2 * i], v = korb_items_data(x->items)[2 * i + 1];
+        const korb_value k = korb_hash_pairs(x)[2 * i], v = korb_hash_pairs(x)[2 * i + 1];
         RESULT ferr; const int32_t j = korb_hash_find_ctx(c, slots + 2, KORB_REF_AT(&slots[1]), k, &ferr);   /* key match = #hash + #eql? (user keys dispatch) */
         if (UNLIKELY(ferr.state != KORB_NORMAL)) { VAL2HASH(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return ferr; }
         if (j < 0) { result = KORB_FALSE; break; }
-        const korb_value v2 = korb_items_data(VAL2HASH(slots[1])->items)[2 * j + 1];
+        const korb_value v2 = korb_hash_pairs(VAL2HASH(slots[1]))[2 * j + 1];
         if (v == v2) continue;                           /* rb_eql: the same object is eql? (a shared NaN) */
         if (korb_eq_needs_send(v) || korb_eq_needs_send(v2)) {
             slots[2] = v; slots[3] = v2;
@@ -382,7 +382,7 @@ static RESULT korb_m_hash_value_q(CTX *c, korb_value *slots, korb_ref self, korb
     const uint32_t n = VAL2HASH(KORB_REF_GET(self))->len;
     const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < n; i++) {
-        const korb_value v = korb_items_data(VAL2HASH(KORB_REF_GET(self))->items)[2 * i + 1];
+        const korb_value v = korb_hash_pairs(VAL2HASH(KORB_REF_GET(self)))[2 * i + 1];
         if (korb_eq_send_p_(eqr, v, slots[0])) {  /* user == → dispatch (value == needle) */
             slots[1] = v; slots[2] = slots[0];
             RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
@@ -401,7 +401,7 @@ static RESULT korb_m_hash_fetch(CTX *c, korb_value *slots, korb_ref self, korb_s
     RESULT ferr; int32_t idx = korb_hash_find_ctx(c, slots, self, KORB_SLICE_GET(a, 0), &ferr);
     if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
     const KorbHash *h = SELF_HASH;                        /* re-read after possible eql? dispatch */
-    if (idx >= 0) return RESULT_OK(korb_items_data(h->items)[2 * idx + 1]);
+    if (idx >= 0) return RESULT_OK(korb_hash_pairs(h)[2 * idx + 1]);
     if (block != NULL) {                                  /* miss: block form yields the key (wins over a default) */
         korb_value k = KORB_SLICE_GET(a, 0);
         return korb_block_yield(c, slots, block, def_env, &k, 1, cself);
@@ -419,7 +419,7 @@ static RESULT korb_hash_collect(CTX *c, korb_value *slots, korb_ref self, int se
     uint32_t n = SELF_HASH->len;
     korb_ref dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
     for (uint32_t i = 0; i < n; i++) {
-        korb_value e = korb_items_data(SELF_HASH->items)[2 * i + sel];   /* push roots e first */
+        korb_value e = korb_hash_pairs(SELF_HASH)[2 * i + sel];   /* push roots e first */
         CHECK(korb_ary_push_val(c, slots, dst, e));
     }
     return RESULT_OK(KORB_REF_GET(dst));
@@ -439,7 +439,7 @@ static RESULT korb_m_hash_delete(CTX *c, korb_value *slots, korb_ref self, korb_
         }
         return RESULT_OK(KORB_NIL);
     }
-    const korb_value removed = korb_items_data(h->items)[2 * idx + 1];   /* held; no GC before return */
+    const korb_value removed = korb_hash_pairs(h)[2 * idx + 1];   /* held; no GC before return */
     korb_hash_remove_at(c, h, (uint32_t)idx);
     return RESULT_OK(removed);
 }
@@ -456,7 +456,7 @@ static RESULT korb_m_hash_each_named(CTX *c, korb_value *slots, korb_ref self, k
         for (uint32_t i = 0; ; i++) {
             const KorbHash *h = SELF_HASH;
             if (i >= h->len) break;
-            slots[1] = korb_items_data(h->items)[2 * i]; slots[2] = korb_items_data(h->items)[2 * i + 1];
+            slots[1] = korb_hash_pairs(h)[2 * i]; slots[2] = korb_hash_pairs(h)[2 * i + 1];
             slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
             CHECK(korb_ary_push_val(c, slots + 4, KORB_REF_AT(&slots[3]), slots[1]));
             CHECK(korb_ary_push_val(c, slots + 4, KORB_REF_AT(&slots[3]), slots[2]));
@@ -473,8 +473,8 @@ static RESULT korb_m_hash_each_named(CTX *c, korb_value *slots, korb_ref self, k
     for (uint32_t i = 0; ; ) {
         const KorbHash *h = SELF_HASH;
         if (i >= h->len) break;
-        slots[0] = korb_items_data(h->items)[2 * i];    /* key — rooted so the post-yield advance check survives GC */
-        korb_value v = korb_items_data(h->items)[2 * i + 1];
+        slots[0] = korb_hash_pairs(h)[2 * i];    /* key — rooted so the post-yield advance check survives GC */
+        korb_value v = korb_hash_pairs(h)[2 * i + 1];
         RESULT r;
         if (np >= 2) {                       /* |k, v| — fast path, no pair alloc */
             korb_value argv[2] = { slots[0], v };
@@ -492,7 +492,7 @@ static RESULT korb_m_hash_each_named(CTX *c, korb_value *slots, korb_ref self, k
         /* Delete-during-iteration safe: if the block deleted the current key, the
          * next key was compacted into slot i, so reprocess it; otherwise advance. */
         const KorbHash *h2 = SELF_HASH;
-        if (i >= h2->len || korb_items_data(h2->items)[2 * i] != slots[0]) continue;
+        if (i >= h2->len || korb_hash_pairs(h2)[2 * i] != slots[0]) continue;
         i++;
     }
     return RESULT_OK(KORB_REF_GET(self));
@@ -503,8 +503,8 @@ static RESULT korb_m_hash_shift(CTX *c, korb_value *slots, korb_ref self, korb_s
     (void)a;
     KORB_CHECK_FROZEN(c, slots, KORB_REF_GET(self));
     if (VAL2HASH(KORB_REF_GET(self))->len == 0) return RESULT_OK(KORB_NIL);
-    slots[0] = korb_items_data(VAL2HASH(KORB_REF_GET(self))->items)[0];   /* key */
-    slots[1] = korb_items_data(VAL2HASH(KORB_REF_GET(self))->items)[1];   /* val */
+    slots[0] = korb_hash_pairs(VAL2HASH(KORB_REF_GET(self)))[0];   /* key */
+    slots[1] = korb_hash_pairs(VAL2HASH(KORB_REF_GET(self)))[1];   /* val */
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));           /* [k,v] (may GC) */
     CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[2]), slots[0]));
     CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[2]), slots[1]));
@@ -517,7 +517,7 @@ static RESULT korb_hash_each_kv(CTX *c, korb_value *slots, korb_ref self, NODE *
         slots[0] = UNWRAP(korb_ary_new(c, slots, SELF_HASH->len));   /* capacity >= len → pushes below never grow/GC */
         korb_ref arr = KORB_REF_AT(&slots[0]);
         for (uint32_t i = 0; i < SELF_HASH->len; i++)     /* SELF_HASH stable: no GC in this loop */
-            UNWRAP(korb_ary_push_val(c, slots + 1, arr, korb_items_data(SELF_HASH->items)[2 * i + (want_key ? 0 : 1)]));
+            UNWRAP(korb_ary_push_val(c, slots + 1, arr, korb_hash_pairs(SELF_HASH)[2 * i + (want_key ? 0 : 1)]));
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, KORB_REF_GET(self), want_key ? "each_key" : "each_value"));
         const RESULT er = korb_enum_new(c, slots + 2, slots[0], slots[1]);
         return korb_enum_each_like(c, er, KORB_REF_GET(self));
@@ -525,7 +525,7 @@ static RESULT korb_hash_each_kv(CTX *c, korb_value *slots, korb_ref self, NODE *
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = SELF_HASH;
         if (i >= h->len) break;
-        korb_value e = korb_items_data(h->items)[2 * i + (want_key ? 0 : 1)];
+        korb_value e = korb_hash_pairs(h)[2 * i + (want_key ? 0 : 1)];
         RESULT r = korb_block_yield(c, slots, block, def_env, &e, 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -553,8 +553,8 @@ static RESULT korb_m_hash_merge(CTX *c, korb_value *slots, korb_ref self, korb_s
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(KORB_REF_GET(self));
         if (i >= h->len) break;
-        slots[1] = korb_items_data(h->items)[2 * i];                        /* key (root) */
-        korb_value val = korb_items_data(VAL2HASH(KORB_REF_GET(self))->items)[2 * i + 1];
+        slots[1] = korb_hash_pairs(h)[2 * i];                        /* key (root) */
+        korb_value val = korb_hash_pairs(VAL2HASH(KORB_REF_GET(self)))[2 * i + 1];
         CHECK(korb_hash_set(c, slots + 2, dst, KORB_REF_AT(&slots[1]), val));
     }
     for (uint32_t k = 0; k < KORB_SLICE_LEN(a); k++) {
@@ -569,12 +569,12 @@ static RESULT korb_m_hash_merge(CTX *c, korb_value *slots, korb_ref self, korb_s
         for (uint32_t i = 0; ; i++) {
             const KorbHash *oh = VAL2HASH(slots[1]);
             if (i >= oh->len) break;
-            slots[2] = korb_items_data(oh->items)[2 * i];                   /* key */
-            slots[3] = korb_items_data(VAL2HASH(slots[1])->items)[2 * i + 1];   /* new value */
+            slots[2] = korb_hash_pairs(oh)[2 * i];                   /* key */
+            slots[3] = korb_hash_pairs(VAL2HASH(slots[1]))[2 * i + 1];   /* new value */
             if (block != NULL) {
                 int32_t idx = korb_hash_find(VAL2HASH(KORB_REF_GET(dst)), slots[2]);
                 if (idx >= 0) {                                  /* conflict → yield(key, old, new) */
-                    slots[4] = korb_items_data(VAL2HASH(KORB_REF_GET(dst))->items)[2 * idx + 1];
+                    slots[4] = korb_hash_pairs(VAL2HASH(KORB_REF_GET(dst)))[2 * idx + 1];
                     korb_value argv[3] = { slots[2], slots[4], slots[3] };
                     RESULT r = korb_block_yield(c, slots + 5, block, def_env, argv, 3, cself);
                     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -607,12 +607,12 @@ static RESULT korb_m_hash_update(CTX *c, korb_value *slots, korb_ref self, korb_
         for (uint32_t i = 0; ; i++) {
             const KorbHash *oh = VAL2HASH(slots[0]);
             if (i >= oh->len) break;
-            slots[1] = korb_items_data(oh->items)[2 * i];                   /* key */
-            slots[2] = korb_items_data(VAL2HASH(slots[0])->items)[2 * i + 1];   /* new value */
+            slots[1] = korb_hash_pairs(oh)[2 * i];                   /* key */
+            slots[2] = korb_hash_pairs(VAL2HASH(slots[0]))[2 * i + 1];   /* new value */
             if (block != NULL) {
                 int32_t idx = korb_hash_find(VAL2HASH(KORB_REF_GET(self)), slots[1]);
                 if (idx >= 0) {                                  /* conflict → yield(key, old, new) */
-                    slots[3] = korb_items_data(VAL2HASH(KORB_REF_GET(self))->items)[2 * idx + 1];
+                    slots[3] = korb_hash_pairs(VAL2HASH(KORB_REF_GET(self)))[2 * idx + 1];
                     korb_value argv[3] = { slots[1], slots[3], slots[2] };
                     RESULT r = korb_block_yield(c, slots + 4, block, def_env, argv, 3, cself);
                     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -631,7 +631,7 @@ static RESULT korb_m_hash_key(CTX *c, korb_value *slots, korb_ref self, korb_sli
     const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
     for (uint32_t i = 0; i < n; i++) {
         const KorbHash *const h = VAL2HASH(KORB_REF_GET(self));   /* re-read each iter */
-        const korb_value v = korb_items_data(h->items)[2 * i + 1], k = korb_items_data(h->items)[2 * i];
+        const korb_value v = korb_hash_pairs(h)[2 * i + 1], k = korb_hash_pairs(h)[2 * i];
         if (korb_eq_send_p_(eqr, v, slots[0])) {  /* user == → dispatch (value == needle) */
             slots[1] = k; slots[2] = v; slots[3] = slots[0];
             RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
@@ -647,8 +647,8 @@ static RESULT korb_m_hash_rassoc(CTX *c, korb_value *slots, korb_ref self, korb_
     korb_value needle = KORB_SLICE_GET(a, 0);
     const KorbHash *h = VAL2HASH(KORB_REF_GET(self));
     for (uint32_t i = 0; i < h->len; i++) {
-        if (korb_value_eq(korb_items_data(h->items)[2*i+1], needle)) {
-            slots[0] = korb_items_data(h->items)[2*i]; slots[1] = korb_items_data(h->items)[2*i+1];
+        if (korb_value_eq(korb_hash_pairs(h)[2*i+1], needle)) {
+            slots[0] = korb_hash_pairs(h)[2*i]; slots[1] = korb_hash_pairs(h)[2*i+1];
             CHECK(korb_hash_make_pair(c, slots + 3, &slots[0], &slots[1], &slots[2]));
             return RESULT_OK(slots[2]);
         }
@@ -658,9 +658,9 @@ static RESULT korb_m_hash_rassoc(CTX *c, korb_value *slots, korb_ref self, korb_
 /* true if every pair of `sub` appears in `sup` with an equal value */
 static bool korb_hash_is_subset(const KorbHash *sub, const KorbHash *sup) {
     for (uint32_t i = 0; i < sub->len; i++) {
-        int32_t idx = korb_hash_find(sup, korb_items_data(sub->items)[2*i]);
+        int32_t idx = korb_hash_find(sup, korb_hash_pairs(sub)[2*i]);
         if (idx < 0) return false;
-        if (!korb_value_eq(korb_items_data(sub->items)[2*i+1], korb_items_data(sup->items)[2*idx+1])) return false;
+        if (!korb_value_eq(korb_hash_pairs(sub)[2*i+1], korb_hash_pairs(sup)[2*idx+1])) return false;
     }
     return true;
 }

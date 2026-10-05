@@ -402,7 +402,7 @@ RESULT korb_fiber_check_storage(CTX *c, korb_value *slots, korb_value h) {
         return korb_raise_frozen(c, slots, h);
     const KorbHash *const hh = VAL2HASH(h);
     for (uint32_t i = 0; i < hh->len; i++)
-        if (UNLIKELY(!SYMBOL_P(korb_items_data(hh->items)[2 * i])))
+        if (UNLIKELY(!SYMBOL_P(korb_hash_pairs(hh)[2 * i])))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "storage keys must be symbols");
     return RESULT_OK(KORB_NIL);
 }
@@ -448,7 +448,7 @@ static RESULT korb_m_fiber_s_aref(CTX *c, korb_value *slots, korb_ref self, korb
     KorbFiberRep *const rep = korb_fiber_cur_rep(c, slots + 1);
     if (rep == NULL || rep->storage == KORB_NIL) return RESULT_OK(KORB_NIL);
     const int32_t i = korb_hash_find(VAL2HASH(rep->storage), slots[0]);
-    return RESULT_OK(i >= 0 ? korb_items_data(VAL2HASH(rep->storage)->items)[2 * i + 1] : KORB_NIL);
+    return RESULT_OK(i >= 0 ? korb_hash_pairs(VAL2HASH(rep->storage))[2 * i + 1] : KORB_NIL);
 }
 static RESULT korb_m_fiber_s_aset(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
@@ -463,14 +463,14 @@ static RESULT korb_m_fiber_s_aset(CTX *c, korb_value *slots, korb_ref self, korb
         KorbHash *const h = VAL2HASH(slots[2]);
         const int32_t di = korb_hash_find(h, slots[0]);
         if (di >= 0) {                                  /* shift the pairs down (no alloc → no GC) */
-            KorbArrayItems *const it = h->items;
+            void *const it = korb_hash_owner(h); korb_value *const it_d = korb_hash_pairs(h);
             for (uint32_t i = (uint32_t)di; i + 1 < h->len; i++) {
-                ARO_STORE(c, it, &korb_items_data(it)[2 * i],     korb_items_data(it)[2 * (i + 1)]);
-                ARO_STORE(c, it, &korb_items_data(it)[2 * i + 1], korb_items_data(it)[2 * (i + 1) + 1]);
+                ARO_STORE(c, it, &it_d[2 * i],     it_d[2 * (i + 1)]);
+                ARO_STORE(c, it, &it_d[2 * i + 1], it_d[2 * (i + 1) + 1]);
             }
             h->len--;
-            ARO_STORE(c, it, &korb_items_data(it)[2 * h->len], KORB_NIL);
-            ARO_STORE(c, it, &korb_items_data(it)[2 * h->len + 1], KORB_NIL);
+            ARO_STORE(c, it, &it_d[2 * h->len], KORB_NIL);
+            ARO_STORE(c, it, &it_d[2 * h->len + 1], KORB_NIL);
             KORB_HASH_DROP_INDEX(h);
         }
         rep->storage = slots[2];

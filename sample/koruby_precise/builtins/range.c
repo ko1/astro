@@ -1367,7 +1367,7 @@ static RESULT korb_m_range_group_by(CTX *c, korb_value *slots, korb_ref self, ko
             CHECK(korb_ary_push_val(c, slots + 4, KORB_REF_AT(&slots[3]), slots[1]));
             CHECK(korb_hash_set(c, slots + 4, h, KORB_REF_AT(&slots[2]), slots[3]));
         } else {
-            slots[3] = korb_items_data(VAL2HASH(KORB_REF_GET(h))->items)[2 * idx + 1];
+            slots[3] = korb_hash_pairs(VAL2HASH(KORB_REF_GET(h)))[2 * idx + 1];
             CHECK(korb_ary_push_val(c, slots + 4, KORB_REF_AT(&slots[3]), slots[1]));
         }
     }

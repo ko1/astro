@@ -482,8 +482,8 @@ static RESULT korb_spawn_plan_build(CTX *c, korb_value *slots, korb_slice a, str
         slots[0] = KORB_SLICE_GET(a, 0);                        /* park: #to_str below dispatches */
         const uint32_t n = VAL2HASH(slots[0])->len;
         for (uint32_t i = 0; i < n; i++) {
-            slots[1] = korb_items_data(VAL2HASH(slots[0])->items)[2 * i];
-            slots[2] = korb_items_data(VAL2HASH(slots[0])->items)[2 * i + 1];
+            slots[1] = korb_hash_pairs(VAL2HASH(slots[0]))[2 * i];
+            slots[2] = korb_hash_pairs(VAL2HASH(slots[0]))[2 * i + 1];
             for (uint32_t w = 1; w <= 2; w++) {                  /* keys and values take #to_str */
                 if (KORB_STRING_P(slots[w]) || (w == 2 && slots[2] == KORB_NIL)) continue;
                 if (!KORB_OBJECT_P(slots[w]) || !korb_responds_to(c, slots[w], korb_intern_lit(c->vm, "to_str", 6)))
@@ -523,8 +523,8 @@ static RESULT korb_spawn_plan_build(CTX *c, korb_value *slots, korb_slice a, str
                through the scanned argument slice on every round */
             const KorbHash *const h = VAL2HASH(KORB_SLICE_GET(a, hi - 1));
             if (i >= h->len) break;
-            slots[0] = korb_items_data(h->items)[2 * i];         /* key   (parked) */
-            slots[1] = korb_items_data(h->items)[2 * i + 1];     /* value (parked) */
+            slots[0] = korb_hash_pairs(h)[2 * i];         /* key   (parked) */
+            slots[1] = korb_hash_pairs(h)[2 * i + 1];     /* value (parked) */
             const korb_value k = slots[0];
             korb_value v = slots[1];
             /* these two are strictly boolean; CRuby rejects anything else before
@@ -1307,9 +1307,9 @@ static RESULT korb_m_io_s_popen(CTX *c, korb_value *slots, korb_ref self, korb_s
                 for (uint32_t i = 0; ; i++) {
                     const KorbHash *const h = VAL2HASH(slots[w]);
                     if (i >= h->len) break;
-                    slots[3] = korb_items_data(h->items)[2 * i];
+                    slots[3] = korb_hash_pairs(h)[2 * i];
                     CHECK(korb_hash_set(c, slots + 4, KORB_REF_AT(&slots[2]), KORB_REF_AT(&slots[3]),
-                                        korb_items_data(VAL2HASH(slots[w])->items)[2 * i + 1]));
+                                        korb_hash_pairs(VAL2HASH(slots[w]))[2 * i + 1]));
                 }
             }
             merged = slots[2];

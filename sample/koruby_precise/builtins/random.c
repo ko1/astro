@@ -171,7 +171,7 @@ static KorbRandSrc korb_rand_src_from_kwargs(CTX *const c, korb_slice a) {
         if (KORB_HASH_P(last)) {
             const int32_t hi = korb_hash_find(VAL2HASH(last), ID2SYM(korb_intern_lit(c->vm, "random", 6)));
             if (hi >= 0) {
-                const korb_value rng = korb_items_data(VAL2HASH(last)->items)[2 * hi + 1];
+                const korb_value rng = korb_hash_pairs(VAL2HASH(last))[2 * hi + 1];
                 if (korb_is_random(c, rng)) { KorbMT *st = korb_rng_of(c, rng); if (st) { KorbRandSrc s = { st, KORB_UNDEF }; return s; } }
                 else { KorbRandSrc s = { NULL, rng }; return s; }   /* any other value: CRuby dispatches #rand on it
                                                                      * (a Module counts — ffaker passes FFaker::Random) */

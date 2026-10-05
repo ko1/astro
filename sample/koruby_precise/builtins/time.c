@@ -436,7 +436,7 @@ static RESULT korb_m_time_now(CTX *c, korb_value *slots, korb_ref self, korb_sli
     if (n >= 1 && KORB_HASH_P(KORB_SLICE_GET(a, n - 1))) {
         const KorbHash *const h = VAL2HASH(KORB_SLICE_GET(a, n - 1));
         const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "in", 2)));
-        if (ix >= 0) in_zv = korb_items_data(h->items)[2 * ix + 1];
+        if (ix >= 0) in_zv = korb_hash_pairs(h)[2 * ix + 1];
     } else if (UNLIKELY(n >= 1)) {
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", n);
     }
@@ -534,7 +534,7 @@ static RESULT korb_m_time_at(CTX *c, korb_value *slots, korb_ref self, korb_slic
     if (alen >= 2 && KORB_HASH_P(KORB_SLICE_GET(a, alen - 1))) {
         const KorbHash *const h = VAL2HASH(KORB_SLICE_GET(a, alen - 1));
         const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "in", 2)));
-        if (ix >= 0) in_zv = korb_items_data(h->items)[2 * ix + 1];
+        if (ix >= 0) in_zv = korb_hash_pairs(h)[2 * ix + 1];
         alen--;
     }
     if (alen >= 2) {                                             /* Time.at(sec, subsec[, unit]) */
@@ -836,9 +836,9 @@ static RESULT korb_m_time_new(CTX *c, korb_value *slots, korb_ref self, korb_sli
          * hash that carries a keyword we know is treated as one */
         const KorbHash *const h = VAL2HASH(KORB_SLICE_GET(a, n - 1));
         const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "in", 2)));
-        if (ix >= 0) in_zv = korb_items_data(h->items)[2 * ix + 1];
+        if (ix >= 0) in_zv = korb_hash_pairs(h)[2 * ix + 1];
         const int32_t px = korb_hash_find(h, ID2SYM(korb_intern_lit(c->vm, "precision", 9)));
-        if (px >= 0) { prec_v = korb_items_data(h->items)[2 * px + 1]; prec_given = true; }
+        if (px >= 0) { prec_v = korb_hash_pairs(h)[2 * px + 1]; prec_given = true; }
         if (ix >= 0 || px >= 0) n--;
     }
     const bool has_in = (in_zv != KORB_NIL);
